@@ -23,48 +23,38 @@ inline fn key(a: u8, b: u8, c: u8) Trigram {
     return (@as(Trigram, a) << 16) | (@as(Trigram, b) << 8) | @as(Trigram, c);
 }
 
-/// Extract every overlapping trigram of `text`, sorted ascending and
-/// deduplicated, into `buf` (which must be at least `text.len` long). Returns
-/// the number of distinct trigrams written. `text.len < 3` ⇒ 0 (no trigram).
+/// Overlapping trigrams of `text`, sorted ascending and deduplicated, into
+/// `buf` (≥ `text.len` long). Returns the distinct count; `text.len < 3` ⇒ 0.
 pub fn extractSortedUnique(text: []const u8, buf: []Trigram) usize {
     if (text.len < 3) return 0;
-    var n: usize = 0;
-    var i: usize = 0;
-    while (i + 3 <= text.len) : (i += 1) {
-        buf[n] = key(text[i], text[i + 1], text[i + 2]);
-        n += 1;
-    }
+    const n = text.len - 2; // overlapping trigram count
+    for (0..n) |i| buf[i] = key(text[i], text[i + 1], text[i + 2]);
     std.mem.sort(Trigram, buf[0..n], {}, comptime std.sort.asc(Trigram));
     var w: usize = 0;
-    var j: usize = 0;
-    while (j < n) : (j += 1) {
-        if (w == 0 or buf[w - 1] != buf[j]) {
-            buf[w] = buf[j];
-            w += 1;
-        }
-    }
+    for (buf[0..n]) |t| if (w == 0 or buf[w - 1] != t) {
+        buf[w] = t;
+        w += 1;
+    };
     return w;
 }
 
 const Posting = struct { tri: Trigram, doc: u32 };
 
 fn postingLess(_: void, a: Posting, b: Posting) bool {
-    if (a.tri != b.tri) return a.tri < b.tri;
-    return a.doc < b.doc;
+    return if (a.tri != b.tri) a.tri < b.tri else a.doc < b.doc;
 }
 
 pub const QueryError = error{ NeedleTooShort, OutOfMemory };
 pub const LoadError = error{ BadFormat, OutOfMemory };
 
 /// On-disk format version (independent of the C-ABI version). The serialized
-/// blob is a **local-machine cache** (native-endian posting bytes) — rebuild,
-/// don't ship it across architectures.
+/// blob is a **local-machine cache** (native-endian) — rebuild, don't ship it.
 pub const format_version: u32 = 1;
 const magic = "GISTIDX\x01";
 const header_len = magic.len + 4 + 4 + 8; // magic + version + doc_count + postings_len
 
-/// Below this many total corpus bytes, the single-threaded comparison-sort
-/// build wins — thread spawn + a 64 MiB counting histogram aren't worth it.
+/// Below this many corpus bytes the single-threaded comparison-sort build wins
+/// — thread spawn + a 64 MiB counting histogram aren't worth it.
 const parallel_build_threshold: usize = 4 << 20; // 4 MiB
 
 /// An immutable trigram index over a fixed set of documents.
@@ -73,17 +63,16 @@ pub const Index = struct {
     doc_count: u32,
     allocator: std.mem.Allocator,
 
-    /// Build an index over `docs` (each entry is one document's bytes). Document
-    /// ids are the indices into `docs`.
+    /// Build an index over `docs` (each entry is one document's bytes); doc ids
+    /// are the indices into `docs`.
     ///
     /// Large corpora take the fast path: extraction is **fanned out across
     /// cores** (each thread fills a private region, no contention), and the
     /// global ordering is an O(n) **counting sort** on the 24-bit trigram key
-    /// rather than an O(n log n) comparison sort — the count is stable, and
-    /// because the concatenated postings are doc-major, each bucket comes out
-    /// doc-ascending, byte-identical to the comparison-sorted result. Small
-    /// corpora (tests, tiny repos) keep the single-threaded comparison sort:
-    /// the 64 MiB counting histogram isn't worth it below the threshold.
+    /// (vs an O(n log n) comparison sort) — stable, and since concatenated
+    /// postings are doc-major each bucket lands doc-ascending, byte-identical
+    /// to the comparison-sorted result. Small corpora keep the single-threaded
+    /// comparison sort: the 64 MiB histogram isn't worth it below the threshold.
     pub fn build(allocator: std.mem.Allocator, docs: []const []const u8) QueryError!Index {
         var upper: usize = 0;
         for (docs) |d| upper += d.len; // ≥ distinct trigrams across all docs
@@ -98,13 +87,11 @@ pub const Index = struct {
     }
 
     fn buildSerial(allocator: std.mem.Allocator, docs: []const []const u8, upper: usize) QueryError!Index {
-        var max_len: usize = 0;
-        for (docs) |d| if (d.len > max_len) {
-            max_len = d.len;
-        };
+        var max_len: usize = 1;
+        for (docs) |d| max_len = @max(max_len, d.len);
         const postings = try allocator.alloc(Posting, upper);
         errdefer allocator.free(postings);
-        const scratch = try allocator.alloc(Trigram, @max(max_len, 1));
+        const scratch = try allocator.alloc(Trigram, max_len);
         defer allocator.free(scratch);
 
         var w: usize = 0;
@@ -128,12 +115,11 @@ pub const Index = struct {
         const ncpu = std.Thread.getCpuCount() catch 1;
         const nthr = @min(@max(ncpu, 1), docs.len);
 
-        // Byte-balanced contiguous doc shards (so concat stays doc-major).
+        // Byte-balanced contiguous doc shards (so concat stays doc-major); each
+        // shard's half-open [lo, hi) doc range is one `bounds` entry.
         const target = upper / nthr;
-        const lo = try allocator.alloc(usize, nthr);
-        defer allocator.free(lo);
-        const hi = try allocator.alloc(usize, nthr);
-        defer allocator.free(hi);
+        const bounds = try allocator.alloc([2]usize, nthr);
+        defer allocator.free(bounds);
         {
             var t: usize = 0;
             var acc: usize = 0;
@@ -141,19 +127,14 @@ pub const Index = struct {
             for (docs, 0..) |d, di| {
                 acc += d.len;
                 if (t + 1 < nthr and acc >= target * (t + 1)) {
-                    lo[t] = start;
-                    hi[t] = di + 1;
+                    bounds[t] = .{ start, di + 1 };
                     start = di + 1;
                     t += 1;
                 }
             }
-            lo[t] = start;
-            hi[t] = docs.len;
+            bounds[t] = .{ start, docs.len };
             t += 1;
-            while (t < nthr) : (t += 1) {
-                lo[t] = docs.len;
-                hi[t] = docs.len;
-            }
+            while (t < nthr) : (t += 1) bounds[t] = .{ docs.len, docs.len };
         }
 
         const shards = try allocator.alloc(ExtractShard, nthr);
@@ -161,13 +142,14 @@ pub const Index = struct {
         const threads = try allocator.alloc(std.Thread, nthr);
         defer allocator.free(threads);
         // Per-shard private posting buffer, sized to its byte budget (an upper
-        // bound on its distinct-trigram count). Allocated by the main thread.
+        // bound on its distinct-trigram count), allocated on the main thread.
         var allocated: usize = 0;
         errdefer for (shards[0..allocated]) |*sh| allocator.free(sh.buf);
         for (0..nthr) |t| {
+            const slice = docs[bounds[t][0]..bounds[t][1]];
             var bytes: usize = 0;
-            for (docs[lo[t]..hi[t]]) |d| bytes += d.len;
-            shards[t] = .{ .docs = docs[lo[t]..hi[t]], .base_doc = @intCast(lo[t]), .buf = try allocator.alloc(Posting, @max(bytes, 1)) };
+            for (slice) |d| bytes += d.len;
+            shards[t] = .{ .docs = slice, .base_doc = @intCast(bounds[t][0]), .buf = try allocator.alloc(Posting, @max(bytes, 1)) };
             allocated += 1;
         }
         defer for (shards) |*sh| allocator.free(sh.buf);
@@ -193,11 +175,9 @@ pub const Index = struct {
 
     fn extractShard(sh: *ExtractShard) void {
         var max_len: usize = 1;
-        for (sh.docs) |d| if (d.len > max_len) {
-            max_len = d.len;
-        };
+        for (sh.docs) |d| max_len = @max(max_len, d.len);
         // Thread-local scratch via the always-thread-safe page allocator (the
-        // caller's allocator may be an arena / non-Sync allocator).
+        // caller's may be an arena / non-Sync allocator).
         const scratch = std.heap.page_allocator.alloc(Trigram, max_len) catch {
             sh.err = true;
             return;
@@ -254,9 +234,8 @@ pub const Index = struct {
         return header_len + self.postings.len * @sizeOf(Posting);
     }
 
-    /// Serialize into `buf` (caller sizes it `>= serializedSize()`). IO-free —
-    /// the caller writes the bytes wherever it likes (the kernel stays
-    /// filesystem-agnostic). Returns the number of bytes written.
+    /// Serialize into `buf` (`>= serializedSize()`). IO-free — caller writes the
+    /// bytes wherever it likes (kernel stays fs-agnostic). Returns bytes written.
     pub fn writeInto(self: *const Index, buf: []u8) usize {
         @memcpy(buf[0..magic.len], magic);
         std.mem.writeInt(u32, buf[magic.len..][0..4], format_version, .little);
@@ -267,9 +246,9 @@ pub const Index = struct {
         return header_len + pb.len;
     }
 
-    /// Rebuild an index from a blob produced by `writeInto`. Copies the postings
-    /// (so the returned index owns them and `deinit` frees them); `bytes` may be
-    /// freed/unmapped afterward. Validates magic + version + length.
+    /// Rebuild an index from a `writeInto` blob. Copies the postings (the index
+    /// owns them, `deinit` frees them) so `bytes` may be freed/unmapped after.
+    /// Validates magic + version + length.
     pub fn fromBytes(allocator: std.mem.Allocator, bytes: []const u8) LoadError!Index {
         if (bytes.len < header_len) return LoadError.BadFormat;
         if (!std.mem.eql(u8, bytes[0..magic.len], magic)) return LoadError.BadFormat;
@@ -317,18 +296,16 @@ pub const Index = struct {
     }
 
     /// Candidate documents that *may* contain `needle` (AND of its trigrams'
-    /// posting lists). Returned slice is owned by the caller (free with the same
-    /// allocator), sorted ascending. `needle.len < 3` ⇒ NeedleTooShort (the
-    /// caller must fall back to a full scan — a trigram index cannot filter on
-    /// fewer than 3 bytes).
+    /// posting lists). Returned slice is caller-owned (free with the same
+    /// allocator), sorted ascending. `needle.len < 3` ⇒ NeedleTooShort — the
+    /// caller must full-scan, a trigram index can't filter on < 3 bytes.
     ///
-    /// T1 — **rarest-first**: resolve every trigram's posting range up front,
-    /// order them by width, seed the candidate set from the *rarest* trigram,
-    /// and intersect outward. The seed array is then as small as the corpus
-    /// allows and each step shrinks fastest — the AND is commutative so the
-    /// result is identical to any order, but the work is bounded by the rarest
-    /// gram instead of the lexicographically-first one (which is what made a
-    /// query like "context.Context" — seeded on the common "con" — slow).
+    /// T1 — **rarest-first**: resolve every trigram's posting range, order by
+    /// width, seed the candidate set from the *rarest* trigram, intersect
+    /// outward. The AND is commutative so the result is order-independent, but
+    /// seeding on the rarest gram (not the lexicographically-first) keeps the
+    /// seed small and shrinks fastest — e.g. "context.Context" no longer seeds
+    /// on the common "con".
     pub fn queryLiteral(self: *const Index, allocator: std.mem.Allocator, needle: []const u8) QueryError![]u32 {
         if (needle.len < 3) return QueryError.NeedleTooShort;
         const qbuf = try allocator.alloc(Trigram, needle.len);
@@ -346,11 +323,8 @@ pub const Index = struct {
         const seed = ranges[0];
         var cand = try allocator.alloc(u32, seed[1] - seed[0]);
         errdefer allocator.free(cand);
-        var n: usize = 0;
-        for (self.postings[seed[0]..seed[1]]) |p| {
-            cand[n] = p.doc;
-            n += 1;
-        }
+        for (self.postings[seed[0]..seed[1]], 0..) |p, i| cand[i] = p.doc;
+        var n: usize = cand.len;
         // Intersect against the remaining ranges, rarest-first, compacting.
         for (ranges[1..]) |r| {
             var w: usize = 0;
