@@ -15,6 +15,7 @@
 const std = @import("std");
 const syn = @import("syntax.zig");
 const dfa_mod = @import("dfa.zig");
+const powerset = @import("powerset.zig");
 const ByteSet = syn.ByteSet;
 const Node = syn.Node;
 
@@ -23,55 +24,61 @@ pub const ParseError = syn.ParseError;
 const vlen: usize = std.simd.suggestVectorLength(u8) orelse 16;
 
 /// A contiguous byte range `[lo, hi]`. The first-byte set decomposes into a
-/// handful of these (`[0-9]`, `[a-f0-9]`, `\w`, the `{p,0}` of `panic|0x`), which
-/// the scanner's skip loop tests with one SIMD compare per range instead of a
-/// scalar byteset probe per byte.
+/// handful of these (`[0-9]`, `[a-f0-9]`, `\w`, the `{p,0}` of `panic|0x`), tested
+/// by the scanner's skip loop with one SIMD compare per range, not a scalar
+/// byteset probe per byte.
 const Range = struct { lo: u8, hi: u8 };
 const max_ranges = 6; // beyond this (e.g. a negated class) the scalar probe wins
 
-// The compiled Thompson-NFA instruction now lives in `syntax.zig` (beside
-// the AST it lowers from) so `dfa.zig` can determinize over it without an
-// import cycle. Aliased here to keep the engine's references unchanged.
+// The compiled Thompson-NFA instruction lives in `syntax.zig` (beside the AST it
+// lowers from) so `dfa.zig` can determinize over it without an import cycle.
+// Aliased here to keep the engine's references unchanged.
 const State = syn.State;
 
 pub const Regex = struct {
     states: []State,
     start: u32,
     required: []u8, // longest literal that must appear in every match ("" if none)
-    // Alternation cover set: literals whose UNION every match intersects (each
-    // ≥3 B). Non-empty only when `required` is too short for a single-literal
+    // Alternation cover set: literals (each ≥3 B) whose UNION every match
+    // intersects. Non-empty only when `required` is too short for a single-literal
     // prefilter but a `foo|bar`-style union is provable. Empty ⇒ unused.
     alts: []const []const u8,
-    // Scan accelerators (verify-time, no effect on match semantics):
-    //   anchored   — every match begins at line start (`^…`); seed only at pos 0.
-    //   first      — bytes that can BEGIN a match mid-line; lets the scanner
-    //                `memchr`-skip dead spans instead of re-seeding every byte.
-    //   first_byte — `first`'s sole member, when singleton (SIMD `indexOfScalar`).
+    // Scan accelerators (verify-time, no effect on match semantics): `anchored` —
+    // every match begins at line start (`^…`), seed only at pos 0; `first` — bytes
+    // that can BEGIN a match mid-line, lets the scanner `memchr`-skip dead spans
+    // vs. re-seeding every byte; `first_byte` — `first`'s sole member when
+    // singleton (SIMD `indexOfScalar`).
     anchored: bool,
     // True iff the start epsilon-reaches `match` at end-of-line (at_start=false,
-    // at_end=true) — i.e. a nullable prefix then `$` (e.g. `\d*$`, `a*`, `x|$`).
-    // Such a pattern matches the (zero-width) end of EVERY line, so `lineMatch`
-    // short-circuits to true. Also closes a latent Pike `.skip` soundness hole:
-    // skip only seeds first-byte positions and would miss this end-of-line match.
+    // at_end=true) — a nullable prefix then `$` (e.g. `\d*$`, `a*`, `x|$`). Such a
+    // pattern matches the zero-width end of EVERY line, so `lineMatch`
+    // short-circuits to true; also closes a latent Pike `.skip` soundness hole
+    // (skip only seeds first-byte positions and would miss this EOL match).
     eol_empty: bool,
     first: ByteSet,
     first_byte: ?u8,
     first_ranges: [max_ranges]Range,
     first_nranges: u8, // 0 ⇒ singleton (memchr) or too-many-ranges (scalar probe)
-    // T2 byte-class DFA (`dfa.zig`): the primary match engine — O(1)/byte,
-    // anchors included, immutable + scratch-free, scanning a whole document in one
-    // fused pass. Non-null unless the powerset blew past the cap, in which case the
-    // Pike VM serves (the `first`/range machinery below accelerates that fallback).
+    // T2 byte-class DFA (`dfa.zig`): the primary match engine — O(1)/byte, anchors
+    // included, immutable + scratch-free, scanning a whole document in one fused
+    // pass. Non-null unless the powerset blew past the cap, when the Pike VM serves
+    // (the `first`/range machinery below accelerates that fallback).
     dfa: ?*dfa_mod.Dfa,
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *Regex) void {
         self.allocator.free(self.states);
         self.allocator.free(self.required);
-        for (self.alts) |s| self.allocator.free(s);
-        if (self.alts.len > 0) self.allocator.free(self.alts);
+        freeAlts(self.allocator, self.alts);
         if (self.dfa) |d| d.deinit();
         self.* = undefined;
+    }
+
+    /// Free an owned cover set (its members then its backing slice). No-op on the
+    /// empty comptime literal, which has no heap backing.
+    fn freeAlts(gpa: std.mem.Allocator, alts: []const []const u8) void {
+        for (alts) |s| gpa.free(s);
+        if (alts.len > 0) gpa.free(alts);
     }
 
     pub fn compile(allocator: std.mem.Allocator, pattern: []const u8) ParseError!Regex {
@@ -92,10 +99,7 @@ pub const Regex = struct {
         const required = try allocator.dupe(u8, req.best);
         errdefer allocator.free(required);
         const alts = try dupeCover(allocator, arena, ast, req.best);
-        errdefer {
-            for (alts) |s| allocator.free(s);
-            if (alts.len > 0) allocator.free(alts);
-        }
+        errdefer freeAlts(allocator, alts);
 
         const states = try c.states.toOwnedSlice(allocator);
         errdefer allocator.free(states);
@@ -105,13 +109,13 @@ pub const Regex = struct {
         if (!anchored) try analyzeFirst(allocator, states, start, &first);
         const single = first.only();
         var ranges: [max_ranges]Range = undefined;
-        // SIMD range scan only earns its keep when there's no singleton memchr;
-        // null (>max_ranges) falls back to the scalar byteset probe.
+        // SIMD range scan earns its keep only without a singleton memchr; null
+        // (>max_ranges) falls back to the scalar byteset probe.
         const nranges: u8 = if (single != null) 0 else firstRanges(first, &ranges) orelse 0;
 
-        // Byte-class DFA: the primary engine. Determinizes the Thompson program
+        // Byte-class DFA, the primary engine: determinizes the Thompson program
         // (anchors and all); null only on powerset blow-up, when the Pike VM serves.
-        const dfa: ?*dfa_mod.Dfa = try dfa_mod.build(allocator, states, start, anchored);
+        const dfa: ?*dfa_mod.Dfa = try powerset.build(allocator, states, start, anchored);
         errdefer if (dfa) |d| d.deinit();
 
         return .{
@@ -130,9 +134,8 @@ pub const Regex = struct {
         };
     }
 
-    /// Decompose a byte set into contiguous `[lo,hi]` ranges; null if it needs
-    /// more than `max_ranges` (the scalar probe is then cheaper than that many
-    /// SIMD compares per chunk).
+    /// Decompose a byte set into contiguous `[lo,hi]` ranges; null past
+    /// `max_ranges` (the scalar probe then beats that many SIMD compares/chunk).
     fn firstRanges(set: ByteSet, out: *[max_ranges]Range) ?u8 {
         var n: u8 = 0;
         var c: usize = 0;
@@ -150,83 +153,76 @@ pub const Regex = struct {
         return n;
     }
 
+    /// Iterative DFS over NFA-state indices, each enqueued at most once. Bounds
+    /// stack depth under `{n}`-expanded programs (where recursion would blow up).
+    const Worklist = struct {
+        visited: []bool,
+        stack: []u32,
+        sp: usize,
+
+        fn init(gpa: std.mem.Allocator, n: usize, start: u32) ParseError!Worklist {
+            const visited = try gpa.alloc(bool, n);
+            @memset(visited, false);
+            const stack = try gpa.alloc(u32, n);
+            visited[start] = true;
+            stack[0] = start;
+            return .{ .visited = visited, .stack = stack, .sp = 1 };
+        }
+        fn deinit(self: *Worklist, gpa: std.mem.Allocator) void {
+            gpa.free(self.visited);
+            gpa.free(self.stack);
+        }
+        fn pop(self: *Worklist) ?u32 {
+            if (self.sp == 0) return null;
+            self.sp -= 1;
+            return self.stack[self.sp];
+        }
+        fn push(self: *Worklist, t: u32) void {
+            if (self.visited[t]) return;
+            self.visited[t] = true;
+            self.stack[self.sp] = t;
+            self.sp += 1;
+        }
+    };
+
     /// Collect every byte that can be the FIRST consumed byte of a match at SOME
     /// position — a sound superset that lets the scanner skip spans containing
     /// none of them. `^` (assert_start) is *traversed*, not blocked: it holds at
-    /// line starts, where the scanner does seed (with the right `at_start` flag),
-    /// so a `^p…` branch's `p` must be reachable — at a mid-line `p` the seeded
-    /// thread simply dies on the failed assertion, never a false positive. `$`
-    /// (assert_end) is blocked: a byte can't be consumed after the line ends.
-    /// Iterative (worklist) to bound stack depth under `{n}`-expanded programs.
+    /// line starts where the scanner seeds (with the right `at_start` flag), so a
+    /// `^p…` branch's `p` must be reachable — at a mid-line `p` the seeded thread
+    /// just dies on the failed assertion, never a false positive. `$` (assert_end)
+    /// is blocked: no byte is consumed after the line ends.
     fn analyzeFirst(gpa: std.mem.Allocator, states: []const State, start: u32, out: *ByteSet) ParseError!void {
-        const visited = try gpa.alloc(bool, states.len);
-        defer gpa.free(visited);
-        @memset(visited, false);
-        const stack = try gpa.alloc(u32, states.len);
-        defer gpa.free(stack);
-        var sp: usize = 1;
-        stack[0] = start;
-        visited[start] = true;
-        const push = struct {
-            fn f(t: u32, vis: []bool, st: []u32, n: *usize) void {
-                if (!vis[t]) {
-                    vis[t] = true;
-                    st[n.*] = t;
-                    n.* += 1;
-                }
-            }
-        }.f;
-        while (sp > 0) {
-            sp -= 1;
-            switch (states[stack[sp]]) {
-                .consume => |cn| out.unionWith(cn.set),
-                .split => |spl| {
-                    push(spl.a, visited, stack, &sp);
-                    push(spl.b, visited, stack, &sp);
-                },
-                .assert_start => |o| push(o, visited, stack, &sp), // holds at line start
-                .assert_end, .match => {}, // `$`: no byte follows; match: zero-width
-            }
-        }
+        var wl = try Worklist.init(gpa, states.len, start);
+        defer wl.deinit(gpa);
+        while (wl.pop()) |s| switch (states[s]) {
+            .consume => |cn| out.unionWith(cn.set),
+            .split => |spl| {
+                wl.push(spl.a);
+                wl.push(spl.b);
+            },
+            .assert_start => |o| wl.push(o), // holds at line start
+            .assert_end, .match => {}, // `$`: no byte follows; match: zero-width
+        };
     }
 
-    /// Does the start epsilon-reach `match` at end-of-line — i.e. with
-    /// `at_start=false` (we're past line start) and `at_end=true` (`$` holds)?
-    /// True only for a nullable prefix that flows into `$`/`match` without
-    /// consuming a byte (`\d*$`, `a*`, `x|$`), which therefore matches the
-    /// zero-width end of every line. `^`-anchored programs return false (the
-    /// `assert_start` is blocked at non-start). Iterative worklist, like
-    /// `analyzeFirst`, to bound stack depth under `{n}`-expanded programs.
+    /// Does the start epsilon-reach `match` at end-of-line (`at_start=false`,
+    /// `at_end=true`)? True only for a nullable prefix flowing into `$`/`match`
+    /// without consuming a byte (`\d*$`, `a*`, `x|$`) — matches the zero-width end
+    /// of every line. `^`-anchored programs return false (`assert_start` blocked
+    /// at non-start).
     fn reachesMatchEol(gpa: std.mem.Allocator, states: []const State, start: u32) ParseError!bool {
-        const visited = try gpa.alloc(bool, states.len);
-        defer gpa.free(visited);
-        @memset(visited, false);
-        const stack = try gpa.alloc(u32, states.len);
-        defer gpa.free(stack);
-        var sp: usize = 1;
-        stack[0] = start;
-        visited[start] = true;
-        const push = struct {
-            fn f(t: u32, vis: []bool, st: []u32, n: *usize) void {
-                if (!vis[t]) {
-                    vis[t] = true;
-                    st[n.*] = t;
-                    n.* += 1;
-                }
-            }
-        }.f;
-        while (sp > 0) {
-            sp -= 1;
-            switch (states[stack[sp]]) {
-                .match => return true,
-                .split => |spl| {
-                    push(spl.a, visited, stack, &sp);
-                    push(spl.b, visited, stack, &sp);
-                },
-                .assert_end => |o| push(o, visited, stack, &sp), // `$` holds at EOL
-                .assert_start, .consume => {}, // at_start=false blocks `^`; a consume isn't zero-width
-            }
-        }
+        var wl = try Worklist.init(gpa, states.len, start);
+        defer wl.deinit(gpa);
+        while (wl.pop()) |s| switch (states[s]) {
+            .match => return true,
+            .split => |spl| {
+                wl.push(spl.a);
+                wl.push(spl.b);
+            },
+            .assert_end => |o| wl.push(o), // `$` holds at EOL
+            .assert_start, .consume => {}, // at_start=false blocks `^`; consume isn't zero-width
+        };
         return false;
     }
 
@@ -374,19 +370,19 @@ pub const Regex = struct {
     pub fn lineMatch(re: *const Regex, sim: *Sim, line: []const u8) bool {
         // The byte-class DFA is the floor: one table lookup per byte, anchors and
         // all, regardless of match density — what the Pike skip path lost to rg on.
-        // It's present for every non-pathological pattern; only a powerset blow-up
-        // past the cap leaves it null, and then
-        // the Pike VM (the proven oracle) serves. Equivalence is held by the rg
-        // oracle + the DFA-vs-Pike differential fuzz — this is purely dispatch.
+        // Present for every non-pathological pattern; only a powerset blow-up past
+        // the cap leaves it null, and then the Pike VM (the proven oracle) serves.
+        // Equivalence held by the rg oracle + the DFA-vs-Pike differential fuzz —
+        // this is purely dispatch.
         if (re.eol_empty) return true; // matches every line's zero-width end (`\d*$`)
         if (re.dfa) |d| return d.match(line);
         return re.lineMatchPike(sim, line);
     }
 
     /// The Pike-VM-only dispatch (anchored fast path · first-byte skip · plain
-    /// re-seed). This is what `lineMatch`/`docMatch` fall back to when the powerset
-    /// blew past the cap and no DFA was built, and the correctness reference the
-    /// DFA's differential fuzz compares against (so the test can force the Pike path).
+    /// re-seed). The `lineMatch`/`docMatch` fallback when the powerset blew past
+    /// the cap and no DFA was built, and the correctness reference the DFA's
+    /// differential fuzz compares against (so the test can force the Pike path).
     pub fn lineMatchPike(re: *const Regex, sim: *Sim, line: []const u8) bool {
         if (re.eol_empty) return true; // see `eol_empty`: matches every line (`\d*$`)
         if (re.anchored) return re.search(sim, line, .anchored);
@@ -401,8 +397,14 @@ pub const Regex = struct {
     fn nextStart(re: *const Regex, line: []const u8, from: usize) ?usize {
         if (re.first_byte) |b| return std.mem.indexOfScalarPos(u8, line, from, b);
         if (re.first_nranges > 0) return re.nextStartRange(line, from);
-        var j = from;
-        while (j < line.len) : (j += 1) if (re.first.has(line[j])) return j;
+        return re.scalarFirst(line, from);
+    }
+
+    /// Scalar fallback: first index ≥ `from` whose byte is in `first` (wide sets,
+    /// e.g. a negated class, where neither memchr nor the range scan applies).
+    fn scalarFirst(re: *const Regex, line: []const u8, from: usize) ?usize {
+        var i = from;
+        while (i < line.len) : (i += 1) if (re.first.has(line[i])) return i;
         return null;
     }
 
@@ -425,8 +427,7 @@ pub const Regex = struct {
             const bits: Mask = @bitCast(hit);
             if (bits != 0) return i + @ctz(bits);
         }
-        while (i < line.len) : (i += 1) if (re.first.has(line[i])) return i;
-        return null;
+        return re.scalarFirst(line, i);
     }
 
     /// Unified Pike search, specialized at comptime by seeding policy:
@@ -463,19 +464,15 @@ pub const Regex = struct {
             const cl = re.closure(sim, &sim.nxt, false, i + 1 == line.len);
             var matched = false;
             for (sim.cur.slice()) |s| switch (re.states[s]) {
-                .consume => |cn| if (cn.set.has(c) and cl.add(cn.out)) {
-                    matched = true;
-                },
+                // `and` keeps `add` from firing on a non-matching byte; `or matched`
+                // accumulates without clobbering an earlier hit this position.
+                .consume => |cn| matched = (cn.set.has(c) and cl.add(cn.out)) or matched,
                 else => {},
             };
             switch (mode) { // re-seed the next start per policy
                 .anchored => {},
-                .plain => if (cl.add(re.start)) {
-                    matched = true;
-                },
-                .skip => if (i + 1 < line.len and re.first.has(line[i + 1]) and cl.add(re.start)) {
-                    matched = true;
-                },
+                .plain => matched = cl.add(re.start) or matched,
+                .skip => matched = (i + 1 < line.len and re.first.has(line[i + 1]) and cl.add(re.start)) or matched,
             }
             std.mem.swap(ThreadList, &sim.cur, &sim.nxt);
             if (matched) return true;
@@ -488,9 +485,8 @@ pub const Regex = struct {
     pub fn docMatch(re: *const Regex, sim: *Sim, doc: []const u8) bool {
         if (re.eol_empty) return true; // matches every line's zero-width end (`\d*$`)
         // The DFA scans the whole buffer in one fused pass (one byte-touch); only a
-        // powerset blow-up past the cap leaves it null, and then the Pike VM (the
-        // proven oracle) serves per line. Equivalence held by the doc-level
-        // DFA-vs-Pike differential fuzz.
+        // powerset blow-up past the cap leaves it null, and then the Pike VM (proven
+        // oracle) serves per line. Equivalence held by the doc-level differential fuzz.
         if (re.dfa) |d| return d.docMatch(doc);
         var rest = doc;
         while (rest.len > 0) {
