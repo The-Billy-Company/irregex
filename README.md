@@ -31,7 +31,7 @@ and contracts. The frontier survey + decision trail live in
 | ----------------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **T0 trigram index**          | ✅ (`src/trigram.zig`) | positional-trigram candidate filter — sound superset of literal matches, queried by binary search; the proven baseline. Build is parallel (16-core extraction + O(n) counting sort), 1.0 s over 125 MiB                           |
 | **T1 rarest-first + persist** | ✅ (`src/trigram.zig`) | resolve every trigram's posting range, seed from the _rarest_, intersect outward (killed the `context.Context` tail 530µs→9µs at libs scale); on-disk serialize/`fromBytes` so a session builds **once** and warm-starts in ~28ms |
-| **T2 regex**                  | ✅ (`src/regex.zig`)   | linear-time **Thompson NFA** over bytes (RE2/ripgrep philosophy — no catastrophic backtracking) + sound required-literal extraction so a regex reuses the T0 prefilter — including a **multi-literal cover set** for alternations (`foo\|bar\|baz` prefilters on the UNION of all three, not a scan). The no-literal full-scan path is accelerated to the metal: an **anchored fast path** (`^…` seeds only at line start) and a **first-byte skip** (SIMD `memchr`/range scan to the next byte that can _begin_ a match) so the Pike search skips dead spans instead of stepping every byte. Proven byte-identical to `rg (?-u)`; cold head-to-head (`bench/regex_headtohead.sh`) wins every prefilterable tier 1.4–3.0× and ties on the no-literal tail |
+| **T2 regex**                  | ✅ (`src/regex.zig`)   | linear-time **Thompson NFA** over bytes (RE2/ripgrep philosophy — no catastrophic backtracking) + sound required-literal extraction so a regex reuses the T0 prefilter — including a **multi-literal cover set** for alternations (`foo\|bar\|baz` prefilters on the UNION of all three, not a scan). The no-literal full-scan path is accelerated to the metal: an **anchored fast path** (`^…` seeds only at line start), a **first-byte skip** (SIMD `memchr`/range scan to the next byte that can _begin_ a match) so the Pike search skips dead spans instead of stepping every byte, and — for the **dense** case the skip can't help (`\w{3,8}`, where `\w` covers most bytes) — a **bit-parallel Glushkov engine** (`src/regex_bitparallel.zig`): the active-position set is one machine word advanced by a handful of bit ops per byte (O(popcount)/byte, no scratch), the structural answer to rg's lazy DFA for small dense programs. It's gated to anchor-free, word-sized programs and dispatched only when the first-byte set is too dense for the skip; everything else stays on the Pike VM, which remains the correctness reference. Proven byte-identical to `rg (?-u)` **and** divergence-free vs the Pike VM across a 40k-case differential fuzz (random grammar × random inputs); cold head-to-head (`bench/regex_headtohead.sh`) wins every prefilterable tier 1.4–3.1× and races on the no-literal tail. The same slate also clocks `ag` (the_silver_searcher, PCRE): gist beats it 15/16 (`ag` trails 1.5–5.2×), the lone exception being the prefilter-less 2-byte mixed alternation `panic\|0x` |
 | **T3 freshness overlay**      | ✅ (`bench/fresh.zig`) | keeps a persisted index correct under heavy concurrent commit churn **without rebuilding or consulting git**. Anchor = the build's wall instant; a file is fresh iff `mtime ≥ anchor`, so any changed/new/touched file (incl. a coworker's commit landing via `git checkout`) is folded into the candidate set and re-verified — zero false negatives, read-your-own-writes, and immune to rebases/overlaps that break `git diff`. Parallel stat-walk; **~42 ms cold vs rg ~555 ms** |
 | **T4 fusion + rank**          | ✅ (`src/rank.zig`)    | weighted **Reciprocal Rank Fusion** over {lexical density, symbol/definition boost, shallow-path} + an optional external ranking (the graphify graph-centrality hook); `cli -- rank <needle>` emits ranked, token-compressed `path:line [def\|use] ×n  <line>` — a symbol's **definition outranks its call sites** (the win rg can't express). Embeddings stay opt-in only (CoREB: short queries collapse them) |
 
@@ -39,9 +39,9 @@ and contracts. The frontier survey + decision trail live in
 
 ```bash
 bench/equality.sh 150 1      # gist ≡ rg over a byte-exact corpus SNAPSHOT, per needle
-bench/headtohead.sh          # gist WARM p50 vs rg's fastest mode (hyperfine), per literal
-bench/coldquery.sh           # gist COLD (fresh process, persisted index) vs rg, per literal
-bench/regex_headtohead.sh    # gist COLD vs rg (?-u) per REGEX, grouped by feature tier
+bench/headtohead.sh          # gist WARM p50 vs rg + ag (the_silver_searcher) fastest mode, per literal
+bench/coldquery.sh           # gist COLD (fresh process, persisted index) vs rg + ag, per literal
+bench/regex_headtohead.sh    # gist COLD vs rg (?-u) + ag (PCRE) per REGEX, grouped by feature tier
 zig build -Doptimize=ReleaseFast bench   # build cost, footprint, latency p50/p95/p99
 ```
 
@@ -84,12 +84,24 @@ gist's but not rg's = an unsound verify. Both must be zero.
   candidates win — `func` 109ms→264ms (**2.4×**), `import` 155ms→290ms
   (**1.9×**). rg only ever wins the **one-time** initial build (~1.0 s) and a
   bare <3-byte needle (no trigram filter ⇒ full read ⇒ a tie).
+- **Raced against `ag` (the_silver_searcher) too**, on its honest fastest path —
+  handed `--path-to-ignore .gitignore`, the root ignore set `rg` reads for free
+  (without it `ag`'s walk has no repo-root gitignore and grinds through the
+  gitignored ~99 GB: 0.46 s scoped vs minutes unscoped). Across the 37 measured
+  queries `gist` wins all but one and `rg` beats `ag` on **36/37**: `ag` trails
+  `rg` by ~1.6–2.1× on every literal (warm + cold) and on 15/16 regexes. The
+  **one** query `ag` wins is the no-prefilter mixed alternation `panic|0x` —
+  `ag` 483 ms vs `rg` 675 ms (**1.40×**) — the very pattern where `gist`'s Pike
+  VM is weakest (1173 ms), since a 2-byte branch denies every engine a literal
+  prefilter. The `rg≷ag` column + per-script tally in the bench scripts surface
+  this directly.
 
 The win is **architectural and raw**: gist is a resident (or instantly
 cold-loaded) index behind a rarest-first trigram prefilter, then a parallel
-SIMD-class verify that touches only candidate bytes; rg pays per-invocation spawn
-+ a full FS-walk + a full multi-core scan _every time_. Build once — gist wins
-every query after, warm (47×–58,000×) or cold (1.8×–7.4×).
+SIMD-class verify that touches only candidate bytes; `rg` and `ag` are both
+unindexed scanners that pay per-invocation spawn + a full FS-walk + a full scan
+_every time_ (`ag` strictly slower than `rg` here, save the one alternation).
+Build once — gist wins every query after, warm (47×–58,000×) or cold (1.8×–7.4×).
 
 ## Build
 

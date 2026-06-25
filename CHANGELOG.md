@@ -101,9 +101,51 @@ All notable changes to the `gist` kernel are documented here. Format follows
   (≈0.8–1.1×, noise-dominated): with no prefilter for *either* tool both read the
   whole 126 MiB, so it's a straight scan race sensitive to the shared dev box's
   load. The skip turned the old clear losses (`^}$` 0.54×, `;$` 0.77×) into
-  ties. The hard floor is `\w{3,8}` — dense matching where `\w` covers most bytes
+  ties.   The hard floor is `\w{3,8}` — dense matching where `\w` covers most bytes
   so the skip never engages and it's Pike-VM-per-byte vs rg's O(1)/byte lazy DFA;
   closing it is the identified next rung (a lazy DFA / bit-parallel NFA step).
+- **Bit-parallel Glushkov engine** (`src/regex_bitparallel.zig`) — closes that
+  `\w{3,8}` floor with the *cheaper* of the two rungs (bit-parallel NFA before a
+  lazy DFA: Baeza-Yates–Gonnet Shift-And → Navarro NR-grep → Hyperscan's
+  small-engine path). The Pike VM is O(active-threads)/byte; on a dense match
+  with no prefilter that's the floor. This engine instead keeps the active
+  *position* set in one machine word and advances it with a few bit ops per byte
+  — O(popcount)/byte, **no allocation, no per-byte epsilon-closure, no thread
+  list, no gen/seen scratch**. Construction is the textbook Glushkov
+  First/Last/Follow/nullable recurrence over the AST, walked **un-memoized** so
+  the `{n,m}` DAG (shared atom pointer) expands into distinct positions, sound by
+  construction. Unanchored search falls out of OR-ing the start set in at every
+  position (the Shift-And start-state trick — it subsumes the Pike re-seed loop).
+  - **Scope, not replacement.** Built only for **anchor-free** programs (`^`/`$`
+    are zero-width + position-dependent — left on the Pike path, which already has
+    the anchored fast path) that fit one word (≤64 positions); anything else ⇒
+    `build` returns null and the Pike VM runs. **Dispatched** only when the
+    first-byte set is too **dense** for the SIMD skip (`first.count() ≥ 32`:
+    `\w`=63, `[A-Za-z]`=52, `.`, `\S`, negated) — a *selective* set (`[0-9]`=10,
+    `[a-f0-9]`=16, `panic|0x`) keeps the skip, which reads a fraction of the
+    bytes. Both paths are proven identical, so this is purely a perf dispatch.
+  - **Verification (the FN scare, retired).** Two oracles, not one: the rg
+    `(?-u)` equality battery (135 literals + 64 regexes over 17,109 files /
+    126 MiB → **0 FN / 0 FP**) *and* a **differential fuzz vs the proven Pike VM**
+    — 4,000 random anchor-free patterns × 10 random inputs (>40k comparisons),
+    **zero divergences** (`src/regex_bitparallel_test.zig`, in `zig build test`).
+    Any disagreement is a real bug, caught hermetically with no rg needed.
+  - **Measured** (`bench/regex_headtohead.sh`, cold, loaded shared box): `\w{3,8}`
+    **0.8–1.1× → a consistent 1.05–1.06×** across runs — the documented hard
+    floor flipped onto the right side of parity via a structurally better
+    automaton, with **no tier regressed** (the sub-1.0 anchored/sparse tail —
+    `;$`, `[0-9]{4}`, `panic|0x` — never touches the bit engine and swings purely
+    with box load, exactly as before). Prefilterable tiers still win outright
+    (`pgxpool\.\w+` ~3.1×, `^func\s` ~2.85×, alternations 1.4–1.8×).
+  - **Graduate-to-lazy-DFA decision: not yet, and the data says why.** On the
+    code-search regimes that matter the programs are small (≤64 positions, where
+    the bit engine is already O(popcount)/byte) and the no-literal tail is
+    *scan-bound* — both tools read the whole 126 MiB, so a lazy DFA wouldn't read
+    fewer bytes, only shave per-byte automaton work the bit engine already
+    minimized. A lazy DFA earns its complexity (mutable transition cache,
+    eviction, the determinization that caused the FN scare) on **large** programs
+    the bit word can't hold — not present in this slate. Rung 1 suffices; the
+    lazy DFA stays the recorded next rung if a large-program workload appears.
 - **Equality oracle** (`bench/equality.sh`, `bench/bench.zig` `verify` mode):
   gist emits its verified matching-file set per pattern + the exact indexed file
   list; the script runs `rg` (and `rg (?-u)` for regex) over that identical list
@@ -113,6 +155,18 @@ All notable changes to the `gist` kernel are documented here. Format follows
   persistence timing, and full-pipeline (filter+verify) latency p50/p95/p99 for
   an adversarial slate. gist beats ripgrep on every query over the identical
   corpus (5.7× worst case → ~140,000× for a rare miss).
+- **Second baseline: `ag` (the_silver_searcher)** in all three race scripts
+  (`bench/headtohead.sh`, `coldquery.sh`, `regex_headtohead.sh`) — a new
+  `ag … column`, an `rg≷ag` direct-matchup column, and an "ag faster than rg on
+  N/M" tally. `ag` runs on its honest fastest path: `--path-to-ignore .gitignore`
+  hands it the root ignore set `rg` reads for free (its own walk reads ignore
+  files only *inside* the search paths, so without it `ag` grinds through the
+  gitignored ~99 GB — 0.46 s scoped vs minutes unscoped). Columns auto-skip if
+  `ag` is not installed. Measured over 37 queries (17.1k files): `gist` wins all
+  but one; `rg` beats `ag` on **36/37** (`ag` ~1.6–2.1× behind on every literal,
+  warm + cold, and 15/16 regexes). `ag`'s lone win is the prefilter-less 2-byte
+  mixed alternation `panic|0x` — `ag` 483 ms vs `rg` 675 ms (**1.40×**), the same
+  pattern where gist's Pike VM is weakest (1173 ms).
 
 ### Changed — "beat ripgrep, period" perf pass
 
