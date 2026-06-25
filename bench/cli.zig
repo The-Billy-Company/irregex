@@ -8,9 +8,11 @@
 //!                                     the regex's required literal
 //!
 //! Why this beats ripgrep on a cold/first query: rg has no index, so every
-//! invocation must walk the whole tree and read every byte. gist cold-loads a
-//! persisted trigram index (~30 ms), resolves the candidate set in RAM, and
-//! then touches disk for *only the candidate files* — for a selective query
+//! invocation must walk the whole tree and read every byte. gist mmaps a
+//! persisted trigram index zero-copy (~0.4 ms — the postings alias the mapped
+//! pages, faulted in lazily as the binary search probes them, rather than a full
+//! read + alloc + memcpy of the 100+ MiB table), resolves the candidate set in
+//! RAM, then touches disk for *only the candidate files* — for a selective query
 //! that is dozens of small files instead of ~16.5k. Subsequent queries in the
 //! same session never rebuild. (A <3-byte needle has no trigram filter, so it
 //! degenerates to a full read, like rg — the one case we merely match it.)
@@ -161,40 +163,63 @@ pub fn runIndex(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !
     });
 }
 
+/// A read-only, page-aligned file mapping (zero-copy view of the bytes on disk).
+const Mapping = []align(std.heap.page_size_min) const u8;
+
+/// mmap a whole file read-only. The mapping survives the fd close (POSIX), and
+/// the OS faults in only the pages actually touched — so "loading" a 100+ MiB
+/// index is O(header) instead of a full read-into-heap + alloc + memcpy. This
+/// is the cold-load win: the binary search probes a handful of pages (warm in
+/// the page cache), not the whole table. A genuinely empty file is rejected
+/// (`mmap` can't map zero length, and a 0-byte index is corruption anyway).
+fn mmapFile(io: std.Io, path: []const u8) !Mapping {
+    const file = try Dir.cwd().openFile(io, path, .{}); // .read_only default
+    defer file.close(io);
+    const len: usize = @intCast((try file.stat(io)).size);
+    if (len == 0) return error.EmptyFile;
+    return std.posix.mmap(null, len, .{ .READ = true }, .{ .TYPE = .PRIVATE }, file.handle, 0);
+}
+
 /// The cold-loaded index + the doc→path table that maps candidate ids back to
-/// files. `paths` slices alias into `pb`, so all three lifetimes are bound.
+/// files. Both are mmap'd: `idx.postings` aliases into `imap` (borrowed, no
+/// copy) and every `paths` slice aliases into `pmap`, so all lifetimes bind to
+/// the two mappings and `deinit` simply unmaps them.
 const Persisted = struct {
-    ib: []u8,
-    pb: []u8,
+    imap: Mapping,
+    pmap: Mapping,
     idx: Index,
     paths: std.ArrayList([]const u8),
     gpa: std.mem.Allocator,
 
     fn deinit(self: *Persisted) void {
         self.paths.deinit(self.gpa);
-        self.idx.deinit();
-        self.gpa.free(self.pb);
-        self.gpa.free(self.ib);
+        self.idx.deinit(); // borrowed ⇒ frees nothing
+        std.posix.munmap(self.pmap);
+        std.posix.munmap(self.imap);
     }
 };
 
-/// Cold-load the persisted index + doc→path table. Returns null (after printing
-/// guidance) when no index has been built yet — the one expected miss.
+/// Cold-load the persisted index + doc→path table by mmap (zero-copy). Returns
+/// null (after printing guidance) when no index has been built yet — the one
+/// expected miss. Paths are NUL-separated in doc-id order; the list is pre-sized
+/// from the NUL count so the split is one allocation.
 fn loadPersisted(gpa: std.mem.Allocator, io: std.Io) !?Persisted {
-    const ib = Dir.cwd().readFileAlloc(io, index_file, gpa, .unlimited) catch {
+    const imap = mmapFile(io, index_file) catch {
         std.debug.print("no index at {s} — run `zig build cli -- index` first\n", .{index_file});
         return null;
     };
-    errdefer gpa.free(ib);
-    var idx = try Index.fromBytes(gpa, ib);
+    errdefer std.posix.munmap(imap);
+    var idx = try Index.fromMappedBytes(imap);
     errdefer idx.deinit();
-    const pb = try Dir.cwd().readFileAlloc(io, paths_file, gpa, .unlimited);
-    errdefer gpa.free(pb);
+
+    const pmap = try mmapFile(io, paths_file);
+    errdefer std.posix.munmap(pmap);
     var paths: std.ArrayList([]const u8) = .empty;
     errdefer paths.deinit(gpa);
-    var pit = std.mem.splitScalar(u8, pb, 0);
-    while (pit.next()) |p| if (p.len > 0) try paths.append(gpa, p);
-    return .{ .ib = ib, .pb = pb, .idx = idx, .paths = paths, .gpa = gpa };
+    try paths.ensureTotalCapacity(gpa, std.mem.count(u8, pmap, &[_]u8{0}) + 1);
+    var pit = std.mem.splitScalar(u8, pmap, 0);
+    while (pit.next()) |p| if (p.len > 0) paths.appendAssumeCapacity(p);
+    return .{ .imap = imap, .pmap = pmap, .idx = idx, .paths = paths, .gpa = gpa };
 }
 
 /// Print matching paths (sorted) + the cold timing breakdown — process

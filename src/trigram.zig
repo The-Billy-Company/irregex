@@ -59,9 +59,13 @@ const parallel_build_threshold: usize = 4 << 20; // 4 MiB
 
 /// An immutable trigram index over a fixed set of documents.
 pub const Index = struct {
-    postings: []Posting,
+    postings: []const Posting,
     doc_count: u32,
     allocator: std.mem.Allocator,
+    /// True when `postings` ALIASES a caller-owned buffer (e.g. an mmap'd index
+    /// file) rather than this allocator's heap. `deinit` then frees nothing —
+    /// the caller unmaps/frees the backing bytes. The zero-copy cold-load win.
+    borrowed: bool = false,
 
     /// Build an index over `docs` (entry = one doc's bytes; doc ids are indices
     /// into `docs`). Large corpora fan extraction across cores (private regions,
@@ -221,7 +225,7 @@ pub const Index = struct {
     }
 
     pub fn deinit(self: *Index) void {
-        self.allocator.free(self.postings);
+        if (!self.borrowed) self.allocator.free(self.postings);
         self.* = undefined;
     }
 
@@ -242,20 +246,50 @@ pub const Index = struct {
         return header_len + pb.len;
     }
 
-    /// Rebuild an index from a `writeInto` blob. Copies the postings (the index
-    /// owns them, `deinit` frees them) so `bytes` may be freed/unmapped after.
-    /// Validates magic + version + length.
-    pub fn fromBytes(allocator: std.mem.Allocator, bytes: []const u8) LoadError!Index {
+    const Header = struct { doc_count: u32, plen: usize, body: usize };
+
+    /// Validate a `writeInto` blob's header (magic + version + length) and return
+    /// its metadata. Shared by the copying `fromBytes` and the zero-copy
+    /// `fromMappedBytes` — the one place the on-disk layout is parsed.
+    fn parseHeader(bytes: []const u8) LoadError!Header {
         if (bytes.len < header_len) return LoadError.BadFormat;
         if (!std.mem.eql(u8, bytes[0..magic.len], magic)) return LoadError.BadFormat;
         if (std.mem.readInt(u32, bytes[magic.len..][0..4], .little) != format_version) return LoadError.BadFormat;
         const doc_count = std.mem.readInt(u32, bytes[magic.len + 4 ..][0..4], .little);
-        const plen = std.mem.readInt(u64, bytes[magic.len + 8 ..][0..8], .little);
+        const plen: usize = @intCast(std.mem.readInt(u64, bytes[magic.len + 8 ..][0..8], .little));
         const body = plen * @sizeOf(Posting);
         if (bytes.len < header_len + body) return LoadError.BadFormat;
-        const postings = try allocator.alloc(Posting, plen);
-        @memcpy(std.mem.sliceAsBytes(postings), bytes[header_len .. header_len + body]);
-        return .{ .postings = postings, .doc_count = doc_count, .allocator = allocator };
+        return .{ .doc_count = doc_count, .plen = plen, .body = body };
+    }
+
+    /// Rebuild an index from a `writeInto` blob, COPYING the postings (the index
+    /// owns them, `deinit` frees them) so `bytes` may be freed/unmapped after.
+    pub fn fromBytes(allocator: std.mem.Allocator, bytes: []const u8) LoadError!Index {
+        const h = try parseHeader(bytes);
+        const postings = try allocator.alloc(Posting, h.plen);
+        @memcpy(std.mem.sliceAsBytes(postings), bytes[header_len .. header_len + h.body]);
+        return .{ .postings = postings, .doc_count = h.doc_count, .allocator = allocator };
+    }
+
+    /// BORROW a `writeInto` blob as an index WITHOUT copying: `postings` aliases
+    /// straight into `bytes` (e.g. an mmap'd file), so the load is O(header) — no
+    /// read-into-heap, no second alloc, no memcpy of the (often 100+ MiB) posting
+    /// table. The OS faults in only the handful of pages the binary search probes,
+    /// so a cold first query pays ~nothing where the copying path paid two full
+    /// passes over the blob. The returned index is `borrowed`: `deinit` frees
+    /// nothing; the caller owns `bytes` and must keep it mapped for the index's
+    /// lifetime. `bytes` must be `@alignOf(Posting)`-aligned at `header_len` — an
+    /// mmap base is page-aligned and `header_len` (24) is a multiple of 4, so it
+    /// holds for the intended caller; any 4-aligned buffer works in general.
+    pub fn fromMappedBytes(bytes: []const u8) LoadError!Index {
+        const h = try parseHeader(bytes);
+        const raw: []align(@alignOf(Posting)) const u8 = @alignCast(bytes[header_len .. header_len + h.body]);
+        return .{
+            .postings = std.mem.bytesAsSlice(Posting, raw),
+            .doc_count = h.doc_count,
+            .allocator = undefined, // unused: `borrowed` ⇒ `deinit` frees nothing
+            .borrowed = true,
+        };
     }
 
     /// Half-open [start, end) index range of `tri`'s postings (docs ascending).
@@ -437,4 +471,30 @@ test "serialize: garbage / truncated blob is rejected, not misread" {
     const a = std.testing.allocator;
     try std.testing.expectError(LoadError.BadFormat, Index.fromBytes(a, "not a gist index"));
     try std.testing.expectError(LoadError.BadFormat, Index.fromBytes(a, magic)); // header truncated
+    try std.testing.expectError(LoadError.BadFormat, Index.fromMappedBytes("not a gist index"));
+}
+
+test "serialize: zero-copy fromMappedBytes aliases postings, no copy" {
+    const a = std.testing.allocator;
+    const docs = [_][]const u8{ "the cat sat", "concatenate" };
+    var idx = try Index.build(a, &docs);
+    defer idx.deinit();
+
+    // mmap is page-aligned; mirror that here so the `@alignCast` in
+    // `fromMappedBytes` holds (the header keeps postings `Posting`-aligned).
+    const buf = try a.alignedAlloc(u8, comptime .fromByteUnits(@alignOf(Posting)), idx.serializedSize());
+    defer a.free(buf);
+    _ = idx.writeInto(buf);
+
+    var mapped = try Index.fromMappedBytes(buf);
+    defer mapped.deinit(); // borrowed ⇒ a no-op; `buf` is freed above
+    try std.testing.expect(mapped.borrowed);
+    try std.testing.expectEqual(idx.doc_count, mapped.doc_count);
+    try std.testing.expectEqualSlices(Posting, idx.postings, mapped.postings);
+    // The decisive property: postings point INTO `buf`, they are not a copy.
+    try std.testing.expectEqual(@intFromPtr(buf.ptr) + header_len, @intFromPtr(mapped.postings.ptr));
+
+    const got = try mapped.queryLiteral(a, "cat"); // both docs contain "cat"
+    defer a.free(got);
+    try std.testing.expectEqualSlices(u32, &[_]u32{ 0, 1 }, got);
 }
