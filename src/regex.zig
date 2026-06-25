@@ -14,6 +14,7 @@
 
 const std = @import("std");
 const syn = @import("regex_syntax.zig");
+const bitp = @import("regex_bitparallel.zig");
 const ByteSet = syn.ByteSet;
 const Node = syn.Node;
 
@@ -27,6 +28,14 @@ const vlen: usize = std.simd.suggestVectorLength(u8) orelse 16;
 /// scalar byteset probe per byte.
 const Range = struct { lo: u8, hi: u8 };
 const max_ranges = 6; // beyond this (e.g. a negated class) the scalar probe wins
+
+/// First-byte-set cardinality at/above which the SIMD skip is useless (the set is
+/// too dense to jump over dead spans) and the bit-parallel engine takes over.
+/// Sits in the gap between structured small classes (`[0-9]`=10, `[a-f0-9]`=16,
+/// punctuation alts) and dense letter-ish classes (`\w`=63, `[A-Za-z]`=52, `.`,
+/// `\S`, negated). Measured: gating here keeps `[0-9]{4}` on the faster skip path
+/// while routing `\w{3,8}` to the bit engine.
+const bit_density_floor: usize = 32;
 
 const State = union(enum) {
     consume: struct { set: ByteSet, out: u32 },
@@ -54,6 +63,10 @@ pub const Regex = struct {
     first_byte: ?u8,
     first_ranges: [max_ranges]Range,
     first_nranges: u8, // 0 ⇒ singleton (memchr) or too-many-ranges (scalar probe)
+    // T2 bit-parallel fast path (`regex_bitparallel.zig`): non-null only for an
+    // anchor-free program small enough to fit one machine word. When present it
+    // serves `lineMatch` (O(popcount)/byte, no scratch); else the Pike VM does.
+    bit: ?*bitp.BitNfa,
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *Regex) void {
@@ -61,6 +74,7 @@ pub const Regex = struct {
         self.allocator.free(self.required);
         for (self.alts) |s| self.allocator.free(s);
         if (self.alts.len > 0) self.allocator.free(self.alts);
+        if (self.bit) |b| b.deinit();
         self.* = undefined;
     }
 
@@ -98,6 +112,12 @@ pub const Regex = struct {
         // null (>max_ranges) falls back to the scalar byteset probe.
         const nranges: u8 = if (single != null) 0 else firstRanges(first, &ranges) orelse 0;
 
+        // Bit-parallel fast path: only for anchor-free programs (anchors are
+        // resolved by the Pike epsilon-closure) that fit one word; null ⇒ Pike.
+        // Reads `ast` only during the call, so the arena may free it afterward.
+        const bit: ?*bitp.BitNfa = if (anchored) null else try bitp.build(allocator, ast);
+        errdefer if (bit) |b| b.deinit();
+
         return .{
             .states = states,
             .start = start,
@@ -108,6 +128,7 @@ pub const Regex = struct {
             .first_byte = single,
             .first_ranges = ranges,
             .first_nranges = nranges,
+            .bit = bit,
             .allocator = allocator,
         };
     }
@@ -314,6 +335,25 @@ pub const Regex = struct {
     /// (`.skip`); otherwise the plain re-seed-every-position search (`.plain`,
     /// e.g. a bare `$` whose first set is empty).
     pub fn lineMatch(re: *const Regex, sim: *Sim, line: []const u8) bool {
+        // The bit-parallel engine processes EVERY byte (O(popcount)/byte, no
+        // scratch); the Pike skip path instead SIMD-jumps over bytes that can't
+        // begin a match. So the bit engine only wins when that skip can't — a
+        // DENSE first-byte set (`\w`≈63, `.`, `\S`, negated classes), where the
+        // skip never engages and the old per-byte Pike loop was the floor. For a
+        // SELECTIVE set (`[0-9]`, `panic|0x`) the skip reads a fraction of the
+        // bytes and stays faster, so keep Pike. (Both paths are proven identical
+        // by the rg oracle + the differential fuzz — this is purely dispatch.)
+        if (re.bit) |b| {
+            if (re.first.count() >= bit_density_floor) return b.match(line);
+        }
+        return re.lineMatchPike(sim, line);
+    }
+
+    /// The Pike-VM-only dispatch (anchored fast path · first-byte skip · plain
+    /// re-seed). This is what `lineMatch` falls back to when no bit-parallel
+    /// engine was built, and the correctness reference the bit engine's
+    /// differential fuzz compares against (so the test can force the Pike path).
+    pub fn lineMatchPike(re: *const Regex, sim: *Sim, line: []const u8) bool {
         if (re.anchored) return re.search(sim, line, .anchored);
         if (re.first.count() != 0) return re.search(sim, line, .skip);
         return re.search(sim, line, .plain);
