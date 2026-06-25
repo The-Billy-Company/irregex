@@ -11,37 +11,42 @@
 //! std.AutoHashMap so it stays stable across Zig's container-API churn: the
 //! index is one flat slice of (trigram, doc) postings sorted by (trigram, doc),
 //! queried by hand-rolled binary search. The n-gram *strategy* (which grams to
-//! emit) is isolated to `extractSortedUnique`, so the SoTA sparse-n-gram
-//! variant (ADR-pending) drops in there without touching build/query.
+//! emit) lives in `ngram.zig`, so the SoTA sparse-n-gram variant (ADR-pending)
+//! drops in there without touching build/query.
 
 const std = @import("std");
+const ngram = @import("ngram.zig");
 
-/// A trigram packed big-endian into the low 24 bits of a u32.
-pub const Trigram = u32;
+/// A trigram packed big-endian into the low 24 bits of a u32 (re-exported from
+/// `ngram` so the index's public surface stays self-contained).
+pub const Trigram = ngram.Trigram;
 
-inline fn key(a: u8, b: u8, c: u8) Trigram {
-    return (@as(Trigram, a) << 16) | (@as(Trigram, b) << 8) | @as(Trigram, c);
+/// Longest doc (≥ 1) — the scratch-buffer size both extractors need.
+inline fn maxDocLen(docs: []const []const u8) usize {
+    var m: usize = 1;
+    for (docs) |d| m = @max(m, d.len);
+    return m;
 }
 
-/// Overlapping trigrams of `text`, sorted ascending and deduplicated, into
-/// `buf` (≥ `text.len` long). Returns the distinct count; `text.len < 3` ⇒ 0.
-pub fn extractSortedUnique(text: []const u8, buf: []Trigram) usize {
-    if (text.len < 3) return 0;
-    const n = text.len - 2; // overlapping trigram count
-    for (0..n) |i| buf[i] = key(text[i], text[i + 1], text[i + 2]);
-    std.mem.sort(Trigram, buf[0..n], {}, comptime std.sort.asc(Trigram));
-    var w: usize = 0;
-    for (buf[0..n]) |t| if (w == 0 or buf[w - 1] != t) {
-        buf[w] = t;
-        w += 1;
-    };
-    return w;
-}
-
-const Posting = struct { tri: Trigram, doc: u32 };
+pub const Posting = struct { tri: Trigram, doc: u32 };
 
 fn postingLess(_: void, a: Posting, b: Posting) bool {
     return if (a.tri != b.tri) a.tri < b.tri else a.doc < b.doc;
+}
+
+/// Emit each doc's distinct trigrams into `out` as postings tagged `base_doc + i`,
+/// reusing `scratch` (≥ longest doc). Returns the posting count written.
+fn emitPostings(docs: []const []const u8, base_doc: u32, scratch: []Trigram, out: []Posting) usize {
+    var w: usize = 0;
+    for (docs, 0..) |d, i| {
+        const k = ngram.extractSortedUnique(d, scratch);
+        const doc: u32 = base_doc + @as(u32, @intCast(i));
+        for (scratch[0..k]) |t| {
+            out[w] = .{ .tri = t, .doc = doc };
+            w += 1;
+        }
+    }
+    return w;
 }
 
 pub const QueryError = error{ NeedleTooShort, OutOfMemory };
@@ -51,7 +56,9 @@ pub const LoadError = error{ BadFormat, OutOfMemory };
 /// blob is a **local-machine cache** (native-endian) — rebuild, don't ship it.
 pub const format_version: u32 = 1;
 const magic = "GISTIDX\x01";
-const header_len = magic.len + 4 + 4 + 8; // magic + version + doc_count + postings_len
+/// On-disk header size (magic + version + doc_count + postings_len). Public so a
+/// zero-copy consumer can locate the `Posting` table inside a mapped blob.
+pub const header_len = magic.len + 4 + 4 + 8;
 
 /// Below this many corpus bytes the single-threaded comparison-sort build wins
 /// — thread spawn + a 64 MiB counting histogram aren't worth it.
@@ -87,24 +94,14 @@ pub const Index = struct {
     }
 
     fn buildSerial(allocator: std.mem.Allocator, docs: []const []const u8, upper: usize) QueryError!Index {
-        var max_len: usize = 1;
-        for (docs) |d| max_len = @max(max_len, d.len);
         const postings = try allocator.alloc(Posting, upper);
         errdefer allocator.free(postings);
-        const scratch = try allocator.alloc(Trigram, max_len);
+        const scratch = try allocator.alloc(Trigram, maxDocLen(docs));
         defer allocator.free(scratch);
 
-        var w: usize = 0;
-        for (docs, 0..) |d, di| {
-            const k = extractSortedUnique(d, scratch);
-            for (scratch[0..k]) |t| {
-                postings[w] = .{ .tri = t, .doc = @intCast(di) };
-                w += 1;
-            }
-        }
-        const final = postings[0..w];
+        const final = postings[0..emitPostings(docs, 0, scratch, postings)];
         std.mem.sort(Posting, final, {}, postingLess);
-        const exact = allocator.realloc(postings, w) catch final;
+        const exact = allocator.realloc(postings, final.len) catch final;
         return .{ .postings = exact, .doc_count = @intCast(docs.len), .allocator = allocator };
     }
 
@@ -174,25 +171,14 @@ pub const Index = struct {
     };
 
     fn extractShard(sh: *ExtractShard) void {
-        var max_len: usize = 1;
-        for (sh.docs) |d| max_len = @max(max_len, d.len);
         // Thread-local scratch via the always-thread-safe page allocator (the
         // caller's may be an arena / non-Sync allocator).
-        const scratch = std.heap.page_allocator.alloc(Trigram, max_len) catch {
+        const scratch = std.heap.page_allocator.alloc(Trigram, maxDocLen(sh.docs)) catch {
             sh.err = true;
             return;
         };
         defer std.heap.page_allocator.free(scratch);
-        var w: usize = 0;
-        for (sh.docs, 0..) |d, i| {
-            const k = extractSortedUnique(d, scratch);
-            const doc: u32 = sh.base_doc + @as(u32, @intCast(i));
-            for (scratch[0..k]) |t| {
-                sh.buf[w] = .{ .tri = t, .doc = doc };
-                w += 1;
-            }
-        }
-        sh.n = w;
+        sh.n = emitPostings(sh.docs, sh.base_doc, scratch, sh.buf);
     }
 
     /// Counting-sort the per-shard postings (doc-major across shards) into one
@@ -337,7 +323,7 @@ pub const Index = struct {
         if (needle.len < 3) return QueryError.NeedleTooShort;
         const qbuf = try allocator.alloc(Trigram, needle.len);
         defer allocator.free(qbuf);
-        const m = extractSortedUnique(needle, qbuf);
+        const m = ngram.extractSortedUnique(needle, qbuf);
         if (m == 0) return QueryError.NeedleTooShort;
 
         const ranges = try allocator.alloc([2]usize, m);
@@ -384,117 +370,7 @@ pub const Index = struct {
             n += c.len;
         }
         std.mem.sort(u32, buf[0..n], {}, comptime std.sort.asc(u32));
-        var w: usize = 0; // in-place dedup of the now-sorted union
-        for (buf[0..n]) |v| if (w == 0 or buf[w - 1] != v) {
-            buf[w] = v;
-            w += 1;
-        };
+        const w = ngram.dedupSorted(u32, buf, n); // dedup the now-sorted union
         return allocator.realloc(buf, w) catch buf[0..w];
     }
 };
-
-// ── tests ─────────────────────────────────────────────────────────────────
-
-test "extract: distinct overlapping trigrams of 'banana'" {
-    var buf: [8]Trigram = undefined;
-    const n = extractSortedUnique("banana", &buf);
-    // ban, ana, nan, ana → {ban, ana, nan} = 3 distinct
-    try std.testing.expectEqual(@as(usize, 3), n);
-}
-
-test "extract: under 3 bytes yields nothing" {
-    var buf: [4]Trigram = undefined;
-    try std.testing.expectEqual(@as(usize, 0), extractSortedUnique("ab", &buf));
-}
-
-test "query: literal hits exactly the containing docs" {
-    const docs = [_][]const u8{ "the cat sat", "the dog ran", "concatenate" };
-    var idx = try Index.build(std.testing.allocator, &docs);
-    defer idx.deinit();
-
-    const got = try idx.queryLiteral(std.testing.allocator, "cat");
-    defer std.testing.allocator.free(got);
-    // doc0 "the cat sat" and doc2 "concatenate" both contain "cat"; doc1 does not.
-    try std.testing.expectEqualSlices(u32, &[_]u32{ 0, 2 }, got);
-}
-
-test "query: true negative returns empty candidate set" {
-    const docs = [_][]const u8{ "the cat sat", "the dog ran" };
-    var idx = try Index.build(std.testing.allocator, &docs);
-    defer idx.deinit();
-    const got = try idx.queryLiteral(std.testing.allocator, "car");
-    defer std.testing.allocator.free(got);
-    try std.testing.expectEqual(@as(usize, 0), got.len);
-}
-
-test "query: filter semantics — present-but-not-contiguous is a candidate" {
-    // "bcaabc" contains trigrams "bca" and "abc" but NOT the literal "abca".
-    // The trigram filter must keep it as a candidate (sound superset); the
-    // caller's exact verify is what ultimately rejects it.
-    const docs = [_][]const u8{"bcaabc"};
-    var idx = try Index.build(std.testing.allocator, &docs);
-    defer idx.deinit();
-    const got = try idx.queryLiteral(std.testing.allocator, "abca");
-    defer std.testing.allocator.free(got);
-    try std.testing.expectEqual(@as(usize, 1), got.len);
-}
-
-test "query: needle under 3 bytes is reported, not silently wrong" {
-    const docs = [_][]const u8{"hello"};
-    var idx = try Index.build(std.testing.allocator, &docs);
-    defer idx.deinit();
-    try std.testing.expectError(QueryError.NeedleTooShort, idx.queryLiteral(std.testing.allocator, "he"));
-}
-
-test "serialize: round-trip preserves postings and query results" {
-    const a = std.testing.allocator;
-    const docs = [_][]const u8{ "the cat sat", "the dog ran", "concatenate" };
-    var idx = try Index.build(a, &docs);
-    defer idx.deinit();
-
-    const buf = try a.alloc(u8, idx.serializedSize());
-    defer a.free(buf);
-    const n = idx.writeInto(buf);
-    try std.testing.expectEqual(idx.serializedSize(), n);
-
-    var loaded = try Index.fromBytes(a, buf);
-    defer loaded.deinit();
-    try std.testing.expectEqual(idx.doc_count, loaded.doc_count);
-    try std.testing.expectEqualSlices(Posting, idx.postings, loaded.postings);
-
-    const got = try loaded.queryLiteral(a, "cat");
-    defer a.free(got);
-    try std.testing.expectEqualSlices(u32, &[_]u32{ 0, 2 }, got);
-}
-
-test "serialize: garbage / truncated blob is rejected, not misread" {
-    const a = std.testing.allocator;
-    try std.testing.expectError(LoadError.BadFormat, Index.fromBytes(a, "not a gist index"));
-    try std.testing.expectError(LoadError.BadFormat, Index.fromBytes(a, magic)); // header truncated
-    try std.testing.expectError(LoadError.BadFormat, Index.fromMappedBytes("not a gist index"));
-}
-
-test "serialize: zero-copy fromMappedBytes aliases postings, no copy" {
-    const a = std.testing.allocator;
-    const docs = [_][]const u8{ "the cat sat", "concatenate" };
-    var idx = try Index.build(a, &docs);
-    defer idx.deinit();
-
-    // mmap is page-aligned; mirror that here so the `@alignCast` in
-    // `fromMappedBytes` holds (the header keeps postings `Posting`-aligned).
-    const buf = try a.alignedAlloc(u8, comptime .fromByteUnits(@alignOf(Posting)), idx.serializedSize());
-    defer a.free(buf);
-    _ = idx.writeInto(buf);
-
-    var mapped = try Index.fromMappedBytes(buf);
-    defer mapped.deinit(); // borrowed ⇒ a no-op; `buf` is freed above
-    try std.testing.expect(mapped.borrowed);
-    try std.testing.expectEqual(idx.doc_count, mapped.doc_count);
-    try std.testing.expectEqualSlices(Posting, idx.postings, mapped.postings);
-    // The decisive property: postings point INTO `buf`, they are not a copy.
-    try std.testing.expectEqual(@intFromPtr(buf.ptr) + header_len, @intFromPtr(mapped.postings.ptr));
-
-    const got = try mapped.queryLiteral(a, "cat"); // both docs contain "cat"
-    defer a.free(got);
-    try std.testing.expectEqualSlices(u32, &[_]u32{ 0, 1 }, got);
-}
