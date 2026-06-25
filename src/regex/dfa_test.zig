@@ -1,4 +1,4 @@
-//! gist T2 byte-class DFA tests — split from `regex_dfa.zig` to keep the engine
+//! gist T2 byte-class DFA tests — split from `dfa.zig` to keep the engine
 //! under the shape cap. Two layers:
 //!   1. targeted unit cases — the no-prefilter scan-tail patterns the DFA exists
 //!      to win (`;$`, `[0-9]{4}`, `panic|0x`, `\w{3,8}`), the line-anchor shapes
@@ -11,7 +11,7 @@
 //!      newlines included. Any divergence is a real bug (no rg needed).
 
 const std = @import("std");
-const regex = @import("regex.zig");
+const regex = @import("core.zig");
 const Regex = regex.Regex;
 
 /// Compile, assert a DFA was actually built (not a powerset-cap fallback), and

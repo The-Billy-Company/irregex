@@ -1,6 +1,6 @@
 //! gist — T2 regex execution: a linear-time Thompson NFA over bytes (RE2 /
 //! ripgrep philosophy — no backtracking, no catastrophic blowup), compiled from
-//! the AST in `regex_syntax.zig` and run with a Pike simulation. Plus the public
+//! the AST in `syntax.zig` and run with a Pike simulation. Plus the public
 //! `Regex` handle carrying the required-literal that lets a regex reuse the T0
 //! trigram prefilter.
 //!
@@ -13,8 +13,8 @@
 //! coincide exactly.
 
 const std = @import("std");
-const syn = @import("regex_syntax.zig");
-const dfa_mod = @import("regex_dfa.zig");
+const syn = @import("syntax.zig");
+const dfa_mod = @import("dfa.zig");
 const ByteSet = syn.ByteSet;
 const Node = syn.Node;
 
@@ -29,8 +29,8 @@ const vlen: usize = std.simd.suggestVectorLength(u8) orelse 16;
 const Range = struct { lo: u8, hi: u8 };
 const max_ranges = 6; // beyond this (e.g. a negated class) the scalar probe wins
 
-// The compiled Thompson-NFA instruction now lives in `regex_syntax.zig` (beside
-// the AST it lowers from) so `regex_dfa.zig` can determinize over it without an
+// The compiled Thompson-NFA instruction now lives in `syntax.zig` (beside
+// the AST it lowers from) so `dfa.zig` can determinize over it without an
 // import cycle. Aliased here to keep the engine's references unchanged.
 const State = syn.State;
 
@@ -58,7 +58,7 @@ pub const Regex = struct {
     first_byte: ?u8,
     first_ranges: [max_ranges]Range,
     first_nranges: u8, // 0 ⇒ singleton (memchr) or too-many-ranges (scalar probe)
-    // T2 byte-class DFA (`regex_dfa.zig`): the primary match engine — O(1)/byte,
+    // T2 byte-class DFA (`dfa.zig`): the primary match engine — O(1)/byte,
     // anchors included, immutable + scratch-free, scanning a whole document in one
     // fused pass. Non-null unless the powerset blew past the cap, in which case the
     // Pike VM serves (the `first`/range machinery below accelerates that fallback).

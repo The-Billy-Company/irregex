@@ -1,6 +1,6 @@
 //! gist — regex *syntax*: byte classes, the AST, a recursive-descent parser for
 //! the supported subset, and sound required-literal extraction. The execution
-//! half (Thompson NFA compile + Pike simulation) lives in `regex.zig`, which
+//! half (Thompson NFA compile + Pike simulation) lives in `core.zig`, which
 //! imports this module. Split out purely to keep each file under the shape cap.
 //!
 //! Supported (ASCII / byte-oriented, matching ripgrep's `(?-u)` mode):
@@ -57,6 +57,18 @@ pub const Node = union(enum) {
     star: *Node,
     plus: *Node,
     quest: *Node,
+};
+
+/// A compiled Thompson-NFA instruction (the flat program `core.zig`'s compiler
+/// emits and both the Pike VM and the lazy DFA execute). Lives here, beside the
+/// AST it lowers from, so `dfa.zig` can determinize over it without an
+/// import cycle through `core.zig`.
+pub const State = union(enum) {
+    consume: struct { set: ByteSet, out: u32 },
+    split: struct { a: u32, b: u32 },
+    assert_start: u32, // zero-width `^`: pass to `out` only at line start
+    assert_end: u32, // zero-width `$`: pass to `out` only at line end
+    match,
 };
 
 pub const ParseError = error{ BadPattern, OutOfMemory };

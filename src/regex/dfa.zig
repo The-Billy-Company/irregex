@@ -12,7 +12,7 @@
 //! single fused pass (one byte-touch). It is the sole non-Pike engine: it
 //! subsumes every earlier fast-path (dense, selective, anchored) at the same floor.
 //!
-//! Determinization (powerset) over the Thompson NFA in `regex_syntax.zig`:
+//! Determinization (powerset) over the Thompson NFA in `syntax.zig`:
 //!   * **Byte classes** — bytes that no consuming state distinguishes collapse to
 //!     one equivalence class, shrinking the alphabet (and the transition table)
 //!     from 256 to a handful of columns. (RE2/rust-`regex` `ByteClasses`.)
@@ -35,7 +35,7 @@
 //! pathological alternations.
 
 const std = @import("std");
-const syn = @import("regex_syntax.zig");
+const syn = @import("syntax.zig");
 const State = syn.State;
 
 /// Powerset state cap. Beyond this the eager build bails to null (Pike fallback).
@@ -96,7 +96,7 @@ pub const Dfa = struct {
     /// dominant cost of a no-prefilter full scan). Per line the last content byte
     /// takes `trans_fin` so `$` fires; `^` is reset by re-seeding `start` at each
     /// line head. Equivalence to the per-line path is held by the doc-level
-    /// differential fuzz vs the Pike VM in `regex_dfa_test.zig`.
+    /// differential fuzz vs the Pike VM in `dfa_test.zig`.
     pub fn docMatch(self: *const Dfa, doc: []const u8) bool {
         const ncls: usize = self.ncls;
         const n = doc.len;

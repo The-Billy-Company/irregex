@@ -1,11 +1,11 @@
-//! gist T2 regex tests — split from `regex.zig` to keep the engine file under
+//! gist T2 regex tests — split from `core.zig` to keep the engine file under
 //! the shape cap. Pulled into `zig build test` via `root.zig`'s test block.
 //! Covers the parser/AST, the Pike VM, the required-literal + alternation
 //! prefilters, and the scan accelerators (anchored fast path, first-byte skip),
 //! the last with the overlapping-start cases that a naive skip would miss.
 
 const std = @import("std");
-const regex = @import("regex.zig");
+const regex = @import("core.zig");
 const Regex = regex.Regex;
 const ParseError = regex.ParseError;
 

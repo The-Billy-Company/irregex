@@ -247,7 +247,7 @@ pub fn runRegex(gpa: std.mem.Allocator, io: std.Io, pattern: []const u8) !void {
     const load_ns = nowNs(io) - l0;
 
     var re = Regex.compile(gpa, pattern) catch {
-        std.debug.print("bad pattern /{s}/ — supported: literals . [] [^] a-z * + ? {{n,m}} | () ^ $ and \\d \\w \\s \\t \\n \\r (see src/regex_syntax.zig)\n", .{pattern});
+        std.debug.print("bad pattern /{s}/ — supported: literals . [] [^] a-z * + ? {{n,m}} | () ^ $ and \\d \\w \\s \\t \\n \\r (see src/regex/syntax.zig)\n", .{pattern});
         return;
     };
     defer re.deinit();
