@@ -19,6 +19,7 @@ const std = @import("std");
 const gist = @import("gist");
 const corpus_mod = @import("corpus.zig");
 const simd = @import("simd.zig");
+const fresh = @import("fresh.zig");
 const Index = gist.trigram.Index;
 const Regex = gist.regex.Regex;
 const Dir = std.Io.Dir;
@@ -128,6 +129,9 @@ fn parallelRead(gpa: std.mem.Allocator, paths: []const []const u8, ids: []const 
 /// order) so a later fresh process can map candidate ids back to files.
 pub fn runIndex(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !void {
     const t0 = nowNs(io);
+    // Wall-clock anchor captured BEFORE the read, so any file touched during the
+    // build (after its own read) is mtime ≥ anchor ⇒ re-verified next query.
+    const built_ns = std.Io.Clock.now(.real, io).nanoseconds;
     var corpus = try corpus_mod.load(gpa, io, roots);
     defer corpus.deinit();
     var idx = try Index.build(gpa, corpus.docs);
@@ -146,6 +150,7 @@ pub fn runIndex(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !
         try pl.append(gpa, 0);
     }
     try Dir.cwd().writeFile(io, .{ .sub_path = paths_file, .data = pl.items });
+    try fresh.writeAnchor(io, built_ns); // T3 freshness anchor
 
     std.debug.print("indexed {d} files · {d:.1} MiB corpus · {d:.1} MiB index · {d:.0} ms → {s}\n", .{
         corpus.docs.len,
@@ -192,18 +197,6 @@ fn loadPersisted(gpa: std.mem.Allocator, io: std.Io) !?Persisted {
     return .{ .ib = ib, .pb = pb, .idx = idx, .paths = paths, .gpa = gpa };
 }
 
-/// Candidate doc-ids for a ≥3-byte literal prefilter (the trigram AND); a
-/// shorter / trigram-less `filter` has no prefilter ⇒ every doc (caller
-/// full-reads, like rg). Returned slice is gpa-owned — free it.
-fn candidateIds(gpa: std.mem.Allocator, idx: *const Index, filter: []const u8, total: usize) ![]u32 {
-    if (filter.len >= 3) {
-        if (idx.queryLiteral(gpa, filter)) |cand| return cand else |_| {}
-    }
-    const ids = try gpa.alloc(u32, total);
-    for (ids, 0..) |*x, i| x.* = @intCast(i);
-    return ids;
-}
-
 /// Print matching paths (sorted) + the cold timing breakdown — process
 /// wall-time is what the cold head-to-head measures.
 fn emitMatches(gpa: std.mem.Allocator, matches: *std.ArrayList([]const u8), read_files: usize, total_paths: usize, load_ns: i128, query_ns: i128) !void {
@@ -233,18 +226,20 @@ pub fn runQuery(gpa: std.mem.Allocator, io: std.Io, needle: []const u8) !void {
     defer matches.deinit(gpa);
     var read_files: usize = 0;
 
-    const ids = try candidateIds(gpa, &p.idx, needle, p.paths.items.len);
-    defer gpa.free(ids);
-    try parallelRead(gpa, p.paths.items, ids, needle, null, &matches, &read_files);
+    const filters = [_][]const u8{needle}; // <3 B ⇒ candidates() seeds every doc
+    var cand = try fresh.candidates(gpa, io, &p.idx, &p.paths, &filters, &corpus_mod.default_roots);
+    defer cand.deinit();
+    try parallelRead(gpa, p.paths.items, cand.ids, needle, null, &matches, &read_files);
     const query_ns = nowNs(io) - q0;
     try emitMatches(gpa, &matches, read_files, p.paths.items.len, load_ns, query_ns);
 }
 
 /// Fresh-process regex query: cold-load the index, prefilter on the regex's
 /// required literal (the substring that must appear in every match — sound, so
-/// no true match is dropped), then verify candidates with the Thompson NFA.
-/// `(?-u)` byte semantics, exactly the slice the equality oracle proves against
-/// `rg`. No usable ≥3-byte required literal ⇒ a full scan (like rg).
+/// no true match is dropped) or, for an alternation, the UNION of its branches'
+/// cover literals (`foo|bar` ⇒ {foo, bar}); then verify candidates with the
+/// Thompson NFA. `(?-u)` byte semantics, exactly the slice the equality oracle
+/// proves against `rg`. No usable ≥3-byte cover ⇒ a full scan (like rg).
 pub fn runRegex(gpa: std.mem.Allocator, io: std.Io, pattern: []const u8) !void {
     const l0 = nowNs(io);
     var p = (try loadPersisted(gpa, io)) orelse return;
@@ -252,7 +247,7 @@ pub fn runRegex(gpa: std.mem.Allocator, io: std.Io, pattern: []const u8) !void {
     const load_ns = nowNs(io) - l0;
 
     var re = Regex.compile(gpa, pattern) catch {
-        std.debug.print("bad pattern /{s}/ — supported: literals . [] [^] a-z * + ? | () and \\d \\w \\s \\t \\n \\r (see src/regex_syntax.zig)\n", .{pattern});
+        std.debug.print("bad pattern /{s}/ — supported: literals . [] [^] a-z * + ? {{n,m}} | () ^ $ and \\d \\w \\s \\t \\n \\r (see src/regex_syntax.zig)\n", .{pattern});
         return;
     };
     defer re.deinit();
@@ -262,9 +257,13 @@ pub fn runRegex(gpa: std.mem.Allocator, io: std.Io, pattern: []const u8) !void {
     defer matches.deinit(gpa);
     var read_files: usize = 0;
 
-    const ids = try candidateIds(gpa, &p.idx, re.required, p.paths.items.len);
-    defer gpa.free(ids);
-    try parallelRead(gpa, p.paths.items, ids, pattern, &re, &matches, &read_files);
+    // Prefilter set: the single mandatory literal, else the alternation cover
+    // set (`foo|bar` ⇒ {foo, bar}), else empty ⇒ full scan — all sound supersets.
+    var one = [_][]const u8{re.required};
+    const filters: []const []const u8 = if (re.required.len >= 3) one[0..] else re.alts;
+    var cand = try fresh.candidates(gpa, io, &p.idx, &p.paths, filters, &corpus_mod.default_roots);
+    defer cand.deinit();
+    try parallelRead(gpa, p.paths.items, cand.ids, pattern, &re, &matches, &read_files);
     const query_ns = nowNs(io) - q0;
     try emitMatches(gpa, &matches, read_files, p.paths.items.len, load_ns, query_ns);
 }
@@ -454,12 +453,13 @@ pub fn runRank(gpa: std.mem.Allocator, io: std.Io, needle: []const u8) !void {
     const load_ns = nowNs(io) - l0;
 
     const q0 = nowNs(io);
-    const ids = try candidateIds(gpa, &p.idx, needle, p.paths.items.len);
-    defer gpa.free(ids);
+    const filters = [_][]const u8{needle}; // <3 B ⇒ candidates() seeds every doc
+    var cand = try fresh.candidates(gpa, io, &p.idx, &p.paths, &filters, &corpus_mod.default_roots);
+    defer cand.deinit();
     var docs: std.ArrayList(Doc) = .empty;
     defer docs.deinit(gpa);
     var read_files: usize = 0;
-    try parallelRank(gpa, p.paths.items, ids, needle, &docs, &read_files);
+    try parallelRank(gpa, p.paths.items, cand.ids, needle, &docs, &read_files);
 
     // The fusion: lexical density + symbol(def) boost + shallow-path, RRF-fused.
     // The null is the graphify graph-centrality hook (see src/rank.zig).

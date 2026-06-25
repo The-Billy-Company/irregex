@@ -63,16 +63,12 @@ pub const Index = struct {
     doc_count: u32,
     allocator: std.mem.Allocator,
 
-    /// Build an index over `docs` (each entry is one document's bytes); doc ids
-    /// are the indices into `docs`.
-    ///
-    /// Large corpora take the fast path: extraction is **fanned out across
-    /// cores** (each thread fills a private region, no contention), and the
-    /// global ordering is an O(n) **counting sort** on the 24-bit trigram key
-    /// (vs an O(n log n) comparison sort) — stable, and since concatenated
-    /// postings are doc-major each bucket lands doc-ascending, byte-identical
-    /// to the comparison-sorted result. Small corpora keep the single-threaded
-    /// comparison sort: the 64 MiB histogram isn't worth it below the threshold.
+    /// Build an index over `docs` (entry = one doc's bytes; doc ids are indices
+    /// into `docs`). Large corpora fan extraction across cores (private regions,
+    /// no contention) then order via an O(n) counting sort on the 24-bit key (vs
+    /// O(n log n) compare): stable, and doc-major concat lands each bucket
+    /// doc-ascending — byte-identical to the comparison-sorted result. Small
+    /// corpora keep the single-threaded sort (the 64 MiB histogram isn't worth it).
     pub fn build(allocator: std.mem.Allocator, docs: []const []const u8) QueryError!Index {
         var upper: usize = 0;
         for (docs) |d| upper += d.len; // ≥ distinct trigrams across all docs
@@ -295,17 +291,14 @@ pub const Index = struct {
         return (a[1] - a[0]) < (b[1] - b[0]);
     }
 
-    /// Candidate documents that *may* contain `needle` (AND of its trigrams'
-    /// posting lists). Returned slice is caller-owned (free with the same
-    /// allocator), sorted ascending. `needle.len < 3` ⇒ NeedleTooShort — the
-    /// caller must full-scan, a trigram index can't filter on < 3 bytes.
+    /// Candidate docs that *may* contain `needle` (AND of its trigrams' posting
+    /// lists). Returned slice is caller-owned (same allocator), sorted ascending.
+    /// `needle.len < 3` ⇒ NeedleTooShort (caller full-scans; can't filter < 3 B).
     ///
-    /// T1 — **rarest-first**: resolve every trigram's posting range, order by
-    /// width, seed the candidate set from the *rarest* trigram, intersect
-    /// outward. The AND is commutative so the result is order-independent, but
-    /// seeding on the rarest gram (not the lexicographically-first) keeps the
-    /// seed small and shrinks fastest — e.g. "context.Context" no longer seeds
-    /// on the common "con".
+    /// T1 — rarest-first: resolve each trigram's range, order by width, seed from
+    /// the rarest gram, intersect outward. AND is commutative so order is
+    /// irrelevant, but the rarest seed (not lexicographically-first) stays small
+    /// and shrinks fastest — e.g. "context.Context" no longer seeds on "con".
     pub fn queryLiteral(self: *const Index, allocator: std.mem.Allocator, needle: []const u8) QueryError![]u32 {
         if (needle.len < 3) return QueryError.NeedleTooShort;
         const qbuf = try allocator.alloc(Trigram, needle.len);
@@ -338,6 +331,31 @@ pub const Index = struct {
             if (n == 0) break;
         }
         return allocator.realloc(cand, n) catch cand[0..n];
+    }
+
+    /// Union of the candidate sets of `needles` (each ≥3 B) — the sound superset
+    /// for an alternation where every match contains one of them. Sorted ascending
+    /// and deduplicated, caller-owned. A sub-query error (e.g. a needle < 3 B)
+    /// propagates so the caller full-scans rather than drop a branch's matches.
+    pub fn queryAny(self: *const Index, allocator: std.mem.Allocator, needles: []const []const u8) QueryError![]u32 {
+        if (needles.len == 1) return self.queryLiteral(allocator, needles[0]);
+        var buf = try allocator.alloc(u32, 0);
+        errdefer allocator.free(buf);
+        var n: usize = 0;
+        for (needles) |needle| {
+            const c = try self.queryLiteral(allocator, needle);
+            defer allocator.free(c);
+            if (n + c.len > buf.len) buf = try allocator.realloc(buf, n + c.len);
+            @memcpy(buf[n..][0..c.len], c);
+            n += c.len;
+        }
+        std.mem.sort(u32, buf[0..n], {}, comptime std.sort.asc(u32));
+        var w: usize = 0; // in-place dedup of the now-sorted union
+        for (buf[0..n]) |v| if (w == 0 or buf[w - 1] != v) {
+            buf[w] = v;
+            w += 1;
+        };
+        return allocator.realloc(buf, w) catch buf[0..w];
     }
 };
 
