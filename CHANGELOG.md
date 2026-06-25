@@ -45,6 +45,65 @@ All notable changes to the `gist` kernel are documented here. Format follows
   `rg (?-u)`: the oracle's 52-regex battery now includes 8 anchored shapes +
   `^{0}`/`{0}$`/`^\s*{0}` templates (0 FN / 0 FP), and the cold CLI path matches
   rg on `^$` (15,572 files with a real blank line), `^func\s`, `\)$`, `;$`, `^}$`.
+- **Counted repetition `{n}` / `{n,}` / `{n,m}`** (`src/regex_syntax.zig`): parsed
+  and desugared into the existing node vocabulary (`min` mandatory copies, then
+  `(max-min)` optional copies or a trailing `*` when unbounded) — the `atom`
+  pointer is shared across copies (the AST becomes a read-only DAG), so the NFA
+  compiler and literal extractor are untouched and `ab{3}c` still prefilters on
+  `abbbc`. Expansion is capped at 1000 to bound NFA size. **Mirrors rust-regex
+  brace semantics exactly**: an unescaped `{` must begin a valid count or it's a
+  `BadPattern` (ripgrep errors identically — `interface{}` is rejected, the
+  literal is `\{`), while a stray `}` stays literal. Proven byte-identical to
+  `rg (?-u)`: the oracle battery adds `[0-9]{4}`, `\w{3,8}`, `x{2,4}`,
+  `0x[0-9a-fA-F]{2,}`, `interface\{\}` + a `{0}\w{2,4}` template (0 FN / 0 FP).
+- **Multi-literal alternation prefilter** (`src/regex_syntax.zig` `requiredAny`,
+  `src/trigram.zig` `Index.queryAny`): an alternation has no single mandatory
+  literal, so it used to full-scan. Now a cover set is extracted — a set of ≥3 B
+  literals such that *every* match contains one (`foo|bar|baz` ⇒ {foo, bar, baz})
+  — and the candidate set is the UNION of each literal's trigram candidates. Sound
+  by construction: the union is a superset of every match, so no true match is
+  dropped; the existing verify pass still gates false positives. It's admitted
+  only when **every** branch yields a ≥3 B literal (a `<3` or unfilterable branch
+  ⇒ no cover ⇒ full scan, e.g. `panic|0x`), a single mandatory literal still wins
+  over a union, and the set is capped at 32 branches. Wired through the cold CLI
+  (`fresh.candidates` now takes a filter *set*) and the oracle. Proven
+  byte-identical to `rg (?-u)`: the battery adds `return|continue|break`,
+  `func|struct|enum`, `TODO|FIXME|XXX`, `import\s+\(|^package`, `context|errors`,
+  `panic|0x` + the `({0}|{1})` template (0 FN / 0 FP over 17,028 files); the cold
+  CLI on `panic|throttle|leaky` reads only 1,071/17,029 files (union prefilter,
+  not a scan) and returns rg's exact 694-file set.
+- **Regex scan accelerators** (`src/regex.zig`, split into `src/regex_test.zig`):
+  the verify-time Pike search that used to re-seed the start thread at *every*
+  byte — wasted closure work — now compiles three position invariants and
+  dispatches `lineMatch` to the cheapest sound strategy (semantics unchanged,
+  proven by the rg oracle + an overlapping-start unit battery):
+  - **Anchored fast path** — `startsAnchored` (every alternation branch begins
+    with `^`) seeds only at line position 0 and bails the instant the thread list
+    drains, so a non-matching line for `^}$` / `^$` is ~O(1) instead of O(len).
+  - **First-byte skip** — `analyzeFirst` walks the NFA for the byte set that can
+    *begin* a match mid-line (traversing `^`, blocking `$`; the over-approximation
+    is sound — a mid-line seed of an `^`-only branch dies on the failed assertion).
+    When the thread list empties the scanner jumps to the next viable start
+    instead of stepping dead bytes: SIMD `indexOfScalar` for a singleton set
+    (`;$`, `0x…`), a **SIMD range scan** (`lo ≤ b ≤ hi` per `@Vector` window, OR'd
+    over ≤6 contiguous ranges) for `[0-9]{4}` / `[a-f0-9]{2,}` / `\w{3,8}`, else a
+    scalar byteset probe. The earlier blocking-`^` version dropped 408 `^package`
+    matches in `import\s+\(|^package` — caught by the oracle, now a regression test.
+  - **Plain path** — unchanged re-seed-every-byte loop for an empty first set
+    (a bare `$`), which the skip can't drive.
+  Measured cold head-to-head vs `rg (?-u) -l` at its fastest gitignore-respecting
+  walk (`bench/regex_headtohead.sh`, hyperfine p-mean, warm cache, 17.1k files):
+  gist wins **every prefilterable tier robustly** (stable run-to-run) —
+  `pgxpool\.\w+` **≈3.0×**, `^func\s` **≈2.5×**, `func\s+\w+\(` **≈1.9×**,
+  `func|struct|enum`/`error|panic|fatal` **≈1.5–1.65×**, `return|continue|break`
+  **≈1.5×** — because the prefilter reads a fraction of the corpus while rg
+  re-walks all of it. The **no-literal full-scan tail oscillates around parity**
+  (≈0.8–1.1×, noise-dominated): with no prefilter for *either* tool both read the
+  whole 126 MiB, so it's a straight scan race sensitive to the shared dev box's
+  load. The skip turned the old clear losses (`^}$` 0.54×, `;$` 0.77×) into
+  ties. The hard floor is `\w{3,8}` — dense matching where `\w` covers most bytes
+  so the skip never engages and it's Pike-VM-per-byte vs rg's O(1)/byte lazy DFA;
+  closing it is the identified next rung (a lazy DFA / bit-parallel NFA step).
 - **Equality oracle** (`bench/equality.sh`, `bench/bench.zig` `verify` mode):
   gist emits its verified matching-file set per pattern + the exact indexed file
   list; the script runs `rg` (and `rg (?-u)` for regex) over that identical list
@@ -151,6 +210,28 @@ All notable changes to the `gist` kernel are documented here. Format follows
   ranks **#1** above every call site, ~25–42 ms cold. rrf + signals carry 4 unit
   tests (definition beats a 25×-hotter usage; external graph drives + is
   weight-controlled). Kernel suite 28/28.
+- **T3 freshness overlay** (`bench/fresh.zig`): keeps a persisted index correct
+  against a working tree many agents rewrite many times a minute, without
+  rebuilding and without consulting git history (the fragile part under heavy,
+  overlapping, rebased commit churn). Insight: the cold query already reads &
+  *verifies* every candidate against live bytes, so a stale/edited/deleted match
+  is never a false **positive** — the only gap is a false **negative** (a file
+  that now matches but wasn't a trigram candidate). So freshness only *widens*
+  the candidate set with files touched since build; the existing verify does the
+  rest. Anchor = the build's wall-clock instant (a `real` Io.Clock timestamp,
+  same UTC-ns domain as file mtime); a file is fresh iff `mtime ≥ anchor`. Immune
+  to commit chaos — rebases/overlaps/races never undo the fact that writing a
+  file's bytes (incl. a `git checkout`/merge/pull landing a coworker's commit)
+  advances its mtime — so it has no false negatives and cannot break, where
+  `git diff HEAD` is *unsound* (a coworker commit already in HEAD shows no diff
+  yet differs from our pre-commit index). The discovery stat-walk fans across the
+  roots in parallel (private page-backed arenas, no shared-allocator contention).
+  Proven end-to-end on a single probe file: a **new** file, a **modified** file
+  whose new trigrams the index never saw, and a **deleted** file (stale posting
+  reads-fails gracefully → no match, no crash) are each handled. Cold process
+  wall **~42 ms vs ripgrep's ~555 ms (13×)**; worst-case cold-cache walk ~95 ms
+  still ~6×. Backward compatible: no anchor file ⇒ freshness is skipped, behavior
+  byte-identical to the pre-T3 cold path. `widen` dedup carries a unit test.
 - **Shape refactor**: extracted corpus loading into `bench/corpus.zig` and the
   parallel verify into `bench/search.zig`; the cold CLI lives in `bench/cli.zig`.
   Every file stays under the 500-line cap.

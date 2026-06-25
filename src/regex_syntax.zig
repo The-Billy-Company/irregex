@@ -5,8 +5,11 @@
 //!
 //! Supported (ASCII / byte-oriented, matching ripgrep's `(?-u)` mode):
 //!   literals · `.` (any byte but '\n') · `[...]` / `[^...]` with `a-z` ranges
-//!   · `*` `+` `?` · `|` · `(...)` grouping · line anchors `^` `$` · escapes
+//!   · `*` `+` `?` · `{n}` `{n,}` `{n,m}` counted repetition · `|` · `(...)`
+//!   grouping · line anchors `^` `$` · escapes
 //!   `\. \* \+ \? \( \) \[ \] \^ \$ \\ \| \/ \t \n \r \d \D \w \W \s \S`.
+//! Like rust-regex, an unescaped `{` must begin a valid count (else BadPattern;
+//! a literal brace is `\{`); a stray `}` is literal.
 
 const std = @import("std");
 
@@ -26,6 +29,21 @@ pub const ByteSet = struct {
     }
     pub fn negate(self: *ByteSet) void {
         for (&self.bits) |*w| w.* = ~w.*;
+    }
+    pub fn unionWith(self: *ByteSet, o: ByteSet) void {
+        for (&self.bits, o.bits) |*w, ow| w.* |= ow;
+    }
+    pub fn count(self: *const ByteSet) usize {
+        var n: usize = 0;
+        for (self.bits) |w| n += @popCount(w);
+        return n;
+    }
+    /// The sole member when the set is a singleton (drives the SIMD `memchr`
+    /// skip in the regex scanner); null for empty or multi-byte sets.
+    pub fn only(self: *const ByteSet) ?u8 {
+        if (self.count() != 1) return null;
+        for (self.bits, 0..) |w, wi| if (w != 0) return @intCast(wi * 64 + @ctz(w));
+        return null;
     }
 };
 
@@ -84,7 +102,7 @@ pub const Parser = struct {
         return acc orelse try p.node(.empty);
     }
 
-    // repeat := atom ('*'|'+'|'?')*
+    // repeat := atom ('*'|'+'|'?'|'{'n[,m]'}')*
     fn parseRepeat(p: *Parser) ParseError!*Node {
         var a = try p.parseAtom();
         while (p.peek()) |c| {
@@ -101,10 +119,90 @@ pub const Parser = struct {
                     _ = p.take();
                     a = try p.node(.{ .quest = a });
                 },
+                '{' => {
+                    // An unescaped `{` MUST begin a valid `{n}`/`{n,}`/`{n,m}`
+                    // spec — rust-regex (ripgrep) errors otherwise, so we mirror
+                    // it (a literal brace is `\{`). `tryBound` restores `pos` on
+                    // failure; here that just precedes the error.
+                    const b = p.tryBound() orelse return ParseError.BadPattern;
+                    a = try p.expand(a, b);
+                },
                 else => break,
             }
         }
         return a;
+    }
+
+    /// `{n}` exact · `{n,}` n-or-more · `{n,m}` range. `n` is required; `max` is
+    /// null when unbounded. RE2/rust-regex-shaped bounds.
+    const Bound = struct { min: usize, max: ?usize };
+
+    /// Cap on a single `{n,m}` expansion (RE2 caps repetition similarly) — guards
+    /// against `a{999999}` blowing up the NFA. Exceeding it ⇒ BadPattern.
+    const max_repeat: usize = 1000;
+
+    /// Parse a `{n[,[m]]}` spec at the current `{`. On any malformation, restore
+    /// `pos` and return null so the caller treats `{` as a literal byte.
+    fn tryBound(p: *Parser) ?Bound {
+        const save = p.pos;
+        _ = p.take(); // '{'
+        var min: usize = 0;
+        var got_min = false;
+        while (p.peek()) |c| {
+            if (c < '0' or c > '9') break;
+            min = min * 10 + (c - '0');
+            got_min = true;
+            _ = p.take();
+        }
+        if (!got_min) {
+            p.pos = save;
+            return null;
+        }
+        var max: ?usize = min; // `{n}` ⇒ exactly n
+        if (p.peek() == ',') {
+            _ = p.take();
+            var m: usize = 0;
+            var got_max = false;
+            while (p.peek()) |c| {
+                if (c < '0' or c > '9') break;
+                m = m * 10 + (c - '0');
+                got_max = true;
+                _ = p.take();
+            }
+            max = if (got_max) m else null; // `{n,}` ⇒ unbounded
+        }
+        if (p.peek() != '}') {
+            p.pos = save;
+            return null;
+        }
+        _ = p.take(); // '}'
+        return .{ .min = min, .max = max };
+    }
+
+    /// Desugar `atom{min,max}` into the existing node vocabulary: `min` mandatory
+    /// copies, then either `(max-min)` optional copies (`a?`) or a trailing `a*`
+    /// when unbounded. The `atom` pointer is shared across copies — the AST is a
+    /// DAG, sound because every visitor (compile, literalInfo) only reads it.
+    fn expand(p: *Parser, atom: *Node, b: Bound) ParseError!*Node {
+        if (b.min > max_repeat or (b.max orelse 0) > max_repeat) return ParseError.BadPattern;
+        if (b.max) |mx| if (mx < b.min) return ParseError.BadPattern;
+
+        var result: ?*Node = null;
+        var i: usize = 0;
+        while (i < b.min) : (i += 1)
+            result = if (result) |r| try p.node(.{ .concat = .{ r, atom } }) else atom;
+
+        if (b.max) |mx| {
+            var k = b.min;
+            while (k < mx) : (k += 1) {
+                const opt = try p.node(.{ .quest = atom });
+                result = if (result) |r| try p.node(.{ .concat = .{ r, opt } }) else opt;
+            }
+        } else {
+            const st = try p.node(.{ .star = atom });
+            result = if (result) |r| try p.node(.{ .concat = .{ r, st } }) else st;
+        }
+        return result orelse p.node(.empty);
     }
 
     fn parseAtom(p: *Parser) ParseError!*Node {
@@ -137,7 +235,7 @@ pub const Parser = struct {
                 _ = p.take();
                 return p.node(.anchor_end);
             },
-            '*', '+', '?' => return ParseError.BadPattern, // nothing to repeat
+            '*', '+', '?', '{' => return ParseError.BadPattern, // repeat op w/o expression
             ')', '|' => return ParseError.BadPattern,
             else => {
                 _ = p.take();
@@ -273,5 +371,61 @@ pub fn literalInfo(arena: std.mem.Allocator, node: *Node) ParseError!LitInfo {
         },
         // Optional / alternation: nothing is guaranteed to appear.
         .star, .quest, .alt => return .{ .exact = null, .best = "" },
+    }
+}
+
+/// True iff every match must begin at the start of a line — the pattern's first
+/// consumable step is preceded by `^` on every alternation branch. Lets the
+/// scanner seed only at line position 0 (no per-byte unanchored re-seed) and bail
+/// the instant the thread list empties. Conservative: only the `^` node anchors,
+/// so an un-anchored branch makes the whole alternation un-anchored.
+pub fn startsAnchored(node: *Node) bool {
+    return switch (node.*) {
+        .anchor_start => true,
+        .concat => |ab| startsAnchored(ab[0]),
+        .alt => |ab| startsAnchored(ab[0]) and startsAnchored(ab[1]),
+        .plus => |x| startsAnchored(x), // `(^x)+` still starts anchored
+        else => false,
+    };
+}
+
+/// Cap on an alternation cover-set — a huge `a|b|c|…` union would issue one
+/// trigram query per branch; past this a full scan is cheaper, so we bail to it.
+const max_cover: usize = 32;
+
+/// A set of ≥3-byte literals such that EVERY match contains at least one of them
+/// — so the UNION of their trigram-candidate sets is a sound superset (no false
+/// negative). Returns null when none is provable (caller full-scans). This is the
+/// multi-literal counterpart to `literalInfo.best`: where `best` needs ONE literal
+/// mandatory across the whole pattern, this admits alternations — `foo|bar` ⇒
+/// {foo, bar} — but only when EVERY branch yields a ≥3 literal (else that branch's
+/// matches could carry none of the set, and filtering would wrongly drop them).
+pub fn requiredAny(arena: std.mem.Allocator, node: *Node) ParseError!?[]const []const u8 {
+    // A single mandatory ≥3 literal is the most selective filter — prefer it.
+    const li = try literalInfo(arena, node);
+    if (li.best.len >= 3) {
+        const one = try arena.alloc([]const u8, 1);
+        one[0] = li.best;
+        return one;
+    }
+    switch (node.*) {
+        .alt => |ab| {
+            const sa = try requiredAny(arena, ab[0]) orelse return null;
+            const sb = try requiredAny(arena, ab[1]) orelse return null;
+            if (sa.len + sb.len > max_cover) return null;
+            const out = try arena.alloc([]const u8, sa.len + sb.len);
+            @memcpy(out[0..sa.len], sa);
+            @memcpy(out[sa.len..], sb);
+            return out;
+        },
+        // In a concat both sides are mandatory, so either side's cover set is
+        // sound for the whole match — take the first side that yields one.
+        .concat => |ab| {
+            if (try requiredAny(arena, ab[0])) |sa| return sa;
+            return try requiredAny(arena, ab[1]);
+        },
+        .plus => |x| return try requiredAny(arena, x),
+        // multi-byte class, star, quest (match empty), empty, anchors ⇒ no cover.
+        else => return null,
     }
 }

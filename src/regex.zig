@@ -19,6 +19,15 @@ const Node = syn.Node;
 
 pub const ParseError = syn.ParseError;
 
+const vlen: usize = std.simd.suggestVectorLength(u8) orelse 16;
+
+/// A contiguous byte range `[lo, hi]`. The first-byte set decomposes into a
+/// handful of these (`[0-9]`, `[a-f0-9]`, `\w`, the `{p,0}` of `panic|0x`), which
+/// the scanner's skip loop tests with one SIMD compare per range instead of a
+/// scalar byteset probe per byte.
+const Range = struct { lo: u8, hi: u8 };
+const max_ranges = 6; // beyond this (e.g. a negated class) the scalar probe wins
+
 const State = union(enum) {
     consume: struct { set: ByteSet, out: u32 },
     split: struct { a: u32, b: u32 },
@@ -31,11 +40,27 @@ pub const Regex = struct {
     states: []State,
     start: u32,
     required: []u8, // longest literal that must appear in every match ("" if none)
+    // Alternation cover set: literals whose UNION every match intersects (each
+    // ≥3 B). Non-empty only when `required` is too short for a single-literal
+    // prefilter but a `foo|bar`-style union is provable. Empty ⇒ unused.
+    alts: []const []const u8,
+    // Scan accelerators (verify-time, no effect on match semantics):
+    //   anchored   — every match begins at line start (`^…`); seed only at pos 0.
+    //   first      — bytes that can BEGIN a match mid-line; lets the scanner
+    //                `memchr`-skip dead spans instead of re-seeding every byte.
+    //   first_byte — `first`'s sole member, when singleton (SIMD `indexOfScalar`).
+    anchored: bool,
+    first: ByteSet,
+    first_byte: ?u8,
+    first_ranges: [max_ranges]Range,
+    first_nranges: u8, // 0 ⇒ singleton (memchr) or too-many-ranges (scalar probe)
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *Regex) void {
         self.allocator.free(self.states);
         self.allocator.free(self.required);
+        for (self.alts) |s| self.allocator.free(s);
+        if (self.alts.len > 0) self.allocator.free(self.alts);
         self.* = undefined;
     }
 
@@ -54,12 +79,116 @@ pub const Regex = struct {
         const start = try c.compileNode(ast, match_idx);
 
         const req = try syn.literalInfo(arena, ast);
+        const required = try allocator.dupe(u8, req.best);
+        errdefer allocator.free(required);
+        const alts = try dupeCover(allocator, arena, ast, req.best);
+        errdefer {
+            for (alts) |s| allocator.free(s);
+            if (alts.len > 0) allocator.free(alts);
+        }
+
+        const states = try c.states.toOwnedSlice(allocator);
+        errdefer allocator.free(states);
+        const anchored = syn.startsAnchored(ast);
+        var first: ByteSet = .{};
+        if (!anchored) try analyzeFirst(allocator, states, start, &first);
+        const single = first.only();
+        var ranges: [max_ranges]Range = undefined;
+        // SIMD range scan only earns its keep when there's no singleton memchr;
+        // null (>max_ranges) falls back to the scalar byteset probe.
+        const nranges: u8 = if (single != null) 0 else firstRanges(first, &ranges) orelse 0;
+
         return .{
-            .states = try c.states.toOwnedSlice(allocator),
+            .states = states,
             .start = start,
-            .required = try allocator.dupe(u8, req.best),
+            .required = required,
+            .alts = alts,
+            .anchored = anchored,
+            .first = first,
+            .first_byte = single,
+            .first_ranges = ranges,
+            .first_nranges = nranges,
             .allocator = allocator,
         };
+    }
+
+    /// Decompose a byte set into contiguous `[lo,hi]` ranges; null if it needs
+    /// more than `max_ranges` (the scalar probe is then cheaper than that many
+    /// SIMD compares per chunk).
+    fn firstRanges(set: ByteSet, out: *[max_ranges]Range) ?u8 {
+        var n: u8 = 0;
+        var c: usize = 0;
+        while (c < 256) {
+            if (!set.has(@intCast(c))) {
+                c += 1;
+                continue;
+            }
+            const lo: u8 = @intCast(c);
+            while (c < 256 and set.has(@intCast(c))) c += 1;
+            if (n == max_ranges) return null;
+            out[n] = .{ .lo = lo, .hi = @intCast(c - 1) };
+            n += 1;
+        }
+        return n;
+    }
+
+    /// Collect every byte that can be the FIRST consumed byte of a match at SOME
+    /// position — a sound superset that lets the scanner skip spans containing
+    /// none of them. `^` (assert_start) is *traversed*, not blocked: it holds at
+    /// line starts, where the scanner does seed (with the right `at_start` flag),
+    /// so a `^p…` branch's `p` must be reachable — at a mid-line `p` the seeded
+    /// thread simply dies on the failed assertion, never a false positive. `$`
+    /// (assert_end) is blocked: a byte can't be consumed after the line ends.
+    /// Iterative (worklist) to bound stack depth under `{n}`-expanded programs.
+    fn analyzeFirst(gpa: std.mem.Allocator, states: []const State, start: u32, out: *ByteSet) ParseError!void {
+        const visited = try gpa.alloc(bool, states.len);
+        defer gpa.free(visited);
+        @memset(visited, false);
+        const stack = try gpa.alloc(u32, states.len);
+        defer gpa.free(stack);
+        var sp: usize = 1;
+        stack[0] = start;
+        visited[start] = true;
+        const push = struct {
+            fn f(t: u32, vis: []bool, st: []u32, n: *usize) void {
+                if (!vis[t]) {
+                    vis[t] = true;
+                    st[n.*] = t;
+                    n.* += 1;
+                }
+            }
+        }.f;
+        while (sp > 0) {
+            sp -= 1;
+            switch (states[stack[sp]]) {
+                .consume => |cn| out.unionWith(cn.set),
+                .split => |spl| {
+                    push(spl.a, visited, stack, &sp);
+                    push(spl.b, visited, stack, &sp);
+                },
+                .assert_start => |o| push(o, visited, stack, &sp), // holds at line start
+                .assert_end, .match => {}, // `$`: no byte follows; match: zero-width
+            }
+        }
+    }
+
+    /// Own a copy of the alternation cover set (empty when a single-literal
+    /// prefilter already applies, i.e. `best` ≥ 3, or none is provable).
+    fn dupeCover(gpa: std.mem.Allocator, arena: std.mem.Allocator, ast: *Node, best: []const u8) ParseError![]const []const u8 {
+        if (best.len >= 3) return &[_][]const u8{}; // single-literal prefilter wins
+        const cover = (try syn.requiredAny(arena, ast)) orelse return &[_][]const u8{};
+        if (cover.len == 0) return &[_][]const u8{};
+        const dst = try gpa.alloc([]const u8, cover.len);
+        var n: usize = 0;
+        errdefer {
+            for (dst[0..n]) |s| gpa.free(s);
+            gpa.free(dst);
+        }
+        for (cover) |s| {
+            dst[n] = try gpa.dupe(u8, s);
+            n += 1;
+        }
+        return dst;
     }
 
     /// Lowers the AST into a flat NFA-state program (Thompson construction).
@@ -177,17 +306,85 @@ pub const Regex = struct {
         return .{ .re = re, .list = list, .seen = sim.seen, .gen = sim.gen, .at_start = at_start, .at_end = at_end };
     }
 
-    /// Does the pattern match any substring of `line`? Linear in `line.len`.
-    pub fn lineMatch(re: *const Regex, sim: *Sim, line: []const u8) bool {
-        sim.cur.len = 0;
-        sim.gen += 1;
-        // Position 0: start of line; also the end iff the line is empty.
-        if (re.closure(sim, &sim.cur, true, line.len == 0).add(re.start)) return true;
+    const Scan = enum { anchored, skip, plain };
 
-        for (line, 0..) |c, i| {
+    /// Does the pattern match any substring of `line`? Linear in `line.len`.
+    /// Dispatches to the cheapest sound strategy: `^…` seeds only at line start
+    /// (`.anchored`); a known first-byte set drives a `memchr`-skip search
+    /// (`.skip`); otherwise the plain re-seed-every-position search (`.plain`,
+    /// e.g. a bare `$` whose first set is empty).
+    pub fn lineMatch(re: *const Regex, sim: *Sim, line: []const u8) bool {
+        if (re.anchored) return re.search(sim, line, .anchored);
+        if (re.first.count() != 0) return re.search(sim, line, .skip);
+        return re.search(sim, line, .plain);
+    }
+
+    /// Next index ≥ `from` whose byte can begin a match. Three tiers: SIMD
+    /// `indexOfScalar` for a singleton set (`;$`), a SIMD range scan for a few
+    /// contiguous ranges (`[0-9]{4}`, `[a-f0-9]{2,}`), and a scalar byteset probe
+    /// for anything wider (a negated class).
+    fn nextStart(re: *const Regex, line: []const u8, from: usize) ?usize {
+        if (re.first_byte) |b| return std.mem.indexOfScalarPos(u8, line, from, b);
+        if (re.first_nranges > 0) return re.nextStartRange(line, from);
+        var j = from;
+        while (j < line.len) : (j += 1) if (re.first.has(line[j])) return j;
+        return null;
+    }
+
+    /// Vectorized hunt for the first byte falling in any of `first_ranges`: one
+    /// `lo ≤ b ≤ hi` compare per range across a `vlen`-wide window, OR the lane
+    /// masks, take the lowest set lane. The scalar tail handles the remainder.
+    fn nextStartRange(re: *const Regex, line: []const u8, from: usize) ?usize {
+        const Vec = @Vector(vlen, u8);
+        const Mask = std.meta.Int(.unsigned, vlen);
+        const ranges = re.first_ranges[0..re.first_nranges];
+        var i = from;
+        while (i + vlen <= line.len) : (i += vlen) {
+            const blk: Vec = line[i..][0..vlen].*;
+            var hit: @Vector(vlen, bool) = @splat(false);
+            for (ranges) |rg| {
+                const lo: Vec = @splat(rg.lo);
+                const hi: Vec = @splat(rg.hi);
+                hit |= (blk >= lo) & (blk <= hi);
+            }
+            const bits: Mask = @bitCast(hit);
+            if (bits != 0) return i + @ctz(bits);
+        }
+        while (i < line.len) : (i += 1) if (re.first.has(line[i])) return i;
+        return null;
+    }
+
+    /// Unified Pike search, specialized at comptime by seeding policy:
+    ///   `.anchored` — never re-seed; the instant the thread list drains, done
+    ///                 (a match can only begin at line position 0).
+    ///   `.skip`     — re-seed a start only where a byte could begin a match, and
+    ///                 when the list empties jump to the next such byte (skipping
+    ///                 dead spans the way rg's literal prefilter does). Equivalent
+    ///                 to seeding every position — a start whose first byte isn't
+    ///                 in `first` dies at once — minus the wasted closure work.
+    ///   `.plain`    — re-seed the start at every position (first set empty).
+    fn search(re: *const Regex, sim: *Sim, line: []const u8, comptime mode: Scan) bool {
+        sim.gen += 1;
+        sim.cur.len = 0;
+        // Position 0: line start; also the end iff the line is empty. Answers any
+        // empty/zero-width match (`a*`, `^$`) without scanning.
+        if (re.closure(sim, &sim.cur, true, line.len == 0).add(re.start)) return true;
+        if (mode == .skip) sim.cur.len = 0; // drive purely by first-byte jumps
+        var i: usize = 0;
+        while (i < line.len) {
+            if (sim.cur.len == 0) switch (mode) {
+                .anchored => return false, // no live thread, no new start allowed
+                .skip => {
+                    i = re.nextStart(line, i) orelse return false;
+                    sim.gen += 1;
+                    sim.cur.len = 0;
+                    if (re.closure(sim, &sim.cur, i == 0, i + 1 == line.len).add(re.start)) return true;
+                },
+                .plain => {},
+            };
+            const c = line[i];
             sim.nxt.len = 0;
             sim.gen += 1;
-            // Threads seeded below sit at position i+1 — never line start, line end exactly when the byte just consumed was the last.
             const cl = re.closure(sim, &sim.nxt, false, i + 1 == line.len);
             var matched = false;
             for (sim.cur.slice()) |s| switch (re.states[s]) {
@@ -196,9 +393,18 @@ pub const Regex = struct {
                 },
                 else => {},
             };
-            if (cl.add(re.start)) matched = true; // unanchored re-seed
+            switch (mode) { // re-seed the next start per policy
+                .anchored => {},
+                .plain => if (cl.add(re.start)) {
+                    matched = true;
+                },
+                .skip => if (i + 1 < line.len and re.first.has(line[i + 1]) and cl.add(re.start)) {
+                    matched = true;
+                },
+            }
             std.mem.swap(ThreadList, &sim.cur, &sim.nxt);
             if (matched) return true;
+            i += 1;
         }
         return false;
     }
@@ -216,126 +422,3 @@ pub const Regex = struct {
         return false;
     }
 };
-
-// ── tests ─────────────────────────────────────────────────────────────────
-
-fn matches(pattern: []const u8, line: []const u8) !bool {
-    var re = try Regex.compile(std.testing.allocator, pattern);
-    defer re.deinit();
-    var sim = try Regex.Sim.init(std.testing.allocator, &re);
-    defer sim.deinit();
-    return re.lineMatch(&sim, line);
-}
-
-test "regex: literal substring (unanchored)" {
-    try std.testing.expect(try matches("cat", "the cat sat"));
-    try std.testing.expect(try matches("cat", "concatenate"));
-    try std.testing.expect(!try matches("cat", "the dog ran"));
-}
-
-test "regex: dot, star, plus, quest" {
-    try std.testing.expect(try matches("a.c", "xxabcyy"));
-    try std.testing.expect(!try matches("a.c", "ac"));
-    try std.testing.expect(try matches("ab*c", "ac"));
-    try std.testing.expect(try matches("ab*c", "abbbbc"));
-    try std.testing.expect(try matches("ab+c", "abc"));
-    try std.testing.expect(!try matches("ab+c", "ac"));
-    try std.testing.expect(try matches("colou?r", "color"));
-    try std.testing.expect(try matches("colou?r", "colour")); // spellchecker:disable-line
-}
-
-test "regex: alternation and groups" {
-    try std.testing.expect(try matches("cat|dog", "the dog ran"));
-    try std.testing.expect(try matches("(foo|bar)baz", "xxbarbazyy"));
-    try std.testing.expect(!try matches("(foo|bar)baz", "bazonly"));
-}
-
-test "regex: classes and escapes" {
-    try std.testing.expect(try matches("[0-9]+", "abc123"));
-    try std.testing.expect(!try matches("[0-9]+", "abcdef"));
-    try std.testing.expect(try matches("\\d\\w*", "x9_yz"));
-    try std.testing.expect(try matches("func\\s+\\w+\\(", "func  Foo("));
-    try std.testing.expect(try matches("[^a-z]", "ABC"));
-    try std.testing.expect(try matches("a\\.b", "xa.b"));
-    try std.testing.expect(!try matches("a\\.b", "axb")); // escaped dot is literal
-}
-
-test "regex: '.' does not cross newline within a line search" {
-    try std.testing.expect(!try matches("a.b", "a\nb"));
-}
-
-test "regex: ^ anchors to line start" {
-    try std.testing.expect(try matches("^func", "func main"));
-    try std.testing.expect(!try matches("^func", "  func main")); // not at start
-    try std.testing.expect(try matches("^a.c", "abc")); // anchored + dot
-    try std.testing.expect(try matches("\\^x", "a^xb")); // escaped caret is literal
-    try std.testing.expect(!try matches("\\^x", "ax")); // … so a bare 'x' won't do
-}
-
-test "regex: $ anchors to line end" {
-    try std.testing.expect(try matches("nil$", "return nil"));
-    try std.testing.expect(!try matches("nil$", "nil pointer")); // not at end
-    try std.testing.expect(try matches(";$", "x := 1;"));
-    try std.testing.expect(try matches("x\\$", "ax$")); // escaped dollar is literal
-}
-
-test "regex: ^…$ whole-line anchoring incl. empty line" {
-    try std.testing.expect(try matches("^$", "")); // empty line matches ^$
-    try std.testing.expect(!try matches("^$", "x")); // non-empty does not
-    try std.testing.expect(try matches("^abc$", "abc")); // exact whole line
-    try std.testing.expect(!try matches("^abc$", "abcd")); // trailing byte breaks $
-    try std.testing.expect(!try matches("^abc$", "xabc")); // leading byte breaks ^
-    try std.testing.expect(try matches("^$", "")); // re-affirm via docMatch below
-}
-
-test "regex: anchored required-literal still drives the prefilter" {
-    const a = std.testing.allocator;
-    var re = try Regex.compile(a, "^func");
-    defer re.deinit();
-    try std.testing.expectEqualStrings("func", re.required); // anchor is zero-width
-}
-
-test "regex: $ via docMatch picks the right line" {
-    const a = std.testing.allocator;
-    var re = try Regex.compile(a, "nil$");
-    defer re.deinit();
-    var sim = try Regex.Sim.init(a, &re);
-    defer sim.deinit();
-    try std.testing.expect(re.docMatch(&sim, "x := 1\nreturn nil\n}"));
-    try std.testing.expect(!re.docMatch(&sim, "nil pointer\nok"));
-}
-
-test "regex: pathological (a+)+ stays linear, no catastrophic backtracking" {
-    // A backtracking engine hangs on this; Thompson is linear and just answers.
-    try std.testing.expect(!try matches("(a+)+z", "aaaaaaaaaaaaaaaaaaaaaaaa!"));
-}
-
-test "regex: required-literal extraction for the trigram prefilter" {
-    const a = std.testing.allocator;
-    {
-        var re = try Regex.compile(a, "func\\s+\\w+\\(");
-        defer re.deinit();
-        try std.testing.expectEqualStrings("func", re.required); // "func" must appear
-    }
-    {
-        var re = try Regex.compile(a, "ab.cd");
-        defer re.deinit();
-        // best mandatory run is len 2 — no usable ≥3 prefilter, caller scans all.
-        try std.testing.expect(re.required.len == 2);
-    }
-    {
-        var re = try Regex.compile(a, "cat|dog");
-        defer re.deinit();
-        try std.testing.expectEqualStrings("", re.required); // alternation ⇒ none
-    }
-}
-
-test "regex: docMatch over multi-line doc" {
-    const a = std.testing.allocator;
-    var re = try Regex.compile(a, "return\\s+nil");
-    defer re.deinit();
-    var sim = try Regex.Sim.init(a, &re);
-    defer sim.deinit();
-    try std.testing.expect(re.docMatch(&sim, "x := 1\nreturn  nil\n}"));
-    try std.testing.expect(!re.docMatch(&sim, "return\nnil")); // split across lines
-}

@@ -42,4 +42,5 @@ test {
     // Every tier is a `pub` re-export above, so `refAllDecls` already pulls each
     // sibling file's tests into `zig build test` — no explicit `_ = mod` needed.
     std.testing.refAllDecls(@This());
+    _ = @import("regex_test.zig"); // engine tests live in a sibling (shape cap)
 }
