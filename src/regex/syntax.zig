@@ -1,7 +1,8 @@
-//! gist — regex *syntax*: byte classes, the AST, a recursive-descent parser for
-//! the supported subset, and sound required-literal extraction. The execution
-//! half (Thompson NFA compile + Pike simulation) lives in `core.zig`, which
-//! imports this module. Split out purely to keep each file under the shape cap.
+//! gist — regex *syntax*: byte classes, the AST, the compiled NFA instruction,
+//! and a recursive-descent parser for the supported subset. The sound AST
+//! analyses that feed the prefilter (required-literal extraction, anchored-start
+//! detection) live in `analysis.zig`; the execution half (Thompson NFA compile +
+//! Pike simulation) lives in `core.zig`. Both import this module.
 //!
 //! Supported (ASCII / byte-oriented, matching ripgrep's `(?-u)` mode):
 //!   literals · `.` (any byte but '\n') · `[...]` / `[^...]` with `a-z` ranges
@@ -15,7 +16,7 @@ const std = @import("std");
 
 /// 256-bit byte class (which bytes a consuming state accepts).
 pub const ByteSet = struct {
-    bits: [4]u64 = .{ 0, 0, 0, 0 },
+    bits: [4]u64 = @splat(0),
 
     pub fn set(self: *ByteSet, b: u8) void {
         self.bits[b >> 6] |= @as(u64, 1) << @intCast(b & 63);
@@ -91,6 +92,26 @@ pub const Parser = struct {
         n.* = v;
         return n;
     }
+    /// Concat `n` onto `acc`, or return `n` when `acc` is empty — the left-fold
+    /// shared by concat sequencing and `{n,m}` expansion.
+    fn chain(p: *Parser, acc: ?*Node, n: *Node) ParseError!*Node {
+        return if (acc) |a| try p.node(.{ .concat = .{ a, n } }) else n;
+    }
+    /// Parse a run of ASCII digits at `pos` as a decimal `usize`; null (without
+    /// advancing) when the next byte isn't a digit.
+    fn digits(p: *Parser) ?usize {
+        var v: usize = 0;
+        var got = false;
+        while (p.peek()) |c| {
+            if (c < '0' or c > '9') break;
+            _ = p.take();
+            got = true;
+            // Saturate past the repeat cap: a larger bound is BadPattern anyway
+            // (see `expand`), and pinning here avoids usize overflow on `a{9…9}`.
+            v = if (v > max_repeat) v else v * 10 + (c - '0');
+        }
+        return if (got) v else null;
+    }
 
     // alt := concat ('|' concat)*
     pub fn parseAlt(p: *Parser) ParseError!*Node {
@@ -108,8 +129,7 @@ pub const Parser = struct {
         var acc: ?*Node = null;
         while (p.peek()) |c| {
             if (c == '|' or c == ')') break;
-            const r = try p.parseRepeat();
-            acc = if (acc) |a| try p.node(.{ .concat = .{ a, r } }) else r;
+            acc = try p.chain(acc, try p.parseRepeat());
         }
         return acc orelse try p.node(.empty);
     }
@@ -119,18 +139,11 @@ pub const Parser = struct {
         var a = try p.parseAtom();
         while (p.peek()) |c| {
             switch (c) {
-                '*' => {
-                    _ = p.take();
-                    a = try p.node(.{ .star = a });
-                },
-                '+' => {
-                    _ = p.take();
-                    a = try p.node(.{ .plus = a });
-                },
-                '?' => {
-                    _ = p.take();
-                    a = try p.node(.{ .quest = a });
-                },
+                '*', '+', '?' => a = try p.node(switch (p.take()) {
+                    '*' => .{ .star = a },
+                    '+' => .{ .plus = a },
+                    else => .{ .quest = a },
+                }),
                 '{' => {
                     // An unescaped `{` MUST begin a valid `{n}`/`{n,}`/`{n,m}`
                     // spec — rust-regex (ripgrep) errors otherwise, so we mirror
@@ -158,30 +171,14 @@ pub const Parser = struct {
     fn tryBound(p: *Parser) ?Bound {
         const save = p.pos;
         _ = p.take(); // '{'
-        var min: usize = 0;
-        var got_min = false;
-        while (p.peek()) |c| {
-            if (c < '0' or c > '9') break;
-            min = min * 10 + (c - '0');
-            got_min = true;
-            _ = p.take();
-        }
-        if (!got_min) {
+        const min = p.digits() orelse {
             p.pos = save;
             return null;
-        }
+        };
         var max: ?usize = min; // `{n}` ⇒ exactly n
         if (p.peek() == ',') {
             _ = p.take();
-            var m: usize = 0;
-            var got_max = false;
-            while (p.peek()) |c| {
-                if (c < '0' or c > '9') break;
-                m = m * 10 + (c - '0');
-                got_max = true;
-                _ = p.take();
-            }
-            max = if (got_max) m else null; // `{n,}` ⇒ unbounded
+            max = p.digits(); // digits ⇒ `{n,m}`; none ⇒ `{n,}` unbounded
         }
         if (p.peek() != '}') {
             p.pos = save;
@@ -201,18 +198,13 @@ pub const Parser = struct {
 
         var result: ?*Node = null;
         var i: usize = 0;
-        while (i < b.min) : (i += 1)
-            result = if (result) |r| try p.node(.{ .concat = .{ r, atom } }) else atom;
+        while (i < b.min) : (i += 1) result = try p.chain(result, atom);
 
         if (b.max) |mx| {
             var k = b.min;
-            while (k < mx) : (k += 1) {
-                const opt = try p.node(.{ .quest = atom });
-                result = if (result) |r| try p.node(.{ .concat = .{ r, opt } }) else opt;
-            }
+            while (k < mx) : (k += 1) result = try p.chain(result, try p.node(.{ .quest = atom }));
         } else {
-            const st = try p.node(.{ .star = atom });
-            result = if (result) |r| try p.node(.{ .concat = .{ r, st } }) else st;
+            result = try p.chain(result, try p.node(.{ .star = atom }));
         }
         return result orelse p.node(.empty);
     }
@@ -231,7 +223,7 @@ pub const Parser = struct {
             '.' => {
                 _ = p.take();
                 var s = ByteSet{};
-                s.bits = .{ ~@as(u64, 0), ~@as(u64, 0), ~@as(u64, 0), ~@as(u64, 0) };
+                s.bits = @splat(~@as(u64, 0));
                 s.bits[0] &= ~(@as(u64, 1) << '\n'); // any byte except newline
                 return p.node(.{ .class = s });
             },
@@ -239,13 +231,9 @@ pub const Parser = struct {
                 _ = p.take();
                 return p.node(.{ .class = try p.parseEscape() });
             },
-            '^' => {
+            '^', '$' => {
                 _ = p.take();
-                return p.node(.anchor_start);
-            },
-            '$' => {
-                _ = p.take();
-                return p.node(.anchor_end);
+                return p.node(if (c == '^') .anchor_start else .anchor_end);
             },
             '*', '+', '?', '{' => return ParseError.BadPattern, // repeat op w/o expression
             ')', '|' => return ParseError.BadPattern,
@@ -261,29 +249,22 @@ pub const Parser = struct {
     fn parseEscape(p: *Parser) ParseError!ByteSet {
         const e = if (p.pos < p.src.len) p.take() else return ParseError.BadPattern;
         var s = ByteSet{};
+        // The uppercase form of each class is its lowercase set, negated.
         switch (e) {
-            'd' => s.setRange('0', '9'),
-            'D' => {
+            'd', 'D' => {
                 s.setRange('0', '9');
-                s.negate();
+                if (e == 'D') s.negate();
             },
-            'w' => {
-                s.setRange('0', '9');
-                s.setRange('A', 'Z');
-                s.setRange('a', 'z');
-                s.set('_');
-            },
-            'W' => {
+            'w', 'W' => {
                 s.setRange('0', '9');
                 s.setRange('A', 'Z');
                 s.setRange('a', 'z');
                 s.set('_');
-                s.negate();
+                if (e == 'W') s.negate();
             },
-            's' => for ([_]u8{ '\t', '\n', 0x0B, 0x0C, '\r', ' ' }) |b| s.set(b),
-            'S' => {
+            's', 'S' => {
                 for ([_]u8{ '\t', '\n', 0x0B, 0x0C, '\r', ' ' }) |b| s.set(b);
-                s.negate();
+                if (e == 'S') s.negate();
             },
             't' => s.set('\t'),
             'n' => s.set('\n'),
@@ -314,14 +295,14 @@ pub const Parser = struct {
             first = false;
             if (c == '\\') {
                 _ = p.take();
-                const esc = try p.parseEscape();
-                for (0..256) |b| if (esc.has(@intCast(b))) s.set(@intCast(b));
+                s.unionWith(try p.parseEscape());
                 continue;
             }
             const lo = p.take();
             if (p.peek() == '-' and p.pos + 1 < p.src.len and p.src[p.pos + 1] != ']') {
                 _ = p.take(); // '-'
                 const hi = p.take();
+                if (hi < lo) return ParseError.BadPattern; // reversed range, e.g. `[z-a]`
                 s.setRange(lo, hi);
             } else {
                 s.set(lo);
@@ -330,114 +311,3 @@ pub const Parser = struct {
         return ParseError.BadPattern; // unterminated class
     }
 };
-
-// ── literal extraction (sound necessary-condition for the trigram prefilter) ─
-
-pub const LitInfo = struct {
-    exact: ?[]const u8, // node matches EXACTLY this literal and nothing else
-    best: []const u8, // longest literal that MUST appear in every match
-};
-
-fn longer(a: []const u8, b: []const u8) []const u8 {
-    return if (a.len >= b.len) a else b;
-}
-
-/// Compute a literal that must appear in every match (`best`). Sound: if it
-/// can't prove one, `best` is "" (caller scans all docs). Mirrors the literal
-/// half of Cox's regexp→trigram analysis, conservatively.
-pub fn literalInfo(arena: std.mem.Allocator, node: *Node) ParseError!LitInfo {
-    switch (node.*) {
-        // Zero-width: matches the empty string at a position. exact="" lets a
-        // mandatory literal run span the anchor (e.g. `^func` ⇒ required "func").
-        .empty, .anchor_start, .anchor_end => return .{ .exact = "", .best = "" },
-        .class => |set| {
-            var count: usize = 0;
-            var only: u8 = 0;
-            for (0..256) |b| if (set.has(@intCast(b))) {
-                count += 1;
-                only = @intCast(b);
-            };
-            if (count == 1) {
-                const lit = try arena.dupe(u8, &[_]u8{only});
-                return .{ .exact = lit, .best = lit };
-            }
-            return .{ .exact = null, .best = "" };
-        },
-        .concat => |ab| {
-            const x = try literalInfo(arena, ab[0]);
-            const y = try literalInfo(arena, ab[1]);
-            var exact: ?[]const u8 = null;
-            if (x.exact != null and y.exact != null)
-                exact = try std.mem.concat(arena, u8, &.{ x.exact.?, y.exact.? });
-            // A mandatory run can span the boundary when x ends / y starts exact.
-            var span: []const u8 = "";
-            if (x.exact) |xe| if (y.exact) |ye| {
-                span = try std.mem.concat(arena, u8, &.{ xe, ye });
-            };
-            const best = longer(longer(x.best, y.best), span);
-            return .{ .exact = exact, .best = best };
-        },
-        .plus => |x| {
-            const xi = try literalInfo(arena, x); // content occurs ≥ once
-            return .{ .exact = null, .best = xi.best };
-        },
-        // Optional / alternation: nothing is guaranteed to appear.
-        .star, .quest, .alt => return .{ .exact = null, .best = "" },
-    }
-}
-
-/// True iff every match must begin at the start of a line — the pattern's first
-/// consumable step is preceded by `^` on every alternation branch. Lets the
-/// scanner seed only at line position 0 (no per-byte unanchored re-seed) and bail
-/// the instant the thread list empties. Conservative: only the `^` node anchors,
-/// so an un-anchored branch makes the whole alternation un-anchored.
-pub fn startsAnchored(node: *Node) bool {
-    return switch (node.*) {
-        .anchor_start => true,
-        .concat => |ab| startsAnchored(ab[0]),
-        .alt => |ab| startsAnchored(ab[0]) and startsAnchored(ab[1]),
-        .plus => |x| startsAnchored(x), // `(^x)+` still starts anchored
-        else => false,
-    };
-}
-
-/// Cap on an alternation cover-set — a huge `a|b|c|…` union would issue one
-/// trigram query per branch; past this a full scan is cheaper, so we bail to it.
-const max_cover: usize = 32;
-
-/// A set of ≥3-byte literals such that EVERY match contains at least one of them
-/// — so the UNION of their trigram-candidate sets is a sound superset (no false
-/// negative). Returns null when none is provable (caller full-scans). This is the
-/// multi-literal counterpart to `literalInfo.best`: where `best` needs ONE literal
-/// mandatory across the whole pattern, this admits alternations — `foo|bar` ⇒
-/// {foo, bar} — but only when EVERY branch yields a ≥3 literal (else that branch's
-/// matches could carry none of the set, and filtering would wrongly drop them).
-pub fn requiredAny(arena: std.mem.Allocator, node: *Node) ParseError!?[]const []const u8 {
-    // A single mandatory ≥3 literal is the most selective filter — prefer it.
-    const li = try literalInfo(arena, node);
-    if (li.best.len >= 3) {
-        const one = try arena.alloc([]const u8, 1);
-        one[0] = li.best;
-        return one;
-    }
-    switch (node.*) {
-        .alt => |ab| {
-            const sa = try requiredAny(arena, ab[0]) orelse return null;
-            const sb = try requiredAny(arena, ab[1]) orelse return null;
-            if (sa.len + sb.len > max_cover) return null;
-            const out = try arena.alloc([]const u8, sa.len + sb.len);
-            @memcpy(out[0..sa.len], sa);
-            @memcpy(out[sa.len..], sb);
-            return out;
-        },
-        // In a concat both sides are mandatory, so either side's cover set is
-        // sound for the whole match — take the first side that yields one.
-        .concat => |ab| {
-            if (try requiredAny(arena, ab[0])) |sa| return sa;
-            return try requiredAny(arena, ab[1]);
-        },
-        .plus => |x| return try requiredAny(arena, x),
-        // multi-byte class, star, quest (match empty), empty, anchors ⇒ no cover.
-        else => return null,
-    }
-}
