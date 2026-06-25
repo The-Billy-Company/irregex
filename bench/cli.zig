@@ -22,6 +22,7 @@ const gist = @import("gist");
 const corpus_mod = @import("corpus.zig");
 const simd = @import("simd.zig");
 const fresh = @import("fresh.zig");
+const scan = @import("scan.zig");
 const Index = gist.trigram.Index;
 const Regex = gist.regex.Regex;
 const Dir = std.Io.Dir;
@@ -266,16 +267,25 @@ pub fn runQuery(gpa: std.mem.Allocator, io: std.Io, needle: []const u8) !void {
 /// Thompson NFA. `(?-u)` byte semantics, exactly the slice the equality oracle
 /// proves against `rg`. No usable ≥3-byte cover ⇒ a full scan (like rg).
 pub fn runRegex(gpa: std.mem.Allocator, io: std.Io, pattern: []const u8) !void {
-    const l0 = nowNs(io);
-    var p = (try loadPersisted(gpa, io)) orelse return;
-    defer p.deinit();
-    const load_ns = nowNs(io) - l0;
-
     var re = Regex.compile(gpa, pattern) catch {
         std.debug.print("bad pattern /{s}/ — supported: literals . [] [^] a-z * + ? {{n,m}} | () ^ $ and \\d \\w \\s \\t \\n \\r (see src/regex/syntax.zig)\n", .{pattern});
         return;
     };
     defer re.deinit();
+
+    // No usable trigram prefilter (no ≥3 B required literal, no all-≥3 alternation
+    // cover) ⇒ every doc is a candidate, so the index filters nothing. Loading it
+    // and running the corpus-wide T3 freshness stat-walk is then pure overhead vs
+    // rg's single walk; scan the live tree directly (one traversal, inherently
+    // fresh — the read IS the freshness guarantee). This is exactly the
+    // no-prefilter scan tail that used to tie/trail rg, now a win (see scan.zig).
+    if (re.required.len < 3 and re.alts.len == 0)
+        return scan.runRegexFullScan(gpa, io, &re);
+
+    const l0 = nowNs(io);
+    var p = (try loadPersisted(gpa, io)) orelse return;
+    defer p.deinit();
+    const load_ns = nowNs(io) - l0;
 
     const q0 = nowNs(io);
     var matches: std.ArrayList([]const u8) = .empty;
