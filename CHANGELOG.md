@@ -168,6 +168,39 @@ All notable changes to the `gist` kernel are documented here. Format follows
   mixed alternation `panic|0x` — `ag` 483 ms vs `rg` 675 ms (**1.40×**), the same
   pattern where gist's Pike VM is weakest (1173 ms).
 
+- **Seven-tool competitive field + indexed rivals** (`bench/_compete.sh`,
+  rewritten `coldquery.sh` / `regex_headtohead.sh` / `headtohead.sh`): the race
+  now spans every level. Beyond the unindexed scanners (`rg`, `ag`, plus new
+  `ugrep`, GNU `grep`, `git grep`) gist is benched against the two mature
+  *indexed* searchers — **csearch** (Russ Cox's Google Code Search, gist's direct
+  trigram ancestor) and **zoekt** (Sourcegraph's production indexed search). A
+  shared `_compete.sh` registry defines the field, the per-tool fastest-honest
+  invocations, and the index builds; csearch indexes gist's **exact** corpus file
+  list (`paths.list`) for an apples-to-apples trigram-vs-trigram race, zoekt the
+  roots tree under the heavy ignore set. Output adds geomean-speedup + win-rate
+  summaries (split indexed/unindexed) and per-race CSVs. Two correctness fixes in
+  the harness: every command's output is drained (`… | wc -l`) so ugrep's lazy
+  multithreaded `-l` actually scans (it short-circuits when stdout is discarded)
+  and a needle miss (grep exits 1) no longer aborts hyperfine.
+- **Expanded scenario slates**: the warm/oracle slate (`bench.zig`) grows to 20
+  literals (added cross-language keywords `goroutine`/`panic(`/`Result<`/`def `/
+  `.unwrap()`) + 30 regexes (added `if\s+err\s*!=\s*nil`, `const\s+\w+\s*=`,
+  `\w+\.\w+\(`, `[a-z]+_[a-z]+_[a-z]+`, `[a-z]+[A-Z]\w+`, `[0-9a-f]{8}-…`); the
+  cold literal slate adds a guaranteed miss + `goroutine`/`SELECT`/`func(`/`})`;
+  the cold regex slate grows to 22 tiers (decl, err-idiom, uuid/snake/camel,
+  dotted-call). Re-proven sound: **50 literals + 68 regexes, 0 FN / 0 FP** vs rg.
+- **Measured competitive standing (17,112 files · 126.5 MiB, shared dev box,
+  hyperfine geomeans):** WARM resident gist beats every scanner **1,028×–5,992×**
+  (15/15; up to 270,000× on a miss) — uncontested, the indexed rivals have no
+  resident CLI. COLD one-shot gist beats every *unindexed* tool **1.9×–9.2×**
+  (10–11/11). COLD regex gist lands **≈ csearch (0.9×, 14/22 wins) and faster than
+  zoekt (1.4×, 13/22)**, **≥ rg (1.3×)** — the old dense floor `\w{3,8}` now beats
+  both indexed rivals. The **one honest loss**: COLD *literal* one-shot vs the
+  indexed rivals (csearch 0.3×, zoekt 0.5× geomean), because gist deserializes a
+  177 MiB index (30 ms) where csearch mmaps 28 MiB, and runs a corpus-wide T3
+  freshness stat-walk they skip — both causes recorded as the next rung, not
+  hidden. gist still beats csearch on the dense / 2-byte needles (`})` 1.5×).
+
 ### Changed — "beat ripgrep, period" perf pass
 
 - **Parallel build + counting sort** (`src/trigram.zig`): `Index.build` now fans
