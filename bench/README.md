@@ -44,7 +44,7 @@ Install the optional ones: `brew install ugrep grep` ·
 |---|---|
 | `headtohead.sh` | **warm**: gist resident-index p50 vs the unindexed scanners (the long-lived agent-session model) |
 | `coldquery.sh` | **cold literal**: fresh-process gist vs csearch/zoekt (indexed) + rg/ugrep/ag/ggrep/git-grep (unindexed) |
-| `regex_headtohead.sh` | **cold regex**: same field, gist's NFA / bit-parallel engine vs RE2 (csearch/zoekt) and PCRE (`-P`) / `(?-u)` |
+| `regex_headtohead.sh` | **cold regex**: same field, gist's byte-class DFA vs RE2 (csearch/zoekt) and PCRE (`-P`) / `(?-u)` |
 | `equality.sh` | **correctness**: gist ≡ `rg` over a byte-exact corpus snapshot (the soundness oracle) |
 
 Each race prints per-query times with gist's speedup, then a summary: **geomean
@@ -88,7 +88,7 @@ scripts quality`) and given its honest fastest path:
   a 2-byte punctuation needle (the `<3 B`, no-trigram-filter fallback).
 - **Cold regex slate** (`regex_headtohead.sh`): 22 patterns grouped by tier —
   literal-prefix, anchored `^`/`$`, counted `{n,m}`, dense classes (`\w{3,8}` —
-  the bit-parallel engine's home), alternation cover sets, and a prefilter-less
+  the byte-class DFA's home), alternation cover sets, and a prefilter-less
   mixed alternation.
 
 `equality.sh` has gist emit its verified matching-file set per pattern **plus a

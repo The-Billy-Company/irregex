@@ -31,7 +31,7 @@ and contracts. The frontier survey + decision trail live in
 | ----------------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **T0 trigram index**          | ✅ (`src/trigram.zig`) | positional-trigram candidate filter — sound superset of literal matches, queried by binary search; the proven baseline. Build is parallel (16-core extraction + O(n) counting sort), 1.0 s over 125 MiB                           |
 | **T1 rarest-first + persist** | ✅ (`src/trigram.zig`) | resolve every trigram's posting range, seed from the _rarest_, intersect outward (killed the `context.Context` tail 530µs→9µs at libs scale); on-disk serialize/`fromBytes` so a session builds **once** and warm-starts in ~28ms |
-| **T2 regex**                  | ✅ (`src/regex.zig`)   | linear-time **Thompson NFA** over bytes (RE2/ripgrep philosophy — no catastrophic backtracking) + sound required-literal extraction so a regex reuses the T0 prefilter — including a **multi-literal cover set** for alternations (`foo\|bar\|baz` prefilters on the UNION of all three, not a scan). The no-literal full-scan path is accelerated to the metal: an **anchored fast path** (`^…` seeds only at line start), a **first-byte skip** (SIMD `memchr`/range scan to the next byte that can _begin_ a match) so the Pike search skips dead spans instead of stepping every byte, and — for the **dense** case the skip can't help (`\w{3,8}`, where `\w` covers most bytes) — a **bit-parallel Glushkov engine** (`src/regex_bitparallel.zig`): the active-position set is one machine word advanced by a handful of bit ops per byte (O(popcount)/byte, no scratch), the structural answer to rg's lazy DFA for small dense programs. It's gated to anchor-free, word-sized programs and dispatched only when the first-byte set is too dense for the skip; everything else stays on the Pike VM, which remains the correctness reference. Proven byte-identical to `rg (?-u)` **and** divergence-free vs the Pike VM across a 40k-case differential fuzz (random grammar × random inputs). Cold head-to-head over a 22-pattern slate (`bench/regex_headtohead.sh`) vs the **seven-tool field**: gist lands **≈ csearch and faster than zoekt** (the two indexed RE2 engines), **≥ rg**, and 2–5.5× over ugrep/ag/GNU-grep — the formerly-losing dense floor `\w{3,8}` now beats both indexed rivals (csearch 1.1×, zoekt 2.1×). See the Proof section |
+| **T2 regex**                  | ✅ (`src/regex.zig`)   | linear-time **Thompson NFA** over bytes (RE2/ripgrep philosophy — no catastrophic backtracking) + sound required-literal extraction so a regex reuses the T0 prefilter — including a **multi-literal cover set** for alternations (`foo\|bar\|baz` prefilters on the UNION of all three, not a scan). The no-literal full-scan path runs at the hardware floor on a **byte-class DFA** (`src/regex_dfa.zig`): the Thompson program is determinized (Cox → RE2 / rust-`regex` lineage) into an immutable, scratch-free automaton that spends **one table lookup per byte regardless of match density**, anchors and all (`^` in the start closure, `$` via a separate final transition table), and scans a whole file in **one fused pass** that detects `\n` inline (each byte touched once — no memchr-then-rescan). Only a powerset blow-up past the cap leaves it on the Pike VM, whose anchored fast path + SIMD first-byte skip stay the capped fallback **and** the differential-fuzz correctness reference. Proven byte-identical to `rg (?-u)` **and** divergence-free vs the Pike VM across two fuzzes — line-level *and* a doc-level scan fuzz (anchors, empty lines + trailing newlines included). Cold head-to-head over a 22-pattern slate (`bench/regex_headtohead.sh`) vs the **seven-tool field**: gist lands **≈ csearch and faster than zoekt** (the two indexed RE2 engines), **≥ rg**, and 2–5.5× over ugrep/ag/GNU-grep — the no-prefilter scan tail now sits **at rg's own scan floor** (the DFA's single-pass scan cut 7–21% off it; the former losers `[a-z]+_[a-z]+_[a-z]+` and `panic\|0x` flipped to ties). See the Proof section |
 | **T3 freshness overlay**      | ✅ (`bench/fresh.zig`) | keeps a persisted index correct under heavy concurrent commit churn **without rebuilding or consulting git**. Anchor = the build's wall instant; a file is fresh iff `mtime ≥ anchor`, so any changed/new/touched file (incl. a coworker's commit landing via `git checkout`) is folded into the candidate set and re-verified — zero false negatives, read-your-own-writes, and immune to rebases/overlaps that break `git diff`. Parallel stat-walk; **~42 ms cold vs rg ~555 ms** |
 | **T4 fusion + rank**          | ✅ (`src/rank.zig`)    | weighted **Reciprocal Rank Fusion** over {lexical density, symbol/definition boost, shallow-path} + an optional external ranking (the graphify graph-centrality hook); `cli -- rank <needle>` emits ranked, token-compressed `path:line [def\|use] ×n  <line>` — a symbol's **definition outranks its call sites** (the win rg can't express). Embeddings stay opt-in only (CoREB: short queries collapse them) |
 
@@ -95,19 +95,21 @@ since each query's tools run back-to-back under identical conditions.
   costs more. **Next rung (recorded, not hidden):** mmap the index to kill the
   30 ms deserialize, and make the freshness walk incremental.
 - **COLD regex — gist is competitive-to-winning against the indexed rivals.** The
-  required-literal / alternation-cover prefilter + the first-byte skip + the
-  bit-parallel Glushkov engine put gist **≈ csearch (0.9× geomean, ahead on
-  14/22 patterns)** and **faster than zoekt (1.4×, 13/22)** across 22 tiers; the
-  old dense floor `\w{3,8}` now **beats csearch (1.1×) and zoekt (2.1×)**, and
-  gist crushes zoekt on anchored shapes (`^func\s` 2.4×). Vs unindexed: **≥ rg
-  (1.3×, 15/22) · ag 2.0× · GNU grep 3.1× · ugrep 5.5×**, tying git grep.
+  required-literal / alternation-cover prefilter + the single-pass **byte-class
+  DFA** put gist **≈ csearch** and **faster than zoekt** across 22 tiers; gist
+  crushes zoekt on anchored shapes (`^func\s` 2.4×). Vs unindexed: **≥ rg on
+  ~19/22 · ag 2.0× · GNU grep 3.1× · ugrep 5.5×**, tying git grep. The
+  no-prefilter scan tail (`[a-z]+_[a-z]+_[a-z]+`, `panic|0x`, `[0-9]{4}`) now sits
+  **at rg's own scan floor** — the DFA's O(1)/byte single-pass scan cut 7–21% off
+  it, flipping the former clear losers to ties; the only residual is gist's ~27 ms
+  cold-load that rg never pays.
 
 The shape of the result is honest and architectural: **gist owns the
 agent-session workload it was built for** — a resident index answering in
 microseconds (1,000–6,000× over every scanner), or a cold one-shot that beats
 every unindexed tool by reading only candidate bytes instead of re-walking the
 tree. Against the two mature *indexed* engines it splits: gist matches/beats them
-on **regex** (prefilter + bit-parallel automaton) but trails them on the **cold
+on **regex** (prefilter + byte-class DFA) but trails them on the **cold
 literal one-shot**, the price of a richer index (2× smaller than zoekt's, but
 fully deserialized) and a freshness guarantee neither csearch nor zoekt offers.
 Build once — gist wins every query after, warm always, cold against every

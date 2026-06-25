@@ -104,48 +104,57 @@ All notable changes to the `gist` kernel are documented here. Format follows
   ties.   The hard floor is `\w{3,8}` — dense matching where `\w` covers most bytes
   so the skip never engages and it's Pike-VM-per-byte vs rg's O(1)/byte lazy DFA;
   closing it is the identified next rung (a lazy DFA / bit-parallel NFA step).
-- **Bit-parallel Glushkov engine** (`src/regex_bitparallel.zig`) — closes that
-  `\w{3,8}` floor with the *cheaper* of the two rungs (bit-parallel NFA before a
-  lazy DFA: Baeza-Yates–Gonnet Shift-And → Navarro NR-grep → Hyperscan's
-  small-engine path). The Pike VM is O(active-threads)/byte; on a dense match
-  with no prefilter that's the floor. This engine instead keeps the active
-  *position* set in one machine word and advances it with a few bit ops per byte
-  — O(popcount)/byte, **no allocation, no per-byte epsilon-closure, no thread
-  list, no gen/seen scratch**. Construction is the textbook Glushkov
-  First/Last/Follow/nullable recurrence over the AST, walked **un-memoized** so
-  the `{n,m}` DAG (shared atom pointer) expands into distinct positions, sound by
-  construction. Unanchored search falls out of OR-ing the start set in at every
-  position (the Shift-And start-state trick — it subsumes the Pike re-seed loop).
-  - **Scope, not replacement.** Built only for **anchor-free** programs (`^`/`$`
-    are zero-width + position-dependent — left on the Pike path, which already has
-    the anchored fast path) that fit one word (≤64 positions); anything else ⇒
-    `build` returns null and the Pike VM runs. **Dispatched** only when the
-    first-byte set is too **dense** for the SIMD skip (`first.count() ≥ 32`:
-    `\w`=63, `[A-Za-z]`=52, `.`, `\S`, negated) — a *selective* set (`[0-9]`=10,
-    `[a-f0-9]`=16, `panic|0x`) keeps the skip, which reads a fraction of the
-    bytes. Both paths are proven identical, so this is purely a perf dispatch.
-  - **Verification (the FN scare, retired).** Two oracles, not one: the rg
-    `(?-u)` equality battery (135 literals + 64 regexes over 17,109 files /
-    126 MiB → **0 FN / 0 FP**) *and* a **differential fuzz vs the proven Pike VM**
-    — 4,000 random anchor-free patterns × 10 random inputs (>40k comparisons),
-    **zero divergences** (`src/regex_bitparallel_test.zig`, in `zig build test`).
-    Any disagreement is a real bug, caught hermetically with no rg needed.
-  - **Measured** (`bench/regex_headtohead.sh`, cold, loaded shared box): `\w{3,8}`
-    **0.8–1.1× → a consistent 1.05–1.06×** across runs — the documented hard
-    floor flipped onto the right side of parity via a structurally better
-    automaton, with **no tier regressed** (the sub-1.0 anchored/sparse tail —
-    `;$`, `[0-9]{4}`, `panic|0x` — never touches the bit engine and swings purely
-    with box load, exactly as before). Prefilterable tiers still win outright
-    (`pgxpool\.\w+` ~3.1×, `^func\s` ~2.85×, alternations 1.4–1.8×).
-  - **Graduate-to-lazy-DFA decision: not yet, and the data says why.** On the
-    code-search regimes that matter the programs are small (≤64 positions, where
-    the bit engine is already O(popcount)/byte) and the no-literal tail is
-    *scan-bound* — both tools read the whole 126 MiB, so a lazy DFA wouldn't read
-    fewer bytes, only shave per-byte automaton work the bit engine already
-    minimized. A lazy DFA earns its complexity (mutable transition cache,
-    eviction, the determinization that caused the FN scare) on **large** programs
-    the bit word can't hold — not present in this slate. Rung 1 suffices; the
-    lazy DFA stays the recorded next rung if a large-program workload appears.
+- **Byte-class DFA — the sole non-Pike engine** (`src/regex_dfa.zig`, tests in
+  `src/regex_dfa_test.zig`; supersedes and removes the interim bit-parallel
+  Glushkov engine). The Pike VM is O(active-threads)/byte, so on the no-prefilter
+  scan tail — a *selective but common* first byte (`;$`, `[0-9]{4}`, `panic|0x`)
+  re-seeds a closure at nearly every byte — it lost to rg's O(1)/byte lazy DFA.
+  This determinizes the Thompson NFA (Cox → RE2 / rust-`regex` lineage, an eager
+  capped variant) into an immutable, scratch-free automaton that spends **one
+  table lookup per byte regardless of match density**:
+  - **Byte classes** collapse the 256-byte alphabet to the handful of columns any
+    consuming state actually distinguishes (RE2/rust-`regex` `ByteClasses`),
+    shrinking the transition table.
+  - **Line anchors without a `.*` hack** — `^` is resolved once in the start
+    state's closure (`at_start=true`); `$` by a separate **final** transition
+    table closed with `at_end=true` (the single-line analogue of RE2's one-byte
+    match delay). Unanchored search re-seeds the NFA start into every transition;
+    an `^`-anchored program never re-seeds and dead-states to `false` the instant
+    its thread set drains.
+  - **Eager + capped** — built at compile (these patterns are tiny); past
+    `max_states=4096` the build bails to null and the Pike VM keeps serving (so
+    `{1000}`-style expansion stays linear, only a pathological alternation trips
+    the cap). One immutable `Dfa` is shared lock-free across all reader threads.
+  - **Single-pass `docMatch`** — scans the whole file buffer in **one fused loop**
+    that detects `\n` inline, so each byte is touched exactly once. (The per-line
+    path memchr-scans for `\n` *and then* re-scans the bytes in the automaton —
+    double byte-traffic, the dominant cost of a no-prefilter full scan.)
+- **Latent Pike `.skip` soundness fix** (`src/regex.zig` `eol_empty`). The DFA
+  doc-fuzz surfaced it: a nullable prefix flowing into `$` (`\d*$`, `a*`, `x|$`)
+  matches the zero-width end of **every** line, but skip mode only seeds
+  first-byte positions and never evaluated the end-of-line empty match — a real
+  false-negative the DFA exposed. `compile` now precomputes whether the start
+  epsilon-reaches `match` at `(at_start=false, at_end=true)` and short-circuits to
+  true (also a fast path for the DFA: no full-line scan for a match-everything
+  pattern). `^`-anchored programs correctly stay false.
+  - **Verification — two oracles, both fail-closed.** The rg `(?-u)` equality
+    battery (135 literals + 64 regexes over 17.1k files / 126 MiB → **0 FN / 0
+    FP**) *and* two **differential fuzzes vs the proven Pike VM**, hermetic (no rg
+    needed): a line-level fuzz (6,000 random patterns — *anchors included* — × 10
+    inputs) and a **doc-level fuzz** (6,000 patterns × 8 multi-line buffers with
+    empty lines + trailing newlines) proving the single-pass scan byte-identical
+    to the per-line path. **Zero divergences** in `zig build test`. The fuzzes
+    earned their keep — they caught the Pike `.skip` bug above and a last-byte
+    `trans_fin` edge in the single-pass scanner during development.
+  - **Measured** (`bench/regex_headtohead.sh` + direct warm-cache query timing,
+    17.1k files / 126 MiB, min-of-runs to filter shared-box load): the
+    no-prefilter scan tail dropped **7–21%** of query time and now sits **at rg's
+    own scan floor** (~248–264 ms vs rg ~250–280 ms) — the residual gap is purely
+    gist's ~27 ms cold-load that rg never pays. The former clear losers flipped to
+    ties: `[a-z]+_[a-z]+_[a-z]+` 326→258 ms query (355→285 ms total vs rg 278),
+    `panic|0x` 313→248 ms. Prefilterable tiers still win outright (`pgxpool\.\w+`
+    ~3×, `^func\s` ~2.5×, alternations 1.4–1.65×) because the trigram prefilter
+    reads a fraction of the corpus while rg re-walks all of it.
 - **Equality oracle** (`bench/equality.sh`, `bench/bench.zig` `verify` mode):
   gist emits its verified matching-file set per pattern + the exact indexed file
   list; the script runs `rg` (and `rg (?-u)` for regex) over that identical list

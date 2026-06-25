@@ -14,7 +14,7 @@
 
 const std = @import("std");
 const syn = @import("regex_syntax.zig");
-const bitp = @import("regex_bitparallel.zig");
+const dfa_mod = @import("regex_dfa.zig");
 const ByteSet = syn.ByteSet;
 const Node = syn.Node;
 
@@ -29,21 +29,10 @@ const vlen: usize = std.simd.suggestVectorLength(u8) orelse 16;
 const Range = struct { lo: u8, hi: u8 };
 const max_ranges = 6; // beyond this (e.g. a negated class) the scalar probe wins
 
-/// First-byte-set cardinality at/above which the SIMD skip is useless (the set is
-/// too dense to jump over dead spans) and the bit-parallel engine takes over.
-/// Sits in the gap between structured small classes (`[0-9]`=10, `[a-f0-9]`=16,
-/// punctuation alts) and dense letter-ish classes (`\w`=63, `[A-Za-z]`=52, `.`,
-/// `\S`, negated). Measured: gating here keeps `[0-9]{4}` on the faster skip path
-/// while routing `\w{3,8}` to the bit engine.
-const bit_density_floor: usize = 32;
-
-const State = union(enum) {
-    consume: struct { set: ByteSet, out: u32 },
-    split: struct { a: u32, b: u32 },
-    assert_start: u32, // zero-width `^`: pass to `out` only at line start
-    assert_end: u32, // zero-width `$`: pass to `out` only at line end
-    match,
-};
+// The compiled Thompson-NFA instruction now lives in `regex_syntax.zig` (beside
+// the AST it lowers from) so `regex_dfa.zig` can determinize over it without an
+// import cycle. Aliased here to keep the engine's references unchanged.
+const State = syn.State;
 
 pub const Regex = struct {
     states: []State,
@@ -59,14 +48,21 @@ pub const Regex = struct {
     //                `memchr`-skip dead spans instead of re-seeding every byte.
     //   first_byte — `first`'s sole member, when singleton (SIMD `indexOfScalar`).
     anchored: bool,
+    // True iff the start epsilon-reaches `match` at end-of-line (at_start=false,
+    // at_end=true) — i.e. a nullable prefix then `$` (e.g. `\d*$`, `a*`, `x|$`).
+    // Such a pattern matches the (zero-width) end of EVERY line, so `lineMatch`
+    // short-circuits to true. Also closes a latent Pike `.skip` soundness hole:
+    // skip only seeds first-byte positions and would miss this end-of-line match.
+    eol_empty: bool,
     first: ByteSet,
     first_byte: ?u8,
     first_ranges: [max_ranges]Range,
     first_nranges: u8, // 0 ⇒ singleton (memchr) or too-many-ranges (scalar probe)
-    // T2 bit-parallel fast path (`regex_bitparallel.zig`): non-null only for an
-    // anchor-free program small enough to fit one machine word. When present it
-    // serves `lineMatch` (O(popcount)/byte, no scratch); else the Pike VM does.
-    bit: ?*bitp.BitNfa,
+    // T2 byte-class DFA (`regex_dfa.zig`): the primary match engine — O(1)/byte,
+    // anchors included, immutable + scratch-free, scanning a whole document in one
+    // fused pass. Non-null unless the powerset blew past the cap, in which case the
+    // Pike VM serves (the `first`/range machinery below accelerates that fallback).
+    dfa: ?*dfa_mod.Dfa,
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *Regex) void {
@@ -74,7 +70,7 @@ pub const Regex = struct {
         self.allocator.free(self.required);
         for (self.alts) |s| self.allocator.free(s);
         if (self.alts.len > 0) self.allocator.free(self.alts);
-        if (self.bit) |b| b.deinit();
+        if (self.dfa) |d| d.deinit();
         self.* = undefined;
     }
 
@@ -104,6 +100,7 @@ pub const Regex = struct {
         const states = try c.states.toOwnedSlice(allocator);
         errdefer allocator.free(states);
         const anchored = syn.startsAnchored(ast);
+        const eol_empty = try reachesMatchEol(allocator, states, start);
         var first: ByteSet = .{};
         if (!anchored) try analyzeFirst(allocator, states, start, &first);
         const single = first.only();
@@ -112,11 +109,10 @@ pub const Regex = struct {
         // null (>max_ranges) falls back to the scalar byteset probe.
         const nranges: u8 = if (single != null) 0 else firstRanges(first, &ranges) orelse 0;
 
-        // Bit-parallel fast path: only for anchor-free programs (anchors are
-        // resolved by the Pike epsilon-closure) that fit one word; null ⇒ Pike.
-        // Reads `ast` only during the call, so the arena may free it afterward.
-        const bit: ?*bitp.BitNfa = if (anchored) null else try bitp.build(allocator, ast);
-        errdefer if (bit) |b| b.deinit();
+        // Byte-class DFA: the primary engine. Determinizes the Thompson program
+        // (anchors and all); null only on powerset blow-up, when the Pike VM serves.
+        const dfa: ?*dfa_mod.Dfa = try dfa_mod.build(allocator, states, start, anchored);
+        errdefer if (dfa) |d| d.deinit();
 
         return .{
             .states = states,
@@ -124,11 +120,12 @@ pub const Regex = struct {
             .required = required,
             .alts = alts,
             .anchored = anchored,
+            .eol_empty = eol_empty,
             .first = first,
             .first_byte = single,
             .first_ranges = ranges,
             .first_nranges = nranges,
-            .bit = bit,
+            .dfa = dfa,
             .allocator = allocator,
         };
     }
@@ -191,6 +188,46 @@ pub const Regex = struct {
                 .assert_end, .match => {}, // `$`: no byte follows; match: zero-width
             }
         }
+    }
+
+    /// Does the start epsilon-reach `match` at end-of-line — i.e. with
+    /// `at_start=false` (we're past line start) and `at_end=true` (`$` holds)?
+    /// True only for a nullable prefix that flows into `$`/`match` without
+    /// consuming a byte (`\d*$`, `a*`, `x|$`), which therefore matches the
+    /// zero-width end of every line. `^`-anchored programs return false (the
+    /// `assert_start` is blocked at non-start). Iterative worklist, like
+    /// `analyzeFirst`, to bound stack depth under `{n}`-expanded programs.
+    fn reachesMatchEol(gpa: std.mem.Allocator, states: []const State, start: u32) ParseError!bool {
+        const visited = try gpa.alloc(bool, states.len);
+        defer gpa.free(visited);
+        @memset(visited, false);
+        const stack = try gpa.alloc(u32, states.len);
+        defer gpa.free(stack);
+        var sp: usize = 1;
+        stack[0] = start;
+        visited[start] = true;
+        const push = struct {
+            fn f(t: u32, vis: []bool, st: []u32, n: *usize) void {
+                if (!vis[t]) {
+                    vis[t] = true;
+                    st[n.*] = t;
+                    n.* += 1;
+                }
+            }
+        }.f;
+        while (sp > 0) {
+            sp -= 1;
+            switch (states[stack[sp]]) {
+                .match => return true,
+                .split => |spl| {
+                    push(spl.a, visited, stack, &sp);
+                    push(spl.b, visited, stack, &sp);
+                },
+                .assert_end => |o| push(o, visited, stack, &sp), // `$` holds at EOL
+                .assert_start, .consume => {}, // at_start=false blocks `^`; a consume isn't zero-width
+            }
+        }
+        return false;
     }
 
     /// Own a copy of the alternation cover set (empty when a single-literal
@@ -335,25 +372,23 @@ pub const Regex = struct {
     /// (`.skip`); otherwise the plain re-seed-every-position search (`.plain`,
     /// e.g. a bare `$` whose first set is empty).
     pub fn lineMatch(re: *const Regex, sim: *Sim, line: []const u8) bool {
-        // The bit-parallel engine processes EVERY byte (O(popcount)/byte, no
-        // scratch); the Pike skip path instead SIMD-jumps over bytes that can't
-        // begin a match. So the bit engine only wins when that skip can't — a
-        // DENSE first-byte set (`\w`≈63, `.`, `\S`, negated classes), where the
-        // skip never engages and the old per-byte Pike loop was the floor. For a
-        // SELECTIVE set (`[0-9]`, `panic|0x`) the skip reads a fraction of the
-        // bytes and stays faster, so keep Pike. (Both paths are proven identical
-        // by the rg oracle + the differential fuzz — this is purely dispatch.)
-        if (re.bit) |b| {
-            if (re.first.count() >= bit_density_floor) return b.match(line);
-        }
+        // The byte-class DFA is the floor: one table lookup per byte, anchors and
+        // all, regardless of match density — what the Pike skip path lost to rg on.
+        // It's present for every non-pathological pattern; only a powerset blow-up
+        // past the cap leaves it null, and then
+        // the Pike VM (the proven oracle) serves. Equivalence is held by the rg
+        // oracle + the DFA-vs-Pike differential fuzz — this is purely dispatch.
+        if (re.eol_empty) return true; // matches every line's zero-width end (`\d*$`)
+        if (re.dfa) |d| return d.match(line);
         return re.lineMatchPike(sim, line);
     }
 
     /// The Pike-VM-only dispatch (anchored fast path · first-byte skip · plain
-    /// re-seed). This is what `lineMatch` falls back to when no bit-parallel
-    /// engine was built, and the correctness reference the bit engine's
-    /// differential fuzz compares against (so the test can force the Pike path).
+    /// re-seed). This is what `lineMatch`/`docMatch` fall back to when the powerset
+    /// blew past the cap and no DFA was built, and the correctness reference the
+    /// DFA's differential fuzz compares against (so the test can force the Pike path).
     pub fn lineMatchPike(re: *const Regex, sim: *Sim, line: []const u8) bool {
+        if (re.eol_empty) return true; // see `eol_empty`: matches every line (`\d*$`)
         if (re.anchored) return re.search(sim, line, .anchored);
         if (re.first.count() != 0) return re.search(sim, line, .skip);
         return re.search(sim, line, .plain);
@@ -451,11 +486,17 @@ pub const Regex = struct {
 
     /// Does any line of `doc` match? rg `-l` line model: `\n` *terminates* a line, so a trailing newline yields no phantom empty final line (only a real blank line matches `^$`) — content after the last `\n` (no terminator) is still a line. (`splitScalar` would emit the phantom and over-match `^$`/`$` on every newline-terminated file vs ripgrep.)
     pub fn docMatch(re: *const Regex, sim: *Sim, doc: []const u8) bool {
+        if (re.eol_empty) return true; // matches every line's zero-width end (`\d*$`)
+        // The DFA scans the whole buffer in one fused pass (one byte-touch); only a
+        // powerset blow-up past the cap leaves it null, and then the Pike VM (the
+        // proven oracle) serves per line. Equivalence held by the doc-level
+        // DFA-vs-Pike differential fuzz.
+        if (re.dfa) |d| return d.docMatch(doc);
         var rest = doc;
         while (rest.len > 0) {
             const nl = std.mem.indexOfScalar(u8, rest, '\n');
             const end = nl orelse rest.len;
-            if (re.lineMatch(sim, rest[0..end])) return true;
+            if (re.lineMatchPike(sim, rest[0..end])) return true;
             if (nl == null) break;
             rest = rest[end + 1 ..];
         }

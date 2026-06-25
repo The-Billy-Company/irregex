@@ -16,7 +16,7 @@ const std = @import("std");
 pub const trigram = @import("trigram.zig");
 pub const regex = @import("regex.zig");
 pub const regex_syntax = @import("regex_syntax.zig");
-pub const regex_bitparallel = @import("regex_bitparallel.zig");
+pub const regex_dfa = @import("regex_dfa.zig");
 pub const rank = @import("rank.zig");
 
 pub const version_string: [:0]const u8 = "0.1.0";
@@ -44,5 +44,5 @@ test {
     // sibling file's tests into `zig build test` — no explicit `_ = mod` needed.
     std.testing.refAllDecls(@This());
     _ = @import("regex_test.zig"); // engine tests live in a sibling (shape cap)
-    _ = @import("regex_bitparallel_test.zig"); // bit-parallel unit + differential fuzz
+    _ = @import("regex_dfa_test.zig"); // byte-class DFA unit + differential fuzz
 }
