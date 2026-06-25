@@ -50,4 +50,5 @@ test {
     _ = @import("rank_test.zig"); // T4 RRF fusion ranking
     _ = @import("regex/core_test.zig"); // T2 engine: parser + Pike VM + prefilters
     _ = @import("regex/dfa_test.zig"); // byte-class DFA unit + differential fuzz
+    _ = @import("regex/powerset_test.zig"); // determinizer structural invariants
 }
