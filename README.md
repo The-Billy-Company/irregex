@@ -18,9 +18,8 @@ re-reading the whole tree like `grep`/`ripgrep` do on every invocation.
 
 It is a kernel, not a binary you install: a Zig library with a flat C-ABI and a
 thin reference CLI (`zig build cli`). The intended consumer is Billy's agent
-tooling, which embeds the library and fuses gist's output with the
-[`graphify`](../../../scripts/observe/workspace/graph) code graph and the
-contract registries.
+tooling, which embeds the library and fuses gist's output with an external code
+graph and the contract registries.
 
 ## Why it exists
 
@@ -89,8 +88,8 @@ defeat `git diff` (parallel stat-walk, ~42 ms cold).
 wants via weighted **Reciprocal Rank Fusion** (Cormack et al. 2009) over three
 intrinsic signals — lexical density, a **definition boost** (a match on a decl
 line outranks its call sites — the win `grep` can't express), and shallow-path
-centrality — plus an optional external ranking (the graphify graph-centrality
-hook). `rank` emits token-compressed `path:line [def|use] ×n  <line>`.
+centrality — plus an optional external ranking (a graph-centrality hook).
+`rank` emits token-compressed `path:line [def|use] ×n  <line>`.
 
 ## Quickstart
 

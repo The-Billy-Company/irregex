@@ -487,7 +487,7 @@ pub fn runRank(gpa: std.mem.Allocator, io: std.Io, needle: []const u8) !void {
     try parallelRank(gpa, p.paths.items, cand.ids, needle, &docs, &read_files);
 
     // The fusion: lexical density + symbol(def) boost + shallow-path, RRF-fused.
-    // The null is the graphify graph-centrality hook (see src/rank.zig).
+    // The null is the external graph-centrality hook (see src/rank.zig).
     const order = try gist.rank.rank(gpa, docs.items, .{}, null);
     defer gpa.free(order);
     const query_ns = nowNs(io) - q0;

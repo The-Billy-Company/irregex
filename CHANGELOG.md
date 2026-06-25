@@ -296,7 +296,7 @@ All notable changes to the `gist` kernel are documented here. Format follows
   line below. Ranking via **weighted Reciprocal Rank Fusion** (Cormack 2009):
   score(d) = Σ wᵢ/(k+rankᵢ) over three rank-based signals — lexical density,
   symbol/definition boost (weight 2), shallow-path — plus an optional external
-  ranking (the graphify graph-centrality hook; null until wired). RRF needs no
+  ranking (a graph-centrality hook; null until wired). RRF needs no
   per-signal normalization and admits new signals for free; embeddings stay out
   (CoREB: short keyword queries collapse them). The harness extracts per-file
   features in a parallel posix read pass (matching-line count, a cross-language
