@@ -3,7 +3,9 @@
     .version = "0.1.0",
     .fingerprint = 0x93c97f1938fd0779,
     .minimum_zig_version = "0.16.0",
-    .dependencies = .{},
+    .dependencies = .{
+        .kernelkit = .{ .path = "../_buildkit" },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",
