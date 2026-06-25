@@ -33,7 +33,7 @@ and contracts. The frontier survey + decision trail live in
 | **T1 rarest-first + persist** | ✅ (`src/trigram.zig`) | resolve every trigram's posting range, seed from the _rarest_, intersect outward (killed the `context.Context` tail 530µs→9µs at libs scale); on-disk serialize/`fromBytes` so a session builds **once** and warm-starts in ~28ms |
 | **T2 regex**                  | ✅ (`src/regex.zig`)   | linear-time **Thompson NFA** over bytes (RE2/ripgrep philosophy — no catastrophic backtracking) + sound required-literal extraction so a regex reuses the T0 prefilter. Proven byte-identical to `rg (?-u)`                       |
 | T3 freshness                  | planned                | git-commit-anchored index + edit overlay (read-your-own-writes)                                                                                                                                                                   |
-| T4 fusion + rank              | planned                | RRF over {lexical, graphify graph, symbol-boost}; embeddings opt-in only (CoREB: short queries collapse them)                                                                                                                     |
+| **T4 fusion + rank**          | ✅ (`src/rank.zig`)    | weighted **Reciprocal Rank Fusion** over {lexical density, symbol/definition boost, shallow-path} + an optional external ranking (the graphify graph-centrality hook); `cli -- rank <needle>` emits ranked, token-compressed `path:line [def\|use] ×n  <line>` — a symbol's **definition outranks its call sites** (the win rg can't express). Embeddings stay opt-in only (CoREB: short queries collapse them) |
 
 ## Proof (every claim falsifiable, run it yourself)
 
@@ -99,7 +99,9 @@ zig build             # emit libgist.{a,dylib} + include/gist.h into zig-out/
 zig build bench       # corpus build/footprint + full-pipeline latency percentiles
 zig build verify -- 150 1   # emit gist match sets + corpus snapshot for the rg oracle
 zig build cli -- index            # build + persist the index once
-zig build cli -- query <needle>   # fresh-process cold query (candidate-only IO)
+zig build cli -- query <needle>   # fresh-process cold literal query (candidate-only IO)
+zig build cli -- regex <pattern>  # cold regex query: NFA verify, `(?-u)` byte semantics
+zig build cli -- rank <needle>    # ranked, token-compressed output (def outranks call sites)
 zig build coverage    # tests under kcov → .local/coverage/ (needs kcov on PATH)
 ```
 

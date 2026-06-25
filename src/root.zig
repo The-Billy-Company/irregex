@@ -16,6 +16,7 @@ const std = @import("std");
 pub const trigram = @import("trigram.zig");
 pub const regex = @import("regex.zig");
 pub const regex_syntax = @import("regex_syntax.zig");
+pub const rank = @import("rank.zig");
 
 pub const version_string: [:0]const u8 = "0.1.0";
 
@@ -38,8 +39,7 @@ export fn gist_trigram_count(text: [*]const u8, len: usize, out: [*]u32) usize {
 }
 
 test {
+    // Every tier is a `pub` re-export above, so `refAllDecls` already pulls each
+    // sibling file's tests into `zig build test` — no explicit `_ = mod` needed.
     std.testing.refAllDecls(@This());
-    _ = trigram;
-    _ = regex;
-    _ = regex_syntax;
 }

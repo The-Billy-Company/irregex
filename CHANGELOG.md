@@ -35,6 +35,16 @@ All notable changes to the `gist` kernel are documented here. Format follows
   required-literal extraction (a conservative slice of Cox's regexp→trigram
   analysis) so a regex reuses the T0 prefilter, falling back to a full scan only
   when no literal is mandatory. Unit-tested incl. the `(a+)+` pathological case.
+- **Line anchors `^` / `$`** (`src/regex_syntax.zig`, `src/regex.zig`): zero-width
+  assertions resolved during the Pike epsilon-closure from per-position
+  (start, end)-of-line flags — `^`/`$` add no NFA bytes, so an anchored pattern's
+  required literal is unchanged (`^func` ⇒ prefilter "func"). `\^`/`\$` stay
+  literal. Fixed `docMatch` to grep's line model (a trailing `\n` *terminates*
+  the last line rather than seeding a phantom empty one — otherwise `^$`/`$`
+  over-match every newline-terminated file vs rg). Proven byte-identical to
+  `rg (?-u)`: the oracle's 52-regex battery now includes 8 anchored shapes +
+  `^{0}`/`{0}$`/`^\s*{0}` templates (0 FN / 0 FP), and the cold CLI path matches
+  rg on `^$` (15,572 files with a real blank line), `^func\s`, `\)$`, `;$`, `^}$`.
 - **Equality oracle** (`bench/equality.sh`, `bench/bench.zig` `verify` mode):
   gist emits its verified matching-file set per pattern + the exact indexed file
   list; the script runs `rg` (and `rg (?-u)` for regex) over that identical list
@@ -84,6 +94,16 @@ All notable changes to the `gist` kernel are documented here. Format follows
   212ms→376ms (**1.8×**). rg now wins only the one-time build (~1.3 s) and a bare
   <3-byte needle (full read ⇒ tie). gist wins **every query after the first
   build — warm and cold.**
+- **Cold regex query** (`bench/cli.zig`): `cli -- regex <pattern>` runs the T2
+  Thompson NFA on the cold path — prefiltered on the regex's required literal
+  (sound, so no true match is dropped), `docMatch`-verified per candidate with a
+  per-thread `Sim` over the existing parallel read fan-out (the `Regex` is shared
+  immutably; only the `Sim` scratch is per-thread). The literal `query` path is
+  unchanged (its benchmark contract is preserved). Proven e2e: 11 regex shapes
+  (incl. `[a-z]+_[a-z]+` at 12,803 files and `//\s*TODO` at 16) **byte-identical
+  to `rg (?-u) -l`** over gist's exact indexed file list, 0 FN / 0 FP. Refactored
+  the shared cold-load / candidate-resolve / emit into `loadPersisted` /
+  `candidateIds` / `emitMatches` so literal + regex share one path.
 - **Parallel cold read** (`bench/cli.zig`): the cold path is IO-bound (read every
   candidate's bytes), and it was the one place a heavy cold query could lose —
   rg reads multi-threaded, gist read single-threaded. Fanned the candidate
@@ -115,6 +135,22 @@ All notable changes to the `gist` kernel are documented here. Format follows
   (`cli.zig`). Byte-exact with `std.mem.indexOf`, proven by a 5000-case
   differential fuzz (`zig build test`, now wired) **and** the rg equality oracle
   (135 literals + 44 regexes, 0 FN / 0 FP, re-proven on the SIMD verify path).
+- **T4 fusion + rank** (`src/rank.zig`, `cli -- rank`): the lexical tiers return
+  an unordered match *set*; an agent wants the one line that answers first — a
+  symbol's **definition**, not its 200 call sites — and pays tokens for every
+  line below. Ranking via **weighted Reciprocal Rank Fusion** (Cormack 2009):
+  score(d) = Σ wᵢ/(k+rankᵢ) over three rank-based signals — lexical density,
+  symbol/definition boost (weight 2), shallow-path — plus an optional external
+  ranking (the graphify graph-centrality hook; null until wired). RRF needs no
+  per-signal normalization and admits new signals for free; embeddings stay out
+  (CoREB: short keyword queries collapse them). The harness extracts per-file
+  features in a parallel posix read pass (matching-line count, a cross-language
+  definition-line detector, the representative best line) and prints ranked,
+  token-compressed `path:line [def|use] ×n  <line>`. Proven on real symbols: the
+  `pub fn` definition of `queryLiteral` / `parallelVerify` / `extractSortedUnique`
+  ranks **#1** above every call site, ~25–42 ms cold. rrf + signals carry 4 unit
+  tests (definition beats a 25×-hotter usage; external graph drives + is
+  weight-controlled). Kernel suite 28/28.
 - **Shape refactor**: extracted corpus loading into `bench/corpus.zig` and the
   parallel verify into `bench/search.zig`; the cold CLI lives in `bench/cli.zig`.
   Every file stays under the 500-line cap.

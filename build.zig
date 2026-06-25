@@ -80,7 +80,7 @@ pub fn build(b: *std.Build) void {
     const run_cli = b.addRunArtifact(bench_exe);
     run_cli.setCwd(b.path("../../.."));
     if (b.args) |args| run_cli.addArgs(args);
-    const cli_step = b.step("cli", "Cold one-shot CLI: `-- index`, then `-- query <needle>`");
+    const cli_step = b.step("cli", "Cold one-shot CLI: `-- index`, then `-- query <needle>` / `-- regex <pattern>`");
     cli_step.dependOn(&run_cli.step);
 
     const tests = b.addTest(.{ .root_module = root_module });

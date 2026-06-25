@@ -2,7 +2,10 @@
 //!
 //!   zig build cli -- index            build the index once, persist it to disk
 //!   zig build cli -- query <needle>   FRESH process: cold-load the index, then
-//!                                     read & verify ONLY the candidate files
+//!                                     read & verify ONLY the candidate literal
+//!   zig build cli -- regex <pattern>  same, but verify with the Thompson NFA
+//!                                     (`(?-u)` byte semantics) — prefiltered on
+//!                                     the regex's required literal
 //!
 //! Why this beats ripgrep on a cold/first query: rg has no index, so every
 //! invocation must walk the whole tree and read every byte. gist cold-loads a
@@ -17,6 +20,7 @@ const gist = @import("gist");
 const corpus_mod = @import("corpus.zig");
 const simd = @import("simd.zig");
 const Index = gist.trigram.Index;
+const Regex = gist.regex.Regex;
 const Dir = std.Io.Dir;
 
 const index_file = corpus_mod.out_dir ++ "/index.gist";
@@ -48,6 +52,7 @@ const ReadShard = struct {
     paths: []const []const u8,
     ids: []const u32,
     needle: []const u8,
+    re: ?*const Regex = null, // null ⇒ literal substring; set ⇒ NFA verify
     out: []u32, // private region (≤ ids.len), no contention
     n: usize = 0,
     reads: usize = 0,
@@ -56,6 +61,11 @@ const ReadShard = struct {
 fn readVerifyShard(sh: *ReadShard) void {
     const scratch = sh.gpa.alloc(u8, corpus_mod.per_file_cap) catch return;
     defer sh.gpa.free(scratch);
+    // A regex shard owns one reusable Pike-sim: the `Regex` is immutable and
+    // shared across threads, but the `Sim` scratch is mutable, so it must be
+    // per-thread (init once here, reused across this shard's files via gen++).
+    var sim: ?Regex.Sim = if (sh.re) |re| (Regex.Sim.init(sh.gpa, re) catch return) else null;
+    defer if (sim) |*s| s.deinit();
     var w: usize = 0;
     for (sh.ids) |d| {
         const fd = std.posix.openat(std.posix.AT.FDCWD, sh.paths[d], .{ .ACCMODE = .RDONLY }, 0) catch continue;
@@ -67,7 +77,8 @@ fn readVerifyShard(sh: *ReadShard) void {
         }
         _ = std.posix.system.close(fd);
         sh.reads += 1;
-        if (simd.contains(scratch[0..n], sh.needle)) {
+        const hit = if (sh.re) |re| re.docMatch(&sim.?, scratch[0..n]) else simd.contains(scratch[0..n], sh.needle);
+        if (hit) {
             sh.out[w] = d;
             w += 1;
         }
@@ -80,7 +91,7 @@ fn readVerifyShard(sh: *ReadShard) void {
 /// overhead isn't worth it and we read inline. Appends matching paths.
 const read_par_threshold = 64;
 
-fn parallelRead(gpa: std.mem.Allocator, paths: []const []const u8, ids: []const u32, needle: []const u8, matches: *std.ArrayList([]const u8), read_files: *usize) !void {
+fn parallelRead(gpa: std.mem.Allocator, paths: []const []const u8, ids: []const u32, needle: []const u8, re: ?*const Regex, matches: *std.ArrayList([]const u8), read_files: *usize) !void {
     const ncpu = std.Thread.getCpuCount() catch 8;
     const nshards = if (ids.len < read_par_threshold) 1 else @min(ids.len, ncpu);
 
@@ -95,7 +106,7 @@ fn parallelRead(gpa: std.mem.Allocator, paths: []const []const u8, ids: []const 
         const lo = off;
         const hi = @min(off + per, ids.len);
         off = hi;
-        sh.* = .{ .gpa = gpa, .paths = paths, .ids = ids[lo..hi], .needle = needle, .out = outbuf[lo..hi] };
+        sh.* = .{ .gpa = gpa, .paths = paths, .ids = ids[lo..hi], .needle = needle, .re = re, .out = outbuf[lo..hi] };
     }
 
     if (nshards == 1) {
@@ -145,48 +156,57 @@ pub fn runIndex(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !
     });
 }
 
-/// Fresh-process query: cold-load the persisted index, then read & verify only
-/// the candidate files. Prints matching paths (sorted) to stderr + a timing
-/// breakdown — process wall-time is what the cold head-to-head measures.
-pub fn runQuery(gpa: std.mem.Allocator, io: std.Io, needle: []const u8) !void {
-    const l0 = nowNs(io);
+/// The cold-loaded index + the doc→path table that maps candidate ids back to
+/// files. `paths` slices alias into `pb`, so all three lifetimes are bound.
+const Persisted = struct {
+    ib: []u8,
+    pb: []u8,
+    idx: Index,
+    paths: std.ArrayList([]const u8),
+    gpa: std.mem.Allocator,
+
+    fn deinit(self: *Persisted) void {
+        self.paths.deinit(self.gpa);
+        self.idx.deinit();
+        self.gpa.free(self.pb);
+        self.gpa.free(self.ib);
+    }
+};
+
+/// Cold-load the persisted index + doc→path table. Returns null (after printing
+/// guidance) when no index has been built yet — the one expected miss.
+fn loadPersisted(gpa: std.mem.Allocator, io: std.Io) !?Persisted {
     const ib = Dir.cwd().readFileAlloc(io, index_file, gpa, .unlimited) catch {
         std.debug.print("no index at {s} — run `zig build cli -- index` first\n", .{index_file});
-        return;
+        return null;
     };
-    defer gpa.free(ib);
+    errdefer gpa.free(ib);
     var idx = try Index.fromBytes(gpa, ib);
-    defer idx.deinit();
+    errdefer idx.deinit();
     const pb = try Dir.cwd().readFileAlloc(io, paths_file, gpa, .unlimited);
-    defer gpa.free(pb);
+    errdefer gpa.free(pb);
     var paths: std.ArrayList([]const u8) = .empty;
-    defer paths.deinit(gpa);
+    errdefer paths.deinit(gpa);
     var pit = std.mem.splitScalar(u8, pb, 0);
     while (pit.next()) |p| if (p.len > 0) try paths.append(gpa, p);
-    const load_ns = nowNs(io) - l0;
+    return .{ .ib = ib, .pb = pb, .idx = idx, .paths = paths, .gpa = gpa };
+}
 
-    const q0 = nowNs(io);
-    var matches: std.ArrayList([]const u8) = .empty;
-    defer matches.deinit(gpa);
-    var read_files: usize = 0;
-
-    // Resolve a candidate id list: the trigram prefilter when the needle is ≥3
-    // bytes, else every doc (a <3-byte needle has no trigram filter ⇒ full read,
-    // like rg). Copied into a uniform buffer so one defer frees either path.
-    var ids: []u32 = undefined;
-    if (idx.queryLiteral(gpa, needle)) |cand| {
-        defer gpa.free(cand);
-        ids = try gpa.alloc(u32, cand.len);
-        @memcpy(ids, cand);
-    } else |_| {
-        ids = try gpa.alloc(u32, paths.items.len);
-        for (ids, 0..) |*x, i| x.* = @intCast(i);
+/// Candidate doc-ids for a ≥3-byte literal prefilter (the trigram AND); a
+/// shorter / trigram-less `filter` has no prefilter ⇒ every doc (caller
+/// full-reads, like rg). Returned slice is gpa-owned — free it.
+fn candidateIds(gpa: std.mem.Allocator, idx: *const Index, filter: []const u8, total: usize) ![]u32 {
+    if (filter.len >= 3) {
+        if (idx.queryLiteral(gpa, filter)) |cand| return cand else |_| {}
     }
-    defer gpa.free(ids);
+    const ids = try gpa.alloc(u32, total);
+    for (ids, 0..) |*x, i| x.* = @intCast(i);
+    return ids;
+}
 
-    try parallelRead(gpa, paths.items, ids, needle, &matches, &read_files);
-    const query_ns = nowNs(io) - q0;
-
+/// Print matching paths (sorted) + the cold timing breakdown — process
+/// wall-time is what the cold head-to-head measures.
+fn emitMatches(gpa: std.mem.Allocator, matches: *std.ArrayList([]const u8), read_files: usize, total_paths: usize, load_ns: i128, query_ns: i128) !void {
     std.mem.sort([]const u8, matches.items, {}, cmpStrings);
     var outbuf: std.ArrayList(u8) = .empty;
     defer outbuf.deinit(gpa);
@@ -196,6 +216,273 @@ pub fn runQuery(gpa: std.mem.Allocator, io: std.Io, needle: []const u8) !void {
     }
     std.debug.print("{s}", .{outbuf.items});
     std.debug.print("— {d} matches · read {d}/{d} candidate files · cold-load {d:.1} ms · query {d:.1} ms · total {d:.1} ms\n", .{
-        matches.items.len, read_files, paths.items.len, ms(load_ns), ms(query_ns), ms(load_ns + query_ns),
+        matches.items.len, read_files, total_paths, ms(load_ns), ms(query_ns), ms(load_ns + query_ns),
+    });
+}
+
+/// Fresh-process literal query: cold-load the index, then read & verify only the
+/// candidate files (exact substring via SIMD `contains`).
+pub fn runQuery(gpa: std.mem.Allocator, io: std.Io, needle: []const u8) !void {
+    const l0 = nowNs(io);
+    var p = (try loadPersisted(gpa, io)) orelse return;
+    defer p.deinit();
+    const load_ns = nowNs(io) - l0;
+
+    const q0 = nowNs(io);
+    var matches: std.ArrayList([]const u8) = .empty;
+    defer matches.deinit(gpa);
+    var read_files: usize = 0;
+
+    const ids = try candidateIds(gpa, &p.idx, needle, p.paths.items.len);
+    defer gpa.free(ids);
+    try parallelRead(gpa, p.paths.items, ids, needle, null, &matches, &read_files);
+    const query_ns = nowNs(io) - q0;
+    try emitMatches(gpa, &matches, read_files, p.paths.items.len, load_ns, query_ns);
+}
+
+/// Fresh-process regex query: cold-load the index, prefilter on the regex's
+/// required literal (the substring that must appear in every match — sound, so
+/// no true match is dropped), then verify candidates with the Thompson NFA.
+/// `(?-u)` byte semantics, exactly the slice the equality oracle proves against
+/// `rg`. No usable ≥3-byte required literal ⇒ a full scan (like rg).
+pub fn runRegex(gpa: std.mem.Allocator, io: std.Io, pattern: []const u8) !void {
+    const l0 = nowNs(io);
+    var p = (try loadPersisted(gpa, io)) orelse return;
+    defer p.deinit();
+    const load_ns = nowNs(io) - l0;
+
+    var re = Regex.compile(gpa, pattern) catch {
+        std.debug.print("bad pattern /{s}/ — supported: literals . [] [^] a-z * + ? | () and \\d \\w \\s \\t \\n \\r (see src/regex_syntax.zig)\n", .{pattern});
+        return;
+    };
+    defer re.deinit();
+
+    const q0 = nowNs(io);
+    var matches: std.ArrayList([]const u8) = .empty;
+    defer matches.deinit(gpa);
+    var read_files: usize = 0;
+
+    const ids = try candidateIds(gpa, &p.idx, re.required, p.paths.items.len);
+    defer gpa.free(ids);
+    try parallelRead(gpa, p.paths.items, ids, pattern, &re, &matches, &read_files);
+    const query_ns = nowNs(io) - q0;
+    try emitMatches(gpa, &matches, read_files, p.paths.items.len, load_ns, query_ns);
+}
+
+// ─────────────────────────── T4: ranked output ───────────────────────────
+//
+// `query`/`regex` return an unordered match SET. `rank` turns it into the
+// ranked, token-compressed list an agent actually wants — the *definition* of a
+// symbol first, its call sites below — via the weighted RRF kernel in
+// `src/rank.zig`. Features are extracted per file in a parallel read pass; the
+// top-K best lines are then re-read for display.
+
+const Doc = gist.rank.Doc;
+
+fn isIdentByte(c: u8) bool {
+    return std.ascii.isAlphanumeric(c) or c == '_';
+}
+
+/// Whole-word presence of `w` in `hay` (identifier boundaries on both sides).
+fn wholeWordIn(hay: []const u8, w: []const u8) bool {
+    var i: usize = 0;
+    while (std.mem.indexOfPos(u8, hay, i, w)) |pos| : (i = pos + 1) {
+        const lo_ok = pos == 0 or !isIdentByte(hay[pos - 1]);
+        const hi = pos + w.len;
+        const hi_ok = hi >= hay.len or !isIdentByte(hay[hi]);
+        if (lo_ok and hi_ok) return true;
+    }
+    return false;
+}
+
+/// Cross-language heuristic: does `line` *define* `needle` (vs use it)? True when
+/// the needle starts at an identifier boundary and a definition keyword appears
+/// as a whole word before it — catches Go/Rust/Zig `fn`/`func`, Python
+/// `def`/`class`, TS `function`, Go methods `func (r T) Name(`, decls
+/// `const X =`, `type T struct`. It only ever *boosts*, so a miss costs nothing.
+const def_kws = [_][]const u8{
+    "fn",     "func",    "def",   "function", "class", "struct", "interface",
+    "type",   "enum",    "trait", "impl",     "const", "let",    "var",
+    "module", "package", "macro",
+};
+fn lineDefinesNeedle(line: []const u8, needle: []const u8) bool {
+    const t = std.mem.trimStart(u8, line, " \t");
+    const npos = std.mem.indexOf(u8, t, needle) orelse return false;
+    if (npos > 0 and isIdentByte(t[npos - 1])) return false; // mid-identifier ⇒ not its decl
+    const before = t[0..npos];
+    // The declared name sits right after the keyword (or a Go receiver). A `=`,
+    // quote, or comma before it means the needle is on a RHS / in a string / in
+    // a list — a use, not a decl. (`(` stays legal for `func (r T) Name(`.)
+    for ([_]u8{ '=', '"', '\'', ',' }) |c| if (std.mem.indexOfScalar(u8, before, c) != null) return false;
+    for (def_kws) |kw| if (wholeWordIn(before, kw)) return true;
+    return false;
+}
+
+fn pathDepth(path: []const u8) u16 {
+    var d: u16 = 0;
+    for (path) |c| if (c == '/') {
+        d +%= 1;
+    };
+    return d;
+}
+
+/// One pass over a candidate file's bytes → its ranking features (matching-line
+/// count, whether any match is a definition, the best line to surface). Returns
+/// null when the needle isn't actually present (a trigram false positive).
+fn fileDoc(buf: []const u8, path: []const u8, needle: []const u8, id: u32) ?Doc {
+    var line_no: u32 = 0;
+    var match_lines: u32 = 0;
+    var first: u32 = 0;
+    var defline: u32 = 0;
+    var it = std.mem.splitScalar(u8, buf, '\n');
+    while (it.next()) |line| {
+        line_no += 1;
+        if (!simd.contains(line, needle)) continue;
+        match_lines += 1;
+        if (first == 0) first = line_no;
+        if (defline == 0 and lineDefinesNeedle(line, needle)) defline = line_no;
+    }
+    if (match_lines == 0) {
+        if (!simd.contains(buf, needle)) return null; // multi-line needle: keep, surface L1
+        return .{ .id = id, .matches = 1, .is_def = false, .best_line = 1, .depth = pathDepth(path) };
+    }
+    return .{
+        .id = id,
+        .matches = match_lines,
+        .is_def = defline != 0,
+        .best_line = if (defline != 0) defline else first,
+        .depth = pathDepth(path),
+    };
+}
+
+/// Read one file fully into `scratch` (capped); returns bytes read or null.
+fn readFileInto(path: []const u8, scratch: []u8) ?usize {
+    const fd = std.posix.openat(std.posix.AT.FDCWD, path, .{ .ACCMODE = .RDONLY }, 0) catch return null;
+    defer {
+        _ = std.posix.system.close(fd);
+    }
+    var n: usize = 0;
+    while (n < scratch.len) {
+        const r = std.posix.read(fd, scratch[n..]) catch break;
+        if (r == 0) break;
+        n += r;
+    }
+    return n;
+}
+
+const RankShard = struct {
+    paths: []const []const u8,
+    ids: []const u32,
+    needle: []const u8,
+    gpa: std.mem.Allocator,
+    out: []Doc,
+    n: usize = 0,
+    reads: usize = 0,
+};
+fn rankShard(sh: *RankShard) void {
+    const scratch = sh.gpa.alloc(u8, corpus_mod.per_file_cap) catch return;
+    defer sh.gpa.free(scratch);
+    var w: usize = 0;
+    for (sh.ids) |d| {
+        const n = readFileInto(sh.paths[d], scratch) orelse continue;
+        sh.reads += 1;
+        if (fileDoc(scratch[0..n], sh.paths[d], sh.needle, d)) |doc| {
+            sh.out[w] = doc;
+            w += 1;
+        }
+    }
+    sh.n = w;
+}
+
+/// Parallel feature extraction over candidate `ids` — one std.Thread per core,
+/// blocking posix reads (same proven pattern as `parallelRead`).
+fn parallelRank(gpa: std.mem.Allocator, paths: []const []const u8, ids: []const u32, needle: []const u8, docs: *std.ArrayList(Doc), read_files: *usize) !void {
+    const ncpu = std.Thread.getCpuCount() catch 8;
+    const nshards = if (ids.len < read_par_threshold) 1 else @min(ids.len, ncpu);
+    const shards = try gpa.alloc(RankShard, nshards);
+    defer gpa.free(shards);
+    const outbuf = try gpa.alloc(Doc, ids.len);
+    defer gpa.free(outbuf);
+    const per = (ids.len + nshards - 1) / nshards;
+    var off: usize = 0;
+    for (shards) |*sh| {
+        const lo = off;
+        const hi = @min(off + per, ids.len);
+        off = hi;
+        sh.* = .{ .paths = paths, .ids = ids[lo..hi], .needle = needle, .gpa = gpa, .out = outbuf[lo..hi] };
+    }
+    if (nshards == 1) {
+        rankShard(&shards[0]);
+    } else {
+        const threads = try gpa.alloc(std.Thread, nshards);
+        defer gpa.free(threads);
+        for (shards, 0..) |*sh, k| threads[k] = try std.Thread.spawn(.{}, rankShard, .{sh});
+        for (threads) |t| t.join();
+    }
+    for (shards) |*sh| {
+        try docs.appendSlice(gpa, sh.out[0..sh.n]);
+        read_files.* += sh.reads;
+    }
+}
+
+/// The trimmed, 120-col-capped text of 1-based `line` in `path` — the one line
+/// shown per ranked file. Display-only (not benchmarked), so io reads are fine.
+fn snippetOf(gpa: std.mem.Allocator, io: std.Io, path: []const u8, line: u32) ![]u8 {
+    const data = Dir.cwd().readFileAlloc(io, path, gpa, .limited(corpus_mod.per_file_cap)) catch return gpa.dupe(u8, "");
+    defer gpa.free(data);
+    var it = std.mem.splitScalar(u8, data, '\n');
+    var ln: u32 = 0;
+    while (it.next()) |l| {
+        ln += 1;
+        if (ln == line) {
+            const t = std.mem.trim(u8, l, " \t\r");
+            return gpa.dupe(u8, t[0..@min(t.len, 120)]);
+        }
+    }
+    return gpa.dupe(u8, "");
+}
+
+/// Fresh-process ranked query: locate candidates, extract per-file features,
+/// fuse via the RRF kernel, print the top-K as token-compressed `path:line` +
+/// surfaced line. The win rg can't express: a symbol's *definition* outranks its
+/// call sites.
+pub fn runRank(gpa: std.mem.Allocator, io: std.Io, needle: []const u8) !void {
+    if (needle.len == 0) return;
+    const l0 = nowNs(io);
+    var p = (try loadPersisted(gpa, io)) orelse return;
+    defer p.deinit();
+    const load_ns = nowNs(io) - l0;
+
+    const q0 = nowNs(io);
+    const ids = try candidateIds(gpa, &p.idx, needle, p.paths.items.len);
+    defer gpa.free(ids);
+    var docs: std.ArrayList(Doc) = .empty;
+    defer docs.deinit(gpa);
+    var read_files: usize = 0;
+    try parallelRank(gpa, p.paths.items, ids, needle, &docs, &read_files);
+
+    // The fusion: lexical density + symbol(def) boost + shallow-path, RRF-fused.
+    // The null is the graphify graph-centrality hook (see src/rank.zig).
+    const order = try gist.rank.rank(gpa, docs.items, .{}, null);
+    defer gpa.free(order);
+    const query_ns = nowNs(io) - q0;
+
+    const top = @min(order.len, 20);
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(gpa);
+    for (order[0..top], 0..) |di, i| {
+        const doc = docs.items[di];
+        const path = p.paths.items[doc.id];
+        const snip = try snippetOf(gpa, io, path, doc.best_line);
+        defer gpa.free(snip);
+        const row = try std.fmt.allocPrint(gpa, "{d:>2}. {s}:{d}  [{s}]  ×{d}  {s}\n", .{
+            i + 1, path, doc.best_line, if (doc.is_def) "def" else "use", doc.matches, snip,
+        });
+        defer gpa.free(row);
+        try buf.appendSlice(gpa, row);
+    }
+    std.debug.print("{s}", .{buf.items});
+    std.debug.print("— {d} ranked matches (top {d}) · read {d}/{d} candidates · cold-load {d:.1} ms · rank {d:.1} ms · total {d:.1} ms\n", .{
+        docs.items.len, top, read_files, p.paths.items.len, ms(load_ns), ms(query_ns), ms(load_ns + query_ns),
     });
 }

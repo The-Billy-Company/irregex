@@ -5,8 +5,8 @@
 //!
 //! Supported (ASCII / byte-oriented, matching ripgrep's `(?-u)` mode):
 //!   literals · `.` (any byte but '\n') · `[...]` / `[^...]` with `a-z` ranges
-//!   · `*` `+` `?` · `|` · `(...)` grouping · escapes `\. \* \+ \? \( \) \[ \]
-//!   `\\ \| \/ \t \n \r \d \D \w \W \s \S`.
+//!   · `*` `+` `?` · `|` · `(...)` grouping · line anchors `^` `$` · escapes
+//!   `\. \* \+ \? \( \) \[ \] \^ \$ \\ \| \/ \t \n \r \d \D \w \W \s \S`.
 
 const std = @import("std");
 
@@ -32,6 +32,8 @@ pub const ByteSet = struct {
 pub const Node = union(enum) {
     empty,
     class: ByteSet, // a single consuming step (literal byte, ., \d, [..])
+    anchor_start, // `^` — zero-width, asserts start of line
+    anchor_end, // `$` — zero-width, asserts end of line
     concat: [2]*Node,
     alt: [2]*Node,
     star: *Node,
@@ -126,6 +128,14 @@ pub const Parser = struct {
             '\\' => {
                 _ = p.take();
                 return p.node(.{ .class = try p.parseEscape() });
+            },
+            '^' => {
+                _ = p.take();
+                return p.node(.anchor_start);
+            },
+            '$' => {
+                _ = p.take();
+                return p.node(.anchor_end);
             },
             '*', '+', '?' => return ParseError.BadPattern, // nothing to repeat
             ')', '|' => return ParseError.BadPattern,
@@ -227,7 +237,9 @@ fn longer(a: []const u8, b: []const u8) []const u8 {
 /// half of Cox's regexp→trigram analysis, conservatively.
 pub fn literalInfo(arena: std.mem.Allocator, node: *Node) ParseError!LitInfo {
     switch (node.*) {
-        .empty => return .{ .exact = "", .best = "" },
+        // Zero-width: matches the empty string at a position. exact="" lets a
+        // mandatory literal run span the anchor (e.g. `^func` ⇒ required "func").
+        .empty, .anchor_start, .anchor_end => return .{ .exact = "", .best = "" },
         .class => |set| {
             var count: usize = 0;
             var only: u8 = 0;
