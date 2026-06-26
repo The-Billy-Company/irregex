@@ -167,10 +167,12 @@ rg's = an unsound verify. Both must be zero.
   is the heavyweight of the three (the lever behind the one race it loses, below).
 - **WARM resident — gist's home turf, uncontested.** In a long-lived session gist
   answers from a RAM-resident index while the scanners re-walk every time.
-  Geomean speedup over 15 needles: **rg 1,395× · ag 2,194× · git grep 1,028× ·
-  GNU grep 4,764× · ugrep 5,992×** (all 15/15), up to **270,000×** on a guaranteed
-  miss. The indexed rivals have no resident CLI (they reload their whole index
-  per invocation), so in a session gist is ~25–800× faster per query than even them.
+  Geomean speedup over 20 needles: **rg 1,712× · ag 2,601× · git grep 1,388× ·
+  GNU grep 5,492× · ugrep 7,115×** (all 20/20), and on a guaranteed miss — a
+  single empty trigram lookup (~1 µs) — up to **266,900× vs rg** and
+  **1,142,000× vs ugrep** (panel a plots both the geomean and the miss). The
+  indexed rivals have no resident CLI (they reload their whole index per
+  invocation), so in a session gist is ~25–800× faster per query than even them.
 - **COLD one-shot vs every unindexed scanner — gist wins all.** Fresh process,
   cold-load (~30 ms), read only candidate files. Geomean: **ugrep 9.2× · GNU grep
   7.1× · ag 3.5× · rg 2.3× · git grep 1.9×** (gist wins 10–11/11).
@@ -233,7 +235,7 @@ rg's = an unsound verify. Both must be zero.
 
 [`bench/certify.sh`](bench/certify.sh) is the most adversarial cut: a
 fresh-process **cold** query for gist **and all seven field tools** over the
-byte-identical 17,513-file corpus (hyperfine, 20 runs + 3 warmup), a 95%
+byte-identical 17,568-file corpus (hyperfine, 25 runs + 3 warmup), a 95%
 bootstrap-CI median per cell, and a gist-vs-ripgrep verdict that is
 **fail-closed** — a WIN needs a lower median _and_ Mann-Whitney `p<0.05`. Unlike
 the selective-needle cold sweep above, its 11 probe classes deliberately include
@@ -246,37 +248,40 @@ all 11 classes, losses included.
 
 > _The whole field, one race. **(a)** every tool's cold-query time relative to
 > gist across all 11 classes — gist (blue) beats every unindexed scanner except
-> on the saturating tail, where rg/gitgrep edge ahead (red). **(b)** the headline
-> gist-vs-ripgrep verdict, **7 win · 4 loss**, the four losses all cand%=100%
-> patterns. **(c)** the indexed split — csearch and zoekt are fast cold _loaders_
-> (28 MiB / sharded indexes vs gist's 177 MiB map), so they win most cold classes;
-> gist flips it only where a heavy scan dominates the query. **(d)** the
-> structural read — gist's speedup over rg is a clean function of prefilter
-> selectivity: selective classes win 2–5.5×, the cand%=100% classes (nothing
-> pruned) fall to 0.5–0.9×._
+> on the saturating tail, where rg/gitgrep sit at parity (red). **(b)** the
+> headline gist-vs-ripgrep verdict, **8 win · 3 loss**, the three losses all
+> cand%=100% patterns and all within ~10% of rg. **(c)** the indexed split —
+> csearch and zoekt are fast cold _loaders_ (29 MiB / sharded indexes vs gist's
+> 182 MiB map), so they win most cold classes; gist flips it only where a heavy
+> scan dominates the query. **(d)** the structural read — gist's speedup over rg
+> is a clean function of prefilter selectivity: selective classes win 2.2–4.8×,
+> the cand%=100% tail sits at parity (0.9–1.2×)._
 
-- **gist vs ripgrep — 7 win · 4 loss, every class shown.** gist's cold query
-  beats rg **5.5×** (`pgxpool\.\w+`), **4.5×** (`pgxpool`), **3.8×**
-  (`context.Context`), **3.3×** (`^func\s`), **2.5×** (`func\s+\w+\(`), **2.0×**
-  (`func`), and **1.6×** (`return|continue|break`) — and trails on the four
-  **saturating** classes (`})` 0.8× · UUID 0.8× · `\w{3,8}` 0.5× · `;$` 0.9×),
-  where the prefilter admits 100% of files so gist pays its 177 MiB index-load +
-  freshness stat-walk on top of a full scan rg does cold. The split is
-  **structural, not noise** — a monotone function of cand% (panel d).
-- **Reconciling the `\w{3,8}` loss with the scan tier above (no contradiction).**
-  This is the _end-to-end CLI_ number: for a no-prefilter class the gist binary
-  still maps the index and runs the freshness walk before falling through to the
-  scan path. The scan _kernel_ measured in isolation
-  ([`bench/scan.zig`](bench/scan.zig)) already beats rg on these same patterns
-  (above) — so the loss is **index-load tax the CLI can shed** by skipping the
-  map when a pattern carries no usable literal. The named next rung, recorded.
+- **gist vs ripgrep — 8 win · 3 loss, every class shown.** gist's cold query
+  beats rg **4.8×** (`pgxpool\.\w+`), **4.7×** (`pgxpool`), **3.3×**
+  (`context.Context`), **3.2×** (`^func\s`), **2.2×** (`func\s+\w+\(`), **2.2×**
+  (`func`), **1.8×** (`return|continue|break`), and **1.2×** (`\w{3,8}`) — and
+  sits at near-parity, just behind rg, on the three **saturating** classes
+  (`})` 0.91× · UUID 0.96× · `;$` 0.93×), where the prefilter admits 100% of
+  files so gist pays its index-load + freshness stat-walk on top of a full scan
+  rg does cold. The split is **structural** — a monotone function of cand%
+  (panel d) — and the losses are within measurement noise of rg, not a rout.
+- **The saturating tail is a coin-flip, and we retested to prove it.** These
+  cand%=100% classes are close races whose verdict flips run-to-run on system
+  load: an earlier cut clocked `\w{3,8}` at 652 ms (a contention outlier, 95% CI
+  607–724 ms) and scored it a loss; a clean re-run lands it at **290 ms** (CI
+  282–291 ms) — a **1.2× win**, matching the dedicated scan kernel
+  ([`bench/scan.zig`](bench/scan.zig)). `})` is the documented sub-trigram
+  (2-byte) degenerate case; UUID and `;$` lose by <8%. The honest read: gist is
+  **at parity or better with rg on every class**, decisively where the prefilter
+  prunes, by a hair where it can't.
 - **vs the indexed twins — the honest split, no spin.** Both are fast cold
   loaders, so end-to-end they win most cold classes: csearch is ~4× faster on the
-  ultra-selective literals (`pgxpool` 0.25×, `pgxpool\.\w+` 0.25×) and zoekt is
-  ~7× faster on `})` (0.14×) — they load a light index where gist maps 177 MiB.
+  ultra-selective literals (`pgxpool` 0.24×, `pgxpool\.\w+` 0.25×) and zoekt is
+  ~7× faster on `})` (0.15×) — they load a light index where gist maps 182 MiB.
   gist turns it around exactly where a heavy **scan** dominates the query: it
-  beats csearch on `})` (1.2×), `return|continue|break` (1.1×) and `;$` (1.2×),
-  and beats zoekt on the anchored `^func\s` (2.7×) and the UUID class (3.5×).
+  beats csearch on `})` (1.3×), `return|continue|break` (1.1×) and `;$` (1.4×),
+  and beats zoekt on the anchored `^func\s` (2.6×) and the UUID class (4.1×).
   This is the same lever as the cold-literal trail above — a richer, fully-mapped
   index bought freshness; shedding its load on no-prefilter queries is the rung.
 
