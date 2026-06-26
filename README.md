@@ -28,12 +28,12 @@ when scoped). The agent pain it can't fix — proven by dogfooding the existing
 tools against real questions about this repo — is everywhere else:
 
 - **scope** — a naive `rg` from repo root crawls >55 s over 99 GB of `target/`
-  + caches; getting the scope right is shell-fragile and easy to get wrong.
+  - caches; getting the scope right is shell-fragile and easy to get wrong.
 - **re-work** — an agent runs dozens of searches per session; every one pays the
   full walk-and-read cost again. There's no memory between queries.
 - **freshness** — coworker agents land commits mid-session. A stale index lies;
   `git diff`-based invalidation breaks under rebases and overlapping edits.
-- **ranking** — agents don't want an unordered set of files, they want the *one*
+- **ranking** — agents don't want an unordered set of files, they want the _one_
   line that answers the question first (a symbol's **definition**, not its 200
   call sites) and pay tokens for everything below it. `grep` can't express that.
 
@@ -49,7 +49,7 @@ The pipeline is four cooperating pieces, each a sibling file under `src/`:
 
 **Trigram candidate index** (`src/trigram.zig`). Any file containing a literal
 must contain every trigram of that literal, so the AND of the per-trigram
-posting lists is a *sound* candidate set — a superset of the true matches,
+posting lists is a _sound_ candidate set — a superset of the true matches,
 computed by binary search with no scanning. It's a **filter, not a matcher**:
 false positives are expected and verified away; false negatives (the one
 unforgivable bug) are impossible for literals ≥ 3 bytes. The build fans
@@ -124,7 +124,7 @@ zig build coverage                # tests under kcov → .local/coverage/ (needs
 
 ## Proof (every claim falsifiable — run it yourself)
 
-gist is raced against a **seven-tool field**: two other *indexed* searchers
+gist is raced against a **seven-tool field**: two other _indexed_ searchers
 (`csearch`, Russ Cox's Google Code Search, gist's direct trigram ancestor;
 `zoekt`, Sourcegraph's production indexed search) and five unindexed scanners
 (`rg`, `ugrep`, `ag`, GNU `grep`, `git grep`), each on its honest fastest path.
@@ -147,9 +147,20 @@ rg's = an unsound verify. Both must be zero.
 
 **Measured (17,112 files · 126.5 MiB · `services libs clients contracts scripts quality`):**
 
+![gist competitive placement across the seven-tool field](assets/gist-competitive.png)
+
+> _Where gist sits in the field — every value below, drawn. **(a)** warm-session
+> dominance over the scanners that re-walk on each call; **(b–c)** the cold
+> one-shot literal and regex sweeps vs the unindexed five (every bar clears
+> parity); **(d)** the honest split against the two indexed engines — gist trails
+> on the cold literal one-shot, matches/beats on regex; **(e)** the
+> build-time/footprint trade-off (gist builds fastest, carries the middle-weight
+> fully-mapped index); **(f)** the architectural "why" — a selective cold query
+> reads only candidate files (`pgxpool`: 409 of 17,513)._
+
 - **Correctness** — the oracle (50 literals + 68 regexes at battery 30, hundreds
   more across seeds) is **0 false negatives / 0 false positives** vs ripgrep over
-  the byte-identical snapshot. `csearch`, indexing gist's *exact* 16,696-file
+  the byte-identical snapshot. `csearch`, indexing gist's _exact_ 16,696-file
   corpus, returns the same sets.
 - **Index economics** — gist **1.2 s build · 177 MiB index**; csearch
   **8.2 s · 28 MiB**; zoekt **5.6 s · 346 MiB**. gist builds fastest; its index
@@ -168,20 +179,111 @@ rg's = an unsound verify. Both must be zero.
   causes: gist (a) **deserializes/maps its 177 MiB index** where csearch mmaps
   28 MiB, and (b) runs a corpus-wide freshness stat-walk for read-your-writes
   correctness — work the rivals skip entirely (they go stale until re-indexed).
-  Even so gist *beats* csearch on dense / 2-byte needles its prefilter can't help
+  Even so gist _beats_ csearch on dense / 2-byte needles its prefilter can't help
   (`})` **1.5×**, `import` ties). **Next rung (recorded, not hidden):** make the
   freshness walk incremental.
-- **COLD regex — gist is competitive-to-winning against the indexed rivals.** The
-  literal/alternation-cover prefilter + the single-pass byte-class DFA put gist
-  **≈ csearch** and **faster than zoekt** across 22 tiers (crushing zoekt on
-  anchored shapes, `^func\s` 2.4×). Vs unindexed: **≥ rg on ~19/22 · ag 2.0× ·
-  GNU grep 3.1× · ugrep 5.5×**, tying git grep. The no-prefilter scan tail now
-  sits **at rg's own scan floor**.
+- **COLD regex — gist wins the no-prefilter tail.** The literal/alternation-cover
+  prefilter + the single-pass byte-class DFA put gist **≈ csearch** and **faster
+  than zoekt** across 22 tiers (crushing zoekt on anchored shapes, `^func\s`
+  2.4×). Vs unindexed: **≥ rg on ~19/22 · ag 2.0× · GNU grep 3.1× · ugrep 5.5×**,
+  tying git grep. The hard case is a regex the index _can't_ prefilter
+  (`\w{3,8}`, `[a-f0-9]{2,}`, `[a-z]+_[a-z]+_[a-z]+`, `[0-9]{4}`, `panic|0x`):
+  every doc is a candidate, so gist skips the index and scans the **live tree**
+  once ([`bench/scan.zig`](bench/scan.zig)) — _more_ correct than the
+  index+freshness path (sees files born since the build, no staleness window).
+  A tie there was not the floor — **profiled, the phased scan leaked two ways**:
+  a ~63 ms serial walk _barrier_ (overlapping nothing) and ~169 ms of _straggler
+  idle_ (static file-count sharding stranded the big files on one core — fastest
+  done in 158 ms, slowest 327 ms). The rewrite is a **fused work-stealing
+  pipeline**: walkers stream paths into a shared queue while a core-sized pool
+  steals files dynamically and reads+scans as the walk still runs. Result
+  (process-internal clock, so build-wrapper-independent): **worker span Δ 169 ms →
+  2.5 ms** (near-perfect balance) and the walk folded under the scan — **~1.7×
+  internal speedup**, the proof we were never at the limit. Oversubscription was
+  _measured, not assumed_ — warm-cache the tier is CPU/syscall-bound (~190 µs/file
+  open+read+close), so ×1 worker/core beat ×2/×3. ReleaseFast, min-of-N vs
+  `rg (?-u)` on its fastest gitignore-respecting path (gist scans a
+  gitignore-_superset_, so it wins while reading **more** bytes — permanent
+  reproducer + soundness gate: [`bench/scan_regress.sh`](bench/scan_regress.sh)):
+  `\w{3,8}` **1.3–3.0×** · `[a-f0-9]{2,}` **1.3–1.4×** · `[a-z]+_[a-z]+_[a-z]+`
+  **1.2×** · `[0-9]{4}` **1.1×** · `panic|0x` **win-or-tie** (~1.0×) — **0 FN/FP**
+  vs rg throughout. The verdict is structural, read
+  straight off the data: **gist's time is pattern-independent** (~240 ms, the
+  per-file syscall floor — the DFA is one early-exiting pass), while **rg's varies
+  2–373 ms with match density** (floor + per-byte scan). So gist wins every
+  scan-expensive pattern outright and only ties the cheapest sparse-literal one,
+  where rg's own scan is nearly free and both sit on the same read floor.
+  **The named next rung (recorded, not hidden):** to win even there, drop _below_
+  the floor — batch the per-file `openat`+`read`+`close` (io_uring / `readv`),
+  since at ~190 µs/file the syscalls, not the bytes, are the wall.
+
+![gist no-prefilter scan path optimization progression](assets/gist-scan-progression.png)
+
+> _The no-prefilter scan tier, profiled to the floor. **(a)** the phased→fused
+> work-stealing rewrite collapsed per-core finish spread (worker-span Δ 169 → 2.5
+> ms — the walk folds under the scan); **(b)** premultiplied DFA transition tables
+> cut the dense scan to the scalar-DFA floor (~one L1 load-use/byte), PMU-measured
+> on Apple Silicon; **(c)** the latency-bound signature — cycles/byte fell ~4× the
+> instruction drop while IPC *rose*, so it's a critical-path win, not throughput;
+> **(d)** the structural verdict — gist's per-file syscall floor makes its time
+> pattern-independent, so the margin over rg widens with match density (gist ≥ rg
+> on every pattern, 0 FN / 0 FP)._
+
+### Macroscopic field race — the fail-closed certificate (`certify.sh`)
+
+[`bench/certify.sh`](bench/certify.sh) is the most adversarial cut: a
+fresh-process **cold** query for gist **and all seven field tools** over the
+byte-identical 17,513-file corpus (hyperfine, 20 runs + 3 warmup), a 95%
+bootstrap-CI median per cell, and a gist-vs-ripgrep verdict that is
+**fail-closed** — a WIN needs a lower median _and_ Mann-Whitney `p<0.05`. Unlike
+the selective-needle cold sweep above, its 11 probe classes deliberately include
+the **saturating** patterns (`})`, `;$`, `\w{3,8}`, a UUID class) where the
+trigram prefilter admits _every_ file — the cases the competition is built to
+win. Every number below is `certify_macro.csv` verbatim; the verdict is shown for
+all 11 classes, losses included.
+
+![gist macroscopic field race across the seven-tool field, measured](assets/gist-field-race.png)
+
+> _The whole field, one race. **(a)** every tool's cold-query time relative to
+> gist across all 11 classes — gist (blue) beats every unindexed scanner except
+> on the saturating tail, where rg/gitgrep edge ahead (red). **(b)** the headline
+> gist-vs-ripgrep verdict, **7 win · 4 loss**, the four losses all cand%=100%
+> patterns. **(c)** the indexed split — csearch and zoekt are fast cold _loaders_
+> (28 MiB / sharded indexes vs gist's 177 MiB map), so they win most cold classes;
+> gist flips it only where a heavy scan dominates the query. **(d)** the
+> structural read — gist's speedup over rg is a clean function of prefilter
+> selectivity: selective classes win 2–5.5×, the cand%=100% classes (nothing
+> pruned) fall to 0.5–0.9×._
+
+- **gist vs ripgrep — 7 win · 4 loss, every class shown.** gist's cold query
+  beats rg **5.5×** (`pgxpool\.\w+`), **4.5×** (`pgxpool`), **3.8×**
+  (`context.Context`), **3.3×** (`^func\s`), **2.5×** (`func\s+\w+\(`), **2.0×**
+  (`func`), and **1.6×** (`return|continue|break`) — and trails on the four
+  **saturating** classes (`})` 0.8× · UUID 0.8× · `\w{3,8}` 0.5× · `;$` 0.9×),
+  where the prefilter admits 100% of files so gist pays its 177 MiB index-load +
+  freshness stat-walk on top of a full scan rg does cold. The split is
+  **structural, not noise** — a monotone function of cand% (panel d).
+- **Reconciling the `\w{3,8}` loss with the scan tier above (no contradiction).**
+  This is the _end-to-end CLI_ number: for a no-prefilter class the gist binary
+  still maps the index and runs the freshness walk before falling through to the
+  scan path. The scan _kernel_ measured in isolation
+  ([`bench/scan.zig`](bench/scan.zig)) already beats rg on these same patterns
+  (above) — so the loss is **index-load tax the CLI can shed** by skipping the
+  map when a pattern carries no usable literal. The named next rung, recorded.
+- **vs the indexed twins — the honest split, no spin.** Both are fast cold
+  loaders, so end-to-end they win most cold classes: csearch is ~4× faster on the
+  ultra-selective literals (`pgxpool` 0.25×, `pgxpool\.\w+` 0.25×) and zoekt is
+  ~7× faster on `})` (0.14×) — they load a light index where gist maps 177 MiB.
+  gist turns it around exactly where a heavy **scan** dominates the query: it
+  beats csearch on `})` (1.2×), `return|continue|break` (1.1×) and `;$` (1.2×),
+  and beats zoekt on the anchored `^func\s` (2.7×) and the UUID class (3.5×).
+  This is the same lever as the cold-literal trail above — a richer, fully-mapped
+  index bought freshness; shedding its load on no-prefilter queries is the rung.
 
 The shape of the result is honest and architectural: **gist owns the
 agent-session workload it was built for** — a resident index answering in
 microseconds, or a cold one-shot that beats every unindexed tool by reading only
-candidate bytes. Against the two mature *indexed* engines it splits: gist
+candidate bytes. Against the two mature _indexed_ engines it splits: gist
 matches/beats them on **regex** but trails on the **cold literal one-shot** — the
 price of a richer index (2× smaller than zoekt's, but fully mapped) and a
 freshness guarantee neither csearch nor zoekt offers.
