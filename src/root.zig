@@ -17,6 +17,9 @@ pub const ngram = @import("ngram.zig");
 pub const trigram = @import("trigram.zig");
 pub const regex = @import("regex/core.zig");
 pub const regex_syntax = @import("regex/syntax.zig");
+pub const regex_analysis = @import("regex/analysis.zig");
+pub const regex_compile = @import("regex/compile.zig");
+pub const regex_prefilter = @import("regex/prefilter.zig");
 pub const regex_dfa = @import("regex/dfa.zig");
 pub const rank = @import("rank.zig");
 
@@ -48,7 +51,10 @@ test {
     _ = @import("ngram_test.zig"); // n-gram extraction strategy primitives
     _ = @import("trigram_test.zig"); // T0 candidate index: query + serialize + build
     _ = @import("rank_test.zig"); // T4 RRF fusion ranking
+    _ = @import("regex/syntax_test.zig"); // T2 syntax: ByteSet + recursive-descent parser
+    _ = @import("regex/analysis_test.zig"); // T2 analysis: required-literal + cover + anchored
     _ = @import("regex/core_test.zig"); // T2 engine: parser + Pike VM + prefilters
+    _ = @import("regex/adversarial_test.zig"); // independent-oracle differential + prefilter brute force
     _ = @import("regex/dfa_test.zig"); // byte-class DFA unit + differential fuzz
     _ = @import("regex/powerset_test.zig"); // determinizer structural invariants
 }
