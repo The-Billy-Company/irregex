@@ -242,6 +242,12 @@ fn emitMatches(gpa: std.mem.Allocator, matches: *std.ArrayList([]const u8), read
 /// Fresh-process literal query: cold-load the index, then read & verify only the
 /// candidate files (exact substring via SIMD `contains`).
 pub fn runQuery(gpa: std.mem.Allocator, io: std.Io, needle: []const u8) !void {
+    // A <3 B needle has no trigram filter, so the index would seed every doc AND
+    // run the corpus-wide freshness stat-walk — two traversals vs rg's one. Skip
+    // the index and scan the live tree once (same win as the no-prefilter regex
+    // tail; see scan.zig). The live read is inherently fresh.
+    if (needle.len < 3) return scan.runLiteralFullScan(gpa, io, needle);
+
     const l0 = nowNs(io);
     var p = (try loadPersisted(gpa, io)) orelse return;
     defer p.deinit();

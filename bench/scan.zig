@@ -1,12 +1,14 @@
-//! gist cold no-prefilter regex scan — the direct live-tree path.
+//! gist cold no-prefilter scan — the direct live-tree path (regex AND literal).
 //!
-//! When a regex has NO usable trigram prefilter — no ≥3 B required literal and
-//! no all-≥3 alternation cover (`[0-9]{4}`, `panic|0x`, `[a-f0-9]{2,}`, `\w{3,8}`,
-//! `[a-z]+_[a-z]+_[a-z]+`) — the index cannot filter anything: every doc is a
-//! candidate. The index path then pays TWO full tree traversals: a corpus-wide T3
-//! freshness stat-walk (`statFile` on every file) AND a candidate read of all
-//! ~18 k files — where ripgrep pays one (walk + read). So for that case we skip the
-//! index entirely and walk the LIVE tree ONCE, reading + DFA-scanning each file.
+//! When a query has NO usable trigram prefilter — a regex with no ≥3 B required
+//! literal and no all-≥3 alternation cover (`[0-9]{4}`, `panic|0x`, `[a-f0-9]{2,}`,
+//! `\w{3,8}`), OR a sub-trigram literal (`<3 B`, e.g. `})`, `=>`) — the index
+//! cannot filter anything: every doc is a candidate. The index path then pays TWO
+//! full tree traversals: a corpus-wide T3 freshness stat-walk (`statFile` on every
+//! file) AND a candidate read of all ~18 k files — where ripgrep pays one (walk +
+//! read). So for that case we skip the index entirely and walk the LIVE tree ONCE,
+//! reading + scanning each file (NFA `docMatch` for regex, `simd.contains` for the
+//! literal).
 //! This is strictly MORE correct than the index+freshness path: it reads current
 //! bytes, sees files created since the build, honors deletions — no staleness
 //! window, so no freshness stat-walk at all. Same skip-dirs, NUL-binary detection
@@ -34,6 +36,7 @@
 const std = @import("std");
 const gist = @import("gist");
 const corpus_mod = @import("corpus.zig");
+const simd = @import("simd.zig");
 const Regex = gist.regex.Regex;
 const Dir = std.Io.Dir;
 
@@ -118,7 +121,8 @@ const Queue = struct {
 const Worker = struct {
     q: *Queue,
     io: std.Io,
-    re: *const Regex,
+    re: ?*const Regex, // set ⇒ NFA `docMatch`; null ⇒ literal `simd.contains(needle)`
+    needle: []const u8 = "", // the substring to verify when `re` is null
     gpa: std.mem.Allocator,
     root: ?[]const u8 = null,
     arena: ?*std.heap.ArenaAllocator = null, // path storage for this worker's root
@@ -156,8 +160,10 @@ fn walkRoot(w: *Worker, root_path: []const u8) void {
 fn consume(w: *Worker) void {
     const scratch = w.gpa.alloc(u8, corpus_mod.per_file_cap) catch return;
     defer w.gpa.free(scratch);
-    var sim = Regex.Sim.init(w.gpa, w.re) catch return;
-    defer sim.deinit();
+    // A regex worker owns one reusable Pike-sim (the `Regex` is shared+immutable,
+    // the `Sim` scratch is per-thread); a literal worker needs none.
+    var sim: ?Regex.Sim = if (w.re) |re| (Regex.Sim.init(w.gpa, re) catch return) else null;
+    defer if (sim) |*s| s.deinit();
     var stolen: [steal_batch][]const u8 = undefined;
     while (true) {
         const got = w.q.steal(stolen[0..]);
@@ -174,7 +180,8 @@ fn consume(w: *Worker) void {
             w.reads += 1;
             w.bytes += n;
             if (n == 0 or corpus_mod.isBinary(scratch[0..n])) continue;
-            if (w.re.docMatch(&sim, scratch[0..n])) w.matched.append(w.gpa, path) catch {};
+            const hit = if (w.re) |re| re.docMatch(&sim.?, scratch[0..n]) else simd.contains(scratch[0..n], w.needle);
+            if (hit) w.matched.append(w.gpa, path) catch {};
         }
     }
 }
@@ -189,10 +196,23 @@ fn workerMain(w: *Worker) void {
     w.elapsed_ns = nowNs(w.io) - t;
 }
 
-/// Cold no-prefilter regex: fused work-stealing walk+read+DFA-scan of the live
-/// tree, emitting the sorted match set. No index load, no freshness stat-walk —
-/// the live read IS the freshness guarantee. `re` is already compiled by caller.
+/// Cold no-prefilter regex: skip the index, scan the live tree directly.
 pub fn runRegexFullScan(gpa: std.mem.Allocator, io: std.Io, re: *const Regex) !void {
+    return runFullScan(gpa, io, re, "");
+}
+
+/// Cold sub-trigram literal (`<3 B` needle ⇒ no trigram filter, so the index
+/// would seed every doc AND pay a freshness stat-walk on top of the read — two
+/// traversals where rg pays one). Skip the index and scan the live tree once,
+/// SIMD-verifying the substring — the literal twin of `runRegexFullScan`.
+pub fn runLiteralFullScan(gpa: std.mem.Allocator, io: std.Io, needle: []const u8) !void {
+    return runFullScan(gpa, io, null, needle);
+}
+
+/// Fused work-stealing walk+read+scan of the live tree, emitting the sorted match
+/// set. No index load, no freshness stat-walk — the live read IS the freshness
+/// guarantee. Verifies with the NFA when `re` is set, else `simd.contains(needle)`.
+fn runFullScan(gpa: std.mem.Allocator, io: std.Io, re: ?*const Regex, needle: []const u8) !void {
     const t0 = nowNs(io);
     const roots = &corpus_mod.default_roots;
 
@@ -215,6 +235,7 @@ pub fn runRegexFullScan(gpa: std.mem.Allocator, io: std.Io, re: *const Regex) !v
         .q = &q,
         .io = io,
         .re = re,
+        .needle = needle,
         .gpa = gpa,
         .root = if (i < roots.len) roots[i] else null,
         .arena = if (i < roots.len) &arenas[i] else null,

@@ -155,6 +155,118 @@ All notable changes to the `gist` kernel are documented here. Format follows
     `panic|0x` 313→248 ms. Prefilterable tiers still win outright (`pgxpool\.\w+`
     ~3×, `^func\s` ~2.5×, alternations 1.4–1.65×) because the trigram prefilter
     reads a fraction of the corpus while rg re-walks all of it.
+- **No-prefilter regex → direct live-tree scan** (`bench/scan.zig`, dispatched
+  from `bench/cli.zig` `runRegex`). A regex with no usable trigram prefilter — no
+  ≥3 B required literal and no all-≥3 alternation cover (`[0-9]{4}`, `panic|0x`,
+  `[a-f0-9]{2,}`, `\w{3,8}`, `[a-z]+_[a-z]+_[a-z]+`) — makes the index filter
+  *nothing*: every doc is a candidate. The cold index path then paid **two** full
+  tree traversals — a corpus-wide T3 freshness `statFile` walk **and** a candidate
+  read of all ~17 k files — where rg pays one (walk + read). The tier is IO-bound
+  (profiled: System time dwarfs the automaton's User time — the scan engine was
+  never the bottleneck, the redundant traversal was), and the freshness stat-walk
+  is the dominant tax: measured **255 ms → 187 ms** (~67 ms) by toggling the
+  anchor on a `panic|0x` full scan. So for that case gist now **skips the index
+  entirely** and walks the LIVE tree once, reading + DFA-scanning each file like
+  rg. This is strictly **more** correct than the index+freshness path — it reads
+  current bytes, sees files created since the build, honors deletions, with no
+  staleness window — so no freshness walk is needed at all. Same skip-dirs /
+  NUL-binary / 4 MiB cap as the indexed corpus.
+  - **Fused work-stealing pipeline (a tie was never the floor).** The first cut
+    was phased — a parallel walk to collect every path, *then* a sharded read+scan
+    — and profiling (process-internal clock, build-wrapper-independent) caught it
+    leaking two ways: a **~63 ms walk barrier** overlapping nothing, and **~169 ms
+    of straggler idle** (static file-count sharding stranded the big files on one
+    core — fastest core done in 158 ms, slowest 327 ms). Rewritten so walkers
+    stream discovered paths into a shared MPMC queue while a core-sized pool steals
+    files in batches and reads+scans *as the walk still runs*: **worker-span
+    Δ 169 ms → 2.5 ms** (near-perfect byte-balance) and the walk folded under the
+    scan — **~1.7× internal speedup**. Oversubscription was *measured, not
+    assumed*: warm-cache the tier is CPU/syscall-bound (~190 µs/file
+    open+read+close, the DFA pass a rounding error), so ×1 worker/logical-core beat
+    ×2/×3 on both wall-clock and balance.
+  - **Correctness:** byte-identical to `rg (?-u) -l` over the same logical corpus
+    (rg run with `--no-ignore --hidden` + gist's dir-excludes so both scan the
+    same file set): **0 FN / 0 FP** across `[0-9]{4}`, `panic|0x`, `[a-f0-9]{2,}`,
+    `[0-9a-f]{8}-…`, `[a-z]+_[a-z]+_[a-z]+`, `\w{3,8}`, `x{2,4}` — the only
+    residual diffs being 3 multi-MB data blobs (`train_text.txt` 2.2 GB,
+    `val_text.txt` 22 MB) whose first match sits past the **pre-existing 4 MiB
+    `per_file_cap`** the indexed corpus caps identically.
+  - **Measured** (ReleaseFast, release-vs-release vs `rg (?-u) -l` on its fastest
+    gitignore-respecting path, min-of-N back-to-back, shared dev box; gist scans a
+    gitignore-*superset*, so it wins while reading **more** bytes): `\w{3,8}`
+    **1.3–3.0×** · `[a-f0-9]{2,}` **1.3–1.4×** · `[a-z]+_[a-z]+_[a-z]+` **1.2×** ·
+    `[0-9]{4}` **1.1×** · `panic|0x` **win-or-tie (~1.0×)** — **0 FN / 0 FP** vs rg
+    throughout (one `[0-9]{4}` `rg_only` file: a >4 MiB blob past the shared
+    `per_file_cap`). gist wins or ties all five. (The earlier Debug-build numbers
+    understated gist — release-vs-release is the honest race.)
+  - **Permanent regression** (`bench/scan_regress.sh`): the scan path is a
+    different code path than the index path `bench/equality.sh` proves, so it gets
+    its own permanent oracle — asserts each pattern still **routes** to the scan
+    path, diffs gist's scan set vs `rg (?-u)` over the identical corpus and **exits
+    1 on any FN/FP** (cap-skips excepted by size), and prints the worker-span Δ as a
+    **straggler canary** so a future regression of the work-stealing balance fails
+    loudly. Keeps the win honest and the floor measured for the next exploration.
+  - **Why the verdict is structural (off the data, not vibes):** gist's time is
+    **pattern-independent** (~240 ms across all five — it sits at the per-file
+    syscall floor, the DFA being a single early-exiting pass), whereas rg's swings
+    **2–373 ms with match density** (floor + per-byte scan). gist therefore wins
+    every scan-expensive pattern and ties only the cheapest sparse-literal
+    (`panic|0x`), where rg's scan is near-free and both rest on the same read floor.
+  - **Named next rung (recorded, not hidden):** beating rg on the sparse-literal
+    tie means dropping *below* the read floor — batch the per-file
+    `openat`+`read`+`close` (io_uring / `readv`), since at ~190 µs/file the
+    syscalls, not the scanned bytes, are the wall. A prefilter can't help a tier
+    already at its IO floor.
+- **DFA transition-table premultiplication** (`src/regex/powerset.zig`,
+  `src/regex/dfa.zig`). The dense no-prefilter scan's hot loop is one load-use
+  recurrence per byte: `next = trans[state * ncls + class[byte]]`. The `state * ncls`
+  multiply sat *on* the loop-carried dependency chain — every step had to compute
+  the row offset before it could issue the load that produces the next state.
+  `powerset` now stores every transition target, `start`, and `dead` **pre-scaled
+  by `ncls`** (a row *offset*, not a state id) and lays `is_match` out offset-indexed,
+  so the recurrence collapses to a bare `next = trans[state + class[byte]]` — the
+  `madd` leaves the critical path entirely (the rust-`regex`/RE2 premultiplied-DFA
+  representation). **Correctness:** structural invariants + exhaustive language
+  equivalence (`powerset_test.zig`, updated for the offset representation) and the
+  doc-level DFA↔Pike differential fuzz (12k patterns × multi-line buffers) — **0
+  divergences** — plus `scan_regress.sh` end-to-end (5 no-prefilter patterns, **0
+  FN / 0 FP** vs `rg` over the identical 17.5k-file tree). **Measured** (Apple
+  Silicon, kperf FIXED_CYCLES/INSTRUCTIONS, min-of-N, real 137 MB corpus,
+  `[0-9a-f]{8}-[0-9a-f]{4}`): **6.62 → 3.98 cyc/byte (−40 %, 1.66×)**, ins/byte
+  16.89 → 14.99 (−1.9), IPC 2.55 → 3.76. The signature is unambiguously
+  latency-bound — instructions fell ~11 % but cycles fell 40 % *and* IPC rose,
+  because shortening the recurrence (madd→load ⇒ load) exposed the ILP the
+  dependency chain had been hiding. The dense DFA now sits at the scalar-DFA hard
+  floor (~one L1 load-use per byte), at/ahead of rg's premultiplied lazy DFA.
+- **DFA start-state acceleration** (`src/regex/dfa.zig`, `src/regex/powerset.zig`).
+  The byte-class DFA's unanchored start state self-loops on most bytes; only a few
+  "relevant" bytes can begin a match (`trans_in` leaves start) or match at EOL
+  (`trans_fin` is a match — the `$`-literal case like `;$`). `powerset` collects
+  that set and, when ≤ 3 bytes, attaches a SIMD `Prefilter`; the scanner then
+  `memchr`/range-skips the dead run to the next relevant byte instead of a table
+  lookup per byte (the rust-`regex`/RE2 `accel.rs` trick). For unanchored patterns
+  where `\n` is irrelevant and no empty line matches, the skip **crosses
+  newlines** — collapsing `;$` to a single-byte `memchr ;` (rg's exact strategy)
+  and the prefilter from a two-range scan to one. Sound because a skipped byte both
+  keeps start in itself *and* can't match under `$`; the byte-at-a-time inner loop
+  still stops at `\n`, so `$`/line-end resolution is unchanged. **Verified by the
+  existing doc-level differential fuzz vs the Pike VM** (12k patterns × multi-line
+  buffers, *anchors + `$`-literals included*) — **0 divergences**. Kernel-level:
+  the no-prefilter end-to-end is read-floor-bound (the scan is ~1 % of wall, < 30 ms
+  User vs ~300 ms System), so this makes the automaton optimal without moving the
+  IO-bound macro number — the lever for that stays the read floor above.
+- **Sub-trigram literals → the same live-tree scan** (`bench/scan.zig`
+  generalized to verify a literal via `simd.contains` as well as a regex via
+  `docMatch`; `bench/cli.zig` `runQuery` routes `needle.len < 3` there). A `<3 B`
+  literal (`})`, `=>`) has no trigram filter, so the index path seeded every doc
+  **and** ran the corpus-wide freshness `statFile` walk on top of the read — the
+  same two-traversals-vs-rg's-one tax the no-prefilter *regex* path already
+  escaped. Short literals now skip the index and walk the live tree once through
+  the proven work-stealing pipeline. **Correctness:** the literal scan is
+  byte-identical to the trusted DFA scan over the identical tree (`} )` literal vs
+  `/\}\)/` regex → same 5,610-file set, 0 diff), and `scan_regress.sh` stays green
+  (0 FN / 0 FP). The ≥ 3 B indexed path is untouched (`pgxpool` still reads
+  409/17,513 files, ~1.7 ms cold-load).
 - **Equality oracle** (`bench/equality.sh`, `bench/bench.zig` `verify` mode):
   gist emits its verified matching-file set per pattern + the exact indexed file
   list; the script runs `rg` (and `rg (?-u)` for regex) over that identical list
@@ -192,7 +304,7 @@ All notable changes to the `gist` kernel are documented here. Format follows
   multithreaded `-l` actually scans (it short-circuits when stdout is discarded)
   and a needle miss (grep exits 1) no longer aborts hyperfine.
 - **Expanded scenario slates**: the warm/oracle slate (`bench.zig`) grows to 20
-  literals (added cross-language keywords `goroutine`/`panic(`/`Result<`/`def `/
+  literals (added cross-language keywords `goroutine`/`panic(`/`Result<`/`def`/
   `.unwrap()`) + 30 regexes (added `if\s+err\s*!=\s*nil`, `const\s+\w+\s*=`,
   `\w+\.\w+\(`, `[a-z]+_[a-z]+_[a-z]+`, `[a-z]+[A-Z]\w+`, `[0-9a-f]{8}-…`); the
   cold literal slate adds a guaranteed miss + `goroutine`/`SELECT`/`func(`/`})`;

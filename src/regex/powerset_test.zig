@@ -72,14 +72,16 @@ fn assertInvariants(re: *const Regex) !void {
     const ncls: usize = d.ncls;
     const ns: usize = d.nstates;
 
-    // (1) shape / bounds.
+    // (1) shape / bounds. The DFA is **premultiplied**: a state is its row offset
+    // `id*ncls`, so table entries / `start` / `dead` are offsets and `is_match` is
+    // laid out by offset (length `ns*ncls`, only the `ncls`-aligned slots live).
     try expect(ncls >= 1 and ncls <= 256);
     try expect(ns >= 1);
-    try expectEqual(ns, d.is_match.len);
+    try expectEqual(ns * ncls, d.is_match.len);
     try expectEqual(ns * ncls, d.trans_in.len);
     try expectEqual(ns * ncls, d.trans_fin.len);
-    try expect(d.start < ns);
-    try expect(d.dead == unfilled or d.dead < ns);
+    try expect(d.start < ns * ncls and d.start % ncls == 0);
+    try expect(d.dead == unfilled or (d.dead < ns * ncls and d.dead % ncls == 0));
     try expectEqual(re.anchored, d.anchored);
 
     // classes are dense [0,ncls) and every byte maps inside that range.
@@ -131,25 +133,27 @@ fn assertInvariants(re: *const Regex) !void {
 
     // (4)+(5) reachability, transition totality, no orphans. BFS the machine the
     // matcher actually walks: `trans_in` edges from `start`. Every slot of a
-    // reached state (interior AND final) must be a filled, valid id.
+    // reached state (interior AND final) must be a filled, valid offset. Values are
+    // premultiplied offsets; `reached`/`fin_target` index the id space (`off/ncls`).
     const reached = try a.alloc(bool, ns);
     defer a.free(reached);
     @memset(reached, false);
-    const stack = try a.alloc(u32, ns);
+    const stack = try a.alloc(u32, ns); // holds offsets; ≤ ns distinct states
     defer a.free(stack);
-    reached[d.start] = true;
+    reached[d.start / ncls] = true;
     stack[0] = d.start;
     var sp: usize = 1;
     while (sp > 0) {
         sp -= 1;
-        const s = stack[sp];
+        const s = stack[sp]; // row offset
         for (0..ncls) |k| {
-            const ti = d.trans_in[@as(usize, s) * ncls + k];
-            const tf = d.trans_fin[@as(usize, s) * ncls + k];
-            try expect(ti != unfilled and ti < ns); // interior slot total + valid
-            try expect(tf != unfilled and tf < ns); // final slot total + valid
-            if (!reached[ti]) {
-                reached[ti] = true;
+            const ti = d.trans_in[s + k];
+            const tf = d.trans_fin[s + k];
+            try expect(ti != unfilled and ti < ns * ncls and ti % ncls == 0); // interior slot total + valid
+            try expect(tf != unfilled and tf < ns * ncls and tf % ncls == 0); // final slot total + valid
+            const tid = ti / ncls;
+            if (!reached[tid]) {
+                reached[tid] = true;
                 stack[sp] = ti;
                 sp += 1;
             }
@@ -160,20 +164,21 @@ fn assertInvariants(re: *const Regex) !void {
     const fin_target = try a.alloc(bool, ns);
     defer a.free(fin_target);
     @memset(fin_target, false);
-    for (0..ns) |s| if (reached[s]) {
-        for (0..ncls) |k| fin_target[d.trans_fin[s * ncls + k]] = true;
+    for (0..ns) |sid| if (reached[sid]) {
+        const s = sid * ncls;
+        for (0..ncls) |k| fin_target[d.trans_fin[s + k] / ncls] = true;
     };
-    for (0..ns) |s| try expect(reached[s] or fin_target[s]);
+    for (0..ns) |sid| try expect(reached[sid] or fin_target[sid]);
 
     // (6) dead-state absorption (anchored only — unanchored re-seeds the start
     // into every step, so its empty set is not an absorbing sink and `match`
     // never consults `dead`). The empty/non-match sink must: never match; loop
     // to itself on every interior byte; never match even at EOL (`trans_fin`).
     if (re.anchored and d.dead != unfilled) {
-        try expect(!d.is_match[d.dead]);
-        if (reached[d.dead]) for (0..ncls) |k| {
-            try expectEqual(d.dead, d.trans_in[@as(usize, d.dead) * ncls + k]);
-            try expect(!d.is_match[d.trans_fin[@as(usize, d.dead) * ncls + k]]);
+        try expect(!d.is_match[d.dead]); // `dead` is an offset; `is_match` is offset-indexed
+        if (reached[d.dead / ncls]) for (0..ncls) |k| {
+            try expectEqual(d.dead, d.trans_in[d.dead + k]); // self-loop (offset → same offset)
+            try expect(!d.is_match[d.trans_fin[d.dead + k]]);
         };
     }
 }

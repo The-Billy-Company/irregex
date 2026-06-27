@@ -25,8 +25,15 @@
 
 const std = @import("std");
 const syn = @import("syntax.zig");
+const prefilter = @import("prefilter.zig");
 const State = syn.State;
 const Dfa = @import("dfa.zig").Dfa;
+
+/// Start-state acceleration eligibility (mirrors rust-regex `accel.rs`): only
+/// accelerate when the start state's escape set is ≤ this many bytes, past which
+/// the SIMD skip stops being selective (e.g. `\w`'s 63 bytes) and a plain dense
+/// scan wins. memchr/range-skip earns its keep at 1–3 exit bytes.
+const max_accel_bytes: usize = 3;
 
 /// Powerset state cap. Beyond this the eager build bails to null (Pike fallback).
 /// Sized so a linear `{n}`-expanded program (DFA ≈ n states) always fits while a
@@ -215,7 +222,7 @@ fn buildClasses(states: []const State, class: *[256]u8, rep: *[256]u8) u16 {
 /// Determinize the Thompson NFA (`states`, entry `start`) into an immutable
 /// byte-class DFA, or null when it isn't worth it (powerset exceeds `max_states`)
 /// — in which case the caller keeps the Pike VM. `anchored` mirrors
-/// `syn.startsAnchored`: every match begins at line start, so we never re-seed.
+/// `analysis.startsAnchored`: every match begins at line start, so we never re-seed.
 pub fn build(gpa: std.mem.Allocator, states: []const State, start: u32, anchored: bool) std.mem.Allocator.Error!?*Dfa {
     var class: [256]u8 = undefined;
     var rep: [256]u8 = undefined;
@@ -286,6 +293,35 @@ pub fn build(gpa: std.mem.Allocator, states: []const State, start: u32, anchored
         }
     }
 
+    // Start-state acceleration: the "relevant" bytes from the unanchored start
+    // state are the only ones that can contribute to a match; when there are few,
+    // the scanner SIMD-skips to them. Anchored programs never re-seed (ineligible).
+    // Computed on the id-based tables BEFORE premultiplication below (it reasons
+    // about state identity, not the flattened offset).
+    const accel = computeAccel(anchored, empty_match, b.trans_in.items, b.trans_fin.items, b.is_match.items, &class, ncls, start_id);
+
+    // Premultiply (rust-regex / RE2 dense-DFA trick): rewrite every state value to
+    // its row offset `id*ncls`, so the hot loop's per-byte index collapses from a
+    // loop-carried `madd(s, ncls, class)` to a fold-into-addressing `s + class[b]`
+    // — one fewer instruction on the latency-bound transition recurrence. Targets
+    // never reached by an interior byte keep their `unknown` sentinel (their row is
+    // never indexed), so skip those to avoid overflowing the multiply.
+    const nc: u32 = ncls;
+    for (b.trans_in.items) |*t| if (t.* != unknown) {
+        t.* *= nc;
+    };
+    for (b.trans_fin.items) |*t| if (t.* != unknown) {
+        t.* *= nc;
+    };
+    // `is_match` re-laid-out by offset: `is_match_pm[id*ncls] = is_match[id]`, so the
+    // hot loop reads `is_match[s]` with the premultiplied `s` and never divides. The
+    // inter-row slots are never indexed (every live `s` is a multiple of `ncls`).
+    const im_pm = try gpa.alloc(bool, @as(usize, b.nstates) * ncls);
+    errdefer gpa.free(im_pm);
+    @memset(im_pm, false);
+    for (b.is_match.items, 0..) |m, id| im_pm[id * ncls] = m;
+    const dead_pm = if (b.dead == unknown) unknown else b.dead * nc;
+
     const dfa = try gpa.create(Dfa);
     errdefer gpa.destroy(dfa);
     dfa.* = .{
@@ -294,12 +330,58 @@ pub fn build(gpa: std.mem.Allocator, states: []const State, start: u32, anchored
         .nstates = b.nstates,
         .trans_in = try b.trans_in.toOwnedSlice(gpa),
         .trans_fin = try b.trans_fin.toOwnedSlice(gpa),
-        .is_match = try b.is_match.toOwnedSlice(gpa),
-        .start = start_id,
+        .is_match = im_pm,
+        .start = start_id * nc,
         .empty_match = empty_match,
         .anchored = anchored,
-        .dead = b.dead,
+        .dead = dead_pm,
+        .accel = accel,
         .allocator = gpa,
     };
+    b.is_match.deinit(gpa); // replaced by the offset-indexed `im_pm`
     return dfa;
+}
+
+/// Derive start-state acceleration from the finished transition tables. A byte is
+/// "relevant" — must stop the SIMD skip — when, from the unanchored start state,
+/// it either (a) moves to a *different* interior state (`trans_in` ≠ start, the
+/// match-beginning case) or (b) produces a match at end-of-line (`trans_fin` is a
+/// match state, the `$`-anchored-literal case like `;$`, where the byte keeps
+/// `trans_in` in start yet matches as the line's last byte). Every other byte both
+/// keeps start in itself AND can't match under `$`, so it is provably skippable.
+/// Returns a `Prefilter` over the relevant set iff it is non-empty and
+/// ≤ `max_accel_bytes`; else null (dense scan).
+///
+/// `\n` is added to the needle **only when the skip can't safely cross a line** —
+/// i.e. when an empty line can match (`empty_match`) or `\n` is itself relevant.
+/// Otherwise crossing `\n` in the start state is a pure no-op, so we omit it: the
+/// scanner then `memchr`s straight across newlines (rg's exact `;$` strategy) and,
+/// for a single relevant byte, the prefilter collapses to a one-byte `memchr`
+/// instead of a two-range scan. The byte-at-a-time inner loop still stops at `\n`,
+/// so `$`/line-end resolution stays correct.
+fn computeAccel(anchored: bool, empty_match: bool, trans_in: []const u32, trans_fin: []const u32, is_match: []const bool, class: *const [256]u8, ncls: u16, start_id: u32) ?prefilter.Prefilter {
+    if (anchored) return null;
+    const base = @as(usize, start_id) * ncls;
+    const relevantByte = struct {
+        fn f(ti: []const u32, tf: []const u32, im: []const bool, off: usize, sid: u32) bool {
+            return ti[off] != sid or im[tf[off]];
+        }
+    }.f;
+    var relevant: syn.ByteSet = .{};
+    var n: usize = 0;
+    var bi: usize = 0;
+    while (bi < 256) : (bi += 1) {
+        const b: u8 = @intCast(bi);
+        if (b == '\n') continue; // line-boundary stop, decided separately below
+        if (relevantByte(trans_in, trans_fin, is_match, base + class[b], start_id)) {
+            relevant.set(b);
+            n += 1;
+        }
+    }
+    if (n == 0 or n > max_accel_bytes) return null;
+    // Keep the skip inside one line only when it must: an empty line can match, or
+    // `\n` itself is relevant. Otherwise let the skip `memchr` across newlines.
+    const nl_relevant = relevantByte(trans_in, trans_fin, is_match, base + class['\n'], start_id);
+    if (empty_match or nl_relevant) relevant.set('\n');
+    return prefilter.Prefilter.init(relevant);
 }
