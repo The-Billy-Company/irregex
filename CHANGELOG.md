@@ -5,6 +5,14 @@ All notable changes to the `gist` kernel are documented here. Format follows
 
 ## [0.1.0] — unreleased
 
+### Changed
+
+- **Benchmark certify harness (`bench/certify.sh`) reformatted** to the repo
+  shell style (2-space indent, one statement per line) and the macroscopic
+  probe loop straightened so each class benches `gist` plus every competitor in
+  a single pass. No change to the emitted `CERTIFICATE.md`, the macro CSV, or
+  the bootstrap-CI / Mann-Whitney stats path.
+
 ### Added
 
 - Initial scaffold mirroring `pkg/kernels/core` conventions: `build.zig`
