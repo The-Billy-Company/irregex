@@ -23,7 +23,7 @@ pub const regex_prefilter = @import("regex/prefilter.zig");
 pub const regex_dfa = @import("regex/dfa.zig");
 pub const rank = @import("rank.zig");
 
-pub const version_string: [:0]const u8 = "0.1.0";
+pub const version_string: [:0]const u8 = "0.1.0"; // x-release-please-version
 
 /// Bump on any C-ABI break so bindings can refuse a mismatched shared lib.
 pub fn abi() u32 {
