@@ -5,6 +5,14 @@ All notable changes to the `gist` kernel are documented here. Format follows
 
 ## [0.1.0] — unreleased
 
+### Fixed
+
+- **README benchmark prose + `regex/adversarial_test.zig`** — escaped the bare
+  `_loaders_` / trailing-underscore emphasis in the cold-loader notes (markdown
+  lint), and switched the rg second-oracle differential's temp-path `bufPrint`
+  from `catch unreachable` to `try` so a formatting error propagates instead of
+  panicking (zig-safety ratchet). No behavior change to the search path.
+
 ### Changed
 
 - **Benchmark certify harness (`bench/certify.sh`) reformatted** to the repo
