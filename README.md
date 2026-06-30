@@ -251,11 +251,11 @@ all 11 classes, losses included.
 > on the saturating tail, where rg/gitgrep sit at parity (red). **(b)** the
 > headline gist-vs-ripgrep verdict, **8 win · 3 loss**, the three losses all
 > cand%=100% patterns and all within ~10% of rg. **(c)** the indexed split —
-> csearch and zoekt are fast cold _loaders_ (29 MiB / sharded indexes vs gist's
+> csearch and zoekt are fast cold \_loaders_ (29 MiB / sharded indexes vs gist's
 > 182 MiB map), so they win most cold classes; gist flips it only where a heavy
 > scan dominates the query. **(d)** the structural read — gist's speedup over rg
 > is a clean function of prefilter selectivity: selective classes win 2.2–4.8×,
-> the cand%=100% tail sits at parity (0.9–1.2×)._
+> the cand%=100% tail sits at parity (0.9–1.2×).\_
 
 - **gist vs ripgrep — 8 win · 3 loss, every class shown.** gist's cold query
   beats rg **4.8×** (`pgxpool\.\w+`), **4.7×** (`pgxpool`), **3.3×**

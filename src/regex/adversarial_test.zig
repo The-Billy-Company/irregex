@@ -642,7 +642,7 @@ test "adversarial: rg second-oracle differential (parser-level)" {
     const rg = findRg(a, io) orelse return error.SkipZigTest; // hermetic on CI without ripgrep
 
     var tmp_buf: [64]u8 = undefined;
-    const tmp = std.fmt.bufPrint(&tmp_buf, "/tmp/gist_rgcheck_{x}.txt", .{@intFromPtr(&threaded)}) catch unreachable;
+    const tmp = try std.fmt.bufPrint(&tmp_buf, "/tmp/gist_rgcheck_{x}.txt", .{@intFromPtr(&threaded)});
     const ctx = RgCtx{ .io = io, .gpa = a, .tmp = tmp, .rg = rg };
     defer std.Io.Dir.cwd().deleteFile(io, tmp) catch {};
 
