@@ -3,6 +3,8 @@
 All notable changes to the `gist` kernel are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versions track `build.zig.zon`.
 
+<!-- towncrier release notes start -->
+
 ## [0.1.0] — unreleased
 
 ### Fixed
