@@ -9,13 +9,17 @@
 //! RRF (Cormack et al. 2009) is the right fusion primitive here, not a hand-tuned
 //! linear score: it needs no per-signal normalization (it consumes *ranks*, not
 //! raw magnitudes), is robust to one signal's blowups, and trivially admits new
-//! signals. score(d) = Σ_i wᵢ / (k + rankᵢ(d)). We fuse three intrinsic signals
+//! signals. score(d) = Σ_i wᵢ / (k + rankᵢ(d)). We fuse four intrinsic signals
 //! computed from the matches themselves —
 //!   • **lexical** density (more occurrences ⇒ more relevant),
 //!   • **symbol** boost (a match on a *definition* line ⇨ what you were looking
-//!     for; weighted highest — this is the agent win rg can't express),
+//!     for; weighted high — this is the agent win rg can't express),
 //!   • **shallow path** (fewer path segments ⇒ closer to a package root, usually
 //!     more central than a deep test/vendor file),
+//!   • **authored** boost (codegen output — `*_grpc.pb.go`, `*_pb2.py`, … — is
+//!     demoted: it wins lexical *and* symbol yet is never the agent's edit
+//!     target, so without this it floods the head on common symbols like
+//!     `context.Context`; weighted to outrank that double boost),
 //! — plus an **optional external ranking** (`graph_rank`): pass any
 //! graph-centrality order and it fuses in for free; pass null and it's ignored.
 //! Embeddings stay deliberately out (CoREB: short keyword queries collapse them).
@@ -29,16 +33,23 @@ pub const Doc = struct {
     is_def: bool, // any match sits on a definition line
     best_line: u32, // 1-based line to surface (the def line if any, else first match)
     depth: u16, // path segment count (number of '/'); shallower ranks higher
+    is_generated: bool = false, // codegen output (*.pb.go, *_pb2.py, …) — almost never the agent's target, so demoted
 };
 
 /// Tunable fusion constants. `k` damps the head so rank-1 isn't pathologically dominant (60 is the canonical RRF value).
 /// Weights encode the editorial call definition > raw frequency > shallowness; the external graph signal, when present, is co-equal with lexical.
+/// `generated` is weighted *above* both lexical and symbol on purpose: a codegen
+/// file (e.g. `*_grpc.pb.go`) is the worst pollutant of this corpus because it
+/// wins both — most match occurrences (lexical) and its boilerplate stubs parse
+/// as defs (symbol) — yet is almost never what an agent is hunting (the repo
+/// forbids editing it). The signal must outweigh that double boost to sink it.
 pub const Weights = struct {
     k: f64 = 60.0,
     lexical: f64 = 1.0,
     symbol: f64 = 2.0,
     shallow: f64 = 0.5,
     graph: f64 = 1.0,
+    generated: f64 = 3.0,
 };
 
 fn byMatchesDesc(docs: []const Doc, a: u32, b: u32) bool {
@@ -53,6 +64,23 @@ fn byDefFirst(docs: []const Doc, a: u32, b: u32) bool {
 fn byShallow(docs: []const Doc, a: u32, b: u32) bool {
     if (docs[a].depth != docs[b].depth) return docs[a].depth < docs[b].depth;
     return docs[a].best_line < docs[b].best_line;
+}
+/// The authored-vs-generated split is a *binary class*, not a ranking, so it is
+/// fused as a tie-aware RRF signal: every authored doc shares rank 0, every
+/// generated doc shares rank `n_authored` (standard competition ranking). That
+/// keeps the signal perfectly **neutral within a class** — it never re-votes the
+/// lexical/symbol order among authored docs (a sequential-position signal would,
+/// double-counting density) — while uniformly sinking the codegen flood below
+/// all real code. When a symbol lives only in generated files the demotion is
+/// constant across them, so the def-first order among them is untouched.
+fn addAuthoredSignal(score: []f64, docs: []const Doc, w: f64, k: f64) void {
+    var n_authored: usize = 0;
+    for (docs) |d| {
+        if (!d.is_generated) n_authored += 1;
+    }
+    const authored_credit = rrf(w, k, 0);
+    const generated_credit = rrf(w, k, n_authored);
+    for (docs, 0..) |d, i| score[i] += if (d.is_generated) generated_credit else authored_credit;
 }
 
 /// Fill `buf` with 0,1,2,… — the identity permutation we sort in place.
@@ -102,6 +130,7 @@ pub fn rank(gpa: std.mem.Allocator, docs: []const Doc, w: Weights, graph_rank: ?
     addSignal(score, docs, scratch, w.lexical, w.k, byMatchesDesc);
     addSignal(score, docs, scratch, w.symbol, w.k, byDefFirst);
     addSignal(score, docs, scratch, w.shallow, w.k, byShallow);
+    addAuthoredSignal(score, docs, w.generated, w.k);
     if (graph_rank) |gr| addExternal(score, docs, gr, w.graph, w.k);
 
     // Sort the id list by fused score desc; id asc breaks ties for determinism.

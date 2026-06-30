@@ -35,6 +35,39 @@ test "rrf: among non-defs, density then shallowness win" {
     try std.testing.expectEqual(@as(u32, 0), order[2]); // fewest matches
 }
 
+test "rrf: a generated file is demoted below authored code despite winning lexical+symbol" {
+    // The context.Context pollution: a `*_grpc.pb.go` stub wins lexical (×100
+    // occurrences) AND symbol (its boilerplate `func (c *…)` parses as a def),
+    // so without the authored signal it floods the head. The authored weight (3)
+    // must outrank that double boost and sink it below real code.
+    const docs = [_]Doc{
+        .{ .id = 0, .matches = 100, .is_def = true, .best_line = 50, .depth = 4, .is_generated = true }, // codegen flood
+        .{ .id = 1, .matches = 4, .is_def = true, .best_line = 10, .depth = 3 }, // the authored def
+        .{ .id = 2, .matches = 8, .is_def = false, .best_line = 2, .depth = 5 }, // hot authored usage
+        .{ .id = 3, .matches = 2, .is_def = false, .best_line = 1, .depth = 2 }, // sparse authored usage
+    };
+    const order = try rank(std.testing.allocator, &docs, .{}, null);
+    defer std.testing.allocator.free(order);
+    // The generated stub (idx 0), despite ×100 + def, is sunk to LAST; the
+    // authored definition (idx 1) rightfully takes the head, the authored usages
+    // follow, and only then the codegen flood.
+    try std.testing.expectEqual(@as(u32, 1), order[0]); // authored def, #1
+    try std.testing.expectEqual(@as(u32, 0), order[3]); // generated stub, last
+}
+
+test "rrf: the authored signal only reorders generated vs authored, never within a class" {
+    // When every match is generated (a proto-only symbol), the demotion is
+    // uniform, so it must not perturb the def-first ordering among them.
+    const docs = [_]Doc{
+        .{ .id = 0, .matches = 50, .is_def = false, .best_line = 5, .depth = 3, .is_generated = true },
+        .{ .id = 1, .matches = 2, .is_def = true, .best_line = 1, .depth = 3, .is_generated = true },
+    };
+    const order = try rank(std.testing.allocator, &docs, .{}, null);
+    defer std.testing.allocator.free(order);
+    try std.testing.expectEqual(@as(u32, 1), order[0]); // the generated def still beats the hotter generated usage
+    try std.testing.expectEqual(@as(u32, 0), order[1]);
+}
+
 test "rrf: external graph ranking fuses in and drives the order" {
     const docs = [_]Doc{
         .{ .id = 100, .matches = 5, .is_def = false, .best_line = 3, .depth = 4 },

@@ -85,11 +85,18 @@ negatives, read-your-own-writes, immune to the rebases and overlapping edits tha
 defeat `git diff` (parallel stat-walk, ~42 ms cold).
 
 **Ranking** (`src/rank.zig`). Turns the verified match set into the list an agent
-wants via weighted **Reciprocal Rank Fusion** (Cormack et al. 2009) over three
+wants via weighted **Reciprocal Rank Fusion** (Cormack et al. 2009) over four
 intrinsic signals — lexical density, a **definition boost** (a match on a decl
-line outranks its call sites — the win `grep` can't express), and shallow-path
-centrality — plus an optional external ranking (a graph-centrality hook).
-`rank` emits token-compressed `path:line [def|use] ×n  <line>`.
+line outranks its call sites — the win `grep` can't express), shallow-path
+centrality, and an **authored boost** that sinks codegen output (`*_grpc.pb.go`,
+`*_pb2.py`, …) below real code: a generated file otherwise floods the head of a
+common symbol like `context.Context` because it wins *both* lexical (most
+occurrences) and the def boost (its boilerplate stubs parse as defs), yet the
+repo forbids editing it, so it is never the agent's target. The class split is
+fused tie-aware (every authored doc shares rank 0, every generated doc shares
+rank `n_authored`) so it stays neutral *within* a class — plus an optional
+external ranking (a graph-centrality hook). `rank` emits token-compressed
+`path:line [def|use|gen] ×n  <line>`.
 
 ## Quickstart
 
