@@ -208,3 +208,33 @@ pub fn reachesMatchEol(gpa: std.mem.Allocator, states: []const State, start: u32
     };
     return false;
 }
+
+/// Can the start reach `match` through only zero-width edges — ε/`split` plus ANY
+/// assertion (`^` `$` `\b` `\B`)? True ⇒ the pattern can match the *empty string*
+/// at some position, with the exact positions decided at run time by the
+/// content-dependent assertions (`\bcat` is not nullable — `c` is mandatory — but
+/// `\b{2,}$`, `\B{2}`, `x|\b$` are).
+///
+/// Why the scanner needs this: the first-byte `.skip` search seeds a start only at
+/// line position 0 and immediately *before* a byte in the first-set; it NEVER
+/// seeds at a bare boundary gap or at end-of-line. That is sound for a match that
+/// must consume a first byte, but a nullable branch can match with no consumed
+/// byte at a position the skip never visits (the `\b{4,6}$` / `\B{2}` fuzz
+/// divergences). `reachesMatchEol` can't catch these — it deliberately won't cross
+/// a word boundary — so this broader predicate routes nullable patterns to the
+/// `.plain` search (which seeds every position, EOL included). Conservative: a
+/// false "yes" only forgoes the skip optimisation, never a match.
+pub fn reachesMatchZeroWidth(gpa: std.mem.Allocator, states: []const State, start: u32) ParseError!bool {
+    var wl = try Worklist.init(gpa, states.len, start);
+    defer wl.deinit(gpa);
+    while (wl.pop()) |s| switch (states[s]) {
+        .match => return true,
+        .split => |spl| {
+            wl.push(spl.a);
+            wl.push(spl.b);
+        },
+        .assert_start, .assert_end, .assert_word_b, .assert_not_word_b => |o| wl.push(o),
+        .consume => {}, // consumes a byte ⇒ this path is not zero-width
+    };
+    return false;
+}

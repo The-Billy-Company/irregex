@@ -23,6 +23,68 @@ test "regex: literal substring (unanchored)" {
     try std.testing.expect(!try matches("cat", "the dog ran"));
 }
 
+fn matchesCI(pattern: []const u8, line: []const u8) !bool {
+    var re = try Regex.compileOpts(std.testing.allocator, pattern, .{ .caseless = true });
+    defer re.deinit();
+    var sim = try Regex.Sim.init(std.testing.allocator, &re);
+    defer sim.deinit();
+    return re.lineMatch(&sim, line);
+}
+
+test "regex: caseless (-i) folds literals, classes, and ranges both ways" {
+    // Literal bytes fold both directions (the pattern case is irrelevant).
+    try std.testing.expect(try matchesCI("WalletService", "type walletservice struct"));
+    try std.testing.expect(try matchesCI("walletservice", "WALLETSERVICE = 1"));
+    try std.testing.expect(try matchesCI("Func", "FUNC main"));
+    // A class range gains its opposite-case twin: [a-c] also admits [A-C].
+    try std.testing.expect(try matchesCI("[a-c]at", "BAT"));
+    // Non-letters are untouched; a digit class stays exact.
+    try std.testing.expect(try matchesCI("err[0-9]", "ERR7"));
+    try std.testing.expect(!try matchesCI("err[0-9]", "ERRx"));
+    // Sound vs case-SENSITIVE baseline: the same pattern must NOT match folded.
+    try std.testing.expect(!try matches("WalletService", "walletservice"));
+}
+
+test "regex: nullable zero-width branch in .skip mode (boundary/EOL re-seed)" {
+    // Regression for the differential-fuzz divergence: a pattern whose first-set
+    // is non-empty (so the scanner picks `.skip`) but which ALSO has a branch that
+    // matches zero-width via a word boundary (`\b{4,6}$`). `.skip` only seeds a
+    // start before a first-byte — never at a bare boundary or EOL — so it dropped
+    // the second branch's match. `nullable` now routes these to `.plain`.
+    // `z|…` forces a first-set ({z}); the line carries no `z`, so only branch 2
+    // can match — exactly the path `.skip` used to miss.
+    try std.testing.expect(try matches("z|\\b{4,6}$", "abc")); // boundary before EOL
+    try std.testing.expect(!try matches("z|\\b{4,6}$", "abc ")); // EOL after space ⇒ no boundary
+    try std.testing.expect(try matches("z|\\b{2,}$", "ab12")); // {2,} unbounded form
+    // `\B{2}` — two non-boundaries at the same gap (between two word bytes).
+    try std.testing.expect(try matches("z|\\B{2}", "abcd")); // gap b|c is a non-boundary
+    try std.testing.expect(!try matches("z|\\B{2}", "a")); // every gap of "a" IS a boundary
+    // The bare nullable pattern (empty first-set ⇒ `.plain` already) stays correct.
+    try std.testing.expect(try matches("\\b{4,6}$", "abc"));
+    try std.testing.expect(!try matches("\\b{4,6}$", "abc "));
+    // A genuinely consuming pattern stays NON-nullable (keeps the .skip fast path).
+    var consuming = try Regex.compile(std.testing.allocator, "func\\s+\\w+");
+    defer consuming.deinit();
+    try std.testing.expect(!consuming.nullable);
+    var zw = try Regex.compile(std.testing.allocator, "z|\\b{4,6}$");
+    defer zw.deinit();
+    try std.testing.expect(zw.nullable);
+}
+
+test "regex: caseless empties the required literal (prefilter falls back to scan)" {
+    // A folded literal byte is a 2-member class, so `only()`→null and the longest
+    // required literal is "" — the cli grep path then seeds every doc (sound,
+    // since trigrams are case-sensitive and cannot prune a caseless needle).
+    var re = try Regex.compileOpts(std.testing.allocator, "walletservice", .{ .caseless = true });
+    defer re.deinit();
+    try std.testing.expectEqual(@as(usize, 0), re.required.len);
+    try std.testing.expectEqual(@as(usize, 0), re.alts.len);
+    // The case-SENSITIVE compile keeps its full required literal for the prefilter.
+    var cs = try Regex.compile(std.testing.allocator, "walletservice");
+    defer cs.deinit();
+    try std.testing.expectEqualStrings("walletservice", cs.required);
+}
+
 test "regex: dot, star, plus, quest" {
     try std.testing.expect(try matches("a.c", "xxabcyy"));
     try std.testing.expect(!try matches("a.c", "ac"));

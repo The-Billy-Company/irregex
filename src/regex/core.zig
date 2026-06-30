@@ -68,6 +68,12 @@ pub const Regex = struct {
     // short-circuits to true; also closes a latent Pike `.skip` soundness hole
     // (skip only seeds first-byte positions and would miss this EOL match).
     eol_empty: bool,
+    // True iff the start epsilon-reaches `match` through a zero-width path that may
+    // cross a word boundary (`\b{2,}$`, `\B{2}`, `x|\b$`) — a CONDITIONAL empty
+    // match `eol_empty` can't see (it won't traverse `\b`/`\B`). The first-byte
+    // `.skip` search would miss such a match (it only seeds before a first-byte,
+    // never at a bare boundary / EOL), so these patterns take the `.plain` search.
+    nullable: bool,
     first: prefilter.Prefilter,
     // T2 byte-class DFA (`dfa.zig`): the primary match engine — O(1)/byte, anchors
     // included, immutable + scratch-free, scanning a whole document in one fused
@@ -91,7 +97,15 @@ pub const Regex = struct {
         if (alts.len > 0) gpa.free(alts);
     }
 
+    /// Compile-time knobs. `caseless` ASCII-folds every consuming class so the
+    /// match is case-insensitive (the `-i` flag) — see `syn.foldCaseAst`.
+    pub const Options = struct { caseless: bool = false };
+
     pub fn compile(allocator: std.mem.Allocator, pattern: []const u8) ParseError!Regex {
+        return compileOpts(allocator, pattern, .{});
+    }
+
+    pub fn compileOpts(allocator: std.mem.Allocator, pattern: []const u8, opts: Options) ParseError!Regex {
         var arena_state = std.heap.ArenaAllocator.init(allocator);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
@@ -99,6 +113,9 @@ pub const Regex = struct {
         var parser = syn.Parser{ .src = pattern, .arena = arena };
         const ast = try parser.parseAlt();
         if (parser.pos != pattern.len) return ParseError.BadPattern;
+        // Fold BEFORE every downstream analysis (required-literal, cover, first-set,
+        // DFA) so prefilter and match engines agree on the case-insensitive class.
+        if (opts.caseless) syn.foldCaseAst(ast);
 
         var c = compile_mod.Compiler{ .gpa = allocator };
         errdefer c.states.deinit(allocator);
@@ -115,6 +132,7 @@ pub const Regex = struct {
         errdefer allocator.free(states);
         const anchored = analysis.startsAnchored(ast);
         const eol_empty = try analysis.reachesMatchEol(allocator, states, start);
+        const nullable = try analysis.reachesMatchZeroWidth(allocator, states, start);
         var first_set: ByteSet = .{};
         if (!anchored) try analysis.analyzeFirst(allocator, states, start, &first_set);
 
@@ -130,6 +148,7 @@ pub const Regex = struct {
             .alts = alts,
             .anchored = anchored,
             .eol_empty = eol_empty,
+            .nullable = nullable,
             .first = prefilter.Prefilter.init(first_set),
             .dfa = dfa,
             .allocator = allocator,
@@ -260,6 +279,11 @@ pub const Regex = struct {
     pub fn lineMatchPike(re: *const Regex, sim: *Sim, line: []const u8) bool {
         if (re.eol_empty) return true; // see `eol_empty`: matches every line (`\d*$`)
         if (re.anchored) return re.search(sim, line, .anchored);
+        // A conditionally-nullable pattern (`x|\b$`, `\B{2}`) can match zero-width
+        // at a bare boundary / EOL the `.skip` search never seeds — it only jumps
+        // to first-bytes. `.plain` re-seeds every position (EOL included), so it's
+        // the sound path even when a first-set exists from another branch.
+        if (re.nullable) return re.search(sim, line, .plain);
         if (re.first.count() != 0) return re.search(sim, line, .skip);
         return re.search(sim, line, .plain);
     }
