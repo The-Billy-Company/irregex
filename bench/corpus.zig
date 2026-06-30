@@ -11,6 +11,27 @@ pub const per_file_cap: usize = 4 << 20; // 4 MiB
 pub const out_dir = ".local/gist-verify";
 pub const default_roots = [_][]const u8{ "services", "libs", "clients", "contracts", "scripts", "quality" };
 
+/// Emit query RESULTS (the match list / ranked rows) on **stdout** — the Unix
+/// convention `rg` follows: data on stdout, diagnostics (timing, `[pipeline]`,
+/// guidance) stay on stderr via `std.debug.print`. This is what makes gist
+/// agent-friendly in a shell: `gist query foo > files` captures the paths and
+/// `gist query foo | head` shows only paths, with the human-facing summary line
+/// still visible on the terminal. A raw `posix.write` loop (handling partial
+/// writes) mirrors the blocking-syscall idiom the read path already uses, and
+/// sidesteps the std Io.Writer surface churn. Write errors are swallowed: a
+/// closed stdout (e.g. `| head` exiting early) must not crash the query.
+pub fn emitStdout(bytes: []const u8) void {
+    var off: usize = 0;
+    while (off < bytes.len) {
+        // `std.posix.system.write` is the raw C-ABI extern (returns isize; <=0 ⇒
+        // error/closed-pipe), the same `std.posix.system.*` layer the read path's
+        // `close` already rides on — `std.posix.write` is absent this Zig cut.
+        const n = std.posix.system.write(1, bytes.ptr + off, bytes.len - off);
+        if (n <= 0) return; // EPIPE (`| head` exited) / EINTR ⇒ stop, never crash
+        off += @intCast(n);
+    }
+}
+
 /// Directory basenames rg skips by default (gitignore + VCS + build output).
 pub fn isSkipDir(name: []const u8) bool {
     const skip = [_][]const u8{

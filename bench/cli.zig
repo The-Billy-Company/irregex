@@ -233,7 +233,7 @@ fn emitMatches(gpa: std.mem.Allocator, matches: *std.ArrayList([]const u8), read
         try outbuf.appendSlice(gpa, p);
         try outbuf.append(gpa, '\n');
     }
-    std.debug.print("{s}", .{outbuf.items});
+    corpus_mod.emitStdout(outbuf.items); // matched paths → stdout (rg convention)
     std.debug.print("— {d} matches · read {d}/{d} candidate files · cold-load {d:.1} ms · query {d:.1} ms · total {d:.1} ms\n", .{
         matches.items.len, read_files, total_paths, ms(load_ns), ms(query_ns), ms(load_ns + query_ns),
     });
@@ -547,7 +547,7 @@ pub fn runRank(gpa: std.mem.Allocator, io: std.Io, needle: []const u8) !void {
         defer gpa.free(row);
         try buf.appendSlice(gpa, row);
     }
-    std.debug.print("{s}", .{buf.items});
+    corpus_mod.emitStdout(buf.items); // ranked rows → stdout (rg convention)
     std.debug.print("— {d} ranked matches (top {d}) · read {d}/{d} candidates · cold-load {d:.1} ms · rank {d:.1} ms · total {d:.1} ms\n", .{
         docs.items.len, top, read_files, p.paths.items.len, ms(load_ns), ms(query_ns), ms(load_ns + query_ns),
     });

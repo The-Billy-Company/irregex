@@ -116,6 +116,12 @@ small reads for a selective query instead of ~16.5k. A `<3-byte` needle has no
 trigram filter and degenerates to a full read (the one case gist merely matches
 `rg`).
 
+**Streams follow the `rg` convention** (so gist composes in a pipeline): the
+match paths / ranked rows go to **stdout**, while the `—` timing summary, the
+`[pipeline]` canary, and any guidance go to **stderr**. `gist query Foo > files`
+captures only the paths; `gist query Foo | head` shows only the paths with the
+summary still on the terminal. Guarded by [`bench/streams.sh`](bench/streams.sh).
+
 Supported regex syntax: literals `.` `[]` `[^]` `a-z` `*` `+` `?` `{n,m}` `|`
 `()` `^` `$` and the classes `\d \w \s \t \n \r` — see `src/regex/syntax.zig`.
 
@@ -143,6 +149,8 @@ bench/equality.sh 150 1      # gist ≡ rg over a byte-exact corpus SNAPSHOT, pe
 bench/headtohead.sh          # WARM: gist resident p50 vs the unindexed scanners
 bench/coldquery.sh           # COLD literal: gist vs csearch/zoekt + the unindexed five
 bench/regex_headtohead.sh    # COLD regex: same field, per feature tier
+bench/scan_regress.sh        # no-prefilter SCAN path: gist ≡ rg soundness + speed
+bench/streams.sh             # output contract: results→stdout, diagnostics→stderr
 ```
 
 `equality.sh` has gist emit its verified matching-file set per pattern **plus a

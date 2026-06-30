@@ -275,7 +275,7 @@ fn runFullScan(gpa: std.mem.Allocator, io: std.Io, re: ?*const Regex, needle: []
         try outbuf.appendSlice(gpa, p);
         try outbuf.append(gpa, '\n');
     }
-    std.debug.print("{s}", .{outbuf.items});
+    corpus_mod.emitStdout(outbuf.items); // matched paths → stdout (rg convention)
     const mb = @as(f64, @floatFromInt(bytes)) / (1 << 20);
     std.debug.print("— {d} matches · scanned {d} files / {d:.0} MiB (live tree, no index/freshness) · total {d:.1} ms\n", .{
         matches.items.len, reads, mb, ms(nowNs(io) - t0),
