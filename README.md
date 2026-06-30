@@ -103,11 +103,62 @@ external ranking (a graph-centrality hook). `rank` emits token-compressed
 ```bash
 cd pkg/kernels/gist
 
-zig build cli -- index            # build + persist the index once (~1.2 s)
-zig build cli -- query <needle>   # cold literal query — reads only candidate files
-zig build cli -- regex <pattern>  # cold regex query (`(?-u)` byte semantics)
-zig build cli -- rank <needle>    # ranked, token-compressed output (def first)
+zig build cli -- index               # build + persist the index once (~1.2 s)
+zig build cli -- query <needle>      # cold literal query — paths of matching files
+zig build cli -- regex <pattern>     # cold regex query (`(?-u)` byte semantics)
+zig build cli -- rank <needle>       # ranked, token-compressed output (def first)
+zig build cli -- grep [flags] <pattern>      # the agent's `rg -n`: every match as
+                                     # `path:line:text`, served from the index
 ```
+
+**`grep` flags — the ripgrep surface an agent actually types.**
+
+| Flag | Meaning |
+|---|---|
+| `-A N` / `-B N` / `-C N` | context lines after / before / both (rg-exact `:`/`-`/`--` framing) |
+| `-t <lang>` | scope to a language — `go py rust ts js swift zig sql proto md json yaml toml sh …` |
+| `-g <glob>` | scope to a path glob (`*.ts`, `services/**`, `[a-z]*.go`); `!`-prefix excludes |
+| `-w` / `-F` | word-boundary (`\b…\b`) / fixed-string (escape regex metachars) |
+| `-l` / `-c` | files-with-matches / per-file count |
+| `-v` / `-i` / `-m N` | invert / ASCII case-insensitive / cap rows per file |
+| `-e <pat>` / `--` | explicit pattern / end of flags (for a leading-dash literal) |
+
+`-t`/`-g` are gist's structural edge over `rg`: rg applies a type/glob filter
+*while walking the whole tree*, but gist already holds the path list, so it
+**prunes candidates before touching disk** — `grep -t go pgxpool.Pool` reads 234
+of 18 608 files and runs **1.44× faster than `rg -t go`** (byte-identical output).
+Unknown flags fail loud (no silent wrong-result). Globs are gitignore-shaped (`*`
+per-segment, `**` across `/`). Guarded by `bench/pathfilter_test.zig` + the rg
+line-diff battery.
+
+**`grep` is the line-emitting verb an agent actually reaches for.** `query`/`regex`
+answer *which files* match (a path set) and `rank` answers *which one line* is
+best — but 90% of the time an agent runs `rg -n <pat>` and reads **every** matching
+line, in place, with its line number. `grep` is that, byte-for-byte: a true
+`rg -n --no-heading` drop-in that serves `path:line:text` from the persisted index
+(reading only candidate files) instead of a whole-tree walk. It unifies literal +
+regex on one engine (a pure literal is its own required literal, so it rides the
+same trigram prefilter — no second code path), takes `-i` for ASCII
+case-insensitivity (folds every byte-class in the pattern, which soundly drops the
+trigram prefilter since trigrams are case-sensitive, falling back to the seed-all
+scan), and `-m N` to cap rows per file. **Measured (cold, ReleaseFast, vs the
+practical `rg -n <pat>` an agent types):** selective symbol queries **5.3–5.8×
+faster** (`pgxpool` 57 ms vs 300 ms — reads 415 of 18 605 files; `WalletService`
+54 ms vs 308 ms) while emitting the *full* line output; a case-insensitive
+seed-all (`-i error`) **1.26×**; and the saturating no-prefilter tail (`;$`, every
+file a candidate) lands at rg parity-minus (~0.75×), the same structural trade the
+cold-literal sweep documents — gist wins decisively where the prefilter prunes,
+ties-or-loses by a hair where it can't.
+
+**Scope vs ripgrep (a deliberate policy, byte-exact on the shared set).** gist's
+corpus is the indexer's: it **ignores `.gitignore`** (searches committed-but-ignored
+files too), **includes hidden dotfiles** (rg needs `--hidden`), **skips the
+`isSkipDir` build/VCS set**, and **caps each file at 4 MiB**. Neutralize those four
+and `grep`'s output is **byte-identical to `rg -n --no-heading --no-unicode`** — a
+13-pattern battery (literal · `.`-dot · alternation · `^`-anchored · `$`-eol ·
+classes · counted · case-insensitive) diffs to **0 lines** against rg over the
+shared scope, including a 265 286-line and a 147 087-line result
+([`.local/gist-grep-bench/battery.sh`](.local)).
 
 `index` writes the index, the doc→path table, and the freshness anchor. Every
 later `query`/`regex`/`rank` is a fresh process that `mmap`s the index, resolves
@@ -123,7 +174,10 @@ captures only the paths; `gist query Foo | head` shows only the paths with the
 summary still on the terminal. Guarded by [`bench/streams.sh`](bench/streams.sh).
 
 Supported regex syntax: literals `.` `[]` `[^]` `a-z` `*` `+` `?` `{n,m}` `|`
-`()` `^` `$` and the classes `\d \w \s \t \n \r` — see `src/regex/syntax.zig`.
+`()` `^` `$` `\b` `\B` and the classes `\d \w \s \t \n \r` — see
+`src/regex/syntax.zig`. `grep -i` ASCII case-folds the pattern (every byte-class
+gains its opposite-case twin) so the whole engine — NFA, DFA, prefilter — matches
+case-insensitively from one transform; see `ByteSet.foldCase` / `foldCaseAst`.
 
 ## Build & test
 

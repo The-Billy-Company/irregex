@@ -1,0 +1,127 @@
+//! Adversarial tests for path scoping. The glob matcher is the risky surface —
+//! a wrong `*`/`**`/class boundary silently drops or admits files, which an
+//! agent reads as "no matches" and trusts. So these pin the segment/`/` rules,
+//! the basename-vs-full-path dispatch, class edge cases, and pathological star
+//! backtracking, and assert the type table against the real repo's languages.
+
+const std = @import("std");
+const pf = @import("pathfilter.zig");
+const globMatch = pf.globMatch;
+const PathFilter = pf.PathFilter;
+const expect = std.testing.expect;
+
+test "literal and single-star within a segment" {
+    try expect(globMatch("*.go", "main.go"));
+    try expect(globMatch("*.go", "a.b.go"));
+    try expect(!globMatch("*.go", "main.rs"));
+    // a single `*` must NOT cross a '/' — this is the rule rg relies on.
+    try expect(!globMatch("*.go", "pkg/main.go"));
+    try expect(globMatch("a*c", "abbbc"));
+    try expect(globMatch("a*c", "ac"));
+    try expect(!globMatch("a*c", "ab/c"));
+}
+
+test "double-star spans slashes and may match zero dirs" {
+    try expect(globMatch("**/*.go", "main.go")); // zero intermediate dirs
+    try expect(globMatch("**/*.go", "a/b/c/main.go"));
+    try expect(globMatch("services/**/*.go", "services/x/y/z.go"));
+    try expect(globMatch("services/**/*.go", "services/z.go"));
+    try expect(!globMatch("services/**/*.go", "libs/z.go"));
+    try expect(globMatch("**", "anything/at/all.txt"));
+}
+
+test "question mark is exactly one non-slash byte" {
+    try expect(globMatch("a?c", "abc"));
+    try expect(!globMatch("a?c", "ac"));
+    try expect(!globMatch("a?c", "abbc"));
+    try expect(!globMatch("a?c", "a/c"));
+}
+
+test "character classes: ranges, negation, literal-close, slash-immunity" {
+    try expect(globMatch("[a-z].go", "x.go"));
+    try expect(!globMatch("[a-z].go", "X.go"));
+    try expect(globMatch("[!a-z].go", "X.go"));
+    try expect(!globMatch("[!a-z].go", "x.go"));
+    try expect(globMatch("[abc]x", "bx"));
+    try expect(!globMatch("[abc]x", "dx"));
+    // a class never matches '/'
+    try expect(!globMatch("[a-z/]x", "/x"));
+    // unterminated class ⇒ '[' is a literal byte
+    try expect(globMatch("[oops", "[oops"));
+    try expect(!globMatch("[oops", "x"));
+}
+
+test "star backtracking does not over- or under-match" {
+    try expect(globMatch("*test*.go", "my_test_thing.go"));
+    try expect(globMatch("*_test.go", "wallet_test.go"));
+    try expect(!globMatch("*_test.go", "wallet.go"));
+    // adversarial: many stars against a long non-matching tail must terminate false
+    try expect(!globMatch("a*a*a*a*b", "aaaaaaaaaaaaaaaaaaaaaaaac"));
+    try expect(globMatch("a*a*a*a*b", "aaaaaaaaaaaaaaaaaaaaaaaab"));
+}
+
+test "PathFilter: type extension union, AND with globs, exclude veto" {
+    const go_rs = PathFilter{ .exts = &.{ ".go", ".rs" } };
+    try expect(go_rs.admits("services/api/main.go"));
+    try expect(go_rs.admits("services/vox/src/lib.rs"));
+    try expect(!go_rs.admits("clients/web/app.ts"));
+
+    // type AND include-glob: must be a .go file under services/
+    const scoped = PathFilter{ .exts = &.{".go"}, .includes = &.{"services/**"} };
+    try expect(scoped.admits("services/api/main.go"));
+    try expect(!scoped.admits("libs/x/main.go")); // right ext, wrong subtree
+    try expect(!scoped.admits("services/api/app.ts")); // right subtree, wrong ext
+
+    // exclude veto beats everything (e.g. drop generated + tests)
+    const no_test = PathFilter{ .exts = &.{".go"}, .excludes = &.{ "*_test.go", "*.pb.go" } };
+    try expect(no_test.admits("services/api/handler.go"));
+    try expect(!no_test.admits("services/api/handler_test.go"));
+    try expect(!no_test.admits("services/api/wallet.pb.go"));
+}
+
+test "empty filter admits everything and prunes nothing" {
+    const empty = PathFilter{};
+    try expect(empty.isEmpty());
+    try expect(empty.admits("anything/at/all.zig"));
+    var ids = [_]u32{ 0, 1, 2, 3 };
+    const paths = [_][]const u8{ "a.go", "b.ts", "c.rs", "d.py" };
+    try expect(empty.prune(&paths, &ids).len == 4);
+}
+
+test "prune keeps only admitted ids, order-preserving" {
+    const only_go = PathFilter{ .exts = &.{".go"} };
+    const paths = [_][]const u8{ "a.go", "b.ts", "c.go", "d.py", "e.go" };
+    var ids = [_]u32{ 0, 1, 2, 3, 4 };
+    const kept = only_go.prune(&paths, &ids);
+    try expect(kept.len == 3);
+    try expect(kept[0] == 0 and kept[1] == 2 and kept[2] == 4);
+}
+
+test "type table spans the mainstream language ecosystem, not just the repo" {
+    // The repo's seven + aliases…
+    for ([_][]const u8{ "go", "py", "python", "rust", "rs", "ts", "typescript", "swift", "zig", "sql", "proto" }) |t|
+        try expect(pf.extsForType(t) != null);
+    // …and the wider world, so gist scopes on ANY codebase, not only Billy's.
+    for ([_][]const u8{
+        "java",   "kotlin", "scala",   "clojure", "cs",        "csharp", "fsharp",
+        "ruby",   "php",    "perl",    "lua",     "r",         "julia",  "dart",
+        "elixir", "erlang", "haskell", "ocaml",   "c",         "cpp",    "cuda",
+        "objc",   "html",   "css",     "json",    "yaml",      "toml",   "xml",
+        "make",   "cmake",  "bazel",   "docker",  "terraform", "nix",    "graphql",
+    }) |t| try expect(pf.extsForType(t) != null);
+    try expect(pf.extsForType("cobol") == null); // unknown ⇒ null ⇒ caller errors
+}
+
+test "bare-filename type rows match by suffix (Makefile, Dockerfile, go.mod)" {
+    // A row may list a dotless filename; `admits` is a plain suffix test, so it
+    // catches build files that have no extension — what rg's filename globs do.
+    const mk = PathFilter{ .exts = pf.extsForType("make").? };
+    try expect(mk.admits("services/Makefile"));
+    try expect(mk.admits("scripts/mk/lint.mk"));
+    try expect(!mk.admits("services/main.go"));
+    const dk = PathFilter{ .exts = pf.extsForType("docker").? };
+    try expect(dk.admits("infra/docker/Dockerfile"));
+    const go = PathFilter{ .exts = pf.extsForType("go").? };
+    try expect(go.admits("services/api/go.mod"));
+    try expect(go.admits("services/api/main.go"));
+}
