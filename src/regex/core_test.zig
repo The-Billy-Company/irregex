@@ -137,6 +137,50 @@ test "regex: $ via docMatch picks the right line" {
     try std.testing.expect(!re.docMatch(&sim, "nil pointer\nok"));
 }
 
+test "regex: \\b word boundary matches rg --no-unicode semantics" {
+    // Whole-word search — the canonical agent use, and the foot-gun this fixes:
+    // gist used to read `\b` as the literal byte 'b' (so `\bcat\b` ⇒ "bcatb").
+    try std.testing.expect(try matches("\\bcat\\b", "the cat sat"));
+    try std.testing.expect(!try matches("\\bcat\\b", "concatenate")); // substring only
+    try std.testing.expect(try matches("\\bcat", "cat")); // boundary at BOL
+    try std.testing.expect(try matches("cat\\b", "a cat")); // boundary at EOL
+    try std.testing.expect(!try matches("\\bcat", "scat")); // no boundary before cat
+    try std.testing.expect(!try matches("cat\\b", "cats")); // no boundary after cat
+    try std.testing.expect(try matches("\\b\\w+\\b", "hello"));
+    try std.testing.expect(try matches("\\b\\d{4}\\b", "year 2026 ok"));
+    try std.testing.expect(!try matches("\\b\\d{4}\\b", "id12345")); // glued to a word
+}
+
+test "regex: \\B non-boundary is the complement of \\b" {
+    try std.testing.expect(try matches("\\Bcat", "concat")); // no boundary before cat
+    try std.testing.expect(!try matches("\\Bcat", "a cat")); // boundary ⇒ \B fails
+    try std.testing.expect(try matches("a\\Bb", "ab")); // between two word bytes
+    try std.testing.expect(!try matches("a\\bb", "ab")); // … so \b cannot match there
+    // Empty line: no word byte anywhere ⇒ every position is a non-boundary.
+    try std.testing.expect(!try matches("\\b", ""));
+    try std.testing.expect(try matches("\\B", ""));
+}
+
+test "regex: \\b keeps the trigram prefilter and skips the DFA" {
+    const a = std.testing.allocator;
+    var re = try Regex.compile(a, "\\bfunc\\b");
+    defer re.deinit();
+    // The bounded literal is still extracted ⇒ the T0 trigram prefilter applies.
+    try std.testing.expectEqualStrings("func", re.required);
+    // A word-boundary pattern keeps the Pike VM (no byte-class DFA built).
+    try std.testing.expect(re.dfa == null);
+}
+
+test "regex: \\b across lines via docMatch picks the whole-word line" {
+    const a = std.testing.allocator;
+    var re = try Regex.compile(a, "\\berr\\b");
+    defer re.deinit();
+    var sim = try Regex.Sim.init(a, &re);
+    defer sim.deinit();
+    try std.testing.expect(re.docMatch(&sim, "stderr = 1\nreturn err\n}")); // 2nd line
+    try std.testing.expect(!re.docMatch(&sim, "stderr\nerrors\nterror")); // all glued
+}
+
 test "regex: pathological (a+)+ stays linear, no catastrophic backtracking" {
     // A backtracking engine hangs on this; Thompson is linear and just answers.
     try std.testing.expect(!try matches("(a+)+z", "aaaaaaaaaaaaaaaaaaaaaaaa!"));

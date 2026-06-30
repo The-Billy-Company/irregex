@@ -305,6 +305,9 @@ const Spec = struct {
                     s.stack[sp] = o;
                     sp += 1;
                 },
+                // This Spec is a DFA structural reference, fed only `\b`-free
+                // patterns (word-boundary patterns have no DFA to compare against).
+                .assert_word_b, .assert_not_word_b => {},
                 .match => matched = true,
             }
         }

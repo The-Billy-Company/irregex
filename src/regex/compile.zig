@@ -26,6 +26,8 @@ pub const Compiler = struct {
             .empty => return next,
             .anchor_start => return self.push(.{ .assert_start = next }),
             .anchor_end => return self.push(.{ .assert_end = next }),
+            .word_boundary => return self.push(.{ .assert_word_b = next }),
+            .not_word_boundary => return self.push(.{ .assert_not_word_b = next }),
             .class => |set| return self.push(.{ .consume = .{ .set = set, .out = next } }),
             .concat => |ab| {
                 const s2 = try self.compileNode(ab[1], next);

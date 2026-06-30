@@ -7,7 +7,8 @@
 //! Supported (ASCII / byte-oriented, matching ripgrep's `(?-u)` mode):
 //!   literals · `.` (any byte but '\n') · `[...]` / `[^...]` with `a-z` ranges
 //!   · `*` `+` `?` · `{n}` `{n,}` `{n,m}` counted repetition · `|` · `(...)`
-//!   grouping · line anchors `^` `$` · escapes
+//!   grouping · line anchors `^` `$` · word boundaries `\b` `\B` (ASCII, the
+//!   `[0-9A-Za-z_]` class — exactly rg `--no-unicode`) · escapes
 //!   `\. \* \+ \? \( \) \[ \] \^ \$ \\ \| \/ \t \n \r \d \D \w \W \s \S`.
 //! Like rust-regex, an unescaped `{` must begin a valid count (else BadPattern;
 //! a literal brace is `\{`); a stray `}` is literal.
@@ -53,6 +54,8 @@ pub const Node = union(enum) {
     class: ByteSet, // a single consuming step (literal byte, ., \d, [..])
     anchor_start, // `^` — zero-width, asserts start of line
     anchor_end, // `$` — zero-width, asserts end of line
+    word_boundary, // `\b` — zero-width, asserts a word/non-word transition
+    not_word_boundary, // `\B` — zero-width, asserts NO such transition
     concat: [2]*Node,
     alt: [2]*Node,
     star: *Node,
@@ -69,6 +72,8 @@ pub const State = union(enum) {
     split: struct { a: u32, b: u32 },
     assert_start: u32, // zero-width `^`: pass to `out` only at line start
     assert_end: u32, // zero-width `$`: pass to `out` only at line end
+    assert_word_b: u32, // zero-width `\b`: pass to `out` only at a word boundary
+    assert_not_word_b: u32, // zero-width `\B`: pass to `out` only off a boundary
     match,
 };
 
@@ -228,7 +233,16 @@ pub const Parser = struct {
                 return p.node(.{ .class = s });
             },
             '\\' => {
-                _ = p.take();
+                _ = p.take(); // consume the backslash
+                // `\b`/`\B` are zero-width word-boundary assertions — they don't
+                // lower to a byte class, so they're resolved here in atom position
+                // (mirroring `^`/`$`) rather than in `parseEscape`, which returns a
+                // ByteSet. Inside a class `[...]` `\b` stays a literal byte (the
+                // `parseClass`→`parseEscape` path is untouched), matching rg.
+                if (p.peek()) |e| if (e == 'b' or e == 'B') {
+                    _ = p.take();
+                    return p.node(if (e == 'b') .word_boundary else .not_word_boundary);
+                };
                 return p.node(.{ .class = try p.parseEscape() });
             },
             '^', '$' => {

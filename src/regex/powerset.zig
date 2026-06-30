@@ -122,6 +122,9 @@ const Builder = struct {
                 },
                 .assert_start => |o| if (at_start) b.pushIf(o),
                 .assert_end => |o| if (at_end) b.pushIf(o),
+                // `build` bails to the Pike VM (returns null above) before any
+                // state is interned, so the determinizer never sees a word boundary.
+                .assert_word_b, .assert_not_word_b => unreachable,
                 .match => matched = true,
             }
         }
@@ -224,6 +227,17 @@ fn buildClasses(states: []const State, class: *[256]u8, rep: *[256]u8) u16 {
 /// — in which case the caller keeps the Pike VM. `anchored` mirrors
 /// `analysis.startsAnchored`: every match begins at line start, so we never re-seed.
 pub fn build(gpa: std.mem.Allocator, states: []const State, start: u32, anchored: bool) std.mem.Allocator.Error!?*Dfa {
+    // A `\b`/`\B` assertion gates on the word-ness of the bytes straddling a
+    // position, which a byte-class DFA can't resolve without folding "previous
+    // byte was a word char" into every state (a second determinization axis). Keep
+    // the Pike VM (the correctness reference) for these — exactly the
+    // powerset-blow-up fallback — while the trigram prefilter still selects on the
+    // bounded literal. Recorded next rung: a word-context-aware DFA.
+    for (states) |st| switch (st) {
+        .assert_word_b, .assert_not_word_b => return null,
+        else => {},
+    };
+
     var class: [256]u8 = undefined;
     var rep: [256]u8 = undefined;
     const ncls = buildClasses(states, &class, &rep);

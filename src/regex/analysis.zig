@@ -35,8 +35,9 @@ fn longer(a: []const u8, b: []const u8) []const u8 {
 pub fn literalInfo(arena: std.mem.Allocator, node: *Node) ParseError!LitInfo {
     switch (node.*) {
         // Zero-width: matches the empty string at a position. exact="" lets a
-        // mandatory literal run span the anchor (e.g. `^func` ⇒ required "func").
-        .empty, .anchor_start, .anchor_end => return .{ .exact = "", .prefix = "", .suffix = "", .best = "" },
+        // mandatory literal run span the anchor (e.g. `^func` ⇒ required "func",
+        // `\bfunc\b` ⇒ "func" — the word boundaries are zero-width too).
+        .empty, .anchor_start, .anchor_end, .word_boundary, .not_word_boundary => return .{ .exact = "", .prefix = "", .suffix = "", .best = "" },
         .class => |set| {
             // A singleton class is an exact literal; anything wider proves nothing.
             if (set.only()) |b| {
@@ -176,6 +177,10 @@ pub fn analyzeFirst(gpa: std.mem.Allocator, states: []const State, start: u32, o
             wl.push(spl.b);
         },
         .assert_start => |o| wl.push(o), // holds at line start
+        // A `\b`/`\B` can hold at SOME position, so the byte it gates is reachable
+        // as a first byte — traverse it (sound superset; a seeded thread at a
+        // position where the boundary fails just dies, never a false positive).
+        .assert_word_b, .assert_not_word_b => |o| wl.push(o),
         .assert_end, .match => {}, // `$`: no byte follows; match: zero-width
     };
 }
@@ -196,6 +201,10 @@ pub fn reachesMatchEol(gpa: std.mem.Allocator, states: []const State, start: u32
         },
         .assert_end => |o| wl.push(o), // `$` holds at EOL
         .assert_start, .consume => {}, // at_start=false blocks `^`; consume isn't zero-width
+        // A word boundary at EOL is content-dependent (the last byte's word-ness),
+        // so we can't statically prove a zero-width EOL match — don't traverse.
+        // Conservative: only ever suppresses the `eol_empty` shortcut, never a match.
+        .assert_word_b, .assert_not_word_b => {},
     };
     return false;
 }

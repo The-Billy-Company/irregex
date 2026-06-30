@@ -59,6 +59,18 @@ const Oracle = struct {
         return @as(u64, 1) << @intCast(p);
     }
 
+    /// ASCII word byte (`[0-9A-Za-z_]`) — gist's `\w` / rg `--no-unicode` class.
+    fn isWord(b: u8) bool {
+        return std.ascii.isAlphanumeric(b) or b == '_';
+    }
+    /// Independent `\b` predicate at gap `pos`: a boundary iff exactly one of the
+    /// straddling bytes is a word byte (BOL/EOL count as non-word).
+    fn wordBoundary(o: Oracle, pos: usize) bool {
+        const left = pos > 0 and isWord(o.line[pos - 1]);
+        const right = pos < o.line.len and isWord(o.line[pos]);
+        return left != right;
+    }
+
     /// Memoized by `(node, pos)`. The `{n,m}` desugaring shares one atom pointer
     /// across copies (the AST is a DAG), so without memoization a nested
     /// `(x{0,2}){3,5}` recomputes the same subtree exponentially. Keyed on the
@@ -70,6 +82,8 @@ const Oracle = struct {
             .empty => bit(pos),
             .anchor_start => if (pos == 0) bit(pos) else 0,
             .anchor_end => if (pos == o.line.len) bit(pos) else 0,
+            .word_boundary => if (o.wordBoundary(pos)) bit(pos) else 0,
+            .not_word_boundary => if (o.wordBoundary(pos)) 0 else bit(pos),
             .class => |set| if (pos < o.line.len and set.has(o.line[pos])) bit(pos + 1) else 0,
             .concat => |ab| blk: {
                 var res: u64 = 0;
@@ -333,6 +347,22 @@ test "adversarial: curated patterns vs independent oracle" {
         .{ .pat = "(^|x)y", .line = "zy" }, // `^` branch fails off-start, `xy` absent
         .{ .pat = "(^|x)y", .line = "xy" },
         .{ .pat = "$a", .line = "" }, // `$` then a char on empty line
+        // Word boundaries `\b`/`\B`: leading/trailing/both-sided, BOL/EOL boundaries,
+        // and non-boundary `\B` inside vs between words.
+        .{ .pat = "\\bcat\\b", .line = "the cat sat" }, // whole word ⇒ match
+        .{ .pat = "\\bcat\\b", .line = "concatenate" }, // substring only ⇒ no match
+        .{ .pat = "\\bcat", .line = "cat" }, // boundary at BOL
+        .{ .pat = "cat\\b", .line = "cat" }, // boundary at EOL
+        .{ .pat = "\\bcat\\b", .line = "cat" }, // both boundaries on a bare word
+        .{ .pat = "\\Bcat", .line = "concat" }, // `\B`: no boundary before `cat`
+        .{ .pat = "\\Bcat", .line = "cat" }, // BOL is a boundary ⇒ `\B` fails
+        .{ .pat = "a\\Bb", .line = "ab" }, // mid-word non-boundary
+        .{ .pat = "a\\bb", .line = "ab" }, // no boundary between two word bytes ⇒ no
+        .{ .pat = "\\b", .line = "" }, // empty line has no word byte ⇒ no boundary
+        .{ .pat = "\\B", .line = "" }, // empty line is all non-boundary ⇒ match
+        .{ .pat = "\\w+\\b", .line = "foo_bar baz" },
+        .{ .pat = "\\b\\d{4}\\b", .line = "year 2026 ok" },
+        .{ .pat = "\\b\\d{4}\\b", .line = "id12345x" }, // digits glued to words ⇒ no
     };
     var col = Collector.init(a);
     defer col.deinit();
@@ -355,7 +385,7 @@ const Gen = struct {
 
     fn atom(g: *Gen, depth: u8) E!void {
         const list = "abe01_";
-        switch (g.r.uintLessThan(u8, if (depth > 0) 13 else 12)) {
+        switch (g.r.uintLessThan(u8, if (depth > 0) 15 else 14)) {
             0 => try g.buf.append(g.a, list[g.r.uintLessThan(usize, list.len)]),
             1 => try g.buf.append(g.a, '.'),
             2 => try g.buf.appendSlice(g.a, "[a-c]"),
@@ -368,6 +398,8 @@ const Gen = struct {
             9 => try g.buf.appendSlice(g.a, "\\S"),
             10 => try g.buf.append(g.a, 0xFF), // raw high-byte literal atom
             11 => try g.buf.appendSlice(g.a, "[^ -~]"), // negated printable ⇒ many first-byte ranges
+            12 => try g.buf.appendSlice(g.a, "\\b"), // word boundary (zero-width)
+            13 => try g.buf.appendSlice(g.a, "\\B"), // non-boundary (zero-width)
             else => {
                 try g.buf.append(g.a, '(');
                 try g.alt(depth - 1);
@@ -667,6 +699,11 @@ test "adversarial: rg second-oracle differential (parser-level)" {
         "a{1,3}", "ab{2}",    "(ab){2}", "a{3}",  "a|b",    "(a|)b", "(|a)b",    "ab|cd",
         "^a",     "a$",       "^abc$",   "^$",    "a^b",    "a$b",   "^a|b$",    "(^|x)y",
         "((a))",  "(a*)*b",   "(a|b)+",  "(a?)+", "a**",
+        // Word boundaries `\b`/`\B` (ASCII, rg `--no-unicode`): leading, trailing,
+        // both-sided, around classes, and the non-boundary `\B` — the foot-gun this
+        // change fixes (gist used to read `\b` as a literal byte 'b').
+        "\\ba",   "a\\b",     "\\babc",  "abc\\b", "\\babc\\b", "\\b\\w+", "\\w+\\b",
+        "\\bend\\b", "\\Bb",  "a\\Bb",   "\\Bbc",  "[a-c]\\b",  "\\b-",    "-\\b",
     };
     for (pats) |p| for (lines) |l| rgAgrees(&col, ctx, p, true, l);
 

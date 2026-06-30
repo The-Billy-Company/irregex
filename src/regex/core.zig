@@ -7,10 +7,15 @@
 //! Grep semantics: a line matches if the pattern matches ANY substring of it
 //! (unanchored). We never construct `.*pat.*`; the Pike simulation re-seeds the
 //! start thread at every position — the standard linear search. Line anchors
-//! `^` / `$` are zero-width assertions resolved during the epsilon-closure from
-//! the (start, end)-of-line flags at each position; `\b` and Unicode classes are
-//! out of scope this tier. The equality oracle runs `rg (?-u)…` so semantics
-//! coincide exactly.
+//! `^` / `$` and word boundaries `\b` / `\B` are zero-width assertions resolved
+//! during the epsilon-closure: `^`/`$` from the (start, end)-of-line flags at each
+//! position, and `\b`/`\B` from the word-ness of the bytes straddling it (ASCII
+//! `[0-9A-Za-z_]`, exactly rg `--no-unicode`). A `\b`/`\B` pattern keeps the Pike
+//! VM (the byte-class DFA can't resolve word context without a separate
+//! determinization, so `powerset.build` bails to null), yet still rides the
+//! trigram prefilter on its bounded literal (`\bfunc\b` ⇒ "func"). Unicode classes
+//! remain out of scope this tier. The equality oracle runs `rg (?-u)…` so
+//! semantics coincide exactly.
 
 const std = @import("std");
 const syn = @import("syntax.zig");
@@ -28,6 +33,20 @@ pub const ParseError = syn.ParseError;
 // lowers from) so `dfa.zig` can determinize over it without an import cycle.
 // Aliased here to keep the engine's references unchanged.
 const State = syn.State;
+
+/// A "word" byte for `\b`/`\B`: ASCII `[0-9A-Za-z_]` — exactly `\w` and rg's
+/// `--no-unicode` word class (the mode the equality oracle pins gist against).
+fn isWord(b: u8) bool {
+    return std.ascii.isAlphanumeric(b) or b == '_';
+}
+/// Is the byte AT gap-position `p` a word byte? (false past line end.)
+fn wordAt(line: []const u8, p: usize) bool {
+    return p < line.len and isWord(line[p]);
+}
+/// Is the byte immediately BEFORE gap-position `p` a word byte? (false at BOL.)
+fn wordBefore(line: []const u8, p: usize) bool {
+    return p > 0 and isWord(line[p - 1]);
+}
 
 pub const Regex = struct {
     states: []State,
@@ -185,8 +204,11 @@ pub const Regex = struct {
         gen: u32,
         at_start: bool,
         at_end: bool,
+        // Word-ness of the bytes straddling this (fixed) position, for `\b`/`\B`.
+        word_before: bool,
+        word_after: bool,
 
-        /// Epsilon-closure of `s` into `list`; returns whether it reached the match state (so `lineMatch` answers without a second list scan). Zero-width anchors resolve against `at_start`/`at_end` — a failed assertion just kills that branch (the position is fixed across one closure).
+        /// Epsilon-closure of `s` into `list`; returns whether it reached the match state (so `lineMatch` answers without a second list scan). Zero-width assertions resolve against the position's flags — `^`/`$` against `at_start`/`at_end`, `\b`/`\B` against `word_before`/`word_after` (a boundary holds iff exactly one side is a word byte) — and a failed assertion just kills that branch (the position is fixed across one closure).
         fn add(c: Closure, s: u32) bool {
             if (c.seen[s] == c.gen) return false;
             c.seen[s] = c.gen;
@@ -198,6 +220,8 @@ pub const Regex = struct {
                 },
                 .assert_start => |out| c.at_start and c.add(out),
                 .assert_end => |out| c.at_end and c.add(out),
+                .assert_word_b => |out| (c.word_before != c.word_after) and c.add(out),
+                .assert_not_word_b => |out| (c.word_before == c.word_after) and c.add(out),
                 else => blk: {
                     c.list.push(s);
                     break :blk c.re.states[s] == .match;
@@ -206,8 +230,8 @@ pub const Regex = struct {
         }
     };
 
-    fn closure(re: *const Regex, sim: *Sim, list: *ThreadList, at_start: bool, at_end: bool) Closure {
-        return .{ .re = re, .list = list, .seen = sim.seen, .gen = sim.gen, .at_start = at_start, .at_end = at_end };
+    fn closure(re: *const Regex, sim: *Sim, list: *ThreadList, at_start: bool, at_end: bool, word_before: bool, word_after: bool) Closure {
+        return .{ .re = re, .list = list, .seen = sim.seen, .gen = sim.gen, .at_start = at_start, .at_end = at_end, .word_before = word_before, .word_after = word_after };
     }
 
     const Scan = enum { anchored, skip, plain };
@@ -253,8 +277,9 @@ pub const Regex = struct {
         sim.gen += 1;
         sim.cur.len = 0;
         // Position 0: line start; also the end iff the line is empty. Answers any
-        // empty/zero-width match (`a*`, `^$`) without scanning.
-        if (re.closure(sim, &sim.cur, true, line.len == 0).add(re.start)) return true;
+        // empty/zero-width match (`a*`, `^$`) without scanning. `\b` here straddles
+        // BOL (no byte before) and line[0].
+        if (re.closure(sim, &sim.cur, true, line.len == 0, wordBefore(line, 0), wordAt(line, 0)).add(re.start)) return true;
         if (mode == .skip) sim.cur.len = 0; // drive purely by first-byte jumps
         var i: usize = 0;
         while (i < line.len) {
@@ -264,14 +289,16 @@ pub const Regex = struct {
                     i = re.first.nextStart(line, i) orelse return false;
                     sim.gen += 1;
                     sim.cur.len = 0;
-                    if (re.closure(sim, &sim.cur, i == 0, i + 1 == line.len).add(re.start)) return true;
+                    if (re.closure(sim, &sim.cur, i == 0, i + 1 == line.len, wordBefore(line, i), wordAt(line, i)).add(re.start)) return true;
                 },
                 .plain => {},
             };
             const c = line[i];
             sim.nxt.len = 0;
             sim.gen += 1;
-            const cl = re.closure(sim, &sim.nxt, false, i + 1 == line.len);
+            // The next closure sits at the gap AFTER byte i (position i+1): the
+            // word byte before it is line[i], the one after is line[i+1].
+            const cl = re.closure(sim, &sim.nxt, false, i + 1 == line.len, wordBefore(line, i + 1), wordAt(line, i + 1));
             var matched = false;
             for (sim.cur.slice()) |s| switch (re.states[s]) {
                 // `and` keeps `add` from firing on a non-matching byte; `or matched`
