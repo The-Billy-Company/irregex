@@ -89,6 +89,7 @@ const Builder = struct {
     visited: []u64, // closure dedup (one pass)
     out: []u64, // consume-set accumulated by one closure
     stack: []u32, // closure worklist
+    key_scratch: []u64, // reusable interning-probe key (`out` ++ match flag)
     sp: usize = 0,
 
     fn pushIf(b: *Builder, s: u32) void {
@@ -163,14 +164,16 @@ const Builder = struct {
     /// the identity — an empty consume-set that reached `match` (e.g. via `$`) is a
     /// distinct state from a dead one.
     fn intern(b: *Builder, matched: bool) std.mem.Allocator.Error!struct { id: u32, is_new: bool } {
+        // Probe with the reusable scratch key first — in any real determinization
+        // most transitions land on an already-interned state, so allocating a
+        // fresh key per call (only to free it on the dup path) is pure churn. Copy
+        // into a permanent key only once the state proves genuinely new.
+        @memcpy(b.key_scratch[0..b.words], b.out);
+        b.key_scratch[b.words] = @intFromBool(matched);
+        if (b.map.get(b.key_scratch)) |id| return .{ .id = id, .is_new = false };
         const key = try b.gpa.alloc(u64, b.words + 1);
         errdefer b.gpa.free(key);
-        @memcpy(key[0..b.words], b.out);
-        key[b.words] = @intFromBool(matched);
-        if (b.map.get(key)) |id| {
-            b.gpa.free(key);
-            return .{ .id = id, .is_new = false };
-        }
+        @memcpy(key, b.key_scratch);
         const id = b.nstates;
         b.nstates += 1;
         try b.map.put(key, id);
@@ -261,6 +264,7 @@ pub fn build(gpa: std.mem.Allocator, states: []const State, start: u32, anchored
         .visited = try gpa.alloc(u64, words),
         .out = try gpa.alloc(u64, words),
         .stack = try gpa.alloc(u32, states.len),
+        .key_scratch = try gpa.alloc(u64, words + 1),
     };
     // Builder scratch + the subset map/sets are discarded once the immutable tables are sliced out (or on a bail). `sets` owns every state key.
     defer {
@@ -272,6 +276,7 @@ pub fn build(gpa: std.mem.Allocator, states: []const State, start: u32, anchored
         gpa.free(b.visited);
         gpa.free(b.out);
         gpa.free(b.stack);
+        gpa.free(b.key_scratch);
     }
     errdefer {
         b.is_match.deinit(gpa);
