@@ -275,6 +275,80 @@ test "leading inline flag group (?i)/(?-u)/(?m) honored; (?s) rejected" {
     }
 }
 
+test "--count-matches is distinct from --count (the silent-wrong-count fix)" {
+    // The bug: `--count-matches` aliased to `--count`, so it counted matching
+    // LINES, not match spans — a silent-wrong result on any line with >1 match
+    // (`e` → 165 lines vs 988 matches). They must set different options.
+    {
+        var p = (try parse(&.{ "--count-matches", "e" })).?;
+        defer p.deinit(A);
+        try expect(p.opts.count_matches and !p.opts.count_only);
+    }
+    {
+        var p = (try parse(&.{ "--count", "e" })).?;
+        defer p.deinit(A);
+        try expect(p.opts.count_only and !p.opts.count_matches);
+    }
+    {
+        var p = (try parse(&.{ "-c", "e" })).?; // short spelling stays line-count
+        defer p.deinit(A);
+        try expect(p.opts.count_only and !p.opts.count_matches);
+    }
+}
+
+test "corpus-policy no-ops gist already satisfies are accepted, not fail-loud" {
+    // gist's corpus ignores `.gitignore` and includes hidden dotfiles (README
+    // "Scope vs ripgrep"), so these rg flags ask for what gist already does.
+    for ([_][]const u8{ "--hidden", "--no-ignore", "--no-ignore-vcs", "--no-ignore-parent", "--no-ignore-dot", "--unrestricted", "--one-file-system" }) |f| {
+        var p = (try parse(&.{ f, "WalletService" })).?;
+        defer p.deinit(A);
+        try expect(eqs(u8, p.pattern, "WalletService"));
+    }
+    { // `-u` / `-uu` short (repeatable --unrestricted), incl. bundled with -i
+        var p = (try parse(&.{ "-uu", "wallet" })).?;
+        defer p.deinit(A);
+        try expect(eqs(u8, p.pattern, "wallet"));
+    }
+    {
+        var p = (try parse(&.{ "-iu", "wallet" })).?;
+        defer p.deinit(A);
+        try expect(p.opts.caseless and eqs(u8, p.pattern, "wallet"));
+    }
+}
+
+test "--sort/--sortr swallow their value (gist emits path-ascending already)" {
+    {
+        var p = (try parse(&.{ "--sort", "path", "foo" })).?; // separate-token value
+        defer p.deinit(A);
+        try expect(eqs(u8, p.pattern, "foo") and p.opts.filter.roots.len == 0);
+    }
+    {
+        var p = (try parse(&.{ "--sort=path", "foo" })).?; // glued value
+        defer p.deinit(A);
+        try expect(eqs(u8, p.pattern, "foo"));
+    }
+    {
+        var p = (try parse(&.{ "--sortr", "modified", "foo" })).?;
+        defer p.deinit(A);
+        try expect(eqs(u8, p.pattern, "foo"));
+    }
+    try expect((try parse(&.{"--sort"})) == null); // missing value still fails loud
+}
+
+test "recognized-but-unsupportable flags fail LOUD (never silent-wrong)" {
+    // A different engine / output model — fail loud with guidance, but crucially
+    // NOT silently ignored (which would give a wrong result on a PCRE/multiline
+    // pattern). Each returns null (the fail-loud sentinel).
+    try expect((try parse(&.{ "-P", "(?<=x)y" })) == null); // PCRE lookbehind
+    try expect((try parse(&.{ "--pcre2", "a" })) == null);
+    try expect((try parse(&.{ "-U", "a\\nb" })) == null); // multiline short
+    try expect((try parse(&.{ "--multiline", "a" })) == null);
+    try expect((try parse(&.{ "--multiline-dotall", "a" })) == null);
+    try expect((try parse(&.{ "--json", "a" })) == null);
+    try expect((try parse(&.{ "--vimgrep", "a" })) == null);
+    try expect((try parse(&.{ "--column", "a" })) == null);
+}
+
 test "type aliases: tsx, jsx, rego, mdc resolve" {
     for ([_][]const u8{ "tsx", "jsx", "rego", "mdc", "vue", "svelte", "cedar" }) |t| {
         var p = (try parse(&.{ "-t", t, "x" })).?;

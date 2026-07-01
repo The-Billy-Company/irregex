@@ -21,6 +21,7 @@ pub const regex_analysis = @import("regex/analysis.zig");
 pub const regex_compile = @import("regex/compile.zig");
 pub const regex_prefilter = @import("regex/prefilter.zig");
 pub const regex_dfa = @import("regex/dfa.zig");
+pub const regex_captures = @import("regex/captures.zig");
 pub const rank = @import("rank.zig");
 
 pub const version_string: [:0]const u8 = "0.1.0"; // x-release-please-version

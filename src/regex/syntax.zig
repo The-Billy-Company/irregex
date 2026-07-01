@@ -47,7 +47,39 @@ pub const ByteSet = struct {
         for (self.bits, 0..) |w, wi| if (w != 0) return @intCast(wi * 64 + @ctz(w));
         return null;
     }
+    /// ASCII case-fold: for every letter present, also admit its opposite-case
+    /// twin (`a`⇄`A`). Drives the `-i` flag — applied to every consuming class so
+    /// a folded literal byte becomes a 2-member set, which `only` then reports as
+    /// non-singleton, so `required`-literal extraction yields "" and the query
+    /// soundly falls back to a full scan (trigrams are case-sensitive). Idempotent
+    /// — safe to re-apply to a shared (DAG) node.
+    pub fn foldCase(self: *ByteSet) void {
+        var c: u8 = 'a';
+        while (c <= 'z') : (c += 1) {
+            const up = c - ('a' - 'A');
+            if (self.has(c)) self.set(up);
+            if (self.has(up)) self.set(c);
+        }
+    }
 };
+
+/// Recursively ASCII case-fold every consuming class in the AST so the compiled
+/// engine (NFA · DFA · Pike alike) matches case-insensitively — the `-i` flag.
+/// Zero-width assertions and structure are untouched. The AST is a DAG (`{n,m}`
+/// shares its atom pointer across copies); `foldCase` is idempotent, so
+/// re-visiting a shared node is harmless.
+pub fn foldCaseAst(n: *Node) void {
+    switch (n.*) {
+        .class => |*s| s.foldCase(),
+        .concat, .alt => |kids| {
+            foldCaseAst(kids[0]);
+            foldCaseAst(kids[1]);
+        },
+        .star, .plus, .quest => |kid| foldCaseAst(kid),
+        .capture => |g| foldCaseAst(g.child),
+        .empty, .anchor_start, .anchor_end, .word_boundary, .not_word_boundary => {},
+    }
+}
 
 pub const Node = union(enum) {
     empty,
@@ -61,7 +93,18 @@ pub const Node = union(enum) {
     star: *Node,
     plus: *Node,
     quest: *Node,
+    // A capturing group `(child)` tagged with its 1-based group index. STRUCTURALLY
+    // TRANSPARENT to the match engine (the main compiler + every analysis lower it
+    // exactly like its child, so the DFA/Pike boolean semantics are unchanged); the
+    // idx is consumed only by the separate capture VM in `captures.zig`, which needs
+    // group boundaries for `-r`/`--json`.
+    capture: struct { idx: u32, child: *Node },
 };
+
+/// A `(?P<name>…)` / `(?<name>…)` group's name paired with its 1-based index —
+/// recorded only when the parser is given a `names` sink (the capture VM), so the
+/// hot main-engine parse allocates nothing extra.
+pub const NamedCap = struct { name: []const u8, idx: u32 };
 
 /// A compiled Thompson-NFA instruction (the flat program `core.zig`'s compiler
 /// emits and both the Pike VM and the lazy DFA execute). Lives here, beside the
@@ -83,6 +126,12 @@ pub const Parser = struct {
     src: []const u8,
     pos: usize = 0,
     arena: std.mem.Allocator,
+    /// Running count of capturing groups seen (assigns 1-based group indices in
+    /// opening-paren order — PCRE/rust-regex numbering).
+    ncaps: u32 = 0,
+    /// Optional sink for `(?P<name>…)` / `(?<name>…)` names. Null on the main-engine
+    /// parse (names are irrelevant there); set by the capture VM's parse.
+    names: ?*std.ArrayList(NamedCap) = null,
 
     fn peek(p: *Parser) ?u8 {
         return if (p.pos < p.src.len) p.src[p.pos] else null;
@@ -214,15 +263,67 @@ pub const Parser = struct {
         return result orelse p.node(.empty);
     }
 
+    /// Read a group name up to (and consuming) the closing `>` — the `<` already
+    /// consumed. Returns the name slice into `src`.
+    fn nameUntilGt(p: *Parser) ParseError![]const u8 {
+        const s = p.pos;
+        while (p.peek()) |ch| {
+            if (ch == '>') {
+                const nm = p.src[s..p.pos];
+                _ = p.take();
+                return nm;
+            }
+            _ = p.take();
+        }
+        return ParseError.BadPattern;
+    }
+
     fn parseAtom(p: *Parser) ParseError!*Node {
         const c = p.peek() orelse return ParseError.BadPattern;
         switch (c) {
             '(' => {
                 _ = p.take();
+                // Group flavor: a plain `(…)` and named `(?P<n>…)`/`(?<n>…)` groups
+                // CAPTURE (get a 1-based index, recorded structurally so the capture
+                // VM can extract them); `(?:…)` is non-capturing. Lookaround
+                // (`(?=`,`(?!`,`(?<=`,`(?<!`) needs backtracking gist's linear engine
+                // can't do → BadPattern.
+                var capturing = true;
+                var name: ?[]const u8 = null;
+                if (p.peek() == '?') {
+                    _ = p.take();
+                    switch (p.peek() orelse return ParseError.BadPattern) {
+                        ':' => {
+                            _ = p.take();
+                            capturing = false;
+                        },
+                        'P' => { // (?P<name>…) or (?P=name) backref (unsupported)
+                            _ = p.take();
+                            if (p.peek() != '<') return ParseError.BadPattern;
+                            _ = p.take();
+                            name = try p.nameUntilGt();
+                        },
+                        '<' => { // (?<name>…) — but (?<= / (?<! are lookbehind
+                            _ = p.take();
+                            if (p.peek() == '=' or p.peek() == '!') return ParseError.BadPattern;
+                            name = try p.nameUntilGt();
+                        },
+                        else => return ParseError.BadPattern, // (?=,(?!,inline flags
+                    }
+                }
+                // Assign the group index BEFORE parsing the body so nested groups
+                // number after their enclosing one (opening-paren order).
+                var idx: u32 = 0;
+                if (capturing) {
+                    p.ncaps += 1;
+                    idx = p.ncaps;
+                    if (name) |nm| if (p.names) |lst| lst.append(p.arena, .{ .name = nm, .idx = idx }) catch return ParseError.OutOfMemory;
+                }
                 const inner = try p.parseAlt();
                 if (p.peek() != ')') return ParseError.BadPattern;
                 _ = p.take();
-                return inner;
+                if (!capturing) return inner;
+                return p.node(.{ .capture = .{ .idx = idx, .child = inner } });
             },
             '[' => return p.parseClass(),
             '.' => {
@@ -283,9 +384,51 @@ pub const Parser = struct {
             't' => s.set('\t'),
             'n' => s.set('\n'),
             'r' => s.set('\r'),
+            'f' => s.set(0x0C),
+            'v' => s.set(0x0B),
+            'a' => s.set(0x07),
+            '0' => s.set(0), // NUL (rg's `\0`)
+            'x' => s.set(try p.hexByte()), // \xNN or \x{H..H}
             else => s.set(e), // \. \* \\ \/ … → literal
         }
         return s;
+    }
+
+    /// Decode a `\x` escape at the current position (the `x` already consumed):
+    /// two hex digits `\xNN`, or a braced codepoint `\x{H..H}`. gist is a byte
+    /// engine, so a value > 0xFF is BadPattern (rg's `(?-u)` byte mode).
+    fn hexByte(p: *Parser) ParseError!u8 {
+        var val: u32 = 0;
+        if (p.peek() == '{') {
+            _ = p.take();
+            var got = false;
+            while (p.peek()) |h| : (got = true) {
+                if (h == '}') break;
+                val = val * 16 + @as(u32, hexVal(h) orelse return ParseError.BadPattern);
+                _ = p.take();
+            }
+            if (!got or p.peek() != '}') return ParseError.BadPattern;
+            _ = p.take();
+        } else {
+            var i: usize = 0;
+            while (i < 2) : (i += 1) {
+                const h = p.peek() orelse return ParseError.BadPattern;
+                val = val * 16 + @as(u32, hexVal(h) orelse return ParseError.BadPattern);
+                _ = p.take();
+            }
+        }
+        if (val > 0xFF) return ParseError.BadPattern;
+        return @intCast(val);
+    }
+
+    /// A single hex digit's value, or null if `c` is not `[0-9A-Fa-f]`.
+    fn hexVal(c: u8) ?u4 {
+        return switch (c) {
+            '0'...'9' => @intCast(c - '0'),
+            'a'...'f' => @intCast(c - 'a' + 10),
+            'A'...'F' => @intCast(c - 'A' + 10),
+            else => null,
+        };
     }
 
     fn parseClass(p: *Parser) ParseError!*Node {

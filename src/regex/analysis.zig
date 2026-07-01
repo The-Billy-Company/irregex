@@ -74,6 +74,8 @@ pub fn literalInfo(arena: std.mem.Allocator, node: *Node) ParseError!LitInfo {
             const xi = try literalInfo(arena, x);
             return .{ .exact = null, .prefix = xi.prefix, .suffix = xi.suffix, .best = xi.best };
         },
+        // A capture is transparent — its literal info is exactly its child's.
+        .capture => |g| return literalInfo(arena, g.child),
         // Optional / alternation: nothing is guaranteed to appear.
         .star, .quest, .alt => return .{ .exact = null, .prefix = "", .suffix = "", .best = "" },
     }
@@ -90,6 +92,7 @@ pub fn startsAnchored(node: *Node) bool {
         .concat => |ab| startsAnchored(ab[0]),
         .alt => |ab| startsAnchored(ab[0]) and startsAnchored(ab[1]),
         .plus => |x| startsAnchored(x), // `(^x)+` still starts anchored
+        .capture => |g| startsAnchored(g.child), // transparent
         else => false,
     };
 }
@@ -123,6 +126,7 @@ pub fn requiredAny(arena: std.mem.Allocator, node: *Node) ParseError!?[]const []
             return try requiredAny(arena, ab[1]);
         },
         .plus => |x| return try requiredAny(arena, x),
+        .capture => |g| return try requiredAny(arena, g.child), // transparent
         // multi-byte class, star, quest (match empty), empty, anchors ⇒ no cover.
         else => return null,
     }

@@ -135,6 +135,13 @@ pub fn extsForType(name: []const u8) ?[]const []const u8 {
     return null;
 }
 
+/// Does `path` carry an extension/filename any built-in type recognizes? Backs
+/// `rg -t all` / `-T all` (match/exclude every recognized source type).
+pub fn isKnownType(path: []const u8) bool {
+    for (type_table) |row| for (row.exts) |e| if (std.mem.endsWith(u8, path, e)) return true;
+    return false;
+}
+
 /// The basename (final `/`-delimited component) of a path.
 fn basename(path: []const u8) []const u8 {
     return if (std.mem.lastIndexOfScalar(u8, path, '/')) |s| path[s + 1 ..] else path;
@@ -226,7 +233,18 @@ pub fn globMatch(pat: []const u8, str: []const u8) bool {
 
 /// A glob applies to the basename when it has no `/`, else the full path — the
 /// rule that lets `*.go` match at any depth while `services/**/*.go` is rooted.
-fn globApplies(pat: []const u8, path: []const u8) bool {
+/// A trailing `/` makes it a *directory* glob (gitignore semantics): `asdf/`
+/// matches the dir `asdf` and everything beneath it, at any depth.
+pub fn globApplies(pat: []const u8, path: []const u8) bool {
+    if (pat.len > 1 and pat[pat.len - 1] == '/') {
+        const core = pat[0 .. pat.len - 1];
+        // Match if any ancestor directory of `path` matches the core glob.
+        var i: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, path, i, '/')) |slash| : (i = slash + 1) {
+            if (globApplies(core, path[0..slash])) return true;
+        }
+        return false;
+    }
     return if (std.mem.indexOfScalar(u8, pat, '/') == null)
         globMatch(pat, basename(path))
     else

@@ -29,6 +29,9 @@ pub const Compiler = struct {
             .word_boundary => return self.push(.{ .assert_word_b = next }),
             .not_word_boundary => return self.push(.{ .assert_not_word_b = next }),
             .class => |set| return self.push(.{ .consume = .{ .set = set, .out = next } }),
+            // A capture group is transparent to the boolean engine — lower its child
+            // (the index is only meaningful to the separate capture VM).
+            .capture => |g| return self.compileNode(g.child, next),
             .concat => |ab| {
                 const s2 = try self.compileNode(ab[1], next);
                 return self.compileNode(ab[0], s2);

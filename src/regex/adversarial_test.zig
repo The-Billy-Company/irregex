@@ -95,6 +95,7 @@ const Oracle = struct {
             .quest => |x| bit(pos) | o.matchAt(x, pos),
             .star => |x| o.closure(x, bit(pos)),
             .plus => |x| o.closure(x, o.matchAt(x, pos)),
+            .capture => |g| o.matchAt(g.child, pos), // transparent to matching
         };
         o.memo.put(key, res) catch {};
         return res;

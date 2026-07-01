@@ -42,6 +42,12 @@ pub const Options = struct {
     /// Cap rows emitted per file (0 = unbounded). Mirrors `rg -m`; an agent
     /// rarely needs the 800th hit in a generated file and pays tokens for each.
     max_per_file: usize = 0,
+    /// `--count-matches`: emit `path:N` where N is the number of individual
+    /// (non-overlapping) match spans — distinct from `-c`/`--count`, which
+    /// counts matching *lines*. Aliasing the two (the pre-fix bug) is a
+    /// silent-wrong result on any line with >1 match (`e` → 165 lines vs 988
+    /// matches); count-matches counts spans via the leftmost-first span engine.
+    count_matches: bool = false,
     before: usize = 0, // `-B`/`-C`: context lines before each match
     after: usize = 0, // `-A`/`-C`: context lines after each match
     word: bool = false, // `-w`: wrap the pattern in `\b(…)\b`
@@ -93,11 +99,12 @@ fn badVal(flag: []const u8) ?Parsed {
 }
 
 const supported =
-    "supported flags: -i -w -F -l -c -v -o -n -N -S -H -m N -A N -B N -C N " ++
+    "supported flags: -i -w -F -l -c -v -o -n -N -S -H -u -m N -A N -B N -C N " ++
     "-r <template> -t <lang> -g <glob> -e <pat> --  ·  long: --ignore-case --word-regexp " ++
-    "--fixed-strings --files-with-matches --count --invert-match --only-matching " ++
+    "--fixed-strings --files-with-matches --count --count-matches --invert-match --only-matching " ++
     "--no-line-number --smart-case --files --no-heading --color[=X] --replace=<template> " ++
     "--after/before/context=N --max-count=N --type=<lang> --glob=<glob> --regexp=<pat> " ++
+    " ·  no-ops (gist already does): --hidden --no-ignore[-vcs/-parent/-dot] -u/--unrestricted --sort <key>" ++
     " ·  positional PATH args scope the search  ·  leading inline flags (?i)/(?-u)/(?m) honored";
 
 /// The mutable parse state threaded through both the short-cluster and long-flag
@@ -158,6 +165,14 @@ fn parseShortCluster(sink: Sink, arg: []const u8, i: *usize, all: []const []cons
             'S' => sink.opts.smart_case = true,
             // no-ops: gist's fixed `path:line:text` model already implies these.
             'n', 'H', 'R', 's' => {},
+            // `-u`/`-uu` (`--unrestricted`): rg widens its corpus toward gist's
+            // policy (search `.gitignore`d + hidden files). gist ALREADY does
+            // this (its corpus ignores `.gitignore` and includes dotfiles — see
+            // README "Scope vs ripgrep"), so the flag is a no-op, not an error.
+            'u' => {},
+            // recognized-but-unsupportable short flags: fail loud with the why.
+            'P' => return unsupported("-P", why_pcre),
+            'U' => return unsupported("-U", why_multiline),
             // ── value flags: consume the rest of the cluster (or next token) ──
             'r' => {
                 sink.opts.replace = takeVal(arg, j, i, all) orelse return valErr("-r");
@@ -207,6 +222,19 @@ fn valErr(flag: []const u8) bool {
     return false;
 }
 
+/// A flag gist *recognizes* but genuinely cannot honor (a different engine or
+/// output model). Fail LOUD with the specific reason + the `rg` fallback — never
+/// a silent wrong result, and never the generic "unknown flag" dump that leaves
+/// an agent guessing whether it typo'd or hit a real limit. Returns false so the
+/// caller bubbles the fail-loud exit.
+fn unsupported(flag: []const u8, why: []const u8) bool {
+    std.debug.print("flag {s} unsupported — {s}\n", .{ flag, why });
+    return false;
+}
+const why_pcre = "gist runs a linear-time RE2-style engine (no backreferences or lookaround); use `rg -P <pat>` for a PCRE2 pattern";
+const why_multiline = "gist matches per line (byte-oriented); use `rg -U <pat>` for a pattern that must span line boundaries";
+const why_structured = "gist emits fixed `path:line:text` rows; use `rg --json`/`--vimgrep` for a structured or column-annotated format";
+
 /// Split a `--name=value` long flag; `.val` is null for the bare `--name`.
 const Long = struct { name: []const u8, val: ?[]const u8 };
 fn splitLong(arg: []const u8) Long {
@@ -236,9 +264,32 @@ fn parseLong(sink: Sink, arg: []const u8, i: *usize, all: []const []const u8) !b
     }.get;
 
     const eq = std.mem.eql;
-    if (eq(u8, lf.name, "ignore-case")) sink.opts.caseless = true else if (eq(u8, lf.name, "word-regexp")) sink.opts.word = true else if (eq(u8, lf.name, "fixed-strings")) sink.opts.fixed = true else if (eq(u8, lf.name, "files-with-matches")) sink.opts.files_only = true else if (eq(u8, lf.name, "count") or eq(u8, lf.name, "count-matches")) sink.opts.count_only = true else if (eq(u8, lf.name, "invert-match")) sink.opts.invert = true else if (eq(u8, lf.name, "only-matching")) sink.opts.only_matching = true else if (eq(u8, lf.name, "files")) sink.opts.files_list = true else if (eq(u8, lf.name, "no-line-number")) sink.opts.no_line_num = true else if (eq(u8, lf.name, "smart-case")) sink.opts.smart_case = true else if (eq(u8, lf.name, "line-number") or eq(u8, lf.name, "no-heading") or eq(u8, lf.name, "heading") or eq(u8, lf.name, "with-filename") or eq(u8, lf.name, "no-filename") or eq(u8, lf.name, "recursive") or eq(u8, lf.name, "case-sensitive") or eq(u8, lf.name, "color")) {
-        // no-ops (gist has one fixed output model). `--color[=X]` swallows an X.
+    if (eq(u8, lf.name, "ignore-case")) sink.opts.caseless = true else if (eq(u8, lf.name, "word-regexp")) sink.opts.word = true else if (eq(u8, lf.name, "fixed-strings")) sink.opts.fixed = true else if (eq(u8, lf.name, "files-with-matches")) sink.opts.files_only = true else if (eq(u8, lf.name, "count")) sink.opts.count_only = true else if (eq(u8, lf.name, "count-matches")) sink.opts.count_matches = true else if (eq(u8, lf.name, "invert-match")) sink.opts.invert = true else if (eq(u8, lf.name, "only-matching")) sink.opts.only_matching = true else if (eq(u8, lf.name, "files")) sink.opts.files_list = true else if (eq(u8, lf.name, "no-line-number")) sink.opts.no_line_num = true else if (eq(u8, lf.name, "smart-case")) sink.opts.smart_case = true else if (eq(u8, lf.name, "line-number") or eq(u8, lf.name, "no-heading") or eq(u8, lf.name, "heading") or eq(u8, lf.name, "with-filename") or eq(u8, lf.name, "no-filename") or eq(u8, lf.name, "recursive") or eq(u8, lf.name, "case-sensitive") or eq(u8, lf.name, "color") or
+        // Corpus-policy no-ops: rg flags that widen its default corpus toward
+        // what gist ALREADY searches — `.gitignore`d files, hidden dotfiles (see
+        // README "Scope vs ripgrep"). gist's corpus is a superset, so asking for
+        // these is asking for what it already does. An agent pastes them
+        // reflexively; erroring forced a fallback to rg. (`-uuu`'s extra
+        // "search binary files too" is the one documented divergence — gist
+        // skips NUL-bearing files, same as its indexer.)
+        eq(u8, lf.name, "hidden") or eq(u8, lf.name, "no-ignore") or eq(u8, lf.name, "no-ignore-vcs") or eq(u8, lf.name, "no-ignore-parent") or eq(u8, lf.name, "no-ignore-dot") or eq(u8, lf.name, "no-ignore-global") or eq(u8, lf.name, "no-ignore-files") or eq(u8, lf.name, "unrestricted") or eq(u8, lf.name, "one-file-system") or eq(u8, lf.name, "stats"))
+    {
+        // no-ops (gist has one fixed output model / already-superset corpus).
+        // `--color[=X]` swallows an X.
         if (lf.val == null and eq(u8, lf.name, "color")) _ = nextTok(i, all);
+    } else if (eq(u8, lf.name, "sort") or eq(u8, lf.name, "sortr")) {
+        // gist emits results **path-ascending** already (a stable, deterministic
+        // order — see runGrep's `cmpBlocks` sort). `--sort path` is exactly that,
+        // so it's a no-op; other keys (`modified`/`created`/`accessed`) and
+        // `--sortr` reverse can't be honored from the index, but path order is
+        // the overwhelmingly common agent request. Swallow the value, keep going.
+        _ = val(lf.val, i, all, nextTok) orelse return valErr("--sort");
+    } else if (eq(u8, lf.name, "pcre2") or eq(u8, lf.name, "auto-hybrid-regex")) {
+        return unsupported(arg, why_pcre);
+    } else if (eq(u8, lf.name, "multiline") or eq(u8, lf.name, "multiline-dotall")) {
+        return unsupported(arg, why_multiline);
+    } else if (eq(u8, lf.name, "json") or eq(u8, lf.name, "vimgrep") or eq(u8, lf.name, "column")) {
+        return unsupported(arg, why_structured);
     } else if (eq(u8, lf.name, "after-context")) {
         sink.opts.after = parseUsize(val(lf.val, i, all, nextTok) orelse return valErr("--after-context")) orelse return valErr("--after-context");
     } else if (eq(u8, lf.name, "before-context")) {

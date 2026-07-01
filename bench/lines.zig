@@ -305,6 +305,11 @@ fn grepShard(sh: *Shard) void {
     defer lines_buf.deinit(sh.gpa);
     var sim_files = Regex.Sim.init(sh.gpa, sh.re) catch return; // for -l/-c fast path
     defer sim_files.deinit();
+    // `--count-matches` counts individual match SPANS (not matching lines), so it
+    // needs the span engine, not `lineMatch`. Init once per shard, reused across
+    // files; only paid when the flag is set (the common path allocates nothing).
+    var span_sim: ?Regex.SpanSim = if (sh.opts.count_matches) (Regex.SpanSim.init(sh.gpa, sh.re) catch return) else null;
+    defer if (span_sim) |*s| s.deinit();
 
     for (sh.ids) |d| {
         const path = sh.paths[d];
@@ -323,8 +328,38 @@ fn grepShard(sh: *Shard) void {
         lines_buf.clearRetainingCapacity();
         collectLines(sh.gpa, buf, &lines_buf) catch continue;
 
-        // `-l` / `-c`: no line bodies, so count matches (or stop at the first).
-        if (sh.opts.files_only or sh.opts.count_only) {
+        // `--count-matches`: count individual (non-overlapping, leftmost-first)
+        // match spans, not matching lines — the semantic `-c`/`--count` can't
+        // express. Invert (`-v`) has no per-line span to count, so rg falls back
+        // to counting non-matching *lines* there; we do the same via the `-c`
+        // path below (count_matches+invert ⇒ line semantics).
+        if (sh.opts.count_matches and !sh.opts.invert) {
+            var total: usize = 0;
+            for (lines_buf.items) |line| {
+                var from: usize = 0;
+                while (from <= line.len) {
+                    const span = sh.re.matchSpan(&span_sim.?, line, from) orelse break;
+                    if (span.end == span.start) { // zero-width: step past to avoid a loop
+                        from = span.start + 1;
+                        continue;
+                    }
+                    total += 1;
+                    if (sh.opts.max_per_file != 0 and total >= sh.opts.max_per_file) break;
+                    from = span.end;
+                }
+                if (sh.opts.max_per_file != 0 and total >= sh.opts.max_per_file) break;
+            }
+            if (total == 0) continue;
+            var body: std.ArrayList(u8) = .empty;
+            body.print(sh.gpa, "{s}:{d}\n", .{ path, total }) catch {};
+            sh.lines += total;
+            sh.out.append(sh.gpa, .{ .path = path, .body = body }) catch body.deinit(sh.gpa);
+            continue;
+        }
+
+        // `-l` / `-c` (and `--count-matches -v`): no line bodies, so count
+        // matching lines (or stop at the first).
+        if (sh.opts.files_only or sh.opts.count_only or sh.opts.count_matches) {
             var hits: usize = 0;
             for (lines_buf.items) |line| {
                 if (sh.re.lineMatch(&sim_files, line) == sh.opts.invert) continue;
@@ -333,7 +368,7 @@ fn grepShard(sh: *Shard) void {
             }
             if (hits == 0) continue;
             var body: std.ArrayList(u8) = .empty;
-            if (sh.opts.count_only)
+            if (sh.opts.count_only or sh.opts.count_matches)
                 body.print(sh.gpa, "{s}:{d}\n", .{ path, hits }) catch {}
             else
                 body.print(sh.gpa, "{s}\n", .{path}) catch {};
