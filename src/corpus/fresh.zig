@@ -21,9 +21,8 @@
 //! no working-tree diff yet differs from our pre-commit index.
 
 const std = @import("std");
-const gist = @import("gist");
 const corpus_mod = @import("corpus.zig");
-const Index = gist.trigram.Index;
+const Index = @import("../index/trigram.zig").Index;
 const Dir = std.Io.Dir;
 
 const anchor_file = corpus_mod.out_dir ++ "/built.ns";

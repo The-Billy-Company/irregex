@@ -6,7 +6,7 @@
 //! and positional path scoping, plus the fail-loud contract for real errors.
 
 const std = @import("std");
-const ga = @import("grepargs.zig");
+const ga = @import("args.zig");
 const expect = std.testing.expect;
 const eqs = std.mem.eql;
 const A = std.testing.allocator;

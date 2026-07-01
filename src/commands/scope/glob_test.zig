@@ -5,9 +5,10 @@
 //! backtracking, and assert the type table against the real repo's languages.
 
 const std = @import("std");
-const pf = @import("pathfilter.zig");
-const globMatch = pf.globMatch;
-const PathFilter = pf.PathFilter;
+const glob = @import("glob.zig");
+const types = @import("types.zig");
+const globMatch = glob.globMatch;
+const PathFilter = glob.PathFilter;
 const expect = std.testing.expect;
 
 test "literal and single-star within a segment" {
@@ -107,10 +108,10 @@ test "positional roots: dir prefix, exact file, whole-corpus '.', boundary" {
 }
 
 test "normalizeRoot strips leading ./ and trailing /" {
-    try expect(std.mem.eql(u8, pf.normalizeRoot("./services/"), "services"));
-    try expect(std.mem.eql(u8, pf.normalizeRoot("libs/x/"), "libs/x"));
-    try expect(std.mem.eql(u8, pf.normalizeRoot("services"), "services"));
-    try expect(std.mem.eql(u8, pf.normalizeRoot("."), "."));
+    try expect(std.mem.eql(u8, glob.normalizeRoot("./services/"), "services"));
+    try expect(std.mem.eql(u8, glob.normalizeRoot("libs/x/"), "libs/x"));
+    try expect(std.mem.eql(u8, glob.normalizeRoot("services"), "services"));
+    try expect(std.mem.eql(u8, glob.normalizeRoot("."), "."));
 }
 
 test "empty filter admits everything and prunes nothing" {
@@ -134,7 +135,7 @@ test "prune keeps only admitted ids, order-preserving" {
 test "type table spans the mainstream language ecosystem, not just the repo" {
     // The repo's seven + aliases…
     for ([_][]const u8{ "go", "py", "python", "rust", "rs", "ts", "typescript", "swift", "zig", "sql", "proto" }) |t|
-        try expect(pf.extsForType(t) != null);
+        try expect(types.extsForType(t) != null);
     // …and the wider world, so gist scopes on ANY codebase, not only Billy's.
     for ([_][]const u8{
         "java",   "kotlin", "scala",   "clojure", "cs",        "csharp", "fsharp",
@@ -142,20 +143,20 @@ test "type table spans the mainstream language ecosystem, not just the repo" {
         "elixir", "erlang", "haskell", "ocaml",   "c",         "cpp",    "cuda",
         "objc",   "html",   "css",     "json",    "yaml",      "toml",   "xml",
         "make",   "cmake",  "bazel",   "docker",  "terraform", "nix",    "graphql",
-    }) |t| try expect(pf.extsForType(t) != null);
-    try expect(pf.extsForType("cobol") == null); // unknown ⇒ null ⇒ caller errors
+    }) |t| try expect(types.extsForType(t) != null);
+    try expect(types.extsForType("cobol") == null); // unknown ⇒ null ⇒ caller errors
 }
 
 test "bare-filename type rows match by suffix (Makefile, Dockerfile, go.mod)" {
     // A row may list a dotless filename; `admits` is a plain suffix test, so it
     // catches build files that have no extension — what rg's filename globs do.
-    const mk = PathFilter{ .exts = pf.extsForType("make").? };
+    const mk = PathFilter{ .exts = types.extsForType("make").? };
     try expect(mk.admits("services/Makefile"));
     try expect(mk.admits("scripts/mk/lint.mk"));
     try expect(!mk.admits("services/main.go"));
-    const dk = PathFilter{ .exts = pf.extsForType("docker").? };
+    const dk = PathFilter{ .exts = types.extsForType("docker").? };
     try expect(dk.admits("infra/docker/Dockerfile"));
-    const go = PathFilter{ .exts = pf.extsForType("go").? };
+    const go = PathFilter{ .exts = types.extsForType("go").? };
     try expect(go.admits("services/api/go.mod"));
     try expect(go.admits("services/api/main.go"));
 }

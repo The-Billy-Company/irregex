@@ -1,6 +1,6 @@
 //! gist `rg` — a ripgrep-DEFAULT drop-in over an arbitrary directory tree.
 //!
-//! WHY THIS EXISTS (distinct from `grep` in lines.zig): the agent-facing `grep`
+//! WHY THIS EXISTS (distinct from the `grep` verb in `../grep/`): the agent-facing `grep`
 //! verb searches the persisted **monorepo index** and always emits
 //! `path:line:text` (its documented contract). To *prove* gist is a genuine
 //! ripgrep drop-in against ripgrep's own integration suite — which creates a
@@ -10,7 +10,7 @@
 //!     prints no `path:` prefix), `-H` forces it, `--no-filename`/`-I` suppress;
 //!   • line numbers OFF by default, `-n` turns them on;
 //!   • `:` frames a match line, `-` a context line, `--` separates groups;
-//!   • `-t/-T/-g/--glob/--iglob` scope by type/glob (reusing `pathfilter.zig`);
+//!   • `-t/-T/-g/--glob/--iglob` scope by type/glob (reusing `../scope/`);
 //!   • exit 0 = matched, 1 = no match, 2 = error/unsupported (ripgrep's codes).
 //! It reuses gist's regex engine verbatim (one linear-time RE2-style matcher, no
 //! second code path) — this module is the walk + presentation shell that makes
@@ -22,17 +22,16 @@
 //! divergence explicitly rather than as a correctness failure.
 
 const std = @import("std");
-const gist = @import("gist");
-const corpus_mod = @import("corpus.zig");
-const rgargs = @import("rgargs.zig");
-const rgemit = @import("rgemit.zig");
-const rgignore = @import("rgignore.zig");
-const rgjson = @import("rgjson.zig");
-const Opts = rgargs.Opts;
-const Emitter = rgemit.Emitter;
-const die = rgargs.die;
-const Regex = gist.regex.Regex;
-const Captures = gist.regex_captures.Captures;
+const corpus_mod = @import("../../corpus/corpus.zig");
+const args = @import("args.zig");
+const output = @import("output.zig");
+const ignore = @import("ignore.zig");
+const json = @import("json.zig");
+const Opts = args.Opts;
+const Emitter = output.Emitter;
+const die = args.die;
+const Regex = @import("../../regex/core.zig").Regex;
+const Captures = @import("../../regex/captures.zig").Captures;
 const Dir = std.Io.Dir;
 
 // ─────────────────────────── file gathering ───────────────────────────
@@ -144,7 +143,7 @@ fn diskPath(a: std.mem.Allocator, root_path: []const u8, p: []const u8) []const 
     return if (std.mem.eql(u8, root_path, ".")) a.dupe(u8, p) catch die("oom\n", .{}) else std.fmt.allocPrint(a, "{s}/{s}", .{ root_path, p }) catch die("oom\n", .{});
 }
 
-fn walkDir(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix: []const u8, o: Opts, ig: *rgignore.Ignore, out: *std.ArrayList(InFile)) void {
+fn walkDir(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix: []const u8, o: Opts, ig: *ignore.Ignore, out: *std.ArrayList(InFile)) void {
     ig.loadDir(root_path, prefix);
     walkDirLinked(a, io, root_path, prefix, o, ig, out, 0);
 }
@@ -153,7 +152,7 @@ fn walkDir(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix: []co
 /// depth is enough for a one-shot walk and can't loop forever on a symlink cycle).
 const max_link_depth: usize = 40;
 
-fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix: []const u8, o: Opts, ig: *rgignore.Ignore, out: *std.ArrayList(InFile), link_depth: usize) void {
+fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix: []const u8, o: Opts, ig: *ignore.Ignore, out: *std.ArrayList(InFile), link_depth: usize) void {
     var root = Dir.cwd().openDir(io, root_path, .{ .iterate = true }) catch return;
     defer root.close(io);
     var walker = root.walkSelectively(a) catch return;
@@ -183,7 +182,7 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
         }
         if (entry.kind == .directory) {
             // rg's DEFAULT walk descends everything except hidden dirs, `.git`, and
-            // ignored ones (.gitignore/.ignore — see rgignore.zig). It does NOT
+            // ignored ones (.gitignore/.ignore — see ignore.zig). It does NOT
             // hardcode node_modules/target skips (that's gist's monorepo-corpus
             // policy in corpus.zig, wrong for an arbitrary-tree drop-in).
             if (ig.shouldSkip(rel, true, entry.basename)) continue;
@@ -202,7 +201,7 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
     }
 }
 
-fn gather(a: std.mem.Allocator, io: std.Io, roots: []const []const u8, o: Opts, ig: *rgignore.Ignore, out: *std.ArrayList(InFile)) bool {
+fn gather(a: std.mem.Allocator, io: std.Io, roots: []const []const u8, o: Opts, ig: *ignore.Ignore, out: *std.ArrayList(InFile)) bool {
     if (roots.len == 0) {
         walkDir(a, io, ".", "", o, ig, out);
         return true;
@@ -228,10 +227,10 @@ fn gather(a: std.mem.Allocator, io: std.Io, roots: []const []const u8, o: Opts, 
 /// Gather → type/glob filter → path-sort → apply --path-separator. Shared by the
 /// search path and `--files`.
 const Collected = struct { files: []InFile, recursive: bool };
-fn collectFiles(a: std.mem.Allocator, io: std.Io, parsed: rgargs.Parsed) Collected {
+fn collectFiles(a: std.mem.Allocator, io: std.Io, parsed: args.Parsed) Collected {
     const o = parsed.opts;
     var all: std.ArrayList(InFile) = .empty;
-    var ig = rgignore.Ignore.init(a, io, o, parsed.roots);
+    var ig = ignore.Ignore.init(a, io, o, parsed.roots);
     const recursive = gather(a, io, parsed.roots, o, &ig, &all);
     var files: std.ArrayList(InFile) = .empty;
     for (all.items) |f| {
@@ -253,7 +252,7 @@ fn collectFiles(a: std.mem.Allocator, io: std.Io, parsed: rgargs.Parsed) Collect
 /// source) — ripgrep matches nothing (and everything under `-v`); the caller
 /// handles that without the engine. An empty pattern LINE is kept (it's a valid
 /// empty pattern = match-all), only the phantom line after a trailing `\n` drops.
-fn combinePatterns(a: std.mem.Allocator, io: std.Io, parsed: rgargs.Parsed) ?[]const u8 {
+fn combinePatterns(a: std.mem.Allocator, io: std.Io, parsed: args.Parsed) ?[]const u8 {
     var pats: std.ArrayList([]const u8) = .empty;
     pats.appendSlice(a, parsed.patterns) catch die("oom\n", .{});
     for (parsed.pattern_files) |pf| {
@@ -318,12 +317,12 @@ fn readStdin(a: std.mem.Allocator) []const u8 {
 
 // ─────────────────────────── run ───────────────────────────
 
-pub fn run(gpa: std.mem.Allocator, io: std.Io, args: []const []const u8) !void {
+pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8) !void {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const a = arena_state.allocator();
 
-    const parsed = rgargs.parseArgv(a, args);
+    const parsed = args.parseArgv(a, argv);
     var o = parsed.opts;
 
     // Honest deferrals: recognized flags gist doesn't yet emit byte-identically.
@@ -383,10 +382,10 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, args: []const []const u8) !void {
 
     // --json: ripgrep's JSON Lines record stream (own printer, shared engine).
     if (o.json) {
-        var jf: std.ArrayList(rgjson.File) = .empty;
+        var jf: std.ArrayList(json.File) = .empty;
         for (files) |f| jf.append(a, .{ .path = f.path, .body = stripBom(f.bytes) }) catch die("oom\n", .{});
         var out: std.ArrayList(u8) = .empty;
-        const matched = rgjson.run(a, &out, &re, caps, o, jf.items);
+        const matched = json.run(a, &out, &re, caps, o, jf.items);
         corpus_mod.emitStdout(out.items);
         std.process.exit(if (matched) 0 else 1);
     }
@@ -585,7 +584,7 @@ fn fileMatchStats(re: *const Regex, a: std.mem.Allocator, o: Opts, body: []const
                 from = sp.start + 1;
                 continue;
             }
-            if (o.word and !rgemit.wordOk(mv, sp.start, sp.end)) {
+            if (o.word and !output.wordOk(mv, sp.start, sp.end)) {
                 from = sp.end;
                 continue;
             }

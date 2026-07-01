@@ -1,6 +1,6 @@
 //! gist ranking signals — the language-agnostic, byte-level heuristics the T4
-//! ranker (`src/rank.zig`) consumes as `Doc` features. Two questions, answered
-//! from raw bytes with no parser:
+//! ranker (sibling `rank.zig`) consumes as `Doc` features. Two questions,
+//! answered from raw bytes with no parser:
 //!
 //!   • **`definesNeedle`** — does this line *define* the needle (vs use it)? The
 //!     definition boost is the agent win `grep` can't express: a symbol's decl

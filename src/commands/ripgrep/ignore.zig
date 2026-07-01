@@ -1,12 +1,12 @@
 //! gist `rg` — the gitignore / .ignore / .rgignore filter that makes gist's
 //! directory walk honor the same "what's tracked" boundary ripgrep does.
 //!
-//! Split from `rgcompat.zig` (the walk shell) the way `rgargs`/`rgemit` are: this
+//! Split from `run.zig` (the walk shell) the way `args`/`output` are: this
 //! module owns ONLY the ignore-rule model — parsing `.gitignore`-dialect lines
 //! into anchored/negated/dir-only globs, accumulating them per directory as the
 //! walk descends, and deciding whether a candidate path is ignored. It reuses
-//! `pathfilter.globMatch` for the segment-aware `*`/`**`/`?`/`[…]` matching, so
-//! there is one glob dialect across `-g` scoping and ignore rules.
+//! the shared `scope/glob.zig` matcher for the segment-aware `*`/`**`/`?`/`[…]`
+//! matching, so there is one glob dialect across `-g` scoping and ignore rules.
 //!
 //! Semantics implemented (ripgrep/git parity):
 //!   • a leading or embedded `/` anchors the pattern to the ignore file's dir;
@@ -19,10 +19,10 @@
 //!     unless `--no-require-git`; `--no-ignore*` / `-u` disable the relevant tier.
 
 const std = @import("std");
-const pathfilter = @import("pathfilter.zig");
-const rgargs = @import("rgargs.zig");
-const die = rgargs.die;
-const Opts = rgargs.Opts;
+const gl = @import("../scope/glob.zig");
+const args = @import("args.zig");
+const die = args.die;
+const Opts = args.Opts;
 const Dir = std.Io.Dir;
 
 /// One compiled ignore rule. `glob` is the pattern core (leading `/` and trailing
@@ -261,8 +261,8 @@ pub const Ignore = struct {
     }
 
     fn glob(self: *const Ignore, pat: []const u8, str: []const u8) bool {
-        if (!self.o.ignore_case_insensitive) return pathfilter.globMatch(pat, str);
-        return pathfilter.globMatch(lower(self.a, pat), lower(self.a, str));
+        if (!self.o.ignore_case_insensitive) return gl.globMatch(pat, str);
+        return gl.globMatch(lower(self.a, pat), lower(self.a, str));
     }
 };
 

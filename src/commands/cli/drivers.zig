@@ -18,18 +18,16 @@
 //! degenerates to a full read, like rg — the one case we merely match it.)
 
 const std = @import("std");
-const gist = @import("gist");
-const corpus_mod = @import("corpus.zig");
-const simd = @import("simd.zig");
-const fresh = @import("fresh.zig");
-const scan = @import("scan.zig");
-const signals = @import("signals.zig");
-const Index = gist.trigram.Index;
-const Regex = gist.regex.Regex;
+const corpus_mod = @import("../../corpus/corpus.zig");
+const fresh = @import("../../corpus/fresh.zig");
+const simd = @import("../../scan/simd.zig");
+const scan = @import("../../scan/sweep.zig");
+const persist = @import("../../index/persist.zig");
+const signals = @import("../../rank/signals.zig");
+const rank_mod = @import("../../rank/rank.zig");
+const Index = @import("../../index/trigram.zig").Index;
+const Regex = @import("../../regex/core.zig").Regex;
 const Dir = std.Io.Dir;
-
-const index_file = corpus_mod.out_dir ++ "/index.gist";
-const paths_file = corpus_mod.out_dir ++ "/paths.list";
 
 fn nowNs(io: std.Io) i128 {
     return std.Io.Clock.now(.awake, io).nanoseconds;
@@ -145,7 +143,7 @@ pub fn runIndex(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !
     const blob = try gpa.alloc(u8, idx.serializedSize());
     defer gpa.free(blob);
     _ = idx.writeInto(blob);
-    try Dir.cwd().writeFile(io, .{ .sub_path = index_file, .data = blob });
+    try Dir.cwd().writeFile(io, .{ .sub_path = persist.index_file, .data = blob });
 
     var pl: std.ArrayList(u8) = .empty;
     defer pl.deinit(gpa);
@@ -153,7 +151,7 @@ pub fn runIndex(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !
         try pl.appendSlice(gpa, p);
         try pl.append(gpa, 0);
     }
-    try Dir.cwd().writeFile(io, .{ .sub_path = paths_file, .data = pl.items });
+    try Dir.cwd().writeFile(io, .{ .sub_path = persist.paths_file, .data = pl.items });
     try fresh.writeAnchor(io, built_ns); // T3 freshness anchor
 
     std.debug.print("indexed {d} files · {d:.1} MiB corpus · {d:.1} MiB index · {d:.0} ms → {s}\n", .{
@@ -163,65 +161,6 @@ pub fn runIndex(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !
         ms(nowNs(io) - t0),
         corpus_mod.out_dir,
     });
-}
-
-/// A read-only, page-aligned file mapping (zero-copy view of the bytes on disk).
-const Mapping = []align(std.heap.page_size_min) const u8;
-
-/// mmap a whole file read-only. The mapping survives the fd close (POSIX), and
-/// the OS faults in only the pages actually touched — so "loading" a 100+ MiB
-/// index is O(header) instead of a full read-into-heap + alloc + memcpy. This
-/// is the cold-load win: the binary search probes a handful of pages (warm in
-/// the page cache), not the whole table. A genuinely empty file is rejected
-/// (`mmap` can't map zero length, and a 0-byte index is corruption anyway).
-fn mmapFile(io: std.Io, path: []const u8) !Mapping {
-    const file = try Dir.cwd().openFile(io, path, .{}); // .read_only default
-    defer file.close(io);
-    const len: usize = @intCast((try file.stat(io)).size);
-    if (len == 0) return error.EmptyFile;
-    return std.posix.mmap(null, len, .{ .READ = true }, .{ .TYPE = .PRIVATE }, file.handle, 0);
-}
-
-/// The cold-loaded index + the doc→path table that maps candidate ids back to
-/// files. Both are mmap'd: `idx.postings` aliases into `imap` (borrowed, no
-/// copy) and every `paths` slice aliases into `pmap`, so all lifetimes bind to
-/// the two mappings and `deinit` simply unmaps them.
-pub const Persisted = struct {
-    imap: Mapping,
-    pmap: Mapping,
-    idx: Index,
-    paths: std.ArrayList([]const u8),
-    gpa: std.mem.Allocator,
-
-    pub fn deinit(self: *Persisted) void {
-        self.paths.deinit(self.gpa);
-        self.idx.deinit(); // borrowed ⇒ frees nothing
-        std.posix.munmap(self.pmap);
-        std.posix.munmap(self.imap);
-    }
-};
-
-/// Cold-load the persisted index + doc→path table by mmap (zero-copy). Returns
-/// null (after printing guidance) when no index has been built yet — the one
-/// expected miss. Paths are NUL-separated in doc-id order; the list is pre-sized
-/// from the NUL count so the split is one allocation.
-pub fn loadPersisted(gpa: std.mem.Allocator, io: std.Io) !?Persisted {
-    const imap = mmapFile(io, index_file) catch {
-        std.debug.print("no index at {s} — run `zig build cli -- index` first\n", .{index_file});
-        return null;
-    };
-    errdefer std.posix.munmap(imap);
-    var idx = try Index.fromMappedBytes(imap);
-    errdefer idx.deinit();
-
-    const pmap = try mmapFile(io, paths_file);
-    errdefer std.posix.munmap(pmap);
-    var paths: std.ArrayList([]const u8) = .empty;
-    errdefer paths.deinit(gpa);
-    try paths.ensureTotalCapacity(gpa, std.mem.count(u8, pmap, &[_]u8{0}) + 1);
-    var pit = std.mem.splitScalar(u8, pmap, 0);
-    while (pit.next()) |p| if (p.len > 0) paths.appendAssumeCapacity(p);
-    return .{ .imap = imap, .pmap = pmap, .idx = idx, .paths = paths, .gpa = gpa };
 }
 
 /// Print matching paths (sorted) + the cold timing breakdown — process
@@ -246,11 +185,11 @@ pub fn runQuery(gpa: std.mem.Allocator, io: std.Io, needle: []const u8) !void {
     // A <3 B needle has no trigram filter, so the index would seed every doc AND
     // run the corpus-wide freshness stat-walk — two traversals vs rg's one. Skip
     // the index and scan the live tree once (same win as the no-prefilter regex
-    // tail; see scan.zig). The live read is inherently fresh.
+    // tail; see scan/sweep.zig). The live read is inherently fresh.
     if (needle.len < 3) return scan.runLiteralFullScan(gpa, io, needle);
 
     const l0 = nowNs(io);
-    var p = (try loadPersisted(gpa, io)) orelse return;
+    var p = (try persist.load(gpa, io)) orelse return;
     defer p.deinit();
     const load_ns = nowNs(io) - l0;
 
@@ -285,12 +224,12 @@ pub fn runRegex(gpa: std.mem.Allocator, io: std.Io, pattern: []const u8) !void {
     // and running the corpus-wide T3 freshness stat-walk is then pure overhead vs
     // rg's single walk; scan the live tree directly (one traversal, inherently
     // fresh — the read IS the freshness guarantee). This is exactly the
-    // no-prefilter scan tail that used to tie/trail rg, now a win (see scan.zig).
+    // no-prefilter scan tail that used to tie/trail rg, now a win (see scan/sweep.zig).
     if (re.required.len < 3 and re.alts.len == 0)
         return scan.runRegexFullScan(gpa, io, &re);
 
     const l0 = nowNs(io);
-    var p = (try loadPersisted(gpa, io)) orelse return;
+    var p = (try persist.load(gpa, io)) orelse return;
     defer p.deinit();
     const load_ns = nowNs(io) - l0;
 
@@ -315,10 +254,10 @@ pub fn runRegex(gpa: std.mem.Allocator, io: std.Io, pattern: []const u8) !void {
 // `query`/`regex` return an unordered match SET. `rank` turns it into the
 // ranked, token-compressed list an agent actually wants — the *definition* of a
 // symbol first, its call sites below — via the weighted RRF kernel in
-// `src/rank.zig`. Features are extracted per file in a parallel read pass; the
+// `rank/rank.zig`. Features are extracted per file in a parallel read pass; the
 // top-K best lines are then re-read for display.
 
-const Doc = gist.rank.Doc;
+const Doc = rank_mod.Doc;
 
 fn pathDepth(path: []const u8) u16 {
     var d: u16 = 0;
@@ -453,7 +392,7 @@ fn snippetOf(gpa: std.mem.Allocator, io: std.Io, path: []const u8, line: u32) ![
 pub fn runRank(gpa: std.mem.Allocator, io: std.Io, needle: []const u8) !void {
     if (needle.len == 0) return;
     const l0 = nowNs(io);
-    var p = (try loadPersisted(gpa, io)) orelse return;
+    var p = (try persist.load(gpa, io)) orelse return;
     defer p.deinit();
     const load_ns = nowNs(io) - l0;
 
@@ -468,7 +407,7 @@ pub fn runRank(gpa: std.mem.Allocator, io: std.Io, needle: []const u8) !void {
 
     // The fusion: lexical density + symbol(def) boost + shallow-path + authored
     // (codegen demotion), RRF-fused. null is the external graph-centrality hook.
-    const order = try gist.rank.rank(gpa, docs.items, .{}, null);
+    const order = try rank_mod.rank(gpa, docs.items, .{}, null);
     defer gpa.free(order);
     const query_ns = nowNs(io) - q0;
 

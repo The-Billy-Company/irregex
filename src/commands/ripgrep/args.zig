@@ -1,7 +1,7 @@
 //! gist `rg` — the ripgrep-compatible CLI flag surface (parsing only).
 //!
-//! Split from `rgcompat.zig` (the walk + match + emit shell) the same way
-//! `grepargs.zig` splits from `lines.zig`: this module owns the argv → `Opts`
+//! Split from `run.zig` (the walk + match + emit shell) the same way the grep
+//! verb's `args.zig` splits from its `emit.zig`: this module owns the argv → `Opts`
 //! lowering and the type/glob `Filter`, and nothing about IO or matching. It
 //! implements ripgrep's DEFAULT flag semantics — short-flag bundling, `--flag`
 //! and `--flag=value`, `-A/-B` precedence over `-C`, the `-u/-uu` unrestrict
@@ -11,7 +11,8 @@
 //! harness scores those N/A rather than silently wrong.
 
 const std = @import("std");
-const pathfilter = @import("pathfilter.zig");
+const glob = @import("../scope/glob.zig");
+const types = @import("../scope/types.zig");
 
 pub const Filename = enum { auto, always, never };
 
@@ -30,13 +31,13 @@ pub const Filter = struct {
         return self.exts.len > 0 or self.includes.len > 0 or self.iglobs.len > 0 or self.type_all;
     }
     pub fn admits(self: Filter, a: std.mem.Allocator, path: []const u8) bool {
-        for (self.excludes) |g| if (pathfilter.globApplies(g, path)) return false;
+        for (self.excludes) |g| if (glob.globApplies(g, path)) return false;
         for (self.neg_exts) |e| if (std.mem.endsWith(u8, path, e)) return false;
-        if (self.ntype_all and pathfilter.isKnownType(path)) return false;
+        if (self.ntype_all and types.isKnownType(path)) return false;
         if (!self.hasInclude()) return true;
         for (self.exts) |e| if (std.mem.endsWith(u8, path, e)) return true;
-        if (self.type_all and pathfilter.isKnownType(path)) return true;
-        for (self.includes) |g| if (pathfilter.globApplies(g, path)) return true;
+        if (self.type_all and types.isKnownType(path)) return true;
+        for (self.includes) |g| if (glob.globApplies(g, path)) return true;
         for (self.iglobs) |g| if (globAppliesCI(a, g, path)) return true;
         return false;
     }
@@ -150,7 +151,7 @@ fn lowerDup(a: std.mem.Allocator, s: []const u8) []u8 {
     return o;
 }
 fn globAppliesCI(a: std.mem.Allocator, pat: []const u8, path: []const u8) bool {
-    return pathfilter.globApplies(lowerDup(a, pat), lowerDup(a, path));
+    return glob.globApplies(lowerDup(a, pat), lowerDup(a, path));
 }
 
 /// A leading `/` anchors a gitignore-style glob to the search root; gist already
@@ -202,7 +203,7 @@ const Builder = struct {
             (if (negate) &self.excludes else &self.includes).appendSlice(self.a, globs) catch die("oom\n", .{});
             return;
         }
-        const e = pathfilter.extsForType(name) orelse die("unrecognized type: {s}\n", .{name});
+        const e = types.extsForType(name) orelse die("unrecognized type: {s}\n", .{name});
         (if (negate) &self.neg_exts else &self.exts).appendSlice(self.a, e) catch die("oom\n", .{});
     }
     /// Register a `--type-add` spec: `name:glob` appends a glob to `name`; the
@@ -217,7 +218,7 @@ const Builder = struct {
             while (it.next()) |t| {
                 if (self.customGlobs(t)) |g| {
                     globs.appendSlice(self.a, g) catch die("oom\n", .{});
-                } else if (pathfilter.extsForType(t)) |exts| {
+                } else if (types.extsForType(t)) |exts| {
                     for (exts) |e| globs.append(self.a, extToGlob(self.a, e)) catch die("oom\n", .{});
                 } else die("unrecognized type: {s}\n", .{t});
             }
@@ -453,75 +454,153 @@ fn parseShort(b: *Builder, arg: []const u8, i: *usize, all: []const []const u8) 
 /// --no-ignore since gist is ignore-agnostic); `noop_val` = same but swallow the
 /// value; `unsupported` = fail loud (a genuine engine/design divergence).
 const Act = enum {
-    icase, scase, smart, word, fixed, invert, only, lnum, no_lnum, with_fn, no_fn,
-    fwm, fwithout, count, cmatches, hidden, text, unrestrict, column, no_column, byteoff,
-    vimgrep, heading, no_heading, trim, nul, nul_data, xline, quiet, stats, passthru,
-    maxcols_preview, stop_nonmatch, crlf, ml, ml_dotall, json, files, type_list, follow, sort_files,
+    icase,
+    scase,
+    smart,
+    word,
+    fixed,
+    invert,
+    only,
+    lnum,
+    no_lnum,
+    with_fn,
+    no_fn,
+    fwm,
+    fwithout,
+    count,
+    cmatches,
+    hidden,
+    text,
+    unrestrict,
+    column,
+    no_column,
+    byteoff,
+    vimgrep,
+    heading,
+    no_heading,
+    trim,
+    nul,
+    nul_data,
+    xline,
+    quiet,
+    stats,
+    passthru,
+    maxcols_preview,
+    stop_nonmatch,
+    crlf,
+    ml,
+    ml_dotall,
+    json,
+    files,
+    type_list,
+    follow,
+    sort_files,
     glob_ci, // value-taking below
-    no_ignore, no_ignore_vcs, no_ignore_dot, no_ignore_parent, no_ignore_exclude,
-    no_ignore_files, ignore_files, no_require_git, require_git, ignore_file_ci,
-    after, before, ctx, maxcount, regexp, typ, typ_not, glob, iglob, maxcols,
-    pathsep, maxdepth, maxfsize, ctxsep, no_ctxsep, fieldmsep, fieldcsep, replace, file, ignore_file, type_add, color, noop, noop_val, unsupported,
+    no_ignore,
+    no_ignore_vcs,
+    no_ignore_dot,
+    no_ignore_parent,
+    no_ignore_exclude,
+    no_ignore_files,
+    ignore_files,
+    no_require_git,
+    require_git,
+    ignore_file_ci,
+    after,
+    before,
+    ctx,
+    maxcount,
+    regexp,
+    typ,
+    typ_not,
+    glob,
+    iglob,
+    maxcols,
+    pathsep,
+    maxdepth,
+    maxfsize,
+    ctxsep,
+    no_ctxsep,
+    fieldmsep,
+    fieldcsep,
+    replace,
+    file,
+    ignore_file,
+    type_add,
+    color,
+    noop,
+    noop_val,
+    unsupported,
 };
 
 const long_map = std.StaticStringMap(Act).initComptime(.{
-    .{ "ignore-case", .icase },        .{ "case-sensitive", .scase },
-    .{ "smart-case", .smart },         .{ "word-regexp", .word },
-    .{ "fixed-strings", .fixed },      .{ "invert-match", .invert },
-    .{ "only-matching", .only },       .{ "line-number", .lnum },
-    .{ "no-line-number", .no_lnum },   .{ "with-filename", .with_fn },
-    .{ "no-filename", .no_fn },        .{ "files-with-matches", .fwm },
-    .{ "files-without-match", .fwithout }, .{ "count", .count },
-    .{ "count-matches", .cmatches },   .{ "hidden", .hidden },
-    .{ "text", .text },                .{ "unrestricted", .unrestrict },
-    .{ "column", .column },            .{ "no-column", .no_column },
-    .{ "byte-offset", .byteoff },
-    .{ "vimgrep", .vimgrep },          .{ "heading", .heading },
-    .{ "no-heading", .no_heading },    .{ "trim", .trim },
-    .{ "null", .nul },                 .{ "null-data", .nul_data },
-    .{ "line-regexp", .xline },        .{ "quiet", .quiet },
-    .{ "stats", .stats },              .{ "stop-on-nonmatch", .stop_nonmatch },
-    .{ "passthru", .passthru },        .{ "passthrough", .passthru },
-    .{ "max-columns-preview", .maxcols_preview },
-    .{ "field-match-separator", .fieldmsep }, .{ "field-context-separator", .fieldcsep },
-    .{ "crlf", .crlf },                .{ "multiline", .ml },
-    .{ "multiline-dotall", .ml_dotall }, .{ "json", .json },
-    .{ "files", .files },              .{ "type-list", .type_list },
-    .{ "follow", .follow },            .{ "sort-files", .sort_files },
-    .{ "glob-case-insensitive", .glob_ci },
-    .{ "after-context", .after },      .{ "before-context", .before },
-    .{ "context", .ctx },              .{ "max-count", .maxcount },
-    .{ "regexp", .regexp },            .{ "type", .typ },
-    .{ "type-not", .typ_not },         .{ "glob", .glob },
-    .{ "iglob", .iglob },              .{ "max-columns", .maxcols },
-    .{ "path-separator", .pathsep },   .{ "max-depth", .maxdepth },
-    .{ "maxdepth", .maxdepth },        .{ "context-separator", .ctxsep },
-    .{ "no-context-separator", .no_ctxsep }, .{ "replace", .replace },
-    .{ "file", .file },
+    .{ "ignore-case", .icase },                   .{ "case-sensitive", .scase },
+    .{ "smart-case", .smart },                    .{ "word-regexp", .word },
+    .{ "fixed-strings", .fixed },                 .{ "invert-match", .invert },
+    .{ "only-matching", .only },                  .{ "line-number", .lnum },
+    .{ "no-line-number", .no_lnum },              .{ "with-filename", .with_fn },
+    .{ "no-filename", .no_fn },                   .{ "files-with-matches", .fwm },
+    .{ "files-without-match", .fwithout },        .{ "count", .count },
+    .{ "count-matches", .cmatches },              .{ "hidden", .hidden },
+    .{ "text", .text },                           .{ "unrestricted", .unrestrict },
+    .{ "column", .column },                       .{ "no-column", .no_column },
+    .{ "byte-offset", .byteoff },                 .{ "vimgrep", .vimgrep },
+    .{ "heading", .heading },                     .{ "no-heading", .no_heading },
+    .{ "trim", .trim },                           .{ "null", .nul },
+    .{ "null-data", .nul_data },                  .{ "line-regexp", .xline },
+    .{ "quiet", .quiet },                         .{ "stats", .stats },
+    .{ "stop-on-nonmatch", .stop_nonmatch },      .{ "passthru", .passthru },
+    .{ "passthrough", .passthru },                .{ "max-columns-preview", .maxcols_preview },
+    .{ "field-match-separator", .fieldmsep },     .{ "field-context-separator", .fieldcsep },
+    .{ "crlf", .crlf },                           .{ "multiline", .ml },
+    .{ "multiline-dotall", .ml_dotall },          .{ "json", .json },
+    .{ "files", .files },                         .{ "type-list", .type_list },
+    .{ "follow", .follow },                       .{ "sort-files", .sort_files },
+    .{ "glob-case-insensitive", .glob_ci },       .{ "after-context", .after },
+    .{ "before-context", .before },               .{ "context", .ctx },
+    .{ "max-count", .maxcount },                  .{ "regexp", .regexp },
+    .{ "type", .typ },                            .{ "type-not", .typ_not },
+    .{ "glob", .glob },                           .{ "iglob", .iglob },
+    .{ "max-columns", .maxcols },                 .{ "path-separator", .pathsep },
+    .{ "max-depth", .maxdepth },                  .{ "maxdepth", .maxdepth },
+    .{ "context-separator", .ctxsep },            .{ "no-context-separator", .no_ctxsep },
+    .{ "replace", .replace },                     .{ "file", .file },
     // ignore-rule controls — now honored (gist reads .gitignore/.ignore)
-    .{ "no-ignore", .no_ignore },      .{ "no-ignore-vcs", .no_ignore_vcs },
-    .{ "no-ignore-parent", .no_ignore_parent }, .{ "no-ignore-dot", .no_ignore_dot },
+    .{ "no-ignore", .no_ignore },                 .{ "no-ignore-vcs", .no_ignore_vcs },
+    .{ "no-ignore-parent", .no_ignore_parent },   .{ "no-ignore-dot", .no_ignore_dot },
     .{ "no-ignore-exclude", .no_ignore_exclude }, .{ "no-ignore-files", .no_ignore_files },
     .{ "ignore-files", .ignore_files }, // re-enable after --no-ignore-files
-    .{ "no-require-git", .no_require_git }, .{ "require-git", .require_git },
+    .{ "no-require-git", .no_require_git },
+    .{ "require-git", .require_git },
     .{ "ignore-file-case-insensitive", .ignore_file_ci },
     .{ "no-ignore-global", .noop }, // gist reads no global gitignore → already off
     .{ "ignore-file", .ignore_file },
     // accept + ignore (gist already satisfies these on an arbitrary tree)
-    .{ "mmap", .noop },                .{ "no-mmap", .noop },
-    .{ "one-file-system", .noop },     .{ "no-follow", .noop },
-    .{ "no-unicode", .noop },          .{ "unicode", .noop },
-    .{ "no-stats", .noop },            .{ "no-trim", .noop },
+    .{ "mmap", .noop },
+    .{ "no-mmap", .noop },
+    .{ "one-file-system", .noop },
+    .{ "no-follow", .noop },
+    .{ "no-unicode", .noop },
+    .{ "unicode", .noop },
+    .{ "no-stats", .noop },
+    .{ "no-trim", .noop },
     // accept + swallow value
-    .{ "color", .color },              .{ "colors", .noop_val },
-    .{ "sort", .noop_val },            .{ "sortr", .noop_val },
-    .{ "threads", .noop_val },         .{ "max-filesize", .maxfsize },
+    .{ "color", .color },
+    .{ "colors", .noop_val },
+    .{ "sort", .noop_val },
+    .{ "sortr", .noop_val },
+    .{ "threads", .noop_val },
+    .{ "max-filesize", .maxfsize },
     .{ "engine", .noop_val },
-    .{ "dfa-size-limit", .noop_val },  .{ "regex-size-limit", .noop_val },
+    .{ "dfa-size-limit", .noop_val },
+    .{ "regex-size-limit", .noop_val },
     // genuine divergences — fail loud so the harness scores N/A, never wrong
-    .{ "pcre2", .unsupported },        .{ "auto-hybrid-regex", .unsupported },
-    .{ "search-zip", .unsupported },   .{ "pre", .unsupported },
-    .{ "binary", .unsupported },       .{ "type-add", .type_add },
+    .{ "pcre2", .unsupported },
+    .{ "auto-hybrid-regex", .unsupported },
+    .{ "search-zip", .unsupported },
+    .{ "pre", .unsupported },
+    .{ "binary", .unsupported },
+    .{ "type-add", .type_add },
     .{ "encoding", .unsupported },
 });
 

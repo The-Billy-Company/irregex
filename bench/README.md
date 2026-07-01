@@ -103,12 +103,12 @@ gist's but not rg's = an unsound verify. Both must be zero.
 
 `scan_regress.sh` is the companion oracle for the **other** code path: a regex the
 trigram index can't prefilter (`\w{3,8}`, `[a-f0-9]{2,}`, `panic|0x`, …) skips the
-index and scans the live tree directly (`scan.zig`), so `equality.sh`'s index-path
+index and scans the live tree directly (`src/scan/sweep.zig`), so `equality.sh`'s index-path
 proof doesn't cover it. The script (a) asserts each pattern still **routes** to the
 scan path, (b) diffs gist's scan match-set against `rg (?-u)` over the identical
 corpus and **exits 1 on any FN/FP** (a file rg matches past the 4 MiB
 `per_file_cap` is a documented cap-skip, not a failure), and (c) races min-of-N vs
-`rg` while printing `scan.zig`'s worker-span Δ — the **straggler canary** that
+`rg` while printing `src/scan/sweep.zig`'s worker-span Δ — the **straggler canary** that
 catches any regression of the fused work-stealing pipeline back toward an
 unbalanced scan. Built ReleaseFast (release-vs-release with rg). Run it:
 

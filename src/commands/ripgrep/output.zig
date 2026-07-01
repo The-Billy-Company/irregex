@@ -1,7 +1,7 @@
-//! gist `rg` — the match + presentation layer (split from `rgcompat.zig`).
+//! gist `rg` — the match + presentation layer (split from `run.zig`).
 //!
-//! `rgcompat.zig` owns the walk (gather files, apply type/glob scope, stdin);
-//! this module owns everything downstream of "here is one file's bytes": line
+//! `run.zig` owns the walk (gather files, apply type/glob scope, stdin); this
+//! module owns everything downstream of "here is one file's bytes": line
 //! splitting is done by the caller, and the `Emitter` turns matches into
 //! ripgrep-shaped output — the default `path:line:text` frame, `-o` only-matching,
 //! `-c/--count`, `--count-matches`, `-A/-B/-C` context windows, `-w` word spans,
@@ -10,12 +10,11 @@
 //! for spans, `lineMatch` for the boolean path); no second matcher.
 
 const std = @import("std");
-const gist = @import("gist");
-const rgargs = @import("rgargs.zig");
-const Opts = rgargs.Opts;
-const die = rgargs.die;
-const Regex = gist.regex.Regex;
-const Captures = gist.regex_captures.Captures;
+const args = @import("args.zig");
+const Opts = args.Opts;
+const die = args.die;
+const Regex = @import("../../regex/core.zig").Regex;
+const Captures = @import("../../regex/captures.zig").Captures;
 
 pub fn isWordByte(c: u8) bool {
     return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '_';
@@ -46,7 +45,7 @@ pub fn groupIndexOf(caps: *const Captures, name: []const u8) ?u32 {
 /// Expand a `-r` replacement template into `buf`: `$1`/`${1}` numeric groups,
 /// `$name`/`${name}` named groups (`$0` = whole match), `$$` → literal `$`, an
 /// unknown/out-of-range group → empty (ripgrep / rust-regex `Replacer` rules).
-/// Shared by the text `Emitter` and the `--json` record stream (`rgjson.zig`).
+/// Shared by the text `Emitter` and the `--json` record stream (`json.zig`).
 pub fn expandInto(a: std.mem.Allocator, caps: *const Captures, buf: *std.ArrayList(u8), tmpl: []const u8, line: []const u8, slots: []const isize) void {
     var i: usize = 0;
     while (i < tmpl.len) {

@@ -23,7 +23,7 @@
 //! The agent-grade flag surface mirrors the ripgrep an agent already types:
 //!   • `-A/-B/-C N` context lines (rg-exact `:`/`-`/`--` framing) — read the code
 //!     around a hit without a second round-trip, the #1 affordance after `-n`.
-//!   • `-t <lang>` / `-g <glob>` path scoping (`pathfilter.zig`) — confine to one
+//!   • `-t <lang>` / `-g <glob>` path scoping (`../scope/`) — confine to one
 //!     language or subtree. Unlike rg (which filters while walking the tree),
 //!     gist prunes candidate ids *before* reading, so scoping makes it faster.
 //!   • `-w` word boundary, `-F` fixed-string (regex metachars escaped), `-l`
@@ -32,20 +32,19 @@
 //! `--` ends flag parsing and `-e <pat>` gives an explicit pattern.
 //!
 //! Candidate resolution + freshness reuse the persisted index path verbatim
-//! (`cli.loadPersisted` + `fresh.candidates`), so read-your-own-writes and the
+//! (`persist.load` + `fresh.candidates`), so read-your-own-writes and the
 //! zero-false-negative guarantee hold here exactly as they do for `query`.
 
 const std = @import("std");
-const gist = @import("gist");
-const corpus_mod = @import("corpus.zig");
-const fresh = @import("fresh.zig");
-const cli = @import("cli.zig");
-const grepargs = @import("grepargs.zig");
-const Regex = gist.regex.Regex;
+const corpus_mod = @import("../../corpus/corpus.zig");
+const fresh = @import("../../corpus/fresh.zig");
+const persist = @import("../../index/persist.zig");
+const grepargs = @import("args.zig");
+const Regex = @import("../../regex/core.zig").Regex;
 
-// The argv parser + its result types live in `grepargs.zig` (the ripgrep-
-// compatible flag surface); re-exported here so `runGrep`'s callers and the
-// tests keep addressing them through `lines`.
+// The argv parser + its result types live in the sibling `args.zig` (the
+// ripgrep-compatible flag surface); re-exported here so `runGrep`'s callers and
+// the tests keep addressing them through this module.
 pub const Options = grepargs.Options;
 pub const Parsed = grepargs.Parsed;
 pub const parseGrep = grepargs.parseGrep;
@@ -105,7 +104,7 @@ fn cmpBlocks(_: void, a: FileBlock, b: FileBlock) bool {
 }
 
 /// Spawn one shard per core above this candidate count; below it the spawn
-/// overhead isn't worth it and the shard runs inline (same tuning as cli.zig).
+/// overhead isn't worth it and the shard runs inline (same tuning as the CLI).
 const par_threshold = 64;
 
 const Shard = struct {
@@ -435,7 +434,7 @@ fn runShards(gpa: std.mem.Allocator, paths: []const []const u8, ids: []const u32
 /// on the next `index` — the same tolerated false-positive the trigram filter has.
 pub fn runFilesList(gpa: std.mem.Allocator, io: std.Io, opts: Options) !void {
     const l0 = nowNs(io);
-    var p = (try cli.loadPersisted(gpa, io)) orelse return;
+    var p = (try persist.load(gpa, io)) orelse return;
     defer p.deinit();
     const load_ns = nowNs(io) - l0;
 
@@ -481,7 +480,7 @@ pub fn runGrep(gpa: std.mem.Allocator, io: std.Io, pattern: []const u8, opts: Op
     defer re.deinit();
 
     const l0 = nowNs(io);
-    var p = (try cli.loadPersisted(gpa, io)) orelse return;
+    var p = (try persist.load(gpa, io)) orelse return;
     defer p.deinit();
     const load_ns = nowNs(io) - l0;
 

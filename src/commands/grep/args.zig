@@ -1,6 +1,6 @@
 //! gist grep argv parser — the ripgrep-compatible flag surface an agent's
-//! muscle memory actually types. Split out of `lines.zig` so the emit/verify
-//! loop stays lean and the (larger) compatibility table lives on its own.
+//! muscle memory actually types. Split from the emit/verify loop (`emit.zig`) so
+//! that loop stays lean and the (larger) compatibility table lives on its own.
 //!
 //! WHY THIS SHAPE, DOGFOODED: gist's goal is to *replace* ripgrep in an agent
 //! loop, so the parser must accept the invocations an agent reflexively writes,
@@ -35,7 +35,8 @@
 //! the worst failure) — the error now lists the full supported surface.
 
 const std = @import("std");
-const pathfilter = @import("pathfilter.zig");
+const glob = @import("../scope/glob.zig");
+const types = @import("../scope/types.zig");
 
 pub const Options = struct {
     caseless: bool = false,
@@ -64,7 +65,7 @@ pub const Options = struct {
     /// no replacement. rg's `-r` *takes a value*, so leaving it a boolean no-op
     /// silently mis-parsed the replacement as the pattern (see parser note).
     replace: ?[]const u8 = null,
-    filter: pathfilter.PathFilter = .{},
+    filter: glob.PathFilter = .{},
 
     pub fn wantsContext(self: Options) bool {
         return self.before > 0 or self.after > 0;
@@ -118,7 +119,7 @@ const Sink = struct {
     excs: *std.ArrayList([]const u8),
 
     fn setType(self: Sink, name: []const u8) !bool {
-        const e = pathfilter.extsForType(name) orelse {
+        const e = types.extsForType(name) orelse {
             std.debug.print("unknown type '{s}' for -t (try go/py/rust/ts/js/swift/zig/sql/proto/md/json/yaml/toml/sh)\n", .{name});
             return false;
         };
@@ -348,7 +349,7 @@ pub fn parseGrep(gpa: std.mem.Allocator, args: []const []const u8) !?Parsed {
         } else if (pattern == null) {
             pattern = arg; // first non-flag is the pattern
         } else {
-            try roots.append(gpa, pathfilter.normalizeRoot(arg)); // later non-flags scope
+            try roots.append(gpa, glob.normalizeRoot(arg)); // later non-flags scope
         }
     }
 
@@ -356,7 +357,7 @@ pub fn parseGrep(gpa: std.mem.Allocator, args: []const []const u8) !?Parsed {
     // [PATH…]`). Any token parsed as the "pattern" is really a path root, so
     // fold it back into the root set and run with an empty pattern.
     if (opts.files_list) {
-        if (pattern) |p| try roots.append(gpa, pathfilter.normalizeRoot(p));
+        if (pattern) |p| try roots.append(gpa, glob.normalizeRoot(p));
         pattern = "";
     }
 

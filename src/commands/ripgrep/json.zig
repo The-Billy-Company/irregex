@@ -1,11 +1,11 @@
 //! gist `rg --json` — ripgrep's JSON Lines record stream (ADR-parity output).
 //!
-//! Split from `rgcompat.zig`/`rgemit.zig`: given each file's already-read bytes,
+//! Split from `run.zig`/`output.zig`: given each file's already-read bytes,
 //! this module emits ripgrep's exact `--json` message sequence — one JSON object
 //! per line: a `begin` per matched file, a `match`/`context` per emitted line
 //! (with byte-accurate `submatches` and, under `-r`, per-match `replacement`),
 //! an `end` with that file's stats, and a trailing `summary`. It reuses the one
-//! regex engine (`matchSpan` for spans, capture VM for `-r`) and `rgemit`'s
+//! regex engine (`matchSpan` for spans, capture VM for `-r`) and `output`'s
 //! shared template expander, so there is no second matcher or replacer.
 //!
 //! The `stats` timing fields (`elapsed`, `elapsed_total`) and `bytes_printed` are
@@ -16,14 +16,13 @@
 //! match/submatch structure) is emitted for real.
 
 const std = @import("std");
-const gist = @import("gist");
-const corpus_mod = @import("corpus.zig");
-const rgargs = @import("rgargs.zig");
-const rgemit = @import("rgemit.zig");
-const Opts = rgargs.Opts;
-const die = rgargs.die;
-const Regex = gist.regex.Regex;
-const Captures = gist.regex_captures.Captures;
+const corpus_mod = @import("../../corpus/corpus.zig");
+const args = @import("args.zig");
+const output = @import("output.zig");
+const Opts = args.Opts;
+const die = args.die;
+const Regex = @import("../../regex/core.zig").Regex;
+const Captures = @import("../../regex/captures.zig").Captures;
 
 pub const File = struct { path: []const u8, body: []const u8 };
 
@@ -132,7 +131,7 @@ fn emitSubmatches(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Rege
             from = sp.start + 1;
             continue;
         }
-        if (o.word and !rgemit.wordOk(view, sp.start, sp.end)) {
+        if (o.word and !output.wordOk(view, sp.start, sp.end)) {
             from = sp.end;
             continue;
         }
@@ -143,7 +142,7 @@ fn emitSubmatches(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Rege
         if (o.replace) |tmpl| if (caps) |c| {
             _ = c.find(view, sp.start, slots);
             var rep: std.ArrayList(u8) = .empty;
-            rgemit.expandInto(a, c, &rep, tmpl, view, slots);
+            output.expandInto(a, c, &rep, tmpl, view, slots);
             out.appendSlice(a, ",\"replacement\":{\"text\":") catch die("oom\n", .{});
             jsonStr(a, out, rep.items);
             out.appendSlice(a, "}") catch die("oom\n", .{});
@@ -169,7 +168,7 @@ fn firstSpan(re: *const Regex, ss: *Regex.SpanSim, o: Opts, view: []const u8) ?R
             from = sp.start + 1;
             continue;
         }
-        if (o.word and !rgemit.wordOk(view, sp.start, sp.end)) {
+        if (o.word and !output.wordOk(view, sp.start, sp.end)) {
             from = sp.end;
             continue;
         }
@@ -197,7 +196,7 @@ fn countMatches(re: *const Regex, ss: *Regex.SpanSim, o: Opts, lines: []const Li
                 from = sp.start + 1;
                 continue;
             }
-            if (o.word and !rgemit.wordOk(ln.view, sp.start, sp.end)) {
+            if (o.word and !output.wordOk(ln.view, sp.start, sp.end)) {
                 from = sp.end;
                 continue;
             }

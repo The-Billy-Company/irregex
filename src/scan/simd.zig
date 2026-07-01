@@ -1,4 +1,4 @@
-//! gist bench — SIMD substring presence test.
+//! gist — SIMD substring presence test (the hot primitive in the verify path).
 //!
 //! Why this exists (proven, not assumed — read `std/mem.zig::findPos`): Zig's
 //! `std.mem.indexOf` is SIMD only for a 1-byte needle; lengths **2–4** fall to

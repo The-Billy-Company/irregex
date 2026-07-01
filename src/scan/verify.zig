@@ -1,9 +1,9 @@
-//! gist bench — data-parallel verify (the half of the head-to-head that has to
-//! out-throughput ripgrep's multi-core scan). The trigram filter is cheap and
+//! gist — data-parallel candidate verify (the half of the head-to-head that has
+//! to out-throughput ripgrep's multi-core scan). The trigram filter is cheap and
 //! single-threaded; the *bytes* are in the candidate verify (and the <3-byte
-//! full-scan fallback), so that is what fans out across cores. Split from
-//! `bench.zig` to keep each file under the shape cap; the corpus-aware
-//! `gistMatches` wrapper stays in `bench.zig` and calls in here.
+//! full-scan fallback), so that is what fans out across cores. The corpus-aware
+//! matcher wrappers that drive this live in the callers (the CLI drivers and the
+//! bench harness); this module is the pure parallel verify kernel + SIMD scan.
 
 const std = @import("std");
 const simd = @import("simd.zig");

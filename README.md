@@ -45,9 +45,11 @@ live in
 
 ## How it works
 
-The pipeline is four cooperating pieces, each a sibling file under `src/`:
+The pipeline is five cooperating tiers, each a concern-scoped subfolder under
+`src/` (`index/` · `regex/` · `rank/` · `scan/` · `corpus/`), driven by the
+command surfaces under `src/commands/`:
 
-**Trigram candidate index** (`src/trigram.zig`). Any file containing a literal
+**Trigram candidate index** (`src/index/trigram.zig`). Any file containing a literal
 must contain every trigram of that literal, so the AND of the per-trigram
 posting lists is a _sound_ candidate set — a superset of the true matches,
 computed by binary search with no scanning. It's a **filter, not a matcher**:
@@ -76,7 +78,7 @@ single fused pass that detects newlines inline. The Pike VM stays the capped
 fallback and the differential-fuzz correctness reference. See
 [`src/regex/README.md`](src/regex/README.md).
 
-**Freshness overlay** (`bench/fresh.zig`). Keeps a persisted index correct under
+**Freshness overlay** (`src/corpus/fresh.zig`). Keeps a persisted index correct under
 heavy concurrent commit churn **without rebuilding or consulting git**. The
 build stamps a wall-clock anchor; a file is fresh iff `mtime ≥ anchor`, so any
 changed, new, or touched file — including a coworker's commit landing via `git
@@ -84,7 +86,7 @@ checkout` — is folded into the candidate set and re-verified. Zero false
 negatives, read-your-own-writes, immune to the rebases and overlapping edits that
 defeat `git diff` (parallel stat-walk, ~42 ms cold).
 
-**Ranking** (`src/rank.zig`). Turns the verified match set into the list an agent
+**Ranking** (`src/rank/rank.zig`). Turns the verified match set into the list an agent
 wants via weighted **Reciprocal Rank Fusion** (Cormack et al. 2009) over four
 intrinsic signals — lexical density, a **definition boost** (a match on a decl
 line outranks its call sites — the win `grep` can't express), shallow-path
@@ -151,8 +153,8 @@ emits path-ascending already). The flags gist genuinely *can't* honor —
 (fixed `path:line:text` model) — fail **loud with the reason + the `rg` fallback**
 rather than the generic unknown-flag dump. A genuinely unknown flag still fails
 **loud** (a silent empty result is the worst agent failure). Parser + surface
-live in [`bench/grepargs.zig`](bench/grepargs.zig), guarded by
-[`bench/grepargs_test.zig`](bench/grepargs_test.zig).
+live in [`src/commands/grep/args.zig`](src/commands/grep/args.zig), guarded by
+[`src/commands/grep/args_test.zig`](src/commands/grep/args_test.zig).
 
 `[PATH…]`/`-t`/`-g` are gist's structural edge over `rg`: rg applies a type/glob/path filter
 *while walking the whole tree*, but gist already holds the path list, so it
@@ -163,8 +165,8 @@ prunes to **28 candidate reads** (vs 86 unscoped, vs rg's whole-subtree walk) an
 runs **1.14× faster than `rg … services/backend/api`** at **~⅕ the syscall time**
 (112 ms vs 590 ms system, hyperfine 15-run) — output byte-identical to rg. Unknown
 flags fail loud (no silent wrong-result). Globs are gitignore-shaped (`*`
-per-segment, `**` across `/`). Guarded by `bench/pathfilter_test.zig`,
-`bench/grepargs_test.zig` + the rg line-diff battery.
+per-segment, `**` across `/`). Guarded by `src/commands/scope/glob_test.zig`,
+`src/commands/grep/args_test.zig` + the rg line-diff battery.
 
 **`grep` is the line-emitting verb an agent actually reaches for.** `query`/`regex`
 answer *which files* match (a path set) and `rank` answers *which one line* is
@@ -295,7 +297,7 @@ rg's = an unsound verify. Both must be zero.
   tying git grep. The hard case is a regex the index _can't_ prefilter
   (`\w{3,8}`, `[a-f0-9]{2,}`, `[a-z]+_[a-z]+_[a-z]+`, `[0-9]{4}`, `panic|0x`):
   every doc is a candidate, so gist skips the index and scans the **live tree**
-  once ([`bench/scan.zig`](bench/scan.zig)) — _more_ correct than the
+  once ([`src/scan/sweep.zig`](src/scan/sweep.zig)) — _more_ correct than the
   index+freshness path (sees files born since the build, no staleness window).
   A tie there was not the floor — **profiled, the phased scan leaked two ways**:
   a ~63 ms serial walk _barrier_ (overlapping nothing) and ~169 ms of _straggler
@@ -375,7 +377,7 @@ all 11 classes, losses included.
   load: an earlier cut clocked `\w{3,8}` at 652 ms (a contention outlier, 95% CI
   607–724 ms) and scored it a loss; a clean re-run lands it at **290 ms** (CI
   282–291 ms) — a **1.2× win**, matching the dedicated scan kernel
-  ([`bench/scan.zig`](bench/scan.zig)). `})` is the documented sub-trigram
+  ([`src/scan/sweep.zig`](src/scan/sweep.zig)). `})` is the documented sub-trigram
   (2-byte) degenerate case; UUID and `;$` lose by <8%. The honest read: gist is
   **at parity or better with rg on every class**, decisively where the prefilter
   prunes, by a hair where it can't.

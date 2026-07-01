@@ -34,10 +34,9 @@
 //! queue as a consumer, so no thread goes idle after the walk. The DFA is unchanged.
 
 const std = @import("std");
-const gist = @import("gist");
-const corpus_mod = @import("corpus.zig");
+const corpus_mod = @import("../corpus/corpus.zig");
 const simd = @import("simd.zig");
-const Regex = gist.regex.Regex;
+const Regex = @import("../regex/core.zig").Regex;
 const Dir = std.Io.Dir;
 
 /// Workers per core. Measured, not assumed: a warm page cache makes this tier
