@@ -67,6 +67,7 @@ fn flattenInto(node: *Node, out: *std.ArrayList(u8), gpa: std.mem.Allocator) !vo
             try flattenInto(ab[0], out, gpa);
             try flattenInto(ab[1], out, gpa);
         },
+        .capture => |g| try flattenInto(g.child, out, gpa), // a group is transparent to its literal run
         else => return error.TestNotLiteral,
     }
 }
