@@ -147,6 +147,62 @@ fn collectLines(gpa: std.mem.Allocator, buf: []const u8, out: *std.ArrayList([]c
 /// Leftmost-first spans come from the Pike VM (`matchSpan`); after a match at
 /// `[s,e)` the next search resumes at `e` (non-overlapping), and a zero-width
 /// match advances one byte so a nullable pattern can't loop. Returns the row count.
+/// Expand a `-r` template's whole-match references into `body` against the
+/// matched text `m`: `$0` / `${0}` / `$&` → `m`, `$$` → a literal `$`, everything
+/// else verbatim. The parser (`grepargs.validReplaceTemplate`) has already
+/// rejected any capture-group ref gist's span engine can't honor, so only these
+/// forms reach here — this stays a pure, allocation-free byte copy.
+fn appendReplacement(gpa: std.mem.Allocator, body: *std.ArrayList(u8), tmpl: []const u8, m: []const u8) !void {
+    var i: usize = 0;
+    while (i < tmpl.len) : (i += 1) {
+        if (tmpl[i] != '$') {
+            try body.append(gpa, tmpl[i]);
+            continue;
+        }
+        if (i + 1 >= tmpl.len) {
+            try body.append(gpa, '$');
+            break;
+        }
+        switch (tmpl[i + 1]) {
+            '$' => {
+                try body.append(gpa, '$');
+                i += 1;
+            },
+            '&', '0' => {
+                try body.appendSlice(gpa, m);
+                i += 1;
+            },
+            '{' => { // `${0}` — the only braced form the parser admits
+                try body.appendSlice(gpa, m);
+                i = std.mem.indexOfScalarPos(u8, tmpl, i + 2, '}').?;
+            },
+            else => try body.append(gpa, '$'), // unreachable given validation
+        }
+    }
+}
+
+/// Append `line`, with each non-overlapping match rewritten by the `-r` template
+/// (`sh.opts.replace`). Mirrors rg's line-mode `--replace`: text between matches
+/// is copied verbatim, a zero-width match is stepped over (never rewritten), and
+/// the tail after the last match is copied. Used only when a replacement is set.
+fn appendReplacedLine(sh: *Shard, ssim: *Regex.SpanSim, line: []const u8, body: *std.ArrayList(u8)) !void {
+    const tmpl = sh.opts.replace.?;
+    var from: usize = 0;
+    var cursor: usize = 0;
+    while (from <= line.len) {
+        const span = sh.re.matchSpan(ssim, line, from) orelse break;
+        if (span.end == span.start) {
+            from = span.start + 1;
+            continue;
+        }
+        try body.appendSlice(sh.gpa, line[cursor..span.start]);
+        try appendReplacement(sh.gpa, body, tmpl, line[span.start..span.end]);
+        cursor = span.end;
+        from = span.end;
+    }
+    try body.appendSlice(sh.gpa, line[cursor..]);
+}
+
 fn emitOnlyMatching(sh: *Shard, path: []const u8, lines: []const []const u8, body: *std.ArrayList(u8)) !usize {
     var ssim = Regex.SpanSim.init(sh.gpa, sh.re) catch return 0;
     defer ssim.deinit();
@@ -161,9 +217,12 @@ fn emitOnlyMatching(sh: *Shard, path: []const u8, lines: []const []const u8, bod
             }
             const text = line[span.start..span.end];
             if (sh.opts.no_line_num)
-                try body.print(sh.gpa, "{s}:{s}\n", .{ path, text })
+                try body.print(sh.gpa, "{s}:", .{path})
             else
-                try body.print(sh.gpa, "{s}:{d}:{s}\n", .{ path, idx + 1, text });
+                try body.print(sh.gpa, "{s}:{d}:", .{ path, idx + 1 });
+            // `-o -r <tmpl>`: emit the rewritten match, not the raw span (rg parity).
+            if (sh.opts.replace) |t| try appendReplacement(sh.gpa, body, t, text) else try body.appendSlice(sh.gpa, text);
+            try body.append(sh.gpa, '\n');
             emitted += 1;
             if (sh.opts.max_per_file != 0 and emitted >= sh.opts.max_per_file) return emitted;
             from = span.end;
@@ -196,6 +255,13 @@ fn emitFileLines(sh: *Shard, path: []const u8, lines: []const []const u8, body: 
     @memset(is_match, false);
     for (match_idx.items) |m| is_match[m] = true;
 
+    // `-r` (line mode): a per-thread span scratch to rewrite matches in place.
+    // Only initialized when a replacement is set (rare), so the common path pays
+    // nothing. A match line is emitted through `appendReplacedLine`; context and
+    // non-match lines are always copied verbatim (rg only rewrites match lines).
+    var rssim: ?Regex.SpanSim = if (opts.replace != null) (Regex.SpanSim.init(sh.gpa, sh.re) catch null) else null;
+    defer if (rssim) |*s| s.deinit();
+
     // Pass 2: expand to context windows, merge, emit with `:`/`-`/`--` framing.
     const B = opts.before;
     const A = opts.after;
@@ -215,9 +281,13 @@ fn emitFileLines(sh: *Shard, path: []const u8, lines: []const []const u8, body: 
         while (k <= hi) : (k += 1) {
             const sep: u8 = if (is_match[k]) ':' else '-';
             if (opts.no_line_num) // `-N`: drop the line column → `path:text`
-                try body.print(sh.gpa, "{s}{c}{s}\n", .{ path, sep, lines[k] })
+                try body.print(sh.gpa, "{s}{c}", .{ path, sep })
             else
-                try body.print(sh.gpa, "{s}{c}{d}{c}{s}\n", .{ path, sep, k + 1, sep, lines[k] });
+                try body.print(sh.gpa, "{s}{c}{d}{c}", .{ path, sep, k + 1, sep });
+            if (is_match[k]) {
+                if (rssim) |*s| try appendReplacedLine(sh, s, lines[k], body) else try body.appendSlice(sh.gpa, lines[k]);
+            } else try body.appendSlice(sh.gpa, lines[k]); // context lines never rewritten
+            try body.append(sh.gpa, '\n');
         }
         prev_end = hi;
     }

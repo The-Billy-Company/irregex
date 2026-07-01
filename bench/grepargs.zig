@@ -16,10 +16,20 @@
 //!      as "unknown flag" though each is a POSIX cluster. Now a `-xyz` cluster
 //!      is decomposed left-to-right; the first *value* flag consumes the rest of
 //!      the cluster as its argument (`-nC3` ⇒ `-n -C 3`, `-tgo` ⇒ `-t go`).
-//!   3. **Harmless rg flags failed loud** — `-n`, `--no-heading`, `-H`, `-r`
+//!   3. **Harmless rg flags failed loud** — `-n`, `--no-heading`, `-H`, `-R`
 //!      are all no-ops under gist's fixed `path:line:text` model, yet errored.
 //!      Now they're accepted as no-ops so the reflexive `rg -n` just works, and
 //!      `-N`/`--no-line-number` + `-S`/`--smart-case` are honored for real.
+//!   4. **`-r`/`--replace` was mis-listed as a valueless no-op** — but rg's `-r`
+//!      *consumes a value* (the replacement). Treating it as a boolean silently
+//!      shifted argv: `grep -r X pat` parsed `X` as the pattern and `pat` as a
+//!      path root — a wrong-but-confident empty result. It is now a value flag
+//!      (`opts.replace`), the one landmine class this parser exists to kill.
+//!   5. **Inline flag groups `(?i)` / `(?-u)` failed loud** — an agent pastes
+//!      rg patterns carrying a leading global flag group reflexively. gist now
+//!      honors the ones it can (`i`→caseless; `m`/`u`/`U`/`-…` no-op) and fails
+//!      loud only on the ones it genuinely can't (`s` dotall, `x` extended),
+//!      instead of rejecting the whole (legal-to-rg) pattern.
 //!
 //! Fail-loud is preserved for genuinely unknown flags (a silent empty result is
 //! the worst failure) — the error now lists the full supported surface.
@@ -43,6 +53,11 @@ pub const Options = struct {
     smart_case: bool = false, // `-S`: caseless iff the pattern has no uppercase
     only_matching: bool = false, // `-o`/`--only-matching`: emit each match span, not the line
     files_list: bool = false, // `--files`: list candidate files (no pattern, no read)
+    /// `-r`/`--replace`: rewrite each match with this template before emit. `$0`
+    /// / `${0}` / `$&` expand to the whole match, `$$` is a literal `$`. null ⇒
+    /// no replacement. rg's `-r` *takes a value*, so leaving it a boolean no-op
+    /// silently mis-parsed the replacement as the pattern (see parser note).
+    replace: ?[]const u8 = null,
     filter: pathfilter.PathFilter = .{},
 
     pub fn wantsContext(self: Options) bool {
@@ -78,12 +93,12 @@ fn badVal(flag: []const u8) ?Parsed {
 }
 
 const supported =
-    "supported flags: -i -w -F -l -c -v -o -n -N -S -H -r -m N -A N -B N -C N " ++
-    "-t <lang> -g <glob> -e <pat> --  ·  long: --ignore-case --word-regexp " ++
+    "supported flags: -i -w -F -l -c -v -o -n -N -S -H -m N -A N -B N -C N " ++
+    "-r <template> -t <lang> -g <glob> -e <pat> --  ·  long: --ignore-case --word-regexp " ++
     "--fixed-strings --files-with-matches --count --invert-match --only-matching " ++
-    "--no-line-number --smart-case --files --no-heading --color[=X] " ++
+    "--no-line-number --smart-case --files --no-heading --color[=X] --replace=<template> " ++
     "--after/before/context=N --max-count=N --type=<lang> --glob=<glob> --regexp=<pat> " ++
-    " ·  positional PATH args scope the search";
+    " ·  positional PATH args scope the search  ·  leading inline flags (?i)/(?-u)/(?m) honored";
 
 /// The mutable parse state threaded through both the short-cluster and long-flag
 /// handlers, so each flag setter is a single line at the call site.
@@ -142,8 +157,12 @@ fn parseShortCluster(sink: Sink, arg: []const u8, i: *usize, all: []const []cons
             'N' => sink.opts.no_line_num = true,
             'S' => sink.opts.smart_case = true,
             // no-ops: gist's fixed `path:line:text` model already implies these.
-            'n', 'H', 'r', 'R', 's' => {},
+            'n', 'H', 'R', 's' => {},
             // ── value flags: consume the rest of the cluster (or next token) ──
+            'r' => {
+                sink.opts.replace = takeVal(arg, j, i, all) orelse return valErr("-r");
+                return true;
+            },
             'A' => {
                 sink.opts.after = parseUsize(takeVal(arg, j, i, all) orelse return valErr("-A")) orelse return valErr("-A");
                 return true;
@@ -236,6 +255,8 @@ fn parseLong(sink: Sink, arg: []const u8, i: *usize, all: []const []const u8) !b
         try sink.addGlob(val(lf.val, i, all, nextTok) orelse return valErr("--glob"));
     } else if (eq(u8, lf.name, "regexp")) {
         sink.setPattern(val(lf.val, i, all, nextTok) orelse return valErr("--regexp"));
+    } else if (eq(u8, lf.name, "replace")) {
+        sink.opts.replace = val(lf.val, i, all, nextTok) orelse return valErr("--replace");
     } else {
         std.debug.print("unknown flag '{s}' — {s}\n", .{ arg, supported });
         return false;
@@ -288,7 +309,7 @@ pub fn parseGrep(gpa: std.mem.Allocator, args: []const []const u8) !?Parsed {
         pattern = "";
     }
 
-    const pat = pattern orelse {
+    var pat = pattern orelse {
         std.debug.print("usage: grep [flags] <pattern> [PATH...]  (or --files [PATH...])\n{s}\n", .{supported});
         exts.deinit(gpa);
         incs.deinit(gpa);
@@ -301,6 +322,19 @@ pub fn parseGrep(gpa: std.mem.Allocator, args: []const []const u8) !?Parsed {
     // rule). `-i` always wins if also given. Resolved here so runGrep is unaware.
     if (opts.smart_case and !opts.caseless and !hasUpper(pat)) opts.caseless = true;
 
+    // A leading inline flag group `(?i)`/`(?-u)`/`(?m)` (rg syntax) is honored
+    // where gist can and rejected loud where it can't — but only when the
+    // pattern is a regex: under `-F` the whole thing is a literal string, so
+    // `(?i)` there is data, not a flag. Runs after smart-case so `(?i)` can win.
+    if (!opts.fixed) {
+        pat = applyInlineFlags(pat, &opts) orelse return errClean(gpa, &exts, &incs, &excs, &roots);
+    }
+    // Validate the `-r` template up front (fail loud, never mid-emit): only the
+    // whole-match refs gist's span engine can honor are allowed.
+    if (opts.replace) |tmpl| {
+        if (!validReplaceTemplate(tmpl)) return errClean(gpa, &exts, &incs, &excs, &roots);
+    }
+
     const exts_s = try exts.toOwnedSlice(gpa);
     const incs_s = try incs.toOwnedSlice(gpa);
     const excs_s = try excs.toOwnedSlice(gpa);
@@ -312,6 +346,76 @@ pub fn parseGrep(gpa: std.mem.Allocator, args: []const []const u8) !?Parsed {
 fn hasUpper(s: []const u8) bool {
     for (s) |c| if (c >= 'A' and c <= 'Z') return true;
     return false;
+}
+
+/// Strip a leading GLOBAL inline-flag group `(?flags)` (rg syntax), applying it
+/// to `opts`, and return the pattern with the group removed (a borrowed
+/// sub-slice, no alloc). rg lets a pattern begin with `(?i)`, `(?-u)`, `(?im)`,
+/// … and an agent pastes them reflexively; rejecting the whole pattern forced a
+/// fallback to rg. Flag map — each honored soundly or a documented no-op:
+///   • `i` → caseless ASCII fold (the whole engine folds via `-i`); `-i` clears.
+///   • `m` → no-op: gist matches per line, which *is* rg's default `^`/`$` mode.
+///   • `u`/`U` (and any `-…` form) → no-op: gist is byte-oriented (== rg `(?-u)`);
+///     `(?u)` differs only on non-ASCII, which byte-mode approximates.
+/// Rejected LOUD (returns null after guidance — never a silent mis-match):
+///   • `s` dotall (`.` spanning newlines) — gist is line-oriented and cannot;
+///   • `x` extended/whitespace-insensitive — unsupported by the parser.
+/// A non-flag `(?` — `(?:…)` non-capturing, `(?=…)` lookahead, `(?<name>…)` — is
+/// left untouched for the regex compiler to accept or reject on its own terms.
+fn applyInlineFlags(pat: []const u8, opts: *Options) ?[]const u8 {
+    if (!std.mem.startsWith(u8, pat, "(?")) return pat;
+    var negate = false;
+    var j: usize = 2;
+    while (j < pat.len) : (j += 1) {
+        switch (pat[j]) {
+            ')' => return pat[j + 1 ..], // consumed a handled global flag group
+            ':' => return pat, // `(?flags:…)` scoped group — leave to the compiler
+            '-' => negate = true,
+            'i' => opts.caseless = !negate,
+            'm', 'u', 'U' => {}, // no-ops (see doc)
+            's', 'x' => |c| {
+                if (negate) continue; // `(?-s)`/`(?-x)` turn OFF ⇒ already gist's default
+                std.debug.print("inline flag '(?{c}…)' unsupported — gist is line-oriented, ASCII byte-mode (drop it, or use rg for a true dotall/extended pattern)\n", .{c});
+                return null;
+            },
+            else => return pat, // not a recognized flag char ⇒ not a flag group
+        }
+    }
+    return pat; // ran off the end with no ')' ⇒ not a valid group; let the compiler report it
+}
+
+/// A `-r` replacement template may only reference the whole match (`$0`, `${0}`,
+/// `$&`) or an escaped literal `$` (`$$`), because gist's span engine tracks the
+/// whole-match extent but not per-group captures. A numbered group ref (`$1`,
+/// `${2}`, …) or a named ref is rejected LOUD here so the failure surfaces at
+/// parse time, not as a silently dropped substitution mid-stream.
+fn validReplaceTemplate(t: []const u8) bool {
+    var i: usize = 0;
+    while (i < t.len) : (i += 1) {
+        if (t[i] != '$') continue;
+        if (i + 1 >= t.len) return true; // trailing '$' is a literal
+        const n = t[i + 1];
+        if (n == '$' or n == '&' or n == '0') {
+            i += 1;
+            continue;
+        }
+        if (n == '{') {
+            const close = std.mem.indexOfScalarPos(u8, t, i + 2, '}') orelse {
+                std.debug.print("bad -r template: unterminated '${{' in \"{s}\"\n", .{t});
+                return false;
+            };
+            const name = t[i + 2 .. close];
+            if (std.mem.eql(u8, name, "0")) {
+                i = close;
+                continue;
+            }
+            std.debug.print("-r group reference \"${{{s}}}\" unsupported — gist tracks the whole match only; use $0/${{0}}/$& (or rg for capture-group rewrites)\n", .{name});
+            return false;
+        }
+        std.debug.print("-r group reference \"${c}\" unsupported — gist tracks the whole match only; use $0/${{0}}/$& (or rg for capture-group rewrites)\n", .{n});
+        return false;
+    }
+    return true;
 }
 
 /// Free the filter arrays and return null — the fail-loud exit after a flag

@@ -59,8 +59,12 @@ const type_table = [_]TypeRow{
     // ── web / scripting ──
     .{ .name = "ts", .exts = &.{ ".ts", ".tsx", ".mts", ".cts" } },
     .{ .name = "typescript", .exts = &.{ ".ts", ".tsx", ".mts", ".cts" } },
+    .{ .name = "tsx", .exts = &.{".tsx"} }, // agents reflexively type `-t tsx`; rg has no such row
     .{ .name = "js", .exts = &.{ ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte" } },
     .{ .name = "javascript", .exts = &.{ ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte" } },
+    .{ .name = "jsx", .exts = &.{".jsx"} },
+    .{ .name = "vue", .exts = &.{".vue"} },
+    .{ .name = "svelte", .exts = &.{".svelte"} },
     .{ .name = "py", .exts = &.{ ".py", ".pyi", ".pyx", ".pxd", ".pxi" } },
     .{ .name = "python", .exts = &.{ ".py", ".pyi", ".pyx", ".pxd", ".pxi" } },
     .{ .name = "ruby", .exts = &.{ ".rb", ".rake", ".gemspec", "Gemfile", "Rakefile" } },
@@ -118,6 +122,9 @@ const type_table = [_]TypeRow{
     .{ .name = "protobuf", .exts = &.{".proto"} },
     .{ .name = "vim", .exts = &.{ ".vim", ".vimrc" } },
     .{ .name = "gd", .exts = &.{".gd"} }, // GDScript (Godot)
+    .{ .name = "rego", .exts = &.{".rego"} }, // OPA policy (Cedar/Rego trust plane)
+    .{ .name = "mdc", .exts = &.{".mdc"} }, // Cursor rule docs
+    .{ .name = "cedar", .exts = &.{".cedar"} }, // Cedar authz policy
 };
 
 /// The extension/filename-suffix list for a type name, or null if unknown

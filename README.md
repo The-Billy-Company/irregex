@@ -121,6 +121,7 @@ zig build cli -- grep [flags] <pattern>      # the agent's `rg -n`: every match 
 | `-g <glob>` | scope to a path glob (`*.ts`, `services/**`, `[a-z]*.go`); `!`-prefix excludes |
 | `-w` / `-F` | word-boundary (`\b…\b`) / fixed-string (escape regex metachars) |
 | `-o` / `--only-matching` | emit each match's TEXT alone (leftmost-first spans, rg-exact), one `path:line:text` row per non-overlapping match |
+| `-r` / `--replace <t>` | rewrite each match by template `t` before emit (`$0`/`${0}`/`$&` = whole match, `$$` = literal `$`); a capture-group ref fails loud (span engine tracks the whole match only) |
 | `--files [PATH…]` | list candidate files (no pattern) — **zero reads, zero tree walk**: an in-memory projection of the index where `rg --files` must walk the tree (gist's structural edge) |
 | `-l` / `-c` | files-with-matches / per-file count |
 | `-v` / `-i` / `-S` | invert / ASCII case-insensitive / smart-case (caseless iff pattern has no uppercase) |
@@ -132,13 +133,28 @@ loop, so `grep` accepts the invocations an agent's muscle memory actually types,
 not a hand-picked subset. Short flags **bundle** (`-ln`, `-in`, `-nC3` ⇒ the
 first value flag consumes the cluster tail); the harmless rg flags that are
 implied by gist's fixed `path:line:text` model are accepted as **no-ops**
-(`-n -H -r -R --no-heading --color=<x> --with-filename`); and every flag also has
+(`-n -H -R --no-heading --color=<x> --with-filename`); and every flag also has
 its rg **long spelling** (`--ignore-case --word-regexp --fixed-strings
 --files-with-matches --count --invert-match --smart-case --no-line-number
---context=N --max-count=N --type=<lang> --glob=<glob> --regexp=<pat>`). A
-genuinely unknown flag still fails **loud** (a silent empty result is the worst
-agent failure). Parser + surface live in [`bench/grepargs.zig`](bench/grepargs.zig),
-guarded by [`bench/grepargs_test.zig`](bench/grepargs_test.zig).
+--context=N --max-count=N --type=<lang> --glob=<glob> --regexp=<pat> --replace=<t>`).
+A leading **inline flag group** an agent pastes reflexively is honored where gist
+can (`(?i)`→caseless, `(?m)`/`(?u)`/`(?-u)`→no-op — gist is per-line byte-mode,
+i.e. rg `(?-u)`) and fails loud only where it genuinely can't (`(?s)` dotall,
+`(?x)` extended), instead of rejecting the whole pattern. A genuinely unknown flag
+still fails **loud** (a silent empty result is the worst agent failure). Parser +
+surface live in [`bench/grepargs.zig`](bench/grepargs.zig), guarded by
+[`bench/grepargs_test.zig`](bench/grepargs_test.zig).
+
+> **`-r` was the one silent-wrong landmine dogfooding surfaced.** rg's `-r`
+> *consumes* the replacement, but gist had listed it among the boolean no-ops, so
+> `grep -r X pat` silently parsed `X` as the pattern and `pat` as a path root — a
+> confident empty result. It is now a value flag with whole-match `$0`/`$&`
+> substitution (byte-identical to `rg -o -r`/`rg -r` on the shared corpus). The
+> deeper reason to prefer gist in an agent loop is structural: in a harness where
+> stdin is a non-tty pipe (how coding agents spawn shells), a bare `rg PATTERN`
+> with no path arg **blocks forever reading stdin**; gist always searches its
+> indexed roots and never hangs (`rg PATTERN </dev/null` returns the same result
+> instantly).
 
 `[PATH…]`/`-t`/`-g` are gist's structural edge over `rg`: rg applies a type/glob/path filter
 *while walking the whole tree*, but gist already holds the path list, so it

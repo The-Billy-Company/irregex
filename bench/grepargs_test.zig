@@ -211,6 +211,78 @@ test "--files: pattern-optional, all non-flags are roots" {
     }
 }
 
+test "-r/--replace consumes a value (the silent-misparse landmine fix)" {
+    // The bug: `-r` was a boolean no-op, so `-r X pat` parsed X as the pattern
+    // and pat as a path root — a confident empty result. It must consume X.
+    {
+        var p = (try parse(&.{ "-r", "X", "pgxpool" })).?;
+        defer p.deinit(A);
+        try expect(eqs(u8, p.pattern, "pgxpool")); // pattern is pgxpool, NOT X
+        try expect(p.opts.replace != null and eqs(u8, p.opts.replace.?, "X"));
+        try expect(p.opts.filter.roots.len == 0); // pgxpool is the pattern, not a root
+    }
+    { // glued short value + bundled with -o, plus the long spelling
+        var p = (try parse(&.{ "-o", "-rREPL", "pat" })).?;
+        defer p.deinit(A);
+        try expect(p.opts.only_matching and eqs(u8, p.opts.replace.?, "REPL"));
+    }
+    {
+        var p = (try parse(&.{ "--replace=$0!", "pat" })).?;
+        defer p.deinit(A);
+        try expect(eqs(u8, p.opts.replace.?, "$0!"));
+    }
+    try expect((try parse(&.{ "-r", "$1", "pat" })) == null); // group ref rejected loud
+    try expect((try parse(&.{ "--replace=${2}", "pat" })) == null); // braced group ref too
+    try expect((try parse(&.{"-r"})) == null); // missing value fails loud
+}
+
+test "leading inline flag group (?i)/(?-u)/(?m) honored; (?s) rejected" {
+    {
+        var p = (try parse(&.{"(?i)wallet"})).?;
+        defer p.deinit(A);
+        try expect(p.opts.caseless and eqs(u8, p.pattern, "wallet")); // group stripped
+    }
+    {
+        var p = (try parse(&.{"(?-u)func"})).?; // byte mode = gist default ⇒ no-op strip
+        defer p.deinit(A);
+        try expect(!p.opts.caseless and eqs(u8, p.pattern, "func"));
+    }
+    {
+        var p = (try parse(&.{"(?im)Foo"})).?; // multiline is gist's default (per-line)
+        defer p.deinit(A);
+        try expect(p.opts.caseless and eqs(u8, p.pattern, "Foo"));
+    }
+    {
+        var p = (try parse(&.{"(?-i)Foo"})).?; // explicit case-sensitive
+        defer p.deinit(A);
+        try expect(!p.opts.caseless and eqs(u8, p.pattern, "Foo"));
+    }
+    { // a non-capturing group is NOT a flag group — left intact for the compiler
+        var p = (try parse(&.{"(?:foo|bar)"})).?;
+        defer p.deinit(A);
+        try expect(eqs(u8, p.pattern, "(?:foo|bar)"));
+    }
+    { // `-F` makes `(?i)` a literal string, not a flag
+        var p = (try parse(&.{ "-F", "(?i)x" })).?;
+        defer p.deinit(A);
+        try expect(!p.opts.caseless and eqs(u8, p.pattern, "(?i)x"));
+    }
+    try expect((try parse(&.{"(?s)a.*b"})) == null); // dotall — gist can't, fail loud
+    {
+        var p = (try parse(&.{"(?-s)ab"})).?; // dotall OFF is already the default ⇒ ok
+        defer p.deinit(A);
+        try expect(eqs(u8, p.pattern, "ab"));
+    }
+}
+
+test "type aliases: tsx, jsx, rego, mdc resolve" {
+    for ([_][]const u8{ "tsx", "jsx", "rego", "mdc", "vue", "svelte", "cedar" }) |t| {
+        var p = (try parse(&.{ "-t", t, "x" })).?;
+        defer p.deinit(A);
+        try expect(p.opts.filter.exts.len > 0);
+    }
+}
+
 test "fail loud: unknown short flag, unknown long flag, missing value, no pattern" {
     try expect((try parse(&.{ "-Z", "foo" })) == null); // unknown short
     try expect((try parse(&.{ "-nZ", "foo" })) == null); // unknown inside a cluster
