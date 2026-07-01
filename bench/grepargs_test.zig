@@ -165,6 +165,52 @@ test "-- ends flag parsing" {
     try expect(eqs(u8, p.pattern, "-n"));
 }
 
+test "-o only-matching: short cluster and long spelling" {
+    {
+        var p = (try parse(&.{ "-o", "func \\w+" })).?;
+        defer p.deinit(A);
+        try expect(p.opts.only_matching);
+    }
+    {
+        var p = (try parse(&.{ "-no", "func" })).?; // bundled with the -n no-op
+        defer p.deinit(A);
+        try expect(p.opts.only_matching);
+    }
+    {
+        var p = (try parse(&.{ "--only-matching", "func" })).?;
+        defer p.deinit(A);
+        try expect(p.opts.only_matching);
+    }
+}
+
+test "--files: pattern-optional, all non-flags are roots" {
+    {
+        var p = (try parse(&.{"--files"})).?; // no pattern needed
+        defer p.deinit(A);
+        try expect(p.opts.files_list);
+        try expect(eqs(u8, p.pattern, ""));
+        try expect(p.opts.filter.roots.len == 0); // whole corpus
+    }
+    {
+        var p = (try parse(&.{ "--files", "services/backend/api", "libs/" })).?;
+        defer p.deinit(A);
+        try expect(p.opts.files_list);
+        try expect(p.opts.filter.roots.len == 2); // both tokens are roots, neither a pattern
+        try expect(p.opts.filter.admits("services/backend/api/x.go"));
+    }
+    {
+        var p = (try parse(&.{ "--files", "-t", "go" })).?; // --files + type scope
+        defer p.deinit(A);
+        try expect(p.opts.files_list and p.opts.filter.exts.len > 0);
+    }
+    {
+        var p = (try parse(&.{ "services", "--files" })).?; // --files after a token: still a root
+        defer p.deinit(A);
+        try expect(p.opts.files_list and p.opts.filter.roots.len == 1);
+        try expect(eqs(u8, p.pattern, ""));
+    }
+}
+
 test "fail loud: unknown short flag, unknown long flag, missing value, no pattern" {
     try expect((try parse(&.{ "-Z", "foo" })) == null); // unknown short
     try expect((try parse(&.{ "-nZ", "foo" })) == null); // unknown inside a cluster

@@ -120,6 +120,8 @@ zig build cli -- grep [flags] <pattern>      # the agent's `rg -n`: every match 
 | `-t <lang>` | scope to a language — `go py rust ts js swift zig sql proto md json yaml toml sh …` |
 | `-g <glob>` | scope to a path glob (`*.ts`, `services/**`, `[a-z]*.go`); `!`-prefix excludes |
 | `-w` / `-F` | word-boundary (`\b…\b`) / fixed-string (escape regex metachars) |
+| `-o` / `--only-matching` | emit each match's TEXT alone (leftmost-first spans, rg-exact), one `path:line:text` row per non-overlapping match |
+| `--files [PATH…]` | list candidate files (no pattern) — **zero reads, zero tree walk**: an in-memory projection of the index where `rg --files` must walk the tree (gist's structural edge) |
 | `-l` / `-c` | files-with-matches / per-file count |
 | `-v` / `-i` / `-S` | invert / ASCII case-insensitive / smart-case (caseless iff pattern has no uppercase) |
 | `-n` / `-N` / `-m N` | line numbers (always on — `-n` is a no-op) / suppress line column / cap rows per file |

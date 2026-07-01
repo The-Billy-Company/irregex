@@ -226,6 +226,11 @@ pub const Regex = struct {
         // Word-ness of the bytes straddling this (fixed) position, for `\b`/`\B`.
         word_before: bool,
         word_after: bool,
+        // Optional start-offset side-channel for `-o` span extraction: when
+        // `starts` is set, every state pushed to `list` records where the thread
+        // reaching it BEGAN (`cur_start`). Null on the hot boolean path (no cost).
+        starts: ?[]usize = null,
+        cur_start: usize = 0,
 
         /// Epsilon-closure of `s` into `list`; returns whether it reached the match state (so `lineMatch` answers without a second list scan). Zero-width assertions resolve against the position's flags — `^`/`$` against `at_start`/`at_end`, `\b`/`\B` against `word_before`/`word_after` (a boundary holds iff exactly one side is a word byte) — and a failed assertion just kills that branch (the position is fixed across one closure).
         fn add(c: Closure, s: u32) bool {
@@ -243,6 +248,7 @@ pub const Regex = struct {
                 .assert_not_word_b => |out| (c.word_before == c.word_after) and c.add(out),
                 else => blk: {
                     c.list.push(s);
+                    if (c.starts) |st| st[s] = c.cur_start; // first (highest-priority) write wins
                     break :blk c.re.states[s] == .match;
                 },
             };
@@ -362,5 +368,127 @@ pub const Regex = struct {
             rest = rest[end + 1 ..];
         }
         return false;
+    }
+
+    // ─────────────────────── `-o` leftmost-first spans ───────────────────────
+    //
+    // `lineMatch`/`docMatch` answer *whether* a line matches; `-o`/--only-matching
+    // needs *where* — each non-overlapping match's byte span, so gist can emit the
+    // matched text alone (extraction: function names, idents, URLs, …) exactly as
+    // ripgrep does. The DFA is boolean, so spans run the Pike VM with a per-state
+    // start-offset map. Semantics are rg's `(?-u)`: leftmost start, then the
+    // highest-priority thread wins the end — earlier alternation branches and
+    // greedy quantifiers extend maximally (verified: `a|ab`→`a`, `a+`→greedy).
+
+    /// A byte span `[start, end)` of one match within a line. `end == start` is a
+    /// zero-width match (the `-o` caller advances past it to avoid looping).
+    pub const Span = struct { start: usize, end: usize };
+
+    /// Reusable Pike scratch for `matchSpan`, plus the per-state start-offset maps
+    /// (`scur`/`snxt`, one entry per state id, valid for the list's generation).
+    /// Kept apart from `Sim` so the hot boolean path never allocates the maps.
+    pub const SpanSim = struct {
+        cur: ThreadList,
+        nxt: ThreadList,
+        seen: []u32,
+        scur: []usize,
+        snxt: []usize,
+        gen: u32 = 0,
+        allocator: std.mem.Allocator,
+
+        pub fn init(allocator: std.mem.Allocator, re: *const Regex) ParseError!SpanSim {
+            const n = re.states.len;
+            const seen = try allocator.alloc(u32, n);
+            @memset(seen, 0);
+            return .{
+                .cur = .{ .buf = try allocator.alloc(u32, n) },
+                .nxt = .{ .buf = try allocator.alloc(u32, n) },
+                .seen = seen,
+                .scur = try allocator.alloc(usize, n),
+                .snxt = try allocator.alloc(usize, n),
+                .allocator = allocator,
+            };
+        }
+        pub fn deinit(self: *SpanSim) void {
+            self.allocator.free(self.cur.buf);
+            self.allocator.free(self.nxt.buf);
+            self.allocator.free(self.seen);
+            self.allocator.free(self.scur);
+            self.allocator.free(self.snxt);
+            self.* = undefined;
+        }
+    };
+
+    /// The highest-priority match in a priority-ordered thread `list`: the first
+    /// `.match` state and where its thread began (`starts`), paired with `end`.
+    /// Also returns its list index (`cut`) so the caller drops every lower-priority
+    /// thread — none can yield a preferred match. `null` ⇒ no match at this position.
+    fn firstMatch(re: *const Regex, list: []const u32, starts: []const usize, end: usize) ?struct { span: Span, cut: usize } {
+        for (list, 0..) |s, k| if (re.states[s] == .match)
+            return .{ .span = .{ .start = starts[s], .end = end }, .cut = k };
+        return null;
+    }
+
+    /// Leftmost-first match of the pattern within `line[from..]`, as a byte span,
+    /// or null. Priority-ordered Pike VM: earlier starts win (leftmost), and among
+    /// threads sharing a start the earliest alternation branch / greediest
+    /// quantifier wins (rg `(?-u)` semantics). Once any thread matches we stop
+    /// seeding new starts (leftmost) but keep strictly-higher-priority survivors
+    /// running, so a greedy branch can still extend the end.
+    pub fn matchSpan(re: *const Regex, sim: *SpanSim, line: []const u8, from: usize) ?Span {
+        sim.gen += 1;
+        sim.cur.len = 0;
+        var cl = Closure{
+            .re = re,
+            .list = &sim.cur,
+            .seen = sim.seen,
+            .gen = sim.gen,
+            .at_start = from == 0,
+            .at_end = from == line.len,
+            .word_before = wordBefore(line, from),
+            .word_after = wordAt(line, from),
+            .starts = sim.scur,
+            .cur_start = from,
+        };
+        _ = cl.add(re.start);
+
+        var best: ?Span = null;
+        var cut: usize = sim.cur.len;
+        if (firstMatch(re, sim.cur.slice(), sim.scur, from)) |m| {
+            best = m.span;
+            cut = m.cut; // process only threads strictly higher-priority than the match
+        }
+
+        var i: usize = from;
+        while (i < line.len) : (i += 1) {
+            const c = line[i];
+            sim.nxt.len = 0;
+            sim.gen += 1;
+            const at_end = i + 1 == line.len;
+            const wb = wordBefore(line, i + 1);
+            const wa = wordAt(line, i + 1);
+            const slice = sim.cur.slice();
+            for (slice[0..cut]) |s| switch (re.states[s]) {
+                .consume => |cn| if (cn.set.has(c)) {
+                    var nc = Closure{ .re = re, .list = &sim.nxt, .seen = sim.seen, .gen = sim.gen, .at_start = false, .at_end = at_end, .word_before = wb, .word_after = wa, .starts = sim.snxt, .cur_start = sim.scur[s] };
+                    _ = nc.add(cn.out);
+                },
+                else => {},
+            };
+            // Re-seed a fresh start at i+1 (lowest priority) only while unmatched.
+            if (best == null) {
+                var sc = Closure{ .re = re, .list = &sim.nxt, .seen = sim.seen, .gen = sim.gen, .at_start = i + 1 == 0, .at_end = at_end, .word_before = wb, .word_after = wa, .starts = sim.snxt, .cur_start = i + 1 };
+                _ = sc.add(re.start);
+            }
+            std.mem.swap(ThreadList, &sim.cur, &sim.nxt);
+            std.mem.swap([]usize, &sim.scur, &sim.snxt);
+            cut = sim.cur.len;
+            if (firstMatch(re, sim.cur.slice(), sim.scur, i + 1)) |m| {
+                best = m.span; // a survivor (strictly higher priority) extends/overrides
+                cut = m.cut;
+            }
+            if (best != null and cut == 0) break; // no higher-priority survivor left
+        }
+        return best;
     }
 };

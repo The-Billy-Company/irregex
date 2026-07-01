@@ -142,8 +142,39 @@ fn collectLines(gpa: std.mem.Allocator, buf: []const u8, out: *std.ArrayList([]c
 /// per-file cap. Returns the number of match lines emitted (0 ⇒ caller drops the
 /// file). Context windows around successive matches are merged when they touch
 /// or overlap; disjoint groups are separated by a `--` line (rg's framing).
+/// `-o`/--only-matching: emit each non-overlapping match's TEXT alone (not the
+/// whole line), one row per match `path:line:text`, exactly as ripgrep does.
+/// Leftmost-first spans come from the Pike VM (`matchSpan`); after a match at
+/// `[s,e)` the next search resumes at `e` (non-overlapping), and a zero-width
+/// match advances one byte so a nullable pattern can't loop. Returns the row count.
+fn emitOnlyMatching(sh: *Shard, path: []const u8, lines: []const []const u8, body: *std.ArrayList(u8)) !usize {
+    var ssim = Regex.SpanSim.init(sh.gpa, sh.re) catch return 0;
+    defer ssim.deinit();
+    var emitted: usize = 0;
+    for (lines, 0..) |line, idx| {
+        var from: usize = 0;
+        while (from <= line.len) {
+            const span = sh.re.matchSpan(&ssim, line, from) orelse break;
+            if (span.end == span.start) { // zero-width: don't emit, step past to avoid a loop
+                from = span.start + 1;
+                continue;
+            }
+            const text = line[span.start..span.end];
+            if (sh.opts.no_line_num)
+                try body.print(sh.gpa, "{s}:{s}\n", .{ path, text })
+            else
+                try body.print(sh.gpa, "{s}:{d}:{s}\n", .{ path, idx + 1, text });
+            emitted += 1;
+            if (sh.opts.max_per_file != 0 and emitted >= sh.opts.max_per_file) return emitted;
+            from = span.end;
+        }
+    }
+    return emitted;
+}
+
 fn emitFileLines(sh: *Shard, path: []const u8, lines: []const []const u8, body: *std.ArrayList(u8)) !usize {
     const opts = sh.opts;
+    if (opts.only_matching and !opts.invert) return emitOnlyMatching(sh, path, lines, body);
     // Pass 1: which line indices match (respecting -v), capped per file.
     var match_idx: std.ArrayList(usize) = .empty;
     defer match_idx.deinit(sh.gpa);
@@ -287,7 +318,55 @@ fn runShards(gpa: std.mem.Allocator, paths: []const []const u8, ids: []const u32
 /// every doc), prune candidates by the `-t`/`-g` path filter (before any read),
 /// then emit `path:line:text` for every matching line, grouped & sorted by path.
 /// This is the agent's `rg -n --no-heading`, served from the index.
+/// `--files`: list every corpus file the path filter admits — WITHOUT reading a
+/// single file's bytes. gist already holds the whole path list in the mmap'd
+/// index, so file discovery is a pure in-memory filter + sort where rg must walk
+/// the entire tree (and, from an uncurated root, can stall on the build/vendor
+/// mass gist's corpus policy already excludes). Read-your-own-writes is kept:
+/// `fresh.candidates` with an empty filter seeds every indexed doc AND folds in
+/// files created/touched since the build (a stat-only walk, no reads), so a file
+/// a coworker just wrote still appears. A file *deleted* since the last index
+/// rebuild may still be listed (there's no read to verify it away) and self-heals
+/// on the next `index` — the same tolerated false-positive the trigram filter has.
+pub fn runFilesList(gpa: std.mem.Allocator, io: std.Io, opts: Options) !void {
+    const l0 = nowNs(io);
+    var p = (try cli.loadPersisted(gpa, io)) orelse return;
+    defer p.deinit();
+    const load_ns = nowNs(io) - l0;
+
+    const q0 = nowNs(io);
+    // Empty filter ⇒ seed every indexed doc; the freshness overlay appends any
+    // file born since the build. No trigram query, no candidate read.
+    var cand = try fresh.candidates(gpa, io, &p.idx, &p.paths, &.{}, &corpus_mod.default_roots);
+    defer cand.deinit();
+
+    var out: std.ArrayList([]const u8) = .empty;
+    defer out.deinit(gpa);
+    for (cand.ids) |d| {
+        const path = p.paths.items[d];
+        if (opts.filter.admits(path)) try out.append(gpa, path);
+    }
+    std.mem.sort([]const u8, out.items, {}, cmpPaths);
+    const query_ns = nowNs(io) - q0;
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(gpa);
+    for (out.items) |path| {
+        try buf.appendSlice(gpa, path);
+        try buf.append(gpa, '\n');
+    }
+    corpus_mod.emitStdout(buf.items); // file paths → stdout (rg convention)
+    std.debug.print("— {d} files · 0 reads (in-memory index projection) · cold-load {d:.1} ms · list {d:.1} ms · total {d:.1} ms\n", .{
+        out.items.len, ms(load_ns), ms(query_ns), ms(load_ns + query_ns),
+    });
+}
+
+fn cmpPaths(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.lessThan(u8, a, b);
+}
+
 pub fn runGrep(gpa: std.mem.Allocator, io: std.Io, pattern: []const u8, opts: Options) !void {
+    if (opts.files_list) return runFilesList(gpa, io, opts);
     const eff = try effectivePattern(gpa, pattern, opts);
     defer if (eff.owned) gpa.free(eff.s);
     var re = Regex.compileOpts(gpa, eff.s, .{ .caseless = opts.caseless }) catch {

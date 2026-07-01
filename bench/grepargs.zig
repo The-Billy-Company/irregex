@@ -41,6 +41,8 @@ pub const Options = struct {
     invert: bool = false, // `-v`: emit non-matching lines (forces seed-all)
     no_line_num: bool = false, // `-N`/`--no-line-number`: emit `path:text` (drop col)
     smart_case: bool = false, // `-S`: caseless iff the pattern has no uppercase
+    only_matching: bool = false, // `-o`/`--only-matching`: emit each match span, not the line
+    files_list: bool = false, // `--files`: list candidate files (no pattern, no read)
     filter: pathfilter.PathFilter = .{},
 
     pub fn wantsContext(self: Options) bool {
@@ -76,11 +78,12 @@ fn badVal(flag: []const u8) ?Parsed {
 }
 
 const supported =
-    "supported flags: -i -w -F -l -c -v -n -N -S -H -r -m N -A N -B N -C N " ++
+    "supported flags: -i -w -F -l -c -v -o -n -N -S -H -r -m N -A N -B N -C N " ++
     "-t <lang> -g <glob> -e <pat> --  ·  long: --ignore-case --word-regexp " ++
-    "--fixed-strings --files-with-matches --count --invert-match --no-line-number " ++
-    "--smart-case --no-heading --color[=X] --after/before/context=N --max-count=N " ++
-    "--type=<lang> --glob=<glob> --regexp=<pat>  ·  positional PATH args scope the search";
+    "--fixed-strings --files-with-matches --count --invert-match --only-matching " ++
+    "--no-line-number --smart-case --files --no-heading --color[=X] " ++
+    "--after/before/context=N --max-count=N --type=<lang> --glob=<glob> --regexp=<pat> " ++
+    " ·  positional PATH args scope the search";
 
 /// The mutable parse state threaded through both the short-cluster and long-flag
 /// handlers, so each flag setter is a single line at the call site.
@@ -135,6 +138,7 @@ fn parseShortCluster(sink: Sink, arg: []const u8, i: *usize, all: []const []cons
             'l' => sink.opts.files_only = true,
             'c' => sink.opts.count_only = true,
             'v' => sink.opts.invert = true,
+            'o' => sink.opts.only_matching = true,
             'N' => sink.opts.no_line_num = true,
             'S' => sink.opts.smart_case = true,
             // no-ops: gist's fixed `path:line:text` model already implies these.
@@ -213,7 +217,7 @@ fn parseLong(sink: Sink, arg: []const u8, i: *usize, all: []const []const u8) !b
     }.get;
 
     const eq = std.mem.eql;
-    if (eq(u8, lf.name, "ignore-case")) sink.opts.caseless = true else if (eq(u8, lf.name, "word-regexp")) sink.opts.word = true else if (eq(u8, lf.name, "fixed-strings")) sink.opts.fixed = true else if (eq(u8, lf.name, "files-with-matches")) sink.opts.files_only = true else if (eq(u8, lf.name, "count") or eq(u8, lf.name, "count-matches")) sink.opts.count_only = true else if (eq(u8, lf.name, "invert-match")) sink.opts.invert = true else if (eq(u8, lf.name, "no-line-number")) sink.opts.no_line_num = true else if (eq(u8, lf.name, "smart-case")) sink.opts.smart_case = true else if (eq(u8, lf.name, "line-number") or eq(u8, lf.name, "no-heading") or eq(u8, lf.name, "heading") or eq(u8, lf.name, "with-filename") or eq(u8, lf.name, "no-filename") or eq(u8, lf.name, "recursive") or eq(u8, lf.name, "case-sensitive") or eq(u8, lf.name, "color")) {
+    if (eq(u8, lf.name, "ignore-case")) sink.opts.caseless = true else if (eq(u8, lf.name, "word-regexp")) sink.opts.word = true else if (eq(u8, lf.name, "fixed-strings")) sink.opts.fixed = true else if (eq(u8, lf.name, "files-with-matches")) sink.opts.files_only = true else if (eq(u8, lf.name, "count") or eq(u8, lf.name, "count-matches")) sink.opts.count_only = true else if (eq(u8, lf.name, "invert-match")) sink.opts.invert = true else if (eq(u8, lf.name, "only-matching")) sink.opts.only_matching = true else if (eq(u8, lf.name, "files")) sink.opts.files_list = true else if (eq(u8, lf.name, "no-line-number")) sink.opts.no_line_num = true else if (eq(u8, lf.name, "smart-case")) sink.opts.smart_case = true else if (eq(u8, lf.name, "line-number") or eq(u8, lf.name, "no-heading") or eq(u8, lf.name, "heading") or eq(u8, lf.name, "with-filename") or eq(u8, lf.name, "no-filename") or eq(u8, lf.name, "recursive") or eq(u8, lf.name, "case-sensitive") or eq(u8, lf.name, "color")) {
         // no-ops (gist has one fixed output model). `--color[=X]` swallows an X.
         if (lf.val == null and eq(u8, lf.name, "color")) _ = nextTok(i, all);
     } else if (eq(u8, lf.name, "after-context")) {
@@ -276,8 +280,16 @@ pub fn parseGrep(gpa: std.mem.Allocator, args: []const []const u8) !?Parsed {
         }
     }
 
+    // `--files` lists candidate files and takes no pattern (rg's `rg --files
+    // [PATH…]`). Any token parsed as the "pattern" is really a path root, so
+    // fold it back into the root set and run with an empty pattern.
+    if (opts.files_list) {
+        if (pattern) |p| try roots.append(gpa, pathfilter.normalizeRoot(p));
+        pattern = "";
+    }
+
     const pat = pattern orelse {
-        std.debug.print("usage: grep [flags] <pattern> [PATH...]\n{s}\n", .{supported});
+        std.debug.print("usage: grep [flags] <pattern> [PATH...]  (or --files [PATH...])\n{s}\n", .{supported});
         exts.deinit(gpa);
         incs.deinit(gpa);
         excs.deinit(gpa);

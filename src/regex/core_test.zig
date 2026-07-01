@@ -351,3 +351,84 @@ test "regex: mixed-anchor alternation seeds the ^-only branch (skip-path soundne
     try std.testing.expect(!re.docMatch(&sim, "  package main")); // ^ not at start
     try std.testing.expect(!re.docMatch(&sim, "// just a comment"));
 }
+
+// ── `-o` / --only-matching leftmost-first span extraction (matchSpan) ──
+//
+// The span engine must reproduce rg's `(?-u)` match semantics EXACTLY: the
+// leftmost start, then among threads sharing it the earliest alternation branch
+// and greediest quantifier win. Every expectation below is cross-checked against
+// `rg -o` on this machine (see .local/gist-dogfood/o_battery.sh, byte-identical).
+
+/// The first match span in `line[from..]` as `[start,end)`, or null.
+fn span1(pattern: []const u8, line: []const u8, from: usize) !?Regex.Span {
+    var re = try Regex.compile(std.testing.allocator, pattern);
+    defer re.deinit();
+    var ss = try Regex.SpanSim.init(std.testing.allocator, &re);
+    defer ss.deinit();
+    return re.matchSpan(&ss, line, from);
+}
+
+/// Concatenate every non-overlapping match's TEXT with '|' — the `-o` stream
+/// per line (empty matches advance one byte, exactly as `emitOnlyMatching`).
+fn spansJoined(gpa: std.mem.Allocator, pattern: []const u8, line: []const u8) ![]u8 {
+    var re = try Regex.compile(gpa, pattern);
+    defer re.deinit();
+    var ss = try Regex.SpanSim.init(gpa, &re);
+    defer ss.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    var from: usize = 0;
+    var first = true;
+    while (from <= line.len) {
+        const sp = re.matchSpan(&ss, line, from) orelse break;
+        if (sp.end == sp.start) {
+            from = sp.start + 1;
+            continue;
+        }
+        if (!first) try out.append(gpa, '|');
+        first = false;
+        try out.appendSlice(gpa, line[sp.start..sp.end]);
+        from = sp.end;
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+fn expectJoined(pattern: []const u8, line: []const u8, want: []const u8) !void {
+    const got = try spansJoined(std.testing.allocator, pattern, line);
+    defer std.testing.allocator.free(got);
+    try std.testing.expectEqualStrings(want, got);
+}
+
+test "matchSpan: leftmost-first prefers the earlier alternation branch (a|ab ⇒ a)" {
+    const sp = (try span1("a|ab", "ab", 0)).?;
+    try std.testing.expect(sp.start == 0 and sp.end == 1); // "a", not "ab"
+    try expectJoined("a|ab", "abab", "a|a"); // then re-anchors after each 'a'
+}
+
+test "matchSpan: greedy quantifiers extend the end maximally" {
+    try expectJoined("a+", "aaa", "aaa");
+    try expectJoined("a+", "baaab", "aaa");
+    try expectJoined("[0-9]+", "x12y345", "12|345");
+    try expectJoined("[0-9]{2,}", "1 22 333", "22|333"); // the lone '1' is below the floor
+}
+
+test "matchSpan: non-overlapping, leftmost extraction of real code shapes" {
+    try expectJoined("func \\w+", "func Foo() { func Bar() }", "func Foo|func Bar");
+    try expectJoined("\\w+", "a.b_c d", "a|b_c|d");
+    try expectJoined("0x[0-9a-fA-F]+", "v := 0xFF + 0x0a", "0xFF|0x0a");
+}
+
+test "matchSpan: anchors and word boundaries land the right span" {
+    try std.testing.expect((try span1("^func", "func main", 0)).?.end == 4);
+    try std.testing.expect((try span1("^func", " func", 0)) == null); // ^ not at start
+    try expectJoined("\\bfunc\\b", "func funcs func", "func|func"); // 'funcs' is not a whole word
+    // `$`-anchored greedy end sits at line end.
+    try std.testing.expect((try span1("[0-9]+$", "id 42", 0)).?.end == 5);
+}
+
+test "matchSpan: resumes from a mid-line offset (non-overlapping iteration)" {
+    // First match at 0..4; the next search from 4 finds the second at 9..13.
+    try std.testing.expect((try span1("func", "func fn func", 0)).?.start == 0);
+    try std.testing.expect((try span1("func", "func fn func", 4)).?.start == 8);
+    try std.testing.expect((try span1("func", "func fn func", 9)) == null);
+}
