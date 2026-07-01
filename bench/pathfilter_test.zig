@@ -79,6 +79,40 @@ test "PathFilter: type extension union, AND with globs, exclude veto" {
     try expect(!no_test.admits("services/api/wallet.pb.go"));
 }
 
+test "positional roots: dir prefix, exact file, whole-corpus '.', boundary" {
+    // A directory root admits paths under it, respecting the '/' boundary so a
+    // sibling with a shared prefix is NOT bled in.
+    const in_services = PathFilter{ .roots = &.{"services"} };
+    try expect(in_services.admits("services/api/main.go"));
+    try expect(!in_services.admits("libs/x.zig"));
+    try expect(!in_services.admits("services_old/x.go")); // '/' boundary, no bleed
+
+    // An exact-file root admits only that file.
+    const one_file = PathFilter{ .roots = &.{"services/api/main.go"} };
+    try expect(one_file.admits("services/api/main.go"));
+    try expect(!one_file.admits("services/api/other.go"));
+
+    // Multiple roots OR together; '.' matches the whole corpus.
+    const two = PathFilter{ .roots = &.{ "services", "libs" } };
+    try expect(two.admits("libs/x.zig") and two.admits("services/y.go"));
+    try expect(!two.admits("clients/z.ts"));
+    const dot = PathFilter{ .roots = &.{"."} };
+    try expect(dot.admits("anywhere/at/all.rs"));
+
+    // roots AND with type/glob/exclude, same as the other constraint sets.
+    const scoped = PathFilter{ .exts = &.{".go"}, .roots = &.{"services"} };
+    try expect(scoped.admits("services/api/main.go"));
+    try expect(!scoped.admits("services/api/app.ts")); // right root, wrong ext
+    try expect(!scoped.admits("libs/api/main.go")); // right ext, wrong root
+}
+
+test "normalizeRoot strips leading ./ and trailing /" {
+    try expect(std.mem.eql(u8, pf.normalizeRoot("./services/"), "services"));
+    try expect(std.mem.eql(u8, pf.normalizeRoot("libs/x/"), "libs/x"));
+    try expect(std.mem.eql(u8, pf.normalizeRoot("services"), "services"));
+    try expect(std.mem.eql(u8, pf.normalizeRoot("."), "."));
+}
+
 test "empty filter admits everything and prunes nothing" {
     const empty = PathFilter{};
     try expect(empty.isEmpty());

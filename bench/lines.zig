@@ -40,158 +40,21 @@ const gist = @import("gist");
 const corpus_mod = @import("corpus.zig");
 const fresh = @import("fresh.zig");
 const cli = @import("cli.zig");
-const pathfilter = @import("pathfilter.zig");
+const grepargs = @import("grepargs.zig");
 const Regex = gist.regex.Regex;
 
-pub const Options = struct {
-    caseless: bool = false,
-    /// Cap rows emitted per file (0 = unbounded). Mirrors `rg -m`; an agent
-    /// rarely needs the 800th hit in a generated file and pays tokens for each.
-    max_per_file: usize = 0,
-    before: usize = 0, // `-B`/`-C`: context lines before each match
-    after: usize = 0, // `-A`/`-C`: context lines after each match
-    word: bool = false, // `-w`: wrap the pattern in `\b(…)\b`
-    fixed: bool = false, // `-F`: treat the pattern as a literal (escape metachars)
-    files_only: bool = false, // `-l`: emit matching paths only
-    count_only: bool = false, // `-c`: emit `path:count`
-    invert: bool = false, // `-v`: emit non-matching lines (forces seed-all)
-    filter: pathfilter.PathFilter = .{},
-
-    pub fn wantsContext(self: Options) bool {
-        return self.before > 0 or self.after > 0;
-    }
-};
+// The argv parser + its result types live in `grepargs.zig` (the ripgrep-
+// compatible flag surface); re-exported here so `runGrep`'s callers and the
+// tests keep addressing them through `lines`.
+pub const Options = grepargs.Options;
+pub const Parsed = grepargs.Parsed;
+pub const parseGrep = grepargs.parseGrep;
 
 fn nowNs(io: std.Io) i128 {
     return std.Io.Clock.now(.awake, io).nanoseconds;
 }
 fn ms(ns: i128) f64 {
     return @as(f64, @floatFromInt(ns)) / 1e6;
-}
-
-// ─────────────────────────── argv → Options ───────────────────────────
-//
-// A fail-loud parser: every recognized flag is consumed explicitly, an unknown
-// `-x` is an error (never silently swallowed as the pattern), and the filter
-// (`-t`/`-g`) lists are gpa-owned (freed by `Parsed.deinit`). Value flags accept
-// both `-A 3` and `-A3`.
-
-pub const Parsed = struct {
-    pattern: []const u8,
-    opts: Options,
-    // gpa-owned backing arrays for the filter; elements are borrowed (static
-    // extension strings / argv glob slices), so only the arrays are freed.
-    exts: []const []const u8,
-    incs: []const []const u8,
-    excs: []const []const u8,
-
-    pub fn deinit(self: *Parsed, gpa: std.mem.Allocator) void {
-        if (self.exts.len > 0) gpa.free(self.exts);
-        if (self.incs.len > 0) gpa.free(self.incs);
-        if (self.excs.len > 0) gpa.free(self.excs);
-    }
-};
-
-fn parseUsize(s: []const u8) ?usize {
-    return std.fmt.parseInt(usize, s, 10) catch null;
-}
-
-/// Parse `gist grep` argv (the tokens AFTER the `grep` verb). Returns null after
-/// printing guidance on any error or a missing pattern. On success the caller
-/// owns `Parsed` and must `deinit` it.
-pub fn parseGrep(gpa: std.mem.Allocator, args: []const []const u8) !?Parsed {
-    var opts: Options = .{};
-    var pattern: ?[]const u8 = null;
-    var exts: std.ArrayList([]const u8) = .empty;
-    var incs: std.ArrayList([]const u8) = .empty;
-    var excs: std.ArrayList([]const u8) = .empty;
-    errdefer {
-        exts.deinit(gpa);
-        incs.deinit(gpa);
-        excs.deinit(gpa);
-    }
-
-    var i: usize = 0;
-    var flags_done = false;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
-        // The value for a `-Xv` glued flag or the next token (`-X v`).
-        const Value = struct {
-            fn get(a: []const u8, idx: *usize, all: []const []const u8) ?[]const u8 {
-                if (a.len > 2) return a[2..];
-                if (idx.* + 1 < all.len) {
-                    idx.* += 1;
-                    return all[idx.*];
-                }
-                return null;
-            }
-        };
-
-        if (!flags_done and arg.len >= 1 and arg[0] == '-' and !std.mem.eql(u8, arg, "-")) {
-            if (std.mem.eql(u8, arg, "--")) {
-                flags_done = true;
-            } else if (std.mem.eql(u8, arg, "-i")) {
-                opts.caseless = true;
-            } else if (std.mem.eql(u8, arg, "-w")) {
-                opts.word = true;
-            } else if (std.mem.eql(u8, arg, "-F")) {
-                opts.fixed = true;
-            } else if (std.mem.eql(u8, arg, "-l")) {
-                opts.files_only = true;
-            } else if (std.mem.eql(u8, arg, "-c")) {
-                opts.count_only = true;
-            } else if (std.mem.eql(u8, arg, "-v")) {
-                opts.invert = true;
-            } else if (std.mem.startsWith(u8, arg, "-m")) {
-                opts.max_per_file = parseUsize(Value.get(arg, &i, args) orelse return badVal("-m")) orelse return badVal("-m");
-            } else if (std.mem.startsWith(u8, arg, "-A")) {
-                opts.after = parseUsize(Value.get(arg, &i, args) orelse return badVal("-A")) orelse return badVal("-A");
-            } else if (std.mem.startsWith(u8, arg, "-B")) {
-                opts.before = parseUsize(Value.get(arg, &i, args) orelse return badVal("-B")) orelse return badVal("-B");
-            } else if (std.mem.startsWith(u8, arg, "-C")) {
-                const n = parseUsize(Value.get(arg, &i, args) orelse return badVal("-C")) orelse return badVal("-C");
-                opts.before = n;
-                opts.after = n;
-            } else if (std.mem.startsWith(u8, arg, "-t")) {
-                const name = Value.get(arg, &i, args) orelse return badVal("-t");
-                const e = pathfilter.extsForType(name) orelse {
-                    std.debug.print("unknown type '{s}' for -t (try go/py/rust/ts/js/swift/zig/sql/proto/md/json/yaml/toml/sh)\n", .{name});
-                    return null;
-                };
-                try exts.appendSlice(gpa, e);
-            } else if (std.mem.startsWith(u8, arg, "-g")) {
-                const g = Value.get(arg, &i, args) orelse return badVal("-g");
-                if (g.len > 0 and g[0] == '!') try excs.append(gpa, g[1..]) else try incs.append(gpa, g);
-            } else if (std.mem.eql(u8, arg, "-e")) {
-                if (i + 1 >= args.len) return badVal("-e");
-                i += 1;
-                if (pattern == null) pattern = args[i];
-            } else {
-                std.debug.print("unknown flag '{s}' — supported: -i -w -F -l -c -v -m N -A N -B N -C N -t <lang> -g <glob> -e <pat> -- (use `-e {s}` or `-- {s}` to search a leading-dash literal)\n", .{ arg, arg, arg });
-                return null;
-            }
-        } else if (pattern == null) {
-            pattern = arg;
-        }
-    }
-
-    const pat = pattern orelse {
-        std.debug.print("usage: grep [-i] [-w] [-F] [-l] [-c] [-v] [-m N] [-A N] [-B N] [-C N] [-t <lang>] [-g <glob>] [-e] <pattern>\n", .{});
-        exts.deinit(gpa);
-        incs.deinit(gpa);
-        excs.deinit(gpa);
-        return null;
-    };
-    const exts_s = try exts.toOwnedSlice(gpa);
-    const incs_s = try incs.toOwnedSlice(gpa);
-    const excs_s = try excs.toOwnedSlice(gpa);
-    opts.filter = .{ .exts = exts_s, .includes = incs_s, .excludes = excs_s };
-    return .{ .pattern = pat, .opts = opts, .exts = exts_s, .incs = incs_s, .excs = excs_s };
-}
-
-fn badVal(flag: []const u8) ?Parsed {
-    std.debug.print("flag {s} needs a value\n", .{flag});
-    return null;
 }
 
 /// Escape every regex metachar in `pat` so the engine matches it literally
@@ -320,7 +183,10 @@ fn emitFileLines(sh: *Shard, path: []const u8, lines: []const []const u8, body: 
         var k = start;
         while (k <= hi) : (k += 1) {
             const sep: u8 = if (is_match[k]) ':' else '-';
-            try body.print(sh.gpa, "{s}{c}{d}{c}{s}\n", .{ path, sep, k + 1, sep, lines[k] });
+            if (opts.no_line_num) // `-N`: drop the line column → `path:text`
+                try body.print(sh.gpa, "{s}{c}{s}\n", .{ path, sep, lines[k] })
+            else
+                try body.print(sh.gpa, "{s}{c}{d}{c}{s}\n", .{ path, sep, k + 1, sep, lines[k] });
         }
         prev_end = hi;
     }

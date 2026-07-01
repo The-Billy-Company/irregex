@@ -226,21 +226,52 @@ fn globApplies(pat: []const u8, path: []const u8) bool {
         globMatch(pat, path);
 }
 
+/// Normalize a positional path arg to the corpus's repo-root-relative shape:
+/// strip a leading `./` and any trailing `/` so `./services/` and `services`
+/// both scope to the same prefix. Returned slice aliases the input (no alloc).
+pub fn normalizeRoot(arg: []const u8) []const u8 {
+    var s = arg;
+    while (std.mem.startsWith(u8, s, "./")) s = s[2..];
+    while (s.len > 1 and s[s.len - 1] == '/') s = s[0 .. s.len - 1];
+    return s;
+}
+
+/// Is `path` at, or under, the directory/file `root`? `.`/`""` is the whole
+/// corpus (matches all). An exact-length equality is a file arg; otherwise the
+/// root must be a *directory* prefix (`services` admits `services/x.go` but not
+/// `services_old/x.go`, hence the mandatory `/` boundary).
+fn underRoot(path: []const u8, root: []const u8) bool {
+    if (root.len == 0 or (root.len == 1 and root[0] == '.')) return true;
+    if (path.len == root.len) return std.mem.eql(u8, path, root);
+    return path.len > root.len and std.mem.startsWith(u8, path, root) and path[root.len] == '/';
+}
+
 /// A resolved set of path constraints. All slices are caller-owned (they alias
 /// argv / a small arena built at parse time); `PathFilter` only borrows them.
 pub const PathFilter = struct {
     exts: []const []const u8 = &.{}, // union of every `-t` type's extensions
     includes: []const []const u8 = &.{}, // `-g <glob>` (OR); empty ⇒ no constraint
     excludes: []const []const u8 = &.{}, // `-g !<glob>` (any match vetoes the path)
+    roots: []const []const u8 = &.{}, // positional PATH args (OR); empty ⇒ whole corpus
 
     pub fn isEmpty(self: PathFilter) bool {
-        return self.exts.len == 0 and self.includes.len == 0 and self.excludes.len == 0;
+        return self.exts.len == 0 and self.includes.len == 0 and
+            self.excludes.len == 0 and self.roots.len == 0;
     }
 
     /// Does `path` survive the filter? An exclude veto wins; then the path must
-    /// satisfy each *non-empty* constraint set (type ∧ include), each OR-internal.
+    /// satisfy each *non-empty* constraint set (root ∧ type ∧ include), each
+    /// OR-internal. Positional roots gate first — an agent's `grep pat dir/`.
     pub fn admits(self: PathFilter, path: []const u8) bool {
         for (self.excludes) |g| if (globApplies(g, path)) return false;
+        if (self.roots.len > 0) {
+            var ok = false;
+            for (self.roots) |r| if (underRoot(path, r)) {
+                ok = true;
+                break;
+            };
+            if (!ok) return false;
+        }
         if (self.exts.len > 0) {
             var ok = false;
             for (self.exts) |e| if (std.mem.endsWith(u8, path, e)) {

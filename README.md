@@ -115,21 +115,40 @@ zig build cli -- grep [flags] <pattern>      # the agent's `rg -n`: every match 
 
 | Flag | Meaning |
 |---|---|
+| `[PATH…]` | positional path args scope the search (`grep pat services/ libs/x.go`) — pruned before any read, so scoping makes gist *faster* (gist's edge, see below) |
 | `-A N` / `-B N` / `-C N` | context lines after / before / both (rg-exact `:`/`-`/`--` framing) |
 | `-t <lang>` | scope to a language — `go py rust ts js swift zig sql proto md json yaml toml sh …` |
 | `-g <glob>` | scope to a path glob (`*.ts`, `services/**`, `[a-z]*.go`); `!`-prefix excludes |
 | `-w` / `-F` | word-boundary (`\b…\b`) / fixed-string (escape regex metachars) |
 | `-l` / `-c` | files-with-matches / per-file count |
-| `-v` / `-i` / `-m N` | invert / ASCII case-insensitive / cap rows per file |
+| `-v` / `-i` / `-S` | invert / ASCII case-insensitive / smart-case (caseless iff pattern has no uppercase) |
+| `-n` / `-N` / `-m N` | line numbers (always on — `-n` is a no-op) / suppress line column / cap rows per file |
 | `-e <pat>` / `--` | explicit pattern / end of flags (for a leading-dash literal) |
 
-`-t`/`-g` are gist's structural edge over `rg`: rg applies a type/glob filter
+**Reflexive-invocation compatible.** gist's goal is to *replace* `rg` in an agent
+loop, so `grep` accepts the invocations an agent's muscle memory actually types,
+not a hand-picked subset. Short flags **bundle** (`-ln`, `-in`, `-nC3` ⇒ the
+first value flag consumes the cluster tail); the harmless rg flags that are
+implied by gist's fixed `path:line:text` model are accepted as **no-ops**
+(`-n -H -r -R --no-heading --color=<x> --with-filename`); and every flag also has
+its rg **long spelling** (`--ignore-case --word-regexp --fixed-strings
+--files-with-matches --count --invert-match --smart-case --no-line-number
+--context=N --max-count=N --type=<lang> --glob=<glob> --regexp=<pat>`). A
+genuinely unknown flag still fails **loud** (a silent empty result is the worst
+agent failure). Parser + surface live in [`bench/grepargs.zig`](bench/grepargs.zig),
+guarded by [`bench/grepargs_test.zig`](bench/grepargs_test.zig).
+
+`[PATH…]`/`-t`/`-g` are gist's structural edge over `rg`: rg applies a type/glob/path filter
 *while walking the whole tree*, but gist already holds the path list, so it
 **prunes candidates before touching disk** — `grep -t go pgxpool.Pool` reads 234
 of 18 608 files and runs **1.44× faster than `rg -t go`** (byte-identical output).
-Unknown flags fail loud (no silent wrong-result). Globs are gitignore-shaped (`*`
-per-segment, `**` across `/`). Guarded by `bench/pathfilter_test.zig` + the rg
-line-diff battery.
+The same holds for a positional path: `grep WalletService services/backend/api`
+prunes to **28 candidate reads** (vs 86 unscoped, vs rg's whole-subtree walk) and
+runs **1.14× faster than `rg … services/backend/api`** at **~⅕ the syscall time**
+(112 ms vs 590 ms system, hyperfine 15-run) — output byte-identical to rg. Unknown
+flags fail loud (no silent wrong-result). Globs are gitignore-shaped (`*`
+per-segment, `**` across `/`). Guarded by `bench/pathfilter_test.zig`,
+`bench/grepargs_test.zig` + the rg line-diff battery.
 
 **`grep` is the line-emitting verb an agent actually reaches for.** `query`/`regex`
 answer *which files* match (a path set) and `rank` answers *which one line* is
