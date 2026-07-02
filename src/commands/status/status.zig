@@ -19,22 +19,6 @@ const fresh = @import("../../corpus/fresh.zig");
 const corpus_mod = @import("../../corpus/corpus.zig");
 const Dir = std.Io.Dir;
 
-/// Distinct trigrams across the postings. The table is sorted by `(tri, doc)`, so
-/// a distinct trigram is a point where `tri` changes from the previous posting —
-/// one linear pass, no allocation.
-fn distinctTrigrams(postings: anytype) usize {
-    if (postings.len == 0) return 0;
-    var n: usize = 1;
-    var prev = postings[0].tri;
-    for (postings[1..]) |p| {
-        if (p.tri != prev) {
-            n += 1;
-            prev = p.tri;
-        }
-    }
-    return n;
-}
-
 /// The on-disk byte size of `path`, or 0 if it can't be stat'd (treated as
 /// absent — this is a report, never a hard failure).
 fn fileSize(io: std.Io, path: []const u8) u64 {
@@ -53,8 +37,8 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
     defer p.deinit();
 
     const files = p.paths.items.len;
-    const postings = p.idx.postings.len;
-    const trigrams = distinctTrigrams(p.idx.postings);
+    const postings = p.idx.posting_count;
+    const trigrams = p.idx.dir_tri.len;
     const idx_bytes = fileSize(io, persist.index_file);
     const paths_bytes = fileSize(io, persist.paths_file);
 

@@ -7,15 +7,33 @@
 //! the real regex engine (false positives are expected and harmless; false
 //! negatives are not, and the trigram filter has none for literals ≥ 3 bytes).
 //!
-//! Design is deliberately allocation-light and free of std.ArrayList /
-//! std.AutoHashMap so it stays stable across Zig's container-API churn: the
-//! index is one flat slice of (trigram, doc) postings sorted by (trigram, doc),
-//! queried by hand-rolled binary search. The n-gram *strategy* (which grams to
-//! emit) lives in `ngram.zig`, so the SoTA sparse-n-gram variant (ADR-pending)
-//! drops in there without touching build/query.
+//! **On-disk/in-memory shape — a CSR directory over delta-varint posting
+//! lists** (csearch's own index format: google/codesearch `index/write.go`).
+//! A flat `(trigram, doc)` pair table costs 8 bytes/posting (4 tag + 4 doc) and
+//! most of that tag is redundant — a distinct trigram has, on average, dozens
+//! of postings sharing it. So the index instead stores three parallel arrays
+//! over the `n` DISTINCT trigrams present (`dir_tri`/`dir_off`/`dir_count`,
+//! csearch's exact per-trigram index-entry triple) plus one `body` byte blob:
+//! each group's ascending doc ids are delta-encoded (first id raw, each
+//! successor `doc[i]-doc[i-1]`, always ≥ 1 since a doc's own trigram set is
+//! deduped) and varint-packed (`varint.zig`), so a locally-clustered doc-id run
+//! — the common case for any trigram that appears in a meaningful fraction of
+//! files — costs ~1 byte/posting instead of 4. Measured on this repo (18,910
+//! files, 343,857 distinct trigrams, 25.56M postings): **195.0 MiB flat → 30.1
+//! MiB CSR+varint (6.5x)**, closing most of the README's "COLD one-shot
+//! literal vs csearch/zoekt" gap (28 MiB) without giving up the
+//! zero-copy mmap load (`persist.zig`) — `dir_*`/`body` still alias the mapped
+//! pages directly (`fromMappedBytes`), so a cold query still touches only the
+//! handful of pages its binary search + a few small per-trigram decodes probe.
+//!
+//! Design is deliberately allocation-light and free of std.AutoHashMap so it
+//! stays stable across Zig's container-API churn. The n-gram *strategy* (which
+//! grams to emit) lives in `ngram.zig`, so the SoTA sparse-n-gram variant
+//! (ADR-pending) drops in there without touching build/query.
 
 const std = @import("std");
 const ngram = @import("ngram.zig");
+const varint = @import("varint.zig");
 
 /// A trigram packed big-endian into the low 24 bits of a u32 (re-exported from
 /// `ngram` so the index's public surface stays self-contained).
@@ -54,24 +72,34 @@ pub const LoadError = error{ BadFormat, OutOfMemory };
 
 /// On-disk format version (independent of the C-ABI version). The serialized
 /// blob is a **local-machine cache** (native-endian) — rebuild, don't ship it.
-pub const format_version: u32 = 1;
+/// v2: CSR trigram directory + delta-varint posting bodies (was a flat
+/// (trigram,doc) pair table) — bumped so a v1 cache is rejected, not misread.
+pub const format_version: u32 = 2;
 const magic = "GISTIDX\x01";
-/// On-disk header size (magic + version + doc_count + postings_len). Public so a
-/// zero-copy consumer can locate the `Posting` table inside a mapped blob.
-pub const header_len = magic.len + 4 + 4 + 8;
+/// On-disk header size (magic + version + doc_count + n_tri + posting_count).
+/// Public so a zero-copy consumer can locate the directory in a mapped blob.
+pub const header_len = magic.len + 4 + 4 + 8 + 8;
 
 /// Below this many corpus bytes the single-threaded comparison-sort build wins
 /// — thread spawn + a 64 MiB counting histogram aren't worth it.
 const parallel_build_threshold: usize = 4 << 20; // 4 MiB
 
-/// An immutable trigram index over a fixed set of documents.
+/// An immutable trigram index over a fixed set of documents, stored as a CSR
+/// directory (`dir_tri`/`dir_off`/`dir_count`, one entry per DISTINCT trigram —
+/// csearch's own `(trigram, count, offset)` index-entry shape) over a
+/// delta-varint-packed `body` of ascending doc ids (see file header for why).
 pub const Index = struct {
-    postings: []const Posting,
+    dir_tri: []const u32,
+    dir_off: []const u32,
+    dir_count: []const u32,
+    body: []const u8,
     doc_count: u32,
+    posting_count: u32,
     allocator: std.mem.Allocator,
-    /// True when `postings` ALIASES a caller-owned buffer (e.g. an mmap'd index
-    /// file) rather than this allocator's heap. `deinit` then frees nothing —
-    /// the caller unmaps/frees the backing bytes. The zero-copy cold-load win.
+    /// True when the four slices above ALIAS a caller-owned buffer (e.g. an
+    /// mmap'd index file) rather than this allocator's heap. `deinit` then
+    /// frees nothing — the caller unmaps/frees the backing bytes. The
+    /// zero-copy cold-load win.
     borrowed: bool = false,
 
     /// Build an index over `docs` (entry = one doc's bytes; doc ids are indices
@@ -80,20 +108,23 @@ pub const Index = struct {
     /// O(n log n) compare): stable, and doc-major concat lands each bucket
     /// doc-ascending — byte-identical to the comparison-sorted result. Small
     /// corpora keep the single-threaded sort (the 64 MiB histogram isn't worth it).
+    /// The flat sorted postings are then `compact`ed into the CSR+varint shape.
     pub fn build(allocator: std.mem.Allocator, docs: []const []const u8) QueryError!Index {
         var upper: usize = 0;
         for (docs) |d| upper += d.len; // ≥ distinct trigrams across all docs
 
-        if (upper < parallel_build_threshold or docs.len < 2) {
-            return buildSerial(allocator, docs, upper);
-        }
-        return buildParallel(allocator, docs, upper) catch |e| switch (e) {
-            // Any threading/alloc hiccup degrades gracefully to the proven path.
-            error.OutOfMemory => buildSerial(allocator, docs, upper),
-        };
+        const flat = if (upper < parallel_build_threshold or docs.len < 2)
+            try buildFlatSerial(allocator, docs, upper)
+        else
+            buildFlatParallel(allocator, docs, upper) catch |e| switch (e) {
+                // Any threading/alloc hiccup degrades gracefully to the proven path.
+                error.OutOfMemory => try buildFlatSerial(allocator, docs, upper),
+            };
+        defer allocator.free(flat);
+        return compact(allocator, @intCast(docs.len), flat);
     }
 
-    fn buildSerial(allocator: std.mem.Allocator, docs: []const []const u8, upper: usize) QueryError!Index {
+    fn buildFlatSerial(allocator: std.mem.Allocator, docs: []const []const u8, upper: usize) std.mem.Allocator.Error![]Posting {
         const postings = try allocator.alloc(Posting, upper);
         errdefer allocator.free(postings);
         const scratch = try allocator.alloc(Trigram, maxDocLen(docs));
@@ -101,14 +132,13 @@ pub const Index = struct {
 
         const final = postings[0..emitPostings(docs, 0, scratch, postings)];
         std.mem.sort(Posting, final, {}, postingLess);
-        const exact = allocator.realloc(postings, final.len) catch final;
-        return .{ .postings = exact, .doc_count = @intCast(docs.len), .allocator = allocator };
+        return allocator.realloc(postings, final.len) catch final;
     }
 
     const radix_bits = 24; // a trigram is 24 bits → one histogram bucket each
     const radix = 1 << radix_bits;
 
-    fn buildParallel(allocator: std.mem.Allocator, docs: []const []const u8, upper: usize) std.mem.Allocator.Error!Index {
+    fn buildFlatParallel(allocator: std.mem.Allocator, docs: []const []const u8, upper: usize) std.mem.Allocator.Error![]Posting {
         const ncpu = std.Thread.getCpuCount() catch 1;
         const nthr = @min(@max(ncpu, 1), docs.len);
 
@@ -155,11 +185,11 @@ pub const Index = struct {
             // Couldn't spawn — run remaining shards inline, join what we have.
             for (t..nthr) |u| extractShard(&shards[u]);
             for (0..t) |u| threads[u].join();
-            return countingAssemble(allocator, docs.len, shards, t);
+            return countingAssemble(allocator, shards, t);
         };
         for (0..nthr) |t| threads[t].join();
         for (shards) |*sh| if (sh.err) return error.OutOfMemory;
-        return countingAssemble(allocator, docs.len, shards, nthr);
+        return countingAssemble(allocator, shards, nthr);
     }
 
     const ExtractShard = struct {
@@ -183,7 +213,7 @@ pub const Index = struct {
 
     /// Counting-sort the per-shard postings (doc-major across shards) into one
     /// (trigram, doc)-ascending slice. O(total + radix).
-    fn countingAssemble(allocator: std.mem.Allocator, doc_count: usize, shards: []ExtractShard, used: usize) std.mem.Allocator.Error!Index {
+    fn countingAssemble(allocator: std.mem.Allocator, shards: []ExtractShard, used: usize) std.mem.Allocator.Error![]Posting {
         var total: usize = 0;
         for (shards[0..used]) |sh| total += sh.n;
 
@@ -207,17 +237,70 @@ pub const Index = struct {
             out[hist[p.tri]] = p;
             hist[p.tri] += 1;
         };
-        return .{ .postings = out, .doc_count = @intCast(doc_count), .allocator = allocator };
+        return out;
+    }
+
+    /// Fold a sorted flat `(trigram, doc)` list into the CSR directory + body:
+    /// one `(dir_tri, dir_off, dir_count)` triple per distinct trigram (upper
+    /// bound `sorted.len`, realloc'd down — every group has count ≥ 1) and a
+    /// `body` of delta-varint-packed doc ids sized to the worst case
+    /// (`varint.max_len` bytes/posting) then realloc'd down to what was
+    /// actually written. Both reallocs typically shrink 3-8x (file header).
+    fn compact(allocator: std.mem.Allocator, doc_count: u32, sorted: []const Posting) std.mem.Allocator.Error!Index {
+        const dir_tri = try allocator.alloc(u32, @max(sorted.len, 1));
+        errdefer allocator.free(dir_tri);
+        const dir_off = try allocator.alloc(u32, @max(sorted.len, 1));
+        errdefer allocator.free(dir_off);
+        const dir_count = try allocator.alloc(u32, @max(sorted.len, 1));
+        errdefer allocator.free(dir_count);
+        var body = try allocator.alloc(u8, @max(sorted.len * varint.max_len, 1));
+        errdefer allocator.free(body);
+
+        var gi: usize = 0; // dir index (distinct-trigram count so far)
+        var bp: usize = 0; // body write cursor
+        var i: usize = 0;
+        while (i < sorted.len) {
+            const t = sorted[i].tri;
+            const group_off = bp;
+            var prev: u32 = 0;
+            var cnt: u32 = 0;
+            while (i < sorted.len and sorted[i].tri == t) : (i += 1) {
+                const doc = sorted[i].doc;
+                const delta: u64 = if (cnt == 0) doc else doc - prev;
+                bp += varint.encode(body[bp..], delta);
+                prev = doc;
+                cnt += 1;
+            }
+            dir_tri[gi] = t;
+            dir_off[gi] = @intCast(group_off);
+            dir_count[gi] = cnt;
+            gi += 1;
+        }
+
+        return .{
+            .dir_tri = allocator.realloc(dir_tri, gi) catch dir_tri[0..gi],
+            .dir_off = allocator.realloc(dir_off, gi) catch dir_off[0..gi],
+            .dir_count = allocator.realloc(dir_count, gi) catch dir_count[0..gi],
+            .body = (allocator.realloc(body, @max(bp, 1)) catch body)[0..bp],
+            .doc_count = doc_count,
+            .posting_count = @intCast(sorted.len),
+            .allocator = allocator,
+        };
     }
 
     pub fn deinit(self: *Index) void {
-        if (!self.borrowed) self.allocator.free(self.postings);
+        if (!self.borrowed) {
+            self.allocator.free(self.dir_tri);
+            self.allocator.free(self.dir_off);
+            self.allocator.free(self.dir_count);
+            self.allocator.free(self.body);
+        }
         self.* = undefined;
     }
 
-    /// Bytes needed to serialize this index (header + raw postings).
+    /// Bytes needed to serialize this index (header + directory + body).
     pub fn serializedSize(self: *const Index) usize {
-        return header_len + self.postings.len * @sizeOf(Posting);
+        return header_len + self.dir_tri.len * 4 + self.dir_off.len * 4 + self.dir_count.len * 4 + self.body.len;
     }
 
     /// Serialize into `buf` (`>= serializedSize()`). IO-free — caller writes the
@@ -226,13 +309,19 @@ pub const Index = struct {
         @memcpy(buf[0..magic.len], magic);
         std.mem.writeInt(u32, buf[magic.len..][0..4], format_version, .little);
         std.mem.writeInt(u32, buf[magic.len + 4 ..][0..4], self.doc_count, .little);
-        std.mem.writeInt(u64, buf[magic.len + 8 ..][0..8], self.postings.len, .little);
-        const pb = std.mem.sliceAsBytes(self.postings);
-        @memcpy(buf[header_len .. header_len + pb.len], pb);
-        return header_len + pb.len;
+        std.mem.writeInt(u64, buf[magic.len + 8 ..][0..8], self.dir_tri.len, .little);
+        std.mem.writeInt(u64, buf[magic.len + 16 ..][0..8], self.posting_count, .little);
+        var off = header_len;
+        for ([_][]const u32{ self.dir_tri, self.dir_off, self.dir_count }) |arr| {
+            const bytes = std.mem.sliceAsBytes(arr);
+            @memcpy(buf[off..][0..bytes.len], bytes);
+            off += bytes.len;
+        }
+        @memcpy(buf[off..][0..self.body.len], self.body);
+        return off + self.body.len;
     }
 
-    const Header = struct { doc_count: u32, plen: usize, body: usize };
+    const Header = struct { doc_count: u32, n_tri: usize, posting_count: usize };
 
     /// Validate a `writeInto` blob's header (magic + version + length) and return
     /// its metadata. Shared by the copying `fromBytes` and the zero-copy
@@ -242,83 +331,147 @@ pub const Index = struct {
         if (!std.mem.eql(u8, bytes[0..magic.len], magic)) return LoadError.BadFormat;
         if (std.mem.readInt(u32, bytes[magic.len..][0..4], .little) != format_version) return LoadError.BadFormat;
         const doc_count = std.mem.readInt(u32, bytes[magic.len + 4 ..][0..4], .little);
-        const plen: usize = @intCast(std.mem.readInt(u64, bytes[magic.len + 8 ..][0..8], .little));
-        const body = plen * @sizeOf(Posting);
-        if (bytes.len < header_len + body) return LoadError.BadFormat;
-        return .{ .doc_count = doc_count, .plen = plen, .body = body };
+        const n_tri: usize = @intCast(std.mem.readInt(u64, bytes[magic.len + 8 ..][0..8], .little));
+        const posting_count: usize = @intCast(std.mem.readInt(u64, bytes[magic.len + 16 ..][0..8], .little));
+        const dir_bytes = std.math.mul(usize, n_tri, 4 * 3) catch return LoadError.BadFormat;
+        if (bytes.len < header_len + dir_bytes) return LoadError.BadFormat;
+        return .{ .doc_count = doc_count, .n_tri = n_tri, .posting_count = posting_count };
     }
 
-    /// Rebuild an index from a `writeInto` blob, COPYING the postings (the index
-    /// owns them, `deinit` frees them) so `bytes` may be freed/unmapped after.
+    /// Rebuild an index from a `writeInto` blob, COPYING the directory + body
+    /// (the index owns them, `deinit` frees them) so `bytes` may be freed after.
+    /// Each region is allocated at its own element type (`u32`/`u8`), so the
+    /// natural allocator alignment holds without an `@alignCast` — unlike the
+    /// zero-copy `fromMappedBytes` below, this path never reinterprets a raw
+    /// byte slice as `u32`s.
     pub fn fromBytes(allocator: std.mem.Allocator, bytes: []const u8) LoadError!Index {
         const h = try parseHeader(bytes);
-        const postings = try allocator.alloc(Posting, h.plen);
-        @memcpy(std.mem.sliceAsBytes(postings), bytes[header_len .. header_len + h.body]);
-        return .{ .postings = postings, .doc_count = h.doc_count, .allocator = allocator };
+        var off: usize = header_len;
+        const dir_tri = try allocator.alloc(u32, h.n_tri);
+        errdefer allocator.free(dir_tri);
+        @memcpy(std.mem.sliceAsBytes(dir_tri), bytes[off..][0 .. h.n_tri * 4]);
+        off += h.n_tri * 4;
+        const dir_off = try allocator.alloc(u32, h.n_tri);
+        errdefer allocator.free(dir_off);
+        @memcpy(std.mem.sliceAsBytes(dir_off), bytes[off..][0 .. h.n_tri * 4]);
+        off += h.n_tri * 4;
+        const dir_count = try allocator.alloc(u32, h.n_tri);
+        errdefer allocator.free(dir_count);
+        @memcpy(std.mem.sliceAsBytes(dir_count), bytes[off..][0 .. h.n_tri * 4]);
+        off += h.n_tri * 4;
+        const body_len = bytes.len - off;
+        const body = try allocator.alloc(u8, @max(body_len, 1));
+        errdefer allocator.free(body);
+        @memcpy(body[0..body_len], bytes[off..]);
+        return .{
+            .dir_tri = dir_tri,
+            .dir_off = dir_off,
+            .dir_count = dir_count,
+            .body = body[0..body_len],
+            .doc_count = h.doc_count,
+            .posting_count = @intCast(h.posting_count),
+            .allocator = allocator,
+        };
     }
 
-    /// BORROW a `writeInto` blob as an index WITHOUT copying: `postings` aliases
-    /// straight into `bytes` (e.g. an mmap'd file), so the load is O(header) — no
-    /// read-into-heap, no second alloc, no memcpy of the (often 100+ MiB) posting
-    /// table. The OS faults in only the handful of pages the binary search probes,
-    /// so a cold first query pays ~nothing where the copying path paid two full
-    /// passes over the blob. The returned index is `borrowed`: `deinit` frees
-    /// nothing; the caller owns `bytes` and must keep it mapped for the index's
-    /// lifetime. `bytes` must be `@alignOf(Posting)`-aligned at `header_len` — an
-    /// mmap base is page-aligned and `header_len` (24) is a multiple of 4, so it
-    /// holds for the intended caller; any 4-aligned buffer works in general.
+    /// BORROW a `writeInto` blob as an index WITHOUT copying: the directory +
+    /// body ALIAS straight into `bytes` (e.g. an mmap'd file), so the load is
+    /// O(header) — no read-into-heap, no second alloc, no memcpy of the (often
+    /// 100+ MiB) posting table. The OS faults in only the handful of pages the
+    /// binary search + per-trigram decode touch, so a cold first query pays
+    /// ~nothing where the copying path paid two full passes over the blob. The
+    /// returned index is `borrowed`: `deinit` frees nothing; the caller owns
+    /// `bytes` and must keep it mapped for the index's lifetime. `bytes` must be
+    /// 4-byte-aligned at `header_len` — an mmap base is page-aligned and
+    /// `header_len` (32) is a multiple of 4, so every dir region start (each a
+    /// multiple of 4 bytes further in) stays 4-aligned too.
     pub fn fromMappedBytes(bytes: []const u8) LoadError!Index {
         const h = try parseHeader(bytes);
-        const raw: []align(@alignOf(Posting)) const u8 = @alignCast(bytes[header_len .. header_len + h.body]);
+        var off: usize = header_len;
+        const tri_bytes = h.n_tri * 4;
+        const dir_tri_raw: []align(4) const u8 = @alignCast(bytes[off..][0..tri_bytes]);
+        off += tri_bytes;
+        const dir_off_raw: []align(4) const u8 = @alignCast(bytes[off..][0..tri_bytes]);
+        off += tri_bytes;
+        const dir_count_raw: []align(4) const u8 = @alignCast(bytes[off..][0..tri_bytes]);
+        off += tri_bytes;
         return .{
-            .postings = std.mem.bytesAsSlice(Posting, raw),
+            .dir_tri = std.mem.bytesAsSlice(u32, dir_tri_raw),
+            .dir_off = std.mem.bytesAsSlice(u32, dir_off_raw),
+            .dir_count = std.mem.bytesAsSlice(u32, dir_count_raw),
+            .body = bytes[off..],
             .doc_count = h.doc_count,
+            .posting_count = @intCast(h.posting_count),
             .allocator = undefined, // unused: `borrowed` ⇒ `deinit` frees nothing
             .borrowed = true,
         };
     }
 
-    /// Half-open [start, end) index range of `tri`'s postings (docs ascending).
-    fn rangeOf(self: *const Index, tri: Trigram) [2]usize {
-        const p = self.postings;
+    /// Binary search `dir_tri` for `tri`'s directory index, or `null` if no doc
+    /// carries it (AND of the caller's trigram set is then soundly empty — a
+    /// literal containing a never-seen trigram cannot occur in any doc).
+    fn dirIndexOf(self: *const Index, tri: Trigram) ?usize {
         var lo: usize = 0;
-        var hi: usize = p.len;
+        var hi: usize = self.dir_tri.len;
         while (lo < hi) {
             const m = lo + (hi - lo) / 2;
-            if (p[m].tri < tri) lo = m + 1 else hi = m;
+            if (self.dir_tri[m] < tri) lo = m + 1 else if (self.dir_tri[m] > tri) hi = m else return m;
         }
-        const start = lo;
-        hi = p.len;
-        while (lo < hi) {
-            const m = lo + (hi - lo) / 2;
-            if (p[m].tri <= tri) lo = m + 1 else hi = m;
-        }
-        return .{ start, lo };
+        return null;
     }
 
-    fn rangeHasDoc(self: *const Index, r: [2]usize, doc: u32) bool {
-        const p = self.postings;
-        var lo = r[0];
-        var hi = r[1];
-        while (lo < hi) {
-            const m = lo + (hi - lo) / 2;
-            if (p[m].doc < doc) lo = m + 1 else if (p[m].doc > doc) hi = m else return true;
+    /// Decode directory group `gi`'s ascending doc-id list into `out` (>= its
+    /// `dir_count[gi]`, bounded by `doc_count`). Returns the count decoded.
+    fn decodeGroup(self: *const Index, gi: usize, out: []u32) usize {
+        const cnt = self.dir_count[gi];
+        var pos: usize = self.dir_off[gi];
+        var prev: u32 = 0;
+        for (0..cnt) |i| {
+            const d = varint.decode(self.body[pos..]);
+            pos += d.len;
+            const doc: u32 = if (i == 0) @intCast(d.value) else prev + @as(u32, @intCast(d.value));
+            out[i] = doc;
+            prev = doc;
         }
-        return false;
+        return cnt;
     }
 
-    fn rangeWidthLess(_: void, a: [2]usize, b: [2]usize) bool {
-        return (a[1] - a[0]) < (b[1] - b[0]);
+    fn dirCountLess(self: *const Index, a: usize, b: usize) bool {
+        return self.dir_count[a] < self.dir_count[b];
+    }
+
+    /// In-place ascending-sorted-list intersection: `a[0..w]` (`w` returned) are
+    /// the values common to `a` and `b`. Safe to write back into `a` itself —
+    /// the write cursor never outruns the read cursor it derives from.
+    fn intersectAscending(a: []u32, b: []const u32) usize {
+        var i: usize = 0;
+        var j: usize = 0;
+        var w: usize = 0;
+        while (i < a.len and j < b.len) {
+            if (a[i] < b[j]) {
+                i += 1;
+            } else if (a[i] > b[j]) {
+                j += 1;
+            } else {
+                a[w] = a[i];
+                w += 1;
+                i += 1;
+                j += 1;
+            }
+        }
+        return w;
     }
 
     /// Candidate docs that *may* contain `needle` (AND of its trigrams' posting
     /// lists). Returned slice is caller-owned (same allocator), sorted ascending.
     /// `needle.len < 3` ⇒ NeedleTooShort (caller full-scans; can't filter < 3 B).
     ///
-    /// T1 — rarest-first: resolve each trigram's range, order by width, seed from
-    /// the rarest gram, intersect outward. AND is commutative so order is
-    /// irrelevant, but the rarest seed (not lexicographically-first) stays small
-    /// and shrinks fastest — e.g. "context.Context" no longer seeds on "con".
+    /// T1 — rarest-first: resolve each trigram's directory group, order by
+    /// posting COUNT (exact, from `dir_count` — no decode needed to compare),
+    /// decode the rarest fully as the seed, then decode+merge-intersect each
+    /// remaining group outward. AND is commutative so order is irrelevant, but
+    /// the rarest seed (not lexicographically-first) stays small and shrinks
+    /// fastest — e.g. "context.Context" no longer seeds on "con".
     pub fn queryLiteral(self: *const Index, allocator: std.mem.Allocator, needle: []const u8) QueryError![]u32 {
         if (needle.len < 3) return QueryError.NeedleTooShort;
         const qbuf = try allocator.alloc(Trigram, needle.len);
@@ -326,31 +479,46 @@ pub const Index = struct {
         const m = ngram.extractSortedUnique(needle, qbuf);
         if (m == 0) return QueryError.NeedleTooShort;
 
-        const ranges = try allocator.alloc([2]usize, m);
-        defer allocator.free(ranges);
-        for (qbuf[0..m], 0..) |t, i| ranges[i] = self.rangeOf(t);
-        std.mem.sort([2]usize, ranges, {}, rangeWidthLess);
+        const groups = try allocator.alloc(usize, m);
+        defer allocator.free(groups);
+        for (qbuf[0..m], 0..) |t, i| groups[i] = self.dirIndexOf(t) orelse return allocator.alloc(u32, 0);
+        std.mem.sort(usize, groups, self, dirCountLess);
 
-        // Seed from the rarest trigram (postings are doc-ascending within a
-        // range, so `cand` is ascending and `rangeHasDoc`'s binary search holds).
-        const seed = ranges[0];
-        var cand = try allocator.alloc(u32, seed[1] - seed[0]);
+        const seed = groups[0];
+        var cand = try allocator.alloc(u32, self.dir_count[seed]);
         errdefer allocator.free(cand);
-        for (self.postings[seed[0]..seed[1]], 0..) |p, i| cand[i] = p.doc;
-        var n: usize = cand.len;
-        // Intersect against the remaining ranges, rarest-first, compacting.
-        for (ranges[1..]) |r| {
-            var w: usize = 0;
-            for (cand[0..n]) |doc| {
-                if (self.rangeHasDoc(r, doc)) {
-                    cand[w] = doc;
-                    w += 1;
-                }
+        var n: usize = self.decodeGroup(seed, cand);
+
+        if (groups.len > 1) {
+            const scratch = try allocator.alloc(u32, self.doc_count);
+            defer allocator.free(scratch);
+            for (groups[1..]) |gi| {
+                const cnt = self.decodeGroup(gi, scratch);
+                n = intersectAscending(cand[0..n], scratch[0..cnt]);
+                if (n == 0) break;
             }
-            n = w;
-            if (n == 0) break;
         }
         return allocator.realloc(cand, n) catch cand[0..n];
+    }
+
+    /// TEST/DEBUG ONLY: fully decode the index back into a sorted `(tri, doc)`
+    /// list — O(postings), never on the query hot path. Lets round-trip/parity
+    /// tests assert byte-for-byte equivalence without exposing the compact
+    /// on-disk representation to the public query API.
+    pub fn debugAllPostings(self: *const Index, allocator: std.mem.Allocator) std.mem.Allocator.Error![]Posting {
+        const out = try allocator.alloc(Posting, self.posting_count);
+        errdefer allocator.free(out);
+        const scratch = try allocator.alloc(u32, self.doc_count);
+        defer allocator.free(scratch);
+        var w: usize = 0;
+        for (self.dir_tri, 0..) |t, gi| {
+            const cnt = self.decodeGroup(gi, scratch);
+            for (scratch[0..cnt]) |d| {
+                out[w] = .{ .tri = t, .doc = d };
+                w += 1;
+            }
+        }
+        return out;
     }
 
     /// Union of the candidate sets of `needles` (each ≥3 B) — the sound superset

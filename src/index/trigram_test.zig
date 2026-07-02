@@ -68,7 +68,12 @@ test "serialize: round-trip preserves postings and query results" {
     var loaded = try Index.fromBytes(a, buf);
     defer loaded.deinit();
     try std.testing.expectEqual(idx.doc_count, loaded.doc_count);
-    try std.testing.expectEqualSlices(Posting, idx.postings, loaded.postings);
+
+    const want = try idx.debugAllPostings(a);
+    defer a.free(want);
+    const got_all = try loaded.debugAllPostings(a);
+    defer a.free(got_all);
+    try std.testing.expectEqualSlices(Posting, want, got_all);
 
     const got = try loaded.queryLiteral(a, "cat");
     defer a.free(got);
@@ -82,15 +87,15 @@ test "serialize: garbage / truncated blob is rejected, not misread" {
     try std.testing.expectError(LoadError.BadFormat, Index.fromMappedBytes("not a gist index"));
 }
 
-test "serialize: zero-copy fromMappedBytes aliases postings, no copy" {
+test "serialize: zero-copy fromMappedBytes aliases the directory, no copy" {
     const a = std.testing.allocator;
     const docs = [_][]const u8{ "the cat sat", "concatenate" };
     var idx = try Index.build(a, &docs);
     defer idx.deinit();
 
     // mmap is page-aligned; mirror that here so the `@alignCast` in
-    // `fromMappedBytes` holds (the header keeps postings `Posting`-aligned).
-    const buf = try a.alignedAlloc(u8, comptime .fromByteUnits(@alignOf(Posting)), idx.serializedSize());
+    // `fromMappedBytes` holds (the header keeps the u32 directory 4-aligned).
+    const buf = try a.alignedAlloc(u8, comptime .fromByteUnits(@alignOf(u32)), idx.serializedSize());
     defer a.free(buf);
     _ = idx.writeInto(buf);
 
@@ -98,9 +103,14 @@ test "serialize: zero-copy fromMappedBytes aliases postings, no copy" {
     defer mapped.deinit(); // borrowed ⇒ a no-op; `buf` is freed above
     try std.testing.expect(mapped.borrowed);
     try std.testing.expectEqual(idx.doc_count, mapped.doc_count);
-    try std.testing.expectEqualSlices(Posting, idx.postings, mapped.postings);
-    // The decisive property: postings point INTO `buf`, they are not a copy.
-    try std.testing.expectEqual(@intFromPtr(buf.ptr) + tri.header_len, @intFromPtr(mapped.postings.ptr));
+
+    const want = try idx.debugAllPostings(a);
+    defer a.free(want);
+    const got_all = try mapped.debugAllPostings(a);
+    defer a.free(got_all);
+    try std.testing.expectEqualSlices(Posting, want, got_all);
+    // The decisive property: the directory points INTO `buf`, not a copy.
+    try std.testing.expectEqual(@intFromPtr(buf.ptr) + tri.header_len, @intFromPtr(mapped.dir_tri.ptr));
 
     const got = try mapped.queryLiteral(a, "cat"); // both docs contain "cat"
     defer a.free(got);
@@ -147,8 +157,10 @@ test "build: >4MiB parallel path byte-matches an independent serial reference" {
     }
     std.mem.sort(Ref, ref[0..n], {}, refLess);
 
-    try std.testing.expectEqual(n, idx.postings.len);
-    for (idx.postings, ref[0..n]) |p, r| {
+    const got = try idx.debugAllPostings(a);
+    defer a.free(got);
+    try std.testing.expectEqual(n, got.len);
+    for (got, ref[0..n]) |p, r| {
         try std.testing.expectEqual(r.tri, p.tri);
         try std.testing.expectEqual(r.doc, p.doc);
     }
