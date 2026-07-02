@@ -27,6 +27,7 @@ const args = @import("args.zig");
 const output = @import("output.zig");
 const ignore = @import("ignore.zig");
 const json = @import("json.zig");
+const types = @import("../scope/types.zig");
 const Opts = args.Opts;
 const Emitter = output.Emitter;
 const die = args.die;
@@ -330,6 +331,24 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8) !void {
     // wrong — each is a scoped follow-up, not a design divergence.
     deferUnimplemented(o);
 
+    // --type-list: dump every `-t` name and the globs it recognizes, one name
+    // per line (aliases repeat their row) — the whole comptime table in
+    // `../scope/types.zig`, in the same domain-grouped order it's declared.
+    if (o.type_list) {
+        var out: std.ArrayList(u8) = .empty;
+        for (types.type_table) |row| {
+            for (row.names) |name| {
+                out.print(a, "{s}: ", .{name}) catch die("oom\n", .{});
+                for (row.globs, 0..) |g, i| {
+                    out.print(a, "{s}{s}", .{ if (i > 0) ", " else "", g }) catch die("oom\n", .{});
+                }
+                out.append(a, '\n') catch die("oom\n", .{});
+            }
+        }
+        corpus_mod.emitStdout(out.items);
+        std.process.exit(0);
+    }
+
     // --files: list the files that would be searched (no pattern), path-sorted,
     // NUL-terminated under --null. Uses the same gather+filter as the search path.
     if (o.files_list) {
@@ -624,7 +643,6 @@ fn emitStats(a: std.mem.Allocator, out: *std.ArrayList(u8), s: Stats) void {
 /// Fail loud (exit 2 → harness N/A) for recognized-but-not-yet-emitted flags.
 fn deferUnimplemented(o: Opts) void {
     if (o.multiline) die("-U/--multiline not yet implemented in gist rg-compat\n", .{});
-    if (o.type_list) die("--type-list: gist's type registry is a documented superset of ripgrep's\n", .{});
 }
 
 /// `-q/--quiet`: true as soon as any file has a matching line (short-circuits).

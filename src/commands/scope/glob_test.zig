@@ -61,20 +61,20 @@ test "star backtracking does not over- or under-match" {
     try expect(globMatch("a*a*a*a*b", "aaaaaaaaaaaaaaaaaaaaaaaab"));
 }
 
-test "PathFilter: type extension union, AND with globs, exclude veto" {
-    const go_rs = PathFilter{ .exts = &.{ ".go", ".rs" } };
+test "PathFilter: type glob union, AND with globs, exclude veto" {
+    const go_rs = PathFilter{ .exts = &.{ "*.go", "*.rs" } };
     try expect(go_rs.admits("services/api/main.go"));
     try expect(go_rs.admits("services/vox/src/lib.rs"));
     try expect(!go_rs.admits("clients/web/app.ts"));
 
     // type AND include-glob: must be a .go file under services/
-    const scoped = PathFilter{ .exts = &.{".go"}, .includes = &.{"services/**"} };
+    const scoped = PathFilter{ .exts = &.{"*.go"}, .includes = &.{"services/**"} };
     try expect(scoped.admits("services/api/main.go"));
     try expect(!scoped.admits("libs/x/main.go")); // right ext, wrong subtree
     try expect(!scoped.admits("services/api/app.ts")); // right subtree, wrong ext
 
     // exclude veto beats everything (e.g. drop generated + tests)
-    const no_test = PathFilter{ .exts = &.{".go"}, .excludes = &.{ "*_test.go", "*.pb.go" } };
+    const no_test = PathFilter{ .exts = &.{"*.go"}, .excludes = &.{ "*_test.go", "*.pb.go" } };
     try expect(no_test.admits("services/api/handler.go"));
     try expect(!no_test.admits("services/api/handler_test.go"));
     try expect(!no_test.admits("services/api/wallet.pb.go"));
@@ -101,7 +101,7 @@ test "positional roots: dir prefix, exact file, whole-corpus '.', boundary" {
     try expect(dot.admits("anywhere/at/all.rs"));
 
     // roots AND with type/glob/exclude, same as the other constraint sets.
-    const scoped = PathFilter{ .exts = &.{".go"}, .roots = &.{"services"} };
+    const scoped = PathFilter{ .exts = &.{"*.go"}, .roots = &.{"services"} };
     try expect(scoped.admits("services/api/main.go"));
     try expect(!scoped.admits("services/api/app.ts")); // right root, wrong ext
     try expect(!scoped.admits("libs/api/main.go")); // right ext, wrong root
@@ -124,7 +124,7 @@ test "empty filter admits everything and prunes nothing" {
 }
 
 test "prune keeps only admitted ids, order-preserving" {
-    const only_go = PathFilter{ .exts = &.{".go"} };
+    const only_go = PathFilter{ .exts = &.{"*.go"} };
     const paths = [_][]const u8{ "a.go", "b.ts", "c.go", "d.py", "e.go" };
     var ids = [_]u32{ 0, 1, 2, 3, 4 };
     const kept = only_go.prune(&paths, &ids);

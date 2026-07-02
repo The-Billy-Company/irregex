@@ -147,7 +147,7 @@ fn underRoot(path: []const u8, root: []const u8) bool {
 /// A resolved set of path constraints. All slices are caller-owned (they alias
 /// argv / a small arena built at parse time); `PathFilter` only borrows them.
 pub const PathFilter = struct {
-    exts: []const []const u8 = &.{}, // union of every `-t` type's extensions
+    exts: []const []const u8 = &.{}, // union of every `-t` type's globs (see scope/types.zig)
     includes: []const []const u8 = &.{}, // `-g <glob>` (OR); empty ⇒ no constraint
     excludes: []const []const u8 = &.{}, // `-g !<glob>` (any match vetoes the path)
     roots: []const []const u8 = &.{}, // positional PATH args (OR); empty ⇒ whole corpus
@@ -172,7 +172,7 @@ pub const PathFilter = struct {
         }
         if (self.exts.len > 0) {
             var ok = false;
-            for (self.exts) |e| if (std.mem.endsWith(u8, path, e)) {
+            for (self.exts) |e| if (globApplies(e, path)) {
                 ok = true;
                 break;
             };

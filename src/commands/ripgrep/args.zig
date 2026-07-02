@@ -19,7 +19,7 @@ pub const Filename = enum { auto, always, never };
 /// Resolved type/glob scope (`-t/-T/-g/--glob/--iglob`), AND-combined; each set
 /// is a no-op when empty. Borrows caller-owned slices (a parse-time arena).
 pub const Filter = struct {
-    exts: []const []const u8 = &.{}, // -t (union)
+    exts: []const []const u8 = &.{}, // -t (union of type globs, see scope/types.zig)
     neg_exts: []const []const u8 = &.{}, // -T
     includes: []const []const u8 = &.{}, // -g/--glob (case-sensitive)
     iglobs: []const []const u8 = &.{}, // --iglob (case-insensitive)
@@ -32,10 +32,10 @@ pub const Filter = struct {
     }
     pub fn admits(self: Filter, a: std.mem.Allocator, path: []const u8) bool {
         for (self.excludes) |g| if (glob.globApplies(g, path)) return false;
-        for (self.neg_exts) |e| if (std.mem.endsWith(u8, path, e)) return false;
+        for (self.neg_exts) |e| if (glob.globApplies(e, path)) return false;
         if (self.ntype_all and types.isKnownType(path)) return false;
         if (!self.hasInclude()) return true;
-        for (self.exts) |e| if (std.mem.endsWith(u8, path, e)) return true;
+        for (self.exts) |e| if (glob.globApplies(e, path)) return true;
         if (self.type_all and types.isKnownType(path)) return true;
         for (self.includes) |g| if (glob.globApplies(g, path)) return true;
         for (self.iglobs) |g| if (globAppliesCI(a, g, path)) return true;
@@ -127,13 +127,6 @@ pub const Parsed = struct { patterns: [][]const u8, opts: Opts, roots: [][]const
 /// A `--type-add name:...` definition, resolved to the globs `-t name` scopes by.
 const CustomType = struct { name: []const u8, globs: []const []const u8 };
 
-/// Convert a built-in type's extension suffix to a glob for `--type-add
-/// x:include:<builtin>`: a dotted suffix becomes `*<ext>`, a bare filename stays.
-fn extToGlob(a: std.mem.Allocator, ext: []const u8) []const u8 {
-    if (ext.len > 0 and ext[0] == '.') return std.fmt.allocPrint(a, "*{s}", .{ext}) catch die("oom\n", .{});
-    return ext;
-}
-
 /// Fatal exit with ripgrep's error code (2). Shared by the parser and the shell.
 pub fn die(comptime msg: []const u8, args: anytype) noreturn {
     std.debug.print(msg, args);
@@ -198,7 +191,7 @@ const Builder = struct {
             return;
         }
         // A user-defined `--type-add` type resolves to include/exclude globs; a
-        // built-in resolves to its extension suffix set.
+        // built-in resolves to its own glob set (scope/types.zig).
         if (self.customGlobs(name)) |globs| {
             (if (negate) &self.excludes else &self.includes).appendSlice(self.a, globs) catch die("oom\n", .{});
             return;
@@ -219,7 +212,9 @@ const Builder = struct {
                 if (self.customGlobs(t)) |g| {
                     globs.appendSlice(self.a, g) catch die("oom\n", .{});
                 } else if (types.extsForType(t)) |exts| {
-                    for (exts) |e| globs.append(self.a, extToGlob(self.a, e)) catch die("oom\n", .{});
+                    // A built-in type's rows are already valid globs (scope/types.zig),
+                    // so they slot straight into the `include:` union with no conversion.
+                    globs.appendSlice(self.a, exts) catch die("oom\n", .{});
                 } else die("unrecognized type: {s}\n", .{t});
             }
         } else {
