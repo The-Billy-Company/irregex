@@ -36,6 +36,8 @@ const color = @import("color.zig");
 const types = @import("../scope/types.zig");
 const simd = @import("../../scan/simd.zig");
 const search_args = @import("../search/args.zig");
+const persist = @import("../../index/persist.zig");
+const fresh = @import("../../corpus/fresh.zig");
 const Opts = args.Opts;
 const Emitter = output.Emitter;
 const die = args.die;
@@ -424,20 +426,135 @@ fn literalGate(parsed: args.Parsed) ?[]const u8 {
     return pattern;
 }
 
+// ─────────────────── index-backed read elision (acceleration) ───────────────────
+//
+// The persisted trigram index is used ONLY to skip *reading* files the walk
+// already discovered but that provably can't match — it never changes the file
+// set, the ignore semantics, the ordering, or the output. The live walk above
+// stays the sole authority on WHAT to search (so every rgsuite parity guarantee
+// holds unchanged); the index just answers, for a walked path it already knows,
+// "does this file contain the pattern's required literal?" and, if not (and the
+// file is unchanged since the index was built — the freshness overlay forces a
+// re-read of anything touched since), lets the read be elided. A skipped file
+// couldn't have produced a single line of output, so eliding its read is
+// byte-invisible — the win is turning "open+read ~16k files" into "open+read
+// only the trigram candidates" for a selective query, gist's whole thesis.
+//
+// Soundness rests on two sets drawn from the index:
+//   • `indexed`  — every path the index covers (only THESE may be elided; a path
+//     the index doesn't know — a new file, or one outside the indexed roots — is
+//     always read, so nothing is ever wrongly skipped);
+//   • `candset`  — `fresh.candidates`: the trigram hits for the prefilter UNIONed
+//     with every file touched since the build (the freshness overlay closes the
+//     stale-index gap — a file that GAINED the needle since the build is in this
+//     set and gets read).
+// Elide reading path P iff  P ∈ indexed  AND  P ∉ candset.
+const IndexSkip = struct {
+    p: persist.Persisted,
+    cand: fresh.Candidates,
+    indexed: std.StringHashMap(void),
+    candset: std.StringHashMap(void),
+
+    fn skip(self: *const IndexSkip, rel: []const u8) bool {
+        return self.indexed.contains(rel) and !self.candset.contains(rel);
+    }
+    fn deinit(self: *IndexSkip) void {
+        self.candset.deinit();
+        self.indexed.deinit();
+        self.cand.deinit();
+        self.p.deinit();
+    }
+};
+
+/// The sound trigram prefilter for this invocation, or empty (⇒ no read is ever
+/// elided) whenever anything makes "contains the required literal" an unsafe
+/// proxy for "can match": `--no-index`, case-folding (`-i`/resolved `-S`),
+/// inversion (`-v` emits zero-hit files too), or the whole-file scans
+/// (`--stats`, `--passthru`) that must read every byte regardless. Otherwise the
+/// engine's own required literal (`re.required`, present in EVERY match) or, for
+/// an alternation, its per-branch cover set (`re.alts` — `foo|bar` ⇒ {foo,bar}),
+/// both of which `fresh.candidates` treats as sound supersets.
+fn trigramFilter(o: Opts, re: *const Regex, one: *[1][]const u8) []const []const u8 {
+    if (o.no_index or o.caseless or o.invert or o.stats or o.passthru) return &.{};
+    if (re.required.len >= 3) {
+        one[0] = re.required;
+        return one[0..];
+    }
+    return re.alts;
+}
+
+/// Build the read-elision oracle from the persisted index, or null when there's
+/// nothing to gain (no sound prefilter, `--no-index`, or no index on disk — the
+/// last probed SILENTLY via `loadQuiet`, since a bare `gist <pattern>` outside an
+/// indexed corpus is the normal case, not a miss to nag about). `fresh_roots`
+/// scopes the freshness stat-walk to the query's own roots (else the indexed
+/// corpus) so a scoped query doesn't pay a whole-corpus stat pass.
+fn buildIndexSkip(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, filters: []const []const u8) ?IndexSkip {
+    if (parsed.opts.no_index or filters.len == 0) return null;
+    var p = (persist.loadQuiet(gpa, io) catch return null) orelse return null;
+    // Snapshot the indexed path set BEFORE freshness widens `p.paths` with new
+    // files (only originally-indexed paths are elision-eligible; the new files
+    // freshness appends are, by definition, things to read).
+    const n_indexed = p.paths.items.len;
+    var indexed = std.StringHashMap(void).init(gpa);
+    indexed.ensureTotalCapacity(@intCast(n_indexed)) catch {
+        p.deinit();
+        return null;
+    };
+    for (p.paths.items[0..n_indexed]) |pp| indexed.putAssumeCapacity(pp, {});
+
+    const fresh_roots = if (parsed.roots.len > 0) parsed.roots else &corpus_mod.default_roots;
+    var cand = fresh.candidates(gpa, io, &p.idx, &p.paths, filters, fresh_roots) catch {
+        indexed.deinit();
+        p.deinit();
+        return null;
+    };
+    var candset = std.StringHashMap(void).init(gpa);
+    candset.ensureTotalCapacity(@intCast(cand.ids.len)) catch {
+        cand.deinit();
+        indexed.deinit();
+        p.deinit();
+        return null;
+    };
+    for (cand.ids) |d| candset.putAssumeCapacity(p.paths.items[d], {});
+    return .{ .p = p, .cand = cand, .indexed = indexed, .candset = candset };
+}
+
 /// Gather (walk, single-threaded) → read (parallel, see `readCandidates`) →
 /// type/glob filter → path-sort → apply --path-separator. Shared by the
 /// search path and `--files`. `gpa` (not the arena `a`) backs the parallel
 /// read shards — `std.heap.ArenaAllocator` isn't safe to allocate through
 /// concurrently, so each shard gets its OWN arena wrapping the shared,
-/// thread-safe `gpa` (see `ReadShard`/`readCandidates`).
+/// thread-safe `gpa` (see `ReadShard`/`readCandidates`). `filters` is the sound
+/// trigram prefilter (`trigramFilter`); empty ⇒ read every walked file (today's
+/// behavior), non-empty ⇒ let the persisted index elide provable-non-candidate
+/// reads (`buildIndexSkip`) — the output is identical either way.
 const Collected = struct { files: []InFile, recursive: bool };
-fn collectFiles(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed) Collected {
+fn collectFiles(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, filters: []const []const u8) Collected {
     const o = parsed.opts;
     var candidates: std.ArrayList(Candidate) = .empty;
     var ig = ignore.Ignore.init(a, io, o, parsed.roots);
     const recursive = gather(a, io, parsed.roots, o, &ig, &candidates);
+
     var all: std.ArrayList(InFile) = .empty;
-    readCandidates(a, gpa, candidates.items, literalGate(parsed), &all);
+    var skip = buildIndexSkip(gpa, io, parsed, filters);
+    defer if (skip) |*s| s.deinit();
+    const read_list = if (skip) |*s| blk: {
+        // Partition the walked set: read only what the index can't prove out.
+        // An elided file contributes nothing to any mode EXCEPT --files-without-
+        // match, which lists every non-matching file — so there it's kept as an
+        // unread (empty-body) entry, which the run loop treats as "no match".
+        var to_read: std.ArrayList(Candidate) = .empty;
+        to_read.ensureTotalCapacity(a, candidates.items.len) catch die("oom\n", .{});
+        for (candidates.items) |c| {
+            if (s.skip(c.rel)) {
+                if (o.files_without) all.append(a, .{ .path = c.rel, .bytes = "", .explicit = c.explicit }) catch die("oom\n", .{});
+            } else to_read.appendAssumeCapacity(c);
+        }
+        break :blk to_read.items;
+    } else candidates.items;
+    readCandidates(a, gpa, read_list, literalGate(parsed), &all);
+
     var files: std.ArrayList(InFile) = .empty;
     files.ensureTotalCapacity(a, all.items.len) catch die("oom\n", .{});
     for (all.items) |f| {
@@ -564,7 +681,9 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // --files: list the files that would be searched (no pattern), path-sorted,
     // NUL-terminated under --null. Uses the same gather+filter as the search path.
     if (o.files_list) {
-        const c = collectFiles(a, gpa, io, parsed);
+        // --files lists every file (no pattern) — nothing to prefilter, so no read
+        // elision applies; pass an empty trigram filter.
+        const c = collectFiles(a, gpa, io, parsed, &.{});
         if (o.quiet) std.process.exit(if (c.files.len > 0) 0 else 1);
         var out: std.ArrayList(u8) = .empty;
         for (c.files) |f| out.print(a, "{s}{c}", .{ f.path, if (o.null_sep) @as(u8, 0) else '\n' }) catch die("oom\n", .{});
@@ -608,7 +727,12 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         std.process.exit(if (hits > 0) 0 else 1);
     }
 
-    const c = collectFiles(a, gpa, io, parsed);
+    // The persisted index (when present) accelerates the walk by eliding reads of
+    // files that provably can't hold the pattern's required literal — a pure
+    // acceleration, output-invisible (see `IndexSkip`). `req_one` backs a possible
+    // one-element `{re.required}` filter slice for its lifetime here.
+    var req_one: [1][]const u8 = undefined;
+    const c = collectFiles(a, gpa, io, parsed, trigramFilter(o, &re, &req_one));
     const files = c.files;
 
     // --json: ripgrep's JSON Lines record stream (own printer, shared engine).

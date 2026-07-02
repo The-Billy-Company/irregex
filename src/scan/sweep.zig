@@ -35,9 +35,9 @@
 
 const std = @import("std");
 const corpus_mod = @import("../corpus/corpus.zig");
+const haystack = @import("../corpus/haystack.zig");
 const simd = @import("simd.zig");
 const Regex = @import("../regex/core.zig").Regex;
-const Dir = std.Io.Dir;
 
 /// Workers per core. Measured, not assumed: a warm page cache makes this tier
 /// CPU/syscall-bound (~190 µs/file is openat+read+close + fault-in, the DFA pass
@@ -133,20 +133,12 @@ const Worker = struct {
 
 fn walkRoot(w: *Worker, root_path: []const u8) void {
     const a = w.arena.?.allocator();
-    var root = Dir.cwd().openDir(w.io, root_path, .{ .iterate = true }) catch return;
-    defer root.close(w.io);
-    var walker = root.walkSelectively(a) catch return;
-    defer walker.deinit();
+    var hw = haystack.Walker.init(w.io, a, root_path) catch return;
+    defer hw.deinit(w.io);
     var batch: [push_batch][]const u8 = undefined;
     var n: usize = 0;
-    while (walker.next(w.io) catch return) |entry| {
-        if (entry.kind == .directory) {
-            if (!corpus_mod.isSkipDir(entry.basename)) walker.enter(w.io, entry) catch return;
-            continue;
-        }
-        if (entry.kind != .file) continue;
-        const full = std.fmt.allocPrint(a, "{s}/{s}", .{ root_path, entry.path }) catch return;
-        batch[n] = full;
+    while (hw.next(w.io) catch return) |hay| {
+        batch[n] = hay.path;
         n += 1;
         if (n == push_batch) {
             w.q.push(batch[0..n]);
