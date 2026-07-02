@@ -19,11 +19,11 @@
 
 const std = @import("std");
 const corpus_mod = @import("../../corpus/corpus.zig");
+const haystack = @import("../../corpus/haystack.zig");
 const glob = @import("../scope/glob.zig");
 const emit = @import("emit.zig");
 const args = @import("args.zig");
 const Regex = @import("../../regex/core.zig").Regex;
-const Dir = std.Io.Dir;
 const Options = args.Options;
 
 fn nowNs(io: std.Io) i128 {
@@ -36,19 +36,9 @@ fn nowNs(io: std.Io) i128 {
 /// the line engine reads the candidate files itself. A failure degrades to
 /// "found nothing under this root" (never a crash, never an invented path).
 fn walkRoot(io: std.Io, a: std.mem.Allocator, root_path: []const u8, out: *std.ArrayList([]const u8)) void {
-    var root = Dir.cwd().openDir(io, root_path, .{ .iterate = true }) catch return;
-    defer root.close(io);
-    var walker = root.walkSelectively(a) catch return;
-    defer walker.deinit();
-    while (walker.next(io) catch return) |entry| {
-        if (entry.kind == .directory) {
-            if (!corpus_mod.isSkipDir(entry.basename)) walker.enter(io, entry) catch return;
-            continue;
-        }
-        if (entry.kind != .file) continue;
-        const full = std.fmt.allocPrint(a, "{s}/{s}", .{ root_path, entry.path }) catch return;
-        out.append(a, full) catch return;
-    }
+    var w = haystack.Walker.init(io, a, root_path) catch return;
+    defer w.deinit(io);
+    while (w.next(io) catch return) |hay| out.append(a, hay.path) catch return;
 }
 
 /// `--live`: scan the live tree with no index. Compiles the same effective

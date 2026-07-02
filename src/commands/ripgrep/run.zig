@@ -34,6 +34,8 @@ const ignore = @import("ignore.zig");
 const json = @import("json.zig");
 const color = @import("color.zig");
 const types = @import("../scope/types.zig");
+const simd = @import("../../scan/simd.zig");
+const search_args = @import("../search/args.zig");
 const Opts = args.Opts;
 const Emitter = output.Emitter;
 const die = args.die;
@@ -123,13 +125,18 @@ fn utf16ToUtf8(a: std.mem.Allocator, bytes: []const u8, endian: std.builtin.Endi
 
 /// rg line semantics: `\n` terminates; trailing `\n` yields no phantom empty
 /// line; content after the last `\n` is still a line. `\r` is KEPT (ripgrep's
-/// default without `--crlf`).
+/// default without `--crlf`). Pre-sized from one `\n` count pass (same idiom
+/// as `persist.zig`'s NUL-count split) so appending a file's lines is a single
+/// allocation instead of the list's usual grow-and-copy doubling — the search
+/// loop below calls this once per candidate file, so the saved reallocations
+/// scale with the corpus, not just one file.
 fn collectLines(a: std.mem.Allocator, buf: []const u8, term: u8, out: *std.ArrayList([]const u8)) void {
+    out.ensureUnusedCapacity(a, std.mem.count(u8, buf, &.{term}) + 1) catch die("oom\n", .{});
     var rest = buf;
     while (true) {
         const nl = std.mem.indexOfScalar(u8, rest, term);
         const end = nl orelse rest.len;
-        if (nl != null or end > 0) out.append(a, rest[0..end]) catch die("oom\n", .{});
+        if (nl != null or end > 0) out.appendAssumeCapacity(rest[0..end]);
         if (nl == null) break;
         rest = rest[end + 1 ..];
     }
@@ -150,16 +157,57 @@ fn diskPath(a: std.mem.Allocator, root_path: []const u8, p: []const u8) []const 
     return if (std.mem.eql(u8, root_path, ".")) a.dupe(u8, p) catch die("oom\n", .{}) else std.fmt.allocPrint(a, "{s}/{s}", .{ root_path, p }) catch die("oom\n", .{});
 }
 
-fn walkDir(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix: []const u8, o: Opts, ig: *ignore.Ignore, out: *std.ArrayList(InFile)) void {
+/// A file the walk found but hasn't read yet: `rel` is the display path
+/// (`.gitignore`-relative, prefix-joined per root); `disk` is a plain,
+/// CWD-openable path string a later phase reopens to actually read bytes.
+/// A walker `Dir`/entry handle is only valid until the walk advances past it
+/// (`std.Io.Dir.Walker`'s own contract), so a read deferred to a parallel
+/// phase — after the single-threaded walk has moved on — needs a reopenable
+/// string, not the handle it was discovered through.
+const Candidate = struct { rel: []const u8, disk: []const u8, explicit: bool = false };
+
+fn walkDir(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix: []const u8, o: Opts, ig: *ignore.Ignore, out: *std.ArrayList(Candidate)) void {
     ig.loadDir(root_path, prefix);
-    walkDirLinked(a, io, root_path, prefix, o, ig, out, 0);
+    // `-L`/`--follow` cycle guard: the real (canonicalized) path of every
+    // directory currently on this DFS's ancestor chain — ripgrep's own
+    // strategy (ripgrep tracks realpaths, not just a depth counter). A
+    // symlink whose target's realpath is already an ancestor is a genuine
+    // cycle and is refused; a symlink that reconverges on an already-FINISHED
+    // sibling subtree (a diamond, not a cycle) is still followed, since it's
+    // popped back off `visited` once its own subtree walk returns.
+    var visited: std.ArrayList([]const u8) = .empty;
+    if (o.follow) if (realDirPath(a, root_path)) |rp| visited.append(a, rp) catch {};
+    walkDirLinked(a, io, root_path, prefix, o, ig, out, 0, &visited);
 }
 
-/// `-L` symlink-recursion cap — a cycle guard (ripgrep tracks realpaths; a bounded
-/// depth is enough for a one-shot walk and can't loop forever on a symlink cycle).
+/// `-L` symlink-recursion depth cap — defense in depth alongside the realpath
+/// cycle guard below (belt-and-suspenders against a non-cyclic but absurdly
+/// deep symlink relay, or a platform where `realpath(3)` can't resolve a leg).
 const max_link_depth: usize = 40;
 
-fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix: []const u8, o: Opts, ig: *ignore.Ignore, out: *std.ArrayList(InFile), link_depth: usize) void {
+/// The canonicalized absolute path of `path` (POSIX `realpath(3)`), or null if
+/// it can't be resolved (dangling symlink, permission error, name too long) —
+/// treated as "not provably a cycle" (the subsequent `openDir` surfaces the
+/// real error if there is one).
+fn realDirPath(a: std.mem.Allocator, path: []const u8) ?[]const u8 {
+    const cpath = std.posix.toPosixPath(path) catch return null;
+    var buf: [std.posix.PATH_MAX]u8 = undefined;
+    const resolved = std.c.realpath(&cpath, &buf) orelse return null;
+    return a.dupe(u8, std.mem.sliceTo(resolved, 0)) catch null;
+}
+
+fn containsPath(haystack_paths: []const []const u8, needle_path: []const u8) bool {
+    for (haystack_paths) |p| if (std.mem.eql(u8, p, needle_path)) return true;
+    return false;
+}
+
+/// Single-threaded directory descent: `.gitignore`/depth/hidden filtering must
+/// stay inline with the walk (each dir's ignore rules load as we enter it), so
+/// this phase only ever DISCOVERS candidates — no file is opened here. The
+/// actual reads happen afterward, in parallel, over the flat list this builds
+/// (see `readCandidates`), matching ripgrep's own split between walking the
+/// tree and reading what it finds.
+fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix: []const u8, o: Opts, ig: *ignore.Ignore, out: *std.ArrayList(Candidate), link_depth: usize, visited: *std.ArrayList([]const u8)) void {
     var root = Dir.cwd().openDir(io, root_path, .{ .iterate = true }) catch return;
     defer root.close(io);
     var walker = root.walkSelectively(a) catch return;
@@ -177,13 +225,21 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
                 var sub = sub_const;
                 sub.close(io);
                 if (o.max_depth == 0 or depth < o.max_depth) {
-                    ig.loadDir(full, rel);
-                    walkDirLinked(a, io, full, rel, o, ig, out, link_depth + 1);
+                    const mark = visited.items.len;
+                    var cyclic = false;
+                    if (realDirPath(a, full)) |rp| {
+                        cyclic = containsPath(visited.items, rp);
+                        if (!cyclic) visited.append(a, rp) catch {};
+                    }
+                    if (!cyclic) {
+                        ig.loadDir(full, rel);
+                        walkDirLinked(a, io, full, rel, o, ig, out, link_depth + 1, visited);
+                        visited.shrinkRetainingCapacity(mark);
+                    }
                 }
             } else |_| {
                 if (o.max_depth != 0 and depth > o.max_depth) continue;
-                const buf = entry.dir.readFileAlloc(io, entry.basename, a, .limited(corpus_mod.per_file_cap)) catch continue;
-                out.append(a, .{ .path = rel, .bytes = decodeBom(a, buf) }) catch die("oom\n", .{});
+                out.append(a, .{ .rel = rel, .disk = full }) catch die("oom\n", .{});
             }
             continue;
         }
@@ -203,12 +259,11 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
         if (entry.kind != .file) continue;
         if (ig.shouldSkip(rel, false, entry.basename)) continue;
         if (o.max_depth != 0 and depth > o.max_depth) continue;
-        const buf = entry.dir.readFileAlloc(io, entry.basename, a, .limited(corpus_mod.per_file_cap)) catch continue;
-        out.append(a, .{ .path = rel, .bytes = decodeBom(a, buf) }) catch die("oom\n", .{});
+        out.append(a, .{ .rel = rel, .disk = diskPath(a, root_path, entry.path) }) catch die("oom\n", .{});
     }
 }
 
-fn gather(a: std.mem.Allocator, io: std.Io, roots: []const []const u8, o: Opts, ig: *ignore.Ignore, out: *std.ArrayList(InFile)) bool {
+fn gather(a: std.mem.Allocator, io: std.Io, roots: []const []const u8, o: Opts, ig: *ignore.Ignore, out: *std.ArrayList(Candidate)) bool {
     if (roots.len == 0) {
         walkDir(a, io, ".", "", o, ig, out);
         return true;
@@ -228,26 +283,167 @@ fn gather(a: std.mem.Allocator, io: std.Io, roots: []const []const u8, o: Opts, 
         } else |_| {
             // An explicitly named file arg is searched verbatim (ripgrep never
             // ignore-filters an explicit path).
-            const buf = Dir.cwd().readFileAlloc(io, r, a, .limited(corpus_mod.per_file_cap)) catch continue;
-            out.append(a, .{ .path = r, .bytes = decodeBom(a, buf), .explicit = true }) catch die("oom\n", .{});
+            out.append(a, .{ .rel = r, .disk = r, .explicit = true }) catch die("oom\n", .{});
         }
     }
     return recursive;
 }
 
-/// Gather → type/glob filter → path-sort → apply --path-separator. Shared by the
-/// search path and `--files`.
-const Collected = struct { files: []InFile, recursive: bool };
-fn collectFiles(a: std.mem.Allocator, io: std.Io, parsed: args.Parsed) Collected {
+/// Spawn one shard per core above this candidate count; below it, thread-spawn
+/// overhead isn't worth it and the whole batch runs inline on the calling
+/// thread. Mirrors `commands/search/emit.zig`'s identical `par_threshold`
+/// tuning for its own parallel candidate-read shards.
+const par_threshold = 64;
+
+const ReadShard = struct {
+    gpa: std.mem.Allocator,
+    // Thread-confined bump allocator for every kept file's byte copy — owned
+    // by this shard alone until `readCandidates` has copied `out` into the
+    // caller's long-lived arena and tears it down, so parallel shards never
+    // contend on `gpa`'s shared allocator machinery for that traffic (the
+    // exact reasoning `emit.zig`'s `Shard.arena` documents).
+    arena: std.heap.ArenaAllocator,
+    candidates: []const Candidate,
+    needle: ?[]const u8,
+    out: std.ArrayList(InFile) = .empty,
+};
+
+/// One candidate's read-and-filter: raw POSIX open/read/close into a reused
+/// per-shard scratch buffer — the same proven-fast cold-read idiom
+/// `emit.zig`'s `grepShard` already uses for its parallel candidate reads
+/// (plain syscalls, no `std.Io` handle to share across threads) — then
+/// BOM-decoded, then dropped on the spot when `needle` (see `literalGate`)
+/// provably isn't in it: one SIMD `contains` call replaces reading a file all
+/// the way to "zero hits" through three more serial passes (binary sniff,
+/// line split, per-line match) in the caller's loop. A kept file's bytes are
+/// copied into `a` (the shard's arena) so they outlive the next reuse of
+/// `scratch`.
+///
+/// `scratch` is sized to `corpus_mod.per_file_cap` — an indexing-corpus
+/// budget, NOT a hard ceiling on what `rg`-compat may search (ripgrep itself
+/// has no default max file size; only an explicit `--max-filesize` caps it,
+/// applied downstream in `collectFiles`). A file that fills `scratch`
+/// completely is ambiguous (exactly cap-sized, or bigger) — `readTail` keeps
+/// reading past it into a growable buffer instead of silently truncating.
+fn readOneCandidate(a: std.mem.Allocator, scratch: []u8, c: Candidate, needle: ?[]const u8) ?InFile {
+    const fd = std.posix.openat(std.posix.AT.FDCWD, c.disk, .{ .ACCMODE = .RDONLY }, 0) catch return null;
+    defer _ = std.posix.system.close(fd);
+    var n: usize = 0;
+    while (n < scratch.len) {
+        const r = std.posix.read(fd, scratch[n..]) catch break;
+        if (r == 0) break;
+        n += r;
+    }
+    if (n == scratch.len) {
+        const raw = readTail(a, fd, scratch) orelse return null;
+        const body = decodeBom(a, raw);
+        if (needle) |needle_v| if (!simd.contains(body, needle_v)) return null;
+        return .{ .path = c.rel, .bytes = body, .explicit = c.explicit };
+    }
+    const body = decodeBom(a, scratch[0..n]);
+    if (needle) |needle_v| if (!simd.contains(body, needle_v)) return null;
+    return .{ .path = c.rel, .bytes = a.dupe(u8, body) catch return null, .explicit = c.explicit };
+}
+
+/// `scratch` (already full) plus whatever remains on `fd`, copied into one
+/// arena-owned buffer — the uncommon path for a file at/above `per_file_cap`,
+/// kept out of the hot common-case function above.
+fn readTail(a: std.mem.Allocator, fd: std.posix.fd_t, scratch: []const u8) ?[]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    out.appendSlice(a, scratch) catch return null;
+    var tmp: [64 * 1024]u8 = undefined;
+    while (true) {
+        const r = std.posix.read(fd, &tmp) catch break;
+        if (r == 0) break;
+        out.appendSlice(a, tmp[0..r]) catch return null;
+    }
+    return out.toOwnedSlice(a) catch null;
+}
+
+fn readShard(sh: *ReadShard) void {
+    const a = sh.arena.allocator();
+    const scratch = sh.gpa.alloc(u8, corpus_mod.per_file_cap) catch return;
+    defer sh.gpa.free(scratch);
+    sh.out.ensureTotalCapacity(sh.gpa, sh.candidates.len) catch {};
+    for (sh.candidates) |c| {
+        if (readOneCandidate(a, scratch, c, sh.needle)) |f| sh.out.appendAssumeCapacity(f);
+    }
+}
+
+/// Read every discovered candidate — in parallel across the machine's cores
+/// above `par_threshold` candidates, the multi-core walk ripgrep itself runs
+/// (`ignore::WalkParallel`) — and append the kept `InFile`s (bytes duped into
+/// `dest`, the caller's long-lived arena) into `out`. Below the threshold this
+/// runs inline: for a handful of files, spawn cost dwarfs the read itself.
+fn readCandidates(dest: std.mem.Allocator, gpa: std.mem.Allocator, candidates: []const Candidate, needle: ?[]const u8, out: *std.ArrayList(InFile)) void {
+    const ncpu = std.Thread.getCpuCount() catch 8;
+    const nshards = if (candidates.len < par_threshold) 1 else @min(candidates.len, ncpu);
+    const shards = gpa.alloc(ReadShard, nshards) catch die("oom\n", .{});
+    defer gpa.free(shards);
+    const per = (candidates.len + nshards - 1) / nshards;
+    var off: usize = 0;
+    for (shards) |*sh| {
+        const lo = off;
+        const hi = @min(off + per, candidates.len);
+        off = hi;
+        sh.* = .{ .gpa = gpa, .arena = std.heap.ArenaAllocator.init(gpa), .candidates = candidates[lo..hi], .needle = needle };
+    }
+    if (nshards == 1) {
+        readShard(&shards[0]);
+    } else {
+        const threads = gpa.alloc(std.Thread, nshards) catch die("oom\n", .{});
+        defer gpa.free(threads);
+        for (shards, 0..) |*sh, k| threads[k] = std.Thread.spawn(.{}, readShard, .{sh}) catch die("thread spawn failed\n", .{});
+        for (threads) |t| t.join();
+    }
+    out.ensureUnusedCapacity(dest, candidates.len) catch die("oom\n", .{});
+    for (shards) |*sh| {
+        for (sh.out.items) |f| out.appendAssumeCapacity(.{ .path = f.path, .bytes = dest.dupe(u8, f.bytes) catch die("oom\n", .{}), .explicit = f.explicit });
+        sh.out.deinit(gpa);
+        sh.arena.deinit();
+    }
+}
+
+/// This invocation's pattern reduces to a plain, case-sensitive, unanchored
+/// substring scan when nothing changes what "the file contains it" means:
+/// one pattern source (`-e`/`-f` fan-in and `-x`/line_regexp anchoring both
+/// route through `combinePatterns` and would already show up as regex syntax
+/// below, but a single-source check keeps this independent of that plumbing),
+/// no `-w`/`-i` (both broaden what counts as a hit past raw byte containment),
+/// no `-v` (inverted mode needs every line INCLUDING files with zero hits).
+/// Mirrors the identical soundness proof in `commands/search/args.zig`'s
+/// `literalNeedle`, re-derived here against this module's own `Opts` shape.
+fn literalGate(parsed: args.Parsed) ?[]const u8 {
     const o = parsed.opts;
-    var all: std.ArrayList(InFile) = .empty;
+    if (o.word or o.caseless or o.invert or o.files_without or o.stats or o.json) return null;
+    if (parsed.patterns.len != 1 or parsed.pattern_files.len != 0) return null;
+    const pattern = parsed.patterns[0];
+    if (pattern.len == 0) return null;
+    if (o.fixed) return pattern; // -F: escaped for the engine, but these ARE the literal bytes
+    if (search_args.looksLikeRegex(pattern)) return null;
+    return pattern;
+}
+
+/// Gather (walk, single-threaded) → read (parallel, see `readCandidates`) →
+/// type/glob filter → path-sort → apply --path-separator. Shared by the
+/// search path and `--files`. `gpa` (not the arena `a`) backs the parallel
+/// read shards — `std.heap.ArenaAllocator` isn't safe to allocate through
+/// concurrently, so each shard gets its OWN arena wrapping the shared,
+/// thread-safe `gpa` (see `ReadShard`/`readCandidates`).
+const Collected = struct { files: []InFile, recursive: bool };
+fn collectFiles(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed) Collected {
+    const o = parsed.opts;
+    var candidates: std.ArrayList(Candidate) = .empty;
     var ig = ignore.Ignore.init(a, io, o, parsed.roots);
-    const recursive = gather(a, io, parsed.roots, o, &ig, &all);
+    const recursive = gather(a, io, parsed.roots, o, &ig, &candidates);
+    var all: std.ArrayList(InFile) = .empty;
+    readCandidates(a, gpa, candidates.items, literalGate(parsed), &all);
     var files: std.ArrayList(InFile) = .empty;
+    files.ensureTotalCapacity(a, all.items.len) catch die("oom\n", .{});
     for (all.items) |f| {
         if (o.filter.active() and !o.filter.admits(a, f.path)) continue;
         if (o.max_filesize != 0 and f.bytes.len > o.max_filesize) continue;
-        files.append(a, f) catch die("oom\n", .{});
+        files.appendAssumeCapacity(f);
     }
     std.mem.sort(InFile, files.items, {}, cmpFiles);
     if (o.path_sep) |sepstr| for (files.items) |*f| {
@@ -314,6 +510,10 @@ fn readableStdin() bool {
     return fmt == std.posix.S.IFIFO or fmt == std.posix.S.IFREG or fmt == std.posix.S.IFSOCK;
 }
 
+/// Ripgrep has no default cap on stdin size (only `--max-filesize`, which
+/// doesn't apply to a stream with no a-priori length) — read to EOF, not to
+/// `per_file_cap` (that constant is an indexing-corpus budget, not a search
+/// ceiling; see `readOneCandidate`'s identical reasoning for on-disk files).
 fn readStdin(a: std.mem.Allocator) []const u8 {
     var buf: std.ArrayList(u8) = .empty;
     var tmp: [64 * 1024]u8 = undefined;
@@ -321,7 +521,6 @@ fn readStdin(a: std.mem.Allocator) []const u8 {
         const n = std.posix.read(0, &tmp) catch break;
         if (n == 0) break;
         buf.appendSlice(a, tmp[0..n]) catch die("oom\n", .{});
-        if (buf.items.len > corpus_mod.per_file_cap) break;
     }
     return buf.toOwnedSlice(a) catch die("oom\n", .{});
 }
@@ -365,7 +564,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // --files: list the files that would be searched (no pattern), path-sorted,
     // NUL-terminated under --null. Uses the same gather+filter as the search path.
     if (o.files_list) {
-        const c = collectFiles(a, io, parsed);
+        const c = collectFiles(a, gpa, io, parsed);
         if (o.quiet) std.process.exit(if (c.files.len > 0) 0 else 1);
         var out: std.ArrayList(u8) = .empty;
         for (c.files) |f| out.print(a, "{s}{c}", .{ f.path, if (o.null_sep) @as(u8, 0) else '\n' }) catch die("oom\n", .{});
@@ -409,7 +608,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         std.process.exit(if (hits > 0) 0 else 1);
     }
 
-    const c = collectFiles(a, io, parsed);
+    const c = collectFiles(a, gpa, io, parsed);
     const files = c.files;
 
     // --json: ripgrep's JSON Lines record stream (own printer, shared engine).

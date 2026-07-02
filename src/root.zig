@@ -15,7 +15,7 @@
 //!   regex/    — the linear-time RE2-style engine (NFA + byte-class DFA + prefilter)
 //!   rank/     — RRF result ranking + its language-agnostic byte-level signals
 //!   scan/     — byte-level match execution (SIMD substring, parallel verify, live sweep)
-//!   corpus/   — in-memory corpus loading + the T3 freshness overlay
+//!   corpus/   — in-memory corpus loading, the shared Haystack walk, + the T3 freshness overlay
 //!   commands/ — the CLI surfaces built on the engine (scope · search · status · ripgrep · cli)
 
 const std = @import("std");
@@ -45,6 +45,7 @@ pub const sweep = @import("scan/sweep.zig");
 
 // ── corpus + freshness ──
 pub const corpus = @import("corpus/corpus.zig");
+pub const haystack = @import("corpus/haystack.zig");
 pub const fresh = @import("corpus/fresh.zig");
 
 /// CLI surfaces built on the engine above. Not part of the C ABI — the `gist`
@@ -100,6 +101,7 @@ test {
     _ = @import("rank/signals_test.zig"); // cross-language def-detection + generated-file signals
     _ = @import("scan/simd_test.zig"); // SIMD `contains` differential fuzz vs std
     _ = @import("corpus/fresh_test.zig"); // T3 freshness `widen` set-algebra
+    _ = @import("corpus/haystack_test.zig"); // shared walk: isSkipDir + joinPath hot-path decisions
     _ = @import("regex/syntax_test.zig"); // T2 syntax: ByteSet + recursive-descent parser
     _ = @import("regex/analysis_test.zig"); // T2 analysis: required-literal + cover + anchored
     _ = @import("regex/core_test.zig"); // T2 engine: parser + Pike VM + prefilters

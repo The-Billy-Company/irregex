@@ -6,7 +6,7 @@
 //! search path emits through.
 
 const std = @import("std");
-const Dir = std.Io.Dir;
+const haystack = @import("haystack.zig");
 
 pub const per_file_cap: usize = 4 << 20; // 4 MiB
 pub const out_dir = ".local/gist-verify";
@@ -33,20 +33,10 @@ pub fn emitStdout(bytes: []const u8) void {
     }
 }
 
-/// Directory basenames rg skips by default (gitignore + VCS + build output).
-pub fn isSkipDir(name: []const u8) bool {
-    const skip = [_][]const u8{
-        ".git",          ".github",     ".hg",           ".svn",        "node_modules",
-        "target",        "dist",        "dist-types",    "build",       ".build",
-        "out",           ".next",       "coverage",      ".venv",       "venv",
-        "site-packages", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
-        ".zig-cache",    "zig-out",     ".cache",        ".local",      ".turbo",
-        "vendor",        ".swiftpm",    "Pods",          "DerivedData", ".cursor",
-        ".idea",         ".vscode",     ".parcel-cache", ".pnpm-store", "graphify-out",
-    };
-    for (skip) |s| if (std.mem.eql(u8, name, s)) return true;
-    return false;
-}
+/// Directory basenames rg skips by default (gitignore + VCS + build output) —
+/// re-exported for anyone still spelling it `corpus.isSkipDir`; the canonical
+/// definition (and the walk that applies it) now lives in `haystack.zig`.
+pub const isSkipDir = haystack.isSkipDir;
 
 /// rg-style binary detection: a NUL byte in the first 8 KiB ⇒ treat as binary.
 pub fn isBinary(bytes: []const u8) bool {
@@ -73,25 +63,16 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !Corp
     var total: u64 = 0;
 
     for (roots) |root_path| {
-        var root = Dir.cwd().openDir(io, root_path, .{ .iterate = true }) catch |e| {
+        var w = haystack.Walker.init(io, a, root_path) catch |e| {
             std.debug.print("  skip {s}: {s}\n", .{ root_path, @errorName(e) });
             continue;
         };
-        defer root.close(io);
-
-        var walker = try root.walkSelectively(a);
-        defer walker.deinit();
-        while (try walker.next(io)) |entry| {
-            if (entry.kind == .directory) {
-                if (!isSkipDir(entry.basename)) try walker.enter(io, entry);
-                continue;
-            }
-            if (entry.kind != .file) continue;
-            const buf = entry.dir.readFileAlloc(io, entry.basename, a, .limited(per_file_cap)) catch continue;
+        defer w.deinit(io);
+        while (try w.next(io)) |hay| {
+            const buf = hay.dir.readFileAlloc(io, hay.name, a, .limited(per_file_cap)) catch continue;
             if (buf.len == 0 or isBinary(buf)) continue;
-            const full = try std.fmt.allocPrint(a, "{s}/{s}", .{ root_path, entry.path });
             try docs.append(a, buf);
-            try paths.append(a, full);
+            try paths.append(a, hay.path);
             total += buf.len;
         }
     }

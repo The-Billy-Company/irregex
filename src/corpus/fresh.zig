@@ -22,6 +22,7 @@
 
 const std = @import("std");
 const corpus_mod = @import("corpus.zig");
+const haystack = @import("haystack.zig");
 const Index = @import("../index/trigram.zig").Index;
 const Dir = std.Io.Dir;
 
@@ -144,20 +145,12 @@ const WalkShard = struct {
 
 fn walkShard(sh: *WalkShard) void {
     const a = sh.arena.allocator();
-    var root = Dir.cwd().openDir(sh.io, sh.root, .{ .iterate = true }) catch return;
-    defer root.close(sh.io);
-    var walker = root.walkSelectively(a) catch return;
-    defer walker.deinit();
-    while (walker.next(sh.io) catch return) |entry| {
-        if (entry.kind == .directory) {
-            if (!corpus_mod.isSkipDir(entry.basename)) walker.enter(sh.io, entry) catch return;
-            continue;
-        }
-        if (entry.kind != .file) continue;
-        const st = entry.dir.statFile(sh.io, entry.basename, .{}) catch continue;
+    var w = haystack.Walker.init(sh.io, a, sh.root) catch return;
+    defer w.deinit(sh.io);
+    while (w.next(sh.io) catch return) |hay| {
+        const st = hay.dir.statFile(sh.io, hay.name, .{}) catch continue;
         if (st.mtime.nanoseconds < sh.built_ns) continue;
-        const full = std.fmt.allocPrint(a, "{s}/{s}", .{ sh.root, entry.path }) catch return;
-        sh.out.append(a, full) catch return;
+        sh.out.append(a, hay.path) catch return;
     }
 }
 
