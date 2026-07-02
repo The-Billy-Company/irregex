@@ -3,7 +3,8 @@
 //! `test`/`coverage` steps live in the shared `kernelkit` chassis
 //! (pkg/kernels/core). This file declares the kernel plus two executables
 //! built on it: the production `gist` CLI (`src/commands/cli/main.zig`, the
-//! `index`/`status`/`search` verbs) and the separate `gist-bench` harness
+//! `index`/`status` lifecycle verbs plus the bare `<pattern>`/`rg` search
+//! front door) and the separate `gist-bench` harness
 //! (`bench/harness/bench.zig`, the `bench`/`verify`/`certify` tooling). Production CLI
 //! and benchmark tooling no longer share a binary.
 
@@ -15,7 +16,11 @@ pub fn build(b: *std.Build) void {
 
     // ── the `gist` CLI executable (the product surface) ──
     // `zig build cli -- index` (build + persist once) / `-- status` /
-    // `-- search <pattern> [PATH...] [flags]` (shape via --show/--rank/--json).
+    // `-- <pattern> [PATH...] [flags]` (shape via --rank/--json). NOTE: this
+    // `run` step executes the freshly compiled exe straight from Zig's cache —
+    // it does NOT refresh `zig-out/bin/gist`; run a plain `zig build`
+    // (the default "install" step) first if a script or manual test shells
+    // that path directly.
     const cli_mod = b.createModule(.{
         .root_source_file = b.path("src/commands/cli/main.zig"),
         .target = k.target,
@@ -28,7 +33,7 @@ pub fn build(b: *std.Build) void {
     const run_cli = b.addRunArtifact(cli_exe);
     run_cli.setCwd(b.path("../../..")); // pkg/kernels/gist → repo root
     if (b.args) |args| run_cli.addArgs(args);
-    b.step("cli", "gist CLI: `-- index`, `-- status`, `-- search <pattern> [flags]`")
+    b.step("cli", "gist CLI: `-- index`, `-- status`, `-- <pattern> [flags]`")
         .dependOn(&run_cli.step);
 
     // ── the `gist-bench` harness executable (bench/verify/certify tooling) ──

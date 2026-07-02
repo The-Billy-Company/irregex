@@ -1,14 +1,14 @@
 //! gist — the persisted-index loader, shared by every cold-query path.
 //!
-//! `runIndex` (the CLI) serializes the trigram `Index` + the doc→path table to
-//! disk; each later fresh process maps them back **zero-copy** and resolves
-//! candidates in RAM. That mmap-load is the cold-query win (map ~0.4 ms vs a full
-//! read+alloc+memcpy of the 100+ MiB table), and it is needed identically by the
-//! `search` verb's every shape — the `--show files`/`--rank` fast drivers
-//! (`commands/search/drivers.zig`) and the `path:line:text` line engine
-//! (`commands/search/emit.zig`) — so it lives here, in the index layer, rather
-//! than in a command (a command importing another command's internals is the
-//! coupling this split exists to kill).
+//! `ripgrep/index.zig`'s `run` (the `gist index` verb) serializes the trigram
+//! `Index` + the doc→path table to disk; each later fresh process maps them back
+//! **zero-copy** and resolves candidates in RAM. That mmap-load is the
+//! cold-query win (map ~0.4 ms vs a full read+alloc+memcpy of the 100+ MiB
+//! table), and it is needed identically by every shape the unified engine
+//! serves — the index-accelerated read-elision walk (`commands/ripgrep/run.zig`)
+//! and the `--rank` ranked view (`commands/ripgrep/rank.zig`) — so it lives
+//! here, in the index layer, rather than in a command (a command importing
+//! another command's internals is the coupling this split exists to kill).
 
 const std = @import("std");
 const Index = @import("trigram.zig").Index;

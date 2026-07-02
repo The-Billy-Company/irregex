@@ -1,5 +1,5 @@
 //! gist — corpus loading, shared by the CLI drivers (`commands/cli/`), the
-//! `search` verb (`commands/search/`) and the bench/verify harness
+//! unified search engine (`commands/ripgrep/`) and the bench/verify harness
 //! (`bench/harness/bench.zig`). The corpus is every non-binary file under the roots
 //! (rg-style: a NUL byte ⇒ binary ⇒ skipped), minus the build/VCS subtrees rg
 //! also skips. Also owns the stdout results contract (`emitResults`) every
@@ -13,11 +13,11 @@ pub const out_dir = ".local/gist-verify";
 pub const default_roots = [_][]const u8{ "services", "libs", "clients", "contracts", "scripts", "quality" };
 
 /// Emit query RESULTS (the match list / ranked rows) on **stdout** — the Unix
-/// convention `rg` follows: data on stdout, diagnostics (timing, `[pipeline]`,
-/// guidance) stay on stderr via `std.debug.print`. This is what makes gist
-/// agent-friendly in a shell: `gist search foo --show files > files` captures the
-/// paths and `gist search foo | head` shows only results, with the summary line
-/// still visible on the terminal. A raw `posix.write` loop (handling partial
+/// convention `rg` follows: data on stdout, any diagnostic (`[pipeline]`, "no
+/// index"/"bad pattern" guidance, `--rank`'s timing line) stays on stderr via
+/// `std.debug.print`. This is what makes gist agent-friendly in a shell: `gist
+/// foo -l > files` captures the paths and `gist foo | head` shows only
+/// results. A raw `posix.write` loop (handling partial
 /// writes) mirrors the blocking-syscall idiom the read path already uses, and
 /// sidesteps the std Io.Writer surface churn. Write errors are swallowed: a
 /// closed stdout (e.g. `| head` exiting early) must not crash the query.

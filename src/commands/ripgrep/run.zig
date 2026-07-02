@@ -1,22 +1,23 @@
-//! gist `rg` — a ripgrep-DEFAULT drop-in over an arbitrary directory tree.
-//!
-//! WHY THIS EXISTS (distinct from the indexed `search` verb in `../search/`):
-//! `search` answers against the persisted **monorepo index** — corpus policy
-//! deliberately searches everything (`.gitignore`d files included) and always
-//! emits `path:line:text` (its documented contract). Two invocations reach this
-//! module instead: the bare `gist <pattern> [PATH...]` shorthand (no verb — the
-//! everyday zero-setup front door, no index required) and the explicit `gist rg`
-//! alias. Both need to *prove* gist is a genuine ripgrep drop-in against
-//! ripgrep's own integration suite — which creates a throwaway directory, drops
-//! in fixtures, and runs `rg` in that CWD — so this module searches an arbitrary
-//! tree with ripgrep's DEFAULT presentation:
+//! gist `rg` — a ripgrep-DEFAULT drop-in over an arbitrary directory tree, and
+//! (since the two engines merged) the SOLE search engine gist ships: the same
+//! walk-and-emit pipeline backs the bare `gist <pattern> [PATH...]` shorthand
+//! (no verb, no index required — the everyday zero-setup front door) and the
+//! explicit `gist rg` alias. A persisted trigram index, when it covers the
+//! searched roots, is used purely to ELIDE reads of files it proves can't match
+//! (`IndexSkip` below) — never to change the file set, ignore semantics,
+//! ordering, or output; `--no-index`/`--index` force the pure walk / the
+//! accelerated path, and `--rank[=N]` rides the same candidate source into the
+//! definition-first RRF view (`rank.zig`). This needs to *prove* gist is a
+//! genuine ripgrep drop-in against ripgrep's own integration suite — which
+//! creates a throwaway directory, drops in fixtures, and runs `rg` in that CWD —
+//! so this module searches an arbitrary tree with ripgrep's DEFAULT presentation:
 //!   • filename shown only when recursive or >1 file (a single explicit file
 //!     prints no `path:` prefix), `-H` forces it, `--no-filename`/`-I` suppress;
 //!   • line numbers OFF by default, `-n` turns them on;
 //!   • `:` frames a match line, `-` a context line, `--` separates groups;
 //!   • `-t/-T/-g/--glob/--iglob` scope by type/glob (reusing `../scope/`);
 //!   • `.gitignore`/`.ignore`/`.rgignore` precedence honored (`ignore.zig`),
-//!     unlike the indexed `search` verb's superset corpus policy;
+//!     byte-identical to `rg`'s own default corpus scope;
 //!   • exit 0 = matched, 1 = no match, 2 = error/unsupported (ripgrep's codes).
 //! It reuses gist's regex engine verbatim (one linear-time RE2-style matcher, no
 //! second code path) — this module is the walk + presentation shell that makes
@@ -35,7 +36,6 @@ const json = @import("json.zig");
 const color = @import("color.zig");
 const types = @import("../scope/types.zig");
 const simd = @import("../../scan/simd.zig");
-const search_args = @import("../search/args.zig");
 const persist = @import("../../index/persist.zig");
 const fresh = @import("../../corpus/fresh.zig");
 const rank = @import("rank.zig");
@@ -294,8 +294,8 @@ fn gather(a: std.mem.Allocator, io: std.Io, roots: []const []const u8, o: Opts, 
 
 /// Spawn one shard per core above this candidate count; below it, thread-spawn
 /// overhead isn't worth it and the whole batch runs inline on the calling
-/// thread. Mirrors `commands/search/emit.zig`'s identical `par_threshold`
-/// tuning for its own parallel candidate-read shards.
+/// thread. Mirrors `ripgrep/rank.zig`'s identical `read_par_threshold` tuning
+/// for its own parallel candidate-read shards.
 const par_threshold = 64;
 
 const ReadShard = struct {
@@ -414,8 +414,6 @@ fn readCandidates(dest: std.mem.Allocator, gpa: std.mem.Allocator, candidates: [
 /// below, but a single-source check keeps this independent of that plumbing),
 /// no `-w`/`-i` (both broaden what counts as a hit past raw byte containment),
 /// no `-v` (inverted mode needs every line INCLUDING files with zero hits).
-/// Mirrors the identical soundness proof in `commands/search/args.zig`'s
-/// `literalNeedle`, re-derived here against this module's own `Opts` shape.
 fn literalGate(parsed: args.Parsed) ?[]const u8 {
     const o = parsed.opts;
     if (o.word or o.caseless or o.invert or o.files_without or o.stats or o.json) return null;
@@ -423,7 +421,7 @@ fn literalGate(parsed: args.Parsed) ?[]const u8 {
     const pattern = parsed.patterns[0];
     if (pattern.len == 0) return null;
     if (o.fixed) return pattern; // -F: escaped for the engine, but these ARE the literal bytes
-    if (search_args.looksLikeRegex(pattern)) return null;
+    if (args.looksLikeRegex(pattern)) return null;
     return pattern;
 }
 
@@ -621,21 +619,47 @@ fn cmpFiles(_: void, x: InFile, y: InFile) bool {
 /// stream while `rg pat` (bare tty) and `rg pat </dev/null` fall through to the
 /// directory walk. The socket case matters for exec APIs that wire fd0 to a
 /// socketpair; omitting it silently diverged from rg on piped-socket input.
+///
+/// Deliberate departure from raw rg parity: a FIFO or socket can be a
+/// long-lived control channel that never writes a byte and never closes (seen
+/// in the wild — some sandboxed shell/tool-call harnesses wire fd 0 to exactly
+/// such a socket). Blocking `read(2)` against that hangs forever, which is
+/// unacceptable for an agent-facing tool. Before committing to the stdin path,
+/// `poll(2)` fd 0 for actual readiness with a short deadline: a real pipe or
+/// socket producer signals within milliseconds (data, or HUP on an
+/// already-closed/empty write end); only the pathological "open forever,
+/// silent" case times out, and that falls through to the ordinary directory
+/// walk instead of hanging. A regular file never blocks on `read`, so it skips
+/// the poll entirely.
+const stdin_poll_timeout_ms = 200;
+
 fn readableStdin() bool {
     var st: std.posix.Stat = undefined;
     if (std.posix.system.fstat(0, &st) != 0) return false;
     const fmt = st.mode & std.posix.S.IFMT;
-    return fmt == std.posix.S.IFIFO or fmt == std.posix.S.IFREG or fmt == std.posix.S.IFSOCK;
+    if (fmt == std.posix.S.IFREG) return true;
+    if (fmt != std.posix.S.IFIFO and fmt != std.posix.S.IFSOCK) return false;
+    var fds = [_]std.posix.pollfd{.{ .fd = 0, .events = std.posix.POLL.IN, .revents = 0 }};
+    const n = std.posix.poll(&fds, stdin_poll_timeout_ms) catch return false;
+    return n > 0;
 }
 
 /// Ripgrep has no default cap on stdin size (only `--max-filesize`, which
 /// doesn't apply to a stream with no a-priori length) — read to EOF, not to
 /// `per_file_cap` (that constant is an indexing-corpus budget, not a search
 /// ceiling; see `readOneCandidate`'s identical reasoning for on-disk files).
+/// Same hang guard as `readableStdin`'s initial check, applied per read: a
+/// FIFO/socket producer that goes silent mid-stream (never writing again, never
+/// closing) must not block this loop forever, so each iteration polls with the
+/// same bounded deadline before reading and treats a timeout as EOF — whatever
+/// arrived before the stall is still searched, nothing is ever discarded.
 fn readStdin(a: std.mem.Allocator) []const u8 {
     var buf: std.ArrayList(u8) = .empty;
     var tmp: [64 * 1024]u8 = undefined;
     while (true) {
+        var fds = [_]std.posix.pollfd{.{ .fd = 0, .events = std.posix.POLL.IN, .revents = 0 }};
+        const ready = std.posix.poll(&fds, stdin_poll_timeout_ms) catch break;
+        if (ready == 0) break; // silent for too long — stop waiting, not hanging
         const n = std.posix.read(0, &tmp) catch break;
         if (n == 0) break;
         buf.appendSlice(a, tmp[0..n]) catch die("oom\n", .{});

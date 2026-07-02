@@ -97,39 +97,43 @@ occurrences) and the def boost (its boilerplate stubs parse as defs), yet the
 repo forbids editing it, so it is never the agent's target. The class split is
 fused tie-aware (every authored doc shares rank 0, every generated doc shares
 rank `n_authored`) so it stays neutral _within_ a class — plus an optional
-external ranking (a graph-centrality hook). `search --rank` emits token-compressed
+external ranking (a graph-centrality hook). `--rank` emits token-compressed
 `path:line [def|use|gen] ×n  <line>`.
 
 ## Quickstart
 
-gist has **three real verbs** — what it _does_, not which competitor's argv it
-apes — plus machine-readable discovery for agents:
+gist has **two lifecycle verbs** — what it _does_, not which competitor's argv
+it apes — plus a single unified search engine reached with no verb at all,
+addressed the way an agent's `rg <pattern>` reflex already types it:
 
 ```bash
 cd pkg/kernels/gist
 
-zig build cli -- index                       # build + persist the index once (~1.2 s)
-zig build cli -- status                      # is an index ready, how fresh, how big
-zig build cli -- search <pattern> [PATH...]  # find matches — output SHAPE is a flag
+zig build cli -- index                    # build + persist the index once (~1.2 s)
+zig build cli -- status                   # is an index ready, how fresh, how big
 
-zig build cli -- search <pat> --show lines   # `path:line:text` (default) — the rg -n drop-in
-zig build cli -- search <pat> --show files   # matching paths only (was `query`/`regex`)
-zig build cli -- search <pat> --show count   # per-file match count
-zig build cli -- search <pat> --rank         # ranked, token-compressed (a symbol's def first)
+zig build cli -- <pattern> [PATH...]      # find matches — no verb, no setup, zero-config
+zig build cli -- rg <pattern> [PATH...]   # the same engine, addressed explicitly
 
-zig build cli -- search --help               # the full flag surface (native + legacy)
-zig build cli -- --schema                    # a JSON capability manifest for agents
+zig build cli -- <pat> -l                 # matching paths only (rg's own `-l`)
+zig build cli -- <pat> --rank             # ranked, token-compressed (a symbol's def first)
+zig build cli -- <pat> --no-index         # force the pure live walk (skip the index entirely)
+
+zig build cli -- --help                   # the full rg-compatible flag surface
+zig build cli -- --schema                 # a JSON capability manifest for agents
 ```
 
-`search` replaces the old `query` / `regex` / `rank` / `grep` quartet: they were
-four verbs answering one question — _what matches, and how do you want it shaped_
-— over one engine. The shape is now a **flag** (`--show` / `--rank` / `--json`),
-the pattern is **auto-detected** literal-or-regex (a pure literal is its own
-required literal, so it rides the same trigram prefilter — no second code path),
-and `gist status` / `gist --schema` answer "am I ready to search fast" and "what
-exactly can this tool do" without a query. The full flag surface — native and
-legacy — is documented in "How it works as a drop-in" below, and exhaustively
-in `--help` / `--schema`.
+The bare `gist <pattern>` shorthand and its explicit `gist rg` alias are ONE
+engine (`src/commands/ripgrep/run.zig`) — a byte-for-byte ripgrep-DEFAULT
+drop-in (gitignore precedence, exit codes, piped stdin) that transparently
+uses a persisted trigram index, when one covers the searched roots, purely to
+**elide reads** of files it proves can't match; it never changes the file set,
+ordering, or output. `--rank` is gist's one native shape with no rg
+equivalent — a definition-first RRF-ranked view (see "Why gist" below).
+`gist status` / `gist --schema` answer "am I ready to search fast" and "what
+exactly can this tool do" without running a query. The full flag surface is
+documented in "How it works as a drop-in" below, and exhaustively in `--help`
+/ `--schema`.
 
 ## Why gist instead of ripgrep — and everything else
 
@@ -171,11 +175,12 @@ in Benchmarks.
 
 ## How it works as a drop-in
 
-The default output, `--show lines`, is a byte-for-byte `rg -n --no-heading`
-drop-in: `path:line:text`, served from the persisted index (reading only
-candidate files) instead of a whole-tree walk. Point an agent, a script, or a
-muscle-memory `rg -n <pattern>` at `gist search <pattern>` and the output
-doesn't change — only where it comes from.
+The default output is a byte-for-byte `rg -n --no-heading` drop-in:
+`path:line:text`, with a persisted trigram index transparently used to skip
+reading files that provably can't match — a whole-tree walk otherwise. Point
+an agent, a script, or a muscle-memory `rg -n <pattern>` at bare `gist -n
+<pattern>` (no verb, no setup) or the explicit `gist rg -n <pattern>` alias and
+the output doesn't change — only how many files get opened to produce it.
 
 Every flag `rg`/`grep` accept keeps working, aliased onto exactly one native
 option (never a second, competing behavior) — this is what makes it a real
@@ -184,15 +189,15 @@ drop-in rather than a lookalike CLI:
 | What you type (either spelling)         | What gist does                                                                                                                                          |
 | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `-n -H -R --no-heading --color=<x>`      | no-ops — gist's output is already `path:line:text`                                                                                                       |
-| `-l` / `-c`                              | `--show files` / `--show count`                                                                                                                          |
+| `-l` / `-c`                              | native rg flags — files-with-matches / per-file match count                                                                                              |
 | `-t <lang>` / `-g <glob>`                | `--lang` / `--glob` — pruned **before** touching disk (`--lang go` reads 234 of 18,608 files, **1.44×** faster than `rg -t go`, byte-identical output)   |
 | `-w` / `-F` / `-i` / `-S`                | word-boundary / fixed-string / case-insensitive / smart-case                                                                                             |
 | `-B N` / `-A N` / `-C N`                 | context lines, rg-exact `:`/`-`/`--` framing                                                                                                             |
 | `-m N` / `-o` / `-r <t>`                 | max count per file / only-matching spans / template replace                                                                                              |
 | `-e <pat>` / `--`                        | explicit pattern (leading-dash safe) / end of flag parsing                                                                                               |
-| `--hidden`, `--no-ignore*`, `-u`/`-uu`   | no-ops — gist's index already searches hidden + gitignored files (see below)                                                                             |
+| `--hidden`, `--no-ignore*`, `-u`/`-uu`   | real, functional — widen the walk exactly as they do in rg (see below)                                                                                   |
 
-A positional path prunes the same way — `search WalletService
+A positional path prunes the same way — `gist WalletService
 services/backend/api` reads 28 candidate files (vs 86 unscoped, vs rg's
 whole-subtree walk) and runs **1.14× faster than `rg …
 services/backend/api`** at ~⅕ the syscall time, byte-identical output. Short
@@ -200,22 +205,22 @@ flags bundle (`-ln`, `-nC3`), and a leading inline flag group is honored
 where gist can (`(?i)` → caseless) and fails loud where it genuinely can't
 (see "Where gist departs from ripgrep" below).
 
-`--rank`/`--show files`/`--show count` are gist-native shapes with no rg
-equivalent; everything else on this page is the parity surface. It's
-guarded, not asserted: a 13-pattern differential battery
-([`bench/gates/equality.sh`](bench/gates/equality.sh)) diffs gist's output
-against `rg -n --no-heading --no-unicode` over a byte-identical corpus
-snapshot, including a 265,286-line and a 147,087-line result, to **0 lines**
-of difference. The exhaustive native + legacy flag reference lives in
-[`src/commands/search/args.zig`](src/commands/search/args.zig) /
-[`compat.zig`](src/commands/search/compat.zig), guarded by
-[`args_test.zig`](src/commands/search/args_test.zig).
+`--rank` is gist's one native shape with no rg equivalent; everything else on
+this page is the parity surface. It's guarded, not asserted: a 13-pattern
+differential battery ([`bench/gates/equality.sh`](bench/gates/equality.sh))
+diffs gist's output against `rg -n --no-heading --no-unicode` over a
+byte-identical corpus snapshot, including a 265,286-line and a 147,087-line
+result, to **0 lines** of difference. The exhaustive rg-compatible flag
+reference lives in
+[`src/commands/ripgrep/args.zig`](src/commands/ripgrep/args.zig).
 
 Streams follow the `rg` convention too, so gist composes in a pipeline the
-same way: matches go to **stdout**, timing and guidance go to **stderr**
-(`gist search Foo --show files > files` captures only the paths; `gist
-search Foo | head` still shows the summary on the terminal) — guarded by
-[`bench/gates/streams.sh`](bench/gates/streams.sh).
+same way: matches go to **stdout**, and — a stronger bar than `rg` itself, not
+just parity with it — the default path puts NOTHING on stderr at all (`gist
+Foo -l > files` captures only the paths; `gist Foo | head` shows only
+matches). The one deliberate exception is `--rank`, which prints its
+cold-load/rank timing to stderr so an agent can see the cost of the ranked
+view — guarded by [`bench/gates/streams.sh`](bench/gates/streams.sh).
 
 ## Where gist departs from ripgrep — on purpose
 
@@ -223,24 +228,20 @@ search Foo | head` still shows the summary on the terminal) — guarded by
 byte-level Thompson NFA / DFA, the RE2 lineage — specifically to rule out
 catastrophic backtracking. No PCRE, in either tool, on purpose.
 
-**Departs on corpus scope — and proves the two are still equivalent once
-that's accounted for.** gist's corpus is the _indexer's_, not the working
-directory's:
-
-- **ignores `.gitignore`** — a committed-but-ignored file is still something
-  an agent might need to find (rg needs `--hidden --no-ignore` to match this)
-- **includes hidden dotfiles** by default (rg needs `--hidden`)
-- **skips only the `isSkipDir` build/VCS set** (`.git`, `node_modules`,
-  `target`, …) — not the user's `.gitignore`
-- **caps each file at 4 MiB**
-
-Neutralize those four knobs on the rg side and the two tools' output is
-**byte-identical** — a 13-pattern battery (literal, dot, alternation,
-anchors, character classes, counted repetition, case-insensitive) diffs to 0
-lines against `rg -n --no-heading --no-unicode` over the shared scope
-([`.local/gist-grep-bench/battery.sh`](.local)). The corpus-widening flags
-(`--hidden`, `--no-ignore*`, `-u`/`-uu`, `--sort`) are accepted as no-ops for
-muscle memory, since gist's default already searches that superset.
+**Matches rg's corpus scope exactly — the walk decides what's IN scope, the
+index only decides what gets READ.** `.gitignore`/`.ignore`/`.rgignore`
+precedence (`ignore.zig`) is honored by the live walk that every invocation
+runs; `--hidden`, `--no-ignore*`, and `-u`/`-uu` are real, functional flags
+(not no-ops) that widen it exactly as they do in rg. The persisted trigram
+index (built over a wider corpus policy — see `corpus/corpus.zig` — hidden
+files and `.gitignore`d files included, capped at 4 MiB/file) is consulted
+**only** to skip opening a file the walk already decided to visit but that
+provably can't match; it never adds a file the walk itself would have
+skipped. A 13-pattern battery (literal, dot, alternation, anchors, character
+classes, counted repetition, case-insensitive) diffs gist's output to 0 lines
+against `rg -n --no-heading --no-unicode` over the same scope
+([`.local/gist-grep-bench/battery.sh`](.local)) — this is genuine parity, not
+a neutralized-knobs equivalence.
 
 **Departs on what "can't" means.** A flag gist genuinely can't honor —
 `-P`/`--pcre2` (no backreferences/lookaround in a linear-time engine),

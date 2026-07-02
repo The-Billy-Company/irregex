@@ -57,10 +57,6 @@ pub const commands = struct {
         pub const glob = @import("commands/scope/glob.zig");
         pub const types = @import("commands/scope/types.zig");
     };
-    /// The one search verb + `index` — the dispatcher over the native/legacy
-    /// parser (`args`+`compat`), the cold drivers (`drivers`), the line engine
-    /// (`emit`+`render`), and the index-free `--live` path (`live`).
-    pub const search = @import("commands/search/run.zig");
     /// Read-only index introspection (the `status` verb).
     pub const status = @import("commands/status/status.zig");
     /// `gist --schema` JSON capability manifest.
@@ -117,8 +113,6 @@ test {
     _ = @import("regex/powerset_test.zig"); // determinizer structural invariants
     // command surfaces (tests + driver bodies, so `zig build test` type-checks all)
     _ = @import("commands/scope/glob_test.zig"); // glob matcher + type/glob/root path scope
-    _ = @import("commands/search/args_test.zig"); // native (Set B) + legacy (Set A) argv parser
-    _ = @import("commands/search/run.zig"); // the search dispatcher (pulls args/compat/drivers/emit/render/live)
     _ = @import("commands/status/status.zig"); // read-only index introspection
     _ = @import("commands/cli/schema.zig"); // `--schema` manifest
     _ = @import("commands/ripgrep/run.zig"); // the unified engine (rgsuite parity drop-in)

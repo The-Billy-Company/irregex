@@ -173,6 +173,18 @@ fn stripAnchor(g: []const u8) []const u8 {
     return if (g.len > 0 and g[0] == '/') g[1..] else g;
 }
 
+/// RE2 metacharacters: a pattern containing any of these is a regex, otherwise
+/// it's a plain literal an SIMD substring scan can serve directly. `-F`/`--fixed`
+/// forces literal regardless (the whole string is data), so callers check that
+/// before this — see `run.zig`'s `literalGate`, the one caller.
+pub fn looksLikeRegex(pat: []const u8) bool {
+    for (pat) |c| switch (c) {
+        '.', '^', '$', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '\\' => return true,
+        else => {},
+    };
+    return false;
+}
+
 /// Mutable parse state: resolves flags into Opts, collects type/glob sets, and
 /// records -A/-B/-C values so -A/-B can take precedence over -C regardless of
 /// argv order (ripgrep's rule), plus the `-u` repetition level.
