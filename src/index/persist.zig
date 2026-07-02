@@ -4,9 +4,10 @@
 //! disk; each later fresh process maps them back **zero-copy** and resolves
 //! candidates in RAM. That mmap-load is the cold-query win (map ~0.4 ms vs a full
 //! read+alloc+memcpy of the 100+ MiB table), and it is needed identically by the
-//! `query`/`regex`/`rank` drivers (`commands/cli/`) and the `grep` verb
-//! (`commands/grep/`) — so it lives here, in the index layer, rather than in
-//! either command (a command importing another command's internals is the
+//! `search` verb's every shape — the `--show files`/`--rank` fast drivers
+//! (`commands/search/drivers.zig`) and the `path:line:text` line engine
+//! (`commands/search/emit.zig`) — so it lives here, in the index layer, rather
+//! than in a command (a command importing another command's internals is the
 //! coupling this split exists to kill).
 
 const std = @import("std");
@@ -60,14 +61,21 @@ pub const Persisted = struct {
 /// from the NUL count so the split is one allocation.
 pub fn load(gpa: std.mem.Allocator, io: std.Io) !?Persisted {
     const imap = mmapFile(io, index_file) catch {
-        std.debug.print("no index at {s} — run `zig build cli -- index` first\n", .{index_file});
+        std.debug.print("no index at {s} — run `gist index` first\n", .{index_file});
         return null;
     };
     errdefer std.posix.munmap(imap);
     var idx = try Index.fromMappedBytes(imap);
     errdefer idx.deinit();
 
-    const pmap = try mmapFile(io, paths_file);
+    // The doc→path table is the second half of the same artifact pair; a missing
+    // (or half-written) one is the same "no usable index" miss as above, not a
+    // crash. `errdefer` won't fire on `return null`, so unmap `imap` by hand.
+    const pmap = mmapFile(io, paths_file) catch {
+        std.debug.print("incomplete index — {s} missing; run `gist index` to rebuild\n", .{paths_file});
+        std.posix.munmap(imap);
+        return null;
+    };
     errdefer std.posix.munmap(pmap);
     var paths: std.ArrayList([]const u8) = .empty;
     errdefer paths.deinit(gpa);

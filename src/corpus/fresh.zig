@@ -36,7 +36,8 @@ pub fn writeAnchor(io: std.Io, built_ns: i128) !void {
 
 /// The anchor, or null when no index/anchor exists yet (⇒ freshness is skipped
 /// and behavior is byte-identical to the pre-T3 cold path — backward compatible).
-fn readAnchor(gpa: std.mem.Allocator, io: std.Io) ?i128 {
+/// `pub` so the `status` verb can report the build instant without a query.
+pub fn readAnchor(gpa: std.mem.Allocator, io: std.Io) ?i128 {
     const b = Dir.cwd().readFileAlloc(io, anchor_file, gpa, .limited(64)) catch return null;
     defer gpa.free(b);
     if (b.len < 8) return null;

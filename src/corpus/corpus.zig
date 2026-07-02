@@ -14,8 +14,8 @@ pub const default_roots = [_][]const u8{ "services", "libs", "clients", "contrac
 /// Emit query RESULTS (the match list / ranked rows) on **stdout** — the Unix
 /// convention `rg` follows: data on stdout, diagnostics (timing, `[pipeline]`,
 /// guidance) stay on stderr via `std.debug.print`. This is what makes gist
-/// agent-friendly in a shell: `gist query foo > files` captures the paths and
-/// `gist query foo | head` shows only paths, with the human-facing summary line
+/// agent-friendly in a shell: `gist search foo --show files > files` captures the
+/// paths and `gist search foo | head` shows only results, with the summary line
 /// still visible on the terminal. A raw `posix.write` loop (handling partial
 /// writes) mirrors the blocking-syscall idiom the read path already uses, and
 /// sidesteps the std Io.Writer surface churn. Write errors are swallowed: a

@@ -1,11 +1,18 @@
-//! gist cold one-shot CLI — the path that wins the *first* query.
+//! gist search — the cold index-backed drivers behind `gist search`.
 //!
-//!   zig build cli -- index            build the index once, persist it to disk
-//!   zig build cli -- query <needle>   FRESH process: cold-load the index, then
-//!                                     read & verify ONLY the candidate literal
-//!   zig build cli -- regex <pattern>  same, but verify with the Thompson NFA
-//!                                     (`(?-u)` byte semantics) — prefiltered on
-//!                                     the regex's required literal
+//!   buildIndex                       build the index once, persist it to disk
+//!   runQuery  <needle>               FRESH process: cold-load the index, then
+//!                                    read & verify ONLY the candidate literal
+//!   runRegex  <pattern>              same, but verify with the Thompson NFA
+//!                                    (`(?-u)` byte semantics) — prefiltered on
+//!                                    the regex's required literal
+//!   runRank   <needle> <k>           the ranked, token-compressed top-K
+//!
+//! These are the specialized fast paths the `--show files` / `--show ranked`
+//! surfaces dispatch to (see `run.zig`): a bare pattern with no line-engine flag
+//! rides `runQuery`/`runRegex` (the benchmarked cold-literal / cold-regex paths),
+//! and `--show ranked` rides `runRank`. The full-flag line engine lives in the
+//! sibling `emit.zig`; this file is the persisted-index machinery only.
 //!
 //! Why this beats ripgrep on a cold/first query: rg has no index, so every
 //! invocation must walk the whole tree and read every byte. gist mmaps a
@@ -249,11 +256,11 @@ pub fn runRegex(gpa: std.mem.Allocator, io: std.Io, pattern: []const u8) !void {
     try emitMatches(gpa, &matches, read_files, p.paths.items.len, load_ns, query_ns);
 }
 
-// ─────────────────────────── T4: ranked output ───────────────────────────
+// ─────────────────────────── ranked output ───────────────────────────
 //
-// `query`/`regex` return an unordered match SET. `rank` turns it into the
-// ranked, token-compressed list an agent actually wants — the *definition* of a
-// symbol first, its call sites below — via the weighted RRF kernel in
+// `--show files` returns an unordered match SET. `--show ranked` turns it into
+// the ranked, token-compressed list an agent actually wants — the *definition*
+// of a symbol first, its call sites below — via the weighted RRF kernel in
 // `rank/rank.zig`. Features are extracted per file in a parallel read pass; the
 // top-K best lines are then re-read for display.
 
@@ -388,8 +395,8 @@ fn snippetOf(gpa: std.mem.Allocator, io: std.Io, path: []const u8, line: u32) ![
 /// Fresh-process ranked query: locate candidates, extract per-file features,
 /// fuse via the RRF kernel, print the top-K as token-compressed `path:line` +
 /// surfaced line. The win rg can't express: a symbol's *definition* outranks its
-/// call sites.
-pub fn runRank(gpa: std.mem.Allocator, io: std.Io, needle: []const u8) !void {
+/// call sites. `k` caps the surfaced rows (`--rank N`, default 20).
+pub fn runRank(gpa: std.mem.Allocator, io: std.Io, needle: []const u8, k: usize) !void {
     if (needle.len == 0) return;
     const l0 = nowNs(io);
     var p = (try persist.load(gpa, io)) orelse return;
@@ -411,7 +418,7 @@ pub fn runRank(gpa: std.mem.Allocator, io: std.Io, needle: []const u8) !void {
     defer gpa.free(order);
     const query_ns = nowNs(io) - q0;
 
-    const top = @min(order.len, 20);
+    const top = @min(order.len, if (k == 0) 20 else k);
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(gpa);
     for (order[0..top], 0..) |di, i| {

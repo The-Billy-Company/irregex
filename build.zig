@@ -3,9 +3,9 @@
 //! `test`/`coverage` steps live in the shared `kernelkit` chassis
 //! (pkg/kernels/core). This file declares the kernel plus two executables
 //! built on it: the production `gist` CLI (`src/commands/cli/main.zig`, the
-//! `index`/`query`/`regex`/`rank`/`grep`/`rg` verbs) and the separate
-//! `gist-bench` harness (`bench/bench.zig`, the `bench`/`verify`/`certify`
-//! tooling). Production CLI and benchmark tooling no longer share a binary.
+//! `index`/`status`/`search` verbs) and the separate `gist-bench` harness
+//! (`bench/bench.zig`, the `bench`/`verify`/`certify` tooling). Production CLI
+//! and benchmark tooling no longer share a binary.
 
 const std = @import("std");
 const kernelkit = @import("kernelkit");
@@ -14,8 +14,8 @@ pub fn build(b: *std.Build) void {
     const k = kernelkit.addKernel(b, .{ .name = "gist" });
 
     // ── the `gist` CLI executable (the product surface) ──
-    // `zig build cli -- index` (build + persist once) / `-- query <needle>` /
-    // `-- regex <pattern>` / `-- rank <needle>` / `-- grep …` / `-- rg …`.
+    // `zig build cli -- index` (build + persist once) / `-- status` /
+    // `-- search <pattern> [PATH...] [flags]` (shape via --show/--rank/--json).
     const cli_mod = b.createModule(.{
         .root_source_file = b.path("src/commands/cli/main.zig"),
         .target = k.target,
@@ -28,7 +28,7 @@ pub fn build(b: *std.Build) void {
     const run_cli = b.addRunArtifact(cli_exe);
     run_cli.setCwd(b.path("../../..")); // pkg/kernels/gist → repo root
     if (b.args) |args| run_cli.addArgs(args);
-    b.step("cli", "gist CLI: `-- index`, then `-- query`/`-- regex`/`-- rank`/`-- grep`/`-- rg`")
+    b.step("cli", "gist CLI: `-- index`, `-- status`, `-- search <pattern> [flags]`")
         .dependOn(&run_cli.step);
 
     // ── the `gist-bench` harness executable (bench/verify/certify tooling) ──
