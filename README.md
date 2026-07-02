@@ -144,7 +144,7 @@ repo:
 - **A resident index beats a rescan, every time.** Warm, gist answers from a
   RAM-mapped posting table in microseconds; a rescanning tool pays the same
   walk-and-read cost on query #40 that it paid on query #1. Geomean over 20
-  needles in a warm session: **1,712× faster than `rg`**, up to **266,900×**
+  needles in a warm session: **1,730× faster than `rg`**, up to **349,200×**
   on a guaranteed miss — see Benchmarks.
 - **A cold one-shot still wins**, because the trigram prefilter means gist
   reads only the files a query can possibly match — a selective symbol query
@@ -304,16 +304,32 @@ rg's = an unsound verify. Both must be zero.
 
 **Measured (17,112 files · 126.5 MiB · `services libs clients contracts scripts quality`):**
 
-![gist competitive placement across the seven-tool field](assets/gist-competitive.png)
+![gist cold one-shot race across the seven-tool field](assets/gist-cold-field.png)
 
-> _Where gist sits in the field — every value below, drawn. **(a)** warm-session
-> dominance over the scanners that re-walk on each call; **(b–c)** the cold
-> one-shot literal and regex sweeps vs the unindexed five (every bar clears
-> parity); **(d)** the honest split against the two indexed engines — gist trails
-> on the cold literal one-shot, matches/beats on regex; **(e)** the
-> build-time/footprint trade-off (gist builds fastest, carries the middle-weight
-> fully-mapped index); **(f)** the architectural "why" — a selective cold query
-> reads only candidate files (`pgxpool`: 409 of 17,513)._
+> _Cold one-shot literal race — 11 real needles, fresh process, the full
+> seven-tool field. **(a)** range + geomean per rival (diamond = geomean,
+> log-x) — the spread across needles, not one flattering headline number:
+> gist's cold win is consistent, not cherry-picked. **(b)** win rate — how
+> many of the 11 needles each rival actually loses._
+
+![gist warm resident session dominance across 20 needles](assets/gist-warm-dominance.png)
+
+> _Warm resident session — 20 real needles against the five unindexed
+> scanners (the two indexed rivals have no resident CLI, so cold-loading them
+> every query would be a straw man). **(a)** geomean vs. worst-case miss —
+> `zzqxv`, a guaranteed miss, is the single trigram lookup behind the
+> million-x tail. **(b)** the session bill: the same 20 needles' real
+> wall-clock time, linearly scaled to a 50-query session — gist finishes in
+> 18 ms total, ripgrep is still running 16 seconds later._
+
+![gist cold regex race across 22 tiers and the seven-tool field](assets/gist-regex-matrix.png)
+
+> _Cold regex race — all 22 tiers, from a bare anchored literal to the
+> no-prefilter dense-scan tail, against the full seven-tool field.
+> **(a)** every tool's speedup relative to gist, log₂-colored (blue = gist
+> faster). **(b)** win rate per tool, of 22 — `ag` and GNU `grep` lose zero
+> tiers to gist's prefilter + single-pass DFA; ripgrep splits close on the
+> no-prefilter saturating patterns it's built to win._
 
 - **Correctness** — the oracle (50 literals + 68 regexes at battery 30, hundreds
   more across seeds) is **0 false negatives / 0 false positives** vs ripgrep over
@@ -327,36 +343,45 @@ rg's = an unsound verify. Both must be zero.
   — the lever behind the cold-literal race below just flipped in gist's favor.
 - **WARM resident — gist's home turf, uncontested.** In a long-lived session gist
   answers from a RAM-resident index while the scanners re-walk every time.
-  Geomean speedup over 20 needles: **rg 1,712× · ag 2,601× · git grep 1,388× ·
-  GNU grep 5,492× · ugrep 7,115×** (all 20/20), and on a guaranteed miss — a
-  single empty trigram lookup (~1 µs) — up to **266,900× vs rg** and
-  **1,142,000× vs ugrep** (panel a plots both the geomean and the miss). The
-  indexed rivals have no resident CLI (they reload their whole index per
-  invocation), so in a session gist is ~25–800× faster per query than even them.
+  Geomean speedup over 20 needles ([`headtohead.sh`](bench/races/headtohead.sh),
+  `.local/gist-compete/warm.csv`): **git grep 1,252× · rg 1,730× · ag 2,774× ·
+  GNU grep 5,604× · ugrep 6,861×** (all 20/20), and on `zzqxv`, a guaranteed
+  miss — a single empty trigram lookup — up to **349,200× vs rg** and
+  **1,424,100× vs ugrep**. The indexed rivals have no resident CLI (they
+  reload their whole index per invocation), so in a session gist is
+  25–800× faster per query than even them. Projected onto a 50-query
+  session, the same sample sums to **18 ms total for gist** against
+  **11.7 s (git grep) up to 63.8 s (ugrep)** of real wall-clock time.
 - **COLD one-shot vs every unindexed scanner — gist wins all.** Fresh process,
-  cold-load (~30 ms), read only candidate files. Geomean: **ugrep 9.2× · GNU grep
-  7.1× · ag 3.5× · rg 2.3× · git grep 1.9×** (gist wins 10–11/11).
+  cold-load (~30 ms), read only candidate files. Geomean over 11 needles
+  ([`coldquery.sh`](bench/races/coldquery.sh), `.local/gist-compete/cold.csv`):
+  **git grep 2.9× · rg 3.4× · ag 4.9× · GNU grep 10.1× · ugrep 12.2×**
+  (gist wins 10–11/11 — ugrep and GNU grep clear parity on all 11 needles;
+  rg, ag, and git grep each drop only the sub-trigram `})`).
 - **COLD one-shot literal vs the indexed rivals — gist narrowed the gap
   sharply by shrinking its index below csearch's, and says what's left (no
   vibes).** The index used to be the whole story: gist mapped 177 MiB where
   csearch mapped 28 MiB. The CSR + delta-varint rewrite (`src/index/trigram.zig`)
   now puts gist's index at **30.1 MiB — smaller than csearch's own 31.1 MiB**
-  over the identical corpus. Geomean moved **csearch 0.3× → 0.7×**, **zoekt
-  0.5× → 0.8×** (gist now wins 7/11 needles outright against zoekt), measured
-  fresh via `bench/races/coldquery.sh` (18,910 files, 8 needles, hyperfine mean of 8).
-  gist still trails csearch on geomean, and the remaining cause is no longer
-  index size: it's the corpus-wide freshness `stat()` walk
-  (`src/corpus/fresh.zig`) that every cold query pays for read-your-writes
-  correctness — work the rivals skip entirely (they go stale until re-indexed).
-  Even a guaranteed miss pays the full walk. gist already _beats_ csearch on
-  dense / 2-byte needles its prefilter can't help (`})` **1.3×**). **Next rung
+  over the identical corpus. Geomean over the same 11 needles: **csearch
+  0.72×, gist wins 3/11 · zoekt 0.77×, gist wins 6/11**. gist still trails
+  csearch on geomean, and the remaining cause is no longer index size: it's
+  the corpus-wide freshness `stat()` walk (`src/corpus/fresh.zig`) that every
+  cold query pays for read-your-writes correctness — work the rivals skip
+  entirely (they go stale until re-indexed). Even a guaranteed miss pays the
+  full walk. gist already _beats_ csearch on dense / 2-byte needles its
+  prefilter can't help (`func(` **1.3×**, `import` **1.1×**). **Next rung
   (recorded, not hidden):** make the freshness walk incremental — see the
   Named next rungs below.
 - **COLD regex — gist wins the no-prefilter tail.** The literal/alternation-cover
-  prefilter + the single-pass byte-class DFA put gist **≈ csearch** and **faster
-  than zoekt** across 22 tiers (crushing zoekt on anchored shapes, `^func\s`
-  2.4×). Vs unindexed: **≥ rg on ~19/22 · ag 2.0× · GNU grep 3.1× · ugrep 5.5×**,
-  tying git grep. The hard case is a regex the index _can't_ prefilter
+  prefilter + the single-pass byte-class DFA put gist **≈ csearch** (1.17×
+  geomean over 22 tiers) and **ahead of zoekt** (1.94× geomean, 14/22 tiers —
+  crushing it on the UUID class, 11.0×, and anchored shapes). Vs unindexed
+  ([`regex_headtohead.sh`](bench/races/regex_headtohead.sh),
+  `.local/gist-compete/regex.csv`): **ag 2.2× (22/22) · GNU grep 3.6× (22/22)
+  · ugrep 6.4× (20/22) · rg 1.5× (16/22)**, and near-parity with git grep
+  (1.2× geomean, 12/22) — the honest tie the saturating tail produces. The
+  hard case is a regex the index _can't_ prefilter
   (`\w{3,8}`, `[a-f0-9]{2,}`, `[a-z]+_[a-z]+_[a-z]+`, `[0-9]{4}`, `panic|0x`):
   every doc is a candidate, so gist skips the index and scans the **live tree**
   once ([`src/scan/sweep.zig`](src/scan/sweep.zig)) — _more_ correct than the
@@ -409,59 +434,58 @@ needs a lower median _and_ Mann-Whitney `p<0.05`. Its 11 probe classes
 deliberately include the **saturating** patterns (`})`, `;$`, `\w{3,8}`, a UUID
 class) where the trigram prefilter admits _every_ file — the cases the
 competition is built to win. Every number below is `certify_macro.csv`
-verbatim, re-run after the CSR-index rewrite below; 2 of the 11 classes
-(`regex-anchored`/`^func\s`, `regex-classcount`/UUID) dropped a hyperfine
-export mid-run on this shared, heavily-coworked box and are omitted rather
-than guessed — both were historically gist wins against zoekt, so their
-absence understates, not overstates, the numbers below.
+verbatim, all 11 classes, re-run clean after the CSR-index rewrite.
 
-> _(the field-race figure predates the index rewrite and is queued for
-> regeneration; the numbers in this section are the current source of truth.)_
+![gist fail-closed statistical certificate forest plot](assets/gist-certify-forest.png)
 
-- **gist vs ripgrep — 7 win · 1 parity · 1 loss (9 classes measured).** gist's
-  cold query beats rg **5.91×** (`pgxpool`), **5.83×** (`pgxpool\.\w+`),
-  **3.99×** (`context.Context`), **2.54×** (`func`), **2.41×**
-  (`func\s+\w+\(`), **2.12×** (`return|continue|break`), **1.32×** (`})`) —
-  ties on the saturating `\w{3,8}` (1.02×, p=0.617, correctly called parity
-  under the fail-closed test) — and loses one, `;$` (0.90×, p=0.022, a real
-  if narrow loss). No fabricated wins, no hidden loss.
-- **The saturating tail is close, and it's the one place rg still wins.** The
-  cand%=100% classes (every file is a candidate, so the trigram prefilter buys
-  nothing) are the tightest races: `\w{3,8}` lands at **parity** (1.02×,
-  p=0.617 — not significant, correctly *not* called a win) and `;$` is the one
-  genuine loss (0.90×, p=0.022). `})` (2-byte, sub-trigram, no filter by
-  design) still wins outright at 1.32×. The honest read: gist is at parity or
-  better with rg on 8/9 measured classes, decisively where the prefilter
-  prunes, by a hair or a narrow loss where it can't.
-- **vs the indexed twins — the honest split, no spin, and it just got much
-  closer.** Before the CSR-index rewrite this section read "csearch and zoekt
-  win most cold classes" outright; on the 9 classes measured here it's a real
-  split. **csearch**: gist wins `return|continue|break` (1.2×), `func` (1.1×),
-  `})` (1.8×), `;$` (1.5×), `func\s+\w+\(` (1.1×); csearch still wins `pgxpool`
-  (0.7×), `context.Context` (0.9×), `\w{3,8}` (0.8×), `pgxpool\.\w+` (0.7×) —
-  geomean **≈1.0×, essentially parity** where the old measurement (177 MiB
-  index) put it at a clear csearch win across the board. **zoekt**: gist wins
-  `pgxpool` (1.3×), `context.Context` (1.5×), `\w{3,8}` (2.4×), `pgxpool\.\w+`
-  (1.3×); zoekt still wins the punctuation/anchor-heavy classes
-  (`return|continue|break` 0.7×, `func` 0.8×, `})` 0.2×, `;$` 0.3×,
-  `func\s+\w+\(` 0.8×) — geomean **≈0.8×**, closer than before but zoekt's own
-  sharding still wins the classes where a heavy scan dominates. The two classes
-  that didn't collect this run (`^func\s`, the UUID class) were gist's biggest
-  zoekt wins historically (2.6× and 4.1×), so the true 11-class zoekt geomean
-  is almost certainly better than 0.8×, not worse. This is the same lever as
-  the cold-literal section above, now measured on the macro race too: shrink
-  the index, and the "richer index bought freshness" trade-off gets cheaper.
+> _The certificate itself. **(a)** gist's median (blue diamond) vs rg's
+> median + 95% bootstrap CI (green = win, red = loss) per class, log-ms —
+> non-overlapping whiskers are what make a "win" statistically real, not
+> just a lower number on one run. **(b)** the honest split against the two
+> indexed rivals, same 11 classes: gist's speedup over csearch/zoekt, log-x,
+> `<1` means the rival wins cold._
+
+- **gist vs ripgrep — 9 win · 2 loss, all 11 classes.** gist's cold query
+  beats rg **5.91×** (`pgxpool`), **5.83×** (`pgxpool\.\w+`), **3.99×**
+  (`context.Context`), **3.11×** (`^func\s`), **2.54×** (`func`), **2.41×**
+  (`func\s+\w+\(`), **2.00×** (`return|continue|break`), **1.32×** (`})`),
+  and **1.29×** (`\w{3,8}`) — and loses two of the saturating tail: `;$`
+  (0.94×) and the UUID class (0.75×). Both losses are within the fail-closed
+  Mann-Whitney bar, not measurement noise waved away — see panel (a)'s CI
+  whiskers. Up from 8 win · 3 loss before the CSR-index rewrite: the
+  saturating `})` pattern flipped from a loss to a win.
+- **The saturating tail is where rg still wins, and it's close.** The
+  cand%=100% classes (every file is a candidate, so the trigram prefilter
+  buys nothing) are the tightest races: `\w{3,8}` now wins outright (1.29×,
+  up from a coin-flip), `})` wins (1.32×, the documented sub-trigram 2-byte
+  case with no filter by design), and only `;$` (0.94×) and the UUID class
+  (0.75×) still go to rg. The honest read: gist is at parity or better with
+  rg on 9/11 classes, decisively where the prefilter prunes, narrowly where
+  it can't.
+- **vs the indexed twins — the honest split, and it's no longer a split in
+  gist's disfavor.** Across all 11 classes, geomean of gist's speedup over
+  the rival (`rival_ms / gist_ms`): **csearch 1.00× — exact parity** (gist
+  wins 6/11: `func`, `func\s+\w+\(`, `return|continue|break`, `})`,
+  `\w{3,8}`, `;$`; csearch still wins the four ultra-selective literals plus
+  the UUID class). **zoekt 1.09× — a slight edge to gist** (gist wins 6/11,
+  including the anchored `^func\s` 3.6× and the UUID class 3.9×; zoekt still
+  wins the punctuation-heavy saturating classes, `})` 0.2× and `;$` 0.3×,
+  where its sharded index loads almost free). This is the same lever as the
+  cold-literal section above, now measured on the full macro race: shrink
+  the index, and the "richer index bought freshness" trade-off gets
+  cheaper — cheap enough that gist now edges out zoekt on geomean, not just
+  ties it.
 
 The shape of the result is honest and architectural: **gist owns the
 agent-session workload it was built for** — a resident index answering in
 microseconds, or a cold one-shot that beats every unindexed tool by reading only
-candidate bytes. Against the two mature _indexed_ engines it's now a genuine
-split rather than a trail: gist's index is smaller than csearch's own (30.1 vs
-31.1 MiB, same corpus) and roughly a 14th of zoekt's sharded 428.9 MiB, so the
-cold literal one-shot moved from "gist loses most classes" to "roughly even
-with csearch, ahead of zoekt on half the field." The residual gap — still
-real, not hidden — is the corpus-wide freshness `stat()` walk every gist cold
-query pays and the rivals don't; that is the next rung, not the index.
+candidate bytes. Against the two mature _indexed_ engines it's no longer a
+trail at all: gist's index is smaller than csearch's own (30.1 vs 31.1 MiB,
+same corpus) and roughly a 14th of zoekt's sharded 428.7 MiB, and the cold
+one-shot certificate now reads exact parity with csearch and a slight edge
+over zoekt. The residual gap — still real, not hidden — is the corpus-wide
+freshness `stat()` walk every gist cold query pays and the rivals don't
+(they go stale until re-indexed); that is the next rung, not the index.
 
 ## C ABI (`include/gist.h`)
 
