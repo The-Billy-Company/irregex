@@ -67,11 +67,11 @@ pub fn literalInfo(arena: std.mem.Allocator, node: *Node) ParseError!LitInfo {
             if (exact) |e| best = longer(best, e);
             return .{ .exact = exact, .prefix = prefix, .suffix = suffix, .best = best };
         },
-        .plus => |x| {
+        .plus => |r| {
             // Content occurs ≥ once, so its prefix/suffix/best are mandatory; but
             // the minimum is a single iteration, so there is no cross-iteration
             // run and the whole is not exact.
-            const xi = try literalInfo(arena, x);
+            const xi = try literalInfo(arena, r.node);
             return .{ .exact = null, .prefix = xi.prefix, .suffix = xi.suffix, .best = xi.best };
         },
         // A capture is transparent — its literal info is exactly its child's.
@@ -91,7 +91,7 @@ pub fn startsAnchored(node: *Node) bool {
         .anchor_start => true,
         .concat => |ab| startsAnchored(ab[0]),
         .alt => |ab| startsAnchored(ab[0]) and startsAnchored(ab[1]),
-        .plus => |x| startsAnchored(x), // `(^x)+` still starts anchored
+        .plus => |r| startsAnchored(r.node), // `(^x)+` still starts anchored
         .capture => |g| startsAnchored(g.child), // transparent
         else => false,
     };
@@ -125,7 +125,7 @@ pub fn requiredAny(arena: std.mem.Allocator, node: *Node) ParseError!?[]const []
             if (try requiredAny(arena, ab[0])) |sa| return sa;
             return try requiredAny(arena, ab[1]);
         },
-        .plus => |x| return try requiredAny(arena, x),
+        .plus => |r| return try requiredAny(arena, r.node),
         .capture => |g| return try requiredAny(arena, g.child), // transparent
         // multi-byte class, star, quest (match empty), empty, anchors ⇒ no cover.
         else => return null,
@@ -227,7 +227,7 @@ pub fn reachesMatchEol(gpa: std.mem.Allocator, states: []const State, start: u32
 /// divergences). `reachesMatchEol` can't catch these — it deliberately won't cross
 /// a word boundary — so this broader predicate routes nullable patterns to the
 /// `.plain` search (which seeds every position, EOL included). Conservative: a
-/// false "yes" only forgoes the skip optimisation, never a match.
+/// false "yes" only forgoes the skip optimization, never a match.
 pub fn reachesMatchZeroWidth(gpa: std.mem.Allocator, states: []const State, start: u32) ParseError!bool {
     var wl = try Worklist.init(gpa, states.len, start);
     defer wl.deinit(gpa);

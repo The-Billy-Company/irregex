@@ -75,7 +75,7 @@ pub fn foldCaseAst(n: *Node) void {
             foldCaseAst(kids[0]);
             foldCaseAst(kids[1]);
         },
-        .star, .plus, .quest => |kid| foldCaseAst(kid),
+        .star, .plus, .quest => |r| foldCaseAst(r.node),
         .capture => |g| foldCaseAst(g.child),
         .empty, .anchor_start, .anchor_end, .word_boundary, .not_word_boundary => {},
     }
@@ -90,15 +90,23 @@ pub const Node = union(enum) {
     not_word_boundary, // `\B` — zero-width, asserts NO such transition
     concat: [2]*Node,
     alt: [2]*Node,
-    star: *Node,
-    plus: *Node,
-    quest: *Node,
+    // Quantifiers carry a `lazy` flag: greedy (`a*`) prefers to consume, lazy
+    // (`a*?`) prefers to stop — this flips only the Thompson `split` PRIORITY, so
+    // it changes which leftmost match is chosen (the span), never whether a match
+    // exists (boolean/DFA semantics and the reachable-end oracle are laziness-
+    // independent). RE2/rust-regex (ripgrep) non-greedy semantics.
+    star: Rep,
+    plus: Rep,
+    quest: Rep,
     // A capturing group `(child)` tagged with its 1-based group index. STRUCTURALLY
     // TRANSPARENT to the match engine (the main compiler + every analysis lower it
     // exactly like its child, so the DFA/Pike boolean semantics are unchanged); the
     // idx is consumed only by the separate capture VM in `captures.zig`, which needs
     // group boundaries for `-r`/`--json`.
     capture: struct { idx: u32, child: *Node },
+
+    /// A quantified sub-expression: the repeated `node` plus greedy/lazy priority.
+    pub const Rep = struct { node: *Node, lazy: bool = false };
 };
 
 /// A `(?P<name>…)` / `(?<name>…)` group's name paired with its 1-based index —
@@ -132,6 +140,16 @@ pub const Parser = struct {
     /// Optional sink for `(?P<name>…)` / `(?<name>…)` names. Null on the main-engine
     /// parse (names are irrelevant there); set by the capture VM's parse.
     names: ?*std.ArrayList(NamedCap) = null,
+    /// Dotall (`-s`/`(?s)`): `.` also matches `\n`. Only meaningful together with
+    /// `multiline` (whole-buffer matching) — in the per-line default a line never
+    /// contains `\n`, so it is inert. Default off (rg `.` excludes `\n`).
+    dotall: bool = false,
+    /// Multiline (`-U`/`--multiline`): the engine matches the WHOLE buffer as one
+    /// haystack (a match may span `\n`), so a negated class `[^…]` must retain
+    /// `\n` (rg semantics: only `.` is special about newlines). In the per-line
+    /// default we strip `\n` from `.` and `[^…]` so no thread crosses a line
+    /// boundary in the fused DFA scan. Default off.
+    multiline: bool = false,
 
     fn peek(p: *Parser) ?u8 {
         return if (p.pos < p.src.len) p.src[p.pos] else null;
@@ -188,28 +206,43 @@ pub const Parser = struct {
         return acc orelse try p.node(.empty);
     }
 
-    // repeat := atom ('*'|'+'|'?'|'{'n[,m]'}')*
+    // repeat := atom (('*'|'+'|'?'|'{'n[,m]'}') '?'?)*
+    // A trailing `?` on any quantifier makes it LAZY (`a*?`, `a+?`, `a??`,
+    // `a{2,5}?`) — RE2/rust-regex non-greedy. `lazyMark` consumes that optional `?`.
     fn parseRepeat(p: *Parser) ParseError!*Node {
         var a = try p.parseAtom();
         while (p.peek()) |c| {
             switch (c) {
-                '*', '+', '?' => a = try p.node(switch (p.take()) {
-                    '*' => .{ .star = a },
-                    '+' => .{ .plus = a },
-                    else => .{ .quest = a },
-                }),
+                '*', '+', '?' => {
+                    const op = p.take();
+                    const lazy = p.lazyMark();
+                    a = try p.node(switch (op) {
+                        '*' => .{ .star = .{ .node = a, .lazy = lazy } },
+                        '+' => .{ .plus = .{ .node = a, .lazy = lazy } },
+                        else => .{ .quest = .{ .node = a, .lazy = lazy } },
+                    });
+                },
                 '{' => {
                     // An unescaped `{` MUST begin a valid `{n}`/`{n,}`/`{n,m}`
                     // spec — rust-regex (ripgrep) errors otherwise, so we mirror
                     // it (a literal brace is `\{`). `tryBound` restores `pos` on
                     // failure; here that just precedes the error.
                     const b = p.tryBound() orelse return ParseError.BadPattern;
-                    a = try p.expand(a, b);
+                    a = try p.expand(a, b, p.lazyMark());
                 },
                 else => break,
             }
         }
         return a;
+    }
+
+    /// Consume a trailing `?` laziness marker after a quantifier, if present.
+    fn lazyMark(p: *Parser) bool {
+        if (p.peek() == '?') {
+            _ = p.take();
+            return true;
+        }
+        return false;
     }
 
     /// `{n}` exact · `{n,}` n-or-more · `{n,m}` range. `n` is required; `max` is
@@ -246,7 +279,7 @@ pub const Parser = struct {
     /// copies, then either `(max-min)` optional copies (`a?`) or a trailing `a*`
     /// when unbounded. The `atom` pointer is shared across copies — the AST is a
     /// DAG, sound because every visitor (compile, literalInfo) only reads it.
-    fn expand(p: *Parser, atom: *Node, b: Bound) ParseError!*Node {
+    fn expand(p: *Parser, atom: *Node, b: Bound, lazy: bool) ParseError!*Node {
         if (b.min > max_repeat or (b.max orelse 0) > max_repeat) return ParseError.BadPattern;
         if (b.max) |mx| if (mx < b.min) return ParseError.BadPattern;
 
@@ -254,11 +287,13 @@ pub const Parser = struct {
         var i: usize = 0;
         while (i < b.min) : (i += 1) result = try p.chain(result, atom);
 
+        // The optional tail carries the laziness: `a{2,5}?` prefers FEWER copies
+        // (each optional copy is a lazy `quest`), `a{2,}?` a lazy trailing `star`.
         if (b.max) |mx| {
             var k = b.min;
-            while (k < mx) : (k += 1) result = try p.chain(result, try p.node(.{ .quest = atom }));
+            while (k < mx) : (k += 1) result = try p.chain(result, try p.node(.{ .quest = .{ .node = atom, .lazy = lazy } }));
         } else {
-            result = try p.chain(result, try p.node(.{ .star = atom }));
+            result = try p.chain(result, try p.node(.{ .star = .{ .node = atom, .lazy = lazy } }));
         }
         return result orelse p.node(.empty);
     }
@@ -330,7 +365,10 @@ pub const Parser = struct {
                 _ = p.take();
                 var s = ByteSet{};
                 s.bits = @splat(~@as(u64, 0));
-                s.bits[0] &= ~(@as(u64, 1) << '\n'); // any byte except newline
+                // `.` excludes `\n` (rg default) unless dotall is on for a
+                // whole-buffer match; in the per-line model dotall is inert
+                // (no line carries a `\n`), so gate it on `multiline` too.
+                if (!(p.dotall and p.multiline)) s.bits[0] &= ~(@as(u64, 1) << '\n');
                 return p.node(.{ .class = s });
             },
             '\\' => {
@@ -445,7 +483,11 @@ pub const Parser = struct {
                 _ = p.take();
                 if (neg) {
                     s.negate();
-                    s.bits[0] &= ~(@as(u64, 1) << '\n'); // negated class still excludes newline
+                    // Per-line default: a negated class must not carry `\n`, else a
+                    // thread would consume it and bleed across lines in the fused
+                    // DFA scan. Whole-buffer (`multiline`) mode keeps `\n` — rg
+                    // treats only `.` as newline-special, so `[^x]` matches `\n`.
+                    if (!p.multiline) s.bits[0] &= ~(@as(u64, 1) << '\n');
                 }
                 return p.node(.{ .class = s });
             }

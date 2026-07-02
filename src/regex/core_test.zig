@@ -412,6 +412,44 @@ test "matchSpan: greedy quantifiers extend the end maximally" {
     try expectJoined("[0-9]{2,}", "1 22 333", "22|333"); // the lone '1' is below the floor
 }
 
+// Lazy (non-greedy) quantifiers prefer the FEWEST repetitions — the split
+// PRIORITY flips (exit before body) so the leftmost match ends as early as
+// possible. Every expectation is byte-verified against `rg -o` (ripgrep 15.1.0,
+// the Rust regex crate default engine, which shares gist's leftmost-first
+// semantics) — see the probe battery in the same-PR proof log.
+test "matchSpan: lazy quantifiers end the match as early as possible" {
+    try expectJoined("a.*?b", "axbxb", "axb"); // greedy `a.*b` ⇒ "axbxb"; lazy stops at first b
+    try expectJoined("a.+?b", "axbxb", "axb"); // ≥1 filler, then first b
+    try expectJoined("<.*?>", "<a><bb>", "<a>|<bb>"); // canonical HTML-tag lazy case
+    try expectJoined("\".*?\"", "\"x\" \"y\"", "\"x\"|\"y\""); // shortest quoted runs
+    try expectJoined("a+?", "aaa", "a|a|a"); // each match minimal ⇒ three singletons
+    try expectJoined("a{2,4}?", "aaaa", "aa|aa"); // counted-lazy: take the floor (2), not 4
+    try expectJoined("a{2,}?", "aaaa", "aa|aa"); // open-ended lazy floor
+}
+
+test "matchSpan: lazy optional (`.??`) still satisfies a following required byte" {
+    // `a.??b`: the optional filler prefers empty, but `ab`≠`aXb`, so it must
+    // consume the `X` — laziness never sacrifices existence, only minimality.
+    try std.testing.expect((try span1("a.??b", "aXb", 0)).?.end == 3);
+    try expectJoined("a.??b", "ab", "ab"); // here the empty branch wins ⇒ "ab"
+}
+
+// A lazy quantifier changes only WHICH match is chosen (the span), never WHETHER
+// one exists: `a.*?b` and greedy `a.*b` agree on match existence for every input,
+// diverging solely on the end offset. Guards the split-priority invariant.
+test "matchSpan: laziness never changes match existence, only the span" {
+    const cases = [_][]const u8{ "axbxb", "ab", "aXXb", "no b here", "abc", "" };
+    for (cases) |line| {
+        const greedy = try span1("a.*b", line, 0);
+        const lazy = try span1("a.*?b", line, 0);
+        try std.testing.expect((greedy == null) == (lazy == null));
+        if (greedy != null) {
+            try std.testing.expect(greedy.?.start == lazy.?.start); // same leftmost start
+            try std.testing.expect(lazy.?.end <= greedy.?.end); // lazy ends no later
+        }
+    }
+}
+
 test "matchSpan: non-overlapping, leftmost extraction of real code shapes" {
     try expectJoined("func \\w+", "func Foo() { func Bar() }", "func Foo|func Bar");
     try expectJoined("\\w+", "a.b_c d", "a|b_c|d");

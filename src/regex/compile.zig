@@ -41,14 +41,19 @@ pub const Compiler = struct {
                 const sb = try self.compileNode(ab[1], next);
                 return self.push(.{ .split = .{ .a = sa, .b = sb } });
             },
-            .quest => |x| {
-                const sx = try self.compileNode(x, next);
-                return self.push(.{ .split = .{ .a = sx, .b = next } });
+            .quest => |r| {
+                const sx = try self.compileNode(r.node, next);
+                // Priority order: greedy prefers the body (`sx`), lazy prefers the
+                // exit (`next`). The Pike VM adds `split.a` before `split.b`, so the
+                // high-priority branch is `.a`.
+                return self.push(if (r.lazy) .{ .split = .{ .a = next, .b = sx } } else .{ .split = .{ .a = sx, .b = next } });
             },
-            .star, .plus => |x, tag| {
-                const sp = try self.push(.{ .split = .{ .a = 0, .b = next } });
-                const sx = try self.compileNode(x, sp);
-                self.states.items[sp].split.a = sx;
+            .star, .plus => |r, tag| {
+                const sp = try self.push(.{ .split = .{ .a = 0, .b = 0 } });
+                const sx = try self.compileNode(r.node, sp);
+                // Greedy: loop back (`sx`) is high priority, exit (`next`) low. Lazy
+                // swaps them (prefer to stop). Set both arms explicitly per laziness.
+                self.states.items[sp].split = if (r.lazy) .{ .a = next, .b = sx } else .{ .a = sx, .b = next };
                 // star enters at the split (zero iters OK); plus enters at x (run once, then loop back via the split).
                 return if (tag == .star) sp else sx;
             },

@@ -54,9 +54,25 @@ const Memo = std.AutoHashMap(Key, u64);
 const Oracle = struct {
     line: []const u8,
     memo: *Memo,
+    // Multiline (`-U`): `^`/`$` anchor at every line boundary (around each `\n`),
+    // not just the buffer ends, and `substringMatch` runs over the whole buffer.
+    // Off ⇒ the per-line model. The `.`/`[^…]` newline membership is already baked
+    // into the parsed AST from the parser's dotall/multiline flags.
+    multiline: bool = false,
 
     inline fn bit(p: usize) u64 {
         return @as(u64, 1) << @intCast(p);
+    }
+
+    /// Multiline `^`: pos is a line start iff at buffer start, or right after a
+    /// `\n` that is not the final byte (a trailing final `\n` opens no phantom
+    /// empty line — matches rg; see the engine's `lineStart`).
+    fn atLineStart(o: Oracle, pos: usize) bool {
+        return pos == 0 or (pos > 0 and pos < o.line.len and o.line[pos - 1] == '\n');
+    }
+    /// Multiline `$`: pos is a line end iff at buffer end or a `\n` begins there.
+    fn atLineEnd(o: Oracle, pos: usize) bool {
+        return pos == o.line.len or (pos < o.line.len and o.line[pos] == '\n');
     }
 
     /// ASCII word byte (`[0-9A-Za-z_]`) — gist's `\w` / rg `--no-unicode` class.
@@ -80,8 +96,8 @@ const Oracle = struct {
         if (o.memo.get(key)) |v| return v;
         const res: u64 = switch (n.*) {
             .empty => bit(pos),
-            .anchor_start => if (pos == 0) bit(pos) else 0,
-            .anchor_end => if (pos == o.line.len) bit(pos) else 0,
+            .anchor_start => if (if (o.multiline) o.atLineStart(pos) else pos == 0) bit(pos) else 0,
+            .anchor_end => if (if (o.multiline) o.atLineEnd(pos) else pos == o.line.len) bit(pos) else 0,
             .word_boundary => if (o.wordBoundary(pos)) bit(pos) else 0,
             .not_word_boundary => if (o.wordBoundary(pos)) 0 else bit(pos),
             .class => |set| if (pos < o.line.len and set.has(o.line[pos])) bit(pos + 1) else 0,
@@ -92,9 +108,11 @@ const Oracle = struct {
                 break :blk res;
             },
             .alt => |ab| o.matchAt(ab[0], pos) | o.matchAt(ab[1], pos),
-            .quest => |x| bit(pos) | o.matchAt(x, pos),
-            .star => |x| o.closure(x, bit(pos)),
-            .plus => |x| o.closure(x, o.matchAt(x, pos)),
+            // Laziness is a leftmost-match SPAN choice; the reachable-end SET this
+            // oracle computes is laziness-independent, so we ignore `r.lazy` here.
+            .quest => |r| bit(pos) | o.matchAt(r.node, pos),
+            .star => |r| o.closure(r.node, bit(pos)),
+            .plus => |r| o.closure(r.node, o.matchAt(r.node, pos)),
             .capture => |g| o.matchAt(g.child, pos), // transparent to matching
         };
         o.memo.put(key, res) catch {};
@@ -159,6 +177,43 @@ fn docAgrees(col: *Collector, a: std.mem.Allocator, pattern: []const u8, doc: []
     if (got != want) {
         var b: [64]u8 = undefined;
         col.report("DOC-DIVERGENCE", pattern, doc, std.fmt.bufPrint(&b, "oracle={} doc={} dfa_built={}", .{ want, got, re.dfa != null }) catch "");
+    }
+}
+
+/// Compile in multiline (`-U`) mode, parse independently (with the same
+/// dotall/multiline parser flags so the `.`/`[^…]` newline membership matches),
+/// and check `bufMatch` (the whole-buffer Pike scan) against the multiline oracle
+/// over a buffer that may contain `\n`. The oracle reuses ONLY the parser, so a
+/// shared engine bug can't hide (same discipline as `engineAgrees`).
+fn bufAgrees(col: *Collector, a: std.mem.Allocator, pattern: []const u8, buf: []const u8, dotall: bool) void {
+    if (buf.len >= 64) return;
+    var re = Regex.compileOpts(a, pattern, .{ .multiline = true, .dotall = dotall }) catch return;
+    defer re.deinit();
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    var p = syn.Parser{ .src = pattern, .arena = arena.allocator(), .multiline = true, .dotall = dotall };
+    const ast = p.parseAlt() catch return;
+    if (p.pos != pattern.len) return;
+
+    var memo = Memo.init(a);
+    defer memo.deinit();
+    // Empty document ⇒ zero lines ⇒ never matches (rg's line model; twin of the
+    // `docMatchOracle` empty-doc rule). The per-line `substringMatch` alone would
+    // call a nullable pattern a match on "", so guard it out here.
+    const want = buf.len > 0 and (Oracle{ .line = buf, .memo = &memo, .multiline = true }).substringMatch(ast);
+    var sim = Regex.Sim.init(a, &re) catch return;
+    defer sim.deinit();
+    const got = re.bufMatch(&sim, buf);
+    if (got != want) {
+        var b: [64]u8 = undefined;
+        col.report("BUF-DIVERGENCE", pattern, buf, std.fmt.bufPrint(&b, "oracle={} buf={} dotall={}", .{ want, got, dotall }) catch "");
+    }
+    // Soundness of the trigram prefilter under multiline: a real match must still
+    // contain the required literal (a multiline pattern's mandatory run is
+    // extracted identically — anchors and `\n`-classes are just zero-width/bytes).
+    if (want and re.required.len > 0 and std.mem.indexOf(u8, buf, re.required) == null) {
+        var b: [96]u8 = undefined;
+        col.report("BUF-REQUIRED-UNSOUND", pattern, buf, std.fmt.bufPrint(&b, "required=\"{s}\" claimed mandatory but absent", .{re.required}) catch "");
     }
 }
 
@@ -244,10 +299,17 @@ fn engineAgrees(c: *Collector, a: std.mem.Allocator, pattern: []const u8, line: 
 const RgCtx = struct { io: std.Io, gpa: std.mem.Allocator, tmp: []const u8, rg: []const u8 };
 
 fn rgMatch(ctx: RgCtx, pattern: []const u8, input: []const u8) ?bool {
+    return rgMatchMode(ctx, pattern, input, false);
+}
+
+/// `multiline` adds `-U` (rg matches the whole file as one haystack — a match may
+/// span `\n`, and `^`/`$` anchor at line boundaries), the exact semantics gist's
+/// `bufMatch` implements. dotall is expressed by an inline `(?s)` in the pattern.
+fn rgMatchMode(ctx: RgCtx, pattern: []const u8, input: []const u8, multiline: bool) ?bool {
     std.Io.Dir.cwd().writeFile(ctx.io, .{ .sub_path = ctx.tmp, .data = input }) catch return null;
-    const res = std.process.run(ctx.gpa, ctx.io, .{
-        .argv = &.{ ctx.rg, "-q", "-a", "--no-unicode", "--color", "never", "-e", pattern, ctx.tmp },
-    }) catch return null;
+    const base = [_][]const u8{ ctx.rg, "-q", "-a", "--no-unicode", "--color", "never", "-e", pattern, ctx.tmp };
+    const withU = [_][]const u8{ ctx.rg, "-q", "-a", "-U", "--no-unicode", "--color", "never", "-e", pattern, ctx.tmp };
+    const res = std.process.run(ctx.gpa, ctx.io, .{ .argv = if (multiline) &withU else &base }) catch return null;
     ctx.gpa.free(res.stdout);
     ctx.gpa.free(res.stderr);
     return switch (res.term) {
@@ -258,6 +320,25 @@ fn rgMatch(ctx: RgCtx, pattern: []const u8, input: []const u8) ?bool {
         },
         else => null,
     };
+}
+
+/// Compare gist's multiline `bufMatch` (whole-buffer, `-U` semantics) against
+/// `rg -U` over `input`. Records (doesn't throw) divergences where both engines
+/// accept the pattern. `dotall` prepends `(?s)` so `.` may cross `\n` in both.
+fn rgBufAgrees(c: *Collector, ctx: RgCtx, pattern: []const u8, input: []const u8, dotall: bool) void {
+    var re = Regex.compileOpts(ctx.gpa, pattern, .{ .multiline = true, .dotall = dotall }) catch return;
+    defer re.deinit();
+    var sim = Regex.Sim.init(ctx.gpa, &re) catch return;
+    defer sim.deinit();
+    // rg expresses dotall inline; a leading `(?s)` applies it to the whole pattern.
+    var pbuf: [128]u8 = undefined;
+    const rg_pat = if (dotall) (std.fmt.bufPrint(&pbuf, "(?s){s}", .{pattern}) catch return) else pattern;
+    const rg = rgMatchMode(ctx, rg_pat, input, true) orelse return;
+    const got = re.bufMatch(&sim, input);
+    if (got != rg) {
+        var b: [80]u8 = undefined;
+        c.report("RG-BUF-DIVERGENCE", pattern, input, std.fmt.bufPrint(&b, "gist={} rg={} dotall={}", .{ got, rg, dotall }) catch "");
+    }
 }
 
 /// `Threaded.init(.{})` gives the child an empty environ (no PATH), so argv[0]
@@ -382,6 +463,8 @@ const Gen = struct {
     r: std.Random,
     buf: *std.ArrayList(u8),
     a: std.mem.Allocator,
+    lazy: bool = false, // when set, ~half of emitted quantifiers get a trailing `?`
+    anchors: bool = true, // when false, never emit `^`/`$` (span differential domain)
     const E = std.mem.Allocator.Error;
 
     fn atom(g: *Gen, depth: u8) E!void {
@@ -410,7 +493,8 @@ const Gen = struct {
     }
     fn quant(g: *Gen, depth: u8) E!void {
         try g.atom(depth);
-        switch (g.r.uintLessThan(u8, 11)) {
+        const kind = g.r.uintLessThan(u8, 11);
+        switch (kind) {
             0 => try g.buf.append(g.a, '*'),
             1 => try g.buf.append(g.a, '+'),
             2 => try g.buf.append(g.a, '?'),
@@ -423,6 +507,12 @@ const Gen = struct {
             9 => try g.buf.appendSlice(g.a, "{4,6}"),
             else => {},
         }
+        // A trailing `?` makes the just-emitted quantifier lazy. `{2}` is exact
+        // (no optional tail) so `{2}?` is meaningless — skip laziness there; every
+        // other quantifier (incl. `?`⇒`??`) accepts it. `kind==10` emitted no
+        // quantifier, so nothing to make lazy.
+        if (g.lazy and kind != 10 and kind != 3 and kind != 8 and g.r.boolean())
+            try g.buf.append(g.a, '?');
     }
     fn concat(g: *Gen, depth: u8) E!void {
         const n = 1 + g.r.uintLessThan(usize, 3);
@@ -437,9 +527,9 @@ const Gen = struct {
         }
     }
     fn pattern(g: *Gen) E!void {
-        if (g.r.boolean()) try g.buf.append(g.a, '^');
+        if (g.anchors and g.r.boolean()) try g.buf.append(g.a, '^');
         try g.alt(1);
-        if (g.r.boolean()) try g.buf.append(g.a, '$');
+        if (g.anchors and g.r.boolean()) try g.buf.append(g.a, '$');
     }
 };
 
@@ -503,6 +593,77 @@ test "adversarial: curated multi-line boundary docs vs independent oracle" {
     if (col.fails != 0) {
         std.debug.print("curated-doc: {} divergence(s)\n", .{col.fails});
         return error.CuratedDocDivergence;
+    }
+}
+
+test "adversarial: multiline (-U) whole-buffer vs independent oracle" {
+    const a = std.testing.allocator;
+    // buf carries `\n`; `^`/`$` are line anchors, `.` excludes `\n` (unless
+    // dotall), negated classes / `\s` / `\W` include `\n` and can cross lines.
+    const MC = struct { pat: []const u8, buf: []const u8, dotall: bool };
+    const cases = [_]MC{
+        // `.` never crosses `\n` without dotall; dotall makes it cross.
+        .{ .pat = "c.d", .buf = "abc\ndef", .dotall = false }, // no match (. ≠ \n)
+        .{ .pat = "c.d", .buf = "abc\ndef", .dotall = true }, // (?s): c\nd matches
+        .{ .pat = "abc.def", .buf = "abc\ndef", .dotall = true },
+        // Negated class + \s + \W include \n ⇒ cross lines even without dotall.
+        .{ .pat = "c[^x]d", .buf = "abc\ndef", .dotall = false }, // c\nd matches
+        .{ .pat = "c\\sd", .buf = "abc\ndef", .dotall = false },
+        .{ .pat = "c\\Wd", .buf = "abc\ndef", .dotall = false },
+        .{ .pat = "c\\nd", .buf = "abc\ndef", .dotall = false }, // literal \n
+        // Multiline anchors fire at every line boundary.
+        .{ .pat = "^def$", .buf = "abc\ndef\nghi", .dotall = false },
+        .{ .pat = "^def", .buf = "abc\ndef\nghi", .dotall = false },
+        .{ .pat = "abc$", .buf = "abc\ndef\nghi", .dotall = false },
+        .{ .pat = "^abc", .buf = "abc\ndef", .dotall = false },
+        .{ .pat = "ghi$", .buf = "abc\ndef\nghi", .dotall = false },
+        .{ .pat = "^xyz$", .buf = "abc\ndef", .dotall = false }, // no such line
+        // A cross-line match spanning two anchors: end of one line, start of next.
+        .{ .pat = "c$\\n^d", .buf = "abc\ndef", .dotall = false },
+        .{ .pat = "\\bcat\\b", .buf = "a\ncat\nb", .dotall = false }, // word bounds around \n
+        .{ .pat = "x*", .buf = "\n\n", .dotall = false }, // nullable over empty lines
+        .{ .pat = "^$", .buf = "a\n\nb", .dotall = false }, // empty middle line
+        .{ .pat = "^$", .buf = "abc", .dotall = false }, // no empty line ⇒ no match
+        .{ .pat = "a[\\s\\S]*b", .buf = "a\nx\ny\nb", .dotall = false }, // greedy cross-line
+        .{ .pat = "def\\nghi", .buf = "abc\ndef\nghi\n", .dotall = false },
+    };
+    var col = Collector.init(a);
+    defer col.deinit();
+    for (cases) |c| bufAgrees(&col, a, c.pat, c.buf, c.dotall);
+    if (col.fails != 0) {
+        std.debug.print("multiline-curated: {} divergence(s)\n", .{col.fails});
+        return error.MultilineCuratedDivergence;
+    }
+}
+
+test "adversarial: multiline (-U) randomized differential vs independent oracle" {
+    const a = std.testing.allocator;
+    const alphabet = "abc01_ \n\nX\xff"; // newlines (incl. adjacent), a high byte
+    var buf: [40]u8 = undefined;
+    var col = Collector.init(a);
+    defer col.deinit();
+
+    var seed: u64 = 0;
+    var checked: usize = 0;
+    while (seed < 120) : (seed += 1) {
+        var prng = std.Random.DefaultPrng.init(seed *% 0xA24BAED4963EE407);
+        const r = prng.random();
+        var pat: std.ArrayList(u8) = .empty;
+        defer pat.deinit(a);
+        var g = Gen{ .r = r, .buf = &pat, .a = a };
+        try g.pattern();
+        const dotall = r.boolean();
+        for (0..6) |trial| {
+            const len = if (trial == 0) 0 else r.uintLessThan(usize, buf.len + 1);
+            for (0..len) |i| buf[i] = alphabet[r.uintLessThan(usize, alphabet.len)];
+            bufAgrees(&col, a, pat.items, buf[0..len], dotall);
+            checked += 1;
+        }
+    }
+    try std.testing.expect(checked > 600);
+    if (col.fails != 0) {
+        std.debug.print("multiline-fuzz: {} divergence(s) across {} checks\n", .{ col.fails, checked });
+        return error.MultilineFuzzDivergence;
     }
 }
 
@@ -692,19 +853,20 @@ test "adversarial: rg second-oracle differential (parser-level)" {
     // Parser corners: escapes, class range/edge handling, `{n,m}`, alternation,
     // anchors, nesting. rg or gist rejecting one ⇒ scope question, auto-skipped.
     const pats = [_][]const u8{
-        "a\\.c",  "\\.",      "\\*",     "a\\*b", "\\(",    "\\)",   "\\[",      "\\]",
-        "\\|",    "\\^",      "\\$",     "\\\\",  "\\+",    "\\?",   "a\\{2\\}", "a.c",
-        "a..c",   ".*",       ".",       "[abc]", "[^abc]", "[a-c]", "[c-c]",    "[-a]",
-        "[a-]",   "[a^b]",    "[.]",     "[*]",   "[\\^]",  "[\\-]", "[\\]]",    "[\\d]",
-        "[\\w]",  "[a-cA-C]", "[0-9]",   "[^-a]", "a{2}",   "a{2,}", "a{0,2}",   "a{0}",
-        "a{1,3}", "ab{2}",    "(ab){2}", "a{3}",  "a|b",    "(a|)b", "(|a)b",    "ab|cd",
-        "^a",     "a$",       "^abc$",   "^$",    "a^b",    "a$b",   "^a|b$",    "(^|x)y",
-        "((a))",  "(a*)*b",   "(a|b)+",  "(a?)+", "a**",
+        "a\\.c",    "\\.",       "\\*",     "a\\*b",   "\\(",       "\\)",   "\\[",      "\\]",
+        "\\|",      "\\^",       "\\$",     "\\\\",    "\\+",       "\\?",   "a\\{2\\}", "a.c",
+        "a..c",     ".*",        ".",       "[abc]",   "[^abc]",    "[a-c]", "[c-c]",    "[-a]",
+        "[a-]",     "[a^b]",     "[.]",     "[*]",     "[\\^]",     "[\\-]", "[\\]]",    "[\\d]",
+        "[\\w]",    "[a-cA-C]",  "[0-9]",   "[^-a]",   "a{2}",      "a{2,}", "a{0,2}",   "a{0}",
+        "a{1,3}",   "ab{2}",     "(ab){2}", "a{3}",    "a|b",       "(a|)b", "(|a)b",    "ab|cd",
+        "^a",       "a$",        "^abc$",   "^$",      "a^b",       "a$b",   "^a|b$",    "(^|x)y",
+        "((a))",    "(a*)*b",    "(a|b)+",  "(a?)+",   "a**",
         // Word boundaries `\b`/`\B` (ASCII, rg `--no-unicode`): leading, trailing,
         // both-sided, around classes, and the non-boundary `\B` — the foot-gun this
         // change fixes (gist used to read `\b` as a literal byte 'b').
-        "\\ba",   "a\\b",     "\\babc",  "abc\\b", "\\babc\\b", "\\b\\w+", "\\w+\\b",
-        "\\bend\\b", "\\Bb",  "a\\Bb",   "\\Bbc",  "[a-c]\\b",  "\\b-",    "-\\b",
+              "\\ba",  "a\\b",     "\\babc",
+        "abc\\b",   "\\babc\\b", "\\b\\w+", "\\w+\\b", "\\bend\\b", "\\Bb",  "a\\Bb",    "\\Bbc",
+        "[a-c]\\b", "\\b-",      "-\\b",
     };
     for (pats) |p| for (lines) |l| rgAgrees(&col, ctx, p, true, l);
 
@@ -737,5 +899,342 @@ test "adversarial: rg second-oracle differential (parser-level)" {
     if (col.fails != 0) {
         std.debug.print("rg differential: {} divergence(s)\n", .{col.fails});
         return error.RgDivergence;
+    }
+}
+
+test "adversarial: rg -U multiline differential (whole-buffer)" {
+    const a = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const rg = findRg(a, io) orelse return error.SkipZigTest; // hermetic without ripgrep
+
+    var tmp_buf: [64]u8 = undefined;
+    const tmp = try std.fmt.bufPrint(&tmp_buf, "/tmp/gist_rgU_{x}.txt", .{@intFromPtr(&threaded)});
+    const ctx = RgCtx{ .io = io, .gpa = a, .tmp = tmp, .rg = rg };
+    defer std.Io.Dir.cwd().deleteFile(io, tmp) catch {};
+
+    var col = Collector.init(a);
+    defer col.deinit();
+
+    // Multi-line buffers with the boundary corners: interior/leading/trailing
+    // newlines, adjacent newlines (empty lines), no-trailing-newline last line.
+    const bufs = [_][]const u8{
+        "abc\ndef\nghi\n", "abc\ndef\nghi", "a\n\nb\n",   "\nx\n",  "one\ntwo",
+        "\n\n\n",          "line",          "a\nb\nc\nd", "x\ny\n",
+    };
+    // `.`/dotall-crossing, negated-class/`\s`/`\W`/literal-`\n` crossing, and the
+    // full anchor matrix at line boundaries — the exact surface `-U` unlocks.
+    const dot_pats = [_][]const u8{ "c.d", "abc.def", "f.g", "a.b", ".*", "x.y" };
+    const cross_pats = [_][]const u8{ "c[^x]d", "c\\sd", "c\\Wd", "f\\ng", "def\\nghi", "[a-z]\\n[a-z]", "b$\\n^c" };
+    const anchor_pats = [_][]const u8{ "^def$", "^def", "def$", "^abc", "ghi$", "^$", "^x$", "^\\w+$", "^.$", "^$\\n" };
+    for (bufs) |buf| {
+        for (dot_pats) |p| {
+            rgBufAgrees(&col, ctx, p, buf, false); // `.` must NOT cross \n
+            rgBufAgrees(&col, ctx, p, buf, true); // (?s): `.` crosses \n
+        }
+        for (cross_pats) |p| rgBufAgrees(&col, ctx, p, buf, false);
+        for (anchor_pats) |p| rgBufAgrees(&col, ctx, p, buf, false);
+    }
+
+    // Randomized breadth vs rg -U over newline-rich buffers: the corner a
+    // hand-picked list misses. rg/gist rejecting a pattern auto-skips (scope).
+    const alphabet = "abc01_ \n\nX";
+    var buf: [28]u8 = undefined;
+    var seed: u64 = 0;
+    while (seed < 90) : (seed += 1) {
+        var prng = std.Random.DefaultPrng.init(seed *% 0x94D049BB133111EB);
+        const r = prng.random();
+        var pat: std.ArrayList(u8) = .empty;
+        defer pat.deinit(a);
+        var g = Gen{ .r = r, .buf = &pat, .a = a };
+        g.pattern() catch continue;
+        const dotall = r.boolean();
+        for (0..4) |t| {
+            const len = if (t == 0) 0 else r.uintLessThan(usize, buf.len + 1);
+            for (0..len) |i| buf[i] = alphabet[r.uintLessThan(usize, alphabet.len)];
+            rgBufAgrees(&col, ctx, pat.items, buf[0..len], dotall);
+        }
+    }
+
+    if (col.fails != 0) {
+        std.debug.print("rg -U differential: {} divergence(s)\n", .{col.fails});
+        return error.RgMultilineDivergence;
+    }
+}
+
+// ─────────────────── rg -o SPAN differential (lazy / greedy) ───────────────────
+//
+// Existence differentials (above) can't see laziness: `a.*b` and `a.*?b` match the
+// SAME inputs, differing only in the END offset of the chosen span. `rg -o` prints
+// each match's TEXT, so joining its lines is a direct, fully-independent oracle for
+// gist's `matchSpan` leftmost-first span — the ONLY place laziness is observable.
+// The Rust regex crate (rg's default engine) shares gist's leftmost-first,
+// greedy/lazy split-priority semantics, so byte-identical `-o` output is the proof
+// that no span is "more correct" than the one gist emits.
+
+/// `rg -o` over a single-line `input`, the NON-EMPTY match texts joined with '|'
+/// (each match is its own output line; `--no-unicode` matches gist's ASCII byte
+/// classes). Empty (zero-width) matches are dropped to match gist's documented
+/// `-o` policy (`render.zig`: zero-width spans are skipped, not emitted) — the
+/// remaining non-empty spans are exactly where greedy/lazy priority is observable.
+/// null ⇒ rg errored (grammar exit ≥2) or couldn't run; "" ⇒ ran, no non-empty match.
+fn rgOnlyJoined(ctx: RgCtx, pattern: []const u8, input: []const u8) ?[]u8 {
+    std.Io.Dir.cwd().writeFile(ctx.io, .{ .sub_path = ctx.tmp, .data = input }) catch return null;
+    const argv = [_][]const u8{ ctx.rg, "-o", "--no-filename", "--no-line-number", "-a", "--no-unicode", "--color", "never", "-e", pattern, ctx.tmp };
+    const res = std.process.run(ctx.gpa, ctx.io, .{ .argv = &argv }) catch return null;
+    defer ctx.gpa.free(res.stderr);
+    const bad = switch (res.term) {
+        .exited => |code| code >= 2, // 0 = matches, 1 = none, ≥2 = grammar/other error
+        else => true,
+    };
+    if (bad) {
+        ctx.gpa.free(res.stdout);
+        return null;
+    }
+    defer ctx.gpa.free(res.stdout);
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(ctx.gpa);
+    var first = true;
+    var it = std.mem.splitScalar(u8, std.mem.trimEnd(u8, res.stdout, "\n"), '\n');
+    while (it.next()) |seg| {
+        if (seg.len == 0) continue; // drop zero-width matches (gist skips them)
+        if (!first) out.append(ctx.gpa, '|') catch return null;
+        first = false;
+        out.appendSlice(ctx.gpa, seg) catch return null;
+    }
+    return out.toOwnedSlice(ctx.gpa) catch null;
+}
+
+/// gist's `-o` stream for a single line: every non-overlapping `matchSpan`'s text
+/// joined with '|' (empty matches advance one byte — exactly `emitOnlyMatching`).
+fn gistOnlyJoined(gpa: std.mem.Allocator, pattern: []const u8, input: []const u8) ?[]u8 {
+    var re = Regex.compile(gpa, pattern) catch return null; // gist rejects ⇒ scope, skip
+    defer re.deinit();
+    var ss = Regex.SpanSim.init(gpa, &re) catch return null;
+    defer ss.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    var from: usize = 0;
+    var first = true;
+    while (from <= input.len) {
+        const sp = re.matchSpan(&ss, input, from) orelse break;
+        if (sp.end == sp.start) {
+            from = sp.start + 1;
+            continue;
+        }
+        if (!first) out.append(gpa, '|') catch return null;
+        first = false;
+        out.appendSlice(gpa, input[sp.start..sp.end]) catch return null;
+        from = sp.end;
+    }
+    return out.toOwnedSlice(gpa) catch null;
+}
+
+fn rgSpanAgrees(c: *Collector, ctx: RgCtx, pattern: []const u8, input: []const u8) void {
+    if (std.mem.indexOfScalar(u8, input, '\n') != null) return; // single-line domain
+    const g = gistOnlyJoined(ctx.gpa, pattern, input) orelse return;
+    defer ctx.gpa.free(g);
+    const rgj = rgOnlyJoined(ctx, pattern, input) orelse return;
+    defer ctx.gpa.free(rgj);
+    if (!std.mem.eql(u8, g, rgj)) {
+        var b: [200]u8 = undefined;
+        c.report("RG-O-SPAN-DIVERGENCE", pattern, input, std.fmt.bufPrint(&b, "gist=\"{s}\" rg=\"{s}\"", .{ g, rgj }) catch "");
+    }
+}
+
+test "adversarial: rg -o span differential (lazy vs greedy leftmost-first)" {
+    const a = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const rg = findRg(a, io) orelse return error.SkipZigTest; // hermetic without ripgrep
+
+    var tmp_buf: [64]u8 = undefined;
+    const tmp = try std.fmt.bufPrint(&tmp_buf, "/tmp/gist_rgo_{x}.txt", .{@intFromPtr(&threaded)});
+    const ctx = RgCtx{ .io = io, .gpa = a, .tmp = tmp, .rg = rg };
+    defer std.Io.Dir.cwd().deleteFile(io, tmp) catch {};
+
+    var col = Collector.init(a);
+    defer col.deinit();
+
+    // Curated lazy/greedy pairs (each byte-verified against rg 15.1.0). The greedy
+    // twin sits beside each lazy pattern so a priority-swap regression that made
+    // lazy behave greedily (or vice-versa) is caught in the SAME run.
+    const cases = [_]Case{
+        .{ .pat = "a.*?b", .line = "axbxb" }, // lazy ⇒ axb
+        .{ .pat = "a.*b", .line = "axbxb" }, // greedy ⇒ axbxb
+        .{ .pat = "a.+?b", .line = "axbxb" },
+        .{ .pat = "<.*?>", .line = "<a><bb>" },
+        .{ .pat = "<.*>", .line = "<a><bb>" },
+        .{ .pat = "\".*?\"", .line = "\"x\" \"y\"" },
+        .{ .pat = "a+?", .line = "aaa" },
+        .{ .pat = "a+", .line = "aaa" },
+        .{ .pat = "a{2,4}?", .line = "aaaa" },
+        .{ .pat = "a{2,4}", .line = "aaaa" },
+        .{ .pat = "a{2,}?", .line = "aaaa" },
+        .{ .pat = "a.??b", .line = "aXb" },
+        .{ .pat = "a.??b", .line = "ab" },
+        .{ .pat = "\\w+?", .line = "hello world" },
+        .{ .pat = "\\d+?", .line = "12345" },
+        .{ .pat = "[ab]*?c", .line = "abbac" },
+        .{ .pat = "(ab)+?", .line = "ababab" },
+        .{ .pat = "x.*?x.*?x", .line = "xaxbxcx" },
+    };
+    for (cases) |cs| rgSpanAgrees(&col, ctx, cs.pat, cs.line);
+
+    // Randomized breadth: lazy-heavy generated patterns over printable single-line
+    // inputs. Where BOTH engines accept the pattern, their `-o` spans must be
+    // byte-identical — the independent-oracle proof that gist's span is canonical.
+    const alphabet = "abc012 _<>";
+    var line_buf: [22]u8 = undefined;
+    var seed: u64 = 0;
+    while (seed < 120) : (seed += 1) {
+        var prng = std.Random.DefaultPrng.init(seed *% 0xD1B54A32D192ED03);
+        const r = prng.random();
+        var pat: std.ArrayList(u8) = .empty;
+        defer pat.deinit(a);
+        // Anchors off: laziness lives in quantifier span choice, and `$`+nullable
+        // triggers a ripgrep `-o` empty-match rendering quirk (a zero-width EOL
+        // match printed as the whole line) unrelated to span priority.
+        var g = Gen{ .r = r, .buf = &pat, .a = a, .lazy = true, .anchors = false };
+        g.pattern() catch continue;
+        for (0..4) |t| {
+            const len = if (t == 0) 0 else r.uintLessThan(usize, line_buf.len + 1);
+            for (0..len) |i| line_buf[i] = alphabet[r.uintLessThan(usize, alphabet.len)];
+            rgSpanAgrees(&col, ctx, pat.items, line_buf[0..len]);
+        }
+    }
+
+    if (col.fails != 0) {
+        std.debug.print("rg -o span differential: {} divergence(s)\n", .{col.fails});
+        return error.RgSpanDivergence;
+    }
+}
+
+// ─────────────── PCRE (grep -oP) SPAN differential — gist's true twin ───────────────
+//
+// ripgrep is deliberately NOT the correctness oracle for empty-match rendering:
+// `rg -o` emits zero-width matches as blank lines and prints a `$`-anchored empty
+// match as the WHOLE line (`x*$` on "abc" ⇒ "abc"). GNU grep, PCRE (`grep -oP`)
+// AND gist all agree instead: zero-width matches are skipped. PCRE additionally
+// implements the SAME leftmost-first greedy/lazy semantics gist compiles, so
+// `grep -oP` is gist's exact semantic twin — this differential is therefore
+// FAITHFUL: anchors enabled, no empty-dropping, byte-for-byte. It is the "pattern
+// more true" proof that gist's span (empty-handling AND laziness) is canonical,
+// not merely rg-quirk-avoidant. (Measured: gist ≡ grep -oP ≡ PCRE on this battery.)
+
+/// Locate a GNU grep with working `-P` (PCRE). Probes `-oP` on a trivial pattern
+/// against `tmp` so we only claim it when PCRE is actually compiled in.
+fn findGrepP(gpa: std.mem.Allocator, io: std.Io, tmp: []const u8) ?[]const u8 {
+    const cands = [_][]const u8{ "/opt/homebrew/bin/ggrep", "/usr/local/bin/ggrep", "/opt/homebrew/bin/grep", "/usr/bin/grep", "/bin/grep" };
+    std.Io.Dir.cwd().writeFile(io, .{ .sub_path = tmp, .data = "ab" }) catch return null;
+    for (cands) |cand| {
+        const res = std.process.run(gpa, io, .{ .argv = &.{ cand, "-oP", "-e", "a", tmp } }) catch continue;
+        defer gpa.free(res.stderr);
+        defer gpa.free(res.stdout);
+        if (res.term == .exited and res.term.exited == 0 and std.mem.eql(u8, std.mem.trimEnd(u8, res.stdout, "\n"), "a")) return cand;
+    }
+    return null;
+}
+
+/// `grep -oP` over a single-line `input`, matches joined with '|'. Inputs are
+/// ASCII-only, so locale is irrelevant to `\w`/`\d`/`\s`/`\b`/`.` here (a UTF-8 `.`
+/// over an ASCII byte is that byte); a multibyte-pattern that errors under UTF-8
+/// auto-skips below. Like gist and unlike rg, PCRE skips zero-width matches, so NO
+/// normalization is applied — the join is faithful. null ⇒ grep errored (exit ≥2)
+/// or couldn't run; "" ⇒ ran, no match.
+fn grepOnlyJoinedP(ctx: RgCtx, grep: []const u8, pattern: []const u8, input: []const u8) ?[]u8 {
+    std.Io.Dir.cwd().writeFile(ctx.io, .{ .sub_path = ctx.tmp, .data = input }) catch return null;
+    const argv = [_][]const u8{ grep, "-oPh", "-e", pattern, ctx.tmp };
+    const res = std.process.run(ctx.gpa, ctx.io, .{ .argv = &argv }) catch return null;
+    defer ctx.gpa.free(res.stderr);
+    const bad = switch (res.term) {
+        .exited => |code| code >= 2,
+        else => true,
+    };
+    if (bad) {
+        ctx.gpa.free(res.stdout);
+        return null;
+    }
+    defer ctx.gpa.free(res.stdout);
+    const trimmed = std.mem.trimEnd(u8, res.stdout, "\n");
+    const joined = ctx.gpa.dupe(u8, trimmed) catch return null;
+    for (joined) |*b| if (b.* == '\n') {
+        b.* = '|';
+    };
+    return joined;
+}
+
+fn grepSpanAgrees(c: *Collector, ctx: RgCtx, grep: []const u8, pattern: []const u8, input: []const u8) void {
+    if (std.mem.indexOfScalar(u8, input, '\n') != null) return; // single-line domain
+    const g = gistOnlyJoined(ctx.gpa, pattern, input) orelse return;
+    defer ctx.gpa.free(g);
+    const gp = grepOnlyJoinedP(ctx, grep, pattern, input) orelse return;
+    defer ctx.gpa.free(gp);
+    if (!std.mem.eql(u8, g, gp)) {
+        var b: [200]u8 = undefined;
+        c.report("PCRE-O-SPAN-DIVERGENCE", pattern, input, std.fmt.bufPrint(&b, "gist=\"{s}\" pcre=\"{s}\"", .{ g, gp }) catch "");
+    }
+}
+
+test "adversarial: grep -oP (PCRE) span differential — faithful, anchors on" {
+    const a = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var tmp_buf: [64]u8 = undefined;
+    const tmp = try std.fmt.bufPrint(&tmp_buf, "/tmp/gist_pcre_{x}.txt", .{@intFromPtr(&threaded)});
+    const grep = findGrepP(a, io, tmp) orelse return error.SkipZigTest; // hermetic without GNU grep+PCRE
+    const ctx = RgCtx{ .io = io, .gpa = a, .tmp = tmp, .rg = grep };
+    defer std.Io.Dir.cwd().deleteFile(io, tmp) catch {};
+
+    var col = Collector.init(a);
+    defer col.deinit();
+
+    // Curated lazy/greedy pairs — verified against `grep -oP` (PCRE). Anchors and
+    // empty-producing patterns included: PCRE skips empties exactly as gist does.
+    const cases = [_]Case{
+        .{ .pat = "a.*?b", .line = "axbxb" },
+        .{ .pat = "a.*b", .line = "axbxb" },
+        .{ .pat = "<.*?>", .line = "<a><bb>" },
+        .{ .pat = "a+?", .line = "aaa" },
+        .{ .pat = "a{2,4}?", .line = "aaaa" },
+        .{ .pat = "a.??b", .line = "aXb" },
+        .{ .pat = "a.??b", .line = "ab" },
+        .{ .pat = "x.*?x.*?x", .line = "xaxbxcx" },
+        // Empty-match & anchor domain where rg diverges but PCRE ≡ gist:
+        .{ .pat = "a*", .line = "baab" }, // leading empty skipped ⇒ "aa"
+        .{ .pat = "[0-9]*", .line = "a12b3" }, // "12|3"
+        .{ .pat = "x*$", .line = "abc" }, // zero-width EOL ⇒ no output (rg ⇒ "abc")
+        .{ .pat = "\\w{0,2}$", .line = "ab c>" }, // zero-width EOL ⇒ none (rg ⇒ whole line)
+        .{ .pat = "a*$", .line = "baaa" }, // "aaa"
+        .{ .pat = "^\\w+", .line = "foo bar" }, // "foo"
+    };
+    for (cases) |cs| grepSpanAgrees(&col, ctx, grep, cs.pat, cs.line);
+
+    // Randomized breadth: lazy-heavy generated patterns WITH anchors (the faithful
+    // domain PCRE shares with gist) over printable single-line inputs.
+    const alphabet = "abc012 _<>";
+    var line_buf: [22]u8 = undefined;
+    var seed: u64 = 0;
+    while (seed < 120) : (seed += 1) {
+        var prng = std.Random.DefaultPrng.init(seed *% 0xBF58476D1CE4E5B9);
+        const r = prng.random();
+        var pat: std.ArrayList(u8) = .empty;
+        defer pat.deinit(a);
+        var g = Gen{ .r = r, .buf = &pat, .a = a, .lazy = true }; // anchors ON — PCRE ≡ gist
+        g.pattern() catch continue;
+        for (0..4) |t| {
+            const len = if (t == 0) 0 else r.uintLessThan(usize, line_buf.len + 1);
+            for (0..len) |i| line_buf[i] = alphabet[r.uintLessThan(usize, alphabet.len)];
+            grepSpanAgrees(&col, ctx, grep, pat.items, line_buf[0..len]);
+        }
+    }
+
+    if (col.fails != 0) {
+        std.debug.print("grep -oP span differential: {} divergence(s)\n", .{col.fails});
+        return error.PcreSpanDivergence;
     }
 }

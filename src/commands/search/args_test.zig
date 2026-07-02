@@ -401,7 +401,7 @@ test "-r/--replace consumes a value (the silent-misparse landmine fix)" {
     try expect((try parse(&.{"-r"})) == null);
 }
 
-test "leading inline flag group (?i)/(?-u)/(?m) honored; (?s) rejected" {
+test "leading inline flag group (?i)/(?-u)/(?m)/(?s) honored" {
     {
         var p = (try parse(&.{"(?i)wallet"})).?;
         defer p.deinit(A);
@@ -432,11 +432,17 @@ test "leading inline flag group (?i)/(?-u)/(?m) honored; (?s) rejected" {
         defer p.deinit(A);
         try expect(!p.opts.caseless and eqs(u8, p.pattern, "(?i)x"));
     }
-    try expect((try parse(&.{"(?s)a.*b"})) == null);
+    {
+        // `(?s)` is now HONORED: it sets dotall (`.` also matches `\n`, meaningful
+        // under `-U`) and is stripped from the pattern handed to the compiler.
+        var p = (try parse(&.{"(?s)a.*b"})).?;
+        defer p.deinit(A);
+        try expect(p.opts.dotall and eqs(u8, p.pattern, "a.*b"));
+    }
     {
         var p = (try parse(&.{"(?-s)ab"})).?;
         defer p.deinit(A);
-        try expect(eqs(u8, p.pattern, "ab"));
+        try expect(!p.opts.dotall and eqs(u8, p.pattern, "ab"));
     }
 }
 
@@ -496,15 +502,37 @@ test "--sort/--sortr swallow their value (gist emits path-ascending already)" {
 }
 
 test "recognized-but-unsupportable flags fail LOUD (never silent-wrong)" {
-    // A different engine — fail loud, never silently ignored. NB: `--json` is now
-    // a SUPPORTED native capability (covered above), so it's dropped from here.
+    // A different engine — fail loud, never silently ignored. NB: `--json` and
+    // `-U`/`--multiline[-dotall]` are now SUPPORTED native capabilities (covered
+    // below), so they're dropped from here. What remains needs a feature gist's
+    // linear-time RE2-style engine or line-oriented output model genuinely lacks.
     try expect((try parse(&.{ "-P", "(?<=x)y" })) == null); // PCRE lookbehind
     try expect((try parse(&.{ "--pcre2", "a" })) == null);
-    try expect((try parse(&.{ "-U", "a\\nb" })) == null); // multiline short
-    try expect((try parse(&.{ "--multiline", "a" })) == null);
-    try expect((try parse(&.{ "--multiline-dotall", "a" })) == null);
     try expect((try parse(&.{ "--vimgrep", "a" })) == null);
     try expect((try parse(&.{ "--column", "a" })) == null);
+}
+
+test "multiline (-U/--multiline/--multiline-dotall) is honored, not fail-loud" {
+    {
+        var p = (try parse(&.{ "-U", "a\\nb" })).?;
+        defer p.deinit(A);
+        try expect(p.opts.multiline and !p.opts.dotall);
+    }
+    {
+        var p = (try parse(&.{ "--multiline", "a" })).?;
+        defer p.deinit(A);
+        try expect(p.opts.multiline and !p.opts.dotall);
+    }
+    {
+        // `--multiline-dotall` implies both: whole-buffer AND `.` crosses `\n`.
+        var p = (try parse(&.{ "--multiline-dotall", "a" })).?;
+        defer p.deinit(A);
+        try expect(p.opts.multiline and p.opts.dotall);
+    }
+    // `-o`/`-r` WITH `-U` is still fail-loud (the multiline emitter frames whole
+    // touched lines, so a per-match cross-line span would silently disagree).
+    try expect((try parse(&.{ "-U", "-o", "a" })) == null);
+    try expect((try parse(&.{ "-U", "-r", "X", "a" })) == null);
 }
 
 test "type aliases: tsx, jsx, rego, mdc resolve" {
