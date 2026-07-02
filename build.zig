@@ -4,7 +4,7 @@
 //! (pkg/kernels/core). This file declares the kernel plus two executables
 //! built on it: the production `gist` CLI (`src/commands/cli/main.zig`, the
 //! `index`/`status`/`search` verbs) and the separate `gist-bench` harness
-//! (`bench/bench.zig`, the `bench`/`verify`/`certify` tooling). Production CLI
+//! (`bench/harness/bench.zig`, the `bench`/`verify`/`certify` tooling). Production CLI
 //! and benchmark tooling no longer share a binary.
 
 const std = @import("std");
@@ -34,7 +34,7 @@ pub fn build(b: *std.Build) void {
     // ── the `gist-bench` harness executable (bench/verify/certify tooling) ──
     // Run from the repo root so relative dirs + output paths resolve there.
     const bench_mod = b.createModule(.{
-        .root_source_file = b.path("bench/bench.zig"),
+        .root_source_file = b.path("bench/harness/bench.zig"),
         .target = k.target,
         .optimize = k.optimize,
     });
@@ -75,7 +75,7 @@ pub fn build(b: *std.Build) void {
         .dependOn(&run_certify.step);
 
     // Bench-side tests too — the harness-local `stats.zig` bootstrap-CI +
-    // Mann-Whitney unit tests. (`bench/bench.zig` imports `gist`; reuse the
+    // Mann-Whitney unit tests. (`bench/harness/bench.zig` imports `gist`; reuse the
     // bench module; the engine tests ride `k.test_step` via `src/root.zig`.)
     k.test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = bench_mod })).step);
 }

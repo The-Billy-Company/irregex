@@ -23,16 +23,22 @@
 const std = @import("std");
 const corpus_mod = @import("corpus.zig");
 const haystack = @import("haystack.zig");
+const bulkstat = @import("bulkstat.zig");
+const persist = @import("../index/persist.zig");
 const Index = @import("../index/trigram.zig").Index;
 const Dir = std.Io.Dir;
 
 const anchor_file = corpus_mod.out_dir ++ "/built.ns";
 
-/// Persist the build instant (wall-clock ns) as the freshness anchor.
+/// Persist the build instant (wall-clock ns) as the freshness anchor. Atomic
+/// (temp-then-rename, see `persist.writeAtomic`) so a concurrent reader never
+/// observes a momentarily-truncated anchor file (which would silently disable
+/// the freshness overlay for that one query — a soft correctness gap, not a
+/// crash, but still avoidable at the same cost as the index/paths writes).
 pub fn writeAnchor(io: std.Io, built_ns: i128) !void {
     var buf: [8]u8 = undefined;
     std.mem.writeInt(i64, &buf, @intCast(built_ns), .little); // epoch-ns fits i64 until 2262
-    try Dir.cwd().writeFile(io, .{ .sub_path = anchor_file, .data = &buf });
+    try persist.writeAtomic(io, anchor_file, &buf);
 }
 
 /// The anchor, or null when no index/anchor exists yet (⇒ freshness is skipped
@@ -130,47 +136,177 @@ pub fn widen(gpa: std.mem.Allocator, paths: *std.ArrayList([]const u8), ids: *st
     }
 }
 
-/// One root's stat-only walk (no reads), over the same skip-rules as the indexed
-/// corpus, collecting paths whose mtime ≥ `built_ns` into a private page-backed
-/// arena. Failures degrade to "found nothing for this root" — never a false
-/// match, only (at worst) a momentarily missed fresh file, self-healing on its
-/// next touch. The discovery walk is the floor cost, so it fans across roots.
-const WalkShard = struct {
+/// One subtree's full stat-only walk (no reads), over the same skip-rules as
+/// the indexed corpus, collecting paths whose mtime ≥ `built_ns` into `a`.
+/// Failures degrade to "found nothing under this subtree" — never a false
+/// match, only (at worst) a momentarily missed fresh file, self-healing on
+/// its next touch. This is the recursive leaf action the work-stealing pool
+/// in `walkFresh` below dispatches per `WorkItem`.
+fn visitItem(io: std.Io, prefix: []const u8, built_ns: i128, a: std.mem.Allocator, out: *std.ArrayList([]const u8)) void {
+    // `getattrlistbulk` (Darwin-only — see `bulkstat.zig`) turns this from
+    // O(files) `stat()` syscalls into O(directories) bulk calls, each
+    // returning name+type+mtime for every sibling at once; it degrades
+    // directory-by-directory back to the exact stat-based walk below on any
+    // failure, so this can only ever be a speed trade, never a correctness one.
+    if (bulkstat.supported) {
+        var dir = Dir.cwd().openDir(io, prefix, .{ .iterate = true }) catch return;
+        defer dir.close(io);
+        bulkstat.visitFresh(a, io, dir, prefix, built_ns, out);
+        return;
+    }
+    var w = haystack.Walker.init(io, a, prefix) catch return;
+    defer w.deinit(io);
+    while (w.next(io) catch return) |hay| {
+        const st = hay.dir.statFile(io, hay.name, .{}) catch continue;
+        if (st.mtime.nanoseconds < built_ns) continue;
+        out.append(a, hay.path) catch return;
+    }
+}
+
+/// A directory subtree still awaiting a full `visitItem` walk.
+const WorkItem = struct { prefix: []const u8 };
+
+/// Bulk-list ONE level of `prefix` (macOS `getattrlistbulk`, all-or-nothing —
+/// see `bulkstat.listOneLevel`), falling back to the portable
+/// `std.Io.Dir.Iterator` on any failure or non-Darwin target. Every
+/// non-skipped child directory becomes a new `WorkItem` (arena-owned prefix);
+/// every child FILE is mtime-checked right here (cheap — a directory's
+/// immediate files are a handful, not worth their own work item) and, if
+/// fresh, appended straight to `out`. Returns `false` only when `prefix`
+/// itself couldn't be opened (race: deleted between discovery and expansion,
+/// or a permissions edge) — the caller then keeps it as its own leaf
+/// `WorkItem`, and `visitItem`'s own `catch return` degrades it to
+/// "found nothing" exactly as before, so this can never drop a file, only
+/// (at worst) fail to subdivide one node further.
+fn expandOneLevel(gpa: std.mem.Allocator, io: std.Io, prefix: []const u8, built_ns: i128, a: std.mem.Allocator, out: *std.ArrayList([]const u8), children: *std.ArrayList(WorkItem)) !bool {
+    if (bulkstat.supported) blk: {
+        var dir = Dir.cwd().openDir(io, prefix, .{ .iterate = true }) catch return false;
+        defer dir.close(io);
+        const entries = bulkstat.listOneLevel(gpa, dir.handle) catch break :blk;
+        defer {
+            for (entries) |e| gpa.free(e.name);
+            gpa.free(entries);
+        }
+        for (entries) |e| {
+            if (e.is_dir) {
+                if (haystack.isSkipDir(e.name)) continue;
+                try children.append(gpa, .{ .prefix = try haystack.joinPath(a, prefix, e.name) });
+            } else if (e.is_file and e.mtime_ns >= built_ns) {
+                try out.append(a, try haystack.joinPath(a, prefix, e.name));
+            }
+        }
+        return true;
+    }
+    var dir = Dir.cwd().openDir(io, prefix, .{ .iterate = true }) catch return false;
+    defer dir.close(io);
+    var it = dir.iterate();
+    while (it.next(io) catch null) |e| {
+        if (e.kind == .directory) {
+            if (haystack.isSkipDir(e.name)) continue;
+            try children.append(gpa, .{ .prefix = try haystack.joinPath(a, prefix, e.name) });
+        } else if (e.kind == .file) {
+            const st = dir.statFile(io, e.name, .{}) catch continue;
+            if (st.mtime.nanoseconds >= built_ns) try out.append(a, try haystack.joinPath(a, prefix, e.name));
+        }
+    }
+    return true;
+}
+
+/// Breadth-expand `roots` into ≥ `target` fine-grained `WorkItem`s (a BFS over
+/// `expandOneLevel`, an index cursor over a list that grows as it's walked —
+/// classic queue-via-array). Why: a static one-shard-per-root split starves
+/// under this repo's size skew (`services` + `clients` are >40× `contracts`
+/// + `quality` combined — six threads means one or two of them are still
+/// walking `services/backend` long after the other four have gone idle, so
+/// wall time tracks the SLOWEST root, not the total work ÷ core count).
+/// Expanding one directory level at a time until there's enough breadth to
+/// actually saturate every core turns the walk into a self-balancing
+/// work-stealing pool regardless of which subtree happens to be huge, and
+/// costs only a handful of extra one-level list calls (µs each) up front.
+/// Once `target` is reached, everything still queued — at whatever depth —
+/// becomes a leaf `WorkItem`, so the BFS naturally stops subdividing
+/// already-small subtrees while continuing to split large ones.
+fn buildWorkItems(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, built_ns: i128, a: std.mem.Allocator, out: *std.ArrayList([]const u8), target: usize) ![]WorkItem {
+    var q: std.ArrayList(WorkItem) = .empty;
+    defer q.deinit(gpa);
+    for (roots) |r| try q.append(gpa, .{ .prefix = r });
+
+    var final: std.ArrayList(WorkItem) = .empty;
+    errdefer final.deinit(gpa);
+
+    var i: usize = 0;
+    while (i < q.items.len) : (i += 1) {
+        const item = q.items[i];
+        const remaining = q.items.len - i; // includes `item` itself
+        if (final.items.len + remaining >= target) {
+            try final.append(gpa, item); // enough breadth already — stop subdividing
+            continue;
+        }
+        var children: std.ArrayList(WorkItem) = .empty;
+        defer children.deinit(gpa);
+        const expanded = expandOneLevel(gpa, io, item.prefix, built_ns, a, out, &children) catch false;
+        if (!expanded or children.items.len == 0) {
+            try final.append(gpa, item); // leaf: unopenable, empty, or all-files
+        } else {
+            try q.appendSlice(gpa, children.items);
+        }
+    }
+    return final.toOwnedSlice(gpa);
+}
+
+/// One work-stealing pool member: pulls the next unclaimed `WorkItem` off the
+/// shared atomic cursor and fully walks it into its own private page-backed
+/// arena (no shared-allocator contention across threads, same principle the
+/// old per-root shards used — just applied over many more, better-balanced
+/// items instead of six static ones).
+const Worker = struct {
     io: std.Io,
-    root: []const u8,
+    items: []const WorkItem,
+    cursor: *std.atomic.Value(usize),
     built_ns: i128,
     arena: std.heap.ArenaAllocator,
     out: std.ArrayList([]const u8) = .empty,
 };
 
-fn walkShard(sh: *WalkShard) void {
-    const a = sh.arena.allocator();
-    var w = haystack.Walker.init(sh.io, a, sh.root) catch return;
-    defer w.deinit(sh.io);
-    while (w.next(sh.io) catch return) |hay| {
-        const st = hay.dir.statFile(sh.io, hay.name, .{}) catch continue;
-        if (st.mtime.nanoseconds < sh.built_ns) continue;
-        sh.out.append(a, hay.path) catch return;
+fn workerRun(w: *Worker) void {
+    const a = w.arena.allocator();
+    while (true) {
+        const i = w.cursor.fetchAdd(1, .monotonic);
+        if (i >= w.items.len) break;
+        visitItem(w.io, w.items[i].prefix, w.built_ns, a, &w.out);
     }
 }
 
-/// Stat-walk every root in parallel (one thread each, private page-backed arenas
-/// ⇒ no shared-allocator contention), then merge fresh paths into `a`.
+/// Stat-walk every root via a self-balancing work-stealing pool, then merge
+/// fresh paths into `a`. Replaces the old static one-thread-per-root split
+/// (see `buildWorkItems`'s doc comment for why): `target` asks for enough
+/// breadth to keep every core busy regardless of how lopsided the tree is,
+/// so this degrades gracefully both when the box is idle (more workers
+/// actually run concurrently) and when it's contended (short, evenly-sized
+/// work items mean one delayed thread stalls a sliver of the walk, not an
+/// entire multi-thousand-file root).
 fn walkFresh(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, built_ns: i128, a: std.mem.Allocator, out: *std.ArrayList([]const u8)) !void {
-    const shards = try gpa.alloc(WalkShard, roots.len);
-    defer gpa.free(shards);
-    for (roots, 0..) |r, i| shards[i] = .{ .io = io, .root = r, .built_ns = built_ns, .arena = std.heap.ArenaAllocator.init(std.heap.page_allocator) };
-    defer for (shards) |*sh| sh.arena.deinit();
+    const ncpu = std.Thread.getCpuCount() catch 8;
+    const items = try buildWorkItems(gpa, io, roots, built_ns, a, out, ncpu * 8);
+    defer gpa.free(items);
+    if (items.len == 0) return;
 
-    const threads = try gpa.alloc(std.Thread, roots.len);
+    const nworkers = @min(ncpu, items.len);
+    const workers = try gpa.alloc(Worker, nworkers);
+    defer gpa.free(workers);
+    var cursor = std.atomic.Value(usize).init(0);
+    for (workers) |*w| w.* = .{ .io = io, .items = items, .cursor = &cursor, .built_ns = built_ns, .arena = std.heap.ArenaAllocator.init(std.heap.page_allocator) };
+    defer for (workers) |*w| w.arena.deinit();
+
+    const threads = try gpa.alloc(std.Thread, nworkers);
     defer gpa.free(threads);
     var spawned: usize = 0;
-    for (shards) |*sh| {
-        threads[spawned] = std.Thread.spawn(.{}, walkShard, .{sh}) catch break;
+    for (workers) |*w| {
+        threads[spawned] = std.Thread.spawn(.{}, workerRun, .{w}) catch break;
         spawned += 1;
     }
-    for (shards[spawned..]) |*sh| walkShard(sh); // any unspawned roots run inline
+    for (workers[spawned..]) |*w| workerRun(w); // any unspawned workers run inline
     for (threads[0..spawned]) |t| t.join();
 
-    for (shards) |*sh| for (sh.out.items) |p| try out.append(a, try a.dupe(u8, p));
+    for (workers) |*w| for (w.out.items) |p| try out.append(a, try a.dupe(u8, p));
 }

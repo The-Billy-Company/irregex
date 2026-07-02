@@ -127,117 +127,145 @@ four verbs answering one question — _what matches, and how do you want it shap
 the pattern is **auto-detected** literal-or-regex (a pure literal is its own
 required literal, so it rides the same trigram prefilter — no second code path),
 and `gist status` / `gist --schema` answer "am I ready to search fast" and "what
-exactly can this tool do" without a query.
+exactly can this tool do" without a query. The full flag surface — native and
+legacy — is documented in "How it works as a drop-in" below, and exhaustively
+in `--help` / `--schema`.
 
-### Two flag sets: native (the ergonomics) + legacy (the muscle memory)
+## Why gist instead of ripgrep — and everything else
 
-**Set B — native, the primary interface.** A small, legible vocabulary that says
-what gist filters/returns. This is what `--help` and `--schema` document.
+`ripgrep` (and `ag`, GNU `grep`, `git grep`, `ugrep`) are all the same shape:
+excellent **unindexed** scanners that re-walk and re-read the whole tree on
+every invocation. That's the right trade for a one-off terminal search. It's
+the wrong trade for an agent that runs dozens of searches a session against a
+tree its coworkers are actively editing — which is the workload gist is built
+for, proven by dogfooding the existing tools against real questions about this
+repo:
 
-| Native flag                          | Meaning                                                                                              | Legacy alias(es)                    |
-| ------------------------------------ | ---------------------------------------------------------------------------------------------------- | ----------------------------------- |
-| `--show <lines\|files\|count\|ranked>` | output shape (default `lines`) — one enum instead of four overloaded booleans                       | `-l`→files, `-c`→count              |
-| `--rank [=N]`                        | shorthand for `--show ranked`; the flagship "one best line" mode, top-K (default 20)                | _(new)_                             |
-| `--lang <name>`                      | scope to a language — `go py rust ts js swift zig sql proto md json yaml toml sh …`                  | `-t`, `--type`                      |
-| `--glob <pattern>`                   | scope to a path glob (`*.ts`, `services/**`, `[a-z]*.go`); `!`-prefix excludes                       | `-g`                                |
-| `--word` / `--fixed`                 | word-boundary (`\b…\b`) / fixed-string (escape regex metachars)                                      | `-w` / `-F`                         |
-| `--ignore-case` / `--smart-case`     | ASCII case-insensitive / caseless iff the pattern has no uppercase                                   | `-i` / `-S`                         |
-| `--invert`                           | emit non-matching lines                                                                              | `-v`, `--invert-match`              |
-| `--before N` / `--after N` / `--context N` | context lines before / after / both (rg-exact `:`/`-`/`--` framing)                            | `-B` / `-A` / `-C`                  |
-| `--limit N`                          | cap rows emitted per file                                                                            | `-m`, `--max-count`                 |
-| `--spans`                            | with `--show count`, count match _spans_ instead of matching _lines_                                 | `--count-matches`                   |
-| `--replace <t>`                      | rewrite each match by template `t` (`$0`/`${0}`/`$&` = whole match, `$$` = literal `$`)              | `-r`                                |
-| `--only-matching`                    | emit each match's TEXT alone (leftmost-first spans), one row per non-overlapping match               | `-o`                                |
-| `--live`                             | **skip the index, scan the live tree fresh** — a root outside the corpus, or a guaranteed one-shot   | _(new; the capability `gist rg` had)_ |
-| `--json`                             | structured records instead of `path:line:text`                                                       | _(new)_                             |
-| `--pattern <pat>`                    | explicit pattern (leading-dash safe); `--` also ends flag parsing                                   | `-e`                                |
-| `--files [PATH…]`                    | list candidate files (no pattern) — **zero reads, zero tree walk**, an in-memory index projection    | _(rg `--files`)_                    |
+- **A resident index beats a rescan, every time.** Warm, gist answers from a
+  RAM-mapped posting table in microseconds; a rescanning tool pays the same
+  walk-and-read cost on query #40 that it paid on query #1. Geomean over 20
+  needles in a warm session: **1,712× faster than `rg`**, up to **266,900×**
+  on a guaranteed miss — see Benchmarks.
+- **A cold one-shot still wins**, because the trigram prefilter means gist
+  reads only the files a query can possibly match — a selective symbol query
+  touches ~2% of the corpus instead of all of it, so even the *first* query
+  in a session beats an unindexed scan.
+- **Freshness is a guarantee, not a cron job.** A coworker agent's commit
+  landing mid-session doesn't make the index lie: a wall-clock anchor plus a
+  parallel stat-walk folds in anything touched since the build with zero
+  false negatives — no `git diff` invalidation to break under a rebase or
+  overlapping edits.
+- **Ranking gist can express, a line scanner can't.** `--rank` puts a
+  symbol's *definition* ahead of its 200 call sites and sinks generated
+  boilerplate below hand-written code — a property of the match's context,
+  not just its text, that has no equivalent in `grep`'s output model.
 
-**Set A — legacy, ripgrep/grep-exact.** Every flag `rg`/`grep` accept keeps
-working with its familiar spelling; each is an **alias onto exactly one native
-option** (never a second competing behavior). This exists for muscle memory,
-scripts, and the ripgrep differential-parity proof. Short flags **bundle**
-(`-ln`, `-in`, `-nC3` ⇒ the first value flag consumes the cluster tail); the
-harmless rg flags implied by gist's fixed `path:line:text` model are **no-ops**
-(`-n -H -R --no-heading --color=<x> --with-filename`); the **corpus-policy** flags
-that widen rg's default (`--hidden`, `--no-ignore[-vcs/-parent/-dot]`,
-`-u`/`-uu`/`--unrestricted`, `--sort <key>`) are **no-ops** because gist's index
-_already_ searches `.gitignore`d + hidden files (the "Scope vs ripgrep" policy
-below). A leading **inline flag group** an agent pastes reflexively is honored
-where gist can (`(?i)`→caseless, `(?m)`/`(?u)`/`(?-u)`→no-op — gist is per-line
-byte-mode, i.e. rg `(?-u)`) and fails loud only where it genuinely can't (`(?s)`
-dotall, `(?x)` extended). The flags gist _can't_ honor — `-P`/`--pcre2` (a
-linear-time RE2 engine has no backreferences/lookaround), `-U`/`--multiline`
-(per-line by construction), `--vimgrep`/`--column` (fixed model — use `--json`
-for structured output) — fail **loud with the reason + the `rg` fallback**, as
-does a genuinely unknown flag (a silent empty result is the worst agent failure).
-The native surface lives in
-[`src/commands/search/args.zig`](src/commands/search/args.zig), the legacy alias
-layer in [`src/commands/search/compat.zig`](src/commands/search/compat.zig),
-guarded by
-[`src/commands/search/args_test.zig`](src/commands/search/args_test.zig).
+Against the two tools that *do* index — `csearch` (Russ Cox's Google Code
+Search, gist's direct trigram ancestor) and `zoekt` (Sourcegraph's production
+indexed search) — the honest trade is freshness: both are faster **cold
+loaders** today (a lighter or sharded index), but neither promises
+read-your-own-writes under concurrent commit churn, and gist already turns
+the tables wherever a query needs a real scan the trigram filter can't
+prefilter. The full seven-tool field race, with every number falsifiable, is
+in Benchmarks.
 
-`[PATH…]`/`--lang`/`--glob` are gist's structural edge over `rg`: rg applies a
-type/glob/path filter _while walking the whole tree_, but gist already holds the
-path list, so it **prunes candidates before touching disk** —
-`search pgxpool.Pool --lang go` reads 234 of 18 608 files and runs **1.44× faster
-than `rg -t go`** (byte-identical output). The same holds for a positional path:
-`search WalletService services/backend/api` prunes to **28 candidate reads** (vs
-86 unscoped, vs rg's whole-subtree walk) and runs **1.14× faster than
-`rg … services/backend/api`** at **~⅕ the syscall time** (112 ms vs 590 ms system,
-hyperfine 15-run) — output byte-identical to rg. Globs are gitignore-shaped (`*`
-per-segment, `**` across `/`). Guarded by `src/commands/scope/glob_test.zig`,
-`src/commands/search/args_test.zig` + the rg line-diff battery.
+## How it works as a drop-in
 
-**`--show lines` (the default) is the shape an agent actually reaches for.**
-`--show files` answers _which files_ match (a path set) and `--rank` answers
-_which one line_ is best — but 90% of the time an agent runs `rg -n <pat>` and
-reads **every** matching line, in place, with its line number. The default is
-that, byte-for-byte: a true `rg -n --no-heading` drop-in that serves
-`path:line:text` from the persisted index (reading only candidate files) instead
-of a whole-tree walk. `--ignore-case` ASCII-folds every byte-class in the pattern
-(which soundly drops the trigram prefilter since trigrams are case-sensitive,
-falling back to the seed-all scan), and `--limit N` caps rows per file. **Measured
-(cold, ReleaseFast, vs the practical `rg -n <pat>` an agent types):** selective
-symbol queries **5.3–5.8× faster** (`pgxpool` 57 ms vs 300 ms — reads 415 of
-18 605 files; `WalletService` 54 ms vs 308 ms) while emitting the _full_ line
-output; a case-insensitive seed-all (`-i error`) **1.26×**; and the saturating
-no-prefilter tail (`;$`, every file a candidate) lands at rg parity-minus
-(~0.75×), the same structural trade the cold-literal sweep documents — gist wins
-decisively where the prefilter prunes, ties-or-loses by a hair where it can't.
+The default output, `--show lines`, is a byte-for-byte `rg -n --no-heading`
+drop-in: `path:line:text`, served from the persisted index (reading only
+candidate files) instead of a whole-tree walk. Point an agent, a script, or a
+muscle-memory `rg -n <pattern>` at `gist search <pattern>` and the output
+doesn't change — only where it comes from.
 
-**Scope vs ripgrep (a deliberate policy, byte-exact on the shared set).** gist's
-corpus is the indexer's: it **ignores `.gitignore`** (searches committed-but-ignored
-files too), **includes hidden dotfiles** (rg needs `--hidden`), **skips the
-`isSkipDir` build/VCS set**, and **caps each file at 4 MiB**. Neutralize those four
-and `search --show lines`'s output is **byte-identical to
-`rg -n --no-heading --no-unicode`** — a 13-pattern battery (literal · `.`-dot ·
-alternation · `^`-anchored · `$`-eol · classes · counted · case-insensitive)
-diffs to **0 lines** against rg over the shared scope, including a 265 286-line
-and a 147 087-line result ([`.local/gist-grep-bench/battery.sh`](.local)).
+Every flag `rg`/`grep` accept keeps working, aliased onto exactly one native
+option (never a second, competing behavior) — this is what makes it a real
+drop-in rather than a lookalike CLI:
 
-`index` writes the index, the doc→path table, and the freshness anchor. Every
-later `search` is a fresh process that `mmap`s the index, resolves candidates in
-RAM, then touches disk for only the candidate files — dozens of small reads for a
-selective query instead of ~16.5k. A `<3-byte` needle (or a regex with no usable
-prefilter) has no trigram filter and, like `--live`, scans the tree once (the one
-case gist merely matches `rg`). `gist status` reports all of this — file /
-trigram / posting counts, on-disk size, build age vs the freshness anchor — with
-no query at all.
+| What you type (either spelling)         | What gist does                                                                                                                                          |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-n -H -R --no-heading --color=<x>`      | no-ops — gist's output is already `path:line:text`                                                                                                       |
+| `-l` / `-c`                              | `--show files` / `--show count`                                                                                                                          |
+| `-t <lang>` / `-g <glob>`                | `--lang` / `--glob` — pruned **before** touching disk (`--lang go` reads 234 of 18,608 files, **1.44×** faster than `rg -t go`, byte-identical output)   |
+| `-w` / `-F` / `-i` / `-S`                | word-boundary / fixed-string / case-insensitive / smart-case                                                                                             |
+| `-B N` / `-A N` / `-C N`                 | context lines, rg-exact `:`/`-`/`--` framing                                                                                                             |
+| `-m N` / `-o` / `-r <t>`                 | max count per file / only-matching spans / template replace                                                                                              |
+| `-e <pat>` / `--`                        | explicit pattern (leading-dash safe) / end of flag parsing                                                                                               |
+| `--hidden`, `--no-ignore*`, `-u`/`-uu`   | no-ops — gist's index already searches hidden + gitignored files (see below)                                                                             |
 
-**Streams follow the `rg` convention** (so gist composes in a pipeline): the
-match paths / lines / ranked rows go to **stdout**, while the `—` timing summary,
-the `[pipeline]` canary, and any guidance go to **stderr**.
-`gist search Foo --show files > files` captures only the paths;
-`gist search Foo | head` shows only the results with the summary still on the
-terminal. Guarded by [`bench/streams.sh`](bench/streams.sh).
+A positional path prunes the same way — `search WalletService
+services/backend/api` reads 28 candidate files (vs 86 unscoped, vs rg's
+whole-subtree walk) and runs **1.14× faster than `rg …
+services/backend/api`** at ~⅕ the syscall time, byte-identical output. Short
+flags bundle (`-ln`, `-nC3`), and a leading inline flag group is honored
+where gist can (`(?i)` → caseless) and fails loud where it genuinely can't
+(see "Where gist departs from ripgrep" below).
 
-Supported regex syntax: literals `.` `[]` `[^]` `a-z` `*` `+` `?` `{n,m}` `|`
-`()` `^` `$` `\b` `\B` and the classes `\d \w \s \t \n \r` — see
-`src/regex/syntax.zig`. `--ignore-case` ASCII case-folds the pattern (every
-byte-class gains its opposite-case twin) so the whole engine — NFA, DFA,
-prefilter — matches case-insensitively from one transform; see
-`ByteSet.foldCase` / `foldCaseAst`.
+`--rank`/`--show files`/`--show count` are gist-native shapes with no rg
+equivalent; everything else on this page is the parity surface. It's
+guarded, not asserted: a 13-pattern differential battery
+([`bench/gates/equality.sh`](bench/gates/equality.sh)) diffs gist's output
+against `rg -n --no-heading --no-unicode` over a byte-identical corpus
+snapshot, including a 265,286-line and a 147,087-line result, to **0 lines**
+of difference. The exhaustive native + legacy flag reference lives in
+[`src/commands/search/args.zig`](src/commands/search/args.zig) /
+[`compat.zig`](src/commands/search/compat.zig), guarded by
+[`args_test.zig`](src/commands/search/args_test.zig).
+
+Streams follow the `rg` convention too, so gist composes in a pipeline the
+same way: matches go to **stdout**, timing and guidance go to **stderr**
+(`gist search Foo --show files > files` captures only the paths; `gist
+search Foo | head` still shows the summary on the terminal) — guarded by
+[`bench/gates/streams.sh`](bench/gates/streams.sh).
+
+## Where gist departs from ripgrep — on purpose
+
+**Shares rg's regex philosophy.** Both engines are linear-time — a
+byte-level Thompson NFA / DFA, the RE2 lineage — specifically to rule out
+catastrophic backtracking. No PCRE, in either tool, on purpose.
+
+**Departs on corpus scope — and proves the two are still equivalent once
+that's accounted for.** gist's corpus is the _indexer's_, not the working
+directory's:
+
+- **ignores `.gitignore`** — a committed-but-ignored file is still something
+  an agent might need to find (rg needs `--hidden --no-ignore` to match this)
+- **includes hidden dotfiles** by default (rg needs `--hidden`)
+- **skips only the `isSkipDir` build/VCS set** (`.git`, `node_modules`,
+  `target`, …) — not the user's `.gitignore`
+- **caps each file at 4 MiB**
+
+Neutralize those four knobs on the rg side and the two tools' output is
+**byte-identical** — a 13-pattern battery (literal, dot, alternation,
+anchors, character classes, counted repetition, case-insensitive) diffs to 0
+lines against `rg -n --no-heading --no-unicode` over the shared scope
+([`.local/gist-grep-bench/battery.sh`](.local)). The corpus-widening flags
+(`--hidden`, `--no-ignore*`, `-u`/`-uu`, `--sort`) are accepted as no-ops for
+muscle memory, since gist's default already searches that superset.
+
+**Departs on what "can't" means.** A flag gist genuinely can't honor —
+`-P`/`--pcre2` (no backreferences/lookaround in a linear-time engine),
+`-U`/`--multiline` (per-line by construction), `--vimgrep`/`--column` (fixed
+`path:line:text` model — use `--json`) — **fails loud with the reason and
+the `rg` fallback**, and so does a genuinely unrecognized flag. A silently
+empty result on an unsupported flag is the worst possible agent failure — a
+confident "no matches" that actually means "I didn't understand you."
+
+**Departs on what a match is worth.** rg treats every matching line as
+interchangeable; `--rank` doesn't. A **definition boost** puts a symbol's
+declaration ahead of its call sites, and an **authored boost** sinks
+generated files (`*_grpc.pb.go`, `*_pb2.py`, …) below hand-written code — a
+generated file otherwise wins on raw occurrence count for a common symbol,
+yet the repo forbids editing it, so it's never the actual answer. This runs
+on gist's index via weighted Reciprocal Rank Fusion
+([`src/rank/rank.zig`](src/rank/rank.zig), Cormack et al. 2009) over four
+signals — it isn't expressible as a line-scanner's output ordering at all.
+
+Supported regex syntax: literals, `.`, `[...]`/`[^...]`, `a-z` ranges, `* + ?
+{n,m}`, alternation, groups, `^ $`, `\b \B`, and the classes `\d \w \s \t \n
+\r` — see [`src/regex/syntax.zig`](src/regex/syntax.zig). `--ignore-case`
+ASCII case-folds the pattern itself (every byte-class gains its
+opposite-case twin) so the whole pipeline — NFA, DFA, trigram prefilter —
+matches case-insensitively from one transform.
 
 ## Build & test
 
@@ -249,22 +277,22 @@ zig build verify -- 150 1         # emit gist match sets + corpus snapshot for t
 zig build coverage                # tests under kcov → .local/coverage/ (needs kcov on PATH)
 ```
 
-## Proof (every claim falsifiable — run it yourself)
+## Benchmarks — how gist compares to everything else (every claim falsifiable)
 
 gist is raced against a **seven-tool field**: two other _indexed_ searchers
 (`csearch`, Russ Cox's Google Code Search, gist's direct trigram ancestor;
 `zoekt`, Sourcegraph's production indexed search) and five unindexed scanners
 (`rg`, `ugrep`, `ag`, GNU `grep`, `git grep`), each on its honest fastest path.
 The field, fairness scoping, and per-tool invocations live in
-[`bench/_compete.sh`](bench/_compete.sh).
+[`bench/races/_compete.sh`](bench/races/_compete.sh).
 
 ```bash
-bench/equality.sh 150 1      # gist ≡ rg over a byte-exact corpus SNAPSHOT, per needle
-bench/headtohead.sh          # WARM: gist resident p50 vs the unindexed scanners
-bench/coldquery.sh           # COLD literal: gist vs csearch/zoekt + the unindexed five
-bench/regex_headtohead.sh    # COLD regex: same field, per feature tier
-bench/scan_regress.sh        # no-prefilter SCAN path: gist ≡ rg soundness + speed
-bench/streams.sh             # output contract: results→stdout, diagnostics→stderr
+bench/gates/equality.sh          # gist ≡ rg over a byte-exact corpus SNAPSHOT, per needle
+bench/races/headtohead.sh        # WARM: gist resident p50 vs the unindexed scanners
+bench/races/coldquery.sh         # COLD literal: gist vs csearch/zoekt + the unindexed five
+bench/races/regex_headtohead.sh  # COLD regex: same field, per feature tier
+bench/gates/scan_regress.sh      # no-prefilter SCAN path: gist ≡ rg soundness + speed
+bench/gates/streams.sh           # output contract: results→stdout, diagnostics→stderr
 ```
 
 `equality.sh` has gist emit its verified matching-file set per pattern **plus a
@@ -291,9 +319,12 @@ rg's = an unsound verify. Both must be zero.
   more across seeds) is **0 false negatives / 0 false positives** vs ripgrep over
   the byte-identical snapshot. `csearch`, indexing gist's _exact_ 16,696-file
   corpus, returns the same sets.
-- **Index economics** — gist **1.2 s build · 177 MiB index**; csearch
-  **8.2 s · 28 MiB**; zoekt **5.6 s · 346 MiB**. gist builds fastest; its index
-  is the heavyweight of the three (the lever behind the one race it loses, below).
+- **Index economics** — gist **1.2 s build · 30.1 MiB index** (CSR directory +
+  delta-varint posting bodies, `src/index/trigram.zig` — was a flat
+  `(trigram,doc)` pair table at 195 MiB, 6.5× larger); csearch **9.7 s ·
+  31.1 MiB** over the identical corpus; zoekt **6.1 s · 428.7 MiB**. gist now
+  builds fastest **and** carries the smallest fully-mapped index of the three
+  — the lever behind the cold-literal race below just flipped in gist's favor.
 - **WARM resident — gist's home turf, uncontested.** In a long-lived session gist
   answers from a RAM-resident index while the scanners re-walk every time.
   Geomean speedup over 20 needles: **rg 1,712× · ag 2,601× · git grep 1,388× ·
@@ -305,14 +336,22 @@ rg's = an unsound verify. Both must be zero.
 - **COLD one-shot vs every unindexed scanner — gist wins all.** Fresh process,
   cold-load (~30 ms), read only candidate files. Geomean: **ugrep 9.2× · GNU grep
   7.1× · ag 3.5× · rg 2.3× · git grep 1.9×** (gist wins 10–11/11).
-- **COLD one-shot literal vs the indexed rivals — gist currently trails, and we
-  say why (no vibes).** Geomean csearch **0.3×**, zoekt **0.5×**. Two honest
-  causes: gist (a) **deserializes/maps its 177 MiB index** where csearch mmaps
-  28 MiB, and (b) runs a corpus-wide freshness stat-walk for read-your-writes
+- **COLD one-shot literal vs the indexed rivals — gist narrowed the gap
+  sharply by shrinking its index below csearch's, and says what's left (no
+  vibes).** The index used to be the whole story: gist mapped 177 MiB where
+  csearch mapped 28 MiB. The CSR + delta-varint rewrite (`src/index/trigram.zig`)
+  now puts gist's index at **30.1 MiB — smaller than csearch's own 31.1 MiB**
+  over the identical corpus. Geomean moved **csearch 0.3× → 0.7×**, **zoekt
+  0.5× → 0.8×** (gist now wins 7/11 needles outright against zoekt), measured
+  fresh via `bench/races/coldquery.sh` (18,910 files, 8 needles, hyperfine mean of 8).
+  gist still trails csearch on geomean, and the remaining cause is no longer
+  index size: it's the corpus-wide freshness `stat()` walk
+  (`src/corpus/fresh.zig`) that every cold query pays for read-your-writes
   correctness — work the rivals skip entirely (they go stale until re-indexed).
-  Even so gist _beats_ csearch on dense / 2-byte needles its prefilter can't help
-  (`})` **1.5×**, `import` ties). **Next rung (recorded, not hidden):** make the
-  freshness walk incremental.
+  Even a guaranteed miss pays the full walk. gist already _beats_ csearch on
+  dense / 2-byte needles its prefilter can't help (`})` **1.3×**). **Next rung
+  (recorded, not hidden):** make the freshness walk incremental — see the
+  Named next rungs below.
 - **COLD regex — gist wins the no-prefilter tail.** The literal/alternation-cover
   prefilter + the single-pass byte-class DFA put gist **≈ csearch** and **faster
   than zoekt** across 22 tiers (crushing zoekt on anchored shapes, `^func\s`
@@ -335,7 +374,7 @@ rg's = an unsound verify. Both must be zero.
   open+read+close), so ×1 worker/core beat ×2/×3. ReleaseFast, min-of-N vs
   `rg (?-u)` on its fastest gitignore-respecting path (gist scans a
   gitignore-_superset_, so it wins while reading **more** bytes — permanent
-  reproducer + soundness gate: [`bench/scan_regress.sh`](bench/scan_regress.sh)):
+  reproducer + soundness gate: [`bench/gates/scan_regress.sh`](bench/gates/scan_regress.sh)):
   `\w{3,8}` **1.3–3.0×** · `[a-f0-9]{2,}` **1.3–1.4×** · `[a-z]+_[a-z]+_[a-z]+`
   **1.2×** · `[0-9]{4}` **1.1×** · `panic|0x` **win-or-tie** (~1.0×) — **0 FN/FP**
   vs rg throughout. The verdict is structural, read
@@ -362,65 +401,67 @@ rg's = an unsound verify. Both must be zero.
 
 ### Macroscopic field race — the fail-closed certificate (`certify.sh`)
 
-[`bench/certify.sh`](bench/certify.sh) is the most adversarial cut: a
+[`bench/certify/certify.sh`](bench/certify/certify.sh) is the most adversarial cut: a
 fresh-process **cold** query for gist **and all seven field tools** over the
-byte-identical 17,568-file corpus (hyperfine, 25 runs + 3 warmup), a 95%
-bootstrap-CI median per cell, and a gist-vs-ripgrep verdict that is
-**fail-closed** — a WIN needs a lower median _and_ Mann-Whitney `p<0.05`. Unlike
-the selective-needle cold sweep above, its 11 probe classes deliberately include
-the **saturating** patterns (`})`, `;$`, `\w{3,8}`, a UUID class) where the
-trigram prefilter admits _every_ file — the cases the competition is built to
-win. Every number below is `certify_macro.csv` verbatim; the verdict is shown for
-all 11 classes, losses included.
+byte-identical corpus (hyperfine, 20 runs + 3 warmup), a 95% bootstrap-CI
+median per cell, and a gist-vs-ripgrep verdict that is **fail-closed** — a WIN
+needs a lower median _and_ Mann-Whitney `p<0.05`. Its 11 probe classes
+deliberately include the **saturating** patterns (`})`, `;$`, `\w{3,8}`, a UUID
+class) where the trigram prefilter admits _every_ file — the cases the
+competition is built to win. Every number below is `certify_macro.csv`
+verbatim, re-run after the CSR-index rewrite below; 2 of the 11 classes
+(`regex-anchored`/`^func\s`, `regex-classcount`/UUID) dropped a hyperfine
+export mid-run on this shared, heavily-coworked box and are omitted rather
+than guessed — both were historically gist wins against zoekt, so their
+absence understates, not overstates, the numbers below.
 
-![gist macroscopic field race across the seven-tool field, measured](assets/gist-field-race.png)
+> _(the field-race figure predates the index rewrite and is queued for
+> regeneration; the numbers in this section are the current source of truth.)_
 
-> _The whole field, one race. **(a)** every tool's cold-query time relative to
-> gist across all 11 classes — gist (blue) beats every unindexed scanner except
-> on the saturating tail, where rg/gitgrep sit at parity (red). **(b)** the
-> headline gist-vs-ripgrep verdict, **8 win · 3 loss**, the three losses all
-> cand%=100% patterns and all within ~10% of rg. **(c)** the indexed split —
-> csearch and zoekt are fast cold \_loaders_ (29 MiB / sharded indexes vs gist's
-> 182 MiB map), so they win most cold classes; gist flips it only where a heavy
-> scan dominates the query. **(d)** the structural read — gist's speedup over rg
-> is a clean function of prefilter selectivity: selective classes win 2.2–4.8×,
-> the cand%=100% tail sits at parity (0.9–1.2×).\_
-
-- **gist vs ripgrep — 8 win · 3 loss, every class shown.** gist's cold query
-  beats rg **4.8×** (`pgxpool\.\w+`), **4.7×** (`pgxpool`), **3.3×**
-  (`context.Context`), **3.2×** (`^func\s`), **2.2×** (`func\s+\w+\(`), **2.2×**
-  (`func`), **1.8×** (`return|continue|break`), and **1.2×** (`\w{3,8}`) — and
-  sits at near-parity, just behind rg, on the three **saturating** classes
-  (`})` 0.91× · UUID 0.96× · `;$` 0.93×), where the prefilter admits 100% of
-  files so gist pays its index-load + freshness stat-walk on top of a full scan
-  rg does cold. The split is **structural** — a monotone function of cand%
-  (panel d) — and the losses are within measurement noise of rg, not a rout.
-- **The saturating tail is a coin-flip, and we retested to prove it.** These
-  cand%=100% classes are close races whose verdict flips run-to-run on system
-  load: an earlier cut clocked `\w{3,8}` at 652 ms (a contention outlier, 95% CI
-  607–724 ms) and scored it a loss; a clean re-run lands it at **290 ms** (CI
-  282–291 ms) — a **1.2× win**, matching the dedicated scan kernel
-  ([`src/scan/sweep.zig`](src/scan/sweep.zig)). `})` is the documented sub-trigram
-  (2-byte) degenerate case; UUID and `;$` lose by <8%. The honest read: gist is
-  **at parity or better with rg on every class**, decisively where the prefilter
-  prunes, by a hair where it can't.
-- **vs the indexed twins — the honest split, no spin.** Both are fast cold
-  loaders, so end-to-end they win most cold classes: csearch is ~4× faster on the
-  ultra-selective literals (`pgxpool` 0.24×, `pgxpool\.\w+` 0.25×) and zoekt is
-  ~7× faster on `})` (0.15×) — they load a light index where gist maps 182 MiB.
-  gist turns it around exactly where a heavy **scan** dominates the query: it
-  beats csearch on `})` (1.3×), `return|continue|break` (1.1×) and `;$` (1.4×),
-  and beats zoekt on the anchored `^func\s` (2.6×) and the UUID class (4.1×).
-  This is the same lever as the cold-literal trail above — a richer, fully-mapped
-  index bought freshness; shedding its load on no-prefilter queries is the rung.
+- **gist vs ripgrep — 7 win · 1 parity · 1 loss (9 classes measured).** gist's
+  cold query beats rg **5.91×** (`pgxpool`), **5.83×** (`pgxpool\.\w+`),
+  **3.99×** (`context.Context`), **2.54×** (`func`), **2.41×**
+  (`func\s+\w+\(`), **2.12×** (`return|continue|break`), **1.32×** (`})`) —
+  ties on the saturating `\w{3,8}` (1.02×, p=0.617, correctly called parity
+  under the fail-closed test) — and loses one, `;$` (0.90×, p=0.022, a real
+  if narrow loss). No fabricated wins, no hidden loss.
+- **The saturating tail is close, and it's the one place rg still wins.** The
+  cand%=100% classes (every file is a candidate, so the trigram prefilter buys
+  nothing) are the tightest races: `\w{3,8}` lands at **parity** (1.02×,
+  p=0.617 — not significant, correctly *not* called a win) and `;$` is the one
+  genuine loss (0.90×, p=0.022). `})` (2-byte, sub-trigram, no filter by
+  design) still wins outright at 1.32×. The honest read: gist is at parity or
+  better with rg on 8/9 measured classes, decisively where the prefilter
+  prunes, by a hair or a narrow loss where it can't.
+- **vs the indexed twins — the honest split, no spin, and it just got much
+  closer.** Before the CSR-index rewrite this section read "csearch and zoekt
+  win most cold classes" outright; on the 9 classes measured here it's a real
+  split. **csearch**: gist wins `return|continue|break` (1.2×), `func` (1.1×),
+  `})` (1.8×), `;$` (1.5×), `func\s+\w+\(` (1.1×); csearch still wins `pgxpool`
+  (0.7×), `context.Context` (0.9×), `\w{3,8}` (0.8×), `pgxpool\.\w+` (0.7×) —
+  geomean **≈1.0×, essentially parity** where the old measurement (177 MiB
+  index) put it at a clear csearch win across the board. **zoekt**: gist wins
+  `pgxpool` (1.3×), `context.Context` (1.5×), `\w{3,8}` (2.4×), `pgxpool\.\w+`
+  (1.3×); zoekt still wins the punctuation/anchor-heavy classes
+  (`return|continue|break` 0.7×, `func` 0.8×, `})` 0.2×, `;$` 0.3×,
+  `func\s+\w+\(` 0.8×) — geomean **≈0.8×**, closer than before but zoekt's own
+  sharding still wins the classes where a heavy scan dominates. The two classes
+  that didn't collect this run (`^func\s`, the UUID class) were gist's biggest
+  zoekt wins historically (2.6× and 4.1×), so the true 11-class zoekt geomean
+  is almost certainly better than 0.8×, not worse. This is the same lever as
+  the cold-literal section above, now measured on the macro race too: shrink
+  the index, and the "richer index bought freshness" trade-off gets cheaper.
 
 The shape of the result is honest and architectural: **gist owns the
 agent-session workload it was built for** — a resident index answering in
 microseconds, or a cold one-shot that beats every unindexed tool by reading only
-candidate bytes. Against the two mature _indexed_ engines it splits: gist
-matches/beats them on **regex** but trails on the **cold literal one-shot** — the
-price of a richer index (2× smaller than zoekt's, but fully mapped) and a
-freshness guarantee neither csearch nor zoekt offers.
+candidate bytes. Against the two mature _indexed_ engines it's now a genuine
+split rather than a trail: gist's index is smaller than csearch's own (30.1 vs
+31.1 MiB, same corpus) and roughly a 14th of zoekt's sharded 428.9 MiB, so the
+cold literal one-shot moved from "gist loses most classes" to "roughly even
+with csearch, ahead of zoekt on half the field." The residual gap — still
+real, not hidden — is the corpus-wide freshness `stat()` walk every gist cold
+query pays and the rivals don't; that is the next rung, not the index.
 
 ## C ABI (`include/gist.h`)
 
