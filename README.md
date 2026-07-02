@@ -487,6 +487,40 @@ over zoekt. The residual gap — still real, not hidden — is the corpus-wide
 freshness `stat()` walk every gist cold query pays and the rivals don't
 (they go stale until re-indexed); that is the next rung, not the index.
 
+### Certificate of Optimality — from "fastest in the field" to "at the limit"
+
+The field race above is **Layer A**: gist is empirically fastest in its class,
+statistically fail-closed. Three further layers turn that into a claim about the
+_theoretical_ ceiling — that no implementation on this chip can go materially
+faster — each cheapest-evidence-first, all splicing into one generated
+`.local/gist-verify/CERTIFICATE.md` (recipe + full tables in
+[`bench/README.md`](bench/README.md), rationale in
+[ADR-320](../../../docs/architecture/3-decisions/320-gist-optimality-certificate-layers.md)):
+
+- **Layer B — port-optimality** ([`bench/portcert/`](bench/portcert/README.md)):
+  byte-faithful copies of the two hot loops, cross-compiled and scored by
+  `llvm-mca`. `simd_contains` is throughput-bound at its port ceiling
+  (**0.031 cyc/byte** on znver4); `dfa_step` is a latency-bound pointer chase
+  (**1.3 cyc/byte**, the loop-carried transition recurrence). LLVM has no
+  Apple-Silicon model, so the bound is taken on `znver4`/`neoverse-v2` reference
+  cores — an honest cross-check, not a fabricated M-series number.
+- **Layer C — roofline** ([`bench/roofline/`](bench/roofline/README.md)):
+  gist's scan runs at **~29% of the measured single-core DRAM ceiling**, so the
+  verify path is **memory-bandwidth-bound** — the real win is the trigram
+  prefilter keeping bytes away from it, not the scan going faster.
+- **Layer D — algorithmic lower bound** ([`bench/lowerbound/`](bench/lowerbound/README.md)):
+  a fail-closed byte-touch audit proving verify reads each candidate byte
+  **exactly once** (fused DFA, `passes ≡ 1.0000`) or fewer (SIMD skips) —
+  the Ω(candidate-bytes) floor — with the trigram filter pruning the rest of the
+  corpus untouched. **All 11 classes sit at the floor.**
+
+Together: the loop is as tight as the instruction ports allow (B), already reads
+a large fraction of what memory can deliver (C), and touches the theoretical
+minimum number of bytes (D) — the three ceilings Layer A's empirical dominance
+converges toward. The probe copies are drift-guarded against the production hot
+loops (`zig build test`), and each layer degrades to a documented skip rather
+than inventing a number for hardware it can't measure.
+
 ## C ABI (`include/gist.h`)
 
 - `gist_abi_version() -> u32`
