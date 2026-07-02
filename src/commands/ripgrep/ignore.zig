@@ -46,6 +46,16 @@ pub const Ignore = struct {
     loaded: std.ArrayList([]const u8) = .empty, // dirs whose ignore files were read
     use_git: bool = false,
     use_dot: bool = false,
+    // Component-depth of the positional root currently being walked (0 for the
+    // implicit whole-CWD walk). ripgrep NEVER ignore-filters a root path named
+    // explicitly on argv — only entries strictly BELOW it (see `walk.rs`'s
+    // `add_parents`: ancestor ignore state is loaded at depth 0, but the depth-0
+    // entry itself is never matched against it, only its depth>0 descendants
+    // are). gist's rules are matched against one path string spanning root+rel
+    // (`Rule.base == ""` covers CWD/ancestor-sourced rules), so `match` must
+    // floor slash-less/anchored matching at this depth to reproduce the same
+    // "the root itself is exempt, its subtree is not" boundary.
+    explicit_root_depth: usize = 0,
 
     /// Build the matcher and load the root-level ignore sources (repo `.gitignore`
     /// + `.git/info/exclude`, `.ignore`/`.rgignore`, and every `--ignore-file`).
@@ -134,6 +144,18 @@ pub const Ignore = struct {
         // A relative commondir is joined to the worktree git dir; an absolute one
         // is used as-is (the OS resolves the embedded `..`).
         return if (cd.len > 0 and cd[0] == '.') join(self.a, real_git_dir, cd) else self.a.dupe(u8, cd) catch die("oom\n", .{});
+    }
+
+    /// Scope subsequent `decide`/`shouldSkip` calls to a positional root path
+    /// (`prefix`, as passed to the walker — may carry a leading `./`) about to
+    /// be walked; `""`/`"."` means the implicit whole-CWD walk. Must be called
+    /// before walking each explicit root (`gather` does this per positional
+    /// PATH arg) so ancestor/CWD-sourced rules (`Rule.base == ""`) can't match
+    /// the root's own path components — only its descendants.
+    pub fn scopeToRoot(self: *Ignore, prefix: []const u8) void {
+        var s = prefix;
+        while (std.mem.startsWith(u8, s, "./")) s = s[2..];
+        self.explicit_root_depth = if (s.len == 0 or std.mem.eql(u8, s, ".")) 0 else std.mem.count(u8, s, "/") + 1;
     }
 
     /// Load the per-directory ignore files for `rel` (relative to the walk root;
@@ -234,6 +256,16 @@ pub const Ignore = struct {
         const rel = stripDot(rel_in); // a `./root` positional prefixes every path
         var sub = rel;
         const base = stripDot(r.base);
+        // A `base==""` rule is CWD/ancestor-sourced (root `.gitignore`, every
+        // `loadParents` row, `.git/info/exclude`): it spans the whole tree, so
+        // `sub` starts at rel's first component same as a whole-CWD walk. When
+        // the walk root is instead an explicit positional path, `rel` carries
+        // that root's own components as its prefix — floor the match at that
+        // depth so a rule can't fire against the root's own path (ripgrep
+        // exempts a depth-0/root entry from every ignore check; see
+        // `scopeToRoot`'s doc comment) while its genuine descendants (deeper
+        // than the root) are still filtered normally.
+        const floor: usize = if (base.len == 0) self.explicit_root_depth else 0;
         if (base.len != 0) {
             if (rel.len <= base.len or !std.mem.startsWith(u8, rel, base) or rel[base.len] != '/') return false;
             sub = rel[base.len + 1 ..];
@@ -243,7 +275,8 @@ pub const Ignore = struct {
             var s = sub;
             var full = true;
             while (true) {
-                if (self.glob(r.glob, s) and (!r.dir_only or !full or is_dir)) return true;
+                const depth = std.mem.count(u8, s, "/") + 1;
+                if (depth > floor and self.glob(r.glob, s) and (!r.dir_only or !full or is_dir)) return true;
                 const slash = std.mem.lastIndexOfScalar(u8, s, '/') orelse return false;
                 s = s[0..slash];
                 full = false;
@@ -253,9 +286,10 @@ pub const Ignore = struct {
         // non-final component is always a directory; the final one only counts for
         // a dir-only rule when the entry itself is a directory.
         var it = std.mem.splitScalar(u8, sub, '/');
-        while (it.next()) |comp| {
+        var idx: usize = 0;
+        while (it.next()) |comp| : (idx += 1) {
             const last = it.index == null;
-            if (self.glob(r.glob, comp) and (!r.dir_only or !last or is_dir)) return true;
+            if (idx >= floor and self.glob(r.glob, comp) and (!r.dir_only or !last or is_dir)) return true;
         }
         return false;
     }

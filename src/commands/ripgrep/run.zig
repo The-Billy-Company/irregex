@@ -219,6 +219,10 @@ fn gather(a: std.mem.Allocator, io: std.Io, roots: []const []const u8, o: Opts, 
             var dir = dir_const;
             dir.close(io);
             const prefix = if (std.mem.eql(u8, r, ".")) "." else std.mem.trimEnd(u8, r, "/");
+            // Exempt this root's own path components from ancestor/CWD-sourced
+            // ignore rules (ripgrep never ignore-filters an explicitly named
+            // root — only what's found beneath it); see `Ignore.scopeToRoot`.
+            ig.scopeToRoot(prefix);
             walkDir(a, io, r, prefix, o, ig, out);
             recursive = true;
         } else |_| {
