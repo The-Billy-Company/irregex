@@ -78,4 +78,64 @@ pub fn build(b: *std.Build) void {
     // Mann-Whitney unit tests. (`bench/harness/bench.zig` imports `gist`; reuse the
     // bench module; the engine tests ride `k.test_step` via `src/root.zig`.)
     k.test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = bench_mod })).step);
+
+    // Shared modules for the Layer B/C/D executables below, each living outside
+    // `bench/harness/`'s module root (Zig forbids importing a source file
+    // outside a module's own root directory) so they're wired as independent,
+    // named modules instead — mirroring how `bench_mod` already wires `gist`.
+    const probes_mod = b.createModule(.{
+        .root_source_file = b.path("bench/harness/probes.zig"),
+        .target = k.target,
+        .optimize = k.optimize,
+    });
+    const pmu_mod = b.createModule(.{
+        .root_source_file = b.path("bench/harness/pmu.zig"),
+        .target = k.target,
+        .optimize = k.optimize,
+    });
+
+    // ── `gist-roofline` — Layer C: single-thread STREAM read-bandwidth ceiling ──
+    const roofline_mod = b.createModule(.{
+        .root_source_file = b.path("bench/roofline/bandwidth.zig"),
+        .target = k.target,
+        .optimize = k.optimize,
+    });
+    roofline_mod.addImport("gist", k.root_module);
+    roofline_mod.addImport("pmu", pmu_mod);
+    roofline_mod.link_libc = true; // pmu.zig's kperf dlopen path, same as bench_mod
+    const roofline_exe = b.addExecutable(.{ .name = "gist-roofline", .root_module = roofline_mod });
+    b.installArtifact(roofline_exe);
+    const run_roofline = b.addRunArtifact(roofline_exe);
+    run_roofline.setCwd(b.path("../../.."));
+    if (b.args) |args| run_roofline.addArgs(args);
+    b.step("roofline", "Layer-C optimality cert: STREAM read-bandwidth ceiling vs gist's scan")
+        .dependOn(&run_roofline.step);
+    k.test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = roofline_mod })).step);
+
+    // ── `gist-lowerbound` — Layer D: algorithmic-floor byte-touch audit ──
+    const lowerbound_mod = b.createModule(.{
+        .root_source_file = b.path("bench/lowerbound/lowerbound.zig"),
+        .target = k.target,
+        .optimize = k.optimize,
+    });
+    lowerbound_mod.addImport("gist", k.root_module);
+    lowerbound_mod.addImport("probes", probes_mod);
+    const lowerbound_exe = b.addExecutable(.{ .name = "gist-lowerbound", .root_module = lowerbound_mod });
+    b.installArtifact(lowerbound_exe);
+    const run_lowerbound = b.addRunArtifact(lowerbound_exe);
+    run_lowerbound.setCwd(b.path("../../.."));
+    if (b.args) |args| run_lowerbound.addArgs(args);
+    b.step("lowerbound", "Layer-D optimality cert: fail-closed algorithmic-floor byte-touch audit")
+        .dependOn(&run_lowerbound.step);
+
+    // Layer-B drift guard (`probes/` copies ≡ the real production hot loops) —
+    // wired into `zig build test` so a silent copy/production divergence fails
+    // CI loudly instead of shipping a stale certificate.
+    const portcert_test_mod = b.createModule(.{
+        .root_source_file = b.path("bench/portcert/probes_test.zig"),
+        .target = k.target,
+        .optimize = k.optimize,
+    });
+    portcert_test_mod.addImport("gist", k.root_module);
+    k.test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = portcert_test_mod })).step);
 }

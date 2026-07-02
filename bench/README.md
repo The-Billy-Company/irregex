@@ -2,15 +2,18 @@
 
 Benchmark, verification, and competitive-proof harness for the `gist`
 code-locator kernel — no engine code lives here (that's all under `src/`).
-Five concerns, five folders:
+Eight concerns, eight folders:
 
 | Folder                      | Concern                                                                                      |
 | ---------------------------- | --------------------------------------------------------------------------------------------- |
-| [`harness/`](harness/README.md)   | The native `gist-bench` Zig binary — corpus load + latency slate, the microscopic cycles/byte certificate, PMU counters, bootstrap statistics. |
+| [`harness/`](harness/README.md)   | The native `gist-bench` Zig binary — corpus load + latency slate, the microscopic cycles/byte certificate, PMU counters, bootstrap statistics, the shared probe registry. |
 | [`races/`](races/README.md)     | The competitor registry (`_compete.sh`) + the three multi-tool field races (warm, cold literal, cold regex). |
 | [`gates/`](gates/README.md)     | Permanent correctness/contract gates: the `gist ≡ rg` equality oracle, the scan-path regression, the stdout/stderr stream-contract check. |
 | [`certify/`](certify/README.md)   | The macroscopic half of the Layer-A optimality certificate — races the whole field per pattern class with a fail-closed statistical verdict. |
 | [`rgsuite/`](rgsuite/README.md)   | The `gist rg` ⇄ real-ripgrep drop-in proof — mined `rgtest!` correctness replay plus the performance scoreboard. |
+| [`portcert/`](portcert/README.md) | Layer B — port-optimality: cross-compiled `llvm-mca` static microarchitectural bound on gist's two hot loops, drift-guarded against production. |
+| [`roofline/`](roofline/README.md) | Layer C — roofline: this machine's measured STREAM read-bandwidth ceiling vs gist's real scan throughput. |
+| [`lowerbound/`](lowerbound/README.md) | Layer D — algorithmic lower bound: a fail-closed structural audit proving gist's verify touches the information-theoretic floor of candidate bytes. |
 
 ```bash
 cd pkg/kernels/gist
@@ -91,34 +94,54 @@ scripts quality`) and given its honest fastest path:
   number — robust to this shared dev box's load because each query's tools run
   back-to-back under the same conditions.
 
-## Certificate of Optimality (Layer A)
+## Certificate of Optimality (Layers A–D)
 
 The race scripts above report _means and ratios_. The **certificate** turns that
 into a claim that is beyond reproach — every number carries a 95% bootstrap
 confidence interval and (vs ripgrep) a Mann-Whitney significance test, so a
 "win" is **statistically real**, not box noise. It is built in four layers,
-cheapest evidence first; **Layer A is implemented**, B–D are the roadmap toward
-"mathematically the fastest it can be":
+cheapest evidence first, and **all four are now implemented**:
 
 | Layer | Claim                                                                 | Status         |
 | ----- | --------------------------------------------------------------------- | -------------- |
 | **A** | empirical dominance — fastest in class on real workloads, fail-closed | ✅ implemented |
-| **B** | port-optimality — hot loop matches the static µarch bound (llvm-mca)  | pending        |
-| **C** | roofline — cycles/byte sits on the hardware ceiling                   | pending        |
-| **D** | algorithmic lower bound — matches the information-theoretic floor     | pending        |
+| **B** | port-optimality — hot loop matches the static µarch bound (llvm-mca)  | ✅ implemented |
+| **C** | roofline — cycles/byte sits on the hardware ceiling                   | ✅ implemented |
+| **D** | algorithmic lower bound — matches the information-theoretic floor     | ✅ implemented |
 
-Layer A has two halves, written into one `.local/gist-verify/CERTIFICATE.md` —
-the **microscopic** half (`zig build certify`, `harness/certify.zig` +
-`harness/pmu.zig` + `harness/stats.zig`, see `harness/README.md`) and the
-**macroscopic** half (`certify/certify.sh` + `certify/certify_stats.py`, see
-`certify/README.md`).
+Every layer writes into the same `.local/gist-verify/CERTIFICATE.md`. Layer A
+has two halves — the **microscopic** half (`zig build certify`,
+`harness/certify.zig` + `harness/pmu.zig` + `harness/stats.zig`, see
+`harness/README.md`) and the **macroscopic** half (`certify/certify.sh` +
+`certify/certify_stats.py`, see `certify/README.md`). **Layer A's run
+rewrites the whole file**, so re-splice B/C/D afterward, in this order:
 
-```bash
-sudo pkg/kernels/gist/zig-out/bin/gist-bench certify   # cycles/byte (run from repo root)
-zig build certify                                        # wall-clock fallback (no sudo)
-```
+Always build **`-Doptimize=ReleaseFast`** — a Debug build is not vectorized and
+its cycles/byte + bandwidth numbers are meaningless (a Debug scan measures loop
+overhead, not the memory hierarchy). The report splicers resolve `.local/` at the
+repo root, so they run from anywhere.
 
 ```bash
 cd pkg/kernels/gist
-RUNS=20 bench/certify/certify.sh    # macroscopic: whole field, fail-closed vs ripgrep
+
+# Layer A — microscopic (cycles/byte; wall-clock fallback without sudo)
+zig build -Doptimize=ReleaseFast certify                 # installs + runs; wall-clock without sudo
+sudo zig-out/bin/gist-bench certify                      # re-run the installed ReleaseFast binary for cycles
+
+# Layer A — macroscopic (whole field, fail-closed vs ripgrep)
+RUNS=20 bench/certify/certify.sh
+
+# Layer B — port-optimality (static llvm-mca bound; needs `brew install llvm`)
+bench/portcert/portcert.sh
+
+# Layer C — roofline (this machine's memory-bandwidth ceiling)
+zig build -Doptimize=ReleaseFast roofline && bench/roofline/roofline_report.py
+
+# Layer D — algorithmic lower bound (fail-closed byte-touch audit)
+zig build -Doptimize=ReleaseFast lowerbound && bench/lowerbound/lowerbound_report.py
 ```
+
+Each layer degrades gracefully rather than failing the whole pipeline: Layer A
+without `sudo` reports wall-clock only; Layer B without `llvm-mca` prints a
+documented skip; none invents a number for hardware it can't measure (e.g. no
+fabricated Apple-Silicon `llvm-mca` model — see `portcert/README.md`).
