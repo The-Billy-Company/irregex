@@ -124,10 +124,22 @@ pub fn main(init: std.process.Init) !void {
         var rest: std.ArrayList([]const u8) = .empty;
         defer rest.deinit(gpa);
         while (it.next()) |arg| try rest.append(gpa, arg);
-        try ripgrep.run(gpa, io, rest.items);
+        try ripgrep.run(gpa, io, rest.items, init.environ_map);
         return;
     }
 
-    std.debug.print("unknown command: {s}\n\n", .{mode});
-    usage();
+    // Implicit invocation: `gist <pattern> [PATH...] [flags]` with no explicit
+    // verb — the shape a bare `rg <pattern>` invocation takes. An `alias
+    // rg=gist` drop-in must accept that same shape, so route it through the
+    // SAME rg-compatible engine `gist rg` uses (its `readableStdin()` piped-
+    // input path, default presentation, exit codes) rather than falling
+    // through to "unknown command" (which printed to stderr while a piped
+    // `make | gist "pattern"` produced no stdout at all) or silently
+    // re-interpreting the pattern as an indexed full-corpus `search`, which
+    // has no stdin path and diverges wildly from `rg`'s piped-stream behavior.
+    var implicit: std.ArrayList([]const u8) = .empty;
+    defer implicit.deinit(gpa);
+    try implicit.append(gpa, mode);
+    while (it.next()) |arg| try implicit.append(gpa, arg);
+    try ripgrep.run(gpa, io, implicit.items, init.environ_map);
 }

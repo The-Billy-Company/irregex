@@ -13,6 +13,7 @@ const std = @import("std");
 const args = @import("args.zig");
 const Opts = args.Opts;
 const die = args.die;
+const palette = @import("color.zig");
 const Regex = @import("../../regex/core.zig").Regex;
 const Captures = @import("../../regex/captures.zig").Captures;
 
@@ -105,6 +106,9 @@ pub const Emitter = struct {
     /// `-r/--replace` capture matcher (group-aware Pike VM), non-null only when a
     /// replacement template is active. Built once per run by the caller.
     caps: ?*Captures = null,
+    /// Resolved once per run by `color.zig` (stdout tty + `--color` + env).
+    /// Paints path/line-number chrome and highlights match spans when true.
+    use_color: bool = false,
 
     /// `--crlf` match view: a trailing `\r` is treated as part of the terminator
     /// (so `$`/`\b` anchor before it) but is KEPT in the emitted line — ripgrep's
@@ -125,11 +129,22 @@ pub const Emitter = struct {
         return if (is_match) self.o.field_match_sep else self.o.field_ctx_sep;
     }
 
+    /// Wrap `s` in `on` .. `reset` when color is active, else emit it plain.
+    fn paint(self: *Emitter, on: []const u8, s: []const u8) void {
+        if (!self.use_color) {
+            self.out.appendSlice(self.a, s) catch die("oom\n", .{});
+            return;
+        }
+        self.out.appendSlice(self.a, on) catch die("oom\n", .{});
+        self.out.appendSlice(self.a, s) catch die("oom\n", .{});
+        self.out.appendSlice(self.a, palette.reset) catch die("oom\n", .{});
+    }
+
     /// Write `path` followed by its terminator — NUL under `--null` (ripgrep's
     /// path-terminator), else the field separator. Used by the count/prefix paths.
     fn writePath(self: *Emitter, path: []const u8, is_match: bool) void {
-        self.out.appendSlice(self.a, path) catch die("oom\n", .{});
-        if (self.o.null_sep) self.out.append(self.a, 0) catch die("oom\n", .{}) else self.out.appendSlice(self.a, self.fieldSep(is_match)) catch die("oom\n", .{});
+        self.paint(palette.path_on, path);
+        if (self.o.null_sep) self.out.append(self.a, 0) catch die("oom\n", .{}) else self.paint(palette.sep_on, self.fieldSep(is_match));
     }
 
     /// Emit the `path:line:col:byteoff:` locator prefix (fields present per flags,
@@ -139,7 +154,11 @@ pub const Emitter = struct {
     fn prefix(self: *Emitter, path: []const u8, lineno: usize, col: usize, byteoff: usize, is_match: bool) void {
         const sep = self.fieldSep(is_match);
         if (self.show_name) self.writePath(path, is_match);
-        if (self.o.line_num) self.out.print(self.a, "{d}{s}", .{ lineno, sep }) catch die("oom\n", .{});
+        if (self.o.line_num) {
+            var buf: [20]u8 = undefined;
+            self.paint(palette.line_on, std.fmt.bufPrint(&buf, "{d}", .{lineno}) catch unreachable);
+            self.paint(palette.sep_on, sep);
+        }
         if (self.o.column and is_match and col != 0) self.out.print(self.a, "{d}{s}", .{ col, sep }) catch die("oom\n", .{});
         if (self.o.byte_offset) self.out.print(self.a, "{d}{s}", .{ byteoff, sep }) catch die("oom\n", .{});
     }
@@ -163,8 +182,43 @@ pub const Emitter = struct {
         if (self.o.trim) s = std.mem.trimStart(u8, s, " \t");
         if (self.o.max_cols != 0 and s.len > self.o.max_cols) {
             self.exceeded(s, is_match, starts);
+        } else if (is_match and self.use_color and self.o.replace == null) {
+            self.highlightSpans(s);
         } else self.out.appendSlice(self.a, s) catch die("oom\n", .{});
         self.out.append(self.a, self.o.term()) catch die("oom\n", .{});
+    }
+
+    /// Paint every match span within `s` (a matching line, post-trim), leaving
+    /// non-matching text untouched. `s` is re-scanned independently of the
+    /// caller's line-hit check — cheap (one line) and keeps this self-contained
+    /// rather than threading span positions through every call site of `text`.
+    /// `-r/--replace` output is excluded by the caller (the substituted text
+    /// isn't "the match" any more).
+    fn highlightSpans(self: *Emitter, s: []const u8) void {
+        var ssim = Regex.SpanSim.init(self.a, self.re) catch {
+            self.out.appendSlice(self.a, s) catch die("oom\n", .{});
+            return;
+        };
+        defer ssim.deinit();
+        const mv = self.mview(s);
+        var from: usize = 0;
+        var last: usize = 0;
+        while (from <= mv.len) {
+            const sp = self.re.matchSpan(&ssim, mv, from) orelse break;
+            if (sp.end == sp.start) {
+                from = sp.start + 1;
+                continue;
+            }
+            if (self.o.word and !wordOk(mv, sp.start, sp.end)) {
+                from = sp.end;
+                continue;
+            }
+            self.out.appendSlice(self.a, s[last..sp.start]) catch die("oom\n", .{});
+            self.paint(palette.match_on, s[sp.start..sp.end]);
+            last = sp.end;
+            from = sp.end;
+        }
+        self.out.appendSlice(self.a, s[last..]) catch die("oom\n", .{});
     }
 
     /// ripgrep's `--max-columns` over-long-line rendering. Without match granularity
@@ -433,7 +487,7 @@ pub const Emitter = struct {
             }
             self.prefix(path, lineno, span.start + 1, self.offOf(line) + span.start, true);
             const end = if (self.o.crlf and span.end == mv.len) line.len else span.end;
-            self.out.appendSlice(self.a, line[span.start..end]) catch die("oom\n", .{});
+            self.paint(palette.match_on, line[span.start..end]);
             self.out.append(self.a, self.o.term()) catch die("oom\n", .{});
             n += 1;
             last_end = span.end;

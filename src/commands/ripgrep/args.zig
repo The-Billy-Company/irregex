@@ -16,6 +16,12 @@ const types = @import("../scope/types.zig");
 
 pub const Filename = enum { auto, always, never };
 
+/// `--color`: `auto` (the default) colorizes iff stdout is a real terminal and
+/// the environment doesn't opt out (`NO_COLOR`, `TERM=dumb`); `always`/`ansi`
+/// force it on regardless of destination or environment; `never` forces it
+/// off. Resolved against stdout + the environment in `color.zig`.
+pub const ColorChoice = enum { auto, always, never, ansi };
+
 /// Resolved type/glob scope (`-t/-T/-g/--glob/--iglob`), AND-combined; each set
 /// is a no-op when empty. Borrows caller-owned slices (a parse-time arena).
 pub const Filter = struct {
@@ -107,6 +113,7 @@ pub const Opts = struct {
     ignore_files: []const []const u8 = &.{}, // --ignore-file <path> (ordered)
     // ctx_sep: null = suppressed line (--no-context-separator); else the string.
     ctx_sep: ?[]const u8 = "--",
+    color: ColorChoice = .auto, // --color auto|always|never|ansi
     filter: Filter = .{},
     pub fn wantsContext(self: Opts) bool {
         return self.before > 0 or self.after > 0;
@@ -717,12 +724,20 @@ fn parseLong(b: *Builder, arg: []const u8, i: *usize, all: []const []const u8) v
         .no_ctxsep => o.ctx_sep = null,
         .replace => o.replace = val(inl, i, all),
         .file => b.pat_files.append(b.a, val(inl, i, all)) catch die("oom\n", .{}),
-        // --color: never/auto is a no-op; always/ansi would need ANSI output,
-        // which an agent-facing locator omits by design → fail loud (harness N/A).
+        // --color WHEN: resolved to an actual go/no-go (stdout tty + env) by
+        // `color.zig` at emit time — this just records the requested mode.
         .color => {
             const c = val(inl, i, all);
-            if (std.mem.eql(u8, c, "always") or std.mem.eql(u8, c, "ansi"))
-                die("--color=always unsupported by design — gist emits no ANSI\n", .{});
+            o.color = if (std.mem.eql(u8, c, "never"))
+                .never
+            else if (std.mem.eql(u8, c, "always"))
+                .always
+            else if (std.mem.eql(u8, c, "ansi"))
+                .ansi
+            else if (std.mem.eql(u8, c, "auto"))
+                .auto
+            else
+                die("bad --color value: {s}\n", .{c});
         },
         .noop => {},
         .noop_val => _ = val(inl, i, all),

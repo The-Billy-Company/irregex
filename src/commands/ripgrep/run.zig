@@ -27,6 +27,7 @@ const args = @import("args.zig");
 const output = @import("output.zig");
 const ignore = @import("ignore.zig");
 const json = @import("json.zig");
+const color = @import("color.zig");
 const types = @import("../scope/types.zig");
 const Opts = args.Opts;
 const Emitter = output.Emitter;
@@ -318,13 +319,16 @@ fn readStdin(a: std.mem.Allocator) []const u8 {
 
 // ─────────────────────────── run ───────────────────────────
 
-pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8) !void {
+pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *const std.process.Environ.Map) !void {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const a = arena_state.allocator();
 
     const parsed = args.parseArgv(a, argv);
     var o = parsed.opts;
+    // Resolved ONCE per run (not per file/emitter): stdout tty + `--color` +
+    // env. Every emitter below shares this single yes/no.
+    const use_color = color.enabled(o, io, env);
 
     // Honest deferrals: recognized flags gist doesn't yet emit byte-identically.
     // Failing loud (exit 2) keeps the harness scoring them N/A, never silently
@@ -389,7 +393,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8) !void {
         var lines: std.ArrayList([]const u8) = .empty;
         collectLines(a, body, o.term(), &lines);
         var out0: std.ArrayList(u8) = .empty;
-        var em0 = Emitter{ .a = a, .re = &re, .o = o, .show_name = false, .out = &out0, .base = @intFromPtr(body.ptr), .caps = caps };
+        var em0 = Emitter{ .a = a, .re = &re, .o = o, .show_name = false, .out = &out0, .base = @intFromPtr(body.ptr), .caps = caps, .use_color = use_color };
         const hits = em0.file("<stdin>", lines.items);
         if (o.quiet) std.process.exit(if (hits > 0) 0 else 1);
         corpus_mod.emitStdout(out0.items);
@@ -416,7 +420,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8) !void {
     };
 
     var out: std.ArrayList(u8) = .empty;
-    var em = Emitter{ .a = a, .re = &re, .o = o, .show_name = if (o.heading) false else show_name, .out = &out, .caps = caps };
+    var em = Emitter{ .a = a, .re = &re, .o = o, .show_name = if (o.heading) false else show_name, .out = &out, .caps = caps, .use_color = use_color };
 
     // --quiet short-circuits on first match — unless --stats is also asked for,
     // which must run the full search to tally (then print only the stats block).
