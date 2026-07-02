@@ -10,9 +10,12 @@
 //! machine-checkable, not just documented.
 //!
 //! The manifest is a static, deterministic document (the CLI surface is a
-//! contract, not runtime state), emitted verbatim to stdout. The internal `rg`
-//! differential-parity path is deliberately absent — it is harness plumbing, not
-//! a capability an agent should reach for.
+//! contract, not runtime state), emitted verbatim to stdout. The whole-tree `rg`
+//! engine's OWN flag surface (rg-exact, `../ripgrep/args.zig`) is deliberately
+//! absent from `verbs` below — it is a different vocabulary from gist's native
+//! Set B (every ripgrep default flag, not gist's `--show`/`--rank`/`--lang`
+//! shape). It's surfaced instead as `shorthand`: a capability an agent should
+//! know exists (zero-setup, no-index search), not a flag-by-flag contract.
 
 const std = @import("std");
 const corpus_mod = @import("../../corpus/corpus.zig");
@@ -66,8 +69,13 @@ const manifest =
     \\      ]
     \\    }
     \\  },
+    \\  "shorthand": {
+    \\    "summary": "gist <pattern> [PATH...] [flags] — no verb, no index required: live-scans the current tree with ripgrep's own default behavior (gitignore precedence, piped stdin, exit codes). The everyday zero-setup front door.",
+    \\    "flag_surface": "rg-exact (../ripgrep/args.zig) — a different, larger vocabulary than the search verb's native Set B; see bench/rgsuite/README.md for the differential-parity coverage",
+    \\    "alias": "gist rg [flags] <pattern> [PATH...] — the same engine addressed explicitly (an `alias rg=gist` drop-in shape)"
+    \\  },
     \\  "output_stream": {"results": "stdout", "diagnostics": "stderr"},
-    \\  "exit_codes": {"0": "ran (results, if any, on stdout)", "1": "usage / parse error / unsupported flag (guidance on stderr)"}
+    \\  "exit_codes": {"0": "ran (results, if any, on stdout)", "1": "usage / parse error / unsupported flag (guidance on stderr); shorthand/rg: also means no match (ripgrep's own convention)", "2": "shorthand/rg only: usage error or a flag rg-parity can't honor by design (guidance on stderr)"}
     \\}
     \\
 ;

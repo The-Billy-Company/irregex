@@ -1,25 +1,30 @@
 //! gist `rg` — a ripgrep-DEFAULT drop-in over an arbitrary directory tree.
 //!
-//! WHY THIS EXISTS (distinct from the `grep` verb in `../grep/`): the agent-facing `grep`
-//! verb searches the persisted **monorepo index** and always emits
-//! `path:line:text` (its documented contract). To *prove* gist is a genuine
-//! ripgrep drop-in against ripgrep's own integration suite — which creates a
-//! throwaway directory, drops in fixtures, and runs `rg` in that CWD — gist must
-//! also search an arbitrary tree with ripgrep's DEFAULT presentation:
+//! WHY THIS EXISTS (distinct from the indexed `search` verb in `../search/`):
+//! `search` answers against the persisted **monorepo index** — corpus policy
+//! deliberately searches everything (`.gitignore`d files included) and always
+//! emits `path:line:text` (its documented contract). Two invocations reach this
+//! module instead: the bare `gist <pattern> [PATH...]` shorthand (no verb — the
+//! everyday zero-setup front door, no index required) and the explicit `gist rg`
+//! alias. Both need to *prove* gist is a genuine ripgrep drop-in against
+//! ripgrep's own integration suite — which creates a throwaway directory, drops
+//! in fixtures, and runs `rg` in that CWD — so this module searches an arbitrary
+//! tree with ripgrep's DEFAULT presentation:
 //!   • filename shown only when recursive or >1 file (a single explicit file
 //!     prints no `path:` prefix), `-H` forces it, `--no-filename`/`-I` suppress;
 //!   • line numbers OFF by default, `-n` turns them on;
 //!   • `:` frames a match line, `-` a context line, `--` separates groups;
 //!   • `-t/-T/-g/--glob/--iglob` scope by type/glob (reusing `../scope/`);
+//!   • `.gitignore`/`.ignore`/`.rgignore` precedence honored (`ignore.zig`),
+//!     unlike the indexed `search` verb's superset corpus policy;
 //!   • exit 0 = matched, 1 = no match, 2 = error/unsupported (ripgrep's codes).
 //! It reuses gist's regex engine verbatim (one linear-time RE2-style matcher, no
 //! second code path) — this module is the walk + presentation shell that makes
-//! that engine addressable the way `rg` is. Features gist cannot honor by design
-//! (`--json`, `-U`, `-P`, `--column`, …) fail LOUD with exit 2 so the
-//! differential harness scores them N/A rather than silently wrong. gist does
-//! NOT interpret `.gitignore` (a deliberate design choice, see README) — so a
-//! `.gitignore`-scoped scenario searches a superset; the harness classifies that
-//! divergence explicitly rather than as a correctness failure.
+//! that engine addressable the way `rg` is. `--json`/`--column`/`--vimgrep` ARE
+//! honored (`json.zig`, `output.zig`); the genuine divergences that fail LOUD
+//! with exit 2 (so the differential harness scores them N/A rather than silently
+//! wrong) are `-U`/`--multiline` (per-line by construction) and `-P`/`--pcre2`
+//! (a linear-time RE2 engine has no backreferences/lookaround).
 
 const std = @import("std");
 const corpus_mod = @import("../../corpus/corpus.zig");

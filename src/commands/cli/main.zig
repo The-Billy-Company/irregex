@@ -6,6 +6,20 @@
 //!   gist status                       read-only: is an index ready, how fresh, how big
 //!   gist search <pattern> [PATH...]    the one search verb (shape is a flag)
 //!
+//! Plus the everyday shorthand — no verb at all:
+//!
+//!   gist <pattern> [PATH...] [flags]  find it, right now, zero setup
+//!
+//! `gist jesus` needs no `gist index` first: it live-scans the current tree
+//! with ripgrep's own default behavior (gitignore precedence, piped stdin, exit
+//! codes) — a true `rg` drop-in for the shape an agent's fingers already know.
+//! It shares gist's engine + `../scope/` path filters but its OWN flag surface
+//! (`../ripgrep/args.zig`, rg-exact — a superset of `search`'s legacy Set A);
+//! `gist search <pattern>` is the native, index-backed verb for gist's own
+//! ergonomics (`--rank`, `--show ranked`, `--json`, `--lang`) once `gist index`
+//! has run. `gist rg [flags] <pattern> [PATH...]` is the same engine addressed
+//! explicitly (an `alias rg=gist` drop-in's shape).
+//!
 //! Plus three top-level introspection flags (convention, like `--help`, so the
 //! verb list stays at three): `--help`, `--version`, `--schema` (a JSON
 //! capability manifest for agents/codegen). The `search` shape is chosen by flag
@@ -15,10 +29,8 @@
 //! This is the thin dispatch shell only: every verb's real work lives in the
 //! engine + command modules, reached through the `gist` module (`commands.search`
 //! for index+search, `commands.status` for introspection, `commands.schema` for
-//! the manifest). The internal `rg` differential-parity drop-in stays reachable
-//! for the rgsuite harness but is DELIBERATELY undocumented — it is harness
-//! plumbing, not a public verb. The bench/verify/certify harness is a separate
-//! executable (`bench/bench.zig`).
+//! the manifest, `commands.ripgrep` for the bare shorthand + `gist rg`). The
+//! bench/verify/certify harness is a separate executable (`bench/bench.zig`).
 
 const std = @import("std");
 const gist = @import("gist");
@@ -26,7 +38,7 @@ const gist = @import("gist");
 const search = gist.commands.search; // index + the one `search` verb
 const status = gist.commands.status; // read-only index introspection
 const schema = gist.commands.schema; // `--schema` JSON manifest
-const ripgrep = gist.commands.ripgrep; // internal rgsuite parity drop-in (undocumented)
+const ripgrep = gist.commands.ripgrep; // whole-tree rg-compatible engine (bare shorthand + `gist rg`)
 const default_roots = gist.corpus.default_roots;
 
 fn usage() void {
@@ -38,6 +50,8 @@ fn usage() void {
         \\  status                       is an index ready, how fresh, how big
         \\  search <pattern> [PATH...]   find matches (shape via --show/--rank/--json)
         \\
+        \\  gist <pattern> [PATH...]     shorthand: no verb, no index needed — live-scans
+        \\                               the current tree with rg's own default behavior
         \\  gist search --help           the full search flag surface (native + legacy)
         \\  gist --schema                a JSON capability manifest for agents
         \\  gist --version
@@ -116,10 +130,14 @@ pub fn main(init: std.process.Init) !void {
         try search.runSearch(gpa, io, rest.items);
         return;
     }
-    // `rg [flags] <pattern> [PATH...]` — the INTERNAL ripgrep-default drop-in that
-    // backs the rgsuite differential-parity certificate (441 mined `rg`-argv
-    // replays). Reachable so `bench/rgsuite/run.py` keeps working, but omitted
-    // from `usage()`/`--schema`: it is harness plumbing, not a public gist verb.
+    // `rg [flags] <pattern> [PATH...]` — the same whole-tree engine the bare
+    // shorthand below uses, addressed explicitly (the shape an `alias
+    // rg=gist` drop-in takes). It also backs the rgsuite differential-parity
+    // certificate (441 mined `rg`-argv replays via `bench/rgsuite/run.py`).
+    // Omitted from `usage()`'s three-verb list (it isn't index-backed — see
+    // the bare shorthand, which IS documented there) and from `--schema`
+    // (its flag surface is rg's own, not gist's native vocabulary), but it is
+    // a fully supported, intentional entry point, not a hidden fallback.
     if (std.mem.eql(u8, mode, "rg")) {
         var rest: std.ArrayList([]const u8) = .empty;
         defer rest.deinit(gpa);
@@ -129,14 +147,15 @@ pub fn main(init: std.process.Init) !void {
     }
 
     // Implicit invocation: `gist <pattern> [PATH...] [flags]` with no explicit
-    // verb — the shape a bare `rg <pattern>` invocation takes. An `alias
-    // rg=gist` drop-in must accept that same shape, so route it through the
-    // SAME rg-compatible engine `gist rg` uses (its `readableStdin()` piped-
-    // input path, default presentation, exit codes) rather than falling
-    // through to "unknown command" (which printed to stderr while a piped
-    // `make | gist "pattern"` produced no stdout at all) or silently
-    // re-interpreting the pattern as an indexed full-corpus `search`, which
-    // has no stdin path and diverges wildly from `rg`'s piped-stream behavior.
+    // verb — documented in `usage()` as the everyday shorthand: the shape an
+    // agent's `rg <pattern>` reflex already takes, with zero setup (no `gist
+    // index` needed first). Routes through the SAME rg-compatible engine
+    // `gist rg` uses (its `readableStdin()` piped-input path, default
+    // presentation, exit codes) rather than falling through to "unknown
+    // command" (which printed to stderr while a piped `make | gist "pattern"`
+    // produced no stdout at all) or silently re-interpreting the pattern as an
+    // indexed full-corpus `search`, which has no stdin path, requires an
+    // index to exist, and diverges wildly from `rg`'s piped-stream behavior.
     var implicit: std.ArrayList([]const u8) = .empty;
     defer implicit.deinit(gpa);
     try implicit.append(gpa, mode);

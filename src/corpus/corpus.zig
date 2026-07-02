@@ -1,8 +1,9 @@
-//! gist — corpus loading, shared by the CLI drivers (`commands/cli/`), the grep
-//! verb (`commands/grep/`) and the bench/verify harness (`bench/bench.zig`). The
-//! corpus is every non-binary file under the roots (rg-style: a NUL byte ⇒
-//! binary ⇒ skipped), minus the build/VCS subtrees rg also skips. Also owns the
-//! stdout results contract (`emitResults`) every search path emits through.
+//! gist — corpus loading, shared by the CLI drivers (`commands/cli/`), the
+//! `search` verb (`commands/search/`) and the bench/verify harness
+//! (`bench/bench.zig`). The corpus is every non-binary file under the roots
+//! (rg-style: a NUL byte ⇒ binary ⇒ skipped), minus the build/VCS subtrees rg
+//! also skips. Also owns the stdout results contract (`emitResults`) every
+//! search path emits through.
 
 const std = @import("std");
 const Dir = std.Io.Dir;
