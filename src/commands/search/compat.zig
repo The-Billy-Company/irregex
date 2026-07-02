@@ -25,13 +25,13 @@ const longVal = args.longVal;
 const nextTok = args.nextTok;
 
 pub const supported =
-    "legacy (ripgrep/grep) aliases: -i -w -F -l -c -v -o -n -N -S -H -u -m N -A N -B N -C N " ++
+    "legacy (ripgrep/grep) aliases: -i -w -F -l -c -v -o -n -N -S -H -u -U -m N -A N -B N -C N " ++
     "-r <template> -t <lang> -g <glob> -e <pat> --  ·  long: --ignore-case --word-regexp " ++
     "--fixed-strings --files-with-matches --count --count-matches --invert-match --only-matching " ++
-    "--no-line-number --smart-case --files --no-heading --color[=X] --replace=<template> " ++
+    "--no-line-number --smart-case --multiline --multiline-dotall --files --no-heading --color[=X] --replace=<template> " ++
     "--after/before/context=N --max-count=N --type=<lang> --glob=<glob> --regexp=<pat> " ++
     " ·  no-ops (gist already does): --hidden --no-ignore[-vcs/-parent/-dot] -u/--unrestricted --sort <key>" ++
-    " ·  positional PATH args scope the search  ·  leading inline flags (?i)/(?-u)/(?m) honored";
+    " ·  positional PATH args scope the search  ·  leading inline flags (?i)/(?s)/(?-u)/(?m) honored";
 
 /// A flag gist *recognizes* but genuinely cannot honor (a different engine or
 /// output model). Fail LOUD with the specific reason + the `rg` fallback — never
@@ -42,7 +42,6 @@ fn unsupported(flag: []const u8, why: []const u8) bool {
     return false;
 }
 const why_pcre = "gist runs a linear-time RE2-style engine (no backreferences or lookaround); use `rg -P <pat>` for a PCRE2 pattern";
-const why_multiline = "gist matches per line (byte-oriented); use `rg -U <pat>` for a pattern that must span line boundaries";
 const why_structured = "gist's --json emits path/line/text records; for ripgrep's own JSON/column/vimgrep framing use `rg --json`/`--vimgrep`/`--column`";
 
 /// Decompose one `-xyz` short cluster (all short flags are legacy rg/grep
@@ -78,9 +77,12 @@ pub fn shortCluster(sink: Sink, arg: []const u8, i: *usize, all: []const []const
             // (search `.gitignore`d + hidden files), which gist ALREADY does — a
             // no-op, not an error (README "Scope vs ripgrep").
             'u' => {},
+            // `-U`/`--multiline`: match the whole file as one haystack (a match may
+            // span `\n`; `^`/`$` anchor at every line boundary) — the native
+            // whole-buffer engine (`Regex.bufMatch`). Honored, not an error.
+            'U' => sink.opts.multiline = true,
             // recognized-but-unsupportable short flags: fail loud with the why.
             'P' => return unsupported("-P", why_pcre),
-            'U' => return unsupported("-U", why_multiline),
             // ── value flags: consume the rest of the cluster (or next token) ──
             'r' => {
                 sink.opts.replace = takeVal(arg, j, i, all) orelse return valErr("-r");
@@ -148,8 +150,6 @@ pub fn longAlias(sink: Sink, arg: []const u8, lf: Long, i: *usize, all: []const 
         _ = longVal(lf.val, i, all) orelse return valErr("--sort");
     } else if (eq(u8, n, "pcre2") or eq(u8, n, "auto-hybrid-regex")) {
         return unsupported(arg, why_pcre);
-    } else if (eq(u8, n, "multiline") or eq(u8, n, "multiline-dotall")) {
-        return unsupported(arg, why_multiline);
     } else if (eq(u8, n, "vimgrep") or eq(u8, n, "column")) {
         return unsupported(arg, why_structured);
     } else if (eq(u8, n, "after-context")) {
@@ -175,10 +175,12 @@ pub fn longAlias(sink: Sink, arg: []const u8, lf: Long, i: *usize, all: []const 
 /// … and an agent pastes them reflexively; rejecting the whole pattern forced a
 /// fallback to rg. Flag map — each honored soundly or a documented no-op:
 ///   • `i` → caseless ASCII fold; `-i` clears.
-///   • `m` → no-op: gist matches per line, which *is* rg's default `^`/`$` mode.
+///   • `m` → no-op: gist's `^`/`$` are line anchors in BOTH modes (per-line by
+///     default, every line boundary under `-U`) — always rg's `(?m)` behavior.
+///   • `s` → dotall: `.` also matches `\n` (takes effect with `-U`; inert per-line,
+///     exactly as rg — a line never carries a `\n`). `(?-s)` clears it.
 ///   • `u`/`U` (and any `-…` form) → no-op: gist is byte-oriented (== rg `(?-u)`).
 /// Rejected LOUD (returns null after guidance — never a silent mismatch):
-///   • `s` dotall (`.` spanning newlines) — gist is line-oriented and cannot;
 ///   • `x` extended/whitespace-insensitive — unsupported by the parser.
 /// A non-flag `(?` — `(?:…)`, `(?=…)`, `(?<name>…)` — is left for the compiler.
 pub fn applyInlineFlags(pat: []const u8, opts: *args.Options) ?[]const u8 {
@@ -192,9 +194,10 @@ pub fn applyInlineFlags(pat: []const u8, opts: *args.Options) ?[]const u8 {
             '-' => negate = true,
             'i' => opts.caseless = !negate,
             'm', 'u', 'U' => {}, // no-ops (see doc)
-            's', 'x' => |c| {
-                if (negate) continue; // `(?-s)`/`(?-x)` turn OFF ⇒ already gist's default
-                std.debug.print("inline flag '(?{c}…)' unsupported — gist is line-oriented, ASCII byte-mode (drop it, or use rg for a true dotall/extended pattern)\n", .{c});
+            's' => opts.dotall = !negate, // dotall: `.` matches `\n` (with -U); `(?-s)` clears
+            'x' => {
+                if (negate) continue; // `(?-x)` turns OFF ⇒ already gist's default
+                std.debug.print("inline flag '(?x…)' unsupported — gist has no extended/whitespace-insensitive mode (drop it, or use rg)\n", .{});
                 return null;
             },
             else => return pat, // not a recognized flag char ⇒ not a flag group

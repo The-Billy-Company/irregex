@@ -48,7 +48,7 @@ fn walkRoot(io: std.Io, a: std.mem.Allocator, root_path: []const u8, out: *std.A
 pub fn runLive(gpa: std.mem.Allocator, io: std.Io, pattern: []const u8, opts: Options) !void {
     const eff = try emit.effectivePattern(gpa, pattern, opts);
     defer if (eff.owned) gpa.free(eff.s);
-    var re = Regex.compileOpts(gpa, eff.s, .{ .caseless = opts.caseless }) catch {
+    var re = Regex.compileOpts(gpa, eff.s, .{ .caseless = opts.caseless, .multiline = opts.multiline, .dotall = opts.dotall }) catch {
         std.debug.print("bad pattern /{s}/ — supported: literals . [] [^] a-z * + ? {{n,m}} | () ^ $ and \\d \\w \\s \\t \\n \\r (see src/regex/syntax.zig)\n", .{pattern});
         return;
     };
@@ -74,5 +74,5 @@ pub fn runLive(gpa: std.mem.Allocator, io: std.Io, pattern: []const u8, opts: Op
     const scoped = opts.filter.prune(paths.items, ids);
     const walk_ns = nowNs(io) - w0;
 
-    try emit.grepOverPaths(gpa, io, opts, &re, paths.items, scoped, paths.items.len, walk_ns);
+    try emit.grepOverPaths(gpa, io, opts, &re, paths.items, scoped, paths.items.len, walk_ns, args.literalNeedle(pattern, opts));
 }

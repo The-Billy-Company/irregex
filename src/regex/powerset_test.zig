@@ -463,22 +463,26 @@ const AllocCounter = struct {
     fn allocator(self: *AllocCounter) std.mem.Allocator {
         return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = resize, .remap = remap, .free = free } };
     }
+    /// The `std.mem.Allocator` vtable contract hands back the untyped `ctx` pointer it
+    /// was constructed with — recovering the concrete type is unavoidably a pointer
+    /// cast (same pattern `std.testing.FailingAllocator` uses); isolated here as the
+    /// single cast site instead of repeating it per vtable method.
+    fn self_(ctx: *anyopaque) *AllocCounter {
+        return @ptrCast(@alignCast(ctx));
+    }
     fn alloc(ctx: *anyopaque, len: usize, al: std.mem.Alignment, ra: usize) ?[*]u8 {
-        const self: *AllocCounter = @ptrCast(@alignCast(ctx));
+        const self = self_(ctx);
         self.allocs += 1;
         return self.child.rawAlloc(len, al, ra);
     }
     fn resize(ctx: *anyopaque, m: []u8, al: std.mem.Alignment, n: usize, ra: usize) bool {
-        const self: *AllocCounter = @ptrCast(@alignCast(ctx));
-        return self.child.rawResize(m, al, n, ra);
+        return self_(ctx).child.rawResize(m, al, n, ra);
     }
     fn remap(ctx: *anyopaque, m: []u8, al: std.mem.Alignment, n: usize, ra: usize) ?[*]u8 {
-        const self: *AllocCounter = @ptrCast(@alignCast(ctx));
-        return self.child.rawRemap(m, al, n, ra);
+        return self_(ctx).child.rawRemap(m, al, n, ra);
     }
     fn free(ctx: *anyopaque, m: []u8, al: std.mem.Alignment, ra: usize) void {
-        const self: *AllocCounter = @ptrCast(@alignCast(ctx));
-        self.child.rawFree(m, al, ra);
+        self_(ctx).child.rawFree(m, al, ra);
     }
 };
 

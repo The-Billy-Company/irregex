@@ -150,7 +150,11 @@ pub fn runIndex(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !
     const blob = try gpa.alloc(u8, idx.serializedSize());
     defer gpa.free(blob);
     _ = idx.writeInto(blob);
-    try Dir.cwd().writeFile(io, .{ .sub_path = persist.index_file, .data = blob });
+    // Atomic (temp-then-rename) writes: a concurrent `gist search` in another
+    // coworking agent's process may be `mmapFile`-ing these exact paths right
+    // now, and a plain truncate+write would let it observe a torn file (see
+    // `persist.writeAtomic`).
+    try persist.writeAtomic(io, persist.index_file, blob);
 
     var pl: std.ArrayList(u8) = .empty;
     defer pl.deinit(gpa);
@@ -158,7 +162,7 @@ pub fn runIndex(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !
         try pl.appendSlice(gpa, p);
         try pl.append(gpa, 0);
     }
-    try Dir.cwd().writeFile(io, .{ .sub_path = persist.paths_file, .data = pl.items });
+    try persist.writeAtomic(io, persist.paths_file, pl.items);
     try fresh.writeAnchor(io, built_ns); // T3 freshness anchor
 
     std.debug.print("indexed {d} files · {d:.1} MiB corpus · {d:.1} MiB index · {d:.0} ms → {s}\n", .{

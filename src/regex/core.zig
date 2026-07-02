@@ -80,6 +80,13 @@ pub const Regex = struct {
     // pass. Non-null unless the powerset blew past the cap, when the Pike VM serves
     // (the `first` prefilter accelerates that fallback's skip search).
     dfa: ?*dfa_mod.Dfa,
+    // Multiline (`-U`): the pattern matches the WHOLE buffer as one haystack — a
+    // match may span `\n`, and `^`/`$` anchor at every line boundary (rg's `-U`
+    // default), resolved per-position against `\n` adjacency (content-dependent,
+    // exactly like `\b`), so the eager `at_start`/`at_end` DFA can't serve it — a
+    // multiline regex is matched by the Pike whole-buffer scan (`bufMatch`), never
+    // the per-line `lineMatch`/`docMatch`. False ⇒ the per-line model, unchanged.
+    multiline: bool,
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *Regex) void {
@@ -99,7 +106,11 @@ pub const Regex = struct {
 
     /// Compile-time knobs. `caseless` ASCII-folds every consuming class so the
     /// match is case-insensitive (the `-i` flag) — see `syn.foldCaseAst`.
-    pub const Options = struct { caseless: bool = false };
+    /// `multiline` (`-U`) matches the whole buffer as one haystack — a match may
+    /// span `\n`, and `^`/`$` become line-boundary anchors (rg's `-U` default).
+    /// `dotall` (`(?s)`) additionally lets `.` match `\n` (only meaningful with
+    /// `multiline`). Both default off ⇒ the per-line model, byte-for-byte unchanged.
+    pub const Options = struct { caseless: bool = false, multiline: bool = false, dotall: bool = false };
 
     pub fn compile(allocator: std.mem.Allocator, pattern: []const u8) ParseError!Regex {
         return compileOpts(allocator, pattern, .{});
@@ -110,7 +121,7 @@ pub const Regex = struct {
         defer arena_state.deinit();
         const arena = arena_state.allocator();
 
-        var parser = syn.Parser{ .src = pattern, .arena = arena };
+        var parser = syn.Parser{ .src = pattern, .arena = arena, .dotall = opts.dotall, .multiline = opts.multiline };
         const ast = try parser.parseAlt();
         if (parser.pos != pattern.len) return ParseError.BadPattern;
         // Fold BEFORE every downstream analysis (required-literal, cover, first-set,
@@ -138,7 +149,11 @@ pub const Regex = struct {
 
         // Byte-class DFA, the primary engine: determinizes the Thompson program
         // (anchors and all); null only on powerset blow-up, when the Pike VM serves.
-        const dfa: ?*dfa_mod.Dfa = try powerset.build(allocator, states, start, anchored);
+        // Multiline resolves `^`/`$` per-position against `\n` adjacency (a match
+        // spans lines), which the eager BOL/EOL determinization can't encode — so a
+        // multiline regex runs the Pike whole-buffer scan and needs no DFA. Skipping
+        // the build also saves its compile cost for that (opt-in) surface.
+        const dfa: ?*dfa_mod.Dfa = if (opts.multiline) null else try powerset.build(allocator, states, start, anchored);
         errdefer if (dfa) |d| d.deinit();
 
         return .{
@@ -151,6 +166,7 @@ pub const Regex = struct {
             .nullable = nullable,
             .first = prefilter.Prefilter.init(first_set),
             .dfa = dfa,
+            .multiline = opts.multiline,
             .allocator = allocator,
         };
     }
@@ -370,6 +386,81 @@ pub const Regex = struct {
         return false;
     }
 
+    // ─────────────────────── multiline (`-U`) whole-buffer match ───────────────────────
+    //
+    // In multiline mode the pattern is matched against the ENTIRE buffer as one
+    // haystack — a match may cross `\n` — and `^`/`$` are line-boundary anchors
+    // (they hold at the buffer ends AND around every `\n`, rg's `-U` default).
+    // Those anchors are content-dependent (they look at the byte adjacent to the
+    // position, exactly like `\b`), so the eager BOL/EOL DFA can't serve them and
+    // `re.dfa` is null here; a whole-buffer Pike scan resolves them per-position.
+    // `.` and negated classes already had their `\n` membership decided at parse
+    // time from the multiline/dotall flags.
+
+    /// A gap position `p` (0..=buf.len) is a line start iff it is the buffer start
+    /// or immediately follows a `\n`; a line end iff it is the buffer end or a `\n`
+    /// begins there. These are the multiline `^`/`$` predicates.
+    fn lineStart(buf: []const u8, p: usize) bool {
+        // BOF, or right after a `\n` that is NOT the final byte. A trailing final
+        // `\n` terminates the last line — it does not open a phantom empty line at
+        // `buf.len` (rg: `^$` matches "abc\n\n" at the real interior empty line but
+        // NOT "abc\n"). `$` has no such exclusion (`\n$` matches "abc\n" at EOF).
+        return p == 0 or (buf[p - 1] == '\n' and p < buf.len);
+    }
+    fn lineEnd(buf: []const u8, p: usize) bool {
+        return p == buf.len or buf[p] == '\n';
+    }
+
+    /// `^`/`$` predicates at gap `p`: multiline resolves them against `\n`
+    /// adjacency (a line boundary), the per-line default against the buffer ends.
+    /// Shared by `matchSpan` so one span engine serves both modes.
+    fn atStart(re: *const Regex, buf: []const u8, p: usize) bool {
+        return if (re.multiline) lineStart(buf, p) else p == 0;
+    }
+    fn atEnd(re: *const Regex, buf: []const u8, p: usize) bool {
+        return if (re.multiline) lineEnd(buf, p) else p == buf.len;
+    }
+
+    /// Epsilon-closure at a whole-buffer position `p`, resolving `^`/`$` against
+    /// `\n` adjacency (multiline) rather than a single external BOL/EOL flag.
+    fn closureBuf(re: *const Regex, sim: *Sim, list: *ThreadList, buf: []const u8, p: usize) Closure {
+        return re.closure(sim, list, lineStart(buf, p), lineEnd(buf, p), wordBefore(buf, p), wordAt(buf, p));
+    }
+
+    /// Does the pattern match any substring of the WHOLE buffer under multiline
+    /// semantics? Linear in `buf.len`: re-seed the start at every position (the
+    /// plain unanchored search — a `^`-anchored branch simply dies wherever the
+    /// per-position line-start assertion fails), threading `\n`-aware `^`/`$`.
+    /// This is the multiline counterpart to `docMatch`; called only when
+    /// `re.multiline` (the caller passes the whole file's bytes, never a split line).
+    pub fn bufMatch(re: *const Regex, sim: *Sim, buf: []const u8) bool {
+        // An empty document has zero lines, so it never matches — rg's line model
+        // (`rg -U` on a zero-byte file reports no match for ANY pattern, even a
+        // nullable `a*`/`^$`). This is the whole-buffer twin of `docMatch`'s
+        // `doc.len > 0` guard; without it a nullable pattern would spuriously hit.
+        if (buf.len == 0) return false;
+        sim.gen += 1;
+        sim.cur.len = 0;
+        // Position 0 (buffer start ⇒ a line start; also a line end iff empty).
+        if (re.closureBuf(sim, &sim.cur, buf, 0).add(re.start)) return true;
+        var i: usize = 0;
+        while (i < buf.len) : (i += 1) {
+            const c = buf[i];
+            sim.nxt.len = 0;
+            sim.gen += 1;
+            const cl = re.closureBuf(sim, &sim.nxt, buf, i + 1);
+            var matched = false;
+            for (sim.cur.slice()) |s| switch (re.states[s]) {
+                .consume => |cn| matched = (cn.set.has(c) and cl.add(cn.out)) or matched,
+                else => {},
+            };
+            matched = cl.add(re.start) or matched; // plain: re-seed a start at i+1
+            std.mem.swap(ThreadList, &sim.cur, &sim.nxt);
+            if (matched) return true;
+        }
+        return false;
+    }
+
     // ─────────────────────── `-o` leftmost-first spans ───────────────────────
     //
     // `lineMatch`/`docMatch` answer *whether* a line matches; `-o`/--only-matching
@@ -443,8 +534,8 @@ pub const Regex = struct {
             .list = &sim.cur,
             .seen = sim.seen,
             .gen = sim.gen,
-            .at_start = from == 0,
-            .at_end = from == line.len,
+            .at_start = re.atStart(line, from),
+            .at_end = re.atEnd(line, from),
             .word_before = wordBefore(line, from),
             .word_after = wordAt(line, from),
             .starts = sim.scur,
@@ -464,20 +555,21 @@ pub const Regex = struct {
             const c = line[i];
             sim.nxt.len = 0;
             sim.gen += 1;
-            const at_end = i + 1 == line.len;
+            const at_start = re.atStart(line, i + 1); // multiline: a `\n` at i makes i+1 a line start
+            const at_end = re.atEnd(line, i + 1);
             const wb = wordBefore(line, i + 1);
             const wa = wordAt(line, i + 1);
             const slice = sim.cur.slice();
             for (slice[0..cut]) |s| switch (re.states[s]) {
                 .consume => |cn| if (cn.set.has(c)) {
-                    var nc = Closure{ .re = re, .list = &sim.nxt, .seen = sim.seen, .gen = sim.gen, .at_start = false, .at_end = at_end, .word_before = wb, .word_after = wa, .starts = sim.snxt, .cur_start = sim.scur[s] };
+                    var nc = Closure{ .re = re, .list = &sim.nxt, .seen = sim.seen, .gen = sim.gen, .at_start = at_start, .at_end = at_end, .word_before = wb, .word_after = wa, .starts = sim.snxt, .cur_start = sim.scur[s] };
                     _ = nc.add(cn.out);
                 },
                 else => {},
             };
             // Re-seed a fresh start at i+1 (lowest priority) only while unmatched.
             if (best == null) {
-                var sc = Closure{ .re = re, .list = &sim.nxt, .seen = sim.seen, .gen = sim.gen, .at_start = i + 1 == 0, .at_end = at_end, .word_before = wb, .word_after = wa, .starts = sim.snxt, .cur_start = i + 1 };
+                var sc = Closure{ .re = re, .list = &sim.nxt, .seen = sim.seen, .gen = sim.gen, .at_start = at_start, .at_end = at_end, .word_before = wb, .word_after = wa, .starts = sim.snxt, .cur_start = i + 1 };
                 _ = sc.add(re.start);
             }
             std.mem.swap(ThreadList, &sim.cur, &sim.nxt);

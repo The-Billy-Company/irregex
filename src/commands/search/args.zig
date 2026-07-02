@@ -48,6 +48,14 @@ pub const Options = struct {
     no_line_num: bool = false, // -N/--no-line-number: emit `path:text` (drop col)
     smart_case: bool = false, // --smart-case / -S: caseless iff no uppercase
     only_matching: bool = false, // --only-matching / -o: emit each match span
+    /// `--multiline` / `-U`: match the WHOLE file as one haystack — a match may
+    /// span `\n`, and `^`/`$` anchor at every line boundary (rg's `-U` default).
+    /// Routes the file through the whole-buffer engine (`Regex.bufMatch`) and the
+    /// touched-line emitter instead of the per-line scan.
+    multiline: bool = false,
+    /// `--multiline-dotall` / `(?s)`: also let `.` match `\n` (only meaningful with
+    /// `multiline`, since the per-line model never carries a `\n`).
+    dotall: bool = false,
     files_list: bool = false, // --files: list corpus files (no pattern, no read)
     live: bool = false, // --live: skip the index, scan the live tree fresh
     json: bool = false, // --json: emit structured records, not path:line:text
@@ -63,6 +71,37 @@ pub const Options = struct {
         return self.before > 0 or self.after > 0;
     }
 };
+
+/// RE2 metacharacters: a pattern containing any of these is a regex, otherwise
+/// it's a plain literal an SIMD substring scan can serve directly. `--fixed`
+/// forces literal regardless (the whole string is data), so callers check that
+/// before this. Shared by `run.zig`'s cold-driver dispatch and `literalNeedle`
+/// below — one definition of "looks like a regex" for both.
+pub fn looksLikeRegex(pat: []const u8) bool {
+    for (pat) |c| switch (c) {
+        '.', '^', '$', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '\\' => return true,
+        else => {},
+    };
+    return false;
+}
+
+/// The literal byte-string this invocation's compiled `Regex` reduces to, when
+/// provably identical to an unanchored, case-sensitive SIMD substring scan — or
+/// null when the line engine's Thompson-NFA/DFA is load-bearing. `--fixed`
+/// escapes every metachar into a literal consume state, so the compiled pattern
+/// is always exactly `pattern`'s bytes regardless of what it contains; otherwise
+/// a metachar-free `pattern` compiles to the same plain byte-concat. `--word`
+/// (boundary assertions) and case-folding (`-i`/resolved `--smart-case`) change
+/// match semantics beyond "contains this substring", so both disqualify — the
+/// caller falls back to `re.lineMatch`/`docMatch`. An empty needle is excluded:
+/// `Regex`'s `eol_empty` zero-width-match short circuit handles it upstream and
+/// `simd.contains(line, "")` is not a substitute for that semantics.
+pub fn literalNeedle(pattern: []const u8, opts: Options) ?[]const u8 {
+    if (opts.word or opts.caseless or pattern.len == 0) return null;
+    if (opts.fixed) return pattern;
+    if (looksLikeRegex(pattern)) return null;
+    return pattern;
+}
 
 pub const Parsed = struct {
     pattern: []const u8,
@@ -171,7 +210,10 @@ pub fn handleLong(sink: Sink, arg: []const u8, i: *usize, all: []const []const u
     const eq = std.mem.eql;
     const n = lf.name;
     // ── boolean native flags ──
-    if (eq(u8, n, "word")) sink.opts.word = true else if (eq(u8, n, "fixed")) sink.opts.fixed = true else if (eq(u8, n, "ignore-case")) sink.opts.caseless = true else if (eq(u8, n, "smart-case")) sink.opts.smart_case = true else if (eq(u8, n, "invert")) sink.opts.invert = true else if (eq(u8, n, "only-matching")) sink.opts.only_matching = true else if (eq(u8, n, "files")) sink.opts.files_list = true else if (eq(u8, n, "live")) sink.opts.live = true else if (eq(u8, n, "json")) sink.opts.json = true else if (eq(u8, n, "spans")) sink.opts.count_matches = true else if (eq(u8, n, "show")) {
+    if (eq(u8, n, "word")) sink.opts.word = true else if (eq(u8, n, "fixed")) sink.opts.fixed = true else if (eq(u8, n, "ignore-case")) sink.opts.caseless = true else if (eq(u8, n, "smart-case")) sink.opts.smart_case = true else if (eq(u8, n, "invert")) sink.opts.invert = true else if (eq(u8, n, "only-matching")) sink.opts.only_matching = true else if (eq(u8, n, "multiline")) sink.opts.multiline = true else if (eq(u8, n, "multiline-dotall")) {
+        sink.opts.multiline = true;
+        sink.opts.dotall = true;
+    } else if (eq(u8, n, "files")) sink.opts.files_list = true else if (eq(u8, n, "live")) sink.opts.live = true else if (eq(u8, n, "json")) sink.opts.json = true else if (eq(u8, n, "spans")) sink.opts.count_matches = true else if (eq(u8, n, "show")) {
         return setShow(sink, longVal(lf.val, i, all) orelse return valErr("--show"));
     } else if (eq(u8, n, "rank")) {
         // Optional value only via `=` (a separate token would be ambiguous with
@@ -286,6 +328,15 @@ pub fn parseSearch(gpa: std.mem.Allocator, argv: []const []const u8) !?Parsed {
     // Validate the `--replace` template up front (fail loud, never mid-emit).
     if (opts.replace) |tmpl| {
         if (!compat.validReplaceTemplate(tmpl)) return errClean(gpa, &exts, &incs, &excs, &roots);
+    }
+
+    // `-o`/`-r` under `-U` need per-match span TEXT shaped across line boundaries
+    // (rg prints each line-slice of a cross-line match). gist's multiline emitter
+    // currently frames whole touched lines, so fail LOUD rather than emit a
+    // per-line result that silently disagrees with `rg -U -o`/`-r` (fail-closed).
+    if (opts.multiline and (opts.only_matching or opts.replace != null)) {
+        std.debug.print("`-o`/`-r` with `-U` (multiline) is not yet supported — gist's multiline output frames whole touched lines; drop `-U`, or use `rg -U -o`/`-r` for per-match cross-line span rewriting\n", .{});
+        return errClean(gpa, &exts, &incs, &excs, &roots);
     }
 
     const exts_s = try exts.toOwnedSlice(gpa);

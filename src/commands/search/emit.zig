@@ -33,6 +33,7 @@ const fresh = @import("../../corpus/fresh.zig");
 const persist = @import("../../index/persist.zig");
 const args = @import("args.zig");
 const render = @import("render.zig");
+const simd = @import("../../scan/simd.zig");
 const Regex = @import("../../regex/core.zig").Regex;
 
 // The argv parser + its result types live in the sibling `args.zig`; re-exported
@@ -102,14 +103,36 @@ const par_threshold = 64;
 
 const Shard = struct {
     gpa: std.mem.Allocator,
+    // Thread-confined bump allocator for every per-file/per-line scratch alloc
+    // (`lines_buf`, `body`, `match_idx`, `is_match`, span-rewrite scratch) —
+    // owned by this shard alone for its whole run, so parallel shards never
+    // contend on `gpa`'s shared allocator machinery for that traffic. Lives
+    // until the caller (`grepOverPaths`) has copied every `FileBlock.body` into
+    // the final output buffer — see `runShards`/`grepOverPaths`.
+    arena: std.heap.ArenaAllocator,
     paths: []const []const u8,
     ids: []const u32,
     re: *const Regex,
     opts: Options,
+    // Set iff the compiled `re` is provably an unanchored, case-sensitive
+    // literal substring match (`args.literalNeedle`) — lets every per-line
+    // boolean check ride the SIMD scanner instead of the byte-class DFA. Same
+    // match set either way; this is a dispatch choice, not a semantic one.
+    lit: ?[]const u8 = null,
     out: std.ArrayList(FileBlock) = .empty,
     reads: usize = 0,
     lines: usize = 0,
 };
+
+/// Does `line` match, per the fastest sound engine for this shard: the SIMD
+/// substring scanner when `re` reduces to a plain literal, else the byte-class
+/// DFA / Pike VM behind `Regex.lineMatch`. Byte-identical verdicts either way —
+/// `args.literalNeedle` only returns non-null when the two are provably the
+/// same predicate (see its doc comment).
+fn lineHit(sh: *const Shard, sim: *Regex.Sim, line: []const u8) bool {
+    if (sh.lit) |needle| return simd.contains(line, needle);
+    return sh.re.lineMatch(sim, line);
+}
 
 /// Split a buffer into display lines with rg's `\n`-terminates semantics: a
 /// trailing newline does NOT yield a phantom empty final line (so `$`/`^$`
@@ -134,50 +157,59 @@ fn collectLines(gpa: std.mem.Allocator, buf: []const u8, out: *std.ArrayList([]c
 /// per-file cap. Returns the number of match lines emitted (0 ⇒ caller drops the
 /// file). Context windows around successive matches are merged when they touch
 /// or overlap; disjoint groups are separated by a `--` line (rg's framing).
-/// Under `--json` every row is a `{path,line,kind,text}` record instead.
-fn emitFileLines(sh: *Shard, path: []const u8, lines: []const []const u8, body: *std.ArrayList(u8)) !usize {
+/// Under `--json` every row is a `{path,line,kind,text}` record instead. `a` is
+/// the shard's arena — every allocation here is scoped to one file and thrown
+/// away in bulk when the shard's arena is torn down, so per-file/per-line work
+/// never touches the (thread-shared) `sh.gpa` and can't contend across shards.
+/// `sim` is the shard's single reused Pike scratch (`grepShard`'s `sim_files`) —
+/// no per-file `Regex.Sim.init` churn.
+fn emitFileLines(sh: *Shard, a: std.mem.Allocator, sim: *Regex.Sim, path: []const u8, lines: []const []const u8, body: *std.ArrayList(u8)) !usize {
     const opts = sh.opts;
     if (opts.only_matching and !opts.invert)
-        return render.emitOnlyMatching(sh.gpa, sh.re, opts, path, lines, body);
+        return render.emitOnlyMatching(a, sh.re, opts, path, lines, body);
     // Pass 1: which line indices match (respecting -v), capped per file.
     var match_idx: std.ArrayList(usize) = .empty;
-    defer match_idx.deinit(sh.gpa);
-    var sim = Regex.Sim.init(sh.gpa, sh.re) catch return 0;
-    defer sim.deinit();
     for (lines, 0..) |line, idx| {
-        const hit = sh.re.lineMatch(&sim, line);
+        const hit = lineHit(sh, sim, line);
         if (hit == opts.invert) continue; // -v flips the desired verdict
-        try match_idx.append(sh.gpa, idx);
+        try match_idx.append(a, idx);
         if (opts.max_per_file != 0 and match_idx.items.len >= opts.max_per_file) break;
     }
     if (match_idx.items.len == 0) return 0;
+    return emitMatchWindows(sh, a, path, lines, match_idx.items, body);
+}
 
+/// Pass 2 (shared by the per-line and multiline paths): expand each matched line
+/// index in `match_idx` (already sorted ascending, deduped, per-file-capped) to
+/// its context window, merge touching/overlapping windows, and emit with rg's
+/// `:`/`-`/`--` framing (or `--json` rows). `-r` rewrites match lines in place.
+/// Returns the matched-line count. `match_idx` must be non-empty.
+fn emitMatchWindows(sh: *Shard, a: std.mem.Allocator, path: []const u8, lines: []const []const u8, match_idx: []const usize, body: *std.ArrayList(u8)) !usize {
+    const opts = sh.opts;
     // A match-line lookup so a hit that falls inside a *neighboring* match's
     // context window is still framed `:` (a match), never `-` (context) — the
     // label depends on the whole match set, not just the group's anchor.
-    const is_match = try sh.gpa.alloc(bool, lines.len);
-    defer sh.gpa.free(is_match);
+    const is_match = try a.alloc(bool, lines.len);
     @memset(is_match, false);
-    for (match_idx.items) |m| is_match[m] = true;
+    for (match_idx) |m| is_match[m] = true;
 
     // `-r` (line mode): a per-thread span scratch to rewrite matches in place.
     // Only initialized when a replacement is set (rare), so the common path pays
     // nothing. A match line is emitted through `render.appendReplacedLine`;
     // context/non-match lines are copied verbatim (rg only rewrites match lines).
-    var rssim: ?Regex.SpanSim = if (opts.replace != null) (Regex.SpanSim.init(sh.gpa, sh.re) catch null) else null;
-    defer if (rssim) |*s| s.deinit();
+    var rssim: ?Regex.SpanSim = if (opts.replace != null) (Regex.SpanSim.init(a, sh.re) catch null) else null;
 
     // Pass 2: expand to context windows, merge, emit with `:`/`-`/`--` framing.
     const B = opts.before;
     const A = opts.after;
     var prev_end: ?usize = null; // last emitted line index (for merge + `--`)
-    for (match_idx.items) |m| {
+    for (match_idx) |m| {
         const lo = if (m >= B) m - B else 0;
         const hi = @min(m + A, lines.len - 1);
         var start = lo;
         if (prev_end) |pe| {
             if (lo > pe + 1) {
-                if (opts.wantsContext() and !opts.json) try body.appendSlice(sh.gpa, "--\n"); // gap ⇒ new group
+                if (opts.wantsContext() and !opts.json) try body.appendSlice(a, "--\n"); // gap ⇒ new group
             } else if (hi <= pe) {
                 continue; // fully inside the previous window — already emitted
             } else start = pe + 1; // contiguous/overlapping ⇒ extend the group
@@ -187,25 +219,110 @@ fn emitFileLines(sh: *Shard, path: []const u8, lines: []const []const u8, body: 
             if (opts.json) {
                 if (is_match[k] and rssim != null) {
                     var tmp: std.ArrayList(u8) = .empty;
-                    defer tmp.deinit(sh.gpa);
-                    try render.appendReplacedLine(sh.gpa, sh.re, &rssim.?, opts.replace.?, lines[k], &tmp);
-                    try render.jsonLineRow(sh.gpa, body, path, k + 1, true, tmp.items);
-                } else try render.jsonLineRow(sh.gpa, body, path, k + 1, is_match[k], lines[k]);
+                    try render.appendReplacedLine(a, sh.re, &rssim.?, opts.replace.?, lines[k], &tmp);
+                    try render.jsonLineRow(a, body, path, k + 1, true, tmp.items);
+                } else try render.jsonLineRow(a, body, path, k + 1, is_match[k], lines[k]);
                 continue;
             }
             const sep: u8 = if (is_match[k]) ':' else '-';
             if (opts.no_line_num) // `-N`: drop the line column → `path:text`
-                try body.print(sh.gpa, "{s}{c}", .{ path, sep })
+                try body.print(a, "{s}{c}", .{ path, sep })
             else
-                try body.print(sh.gpa, "{s}{c}{d}{c}", .{ path, sep, k + 1, sep });
+                try body.print(a, "{s}{c}{d}{c}", .{ path, sep, k + 1, sep });
             if (is_match[k]) {
-                if (rssim) |*s| try render.appendReplacedLine(sh.gpa, sh.re, s, opts.replace.?, lines[k], body) else try body.appendSlice(sh.gpa, lines[k]);
-            } else try body.appendSlice(sh.gpa, lines[k]); // context lines never rewritten
-            try body.append(sh.gpa, '\n');
+                if (rssim) |*s| try render.appendReplacedLine(a, sh.re, s, opts.replace.?, lines[k], body) else try body.appendSlice(a, lines[k]);
+            } else try body.appendSlice(a, lines[k]); // context lines never rewritten
+            try body.append(a, '\n');
         }
         prev_end = hi;
     }
-    return match_idx.items.len;
+    return match_idx.len;
+}
+
+// ─────────────────────────── multiline (`-U`) file path ───────────────────────────
+
+/// Display lines PLUS each line's raw start offset in the buffer, so a
+/// whole-buffer match span (byte range) can be mapped back to the line(s) it
+/// touches. Same `\n`-terminates line model as `collectLines` (no phantom final
+/// line after a trailing `\n`); `starts[i]` is line `i`'s first byte in `buf`.
+fn collectLinesOff(gpa: std.mem.Allocator, buf: []const u8, lines: *std.ArrayList([]const u8), starts: *std.ArrayList(usize)) !void {
+    var off: usize = 0;
+    while (true) {
+        const rel = std.mem.indexOfScalar(u8, buf[off..], '\n');
+        const nl: ?usize = if (rel) |r| off + r else null;
+        const end = nl orelse buf.len;
+        if (nl != null or end > off) {
+            const raw = buf[off..end];
+            const line = if (raw.len > 0 and raw[raw.len - 1] == '\r') raw[0 .. raw.len - 1] else raw;
+            try lines.append(gpa, line);
+            try starts.append(gpa, off);
+        }
+        if (nl == null) break;
+        off = nl.? + 1;
+    }
+}
+
+/// Line index (0-based) owning byte offset `off`: the largest `i` with
+/// `starts[i] <= off`. `starts[0]` is always 0, so the result is well-defined for
+/// every `off` in `0..=buf.len` (the phantom position after a trailing `\n` maps
+/// to the last real line). Binary search — `starts` is ascending.
+fn lineOfOffset(starts: []const usize, off: usize) usize {
+    var lo: usize = 0;
+    var hi: usize = starts.len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        if (starts[mid] <= off) lo = mid + 1 else hi = mid;
+    }
+    return lo - 1;
+}
+
+/// Emit one file under multiline (`-U`) semantics: match the WHOLE buffer, then
+/// emit every line each match span touches (rg's `-U` framing — a match spanning
+/// lines 2–4 prints 2, 3, 4). Returns the matched-line count (0 ⇒ drop the file).
+/// `-v` inverts to the lines NOT touched by any match. Context windows + `:`/`-`/
+/// `--` framing reuse `emitMatchWindows`.
+fn emitFileMultiline(sh: *Shard, a: std.mem.Allocator, span_sim: *Regex.SpanSim, path: []const u8, buf: []const u8, lines: []const []const u8, starts: []const usize, body: *std.ArrayList(u8)) !usize {
+    const opts = sh.opts;
+    // Touched-line set: leftmost, non-overlapping spans over the whole buffer,
+    // each mapped to the line range [line(start) .. line(end-1)]. Spans advance
+    // monotonically, so the touched lines land already sorted; the `> last` guard
+    // dedups the seam where one span's last line equals the next span's first.
+    var touched: std.ArrayList(usize) = .empty;
+    var from: usize = 0;
+    var last: ?usize = null;
+    var spans: usize = 0;
+    while (from <= buf.len) {
+        const span = sh.re.matchSpan(span_sim, buf, from) orelse break;
+        spans += 1;
+        const l0 = lineOfOffset(starts, span.start);
+        const l1 = if (span.end > span.start) lineOfOffset(starts, span.end - 1) else l0;
+        var l = l0;
+        while (l <= l1) : (l += 1) {
+            if (last == null or l > last.?) {
+                try touched.append(a, l);
+                last = l;
+            }
+        }
+        from = if (span.end == span.start) span.start + 1 else span.end;
+        if (opts.max_per_file != 0 and spans >= opts.max_per_file) break;
+    }
+
+    if (!opts.invert) {
+        if (touched.items.len == 0) return 0;
+        return emitMatchWindows(sh, a, path, lines, touched.items, body);
+    }
+    // `-v`: the complement — every line not touched by any match.
+    const hit = try a.alloc(bool, lines.len);
+    @memset(hit, false);
+    for (touched.items) |m| hit[m] = true;
+    var comp: std.ArrayList(usize) = .empty;
+    for (lines, 0..) |_, idx| {
+        if (hit[idx]) continue;
+        try comp.append(a, idx);
+        if (opts.max_per_file != 0 and comp.items.len >= opts.max_per_file) break;
+    }
+    if (comp.items.len == 0) return 0;
+    return emitMatchWindows(sh, a, path, lines, comp.items, body);
 }
 
 /// Read each candidate file (blocking posix — the proven-fast cold-read idiom),
@@ -214,17 +331,28 @@ fn emitFileLines(sh: *Shard, path: []const u8, lines: []const []const u8, body: 
 /// block. Binary files (a NUL in the first 8 KiB) are skipped, matching the
 /// indexer's own filter.
 fn grepShard(sh: *Shard) void {
+    // Every per-file/per-line scratch allocation below (`lines_buf` growth,
+    // `body`, `match_idx`, `is_match`, span rewrite scratch) rides this shard's
+    // own arena — a thread-confined bump allocator, so N shards running in
+    // parallel never contend on `sh.gpa`'s shared allocator for the thousands
+    // of small alloc/free cycles a dense candidate set produces. Only `scratch`
+    // (one fixed-size buffer) and the two `Sim`/`SpanSim` scratches below (one
+    // init each, reused across every file this shard reads) touch `sh.gpa`.
+    const a = sh.arena.allocator();
     const scratch = sh.gpa.alloc(u8, corpus_mod.per_file_cap) catch return;
     defer sh.gpa.free(scratch);
     var lines_buf: std.ArrayList([]const u8) = .empty;
-    defer lines_buf.deinit(sh.gpa);
-    var sim_files = Regex.Sim.init(sh.gpa, sh.re) catch return; // for -l/-c fast path
+    var sim_files = Regex.Sim.init(sh.gpa, sh.re) catch return; // for -l/-c fast path AND the line engine
     defer sim_files.deinit();
     // `--spans`/--count-matches counts individual match SPANS (not matching
-    // lines), so it needs the span engine, not `lineMatch`. Init once per shard,
-    // reused across files; only paid when set (common path allocates nothing).
-    var span_sim: ?Regex.SpanSim = if (sh.opts.count_matches) (Regex.SpanSim.init(sh.gpa, sh.re) catch return) else null;
+    // lines), so it needs the span engine, not `lineMatch`. Multiline (`-U`) also
+    // rides the span engine (whole-buffer spans → touched lines). Init once per
+    // shard, reused across files; only paid when set (common path allocates none).
+    var span_sim: ?Regex.SpanSim = if (sh.opts.count_matches or sh.opts.multiline) (Regex.SpanSim.init(sh.gpa, sh.re) catch return) else null;
     defer if (span_sim) |*s| s.deinit();
+    // Multiline line-offset scratch (byte offset of each display line in the
+    // buffer), reused across files; only allocated under `-U`.
+    var starts_buf: std.ArrayList(usize) = .empty;
 
     for (sh.ids) |d| {
         const path = sh.paths[d];
@@ -240,8 +368,65 @@ fn grepShard(sh: *Shard) void {
         const buf = scratch[0..n];
         if (n == 0 or corpus_mod.isBinary(buf)) continue;
 
+        // Multiline (`-U`): match the WHOLE buffer as one haystack (a match may
+        // span `\n`), then shape the output per `--show`. A different match model
+        // (whole-buffer spans → touched lines) than the per-line path below, so it
+        // owns its own block and `continue`s. `sh.lit` is never set under `-U`
+        // (disabled in `runShards`), so the SIMD literal skip above can't fire.
+        if (sh.opts.multiline) {
+            // `-l`/`--show files`: presence is enough — one whole-buffer probe.
+            if (sh.opts.files_only) {
+                const hit = sh.re.bufMatch(&sim_files, buf) != sh.opts.invert;
+                if (!hit) continue;
+                var body: std.ArrayList(u8) = .empty;
+                if (sh.opts.json) render.jsonFileRow(a, &body, path) catch {} else body.print(a, "{s}\n", .{path}) catch {};
+                sh.lines += 1;
+                sh.out.append(sh.gpa, .{ .path = path, .body = body }) catch {};
+                continue;
+            }
+            // `-c`/`--show count`/`--spans`: rg `-U` counts MATCHES (whole-buffer
+            // spans), not matching lines. `-v` has no span to count ⇒ rg counts
+            // non-matching lines; defer that to the touched-line path below.
+            if ((sh.opts.count_only or sh.opts.count_matches) and !sh.opts.invert) {
+                var total: usize = 0;
+                var from: usize = 0;
+                while (from <= buf.len) {
+                    const span = sh.re.matchSpan(&span_sim.?, buf, from) orelse break;
+                    total += 1;
+                    from = if (span.end == span.start) span.start + 1 else span.end;
+                    if (sh.opts.max_per_file != 0 and total >= sh.opts.max_per_file) break;
+                }
+                if (total == 0) continue;
+                var body: std.ArrayList(u8) = .empty;
+                if (sh.opts.json) render.jsonCountRow(a, &body, path, total) catch {} else body.print(a, "{s}:{d}\n", .{ path, total }) catch {};
+                sh.lines += total;
+                sh.out.append(sh.gpa, .{ .path = path, .body = body }) catch {};
+                continue;
+            }
+            // Default `--show lines` (and `-v`): emit every line each match touches.
+            lines_buf.clearRetainingCapacity();
+            starts_buf.clearRetainingCapacity();
+            collectLinesOff(a, buf, &lines_buf, &starts_buf) catch continue;
+            var body: std.ArrayList(u8) = .empty;
+            const hits = emitFileMultiline(sh, a, &span_sim.?, path, buf, lines_buf.items, starts_buf.items, &body) catch continue;
+            if (hits > 0) {
+                sh.lines += hits;
+                sh.out.append(sh.gpa, .{ .path = path, .body = body }) catch {};
+            }
+            continue;
+        }
+
+        // A literal candidate that doesn't actually contain the needle anywhere
+        // (a trigram false positive) can't have a matching line — skip before
+        // paying for `collectLines`. Only sound when not inverted: under `-v`,
+        // "needle absent from the whole file" means EVERY line is a hit, the
+        // opposite of skippable.
+        if (sh.lit) |needle| {
+            if (!sh.opts.invert and !simd.contains(buf, needle)) continue;
+        }
+
         lines_buf.clearRetainingCapacity();
-        collectLines(sh.gpa, buf, &lines_buf) catch continue;
+        collectLines(a, buf, &lines_buf) catch continue;
 
         // `--spans`: count individual (non-overlapping, leftmost-first) match
         // spans, not matching lines — the semantic `--show count` can't express.
@@ -266,9 +451,9 @@ fn grepShard(sh: *Shard) void {
             }
             if (total == 0) continue;
             var body: std.ArrayList(u8) = .empty;
-            if (sh.opts.json) render.jsonCountRow(sh.gpa, &body, path, total) catch {} else body.print(sh.gpa, "{s}:{d}\n", .{ path, total }) catch {};
+            if (sh.opts.json) render.jsonCountRow(a, &body, path, total) catch {} else body.print(a, "{s}:{d}\n", .{ path, total }) catch {};
             sh.lines += total;
-            sh.out.append(sh.gpa, .{ .path = path, .body = body }) catch body.deinit(sh.gpa);
+            sh.out.append(sh.gpa, .{ .path = path, .body = body }) catch {};
             continue;
         }
 
@@ -277,35 +462,40 @@ fn grepShard(sh: *Shard) void {
         if (sh.opts.files_only or sh.opts.count_only or sh.opts.count_matches) {
             var hits: usize = 0;
             for (lines_buf.items) |line| {
-                if (sh.re.lineMatch(&sim_files, line) == sh.opts.invert) continue;
+                if (lineHit(sh, &sim_files, line) == sh.opts.invert) continue;
                 hits += 1;
                 if (sh.opts.files_only) break; // presence is enough
             }
             if (hits == 0) continue;
             var body: std.ArrayList(u8) = .empty;
             if (sh.opts.json) {
-                if (sh.opts.files_only) render.jsonFileRow(sh.gpa, &body, path) catch {} else render.jsonCountRow(sh.gpa, &body, path, hits) catch {};
+                if (sh.opts.files_only) render.jsonFileRow(a, &body, path) catch {} else render.jsonCountRow(a, &body, path, hits) catch {};
             } else if (sh.opts.count_only or sh.opts.count_matches) {
-                body.print(sh.gpa, "{s}:{d}\n", .{ path, hits }) catch {};
-            } else body.print(sh.gpa, "{s}\n", .{path}) catch {};
+                body.print(a, "{s}:{d}\n", .{ path, hits }) catch {};
+            } else body.print(a, "{s}\n", .{path}) catch {};
             sh.lines += hits;
-            sh.out.append(sh.gpa, .{ .path = path, .body = body }) catch body.deinit(sh.gpa);
+            sh.out.append(sh.gpa, .{ .path = path, .body = body }) catch {};
             continue;
         }
 
         var body: std.ArrayList(u8) = .empty;
-        const hits = emitFileLines(sh, path, lines_buf.items, &body) catch {
-            body.deinit(sh.gpa);
-            continue;
-        };
+        const hits = emitFileLines(sh, a, &sim_files, path, lines_buf.items, &body) catch continue;
         if (hits > 0) {
             sh.lines += hits;
-            sh.out.append(sh.gpa, .{ .path = path, .body = body }) catch body.deinit(sh.gpa);
-        } else body.deinit(sh.gpa);
+            sh.out.append(sh.gpa, .{ .path = path, .body = body }) catch {};
+        }
     }
 }
 
-fn runShards(gpa: std.mem.Allocator, paths: []const []const u8, ids: []const u32, re: *const Regex, opts: Options, blocks: *std.ArrayList(FileBlock), reads: *usize, lines: *usize) !void {
+/// Run every shard, then hand each shard's ARENA (not just its results) to the
+/// caller via `arenas` — a `FileBlock.body` returned in `blocks` points into its
+/// shard's arena, so that arena must outlive the final output assembly in
+/// `grepOverPaths`. `ArenaAllocator` is a plain value (a child allocator plus
+/// two linked-list heads; deinit takes it by value), so moving the completed
+/// arena out of the freed `shards` slice and into `arenas` is sound — nothing
+/// self-referential to invalidate, and no thread allocates through it again
+/// once its own `grepShard` call has returned.
+fn runShards(gpa: std.mem.Allocator, paths: []const []const u8, ids: []const u32, re: *const Regex, opts: Options, lit: ?[]const u8, blocks: *std.ArrayList(FileBlock), reads: *usize, lines: *usize, arenas: *std.ArrayList(std.heap.ArenaAllocator)) !void {
     const ncpu = std.Thread.getCpuCount() catch 8;
     const nshards = if (ids.len < par_threshold) 1 else @min(ids.len, ncpu);
     const shards = try gpa.alloc(Shard, nshards);
@@ -316,7 +506,10 @@ fn runShards(gpa: std.mem.Allocator, paths: []const []const u8, ids: []const u32
         const lo = off;
         const hi = @min(off + per, ids.len);
         off = hi;
-        sh.* = .{ .gpa = gpa, .paths = paths, .ids = ids[lo..hi], .re = re, .opts = opts };
+        // The SIMD literal fast-path assumes per-line `contains`; under `-U` a
+        // (rare) needle with an embedded `\n` must cross lines, so route every
+        // multiline query through the whole-buffer regex engine instead.
+        sh.* = .{ .gpa = gpa, .arena = std.heap.ArenaAllocator.init(gpa), .paths = paths, .ids = ids[lo..hi], .re = re, .opts = opts, .lit = if (opts.multiline) null else lit };
     }
     if (nshards == 1) {
         grepShard(&shards[0]);
@@ -326,11 +519,13 @@ fn runShards(gpa: std.mem.Allocator, paths: []const []const u8, ids: []const u32
         for (shards, 0..) |*sh, k| threads[k] = try std.Thread.spawn(.{}, grepShard, .{sh});
         for (threads) |t| t.join();
     }
+    try arenas.ensureUnusedCapacity(gpa, nshards);
     for (shards) |*sh| {
         try blocks.appendSlice(gpa, sh.out.items);
         sh.out.deinit(gpa);
         reads.* += sh.reads;
         lines.* += sh.lines;
+        arenas.appendAssumeCapacity(sh.arena);
     }
 }
 
@@ -393,7 +588,7 @@ pub fn runGrep(gpa: std.mem.Allocator, io: std.Io, pattern: []const u8, opts: Op
     if (opts.files_list) return runFilesList(gpa, io, opts);
     const eff = try effectivePattern(gpa, pattern, opts);
     defer if (eff.owned) gpa.free(eff.s);
-    var re = Regex.compileOpts(gpa, eff.s, .{ .caseless = opts.caseless }) catch {
+    var re = Regex.compileOpts(gpa, eff.s, .{ .caseless = opts.caseless, .multiline = opts.multiline, .dotall = opts.dotall }) catch {
         std.debug.print("bad pattern /{s}/ — supported: literals . [] [^] a-z * + ? {{n,m}} | () ^ $ and \\d \\w \\s \\t \\n \\r (see src/regex/syntax.zig)\n", .{pattern});
         return;
     };
@@ -416,7 +611,7 @@ pub fn runGrep(gpa: std.mem.Allocator, io: std.Io, pattern: []const u8, opts: Op
     // edge over rg, which can only filter while walking. A no-op filter is free.
     const scoped = opts.filter.prune(p.paths.items, cand.ids);
     const pre_ns = nowNs(io) - l0; // cold-load + candidate resolution + prune
-    try grepOverPaths(gpa, io, opts, &re, p.paths.items, scoped, p.paths.items.len, pre_ns);
+    try grepOverPaths(gpa, io, opts, &re, p.paths.items, scoped, p.paths.items.len, pre_ns, args.literalNeedle(pattern, opts));
 }
 
 /// Run the line engine over an EXPLICIT candidate set (`ids` indexing `paths`)
@@ -424,17 +619,26 @@ pub fn runGrep(gpa: std.mem.Allocator, io: std.Io, pattern: []const u8, opts: Op
 /// the indexed `runGrep` feeds it the trigram-prefiltered + freshness-widened
 /// candidates, while the `--live` driver (`live.zig`) feeds it every live-tree
 /// path — one line engine, two candidate sources. `pre_ns` is the pre-search
-/// cost folded into the summary (the index cold-load, or the live walk).
-pub fn grepOverPaths(gpa: std.mem.Allocator, io: std.Io, opts: Options, re: *const Regex, paths: []const []const u8, ids: []u32, total_paths: usize, pre_ns: i128) !void {
+/// cost folded into the summary (the index cold-load, or the live walk). `lit`
+/// is `args.literalNeedle(pattern, opts)` — non-null lets every shard ride the
+/// SIMD scanner instead of the DFA/Pike VM for the "does this line match" test
+/// (see `Shard.lit` / `lineHit`); null preserves the exact prior behavior.
+pub fn grepOverPaths(gpa: std.mem.Allocator, io: std.Io, opts: Options, re: *const Regex, paths: []const []const u8, ids: []u32, total_paths: usize, pre_ns: i128, lit: ?[]const u8) !void {
     const q0 = nowNs(io);
     var blocks: std.ArrayList(FileBlock) = .empty;
+    defer blocks.deinit(gpa);
+    // Every `FileBlock.body` byte lives in its shard's arena (see `Shard.arena`
+    // / `runShards`), not in `gpa` — so blocks are never individually freed;
+    // the arenas are torn down as a batch once `outbuf` holds a copy of every
+    // body's bytes (right after the loop below).
+    var arenas: std.ArrayList(std.heap.ArenaAllocator) = .empty;
     defer {
-        for (blocks.items) |*b| b.body.deinit(gpa);
-        blocks.deinit(gpa);
+        for (arenas.items) |ar| ar.deinit();
+        arenas.deinit(gpa);
     }
     var reads: usize = 0;
     var lines: usize = 0;
-    try runShards(gpa, paths, ids, re, opts, &blocks, &reads, &lines);
+    try runShards(gpa, paths, ids, re, opts, lit, &blocks, &reads, &lines, &arenas);
     std.mem.sort(FileBlock, blocks.items, {}, cmpBlocks);
     const query_ns = nowNs(io) - q0;
 

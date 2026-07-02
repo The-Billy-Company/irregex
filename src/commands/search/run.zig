@@ -32,18 +32,6 @@ const live = @import("live.zig");
 /// so `main` reaches every real operation through `commands.search`.
 pub const runIndex = drivers.runIndex;
 
-/// RE2 metacharacters: a pattern containing any of these is a regex, otherwise
-/// it's a plain literal an SIMD substring scan can serve directly (the fast
-/// `runQuery` path). `--fixed` forces literal regardless (the whole string is
-/// data), so it's checked by the caller before this.
-fn looksLikeRegex(pat: []const u8) bool {
-    for (pat) |c| switch (c) {
-        '.', '^', '$', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '\\' => return true,
-        else => {},
-    };
-    return false;
-}
-
 /// Can this invocation ride the specialized `--show files` cold driver (paths
 /// only, no line engine)? Only when the shape is exactly "which files match" AND
 /// no feature the path-level driver can't honor is requested. Any case-fold,
@@ -54,6 +42,7 @@ fn canRideFilesFastPath(opts: args.Options) bool {
         !opts.json and !opts.caseless and !opts.smart_case and !opts.word and
         !opts.fixed and !opts.invert and !opts.only_matching and
         !opts.count_only and !opts.count_matches and !opts.no_line_num and
+        !opts.multiline and // `-U` needs the whole-buffer engine, not per-line docMatch
         opts.replace == null and opts.max_per_file == 0 and !opts.wantsContext();
 }
 
@@ -80,7 +69,7 @@ pub fn runSearch(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8) !
     // `--show files` with no line-engine feature ⇒ the benchmarked cold driver:
     // SIMD substring for a plain literal, Thompson-NFA for a regex (paths only).
     if (canRideFilesFastPath(opts)) {
-        if (looksLikeRegex(parsed.pattern)) return drivers.runRegex(gpa, io, parsed.pattern);
+        if (args.looksLikeRegex(parsed.pattern)) return drivers.runRegex(gpa, io, parsed.pattern);
         return drivers.runQuery(gpa, io, parsed.pattern);
     }
 
