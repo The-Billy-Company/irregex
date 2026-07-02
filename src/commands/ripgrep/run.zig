@@ -38,6 +38,7 @@ const simd = @import("../../scan/simd.zig");
 const search_args = @import("../search/args.zig");
 const persist = @import("../../index/persist.zig");
 const fresh = @import("../../corpus/fresh.zig");
+const rank = @import("rank.zig");
 const Opts = args.Opts;
 const Emitter = output.Emitter;
 const die = args.die;
@@ -689,6 +690,15 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         for (c.files) |f| out.print(a, "{s}{c}", .{ f.path, if (o.null_sep) @as(u8, 0) else '\n' }) catch die("oom\n", .{});
         corpus_mod.emitStdout(out.items);
         std.process.exit(if (c.files.len > 0) 0 else 1);
+    }
+
+    // --rank: gist's definition-first ranked view — a distinct output shape from
+    // the rg-parity line engine, resolved from the persisted index (which it
+    // requires). Dispatch before pattern combination / the walk: it ranks the
+    // indexed candidate set for the raw literal, not a compiled line regex.
+    if (o.rank) {
+        try rank.run(gpa, io, if (parsed.patterns.len > 0) parsed.patterns[0] else "", o.rank_k);
+        return;
     }
 
     // Zero patterns (an empty `-f` file): ripgrep matches nothing — so without

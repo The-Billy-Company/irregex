@@ -10,19 +10,21 @@
 //! machine-checkable, not just documented.
 //!
 //! The manifest is a static, deterministic document (the CLI surface is a
-//! contract, not runtime state), emitted verbatim to stdout. The whole-tree `rg`
-//! engine's OWN flag surface (rg-exact, `../ripgrep/args.zig`) is deliberately
-//! absent from `verbs` below — it is a different vocabulary from gist's native
-//! Set B (every ripgrep default flag, not gist's `--show`/`--rank`/`--lang`
-//! shape). It's surfaced instead as `shorthand`: a capability an agent should
-//! know exists (zero-setup, no-index search), not a flag-by-flag contract.
+//! contract, not runtime state), emitted verbatim to stdout. There are two
+//! lifecycle `verbs` (`index`, `status`); the search itself has no verb — it is
+//! the bare `gist <pattern>` invocation, described under `search` below. Its
+//! flag surface is rg-exact (`../ripgrep/args.zig`) — every ripgrep default flag
+//! — plus gist's own additions (`--no-index`/`--index`/`--rank`). The full rg
+//! flag list is a contract enumerated by the rgsuite differential-parity harness
+//! rather than duplicated here; the manifest lists gist's native additions and
+//! points at that coverage.
 
 const std = @import("std");
 const corpus_mod = @import("../../corpus/corpus.zig");
 
-/// The capability manifest. Kept in sync by hand with `search/args.zig` (native
-/// flags) and `search/compat.zig` (legacy aliases) — the `--schema`/`--help`
-/// parity is asserted by the CLI's own tests + the two-set doc in the README.
+/// The capability manifest. Kept in sync by hand with the unified engine's flag
+/// parser (`../ripgrep/args.zig`) — the `--schema`/`--help` parity is asserted by
+/// the CLI's own tests + the rgsuite differential-parity harness.
 const manifest =
     \\{
     \\  "tool": "gist",
@@ -38,44 +40,24 @@ const manifest =
     \\      "summary": "read-only introspection: index presence, file/trigram/posting counts, on-disk size, build age, roots",
     \\      "args": [],
     \\      "flags": []
-    \\    },
-    \\    "search": {
-    \\      "summary": "the one search verb; pattern is auto-detected literal-or-regex, output shape is a flag",
-    \\      "args": [
-    \\        {"name": "pattern", "type": "string", "required": true, "description": "the literal or RE2-style regex to find"},
-    \\        {"name": "PATH...", "type": "string[]", "required": false, "description": "positional roots that scope the search (pruned before any read)"}
-    \\      ],
-    \\      "flags": [
-    \\        {"native": "--show", "type": "enum(lines|files|count|ranked)", "default": "lines", "legacy_aliases": ["-l (files)", "-c (count)", "--files-with-matches", "--count"], "description": "output shape"},
-    \\        {"native": "--rank", "type": "int?", "default": 20, "legacy_aliases": [], "description": "shorthand for --show ranked; optional =N caps the top-K (definition-first RRF)"},
-    \\        {"native": "--lang", "type": "string", "default": null, "legacy_aliases": ["-t", "--type"], "description": "scope by language (go/py/rust/ts/js/swift/zig/sql/proto/...)"},
-    \\        {"native": "--glob", "type": "string", "default": null, "legacy_aliases": ["-g"], "description": "scope by path glob; a leading ! excludes"},
-    \\        {"native": "--word", "type": "bool", "default": false, "legacy_aliases": ["-w", "--word-regexp"], "description": "match on word boundaries"},
-    \\        {"native": "--fixed", "type": "bool", "default": false, "legacy_aliases": ["-F", "--fixed-strings"], "description": "treat the pattern as a literal string"},
-    \\        {"native": "--ignore-case", "type": "bool", "default": false, "legacy_aliases": ["-i"], "description": "case-insensitive (ASCII fold)"},
-    \\        {"native": "--smart-case", "type": "bool", "default": false, "legacy_aliases": ["-S"], "description": "case-insensitive iff the pattern has no uppercase"},
-    \\        {"native": "--invert", "type": "bool", "default": false, "legacy_aliases": ["-v", "--invert-match"], "description": "emit non-matching lines"},
-    \\        {"native": "--before", "type": "int", "default": 0, "legacy_aliases": ["-B"], "description": "context lines before each match"},
-    \\        {"native": "--after", "type": "int", "default": 0, "legacy_aliases": ["-A"], "description": "context lines after each match"},
-    \\        {"native": "--context", "type": "int", "default": 0, "legacy_aliases": ["-C"], "description": "context lines on both sides"},
-    \\        {"native": "--limit", "type": "int", "default": 0, "legacy_aliases": ["-m", "--max-count"], "description": "cap rows per file (0 = unbounded)"},
-    \\        {"native": "--spans", "type": "bool", "default": false, "legacy_aliases": ["--count-matches"], "description": "with --show count, count match spans instead of lines"},
-    \\        {"native": "--replace", "type": "string", "default": null, "legacy_aliases": ["-r"], "description": "rewrite each match ($0/${0}/$& = whole match; $$ = literal $)"},
-    \\        {"native": "--only-matching", "type": "bool", "default": false, "legacy_aliases": ["-o"], "description": "emit each match span, not the whole line"},
-    \\        {"native": "--live", "type": "bool", "default": false, "legacy_aliases": [], "description": "skip the index, scan the live tree fresh"},
-    \\        {"native": "--json", "type": "bool", "default": false, "legacy_aliases": [], "description": "structured records instead of path:line:text"},
-    \\        {"native": "--pattern", "type": "string", "default": null, "legacy_aliases": ["-e"], "description": "explicit pattern (leading-dash safe)"},
-    \\        {"native": "--files", "type": "bool", "default": false, "legacy_aliases": [], "description": "list corpus files (no pattern, no read)"}
-    \\      ]
     \\    }
     \\  },
-    \\  "shorthand": {
-    \\    "summary": "gist <pattern> [PATH...] [flags] — no verb, no index required: live-scans the current tree with ripgrep's own default behavior (gitignore precedence, piped stdin, exit codes). The everyday zero-setup front door.",
-    \\    "flag_surface": "rg-exact (../ripgrep/args.zig) — a different, larger vocabulary than the search verb's native Set B; see bench/rgsuite/README.md for the differential-parity coverage",
+    \\  "search": {
+    \\    "summary": "gist <pattern> [PATH...] [flags] — the canonical invocation: no verb, no setup. Live-scans the current tree with ripgrep's own default behavior (gitignore precedence, piped stdin, exit codes); when a fresh index covers the searched subtree it is used automatically to elide non-candidate reads, byte-identically to the pure walk.",
+    \\    "args": [
+    \\      {"name": "pattern", "type": "string", "required": true, "description": "the literal or RE2-style regex to find"},
+    \\      {"name": "PATH...", "type": "string[]", "required": false, "description": "positional roots that scope the search (pruned before any read)"}
+    \\    ],
+    \\    "flag_surface": "rg-exact (../ripgrep/args.zig) — every ripgrep default flag; the full contract is enumerated by bench/rgsuite (441 mined rg-argv replays, see bench/rgsuite/README.md)",
+    \\    "native_additions": [
+    \\      {"native": "--rank", "type": "int?", "default": 20, "description": "gist's one shape rg can't express: the definition-first ranked view (RRF fusion; a symbol's definition outranks its call sites, codegen demoted). Optional =N caps the top-K. Requires an index."},
+    \\      {"native": "--no-index", "type": "bool", "default": false, "description": "force the pure live walk (never consult the index)"},
+    \\      {"native": "--index", "type": "bool", "default": false, "description": "force the index-accelerated read-elision path (default: auto-detect a fresh index)"}
+    \\    ],
     \\    "alias": "gist rg [flags] <pattern> [PATH...] — the same engine addressed explicitly (an `alias rg=gist` drop-in shape)"
     \\  },
     \\  "output_stream": {"results": "stdout", "diagnostics": "stderr"},
-    \\  "exit_codes": {"0": "ran (results, if any, on stdout)", "1": "usage / parse error / unsupported flag (guidance on stderr); shorthand/rg: also means no match (ripgrep's own convention)", "2": "shorthand/rg only: usage error or a flag rg-parity can't honor by design (guidance on stderr)"}
+    \\  "exit_codes": {"0": "ran (results on stdout, if any)", "1": "no match (ripgrep's own convention), or a usage/parse/unsupported-flag error (guidance on stderr)", "2": "usage error or a flag rg-parity can't honor by design (guidance on stderr)"}
     \\}
     \\
 ;

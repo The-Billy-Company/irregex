@@ -36,10 +36,24 @@ fn mmapFile(io: std.Io, path: []const u8) !Mapping {
     return std.posix.mmap(null, len, .{ .READ = true }, .{ .TYPE = .PRIVATE }, file.handle, 0);
 }
 
+/// Materialize `sub_path` with `data` via the temp-then-rename pattern (POSIX
+/// `rename` is atomic on the same filesystem) instead of a plain truncate+write.
+/// Up to ~10 agents cowork this repo and any of them can run `gist index` while
+/// another is mid-`mmapFile` on the very same `index.gist`/`paths.list` — a
+/// plain overwrite lets that reader observe a torn (truncated/zero-length or
+/// half-written) file and silently return zero candidates. Atomic replace means
+/// a concurrent reader always sees either the fully-old or fully-new bytes.
+pub fn writeAtomic(io: std.Io, sub_path: []const u8, data: []const u8) !void {
+    var af = try Dir.cwd().createFileAtomic(io, sub_path, .{ .make_path = true, .replace = true });
+    defer af.deinit(io);
+    try af.file.writeStreamingAll(io, data);
+    try af.replace(io);
+}
+
 /// The cold-loaded index + the doc→path table that maps candidate ids back to
-/// files. Both are mmap'd: `idx.postings` aliases into `imap` (borrowed, no
-/// copy) and every `paths` slice aliases into `pmap`, so all lifetimes bind to
-/// the two mappings and `deinit` simply unmaps them.
+/// files. Both are mmap'd: `idx`'s directory + body slices alias into `imap`
+/// (borrowed, no copy) and every `paths` slice aliases into `pmap`, so all
+/// lifetimes bind to the two mappings and `deinit` simply unmaps them.
 pub const Persisted = struct {
     imap: Mapping,
     pmap: Mapping,
@@ -60,8 +74,22 @@ pub const Persisted = struct {
 /// expected miss. Paths are NUL-separated in doc-id order; the list is pre-sized
 /// from the NUL count so the split is one allocation.
 pub fn load(gpa: std.mem.Allocator, io: std.Io) !?Persisted {
+    return loadImpl(gpa, io, true);
+}
+
+/// `load`, but SILENT on a miss (no "run `gist index`" guidance). The bare
+/// `gist <pattern>` front door probes for an index on every invocation to
+/// accelerate its live walk (skip reading provable-non-candidate files —
+/// `commands/ripgrep/run.zig`), and outside an indexed corpus that probe MUST
+/// stay quiet: a missing index there is the normal case, not something to nag
+/// about, and the walk falls back to reading every file exactly as before.
+pub fn loadQuiet(gpa: std.mem.Allocator, io: std.Io) !?Persisted {
+    return loadImpl(gpa, io, false);
+}
+
+fn loadImpl(gpa: std.mem.Allocator, io: std.Io, comptime verbose: bool) !?Persisted {
     const imap = mmapFile(io, index_file) catch {
-        std.debug.print("no index at {s} — run `gist index` first\n", .{index_file});
+        if (verbose) std.debug.print("no index at {s} — run `gist index` first\n", .{index_file});
         return null;
     };
     errdefer std.posix.munmap(imap);
@@ -72,7 +100,7 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io) !?Persisted {
     // (or half-written) one is the same "no usable index" miss as above, not a
     // crash. `errdefer` won't fire on `return null`, so unmap `imap` by hand.
     const pmap = mmapFile(io, paths_file) catch {
-        std.debug.print("incomplete index — {s} missing; run `gist index` to rebuild\n", .{paths_file});
+        if (verbose) std.debug.print("incomplete index — {s} missing; run `gist index` to rebuild\n", .{paths_file});
         std.posix.munmap(imap);
         return null;
     };

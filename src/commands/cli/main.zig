@@ -1,81 +1,60 @@
 //! gist — the CLI executable entrypoint (the `gist` binary).
 //!
-//! Three real verbs — what gist DOES, not which competitor's argv it apes:
+//! Two lifecycle verbs — what gist DOES, not which competitor's argv it apes:
 //!
 //!   gist index                        build + persist the trigram index
 //!   gist status                       read-only: is an index ready, how fresh, how big
-//!   gist search <pattern> [PATH...]    the one search verb (shape is a flag)
 //!
-//! Plus the everyday shorthand — no verb at all:
+//! Everything else is the search itself — no verb at all, the shape an agent's
+//! `rg <pattern>` reflex already takes:
 //!
 //!   gist <pattern> [PATH...] [flags]  find it, right now, zero setup
 //!
-//! `gist jesus` needs no `gist index` first: it live-scans the current tree
-//! with ripgrep's own default behavior (gitignore precedence, piped stdin, exit
-//! codes) — a true `rg` drop-in for the shape an agent's fingers already know.
-//! It shares gist's engine + `../scope/` path filters but its OWN flag surface
-//! (`../ripgrep/args.zig`, rg-exact — a superset of `search`'s legacy Set A);
-//! `gist search <pattern>` is the native, index-backed verb for gist's own
-//! ergonomics (`--rank`, `--show ranked`, `--json`, `--lang`) once `gist index`
-//! has run. `gist rg [flags] <pattern> [PATH...]` is the same engine addressed
-//! explicitly (an `alias rg=gist` drop-in's shape).
+//! `gist jesus` needs no `gist index` first: it live-scans the current tree with
+//! ripgrep's own default behavior (gitignore precedence, piped stdin, exit
+//! codes) — a true `rg` drop-in. When a fresh index covers the searched subtree
+//! it is used *automatically* as an acceleration structure (reads of provable
+//! non-candidate files are elided), byte-identically to the live walk;
+//! `--no-index` forces the pure walk, `--index` forces the accelerated path.
+//! `--rank[=N]` selects gist's one native shape ripgrep can't express — the
+//! definition-first ranked view. `gist rg [flags] <pattern> [PATH...]` is the
+//! same engine addressed explicitly (an `alias rg=gist` drop-in's shape).
 //!
-//! Plus three top-level introspection flags (convention, like `--help`, so the
-//! verb list stays at three): `--help`, `--version`, `--schema` (a JSON
-//! capability manifest for agents/codegen). The `search` shape is chosen by flag
-//! — `--show lines|files|count|ranked`, `--rank`, `--json` — not a different verb,
-//! collapsing the old `query`/`regex`/`rank`/`grep` quartet into one.
+//! Plus three top-level introspection flags (convention, like `--help`):
+//! `--help`, `--version`, `--schema` (a JSON capability manifest for
+//! agents/codegen).
 //!
 //! This is the thin dispatch shell only: every verb's real work lives in the
-//! engine + command modules, reached through the `gist` module (`commands.search`
-//! for index+search, `commands.status` for introspection, `commands.schema` for
-//! the manifest, `commands.ripgrep` for the bare shorthand + `gist rg`). The
-//! bench/verify/certify harness is a separate executable (`bench/bench.zig`).
+//! engine + command modules, reached through the `gist` module (`commands.ripgrep`
+//! for the unified search engine, `commands.indexer` for `gist index`,
+//! `commands.status` for introspection, `commands.schema` for the manifest). The
+//! bench/verify/certify harness is a separate executable (`bench/harness/bench.zig`).
 
 const std = @import("std");
 const gist = @import("gist");
 
-const search = gist.commands.search; // index + the one `search` verb
+const indexer = gist.commands.indexer; // `gist index` — build + persist the trigram index
 const status = gist.commands.status; // read-only index introspection
 const schema = gist.commands.schema; // `--schema` JSON manifest
-const ripgrep = gist.commands.ripgrep; // whole-tree rg-compatible engine (bare shorthand + `gist rg`)
+const ripgrep = gist.commands.ripgrep; // the unified search engine (bare shorthand + `gist rg`)
 const default_roots = gist.corpus.default_roots;
 
 fn usage() void {
     std.debug.print(
         \\gist — fast, agent-friendly code locator
         \\
-        \\usage: gist <command> [args]
-        \\  index                        build + persist the trigram index
-        \\  status                       is an index ready, how fresh, how big
-        \\  search <pattern> [PATH...]   find matches (shape via --show/--rank/--json)
+        \\usage:
+        \\  gist <pattern> [PATH...] [flags]   find matches — no verb, no setup; live-scans
+        \\                                     the tree (rg's default behavior), auto-using a
+        \\                                     fresh index to skip non-candidate reads
+        \\  index                              build + persist the trigram index
+        \\  status                             is an index ready, how fresh, how big
         \\
-        \\  gist <pattern> [PATH...]     shorthand: no verb, no index needed — live-scans
-        \\                               the current tree with rg's own default behavior
-        \\  gist search --help           the full search flag surface (native + legacy)
-        \\  gist --schema                a JSON capability manifest for agents
+        \\  --no-index / --index               force the live walk / the index-accelerated path
+        \\  --rank [=N]                         definition-first ranked view (top N, default 20)
+        \\  gist --help                        the full flag surface (`gist rg --help`)
+        \\  gist --schema                      a JSON capability manifest for agents
         \\  gist --version
-        \\
-    , .{});
-}
-
-fn searchHelp() void {
-    std.debug.print(
-        \\usage: gist search <pattern> [PATH...] [flags]
-        \\
-        \\  --show <ranked|lines|files|count>   output shape (default: lines)
-        \\  --rank [=N]                         shorthand for --show ranked (top N, default 20)
-        \\  --lang <name>   --glob <pattern>    scope by language / path glob
-        \\  --word  --fixed  --ignore-case  --smart-case  --invert
-        \\  --before N  --after N  --context N
-        \\  --limit N  --spans  --replace <template>  --only-matching
-        \\  --live                              skip the index, scan the tree fresh
-        \\  --json                              structured output instead of path:line:text
-        \\  --pattern <pat>   --files   --      explicit pattern / list files / end of flags
-        \\
-        \\Legacy / ripgrep-compatible aliases (accepted, not the primary spelling):
-        \\  -l -c -v -i -w -F -o -n -N -S -m -e -t -g -r -A -B -C
-        \\  --files-with-matches --count --count-matches --invert-match --word-regexp ...
         \\
     , .{});
 }
@@ -106,28 +85,11 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (std.mem.eql(u8, mode, "index")) {
-        try search.runIndex(gpa, io, &default_roots);
+        try indexer.run(gpa, io, &default_roots);
         return;
     }
     if (std.mem.eql(u8, mode, "status")) {
         try status.run(gpa, io);
-        return;
-    }
-    // `search <pattern> [PATH...] [flags]` — the one search verb. Shape (lines /
-    // files / count / ranked), freshness (--live), and structure (--json) are all
-    // flags; `search.runSearch` parses them (native Set B + legacy Set A) and
-    // dispatches to the fastest correct engine.
-    if (std.mem.eql(u8, mode, "search")) {
-        var rest: std.ArrayList([]const u8) = .empty;
-        defer rest.deinit(gpa);
-        while (it.next()) |arg| {
-            if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-                searchHelp();
-                return;
-            }
-            try rest.append(gpa, arg);
-        }
-        try search.runSearch(gpa, io, rest.items);
         return;
     }
     // `rg [flags] <pattern> [PATH...]` — the same whole-tree engine the bare

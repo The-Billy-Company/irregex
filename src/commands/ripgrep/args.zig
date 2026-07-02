@@ -114,6 +114,18 @@ pub const Opts = struct {
     // ctx_sep: null = suppressed line (--no-context-separator); else the string.
     ctx_sep: ?[]const u8 = "--",
     color: ColorChoice = .auto, // --color auto|always|never|ansi
+    // --no-index: never consult the persisted trigram index — always live-read
+    // every walked file. Default (false) auto-detects an index and uses it purely
+    // to SKIP reading files it proves can't match (unchanged since the build and
+    // not a trigram candidate); the walk + output stay byte-identical either way.
+    // `--index` is the explicit opt-in spelling of that default (undo a prior
+    // `--no-index`); neither ever changes results, only how many files are opened.
+    no_index: bool = false,
+    // --rank[=N]: gist-native ranked view (no rg equivalent) — definition-first
+    // RRF over the indexed candidate set, top-K rows (`rank.zig`). `rank_k` = 0
+    // means the default 20. Requires a persisted index (that's what it reads).
+    rank: bool = false,
+    rank_k: usize = 0,
     filter: Filter = .{},
     pub fn wantsContext(self: Opts) bool {
         return self.before > 0 or self.after > 0;
@@ -530,6 +542,9 @@ const Act = enum {
     ignore_file,
     type_add,
     color,
+    no_index,
+    index,
+    rank,
     noop,
     noop_val,
     unsupported,
@@ -577,6 +592,12 @@ const long_map = std.StaticStringMap(Act).initComptime(.{
     .{ "ignore-file-case-insensitive", .ignore_file_ci },
     .{ "no-ignore-global", .noop }, // gist reads no global gitignore → already off
     .{ "ignore-file", .ignore_file },
+    // gist-native index controls (no rg equivalent): the persisted trigram index
+    // is an acceleration structure only — it never changes results, so both are
+    // safe on the rg-compat surface.
+    .{ "no-index", .no_index },
+    .{ "index", .index },
+    .{ "rank", .rank },
     // accept + ignore (gist already satisfies these on an arbitrary tree)
     .{ "mmap", .noop },
     .{ "no-mmap", .noop },
@@ -697,6 +718,14 @@ fn parseLong(b: *Builder, arg: []const u8, i: *usize, all: []const []const u8) v
         .require_git => o.no_require_git = false, // undo an earlier --no-require-git
         .ignore_file_ci => o.ignore_case_insensitive = true,
         .ignore_file => b.ignore_files.append(b.a, val(inl, i, all)) catch die("oom\n", .{}),
+        .no_index => o.no_index = true,
+        .index => o.no_index = false,
+        // --rank takes an OPTIONAL inline count only (`--rank=N`); a bare `--rank`
+        // must not swallow the following token — that's the pattern (`gist --rank foo`).
+        .rank => {
+            o.rank = true;
+            if (inl) |v| o.rank_k = toU(v);
+        },
         .type_add => b.addTypeDef(val(inl, i, all)),
         .after => {
             b.a_val = toU(val(inl, i, all));

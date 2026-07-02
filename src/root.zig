@@ -46,6 +46,7 @@ pub const sweep = @import("scan/sweep.zig");
 // ── corpus + freshness ──
 pub const corpus = @import("corpus/corpus.zig");
 pub const haystack = @import("corpus/haystack.zig");
+pub const bulkstat = @import("corpus/bulkstat.zig");
 pub const fresh = @import("corpus/fresh.zig");
 
 /// CLI surfaces built on the engine above. Not part of the C ABI — the `gist`
@@ -64,9 +65,13 @@ pub const commands = struct {
     pub const status = @import("commands/status/status.zig");
     /// `gist --schema` JSON capability manifest.
     pub const schema = @import("commands/cli/schema.zig");
-    /// INTERNAL ripgrep-default drop-in — the rgsuite differential-parity harness
-    /// target only. Not a documented verb (see `commands/cli/main.zig`).
+    /// The unified search engine — the certified ripgrep-parity walk-and-emit
+    /// pipeline (`run`), its index-backed read-elision + `--no-index`/`--rank`
+    /// candidate sources, and the ranked view (`rank`). Backs the bare
+    /// `gist <pattern>` shorthand, `gist rg`, and the rgsuite parity certificate.
     pub const ripgrep = @import("commands/ripgrep/run.zig");
+    /// The `index` verb — build + persist the trigram index the engine reads.
+    pub const indexer = @import("commands/ripgrep/index.zig");
 };
 
 pub const version_string: [:0]const u8 = "0.1.0"; // x-release-please-version
@@ -96,12 +101,14 @@ test {
     std.testing.refAllDecls(@This());
     // engine tiers
     _ = @import("index/ngram_test.zig"); // n-gram extraction strategy primitives
+    _ = @import("index/varint_test.zig"); // LEB128 varint codec (compact posting bodies)
     _ = @import("index/trigram_test.zig"); // T0 candidate index: query + serialize + build
     _ = @import("rank/rank_test.zig"); // T4 RRF fusion ranking
     _ = @import("rank/signals_test.zig"); // cross-language def-detection + generated-file signals
     _ = @import("scan/simd_test.zig"); // SIMD `contains` differential fuzz vs std
     _ = @import("corpus/fresh_test.zig"); // T3 freshness `widen` set-algebra
     _ = @import("corpus/haystack_test.zig"); // shared walk: isSkipDir + joinPath hot-path decisions
+    _ = @import("corpus/bulkstat_test.zig"); // getattrlistbulk ≡ stat-walk differential
     _ = @import("regex/syntax_test.zig"); // T2 syntax: ByteSet + recursive-descent parser
     _ = @import("regex/analysis_test.zig"); // T2 analysis: required-literal + cover + anchored
     _ = @import("regex/core_test.zig"); // T2 engine: parser + Pike VM + prefilters
@@ -114,5 +121,7 @@ test {
     _ = @import("commands/search/run.zig"); // the search dispatcher (pulls args/compat/drivers/emit/render/live)
     _ = @import("commands/status/status.zig"); // read-only index introspection
     _ = @import("commands/cli/schema.zig"); // `--schema` manifest
-    _ = @import("commands/ripgrep/run.zig"); // internal rgsuite parity drop-in
+    _ = @import("commands/ripgrep/run.zig"); // the unified engine (rgsuite parity drop-in)
+    _ = @import("commands/ripgrep/rank.zig"); // `--rank` definition-first ranked view
+    _ = @import("commands/ripgrep/index.zig"); // the `index` verb: build + persist
 }
