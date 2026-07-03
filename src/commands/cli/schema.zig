@@ -54,7 +54,7 @@ const manifest =
     \\      {"native": "--no-index", "type": "bool", "default": false, "description": "force the pure live walk (never consult the index)"},
     \\      {"native": "--index", "type": "bool", "default": false, "description": "force the index-accelerated read-elision path (default: auto-detect a fresh index)"}
     \\    ],
-    \\    "alias": "gist rg [flags] <pattern> [PATH...] — the same engine addressed explicitly (an `alias rg=gist` drop-in shape)"
+    \\    "alias": "gist rg [flags] <pattern> [PATH...] (an `alias rg=gist` drop-in shape) or gist search <pattern> [PATH...] (the habit-safe `search` verb) — both are the same engine addressed explicitly"
     \\  },
     \\  "output_stream": {"results": "stdout", "diagnostics": "stderr"},
     \\  "exit_codes": {"0": "ran (results on stdout, if any)", "1": "no match (ripgrep's own convention), or a usage/parse/unsupported-flag error (guidance on stderr)", "2": "usage error or a flag rg-parity can't honor by design (guidance on stderr)"}

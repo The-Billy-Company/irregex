@@ -1,0 +1,1 @@
+Add a habit-safe search verb: gist search PATTERN PATHS now aliases the same engine as gist rg and the bare gist PATTERN shorthand. Previously it misparsed the pattern as a path and failed with os error 2; a bare gist search with no pattern still searches for the literal word search, so nothing regresses.

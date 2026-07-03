@@ -17,8 +17,11 @@
 //! non-candidate files are elided), byte-identically to the live walk;
 //! `--no-index` forces the pure walk, `--index` forces the accelerated path.
 //! `--rank[=N]` selects gist's one native shape ripgrep can't express — the
-//! definition-first ranked view. `gist rg [flags] <pattern> [PATH...]` is the
-//! same engine addressed explicitly (an `alias rg=gist` drop-in's shape).
+//! definition-first ranked view. `gist rg [flags] <pattern> [PATH...]` and its
+//! habit-safe twin `gist search <pattern> [PATH...]` are the same engine
+//! addressed explicitly with a verb (the `alias rg=gist` drop-in's shape, and
+//! the `search` reflex — so `gist search foo` finds `foo` instead of dying on a
+//! nonexistent path).
 //!
 //! Plus three top-level introspection flags (convention, like `--help`):
 //! `--help`, `--version`, `--schema` (a JSON capability manifest for
@@ -50,6 +53,7 @@ fn usage() void {
         \\  index                              build + persist the trigram index
         \\  status                             is an index ready, how fresh, how big
         \\
+        \\  rg / search <pattern> [PATH...]    the same engine, addressed with a verb (habit-safe aliases)
         \\  --no-index / --index               force the live walk / the index-accelerated path
         \\  --rank [=N]                         definition-first ranked view (top N, default 20)
         \\  gist --help                        the full flag surface (`gist rg --help`)
@@ -105,6 +109,24 @@ pub fn main(init: std.process.Init) !void {
         defer rest.deinit(gpa);
         while (it.next()) |arg| try rest.append(gpa, arg);
         try ripgrep.run(gpa, io, rest.items, init.environ_map);
+        return;
+    }
+    // `search <pattern> [PATH...]` — the same engine addressed with the verb the
+    // reflex reaches for. gist's canonical shape is verbless (`gist <pattern>`),
+    // but `gist search foo` is a near-universal habit; without this it parses as
+    // pattern=`search`, path=`foo`, and dies on `foo: No such file (os error 2)`
+    // — a faithful-to-rg but repeatedly baffling failure. A bare `gist search`
+    // (no pattern after it) still searches for the literal word "search", so no
+    // existing invocation regresses.
+    if (std.mem.eql(u8, mode, "search")) {
+        var rest: std.ArrayList([]const u8) = .empty;
+        defer rest.deinit(gpa);
+        while (it.next()) |arg| try rest.append(gpa, arg);
+        if (rest.items.len > 0) {
+            try ripgrep.run(gpa, io, rest.items, init.environ_map);
+        } else {
+            try ripgrep.run(gpa, io, &.{mode}, init.environ_map);
+        }
         return;
     }
 

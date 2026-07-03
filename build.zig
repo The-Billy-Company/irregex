@@ -21,12 +21,32 @@ pub fn build(b: *std.Build) void {
     // it does NOT refresh `zig-out/bin/gist`; run a plain `zig build`
     // (the default "install" step) first if a script or manual test shells
     // that path directly.
+    //
+    // The CLI is gist's product surface — the on-PATH binary (`~/.local/bin/gist`
+    // → `zig-out/bin/gist`) whose entire reason to exist is out-running ripgrep.
+    // A Debug build is 4–8× slower and reads to a caller like a hang, so the CLI
+    // (and the engine module it links, where the hot loops live) defaults to
+    // ReleaseFast regardless of the build-wide `-Doptimize` — a bare `zig build`
+    // must never install a slow debug `gist`. `-Dcli-optimize=Debug` still yields
+    // a debug CLI for engine debugging. Tests / coverage / the C-ABI libs keep
+    // the standard (safety-checked, DWARF-carrying) default optimize untouched,
+    // so this dedicated module pair leaves those graphs exactly as they were.
+    const cli_optimize = b.option(
+        std.builtin.OptimizeMode,
+        "cli-optimize",
+        "optimize mode for the installed gist CLI (default ReleaseFast — the product surface's whole point is speed)",
+    ) orelse .ReleaseFast;
+    const cli_engine = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = k.target,
+        .optimize = cli_optimize,
+    });
     const cli_mod = b.createModule(.{
         .root_source_file = b.path("src/commands/cli/main.zig"),
         .target = k.target,
-        .optimize = k.optimize,
+        .optimize = cli_optimize,
     });
-    cli_mod.addImport("gist", k.root_module);
+    cli_mod.addImport("gist", cli_engine);
     const cli_exe = b.addExecutable(.{ .name = "gist", .root_module = cli_mod });
     b.installArtifact(cli_exe);
 
@@ -35,6 +55,35 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| run_cli.addArgs(args);
     b.step("cli", "gist CLI: `-- index`, `-- status`, `-- <pattern> [flags]`")
         .dependOn(&run_cli.step);
+
+    // Black-box CLI regression guard (wired into `zig build test`): an explicit
+    // PATH arg that can't be opened must be reported to stderr and force exit 2
+    // (ripgrep's error class) — NOT dropped silently with a "no match" exit 1,
+    // which read to a caller like an instant crash on a typo'd path
+    // (`gist search tel` → "search" pattern in nonexistent path "tel"). Spawns
+    // the freshly compiled exe so the fix can never silently regress.
+    const badpath_test = b.addRunArtifact(cli_exe);
+    badpath_test.setCwd(b.path("../../.."));
+    badpath_test.addArgs(&.{ "gist_badpath_regression_needle", "gist_definitely_nonexistent_path_xyz" });
+    badpath_test.expectExitCode(2);
+    badpath_test.expectStdErrMatch("No such file or directory");
+    k.test_step.dependOn(&badpath_test.step);
+
+    // Companion guard: the habit-safe `search` verb must be CONSUMED, so the
+    // token after it is the pattern (and the token after THAT a path) — not
+    // silently re-read. This needle string lives in this very build.zig (the
+    // addArgs below), so WITH the verb `gist search <needle> --no-index <file>`
+    // finds it and exits 0; absent the verb it parses as pattern="search",
+    // path="<needle>", dies opening the nonexistent path with exit 2 ("No such
+    // file"). Asserting exit 0 fails closed the instant the verb stops being
+    // stripped. `--no-index` forces the pure live walk so the guard tests the
+    // dispatch/arg-parsing (its purpose), not index freshness, and stays
+    // deterministic + fast (one file) under the concurrently-edited tree.
+    const search_verb_test = b.addRunArtifact(cli_exe);
+    search_verb_test.setCwd(b.path("../../.."));
+    search_verb_test.addArgs(&.{ "search", "gist_search_verb_regression_needle_xyz", "--no-index", "pkg/kernels/gist/build.zig" });
+    search_verb_test.expectExitCode(0);
+    k.test_step.dependOn(&search_verb_test.step);
 
     // ── the `gist-bench` harness executable (bench/verify/certify tooling) ──
     // Run from the repo root so relative dirs + output paths resolve there.
