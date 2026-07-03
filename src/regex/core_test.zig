@@ -145,6 +145,47 @@ test "regex: an unescaped { without a valid count is rejected (matches rg)" {
     try std.testing.expect(try matches("interface\\{\\}", "type T interface{}")); // escaped braces
 }
 
+test "regex: POSIX bracket classes ([[:space:]] etc.) match rg byte-mode sets" {
+    const a = std.testing.allocator;
+    // Regression: `[[:space:]]` used to silently parse as the class {[,:,s,p,a,c,e}
+    // followed by a literal `]`, matching almost nothing (`gist '[[:space:]]import'`
+    // returned 0 where rg found 23k+). It must now match a single whitespace byte.
+    try std.testing.expect(try matches("[[:space:]]", "a b")); // the space
+    try std.testing.expect(try matches("[[:space:]]", "x\ty")); // the tab
+    try std.testing.expect(!try matches("[[:space:]]", "abc")); // no whitespace
+    // …and NOT the old mis-parse (a bare `]` after non-space letters).
+    try std.testing.expect(!try matches("[[:space:]]import", "]import"));
+    try std.testing.expect(try matches("[[:space:]]import", " import"));
+
+    // Each named class carries exactly its ASCII members.
+    try std.testing.expect(try matches("^[[:digit:]]+$", "12345"));
+    try std.testing.expect(!try matches("^[[:digit:]]+$", "12a45"));
+    try std.testing.expect(try matches("[[:alpha:]]", "9x9"));
+    try std.testing.expect(!try matches("[[:alpha:]]", "909"));
+    try std.testing.expect(try matches("[[:upper:]][[:lower:]]", "Go"));
+    try std.testing.expect(!try matches("[[:upper:]][[:lower:]]", "GO"));
+    try std.testing.expect(try matches("[[:xdigit:]]{2}", "3fh")); // "3f"
+    try std.testing.expect(!try matches("^[[:xdigit:]]{2}$", "gz"));
+
+    // Negated POSIX class `[[:^space:]]` = any non-whitespace byte.
+    try std.testing.expect(try matches("[[:^space:]]", "  x  "));
+    try std.testing.expect(!try matches("^[[:^space:]]$", " "));
+
+    // Composes with literals/ranges in the same bracket.
+    try std.testing.expect(try matches("^[[:alnum:]_]+$", "snake_case9"));
+    try std.testing.expect(!try matches("^[[:alnum:]_]+$", "has-dash"));
+    try std.testing.expect(try matches("[[:digit:]a-f]", "e")); // range parses alongside
+
+    // A bare `[` that doesn't open `[:…:]` stays a literal member (rg semantics):
+    // `[[x]` is the two-member class {'[','x'}.
+    try std.testing.expect(try matches("[[x]", "z[z"));
+    try std.testing.expect(try matches("[[x]", "zxz"));
+    try std.testing.expect(!try matches("[[x]", "abc"));
+
+    // An unknown class name inside a well-formed `[:…:]` is BadPattern (rg rejects too).
+    try std.testing.expectError(ParseError.BadPattern, Regex.compile(a, "[[:bogus:]]"));
+}
+
 test "regex: counted-repetition required-literal for the prefilter" {
     const a = std.testing.allocator;
     {

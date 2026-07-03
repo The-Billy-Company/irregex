@@ -6,9 +6,11 @@
 //!
 //! Supported (ASCII / byte-oriented, matching ripgrep's `(?-u)` mode):
 //!   literals · `.` (any byte but '\n') · `[...]` / `[^...]` with `a-z` ranges
-//!   · `*` `+` `?` · `{n}` `{n,}` `{n,m}` counted repetition · `|` · `(...)`
-//!   grouping · line anchors `^` `$` · word boundaries `\b` `\B` (ASCII, the
-//!   `[0-9A-Za-z_]` class — exactly rg `--no-unicode`) · escapes
+//!   and POSIX bracket classes `[[:alpha:]]` … `[[:^space:]]` (ASCII sets, the
+//!   `(?-u)` twins rg accepts) · `*` `+` `?` · `{n}` `{n,}` `{n,m}` counted
+//!   repetition · `|` · `(...)` grouping · line anchors `^` `$` · word
+//!   boundaries `\b` `\B` (ASCII, the `[0-9A-Za-z_]` class — exactly rg
+//!   `--no-unicode`) · escapes
 //!   `\. \* \+ \? \( \) \[ \] \^ \$ \\ \| \/ \t \n \r \d \D \w \W \s \S`.
 //! Like rust-regex, an unescaped `{` must begin a valid count (else BadPattern;
 //! a literal brace is `\{`); a stray `}` is literal.
@@ -469,6 +471,98 @@ pub const Parser = struct {
         };
     }
 
+    /// Fill `s` with a POSIX class's ASCII members (rg's `(?-u)` byte sets).
+    /// Returns false for an unknown name so the caller raises BadPattern.
+    fn fillPosix(s: *ByteSet, name: []const u8) bool {
+        const eq = std.mem.eql;
+        if (eq(u8, name, "alnum")) {
+            s.setRange('0', '9');
+            s.setRange('A', 'Z');
+            s.setRange('a', 'z');
+        } else if (eq(u8, name, "alpha")) {
+            s.setRange('A', 'Z');
+            s.setRange('a', 'z');
+        } else if (eq(u8, name, "ascii")) {
+            s.setRange(0, 0x7F);
+        } else if (eq(u8, name, "blank")) {
+            s.set('\t');
+            s.set(' ');
+        } else if (eq(u8, name, "cntrl")) {
+            s.setRange(0, 0x1F);
+            s.set(0x7F);
+        } else if (eq(u8, name, "digit")) {
+            s.setRange('0', '9');
+        } else if (eq(u8, name, "graph")) {
+            s.setRange(0x21, 0x7E);
+        } else if (eq(u8, name, "lower")) {
+            s.setRange('a', 'z');
+        } else if (eq(u8, name, "print")) {
+            s.setRange(0x20, 0x7E);
+        } else if (eq(u8, name, "punct")) {
+            s.setRange(0x21, 0x2F);
+            s.setRange(0x3A, 0x40);
+            s.setRange(0x5B, 0x60);
+            s.setRange(0x7B, 0x7E);
+        } else if (eq(u8, name, "space")) {
+            for ([_]u8{ '\t', '\n', 0x0B, 0x0C, '\r', ' ' }) |b| s.set(b);
+        } else if (eq(u8, name, "upper")) {
+            s.setRange('A', 'Z');
+        } else if (eq(u8, name, "word")) {
+            s.setRange('0', '9');
+            s.setRange('A', 'Z');
+            s.setRange('a', 'z');
+            s.set('_');
+        } else if (eq(u8, name, "xdigit")) {
+            s.setRange('0', '9');
+            s.setRange('A', 'F');
+            s.setRange('a', 'f');
+        } else return false;
+        return true;
+    }
+
+    /// Try to consume a POSIX bracket expression `[:name:]` / `[:^name:]` at the
+    /// current position (the outer class `[` already consumed; `p.peek()` is the
+    /// inner `[`), unioning its bytes into `s`. Returns false without advancing
+    /// when the `[` doesn't open a `[:…:]`, so the caller treats it literally
+    /// (rg: a bare `[` inside a class is a literal byte). An unknown class name
+    /// inside a well-formed `[:…:]` is BadPattern — rg rejects it too.
+    fn tryPosixClass(p: *Parser, s: *ByteSet) ParseError!bool {
+        if (p.pos + 1 >= p.src.len or p.src[p.pos] != '[' or p.src[p.pos + 1] != ':') return false;
+        const save = p.pos;
+        p.pos += 2; // consume `[:`
+        var negate = false;
+        if (p.peek() == '^') {
+            _ = p.take();
+            negate = true;
+        }
+        const ns = p.pos;
+        while (p.peek()) |ch| {
+            if (ch == ':') break;
+            _ = p.take();
+        }
+        // A well-formed POSIX class closes with `:]`; otherwise the leading `[`
+        // was a literal — rewind and let the caller consume it as a byte.
+        if (p.peek() != ':' or p.pos + 1 >= p.src.len or p.src[p.pos + 1] != ']') {
+            p.pos = save;
+            return false;
+        }
+        const name = p.src[ns..p.pos];
+        _ = p.take(); // ':'
+        _ = p.take(); // ']'
+        var cls = ByteSet{};
+        if (!fillPosix(&cls, name)) return ParseError.BadPattern;
+        if (negate) {
+            cls.negate();
+            // Same invariant the outer negated class enforces: in the per-line
+            // default a negated set must not carry `\n`, else a thread would
+            // consume it and bleed across lines in the fused DFA scan. Whole-
+            // buffer (`multiline`) mode keeps `\n`.
+            if (!p.multiline) cls.bits[0] &= ~(@as(u64, 1) << '\n');
+        }
+        s.unionWith(cls);
+        return true;
+    }
+
     fn parseClass(p: *Parser) ParseError!*Node {
         _ = p.take(); // '['
         var s = ByteSet{};
@@ -490,6 +584,13 @@ pub const Parser = struct {
                     if (!p.multiline) s.bits[0] &= ~(@as(u64, 1) << '\n');
                 }
                 return p.node(.{ .class = s });
+            }
+            // POSIX bracket class `[:name:]` inside the outer `[...]` (rg byte
+            // mode). Consumes the whole `[:…:]`; a `[` that doesn't open one
+            // falls through to the literal-byte path below.
+            if (c == '[' and try p.tryPosixClass(&s)) {
+                first = false;
+                continue;
             }
             first = false;
             if (c == '\\') {
