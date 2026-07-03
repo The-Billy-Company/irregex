@@ -6,8 +6,8 @@ const varint = @import("varint.zig");
 
 test "round-trip: boundary values across every byte-length tier" {
     const cases = [_]u64{
-        0,     1,          126,        127,        128,
-        16383, 16384,      2097151,    2097152,    268435455,
+        0,         1,                    126,                  127,     128,
+        16383,     16384,                2097151,              2097152, 268435455,
         268435456, std.math.maxInt(u32), std.math.maxInt(u64),
     };
     var buf: [10]u8 = undefined;

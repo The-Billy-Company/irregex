@@ -2,10 +2,10 @@
 
 The `gist` binary's entrypoint + the machine-readable capability manifest.
 
-| File         | Role                                                                                                                                                                          |
-| ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| File         | Role                                                                                                                                                                                                                                          |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `main.zig`   | The `gist` executable entrypoint — dispatches the two lifecycle verbs `index` / `status`, the bare `gist <pattern> [PATH...]` shorthand (no verb), the explicit `gist rg` alias, and the top-level `--help` / `--version` / `--schema` flags. |
-| `schema.zig` | `gist --schema` — the static JSON capability manifest (verbs, native flags, types, defaults, legacy aliases, exit codes) an agent or codegen step consumes instead of scraping `--help`. |
+| `schema.zig` | `gist --schema` — the static JSON capability manifest (verbs, native flags, types, defaults, legacy aliases, exit codes) an agent or codegen step consumes instead of scraping `--help`.                                                      |
 
 Read-only introspection lives in [`../status/`](../status). The bare
 shorthand and `gist rg` both route through the one unified search engine in

@@ -1,8 +1,8 @@
 **The two search engines merged into one.** `gist`'s certified ripgrep-parity
-walk-and-emit pipeline (`src/commands/ripgrep/`) is now the *sole* engine, and it
+walk-and-emit pipeline (`src/commands/ripgrep/`) is now the _sole_ engine, and it
 gained a second, much faster candidate source: the persisted trigram index. When
 a fresh index covers the searched subtree it is used automatically as an
-*acceleration structure* — reads of files the index can prove cannot match
+_acceleration structure_ — reads of files the index can prove cannot match
 (trigram non-candidates unchanged since the index was built) are elided, while
 the live walk stays authoritative for path discovery and `.gitignore` semantics,
 so output is byte-identical to a pure walk. `--no-index` forces the live walk;

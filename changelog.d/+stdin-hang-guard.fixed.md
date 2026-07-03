@@ -11,5 +11,5 @@ real producer signals within milliseconds, so this is unobservable in normal
 use; only the "open forever, silent" case now times out and falls through to
 the ordinary directory walk instead of hanging. The same bounded poll guards
 each iteration of the stdin read loop itself, so a producer that goes silent
-*mid-stream* can't hang gist either — whatever arrived before the stall is
+_mid-stream_ can't hang gist either — whatever arrived before the stall is
 still searched. Piped stdin search (`cmd | gist pattern`) is unaffected.

@@ -32,8 +32,8 @@ exit codes) so it's a true drop-in for an agent's `rg` reflex.
 
 | Folder              | Verb(s)                                                                                            |
 | ------------------- | -------------------------------------------------------------------------------------------------- |
-| `commands/cli/`     | the `main.zig` entrypoint + the `--schema` capability manifest                                    |
-| `commands/search/`  | the one `search` verb (index + query) — replaces the old `query`/`regex`/`rank`/`grep` quartet    |
+| `commands/cli/`     | the `main.zig` entrypoint + the `--schema` capability manifest                                     |
+| `commands/search/`  | the one `search` verb (index + query) — replaces the old `query`/`regex`/`rank`/`grep` quartet     |
 | `commands/ripgrep/` | the `rg`-DEFAULT drop-in over an arbitrary tree — backs the bare shorthand + the `gist rg` alias   |
 | `commands/scope/`   | shared path scoping — `-g <glob>` matching (`glob.zig`) + the `-t <lang>` type table (`types.zig`) |
 

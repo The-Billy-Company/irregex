@@ -118,8 +118,9 @@ fn utf16ToUtf8(a: std.mem.Allocator, bytes: []const u8, endian: std.builtin.Endi
         } else if (cp >= 0xDC00 and cp <= 0xDFFF) cp = 0xFFFD; // stray low surrogate
         var enc: [4]u8 = undefined;
         const n = std.unicode.utf8Encode(cp, &enc) catch blk: {
-            const rn = std.unicode.utf8Encode(0xFFFD, &enc) catch unreachable;
-            break :blk rn;
+            // U+FFFD REPLACEMENT CHARACTER — its UTF-8 encoding is a fixed 3 bytes.
+            enc[0..3].* = .{ 0xEF, 0xBF, 0xBD };
+            break :blk 3;
         };
         out.appendSlice(a, enc[0..n]) catch die("oom\n", .{});
     }

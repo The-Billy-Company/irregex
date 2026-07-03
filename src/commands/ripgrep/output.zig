@@ -156,7 +156,7 @@ pub const Emitter = struct {
         if (self.show_name) self.writePath(path, is_match);
         if (self.o.line_num) {
             var buf: [20]u8 = undefined;
-            self.paint(palette.line_on, std.fmt.bufPrint(&buf, "{d}", .{lineno}) catch unreachable);
+            self.paint(palette.line_on, std.fmt.bufPrint(&buf, "{d}", .{lineno}) catch die("line number too long\n", .{}));
             self.paint(palette.sep_on, sep);
         }
         if (self.o.column and is_match and col != 0) self.out.print(self.a, "{d}{s}", .{ col, sep }) catch die("oom\n", .{});

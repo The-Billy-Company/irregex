@@ -152,7 +152,7 @@ repo:
   on a guaranteed miss — see Benchmarks.
 - **A cold one-shot still wins**, because the trigram prefilter means gist
   reads only the files a query can possibly match — a selective symbol query
-  touches ~2% of the corpus instead of all of it, so even the *first* query
+  touches ~2% of the corpus instead of all of it, so even the _first_ query
   in a session beats an unindexed scan.
 - **Freshness is a guarantee, not a cron job.** A coworker agent's commit
   landing mid-session doesn't make the index lie: a wall-clock anchor plus a
@@ -160,11 +160,11 @@ repo:
   false negatives — no `git diff` invalidation to break under a rebase or
   overlapping edits.
 - **Ranking gist can express, a line scanner can't.** `--rank` puts a
-  symbol's *definition* ahead of its 200 call sites and sinks generated
+  symbol's _definition_ ahead of its 200 call sites and sinks generated
   boilerplate below hand-written code — a property of the match's context,
   not just its text, that has no equivalent in `grep`'s output model.
 
-Against the two tools that *do* index — `csearch` (Russ Cox's Google Code
+Against the two tools that _do_ index — `csearch` (Russ Cox's Google Code
 Search, gist's direct trigram ancestor) and `zoekt` (Sourcegraph's production
 indexed search) — the honest trade is freshness: both are faster **cold
 loaders** today (a lighter or sharded index), but neither promises
@@ -186,16 +186,16 @@ Every flag `rg`/`grep` accept keeps working, aliased onto exactly one native
 option (never a second, competing behavior) — this is what makes it a real
 drop-in rather than a lookalike CLI:
 
-| What you type (either spelling)         | What gist does                                                                                                                                          |
-| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `-n -H -R --no-heading --color=<x>`      | no-ops — gist's output is already `path:line:text`                                                                                                       |
-| `-l` / `-c`                              | native rg flags — files-with-matches / per-file match count                                                                                              |
-| `-t <lang>` / `-g <glob>`                | `--lang` / `--glob` — pruned **before** touching disk (`--lang go` reads 234 of 18,608 files, **1.44×** faster than `rg -t go`, byte-identical output)   |
-| `-w` / `-F` / `-i` / `-S`                | word-boundary / fixed-string / case-insensitive / smart-case                                                                                             |
-| `-B N` / `-A N` / `-C N`                 | context lines, rg-exact `:`/`-`/`--` framing                                                                                                             |
-| `-m N` / `-o` / `-r <t>`                 | max count per file / only-matching spans / template replace                                                                                              |
-| `-e <pat>` / `--`                        | explicit pattern (leading-dash safe) / end of flag parsing                                                                                               |
-| `--hidden`, `--no-ignore*`, `-u`/`-uu`   | real, functional — widen the walk exactly as they do in rg (see below)                                                                                   |
+| What you type (either spelling)        | What gist does                                                                                                                                         |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `-n -H -R --no-heading --color=<x>`    | no-ops — gist's output is already `path:line:text`                                                                                                     |
+| `-l` / `-c`                            | native rg flags — files-with-matches / per-file match count                                                                                            |
+| `-t <lang>` / `-g <glob>`              | `--lang` / `--glob` — pruned **before** touching disk (`--lang go` reads 234 of 18,608 files, **1.44×** faster than `rg -t go`, byte-identical output) |
+| `-w` / `-F` / `-i` / `-S`              | word-boundary / fixed-string / case-insensitive / smart-case                                                                                           |
+| `-B N` / `-A N` / `-C N`               | context lines, rg-exact `:`/`-`/`--` framing                                                                                                           |
+| `-m N` / `-o` / `-r <t>`               | max count per file / only-matching spans / template replace                                                                                            |
+| `-e <pat>` / `--`                      | explicit pattern (leading-dash safe) / end of flag parsing                                                                                             |
+| `--hidden`, `--no-ignore*`, `-u`/`-uu` | real, functional — widen the walk exactly as they do in rg (see below)                                                                                 |
 
 A positional path prunes the same way — `gist WalletService
 services/backend/api` reads 28 candidate files (vs 86 unscoped, vs rg's

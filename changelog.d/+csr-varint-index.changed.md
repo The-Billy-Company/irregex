@@ -22,7 +22,7 @@ CSR+varint (6.5×)** — smaller than `csearch`'s own index over the identical
 corpus (31.1 MiB) for the first time. `bench/coldquery.sh`'s cross-tool cold
 literal race (fresh process, hyperfine mean, 8 runs, 8 needles) moves the
 geomean gist/csearch ratio **0.3× → 0.7×** and gist/zoekt **0.5× → 0.8×** —
-gist now outright *wins* 7/11 needles against zoekt (up from a near-total
+gist now outright _wins_ 7/11 needles against zoekt (up from a near-total
 loss) and still trails csearch geomean, but by roughly half the prior margin.
 The residual gap is no longer index size (gist's is now the smaller of the
 two) — profiling traces it to the corpus-wide freshness `stat()` walk
@@ -36,7 +36,7 @@ format.
 
 **Confirmed on the fail-closed macro certificate** (`bench/certify/certify.sh`
 — fresh-process, hyperfine 20 runs + 3 warmup, gist-vs-rg verdict requires a
-lower median *and* Mann-Whitney p<0.05): **7 win · 1 parity · 1 loss** across
+lower median _and_ Mann-Whitney p<0.05): **7 win · 1 parity · 1 loss** across
 9 measured classes (up from a documented 8 win/3 loss at the old index size —
 methodology differs slightly, see README), and the vs-csearch/vs-zoekt split
 moved from "rivals win most cold classes" to a genuine ~50/50 split

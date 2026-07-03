@@ -866,7 +866,7 @@ All notable changes to the `gist` kernel are documented here. Format follows
   - **`--color auto|always|never|ansi`**, matching ripgrep's own resolution
     rules: `auto` (the default) colorizes iff stdout is a real terminal *and*
     the environment doesn't opt out (`NO_COLOR` — any value,
-  https://no-color.org
+  <https://no-color.org>
     — or an absent/`dumb` `TERM`) *and* no flag that implies plain text
     (`--json`, `--vimgrep`) is active; `always`/`ansi` force it on regardless
   of
