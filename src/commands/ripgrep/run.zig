@@ -267,12 +267,39 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
     }
 }
 
-fn gather(a: std.mem.Allocator, io: std.Io, roots: []const []const u8, o: Opts, ig: *ignore.Ignore, out: *std.ArrayList(Candidate)) bool {
+/// The outcome of resolving the query's PATH args: whether the walk was
+/// recursive (drives the filename-prefix default) and whether any explicitly
+/// named path could not be opened AT ALL. ripgrep reports such a path to stderr
+/// and exits 2 (error); gist used to append it as a candidate whose deferred
+/// read failed silently, then exit 1 ("no match") — which read to a caller like
+/// an instant crash on a typo'd path (`gist search tel` → "search" pattern in
+/// nonexistent path "tel" → nothing, exit 1). This carries the error out so the
+/// run exits 2, matching rg (error trumps match/no-match).
+const Gathered = struct { recursive: bool, path_error: bool };
+
+/// ripgrep's `<bin>: <path>: <errno phrase>` note for an explicit PATH arg that
+/// can't be opened. The differential harness keys only on the errno phrase and
+/// the exit class (never the `rg:`/`gist:` prefix or the exact number — see
+/// `bench/rgsuite/run.py`), so the common cases carry rg's own wording and
+/// anything rarer falls back to the Zig error name.
+fn pathErrNote(err: anyerror) []const u8 {
+    return switch (err) {
+        error.FileNotFound => "No such file or directory (os error 2)",
+        error.AccessDenied => "Permission denied (os error 13)",
+        error.NotDir => "Not a directory (os error 20)",
+        error.SymLinkLoop => "Too many levels of symbolic links (os error 62)",
+        error.NameTooLong => "File name too long (os error 63)",
+        else => @errorName(err),
+    };
+}
+
+fn gather(a: std.mem.Allocator, io: std.Io, roots: []const []const u8, o: Opts, ig: *ignore.Ignore, out: *std.ArrayList(Candidate)) Gathered {
     if (roots.len == 0) {
         walkDir(a, io, ".", "", o, ig, out);
-        return true;
+        return .{ .recursive = true, .path_error = false };
     }
     var recursive = false;
+    var path_error = false;
     for (roots) |r| {
         if (Dir.cwd().openDir(io, r, .{ .iterate = true })) |dir_const| {
             var dir = dir_const;
@@ -285,12 +312,20 @@ fn gather(a: std.mem.Allocator, io: std.Io, roots: []const []const u8, o: Opts, 
             walkDir(a, io, r, prefix, o, ig, out);
             recursive = true;
         } else |_| {
-            // An explicitly named file arg is searched verbatim (ripgrep never
-            // ignore-filters an explicit path).
-            out.append(a, .{ .rel = r, .disk = r, .explicit = true }) catch die("oom\n", .{});
+            // Not a directory. Probe it as a file: ripgrep searches an explicitly
+            // named file verbatim (never ignore-filtered), but a path it can't
+            // open at all (missing / unreadable / non-dir component) is reported
+            // to stderr and forces the error exit — never dropped silently.
+            if (std.posix.openat(std.posix.AT.FDCWD, r, .{ .ACCMODE = .RDONLY }, 0)) |fd| {
+                _ = std.posix.system.close(fd);
+                out.append(a, .{ .rel = r, .disk = r, .explicit = true }) catch die("oom\n", .{});
+            } else |ferr| {
+                std.debug.print("gist: {s}: {s}\n", .{ r, pathErrNote(ferr) });
+                path_error = true;
+            }
         }
     }
-    return recursive;
+    return .{ .recursive = recursive, .path_error = path_error };
 }
 
 /// Spawn one shard per core above this candidate count; below it, thread-spawn
@@ -529,12 +564,12 @@ fn buildIndexSkip(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, filte
 /// trigram prefilter (`trigramFilter`); empty ⇒ read every walked file (today's
 /// behavior), non-empty ⇒ let the persisted index elide provable-non-candidate
 /// reads (`buildIndexSkip`) — the output is identical either way.
-const Collected = struct { files: []InFile, recursive: bool };
+const Collected = struct { files: []InFile, recursive: bool, path_error: bool };
 fn collectFiles(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, filters: []const []const u8) Collected {
     const o = parsed.opts;
     var candidates: std.ArrayList(Candidate) = .empty;
     var ig = ignore.Ignore.init(a, io, o, parsed.roots);
-    const recursive = gather(a, io, parsed.roots, o, &ig, &candidates);
+    const g = gather(a, io, parsed.roots, o, &ig, &candidates);
 
     var all: std.ArrayList(InFile) = .empty;
     var skip = buildIndexSkip(gpa, io, parsed, filters);
@@ -566,7 +601,7 @@ fn collectFiles(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, parsed
     if (o.path_sep) |sepstr| for (files.items) |*f| {
         f.path = replaceSep(a, f.path, sepstr);
     };
-    return .{ .files = files.items, .recursive = recursive };
+    return .{ .files = files.items, .recursive = g.recursive, .path_error = g.path_error };
 }
 
 /// Combine every pattern source — bare/`-e`/`--regexp` plus each `-f/--file`
@@ -710,11 +745,11 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         // --files lists every file (no pattern) — nothing to prefilter, so no read
         // elision applies; pass an empty trigram filter.
         const c = collectFiles(a, gpa, io, parsed, &.{});
-        if (o.quiet) std.process.exit(if (c.files.len > 0) 0 else 1);
+        if (o.quiet) std.process.exit(if (c.path_error) 2 else if (c.files.len > 0) 0 else 1);
         var out: std.ArrayList(u8) = .empty;
         for (c.files) |f| out.print(a, "{s}{c}", .{ f.path, if (o.null_sep) @as(u8, 0) else '\n' }) catch die("oom\n", .{});
         corpus_mod.emitStdout(out.items);
-        std.process.exit(if (c.files.len > 0) 0 else 1);
+        std.process.exit(if (c.path_error) 2 else if (c.files.len > 0) 0 else 1);
     }
 
     // --rank: gist's definition-first ranked view — a distinct output shape from
@@ -777,7 +812,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         var out: std.ArrayList(u8) = .empty;
         const matched = json.run(a, &out, &re, caps, o, jf.items);
         corpus_mod.emitStdout(out.items);
-        std.process.exit(if (matched) 0 else 1);
+        std.process.exit(if (c.path_error) 2 else if (matched) 0 else 1);
     }
 
     const show_name = switch (o.filename) {
@@ -791,7 +826,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
 
     // --quiet short-circuits on first match — unless --stats is also asked for,
     // which must run the full search to tally (then print only the stats block).
-    if (o.quiet and !o.stats) std.process.exit(if (anyMatch(a, &re, o, files)) 0 else 1);
+    if (o.quiet and !o.stats) std.process.exit(if (c.path_error) 2 else if (anyMatch(a, &re, o, files)) 0 else 1);
 
     if (o.files_without) {
         var lsim = Regex.Sim.init(a, &re) catch die("engine init failed\n", .{});
@@ -815,7 +850,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
             if (!any) out.print(a, "{s}{c}", .{ f.path, if (o.null_sep) @as(u8, 0) else '\n' }) catch die("oom\n", .{});
         }
         corpus_mod.emitStdout(out.items);
-        std.process.exit(if (out.items.len > 0) 0 else 1);
+        std.process.exit(if (c.path_error) 2 else if (out.items.len > 0) 0 else 1);
     }
 
     const heading = o.heading and !o.count_only and !o.count_matches and !o.files_only and !o.vimgrep;
@@ -866,7 +901,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         emitStats(a, &out, stat);
     }
     corpus_mod.emitStdout(out.items);
-    std.process.exit(if (matched_files > 0) 0 else 1);
+    std.process.exit(if (c.path_error) 2 else if (matched_files > 0) 0 else 1);
 }
 
 /// ripgrep binary-file handling (a NUL is present, no `--text`/`--null-data`).

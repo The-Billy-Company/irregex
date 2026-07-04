@@ -42,8 +42,20 @@ pub const Ignore = struct {
     a: std.mem.Allocator,
     io: std.Io,
     o: Opts,
-    rules: std.ArrayList(Rule) = .empty,
-    loaded: std.ArrayList([]const u8) = .empty, // dirs whose ignore files were read
+    // Ignore rules bucketed by the directory (relative to the walk root; "" = the
+    // CWD/ancestor tier) whose ignore file contributed them. A candidate path can
+    // only be governed by rules from its OWN ANCESTOR directories — a `.gitignore`
+    // scopes its subtree, never a sibling's — so `decide` consults just the ""
+    // tier plus each ancestor dir's bucket: O(path depth), not O(total rules). A
+    // single flat list (the old shape) forced every path to be tested against
+    // every rule ever loaded anywhere in the tree, since rules were never scoped
+    // back out as the DFS unwound — O(paths × rules), the whole-tree latency wall.
+    // Within a bucket, insertion order IS precedence order; across buckets,
+    // shallow→deep with last-match-wins (git precedence) — byte-identical verdicts
+    // to the old single scan (the same rule sequence, minus the sibling rules that
+    // could never match anyway).
+    groups: std.StringHashMap(std.ArrayList(Rule)),
+    loaded: std.StringHashMap(void), // dirs whose ignore files were read (dedupe)
     use_git: bool = false,
     use_dot: bool = false,
     // Component-depth of the positional root currently being walked (0 for the
@@ -63,7 +75,13 @@ pub const Ignore = struct {
     /// probed for its own `.git` so a git repo (or worktree) named as a path arg is
     /// honored, not just CWD.
     pub fn init(a: std.mem.Allocator, io: std.Io, o: Opts, roots: []const []const u8) Ignore {
-        var self = Ignore{ .a = a, .io = io, .o = o };
+        var self = Ignore{
+            .a = a,
+            .io = io,
+            .o = o,
+            .groups = std.StringHashMap(std.ArrayList(Rule)).init(a),
+            .loaded = std.StringHashMap(void).init(a),
+        };
         // `--ignore-file` is EXPLICIT user intent: lowest precedence (added first,
         // so an in-tree `.ignore`/`.gitignore` overrides it — rg's f45 rule) and
         // honored even under `-u`/`--no-ignore` (only `--no-ignore-files` drops it).
@@ -162,8 +180,9 @@ pub const Ignore = struct {
     /// on-disk path `disk`) exactly once, as the walk is about to descend into it.
     pub fn loadDir(self: *Ignore, disk: []const u8, rel: []const u8) void {
         if (self.o.no_ignore) return;
-        for (self.loaded.items) |d| if (std.mem.eql(u8, d, rel)) return;
-        self.loaded.append(self.a, self.a.dupe(u8, rel) catch die("oom\n", .{})) catch die("oom\n", .{});
+        const gop = self.loaded.getOrPut(rel) catch die("oom\n", .{});
+        if (gop.found_existing) return;
+        gop.key_ptr.* = self.a.dupe(u8, rel) catch die("oom\n", .{}); // own the key (rel may be transient)
         if (self.use_git) self.readFile(join(self.a, disk, ".gitignore"), rel, "");
         if (self.use_dot) {
             self.readFile(join(self.a, disk, ".ignore"), rel, "");
@@ -176,10 +195,28 @@ pub const Ignore = struct {
     /// matching rule wins (the list is pre-ordered by precedence).
     pub fn decide(self: *const Ignore, rel: []const u8, is_dir: bool) ?bool {
         var verdict: ?bool = null;
-        for (self.rules.items) |r| if (self.match(r, rel, is_dir)) {
-            verdict = !r.negated;
-        };
+        // The CWD/ancestor tier (root `.gitignore`, parents, `.git/info/exclude`,
+        // `--ignore-file`) governs every path; then each ANCESTOR directory of
+        // `rel`, shallow→deep, so the deepest matching rule wins (git precedence).
+        self.applyGroup("", rel, is_dir, &verdict);
+        const stripped = stripDot(rel);
+        var i: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, stripped, i, '/')) |slash| {
+            self.applyGroup(stripped[0..slash], rel, is_dir, &verdict);
+            i = slash + 1;
+        }
         return verdict;
+    }
+
+    /// Fold one directory bucket's rules into `verdict` (last match wins). The
+    /// bucket key is a directory path relative to the walk root ("" = CWD tier);
+    /// `match` still does its own base/anchor/dir-only work, so feeding it only
+    /// ancestor-sourced rules changes which rules are *tried*, never the verdict.
+    fn applyGroup(self: *const Ignore, base_key: []const u8, rel: []const u8, is_dir: bool, verdict: *?bool) void {
+        const g = self.groups.getPtr(base_key) orelse return;
+        for (g.items) |r| if (self.match(r, rel, is_dir)) {
+            verdict.* = !r.negated;
+        };
     }
 
     /// Should the walk drop this entry? Folds three rules: `.git` is never walked;
@@ -240,7 +277,15 @@ pub const Ignore = struct {
             } else return;
         }
         if (line.len == 0) return;
-        self.rules.append(self.a, .{
+        // Bucket by the source directory (normalized like `match` does, so a "."
+        // / "./x" base and its rel-side counterpart collapse to the same key).
+        const key = stripDot(base);
+        const gop = self.groups.getOrPut(key) catch die("oom\n", .{});
+        if (!gop.found_existing) {
+            gop.key_ptr.* = self.a.dupe(u8, key) catch die("oom\n", .{});
+            gop.value_ptr.* = .empty;
+        }
+        gop.value_ptr.append(self.a, .{
             .glob = self.a.dupe(u8, line) catch die("oom\n", .{}),
             .base = base,
             .negated = negated,
