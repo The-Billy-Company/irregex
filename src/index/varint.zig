@@ -51,3 +51,46 @@ pub fn decode(buf: []const u8) Decoded {
     }
     return .{ .value = result, .len = i };
 }
+
+pub const DecodeError = error{
+    /// Ran out of bytes (or `max_bytes`) with the continuation bit still set.
+    Truncated,
+    /// Encoding needs more than `max_len` (5) bytes — cannot be a canonical u32.
+    TooLong,
+    /// A multi-byte encoding terminating in `0x00` (high group all-zero); its
+    /// value fits in fewer bytes, so the encoding is non-minimal.
+    NonCanonical,
+    /// The decoded value exceeds `maxInt(u32)` (a doc id / posting must fit u32).
+    Overflow,
+};
+
+pub const DecodedBounded = struct { value: u32, len: usize };
+
+/// The UNTRUSTED-input decoder: `decode` above trusts a well-formed body (it has
+/// no terminator or length bound), which is right on the hot query path but wrong
+/// for the loader, where a corrupt/hostile blob must be rejected — not walked out
+/// of bounds, not silently accepted noncanonical. This reads at most
+/// `min(max_bytes, buf.len)` bytes and rejects truncated, > `max_len`,
+/// noncanonical (trailing `0x00` group), and `> maxInt(u32)` encodings. Used by
+/// `trigram.zig`'s `validateStructure` to prove every posting-body varint is safe
+/// to hand to the fast `decode` afterwards.
+pub fn decodeBoundedCanonical(buf: []const u8, max_bytes: usize) DecodeError!DecodedBounded {
+    const limit = @min(max_bytes, buf.len);
+    var result: u64 = 0;
+    var shift: u6 = 0;
+    var i: usize = 0;
+    while (true) {
+        if (i >= limit) return DecodeError.Truncated;
+        const b = buf[i];
+        result |= @as(u64, b & 0x7f) << shift;
+        i += 1;
+        if (b & 0x80 == 0) {
+            if (i > 1 and b == 0) return DecodeError.NonCanonical;
+            break;
+        }
+        if (i >= max_len) return DecodeError.TooLong;
+        shift += 7;
+    }
+    if (result > std.math.maxInt(u32)) return DecodeError.Overflow;
+    return .{ .value = @intCast(result), .len = i };
+}

@@ -281,7 +281,9 @@ pub const Index = struct {
             .dir_tri = allocator.realloc(dir_tri, gi) catch dir_tri[0..gi],
             .dir_off = allocator.realloc(dir_off, gi) catch dir_off[0..gi],
             .dir_count = allocator.realloc(dir_count, gi) catch dir_count[0..gi],
-            .body = (allocator.realloc(body, @max(bp, 1)) catch body)[0..bp],
+            // realloc to EXACTLY bp (0 frees the placeholder) so `deinit` frees what
+            // was allocated — an empty index otherwise leaks the `@max(…,1)` byte.
+            .body = allocator.realloc(body, bp) catch body[0..bp],
             .doc_count = doc_count,
             .posting_count = @intCast(sorted.len),
             .allocator = allocator,
@@ -332,10 +334,62 @@ pub const Index = struct {
         if (std.mem.readInt(u32, bytes[magic.len..][0..4], .little) != format_version) return LoadError.BadFormat;
         const doc_count = std.mem.readInt(u32, bytes[magic.len + 4 ..][0..4], .little);
         const n_tri: usize = @intCast(std.mem.readInt(u64, bytes[magic.len + 8 ..][0..8], .little));
-        const posting_count: usize = @intCast(std.mem.readInt(u64, bytes[magic.len + 16 ..][0..8], .little));
+        const pc64 = std.mem.readInt(u64, bytes[magic.len + 16 ..][0..8], .little);
+        if (pc64 > std.math.maxInt(u32)) return LoadError.BadFormat; // posting_count must fit u32
         const dir_bytes = std.math.mul(usize, n_tri, 4 * 3) catch return LoadError.BadFormat;
-        if (bytes.len < header_len + dir_bytes) return LoadError.BadFormat;
-        return .{ .doc_count = doc_count, .n_tri = n_tri, .posting_count = posting_count };
+        const need = std.math.add(usize, header_len, dir_bytes) catch return LoadError.BadFormat;
+        if (bytes.len < need) return LoadError.BadFormat;
+        return .{ .doc_count = doc_count, .n_tri = n_tri, .posting_count = @intCast(pc64) };
+    }
+
+    /// Reject a corrupt/hostile blob whose header parsed but whose body is unsafe
+    /// to query. Proves every invariant the fast query path (`decodeGroup`)
+    /// assumes: distinct ascending trigrams; each group non-empty, in-bounds, and
+    /// EXACTLY consumed; every posting-body varint canonical, bounded, u32-sized;
+    /// doc ids strictly ascending and < `doc_count` with no wrap; and
+    /// `sum(dir_count) == posting_count`. Both loaders run this before returning,
+    /// so a returned `Index` is always safe to walk — the on-disk format is a
+    /// native-endian local rebuildable cache, but even a mangled one fails closed
+    /// (`BadFormat`) instead of a panic, a silent accept, or a later OOB read.
+    fn validateStructure(
+        dir_tri: []const u32,
+        dir_off: []const u32,
+        dir_count: []const u32,
+        body: []const u8,
+        doc_count: u32,
+        posting_count: u32,
+    ) LoadError!void {
+        const n = dir_tri.len;
+        if (n == 0) {
+            // Canonical empty index (also the all-files-shorter-than-3-bytes case,
+            // where doc_count > 0 but no trigram exists): no groups, no body.
+            if (body.len != 0 or posting_count != 0) return LoadError.BadFormat;
+            return;
+        }
+        if (dir_off[0] != 0) return LoadError.BadFormat;
+        var sum: u64 = 0;
+        for (0..n) |i| {
+            if (i > 0 and dir_tri[i] <= dir_tri[i - 1]) return LoadError.BadFormat; // distinct, ascending
+            if (dir_count[i] == 0) return LoadError.BadFormat; // ≥ 1 posting per group
+            if (dir_off[i] > body.len) return LoadError.BadFormat;
+            const group_end = if (i + 1 < n) dir_off[i + 1] else body.len;
+            if (group_end < dir_off[i] or group_end > body.len) return LoadError.BadFormat; // nondecreasing, in-bounds
+            var pos: usize = dir_off[i];
+            var prev: u32 = 0;
+            for (0..dir_count[i]) |k| {
+                const d = varint.decodeBoundedCanonical(body[pos..group_end], varint.max_len) catch return LoadError.BadFormat;
+                pos += d.len;
+                const doc: u32 = if (k == 0) d.value else blk: {
+                    if (d.value == 0) return LoadError.BadFormat; // delta ≥ 1 ⇒ strictly ascending
+                    break :blk std.math.add(u32, prev, d.value) catch return LoadError.BadFormat; // no wrap
+                };
+                if (doc >= doc_count) return LoadError.BadFormat; // doc id in range
+                prev = doc;
+            }
+            if (pos != group_end) return LoadError.BadFormat; // group exactly consumed — no gap, no trailing bytes
+            sum += dir_count[i];
+        }
+        if (sum != posting_count) return LoadError.BadFormat;
     }
 
     /// Rebuild an index from a `writeInto` blob, COPYING the directory + body
@@ -360,14 +414,21 @@ pub const Index = struct {
         @memcpy(std.mem.sliceAsBytes(dir_count), bytes[off..][0 .. h.n_tri * 4]);
         off += h.n_tri * 4;
         const body_len = bytes.len - off;
-        const body = try allocator.alloc(u8, @max(body_len, 1));
+        // Alloc EXACTLY body_len (0 allowed) so `deinit`'s `free(self.body)` matches
+        // the allocation — an empty-body index (canonical empty / all-docs-<3-bytes)
+        // previously alloc'd a 1-byte placeholder but stored/freed a 0-len slice,
+        // leaking the byte.
+        const body = try allocator.alloc(u8, body_len);
         errdefer allocator.free(body);
-        @memcpy(body[0..body_len], bytes[off..]);
+        @memcpy(body, bytes[off..]);
+        // Fail closed on a corrupt body before handing the index to the query path
+        // (the errdefers above free the copies on rejection).
+        try validateStructure(dir_tri, dir_off, dir_count, body, h.doc_count, @intCast(h.posting_count));
         return .{
             .dir_tri = dir_tri,
             .dir_off = dir_off,
             .dir_count = dir_count,
-            .body = body[0..body_len],
+            .body = body,
             .doc_count = h.doc_count,
             .posting_count = @intCast(h.posting_count),
             .allocator = allocator,
@@ -387,6 +448,11 @@ pub const Index = struct {
     /// multiple of 4 bytes further in) stays 4-aligned too.
     pub fn fromMappedBytes(bytes: []const u8) LoadError!Index {
         const h = try parseHeader(bytes);
+        // Every dir region starts a multiple of 4 bytes past `bytes.ptr` (header_len
+        // 32 + k·4), so a 4-aligned base makes all three u32-aligned. An mmap base
+        // is page-aligned; a hand-built misaligned slice must fail closed here
+        // rather than trap in the `@alignCast` below.
+        if (@intFromPtr(bytes.ptr) % 4 != 0) return LoadError.BadFormat;
         var off: usize = header_len;
         const tri_bytes = h.n_tri * 4;
         const dir_tri_raw: []align(4) const u8 = @alignCast(bytes[off..][0..tri_bytes]);
@@ -395,11 +461,16 @@ pub const Index = struct {
         off += tri_bytes;
         const dir_count_raw: []align(4) const u8 = @alignCast(bytes[off..][0..tri_bytes]);
         off += tri_bytes;
+        const dir_tri = std.mem.bytesAsSlice(u32, dir_tri_raw);
+        const dir_off = std.mem.bytesAsSlice(u32, dir_off_raw);
+        const dir_count = std.mem.bytesAsSlice(u32, dir_count_raw);
+        const body = bytes[off..];
+        try validateStructure(dir_tri, dir_off, dir_count, body, h.doc_count, @intCast(h.posting_count));
         return .{
-            .dir_tri = std.mem.bytesAsSlice(u32, dir_tri_raw),
-            .dir_off = std.mem.bytesAsSlice(u32, dir_off_raw),
-            .dir_count = std.mem.bytesAsSlice(u32, dir_count_raw),
-            .body = bytes[off..],
+            .dir_tri = dir_tri,
+            .dir_off = dir_off,
+            .dir_count = dir_count,
+            .body = body,
             .doc_count = h.doc_count,
             .posting_count = @intCast(h.posting_count),
             .allocator = undefined, // unused: `borrowed` ⇒ `deinit` frees nothing
