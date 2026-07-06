@@ -1,0 +1,1 @@
+New one-shot install surface: 'make install-gist' builds the ReleaseFast CLI, symlinks it onto PATH (~/.local/bin/gist), and builds/refreshes the persisted trigram index — the setup step for agents dogfooding gist as the repo's default code search.

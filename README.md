@@ -107,6 +107,13 @@ it apes — plus a single unified search engine reached with no verb at all,
 addressed the way an agent's `rg <pattern>` reflex already types it:
 
 ```bash
+make install-gist       # from repo root: build (ReleaseFast) + symlink ~/.local/bin/gist + index
+gist status             # verify the installed CLI + index in one line
+```
+
+Or drive the CLI straight from the build graph, no install:
+
+```bash
 cd pkg/kernels/gist
 
 zig build cli -- index                    # build + persist the index once (~1.2 s)
