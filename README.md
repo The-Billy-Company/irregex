@@ -38,8 +38,11 @@ tools against real questions about this repo — is everywhere else:
   call sites) and pay tokens for everything below it. `grep` can't express that.
 
 `gist` targets exactly those: a persistent **index** (don't rescan), a
-zero-false-negative **freshness** guarantee (read-your-own-writes under churn),
-and **ranked, token-compressed** output. The frontier survey and decision trail
+**freshness** overlay that is zero-false-negative *under stated local-filesystem
+assumptions* (content writes advance mtime, the freshness walk is readable, live
+bytes are re-verified before output — the assumptions and edge cases are
+enumerated in the dossier), and **ranked, token-compressed** output. The frontier
+survey and decision trail
 live in
 [`research/dossiers/locator-sota.dossier.toml`](../../../research/dossiers).
 
@@ -131,8 +134,10 @@ zig build cli -- --schema                 # a JSON capability manifest for agent
 ```
 
 The bare `gist <pattern>` shorthand and its explicit `gist rg` alias are ONE
-engine (`src/commands/ripgrep/run.zig`) — a byte-for-byte ripgrep-DEFAULT
-drop-in (gitignore precedence, exit codes, piped stdin) that transparently
+engine (`src/commands/ripgrep/run.zig`) — a ripgrep-DEFAULT drop-in on its
+**supported surface** (gitignore precedence, exit codes, piped stdin;
+byte-identical on 98.6% of the mined rgsuite corpus, 4 known divergences tracked
+under "Where gist departs from ripgrep") that transparently
 uses a persisted trigram index, when one covers the searched roots, purely to
 **elide reads** of files it proves can't match; it never changes the file set,
 ordering, or output. `--rank` is gist's one native shape with no rg
@@ -182,16 +187,19 @@ in Benchmarks.
 
 ## How it works as a drop-in
 
-The default output is a byte-for-byte `rg -n --no-heading` drop-in:
-`path:line:text`, with a persisted trigram index transparently used to skip
+The default output targets `rg -n --no-heading` byte-for-byte on its supported
+surface (98.6% of the mined rgsuite corpus is byte-identical; 4 known divergences
+below): `path:line:text`, with a persisted trigram index transparently used to skip
 reading files that provably can't match — a whole-tree walk otherwise. Point
 an agent, a script, or a muscle-memory `rg -n <pattern>` at bare `gist -n
 <pattern>` (no verb, no setup) or the explicit `gist rg -n <pattern>` alias and
 the output doesn't change — only how many files get opened to produce it.
 
-Every flag `rg`/`grep` accept keeps working, aliased onto exactly one native
-option (never a second, competing behavior) — this is what makes it a real
-drop-in rather than a lookalike CLI:
+A broad, documented subset of the flags `rg`/`grep` accept maps onto exactly one
+native option (never a second, competing behavior); flags outside that subset are
+either accepted-and-ignored or fail loud (never silently wrong) — the full buckets
+live in `--schema` and the dossier's compatibility matrix. This is what makes it a
+real drop-in on its supported surface rather than a lookalike CLI:
 
 | What you type (either spelling)        | What gist does                                                                                                                                         |
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -213,12 +221,16 @@ where gist can (`(?i)` → caseless) and fails loud where it genuinely can't
 (see "Where gist departs from ripgrep" below).
 
 `--rank` is gist's one native shape with no rg equivalent; everything else on
-this page is the parity surface. It's guarded, not asserted: a 13-pattern
-differential battery ([`bench/gates/equality.sh`](bench/gates/equality.sh))
-diffs gist's output against `rg -n --no-heading --no-unicode` over a
-byte-identical corpus snapshot, including a 265,286-line and a 147,087-line
-result, to **0 lines** of difference. The exhaustive rg-compatible flag
-reference lives in
+this page is the parity surface, guarded by two **distinct** gates. **File-set
+soundness** ([`bench/gates/equality.sh`](bench/gates/equality.sh)) diffs gist's
+matching *file set* against `rg -F -l` / `rg -l '(?-u)…'` over a byte-identical
+corpus snapshot — proving zero false negatives / positives (the candidate filter
+is sound), but it is a file-set oracle, **not** a line-output diff. **Line-output
+parity** is the job of [`bench/rgsuite/`](bench/rgsuite/README.md) (441 mined `rg`
+argv replays); the committed `results.json` currently reads **275 PASS / 3 ORDER /
+4 FAIL / 38 NA / 121 SKIP = 98.6% supported-surface parity** — not yet zero-FAIL
+(the four divergences are listed under "Where gist departs from ripgrep"). The
+exhaustive rg-compatible flag reference lives in
 [`src/commands/ripgrep/args.zig`](src/commands/ripgrep/args.zig).
 
 Streams follow the `rg` convention too, so gist composes in a pipeline the
@@ -349,12 +361,13 @@ rg's = an unsound verify. Both must be zero.
   more across seeds) is **0 false negatives / 0 false positives** vs ripgrep over
   the byte-identical snapshot. `csearch`, indexing gist's _exact_ 16,696-file
   corpus, returns the same sets.
-- **Index economics** — gist **1.2 s build · 30.1 MiB index** (CSR directory +
-  delta-varint posting bodies, `src/index/trigram.zig` — was a flat
-  `(trigram,doc)` pair table at 195 MiB, 6.5× larger); csearch **9.7 s ·
-  31.1 MiB** over the identical corpus; zoekt **6.1 s · 428.7 MiB**. gist now
-  builds fastest **and** carries the smallest fully-mapped index of the three
-  — the lever behind the cold-literal race below just flipped in gist's favor.
+- **Index economics** — gist **1.2 s build · 30.1 MiB posting blob** (`index.gist`,
+  CSR directory + delta-varint posting bodies, `src/index/trigram.zig` — was a flat
+  `(trigram,doc)` pair table at 195 MiB, 6.5× larger); csearch **9.7 s · 31.1 MiB**
+  over the identical corpus; zoekt **6.1 s · 428.7 MiB**. Caveat: 30.1 MiB is the
+  posting blob only — gist's separate `paths.list` + freshness anchor are not
+  counted, so "smaller than csearch" is indicative, not yet strictly
+  apples-to-apples (tracked in the dossier / `GIST-ISSUES.md`).
 - **WARM resident — gist's home turf, uncontested.** In a long-lived session gist
   answers from a RAM-resident index while the scanners re-walk every time.
   Geomean speedup over 20 needles ([`headtohead.sh`](bench/races/headtohead.sh),
@@ -439,6 +452,18 @@ rg's = an unsound verify. Both must be zero.
 > on every pattern, 0 FN / 0 FP)._
 
 ### Macroscopic field race — the fail-closed certificate (`certify.sh`)
+
+> **Reproducibility caveat (read before citing the numbers below).** The
+> `9 win · 2 loss` verdict was measured on the current wired CLI, but (1) the
+> per-cell timing wrappers only became genuinely fail-closed on hard errors
+> (exit ≥ 2) in the honesty pass that produced this note — earlier runs could time
+> a masked failure as a fast search; and (2) `certify.sh`'s raw outputs
+> (`CERTIFICATE.md`, `certify_macro.csv`, per-cell hyperfine JSON, tool + machine
+> metadata) are written to gitignored `.local/gist-verify/` and are **not
+> committed**, and the figures below are transcribed from a run rather than
+> regenerated from committed data. Treat the numbers as **indicative pending a
+> committed, fail-closed rerun** — the harness is real; an archived, reproducible
+> certificate is not in the tree yet (tracked in `GIST-ISSUES.md`).
 
 [`bench/certify/certify.sh`](bench/certify/certify.sh) is the most adversarial cut: a
 fresh-process **cold** query for gist **and all seven field tools** over the
