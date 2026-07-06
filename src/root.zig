@@ -100,6 +100,7 @@ test {
     _ = @import("index/varint_test.zig"); // LEB128 varint codec (compact posting bodies)
     _ = @import("index/trigram_test.zig"); // T0 candidate index: query + serialize + build
     _ = @import("index/trigram_load_test.zig"); // T0 loader adversarial suite: malformed blobs fail closed
+    _ = @import("index/persist_test.zig"); // T0 persisted index/path-table integrity (doc-id OOB guard)
     _ = @import("rank/rank_test.zig"); // T4 RRF fusion ranking
     _ = @import("rank/signals_test.zig"); // cross-language def-detection + generated-file signals
     _ = @import("scan/simd_test.zig"); // SIMD `contains` differential fuzz vs std

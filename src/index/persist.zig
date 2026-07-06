@@ -87,6 +87,28 @@ pub fn loadQuiet(gpa: std.mem.Allocator, io: std.Io) !?Persisted {
     return loadImpl(gpa, io, false);
 }
 
+/// Doc→path table integrity: the index guarantees every candidate id < doc_count,
+/// but that only prevents an out-of-bounds path lookup if the table holds EXACTLY
+/// doc_count entries. Called by the loader; exposed for tests.
+pub const PairError = error{PathTableMismatch};
+pub fn validatePersistedPair(doc_count: u32, paths: []const []const u8) PairError!void {
+    if (paths.len != doc_count) return PairError.PathTableMismatch;
+}
+
+/// Split the mmap'd `paths.list` (NUL-separated, doc-id order) into borrowed
+/// slices, dropping empties (a trailing NUL, or a coalesced double-NUL). The
+/// slices alias `pmap`, which must outlive the returned list. Factored out of
+/// `loadImpl` so both the split and the count invariant above are unit-testable
+/// without touching the filesystem.
+pub fn parsePathTable(gpa: std.mem.Allocator, pmap: []const u8) !std.ArrayList([]const u8) {
+    var paths: std.ArrayList([]const u8) = .empty;
+    errdefer paths.deinit(gpa);
+    try paths.ensureTotalCapacity(gpa, std.mem.count(u8, pmap, &[_]u8{0}) + 1);
+    var pit = std.mem.splitScalar(u8, pmap, 0);
+    while (pit.next()) |p| if (p.len > 0) paths.appendAssumeCapacity(p);
+    return paths;
+}
+
 fn loadImpl(gpa: std.mem.Allocator, io: std.Io, comptime verbose: bool) !?Persisted {
     const imap = mmapFile(io, index_file) catch {
         if (verbose) std.debug.print("no index at {s} — run `gist index` first\n", .{index_file});
@@ -105,10 +127,18 @@ fn loadImpl(gpa: std.mem.Allocator, io: std.Io, comptime verbose: bool) !?Persis
         return null;
     };
     errdefer std.posix.munmap(pmap);
-    var paths: std.ArrayList([]const u8) = .empty;
+    var paths = try parsePathTable(gpa, pmap);
     errdefer paths.deinit(gpa);
-    try paths.ensureTotalCapacity(gpa, std.mem.count(u8, pmap, &[_]u8{0}) + 1);
-    var pit = std.mem.splitScalar(u8, pmap, 0);
-    while (pit.next()) |p| if (p.len > 0) paths.appendAssumeCapacity(p);
+    // The index bounds every candidate doc id < doc_count; that only protects the
+    // path lookup if the table holds exactly doc_count entries. A mismatch (a torn
+    // or stale paths.list) is treated as a no-usable-index miss — fall back to the
+    // full walk rather than risk indexing past `paths.items`.
+    validatePersistedPair(idx.doc_count, paths.items) catch {
+        if (verbose) std.debug.print("index/paths mismatch ({d} paths != {d} docs) — run `gist index` to rebuild\n", .{ paths.items.len, idx.doc_count });
+        paths.deinit(gpa);
+        std.posix.munmap(pmap);
+        std.posix.munmap(imap);
+        return null;
+    };
     return .{ .imap = imap, .pmap = pmap, .idx = idx, .paths = paths, .gpa = gpa };
 }
