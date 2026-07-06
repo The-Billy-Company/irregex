@@ -60,3 +60,44 @@ test "fuzz: random u32 round-trips against a PRNG, 10k draws" {
         try std.testing.expectEqual(n, d.len);
     }
 }
+
+// ── decodeBoundedCanonical — the untrusted-loader decoder ──
+
+test "decodeBoundedCanonical: accepts canonical encodings incl. maxInt(u32)" {
+    const cases = [_]u32{ 0, 1, 127, 128, 16383, 16384, 300, std.math.maxInt(u32) };
+    var buf: [8]u8 = undefined;
+    for (cases) |v| {
+        const n = varint.encode(&buf, v);
+        const d = try varint.decodeBoundedCanonical(&buf, varint.max_len);
+        try std.testing.expectEqual(v, d.value);
+        try std.testing.expectEqual(n, d.len);
+    }
+}
+
+test "decodeBoundedCanonical: rejects empty input" {
+    try std.testing.expectError(varint.DecodeError.Truncated, varint.decodeBoundedCanonical(&.{}, varint.max_len));
+}
+
+test "decodeBoundedCanonical: rejects unterminated continuation" {
+    try std.testing.expectError(varint.DecodeError.Truncated, varint.decodeBoundedCanonical(&[_]u8{0x80}, varint.max_len));
+    try std.testing.expectError(varint.DecodeError.Truncated, varint.decodeBoundedCanonical(&[_]u8{ 0xFF, 0xFF }, varint.max_len));
+}
+
+test "decodeBoundedCanonical: rejects > 5-byte u32 encodings (TooLong)" {
+    try std.testing.expectError(varint.DecodeError.TooLong, varint.decodeBoundedCanonical(&[_]u8{ 0x80, 0x80, 0x80, 0x80, 0x80, 0x00 }, 16));
+}
+
+test "decodeBoundedCanonical: rejects overlong encodings of zero and one" {
+    try std.testing.expectError(varint.DecodeError.NonCanonical, varint.decodeBoundedCanonical(&[_]u8{ 0x80, 0x00 }, varint.max_len));
+    try std.testing.expectError(varint.DecodeError.NonCanonical, varint.decodeBoundedCanonical(&[_]u8{ 0x81, 0x00 }, varint.max_len));
+}
+
+test "decodeBoundedCanonical: rejects a 5-byte value exceeding maxInt(u32) (Overflow)" {
+    // 0x1F in the 5th group sets bit 32 → 0x1FFFFFFFF > u32.
+    try std.testing.expectError(varint.DecodeError.Overflow, varint.decodeBoundedCanonical(&[_]u8{ 0xFF, 0xFF, 0xFF, 0xFF, 0x1F }, varint.max_len));
+}
+
+test "decodeBoundedCanonical: never reads beyond max_bytes even if buf is longer" {
+    // A valid 2-byte varint follows, but max_bytes=1 forbids reading the 2nd byte.
+    try std.testing.expectError(varint.DecodeError.Truncated, varint.decodeBoundedCanonical(&[_]u8{ 0x80, 0x01, 0x99 }, 1));
+}
