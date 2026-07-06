@@ -239,6 +239,12 @@ pub const Regex = struct {
         gen: u32,
         at_start: bool,
         at_end: bool,
+        // Buffer-edge flags for `\A`/`\z` (multiline only — in the per-line
+        // default the parser lowered them to `^`/`$`, so these states never
+        // exist there and the flags are inert). Distinct from `at_start`/
+        // `at_end`, which multiline resolves at every LINE boundary.
+        at_buf_start: bool,
+        at_buf_end: bool,
         // Word-ness of the bytes straddling this (fixed) position, for `\b`/`\B`.
         word_before: bool,
         word_after: bool,
@@ -260,8 +266,12 @@ pub const Regex = struct {
                 },
                 .assert_start => |out| c.at_start and c.add(out),
                 .assert_end => |out| c.at_end and c.add(out),
+                .assert_buf_start => |out| c.at_buf_start and c.add(out),
+                .assert_buf_end => |out| c.at_buf_end and c.add(out),
                 .assert_word_b => |out| (c.word_before != c.word_after) and c.add(out),
                 .assert_not_word_b => |out| (c.word_before == c.word_after) and c.add(out),
+                .assert_word_start => |out| (!c.word_before and c.word_after) and c.add(out),
+                .assert_word_end => |out| (c.word_before and !c.word_after) and c.add(out),
                 else => blk: {
                     c.list.push(s);
                     if (c.starts) |st| st[s] = c.cur_start; // first (highest-priority) write wins
@@ -272,7 +282,10 @@ pub const Regex = struct {
     };
 
     fn closure(re: *const Regex, sim: *Sim, list: *ThreadList, at_start: bool, at_end: bool, word_before: bool, word_after: bool) Closure {
-        return .{ .re = re, .list = list, .seen = sim.seen, .gen = sim.gen, .at_start = at_start, .at_end = at_end, .word_before = word_before, .word_after = word_after };
+        // Per-line callers: the line IS the haystack, so the buffer edges
+        // coincide with `at_start`/`at_end` (and `\A`/`\z` were lowered to
+        // `^`/`$` anyway). `closureBuf` overrides both for multiline.
+        return .{ .re = re, .list = list, .seen = sim.seen, .gen = sim.gen, .at_start = at_start, .at_end = at_end, .at_buf_start = at_start, .at_buf_end = at_end, .word_before = word_before, .word_after = word_after };
     }
 
     const Scan = enum { anchored, skip, plain };
@@ -423,8 +436,13 @@ pub const Regex = struct {
 
     /// Epsilon-closure at a whole-buffer position `p`, resolving `^`/`$` against
     /// `\n` adjacency (multiline) rather than a single external BOL/EOL flag.
+    /// `\A`/`\z` (assert_buf_*) resolve against the true buffer edges here — a
+    /// line boundary is NOT a buffer edge under multiline.
     fn closureBuf(re: *const Regex, sim: *Sim, list: *ThreadList, buf: []const u8, p: usize) Closure {
-        return re.closure(sim, list, lineStart(buf, p), lineEnd(buf, p), wordBefore(buf, p), wordAt(buf, p));
+        var c = re.closure(sim, list, lineStart(buf, p), lineEnd(buf, p), wordBefore(buf, p), wordAt(buf, p));
+        c.at_buf_start = p == 0;
+        c.at_buf_end = p == buf.len;
+        return c;
     }
 
     /// Does the pattern match any substring of the WHOLE buffer under multiline
@@ -454,7 +472,13 @@ pub const Regex = struct {
                 .consume => |cn| matched = (cn.set.has(c) and cl.add(cn.out)) or matched,
                 else => {},
             };
-            matched = cl.add(re.start) or matched; // plain: re-seed a start at i+1
+            // Plain re-seed a start at i+1 — EXCEPT at the phantom position after
+            // a trailing final `\n`: that gap belongs to no line (rg's line model
+            // opens no phantom empty last line), so no match may START there. A
+            // bare `\z` therefore does NOT match "abc\n" while `\n\z` (a thread
+            // started at the real last byte) does — both verified against rg -U.
+            const phantom = i + 1 == buf.len and c == '\n';
+            if (!phantom) matched = cl.add(re.start) or matched;
             std.mem.swap(ThreadList, &sim.cur, &sim.nxt);
             if (matched) return true;
         }
@@ -536,6 +560,11 @@ pub const Regex = struct {
             .gen = sim.gen,
             .at_start = re.atStart(line, from),
             .at_end = re.atEnd(line, from),
+            // `line` is the whole haystack handed to the span engine (a line in
+            // the per-line default, the buffer under multiline), so its edges
+            // ARE the `\A`/`\z` buffer edges in both modes.
+            .at_buf_start = from == 0,
+            .at_buf_end = from == line.len,
             .word_before = wordBefore(line, from),
             .word_after = wordAt(line, from),
             .starts = sim.scur,
@@ -557,19 +586,20 @@ pub const Regex = struct {
             sim.gen += 1;
             const at_start = re.atStart(line, i + 1); // multiline: a `\n` at i makes i+1 a line start
             const at_end = re.atEnd(line, i + 1);
+            const at_buf_end = i + 1 == line.len; // position i+1 ≥ 1 is never the buffer start
             const wb = wordBefore(line, i + 1);
             const wa = wordAt(line, i + 1);
             const slice = sim.cur.slice();
             for (slice[0..cut]) |s| switch (re.states[s]) {
                 .consume => |cn| if (cn.set.has(c)) {
-                    var nc = Closure{ .re = re, .list = &sim.nxt, .seen = sim.seen, .gen = sim.gen, .at_start = at_start, .at_end = at_end, .word_before = wb, .word_after = wa, .starts = sim.snxt, .cur_start = sim.scur[s] };
+                    var nc = Closure{ .re = re, .list = &sim.nxt, .seen = sim.seen, .gen = sim.gen, .at_start = at_start, .at_end = at_end, .at_buf_start = false, .at_buf_end = at_buf_end, .word_before = wb, .word_after = wa, .starts = sim.snxt, .cur_start = sim.scur[s] };
                     _ = nc.add(cn.out);
                 },
                 else => {},
             };
             // Re-seed a fresh start at i+1 (lowest priority) only while unmatched.
             if (best == null) {
-                var sc = Closure{ .re = re, .list = &sim.nxt, .seen = sim.seen, .gen = sim.gen, .at_start = at_start, .at_end = at_end, .word_before = wb, .word_after = wa, .starts = sim.snxt, .cur_start = i + 1 };
+                var sc = Closure{ .re = re, .list = &sim.nxt, .seen = sim.seen, .gen = sim.gen, .at_start = at_start, .at_end = at_end, .at_buf_start = false, .at_buf_end = at_buf_end, .word_before = wb, .word_after = wa, .starts = sim.snxt, .cur_start = i + 1 };
                 _ = sc.add(re.start);
             }
             std.mem.swap(ThreadList, &sim.cur, &sim.nxt);

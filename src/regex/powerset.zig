@@ -124,8 +124,9 @@ const Builder = struct {
                 .assert_start => |o| if (at_start) b.pushIf(o),
                 .assert_end => |o| if (at_end) b.pushIf(o),
                 // `build` bails to the Pike VM (returns null above) before any
-                // state is interned, so the determinizer never sees a word boundary.
-                .assert_word_b, .assert_not_word_b => unreachable,
+                // state is interned, so the determinizer never sees a word
+                // boundary (two-sided or one-sided) or a buffer anchor.
+                .assert_word_b, .assert_not_word_b, .assert_word_start, .assert_word_end, .assert_buf_start, .assert_buf_end => unreachable,
                 .match => matched = true,
             }
         }
@@ -230,14 +231,16 @@ fn buildClasses(states: []const State, class: *[256]u8, rep: *[256]u8) u16 {
 /// — in which case the caller keeps the Pike VM. `anchored` mirrors
 /// `analysis.startsAnchored`: every match begins at line start, so we never re-seed.
 pub fn build(gpa: std.mem.Allocator, states: []const State, start: u32, anchored: bool) std.mem.Allocator.Error!?*Dfa {
-    // A `\b`/`\B` assertion gates on the word-ness of the bytes straddling a
-    // position, which a byte-class DFA can't resolve without folding "previous
-    // byte was a word char" into every state (a second determinization axis). Keep
-    // the Pike VM (the correctness reference) for these — exactly the
-    // powerset-blow-up fallback — while the trigram prefilter still selects on the
-    // bounded literal. Recorded next rung: a word-context-aware DFA.
+    // A `\b`/`\B` (or one-sided `\<`/`\>`) assertion gates on the word-ness of
+    // the bytes straddling a position, which a byte-class DFA can't resolve
+    // without folding "previous byte was a word char" into every state (a second
+    // determinization axis). Keep the Pike VM (the correctness reference) for
+    // these — exactly the powerset-blow-up fallback — while the trigram
+    // prefilter still selects on the bounded literal. Recorded next rung: a
+    // word-context-aware DFA. The buffer anchors (`\A`/`\z`) exist only under
+    // multiline, where no DFA is built at all — bail defensively anyway.
     for (states) |st| switch (st) {
-        .assert_word_b, .assert_not_word_b => return null,
+        .assert_word_b, .assert_not_word_b, .assert_word_start, .assert_word_end, .assert_buf_start, .assert_buf_end => return null,
         else => {},
     };
 

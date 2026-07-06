@@ -511,3 +511,59 @@ test "matchSpan: resumes from a mid-line offset (non-overlapping iteration)" {
     try std.testing.expect((try span1("func", "func fn func", 4)).?.start == 8);
     try std.testing.expect((try span1("func", "func fn func", 9)) == null);
 }
+
+// ─────────────── rg-parity escapes: \< \> (word start/end), \A \z ───────────────
+// Every expectation below is hand-verified against the installed ripgrep
+// (`rg '\<bar' …` etc.) — the divergences this pass fixed were gist silently
+// reading these as literal '<' '>' 'A' 'z' bytes.
+
+test "regex: \\< matches only where a word STARTS, \\> only where one ENDS" {
+    try std.testing.expect(try matches("\\<bar", "foo bar")); // gap ' |b' is a word start
+    try std.testing.expect(try matches("bar\\>", "foo bar")); // gap 'r|EOL' is a word end
+    try std.testing.expect(try matches("foo\\>", "foo bar")); // gap 'o| ' is a word end
+    try std.testing.expect(!try matches("\\<ar", "foo bar")); // 'b|a' is word|word ⇒ not a start
+    try std.testing.expect(!try matches("foo\\<", "foo bar")); // 'o| ' is an END, not a start
+    try std.testing.expect(!try matches("\\>bar", "foo bar")); // ' |b' is a START, not an end
+    try std.testing.expect(try matches("\\<bar\\>", "foo bar")); // whole word
+    try std.testing.expect(!try matches("\\<bar\\>", "foobar")); // substring only
+    // One-sided vs two-sided: `\b` holds at BOTH edges of a word, `\<` at one.
+    try std.testing.expect(try matches("\\bfoo", "foo bar"));
+    try std.testing.expect(try matches("\\<foo", "foo bar"));
+    try std.testing.expect(try matches("foo\\b", "foo bar"));
+    try std.testing.expect(!try matches("foo\\<", "foo bar"));
+}
+
+test "regex: \\A and \\z anchor the per-line haystack (rg default line model)" {
+    try std.testing.expect(try matches("\\Afoo", "foo bar")); // line start
+    try std.testing.expect(!try matches("\\Abar", "foo bar")); // mid-line ⇒ no
+    try std.testing.expect(try matches("bar\\z", "foo bar")); // line end
+    try std.testing.expect(!try matches("foo\\z", "foo bar")); // mid-line ⇒ no
+    try std.testing.expect(try matches("\\Afoo bar\\z", "foo bar")); // exact line
+    try std.testing.expect(try matches("\\A\\z", "")); // empty line: start==end
+}
+
+fn bufMatches(pattern: []const u8, buf: []const u8) !bool {
+    var re = try Regex.compileOpts(std.testing.allocator, pattern, .{ .multiline = true });
+    defer re.deinit();
+    var sim = try Regex.Sim.init(std.testing.allocator, &re);
+    defer sim.deinit();
+    return re.bufMatch(&sim, buf);
+}
+
+test "regex: multiline \\A/\\z are BUFFER anchors while ^/$ hold at every line" {
+    // `^` holds at each line start; `\A` only at the buffer's first byte.
+    try std.testing.expect(try bufMatches("^beta", "alpha\nbeta\n"));
+    try std.testing.expect(!try bufMatches("\\Abeta", "alpha\nbeta\n"));
+    try std.testing.expect(try bufMatches("\\Aalpha", "alpha\nbeta\n"));
+    // `$` holds at each line end; `\z` only at the buffer's very end.
+    try std.testing.expect(try bufMatches("alpha$", "alpha\nbeta"));
+    try std.testing.expect(!try bufMatches("alpha\\z", "alpha\nbeta"));
+    try std.testing.expect(try bufMatches("beta\\z", "alpha\nbeta"));
+    // A trailing `\n` is part of the buffer: `\z` sits after it, not before
+    // (rg -U: `beta\z` does NOT match "alpha\nbeta\n" — verified).
+    try std.testing.expect(!try bufMatches("beta\\z", "alpha\nbeta\n"));
+    try std.testing.expect(try bufMatches("beta\n\\z", "alpha\nbeta\n"));
+    // `\<`/`\>` keep working across the whole-buffer scan.
+    try std.testing.expect(try bufMatches("\\<beta\\>", "alpha\nbeta\n"));
+    try std.testing.expect(!try bufMatches("\\<eta", "alpha\nbeta\n"));
+}

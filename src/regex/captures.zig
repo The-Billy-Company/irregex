@@ -28,6 +28,8 @@ const Inst = union(enum) {
     aend: u32,
     awb: u32,
     anwb: u32,
+    awstart: u32, // `\<` — word start (¬word|word)
+    awend: u32, // `\>` — word end (word|¬word)
     match,
 };
 
@@ -219,6 +221,8 @@ pub const Captures = struct {
             .aend => |o| if (pos == line.len) self.addThread(list, len, slots, o, in_slots, pos, line),
             .awb => |o| if (wordBefore(line, pos) != wordAt(line, pos)) self.addThread(list, len, slots, o, in_slots, pos, line),
             .anwb => |o| if (wordBefore(line, pos) == wordAt(line, pos)) self.addThread(list, len, slots, o, in_slots, pos, line),
+            .awstart => |o| if (!wordBefore(line, pos) and wordAt(line, pos)) self.addThread(list, len, slots, o, in_slots, pos, line),
+            .awend => |o| if (wordBefore(line, pos) and !wordAt(line, pos)) self.addThread(list, len, slots, o, in_slots, pos, line),
             .char, .match => {
                 list.*[len.*] = pc;
                 @memcpy(slots[pc], in_slots);
@@ -243,8 +247,14 @@ const Comp = struct {
             .empty => return next,
             .anchor_start => return self.push(.{ .astart = next }),
             .anchor_end => return self.push(.{ .aend = next }),
+            // The captures parser never sets `multiline` (the CLI serves `-r`/
+            // `--json` per line only), so `\A`/`\z` already lowered to the line
+            // anchors above; the whole-buffer variants cannot occur here.
+            .anchor_buf_start, .anchor_buf_end => unreachable,
             .word_boundary => return self.push(.{ .awb = next }),
             .not_word_boundary => return self.push(.{ .anwb = next }),
+            .word_start => return self.push(.{ .awstart = next }),
+            .word_end => return self.push(.{ .awend = next }),
             .class => |set| return self.push(.{ .char = .{ .set = set, .out = next } }),
             .capture => |g| {
                 const close = try self.push(.{ .save = .{ .slot = 2 * g.idx + 1, .out = next } });

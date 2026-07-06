@@ -8,10 +8,19 @@
 //!   literals · `.` (any byte but '\n') · `[...]` / `[^...]` with `a-z` ranges
 //!   and POSIX bracket classes `[[:alpha:]]` … `[[:^space:]]` (ASCII sets, the
 //!   `(?-u)` twins rg accepts) · `*` `+` `?` · `{n}` `{n,}` `{n,m}` counted
-//!   repetition · `|` · `(...)` grouping · line anchors `^` `$` · word
-//!   boundaries `\b` `\B` (ASCII, the `[0-9A-Za-z_]` class — exactly rg
-//!   `--no-unicode`) · escapes
-//!   `\. \* \+ \? \( \) \[ \] \^ \$ \\ \| \/ \t \n \r \d \D \w \W \s \S`.
+//!   repetition · `|` · `(...)` grouping · line anchors `^` `$` · haystack
+//!   anchors `\A` `\z` (start/end of haystack — the line in the per-line
+//!   default, the whole buffer under multiline) · word boundaries `\b` `\B`
+//!   and the one-sided `\<` `\>` (word start/end; ASCII, the `[0-9A-Za-z_]`
+//!   class — exactly rg `--no-unicode`) · escapes
+//!   `\t \n \r \f \v \a \xNN \x{H..H} \d \D \w \W \s \S` plus any escaped
+//!   ASCII punctuation (`\. \* \\ \/ \-` … → the literal byte).
+//! rg-parity rejections (BadPattern, never a silent literal): `\0`–`\9`
+//! (backreference syntax — unsupported in a linear-time engine; NUL is `\x00`),
+//! any other escaped ASCII letter or digit (`\q`, `\e`, `\Z`, … — rg's
+//! "unrecognized escape sequence"), and any assertion escape inside a class
+//! (`[\b]`, `[\A]`, `[\z]`, `[\<]`, `[\>]` — rg's "invalid escape sequence
+//! found in character class").
 //! Like rust-regex, an unescaped `{` must begin a valid count (else BadPattern;
 //! a literal brace is `\{`); a stray `}` is literal.
 
@@ -79,7 +88,7 @@ pub fn foldCaseAst(n: *Node) void {
         },
         .star, .plus, .quest => |r| foldCaseAst(r.node),
         .capture => |g| foldCaseAst(g.child),
-        .empty, .anchor_start, .anchor_end, .word_boundary, .not_word_boundary => {},
+        .empty, .anchor_start, .anchor_end, .anchor_buf_start, .anchor_buf_end, .word_boundary, .not_word_boundary, .word_start, .word_end => {},
     }
 }
 
@@ -88,8 +97,12 @@ pub const Node = union(enum) {
     class: ByteSet, // a single consuming step (literal byte, ., \d, [..])
     anchor_start, // `^` — zero-width, asserts start of line
     anchor_end, // `$` — zero-width, asserts end of line
+    anchor_buf_start, // `\A` under multiline — zero-width, asserts start of BUFFER
+    anchor_buf_end, // `\z` under multiline — zero-width, asserts end of BUFFER
     word_boundary, // `\b` — zero-width, asserts a word/non-word transition
     not_word_boundary, // `\B` — zero-width, asserts NO such transition
+    word_start, // `\<` — zero-width, holds iff !word_before && word_after
+    word_end, // `\>` — zero-width, holds iff word_before && !word_after
     concat: [2]*Node,
     alt: [2]*Node,
     // Quantifiers carry a `lazy` flag: greedy (`a*`) prefers to consume, lazy
@@ -127,6 +140,10 @@ pub const State = union(enum) {
     assert_end: u32, // zero-width `$`: pass to `out` only at line end
     assert_word_b: u32, // zero-width `\b`: pass to `out` only at a word boundary
     assert_not_word_b: u32, // zero-width `\B`: pass to `out` only off a boundary
+    assert_word_start: u32, // zero-width `\<`: only where a word BEGINS (¬word|word)
+    assert_word_end: u32, // zero-width `\>`: only where a word ENDS (word|¬word)
+    assert_buf_start: u32, // zero-width `\A` (multiline): pass only at buffer start
+    assert_buf_end: u32, // zero-width `\z` (multiline): pass only at buffer end
     match,
 };
 
@@ -375,14 +392,34 @@ pub const Parser = struct {
             },
             '\\' => {
                 _ = p.take(); // consume the backslash
-                // `\b`/`\B` are zero-width word-boundary assertions — they don't
-                // lower to a byte class, so they're resolved here in atom position
-                // (mirroring `^`/`$`) rather than in `parseEscape`, which returns a
-                // ByteSet. Inside a class `[...]` `\b` stays a literal byte (the
-                // `parseClass`→`parseEscape` path is untouched), matching rg.
-                if (p.peek()) |e| if (e == 'b' or e == 'B') {
-                    _ = p.take();
-                    return p.node(if (e == 'b') .word_boundary else .not_word_boundary);
+                // Zero-width assertion escapes don't lower to a byte class, so
+                // they're resolved here in atom position (mirroring `^`/`$`)
+                // rather than in `parseEscape`, which returns a ByteSet. They are
+                // atom-position ONLY: inside a class `[...]` each of these is
+                // BadPattern (rg: "invalid escape sequence found in character
+                // class") — `parseEscape` enforces that.
+                if (p.peek()) |e| switch (e) {
+                    'b', 'B' => {
+                        _ = p.take();
+                        return p.node(if (e == 'b') .word_boundary else .not_word_boundary);
+                    },
+                    '<', '>' => { // rg's one-sided word boundaries (word start/end)
+                        _ = p.take();
+                        return p.node(if (e == '<') .word_start else .word_end);
+                    },
+                    // `\A`/`\z` anchor the HAYSTACK. In the per-line default the
+                    // haystack is the line, so they coincide with `^`/`$` and
+                    // lower to the existing nodes (zero engine changes); under
+                    // multiline the haystack is the whole buffer — a distinct
+                    // assertion from the line-boundary `^`/`$` — so they get
+                    // their own nodes. (`\Z` is NOT rg syntax — it falls through
+                    // to `parseEscape`'s unrecognized-letter rejection.)
+                    'A', 'z' => {
+                        _ = p.take();
+                        if (e == 'A') return p.node(if (p.multiline) .anchor_buf_start else .anchor_start);
+                        return p.node(if (p.multiline) .anchor_buf_end else .anchor_end);
+                    },
+                    else => {},
                 };
                 return p.node(.{ .class = try p.parseEscape() });
             },
@@ -427,9 +464,25 @@ pub const Parser = struct {
             'f' => s.set(0x0C),
             'v' => s.set(0x0B),
             'a' => s.set(0x07),
-            '0' => s.set(0), // NUL (rg's `\0`)
             'x' => s.set(try p.hexByte()), // \xNN or \x{H..H}
-            else => s.set(e), // \. \* \\ \/ … → literal
+            // `\0`–`\9` are backreference syntax — unsupported in a linear-time
+            // engine and rejected by rg too ("backreferences are not supported",
+            // exit 2), in atom position AND inside `[...]`. NUL is spelled `\x00`.
+            '0'...'9' => return ParseError.BadPattern,
+            // `\<`/`\>` reach here only from inside a class (atom position is
+            // intercepted in `parseAtom`): an assertion escape is invalid in a
+            // class — rg exits 2, so a silent literal `<`/`>` would be a lie.
+            '<', '>' => return ParseError.BadPattern,
+            else => {
+                // Any OTHER escaped ASCII letter is unrecognized (`\q`, `\e`,
+                // `\Z`, `\h`, …) — rg exits 2 ("unrecognized escape sequence"),
+                // and this also catches the assertion letters `b B A z` inside a
+                // class (atom position intercepts them first). Escaped
+                // punctuation / non-alphanumeric bytes stay literal (rg allows
+                // `\-`, `\_`, `\.`, `\/`, `\ `, …).
+                if (std.ascii.isAlphabetic(e)) return ParseError.BadPattern;
+                s.set(e);
+            },
         }
         return s;
     }

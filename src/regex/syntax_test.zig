@@ -176,8 +176,8 @@ test "syntax/escape: uppercase class is the exact complement of lowercase" {
     }
 }
 
-test "syntax/escape: metacharacter escapes are literal; unknown escape is its byte" {
-    inline for (.{ "\\.", "\\*", "\\+", "\\?", "\\(", "\\)", "\\[", "\\]", "\\^", "\\$", "\\\\", "\\|", "\\/" }) |pat| {
+test "syntax/escape: metacharacter and punctuation escapes are literal" {
+    inline for (.{ "\\.", "\\*", "\\+", "\\?", "\\(", "\\)", "\\[", "\\]", "\\^", "\\$", "\\\\", "\\|", "\\/", "\\-", "\\_" }) |pat| {
         var pr = try parse(pat);
         defer pr.deinit();
         const s = try classOf(&pr);
@@ -190,12 +190,77 @@ test "syntax/escape: metacharacter escapes are literal; unknown escape is its by
         const s = try classOf(&pr);
         try std.testing.expect(s.has('\t') and s.count() == 1);
     }
-    {
-        var pr = try parse("\\q"); // unknown escape ⇒ literal 'q'
-        defer pr.deinit();
-        const s = try classOf(&pr);
-        try std.testing.expect(s.has('q') and s.count() == 1);
+}
+
+test "syntax/escape: backreferences \\0-\\9 are BadPattern (rg parity), in atom and class" {
+    // rg (rust-regex) rejects `\0`…`\9` as backreference syntax, exit 2 — a
+    // linear-time engine can't do backreferences, and `\0` is NOT NUL there
+    // (NUL is spelled `\x00`). A silent NUL-class or literal digit was the
+    // original head-to-head divergence this suite pins.
+    inline for (.{ "\\0", "\\1", "\\5", "\\9", "a\\1b", "[\\047]", "[\\0]", "[a\\3]" }) |pat| {
+        try std.testing.expectError(ParseError.BadPattern, parse(pat));
     }
+    // The supported NUL spelling still yields exactly the NUL byte.
+    var pr = try parse("\\x00");
+    defer pr.deinit();
+    const s = try classOf(&pr);
+    try std.testing.expect(s.has(0) and s.count() == 1);
+}
+
+test "syntax/escape: unrecognized ASCII-letter escapes are BadPattern (rg parity)" {
+    // rg exits 2 with "unrecognized escape sequence" — gist must never turn
+    // `\q` into a confident literal-'q' non-match. `\Z` is rust-regex's
+    // deliberate omission (end-of-haystack is `\z`), so it errors too.
+    inline for (.{ "\\q", "\\e", "\\y", "\\h", "\\V", "\\Z", "\\p", "a\\qb" }) |pat| {
+        try std.testing.expectError(ParseError.BadPattern, parse(pat));
+    }
+}
+
+test "syntax/escape: assertion escapes are invalid inside a class (rg parity)" {
+    // rg: "invalid escape sequence found in character class" — `\b` is NOT a
+    // literal 'b' (or backspace) inside `[...]`, and the one-sided `\<`/`\>`
+    // and haystack anchors are atom-position-only.
+    inline for (.{ "[\\b]", "[\\B]", "[\\A]", "[\\z]", "[\\<]", "[\\>]", "[a\\b]" }) |pat| {
+        try std.testing.expectError(ParseError.BadPattern, parse(pat));
+    }
+    // …while byte/class escapes still compose inside a class.
+    var pr = try parse("[\\t\\d]");
+    defer pr.deinit();
+    const s = try classOf(&pr);
+    try std.testing.expect(s.has('\t') and s.has('0') and s.has('9') and !s.has('b'));
+}
+
+test "syntax/escape: \\A \\z \\< \\> parse to zero-width assertion nodes" {
+    // Per-line default: `\A`/`\z` lower to the existing line anchors (the line
+    // IS the haystack), `\<`/`\>` to the one-sided word boundaries.
+    {
+        var pr = try parse("\\A");
+        defer pr.deinit();
+        try std.testing.expect(pr.node.* == .anchor_start);
+    }
+    {
+        var pr = try parse("\\z");
+        defer pr.deinit();
+        try std.testing.expect(pr.node.* == .anchor_end);
+    }
+    {
+        var pr = try parse("\\<");
+        defer pr.deinit();
+        try std.testing.expect(pr.node.* == .word_start);
+    }
+    {
+        var pr = try parse("\\>");
+        defer pr.deinit();
+        try std.testing.expect(pr.node.* == .word_end);
+    }
+    // Multiline: the haystack is the whole buffer, so `\A`/`\z` become the
+    // distinct buffer anchors (a line boundary is not a buffer edge there).
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var p = syn.Parser{ .src = "\\A", .arena = arena.allocator(), .multiline = true };
+    try std.testing.expect((try p.parseAlt()).* == .anchor_buf_start);
+    var pz = syn.Parser{ .src = "\\z", .arena = arena.allocator(), .multiline = true };
+    try std.testing.expect((try pz.parseAlt()).* == .anchor_buf_end);
 }
 
 test "syntax/escape: a trailing backslash is BadPattern, not a crash" {

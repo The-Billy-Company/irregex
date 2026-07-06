@@ -269,8 +269,14 @@ on gist's index via weighted Reciprocal Rank Fusion
 signals — it isn't expressible as a line-scanner's output ordering at all.
 
 Supported regex syntax: literals, `.`, `[...]`/`[^...]`, `a-z` ranges, `* + ?
-{n,m}`, alternation, groups, `^ $`, `\b \B`, and the classes `\d \w \s \t \n
-\r` — see [`src/regex/syntax.zig`](src/regex/syntax.zig). `--ignore-case`
+{n,m}`, alternation, groups, `^ $`, the haystack anchors `\A \z`, the word
+boundaries `\b \B` and one-sided `\< \>`, and the classes `\d \w \s \t \n
+\r` (NUL is `\x00`) — see [`src/regex/syntax.zig`](src/regex/syntax.zig).
+The escape parser is rg-parity **fail-loud**: `\0`–`\9` (backreference
+syntax), unrecognized letter escapes (`\q`, `\e`, `\Z`, …), and assertion
+escapes inside a class (`[\b]`, `[\A]`, `[\<]`) all exit 2 with the reason
+and the `rg --pcre2` fallback — exactly the inputs rg itself rejects — never
+a silent wrong literal. `--ignore-case`
 ASCII case-folds the pattern itself (every byte-class gains its
 opposite-case twin) so the whole pipeline — NFA, DFA, trigram prefilter —
 matches case-insensitively from one transform.

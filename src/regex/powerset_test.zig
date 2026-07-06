@@ -305,9 +305,10 @@ const Spec = struct {
                     s.stack[sp] = o;
                     sp += 1;
                 },
-                // This Spec is a DFA structural reference, fed only `\b`-free
-                // patterns (word-boundary patterns have no DFA to compare against).
-                .assert_word_b, .assert_not_word_b => {},
+                // This Spec is a DFA structural reference, fed only patterns free
+                // of word-context assertions and buffer anchors (those have no
+                // DFA to compare against — `powerset.build` bails to null).
+                .assert_word_b, .assert_not_word_b, .assert_word_start, .assert_word_end, .assert_buf_start, .assert_buf_end => {},
                 .match => matched = true,
             }
         }

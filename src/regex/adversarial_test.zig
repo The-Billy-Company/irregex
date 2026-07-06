@@ -86,6 +86,13 @@ const Oracle = struct {
         const right = pos < o.line.len and isWord(o.line[pos]);
         return left != right;
     }
+    /// Independent one-sided predicates for `\<` / `\>` (rg's word start/end).
+    fn wordStartAt(o: Oracle, pos: usize) bool {
+        return !(pos > 0 and isWord(o.line[pos - 1])) and (pos < o.line.len and isWord(o.line[pos]));
+    }
+    fn wordEndAt(o: Oracle, pos: usize) bool {
+        return (pos > 0 and isWord(o.line[pos - 1])) and !(pos < o.line.len and isWord(o.line[pos]));
+    }
 
     /// Memoized by `(node, pos)`. The `{n,m}` desugaring shares one atom pointer
     /// across copies (the AST is a DAG), so without memoization a nested
@@ -100,6 +107,13 @@ const Oracle = struct {
             .anchor_end => if (if (o.multiline) o.atLineEnd(pos) else pos == o.line.len) bit(pos) else 0,
             .word_boundary => if (o.wordBoundary(pos)) bit(pos) else 0,
             .not_word_boundary => if (o.wordBoundary(pos)) 0 else bit(pos),
+            .word_start => if (o.wordStartAt(pos)) bit(pos) else 0,
+            .word_end => if (o.wordEndAt(pos)) bit(pos) else 0,
+            // `\A`/`\z` under multiline: the true BUFFER edges, independent of
+            // line boundaries (the per-line default lowers them to `^`/`$`, so
+            // these nodes only reach the oracle from a multiline parse).
+            .anchor_buf_start => if (pos == 0) bit(pos) else 0,
+            .anchor_buf_end => if (pos == o.line.len) bit(pos) else 0,
             .class => |set| if (pos < o.line.len and set.has(o.line[pos])) bit(pos + 1) else 0,
             .concat => |ab| blk: {
                 var res: u64 = 0;
@@ -136,7 +150,13 @@ const Oracle = struct {
 
     fn substringMatch(o: Oracle, ast: *const Node) bool {
         var s: usize = 0;
-        while (s <= o.line.len) : (s += 1) if (o.matchAt(ast, s) != 0) return true;
+        while (s <= o.line.len) : (s += 1) {
+            // Multiline (rg -U) line model: the gap after a trailing final `\n`
+            // belongs to no line, so no match may START there (a bare `\z`
+            // doesn't match "abc\n"; `\n\z` does — verified against rg -U).
+            if (o.multiline and s == o.line.len and s > 0 and o.line[s - 1] == '\n') break;
+            if (o.matchAt(ast, s) != 0) return true;
+        }
         return false;
     }
 };
@@ -445,6 +465,21 @@ test "adversarial: curated patterns vs independent oracle" {
         .{ .pat = "\\w+\\b", .line = "foo_bar baz" },
         .{ .pat = "\\b\\d{4}\\b", .line = "year 2026 ok" },
         .{ .pat = "\\b\\d{4}\\b", .line = "id12345x" }, // digits glued to words ⇒ no
+        // One-sided word boundaries `\<`/`\>` (rg word start/end) — the one-sided
+        // twins of `\b`, and the direction matters (a start is not an end).
+        .{ .pat = "\\<bar", .line = "foo bar" },
+        .{ .pat = "\\<ar", .line = "foo bar" }, // mid-word ⇒ no start
+        .{ .pat = "foo\\>", .line = "foo bar" },
+        .{ .pat = "foo\\<", .line = "foo bar" }, // an END gap, not a start ⇒ no
+        .{ .pat = "\\>bar", .line = "foo bar" }, // a START gap, not an end ⇒ no
+        .{ .pat = "\\<bar\\>", .line = "foobar" }, // substring only ⇒ no
+        .{ .pat = "\\<\\w+\\>", .line = "  word  " },
+        // Haystack anchors `\A`/`\z` (per-line default: the line IS the haystack).
+        .{ .pat = "\\Afoo", .line = "foo bar" },
+        .{ .pat = "\\Abar", .line = "foo bar" }, // mid-line ⇒ no
+        .{ .pat = "bar\\z", .line = "foo bar" },
+        .{ .pat = "foo\\z", .line = "foo bar" }, // mid-line ⇒ no
+        .{ .pat = "\\A\\z", .line = "" }, // empty haystack: start == end
     };
     var col = Collector.init(a);
     defer col.deinit();
@@ -465,11 +500,19 @@ const Gen = struct {
     a: std.mem.Allocator,
     lazy: bool = false, // when set, ~half of emitted quantifiers get a trailing `?`
     anchors: bool = true, // when false, never emit `^`/`$` (span differential domain)
+    // When false, never emit `\<`/`\>`: the `-o` span differentials can't use
+    // them (rg's zero-width rendering quirk; PCRE reads `\<` differently), the
+    // existence differentials (oracle / rg -q) can.
+    word_edges: bool = true,
     const E = std.mem.Allocator.Error;
 
     fn atom(g: *Gen, depth: u8) E!void {
         const list = "abe01_";
-        switch (g.r.uintLessThan(u8, if (depth > 0) 15 else 14)) {
+        const n_atoms: u8 = if (g.word_edges) 16 else 14; // non-group choices
+        const roll = g.r.uintLessThan(u8, if (depth > 0) n_atoms + 1 else n_atoms);
+        // Without word edges the group slot rolls as 14 — remap it past 15 so
+        // the `\<`/`\>` arms stay unreachable.
+        switch (if (!g.word_edges and roll >= 14) 16 else roll) {
             0 => try g.buf.append(g.a, list[g.r.uintLessThan(usize, list.len)]),
             1 => try g.buf.append(g.a, '.'),
             2 => try g.buf.appendSlice(g.a, "[a-c]"),
@@ -484,6 +527,8 @@ const Gen = struct {
             11 => try g.buf.appendSlice(g.a, "[^ -~]"), // negated printable ⇒ many first-byte ranges
             12 => try g.buf.appendSlice(g.a, "\\b"), // word boundary (zero-width)
             13 => try g.buf.appendSlice(g.a, "\\B"), // non-boundary (zero-width)
+            14 => try g.buf.appendSlice(g.a, "\\<"), // word start (zero-width, one-sided)
+            15 => try g.buf.appendSlice(g.a, "\\>"), // word end (zero-width, one-sided)
             else => {
                 try g.buf.append(g.a, '(');
                 try g.alt(depth - 1);
@@ -867,6 +912,12 @@ test "adversarial: rg second-oracle differential (parser-level)" {
               "\\ba",  "a\\b",     "\\babc",
         "abc\\b",   "\\babc\\b", "\\b\\w+", "\\w+\\b", "\\bend\\b", "\\Bb",  "a\\Bb",    "\\Bbc",
         "[a-c]\\b", "\\b-",      "-\\b",
+        // One-sided word boundaries + haystack anchors (this pass's rg-parity
+        // additions) — rg's default per-line model makes them line-scoped here.
+        "\\<a",     "\\<abc",    "abc\\>",  "\\<abc\\>", "a\\>",   "\\>a",  "a\\<",     "\\<\\w+\\>",
+        "\\Aabc",   "abc\\z",    "\\Aa",    "a\\z",      "\\A",    "\\z",   "\\A\\z",   "\\Aabc\\z",
+        // Escaped punctuation stays literal on both engines.
+        "\\-",      "\\_",       "a\\-b",
     };
     for (pats) |p| for (lines) |l| rgAgrees(&col, ctx, p, true, l);
 
@@ -925,9 +976,11 @@ test "adversarial: rg -U multiline differential (whole-buffer)" {
     };
     // `.`/dotall-crossing, negated-class/`\s`/`\W`/literal-`\n` crossing, and the
     // full anchor matrix at line boundaries — the exact surface `-U` unlocks.
+    // `\A`/`\z` are the BUFFER anchors here (distinct from every-line `^`/`$`),
+    // and `\<`/`\>` must stay content-correct across the whole-buffer scan.
     const dot_pats = [_][]const u8{ "c.d", "abc.def", "f.g", "a.b", ".*", "x.y" };
     const cross_pats = [_][]const u8{ "c[^x]d", "c\\sd", "c\\Wd", "f\\ng", "def\\nghi", "[a-z]\\n[a-z]", "b$\\n^c" };
-    const anchor_pats = [_][]const u8{ "^def$", "^def", "def$", "^abc", "ghi$", "^$", "^x$", "^\\w+$", "^.$", "^$\\n" };
+    const anchor_pats = [_][]const u8{ "^def$", "^def", "def$", "^abc", "ghi$", "^$", "^x$", "^\\w+$", "^.$", "^$\\n", "\\Aabc", "\\Adef", "ghi\\z", "def\\z", "\\A", "\\z", "ghi\\n\\z", "\\<def\\>", "\\<ef", "\\Aabc$", "^def\\z" };
     for (bufs) |buf| {
         for (dot_pats) |p| {
             rgBufAgrees(&col, ctx, p, buf, false); // `.` must NOT cross \n
@@ -1097,7 +1150,7 @@ test "adversarial: rg -o span differential (lazy vs greedy leftmost-first)" {
         // Anchors off: laziness lives in quantifier span choice, and `$`+nullable
         // triggers a ripgrep `-o` empty-match rendering quirk (a zero-width EOL
         // match printed as the whole line) unrelated to span priority.
-        var g = Gen{ .r = r, .buf = &pat, .a = a, .lazy = true, .anchors = false };
+        var g = Gen{ .r = r, .buf = &pat, .a = a, .lazy = true, .anchors = false, .word_edges = false };
         g.pattern() catch continue;
         for (0..4) |t| {
             const len = if (t == 0) 0 else r.uintLessThan(usize, line_buf.len + 1);
@@ -1224,7 +1277,7 @@ test "adversarial: grep -oP (PCRE) span differential — faithful, anchors on" {
         const r = prng.random();
         var pat: std.ArrayList(u8) = .empty;
         defer pat.deinit(a);
-        var g = Gen{ .r = r, .buf = &pat, .a = a, .lazy = true }; // anchors ON — PCRE ≡ gist
+        var g = Gen{ .r = r, .buf = &pat, .a = a, .lazy = true, .word_edges = false }; // anchors ON — PCRE ≡ gist
         g.pattern() catch continue;
         for (0..4) |t| {
             const len = if (t == 0) 0 else r.uintLessThan(usize, line_buf.len + 1);

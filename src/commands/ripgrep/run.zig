@@ -828,13 +828,13 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         break :blk "";
     };
     var re = Regex.compileOpts(gpa, eff, .{ .caseless = o.caseless }) catch
-        die("bad pattern '{s}' — outside gist's linear-time syntax (no lookaround, backreferences, or mid-pattern inline flags; --schema lists the surface). Fallback: rg '{s}'\n", .{ eff, eff });
+        die("bad pattern '{s}' — outside gist's linear-time syntax: no lookaround, no backreferences (\\0–\\9; NUL is \\x00), no unrecognized escapes (\\q, \\e, …), no assertion escapes inside [...], no mid-pattern inline flags (--schema lists the surface). Fallback: rg '{s}' (add --pcre2 for backreferences/lookaround)\n", .{ eff, eff });
     defer re.deinit();
 
     // -r/--replace: build the group-aware capture matcher (same AST, save-carrying
     // Pike VM) once and share it across every emitter for template expansion.
     var caps_store: ?Captures = if (o.replace != null)
-        (Captures.compile(gpa, eff, o.caseless) catch die("bad pattern '{s}' — outside gist's linear-time syntax. Fallback: rg '{s}'\n", .{ eff, eff }))
+        (Captures.compile(gpa, eff, o.caseless) catch die("bad pattern '{s}' — outside gist's linear-time syntax. Fallback: rg '{s}' (add --pcre2 for backreferences/lookaround)\n", .{ eff, eff }))
     else
         null;
     defer if (caps_store) |*cp| cp.deinit();

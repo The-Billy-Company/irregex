@@ -26,8 +26,12 @@ pub const Compiler = struct {
             .empty => return next,
             .anchor_start => return self.push(.{ .assert_start = next }),
             .anchor_end => return self.push(.{ .assert_end = next }),
+            .anchor_buf_start => return self.push(.{ .assert_buf_start = next }),
+            .anchor_buf_end => return self.push(.{ .assert_buf_end = next }),
             .word_boundary => return self.push(.{ .assert_word_b = next }),
             .not_word_boundary => return self.push(.{ .assert_not_word_b = next }),
+            .word_start => return self.push(.{ .assert_word_start = next }),
+            .word_end => return self.push(.{ .assert_word_end = next }),
             .class => |set| return self.push(.{ .consume = .{ .set = set, .out = next } }),
             // A capture group is transparent to the boolean engine — lower its child
             // (the index is only meaningful to the separate capture VM).
