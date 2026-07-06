@@ -85,6 +85,23 @@ pub fn build(b: *std.Build) void {
     search_verb_test.expectExitCode(0);
     k.test_step.dependOn(&search_verb_test.step);
 
+    // Companion guard: a leading `(?i)` inline-flag directive (rust-regex/rg
+    // syntax) must be HONORED (stripped, run-wide caseless) — not rejected as a
+    // bad pattern with exit 2, which is what a regression in
+    // `stripLeadingFlags`/`combinePatterns` produces. The fixture below is the
+    // ONLY case-fold target: the pattern spells the needle lowercase with a
+    // `[e]` class (so the pattern's own addArgs literal can never self-match),
+    // while the fixture is case-twisted (`NeEdLe`). A match therefore REQUIRES
+    // both the directive strip AND the case fold: a case-sensitive engine
+    // finds nothing (exit 1) and a directive-rejecting one dies (exit 2) —
+    // either way the guard fails closed.
+    const inline_flag_test = b.addRunArtifact(cli_exe);
+    inline_flag_test.setCwd(b.path("../../.."));
+    inline_flag_test.addArgs(&.{ "(?i)gist_inline_flag_regression_n[e]edle_xyz", "--no-index", "pkg/kernels/gist/build.zig" });
+    inline_flag_test.expectExitCode(0);
+    k.test_step.dependOn(&inline_flag_test.step);
+    // gist_inline_flag_regression_NeEdLe_xyz ← the fixture the guard case-folds onto
+
     // ── the `gist-bench` harness executable (bench/verify/certify tooling) ──
     // Run from the repo root so relative dirs + output paths resolve there.
     const bench_mod = b.createModule(.{

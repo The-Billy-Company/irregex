@@ -604,6 +604,37 @@ fn collectFiles(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, parsed
     return .{ .files = files.items, .recursive = g.recursive, .path_error = g.path_error };
 }
 
+/// A leading `(?flags)` directive (rust-regex/rg syntax) on a pattern, honored
+/// where the per-line byte engine genuinely can — the contract is "honored
+/// where gist can, loud where it can't", never a silent wrong answer:
+///   • `i` / `-i` → ASCII caseless on/off for the WHOLE pattern (gist compiles
+///     one global engine, so the directive resolves to the run-wide option;
+///     mixed demands across `-e`/`-f` patterns fail loud — rgsuite boundary #5);
+///   • `m` `s` (and negations) → inert in the per-line model: `^`/`$` already
+///     anchor every line and no line carries a `\n` for `.` to cross;
+///   • `-u` → inert: byte/ASCII semantics ARE gist's native behavior;
+///   • `u` `x` `U` `R` → semantics the engine can't reproduce → die with the
+///     reason and the rg fallback.
+/// Anything else after `(?` (lookaround, a scoped `(?i:…)` group, `(?P<…>`) is
+/// not a flag directive — returns null and the regex parser decides.
+const LeadingFlags = struct { rest: []const u8, caseless: ?bool = null };
+fn stripLeadingFlags(pat: []const u8) ?LeadingFlags {
+    if (!std.mem.startsWith(u8, pat, "(?")) return null;
+    const close = std.mem.indexOfScalar(u8, pat, ')') orelse return null;
+    if (close == 2) return null; // `(?)` — empty directive, the parser rejects it
+    var caseless: ?bool = null;
+    var neg = false;
+    for (pat[2..close]) |f| switch (f) {
+        '-' => neg = true,
+        'i' => caseless = !neg,
+        'm', 's' => {},
+        'u' => if (!neg) die("(?u) unsupported — gist matches bytes with ASCII case rules, not Unicode; use rg for this\n", .{}),
+        'x', 'U', 'R' => die("(?{c}) unsupported by gist's engine — use ripgrep for this\n", .{f}),
+        else => return null,
+    };
+    return .{ .rest = pat[close + 1 ..], .caseless = caseless };
+}
+
 /// Combine every pattern source — bare/`-e`/`--regexp` plus each `-f/--file`
 /// line — into one regex: `-F` escapes each literal, multiple patterns OR via
 /// `(?:…)|(?:…)`, and `-x/--line-regexp` anchors the whole with `^(?:…)$`.
@@ -611,7 +642,10 @@ fn collectFiles(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, parsed
 /// source) — ripgrep matches nothing (and everything under `-v`); the caller
 /// handles that without the engine. An empty pattern LINE is kept (it's a valid
 /// empty pattern = match-all), only the phantom line after a trailing `\n` drops.
-fn combinePatterns(a: std.mem.Allocator, io: std.Io, parsed: args.Parsed) ?[]const u8 {
+/// Leading `(?flags)` directives are resolved here (see `stripLeadingFlags`),
+/// which may flip `o.caseless` — under `-F` the bytes `(?i)` stay a literal,
+/// exactly as in rg.
+fn combinePatterns(a: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: *Opts) ?[]const u8 {
     var pats: std.ArrayList([]const u8) = .empty;
     pats.appendSlice(a, parsed.patterns) catch die("oom\n", .{});
     for (parsed.pattern_files) |pf| {
@@ -627,9 +661,33 @@ fn combinePatterns(a: std.mem.Allocator, io: std.Io, parsed: args.Parsed) ?[]con
         }
     }
     if (pats.items.len == 0) return null;
-    if (parsed.opts.fixed) for (pats.items) |*p| {
-        p.* = escapeLiteral(a, p.*);
-    };
+    if (parsed.opts.fixed) {
+        for (pats.items) |*p| p.* = escapeLiteral(a, p.*);
+    } else {
+        // Resolve leading `(?flags)` directives. `demand` is the caseless
+        // setting some pattern explicitly asked for; `inherit` marks a pattern
+        // riding the CLI's own `-i`/`-s`/resolved `-S` setting. gist compiles
+        // one engine, so the two may not disagree (rg scopes flags per branch).
+        var demand: ?bool = null;
+        var inherit = false;
+        for (pats.items) |*p| {
+            const sf = stripLeadingFlags(p.*) orelse {
+                inherit = true;
+                continue;
+            };
+            p.* = sf.rest;
+            if (sf.caseless) |w| {
+                if (demand != null and demand.? != w)
+                    die("mixed per-pattern (?i) case demands — gist compiles one engine; use rg for this\n", .{});
+                demand = w;
+            } else inherit = true;
+        }
+        if (demand) |w| {
+            if (inherit and w != o.caseless)
+                die("(?i) on some patterns but not others — gist compiles one engine; use rg for this\n", .{});
+            o.caseless = w;
+        }
+    }
     var combined: []const u8 = pats.items[0];
     if (pats.items.len > 1) {
         var buf: std.ArrayList(u8) = .empty;
@@ -764,19 +822,19 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // Zero patterns (an empty `-f` file): ripgrep matches nothing — so without
     // `-v` there is no output (exit 1); with `-v` every line is a match. We model
     // the latter as "match-all (empty pattern), un-inverted".
-    const eff = combinePatterns(a, io, parsed) orelse blk: {
+    const eff = combinePatterns(a, io, parsed, &o) orelse blk: {
         if (!o.invert) std.process.exit(1);
         o.invert = false;
         break :blk "";
     };
     var re = Regex.compileOpts(gpa, eff, .{ .caseless = o.caseless }) catch
-        die("bad pattern\n", .{});
+        die("bad pattern '{s}' — outside gist's linear-time syntax (no lookaround, backreferences, or mid-pattern inline flags; --schema lists the surface). Fallback: rg '{s}'\n", .{ eff, eff });
     defer re.deinit();
 
     // -r/--replace: build the group-aware capture matcher (same AST, save-carrying
     // Pike VM) once and share it across every emitter for template expansion.
     var caps_store: ?Captures = if (o.replace != null)
-        (Captures.compile(gpa, eff, o.caseless) catch die("bad pattern\n", .{}))
+        (Captures.compile(gpa, eff, o.caseless) catch die("bad pattern '{s}' — outside gist's linear-time syntax. Fallback: rg '{s}'\n", .{ eff, eff }))
     else
         null;
     defer if (caps_store) |*cp| cp.deinit();
@@ -1070,4 +1128,40 @@ fn anyMatch(a: std.mem.Allocator, re: *const Regex, o: Opts, files: []const InFi
         }
     }
     return false;
+}
+
+// The dying arms (`(?u)`, `(?x)`, mixed demands) exit the process by design,
+// so tests cover the honor/strip/decline paths; build.zig's black-box guard
+// covers the end-to-end exit codes.
+test "stripLeadingFlags honors i/-i and strips the directive" {
+    const t = std.testing;
+    const ci = stripLeadingFlags("(?i)Foo.*bar").?;
+    try t.expectEqualStrings("Foo.*bar", ci.rest);
+    try t.expectEqual(@as(?bool, true), ci.caseless);
+    const cs = stripLeadingFlags("(?-i)Foo").?;
+    try t.expectEqualStrings("Foo", cs.rest);
+    try t.expectEqual(@as(?bool, false), cs.caseless);
+    const both = stripLeadingFlags("(?i-s)x").?; // `-` negates only what follows it
+    try t.expectEqual(@as(?bool, true), both.caseless);
+    try t.expectEqualStrings("x", both.rest);
+}
+
+test "stripLeadingFlags treats m/s/-u as inert, no case demand" {
+    const t = std.testing;
+    const sf = stripLeadingFlags("(?sm)^func$").?;
+    try t.expectEqualStrings("^func$", sf.rest);
+    try t.expectEqual(@as(?bool, null), sf.caseless);
+    const nu = stripLeadingFlags("(?-u)\\w+").?;
+    try t.expectEqualStrings("\\w+", nu.rest);
+    try t.expectEqual(@as(?bool, null), nu.caseless);
+}
+
+test "stripLeadingFlags declines non-directive groups (parser decides)" {
+    const t = std.testing;
+    try t.expectEqual(@as(?LeadingFlags, null), stripLeadingFlags("(?i:foo)bar")); // scoped group
+    try t.expectEqual(@as(?LeadingFlags, null), stripLeadingFlags("(?=foo)")); // lookahead
+    try t.expectEqual(@as(?LeadingFlags, null), stripLeadingFlags("(?P<n>a)")); // named group
+    try t.expectEqual(@as(?LeadingFlags, null), stripLeadingFlags("(?)x")); // empty directive
+    try t.expectEqual(@as(?LeadingFlags, null), stripLeadingFlags("foo(?i)")); // not leading
+    try t.expectEqual(@as(?LeadingFlags, null), stripLeadingFlags("(?i")); // unclosed
 }
