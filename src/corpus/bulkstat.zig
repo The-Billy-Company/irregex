@@ -245,6 +245,47 @@ pub fn listOneLevel(gpa: Allocator, dirfd: std.posix.fd_t) ![]OwnedEntry {
     return list.toOwnedSlice(gpa);
 }
 
+/// Fully drains ONE level of `dirfd` via raw `getdirentries(2)` — names +
+/// `d_type` only, no attributes, no mtime (`mtime_ns = 0`). When the caller
+/// doesn't need per-entry mtime (the parallel walk without index elision),
+/// this is strictly cheaper than `listOneLevel`: `getattrlistbulk` makes the
+/// kernel resolve and pack attributes per entry, while `getdirentries` is the
+/// same thin readdir path ripgrep rides. Darwin-only (same `supported` gate).
+pub fn listNamesOnly(gpa: Allocator, dirfd: std.posix.fd_t) ![]OwnedEntry {
+    var list: std.ArrayList(OwnedEntry) = .empty;
+    errdefer {
+        for (list.items) |e| gpa.free(e.name);
+        list.deinit(gpa);
+    }
+    var buf: [64 * 1024]u8 align(@alignOf(u64)) = undefined;
+    var seek: i64 = 0;
+    while (true) {
+        const rc = std.posix.system.getdirentries(dirfd, &buf, buf.len, &seek);
+        if (std.posix.errno(rc) != .SUCCESS) return error.BulkStatUnsupported;
+        const n: usize = @intCast(rc);
+        if (n == 0) return list.toOwnedSlice(gpa);
+        var i: usize = 0;
+        while (i < n) {
+            // Darwin 64-bit `struct dirent`, decoded by explicit field offset
+            // (no pointer casts): d_ino u64 @0 · d_seekoff u64 @8 ·
+            // d_reclen u16 @16 · d_namlen u16 @18 · d_type u8 @20 · name @21.
+            const rec = buf[i..n];
+            const ino = std.mem.readInt(u64, rec[0..8], .little);
+            const reclen = std.mem.readInt(u16, rec[16..18], .little);
+            const namlen = std.mem.readInt(u16, rec[18..20], .little);
+            const dtype = rec[20];
+            i += reclen;
+            if (ino == 0) continue;
+            const name = rec[21 .. 21 + @as(usize, namlen)];
+            if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) continue;
+            const is_dir = dtype == std.posix.DT.DIR;
+            const is_file = dtype == std.posix.DT.REG;
+            if (!is_dir and !is_file) continue; // symlinks/specials — the walk never follows them
+            try list.append(gpa, .{ .name = try gpa.dupe(u8, name), .is_dir = is_dir, .is_file = is_file, .mtime_ns = 0 });
+        }
+    }
+}
+
 /// The pre-bulkstat walk (readdir + `statFile` per entry), scoped to one
 /// subtree — reused verbatim as `visitFresh`'s degrade path so a bulk-call
 /// failure can only fall back to previously-proven-correct behavior.

@@ -898,26 +898,27 @@ test "adversarial: rg second-oracle differential (parser-level)" {
     // Parser corners: escapes, class range/edge handling, `{n,m}`, alternation,
     // anchors, nesting. rg or gist rejecting one ⇒ scope question, auto-skipped.
     const pats = [_][]const u8{
-        "a\\.c",    "\\.",       "\\*",     "a\\*b",   "\\(",       "\\)",   "\\[",      "\\]",
-        "\\|",      "\\^",       "\\$",     "\\\\",    "\\+",       "\\?",   "a\\{2\\}", "a.c",
-        "a..c",     ".*",        ".",       "[abc]",   "[^abc]",    "[a-c]", "[c-c]",    "[-a]",
-        "[a-]",     "[a^b]",     "[.]",     "[*]",     "[\\^]",     "[\\-]", "[\\]]",    "[\\d]",
-        "[\\w]",    "[a-cA-C]",  "[0-9]",   "[^-a]",   "a{2}",      "a{2,}", "a{0,2}",   "a{0}",
-        "a{1,3}",   "ab{2}",     "(ab){2}", "a{3}",    "a|b",       "(a|)b", "(|a)b",    "ab|cd",
-        "^a",       "a$",        "^abc$",   "^$",      "a^b",       "a$b",   "^a|b$",    "(^|x)y",
-        "((a))",    "(a*)*b",    "(a|b)+",  "(a?)+",   "a**",
+        "a\\.c",    "\\.",       "\\*",        "a\\*b",   "\\(",       "\\)",    "\\[",       "\\]",
+        "\\|",      "\\^",       "\\$",        "\\\\",    "\\+",       "\\?",    "a\\{2\\}",  "a.c",
+        "a..c",     ".*",        ".",          "[abc]",   "[^abc]",    "[a-c]",  "[c-c]",     "[-a]",
+        "[a-]",     "[a^b]",     "[.]",        "[*]",     "[\\^]",     "[\\-]",  "[\\]]",     "[\\d]",
+        "[\\w]",    "[a-cA-C]",  "[0-9]",      "[^-a]",   "a{2}",      "a{2,}",  "a{0,2}",    "a{0}",
+        "a{1,3}",   "ab{2}",     "(ab){2}",    "a{3}",    "a|b",       "(a|)b",  "(|a)b",     "ab|cd",
+        "^a",       "a$",        "^abc$",      "^$",      "a^b",       "a$b",    "^a|b$",     "(^|x)y",
+        "((a))",    "(a*)*b",    "(a|b)+",     "(a?)+",   "a**",
         // Word boundaries `\b`/`\B` (ASCII, rg `--no-unicode`): leading, trailing,
         // both-sided, around classes, and the non-boundary `\B` — the foot-gun this
         // change fixes (gist used to read `\b` as a literal byte 'b').
-              "\\ba",  "a\\b",     "\\babc",
-        "abc\\b",   "\\babc\\b", "\\b\\w+", "\\w+\\b", "\\bend\\b", "\\Bb",  "a\\Bb",    "\\Bbc",
+              "\\ba",   "a\\b",      "\\babc",
+        "abc\\b",   "\\babc\\b", "\\b\\w+",    "\\w+\\b", "\\bend\\b", "\\Bb",   "a\\Bb",     "\\Bbc",
         "[a-c]\\b", "\\b-",      "-\\b",
         // One-sided word boundaries + haystack anchors (this pass's rg-parity
         // additions) — rg's default per-line model makes them line-scoped here.
-        "\\<a",     "\\<abc",    "abc\\>",  "\\<abc\\>", "a\\>",   "\\>a",  "a\\<",     "\\<\\w+\\>",
-        "\\Aabc",   "abc\\z",    "\\Aa",    "a\\z",      "\\A",    "\\z",   "\\A\\z",   "\\Aabc\\z",
+              "\\<a",    "\\<abc",    "abc\\>", "\\<abc\\>", "a\\>",
+        "\\>a",     "a\\<",      "\\<\\w+\\>", "\\Aabc",  "abc\\z",    "\\Aa",   "a\\z",      "\\A",
+        "\\z",      "\\A\\z",    "\\Aabc\\z",
         // Escaped punctuation stays literal on both engines.
-        "\\-",      "\\_",       "a\\-b",
+         "\\-",     "\\_",       "a\\-b",
     };
     for (pats) |p| for (lines) |l| rgAgrees(&col, ctx, p, true, l);
 

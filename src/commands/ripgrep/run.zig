@@ -34,6 +34,8 @@ const output = @import("output.zig");
 const ignore = @import("ignore.zig");
 const json = @import("json.zig");
 const color = @import("color.zig");
+const grepfile = @import("grepfile.zig");
+const pipeline = @import("pipeline.zig");
 const types = @import("../scope/types.zig");
 const simd = @import("../../scan/simd.zig");
 const persist = @import("../../index/persist.zig");
@@ -46,15 +48,19 @@ const Regex = @import("../../regex/core.zig").Regex;
 const Captures = @import("../../regex/captures.zig").Captures;
 const Dir = std.Io.Dir;
 
+// Per-file semantics (BOM/UTF-16 ingest, rg line split, binary handling, the
+// --stats tally) live in `grepfile.zig`, shared verbatim with the parallel
+// pipeline so the two engines cannot drift.
+const stripBom = grepfile.stripBom;
+const decodeBom = grepfile.decodeBom;
+const collectLines = grepfile.collectLines;
+const Stats = grepfile.Stats;
+const fileMatchStats = grepfile.fileMatchStats;
+const emitStats = grepfile.emitStats;
+
 // ─────────────────────────── file gathering ───────────────────────────
 
 const InFile = struct { path: []const u8, bytes: []const u8, explicit: bool = false };
-
-/// ripgrep's default read-buffer capacity. Binary detection scans buffer-sized
-/// reads for a NUL; a match in the buffer that first contains the NUL is NOT
-/// printed (rg has already scanned ahead), so the emission cutoff is the start
-/// of that buffer — `(nul_offset / BUFCAP) * BUFCAP`.
-const BUFCAP: usize = 65536;
 
 /// Replace every `/` in `path` with the (arbitrary-length) `sep` string for
 /// `--path-separator`. Returns `path` unchanged when it has no separator.
@@ -77,73 +83,6 @@ fn escapeLiteral(a: std.mem.Allocator, pat: []const u8) []u8 {
         out.append(a, c) catch die("oom\n", .{});
     }
     return out.toOwnedSlice(a) catch die("oom\n", .{});
-}
-
-/// Strip a leading UTF-8 BOM (ripgrep transparently skips it so `^` anchors to
-/// the first real byte). Downstream of `decodeBom` this is a no-op for files (the
-/// BOM is already gone); it still guards the stdin path, which isn't BOM-decoded.
-fn stripBom(buf: []const u8) []const u8 {
-    if (buf.len >= 3 and buf[0] == 0xEF and buf[1] == 0xBB and buf[2] == 0xBF) return buf[3..];
-    return buf;
-}
-
-/// BOM-driven encoding auto-detection, applied once per file at ingest — ripgrep's
-/// default (`--encoding auto`) behavior. A UTF-8 BOM is stripped; a UTF-16 LE/BE
-/// BOM transcodes the whole file to UTF-8 so the (UTF-8) pattern matches and the
-/// UTF-16 NULs never trip binary detection. BOM-less UTF-16 is NOT sniffed (rg
-/// needs explicit `-E utf-16` for that, which stays NA); anything else is bytes.
-fn decodeBom(a: std.mem.Allocator, buf: []const u8) []const u8 {
-    if (buf.len >= 3 and buf[0] == 0xEF and buf[1] == 0xBB and buf[2] == 0xBF) return buf[3..];
-    if (buf.len >= 2 and buf[0] == 0xFF and buf[1] == 0xFE) return utf16ToUtf8(a, buf[2..], .little);
-    if (buf.len >= 2 and buf[0] == 0xFE and buf[1] == 0xFF) return utf16ToUtf8(a, buf[2..], .big);
-    return buf;
-}
-
-/// Transcode UTF-16 (BOM already consumed) to UTF-8, resolving surrogate pairs;
-/// a lone/invalid surrogate or trailing odd byte becomes U+FFFD (rust-encoding's
-/// lossy behavior, which ripgrep uses).
-fn utf16ToUtf8(a: std.mem.Allocator, bytes: []const u8, endian: std.builtin.Endian) []const u8 {
-    var out: std.ArrayList(u8) = .empty;
-    var i: usize = 0;
-    while (i + 1 < bytes.len) : (i += 2) {
-        var cp: u21 = std.mem.readInt(u16, bytes[i..][0..2], endian);
-        if (cp >= 0xD800 and cp <= 0xDBFF) { // high surrogate → need a low one
-            if (i + 3 < bytes.len) {
-                const lo: u16 = std.mem.readInt(u16, bytes[i + 2 ..][0..2], endian);
-                if (lo >= 0xDC00 and lo <= 0xDFFF) {
-                    cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
-                    i += 2;
-                } else cp = 0xFFFD;
-            } else cp = 0xFFFD;
-        } else if (cp >= 0xDC00 and cp <= 0xDFFF) cp = 0xFFFD; // stray low surrogate
-        var enc: [4]u8 = undefined;
-        const n = std.unicode.utf8Encode(cp, &enc) catch blk: {
-            // U+FFFD REPLACEMENT CHARACTER — its UTF-8 encoding is a fixed 3 bytes.
-            enc[0..3].* = .{ 0xEF, 0xBF, 0xBD };
-            break :blk 3;
-        };
-        out.appendSlice(a, enc[0..n]) catch die("oom\n", .{});
-    }
-    return out.toOwnedSlice(a) catch die("oom\n", .{});
-}
-
-/// rg line semantics: `\n` terminates; trailing `\n` yields no phantom empty
-/// line; content after the last `\n` is still a line. `\r` is KEPT (ripgrep's
-/// default without `--crlf`). Pre-sized from one `\n` count pass (same idiom
-/// as `persist.zig`'s NUL-count split) so appending a file's lines is a single
-/// allocation instead of the list's usual grow-and-copy doubling — the search
-/// loop below calls this once per candidate file, so the saved reallocations
-/// scale with the corpus, not just one file.
-fn collectLines(a: std.mem.Allocator, buf: []const u8, term: u8, out: *std.ArrayList([]const u8)) void {
-    out.ensureUnusedCapacity(a, std.mem.count(u8, buf, &.{term}) + 1) catch die("oom\n", .{});
-    var rest = buf;
-    while (true) {
-        const nl = std.mem.indexOfScalar(u8, rest, term);
-        const end = nl orelse rest.len;
-        if (nl != null or end > 0) out.appendAssumeCapacity(rest[0..end]);
-        if (nl == null) break;
-        rest = rest[end + 1 ..];
-    }
 }
 
 /// Depth of a walker-relative path (root children = 1). `--max-depth` caps it.
@@ -365,38 +304,15 @@ const ReadShard = struct {
 /// completely is ambiguous (exactly cap-sized, or bigger) — `readTail` keeps
 /// reading past it into a growable buffer instead of silently truncating.
 fn readOneCandidate(a: std.mem.Allocator, scratch: []u8, c: Candidate, needle: ?[]const u8) ?InFile {
-    const fd = std.posix.openat(std.posix.AT.FDCWD, c.disk, .{ .ACCMODE = .RDONLY }, 0) catch return null;
-    defer _ = std.posix.system.close(fd);
-    var n: usize = 0;
-    while (n < scratch.len) {
-        const r = std.posix.read(fd, scratch[n..]) catch break;
-        if (r == 0) break;
-        n += r;
-    }
-    if (n == scratch.len) {
-        const raw = readTail(a, fd, scratch) orelse return null;
-        const body = decodeBom(a, raw);
-        if (needle) |needle_v| if (!simd.contains(body, needle_v)) return null;
-        return .{ .path = c.rel, .bytes = body, .explicit = c.explicit };
-    }
-    const body = decodeBom(a, scratch[0..n]);
+    const raw = grepfile.readFileRaw(a, scratch, c.disk) orelse return null;
+    const body = decodeBom(a, raw);
     if (needle) |needle_v| if (!simd.contains(body, needle_v)) return null;
-    return .{ .path = c.rel, .bytes = a.dupe(u8, body) catch return null, .explicit = c.explicit };
-}
-
-/// `scratch` (already full) plus whatever remains on `fd`, copied into one
-/// arena-owned buffer — the uncommon path for a file at/above `per_file_cap`,
-/// kept out of the hot common-case function above.
-fn readTail(a: std.mem.Allocator, fd: std.posix.fd_t, scratch: []const u8) ?[]const u8 {
-    var out: std.ArrayList(u8) = .empty;
-    out.appendSlice(a, scratch) catch return null;
-    var tmp: [64 * 1024]u8 = undefined;
-    while (true) {
-        const r = std.posix.read(fd, &tmp) catch break;
-        if (r == 0) break;
-        out.appendSlice(a, tmp[0..r]) catch return null;
-    }
-    return out.toOwnedSlice(a) catch null;
+    // A tail-read (≥ cap) or UTF-16-transcoded body is already `a`-owned; a
+    // body still inside `scratch` must be duped to outlive scratch's next reuse.
+    const in_scratch = @intFromPtr(body.ptr) >= @intFromPtr(scratch.ptr) and
+        @intFromPtr(body.ptr) < @intFromPtr(scratch.ptr) + scratch.len;
+    const owned = if (in_scratch) (a.dupe(u8, body) catch return null) else body;
+    return .{ .path = c.rel, .bytes = owned, .explicit = c.explicit };
 }
 
 fn readShard(sh: *ReadShard) void {
@@ -452,7 +368,11 @@ fn readCandidates(dest: std.mem.Allocator, gpa: std.mem.Allocator, candidates: [
 /// no `-v` (inverted mode needs every line INCLUDING files with zero hits).
 fn literalGate(parsed: args.Parsed) ?[]const u8 {
     const o = parsed.opts;
-    if (o.word or o.caseless or o.invert or o.files_without or o.stats or o.json) return null;
+    // `-w` stays gateable: `\bLIT\b` can only match where LIT occurs, so a
+    // file (or line) without the literal bytes is skippable — the boundary
+    // check only ever REJECTS occurrences. Inversion flips selection to
+    // non-matching lines (a literal-free file still prints), so it can't gate.
+    if (o.caseless or o.invert or o.files_without or o.stats or o.json) return null;
     if (parsed.patterns.len != 1 or parsed.pattern_files.len != 0) return null;
     const pattern = parsed.patterns[0];
     if (pattern.len == 0) return null;
@@ -800,6 +720,9 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // --files: list the files that would be searched (no pattern), path-sorted,
     // NUL-terminated under --null. Uses the same gather+filter as the search path.
     if (o.files_list) {
+        // The parallel engine never opens a file in --files mode (a listing needs
+        // paths, not bytes) — the serial path below reads every body it lists.
+        if (pipeline.eligible(io, parsed, o)) pipeline.run(gpa, io, parsed, o, null, use_color, &.{}, null);
         // --files lists every file (no pattern) — nothing to prefilter, so no read
         // elision applies; pass an empty trigram filter.
         const c = collectFiles(a, gpa, io, parsed, &.{});
@@ -860,7 +783,17 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // acceleration, output-invisible (see `IndexSkip`). `req_one` backs a possible
     // one-element `{re.required}` filter slice for its lifetime here.
     var req_one: [1][]const u8 = undefined;
-    const c = collectFiles(a, gpa, io, parsed, trigramFilter(o, &re, &req_one));
+    const filters = trigramFilter(o, &re, &req_one);
+
+    // The common recursive-walk case runs on the parallel fused engine
+    // (pipeline.zig): work-stealing directory walk, bulk-stat listings, inline
+    // index/freshness elision, per-file render on every core — byte-identical
+    // output, produced in parallel. Anything it declines (see `eligible`) falls
+    // through to this proven serial engine.
+    if (pipeline.eligible(io, parsed, o))
+        pipeline.run(gpa, io, parsed, o, &re, use_color, filters, literalGate(parsed));
+
+    const c = collectFiles(a, gpa, io, parsed, filters);
     const files = c.files;
 
     // --json: ripgrep's JSON Lines record stream (own printer, shared engine).
@@ -880,7 +813,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     };
 
     var out: std.ArrayList(u8) = .empty;
-    var em = Emitter{ .a = a, .re = &re, .o = o, .show_name = if (o.heading) false else show_name, .out = &out, .caps = caps, .use_color = use_color };
+    var em = Emitter{ .a = a, .re = &re, .o = o, .show_name = if (o.heading) false else show_name, .out = &out, .caps = caps, .use_color = use_color, .needle = literalGate(parsed) };
 
     // --quiet short-circuits on first match — unless --stats is also asked for,
     // which must run the full search to tally (then print only the stats block).
@@ -925,7 +858,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         if (body.len == 0) continue;
         if (binary_detect) if (std.mem.indexOfScalar(u8, body, 0)) |nul| {
             em.base = @intFromPtr(body.ptr);
-            if (handleBinary(a, &re, o, &out, &em, f, body, nul, show_name)) matched_files += 1;
+            if (grepfile.handleBinary(a, &re, o, &out, &em, f.path, f.explicit, body, nul, show_name)) matched_files += 1;
             continue;
         };
         var lines: std.ArrayList([]const u8) = .empty;
@@ -960,148 +893,6 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     }
     corpus_mod.emitStdout(out.items);
     std.process.exit(if (c.path_error) 2 else if (matched_files > 0) 0 else 1);
-}
-
-/// ripgrep binary-file handling (a NUL is present, no `--text`/`--null-data`).
-/// Emits matching lines that start before the NUL-containing buffer, then either
-/// the implicit WARNING (files reached via the walk / glob) or the explicit
-/// `binary file matches` summary (an explicit path arg or stdin). Returns whether
-/// the file counts as a match (drives the process exit code).
-fn handleBinary(a: std.mem.Allocator, re: *const Regex, o: Opts, out: *std.ArrayList(u8), em: *Emitter, f: InFile, body: []const u8, nul: usize, show_name: bool) bool {
-    const cut = (nul / BUFCAP) * BUFCAP; // start of the buffer that holds the NUL
-    var lines: std.ArrayList([]const u8) = .empty;
-    collectLines(a, body, o.term(), &lines);
-    var cutoff: usize = lines.items.len;
-    for (lines.items, 0..) |line, k| {
-        if (@intFromPtr(line.ptr) - @intFromPtr(body.ptr) >= cut) {
-            cutoff = k;
-            break;
-        }
-    }
-    const head = lines.items[0..cutoff];
-
-    // -c/--count: implicit files are suppressed entirely (rg scans fully, detects
-    // binary, drops the count); an explicit file counts every match across the
-    // whole body (rg treats an explicit binary as text for counting).
-    if (o.count_only or o.count_matches) {
-        if (!f.explicit) return false;
-        return em.file(f.path, lines.items) > 0;
-    }
-
-    const before = out.items.len;
-    const hits = em.file(f.path, head);
-    if (f.explicit) {
-        // Explicit path / stdin: the summary fires if the file matches anywhere
-        // (including after the NUL — rg reports the whole file as a binary match).
-        if (anyLinesMatch(a, re, o, lines.items)) {
-            binNote(a, out, o, f.path, nul, show_name, "binary file matches");
-            return true;
-        }
-        out.shrinkRetainingCapacity(before);
-        return false;
-    }
-    // Implicit (walk/glob): a WARNING only when we actually printed a match before
-    // the NUL buffer; otherwise rg quits silently (no output, no match).
-    if (hits > 0) {
-        binNote(a, out, o, f.path, nul, show_name, "WARNING: stopped searching binary file after match");
-        return true;
-    }
-    return false;
-}
-
-/// Append ripgrep's binary note: `[<path>: ]<msg> (found "\0" byte around offset
-/// N)`. The path prefix (with `: ` separator) is shown only when filenames are on.
-fn binNote(a: std.mem.Allocator, out: *std.ArrayList(u8), o: Opts, path: []const u8, nul: usize, show_name: bool, msg: []const u8) void {
-    if (show_name) out.print(a, "{s}: ", .{path}) catch die("oom\n", .{});
-    out.print(a, "{s} (found \"\\0\" byte around offset {d}){c}", .{ msg, nul, o.term() }) catch die("oom\n", .{});
-}
-
-/// Does any line match (used for the explicit binary summary)? Honors `-w` and
-/// the `--crlf` view; ignores `-v` (rg's binary summary reflects real matches).
-fn anyLinesMatch(a: std.mem.Allocator, re: *const Regex, o: Opts, lines: []const []const u8) bool {
-    var sim = Regex.Sim.init(a, re) catch return false;
-    defer sim.deinit();
-    var wss: ?Regex.SpanSim = if (o.word) (Regex.SpanSim.init(a, re) catch null) else null;
-    defer if (wss) |*s| s.deinit();
-    var em = Emitter{ .a = a, .re = re, .o = o, .show_name = false, .out = undefined };
-    for (lines) |line| {
-        const mv = if (o.crlf) std.mem.trimEnd(u8, line, "\r") else line;
-        const hit = if (wss) |*s| em.lineHitWord(s, mv) else re.lineMatch(&sim, mv);
-        if (hit) return true;
-    }
-    return false;
-}
-
-/// `--stats` tally (ripgrep's summary). Timing fields are intentionally omitted:
-/// they are non-deterministic and the differential harness normalizes the two
-/// `seconds` lines away (ripgrep's own tests only `contains`-check them).
-const Stats = struct {
-    matches: usize = 0,
-    matched_lines: usize = 0,
-    files_with_match: usize = 0,
-    files_searched: usize = 0,
-    bytes_printed: usize = 0,
-    bytes_searched: usize = 0,
-};
-
-const FileStat = struct { matches: usize, lines: usize, bytes: usize };
-
-/// Count total match spans and matching lines in one file (for `--stats`),
-/// honoring `-w` word bounds and the `--crlf` match view. Empty spans don't
-/// count (ripgrep counts non-empty matches). Under `-m/--max-count`, ripgrep
-/// stops reading after the Nth matching line, so `bytes` reports only the bytes
-/// actually searched (ADR-parity with rg's `r2944` regression) rather than the
-/// whole file.
-fn fileMatchStats(re: *const Regex, a: std.mem.Allocator, o: Opts, body: []const u8, lines: []const []const u8) FileStat {
-    var ss = Regex.SpanSim.init(a, re) catch return .{ .matches = 0, .lines = 0, .bytes = body.len };
-    defer ss.deinit();
-    var m: usize = 0;
-    var l: usize = 0;
-    for (lines) |line| {
-        const mv = if (o.crlf) std.mem.trimEnd(u8, line, "\r") else line;
-        var from: usize = 0;
-        var line_hit = false;
-        while (from <= mv.len) {
-            const sp = re.matchSpan(&ss, mv, from) orelse break;
-            if (sp.end == sp.start) {
-                from = sp.start + 1;
-                continue;
-            }
-            if (o.word and !output.wordOk(mv, sp.start, sp.end)) {
-                from = sp.end;
-                continue;
-            }
-            m += 1;
-            line_hit = true;
-            from = sp.end;
-        }
-        if (line_hit) l += 1;
-        if (o.max_per_file != 0 and l >= o.max_per_file) {
-            // rg stops after the Nth matching line; bytes searched = end of that
-            // line (its terminator included when one follows).
-            var end = (@intFromPtr(line.ptr) - @intFromPtr(body.ptr)) + line.len;
-            if (end < body.len) end += 1;
-            return .{ .matches = m, .lines = l, .bytes = end };
-        }
-    }
-    return .{ .matches = m, .lines = l, .bytes = body.len };
-}
-
-/// Emit ripgrep's `--stats` block (leading blank line, one field per line). The
-/// two `seconds` lines carry zeros — the harness normalizes them (see `Stats`).
-fn emitStats(a: std.mem.Allocator, out: *std.ArrayList(u8), s: Stats) void {
-    out.print(a,
-        \\
-        \\{d} matches
-        \\{d} matched lines
-        \\{d} files contained matches
-        \\{d} files searched
-        \\{d} bytes printed
-        \\{d} bytes searched
-        \\0.000000 seconds spent searching
-        \\0.000000 seconds total
-        \\
-    , .{ s.matches, s.matched_lines, s.files_with_match, s.files_searched, s.bytes_printed, s.bytes_searched }) catch die("oom\n", .{});
 }
 
 /// Fail loud (exit 2 → harness N/A) for recognized-but-not-yet-emitted flags.

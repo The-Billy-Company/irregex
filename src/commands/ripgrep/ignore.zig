@@ -30,12 +30,214 @@ const Dir = std.Io.Dir;
 /// whose ignore file contributed it. `rank` sorts rules into precedence order —
 /// but because rules are appended shallow→deep, low-source→high-source, the list
 /// is already ascending, so `decide` just takes the last matching rule's verdict.
-const Rule = struct {
+/// `pub` (with `parseRuleLine`/`ruleMatch` below) so the parallel pipeline can
+/// build immutable per-directory rule chains out of the same parse + match core.
+pub const Rule = struct {
     glob: []const u8,
     base: []const u8,
     negated: bool,
     anchored: bool,
     dir_only: bool,
+};
+
+/// Parse one gitignore-dialect line into a `Rule` (comments/blank lines → null).
+/// The standalone core of `Ignore.addLine`: `base` anchors the rule to the
+/// contributing directory; `strip` (non-empty only for an ancestor-directory
+/// file) re-anchors an ancestor's anchored rules onto the search subtree.
+/// `line` slices alias `raw` — the caller owns the backing bytes' lifetime.
+pub fn parseRuleLine(raw: []const u8, base: []const u8, strip: []const u8) ?Rule {
+    var line = raw;
+    if (line.len == 0 or line[0] == '#') return null;
+    var negated = false;
+    if (line[0] == '!') {
+        negated = true;
+        line = line[1..];
+    } else if (line.len > 1 and line[0] == '\\' and (line[1] == '#' or line[1] == '!')) {
+        line = line[1..]; // escaped leading '#'/'!' → literal
+    }
+    var dir_only = false;
+    if (line.len > 0 and line[line.len - 1] == '/') {
+        dir_only = true;
+        line = line[0 .. line.len - 1];
+    }
+    var anchored = false;
+    if (line.len > 0 and line[0] == '/') {
+        anchored = true;
+        line = line[1..];
+    } else if (std.mem.indexOfScalar(u8, line, '/') != null) {
+        anchored = true;
+    }
+    if (line.len == 0) return null;
+    // Parent-file re-anchoring: an ANCHORED ancestor rule is anchored to that
+    // ancestor, so only the slice under the search subtree (`strip` = CWD
+    // relative to the ancestor) can affect the walk — strip that prefix, or
+    // drop the rule if it targets a sibling. A slash-less rule matches a
+    // basename at any depth, so it already applies under CWD unchanged.
+    if (strip.len != 0 and anchored) {
+        if (line.len > strip.len and std.mem.startsWith(u8, line, strip) and line[strip.len] == '/') {
+            line = line[strip.len + 1 ..];
+        } else return null;
+    }
+    if (line.len == 0) return null;
+    return .{ .glob = line, .base = base, .negated = negated, .anchored = anchored, .dir_only = dir_only };
+}
+
+/// Does rule `r` match candidate `rel` (a dir when `is_dir`)? The standalone
+/// core of `Ignore.match`, parameterized on the two bits of walk state the
+/// method drew from `self` — `root_depth` (the explicit positional root's
+/// component depth, see `scopeToRoot`) and case-insensitive matching (`a`
+/// backs the lowercase copies; only touched when `ci` is set). Thread-safe:
+/// reads only its arguments.
+pub fn ruleMatch(a: std.mem.Allocator, ci: bool, root_depth: usize, r: Rule, rel_in: []const u8, is_dir: bool) bool {
+    const rel = stripDot(rel_in); // a `./root` positional prefixes every path
+    var sub = rel;
+    const base = stripDot(r.base);
+    // A `base==""` rule is CWD/ancestor-sourced (root `.gitignore`, every
+    // `loadParents` row, `.git/info/exclude`): it spans the whole tree, so
+    // `sub` starts at rel's first component same as a whole-CWD walk. When
+    // the walk root is instead an explicit positional path, `rel` carries
+    // that root's own components as its prefix — floor the match at that
+    // depth so a rule can't fire against the root's own path (ripgrep
+    // exempts a depth-0/root entry from every ignore check; see
+    // `scopeToRoot`'s doc comment) while its genuine descendants (deeper
+    // than the root) are still filtered normally.
+    const floor: usize = if (base.len == 0) root_depth else 0;
+    if (base.len != 0) {
+        if (rel.len <= base.len or !std.mem.startsWith(u8, rel, base) or rel[base.len] != '/') return false;
+        sub = rel[base.len + 1 ..];
+    }
+    if (sub.len == 0) return false;
+    // ENTITY-ONLY matching (git model): a rule is tested against the candidate
+    // itself — its full path (anchored) or its final component (slash-less) —
+    // never against ancestor components or path prefixes. Ancestor exclusion
+    // is the WALK's job: an ignored directory is pruned when entered, so its
+    // descendants are never enumerated; re-testing ancestors here would OR
+    // matches across levels and lose per-level last-match-wins (a
+    // `!scripts/observe/build/` re-include must not leak down to the
+    // `__pycache__/` inside it, and a `build/` exclude must not resurrect
+    // against children of that re-included directory).
+    if (r.anchored) {
+        const depth = std.mem.count(u8, sub, "/") + 1;
+        return depth > floor and ruleGlob(a, ci, r.glob, sub) and (!r.dir_only or is_dir);
+    }
+    // Slash-less: match the basename; dir-only rules require a directory.
+    const base_idx = if (std.mem.lastIndexOfScalar(u8, sub, '/')) |s| s + 1 else 0;
+    const comp_idx = std.mem.count(u8, sub[0..base_idx], "/");
+    return comp_idx >= floor and ruleGlob(a, ci, r.glob, sub[base_idx..]) and (!r.dir_only or is_dir);
+}
+
+fn ruleGlob(a: std.mem.Allocator, ci: bool, pat: []const u8, str: []const u8) bool {
+    if (!ci) return gl.globMatch(pat, str);
+    return gl.globMatch(lower(a, pat), lower(a, str));
+}
+
+/// The CWD/ancestor rule tier ("" bucket) compiled for O(1)-per-entry
+/// evaluation — the parallel pipeline's answer to ripgrep's globset. Verdicts
+/// are RANKS (rule indices): last-match-wins becomes max-rank-wins, so a
+/// literal-basename rule is one hash probe instead of a glob call. Matching
+/// is entity-only (`ruleMatch`'s model): basename for slash-less rules, full
+/// path for anchored ones — ancestor exclusion is the walk's pruning, never
+/// re-derived here. Built once before fan-out; immutable and lock-free.
+pub const Compiled = struct {
+    rules: []const Rule,
+    lit: std.StringHashMap(Slot), // slash-less, meta-free glob → exact basename
+    ext: std.StringHashMap(Slot), // slash-less `*.X` (X dot/meta-free) → basename extension
+    complex: []const u32, // everything else, ascending rank
+    a: std.mem.Allocator,
+
+    /// Best (max) rank per key, split by dir-only: a dir-only rule is
+    /// eligible only when the entry itself is a directory.
+    const Slot = struct { plain: ?u32 = null, dironly: ?u32 = null };
+
+    /// Compile the "" bucket, or null when this run can't use the fast tier
+    /// (case-insensitive matching, or ANY rules bucketed under an explicit
+    /// root — e.g. a positional-root repo's `.git/info/exclude`, whose bucket
+    /// this tier doesn't model).
+    pub fn build(a: std.mem.Allocator, ig: *const Ignore) ?Compiled {
+        if (ig.o.ignore_case_insensitive) return null;
+        var keys = ig.groups.keyIterator();
+        while (keys.next()) |k| if (k.len != 0) return null;
+        var self = Compiled{
+            .rules = &.{},
+            .lit = std.StringHashMap(Slot).init(a),
+            .ext = std.StringHashMap(Slot).init(a),
+            .complex = &.{},
+            .a = a,
+        };
+        const bucket = ig.groups.getPtr("") orelse return self;
+        self.rules = bucket.items;
+        var cx: std.ArrayList(u32) = .empty;
+        for (bucket.items, 0..) |r, i| {
+            const rank: u32 = @intCast(i);
+            if (!r.anchored and !hasMeta(r.glob)) {
+                slotPut(&self.lit, r.glob, rank, r.dir_only);
+            } else if (!r.anchored and extKey(r.glob) != null) {
+                slotPut(&self.ext, extKey(r.glob).?, rank, r.dir_only);
+            } else {
+                cx.append(a, rank) catch die("oom\n", .{});
+            }
+        }
+        self.complex = cx.toOwnedSlice(a) catch die("oom\n", .{});
+        return self;
+    }
+
+    /// Max rank matching `rel` (stripped, no `./`). Byte-equivalent to folding
+    /// the whole bucket through `ruleMatch` (see `decideAt`) — the root-depth
+    /// exemption is structural here: every walked entry sits strictly BELOW
+    /// its root, so the entry itself is never the exempt root component.
+    pub fn matchRank(self: *const Compiled, rel: []const u8, is_dir: bool) ?u32 {
+        var best: ?u32 = null;
+        const base = if (std.mem.lastIndexOfScalar(u8, rel, '/')) |s| rel[s + 1 ..] else rel;
+        fold(&best, self.lit.get(base), is_dir);
+        if (std.mem.lastIndexOfScalar(u8, base, '.')) |dot| {
+            if (dot + 1 < base.len) fold(&best, self.ext.get(base[dot + 1 ..]), is_dir);
+        }
+        // Descending scan with early exit: the first (highest-rank) match wins,
+        // and no rule at-or-below `best` can change the verdict.
+        var i = self.complex.len;
+        while (i > 0) {
+            i -= 1;
+            const rank = self.complex[i];
+            if (best != null and rank <= best.?) break;
+            const r = self.rules[rank];
+            if (r.dir_only and !is_dir) continue;
+            const hit = if (r.anchored) gl.globMatch(r.glob, rel) else gl.globMatch(r.glob, base);
+            if (hit) {
+                best = rank;
+                break;
+            }
+        }
+        return best;
+    }
+
+    fn fold(best: *?u32, slot: ?Slot, is_dir: bool) void {
+        const s = slot orelse return;
+        if (s.plain) |r| if (best.* == null or r > best.*.?) {
+            best.* = r;
+        };
+        if (is_dir) if (s.dironly) |r| if (best.* == null or r > best.*.?) {
+            best.* = r;
+        };
+    }
+
+    fn slotPut(map: *std.StringHashMap(Slot), key: []const u8, rank: u32, dir_only: bool) void {
+        const gop = map.getOrPut(key) catch die("oom\n", .{});
+        if (!gop.found_existing) gop.value_ptr.* = .{};
+        if (dir_only) gop.value_ptr.dironly = rank else gop.value_ptr.plain = rank;
+    }
+
+    fn hasMeta(s: []const u8) bool {
+        return std.mem.indexOfAny(u8, s, "*?[\\") != null;
+    }
+
+    /// `*.X` with a dot/meta-free X — matchable by basename-extension lookup
+    /// (a component matches `*.X` iff its final `.`-suffix is exactly X).
+    fn extKey(glob: []const u8) ?[]const u8 {
+        if (glob.len < 3 or glob[0] != '*' or glob[1] != '.') return null;
+        const x = glob[2..];
+        if (hasMeta(x) or std.mem.indexOfScalar(u8, x, '.') != null) return null;
+        return x;
+    }
 };
 
 pub const Ignore = struct {
@@ -194,15 +396,24 @@ pub const Ignore = struct {
     /// no rule matched, true = ignored, false = explicitly whitelisted. Last
     /// matching rule wins (the list is pre-ordered by precedence).
     pub fn decide(self: *const Ignore, rel: []const u8, is_dir: bool) ?bool {
+        return self.decideAt(rel, is_dir, self.explicit_root_depth);
+    }
+
+    /// `decide` with the explicit-root depth passed per call instead of read from
+    /// the (mutable) `explicit_root_depth` field — the thread-safe form the
+    /// parallel pipeline uses against a FROZEN `Ignore` (no `loadDir`/`scopeToRoot`
+    /// after the walk fans out): every task carries its own root depth, so
+    /// interleaved tasks from different positional roots can't race the field.
+    pub fn decideAt(self: *const Ignore, rel: []const u8, is_dir: bool, root_depth: usize) ?bool {
         var verdict: ?bool = null;
         // The CWD/ancestor tier (root `.gitignore`, parents, `.git/info/exclude`,
         // `--ignore-file`) governs every path; then each ANCESTOR directory of
         // `rel`, shallow→deep, so the deepest matching rule wins (git precedence).
-        self.applyGroup("", rel, is_dir, &verdict);
+        self.applyGroup("", rel, is_dir, root_depth, &verdict);
         const stripped = stripDot(rel);
         var i: usize = 0;
         while (std.mem.indexOfScalarPos(u8, stripped, i, '/')) |slash| {
-            self.applyGroup(stripped[0..slash], rel, is_dir, &verdict);
+            self.applyGroup(stripped[0..slash], rel, is_dir, root_depth, &verdict);
             i = slash + 1;
         }
         return verdict;
@@ -212,9 +423,9 @@ pub const Ignore = struct {
     /// bucket key is a directory path relative to the walk root ("" = CWD tier);
     /// `match` still does its own base/anchor/dir-only work, so feeding it only
     /// ancestor-sourced rules changes which rules are *tried*, never the verdict.
-    fn applyGroup(self: *const Ignore, base_key: []const u8, rel: []const u8, is_dir: bool, verdict: *?bool) void {
+    fn applyGroup(self: *const Ignore, base_key: []const u8, rel: []const u8, is_dir: bool, root_depth: usize, verdict: *?bool) void {
         const g = self.groups.getPtr(base_key) orelse return;
-        for (g.items) |r| if (self.match(r, rel, is_dir)) {
+        for (g.items) |r| if (ruleMatch(self.a, self.o.ignore_case_insensitive, root_depth, r, rel, is_dir)) {
             verdict.* = !r.negated;
         };
     }
@@ -225,6 +436,18 @@ pub const Ignore = struct {
     pub fn shouldSkip(self: *const Ignore, rel: []const u8, is_dir: bool, basename: []const u8) bool {
         if (is_dir and std.mem.eql(u8, basename, ".git")) return true;
         const v = self.decide(rel, is_dir);
+        if (v == true) return true;
+        const hidden = basename.len > 0 and basename[0] == '.';
+        if (hidden and !self.o.hidden and v != false) return true;
+        return false;
+    }
+
+    /// Fold a base-tier verdict (`decideAt`) with the hidden-dotfile rule the same
+    /// way `shouldSkip` does, but from an ALREADY-COMPUTED verdict — the parallel
+    /// pipeline computes the base verdict and its per-directory chain verdicts
+    /// separately (deepest wins), then applies this shared final step.
+    pub fn skipFromVerdict(self: *const Ignore, v: ?bool, is_dir: bool, basename: []const u8) bool {
+        if (is_dir and std.mem.eql(u8, basename, ".git")) return true;
         if (v == true) return true;
         const hidden = basename.len > 0 and basename[0] == '.';
         if (hidden and !self.o.hidden and v != false) return true;
@@ -242,106 +465,21 @@ pub const Ignore = struct {
         while (it.next()) |raw| self.addLine(std.mem.trimEnd(u8, raw, "\r"), base, strip);
     }
 
-    /// Parse one gitignore-dialect line into a `Rule` (comments/blank lines drop).
+    /// Parse one gitignore-dialect line into a `Rule` (comments/blank lines drop)
+    /// and bucket it by source directory — the container half of `parseRuleLine`.
     fn addLine(self: *Ignore, raw: []const u8, base: []const u8, strip: []const u8) void {
-        var line = raw;
-        if (line.len == 0 or line[0] == '#') return;
-        var negated = false;
-        if (line[0] == '!') {
-            negated = true;
-            line = line[1..];
-        } else if (line.len > 1 and line[0] == '\\' and (line[1] == '#' or line[1] == '!')) {
-            line = line[1..]; // escaped leading '#'/'!' → literal
-        }
-        var dir_only = false;
-        if (line.len > 0 and line[line.len - 1] == '/') {
-            dir_only = true;
-            line = line[0 .. line.len - 1];
-        }
-        var anchored = false;
-        if (line.len > 0 and line[0] == '/') {
-            anchored = true;
-            line = line[1..];
-        } else if (std.mem.indexOfScalar(u8, line, '/') != null) {
-            anchored = true;
-        }
-        if (line.len == 0) return;
-        // Parent-file re-anchoring: an ANCHORED ancestor rule is anchored to that
-        // ancestor, so only the slice under the search subtree (`strip` = CWD
-        // relative to the ancestor) can affect the walk — strip that prefix, or
-        // drop the rule if it targets a sibling. A slash-less rule matches a
-        // basename at any depth, so it already applies under CWD unchanged.
-        if (strip.len != 0 and anchored) {
-            if (line.len > strip.len and std.mem.startsWith(u8, line, strip) and line[strip.len] == '/') {
-                line = line[strip.len + 1 ..];
-            } else return;
-        }
-        if (line.len == 0) return;
-        // Bucket by the source directory (normalized like `match` does, so a "."
-        // / "./x" base and its rel-side counterpart collapse to the same key).
+        const parsed = parseRuleLine(raw, base, strip) orelse return;
+        // Bucket by the source directory (normalized like `ruleMatch` does, so a
+        // "." / "./x" base and its rel-side counterpart collapse to the same key).
         const key = stripDot(base);
         const gop = self.groups.getOrPut(key) catch die("oom\n", .{});
         if (!gop.found_existing) {
             gop.key_ptr.* = self.a.dupe(u8, key) catch die("oom\n", .{});
             gop.value_ptr.* = .empty;
         }
-        gop.value_ptr.append(self.a, .{
-            .glob = self.a.dupe(u8, line) catch die("oom\n", .{}),
-            .base = base,
-            .negated = negated,
-            .anchored = anchored,
-            .dir_only = dir_only,
-        }) catch die("oom\n", .{});
-    }
-
-    /// Does rule `r` match candidate `rel` (a dir when `is_dir`)? Applies the
-    /// rule's base scoping, then anchored full/ancestor matching or slash-less
-    /// any-component matching, honoring the directory-only restriction.
-    fn match(self: *const Ignore, r: Rule, rel_in: []const u8, is_dir: bool) bool {
-        const rel = stripDot(rel_in); // a `./root` positional prefixes every path
-        var sub = rel;
-        const base = stripDot(r.base);
-        // A `base==""` rule is CWD/ancestor-sourced (root `.gitignore`, every
-        // `loadParents` row, `.git/info/exclude`): it spans the whole tree, so
-        // `sub` starts at rel's first component same as a whole-CWD walk. When
-        // the walk root is instead an explicit positional path, `rel` carries
-        // that root's own components as its prefix — floor the match at that
-        // depth so a rule can't fire against the root's own path (ripgrep
-        // exempts a depth-0/root entry from every ignore check; see
-        // `scopeToRoot`'s doc comment) while its genuine descendants (deeper
-        // than the root) are still filtered normally.
-        const floor: usize = if (base.len == 0) self.explicit_root_depth else 0;
-        if (base.len != 0) {
-            if (rel.len <= base.len or !std.mem.startsWith(u8, rel, base) or rel[base.len] != '/') return false;
-            sub = rel[base.len + 1 ..];
-        }
-        if (sub.len == 0) return false;
-        if (r.anchored) {
-            var s = sub;
-            var full = true;
-            while (true) {
-                const depth = std.mem.count(u8, s, "/") + 1;
-                if (depth > floor and self.glob(r.glob, s) and (!r.dir_only or !full or is_dir)) return true;
-                const slash = std.mem.lastIndexOfScalar(u8, s, '/') orelse return false;
-                s = s[0..slash];
-                full = false;
-            }
-        }
-        // Slash-less: match any single path component (basename at any depth). A
-        // non-final component is always a directory; the final one only counts for
-        // a dir-only rule when the entry itself is a directory.
-        var it = std.mem.splitScalar(u8, sub, '/');
-        var idx: usize = 0;
-        while (it.next()) |comp| : (idx += 1) {
-            const last = it.index == null;
-            if (idx >= floor and self.glob(r.glob, comp) and (!r.dir_only or !last or is_dir)) return true;
-        }
-        return false;
-    }
-
-    fn glob(self: *const Ignore, pat: []const u8, str: []const u8) bool {
-        if (!self.o.ignore_case_insensitive) return gl.globMatch(pat, str);
-        return gl.globMatch(lower(self.a, pat), lower(self.a, str));
+        var owned = parsed;
+        owned.glob = self.a.dupe(u8, parsed.glob) catch die("oom\n", .{});
+        gop.value_ptr.append(self.a, owned) catch die("oom\n", .{});
     }
 };
 

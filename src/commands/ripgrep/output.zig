@@ -103,6 +103,11 @@ pub const Emitter = struct {
     /// Absolute address of the current file's byte-0 (set per file by the caller);
     /// `--byte-offset` reports `@intFromPtr(line.ptr) - base` for each line/match.
     base: usize = 0,
+    /// Optional required-literal (from `literalGate`): every match must
+    /// contain these bytes, so lines without them are rejected by SIMD
+    /// memmem before any engine run. Purely an accelerator — never set for
+    /// caseless/inverted/multi-pattern runs (the gate derivation refuses).
+    needle: ?[]const u8 = null,
     /// `-r/--replace` capture matcher (group-aware Pike VM), non-null only when a
     /// replacement template is active. Built once per run by the caller.
     caps: ?*Captures = null,
@@ -370,7 +375,12 @@ pub const Emitter = struct {
         var idx: std.ArrayList(usize) = .empty;
         for (lines, 0..) |line, k| {
             const mv = self.mview(line);
-            const hit = if (wss) |*s| self.lineHitWord(s, mv) else self.re.lineMatch(&sim, mv);
+            // A required-literal gate (when the caller derived one): a line
+            // without the literal bytes cannot match, and a SIMD memmem is an
+            // order of magnitude cheaper than an engine run per line.
+            const hit = if (self.needle != null and std.mem.indexOf(u8, mv, self.needle.?) == null)
+                false
+            else if (wss) |*s| self.lineHitWord(s, mv) else self.re.lineMatch(&sim, mv);
             if (hit == o.invert) {
                 // --stop-on-nonmatch: once matching has begun, the first non-match
                 // ends the file (ripgrep stops reading further lines).
