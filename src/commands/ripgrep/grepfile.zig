@@ -10,7 +10,6 @@
 //! both call these, so the two engines cannot drift on per-file semantics.
 
 const std = @import("std");
-const corpus_mod = @import("../../corpus/corpus.zig");
 const args = @import("args.zig");
 const output = @import("output.zig");
 const Opts = args.Opts;
@@ -83,7 +82,7 @@ pub fn collectLines(a: std.mem.Allocator, buf: []const u8, term: u8, out: *std.A
     out.ensureUnusedCapacity(a, std.mem.count(u8, buf, &.{term}) + 1) catch die("oom\n", .{});
     var rest = buf;
     while (true) {
-        const nl = std.mem.indexOfScalar(u8, rest, term);
+        const nl = std.mem.findScalar(u8, rest, term);
         const end = nl orelse rest.len;
         if (nl != null or end > 0) out.appendAssumeCapacity(rest[0..end]);
         if (nl == null) break;

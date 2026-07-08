@@ -38,13 +38,14 @@ tools against real questions about this repo — is everywhere else:
   call sites) and pay tokens for everything below it. `grep` can't express that.
 
 `gist` targets exactly those: a persistent **index** (don't rescan), a
-**freshness** overlay that is zero-false-negative *under stated local-filesystem
-assumptions* (content writes advance mtime, the freshness walk is readable, live
+**freshness** overlay that is zero-false-negative _under stated local-filesystem
+assumptions_ (content writes advance mtime, the freshness walk is readable, live
 bytes are re-verified before output — the assumptions and edge cases are
 enumerated in the dossier), and **ranked, token-compressed** output. The frontier
 survey and decision trail
-live in
-[`research/dossiers/locator-sota.dossier.toml`](../../../research/dossiers).
+live in `research/dossiers/locator-sota.dossier.toml` (machine-local research
+scratch, archived per the `.local/` lifecycle — see `archive/archive.py show
+scope-crazy` to restore it).
 
 ## How it works
 
@@ -223,7 +224,7 @@ where gist can (`(?i)` → caseless) and fails loud where it genuinely can't
 `--rank` is gist's one native shape with no rg equivalent; everything else on
 this page is the parity surface, guarded by two **distinct** gates. **File-set
 soundness** ([`bench/gates/equality.sh`](bench/gates/equality.sh)) diffs gist's
-matching *file set* against `rg -F -l` / `rg -l '(?-u)…'` over a byte-identical
+matching _file set_ against `rg -F -l` / `rg -l '(?-u)…'` over a byte-identical
 corpus snapshot — proving zero false negatives / positives (the candidate filter
 is sound), but it is a file-set oracle, **not** a line-output diff. **Line-output
 parity** is the job of [`bench/rgsuite/`](bench/rgsuite/README.md) (441 mined `rg`

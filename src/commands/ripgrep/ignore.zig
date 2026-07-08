@@ -64,7 +64,7 @@ pub fn parseRuleLine(raw: []const u8, base: []const u8, strip: []const u8) ?Rule
     if (line.len > 0 and line[0] == '/') {
         anchored = true;
         line = line[1..];
-    } else if (std.mem.indexOfScalar(u8, line, '/') != null) {
+    } else if (std.mem.findScalar(u8, line, '/') != null) {
         anchored = true;
     }
     if (line.len == 0) return null;
@@ -121,7 +121,7 @@ pub fn ruleMatch(a: std.mem.Allocator, ci: bool, root_depth: usize, r: Rule, rel
         return depth > floor and ruleGlob(a, ci, r.glob, sub) and (!r.dir_only or is_dir);
     }
     // Slash-less: match the basename; dir-only rules require a directory.
-    const base_idx = if (std.mem.lastIndexOfScalar(u8, sub, '/')) |s| s + 1 else 0;
+    const base_idx = if (std.mem.findScalarLast(u8, sub, '/')) |s| s + 1 else 0;
     const comp_idx = std.mem.count(u8, sub[0..base_idx], "/");
     return comp_idx >= floor and ruleGlob(a, ci, r.glob, sub[base_idx..]) and (!r.dir_only or is_dir);
 }
@@ -187,9 +187,9 @@ pub const Compiled = struct {
     /// its root, so the entry itself is never the exempt root component.
     pub fn matchRank(self: *const Compiled, rel: []const u8, is_dir: bool) ?u32 {
         var best: ?u32 = null;
-        const base = if (std.mem.lastIndexOfScalar(u8, rel, '/')) |s| rel[s + 1 ..] else rel;
+        const base = if (std.mem.findScalarLast(u8, rel, '/')) |s| rel[s + 1 ..] else rel;
         fold(&best, self.lit.get(base), is_dir);
-        if (std.mem.lastIndexOfScalar(u8, base, '.')) |dot| {
+        if (std.mem.findScalarLast(u8, base, '.')) |dot| {
             if (dot + 1 < base.len) fold(&best, self.ext.get(base[dot + 1 ..]), is_dir);
         }
         // Descending scan with early exit: the first (highest-rank) match wins,
@@ -227,7 +227,7 @@ pub const Compiled = struct {
     }
 
     fn hasMeta(s: []const u8) bool {
-        return std.mem.indexOfAny(u8, s, "*?[\\") != null;
+        return std.mem.findAny(u8, s, "*?[\\") != null;
     }
 
     /// `*.X` with a dot/meta-free X — matchable by basename-extension lookup
@@ -235,7 +235,7 @@ pub const Compiled = struct {
     fn extKey(glob: []const u8) ?[]const u8 {
         if (glob.len < 3 or glob[0] != '*' or glob[1] != '.') return null;
         const x = glob[2..];
-        if (hasMeta(x) or std.mem.indexOfScalar(u8, x, '.') != null) return null;
+        if (hasMeta(x) or std.mem.findScalar(u8, x, '.') != null) return null;
         return x;
     }
 };
@@ -354,7 +354,11 @@ pub const Ignore = struct {
             var d = d_const;
             d.close(self.io);
             return dot_git; // plain repo: `.git` is the git dir
-        } else |_| {}
+        } else |err| {
+            // Not a dir (or absent) — fall through and probe it as a worktree
+            // `.git`-FILE below; only a genuinely unexpected failure is worth a trace.
+            std.log.debug("gist: openDir {s} failed, probing worktree .git-file: {}\n", .{ dot_git, err });
+        }
         const gitfile = Dir.cwd().readFileAlloc(self.io, dot_git, self.a, .limited(4096)) catch return null;
         const line0 = std.mem.trimEnd(u8, firstLine(gitfile), "\r");
         if (!std.mem.startsWith(u8, line0, "gitdir: ")) return null;
@@ -412,7 +416,7 @@ pub const Ignore = struct {
         self.applyGroup("", rel, is_dir, root_depth, &verdict);
         const stripped = stripDot(rel);
         var i: usize = 0;
-        while (std.mem.indexOfScalarPos(u8, stripped, i, '/')) |slash| {
+        while (std.mem.findScalarPos(u8, stripped, i, '/')) |slash| {
             self.applyGroup(stripped[0..slash], rel, is_dir, root_depth, &verdict);
             i = slash + 1;
         }
@@ -543,7 +547,7 @@ fn gitRootDepth(io: std.Io) ?usize {
 
 /// The first line of `buf` (without the terminator), or all of `buf` if none.
 fn firstLine(buf: []const u8) []const u8 {
-    const nl = std.mem.indexOfScalar(u8, buf, '\n') orelse return buf;
+    const nl = std.mem.findScalar(u8, buf, '\n') orelse return buf;
     return buf[0..nl];
 }
 
@@ -555,7 +559,11 @@ fn hasDotGit(io: std.Io, path: []const u8) bool {
         var d = d_const;
         d.close(io);
         return true;
-    } else |_| {}
+    } else |err| {
+        // Not a dir (or absent) — fall through and probe it as a worktree
+        // `.git`-FILE below; only a genuinely unexpected failure is worth a trace.
+        std.log.debug("gist: openDir {s} failed, probing worktree .git-file: {}\n", .{ dg, err });
+    }
     const b = Dir.cwd().readFileAlloc(io, dg, std.heap.page_allocator, .limited(4096)) catch return false;
     std.heap.page_allocator.free(b);
     return true;

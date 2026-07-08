@@ -20,7 +20,6 @@
 //! rather than duplicated here; the manifest lists gist's native additions and
 //! points at that coverage.
 
-const std = @import("std");
 const corpus_mod = @import("../../corpus/corpus.zig");
 
 /// The capability manifest. Kept in sync by hand with the unified engine's flag

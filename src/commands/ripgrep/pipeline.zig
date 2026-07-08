@@ -552,7 +552,9 @@ fn processDir(w: *Worker, a: std.mem.Allocator, scratch: []u8, task: DirTask, lo
                 entries.append(a, .{ .name = e.name, .is_dir = e.is_dir, .is_file = e.is_file, .mtime_ns = e.mtime_ns }) catch die("oom\n", .{});
             }
             bulk_ok = true;
-        } else |_| {}
+        } else |err| {
+            std.log.debug("gist: bulk listing of {s} failed, falling back to portable readdir: {}\n", .{ task.disk, err });
+        }
     }
     if (!bulk_ok) {
         if (bulkstat.supported) {
@@ -570,7 +572,9 @@ fn processDir(w: *Worker, a: std.mem.Allocator, scratch: []u8, task: DirTask, lo
             var mtime: i128 = 0;
             // mtime is only consulted for elision candidates; stat lazily there.
             if (e.kind == .file and cfg.lazy != null) {
-                if (dir.statFile(w.io, e.name, .{})) |st| mtime = st.mtime.nanoseconds else |_| {}
+                if (dir.statFile(w.io, e.name, .{})) |st| mtime = st.mtime.nanoseconds else |err| {
+                    std.log.debug("gist: statFile {s} failed, mtime elision skipped: {}\n", .{ e.name, err });
+                }
             }
             // The iterator's name buffer is reused on the next `next()` —
             // fragments/tasks hold rel paths built from it, so own a copy.
@@ -668,7 +672,7 @@ fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, disk: []const u8,
         .needle = cfg.needle,
     };
 
-    if (cfg.binary_detect) if (std.mem.indexOfScalar(u8, body, 0)) |nul| {
+    if (cfg.binary_detect) if (std.mem.findScalar(u8, body, 0)) |nul| {
         const matched = grepfile.handleBinary(a, re, o, &buf, &em, dpath, false, body, nul, cfg.show_name);
         if (matched or buf.items.len > 0)
             cfg.sink.emit(if (matched) .bin_hit else .text_plain, buf.items);
@@ -690,7 +694,7 @@ fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, disk: []const u8,
 }
 
 fn replaceSep(a: std.mem.Allocator, path: []const u8, sep: []const u8) []const u8 {
-    if (std.mem.indexOfScalar(u8, path, '/') == null) return path;
+    if (std.mem.findScalar(u8, path, '/') == null) return path;
     var out: std.ArrayList(u8) = .empty;
     for (path) |c| {
         if (c == '/') out.appendSlice(a, sep) catch die("oom\n", .{}) else out.append(a, c) catch die("oom\n", .{});
@@ -791,7 +795,9 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     if (std.c.getenv("GIST_WORKERS")) |s| {
         if (std.fmt.parseInt(usize, std.mem.span(s), 10)) |n| {
             nworkers = @max(1, n);
-        } else |_| {}
+        } else |err| {
+            std.log.debug("gist: GIST_WORKERS={s} unparsable, keeping default: {}\n", .{ s, err });
+        }
     }
     const workers = gpa.alloc(Worker, nworkers) catch die("oom\n", .{});
     defer gpa.free(workers);

@@ -17,7 +17,7 @@ const std = @import("std");
 
 /// The basename (final `/`-delimited component) of a path.
 fn basename(path: []const u8) []const u8 {
-    return if (std.mem.lastIndexOfScalar(u8, path, '/')) |s| path[s + 1 ..] else path;
+    return if (std.mem.findScalarLast(u8, path, '/')) |s| path[s + 1 ..] else path;
 }
 
 /// Match a `[...]` class at `pat[0]=='['` against byte `c`. Returns the verdict
@@ -113,12 +113,12 @@ pub fn globApplies(pat: []const u8, path: []const u8) bool {
         const core = pat[0 .. pat.len - 1];
         // Match if any ancestor directory of `path` matches the core glob.
         var i: usize = 0;
-        while (std.mem.indexOfScalarPos(u8, path, i, '/')) |slash| : (i = slash + 1) {
+        while (std.mem.findScalarPos(u8, path, i, '/')) |slash| : (i = slash + 1) {
             if (globApplies(core, path[0..slash])) return true;
         }
         return false;
     }
-    return if (std.mem.indexOfScalar(u8, pat, '/') == null)
+    return if (std.mem.findScalar(u8, pat, '/') == null)
         globMatch(pat, basename(path))
     else
         globMatch(pat, path);

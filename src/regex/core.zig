@@ -390,7 +390,7 @@ pub const Regex = struct {
         if (re.dfa) |d| return d.docMatch(doc);
         var rest = doc;
         while (rest.len > 0) {
-            const nl = std.mem.indexOfScalar(u8, rest, '\n');
+            const nl = std.mem.findScalar(u8, rest, '\n');
             const end = nl orelse rest.len;
             if (re.lineMatchPike(sim, rest[0..end])) return true;
             if (nl == null) break;

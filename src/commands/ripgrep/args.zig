@@ -233,7 +233,7 @@ const Builder = struct {
     /// Register a `--type-add` spec: `name:glob` appends a glob to `name`; the
     /// `name:include:t1,t2` form aliases `name` to the union of other types.
     fn addTypeDef(self: *Builder, spec: []const u8) void {
-        const colon = std.mem.indexOfScalar(u8, spec, ':') orelse die("invalid --type-add: {s}\n", .{spec});
+        const colon = std.mem.findScalar(u8, spec, ':') orelse die("invalid --type-add: {s}\n", .{spec});
         const name = spec[0..colon];
         const rest = spec[colon + 1 ..];
         var globs: std.ArrayList([]const u8) = .empty;
@@ -285,7 +285,7 @@ const Builder = struct {
 /// product across groups, nesting-aware). A pattern with no brace group yields
 /// itself; an unbalanced `{` is left literal.
 fn braceExpand(a: std.mem.Allocator, pat: []const u8, out: *std.ArrayList([]const u8)) void {
-    const open = std.mem.indexOfScalar(u8, pat, '{') orelse {
+    const open = std.mem.findScalar(u8, pat, '{') orelse {
         out.append(a, a.dupe(u8, pat) catch die("oom\n", .{})) catch die("oom\n", .{});
         return;
     };
@@ -346,7 +346,7 @@ fn toU(s: []const u8) usize {
 /// backslash is kept verbatim (rg's lenient rule). Returns `s` unchanged when it
 /// has no backslash (the common case).
 fn unescape(a: std.mem.Allocator, s: []const u8) []const u8 {
-    if (std.mem.indexOfScalar(u8, s, '\\') == null) return s;
+    if (std.mem.findScalar(u8, s, '\\') == null) return s;
     var out: std.ArrayList(u8) = .empty;
     var i: usize = 0;
     while (i < s.len) : (i += 1) {
@@ -643,7 +643,7 @@ fn parseLong(b: *Builder, arg: []const u8, i: *usize, all: []const []const u8) v
     const body = arg[2..];
     var name = body;
     var inl: ?[]const u8 = null;
-    if (std.mem.indexOfScalar(u8, body, '=')) |eq| {
+    if (std.mem.findScalar(u8, body, '=')) |eq| {
         name = body[0..eq];
         inl = body[eq + 1 ..];
     }

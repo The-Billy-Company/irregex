@@ -105,7 +105,12 @@ fn checkOne(a: std.mem.Allocator, bytes: []const u8) !void {
             var idx = idx0;
             defer idx.deinit();
             if (!safeCanonical(&idx)) return error.LoaderAcceptedNoncanonical;
-            if (idx.queryLiteral(a, "abc")) |got| a.free(got) else |_| {} // crash surface only
+            if (idx.queryLiteral(a, "abc")) |got| a.free(got) else |err| {
+                // Crash surface only — the fuzz corpus feeds adversarial bytes, so a
+                // query error here is expected noise, not a bug; we only care that
+                // `queryLiteral` didn't panic/UB on this input.
+                std.log.debug("gist: trigram fuzz queryLiteral error (expected noise): {}\n", .{err});
+            }
             break :blk true;
         } else |_| break :blk false;
     };

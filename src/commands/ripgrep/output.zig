@@ -378,7 +378,7 @@ pub const Emitter = struct {
             // A required-literal gate (when the caller derived one): a line
             // without the literal bytes cannot match, and a SIMD memmem is an
             // order of magnitude cheaper than an engine run per line.
-            const hit = if (self.needle != null and std.mem.indexOf(u8, mv, self.needle.?) == null)
+            const hit = if (self.needle != null and std.mem.find(u8, mv, self.needle.?) == null)
                 false
             else if (wss) |*s| self.lineHitWord(s, mv) else self.re.lineMatch(&sim, mv);
             if (hit == o.invert) {

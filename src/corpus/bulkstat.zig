@@ -167,7 +167,7 @@ fn parseEntry(buf: []const u8, start: usize) !Parsed {
         const ne = ns + data_len;
         if (ne > buf.len or ns > ne) return error.BulkStatUnsupported;
         var raw = buf[ns..ne];
-        if (std.mem.indexOfScalar(u8, raw, 0)) |nul| raw = raw[0..nul]; // NUL-terminated
+        if (std.mem.findScalar(u8, raw, 0)) |nul| raw = raw[0..nul]; // NUL-terminated
         name = raw;
         pos += 8;
     }

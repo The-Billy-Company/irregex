@@ -52,7 +52,7 @@ pub const isSkipDir = haystack.isSkipDir;
 /// rg-style binary detection: a NUL byte in the first 8 KiB ⇒ treat as binary.
 pub fn isBinary(bytes: []const u8) bool {
     const window = bytes[0..@min(bytes.len, 8192)];
-    return std.mem.indexOfScalar(u8, window, 0) != null;
+    return std.mem.findScalar(u8, window, 0) != null;
 }
 
 pub const Corpus = struct {

@@ -65,7 +65,7 @@ const InFile = struct { path: []const u8, bytes: []const u8, explicit: bool = fa
 /// Replace every `/` in `path` with the (arbitrary-length) `sep` string for
 /// `--path-separator`. Returns `path` unchanged when it has no separator.
 fn replaceSep(a: std.mem.Allocator, path: []const u8, sep: []const u8) []const u8 {
-    if (std.mem.indexOfScalar(u8, path, '/') == null) return path;
+    if (std.mem.findScalar(u8, path, '/') == null) return path;
     var out: std.ArrayList(u8) = .empty;
     for (path) |c| {
         if (c == '/') out.appendSlice(a, sep) catch die("oom\n", .{}) else out.append(a, c) catch die("oom\n", .{});
@@ -119,7 +119,7 @@ fn walkDir(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix: []co
     // sibling subtree (a diamond, not a cycle) is still followed, since it's
     // popped back off `visited` once its own subtree walk returns.
     var visited: std.ArrayList([]const u8) = .empty;
-    if (o.follow) if (realDirPath(a, root_path)) |rp| visited.append(a, rp) catch {};
+    if (o.follow) if (realDirPath(a, root_path)) |rp| visited.append(a, rp) catch die("oom\n", .{});
     walkDirLinked(a, io, root_path, prefix, o, ig, out, 0, &visited);
 }
 
@@ -172,7 +172,7 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
                     var cyclic = false;
                     if (realDirPath(a, full)) |rp| {
                         cyclic = containsPath(visited.items, rp);
-                        if (!cyclic) visited.append(a, rp) catch {};
+                        if (!cyclic) visited.append(a, rp) catch die("oom\n", .{});
                     }
                     if (!cyclic) {
                         ig.loadDir(full, rel);
@@ -195,7 +195,9 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
             const shallow = o.max_depth == 0 or depth < o.max_depth;
             if (shallow) {
                 ig.loadDir(diskPath(a, root_path, entry.path), rel);
-                walker.enter(io, entry) catch {};
+                walker.enter(io, entry) catch |err| {
+                    std.log.debug("gist: walker.enter {s} failed, subtree skipped: {}\n", .{ rel, err });
+                };
             }
             continue;
         }
@@ -319,7 +321,7 @@ fn readShard(sh: *ReadShard) void {
     const a = sh.arena.allocator();
     const scratch = sh.gpa.alloc(u8, corpus_mod.per_file_cap) catch return;
     defer sh.gpa.free(scratch);
-    sh.out.ensureTotalCapacity(sh.gpa, sh.candidates.len) catch {};
+    sh.out.ensureTotalCapacity(sh.gpa, sh.candidates.len) catch die("oom\n", .{});
     for (sh.candidates) |c| {
         if (readOneCandidate(a, scratch, c, sh.needle)) |f| sh.out.appendAssumeCapacity(f);
     }
@@ -540,7 +542,7 @@ fn collectFiles(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, parsed
 const LeadingFlags = struct { rest: []const u8, caseless: ?bool = null };
 fn stripLeadingFlags(pat: []const u8) ?LeadingFlags {
     if (!std.mem.startsWith(u8, pat, "(?")) return null;
-    const close = std.mem.indexOfScalar(u8, pat, ')') orelse return null;
+    const close = std.mem.findScalar(u8, pat, ')') orelse return null;
     if (close == 2) return null; // `(?)` — empty directive, the parser rejects it
     var caseless: ?bool = null;
     var neg = false;
@@ -856,7 +858,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     for (files) |f| {
         const body = stripBom(f.bytes);
         if (body.len == 0) continue;
-        if (binary_detect) if (std.mem.indexOfScalar(u8, body, 0)) |nul| {
+        if (binary_detect) if (std.mem.findScalar(u8, body, 0)) |nul| {
             em.base = @intFromPtr(body.ptr);
             if (grepfile.handleBinary(a, &re, o, &out, &em, f.path, f.explicit, body, nul, show_name)) matched_files += 1;
             continue;

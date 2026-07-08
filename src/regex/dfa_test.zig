@@ -188,7 +188,7 @@ test "dfa: differential fuzz vs the Pike VM (0 divergences), anchors included" {
 fn pikeDoc(re: *Regex, sim: *Regex.Sim, doc: []const u8) bool {
     var rest = doc;
     while (rest.len > 0) {
-        const nl = std.mem.indexOfScalar(u8, rest, '\n');
+        const nl = std.mem.findScalar(u8, rest, '\n');
         const end = nl orelse rest.len;
         if (re.lineMatchPike(sim, rest[0..end])) return true;
         if (nl == null) break;

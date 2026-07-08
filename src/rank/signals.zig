@@ -28,7 +28,7 @@ fn isIdentByte(c: u8) bool {
 /// Whole-word presence of `w` in `hay` (identifier boundaries on both sides).
 fn wholeWordIn(hay: []const u8, w: []const u8) bool {
     var i: usize = 0;
-    while (std.mem.indexOfPos(u8, hay, i, w)) |pos| : (i = pos + 1) {
+    while (std.mem.findPos(u8, hay, i, w)) |pos| : (i = pos + 1) {
         const lo_ok = pos == 0 or !isIdentByte(hay[pos - 1]);
         const hi = pos + w.len;
         const hi_ok = hi >= hay.len or !isIdentByte(hay[hi]);
@@ -66,7 +66,7 @@ const def_kws = [_][]const u8{
 /// list element — a use, not a decl (`(` stays legal for `func (r T) Name(`).
 pub fn definesNeedle(line: []const u8, needle: []const u8) bool {
     const t = std.mem.trimStart(u8, line, " \t");
-    const npos = std.mem.indexOf(u8, t, needle) orelse return false;
+    const npos = std.mem.find(u8, t, needle) orelse return false;
     // The needle must be the declared name as a WHOLE word — an identifier
     // boundary on both sides. Without the right-side check, searching `Wallet`
     // would treat `type WalletService struct` as its definition (a prefix hit).
@@ -74,7 +74,7 @@ pub fn definesNeedle(line: []const u8, needle: []const u8) bool {
     const after = npos + needle.len;
     if (after < t.len and isIdentByte(t[after])) return false; // right boundary
     const before = t[0..npos];
-    for ([_]u8{ '=', '"', '\'', ',' }) |c| if (std.mem.indexOfScalar(u8, before, c) != null) return false;
+    for ([_]u8{ '=', '"', '\'', ',' }) |c| if (std.mem.findScalar(u8, before, c) != null) return false;
     for (def_kws) |kw| if (wholeWordIn(before, kw)) return true;
     return false;
 }
@@ -107,7 +107,7 @@ const gen_markers = [_][]const u8{
 pub fn isGenerated(path: []const u8, buf: []const u8) bool {
     for (gen_suffixes) |s| if (std.mem.endsWith(u8, path, s)) return true;
     const head = buf[0..@min(buf.len, 256)];
-    const eol = std.mem.indexOfScalar(u8, head, '\n') orelse head.len;
-    for (gen_markers) |m| if (std.mem.indexOf(u8, head[0..eol], m) != null) return true;
+    const eol = std.mem.findScalar(u8, head, '\n') orelse head.len;
+    for (gen_markers) |m| if (std.mem.find(u8, head[0..eol], m) != null) return true;
     return false;
 }
