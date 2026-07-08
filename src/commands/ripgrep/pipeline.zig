@@ -1,5 +1,5 @@
-// MONOLITHIC: one fused work-stealing pipeline — queue, walk, ignore chain, elision, per-file search, and stitch share per-worker state; splitting breaks the single-pass flow
-//! gist `rg` — the parallel fused walk+read+match engine (the fast path).
+// MONOLITHIC: one fused work-stealing pipeline — queue, walk, ignore chain, elision, per-file search, and the streaming sink share per-worker state; splitting breaks the single-pass flow
+//! gist `rg` — the parallel fused walk+read+match+emit engine (the fast path).
 //!
 //! `run.zig`'s serial engine walks the tree single-threaded, reads candidates
 //! in a second phase, then matches+emits in a third — three passes, one core
@@ -10,10 +10,18 @@
 //! mtime powers inline index elision with no separate freshness stat-walk),
 //! applies the ignore verdict, pushes child directories back on the queue, and
 //! searches child FILES on the spot (read → BOM decode → literal gate →
-//! binary sniff → line match → render) into a per-file output FRAGMENT. The
-//! main thread sorts fragments by path and stitches them with the same
-//! inter-file glue the serial engine writes (heading blank lines, `--` context
-//! group separators), so the bytes are identical — just produced on all cores.
+//! binary sniff → line match → render), writing each hit to stdout the
+//! instant it's rendered via the shared `Sink` (`Sink.emit`, lock-guarded so
+//! concurrent workers' output never interleaves) — never buffered and
+//! reordered after the fact. This is also what lets gist cancel early: a
+//! downstream reader hanging up (`| head`, a closed FD, an interrupted pager)
+//! surfaces as a failed write, which flips `Queue.aborted` and unwinds every
+//! worker within microseconds instead of finishing the whole tree — the same
+//! EPIPE-triggered cooperative-cancellation ripgrep's own printer uses. The
+//! cost: output arrives in worker-discovery order, not global path-sort order
+//! (gist's own rgsuite harness already treats an order-only diff as a soft
+//! pass, since a parallel walker's file order was never a byte-parity promise
+//! to begin with — see `bench/rgsuite/run.py`'s `ORDER` bucket).
 //!
 //! Thread-safety is by construction, not locks: the base `Ignore` (CWD/
 //! ancestor tier) is FROZEN before fan-out and read via `decideAt` (root depth
@@ -245,7 +253,11 @@ const DirTask = struct {
 /// dry. A dry worker spins briefly (donations arrive within microseconds
 /// mid-walk), then PARKS on the condvar; donors wake exactly as many parked
 /// peers as they have tasks, so there is no per-push thundering herd and no
-/// yield-storm at the walk's tail. `live == 0` ⇔ walk complete.
+/// yield-storm at the walk's tail. `live == 0` ⇔ walk complete; `aborted` is
+/// the other way a walk ends — a downstream reader hanging up (`| head`)
+/// mid-stream, detected as a failed write in `Sink.emit` — and is checked
+/// everywhere `live == 0` is, so every worker (spinning, parked, or mid local
+/// backlog) unwinds within microseconds instead of finishing the whole tree.
 const Queue = struct {
     mu: std.Io.Mutex = .init,
     cv: std.Io.Condition = .init,
@@ -255,8 +267,20 @@ const Queue = struct {
     live: std.atomic.Value(usize) = .init(0), // undone tasks anywhere (local stacks included)
     avail: std.atomic.Value(usize) = .init(0), // tasks sitting in `items` (maintained under `mu`)
     starving: std.atomic.Value(u32) = .init(0), // workers inside `pop` (spinning or parked)
+    aborted: std.atomic.Value(bool) = .init(false), // set once; a broken output pipe cancels the walk
     gpa: std.mem.Allocator,
     io: std.Io,
+
+    /// Cancel the walk: a `Sink.emit` write came back closed-pipe. Idempotent
+    /// (the CAS-style swap only wakes parked peers on the transition), so
+    /// concurrent workers hitting EPIPE at once never double-broadcast.
+    fn abort(q: *Queue) void {
+        if (q.aborted.swap(true, .acq_rel)) return;
+        q.mu.lockUncancelable(q.io);
+        const any = q.waiting > 0;
+        q.mu.unlock(q.io);
+        if (any) q.cv.broadcast(q.io);
+    }
 
     /// Account for `n` newly discovered tasks (wherever they live). Must
     /// precede the discovering task's own `done`, else `live` could graze 0
@@ -288,6 +312,7 @@ const Queue = struct {
         defer _ = q.starving.fetchSub(1, .acq_rel);
         var spins: u32 = 0;
         while (true) {
+            if (q.aborted.load(.acquire)) return null;
             if (q.avail.load(.acquire) != 0) {
                 q.mu.lockUncancelable(q.io);
                 if (q.head < q.items.items.len) {
@@ -310,10 +335,10 @@ const Queue = struct {
                 continue;
             }
             // Park. The predicate is re-checked under `mu`, and both wakers
-            // (`donate`, `done`) publish under/after the same lock — the
-            // classic no-missed-wakeup shape.
+            // (`donate`, `done`, `abort`) publish under/after the same lock —
+            // the classic no-missed-wakeup shape.
             q.mu.lockUncancelable(q.io);
-            while (q.head >= q.items.items.len and q.live.load(.acquire) != 0) {
+            while (q.head >= q.items.items.len and q.live.load(.acquire) != 0 and !q.aborted.load(.acquire)) {
                 q.waiting += 1;
                 q.cv.waitUncancelable(q.io, &q.mu);
                 q.waiting -= 1;
@@ -334,22 +359,69 @@ const Queue = struct {
     }
 };
 
-// ─────────────────────────── fragments ───────────────────────────
+// ─────────────────────────── streaming sink ───────────────────────────
 
-/// One file's rendered output, produced by whichever worker searched it.
-/// `key` is the ORIGINAL rel path (the serial engine's sort key — path-sep
-/// replacement happens on the display path only); `buf` carries no inter-file
-/// glue (heading blank lines / `--` separators are stitched by the main
-/// thread, which alone knows the final path order).
-const Frag = struct {
-    key: []const u8,
-    buf: []const u8,
-    kind: enum { text_hit, text_plain, bin_hit },
+/// What kind of fragment a worker just rendered — decides what inter-file
+/// glue (if any) `Sink.emit` prepends before writing it.
+const FragKind = enum { text_hit, text_plain, bin_hit };
+
+/// The one shared stdout writer every worker streams through, the instant
+/// each file's fragment is ready — replacing the old collect-everything →
+/// sort-by-path → k-way-merge → single-write stitch. That buffered design
+/// meant NOTHING reached a downstream reader until the entire corpus had
+/// been walked, matched, and assembled: a piped `head -1` got zero benefit
+/// from exiting early (measured: same wall-clock as capturing the full,
+/// untruncated result — `rg | head -1` finishes in single-digit ms on the
+/// same query by contrast, because ripgrep streams and cancels on the first
+/// EPIPE). `emit` is the fix: write under a lock (so concurrent workers'
+/// output never interleaves) the moment a match is found, and the moment a
+/// write comes back closed-pipe, cancel the walk via `q.abort()` — the same
+/// cooperative-cancellation shape ripgrep's own printer uses.
+///
+/// The trade: output now arrives in worker-discovery order, not the old
+/// global path-sort — gist's own rgsuite harness already classifies an
+/// order-only diff as a soft pass (`sort_lines(gist) == sort_lines(rg)`),
+/// since a parallel walker's file order was never a byte-parity promise to
+/// begin with. Every other framing (heading blank lines, `--` context-group
+/// separators, per-file line order, the match/no-match exit code) is
+/// unchanged — `first`/`matched_files` just move from a single-threaded
+/// post-pass into this lock-guarded running state.
+const Sink = struct {
+    q: *Queue,
+    io: std.Io,
+    mu: std.Io.Mutex = .init,
+    heading: bool,
+    join_groups: bool,
+    files_mode: bool,
+    null_sep: bool,
+    first: bool = true, // guarded by `mu`
+    matched_files: usize = 0, // guarded by `mu`
+
+    fn emit(self: *Sink, kind: FragKind, buf: []const u8) void {
+        self.mu.lockUncancelable(self.io);
+        defer self.mu.unlock(self.io);
+        if (self.q.aborted.load(.monotonic)) return; // pipe already gone — nothing left to do
+        var ok = true;
+        if (self.files_mode) {
+            self.matched_files += 1;
+            ok = corpus_mod.writeStdout(buf) and
+                corpus_mod.writeStdout(if (self.null_sep) "\x00" else "\n");
+        } else {
+            switch (kind) {
+                .text_hit => {
+                    if (self.heading and !self.first) ok = corpus_mod.writeStdout("\n");
+                    if (ok and self.join_groups and !self.first and buf.len > 0) ok = corpus_mod.writeStdout("--\n");
+                    self.first = false;
+                    self.matched_files += 1;
+                },
+                .bin_hit => self.matched_files += 1,
+                .text_plain => {},
+            }
+            if (ok) ok = corpus_mod.writeStdout(buf);
+        }
+        if (!ok) self.q.abort();
+    }
 };
-
-fn fragLess(_: void, x: Frag, y: Frag) bool {
-    return std.mem.lessThan(u8, x.key, y.key);
-}
 
 // ─────────────────────────── worker ───────────────────────────
 
@@ -367,6 +439,7 @@ const Cfg = struct {
     join_groups: bool,
     binary_detect: bool,
     files_mode: bool,
+    sink: *Sink,
 };
 
 /// A file discovered before the elide oracle finished loading — held back so
@@ -379,7 +452,6 @@ const Worker = struct {
     gpa: std.mem.Allocator,
     cfg: *const Cfg,
     arena: std.heap.ArenaAllocator,
-    frags: std.ArrayList(Frag) = .empty,
     pending: std.ArrayList(Deferred) = .empty,
 };
 
@@ -397,6 +469,7 @@ fn workerMain(w: *Worker) void {
     // to blocking-pop when the local stack runs dry.
     var local: std.ArrayList(DirTask) = .empty;
     while (true) {
+        if (w.q.aborted.load(.monotonic)) break; // downstream pipe closed — unwind now, not at tree's end
         const task = local.pop() orelse w.q.pop() orelse break;
         processDir(w, a, scratch, task, &local);
         w.q.done();
@@ -410,13 +483,10 @@ fn workerMain(w: *Worker) void {
         }
         flushPending(w, a, scratch, false);
     }
-    // The walk is over; resolve whatever is still deferred (see the policy
-    // note on `flushPending`).
-    flushPending(w, a, scratch, true);
-    // Sort this worker's fragments here, on the worker's own core — the main
-    // thread then k-way-merges N already-sorted lists instead of sorting the
-    // whole corpus serially.
-    std.mem.sort(Frag, w.frags.items, {}, fragLess);
+    // The walk is over (or cancelled); resolve whatever is still deferred
+    // (see the policy note on `flushPending`) — unless the pipe is already
+    // gone, in which case there's nothing left to search FOR.
+    if (!w.q.aborted.load(.monotonic)) flushPending(w, a, scratch, true);
 }
 
 /// Elide-or-search every deferred file. In-walk (`final=false`): only runs
@@ -434,7 +504,7 @@ fn flushPending(w: *Worker, a: std.mem.Allocator, scratch: []u8, final: bool) vo
     for (w.pending.items) |d| {
         if (ready) if (lz.val) |*el| if (el.skip(stripDot(d.rel), d.mtime_ns)) continue;
         const dpath = if (o.path_sep) |sep| replaceSep(a, d.rel, sep) else d.rel;
-        searchFile(w, a, scratch, d.disk, d.rel, dpath);
+        searchFile(w, a, scratch, d.disk, dpath);
     }
     w.pending.clearRetainingCapacity();
 }
@@ -564,18 +634,18 @@ fn handleEntry(w: *Worker, a: std.mem.Allocator, scratch: []u8, task: DirTask, c
 
     const dpath = if (o.path_sep) |sep| replaceSep(a, rel, sep) else rel;
     if (cfg.files_mode) {
-        // The fragment IS the display path — the stitch appends the one-byte
-        // separator, so listing a file allocates nothing beyond `rel` itself.
-        w.frags.append(a, .{ .key = rel, .buf = dpath, .kind = .text_hit }) catch die("oom\n", .{});
+        // Streamed straight through — `Sink.emit` appends the one-byte
+        // separator, so listing a file allocates nothing beyond `dpath` itself.
+        cfg.sink.emit(.text_hit, dpath);
         return;
     }
-    searchFile(w, a, scratch, joinPath(a, task.disk, e.name), rel, dpath);
+    searchFile(w, a, scratch, joinPath(a, task.disk, e.name), dpath);
 }
 
-/// Read + match + render ONE file into a fragment — the parallel twin of the
-/// serial engine's per-file loop body (`run.zig`), built from the same
-/// `grepfile` primitives so the two cannot drift.
-fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, disk: []const u8, rel: []const u8, dpath: []const u8) void {
+/// Read + match + render ONE file straight into the sink — the parallel
+/// twin of the serial engine's per-file loop body (`run.zig`), built from the
+/// same `grepfile` primitives so the two cannot drift.
+fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, disk: []const u8, dpath: []const u8) void {
     const cfg = w.cfg;
     const o = cfg.o;
     const re = cfg.re.?;
@@ -601,7 +671,7 @@ fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, disk: []const u8,
     if (cfg.binary_detect) if (std.mem.indexOfScalar(u8, body, 0)) |nul| {
         const matched = grepfile.handleBinary(a, re, o, &buf, &em, dpath, false, body, nul, cfg.show_name);
         if (matched or buf.items.len > 0)
-            w.frags.append(a, .{ .key = rel, .buf = buf.items, .kind = if (matched) .bin_hit else .text_plain }) catch die("oom\n", .{});
+            cfg.sink.emit(if (matched) .bin_hit else .text_plain, buf.items);
         return;
     };
 
@@ -613,10 +683,10 @@ fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, disk: []const u8,
     if (hits == 0) {
         // No heading header to keep, and (except --passthru) no body either.
         if (cfg.heading or buf.items.len == before_body) return;
-        w.frags.append(a, .{ .key = rel, .buf = buf.items, .kind = .text_plain }) catch die("oom\n", .{});
+        cfg.sink.emit(.text_plain, buf.items);
         return;
     }
-    w.frags.append(a, .{ .key = rel, .buf = buf.items, .kind = .text_hit }) catch die("oom\n", .{});
+    cfg.sink.emit(.text_hit, buf.items);
 }
 
 fn replaceSep(a: std.mem.Allocator, path: []const u8, sep: []const u8) []const u8 {
@@ -644,9 +714,9 @@ fn rootDepth(prefix: []const u8) usize {
     return std.mem.count(u8, s, "/") + 1;
 }
 
-/// Fan out, walk, search, join, stitch, emit, exit. `filters` is the sound
-/// trigram prefilter (`run.zig`'s `trigramFilter`) powering inline elision;
-/// `needle` is the `literalGate` substring (SIMD pre-gate). Never returns.
+/// Fan out, walk, search, stream, exit. `filters` is the sound trigram
+/// prefilter (`run.zig`'s `trigramFilter`) powering inline elision; `needle`
+/// is the `literalGate` substring (SIMD pre-gate). Never returns.
 pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re: ?*const Regex, use_color: bool, filters: []const []const u8, needle: ?[]const u8) noreturn {
     const heading = o.heading and !o.count_only and !o.count_matches and !o.files_only and !o.vimgrep;
     // The elide oracle loads on its own thread while the walk runs (the
@@ -669,6 +739,16 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
 
     var ig = ignore.Ignore.init(gpa, io, o, parsed.roots);
     const compiled = ignore.Compiled.build(gpa, &ig);
+    var q = Queue{ .gpa = gpa, .io = io };
+    defer q.items.deinit(gpa);
+    var sink = Sink{
+        .q = &q,
+        .io = io,
+        .heading = heading,
+        .join_groups = o.wantsContext() and !o.files_only and !o.count_only and !o.count_matches and !heading,
+        .files_mode = o.files_list,
+        .null_sep = o.null_sep,
+    };
     const cfg = Cfg{
         .o = o,
         .re = re,
@@ -683,13 +763,11 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
             .auto => true, // the walk is recursive by construction
         },
         .heading = heading,
-        .join_groups = o.wantsContext() and !o.files_only and !o.count_only and !o.count_matches and !heading,
+        .join_groups = sink.join_groups,
         .binary_detect = !o.text and !o.null_data and !o.files_only,
         .files_mode = o.files_list,
+        .sink = &sink,
     };
-
-    var q = Queue{ .gpa = gpa, .io = io };
-    defer q.items.deinit(gpa);
     var roots_one = [_][]const u8{"."};
     const roots: []const []const u8 = if (parsed.roots.len > 0) parsed.roots else roots_one[0..];
     {
@@ -730,56 +808,8 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     workerMain(&workers[0]); // the main thread is a worker too
     for (threads[0..spawned]) |t| t.join();
 
-    // ── stitch: path order + the serial engine's inter-file glue ──
-    // Each worker's fragment list arrives pre-sorted (sorted on the worker's
-    // own thread as it retired); a k-way merge of N sorted runs replaces the
-    // serial whole-corpus sort.
-    var frags: std.ArrayList(Frag) = .empty;
-    defer frags.deinit(gpa);
-    {
-        var total: usize = 0;
-        for (workers) |*w| total += w.frags.items.len;
-        frags.ensureTotalCapacity(gpa, total) catch die("oom\n", .{});
-        var cursor = gpa.alloc(usize, workers.len) catch die("oom\n", .{});
-        defer gpa.free(cursor);
-        @memset(cursor, 0);
-        while (frags.items.len < total) {
-            var best: ?usize = null;
-            for (workers, 0..) |*w, i| {
-                if (cursor[i] >= w.frags.items.len) continue;
-                if (best == null or fragLess({}, w.frags.items[cursor[i]], workers[best.?].frags.items[cursor[best.?]]))
-                    best = i;
-            }
-            const b = best.?;
-            frags.appendAssumeCapacity(workers[b].frags.items[cursor[b]]);
-            cursor[b] += 1;
-        }
-    }
-
-    var out: std.ArrayList(u8) = .empty;
-    defer out.deinit(gpa);
-    var matched_files: usize = 0;
-    var first = true;
-    for (frags.items) |f| {
-        switch (f.kind) {
-            .text_hit => {
-                if (cfg.files_mode) {
-                    matched_files += 1;
-                    out.appendSlice(gpa, f.buf) catch die("oom\n", .{});
-                    out.append(gpa, if (o.null_sep) 0 else '\n') catch die("oom\n", .{});
-                    continue;
-                } else {
-                    if (heading and !first) out.append(gpa, '\n') catch die("oom\n", .{});
-                    if (cfg.join_groups and !first and f.buf.len > 0) out.appendSlice(gpa, "--\n") catch die("oom\n", .{});
-                    first = false;
-                    matched_files += 1;
-                }
-            },
-            .bin_hit => matched_files += 1,
-            .text_plain => {},
-        }
-        out.appendSlice(gpa, f.buf) catch die("oom\n", .{});
-    }
-    corpus_mod.emitStdout(out.items);
-    std.process.exit(if (matched_files > 0) 0 else 1);
+    // Every byte is already on stdout — each worker streamed its fragments
+    // through `sink.emit` the instant it rendered them (see `Sink`). Nothing
+    // left to stitch or write; `sink.matched_files` alone decides the exit code.
+    std.process.exit(if (sink.matched_files > 0) 0 else 1);
 }
