@@ -57,7 +57,18 @@ const Dir = std.Io.Dir;
 /// Can this invocation run on the parallel engine byte-identically? Everything
 /// here must ALSO hold in `run.zig`'s dispatch (it calls this) — the serial
 /// engine remains the semantic reference for whatever this declines.
+///
+/// `GIST_NO_PARALLEL` (internal, undocumented — the `GIST_WORKERS` idiom)
+/// forces every eligible query onto the serial engine anyway. It exists SOLELY
+/// so the parity gates (`bench/gates/line_parity.sh`, `bench/rgsuite/run.py`)
+/// can run their whole case list against BOTH engines and catch exactly the
+/// class of bug this function's own history proves possible: the parallel
+/// engine landed a day after a serial-engine-only ignore-parity fix and
+/// silently missed it (see `ignore.zig`'s `skipFromVerdict` — it now takes the
+/// same whitelist-override pair `shouldSkip` does). No production caller sets
+/// this; it is never exposed as a CLI flag.
 pub fn eligible(io: std.Io, parsed: args.Parsed, o: Opts) bool {
+    if (std.c.getenv("GIST_NO_PARALLEL") != null) return false;
     if (o.follow or o.json or o.quiet or o.stats or o.files_without or
         o.replace != null or o.max_filesize != 0 or o.multiline) return false;
     // Every positional root must be a directory — an explicit FILE arg carries
@@ -93,7 +104,11 @@ fn applyChain(node: ?*const IgNode, a: std.mem.Allocator, ci: bool, root_depth: 
 /// The full skip decision for one walked entry: frozen-base verdict —
 /// `Compiled.matchRank` (hash-probing fast tier) when available, else
 /// `decideAt` — overridden by the per-directory chain, then the shared
-/// `.git`/hidden folding (`skipFromVerdict`).
+/// `.git`/hidden folding (`skipFromVerdict`). Threads the same ripgrep
+/// whitelist-override pair (`Filter.whitelists`/`whitelistsHidden`) the serial
+/// engine's `walkDirLinked` computes per entry — see `Ignore.shouldSkip`'s doc
+/// comment for the asymmetry (`-g`/`--iglob` bypasses `.git`+ignore, a `-t`
+/// type match only un-hides) this engine must reproduce byte-for-byte.
 fn shouldSkip(cfg: *const Cfg, chain: ?*const IgNode, a: std.mem.Allocator, task: DirTask, rel: []const u8, is_dir: bool, basename: []const u8) bool {
     const ig = cfg.ig;
     var v: ?bool = null;
@@ -103,7 +118,9 @@ fn shouldSkip(cfg: *const Cfg, chain: ?*const IgNode, a: std.mem.Allocator, task
         v = ig.decideAt(rel, is_dir, task.root_depth);
     }
     applyChain(chain, a, ig.o.ignore_case_insensitive, task.root_depth, rel, is_dir, &v);
-    return ig.skipFromVerdict(v, is_dir, basename);
+    const wl_ig = cfg.o.filter.whitelists(a, rel);
+    const wl_hid = cfg.o.filter.whitelistsHidden(a, rel);
+    return ig.skipFromVerdict(v, is_dir, basename, wl_ig, wl_hid);
 }
 
 /// Read one ignore file (raw POSIX, worker-thread safe) into `a`. Null when
@@ -268,6 +285,11 @@ const Queue = struct {
     avail: std.atomic.Value(usize) = .init(0), // tasks sitting in `items` (maintained under `mu`)
     starving: std.atomic.Value(u32) = .init(0), // workers inside `pop` (spinning or parked)
     aborted: std.atomic.Value(bool) = .init(false), // set once; a broken output pipe cancels the walk
+    // A directory the walk discovered but could not open/descend (unreadable /
+    // EACCES) — set from any worker thread; `run` folds it into the exit code
+    // (rg parity: an unsignaled walk gap must never present as a silent
+    // "no match", see `reportWalkError`/`run.zig`'s identical `walk_error`).
+    walk_error: std.atomic.Value(bool) = .init(false),
     gpa: std.mem.Allocator,
     io: std.Io,
 
@@ -523,14 +545,29 @@ fn joinRel(a: std.mem.Allocator, prefix: []const u8, name: []const u8) []const u
     return std.fmt.allocPrint(a, "{s}/{s}", .{ prefix, name }) catch die("oom\n", .{});
 }
 
+/// ripgrep prints a walk error to stderr (`rg: <path>: <errno>`) and lets the
+/// run exit 2 — the same contract `run.zig`'s serial `reportWalkError`
+/// enforces, mirrored here for the parallel engine: a directory this walk
+/// discovered but could not open/descend is a POTENTIAL false negative that
+/// MUST be signaled, never dropped in silence just because a peer worker is
+/// mid-flight. Thread-safe (any worker may call this concurrently).
+fn reportWalkError(q: *Queue, rel: []const u8, e: anyerror) void {
+    std.debug.print("gist: {s}: {s}\n", .{ rel, grepfile.pathErrNote(e) });
+    q.walk_error.store(true, .release);
+}
+
 fn processDir(w: *Worker, a: std.mem.Allocator, scratch: []u8, task: DirTask, local: *std.ArrayList(DirTask)) void {
     const cfg = w.cfg;
     const o = cfg.o;
 
     // Raw `openat` (worker-thread safe, no std.Io indirection) — the fd feeds
     // `getattrlistbulk` directly and is wrapped in a `Dir` only for the
-    // portable fallback.
-    const fd = std.posix.openat(std.posix.AT.FDCWD, task.disk, .{ .ACCMODE = .RDONLY, .DIRECTORY = true }, 0) catch return;
+    // portable fallback. An unreadable/EACCES directory is a walk error, not a
+    // silent prune (rg parity — see `reportWalkError`).
+    const fd = std.posix.openat(std.posix.AT.FDCWD, task.disk, .{ .ACCMODE = .RDONLY, .DIRECTORY = true }, 0) catch |e| {
+        reportWalkError(w.q, task.rel, e);
+        return;
+    };
     var dir = Dir{ .handle = fd };
     var closed = false;
     defer if (!closed) {
@@ -560,12 +597,29 @@ fn processDir(w: *Worker, a: std.mem.Allocator, scratch: []u8, task: DirTask, lo
             // readdir — reopen a fresh handle before the portable fallback.
             _ = std.posix.system.close(dir.handle);
             closed = true;
-            const fd2 = std.posix.openat(std.posix.AT.FDCWD, task.disk, .{ .ACCMODE = .RDONLY, .DIRECTORY = true }, 0) catch return;
+            const fd2 = std.posix.openat(std.posix.AT.FDCWD, task.disk, .{ .ACCMODE = .RDONLY, .DIRECTORY = true }, 0) catch |e| {
+                reportWalkError(w.q, task.rel, e);
+                return;
+            };
             dir = Dir{ .handle = fd2 };
             closed = false;
         }
         var it = dir.iterate();
-        while (it.next(w.io) catch null) |e| {
+        while (true) {
+            // A `next` error is this directory's iteration failing after it was
+            // opened (deleted mid-walk, FS error): report it and STOP iterating
+            // THIS directory (the reader's cursor never advances past a failed
+            // read — see std.Io.Dir.Reader.next / SelectiveWalker.next's own
+            // "all future `next` calls would likely just fail with the same
+            // error" comment — so a `continue` here would spin forever on the
+            // same errno). The walk still finishes every OTHER directory; rg's
+            // own "keep walking past an error" behavior is preserved at the
+            // per-directory grain via the queue draining other tasks.
+            const maybe = it.next(w.io) catch |e| {
+                reportWalkError(w.q, task.rel, e);
+                break;
+            };
+            const e = maybe orelse break;
             if (e.kind != .file and e.kind != .directory) continue;
             var mtime: i128 = 0;
             // mtime is only consulted for elision candidates; stat lazily there.
@@ -810,6 +864,8 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
 
     // Every byte is already on stdout — each worker streamed its fragments
     // through `sink.emit` the instant it rendered them (see `Sink`). Nothing
-    // left to stitch or write; `sink.matched_files` alone decides the exit code.
-    std.process.exit(if (sink.matched_files > 0) 0 else 1);
+    // left to stitch or write; a walk error (unreadable dir) trumps match/
+    // no-match (rg parity — see `reportWalkError`), otherwise `sink.matched_files`
+    // alone decides the exit code.
+    std.process.exit(if (q.walk_error.load(.acquire)) 2 else if (sink.matched_files > 0) 0 else 1);
 }

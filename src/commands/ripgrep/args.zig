@@ -47,6 +47,27 @@ pub const Filter = struct {
         for (self.iglobs) |g| if (globAppliesCI(a, g, path)) return true;
         return false;
     }
+    /// ripgrep `Override` whitelist: does an explicit `-g`/`--glob`/`--iglob` glob
+    /// force this path IN, OVERRIDING the hidden/ignore filters (`Match::Whitelist`
+    /// short-circuit)? ONLY `-g`/`--iglob` form the override — `-t`/`-T` type
+    /// filters do NOT bypass ignore, they layer on top of it. A `-g '!…'` exclude
+    /// vetoes; empty include sets ⇒ no override (normal hidden/ignore stands).
+    pub fn whitelists(self: Filter, a: std.mem.Allocator, path: []const u8) bool {
+        if (self.includes.len == 0 and self.iglobs.len == 0) return false;
+        for (self.excludes) |g| if (glob.globApplies(g, path)) return false;
+        for (self.includes) |g| if (glob.globApplies(g, path)) return true;
+        for (self.iglobs) |g| if (globAppliesCI(a, g, path)) return true;
+        return false;
+    }
+    /// Does any include whitelist UN-HIDE this path (bypass the dotfile skip)? A
+    /// `-g`/`--iglob` override does (via `whitelists`), and so does a `-t`/`-t all`
+    /// TYPE match — ripgrep un-hides a dotfile that a type filter selects, even
+    /// though a type filter never bypasses gitignore (that stays `whitelists`).
+    pub fn whitelistsHidden(self: Filter, a: std.mem.Allocator, path: []const u8) bool {
+        if (self.whitelists(a, path)) return true;
+        for (self.exts) |e| if (glob.globApplies(e, path)) return true;
+        return self.type_all and types.isKnownType(path);
+    }
     /// True when any set constrains the file list (lets the caller skip the walk
     /// filter entirely on an unscoped query).
     pub fn active(self: Filter) bool {

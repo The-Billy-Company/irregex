@@ -109,7 +109,17 @@ fn diskPath(a: std.mem.Allocator, root_path: []const u8, p: []const u8) []const 
 /// string, not the handle it was discovered through.
 const Candidate = struct { rel: []const u8, disk: []const u8, explicit: bool = false };
 
-fn walkDir(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix: []const u8, o: Opts, ig: *ignore.Ignore, out: *std.ArrayList(Candidate)) void {
+/// ripgrep prints a walk error to stderr (`rg: <path>: <errno>`) and lets the run
+/// exit 2: a directory it could not descend is a POTENTIAL false negative that
+/// MUST be signaled, never skipped in silence. Mirror that — name the path,
+/// carry the errno phrase (`pathErrNote`, shared with the explicit-PATH path),
+/// and set the shared error flag so `collectFiles` surfaces exit 2.
+fn reportWalkError(rel: []const u8, e: anyerror, walk_error: *bool) void {
+    std.debug.print("gist: {s}: {s}\n", .{ rel, grepfile.pathErrNote(e) });
+    walk_error.* = true;
+}
+
+fn walkDir(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix: []const u8, o: Opts, ig: *ignore.Ignore, out: *std.ArrayList(Candidate), walk_error: *bool) void {
     ig.loadDir(root_path, prefix);
     // `-L`/`--follow` cycle guard: the real (canonicalized) path of every
     // directory currently on this DFS's ancestor chain — ripgrep's own
@@ -120,7 +130,7 @@ fn walkDir(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix: []co
     // popped back off `visited` once its own subtree walk returns.
     var visited: std.ArrayList([]const u8) = .empty;
     if (o.follow) if (realDirPath(a, root_path)) |rp| visited.append(a, rp) catch {};
-    walkDirLinked(a, io, root_path, prefix, o, ig, out, 0, &visited);
+    walkDirLinked(a, io, root_path, prefix, o, ig, out, 0, &visited, walk_error);
 }
 
 /// `-L` symlink-recursion depth cap — defense in depth alongside the realpath
@@ -150,19 +160,35 @@ fn containsPath(haystack_paths: []const []const u8, needle_path: []const u8) boo
 /// actual reads happen afterward, in parallel, over the flat list this builds
 /// (see `readCandidates`), matching ripgrep's own split between walking the
 /// tree and reading what it finds.
-fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix: []const u8, o: Opts, ig: *ignore.Ignore, out: *std.ArrayList(Candidate), link_depth: usize, visited: *std.ArrayList([]const u8)) void {
-    var root = Dir.cwd().openDir(io, root_path, .{ .iterate = true }) catch return;
+fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix: []const u8, o: Opts, ig: *ignore.Ignore, out: *std.ArrayList(Candidate), link_depth: usize, visited: *std.ArrayList([]const u8), walk_error: *bool) void {
+    var root = Dir.cwd().openDir(io, root_path, .{ .iterate = true }) catch |e| return reportWalkError(prefix, e, walk_error);
     defer root.close(io);
     var walker = root.walkSelectively(a) catch return;
     defer walker.deinit();
-    while (walker.next(io) catch return) |entry| {
+    while (true) {
+        // A `next` error is a dir whose iteration failed after it was opened
+        // (deleted mid-walk, FS error): report it and CONTINUE — the walker has
+        // already popped the failed dir, so the next call proceeds. ripgrep keeps
+        // walking past such errors rather than aborting the whole run.
+        const maybe = walker.next(io) catch |e| {
+            reportWalkError(prefix, e, walk_error);
+            continue;
+        };
+        const entry = maybe orelse break;
         const depth = pathDepth(entry.path);
         const rel = relPath(a, prefix, entry.path);
+        // ripgrep whitelist-override, with rg's asymmetry (see `Ignore.shouldSkip`
+        // + `Filter.whitelists`/`whitelistsHidden`): a `-g`/`--iglob` match
+        // (`wl_ig`) force-searches even a hidden/gitignored path and descends a
+        // whitelisted `.git`/ignored dir (rg's `-g '*'` searches `.git`); a `-t`
+        // type match only additionally un-hides (`wl_hid`), never un-ignores.
+        const wl_ig = o.filter.whitelists(a, rel);
+        const wl_hid = o.filter.whitelistsHidden(a, rel);
         // -L/--follow: a symlink is resolved to its target — a dir is walked as a
         // subtree (path-prefixed by the link), a file is read like any other.
         if (entry.kind == .sym_link and o.follow) {
             if (link_depth >= max_link_depth) continue;
-            if (ig.shouldSkip(rel, false, entry.basename)) continue;
+            if (ig.shouldSkip(rel, false, entry.basename, wl_ig, wl_hid)) continue;
             const full = if (std.mem.eql(u8, root_path, ".")) std.fmt.allocPrint(a, "./{s}", .{entry.path}) catch continue else std.fmt.allocPrint(a, "{s}/{s}", .{ root_path, entry.path }) catch continue;
             if (Dir.cwd().openDir(io, full, .{ .iterate = true })) |sub_const| {
                 var sub = sub_const;
@@ -176,7 +202,7 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
                     }
                     if (!cyclic) {
                         ig.loadDir(full, rel);
-                        walkDirLinked(a, io, full, rel, o, ig, out, link_depth + 1, visited);
+                        walkDirLinked(a, io, full, rel, o, ig, out, link_depth + 1, visited, walk_error);
                         visited.shrinkRetainingCapacity(mark);
                     }
                 }
@@ -190,17 +216,20 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
             // rg's DEFAULT walk descends everything except hidden dirs, `.git`, and
             // ignored ones (.gitignore/.ignore — see ignore.zig). It does NOT
             // hardcode node_modules/target skips (that's gist's monorepo-corpus
-            // policy in corpus.zig, wrong for an arbitrary-tree drop-in).
-            if (ig.shouldSkip(rel, true, entry.basename)) continue;
+            // policy in corpus.zig, wrong for an arbitrary-tree drop-in). A `-g`
+            // whitelist (`wl_ig`) overrides all of it, `.git` included (rg parity).
+            if (ig.shouldSkip(rel, true, entry.basename, wl_ig, wl_hid)) continue;
             const shallow = o.max_depth == 0 or depth < o.max_depth;
             if (shallow) {
                 ig.loadDir(diskPath(a, root_path, entry.path), rel);
-                walker.enter(io, entry) catch {};
+                // A dir we chose to descend but cannot open (unreadable / EACCES)
+                // is a walk error — report it and exit 2, never skip in silence.
+                walker.enter(io, entry) catch |e| reportWalkError(rel, e, walk_error);
             }
             continue;
         }
         if (entry.kind != .file) continue;
-        if (ig.shouldSkip(rel, false, entry.basename)) continue;
+        if (ig.shouldSkip(rel, false, entry.basename, wl_ig, wl_hid)) continue;
         if (o.max_depth != 0 and depth > o.max_depth) continue;
         out.append(a, .{ .rel = rel, .disk = diskPath(a, root_path, entry.path) }) catch die("oom\n", .{});
     }
@@ -216,26 +245,14 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
 /// run exits 2, matching rg (error trumps match/no-match).
 const Gathered = struct { recursive: bool, path_error: bool };
 
-/// ripgrep's `<bin>: <path>: <errno phrase>` note for an explicit PATH arg that
-/// can't be opened. The differential harness keys only on the errno phrase and
-/// the exit class (never the `rg:`/`gist:` prefix or the exact number — see
-/// `bench/rgsuite/run.py`), so the common cases carry rg's own wording and
-/// anything rarer falls back to the Zig error name.
-fn pathErrNote(err: anyerror) []const u8 {
-    return switch (err) {
-        error.FileNotFound => "No such file or directory (os error 2)",
-        error.AccessDenied => "Permission denied (os error 13)",
-        error.NotDir => "Not a directory (os error 20)",
-        error.SymLinkLoop => "Too many levels of symbolic links (os error 62)",
-        error.NameTooLong => "File name too long (os error 63)",
-        else => @errorName(err),
-    };
-}
-
 fn gather(a: std.mem.Allocator, io: std.Io, roots: []const []const u8, o: Opts, ig: *ignore.Ignore, out: *std.ArrayList(Candidate)) Gathered {
+    // A dir the walk discovers but cannot descend (unreadable / EACCES) sets this
+    // — folded into `path_error` so, like ripgrep, an unsignaled walk gap forces
+    // exit 2 rather than a silent "no match".
+    var walk_error = false;
     if (roots.len == 0) {
-        walkDir(a, io, ".", "", o, ig, out);
-        return .{ .recursive = true, .path_error = false };
+        walkDir(a, io, ".", "", o, ig, out, &walk_error);
+        return .{ .recursive = true, .path_error = walk_error };
     }
     var recursive = false;
     var path_error = false;
@@ -248,7 +265,7 @@ fn gather(a: std.mem.Allocator, io: std.Io, roots: []const []const u8, o: Opts, 
             // ignore rules (ripgrep never ignore-filters an explicitly named
             // root — only what's found beneath it); see `Ignore.scopeToRoot`.
             ig.scopeToRoot(prefix);
-            walkDir(a, io, r, prefix, o, ig, out);
+            walkDir(a, io, r, prefix, o, ig, out, &walk_error);
             recursive = true;
         } else |_| {
             // Not a directory. Probe it as a file: ripgrep searches an explicitly
@@ -259,12 +276,12 @@ fn gather(a: std.mem.Allocator, io: std.Io, roots: []const []const u8, o: Opts, 
                 _ = std.posix.system.close(fd);
                 out.append(a, .{ .rel = r, .disk = r, .explicit = true }) catch die("oom\n", .{});
             } else |ferr| {
-                std.debug.print("gist: {s}: {s}\n", .{ r, pathErrNote(ferr) });
+                std.debug.print("gist: {s}: {s}\n", .{ r, grepfile.pathErrNote(ferr) });
                 path_error = true;
             }
         }
     }
-    return .{ .recursive = recursive, .path_error = path_error };
+    return .{ .recursive = recursive, .path_error = path_error or walk_error };
 }
 
 /// Spawn one shard per core above this candidate count; below it, thread-spawn

@@ -226,15 +226,61 @@ pub const Emitter = struct {
         self.out.appendSlice(self.a, s[last..]) catch die("oom\n", .{});
     }
 
+    /// Non-empty, `-w`-filtered match spans of `s` (on its `--crlf` view), leftmost
+    /// non-overlapping — the "match granularity" `--color` gives the over-long-line
+    /// renderer (rg counts/paints matches once it's highlighting). Same iteration
+    /// as `highlightSpans`, materialized so `exceeded` can both paint the shown
+    /// preview AND count the matches past the cut in one pass. Arena-owned.
+    fn matchSpans(self: *Emitter, s: []const u8) []const Regex.Span {
+        var out: std.ArrayList(Regex.Span) = .empty;
+        var ssim = Regex.SpanSim.init(self.a, self.re) catch return &.{};
+        defer ssim.deinit();
+        const mv = self.mview(s);
+        var from: usize = 0;
+        while (from <= mv.len) {
+            const sp = self.re.matchSpan(&ssim, mv, from) orelse break;
+            if (sp.end == sp.start) {
+                from = sp.start + 1;
+                continue;
+            }
+            if (self.o.word and !wordOk(mv, sp.start, sp.end)) {
+                from = sp.end;
+                continue;
+            }
+            out.append(self.a, sp) catch die("oom\n", .{});
+            from = sp.end;
+        }
+        return out.toOwnedSlice(self.a) catch &.{};
+    }
+
     /// ripgrep's `--max-columns` over-long-line rendering. Without match granularity
-    /// (no `-r`) it's the plain `[Omitted long …]` / ` [... omitted end of long
-    /// line]`; WITH granularity (`-r`, and later colors) it reports match counts:
-    /// `[Omitted long line with N matches]` / ` [... N more match(es)]`. `starts`
-    /// are replacement offsets within `s` (empty ⇒ no granularity).
+    /// it's the plain `[Omitted long …]` / ` [... omitted end of long line]`; WITH
+    /// it (`-r` replacement offsets OR `--color`, which highlights so it counts) it
+    /// reports match counts: `[Omitted long line with N matches]` / ` [... N more
+    /// match(es)]`. `starts` are `-r` replacement offsets within `s` (empty ⇒ none).
     fn exceeded(self: *Emitter, s: []const u8, is_match: bool, starts: []const usize) void {
         const gran = starts.len != 0 or (self.o.replace != null and is_match);
         if (self.o.max_cols_preview) {
             const cut = previewEnd(s, self.o.max_cols);
+            // `--color` (no `-r`): paint matches inside the shown preview and count
+            // the ones that begin past the cut — rg's colored-preview behavior.
+            if (self.use_color and is_match and self.o.replace == null) {
+                var last: usize = 0;
+                var remaining: usize = 0;
+                for (self.matchSpans(s)) |sp| {
+                    if (sp.start >= cut) {
+                        remaining += 1;
+                        continue;
+                    }
+                    self.out.appendSlice(self.a, s[last..sp.start]) catch die("oom\n", .{});
+                    const e = @min(sp.end, cut);
+                    self.paint(palette.match_on, s[sp.start..e]);
+                    last = e;
+                }
+                self.out.appendSlice(self.a, s[last..cut]) catch die("oom\n", .{});
+                self.out.print(self.a, " [... {d} more {s}]", .{ remaining, if (remaining == 1) "match" else "matches" }) catch die("oom\n", .{});
+                return;
+            }
             self.out.appendSlice(self.a, s[0..cut]) catch die("oom\n", .{});
             if (!gran) {
                 self.out.appendSlice(self.a, " [... omitted end of long line]") catch die("oom\n", .{});
