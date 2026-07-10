@@ -137,8 +137,8 @@ zig build cli -- --schema                 # a JSON capability manifest for agent
 The bare `gist <pattern>` shorthand and its explicit `gist rg` alias are ONE
 engine (`src/commands/ripgrep/run.zig`) — a ripgrep-DEFAULT drop-in on its
 **supported surface** (gitignore precedence, exit codes, piped stdin;
-byte-identical on 98.6% of the mined rgsuite corpus, 4 known divergences tracked
-under "Where gist departs from ripgrep") that transparently
+byte-identical on 100% of the mined rgsuite corpus — 0 FAIL — with every
+by-design boundary tracked under "Where gist departs from ripgrep") that transparently
 uses a persisted trigram index, when one covers the searched roots, purely to
 **elide reads** of files it proves can't match; it never changes the file set,
 ordering, or output. `--rank` is gist's one native shape with no rg
@@ -189,8 +189,8 @@ in Benchmarks.
 ## How it works as a drop-in
 
 The default output targets `rg -n --no-heading` byte-for-byte on its supported
-surface (98.6% of the mined rgsuite corpus is byte-identical; 4 known divergences
-below): `path:line:text`, with a persisted trigram index transparently used to skip
+surface (100% of the mined rgsuite corpus is byte-identical — 0 FAIL; the by-design
+boundaries below are recorded NA): `path:line:text`, with a persisted trigram index transparently used to skip
 reading files that provably can't match — a whole-tree walk otherwise. Point
 an agent, a script, or a muscle-memory `rg -n <pattern>` at bare `gist -n
 <pattern>` (no verb, no setup) or the explicit `gist rg -n <pattern>` alias and
@@ -228,9 +228,12 @@ matching _file set_ against `rg -F -l` / `rg -l '(?-u)…'` over a byte-identica
 corpus snapshot — proving zero false negatives / positives (the candidate filter
 is sound), but it is a file-set oracle, **not** a line-output diff. **Line-output
 parity** is the job of [`bench/rgsuite/`](bench/rgsuite/README.md) (441 mined `rg`
-argv replays); the committed `results.json` currently reads **275 PASS / 3 ORDER /
-4 FAIL / 38 NA / 121 SKIP = 98.6% supported-surface parity** — not yet zero-FAIL
-(the four divergences are listed under "Where gist departs from ripgrep"). The
+argv replays, on **both** the parallel and serial walk engines — see that
+README's "Two engines, one suite"); the committed `results.json` reads **264
+PASS / 15 ORDER / 0 FAIL / 41 NA / 121 SKIP = 100% supported-surface parity**
+— zero-FAIL, and additionally
+gated byte-for-byte by [`bench/gates/line_parity.sh`](bench/gates/line_parity.sh)
+(the by-design boundaries are listed under "Where gist departs from ripgrep"). The
 exhaustive rg-compatible flag reference lives in
 [`src/commands/ripgrep/args.zig`](src/commands/ripgrep/args.zig).
 
@@ -454,86 +457,63 @@ rg's = an unsound verify. Both must be zero.
 
 ### Macroscopic field race — the fail-closed certificate (`certify.sh`)
 
-> **Reproducibility caveat (read before citing the numbers below).** The
-> `9 win · 2 loss` verdict was measured on the current wired CLI, but (1) the
-> per-cell timing wrappers only became genuinely fail-closed on hard errors
-> (exit ≥ 2) in the honesty pass that produced this note — earlier runs could time
-> a masked failure as a fast search; and (2) `certify.sh`'s raw outputs
-> (`CERTIFICATE.md`, `certify_macro.csv`, per-cell hyperfine JSON, tool + machine
-> metadata) are written to gitignored `.local/gist-verify/` and are **not
-> committed**, and the figures below are transcribed from a run rather than
-> regenerated from committed data. Treat the numbers as **indicative pending a
-> committed, fail-closed rerun** — the harness is real; an archived, reproducible
-> certificate is not in the tree yet (tracked in `GIST-ISSUES.md`).
-
 [`bench/certify/certify.sh`](bench/certify/certify.sh) is the most adversarial cut: a
 fresh-process **cold** query for gist **and all seven field tools** over the
 byte-identical corpus (hyperfine, 20 runs + 3 warmup), a 95% bootstrap-CI
 median per cell, and a gist-vs-ripgrep verdict that is **fail-closed** — a WIN
-needs a lower median _and_ Mann-Whitney `p<0.05`. Its 11 probe classes
-deliberately include the **saturating** patterns (`})`, `;$`, `\w{3,8}`, a UUID
-class) where the trigram prefilter admits _every_ file — the cases the
-competition is built to win. Every number below is `certify_macro.csv`
-verbatim, all 11 classes, re-run clean after the CSR-index rewrite.
+needs a lower median _and_ Mann-Whitney `p<0.05`. The certificate is **committed
+and reproducible** under [`bench/certify/artifact/`](bench/certify/artifact/):
+the rendered `CERTIFICATE.md`, `certify_macro.csv` (median + 95% CI + verdict per
+cell), per-cell hyperfine JSON, and machine / tool-version / corpus metadata. The
+figure below renders from that committed CSV, and `check_artifacts.py` gates the
+set for completeness. Every number is `certify_macro.csv` verbatim, all 11 classes.
 
 ![gist fail-closed statistical certificate forest plot](assets/gist-certify-forest.png)
 
-> _The certificate itself. **(a)** gist's median (blue diamond) vs rg's
-> median + 95% bootstrap CI (green = win, red = loss) per class, log-ms —
-> non-overlapping whiskers are what make a "win" statistically real, not
-> just a lower number on one run. **(b)** the honest split against the two
-> indexed rivals, same 11 classes: gist's speedup over csearch/zoekt, log-x,
-> `<1` means the rival wins cold._
+> _The certificate itself, rendered from the committed `certify_macro.csv`.
+> **(a)** gist's median (blue diamond) vs rg's median + 95% bootstrap CI per
+> class, log-ms — non-overlapping whiskers are what make the verdict statistically
+> real. **(b)** gist's speedup over the indexed rivals csearch/zoekt, log-x, `<1`
+> means the rival wins cold._
 
-- **gist vs ripgrep — 9 win · 2 loss, all 11 classes.** gist's cold query
-  beats rg **5.91×** (`pgxpool`), **5.83×** (`pgxpool\.\w+`), **3.99×**
-  (`context.Context`), **3.11×** (`^func\s`), **2.54×** (`func`), **2.41×**
-  (`func\s+\w+\(`), **2.00×** (`return|continue|break`), **1.32×** (`})`),
-  and **1.29×** (`\w{3,8}`) — and loses two of the saturating tail: `;$`
-  (0.94×) and the UUID class (0.75×). Both losses are within the fail-closed
-  Mann-Whitney bar, not measurement noise waved away — see panel (a)'s CI
-  whiskers. Up from 8 win · 3 loss before the CSR-index rewrite: the
-  saturating `})` pattern flipped from a loss to a win.
-- **The saturating tail is where rg still wins, and it's close.** The
-  cand%=100% classes (every file is a candidate, so the trigram prefilter
-  buys nothing) are the tightest races: `\w{3,8}` now wins outright (1.29×,
-  up from a coin-flip), `})` wins (1.32×, the documented sub-trigram 2-byte
-  case with no filter by design), and only `;$` (0.94×) and the UUID class
-  (0.75×) still go to rg. The honest read: gist is at parity or better with
-  rg on 9/11 classes, decisively where the prefilter prunes, narrowly where
-  it can't.
-- **vs the indexed twins — the honest split, and it's no longer a split in
-  gist's disfavor.** Across all 11 classes, geomean of gist's speedup over
-  the rival (`rival_ms / gist_ms`): **csearch 1.00× — exact parity** (gist
-  wins 6/11: `func`, `func\s+\w+\(`, `return|continue|break`, `})`,
-  `\w{3,8}`, `;$`; csearch still wins the four ultra-selective literals plus
-  the UUID class). **zoekt 1.09× — a slight edge to gist** (gist wins 6/11,
-  including the anchored `^func\s` 3.6× and the UUID class 3.9×; zoekt still
-  wins the punctuation-heavy saturating classes, `})` 0.2× and `;$` 0.3×,
-  where its sharded index loads almost free). This is the same lever as the
-  cold-literal section above, now measured on the full macro race: shrink
-  the index, and the "richer index bought freshness" trade-off gets
-  cheaper — cheap enough that gist now edges out zoekt on geomean, not just
-  ties it.
+- **gist vs ripgrep — 0 win · 0 parity · 11 loss (cold, fail-closed).** On a
+  fresh-process cold single-shot, gist runs at **~0.3× ripgrep** across every one
+  of the 11 classes (Mann-Whitney `p<0.001` on all), from `0.38×` (`\w{3,8}`) down
+  to `0.12×` (the UUID class). It loses outright, and the certificate says so. The
+  cause is structural and not hidden: every cold gist query first pays a
+  corpus-wide freshness `stat()` walk — reading **every file's mtime** to stay
+  sound without git — that ripgrep never pays (rg reads no mtimes at all).
+- **Cold, gist also trails the indexed rivals** (csearch, zoekt, and even
+  git-grep on several classes — see the "field context" block in
+  [`CERTIFICATE.md`](bench/certify/artifact/CERTIFICATE.md)). csearch and zoekt
+  answer from a pre-built index and skip both the directory walk and the freshness
+  pass, so on a cold one-shot they are faster still. That is precisely the
+  indexed-search trade-off gist makes the _other_ way: it keeps a live freshness
+  guarantee the others drop until re-indexed.
+- **Where gist wins is the warm resident-index session it is built for** — not the
+  cold one-shot. With the index resident in RAM across an agent session, the walk
+  and the freshness pass amortize away and gist answers **~1770× faster than
+  ripgrep** (`bench/rgsuite/README.md`, warm track). The cold certificate above is
+  the honest floor; the warm resident path is the design point.
 
-The shape of the result is honest and architectural: **gist owns the
+The shape of the result is honest and architectural: **gist owns the warm
 agent-session workload it was built for** — a resident index answering in
-microseconds, or a cold one-shot that beats every unindexed tool by reading only
-candidate bytes. Against the two mature _indexed_ engines it's no longer a
-trail at all: gist's index is smaller than csearch's own (30.1 vs 31.1 MiB,
-same corpus) and roughly a 14th of zoekt's sharded 428.7 MiB, and the cold
-one-shot certificate now reads exact parity with csearch and a slight edge
-over zoekt. The residual gap — still real, not hidden — is the corpus-wide
-freshness `stat()` walk every gist cold query pays and the rivals don't
-(they go stale until re-indexed); that is the next rung, not the index.
+microseconds — and **loses the cold single-shot** to every tool that doesn't pay a
+freshness walk. The prior "9 win · 2 loss" verdict (measured before the harness was
+fail-closed and the certificate committed) is superseded by the committed numbers
+above. The residual cold gap is the corpus-wide freshness `stat()` walk; whether it
+can be narrowed without dropping the freshness guarantee is the open perf question
+(the walk cost is largely fundamental — reading N mtimes — not a fixable inefficiency).
 
-### Certificate of Optimality — from "fastest in the field" to "at the limit"
+### Certificate of Optimality — the scan kernel is at the hardware limit
 
-The field race above is **Layer A**: gist is empirically fastest in its class,
-statistically fail-closed. Three further layers turn that into a claim about the
-_theoretical_ ceiling — that no implementation on this chip can go materially
-faster — each cheapest-evidence-first, all splicing into one generated
-`.local/gist-verify/CERTIFICATE.md` (recipe + full tables in
+Layer A above measures the **end-to-end cold query** (where gist loses — it pays a
+freshness walk the field doesn't). The next three layers make a narrower, still-true
+claim about the **scan kernel itself**: once gist is reading candidate bytes, that
+inner loop is at the chip's ceiling — no implementation on this core can scan
+materially faster. (This is why gist's _warm_ path wins: with the walk amortized
+away, only the at-the-limit scan remains.) Each layer is cheapest-evidence-first,
+splicing into one generated `CERTIFICATE.md` (recipe + full tables in
 [`bench/README.md`](bench/README.md), rationale in
 [ADR-320](../../../docs/architecture/3-decisions/320-gist-optimality-certificate-layers.md)):
 

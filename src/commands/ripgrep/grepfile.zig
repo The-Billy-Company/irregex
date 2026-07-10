@@ -243,6 +243,25 @@ pub fn emitStats(a: std.mem.Allocator, out: *std.ArrayList(u8), s: Stats) void {
     , .{ s.matches, s.matched_lines, s.files_with_match, s.files_searched, s.bytes_printed, s.bytes_searched }) catch die("oom\n", .{});
 }
 
+/// ripgrep's `<bin>: <path>: <errno phrase>` note for a path that can't be
+/// opened/descended — an explicit PATH arg or an unreadable directory hit
+/// mid-walk. Shared by both engines (`run.zig`'s serial walk + explicit-PATH
+/// probe, `pipeline.zig`'s parallel `processDir`) so a walk-error message
+/// can't drift between them. The differential harness keys only on the errno
+/// phrase and the exit class (never the `rg:`/`gist:` prefix or the exact
+/// number — see `bench/rgsuite/run.py`), so the common cases carry rg's own
+/// wording and anything rarer falls back to the Zig error name.
+pub fn pathErrNote(err: anyerror) []const u8 {
+    return switch (err) {
+        error.FileNotFound => "No such file or directory (os error 2)",
+        error.AccessDenied => "Permission denied (os error 13)",
+        error.NotDir => "Not a directory (os error 20)",
+        error.SymLinkLoop => "Too many levels of symbolic links (os error 62)",
+        error.NameTooLong => "File name too long (os error 63)",
+        else => @errorName(err),
+    };
+}
+
 /// One candidate's raw bytes: POSIX open/read/close into the caller's reused
 /// `scratch` (sized `corpus.per_file_cap`); a file that fills `scratch`
 /// completely is ambiguous (exactly cap-sized, or bigger), so `readTail` keeps

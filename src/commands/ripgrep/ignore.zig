@@ -434,27 +434,34 @@ pub const Ignore = struct {
         };
     }
 
-    /// Should the walk drop this entry? Folds three rules: `.git` is never walked;
-    /// an ignored path is dropped; a dotfile stays hidden unless `--hidden` or an
-    /// explicit `!`-whitelist un-hides it.
-    pub fn shouldSkip(self: *const Ignore, rel: []const u8, is_dir: bool, basename: []const u8) bool {
-        if (is_dir and std.mem.eql(u8, basename, ".git")) return true;
+    /// Should the walk drop this entry? Folds `.git` + gitignore + the dotfile
+    /// skip, each with ripgrep's whitelist-override asymmetry (proven against rg's
+    /// own walk): `wl_ignore` (a `-g`/`--iglob` override match) bypasses `.git`
+    /// AND gitignore; `wl_hidden` (a `-g`/`--iglob` OR `-t`/`-t all` match)
+    /// bypasses only the hidden-dotfile skip. A type filter un-hides but never
+    /// un-ignores; an override does both. `wl_hidden ⊇ wl_ignore` by construction.
+    pub fn shouldSkip(self: *const Ignore, rel: []const u8, is_dir: bool, basename: []const u8, wl_ignore: bool, wl_hidden: bool) bool {
+        if (is_dir and std.mem.eql(u8, basename, ".git")) return !wl_ignore;
         const v = self.decide(rel, is_dir);
-        if (v == true) return true;
+        if (v == true) return !wl_ignore;
         const hidden = basename.len > 0 and basename[0] == '.';
-        if (hidden and !self.o.hidden and v != false) return true;
+        if (hidden and !self.o.hidden and v != false) return !wl_hidden;
         return false;
     }
 
     /// Fold a base-tier verdict (`decideAt`) with the hidden-dotfile rule the same
     /// way `shouldSkip` does, but from an ALREADY-COMPUTED verdict — the parallel
     /// pipeline computes the base verdict and its per-directory chain verdicts
-    /// separately (deepest wins), then applies this shared final step.
-    pub fn skipFromVerdict(self: *const Ignore, v: ?bool, is_dir: bool, basename: []const u8) bool {
-        if (is_dir and std.mem.eql(u8, basename, ".git")) return true;
-        if (v == true) return true;
+    /// separately (deepest wins), then applies this shared final step. Takes the
+    /// same `wl_ignore`/`wl_hidden` override pair as `shouldSkip` (see its doc
+    /// comment) so a `-g`/`--iglob`/`-t` whitelist force-searches identically on
+    /// both engines — the parallel pipeline must never regress this asymmetry
+    /// just because it derives the verdict differently.
+    pub fn skipFromVerdict(self: *const Ignore, v: ?bool, is_dir: bool, basename: []const u8, wl_ignore: bool, wl_hidden: bool) bool {
+        if (is_dir and std.mem.eql(u8, basename, ".git")) return !wl_ignore;
+        if (v == true) return !wl_ignore;
         const hidden = basename.len > 0 and basename[0] == '.';
-        if (hidden and !self.o.hidden and v != false) return true;
+        if (hidden and !self.o.hidden and v != false) return !wl_hidden;
         return false;
     }
 
