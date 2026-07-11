@@ -89,7 +89,21 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (std.mem.eql(u8, mode, "index")) {
-        try indexer.run(gpa, io, &default_roots);
+        // `index` (full rebuild) · `index --incremental` (graft only changed
+        // files onto the existing index — byte-identical, a fraction of the
+        // work) · `index --auto` (drift-gated + single-flight — the hook-safe
+        // refresh across coworking agents). Roots are always the defaults.
+        var m: indexer.Mode = .full;
+        while (it.next()) |arg| {
+            if (std.mem.eql(u8, arg, "--incremental") or std.mem.eql(u8, arg, "-i")) {
+                m = .incremental;
+            } else if (std.mem.eql(u8, arg, "--auto")) {
+                m = .auto;
+            } else if (std.mem.eql(u8, arg, "--full")) {
+                m = .full;
+            }
+        }
+        try indexer.run(gpa, io, &default_roots, m);
         return;
     }
     if (std.mem.eql(u8, mode, "status")) {

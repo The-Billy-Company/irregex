@@ -69,6 +69,14 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
         const now_ns = std.Io.Clock.now(.real, io).nanoseconds;
         const age_s = @as(f64, @floatFromInt(now_ns - built_ns)) / 1e9;
         try buf.print(gpa, "  built            {d:.0} s ago (freshness anchor set — new/edited files are folded in per query)\n", .{age_s});
+        // Drift: files touched since the build — the live-scan tax a stale index
+        // pays per query. `index --auto` folds these in (byte-identically) so
+        // subsequent queries stop re-walking them.
+        const drift = fresh.driftCount(gpa, io, &corpus_mod.default_roots, built_ns) catch 0;
+        if (drift == 0)
+            try buf.appendSlice(gpa, "  drift            0 files — index is current\n")
+        else
+            try buf.print(gpa, "  drift            {d} files changed since build (folded live per query; `gist index --auto` to persist)\n", .{drift});
     } else {
         try buf.appendSlice(gpa, "  built            (no freshness anchor — rebuild with `index` to enable the freshness overlay)\n");
     }

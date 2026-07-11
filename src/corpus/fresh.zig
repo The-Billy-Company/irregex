@@ -106,6 +106,21 @@ pub fn candidates(
     return .{ .ids = try ids.toOwnedSlice(gpa), .arena = arena, .gpa = gpa };
 }
 
+/// How many files under `roots` have been touched since `built_ns` — the
+/// index's *drift*. Runs the exact same work-stealing stat-walk the query
+/// overlay uses (`walkFresh`), just counting instead of widening. The `index
+/// --auto` drift gate calls this to decide whether a fold is even worth it, and
+/// `status` reports it so an agent can see, without a query, how much live-scan
+/// tax a stale index is currently paying. Deletions aren't counted (they can't
+/// advance an mtime) — harmless: a dropped file's stale postings verify out.
+pub fn driftCount(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, built_ns: i128) !usize {
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    var out: std.ArrayList([]const u8) = .empty;
+    try walkFresh(gpa, io, roots, built_ns, arena.allocator(), &out);
+    return out.items.len;
+}
+
 fn seedAll(gpa: std.mem.Allocator, ids: *std.ArrayList(u32), total: usize) !void {
     try ids.ensureTotalCapacity(gpa, total);
     for (0..total) |i| ids.appendAssumeCapacity(@intCast(i));

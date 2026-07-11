@@ -121,4 +121,5 @@ test {
     _ = @import("commands/ripgrep/run.zig"); // the unified engine (rgsuite parity drop-in)
     _ = @import("commands/ripgrep/rank.zig"); // `--rank` definition-first ranked view
     _ = @import("commands/ripgrep/index.zig"); // the `index` verb: build + persist
+    _ = @import("commands/ripgrep/graft_test.zig"); // incremental graft ≡ full-rebuild (byte-identical)
 }

@@ -50,6 +50,31 @@ pub fn writeAtomic(io: std.Io, sub_path: []const u8, data: []const u8) !void {
     try af.replace(io);
 }
 
+/// Serialize `idx` + its doc→path `paths` table to the two on-disk artifacts,
+/// each via the atomic temp-then-rename above so a concurrent reader never sees
+/// a torn pair. Returns the index blob size (for the caller's report). Does NOT
+/// write the freshness anchor — that lives in `corpus/fresh.zig`, which imports
+/// this module, so the caller stamps the anchor itself (`fresh.writeAnchor`)
+/// after this returns. Shared by the full build (`commands/ripgrep/index.zig`)
+/// and the incremental graft (`commands/ripgrep/graft.zig`) so both emit the
+/// byte-identical artifact pair through one code path.
+pub fn persistIndexAndPaths(gpa: std.mem.Allocator, io: std.Io, idx: *const Index, paths: []const []const u8) !usize {
+    try Dir.cwd().createDirPath(io, corpus_mod.out_dir);
+    const blob = try gpa.alloc(u8, idx.serializedSize());
+    defer gpa.free(blob);
+    _ = idx.writeInto(blob);
+    try writeAtomic(io, index_file, blob);
+
+    var pl: std.ArrayList(u8) = .empty;
+    defer pl.deinit(gpa);
+    for (paths) |p| {
+        try pl.appendSlice(gpa, p);
+        try pl.append(gpa, 0); // NUL-separated, doc-id order (`parsePathTable` splits on it)
+    }
+    try writeAtomic(io, paths_file, pl.items);
+    return blob.len;
+}
+
 /// The cold-loaded index + the doc→path table that maps candidate ids back to
 /// files. Both are mmap'd: `idx`'s directory + body slices alias into `imap`
 /// (borrowed, no copy) and every `paths` slice aliases into `pmap`, so all

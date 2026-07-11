@@ -121,7 +121,9 @@ Or drive the CLI straight from the build graph, no install:
 cd pkg/kernels/gist
 
 zig build cli -- index                    # build + persist the index once (~1.2 s)
-zig build cli -- status                   # is an index ready, how fresh, how big
+zig build cli -- index --incremental      # graft only changed files onto the index — byte-identical, 4–6× faster
+zig build cli -- index --auto             # drift-gated + single-flight refresh — no-op in ms if nothing moved
+zig build cli -- status                   # is an index ready, how fresh, how big, how drifted
 
 zig build cli -- <pattern> [PATH...]      # find matches — no verb, no setup, zero-config
 zig build cli -- rg <pattern> [PATH...]   # the same engine, addressed explicitly
@@ -147,6 +149,35 @@ equivalent — a definition-first RRF-ranked view (see "Why gist" below).
 exactly can this tool do" without running a query. The full flag surface is
 documented in "How it works as a drop-in" below, and exhaustively in `--help`
 / `--schema`.
+
+### Keeping the index fresh without a full rebuild
+
+A search is always correct without touching the index — the freshness overlay
+folds anything touched since the build into every query (see below). What drifts
+is _speed_: each drifted file is re-read live per query until it's folded into the
+persisted index. `index --incremental` grafts just those changed files on — it
+inverts the existing index, **reuses** every unchanged doc's trigrams verbatim,
+re-reads only the new/touched ones, and re-folds through the same counting-sort
+CSR path a full build uses, so the result is **byte-identical to a from-scratch
+rebuild** (proven in `src/commands/ripgrep/graft_test.zig`) at a fraction of the
+cost (~780 ms vs ~2.5 s over this repo's 23k files — 68 re-read, 22.9k reused).
+
+`index --auto` wraps that in the two guards that make it safe to fire
+unattended from the ~10 agents coworking on one tree:
+
+- **Drift gate** — reads the anchor, counts files touched since it, and returns
+  in milliseconds doing zero work when nothing moved. Only a real delta pays the
+  fold.
+- **Single-flight** — an advisory lock (`std.Io.File`, non-blocking in `--auto`)
+  means exactly one agent folds a given drift; the rest no-op instantly. Every
+  write is atomic (temp-then-rename), so a concurrent query never sees a torn
+  index.
+
+`make gist-refresh` is the wired entry point (`gist index --auto`). It is safe to
+call at the end of any operation — a Cursor `stop` hook, a watch loop, CI, or by
+hand. To auto-refresh after each agent turn, add a detached `stop` hook that
+shells `make gist-refresh &` (opt-in — it is not wired by default, to stay in
+lane with the shared hooks config).
 
 ## Why gist instead of ripgrep — and everything else
 
