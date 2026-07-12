@@ -119,6 +119,8 @@ pub fn build(b: *std.Build) void {
         \\    if (count != 3u) return 12;
         \\    for (size_t i = 1; i < count; ++i)
         \\        if (out[i - 1] >= out[i]) return 13;
+        \\    const char *ver = gist_version();
+        \\    if (ver == NULL || ver[0] < '0' || ver[0] > '9') return 14;
         \\    return 0;
         \\}
         \\

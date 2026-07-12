@@ -9,9 +9,12 @@
 //!
 //! Search, index lifecycle, and result handling are Zig-native and surfaced by
 //! the `gist` CLI. The deliberately minimal C ABI in `include/gist.h` exposes
-//! only ABI-version introspection and allocation-free trigram extraction; it
-//! does not open, build, or query indexes. Non-Zig embedding therefore uses the
-//! CLI contract rather than a speculative FFI search API.
+//! ABI/engine-version introspection and allocation-free trigram extraction; it
+//! does not open, build, or query indexes. Non-Zig embedding uses the unified
+//! search contract (ADR-352) over the certified CLI (`billy-gist` drives the
+//! binary + `--json`); a resident in-process session ABI is the specified
+//! graduation rung, blocked on refactoring the engine's `die()`/exit error path
+//! into error returns so a bad query can never terminate an embedding host.
 //!
 //! Package shape mirrors pkg/kernels/core + principia, grouped into
 //! concern-scoped subfolders under `src/` (each re-exported here):
@@ -77,13 +80,21 @@ pub const commands = struct {
 
 pub const version_string: [:0]const u8 = "0.1.0"; // x-release-please-version
 
-/// Bump on any break to the deliberately minimal two-symbol C ABI.
+/// Bump on any BREAK to the C ABI. Additive symbols (e.g. `gist_version`) do
+/// not bump it — a consumer compiled against an older header keeps working.
 pub fn abi() u32 {
     return 1;
 }
 
 export fn gist_abi_version() u32 {
     return abi();
+}
+
+/// The engine semver (`version_string`), NUL-terminated, static-lifetime. Lets
+/// a binding version-gate the shared library / binary it drives against its own
+/// packaged version (the unified-search contract's `engine_version`, ADR-352).
+export fn gist_version() [*:0]const u8 {
+    return version_string.ptr;
 }
 
 /// Extract the distinct, ascending trigrams of `text[0..len]` into
