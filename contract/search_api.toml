@@ -1,0 +1,95 @@
+# GIST Unified Search API — capability contract (ADR-352).
+#
+# Single source of truth for the cross-face search contract: the request
+# options every face accepts, the match kinds it returns, the process exit
+# codes it speaks, the ABI version, and the transports that realize it. The two
+# importable faces — the Python package (`bindings/python/gist`) and the
+# standalone Rust crate (`bindings/rust`) — each mirror these constants, and a
+# parity test in each asserts the mirror against this file (and the Rust/Python
+# `version()` against the live binary), so the contract cannot silently drift
+# from the engine in either language.
+#
+# This is a contract, not code: adding a request option here is a deliberate
+# widening of the deep `SearchRequest` surface, reviewed as an interface change.
+
+[meta]
+name = "gist-unified-search"
+# Tracks src/root.zig `abi()` (the C ABI compatibility integer). Additive C
+# symbols (gist_version) do not bump it; a breaking C ABI change does.
+abi_version = 1
+# Tracks src/root.zig `version_string` / build.zig.zon `version`.
+engine_version = "0.1.0"
+package_dist = "billy-gist"
+package_import = "gist"
+
+# How the one contract is carried to the engine. `subprocess` is authoritative
+# today (ADR-352): safe by construction — a bad pattern exits the child, never
+# the host. `ffi` is the specified graduation rung (resident in-process session)
+# and is intentionally absent from the engine's exported C surface until the
+# die()->error-return refactor lands.
+[transports]
+subprocess = { status = "authoritative", detail = "certified `gist` binary + --json; results produced by the same combinePatterns->collectFiles->json.run path the CLI uses" }
+ffi = { status = "planned", detail = "resident gist_open/gist_search/gist_close session ABI; blocked on the engine error-return refactor" }
+
+# The exact request surface the deep contract exposes. Each option maps to the
+# rg-parity flag the engine already honors (see src/commands/ripgrep/args.zig
+# `flag_catalog`); the package lowers a SearchRequest into that argv. Only
+# match-finding intent belongs here — presentation, ranking, stats, replace,
+# and stdin remain CLI-only and are deliberately NOT contract options.
+[request_options]
+pattern      = { type = "str",       flag = "<positional>", detail = "the regex or literal to find" }
+paths        = { type = "list[str]", flag = "<positional>", detail = "roots to search; empty = the repo default roots" }
+fixed        = { type = "bool",      flag = "-F",           detail = "treat pattern as a literal string" }
+ignore_case  = { type = "bool",      flag = "-i",           detail = "ASCII case-insensitive" }
+smart_case   = { type = "bool",      flag = "-S",           detail = "case-insensitive unless the pattern has an uppercase byte" }
+word         = { type = "bool",      flag = "-w",           detail = "match whole words (ASCII word boundaries)" }
+invert       = { type = "bool",      flag = "-v",           detail = "select non-matching lines" }
+globs        = { type = "list[str]", flag = "-g",           detail = "include/exclude globs (a leading ! excludes)" }
+iglobs       = { type = "list[str]", flag = "--iglob",      detail = "case-insensitive include/exclude globs" }
+types        = { type = "list[str]", flag = "-t",           detail = "restrict to a registered file type" }
+not_types    = { type = "list[str]", flag = "-T",           detail = "exclude a registered file type" }
+before       = { type = "int",       flag = "-B",           detail = "lines of leading context" }
+after        = { type = "int",       flag = "-A",           detail = "lines of trailing context" }
+context      = { type = "int",       flag = "-C",           detail = "lines of context on both sides" }
+max_count    = { type = "int",       flag = "-m",           detail = "stop after N matches per file (0 = unlimited)" }
+max_depth    = { type = "int",       flag = "--max-depth",  detail = "cap directory descent depth (0 = unlimited)" }
+hidden       = { type = "bool",      flag = "--hidden",     detail = "search hidden files/dirs" }
+no_ignore    = { type = "bool",      flag = "--no-ignore",  detail = "disable .gitignore/.ignore/.rgignore filtering" }
+follow       = { type = "bool",      flag = "-L",           detail = "follow symlinks" }
+no_index     = { type = "bool",      flag = "--no-index",   detail = "force the pure live walk (skip index acceleration)" }
+
+# What a Match record can be. `match` lines carry submatch spans; `context`
+# lines are the -A/-B/-C neighborhood and carry none.
+[match_kinds]
+match   = { detail = "a line containing at least one submatch" }
+context = { detail = "a leading/trailing context line (no submatches)" }
+
+# ripgrep's process exit codes — preserved end-to-end so a script reading the
+# code means the same thing it does for rg.
+[exit_codes]
+matched      = { code = 0, detail = "at least one match" }
+no_match     = { code = 1, detail = "ran cleanly, found nothing" }
+error        = { code = 2, detail = "unsupported pattern/flag, or an I/O/walk error — never a silent empty result" }
+
+# The agent / code-place tool boundary (ADR-352, plan step 5). Billy operating a
+# user's machine and a coding agent working a repository are the same actor: both
+# express "find these matches in this tree" as one SearchRequest. Billy's
+# `fs_search(place, query, glob, context_lines, semantic, at)` verb
+# (services/ai/tools/code/place/fs.py) speaks a slightly different vocabulary
+# than the canonical request fields; `gist.request_from_tool` normalizes it.
+#
+# `aliases` map a tool-boundary parameter name onto its canonical request option.
+[tool_boundary.aliases]
+query         = "pattern"   # fs_search's term for the pattern
+glob          = "globs"     # singular tool param -> the list option
+context_lines = "context"   # fs_search's symmetric-context param
+
+# `routing_keys` are recognized-but-ignored by the request mapper: they select
+# *where* the repository lives and *how* results are ranked, which is the place
+# adapter's decision, not GIST's. Listing them here is the contract statement
+# that one semantic API does not require one transport — place/transport routing
+# stays outside GIST.
+[tool_boundary.routing_keys]
+place    = "which place owns the tree (workspace | machine | scratch)"
+at       = "place addressing (e.g. 'home' or an absolute granted path)"
+semantic = "rank by meaning via the place's vector index, not this engine"
