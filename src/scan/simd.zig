@@ -16,7 +16,7 @@ const std = @import("std");
 
 const vlen: usize = std.simd.suggestVectorLength(u8) orelse 16;
 const Vec = @Vector(vlen, u8);
-const Mask = @Int(.unsigned, vlen);
+const Mask = std.meta.Int(.unsigned, vlen);
 
 pub fn contains(hay: []const u8, needle: []const u8) bool {
     const n = needle.len;
@@ -42,7 +42,7 @@ pub fn contains(hay: []const u8, needle: []const u8) bool {
         }
     }
     // Scalar tail for the < vlen remainder.
-    return std.mem.findPos(u8, hay, i, needle) != null;
+    return std.mem.indexOfPos(u8, hay, i, needle) != null;
 }
 
 fn memchr(hay: []const u8, c: u8) bool {

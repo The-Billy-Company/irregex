@@ -1,1 +1,0 @@
-Modularized the ripgrep-compatible search engine: file gathering plus index elision (collect.zig), stdin stream search (stdin.zig), and directory walking split out of the monolithic run.zig/args.zig/output.zig and the trigram/syntax modules into focused siblings, and refreshed the bench gate scripts. Internal refactor with no change to rg-parity behavior or output.

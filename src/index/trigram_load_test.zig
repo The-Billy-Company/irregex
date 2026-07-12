@@ -74,6 +74,14 @@ fn expectBadFormatBoth(bytes: []const u8) !void {
     } else |err| try std.testing.expectEqual(tri.LoadError.BadFormat, err);
 }
 
+fn expectBadFormatTrusted(bytes: []const u8) !void {
+    const a = std.testing.allocator;
+    const aligned = try a.alignedAlloc(u8, .fromByteUnits(@alignOf(u32)), bytes.len);
+    defer a.free(aligned);
+    @memcpy(aligned, bytes);
+    try std.testing.expectError(tri.LoadError.BadFormat, tri.Index.fromTrustedMappedBytes(aligned));
+}
+
 /// Load a (presumed well-formed) blob through BOTH paths and require they agree
 /// (both accept or both reject); returns whether it was accepted.
 fn bothAccept(bytes: []const u8) !bool {
@@ -227,6 +235,43 @@ test "load rejects trailing garbage after the last group" {
     try expectBadFormatBoth(blob);
 }
 
+test "trusted mapped load defers body validation but a touched corrupt group fails safely" {
+    const a = std.testing.allocator;
+    // "abc" is valid; untouched "xyz" ends in a truncated varint. The fully
+    // validating loader must reject the whole blob, while the trusted local
+    // path accepts its sound directory and validates groups on demand.
+    const blob = try makeBlob(a, 1, 2, &.{ 0x616263, 0x78797a }, &.{ 0, 1 }, &.{ 1, 1 }, &.{ 0x00, 0x80 });
+    defer a.free(blob);
+    const aligned = try a.alignedAlloc(u8, .fromByteUnits(@alignOf(u32)), blob.len);
+    defer a.free(aligned);
+    @memcpy(aligned, blob);
+
+    try std.testing.expectError(tri.LoadError.BadFormat, tri.Index.fromMappedBytes(aligned));
+    var trusted = try tri.Index.fromTrustedMappedBytes(aligned);
+    defer trusted.deinit();
+
+    const valid = try trusted.queryLiteral(a, "abc");
+    defer a.free(valid);
+    try std.testing.expectEqualSlices(u32, &.{0}, valid);
+    try std.testing.expectError(tri.QueryError.CorruptIndex, trusted.queryLiteral(a, "xyz"));
+}
+
+test "trusted mapped load rejects malformed directory and region bounds eagerly" {
+    const a = std.testing.allocator;
+    const bad_order = try makeBlob(a, 1, 2, &.{ 7, 3 }, &.{ 0, 1 }, &.{ 1, 1 }, &.{ 0, 0 });
+    defer a.free(bad_order);
+    try expectBadFormatTrusted(bad_order);
+
+    const bad_sum = try makeBlob(a, 1, 3, &.{7}, &.{0}, &.{1}, &.{0});
+    defer a.free(bad_sum);
+    try expectBadFormatTrusted(bad_sum);
+
+    // Two postings need at least two one-byte varints; this region has one.
+    const short_region = try makeBlob(a, 2, 2, &.{7}, &.{0}, &.{2}, &.{0});
+    defer a.free(short_region);
+    try expectBadFormatTrusted(short_region);
+}
+
 // ── varint-body rejects ──────────────────────────────────────────────────────
 
 test "load rejects a truncated varint" {
@@ -311,6 +356,7 @@ test "fromMappedBytes rejects a misaligned directory start instead of trapping" 
     defer a.free(raw);
     @memcpy(raw[1..][0..blob.len], blob);
     try std.testing.expectError(tri.LoadError.BadFormat, tri.Index.fromMappedBytes(raw[1..][0..blob.len]));
+    try std.testing.expectError(tri.LoadError.BadFormat, tri.Index.fromTrustedMappedBytes(raw[1..][0..blob.len]));
 }
 
 // ── mutation fuzz-lite (CI-safe) ─────────────────────────────────────────────

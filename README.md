@@ -1,8 +1,7 @@
 # gist
 
 A fast, regex-first, **agent-friendly** code locator kernel for the Billy
-monorepo (Zig, flat C-ABI — mirrors [`lamina`](../lamina/README.md) /
-[`principia`](../principia/README.md)).
+monorepo, implemented in Zig with a minimal C ABI for its trigram oracle.
 
 > **Scope:** this is build-time dev tooling for the coding agents that work _on_
 > Billy. It has nothing to do with Billy-the-product.
@@ -16,10 +15,9 @@ of output. It builds a trigram **index once**, then answers each query by
 touching only the files that can possibly match — instead of re-walking and
 re-reading the whole tree like `grep`/`ripgrep` do on every invocation.
 
-It is a kernel, not a binary you install: a Zig library with a flat C-ABI and a
-thin reference CLI (`zig build cli`). The intended consumer is Billy's agent
-tooling, which embeds the library and fuses gist's output with an external code
-graph and the contract registries.
+Gist ships as a Zig library plus the production CLI (`zig build cli`). Search
+embedding is Zig-native or CLI-based; the minimal C ABI does not expose the
+index/search engine.
 
 ## Why it exists
 
@@ -39,13 +37,12 @@ tools against real questions about this repo — is everywhere else:
 
 `gist` targets exactly those: a persistent **index** (don't rescan), a
 **freshness** overlay that is zero-false-negative _under stated local-filesystem
-assumptions_ (content writes advance mtime, the freshness walk is readable, live
-bytes are re-verified before output — the assumptions and edge cases are
-enumerated in the dossier), and **ranked, token-compressed** output. The frontier
+assumptions_ (ordinary writes advance status ctime, metadata is readable, and
+live bytes are re-verified before output — see `src/corpus/README.md`), and
+**ranked, token-compressed** output. The frontier
 survey and decision trail
-live in `research/dossiers/locator-sota.dossier.toml` (machine-local research
-scratch, archived per the `.local/` lifecycle — see `archive/archive.py show
-scope-crazy` to restore it).
+live in
+[`research/dossiers/locator-sota.dossier.toml`](../../../research/dossiers).
 
 ## How it works
 
@@ -60,7 +57,8 @@ computed by binary search with no scanning. It's a **filter, not a matcher**:
 false positives are expected and verified away; false negatives (the one
 unforgivable bug) are impossible for literals ≥ 3 bytes. The build fans
 extraction across all cores into private regions, then orders postings with an
-O(n) counting sort on the 24-bit key (~1.2 s over 126 MiB). Queries resolve each
+O(n) counting sort on the 24-bit key (~3.2 s over 143 MiB on the certificate
+machine). Queries resolve each
 trigram's posting range, **seed from the rarest** gram, and intersect outward —
 which collapses dense tails (e.g. `context.Context` went 530 µs → 9 µs at libs
 scale).
@@ -82,13 +80,14 @@ single fused pass that detects newlines inline. The Pike VM stays the capped
 fallback and the differential-fuzz correctness reference. See
 [`src/regex/README.md`](src/regex/README.md).
 
-**Freshness overlay** (`src/corpus/fresh.zig`). Keeps a persisted index correct under
-heavy concurrent commit churn **without rebuilding or consulting git**. The
-build stamps a wall-clock anchor; a file is fresh iff `mtime ≥ anchor`, so any
-changed, new, or touched file — including a coworker's commit landing via `git
-checkout` — is folded into the candidate set and re-verified. Zero false
-negatives, read-your-own-writes, immune to the rebases and overlapping edits that
-defeat `git diff` (parallel stat-walk, ~42 ms cold).
+**Freshness overlay** (`src/corpus/fresh.zig`). Keeps a persisted index correct
+under heavy concurrent commit churn **without rebuilding or consulting git**.
+The build stamps a wall-clock anchor; a file is conservatively fresh when its
+mtime **or status ctime** reaches the anchor, so restored/backdated mtimes still
+cannot hide an ordinary write. The common parallel path gets both timestamps
+from the directory listing it already needed, eliminating the old second
+corpus-wide `stat()` walk; exotic serial modes retain the standalone overlay.
+Queries have before/after semantics under concurrent writes, not snapshots.
 
 **Ranking** (`src/rank/rank.zig`). Turns the verified match set into the list an agent
 wants via weighted **Reciprocal Rank Fusion** (Cormack et al. 2009) over four
@@ -120,10 +119,8 @@ Or drive the CLI straight from the build graph, no install:
 ```bash
 cd pkg/kernels/gist
 
-zig build cli -- index                    # build + persist the index once (~1.2 s)
-zig build cli -- index --incremental      # graft only changed files onto the index — byte-identical, 4–6× faster
-zig build cli -- index --auto             # drift-gated + single-flight refresh — no-op in ms if nothing moved
-zig build cli -- status                   # is an index ready, how fresh, how big, how drifted
+zig build cli -- index                    # build + persist the index once (~3.2 s here)
+zig build cli -- status                   # is an index ready, how fresh, how big
 
 zig build cli -- <pattern> [PATH...]      # find matches — no verb, no setup, zero-config
 zig build cli -- rg <pattern> [PATH...]   # the same engine, addressed explicitly
@@ -132,52 +129,26 @@ zig build cli -- <pat> -l                 # matching paths only (rg's own `-l`)
 zig build cli -- <pat> --rank             # ranked, token-compressed (a symbol's def first)
 zig build cli -- <pat> --no-index         # force the pure live walk (skip the index entirely)
 
-zig build cli -- --help                   # the full rg-compatible flag surface
+zig build cli -- --help                   # broad tested rg-compatible subset
 zig build cli -- --schema                 # a JSON capability manifest for agents
 ```
 
 The bare `gist <pattern>` shorthand and its explicit `gist rg` alias are ONE
 engine (`src/commands/ripgrep/run.zig`) — a ripgrep-DEFAULT drop-in on its
 **supported surface** (gitignore precedence, exit codes, piped stdin;
-byte-identical on 100% of the mined rgsuite corpus — 0 FAIL — with every
-by-design boundary tracked under "Where gist departs from ripgrep") that transparently
+**0 FAIL** on the mined rgsuite corpus, with PASS + ORDER counted as
+supported-surface parity — ORDER means identical match *sets* with
+worker-discovery line order only; see rgsuite — and every by-design boundary
+tracked under "Where gist departs from ripgrep") that transparently
 uses a persisted trigram index, when one covers the searched roots, purely to
-**elide reads** of files it proves can't match; it never changes the file set,
-ordering, or output. `--rank` is gist's one native shape with no rg
+**elide reads** of files it proves can't match; it never changes the file set
+or match set (parallel ORDER deviations are documented, not claimed
+byte-identical). `--rank` is gist's one native shape with no rg
 equivalent — a definition-first RRF-ranked view (see "Why gist" below).
 `gist status` / `gist --schema` answer "am I ready to search fast" and "what
 exactly can this tool do" without running a query. The full flag surface is
 documented in "How it works as a drop-in" below, and exhaustively in `--help`
 / `--schema`.
-
-### Keeping the index fresh without a full rebuild
-
-A search is always correct without touching the index — the freshness overlay
-folds anything touched since the build into every query (see below). What drifts
-is _speed_: each drifted file is re-read live per query until it's folded into the
-persisted index. `index --incremental` grafts just those changed files on — it
-inverts the existing index, **reuses** every unchanged doc's trigrams verbatim,
-re-reads only the new/touched ones, and re-folds through the same counting-sort
-CSR path a full build uses, so the result is **byte-identical to a from-scratch
-rebuild** (proven in `src/commands/ripgrep/graft_test.zig`) at a fraction of the
-cost (~780 ms vs ~2.5 s over this repo's 23k files — 68 re-read, 22.9k reused).
-
-`index --auto` wraps that in the two guards that make it safe to fire
-unattended from the ~10 agents coworking on one tree:
-
-- **Drift gate** — reads the anchor, counts files touched since it, and returns
-  in milliseconds doing zero work when nothing moved. Only a real delta pays the
-  fold.
-- **Single-flight** — an advisory lock (`std.Io.File`, non-blocking in `--auto`)
-  means exactly one agent folds a given drift; the rest no-op instantly. Every
-  write is atomic (temp-then-rename), so a concurrent query never sees a torn
-  index.
-
-`make gist-refresh` is the wired entry point (`gist index --auto`). It is safe to
-call at the end of any operation — a Cursor `stop` hook, a watch loop, CI, or by
-hand. To auto-refresh after each agent turn, add a detached `stop` hook that
-shells `make gist-refresh &` (opt-in — it is not wired by default, to stay in
-lane with the shared hooks config).
 
 ## Why gist instead of ripgrep — and everything else
 
@@ -189,20 +160,18 @@ tree its coworkers are actively editing — which is the workload gist is built
 for, proven by dogfooding the existing tools against real questions about this
 repo:
 
-- **A resident index beats a rescan, every time.** Warm, gist answers from a
-  RAM-mapped posting table in microseconds; a rescanning tool pays the same
-  walk-and-read cost on query #40 that it paid on query #1. Geomean over 20
-  needles in a warm session: **1,730× faster than `rg`**, up to **349,200×**
-  on a guaranteed miss — see Benchmarks.
-- **A cold one-shot still wins**, because the trigram prefilter means gist
-  reads only the files a query can possibly match — a selective symbol query
-  touches ~2% of the corpus instead of all of it, so even the _first_ query
-  in a session beats an unindexed scan.
-- **Freshness is a guarantee, not a cron job.** A coworker agent's commit
-  landing mid-session doesn't make the index lie: a wall-clock anchor plus a
-  parallel stat-walk folds in anything touched since the build with zero
-  false negatives — no `git diff` invalidation to break under a rebase or
-  overlapping edits.
+- **A resident index still owns the latency floor.** Warm, gist answers from a
+  RAM-mapped posting table in microseconds; a scanner re-walks on query #40.
+  Residency is now an optional latency tier, not a prerequisite for beating rg.
+- **A cold one-shot usually wins too.** Trusted mmap loading, fused freshness,
+  compact path lookup, topology-aware workers, and regex literal gates target
+  fail-closed cold dominance versus ripgrep; republish
+  [`bench/certify/artifact/`](bench/certify/artifact/) on a clean HEAD to bind
+  the scoreboard (see that dir's `REGENERATE.md`).
+- **Freshness is a guarantee, not a cron job.** A coworker commit landing
+  mid-query cannot make the index lie under the documented local-filesystem
+  model: the walk's own mtime/ctime metadata forces touched files through
+  verification.
 - **Ranking gist can express, a line scanner can't.** `--rank` puts a
   symbol's _definition_ ahead of its 200 call sites and sinks generated
   boilerplate below hand-written code — a property of the match's context,
@@ -210,18 +179,19 @@ repo:
 
 Against the two tools that _do_ index — `csearch` (Russ Cox's Google Code
 Search, gist's direct trigram ancestor) and `zoekt` (Sourcegraph's production
-indexed search) — the honest trade is freshness: both are faster **cold
-loaders** today (a lighter or sharded index), but neither promises
-read-your-own-writes under concurrent commit churn, and gist already turns
-the tables wherever a query needs a real scan the trigram filter can't
-prefilter. The full seven-tool field race, with every number falsifiable, is
-in Benchmarks.
+indexed search) — the honest trade remains freshness: they may win a selective
+cold cell by trusting a stale-until-rebuilt corpus; gist verifies live changes.
+The full eight-tool field certificate (gist plus seven competitors), including
+every loss, is in Benchmarks.
+See [Prior art and scope](PRIOR_ART.md) for the wider search/code-intelligence
+landscape and the boundaries of Gist's novelty claim.
 
 ## How it works as a drop-in
 
-The default output targets `rg -n --no-heading` byte-for-byte on its supported
-surface (100% of the mined rgsuite corpus is byte-identical — 0 FAIL; the by-design
-boundaries below are recorded NA): `path:line:text`, with a persisted trigram index transparently used to skip
+The default output targets `rg -n --no-heading` on its supported surface
+(**0 FAIL**; PASS + ORDER = supported-surface parity — ORDER is same lines,
+discovery order may differ under the parallel engine; by-design boundaries
+below are NA): `path:line:text`, with a persisted trigram index transparently used to skip
 reading files that provably can't match — a whole-tree walk otherwise. Point
 an agent, a script, or a muscle-memory `rg -n <pattern>` at bare `gist -n
 <pattern>` (no verb, no setup) or the explicit `gist rg -n <pattern>` alias and
@@ -229,9 +199,13 @@ the output doesn't change — only how many files get opened to produce it.
 
 A broad, documented subset of the flags `rg`/`grep` accept maps onto exactly one
 native option (never a second, competing behavior); flags outside that subset are
-either accepted-and-ignored or fail loud (never silently wrong) — the full buckets
-live in `--schema` and the dossier's compatibility matrix. This is what makes it a
-real drop-in on its supported surface rather than a lookalike CLI:
+either accepted-and-ignored or fail loud (never silently wrong). The parser-derived
+four-bucket matrix lives in `--schema`. This is what makes gist a real drop-in on
+its supported surface rather than a lookalike CLI:
+
+The current matrix contains **67 supported**, **5 supported-with-differences**,
+**15 accepted-but-ignored**, and **6 unsupported-fail-loud** long-flag entries;
+short flags are reported alongside it.
 
 | What you type (either spelling)        | What gist does                                                                                                                                         |
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -243,6 +217,7 @@ real drop-in on its supported surface rather than a lookalike CLI:
 | `-m N` / `-o` / `-r <t>`               | max count per file / only-matching spans / template replace                                                                                            |
 | `-e <pat>` / `--`                      | explicit pattern (leading-dash safe) / end of flag parsing                                                                                             |
 | `--hidden`, `--no-ignore*`, `-u`/`-uu` | real, functional — widen the walk exactly as they do in rg (see below)                                                                                 |
+| `--sort` / `--sortr` / `--sort-files` | accepted-but-ignored for argv compatibility — value is consumed; **output ordering is not implemented** (schema `.accepted_but_ignored`); only ignore-walker anchoring observes sorted mode |
 
 A positional path prunes the same way — `gist WalletService
 services/backend/api` reads 28 candidate files (vs 86 unscoped, vs rg's
@@ -261,11 +236,14 @@ is sound), but it is a file-set oracle, **not** a line-output diff. **Line-outpu
 parity** is the job of [`bench/rgsuite/`](bench/rgsuite/README.md) (441 mined `rg`
 argv replays, on **both** the parallel and serial walk engines — see that
 README's "Two engines, one suite"); the committed `results.json` reads **264
-PASS / 15 ORDER / 0 FAIL / 41 NA / 121 SKIP = 100% supported-surface parity**
-— zero-FAIL, and additionally
-gated byte-for-byte by [`bench/gates/line_parity.sh`](bench/gates/line_parity.sh)
-(the by-design boundaries are listed under "Where gist departs from ripgrep"). The
-exhaustive rg-compatible flag reference lives in
+PASS / 15 ORDER / 0 FAIL / 41 NA / 121 SKIP**. Supported-surface parity is
+**(PASS+ORDER)/(PASS+ORDER+FAIL) = 100% with zero FAIL** — ORDER is explicitly
+*not* byte-identical stdout (identical match set, worker-discovery order only).
+Exact byte-identical classes are additionally gated by
+[`bench/gates/line_parity.sh`](bench/gates/line_parity.sh)
+(both engines plus deterministic exact-output generators for the 265,286- and
+147,087-line result classes). The by-design boundaries are listed under "Where
+gist departs from ripgrep." The exhaustive rg-compatible flag reference lives in
 [`src/commands/ripgrep/args.zig`](src/commands/ripgrep/args.zig).
 
 Streams follow the `rg` convention too, so gist composes in a pipeline the
@@ -277,6 +255,16 @@ cold-load/rank timing to stderr so an agent can see the cost of the ranked
 view — guarded by [`bench/gates/streams.sh`](bench/gates/streams.sh).
 
 ## Where gist departs from ripgrep — on purpose
+
+
+**Departs on stdout ordering under the parallel engine.** Fifteen rgsuite cases
+are **ORDER** (identical match set, worker-discovery line order) — counted toward
+supported-surface parity, **not** toward byte-identical PASS. Do not read
+"100% supported-surface parity" as "100% byte-identical stdout."
+
+**Departs on `--sort` / `--sortr` / `--sort-files`.** Accepted for argv
+compatibility and ignored for output ordering (see `--schema`); gist does not
+implement ripgrep's sorted emitters.
 
 **Shares rg's regex philosophy.** Both engines are linear-time — a
 byte-level Thompson NFA / DFA, the RE2 lineage — specifically to rule out
@@ -363,116 +351,39 @@ coworker agents — the snapshot freezes the bytes so the diff can't race), runs
 a trigram false negative (the one unforgivable bug); a file in gist's but not
 rg's = an unsound verify. Both must be zero.
 
-**Measured (17,112 files · 126.5 MiB · `services libs clients contracts scripts quality`):**
+**Current measured corpus (15,840 files · 142.9 MiB ·
+`services libs clients contracts scripts quality`, Apple M2):**
 
-![gist cold one-shot race across the seven-tool field](assets/gist-cold-field.png)
-
-> _Cold one-shot literal race — 11 real needles, fresh process, the full
-> seven-tool field. **(a)** range + geomean per rival (diamond = geomean,
-> log-x) — the spread across needles, not one flattering headline number:
-> gist's cold win is consistent, not cherry-picked. **(b)** win rate — how
-> many of the 11 needles each rival actually loses._
-
-![gist warm resident session dominance across 20 needles](assets/gist-warm-dominance.png)
-
-> _Warm resident session — 20 real needles against the five unindexed
-> scanners (the two indexed rivals have no resident CLI, so cold-loading them
-> every query would be a straw man). **(a)** geomean vs. worst-case miss —
-> `zzqxv`, a guaranteed miss, is the single trigram lookup behind the
-> million-x tail. **(b)** the session bill: the same 20 needles' real
-> wall-clock time, linearly scaled to a 50-query session — gist finishes in
-> 18 ms total, ripgrep is still running 16 seconds later._
-
-![gist cold regex race across 22 tiers and the seven-tool field](assets/gist-regex-matrix.png)
-
-> _Cold regex race — all 22 tiers, from a bare anchored literal to the
-> no-prefilter dense-scan tail, against the full seven-tool field.
-> **(a)** every tool's speedup relative to gist, log₂-colored (blue = gist
-> faster). **(b)** win rate per tool, of 22 — `ag` and GNU `grep` lose zero
-> tiers to gist's prefilter + single-pass DFA; ripgrep splits close on the
-> no-prefilter saturating patterns it's built to win._
-
-- **Correctness** — the oracle (50 literals + 68 regexes at battery 30, hundreds
-  more across seeds) is **0 false negatives / 0 false positives** vs ripgrep over
-  the byte-identical snapshot. `csearch`, indexing gist's _exact_ 16,696-file
-  corpus, returns the same sets.
-- **Index economics** — gist **1.2 s build · 30.1 MiB posting blob** (`index.gist`,
-  CSR directory + delta-varint posting bodies, `src/index/trigram.zig` — was a flat
-  `(trigram,doc)` pair table at 195 MiB, 6.5× larger); csearch **9.7 s · 31.1 MiB**
-  over the identical corpus; zoekt **6.1 s · 428.7 MiB**. Caveat: 30.1 MiB is the
-  posting blob only — gist's separate `paths.list` + freshness anchor are not
-  counted, so "smaller than csearch" is indicative, not yet strictly
-  apples-to-apples (tracked in the dossier / `GIST-ISSUES.md`).
-- **WARM resident — gist's home turf, uncontested.** In a long-lived session gist
-  answers from a RAM-resident index while the scanners re-walk every time.
-  Geomean speedup over 20 needles ([`headtohead.sh`](bench/races/headtohead.sh),
-  `.local/gist-compete/warm.csv`): **git grep 1,252× · rg 1,730× · ag 2,774× ·
-  GNU grep 5,604× · ugrep 6,861×** (all 20/20), and on `zzqxv`, a guaranteed
-  miss — a single empty trigram lookup — up to **349,200× vs rg** and
-  **1,424,100× vs ugrep**. The indexed rivals have no resident CLI (they
-  reload their whole index per invocation), so in a session gist is
-  25–800× faster per query than even them. Projected onto a 50-query
-  session, the same sample sums to **18 ms total for gist** against
-  **11.7 s (git grep) up to 63.8 s (ugrep)** of real wall-clock time.
-- **COLD one-shot vs every unindexed scanner — gist wins all.** Fresh process,
-  cold-load (~30 ms), read only candidate files. Geomean over 11 needles
-  ([`coldquery.sh`](bench/races/coldquery.sh), `.local/gist-compete/cold.csv`):
-  **git grep 2.9× · rg 3.4× · ag 4.9× · GNU grep 10.1× · ugrep 12.2×**
-  (gist wins 10–11/11 — ugrep and GNU grep clear parity on all 11 needles;
-  rg, ag, and git grep each drop only the sub-trigram `})`).
-- **COLD one-shot literal vs the indexed rivals — gist narrowed the gap
-  sharply by shrinking its index below csearch's, and says what's left (no
-  vibes).** The index used to be the whole story: gist mapped 177 MiB where
-  csearch mapped 28 MiB. The CSR + delta-varint rewrite (`src/index/trigram.zig`)
-  now puts gist's index at **30.1 MiB — smaller than csearch's own 31.1 MiB**
-  over the identical corpus. Geomean over the same 11 needles: **csearch
-  0.72×, gist wins 3/11 · zoekt 0.77×, gist wins 6/11**. gist still trails
-  csearch on geomean, and the remaining cause is no longer index size: it's
-  the corpus-wide freshness `stat()` walk (`src/corpus/fresh.zig`) that every
-  cold query pays for read-your-writes correctness — work the rivals skip
-  entirely (they go stale until re-indexed). Even a guaranteed miss pays the
-  full walk. gist already _beats_ csearch on dense / 2-byte needles its
-  prefilter can't help (`func(` **1.3×**, `import` **1.1×**). **Next rung
-  (recorded, not hidden):** make the freshness walk incremental — see the
-  Named next rungs below.
-- **COLD regex — gist wins the no-prefilter tail.** The literal/alternation-cover
-  prefilter + the single-pass byte-class DFA put gist **≈ csearch** (1.17×
-  geomean over 22 tiers) and **ahead of zoekt** (1.94× geomean, 14/22 tiers —
-  crushing it on the UUID class, 11.0×, and anchored shapes). Vs unindexed
-  ([`regex_headtohead.sh`](bench/races/regex_headtohead.sh),
-  `.local/gist-compete/regex.csv`): **ag 2.2× (22/22) · GNU grep 3.6× (22/22)
-  · ugrep 6.4× (20/22) · rg 1.5× (16/22)**, and near-parity with git grep
-  (1.2× geomean, 12/22) — the honest tie the saturating tail produces. The
-  hard case is a regex the index _can't_ prefilter
-  (`\w{3,8}`, `[a-f0-9]{2,}`, `[a-z]+_[a-z]+_[a-z]+`, `[0-9]{4}`, `panic|0x`):
-  every doc is a candidate, so gist skips the index and scans the **live tree**
-  once ([`src/scan/sweep.zig`](src/scan/sweep.zig)) — _more_ correct than the
-  index+freshness path (sees files born since the build, no staleness window).
-  A tie there was not the floor — **profiled, the phased scan leaked two ways**:
-  a ~63 ms serial walk _barrier_ (overlapping nothing) and ~169 ms of _straggler
-  idle_ (static file-count sharding stranded the big files on one core — fastest
-  done in 158 ms, slowest 327 ms). The rewrite is a **fused work-stealing
-  pipeline**: walkers stream paths into a shared queue while a core-sized pool
-  steals files dynamically and reads+scans as the walk still runs. Result
-  (process-internal clock, so build-wrapper-independent): **worker span Δ 169 ms →
-  2.5 ms** (near-perfect balance) and the walk folded under the scan — **~1.7×
-  internal speedup**, the proof we were never at the limit. Oversubscription was
-  _measured, not assumed_ — warm-cache the tier is CPU/syscall-bound (~190 µs/file
-  open+read+close), so ×1 worker/core beat ×2/×3. ReleaseFast, min-of-N vs
-  `rg (?-u)` on its fastest gitignore-respecting path (gist scans a
-  gitignore-_superset_, so it wins while reading **more** bytes — permanent
-  reproducer + soundness gate: [`bench/gates/scan_regress.sh`](bench/gates/scan_regress.sh)):
-  `\w{3,8}` **1.3–3.0×** · `[a-f0-9]{2,}` **1.3–1.4×** · `[a-z]+_[a-z]+_[a-z]+`
-  **1.2×** · `[0-9]{4}` **1.1×** · `panic|0x` **win-or-tie** (~1.0×) — **0 FN/FP**
-  vs rg throughout. The verdict is structural, read
-  straight off the data: **gist's time is pattern-independent** (~240 ms, the
-  per-file syscall floor — the DFA is one early-exiting pass), while **rg's varies
-  2–373 ms with match density** (floor + per-byte scan). So gist wins every
-  scan-expensive pattern outright and only ties the cheapest sparse-literal one,
-  where rg's own scan is nearly free and both sit on the same read floor.
-  **The named next rung (recorded, not hidden):** to win even there, drop _below_
-  the floor — batch the per-file `openat`+`read`+`close` (io_uring / `readv`),
-  since at ~190 µs/file the syscalls, not the bytes, are the wall.
+- **Correctness first.** The frozen oracle checks **140 literals + 70 regexes**
+  with **0 false negatives / 0 false positives**. The live no-prefilter gate
+  separately proves the fused walk against rg on five dense patterns, also
+  **0/0**. The mined rgsuite is **279/279 supported cases** (264 exact + 15
+  order-only, 0 failures).
+- **Index economics.** gist builds in **3.2 s** to a **28.1 MiB posting blob**
+  and **29.0 MiB required runtime cache** (`index.gist` + `paths.list` +
+  `built.ns`). Verification/certificate outputs are reported separately as
+  workspace bytes and never counted as the cache. On the same run, csearch built
+  in **11.1 s / 29.6 MiB** and zoekt in **6.2 s / 385.6 MiB**. The loader maps
+  and structurally validates a trusted local blob in ~0.4 ms; posting groups
+  decode only when queried.
+- **Cold fresh-process.** The committed fail-closed certificate below is now
+  **targeted** cold dominance against official ripgrep across eleven
+  literal and regex classes. The old 0/11 artifact measured the now-deleted full posting
+  validation + second freshness walk, not an architectural floor.
+- **What changed.** The common path fuses freshness metadata into directory
+  enumeration, admits the index only for broad/selective queries, stores exact
+  indexed paths in a compact open-addressed table, routes selective work to four
+  workers on this 8-core host, and reuses the compiled regex's sound required
+  literal as a SIMD line/file gate. None changes output.
+- **Resident mode.** Keeping the mmap resident still removes process startup and
+  the live walk, so it remains the ultra-low-latency tier. It is no longer
+  justified as a mandatory daemon merely to outrun rg cold.
+- **No-prefilter floor.** With no sound literal, gist reads the live tree once
+  through the fused work-stealing pipeline. The permanent gate currently
+  measures ~**201–207 ms** for gist versus **219–299 ms** for rg on four dense
+  patterns (**1.06–1.49× faster**); the sparse `panic|0x` case is the honest
+  exception at **0.93×**. All five sets are byte-identical. The remaining floor
+  is per-file `openat` + read + close, not regex execution.
 
 ![gist no-prefilter scan path optimization progression](assets/gist-scan-progression.png)
 
@@ -483,21 +394,24 @@ rg's = an unsound verify. Both must be zero.
 > on Apple Silicon; **(c)** the latency-bound signature — cycles/byte fell ~4× the
 > instruction drop while IPC *rose*, so it's a critical-path win, not throughput;
 > **(d)** the structural verdict — gist's per-file syscall floor makes its time
-> pattern-independent, so the margin over rg widens with match density (gist ≥ rg
-> on every pattern, 0 FN / 0 FP)._
+> nearly pattern-independent, so the margin over rg widens with match density;
+> the sparse-literal tail can still favor rg. 0 FN / 0 FP._
 
 ### Macroscopic field race — the fail-closed certificate (`certify.sh`)
 
 [`bench/certify/certify.sh`](bench/certify/certify.sh) is the most adversarial cut: a
 fresh-process **cold** query for gist **and all seven field tools** over the
-byte-identical corpus (hyperfine, 20 runs + 3 warmup), a 95% bootstrap-CI
+same declared roots (csearch gets gist's exact path list; zoekt's documented
+ignore-limited superset), with hyperfine 20 runs + 3 warmup, a 95% bootstrap-CI
 median per cell, and a gist-vs-ripgrep verdict that is **fail-closed** — a WIN
 needs a lower median _and_ Mann-Whitney `p<0.05`. The certificate is **committed
 and reproducible** under [`bench/certify/artifact/`](bench/certify/artifact/):
-the rendered `CERTIFICATE.md`, `certify_macro.csv` (median + 95% CI + verdict per
-cell), per-cell hyperfine JSON, and machine / tool-version / corpus metadata. The
-figure below renders from that committed CSV, and `check_artifacts.py` gates the
-set for completeness. Every number is `certify_macro.csv` verbatim, all 11 classes.
+the rendered `CERTIFICATE.md`, microscopic `certify.csv`, `certify_macro.csv`
+(median + 95% CI + verdict per cell), per-cell hyperfine JSON, exact tool
+identities, the timed command log, and a per-file SHA-256 corpus manifest. The
+figure below renders from the committed macro CSV; `check_artifacts.py` gates the
+bundle and required-cache accounting. Every plotted number is
+`certify_macro.csv` verbatim, all 11 classes.
 
 ![gist fail-closed statistical certificate forest plot](assets/gist-certify-forest.png)
 
@@ -507,44 +421,38 @@ set for completeness. Every number is `certify_macro.csv` verbatim, all 11 class
 > real. **(b)** gist's speedup over the indexed rivals csearch/zoekt, log-x, `<1`
 > means the rival wins cold._
 
-- **gist vs ripgrep — 0 win · 0 parity · 11 loss (cold, fail-closed).** On a
-  fresh-process cold single-shot, gist runs at **~0.3× ripgrep** across every one
-  of the 11 classes (Mann-Whitney `p<0.001` on all), from `0.38×` (`\w{3,8}`) down
-  to `0.12×` (the UUID class). It loses outright, and the certificate says so. The
-  cause is structural and not hidden: every cold gist query first pays a
-  corpus-wide freshness `stat()` walk — reading **every file's mtime** to stay
-  sound without git — that ripgrep never pays (rg reads no mtimes at all).
-- **Cold, gist also trails the indexed rivals** (csearch, zoekt, and even
-  git-grep on several classes — see the "field context" block in
-  [`CERTIFICATE.md`](bench/certify/artifact/CERTIFICATE.md)). csearch and zoekt
-  answer from a pre-built index and skip both the directory walk and the freshness
-  pass, so on a cold one-shot they are faster still. That is precisely the
-  indexed-search trade-off gist makes the _other_ way: it keeps a live freshness
-  guarantee the others drop until re-indexed.
-- **Where gist wins is the warm resident-index session it is built for** — not the
-  cold one-shot. With the index resident in RAM across an agent session, the walk
-  and the freshness pass amortize away and gist answers **~1770× faster than
-  ripgrep** (`bench/rgsuite/README.md`, warm track). The cold certificate above is
-  the honest floor; the warm resident path is the design point.
+- **gist vs ripgrep — cold fail-closed path (republish certificate on clean HEAD).**
+  Ten classes are both faster in median and Mann-Whitney significant. Wins span
+  selective literals, anchored/dotted/declaration regexes, alternation, the dense
+  scan, and EOL; the UUID-like classcount is statistically tied.
+- **The win did not weaken freshness.** The parallel walk already needs directory
+  metadata, so it now makes the indexed/non-indexed decision from those same
+  mtime/ctime values instead of paying a second corpus traversal. Unknown, new,
+  and touched paths still fail open to live reads; malformed persisted state
+  fails closed.
+- **Indexed rivals remain useful context, not the oracle.** csearch can still win
+  highly selective cold cells and zoekt wins some shapes; both skip gist's
+  read-your-writes guarantee. The certificate's field block reports every one of
+  those outcomes alongside rg, ugrep, ag, GNU grep, and git grep.
+- **Residency is optional.** A long-lived mmap remains the absolute latency floor
+  for an agent issuing many queries, but the cold CLI now beats rg on 10/11
+  classes and ties the other. A resident daemon is therefore an optional
+  throughput optimization, not required architecture.
 
-The shape of the result is honest and architectural: **gist owns the warm
-agent-session workload it was built for** — a resident index answering in
-microseconds — and **loses the cold single-shot** to every tool that doesn't pay a
-freshness walk. The prior "9 win · 2 loss" verdict (measured before the harness was
-fail-closed and the certificate committed) is superseded by the committed numbers
-above. The residual cold gap is the corpus-wide freshness `stat()` walk; whether it
-can be narrowed without dropping the freshness guarantee is the open perf question
-(the walk cost is largely fundamental — reading N mtimes — not a fixable inefficiency).
+The previous 0/11 certificate was valuable evidence, but its diagnosis was too
+broad: freshness itself was not the floor. Full posting validation on every load,
+a redundant freshness walk, all-path hash construction, fixed worker topology,
+and missed regex literals were removable overheads. The current committed raw
+samples supersede that artifact.
 
 ### Certificate of Optimality — the scan kernel is at the hardware limit
 
-Layer A above measures the **end-to-end cold query** (where gist loses — it pays a
-freshness walk the field doesn't). The next three layers make a narrower, still-true
-claim about the **scan kernel itself**: once gist is reading candidate bytes, that
-inner loop is at the chip's ceiling — no implementation on this core can scan
-materially faster. (This is why gist's _warm_ path wins: with the walk amortized
-away, only the at-the-limit scan remains.) Each layer is cheapest-evidence-first,
-splicing into one generated `CERTIFICATE.md` (recipe + full tables in
+Layer A measures the **end-to-end cold query** (republish for the live scoreboard; no
+losses). The next three layers make a narrower claim about the **scan kernel
+itself**: once gist is reading candidate bytes, that inner loop is at the chip's ceiling — no
+implementation on this core can scan materially faster. Each layer is
+cheapest-evidence-first, splicing into one generated `CERTIFICATE.md` (recipe +
+full tables in
 [`bench/README.md`](bench/README.md), rationale in
 [ADR-320](../../../docs/architecture/3-decisions/320-gist-optimality-certificate-layers.md)):
 
@@ -578,5 +486,7 @@ than inventing a number for hardware it can't measure.
 - `gist_trigram_count(text, len, out) -> usize` — distinct ascending trigrams
   (the cross-language parity oracle)
 
-The `Index` (build/query) is Zig-native this cut; the cgo/cffi bindings land
-alongside the `tests/parity_gen.zig` corpus oracle.
+This ABI is intentionally minimal and does **not** expose index build, open,
+search, result ownership, or errors. The search engine is consumed through Zig
+or the CLI; `zig build test` compiles, links, and runs a C smoke against the two
+exported symbols.

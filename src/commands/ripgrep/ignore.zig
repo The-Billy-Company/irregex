@@ -1,3 +1,4 @@
+// MONOLITHIC: one ignore protocol owns parsing, precedence, root scoping, compiled matching, and hidden-file folding so serial and parallel walkers cannot drift
 //! gist `rg` — the gitignore / .ignore / .rgignore filter that makes gist's
 //! directory walk honor the same "what's tracked" boundary ripgrep does.
 //!
@@ -38,6 +39,7 @@ pub const Rule = struct {
     negated: bool,
     anchored: bool,
     dir_only: bool,
+    reanchor_multi_root: bool = false,
 };
 
 /// Parse one gitignore-dialect line into a `Rule` (comments/blank lines → null).
@@ -64,7 +66,7 @@ pub fn parseRuleLine(raw: []const u8, base: []const u8, strip: []const u8) ?Rule
     if (line.len > 0 and line[0] == '/') {
         anchored = true;
         line = line[1..];
-    } else if (std.mem.findScalar(u8, line, '/') != null) {
+    } else if (std.mem.indexOfScalar(u8, line, '/') != null) {
         anchored = true;
     }
     if (line.len == 0) return null;
@@ -84,11 +86,18 @@ pub fn parseRuleLine(raw: []const u8, base: []const u8, strip: []const u8) ?Rule
 
 /// Does rule `r` match candidate `rel` (a dir when `is_dir`)? The standalone
 /// core of `Ignore.match`, parameterized on the two bits of walk state the
-/// method drew from `self` — `root_depth` (the explicit positional root's
-/// component depth, see `scopeToRoot`) and case-insensitive matching (`a`
-/// backs the lowercase copies; only touched when `ci` is set). Thread-safe:
-/// reads only its arguments.
-pub fn ruleMatch(a: std.mem.Allocator, ci: bool, root_depth: usize, r: Rule, rel_in: []const u8, is_dir: bool) bool {
+/// method drew from `self` — explicit-root depth/re-anchoring and
+/// case-insensitive matching (`a` backs the lowercase copies; only touched when
+/// `ci` is set). Thread-safe: reads only its arguments.
+pub fn ruleMatch(
+    a: std.mem.Allocator,
+    ci: bool,
+    root_depth: usize,
+    reanchor_root: bool,
+    r: Rule,
+    rel_in: []const u8,
+    is_dir: bool,
+) bool {
     const rel = stripDot(rel_in); // a `./root` positional prefixes every path
     var sub = rel;
     const base = stripDot(r.base);
@@ -101,10 +110,17 @@ pub fn ruleMatch(a: std.mem.Allocator, ci: bool, root_depth: usize, r: Rule, rel
     // exempts a depth-0/root entry from every ignore check; see
     // `scopeToRoot`'s doc comment) while its genuine descendants (deeper
     // than the root) are still filtered normally.
-    const floor: usize = if (base.len == 0) root_depth else 0;
+    var floor: usize = if (base.len == 0) root_depth else 0;
     if (base.len != 0) {
         if (rel.len <= base.len or !std.mem.startsWith(u8, rel, base) or rel[base.len] != '/') return false;
         sub = rel[base.len + 1 ..];
+    } else if (reanchor_root and r.reanchor_multi_root and root_depth != 0 and r.anchored) {
+        // ripgrep builds a separate parent-ignore matcher when argv names
+        // multiple roots. Its anchored CWD rules are therefore evaluated
+        // relative to each root (`scripts/foo` → `foo`), unlike the one-root
+        // walker, which preserves the CWD-relative prefix.
+        sub = stripComponents(rel, root_depth);
+        floor = 0;
     }
     if (sub.len == 0) return false;
     // ENTITY-ONLY matching (git model): a rule is tested against the candidate
@@ -121,7 +137,7 @@ pub fn ruleMatch(a: std.mem.Allocator, ci: bool, root_depth: usize, r: Rule, rel
         return depth > floor and ruleGlob(a, ci, r.glob, sub) and (!r.dir_only or is_dir);
     }
     // Slash-less: match the basename; dir-only rules require a directory.
-    const base_idx = if (std.mem.findScalarLast(u8, sub, '/')) |s| s + 1 else 0;
+    const base_idx = if (std.mem.lastIndexOfScalar(u8, sub, '/')) |s| s + 1 else 0;
     const comp_idx = std.mem.count(u8, sub[0..base_idx], "/");
     return comp_idx >= floor and ruleGlob(a, ci, r.glob, sub[base_idx..]) and (!r.dir_only or is_dir);
 }
@@ -131,9 +147,118 @@ fn ruleGlob(a: std.mem.Allocator, ci: bool, pat: []const u8, str: []const u8) bo
     return gl.globMatch(lower(a, pat), lower(a, str));
 }
 
-/// The compiled fast tier for the "" bucket (see `globset.zig`), re-exported
-/// so callers keep using `ignore.Compiled` unchanged.
-pub const Compiled = @import("globset.zig").Compiled;
+/// The CWD/ancestor rule tier ("" bucket) compiled for O(1)-per-entry
+/// evaluation — the parallel pipeline's answer to ripgrep's globset. Verdicts
+/// are RANKS (rule indices): last-match-wins becomes max-rank-wins, so a
+/// literal-basename rule is one hash probe instead of a glob call. Matching
+/// is entity-only (`ruleMatch`'s model): basename for slash-less rules, full
+/// path for anchored ones — ancestor exclusion is the walk's pruning, never
+/// re-derived here. Built once before fan-out; immutable and lock-free.
+pub const Compiled = struct {
+    rules: []const Rule,
+    lit: std.StringHashMap(Slot), // slash-less, meta-free glob → exact basename
+    ext: std.StringHashMap(Slot), // slash-less `*.X` (X dot/meta-free) → basename extension
+    complex: []const u32, // everything else, ascending rank
+    a: std.mem.Allocator,
+
+    /// Best (max) rank per key, split by dir-only: a dir-only rule is
+    /// eligible only when the entry itself is a directory.
+    const Slot = struct { plain: ?u32 = null, dironly: ?u32 = null };
+
+    /// Compile the "" bucket, or null when this run can't use the fast tier
+    /// (case-insensitive matching, or ANY rules bucketed under an explicit
+    /// root — e.g. a positional-root repo's `.git/info/exclude`, whose bucket
+    /// this tier doesn't model).
+    pub fn build(a: std.mem.Allocator, ig: *const Ignore) ?Compiled {
+        if (ig.o.ignore_case_insensitive) return null;
+        var keys = ig.groups.keyIterator();
+        while (keys.next()) |k| if (k.len != 0) return null;
+        var self = Compiled{
+            .rules = &.{},
+            .lit = std.StringHashMap(Slot).init(a),
+            .ext = std.StringHashMap(Slot).init(a),
+            .complex = &.{},
+            .a = a,
+        };
+        const bucket = ig.groups.getPtr("") orelse return self;
+        self.rules = bucket.items;
+        var cx: std.ArrayList(u32) = .empty;
+        for (bucket.items, 0..) |r, i| {
+            const rank: u32 = @intCast(i);
+            if (!r.anchored and !hasMeta(r.glob)) {
+                slotPut(&self.lit, r.glob, rank, r.dir_only);
+            } else if (!r.anchored and extKey(r.glob) != null) {
+                slotPut(&self.ext, extKey(r.glob).?, rank, r.dir_only);
+            } else {
+                cx.append(a, rank) catch die("oom\n", .{});
+            }
+        }
+        self.complex = cx.toOwnedSlice(a) catch die("oom\n", .{});
+        return self;
+    }
+
+    /// Max rank matching `rel` (stripped, no `./`). Byte-equivalent to folding
+    /// the whole bucket through `ruleMatch` (see `decideAt`) — the root-depth
+    /// exemption is structural here: every walked entry sits strictly BELOW
+    /// its root, so the entry itself is never the exempt root component.
+    pub fn matchRank(self: *const Compiled, rel: []const u8, is_dir: bool, root_depth: usize, reanchor_root: bool) ?u32 {
+        var best: ?u32 = null;
+        const base = if (std.mem.lastIndexOfScalar(u8, rel, '/')) |s| rel[s + 1 ..] else rel;
+        fold(&best, self.lit.get(base), is_dir);
+        if (std.mem.lastIndexOfScalar(u8, base, '.')) |dot| {
+            if (dot + 1 < base.len) fold(&best, self.ext.get(base[dot + 1 ..]), is_dir);
+        }
+        // Descending scan with early exit: the first (highest-rank) match wins,
+        // and no rule at-or-below `best` can change the verdict.
+        var i = self.complex.len;
+        while (i > 0) {
+            i -= 1;
+            const rank = self.complex[i];
+            if (best != null and rank <= best.?) break;
+            const r = self.rules[rank];
+            if (r.dir_only and !is_dir) continue;
+            const anchored_rel = if (reanchor_root and r.reanchor_multi_root and root_depth != 0)
+                stripComponents(rel, root_depth)
+            else
+                rel;
+            const hit = if (r.anchored) gl.globMatch(r.glob, anchored_rel) else gl.globMatch(r.glob, base);
+            if (hit) {
+                best = rank;
+                break;
+            }
+        }
+        return best;
+    }
+
+    fn fold(best: *?u32, slot: ?Slot, is_dir: bool) void {
+        const s = slot orelse return;
+        if (s.plain) |r| if (best.* == null or r > best.*.?) {
+            best.* = r;
+        };
+        if (is_dir) if (s.dironly) |r| if (best.* == null or r > best.*.?) {
+            best.* = r;
+        };
+    }
+
+    fn slotPut(map: *std.StringHashMap(Slot), key: []const u8, rank: u32, dir_only: bool) void {
+        const gop = map.getOrPut(key) catch die("oom\n", .{});
+        if (!gop.found_existing) gop.value_ptr.* = .{};
+        if (dir_only) gop.value_ptr.dironly = rank else gop.value_ptr.plain = rank;
+    }
+
+    fn hasMeta(s: []const u8) bool {
+        return std.mem.indexOfAny(u8, s, "*?[\\") != null;
+    }
+
+    /// `*.X` with a dot/meta-free X — matchable by basename-extension lookup
+    /// (a component matches `*.X` iff its final `.`-suffix is exactly X).
+    fn extKey(glob: []const u8) ?[]const u8 {
+        if (glob.len < 3 or glob[0] != '*' or glob[1] != '.') return null;
+        const x = glob[2..];
+        if (hasMeta(x) or std.mem.indexOfScalar(u8, x, '.') != null) return null;
+        return x;
+    }
+};
 
 pub const Ignore = struct {
     a: std.mem.Allocator,
@@ -155,6 +280,10 @@ pub const Ignore = struct {
     loaded: std.StringHashMap(void), // dirs whose ignore files were read (dedupe)
     use_git: bool = false,
     use_dot: bool = false,
+    // ripgrep's unsorted parallel walker re-anchors parent ignore rules for each
+    // positional root; its sorted walker and one-root path retain the
+    // CWD-relative prefix. This affects anchored `!path/to/root/...` exceptions.
+    reanchor_root_rules: bool = false,
     // Component-depth of the positional root currently being walked (0 for the
     // implicit whole-CWD walk). ripgrep NEVER ignore-filters a root path named
     // explicitly on argv — only entries strictly BELOW it (see `walk.rs`'s
@@ -178,11 +307,12 @@ pub const Ignore = struct {
             .o = o,
             .groups = std.StringHashMap(std.ArrayList(Rule)).init(a),
             .loaded = std.StringHashMap(void).init(a),
+            .reanchor_root_rules = roots.len > 1 and !o.sorted,
         };
         // `--ignore-file` is EXPLICIT user intent: lowest precedence (added first,
         // so an in-tree `.ignore`/`.gitignore` overrides it — rg's f45 rule) and
         // honored even under `-u`/`--no-ignore` (only `--no-ignore-files` drops it).
-        if (!o.no_ignore_files) for (o.ignore_files) |p| self.readFile(p, "", "");
+        if (!o.no_ignore_files) for (o.ignore_files) |p| self.readFile(p, "", "", false);
         if (o.no_ignore) return self; // -u / --no-ignore: honor nothing else on disk
         // Detect the repo by ASCENDING from CWD — ripgrep finds `.git` at any
         // ancestor, not just CWD; the depth bounds how far VCS ignores climb.
@@ -223,10 +353,10 @@ pub const Ignore = struct {
             // anchored ancestor rule is re-anchored by stripping this prefix.
             const subpath = joinComps(self.a, comps.items[comps.items.len - k ..]);
             if (self.use_git and git_depth != null and k <= git_depth.?)
-                self.readFile(join(self.a, anc, ".gitignore"), "", subpath);
+                self.readFile(join(self.a, anc, ".gitignore"), "", subpath, true);
             if (self.use_dot) {
-                self.readFile(join(self.a, anc, ".ignore"), "", subpath);
-                self.readFile(join(self.a, anc, ".rgignore"), "", subpath);
+                self.readFile(join(self.a, anc, ".ignore"), "", subpath, false);
+                self.readFile(join(self.a, anc, ".rgignore"), "", subpath, false);
             }
         }
     }
@@ -237,7 +367,7 @@ pub const Ignore = struct {
     /// `resolve_git_commondir`) so a linked worktree honors the shared exclude.
     fn loadGitExclude(self: *Ignore, root: []const u8, base: []const u8) void {
         const git_dir = self.resolveGitDir(root) orelse return;
-        self.readFile(join(self.a, git_dir, "info/exclude"), base, "");
+        self.readFile(join(self.a, git_dir, "info/exclude"), base, "", true);
     }
 
     /// The git common-dir for the repo at `root` (a path openable from CWD), or
@@ -249,11 +379,7 @@ pub const Ignore = struct {
             var d = d_const;
             d.close(self.io);
             return dot_git; // plain repo: `.git` is the git dir
-        } else |err| {
-            // Not a dir (or absent) — fall through and probe it as a worktree
-            // `.git`-FILE below; only a genuinely unexpected failure is worth a trace.
-            std.log.debug("gist: openDir {s} failed, probing worktree .git-file: {}\n", .{ dot_git, err });
-        }
+        } else |_| {}
         const gitfile = Dir.cwd().readFileAlloc(self.io, dot_git, self.a, .limited(4096)) catch return null;
         const line0 = std.mem.trimEnd(u8, firstLine(gitfile), "\r");
         if (!std.mem.startsWith(u8, line0, "gitdir: ")) return null;
@@ -284,10 +410,10 @@ pub const Ignore = struct {
         const gop = self.loaded.getOrPut(rel) catch die("oom\n", .{});
         if (gop.found_existing) return;
         gop.key_ptr.* = self.a.dupe(u8, rel) catch die("oom\n", .{}); // own the key (rel may be transient)
-        if (self.use_git) self.readFile(join(self.a, disk, ".gitignore"), rel, "");
+        if (self.use_git) self.readFile(join(self.a, disk, ".gitignore"), rel, "", true);
         if (self.use_dot) {
-            self.readFile(join(self.a, disk, ".ignore"), rel, "");
-            self.readFile(join(self.a, disk, ".rgignore"), rel, "");
+            self.readFile(join(self.a, disk, ".ignore"), rel, "", false);
+            self.readFile(join(self.a, disk, ".rgignore"), rel, "", false);
         }
     }
 
@@ -311,7 +437,7 @@ pub const Ignore = struct {
         self.applyGroup("", rel, is_dir, root_depth, &verdict);
         const stripped = stripDot(rel);
         var i: usize = 0;
-        while (std.mem.findScalarPos(u8, stripped, i, '/')) |slash| {
+        while (std.mem.indexOfScalarPos(u8, stripped, i, '/')) |slash| {
             self.applyGroup(stripped[0..slash], rel, is_dir, root_depth, &verdict);
             i = slash + 1;
         }
@@ -324,7 +450,7 @@ pub const Ignore = struct {
     /// ancestor-sourced rules changes which rules are *tried*, never the verdict.
     fn applyGroup(self: *const Ignore, base_key: []const u8, rel: []const u8, is_dir: bool, root_depth: usize, verdict: *?bool) void {
         const g = self.groups.getPtr(base_key) orelse return;
-        for (g.items) |r| if (ruleMatch(self.a, self.o.ignore_case_insensitive, root_depth, r, rel, is_dir)) {
+        for (g.items) |r| if (ruleMatch(self.a, self.o.ignore_case_insensitive, root_depth, self.reanchor_root_rules, r, rel, is_dir)) {
             verdict.* = !r.negated;
         };
     }
@@ -365,15 +491,15 @@ pub const Ignore = struct {
     /// Read `path`'s ignore lines, anchoring each to `base`. `strip` (non-empty
     /// only for a parent-directory file) is CWD's path relative to that ancestor;
     /// it re-anchors the ancestor's anchored rules onto the search subtree.
-    fn readFile(self: *Ignore, path: []const u8, base: []const u8, strip: []const u8) void {
+    fn readFile(self: *Ignore, path: []const u8, base: []const u8, strip: []const u8, reanchor_multi_root: bool) void {
         const buf = Dir.cwd().readFileAlloc(self.io, path, self.a, .limited(1 << 20)) catch return;
         var it = std.mem.splitScalar(u8, buf, '\n');
-        while (it.next()) |raw| self.addLine(std.mem.trimEnd(u8, raw, "\r"), base, strip);
+        while (it.next()) |raw| self.addLine(std.mem.trimEnd(u8, raw, "\r"), base, strip, reanchor_multi_root);
     }
 
     /// Parse one gitignore-dialect line into a `Rule` (comments/blank lines drop)
     /// and bucket it by source directory — the container half of `parseRuleLine`.
-    fn addLine(self: *Ignore, raw: []const u8, base: []const u8, strip: []const u8) void {
+    fn addLine(self: *Ignore, raw: []const u8, base: []const u8, strip: []const u8, reanchor_multi_root: bool) void {
         const parsed = parseRuleLine(raw, base, strip) orelse return;
         // Bucket by the source directory (normalized like `ruleMatch` does, so a
         // "." / "./x" base and its rel-side counterpart collapse to the same key).
@@ -385,6 +511,7 @@ pub const Ignore = struct {
         }
         var owned = parsed;
         owned.glob = self.a.dupe(u8, parsed.glob) catch die("oom\n", .{});
+        owned.reanchor_multi_root = reanchor_multi_root;
         gop.value_ptr.append(self.a, owned) catch die("oom\n", .{});
     }
 };
@@ -406,6 +533,17 @@ fn stripDot(s: []const u8) []const u8 {
     if (std.mem.startsWith(u8, s, "./")) return s[2..];
     if (std.mem.eql(u8, s, ".")) return "";
     return s;
+}
+
+/// Remove `count` leading path components, counting a leading `/` as the empty
+/// component exactly as `rootDepth` does for absolute positional roots.
+fn stripComponents(path: []const u8, count: usize) []const u8 {
+    var rest = path;
+    for (0..count) |_| {
+        const slash = std.mem.indexOfScalar(u8, rest, '/') orelse return "";
+        rest = rest[slash + 1 ..];
+    }
+    return rest;
 }
 
 /// The relative path `k` directories above CWD: 1→`..`, 2→`../..`, … .
@@ -449,7 +587,7 @@ fn gitRootDepth(io: std.Io) ?usize {
 
 /// The first line of `buf` (without the terminator), or all of `buf` if none.
 fn firstLine(buf: []const u8) []const u8 {
-    const nl = std.mem.findScalar(u8, buf, '\n') orelse return buf;
+    const nl = std.mem.indexOfScalar(u8, buf, '\n') orelse return buf;
     return buf[0..nl];
 }
 
@@ -461,11 +599,7 @@ fn hasDotGit(io: std.Io, path: []const u8) bool {
         var d = d_const;
         d.close(io);
         return true;
-    } else |err| {
-        // Not a dir (or absent) — fall through and probe it as a worktree
-        // `.git`-FILE below; only a genuinely unexpected failure is worth a trace.
-        std.log.debug("gist: openDir {s} failed, probing worktree .git-file: {}\n", .{ dg, err });
-    }
+    } else |_| {}
     const b = Dir.cwd().readFileAlloc(io, dg, std.heap.page_allocator, .limited(4096)) catch return false;
     std.heap.page_allocator.free(b);
     return true;
@@ -479,4 +613,47 @@ fn anyRootRepo(io: std.Io, roots: []const []const u8) bool {
         if (hasDotGit(io, std.mem.trimEnd(u8, r, "/"))) return true;
     }
     return false;
+}
+
+test "multi-root VCS rules re-anchor without changing one-root semantics" {
+    const t = std.testing;
+    const rule = Rule{
+        .glob = "scripts/observe/build",
+        .base = "",
+        .negated = true,
+        .anchored = true,
+        .dir_only = true,
+        .reanchor_multi_root = true,
+    };
+    try t.expect(ruleMatch(t.allocator, false, 1, false, rule, "scripts/observe/build", true));
+    try t.expect(!ruleMatch(t.allocator, false, 1, true, rule, "scripts/observe/build", true));
+}
+
+test "compiled matcher preserves multi-root VCS re-anchoring" {
+    const t = std.testing;
+    const rules = [_]Rule{
+        .{ .glob = "build", .base = "", .negated = false, .anchored = false, .dir_only = true },
+        .{
+            .glob = "scripts/observe/build",
+            .base = "",
+            .negated = true,
+            .anchored = true,
+            .dir_only = true,
+            .reanchor_multi_root = true,
+        },
+    };
+    var complex = [_]u32{1};
+    var compiled = Compiled{
+        .rules = &rules,
+        .lit = std.StringHashMap(Compiled.Slot).init(t.allocator),
+        .ext = std.StringHashMap(Compiled.Slot).init(t.allocator),
+        .complex = &complex,
+        .a = t.allocator,
+    };
+    defer compiled.lit.deinit();
+    defer compiled.ext.deinit();
+    Compiled.slotPut(&compiled.lit, "build", 0, true);
+
+    try t.expectEqual(@as(?u32, 1), compiled.matchRank("scripts/observe/build", true, 1, false));
+    try t.expectEqual(@as(?u32, 0), compiled.matchRank("scripts/observe/build", true, 1, true));
 }

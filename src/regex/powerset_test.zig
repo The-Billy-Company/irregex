@@ -342,7 +342,7 @@ const Spec = struct {
     fn docMatch(s: *Spec, doc: []const u8) bool {
         var rest = doc;
         while (rest.len > 0) {
-            const nl = std.mem.findScalar(u8, rest, '\n');
+            const nl = std.mem.indexOfScalar(u8, rest, '\n');
             const end = nl orelse rest.len;
             if (s.lineMatch(rest[0..end])) return true;
             if (nl == null) break;
@@ -370,7 +370,7 @@ fn exhaustiveEquiv(pat: []const u8, re: *const Regex, alphabet: []const u8, maxl
                 std.debug.print("DOC MISMATCH pat=/{s}/ s=\"{s}\" spec={} dfa={}\n", .{ pat, sline, spec.docMatch(sline), d.docMatch(sline) });
                 return error.DocLangMismatch;
             }
-            if (std.mem.findScalar(u8, sline, '\n') == null and spec.lineMatch(sline) != d.match(sline)) {
+            if (std.mem.indexOfScalar(u8, sline, '\n') == null and spec.lineMatch(sline) != d.match(sline)) {
                 std.debug.print("LINE MISMATCH pat=/{s}/ s=\"{s}\" spec={} dfa={}\n", .{ pat, sline, spec.lineMatch(sline), d.match(sline) });
                 return error.LineLangMismatch;
             }

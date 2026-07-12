@@ -49,11 +49,11 @@ pub const Prefilter = struct {
     }
 
     /// Next index ≥ `from` whose byte can begin a match. Three tiers: SIMD
-    /// `findScalar` for a singleton set (`;$`), a SIMD range scan for a few
+    /// `indexOfScalar` for a singleton set (`;$`), a SIMD range scan for a few
     /// contiguous ranges (`[0-9]{4}`, `[a-f0-9]{2,}`), and a scalar byteset probe
     /// for anything wider (a negated class).
     pub fn nextStart(self: *const Prefilter, line: []const u8, from: usize) ?usize {
-        if (self.byte) |b| return std.mem.findScalarPos(u8, line, from, b);
+        if (self.byte) |b| return std.mem.indexOfScalarPos(u8, line, from, b);
         if (self.nranges > 0) return self.nextStartRange(line, from);
         return self.scalarFirst(line, from);
     }
@@ -71,7 +71,7 @@ pub const Prefilter = struct {
     /// masks, take the lowest set lane. The scalar tail handles the remainder.
     fn nextStartRange(self: *const Prefilter, line: []const u8, from: usize) ?usize {
         const Vec = @Vector(vlen, u8);
-        const Mask = @Int(.unsigned, vlen);
+        const Mask = std.meta.Int(.unsigned, vlen);
         const ranges = self.ranges[0..self.nranges];
         var i = from;
         while (i + vlen <= line.len) : (i += vlen) {

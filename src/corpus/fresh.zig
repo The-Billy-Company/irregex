@@ -1,24 +1,24 @@
-//! gist T3 — freshness overlay. Keeps a persisted index correct against a
-//! working tree that many agents rewrite many times a minute WITHOUT rebuilding
-//! and WITHOUT consulting git history (the fragile part under heavy, overlapping,
-//! rebased commit churn).
+//! gist T3 — local-filesystem freshness overlay. A persisted trigram index only
+//! elides a live read when the path was indexed and both filesystem change
+//! clocks prove it predates the build anchor. Every other file is read and
+//! verified against live bytes before output.
 //!
-//! Why it can't break: the cold query already reads & VERIFIES every candidate
-//! against live bytes, so a stale/edited/deleted match is never a false
-//! *positive*. The only staleness gap is a false *negative* — a file that now
-//! matches but wasn't a trigram candidate (a new file, or one that gained the
-//! needle since build). So freshness only has to *widen* the candidate set with
-//! files touched since the index was built; the existing verify does the rest.
+//! The anchor is captured before the index reads the corpus. A file is
+//! conservatively fresh when mtime OR ctime is `>= anchor`, or either timestamp
+//! is unavailable. ctime closes the ordinary preserved-mtime hole: writing or
+//! replacing bytes advances status-change time even if a later `touch -r`
+//! restores mtime. Equality is fresh so coarse clocks that collapse a
+//! post-anchor write onto the anchor tick remain conservative.
 //!
-//! Anchor = the wall-clock instant of the build (`real` Io.Clock — the same
-//! UTC-ns domain as file mtime). A file is fresh iff `mtime ≥ anchor`. This is
-//! immune to commit chaos: rebases, overlapping branches, and racing commits
-//! never change the fact that writing a file's bytes (incl. a `git
-//! checkout`/merge/pull landing a coworker's commit) advances its mtime. It is a
-//! strict over-approximation — re-reading a touched-but-unchanged file is
-//! harmless (verify filters it) — so it has no false negatives and cannot break.
-//! `git diff HEAD` is *unsound* here: a coworker's commit already in HEAD shows
-//! no working-tree diff yet differs from our pre-commit index.
+//! This is freshness-aware with no false negatives under the model documented
+//! in `README.md`: a local filesystem whose reported ctime advances to the
+//! anchor tick or later for a completed ordinary write, and a primary live walk
+//! that reports traversal failures. Deliberately backdating both clocks,
+//! network/cache incoherence, and writes racing the metadata/read window are
+//! outside a snapshot guarantee. A racing query may resolve to the before- or
+//! after-write state; the next query observes the advanced ctime. `git diff
+//! HEAD` remains unsound because a coworker's committed change can differ from
+//! the older index without appearing in the working-tree diff.
 
 const std = @import("std");
 const corpus_mod = @import("corpus.zig");
@@ -41,14 +41,16 @@ pub fn writeAnchor(io: std.Io, built_ns: i128) !void {
     try persist.writeAtomic(io, anchor_file, &buf);
 }
 
-/// The anchor, or null when no index/anchor exists yet (⇒ freshness is skipped
-/// and behavior is byte-identical to the pre-T3 cold path — backward compatible).
+/// The anchor, or null when it is missing, truncated, or in the future. Query
+/// callers fail closed to reading every walked file when this proof is absent.
 /// `pub` so the `status` verb can report the build instant without a query.
 pub fn readAnchor(gpa: std.mem.Allocator, io: std.Io) ?i128 {
     const b = Dir.cwd().readFileAlloc(io, anchor_file, gpa, .limited(64)) catch return null;
     defer gpa.free(b);
     if (b.len < 8) return null;
-    return std.mem.readInt(i64, b[0..8], .little);
+    const built_ns: i128 = std.mem.readInt(i64, b[0..8], .little);
+    if (built_ns > std.Io.Clock.now(.real, io).nanoseconds) return null;
+    return built_ns;
 }
 
 /// Candidate doc-ids + a private arena owning any new-file paths appended to the
@@ -63,8 +65,9 @@ pub const Candidates = struct {
     }
 };
 
-/// Base trigram candidates for `filters` UNIONed with every file touched since
-/// the index was built. `filters` is the prefilter set: a single mandatory
+/// Base trigram candidates for `filters` UNIONed with every file whose mtime or
+/// ctime is at/after the build anchor (plus metadata-unknown files). `filters`
+/// is the prefilter set: a single mandatory
 /// literal (`{required}`), an alternation cover set (`foo|bar` ⇒ {foo, bar}), or
 /// empty ⇒ every doc. Each filter must be ≥3 B; an empty set or any short/failed
 /// filter falls back to seeding every doc (sound — the verify pass still gates).
@@ -101,24 +104,14 @@ pub fn candidates(
         var freshlist: std.ArrayList([]const u8) = .empty; // arena-owned strings
         try walkFresh(gpa, io, roots, built_ns, a, &freshlist);
         if (freshlist.items.len > 0) try widen(gpa, paths, &ids, freshlist.items);
+    } else {
+        // Without a trustworthy anchor no indexed non-candidate is provably
+        // unchanged. Seed all so the caller declines elision and live-reads.
+        ids.clearRetainingCapacity();
+        try seedAll(gpa, &ids, paths.items.len);
     }
 
     return .{ .ids = try ids.toOwnedSlice(gpa), .arena = arena, .gpa = gpa };
-}
-
-/// How many files under `roots` have been touched since `built_ns` — the
-/// index's *drift*. Runs the exact same work-stealing stat-walk the query
-/// overlay uses (`walkFresh`), just counting instead of widening. The `index
-/// --auto` drift gate calls this to decide whether a fold is even worth it, and
-/// `status` reports it so an agent can see, without a query, how much live-scan
-/// tax a stale index is currently paying. Deletions aren't counted (they can't
-/// advance an mtime) — harmless: a dropped file's stale postings verify out.
-pub fn driftCount(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, built_ns: i128) !usize {
-    var arena = std.heap.ArenaAllocator.init(gpa);
-    defer arena.deinit();
-    var out: std.ArrayList([]const u8) = .empty;
-    try walkFresh(gpa, io, roots, built_ns, arena.allocator(), &out);
-    return out.items.len;
 }
 
 fn seedAll(gpa: std.mem.Allocator, ids: *std.ArrayList(u32), total: usize) !void {
@@ -151,18 +144,17 @@ pub fn widen(gpa: std.mem.Allocator, paths: *std.ArrayList([]const u8), ids: *st
     }
 }
 
-/// One subtree's full stat-only walk (no reads), over the same skip-rules as
-/// the indexed corpus, collecting paths whose mtime ≥ `built_ns` into `a`.
-/// Failures degrade to "found nothing under this subtree" — never a false
-/// match, only (at worst) a momentarily missed fresh file, self-healing on
-/// its next touch. This is the recursive leaf action the work-stealing pool
-/// in `walkFresh` below dispatches per `WorkItem`.
+/// One subtree's metadata-only walk (no reads), over the same skip-rules as the
+/// indexed corpus, collecting paths that require a live read into `a`.
+/// Per-file stat failures are collected conservatively; traversal failures are
+/// surfaced by the query's primary live walk. This is the recursive leaf action
+/// the work-stealing pool in `walkFresh` dispatches per `WorkItem`.
 fn visitItem(io: std.Io, prefix: []const u8, built_ns: i128, a: std.mem.Allocator, out: *std.ArrayList([]const u8)) void {
     // `getattrlistbulk` (Darwin-only — see `bulkstat.zig`) turns this from
     // O(files) `stat()` syscalls into O(directories) bulk calls, each
-    // returning name+type+mtime for every sibling at once; it degrades
+    // returning name+type+mtime+ctime for every sibling at once; it degrades
     // directory-by-directory back to the exact stat-based walk below on any
-    // failure, so this can only ever be a speed trade, never a correctness one.
+    // failure, preserving the same conservative metadata decision.
     if (bulkstat.supported) {
         var dir = Dir.cwd().openDir(io, prefix, .{ .iterate = true }) catch return;
         defer dir.close(io);
@@ -172,8 +164,11 @@ fn visitItem(io: std.Io, prefix: []const u8, built_ns: i128, a: std.mem.Allocato
     var w = haystack.Walker.init(io, a, prefix) catch return;
     defer w.deinit(io);
     while (w.next(io) catch return) |hay| {
-        const st = hay.dir.statFile(io, hay.name, .{}) catch continue;
-        if (st.mtime.nanoseconds < built_ns) continue;
+        const st = hay.dir.statFile(io, hay.name, .{}) catch {
+            out.append(a, hay.path) catch return;
+            continue;
+        };
+        if (!bulkstat.needsLiveRead(built_ns, st.mtime.nanoseconds, st.ctime.nanoseconds)) continue;
         out.append(a, hay.path) catch return;
     }
 }
@@ -185,14 +180,13 @@ const WorkItem = struct { prefix: []const u8 };
 /// see `bulkstat.listOneLevel`), falling back to the portable
 /// `std.Io.Dir.Iterator` on any failure or non-Darwin target. Every
 /// non-skipped child directory becomes a new `WorkItem` (arena-owned prefix);
-/// every child FILE is mtime-checked right here (cheap — a directory's
+/// every child FILE is metadata-checked right here (cheap — a directory's
 /// immediate files are a handful, not worth their own work item) and, if
 /// fresh, appended straight to `out`. Returns `false` only when `prefix`
 /// itself couldn't be opened (race: deleted between discovery and expansion,
 /// or a permissions edge) — the caller then keeps it as its own leaf
-/// `WorkItem`, and `visitItem`'s own `catch return` degrades it to
-/// "found nothing" exactly as before, so this can never drop a file, only
-/// (at worst) fail to subdivide one node further.
+/// `WorkItem`; the primary query walk remains responsible for reporting an
+/// inaccessible subtree rather than presenting a complete result.
 fn expandOneLevel(gpa: std.mem.Allocator, io: std.Io, prefix: []const u8, built_ns: i128, a: std.mem.Allocator, out: *std.ArrayList([]const u8), children: *std.ArrayList(WorkItem)) !bool {
     if (bulkstat.supported) blk: {
         var dir = Dir.cwd().openDir(io, prefix, .{ .iterate = true }) catch return false;
@@ -206,7 +200,7 @@ fn expandOneLevel(gpa: std.mem.Allocator, io: std.Io, prefix: []const u8, built_
             if (e.is_dir) {
                 if (haystack.isSkipDir(e.name)) continue;
                 try children.append(gpa, .{ .prefix = try haystack.joinPath(a, prefix, e.name) });
-            } else if (e.is_file and e.mtime_ns >= built_ns) {
+            } else if (e.is_file and bulkstat.needsLiveRead(built_ns, e.mtime_ns, e.ctime_ns)) {
                 try out.append(a, try haystack.joinPath(a, prefix, e.name));
             }
         }
@@ -220,8 +214,12 @@ fn expandOneLevel(gpa: std.mem.Allocator, io: std.Io, prefix: []const u8, built_
             if (haystack.isSkipDir(e.name)) continue;
             try children.append(gpa, .{ .prefix = try haystack.joinPath(a, prefix, e.name) });
         } else if (e.kind == .file) {
-            const st = dir.statFile(io, e.name, .{}) catch continue;
-            if (st.mtime.nanoseconds >= built_ns) try out.append(a, try haystack.joinPath(a, prefix, e.name));
+            const path = try haystack.joinPath(a, prefix, e.name);
+            const st = dir.statFile(io, e.name, .{}) catch {
+                try out.append(a, path);
+                continue;
+            };
+            if (bulkstat.needsLiveRead(built_ns, st.mtime.nanoseconds, st.ctime.nanoseconds)) try out.append(a, path);
         }
     }
     return true;

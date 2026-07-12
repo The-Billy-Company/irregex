@@ -10,6 +10,7 @@
 //! both call these, so the two engines cannot drift on per-file semantics.
 
 const std = @import("std");
+const corpus_mod = @import("../../corpus/corpus.zig");
 const args = @import("args.zig");
 const output = @import("output.zig");
 const Opts = args.Opts;
@@ -82,7 +83,7 @@ pub fn collectLines(a: std.mem.Allocator, buf: []const u8, term: u8, out: *std.A
     out.ensureUnusedCapacity(a, std.mem.count(u8, buf, &.{term}) + 1) catch die("oom\n", .{});
     var rest = buf;
     while (true) {
-        const nl = std.mem.findScalar(u8, rest, term);
+        const nl = std.mem.indexOfScalar(u8, rest, term);
         const end = nl orelse rest.len;
         if (nl != null or end > 0) out.appendAssumeCapacity(rest[0..end]);
         if (nl == null) break;
@@ -97,6 +98,16 @@ pub fn collectLines(a: std.mem.Allocator, buf: []const u8, term: u8, out: *std.A
 /// the file counts as a match (drives the process exit code).
 pub fn handleBinary(a: std.mem.Allocator, re: *const Regex, o: Opts, out: *std.ArrayList(u8), em: *Emitter, path: []const u8, explicit: bool, body: []const u8, nul: usize, show_name: bool) bool {
     const cut = (nul / BUFCAP) * BUFCAP; // start of the buffer that holds the NUL
+
+    // `-l` can observe only complete buffers before the one that revealed the
+    // first NUL. Do not split/scan the discarded tail (often a multi-megabyte
+    // image, font, audio clip, or model artifact).
+    if (o.files_only and !explicit) {
+        var visible: std.ArrayList([]const u8) = .empty;
+        collectLines(a, body[0..cut], o.term(), &visible);
+        return em.file(path, visible.items) > 0;
+    }
+
     var lines: std.ArrayList([]const u8) = .empty;
     collectLines(a, body, o.term(), &lines);
     var cutoff: usize = lines.items.len;
@@ -107,6 +118,10 @@ pub fn handleBinary(a: std.mem.Allocator, re: *const Regex, o: Opts, out: *std.A
         }
     }
     const head = lines.items[0..cutoff];
+
+    // -l/--files-with-matches scans an explicit file as text and emits no binary
+    // warning. Walked files returned through the bounded fast path above.
+    if (o.files_only) return em.file(path, lines.items) > 0;
 
     // -c/--count: implicit files are suppressed entirely (rg scans fully, detects
     // binary, drops the count); an explicit file counts every match across the
@@ -296,4 +311,32 @@ pub fn readTail(a: std.mem.Allocator, fd: std.posix.fd_t, scratch: []const u8) ?
         out.appendSlice(a, tmp[0..r]) catch return null;
     }
     return out.toOwnedSlice(a) catch null;
+}
+
+test "walked -l stops at the NUL buffer without scanning its tail" {
+    const t = std.testing;
+    var re = try Regex.compile(t.allocator, "panic");
+    defer re.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(t.allocator);
+    const o = Opts{ .files_only = true };
+    var em = Emitter{
+        .a = t.allocator,
+        .re = &re,
+        .o = o,
+        .show_name = true,
+        .out = &out,
+    };
+
+    const same_buffer = "panic\x00panic after cutoff";
+    try t.expect(!handleBinary(t.allocator, &re, o, &out, &em, "same.bin", false, same_buffer, 5, true));
+    try t.expectEqual(@as(usize, 0), out.items.len);
+
+    const prior_buffer = try t.allocator.alloc(u8, BUFCAP + 1);
+    defer t.allocator.free(prior_buffer);
+    @memset(prior_buffer, 'x');
+    @memcpy(prior_buffer[0..5], "panic");
+    prior_buffer[BUFCAP] = 0;
+    try t.expect(handleBinary(t.allocator, &re, o, &out, &em, "prior.bin", false, prior_buffer, BUFCAP, true));
+    try t.expectEqualStrings("prior.bin\n", out.items);
 }

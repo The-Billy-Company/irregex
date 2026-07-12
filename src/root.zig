@@ -1,4 +1,4 @@
-//! gist — fast, agent-friendly code locator kernel (Zig, C-ABI).
+//! gist — fast, agent-friendly code locator kernel.
 //!
 //! The engine half of an agent-native grep: a candidate INDEX that turns a
 //! whole-tree scan into a scoped lookup, plus (later tiers) sparse-n-gram
@@ -7,9 +7,14 @@
 //! win is at scale (don't rescan) and at *intent* (don't already know the
 //! symbol) — see `research/dossiers/locator-sota.dossier.toml`.
 //!
+//! Search, index lifecycle, and result handling are Zig-native and surfaced by
+//! the `gist` CLI. The deliberately minimal C ABI in `include/gist.h` exposes
+//! only ABI-version introspection and allocation-free trigram extraction; it
+//! does not open, build, or query indexes. Non-Zig embedding therefore uses the
+//! CLI contract rather than a speculative FFI search API.
+//!
 //! Package shape mirrors pkg/kernels/core + principia, grouped into
-//! concern-scoped subfolders under `src/` (each re-exported here) and surfaced
-//! through a FLAT C ABI (no namespaces in C/cffi/cgo) pinned in `include/gist.h`:
+//! concern-scoped subfolders under `src/` (each re-exported here):
 //!
 //!   index/    — the trigram candidate index (turn a whole-tree scan into a lookup)
 //!   regex/    — the linear-time RE2-style engine (NFA + byte-class DFA + prefilter)
@@ -72,7 +77,7 @@ pub const commands = struct {
 
 pub const version_string: [:0]const u8 = "0.1.0"; // x-release-please-version
 
-/// Bump on any C-ABI break so bindings can refuse a mismatched shared lib.
+/// Bump on any break to the deliberately minimal two-symbol C ABI.
 pub fn abi() u32 {
     return 1;
 }
@@ -83,8 +88,8 @@ export fn gist_abi_version() u32 {
 
 /// Extract the distinct, ascending trigrams of `text[0..len]` into
 /// `out[0..len]` (caller sizes `out` ≥ `len`). Returns the count written.
-/// A deterministic, allocation-free primitive — the cross-language parity
-/// oracle the bindings assert against.
+/// This deterministic primitive is the C ABI's only data operation; search and
+/// index lifecycle remain Zig-native/CLI surfaces.
 export fn gist_trigram_count(text: [*]const u8, len: usize, out: [*]u32) usize {
     if (len < 3) return 0;
     return ngram.extractSortedUnique(text[0..len], out[0..len]);
@@ -121,5 +126,4 @@ test {
     _ = @import("commands/ripgrep/run.zig"); // the unified engine (rgsuite parity drop-in)
     _ = @import("commands/ripgrep/rank.zig"); // `--rank` definition-first ranked view
     _ = @import("commands/ripgrep/index.zig"); // the `index` verb: build + persist
-    _ = @import("commands/ripgrep/graft_test.zig"); // incremental graft ≡ full-rebuild (byte-identical)
 }

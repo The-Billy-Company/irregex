@@ -3,7 +3,7 @@
 //! replaces inside `fresh.zig`. Freshness has one unforgivable failure mode —
 //! a false negative, a changed file the overlay fails to surface — so this
 //! test builds a real (not mocked) directory tree with a mix of old/new
-//! mtimes, a skip-dir, and a symlink, and cross-checks two independently
+//! change timestamps, a skip-dir, and a symlink, and cross-checks two independently
 //! reachable code paths over live syscalls rather than asserting a
 //! hand-computed "expected" set (a self-referential oracle would prove
 //! nothing here — the whole risk is a parsing bug in the hand-rolled
@@ -25,13 +25,26 @@ fn statWalk(a: std.mem.Allocator, io: std.Io, root_path: []const u8, built_ns: i
     var w = try haystack.Walker.init(io, a, root_path);
     defer w.deinit(io);
     while (try w.next(io)) |hay| {
-        const st = hay.dir.statFile(io, hay.name, .{}) catch continue;
-        if (st.mtime.nanoseconds < built_ns) continue;
+        const st = hay.dir.statFile(io, hay.name, .{}) catch {
+            try out.append(a, hay.path);
+            continue;
+        };
+        if (!bulkstat.needsLiveRead(built_ns, st.mtime.nanoseconds, st.ctime.nanoseconds)) continue;
         try out.append(a, hay.path);
     }
 }
 
-test "bulkstat.visitFresh ≡ the stat-based walk over a real tree (old/new mtimes, skip-dir, symlink)" {
+test "needsLiveRead elides only when both clocks strictly predate the anchor" {
+    const anchor: i128 = 1_000;
+
+    try std.testing.expect(!bulkstat.needsLiveRead(anchor, 999, 999));
+    try std.testing.expect(bulkstat.needsLiveRead(anchor, anchor, 999)); // mtime == anchor
+    try std.testing.expect(bulkstat.needsLiveRead(anchor, 999, anchor)); // ctime boundary
+    try std.testing.expect(bulkstat.needsLiveRead(anchor, null, 999));
+    try std.testing.expect(bulkstat.needsLiveRead(anchor, 999, null));
+}
+
+test "bulkstat.visitFresh ≡ the stat-based walk over a real tree (old/new metadata, skip-dir, symlink)" {
     if (!bulkstat.supported) return error.SkipZigTest;
     const gpa = std.testing.allocator;
     var threaded = std.Io.Threaded.init(gpa, .{});
@@ -58,7 +71,7 @@ test "bulkstat.visitFresh ≡ the stat-based walk over a real tree (old/new mtim
 
     // Anchor sits strictly between "old" and "new": old files predate the
     // index build, new files (incl. the skip-dir's, to prove it's excluded
-    // on NAME alone, not by accident of mtime) postdate it.
+    // on NAME alone, not by accident of metadata) postdate it.
     const anchor = std.Io.Timestamp.now(io, .real);
     try io.sleep(.fromNanoseconds(50 * std.time.ns_per_ms), .real);
     const built_ns: i128 = anchor.nanoseconds;
@@ -107,7 +120,7 @@ test "bulkstat.visitFresh ≡ the stat-based walk over a real tree (old/new mtim
     }
 }
 
-test "bulkstat.BulkDir reads name/type/mtime directly off a small directory" {
+test "bulkstat.BulkDir reads name/type/mtime/ctime directly off a small directory" {
     if (!bulkstat.supported) return error.SkipZigTest;
     const gpa = std.testing.allocator;
     var threaded = std.Io.Threaded.init(gpa, .{});
@@ -134,7 +147,8 @@ test "bulkstat.BulkDir reads name/type/mtime directly off a small directory" {
         if (std.mem.eql(u8, e.name, "hello.txt")) {
             try std.testing.expect(e.is_file);
             try std.testing.expect(!e.is_dir);
-            try std.testing.expect(e.mtime_ns > 0);
+            try std.testing.expect(e.mtime_ns.? > 0);
+            try std.testing.expect(e.ctime_ns.? > 0);
             saw_file = true;
         } else if (std.mem.eql(u8, e.name, "childdir")) {
             try std.testing.expect(e.is_dir);

@@ -1,10 +1,12 @@
 //! gist T0 persisted index/path-table tests — split per the shape cap, wired via
 //! `root.zig`'s test block. Exercises the doc→path integrity invariant
-//! (`validatePersistedPair`) and the NUL-split (`parsePathTable`) WITHOUT touching
-//! the filesystem; the mmap `load` path is covered end-to-end by the CLI races.
+//! (`validatePersistedPair`), the NUL-split (`parsePathTable`), generation
+//! matching, and a filesystem concurrency regression for generation publish.
 
 const std = @import("std");
 const persist = @import("persist.zig");
+const Index = @import("trigram.zig").Index;
+const Dir = std.Io.Dir;
 
 test "parsePathTable: splits NUL-separated paths in doc-id order, dropping a trailing NUL" {
     const a = std.testing.allocator;
@@ -39,4 +41,138 @@ test "validatePersistedPair: rejects a shorter or longer path table (the doc-id 
 test "validatePersistedPair: an empty table matches only doc_count 0" {
     try persist.validatePersistedPair(0, &.{});
     try std.testing.expectError(persist.PairError.PathTableMismatch, persist.validatePersistedPair(1, &.{}));
+}
+
+test "validateGeneration: accepts identical ids and rejects drift" {
+    try persist.validateGeneration("abc", "abc");
+    try std.testing.expectError(persist.PairError.GenerationMismatch, persist.validateGeneration("abc", "abd"));
+}
+
+test "persistIndexAndPathsAt: generation publish keeps readers off a torn pair" {
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = try std.fmt.allocPrint(gpa, "/tmp/gist_persist_gen_{x}", .{@intFromPtr(&threaded)});
+    defer gpa.free(root);
+    Dir.cwd().deleteTree(io, root) catch {};
+    defer Dir.cwd().deleteTree(io, root) catch {};
+
+    const docs_a = [_][]const u8{ "alpha cat", "beta dog" };
+    const paths_a = [_][]const u8{ "a.txt", "b.txt" };
+    var idx_a = try Index.build(gpa, &docs_a);
+    defer idx_a.deinit();
+    _ = try persist.persistIndexAndPathsAt(gpa, io, root, &idx_a, &paths_a);
+
+    var loaded_a = (try persist.loadAt(gpa, io, root, false)).?;
+    defer loaded_a.deinit();
+    try std.testing.expectEqual(@as(u32, 2), loaded_a.idx.doc_count);
+    try std.testing.expectEqualStrings("a.txt", loaded_a.paths.items[0]);
+
+    // Stage a second generation WITHOUT flipping pair.gen — the classic torn
+    // window if index.gist/paths.list were published as two independent renames.
+    const docs_b = [_][]const u8{ "gamma eel", "delta fox", "epsilon gnu" };
+    const paths_b = [_][]const u8{ "c.txt", "d.txt", "e.txt" };
+    var idx_b = try Index.build(gpa, &docs_b);
+    defer idx_b.deinit();
+    const blob_b = try gpa.alloc(u8, idx_b.serializedSize());
+    defer gpa.free(blob_b);
+    _ = idx_b.writeInto(blob_b);
+    var pl_b: std.ArrayList(u8) = .empty;
+    defer pl_b.deinit(gpa);
+    for (paths_b) |p| {
+        try pl_b.appendSlice(gpa, p);
+        try pl_b.append(gpa, 0);
+    }
+    const staged = try std.fmt.allocPrint(gpa, "{s}/gens/staged-torn", .{root});
+    defer gpa.free(staged);
+    try Dir.cwd().createDirPath(io, staged);
+    const staged_index = try std.fmt.allocPrint(gpa, "{s}/index.gist", .{staged});
+    defer gpa.free(staged_index);
+    const staged_paths = try std.fmt.allocPrint(gpa, "{s}/paths.list", .{staged});
+    defer gpa.free(staged_paths);
+    try persist.writeAtomic(io, staged_index, blob_b);
+    try persist.writeAtomic(io, staged_paths, pl_b.items);
+    // Poison the stable aliases the way a non-atomic publisher would mid-flight:
+    // new index blob, still-old path table on the stable names.
+    const stable_index = try std.fmt.allocPrint(gpa, "{s}/index.gist", .{root});
+    defer gpa.free(stable_index);
+    try persist.writeAtomic(io, stable_index, blob_b);
+
+    // pair.gen still names generation A → load must keep A's consistent pair,
+    // not the poisoned stable index.gist + old paths.list mix.
+    var loaded_mid = (try persist.loadAt(gpa, io, root, false)).?;
+    defer loaded_mid.deinit();
+    try std.testing.expectEqual(@as(u32, 2), loaded_mid.idx.doc_count);
+    try std.testing.expectEqual(@as(usize, 2), loaded_mid.paths.items.len);
+    try std.testing.expectEqualStrings("a.txt", loaded_mid.paths.items[0]);
+
+    // Completing publish flips the generation; load now sees B.
+    _ = try persist.persistIndexAndPathsAt(gpa, io, root, &idx_b, &paths_b);
+    var loaded_b = (try persist.loadAt(gpa, io, root, false)).?;
+    defer loaded_b.deinit();
+    try std.testing.expectEqual(@as(u32, 3), loaded_b.idx.doc_count);
+    try std.testing.expectEqual(@as(usize, 3), loaded_b.paths.items.len);
+    try std.testing.expectEqualStrings("c.txt", loaded_b.paths.items[0]);
+}
+
+test "persistIndexAndPathsAt: concurrent loaders never observe a mixed generation" {
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = try std.fmt.allocPrint(gpa, "/tmp/gist_persist_race_{x}", .{@intFromPtr(&threaded)});
+    defer gpa.free(root);
+    Dir.cwd().deleteTree(io, root) catch {};
+    defer Dir.cwd().deleteTree(io, root) catch {};
+
+    const docs0 = [_][]const u8{"seed aaa"};
+    const paths0 = [_][]const u8{"seed.txt"};
+    var idx0 = try Index.build(gpa, &docs0);
+    defer idx0.deinit();
+    _ = try persist.persistIndexAndPathsAt(gpa, io, root, &idx0, &paths0);
+
+    const Worker = struct {
+        root: []const u8,
+        io: std.Io,
+        mismatches: *std.atomic.Value(usize),
+        fn run(self: *@This()) void {
+            var i: usize = 0;
+            while (i < 40) : (i += 1) {
+                var loaded = persist.loadAt(std.heap.page_allocator, self.io, self.root, false) catch {
+                    _ = self.mismatches.fetchAdd(1, .monotonic);
+                    continue;
+                } orelse continue;
+                defer loaded.deinit();
+                if (loaded.paths.items.len != loaded.idx.doc_count) {
+                    _ = self.mismatches.fetchAdd(1, .monotonic);
+                }
+            }
+        }
+    };
+
+    var mismatches: std.atomic.Value(usize) = .init(0);
+    var w1: Worker = .{ .root = root, .io = io, .mismatches = &mismatches };
+    var w2: Worker = .{ .root = root, .io = io, .mismatches = &mismatches };
+    const t1 = try std.Thread.spawn(.{}, Worker.run, .{&w1});
+    const t2 = try std.Thread.spawn(.{}, Worker.run, .{&w2});
+
+    var n: usize = 0;
+    while (n < 25) : (n += 1) {
+        const docs = [_][]const u8{ "pub one", "pub two", "pub three" };
+        // Alternate path-table lengths so a torn stable-path publish would
+        // produce a detectable doc_count ≠ paths.len mismatch.
+        const paths_odd = [_][]const u8{ "o1.txt", "o2.txt", "o3.txt" };
+        const paths_even = [_][]const u8{ "e1.txt", "e2.txt" };
+        var idx = try Index.build(gpa, if (n % 2 == 0) docs[0..2] else docs[0..3]);
+        defer idx.deinit();
+        const paths: []const []const u8 = if (n % 2 == 0) &paths_even else &paths_odd;
+        _ = try persist.persistIndexAndPathsAt(gpa, io, root, &idx, paths);
+    }
+
+    t1.join();
+    t2.join();
+    try std.testing.expectEqual(@as(usize, 0), mismatches.load(.monotonic));
 }

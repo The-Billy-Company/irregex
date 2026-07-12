@@ -79,12 +79,7 @@ const Queue = struct {
     fn push(q: *Queue, batch: []const []const u8) void {
         if (batch.len == 0) return;
         q.mu.lockUncancelable(q.io);
-        q.items.appendSlice(q.gpa, batch) catch |err| {
-            // Degrades per this file's failure policy (see `Worker` doc): a
-            // dropped batch under OOM omits paths from the scan rather than
-            // crashing the whole run.
-            std.log.debug("gist: sweep: queue push dropped {d} path(s): {}\n", .{ batch.len, err });
-        };
+        q.items.appendSlice(q.gpa, batch) catch {};
         q.mu.unlock(q.io);
         q.cv.broadcast(q.io);
     }
@@ -177,11 +172,7 @@ fn consume(w: *Worker) void {
             w.bytes += n;
             if (n == 0 or corpus_mod.isBinary(scratch[0..n])) continue;
             const hit = if (w.re) |re| re.docMatch(&sim.?, scratch[0..n]) else simd.contains(scratch[0..n], w.needle);
-            if (hit) w.matched.append(w.gpa, path) catch |err| {
-                // Degrades per this file's failure policy (see `Worker` doc): a
-                // dropped match under OOM omits a file rather than crashing.
-                std.log.debug("gist: sweep: match append failed for {s}: {}\n", .{ path, err });
-            };
+            if (hit) w.matched.append(w.gpa, path) catch {};
         }
     }
 }

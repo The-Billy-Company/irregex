@@ -1,68 +1,154 @@
-//! gist --schema — the machine-readable capability manifest.
+//! gist --schema — the deterministic, machine-readable capability manifest.
 //!
-//! An agent (or a codegen step, or the `services/ai/tools` registry that should
-//! eventually wire gist as a first-class tool) shouldn't have to scrape `--help`
-//! prose to learn what gist can do. `gist --schema` emits a stable JSON document:
-//! every public verb, every NATIVE (Set B) flag with its type / default /
-//! one-line description, the LEGACY (Set A) ripgrep/grep spelling(s) each native
-//! flag aliases, and the process exit codes. This is the concrete answer to
-//! "allow agents the most specificity in discovering it" — the two-set model is
-//! machine-checkable, not just documented.
-//!
-//! The manifest is a static, deterministic document (the CLI surface is a
-//! contract, not runtime state), emitted verbatim to stdout. There are two
-//! lifecycle `verbs` (`index`, `status`); the search itself has no verb — it is
-//! the bare `gist <pattern>` invocation, described under `search` below. Its
-//! flag surface is a documented rg-compatible subset (`../ripgrep/args.zig`) —
-//! broad but not every rg flag; unsupported flags fail loud — plus gist's own
-//! additions (`--no-index`/`--index`/`--rank`). The full rg
-//! flag list is a contract enumerated by the rgsuite differential-parity harness
-//! rather than duplicated here; the manifest lists gist's native additions and
-//! points at that coverage.
+//! Search compatibility is not prose copied from the parser. The four ripgrep
+//! buckets are rendered directly from `ripgrep/args.zig`'s declarative catalog,
+//! the same rows that build the short- and long-flag dispatch tables.
 
+const std = @import("std");
 const corpus_mod = @import("../../corpus/corpus.zig");
+const args = @import("../ripgrep/args.zig");
 
-/// The capability manifest. Kept in sync by hand with the unified engine's flag
-/// parser (`../ripgrep/args.zig`) — the `--schema`/`--help` parity is asserted by
-/// the CLI's own tests + the rgsuite differential-parity harness.
-const manifest =
+const manifest_prefix =
     \\{
     \\  "tool": "gist",
     \\  "version": "0.1.0",
-    \\  "summary": "persistent trigram-indexed code locator; a drop-in for an agent's rg loop",
+    \\  "summary": "persistent trigram-indexed code locator for an agent's repeated exact-search loop",
     \\  "verbs": {
     \\    "index": {
-    \\      "summary": "build + persist the trigram index and freshness anchor (a mutating lifecycle action)",
+    \\      "summary": "build and persist the trigram index and freshness anchor",
     \\      "args": [],
     \\      "flags": []
     \\    },
     \\    "status": {
-    \\      "summary": "read-only introspection: index presence, file/trigram/posting counts, on-disk size, build age, roots",
+    \\      "summary": "read-only index presence, size, age, counts, and roots",
     \\      "args": [],
     \\      "flags": []
     \\    }
     \\  },
     \\  "search": {
-    \\    "summary": "gist <pattern> [PATH...] [flags] — the canonical invocation: no verb, no setup. Live-scans the current tree with ripgrep's own default behavior (gitignore precedence, piped stdin, exit codes); when a fresh index covers the searched subtree it is used automatically to elide non-candidate reads, byte-identically to the pure walk.",
+    \\    "summary": "gist <pattern> [PATH...] [flags] live-scans with ripgrep-like defaults and automatically uses a covering index only to elide provable non-candidate reads",
     \\    "args": [
-    \\      {"name": "pattern", "type": "string", "required": true, "description": "the literal or RE2-style regex to find"},
-    \\      {"name": "PATH...", "type": "string[]", "required": false, "description": "positional roots that scope the search (pruned before any read)"}
+    \\      {"name": "pattern", "type": "string", "required": true, "description": "literal or RE2-style regex"},
+    \\      {"name": "PATH...", "type": "string[]", "required": false, "description": "positional search roots"}
     \\    ],
-    \\    "flag_surface": "documented rg-compatible subset (../ripgrep/args.zig) — broad but not every rg flag; unsupported flags fail loud, some are accepted-but-ignored. Measured by bench/rgsuite (441 mined rg-argv replays: 98.6% supported-surface parity, 4 known FAILs — see bench/rgsuite/README.md)",
+    \\    "flag_surface": "broad, tested ripgrep-compatible subset; not full ripgrep compatibility. Unsupported and unknown flags fail loud with exit 2.",
+    \\    "ripgrep_compatibility": {
+    \\      "source_of_truth": "src/commands/ripgrep/args.zig:flag_catalog",
+    \\      "unknown_flags": "unsupported-fail-loud",
+    \\      "buckets": {
+;
+
+const manifest_suffix =
+    \\      }
+    \\    },
     \\    "native_additions": [
-    \\      {"native": "--rank", "type": "int?", "default": 20, "description": "gist's one shape rg can't express: the definition-first ranked view (RRF fusion; a symbol's definition outranks its call sites, codegen demoted). Optional =N caps the top-K. Requires an index."},
-    \\      {"native": "--no-index", "type": "bool", "default": false, "description": "force the pure live walk (never consult the index)"},
-    \\      {"native": "--index", "type": "bool", "default": false, "description": "force the index-accelerated read-elision path (default: auto-detect a fresh index)"}
+    \\      {"native": "--rank", "type": "int?", "default": 20, "description": "definition-first ranked view; optional =N caps top-K and requires an index"},
+    \\      {"native": "--no-index", "type": "bool", "default": false, "description": "force the pure live walk"},
+    \\      {"native": "--index", "type": "bool", "default": false, "description": "re-enable automatic index acceleration after --no-index"}
     \\    ],
-    \\    "alias": "gist rg [flags] <pattern> [PATH...] (an `alias rg=gist` drop-in shape) or gist search <pattern> [PATH...] (the habit-safe `search` verb) — both are the same engine addressed explicitly"
+    \\    "alias": "gist rg [flags] <pattern> [PATH...] and gist search <pattern> [PATH...] address the same engine"
     \\  },
     \\  "output_stream": {"results": "stdout", "diagnostics": "stderr"},
-    \\  "exit_codes": {"0": "ran (results on stdout, if any)", "1": "no match (ripgrep's own convention), or a usage/parse/unsupported-flag error (guidance on stderr)", "2": "usage error or a flag rg-parity can't honor by design (guidance on stderr)"}
+    \\  "exit_codes": {"0": "search ran and matched, or an introspection action succeeded", "1": "search ran with no match", "2": "usage, parse, path, or unsupported-flag error"}
     \\}
     \\
 ;
 
+const Bucket = struct {
+    name: []const u8,
+    compatibility: args.Compatibility,
+};
+
+const buckets = [_]Bucket{
+    .{ .name = "supported", .compatibility = .supported },
+    .{ .name = "supported-with-differences", .compatibility = .supported_with_differences },
+    .{ .name = "accepted-but-ignored", .compatibility = .accepted_but_ignored },
+    .{ .name = "unsupported-fail-loud", .compatibility = .unsupported_fail_loud },
+};
+
+fn appendJsonString(a: std.mem.Allocator, out: *std.ArrayList(u8), value: []const u8) !void {
+    try out.append(a, '"');
+    for (value) |c| switch (c) {
+        '"' => try out.appendSlice(a, "\\\""),
+        '\\' => try out.appendSlice(a, "\\\\"),
+        '\n' => try out.appendSlice(a, "\\n"),
+        '\r' => try out.appendSlice(a, "\\r"),
+        '\t' => try out.appendSlice(a, "\\t"),
+        else => try out.append(a, c),
+    };
+    try out.append(a, '"');
+}
+
+fn appendSpec(a: std.mem.Allocator, out: *std.ArrayList(u8), spec: args.FlagSpec) !void {
+    try out.appendSlice(a, "{\"spellings\":[");
+    var first = true;
+    if (spec.short) |short| {
+        const spelling = [_]u8{ '-', short };
+        try appendJsonString(a, out, &spelling);
+        first = false;
+    }
+    for (spec.longs) |long| {
+        if (!first) try out.append(a, ',');
+        try out.append(a, '"');
+        try out.appendSlice(a, "--");
+        try out.appendSlice(a, long);
+        try out.append(a, '"');
+        first = false;
+    }
+    try out.append(a, ']');
+    if (spec.note) |note| {
+        try out.appendSlice(a, ",\"note\":");
+        try appendJsonString(a, out, note);
+    }
+    try out.append(a, '}');
+}
+
+fn render(a: std.mem.Allocator) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(a);
+    try out.appendSlice(a, manifest_prefix);
+    for (buckets, 0..) |bucket, bucket_i| {
+        if (bucket_i > 0) try out.appendSlice(a, ",\n");
+        try out.appendSlice(a, "        ");
+        try appendJsonString(a, &out, bucket.name);
+        try out.appendSlice(a, ": [");
+        var first = true;
+        for (args.flag_catalog) |spec| {
+            if (spec.compatibility != bucket.compatibility) continue;
+            if (!first) try out.append(a, ',');
+            try appendSpec(a, &out, spec);
+            first = false;
+        }
+        try out.append(a, ']');
+    }
+    try out.append(a, '\n');
+    try out.appendSlice(a, manifest_suffix);
+    return out.toOwnedSlice(a);
+}
+
 /// Emit the JSON capability manifest to stdout.
 pub fn emit() void {
+    const a = std.heap.page_allocator;
+    const manifest = render(a) catch {
+        std.debug.print("gist: could not render --schema\n", .{});
+        std.process.exit(2);
+    };
+    defer a.free(manifest);
     corpus_mod.emitStdout(manifest);
+}
+
+test "--schema is valid JSON derived from the parser catalog" {
+    const t = std.testing;
+    const manifest = try render(t.allocator);
+    defer t.allocator.free(manifest);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, t.allocator, manifest, .{});
+    defer parsed.deinit();
+    for (buckets) |bucket| {
+        try t.expect(std.mem.indexOf(u8, manifest, bucket.name) != null);
+    }
+    try t.expect(std.mem.indexOf(u8, manifest, "ASCII-only case folding") != null);
+    try t.expect(std.mem.indexOf(u8, manifest, "\\\\b/\\\\w") != null);
+    try t.expect(std.mem.indexOf(u8, manifest, "98" ++ ".6") == null);
+    try t.expect(std.mem.indexOf(u8, manifest, "known " ++ "FAIL") == null);
 }

@@ -6,7 +6,8 @@
 //! Silicon, confirmed via `uname`/`sysctl`). The macOS-native equivalent for
 //! "stop paying one syscall per file" is `getattrlistbulk`: unlike
 //! `readdir()` + `stat()` per entry (2 syscalls/file), one bulk call returns
-//! name + type + mtime for many siblings at once — Apple's own filesystem-dev
+//! name + type + mtime + ctime for many siblings at once — Apple's own
+//! filesystem-dev
 //! list documents 4–50× fewer syscalls (readdir vs getdirentriesattr thread,
 //! Dec 2014; independently reproduced: ~1,600× fewer syscalls, ~4-5× faster
 //! on a warm NVMe SSD, quivent/getattrlistbulk-rs, 2025 benchmark on M1).
@@ -15,7 +16,8 @@
 //!
 //! Why hand-rolled instead of `mmap`-ing files or another IO trick: the
 //! freshness walk never reads file *bytes* — it only needs each file's
-//! mtime, so the lever is metadata syscalls, not data IO. (Candidate file
+//! change timestamps, so the lever is metadata syscalls, not data IO.
+//! (Candidate file
 //! *reads* are a different, already-solved problem: ripgrep's own author
 //! documents why `mmap` is a net loss for "open many small files" —
 //! open+mmap+munmap has a *higher* fixed cost per file than open+read+close
@@ -29,7 +31,8 @@
 //! and the per-entry buffer layout (a `u32` length prefix, then the
 //! `attribute_set_t` of what was actually returned, then each requested
 //! attribute in Apple's fixed group order — RETURNED_ATTRS, NAME, OBJTYPE,
-//! MODTIME for our exact request — with `NAME`'s bytes stored out-of-line via
+//! MODTIME, CHGTIME for our exact request — with `NAME`'s bytes stored
+//! out-of-line via
 //! an `attrreference_t` offset+length pair). Cross-checked byte-for-byte
 //! against a maintained, benchmarked Rust binding
 //! (quivent/getattrlistbulk-rs `src/{ffi,parser}.rs`) before writing this.
@@ -37,9 +40,9 @@
 //! FAIL-SOFT, NEVER FAIL-OPEN: a bulk call failing on some directory (an
 //! unusual mount, a permissions edge, or simply a filesystem that doesn't
 //! implement it) falls back to the proven stat-based walk for *that*
-//! subtree only — freshness must never produce a false negative (the one
-//! unforgivable bug per `fresh.zig`), so a syscall we're not 100% certain of
-//! everywhere degrades instead of risking a silently dropped file.
+//! subtree only. Under `README.md`'s local-filesystem model, uncertain bulk
+//! metadata therefore loses speed rather than weakening the conservative
+//! live-read decision.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -58,6 +61,7 @@ const ATTR_BIT_MAP_COUNT: u16 = 5;
 const ATTR_CMN_NAME: u32 = 0x00000001;
 const ATTR_CMN_OBJTYPE: u32 = 0x00000008;
 const ATTR_CMN_MODTIME: u32 = 0x00000400;
+const ATTR_CMN_CHGTIME: u32 = 0x00000800;
 const ATTR_CMN_RETURNED_ATTRS: u32 = 0x80000000;
 const FSOPT_PACK_INVAL_ATTRS: u64 = 0x00000008;
 
@@ -81,24 +85,35 @@ const attrlist_t = extern struct {
 /// `<sys/unistd.h>` (`SYS_getattrlistbulk` = 461 in `<sys/syscall.h>`).
 extern "c" fn getattrlistbulk(dirfd: c_int, alist: *anyopaque, attr_buf: [*]u8, attr_buf_size: usize, options: u64) c_int;
 
-const requested_commonattr: u32 = ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_NAME | ATTR_CMN_OBJTYPE | ATTR_CMN_MODTIME;
+const requested_commonattr: u32 = ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_NAME | ATTR_CMN_OBJTYPE | ATTR_CMN_MODTIME | ATTR_CMN_CHGTIME;
 
-/// One directory entry's shape (mtime), one bulk call away instead of one
+/// One directory entry's freshness metadata, one bulk call away instead of one
 /// `stat()` syscall away. `name` aliases the iterator's internal buffer —
 /// valid only until the next `next()` call (mirrors `haystack.Haystack`).
 pub const Entry = struct {
     name: []const u8,
     is_dir: bool,
     is_file: bool,
-    mtime_ns: i128,
+    mtime_ns: ?i128,
+    ctime_ns: ?i128,
 };
+
+/// Only metadata strictly older than the build anchor proves an indexed file
+/// unchanged. Either timestamp at/after the anchor, or either one unavailable,
+/// forces a live read. `>=` intentionally keeps same-tick/coarse-clock boundary
+/// values conservative.
+pub fn needsLiveRead(anchor_ns: i128, mtime_ns: ?i128, ctime_ns: ?i128) bool {
+    const mtime = mtime_ns orelse return true;
+    const ctime = ctime_ns orelse return true;
+    return mtime >= anchor_ns or ctime >= anchor_ns;
+}
 
 /// Bulk-enumerates ONE open directory. 8 KiB batches (not 64 KiB): this is a
 /// per-recursion-depth stack local (`visitFresh` below), and a monorepo path
 /// is at most ~15 components deep, so 8 KiB × depth stays a rounding error
 /// against any thread's stack — while still batching dozens of typical
 /// same-directory siblings per syscall (most directories in this repo hold
-/// well under 8 KiB / ~40 B-per-entry ≈ 200 entries, i.e. ONE syscall each).
+/// well under 8 KiB / ~64 B-per-entry ≈ 128 entries, i.e. ONE syscall each).
 pub const BulkDir = struct {
     dirfd: std.posix.fd_t,
     buf: [8192]u8 align(@alignOf(u32)) = undefined,
@@ -142,10 +157,12 @@ const Parsed = struct { value: Entry, advance: usize };
 /// `attrreference_t name` (i32 offset + u32 length, 8 B — the offset is
 /// relative to the FIELD's own address, and the bytes it points to live
 /// out-of-line, appended after every fixed attribute) │ `u32 objtype` │
-/// `timespec modtime` (i64 sec + i64 nsec). Every multi-byte read goes
-/// through `std.mem.readInt` on a byte slice (never a direct pointer cast) —
-/// the kernel's packing isn't guaranteed to leave every field naturally
-/// aligned for a typed load.
+/// `timespec modtime` · `timespec chgtime` (each i64 sec + i64 nsec). Every
+/// multi-byte read goes through `std.mem.readInt` on a byte slice (never a
+/// direct pointer cast) — the kernel's packing isn't guaranteed to leave every
+/// field naturally aligned for a typed load. `FSOPT_PACK_INVAL_ATTRS` physically
+/// packs every requested field; `returned_common` says whether each value is
+/// valid, so invalid timestamps still advance `pos` but become null metadata.
 fn parseEntry(buf: []const u8, start: usize) !Parsed {
     if (start + 4 > buf.len) return error.BulkStatUnsupported;
     const length = std.mem.readInt(u32, buf[start..][0..4], .little);
@@ -156,49 +173,61 @@ fn parseEntry(buf: []const u8, start: usize) !Parsed {
     const returned_common = std.mem.readInt(u32, buf[pos..][0..4], .little);
     pos += 20; // attribute_set_t: commonattr, volattr, dirattr, fileattr, forkattr
 
-    var name: []const u8 = "";
-    if (returned_common & ATTR_CMN_NAME != 0) {
-        if (pos + 8 > buf.len) return error.BulkStatUnsupported;
-        const data_offset = std.mem.readInt(i32, buf[pos..][0..4], .little);
-        const data_len = std.mem.readInt(u32, buf[pos + 4 ..][0..4], .little);
-        const name_start = @as(i64, @intCast(pos)) + data_offset;
-        if (name_start < 0) return error.BulkStatUnsupported;
-        const ns: usize = @intCast(name_start);
-        const ne = ns + data_len;
-        if (ne > buf.len or ns > ne) return error.BulkStatUnsupported;
-        var raw = buf[ns..ne];
-        if (std.mem.findScalar(u8, raw, 0)) |nul| raw = raw[0..nul]; // NUL-terminated
-        name = raw;
-        pos += 8;
-    }
+    if (returned_common & ATTR_CMN_NAME == 0 or returned_common & ATTR_CMN_OBJTYPE == 0)
+        return error.BulkStatUnsupported;
 
-    var objtype: u32 = 0;
-    if (returned_common & ATTR_CMN_OBJTYPE != 0) {
-        if (pos + 4 > buf.len) return error.BulkStatUnsupported;
-        objtype = std.mem.readInt(u32, buf[pos..][0..4], .little);
-        pos += 4;
-    }
+    if (pos + 8 > buf.len) return error.BulkStatUnsupported;
+    const data_offset = std.mem.readInt(i32, buf[pos..][0..4], .little);
+    const data_len = std.mem.readInt(u32, buf[pos + 4 ..][0..4], .little);
+    const name_start = @as(i64, @intCast(pos)) + data_offset;
+    if (name_start < 0) return error.BulkStatUnsupported;
+    const ns: usize = @intCast(name_start);
+    const ne = ns + data_len;
+    if (ne > buf.len or ns > ne) return error.BulkStatUnsupported;
+    var name = buf[ns..ne];
+    if (std.mem.indexOfScalar(u8, name, 0)) |nul| name = name[0..nul]; // NUL-terminated
+    pos += 8;
 
-    var mtime_ns: i128 = 0;
-    if (returned_common & ATTR_CMN_MODTIME != 0) {
-        if (pos + 16 > buf.len) return error.BulkStatUnsupported;
-        const sec = std.mem.readInt(i64, buf[pos..][0..8], .little);
-        const nsec = std.mem.readInt(i64, buf[pos + 8 ..][0..8], .little);
-        mtime_ns = @as(i128, sec) * std.time.ns_per_s + @as(i128, nsec);
-    }
+    if (pos + 4 > buf.len) return error.BulkStatUnsupported;
+    const objtype = std.mem.readInt(u32, buf[pos..][0..4], .little);
+    pos += 4;
+
+    if (pos + 16 > buf.len) return error.BulkStatUnsupported;
+    const mtime_sec = std.mem.readInt(i64, buf[pos..][0..8], .little);
+    const mtime_nsec = std.mem.readInt(i64, buf[pos + 8 ..][0..8], .little);
+    const mtime_ns: ?i128 = if (returned_common & ATTR_CMN_MODTIME != 0)
+        @as(i128, mtime_sec) * std.time.ns_per_s + @as(i128, mtime_nsec)
+    else
+        null;
+    pos += 16;
+
+    if (pos + 16 > buf.len) return error.BulkStatUnsupported;
+    const ctime_sec = std.mem.readInt(i64, buf[pos..][0..8], .little);
+    const ctime_nsec = std.mem.readInt(i64, buf[pos + 8 ..][0..8], .little);
+    const ctime_ns: ?i128 = if (returned_common & ATTR_CMN_CHGTIME != 0)
+        @as(i128, ctime_sec) * std.time.ns_per_s + @as(i128, ctime_nsec)
+    else
+        null;
 
     return .{
-        .value = .{ .name = name, .is_dir = objtype == VDIR, .is_file = objtype == VREG, .mtime_ns = mtime_ns },
+        .value = .{
+            .name = name,
+            .is_dir = objtype == VDIR,
+            .is_file = objtype == VREG,
+            .mtime_ns = mtime_ns,
+            .ctime_ns = ctime_ns,
+        },
         .advance = length,
     };
 }
 
 /// Recursively collect every file under `dir` (relative path `prefix`) whose
-/// mtime is `>= built_ns`, applying the shared `haystack.isSkipDir` policy —
-/// the bulk-enumeration twin of `fresh.zig`'s old per-file-`statFile` walk.
+/// mtime or ctime is `>= built_ns` (or metadata is unavailable), applying the
+/// shared `haystack.isSkipDir` policy — the bulk-enumeration twin of
+/// `fresh.zig`'s portable per-file-`statFile` walk.
 /// Degrades directory-by-directory: a bulk failure on one directory falls
 /// back to `fallbackWalk` (the proven stat-based path) for that subtree only,
-/// so a filesystem edge case can only cost speed, never correctness.
+/// preserving the same metadata rule.
 pub fn visitFresh(a: Allocator, io: std.Io, dir: Dir, prefix: []const u8, built_ns: i128, out: *std.ArrayList([]const u8)) void {
     var bd = BulkDir.init(dir.handle);
     while (true) {
@@ -215,7 +244,7 @@ pub fn visitFresh(a: Allocator, io: std.Io, dir: Dir, prefix: []const u8, built_
             continue;
         }
         if (!entry.is_file) continue; // symlinks/etc — never followed, matches haystack.Walker
-        if (entry.mtime_ns < built_ns) continue;
+        if (!needsLiveRead(built_ns, entry.mtime_ns, entry.ctime_ns)) continue;
         const full = std.fmt.allocPrint(a, "{s}/{s}", .{ prefix, entry.name }) catch return;
         out.append(a, full) catch return;
     }
@@ -224,7 +253,13 @@ pub fn visitFresh(a: Allocator, io: std.Io, dir: Dir, prefix: []const u8, built_
 /// One directory entry, name durably owned (`gpa`-allocated) rather than
 /// aliasing `BulkDir`'s reused scratch buffer — for callers that must hold
 /// entries past the next `next()` call, i.e. `listOneLevel` below.
-pub const OwnedEntry = struct { name: []u8, is_dir: bool, is_file: bool, mtime_ns: i128 };
+pub const OwnedEntry = struct {
+    name: []u8,
+    is_dir: bool,
+    is_file: bool,
+    mtime_ns: ?i128,
+    ctime_ns: ?i128,
+};
 
 /// Fully drains ONE level of `dirfd` via `getattrlistbulk`, duping every name
 /// into `gpa` up front. All-or-nothing: any parse/syscall failure partway
@@ -240,14 +275,20 @@ pub fn listOneLevel(gpa: Allocator, dirfd: std.posix.fd_t) ![]OwnedEntry {
     }
     var bd = BulkDir.init(dirfd);
     while (try bd.next()) |e| {
-        try list.append(gpa, .{ .name = try gpa.dupe(u8, e.name), .is_dir = e.is_dir, .is_file = e.is_file, .mtime_ns = e.mtime_ns });
+        try list.append(gpa, .{
+            .name = try gpa.dupe(u8, e.name),
+            .is_dir = e.is_dir,
+            .is_file = e.is_file,
+            .mtime_ns = e.mtime_ns,
+            .ctime_ns = e.ctime_ns,
+        });
     }
     return list.toOwnedSlice(gpa);
 }
 
 /// Fully drains ONE level of `dirfd` via raw `getdirentries(2)` — names +
-/// `d_type` only, no attributes, no mtime (`mtime_ns = 0`). When the caller
-/// doesn't need per-entry mtime (the parallel walk without index elision),
+/// `d_type` only, no timestamps (`mtime_ns = ctime_ns = null`). When the caller
+/// doesn't need per-entry metadata (the parallel walk without index elision),
 /// this is strictly cheaper than `listOneLevel`: `getattrlistbulk` makes the
 /// kernel resolve and pack attributes per entry, while `getdirentries` is the
 /// same thin readdir path ripgrep rides. Darwin-only (same `supported` gate).
@@ -281,7 +322,13 @@ pub fn listNamesOnly(gpa: Allocator, dirfd: std.posix.fd_t) ![]OwnedEntry {
             const is_dir = dtype == std.posix.DT.DIR;
             const is_file = dtype == std.posix.DT.REG;
             if (!is_dir and !is_file) continue; // symlinks/specials — the walk never follows them
-            try list.append(gpa, .{ .name = try gpa.dupe(u8, name), .is_dir = is_dir, .is_file = is_file, .mtime_ns = 0 });
+            try list.append(gpa, .{
+                .name = try gpa.dupe(u8, name),
+                .is_dir = is_dir,
+                .is_file = is_file,
+                .mtime_ns = null,
+                .ctime_ns = null,
+            });
         }
     }
 }
@@ -293,8 +340,11 @@ fn fallbackWalk(a: Allocator, io: std.Io, root_path: []const u8, built_ns: i128,
     var w = haystack.Walker.init(io, a, root_path) catch return;
     defer w.deinit(io);
     while (w.next(io) catch return) |hay| {
-        const st = hay.dir.statFile(io, hay.name, .{}) catch continue;
-        if (st.mtime.nanoseconds < built_ns) continue;
+        const st = hay.dir.statFile(io, hay.name, .{}) catch {
+            out.append(a, hay.path) catch return;
+            continue;
+        };
+        if (!needsLiveRead(built_ns, st.mtime.nanoseconds, st.ctime.nanoseconds)) continue;
         out.append(a, hay.path) catch return;
     }
 }

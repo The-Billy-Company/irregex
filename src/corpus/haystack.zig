@@ -4,10 +4,10 @@
 //! adapted to gist's general program: no ignore files, no explicit-file-arg
 //! concept, one skip-dir policy (`isSkipDir`) shared by every corpus consumer.
 //! Before this, `corpus.zig`'s index build, `ripgrep/run.zig`'s tree-walk
-//! enumeration, `corpus/fresh.zig`'s mtime-only freshness stat-walk, and
+//! enumeration, `corpus/fresh.zig`'s mtime+ctime freshness stat-walk, and
 //! `scan/sweep.zig`'s no-prefilter live scan each re-derived the identical
 //! walk skeleton (open root → skip/enter dirs → join a file's path) around a
-//! DIFFERENT per-file action (read bytes, keep the path, stat mtime, queue for
+//! DIFFERENT per-file action (read bytes, keep the path, stat metadata, queue for
 //! a worker pool). `Walker` is now the one place that skeleton lives; each
 //! caller drives it and supplies only its own per-file action.
 //!

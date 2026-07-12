@@ -129,11 +129,7 @@ const Oracle = struct {
             .plus => |r| o.closure(r.node, o.matchAt(r.node, pos)),
             .capture => |g| o.matchAt(g.child, pos), // transparent to matching
         };
-        o.memo.put(key, res) catch |err| {
-            // Pure memoization: a dropped entry under OOM only costs a recompute
-            // on the next hit, never a wrong answer — `res` above is still returned.
-            std.log.debug("gist: oracle memo put failed (recompute-on-miss): {}\n", .{err});
-        };
+        o.memo.put(key, res) catch {};
         return res;
     }
 
@@ -172,7 +168,7 @@ const Oracle = struct {
 fn docMatchOracle(a: std.mem.Allocator, ast: *const Node, doc: []const u8) bool {
     var rest = doc;
     while (rest.len > 0) {
-        const nl = std.mem.findScalar(u8, rest, '\n');
+        const nl = std.mem.indexOfScalar(u8, rest, '\n');
         const end = nl orelse rest.len;
         var memo = Memo.init(a);
         defer memo.deinit();
@@ -235,7 +231,7 @@ fn bufAgrees(col: *Collector, a: std.mem.Allocator, pattern: []const u8, buf: []
     // Soundness of the trigram prefilter under multiline: a real match must still
     // contain the required literal (a multiline pattern's mandatory run is
     // extracted identically — anchors and `\n`-classes are just zero-width/bytes).
-    if (want and re.required.len > 0 and std.mem.find(u8, buf, re.required) == null) {
+    if (want and re.required.len > 0 and std.mem.indexOf(u8, buf, re.required) == null) {
         var b: [96]u8 = undefined;
         col.report("BUF-REQUIRED-UNSOUND", pattern, buf, std.fmt.bufPrint(&b, "required=\"{s}\" claimed mandatory but absent", .{re.required}) catch "");
     }
@@ -262,11 +258,7 @@ const Collector = struct {
         c.fails += 1;
         if (c.seen.contains(pattern)) return;
         const owned = c.arena.allocator().dupe(u8, pattern) catch return;
-        c.seen.put(owned, {}) catch |err| {
-            // Dedup-only cache: a dropped entry under OOM just means this pattern
-            // may print again on a later failure — cosmetic, never a correctness bug.
-            std.log.debug("gist: adversarial collector dedup put failed: {}\n", .{err});
-        };
+        c.seen.put(owned, {}) catch {};
         if (c.printed >= max_print) return;
         c.printed += 1;
         std.debug.print("{s} pat=/{s}/ line=\"{s}\" {s}\n", .{ kind, pattern, line, extra });
@@ -300,11 +292,11 @@ fn engineAgrees(c: *Collector, a: std.mem.Allocator, pattern: []const u8, line: 
     var b: [128]u8 = undefined;
     if (dfa_ans != want or pike_ans != want)
         c.report("MATCH-DIVERGENCE", pattern, line, std.fmt.bufPrint(&b, "oracle={} dfa={} pike={} dfa_built={}", .{ want, dfa_ans, pike_ans, re.dfa != null }) catch "");
-    if (want and re.required.len > 0 and std.mem.find(u8, line, re.required) == null)
+    if (want and re.required.len > 0 and std.mem.indexOf(u8, line, re.required) == null)
         c.report("REQUIRED-UNSOUND", pattern, line, std.fmt.bufPrint(&b, "required=\"{s}\" claimed mandatory but absent", .{re.required}) catch "");
     if (want and re.alts.len > 0) {
         var any = false;
-        for (re.alts) |lit| if (std.mem.find(u8, line, lit) != null) {
+        for (re.alts) |lit| if (std.mem.indexOf(u8, line, lit) != null) {
             any = true;
             break;
         };
@@ -1094,7 +1086,7 @@ fn gistOnlyJoined(gpa: std.mem.Allocator, pattern: []const u8, input: []const u8
 }
 
 fn rgSpanAgrees(c: *Collector, ctx: RgCtx, pattern: []const u8, input: []const u8) void {
-    if (std.mem.findScalar(u8, input, '\n') != null) return; // single-line domain
+    if (std.mem.indexOfScalar(u8, input, '\n') != null) return; // single-line domain
     const g = gistOnlyJoined(ctx.gpa, pattern, input) orelse return;
     defer ctx.gpa.free(g);
     const rgj = rgOnlyJoined(ctx, pattern, input) orelse return;
@@ -1229,7 +1221,7 @@ fn grepOnlyJoinedP(ctx: RgCtx, grep: []const u8, pattern: []const u8, input: []c
 }
 
 fn grepSpanAgrees(c: *Collector, ctx: RgCtx, grep: []const u8, pattern: []const u8, input: []const u8) void {
-    if (std.mem.findScalar(u8, input, '\n') != null) return; // single-line domain
+    if (std.mem.indexOfScalar(u8, input, '\n') != null) return; // single-line domain
     const g = gistOnlyJoined(ctx.gpa, pattern, input) orelse return;
     defer ctx.gpa.free(g);
     const gp = grepOnlyJoinedP(ctx, grep, pattern, input) orelse return;

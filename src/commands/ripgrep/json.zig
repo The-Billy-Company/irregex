@@ -54,7 +54,7 @@ fn emitFile(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Regex, ss:
     var lines: std.ArrayList(Line) = .empty;
     var pos: usize = 0;
     while (pos < f.body.len) {
-        const nl = std.mem.findScalarPos(u8, f.body, pos, '\n');
+        const nl = std.mem.indexOfScalarPos(u8, f.body, pos, '\n');
         const content_end = nl orelse f.body.len;
         const text_end = if (nl) |n| n + 1 else f.body.len;
         const content = f.body[pos..content_end];

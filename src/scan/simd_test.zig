@@ -24,7 +24,7 @@ test "simd contains ≡ std.mem.indexOf" {
         .{ .hay = "needle longer than the haystack here", .ndl = "this needle is far too long to ever fit" },
     };
     for (cases) |c| {
-        const want = std.mem.find(u8, c.hay, c.ndl) != null;
+        const want = std.mem.indexOf(u8, c.hay, c.ndl) != null;
         try std.testing.expectEqual(want, contains(c.hay, c.ndl));
     }
     // Randomized differential fuzz over a noisy buffer.
@@ -38,7 +38,7 @@ test "simd contains ≡ std.mem.indexOf" {
         const nlen = 1 + rng.uintLessThan(usize, 6);
         for (ndl[0..nlen]) |*b| b.* = 'a' + rng.uintLessThan(u8, 4);
         const hlen = rng.uintLessThan(usize, buf.len);
-        const want = std.mem.find(u8, buf[0..hlen], ndl[0..nlen]) != null;
+        const want = std.mem.indexOf(u8, buf[0..hlen], ndl[0..nlen]) != null;
         try std.testing.expectEqual(want, contains(buf[0..hlen], ndl[0..nlen]));
     }
 }

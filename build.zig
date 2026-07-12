@@ -102,6 +102,49 @@ pub fn build(b: *std.Build) void {
     k.test_step.dependOn(&inline_flag_test.step);
     // gist_inline_flag_regression_NeEdLe_xyz ← the fixture the guard case-folds onto
 
+    // Compile, link, and run a real C consumer against the deliberately minimal
+    // ABI. This catches calling-convention, header, symbol, and primitive-contract
+    // drift that the toolchain-free gist-contract text gate cannot observe.
+    const c_smoke_source = b.addWriteFiles().add("gist_c_abi_smoke.c",
+        \\#include "gist.h"
+        \\#include <stddef.h>
+        \\#include <stdint.h>
+        \\
+        \\int main(void) {
+        \\    const uint8_t text[] = {'a', 'b', 'c', 'a', 'b', 'c'};
+        \\    uint32_t out[sizeof text] = {0};
+        \\    if (gist_abi_version() != 1u) return 10;
+        \\    if (gist_trigram_count(text, 2u, out) != 0u) return 11;
+        \\    const size_t count = gist_trigram_count(text, sizeof text, out);
+        \\    if (count != 3u) return 12;
+        \\    for (size_t i = 1; i < count; ++i)
+        \\        if (out[i - 1] >= out[i]) return 13;
+        \\    return 0;
+        \\}
+        \\
+    );
+    const c_smoke_mod = b.createModule(.{
+        .target = k.target,
+        .optimize = k.optimize,
+        .link_libc = true,
+    });
+    c_smoke_mod.addIncludePath(b.path("include"));
+    c_smoke_mod.addCSourceFile(.{
+        .file = c_smoke_source,
+        .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" },
+    });
+    c_smoke_mod.addObject(b.addObject(.{
+        .name = "gist-c-abi-smoke-kernel",
+        .root_module = k.root_module,
+    }));
+    const c_smoke = b.addExecutable(.{
+        .name = "gist-c-abi-smoke",
+        .root_module = c_smoke_mod,
+    });
+    const run_c_smoke = b.addRunArtifact(c_smoke);
+    run_c_smoke.expectExitCode(0);
+    k.test_step.dependOn(&run_c_smoke.step);
+
     // ── the `gist-bench` harness executable (bench/verify/certify tooling) ──
     // Run from the repo root so relative dirs + output paths resolve there.
     const bench_mod = b.createModule(.{
