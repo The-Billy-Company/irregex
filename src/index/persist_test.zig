@@ -45,7 +45,7 @@ test "validatePersistedPair: an empty table matches only doc_count 0" {
 
 test "validateGeneration: accepts identical ids and rejects drift" {
     try persist.validateGeneration("abc", "abc");
-    try std.testing.expectError(persist.PairError.GenerationMismatch, persist.validateGeneration("abc", "abd"));
+    try std.testing.expectError(persist.PairError.GenerationMismatch, persist.validateGeneration("abc", "abx"));
 }
 
 test "persistIndexAndPathsAt: generation publish keeps readers off a torn pair" {
