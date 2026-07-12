@@ -137,7 +137,7 @@ The bare `gist <pattern>` shorthand and its explicit `gist rg` alias are ONE
 engine (`src/commands/ripgrep/run.zig`) — a ripgrep-DEFAULT drop-in on its
 **supported surface** (gitignore precedence, exit codes, piped stdin;
 **0 FAIL** on the mined rgsuite corpus, with PASS + ORDER counted as
-supported-surface parity — ORDER means identical match *sets* with
+supported-surface parity — ORDER means identical match _sets_ with
 worker-discovery line order only; see rgsuite — and every by-design boundary
 tracked under "Where gist departs from ripgrep") that transparently
 uses a persisted trigram index, when one covers the searched roots, purely to
@@ -207,17 +207,17 @@ The current matrix contains **67 supported**, **5 supported-with-differences**,
 **15 accepted-but-ignored**, and **6 unsupported-fail-loud** long-flag entries;
 short flags are reported alongside it.
 
-| What you type (either spelling)        | What gist does                                                                                                                                         |
-| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `-n -H -R --no-heading --color=<x>`    | no-ops — gist's output is already `path:line:text`                                                                                                     |
-| `-l` / `-c`                            | native rg flags — files-with-matches / per-file match count                                                                                            |
-| `-t <lang>` / `-g <glob>`              | `--lang` / `--glob` — pruned **before** touching disk (`--lang go` reads 234 of 18,608 files, **1.44×** faster than `rg -t go`, byte-identical output) |
-| `-w` / `-F` / `-i` / `-S`              | word-boundary / fixed-string / case-insensitive / smart-case                                                                                           |
-| `-B N` / `-A N` / `-C N`               | context lines, rg-exact `:`/`-`/`--` framing                                                                                                           |
-| `-m N` / `-o` / `-r <t>`               | max count per file / only-matching spans / template replace                                                                                            |
-| `-e <pat>` / `--`                      | explicit pattern (leading-dash safe) / end of flag parsing                                                                                             |
-| `--hidden`, `--no-ignore*`, `-u`/`-uu` | real, functional — widen the walk exactly as they do in rg (see below)                                                                                 |
-| `--sort` / `--sortr` / `--sort-files` | accepted-but-ignored for argv compatibility — value is consumed; **output ordering is not implemented** (schema `.accepted_but_ignored`); only ignore-walker anchoring observes sorted mode |
+| What you type (either spelling)        | What gist does                                                                                                                                                                              |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-n -H -R --no-heading --color=<x>`    | no-ops — gist's output is already `path:line:text`                                                                                                                                          |
+| `-l` / `-c`                            | native rg flags — files-with-matches / per-file match count                                                                                                                                 |
+| `-t <lang>` / `-g <glob>`              | `--lang` / `--glob` — pruned **before** touching disk (`--lang go` reads 234 of 18,608 files, **1.44×** faster than `rg -t go`, byte-identical output)                                      |
+| `-w` / `-F` / `-i` / `-S`              | word-boundary / fixed-string / case-insensitive / smart-case                                                                                                                                |
+| `-B N` / `-A N` / `-C N`               | context lines, rg-exact `:`/`-`/`--` framing                                                                                                                                                |
+| `-m N` / `-o` / `-r <t>`               | max count per file / only-matching spans / template replace                                                                                                                                 |
+| `-e <pat>` / `--`                      | explicit pattern (leading-dash safe) / end of flag parsing                                                                                                                                  |
+| `--hidden`, `--no-ignore*`, `-u`/`-uu` | real, functional — widen the walk exactly as they do in rg (see below)                                                                                                                      |
+| `--sort` / `--sortr` / `--sort-files`  | accepted-but-ignored for argv compatibility — value is consumed; **output ordering is not implemented** (schema `.accepted_but_ignored`); only ignore-walker anchoring observes sorted mode |
 
 A positional path prunes the same way — `gist WalletService
 services/backend/api` reads 28 candidate files (vs 86 unscoped, vs rg's
@@ -238,7 +238,7 @@ argv replays, on **both** the parallel and serial walk engines — see that
 README's "Two engines, one suite"); the committed `results.json` reads **264
 PASS / 15 ORDER / 0 FAIL / 41 NA / 121 SKIP**. Supported-surface parity is
 **(PASS+ORDER)/(PASS+ORDER+FAIL) = 100% with zero FAIL** — ORDER is explicitly
-*not* byte-identical stdout (identical match set, worker-discovery order only).
+_not_ byte-identical stdout (identical match set, worker-discovery order only).
 Exact byte-identical classes are additionally gated by
 [`bench/gates/line_parity.sh`](bench/gates/line_parity.sh)
 (both engines plus deterministic exact-output generators for the 265,286- and
@@ -255,7 +255,6 @@ cold-load/rank timing to stderr so an agent can see the cost of the ranked
 view — guarded by [`bench/gates/streams.sh`](bench/gates/streams.sh).
 
 ## Where gist departs from ripgrep — on purpose
-
 
 **Departs on stdout ordering under the parallel engine.** Fifteen rgsuite cases
 are **ORDER** (identical match set, worker-discovery line order) — counted toward
