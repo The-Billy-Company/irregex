@@ -1,3 +1,16 @@
+---
+doc_radar:
+  counts:
+    - description: "gist src/ subfolders — 5 pipeline tiers (index · regex · rank · scan · corpus) + commands/ CLI"
+      glob: pkg/kernels/gist/src/*
+      unit: dirs
+      equals: 6
+  sentinels:
+    - description: "gist registered in the shipkit changelog roster (OSS-package membership)"
+      file: pkg/tools/support/changelog/packages.py
+      contains: 'Package("pkg/kernels/gist"'
+---
+
 # gist
 
 A fast, regex-first, **agent-friendly** code locator kernel for the Billy
