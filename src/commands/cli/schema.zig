@@ -42,7 +42,7 @@ const manifest_suffix =
     \\      }
     \\    },
     \\    "native_additions": [
-    \\      {"native": "--rank", "type": "int?", "default": 20, "description": "definition-first ranked view; optional =N caps top-K and requires an index"},
+    \\      {"native": "--rank", "type": "int?", "default": 20, "description": "definition-first ranked view over the same regex + PATH scope as the line engine; optional =N caps top-K and requires an index"},
     \\      {"native": "--no-index", "type": "bool", "default": false, "description": "force the pure live walk"},
     \\      {"native": "--index", "type": "bool", "default": false, "description": "re-enable automatic index acceleration after --no-index"}
     \\    ],

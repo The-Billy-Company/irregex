@@ -40,7 +40,23 @@ const indexer = gist.commands.indexer; // `gist index` — build + persist the t
 const status = gist.commands.status; // read-only index introspection
 const schema = gist.commands.schema; // `--schema` JSON manifest
 const ripgrep = gist.commands.ripgrep; // the unified search engine (bare shorthand + `gist rg`)
+const serve = gist.commands.serve; // `gist serve` — the resident warm daemon
+const client = gist.commands.client; // the warm CLI fast path (daemon dial + cold fallback)
 const default_roots = gist.corpus.default_roots;
+
+/// Try the resident daemon for an eligible query; on a served answer this exits
+/// the process with rg's code and never returns. Any miss (ineligible argv, no
+/// daemon, decline, wire error) returns so the caller runs the cold engine —
+/// the daemon is a pure accelerator, never a new failure mode.
+fn tryWarm(gpa: std.mem.Allocator, io: std.Io, env: *const std.process.Environ.Map, argv: []const []const u8) void {
+    const sock = serve.socketPath(gpa, env) catch return;
+    const outcome = client.attempt(gpa, io, argv, sock);
+    gpa.free(sock);
+    switch (outcome) {
+        .served => |code| std.process.exit(code),
+        .cold => {},
+    }
+}
 
 fn usage() void {
     std.debug.print(
@@ -96,6 +112,21 @@ pub fn main(init: std.process.Init) !void {
         try status.run(gpa, io);
         return;
     }
+    // `gist serve [ROOT...]` — run the resident daemon: keep the index warm
+    // behind a Unix socket so subsequent eligible queries answer without cold
+    // startup. Trailing path args scope the served tree (default: the repo
+    // roots); a subtree daemon is both a real use and what the hermetic
+    // client/session tests drive over a throwaway corpus.
+    if (std.mem.eql(u8, mode, "serve")) {
+        const sock = try serve.socketPath(gpa, init.environ_map);
+        defer gpa.free(sock);
+        var roots: std.ArrayList([]const u8) = .empty;
+        defer roots.deinit(gpa);
+        while (it.next()) |arg| try roots.append(gpa, arg);
+        const use_roots: []const []const u8 = if (roots.items.len > 0) roots.items else &default_roots;
+        try serve.run(gpa, io, use_roots, sock);
+        return;
+    }
     // `rg [flags] <pattern> [PATH...]` — the same whole-tree engine the bare
     // shorthand below uses, addressed explicitly (the shape an `alias
     // rg=gist` drop-in takes). It also backs the rgsuite differential-parity
@@ -108,6 +139,7 @@ pub fn main(init: std.process.Init) !void {
         var rest: std.ArrayList([]const u8) = .empty;
         defer rest.deinit(gpa);
         while (it.next()) |arg| try rest.append(gpa, arg);
+        tryWarm(gpa, io, init.environ_map, rest.items);
         try ripgrep.run(gpa, io, rest.items, init.environ_map);
         return;
     }
@@ -123,8 +155,10 @@ pub fn main(init: std.process.Init) !void {
         defer rest.deinit(gpa);
         while (it.next()) |arg| try rest.append(gpa, arg);
         if (rest.items.len > 0) {
+            tryWarm(gpa, io, init.environ_map, rest.items);
             try ripgrep.run(gpa, io, rest.items, init.environ_map);
         } else {
+            tryWarm(gpa, io, init.environ_map, &.{mode});
             try ripgrep.run(gpa, io, &.{mode}, init.environ_map);
         }
         return;
@@ -144,5 +178,6 @@ pub fn main(init: std.process.Init) !void {
     defer implicit.deinit(gpa);
     try implicit.append(gpa, mode);
     while (it.next()) |arg| try implicit.append(gpa, arg);
+    tryWarm(gpa, io, init.environ_map, implicit.items);
     try ripgrep.run(gpa, io, implicit.items, init.environ_map);
 }

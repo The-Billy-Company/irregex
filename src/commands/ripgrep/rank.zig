@@ -1,26 +1,28 @@
 //! gist `--rank` — the definition-first ranked view, gist's one output shape
 //! ripgrep can't express.
 //!
-//! `gist <pattern>` (and `gist rg`) answer WHERE a literal appears, ripgrep-
+//! `gist <pattern>` (and `gist rg`) answer WHERE a pattern appears, ripgrep-
 //! identically (`run.zig`). `--rank` answers WHICH of those hits matters most:
 //! it cold-loads the persisted trigram index, resolves the candidate set (the
-//! same `fresh.candidates` widening the read-elision path uses), extracts a few
-//! per-file ranking features in a parallel read pass, fuses them with the
-//! weighted RRF kernel in `rank/rank.zig`, and prints the top-K as
-//! `path:line [kind] ×count line` — a symbol's DEFINITION outranking its call
-//! sites, codegen demoted. It requires an index (that's the structure the
-//! ranking reads); without one there's nothing to rank.
+//! same `fresh.candidates` widening the read-elision path uses — driven by the
+//! compiled regex's required literal / alternation cover, not the raw argv
+//! bytes), extracts a few per-file ranking features in a parallel read pass,
+//! fuses them with the weighted RRF kernel in `rank/rank.zig`, and prints the
+//! top-K as `path:line [kind] ×count line` — a symbol's DEFINITION outranking
+//! its call sites, codegen demoted. It requires an index (that's the structure
+//! the ranking reads); without one there's nothing to rank.
 //!
-//! This is the sole surviving home of the ranked drivers (hoisted out of the
-//! former `commands/search/drivers.zig` when the two engines merged): the raw
-//! blocking-syscall parallel read + RRF fusion, unchanged, addressed now by the
-//! unified engine's `--rank` flag instead of the deleted `search --show ranked`.
+//! Pattern semantics match the line engine: the caller compiles via
+//! `combinePatterns` + `Regex.compileOpts`, so alternations (`foo|bar`),
+//! wildcards (`claim.*job`), `-F`/`-i`/`-x`, and multi-`-e` OR all rank the
+//! same hits the unranked search would emit. Positional PATH roots gate the
+//! candidate set the same way a scoped walk would.
 
 const std = @import("std");
 const corpus_mod = @import("../../corpus/corpus.zig");
 const fresh = @import("../../corpus/fresh.zig");
-const simd = @import("../../scan/simd.zig");
 const persist = @import("../../index/persist.zig");
+const Regex = @import("../../regex/core.zig").Regex;
 const signals = @import("../../rank/signals.zig");
 const rank_mod = @import("../../rank/rank.zig");
 const Dir = std.Io.Dir;
@@ -42,10 +44,48 @@ fn pathDepth(path: []const u8) u16 {
     return d;
 }
 
+/// Same boundary rule as `commands/scope/glob.zig::underRoot`: exact file hit,
+/// or a directory prefix ending at `/` (so `services` never admits `services_old`).
+fn underRoot(path: []const u8, root_raw: []const u8) bool {
+    var root = root_raw;
+    while (std.mem.startsWith(u8, root, "./")) root = root[2..];
+    root = std.mem.trimEnd(u8, root, "/");
+    if (root.len == 0 or (root.len == 1 and root[0] == '.')) return true;
+    if (path.len == root.len) return std.mem.eql(u8, path, root);
+    return path.len > root.len and std.mem.startsWith(u8, path, root) and path[root.len] == '/';
+}
+
+fn underAnyRoot(path: []const u8, roots: []const []const u8) bool {
+    if (roots.len == 0) return true;
+    for (roots) |r| if (underRoot(path, r)) return true;
+    return false;
+}
+
+/// Sound trigram prefilter for the compiled regex — same rule as
+/// `run.zig::trigramFilter` (minus CLI flags the ranked path never sets).
+fn rankFilters(re: *const Regex, caseless: bool, one: *[1][]const u8) []const []const u8 {
+    if (caseless) return &.{};
+    if (re.required.len >= 3) {
+        one[0] = re.required;
+        return one[0..];
+    }
+    return re.alts;
+}
+
+/// Does this matching line define the symbol? Prefer the analyzer's required
+/// literal; otherwise try each alternation branch that actually appears.
+fn lineDefines(line: []const u8, re: *const Regex) bool {
+    if (re.required.len > 0) return signals.definesNeedle(line, re.required);
+    for (re.alts) |alt| {
+        if (std.mem.indexOf(u8, line, alt) != null and signals.definesNeedle(line, alt)) return true;
+    }
+    return false;
+}
+
 /// One pass over a candidate file's bytes → its ranking features (matching-line
 /// count, whether any match is a definition, the best line to surface). Returns
-/// null when the needle isn't actually present (a trigram false positive).
-fn fileDoc(buf: []const u8, path: []const u8, needle: []const u8, id: u32) ?Doc {
+/// null when the regex doesn't actually match (a trigram false positive).
+fn fileDoc(buf: []const u8, path: []const u8, re: *const Regex, sim: *Regex.Sim, id: u32) ?Doc {
     var line_no: u32 = 0;
     var match_lines: u32 = 0;
     var first: u32 = 0;
@@ -53,14 +93,16 @@ fn fileDoc(buf: []const u8, path: []const u8, needle: []const u8, id: u32) ?Doc 
     var it = std.mem.splitScalar(u8, buf, '\n');
     while (it.next()) |line| {
         line_no += 1;
-        if (!simd.contains(line, needle)) continue;
+        if (!re.lineMatch(sim, line)) continue;
         match_lines += 1;
         if (first == 0) first = line_no;
-        if (defline == 0 and signals.definesNeedle(line, needle)) defline = line_no;
+        if (defline == 0 and lineDefines(line, re)) defline = line_no;
     }
     const generated = signals.isGenerated(path, buf);
     if (match_lines == 0) {
-        if (!simd.contains(buf, needle)) return null; // multi-line needle: keep, surface L1
+        // Multi-line / whole-buffer match the per-line scan missed: keep the
+        // file if the document matcher still fires, surface L1.
+        if (!re.docMatch(sim, buf)) return null;
         return .{ .id = id, .matches = 1, .is_def = false, .best_line = 1, .depth = pathDepth(path), .is_generated = generated };
     }
     return .{
@@ -95,7 +137,7 @@ const read_par_threshold = 64;
 const RankShard = struct {
     paths: []const []const u8,
     ids: []const u32,
-    needle: []const u8,
+    re: *const Regex,
     gpa: std.mem.Allocator,
     out: []Doc,
     n: usize = 0,
@@ -104,11 +146,15 @@ const RankShard = struct {
 fn rankShard(sh: *RankShard) void {
     const scratch = sh.gpa.alloc(u8, corpus_mod.per_file_cap) catch return;
     defer sh.gpa.free(scratch);
+    // Per-shard Pike scratch — the DFA path ignores it, but lineMatch's Pike
+    // fallback needs exclusive Sim state (not thread-safe to share).
+    var sim = Regex.Sim.init(sh.gpa, sh.re) catch return;
+    defer sim.deinit();
     var w: usize = 0;
     for (sh.ids) |d| {
         const n = readFileInto(sh.paths[d], scratch) orelse continue;
         sh.reads += 1;
-        if (fileDoc(scratch[0..n], sh.paths[d], sh.needle, d)) |doc| {
+        if (fileDoc(scratch[0..n], sh.paths[d], sh.re, &sim, d)) |doc| {
             sh.out[w] = doc;
             w += 1;
         }
@@ -118,7 +164,7 @@ fn rankShard(sh: *RankShard) void {
 
 /// Parallel feature extraction over candidate `ids` — one std.Thread per core,
 /// blocking posix reads (the same proven pattern as `run.zig`'s `readCandidates`).
-fn parallelRank(gpa: std.mem.Allocator, paths: []const []const u8, ids: []const u32, needle: []const u8, docs: *std.ArrayList(Doc), read_files: *usize) !void {
+fn parallelRank(gpa: std.mem.Allocator, paths: []const []const u8, ids: []const u32, re: *const Regex, docs: *std.ArrayList(Doc), read_files: *usize) !void {
     const ncpu = std.Thread.getCpuCount() catch 8;
     const nshards = if (ids.len < read_par_threshold) 1 else @min(ids.len, ncpu);
     const shards = try gpa.alloc(RankShard, nshards);
@@ -131,7 +177,7 @@ fn parallelRank(gpa: std.mem.Allocator, paths: []const []const u8, ids: []const 
         const lo = off;
         const hi = @min(off + per, ids.len);
         off = hi;
-        sh.* = .{ .paths = paths, .ids = ids[lo..hi], .needle = needle, .gpa = gpa, .out = outbuf[lo..hi] };
+        sh.* = .{ .paths = paths, .ids = ids[lo..hi], .re = re, .gpa = gpa, .out = outbuf[lo..hi] };
     }
     if (nshards == 1) {
         rankShard(&shards[0]);
@@ -164,26 +210,50 @@ fn snippetOf(gpa: std.mem.Allocator, io: std.Io, path: []const u8, line: u32) ![
     return gpa.dupe(u8, "");
 }
 
-/// Fresh-process ranked query: cold-load the index, resolve + read candidates,
-/// extract per-file features, fuse via the RRF kernel, print the top-K as
-/// token-compressed `path:line` + surfaced line. `k` caps the surfaced rows
-/// (`--rank[=N]`, default 20). No index ⇒ nothing to rank (silent no-op, the
-/// same "an index is the structure this reads" contract the old driver had).
-pub fn run(gpa: std.mem.Allocator, io: std.Io, needle: []const u8, k: usize) !void {
-    if (needle.len == 0) return;
+/// Fresh-process ranked query: cold-load the index, resolve + read candidates
+/// for the compiled regex (optionally scoped to PATH roots), extract per-file
+/// features, fuse via the RRF kernel, print the top-K as token-compressed
+/// `path:line` + surfaced line. `k` caps the surfaced rows (`--rank[=N]`,
+/// default 20). No index ⇒ nothing to rank (silent no-op). `caseless` disables
+/// the trigram prefilter (same soundness rule as the line engine).
+pub fn run(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    re: *const Regex,
+    roots: []const []const u8,
+    k: usize,
+    caseless: bool,
+) !void {
     const l0 = nowNs(io);
     var p = (try persist.load(gpa, io)) orelse return;
     defer p.deinit();
     const load_ns = nowNs(io) - l0;
 
     const q0 = nowNs(io);
-    const filters = [_][]const u8{needle}; // <3 B ⇒ candidates() seeds every doc
-    var cand = try fresh.candidates(gpa, io, &p.idx, &p.paths, &filters, &corpus_mod.default_roots);
+    var one: [1][]const u8 = undefined;
+    const filters = rankFilters(re, caseless, &one);
+    var cand = try fresh.candidates(gpa, io, &p.idx, &p.paths, filters, &corpus_mod.default_roots);
     defer cand.deinit();
+
+    // PATH roots gate before the read — without this, `gist pat dir/ --rank`
+    // ranks the whole indexed corpus (the bug that flooded agents with
+    // out-of-scope hits, or hid in-scope ones behind an empty top-K).
+    var scoped: std.ArrayList(u32) = .empty;
+    defer scoped.deinit(gpa);
+    if (roots.len == 0) {
+        try scoped.appendSlice(gpa, cand.ids);
+    } else {
+        try scoped.ensureTotalCapacity(gpa, cand.ids.len);
+        for (cand.ids) |d| {
+            if (d >= p.paths.items.len) continue;
+            if (underAnyRoot(p.paths.items[d], roots)) scoped.appendAssumeCapacity(d);
+        }
+    }
+
     var docs: std.ArrayList(Doc) = .empty;
     defer docs.deinit(gpa);
     var read_files: usize = 0;
-    try parallelRank(gpa, p.paths.items, cand.ids, needle, &docs, &read_files);
+    try parallelRank(gpa, p.paths.items, scoped.items, re, &docs, &read_files);
 
     // The fusion: lexical density + symbol(def) boost + shallow-path + authored
     // (codegen demotion), RRF-fused. null is the external graph-centrality hook.
@@ -210,4 +280,78 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, needle: []const u8, k: usize) !vo
     std.debug.print("— {d} ranked matches (top {d}) · read {d}/{d} candidates · cold-load {d:.1} ms · rank {d:.1} ms · total {d:.1} ms\n", .{
         docs.items.len, top, read_files, p.paths.items.len, ms(load_ns), ms(query_ns), ms(load_ns + query_ns),
     });
+}
+
+test "underRoot gates directory prefixes and exact files" {
+    const t = std.testing;
+    try t.expect(underRoot("services/ai/x.py", "services/ai"));
+    try t.expect(underRoot("services/ai", "services/ai"));
+    try t.expect(underRoot("services/ai/x.py", "./services/ai/"));
+    try t.expect(!underRoot("services/ai_old/x.py", "services/ai"));
+    try t.expect(!underRoot("services/backend/x.go", "services/ai"));
+    try t.expect(underAnyRoot("services/ai/x.py", &.{ "services/backend", "services/ai" }));
+    try t.expect(!underAnyRoot("pkg/kernels/gist/x.zig", &.{ "services/ai", "services/backend" }));
+    try t.expect(underAnyRoot("anywhere.go", &.{}));
+}
+
+test "fileDoc matches alternation and wildcard regexes, not raw pattern bytes" {
+    const t = std.testing;
+    const a = t.allocator;
+
+    // The bug: treating `FOO|BAR` as a literal meant zero hits unless a file
+    // contained the characters `FOO|BAR`. Ranking must use the compiled engine.
+    var re_alt = try Regex.compile(a, "FOO_CLAIM|BAR_CLAIM");
+    defer re_alt.deinit();
+    var sim_alt = try Regex.Sim.init(a, &re_alt);
+    defer sim_alt.deinit();
+    const hay_alt =
+        \\const x = 1;
+        \\fn BAR_CLAIM() void {}
+        \\use FOO_CLAIM here
+    ;
+    const doc_alt = fileDoc(hay_alt, "src/claim.zig", &re_alt, &sim_alt, 7) orelse {
+        try t.expect(false); // must match both branches
+        return;
+    };
+    try t.expectEqual(@as(u32, 2), doc_alt.matches);
+    try t.expect(doc_alt.is_def);
+    try t.expectEqual(@as(u32, 2), doc_alt.best_line);
+
+    var re_wild = try Regex.compile(a, "claim.*job");
+    defer re_wild.deinit();
+    var sim_wild = try Regex.Sim.init(a, &re_wild);
+    defer sim_wild.deinit();
+    const hay_wild =
+        \\// claim the job via SET NX
+        \\const other = 1;
+    ;
+    const doc_wild = fileDoc(hay_wild, "queue.py", &re_wild, &sim_wild, 3) orelse {
+        try t.expect(false); // must match claim…job span
+        return;
+    };
+    try t.expectEqual(@as(u32, 1), doc_wild.matches);
+    try t.expectEqual(@as(u32, 1), doc_wild.best_line);
+
+    // No claim…job span at all ⇒ not a match (the old literal path would also
+    // miss this; the point is the engine doesn't false-positive on noise).
+    try t.expect(fileDoc("no relevant tokens here", "doc.md", &re_wild, &sim_wild, 1) == null);
+}
+
+test "rankFilters prefers required literal then alternation cover" {
+    const t = std.testing;
+    const a = t.allocator;
+    var one: [1][]const u8 = undefined;
+
+    var re_lit = try Regex.compile(a, "JOBS_PG_CLAIM");
+    defer re_lit.deinit();
+    const f_lit = rankFilters(&re_lit, false, &one);
+    try t.expectEqual(@as(usize, 1), f_lit.len);
+    try t.expectEqualStrings("JOBS_PG_CLAIM", f_lit[0]);
+
+    var re_alt = try Regex.compile(a, "jobs_pg_claim|JOBS_PG_CLAIM");
+    defer re_alt.deinit();
+    const f_alt = rankFilters(&re_alt, false, &one);
+    // No single required ≥3 spanning both branches ⇒ cover set.
+    try t.expect(f_alt.len >= 1);
+    try t.expectEqual(@as(usize, 0), rankFilters(&re_alt, true, &one).len); // caseless ⇒ no prefilter
 }

@@ -4,8 +4,8 @@
 //! adapted to gist's general program: no ignore files, no explicit-file-arg
 //! concept, one skip-dir policy (`isSkipDir`) shared by every corpus consumer.
 //! Before this, `corpus.zig`'s index build, `ripgrep/run.zig`'s tree-walk
-//! enumeration, `corpus/fresh.zig`'s mtime+ctime freshness stat-walk, and
-//! `scan/sweep.zig`'s no-prefilter live scan each re-derived the identical
+//! enumeration, `corpus/fresh.zig`'s mtime+ctime freshness stat-walk, and the
+//! no-prefilter live scan each re-derived the identical
 //! walk skeleton (open root → skip/enter dirs → join a file's path) around a
 //! DIFFERENT per-file action (read bytes, keep the path, stat metadata, queue for
 //! a worker pool). `Walker` is now the one place that skeleton lives; each
@@ -15,8 +15,8 @@
 //! exactly as it documents: valid only until the next `Walker.next` call. A
 //! caller that needs the file's bytes or metadata must act on them
 //! immediately (as every current caller already does); `path` is arena-owned
-//! and safe to keep past that point (e.g. queued across threads, as
-//! `scan/sweep.zig` does).
+//! and safe to keep past that point (e.g. queued across threads by a
+//! work-stealing consumer).
 
 const std = @import("std");
 const Dir = std.Io.Dir;

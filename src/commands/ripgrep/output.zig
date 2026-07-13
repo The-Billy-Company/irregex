@@ -440,14 +440,17 @@ pub const Emitter = struct {
                 if (o.stop_on_nonmatch and idx.items.len > 0) break;
                 continue;
             }
+            // `-l` asks only whether this file has any matching line. Emit on
+            // the first proof instead of scanning the rest of the file and
+            // accumulating line indexes that no output mode will consume.
+            if (o.files_only) {
+                self.out.print(self.a, "{s}{c}", .{ path, if (o.null_sep) @as(u8, 0) else '\n' }) catch die("oom\n", .{});
+                return 1;
+            }
             idx.append(self.a, k) catch die("oom\n", .{});
             if (o.max_per_file != 0 and idx.items.len >= o.max_per_file) break;
         }
         if (idx.items.len == 0) return 0;
-        if (o.files_only) {
-            self.out.print(self.a, "{s}{c}", .{ path, if (o.null_sep) @as(u8, 0) else '\n' }) catch die("oom\n", .{});
-            return idx.items.len;
-        }
         if (o.count_only or o.count_matches) {
             if (self.show_name) self.writePath(path, true);
             self.out.print(self.a, "{d}\n", .{idx.items.len}) catch die("oom\n", .{});
@@ -671,4 +674,23 @@ test "required literal line gate handles sub-trigram needles" {
     try t.expectEqualStrings("-", re.required);
     try t.expect(!em.lineCanMatch("abcdef012345"));
     try t.expect(em.lineCanMatch("deadbeef-cafe"));
+}
+
+test "files-only emits once and stops after the first matching line" {
+    const t = std.testing;
+    var re = try Regex.compile(t.allocator, "needle");
+    defer re.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(t.allocator);
+    var em = Emitter{
+        .a = t.allocator,
+        .re = &re,
+        .o = .{ .files_only = true },
+        .show_name = true,
+        .out = &out,
+        .needle = re.required,
+    };
+
+    try t.expectEqual(@as(usize, 1), em.file("fixture.txt", &.{ "needle first", "needle second" }));
+    try t.expectEqualStrings("fixture.txt\n", out.items);
 }

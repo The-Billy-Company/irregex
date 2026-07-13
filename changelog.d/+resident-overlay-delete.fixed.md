@@ -1,0 +1,1 @@
+A resident file reconciled into the mutation overlay and then deleted is no longer reported off the watcher-clean path: overlay matches are now existence-checked with the same fail-closed stat-per-hit the base docs use, so a delete that vanishes from the metadata walk can never surface a stale hit (preserving resident==rg).

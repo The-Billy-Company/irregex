@@ -1,0 +1,1 @@
+`--rank` now compiles the pattern through the same regex engine as the line search (so `foo|bar` and `claim.*job` rank real matches instead of looking for those bytes literally) and honors positional PATH roots when scoping the candidate set.

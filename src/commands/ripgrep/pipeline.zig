@@ -28,8 +28,8 @@
 //! passed per call, never a mutable field); each directory's own ignore rules
 //! live in an immutable `IgNode` chained to its parent's, built once by the
 //! worker that entered the directory and only read thereafter. Workers touch
-//! only their own arena; the one shared structure is the task queue (mutex +
-//! condvar, the `scan/sweep.zig` idiom).
+//! only their own arena; the one shared structure is the task queue (the
+//! classic mutex + condvar work-stealing queue idiom).
 //!
 //! Dispatch policy (`eligible`): the recursive-walk cases every agent session
 //! actually hits — default search, `-l`, `-c`, `-o`, `-n`, context, `-w`/`-i`/

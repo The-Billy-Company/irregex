@@ -53,6 +53,32 @@ pub fn readAnchor(gpa: std.mem.Allocator, io: std.Io) ?i128 {
     return built_ns;
 }
 
+/// The set of paths under `roots` that require a live read relative to
+/// `built_ns` — every file whose mtime OR ctime is at/after the anchor, plus
+/// any whose metadata could not be read (conservative). This is the *exact*
+/// "needs a live read" set the index-elision path computes internally
+/// (`walkFresh`), lifted to a standalone primitive so the resident session's
+/// reconcile barrier (`src/session/`) re-reads precisely the files the cold
+/// path would — the shared machinery is why `resident == --no-index == rg`
+/// holds by construction rather than by a second, drift-prone walk. Paths are
+/// owned by the returned arena; caller `deinit`s it after copying what it keeps.
+pub const ChangedSet = struct {
+    paths: []const []const u8,
+    arena: std.heap.ArenaAllocator,
+    pub fn deinit(self: *ChangedSet) void {
+        self.arena.deinit();
+    }
+};
+
+pub fn changedSince(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, built_ns: i128) !ChangedSet {
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    errdefer arena.deinit();
+    const a = arena.allocator();
+    var out: std.ArrayList([]const u8) = .empty;
+    try walkFresh(gpa, io, roots, built_ns, a, &out);
+    return .{ .paths = try a.dupe([]const u8, out.items), .arena = arena };
+}
+
 /// Candidate doc-ids + a private arena owning any new-file paths appended to the
 /// caller's `paths` list. Keep it alive until after the candidate read.
 pub const Candidates = struct {
@@ -311,14 +337,21 @@ fn walkFresh(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, buil
     for (workers) |*w| w.* = .{ .io = io, .items = items, .cursor = &cursor, .built_ns = built_ns, .arena = std.heap.ArenaAllocator.init(std.heap.page_allocator) };
     defer for (workers) |*w| w.arena.deinit();
 
-    const threads = try gpa.alloc(std.Thread, nworkers);
+    // The calling thread always runs worker[0] inline and only spawns the rest,
+    // so a single-shard walk (a small tree — the common resident-reconcile case,
+    // hit on every non-clean query) spawns ZERO threads instead of paying a
+    // spawn+join per query, and a multi-shard walk still saturates every core
+    // (N-1 spawned + 1 inline) with the calling thread participating rather than
+    // idling on join.
+    const threads = try gpa.alloc(std.Thread, nworkers - 1);
     defer gpa.free(threads);
     var spawned: usize = 0;
-    for (workers) |*w| {
+    for (workers[1..]) |*w| {
         threads[spawned] = std.Thread.spawn(.{}, workerRun, .{w}) catch break;
         spawned += 1;
     }
-    for (workers[spawned..]) |*w| workerRun(w); // any unspawned workers run inline
+    for (workers[1 + spawned ..]) |*w| workerRun(w); // any unspawnable worker runs inline
+    workerRun(&workers[0]); // calling thread takes a share instead of idling
     for (threads[0..spawned]) |t| t.join();
 
     for (workers) |*w| for (w.out.items) |p| try out.append(a, try a.dupe(u8, p));

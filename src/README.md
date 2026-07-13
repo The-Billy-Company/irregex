@@ -15,6 +15,7 @@ holds only the benchmark/verify harness — no engine code lives there.
 | `rank/`     | **T4** ranked output — weighted Reciprocal Rank Fusion over intrinsic, language-agnostic signals             |
 | `scan/`     | the no-prefilter fallback — SIMD substring presence + fused work-stealing parallel verify over the live tree |
 | `corpus/`   | corpus loading (rg-style binary/skip rules, stdout results contract) + the mtime freshness overlay           |
+| `session/`  | the resident-session transport (ADR-352 rung 2.5) — warm error-returning engine, UDS wire codec, eligibility classifier, fail-closed freshness watcher |
 | `commands/` | the driver surfaces the CLI dispatches to (see below) — the only tier that composes the others end-to-end    |
 
 `root.zig` is the package/C-ABI root: it re-exports each tier, pins
@@ -33,8 +34,8 @@ exit codes) so it's a true drop-in for an agent's `rg` reflex.
 | Folder              | Verb(s)                                                                                            |
 | ------------------- | -------------------------------------------------------------------------------------------------- |
 | `commands/cli/`     | the `main.zig` entrypoint + the `--schema` capability manifest                                     |
-| `commands/search/`  | the one `search` verb (index + query) — replaces the old `query`/`regex`/`rank`/`grep` quartet     |
-| `commands/ripgrep/` | the `rg`-DEFAULT drop-in over an arbitrary tree — backs the bare shorthand + the `gist rg` alias   |
+| `commands/ripgrep/` | the unified search engine + `index` verb — the `rg`-DEFAULT drop-in over an arbitrary tree, backing the bare shorthand, the `gist rg`/`search` aliases, and `--rank` |
+| `commands/status/`  | read-only index introspection — the `status` verb (is an index ready, how fresh, how big)         |
 | `commands/scope/`   | shared path scoping — `-g <glob>` matching (`glob.zig`) + the `-t <lang>` type table (`types.zig`) |
 
 See [`../README.md`](../README.md) for the architecture narrative, competitive
