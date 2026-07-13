@@ -2,7 +2,7 @@
 
 Benchmark, verification, and competitive-proof harness for the `gist`
 code-locator kernel — no engine code lives here (that's all under `src/`).
-Eight concerns, eight folders:
+Nine concerns, nine folders:
 
 | Folder                                | Concern                                                                                                                                                                   |
 | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -10,6 +10,7 @@ Eight concerns, eight folders:
 | [`races/`](races/README.md)           | The competitor registry (`_compete.sh`) + the three multi-tool field races (warm, cold literal, cold regex).                                                              |
 | [`gates/`](gates/README.md)           | Permanent correctness/contract gates: the `gist ≡ rg` equality oracle, the scan-path regression, the stdout/stderr stream-contract check.                                 |
 | [`certify/`](certify/README.md)       | The macroscopic half of the Layer-A optimality certificate — races the whole field per pattern class with a fail-closed statistical verdict.                              |
+| [`session/`](session/README.md)       | The **resident-session** certificate — the honest warm-product path (persistent client → `gist serve` daemon over a Unix socket), the only sound basis for a warm-speedup claim (ADR-352 rung 2.5). |
 | [`rgsuite/`](rgsuite/README.md)       | The `gist rg` ⇄ real-ripgrep drop-in proof — mined `rgtest!` correctness replay plus the performance scoreboard.                                                          |
 | [`portcert/`](portcert/README.md)     | Layer B — port-optimality: cross-compiled `llvm-mca` static microarchitectural bound on gist's two hot loops, drift-guarded against production.                           |
 | [`roofline/`](roofline/README.md)     | Layer C — roofline: this machine's measured STREAM read-bandwidth ceiling vs gist's real scan throughput.                                                                 |
@@ -66,6 +67,13 @@ Each race prints per-query times with gist's speedup, then a summary: **geomean
 speedup and win-rate per tool**, split indexed vs unindexed. Raw rows land in
 `.local/gist-compete/{cold,regex,warm}.csv` for your own analysis. See
 `races/README.md` and `gates/README.md` for the scenario-level detail.
+
+`races/headtohead.sh` times gist's **in-process** engine (the microsecond
+ceiling — no transport, no process spawn), which no client actually rides. The
+honest warm-**product** path — a persistent client dialing a `gist serve` daemon
+once and replaying the slate over that warm connection — is certified separately
+in [`session/`](session/README.md) (`make bench-gist-session`), the only sound
+basis for a "warm is Nx faster than ripgrep" claim.
 
 ## Fairness — stated, not hand-waved
 

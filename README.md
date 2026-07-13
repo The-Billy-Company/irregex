@@ -1,10 +1,10 @@
 ---
 doc_radar:
   counts:
-    - description: "gist src/ subfolders — 5 pipeline tiers (index · regex · rank · scan · corpus) + commands/ CLI"
+    - description: "gist src/ subfolders — 5 pipeline tiers (index · regex · rank · scan · corpus) + commands/ CLI + session/ resident transport (ADR-352 rung 2.5)"
       glob: pkg/kernels/gist/src/*
       unit: dirs
-      equals: 6
+      equals: 7
   sentinels:
     - description: "gist registered in the shipkit changelog roster (OSS-package membership)"
       file: pkg/tools/support/changelog/packages.py
@@ -447,10 +447,19 @@ bundle and required-cache accounting. Every plotted number is
   highly selective cold cells and zoekt wins some shapes; both skip gist's
   read-your-writes guarantee. The certificate's field block reports every one of
   those outcomes alongside rg, ugrep, ag, GNU grep, and git grep.
-- **Residency is optional.** A long-lived mmap remains the absolute latency floor
-  for an agent issuing many queries, but the cold CLI now beats rg on **all 11**
-  classes. A resident daemon is therefore an optional throughput optimization,
-  not required architecture.
+- **Residency is optional, but now productized and certified.** A long-lived
+  mmap remains the absolute latency floor for an agent issuing many queries; the
+  cold CLI already beats rg on **all 11** classes, so a resident daemon is a
+  throughput optimization, not required architecture. The daemon path itself —
+  a persistent client dialing `gist serve` once over a Unix socket (ADR-352 rung
+  2.5) — has its own honest warm certificate under
+  [`bench/session/`](bench/session/), gated by `make bench-gist-session`: even on
+  a platform with no filesystem watcher (every query pays the reconcile
+  freshness tax) it measures **7.2× geomean over ripgrep-cold**, because rg
+  re-walks and re-scans the whole tree each call while the warm client pays only
+  the reconcile plus an in-RAM index query; where a watcher arms the fast path
+  (Linux inotify) the reconcile vanishes and the number approaches the in-process
+  microsecond ceiling.
 
 The previous 0/11 certificate was valuable evidence, but its diagnosis was too
 broad: freshness itself was not the floor. Full posting validation on every load,
