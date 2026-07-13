@@ -24,12 +24,57 @@ package_import = "gist"
 
 # How the one contract is carried to the engine. `subprocess` is authoritative
 # today (ADR-352): safe by construction — a bad pattern exits the child, never
-# the host. `ffi` is the specified graduation rung (resident in-process session)
-# and is intentionally absent from the engine's exported C surface until the
-# die()->error-return refactor lands.
+# the host. `uds` is the resident-session transport (ADR-352 rung 2.5): a
+# per-repository `gist serve` daemon holds the corpus + trigram index warm in
+# memory and answers eligible file-set requests over a length-prefixed
+# Unix-domain-socket protocol, sidestepping the die()->exit hazard because the
+# resident query kernels return errors instead of calling die(). `ffi` (in-proc
+# C session) remains the further rung, still blocked on refactoring the *CLI*
+# engine's error path.
+#
+# Honesty note (status tokens are truthful about disk, not aspiration): both
+# `subprocess` and `uds` are callable transports today. The `uds` resident stack
+# is landed and verified end to end — the eligibility classifier
+# (`src/session/request.zig`), the length-prefixed wire codec
+# (`src/session/protocol.zig`), the warm error-returning engine
+# (`src/session/resident.zig`), the fail-closed freshness watcher
+# (`src/session/watch.zig`), the `gist serve` daemon accept-loop
+# (`src/commands/serve/serve.zig`), and the fail-open connecting client
+# (`src/commands/client/client.zig`, wired into the bare-`gist` front door in
+# `src/commands/cli/main.zig`) — under an end-to-end lifecycle test
+# (`src/commands/serve/serve_test.zig`). The warm path is a pure accelerator that
+# routes only what it can answer byte-identically to cold (today: `-l` /
+# files-with-matches) and falls open to `subprocess` for everything else, so it
+# is never a new source of truth or a new failure mode.
 [transports]
 subprocess = { status = "authoritative", detail = "certified `gist` binary + --json; results produced by the same combinePatterns->collectFiles->json.run path the CLI uses" }
-ffi = { status = "planned", detail = "resident gist_open/gist_search/gist_close session ABI; blocked on the engine error-return refactor" }
+uds = { status = "operational-accelerator", detail = "`gist serve` daemon holds a warm ResidentSession behind a Unix socket; the front-door client dials it for eligible queries (today `-l`/files-with-matches, emitted byte-identically to cold) and falls open to `subprocess` on any ineligible argv, absent daemon, decline, or wire hiccup — a pure fail-open accelerator, never a distinct answer path (src/commands/{serve,client}, src/session/*)" }
+ffi = { status = "planned", detail = "resident gist_open/gist_search/gist_close C session ABI; blocked on the CLI engine error-return refactor" }
+
+# Resident-session semantics for the `uds` transport (ADR-352 rung 2.5). A client
+# opens a persistent connection to one daemon generation and issues many queries;
+# the daemon carries three monotonic generations so a client can detect a rebuilt
+# index or a restarted daemon and re-handshake. Not mirrored as package constants
+# (no per-language drift risk — these govern the wire protocol the Zig daemon and
+# its clients speak), but pinned here as the authoritative shape.
+[session]
+socket_env = "GIST_SESSION_SOCK"            # override the default per-repo socket path
+default_socket = ".local/gist-verify/gistd.sock"
+protocol_version = 1                         # length-prefixed frame protocol (src/session/protocol.zig)
+# Monotonic generations carried in every READY/STATUS frame.
+generations = ["daemon", "session", "index"] # daemon boot id · per-connection id · published pair.gen
+# The request shapes the resident fast path answers directly. Everything else
+# (line output, --json, context, --rank, replace, invert, multiline, explicit
+# file lists, stdin) is unsupported on the fast path and falls back to the cold
+# subprocess transport, byte-for-byte identically.
+eligible_modes = ["files", "count"]          # -l (files-with-matches) · -c (matching-line count)
+# Freshness is fail-closed: a query is answered from resident bytes only when the
+# barrier proves the searched roots unchanged since the daemon's build anchor
+# (a watcher-clean window); otherwise the daemon reconciles changed/new/deleted
+# paths against the live filesystem before answering, preserving the invariant
+# `resident matches == --no-index matches == rg matches`.
+freshness = "fail-closed-reconcile"
+watchers = ["inotify", "reconcile"]          # linux inotify accelerator; portable metadata-reconcile barrier
 
 # The exact request surface the deep contract exposes. Each option maps to the
 # rg-parity flag the engine already honors (see src/commands/ripgrep/args.zig

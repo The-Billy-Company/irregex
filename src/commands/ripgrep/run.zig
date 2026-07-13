@@ -7,8 +7,8 @@
 //! searched roots, is used purely to ELIDE reads of files it proves can't match
 //! (`IndexSkip` below) — never to change the file set, ignore semantics,
 //! ordering, or output; `--no-index`/`--index` force the pure walk / the
-//! accelerated path, and `--rank[=N]` rides the same candidate source into the
-//! definition-first RRF view (`rank.zig`). This needs to *prove* gist is a
+//! accelerated path, and `--rank[=N]` ranks the same compiled-regex hits (and
+//! PATH scope) via the definition-first RRF view (`rank.zig`). This needs to *prove* gist is a
 //! genuine ripgrep drop-in against ripgrep's own integration suite — which
 //! creates a throwaway directory, drops in fixtures, and runs `rg` in that CWD —
 //! so this module searches an arbitrary tree with ripgrep's DEFAULT presentation:
@@ -42,6 +42,7 @@ const simd = @import("../../scan/simd.zig");
 const persist = @import("../../index/persist.zig");
 const fresh = @import("../../corpus/fresh.zig");
 const rank = @import("rank.zig");
+const query_mod = @import("../../engine/query.zig");
 const Opts = args.Opts;
 const Emitter = output.Emitter;
 const die = args.die;
@@ -444,11 +445,9 @@ const IndexSkip = struct {
 /// both of which `fresh.candidates` treats as sound supersets.
 fn trigramFilter(o: Opts, re: *const Regex, one: *[1][]const u8) []const []const u8 {
     if (o.no_index or o.caseless or o.invert or o.stats or o.passthru) return &.{};
-    if (re.required.len >= 3) {
-        one[0] = re.required;
-        return one[0..];
-    }
-    return re.alts;
+    // The regex→sound-literals mapping is the shared search core's, so the cold
+    // elision and the warm resident session prune by identical literals.
+    return query_mod.regexPrefilter(re, one);
 }
 
 /// Build the read-elision oracle from the persisted index, or null when there's
@@ -765,15 +764,6 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         std.process.exit(if (c.path_error) 2 else if (c.files.len > 0) 0 else 1);
     }
 
-    // --rank: gist's definition-first ranked view — a distinct output shape from
-    // the rg-parity line engine, resolved from the persisted index (which it
-    // requires). Dispatch before pattern combination / the walk: it ranks the
-    // indexed candidate set for the raw literal, not a compiled line regex.
-    if (o.rank) {
-        try rank.run(gpa, io, if (parsed.patterns.len > 0) parsed.patterns[0] else "", o.rank_k);
-        return;
-    }
-
     // Zero patterns (an empty `-f` file): ripgrep matches nothing — so without
     // `-v` there is no output (exit 1); with `-v` every line is a match. We model
     // the latter as "match-all (empty pattern), un-inverted".
@@ -785,6 +775,15 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     var re = Regex.compileOpts(gpa, eff, .{ .caseless = o.caseless }) catch
         die("bad pattern '{s}' — outside gist's linear-time syntax: no lookaround, no backreferences (\\0–\\9; NUL is \\x00), no unrecognized escapes (\\q, \\e, …), no assertion escapes inside [...], no mid-pattern inline flags (--schema lists the surface). Fallback: rg '{s}' (add --pcre2 for backreferences/lookaround)\n", .{ eff, eff });
     defer re.deinit();
+
+    // --rank: definition-first ranked view over the SAME compiled pattern the
+    // line engine would search (alternations, wildcards, -F/-i/-x, multi-e OR)
+    // and the same PATH roots a scoped walk would honor. Requires an index.
+    if (o.rank) {
+        try rank.run(gpa, io, &re, parsed.roots, o.rank_k, o.caseless);
+        return;
+    }
+
     const line_needle = requiredLiteralGate(o, &re);
     const file_needle = wholeFileLiteralGate(o, line_needle);
 

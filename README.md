@@ -1,10 +1,10 @@
 ---
 doc_radar:
   counts:
-    - description: "gist src/ subfolders — 5 pipeline tiers (index · regex · rank · scan · corpus) + commands/ CLI + session/ resident transport (ADR-352 rung 2.5)"
+    - description: "gist src/ subfolders — 6 pipeline tiers (engine · index · regex · rank · scan · corpus) + commands/ CLI + session/ resident transport (ADR-352 rung 2.5)"
       glob: pkg/kernels/gist/src/*
       unit: dirs
-      equals: 7
+      equals: 8
   sentinels:
     - description: "gist registered in the shipkit changelog roster (OSS-package membership)"
       file: pkg/tools/support/changelog/packages.py
@@ -59,9 +59,9 @@ live in
 
 ## How it works
 
-The pipeline is five cooperating tiers, each a concern-scoped subfolder under
-`src/` (`index/` · `regex/` · `rank/` · `scan/` · `corpus/`), driven by the
-command surfaces under `src/commands/`:
+The pipeline is six cooperating tiers, each a concern-scoped subfolder under
+`src/` (`index/` · `regex/` · `rank/` · `scan/` · `corpus/` · `engine/`), driven
+by the command surfaces under `src/commands/`:
 
 **Trigram candidate index** (`src/index/trigram.zig`). Any file containing a literal
 must contain every trigram of that literal, so the AND of the per-trigram
@@ -115,6 +115,18 @@ fused tie-aware (every authored doc shares rank 0, every generated doc shares
 rank `n_authored`) so it stays neutral _within_ a class — plus an optional
 external ranking (a graph-centrality hook). `--rank` emits token-compressed
 `path:line [def|use|gen] ×n  <line>`.
+
+**Compiled query core** (`src/engine/query.zig`). One deep module owns "a search
+intent, compiled": a `(pattern, fixed, ignore_case, mode)` spec lowers into an
+immutable matcher — a literal for the `-F` no-fold SIMD fast path, else the
+linear-time regex engine — from which every face draws the two things it needs:
+the sound trigram **prefilter** that prunes index candidates (required literal,
+else the alternation cover) and the per-doc **match / line-count** decision. It
+is fail-closed (a pattern outside the linear-time syntax is `error.Unsupported`,
+never a `die()`) and thread-safe (the compiled query is immutable; per-worker
+regex scratch is caller-owned), so the cold CLI (`src/commands/ripgrep/`) and the
+warm resident session (`src/session/`) execute through the **same** compile,
+prefilter, and match kernels and cannot drift on what matches.
 
 ## Quickstart
 

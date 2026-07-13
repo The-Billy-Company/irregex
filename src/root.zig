@@ -22,9 +22,11 @@
 //!   index/    — the trigram candidate index (turn a whole-tree scan into a lookup)
 //!   regex/    — the linear-time RE2-style engine (NFA + byte-class DFA + prefilter)
 //!   rank/     — RRF result ranking + its language-agnostic byte-level signals
-//!   scan/     — byte-level match execution (SIMD substring, parallel verify, live sweep)
+//!   scan/     — byte-level match execution (SIMD substring, data-parallel verify kernel)
 //!   corpus/   — in-memory corpus loading, the shared Haystack walk, + the T3 freshness overlay
-//!   commands/ — the CLI surfaces built on the engine (scope · search · status · ripgrep · cli)
+//!   engine/   — the transport-neutral compiled query: one compile → prefilter → match core (fail-closed, thread-safe) both cold CLI and warm session execute through
+//!   session/  — the resident-session transport (ADR-352 rung 2.5): warm engine · UDS codec · classifier · watcher
+//!   commands/ — the CLI surfaces built on the engine (scope · status · ripgrep · cli)
 
 const std = @import("std");
 
@@ -49,13 +51,31 @@ pub const signals = @import("rank/signals.zig");
 // ── byte-level match execution ──
 pub const simd = @import("scan/simd.zig");
 pub const verify = @import("scan/verify.zig");
-pub const sweep = @import("scan/sweep.zig");
 
 // ── corpus + freshness ──
 pub const corpus = @import("corpus/corpus.zig");
 pub const haystack = @import("corpus/haystack.zig");
 pub const bulkstat = @import("corpus/bulkstat.zig");
 pub const fresh = @import("corpus/fresh.zig");
+
+// ── the transport-neutral compiled query (the shared search core) ──
+// One deep module owns "a search intent, compiled": the fail-closed, thread-safe
+// compile → sound-trigram-prefilter → per-doc match/count kernels that BOTH the
+// cold CLI (`commands/ripgrep`) and the warm resident session (`session`)
+// execute through, so the two engines cannot drift on what matches.
+pub const engine = struct {
+    pub const query = @import("engine/query.zig");
+};
+
+// ── resident search session (ADR-352 rung 2.5): the warm in-memory engine +
+// its Unix-socket transport, sharing the kernels above but returning errors
+// instead of `die()`ing so a bad request can't take down the daemon. ──
+pub const session = struct {
+    pub const resident = @import("session/resident.zig");
+    pub const request = @import("session/request.zig");
+    pub const protocol = @import("session/protocol.zig");
+    pub const watch = @import("session/watch.zig");
+};
 
 /// CLI surfaces built on the engine above. Not part of the C ABI — the `gist`
 /// executable (`commands/cli/main.zig`) and the bench harness dispatch through
@@ -76,6 +96,12 @@ pub const commands = struct {
     pub const ripgrep = @import("commands/ripgrep/run.zig");
     /// The `index` verb — build + persist the trigram index the engine reads.
     pub const indexer = @import("commands/ripgrep/index.zig");
+    /// `gist serve` — the resident daemon that keeps a `session` warm behind a
+    /// Unix socket (ADR-352 rung 2.5).
+    pub const serve = @import("commands/serve/serve.zig");
+    /// The CLI's warm fast path — dial the daemon for an eligible query, emit
+    /// byte-identically to cold, else fall back (`attempt`).
+    pub const client = @import("commands/client/client.zig");
 };
 
 pub const version_string: [:0]const u8 = "0.1.0"; // x-release-please-version
@@ -122,6 +148,12 @@ test {
     _ = @import("rank/signals_test.zig"); // cross-language def-detection + generated-file signals
     _ = @import("scan/simd_test.zig"); // SIMD `contains` differential fuzz vs std
     _ = @import("corpus/fresh_test.zig"); // T3 freshness `widen` set-algebra
+    _ = @import("engine/query_test.zig"); // shared compiled-query: compile/prefilter/match vs oracle
+    _ = @import("session/request_test.zig"); // resident request eligibility classifier
+    _ = @import("session/resident_test.zig"); // resident session: parity vs cold, overlay, RYW, deletion
+    _ = @import("session/protocol_test.zig"); // UDS frame codec round-trip + adversarial
+    _ = @import("session/watch_test.zig"); // freshness watcher: dirty/clean seqlock barrier
+    _ = @import("session/freshness_test.zig"); // barrier hardening: differential vs on-disk oracle, concurrency, overflow/bound
     _ = @import("corpus/haystack_test.zig"); // shared walk: isSkipDir + joinPath hot-path decisions
     _ = @import("corpus/bulkstat_test.zig"); // getattrlistbulk ≡ stat-walk differential
     _ = @import("regex/syntax_test.zig"); // T2 syntax: ByteSet + recursive-descent parser
@@ -137,4 +169,7 @@ test {
     _ = @import("commands/ripgrep/run.zig"); // the unified engine (rgsuite parity drop-in)
     _ = @import("commands/ripgrep/rank.zig"); // `--rank` definition-first ranked view
     _ = @import("commands/ripgrep/index.zig"); // the `index` verb: build + persist
+    _ = @import("commands/serve/serve.zig"); // the resident daemon driver body
+    _ = @import("commands/client/client.zig"); // the warm CLI fast-path client body
+    _ = @import("commands/serve/serve_test.zig"); // end-to-end daemon lifecycle + client round-trip
 }
