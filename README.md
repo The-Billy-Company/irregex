@@ -177,10 +177,10 @@ repo:
   RAM-mapped posting table in microseconds; a scanner re-walks on query #40.
   Residency is now an optional latency tier, not a prerequisite for beating rg.
 - **A cold one-shot usually wins too.** Trusted mmap loading, fused freshness,
-  compact path lookup, topology-aware workers, and regex literal gates target
-  fail-closed cold dominance versus ripgrep; republish
-  [`bench/certify/artifact/`](bench/certify/artifact/) on a clean HEAD to bind
-  the scoreboard (see that dir's `REGENERATE.md`).
+  compact path lookup, topology-aware workers, and regex literal gates deliver
+  fail-closed cold dominance versus ripgrep — the published certificate under
+  [`bench/certify/artifact/`](bench/certify/artifact/) reads **11 win / 0
+  parity / 0 loss**, gated by `make bench-gist-ratio`.
 - **Freshness is a guarantee, not a cron job.** A coworker commit landing
   mid-query cannot make the index lie under the documented local-filesystem
   model: the walk's own mtime/ctime metadata forces touched files through
@@ -378,8 +378,8 @@ rg's = an unsound verify. Both must be zero.
   in **11.1 s / 29.6 MiB** and zoekt in **6.2 s / 385.6 MiB**. The loader maps
   and structurally validates a trusted local blob in ~0.4 ms; posting groups
   decode only when queried.
-- **Cold fresh-process.** The committed fail-closed certificate below is now
-  **targeted** cold dominance against official ripgrep across eleven
+- **Cold fresh-process.** The committed fail-closed certificate below is
+  **11 win / 0 parity / 0 loss** against official ripgrep across eleven
   literal and regex classes. The old 0/11 artifact measured the now-deleted full posting
   validation + second freshness walk, not an architectural floor.
 - **What changed.** The common path fuses freshness metadata into directory
@@ -433,10 +433,11 @@ bundle and required-cache accounting. Every plotted number is
 > real. **(b)** gist's speedup over the indexed rivals csearch/zoekt, log-x, `<1`
 > means the rival wins cold._
 
-- **gist vs ripgrep — cold fail-closed path (republish certificate on clean HEAD).**
-  Ten classes are both faster in median and Mann-Whitney significant. Wins span
-  selective literals, anchored/dotted/declaration regexes, alternation, the dense
-  scan, and EOL; the UUID-like classcount is statistically tied.
+- **gist vs ripgrep — cold fail-closed path.** Eleven classes are both faster in
+  median and Mann-Whitney significant on the published certificate
+  ([`bench/certify/artifact/`](bench/certify/artifact/)): selective literals,
+  anchored/dotted/declaration regexes, alternation, the dense scan, EOL, the
+  punct saturator, and the UUID-like classcount. **11 win · 0 parity · 0 loss.**
 - **The win did not weaken freshness.** The parallel walk already needs directory
   metadata, so it now makes the indexed/non-indexed decision from those same
   mtime/ctime values instead of paying a second corpus traversal. Unknown, new,
@@ -447,20 +448,22 @@ bundle and required-cache accounting. Every plotted number is
   read-your-writes guarantee. The certificate's field block reports every one of
   those outcomes alongside rg, ugrep, ag, GNU grep, and git grep.
 - **Residency is optional.** A long-lived mmap remains the absolute latency floor
-  for an agent issuing many queries, but the cold CLI now beats rg on 10/11
-  classes and ties the other. A resident daemon is therefore an optional
-  throughput optimization, not required architecture.
+  for an agent issuing many queries, but the cold CLI now beats rg on **all 11**
+  classes. A resident daemon is therefore an optional throughput optimization,
+  not required architecture.
 
 The previous 0/11 certificate was valuable evidence, but its diagnosis was too
 broad: freshness itself was not the floor. Full posting validation on every load,
 a redundant freshness walk, all-path hash construction, fixed worker topology,
 and missed regex literals were removable overheads. The current committed raw
-samples supersede that artifact.
+samples supersede that artifact. Ratio floors in
+[`bench/certify/ratio_baseline.json`](bench/certify/ratio_baseline.json) are
+gated by `make bench-gist-ratio` so a cold-path regression can't silently ship.
 
 ### Certificate of Optimality — the scan kernel is at the hardware limit
 
-Layer A measures the **end-to-end cold query** (republish for the live scoreboard; no
-losses). The next three layers make a narrower claim about the **scan kernel
+Layer A measures the **end-to-end cold query** (11/11 win vs ripgrep on the
+published certificate). The next three layers make a narrower claim about the **scan kernel
 itself**: once gist is reading candidate bytes, that inner loop is at the chip's ceiling — no
 implementation on this core can scan materially faster. Each layer is
 cheapest-evidence-first, splicing into one generated `CERTIFICATE.md` (recipe +
