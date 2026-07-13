@@ -31,6 +31,24 @@ test "double-star spans slashes and may match zero dirs" {
     try expect(globMatch("**", "anything/at/all.txt"));
 }
 
+test "double-star segment token anchors at path-segment boundaries (rg parity)" {
+    // `**/X` skips whole segments, then X must match a segment from its START —
+    // it must NOT bind to a suffix inside a component. This is the rg/gitignore
+    // rule the `!**/_pb2*` lint excludes rely on: a generated stub whose basename
+    // merely CONTAINS `_pb2` is not the same as one that begins with it.
+    try expect(globMatch("**/_pb2*", "a/b/_pb2.pyi")); // basename starts with _pb2 ⇒ match
+    try expect(globMatch("**/_pb2*", "_pb2foo.py")); // zero dirs, starts with _pb2
+    try expect(!globMatch("**/_pb2*", "a/outreach_pb2.pyi")); // merely CONTAINS _pb2 ⇒ no match
+    try expect(!globMatch("**/_pb2*", "svc/outreachpb/outreach_pb2_grpc.pyi"));
+    // The positive cases the exclude set still must catch.
+    try expect(globMatch("**/*_pb2*", "a/outreach_pb2.pyi")); // leading `*` DOES span the prefix
+    try expect(globMatch("**/target/**", "services/x/target/debug/app"));
+    try expect(!globMatch("**/target/**", "services/x/mytarget/debug/app")); // segment, not substring
+    try expect(globMatch("**/*.pb.go", "a/b/wallet.pb.go"));
+    try expect(!globMatch("**/generated/**", "a/pregenerated/x.ts")); // 'generated' as a segment only
+    try expect(globMatch("**/generated/**", "a/generated/x.ts"));
+}
+
 test "question mark is exactly one non-slash byte" {
     try expect(globMatch("a?c", "abc"));
     try expect(!globMatch("a?c", "ac"));

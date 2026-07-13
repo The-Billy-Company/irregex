@@ -62,11 +62,22 @@ pub fn globMatch(pat: []const u8, str: []const u8) bool {
         switch (pat[pi]) {
             '*' => {
                 if (pi + 1 < pat.len and pat[pi + 1] == '*') {
-                    var rest = pi + 2; // `**` spans '/'; absorb a trailing '/' so it may match zero dirs
+                    // `**` spans '/'. When it is a *segment token* `**/` — bounded
+                    // by the pattern start or a '/' on the left and a '/' on the
+                    // right — the continuation must resume only at a path-segment
+                    // boundary, because rg/gitignore match whole segments: `**/_pb2*`
+                    // excludes a basename that STARTS with `_pb2`, never one that
+                    // merely contains it (so `outreach_pb2.pyi` stays in, matching
+                    // rg). A `**` that is not a clean segment token keeps the looser
+                    // "match at any offset" behavior.
+                    const left_edge = pi == 0 or pat[pi - 1] == '/';
+                    var rest = pi + 2; // absorb a trailing '/' so `**/` may match zero dirs
+                    const seg = left_edge and rest < pat.len and pat[rest] == '/';
                     if (rest < pat.len and pat[rest] == '/') rest += 1;
                     var k = si;
                     while (true) : (k += 1) {
-                        if (globMatch(pat[rest..], str[k..])) return true;
+                        const at_boundary = k == si or str[k - 1] == '/';
+                        if ((!seg or at_boundary) and globMatch(pat[rest..], str[k..])) return true;
                         if (k >= str.len) return false;
                     }
                 }
