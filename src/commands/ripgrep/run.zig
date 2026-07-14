@@ -714,6 +714,18 @@ fn readStdin(a: std.mem.Allocator) []const u8 {
 
 // ─────────────────────────── run ───────────────────────────
 
+/// Interactive long-line guard (gist-native, TTY-only). A single multi-megabyte
+/// minified line — a generated `*.gen.json`, a bundled asset — makes a terminal
+/// spend ~a second reflowing ONE logical line; that render, not the search, is
+/// the "hang near the end" of a high-hit query (gist produces the whole result
+/// in ~0.1s, faster than ripgrep). 16 KiB cleanly separates human-authored long
+/// lines (observed max a few KB) from generated blobs (tens of KB and up), and a
+/// 16 KiB line reflows instantly. Applied ONLY when stdout is a real terminal
+/// and the user set no `--max-columns`, so piped/redirected output stays
+/// byte-identical to ripgrep (the rgsuite differential harness and every agent
+/// capture are untouched). Opt out with `-M0`.
+const tty_long_line_cols: usize = 16 * 1024;
+
 pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *const std.process.Environ.Map) !void {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
@@ -724,6 +736,12 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // Resolved ONCE per run (not per file/emitter): stdout tty + `--color` +
     // env. Every emitter below shares this single yes/no.
     const use_color = color.enabled(o, io, env);
+
+    // Cap absurdly long lines when writing to a terminal (see `tty_long_line_cols`):
+    // a purely interactive convenience that leaves piped/file output byte-identical
+    // to ripgrep. Keyed on the real stdout destination, independent of `--color`.
+    if (!o.max_cols_set and (std.Io.File.stdout().isTty(io) catch false))
+        o.max_cols = tty_long_line_cols;
 
     // Honest deferrals: recognized flags gist doesn't yet emit byte-identically.
     // Failing loud (exit 2) keeps the harness scoring them N/A, never silently

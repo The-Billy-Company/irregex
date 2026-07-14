@@ -96,6 +96,10 @@ pub const Opts = struct {
     hidden: bool = false,
     text: bool = false,
     max_cols: usize = 0,
+    // Was --max-columns/-M given on the argv? Distinguishes an explicit `-M0`
+    // (opt out of any cap) from the unset default, so the TTY-only long-line
+    // guard (`run.zig`) applies only when the user expressed no preference.
+    max_cols_set: bool = false,
     max_cols_preview: bool = false, // --max-columns-preview
     passthru: bool = false, // --passthru (print every line)
     field_match_sep: []const u8 = ":", // --field-match-separator
@@ -706,6 +710,7 @@ fn parseShort(b: *Builder, arg: []const u8, i: *usize, all: []const []const u8) 
             },
             .maxcols => {
                 b.o.max_cols = toU(takeVal(arg, j, i, all));
+                b.o.max_cols_set = true;
                 return;
             },
             .regexp => {
@@ -855,7 +860,10 @@ fn parseLong(b: *Builder, arg: []const u8, i: *usize, all: []const []const u8) v
         .typ_not => b.addType(val(inl, i, all), true),
         .glob => b.addGlob(val(inl, i, all), false),
         .iglob => b.addGlob(val(inl, i, all), true),
-        .maxcols => o.max_cols = toU(val(inl, i, all)),
+        .maxcols => {
+            o.max_cols = toU(val(inl, i, all));
+            o.max_cols_set = true;
+        },
         .pathsep => o.path_sep = val(inl, i, all),
         .maxdepth => o.max_depth = toU(val(inl, i, all)),
         .maxfsize => o.max_filesize = toBytes(val(inl, i, all)),
