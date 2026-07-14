@@ -1,0 +1,1 @@
+Python bindings gain a result-side aggregation API: gist.summary() searches then buckets matches, and gist.tally() groups any Match sequence by a named axis (file/dir/ext/match) or a custom callable, ranked by count. It is contract-safe (does not widen SearchRequest) and pure over the engine's results.

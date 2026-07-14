@@ -1,0 +1,1 @@
+Rust crate gains the same result-side aggregation API as the Python face: gist::summary() searches then buckets matches, and gist::tally()/tally_by() group any Match sequence by a named Axis (File/Dir/Ext/Match) or a custom Fn(&Match) -> String, ranked by count. It is contract-safe (does not widen SearchRequest) and pure over the engine's results.
