@@ -1,0 +1,1 @@
+The rg CLI now prints a stderr note when a bundled -r value looks like a grep-style flag bundle (e.g. -rn parsing as --replace=n), pointing at the ripgrep semantics instead of leaving silently rewritten output. Parsing is unchanged — stdout parity with ripgrep is preserved.

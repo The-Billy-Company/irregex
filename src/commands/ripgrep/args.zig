@@ -656,6 +656,31 @@ const short_map: [256]?usize = blk: {
     break :blk map;
 };
 
+/// The `-rn` footgun: grep muscle memory reads `-rn` as "recursive + line
+/// numbers", but rg short-flag bundling (which gist matches byte-for-byte)
+/// parses it as `--replace=n` — every match silently rewritten to `n`, output
+/// that looks mangled rather than wrong. True iff a bundled `-r` value is a
+/// short string made entirely of known short flags (`n`, `ni`, `l`, …), i.e.
+/// almost certainly an intended flag bundle. Replacement templates (`$1`,
+/// `${name}`) and longer text never qualify.
+fn looksLikeFlagBundle(v: []const u8) bool {
+    if (v.len == 0 or v.len > 3) return false;
+    for (v) |c| if (short_map[c] == null) return false;
+    return true;
+}
+
+/// Emit the `-rn` grep-ism note on stderr. Behavior stays rg-identical (parity
+/// is sacred and the differential harness compares stdout only) — this only
+/// tells the user what actually happened so an agent doesn't misread replaced
+/// output as a display bug.
+fn noteGrepStyleReplace(v: []const u8) void {
+    if (!looksLikeFlagBundle(v)) return;
+    std.debug.print(
+        "gist: note: '-r{s}' parses as --replace={s} (ripgrep semantics: -r takes a value; recursion is already the default). Spell flags separately (e.g. -n), or use --replace to silence this note.\n",
+        .{ v, v },
+    );
+}
+
 fn parseShort(b: *Builder, arg: []const u8, i: *usize, all: []const []const u8) void {
     var j: usize = 1;
     while (j < arg.len) : (j += 1) {
@@ -682,7 +707,9 @@ fn parseShort(b: *Builder, arg: []const u8, i: *usize, all: []const []const u8) 
             .nul => b.o.null_sep = true,
             .follow => b.o.follow = true,
             .replace => {
+                const bundled = j + 1 < arg.len; // value taken from this token, not the next argv
                 b.o.replace = takeVal(arg, j, i, all);
+                if (bundled) noteGrepStyleReplace(b.o.replace.?);
                 return;
             },
             .file => {
@@ -981,6 +1008,28 @@ test "sort modes preserve ripgrep walker semantics" {
 
     const unsorted = parseArgv(a, &.{ "--sort=none", "needle", "root-a", "root-b" });
     try t.expect(!unsorted.opts.sorted);
+}
+
+test "-rn keeps ripgrep replace semantics but is flagged as a grep-ism" {
+    const t = std.testing;
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Parity is sacred: `-rn` must still parse as --replace=n, exactly like rg.
+    const p = parseArgv(a, &.{ "-rn", "needle", "root" });
+    try t.expectEqualStrings("n", p.opts.replace.?);
+    try t.expect(!p.opts.line_num);
+
+    // The stderr note fires only for bundle-shaped values, never for real
+    // replacement templates or an unbundled `-r VALUE`.
+    try t.expect(looksLikeFlagBundle("n"));
+    try t.expect(looksLikeFlagBundle("ni"));
+    try t.expect(!looksLikeFlagBundle("$1"));
+    try t.expect(!looksLikeFlagBundle("REDACTED"));
+    try t.expect(!looksLikeFlagBundle(""));
+    const spaced = parseArgv(a, &.{ "-r", "n", "needle", "root" });
+    try t.expectEqualStrings("n", spaced.opts.replace.?);
 }
 
 test "flag catalog is the parser compatibility source of truth" {
