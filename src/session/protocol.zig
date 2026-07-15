@@ -227,10 +227,11 @@ pub fn writeAll(fd: std.posix.fd_t, bytes: []const u8) bool {
 }
 
 /// One SIGPIPE-safe `send` (see `writeAll`); byte count, ≤ 0 on a dead peer/error.
+/// Both paths use `sendto` so the `[*]const u8` buffer type matches without
+/// `@ptrCast` — Darwin has no MSG_NOSIGNAL (SO_NOSIGPIPE is armed in `writeAll`).
 fn sendNoSigpipe(fd: std.posix.fd_t, ptr: [*]const u8, len: usize) isize {
-    if (comptime builtin.os.tag == .linux)
-        return @bitCast(std.posix.system.sendto(fd, ptr, len, std.posix.MSG.NOSIGNAL, null, 0));
-    return std.posix.system.send(fd, @ptrCast(ptr), len, 0);
+    const flags: u32 = if (comptime builtin.os.tag == .linux) std.posix.MSG.NOSIGNAL else 0;
+    return @bitCast(std.posix.system.sendto(fd, ptr, len, flags, null, 0));
 }
 
 /// Send one framed message on `fd`.
