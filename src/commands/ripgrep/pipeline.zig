@@ -119,7 +119,7 @@ test "transform routing: -z/-E ride the pipeline; --pre/--binary decline" {
     try t.expect(transformsRidePipeline(.{}));
     try t.expect(transformsRidePipeline(.{ .search_zip = true }));
     try t.expect(transformsRidePipeline(.{ .encoding = .utf16le }));
-    try t.expect(transformsRidePipeline(.{ .search_zip = true, .encoding = .latin1 }));
+    try t.expect(transformsRidePipeline(.{ .search_zip = true, .encoding = .windows_1252 }));
     // the two that must stay serial
     try t.expect(!transformsRidePipeline(.{ .pre = "decompress.sh" }));
     try t.expect(!transformsRidePipeline(.{ .binary = true }));

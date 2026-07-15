@@ -17,6 +17,7 @@ const glob = @import("../scope/glob.zig");
 const types = @import("../scope/types.zig");
 const uni = @import("../../regex/unicode/tables.zig");
 const udec = @import("../../regex/unicode/decode.zig");
+const encoding = @import("encoding.zig");
 
 pub const Filename = enum { auto, always, never };
 
@@ -29,24 +30,16 @@ pub const ColorChoice = enum { auto, always, never, ansi };
 /// `-E`/`--encoding`: the source encoding to transcode to UTF-8 before matching.
 /// `auto` (the default) is BOM sniffing (UTF-8 BOM stripped, UTF-16 BOM
 /// transcoded); `none` disables even that; the explicit labels force a transcode
-/// regardless of any BOM. The transform lives in `ingest.zig`; this is only the
-/// resolved choice. A curated set of the common encodings is supported (rg rides
-/// encoding_rs's full label table) — an unrecognized label fails loud.
-pub const Encoding = enum { auto, none, utf8, utf16, utf16le, utf16be, latin1 };
+/// regardless of any BOM. The enum and its full WHATWG label resolver live in
+/// `encoding.zig` (which also owns the legacy-code-page decoders); `ingest.zig`
+/// keeps the `auto`/`none`/UTF fast paths and delegates the rest there. Re-exported
+/// here so the flag surface stays the one place argv semantics are read.
+pub const Encoding = encoding.Encoding;
 
 /// Resolve an `--encoding` label to the enum, or null for an unrecognized one
-/// (the caller fails loud). Accepts rg/encoding_rs spellings and common aliases.
-pub fn encodingFromLabel(s: []const u8) ?Encoding {
-    const eq = std.ascii.eqlIgnoreCase;
-    if (eq(s, "auto")) return .auto;
-    if (eq(s, "none")) return .none;
-    if (eq(s, "utf-8") or eq(s, "utf8")) return .utf8;
-    if (eq(s, "utf-16") or eq(s, "utf16")) return .utf16;
-    if (eq(s, "utf-16le") or eq(s, "utf16le")) return .utf16le;
-    if (eq(s, "utf-16be") or eq(s, "utf16be")) return .utf16be;
-    if (eq(s, "latin1") or eq(s, "latin-1") or eq(s, "iso-8859-1") or eq(s, "iso8859-1")) return .latin1;
-    return null;
-}
+/// (the caller fails loud). The full WHATWG label table (`encoding_rs::for_label`,
+/// which rg rides) plus gist's `auto`/`none` spellings — see `encoding.fromLabel`.
+pub const encodingFromLabel = encoding.fromLabel;
 
 /// Resolved type/glob scope (`-t/-T/-g/--glob/--iglob`), AND-combined; each set
 /// is a no-op when empty. Borrows caller-owned slices (a parse-time arena).
@@ -763,7 +756,7 @@ pub const flag_catalog = [_]FlagSpec{
     .{ .short = 'z', .longs = &.{"search-zip"}, .action = .search_zip, .compatibility = .supported_with_differences, .note = "gzip/zlib/zstd/xz decode in-process (faster than rg's per-file fork); bzip2/lz4/brotli/lzma/.Z shell the standard tool" },
     .{ .longs = &.{"pre"}, .action = .pre, .compatibility = .supported_with_differences, .note = "the command receives the file path as argv[1] (stdin is closed); a non-zero exit is an error (exit 2)" },
     .{ .longs = &.{"pre-glob"}, .action = .pre_glob, .compatibility = .supported },
-    .{ .short = 'E', .longs = &.{"encoding"}, .action = .encoding, .compatibility = .supported_with_differences, .note = "auto/none + a curated label set (utf-8, utf-16[le|be], latin1); an unrecognized label fails loud (rg rides encoding_rs's full table)" },
+    .{ .short = 'E', .longs = &.{"encoding"}, .action = .encoding, .compatibility = .supported, .note = "auto/none + the full WHATWG label table (rg's encoding_rs set): UTF-8/16, the single-byte pages, and CJK gb18030/GBK, Big5, EUC-JP, Shift_JIS, EUC-KR, ISO-2022-JP; an unrecognized label fails loud" },
 };
 
 const LongPair = struct { []const u8, usize };
@@ -1347,8 +1340,13 @@ test "content-transform flags parse into Opts" {
 
     const e = parseArgv(a, &.{ "-E", "utf-16le", "needle", "f" });
     try t.expectEqual(Encoding.utf16le, e.opts.encoding);
+    // WHATWG folds latin1 into windows-1252 (encoding_rs parity), and the CJK
+    // labels the pitch names explicitly now resolve rather than failing loud.
     const e2 = parseArgv(a, &.{ "--encoding=latin1", "needle", "f" });
-    try t.expectEqual(Encoding.latin1, e2.opts.encoding);
+    try t.expectEqual(Encoding.windows_1252, e2.opts.encoding);
+    try t.expectEqual(Encoding.shift_jis, parseArgv(a, &.{ "-E", "sjis", "needle", "f" }).opts.encoding);
+    try t.expectEqual(Encoding.gb18030, parseArgv(a, &.{ "-E", "gbk", "needle", "f" }).opts.encoding);
+    try t.expectEqual(Encoding.euc_jp, parseArgv(a, &.{ "--encoding=euc-jp", "needle", "f" }).opts.encoding);
 
     const pre = parseArgv(a, &.{ "--pre", "/bin/cat", "--pre-glob", "*.gz", "--pre-glob", "!*.tmp", "needle", "d" });
     try t.expectEqualStrings("/bin/cat", pre.opts.pre.?);

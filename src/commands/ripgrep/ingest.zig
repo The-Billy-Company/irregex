@@ -14,7 +14,9 @@
 //!   • `-E`/`--encoding` — transcode the (post-decompress / post-pre) bytes from a
 //!     named source encoding to UTF-8 so a UTF-8 pattern matches. `auto` (default)
 //!     is BOM sniffing (shared with the untransformed fast path); `none` disables
-//!     it; explicit labels (`utf-16`, `latin1`, …) force a transcode.
+//!     it; explicit labels (`utf-16`, `shift_jis`, `gbk`, …) force a transcode. The
+//!     legacy-code-page decoders live in `encoding.zig`; `applyEncoding` keeps only
+//!     the UTF fast paths and delegates the rest.
 //!
 //! This is a deep module: one entry point, `apply`, owns the whole
 //! decompress → preprocess → transcode ordering and every failure mode, so the
@@ -25,6 +27,7 @@
 
 const std = @import("std");
 const args = @import("args.zig");
+const encoding = @import("encoding.zig");
 const glob = @import("../scope/glob.zig");
 const grepfile = @import("grepfile.zig");
 const flate = std.compress.flate;
@@ -83,12 +86,14 @@ pub fn apply(a: std.mem.Allocator, cfg: *const Config, disk: []const u8, rel: []
 
 // ─────────────────────────── encoding ───────────────────────────
 
-/// Transcode `buf` from the requested source encoding to UTF-8. `auto` is the
-/// default BOM-sniff (shared verbatim with the untransformed read path via
-/// `grepfile.decodeBom`); `none` passes bytes through untouched; the explicit
-/// labels force a transcode regardless of any BOM. UTF-16 without an explicit
-/// endianness picks it from a leading BOM (else little-endian, encoding_rs's
-/// default). Latin-1 maps each byte 1:1 to its U+00xx code point.
+/// Transcode `buf` from the requested source encoding to UTF-8. The `auto`/`none`/
+/// UTF families are handled inline here: `auto` is the default BOM-sniff (shared
+/// verbatim with the untransformed read path via `grepfile.decodeBom`); `none`
+/// passes bytes through untouched; `utf8` strips a UTF-8 BOM; the UTF-16 variants
+/// transcode (a bare `utf16` without an explicit endianness picks it from a
+/// leading BOM, else little-endian — encoding_rs's default). Every other WHATWG
+/// legacy encoding (the single-byte pages + the CJK multi-byte pages) routes to
+/// `encoding.decode`.
 pub fn applyEncoding(a: std.mem.Allocator, enc: args.Encoding, buf: []const u8) []const u8 {
     return switch (enc) {
         .auto => grepfile.decodeBom(a, buf),
@@ -100,7 +105,7 @@ pub fn applyEncoding(a: std.mem.Allocator, enc: args.Encoding, buf: []const u8) 
             const e: std.builtin.Endian = if (buf.len >= 2 and buf[0] == 0xFE and buf[1] == 0xFF) .big else .little;
             break :blk grepfile.utf16ToUtf8(a, dropUtf16Bom(buf, e), e);
         },
-        .latin1 => latin1ToUtf8(a, buf),
+        else => encoding.decode(a, enc, buf),
     };
 }
 
@@ -112,29 +117,6 @@ fn dropUtf16Bom(buf: []const u8, endian: std.builtin.Endian) []const u8 {
     const be = buf[0] == 0xFE and buf[1] == 0xFF;
     if ((endian == .little and le) or (endian == .big and be)) return buf[2..];
     return buf;
-}
-
-/// ISO-8859-1 (Latin-1) → UTF-8: every byte is its own code point (U+0000–U+00FF),
-/// so 0x00–0x7F pass through and 0x80–0xFF become the 2-byte UTF-8 of U+0080–U+00FF.
-/// A pure-ASCII body needs no copy (the common case) and aliases straight through.
-fn latin1ToUtf8(a: std.mem.Allocator, buf: []const u8) []const u8 {
-    var high = false;
-    for (buf) |c| if (c >= 0x80) {
-        high = true;
-        break;
-    };
-    if (!high) return buf;
-    var out: std.ArrayList(u8) = .empty;
-    out.ensureTotalCapacity(a, buf.len + (buf.len >> 2)) catch die("oom\n", .{});
-    for (buf) |c| {
-        if (c < 0x80) {
-            out.appendAssumeCapacity(c);
-        } else {
-            out.append(a, 0xC0 | (c >> 6)) catch die("oom\n", .{});
-            out.append(a, 0x80 | (c & 0x3F)) catch die("oom\n", .{});
-        }
-    }
-    return out.toOwnedSlice(a) catch die("oom\n", .{});
 }
 
 // ─────────────────────────── decompression ───────────────────────────
@@ -294,17 +276,16 @@ test "codecFor maps extensions (case-insensitive), null otherwise" {
     try t.expectEqual(@as(?Codec, null), codecFor("no-ext"));
 }
 
-test "latin1 transcode: ASCII aliases, high bytes become 2-byte UTF-8" {
+test "latin1 (→ windows-1252) transcode: ASCII aliases, high bytes become 2-byte UTF-8" {
     const t = std.testing;
     var arena = std.heap.ArenaAllocator.init(t.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    // Pure ASCII returns the same backing slice (no copy).
+    // Pure ASCII returns the same backing slice (no copy) via encoding.decode's fast path.
     const ascii = "func main()";
-    try t.expectEqual(ascii.ptr, latin1ToUtf8(a, ascii).ptr);
-    // 0xE9 (é in Latin-1) → U+00E9 → 0xC3 0xA9.
-    const got = latin1ToUtf8(a, "caf\xE9");
-    try t.expectEqualStrings("caf\xC3\xA9", got);
+    try t.expectEqual(ascii.ptr, applyEncoding(a, .windows_1252, ascii).ptr);
+    // 0xE9 (é, identical in Latin-1 and windows-1252) → U+00E9 → 0xC3 0xA9.
+    try t.expectEqualStrings("caf\xC3\xA9", applyEncoding(a, .windows_1252, "caf\xE9"));
 }
 
 test "gzip decodes in-process to the original bytes" {

@@ -9,6 +9,18 @@ doc_radar:
     - description: "gist registered in the shipkit changelog roster (OSS-package membership)"
       file: pkg/tools/support/changelog/packages.py
       contains: 'Package("pkg/kernels/gist"'
+    - description: "Unicode is default-on at the CLI (rg-parity); --no-unicode / (?-u) opt out"
+      file: pkg/kernels/gist/src/commands/ripgrep/args.zig
+      contains: "unicode: bool = true,"
+    - description: "Unicode data tables generated from a pinned UCD version"
+      file: pkg/kernels/gist/src/regex/unicode/tables.gen.zig
+      contains: 'unicode_version = "16.0.0"'
+    - description: "-E honors the full WHATWG label table incl. the CJK multi-byte decoders"
+      file: pkg/kernels/gist/src/commands/ripgrep/encoding.zig
+      contains:
+        - "gb18030"
+        - "shift_jis"
+        - "euc_jp"
 ---
 
 # gist
@@ -90,8 +102,12 @@ union of all three). When a pattern has no usable literal, the full-scan path
 runs on an immutable **byte-class DFA** (`src/regex/dfa.zig`) that spends one
 table lookup per byte regardless of match density — anchors and all — in a
 single fused pass that detects newlines inline. The Pike VM stays the capped
-fallback and the differential-fuzz correctness reference. See
-[`src/regex/README.md`](src/regex/README.md).
+fallback and the differential-fuzz correctness reference. For the constructs a
+linear engine provably can't express — lookaround, backreferences — the opt-in
+`-P`/`--pcre2` backend (`src/regex/pcre2.zig`, vendored PCRE2 10.47 JIT) reuses
+the *same* required-literal prefilter, making gist the only indexed PCRE search
+in the field; `--engine auto` compiles linear first and escalates only when the
+pattern needs it. See [`src/regex/README.md`](src/regex/README.md).
 
 **Freshness overlay** (`src/corpus/fresh.zig`). Keeps a persisted index correct
 under heavy concurrent commit churn **without rebuilding or consulting git**.
@@ -228,16 +244,21 @@ either accepted-and-ignored or fail loud (never silently wrong). The parser-deri
 four-bucket matrix lives in `--schema`. This is what makes gist a real drop-in on
 its supported surface rather than a lookalike CLI:
 
-The current matrix contains **67 supported**, **5 supported-with-differences**,
-**15 accepted-but-ignored**, and **6 unsupported-fail-loud** long-flag entries;
-short flags are reported alongside it.
+As of this writing the matrix holds **74 supported**, **17
+supported-with-differences**, **5 accepted-but-ignored**, and **0
+unsupported-fail-loud** long-flag entries — every ripgrep long flag now
+resolves to a live behavior (`--schema` is the authoritative running count,
+and short flags are reported alongside it). `-P`/`--pcre2`, `--engine`, and
+`--auto-hybrid-regex` sit in supported-with-differences: the opt-in PCRE2
+backend is real and trigram-prefiltered, not fail-loud.
 
 | What you type (either spelling)        | What gist does                                                                                                                                                                              |
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `-n -H -R --no-heading --color=<x>`    | no-ops — gist's output is already `path:line:text`                                                                                                                                          |
 | `-l` / `-c`                            | native rg flags — files-with-matches / per-file match count                                                                                                                                 |
 | `-t <lang>` / `-g <glob>`              | `--lang` / `--glob` — pruned **before** touching disk (`--lang go` reads 234 of 18,608 files, **1.44×** faster than `rg -t go`, byte-identical output)                                      |
-| `-w` / `-F` / `-i` / `-S`              | word-boundary / fixed-string / case-insensitive / smart-case                                                                                                                                |
+| `-w` / `-F` / `-i` / `-S`              | word-boundary / fixed-string / case-insensitive / smart-case — Unicode by default (rg-parity)                                                                                               |
+| `--unicode` / `--no-unicode`           | Unicode is default-on; `--no-unicode` (or a leading `(?-u)`) reverts `-i`/`-S`/`-w`/`\b`/`\w` to ASCII bytes                                                                                 |
 | `-B N` / `-A N` / `-C N`               | context lines, rg-exact `:`/`-`/`--` framing                                                                                                                                                |
 | `-m N` / `-o` / `-r <t>`               | max count per file / only-matching spans / template replace                                                                                                                                 |
 | `-e <pat>` / `--`                      | explicit pattern (leading-dash safe) / end of flag parsing                                                                                                                                  |
@@ -290,9 +311,18 @@ supported-surface parity, **not** toward byte-identical PASS. Do not read
 compatibility and ignored for output ordering (see `--schema`); gist does not
 implement ripgrep's sorted emitters.
 
-**Shares rg's regex philosophy.** Both engines are linear-time — a
-byte-level Thompson NFA / DFA, the RE2 lineage — specifically to rule out
-catastrophic backtracking. No PCRE, in either tool, on purpose.
+**Shares rg's regex philosophy — and rg's escape hatch.** gist's *default*
+engine is linear-time — a byte-level Thompson NFA / DFA, the RE2 lineage —
+specifically to rule out catastrophic backtracking, and it's what `--rank`,
+replace, and the whole trigram AST are built on. Like rg, gist also ships the
+deliberate opt-in escape hatch for the patterns a linear engine provably can't
+express: `-P`/`--pcre2` selects a vendored PCRE2 10.47 JIT backend (lookaround,
+backreferences, `\1`…`\9`), and `--engine auto` is rg's hybrid — compile linear
+first, escalate to PCRE2 only for a pattern the linear engine declines. Unlike
+rg, **both backends are trigram-prefiltered**: gist extracts the required
+literals even from a lookaround/backreference pattern and skips files that
+provably can't match before PCRE2 ever runs, so on this class gist beats every
+PCRE-capable competitor head-to-head (`bench/races/pcre_headtohead.sh`).
 
 **Matches rg's corpus scope exactly — the walk decides what's IN scope, the
 index only decides what gets READ.** `.gitignore`/`.ignore`/`.rgignore`
@@ -309,13 +339,34 @@ against `rg -n --no-heading --no-unicode` over the same scope
 ([`.local/gist-grep-bench/battery.sh`](.local)) — this is genuine parity, not
 a neutralized-knobs equivalence.
 
-**Departs on what "can't" means.** A flag gist genuinely can't honor —
-`-P`/`--pcre2` (no backreferences/lookaround in a linear-time engine),
-`-U`/`--multiline` (per-line by construction), `--vimgrep`/`--column` (fixed
-`path:line:text` model — use `--json`) — **fails loud with the reason and
-the `rg` fallback**, and so does a genuinely unrecognized flag. A silently
-empty result on an unsupported flag is the worst possible agent failure — a
-confident "no matches" that actually means "I didn't understand you."
+**Fails loud on what it can't express — never silent.** No ripgrep long flag
+is unsupported any more (`-P`/`--pcre2`, `-U`/`--multiline`, `--vimgrep`,
+`--column` all landed), so the fail-loud surface is now the *pattern*, not the
+flag: the linear default rejects a lookaround / backreference / unknown escape
+with the reason **and** the `-P` / `--engine auto` fallback, an unrecognized
+`--encoding` label exits 2, and a genuinely unknown flag fails with its `rg`
+spelling. A silently empty result on something gist didn't understand is the
+worst possible agent failure — a confident "no matches" that actually means "I
+didn't understand you" — so gist never does it.
+
+**Transforms content faster than rg — in-process, not fork-per-file.** The three
+rg flags that reshape a file's bytes before matching all land, coordinated by one
+deep module ([`src/commands/ripgrep/ingest.zig`](src/commands/ripgrep/ingest.zig))
+that owns the `decompress → preprocess → transcode` ordering so neither walk
+engine re-implements it. `-z`/`--search-zip` decodes the common formats (gzip,
+zlib, zstd, xz) **in-process** via Zig's `std.compress` — no `gzip -dc` fork per
+file, gist's biggest edge over rg, which shells an external decompressor for
+every format; the long-tail codecs (bzip2, lz4, brotli, lzma, `.Z`) fall back to
+the standard tool. `--pre` (scoped by `--pre-glob`) runs a preprocessor and
+searches its stdout, a failed invocation being a loud exit-2, never a silent
+no-match. `-E`/`--encoding` transcodes to UTF-8 before matching over rg's full
+`encoding_rs` label table — UTF-16 (LE/BE), the single-byte pages, and CJK
+gb18030/GBK, Big5, EUC-JP, Shift_JIS, EUC-KR, ISO-2022-JP (`auto` BOM-sniffs,
+`none` disables; byte-exact vs rg in `bench/rgsuite/transforms.py`). Any of these forces the plain live read —
+the persisted trigram index is built over raw on-disk bytes, so a needle living
+only in the transformed stream must not be elided. `--binary`/`-uuu` searches a
+NUL-bearing file **in full and prints every matching line** (a superset of rg,
+which stops at a one-line `binary file matches` summary).
 
 **Departs on what a match is worth.** rg treats every matching line as
 interchangeable; `--rank` doesn't. A **definition boost** puts a symbol's
@@ -328,18 +379,34 @@ weighted Reciprocal Rank Fusion
 ([`src/rank/rank.zig`](src/rank/rank.zig), Cormack et al. 2009) over four
 signals — it isn't expressible as a line-scanner's output ordering at all.
 
-Supported regex syntax: literals, `.`, `[...]`/`[^...]`, `a-z` ranges, `* + ?
-{n,m}`, alternation, groups, `^ $`, the haystack anchors `\A \z`, the word
-boundaries `\b \B` and one-sided `\< \>`, and the classes `\d \w \s \t \n
-\r` (NUL is `\x00`) — see [`src/regex/syntax.zig`](src/regex/syntax.zig).
-The escape parser is rg-parity **fail-loud**: `\0`–`\9` (backreference
-syntax), unrecognized letter escapes (`\q`, `\e`, `\Z`, …), and assertion
-escapes inside a class (`[\b]`, `[\A]`, `[\<]`) all exit 2 with the reason
-and the `rg --pcre2` fallback — exactly the inputs rg itself rejects — never
-a silent wrong literal. `--ignore-case`
-ASCII case-folds the pattern itself (every byte-class gains its
-opposite-case twin) so the whole pipeline — NFA, DFA, trigram prefilter —
-matches case-insensitively from one transform.
+Linear-engine regex syntax (the default): literals, `.`, `[...]`/`[^...]`,
+`a-z` ranges, `* + ? {n,m}`, alternation, groups, `^ $`, the haystack anchors
+`\A \z`, the word boundaries `\b \B` and one-sided `\< \>`, and the classes
+`\d \w \s \t \n \r` (NUL is `\x00`) — see
+[`src/regex/syntax.zig`](src/regex/syntax.zig). The escape parser is rg-parity
+**fail-loud**: `\0`–`\9` (backreference syntax), unrecognized letter escapes
+(`\q`, `\e`, `\Z`, …), and assertion escapes inside a class (`[\b]`, `[\A]`,
+`[\<]`) all exit 2 with the reason and the **native `gist -P` / `gist --engine
+auto`** fallback — exactly the inputs rg's default engine rejects, and exactly
+what its `--pcre2` engine (and gist's) then accepts — never a silent wrong
+literal. Lookaround and backreferences live in the PCRE2 backend, reached with
+`-P` or auto-escalated by `--engine auto`.
+
+**Unicode is default-on (rg-parity).** `-i`/`-S`, `\b \B \< \>`, `-w`, and the
+classes `\w \d \s`/`.`/`\p{…}` all operate over Unicode **codepoints**, exactly
+like ripgrep's default. Case folding expands each literal/class to its full
+simple-fold **orbit** (`café` ⇄ `CAFÉ`, `ß`, the Greek final-sigma `Σ`/`σ`/`ς`),
+smart-case (`-S`) is disabled by any Unicode uppercase, and word boundaries
+decode the straddling codepoint (an invalid-UTF-8 byte is a non-word unit). A
+codepoint class lowers to a compact UTF-8 byte sub-automaton
+([`src/regex/unicode/`](src/regex/unicode/)) woven into the same byte NFA, so
+the byte-class DFA still runs at the O(1)/byte floor; Unicode `\b`/fold queries
+run the Pike VM only on trigram-prefiltered candidates. `(?-u)` (leading flag)
+or `--no-unicode` opt out to the exact ASCII byte behavior. The Unicode data
+tables are generated from a pinned UCD
+(`pkg/kernels/gist/tools/build_unicode_tables.py` →
+`pkg/kernels/gist/src/regex/unicode/tables.gen.zig`, `make gen-gist-unicode`),
+drift-gated against regeneration.
 
 ## Build & test
 

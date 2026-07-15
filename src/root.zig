@@ -167,11 +167,16 @@ test {
     _ = @import("regex/adversarial_test.zig"); // independent-oracle differential + prefilter brute force
     _ = @import("regex/dfa_test.zig"); // byte-class DFA unit + differential fuzz
     _ = @import("regex/powerset_test.zig"); // determinizer structural invariants
+    _ = @import("regex/unicode/utf8seq.zig"); // scalar-range → UTF-8 byte-range decomposition
+    _ = @import("regex/unicode/decode.zig"); // UTF-8 codepoint decode (fwd/last) for \b
+    _ = @import("regex/unicode/tables.zig"); // Unicode data API: Perl/\p classes, fold orbits
     // command surfaces (tests + driver bodies, so `zig build test` type-checks all)
     _ = @import("commands/scope/glob_test.zig"); // glob matcher + type/glob/root path scope
     _ = @import("commands/status/status.zig"); // read-only index introspection
     _ = @import("commands/cli/schema.zig"); // `--schema` manifest
     _ = @import("commands/ripgrep/run.zig"); // the unified engine (rgsuite parity drop-in)
+    _ = @import("commands/ripgrep/ingest.zig"); // -z/--pre/-E content transforms (decompress/preprocess/transcode)
+    _ = @import("commands/ripgrep/encoding.zig"); // -E WHATWG legacy-code-page decoders (single-byte + CJK multi-byte)
     _ = @import("commands/ripgrep/multiline.zig"); // -U whole-buffer match model (Emitter.buffer + --json)
     _ = @import("commands/ripgrep/rank.zig"); // `--rank` definition-first ranked view
     _ = @import("commands/ripgrep/index.zig"); // the `index` verb: build + persist
