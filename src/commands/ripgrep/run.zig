@@ -768,19 +768,13 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         o.max_cols = tty_long_line_cols;
 
     // --type-list: dump every `-t` name and the globs it recognizes, one name
-    // per line (aliases repeat their row) — the whole comptime table in
-    // `../scope/types.zig`, in the same domain-grouped order it's declared.
+    // per line, in ripgrep's exact presentation — names sorted lexicographically,
+    // each row's globs sorted lexicographically (`../scope/types.zig`
+    // `writeTypeList`). gist's registry is a strict SUPERSET of ripgrep's, so the
+    // listing is rg-shaped and rg-sorted while covering more types + globs.
     if (o.type_list) {
         var out: std.ArrayList(u8) = .empty;
-        for (types.type_table) |row| {
-            for (row.names) |name| {
-                out.print(a, "{s}: ", .{name}) catch die("oom\n", .{});
-                for (row.globs, 0..) |g, i| {
-                    out.print(a, "{s}{s}", .{ if (i > 0) ", " else "", g }) catch die("oom\n", .{});
-                }
-                out.append(a, '\n') catch die("oom\n", .{});
-            }
-        }
+        types.writeTypeList(a, &out) catch die("oom\n", .{});
         corpus_mod.emitStdout(out.items);
         std.process.exit(0);
     }

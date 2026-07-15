@@ -584,7 +584,7 @@ pub const flag_catalog = [_]FlagSpec{
     .{ .longs = &.{"multiline-dotall"}, .action = .ml_dotall, .compatibility = .supported },
     .{ .longs = &.{"json"}, .action = .json, .compatibility = .supported },
     .{ .longs = &.{"files"}, .action = .files, .compatibility = .supported },
-    .{ .longs = &.{"type-list"}, .action = .type_list, .compatibility = .supported_with_differences, .note = "lists gist's own broader type registry, not ripgrep's table byte-for-byte" },
+    .{ .longs = &.{"type-list"}, .action = .type_list, .compatibility = .supported_with_differences, .note = "rg-sorted, rg-framed output over a strict SUPERSET of rg's type registry (most rows byte-identical; the rest richer, plus gist-only types)" },
     .{ .short = 'L', .longs = &.{"follow"}, .action = .follow, .compatibility = .supported },
     .{ .longs = &.{"sort-files"}, .action = .sort_files, .compatibility = .accepted_but_ignored, .note = "accepted for argv compatibility; requested output ordering is not implemented" },
     .{ .longs = &.{"sort"}, .action = .sort, .compatibility = .accepted_but_ignored, .note = "value is consumed; only internal ignore-walker anchoring observes sorted mode" },

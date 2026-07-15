@@ -165,6 +165,56 @@ test "type table spans the mainstream language ecosystem, not just the repo" {
     try expect(types.extsForType("cobol") == null); // unknown ⇒ null ⇒ caller errors
 }
 
+test "writeTypeList renders rg-identical sort order: names and globs lexicographic" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var out: std.ArrayList(u8) = .empty;
+    try types.writeTypeList(a, &out);
+
+    // Every non-empty line is `name: g1, g2, …`. Names must ascend lexically
+    // across lines (rg's presentation), and each row's globs must ascend too.
+    var prev_name: []const u8 = "";
+    var lines = std.mem.tokenizeScalar(u8, out.items, '\n');
+    var seen: usize = 0;
+    while (lines.next()) |line| {
+        const colon = std.mem.indexOfScalar(u8, line, ':').?;
+        const name = line[0..colon];
+        try expect(std.mem.lessThan(u8, prev_name, name)); // strictly ascending, no dupes
+        prev_name = name;
+        seen += 1;
+
+        var prev_glob: []const u8 = "";
+        var globs = std.mem.splitSequence(u8, line[colon + 2 ..], ", ");
+        while (globs.next()) |g| {
+            try expect(!std.mem.lessThan(u8, g, prev_glob)); // non-decreasing
+            prev_glob = g;
+        }
+    }
+    // The whole table is emitted (one line per name, aliases expanded).
+    var expected: usize = 0;
+    for (types.type_table) |row| expected += row.names.len;
+    try std.testing.expectEqual(expected, seen);
+}
+
+test "writeTypeList is byte-identical to rg for representative shared rows" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    try types.writeTypeList(arena.allocator(), &out);
+    // Frozen against `rg --type-list` (ripgrep 15.1.0): these rows are pure
+    // parity — gist adds nothing, so they must match ripgrep verbatim, proving
+    // the sort/framing is rg-faithful, not merely "close".
+    // Framed with surrounding newlines so a match is a whole line, not a
+    // substring of a longer row. Rows chosen to never be the first line.
+    for ([_][]const u8{
+        "\nasm: *.S, *.asm, *.s\n",
+        "\nats: *.ats, *.dats, *.hats, *.sats\n",
+        "\ncython: *.pxd, *.pxi, *.pyx\n",
+        "\nelixir: *.eex, *.ex, *.exs, *.heex, *.leex, *.livemd\n",
+    }) |row| try expect(std.mem.indexOf(u8, out.items, row) != null);
+}
+
 test "bare-filename type rows match by suffix (Makefile, Dockerfile, go.mod)" {
     // A row may list a dotless filename; `admits` is a plain suffix test, so it
     // catches build files that have no extension — what rg's filename globs do.

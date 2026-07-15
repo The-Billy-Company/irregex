@@ -334,3 +334,47 @@ pub fn isKnownType(path: []const u8) bool {
     for (type_table) |row| for (row.globs) |g| if (glob.globApplies(g, path)) return true;
     return false;
 }
+
+const NameGlobs = struct { name: []const u8, globs: []const []const u8 };
+
+fn lessStr(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.lessThan(u8, a, b);
+}
+
+fn lessByName(_: void, a: NameGlobs, b: NameGlobs) bool {
+    return std.mem.lessThan(u8, a.name, b.name);
+}
+
+/// Render the whole registry exactly the way `rg --type-list` presents it:
+/// every type NAME on its own line (alias names each get a row), names sorted
+/// lexicographically, and each row's globs sorted lexicographically, joined
+/// `name: g1, g2, …\n`. gist's domain-grouped source order (readable as a
+/// system) is decoupled from this rg-faithful *presentation* order, so the
+/// output is byte-shaped identically to ripgrep's — same sort, same framing —
+/// while covering strictly more: gist's table is a superset of ripgrep's
+/// (every rg type and glob present, plus gist-only types and per-type glob
+/// enrichments). Feature parity in format; a superset in content.
+///
+/// Allocates into `a` (arena at the call site); O(n log n) over the ~240
+/// expanded rows, run once at the `--type-list` dump path only — never on a
+/// search hot path, so the source table stays immutable and shared.
+pub fn writeTypeList(a: std.mem.Allocator, out: *std.ArrayList(u8)) std.mem.Allocator.Error!void {
+    var n: usize = 0;
+    for (type_table) |row| n += row.names.len;
+    var rows = try a.alloc(NameGlobs, n);
+    var i: usize = 0;
+    for (type_table) |row| for (row.names) |name| {
+        rows[i] = .{ .name = name, .globs = row.globs };
+        i += 1;
+    };
+    std.mem.sort(NameGlobs, rows, {}, lessByName);
+    for (rows) |row| {
+        // Sort a private copy — the comptime table's glob slices are immutable
+        // and shared across aliases, so we must never sort them in place.
+        const globs = try a.dupe([]const u8, row.globs);
+        std.mem.sort([]const u8, globs, {}, lessStr);
+        try out.print(a, "{s}:", .{row.name});
+        for (globs, 0..) |g, k| try out.print(a, "{s} {s}", .{ if (k > 0) "," else "", g });
+        try out.append(a, '\n');
+    }
+}

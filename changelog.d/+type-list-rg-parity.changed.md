@@ -1,0 +1,1 @@
+`--type-list` now prints in ripgrep's exact presentation — type names sorted lexicographically (one line per alias) and each type's globs sorted lexicographically — over a strict superset of ripgrep's type registry. Most rows are byte-identical to `rg --type-list`; the remainder differ only by being richer (gist-only types and per-type glob enrichments).
