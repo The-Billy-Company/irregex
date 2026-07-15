@@ -4,9 +4,10 @@
 //! takes the microsecond clean path; on any event it forces a reconcile. These
 //! tests pin that barrier's two halves — an armed, event-free window flips
 //! `clean` true (fast path) and a `markDirty` clears it (back to reconcile) —
-//! and prove the real `Watcher` lifecycle (`start`/`stop`) is crash-free and,
-//! on a target without an inotify backend, leaves the session unarmed so it
-//! keeps reconciling (fail-closed: a missing watcher costs speed, not soundness).
+//! and prove the real `Watcher` lifecycle (`start`/`stop`) is crash-free: it
+//! arms the session where a recursive-watch backend exists (Linux inotify /
+//! macOS FSEvents) and, on a target without one, leaves the session unarmed so
+//! it keeps reconciling (fail-closed: a missing watcher costs speed, not soundness).
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -66,7 +67,7 @@ test "barrier: an armed, event-free query flips clean; markDirty clears it" {
     try std.testing.expect(session.clean.load(.acquire)); // re-proven clean
 }
 
-test "Watcher.start/stop is crash-free and fail-closed on a backend-less target" {
+test "Watcher.start/stop is crash-free, arms where a backend exists, fail-closed where none does" {
     const gpa = std.testing.allocator;
     var threaded = std.Io.Threaded.init(gpa, .{});
     defer threaded.deinit();
@@ -84,11 +85,16 @@ test "Watcher.start/stop is crash-free and fail-closed on a backend-less target"
     w.start();
     defer w.stop();
 
-    // On a target with no inotify backend (incl. macOS today) the session is
-    // never armed, so every query reconciles — soundness never rests on the
-    // watcher. Where a backend exists, arming is allowed; either way the
-    // session stays queryable.
-    if (builtin.os.tag != .linux) try std.testing.expect(!session.watcher_active);
+    // macOS FSEvents arms here (the /tmp fixture is a watchable subtree), which
+    // is the whole point of the backend — prove the stream actually came up.
+    // Linux inotify arming is env-dependent (the runner's watch limits), so only
+    // require it not to crash. Any other target has no backend and must stay
+    // unarmed so every query reconciles — soundness never rests on the watcher.
+    switch (builtin.os.tag) {
+        .macos => try std.testing.expect(session.watcher_active),
+        .linux => {},
+        else => try std.testing.expect(!session.watcher_active),
+    }
 
     var q = std.heap.ArenaAllocator.init(gpa);
     defer q.deinit();

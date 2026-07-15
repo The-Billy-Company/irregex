@@ -67,8 +67,31 @@ fn pcre2Library(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.b
     return b.addLibrary(.{ .name = "pcre2gist", .linkage = .static, .root_module = mod });
 }
 
+/// Wire the CoreServices (FSEvents) + CoreFoundation (CFRunLoop) frameworks the
+/// macOS resident watcher (`src/session/watch.zig`) calls into. Applied to every
+/// module that compiles the engine and produces a final link — including the
+/// C-ABI smoke exe, which links the engine as an object (framework flags don't
+/// propagate across `addObject`, only `addImport`). No-op off macOS. `link_libc`
+/// only wires the SDK sysroot; macOS links libSystem regardless.
+fn linkWatcherFrameworks(m: *std.Build.Module, frameworks: ?[]const u8) void {
+    const fw = frameworks orelse return;
+    m.link_libc = true;
+    m.addSystemFrameworkPath(.{ .cwd_relative = fw });
+    m.linkFramework("CoreServices", .{});
+    m.linkFramework("CoreFoundation", .{});
+}
+
 pub fn build(b: *std.Build) void {
     const k = kernelkit.addKernel(b, .{ .name = "gist" });
+
+    // kernelkit pins `os_version_min`, so Zig treats the target as cross-ish and
+    // skips native SDK auto-detection — resolve the SDK's framework dir once here
+    // (null off macOS) and hand it to every engine-linking module below.
+    const darwin_frameworks: ?[]const u8 = if (k.target.result.os.tag == .macos)
+        b.fmt("{s}/System/Library/Frameworks", .{std.mem.trimEnd(u8, b.run(&.{ "xcrun", "--show-sdk-path" }), "\n")})
+    else
+        null;
+    linkWatcherFrameworks(k.root_module, darwin_frameworks);
 
     // Link the vendored PCRE2 backend into the engine module (and thus every
     // artifact built from it: the C-ABI libs, the test binary, and the
@@ -108,6 +131,7 @@ pub fn build(b: *std.Build) void {
     // default), so it links a PCRE2 built at the same optimize level rather than
     // the (possibly Debug) engine copy.
     cli_engine.linkLibrary(pcre2Library(b, k.target, cli_optimize));
+    linkWatcherFrameworks(cli_engine, darwin_frameworks);
     const cli_mod = b.createModule(.{
         .root_source_file = b.path("src/commands/cli/main.zig"),
         .target = k.target,
@@ -226,6 +250,7 @@ pub fn build(b: *std.Build) void {
         .optimize = k.optimize,
         .link_libc = true,
     });
+    linkWatcherFrameworks(c_smoke_mod, darwin_frameworks); // engine object pulls in FSEvents externs
     c_smoke_mod.addIncludePath(b.path("include"));
     c_smoke_mod.addCSourceFile(.{
         .file = c_smoke_source,
