@@ -18,6 +18,46 @@ const Node = syn.Node;
 
 pub const ParseError = syn.ParseError;
 
+/// PCRE2's capture twin — the `-P -r` arm of the `Caps` union below.
+pub const PcreCaptures = @import("pcre2/captures.zig").PcreCaptures;
+
+/// The engine-neutral capture seam for `-r`/`--replace` and `--json` submatches,
+/// mirroring `matcher.zig`'s `Matcher`: the linear Pike VM (`Captures`) or the
+/// PCRE2 capture engine (`PcreCaptures`), behind the three primitives the
+/// replacement expander needs — `nslots` (slot-vector width), `find` (fill a
+/// match's group offsets), `groupByName` (`${name}` → number). The output layer
+/// names `Caps` without knowing which engine produced the groups; the `-r`
+/// template expansion (`expandInto`) is byte-identical to ripgrep either way.
+pub const Caps = union(enum) {
+    linear: Captures,
+    pcre: PcreCaptures,
+
+    pub fn nslots(self: *const Caps) usize {
+        return switch (self.*) {
+            .linear => |*c| c.nslots,
+            .pcre => |*c| c.nslots,
+        };
+    }
+    pub fn find(self: *Caps, line: []const u8, from: usize, out: []isize) bool {
+        return switch (self.*) {
+            .linear => |*c| c.find(line, from, out),
+            .pcre => |*c| c.find(line, from, out),
+        };
+    }
+    pub fn groupByName(self: *const Caps, name: []const u8) ?u32 {
+        return switch (self.*) {
+            .linear => |*c| c.groupByName(name),
+            .pcre => |*c| c.groupByName(name),
+        };
+    }
+    pub fn deinit(self: *Caps) void {
+        switch (self.*) {
+            .linear => |*c| c.deinit(),
+            .pcre => |*c| c.deinit(),
+        }
+    }
+};
+
 /// A capture-VM instruction. `save{slot}` records the current input position into
 /// a thread's slot (group `g` uses slots `2g`/`2g+1`; group 0 = whole match).
 const Inst = union(enum) {

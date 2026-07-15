@@ -5,12 +5,26 @@
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .kernelkit = .{ .path = "../_buildkit" },
+        // PCRE2 10.47 — the opt-in `-P` engine. The build compiles the pinned
+        // mirror physically vendored under vendor/pcre2/ (hermetic, offline,
+        // byte-reproducible), so this entry is `.lazy` and is NEVER fetched by
+        // `zig build`. It exists to pin the exact upstream release by URL +
+        // content hash — the machine-checkable provenance the supply-chain
+        // ledger records as a trust edge (contracts/trust/supply-chain/
+        // ledger.toml, zig/pcre2). To re-vendor, `zig fetch --save` the next
+        // release and refresh vendor/pcre2/ + the ledger row together.
+        .pcre2 = .{
+            .url = "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.47/pcre2-10.47.tar.gz",
+            .hash = "N-V-__8AACsQywAxzz2irB4p1ssU5F43ChN0ztDcy_GRz_Hz",
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "src",
         "include",
+        "vendor",
         "README.md",
         "CHANGELOG.md",
     },

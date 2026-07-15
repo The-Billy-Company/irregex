@@ -77,6 +77,15 @@ pub const Filter = struct {
     }
 };
 
+/// Which match backend realizes the pattern (`-P`/`--pcre2`, `--engine=<name>`).
+/// `default` is gist's linear-time RE2/Pike engine — no backtracking, no
+/// lookaround/backreferences, safe over an adversarial tree. `pcre2` is the
+/// opt-in PCRE2 backend for the constructs the linear engine can't express.
+/// `auto` runs the linear engine and only escalates to PCRE2 for a pattern that
+/// genuinely needs it (rg's own `--engine=auto` semantics). Wave 0 records the
+/// choice; the PCRE2 runtime lands behind `run.zig`'s `deferUnimplemented`.
+pub const Engine = enum { default, pcre2, auto };
+
 pub const Opts = struct {
     caseless: bool = false,
     smart_case: bool = false,
@@ -120,6 +129,11 @@ pub const Opts = struct {
     null_data: bool = false, // --null-data (NUL line terminator)
     multiline: bool = false, // -U/--multiline
     multiline_dotall: bool = false, // --multiline-dotall
+    // Match-backend selection (-P/--pcre2, --engine). `default` = the linear
+    // RE2/Pike engine; `pcre2`/`auto` route to the PCRE2 backend (Wave-0 model —
+    // the pcre2 runtime is still fail-loud via run.zig's deferUnimplemented).
+    engine: Engine = .default,
+    pcre_unicode: bool = true, // --pcre2-unicode / --no-pcre2-unicode (PCRE2 Unicode mode)
     json: bool = false, // --json
     replace: ?[]const u8 = null, // -r/--replace
     // walk-scope flags
@@ -150,8 +164,8 @@ pub const Opts = struct {
     // `--no-index`); neither ever changes results, only how many files are opened.
     no_index: bool = false,
     // --rank[=N]: gist-native ranked view (no rg equivalent) — definition-first
-    // RRF over the indexed candidate set, top-K rows (`rank.zig`). `rank_k` = 0
-    // means the default 20. Requires a persisted index (that's what it reads).
+    // RRF over indexed candidates when available, else the live walk. `rank_k`
+    // = 0 means the default 20; --no-index explicitly selects live ranking.
     rank: bool = false,
     rank_k: usize = 0,
     filter: Filter = .{},
@@ -499,6 +513,10 @@ const Act = enum {
     no_index,
     index,
     rank,
+    pcre, // -P/--pcre2: select the PCRE2 backend
+    engine, // --engine=<default|pcre2|auto>: select the match backend by name
+    pcre_unicode, // --pcre2-unicode: PCRE2 Unicode mode on
+    no_pcre_unicode, // --no-pcre2-unicode: PCRE2 Unicode mode off
     noop,
     noop_val,
     unsupported,
@@ -617,10 +635,16 @@ pub const flag_catalog = [_]FlagSpec{
     .{ .longs = &.{"no-trim"}, .action = .noop, .compatibility = .accepted_but_ignored, .note = "does not undo an earlier --trim" },
     .{ .longs = &.{"colors"}, .action = .noop_val, .compatibility = .accepted_but_ignored },
     .{ .short = 'j', .longs = &.{"threads"}, .action = .noop_val, .compatibility = .accepted_but_ignored, .note = "value is consumed; gist chooses its own worker topology" },
-    .{ .longs = &.{"engine"}, .action = .noop_val, .compatibility = .accepted_but_ignored },
+    // Match-backend selection. `--engine default|auto` selects the linear engine
+    // (auto only escalates to PCRE2 for a pattern that needs it); `--engine pcre2`
+    // and `-P` select the PCRE2 backend, which fails loud until it lands.
+    .{ .longs = &.{"engine"}, .action = .engine, .compatibility = .supported_with_differences, .note = "default/auto select gist's linear engine; pcre2 selects the PCRE2 backend, which fails loud until it lands" },
+    // PCRE2 Unicode mode (recorded in the model; effective once the backend lands).
+    .{ .longs = &.{"pcre2-unicode"}, .action = .pcre_unicode, .compatibility = .accepted_but_ignored, .note = "records PCRE2 Unicode mode; effective once the PCRE2 backend lands" },
+    .{ .longs = &.{"no-pcre2-unicode"}, .action = .no_pcre_unicode, .compatibility = .accepted_but_ignored, .note = "records PCRE2 byte mode; effective once the PCRE2 backend lands" },
     .{ .longs = &.{ "dfa-size-limit", "regex-size-limit" }, .action = .noop_val, .compatibility = .accepted_but_ignored },
     // Genuine divergences fail with exit 2; unknown flags follow the same rule.
-    .{ .short = 'P', .longs = &.{"pcre2"}, .action = .unsupported, .compatibility = .unsupported_fail_loud, .note = "gist has no PCRE2 lookaround or backreferences" },
+    .{ .short = 'P', .longs = &.{"pcre2"}, .action = .pcre, .compatibility = .unsupported_fail_loud, .note = "selects the PCRE2 backend (lookaround/backreferences); fails loud until the hermetic PCRE2 JIT engine lands" },
     .{ .longs = &.{"auto-hybrid-regex"}, .action = .unsupported, .compatibility = .unsupported_fail_loud },
     .{ .short = 'z', .longs = &.{"search-zip"}, .action = .unsupported, .compatibility = .unsupported_fail_loud },
     .{ .longs = &.{"pre"}, .action = .unsupported, .compatibility = .unsupported_fail_loud },
@@ -761,6 +785,7 @@ fn parseShort(b: *Builder, arg: []const u8, i: *usize, all: []const []const u8) 
                 return;
             },
             .ml => b.o.multiline = true,
+            .pcre => b.o.engine = .pcre2,
             .unsupported => die("-{c} unsupported by design — use ripgrep for this\n", .{arg[j]}),
             else => unreachable,
         }
@@ -842,6 +867,20 @@ fn parseLong(b: *Builder, arg: []const u8, i: *usize, all: []const []const u8) v
             o.multiline = true;
             o.multiline_dotall = true;
         },
+        .pcre => o.engine = .pcre2,
+        .engine => {
+            const v = val(inl, i, all);
+            o.engine = if (std.mem.eql(u8, v, "default"))
+                .default
+            else if (std.mem.eql(u8, v, "pcre2"))
+                .pcre2
+            else if (std.mem.eql(u8, v, "auto"))
+                .auto
+            else
+                die("bad --engine value: {s} (expected default, pcre2, or auto)\n", .{v});
+        },
+        .pcre_unicode => o.pcre_unicode = true,
+        .no_pcre_unicode => o.pcre_unicode = false,
         .json => o.json = true,
         .files => o.files_list = true,
         .type_list => o.type_list = true,

@@ -43,6 +43,8 @@ pub const regex_compile = @import("regex/compile.zig");
 pub const regex_prefilter = @import("regex/prefilter.zig");
 pub const regex_dfa = @import("regex/dfa.zig");
 pub const regex_captures = @import("regex/captures.zig");
+pub const regex_pcre2 = @import("regex/pcre2.zig");
+pub const regex_matcher = @import("regex/matcher.zig");
 
 // ── ranking ──
 pub const rank = @import("rank/rank.zig");
@@ -159,6 +161,9 @@ test {
     _ = @import("regex/syntax_test.zig"); // T2 syntax: ByteSet + recursive-descent parser
     _ = @import("regex/analysis_test.zig"); // T2 analysis: required-literal + cover + anchored
     _ = @import("regex/core_test.zig"); // T2 engine: parser + Pike VM + prefilters
+    _ = @import("regex/matcher.zig"); // engine-neutral match seam: linear-arm forwarding
+    _ = @import("regex/pcre2.zig"); // PCRE2 `-P` backend: engine + literal co-located tests
+    _ = @import("regex/pcre2_test.zig"); // PCRE2 adversarial: lookaround/backref/limit/JIT parity
     _ = @import("regex/adversarial_test.zig"); // independent-oracle differential + prefilter brute force
     _ = @import("regex/dfa_test.zig"); // byte-class DFA unit + differential fuzz
     _ = @import("regex/powerset_test.zig"); // determinizer structural invariants
@@ -167,6 +172,7 @@ test {
     _ = @import("commands/status/status.zig"); // read-only index introspection
     _ = @import("commands/cli/schema.zig"); // `--schema` manifest
     _ = @import("commands/ripgrep/run.zig"); // the unified engine (rgsuite parity drop-in)
+    _ = @import("commands/ripgrep/multiline.zig"); // -U whole-buffer match model (Emitter.buffer + --json)
     _ = @import("commands/ripgrep/rank.zig"); // `--rank` definition-first ranked view
     _ = @import("commands/ripgrep/index.zig"); // the `index` verb: build + persist
     _ = @import("commands/serve/serve.zig"); // the resident daemon driver body

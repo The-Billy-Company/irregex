@@ -151,8 +151,8 @@ zig build cli -- <pattern> [PATH...]      # find matches — no verb, no setup, 
 zig build cli -- rg <pattern> [PATH...]   # the same engine, addressed explicitly
 
 zig build cli -- <pat> -l                 # matching paths only (rg's own `-l`)
-zig build cli -- <pat> --rank             # ranked, token-compressed (a symbol's def first)
-zig build cli -- <pat> --no-index         # force the pure live walk (skip the index entirely)
+zig build cli -- <pat> --rank             # ranked; live-ranks if the index is unavailable
+zig build cli -- <pat> --no-index         # force the pure live walk (also with --rank)
 
 zig build cli -- --help                   # broad tested rg-compatible subset
 zig build cli -- --schema                 # a JSON capability manifest for agents
@@ -191,7 +191,7 @@ repo:
 - **A cold one-shot usually wins too.** Trusted mmap loading, fused freshness,
   compact path lookup, topology-aware workers, and regex literal gates deliver
   fail-closed cold dominance versus ripgrep — the published certificate under
-  [`bench/certify/artifact/`](bench/certify/artifact/) reads **11 win / 0
+  [`bench/certify/artifact/`](bench/certify/artifact/) reads **12 win / 0
   parity / 0 loss**, gated by `make bench-gist-ratio`.
 - **Freshness is a guarantee, not a cron job.** A coworker commit landing
   mid-query cannot make the index lie under the documented local-filesystem
@@ -323,7 +323,8 @@ declaration ahead of its call sites, and an **authored boost** sinks
 generated files (`*_grpc.pb.go`, `*_pb2.py`, …) below hand-written code — a
 generated file otherwise wins on raw occurrence count for a common symbol,
 yet the repo forbids editing it, so it's never the actual answer. This runs
-on gist's index via weighted Reciprocal Rank Fusion
+on indexed candidates when warm, or the same live-walk matches when cold, via
+weighted Reciprocal Rank Fusion
 ([`src/rank/rank.zig`](src/rank/rank.zig), Cormack et al. 2009) over four
 signals — it isn't expressible as a line-scanner's output ordering at all.
 
@@ -391,8 +392,10 @@ rg's = an unsound verify. Both must be zero.
   and structurally validates a trusted local blob in ~0.4 ms; posting groups
   decode only when queried.
 - **Cold fresh-process.** The committed fail-closed certificate below is
-  **11 win / 0 parity / 0 loss** against official ripgrep across eleven
-  literal and regex classes. The old 0/11 artifact measured the now-deleted full posting
+  **12 win / 0 parity / 0 loss** against official ripgrep across twelve
+  literal and regex classes — including `panic|0x`, the sparse sub-trigram
+  alternation that was this table's one documented loss before the fused
+  `containsAny` equivalence path. The old 0/11 artifact measured the now-deleted full posting
   validation + second freshness walk, not an architectural floor.
 - **What changed.** The common path fuses freshness metadata into directory
   enumeration, admits the index only for broad/selective queries, stores exact
@@ -404,10 +407,21 @@ rg's = an unsound verify. Both must be zero.
   justified as a mandatory daemon merely to outrun rg cold.
 - **No-prefilter floor.** With no sound literal, gist reads the live tree once
   through the fused work-stealing pipeline. The permanent gate currently
-  measures ~**201–207 ms** for gist versus **219–299 ms** for rg on four dense
-  patterns (**1.06–1.49× faster**); the sparse `panic|0x` case is the honest
-  exception at **0.93×**. All five sets are byte-identical. The remaining floor
-  is per-file `openat` + read + close, not regex execution.
+  measures ~**188–210 ms** for gist versus **301–468 ms** for rg across all five
+  dense patterns (**1.48–2.25× faster**); the formerly-losing sparse `panic|0x`
+  case is now a **1.60×** win. All five sets are byte-identical. What closed the
+  gap: files are read in **two stages** (a 64 KiB prefix first — on this corpus
+  86% of all bytes are tails of >64 KiB files, and `-l` mode emits from a
+  prefix-proven match without ever reading the tail, the same early exit rg's
+  streaming reader gets for free; the tail read then rescans only unseen bytes
+  plus a literal-width seam window), opens resolve **one path component**
+  against the walk's still-open parent directory fd (`openat`) instead of
+  re-walking the full path, a pattern that is exactly a **pure-literal
+  alternation** (`panic|0x`) is answered by a fused single-pass SIMD
+  `containsAny` (per-needle first+last-byte fingerprints over shared block
+  loads) as a match _equivalence_ — no regex engine runs at all — and each
+  worker reuses one match-scratch arena across every file it searches. The
+  remaining floor is per-file `openat` + read + close, not regex execution.
 
 ![gist no-prefilter scan path optimization progression](assets/gist-scan-progression.png)
 
@@ -419,7 +433,8 @@ rg's = an unsound verify. Both must be zero.
 > instruction drop while IPC *rose*, so it's a critical-path win, not throughput;
 > **(d)** the structural verdict — gist's per-file syscall floor makes its time
 > nearly pattern-independent, so the margin over rg widens with match density;
-> the sparse-literal tail can still favor rg. 0 FN / 0 FP._
+> the staged-read + pure-literal-equivalence pass has since closed the
+> sparse-literal tail too. 0 FN / 0 FP._
 
 ### Macroscopic field race — the fail-closed certificate (`certify.sh`)
 
@@ -435,7 +450,7 @@ the rendered `CERTIFICATE.md`, microscopic `certify.csv`, `certify_macro.csv`
 identities, the timed command log, and a per-file SHA-256 corpus manifest. The
 figure below renders from the committed macro CSV; `check_artifacts.py` gates the
 bundle and required-cache accounting. Every plotted number is
-`certify_macro.csv` verbatim, all 11 classes.
+`certify_macro.csv` verbatim, all 12 classes.
 
 ![gist fail-closed statistical certificate forest plot](assets/gist-certify-forest.png)
 
@@ -445,11 +460,13 @@ bundle and required-cache accounting. Every plotted number is
 > real. **(b)** gist's speedup over the indexed rivals csearch/zoekt, log-x, `<1`
 > means the rival wins cold._
 
-- **gist vs ripgrep — cold fail-closed path.** Eleven classes are both faster in
+- **gist vs ripgrep — cold fail-closed path.** Twelve classes are both faster in
   median and Mann-Whitney significant on the published certificate
   ([`bench/certify/artifact/`](bench/certify/artifact/)): selective literals,
   anchored/dotted/declaration regexes, alternation, the dense scan, EOL, the
-  punct saturator, and the UUID-like classcount. **11 win · 0 parity · 0 loss.**
+  punct saturator, the UUID-like classcount, and the pure-literal alternation
+  (`panic|0x`, a sub-trigram branch no index can prefilter). **12 win · 0
+  parity · 0 loss.**
 - **The win did not weaken freshness.** The parallel walk already needs directory
   metadata, so it now makes the indexed/non-indexed decision from those same
   mtime/ctime values instead of paying a second corpus traversal. Unknown, new,
@@ -461,7 +478,7 @@ bundle and required-cache accounting. Every plotted number is
   those outcomes alongside rg, ugrep, ag, GNU grep, and git grep.
 - **Residency is optional, but now productized and certified.** A long-lived
   mmap remains the absolute latency floor for an agent issuing many queries; the
-  cold CLI already beats rg on **all 11** classes, so a resident daemon is a
+  cold CLI already beats rg on **all 12** classes, so a resident daemon is a
   throughput optimization, not required architecture. The daemon path itself —
   a persistent client dialing `gist serve` once over a Unix socket (ADR-352 rung
   2.5) — has its own honest warm certificate under
@@ -473,7 +490,7 @@ bundle and required-cache accounting. Every plotted number is
   (Linux inotify) the reconcile vanishes and the number approaches the in-process
   microsecond ceiling.
 
-The previous 0/11 certificate was valuable evidence, but its diagnosis was too
+The previous 0-win certificate was valuable evidence, but its diagnosis was too
 broad: freshness itself was not the floor. Full posting validation on every load,
 a redundant freshness walk, all-path hash construction, fixed worker topology,
 and missed regex literals were removable overheads. The current committed raw
@@ -483,7 +500,7 @@ gated by `make bench-gist-ratio` so a cold-path regression can't silently ship.
 
 ### Certificate of Optimality — the scan kernel is at the hardware limit
 
-Layer A measures the **end-to-end cold query** (11/11 win vs ripgrep on the
+Layer A measures the **end-to-end cold query** (12/12 win vs ripgrep on the
 published certificate). The next three layers make a narrower claim about the **scan kernel
 itself**: once gist is reading candidate bytes, that inner loop is at the chip's ceiling — no
 implementation on this core can scan materially faster. Each layer is
@@ -507,7 +524,7 @@ full tables in
   a fail-closed byte-touch audit proving verify reads each candidate byte
   **exactly once** (fused DFA, `passes ≡ 1.0000`) or fewer (SIMD skips) —
   the Ω(candidate-bytes) floor — with the trigram filter pruning the rest of the
-  corpus untouched. **All 11 classes sit at the floor.**
+  corpus untouched. **All 12 classes sit at the floor.**
 
 Together: the loop is as tight as the instruction ports allow (B), already reads
 a large fraction of what memory can deliver (C), and touches the theoretical
