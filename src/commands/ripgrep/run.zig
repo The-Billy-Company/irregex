@@ -33,6 +33,7 @@
 //! (it declines loud under `-P`).
 
 const std = @import("std");
+const builtin = @import("builtin");
 const corpus_mod = @import("../../corpus/corpus.zig");
 const args = @import("args.zig");
 const output = @import("output.zig");
@@ -40,6 +41,7 @@ const ignore = @import("ignore.zig");
 const json = @import("json.zig");
 const color = @import("color.zig");
 const grepfile = @import("grepfile.zig");
+const ingest = @import("ingest.zig");
 const pipeline = @import("pipeline.zig");
 const types = @import("../scope/types.zig");
 const simd = @import("../../scan/simd.zig");
@@ -71,7 +73,7 @@ const emitStats = grepfile.emitStats;
 
 // ─────────────────────────── file gathering ───────────────────────────
 
-const InFile = struct { path: []const u8, bytes: []const u8, explicit: bool = false };
+const InFile = struct { path: []const u8, bytes: []const u8, explicit: bool = false, sort_time: i96 = 0 };
 
 /// Replace every `/` in `path` with the (arbitrary-length) `sep` string for
 /// `--path-separator`. Returns `path` unchanged when it has no separator.
@@ -141,7 +143,10 @@ fn walkDir(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix: []co
     // popped back off `visited` once its own subtree walk returns.
     var visited: std.ArrayList([]const u8) = .empty;
     if (o.follow) if (realDirPath(a, root_path)) |rp| visited.append(a, rp) catch {};
-    walkDirLinked(a, io, root_path, prefix, o, ig, out, 0, &visited, walk_error);
+    // --one-file-system: pin the device of the root the walk starts on; the
+    // descent below refuses any directory sitting on a different device.
+    const root_dev: ?i128 = if (o.one_file_system) deviceOf(root_path) else null;
+    walkDirLinked(a, io, root_path, prefix, o, ig, out, 0, &visited, walk_error, root_dev);
 }
 
 /// `-L` symlink-recursion depth cap — defense in depth alongside the realpath
@@ -165,13 +170,41 @@ fn containsPath(haystack_paths: []const []const u8, needle_path: []const u8) boo
     return false;
 }
 
+/// The device id backing `path` (POSIX `st_dev`), or null if it can't be
+/// stat'd. Powers `--one-file-system`: a directory whose device differs from
+/// the walk's starting device is a mount point we refuse to descend. `i128`
+/// holds every platform's `dev_t` (darwin `i32`, linux `u64`) without loss.
+/// Raw `stat(2)` (via `fstatat` at CWD) — the one syscall behind both
+/// `--one-file-system` (device id) and `--sort created` (birth time), neither of
+/// which the portable `std.Io` `Stat` exposes. Null on any stat failure.
+fn rawStat(path: []const u8) ?std.posix.Stat {
+    const cpath = std.posix.toPosixPath(path) catch return null;
+    var st: std.posix.Stat = undefined;
+    if (std.c.fstatat(std.posix.AT.FDCWD, &cpath, &st, 0) != 0) return null;
+    return st;
+}
+
+fn deviceOf(path: []const u8) ?i128 {
+    const st = rawStat(path) orelse return null;
+    return @intCast(st.dev);
+}
+
+/// True iff `--one-file-system` is active AND `path` sits on a different device
+/// than the walk root. A stat failure never prunes (returns false) — an
+/// unreadable directory is a walk error surfaced elsewhere, not a silent drop.
+fn crossesDevice(root_dev: ?i128, path: []const u8) bool {
+    const rd = root_dev orelse return false;
+    const dev = deviceOf(path) orelse return false;
+    return dev != rd;
+}
+
 /// Single-threaded directory descent: `.gitignore`/depth/hidden filtering must
 /// stay inline with the walk (each dir's ignore rules load as we enter it), so
 /// this phase only ever DISCOVERS candidates — no file is opened here. The
 /// actual reads happen afterward, in parallel, over the flat list this builds
 /// (see `readCandidates`), matching ripgrep's own split between walking the
 /// tree and reading what it finds.
-fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix: []const u8, o: Opts, ig: *ignore.Ignore, out: *std.ArrayList(Candidate), link_depth: usize, visited: *std.ArrayList([]const u8), walk_error: *bool) void {
+fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix: []const u8, o: Opts, ig: *ignore.Ignore, out: *std.ArrayList(Candidate), link_depth: usize, visited: *std.ArrayList([]const u8), walk_error: *bool, root_dev: ?i128) void {
     var root = Dir.cwd().openDir(io, root_path, .{ .iterate = true }) catch |e| return reportWalkError(prefix, e, walk_error);
     defer root.close(io);
     var walker = root.walkSelectively(a) catch return;
@@ -204,6 +237,7 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
             if (Dir.cwd().openDir(io, full, .{ .iterate = true })) |sub_const| {
                 var sub = sub_const;
                 sub.close(io);
+                if (crossesDevice(root_dev, full)) continue;
                 if (o.max_depth == 0 or depth < o.max_depth) {
                     const mark = visited.items.len;
                     var cyclic = false;
@@ -213,7 +247,7 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
                     }
                     if (!cyclic) {
                         ig.loadDir(full, rel);
-                        walkDirLinked(a, io, full, rel, o, ig, out, link_depth + 1, visited, walk_error);
+                        walkDirLinked(a, io, full, rel, o, ig, out, link_depth + 1, visited, walk_error, root_dev);
                         visited.shrinkRetainingCapacity(mark);
                     }
                 }
@@ -230,6 +264,8 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
             // policy in corpus.zig, wrong for an arbitrary-tree drop-in). A `-g`
             // whitelist (`wl_ig`) overrides all of it, `.git` included (rg parity).
             if (ig.shouldSkip(rel, true, entry.basename, wl_ig, wl_hid)) continue;
+            // --one-file-system: never descend a mount point onto another device.
+            if (root_dev != null and crossesDevice(root_dev, diskPath(a, root_path, entry.path))) continue;
             const shallow = o.max_depth == 0 or depth < o.max_depth;
             if (shallow) {
                 ig.loadDir(diskPath(a, root_path, entry.path), rel);
@@ -311,6 +347,7 @@ const ReadShard = struct {
     arena: std.heap.ArenaAllocator,
     candidates: []const Candidate,
     needle: ?[]const u8,
+    cfg: *const ingest.Config,
     out: std.ArrayList(InFile) = .empty,
 };
 
@@ -331,9 +368,17 @@ const ReadShard = struct {
 /// applied downstream in `collectFiles`). A file that fills `scratch`
 /// completely is ambiguous (exactly cap-sized, or bigger) — `readTail` keeps
 /// reading past it into a growable buffer instead of silently truncating.
-fn readOneCandidate(a: std.mem.Allocator, scratch: []u8, c: Candidate, needle: ?[]const u8) ?InFile {
+fn readOneCandidate(a: std.mem.Allocator, scratch: []u8, c: Candidate, needle: ?[]const u8, cfg: *const ingest.Config) ?InFile {
     const raw = grepfile.readFileRaw(a, scratch, c.disk) orelse return null;
-    const body = decodeBom(a, raw);
+    // -z/--pre/-E rewrite a file's bytes before matching (decompress, preprocess,
+    // transcode); `ingest.apply` owns that whole pipeline (and folds in BOM/
+    // encoding). Null means the file is DROPPED — an errored `--pre` whose latch
+    // already carries the exit-2 signal. The untransformed fast path stays a plain
+    // BOM decode with no per-file branch beyond this one predicate.
+    const body = if (cfg.active())
+        (ingest.apply(a, cfg, c.disk, c.rel, raw) orelse return null)
+    else
+        decodeBom(a, raw);
     if (needle) |needle_v| if (!simd.contains(body, needle_v)) return null;
     // A tail-read (≥ cap) or UTF-16-transcoded body is already `a`-owned; a
     // body still inside `scratch` must be duped to outlive scratch's next reuse.
@@ -349,7 +394,7 @@ fn readShard(sh: *ReadShard) void {
     defer sh.gpa.free(scratch);
     sh.out.ensureTotalCapacity(sh.gpa, sh.candidates.len) catch {};
     for (sh.candidates) |c| {
-        if (readOneCandidate(a, scratch, c, sh.needle)) |f| sh.out.appendAssumeCapacity(f);
+        if (readOneCandidate(a, scratch, c, sh.needle, sh.cfg)) |f| sh.out.appendAssumeCapacity(f);
     }
 }
 
@@ -358,8 +403,15 @@ fn readShard(sh: *ReadShard) void {
 /// (`ignore::WalkParallel`) — and append the kept `InFile`s (bytes duped into
 /// `dest`, the caller's long-lived arena) into `out`. Below the threshold this
 /// runs inline: for a handful of files, spawn cost dwarfs the read itself.
-fn readCandidates(dest: std.mem.Allocator, gpa: std.mem.Allocator, candidates: []const Candidate, needle: ?[]const u8, out: *std.ArrayList(InFile)) void {
+fn readCandidates(dest: std.mem.Allocator, gpa: std.mem.Allocator, candidates: []const Candidate, needle: ?[]const u8, out: *std.ArrayList(InFile), cfg: *const ingest.Config) void {
     const ncpu = std.Thread.getCpuCount() catch 8;
+    // A transforming run (-z/--pre/-E) reads in parallel like any other: each
+    // shard decompresses/transcodes on its OWN arena + scratch, and `ingest`'s
+    // subprocess path (external decompressor / `--pre`) is concurrency-safe —
+    // `std.process.run` holds only per-call state (its own child, pipes, buffers)
+    // and `posix_spawn` is thread-safe, so parallel forks never race. The one
+    // shared datum, the `--pre` failure latch, is an atomic store. Parallelizing
+    // the decode is the whole point: it's the bottleneck rg pays per file.
     const nshards = if (candidates.len < par_threshold) 1 else @min(candidates.len, ncpu);
     const shards = gpa.alloc(ReadShard, nshards) catch die("oom\n", .{});
     defer gpa.free(shards);
@@ -369,7 +421,7 @@ fn readCandidates(dest: std.mem.Allocator, gpa: std.mem.Allocator, candidates: [
         const lo = off;
         const hi = @min(off + per, candidates.len);
         off = hi;
-        sh.* = .{ .gpa = gpa, .arena = std.heap.ArenaAllocator.init(gpa), .candidates = candidates[lo..hi], .needle = needle };
+        sh.* = .{ .gpa = gpa, .arena = std.heap.ArenaAllocator.init(gpa), .candidates = candidates[lo..hi], .needle = needle, .cfg = cfg };
     }
     if (nshards == 1) {
         readShard(&shards[0]);
@@ -540,6 +592,7 @@ fn collectFiles(
     parsed: args.Parsed,
     filters: []const []const u8,
     file_needle: ?[]const u8,
+    cfg: *const ingest.Config,
 ) Collected {
     const o = parsed.opts;
     var candidates: std.ArrayList(Candidate) = .empty;
@@ -563,7 +616,7 @@ fn collectFiles(
         }
         break :blk to_read.items;
     } else candidates.items;
-    readCandidates(a, gpa, read_list, file_needle, &all);
+    readCandidates(a, gpa, read_list, file_needle, &all, cfg);
 
     var files: std.ArrayList(InFile) = .empty;
     files.ensureTotalCapacity(a, all.items.len) catch die("oom\n", .{});
@@ -572,7 +625,13 @@ fn collectFiles(
         if (o.max_filesize != 0 and f.bytes.len > o.max_filesize) continue;
         files.appendAssumeCapacity(f);
     }
-    std.mem.sort(InFile, files.items, {}, cmpFiles);
+    // A time-keyed sort needs each file's timestamp; stat only then, and only
+    // the kept set. `.path`/`.none` need no metadata (path is already in hand).
+    if (o.sort_key == .modified or o.sort_key == .accessed or o.sort_key == .created)
+        for (files.items) |*f| {
+            f.sort_time = sortTimeOf(io, o.sort_key, f.path);
+        };
+    std.mem.sort(InFile, files.items, SortCtx{ .key = o.sort_key, .reverse = o.sort_reverse }, cmpFiles);
     if (o.path_sep) |sepstr| for (files.items) |*f| {
         f.path = replaceSep(a, f.path, sepstr);
     };
@@ -587,27 +646,30 @@ fn collectFiles(
 ///     mixed demands across `-e`/`-f` patterns fail loud — rgsuite boundary #5);
 ///   • `m` `s` (and negations) → inert in the per-line model: `^`/`$` already
 ///     anchor every line and no line carries a `\n` for `.` to cross;
-///   • `-u` → inert: byte/ASCII semantics ARE gist's native behavior;
-///   • `u` `x` `U` `R` → semantics the engine can't reproduce → die with the
+///   • `u` / `-u` → Unicode mode on/off for the WHOLE pattern (`u` = gist's
+///     default; `-u` selects byte/ASCII), the run-wide analogue of `-i` reconciled
+///     the same way (mixed per-pattern demands fail loud);
+///   • `x` `U` `R` → semantics the engine can't reproduce → die with the
 ///     reason and the rg fallback.
 /// Anything else after `(?` (lookaround, a scoped `(?i:…)` group, `(?P<…>`) is
 /// not a flag directive — returns null and the regex parser decides.
-const LeadingFlags = struct { rest: []const u8, caseless: ?bool = null };
+const LeadingFlags = struct { rest: []const u8, caseless: ?bool = null, unicode: ?bool = null };
 fn stripLeadingFlags(pat: []const u8) ?LeadingFlags {
     if (!std.mem.startsWith(u8, pat, "(?")) return null;
     const close = std.mem.indexOfScalar(u8, pat, ')') orelse return null;
     if (close == 2) return null; // `(?)` — empty directive, the parser rejects it
     var caseless: ?bool = null;
+    var unicode: ?bool = null;
     var neg = false;
     for (pat[2..close]) |f| switch (f) {
         '-' => neg = true,
         'i' => caseless = !neg,
+        'u' => unicode = !neg,
         'm', 's' => {},
-        'u' => if (!neg) die("(?u) unsupported — gist matches bytes with ASCII case rules, not Unicode; use rg for this\n", .{}),
         'x', 'U', 'R' => die("(?{c}) unsupported by gist's engine — use ripgrep for this\n", .{f}),
         else => return null,
     };
-    return .{ .rest = pat[close + 1 ..], .caseless = caseless };
+    return .{ .rest = pat[close + 1 ..], .caseless = caseless, .unicode = unicode };
 }
 
 /// Combine every pattern source — bare/`-e`/`--regexp` plus each `-f/--file`
@@ -645,9 +707,13 @@ fn combinePatterns(a: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: *Op
         // one engine, so the two may not disagree (rg scopes flags per branch).
         var demand: ?bool = null;
         var inherit = false;
+        // Same one-engine reconciliation for Unicode mode (`(?u)`/`(?-u)`).
+        var udemand: ?bool = null;
+        var uinherit = false;
         for (pats.items) |*p| {
             const sf = stripLeadingFlags(p.*) orelse {
                 inherit = true;
+                uinherit = true;
                 continue;
             };
             p.* = sf.rest;
@@ -656,11 +722,21 @@ fn combinePatterns(a: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: *Op
                     die("mixed per-pattern (?i) case demands — gist compiles one engine; use rg for this\n", .{});
                 demand = w;
             } else inherit = true;
+            if (sf.unicode) |w| {
+                if (udemand != null and udemand.? != w)
+                    die("mixed per-pattern (?u) Unicode demands — gist compiles one engine; use rg for this\n", .{});
+                udemand = w;
+            } else uinherit = true;
         }
         if (demand) |w| {
             if (inherit and w != o.caseless)
                 die("(?i) on some patterns but not others — gist compiles one engine; use rg for this\n", .{});
             o.caseless = w;
+        }
+        if (udemand) |w| {
+            if (uinherit and w != o.unicode)
+                die("(?u)/(?-u) on some patterns but not others — gist compiles one engine; use rg for this\n", .{});
+            o.unicode = w;
         }
     }
     var combined: []const u8 = pats.items[0];
@@ -676,8 +752,68 @@ fn combinePatterns(a: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: *Op
     return combined;
 }
 
-fn cmpFiles(_: void, x: InFile, y: InFile) bool {
-    return std.mem.lessThan(u8, x.path, y.path);
+/// Ascending order for one sort key, path-tiebroken so the result is total and
+/// deterministic (two files with the same mtime never swap run-to-run).
+fn lessAsc(key: args.SortKey, x: InFile, y: InFile) bool {
+    return switch (key) {
+        .none, .path => pathLess(x.path, y.path),
+        .modified, .accessed, .created => if (x.sort_time == y.sort_time)
+            pathLess(x.path, y.path)
+        else
+            x.sort_time < y.sort_time,
+    };
+}
+
+/// Path order matching ripgrep's `--sort path` — Rust `Path::cmp`, which compares
+/// component-by-component. That is byte order with the separator `/` ranked BELOW
+/// every other byte: `warroom/service.go` sorts before `warroom.go`, where a raw
+/// byte compare would flip them (`.`=0x2e < `/`=0x2f). Mapping `/`→0 and every
+/// other byte→byte+1 keeps all other orderings intact while making the separator
+/// the smallest, so gist's ordered output stays byte-identical to ripgrep's.
+fn pathLess(a: []const u8, b: []const u8) bool {
+    const n = @min(a.len, b.len);
+    for (a[0..n], b[0..n]) |ca, cb| {
+        if (ca != cb) return pathOrd(ca) < pathOrd(cb);
+    }
+    return a.len < b.len;
+}
+
+inline fn pathOrd(c: u8) u16 {
+    return if (c == '/') 0 else @as(u16, c) + 1;
+}
+
+/// `--sort`/`--sortr` comparator. `--sortr` is a true reverse: swapping the
+/// operands flips the path tiebreak too, so descending order is the exact
+/// mirror of ascending (no adjacent-equal reordering left over).
+fn cmpFiles(ctx: SortCtx, x: InFile, y: InFile) bool {
+    return if (ctx.reverse) lessAsc(ctx.key, y, x) else lessAsc(ctx.key, x, y);
+}
+
+const SortCtx = struct { key: args.SortKey, reverse: bool };
+
+/// The nanosecond timestamp `--sort <key>` orders `path` by. `modified` and
+/// `accessed` come from the portable `statFile` (accessed degrades to modified
+/// when the platform doesn't record atime); `created` uses the birth time where
+/// the OS exposes it (macOS today) and falls back to the status-change time
+/// (ctime) elsewhere, matching the flag note. A stat failure sorts as epoch 0.
+fn sortTimeOf(io: std.Io, key: args.SortKey, path: []const u8) i96 {
+    const st = Dir.cwd().statFile(io, path, .{}) catch return 0;
+    return switch (key) {
+        .modified => st.mtime.nanoseconds,
+        .accessed => if (st.atime) |t| t.nanoseconds else st.mtime.nanoseconds,
+        .created => createdTimeNs(path) orelse st.ctime.nanoseconds,
+        .none, .path => 0,
+    };
+}
+
+/// File birth time in ns, or null where the platform doesn't record it (then the
+/// caller falls back to ctime). macOS carries it in `struct stat`; gist declines
+/// to invent one elsewhere rather than silently mislabel ctime as creation.
+fn createdTimeNs(path: []const u8) ?i96 {
+    if (builtin.target.os.tag != .macos) return null;
+    const st = rawStat(path) orelse return null;
+    const bt = st.birthtime();
+    return @as(i96, bt.sec) * std.time.ns_per_s + bt.nsec;
 }
 
 /// ripgrep's `is_readable_stdin` (grep/cli): `!is_terminal(fd0) && (is_file ||
@@ -750,6 +886,43 @@ fn readStdin(a: std.mem.Allocator) []const u8 {
 /// capture are untouched). Opt out with `-M0`.
 const tty_long_line_cols: usize = 16 * 1024;
 
+/// Compile the search matcher for the resolved engine — `run`'s single build
+/// point, reused by the `-r` capture matcher so both sides pick the SAME backend.
+///   • `.default` — the linear RE2/Pike engine; fail loud (pointing at `-P` /
+///     `--engine auto`) on a construct outside its linear-time syntax.
+///   • `.pcre2` (`-P`/`--pcre2`, `--engine pcre2`) — the vendored PCRE2 JIT
+///     backend outright; fail loud on a PCRE2 compile error.
+///   • `.auto` (`--engine auto`, `--auto-hybrid-regex`) — ripgrep's hybrid:
+///     compile the linear engine first (its speed + trigram AST + `--rank`), and
+///     escalate to PCRE2 only for a pattern the linear engine declines
+///     (lookaround / backreferences / an escape it doesn't own). When NEITHER
+///     engine accepts the pattern, fail loud with the PCRE2 diagnostic — never a
+///     silent wrong answer, the whole point of gist's fail-closed flag contract.
+/// Returns a compiled `Matcher`; every error path is a `die` (noreturn), so the
+/// caller reads the resolved backend off the union tag.
+fn buildMatcher(gpa: std.mem.Allocator, eff: []const u8, o: Opts) Matcher {
+    switch (o.engine) {
+        .pcre2 => return .{ .pcre = Pcre.compileOpts(gpa, eff, .{ .caseless = o.caseless, .multiline = o.multiline, .dotall = o.multiline_dotall, .unicode = o.pcre_unicode }) catch |e| switch (e) {
+            error.OutOfMemory => die("oom\n", .{}),
+            else => die("bad PCRE2 pattern '{s}': {s}\n", .{ eff, pcre2.lastError() }),
+        } },
+        .default => return .{ .linear = Regex.compileOpts(gpa, eff, .{ .caseless = o.caseless, .multiline = o.multiline, .dotall = o.multiline_dotall, .unicode = o.unicode }) catch
+            die("bad pattern '{s}' — outside gist's linear-time syntax: no lookaround, no backreferences (\\0–\\9; NUL is \\x00), no unrecognized escapes (\\q, \\e, …), no assertion escapes inside [...], no mid-pattern inline flags (--schema lists the surface). Fallback: rg '{s}' (add --pcre2 for backreferences/lookaround, or --engine auto to escalate automatically)\n", .{ eff, eff }) },
+        .auto => {
+            // Hybrid: prefer the linear engine (faster, trigram-AST, --rank-able);
+            // its decline is the ONLY signal to escalate. A linear compile error
+            // is discarded here precisely because PCRE2 is the fallback.
+            if (Regex.compileOpts(gpa, eff, .{ .caseless = o.caseless, .multiline = o.multiline, .dotall = o.multiline_dotall, .unicode = o.unicode })) |r|
+                return .{ .linear = r }
+            else |_| {}
+            return .{ .pcre = Pcre.compileOpts(gpa, eff, .{ .caseless = o.caseless, .multiline = o.multiline, .dotall = o.multiline_dotall, .unicode = o.pcre_unicode }) catch |e| switch (e) {
+                error.OutOfMemory => die("oom\n", .{}),
+                else => die("regex '{s}' compiles under neither engine — gist's linear engine declined it (lookaround / backreferences / an unknown escape) and PCRE2 rejected it too: {s}\n", .{ eff, pcre2.lastError() }),
+            } };
+        },
+    }
+}
+
 pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *const std.process.Environ.Map) !void {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
@@ -760,6 +933,23 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // Resolved ONCE per run (not per file/emitter): stdout tty + `--color` +
     // env. Every emitter below shares this single yes/no.
     const use_color = color.enabled(o, io, env);
+
+    // The content-transform pipeline (-z decompress / --pre preprocess / -E
+    // transcode). `pre_error` latches a failed `--pre` invocation (exit 2, rg
+    // parity); `transforming` disables index elision + whole-file trigram
+    // prefilters below, since those are proven against raw on-disk bytes, not the
+    // rewritten stream a candidate's needle actually lives in.
+    var pre_error = std.atomic.Value(bool).init(false);
+    const icfg = ingest.Config{
+        .io = io,
+        .search_zip = o.search_zip,
+        .pre = o.pre,
+        .pre_globs = o.pre_globs,
+        .pre_excludes = o.pre_excludes,
+        .encoding = o.encoding,
+        .pre_error = &pre_error,
+    };
+    const transforming = icfg.active();
 
     // Cap absurdly long lines when writing to a terminal (see `tty_long_line_cols`):
     // a purely interactive convenience that leaves piped/file output byte-identical
@@ -784,10 +974,10 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     if (o.files_list) {
         // The parallel engine never opens a file in --files mode (a listing needs
         // paths, not bytes) — the serial path below reads every body it lists.
-        if (pipeline.eligible(io, parsed, o)) pipeline.run(gpa, io, parsed, o, null, use_color, &.{}, null, null);
+        if (pipeline.eligible(io, parsed, o)) pipeline.run(gpa, io, parsed, o, null, use_color, &.{}, null, null, &icfg);
         // --files lists every file (no pattern) — nothing to prefilter, so no read
         // elision applies; pass an empty trigram filter.
-        const c = collectFiles(a, gpa, io, parsed, &.{}, null);
+        const c = collectFiles(a, gpa, io, parsed, &.{}, null, &icfg);
         if (o.quiet) std.process.exit(if (c.path_error) 2 else if (c.files.len > 0) 0 else 1);
         var out: std.ArrayList(u8) = .empty;
         for (c.files) |f| out.print(a, "{s}{c}", .{ f.path, if (o.null_sep) @as(u8, 0) else '\n' }) catch die("oom\n", .{});
@@ -805,19 +995,18 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     };
     // The engine-neutral match seam: the output layer (Emitter, --json, per-file
     // binary/stats) consumes `&re` as a `Matcher` without knowing which engine
-    // produced a span. `-P`/`--pcre2` builds the PCRE2 arm (lookaround,
-    // backreferences, Unicode properties); everything else builds the linear
-    // RE2/Pike arm. Both honor `-U`/`--multiline` and `--multiline-dotall`.
-    var re: Matcher = if (o.engine == .pcre2)
-        .{ .pcre = Pcre.compileOpts(gpa, eff, .{ .caseless = o.caseless, .multiline = o.multiline, .dotall = o.multiline_dotall, .unicode = o.pcre_unicode }) catch |e| switch (e) {
-            error.OutOfMemory => die("oom\n", .{}),
-            else => die("bad PCRE2 pattern '{s}': {s}\n", .{ eff, pcre2.lastError() }),
-        } }
-    else
-        .{ .linear = Regex.compileOpts(gpa, eff, .{ .caseless = o.caseless, .multiline = o.multiline, .dotall = o.multiline_dotall }) catch
-            die("bad pattern '{s}' — outside gist's linear-time syntax: no lookaround, no backreferences (\\0–\\9; NUL is \\x00), no unrecognized escapes (\\q, \\e, …), no assertion escapes inside [...], no mid-pattern inline flags (--schema lists the surface). Fallback: rg '{s}' (add --pcre2 for backreferences/lookaround)\n", .{ eff, eff }) };
+    // produced a span. `buildMatcher` resolves the engine choice — `-P`/`--engine
+    // pcre2` builds the PCRE2 arm (lookaround, backreferences, Unicode
+    // properties); `--engine auto` compiles the linear arm and escalates to PCRE2
+    // only for a pattern the linear engine declines; the default is the linear
+    // RE2/Pike arm. All honor `-U`/`--multiline` and `--multiline-dotall`.
+    var re: Matcher = buildMatcher(gpa, eff, o);
     defer re.deinit();
-    if (o.engine == .pcre2) pcre2.clearMatchError(); // fresh sticky-error latch per run
+    // The RESOLVED backend (an auto pattern may have escalated to PCRE2) — drives
+    // the sticky-error latch, the `--rank` guard, and the `-r` capture engine
+    // below so all three follow the engine actually chosen, not the one requested.
+    const is_pcre = std.meta.activeTag(re) == .pcre;
+    if (is_pcre) pcre2.clearMatchError(); // fresh sticky-error latch per run
 
     // --rank: definition-first ranked view over the SAME compiled pattern and
     // PATH scope. Prefer the persisted candidate set; an absent/incomplete index
@@ -826,14 +1015,17 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // (definition-shape ranking), so it declines loud under `-P` rather than
     // silently ignoring the backend the user asked for.
     if (o.rank) {
-        if (o.engine == .pcre2) die("--rank uses gist's linear engine and is unavailable with -P/--pcre2 — drop one\n", .{});
+        if (is_pcre) die("--rank uses gist's linear engine and is unavailable with a PCRE2 pattern (-P/--pcre2, or an --engine auto escalation) — drop one\n", .{});
         const rex: *const Regex = &re.linear;
-        if (!o.no_index and try rank.run(gpa, io, rex, parsed.roots, o.rank_k, o.caseless)) return;
-        const c = collectFiles(a, gpa, io, parsed, &.{}, requiredLiteralGate(o, &re));
+        // A persisted-index rank reads raw indexed bytes, so it's only taken when
+        // not transforming; -z/--pre/-E fall to the live walk (which reads through
+        // `ingest`), keeping the ranked view correct over the rewritten stream.
+        if (!o.no_index and !transforming and try rank.run(gpa, io, rex, parsed.roots, o.rank_k, o.caseless)) return;
+        const c = collectFiles(a, gpa, io, parsed, &.{}, requiredLiteralGate(o, &re), &icfg);
         const live = a.alloc(rank.LiveFile, c.files.len) catch die("oom\n", .{});
         for (c.files, live) |file, *dst| dst.* = .{ .path = file.path, .bytes = file.bytes };
         try rank.runLive(gpa, io, rex, live, o.rank_k);
-        if (c.path_error) std.process.exit(2);
+        if (c.path_error or pre_error.load(.seq_cst)) std.process.exit(2);
         return;
     }
 
@@ -845,13 +1037,13 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // real backreference/lookaround programs; the linear arm is the save-carrying
     // Pike VM over the same AST. Same engine choice as the search matcher above.
     var caps_store: ?Caps = if (o.replace != null)
-        (if (o.engine == .pcre2)
+        (if (is_pcre)
             Caps{ .pcre = captures_mod.PcreCaptures.compile(gpa, eff, .{ .caseless = o.caseless, .multiline = o.multiline, .dotall = o.multiline_dotall, .unicode = o.pcre_unicode }) catch |e| switch (e) {
                 error.OutOfMemory => die("oom\n", .{}),
                 else => die("bad PCRE2 pattern '{s}': {s}\n", .{ eff, pcre2.lastError() }),
             } }
         else
-            Caps{ .linear = Captures.compile(gpa, eff, o.caseless) catch die("bad pattern '{s}' — outside gist's linear-time syntax. Fallback: rg '{s}' (add --pcre2 for backreferences/lookaround)\n", .{ eff, eff }) })
+            Caps{ .linear = Captures.compile(gpa, eff, o.caseless, o.unicode) catch die("bad pattern '{s}' — outside gist's linear-time syntax. Fallback: rg '{s}' (add --pcre2 for backreferences/lookaround)\n", .{ eff, eff }) })
     else
         null;
     defer if (caps_store) |*cp| cp.deinit();
@@ -861,7 +1053,10 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // regular file), search the piped bytes as one unnamed source — no filename
     // prefix, rg exit codes. A tty or /dev/null stdin falls through to the walk.
     if (parsed.roots.len == 0 and readableStdin()) {
-        const body = stripBom(readStdin(a));
+        // -z/--pre need a path and don't apply to stdin (rg parity); -E does —
+        // transcode the stream, else the default BOM strip.
+        const raw = readStdin(a);
+        const body = if (o.encoding == .auto) stripBom(raw) else ingest.applyEncoding(a, o.encoding, raw);
         var out0: std.ArrayList(u8) = .empty;
         var em0 = Emitter{ .a = a, .re = &re, .o = o, .show_name = false, .out = &out0, .base = @intFromPtr(body.ptr), .caps = caps, .use_color = use_color, .needle = line_needle };
         // `-U`: match the whole stream as one buffer (a match may cross `\n`);
@@ -882,7 +1077,9 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // acceleration, output-invisible (see `IndexSkip`). `req_one` backs a possible
     // one-element `{re.required}` filter slice for its lifetime here.
     var req_one: [1][]const u8 = undefined;
-    const filters = trigramFilter(o, &re, &req_one);
+    // A transforming run searches rewritten bytes, so the on-disk trigram index
+    // can neither elide reads nor prefilter — force the plain live walk.
+    const filters = if (transforming) &[_][]const u8{} else trigramFilter(o, &re, &req_one);
 
     // The common recursive-walk case runs on the parallel fused engine
     // (pipeline.zig): work-stealing directory walk, bulk-stat listings, inline
@@ -890,10 +1087,13 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // output, produced in parallel. Anything it declines (see `eligible`) falls
     // through to this proven serial engine.
     if (pipeline.eligible(io, parsed, o))
-        pipeline.run(gpa, io, parsed, o, &re, use_color, filters, file_needle, line_needle);
+        pipeline.run(gpa, io, parsed, o, &re, use_color, filters, file_needle, line_needle, &icfg);
 
-    const c = collectFiles(a, gpa, io, parsed, filters, file_needle);
+    const c = collectFiles(a, gpa, io, parsed, filters, file_needle, &icfg);
     const files = c.files;
+    // A `--pre` invocation that failed during the reads above is an error (exit 2),
+    // exactly like an unopenable explicit path — fold it into every exit below.
+    const err_exit = c.path_error or pre_error.load(.seq_cst);
 
     // --json: ripgrep's JSON Lines record stream (own printer, shared engine).
     if (o.json) {
@@ -903,7 +1103,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         const matched = json.run(a, &out, &re, caps, o, jf.items);
         corpus_mod.emitStdout(out.items);
         pcreFaultExit(&re);
-        std.process.exit(if (c.path_error) 2 else if (matched) 0 else 1);
+        std.process.exit(if (err_exit) 2 else if (matched) 0 else 1);
     }
 
     const show_name = switch (o.filename) {
@@ -920,7 +1120,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     if (o.quiet and !o.stats) {
         const hit = anyMatch(a, &re, o, line_needle, files);
         pcreFaultExit(&re);
-        std.process.exit(if (c.path_error) 2 else if (hit) 0 else 1);
+        std.process.exit(if (err_exit) 2 else if (hit) 0 else 1);
     }
 
     if (o.files_without) {
@@ -930,7 +1130,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         defer if (wss) |*s| s.deinit();
         for (files) |f| {
             const body = stripBom(f.bytes);
-            if (body.len > 0 and corpus_mod.isBinary(body) and !o.text) continue;
+            if (body.len > 0 and corpus_mod.isBinary(body) and !o.text and !o.binary) continue;
             // `-U`: "match" is a whole-buffer hit — render into a throwaway buffer
             // and reuse the multiline emitter's tally (which already bakes in `-w`,
             // `-v`, and the zero-width progress rule) as the boolean.
@@ -953,7 +1153,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         }
         corpus_mod.emitStdout(out.items);
         pcreFaultExit(&re);
-        std.process.exit(if (c.path_error) 2 else if (out.items.len > 0) 0 else 1);
+        std.process.exit(if (err_exit) 2 else if (out.items.len > 0) 0 else 1);
     }
 
     const heading = o.heading and !o.count_only and !o.count_matches and !o.files_only and !o.vimgrep;
@@ -962,7 +1162,10 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     var first = true;
     // Binary detection remains active for -l: a match after the buffer that
     // revealed a NUL must not turn the file into a false-positive path.
-    const binary_detect = !o.text and !o.null_data;
+    // --binary/-uuu (o.binary) searches binary files in full — same as --text for
+    // the quit-at-NUL decision, so detection is off for both (gist's superset
+    // flavor prints every matching line rather than a binary summary).
+    const binary_detect = !o.text and !o.binary and !o.null_data;
     var stat = Stats{};
     for (files) |f| {
         const body = stripBom(f.bytes);
@@ -1006,7 +1209,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     }
     corpus_mod.emitStdout(out.items);
     pcreFaultExit(&re);
-    std.process.exit(if (c.path_error) 2 else if (matched_files > 0) 0 else 1);
+    std.process.exit(if (err_exit) 2 else if (matched_files > 0) 0 else 1);
 }
 
 /// Mirror ripgrep's exit 2 when a `-P` search tripped a resource limit mid-run
@@ -1033,7 +1236,7 @@ fn anyMatch(a: std.mem.Allocator, re: *const Matcher, o: Opts, needle: ?[]const 
     var em = Emitter{ .a = a, .re = re, .o = o, .show_name = false, .out = undefined };
     for (files) |f| {
         const body = stripBom(f.bytes);
-        if (body.len == 0 or (corpus_mod.isBinary(body) and !o.text)) continue;
+        if (body.len == 0 or (corpus_mod.isBinary(body) and !o.text and !o.binary)) continue;
         if (o.multiline) {
             var scratch: std.ArrayList(u8) = .empty;
             var em2 = Emitter{ .a = a, .re = re, .o = o, .show_name = false, .out = &scratch, .base = @intFromPtr(body.ptr), .needle = needle };
@@ -1055,6 +1258,65 @@ fn anyMatch(a: std.mem.Allocator, re: *const Matcher, o: Opts, needle: ?[]const 
 // The dying arms (`(?u)`, `(?x)`, mixed demands) exit the process by design,
 // so tests cover the honor/strip/decline paths; build.zig's black-box guard
 // covers the end-to-end exit codes.
+test "sort comparator: path + time keys, ascending and reversed, path-tiebroken" {
+    const t = std.testing;
+    const a = InFile{ .path = "a.zig", .bytes = "", .sort_time = 100 };
+    const b = InFile{ .path = "b.zig", .bytes = "", .sort_time = 200 };
+    const c = InFile{ .path = "c.zig", .bytes = "", .sort_time = 100 }; // ties a on time
+
+    // Path key: separator-aware order (see pathLess); reverse is the exact mirror.
+    try t.expect(cmpFiles(.{ .key = .path, .reverse = false }, a, b));
+    try t.expect(!cmpFiles(.{ .key = .path, .reverse = false }, b, a));
+    try t.expect(cmpFiles(.{ .key = .path, .reverse = true }, b, a));
+
+    // Time key: earlier stamp sorts first; equal stamps fall back to path so the
+    // order is total (a before c even though both are t=100).
+    try t.expect(cmpFiles(.{ .key = .modified, .reverse = false }, a, b));
+    try t.expect(!cmpFiles(.{ .key = .modified, .reverse = false }, b, a));
+    try t.expect(cmpFiles(.{ .key = .modified, .reverse = false }, a, c));
+    try t.expect(!cmpFiles(.{ .key = .modified, .reverse = false }, c, a));
+    // Reversed time is the full mirror, tiebreak included.
+    try t.expect(cmpFiles(.{ .key = .modified, .reverse = true }, c, a));
+
+    // A full sort lands the expected total order and its reverse.
+    var asc = [_]InFile{ b, c, a };
+    std.mem.sort(InFile, &asc, SortCtx{ .key = .modified, .reverse = false }, cmpFiles);
+    try t.expectEqualStrings("a.zig", asc[0].path);
+    try t.expectEqualStrings("c.zig", asc[1].path);
+    try t.expectEqualStrings("b.zig", asc[2].path);
+    var desc = [_]InFile{ a, c, b };
+    std.mem.sort(InFile, &desc, SortCtx{ .key = .modified, .reverse = true }, cmpFiles);
+    try t.expectEqualStrings("b.zig", desc[0].path);
+    try t.expectEqualStrings("c.zig", desc[1].path);
+    try t.expectEqualStrings("a.zig", desc[2].path);
+}
+
+test "pathLess: separator ranks below every byte (ripgrep Path::cmp parity)" {
+    const t = std.testing;
+    // The adversarial collision `--sortr path` surfaced against rg: a raw byte
+    // compare puts `.`(0x2e) < `/`(0x2f), but ripgrep compares component-wise, so
+    // the directory `warroom/…` sorts before the file `warroom.go`.
+    try t.expect(pathLess("dir/warroom/service.go", "dir/warroom.go"));
+    try t.expect(!pathLess("dir/warroom.go", "dir/warroom/service.go"));
+    // A prefix path still sorts before its extension, and before a deeper child.
+    try t.expect(pathLess("a/b", "a/b.go"));
+    try t.expect(pathLess("a/b", "a/b/c"));
+    // Non-separator bytes keep their natural order; equal paths are not `<`.
+    try t.expect(pathLess("a/x.go", "a/y.go"));
+    try t.expect(!pathLess("a/x.go", "a/x.go"));
+    // A full sort of the collision set is the exact mirror under reverse.
+    const wr = InFile{ .path = "svc/warroom.go", .bytes = "", .sort_time = 0 };
+    const ws = InFile{ .path = "svc/warroom/service.go", .bytes = "", .sort_time = 0 };
+    var asc = [_]InFile{ wr, ws };
+    std.mem.sort(InFile, &asc, SortCtx{ .key = .path, .reverse = false }, cmpFiles);
+    try t.expectEqualStrings("svc/warroom/service.go", asc[0].path);
+    try t.expectEqualStrings("svc/warroom.go", asc[1].path);
+    var desc2 = [_]InFile{ ws, wr };
+    std.mem.sort(InFile, &desc2, SortCtx{ .key = .path, .reverse = true }, cmpFiles);
+    try t.expectEqualStrings("svc/warroom.go", desc2[0].path);
+    try t.expectEqualStrings("svc/warroom/service.go", desc2[1].path);
+}
+
 test "stripLeadingFlags honors i/-i and strips the directive" {
     const t = std.testing;
     const ci = stripLeadingFlags("(?i)Foo.*bar").?;
@@ -1068,14 +1330,24 @@ test "stripLeadingFlags honors i/-i and strips the directive" {
     try t.expectEqualStrings("x", both.rest);
 }
 
-test "stripLeadingFlags treats m/s/-u as inert, no case demand" {
+test "stripLeadingFlags treats m/s as inert; u/-u select Unicode mode" {
     const t = std.testing;
     const sf = stripLeadingFlags("(?sm)^func$").?;
     try t.expectEqualStrings("^func$", sf.rest);
     try t.expectEqual(@as(?bool, null), sf.caseless);
+    try t.expectEqual(@as(?bool, null), sf.unicode);
+    // `(?-u)` selects the byte/ASCII engine; `(?u)` re-selects the default.
     const nu = stripLeadingFlags("(?-u)\\w+").?;
     try t.expectEqualStrings("\\w+", nu.rest);
     try t.expectEqual(@as(?bool, null), nu.caseless);
+    try t.expectEqual(@as(?bool, false), nu.unicode);
+    const yu = stripLeadingFlags("(?u)\\w+").?;
+    try t.expectEqualStrings("\\w+", yu.rest);
+    try t.expectEqual(@as(?bool, true), yu.unicode);
+    // Combined with case: `(?i-u)` is caseless + ASCII (the `-` negates only `u`).
+    const iu = stripLeadingFlags("(?i-u)Foo").?;
+    try t.expectEqual(@as(?bool, true), iu.caseless);
+    try t.expectEqual(@as(?bool, false), iu.unicode);
 }
 
 test "stripLeadingFlags declines non-directive groups (parser decides)" {
