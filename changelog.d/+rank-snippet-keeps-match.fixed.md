@@ -1,0 +1,1 @@
+Ranked --rank snippets now window around the match instead of taking a leading 120-byte prefix, so a hit past column 120 still surfaces the matched token (with … markers on truncated edges) instead of a line of filler with the token gone.

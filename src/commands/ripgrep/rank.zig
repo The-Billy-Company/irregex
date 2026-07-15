@@ -193,19 +193,82 @@ fn parallelRank(gpa: std.mem.Allocator, paths: []const []const u8, ids: []const 
     }
 }
 
-/// The trimmed, 120-col-capped text of 1-based `line` in `path` — the one line
-/// shown per ranked file. Display-only (not benchmarked), so io reads are fine.
-fn snippetOf(gpa: std.mem.Allocator, io: std.Io, path: []const u8, line: u32) ![]u8 {
+/// Ranked-row snippet budget — enough for a decl + a little neighborhood, small
+/// enough that 20 ranked rows stay cheap in an agent's context window.
+const snippet_budget: usize = 120;
+
+/// Byte index ≤ `i` on a UTF-8 boundary (never split a multi-byte scalar).
+fn utf8Floor(s: []const u8, i: usize) usize {
+    var n = @min(i, s.len);
+    while (n > 0 and n < s.len and (s[n] & 0xC0) == 0x80) n -= 1;
+    return n;
+}
+
+/// A ≤`budget`-byte window of `line` that keeps the match span visible.
+/// Prefix-only truncation hid matches past column 120 (agents saw `×××…` with
+/// the hit token gone — the whole point of surfacing the line). Prefer a
+/// window that contains `[sp.start, sp.end)`; fall back to a leading prefix
+/// when there is no span or the match itself is wider than the budget.
+fn windowAround(line: []const u8, span: ?Regex.Span, budget: usize) []const u8 {
+    if (line.len <= budget) return line;
+    const sp = span orelse return line[0..budget];
+    if (sp.end <= sp.start or sp.start >= line.len) return line[0..budget];
+    const end = @min(sp.end, line.len);
+    const match_len = end - sp.start;
+    if (match_len >= budget) {
+        // Match alone fills the budget — show its leading bytes (still the token).
+        return line[sp.start..utf8Floor(line, sp.start + budget)];
+    }
+    // Bias a little left of center so a `fn foo(` / `class Foo` decl keeps its
+    // keyword; clamp so the full match stays inside the window.
+    const ideal = sp.start -| (budget - match_len) / 3;
+    var start = utf8Floor(line, ideal);
+    if (start + budget < end) start = utf8Floor(line, end - budget);
+    if (start + budget > line.len) start = utf8Floor(line, line.len - budget);
+    const cut = utf8Floor(line, start + budget);
+    if (cut <= start) return line[start..@min(start + budget, line.len)];
+    return line[start..cut];
+}
+
+/// First non-empty match span on `line`, or null when the engine can't init /
+/// finds nothing (trigram false-positive lines shouldn't reach here, but the
+/// snippet path must still degrade to a prefix rather than crash).
+fn firstSpan(gpa: std.mem.Allocator, re: *const Regex, line: []const u8) ?Regex.Span {
+    var ssim = Regex.SpanSim.init(gpa, re) catch return null;
+    defer ssim.deinit();
+    var from: usize = 0;
+    while (from <= line.len) {
+        const sp = re.matchSpan(&ssim, line, from) orelse return null;
+        if (sp.end > sp.start) return sp;
+        from = sp.start + 1;
+    }
+    return null;
+}
+
+/// The trimmed, match-anchored, 120-col-capped text of 1-based `line` in `path`
+/// — the one line shown per ranked file. Display-only (not benchmarked), so
+/// io reads are fine. `…` marks a truncated edge so agents can tell the
+/// matched token sits in a window, not the raw file prefix.
+fn snippetOf(gpa: std.mem.Allocator, io: std.Io, path: []const u8, line: u32, re: *const Regex) ![]u8 {
     const data = Dir.cwd().readFileAlloc(io, path, gpa, .limited(corpus_mod.per_file_cap)) catch return gpa.dupe(u8, "");
     defer gpa.free(data);
     var it = std.mem.splitScalar(u8, data, '\n');
     var ln: u32 = 0;
     while (it.next()) |l| {
         ln += 1;
-        if (ln == line) {
-            const t = std.mem.trim(u8, l, " \t\r");
-            return gpa.dupe(u8, t[0..@min(t.len, 120)]);
-        }
+        if (ln != line) continue;
+        const t = std.mem.trim(u8, l, " \t\r");
+        const sp = firstSpan(gpa, re, t);
+        const win = windowAround(t, sp, snippet_budget);
+        const off = @intFromPtr(win.ptr) - @intFromPtr(t.ptr);
+        const left = off > 0;
+        const right = off + win.len < t.len;
+        if (!left and !right) return gpa.dupe(u8, win);
+        var out: std.ArrayList(u8) = .empty;
+        if (left) try out.appendSlice(gpa, "…");
+        try out.appendSlice(gpa, win);
+        if (right) try out.appendSlice(gpa, "…");
+        return out.toOwnedSlice(gpa);
     }
     return gpa.dupe(u8, "");
 }
@@ -267,7 +330,7 @@ pub fn run(
     for (order[0..top], 0..) |di, i| {
         const doc = docs.items[di];
         const path = p.paths.items[doc.id];
-        const snip = try snippetOf(gpa, io, path, doc.best_line);
+        const snip = try snippetOf(gpa, io, path, doc.best_line, re);
         defer gpa.free(snip);
         const kind = if (doc.is_generated) "gen" else if (doc.is_def) "def" else "use";
         const row = try std.fmt.allocPrint(gpa, "{d:>2}. {s}:{d}  [{s}]  ×{d}  {s}\n", .{
@@ -354,4 +417,20 @@ test "rankFilters prefers required literal then alternation cover" {
     // No single required ≥3 spanning both branches ⇒ cover set.
     try t.expect(f_alt.len >= 1);
     try t.expectEqual(@as(usize, 0), rankFilters(&re_alt, true, &one).len); // caseless ⇒ no prefilter
+}
+
+test "windowAround keeps a late match token inside the budget" {
+    const t = std.testing;
+    // The bug: a leading 120-byte slice dropped any hit past column 120, so
+    // `--rank` printed a line of filler with the matched token gone.
+    const pad = "x" ** 130;
+    const line = pad ++ "UniqueMangleTokenXYZ" ++ ("y" ** 20);
+    const sp = Regex.Span{ .start = 130, .end = 130 + "UniqueMangleTokenXYZ".len };
+    const win = windowAround(line, sp, snippet_budget);
+    try t.expect(win.len <= snippet_budget);
+    try t.expect(std.mem.indexOf(u8, win, "UniqueMangleTokenXYZ") != null);
+    // No span ⇒ prefix fallback (legacy behaviour for non-matching lines).
+    try t.expectEqualStrings(line[0..snippet_budget], windowAround(line, null, snippet_budget));
+    // Short lines pass through untouched.
+    try t.expectEqualStrings("short", windowAround("short", sp, snippet_budget));
 }
