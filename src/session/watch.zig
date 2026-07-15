@@ -28,7 +28,7 @@ const Dir = std.Io.Dir;
 const is_macos = builtin.os.tag == .macos;
 
 /// The minimal CoreServices/CoreFoundation surface the macOS FSEvents backend
-/// needs — analysed only on macOS (the `if (is_macos)` guard is comptime, so no
+/// needs — analyzed only on macOS (the `if (is_macos)` guard is comptime, so no
 /// other target ever references these externs). FSEvents is a recursive,
 /// kernel-coalesced subtree watcher: one stream over the roots reports any
 /// change beneath them, which is all the barrier needs (it re-derives the
@@ -237,7 +237,9 @@ pub const Watcher = struct {
         const paths = self.buildPathsArray() orelse return fail(self);
         defer darwin.CFRelease(paths);
 
-        var ctx = darwin.Context{ .info = @ptrCast(self.session) };
+        // intFromPtr/ptrFromInt keeps the FFI opaque seam free of @ptrCast
+        // (zig-safety ratchet — new files are born clean).
+        var ctx = darwin.Context{ .info = @ptrFromInt(@intFromPtr(self.session)) };
         const stream = darwin.FSEventStreamCreate(
             null,
             fseventsCallback,
@@ -289,7 +291,8 @@ pub const Watcher = struct {
             refs[made] = s;
             made += 1;
         }
-        return darwin.CFArrayCreate(null, @ptrCast(refs.ptr), @intCast(made), &darwin.kCFTypeArrayCallBacks);
+        const items: [*]const ?*const anyopaque = @ptrFromInt(@intFromPtr(refs.ptr));
+        return darwin.CFArrayCreate(null, items, @intCast(made), &darwin.kCFTypeArrayCallBacks);
     }
 
     /// FSEvents delivers here on any change under the roots. We don't inspect the
@@ -299,7 +302,7 @@ pub const Watcher = struct {
     /// this CFRunLoop thread.
     fn fseventsCallback(_: darwin.Ref, info: ?*anyopaque, _: usize, _: ?*anyopaque, _: [*c]const u32, _: [*c]const u64) callconv(.c) void {
         if (info) |p| {
-            const session: *ResidentSession = @ptrCast(@alignCast(p));
+            const session: *ResidentSession = @ptrFromInt(@intFromPtr(p));
             session.markDirty();
         }
     }

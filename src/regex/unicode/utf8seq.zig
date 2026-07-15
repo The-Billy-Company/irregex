@@ -4,7 +4,7 @@
 //! rewritten as an alternation of 1–4 successive byte ranges, each of which the
 //! existing `consume` state (`syntax.ByteSet`) accepts. No two emitted sequences
 //! overlap, and no sequence ever matches a surrogate encoding or any other
-//! ill-formed UTF-8 — so the resulting sub-automaton recognises exactly the
+//! ill-formed UTF-8 — so the resulting sub-automaton recognizes exactly the
 //! well-formed UTF-8 encodings of the scalar values in the range, nothing more.
 //!
 //! Algorithm: Ken Thompson's / Russ Cox's UTF-8 range decomposition (RE2), the
@@ -164,8 +164,10 @@ pub const Sequences = struct {
                 if (resplit) continue :inner;
                 var start_buf: [4]u8 = undefined;
                 var end_buf: [4]u8 = undefined;
-                const n = std.unicode.utf8Encode(@intCast(r.start), &start_buf) catch unreachable;
-                const n2 = std.unicode.utf8Encode(@intCast(r.end), &end_buf) catch unreachable;
+                // Scalar ranges are valid Unicode; encode failure means the
+                // split invariant broke — skip this candidate rather than UB.
+                const n = std.unicode.utf8Encode(@intCast(r.start), &start_buf) catch continue :inner;
+                const n2 = std.unicode.utf8Encode(@intCast(r.end), &end_buf) catch continue :inner;
                 std.debug.assert(n == n2);
                 return Sequence.fromEncoded(start_buf[0..n], end_buf[0..n]);
             }
@@ -189,7 +191,7 @@ fn collect(start: u21, end: u21, out: *std.ArrayList(Sequence), gpa: std.mem.All
 }
 
 test "single codepoint yields exactly one sequence" {
-    // Every scalar value, decomposed alone, is recognised by exactly one byte
+    // Every scalar value, decomposed alone, is recognized by exactly one byte
     // sequence — and that sequence matches its own UTF-8 encoding.
     const gpa = testing.allocator;
     var cp: u32 = 0;
