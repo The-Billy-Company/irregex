@@ -1,8 +1,8 @@
 # Towncrier configuration for gist — DO NOT hand-edit.
 #
-# Generated from the canonical template in the shipkit changelog driver
-# (pkg/tools/support/changelog/config.py). The package roster lives in
-# pkg/tools/support/changelog/packages.py.
+# Generated from the canonical template in the chronicle changelog driver
+# (pkg/tools/support/chronicle/config.py). The package roster lives in
+# pkg/tools/support/chronicle/packages.py.
 #
 #   make changelog-init             (re)materialize this file + changelog.d/
 #   make changelog-verify           drift gate (byte-parity vs this template)

@@ -6,8 +6,8 @@ doc_radar:
       unit: dirs
       equals: 8
   sentinels:
-    - description: "gist registered in the shipkit changelog roster (OSS-package membership)"
-      file: pkg/tools/support/shipkit/changelog/packages.py
+    - description: "gist registered in the changelog roster (OSS-package membership)"
+      file: pkg/tools/support/chronicle/packages.py
       contains: 'Package("pkg/kernels/gist"'
     - description: "Unicode is default-on at the CLI (rg-parity); --no-unicode / (?-u) opt out"
       file: pkg/kernels/gist/src/commands/ripgrep/args.zig
