@@ -62,10 +62,27 @@ test "classify: no eligible mode falls back to cold" {
     try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-F", "needle" }));
 }
 
-test "classify: a second bare token (a PATH arg) is ineligible" {
-    // The resident path serves the DEFAULT roots only; an explicit path arg is
-    // exactly what the cold engine owns.
+test "classify: a rootless -l/-c query is eligible" {
+    // The daemon serves exactly the rootless CWD tree, so a rootless eligible
+    // query is the one shape routed warm — byte-identical to `gist <pattern>`.
+    const a = try ok(&.{ "-l", "needle" });
+    try std.testing.expectEqual(request.Mode.files, a.mode);
+    const b = try ok(&.{ "-c", "-F", "needle" });
+    try std.testing.expectEqual(request.Mode.count, b.mode);
+}
+
+test "classify: ANY explicit PATH arg is ineligible (rootless-only parity)" {
+    // The daemon serves only the rootless CWD tree and the wire carries no
+    // roots, so every explicit scope stays cold — a subtree (would over-report
+    // against the whole tree), a foreign path, the full former default-root set,
+    // and even `.` (which cold renders with a `./` prefix the daemon omits).
     try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "needle", "services" }));
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "needle", "services", "libs" }));
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "needle", "/tmp/foreign" }));
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "needle", "." }));
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "needle", "services", "libs", "clients", "contracts", "scripts", "quality" }));
+    // A `--` separator ends flag parsing; the paths after it are still paths.
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "needle", "--", "services" }));
 }
 
 test "classify: any unrecognized flag hands the whole request to cold" {

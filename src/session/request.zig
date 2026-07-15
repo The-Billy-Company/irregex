@@ -2,11 +2,20 @@
 //!
 //! The resident daemon accelerates exactly the two broad-tree request shapes an
 //! agent reaches for most — "which files contain this" (`-l`) and "how many
-//! matching lines" (`-c`) — over the repo's DEFAULT roots, for a literal (`-F`)
-//! or a plain (linear-time) regex, optionally ASCII-caseless (`-i`). Everything
-//! else — line output, `--json`, context, `--rank`, replace, invert, `-w`,
-//! multiline, explicit PATH args, globs/types, stdin — is deliberately NOT
-//! eligible and is answered by the certified cold subprocess, byte-for-byte.
+//! matching lines" (`-c`) — over the ROOTLESS current-working-directory tree,
+//! for a literal (`-F`) or a plain (linear-time) regex, optionally ASCII-caseless
+//! (`-i`). Everything else — line output, `--json`, context, `--rank`, replace,
+//! invert, `-w`, multiline, ANY explicit PATH arg, globs/types, stdin — is
+//! deliberately NOT eligible and is answered by the certified cold subprocess,
+//! byte-for-byte.
+//!
+//! Rootless-only is the parity contract: the daemon serves exactly the tree a
+//! bare `gist <pattern>` walks (`gather` with empty roots → `walkDir(".", "")`,
+//! CWD-relative paths with no `./` prefix). An explicit `PATH` arg — even `.`,
+//! which cold prefixes as `./file` — would scope or shape the output
+//! differently from the daemon's served corpus, so it stays cold. The wire
+//! carries no roots; the daemon always answers over its whole served corpus, so
+//! only the rootless query is byte-parity-safe to route warm.
 //!
 //! `classify` is a self-contained argv scanner, NOT a second copy of
 //! `commands/ripgrep/args.zig`: it recognizes only the supported surface and
@@ -42,45 +51,53 @@ pub const ClassifyError = error{
 /// Classify an rg-style argv into an eligible `Request`, or fail so the caller
 /// uses the cold transport. Recognizes: `-l`/`--files-with-matches`,
 /// `-c`/`--count`, `-F`/`--fixed-strings`, `-i`/`--ignore-case`, and the
-/// pattern via a leading bare token or `-e`/`--regexp[=]VALUE`. A second bare
-/// token (a PATH), a `--` separator, or ANY other flag makes the request
-/// ineligible — the cold engine owns those, unchanged.
+/// pattern via a leading bare token or `-e`/`--regexp[=]VALUE`. The query must
+/// be ROOTLESS: ANY positional PATH arg (including after a `--` separator, and
+/// including `.`) makes it ineligible, because the daemon serves only the
+/// rootless CWD tree and the wire carries no roots — a scoped or `./`-prefixed
+/// answer would not match. Any other flag is likewise ineligible; the cold
+/// engine owns all of those, unchanged.
 pub fn classify(argv: []const []const u8) ClassifyError!Request {
     var pattern: ?[]const u8 = null;
     var mode: ?Mode = null;
     var fixed = false;
     var ignore_case = false;
+    var end_of_flags = false;
 
     var i: usize = 0;
     while (i < argv.len) : (i += 1) {
         const arg = argv[i];
         if (arg.len == 0) return ClassifyError.Unsupported;
-        if (std.mem.eql(u8, arg, "-l") or std.mem.eql(u8, arg, "--files-with-matches")) {
+        if (!end_of_flags and std.mem.eql(u8, arg, "--")) {
+            end_of_flags = true; // rg parity: everything after `--` is a path
+        } else if (!end_of_flags and (std.mem.eql(u8, arg, "-l") or std.mem.eql(u8, arg, "--files-with-matches"))) {
             if (mode != null and mode.? != .files) return ClassifyError.Unsupported;
             mode = .files;
-        } else if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--count")) {
+        } else if (!end_of_flags and (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--count"))) {
             if (mode != null and mode.? != .count) return ClassifyError.Unsupported;
             mode = .count;
-        } else if (std.mem.eql(u8, arg, "-F") or std.mem.eql(u8, arg, "--fixed-strings")) {
+        } else if (!end_of_flags and (std.mem.eql(u8, arg, "-F") or std.mem.eql(u8, arg, "--fixed-strings"))) {
             fixed = true;
-        } else if (std.mem.eql(u8, arg, "-i") or std.mem.eql(u8, arg, "--ignore-case")) {
+        } else if (!end_of_flags and (std.mem.eql(u8, arg, "-i") or std.mem.eql(u8, arg, "--ignore-case"))) {
             ignore_case = true;
-        } else if (std.mem.eql(u8, arg, "-e") or std.mem.eql(u8, arg, "--regexp")) {
+        } else if (!end_of_flags and (std.mem.eql(u8, arg, "-e") or std.mem.eql(u8, arg, "--regexp"))) {
             i += 1;
             if (i >= argv.len or pattern != null) return ClassifyError.Unsupported;
             pattern = argv[i];
-        } else if (std.mem.startsWith(u8, arg, "--regexp=")) {
+        } else if (!end_of_flags and std.mem.startsWith(u8, arg, "--regexp=")) {
             if (pattern != null) return ClassifyError.Unsupported;
             pattern = arg["--regexp=".len..];
-        } else if (arg[0] == '-') {
+        } else if (!end_of_flags and arg[0] == '-') {
             // Any other flag (context, --json, -w, -v, -g/-t, --hidden, -n, …)
             // is outside the fast path — hand the whole request to cold.
             return ClassifyError.Unsupported;
+        } else if (pattern == null) {
+            pattern = arg; // the first bare token is the pattern
         } else {
-            // A bare token: the pattern (first) — a SECOND one is a PATH arg,
-            // which the resident path (default-roots only) does not serve.
-            if (pattern != null) return ClassifyError.Unsupported;
-            pattern = arg;
+            // A PATH arg: the daemon serves only the rootless CWD tree, so any
+            // explicit scope (subtree, foreign path, or even `.`, which cold
+            // renders with a `./` prefix) is answered cold, unchanged.
+            return ClassifyError.Unsupported;
         }
     }
 

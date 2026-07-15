@@ -7,17 +7,31 @@
 //! is the transport shell only; the correctness (freshness, parity) lives in the
 //! session (`src/session/`).
 //!
-//! Lifecycle: build the session, arm the freshness watcher, bind the socket
-//! (unlinking a stale one), then a **serial** accept loop — one client's frame
-//! loop runs to completion before the next connection is taken. A local
-//! single-user daemon has no fan-out to serve, and serial accept keeps the
-//! session's mutation overlay single-threaded without a per-connection thread to
-//! join on teardown (the concurrency-safety of the engine itself is proven
-//! directly in `resident` under `std.Thread`, not through the socket). An
-//! explicit `shutdown` frame is the only thing that stops the loop; a client
-//! merely disconnecting just frees the daemon for the next one. Every failure is
-//! fail-open toward cold: a declined/again-errored query costs the client a
-//! fallback subprocess, never a wrong answer.
+//! Lifecycle: grab the single-instance lock, build the session, arm the
+//! freshness watcher, bind the socket (unlinking a stale one), then a **serial**
+//! accept loop — one client's frame loop runs to completion before the next
+//! connection is taken. A local single-user daemon has no fan-out to serve, and
+//! serial accept keeps the session's mutation overlay single-threaded without a
+//! per-connection thread to join on teardown (the concurrency-safety of the
+//! engine itself is proven directly in `resident` under `std.Thread`, not
+//! through the socket). Every failure is fail-open toward cold: a
+//! declined/again-errored query costs the client a fallback subprocess, never a
+//! wrong answer.
+//!
+//! Two self-management properties make the daemon safe to auto-spawn (the cold
+//! CLI forks one on the first eligible miss, so ~10 coworker CLIs may each race
+//! to start one):
+//!
+//!   * **Single-instance** — before touching the socket, `run` takes an advisory
+//!     `flock` on `<socket>.lock`. Exactly one racer wins; the losers return at
+//!     once *without* unlinking the winner's live socket. The lock is taken
+//!     first precisely so a loser never runs the stale-socket cleanup below.
+//!   * **Idle-TTL self-exit** — the accept loop `poll`s with a timeout; if no
+//!     client dials within `idle_ttl_ms` the daemon exits so an abandoned
+//!     session doesn't pin RAM forever. The next query just re-spawns it.
+//!
+//! An explicit `shutdown` frame also stops the loop; a client merely
+//! disconnecting just frees the daemon for the next one.
 
 const std = @import("std");
 const resident = @import("../../session/resident.zig");
@@ -29,12 +43,30 @@ const Dir = std.Io.Dir;
 
 const ResidentSession = resident.ResidentSession;
 
+extern "c" fn flock(fd: std.posix.fd_t, operation: c_int) c_int;
+extern "c" fn close(fd: std.posix.fd_t) c_int;
+
 /// What a completed connection tells the accept loop to do next.
 const After = enum { next, stop };
 
-/// Serve `roots` warm on `socket_path` until a client sends `shutdown` (or the
-/// listener dies). Owns the session + socket for its whole lifetime.
+/// Idle window with zero connections before a warm daemon self-exits: the
+/// resident index/corpus stops earning its RAM once nobody is querying, and a
+/// fresh query re-spawns one in the background anyway (see `client/spawn.zig`).
+const idle_ttl_ms: i32 = 10 * 60 * 1000;
+
+/// Serve `roots` warm on `socket_path` until it goes idle, a client sends
+/// `shutdown`, or the listener dies. Owns the session + socket for its whole
+/// lifetime. Returns immediately (no-op) if another daemon already holds the
+/// single-instance lock, so it is safe to auto-spawn or run twice.
 pub fn run(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, socket_path: []const u8) !void {
+    // Singleton FIRST — before any socket mutation — so a losing racer never
+    // unlinks the winner's live socket during the stale-socket cleanup below.
+    const lock_fd = acquireSingleton(io, socket_path) orelse {
+        std.debug.print("gist serve: another daemon already warm on {s}\n", .{socket_path});
+        return;
+    };
+    defer _ = close(lock_fd); // closing releases the advisory flock
+
     var session = try ResidentSession.init(gpa, io, roots);
     defer session.deinit();
     session.daemon_gen = @bitCast(@as(i64, @truncate(std.Io.Clock.now(.real, io).nanoseconds)));
@@ -52,14 +84,35 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, socket
 
     std.debug.print("gist serve: warm on {s} ({d} roots)\n", .{ socket_path, roots.len });
 
+    var pfd = [_]std.posix.pollfd{.{ .fd = server.socket.handle, .events = std.posix.POLL.IN, .revents = 0 }};
     var session_gen: u64 = 0;
     while (true) {
+        // Wait for a pending connection, but no longer than the idle TTL: a
+        // timeout (ready == 0) means the daemon has gone cold and self-exits.
+        const ready = std.posix.poll(&pfd, idle_ttl_ms) catch break;
+        if (ready == 0) break;
         const stream = server.accept(io) catch break;
         session_gen +%= 1;
         const after = serveConn(&session, gpa, io, stream.socket.handle, session_gen);
         stream.close(io);
         if (after == .stop) break;
     }
+}
+
+/// Take the advisory single-instance lock on `<socket_path>.lock`. Returns the
+/// held fd (keep it open for the daemon's lifetime — closing releases the lock),
+/// or `null` if another daemon owns it or the lock file can't be opened (in
+/// which case the caller declines to start rather than fight over the socket).
+fn acquireSingleton(io: std.Io, socket_path: []const u8) ?std.posix.fd_t {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const lock_path = std.fmt.bufPrint(&buf, "{s}.lock", .{socket_path}) catch return null;
+    if (std.fs.path.dirnamePosix(lock_path)) |dir| Dir.cwd().createDirPath(io, dir) catch {};
+    const fd = std.posix.openat(std.posix.AT.FDCWD, lock_path, .{ .ACCMODE = .RDWR, .CREAT = true }, 0o600) catch return null;
+    if (flock(fd, std.posix.LOCK.EX | std.posix.LOCK.NB) != 0) {
+        _ = close(fd); // held by a live daemon → this racer stands down
+        return null;
+    }
+    return fd;
 }
 
 /// Drive one client's frame loop to completion. Returns `.stop` only on an

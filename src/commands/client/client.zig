@@ -21,6 +21,10 @@ const protocol = @import("../../session/protocol.zig");
 const corpus = @import("../../corpus/corpus.zig");
 const net = std.Io.net;
 
+/// Best-effort detached daemon auto-spawn: when an eligible query finds no
+/// daemon, `maybeSpawn` forks one so the *next* query lands warm (`spawn.zig`).
+pub const spawn = @import("spawn.zig");
+
 /// The outcome of a warm attempt. `.served` means the result was fully emitted
 /// to stdout with the given exit code (0 = matched, 1 = no match — rg's codes);
 /// `.cold` means the caller must run the cold engine (nothing was emitted).

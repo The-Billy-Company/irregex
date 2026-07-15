@@ -14,20 +14,27 @@
 //! ## Read-your-writes: a fail-closed reconcile barrier
 //!
 //! The invariant is `resident matches == gist --no-index matches == rg matches`.
-//! It holds because freshness reuses the cold path's own metadata walk
-//! (`corpus/fresh.zig::changedSince`), never a second, drift-prone one:
+//! It holds because both the base corpus and every reconcile re-derive their file
+//! set from the cold path's OWN certified walk (`commands/ripgrep/run.zig::
+//! defaultFileSet` — hidden-file exclusion, `.gitignore`/`.ignore` precedence,
+//! `.git` skip, root scope), never `haystack`'s coarse superset. The warm set is
+//! therefore byte-identical to what a rootless `gist <pattern>` would walk:
 //!
 //!   - A query is answered from resident bytes directly ONLY when the freshness
 //!     barrier proves the roots quiescent since the last reconcile — a
-//!     watcher-clean window (`markClean`/`markDirty`, driven by inotify on Linux;
-//!     `src/session/watch.zig`). This is the microsecond path.
+//!     watcher-clean window (`markClean`/`markDirty`, driven by inotify on Linux
+//!     / FSEvents on macOS; `src/session/watch.zig`). This is the microsecond path.
 //!   - Otherwise (no watcher, any pending event, first query) the session
-//!     RECONCILES: it re-reads exactly the files `changedSince` flags as touched
-//!     into a mutation overlay (content change → replace bytes; delete / became
-//!     binary/empty → tombstone; new file → add), then answers over
-//!     (base ∪ overlay) − tombstones. Fail-closed: a missing/again-future anchor
-//!     or a rebuilt index (`pair.gen` drift) is surfaced as `error.Stale`, and
-//!     the daemon declines so the client falls back to the certified cold path.
+//!     RECONCILES: it re-walks the authoritative set and diffs it against
+//!     base + overlay — a path that left the set (deleted, or newly
+//!     hidden/ignored) is tombstoned; a new path is read in; a known path whose
+//!     mtime/ctime advanced past the freshness cursor is re-read — then answers
+//!     over (base ∪ overlay) − tombstones. Fail-closed: a rebuilt index
+//!     (`pair.gen` drift) or a reconcile allocation failure surfaces as
+//!     `error.Stale` and the daemon declines, so the client falls back to the
+//!     certified cold path. (A catastrophic OOM inside the shared walk itself
+//!     exits the daemon via `die()`; the client's dropped connection then falls
+//!     back cold and the next query re-spawns a fresh daemon — fail-open too.)
 //!
 //! Queries are serialized by `mutex`; the watcher only ever touches the atomic
 //! `dirty_seq`/`clean` pair, never the overlay, so the barrier is a lock-free
@@ -35,7 +42,13 @@
 
 const std = @import("std");
 const corpus_mod = @import("../corpus/corpus.zig");
-const fresh = @import("../corpus/fresh.zig");
+const bulkstat = @import("../corpus/bulkstat.zig");
+// The resident file set is the certified rg-default walk the cold path uses, NOT
+// `haystack`'s coarse superset — this is what makes `resident == --no-index ==
+// rg` true for hidden files, `.gitignore` precedence, and root scope. `session`
+// depending on `commands/ripgrep` is a one-way edge (run.zig never imports
+// session), so no import cycle.
+const run = @import("../commands/ripgrep/run.zig");
 const persist = @import("../index/persist.zig");
 const Index = @import("../index/trigram.zig").Index;
 const query_mod = @import("../engine/query.zig");
@@ -118,7 +131,18 @@ pub const ResidentSession = struct {
         // different index and predates any tree touched since the last `gist
         // index` (using it would re-read the whole corpus on every query).
         const load_ns = std.Io.Clock.now(.real, io).nanoseconds;
-        var corpus = try corpus_mod.load(gpa, io, owned_roots);
+        // Select the corpus with the certified rg-default walk (hidden-file
+        // exclusion + `.gitignore` precedence + root scope) and read exactly that
+        // set — so the resident base matches cold's live walk byte-for-byte,
+        // never `haystack`'s coarse superset. A short-lived arena owns the path
+        // list just for the read.
+        var sel_arena = std.heap.ArenaAllocator.init(gpa);
+        const sel_paths = run.defaultFileSet(sel_arena.allocator(), io, owned_roots);
+        var corpus = corpus_mod.loadPaths(gpa, io, sel_paths) catch |e| {
+            sel_arena.deinit();
+            return e;
+        };
+        sel_arena.deinit();
         errdefer corpus.deinit();
         var idx = try Index.build(gpa, corpus.docs);
         errdefer idx.deinit();
@@ -228,40 +252,89 @@ pub const ResidentSession = struct {
         self.markDirty(); // a rebuilt index demands a reconcile pass
     }
 
-    /// Bring the overlay current: re-read every path touched since `fresh_ns`.
-    /// No-op on the watcher-clean fast path. Fail-closed on a missing anchor.
+    /// Bring the overlay current against the certified rg-default walk. No-op on
+    /// the watcher-clean fast path. Re-derives the authoritative file set the
+    /// cold path would walk RIGHT NOW and diffs it against the resident base +
+    /// overlay: a file that left the set (deleted, or newly hidden/ignored) is
+    /// tombstoned; a new file is read in; a file whose mtime/ctime advanced past
+    /// the freshness cursor is re-read. This is the whole read-your-writes
+    /// barrier — the set comes from the SAME walk as cold, so warm answers can't
+    /// drift from `gist --no-index`/`rg`. A reconcile allocation failure surfaces
+    /// as `error.Stale` (→ cold fallback); see the module header on walk OOM.
     fn reconcile(self: *ResidentSession) QueryError!void {
         try self.maybeReload();
         if (self.watcher_active and self.clean.load(.acquire)) return;
 
         const seq0 = self.dirty_seq.load(.acquire);
         const now = std.Io.Clock.now(.real, self.io).nanoseconds;
-        // Scan from the session's own monotonic cursor (init load instant, then
-        // each prior reconcile's pre-walk instant) — the incremental catch-up
-        // window. It never re-widens to the persisted index's global anchor,
-        // which belongs to a different index and would re-read the whole corpus
-        // on every query.
-        var changed = fresh.changedSince(self.gpa, self.io, self.roots, self.fresh_ns) catch
-            return QueryError.Stale;
-        defer changed.deinit();
 
-        for (changed.paths) |p| {
-            const raw = Dir.cwd().readFileAlloc(self.io, p, self.gpa, .limited(corpus_mod.per_file_cap)) catch {
-                try self.putOverlay(p, .tombstone); // gone or unreadable
-                continue;
-            };
-            if (raw.len == 0 or corpus_mod.isBinary(raw)) {
-                self.gpa.free(raw);
-                try self.putOverlay(p, .tombstone); // no longer a searchable doc
-                continue;
-            }
-            try self.putOverlay(p, .{ .bytes = raw });
-        }
+        var walk_arena = std.heap.ArenaAllocator.init(self.gpa);
+        defer walk_arena.deinit();
+        const cur = run.defaultFileSet(walk_arena.allocator(), self.io, self.roots);
+
+        var cur_set = std.StringHashMap(void).init(self.gpa);
+        defer cur_set.deinit();
+        try cur_set.ensureTotalCapacity(@intCast(cur.len));
+        for (cur) |p| cur_set.putAssumeCapacity(p, {});
+
+        for (cur) |p| try self.reconcileOne(p);
+        try self.tombstoneVanished(&cur_set);
+
         self.fresh_ns = now;
         // Only trust the clean short-circuit if a watcher is live AND no event
         // raced this reconcile (seqlock recheck). Without a watcher, stay dirty.
         if (self.watcher_active and self.dirty_seq.load(.acquire) == seq0)
             self.clean.store(true, .release);
+    }
+
+    /// Fold one currently-authoritative path into the overlay. A new or
+    /// reappeared (previously tombstoned) path is read unconditionally; an
+    /// already-known path is re-read only when its mtime/ctime advanced past the
+    /// freshness cursor — the incremental catch-up that keeps reconcile from
+    /// re-reading an unchanged corpus every query.
+    fn reconcileOne(self: *ResidentSession, p: []const u8) QueryError!void {
+        if (self.overlay.get(p)) |ov| switch (ov) {
+            .tombstone => return self.readInto(p), // reappeared since its delete
+            .bytes => {}, // already substituted — fall through to the mtime gate
+        } else if (!self.by_path.contains(p)) {
+            return self.readInto(p); // brand-new file, not in the base corpus
+        }
+        const st = Dir.cwd().statFile(self.io, p, .{}) catch return self.readInto(p);
+        if (bulkstat.needsLiveRead(self.fresh_ns, st.mtime.nanoseconds, st.ctime.nanoseconds))
+            return self.readInto(p);
+    }
+
+    /// Read `p` into an overlay entry: its live bytes, or a tombstone when it is
+    /// gone/unreadable or no longer a searchable doc (empty/binary) — the exact
+    /// per-file admission `corpus.loadPaths`/cold apply, so a file that turned
+    /// binary drops out of both warm and cold identically.
+    fn readInto(self: *ResidentSession, p: []const u8) QueryError!void {
+        const raw = Dir.cwd().readFileAlloc(self.io, p, self.gpa, .limited(corpus_mod.per_file_cap)) catch
+            return self.putOverlay(p, .tombstone);
+        if (raw.len == 0 or corpus_mod.isBinary(raw)) {
+            self.gpa.free(raw);
+            return self.putOverlay(p, .tombstone);
+        }
+        return self.putOverlay(p, .{ .bytes = raw });
+    }
+
+    /// Tombstone every base doc or overlaid file that is no longer in the
+    /// authoritative set (deleted, or newly hidden/gitignored). Removals are
+    /// collected before mutating `overlay` (no mutation mid-iteration).
+    fn tombstoneVanished(self: *ResidentSession, cur_set: *const std.StringHashMap(void)) QueryError!void {
+        var gone: std.ArrayList([]const u8) = .empty;
+        defer gone.deinit(self.gpa);
+        for (self.corpus.paths) |p| {
+            if (cur_set.contains(p)) continue;
+            if (self.overlay.get(p)) |ov| if (ov == .tombstone) continue; // already gone
+            try gone.append(self.gpa, p);
+        }
+        var it = self.overlay.iterator();
+        while (it.next()) |e| switch (e.value_ptr.*) {
+            .bytes => if (!cur_set.contains(e.key_ptr.*)) try gone.append(self.gpa, e.key_ptr.*),
+            .tombstone => {},
+        };
+        for (gone.items) |p| try self.putOverlay(p, .tombstone);
     }
 
     /// Effective bytes for base doc `id`: overlay substitute, tombstone (→ null),
@@ -298,11 +371,11 @@ pub const ResidentSession = struct {
         var sc = cq.scratch(self.gpa) catch return QueryError.OutOfMemory;
         defer sc.deinit();
 
-        // A base doc deleted since the build vanishes from the metadata walk, so
-        // `changedSince` can't flag it. On the watcher-clean path a live watcher
-        // has already tombstoned any delete; otherwise confirm each matched base
-        // path still exists (a cheap stat per match) so a removed file is never
-        // reported — fail-closed against the one gap the reconcile walk can't see.
+        // The reconcile walk-diff already tombstones any delete it observes, but a
+        // file can vanish in the race between that walk and this report. On the
+        // watcher-clean path a live watcher has tombstoned every delete, so trust
+        // it (microsecond no-stat path); otherwise confirm each matched path still
+        // exists (a cheap stat per hit) so a just-removed file is never reported.
         var acc = Accumulator{
             .mode = req.mode,
             .arena = arena,
@@ -353,12 +426,11 @@ pub const ResidentSession = struct {
         var it = self.overlay.iterator();
         while (it.next()) |e| switch (e.value_ptr.*) {
             .tombstone => {},
-            // Overlay bytes existed at their reconcile re-read, but a later delete
-            // vanishes from the metadata walk so the next `changedSince` cannot
-            // re-flag it — the stale entry would be a false positive. Off the
-            // watcher-clean path, existence-check the match (same fail-closed
-            // stat-per-hit the base docs use); the clean path already tombstoned
-            // any delete, so it keeps the microsecond no-stat fast path.
+            // A reconcile tombstones any overlay path that left the walk set, but
+            // (as for base docs) a delete can still race the walk→report window.
+            // Off the watcher-clean path, existence-check the match (same
+            // fail-closed stat-per-hit the base docs use); the clean path already
+            // tombstoned any delete, so it keeps the microsecond no-stat path.
             .bytes => |b| try acc.consider(e.key_ptr.*, b, cq, sc, acc.verify_existence),
         };
     }

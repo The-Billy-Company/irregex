@@ -182,5 +182,6 @@ test {
     _ = @import("commands/ripgrep/index.zig"); // the `index` verb: build + persist
     _ = @import("commands/serve/serve.zig"); // the resident daemon driver body
     _ = @import("commands/client/client.zig"); // the warm CLI fast-path client body
+    _ = @import("commands/client/spawn.zig"); // best-effort detached daemon auto-spawn
     _ = @import("commands/serve/serve_test.zig"); // end-to-end daemon lifecycle + client round-trip
 }

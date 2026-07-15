@@ -50,11 +50,19 @@ const default_roots = gist.corpus.default_roots;
 /// the daemon is a pure accelerator, never a new failure mode.
 fn tryWarm(gpa: std.mem.Allocator, io: std.Io, env: *const std.process.Environ.Map, argv: []const []const u8) void {
     const sock = serve.socketPath(gpa, env) catch return;
-    const outcome = client.attempt(gpa, io, argv, sock);
-    gpa.free(sock);
-    switch (outcome) {
-        .served => |code| std.process.exit(code),
-        .cold => {},
+    defer gpa.free(sock);
+    const debug = env.get("GIST_DEBUG_WARM") != null; // observe the routing decision
+    switch (client.attempt(gpa, io, argv, sock)) {
+        .served => |code| {
+            if (debug) std.debug.print("gist: [warm]\n", .{});
+            std.process.exit(code);
+        },
+        // Cold miss on an eligible shape with no daemon up: fork one detached so
+        // the next such query lands warm. This query still runs cold below.
+        .cold => {
+            if (debug) std.debug.print("gist: [cold]\n", .{});
+            client.spawn.maybeSpawn(gpa, io, env, argv, sock);
+        },
     }
 }
 
@@ -112,19 +120,22 @@ pub fn main(init: std.process.Init) !void {
         try status.run(gpa, io);
         return;
     }
-    // `gist serve [ROOT...]` — run the resident daemon: keep the index warm
-    // behind a Unix socket so subsequent eligible queries answer without cold
-    // startup. Trailing path args scope the served tree (default: the repo
-    // roots); a subtree daemon is both a real use and what the hermetic
-    // client/session tests drive over a throwaway corpus.
+    // `gist serve [ROOT...]` — run the resident daemon: keep the corpus + index
+    // warm behind a Unix socket so subsequent eligible queries answer without
+    // cold startup. With NO path args it serves the rootless CWD walk — the EXACT
+    // tree a bare `gist <pattern>` walks (`walkDir(".", "")`, CWD-relative paths,
+    // no `./` prefix), which is the whole basis of warm==cold parity; this is
+    // what auto-spawn (`client/spawn.zig`) starts. Trailing path args scope a
+    // subtree instead (a real use, and what the hermetic client/session tests
+    // drive over a throwaway corpus).
     if (std.mem.eql(u8, mode, "serve")) {
         const sock = try serve.socketPath(gpa, init.environ_map);
         defer gpa.free(sock);
         var roots: std.ArrayList([]const u8) = .empty;
         defer roots.deinit(gpa);
         while (it.next()) |arg| try roots.append(gpa, arg);
-        const use_roots: []const []const u8 = if (roots.items.len > 0) roots.items else &default_roots;
-        try serve.run(gpa, io, use_roots, sock);
+        // Empty roots ⇒ rootless CWD walk (byte-identical to rootless cold).
+        try serve.run(gpa, io, roots.items, sock);
         return;
     }
     // `rg [flags] <pattern> [PATH...]` — the same whole-tree engine the bare

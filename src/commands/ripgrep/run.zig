@@ -331,6 +331,26 @@ fn gather(a: std.mem.Allocator, io: std.Io, roots: []const []const u8, o: Opts, 
     return .{ .recursive = recursive, .path_error = path_error or walk_error };
 }
 
+/// The authoritative rg-default file set under `roots` — the SAME certified
+/// `gather`/`ignore.zig` walk the bare cold search uses (hidden-file exclusion,
+/// `.gitignore`/`.ignore`/`.rgignore` precedence, `.git` skip, per-root
+/// scoping), but paths only, no reads. Empty `roots` walks CWD, exactly like a
+/// rootless `gist <pattern>`. Exposed so the resident daemon (`src/session/`)
+/// builds its corpus and reconciles over a selection BYTE-IDENTICAL to cold,
+/// instead of `haystack`'s coarse superset — the whole basis of the warm-path
+/// parity guarantee. Paths (and the returned slice) are owned by `a`; the walk's
+/// default `Opts` mean no `-g`/`-t`/`--hidden`, which is exactly the query
+/// surface `request.classify` admits to the warm path.
+pub fn defaultFileSet(a: std.mem.Allocator, io: std.Io, roots: []const []const u8) []const []const u8 {
+    const o: Opts = .{};
+    var ig = ignore.Ignore.init(a, io, o, roots);
+    var candidates: std.ArrayList(Candidate) = .empty;
+    _ = gather(a, io, roots, o, &ig, &candidates);
+    const paths = a.alloc([]const u8, candidates.items.len) catch die("oom\n", .{});
+    for (candidates.items, paths) |c, *p| p.* = c.rel;
+    return paths;
+}
+
 /// Spawn one shard per core above this candidate count; below it, thread-spawn
 /// overhead isn't worth it and the whole batch runs inline on the calling
 /// thread. Mirrors `ripgrep/rank.zig`'s identical `read_par_threshold` tuning

@@ -37,6 +37,7 @@ const Tree = struct {
 
     fn write(self: *Tree, rel: []const u8, data: []const u8) !void {
         const p = try std.fmt.allocPrint(self.a, "{s}/{s}", .{ self.root, rel });
+        if (std.fs.path.dirnamePosix(p)) |dir| try Dir.cwd().createDirPath(self.io, dir);
         try Dir.cwd().writeFile(self.io, .{ .sub_path = p, .data = data });
     }
 
@@ -174,6 +175,44 @@ test "resident: a deleted file is never reported" {
         const files = try queryFiles(&session, q.allocator(), .{ .pattern = "needle", .mode = .files, .fixed = true });
         try expectFileSet(&tree, files, &.{"a.txt"});
     }
+}
+
+test "resident: the file set is the rg-default walk (hidden/gitignore/binary/empty excluded)" {
+    // The parity contract: the resident corpus is selected by the SAME rg-default
+    // walk cold uses, so hidden files, `.gitignore`/nested-`.gitignore` matches,
+    // `.git`, binary, and empty files are all absent — never `haystack`'s coarse
+    // superset. A false POSITIVE here (reporting a file rg would exclude) is the
+    // exact warm-vs-cold drift this whole refactor closes.
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var fixture = std.heap.ArenaAllocator.init(gpa);
+    defer fixture.deinit();
+
+    var tree = try Tree.init(fixture.allocator(), io, "ignore", @intFromPtr(&threaded));
+    defer tree.deinit();
+    try tree.write("visible.txt", "needle here\n"); // kept
+    try tree.write("sub/ok.txt", "needle nested\n"); // kept
+    try tree.write(".hidden.txt", "needle hidden\n"); // excluded: hidden file
+    try tree.write(".config/d.txt", "needle hidden dir\n"); // excluded: hidden dir
+    try tree.write(".git/config", "needle in git\n"); // excluded: .git
+    try tree.write("ignored/x.txt", "needle ignored\n"); // excluded: .gitignore dir
+    try tree.write("skip.log", "needle log\n"); // excluded: .gitignore glob
+    try tree.write("nested/drop/y.txt", "needle dropped\n"); // excluded: nested .gitignore
+    try tree.write("nested/keep/z.txt", "needle kept\n"); // kept
+    try tree.write("bin.dat", "needle\x00\x00binary\n"); // excluded: binary
+    try tree.write("empty.txt", ""); // excluded: empty
+    try tree.write(".gitignore", "ignored/\n*.log\n");
+    try tree.write("nested/.gitignore", "drop/\n");
+
+    var session = try ResidentSession.init(gpa, io, &.{tree.root});
+    defer session.deinit();
+
+    var q = std.heap.ArenaAllocator.init(gpa);
+    defer q.deinit();
+    const files = try queryFiles(&session, q.allocator(), .{ .pattern = "needle", .mode = .files, .fixed = true });
+    try expectFileSet(&tree, files, &.{ "visible.txt", "sub/ok.txt", "nested/keep/z.txt" });
 }
 
 test "resident: regex and caseless paths agree with the literal path" {
