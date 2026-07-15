@@ -238,6 +238,23 @@ test "required-literal: conservative on ambiguity (never over-claims)" {
     try expectRequired("a[bc]defg", "defg"); // class breaks; tail survives
 }
 
+test "required-literal: lookaround/backreferences prefilter soundly (the PCRE-race premise)" {
+    // gist beats every PCRE competitor on this class BECAUSE it prunes the read
+    // set on a sound required literal these lookaround patterns still carry (the
+    // lookaround itself is zero-width, so the surrounding literal is mandatory in
+    // every match). If this regresses, gist silently loses its prefilter edge —
+    // or worse, over-claims and elides a real match. These are the exact slate
+    // patterns from bench/races/pcre_headtohead.sh.
+    try expectRequired("func\\s+\\w+(?=\\()", "func"); // lookahead: "func" required
+    try expectRequired("import\\s+(?!type)", "import"); // neg-lookahead: "import"
+    try expectRequired("(?<=return\\s)nil", "nil"); // lookbehind: only "nil" is consumed
+    try expectRequired("const\\s+\\w+(?=\\s*=)", "const");
+    // Literal-free by construction — the prefilter correctly declines, so the
+    // race falls through to gist's fused parallel PCRE2-JIT scan (still a win).
+    try expectRequired("<(\\w+)>.*</\\1>", ""); // "</" is 2 bytes, below the trigram floor
+    try expectRequired("\\b(\\w{3,})\\b.*\\b\\1\\b", ""); // pure backreference, no literal
+}
+
 test "required-literal: caseless short-circuits to empty" {
     const got = try literal.required(t.allocator, "hello", true);
     defer t.allocator.free(got);

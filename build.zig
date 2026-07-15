@@ -181,6 +181,23 @@ pub fn build(b: *std.Build) void {
     k.test_step.dependOn(&inline_flag_test.step);
     // gist_inline_flag_regression_NeEdLe_xyz ← the fixture the guard case-folds onto
 
+    // Companion guard: `--engine auto` must ESCALATE to the PCRE2 backend for a
+    // pattern the linear engine declines (here a lookahead) — not die with the
+    // linear "outside gist's linear-time syntax" exit-2. The pattern is a literal
+    // followed by a lookahead `(?=_TAIL)`; it can only match where `_TAIL`
+    // immediately follows, which is the fixture comment below — NOT this addArgs
+    // line, where the literal is followed by the raw `(?=…)` bytes. So a match at
+    // all requires (a) auto actually escalating to PCRE2 and (b) PCRE2 honoring
+    // the lookahead. A non-escalating auto dies exit 2; a broken lookahead finds
+    // nothing exit 1 — either way the guard fails closed. `--no-index` keeps it
+    // deterministic against the shared, concurrently-edited tree.
+    const auto_escalate_test = b.addRunArtifact(cli_exe);
+    auto_escalate_test.setCwd(b.path("../../.."));
+    auto_escalate_test.addArgs(&.{ "--engine", "auto", "gist_auto_escalation_regression_needle_xyz(?=_TAIL)", "--no-index", "pkg/kernels/gist/build.zig" });
+    auto_escalate_test.expectExitCode(0);
+    k.test_step.dependOn(&auto_escalate_test.step);
+    // gist_auto_escalation_regression_needle_xyz_TAIL ← the fixture auto escalates PCRE2 onto
+
     // Compile, link, and run a real C consumer against the deliberately minimal
     // ABI. This catches calling-convention, header, symbol, and primitive-contract
     // drift that the toolchain-free gist-contract text gate cannot observe.
