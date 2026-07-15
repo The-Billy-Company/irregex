@@ -52,6 +52,8 @@ const Opts = args.Opts;
 const Emitter = output.Emitter;
 const die = args.die;
 const Regex = @import("../../regex/core.zig").Regex;
+const Matcher = @import("../../regex/matcher.zig").Matcher;
+const pcre2 = @import("../../regex/pcre2.zig");
 const Dir = std.Io.Dir;
 
 /// Can this invocation run on the parallel engine byte-identically? Everything
@@ -71,6 +73,10 @@ pub fn eligible(io: std.Io, parsed: args.Parsed, o: Opts) bool {
     if (std.c.getenv("GIST_NO_PARALLEL") != null) return false;
     if (o.follow or o.json or o.quiet or o.stats or o.files_without or
         o.replace != null or o.max_filesize != 0 or o.multiline) return false;
+    // `-P`/`--pcre2` rides the parallel engine like the linear default: its
+    // per-worker PCRE2 scratch is thread-confined, and the match-limit latch
+    // (the exit-2-on-catastrophic-backtracking rg parity) is a process-global
+    // atomic every worker stores into, folded into the exit code below.
     // Every positional root must be a directory — an explicit FILE arg carries
     // rg's "never ignore-filtered, error-if-unopenable" semantics (serial).
     for (parsed.roots) |r| {
@@ -186,9 +192,7 @@ pub const IndexedPaths = struct {
 
     pub fn init(gpa: std.mem.Allocator, paths: []const []const u8) std.mem.Allocator.Error!IndexedPaths {
         if (paths.len > std.math.maxInt(usize) / 2) return error.OutOfMemory;
-        const target = @max(@as(usize, 8), paths.len * 2);
-        var capacity: usize = 8;
-        while (capacity < target) capacity <<= 1;
+        const capacity = std.math.ceilPowerOfTwo(usize, @max(@as(usize, 8), paths.len * 2)) catch return error.OutOfMemory;
         const slots = try gpa.alloc(u32, capacity);
         @memset(slots, empty);
         const table = IndexedPaths{ .slots = slots, .mask = capacity - 1, .gpa = gpa };
@@ -301,27 +305,23 @@ pub fn indexSavingsWorthTable(total: usize, candidates: usize) bool {
 fn buildElide(gpa: std.mem.Allocator, io: std.Io, o: Opts, filters: []const []const u8) ?Elide {
     if (o.no_index or filters.len == 0) return null;
     for (filters) |f| if (f.len < 3) return null;
-    const anchor = fresh.readAnchor(gpa, io) orelse return null;
-    var p = (persist.loadQuiet(gpa, io) catch return null) orelse return null;
-    const cand = p.idx.queryAny(gpa, filters) catch {
-        p.deinit();
-        return null;
-    };
+    return assembleElide(gpa, io, filters) catch null;
+}
+
+/// Fallible half of `buildElide`: every early exit (a missing anchor, an
+/// unloadable/unworthwhile index, an OOM) is an error, so `errdefer` sheds the
+/// half-built state instead of hand-threading `deinit` down each return path.
+fn assembleElide(gpa: std.mem.Allocator, io: std.Io, filters: []const []const u8) !Elide {
+    const anchor = fresh.readAnchor(gpa, io) orelse return error.NoAnchor;
+    var p = (persist.loadQuiet(gpa, io) catch return error.NoIndex) orelse return error.NoIndex;
+    errdefer p.deinit();
+    const cand = try p.idx.queryAny(gpa, filters);
     defer gpa.free(cand);
-    if (!indexSavingsWorthTable(p.paths.items.len, cand.len)) {
-        p.deinit();
-        return null;
-    }
-    var candidates = std.DynamicBitSet.initEmpty(gpa, p.paths.items.len) catch {
-        p.deinit();
-        return null;
-    };
+    if (!indexSavingsWorthTable(p.paths.items.len, cand.len)) return error.NotWorthwhile;
+    var candidates = try std.DynamicBitSet.initEmpty(gpa, p.paths.items.len);
+    errdefer candidates.deinit();
     for (cand) |d| candidates.set(d);
-    const indexed = IndexedPaths.init(gpa, p.paths.items) catch {
-        candidates.deinit();
-        p.deinit();
-        return null;
-    };
+    const indexed = try IndexedPaths.init(gpa, p.paths.items);
     return .{ .p = p, .indexed = indexed, .candidates = candidates, .anchor = anchor };
 }
 
@@ -382,15 +382,22 @@ const Queue = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
 
-    /// Cancel the walk: a `Sink.emit` write came back closed-pipe. Idempotent
-    /// (the CAS-style swap only wakes parked peers on the transition), so
-    /// concurrent workers hitting EPIPE at once never double-broadcast.
-    fn abort(q: *Queue) void {
-        if (q.aborted.swap(true, .acq_rel)) return;
+    /// Wake every parked worker. The predicate is read under `mu` (where the
+    /// pop loop parks), so the no-missed-wakeup shape holds; both terminal
+    /// transitions — broken pipe (`abort`) and last task done (`done`) — funnel
+    /// through here.
+    fn wakeParked(q: *Queue) void {
         q.mu.lockUncancelable(q.io);
         const any = q.waiting > 0;
         q.mu.unlock(q.io);
         if (any) q.cv.broadcast(q.io);
+    }
+
+    /// Cancel the walk: a `Sink.emit` write came back closed-pipe. Idempotent
+    /// (the CAS-style swap only wakes parked peers on the transition), so
+    /// concurrent workers hitting EPIPE at once never double-broadcast.
+    fn abort(q: *Queue) void {
+        if (!q.aborted.swap(true, .acq_rel)) q.wakeParked();
     }
 
     /// Account for `n` newly discovered tasks (wherever they live). Must
@@ -460,13 +467,8 @@ const Queue = struct {
     }
 
     fn done(q: *Queue) void {
-        if (q.live.fetchSub(1, .acq_rel) == 1) {
-            // Walk complete — release every parked worker so it can retire.
-            q.mu.lockUncancelable(q.io);
-            const any = q.waiting > 0;
-            q.mu.unlock(q.io);
-            if (any) q.cv.broadcast(q.io);
-        }
+        // Walk complete — release every parked worker so it can retire.
+        if (q.live.fetchSub(1, .acq_rel) == 1) q.wakeParked();
     }
 };
 
@@ -539,12 +541,33 @@ const Sink = struct {
 /// Run-wide immutable configuration every worker shares.
 const Cfg = struct {
     o: Opts,
-    re: ?*const Regex, // null only in --files mode
+    re: ?*const Matcher, // null only in --files mode
     ig: *const ignore.Ignore,
     compiled: ?*const ignore.Compiled, // rank-based base tier (null → decideAt)
     lazy: ?*LazyElide, // concurrent elide loader (null → no elision this run)
     file_needle: ?[]const u8, // whole-file SIMD gate; null for passthru/stats-like modes
+    // Multi-literal whole-file SIMD gate for pure alternations (`panic|0x`):
+    // the union of these literals covers every match, so a body containing none
+    // of them is dropped without a regex run. Non-empty only when `file_needle`
+    // is null (a single required literal is the stronger gate) and the mode may
+    // drop whole files. Because the set is a match EQUIVALENCE (see
+    // `Regex.lits`), the `-l` fast path may also EMIT on a gate hit alone.
+    file_alts: []const []const u8,
+    // The whole-file literal gate that ran (`file_needle` or `file_alts`) is a
+    // match EQUIVALENCE (`Regex.lits`): a gate hit PROVES some line matches, so
+    // the `-l` fast path may emit without any engine run at all.
+    lits_equiv: bool,
+    // Longest gate literal (`file_needle`/`file_alts`), or 0 when no gate runs.
+    // Sizes the straddle window when a stage-1-cleared prefix lets the gate
+    // rescan only the tail: a literal crossing the prefix/tail seam can start
+    // at most `gate_len-1` bytes before the seam.
+    gate_len: usize,
     line_needle: ?[]const u8, // required literal before each regex engine run
+    // `-l` fused fast path is sound for this invocation: no flag reshapes the
+    // per-line match decision away from "does any line match?" — so one fused
+    // whole-buffer `docMatch` (early-exit, no line split, no per-line dispatch)
+    // answers the file.
+    fast_l: bool,
     use_color: bool,
     show_name: bool,
     heading: bool,
@@ -570,7 +593,19 @@ const Worker = struct {
     cfg: *const Cfg,
     arena: std.heap.ArenaAllocator,
     pending: std.ArrayList(Deferred) = .empty,
+    // Reusable boolean-match scratch (`Matcher.Sim` is per-thread by design):
+    // lazily built once on first use, then reused for every file this worker
+    // searches — the Pike generation counter self-invalidates between calls,
+    // so no reset is needed and no per-file alloc/free is paid.
+    sim: ?Matcher.Sim = null,
 };
+
+/// The worker's lazily-built reusable match scratch (null only on OOM, where
+/// the caller degrades to "no match proven" — never an invented match).
+fn workerSim(w: *Worker) ?*Matcher.Sim {
+    if (w.sim == null) w.sim = Matcher.Sim.init(w.arena.allocator(), w.cfg.re.?) catch return null;
+    return &w.sim.?;
+}
 
 /// A listed directory entry, normalized across the two listing backends.
 const Entry = struct {
@@ -627,7 +662,7 @@ fn flushPending(w: *Worker, a: std.mem.Allocator, scratch: []u8, final: bool) vo
     for (w.pending.items) |d| {
         if (ready) if (lz.val) |*el| if (el.skip(stripDot(d.rel), d.mtime_ns, d.ctime_ns)) continue;
         const dpath = if (o.path_sep) |sep| replaceSep(a, d.rel, sep) else d.rel;
-        searchFile(w, a, scratch, d.disk, dpath);
+        searchFile(w, a, scratch, std.posix.AT.FDCWD, d.disk, dpath);
     }
     w.pending.clearRetainingCapacity();
 }
@@ -762,7 +797,7 @@ fn processDir(w: *Worker, a: std.mem.Allocator, scratch: []u8, task: DirTask, lo
     // Children go on the worker's own stack; only the COUNT touches the
     // shared queue (accounting must precede this task's `done`).
     const before = local.items.len;
-    for (entries.items) |e| handleEntry(w, a, scratch, task, chain, local, e);
+    for (entries.items) |e| handleEntry(w, a, scratch, dir.handle, task, chain, local, e);
     w.q.noteDiscovered(local.items.len - before);
 }
 
@@ -777,12 +812,16 @@ fn needsElisionMetadata(cfg: *const Cfg) bool {
 
 fn noteIgnoreFile(present: *IgPresent, name: []const u8, is_file: bool) void {
     if (!is_file or name.len < 7 or name[0] != '.') return;
-    if (std.mem.eql(u8, name, ".gitignore")) present.gitignore = true;
-    if (std.mem.eql(u8, name, ".ignore")) present.dotignore = true;
-    if (std.mem.eql(u8, name, ".rgignore")) present.rgignore = true;
+    if (std.mem.eql(u8, name, ".gitignore")) {
+        present.gitignore = true;
+    } else if (std.mem.eql(u8, name, ".ignore")) {
+        present.dotignore = true;
+    } else if (std.mem.eql(u8, name, ".rgignore")) {
+        present.rgignore = true;
+    }
 }
 
-fn handleEntry(w: *Worker, a: std.mem.Allocator, scratch: []u8, task: DirTask, chain: ?*const IgNode, children: *std.ArrayList(DirTask), e: Entry) void {
+fn handleEntry(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.posix.fd_t, task: DirTask, chain: ?*const IgNode, children: *std.ArrayList(DirTask), e: Entry) void {
     const cfg = w.cfg;
     const o = cfg.o;
     if (!e.is_dir and !e.is_file) return; // symlinks & specials — never followed here
@@ -825,20 +864,63 @@ fn handleEntry(w: *Worker, a: std.mem.Allocator, scratch: []u8, task: DirTask, c
         cfg.sink.emit(.text_hit, dpath);
         return;
     }
-    searchFile(w, a, scratch, joinPath(a, task.disk, e.name), dpath);
+    // The parent directory is still open in `processDir` — resolve one
+    // component (`e.name`) against its fd instead of the full path from CWD.
+    searchFile(w, a, scratch, dirfd, e.name, dpath);
 }
 
 /// Read + match + render ONE file straight into the sink — the parallel
 /// twin of the serial engine's per-file loop body (`run.zig`), built from the
-/// same `grepfile` primitives so the two cannot drift.
-fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, disk: []const u8, dpath: []const u8) void {
+/// same `grepfile` primitives so the two cannot drift. `disk` is resolved
+/// relative to `dirfd` (the walk passes the still-open parent directory so the
+/// kernel resolves one component; deferred/elision reads pass `AT.FDCWD` with
+/// the full path).
+fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.posix.fd_t, disk: []const u8, dpath: []const u8) void {
     const cfg = w.cfg;
     const o = cfg.o;
     const re = cfg.re.?;
-    const raw = grepfile.readFileRaw(a, scratch, disk) orelse return;
+    const sf = grepfile.StagedFile.open(scratch, dirfd, disk) orelse return;
+    defer sf.close();
+
+    // Stage 1 — decide what the first BUFCAP bytes (rg's buffer 0) already
+    // settle, before paying for the tail (86% of this corpus's bytes live in
+    // the tails of >64 KiB files). A UTF-16 BOM opts out: the transcode needs
+    // the whole file and dissolves its NULs, so no prefix triage is sound.
+    const utf16 = sf.prefix.len >= 2 and
+        ((sf.prefix[0] == 0xFF and sf.prefix[1] == 0xFE) or (sf.prefix[0] == 0xFE and sf.prefix[1] == 0xFF));
+    if (!utf16) {
+        // NUL in buffer 0: rg's emission cutoff is the start of the buffer that
+        // holds the first NUL — the very first — so an implicit walked file
+        // contributes NOTHING in any parallel-engine mode (`-l`, default, `-c`,
+        // context, `-o` all key off lines before the cutoff; `--binary`-style
+        // explicit files never reach this engine). Skip without the tail read.
+        if (cfg.binary_detect and std.mem.indexOfScalar(u8, sf.prefix, 0) != null) return;
+        // `-l` + a >64 KiB file: a match PROVEN inside the NUL-free prefix is a
+        // match of the file (a partial trailing line only truncates a real
+        // line, and the literal gates never over-claim) — emit and skip the
+        // tail. Absence proves nothing; fall through to the full read.
+        if (cfg.fast_l and sf.more and prefixProvesMatch(w, re, grepfile.stripBom(sf.prefix))) {
+            var buf: std.ArrayList(u8) = .empty;
+            buf.print(a, "{s}{c}", .{ dpath, @as(u8, if (o.null_sep) 0 else '\n') }) catch die("oom\n", .{});
+            cfg.sink.emit(.text_hit, buf.items);
+            return;
+        }
+    }
+    const raw = if (sf.more) (sf.readRest(a, scratch) orelse return) else sf.prefix;
     const body = grepfile.decodeBom(a, raw);
     if (body.len == 0) return;
-    if (cfg.file_needle) |n| if (!simd.contains(body, n)) return;
+    // Bytes of `body` already covered by the stage-1 prefix scans, in body
+    // space: `body` aliases `raw` at offset 0 or 3 (UTF-8 BOM strip), so the
+    // scanned raw prefix maps to `body[0..covered]`. A UTF-16 transcode built a
+    // fresh buffer with different bytes — nothing carries over (covered = 0).
+    const covered: usize = if (utf16) 0 else sf.prefix.len -| (@intFromPtr(body.ptr) - @intFromPtr(raw.ptr));
+    // Literal gate. When stage 1 already proved the equivalence gate absent
+    // from the prefix (fast_l + tail present + no early emit above), rescan
+    // only the unseen tail plus a `gate_len-1` straddle window for a literal
+    // crossing the seam — not the whole body again.
+    const gate_from: usize = if (cfg.fast_l and cfg.lits_equiv and !utf16 and sf.more) covered -| (cfg.gate_len - 1) else 0;
+    if (cfg.file_needle) |n| if (!simd.contains(body[gate_from..], n)) return;
+    if (cfg.file_alts.len > 0 and !simd.containsAny(body[gate_from..], cfg.file_alts)) return;
 
     var buf: std.ArrayList(u8) = .empty;
     var em = Emitter{
@@ -854,12 +936,31 @@ fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, disk: []const u8,
         .needle = cfg.line_needle,
     };
 
-    if (cfg.binary_detect) if (std.mem.indexOfScalar(u8, body, 0)) |nul| {
+    // Stage 1 already proved `body[0..covered]` NUL-free (or we'd have
+    // returned there), so the first NUL — the binary cutoff — can only sit in
+    // the unseen tail. Sub-cap files are fully covered: zero bytes rescanned.
+    if (cfg.binary_detect) if (std.mem.indexOfScalarPos(u8, body, covered, 0)) |nul| {
         const matched = grepfile.handleBinary(a, re, o, &buf, &em, dpath, false, body, nul, cfg.show_name);
         if (matched or buf.items.len > 0)
             cfg.sink.emit(if (matched) .bin_hit else .text_plain, buf.items);
         return;
     };
+
+    // `-l` fused fast path: one early-exit whole-buffer pass answers the file —
+    // no line split, no per-line engine dispatch. When the pattern is a pure
+    // literal (alternation), the whole-file gate above already PROVED the match
+    // (equivalence, not containment), so not even `docMatch` runs.
+    if (cfg.fast_l) {
+        const hit = cfg.lits_equiv or blk: {
+            const sim = workerSim(w) orelse break :blk false;
+            break :blk re.docMatch(sim, body);
+        };
+        if (hit) {
+            buf.print(a, "{s}{c}", .{ dpath, @as(u8, if (o.null_sep) 0 else '\n') }) catch die("oom\n", .{});
+            cfg.sink.emit(.text_hit, buf.items);
+        }
+        return;
+    }
 
     var lines: std.ArrayList([]const u8) = .empty;
     grepfile.collectLines(a, body, o.term(), &lines);
@@ -873,6 +974,24 @@ fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, disk: []const u8,
         return;
     }
     cfg.sink.emit(.text_hit, buf.items);
+}
+
+/// Positive-only match proof over a buffer prefix: true ⇒ the file matches
+/// (emit and skip its tail); false ⇒ undecided (the caller reads the rest).
+/// The pure-literal equivalence answers from SIMD `contains` alone — sound even
+/// inside the truncated final line, since a literal carries no `\n` and so sits
+/// inside the real (longer) line too. The regex path instead sees only COMPLETE
+/// lines: a truncated line's cut IS an end-of-line to `docMatch`, so `$`/`^$`
+/// could fire where the real line continues — a false positive the trim removes.
+fn prefixProvesMatch(w: *Worker, re: *const Matcher, prefix: []const u8) bool {
+    const cfg = w.cfg;
+    if (cfg.lits_equiv) {
+        if (cfg.file_needle) |n| return simd.contains(prefix, n);
+        return simd.containsAny(prefix, cfg.file_alts);
+    }
+    const nl = std.mem.lastIndexOfScalar(u8, prefix, '\n') orelse return false;
+    const sim = workerSim(w) orelse return false;
+    return re.docMatch(sim, prefix[0 .. nl + 1]);
 }
 
 fn replaceSep(a: std.mem.Allocator, path: []const u8, sep: []const u8) []const u8 {
@@ -908,7 +1027,7 @@ pub fn run(
     io: std.Io,
     parsed: args.Parsed,
     o: Opts,
-    re: ?*const Regex,
+    re: ?*const Matcher,
     use_color: bool,
     filters: []const []const u8,
     file_needle: ?[]const u8,
@@ -960,6 +1079,22 @@ pub fn run(
         .files_mode = o.files_list,
         .null_sep = o.null_sep,
     };
+    // Pure-literal alternation gate/equivalence (see `Cfg.file_alts`): only when
+    // no single required literal already gates, and never for modes that must
+    // read every body (`-v` needs zero-hit files; passthru emits them).
+    const lits: []const []const u8 = if (re) |m| m.lits() else &.{};
+    const file_alts: []const []const u8 = if (lits.len > 0 and file_needle == null and !o.invert and !o.passthru) lits else &.{};
+    // Equivalence proof: the whole-file gate that will run (`file_needle`, a
+    // single pure literal, or `file_alts`, a pure alternation) IS the pattern.
+    const lits_equiv = (file_needle != null and lits.len == 1 and std.mem.eql(u8, lits[0], file_needle.?)) or file_alts.len > 0;
+    const fast_l = o.files_only and !o.invert and !o.word and !o.crlf and !o.null_data and
+        o.max_per_file == 0 and !o.only_matching and !o.count_only and !o.count_matches and
+        !o.passthru and !o.vimgrep and !o.stop_on_nonmatch and o.replace == null;
+    const gate_len = blk: {
+        var m: usize = if (file_needle) |n| n.len else 0;
+        for (file_alts) |n| m = @max(m, n.len);
+        break :blk m;
+    };
     const cfg = Cfg{
         .o = o,
         .re = re,
@@ -967,7 +1102,11 @@ pub fn run(
         .compiled = if (compiled) |*c| c else null,
         .lazy = if (want_elision) &lazy else null,
         .file_needle = file_needle,
+        .file_alts = file_alts,
+        .lits_equiv = lits_equiv,
+        .gate_len = gate_len,
         .line_needle = line_needle,
+        .fast_l = fast_l,
         .use_color = use_color,
         .show_name = switch (o.filename) {
             .always => true,
@@ -1025,6 +1164,14 @@ pub fn run(
     // left to stitch or write; a walk error (unreadable dir) trumps match/
     // no-match (rg parity — see `reportWalkError`), otherwise `sink.matched_files`
     // alone decides the exit code.
+    // A `-P` worker that tripped a resource limit on catastrophic input latched
+    // the process-global fault — mirror ripgrep's exit 2 over the accumulated
+    // (already-streamed) output, exactly as the serial engine's `pcreFaultExit`.
+    if (re) |m| if (m.matchError() != 0) {
+        var errbuf: [256]u8 = undefined;
+        std.debug.print("gist: PCRE2: error matching: {s}\n", .{pcre2.matchErrorMessage(&errbuf)});
+        std.process.exit(2);
+    };
     std.process.exit(if (q.walk_error.load(.acquire)) 2 else if (sink.matched_files > 0) 0 else 1);
 }
 

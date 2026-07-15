@@ -1,14 +1,14 @@
 # `engine/` — the transport-neutral compiled query
 
-The shared search core (ADR-352). One deep module owns *"a search intent,
-compiled"*, so the cold CLI (`commands/ripgrep/`) and the warm resident session
+The shared search core (ADR-352). One deep module owns _"a search intent,
+compiled"_, so the cold CLI (`commands/ripgrep/`) and the warm resident session
 (`session/`) cannot drift on **what matches** or **which literals are safe to
 prune by** — they compile and match through the same code here.
 
-| File | Role |
-|---|---|
-| `query.zig` | `CompiledQuery` — lower a `(pattern, fixed, ignore_case, mode)` spec into an immutable matcher (literal SIMD fast path, else the linear-time regex engine), and expose the two things every face needs: the sound trigram `prefilter` for index candidate pruning, and the per-doc `docMatches` / `countLines` decision. Plus `regexPrefilter`, the required-literal-vs-alternation-cover selector the cold `trigramFilter` shares. |
-| `query_test.zig` | Compile shapes (literal / regex / escaped `-F -i`), prefilter selection, the fail-closed `error.Unsupported` boundary, and the match/count kernels against hand-computed answers. |
+| File             | Role                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `query.zig`      | `CompiledQuery` — lower a `(pattern, fixed, ignore_case, mode)` spec into an immutable matcher (literal SIMD fast path, else the linear-time regex engine), and expose the two things every face needs: the sound trigram `prefilter` for index candidate pruning, and the per-doc `docMatches` / `countLines` decision. Plus `regexPrefilter`, the required-literal-vs-alternation-cover selector the cold `trigramFilter` shares. |
+| `query_test.zig` | Compile shapes (literal / regex / escaped `-F -i`), prefilter selection, the fail-closed `error.Unsupported` boundary, and the match/count kernels against hand-computed answers.                                                                                                                                                                                                                                                   |
 
 ## Two invariants make it the shared boundary
 

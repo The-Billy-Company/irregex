@@ -132,6 +132,57 @@ pub fn requiredAny(arena: std.mem.Allocator, node: *Node) ParseError!?[]const []
     }
 }
 
+/// Cap on a pure-literal alternation set — each literal costs one SIMD
+/// `contains` pass over the whole body, so past a handful the DFA scan wins.
+const max_lits: usize = 8;
+
+/// The EXACT literal this node matches — and nothing else — or null. Stricter
+/// than `LitInfo.exact`: zero-width nodes (anchors, `\b`, `.empty`) are REJECTED
+/// rather than treated as "", because the caller uses these literals as a
+/// match-equivalence (not just containment): `pattern matches line` ⟺ `line
+/// contains one of the literals`. An anchor would break that equivalence
+/// (`^panic` contains-hits mid-line), so purity must exclude all assertions.
+fn pureLit(arena: std.mem.Allocator, node: *Node) ParseError!?[]const u8 {
+    switch (node.*) {
+        .class => |set| {
+            const b = set.only() orelse return null;
+            return try arena.dupe(u8, &[_]u8{b});
+        },
+        .concat => |ab| {
+            const x = (try pureLit(arena, ab[0])) orelse return null;
+            const y = (try pureLit(arena, ab[1])) orelse return null;
+            return try std.mem.concat(arena, u8, &.{ x, y });
+        },
+        .capture => |g| return pureLit(arena, g.child), // transparent
+        else => return null,
+    }
+}
+
+/// If the whole pattern is EXACTLY an alternation of pure literals (`panic|0x`,
+/// `foo`, `a|b|c`), return them; else null. This is a match-EQUIVALENCE, not a
+/// mere containment gate: a line matches ⟺ it contains one of the literals —
+/// which lets `-l` answer a whole file with one SIMD `contains` per literal and
+/// no regex engine run. Literals carrying `\n` (can't sit inside one line) or
+/// NUL (binary semantics) are rejected; so is an empty literal (matches
+/// everywhere — the `eol_empty` machinery owns that case).
+pub fn pureLiterals(arena: std.mem.Allocator, node: *Node) ParseError!?[]const []const u8 {
+    switch (node.*) {
+        .alt => |ab| {
+            const sa = (try pureLiterals(arena, ab[0])) orelse return null;
+            const sb = (try pureLiterals(arena, ab[1])) orelse return null;
+            if (sa.len + sb.len > max_lits) return null;
+            return try std.mem.concat(arena, []const u8, &.{ sa, sb });
+        },
+        .capture => |g| return pureLiterals(arena, g.child), // transparent
+        else => {
+            const lit = (try pureLit(arena, node)) orelse return null;
+            if (lit.len == 0) return null;
+            if (std.mem.indexOfAny(u8, lit, "\n\x00") != null) return null;
+            return try arena.dupe([]const u8, &.{lit});
+        },
+    }
+}
+
 /// Iterative DFS over NFA-state indices, each enqueued at most once. Bounds
 /// stack depth under `{n}`-expanded programs (where recursion would blow up).
 const Worklist = struct {

@@ -13,7 +13,7 @@ Python package, the standalone Rust `gist` crate, and Billy's agent code-search
 tool. All express **one** request shape and consume **one** engine (the certified
 rg-parity walk); this file freezes the enumerations they share so a package
 constant and the binary's own version can never silently diverge. It is a
-*contract*, reviewed as an interface change — widening `[request_options]` is a
+_contract_, reviewed as an interface change — widening `[request_options]` is a
 deliberate deepening of the `SearchRequest` surface, not a casual edit.
 
 ## Who reads it

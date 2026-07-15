@@ -7,9 +7,9 @@ feeds these kernels on the no-prefilter path lives in the ripgrep engine
 (`commands/ripgrep/pipeline.zig`), and the resident session drives `verify`
 directly.
 
-| File         | Role                                                                                                                            |
-| ------------ | ----------------------------------------------------------------------------------------------------------------------------- |
-| `simd.zig`   | SIMD substring presence test (`contains ≡ std.mem.indexOf`) — the hot primitive in the verify path.                          |
+| File         | Role                                                                                                                             |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| `simd.zig`   | SIMD substring presence test (`contains ≡ std.mem.indexOf`) — the hot primitive in the verify path.                              |
 | `verify.zig` | The pure data-parallel candidate-verify kernel + SIMD scan; the corpus-aware matcher wrappers that drive it live in the callers. |
 
 Soundness (0 FN / 0 FP vs `rg (?-u)`) and the straggler-balance canary are gated

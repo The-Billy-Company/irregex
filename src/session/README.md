@@ -16,18 +16,18 @@ The warm, in-memory engine behind the `gist serve` daemon. It productizes the
 in-memory bench path (`bench/harness/bench.zig::gistMatches`) as a real
 per-repository service: the corpus bytes + trigram index are held resident, so
 an eligible request answers without re-paying the cold subprocess's process +
-index-mmap + candidate-read startup. It reuses the *lower* kernels the CLI is
+index-mmap + candidate-read startup. It reuses the _lower_ kernels the CLI is
 built on (`index/trigram`, `scan/verify`, `scan/simd`, `regex/core`,
 `corpus/fresh`) — but every entry point **returns errors** instead of calling
 `die()`, which is exactly why the resident path sidesteps the exit hazard
 ADR-352 defers the in-process C FFI on.
 
-| File | Role |
-|---|---|
-| [`resident.zig`](resident.zig) | `ResidentSession`: in-memory corpus/index, mutation overlay, generation reload, the fail-closed reconcile barrier, and the safe `-l`/`-c` query kernels. |
-| [`request.zig`](request.zig) | The eligibility classifier — accepts only the supported argv surface (`-l`/`-c`, `-F`, `-i`, `-e`/`--regexp`, default roots), everything else → `error.Unsupported` (cold fallback). |
-| [`protocol.zig`](protocol.zig) | The length-prefixed UDS frame codec (`[u32 len][u8 opcode][payload]`) + fd send/recv, fail-closed on oversized/truncated/unknown frames. |
-| [`watch.zig`](watch.zig) | The freshness watcher — a pure accelerator (Linux inotify; reconcile-always baseline elsewhere) that only ever decides *whether the reconcile walk may be skipped*, never correctness. |
+| File                           | Role                                                                                                                                                                                   |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`resident.zig`](resident.zig) | `ResidentSession`: in-memory corpus/index, mutation overlay, generation reload, the fail-closed reconcile barrier, and the safe `-l`/`-c` query kernels.                               |
+| [`request.zig`](request.zig)   | The eligibility classifier — accepts only the supported argv surface (`-l`/`-c`, `-F`, `-i`, `-e`/`--regexp`, default roots), everything else → `error.Unsupported` (cold fallback).   |
+| [`protocol.zig`](protocol.zig) | The length-prefixed UDS frame codec (`[u32 len][u8 opcode][payload]`) + fd send/recv, fail-closed on oversized/truncated/unknown frames.                                               |
+| [`watch.zig`](watch.zig)       | The freshness watcher — a pure accelerator (Linux inotify; reconcile-always baseline elsewhere) that only ever decides _whether the reconcile walk may be skipped_, never correctness. |
 
 ## The invariant
 

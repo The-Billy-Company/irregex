@@ -56,6 +56,12 @@ pub const Regex = struct {
     // intersects. Non-empty only when `required` is too short for a single-literal
     // prefilter but a `foo|bar`-style union is provable. Empty ⇒ unused.
     alts: []const []const u8,
+    // Pure-literal EQUIVALENCE set: non-empty iff the whole pattern is exactly an
+    // alternation of these literals (`panic|0x` ⇒ {panic, 0x}) — a line matches
+    // ⟺ it contains one of them. Strictly stronger than `alts` (which is mere
+    // containment): the boolean scan path may answer from SIMD `contains` alone,
+    // with no regex engine run. Empty ⇒ unused. See `analysis.pureLiterals`.
+    lits: []const []const u8,
     // Scan accelerators (verify-time, no effect on match semantics): `anchored` —
     // every match begins at line start (`^…`), seed only at pos 0; `first` — the
     // bytes that can BEGIN a match mid-line plus the precomputed skip strategy
@@ -93,6 +99,7 @@ pub const Regex = struct {
         self.allocator.free(self.states);
         self.allocator.free(self.required);
         freeAlts(self.allocator, self.alts);
+        freeAlts(self.allocator, self.lits);
         if (self.dfa) |d| d.deinit();
         self.* = undefined;
     }
@@ -138,6 +145,8 @@ pub const Regex = struct {
         errdefer allocator.free(required);
         const alts = try dupeCover(allocator, arena, ast, req.best);
         errdefer freeAlts(allocator, alts);
+        const lits = try dupeLits(allocator, arena, ast, opts.multiline);
+        errdefer freeAlts(allocator, lits);
 
         const states = try c.states.toOwnedSlice(allocator);
         errdefer allocator.free(states);
@@ -161,6 +170,7 @@ pub const Regex = struct {
             .start = start,
             .required = required,
             .alts = alts,
+            .lits = lits,
             .anchored = anchored,
             .eol_empty = eol_empty,
             .nullable = nullable,
@@ -184,6 +194,25 @@ pub const Regex = struct {
             gpa.free(dst);
         }
         for (cover) |s| {
+            dst[n] = try gpa.dupe(u8, s);
+            n += 1;
+        }
+        return dst;
+    }
+
+    /// Own a copy of the pure-literal equivalence set (`analysis.pureLiterals`),
+    /// or empty. Multiline (`-U`) changes the match model (a match may cross
+    /// `\n`), so the per-line equivalence claim doesn't hold there — skip it.
+    fn dupeLits(gpa: std.mem.Allocator, arena: std.mem.Allocator, ast: *Node, multiline: bool) ParseError![]const []const u8 {
+        if (multiline) return &[_][]const u8{};
+        const lits = (try analysis.pureLiterals(arena, ast)) orelse return &[_][]const u8{};
+        const dst = try gpa.alloc([]const u8, lits.len);
+        var n: usize = 0;
+        errdefer {
+            for (dst[0..n]) |s| gpa.free(s);
+            gpa.free(dst);
+        }
+        for (lits) |s| {
             dst[n] = try gpa.dupe(u8, s);
             n += 1;
         }

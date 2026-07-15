@@ -58,23 +58,30 @@ ffi = { status = "planned", detail = "resident gist_open/gist_search/gist_close 
 # (no per-language drift risk — these govern the wire protocol the Zig daemon and
 # its clients speak), but pinned here as the authoritative shape.
 [session]
-socket_env = "GIST_SESSION_SOCK"            # override the default per-repo socket path
+socket_env = "GIST_SESSION_SOCK"                 # override the default per-repo socket path
 default_socket = ".local/gist-verify/gistd.sock"
-protocol_version = 1                         # length-prefixed frame protocol (src/session/protocol.zig)
+protocol_version = 1                             # length-prefixed frame protocol (src/session/protocol.zig)
 # Monotonic generations carried in every READY/STATUS frame.
-generations = ["daemon", "session", "index"] # daemon boot id · per-connection id · published pair.gen
+generations = [
+  "daemon",
+  "session",
+  "index",
+] # daemon boot id · per-connection id · published pair.gen
 # The request shapes the resident fast path answers directly. Everything else
 # (line output, --json, context, --rank, replace, invert, multiline, explicit
 # file lists, stdin) is unsupported on the fast path and falls back to the cold
 # subprocess transport, byte-for-byte identically.
-eligible_modes = ["files", "count"]          # -l (files-with-matches) · -c (matching-line count)
+eligible_modes = [ "files", "count" ] # -l (files-with-matches) · -c (matching-line count)
 # Freshness is fail-closed: a query is answered from resident bytes only when the
 # barrier proves the searched roots unchanged since the daemon's build anchor
 # (a watcher-clean window); otherwise the daemon reconciles changed/new/deleted
 # paths against the live filesystem before answering, preserving the invariant
 # `resident matches == --no-index matches == rg matches`.
 freshness = "fail-closed-reconcile"
-watchers = ["inotify", "reconcile"]          # linux inotify accelerator; portable metadata-reconcile barrier
+watchers = [
+  "inotify",
+  "reconcile",
+] # linux inotify accelerator; portable metadata-reconcile barrier
 
 # The exact request surface the deep contract exposes. Each option maps to the
 # rg-parity flag the engine already honors (see src/commands/ripgrep/args.zig
@@ -82,39 +89,39 @@ watchers = ["inotify", "reconcile"]          # linux inotify accelerator; portab
 # match-finding intent belongs here — presentation, ranking, stats, replace,
 # and stdin remain CLI-only and are deliberately NOT contract options.
 [request_options]
-pattern      = { type = "str",       flag = "<positional>", detail = "the regex or literal to find" }
-paths        = { type = "list[str]", flag = "<positional>", detail = "roots to search; empty = the repo default roots" }
-fixed        = { type = "bool",      flag = "-F",           detail = "treat pattern as a literal string" }
-ignore_case  = { type = "bool",      flag = "-i",           detail = "ASCII case-insensitive" }
-smart_case   = { type = "bool",      flag = "-S",           detail = "case-insensitive unless the pattern has an uppercase byte" }
-word         = { type = "bool",      flag = "-w",           detail = "match whole words (ASCII word boundaries)" }
-invert       = { type = "bool",      flag = "-v",           detail = "select non-matching lines" }
-globs        = { type = "list[str]", flag = "-g",           detail = "include/exclude globs (a leading ! excludes)" }
-iglobs       = { type = "list[str]", flag = "--iglob",      detail = "case-insensitive include/exclude globs" }
-types        = { type = "list[str]", flag = "-t",           detail = "restrict to a registered file type" }
-not_types    = { type = "list[str]", flag = "-T",           detail = "exclude a registered file type" }
-before       = { type = "int",       flag = "-B",           detail = "lines of leading context" }
-after        = { type = "int",       flag = "-A",           detail = "lines of trailing context" }
-context      = { type = "int",       flag = "-C",           detail = "lines of context on both sides" }
-max_count    = { type = "int",       flag = "-m",           detail = "stop after N matches per file (0 = unlimited)" }
-max_depth    = { type = "int",       flag = "--max-depth",  detail = "cap directory descent depth (0 = unlimited)" }
-hidden       = { type = "bool",      flag = "--hidden",     detail = "search hidden files/dirs" }
-no_ignore    = { type = "bool",      flag = "--no-ignore",  detail = "disable .gitignore/.ignore/.rgignore filtering" }
-follow       = { type = "bool",      flag = "-L",           detail = "follow symlinks" }
-no_index     = { type = "bool",      flag = "--no-index",   detail = "force the pure live walk (skip index acceleration)" }
+pattern = { type = "str", flag = "<positional>", detail = "the regex or literal to find" }
+paths = { type = "list[str]", flag = "<positional>", detail = "roots to search; empty = the repo default roots" }
+fixed = { type = "bool", flag = "-F", detail = "treat pattern as a literal string" }
+ignore_case = { type = "bool", flag = "-i", detail = "ASCII case-insensitive" }
+smart_case = { type = "bool", flag = "-S", detail = "case-insensitive unless the pattern has an uppercase byte" }
+word = { type = "bool", flag = "-w", detail = "match whole words (ASCII word boundaries)" }
+invert = { type = "bool", flag = "-v", detail = "select non-matching lines" }
+globs = { type = "list[str]", flag = "-g", detail = "include/exclude globs (a leading ! excludes)" }
+iglobs = { type = "list[str]", flag = "--iglob", detail = "case-insensitive include/exclude globs" }
+types = { type = "list[str]", flag = "-t", detail = "restrict to a registered file type" }
+not_types = { type = "list[str]", flag = "-T", detail = "exclude a registered file type" }
+before = { type = "int", flag = "-B", detail = "lines of leading context" }
+after = { type = "int", flag = "-A", detail = "lines of trailing context" }
+context = { type = "int", flag = "-C", detail = "lines of context on both sides" }
+max_count = { type = "int", flag = "-m", detail = "stop after N matches per file (0 = unlimited)" }
+max_depth = { type = "int", flag = "--max-depth", detail = "cap directory descent depth (0 = unlimited)" }
+hidden = { type = "bool", flag = "--hidden", detail = "search hidden files/dirs" }
+no_ignore = { type = "bool", flag = "--no-ignore", detail = "disable .gitignore/.ignore/.rgignore filtering" }
+follow = { type = "bool", flag = "-L", detail = "follow symlinks" }
+no_index = { type = "bool", flag = "--no-index", detail = "force the pure live walk (skip index acceleration)" }
 
 # What a Match record can be. `match` lines carry submatch spans; `context`
 # lines are the -A/-B/-C neighborhood and carry none.
 [match_kinds]
-match   = { detail = "a line containing at least one submatch" }
+match = { detail = "a line containing at least one submatch" }
 context = { detail = "a leading/trailing context line (no submatches)" }
 
 # ripgrep's process exit codes — preserved end-to-end so a script reading the
 # code means the same thing it does for rg.
 [exit_codes]
-matched      = { code = 0, detail = "at least one match" }
-no_match     = { code = 1, detail = "ran cleanly, found nothing" }
-error        = { code = 2, detail = "unsupported pattern/flag, or an I/O/walk error — never a silent empty result" }
+matched = { code = 0, detail = "at least one match" }
+no_match = { code = 1, detail = "ran cleanly, found nothing" }
+error = { code = 2, detail = "unsupported pattern/flag, or an I/O/walk error — never a silent empty result" }
 
 # The agent / code-place tool boundary (ADR-352, plan step 5). Billy operating a
 # user's machine and a coding agent working a repository are the same actor: both
@@ -125,9 +132,9 @@ error        = { code = 2, detail = "unsupported pattern/flag, or an I/O/walk er
 #
 # `aliases` map a tool-boundary parameter name onto its canonical request option.
 [tool_boundary.aliases]
-query         = "pattern"   # fs_search's term for the pattern
-glob          = "globs"     # singular tool param -> the list option
-context_lines = "context"   # fs_search's symmetric-context param
+query = "pattern"         # fs_search's term for the pattern
+glob = "globs"            # singular tool param -> the list option
+context_lines = "context" # fs_search's symmetric-context param
 
 # `routing_keys` are recognized-but-ignored by the request mapper: they select
 # *where* the repository lives and *how* results are ranked, which is the place
@@ -135,6 +142,6 @@ context_lines = "context"   # fs_search's symmetric-context param
 # that one semantic API does not require one transport — place/transport routing
 # stays outside GIST.
 [tool_boundary.routing_keys]
-place    = "which place owns the tree (workspace | machine | scratch)"
-at       = "place addressing (e.g. 'home' or an absolute granted path)"
+place = "which place owns the tree (workspace | machine | scratch)"
+at = "place addressing (e.g. 'home' or an absolute granted path)"
 semantic = "rank by meaning via the place's vector index, not this engine"

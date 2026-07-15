@@ -11,8 +11,71 @@
 const std = @import("std");
 const kernelkit = @import("kernelkit");
 
+// ── vendored PCRE2 10.47 (the opt-in `-P` backend) ──
+// Hermetic: the exact upstream release is pinned under vendor/pcre2/ and
+// compiled from source here — no system/global libpcre2 is ever consulted, so
+// the build is byte-reproducible on any machine. Provenance (release URL +
+// sha256) lives in vendor/pcre2/README.md. The 8-bit library sources are the
+// canonical set from PCRE2's own NON-AUTOTOOLS-BUILD guide (step 4);
+// pcre2_jit_compile.c #includes the sljit backend from ../deps/sljit relative
+// to the src dir, so the vendored src↔deps layout must be preserved.
+const pcre2_sources = [_][]const u8{
+    "pcre2_auto_possess.c", "pcre2_chartables.c",     "pcre2_chkdint.c",
+    "pcre2_compile.c",      "pcre2_compile_cgroup.c", "pcre2_compile_class.c",
+    "pcre2_config.c",       "pcre2_context.c",        "pcre2_convert.c",
+    "pcre2_dfa_match.c",    "pcre2_error.c",          "pcre2_extuni.c",
+    "pcre2_find_bracket.c", "pcre2_jit_compile.c",    "pcre2_maketables.c",
+    "pcre2_match.c",        "pcre2_match_data.c",     "pcre2_match_next.c",
+    "pcre2_newline.c",      "pcre2_ord2utf.c",        "pcre2_pattern_info.c",
+    "pcre2_script_run.c",   "pcre2_serialize.c",      "pcre2_string_utils.c",
+    "pcre2_study.c",        "pcre2_substitute.c",     "pcre2_substring.c",
+    "pcre2_tables.c",       "pcre2_ucd.c",            "pcre2_valid_utf.c",
+    "pcre2_xclass.c",
+};
+
+// Feature selection lives here (visible + reviewable) rather than by editing
+// the vendored config.h, which stays byte-identical to upstream's
+// config.h.generic. HAVE_CONFIG_H pulls in that header for the value-macro
+// defaults (MATCH_LIMIT, LINK_SIZE, NEWLINE_DEFAULT, …); the -D flags turn on
+// the 8-bit library, Unicode/UTF, JIT, and static linkage. `-fno-sanitize=
+// undefined` keeps Zig's C UBSan from trapping on PCRE2's intentional, well-
+// defined-in-practice pointer/shift idioms — a `-P` query must degrade to a
+// clean error, never a sanitizer abort.
+const pcre2_cflags = [_][]const u8{
+    "-DHAVE_CONFIG_H",
+    "-DPCRE2_CODE_UNIT_WIDTH=8",
+    "-DPCRE2_STATIC",
+    "-DSUPPORT_UNICODE",
+    "-DSUPPORT_PCRE2_8",
+    "-DSUPPORT_JIT",
+    "-fno-sanitize=undefined",
+    "-std=c11",
+};
+
+/// Build the vendored PCRE2 8-bit library (JIT included) as one static archive
+/// at `optimize`. SUPPORT_JIT is always compiled in; on an sljit-unsupported
+/// target the backend self-disables and `pcre2_jit_compile` reports an error,
+/// which the Zig wrapper treats as "no JIT" and falls back to the interpreter.
+fn pcre2Library(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
+    const mod = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    mod.addIncludePath(b.path("vendor/pcre2/src"));
+    mod.addCSourceFiles(.{
+        .root = b.path("vendor/pcre2/src"),
+        .files = &pcre2_sources,
+        .flags = &pcre2_cflags,
+    });
+    return b.addLibrary(.{ .name = "pcre2gist", .linkage = .static, .root_module = mod });
+}
+
 pub fn build(b: *std.Build) void {
     const k = kernelkit.addKernel(b, .{ .name = "gist" });
+
+    // Link the vendored PCRE2 backend into the engine module (and thus every
+    // artifact built from it: the C-ABI libs, the test binary, and the
+    // bench/roofline/lowerbound/portcert executables that import it). The CLI
+    // links its own copy built at the CLI optimize level (below).
+    const pcre2_engine = pcre2Library(b, k.target, k.optimize);
+    k.root_module.linkLibrary(pcre2_engine);
 
     // ── the `gist` CLI executable (the product surface) ──
     // `zig build cli -- index` (build + persist once) / `-- status` /
@@ -41,6 +104,10 @@ pub fn build(b: *std.Build) void {
         .target = k.target,
         .optimize = cli_optimize,
     });
+    // The installed CLI is the speed-critical product surface (ReleaseFast by
+    // default), so it links a PCRE2 built at the same optimize level rather than
+    // the (possibly Debug) engine copy.
+    cli_engine.linkLibrary(pcre2Library(b, k.target, cli_optimize));
     const cli_mod = b.createModule(.{
         .root_source_file = b.path("src/commands/cli/main.zig"),
         .target = k.target,
@@ -84,6 +151,18 @@ pub fn build(b: *std.Build) void {
     search_verb_test.addArgs(&.{ "search", "gist_search_verb_regression_needle_xyz", "--no-index", "pkg/kernels/gist/build.zig" });
     search_verb_test.expectExitCode(0);
     k.test_step.dependOn(&search_verb_test.step);
+
+    // Ranked search must remain useful before the index is warmed (or when its
+    // persisted pair is incomplete). --no-index deterministically exercises the
+    // same live-rank fallback without mutating the shared machine-local cache.
+    const live_rank_test = b.addRunArtifact(cli_exe);
+    live_rank_test.setCwd(b.path("../../.."));
+    live_rank_test.addArgs(&.{ "gist_live_rank_regression_needle_xyz", "--rank", "--no-index", "pkg/kernels/gist/build.zig" });
+    live_rank_test.expectExitCode(0);
+    live_rank_test.expectStdOutMatch("pkg/kernels/gist/build.zig:");
+    live_rank_test.expectStdErrMatch("live-scanned");
+    k.test_step.dependOn(&live_rank_test.step);
+    // gist_live_rank_regression_needle_xyz ← fallback fixture
 
     // Companion guard: a leading `(?i)` inline-flag directive (rust-regex/rg
     // syntax) must be HONORED (stripped, run-wide caseless) — not rejected as a
@@ -139,6 +218,10 @@ pub fn build(b: *std.Build) void {
         .name = "gist-c-abi-smoke-kernel",
         .root_module = k.root_module,
     }));
+    // The kernel object carries the engine's PCRE2 extern references; the smoke
+    // exe links a matching PCRE2 so those symbols resolve (the C ABI itself does
+    // not touch PCRE2, but the whole engine module is compiled into the object).
+    c_smoke_mod.linkLibrary(pcre2_engine);
     const c_smoke = b.addExecutable(.{
         .name = "gist-c-abi-smoke",
         .root_module = c_smoke_mod,

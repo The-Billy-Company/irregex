@@ -9,8 +9,8 @@
 //! bytes), extracts a few per-file ranking features in a parallel read pass,
 //! fuses them with the weighted RRF kernel in `rank/rank.zig`, and prints the
 //! top-K as `path:line [kind] ×count line` — a symbol's DEFINITION outranking
-//! its call sites, codegen demoted. It requires an index (that's the structure
-//! the ranking reads); without one there's nothing to rank.
+//! its call sites, codegen demoted. When persistence is unavailable, the caller
+//! feeds the same ranker from the live walk instead.
 //!
 //! Pattern semantics match the line engine: the caller compiles via
 //! `combinePatterns` + `Regex.compileOpts`, so alternations (`foo|bar`),
@@ -28,6 +28,19 @@ const rank_mod = @import("../../rank/rank.zig");
 const Dir = std.Io.Dir;
 
 const Doc = rank_mod.Doc;
+pub const LiveFile = struct { path: []const u8, bytes: []const u8 };
+
+const Source = union(enum) {
+    disk: []const []const u8,
+    memory: []const LiveFile,
+
+    fn path(self: Source, id: u32) []const u8 {
+        return switch (self) {
+            .disk => |paths| paths[id],
+            .memory => |files| files[id].path,
+        };
+    }
+};
 
 fn nowNs(io: std.Io) i128 {
     return std.Io.Clock.now(.awake, io).nanoseconds;
@@ -249,9 +262,7 @@ fn firstSpan(gpa: std.mem.Allocator, re: *const Regex, line: []const u8) ?Regex.
 /// — the one line shown per ranked file. Display-only (not benchmarked), so
 /// io reads are fine. `…` marks a truncated edge so agents can tell the
 /// matched token sits in a window, not the raw file prefix.
-fn snippetOf(gpa: std.mem.Allocator, io: std.Io, path: []const u8, line: u32, re: *const Regex) ![]u8 {
-    const data = Dir.cwd().readFileAlloc(io, path, gpa, .limited(corpus_mod.per_file_cap)) catch return gpa.dupe(u8, "");
-    defer gpa.free(data);
+fn snippetFrom(gpa: std.mem.Allocator, data: []const u8, line: u32, re: *const Regex) ![]u8 {
     var it = std.mem.splitScalar(u8, data, '\n');
     var ln: u32 = 0;
     while (it.next()) |l| {
@@ -273,12 +284,41 @@ fn snippetOf(gpa: std.mem.Allocator, io: std.Io, path: []const u8, line: u32, re
     return gpa.dupe(u8, "");
 }
 
+fn snippetOf(gpa: std.mem.Allocator, io: std.Io, source: Source, id: u32, line: u32, re: *const Regex) ![]u8 {
+    return switch (source) {
+        .memory => |files| snippetFrom(gpa, files[id].bytes, line, re),
+        .disk => |paths| blk: {
+            const data = Dir.cwd().readFileAlloc(io, paths[id], gpa, .limited(corpus_mod.per_file_cap)) catch return gpa.dupe(u8, "");
+            defer gpa.free(data);
+            break :blk snippetFrom(gpa, data, line, re);
+        },
+    };
+}
+
+fn emitRanked(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, docs: []const Doc, source: Source, k: usize) !usize {
+    const order = try rank_mod.rank(gpa, docs, .{}, null);
+    defer gpa.free(order);
+    const top = @min(order.len, if (k == 0) 20 else k);
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(gpa);
+    for (order[0..top], 0..) |di, i| {
+        const doc = docs[di];
+        const path = source.path(doc.id);
+        const snip = try snippetOf(gpa, io, source, doc.id, doc.best_line, re);
+        defer gpa.free(snip);
+        const kind = if (doc.is_generated) "gen" else if (doc.is_def) "def" else "use";
+        try buf.print(gpa, "{d:>2}. {s}:{d}  [{s}]  ×{d}  {s}\n", .{ i + 1, path, doc.best_line, kind, doc.matches, snip });
+    }
+    corpus_mod.emitStdout(buf.items);
+    return top;
+}
+
 /// Fresh-process ranked query: cold-load the index, resolve + read candidates
 /// for the compiled regex (optionally scoped to PATH roots), extract per-file
 /// features, fuse via the RRF kernel, print the top-K as token-compressed
 /// `path:line` + surfaced line. `k` caps the surfaced rows (`--rank[=N]`,
-/// default 20). No index ⇒ nothing to rank (silent no-op). `caseless` disables
-/// the trigram prefilter (same soundness rule as the line engine).
+/// default 20). Returns false when no complete index is available so the caller
+/// can live-rank. `caseless` disables the trigram prefilter.
 pub fn run(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -286,9 +326,9 @@ pub fn run(
     roots: []const []const u8,
     k: usize,
     caseless: bool,
-) !void {
+) !bool {
     const l0 = nowNs(io);
-    var p = (try persist.load(gpa, io)) orelse return;
+    var p = (persist.loadQuiet(gpa, io) catch null) orelse return false;
     defer p.deinit();
     const load_ns = nowNs(io) - l0;
 
@@ -320,28 +360,28 @@ pub fn run(
 
     // The fusion: lexical density + symbol(def) boost + shallow-path + authored
     // (codegen demotion), RRF-fused. null is the external graph-centrality hook.
-    const order = try rank_mod.rank(gpa, docs.items, .{}, null);
-    defer gpa.free(order);
     const query_ns = nowNs(io) - q0;
-
-    const top = @min(order.len, if (k == 0) 20 else k);
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(gpa);
-    for (order[0..top], 0..) |di, i| {
-        const doc = docs.items[di];
-        const path = p.paths.items[doc.id];
-        const snip = try snippetOf(gpa, io, path, doc.best_line, re);
-        defer gpa.free(snip);
-        const kind = if (doc.is_generated) "gen" else if (doc.is_def) "def" else "use";
-        const row = try std.fmt.allocPrint(gpa, "{d:>2}. {s}:{d}  [{s}]  ×{d}  {s}\n", .{
-            i + 1, path, doc.best_line, kind, doc.matches, snip,
-        });
-        defer gpa.free(row);
-        try buf.appendSlice(gpa, row);
-    }
-    corpus_mod.emitStdout(buf.items); // ranked rows → stdout (rg convention)
+    const top = try emitRanked(gpa, io, re, docs.items, .{ .disk = p.paths.items }, k);
     std.debug.print("— {d} ranked matches (top {d}) · read {d}/{d} candidates · cold-load {d:.1} ms · rank {d:.1} ms · total {d:.1} ms\n", .{
         docs.items.len, top, read_files, p.paths.items.len, ms(load_ns), ms(query_ns), ms(load_ns + query_ns),
+    });
+    return true;
+}
+
+/// Rank bytes already gathered by the rg-compatible live walk.
+pub fn runLive(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, files: []const LiveFile, k: usize) !void {
+    const q0 = nowNs(io);
+    var docs: std.ArrayList(Doc) = .empty;
+    defer docs.deinit(gpa);
+    var sim = try Regex.Sim.init(gpa, re);
+    defer sim.deinit();
+    for (files, 0..) |file, id| {
+        if (fileDoc(file.bytes, file.path, re, &sim, @intCast(id))) |doc| try docs.append(gpa, doc);
+    }
+    const top = try emitRanked(gpa, io, re, docs.items, .{ .memory = files }, k);
+    const query_ns = nowNs(io) - q0;
+    std.debug.print("— {d} ranked matches (top {d}) · live-scanned {d} files · rank {d:.1} ms\n", .{
+        docs.items.len, top, files.len, ms(query_ns),
     });
 }
 

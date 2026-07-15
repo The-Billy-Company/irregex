@@ -20,13 +20,17 @@
 //!   • `.gitignore`/`.ignore`/`.rgignore` precedence honored (`ignore.zig`),
 //!     byte-identical to `rg`'s own default corpus scope;
 //!   • exit 0 = matched, 1 = no match, 2 = error/unsupported (ripgrep's codes).
-//! It reuses gist's regex engine verbatim (one linear-time RE2-style matcher, no
-//! second code path) — this module is the walk + presentation shell that makes
-//! that engine addressable the way `rg` is. `--json`/`--column`/`--vimgrep` ARE
-//! honored (`json.zig`, `output.zig`); the genuine divergences that fail LOUD
-//! with exit 2 (so the differential harness scores them N/A rather than silently
-//! wrong) are `-U`/`--multiline` (per-line by construction) and `-P`/`--pcre2`
-//! (a linear-time RE2 engine has no backreferences/lookaround).
+//! It reuses gist's linear-time RE2-style matcher for the default per-line and
+//! the `-U`/`--multiline` whole-buffer paths, and routes `-P`/`--pcre2` to the
+//! opt-in PCRE2 JIT backend (`../../regex/pcre2.zig`) — both behind the
+//! engine-neutral `Matcher` seam, so `multiline.zig` + `Emitter.buffer` own
+//! cross-line emission regardless of which engine produced a span. This module
+//! is the walk + presentation shell that makes both engines addressable the way
+//! `rg` is: `--json`/`--column`/`--vimgrep` ARE honored (`json.zig`,
+//! `output.zig`). A PCRE2 run that trips a resource limit on pathological input
+//! (catastrophic backtracking) mirrors ripgrep's exit 2 rather than reporting a
+//! silent no-match. `--rank` is the one gist-native view that stays linear-only
+//! (it declines loud under `-P`).
 
 const std = @import("std");
 const corpus_mod = @import("../../corpus/corpus.zig");
@@ -47,7 +51,12 @@ const Opts = args.Opts;
 const Emitter = output.Emitter;
 const die = args.die;
 const Regex = @import("../../regex/core.zig").Regex;
-const Captures = @import("../../regex/captures.zig").Captures;
+const Matcher = @import("../../regex/matcher.zig").Matcher;
+const pcre2 = @import("../../regex/pcre2.zig");
+const Pcre = pcre2.Pcre;
+const captures_mod = @import("../../regex/captures.zig");
+const Captures = captures_mod.Captures;
+const Caps = captures_mod.Caps;
 const Dir = std.Io.Dir;
 
 // Per-file semantics (BOM/UTF-16 ingest, rg line split, binary handling, the
@@ -381,9 +390,12 @@ fn readCandidates(dest: std.mem.Allocator, gpa: std.mem.Allocator, candidates: [
 /// The compiled analyzer's longest literal present in every match. This works
 /// for literals and regexes alike (including 1–2 byte literals that cannot use
 /// the trigram index), and stays null for alternations without a common literal.
-fn requiredLiteralGate(o: Opts, re: *const Regex) ?[]const u8 {
-    if (o.caseless or o.invert or re.required.len == 0) return null;
-    return re.required;
+/// Engine-neutral: `Matcher.required()` is the sound per-match literal from
+/// either backend (`Regex.required` / the PCRE2 `literal.zig` extractor).
+fn requiredLiteralGate(o: Opts, re: *const Matcher) ?[]const u8 {
+    const req = re.required();
+    if (o.caseless or o.invert or req.len == 0) return null;
+    return req;
 }
 
 /// A line gate merely avoids a regex run. A whole-file gate drops the file, so
@@ -443,11 +455,23 @@ const IndexSkip = struct {
 /// engine's own required literal (`re.required`, present in EVERY match) or, for
 /// an alternation, its per-branch cover set (`re.alts` — `foo|bar` ⇒ {foo,bar}),
 /// both of which `fresh.candidates` treats as sound supersets.
-fn trigramFilter(o: Opts, re: *const Regex, one: *[1][]const u8) []const []const u8 {
+fn trigramFilter(o: Opts, re: *const Matcher, one: *[1][]const u8) []const []const u8 {
     if (o.no_index or o.caseless or o.invert or o.stats or o.passthru) return &.{};
     // The regex→sound-literals mapping is the shared search core's, so the cold
-    // elision and the warm resident session prune by identical literals.
-    return query_mod.regexPrefilter(re, one);
+    // elision and the warm resident session prune by identical literals. The
+    // PCRE2 arm has no gist AST, so it prunes by its required literal alone
+    // (≥3 bytes to be trigram-usable) — the same soundness rule, conservatively.
+    return switch (re.*) {
+        .linear => |*r| query_mod.regexPrefilter(r, one),
+        .pcre => blk: {
+            const req = re.required();
+            if (req.len >= 3) {
+                one[0] = req;
+                break :blk one[0..1];
+            }
+            break :blk re.alts();
+        },
+    };
 }
 
 /// Build the read-elision oracle from the persisted index, or null when there's
@@ -743,11 +767,6 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     if (!o.max_cols_set and (std.Io.File.stdout().isTty(io) catch false))
         o.max_cols = tty_long_line_cols;
 
-    // Honest deferrals: recognized flags gist doesn't yet emit byte-identically.
-    // Failing loud (exit 2) keeps the harness scoring them N/A, never silently
-    // wrong — each is a scoped follow-up, not a design divergence.
-    deferUnimplemented(o);
-
     // --type-list: dump every `-t` name and the globs it recognizes, one name
     // per line (aliases repeat their row) — the whole comptime table in
     // `../scope/types.zig`, in the same domain-grouped order it's declared.
@@ -790,40 +809,75 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         o.invert = false;
         break :blk "";
     };
-    var re = Regex.compileOpts(gpa, eff, .{ .caseless = o.caseless }) catch
-        die("bad pattern '{s}' — outside gist's linear-time syntax: no lookaround, no backreferences (\\0–\\9; NUL is \\x00), no unrecognized escapes (\\q, \\e, …), no assertion escapes inside [...], no mid-pattern inline flags (--schema lists the surface). Fallback: rg '{s}' (add --pcre2 for backreferences/lookaround)\n", .{ eff, eff });
+    // The engine-neutral match seam: the output layer (Emitter, --json, per-file
+    // binary/stats) consumes `&re` as a `Matcher` without knowing which engine
+    // produced a span. `-P`/`--pcre2` builds the PCRE2 arm (lookaround,
+    // backreferences, Unicode properties); everything else builds the linear
+    // RE2/Pike arm. Both honor `-U`/`--multiline` and `--multiline-dotall`.
+    var re: Matcher = if (o.engine == .pcre2)
+        .{ .pcre = Pcre.compileOpts(gpa, eff, .{ .caseless = o.caseless, .multiline = o.multiline, .dotall = o.multiline_dotall, .unicode = o.pcre_unicode }) catch |e| switch (e) {
+            error.OutOfMemory => die("oom\n", .{}),
+            else => die("bad PCRE2 pattern '{s}': {s}\n", .{ eff, pcre2.lastError() }),
+        } }
+    else
+        .{ .linear = Regex.compileOpts(gpa, eff, .{ .caseless = o.caseless, .multiline = o.multiline, .dotall = o.multiline_dotall }) catch
+            die("bad pattern '{s}' — outside gist's linear-time syntax: no lookaround, no backreferences (\\0–\\9; NUL is \\x00), no unrecognized escapes (\\q, \\e, …), no assertion escapes inside [...], no mid-pattern inline flags (--schema lists the surface). Fallback: rg '{s}' (add --pcre2 for backreferences/lookaround)\n", .{ eff, eff }) };
     defer re.deinit();
+    if (o.engine == .pcre2) pcre2.clearMatchError(); // fresh sticky-error latch per run
 
-    // --rank: definition-first ranked view over the SAME compiled pattern the
-    // line engine would search (alternations, wildcards, -F/-i/-x, multi-e OR)
-    // and the same PATH roots a scoped walk would honor. Requires an index.
+    // --rank: definition-first ranked view over the SAME compiled pattern and
+    // PATH scope. Prefer the persisted candidate set; an absent/incomplete index
+    // (or --no-index) degrades to the normal live walk, then the same RRF kernel.
+    // It is the one gist-native view built on the linear engine's AST analysis
+    // (definition-shape ranking), so it declines loud under `-P` rather than
+    // silently ignoring the backend the user asked for.
     if (o.rank) {
-        try rank.run(gpa, io, &re, parsed.roots, o.rank_k, o.caseless);
+        if (o.engine == .pcre2) die("--rank uses gist's linear engine and is unavailable with -P/--pcre2 — drop one\n", .{});
+        const rex: *const Regex = &re.linear;
+        if (!o.no_index and try rank.run(gpa, io, rex, parsed.roots, o.rank_k, o.caseless)) return;
+        const c = collectFiles(a, gpa, io, parsed, &.{}, requiredLiteralGate(o, &re));
+        const live = a.alloc(rank.LiveFile, c.files.len) catch die("oom\n", .{});
+        for (c.files, live) |file, *dst| dst.* = .{ .path = file.path, .bytes = file.bytes };
+        try rank.runLive(gpa, io, rex, live, o.rank_k);
+        if (c.path_error) std.process.exit(2);
         return;
     }
 
     const line_needle = requiredLiteralGate(o, &re);
     const file_needle = wholeFileLiteralGate(o, line_needle);
 
-    // -r/--replace: build the group-aware capture matcher (same AST, save-carrying
-    // Pike VM) once and share it across every emitter for template expansion.
-    var caps_store: ?Captures = if (o.replace != null)
-        (Captures.compile(gpa, eff, o.caseless) catch die("bad pattern '{s}' — outside gist's linear-time syntax. Fallback: rg '{s}' (add --pcre2 for backreferences/lookaround)\n", .{ eff, eff }))
+    // -r/--replace: build the group-aware capture matcher once and share it
+    // across every emitter for template expansion. The PCRE2 arm captures from
+    // real backreference/lookaround programs; the linear arm is the save-carrying
+    // Pike VM over the same AST. Same engine choice as the search matcher above.
+    var caps_store: ?Caps = if (o.replace != null)
+        (if (o.engine == .pcre2)
+            Caps{ .pcre = captures_mod.PcreCaptures.compile(gpa, eff, .{ .caseless = o.caseless, .multiline = o.multiline, .dotall = o.multiline_dotall, .unicode = o.pcre_unicode }) catch |e| switch (e) {
+                error.OutOfMemory => die("oom\n", .{}),
+                else => die("bad PCRE2 pattern '{s}': {s}\n", .{ eff, pcre2.lastError() }),
+            } }
+        else
+            Caps{ .linear = Captures.compile(gpa, eff, o.caseless) catch die("bad pattern '{s}' — outside gist's linear-time syntax. Fallback: rg '{s}' (add --pcre2 for backreferences/lookaround)\n", .{ eff, eff }) })
     else
         null;
     defer if (caps_store) |*cp| cp.deinit();
-    const caps: ?*Captures = if (caps_store) |*cp| cp else null;
+    const caps: ?*Caps = if (caps_store) |*cp| cp else null;
 
     // Stdin search (rg parity): with no PATH args and a readable stdin (pipe /
     // regular file), search the piped bytes as one unnamed source — no filename
     // prefix, rg exit codes. A tty or /dev/null stdin falls through to the walk.
     if (parsed.roots.len == 0 and readableStdin()) {
         const body = stripBom(readStdin(a));
-        var lines: std.ArrayList([]const u8) = .empty;
-        collectLines(a, body, o.term(), &lines);
         var out0: std.ArrayList(u8) = .empty;
         var em0 = Emitter{ .a = a, .re = &re, .o = o, .show_name = false, .out = &out0, .base = @intFromPtr(body.ptr), .caps = caps, .use_color = use_color, .needle = line_needle };
-        const hits = em0.file("<stdin>", lines.items);
+        // `-U`: match the whole stream as one buffer (a match may cross `\n`);
+        // otherwise the per-line path over rg's line split.
+        const hits = if (o.multiline) em0.buffer("<stdin>", body) else blk: {
+            var lines: std.ArrayList([]const u8) = .empty;
+            collectLines(a, body, o.term(), &lines);
+            break :blk em0.file("<stdin>", lines.items);
+        };
+        pcreFaultExit(&re);
         if (o.quiet) std.process.exit(if (hits > 0) 0 else 1);
         corpus_mod.emitStdout(out0.items);
         std.process.exit(if (hits > 0) 0 else 1);
@@ -854,6 +908,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         var out: std.ArrayList(u8) = .empty;
         const matched = json.run(a, &out, &re, caps, o, jf.items);
         corpus_mod.emitStdout(out.items);
+        pcreFaultExit(&re);
         std.process.exit(if (c.path_error) 2 else if (matched) 0 else 1);
     }
 
@@ -868,31 +923,42 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
 
     // --quiet short-circuits on first match — unless --stats is also asked for,
     // which must run the full search to tally (then print only the stats block).
-    if (o.quiet and !o.stats) std.process.exit(if (c.path_error) 2 else if (anyMatch(a, &re, o, line_needle, files)) 0 else 1);
+    if (o.quiet and !o.stats) {
+        const hit = anyMatch(a, &re, o, line_needle, files);
+        pcreFaultExit(&re);
+        std.process.exit(if (c.path_error) 2 else if (hit) 0 else 1);
+    }
 
     if (o.files_without) {
-        var lsim = Regex.Sim.init(a, &re) catch die("engine init failed\n", .{});
+        var lsim = Matcher.Sim.init(a, &re) catch die("engine init failed\n", .{});
         defer lsim.deinit();
-        var wss: ?Regex.SpanSim = if (o.word) (Regex.SpanSim.init(a, &re) catch null) else null;
+        var wss: ?Matcher.SpanSim = if (o.word) (Matcher.SpanSim.init(a, &re) catch null) else null;
         defer if (wss) |*s| s.deinit();
         for (files) |f| {
             const body = stripBom(f.bytes);
             if (body.len > 0 and corpus_mod.isBinary(body) and !o.text) continue;
-            var lines: std.ArrayList([]const u8) = .empty;
-            collectLines(a, body, o.term(), &lines);
-            var any = false;
-            for (lines.items) |line| {
-                const mv = if (o.crlf) std.mem.trimEnd(u8, line, "\r") else line;
-                const hit = (line_needle == null or simd.contains(mv, line_needle.?)) and
-                    (if (wss) |*s| em.lineHitWord(s, mv) else re.lineMatch(&lsim, mv));
-                if (hit) {
-                    any = true;
-                    break;
+            // `-U`: "match" is a whole-buffer hit — render into a throwaway buffer
+            // and reuse the multiline emitter's tally (which already bakes in `-w`,
+            // `-v`, and the zero-width progress rule) as the boolean.
+            const any = if (o.multiline) blk: {
+                var scratch: std.ArrayList(u8) = .empty;
+                var em2 = Emitter{ .a = a, .re = &re, .o = o, .show_name = false, .out = &scratch, .base = @intFromPtr(body.ptr), .caps = caps, .needle = line_needle };
+                break :blk em2.buffer(f.path, body) > 0;
+            } else blk: {
+                var lines: std.ArrayList([]const u8) = .empty;
+                collectLines(a, body, o.term(), &lines);
+                for (lines.items) |line| {
+                    const mv = if (o.crlf) std.mem.trimEnd(u8, line, "\r") else line;
+                    const hit = (line_needle == null or simd.contains(mv, line_needle.?)) and
+                        (if (wss) |*s| em.lineHitWord(s, mv) else re.lineMatch(&lsim, mv));
+                    if (hit) break :blk true;
                 }
-            }
+                break :blk false;
+            };
             if (!any) out.print(a, "{s}{c}", .{ f.path, if (o.null_sep) @as(u8, 0) else '\n' }) catch die("oom\n", .{});
         }
         corpus_mod.emitStdout(out.items);
+        pcreFaultExit(&re);
         std.process.exit(if (c.path_error) 2 else if (out.items.len > 0) 0 else 1);
     }
 
@@ -912,8 +978,10 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
             if (grepfile.handleBinary(a, &re, o, &out, &em, f.path, f.explicit, body, nul, show_name)) matched_files += 1;
             continue;
         };
+        // `-U` matches the whole buffer (no line split); the per-line path splits
+        // into rg lines. `fileMatchStats`/`Emitter` are multiline-aware internally.
         var lines: std.ArrayList([]const u8) = .empty;
-        collectLines(a, body, o.term(), &lines);
+        if (!o.multiline) collectLines(a, body, o.term(), &lines);
         if (o.stats) {
             stat.files_searched += 1;
             const fs = fileMatchStats(&re, a, o, body, lines.items);
@@ -925,7 +993,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         // --heading: a blank-line-separated group per file, path on its own line.
         if (heading) out.print(a, "{s}{s}\n", .{ if (first) "" else "\n", f.path }) catch die("oom\n", .{});
         em.base = @intFromPtr(body.ptr);
-        const hits = em.file(f.path, lines.items);
+        const hits = if (o.multiline) em.buffer(f.path, body) else em.file(f.path, lines.items);
         if (hits > 0) {
             if (join_groups and !first and out.items.len > before)
                 out.insertSlice(a, before, "--\n") catch die("oom\n", .{});
@@ -943,24 +1011,41 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         emitStats(a, &out, stat);
     }
     corpus_mod.emitStdout(out.items);
+    pcreFaultExit(&re);
     std.process.exit(if (c.path_error) 2 else if (matched_files > 0) 0 else 1);
 }
 
-/// Fail loud (exit 2 → harness N/A) for recognized-but-not-yet-emitted flags.
-fn deferUnimplemented(o: Opts) void {
-    if (o.multiline) die("-U/--multiline not yet implemented in gist rg-compat\n", .{});
+/// Mirror ripgrep's exit 2 when a `-P` search tripped a resource limit mid-run
+/// (catastrophic backtracking hitting the match/depth limit, a JIT stack
+/// overflow): the PCRE2 arm latched the fault and returned a silent no-match to
+/// the emitter, so any accumulated stdout is flushed first (earlier files'
+/// genuine matches, exactly as rg leaves them) and then the run exits 2 rather
+/// than reporting a bogus no-match. A no-op for the linear engine (always 0).
+fn pcreFaultExit(re: *const Matcher) void {
+    if (re.matchError() == 0) return;
+    var buf: [256]u8 = undefined;
+    std.debug.print("gist: PCRE2: error matching: {s}\n", .{pcre2.matchErrorMessage(&buf)});
+    std.process.exit(2);
 }
 
-/// `-q/--quiet`: true as soon as any file has a matching line (short-circuits).
-fn anyMatch(a: std.mem.Allocator, re: *const Regex, o: Opts, needle: ?[]const u8, files: []const InFile) bool {
-    var sim = Regex.Sim.init(a, re) catch return false;
+/// `-q/--quiet`: true as soon as any file matches (short-circuits). Under `-U` the
+/// whole-buffer emitter's tally (invert/word/zero-width baked in) is the boolean;
+/// otherwise the per-line scan against the (possibly inverted) line selection.
+fn anyMatch(a: std.mem.Allocator, re: *const Matcher, o: Opts, needle: ?[]const u8, files: []const InFile) bool {
+    var sim = Matcher.Sim.init(a, re) catch return false;
     defer sim.deinit();
-    var wss: ?Regex.SpanSim = if (o.word) (Regex.SpanSim.init(a, re) catch null) else null;
+    var wss: ?Matcher.SpanSim = if (o.word) (Matcher.SpanSim.init(a, re) catch null) else null;
     defer if (wss) |*s| s.deinit();
     var em = Emitter{ .a = a, .re = re, .o = o, .show_name = false, .out = undefined };
     for (files) |f| {
         const body = stripBom(f.bytes);
         if (body.len == 0 or (corpus_mod.isBinary(body) and !o.text)) continue;
+        if (o.multiline) {
+            var scratch: std.ArrayList(u8) = .empty;
+            var em2 = Emitter{ .a = a, .re = re, .o = o, .show_name = false, .out = &scratch, .base = @intFromPtr(body.ptr), .needle = needle };
+            if (em2.buffer(f.path, body) > 0) return true;
+            continue;
+        }
         var lines: std.ArrayList([]const u8) = .empty;
         collectLines(a, body, o.term(), &lines);
         for (lines.items) |line| {
@@ -1011,19 +1096,19 @@ test "stripLeadingFlags declines non-directive groups (parser decides)" {
 
 test "required literal gate reuses sound regex analysis" {
     const t = std.testing;
-    var decl = try Regex.compile(t.allocator, "func\\s+\\w+\\(");
+    var decl = Matcher{ .linear = try Regex.compile(t.allocator, "func\\s+\\w+\\(") };
     defer decl.deinit();
     try t.expectEqualStrings("func", requiredLiteralGate(.{}, &decl).?);
 
-    var short = try Regex.compile(t.allocator, "[0-9a-f]{8}-[0-9a-f]{4}");
+    var short = Matcher{ .linear = try Regex.compile(t.allocator, "[0-9a-f]{8}-[0-9a-f]{4}") };
     defer short.deinit();
     try t.expectEqualStrings("-", requiredLiteralGate(.{}, &short).?);
 
-    var common = try Regex.compile(t.allocator, "(foo|bar)baz");
+    var common = Matcher{ .linear = try Regex.compile(t.allocator, "(foo|bar)baz") };
     defer common.deinit();
     try t.expectEqualStrings("baz", requiredLiteralGate(.{}, &common).?);
 
-    var alternatives = try Regex.compile(t.allocator, "(?:foo)|(?:bar)");
+    var alternatives = Matcher{ .linear = try Regex.compile(t.allocator, "(?:foo)|(?:bar)") };
     defer alternatives.deinit();
     try t.expectEqual(@as(?[]const u8, null), requiredLiteralGate(.{}, &alternatives));
 }
