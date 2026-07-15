@@ -45,6 +45,76 @@ test "regex: caseless (-i) folds literals, classes, and ranges both ways" {
     try std.testing.expect(!try matches("WalletService", "walletservice"));
 }
 
+fn matchesU(pattern: []const u8, line: []const u8) !bool {
+    var re = try Regex.compileOpts(std.testing.allocator, pattern, .{ .unicode = true });
+    defer re.deinit();
+    var sim = try Regex.Sim.init(std.testing.allocator, &re);
+    defer sim.deinit();
+    return re.lineMatch(&sim, line);
+}
+
+test "regex/unicode: codepoint classes, dot, properties, and non-ASCII literals" {
+    // `.` spans a whole codepoint, not a byte — "café" is 4 codepoints, and `.`
+    // never matches half of the é (which the byte engine's `.` would).
+    try std.testing.expect(try matchesU("caf.", "café"));
+    try std.testing.expect(try matchesU("c.f.", "café"));
+    try std.testing.expect(!try matchesU("caf..", "café")); // only 4 codepoints
+    // Unicode `\w` / `\d` / `\s` include non-ASCII.
+    try std.testing.expect(try matchesU("\\w+", "中文"));
+    try std.testing.expect(try matchesU("\\w", "é"));
+    try std.testing.expect(try matchesU("\\d", "\u{0660}")); // ARABIC-INDIC ZERO
+    try std.testing.expect(!try matchesU("\\d", "x"));
+    try std.testing.expect(try matchesU("a\\sb", "a\u{00A0}b")); // NBSP is \s in Unicode
+    // `\p{…}` general categories and scripts.
+    try std.testing.expect(try matchesU("\\p{L}", "α"));
+    try std.testing.expect(!try matchesU("\\p{L}", "1"));
+    try std.testing.expect(try matchesU("\\p{Nd}+", "123"));
+    try std.testing.expect(try matchesU("\\p{Greek}", "Ω"));
+    try std.testing.expect(!try matchesU("\\p{Greek}", "A"));
+    try std.testing.expect(try matchesU("\\P{L}", "7")); // negated property
+    // Non-ASCII literal matches its exact codepoint, atomically.
+    try std.testing.expect(try matchesU("café", "the café closed"));
+    try std.testing.expect(!try matchesU("café", "cafe"));
+    // Unicode class ranges over codepoints, and negation covers all of Unicode.
+    try std.testing.expect(try matchesU("[à-ÿ]", "ñ"));
+    try std.testing.expect(!try matchesU("[à-ÿ]", "A"));
+    try std.testing.expect(try matchesU("[^a]", "中")); // ¬a includes every other codepoint
+    try std.testing.expect(!try matchesU("[^a]", "a"));
+    // `\x{…}` is a codepoint (not a raw byte) in Unicode mode.
+    try std.testing.expect(try matchesU("\\x{1F600}", "😀"));
+}
+
+test "regex/unicode: word boundaries decode the straddling codepoint" {
+    // `\b` holds iff the codepoints on the two sides of the gap differ in
+    // word-ness. Non-ASCII letters are WORD characters in Unicode mode, so a gap
+    // between two of them is NOT a boundary — the byte engine (which sees only the
+    // high bytes) would wrongly fire here.
+    try std.testing.expect(try matchesU("\\bfée\\b", "la fée verte")); // é is a word char both sides
+    try std.testing.expect(try matchesU("\\bαβγ\\b", "χ αβγ δ")); // Greek run bounded by spaces
+    try std.testing.expect(!try matchesU("\\bαβ\\b", "αβγ")); // no boundary inside a word run
+    // A boundary DOES sit between a word codepoint and a non-word one (punctuation).
+    try std.testing.expect(try matchesU("\\bfée\\b", "«fée»")); // guillemets are non-word
+    // `\B` is the exact complement: it holds strictly inside a Unicode word run.
+    try std.testing.expect(try matchesU("α\\Bβ", "αβγ"));
+    try std.testing.expect(!try matchesU("\\Bα", "χ αβγ")); // α starts a word ⇒ boundary, not \B
+    // `\<` / `\>` word-start / word-end straddle the multi-byte gap too.
+    try std.testing.expect(try matchesU("\\<café", "un café"));
+    try std.testing.expect(try matchesU("café\\>", "un café!"));
+    try std.testing.expect(!try matchesU("\\<afé", "café")); // 'afé' does not begin a word
+    // ASCII `(?-u)` word boundary is unchanged: a high byte is a NON-word byte, so
+    // `\b` fires between a letter and the é's lead byte.
+    try std.testing.expect(try matches("\\bcaf\\b", "café")); // C3 is a non-word byte ⇒ boundary after 'f'
+}
+
+test "regex/unicode: (?-u)/ASCII mode is byte-for-byte unchanged" {
+    // With Unicode OFF (today's behavior), `.` is a single byte and `\w` is ASCII —
+    // the parity floor the DoD pins. "café" = c a f C3 A9; the byte `.` matches the
+    // C3, so `caf.` matches at 4 bytes and `\w` never matches a lone high byte.
+    try std.testing.expect(try matches("caf.", "café")); // byte `.` matches the C3
+    try std.testing.expect(!try matches("\\w", "é")); // ASCII \w rejects high bytes
+    try std.testing.expect(try matches("\\w+", "abc"));
+}
+
 test "regex: nullable zero-width branch in .skip mode (boundary/EOL re-seed)" {
     // Regression for the differential-fuzz divergence: a pattern whose first-set
     // is non-empty (so the scanner picks `.skip`) but which ALSO has a branch that

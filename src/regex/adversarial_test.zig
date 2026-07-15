@@ -38,6 +38,7 @@ const std = @import("std");
 const regex = @import("core.zig");
 const syn = @import("syntax.zig");
 const prefilter = @import("prefilter.zig");
+const udec = @import("unicode/decode.zig");
 const Regex = regex.Regex;
 const Node = syn.Node;
 const ByteSet = syn.ByteSet;
@@ -115,6 +116,14 @@ const Oracle = struct {
             .anchor_buf_start => if (pos == 0) bit(pos) else 0,
             .anchor_buf_end => if (pos == o.line.len) bit(pos) else 0,
             .class => |set| if (pos < o.line.len and set.has(o.line[pos])) bit(pos + 1) else 0,
+            // Independent codepoint-class matcher: decode the scalar at `pos`
+            // (std.unicode, not gist's `utf8seq`) and test raw range membership —
+            // so a shared lowering bug can't hide. Consumes the whole codepoint.
+            .uclass => |ranges| blk: {
+                const d = udec.decode(o.line[pos..]) orelse break :blk 0;
+                for (ranges) |r| if (d.cp >= r[0] and d.cp <= r[1]) break :blk bit(pos + d.len);
+                break :blk 0;
+            },
             .concat => |ab| blk: {
                 var res: u64 = 0;
                 var ends = o.matchAt(ab[0], pos);
@@ -358,6 +367,57 @@ fn rgBufAgrees(c: *Collector, ctx: RgCtx, pattern: []const u8, input: []const u8
     if (got != rg) {
         var b: [80]u8 = undefined;
         c.report("RG-BUF-DIVERGENCE", pattern, input, std.fmt.bufPrint(&b, "gist={} rg={} dotall={}", .{ got, rg, dotall }) catch "");
+    }
+}
+
+/// rg at its DEFAULT (Unicode) semantics — the `--no-unicode` flag dropped — for
+/// the Unicode differential. `-a` keeps invalid-UTF-8 lines in scope (a lone
+/// 0xFF must read as a non-word byte, never skipped). Same tri-state as `rgMatch`.
+fn rgMatchU(ctx: RgCtx, pattern: []const u8, input: []const u8) ?bool {
+    std.Io.Dir.cwd().writeFile(ctx.io, .{ .sub_path = ctx.tmp, .data = input }) catch return null;
+    const argv = [_][]const u8{ ctx.rg, "-q", "-a", "--color", "never", "-e", pattern, ctx.tmp };
+    const res = std.process.run(ctx.gpa, ctx.io, .{ .argv = &argv }) catch return null;
+    ctx.gpa.free(res.stdout);
+    ctx.gpa.free(res.stderr);
+    return switch (res.term) {
+        .exited => |code| switch (code) {
+            0 => true,
+            1 => false,
+            else => null, // grammar error ⇒ out of comparable scope
+        },
+        else => null,
+    };
+}
+
+/// Unicode-mode twin of `rgAgrees`: compile gist with `.unicode = true` (the CLI
+/// default, rg-parity) and check `lineMatch` (rg fed `line ++ "\n"`) or `docMatch`
+/// (raw doc) against `rg` at its DEFAULT Unicode semantics. rg is a fully
+/// independent implementation — including its Unicode fold orbits, `\w`/`\p{…}`
+/// tables, and `\b` codepoint decode — so a shared engine OR shared-table bug
+/// cannot hide. Either side rejecting the pattern ⇒ grammar scope, skipped.
+fn rgAgreesU(c: *Collector, ctx: RgCtx, pattern: []const u8, line: bool, input: []const u8) void {
+    var re = Regex.compileOpts(ctx.gpa, pattern, .{ .unicode = true }) catch return;
+    defer re.deinit();
+    var sim = Regex.Sim.init(ctx.gpa, &re) catch return;
+    defer sim.deinit();
+    if (line) {
+        var buf: [96]u8 = undefined;
+        if (input.len + 1 > buf.len) return;
+        @memcpy(buf[0..input.len], input);
+        buf[input.len] = '\n';
+        const rg = rgMatchU(ctx, pattern, buf[0 .. input.len + 1]) orelse return;
+        const got = re.lineMatch(&sim, input);
+        if (got != rg) {
+            var b: [80]u8 = undefined;
+            c.report("RG-U-LINE-DIVERGENCE", pattern, input, std.fmt.bufPrint(&b, "gist={} rg={}", .{ got, rg }) catch "");
+        }
+    } else {
+        const rg = rgMatchU(ctx, pattern, input) orelse return;
+        const got = re.docMatch(&sim, input);
+        if (got != rg) {
+            var b: [80]u8 = undefined;
+            c.report("RG-U-DOC-DIVERGENCE", pattern, input, std.fmt.bufPrint(&b, "gist={} rg={}", .{ got, rg }) catch "");
+        }
     }
 }
 
@@ -1163,6 +1223,102 @@ test "adversarial: rg -o span differential (lazy vs greedy leftmost-first)" {
     if (col.fails != 0) {
         std.debug.print("rg -o span differential: {} divergence(s)\n", .{col.fails});
         return error.RgSpanDivergence;
+    }
+}
+
+// ───────────────── Unicode differential vs rg DEFAULT (rg-parity) ─────────────────
+//
+// The differentials above run gist's ASCII engine against `rg --no-unicode`. This
+// one proves the OTHER half — gist's Unicode-default engine (`compileOpts(.{ .unicode
+// = true })`, the CLI default) ≡ `rg` at its DEFAULT (Unicode) semantics — across
+// the four surfaces this pass brought online: full-orbit case folding (Latin/Greek
+// final-sigma/Cyrillic/ß), codepoint & property classes (`\w \d \s . \p{…}`),
+// Unicode word boundaries (`\b`/`\<`/`\>` decoding the straddling codepoint), and
+// the invariant that an invalid-UTF-8 byte is a non-word, non-`\w` unit. rg is a
+// fully independent implementation of all of these, so a shared bug can't hide.
+
+test "adversarial: Unicode differential vs rg default (fold/classes/boundaries)" {
+    const a = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const rg = findRg(a, io) orelse return error.SkipZigTest; // hermetic without ripgrep
+
+    var tmp_buf: [64]u8 = undefined;
+    const tmp = try std.fmt.bufPrint(&tmp_buf, "/tmp/gist_rgU_uni_{x}.txt", .{@intFromPtr(&threaded)});
+    const ctx = RgCtx{ .io = io, .gpa = a, .tmp = tmp, .rg = rg };
+    defer std.Io.Dir.cwd().deleteFile(io, tmp) catch {};
+
+    var col = Collector.init(a);
+    defer col.deinit();
+
+    // Multi-script inputs: Latin fold orbits (café/straße), Greek incl. the
+    // final-sigma ς/σ/Σ orbit, Cyrillic, CJK (word chars, no case), fullwidth
+    // digits, mixed word/non-word gaps, and a lone invalid-UTF-8 byte.
+    const inputs = [_][]const u8{
+        "café start",           "RÉSUMÉ",       "straße",
+        "Σίσυφος",              "ΚΌΣΜΟΣ end",   "Москва city",
+        "日本語 text",          "１２３ nums",   "abc café déjà",
+        "lead \xff tail word",  "",             "x",
+        "mixEd CaSe é À",
+    };
+    // Patterns both engines accept and that are meaningful under Unicode. Fold
+    // (`(?i)…`), classes (`\w \d \s \W . \p{…}`), boundaries (`\b \< \>`), and the
+    // `(?-u)` opt-out that must revert to ASCII exactly like `rg`'s.
+    const pats = [_][]const u8{
+        // case folding across scripts
+        "(?i)café",   "(?i)CAFÉ",   "(?i)straße",  "(?i)STRASSE",
+        "(?i)σίσυφος", "(?i)ΣΊΣΥΦΟΣ", "(?i)Σ",       "(?i)москва",
+        // codepoint & property classes
+        "\\w+",       "\\W+",       "\\d+",         "\\s+",
+        "\\p{L}+",    "\\p{Lu}+",   "\\p{Greek}+",  "caf.",  ".",
+        // Unicode word boundaries (decode the straddling codepoint)
+        "café\\b",   "\\bword\\b",  "\\b\\w+\\b",  "é\\b",  "\\<\\w+\\>",
+        // ASCII opt-out must revert exactly like rg's (?-u)
+        "(?-u)café", "(?-u)\\w+",   "(?-u)\\bword\\b",
+    };
+    for (pats) |p| for (inputs) |in| {
+        rgAgreesU(&col, ctx, p, true, in); // single-line existence
+        rgAgreesU(&col, ctx, p, false, in); // doc existence (twin path)
+    };
+
+    // Randomized breadth: quantify/anchor a Unicode literal or class, then run over
+    // inputs assembled from whole multibyte codepoints (never a split UTF-8 unit).
+    const cps = [_][]const u8{ "a", "é", "Σ", "σ", "ς", "ß", "Д", "語", "１", " ", "_", "-", "\xff" };
+    const frags = [_][]const u8{ "café", "straße", "\\w", "\\p{L}", "\\d", ".", "é", "Σ" };
+    const quants = [_][]const u8{ "", "+", "*", "?", "{1,3}" };
+    var in_buf: [64]u8 = undefined;
+    var seed: u64 = 0;
+    var checked: usize = 0;
+    while (seed < 200) : (seed += 1) {
+        var prng = std.Random.DefaultPrng.init(seed *% 0x2545F4914F6CDD1D);
+        const r = prng.random();
+        var pat: std.ArrayList(u8) = .empty;
+        defer pat.deinit(a);
+        if (r.boolean()) pat.appendSlice(a, if (r.boolean()) "(?i)" else "(?-u)") catch continue;
+        const nfrag = 1 + r.uintLessThan(usize, 2);
+        for (0..nfrag) |_| {
+            pat.appendSlice(a, frags[r.uintLessThan(usize, frags.len)]) catch continue;
+            pat.appendSlice(a, quants[r.uintLessThan(usize, quants.len)]) catch continue;
+        }
+        if (r.boolean()) pat.appendSlice(a, "\\b") catch continue;
+        for (0..4) |t| {
+            var len: usize = 0;
+            const ncp = if (t == 0) 0 else r.uintLessThan(usize, 8);
+            for (0..ncp) |_| {
+                const cp = cps[r.uintLessThan(usize, cps.len)];
+                if (len + cp.len > in_buf.len) break;
+                @memcpy(in_buf[len..][0..cp.len], cp);
+                len += cp.len;
+            }
+            rgAgreesU(&col, ctx, pat.items, true, in_buf[0..len]);
+            checked += 1;
+        }
+    }
+    try std.testing.expect(checked > 600);
+    if (col.fails != 0) {
+        std.debug.print("Unicode rg differential: {} divergence(s) across {} checks\n", .{ col.fails, checked });
+        return error.UnicodeRgDivergence;
     }
 }
 

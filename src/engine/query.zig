@@ -46,8 +46,13 @@ pub const Spec = struct {
     mode: Mode = .files,
     /// `-F`: treat the pattern as a fixed string, not a regex.
     fixed: bool = false,
-    /// `-i`: ASCII case-insensitive.
+    /// `-i`: case-insensitive (Unicode fold when `unicode`, else ASCII).
     ignore_case: bool = false,
+    /// Unicode mode (rg default ON): full case-fold orbits and codepoint
+    /// `\w`/`\d`/`\s`/`.`/`\p{…}`/`\b`. The resident fast path never sees an
+    /// explicit `--no-unicode`/`(?-u)` (its classifier hands those to the cold
+    /// engine), so it always compiles at the rg-parity default.
+    unicode: bool = true,
 };
 
 pub const CompileError = error{
@@ -105,7 +110,7 @@ pub const CompiledQuery = struct {
         } else spec.pattern;
         errdefer if (escaped) |e| gpa.free(e);
 
-        const re = Regex.compileOpts(gpa, pat, .{ .caseless = spec.ignore_case }) catch
+        const re = Regex.compileOpts(gpa, pat, .{ .caseless = spec.ignore_case, .unicode = spec.unicode }) catch
             return CompileError.Unsupported;
         return .{ .mode = spec.mode, .caseless = spec.ignore_case, .body = .{ .regex = re }, .escaped = escaped };
     }

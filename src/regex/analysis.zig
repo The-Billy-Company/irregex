@@ -29,6 +29,16 @@ fn longer(a: []const u8, b: []const u8) []const u8 {
     return if (a.len >= b.len) a else b;
 }
 
+/// The UTF-8 bytes of a single-codepoint `uclass` (a non-ASCII literal), or null
+/// for a wider codepoint class — so a `uclass` literal feeds the same prefilter /
+/// pure-literal machinery as an ASCII `class` singleton.
+fn uclassLiteral(arena: std.mem.Allocator, ranges: []const [2]u21) ParseError!?[]const u8 {
+    if (ranges.len != 1 or ranges[0][0] != ranges[0][1]) return null;
+    var buf: [4]u8 = undefined;
+    const n = std.unicode.utf8Encode(ranges[0][0], &buf) catch return null;
+    return try arena.dupe(u8, buf[0..n]);
+}
+
 /// Compute a literal that must appear in every match (`best`). Sound: if it
 /// can't prove one, `best` is "" (caller scans all docs). Mirrors the literal
 /// half of Cox's regexp→trigram analysis, conservatively.
@@ -44,6 +54,14 @@ pub fn literalInfo(arena: std.mem.Allocator, node: *Node) ParseError!LitInfo {
                 const lit = try arena.dupe(u8, &[_]u8{b});
                 return .{ .exact = lit, .prefix = lit, .suffix = lit, .best = lit };
             }
+            return .{ .exact = null, .prefix = "", .suffix = "", .best = "" };
+        },
+        // A single-codepoint `uclass` (a non-ASCII literal) is exact — its UTF-8
+        // bytes feed the trigram prefilter exactly like an ASCII literal. A wider
+        // codepoint class (`\w`, `[é-ÿ]`) proves no literal.
+        .uclass => |ranges| {
+            if (try uclassLiteral(arena, ranges)) |l|
+                return .{ .exact = l, .prefix = l, .suffix = l, .best = l };
             return .{ .exact = null, .prefix = "", .suffix = "", .best = "" };
         },
         .concat => |ab| {
@@ -148,6 +166,7 @@ fn pureLit(arena: std.mem.Allocator, node: *Node) ParseError!?[]const u8 {
             const b = set.only() orelse return null;
             return try arena.dupe(u8, &[_]u8{b});
         },
+        .uclass => |ranges| return uclassLiteral(arena, ranges),
         .concat => |ab| {
             const x = (try pureLit(arena, ab[0])) orelse return null;
             const y = (try pureLit(arena, ab[1])) orelse return null;

@@ -147,7 +147,10 @@ test "--schema is valid JSON derived from the parser catalog" {
     for (buckets) |bucket| {
         try t.expect(std.mem.indexOf(u8, manifest, bucket.name) != null);
     }
-    try t.expect(std.mem.indexOf(u8, manifest, "ASCII-only case folding") != null);
+    // Post-Unicode-flip: -i/-S/-w are `supported` (rg-parity) with Unicode by
+    // default, no longer `supported_with_differences` for ASCII-only folding.
+    try t.expect(std.mem.indexOf(u8, manifest, "Unicode case folding by default") != null);
+    try t.expect(std.mem.indexOf(u8, manifest, "ASCII-only case folding") == null);
     try t.expect(std.mem.indexOf(u8, manifest, "\\\\b/\\\\w") != null);
     try t.expect(std.mem.indexOf(u8, manifest, "98" ++ ".6") == null);
     try t.expect(std.mem.indexOf(u8, manifest, "known " ++ "FAIL") == null);

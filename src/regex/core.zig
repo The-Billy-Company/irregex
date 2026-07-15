@@ -24,6 +24,8 @@ const compile_mod = @import("compile.zig");
 const prefilter = @import("prefilter.zig");
 const dfa_mod = @import("dfa.zig");
 const powerset = @import("powerset.zig");
+const udec = @import("unicode/decode.zig");
+const utables = @import("unicode/tables.zig");
 const ByteSet = syn.ByteSet;
 const Node = syn.Node;
 
@@ -34,18 +36,31 @@ pub const ParseError = syn.ParseError;
 // Aliased here to keep the engine's references unchanged.
 const State = syn.State;
 
-/// A "word" byte for `\b`/`\B`: ASCII `[0-9A-Za-z_]` — exactly `\w` and rg's
-/// `--no-unicode` word class (the mode the equality oracle pins gist against).
-fn isWord(b: u8) bool {
+/// A "word" byte for ASCII `\b`/`\B` (`(?-u)`): `[0-9A-Za-z_]` — exactly `\w`
+/// and rg's `--no-unicode` word class.
+fn isWordByte(b: u8) bool {
     return std.ascii.isAlphanumeric(b) or b == '_';
 }
-/// Is the byte AT gap-position `p` a word byte? (false past line end.)
-fn wordAt(line: []const u8, p: usize) bool {
-    return p < line.len and isWord(line[p]);
+/// Is the codepoint STARTING at gap-position `p` a word character? In Unicode
+/// mode (rg default) the scalar straddling the gap is decoded forward and tested
+/// against the full `\w` set (Alphabetic ∪ M ∪ Nd ∪ Pc ∪ Join_Control); an
+/// ill-formed byte or line end is never a word char (rust-regex
+/// `is_word_char::fwd`). ASCII mode is the single-byte fast path.
+fn wordAt(unicode: bool, line: []const u8, p: usize) bool {
+    if (p >= line.len) return false;
+    if (!unicode or line[p] < 0x80) return isWordByte(line[p]);
+    const d = udec.decode(line[p..]) orelse return false;
+    return utables.isWord(d.cp);
 }
-/// Is the byte immediately BEFORE gap-position `p` a word byte? (false at BOL.)
-fn wordBefore(line: []const u8, p: usize) bool {
-    return p > 0 and isWord(line[p - 1]);
+/// Is the codepoint ending immediately BEFORE gap-position `p` a word character?
+/// Unicode mode decodes the scalar backward (`decodeLast`); ASCII/`(?-u)` mode is
+/// the single-byte test. False at BOL / on an ill-formed tail (rust-regex
+/// `is_word_char::rev`).
+fn wordBefore(unicode: bool, line: []const u8, p: usize) bool {
+    if (p == 0) return false;
+    if (!unicode or line[p - 1] < 0x80) return isWordByte(line[p - 1]);
+    const d = udec.decodeLast(line[0..p]) orelse return false;
+    return utables.isWord(d.cp);
 }
 
 pub const Regex = struct {
@@ -93,6 +108,14 @@ pub const Regex = struct {
     // multiline regex is matched by the Pike whole-buffer scan (`bufMatch`), never
     // the per-line `lineMatch`/`docMatch`. False ⇒ the per-line model, unchanged.
     multiline: bool,
+    // Unicode mode (rg default; `(?-u)`/`--no-unicode` clears it). Drives the
+    // word test behind `\b`/`\B`/`\<`/`\>` and `-w`: set, the codepoint straddling
+    // a gap is decoded and tested against the full `\w` set; cleared, it's the
+    // ASCII single-byte test (byte-for-byte today's behavior). Class/literal
+    // Unicode is already baked into the compiled program at parse time; this flag
+    // only reaches the content-dependent word-context assertions the Pike VM
+    // resolves per position.
+    unicode: bool,
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *Regex) void {
@@ -117,7 +140,11 @@ pub const Regex = struct {
     /// span `\n`, and `^`/`$` become line-boundary anchors (rg's `-U` default).
     /// `dotall` (`(?s)`) additionally lets `.` match `\n` (only meaningful with
     /// `multiline`). Both default off ⇒ the per-line model, byte-for-byte unchanged.
-    pub const Options = struct { caseless: bool = false, multiline: bool = false, dotall: bool = false };
+    /// `unicode` (rg default; `(?-u)`/`--no-unicode` clears it) makes the parser
+    /// codepoint-aware: non-ASCII literals, `.`, `\w`/`\d`/`\s`, `\p{…}`, and
+    /// non-ASCII `[…]` lower to a `uclass` (UTF-8 byte sub-automaton). Cleared, the
+    /// engine is a pure byte matcher (today's `(?-u)` behavior, byte-for-byte).
+    pub const Options = struct { caseless: bool = false, multiline: bool = false, dotall: bool = false, unicode: bool = false };
 
     pub fn compile(allocator: std.mem.Allocator, pattern: []const u8) ParseError!Regex {
         return compileOpts(allocator, pattern, .{});
@@ -128,12 +155,12 @@ pub const Regex = struct {
         defer arena_state.deinit();
         const arena = arena_state.allocator();
 
-        var parser = syn.Parser{ .src = pattern, .arena = arena, .dotall = opts.dotall, .multiline = opts.multiline };
+        var parser = syn.Parser{ .src = pattern, .arena = arena, .dotall = opts.dotall, .multiline = opts.multiline, .unicode = opts.unicode };
         const ast = try parser.parseAlt();
         if (parser.pos != pattern.len) return ParseError.BadPattern;
         // Fold BEFORE every downstream analysis (required-literal, cover, first-set,
         // DFA) so prefilter and match engines agree on the case-insensitive class.
-        if (opts.caseless) syn.foldCaseAst(ast);
+        if (opts.caseless) try syn.foldCaseAst(arena, ast, opts.unicode);
 
         var c = compile_mod.Compiler{ .gpa = allocator };
         errdefer c.states.deinit(allocator);
@@ -177,6 +204,7 @@ pub const Regex = struct {
             .first = prefilter.Prefilter.init(first_set),
             .dfa = dfa,
             .multiline = opts.multiline,
+            .unicode = opts.unicode,
             .allocator = allocator,
         };
     }
@@ -367,7 +395,7 @@ pub const Regex = struct {
         // Position 0: line start; also the end iff the line is empty. Answers any
         // empty/zero-width match (`a*`, `^$`) without scanning. `\b` here straddles
         // BOL (no byte before) and line[0].
-        if (re.closure(sim, &sim.cur, true, line.len == 0, wordBefore(line, 0), wordAt(line, 0)).add(re.start)) return true;
+        if (re.closure(sim, &sim.cur, true, line.len == 0, wordBefore(re.unicode, line, 0), wordAt(re.unicode, line, 0)).add(re.start)) return true;
         if (mode == .skip) sim.cur.len = 0; // drive purely by first-byte jumps
         var i: usize = 0;
         while (i < line.len) {
@@ -377,7 +405,7 @@ pub const Regex = struct {
                     i = re.first.nextStart(line, i) orelse return false;
                     sim.gen += 1;
                     sim.cur.len = 0;
-                    if (re.closure(sim, &sim.cur, i == 0, i + 1 == line.len, wordBefore(line, i), wordAt(line, i)).add(re.start)) return true;
+                    if (re.closure(sim, &sim.cur, i == 0, i + 1 == line.len, wordBefore(re.unicode, line, i), wordAt(re.unicode, line, i)).add(re.start)) return true;
                 },
                 .plain => {},
             };
@@ -386,7 +414,7 @@ pub const Regex = struct {
             sim.gen += 1;
             // The next closure sits at the gap AFTER byte i (position i+1): the
             // word byte before it is line[i], the one after is line[i+1].
-            const cl = re.closure(sim, &sim.nxt, false, i + 1 == line.len, wordBefore(line, i + 1), wordAt(line, i + 1));
+            const cl = re.closure(sim, &sim.nxt, false, i + 1 == line.len, wordBefore(re.unicode, line, i + 1), wordAt(re.unicode, line, i + 1));
             var matched = false;
             for (sim.cur.slice()) |s| switch (re.states[s]) {
                 // `and` keeps `add` from firing on a non-matching byte; `or matched`
@@ -468,7 +496,7 @@ pub const Regex = struct {
     /// `\A`/`\z` (assert_buf_*) resolve against the true buffer edges here — a
     /// line boundary is NOT a buffer edge under multiline.
     fn closureBuf(re: *const Regex, sim: *Sim, list: *ThreadList, buf: []const u8, p: usize) Closure {
-        var c = re.closure(sim, list, lineStart(buf, p), lineEnd(buf, p), wordBefore(buf, p), wordAt(buf, p));
+        var c = re.closure(sim, list, lineStart(buf, p), lineEnd(buf, p), wordBefore(re.unicode, buf, p), wordAt(re.unicode, buf, p));
         c.at_buf_start = p == 0;
         c.at_buf_end = p == buf.len;
         return c;
@@ -594,8 +622,8 @@ pub const Regex = struct {
             // ARE the `\A`/`\z` buffer edges in both modes.
             .at_buf_start = from == 0,
             .at_buf_end = from == line.len,
-            .word_before = wordBefore(line, from),
-            .word_after = wordAt(line, from),
+            .word_before = wordBefore(re.unicode, line, from),
+            .word_after = wordAt(re.unicode, line, from),
             .starts = sim.scur,
             .cur_start = from,
         };
@@ -616,8 +644,8 @@ pub const Regex = struct {
             const at_start = re.atStart(line, i + 1); // multiline: a `\n` at i makes i+1 a line start
             const at_end = re.atEnd(line, i + 1);
             const at_buf_end = i + 1 == line.len; // position i+1 ≥ 1 is never the buffer start
-            const wb = wordBefore(line, i + 1);
-            const wa = wordAt(line, i + 1);
+            const wb = wordBefore(re.unicode, line, i + 1);
+            const wa = wordAt(re.unicode, line, i + 1);
             const slice = sim.cur.slice();
             for (slice[0..cut]) |s| switch (re.states[s]) {
                 .consume => |cn| if (cn.set.has(c)) {

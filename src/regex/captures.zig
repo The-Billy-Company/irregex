@@ -13,6 +13,9 @@
 
 const std = @import("std");
 const syn = @import("syntax.zig");
+const compile_mod = @import("compile.zig");
+const udec = @import("unicode/decode.zig");
+const utables = @import("unicode/tables.zig");
 const ByteSet = syn.ByteSet;
 const Node = syn.Node;
 
@@ -73,14 +76,24 @@ const Inst = union(enum) {
     match,
 };
 
-fn isWord(b: u8) bool {
+fn isWordByte(b: u8) bool {
     return std.ascii.isAlphanumeric(b) or b == '_';
 }
-fn wordAt(line: []const u8, p: usize) bool {
-    return p < line.len and isWord(line[p]);
+/// Word-ness of the codepoint STARTING at gap `p` (Unicode mode decodes forward;
+/// ASCII/`(?-u)` mode is the single-byte test) — see `core.zig` for the contract.
+fn wordAt(unicode: bool, line: []const u8, p: usize) bool {
+    if (p >= line.len) return false;
+    if (!unicode or line[p] < 0x80) return isWordByte(line[p]);
+    const d = udec.decode(line[p..]) orelse return false;
+    return utables.isWord(d.cp);
 }
-fn wordBefore(line: []const u8, p: usize) bool {
-    return p > 0 and isWord(line[p - 1]);
+/// Word-ness of the codepoint ending just BEFORE gap `p` (Unicode mode decodes
+/// backward via `decodeLast`; ASCII mode is the single-byte test).
+fn wordBefore(unicode: bool, line: []const u8, p: usize) bool {
+    if (p == 0) return false;
+    if (!unicode or line[p - 1] < 0x80) return isWordByte(line[p - 1]);
+    const d = udec.decodeLast(line[0..p]) orelse return false;
+    return utables.isWord(d.cp);
 }
 
 /// A compiled capture matcher: the program plus per-find scratch. `nslots` =
@@ -91,6 +104,10 @@ pub const Captures = struct {
     ngroups: u32,
     nslots: usize,
     names: []syn.NamedCap,
+    // Unicode mode (rg default): drives the `\b`/`\B`/`\<`/`\>` word test to
+    // decode the straddling codepoint, matching the main engine. Class/literal
+    // Unicode is baked into `prog` at parse time.
+    unicode: bool,
     allocator: std.mem.Allocator,
 
     // Reused across finds: the two thread lists, the per-generation dedup, and the
@@ -102,16 +119,16 @@ pub const Captures = struct {
     nslots_buf: [][]isize,
     gen: u32 = 0,
 
-    pub fn compile(gpa: std.mem.Allocator, pattern: []const u8, caseless: bool) ParseError!Captures {
+    pub fn compile(gpa: std.mem.Allocator, pattern: []const u8, caseless: bool, unicode: bool) ParseError!Captures {
         var arena_state = std.heap.ArenaAllocator.init(gpa);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
 
         var names: std.ArrayList(syn.NamedCap) = .empty;
-        var parser = syn.Parser{ .src = pattern, .arena = arena, .names = &names };
+        var parser = syn.Parser{ .src = pattern, .arena = arena, .names = &names, .unicode = unicode };
         const ast = try parser.parseAlt();
         if (parser.pos != pattern.len) return ParseError.BadPattern;
-        if (caseless) syn.foldCaseAst(ast);
+        if (caseless) try syn.foldCaseAst(arena, ast, unicode);
 
         var c = Comp{ .gpa = gpa };
         errdefer c.prog.deinit(gpa);
@@ -148,6 +165,7 @@ pub const Captures = struct {
             .ngroups = ngroups,
             .nslots = nslots,
             .names = owned_names,
+            .unicode = unicode,
             .allocator = gpa,
             .cur = try gpa.alloc(u32, n),
             .nxt = try gpa.alloc(u32, n),
@@ -259,10 +277,10 @@ pub const Captures = struct {
             },
             .astart => |o| if (pos == 0) self.addThread(list, len, slots, o, in_slots, pos, line),
             .aend => |o| if (pos == line.len) self.addThread(list, len, slots, o, in_slots, pos, line),
-            .awb => |o| if (wordBefore(line, pos) != wordAt(line, pos)) self.addThread(list, len, slots, o, in_slots, pos, line),
-            .anwb => |o| if (wordBefore(line, pos) == wordAt(line, pos)) self.addThread(list, len, slots, o, in_slots, pos, line),
-            .awstart => |o| if (!wordBefore(line, pos) and wordAt(line, pos)) self.addThread(list, len, slots, o, in_slots, pos, line),
-            .awend => |o| if (wordBefore(line, pos) and !wordAt(line, pos)) self.addThread(list, len, slots, o, in_slots, pos, line),
+            .awb => |o| if (wordBefore(self.unicode, line, pos) != wordAt(self.unicode, line, pos)) self.addThread(list, len, slots, o, in_slots, pos, line),
+            .anwb => |o| if (wordBefore(self.unicode, line, pos) == wordAt(self.unicode, line, pos)) self.addThread(list, len, slots, o, in_slots, pos, line),
+            .awstart => |o| if (!wordBefore(self.unicode, line, pos) and wordAt(self.unicode, line, pos)) self.addThread(list, len, slots, o, in_slots, pos, line),
+            .awend => |o| if (wordBefore(self.unicode, line, pos) and !wordAt(self.unicode, line, pos)) self.addThread(list, len, slots, o, in_slots, pos, line),
             .char, .match => {
                 list.*[len.*] = pc;
                 @memcpy(slots[pc], in_slots);
@@ -282,6 +300,18 @@ const Comp = struct {
         return @intCast(self.prog.items.len - 1);
     }
 
+    // The two hooks `compile_mod.lowerUtf8` drives to weave a `uclass` into a
+    // UTF-8 byte trie over this VM's own instruction set (byte-range `char` +
+    // `split`), so the boolean compiler and the capture VM share one lowering.
+    pub fn emitConsume(self: *Comp, lo: u8, hi: u8, out: u32) ParseError!u32 {
+        var set = ByteSet{};
+        set.setRange(lo, hi);
+        return self.push(.{ .char = .{ .set = set, .out = out } });
+    }
+    pub fn emitSplit(self: *Comp, a: u32, b: u32) ParseError!u32 {
+        return self.push(.{ .split = .{ .a = a, .b = b } });
+    }
+
     fn compileNode(self: *Comp, node: *Node, next: u32) ParseError!u32 {
         switch (node.*) {
             .empty => return next,
@@ -296,6 +326,7 @@ const Comp = struct {
             .word_start => return self.push(.{ .awstart = next }),
             .word_end => return self.push(.{ .awend = next }),
             .class => |set| return self.push(.{ .char = .{ .set = set, .out = next } }),
+            .uclass => |ranges| return compile_mod.lowerUtf8(self.gpa, ranges, next, self),
             .capture => |g| {
                 const close = try self.push(.{ .save = .{ .slot = 2 * g.idx + 1, .out = next } });
                 const body = try self.compileNode(g.child, close);

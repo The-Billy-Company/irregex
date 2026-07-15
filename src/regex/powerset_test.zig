@@ -56,6 +56,17 @@ fn compileDfa(pattern: []const u8) !Regex {
     return re;
 }
 
+/// `compileDfa`'s Unicode-mode twin — compiles with `.unicode = true` so the
+/// pattern lowers non-ASCII content to a UTF-8 byte sub-automaton.
+fn compileDfaU(pattern: []const u8) !Regex {
+    var re = try Regex.compileOpts(std.testing.allocator, pattern, .{ .unicode = true });
+    if (re.dfa == null) {
+        re.deinit();
+        return error.PowersetCapHit;
+    }
+    return re;
+}
+
 fn countConsume(states: []const syn.State) usize {
     var n: usize = 0;
     for (states) |st| if (st == .consume) {
@@ -404,6 +415,33 @@ test "powerset: EXHAUSTIVE language equivalence vs the NFA spec (every string �
         defer re.deinit();
         exhaustiveEquiv(p, &re, "az1\n", 7) catch |e| {
             std.debug.print("EXHAUSTIVE FAILURE on /{s}/: {}\n", .{ p, e });
+            return e;
+        };
+    }
+}
+
+test "powerset: EXHAUSTIVE language equivalence for Unicode classes (DFA ≡ NFA over UTF-8)" {
+    // A `uclass` lowers to a multi-byte UTF-8 sub-automaton; the `Spec` walks those
+    // byte states, so this proves the determinizer follows the right edges through
+    // 2–4-byte consume chains (the one bug class the intrinsic invariants can't
+    // see). The alphabet mixes ASCII with the UTF-8 bytes of é (C3 A9) and 中
+    // (E4 B8 AD) plus a lone continuation byte (80), so every string ≤ 4 bytes —
+    // well-formed AND ill-formed — is checked both ways.
+    const pats = [_][]const u8{
+        "é",       "é+",      "\\w",       "\\w+",     "\\d",
+        ".",       ".*",      "[à-ÿ]",     "[^a]",     "\\p{L}",
+        "\\p{Nd}", "a\\wb",   "中",         "中+",       "café",
+        "\\w{2}",  "é|中",    "[a-cé中]",   "\\S",
+    };
+    const alpha = [_]u8{ 'a', 0xC3, 0xA9, 0xE4, 0xB8, 0xAD, 0x80 };
+    for (pats) |p| {
+        var re = compileDfaU(p) catch |e| {
+            if (e == error.PowersetCapHit) continue; // Pike serves this one; no DFA to diff
+            return e;
+        };
+        defer re.deinit();
+        exhaustiveEquiv(p, &re, &alpha, 4) catch |e| {
+            std.debug.print("UNICODE EXHAUSTIVE FAILURE on /{s}/: {}\n", .{ p, e });
             return e;
         };
     }
