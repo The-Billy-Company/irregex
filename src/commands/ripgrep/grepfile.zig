@@ -110,11 +110,13 @@ pub fn handleBinary(a: std.mem.Allocator, re: *const Matcher, o: Opts, out: *std
     // image, font, audio clip, or model artifact).
     if (o.files_only and !explicit) {
         var visible: std.ArrayList([]const u8) = .empty;
+        defer visible.deinit(a);
         collectLines(a, body[0..cut], o.term(), &visible);
         return em.file(path, visible.items) > 0;
     }
 
     var lines: std.ArrayList([]const u8) = .empty;
+    defer lines.deinit(a);
     collectLines(a, body, o.term(), &lines);
     var cutoff: usize = lines.items.len;
     for (lines.items, 0..) |line, k| {

@@ -44,6 +44,7 @@ const args = @import("args.zig");
 const output = @import("output.zig");
 const ignore = @import("ignore.zig");
 const grepfile = @import("grepfile.zig");
+const ingest = @import("ingest.zig");
 const simd = @import("../../scan/simd.zig");
 const persist = @import("../../index/persist.zig");
 const fresh = @import("../../corpus/fresh.zig");
@@ -73,6 +74,15 @@ pub fn eligible(io: std.Io, parsed: args.Parsed, o: Opts) bool {
     if (std.c.getenv("GIST_NO_PARALLEL") != null) return false;
     if (o.follow or o.json or o.quiet or o.stats or o.files_without or
         o.replace != null or o.max_filesize != 0 or o.multiline) return false;
+    // A globally ordered result (`--sort`/`--sortr`) and a device-bounded walk
+    // (`--one-file-system`) both need cross-file state the streaming sink can't
+    // give, so they run on the serial engine — which still reads in parallel,
+    // then orders once, beating ripgrep's fully single-threaded sort walk.
+    if (o.sort_key != .none or o.one_file_system) return false;
+    // `-z`/`-E` ride the parallel engine; `--pre`/`--binary` do not (see
+    // `transformsRidePipeline`). Kept as a pure, unit-tested seam so a future
+    // edit can't silently drop `-z` back to the serial engine unnoticed.
+    if (!transformsRidePipeline(o)) return false;
     // `-P`/`--pcre2` rides the parallel engine like the linear default: its
     // per-worker PCRE2 scratch is thread-confined, and the match-limit latch
     // (the exit-2-on-catastrophic-backtracking rg parity) is a process-global
@@ -84,6 +94,38 @@ pub fn eligible(io: std.Io, parsed: args.Parsed, o: Opts) bool {
         d.close(io);
     }
     return true;
+}
+
+/// The content-transform half of the pipeline-eligibility contract, factored out
+/// pure so the routing decision is unit-testable without a filesystem walk.
+///
+/// `-z`/`--search-zip` (decompress) and `-E`/`--encoding` (transcode) RIDE the
+/// parallel engine: each worker rewrites its own file on a private arena — native
+/// `std.compress` in-process, or a thread-safe `std.process.run` for the
+/// external-codec tail — then matches+emits it, fusing the decode with the match
+/// that rg pays serially per file. `--pre` DECLINES (it must keep rg's
+/// "preprocessor receives the file PATH as argv[1]" contract with a single-writer
+/// stderr + exit-2 latch on the serial engine); `--binary`/`-uuu` DECLINES (the
+/// whole-file NUL-bearing binary search path is serial). `-z` and `-E` are always
+/// safe here because their rewrite is a pure per-file byte function. See
+/// `ingest.zig` + `searchFile`'s transform branch.
+pub fn transformsRidePipeline(o: Opts) bool {
+    return o.pre == null and !o.binary;
+}
+
+test "transform routing: -z/-E ride the pipeline; --pre/--binary decline" {
+    const t = std.testing;
+    // plain + the two transforms that ride the parallel engine
+    try t.expect(transformsRidePipeline(.{}));
+    try t.expect(transformsRidePipeline(.{ .search_zip = true }));
+    try t.expect(transformsRidePipeline(.{ .encoding = .utf16le }));
+    try t.expect(transformsRidePipeline(.{ .search_zip = true, .encoding = .latin1 }));
+    // the two that must stay serial
+    try t.expect(!transformsRidePipeline(.{ .pre = "decompress.sh" }));
+    try t.expect(!transformsRidePipeline(.{ .binary = true }));
+    // a transform paired with a serial-only flag still declines (serial wins)
+    try t.expect(!transformsRidePipeline(.{ .search_zip = true, .binary = true }));
+    try t.expect(!transformsRidePipeline(.{ .search_zip = true, .pre = "p.sh" }));
 }
 
 // ─────────────────────────── ignore chain ───────────────────────────
@@ -574,6 +616,10 @@ const Cfg = struct {
     join_groups: bool,
     binary_detect: bool,
     files_mode: bool,
+    // Non-null ⇒ a `-z`/`-E` run: each worker rewrites a file's bytes
+    // (decompress/transcode) before matching. Immutable + shared; every
+    // `ingest.apply` call is thread-confined to the calling worker's arena.
+    ingest: ?*const ingest.Config,
     sink: *Sink,
 };
 
@@ -662,7 +708,7 @@ fn flushPending(w: *Worker, a: std.mem.Allocator, scratch: []u8, final: bool) vo
     for (w.pending.items) |d| {
         if (ready) if (lz.val) |*el| if (el.skip(stripDot(d.rel), d.mtime_ns, d.ctime_ns)) continue;
         const dpath = if (o.path_sep) |sep| replaceSep(a, d.rel, sep) else d.rel;
-        searchFile(w, a, scratch, std.posix.AT.FDCWD, d.disk, dpath);
+        searchFile(w, a, scratch, std.posix.AT.FDCWD, d.disk, dpath, d.disk);
     }
     w.pending.clearRetainingCapacity();
 }
@@ -866,7 +912,8 @@ fn handleEntry(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.posix
     }
     // The parent directory is still open in `processDir` — resolve one
     // component (`e.name`) against its fd instead of the full path from CWD.
-    searchFile(w, a, scratch, dirfd, e.name, dpath);
+    // `rel` is the CWD-openable path a `-z` external-codec subprocess re-opens.
+    searchFile(w, a, scratch, dirfd, e.name, dpath, rel);
 }
 
 /// Read + match + render ONE file straight into the sink — the parallel
@@ -875,10 +922,29 @@ fn handleEntry(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.posix
 /// relative to `dirfd` (the walk passes the still-open parent directory so the
 /// kernel resolves one component; deferred/elision reads pass `AT.FDCWD` with
 /// the full path).
-fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.posix.fd_t, disk: []const u8, dpath: []const u8) void {
+fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.posix.fd_t, disk: []const u8, dpath: []const u8, openable: []const u8) void {
     const cfg = w.cfg;
     const o = cfg.o;
     const re = cfg.re.?;
+
+    // Transform run (`-z`/`-E`): the on-disk bytes are compressed/encoded, so the
+    // staged prefix triage below (a NUL sniff, an `-l` prefix proof) would read
+    // garbage — read the WHOLE file, rewrite it via `ingest`, then match the
+    // decoded body from offset 0 (covered/gate_from = 0). `openable` is the
+    // CWD-relative path the external-codec subprocess (bz2/lz4/br) re-opens;
+    // native decoders (gz/zst/xz) and `-E` reuse the bytes we just read. A null
+    // return is a dropped file (never reached here: `--pre`, the only dropping
+    // transform, stays on the serial engine).
+    if (cfg.ingest) |icfg| {
+        const sf = grepfile.StagedFile.open(scratch, dirfd, disk) orelse return;
+        defer sf.close();
+        const raw = sf.readRest(a, scratch) orelse return;
+        const body = ingest.apply(a, icfg, openable, dpath, raw) orelse return;
+        if (body.len == 0) return;
+        emitBody(w, a, dpath, body, 0, 0);
+        return;
+    }
+
     const sf = grepfile.StagedFile.open(scratch, dirfd, disk) orelse return;
     defer sf.close();
 
@@ -919,6 +985,18 @@ fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.posix.
     // only the unseen tail plus a `gate_len-1` straddle window for a literal
     // crossing the seam — not the whole body again.
     const gate_from: usize = if (cfg.fast_l and cfg.lits_equiv and !utf16 and sf.more) covered -| (cfg.gate_len - 1) else 0;
+    emitBody(w, a, dpath, body, covered, gate_from);
+}
+
+/// The shared match+render tail: literal gate, binary handling, the `-l` fused
+/// fast path, and the per-line emit — streamed into the sink. Both callers reach
+/// it with a fully-decoded `body`: the staged read path (raw on-disk bytes,
+/// `covered`/`gate_from` reflecting its stage-1 prefix scan) and the transform
+/// path (`ingest`-rewritten bytes, both 0 — nothing was pre-scanned).
+fn emitBody(w: *Worker, a: std.mem.Allocator, dpath: []const u8, body: []const u8, covered: usize, gate_from: usize) void {
+    const cfg = w.cfg;
+    const o = cfg.o;
+    const re = cfg.re.?;
     if (cfg.file_needle) |n| if (!simd.contains(body[gate_from..], n)) return;
     if (cfg.file_alts.len > 0 and !simd.containsAny(body[gate_from..], cfg.file_alts)) return;
 
@@ -1032,6 +1110,7 @@ pub fn run(
     filters: []const []const u8,
     file_needle: ?[]const u8,
     line_needle: ?[]const u8,
+    icfg: *const ingest.Config,
 ) noreturn {
     const heading = o.heading and !o.count_only and !o.count_matches and !o.files_only and !o.vimgrep;
     const want_elision = indexElisionWanted(parsed, filters);
@@ -1117,6 +1196,7 @@ pub fn run(
         .join_groups = sink.join_groups,
         .binary_detect = !o.text and !o.null_data,
         .files_mode = o.files_list,
+        .ingest = if (icfg.active()) icfg else null,
         .sink = &sink,
     };
     var roots_one = [_][]const u8{"."};
@@ -1138,7 +1218,20 @@ pub fn run(
     // remains absolute.
     const ncpu = std.Thread.getCpuCount() catch 6;
     const narrow_scope = parsed.roots.len > 0 and !broadIndexedRoots(parsed.roots);
-    var nworkers = defaultWorkerCount(ncpu, o.files_list or want_elision or narrow_scope);
+    // A transforming run (-z/--pre/-E) does CPU-bound per-file work — inflate
+    // (gzip/xz/zstd) or transcode — that scales to every core, exactly like the
+    // serial engine's parallel read-shards (`run.zig` `readCandidates` fans out
+    // to `min(candidates, ncpu)`). The 6-worker ceiling is tuned for the
+    // syscall/namei-bound plaintext walk, where more threads only add fd + namei
+    // contention; it throttles decode-heavy codecs (xz/zstd) below the serial
+    // path, so a transforming pipeline lifts the cap to all logical CPUs.
+    var nworkers = if (icfg.active())
+        @max(@as(usize, 1), ncpu)
+    else
+        defaultWorkerCount(ncpu, o.files_list or want_elision or narrow_scope);
+    // -j/--threads caps the pool explicitly (rg's `--threads`); 0 keeps gist's
+    // adaptive topology. `GIST_WORKERS` still overrides everything (parity gates).
+    if (o.threads != 0) nworkers = @max(1, o.threads);
     if (std.c.getenv("GIST_WORKERS")) |s| {
         if (std.fmt.parseInt(usize, std.mem.span(s), 10)) |n| {
             nworkers = @max(1, n);
