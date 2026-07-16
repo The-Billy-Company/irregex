@@ -320,6 +320,11 @@ pub const Ignore = struct {
         const git_repo = o.no_require_git or git_depth != null or anyRootRepo(io, roots);
         self.use_git = git_repo and !o.no_ignore_vcs;
         self.use_dot = !o.no_ignore_dot;
+        // git's global excludes (`core.excludesFile`) is the LOWEST-precedence VCS
+        // ignore tier, so it loads before every repo source below and is overridden
+        // by them (last-match-wins). Gated with the rest of the VCS tier (`use_git`),
+        // disabled on its own by `--no-ignore-global`.
+        if (self.use_git and !o.no_ignore_global) self.loadGlobalExclude();
         // Parent (ancestor) ignores — rg also reads `.gitignore`/`.ignore` from
         // every directory ABOVE the search root, unless `--no-ignore-parent`. VCS
         // ancestors stop at the git root; `.ignore`/`.rgignore` climb to `/`.
@@ -368,6 +373,28 @@ pub const Ignore = struct {
     fn loadGitExclude(self: *Ignore, root: []const u8, base: []const u8) void {
         const git_dir = self.resolveGitDir(root) orelse return;
         self.readFile(join(self.a, git_dir, "info/exclude"), base, "", true);
+    }
+
+    /// Read git's global excludes file into the CWD tier ("" bucket). The path is
+    /// resolved exactly as ripgrep does (see `globalExcludesPath`); it may not
+    /// exist, in which case `readFile` is a no-op. `reanchor_multi_root = true`
+    /// mirrors `.git/info/exclude`: an ancestor-tier source, re-anchored per root.
+    fn loadGlobalExclude(self: *Ignore) void {
+        const path = self.globalExcludesPath() orelse return;
+        self.readFile(path, "", "", true);
+    }
+
+    /// git's global gitignore path (ripgrep parity, `gitconfig_excludes_path`),
+    /// reading `$HOME`/`$XDG_CONFIG_HOME` from the process env (stable for the
+    /// per-user gist server's lifetime). The env-free resolution is delegated to
+    /// `globalExcludesFrom`.
+    fn globalExcludesPath(self: *Ignore) ?[]const u8 {
+        const home = envSpan("HOME");
+        const xdg = blk: {
+            const x = envSpan("XDG_CONFIG_HOME");
+            break :blk if (x != null and x.?.len != 0) x else null;
+        };
+        return globalExcludesFrom(self.io, self.a, home, xdg);
     }
 
     /// The git common-dir for the repo at `root` (a path openable from CWD), or
@@ -527,6 +554,83 @@ fn join(a: std.mem.Allocator, dir: []const u8, name: []const u8) []const u8 {
     return std.fmt.allocPrint(a, "{s}/{s}", .{ dir, name }) catch die("oom\n", .{});
 }
 
+/// A process env var's value, or null if unset — the leaf used by
+/// `globalExcludesPath` to locate git's config/ignore homes. Reads the process
+/// environment directly (`std.c.getenv`, as the pipeline does for its `GIST_*`
+/// knobs): HOME/XDG_CONFIG_HOME are stable for the per-user gist server's
+/// lifetime, so this matches ripgrep's own `std::env` resolution. The returned
+/// slice borrows libc's stable environ storage (no copy).
+fn envSpan(key: [*:0]const u8) ?[]const u8 {
+    return if (std.c.getenv(key)) |v| std.mem.span(v) else null;
+}
+
+/// Best-effort whole-file read (≤1 MiB); null on any error (missing/unreadable),
+/// matching git/ripgrep's "absent global config is simply no rules" behavior.
+fn readOpt(io: std.Io, a: std.mem.Allocator, path: []const u8) ?[]const u8 {
+    return Dir.cwd().readFileAlloc(io, path, a, .limited(1 << 20)) catch null;
+}
+
+/// Extract `core.excludesfile` from raw git-config bytes, ripgrep's deliberately
+/// lazy `(?im-u)^\s*excludesfile\s*=\s*"?\s*(\S+?)\s*"?\s*$`: the FIRST line whose
+/// (case-insensitive) key is `excludesfile`, one optional quote + surrounding
+/// whitespace stripped from each side, and a value that is a single whitespace-free
+/// token (an interior space fails the anchor, so scanning continues). Section
+/// headers are ignored exactly as ripgrep ignores them. Returned slice aliases
+/// `data`; the caller tilde-expands and owns the copy.
+fn parseExcludesFile(data: []const u8) ?[]const u8 {
+    var it = std.mem.splitScalar(u8, data, '\n');
+    while (it.next()) |raw| if (excludesValue(std.mem.trimEnd(u8, raw, "\r"))) |v| return v;
+    return null;
+}
+
+fn excludesValue(line: []const u8) ?[]const u8 {
+    const ws = " \t";
+    const key = "excludesfile";
+    var s = std.mem.trimStart(u8, line, ws);
+    if (s.len < key.len or !std.ascii.eqlIgnoreCase(s[0..key.len], key)) return null;
+    s = std.mem.trimStart(u8, s[key.len..], ws);
+    if (s.len == 0 or s[0] != '=') return null;
+    s = std.mem.trimStart(u8, s[1..], ws);
+    if (s.len != 0 and s[0] == '"') s = std.mem.trimStart(u8, s[1..], ws);
+    s = std.mem.trimEnd(u8, s, ws);
+    if (s.len != 0 and s[s.len - 1] == '"') s = std.mem.trimEnd(u8, s[0 .. s.len - 1], ws);
+    if (s.len == 0 or std.mem.indexOfAny(u8, s, ws) != null) return null;
+    return s;
+}
+
+/// Expand every `~` to `$HOME` (ripgrep's `expand_tilde`: a plain `replace`, not
+/// just a leading-`~` rule). Always returns an arena-owned copy so the caller can
+/// hold it past `data`'s lifetime.
+fn expandTilde(a: std.mem.Allocator, home: ?[]const u8, s: []const u8) []const u8 {
+    const h = home orelse return a.dupe(u8, s) catch die("oom\n", .{});
+    if (std.mem.indexOfScalar(u8, s, '~') == null) return a.dupe(u8, s) catch die("oom\n", .{});
+    var buf: std.ArrayList(u8) = .empty;
+    for (s) |c| if (c == '~')
+        buf.appendSlice(a, h) catch die("oom\n", .{})
+    else
+        buf.append(a, c) catch die("oom\n", .{});
+    return buf.toOwnedSlice(a) catch die("oom\n", .{});
+}
+
+/// Resolve git's global excludes path from explicit `home`/`xdg` (env-free, so
+/// it is directly testable): `core.excludesfile` from `<home>/.gitconfig`, else
+/// from `<xdg|home/.config>/git/config`, else that base's default `git/ignore`.
+/// `~` in a configured value expands to `home`. The returned path need not exist
+/// — the caller's `readFile` tolerates a miss.
+fn globalExcludesFrom(io: std.Io, a: std.mem.Allocator, home: ?[]const u8, xdg: ?[]const u8) ?[]const u8 {
+    if (home) |h| if (readOpt(io, a, join(a, h, ".gitconfig"))) |data| {
+        if (parseExcludesFile(data)) |raw| return expandTilde(a, home, raw);
+    };
+    // `<home>/.gitconfig` didn't decide it → the XDG (or `<home>/.config`) config,
+    // then that same base's default `git/ignore`.
+    const cfg_home = xdg orelse (if (home) |h| join(a, h, ".config") else null);
+    const c = cfg_home orelse return null;
+    if (readOpt(io, a, join(a, c, "git/config"))) |data| {
+        if (parseExcludesFile(data)) |raw| return expandTilde(a, home, raw);
+    }
+    return join(a, c, "git/ignore");
+}
+
 /// Drop a leading `./` (or a bare `.`) so a `./root` positional's paths compare
 /// against ignore rules the same as a bare `root` positional's do.
 fn stripDot(s: []const u8) []const u8 {
@@ -613,6 +717,93 @@ fn anyRootRepo(io: std.Io, roots: []const []const u8) bool {
         if (hasDotGit(io, std.mem.trimEnd(u8, r, "/"))) return true;
     }
     return false;
+}
+
+test "parseExcludesFile mirrors ripgrep's core.excludesfile extraction" {
+    const t = std.testing;
+    // rg parse_excludes_file 1–5, byte-for-byte on the same inputs.
+    try t.expectEqualStrings("/foo/bar", parseExcludesFile("[core]\nexcludesFile = /foo/bar").?);
+    try t.expectEqualStrings("~/foo/bar", parseExcludesFile("[core]\nexcludesFile = ~/foo/bar").?);
+    try t.expectEqual(@as(?[]const u8, null), parseExcludesFile("[core]\nexcludeFile = /foo/bar")); // missing 's'
+    try t.expectEqualStrings("~/foo/bar", parseExcludesFile("[core]\nexcludesFile = \"~/foo/bar\"").?);
+    try t.expectEqual(@as(?[]const u8, null), parseExcludesFile("[core]\nexcludesFile = \" \"~/foo/bar \" \"")); // interior space fails the anchor
+    // Case-insensitive key, section-agnostic (rg's lazy regex ignores headers),
+    // and a malformed earlier line does not shadow a valid later one.
+    try t.expectEqualStrings("/a", parseExcludesFile("EXCLUDESFILE=/a").?);
+    try t.expectEqualStrings("/good", parseExcludesFile("excludesfile = a b\nexcludesfile = /good").?);
+    try t.expectEqual(@as(?[]const u8, null), parseExcludesFile("[core]\n\tpager = less\n"));
+}
+
+test "expandTilde replaces every tilde with $HOME, else copies verbatim" {
+    const t = std.testing;
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try t.expectEqualStrings("/home/u/foo/bar", expandTilde(a, "/home/u", "~/foo/bar"));
+    try t.expectEqualStrings("/home/u+/home/u", expandTilde(a, "/home/u", "~+~")); // plain replace, not just leading
+    try t.expectEqualStrings("/abs/path", expandTilde(a, "/home/u", "/abs/path")); // no tilde ⇒ verbatim copy
+    try t.expectEqualStrings("~/x", expandTilde(a, null, "~/x")); // no HOME ⇒ left untouched
+}
+
+test "globalExcludesFrom: gitconfig ≻ xdg config ≻ default, tilde-expanded" {
+    const t = std.testing;
+    var threaded = std.Io.Threaded.init(t.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const home = "/tmp/gist_glob_excludes_fixture";
+    Dir.cwd().deleteTree(io, home) catch {};
+    try Dir.cwd().createDirPath(io, home);
+    defer Dir.cwd().deleteTree(io, home) catch {};
+
+    // No config file anywhere ⇒ the default `<home>/.config/git/ignore` (a path
+    // that need not exist), and an XDG override redirects that default base.
+    try t.expectEqualStrings(try std.fmt.allocPrint(a, "{s}/.config/git/ignore", .{home}), globalExcludesFrom(io, a, home, null).?);
+    const xdg = try std.fmt.allocPrint(a, "{s}/xdg", .{home});
+    try t.expectEqualStrings(try std.fmt.allocPrint(a, "{s}/git/ignore", .{xdg}), globalExcludesFrom(io, a, home, xdg).?);
+
+    // `<home>/.config/git/config`'s excludesfile beats the bare default…
+    try Dir.cwd().createDirPath(io, try std.fmt.allocPrint(a, "{s}/.config/git", .{home}));
+    try Dir.cwd().writeFile(io, .{ .sub_path = try std.fmt.allocPrint(a, "{s}/.config/git/config", .{home}), .data = "[core]\n\texcludesfile = /explicit/cfg\n" });
+    try t.expectEqualStrings("/explicit/cfg", globalExcludesFrom(io, a, home, null).?);
+
+    // …and `<home>/.gitconfig` outranks the XDG config, with `~` → home.
+    try Dir.cwd().writeFile(io, .{ .sub_path = try std.fmt.allocPrint(a, "{s}/.gitconfig", .{home}), .data = "[core]\n\texcludesFile = ~/mygi\n" });
+    try t.expectEqualStrings(try std.fmt.allocPrint(a, "{s}/mygi", .{home}), globalExcludesFrom(io, a, home, null).?);
+}
+
+test "a global-sourced ignore file drives the CWD-tier verdict (loadGlobalExclude mechanic)" {
+    const t = std.testing;
+    var threaded = std.Io.Threaded.init(t.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const dir = "/tmp/gist_globrule_fixture";
+    Dir.cwd().deleteTree(io, dir) catch {};
+    try Dir.cwd().createDirPath(io, dir);
+    defer Dir.cwd().deleteTree(io, dir) catch {};
+    const gi = try std.fmt.allocPrint(a, "{s}/globalignore", .{dir});
+    try Dir.cwd().writeFile(io, .{ .sub_path = gi, .data = "*.log\n!keep.log\n" });
+
+    var ig = Ignore{
+        .a = a,
+        .io = io,
+        .o = .{},
+        .groups = std.StringHashMap(std.ArrayList(Rule)).init(a),
+        .loaded = std.StringHashMap(void).init(a),
+    };
+    // Exactly what `loadGlobalExclude` does with the resolved path: fold the
+    // global file into the "" (CWD/ancestor) tier, lowest precedence.
+    ig.readFile(gi, "", "", true);
+    try t.expectEqual(@as(?bool, true), ig.decide("app.log", false)); // *.log ignored
+    try t.expectEqual(@as(?bool, false), ig.decide("keep.log", false)); // later !keep.log re-includes
+    try t.expectEqual(@as(?bool, null), ig.decide("app.txt", false)); // untouched
 }
 
 test "multi-root VCS rules re-anchor without changing one-root semantics" {

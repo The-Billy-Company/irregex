@@ -21,6 +21,9 @@ doc_radar:
         - "gb18030"
         - "shift_jis"
         - "euc_jp"
+    - description: "status has a versioned machine-readable lifecycle contract"
+      file: pkg/kernels/gist/src/commands/status/status.zig
+      contains: ["pub const schema_version = 1;", "pub const Snapshot = struct"]
 ---
 
 # gist
@@ -105,7 +108,7 @@ single fused pass that detects newlines inline. The Pike VM stays the capped
 fallback and the differential-fuzz correctness reference. For the constructs a
 linear engine provably can't express — lookaround, backreferences — the opt-in
 `-P`/`--pcre2` backend (`src/regex/pcre2.zig`, vendored PCRE2 10.47 JIT) reuses
-the *same* required-literal prefilter, making gist the only indexed PCRE search
+the _same_ required-literal prefilter, making gist the only indexed PCRE search
 in the field; `--engine auto` compiles linear first and escalates only when the
 pattern needs it. See [`src/regex/README.md`](src/regex/README.md).
 
@@ -153,6 +156,7 @@ addressed the way an agent's `rg <pattern>` reflex already types it:
 ```bash
 make install-gist       # from repo root: build (ReleaseFast) + symlink ~/.local/bin/gist + index
 gist status             # verify the installed CLI + index in one line
+gist status --json      # the same snapshot as stable JSON for programs/agents
 ```
 
 Or drive the CLI straight from the build graph, no install:
@@ -187,9 +191,12 @@ or match set (parallel ORDER deviations are documented, not claimed
 byte-identical). `--rank` is gist's one native shape with no rg
 equivalent — a definition-first RRF-ranked view (see "Why gist" below).
 `gist status` / `gist --schema` answer "am I ready to search fast" and "what
-exactly can this tool do" without running a query. The full flag surface is
-documented in "How it works as a drop-in" below, and exhaustively in `--help`
-/ `--schema`.
+exactly can this tool do" without running a query. Programs use `gist status
+--json`, a versioned snapshot derived from the same model as the unchanged
+human report; its exact v1 fields and unavailable-state semantics are documented
+in [`src/commands/status/README.md`](src/commands/status/README.md). The full
+flag surface is documented in "How it works as a drop-in" below, and
+exhaustively in `--help` / `--schema`.
 
 ## Why gist instead of ripgrep — and everything else
 
@@ -258,7 +265,7 @@ backend is real and trigram-prefiltered, not fail-loud.
 | `-l` / `-c`                            | native rg flags — files-with-matches / per-file match count                                                                                                                                 |
 | `-t <lang>` / `-g <glob>`              | `--lang` / `--glob` — pruned **before** touching disk (`--lang go` reads 234 of 18,608 files, **1.44×** faster than `rg -t go`, byte-identical output)                                      |
 | `-w` / `-F` / `-i` / `-S`              | word-boundary / fixed-string / case-insensitive / smart-case — Unicode by default (rg-parity)                                                                                               |
-| `--unicode` / `--no-unicode`           | Unicode is default-on; `--no-unicode` (or a leading `(?-u)`) reverts `-i`/`-S`/`-w`/`\b`/`\w` to ASCII bytes                                                                                 |
+| `--unicode` / `--no-unicode`           | Unicode is default-on; `--no-unicode` (or a leading `(?-u)`) reverts `-i`/`-S`/`-w`/`\b`/`\w` to ASCII bytes                                                                                |
 | `-B N` / `-A N` / `-C N`               | context lines, rg-exact `:`/`-`/`--` framing                                                                                                                                                |
 | `-m N` / `-o` / `-r <t>`               | max count per file / only-matching spans / template replace                                                                                                                                 |
 | `-e <pat>` / `--`                      | explicit pattern (leading-dash safe) / end of flag parsing                                                                                                                                  |
@@ -311,7 +318,7 @@ supported-surface parity, **not** toward byte-identical PASS. Do not read
 compatibility and ignored for output ordering (see `--schema`); gist does not
 implement ripgrep's sorted emitters.
 
-**Shares rg's regex philosophy — and rg's escape hatch.** gist's *default*
+**Shares rg's regex philosophy — and rg's escape hatch.** gist's _default_
 engine is linear-time — a byte-level Thompson NFA / DFA, the RE2 lineage —
 specifically to rule out catastrophic backtracking, and it's what `--rank`,
 replace, and the whole trigram AST are built on. Like rg, gist also ships the
@@ -341,7 +348,7 @@ a neutralized-knobs equivalence.
 
 **Fails loud on what it can't express — never silent.** No ripgrep long flag
 is unsupported any more (`-P`/`--pcre2`, `-U`/`--multiline`, `--vimgrep`,
-`--column` all landed), so the fail-loud surface is now the *pattern*, not the
+`--column` all landed), so the fail-loud surface is now the _pattern_, not the
 flag: the linear default rejects a lookaround / backreference / unknown escape
 with the reason **and** the `-P` / `--engine auto` fallback, an unrecognized
 `--encoding` label exits 2, and a genuinely unknown flag fails with its `rg`
@@ -554,8 +561,8 @@ bundle and required-cache accounting. Every plotted number is
   freshness tax) it measures **7.2× geomean over ripgrep-cold**, because rg
   re-walks and re-scans the whole tree each call while the warm client pays only
   the reconcile plus an in-RAM index query; where a watcher arms the fast path
-  (Linux inotify) the reconcile vanishes and the number approaches the in-process
-  microsecond ceiling.
+  (Linux inotify · macOS FSEvents) the reconcile vanishes and the number
+  approaches the in-process microsecond ceiling.
 
 The previous 0-win certificate was valuable evidence, but its diagnosis was too
 broad: freshness itself was not the floor. Full posting validation on every load,

@@ -147,6 +147,17 @@ pub fn build(b: *std.Build) void {
     b.step("cli", "gist CLI: `-- index`, `-- status`, `-- <pattern> [flags]`")
         .dependOn(&run_cli.step);
 
+    // Machine lifecycle contract: valid JSON is emitted whether the shared
+    // machine-local index is ready or unavailable. Unit tests pin every field;
+    // this black-box guard pins CLI dispatch and keeps prose off stderr.
+    const status_json_test = b.addRunArtifact(cli_exe);
+    status_json_test.setCwd(b.path("../../.."));
+    status_json_test.addArgs(&.{ "status", "--json" });
+    status_json_test.expectExitCode(0);
+    status_json_test.expectStdOutMatch("\"schema_version\":1");
+    status_json_test.expectStdOutMatch("\"state\":");
+    k.test_step.dependOn(&status_json_test.step);
+
     // Black-box CLI regression guard (wired into `zig build test`): an explicit
     // PATH arg that can't be opened must be reported to stderr and force exit 2
     // (ripgrep's error class) — NOT dropped silently with a "no match" exit 1,

@@ -23,12 +23,12 @@ lowers each query through the shared search core (`engine/query.zig` over
 point **returns errors** instead of calling `die()`, which is exactly why the
 resident path sidesteps the exit hazard ADR-352 defers the in-process C FFI on.
 
-| File                           | Role                                                                                                                                                                                   |
-| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`resident.zig`](resident.zig) | `ResidentSession`: in-memory corpus/index, mutation overlay, generation reload, the fail-closed reconcile barrier, and the safe `-l`/`-c` query kernels.                               |
+| File                           | Role                                                                                                                                                                                                                                   |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`resident.zig`](resident.zig) | `ResidentSession`: in-memory corpus/index, mutation overlay, generation reload, the fail-closed reconcile barrier, and the safe `-l`/`-c` query kernels.                                                                               |
 | [`request.zig`](request.zig)   | The eligibility classifier — accepts only the supported argv surface (`-l`/`-c`, `-F`, `-i`, `-e`/`--regexp`; **rootless only** — any explicit PATH arg, even `.`, stays cold), everything else → `error.Unsupported` (cold fallback). |
-| [`protocol.zig`](protocol.zig) | The length-prefixed UDS frame codec (`[u32 len][u8 opcode][payload]`) + fd send/recv, fail-closed on oversized/truncated/unknown frames.                                               |
-| [`watch.zig`](watch.zig)       | The freshness watcher — a pure accelerator (Linux inotify · macOS FSEvents; reconcile-always baseline on other targets) that only ever decides _whether the reconcile walk may be skipped_, never correctness. |
+| [`protocol.zig`](protocol.zig) | The length-prefixed UDS frame codec (`[u32 len][u8 opcode][payload]`) + fd send/recv, fail-closed on oversized/truncated/unknown frames.                                                                                               |
+| [`watch.zig`](watch.zig)       | The freshness watcher — a pure accelerator (Linux inotify · macOS FSEvents; reconcile-always baseline on other targets) that only ever decides _whether the reconcile walk may be skipped_, never correctness.                         |
 
 ## The invariant
 

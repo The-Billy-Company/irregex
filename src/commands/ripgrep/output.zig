@@ -932,7 +932,7 @@ const MlHarness = struct {
             .arena = std.heap.ArenaAllocator.init(ta),
             .m = .{ .linear = try Regex.compileOpts(ta, pat, .{ .multiline = true, .dotall = o.dotall }) },
         };
-        if (o.replace) h.caps = .{ .linear = try Captures.compile(ta, pat, false) };
+        if (o.replace) h.caps = .{ .linear = try Captures.compile(ta, pat, false, false) };
         return h;
     }
     fn deinit(self: *MlHarness) void {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lower the pinned UCD subset in tools/ucd/ into src/regex/unicode/tables.gen.zig.
+r"""Lower the pinned UCD subset in tools/ucd/ into src/regex/unicode/tables.gen.zig.
 
 gist is a byte automaton; to match Unicode *codepoint* classes it needs compact,
 sorted scalar-range tables for the Perl classes (\\w \\d \\s), the simple
@@ -73,6 +73,7 @@ def coalesce(ranges: list[Range]) -> list[Range]:
 
 
 def union(*groups: list[Range]) -> list[Range]:
+    """Merge several range lists into one coalesced sorted set."""
     out: list[Range] = []
     for g in groups:
         out.extend(g)
@@ -107,11 +108,13 @@ def fold_orbits(path: Path) -> dict[int, list[int]]:
 
 
 def fmt_ranges(name: str, ranges: list[Range]) -> str:
+    """Render one Zig `pub const <name>: []const Range` table literal."""
     body = ", ".join(f".{{ 0x{lo:X}, 0x{hi:X} }}" for lo, hi in ranges)
     return f"pub const {name}: []const Range = &.{{ {body} }};"
 
 
 def build() -> str:
+    """Lower the pinned UCD inputs into the generated Unicode tables module text."""
     gc = {k: coalesce(v) for k, v in gc_map(UCD / "DerivedGeneralCategory.txt").items()}
     alphabetic = coalesce(parse_ranges(UCD / "DerivedCoreProperties.txt", "Alphabetic"))
     white_space = coalesce(parse_ranges(UCD / "PropList.txt", "White_Space"))
@@ -195,6 +198,7 @@ def build() -> str:
 
 
 def main() -> int:
+    """CLI entry: write `tables.gen.zig` or `--check` drift against it."""
     generated = build()
     if "--check" in sys.argv:
         current = OUT.read_text() if OUT.exists() else ""

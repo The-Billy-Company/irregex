@@ -4,17 +4,17 @@ Benchmark, verification, and competitive-proof harness for the `gist`
 code-locator kernel — no engine code lives here (that's all under `src/`).
 Nine concerns, nine folders:
 
-| Folder                                | Concern                                                                                                                                                                   |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`harness/`](harness/README.md)       | The native `gist-bench` Zig binary — corpus load + latency slate, the microscopic cycles/byte certificate, PMU counters, bootstrap statistics, the shared probe registry. |
-| [`races/`](races/README.md)           | The competitor registry (`_compete.sh`) + the three multi-tool field races (warm, cold literal, cold regex).                                                              |
-| [`gates/`](gates/README.md)           | Permanent correctness/contract gates: the `gist ≡ rg` equality oracle, the scan-path regression, the stdout/stderr stream-contract check.                                 |
-| [`certify/`](certify/README.md)       | The macroscopic half of the Layer-A optimality certificate — races the whole field per pattern class with a fail-closed statistical verdict.                              |
+| Folder                                | Concern                                                                                                                                                                                             |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`harness/`](harness/README.md)       | The native `gist-bench` Zig binary — corpus load + latency slate, the microscopic cycles/byte certificate, PMU counters, bootstrap statistics, the shared probe registry.                           |
+| [`races/`](races/README.md)           | The competitor registry (`_compete.sh`) + the three multi-tool field races (warm, cold literal, cold regex).                                                                                        |
+| [`gates/`](gates/README.md)           | Permanent correctness/contract gates: the `gist ≡ rg` equality oracle, the scan-path regression, the stdout/stderr stream-contract check.                                                           |
+| [`certify/`](certify/README.md)       | The macroscopic half of the Layer-A optimality certificate — races the whole field per pattern class with a fail-closed statistical verdict.                                                        |
 | [`session/`](session/README.md)       | The **resident-session** certificate — the honest warm-product path (persistent client → `gist serve` daemon over a Unix socket), the only sound basis for a warm-speedup claim (ADR-352 rung 2.5). |
-| [`rgsuite/`](rgsuite/README.md)       | The `gist rg` ⇄ real-ripgrep drop-in proof — mined `rgtest!` correctness replay plus the performance scoreboard.                                                          |
-| [`portcert/`](portcert/README.md)     | Layer B — port-optimality: cross-compiled `llvm-mca` static microarchitectural bound on gist's two hot loops, drift-guarded against production.                           |
-| [`roofline/`](roofline/README.md)     | Layer C — roofline: this machine's measured STREAM read-bandwidth ceiling vs gist's real scan throughput.                                                                 |
-| [`lowerbound/`](lowerbound/README.md) | Layer D — algorithmic lower bound: a fail-closed structural audit proving gist's verify touches the information-theoretic floor of candidate bytes.                       |
+| [`rgsuite/`](rgsuite/README.md)       | The `gist rg` ⇄ real-ripgrep drop-in proof — mined `rgtest!` correctness replay plus the performance scoreboard.                                                                                    |
+| [`portcert/`](portcert/README.md)     | Layer B — port-optimality: cross-compiled `llvm-mca` static microarchitectural bound on gist's two hot loops, drift-guarded against production.                                                     |
+| [`roofline/`](roofline/README.md)     | Layer C — roofline: this machine's measured STREAM read-bandwidth ceiling vs gist's real scan throughput.                                                                                           |
+| [`lowerbound/`](lowerbound/README.md) | Layer D — algorithmic lower bound: a fail-closed structural audit proving gist's verify touches the information-theoretic floor of candidate bytes.                                                 |
 
 ```bash
 cd pkg/kernels/gist

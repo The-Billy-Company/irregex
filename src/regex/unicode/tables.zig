@@ -104,7 +104,7 @@ pub fn property(name_in: []const u8) ?[]const Range {
     var name = std.mem.trim(u8, name_in, " \t");
     if (std.mem.indexOfScalar(u8, name, '=')) |eq| {
         const key = std.mem.trim(u8, name[0..eq], " \t");
-        // A key we recognise is stripped; an unknown key means an unsupported
+        // A key we recognize is stripped; an unknown key means an unsupported
         // property form (fail closed → null).
         if (!(looseEql(key, "gc") or looseEql(key, "generalcategory") or looseEql(key, "sc") or looseEql(key, "script"))) return null;
         name = std.mem.trim(u8, name[eq + 1 ..], " \t");

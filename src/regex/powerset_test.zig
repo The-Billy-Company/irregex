@@ -428,10 +428,25 @@ test "powerset: EXHAUSTIVE language equivalence for Unicode classes (DFA ≡ NFA
     // (E4 B8 AD) plus a lone continuation byte (80), so every string ≤ 4 bytes —
     // well-formed AND ill-formed — is checked both ways.
     const pats = [_][]const u8{
-        "é",       "é+",      "\\w",       "\\w+",     "\\d",
-        ".",       ".*",      "[à-ÿ]",     "[^a]",     "\\p{L}",
-        "\\p{Nd}", "a\\wb",   "中",         "中+",       "café",
-        "\\w{2}",  "é|中",    "[a-cé中]",   "\\S",
+        "é",
+        "é+",
+        "\\w",
+        "\\w+",
+        "\\d",
+        ".",
+        ".*",
+        "[à-ÿ]",
+        "[^a]",
+        "\\p{L}",
+        "\\p{Nd}",
+        "a\\wb",
+        "中",
+        "中+",
+        "café",
+        "\\w{2}",
+        "é|中",
+        "[a-cé中]",
+        "\\S",
     };
     const alpha = [_]u8{ 'a', 0xC3, 0xA9, 0xE4, 0xB8, 0xAD, 0x80 };
     for (pats) |p| {

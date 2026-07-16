@@ -1256,10 +1256,18 @@ test "adversarial: Unicode differential vs rg default (fold/classes/boundaries)"
     // final-sigma ς/σ/Σ orbit, Cyrillic, CJK (word chars, no case), fullwidth
     // digits, mixed word/non-word gaps, and a lone invalid-UTF-8 byte.
     const inputs = [_][]const u8{
-        "café start",           "RÉSUMÉ",       "straße",
-        "Σίσυφος",              "ΚΌΣΜΟΣ end",   "Москва city",
-        "日本語 text",          "１２３ nums",   "abc café déjà",
-        "lead \xff tail word",  "",             "x",
+        "café start",
+        "RÉSUMÉ",
+        "straße",
+        "Σίσυφος",
+        "ΚΌΣΜΟΣ end",
+        "Москва city",
+        "日本語 text",
+        "１２３ nums",
+        "abc café déjà",
+        "lead \xff tail word",
+        "",
+        "x",
         "mixEd CaSe é À",
     };
     // Patterns both engines accept and that are meaningful under Unicode. Fold
@@ -1267,15 +1275,34 @@ test "adversarial: Unicode differential vs rg default (fold/classes/boundaries)"
     // `(?-u)` opt-out that must revert to ASCII exactly like `rg`'s.
     const pats = [_][]const u8{
         // case folding across scripts
-        "(?i)café",   "(?i)CAFÉ",   "(?i)straße",  "(?i)STRASSE",
-        "(?i)σίσυφος", "(?i)ΣΊΣΥΦΟΣ", "(?i)Σ",       "(?i)москва",
+        "(?i)café",
+        "(?i)CAFÉ",
+        "(?i)straße",
+        "(?i)STRASSE",
+        "(?i)σίσυφος",
+        "(?i)ΣΊΣΥΦΟΣ",
+        "(?i)Σ",
+        "(?i)москва",
         // codepoint & property classes
-        "\\w+",       "\\W+",       "\\d+",         "\\s+",
-        "\\p{L}+",    "\\p{Lu}+",   "\\p{Greek}+",  "caf.",  ".",
+        "\\w+",
+        "\\W+",
+        "\\d+",
+        "\\s+",
+        "\\p{L}+",
+        "\\p{Lu}+",
+        "\\p{Greek}+",
+        "caf.",
+        ".",
         // Unicode word boundaries (decode the straddling codepoint)
-        "café\\b",   "\\bword\\b",  "\\b\\w+\\b",  "é\\b",  "\\<\\w+\\>",
+        "café\\b",
+        "\\bword\\b",
+        "\\b\\w+\\b",
+        "é\\b",
+        "\\<\\w+\\>",
         // ASCII opt-out must revert exactly like rg's (?-u)
-        "(?-u)café", "(?-u)\\w+",   "(?-u)\\bword\\b",
+        "(?-u)café",
+        "(?-u)\\w+",
+        "(?-u)\\bword\\b",
     };
     for (pats) |p| for (inputs) |in| {
         rgAgreesU(&col, ctx, p, true, in); // single-line existence

@@ -21,15 +21,15 @@ gist reaches byte-for-byte `-E` parity with `rg` (proven in
 
 ## What's used
 
-| File(s) | Used for |
-|---|---|
-| `encodings.json` | label → encoding tag map (the full WHATWG alias table) |
-| `index-{ibm866,iso-8859-*,koi8-*,macintosh,windows-*,x-mac-cyrillic}.txt` | the single-byte pages (one byte → code point) |
-| `index-gb18030.txt` + `index-gb18030-ranges.txt` | gb18030 / GBK (two-byte table + four-byte range map) |
-| `index-big5.txt` | Big5 |
-| `index-jis0208.txt` + `index-jis0212.txt` | EUC-JP / Shift_JIS |
-| `index-iso-2022-jp-katakana.txt` | ISO-2022-JP katakana state |
-| `index-euc-kr.txt` | EUC-KR (WHATWG euc-kr = CP949/UHC) |
+| File(s)                                                                   | Used for                                               |
+| ------------------------------------------------------------------------- | ------------------------------------------------------ |
+| `encodings.json`                                                          | label → encoding tag map (the full WHATWG alias table) |
+| `index-{ibm866,iso-8859-*,koi8-*,macintosh,windows-*,x-mac-cyrillic}.txt` | the single-byte pages (one byte → code point)          |
+| `index-gb18030.txt` + `index-gb18030-ranges.txt`                          | gb18030 / GBK (two-byte table + four-byte range map)   |
+| `index-big5.txt`                                                          | Big5                                                   |
+| `index-jis0208.txt` + `index-jis0212.txt`                                 | EUC-JP / Shift_JIS                                     |
+| `index-iso-2022-jp-katakana.txt`                                          | ISO-2022-JP katakana state                             |
+| `index-euc-kr.txt`                                                        | EUC-KR (WHATWG euc-kr = CP949/UHC)                     |
 
 Verify the embedded pins with `shasum -a 256 *.txt` (compare to each file's
 `# Identifier:`). To upgrade: re-fetch the set from the URL above, then

@@ -386,7 +386,7 @@ const MlJson = struct {
             .arena = std.heap.ArenaAllocator.init(ta),
             .m = .{ .linear = try Regex.compileOpts(ta, pat, .{ .multiline = true }) },
         };
-        if (replace) h.caps = .{ .linear = try Captures.compile(ta, pat, false) };
+        if (replace) h.caps = .{ .linear = try Captures.compile(ta, pat, false, false) };
         return h;
     }
     fn deinit(self: *MlJson) void {

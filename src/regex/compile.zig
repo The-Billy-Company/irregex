@@ -85,7 +85,7 @@ pub const Compiler = struct {
 // ─────────────────────── Unicode class → UTF-8 byte trie ───────────────────────
 //
 // A `uclass` (a set of Unicode scalar ranges) is lowered into a byte
-// sub-automaton that recognises exactly the well-formed UTF-8 encodings of those
+// sub-automaton that recognizes exactly the well-formed UTF-8 encodings of those
 // scalar values, flowing to `next`. Each scalar range is decomposed into 1–4
 // successive byte ranges (`utf8seq`), then all the resulting byte sequences are
 // woven into a **prefix-merged, hash-consed** trie: sequences sharing a leading

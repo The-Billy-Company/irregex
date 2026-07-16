@@ -7,7 +7,7 @@ trips a clean no-match instead of hanging. `--engine auto` (and rg's deprecated
 its speed + trigram AST, escalate to PCRE2 only for a pattern the linear engine
 declines. Crucially, PCRE2 patterns are **trigram-prefiltered** too — sound
 required-literal extraction (`src/regex/pcre2/literal.zig`) skips files that
-provably can't match before PCRE2 runs, making gist the only *indexed* PCRE
+provably can't match before PCRE2 runs, making gist the only _indexed_ PCRE
 search in the field: it wins the `bench/races/pcre_headtohead.sh` lookaround /
 backreference slate against every PCRE-capable competitor (rg -P, ugrep, ag,
 grep -P, git grep -P), with rg -P as the correctness oracle. `--rank` and
