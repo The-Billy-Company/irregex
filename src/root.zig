@@ -148,6 +148,7 @@ test {
     _ = @import("index/trigram_fuzz.zig"); // T0 loader long fuzz (seeds + mutations; GIST_FUZZ_ITERS)
     _ = @import("rank/rank_test.zig"); // T4 RRF fusion ranking
     _ = @import("rank/signals_test.zig"); // cross-language def-detection + generated-file signals
+    _ = @import("rank/mirror.zig"); // cached-source mirror classification + exact canonical duplicate
     _ = @import("scan/simd_test.zig"); // SIMD `contains` differential fuzz vs std
     _ = @import("corpus/fresh_test.zig"); // T3 freshness `widen` set-algebra
     _ = @import("engine/query_test.zig"); // shared compiled-query: compile/prefilter/match vs oracle

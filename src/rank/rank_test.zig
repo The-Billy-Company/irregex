@@ -68,6 +68,17 @@ test "rrf: the authored signal only reorders generated vs authored, never within
     try std.testing.expectEqual(@as(u32, 0), order[1]);
 }
 
+test "rrf: a cached source mirror is demoted below its canonical file" {
+    const docs = [_]Doc{
+        .{ .id = 0, .matches = 20, .is_def = true, .best_line = 8, .depth = 7, .is_mirror = true },
+        .{ .id = 1, .matches = 2, .is_def = true, .best_line = 8, .depth = 3 },
+    };
+    const order = try rank(std.testing.allocator, &docs, .{}, null);
+    defer std.testing.allocator.free(order);
+    try std.testing.expectEqual(@as(u32, 1), order[0]);
+    try std.testing.expectEqual(@as(u32, 0), order[1]);
+}
+
 test "rrf: external graph ranking fuses in and drives the order" {
     const docs = [_]Doc{
         .{ .id = 100, .matches = 5, .is_def = false, .best_line = 3, .depth = 4 },

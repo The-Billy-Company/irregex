@@ -23,6 +23,7 @@ const corpus_mod = @import("../../corpus/corpus.zig");
 const fresh = @import("../../corpus/fresh.zig");
 const persist = @import("../../index/persist.zig");
 const Regex = @import("../../regex/core.zig").Regex;
+const mirror = @import("../../rank/mirror.zig");
 const signals = @import("../../rank/signals.zig");
 const rank_mod = @import("../../rank/rank.zig");
 const Dir = std.Io.Dir;
@@ -112,11 +113,23 @@ fn fileDoc(buf: []const u8, path: []const u8, re: *const Regex, sim: *Regex.Sim,
         if (defline == 0 and lineDefines(line, re)) defline = line_no;
     }
     const generated = signals.isGenerated(path, buf);
+    const is_mirror = mirror.isPath(path);
+    const content_hash = mirror.fingerprint(buf);
     if (match_lines == 0) {
         // Multi-line / whole-buffer match the per-line scan missed: keep the
         // file if the document matcher still fires, surface L1.
         if (!re.docMatch(sim, buf)) return null;
-        return .{ .id = id, .matches = 1, .is_def = false, .best_line = 1, .depth = pathDepth(path), .is_generated = generated };
+        return .{
+            .id = id,
+            .matches = 1,
+            .is_def = false,
+            .best_line = 1,
+            .depth = pathDepth(path),
+            .is_generated = generated,
+            .is_mirror = is_mirror,
+            .content_hash = content_hash,
+            .content_len = buf.len,
+        };
     }
     return .{
         .id = id,
@@ -125,6 +138,9 @@ fn fileDoc(buf: []const u8, path: []const u8, re: *const Regex, sim: *Regex.Sim,
         .best_line = if (defline != 0) defline else first,
         .depth = pathDepth(path),
         .is_generated = generated,
+        .is_mirror = is_mirror,
+        .content_hash = content_hash,
+        .content_len = buf.len,
     };
 }
 
@@ -306,8 +322,12 @@ fn emitRanked(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, docs: []cons
         const path = source.path(doc.id);
         const snip = try snippetOf(gpa, io, source, doc.id, doc.best_line, re);
         defer gpa.free(snip);
-        const kind = if (doc.is_generated) "gen" else if (doc.is_def) "def" else "use";
-        try buf.print(gpa, "{d:>2}. {s}:{d}  [{s}]  ×{d}  {s}\n", .{ i + 1, path, doc.best_line, kind, doc.matches, snip });
+        const kind = if (doc.is_mirror) "mirror" else if (doc.is_generated) "gen" else if (doc.is_def) "def" else "use";
+        try buf.print(gpa, "{d:>2}. {s}:{d}  [{s}]  ×{d}  {s}", .{ i + 1, path, doc.best_line, kind, doc.matches, snip });
+        if (doc.is_mirror) {
+            if (mirror.canonical(Doc, docs, doc)) |canonical| try buf.print(gpa, "  (mirror of {s})", .{source.path(canonical)});
+        }
+        try buf.append(gpa, '\n');
     }
     corpus_mod.emitStdout(buf.items);
     return top;

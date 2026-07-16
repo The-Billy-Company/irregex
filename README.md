@@ -126,14 +126,13 @@ wants via weighted **Reciprocal Rank Fusion** (Cormack et al. 2009) over four
 intrinsic signals — lexical density, a **definition boost** (a match on a decl
 line outranks its call sites — the win `grep` can't express), shallow-path
 centrality, and an **authored boost** that sinks codegen output (`*_grpc.pb.go`,
-`*_pb2.py`, …) below real code: a generated file otherwise floods the head of a
-common symbol like `context.Context` because it wins _both_ lexical (most
-occurrences) and the def boost (its boilerplate stubs parse as defs), yet the
-repo forbids editing it, so it is never the agent's target. The class split is
-fused tie-aware (every authored doc shares rank 0, every generated doc shares
-rank `n_authored`) so it stays neutral _within_ a class — plus an optional
-external ranking (a graph-centrality hook). `--rank` emits token-compressed
-`path:line [def|use|gen] ×n  <line>`.
+`*_pb2.py`, …) and cached source mirrors (`target/semver-checks/`,
+`.git/worktrees/`, …) below canonical code. Both otherwise flood the head by
+winning lexical density and definition detection despite not being the agent's
+edit target. The class split is fused tie-aware so it stays neutral _within_ a
+class; exact mirrored bytes are annotated with their canonical result.
+An optional external ranking supplies a graph-centrality hook. `--rank` emits
+token-compressed `path:line [def|use|gen|mirror] ×n <line>`.
 
 **Compiled query core** (`src/engine/query.zig`). One deep module owns "a search
 intent, compiled": a `(pattern, fixed, ignore_case, mode)` spec lowers into an

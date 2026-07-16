@@ -16,10 +16,10 @@
 //!     for; weighted high — this is the agent win rg can't express),
 //!   • **shallow path** (fewer path segments ⇒ closer to a package root, usually
 //!     more central than a deep test/vendor file),
-//!   • **authored** boost (codegen output — `*_grpc.pb.go`, `*_pb2.py`, … — is
-//!     demoted: it wins lexical *and* symbol yet is never the agent's edit
-//!     target, so without this it floods the head on common symbols like
-//!     `context.Context`; weighted to outrank that double boost),
+//!   • **authored** boost (codegen output and cached source mirrors are demoted:
+//!     they win lexical *and* symbol yet are never the agent's edit target, so
+//!     without this they flood the head on common symbols; weighted to outrank
+//!     that double boost),
 //! — plus an **optional external ranking** (`graph_rank`): pass any
 //! graph-centrality order and it fuses in for free; pass null and it's ignored.
 //! Embeddings stay deliberately out (CoREB: short keyword queries collapse them).
@@ -34,6 +34,9 @@ pub const Doc = struct {
     best_line: u32, // 1-based line to surface (the def line if any, else first match)
     depth: u16, // path segment count (number of '/'); shallower ranks higher
     is_generated: bool = false, // codegen output (*.pb.go, *_pb2.py, …) — almost never the agent's target, so demoted
+    is_mirror: bool = false, // cached/VCS snapshot of authored source — canonical working-tree copy ranks first
+    content_hash: u64 = 0, // caller-computed fingerprint used only to identify an exact canonical duplicate
+    content_len: usize = 0, // paired with content_hash before emitting a mirror→canonical annotation
 };
 
 /// Tunable fusion constants. `k` damps the head so rank-1 isn't pathologically dominant (60 is the canonical RRF value).
@@ -65,22 +68,23 @@ fn byShallow(docs: []const Doc, a: u32, b: u32) bool {
     if (docs[a].depth != docs[b].depth) return docs[a].depth < docs[b].depth;
     return docs[a].best_line < docs[b].best_line;
 }
-/// The authored-vs-generated split is a *binary class*, not a ranking, so it is
+fn isAuthored(d: Doc) bool {
+    return !d.is_generated and !d.is_mirror;
+}
+
+/// The authored-vs-artifact split is a *binary class*, not a ranking, so it is
 /// fused as a tie-aware RRF signal: every authored doc shares rank 0, every
-/// generated doc shares rank `n_authored` (standard competition ranking). That
-/// keeps the signal perfectly **neutral within a class** — it never re-votes the
-/// lexical/symbol order among authored docs (a sequential-position signal would,
-/// double-counting density) — while uniformly sinking the codegen flood below
-/// all real code. When a symbol lives only in generated files the demotion is
-/// constant across them, so the def-first order among them is untouched.
+/// generated or mirrored doc shares rank `n_authored` (standard competition
+/// ranking). That keeps the signal perfectly **neutral within a class** while
+/// uniformly sinking incidental copies below canonical source.
 fn addAuthoredSignal(score: []f64, docs: []const Doc, w: f64, k: f64) void {
     var n_authored: usize = 0;
     for (docs) |d| {
-        if (!d.is_generated) n_authored += 1;
+        if (isAuthored(d)) n_authored += 1;
     }
     const authored_credit = rrf(w, k, 0);
-    const generated_credit = rrf(w, k, n_authored);
-    for (docs, 0..) |d, i| score[i] += if (d.is_generated) generated_credit else authored_credit;
+    const artifact_credit = rrf(w, k, n_authored);
+    for (docs, 0..) |d, i| score[i] += if (isAuthored(d)) authored_credit else artifact_credit;
 }
 
 /// Fill `buf` with 0,1,2,… — the identity permutation we sort in place.
