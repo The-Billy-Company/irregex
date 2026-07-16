@@ -21,3 +21,7 @@ The daemon is a pure accelerator: it never becomes a new source of truth or a ne
 failure mode, and can always be skipped. `-c` and richer shapes stay cold (the
 daemon speaks `count` on the wire as a corpus-wide total for embedders, but the
 CLI never claims rg's per-file `-c` layout from it).
+
+**Client I/O deadline.** After connect, every warm `recvFrame` is gated by
+`poll(…, client_io_timeout_ms)` (2s). A peer that accepts but never speaks READY
+cannot park the CLI — timeout falls through to `.cold`. See `client_test.zig`.

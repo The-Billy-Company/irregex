@@ -25,6 +25,13 @@ const net = std.Io.net;
 /// daemon, `maybeSpawn` forks one so the *next* query lands warm (`spawn.zig`).
 pub const spawn = @import("spawn.zig");
 
+/// Soft deadline (ms) for every warm-client wait after connect. A wedged daemon
+/// (accepted but never READY, stuck reconcile, half-closed peer) must not park
+/// an agent shell forever — timeout → `.cold` and the certified path runs.
+/// Keep short: cold is always correct and typically finishes well under this
+/// budget for `-l` queries. Exposed for the wedge regression test.
+pub const client_io_timeout_ms: i32 = 2_000;
+
 /// The outcome of a warm attempt. `.served` means the result was fully emitted
 /// to stdout with the given exit code (0 = matched, 1 = no match — rg's codes);
 /// `.cold` means the caller must run the cold engine (nothing was emitted).
@@ -32,6 +39,24 @@ pub const Outcome = union(enum) {
     served: u8,
     cold,
 };
+
+/// Wait until `fd` is readable or the client deadline elapses. `false` means
+/// timed out / poll error — caller falls through to cold. Prefer `poll` over
+/// `SO_RCVTIMEO`: the latter's `timeval` ABI is easy to get wrong across libc
+/// cuts, and a silent setsockopt failure used to leave the CLI blocked forever.
+fn waitReadable(fd: std.posix.fd_t) bool {
+    var pfd = [_]std.posix.pollfd{.{ .fd = fd, .events = std.posix.POLL.IN, .revents = 0 }};
+    const n = std.posix.poll(&pfd, client_io_timeout_ms) catch return false;
+    // Only IN means "bytes ready". HUP/ERR alone must not look like a READY
+    // frame — that would skip the deadline and race a closing peer to cold.
+    return n > 0 and (pfd[0].revents & std.posix.POLL.IN) != 0;
+}
+
+/// Receive one frame, but never block longer than `client_io_timeout_ms`.
+fn recvFrameDeadline(gpa: std.mem.Allocator, fd: std.posix.fd_t) !protocol.Frame {
+    if (!waitReadable(fd)) return error.TimedOut;
+    return protocol.recvFrame(gpa, fd);
+}
 
 /// Try to answer `argv` warm. Never errors: any failure is `.cold`.
 pub fn attempt(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, socket_path: []const u8) Outcome {
@@ -49,13 +74,13 @@ pub fn attempt(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, soc
 
 /// One request/response over an open connection: handshake, send the query, and
 /// on a `result` frame emit the sorted file list to stdout. A `decline`/`err`
-/// frame (or any wire error) propagates so `attempt` degrades to cold.
+/// frame (or any wire error / deadline) propagates so `attempt` degrades to cold.
 fn exchange(gpa: std.mem.Allocator, fd: std.posix.fd_t, req: request.Request) !Outcome {
     // Handshake: HELLO → READY. A daemon speaking another protocol version is
     // not one we can trust to frame-match, so bail to cold.
     try protocol.sendFrame(gpa, fd, .hello, &.{protocol.protocol_version});
     {
-        var ready = try protocol.recvFrame(gpa, fd);
+        var ready = try recvFrameDeadline(gpa, fd);
         defer ready.deinit();
         if (ready.op != .ready) return .cold;
         const r = protocol.decodeReady(ready.payload()) catch return .cold;
@@ -67,7 +92,7 @@ fn exchange(gpa: std.mem.Allocator, fd: std.posix.fd_t, req: request.Request) !O
     try protocol.encodeQuery(&qbuf, gpa, req);
     if (!protocol.writeAll(fd, qbuf.items)) return .cold;
 
-    var resp = try protocol.recvFrame(gpa, fd);
+    var resp = try recvFrameDeadline(gpa, fd);
     defer resp.deinit();
     if (resp.op != .result) return .cold; // decline / err → cold
     const view = protocol.decodeResult(resp.payload()) catch return .cold;
