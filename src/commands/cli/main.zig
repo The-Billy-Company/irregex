@@ -3,7 +3,7 @@
 //! Two lifecycle verbs — what gist DOES, not which competitor's argv it apes:
 //!
 //!   gist index                        build + persist the trigram index
-//!   gist status                       read-only: is an index ready, how fresh, how big
+//!   gist status [--json]              read-only: is an index ready, how fresh, how big
 //!
 //! Everything else is the search itself — no verb at all, the shape an agent's
 //! `rg <pattern>` reflex already takes:
@@ -75,7 +75,7 @@ fn usage() void {
         \\                                     the tree (rg's default behavior), auto-using a
         \\                                     fresh index to skip non-candidate reads
         \\  index                              build + persist the trigram index
-        \\  status                             is an index ready, how fresh, how big
+        \\  status [--json]                    is an index ready, how fresh, how big
         \\
         \\  rg / search <pattern> [PATH...]    the same engine, addressed with a verb (habit-safe aliases)
         \\  --no-index / --index               force the live walk / the index-accelerated path
@@ -117,7 +117,13 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
     if (std.mem.eql(u8, mode, "status")) {
-        try status.run(gpa, io);
+        const arg = it.next();
+        const json = if (arg) |value| std.mem.eql(u8, value, "--json") else false;
+        if (arg != null and !json or it.next() != null) {
+            std.debug.print("gist: status accepts only --json\n", .{});
+            std.process.exit(2);
+        }
+        try status.run(gpa, io, json);
         return;
     }
     // `gist serve [ROOT...]` — run the resident daemon: keep the corpus + index

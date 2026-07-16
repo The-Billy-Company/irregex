@@ -22,7 +22,14 @@ const manifest_prefix =
     \\    "status": {
     \\      "summary": "read-only index presence, size, age, counts, and roots",
     \\      "args": [],
-    \\      "flags": []
+    \\      "flags": [{"name": "--json", "type": "bool", "default": false, "description": "emit the versioned status snapshot instead of human prose"}],
+    \\      "json_schema": {
+    \\        "schema_version": "integer; currently 1",
+    \\        "state": "\"ready\" | \"unavailable\"",
+    \\        "index": "null | {path:string, paths_file:string, files_indexed:integer, distinct_trigrams:integer, postings:integer, index_bytes:integer, paths_bytes:integer}",
+    \\        "freshness": "{anchor_unix_ns:null|integer, age_seconds:null|number}",
+    \\        "roots": "string[]"
+    \\      }
     \\    }
     \\  },
     \\  "search": {

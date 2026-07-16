@@ -92,9 +92,9 @@ watchers = [
 pattern = { type = "str", flag = "<positional>", detail = "the regex or literal to find" }
 paths = { type = "list[str]", flag = "<positional>", detail = "roots to search; empty = the repo default roots" }
 fixed = { type = "bool", flag = "-F", detail = "treat pattern as a literal string" }
-ignore_case = { type = "bool", flag = "-i", detail = "ASCII case-insensitive" }
-smart_case = { type = "bool", flag = "-S", detail = "case-insensitive unless the pattern has an uppercase byte" }
-word = { type = "bool", flag = "-w", detail = "match whole words (ASCII word boundaries)" }
+ignore_case = { type = "bool", flag = "-i", detail = "Unicode case-insensitive by default; `unicode = false` selects ASCII folding" }
+smart_case = { type = "bool", flag = "-S", detail = "Unicode-case-insensitive unless the pattern has uppercase text" }
+word = { type = "bool", flag = "-w", detail = "match whole Unicode words by default; `unicode = false` selects ASCII boundaries" }
 invert = { type = "bool", flag = "-v", detail = "select non-matching lines" }
 globs = { type = "list[str]", flag = "-g", detail = "include/exclude globs (a leading ! excludes)" }
 iglobs = { type = "list[str]", flag = "--iglob", detail = "case-insensitive include/exclude globs" }
@@ -109,6 +109,10 @@ hidden = { type = "bool", flag = "--hidden", detail = "search hidden files/dirs"
 no_ignore = { type = "bool", flag = "--no-ignore", detail = "disable .gitignore/.ignore/.rgignore filtering" }
 follow = { type = "bool", flag = "-L", detail = "follow symlinks" }
 no_index = { type = "bool", flag = "--no-index", detail = "force the pure live walk (skip index acceleration)" }
+engine = { type = "linear|auto|pcre2", flag = "--engine/-P", detail = "linear matcher, automatic PCRE2 escalation, or explicit PCRE2 JIT" }
+multiline = { type = "bool", flag = "-U", detail = "allow a match to span line boundaries" }
+multiline_dotall = { type = "bool", flag = "--multiline-dotall", detail = "make `.` match newlines; implies multiline in the package" }
+unicode = { type = "bool|null", flag = "--unicode/--no-unicode", detail = "explicit Unicode/ASCII semantics across the selected linear or PCRE2 backend; null keeps engine defaults" }
 
 # What a Match record can be. `match` lines carry submatch spans; `context`
 # lines are the -A/-B/-C neighborhood and carry none.
