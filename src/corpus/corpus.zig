@@ -90,27 +90,3 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !Corp
     }
     return .{ .docs = docs.items, .paths = paths.items, .bytes = total, .arena = arena };
 }
-
-/// Read an explicit, pre-selected path list into a corpus (no walk). The caller
-/// supplies the authoritative file set — for the resident daemon, the certified
-/// rg-default walk (`commands/ripgrep/run.zig::defaultFileSet`) — so the corpus
-/// membership matches cold's live walk exactly, rather than `load`'s coarse
-/// `haystack` superset. Same per-file admission as `load` (skip empty/binary,
-/// unreadable) so the two loaders agree on what counts as a searchable doc; a
-/// path that vanished or turned binary since selection is simply dropped. Path
-/// strings are duped into the corpus arena, so the caller's slice may be freed.
-pub fn loadPaths(gpa: std.mem.Allocator, io: std.Io, in_paths: []const []const u8) !Corpus {
-    var arena = std.heap.ArenaAllocator.init(gpa);
-    const a = arena.allocator();
-    var docs: std.ArrayList([]const u8) = .empty;
-    var paths: std.ArrayList([]const u8) = .empty;
-    var total: u64 = 0;
-    for (in_paths) |p| {
-        const buf = Dir.cwd().readFileAlloc(io, p, a, .limited(per_file_cap)) catch continue;
-        if (buf.len == 0 or isBinary(buf)) continue;
-        try docs.append(a, buf);
-        try paths.append(a, try a.dupe(u8, p));
-        total += buf.len;
-    }
-    return .{ .docs = docs.items, .paths = paths.items, .bytes = total, .arena = arena };
-}
