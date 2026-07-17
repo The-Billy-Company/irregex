@@ -331,6 +331,12 @@ fn gather(a: std.mem.Allocator, io: std.Io, roots: []const []const u8, o: Opts, 
     return .{ .recursive = recursive, .path_error = path_error or walk_error };
 }
 
+/// `defaultFileSet`'s answer: the walked paths plus whether the walk hit an
+/// error (an unreadable directory / unopenable explicit root). Cold reports
+/// that to stderr and exits 2; the resident session must DECLINE (answer cold)
+/// rather than serve a silently gapped set with a clean exit code.
+pub const FileSet = struct { paths: []const []const u8, path_error: bool };
+
 /// The authoritative rg-default file set under `roots` — the SAME certified
 /// `gather`/`ignore.zig` walk the bare cold search uses (hidden-file exclusion,
 /// `.gitignore`/`.ignore`/`.rgignore` precedence, `.git` skip, per-root
@@ -341,14 +347,14 @@ fn gather(a: std.mem.Allocator, io: std.Io, roots: []const []const u8, o: Opts, 
 /// parity guarantee. Paths (and the returned slice) are owned by `a`; the walk's
 /// default `Opts` mean no `-g`/`-t`/`--hidden`, which is exactly the query
 /// surface `request.classify` admits to the warm path.
-pub fn defaultFileSet(a: std.mem.Allocator, io: std.Io, roots: []const []const u8) []const []const u8 {
+pub fn defaultFileSet(a: std.mem.Allocator, io: std.Io, roots: []const []const u8) FileSet {
     const o: Opts = .{};
     var ig = ignore.Ignore.init(a, io, o, roots);
     var candidates: std.ArrayList(Candidate) = .empty;
-    _ = gather(a, io, roots, o, &ig, &candidates);
+    const g = gather(a, io, roots, o, &ig, &candidates);
     const paths = a.alloc([]const u8, candidates.items.len) catch die("oom\n", .{});
     for (candidates.items, paths) |c, *p| p.* = c.rel;
-    return paths;
+    return .{ .paths = paths, .path_error = g.path_error };
 }
 
 /// Spawn one shard per core above this candidate count; below it, thread-spawn
@@ -790,7 +796,10 @@ fn lessAsc(key: args.SortKey, x: InFile, y: InFile) bool {
 /// byte compare would flip them (`.`=0x2e < `/`=0x2f). Mapping `/`→0 and every
 /// other byte→byte+1 keeps all other orderings intact while making the separator
 /// the smallest, so gist's ordered output stays byte-identical to ripgrep's.
-fn pathLess(a: []const u8, b: []const u8) bool {
+/// `pub` so the in-process FFI match stream (`session/resident.zig::search`)
+/// emits docs in the SAME order the cold `--json` file sort produces — a caller
+/// gets one byte-identical record order across both transports.
+pub fn pathLess(a: []const u8, b: []const u8) bool {
     const n = @min(a.len, b.len);
     for (a[0..n], b[0..n]) |ca, cb| {
         if (ca != cb) return pathOrd(ca) < pathOrd(cb);
@@ -858,7 +867,11 @@ fn createdTimeNs(path: []const u8) ?i96 {
 /// the poll entirely.
 const stdin_poll_timeout_ms = 200;
 
-fn readableStdin() bool {
+/// `pub` for the warm client (`commands/client/client.zig`): a rootless query
+/// with a readable stdin is a STREAM search in the cold engine (below), which
+/// the daemon's tree corpus can never answer — the client must detect the same
+/// condition, with the same fd-type rules, and decline to cold.
+pub fn readableStdin() bool {
     var st: std.posix.Stat = undefined;
     if (std.posix.system.fstat(0, &st) != 0) return false;
     const fmt = st.mode & std.posix.S.IFMT;

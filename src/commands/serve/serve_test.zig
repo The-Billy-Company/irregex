@@ -58,8 +58,38 @@ fn collectFiles(gpa: std.mem.Allocator, fd: std.posix.fd_t, arena: std.mem.Alloc
             while (try iter.next()) |p| try out.append(arena, try arena.dupe(u8, p));
         },
         .count => return error.UnexpectedCountFrame,
+        .lines => return error.UnexpectedLinesFrame,
     }
     return out.toOwnedSlice(arena);
+}
+
+const LinesAnswer = struct { out: []const u8, matched: bool };
+
+/// Send a `lines` query and reassemble its chunk-streamed answer: zero or more
+/// `chunk` frames of raw pre-rendered bytes, then the terminal `result(lines)`
+/// frame carrying the matched flag — the exact grammar the warm CLI client speaks.
+fn collectLines(gpa: std.mem.Allocator, fd: std.posix.fd_t, arena: std.mem.Allocator, req: request.Request) !LinesAnswer {
+    var qbuf: std.ArrayList(u8) = .empty;
+    defer qbuf.deinit(gpa);
+    try protocol.encodeQuery(&qbuf, gpa, req);
+    try std.testing.expect(protocol.writeAll(fd, qbuf.items));
+
+    var out: std.ArrayList(u8) = .empty;
+    while (true) {
+        var resp = try protocol.recvFrame(gpa, fd);
+        defer resp.deinit();
+        switch (resp.op) {
+            .chunk => try out.appendSlice(arena, resp.payload()),
+            .result => {
+                const view = try protocol.decodeResult(resp.payload());
+                return switch (view) {
+                    .lines => |matched| .{ .out = out.items, .matched = matched },
+                    else => error.UnexpectedResultMode,
+                };
+            },
+            else => return error.UnexpectedFrame,
+        }
+    }
 }
 
 fn hasSuffix(files: []const []const u8, suffix: []const u8) bool {
@@ -111,6 +141,28 @@ test "serve: handshake → -l query → ping → shutdown round-trips over the s
     try std.testing.expect(hasSuffix(files, "a.txt"));
     try std.testing.expect(hasSuffix(files, "c.txt"));
     try std.testing.expect(!hasSuffix(files, "b.txt"));
+
+    // Bare `lines` query: chunk-streamed pre-rendered `path:text` rows in
+    // cold's `pathLess` file order, then the terminal matched flag.
+    {
+        const lr = try collectLines(gpa, fd, a, .{ .pattern = "WalletService", .mode = .lines, .fixed = true });
+        try std.testing.expect(lr.matched);
+        const want = try std.fmt.allocPrint(a, "{s}/a.txt:WalletService here\n{s}/c.txt:also WalletService\n", .{ root, root });
+        try std.testing.expectEqualStrings(want, lr.out);
+    }
+    // `-n` flips the same rows to `path:line:text`.
+    {
+        const lr = try collectLines(gpa, fd, a, .{ .pattern = "WalletService", .mode = .lines, .fixed = true, .line_num = true });
+        try std.testing.expect(lr.matched);
+        const want = try std.fmt.allocPrint(a, "{s}/a.txt:1:WalletService here\n{s}/c.txt:1:also WalletService\n", .{ root, root });
+        try std.testing.expectEqualStrings(want, lr.out);
+    }
+    // A no-match `lines` query: zero chunks, terminal `matched = false`.
+    {
+        const lr = try collectLines(gpa, fd, a, .{ .pattern = "NoSuchNeedleAnywhere", .mode = .lines, .fixed = true });
+        try std.testing.expect(!lr.matched);
+        try std.testing.expectEqualStrings("", lr.out);
+    }
 
     // PING → PONG.
     try protocol.sendFrame(gpa, fd, .ping, "");

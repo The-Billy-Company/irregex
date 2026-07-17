@@ -150,14 +150,23 @@ fn handleQuery(session: *ResidentSession, gpa: std.mem.Allocator, io: std.Io, fd
 
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
-    const result = session.query(arena.allocator(), req) catch
-        return protocol.sendFrame(gpa, fd, .decline, "");
-
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(gpa);
-    switch (result.mode) {
-        .files => try protocol.encodeFiles(&buf, gpa, result.files),
-        .count => try protocol.encodeCount(&buf, gpa, result.count),
+    if (req.mode == .lines) {
+        // The default line search: pre-rendered output bytes, chunk-streamed
+        // (protocol.encodeLines) so an arbitrarily large answer never breaches
+        // `max_frame`, then the terminal matched flag.
+        const ans = session.queryLines(arena.allocator(), req) catch
+            return protocol.sendFrame(gpa, fd, .decline, "");
+        try protocol.encodeLines(&buf, gpa, ans.out, ans.matched);
+    } else {
+        const result = session.query(arena.allocator(), req) catch
+            return protocol.sendFrame(gpa, fd, .decline, "");
+        switch (result.mode) {
+            .files => try protocol.encodeFiles(&buf, gpa, result.files),
+            .count => try protocol.encodeCount(&buf, gpa, result.count),
+            .lines => unreachable, // routed above
+        }
     }
     if (!protocol.writeAll(fd, buf.items)) return error.ConnClosed;
 }

@@ -30,11 +30,13 @@ const std = @import("std");
 const simd = @import("../scan/simd.zig");
 const Regex = @import("../regex/core.zig").Regex;
 
-/// The two mode shapes the shared core answers: `files` (any line matches) and
-/// `count` (how many lines match). Richer cold-only presentations (content,
-/// context, JSON) stay in `commands/ripgrep/` — they consume the same match
-/// decision but shape their own output.
-pub const Mode = enum { files, count };
+/// The three mode shapes the shared core answers: `files` (any line matches),
+/// `count` (how many lines match), and `lines` (the default `path:text` match
+/// lines — rendered by the warm session through the cold `Emitter` itself, so
+/// the presentation cannot drift). Richer cold-only presentations (context,
+/// JSON, replace, --only-matching) stay in `commands/ripgrep/` — they consume
+/// the same match decision but shape their own output.
+pub const Mode = enum(u8) { files = 0, count = 1, lines = 2 };
 
 /// A search intent before compilation. Mirrors the resident classifier's
 /// `Request` fields (`session/request.zig`) — the transport-neutral subset of
@@ -197,7 +199,9 @@ pub fn regexPrefilter(re: *const Regex, one: *[1][]const u8) []const []const u8 
 
 /// Escape a literal into a regex (for the caseless `-F -i` path, where the
 /// trigram prefilter is unsafe and the regex engine does the case fold).
-fn escapeLiteral(a: std.mem.Allocator, pat: []const u8) ![]u8 {
+/// `pub` because the warm lines renderer (`session/render.zig`) builds its
+/// emission `Matcher` from the SAME escaped form the cold `-F` path compiles.
+pub fn escapeLiteral(a: std.mem.Allocator, pat: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     for (pat) |c| {
         switch (c) {

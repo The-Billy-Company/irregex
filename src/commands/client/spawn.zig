@@ -20,6 +20,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const request = @import("../../session/request.zig");
+const run = @import("../ripgrep/run.zig");
 const net = std.Io.net;
 
 /// Only these targets have the fork+exec + `flock`/FSEvents/inotify machinery the
@@ -46,9 +47,15 @@ pub fn maybeSpawn(
     if (env.get("GIST_NO_AUTOSERVE") != null) return;
     if (env.get("GIST_NO_PARALLEL") != null) return;
     if (env.get("GIST_SESSION_SOCK") != null) return;
-    // Only the shapes the daemon can actually accelerate are worth warming for
-    // (a bare line search is never served warm — spawning would be pure waste).
-    _ = request.classify(argv) catch return;
+    // Only the shapes the daemon can actually accelerate are worth warming for.
+    const req = request.classify(argv) catch return;
+    // The client declines these shapes up front (`client.attempt`), so a daemon
+    // would never serve them: `-c` stays cold (per-file layout), a TTY stdout
+    // gets cold's interactive presentation, and a readable stdin is a stream
+    // search. Don't burn a resident corpus warming for a shape that can't land.
+    if (req.mode == .count) return;
+    if (std.Io.File.stdout().isTty(io) catch false) return;
+    if (run.readableStdin()) return;
     // A daemon may have come up since the client's dial (a coworker's spawn, or
     // one still binding). Probe once; if it answers, leave it be.
     if (net.UnixAddress.init(socket_path)) |ua| {

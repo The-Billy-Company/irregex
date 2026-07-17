@@ -43,13 +43,15 @@ package_import = "gist"
 # (`src/commands/client/client.zig`, wired into the bare-`gist` front door in
 # `src/commands/cli/main.zig`) — under an end-to-end lifecycle test
 # (`src/commands/serve/serve_test.zig`). The warm path is a pure accelerator that
-# routes only what it can answer byte-identically to cold (today: `-l` /
-# files-with-matches) and falls open to `subprocess` for everything else, so it
-# is never a new source of truth or a new failure mode.
+# routes only what it can answer with cold's own per-file bytes and exit code
+# (`-l`/files-with-matches and the bare default `lines` search, incl. `-n`;
+# file order is the deterministic pathLess canonicalization of cold's parallel
+# discovery order) and falls open to `subprocess` for everything else, so it is
+# never a new source of truth or a new failure mode.
 [transports]
 subprocess = { status = "authoritative", detail = "certified `gist` binary + --json; results produced by the same combinePatterns->collectFiles->json.run path the CLI uses" }
-uds = { status = "operational-accelerator", detail = "`gist serve` daemon holds a warm ResidentSession behind a Unix socket; the front-door client dials it for eligible queries (today `-l`/files-with-matches, emitted byte-identically to cold) and falls open to `subprocess` on any ineligible argv, absent daemon, decline, or wire hiccup — a pure fail-open accelerator, never a distinct answer path (src/commands/{serve,client}, src/session/*)" }
 ffi = { status = "planned", detail = "resident gist_open/gist_search/gist_close C session ABI; blocked on the CLI engine error-return refactor" }
+uds = { status = "operational-accelerator", detail = "`gist serve` daemon holds a warm ResidentSession behind a Unix socket; the front-door client dials it for eligible queries (`-l`/files-with-matches, and the bare default `lines` search whose `path:[line:]text` bytes the daemon pre-renders through the cold Emitter and chunk-streams) and falls open to `subprocess` on any ineligible argv, TTY stdout, readable stdin, absent daemon, decline, or wire hiccup — a pure fail-open accelerator, never a distinct answer path (src/commands/{serve,client}, src/session/*)" }
 
 # Resident-session semantics for the `uds` transport (ADR-352 rung 2.5). A client
 # opens a persistent connection to one daemon generation and issues many queries;
@@ -68,10 +70,18 @@ generations = [
   "index",
 ] # daemon boot id · per-connection id · published pair.gen
 # The request shapes the resident fast path answers directly. Everything else
-# (line output, --json, context, --rank, replace, invert, multiline, explicit
-# file lists, stdin) is unsupported on the fast path and falls back to the cold
-# subprocess transport, byte-for-byte identically.
-eligible_modes = [ "files", "count" ] # -l (files-with-matches) · -c (matching-line count)
+# (--json, context, --rank, replace, invert, multiline, explicit file lists,
+# stdin, a TTY stdout) is unsupported on the fast path and falls back to the
+# cold subprocess transport, byte-for-byte identically. `lines` is the bare
+# default `path:text` search (`-n` for `path:line:text`), pre-rendered daemon-
+# side through the cold Emitter and chunk-streamed; the CLI routes `files` and
+# `lines` warm, while `count` stays a wire-only corpus-wide total for embedders
+# (rg's `-c` is per-file, so the CLI answers it cold).
+eligible_modes = [
+  "files",
+  "count",
+  "lines",
+] # -l (files-with-matches) · -c (matching-line count) · bare default line search
 # Freshness is fail-closed: a query is answered from resident bytes only when the
 # barrier proves the searched roots unchanged since the daemon's build anchor
 # (a watcher-clean window); otherwise the daemon reconciles changed/new/deleted

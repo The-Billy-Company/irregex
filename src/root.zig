@@ -74,6 +74,8 @@ pub const engine = struct {
 // instead of `die()`ing so a bad request can't take down the daemon. ──
 pub const session = struct {
     pub const resident = @import("session/resident.zig");
+    pub const mirror = @import("session/mirror.zig");
+    pub const render = @import("session/render.zig");
     pub const request = @import("session/request.zig");
     pub const protocol = @import("session/protocol.zig");
     pub const watch = @import("session/watch.zig");
@@ -153,6 +155,8 @@ test {
     _ = @import("corpus/fresh_test.zig"); // T3 freshness `widen` set-algebra
     _ = @import("engine/query_test.zig"); // shared compiled-query: compile/prefilter/match vs oracle
     _ = @import("session/request_test.zig"); // resident request eligibility classifier
+    _ = @import("session/mirror.zig"); // faithful corpus ingest: BOM/UTF-16 decode, whole-body NUL, no cap
+    _ = @import("session/render.zig"); // warm lines renderer: cold-Emitter byte parity
     _ = @import("session/resident_test.zig"); // resident session: parity vs cold, overlay, RYW, deletion
     _ = @import("session/protocol_test.zig"); // UDS frame codec round-trip + adversarial
     _ = @import("session/watch_test.zig"); // freshness watcher: dirty/clean seqlock barrier

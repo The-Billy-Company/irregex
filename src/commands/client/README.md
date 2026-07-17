@@ -10,12 +10,24 @@ doc_radar:
 `attempt(gpa, io, argv, socket_path)` is the fail-open bridge from the bare
 `gist <pattern>` front door to the resident daemon ([`../serve`](../serve)). It
 classifies the argv ([`session/request.zig`](../../session/request.zig)) and only
-when the request is one the warm path answers with the **same match set as
-cold** — today, `-l`/`--files-with-matches` over the default roots — does it
-dial the socket, run the query, and emit the matched paths (deterministically
-sorted — a canonicalization of ripgrep's otherwise walk-order `-l` output).
-Anything else (ineligible argv, no daemon, a `decline`, any wire hiccup) returns
-`.cold` and the caller runs the certified cold path unchanged.
+when the request is one the warm path answers with **cold's own per-file bytes
+and exit code** — `-l`/`--files-with-matches` (the sorted path list) and the
+bare default line search (`gist <pattern> [-n]`, whose `path:[line:]text` bytes
+the daemon pre-renders through the cold Emitter itself and chunk-streams) —
+does it dial the socket, run the query, and emit the result. File emission
+order is the deterministic `pathLess` canonicalization of cold's parallel
+worker-discovery order (the same convention warm `-l` has always used; the
+rgsuite oracle certifies the equivalence as `sort_lines(gist) ==
+sort_lines(rg)`). Anything else (ineligible argv, no daemon, a `decline`, any
+wire hiccup) returns `.cold` and the caller runs the certified cold path
+unchanged.
+
+Two environment guards keep the warm answer inside its parity envelope: a
+**TTY stdout** declines to cold (interactive cold adds ANSI color + the 16 KiB
+long-line cap; the daemon renders the piped frame only — agents and pipes, the
+entire warm workload, are unaffected), and a **readable stdin** declines to cold
+(a rootless query with data on stdin is a stream search, which the tree daemon
+can never answer).
 
 The daemon is a pure accelerator: it never becomes a new source of truth or a new
 failure mode, and can always be skipped. `-c` and richer shapes stay cold (the

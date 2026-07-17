@@ -215,6 +215,161 @@ test "resident: the file set is the rg-default walk (hidden/gitignore/binary/emp
     try expectFileSet(&tree, files, &.{ "visible.txt", "sub/ok.txt", "nested/keep/z.txt" });
 }
 
+test "resident: queryLines renders the cold default frame (path:text, -n, RYW)" {
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var fixture = std.heap.ArenaAllocator.init(gpa);
+    defer fixture.deinit();
+
+    var tree = try Tree.init(fixture.allocator(), io, "lines", @intFromPtr(&threaded));
+    defer tree.deinit();
+    try tree.write("a.txt", "alpha\nneedle one\n");
+    try tree.write("b.txt", "needle two\nno\nneedle three"); // no trailing \n
+    try tree.write("c.txt", "nothing here\n");
+
+    var session = try ResidentSession.init(gpa, io, &.{tree.root});
+    defer session.deinit();
+
+    // Default piped frame: `path:text`, files in cold's pathLess order, final
+    // unterminated line still gets its newline (the cold Emitter's own rule).
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        const ans = try session.queryLines(q.allocator(), .{ .pattern = "needle", .mode = .lines, .fixed = true });
+        try std.testing.expect(ans.matched);
+        const want = try std.fmt.allocPrint(q.allocator(), "{s}/a.txt:needle one\n{s}/b.txt:needle two\n{s}/b.txt:needle three\n", .{ tree.root, tree.root, tree.root });
+        try std.testing.expectEqualStrings(want, ans.out);
+    }
+
+    // `-n` prefixes each row with its 1-based line number.
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        const ans = try session.queryLines(q.allocator(), .{ .pattern = "needle", .mode = .lines, .fixed = true, .line_num = true });
+        const want = try std.fmt.allocPrint(q.allocator(), "{s}/a.txt:2:needle one\n{s}/b.txt:1:needle two\n{s}/b.txt:3:needle three\n", .{ tree.root, tree.root, tree.root });
+        try std.testing.expectEqualStrings(want, ans.out);
+    }
+
+    // Read-your-writes holds for the lines face too.
+    try advanceClock(io);
+    try tree.write("c.txt", "needle late\n");
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        const ans = try session.queryLines(q.allocator(), .{ .pattern = "needle late", .mode = .lines, .fixed = true });
+        try std.testing.expect(ans.matched);
+        const want = try std.fmt.allocPrint(q.allocator(), "{s}/c.txt:needle late\n", .{tree.root});
+        try std.testing.expectEqualStrings(want, ans.out);
+    }
+
+    // No match: empty output, matched=false (cold's exit-1 shape).
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        const ans = try session.queryLines(q.allocator(), .{ .pattern = "absent-needle", .mode = .lines, .fixed = true });
+        try std.testing.expect(!ans.matched);
+        try std.testing.expectEqualStrings("", ans.out);
+    }
+
+    // The fold face refuses the lines shape (it would emit the wrong frame).
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        try std.testing.expectError(error.Stale, session.query(q.allocator(), .{ .pattern = "needle", .mode = .lines, .fixed = true }));
+    }
+}
+
+test "resident: binary docs follow cold's per-mode NUL policy (faithful mirror)" {
+    // Cold does NOT skip a walked binary file wholesale: `-l` observes complete
+    // 64 KiB buffers before the one holding the first NUL; `-c` suppresses the
+    // file entirely; the default line search emits pre-cut matches + WARNING.
+    // The old 8 KiB-window corpus skip diverged on all three — this pins the fix.
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var fixture = std.heap.ArenaAllocator.init(gpa);
+    defer fixture.deinit();
+
+    var tree = try Tree.init(fixture.allocator(), io, "binary", @intFromPtr(&threaded));
+    defer tree.deinit();
+    // NUL in the first buffer: cold `-l` sees zero visible lines → excluded.
+    try tree.write("early.dat", "needle\x00tail");
+    // Match in a complete buffer BEFORE the NUL one (nul past 64 KiB): cold
+    // `-l` REPORTS this file; `-c` still suppresses it.
+    var big: std.ArrayList(u8) = .empty;
+    defer big.deinit(gpa);
+    try big.appendSlice(gpa, "needle early\n");
+    try big.appendNTimes(gpa, 'x', 65536);
+    try big.append(gpa, 0);
+    try tree.write("late.dat", big.items);
+    try tree.write("plain.txt", "needle plain\n");
+
+    var session = try ResidentSession.init(gpa, io, &.{tree.root});
+    defer session.deinit();
+
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        const files = try queryFiles(&session, q.allocator(), .{ .pattern = "needle", .mode = .files, .fixed = true });
+        try expectFileSet(&tree, files, &.{ "late.dat", "plain.txt" });
+    }
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        const counted = try session.query(q.allocator(), .{ .pattern = "needle", .mode = .count, .fixed = true });
+        try std.testing.expectEqual(@as(u64, 1), counted.count); // plain.txt only
+    }
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        const ans = try session.queryLines(q.allocator(), .{ .pattern = "needle", .mode = .lines, .fixed = true });
+        try std.testing.expect(ans.matched);
+        const late = try tree.abs("late.dat");
+        const plain = try tree.abs("plain.txt");
+        const head = try std.fmt.allocPrint(q.allocator(), "{s}:needle early\n", .{late});
+        try std.testing.expect(std.mem.startsWith(u8, ans.out, head));
+        try std.testing.expect(std.mem.indexOf(u8, ans.out, "WARNING: stopped searching binary file") != null);
+        const tail = try std.fmt.allocPrint(q.allocator(), "{s}:needle plain\n", .{plain});
+        try std.testing.expect(std.mem.endsWith(u8, ans.out, tail));
+        // early.dat contributes nothing in any mode.
+        try std.testing.expect(std.mem.indexOf(u8, ans.out, "early.dat") == null);
+    }
+}
+
+test "resident: UTF-16 and >4MiB docs are searched warm (BOM decode, no cap)" {
+    // Two former warm gaps the faithful mirror closes: a UTF-16 file (its
+    // encoding NULs used to mis-sniff it binary) and a text file past the old
+    // 4 MiB indexing cap (used to be silently absent from every warm answer).
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var fixture = std.heap.ArenaAllocator.init(gpa);
+    defer fixture.deinit();
+
+    var tree = try Tree.init(fixture.allocator(), io, "ingest", @intFromPtr(&threaded));
+    defer tree.deinit();
+    // "needle\n" as UTF-16 LE with BOM.
+    try tree.write("u16.txt", "\xFF\xFEn\x00e\x00e\x00d\x00l\x00e\x00\n\x00");
+    var big: std.ArrayList(u8) = .empty;
+    defer big.deinit(gpa);
+    try big.appendNTimes(gpa, 'x', (4 << 20) + 64); // past the old per_file_cap
+    big.items[big.items.len - 8] = '\n';
+    try big.appendSlice(gpa, "needle at the end\n");
+    try tree.write("big.txt", big.items);
+
+    var session = try ResidentSession.init(gpa, io, &.{tree.root});
+    defer session.deinit();
+
+    var q = std.heap.ArenaAllocator.init(gpa);
+    defer q.deinit();
+    const files = try queryFiles(&session, q.allocator(), .{ .pattern = "needle", .mode = .files, .fixed = true });
+    try expectFileSet(&tree, files, &.{ "u16.txt", "big.txt" });
+}
+
 test "resident: regex and caseless paths agree with the literal path" {
     const gpa = std.testing.allocator;
     var threaded = std.Io.Threaded.init(gpa, .{});

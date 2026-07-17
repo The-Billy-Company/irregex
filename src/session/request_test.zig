@@ -56,10 +56,38 @@ test "classify: a bare -l/-c with no pattern is NoPattern (the walk lists files)
     try std.testing.expectError(request.ClassifyError.NoPattern, ok(&.{"-c"}));
 }
 
-test "classify: no eligible mode falls back to cold" {
-    // A bare pattern with no -l/-c is a line search — not an eligible mode.
-    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{"needle"}));
-    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-F", "needle" }));
+test "classify: a bare pattern with no mode flag is the default lines search" {
+    const a = try ok(&.{"needle"});
+    try std.testing.expectEqual(request.Mode.lines, a.mode);
+    try std.testing.expectEqualStrings("needle", a.pattern);
+    try std.testing.expect(!a.line_num);
+
+    const b = try ok(&.{ "-F", "needle" });
+    try std.testing.expectEqual(request.Mode.lines, b.mode);
+    try std.testing.expect(b.fixed);
+}
+
+test "classify: -n/--line-number carried; -N undoes it left-to-right (rg parity)" {
+    const a = try ok(&.{ "-n", "needle" });
+    try std.testing.expectEqual(request.Mode.lines, a.mode);
+    try std.testing.expect(a.line_num);
+    const b = try ok(&.{ "--line-number", "needle" });
+    try std.testing.expect(b.line_num);
+    const c = try ok(&.{ "-n", "-N", "needle" });
+    try std.testing.expect(!c.line_num);
+    const d = try ok(&.{ "-N", "-n", "needle" });
+    try std.testing.expect(d.line_num);
+    // Carried (and ignored) on the fold modes, exactly as cold does.
+    const e = try ok(&.{ "-l", "-n", "needle" });
+    try std.testing.expectEqual(request.Mode.files, e.mode);
+    try std.testing.expect(e.line_num);
+}
+
+test "classify: a pattern carrying a newline or NUL stays cold" {
+    // Warm whole-doc gates would match ACROSS lines where rg's per-line model
+    // cannot; a NUL byte interacts with binary detection. Cold owns both.
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{"multi\nline"}));
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "-F", "nul\x00byte" }));
 }
 
 test "classify: a rootless -l/-c query is eligible" {

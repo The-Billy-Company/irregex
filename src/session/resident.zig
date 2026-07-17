@@ -1,3 +1,4 @@
+// MONOLITHIC: warm-session engine — the freshness seqlock, reconcile overlay, and the three answer faces (fold, lines, record stream) share one mutex-guarded session state
 //! gist resident session — the warm, in-memory search engine (ADR-352 rung 2.5).
 //!
 //! A `ResidentSession` owns the corpus bytes + trigram index for one repository,
@@ -10,6 +11,22 @@
 //! (`error.Unsupported`) instead of calling `die()`, a bad request surfaces here
 //! as `error.Stale` (→ cold fallback) and can never terminate the daemon — the
 //! exact hazard ADR-352 defers the C FFI on.
+//!
+//! ## The corpus is a faithful mirror
+//!
+//! Base docs load through `mirror.zig`: full reads (no cap), BOM/UTF-16 decode,
+//! whole-body first-NUL offsets, empty docs dropped — the same per-file ingest
+//! a cold run applies. Binary docs are ADMITTED (cold does not skip a walked
+//! binary; it searches up to the buffer that revealed the first NUL), and each
+//! mode applies cold's own binary rule at answer time:
+//!
+//!   - `files` (`-l`): match only within complete buffers before the NUL one
+//!     (`grepfile.handleBinary`'s files_only policy).
+//!   - `count` (`-c`): an implicit binary file is suppressed entirely.
+//!   - `lines` (bare `gist <pattern>`): emit pre-NUL-buffer matches + WARNING,
+//!     rendered by `render.zig` through the cold Emitter itself.
+//!   - `search` (FFI record stream): a doc cold `--json` would skip (its 8 KiB
+//!     `isBinary` window) is skipped, keeping the record stream byte-identical.
 //!
 //! ## Read-your-writes: a fail-closed reconcile barrier
 //!
@@ -30,11 +47,13 @@
 //!     hidden/ignored) is tombstoned; a new path is read in; a known path whose
 //!     mtime/ctime advanced past the freshness cursor is re-read — then answers
 //!     over (base ∪ overlay) − tombstones. Fail-closed: a rebuilt index
-//!     (`pair.gen` drift) or a reconcile allocation failure surfaces as
-//!     `error.Stale` and the daemon declines, so the client falls back to the
-//!     certified cold path. (A catastrophic OOM inside the shared walk itself
-//!     exits the daemon via `die()`; the client's dropped connection then falls
-//!     back cold and the next query re-spawns a fresh daemon — fail-open too.)
+//!     (`pair.gen` drift), a reconcile allocation failure, or a WALK ERROR (an
+//!     unreadable directory — cold reports it and exits 2, so a warm answer over
+//!     a silently gapped set would lie) surfaces as `error.Stale` and the daemon
+//!     declines, so the client falls back to the certified cold path. (A
+//!     catastrophic OOM inside the shared walk itself exits the daemon via
+//!     `die()`; the client's dropped connection then falls back cold and the
+//!     next query re-spawns a fresh daemon — fail-open too.)
 //!
 //! Queries are serialized by `mutex`; the watcher only ever touches the atomic
 //! `dirty_seq`/`clean` pair, never the overlay, so the barrier is a lock-free
@@ -43,12 +62,15 @@
 const std = @import("std");
 const corpus_mod = @import("../corpus/corpus.zig");
 const bulkstat = @import("../corpus/bulkstat.zig");
+const mirror = @import("mirror.zig");
+const render = @import("render.zig");
 // The resident file set is the certified rg-default walk the cold path uses, NOT
 // `haystack`'s coarse superset — this is what makes `resident == --no-index ==
 // rg` true for hidden files, `.gitignore` precedence, and root scope. `session`
 // depending on `commands/ripgrep` is a one-way edge (run.zig never imports
 // session), so no import cycle.
 const run = @import("../commands/ripgrep/run.zig");
+const grepfile = @import("../commands/ripgrep/grepfile.zig");
 const persist = @import("../index/persist.zig");
 const Index = @import("../index/trigram.zig").Index;
 const query_mod = @import("../engine/query.zig");
@@ -70,7 +92,7 @@ pub const QueryError = error{
 };
 
 /// One eligible query's answer. `files` aliases session-owned path strings
-/// (corpus path table or overlay keys) valid until the next reconcile; the
+/// (mirror path table or overlay keys) valid until the next reconcile; the
 /// caller (daemon frame builder / test) copies them out under the session lock.
 pub const Result = struct {
     mode: Mode,
@@ -78,8 +100,15 @@ pub const Result = struct {
     count: u64 = 0,
 };
 
+/// A `lines`-mode answer: the pre-rendered output bytes (owned by the caller's
+/// arena) and whether any file matched (cold's exit-code boolean).
+pub const Lines = struct {
+    out: []const u8,
+    matched: bool,
+};
+
 /// One streamed match: a matching LINE (ADR-352 rung 3 — the in-process FFI's
-/// output unit). `path` aliases the corpus path table / overlay key; `text` is
+/// output unit). `path` aliases the mirror path table / overlay key; `text` is
 /// the line CONTENT without its `\n` terminator and aliases session bytes;
 /// `spans` alias `search`'s per-line scratch. All three are valid ONLY during
 /// the `emit` call — the sink must copy anything it keeps. `line_number` is
@@ -105,23 +134,33 @@ pub const MatchSink = struct {
     emit: *const fn (ctx: *anyopaque, rec: MatchRecord) bool,
 };
 
-/// A candidate doc to emit, gathered before streaming so records leave in a
-/// deterministic path order. `bytes` aliases corpus/overlay memory.
+/// A candidate doc gathered before answering so results leave in a
+/// deterministic path order. `bytes` aliases mirror/overlay memory; `nul` is
+/// the first-NUL byte offset (null ⇒ text), driving each mode's binary rule.
 const DocRef = struct {
     path: []const u8,
     bytes: []const u8,
+    nul: ?usize = null,
 
-    /// Separator-aware path order — the SAME `pathLess` the cold `--json` file
-    /// sort uses (`commands/ripgrep/run.zig`), so the streamed record order is
-    /// byte-identical to a cold `gist --json` run, not merely set-equal.
+    /// Separator-aware path order — the SAME `pathLess` cold's `--sort path`
+    /// comparator uses (`commands/ripgrep/run.zig::cmpFiles`). Cold's default
+    /// parallel pipeline emits in worker-discovery order (nondeterministic);
+    /// warm canonicalizes to this deterministic total order instead — per-file
+    /// bytes stay identical, and the rgsuite oracle's own equivalence
+    /// (`sort_lines(gist) == sort_lines(rg)`) certifies the file-order freedom.
     fn less(_: void, a: DocRef, b: DocRef) bool {
         return run.pathLess(a.path, b.path);
     }
 };
 
-/// A base doc's live substitute: replacement bytes, or a tombstone (deleted, or
-/// no longer a searchable doc — became empty/binary). Bytes are gpa-owned.
-const Overlay = union(enum) { bytes: []u8, tombstone };
+/// Which docs a gather admits: the FFI record stream skips what cold `--json`
+/// skips (its 8 KiB `isBinary` window); the `lines` renderer admits every doc
+/// and lets `grepfile.handleBinary` apply cold's NUL-cut policy per file.
+const Admit = enum { json_stream, lines };
+
+/// A base doc's live substitute: a replacement document (gpa-owned bytes +
+/// first-NUL offset), or a tombstone (deleted / left the walk set / read empty).
+const Overlay = union(enum) { doc: mirror.OwnedDoc, tombstone };
 
 pub const ResidentSession = struct {
     gpa: std.mem.Allocator,
@@ -129,9 +168,9 @@ pub const ResidentSession = struct {
     roots_arena: std.heap.ArenaAllocator,
     roots: []const []const u8,
 
-    corpus: corpus_mod.Corpus,
+    mir: mirror.Mirror,
     idx: Index,
-    /// doc-id lookup for overlay substitution (aliases `corpus.paths`).
+    /// doc-id lookup for overlay substitution (aliases `mir.paths`).
     by_path: std.StringHashMap(u32),
 
     /// The published index generation this session bound to ("" = legacy/none),
@@ -175,25 +214,27 @@ pub const ResidentSession = struct {
         // index` (using it would re-read the whole corpus on every query).
         const load_ns = std.Io.Clock.now(.real, io).nanoseconds;
         // Select the corpus with the certified rg-default walk (hidden-file
-        // exclusion + `.gitignore` precedence + root scope) and read exactly that
-        // set — so the resident base matches cold's live walk byte-for-byte,
-        // never `haystack`'s coarse superset. A short-lived arena owns the path
-        // list just for the read.
+        // exclusion + `.gitignore` precedence + root scope) and mirror exactly
+        // that set — so the resident base matches cold's live walk
+        // byte-for-byte, never `haystack`'s coarse superset. A walk error here
+        // doesn't fail init (the daemon may still come up); the first reconcile
+        // re-walks and declines the query if the error persists. A short-lived
+        // arena owns the path list just for the read.
         var sel_arena = std.heap.ArenaAllocator.init(gpa);
-        const sel_paths = run.defaultFileSet(sel_arena.allocator(), io, owned_roots);
-        var corpus = corpus_mod.loadPaths(gpa, io, sel_paths) catch |e| {
+        const sel = run.defaultFileSet(sel_arena.allocator(), io, owned_roots);
+        var mir = mirror.load(gpa, io, sel.paths) catch |e| {
             sel_arena.deinit();
             return e;
         };
         sel_arena.deinit();
-        errdefer corpus.deinit();
-        var idx = try Index.build(gpa, corpus.docs);
+        errdefer mir.deinit();
+        var idx = try Index.build(gpa, mir.docs);
         errdefer idx.deinit();
 
         var by_path = std.StringHashMap(u32).init(gpa);
         errdefer by_path.deinit();
-        try by_path.ensureTotalCapacity(@intCast(corpus.paths.len));
-        for (corpus.paths, 0..) |p, i| by_path.putAssumeCapacity(p, @intCast(i));
+        try by_path.ensureTotalCapacity(@intCast(mir.paths.len));
+        for (mir.paths, 0..) |p, i| by_path.putAssumeCapacity(p, @intCast(i));
 
         const gen = try readGen(gpa, io);
         errdefer gpa.free(gen);
@@ -203,7 +244,7 @@ pub const ResidentSession = struct {
             .io = io,
             .roots_arena = roots_arena,
             .roots = owned_roots,
-            .corpus = corpus,
+            .mir = mir,
             .idx = idx,
             .by_path = by_path,
             .index_gen = gen,
@@ -218,7 +259,7 @@ pub const ResidentSession = struct {
         self.gpa.free(self.index_gen);
         self.by_path.deinit();
         self.idx.deinit();
-        self.corpus.deinit();
+        self.mir.deinit();
         self.roots_arena.deinit();
     }
 
@@ -227,7 +268,7 @@ pub const ResidentSession = struct {
         while (it.next()) |e| {
             self.gpa.free(e.key_ptr.*);
             switch (e.value_ptr.*) {
-                .bytes => |b| self.gpa.free(b),
+                .doc => |d| self.gpa.free(d.bytes),
                 .tombstone => {},
             }
         }
@@ -239,7 +280,7 @@ pub const ResidentSession = struct {
         const gop = try self.overlay.getOrPut(path);
         if (gop.found_existing) {
             switch (gop.value_ptr.*) {
-                .bytes => |b| self.gpa.free(b),
+                .doc => |d| self.gpa.free(d.bytes),
                 .tombstone => {},
             }
         } else {
@@ -287,7 +328,7 @@ pub const ResidentSession = struct {
         self.gpa.free(self.index_gen);
         self.by_path.deinit();
         self.idx.deinit();
-        self.corpus.deinit();
+        self.mir.deinit();
         self.roots_arena.deinit();
 
         // Move the fresh engine's data fields into place, field-by-field, and
@@ -300,7 +341,7 @@ pub const ResidentSession = struct {
         // moved out of it, so it needs no deinit.
         self.roots_arena = fresh.roots_arena;
         self.roots = fresh.roots;
-        self.corpus = fresh.corpus;
+        self.mir = fresh.mir;
         self.idx = fresh.idx;
         self.by_path = fresh.by_path;
         self.index_gen = fresh.index_gen;
@@ -317,7 +358,8 @@ pub const ResidentSession = struct {
     /// tombstoned; a new file is read in; a file whose mtime/ctime advanced past
     /// the freshness cursor is re-read. This is the whole read-your-writes
     /// barrier — the set comes from the SAME walk as cold, so warm answers can't
-    /// drift from `gist --no-index`/`rg`. A reconcile allocation failure surfaces
+    /// drift from `gist --no-index`/`rg`. A reconcile allocation failure OR a
+    /// walk error (unreadable directory — cold reports it and exits 2) surfaces
     /// as `error.Stale` (→ cold fallback); see the module header on walk OOM.
     fn reconcile(self: *ResidentSession) QueryError!void {
         try self.maybeReload();
@@ -328,7 +370,13 @@ pub const ResidentSession = struct {
 
         var walk_arena = std.heap.ArenaAllocator.init(self.gpa);
         defer walk_arena.deinit();
-        const cur = run.defaultFileSet(walk_arena.allocator(), self.io, self.roots);
+        const fs = run.defaultFileSet(walk_arena.allocator(), self.io, self.roots);
+        // An errored walk is a GAPPED set. Cold would report the unreadable
+        // directory to stderr and exit 2; serving a clean-looking warm answer
+        // over the gap would silently drop its files. Decline (and never mark
+        // clean) until a walk completes without error.
+        if (fs.path_error) return QueryError.Stale;
+        const cur = fs.paths;
 
         var cur_set = std.StringHashMap(void).init(self.gpa);
         defer cur_set.deinit();
@@ -353,7 +401,7 @@ pub const ResidentSession = struct {
     fn reconcileOne(self: *ResidentSession, p: []const u8) QueryError!void {
         if (self.overlay.get(p)) |ov| switch (ov) {
             .tombstone => return self.readInto(p), // reappeared since its delete
-            .bytes => {}, // already substituted — fall through to the mtime gate
+            .doc => {}, // already substituted — fall through to the mtime gate
         } else if (!self.by_path.contains(p)) {
             return self.readInto(p); // brand-new file, not in the base corpus
         }
@@ -362,18 +410,15 @@ pub const ResidentSession = struct {
             return self.readInto(p);
     }
 
-    /// Read `p` into an overlay entry: its live bytes, or a tombstone when it is
-    /// gone/unreadable or no longer a searchable doc (empty/binary) — the exact
-    /// per-file admission `corpus.loadPaths`/cold apply, so a file that turned
-    /// binary drops out of both warm and cold identically.
+    /// Read `p` into an overlay entry with the SAME faithful ingest the base
+    /// mirror applies (full read, BOM/UTF-16 decode, whole-body NUL offset), or
+    /// a tombstone when it is gone/unreadable/empty — the only cases that can
+    /// never produce cold output. A file that turned binary stays IN the
+    /// overlay with its `nul` recorded, so each mode applies cold's binary rule.
     fn readInto(self: *ResidentSession, p: []const u8) QueryError!void {
-        const raw = Dir.cwd().readFileAlloc(self.io, p, self.gpa, .limited(corpus_mod.per_file_cap)) catch
+        const doc = mirror.readDocOwned(self.gpa, self.io, p) orelse
             return self.putOverlay(p, .tombstone);
-        if (raw.len == 0 or corpus_mod.isBinary(raw)) {
-            self.gpa.free(raw);
-            return self.putOverlay(p, .tombstone);
-        }
-        return self.putOverlay(p, .{ .bytes = raw });
+        return self.putOverlay(p, .{ .doc = doc });
     }
 
     /// Tombstone every base doc or overlaid file that is no longer in the
@@ -382,35 +427,29 @@ pub const ResidentSession = struct {
     fn tombstoneVanished(self: *ResidentSession, cur_set: *const std.StringHashMap(void)) QueryError!void {
         var gone: std.ArrayList([]const u8) = .empty;
         defer gone.deinit(self.gpa);
-        for (self.corpus.paths) |p| {
+        for (self.mir.paths) |p| {
             if (cur_set.contains(p)) continue;
             if (self.overlay.get(p)) |ov| if (ov == .tombstone) continue; // already gone
             try gone.append(self.gpa, p);
         }
         var it = self.overlay.iterator();
         while (it.next()) |e| switch (e.value_ptr.*) {
-            .bytes => if (!cur_set.contains(e.key_ptr.*)) try gone.append(self.gpa, e.key_ptr.*),
+            .doc => if (!cur_set.contains(e.key_ptr.*)) try gone.append(self.gpa, e.key_ptr.*),
             .tombstone => {},
         };
         for (gone.items) |p| try self.putOverlay(p, .tombstone);
     }
 
-    /// Effective bytes for base doc `id`: overlay substitute, tombstone (→ null),
-    /// or the resident bytes.
-    fn docBytes(self: *const ResidentSession, id: u32) ?[]const u8 {
-        if (self.overlay.get(self.corpus.paths[id])) |ov| return switch (ov) {
-            .bytes => |b| b,
-            .tombstone => null,
-        };
-        return self.corpus.docs[id];
-    }
-
     // ── the query ──
 
-    /// Answer an eligible request over the warm engine. `arena` owns the
-    /// returned `files` slice (the path strings themselves alias session memory,
-    /// stable until the next reconcile — copy under the lock if needed).
+    /// Answer an eligible `-l`/`-c` request over the warm engine. `arena` owns
+    /// the returned `files` slice (the path strings themselves alias session
+    /// memory, stable until the next reconcile — copy under the lock if needed).
+    /// A `.lines` request is `error.Stale` here — its chunk-streamed
+    /// presentation is `queryLines`' answer, and routing it through the file/
+    /// count folder would silently produce the wrong shape.
     pub fn query(self: *ResidentSession, arena: std.mem.Allocator, req: Request) QueryError!Result {
+        if (req.mode == .lines) return QueryError.Stale;
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         try self.reconcile();
@@ -444,6 +483,47 @@ pub const ResidentSession = struct {
 
         if (req.mode == .files) std.mem.sort([]const u8, acc.files.items, {}, lessPath);
         return .{ .mode = req.mode, .files = acc.files.items, .count = acc.count };
+    }
+
+    /// Answer a bare `gist <pattern>` (`.lines`) request: the default
+    /// `path:text` / `-n` `path:line:text` presentation, pre-rendered into one
+    /// buffer through the cold engine's OWN Emitter (`render.zig`) so the bytes
+    /// cannot drift from a piped cold run. Same reconcile + freshness barrier +
+    /// trigram prefilter + fail-closed existence check as `query`; docs render
+    /// in the warm canonical `pathLess` file order (see `DocRef.less`); binary
+    /// docs get cold's exact NUL-cut policy. `arena` owns the returned bytes.
+    /// A pattern outside the linear
+    /// engine (or a mid-render OOM) is `error.Stale`/`OutOfMemory` → the daemon
+    /// declines and the client answers cold.
+    pub fn queryLines(self: *ResidentSession, arena: std.mem.Allocator, req: Request) QueryError!Lines {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        try self.reconcile();
+
+        var cq = CompiledQuery.compile(self.gpa, .{
+            .pattern = req.pattern,
+            .mode = .files, // the whole-doc gate; presentation is render's job
+            .fixed = req.fixed,
+            .ignore_case = req.ignore_case,
+        }) catch return QueryError.Stale;
+        defer cq.deinit(self.gpa);
+        var sc = cq.scratch(self.gpa) catch return QueryError.OutOfMemory;
+        defer sc.deinit();
+
+        // Admit every doc (binary included — the renderer applies cold's cut).
+        // The whole-doc gate over full bytes is a sound superset: a binary doc
+        // whose only match sits past its NUL buffer renders to nothing, exactly
+        // as cold's emit loop produces nothing for it.
+        const docs = try self.matchingDocs(arena, &cq, &sc, .lines);
+        const rdocs = try arena.alloc(render.Doc, docs.len);
+        for (docs, rdocs) |d, *r| r.* = .{ .path = d.path, .bytes = d.bytes, .nul = d.nul };
+
+        var out: std.ArrayList(u8) = .empty;
+        const matched = render.renderLines(arena, req, rdocs, &out) catch |e| switch (e) {
+            error.OutOfMemory => return QueryError.OutOfMemory,
+            error.Unsupported => return QueryError.Stale,
+        };
+        return .{ .out = out.items, .matched = matched };
     }
 
     /// Stream one `MatchRecord` per matching LINE over the warm corpus to `sink`
@@ -488,47 +568,46 @@ pub const ResidentSession = struct {
         var msc = cq.matchScratch(self.gpa) catch return QueryError.OutOfMemory;
         defer msc.deinit();
 
-        // Gather the MATCHING docs (base ∪ overlay − tombstones) into a path-sorted
-        // list so the stream order is deterministic. A doc is admitted only after
-        // it clears the whole-doc gate, so `docs` holds real matches only; off the
-        // watcher-clean path a matching doc is then existence-checked (the same
-        // fail-closed stat-per-hit `query` uses) so a file removed in the
-        // walk→report window is dropped — the stat now costs only per match, not
-        // per candidate. The emitted record stream stays byte-identical: a
-        // non-matching candidate produced no record before either.
-        const check_exists = !self.clean.load(.acquire);
-        var docs: std.ArrayList(DocRef) = .empty;
-        var cand_buf: ?[]u32 = null;
-        defer if (cand_buf) |c| self.gpa.free(c);
-        const cand = try self.candidateIds(&cq, &cand_buf);
-        for (cand) |id| {
-            const path = self.corpus.paths[id];
-            if (self.overlay.contains(path)) continue; // overlay handled below
-            const bytes = self.corpus.docs[id];
-            if (!cq.docMatches(bytes, &sc)) continue; // skip trigram false positives
-            if (check_exists and !self.pathExists(path)) continue;
-            try docs.append(arena, .{ .path = path, .bytes = bytes });
-        }
-        var it = self.overlay.iterator();
-        while (it.next()) |e| switch (e.value_ptr.*) {
-            .tombstone => {},
-            .bytes => |b| {
-                if (!cq.docMatches(b, &sc)) continue;
-                if (check_exists and !self.pathExists(e.key_ptr.*)) continue;
-                try docs.append(arena, .{ .path = e.key_ptr.*, .bytes = b });
-            },
-        };
-        std.mem.sort(DocRef, docs.items, {}, DocRef.less);
+        const docs = try self.matchingDocs(arena, &cq, &sc, .json_stream);
 
         var spans: std.ArrayList(Span) = .empty;
         defer spans.deinit(self.gpa);
         var any = false;
-        for (docs.items) |d| {
+        for (docs) |d| {
             const o = try emitDoc(self.gpa, &cq, &msc, &spans, d, sink);
             any = any or o.matched;
             if (o.halt) break; // sink asked to stop — leave the rest unscanned
         }
         return any;
+    }
+
+    /// Gather the MATCHING docs (base ∪ overlay − tombstones) into a path-sorted
+    /// slice, shared by the `lines` renderer and the FFI record stream. A doc is
+    /// admitted only after it clears the whole-doc gate (the SAME `-l` decision
+    /// `query` uses), so the result holds real matches only; off the
+    /// watcher-clean path a matching doc is then existence-checked (the same
+    /// fail-closed stat-per-hit `query` uses) so a file removed in the
+    /// walk→report window is never reported. `admit` selects the binary policy
+    /// (see `Admit`). The sort is `run.pathLess` — the warm canonical file
+    /// order (see `DocRef.less`) — so downstream output is deterministic.
+    fn matchingDocs(self: *ResidentSession, arena: std.mem.Allocator, cq: *const CompiledQuery, sc: *Scratch, admit: Admit) QueryError![]const DocRef {
+        const check_exists = !self.clean.load(.acquire);
+        var docs: std.ArrayList(DocRef) = .empty;
+        var cand_buf: ?[]u32 = null;
+        defer if (cand_buf) |c| self.gpa.free(c);
+        const cand = try self.candidateIds(cq, &cand_buf);
+        for (cand) |id| {
+            const path = self.mir.paths[id];
+            if (self.overlay.contains(path)) continue; // overlay handled below
+            try considerDoc(&docs, arena, .{ .path = path, .bytes = self.mir.docs[id], .nul = self.mir.nuls[id] }, cq, sc, admit, check_exists, self);
+        }
+        var it = self.overlay.iterator();
+        while (it.next()) |e| switch (e.value_ptr.*) {
+            .tombstone => {},
+            .doc => |d| try considerDoc(&docs, arena, .{ .path = e.key_ptr.*, .bytes = d.bytes, .nul = d.nul }, cq, sc, admit, check_exists, self),
+        };
+        std.mem.sort(DocRef, docs.items, {}, DocRef.less);
+        return docs.items;
     }
 
     /// Prune candidates with the compiled query's sound trigram prefilter (a
@@ -541,8 +620,8 @@ pub const ResidentSession = struct {
         defer if (cand_buf) |c| self.gpa.free(c);
         const cand = try self.candidateIds(cq, &cand_buf);
         for (cand) |id| {
-            if (self.overlay.contains(self.corpus.paths[id])) continue; // handled below
-            try acc.consider(self.corpus.paths[id], self.corpus.docs[id], cq, sc, acc.verify_existence);
+            if (self.overlay.contains(self.mir.paths[id])) continue; // handled below
+            try acc.consider(self.mir.paths[id], self.mir.docs[id], self.mir.nuls[id], cq, sc, acc.verify_existence);
         }
         try self.considerOverlay(acc, cq, sc);
     }
@@ -551,8 +630,8 @@ pub const ResidentSession = struct {
     /// hits (a single required literal → `queryLiteral`; an alternation cover →
     /// `queryAny`), or every doc id when nothing is prunable or the index query
     /// fails. `buf` owns any index-allocated slice (freed by the caller). Shared
-    /// by the files/count `answer` and the FFI match stream (`search`) so both
-    /// prune candidates through identical logic.
+    /// by the files/count `answer`, the `lines` renderer, and the FFI match
+    /// stream (`matchingDocs`) so all faces prune candidates identically.
     fn candidateIds(self: *ResidentSession, cq: *const CompiledQuery, buf: *?[]u32) QueryError![]const u32 {
         var one: [1][]const u8 = undefined;
         const pf = cq.prefilter(&one);
@@ -581,12 +660,12 @@ pub const ResidentSession = struct {
             // Off the watcher-clean path, existence-check the match (same
             // fail-closed stat-per-hit the base docs use); the clean path already
             // tombstoned any delete, so it keeps the microsecond no-stat path.
-            .bytes => |b| try acc.consider(e.key_ptr.*, b, cq, sc, acc.verify_existence),
+            .doc => |d| try acc.consider(e.key_ptr.*, d.bytes, d.nul, cq, sc, acc.verify_existence),
         };
     }
 
     fn allDocIds(self: *ResidentSession, buf: *?[]u32) QueryError![]const u32 {
-        const all = try self.gpa.alloc(u32, self.corpus.docs.len);
+        const all = try self.gpa.alloc(u32, self.mir.docs.len);
         for (all, 0..) |*x, i| x.* = @intCast(i);
         buf.* = all;
         return all;
@@ -600,6 +679,18 @@ pub const ResidentSession = struct {
     }
 };
 
+/// One `matchingDocs` admission decision: binary policy, whole-doc gate,
+/// existence check, append. Free function (not a method) so the hot loop's
+/// shape is explicit at both call sites.
+fn considerDoc(docs: *std.ArrayList(DocRef), arena: std.mem.Allocator, d: DocRef, cq: *const CompiledQuery, sc: *Scratch, admit: Admit, check_exists: bool, self: *const ResidentSession) QueryError!void {
+    // Cold `--json` skips a doc its 8 KiB `isBinary` window flags; a doc whose
+    // first NUL sits past the window is streamed in full. Match that exactly.
+    if (admit == .json_stream and d.nul != null and corpus_mod.isBinary(d.bytes)) return;
+    if (!cq.docMatches(d.bytes, sc)) return; // trigram false positive / no match
+    if (check_exists and !self.pathExists(d.path)) return;
+    try docs.append(arena, d);
+}
+
 /// One doc's emission outcome: whether it had a matching line, and whether the
 /// sink asked to halt the whole stream on one of them.
 const DocEmit = struct { matched: bool, halt: bool };
@@ -608,9 +699,9 @@ const DocEmit = struct { matched: bool, halt: bool };
 /// over rg's line model (`\n` terminates, no phantom final line). `spans` is a
 /// caller-owned per-line buffer, cleared and refilled per line so no allocation
 /// survives the call. Stops at the line where the sink returns `true`, reporting
-/// the halt so the caller ends the whole stream. The corpus admits only
-/// non-empty, non-binary docs (`corpus.loadPaths`/`readInto`), so the
-/// binary/empty skips the cold `--json` path applies are already upstream.
+/// the halt so the caller ends the whole stream. `matchingDocs(.json_stream)`
+/// admits only non-empty docs cold `--json` would search, so the binary/empty
+/// skips that path applies are already upstream.
 fn emitDoc(gpa: std.mem.Allocator, cq: *const CompiledQuery, msc: *MatchScratch, spans: *std.ArrayList(Span), d: DocRef, sink: MatchSink) error{OutOfMemory}!DocEmit {
     var any = false;
     var pos: usize = 0;
@@ -634,8 +725,9 @@ fn emitDoc(gpa: std.mem.Allocator, cq: *const CompiledQuery, msc: *MatchScratch,
 }
 
 /// Folds matched docs into either the file-path set (`-l`) or the matching-line
-/// total (`-c`), so both eligible modes share one candidate walk. The match
-/// decision itself is the shared `CompiledQuery` kernel (`engine/query.zig`).
+/// total (`-c`), so both fold modes share one candidate walk. The match
+/// decision itself is the shared `CompiledQuery` kernel (`engine/query.zig`);
+/// the binary rule per mode is cold's own (see the module header).
 const Accumulator = struct {
     mode: Mode,
     arena: std.mem.Allocator,
@@ -644,19 +736,31 @@ const Accumulator = struct {
     files: std.ArrayList([]const u8) = .empty,
     count: u64 = 0,
 
-    fn consider(self: *Accumulator, path: []const u8, bytes: []const u8, cq: *const CompiledQuery, sc: *Scratch, check_exists: bool) QueryError!void {
+    fn consider(self: *Accumulator, path: []const u8, bytes: []const u8, nul: ?usize, cq: *const CompiledQuery, sc: *Scratch, check_exists: bool) QueryError!void {
         switch (self.mode) {
             .files => {
-                if (!cq.docMatches(bytes, sc)) return;
+                // Binary `-l` observes only complete buffers before the one that
+                // revealed the first NUL (`grepfile.handleBinary` files_only) —
+                // a match past the cut must not turn the file into a false path.
+                const gated = if (nul) |n| bytes[0 .. (n / grepfile.BUFCAP) * grepfile.BUFCAP] else bytes;
+                if (gated.len == 0) return; // NUL in the first buffer ⇒ cold sees zero lines
+                if (!cq.docMatches(gated, sc)) return;
                 if (check_exists and !self.exists(path)) return;
                 try self.files.append(self.arena, path);
             },
             .count => {
+                // Cold `-c` suppresses an implicit binary file entirely (rg
+                // scans, detects the NUL, drops the count) — whole-body NUL,
+                // exactly the offset the mirror recorded at ingest.
+                if (nul != null) return;
                 const n = cq.countLines(bytes, sc);
                 if (n == 0) return;
                 if (check_exists and !self.exists(path)) return;
                 self.count += n;
             },
+            // The lines presentation never routes through the fold — `query`
+            // rejects it up front and `queryLines` renders via `render.zig`.
+            .lines => unreachable,
         }
     }
 
@@ -666,8 +770,11 @@ const Accumulator = struct {
     }
 };
 
+/// Separator-aware path order for the `-l` answer — the SAME `pathLess` order
+/// cold's file sort applies (sort key `.none`), so the warm file list is
+/// byte-identical to a cold `gist -l` run, not merely set-equal.
 fn lessPath(_: void, a: []const u8, b: []const u8) bool {
-    return std.mem.lessThan(u8, a, b);
+    return run.pathLess(a, b);
 }
 
 /// The published `pair.gen` (gpa-owned; "" when absent). A rebuilt index changes

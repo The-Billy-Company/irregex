@@ -43,10 +43,10 @@ test "parseFrame returns null until a whole frame is buffered" {
 }
 
 test "query encode/decode preserves mode, flags, and pattern" {
-    inline for (.{ request.Mode.files, request.Mode.count }) |mode| {
+    inline for (.{ request.Mode.files, request.Mode.count, request.Mode.lines }) |mode| {
         var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(gpa);
-        const req = request.Request{ .pattern = "needle", .mode = mode, .fixed = true, .ignore_case = true };
+        const req = request.Request{ .pattern = "needle", .mode = mode, .fixed = true, .ignore_case = true, .line_num = true };
         try protocol.encodeQuery(&buf, gpa, req);
 
         const p = try roundTrip(&buf);
@@ -55,6 +55,7 @@ test "query encode/decode preserves mode, flags, and pattern" {
         try std.testing.expectEqual(mode, got.mode);
         try std.testing.expect(got.fixed);
         try std.testing.expect(got.ignore_case);
+        try std.testing.expect(got.line_num);
         try std.testing.expectEqualStrings("needle", got.pattern);
     }
 }
@@ -84,6 +85,61 @@ test "count result encode/decode preserves the u64" {
     const p = try roundTrip(&buf);
     const view = try protocol.decodeResult(p.payload);
     try std.testing.expectEqual(@as(u64, 4_294_967_301), view.count);
+}
+
+/// Reassemble a chunk-streamed `lines` answer from a raw frame byte stream —
+/// the exact loop the warm client runs over the socket.
+fn reassembleLines(bytes: []const u8, out: *std.ArrayList(u8)) !bool {
+    var rest = bytes;
+    while (true) {
+        const p = (try protocol.parseFrame(rest)) orelse return error.TestTruncatedStream;
+        rest = rest[p.consumed..];
+        switch (p.op) {
+            .chunk => try out.appendSlice(gpa, p.payload),
+            .result => {
+                try std.testing.expectEqual(@as(usize, 0), rest.len); // terminal frame is last
+                return (try protocol.decodeResult(p.payload)).lines;
+            },
+            else => return error.TestUnexpectedFrame,
+        }
+    }
+}
+
+test "lines answer: chunk framing reassembles byte-identically, split at chunk_bytes" {
+    // A body larger than one chunk budget must split into ⌈len/chunk_bytes⌉
+    // chunks and reassemble to the exact original bytes.
+    const body = try gpa.alloc(u8, protocol.chunk_bytes + 1234);
+    defer gpa.free(body);
+    for (body, 0..) |*b, i| b.* = @truncate(i *% 251);
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(gpa);
+    try protocol.encodeLines(&buf, gpa, body, true);
+
+    // First frame is a full-budget chunk, proving the split boundary.
+    const first = (try protocol.parseFrame(buf.items)).?;
+    try std.testing.expectEqual(protocol.Opcode.chunk, first.op);
+    try std.testing.expectEqual(protocol.chunk_bytes, first.payload.len);
+
+    var got: std.ArrayList(u8) = .empty;
+    defer got.deinit(gpa);
+    try std.testing.expect(try reassembleLines(buf.items, &got));
+    try std.testing.expectEqualSlices(u8, body, got.items);
+}
+
+test "lines answer: a no-match reply is zero chunks + a terminal matched=false" {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(gpa);
+    try protocol.encodeLines(&buf, gpa, "", false);
+
+    var got: std.ArrayList(u8) = .empty;
+    defer got.deinit(gpa);
+    try std.testing.expect(!try reassembleLines(buf.items, &got));
+    try std.testing.expectEqualStrings("", got.items);
+}
+
+test "decodeResult(lines) rejects a truncated terminal frame" {
+    try std.testing.expectError(protocol.WireError.BadFrame, protocol.decodeResult(&.{@intFromEnum(request.Mode.lines)}));
 }
 
 test "ready handshake encode/decode preserves both generations and the index gen" {

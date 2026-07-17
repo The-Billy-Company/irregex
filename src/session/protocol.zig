@@ -29,13 +29,20 @@ pub const Opcode = enum(u8) {
     hello = 1, // C→S: [u8 proto_version]
     ready = 2, // S→C: [u8 proto][u64 daemon_gen][u64 session_gen][u32 n][gen bytes]
     query = 3, // C→S: [u8 mode][u8 flags][pattern bytes]
-    result = 4, // S→C: [u8 mode] then files/count body
+    result = 4, // S→C: [u8 mode] then files/count/lines body
     decline = 5, // S→C: (no payload) — answer this request cold
     err = 6, // S→C: [message bytes]
     shutdown = 7, // C→S: (no payload)
     status = 8, // C→S: (no payload) → S replies `ready`
     ping = 9, // C→S: (no payload)
     pong = 10, // S→C: (no payload)
+    // ADDITIVE (protocol stays v1): a `lines` answer streams as zero or more
+    // `chunk` frames of raw pre-rendered output bytes, then one terminal
+    // `result` frame `[mode=lines][u8 matched]`. Chunking keeps every frame
+    // under `max_frame` for an arbitrarily large answer; an OLD daemon never
+    // emits `chunk` (it declines the unknown `lines` mode byte first), and an
+    // old client never requests it — so v1 peers interop unchanged.
+    chunk = 11, // S→C: [raw output bytes]
 
     pub fn fromByte(b: u8) ?Opcode {
         return std.enums.fromInt(Opcode, b);
@@ -44,6 +51,11 @@ pub const Opcode = enum(u8) {
 
 const flag_fixed: u8 = 1 << 0;
 const flag_ignore_case: u8 = 1 << 1;
+const flag_line_num: u8 = 1 << 2; // `-n` (meaningful for `lines` mode only)
+
+/// Chunk payload budget for a streamed `lines` answer — comfortably under
+/// `max_frame` while keeping per-frame overhead negligible.
+pub const chunk_bytes: usize = 4 << 20;
 
 pub const WireError = error{ FrameTooLarge, Truncated, BadOpcode, BadFrame, ConnClosed, Io, OutOfMemory };
 
@@ -83,6 +95,7 @@ pub fn encodeQuery(buf: *std.ArrayList(u8), gpa: std.mem.Allocator, req: request
     var flags: u8 = 0;
     if (req.fixed) flags |= flag_fixed;
     if (req.ignore_case) flags |= flag_ignore_case;
+    if (req.line_num) flags |= flag_line_num;
     try body.append(gpa, flags);
     try body.appendSlice(gpa, req.pattern);
     try writeFrame(buf, gpa, .query, body.items);
@@ -101,6 +114,7 @@ pub fn decodeQuery(payload: []const u8) WireError!request.Request {
         .mode = mode,
         .fixed = flags & flag_fixed != 0,
         .ignore_case = flags & flag_ignore_case != 0,
+        .line_num = flags & flag_line_num != 0,
     };
 }
 
@@ -125,9 +139,27 @@ pub fn encodeCount(buf: *std.ArrayList(u8), gpa: std.mem.Allocator, count: u64) 
     try writeFrame(buf, gpa, .result, &body);
 }
 
+/// Frame a whole pre-rendered `lines` answer: `out` split into `chunk` frames
+/// of at most `chunk_bytes`, then the terminal `result` frame carrying only the
+/// matched flag (the exit-code boolean). Zero chunks for a no-output answer is
+/// legal — the terminal frame alone says "ran warm, nothing matched".
+pub fn encodeLines(buf: *std.ArrayList(u8), gpa: std.mem.Allocator, out: []const u8, matched: bool) !void {
+    var rest = out;
+    while (rest.len > 0) {
+        const n = @min(rest.len, chunk_bytes);
+        try writeFrame(buf, gpa, .chunk, rest[0..n]);
+        rest = rest[n..];
+    }
+    const body = [_]u8{ @intFromEnum(request.Mode.lines), @intFromBool(matched) };
+    try writeFrame(buf, gpa, .result, &body);
+}
+
 pub const ResultView = union(request.Mode) {
     files: FileIter,
     count: u64,
+    /// The terminal frame of a chunk-streamed `lines` answer: whether any file
+    /// matched (the output bytes themselves arrived in prior `chunk` frames).
+    lines: bool,
 };
 
 /// Zero-copy view over a decoded `result` payload; `FileIter` yields each path
@@ -144,6 +176,10 @@ pub fn decodeResult(payload: []const u8) WireError!ResultView {
             if (payload.len < 5) return WireError.BadFrame;
             const n = std.mem.readInt(u32, payload[1..5], .little);
             break :blk .{ .files = .{ .rest = payload[5..], .remaining = n } };
+        },
+        .lines => blk: {
+            if (payload.len < 2) return WireError.BadFrame;
+            break :blk .{ .lines = payload[1] != 0 };
         },
     };
 }

@@ -9,16 +9,34 @@
 //! certified cold path unchanged. The daemon never becomes a new source of truth
 //! or a new failure mode; it is a pure accelerator that can always be skipped.
 //!
-//! Parity scope: only `-l`/`--files-with-matches` (files-with-matches) is routed
-//! warm. Its output is the matched paths, sorted, one per line — trivially
-//! reproducible from the wire. `-c` (per-file `path:count`) and every richer
-//! shape stay cold: the daemon speaks `count` on the wire as a corpus-wide total
-//! for embedders, but the CLI never claims rg's per-file `-c` layout from it.
+//! Parity scope: `-l`/`--files-with-matches` (the sorted path list) and the
+//! default `lines` search (bare `gist <pattern> [-n]`, whose `path:[line:]text`
+//! bytes the daemon pre-renders through the cold Emitter itself) are routed
+//! warm. Per-file bytes and the exit code are identical to cold; the FILE
+//! emission order is the deterministic `pathLess` canonicalization of cold's
+//! parallel worker-discovery order — the same convention warm `-l` has always
+//! used, and the equivalence the rgsuite oracle certifies (`sort_lines(gist)
+//! == sort_lines(rg)`). `-c` (per-file `path:count`) and every richer shape
+//! stay cold: the daemon speaks `count` on the wire as a corpus-wide total for
+//! embedders, but the CLI never claims rg's per-file `-c` layout from it.
+//!
+//! Two environment guards keep the warm answer inside its parity envelope:
+//!
+//!   * **TTY stdout → cold.** An interactive cold run adds ANSI color and the
+//!     16 KiB long-line cap (`--color auto` + the TTY `max_cols` default); the
+//!     daemon renders the PIPED frame only. Agents and pipes — the entire warm
+//!     workload — are unaffected.
+//!   * **Readable stdin → cold.** A rootless query with data on stdin is a
+//!     STREAM search in the cold engine; the daemon's tree corpus can never
+//!     answer it. Same fd-type rules as cold (`run.readableStdin`), checked
+//!     only after a daemon connection exists so the common no-daemon path
+//!     never pays the FIFO poll.
 
 const std = @import("std");
 const request = @import("../../session/request.zig");
 const protocol = @import("../../session/protocol.zig");
 const corpus = @import("../../corpus/corpus.zig");
+const run = @import("../ripgrep/run.zig");
 const net = std.Io.net;
 
 /// Best-effort detached daemon auto-spawn: when an eligible query finds no
@@ -29,7 +47,7 @@ pub const spawn = @import("spawn.zig");
 /// (accepted but never READY, stuck reconcile, half-closed peer) must not park
 /// an agent shell forever — timeout → `.cold` and the certified path runs.
 /// Keep short: cold is always correct and typically finishes well under this
-/// budget for `-l` queries. Exposed for the wedge regression test.
+/// budget for eligible queries. Exposed for the wedge regression test.
 pub const client_io_timeout_ms: i32 = 2_000;
 
 /// The outcome of a warm attempt. `.served` means the result was fully emitted
@@ -61,20 +79,34 @@ fn recvFrameDeadline(gpa: std.mem.Allocator, fd: std.posix.fd_t) !protocol.Frame
 /// Try to answer `argv` warm. Never errors: any failure is `.cold`.
 pub fn attempt(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, socket_path: []const u8) Outcome {
     const req = request.classify(argv) catch return .cold;
-    // Only files-mode is byte-parity-safe to emit from the daemon's answer.
-    if (req.mode != .files) return .cold;
+    // The wire count is a corpus-wide total; rg's `-c` is per-file — cold owns it.
+    if (req.mode == .count) return .cold;
+    // Cold's interactive presentation (color, TTY long-line cap) is out of the
+    // daemon's piped-frame envelope — the certified path owns the terminal.
+    // Same detection cold's `--color auto` resolution uses (run.zig).
+    if (std.Io.File.stdout().isTty(io) catch false) return .cold;
 
     const ua = net.UnixAddress.init(socket_path) catch return .cold;
     const stream = ua.connect(io) catch return .cold; // no daemon → cold
     defer stream.close(io);
     const fd = stream.socket.handle;
 
+    // A readable stdin makes this a STREAM search cold — the tree daemon must
+    // decline. Checked after the dial so a daemonless query never pays the
+    // FIFO poll (`readableStdin` may wait up to its short poll window).
+    if (run.readableStdin()) return .cold;
+
     return exchange(gpa, fd, req) catch .cold;
 }
 
 /// One request/response over an open connection: handshake, send the query, and
-/// on a `result` frame emit the sorted file list to stdout. A `decline`/`err`
-/// frame (or any wire error / deadline) propagates so `attempt` degrades to cold.
+/// emit the answer — a `result(files)` frame becomes the sorted path list; a
+/// chunk-streamed `lines` answer buffers every `chunk` frame and emits on the
+/// terminal `result(lines)` frame (buffer-then-emit keeps the fallback atomic:
+/// nothing reaches stdout unless the whole warm answer arrived, so a mid-stream
+/// wire failure still degrades to a clean cold run with no duplicated output).
+/// A `decline`/`err` frame (or any wire error / deadline) propagates so
+/// `attempt` degrades to cold.
 fn exchange(gpa: std.mem.Allocator, fd: std.posix.fd_t, req: request.Request) !Outcome {
     // Handshake: HELLO → READY. A daemon speaking another protocol version is
     // not one we can trust to frame-match, so bail to cold.
@@ -92,21 +124,34 @@ fn exchange(gpa: std.mem.Allocator, fd: std.posix.fd_t, req: request.Request) !O
     try protocol.encodeQuery(&qbuf, gpa, req);
     if (!protocol.writeAll(fd, qbuf.items)) return .cold;
 
-    var resp = try recvFrameDeadline(gpa, fd);
-    defer resp.deinit();
-    if (resp.op != .result) return .cold; // decline / err → cold
-    const view = protocol.decodeResult(resp.payload()) catch return .cold;
-
-    return switch (view) {
-        .files => |files_iter| emitFiles(gpa, files_iter),
-        .count => .cold, // CLI never emits count warm (see file header)
-    };
+    var lines_out: std.ArrayList(u8) = .empty;
+    defer lines_out.deinit(gpa);
+    while (true) {
+        var resp = try recvFrameDeadline(gpa, fd);
+        defer resp.deinit();
+        switch (resp.op) {
+            // A `lines` answer streams as chunks; accumulate until the terminal
+            // result frame. (An old v1 daemon never emits `chunk` — it declines
+            // the unknown mode byte first — so this arm is dead against it.)
+            .chunk => try lines_out.appendSlice(gpa, resp.payload()),
+            .result => {
+                const view = protocol.decodeResult(resp.payload()) catch return .cold;
+                return switch (view) {
+                    // Chunks before a files/count result are a protocol violation.
+                    .files => |files_iter| if (lines_out.items.len > 0) .cold else emitFiles(gpa, files_iter),
+                    .lines => |matched| emitRaw(lines_out.items, matched),
+                    .count => .cold, // CLI never emits count warm (see file header)
+                };
+            },
+            else => return .cold, // decline / err → cold
+        }
+    }
 }
 
 /// Emit the matched paths one per line and return rg's exit code (0 matched /
-/// 1 none). The set is identical to cold `-l`; the daemon returns it sorted (a
-/// deterministic canonicalization of ripgrep's otherwise walk-order output).
-/// One batched write mirrors the cold path's buffered emit.
+/// 1 none). The set AND order are identical to cold `-l` (the daemon sorts with
+/// the same separator-aware `pathLess` cold's file sort applies). One batched
+/// write mirrors the cold path's buffered emit.
 fn emitFiles(gpa: std.mem.Allocator, files_iter: protocol.FileIter) Outcome {
     var it = files_iter;
     var out: std.ArrayList(u8) = .empty;
@@ -119,4 +164,11 @@ fn emitFiles(gpa: std.mem.Allocator, files_iter: protocol.FileIter) Outcome {
     }
     if (out.items.len > 0) _ = corpus.writeStdout(out.items);
     return .{ .served = if (any) 0 else 1 };
+}
+
+/// Emit a fully-assembled pre-rendered `lines` answer verbatim (the daemon
+/// already produced cold's exact bytes) and return rg's exit code.
+fn emitRaw(bytes: []const u8, matched: bool) Outcome {
+    if (bytes.len > 0) _ = corpus.writeStdout(bytes);
+    return .{ .served = if (matched) 0 else 1 };
 }
