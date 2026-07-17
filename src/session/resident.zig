@@ -54,6 +54,8 @@ const Index = @import("../index/trigram.zig").Index;
 const query_mod = @import("../engine/query.zig");
 const CompiledQuery = query_mod.CompiledQuery;
 const Scratch = query_mod.Scratch;
+const MatchScratch = query_mod.MatchScratch;
+const Span = query_mod.Span;
 const request = @import("request.zig");
 const Dir = std.Io.Dir;
 
@@ -74,6 +76,47 @@ pub const Result = struct {
     mode: Mode,
     files: []const []const u8 = &.{},
     count: u64 = 0,
+};
+
+/// One streamed match: a matching LINE (ADR-352 rung 3 — the in-process FFI's
+/// output unit). `path` aliases the corpus path table / overlay key; `text` is
+/// the line CONTENT without its `\n` terminator and aliases session bytes;
+/// `spans` alias `search`'s per-line scratch. All three are valid ONLY during
+/// the `emit` call — the sink must copy anything it keeps. `line_number` is
+/// 1-based over rg's line model, and every span is a non-empty `[start,end)`
+/// byte range within `text`, byte-identical to the cold `gist --json` submatch
+/// stream (`commands/ripgrep/json.zig`).
+pub const MatchRecord = struct {
+    path: []const u8,
+    line_number: u64,
+    text: []const u8,
+    spans: []const Span,
+};
+
+/// The caller's streaming sink for `search` — the FFI's no-stdout, no-exit
+/// output channel. `emit` is invoked once per matching line, synchronously,
+/// under the session lock; it must not re-enter the session. `ctx` is the
+/// caller's opaque state (the C callback + userdata on the FFI boundary). It
+/// returns `true` to STOP the stream early (the caller has enough — a bound, a
+/// first hit, its own abort) or `false` to keep receiving lines; a stop leaves
+/// the corpus otherwise unscanned, so bounded queries cost only what they read.
+pub const MatchSink = struct {
+    ctx: *anyopaque,
+    emit: *const fn (ctx: *anyopaque, rec: MatchRecord) bool,
+};
+
+/// A candidate doc to emit, gathered before streaming so records leave in a
+/// deterministic path order. `bytes` aliases corpus/overlay memory.
+const DocRef = struct {
+    path: []const u8,
+    bytes: []const u8,
+
+    /// Separator-aware path order — the SAME `pathLess` the cold `--json` file
+    /// sort uses (`commands/ripgrep/run.zig`), so the streamed record order is
+    /// byte-identical to a cold `gist --json` run, not merely set-equal.
+    fn less(_: void, a: DocRef, b: DocRef) bool {
+        return run.pathLess(a.path, b.path);
+    }
 };
 
 /// A base doc's live substitute: replacement bytes, or a tombstone (deleted, or
@@ -232,13 +275,13 @@ pub const ResidentSession = struct {
         defer self.gpa.free(cur);
         if (std.mem.eql(u8, cur, self.index_gen)) return;
 
-        var fresh_session = ResidentSession.init(self.gpa, self.io, self.roots) catch return QueryError.Stale;
-        // Preserve identity fields the server owns.
-        fresh_session.daemon_gen = self.daemon_gen;
-        fresh_session.watcher_active = self.watcher_active;
-        // Swap: tear down the stale engine, keep the fresh one's arenas/maps.
-        // (roots_arena is rebuilt by init from self.roots, which lived in the
-        // OLD roots_arena — init dupes it before we free anything below.)
+        // Build the replacement engine BEFORE tearing the stale one down, so a
+        // rebuild failure leaves this session fully intact (→ Stale, cold
+        // fallback). init dupes `self.roots` into its own arena before we free
+        // the old roots_arena below.
+        const fresh = ResidentSession.init(self.gpa, self.io, self.roots) catch return QueryError.Stale;
+
+        // Free only the stale DATA.
         self.clearOverlay();
         self.overlay.deinit();
         self.gpa.free(self.index_gen);
@@ -246,9 +289,24 @@ pub const ResidentSession = struct {
         self.idx.deinit();
         self.corpus.deinit();
         self.roots_arena.deinit();
-        const daemon_gen = self.daemon_gen;
-        self.* = fresh_session;
-        self.daemon_gen = daemon_gen;
+
+        // Move the fresh engine's data fields into place, field-by-field, and
+        // leave the synchronization + identity fields alone: `mutex` is HELD by
+        // the caller (a whole-struct `self.* = fresh` reset it to `.unlocked`,
+        // so the caller's `defer unlock` hit `unreachable`); the watcher seqlock
+        // (`dirty_seq`/`clean`) stays monotonic; `gpa`/`io`/`daemon_gen`/
+        // `watcher_active` are unchanged. `fresh`'s own mutex/atomics/identity
+        // are default-initialized and unused, and every owning field has been
+        // moved out of it, so it needs no deinit.
+        self.roots_arena = fresh.roots_arena;
+        self.roots = fresh.roots;
+        self.corpus = fresh.corpus;
+        self.idx = fresh.idx;
+        self.by_path = fresh.by_path;
+        self.index_gen = fresh.index_gen;
+        self.fresh_ns = fresh.fresh_ns;
+        self.overlay = fresh.overlay;
+
         self.markDirty(); // a rebuilt index demands a reconcile pass
     }
 
@@ -388,36 +446,128 @@ pub const ResidentSession = struct {
         return .{ .mode = req.mode, .files = acc.files.items, .count = acc.count };
     }
 
+    /// Stream one `MatchRecord` per matching LINE over the warm corpus to `sink`
+    /// — the in-process FFI's search entry (ADR-352 rung 3). Same reconcile +
+    /// freshness barrier + trigram-prefilter + fail-closed existence check as
+    /// `query`, but instead of folding to a file set / line count it emits, per
+    /// matching line, the path, 1-based line number, the line content, and the
+    /// line's non-empty submatch spans — through the shared core's
+    /// `collectSpans`, so each record is byte-identical to the cold `gist --json`
+    /// stream. Docs are emitted in ascending path order; lines within a doc
+    /// ascend by number. `arena` owns only the transient candidate list; every
+    /// string/span handed to the sink aliases session/scratch memory valid for
+    /// that `emit` call alone. Returns whether any line matched. The sink may
+    /// return `true` from `emit` to STOP early (a bounded / first-match query):
+    /// the doc loop halts at once and no further candidate is scanned, so the
+    /// return still reports whether a line matched before the stop. A pattern
+    /// outside the linear-time syntax surfaces as `error.Stale` (→ cold
+    /// fallback), exactly like `query` — the C boundary never sees a `die()`.
+    pub fn search(self: *ResidentSession, arena: std.mem.Allocator, req: Request, sink: MatchSink) QueryError!bool {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        try self.reconcile();
+
+        // Mode is irrelevant to span emission — compile the cheap `files` body.
+        var cq = CompiledQuery.compile(self.gpa, .{
+            .pattern = req.pattern,
+            .mode = .files,
+            .fixed = req.fixed,
+            .ignore_case = req.ignore_case,
+        }) catch return QueryError.Stale;
+        defer cq.deinit(self.gpa);
+        // Two per-query scratches: the boolean sim is the whole-doc reject gate,
+        // the span VM only ever fires on a doc already proven to match. A trigram
+        // candidate set is a SUPERSET (false positives, plus the alternation
+        // cover's over-approximation), so gating each doc with the cheap
+        // `docMatches` — the SAME `-l` decision `query` uses — keeps the expensive
+        // per-line span scan (and the sort, and the existence stat) off every
+        // non-matching candidate. This is what pulls the stream path to the
+        // files/count path's efficiency instead of span-scanning the whole superset.
+        var sc = cq.scratch(self.gpa) catch return QueryError.OutOfMemory;
+        defer sc.deinit();
+        var msc = cq.matchScratch(self.gpa) catch return QueryError.OutOfMemory;
+        defer msc.deinit();
+
+        // Gather the MATCHING docs (base ∪ overlay − tombstones) into a path-sorted
+        // list so the stream order is deterministic. A doc is admitted only after
+        // it clears the whole-doc gate, so `docs` holds real matches only; off the
+        // watcher-clean path a matching doc is then existence-checked (the same
+        // fail-closed stat-per-hit `query` uses) so a file removed in the
+        // walk→report window is dropped — the stat now costs only per match, not
+        // per candidate. The emitted record stream stays byte-identical: a
+        // non-matching candidate produced no record before either.
+        const check_exists = !self.clean.load(.acquire);
+        var docs: std.ArrayList(DocRef) = .empty;
+        var cand_buf: ?[]u32 = null;
+        defer if (cand_buf) |c| self.gpa.free(c);
+        const cand = try self.candidateIds(&cq, &cand_buf);
+        for (cand) |id| {
+            const path = self.corpus.paths[id];
+            if (self.overlay.contains(path)) continue; // overlay handled below
+            const bytes = self.corpus.docs[id];
+            if (!cq.docMatches(bytes, &sc)) continue; // skip trigram false positives
+            if (check_exists and !self.pathExists(path)) continue;
+            try docs.append(arena, .{ .path = path, .bytes = bytes });
+        }
+        var it = self.overlay.iterator();
+        while (it.next()) |e| switch (e.value_ptr.*) {
+            .tombstone => {},
+            .bytes => |b| {
+                if (!cq.docMatches(b, &sc)) continue;
+                if (check_exists and !self.pathExists(e.key_ptr.*)) continue;
+                try docs.append(arena, .{ .path = e.key_ptr.*, .bytes = b });
+            },
+        };
+        std.mem.sort(DocRef, docs.items, {}, DocRef.less);
+
+        var spans: std.ArrayList(Span) = .empty;
+        defer spans.deinit(self.gpa);
+        var any = false;
+        for (docs.items) |d| {
+            const o = try emitDoc(self.gpa, &cq, &msc, &spans, d, sink);
+            any = any or o.matched;
+            if (o.halt) break; // sink asked to stop — leave the rest unscanned
+        }
+        return any;
+    }
+
     /// Prune candidates with the compiled query's sound trigram prefilter (a
     /// single required literal → `queryLiteral`; an alternation cover →
     /// `queryAny`; nothing prunable → every doc), then verify each with the
     /// shared match kernel. Overlay docs (changed/new since the build) are always
     /// verified directly — the index is stale for exactly those.
     fn answer(self: *ResidentSession, acc: *Accumulator, cq: *const CompiledQuery, sc: *Scratch) QueryError!void {
-        var one: [1][]const u8 = undefined;
-        const pf = cq.prefilter(&one);
         var cand_buf: ?[]u32 = null;
         defer if (cand_buf) |c| self.gpa.free(c);
-        const cand: []const u32 = blk: {
-            if (pf.len == 1) {
-                if (self.idx.queryLiteral(self.gpa, pf[0])) |c| {
-                    cand_buf = c;
-                    break :blk c;
-                } else |_| {}
-            } else if (pf.len > 1) {
-                if (self.idx.queryAny(self.gpa, pf)) |c| {
-                    cand_buf = c;
-                    break :blk c;
-                } else |_| {}
-            }
-            break :blk try self.allDocIds(&cand_buf);
-        };
-
+        const cand = try self.candidateIds(cq, &cand_buf);
         for (cand) |id| {
             if (self.overlay.contains(self.corpus.paths[id])) continue; // handled below
             try acc.consider(self.corpus.paths[id], self.corpus.docs[id], cq, sc, acc.verify_existence);
         }
         try self.considerOverlay(acc, cq, sc);
+    }
+
+    /// The base-doc candidate ids for `cq`: the sound trigram prefilter's index
+    /// hits (a single required literal → `queryLiteral`; an alternation cover →
+    /// `queryAny`), or every doc id when nothing is prunable or the index query
+    /// fails. `buf` owns any index-allocated slice (freed by the caller). Shared
+    /// by the files/count `answer` and the FFI match stream (`search`) so both
+    /// prune candidates through identical logic.
+    fn candidateIds(self: *ResidentSession, cq: *const CompiledQuery, buf: *?[]u32) QueryError![]const u32 {
+        var one: [1][]const u8 = undefined;
+        const pf = cq.prefilter(&one);
+        if (pf.len == 1) {
+            if (self.idx.queryLiteral(self.gpa, pf[0])) |c| {
+                buf.* = c;
+                return c;
+            } else |_| {}
+        } else if (pf.len > 1) {
+            if (self.idx.queryAny(self.gpa, pf)) |c| {
+                buf.* = c;
+                return c;
+            } else |_| {}
+        }
+        return try self.allDocIds(buf);
     }
 
     /// Verify the mutation overlay (changed base docs + brand-new files) directly
@@ -441,7 +591,47 @@ pub const ResidentSession = struct {
         buf.* = all;
         return all;
     }
+
+    /// Does `path` still exist? The fail-closed stat-per-hit the match stream
+    /// uses off the watcher-clean path (mirrors `Accumulator.exists`).
+    fn pathExists(self: *const ResidentSession, path: []const u8) bool {
+        _ = Dir.cwd().statFile(self.io, path, .{}) catch return false;
+        return true;
+    }
 };
+
+/// One doc's emission outcome: whether it had a matching line, and whether the
+/// sink asked to halt the whole stream on one of them.
+const DocEmit = struct { matched: bool, halt: bool };
+
+/// Emit every matching LINE of one doc to `sink`, ascending by line number,
+/// over rg's line model (`\n` terminates, no phantom final line). `spans` is a
+/// caller-owned per-line buffer, cleared and refilled per line so no allocation
+/// survives the call. Stops at the line where the sink returns `true`, reporting
+/// the halt so the caller ends the whole stream. The corpus admits only
+/// non-empty, non-binary docs (`corpus.loadPaths`/`readInto`), so the
+/// binary/empty skips the cold `--json` path applies are already upstream.
+fn emitDoc(gpa: std.mem.Allocator, cq: *const CompiledQuery, msc: *MatchScratch, spans: *std.ArrayList(Span), d: DocRef, sink: MatchSink) error{OutOfMemory}!DocEmit {
+    var any = false;
+    var pos: usize = 0;
+    var lineno: u64 = 0;
+    while (pos < d.bytes.len) {
+        const nl = std.mem.indexOfScalarPos(u8, d.bytes, pos, '\n');
+        const end = nl orelse d.bytes.len;
+        lineno += 1;
+        const view = d.bytes[pos..end];
+        spans.clearRetainingCapacity();
+        try cq.collectSpans(gpa, view, msc, spans);
+        if (spans.items.len > 0) {
+            any = true;
+            if (sink.emit(sink.ctx, .{ .path = d.path, .line_number = lineno, .text = view, .spans = spans.items }))
+                return .{ .matched = true, .halt = true };
+        }
+        if (nl == null) break;
+        pos = end + 1;
+    }
+    return .{ .matched = any, .halt = false };
+}
 
 /// Folds matched docs into either the file-path set (`-l`) or the matching-line
 /// total (`-c`), so both eligible modes share one candidate walk. The match
