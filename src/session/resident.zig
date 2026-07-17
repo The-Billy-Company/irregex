@@ -123,17 +123,14 @@ pub const MatchRecord = struct {
 };
 
 /// The caller's streaming sink for `search` — the FFI's no-stdout, no-exit
-/// output channel. `emit` is invoked once per matching line, synchronously,
-/// under the session lock; it must not re-enter the session. `ctx` is the
-/// caller's opaque state (the C callback + userdata on the FFI boundary). It
-/// returns `true` to STOP the stream early (the caller has enough — a bound, a
-/// first hit, its own abort) or `false` to keep receiving lines; a stop leaves
-/// the corpus otherwise unscanned, so bounded queries cost only what they read.
-pub const MatchSink = struct {
-    ctx: *anyopaque,
-    emit: *const fn (ctx: *anyopaque, rec: MatchRecord) bool,
-};
-
+/// output channel. Any pointer type `*Sink` with a `pub fn emit(self: *Sink,
+/// rec: MatchRecord) bool` method qualifies (checked at the `search`/`emitDoc`
+/// call site, comptime-monomorphized — no vtable, no `*anyopaque`, no reverse
+/// pointer cast). `emit` is invoked once per matching line, synchronously,
+/// under the session lock; it must not re-enter the session. It returns `true`
+/// to STOP the stream early (the caller has enough — a bound, a first hit, its
+/// own abort) or `false` to keep receiving lines; a stop leaves the corpus
+/// otherwise unscanned, so bounded queries cost only what they read.
 /// A candidate doc gathered before answering so results leave in a
 /// deterministic path order. `bytes` aliases mirror/overlay memory; `nul` is
 /// the first-NUL byte offset (null ⇒ text), driving each mode's binary rule.
@@ -542,7 +539,7 @@ pub const ResidentSession = struct {
     /// return still reports whether a line matched before the stop. A pattern
     /// outside the linear-time syntax surfaces as `error.Stale` (→ cold
     /// fallback), exactly like `query` — the C boundary never sees a `die()`.
-    pub fn search(self: *ResidentSession, arena: std.mem.Allocator, req: Request, sink: MatchSink) QueryError!bool {
+    pub fn search(self: *ResidentSession, arena: std.mem.Allocator, req: Request, sink: anytype) QueryError!bool {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         try self.reconcile();
@@ -702,7 +699,7 @@ const DocEmit = struct { matched: bool, halt: bool };
 /// the halt so the caller ends the whole stream. `matchingDocs(.json_stream)`
 /// admits only non-empty docs cold `--json` would search, so the binary/empty
 /// skips that path applies are already upstream.
-fn emitDoc(gpa: std.mem.Allocator, cq: *const CompiledQuery, msc: *MatchScratch, spans: *std.ArrayList(Span), d: DocRef, sink: MatchSink) error{OutOfMemory}!DocEmit {
+fn emitDoc(gpa: std.mem.Allocator, cq: *const CompiledQuery, msc: *MatchScratch, spans: *std.ArrayList(Span), d: DocRef, sink: anytype) error{OutOfMemory}!DocEmit {
     var any = false;
     var pos: usize = 0;
     var lineno: u64 = 0;
@@ -715,7 +712,7 @@ fn emitDoc(gpa: std.mem.Allocator, cq: *const CompiledQuery, msc: *MatchScratch,
         try cq.collectSpans(gpa, view, msc, spans);
         if (spans.items.len > 0) {
             any = true;
-            if (sink.emit(sink.ctx, .{ .path = d.path, .line_number = lineno, .text = view, .spans = spans.items }))
+            if (sink.emit(.{ .path = d.path, .line_number = lineno, .text = view, .spans = spans.items }))
                 return .{ .matched = true, .halt = true };
         }
         if (nl == null) break;

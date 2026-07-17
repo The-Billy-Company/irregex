@@ -233,18 +233,52 @@ pub fn build(b: *std.Build) void {
     k.test_step.dependOn(&auto_escalate_test.step);
     // gist_auto_escalation_regression_needle_xyz_TAIL ← the fixture auto escalates PCRE2 onto
 
-    // Compile, link, and run a real C consumer against the deliberately minimal
-    // ABI. This catches calling-convention, header, symbol, and primitive-contract
-    // drift that the toolchain-free gist-contract text gate cannot observe.
+    // Compile, link, and run a real C consumer against the C ABI. This catches
+    // calling-convention, header, symbol, and contract drift that the
+    // toolchain-free gist-contract text gate cannot observe. Beyond the version
+    // + trigram primitives it drives the rung-3 warm session end to end
+    // (`gist_open`/`gist_search`/`gist_close`) over a generated two-line fixture:
+    // a full stream must fire on BOTH matching lines with the first hit on line 1
+    // and a single whole-needle submatch (byte-accurate offsets reach C); a
+    // callback that returns non-zero must STOP after the first line yet still
+    // report GIST_MATCH (the abort return, ABI v2); and a no-match query must
+    // return GIST_OK without firing (never `die()`s). The needle lives ONLY in
+    // the fixture (a separate dir from this C source), so it can never self-match.
+    const ffi_fixture = b.addWriteFiles();
+    _ = ffi_fixture.add("fixture.txt", "gist_ffi_smoke_needle on line one\ngist_ffi_smoke_needle on line two\n");
     const c_smoke_source = b.addWriteFiles().add("gist_c_abi_smoke.c",
         \\#include "gist.h"
         \\#include <stddef.h>
         \\#include <stdint.h>
         \\
+        \\static int g_hits;
+        \\static uint64_t g_first_line;
+        \\static size_t g_first_nsub, g_first_start, g_first_end;
+        \\
+        \\/* Records the FIRST hit's shape, then continues the stream. */
+        \\static int32_t on_match(void *ctx, const gist_match *m) {
+        \\    (void)ctx;
+        \\    if (g_hits == 0) {
+        \\        g_first_line = m->line_number;
+        \\        g_first_nsub = m->nsubmatches;
+        \\        if (m->nsubmatches > 0u) { g_first_start = m->submatches[0].start; g_first_end = m->submatches[0].end; }
+        \\    }
+        \\    g_hits++;
+        \\    return 0; /* continue */
+        \\}
+        \\
+        \\/* Aborts the stream after the first matching line. */
+        \\static int32_t on_match_stop(void *ctx, const gist_match *m) {
+        \\    (void)ctx;
+        \\    (void)m;
+        \\    g_hits++;
+        \\    return 1; /* stop */
+        \\}
+        \\
         \\int main(void) {
         \\    const uint8_t text[] = {'a', 'b', 'c', 'a', 'b', 'c'};
         \\    uint32_t out[sizeof text] = {0};
-        \\    if (gist_abi_version() != 1u) return 10;
+        \\    if (gist_abi_version() != 2u) return 10;
         \\    if (gist_trigram_count(text, 2u, out) != 0u) return 11;
         \\    const size_t count = gist_trigram_count(text, sizeof text, out);
         \\    if (count != 3u) return 12;
@@ -252,6 +286,30 @@ pub fn build(b: *std.Build) void {
         \\        if (out[i - 1] >= out[i]) return 13;
         \\    const char *ver = gist_version();
         \\    if (ver == NULL || ver[0] < '0' || ver[0] > '9') return 14;
+        \\
+        \\    /* warm session over the CWD fixture tree (set by the build). */
+        \\    gist_session *s = NULL;
+        \\    const char *roots[] = {"."};
+        \\    if (gist_open(roots, 1u, &s) != GIST_OK) return 20;
+        \\    if (s == NULL) return 21;
+        \\    const char needle[] = "gist_ffi_smoke_needle";
+        \\    const size_t nlen = sizeof needle - 1u;
+        \\
+        \\    /* full stream: both lines match; first hit is line 1, whole-needle span. */
+        \\    if (gist_search(s, (const uint8_t *)needle, nlen, GIST_FIXED, on_match, NULL) != GIST_MATCH) return 22;
+        \\    if (g_hits != 2 || g_first_line != 1u || g_first_nsub != 1u) return 23;
+        \\    if (g_first_start != 0u || g_first_end != nlen) return 24;
+        \\
+        \\    /* early stop: the callback aborts after the first line -> one hit, MATCH. */
+        \\    g_hits = 0;
+        \\    if (gist_search(s, (const uint8_t *)needle, nlen, GIST_FIXED, on_match_stop, NULL) != GIST_MATCH) return 25;
+        \\    if (g_hits != 1) return 26;
+        \\
+        \\    /* no match still returns OK and never fires. */
+        \\    g_hits = 0;
+        \\    if (gist_search(s, (const uint8_t *)"zzz_absent_needle_zzz", 21u, GIST_FIXED, on_match, NULL) != GIST_OK) return 27;
+        \\    if (g_hits != 0) return 28;
+        \\    gist_close(s);
         \\    return 0;
         \\}
         \\
@@ -280,6 +338,9 @@ pub fn build(b: *std.Build) void {
         .root_module = c_smoke_mod,
     });
     const run_c_smoke = b.addRunArtifact(c_smoke);
+    // Run in the generated fixture dir so `gist_open(".")` walks exactly the one
+    // seeded file — deterministic and isolated from the concurrently-edited tree.
+    run_c_smoke.setCwd(ffi_fixture.getDirectory());
     run_c_smoke.expectExitCode(0);
     k.test_step.dependOn(&run_c_smoke.step);
 

@@ -1,10 +1,10 @@
 ---
 doc_radar:
   counts:
-    - description: "gist src/ subfolders — 6 pipeline tiers (engine · index · regex · rank · scan · corpus) + commands/ CLI + session/ resident transport (ADR-352 rung 2.5)"
+    - description: "gist src/ subfolders — 6 pipeline tiers (engine · index · regex · rank · scan · corpus) + commands/ CLI + session/ resident transport (ADR-352 rung 2.5) + ffi/ in-process C-ABI search session (rung 3)"
       glob: pkg/kernels/gist/src/*
       unit: dirs
-      equals: 8
+      equals: 9
   sentinels:
     - description: "gist registered in the changelog roster (OSS-package membership)"
       file: pkg/tools/support/chronicle/packages.py
@@ -609,10 +609,17 @@ than inventing a number for hardware it can't measure.
 ## C ABI (`include/gist.h`)
 
 - `gist_abi_version() -> u32`
+- `gist_version() -> const char *` — engine semver, for version-gating
 - `gist_trigram_count(text, len, out) -> usize` — distinct ascending trigrams
   (the cross-language parity oracle)
+- `gist_open` / `gist_search` / `gist_close` — the in-process warm search
+  session (ADR-352 rung 3): a non-Zig host holds one corpus warm in its own
+  process and streams a `gist_match` per matching line to a callback, with no
+  subprocess, socket, `stdout`, or `exit`. The callback returns 0 to continue or
+  non-zero to stop early (a bounded / first-match query); every call returns a
+  status code (`GIST_STALE` → answer cold), so a bad query never terminates the
+  host.
 
-This ABI is intentionally minimal and does **not** expose index build, open,
-search, result ownership, or errors. The search engine is consumed through Zig
-or the CLI; `zig build test` compiles, links, and runs a C smoke against the two
-exported symbols.
+Index BUILD lifecycle stays a Zig/CLI surface (a session searches the live
+tree). `zig build test` compiles, links, and runs a real C consumer against
+these symbols — including the rung-3 session end to end (see `src/ffi/`).

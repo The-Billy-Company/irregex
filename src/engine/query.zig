@@ -78,6 +78,29 @@ pub const Scratch = union(enum) {
     }
 };
 
+/// A matched byte span `[start, end)` within one line. Aliases the regex
+/// engine's own span so the FFI reports the exact offsets the cold `--json`
+/// submatch stream does.
+pub const Span = Regex.Span;
+
+/// Per-query span scratch for match-record emission (`collectSpans`) — the
+/// slot-free span VM (`Regex.SpanSim`) for a regex body, or nothing for a
+/// literal (whose spans are plain `indexOf` occurrences). Kept apart from
+/// `Scratch`: the boolean `docMatches`/`countLines` hot path never allocates
+/// the span maps, and match emission never needs the cheaper boolean scratch.
+/// One per thread; never shared. Made by `CompiledQuery.matchScratch`.
+pub const MatchScratch = union(enum) {
+    none,
+    sim: Regex.SpanSim,
+
+    pub fn deinit(self: *MatchScratch) void {
+        switch (self.*) {
+            .sim => |*s| s.deinit(),
+            .none => {},
+        }
+    }
+};
+
 /// A compiled, immutable search intent. Cheap to share across walk workers;
 /// `deinit` releases the compiled regex and any escaped-literal buffer.
 pub const CompiledQuery = struct {
@@ -180,6 +203,49 @@ pub const CompiledQuery = struct {
             rest = rest[end + 1 ..];
         }
         return n;
+    }
+
+    /// A fresh per-thread SPAN scratch for `collectSpans`: the slot-free span VM
+    /// for a regex body, or `.none` for a literal (whose spans are `indexOf`
+    /// occurrences, needing no state).
+    pub fn matchScratch(self: *const CompiledQuery, gpa: std.mem.Allocator) CompileError!MatchScratch {
+        return switch (self.body) {
+            .literal => .none,
+            .regex => |*re| .{ .sim = Regex.SpanSim.init(gpa, re) catch return CompileError.OutOfMemory },
+        };
+    }
+
+    /// Append every non-empty match span in `line` (leftmost, non-overlapping)
+    /// to `out`. A literal body walks successive `indexOf` occurrences; a regex
+    /// body drives the leftmost-first span VM, skipping a zero-width match by one
+    /// byte exactly as the cold `--json` submatch iterator does
+    /// (`commands/ripgrep/json.zig::emitSubmatches`), so a match record emitted
+    /// here carries byte-identical submatch offsets to the subprocess `--json`
+    /// stream. The FFI's eligible class is plain/literal/±case (no `-w`/`-r`), so
+    /// none of that path's word-boundary or replacement filtering applies.
+    pub fn collectSpans(self: *const CompiledQuery, a: std.mem.Allocator, line: []const u8, sc: *MatchScratch, out: *std.ArrayList(Span)) error{OutOfMemory}!void {
+        switch (self.body) {
+            .literal => |needle| {
+                if (needle.len == 0) return;
+                var from: usize = 0;
+                while (std.mem.indexOfPos(u8, line, from, needle)) |i| {
+                    try out.append(a, .{ .start = i, .end = i + needle.len });
+                    from = i + needle.len; // non-overlapping, like rg's leftmost scan
+                }
+            },
+            .regex => |*re| {
+                var from: usize = 0;
+                while (from <= line.len) {
+                    const sp = re.matchSpan(&sc.sim, line, from) orelse break;
+                    if (sp.end == sp.start) {
+                        from = sp.start + 1; // step past a zero-width match (json.zig parity)
+                        continue;
+                    }
+                    try out.append(a, sp);
+                    from = sp.end;
+                }
+            },
+        }
     }
 };
 
