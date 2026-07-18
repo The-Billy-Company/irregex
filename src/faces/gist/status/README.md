@@ -2,14 +2,14 @@
 doc_radar:
   sentinels:
     - description: "machine status contract stays versioned and CLI-addressable"
-      file: pkg/kernels/gist/src/commands/status/status.zig
+      file: pkg/kernels/gist/src/faces/gist/status/status.zig
       contains: ["pub const schema_version = 1;", "pub const Snapshot = struct"]
     - description: "status JSON remains discoverable through the CLI"
-      file: pkg/kernels/gist/src/commands/cli/main.zig
+      file: pkg/kernels/gist/src/faces/cli/main.zig
       contains: 'std.mem.eql(u8, value, "--json")'
 ---
 
-# gist/src/commands/status
+# gist/src/faces/gist/status
 
 The `gist status` verb — read-only introspection of the persisted index.
 

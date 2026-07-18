@@ -1,4 +1,4 @@
-# gist/src/commands/cli
+# gist/src/faces/cli
 
 The `gist` binary's entrypoint + the machine-readable capability manifest.
 

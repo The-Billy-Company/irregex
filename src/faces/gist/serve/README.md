@@ -1,7 +1,7 @@
 <!--
 doc_radar:
   paths_exist:
-    - pkg/kernels/gist/src/commands/serve/serve.zig
+    - pkg/kernels/gist/src/faces/gist/serve/serve.zig
     - pkg/kernels/gist/src/session/resident.zig
   sentinels:
     - file: pkg/kernels/gist/contract/search_api.toml

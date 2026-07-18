@@ -10,10 +10,10 @@
 //! the former `commands/search/drivers.zig` when that module was deleted).
 
 const std = @import("std");
-const corpus_mod = @import("../../corpus/corpus.zig");
-const fresh = @import("../../corpus/fresh.zig");
-const persist = @import("../../index/persist.zig");
-const Index = @import("../../index/trigram.zig").Index;
+const corpus_mod = @import("../../../kernel/corpus/corpus.zig");
+const fresh = @import("../../../kernel/corpus/fresh.zig");
+const persist = @import("../../../kernel/index/persist.zig");
+const Index = @import("../../../kernel/index/trigram.zig").Index;
 const nowNs = @import("args.zig").nowNs;
 const ms = @import("args.zig").ms;
 

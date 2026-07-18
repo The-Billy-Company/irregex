@@ -16,11 +16,11 @@ const Opts = args.Opts;
 const die = args.die;
 const oom = args.oom;
 const palette = @import("color.zig");
-const simd = @import("../../scan/simd.zig");
+const simd = @import("../../../kernel/scan/simd.zig");
 const ml = @import("multiline.zig");
-const Regex = @import("../../regex/core.zig").Regex;
-const Matcher = @import("../../regex/matcher.zig").Matcher;
-const captures_mod = @import("../../regex/captures.zig");
+const Regex = @import("../../../kernel/regex/core.zig").Regex;
+const Matcher = @import("../../../kernel/regex/matcher.zig").Matcher;
+const captures_mod = @import("../../../kernel/regex/captures.zig");
 const Caps = captures_mod.Caps;
 const Captures = captures_mod.Captures;
 

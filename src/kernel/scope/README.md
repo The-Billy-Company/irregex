@@ -1,4 +1,4 @@
-# gist/src/commands/scope
+# gist/src/kernel/scope
 
 Shared **path scoping** — the `-t <lang>` / `-g <glob>` / positional-`PATH`
 affordances an agent reaches for to confine a search to a subtree. Because gist

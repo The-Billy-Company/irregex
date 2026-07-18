@@ -27,7 +27,7 @@
 //! thread), mirroring `CompiledQuery`'s own discipline.
 
 const std = @import("std");
-const query = @import("../engine/query.zig");
+const query = @import("../kernel/engine/query.zig");
 
 pub const Spec = query.Spec;
 pub const CompiledQuery = query.CompiledQuery;

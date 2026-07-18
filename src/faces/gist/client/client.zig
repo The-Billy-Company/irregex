@@ -33,9 +33,9 @@
 //!     never pays the FIFO poll.
 
 const std = @import("std");
-const request = @import("../../session/request.zig");
-const protocol = @import("../../session/protocol.zig");
-const corpus = @import("../../corpus/corpus.zig");
+const request = @import("../../../session/request.zig");
+const protocol = @import("../../../session/protocol.zig");
+const corpus = @import("../../../kernel/corpus/corpus.zig");
 const run = @import("../ripgrep/run.zig");
 const net = std.Io.net;
 

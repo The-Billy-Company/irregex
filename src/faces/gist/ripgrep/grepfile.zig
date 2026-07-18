@@ -12,7 +12,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const corpus_mod = @import("../../corpus/corpus.zig");
+const corpus_mod = @import("../../../kernel/corpus/corpus.zig");
 const args = @import("args.zig");
 const output = @import("output.zig");
 const Opts = args.Opts;
@@ -20,8 +20,8 @@ const die = args.die;
 const oom = args.oom;
 const multiline = @import("multiline.zig");
 const Emitter = output.Emitter;
-const Regex = @import("../../regex/core.zig").Regex;
-const Matcher = @import("../../regex/matcher.zig").Matcher;
+const Regex = @import("../../../kernel/regex/core.zig").Regex;
+const Matcher = @import("../../../kernel/regex/matcher.zig").Matcher;
 
 /// ripgrep's default read-buffer capacity. Binary detection scans buffer-sized
 /// reads for a NUL; a match in the buffer that first contains the NUL is NOT

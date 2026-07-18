@@ -19,15 +19,15 @@
 //! candidate set the same way a scoped walk would.
 
 const std = @import("std");
-const corpus_mod = @import("../../corpus/corpus.zig");
-const fresh = @import("../../corpus/fresh.zig");
-const persist = @import("../../index/persist.zig");
-const Regex = @import("../../regex/core.zig").Regex;
-const mirror = @import("../../rank/mirror.zig");
-const signals = @import("../../rank/signals.zig");
-const rank_mod = @import("../../rank/rank.zig");
-const gl = @import("../scope/glob.zig");
-const query_mod = @import("../../engine/query.zig");
+const corpus_mod = @import("../../../kernel/corpus/corpus.zig");
+const fresh = @import("../../../kernel/corpus/fresh.zig");
+const persist = @import("../../../kernel/index/persist.zig");
+const Regex = @import("../../../kernel/regex/core.zig").Regex;
+const mirror = @import("../../../kernel/rank/mirror.zig");
+const signals = @import("../../../kernel/rank/signals.zig");
+const rank_mod = @import("../../../kernel/rank/rank.zig");
+const gl = @import("../../../kernel/scope/glob.zig");
+const query_mod = @import("../../../kernel/engine/query.zig");
 const args_mod = @import("args.zig");
 const Dir = std.Io.Dir;
 

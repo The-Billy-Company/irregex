@@ -31,7 +31,7 @@ const std = @import("std");
 /// The two eligible answer shapes. Aliases the shared search core's `Mode`
 /// (`engine/query.zig`) so the classifier, the wire protocol, and the compiled
 /// query all speak one enum — no cross-layer conversion, no drift.
-pub const Mode = @import("../engine/query.zig").Mode;
+pub const Mode = @import("../kernel/engine/query.zig").Mode;
 
 /// A classified, eligible resident request. `pattern` aliases into the argv the
 /// classifier scanned (or, for the wire path, the frame buffer) — the caller

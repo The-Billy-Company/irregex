@@ -60,8 +60,8 @@
 //! seqlock over a mutex-guarded engine.
 
 const std = @import("std");
-const corpus_mod = @import("../corpus/corpus.zig");
-const bulkstat = @import("../corpus/bulkstat.zig");
+const corpus_mod = @import("../kernel/corpus/corpus.zig");
+const bulkstat = @import("../kernel/corpus/bulkstat.zig");
 const mirror = @import("mirror.zig");
 const render = @import("render.zig");
 // The resident file set is the certified rg-default walk the cold path uses, NOT
@@ -69,13 +69,13 @@ const render = @import("render.zig");
 // rg` true for hidden files, `.gitignore` precedence, and root scope. `session`
 // depending on `commands/ripgrep` is a one-way edge (run.zig never imports
 // session), so no import cycle.
-const run = @import("../commands/ripgrep/run.zig");
-const grepfile = @import("../commands/ripgrep/grepfile.zig");
+const run = @import("../faces/gist/ripgrep/run.zig");
+const grepfile = @import("../faces/gist/ripgrep/grepfile.zig");
 const dirtylog = @import("dirty.zig");
 const delta_mod = @import("delta.zig");
-const persist = @import("../index/persist.zig");
-const Index = @import("../index/trigram.zig").Index;
-const query_mod = @import("../engine/query.zig");
+const persist = @import("../kernel/index/persist.zig");
+const Index = @import("../kernel/index/trigram.zig").Index;
+const query_mod = @import("../kernel/engine/query.zig");
 const CompiledQuery = query_mod.CompiledQuery;
 const Scratch = query_mod.Scratch;
 const MatchScratch = query_mod.MatchScratch;

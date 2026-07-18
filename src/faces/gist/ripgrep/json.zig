@@ -16,16 +16,16 @@
 //! match/submatch structure) is emitted for real.
 
 const std = @import("std");
-const corpus_mod = @import("../../corpus/corpus.zig");
+const corpus_mod = @import("../../../kernel/corpus/corpus.zig");
 const args = @import("args.zig");
 const output = @import("output.zig");
 const ml = @import("multiline.zig");
 const Opts = args.Opts;
 const die = args.die;
 const oom = args.oom;
-const Regex = @import("../../regex/core.zig").Regex;
-const Matcher = @import("../../regex/matcher.zig").Matcher;
-const captures_mod = @import("../../regex/captures.zig");
+const Regex = @import("../../../kernel/regex/core.zig").Regex;
+const Matcher = @import("../../../kernel/regex/matcher.zig").Matcher;
+const captures_mod = @import("../../../kernel/regex/captures.zig");
 const Caps = captures_mod.Caps;
 const Captures = captures_mod.Captures;
 

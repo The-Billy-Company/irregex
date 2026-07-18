@@ -19,7 +19,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const request = @import("../../session/request.zig");
+const request = @import("../../../session/request.zig");
 const run = @import("../ripgrep/run.zig");
 const net = std.Io.net;
 

@@ -1,4 +1,4 @@
-# gist/src/commands/ripgrep
+# gist/src/faces/gist/ripgrep
 
 The **`rg`-DEFAULT drop-in** — gist over an _arbitrary_ directory tree (not the
 persisted Billy index), matching ripgrep's default behavior byte-for-byte so it

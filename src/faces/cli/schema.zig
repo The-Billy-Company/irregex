@@ -5,8 +5,8 @@
 //! the same rows that build the short- and long-flag dispatch tables.
 
 const std = @import("std");
-const corpus_mod = @import("../../corpus/corpus.zig");
-const args = @import("../ripgrep/args.zig");
+const corpus_mod = @import("../../kernel/corpus/corpus.zig");
+const args = @import("../gist/ripgrep/args.zig");
 
 const manifest_prefix =
     \\{
@@ -55,7 +55,7 @@ const manifest_prefix =
     \\    ],
     \\    "flag_surface": "broad, tested ripgrep-compatible subset; not full ripgrep compatibility. Unsupported and unknown flags fail loud with exit 2.",
     \\    "ripgrep_compatibility": {
-    \\      "source_of_truth": "src/commands/ripgrep/args.zig:flag_catalog",
+    \\      "source_of_truth": "src/faces/gist/ripgrep/args.zig:flag_catalog",
     \\      "unknown_flags": "unsupported-fail-loud",
     \\      "buckets": {
 ;

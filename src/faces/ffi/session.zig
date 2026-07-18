@@ -28,8 +28,8 @@
 //! pool, and the handle.
 
 const std = @import("std");
-const resident = @import("../session/resident.zig");
-const request = @import("../session/request.zig");
+const resident = @import("../../session/resident.zig");
+const request = @import("../../session/request.zig");
 
 /// The FFI allocates through the C allocator so a host that already owns the C
 /// heap (the Python process) shares one arena, and teardown needs no Zig GPA.
@@ -163,7 +163,7 @@ pub fn open(roots_ptr: ?[*]const [*:0]const u8, nroots: usize, out: ?**Session) 
         gpa.destroy(s);
         return .open_failed;
     };
-    out.* = s;
+    out_slot.* = s;
     return .ok;
 }
 

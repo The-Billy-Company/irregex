@@ -24,15 +24,15 @@
 //! Diagnostics (timing) go to stderr; results to stdout, rg-style.
 
 const std = @import("std");
-const corpus_mod = @import("../../corpus/corpus.zig");
-const fresh = @import("../../corpus/fresh.zig");
-const persist = @import("../../index/persist.zig");
-const cli_args = @import("../ripgrep/args.zig");
-const scope = @import("../scope/glob.zig");
-const sketch = @import("../../irregex/sketch.zig");
-const patterns_mod = @import("../../irregex/patterns.zig");
-const loom = @import("../../irregex/loom.zig");
-const query = @import("../../engine/query.zig");
+const corpus_mod = @import("../../kernel/corpus/corpus.zig");
+const fresh = @import("../../kernel/corpus/fresh.zig");
+const persist = @import("../../kernel/index/persist.zig");
+const cli_args = @import("../gist/ripgrep/args.zig");
+const scope = @import("../../kernel/scope/glob.zig");
+const sketch = @import("../../primitives/sketch.zig");
+const patterns_mod = @import("../../primitives/patterns.zig");
+const loom = @import("../../primitives/loom.zig");
+const query = @import("../../kernel/engine/query.zig");
 
 const die = cli_args.die;
 const oom = cli_args.oom;

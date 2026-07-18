@@ -14,10 +14,10 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const glob = @import("../scope/glob.zig");
-const types = @import("../scope/types.zig");
-const uni = @import("../../regex/unicode/tables.zig");
-const udec = @import("../../regex/unicode/decode.zig");
+const glob = @import("../../../kernel/scope/glob.zig");
+const types = @import("../../../kernel/scope/types.zig");
+const uni = @import("../../../kernel/regex/unicode/tables.zig");
+const udec = @import("../../../kernel/regex/unicode/decode.zig");
 const encoding = @import("encoding.zig");
 
 pub const Filename = enum { auto, always, never };

@@ -20,7 +20,7 @@ const output = @import("output.zig");
 const Opts = args.Opts;
 const die = args.die;
 const oom = args.oom;
-const Matcher = @import("../../regex/matcher.zig").Matcher;
+const Matcher = @import("../../../kernel/regex/matcher.zig").Matcher;
 
 pub const Span = Matcher.Span;
 
@@ -182,7 +182,7 @@ pub fn blockBases(a: std.mem.Allocator, lines: []const Line, spans: []const Span
 // ─────────────────────────────── tests ───────────────────────────────
 
 const t = std.testing;
-const Regex = @import("../../regex/core.zig").Regex;
+const Regex = @import("../../../kernel/regex/core.zig").Regex;
 
 /// Test scaffold: an arena for the model's `[]…` allocations (mirrors the
 /// per-run arena the CLI hands the emitter, so nothing leaks) plus a compiled

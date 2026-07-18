@@ -31,8 +31,8 @@
 //! drain that saw it).
 
 const std = @import("std");
-const ignore = @import("../commands/ripgrep/ignore.zig");
-const grepfile = @import("../commands/ripgrep/grepfile.zig");
+const ignore = @import("../faces/gist/ripgrep/ignore.zig");
+const grepfile = @import("../faces/gist/ripgrep/grepfile.zig");
 const Dir = std.Io.Dir;
 
 /// One resolved watcher path, in KEY SPACE (the exact path-string dialect the

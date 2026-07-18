@@ -1,4 +1,4 @@
-# `src/commands/irregex/` — the irregex CLI faces
+# `src/faces/hydra/` — the compression-search faces
 
 The `similar`, `dups`, and `patterns` verbs — gist's native shapes over the
 `src/irregex/` primitives (match ∪ relate ∪ weave). Like `--rank`, these are

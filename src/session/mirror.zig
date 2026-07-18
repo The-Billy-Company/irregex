@@ -31,7 +31,7 @@
 //! plain `[][]const u8` so the trigram index builds over it directly.
 
 const std = @import("std");
-const grepfile = @import("../commands/ripgrep/grepfile.zig");
+const grepfile = @import("../faces/gist/ripgrep/grepfile.zig");
 const Dir = std.Io.Dir;
 
 /// One faithfully ingested document body: decoded bytes plus the byte offset of

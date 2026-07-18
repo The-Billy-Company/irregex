@@ -2,7 +2,7 @@
 //! static+dynamic C-ABI artifact, the macOS archive realign, and the
 //! `test`/`coverage` steps live in the shared `kernelkit` chassis
 //! (pkg/kernels/core). This file declares the kernel plus two executables
-//! built on it: the production `gist` CLI (`src/commands/cli/main.zig`, the
+//! built on it: the production `gist` CLI (`src/faces/cli/main.zig`, the
 //! `index`/`status` lifecycle verbs plus the bare `<pattern>`/`rg` search
 //! front door) and the separate `gist-bench` harness
 //! (`bench/harness/bench.zig`, the `bench`/`verify`/`certify` tooling). Production CLI
@@ -148,7 +148,7 @@ pub fn build(b: *std.Build) void {
     cli_engine.linkLibrary(pcre2Library(b, k.target, cli_optimize));
     linkWatcherFrameworks(cli_engine, darwin_frameworks);
     const cli_mod = b.createModule(.{
-        .root_source_file = b.path("src/commands/cli/main.zig"),
+        .root_source_file = b.path("src/faces/cli/main.zig"),
         .target = k.target,
         .optimize = cli_optimize,
     });
@@ -179,7 +179,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     const check_mod = b.createModule(.{
-        .root_source_file = b.path("src/commands/cli/main.zig"),
+        .root_source_file = b.path("src/faces/cli/main.zig"),
         .target = linux_target,
         .optimize = .Debug,
     });

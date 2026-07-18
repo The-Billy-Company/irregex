@@ -1,8 +1,8 @@
 <!--
 doc_radar:
   paths_exist:
-    - pkg/kernels/gist/src/commands/client/client.zig
-    - pkg/kernels/gist/src/commands/serve/serve.zig
+    - pkg/kernels/gist/src/faces/gist/client/client.zig
+    - pkg/kernels/gist/src/faces/gist/serve/serve.zig
 -->
 
 # `commands/client/` — the CLI's warm fast path
