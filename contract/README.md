@@ -28,6 +28,6 @@ deliberate deepening of the `SearchRequest` surface, not a casual edit.
   contract or stays a CLI-only presentation flag.
 
 The engine's actual flag surface lives in
-[`../src/gist/faces/ripgrep/args.zig`](../src/gist/faces/ripgrep/args.zig)
+[`../src/gist/faces/cli/search/argv/args.zig`](../src/gist/faces/cli/search/argv/args.zig)
 (`flag_catalog`); each `flag = …` here names the rg-parity flag the package
 lowers a request option into.

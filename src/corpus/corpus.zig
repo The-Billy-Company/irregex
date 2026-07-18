@@ -1,5 +1,5 @@
 //! irregex — corpus loading, shared by the CLI drivers (`gist/faces/cli/`), the
-//! unified search engine (`gist/faces/ripgrep/`) and the bench/verify harness
+//! unified search engine (`gist/faces/cli/search/`) and the bench/verify harness
 //! (`bench/harness/bench.zig`). The corpus is every non-binary file under the roots
 //! (rg-style: a NUL byte ⇒ binary ⇒ skipped), minus the build/VCS subtrees rg
 //! also skips. Also owns the stdout results contract (`emitResults`) every

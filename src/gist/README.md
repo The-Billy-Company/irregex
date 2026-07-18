@@ -5,19 +5,19 @@ doc_radar:
       file: pkg/tools/support/chronicle/packages.py
       contains: 'Package("pkg/kernels/irregex"'
     - description: "Unicode is default-on at the CLI (rg-parity); --no-unicode / (?-u) opt out"
-      file: pkg/kernels/irregex/src/gist/faces/ripgrep/args.zig
+      file: pkg/kernels/irregex/src/gist/faces/cli/search/argv/args.zig
       contains: "unicode: bool = true,"
     - description: "Unicode data tables generated from a pinned UCD version"
       file: pkg/kernels/irregex/src/gist/kernel/regex/unicode/tables.gen.zig
       contains: 'unicode_version = "16.0.0"'
     - description: "-E honors the full WHATWG label table incl. the CJK multi-byte decoders"
-      file: pkg/kernels/irregex/src/gist/faces/ripgrep/encoding.zig
+      file: pkg/kernels/irregex/src/gist/faces/cli/search/read/encoding.zig
       contains:
         - "gb18030"
         - "shift_jis"
         - "euc_jp"
     - description: "status has a versioned machine-readable lifecycle contract"
-      file: pkg/kernels/irregex/src/gist/faces/status/status.zig
+      file: pkg/kernels/irregex/src/gist/faces/cli/status/status.zig
       contains: ["pub const schema_version = 1;", "pub const Snapshot = struct"]
 ---
 
@@ -67,9 +67,10 @@ live bytes are re-verified before output — see `src/corpus/README.md`), and
 
 ## How it works
 
-The pipeline is six cooperating tiers, each a concern-scoped subfolder under
-`src/` (`index/` · `regex/` · `rank/` · `scan/` · `corpus/` · `engine/`), driven
-by the command surfaces under `src/commands/`:
+The pipeline is six cooperating tiers — five concern-scoped subfolders under
+`src/gist/kernel/` (`index/` · `regex/` · `rank/` · `scan/` · `engine/`) plus the
+shared `src/corpus/` loader — driven by the command surfaces under
+`src/gist/faces/`:
 
 **Trigram candidate index** (`src/gist/kernel/index/trigram.zig`). Any file containing a literal
 must contain every trigram of that literal, so the AND of the per-trigram
@@ -95,12 +96,12 @@ RE2/ripgrep philosophy — no catastrophic backtracking) with sound
 required-literal extraction, so a regex reuses the trigram prefilter, including a
 **multi-literal cover set** for alternations (`foo|bar|baz` prefilters on the
 union of all three). When a pattern has no usable literal, the full-scan path
-runs on an immutable **byte-class DFA** (`src/gist/kernel/regex/dfa.zig`) that spends one
+runs on an immutable **byte-class DFA** (`src/gist/kernel/regex/linear/dfa.zig`) that spends one
 table lookup per byte regardless of match density — anchors and all — in a
 single fused pass that detects newlines inline. The Pike VM stays the capped
 fallback and the differential-fuzz correctness reference. For the constructs a
 linear engine provably can't express — lookaround, backreferences — the opt-in
-`-P`/`--pcre2` backend (`src/gist/kernel/regex/pcre2.zig`, vendored PCRE2 10.47 JIT) reuses
+`-P`/`--pcre2` backend (`src/gist/kernel/regex/pcre2/backend.zig`, vendored PCRE2 10.47 JIT) reuses
 the _same_ required-literal prefilter, making gist the only indexed PCRE search
 in the field; `--engine auto` compiles linear first and escalates only when the
 pattern needs it. See [`src/gist/kernel/regex/README.md`](kernel/regex/README.md).
@@ -135,7 +136,7 @@ the sound trigram **prefilter** that prunes index candidates (required literal,
 else the alternation cover) and the per-doc **match / line-count** decision. It
 is fail-closed (a pattern outside the linear-time syntax is `error.Unsupported`,
 never a `die()`) and thread-safe (the compiled query is immutable; per-worker
-regex scratch is caller-owned), so the cold CLI (`src/gist/faces/ripgrep/`) and the
+regex scratch is caller-owned), so the cold CLI (`src/gist/faces/cli/search/`) and the
 warm resident session (`src/gist/session/`) execute through the **same** compile,
 prefilter, and match kernels and cannot drift on what matches.
 
@@ -181,7 +182,7 @@ hydra dups --max-distance 0.25            # near-duplicate pairs, closest first
 ```
 
 The bare `gist <pattern>` shorthand and its explicit `gist rg` alias are ONE
-engine (`src/gist/faces/ripgrep/run.zig`) — a ripgrep-DEFAULT drop-in on its
+engine (`src/gist/faces/cli/search/engine/serial.zig`) — a ripgrep-DEFAULT drop-in on its
 **supported surface** (gitignore precedence, exit codes, piped stdin;
 **0 FAIL and 0 ORDER** on the mined rgsuite corpus: every case matches `rg`
 at its own upstream assertion bar — byte-exact where ripgrep's suite pins
@@ -196,7 +197,7 @@ equivalent — a definition-first RRF-ranked view (see "Why gist" below).
 exactly can this tool do" without running a query. Programs use `gist status
 --json`, a versioned snapshot derived from the same model as the unchanged
 human report; its exact v1 fields and unavailable-state semantics are documented
-in [`src/gist/faces/status/README.md`](faces/status/README.md). The full
+in [`src/gist/faces/cli/status/README.md`](faces/cli/status/README.md). The full
 flag surface is documented in "How it works as a drop-in" below, and
 exhaustively in `--help` / `--schema`.
 
@@ -300,7 +301,7 @@ Exact byte-identical classes are additionally gated by
 (both engines plus deterministic exact-output generators for the 265,286- and
 147,087-line result classes). The by-design boundaries are listed under "Where
 gist departs from ripgrep." The exhaustive rg-compatible flag reference lives in
-[`src/gist/faces/ripgrep/args.zig`](faces/ripgrep/args.zig).
+[`src/gist/faces/cli/search/argv/args.zig`](faces/cli/search/argv/args.zig).
 
 Streams follow the `rg` convention too, so gist composes in a pipeline the
 same way: matches go to **stdout**, and — a stronger bar than `rg` itself, not
@@ -362,7 +363,7 @@ didn't understand you" — so gist never does it.
 
 **Transforms content faster than rg — in-process, not fork-per-file.** The three
 rg flags that reshape a file's bytes before matching all land, coordinated by one
-deep module ([`src/gist/faces/ripgrep/ingest.zig`](faces/ripgrep/ingest.zig))
+deep module ([`src/gist/faces/cli/search/read/ingest.zig`](faces/cli/search/read/ingest.zig))
 that owns the `decompress → preprocess → transcode` ordering so neither walk
 engine re-implements it. `-z`/`--search-zip` decodes the common formats (gzip,
 zlib, zstd, xz) **in-process** via Zig's `std.compress` — no `gzip -dc` fork per
@@ -394,7 +395,7 @@ Linear-engine regex syntax (the default): literals, `.`, `[...]`/`[^...]`,
 `a-z` ranges, `* + ? {n,m}`, alternation, groups, `^ $`, the haystack anchors
 `\A \z`, the word boundaries `\b \B` and one-sided `\< \>`, and the classes
 `\d \w \s \t \n \r` (NUL is `\x00`) — see
-[`src/gist/kernel/regex/syntax.zig`](kernel/regex/syntax.zig). The escape parser is rg-parity
+[`src/gist/kernel/regex/syntax/syntax.zig`](kernel/regex/syntax/syntax.zig). The escape parser is rg-parity
 **fail-loud**: `\0`–`\9` (backreference syntax), unrecognized letter escapes
 (`\q`, `\e`, `\Z`, …), and assertion escapes inside a class (`[\b]`, `[\A]`,
 `[\<]`) all exit 2 with the reason and the **native `gist -P` / `gist --engine

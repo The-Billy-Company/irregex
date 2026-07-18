@@ -22,19 +22,19 @@
 //!     the match primitives. N workers share one compiled query with N scratches.
 //!
 //! Before this module, the warm engine (`session/resident.zig`) and the cold
-//! engine (`commands/ripgrep/`) each re-derived the required-literal-vs-alts
+//! engine (`faces/cli/search/`) each re-derived the required-literal-vs-alts
 //! prefilter and re-implemented literal/regex verification; the two "cannot
 //! drift" only because they now compile and match through the same code here.
 
 const std = @import("std");
 const simd = @import("../scan/simd.zig");
-const Regex = @import("../regex/core.zig").Regex;
+const Regex = @import("../regex/linear/core.zig").Regex;
 
 /// The three mode shapes the shared core answers: `files` (any line matches),
 /// `count` (how many lines match), and `lines` (the default `path:text` match
 /// lines — rendered by the warm session through the cold `Emitter` itself, so
 /// the presentation cannot drift). Richer cold-only presentations (context,
-/// JSON, replace, --only-matching) stay in `commands/ripgrep/` — they consume
+/// JSON, replace, --only-matching) stay in `faces/cli/search/` — they consume
 /// the same match decision but shape their own output.
 pub const Mode = enum(u8) { files = 0, count = 1, lines = 2 };
 
@@ -219,7 +219,7 @@ pub const CompiledQuery = struct {
     /// to `out`. A literal body walks successive `indexOf` occurrences; a regex
     /// body drives the leftmost-first span VM, skipping a zero-width match by one
     /// byte exactly as the cold `--json` submatch iterator does
-    /// (`commands/ripgrep/json.zig::emitSubmatches`), so a match record emitted
+    /// (`faces/cli/search/emit/json.zig::emitSubmatches`), so a match record emitted
     /// here carries byte-identical submatch offsets to the subprocess `--json`
     /// stream. The FFI's eligible class is plain/literal/±case (no `-w`/`-r`), so
     /// none of that path's word-boundary or replacement filtering applies.

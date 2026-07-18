@@ -446,6 +446,25 @@ pub fn build(b: *std.Build) void {
     // bench module; the engine tests ride `k.test_step` via `src/root.zig`.)
     k.test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = bench_mod })).step);
 
+    // ── `relate-knn` — the compression-as-embedding proof harness ──
+    // Runs the REAL hydra relate engine (zipper cross-parse / LZJD sketch) as a
+    // k-NN text classifier over a labeled manifest, emitting accuracy + build/
+    // query cost as JSON. The sibling driver (bench/relate/) races it against
+    // gzip-kNN (ACL 2023) and a static-embedding model. Run from the repo root.
+    const relate_knn_mod = b.createModule(.{
+        .root_source_file = b.path("bench/relate/knn.zig"),
+        .target = k.target,
+        .optimize = cli_optimize, // the product-speed posture — this is a timing tool
+    });
+    relate_knn_mod.addImport("irregex", cli_engine);
+    const relate_knn_exe = b.addExecutable(.{ .name = "relate-knn", .root_module = relate_knn_mod });
+    b.installArtifact(relate_knn_exe);
+    const run_relate_knn = b.addRunArtifact(relate_knn_exe);
+    run_relate_knn.setCwd(b.path("../../.."));
+    if (b.args) |args| run_relate_knn.addArgs(args);
+    b.step("relate-knn", "Run the hydra relate engine as a k-NN classifier over a labeled manifest")
+        .dependOn(&run_relate_knn.step);
+
     // Shared modules for the Layer B/C/D executables below, each living outside
     // `bench/harness/`'s module root (Zig forbids importing a source file
     // outside a module's own root directory) so they're wired as independent,

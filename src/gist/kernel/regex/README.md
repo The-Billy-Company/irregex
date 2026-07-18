@@ -1,41 +1,44 @@
+---
+doc_radar:
+  counts:
+    - description: "seven regex pipeline stages — syntax, analysis, compile, linear, pcre2, unicode, oracle"
+      glob: pkg/kernels/irregex/src/gist/kernel/regex/*/
+      equals: 7
+      unit: dirs
+  sentinels:
+    - description: "only core + DFA are re-exported at the package root; submodules are imported directly"
+      file: pkg/kernels/irregex/src/root.zig
+      contains:
+        - 'pub const regex = @import("gist/kernel/regex/linear/core.zig");'
+        - 'pub const regex_dfa = @import("gist/kernel/regex/linear/dfa.zig");'
+---
+
 # gist — T2 regex
 
 The regex execution tier: a linear-time **Thompson NFA** over bytes (RE2 /
 ripgrep philosophy — no backtracking, no catastrophic blowup) with a byte-class
-DFA as the primary O(1)/byte engine and a Pike VM fallback. Re-exported through
-`src/root.zig` (`regex` / `regex_syntax` / `regex_analysis` / `regex_compile` /
-`regex_prefilter` / `regex_dfa`).
+DFA as the primary O(1)/byte engine and a Pike VM fallback. Organized by real
+pipeline stage — the AST flows front-to-back, `syntax → analysis → compile →
+linear`, with `unicode` data feeding the class lowering, `pcre2` the opt-in
+escape hatch, and `oracle` the independent correctness backstop. Only the core
+handle (`regex`) and DFA (`regex_dfa`) are re-exported through `src/root.zig`;
+every other stage is imported directly by its consumer.
 
-| File                | Role                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `core.zig`          | Public `Regex` handle: `compile` orchestration, the Pike VM (`Sim` scratch, epsilon-closure, the comptime-specialized `search`), and `lineMatch`/`docMatch` dispatch (DFA primary, Pike fallback).                                                                                                                                                                                                                                    |
-| `syntax.zig`        | Regex _syntax_: byte classes (`ByteSet`), the Unicode scalar-range class (`uclass` / `ScalarSet`), the AST (`Node`), the recursive-descent parser (codepoint-decoding in Unicode mode), Unicode-aware `foldCaseAst`, and the compiled NFA instruction (`State`).                                                                                                                                                                      |
-| `unicode/`          | The Unicode data + UTF-8 leaf (own README): `utf8seq.zig` lowers a scalar range to non-overlapping UTF-8 byte-range steps, `decode.zig` decodes codepoints fwd/last for `\b`, `tables.zig` is the data API (`\w \d \s`, `\p{…}`, fold orbits, `isWord`/`isUpper`) over the generated `tables.gen.zig` (pinned UCD, drift-gated).                                                                                                      |
-| `analysis.zig`      | Sound, read-only analyses feeding the accelerators — AST visitors (required-literal / alternation-cover extraction, anchored-start) and compiled-NFA visitors (`analyzeFirst` first-byte set, `reachesMatchEol`).                                                                                                                                                                                                                     |
-| `compile.zig`       | Thompson construction: lowers the AST into the flat NFA `State` program both the Pike VM and the DFA execute (the structural counterpart to `powerset.zig`).                                                                                                                                                                                                                                                                          |
-| `prefilter.zig`     | First-byte scan acceleration: the `Prefilter` (first-byte set + precomputed singleton-memchr / SIMD-range / scalar-probe skip strategy) the Pike `.skip` path uses to jump over dead spans.                                                                                                                                                                                                                                           |
-| `dfa.zig`           | Byte-class DFA — the primary match engine. The immutable, scratch-free automaton (`match` / `docMatch`) that scans a whole document in one fused pass; consumes the finished tables.                                                                                                                                                                                                                                                  |
-| `powerset.zig`      | Powerset (subset) construction — determinizes the Thompson program (byte classes + `^`/`$` anchors, capped at `max_states`) into the immutable `dfa.zig` `Dfa`, or null on blow-up (Pike fallback).                                                                                                                                                                                                                                   |
-| `core_test.zig`     | Engine tests: parser/AST, Pike VM, prefilters, scan accelerators.                                                                                                                                                                                                                                                                                                                                                                     |
-| `dfa_test.zig`      | DFA unit cases + differential fuzz against the Pike VM (line- and doc-level).                                                                                                                                                                                                                                                                                                                                                         |
-| `powerset_test.zig` | Determinizer correctness (non-Pike): **(A)** structural invariants — byte-class soundness + minimality, transition totality over the reachable machine, no-orphan/dead-state absorption, build determinism, exact class counts, cap-bail; **(B)** EXHAUSTIVE language equivalence vs a from-scratch NFA spec (every string ≤7, spec validated ≡ Pike) that catches a wrong transition function — plus a randomized fuzz running both. |
-
-The opt-in PCRE2 backend for the constructs this linear tier deliberately can't
-express (lookaround, backreferences) lives in [`pcre2/`](pcre2/), behind the
-`pcre2.zig` module entry and the frozen `matcher.zig` seam; `--engine auto`
-escalates to it only when the linear engine declines a pattern.
+| Stage | Folder | Role |
+| --- | --- | --- |
+| syntax | [`syntax/`](syntax) | Byte/scalar classes, the AST, the recursive-descent parser, Unicode-aware case folding, and the compiled NFA instruction — the vocabulary every stage shares. |
+| analysis | [`analysis/`](analysis) | Sound, conservative accelerator analyses: required-literal / cover extraction for the trigram prefilter, first-byte sets, and the scan-skip `Prefilter`. |
+| compile | [`compile/`](compile) | Thompson AST→NFA lowering, and the separate capture-extraction Pike VM (the primary engine stays capture-free). |
+| linear | [`linear/`](linear) | The engine: public `Regex` handle, Pike VM, byte-class DFA + powerset determinizer, and the engine-neutral `Matcher` seam. |
+| pcre2 | [`pcre2/`](pcre2) | The opt-in vendored PCRE2 JIT backend for lookaround / backreferences the linear tier can't express; `--engine auto` escalates to it only on demand. |
+| unicode | [`unicode/`](unicode) | The pinned-UCD data + UTF-8 leaf: scalar-range → byte-range decomposition, codepoint decode for `\b`, and the `\w \d \s` / `\p{…}` / fold tables. |
+| oracle | [`oracle/`](oracle) | Adversarial differential tests against an *independent* oracle (and `rg` at default semantics) — catches bugs the in-family Pike-vs-DFA fuzz would share. |
 
 **Unicode is default-on (rg-parity).** In Unicode mode the parser decodes
 codepoints, non-ASCII literals / `[...]` / `\p{…}` / `\w \d \s` / `.` become a
-`uclass` (scalar ranges), and `foldCaseAst` expands each to its full simple-fold
-orbit. `compile.zig` lowers a `uclass` through `unicode/utf8seq.zig` into a
+`uclass` (scalar ranges), and case folding expands each to its full simple-fold
+orbit. `compile/` lowers a `uclass` through `unicode/utf8seq.zig` into a
 hash-consed minimal UTF-8 byte trie woven into the same byte NFA — so the DFA
-still determinizes it at the O(1)/byte floor (`powerset_test.zig` extends its
-exhaustive equivalence to UTF-8 alphabets). Unicode `\b`/`-w` decode the
-straddling codepoint via `unicode/tables.zig::isWord` and stay on the Pike VM,
-prefiltered. `(?-u)` / `--no-unicode` revert every surface to ASCII bytes. The
-independent differential oracles (`adversarial_test.zig`) cross-check gist's
-Unicode engine against `rg` at its default semantics.
-
-Split across files purely to stay under the shape cap; the imports between them
-are folder-relative (`@import("syntax.zig")` etc.).
+still determinizes it at the O(1)/byte floor. Unicode `\b`/`-w` decode the
+straddling codepoint via `unicode/tables.zig` and stay on the Pike VM,
+prefiltered. `(?-u)` / `--no-unicode` revert every surface to ASCII bytes.

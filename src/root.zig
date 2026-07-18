@@ -30,7 +30,7 @@
 //!                   rank (RRF + byte-level signals), scan (SIMD substring + parallel verify),
 //!                   engine (the transport-neutral compiled query both cold CLI and warm session execute through)
 //!   gist/session/ — the resident-session transport (ADR-352 rung 2.5): warm engine · UDS codec · classifier · watcher
-//!   gist/faces/   — the gist product surfaces (cli · ripgrep · status · serve · client · ffi)
+//!   gist/faces/   — the gist product surfaces (cli[search·lifecycle·status·daemon·schema] · ffi)
 //!   hydra/        — the compression-search engine: engine/ verb drivers + cli/ binary shell
 
 const std = @import("std");
@@ -43,8 +43,8 @@ pub const persist = @import("gist/kernel/index/persist.zig");
 // ── regex engine ──
 // Submodules are imported by their consumers directly; only the core + DFA
 // surfaces are re-exported at the root for the C-ABI / library consumers.
-pub const regex = @import("gist/kernel/regex/core.zig");
-pub const regex_dfa = @import("gist/kernel/regex/dfa.zig");
+pub const regex = @import("gist/kernel/regex/linear/core.zig");
+pub const regex_dfa = @import("gist/kernel/regex/linear/dfa.zig");
 
 // ── ranking ──
 pub const rank = @import("gist/kernel/rank/rank.zig");
@@ -88,7 +88,7 @@ pub const hydra = struct {
 // ── the transport-neutral compiled query (the shared search core) ──
 // One deep module owns "a search intent, compiled": the fail-closed, thread-safe
 // compile → sound-trigram-prefilter → per-doc match/count kernels that BOTH the
-// cold CLI (`commands/ripgrep`) and the warm resident session (`session`)
+// cold CLI (`gist/faces/cli/search`) and the warm resident session (`session`)
 // execute through, so the two engines cannot drift on what matches.
 pub const engine = struct {
     pub const query = @import("gist/kernel/engine/query.zig");
@@ -99,7 +99,7 @@ pub const engine = struct {
 // instead of `die()`ing so a bad request can't take down the daemon. ──
 pub const session = struct {
     pub const resident = @import("gist/session/resident.zig");
-    pub const mirror = @import("gist/session/mirror.zig");
+    pub const corpus = @import("gist/session/corpus.zig");
     pub const render = @import("gist/session/render.zig");
     pub const request = @import("gist/session/request.zig");
     pub const protocol = @import("gist/session/protocol.zig");
@@ -113,7 +113,7 @@ pub const session = struct {
 pub const ffi = @import("gist/faces/ffi/session.zig");
 
 /// CLI surfaces built on the engine above. Not part of the C ABI — the `gist`
-/// executable (`commands/cli/main.zig`) and the bench harness dispatch through
+/// executable (`gist/faces/cli/main.zig`) and the bench harness dispatch through
 /// these; grouped here so the whole command tree resolves through the module.
 pub const commands = struct {
     pub const scope = struct {
@@ -121,19 +121,20 @@ pub const commands = struct {
         pub const types = @import("scope/types.zig");
     };
     /// Read-only index introspection (the `status` verb).
-    pub const status = @import("gist/faces/status/status.zig");
+    pub const status = @import("gist/faces/cli/status/status.zig");
     /// `gist --schema` JSON capability manifest.
-    pub const schema = @import("gist/faces/cli/schema.zig");
+    pub const schema = @import("gist/faces/cli/schema/schema.zig");
     /// The unified search engine — the certified ripgrep-parity walk-and-emit
-    /// pipeline (`run`), its index-backed read-elision + `--no-index`/`--rank`
-    /// candidate sources, and the ranked view (`rank`). Backs the bare
-    /// `gist <pattern>` shorthand, `gist rg`, and the rgsuite parity certificate.
-    pub const ripgrep = @import("gist/faces/ripgrep/run.zig");
+    /// control plane (`engine/serial.zig`), its index-backed read-elision +
+    /// `--no-index`/`--rank` candidate sources, and the ranked view
+    /// (`engine/ranked.zig`). Backs the bare `gist <pattern>` shorthand,
+    /// `gist rg`, and the rgsuite parity certificate.
+    pub const search = @import("gist/faces/cli/search/engine/serial.zig");
     /// The `index` verb — build + persist the trigram index the engine reads.
-    pub const indexer = @import("gist/faces/ripgrep/index.zig");
+    pub const indexer = @import("gist/faces/cli/lifecycle/index.zig");
     /// `gist serve` — the resident daemon that keeps a `session` warm behind a
     /// Unix socket (ADR-352 rung 2.5).
-    pub const serve = @import("gist/faces/serve/serve.zig");
+    pub const serve = @import("gist/faces/cli/daemon/serve/serve.zig");
     /// The hydra verbs — `similar`/`dups`/`patterns` over `src/primitives/`.
     pub const irregex = @import("hydra/engine/verbs.zig");
     /// `hydra search` — two-stage compression retrieval (lexicon → zipper).
@@ -142,7 +143,7 @@ pub const commands = struct {
     pub const hydra_schema = @import("hydra/cli/schema.zig");
     /// The CLI's warm fast path — dial the daemon for an eligible query, emit
     /// byte-identically to cold, else fall back (`attempt`).
-    pub const client = @import("gist/faces/client/client.zig");
+    pub const client = @import("gist/faces/cli/daemon/client/client.zig");
 };
 
 pub const version_string: [:0]const u8 = "0.1.0"; // x-release-please-version
@@ -221,13 +222,13 @@ test {
     _ = @import("gist/kernel/index/fresh_test.zig"); // T3 freshness `widen` set-algebra
     _ = @import("gist/kernel/engine/query_test.zig"); // shared compiled-query: compile/prefilter/match vs oracle
     _ = @import("primitives/sketch_test.zig"); // relate half: kinship metric semantics + clustering gate
-    _ = hydra.lexicon; // hydra: corpus-priced fingerprint recall index
+    _ = @import("hydra/engine/lexicon.zig"); // hydra: corpus-priced fingerprint recall index
     _ = @import("hydra/engine/zipper.zig"); // hydra: suffix-automaton Ziv–Merhav cross-parse (exact ΔAb)
     _ = @import("hydra/engine/lexicon_test.zig"); // hydra: retrieval proof (short-query recall, ΔAb sidedness, zero-bit boilerplate)
     _ = @import("primitives/patterns_test.zig"); // match half: set ≡ N single-pattern oracles (gate off/on)
     _ = @import("primitives/loom_test.zig"); // weave: closed op set — total, deterministic, hand-tallied
     _ = @import("gist/session/request_test.zig"); // resident request eligibility classifier
-    _ = @import("gist/session/mirror.zig"); // faithful corpus ingest: BOM/UTF-16 decode, whole-body NUL, no cap
+    _ = @import("gist/session/corpus.zig"); // faithful corpus ingest: BOM/UTF-16 decode, whole-body NUL, no cap
     _ = @import("gist/session/render.zig"); // warm lines renderer: cold-Emitter byte parity
     _ = @import("gist/session/resident_test.zig"); // resident session: parity vs cold, overlay, RYW, deletion
     _ = @import("gist/session/protocol_test.zig"); // UDS frame codec round-trip + adversarial
@@ -238,32 +239,33 @@ test {
     _ = @import("gist/session/scoped_test.zig"); // scoped reconcile adversarial: vs full-walk ground truth
     _ = @import("corpus/haystack_test.zig"); // shared walk: isSkipDir + joinPath hot-path decisions
     _ = @import("corpus/bulkstat_test.zig"); // getattrlistbulk ≡ stat-walk differential
-    _ = @import("gist/kernel/regex/syntax_test.zig"); // T2 syntax: ByteSet + recursive-descent parser
-    _ = @import("gist/kernel/regex/analysis_test.zig"); // T2 analysis: required-literal + cover + anchored
-    _ = @import("gist/kernel/regex/core_test.zig"); // T2 engine: parser + Pike VM + prefilters
-    _ = @import("gist/kernel/regex/matcher.zig"); // engine-neutral match seam: linear-arm forwarding
-    _ = @import("gist/kernel/regex/pcre2.zig"); // PCRE2 `-P` backend: engine + literal co-located tests
-    _ = @import("gist/kernel/regex/pcre2_test.zig"); // PCRE2 adversarial: lookaround/backref/limit/JIT parity
-    _ = @import("gist/kernel/regex/adversarial_test.zig"); // independent-oracle differential + prefilter brute force
-    _ = @import("gist/kernel/regex/dfa_test.zig"); // byte-class DFA unit + differential fuzz
-    _ = @import("gist/kernel/regex/powerset_test.zig"); // determinizer structural invariants
+    _ = @import("gist/kernel/regex/syntax/syntax_test.zig"); // T2 syntax: ByteSet + recursive-descent parser
+    _ = @import("gist/kernel/regex/analysis/analysis_test.zig"); // T2 analysis: required-literal + cover + anchored
+    _ = @import("gist/kernel/regex/linear/core_test.zig"); // T2 engine: parser + Pike VM + prefilters
+    _ = @import("gist/kernel/regex/linear/matcher.zig"); // engine-neutral match seam: linear-arm forwarding
+    _ = @import("gist/kernel/regex/pcre2/backend.zig"); // PCRE2 `-P` backend: engine + literal co-located tests
+    _ = @import("gist/kernel/regex/pcre2/backend_test.zig"); // PCRE2 adversarial: lookaround/backref/limit/JIT parity
+    _ = @import("gist/kernel/regex/oracle/adversarial_test.zig"); // independent-oracle differential + prefilter brute force
+    _ = @import("gist/kernel/regex/linear/dfa_test.zig"); // byte-class DFA unit + differential fuzz
+    _ = @import("gist/kernel/regex/linear/powerset_test.zig"); // determinizer structural invariants
     _ = @import("gist/kernel/regex/unicode/utf8seq.zig"); // scalar-range → UTF-8 byte-range decomposition
     _ = @import("gist/kernel/regex/unicode/decode.zig"); // UTF-8 codepoint decode (fwd/last) for \b
     _ = @import("gist/kernel/regex/unicode/tables.zig"); // Unicode data API: Perl/\p classes, fold orbits
     // command surfaces (tests + driver bodies, so `zig build test` type-checks all)
     _ = @import("scope/glob_test.zig"); // glob matcher + type/glob/root path scope
-    _ = @import("gist/faces/status/status.zig"); // read-only index introspection
-    _ = @import("gist/faces/cli/schema.zig"); // `--schema` manifest
+    _ = @import("gist/faces/cli/status/status.zig"); // read-only index introspection
+    _ = @import("gist/faces/cli/schema/schema.zig"); // `--schema` manifest
     _ = @import("hydra/cli/schema.zig"); // hydra's `--schema` manifest
-    _ = @import("gist/faces/ripgrep/run.zig"); // the unified engine (rgsuite parity drop-in)
-    _ = @import("gist/faces/ripgrep/ingest.zig"); // -z/--pre/-E content transforms (decompress/preprocess/transcode)
-    _ = @import("gist/faces/ripgrep/encoding.zig"); // -E WHATWG legacy-code-page decoders (single-byte + CJK multi-byte)
-    _ = @import("gist/faces/ripgrep/multiline.zig"); // -U whole-buffer match model (Emitter.buffer + --json)
-    _ = @import("gist/faces/ripgrep/rank.zig"); // `--rank` definition-first ranked view
-    _ = @import("gist/faces/ripgrep/index.zig"); // the `index` verb: build + persist
-    _ = @import("gist/faces/serve/serve.zig"); // the resident daemon driver body
-    _ = @import("gist/faces/client/client.zig"); // the warm CLI fast-path client body
-    _ = @import("gist/faces/client/spawn.zig"); // best-effort detached daemon auto-spawn
-    _ = @import("gist/faces/client/client_test.zig"); // wedged-daemon → cold deadline (no hang)
-    _ = @import("gist/faces/serve/serve_test.zig"); // end-to-end daemon lifecycle + client round-trip
+    _ = @import("gist/faces/cli/search/engine/serial.zig"); // the unified engine (rgsuite parity drop-in)
+    _ = @import("gist/faces/cli/search/engine/parallel.zig"); // the fused work-stealing parallel walk/read/emit pass
+    _ = @import("gist/faces/cli/search/read/ingest.zig"); // -z/--pre/-E content transforms (decompress/preprocess/transcode)
+    _ = @import("gist/faces/cli/search/read/encoding.zig"); // -E WHATWG legacy-code-page decoders (single-byte + CJK multi-byte)
+    _ = @import("gist/faces/cli/search/emit/multiline.zig"); // -U whole-buffer match model (Emitter.buffer + --json)
+    _ = @import("gist/faces/cli/search/engine/ranked.zig"); // `--rank` definition-first ranked view
+    _ = @import("gist/faces/cli/lifecycle/index.zig"); // the `index` verb: build + persist
+    _ = @import("gist/faces/cli/daemon/serve/serve.zig"); // the resident daemon driver body
+    _ = @import("gist/faces/cli/daemon/client/client.zig"); // the warm CLI fast-path client body
+    _ = @import("gist/faces/cli/daemon/client/spawn.zig"); // best-effort detached daemon auto-spawn
+    _ = @import("gist/faces/cli/daemon/client/client_test.zig"); // wedged-daemon → cold deadline (no hang)
+    _ = @import("gist/faces/cli/daemon/serve/serve_test.zig"); // end-to-end daemon lifecycle + client round-trip
 }

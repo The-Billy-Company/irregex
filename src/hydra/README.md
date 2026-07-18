@@ -14,10 +14,10 @@ doc_radar:
 **What if compression was a text search algorithm?** hydra is that question
 as a package: a separate engine beside gist, built on the observation of
 Benedetto, Caglioti & Loreto ("Language Trees and Zipping", 2001) that a
-compressor's model of one text prices any other text — so _how few bits it
-takes to describe this with that already warm_ is a distance, with no
-parsing, no tokenizer, and no language list. gist answers _"where is this
-exact pattern?"_; hydra answers _"what is this LIKE?"_. The math is
+compressor's model of one text prices any other text — so *how few bits it
+takes to describe this with that already warm* is a distance, with no
+parsing, no tokenizer, and no language list. gist answers *"where is this
+exact pattern?"*; hydra answers *"what is this LIKE?"*. The math is
 hand-rolled rather than borrowed: no gzip run, no LZ78 parse — a
 corpus-priced fingerprint index for recall and an exact suffix-automaton
 cross-parse for precision (see [`engine/`](engine/README.md)).
@@ -32,19 +32,19 @@ sketches, multi-pattern attribution, loom shaping) and the
 
 ## Layout
 
-| Folder    | What                                                                                                  |
-| --------- | ----------------------------------------------------------------------------------------------------- |
+| Folder    | What                                                                                        |
+| --------- | -------------------------------------------------------------------------------------------- |
 | `engine/` | the retrieval core (`lexicon.zig` recall + `zipper.zig` precision) and the verb drivers (`verbs.zig`) |
-| `cli/`    | the `hydra` binary — dispatch shell (`main.zig`) + `--schema` capability manifest (`schema.zig`)      |
+| `cli/`    | the `hydra` binary — dispatch shell (`main.zig`) + `--schema` capability manifest (`schema.zig`) |
 
 ## Verbs
 
-| Verb                   | Machinery            | Question it answers                                                                                                             |
-| ---------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Verb                   | Machinery           | Question it answers                                                                           |
+| ---------------------- | ------------------- | --------------------------------------------------------------------------------------------- |
 | `hydra search <text>`  | `lexicon` + `zipper` | which files would _describe_ this text most cheaply? (retrieval by conditional description length; score = coding gain ∈ [0,1]) |
-| `hydra similar <path>` | `sketch`             | what else in this tree is _like_ this file?                                                                                     |
-| `hydra dups`           | `sketch`             | which files are near-duplicates of each other?                                                                                  |
-| `hydra patterns -e P…` | `patterns` + `loom`  | one walk, N patterns — which pattern hit where, shaped (`--by`/`--under`/`--top`) engine-side                                   |
+| `hydra similar <path>` | `sketch`            | what else in this tree is _like_ this file?                                                   |
+| `hydra dups`           | `sketch`            | which files are near-duplicates of each other?                                                |
+| `hydra patterns -e P…` | `patterns` + `loom` | one walk, N patterns — which pattern hit where, shaped (`--by`/`--under`/`--top`) engine-side |
 
 Corpus policy: the verbs load the **index corpus** (every non-binary file
 under the roots minus VCS/build subtrees — `corpus.load`), the same

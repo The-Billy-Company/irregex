@@ -4,7 +4,7 @@ The **byte-level verify primitives** — the hot per-file kernels that decide
 whether a candidate matches. This is the half of the head-to-head that has to
 out-throughput ripgrep's multi-core scan; the fused work-stealing walk that
 feeds these kernels on the no-prefilter path lives in the ripgrep engine
-(`commands/ripgrep/pipeline.zig`), and the resident session drives `verify`
+(`faces/cli/search/engine/parallel.zig`), and the resident session drives `verify`
 directly.
 
 | File         | Role                                                                                                                             |

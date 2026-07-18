@@ -10,7 +10,7 @@
 //! story and `../matcher.zig` for the union that dispatches to us.
 
 const std = @import("std");
-const core = @import("../core.zig");
+const core = @import("../linear/core.zig");
 const ffi = @import("ffi.zig");
 const literal = @import("literal.zig");
 

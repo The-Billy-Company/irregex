@@ -1,0 +1,1 @@
+The in-process C-ABI session seam is now null-hardened: gist_open with a null out (or null roots with nroots > 0) and gist_search with a null pattern (pattern_len > 0) return GIST_INVALID instead of dereferencing blind, and nroots == 0 / pattern_len == 0 never read their pointer. Also fixed an OOM-path leak of the transcoded body in the mirror's readDocOwned.

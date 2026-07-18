@@ -23,13 +23,13 @@
 //! connection falls back cold.)
 
 const std = @import("std");
-const args = @import("../faces/ripgrep/args.zig");
-const output = @import("../faces/ripgrep/output.zig");
-const grepfile = @import("../faces/ripgrep/grepfile.zig");
+const args = @import("../faces/cli/search/argv/args.zig");
+const output = @import("../faces/cli/search/emit/output.zig");
+const grepfile = @import("../faces/cli/search/read/grepfile.zig");
 const query_mod = @import("../kernel/engine/query.zig");
 const request = @import("request.zig");
-const Regex = @import("../kernel/regex/core.zig").Regex;
-const Matcher = @import("../kernel/regex/matcher.zig").Matcher;
+const Regex = @import("../kernel/regex/linear/core.zig").Regex;
+const Matcher = @import("../kernel/regex/linear/matcher.zig").Matcher;
 
 pub const RenderError = error{ Unsupported, OutOfMemory };
 

@@ -1,10 +1,10 @@
 ---
 doc_radar:
   counts:
-    - description: "nine bench concern folders, one per row of the table below"
+    - description: "ten bench concern folders, one per row of the table below"
       glob: pkg/kernels/irregex/bench/*/
       unit: dirs
-      equals: 9
+      equals: 10
   sentinels:
     - description: "the Layer B′ measured rung exists as a build step"
       file: pkg/kernels/irregex/build.zig
@@ -15,7 +15,7 @@ doc_radar:
 
 Benchmark, verification, and competitive-proof harness for the `gist`
 code-locator kernel — no engine code lives here (that's all under `src/`).
-Nine concerns, nine folders:
+Ten concerns, ten folders:
 
 | Folder                                | Concern                                                                                                                                                                                                                                        |
 | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -27,7 +27,8 @@ Nine concerns, nine folders:
 | [`rgsuite/`](rgsuite/README.md)       | The `gist rg` ⇄ real-ripgrep drop-in proof — mined `rgtest!` correctness replay plus the performance scoreboard.                                                                                                                               |
 | [`portcert/`](portcert/README.md)     | Layer B — port-optimality: cross-compiled `llvm-mca` static microarchitectural bound on gist's two hot loops, drift-guarded against production, plus Layer B′ — the same probes **measured on this machine** under the PMU (`gist-portbound`). |
 | [`roofline/`](roofline/README.md)     | Layer C — roofline: this machine's measured STREAM read-bandwidth ceiling vs gist's real scan throughput.                                                                                                                                      |
-| [`lowerbound/`](lowerbound/README.md) | Layer D — algorithmic lower bound: a fail-closed structural audit proving gist's verify touches the information-theoretic floor of candidate bytes.                                                                                            |
+| [`lowerbound/`](lowerbound/README.md) | Layer D â algorithmic lower bound: a fail-closed structural audit proving gist's verify touches the information-theoretic floor of candidate bytes.                                                                                            |
+| [`relate/`](relate/README.md)         | The hydra **relate** proof (`relate-knn`) — the real cross-parse / LZJD / pivot engine run as a k-NN classifier; the measured basis for the compression-vs-embeddings verdict (`spikes/compression-vs-embeddings/`).      |
 
 ```bash
 cd pkg/kernels/irregex

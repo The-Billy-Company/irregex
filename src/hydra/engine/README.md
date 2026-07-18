@@ -21,10 +21,10 @@ The machinery behind the `hydra` binary, in two layers:
 **The retrieval core** — compression-as-search, hand-rolled (no borrowed
 compressor, no compressor run at all):
 
-| Module        | Role                                                                                                                                                                                               |
+| Module        | Role                                                                                                                                                                                              |
 | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `lexicon.zig` | **recall** — a corpus-priced fingerprint index: winnowed 8-gram fingerprints (Schleimer et al. 2003) priced at their corpus information content, −log2(df/N) bits; boilerplate prices at exactly 0 |
-| `zipper.zig`  | **precision** — a suffix automaton per candidate doc drives an exact Ziv–Merhav cross-parse: the query's conditional description length in bits (the paper's ΔAb, computed in closed form)         |
+| `zipper.zig`  | **precision** — a suffix automaton per candidate doc drives an exact Ziv–Merhav cross-parse: the query's conditional description length in bits (the paper's ΔAb, computed in closed form)          |
 
 `Lexicon.retrieve` composes them: the lexicon nominates candidates from the
 index alone (no doc bytes touched), the zipper decides by exact conditional

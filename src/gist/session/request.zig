@@ -20,7 +20,7 @@
 //! only the rootless query is byte-parity-safe to route warm.
 //!
 //! `classify` is a self-contained argv scanner, NOT a second copy of
-//! `commands/ripgrep/args.zig`: it recognizes only the supported surface and
+//! `faces/cli/search/argv/args.zig`: it recognizes only the supported surface and
 //! returns `error.Unsupported` for anything outside it (so the client falls
 //! back to cold), and — crucially — it never calls `die()`. That is the whole
 //! reason the resident path sidesteps the ADR-352 exit hazard: an ineligible or

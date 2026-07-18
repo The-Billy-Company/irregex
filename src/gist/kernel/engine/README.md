@@ -1,7 +1,7 @@
 # `engine/` — the transport-neutral compiled query
 
 The shared search core (ADR-352). One deep module owns _"a search intent,
-compiled"_, so the cold CLI (`commands/ripgrep/`) and the warm resident session
+compiled"_, so the cold CLI (`faces/cli/search/`) and the warm resident session
 (`session/`) cannot drift on **what matches** or **which literals are safe to
 prune by** — they compile and match through the same code here.
 
@@ -23,5 +23,5 @@ prune by** — they compile and match through the same code here.
   N walk workers share one compiled query with N scratches.
 
 Richer cold-only presentations (content, context, `--json`) stay in
-`commands/ripgrep/` — they consume the same match decision but shape their own
+`faces/cli/search/` — they consume the same match decision but shape their own
 output.

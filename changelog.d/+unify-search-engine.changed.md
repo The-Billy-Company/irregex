@@ -1,5 +1,5 @@
 **The two search engines merged into one.** `gist`'s certified ripgrep-parity
-walk-and-emit pipeline (`src/commands/ripgrep/`) is now the _sole_ engine, and it
+walk-and-emit pipeline (`src/gist/faces/cli/search/`) is now the _sole_ engine, and it
 gained a second, much faster candidate source: the persisted trigram index. When
 a fresh index covers the searched subtree it is used automatically as an
 _acceleration structure_ — reads of files the index can prove cannot match
@@ -16,7 +16,7 @@ plus the freshness overlay (16/16 byte-identical).
 `--rank[=N]` folds in gist's one output shape ripgrep can't express — the
 definition-first ranked view (RRF fusion over per-file signals, a symbol's
 definition outranking its call sites, codegen demoted) — now a flag on the
-unified engine (`src/commands/ripgrep/rank.zig`) instead of a separate verb.
+unified engine (`src/gist/faces/cli/search/engine/ranked.zig`) instead of a separate verb.
 
 **The `search` verb is gone.** Bare `gist <pattern> [PATH...]` is canonical
 (`index` and `status` remain the only lifecycle verbs); `gist rg` is the same
