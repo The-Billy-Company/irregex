@@ -8,7 +8,7 @@ doc_radar:
   sentinels:
     - description: "the tier is a first-class root export, tests wired into zig build test"
       file: pkg/kernels/irregex/src/root.zig
-      contains: ['pub const irregex = struct', 'irregex/sketch_test.zig', 'irregex/patterns_test.zig', 'irregex/loom_test.zig']
+      contains: ['pub const irregex = struct', 'primitives/sketch_test.zig', 'primitives/patterns_test.zig', 'primitives/loom_test.zig']
     - description: "the frozen sketch resolution this README quotes (bottom-k size, phrase floor)"
       file: pkg/kernels/irregex/src/primitives/sketch.zig
       contains: ['pub const k = 128', 'pub const min_phrase = 3']
