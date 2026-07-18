@@ -221,7 +221,7 @@ test {
     _ = @import("gist/kernel/index/fresh_test.zig"); // T3 freshness `widen` set-algebra
     _ = @import("gist/kernel/engine/query_test.zig"); // shared compiled-query: compile/prefilter/match vs oracle
     _ = @import("primitives/sketch_test.zig"); // relate half: kinship metric semantics + clustering gate
-    _ = @import("hydra/engine/lexicon.zig"); // hydra: corpus-priced fingerprint recall index
+    _ = hydra.lexicon; // hydra: corpus-priced fingerprint recall index
     _ = @import("hydra/engine/zipper.zig"); // hydra: suffix-automaton Ziv–Merhav cross-parse (exact ΔAb)
     _ = @import("hydra/engine/lexicon_test.zig"); // hydra: retrieval proof (short-query recall, ΔAb sidedness, zero-bit boilerplate)
     _ = @import("primitives/patterns_test.zig"); // match half: set ≡ N single-pattern oracles (gate off/on)

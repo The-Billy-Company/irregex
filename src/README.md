@@ -13,35 +13,35 @@ the corpus substrate.
 
 | Tier          | What lives there                                                                                                                            |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `corpus/`     | the shared corpus substrate — loading (rg-style binary/skip rules, stdout results contract), the Haystack walk, `getattrlistbulk` bulk stat  |
-| `scope/`      | shared path scoping — `-g <glob>` matching (`glob.zig`) + the `-t <lang>` type table (`types.zig`)                                           |
-| `primitives/` | the shared irregex math (ADR-363) — `patterns` (match), `sketch` (relate), `loom` (weave)                                                    |
-| `gist/`       | the exact-search engine + the `gist` product faces — nothing here is consumed by hydra's relate math                                         |
-| `hydra/`      | the compression-search engine + the `hydra` binary                                                                                           |
+| `corpus/`     | the shared corpus substrate — loading (rg-style binary/skip rules, stdout results contract), the Haystack walk, `getattrlistbulk` bulk stat |
+| `scope/`      | shared path scoping — `-g <glob>` matching (`glob.zig`) + the `-t <lang>` type table (`types.zig`)                                          |
+| `primitives/` | the shared irregex math (ADR-363) — `patterns` (match), `sketch` (relate), `loom` (weave)                                                   |
+| `gist/`       | the exact-search engine + the `gist` product faces — nothing here is consumed by hydra's relate math                                        |
+| `hydra/`      | the compression-search engine + the `hydra` binary                                                                                          |
 
 ### `gist/` — the exact-search engine
 
-| Folder                 | Concern                                                                                                                                          |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `gist/kernel/index/`   | **T0** trigram candidate index — n-gram extraction, posting-list build/query, zero-copy `mmap` persistence, + the T3 mtime freshness overlay        |
-| `gist/kernel/regex/`   | linear-time regex — Thompson NFA + byte-class DFA + Pike fallback, sound literal analysis, capture VM                                               |
-| `gist/kernel/rank/`    | **T4** ranked output — weighted Reciprocal Rank Fusion over intrinsic, language-agnostic signals                                                    |
-| `gist/kernel/scan/`    | the no-prefilter fallback — SIMD substring presence + fused work-stealing parallel verify over the live tree                                        |
-| `gist/kernel/engine/`  | the transport-neutral compiled query — one compile → sound trigram prefilter → per-doc match/count/span kernels that every face executes through    |
-| `gist/session/`        | the resident-session transport (ADR-352 rung 2.5) — warm error-returning engine, UDS wire codec, eligibility classifier, freshness watcher          |
-| `gist/faces/cli/`      | the `gist` binary entrypoint + the `--schema` capability manifest                                                                                   |
-| `gist/faces/ripgrep/`  | the unified search engine + `index` verb — the `rg`-DEFAULT drop-in over an arbitrary tree, backing the bare shorthand, `gist rg`/`search`, `--rank` |
-| `gist/faces/status/`   | read-only index introspection — the `status` verb (is an index ready, how fresh, how big)                                                           |
-| `gist/faces/serve/`    | the resident-session daemon face (`gist serve`)                                                                                                     |
-| `gist/faces/client/`   | the thin client that spawns/dials the resident session                                                                                              |
-| `gist/faces/ffi/`      | the in-process C-ABI search session (ADR-352 rung 3) — `irregex_open`/`irregex_search`/`irregex_close`, streaming Match records to a caller callback |
+| Folder                | Concern                                                                                                                                              |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `gist/kernel/index/`  | **T0** trigram candidate index — n-gram extraction, posting-list build/query, zero-copy `mmap` persistence, + the T3 mtime freshness overlay         |
+| `gist/kernel/regex/`  | linear-time regex — Thompson NFA + byte-class DFA + Pike fallback, sound literal analysis, capture VM                                                |
+| `gist/kernel/rank/`   | **T4** ranked output — weighted Reciprocal Rank Fusion over intrinsic, language-agnostic signals                                                     |
+| `gist/kernel/scan/`   | the no-prefilter fallback — SIMD substring presence + fused work-stealing parallel verify over the live tree                                         |
+| `gist/kernel/engine/` | the transport-neutral compiled query — one compile → sound trigram prefilter → per-doc match/count/span kernels that every face executes through     |
+| `gist/session/`       | the resident-session transport (ADR-352 rung 2.5) — warm error-returning engine, UDS wire codec, eligibility classifier, freshness watcher           |
+| `gist/faces/cli/`     | the `gist` binary entrypoint + the `--schema` capability manifest                                                                                    |
+| `gist/faces/ripgrep/` | the unified search engine + `index` verb — the `rg`-DEFAULT drop-in over an arbitrary tree, backing the bare shorthand, `gist rg`/`search`, `--rank` |
+| `gist/faces/status/`  | read-only index introspection — the `status` verb (is an index ready, how fresh, how big)                                                            |
+| `gist/faces/serve/`   | the resident-session daemon face (`gist serve`)                                                                                                      |
+| `gist/faces/client/`  | the thin client that spawns/dials the resident session                                                                                               |
+| `gist/faces/ffi/`     | the in-process C-ABI search session (ADR-352 rung 3) — `irregex_open`/`irregex_search`/`irregex_close`, streaming Match records to a caller callback |
 
 ### `hydra/` — the compression-search engine
 
-| Folder          | Concern                                                                                                             |
-| --------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `hydra/engine/` | the relate engine — verb drivers over the shared `primitives/` math (`similar` / `dups` / `patterns` today)            |
-| `hydra/cli/`    | the `hydra` binary — thin dispatch (`main.zig`) + the `--schema` capability manifest (`schema.zig`)                    |
+| Folder          | Concern                                                                                                     |
+| --------------- | ----------------------------------------------------------------------------------------------------------- |
+| `hydra/engine/` | the relate engine — verb drivers over the shared `primitives/` math (`similar` / `dups` / `patterns` today) |
+| `hydra/cli/`    | the `hydra` binary — thin dispatch (`main.zig`) + the `--schema` capability manifest (`schema.zig`)         |
 
 `root.zig` is the package/C-ABI root: it re-exports each tier, pins
 `irregex_abi_version`, exposes `irregex_trigram_count` (the parity oracle), and
