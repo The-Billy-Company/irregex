@@ -11,7 +11,7 @@
 //! list documents 4–50× fewer syscalls (readdir vs getdirentriesattr thread,
 //! Dec 2014; independently reproduced: ~1,600× fewer syscalls, ~4-5× faster
 //! on a warm NVMe SSD, quivent/getattrlistbulk-rs, 2025 benchmark on M1).
-//! `pkg/kernels/gist/changelog.d/+bulkstat-freshness.changed.md` cites the
+//! `pkg/kernels/irregex/changelog.d/+bulkstat-freshness.changed.md` cites the
 //! measurement on THIS corpus.
 //!
 //! Why hand-rolled instead of `mmap`-ing files or another IO trick: the

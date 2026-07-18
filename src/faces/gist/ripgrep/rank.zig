@@ -404,7 +404,7 @@ test "underAnyRoot gates directory prefixes and exact files" {
     try t.expect(!underAnyRoot("services/ai_old/x.py", &.{"services/ai"}));
     try t.expect(!underAnyRoot("services/backend/x.go", &.{"services/ai"}));
     try t.expect(underAnyRoot("services/ai/x.py", &.{ "services/backend", "services/ai" }));
-    try t.expect(!underAnyRoot("pkg/kernels/gist/x.zig", &.{ "services/ai", "services/backend" }));
+    try t.expect(!underAnyRoot("pkg/kernels/irregex/x.zig", &.{ "services/ai", "services/backend" }));
     try t.expect(underAnyRoot("anywhere.go", &.{}));
 }
 

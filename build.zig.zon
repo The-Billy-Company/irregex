@@ -1,7 +1,7 @@
 .{
-    .name = .gist,
+    .name = .irregex,
     .version = "0.1.0", // x-release-please-version
-    .fingerprint = 0x93c97f1938fd0779,
+    .fingerprint = 0x418e7555d884a859,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .kernelkit = .{ .path = "../_buildkit" },

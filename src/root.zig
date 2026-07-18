@@ -8,10 +8,10 @@
 //! symbol) — see `research/dossiers/locator-sota.dossier.toml`.
 //!
 //! Search, index lifecycle, and result handling are Zig-native and surfaced by
-//! the `gist` CLI. The C ABI in `include/gist.h` exposes ABI/engine-version
+//! the `gist` CLI. The C ABI in `include/irregex.h` exposes ABI/engine-version
 //! introspection, allocation-free trigram extraction, AND — since ADR-352
-//! rung 3 — an in-process warm search SESSION (`gist_open`/`gist_search`/
-//! `gist_close`, implemented in `ffi/session.zig`): a non-Zig host holds a
+//! rung 3 — an in-process warm search SESSION (`irregex_open`/`irregex_search`/
+//! `irregex_close`, implemented in `ffi/session.zig`): a non-Zig host holds a
 //! corpus warm in its own process and streams match records over a callback,
 //! with no subprocess, socket, `stdout`, or `exit`. Every entry returns a
 //! status code instead of `die()`ing, so a bad query can never terminate an
@@ -129,22 +129,22 @@ pub const commands = struct {
 
 pub const version_string: [:0]const u8 = "0.1.0"; // x-release-please-version
 
-/// Bump on any BREAK to the C ABI. Additive symbols (e.g. `gist_version`) do
+/// Bump on any BREAK to the C ABI. Additive symbols (e.g. `irregex_version`) do
 /// not bump it — a consumer compiled against an older header keeps working.
-/// v2: the rung-3 match callback (`gist_match_fn`) gained an `i32` abort return
+/// v2: the rung-3 match callback (`irregex_match_fn`) gained an `i32` abort return
 /// (0 continue / non-zero stop), a signature change, so the ABI stepped 1 → 2.
 pub fn abi() u32 {
     return 2;
 }
 
-export fn gist_abi_version() u32 {
+export fn irregex_abi_version() u32 {
     return abi();
 }
 
 /// The engine semver (`version_string`), NUL-terminated, static-lifetime. Lets
 /// a binding version-gate the shared library / binary it drives against its own
 /// packaged version (the unified-search contract's `engine_version`, ADR-352).
-export fn gist_version() [*:0]const u8 {
+export fn irregex_version() [*:0]const u8 {
     return version_string.ptr;
 }
 
@@ -152,21 +152,21 @@ export fn gist_version() [*:0]const u8 {
 /// `out[0..len]` (caller sizes `out` ≥ `len`). Returns the count written.
 /// This deterministic primitive is the C ABI's only data operation; search and
 /// index lifecycle remain Zig-native/CLI surfaces.
-export fn gist_trigram_count(text: [*]const u8, len: usize, out: [*]u32) usize {
+export fn irregex_trigram_count(text: [*]const u8, len: usize, out: [*]u32) usize {
     if (len < 3) return 0;
     return ngram.extractSortedUnique(text[0..len], out[0..len]);
 }
 
 // ── in-process warm search session (ADR-352 rung 3) ──
 // Thin C shims over `ffi/session.zig`; the `Status` enum lowers to its `i32`
-// tag. `gist_session` is opaque to C (`ffi.Session` by pointer). These are the
+// tag. `irregex_session` is opaque to C (`ffi.Session` by pointer). These are the
 // first ABI symbols that open/query a corpus; their match callback carries an
 // `i32` abort return (0 continue / non-zero stop), the signature refinement
-// that took `gist_abi_version` to 2.
+// that took `irregex_abi_version` to 2.
 
 /// Open a warm session over `roots[0..nroots]` (NUL-terminated paths); writes
 /// the handle to `*out`. Returns 0 on success, negative on failure.
-export fn gist_open(roots: [*]const [*:0]const u8, nroots: usize, out: **ffi.Session) i32 {
+export fn irregex_open(roots: [*]const [*:0]const u8, nroots: usize, out: **ffi.Session) i32 {
     return @intFromEnum(ffi.open(roots, nroots, out));
 }
 
@@ -175,12 +175,12 @@ export fn gist_open(roots: [*]const [*:0]const u8, nroots: usize, out: **ffi.Ses
 /// should answer cold). `on_match` returns 0 to continue or non-zero to stop the
 /// stream early (a bounded / first-match query still returns 1). `flags`: bit0
 /// `-F` fixed, bit1 `-i` ignore-case.
-export fn gist_search(s: *ffi.Session, pattern: [*]const u8, pattern_len: usize, flags: u32, on_match: ffi.MatchFn, ctx: ?*anyopaque) i32 {
+export fn irregex_search(s: *ffi.Session, pattern: [*]const u8, pattern_len: usize, flags: u32, on_match: ffi.MatchFn, ctx: ?*anyopaque) i32 {
     return @intFromEnum(ffi.search(s, pattern, pattern_len, flags, on_match, ctx));
 }
 
-/// Free a session opened by `gist_open`.
-export fn gist_close(s: *ffi.Session) void {
+/// Free a session opened by `irregex_open`.
+export fn irregex_close(s: *ffi.Session) void {
     ffi.close(s);
 }
 

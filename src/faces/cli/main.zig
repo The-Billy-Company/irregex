@@ -34,7 +34,7 @@
 //! bench/verify/certify harness is a separate executable (`bench/harness/bench.zig`).
 
 const std = @import("std");
-const gist = @import("gist");
+const gist = @import("irregex");
 
 const indexer = gist.commands.indexer; // `gist index` — build + persist the trigram index
 const status = gist.commands.status; // read-only index introspection

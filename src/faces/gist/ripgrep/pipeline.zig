@@ -1298,7 +1298,7 @@ test "index loading stays off narrow explicit roots" {
     const t = std.testing;
     try t.expect(broadIndexedRoots(&.{ "libs", "services" }));
     try t.expect(broadIndexedRoots(&.{"."}));
-    try t.expect(!broadIndexedRoots(&.{"pkg/kernels/gist"}));
+    try t.expect(!broadIndexedRoots(&.{"pkg/kernels/irregex"}));
     try t.expect(!broadIndexedRoots(&.{"/tmp/corpus"}));
 }
 

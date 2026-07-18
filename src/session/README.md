@@ -1,22 +1,22 @@
 <!--
 doc_radar:
   paths_exist:
-    - pkg/kernels/gist/src/session/resident.zig
-    - pkg/kernels/gist/src/session/mirror.zig
-    - pkg/kernels/gist/src/session/render.zig
-    - pkg/kernels/gist/src/session/request.zig
-    - pkg/kernels/gist/src/session/protocol.zig
-    - pkg/kernels/gist/src/session/watch.zig
-    - pkg/kernels/gist/src/session/dirty.zig
-    - pkg/kernels/gist/src/session/delta.zig
+    - pkg/kernels/irregex/src/session/resident.zig
+    - pkg/kernels/irregex/src/session/mirror.zig
+    - pkg/kernels/irregex/src/session/render.zig
+    - pkg/kernels/irregex/src/session/request.zig
+    - pkg/kernels/irregex/src/session/protocol.zig
+    - pkg/kernels/irregex/src/session/watch.zig
+    - pkg/kernels/irregex/src/session/dirty.zig
+    - pkg/kernels/irregex/src/session/delta.zig
   sentinels:
-    - file: pkg/kernels/gist/contract/search_api.toml
+    - file: pkg/kernels/irregex/contract/search_api.toml
       contains: ["[session]", "eligible_modes", "fail-closed-reconcile", "\"lines\""]
-    - file: pkg/kernels/gist/src/session/protocol.zig
+    - file: pkg/kernels/irregex/src/session/protocol.zig
       contains: ["chunk = 11", "protocol_version: u8 = 1"]
-    - file: pkg/kernels/gist/src/session/dirty.zig
+    - file: pkg/kernels/irregex/src/session/dirty.zig
       contains: ["armExact", "noteDoubt"]
-    - file: pkg/kernels/gist/src/session/delta.zig
+    - file: pkg/kernels/irregex/src/session/delta.zig
       contains: ["needs_full", "keyIsCurrent"]
 -->
 

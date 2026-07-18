@@ -1,7 +1,7 @@
 ---
 doc_radar:
   sentinels:
-    - file: pkg/kernels/gist/src/kernel/regex/unicode/tables.gen.zig
+    - file: pkg/kernels/irregex/src/kernel/regex/unicode/tables.gen.zig
       contains: ['pub const unicode_version = "16.0.0";']
 ---
 
@@ -32,5 +32,5 @@ make gen-gist-verify     # drift gate: regenerate + diff (CI)
 The generator is stdlib-only and deterministic, so the checked-in
 `tables.gen.zig` is exactly what the pinned inputs produce — a byte-diff is the
 drift gate. To move to a newer Unicode version, re-vendor the UCD files (update
-`pkg/kernels/gist/tools/ucd/README.md` provenance), bump `UNICODE_VERSION`, and
+`pkg/kernels/irregex/tools/ucd/README.md` provenance), bump `UNICODE_VERSION`, and
 regenerate.

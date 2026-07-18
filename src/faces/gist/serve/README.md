@@ -1,10 +1,10 @@
 <!--
 doc_radar:
   paths_exist:
-    - pkg/kernels/gist/src/faces/gist/serve/serve.zig
-    - pkg/kernels/gist/src/session/resident.zig
+    - pkg/kernels/irregex/src/faces/gist/serve/serve.zig
+    - pkg/kernels/irregex/src/session/resident.zig
   sentinels:
-    - file: pkg/kernels/gist/contract/search_api.toml
+    - file: pkg/kernels/irregex/contract/search_api.toml
       contains: ["GIST_SESSION_SOCK", "gistd.sock"]
 -->
 

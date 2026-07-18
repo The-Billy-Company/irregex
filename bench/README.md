@@ -2,12 +2,12 @@
 doc_radar:
   counts:
     - description: "nine bench concern folders, one per row of the table below"
-      glob: pkg/kernels/gist/bench/*/
+      glob: pkg/kernels/irregex/bench/*/
       unit: dirs
       equals: 9
   sentinels:
     - description: "the Layer B′ measured rung exists as a build step"
-      file: pkg/kernels/gist/build.zig
+      file: pkg/kernels/irregex/build.zig
       contains: 'b.step("portbound"'
 ---
 
@@ -30,7 +30,7 @@ Nine concerns, nine folders:
 | [`lowerbound/`](lowerbound/README.md) | Layer D — algorithmic lower bound: a fail-closed structural audit proving gist's verify touches the information-theoretic floor of candidate bytes.                                                                                            |
 
 ```bash
-cd pkg/kernels/gist
+cd pkg/kernels/irregex
 zig build -Doptimize=ReleaseFast bench                  # default Billy source roots
 zig build -Doptimize=ReleaseFast bench -- services libs  # scope to specific dirs
 ```
@@ -143,7 +143,7 @@ overhead, not the memory hierarchy). The report splicers resolve `.local/` at th
 repo root, so they run from anywhere.
 
 ```bash
-cd pkg/kernels/gist
+cd pkg/kernels/irregex
 
 # Layer A — microscopic (cycles/byte; wall-clock fallback without sudo)
 zig build -Doptimize=ReleaseFast certify                 # installs + runs; wall-clock without sudo
@@ -157,7 +157,7 @@ bench/portcert/portcert.sh
 
 # Layer B′ — the port bound MEASURED on this machine (same drift-guarded probes)
 zig build -Doptimize=ReleaseFast portbound                          # wall-clock; labels cycles NOT measured
-(cd ../../.. && sudo pkg/kernels/gist/zig-out/bin/gist-portbound)  # measured cycles (kpc is root-gated)
+(cd ../../.. && sudo pkg/kernels/irregex/zig-out/bin/gist-portbound)  # measured cycles (kpc is root-gated)
 bench/portcert/portcert.sh                                          # re-splice the measured subsection
 
 # Layer C — roofline (this machine's memory-bandwidth ceiling)

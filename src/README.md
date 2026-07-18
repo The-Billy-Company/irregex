@@ -2,7 +2,7 @@
 
 Zig sources for the `gist` code-locator kernel, grouped into three
 concern-scoped tiers plus the resident transport. Every module is re-exported
-through `root.zig` and surfaced via the flat C-ABI in `../include/gist.h`.
+through `root.zig` and surfaced via the flat C-ABI in `../include/irregex.h`.
 `bench/` holds only the benchmark/verify harness — no engine code lives there.
 
 ## Layout
@@ -42,10 +42,10 @@ piped stdin, exit codes) so it's a true drop-in for an agent's `rg` reflex.
 | `faces/gist/serve/`   | the resident-session daemon face (`gist serve`)                                                                                                          |
 | `faces/gist/client/`  | the thin client that spawns/dials the resident session                                                                                                   |
 | `faces/hydra/`        | the compression-search faces — `similar` / `dups` / `patterns` verbs over the primitives tier                                                            |
-| `faces/ffi/`          | the in-process C-ABI search session (ADR-352 rung 3) — `gist_open`/`gist_search`/`gist_close`, streaming Match records to a caller callback              |
+| `faces/ffi/`          | the in-process C-ABI search session (ADR-352 rung 3) — `irregex_open`/`irregex_search`/`irregex_close`, streaming Match records to a caller callback              |
 
 `root.zig` is the package/C-ABI root: it re-exports each tier, pins
-`gist_abi_version`, exposes `gist_trigram_count` (the parity oracle), and
+`irregex_abi_version`, exposes `irregex_trigram_count` (the parity oracle), and
 aggregates every `*_test.zig` so `zig build test` type-checks the whole tree.
 
 See [`../README.md`](../README.md) for the architecture narrative, competitive

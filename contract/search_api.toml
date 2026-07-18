@@ -15,8 +15,8 @@
 [meta]
 name = "gist-unified-search"
 # Tracks src/root.zig `abi()` (the C ABI compatibility integer). Additive C
-# symbols (gist_version) do not bump it; a breaking C ABI change does. v2: the
-# rung-3 match callback (gist_match_fn) gained an i32 abort return.
+# symbols (irregex_version) do not bump it; a breaking C ABI change does. v2: the
+# rung-3 match callback (irregex_match_fn) gained an i32 abort return.
 abi_version = 2
 # Tracks src/root.zig `version_string` / build.zig.zon `version`.
 engine_version = "0.1.0"
@@ -31,7 +31,7 @@ package_import = "gist"
 # Unix-domain-socket protocol, sidestepping the die()->exit hazard because the
 # resident query kernels return errors instead of calling die(). `ffi` (in-proc
 # C session) is the further rung: it shares that same error-returning resident
-# engine, so a bad query surfaces as GIST_STALE, never a dead host.
+# engine, so a bad query surfaces as IRREGEX_STALE, never a dead host.
 #
 # Honesty note (status tokens are truthful about disk, not aspiration): both
 # `subprocess` and `uds` are callable transports today. The `uds` resident stack
@@ -52,7 +52,7 @@ package_import = "gist"
 [transports]
 subprocess = { status = "authoritative", detail = "certified `gist` binary + --json; results produced by the same combinePatterns->collectFiles->json.run path the CLI uses" }
 uds = { status = "operational-accelerator", detail = "`gist serve` daemon holds a warm ResidentSession behind a Unix socket; the front-door client dials it for eligible queries (`-l`/files-with-matches, and the bare default `lines` search whose `path:[line:]text` bytes the daemon pre-renders through the cold Emitter and chunk-streams) and falls open to `subprocess` on any ineligible argv, TTY stdout, readable stdin, absent daemon, decline, or wire hiccup — a pure fail-open accelerator, never a distinct answer path (src/commands/{serve,client}, src/session/*)" }
-ffi = { status = "operational-accelerator", detail = "in-process gist_open/gist_search/gist_close C session ABI (src/ffi/session.zig) over the same error-returning resident engine as `uds`; a bad query returns GIST_STALE, never a dead host. The match callback carries an i32 abort return (0 continue / non-zero stop) for bounded / first-match streaming. Unlike `uds` (files/count only), it streams full Match records, so the Python `Session.run/files/count/absent` route through it via cffi (bindings/python/gist/_ffi.py) when the shared library + cffi are present in-process, falling open to the `uds` daemon or `subprocess` otherwise — a pure fail-open accelerator, never a distinct answer path. cffi stays optional; the wheel is pure-Python without it. Verified by the C-ABI smoke (build.zig) and FFI-vs-cold byte-parity tests (bindings/python/tests/test_ffi_parity.py)." }
+ffi = { status = "operational-accelerator", detail = "in-process irregex_open/irregex_search/irregex_close C session ABI (src/ffi/session.zig) over the same error-returning resident engine as `uds`; a bad query returns IRREGEX_STALE, never a dead host. The match callback carries an i32 abort return (0 continue / non-zero stop) for bounded / first-match streaming. Unlike `uds` (files/count only), it streams full Match records, so the Python `Session.run/files/count/absent` route through it via cffi (bindings/python/gist/_ffi.py) when the shared library + cffi are present in-process, falling open to the `uds` daemon or `subprocess` otherwise — a pure fail-open accelerator, never a distinct answer path. cffi stays optional; the wheel is pure-Python without it. Verified by the C-ABI smoke (build.zig) and FFI-vs-cold byte-parity tests (bindings/python/tests/test_ffi_parity.py)." }
 
 # Resident-session semantics for the `uds` transport (ADR-352 rung 2.5). A client
 # opens a persistent connection to one daemon generation and issues many queries;

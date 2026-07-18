@@ -64,7 +64,7 @@ fn pcre2Library(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.b
         .files = &pcre2_sources,
         .flags = &pcre2_cflags,
     });
-    return b.addLibrary(.{ .name = "pcre2gist", .linkage = .static, .root_module = mod });
+    return b.addLibrary(.{ .name = "pcre2irregex", .linkage = .static, .root_module = mod });
 }
 
 /// Wire the CoreServices (FSEvents) + CoreFoundation (CFRunLoop) frameworks the
@@ -89,7 +89,7 @@ pub fn build(b: *std.Build) void {
     // the same suite ~4× slower (5.5 min vs ~80 s) for no extra checking.
     // `-Dtest-optimize=Debug` still yields a Debug test binary when stepping
     // through a failure; the kcov `coverage` binary stays build-wide Debug.
-    const k = kernelkit.addKernel(b, .{ .name = "gist", .test_optimize = .ReleaseSafe });
+    const k = kernelkit.addKernel(b, .{ .name = "irregex", .test_optimize = .ReleaseSafe });
 
     // kernelkit pins `os_version_min`, so Zig treats the target as cross-ish and
     // skips native SDK auto-detection — resolve the SDK's framework dir once here
@@ -152,12 +152,12 @@ pub fn build(b: *std.Build) void {
         .target = k.target,
         .optimize = cli_optimize,
     });
-    cli_mod.addImport("gist", cli_engine);
+    cli_mod.addImport("irregex", cli_engine);
     const cli_exe = b.addExecutable(.{ .name = "gist", .root_module = cli_mod });
     b.installArtifact(cli_exe);
 
     const run_cli = b.addRunArtifact(cli_exe);
-    run_cli.setCwd(b.path("../../..")); // pkg/kernels/gist → repo root
+    run_cli.setCwd(b.path("../../..")); // pkg/kernels/irregex → repo root
     if (b.args) |args| run_cli.addArgs(args);
     b.step("cli", "gist CLI: `-- index`, `-- status`, `-- <pattern> [flags]`")
         .dependOn(&run_cli.step);
@@ -183,7 +183,7 @@ pub fn build(b: *std.Build) void {
         .target = linux_target,
         .optimize = .Debug,
     });
-    check_mod.addImport("gist", check_engine);
+    check_mod.addImport("irregex", check_engine);
     const check_obj = b.addObject(.{ .name = "gist-check-linux", .root_module = check_mod });
     const check_linux = b.step("check-linux", "Cross-compile the CLI for x86_64-linux (Sema+codegen, no link) — keeps the comptime-pruned Linux legs building");
     check_linux.dependOn(&check_obj.step);
@@ -225,7 +225,7 @@ pub fn build(b: *std.Build) void {
     // deterministic + fast (one file) under the concurrently-edited tree.
     const search_verb_test = b.addRunArtifact(cli_exe);
     search_verb_test.setCwd(b.path("../../.."));
-    search_verb_test.addArgs(&.{ "search", "gist_search_verb_regression_needle_xyz", "--no-index", "pkg/kernels/gist/build.zig" });
+    search_verb_test.addArgs(&.{ "search", "gist_search_verb_regression_needle_xyz", "--no-index", "pkg/kernels/irregex/build.zig" });
     search_verb_test.expectExitCode(0);
     k.test_step.dependOn(&search_verb_test.step);
 
@@ -234,9 +234,9 @@ pub fn build(b: *std.Build) void {
     // same live-rank fallback without mutating the shared machine-local cache.
     const live_rank_test = b.addRunArtifact(cli_exe);
     live_rank_test.setCwd(b.path("../../.."));
-    live_rank_test.addArgs(&.{ "gist_live_rank_regression_needle_xyz", "--rank", "--no-index", "pkg/kernels/gist/build.zig" });
+    live_rank_test.addArgs(&.{ "gist_live_rank_regression_needle_xyz", "--rank", "--no-index", "pkg/kernels/irregex/build.zig" });
     live_rank_test.expectExitCode(0);
-    live_rank_test.expectStdOutMatch("pkg/kernels/gist/build.zig:");
+    live_rank_test.expectStdOutMatch("pkg/kernels/irregex/build.zig:");
     live_rank_test.expectStdErrMatch("live-scanned");
     k.test_step.dependOn(&live_rank_test.step);
     // gist_live_rank_regression_needle_xyz ← fallback fixture
@@ -253,7 +253,7 @@ pub fn build(b: *std.Build) void {
     // either way the guard fails closed.
     const inline_flag_test = b.addRunArtifact(cli_exe);
     inline_flag_test.setCwd(b.path("../../.."));
-    inline_flag_test.addArgs(&.{ "(?i)gist_inline_flag_regression_n[e]edle_xyz", "--no-index", "pkg/kernels/gist/build.zig" });
+    inline_flag_test.addArgs(&.{ "(?i)gist_inline_flag_regression_n[e]edle_xyz", "--no-index", "pkg/kernels/irregex/build.zig" });
     inline_flag_test.expectExitCode(0);
     k.test_step.dependOn(&inline_flag_test.step);
     // gist_inline_flag_regression_NeEdLe_xyz ← the fixture the guard case-folds onto
@@ -270,7 +270,7 @@ pub fn build(b: *std.Build) void {
     // deterministic against the shared, concurrently-edited tree.
     const auto_escalate_test = b.addRunArtifact(cli_exe);
     auto_escalate_test.setCwd(b.path("../../.."));
-    auto_escalate_test.addArgs(&.{ "--engine", "auto", "gist_auto_escalation_regression_needle_xyz(?=_TAIL)", "--no-index", "pkg/kernels/gist/build.zig" });
+    auto_escalate_test.addArgs(&.{ "--engine", "auto", "gist_auto_escalation_regression_needle_xyz(?=_TAIL)", "--no-index", "pkg/kernels/irregex/build.zig" });
     auto_escalate_test.expectExitCode(0);
     k.test_step.dependOn(&auto_escalate_test.step);
     // gist_auto_escalation_regression_needle_xyz_TAIL ← the fixture auto escalates PCRE2 onto
@@ -279,17 +279,17 @@ pub fn build(b: *std.Build) void {
     // calling-convention, header, symbol, and contract drift that the
     // toolchain-free gist-contract text gate cannot observe. Beyond the version
     // + trigram primitives it drives the rung-3 warm session end to end
-    // (`gist_open`/`gist_search`/`gist_close`) over a generated two-line fixture:
+    // (`irregex_open`/`irregex_search`/`irregex_close`) over a generated two-line fixture:
     // a full stream must fire on BOTH matching lines with the first hit on line 1
     // and a single whole-needle submatch (byte-accurate offsets reach C); a
     // callback that returns non-zero must STOP after the first line yet still
-    // report GIST_MATCH (the abort return, ABI v2); and a no-match query must
-    // return GIST_OK without firing (never `die()`s). The needle lives ONLY in
+    // report IRREGEX_MATCH (the abort return, ABI v2); and a no-match query must
+    // return IRREGEX_OK without firing (never `die()`s). The needle lives ONLY in
     // the fixture (a separate dir from this C source), so it can never self-match.
     const ffi_fixture = b.addWriteFiles();
     _ = ffi_fixture.add("fixture.txt", "gist_ffi_smoke_needle on line one\ngist_ffi_smoke_needle on line two\n");
     const c_smoke_source = b.addWriteFiles().add("gist_c_abi_smoke.c",
-        \\#include "gist.h"
+        \\#include "irregex.h"
         \\#include <stddef.h>
         \\#include <stdint.h>
         \\
@@ -298,7 +298,7 @@ pub fn build(b: *std.Build) void {
         \\static size_t g_first_nsub, g_first_start, g_first_end;
         \\
         \\/* Records the FIRST hit's shape, then continues the stream. */
-        \\static int32_t on_match(void *ctx, const gist_match *m) {
+        \\static int32_t on_match(void *ctx, const irregex_match *m) {
         \\    (void)ctx;
         \\    if (g_hits == 0) {
         \\        g_first_line = m->line_number;
@@ -310,7 +310,7 @@ pub fn build(b: *std.Build) void {
         \\}
         \\
         \\/* Aborts the stream after the first matching line. */
-        \\static int32_t on_match_stop(void *ctx, const gist_match *m) {
+        \\static int32_t on_match_stop(void *ctx, const irregex_match *m) {
         \\    (void)ctx;
         \\    (void)m;
         \\    g_hits++;
@@ -320,38 +320,38 @@ pub fn build(b: *std.Build) void {
         \\int main(void) {
         \\    const uint8_t text[] = {'a', 'b', 'c', 'a', 'b', 'c'};
         \\    uint32_t out[sizeof text] = {0};
-        \\    if (gist_abi_version() != 2u) return 10;
-        \\    if (gist_trigram_count(text, 2u, out) != 0u) return 11;
-        \\    const size_t count = gist_trigram_count(text, sizeof text, out);
+        \\    if (irregex_abi_version() != 2u) return 10;
+        \\    if (irregex_trigram_count(text, 2u, out) != 0u) return 11;
+        \\    const size_t count = irregex_trigram_count(text, sizeof text, out);
         \\    if (count != 3u) return 12;
         \\    for (size_t i = 1; i < count; ++i)
         \\        if (out[i - 1] >= out[i]) return 13;
-        \\    const char *ver = gist_version();
+        \\    const char *ver = irregex_version();
         \\    if (ver == NULL || ver[0] < '0' || ver[0] > '9') return 14;
         \\
         \\    /* warm session over the CWD fixture tree (set by the build). */
-        \\    gist_session *s = NULL;
+        \\    irregex_session *s = NULL;
         \\    const char *roots[] = {"."};
-        \\    if (gist_open(roots, 1u, &s) != GIST_OK) return 20;
+        \\    if (irregex_open(roots, 1u, &s) != IRREGEX_OK) return 20;
         \\    if (s == NULL) return 21;
         \\    const char needle[] = "gist_ffi_smoke_needle";
         \\    const size_t nlen = sizeof needle - 1u;
         \\
         \\    /* full stream: both lines match; first hit is line 1, whole-needle span. */
-        \\    if (gist_search(s, (const uint8_t *)needle, nlen, GIST_FIXED, on_match, NULL) != GIST_MATCH) return 22;
+        \\    if (irregex_search(s, (const uint8_t *)needle, nlen, IRREGEX_FIXED, on_match, NULL) != IRREGEX_MATCH) return 22;
         \\    if (g_hits != 2 || g_first_line != 1u || g_first_nsub != 1u) return 23;
         \\    if (g_first_start != 0u || g_first_end != nlen) return 24;
         \\
         \\    /* early stop: the callback aborts after the first line -> one hit, MATCH. */
         \\    g_hits = 0;
-        \\    if (gist_search(s, (const uint8_t *)needle, nlen, GIST_FIXED, on_match_stop, NULL) != GIST_MATCH) return 25;
+        \\    if (irregex_search(s, (const uint8_t *)needle, nlen, IRREGEX_FIXED, on_match_stop, NULL) != IRREGEX_MATCH) return 25;
         \\    if (g_hits != 1) return 26;
         \\
         \\    /* no match still returns OK and never fires. */
         \\    g_hits = 0;
-        \\    if (gist_search(s, (const uint8_t *)"zzz_absent_needle_zzz", 21u, GIST_FIXED, on_match, NULL) != GIST_OK) return 27;
+        \\    if (irregex_search(s, (const uint8_t *)"zzz_absent_needle_zzz", 21u, IRREGEX_FIXED, on_match, NULL) != IRREGEX_OK) return 27;
         \\    if (g_hits != 0) return 28;
-        \\    gist_close(s);
+        \\    irregex_close(s);
         \\    return 0;
         \\}
         \\
@@ -380,7 +380,7 @@ pub fn build(b: *std.Build) void {
         .root_module = c_smoke_mod,
     });
     const run_c_smoke = b.addRunArtifact(c_smoke);
-    // Run in the generated fixture dir so `gist_open(".")` walks exactly the one
+    // Run in the generated fixture dir so `irregex_open(".")` walks exactly the one
     // seeded file — deterministic and isolated from the concurrently-edited tree.
     run_c_smoke.setCwd(ffi_fixture.getDirectory());
     run_c_smoke.expectExitCode(0);
@@ -393,13 +393,13 @@ pub fn build(b: *std.Build) void {
         .target = k.target,
         .optimize = k.optimize,
     });
-    bench_mod.addImport("gist", k.root_module);
+    bench_mod.addImport("irregex", k.root_module);
     // Layer-A certify mode reads hardware perf counters through Apple's private
     // kperf framework via `dlopen` (std.DynLib) — needs libc.
     bench_mod.link_libc = true;
     const bench_exe = b.addExecutable(.{ .name = "gist-bench", .root_module = bench_mod });
     // Install to zig-out/bin so the cycles/byte pass can run under sudo without a
-    // root-cache recompile: `sudo pkg/kernels/gist/zig-out/bin/gist-bench certify`.
+    // root-cache recompile: `sudo pkg/kernels/irregex/zig-out/bin/gist-bench certify`.
     b.installArtifact(bench_exe);
 
     // `zig build bench [-- <dirs…>]` — load a real corpus, build the index, time
@@ -455,7 +455,7 @@ pub fn build(b: *std.Build) void {
         .target = k.target,
         .optimize = k.optimize,
     });
-    roofline_mod.addImport("gist", k.root_module);
+    roofline_mod.addImport("irregex", k.root_module);
     roofline_mod.addImport("pmu", pmu_mod);
     roofline_mod.link_libc = true; // pmu.zig's kperf dlopen path, same as bench_mod
     const roofline_exe = b.addExecutable(.{ .name = "gist-roofline", .root_module = roofline_mod });
@@ -473,7 +473,7 @@ pub fn build(b: *std.Build) void {
         .target = k.target,
         .optimize = k.optimize,
     });
-    lowerbound_mod.addImport("gist", k.root_module);
+    lowerbound_mod.addImport("irregex", k.root_module);
     lowerbound_mod.addImport("probes", probes_mod);
     const lowerbound_exe = b.addExecutable(.{ .name = "gist-lowerbound", .root_module = lowerbound_mod });
     b.installArtifact(lowerbound_exe);
@@ -493,7 +493,7 @@ pub fn build(b: *std.Build) void {
         .target = k.target,
         .optimize = k.optimize,
     });
-    portbound_mod.addImport("gist", k.root_module);
+    portbound_mod.addImport("irregex", k.root_module);
     portbound_mod.addImport("pmu", pmu_mod);
     portbound_mod.link_libc = true; // pmu.zig's kperf dlopen path, same as bench_mod
     const portbound_exe = b.addExecutable(.{ .name = "gist-portbound", .root_module = portbound_mod });
@@ -513,6 +513,6 @@ pub fn build(b: *std.Build) void {
         .target = k.target,
         .optimize = k.optimize,
     });
-    portcert_test_mod.addImport("gist", k.root_module);
+    portcert_test_mod.addImport("irregex", k.root_module);
     k.test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = portcert_test_mod })).step);
 }
