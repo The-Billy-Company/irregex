@@ -74,7 +74,7 @@ const emitStats = grepfile.emitStats;
 
 // ─────────────────────────── file gathering ───────────────────────────
 
-const InFile = struct { path: []const u8, bytes: []const u8, explicit: bool = false, sort_time: i96 = 0 };
+const InFile = struct { path: []const u8, bytes: []const u8, explicit: bool = false, sort_time: i96 = 0, root: u32 = 0 };
 
 /// Replace every `/` in `path` with the (arbitrary-length) `sep` string for
 /// `--path-separator`. Returns `path` unchanged when it has no separator.
@@ -121,7 +121,11 @@ fn diskPath(a: std.mem.Allocator, root_path: []const u8, p: []const u8) []const 
 /// (`std.Io.Dir.Walker`'s own contract), so a read deferred to a parallel
 /// phase — after the single-threaded walk has moved on — needs a reopenable
 /// string, not the handle it was discovered through.
-const Candidate = struct { rel: []const u8, disk: []const u8, explicit: bool = false };
+/// `root` is the argv ordinal of the PATH argument this file was found under —
+/// load-bearing for ascending `--sort path`, the one rg sort applied during
+/// traversal (per-directory sibling sort) so roots keep their argv order while
+/// only the files WITHIN each root sort (rg hiargs.rs `sort_by_file_name`).
+const Candidate = struct { rel: []const u8, disk: []const u8, explicit: bool = false, root: u32 = 0 };
 
 /// ripgrep prints a walk error to stderr (`rg: <path>: <errno>`) and lets the run
 /// exit 2: a directory it could not descend is a POTENTIAL false negative that
@@ -304,7 +308,8 @@ fn gather(a: std.mem.Allocator, io: std.Io, roots: []const []const u8, o: Opts, 
     }
     var recursive = false;
     var path_error = false;
-    for (roots) |r| {
+    for (roots, 0..) |r, root_idx| {
+        const first = out.items.len;
         if (Dir.cwd().openDir(io, r, .{ .iterate = true })) |dir_const| {
             var dir = dir_const;
             dir.close(io);
@@ -328,6 +333,7 @@ fn gather(a: std.mem.Allocator, io: std.Io, roots: []const []const u8, o: Opts, 
                 path_error = true;
             }
         }
+        for (out.items[first..]) |*c| c.root = @intCast(root_idx);
     }
     return .{ .recursive = recursive, .path_error = path_error or walk_error };
 }
@@ -415,7 +421,7 @@ fn readOneCandidate(a: std.mem.Allocator, scratch: []u8, c: Candidate, needle: ?
     const in_scratch = @intFromPtr(body.ptr) >= @intFromPtr(scratch.ptr) and
         @intFromPtr(body.ptr) < @intFromPtr(scratch.ptr) + scratch.len;
     const owned = if (in_scratch) (a.dupe(u8, body) catch return null) else body;
-    return .{ .path = c.rel, .bytes = owned, .explicit = c.explicit };
+    return .{ .path = c.rel, .bytes = owned, .explicit = c.explicit, .root = c.root };
 }
 
 fn readShard(sh: *ReadShard) void {
@@ -463,7 +469,7 @@ fn readCandidates(dest: std.mem.Allocator, gpa: std.mem.Allocator, candidates: [
     }
     out.ensureUnusedCapacity(dest, candidates.len) catch die("oom\n", .{});
     for (shards) |*sh| {
-        for (sh.out.items) |f| out.appendAssumeCapacity(.{ .path = f.path, .bytes = dest.dupe(u8, f.bytes) catch die("oom\n", .{}), .explicit = f.explicit });
+        for (sh.out.items) |f| out.appendAssumeCapacity(.{ .path = f.path, .bytes = dest.dupe(u8, f.bytes) catch die("oom\n", .{}), .explicit = f.explicit, .root = f.root });
         sh.out.deinit(gpa);
         sh.arena.deinit();
     }
@@ -641,7 +647,7 @@ fn collectFiles(
         to_read.ensureTotalCapacity(a, candidates.items.len) catch die("oom\n", .{});
         for (candidates.items) |c| {
             if (s.skip(c.rel)) {
-                if (o.files_without) all.append(a, .{ .path = c.rel, .bytes = "", .explicit = c.explicit }) catch die("oom\n", .{});
+                if (o.files_without) all.append(a, .{ .path = c.rel, .bytes = "", .explicit = c.explicit, .root = c.root }) catch die("oom\n", .{});
             } else to_read.appendAssumeCapacity(c);
         }
         break :blk to_read.items;
@@ -794,6 +800,18 @@ fn lessAsc(key: args.SortKey, x: InFile, y: InFile) bool {
     };
 }
 
+/// Ascending `--sort path` — the ONE sort rg applies during traversal
+/// (`sort_by_file_name` on the walker, hiargs.rs), so PATH arguments keep
+/// their argv order and only the files WITHIN each root sort (a DFS with
+/// name-sorted siblings is exactly component-wise path order). Every other
+/// mode — `--sortr path` and all time keys — is rg's collect-then-sort over
+/// the whole haystack set, which IS global (a probe: `rg --sortr path aa zz`
+/// interleaves roots; `rg --sort path aa zz` never does).
+fn lessAscPathWalk(x: InFile, y: InFile) bool {
+    if (x.root != y.root) return x.root < y.root;
+    return pathLess(x.path, y.path);
+}
+
 /// Path order matching ripgrep's `--sort path` — Rust `Path::cmp`, which compares
 /// component-by-component. That is byte order with the separator `/` ranked BELOW
 /// every other byte: `warroom/service.go` sorts before `warroom.go`, where a raw
@@ -817,8 +835,13 @@ inline fn pathOrd(c: u8) u16 {
 
 /// `--sort`/`--sortr` comparator. `--sortr` is a true reverse: swapping the
 /// operands flips the path tiebreak too, so descending order is the exact
-/// mirror of ascending (no adjacent-equal reordering left over).
+/// mirror of ascending (no adjacent-equal reordering left over) — matching
+/// rg's `ordering.reverse()` / `.cmp().reverse()` collect-and-sort. The one
+/// asymmetry is ascending `path`, which rg sorts in the WALKER (per root, see
+/// `lessAscPathWalk`); its reverse is NOT that order mirrored but a global
+/// descending `Path::cmp`.
 fn cmpFiles(ctx: SortCtx, x: InFile, y: InFile) bool {
+    if (ctx.key == .path and !ctx.reverse) return lessAscPathWalk(x, y);
     return if (ctx.reverse) lessAsc(ctx.key, y, x) else lessAsc(ctx.key, x, y);
 }
 
@@ -828,9 +851,12 @@ const SortCtx = struct { key: args.SortKey, reverse: bool };
 /// `accessed` come from the portable `statFile` (accessed degrades to modified
 /// when the platform doesn't record atime); `created` uses the birth time where
 /// the OS exposes it (macOS today) and falls back to the status-change time
-/// (ctime) elsewhere, matching the flag note. A stat failure sorts as epoch 0.
+/// (ctime) elsewhere, matching the flag note. A stat failure sorts LAST when
+/// ascending (max sentinel) — rg's rule ("things that error should appear
+/// later"); the mirrored reverse then puts it first, exactly like rg's
+/// `ordering.reverse()`.
 fn sortTimeOf(io: std.Io, key: args.SortKey, path: []const u8) i96 {
-    const st = Dir.cwd().statFile(io, path, .{}) catch return 0;
+    const st = Dir.cwd().statFile(io, path, .{}) catch return std.math.maxInt(i96);
     return switch (key) {
         .modified => st.mtime.nanoseconds,
         .accessed => if (st.atime) |t| t.nanoseconds else st.mtime.nanoseconds,
@@ -1143,10 +1169,12 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         std.process.exit(if (err_exit) 2 else if (matched) 0 else 1);
     }
 
+    // `--vimgrep` forces the filename on even for a single explicit file —
+    // rg's `with_filename` default is `vimgrep || !paths.is_one_file`.
     const show_name = switch (o.filename) {
         .always => true,
         .never => false,
-        .auto => c.recursive or files.len > 1 or parsed.roots.len > 1,
+        .auto => o.vimgrep or c.recursive or files.len > 1 or parsed.roots.len > 1,
     };
 
     var out: std.ArrayList(u8) = .empty;
@@ -1326,6 +1354,26 @@ test "sort comparator: path + time keys, ascending and reversed, path-tiebroken"
     try t.expectEqualStrings("b.zig", desc[0].path);
     try t.expectEqualStrings("c.zig", desc[1].path);
     try t.expectEqualStrings("a.zig", desc[2].path);
+}
+
+test "sort path: ascending is per-root walk order, descending is global (rg parity)" {
+    const t = std.testing;
+    // argv `zz aa`: zz's files sort within zz, aa's within aa, roots keep argv
+    // order — rg's walker sort. Descending ignores roots entirely (global
+    // collect-and-sort with `.reverse()`).
+    const z0 = InFile{ .path = "zz/0.txt", .bytes = "", .root = 0 };
+    const z2 = InFile{ .path = "zz/2.txt", .bytes = "", .root = 0 };
+    const a1 = InFile{ .path = "aa/1.txt", .bytes = "", .root = 1 };
+    var asc = [_]InFile{ a1, z2, z0 };
+    std.mem.sort(InFile, &asc, SortCtx{ .key = .path, .reverse = false }, cmpFiles);
+    try t.expectEqualStrings("zz/0.txt", asc[0].path);
+    try t.expectEqualStrings("zz/2.txt", asc[1].path);
+    try t.expectEqualStrings("aa/1.txt", asc[2].path);
+    var desc = [_]InFile{ a1, z2, z0 };
+    std.mem.sort(InFile, &desc, SortCtx{ .key = .path, .reverse = true }, cmpFiles);
+    try t.expectEqualStrings("zz/2.txt", desc[0].path);
+    try t.expectEqualStrings("zz/0.txt", desc[1].path);
+    try t.expectEqualStrings("aa/1.txt", desc[2].path);
 }
 
 test "pathLess: separator ranks below every byte (ripgrep Path::cmp parity)" {

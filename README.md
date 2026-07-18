@@ -180,14 +180,14 @@ zig build cli -- --schema                 # a JSON capability manifest for agent
 The bare `gist <pattern>` shorthand and its explicit `gist rg` alias are ONE
 engine (`src/commands/ripgrep/run.zig`) — a ripgrep-DEFAULT drop-in on its
 **supported surface** (gitignore precedence, exit codes, piped stdin;
-**0 FAIL** on the mined rgsuite corpus, with PASS + ORDER counted as
-supported-surface parity — ORDER means identical match _sets_ with
-worker-discovery line order only; see rgsuite — and every by-design boundary
+**0 FAIL and 0 ORDER** on the mined rgsuite corpus: every case matches `rg`
+at its own upstream assertion bar — byte-exact where ripgrep's suite pins
+bytes, sorted-lines where rg's own parallel walk is nondeterministic and its
+suite compares sorted; see rgsuite — and every by-design boundary
 tracked under "Where gist departs from ripgrep") that transparently
 uses a persisted trigram index, when one covers the searched roots, purely to
 **elide reads** of files it proves can't match; it never changes the file set
-or match set (parallel ORDER deviations are documented, not claimed
-byte-identical). `--rank` is gist's one native shape with no rg
+or match set. `--rank` is gist's one native shape with no rg
 equivalent — a definition-first RRF-ranked view (see "Why gist" below).
 `gist status` / `gist --schema` answer "am I ready to search fast" and "what
 exactly can this tool do" without running a query. Programs use `gist status
@@ -236,9 +236,8 @@ landscape and the boundaries of Gist's novelty claim.
 ## How it works as a drop-in
 
 The default output targets `rg -n --no-heading` on its supported surface
-(**0 FAIL**; PASS + ORDER = supported-surface parity — ORDER is same lines,
-discovery order may differ under the parallel engine; by-design boundaries
-below are NA): `path:line:text`, with a persisted trigram index transparently used to skip
+(**0 FAIL, 0 ORDER** — byte-exact wherever ripgrep's own suite pins bytes;
+by-design boundaries below are NA): `path:line:text`, with a persisted trigram index transparently used to skip
 reading files that provably can't match — a whole-tree walk otherwise. Point
 an agent, a script, or a muscle-memory `rg -n <pattern>` at bare `gist -n
 <pattern>` (no verb, no setup) or the explicit `gist rg -n <pattern>` alias and
@@ -287,10 +286,12 @@ corpus snapshot — proving zero false negatives / positives (the candidate filt
 is sound), but it is a file-set oracle, **not** a line-output diff. **Line-output
 parity** is the job of [`bench/rgsuite/`](bench/rgsuite/README.md) (441 mined `rg`
 argv replays, on **both** the parallel and serial walk engines — see that
-README's "Two engines, one suite"); the committed `results.json` reads **264
-PASS / 15 ORDER / 0 FAIL / 41 NA / 121 SKIP**. Supported-surface parity is
-**(PASS+ORDER)/(PASS+ORDER+FAIL) = 100% with zero FAIL** — ORDER is explicitly
-_not_ byte-identical stdout (identical match set, worker-discovery order only).
+README's "Two engines, one suite"); the committed `results.json` reads **306
+PASS / 0 ORDER / 0 FAIL / 14 NA / 121 SKIP**. Supported-surface parity is
+**(PASS+ORDER)/(PASS+ORDER+FAIL) = 100% with zero FAIL and zero ORDER** —
+every case meets its upstream assertion's own bar (byte-exact for `eqnice!`
+cases; sorted-lines only for the 5 cases ripgrep's own suite compares sorted
+because rg's parallel walk order is genuinely nondeterministic).
 Exact byte-identical classes are additionally gated by
 [`bench/gates/line_parity.sh`](bench/gates/line_parity.sh)
 (both engines plus deterministic exact-output generators for the 265,286- and
@@ -308,14 +309,15 @@ view — guarded by [`bench/gates/streams.sh`](bench/gates/streams.sh).
 
 ## Where gist departs from ripgrep — on purpose
 
-**Departs on stdout ordering under the parallel engine.** Fifteen rgsuite cases
-are **ORDER** (identical match set, worker-discovery line order) — counted toward
-supported-surface parity, **not** toward byte-identical PASS. Do not read
-"100% supported-surface parity" as "100% byte-identical stdout."
-
-**Departs on `--sort` / `--sortr` / `--sort-files`.** Accepted for argv
-compatibility and ignored for output ordering (see `--schema`); gist does not
-implement ripgrep's sorted emitters.
+**Departs on stdout ordering only where rg itself is nondeterministic.** The
+parallel engine streams each hit in worker-discovery order — the same trade
+ripgrep's own parallel walk makes, which is why ripgrep's suite compares those
+cases order-agnostically (`eqnice_sorted!`); gist meets the same bar (the
+rgsuite ORDER bucket is empty). Wherever rg's own output IS deterministic —
+single-dir walks, `--files` under one root, and every `--sort*` mode — gist
+reproduces it byte-for-byte, including rg's component-wise `Path::cmp` order
+(`warroom/service.go` before `warroom.go`; proven per-key in
+`bench/rgsuite/flags.py`).
 
 **Shares rg's regex philosophy — and rg's escape hatch.** gist's _default_
 engine is linear-time — a byte-level Thompson NFA / DFA, the RE2 lineage —
@@ -473,8 +475,8 @@ gate holds over time, and re-cutting the certificate
 - **Correctness first.** The frozen oracle checks **140 literals + 70 regexes**
   with **0 false negatives / 0 false positives**. The live no-prefilter gate
   separately proves the fused walk against rg on five dense patterns, also
-  **0/0**. The mined rgsuite is **279/279 supported cases** (264 exact + 15
-  order-only, 0 failures).
+  **0/0**. The mined rgsuite is **306/306 supported cases** (0 failures,
+  0 order-only deviations — every case at its upstream assertion's own bar).
 - **Index economics.** gist builds in **3.2 s** to a **28.1 MiB posting blob**
   and **29.0 MiB required runtime cache** (`index.gist` + `paths.list` +
   `built.ns`). Verification/certificate outputs are reported separately as

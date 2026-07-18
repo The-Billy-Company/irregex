@@ -94,6 +94,11 @@ pub fn expandInto(a: std.mem.Allocator, caps: *const Caps, buf: *std.ArrayList(u
 /// `--max-columns-preview` cut point: the largest byte index ≤ `cols` that lands
 /// on a UTF-8 char boundary (ripgrep counts graphemes; byte-accurate for ASCII,
 /// and never splits a multi-byte scalar for the rest).
+/// Byte length of a line's `--trim`-able blank prefix (spaces and tabs).
+fn blankPrefix(s: []const u8) usize {
+    return s.len - std.mem.trimStart(u8, s, " \t").len;
+}
+
 fn previewEnd(s: []const u8, cols: usize) usize {
     var end = @min(cols, s.len);
     while (end > 0 and end < s.len and (s[end] & 0xC0) == 0x80) end -= 1;
@@ -195,7 +200,28 @@ pub const Emitter = struct {
             s = r.text;
             starts = r.starts;
         };
-        if (self.o.trim) s = std.mem.trimStart(u8, s, " \t");
+        self.emitBody(s, is_match, starts);
+    }
+
+    /// The presentation tail shared by every "print this line body" path:
+    /// `--trim`, then `-M/--max-columns` placeholders (with `starts` as the
+    /// match granularity), then color, then the terminator. `starts` are
+    /// replacement offsets within `s_in`; trimming rebases them (an offset
+    /// inside the trimmed whitespace clamps to 0 — before any cut, like rg's
+    /// block-coordinate comparison).
+    fn emitBody(self: *Emitter, s_in: []const u8, is_match: bool, starts_in: []const usize) void {
+        var s = s_in;
+        var starts = starts_in;
+        if (self.o.trim) {
+            const trimmed = std.mem.trimStart(u8, s, " \t");
+            const n = s.len - trimmed.len;
+            if (n != 0 and starts.len != 0) {
+                const adj = self.a.alloc(usize, starts.len) catch die("oom\n", .{});
+                for (starts, 0..) |st, i| adj[i] = st -| n;
+                starts = adj;
+            }
+            s = trimmed;
+        }
         if (self.o.max_cols != 0 and s.len > self.o.max_cols) {
             self.exceeded(s, is_match, starts);
         } else if (is_match and self.use_color and self.o.replace == null) {
@@ -678,7 +704,7 @@ pub const Emitter = struct {
     /// for the count modes. Zero ⇒ no output was written for this file.
     pub fn buffer(self: *Emitter, path: []const u8, body: []const u8) usize {
         const o = self.o;
-        const spans = ml.collect(self.a, self.re, o, body);
+        const spans = self.collectSpans(o, body);
         // `--count-matches` and `-c -o` tally every match span (empties included).
         if (o.count_matches or (o.count_only and o.only_matching)) {
             const n = ml.countAll(spans);
@@ -693,7 +719,38 @@ pub const Emitter = struct {
         }
         if (o.count_only) return self.bufTally(path, ml.countStartLines(lines, spans));
         if (o.only_matching) return if (o.replace != null) self.bufOnlyRepl(path, lines, spans, body) else self.bufOnly(path, lines, spans, body);
+        if (o.vimgrep) return self.bufVimgrep(path, lines, spans, body);
+        if (o.replace != null) return self.bufReplaceBlocks(path, lines, spans, body);
         return self.bufBlocks(path, lines, spans, body);
+    }
+
+    /// Whole-buffer span collection honoring the `--crlf` match view: matching
+    /// runs against `body` with every `\r` that directly precedes a `\n`
+    /// removed, so `^`/`$` (and `-w` bounds) anchor at the LOGICAL line ends —
+    /// rg's CRLF-aware regex (`Sherlock$` must match `…Sherlock\r\n`). Returned
+    /// spans are remapped to ORIGINAL byte offsets; a span never contains a
+    /// removed `\r` (it wasn't in the view), so a match ending at a logical
+    /// line end maps to just before the `\r`. Plain bodies pay nothing.
+    fn collectSpans(self: *Emitter, o: Opts, body: []const u8) []ml.Span {
+        if (!self.o.crlf or body.len > std.math.maxInt(u32) or
+            std.mem.indexOf(u8, body, "\r\n") == null)
+            return ml.collect(self.a, self.re, o, body);
+        const view = self.a.alloc(u8, body.len) catch die("oom\n", .{});
+        const origin = self.a.alloc(u32, body.len) catch die("oom\n", .{});
+        var vlen: usize = 0;
+        for (body, 0..) |c, i| {
+            if (c == '\r' and i + 1 < body.len and body[i + 1] == '\n') continue;
+            view[vlen] = c;
+            origin[vlen] = @intCast(i);
+            vlen += 1;
+        }
+        const spans = ml.collect(self.a, self.re, o, view[0..vlen]);
+        for (spans) |*sp| {
+            const s = origin[sp.start];
+            sp.end = if (sp.end > sp.start) origin[sp.end - 1] + 1 else s;
+            sp.start = s;
+        }
+        return spans;
     }
 
     /// Emit a `[path:]N` count line (0 ⇒ nothing), returning `n` for the caller.
@@ -714,7 +771,7 @@ pub const Emitter = struct {
         @memset(covered, false);
         // Coverage needs EVERY match (no `-m` cap); `-m` bounds only the printed
         // inverted lines below. `collect` reads only `-w` from these opts.
-        for (ml.collect(self.a, self.re, .{ .word = o.word }, body)) |sp| {
+        for (self.collectSpans(.{ .word = o.word }, body)) |sp| {
             const l1 = ml.lineIndexAt(lines, ml.spanLast(sp));
             var li = ml.lineIndexAt(lines, sp.start);
             while (li <= l1) : (li += 1) covered[li] = true;
@@ -754,14 +811,34 @@ pub const Emitter = struct {
             while (li <= l1) : (li += 1) {
                 const ln = lines[li];
                 if (ln.content_end == ln.start) continue; // blank line: rg emits nothing
-                const fs = @max(sp.start, ln.start);
+                var fs = @max(sp.start, ln.start);
                 var fe = @min(sp.end, ln.content_end);
                 if (fe == fs and fs == ln.start and lone) continue; // lone `^`-style empty at line start
+                // --trim: rg trims the LINE's blank prefix before intersecting it
+                // with the match, so a fragment starts no earlier than the trimmed
+                // line start; a non-empty fragment swallowed whole by the trim
+                // emits nothing (rg advances past it). Columns are unaffected.
+                if (self.o.trim and fe > fs) {
+                    const ts = ln.start + blankPrefix(body[ln.start..ln.content_end]);
+                    if (fe <= ts) continue;
+                    fs = @max(fs, ts);
+                }
                 // --crlf: a fragment reaching the \r-trimmed line end keeps the \r
                 // (rg emits the terminator's carriage return with the last line).
                 if (self.o.crlf and ln.content_end > ln.start and body[ln.content_end - 1] == '\r' and fe == ln.content_end - 1) fe = ln.content_end;
                 self.prefix(path, li + 1, col, sp.start, true);
-                self.paint(palette.match_on, body[fs..fe]);
+                const frag = body[fs..fe];
+                // -M/--max-columns on the fragment. `-o` always has match
+                // granularity, and no OTHER match can start inside this
+                // fragment's truncated tail (spans are non-overlapping), so the
+                // preview placeholder is always ` [... 0 more matches]` and the
+                // plain one `[Omitted long matching line]` — pass one span at
+                // the fragment start to select that granularity.
+                if (self.o.max_cols != 0 and frag.len > self.o.max_cols) {
+                    self.exceeded(frag, true, &.{0});
+                } else {
+                    self.paint(palette.match_on, frag);
+                }
                 self.out.append(self.a, self.o.term()) catch die("oom\n", .{});
             }
         }
@@ -786,27 +863,40 @@ pub const Emitter = struct {
         return spans.len;
     }
 
+    /// `--vimgrep` under `-U`: one row per MATCH, showing only the FIRST line
+    /// the match covers — rg's `per_match_one_line` ("vimgrep really only wants
+    /// one line per match, even when a match spans multiple lines", rg #1866).
+    /// The column is the match's start within that line (1-based) and the row
+    /// carries the FULL line text (`--trim`/`-M` applied), not just the match.
+    /// Empty spans are skipped (parity with the single-line vimgrep frame).
+    fn bufVimgrep(self: *Emitter, path: []const u8, lines: []const ml.Line, spans: []const ml.Span, body: []const u8) usize {
+        var emitted: usize = 0;
+        for (spans) |sp| {
+            if (sp.end == sp.start) continue;
+            const li = ml.lineIndexAt(lines, sp.start);
+            const ln = lines[li];
+            self.prefix(path, li + 1, 1 + (sp.start - ln.start), ln.start, true);
+            self.emitBody(body[ln.start..ln.content_end], true, &.{sp.start - ln.start});
+            emitted += 1;
+        }
+        return emitted;
+    }
+
     /// The default `-U` frame: print each line a match covers (once, deduped
     /// across overlapping matches), with `-A/-B/-C` context windows and the
-    /// same `--`-group coalescing as the per-line `file` path. Under `-r` a
-    /// match's covered lines are replaced by the expanded template (re-split
-    /// into physical lines), while context lines keep their original numbers.
+    /// same `--`-group coalescing as the per-line `file` path. `--passthru`
+    /// widens every window to the whole file (rg's "context of infinity").
     fn bufBlocks(self: *Emitter, path: []const u8, lines: []const ml.Line, spans: []const ml.Span, body: []const u8) usize {
         const o = self.o;
         const n = lines.len;
         const is_match = self.a.alloc(bool, n) catch die("oom\n", .{});
         const col = self.a.alloc(usize, n) catch die("oom\n", .{});
-        // For -r: the first span that STARTS on a line (emit its replacement
-        // there) and a skip mark for a covered line no span starts on.
-        const starter = self.a.alloc(?usize, n) catch die("oom\n", .{});
         @memset(is_match, false);
         @memset(col, 0);
-        @memset(starter, null);
-        for (spans, 0..) |sp, si| {
+        for (spans) |sp| {
             const l0 = ml.lineIndexAt(lines, sp.start);
             const l1 = ml.lineIndexAt(lines, ml.spanLast(sp));
             const c = 1 + (sp.start - lines[l0].start);
-            if (starter[l0] == null) starter[l0] = si;
             var li = l0;
             while (li <= l1) : (li += 1) {
                 if (!is_match[li]) {
@@ -818,8 +908,8 @@ pub const Emitter = struct {
         var idx: std.ArrayList(usize) = .empty;
         for (0..n) |k| if (is_match[k]) idx.append(self.a, k) catch die("oom\n", .{});
 
-        const B = o.before;
-        const A = o.after;
+        const B = if (o.passthru) n else o.before;
+        const A = if (o.passthru) n else o.after;
         var prev_end: ?usize = null;
         for (idx.items) |m| {
             const lo = if (m >= B) m - B else 0;
@@ -835,12 +925,6 @@ pub const Emitter = struct {
             var k = start;
             while (k <= hi) : (k += 1) {
                 const is_m = is_match[k];
-                if (o.replace != null and is_m) {
-                    if (starter[k]) |si| self.emitReplacedAt(path, lines, spans, body, k, si);
-                    // a covered line no match starts on was folded into the
-                    // preceding match's replacement — emit nothing for it.
-                    continue;
-                }
                 self.prefix(path, k + 1, if (is_m) col[k] else 0, lines[k].start, is_m);
                 self.text(body[lines[k].start..lines[k].content_end], is_m);
             }
@@ -849,31 +933,106 @@ pub const Emitter = struct {
         return idx.items.len;
     }
 
-    /// Emit every match STARTING on line `k` (index `si` is the first) as its
-    /// expanded template, re-split into physical lines numbered from `k`. Shared
-    /// by the `-r` branch of `bufBlocks`.
-    fn emitReplacedAt(self: *Emitter, path: []const u8, lines: []const ml.Line, spans: []const ml.Span, body: []const u8, k: usize, si: usize) void {
-        const caps = self.caps orelse return;
-        const tmpl = self.o.replace.?;
+    /// `-U -r` — rg's actual replacement model (rg #1311): the searcher
+    /// coalesces matches whose covered lines overlap or are ADJACENT into one
+    /// sink block; the printer replaces every match within the block while
+    /// PRESERVING the block's non-matching bytes, then re-splits the REPLACED
+    /// text into physical lines numbered from the block's first original line.
+    /// Context lines around a block keep their original text and numbers;
+    /// `--passthru` widens the window to the whole file. Supersedes a per-span
+    /// emit that dropped the surrounding text of the matched lines.
+    fn bufReplaceBlocks(self: *Emitter, path: []const u8, lines: []const ml.Line, spans: []const ml.Span, body: []const u8) usize {
+        const o = self.o;
+        const caps = self.caps orelse return 0;
+        const tmpl = o.replace.?;
         const slots = self.a.alloc(isize, caps.nslots()) catch die("oom\n", .{});
-        var s = si;
-        while (s < spans.len and ml.lineIndexAt(lines, spans[s].start) == k) : (s += 1) {
-            _ = caps.find(body, spans[s].start, slots);
-            var rep: std.ArrayList(u8) = .empty;
-            self.expand(&rep, tmpl, body, slots);
-            var lineno = k + 1;
-            var piece_start: usize = 0;
-            var i: usize = 0;
-            while (i <= rep.items.len) : (i += 1) {
-                if (i == rep.items.len or rep.items[i] == '\n') {
-                    self.prefix(path, lineno, 0, lines[k].start, true);
-                    self.out.appendSlice(self.a, rep.items[piece_start..i]) catch die("oom\n", .{});
-                    self.out.append(self.a, self.o.term()) catch die("oom\n", .{});
-                    if (i == rep.items.len) break;
-                    piece_start = i + 1;
-                    lineno += 1;
-                }
+        const n = lines.len;
+        const B = if (o.passthru) n else o.before;
+        const A = if (o.passthru) n else o.after;
+        var covered: usize = 0;
+        var prev_end: ?usize = null;
+        var i: usize = 0;
+        while (i < spans.len) {
+            // The searcher block: grow while the next span's first line is
+            // within one line of the block's last covered line (overlap OR
+            // adjacency both join — glue.rs `last_match.end() >= line.start()`).
+            const blo = ml.lineIndexAt(lines, spans[i].start);
+            var bhi = ml.lineIndexAt(lines, ml.spanLast(spans[i]));
+            var j = i + 1;
+            while (j < spans.len) : (j += 1) {
+                if (ml.lineIndexAt(lines, spans[j].start) > bhi + 1) break;
+                const e = ml.lineIndexAt(lines, ml.spanLast(spans[j]));
+                if (e > bhi) bhi = e;
             }
+            covered += bhi - blo + 1;
+            // Context window over the ORIGINAL grid. After-context never
+            // reaches the next block's first line — the searcher sinks that
+            // line as a match, so context stops short of it.
+            const lo = if (blo >= B) blo - B else 0;
+            var hi = @min(bhi + A, n - 1);
+            if (j < spans.len) hi = @min(hi, ml.lineIndexAt(lines, spans[j].start) - 1);
+            var start = lo;
+            if (prev_end) |pe| {
+                if (lo > pe + 1) {
+                    if (o.wantsContext()) self.groupSep();
+                } else start = @max(start, pe + 1);
+            }
+            var k = start;
+            while (k < blo) : (k += 1) {
+                self.prefix(path, k + 1, 0, lines[k].start, false);
+                self.text(body[lines[k].start..lines[k].content_end], false);
+            }
+            // Build the replaced block: each span expands its template, every
+            // other byte (including the trailing terminator) copies verbatim.
+            var buf: std.ArrayList(u8) = .empty;
+            var starts: std.ArrayList(usize) = .empty;
+            var cursor = lines[blo].start;
+            for (spans[i..j]) |sp| {
+                buf.appendSlice(self.a, body[cursor..sp.start]) catch die("oom\n", .{});
+                starts.append(self.a, buf.items.len) catch die("oom\n", .{});
+                _ = caps.find(body, sp.start, slots);
+                self.expand(&buf, tmpl, body, slots);
+                cursor = @max(cursor, sp.end);
+            }
+            buf.appendSlice(self.a, body[cursor..lines[bhi].term_end]) catch die("oom\n", .{});
+            self.emitReplacedBlock(path, blo, lines[blo].start, buf.items, starts.items);
+            k = bhi + 1;
+            while (k <= hi) : (k += 1) {
+                self.prefix(path, k + 1, 0, lines[k].start, false);
+                self.text(body[lines[k].start..lines[k].content_end], false);
+            }
+            prev_end = hi;
+            i = j;
+        }
+        return covered;
+    }
+
+    /// Emit one replaced block's text as physical lines numbered from original
+    /// line `blo` (0-based). rg's frame: every line is a match line, the column
+    /// (under `--column`) is the FIRST replacement's block-relative offset on
+    /// every line, and `--trim`/`-M` apply per emitted line with the
+    /// replacement `starts` as the match granularity.
+    fn emitReplacedBlock(self: *Emitter, path: []const u8, blo: usize, block_off: usize, rep: []const u8, starts: []const usize) void {
+        const term = self.o.term();
+        const col = if (starts.len > 0) starts[0] + 1 else 0;
+        var lineno = blo + 1;
+        var pos: usize = 0;
+        while (pos < rep.len) {
+            const nl = std.mem.indexOfScalarPos(u8, rep, pos, term);
+            const end = nl orelse rep.len;
+            // Rebase the replacement starts into this line's coordinates; a
+            // start on an earlier line clamps to 0 (before any `-M` cut, like
+            // rg's block-coordinate comparison), later ones drop off the tail.
+            var line_starts: std.ArrayList(usize) = .empty;
+            for (starts) |st| {
+                if (st >= end) break;
+                line_starts.append(self.a, st -| pos) catch die("oom\n", .{});
+            }
+            self.prefix(path, lineno, col, block_off + pos, true);
+            self.emitBody(rep[pos..end], true, line_starts.items);
+            if (nl == null) break;
+            pos = end + 1;
+            lineno += 1;
         }
     }
 };
