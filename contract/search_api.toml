@@ -36,10 +36,10 @@ package_import = "gist"
 # Honesty note (status tokens are truthful about disk, not aspiration): both
 # `subprocess` and `uds` are callable transports today. The `uds` resident stack
 # is landed and verified end to end — the eligibility classifier
-# (`src/session/request.zig`), the length-prefixed wire codec
-# (`src/session/protocol.zig`), the warm error-returning engine
-# (`src/session/resident.zig`), the fail-closed freshness watcher
-# (`src/session/watch.zig`), the `gist serve` daemon accept-loop
+# (`src/gist/session/request.zig`), the length-prefixed wire codec
+# (`src/gist/session/protocol.zig`), the warm error-returning engine
+# (`src/gist/session/resident.zig`), the fail-closed freshness watcher
+# (`src/gist/session/watch.zig`), the `gist serve` daemon accept-loop
 # (`src/commands/serve/serve.zig`), and the fail-open connecting client
 # (`src/commands/client/client.zig`, wired into the bare-`gist` front door in
 # `src/commands/cli/main.zig`) — under an end-to-end lifecycle test
@@ -51,7 +51,7 @@ package_import = "gist"
 # never a new source of truth or a new failure mode.
 [transports]
 subprocess = { status = "authoritative", detail = "certified `gist` binary + --json; results produced by the same combinePatterns->collectFiles->json.run path the CLI uses" }
-uds = { status = "operational-accelerator", detail = "`gist serve` daemon holds a warm ResidentSession behind a Unix socket; the front-door client dials it for eligible queries (`-l`/files-with-matches, and the bare default `lines` search whose `path:[line:]text` bytes the daemon pre-renders through the cold Emitter and chunk-streams) and falls open to `subprocess` on any ineligible argv, TTY stdout, readable stdin, absent daemon, decline, or wire hiccup — a pure fail-open accelerator, never a distinct answer path (src/commands/{serve,client}, src/session/*)" }
+uds = { status = "operational-accelerator", detail = "`gist serve` daemon holds a warm ResidentSession behind a Unix socket; the front-door client dials it for eligible queries (`-l`/files-with-matches, and the bare default `lines` search whose `path:[line:]text` bytes the daemon pre-renders through the cold Emitter and chunk-streams) and falls open to `subprocess` on any ineligible argv, TTY stdout, readable stdin, absent daemon, decline, or wire hiccup — a pure fail-open accelerator, never a distinct answer path (src/gist/faces/{serve,client}, src/gist/session/*)" }
 ffi = { status = "operational-accelerator", detail = "in-process irregex_open/irregex_search/irregex_close C session ABI (src/ffi/session.zig) over the same error-returning resident engine as `uds`; a bad query returns IRREGEX_STALE, never a dead host. The match callback carries an i32 abort return (0 continue / non-zero stop) for bounded / first-match streaming. Unlike `uds` (files/count only), it streams full Match records, so the Python `Session.run/files/count/absent` route through it via cffi (bindings/python/gist/_ffi.py) when the shared library + cffi are present in-process, falling open to the `uds` daemon or `subprocess` otherwise — a pure fail-open accelerator, never a distinct answer path. cffi stays optional; the wheel is pure-Python without it. Verified by the C-ABI smoke (build.zig) and FFI-vs-cold byte-parity tests (bindings/python/tests/test_ffi_parity.py)." }
 
 # Resident-session semantics for the `uds` transport (ADR-352 rung 2.5). A client
@@ -63,7 +63,7 @@ ffi = { status = "operational-accelerator", detail = "in-process irregex_open/ir
 [session]
 socket_env = "GIST_SESSION_SOCK"                 # override the default per-repo socket path
 default_socket = ".local/gist-verify/gistd.sock"
-protocol_version = 1                             # length-prefixed frame protocol (src/session/protocol.zig)
+protocol_version = 1                             # length-prefixed frame protocol (src/gist/session/protocol.zig)
 # Monotonic generations carried in every READY/STATUS frame.
 generations = [
   "daemon",

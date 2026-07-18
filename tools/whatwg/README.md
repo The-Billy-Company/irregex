@@ -5,7 +5,7 @@ decoders are lowered from. They are pinned and vendored so table generation is
 **hermetic** (no network at build/CI time) and the drift gate is reproducible.
 The lowering lives in [`../build_encoding_tables.py`](../build_encoding_tables.py)
 → emits `src/commands/ripgrep/encoding_tables.gen.zig`, which
-[`../../src/commands/ripgrep/encoding.zig`](../../src/commands/ripgrep/encoding.zig)
+[`../../src/gist/faces/ripgrep/encoding.zig`](../../src/gist/faces/ripgrep/encoding.zig)
 rides. This is the same set `encoding_rs` (ripgrep's transcoder) is built from, so
 gist reaches byte-for-byte `-E` parity with `rg` (proven in
 [`../../bench/rgsuite/transforms.py`](../../bench/rgsuite/transforms.py)).

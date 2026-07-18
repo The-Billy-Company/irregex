@@ -73,13 +73,15 @@ pub const irregex = struct {
 };
 
 // ── hydra: the compression-search engine ──
-// The asymmetric successor to the symmetric sketch for SEARCH: a persisted
-// phrase lexicon prices every LZ78 phrase at its corpus information content
-// (−log2(df/N) bits), ranks docs by the bits their dictionary already paid
-// toward describing a query (bitsSaved), and refines with the native ΔAb
-// conditional parse (crossCost). See src/hydra/engine/lexicon.zig.
+// The asymmetric successor to the symmetric sketch for SEARCH, hand-rolled:
+// the lexicon prices winnowed fingerprints at their corpus information
+// content (−log2(df/N) bits) and nominates candidates by the bits a doc
+// already paid toward describing the query; the zipper decides exactly — a
+// suffix-automaton Ziv–Merhav cross-parse charging real code lengths (the
+// paper's ΔAb with no compressor run). See src/hydra/engine/.
 pub const hydra = struct {
     pub const lexicon = @import("hydra/engine/lexicon.zig");
+    pub const zipper = @import("hydra/engine/zipper.zig");
     pub const verbs = @import("hydra/engine/verbs.zig");
 };
 
@@ -134,6 +136,8 @@ pub const commands = struct {
     pub const serve = @import("gist/faces/serve/serve.zig");
     /// The hydra verbs — `similar`/`dups`/`patterns` over `src/primitives/`.
     pub const irregex = @import("hydra/engine/verbs.zig");
+    /// `hydra search` — two-stage compression retrieval (lexicon → zipper).
+    pub const hydra_search = @import("hydra/engine/search.zig");
     /// `hydra --schema` JSON capability manifest (the hydra binary's).
     pub const hydra_schema = @import("hydra/cli/schema.zig");
     /// The CLI's warm fast path — dial the daemon for an eligible query, emit
@@ -217,7 +221,8 @@ test {
     _ = @import("gist/kernel/index/fresh_test.zig"); // T3 freshness `widen` set-algebra
     _ = @import("gist/kernel/engine/query_test.zig"); // shared compiled-query: compile/prefilter/match vs oracle
     _ = @import("primitives/sketch_test.zig"); // relate half: kinship metric semantics + clustering gate
-    _ = @import("hydra/engine/lexicon.zig"); // hydra: the query-conditioned coding-gain ranker
+    _ = @import("hydra/engine/lexicon.zig"); // hydra: corpus-priced fingerprint recall index
+    _ = @import("hydra/engine/zipper.zig"); // hydra: suffix-automaton Ziv–Merhav cross-parse (exact ΔAb)
     _ = @import("hydra/engine/lexicon_test.zig"); // hydra: retrieval proof (short-query recall, ΔAb sidedness, zero-bit boilerplate)
     _ = @import("primitives/patterns_test.zig"); // match half: set ≡ N single-pattern oracles (gate off/on)
     _ = @import("primitives/loom_test.zig"); // weave: closed op set — total, deterministic, hand-tallied

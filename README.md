@@ -1,10 +1,10 @@
 ---
 doc_radar:
   counts:
-    - description: "irregex src/ tiers — kernel/ (engine · index · regex · rank · scan · corpus · scope) + primitives/ (patterns · sketch · loom) + faces/ (cli · gist · hydra · ffi) + session/ resident transport (ADR-352 rung 2.5)"
+    - description: "irregex src/ tiers — the shared floor (corpus · scope · primitives) + the two engines (gist · hydra)"
       glob: pkg/kernels/irregex/src/*
       unit: dirs
-      equals: 4
+      equals: 5
   sentinels:
     - description: "the Zig package identity is irregex"
       file: pkg/kernels/irregex/build.zig.zon
@@ -37,28 +37,29 @@ is LIKE this file?"*, and *"shape the answer before it costs tokens"*
 
 | Face | What it is | Docs |
 |---|---|---|
-| **gist** | the rg-parity code locator CLI — trigram index, ranked search, resident session; the agents' everyday search reflex | [`src/faces/gist/README.md`](src/faces/gist/README.md) |
-| **hydra** | compression-as-search — the `similar` / `dups` / `patterns` verbs (LZJD kinship, multi-pattern attribution, loom shaping) | [`src/faces/hydra/README.md`](src/faces/hydra/README.md) |
-| **ffi** | the in-process C-ABI warm session (`irregex_open` / `irregex_search` / `irregex_close` over `libirregex`) | [`src/faces/ffi/README.md`](src/faces/ffi/README.md) |
+| **gist** | the rg-parity code locator CLI — trigram index, ranked search, resident session; the agents' everyday search reflex | [`src/gist/README.md`](src/gist/README.md) |
+| **hydra** | compression-as-search — the `similar` / `dups` / `patterns` verbs (LZJD kinship, multi-pattern attribution, loom shaping) | [`src/hydra/README.md`](src/hydra/README.md) |
+| **ffi** | the in-process C-ABI warm session (`irregex_open` / `irregex_search` / `irregex_close` over `libirregex`) | [`src/gist/faces/ffi/README.md`](src/gist/faces/ffi/README.md) |
 
-Both CLIs ride the same kernel and the same persisted index; the `gist` binary
-name — and every `gist <pattern>` reflex, flag, and exit code — is unchanged.
+The two CLIs are separate engines over a small shared floor (`src/corpus/`,
+`src/scope/`, `src/primitives/`); the `gist` binary name — and every
+`gist <pattern>` reflex, flag, and exit code — is unchanged.
 
 ## Package layout
 
 | Dir | What |
 |---|---|
-| `src/kernel/` | the search kernel every face shares — engine, trigram index, linear-time regex, rank, scan, corpus, scope |
-| `src/primitives/` | the irregex tier — `patterns` (match ∪ attribute), `sketch` (LZJD relate), `loom` (weave) |
-| `src/faces/` | product surfaces — `cli/` dispatcher, `gist/`, `hydra/`, `ffi/` |
-| `src/session/` | the resident-session transport (ADR-352 rung 2.5) |
+| `src/corpus/` + `src/scope/` | the shared floor both engines ride — corpus walk/loading + path scoping |
+| `src/primitives/` | the shared irregex math — `patterns` (match ∪ attribute), `sketch` (LZJD relate), `loom` (weave) |
+| `src/gist/` | the exact-search engine — `kernel/` (engine, trigram index, regex, rank, scan), `session/` (ADR-352 rung 2.5), `faces/` (cli, ripgrep, status, serve, client, ffi) |
+| `src/hydra/` | the compression-search engine — `engine/` verb drivers + `cli/` binary shell |
 | `include/` | `irregex.h` — the flat C ABI (`irregex_*` symbols) |
 | `bindings/` | Python (`billy-gist`, subprocess + optional cffi over `libirregex`) and Rust (subprocess) faces |
 | `contract/` | `search_api.toml` — the unified SearchRequest/irregex contract (ADR-352) |
 | `bench/` | certification + competitive benchmark harness (rgsuite, races, certify, roofline) |
 
 See [`src/README.md`](src/README.md) for the tier-by-tier map and
-[`src/faces/gist/README.md`](src/faces/gist/README.md) for the architecture
+[`src/gist/README.md`](src/gist/README.md) for the architecture
 narrative, competitive benchmarks, and the full rg-parity flag table.
 
 ## Build & test

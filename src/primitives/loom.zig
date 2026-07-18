@@ -19,7 +19,7 @@
 //! the result (caller frees via `Result.deinit`).
 
 const std = @import("std");
-const glob = @import("../kernel/scope/glob.zig");
+const glob = @import("../scope/glob.zig");
 
 /// One attributed match fact: pattern `pattern` matched `path` at `line`
 /// (1-based; 0 = doc-level attribution with no line resolved). The atom both
