@@ -44,7 +44,7 @@ pub const k = 128;
 /// parse's phrase boundaries depend on them) but are NOT offered to the
 /// sketch. Every text over one character set shares the 1–2 byte phrase
 /// base, so admitting it spends sketch slots on a constant noise floor that
-/// washes out kinship (measured on this repo with min=1: `gist similar` on a
+/// washes out kinship (measured on this repo with min=1: `hydra similar` on a
 /// Zig kernel surfaced Rust, Markdown, and TSX within ±0.02 of each other).
 /// Three bytes is where style begins — the same floor the trigram index is
 /// built on. Length, not content — the parse itself stays classic LZ78.

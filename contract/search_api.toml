@@ -155,9 +155,9 @@ sketch = { k = 128, min_phrase = 3, algorithm = "LZ78 phrase dictionary -> botto
 attribution = { detail = "a PatternSet answer is bit-identical to N independent single-pattern runs; the fused (?:a)|(?:b) gate is an accelerator that may only skip work, never change an answer (tests hold it to the single-pattern oracle)" }
 
 [irregex.verbs]
-similar = { argv = "gist similar <path> [--top N] [--json] [ROOT...]", detail = "nearest files to <path> by compression kinship, ascending distance; the target itself is excluded" }
-dups = { argv = "gist dups [--max-distance T] [--top N] [--json] [ROOT...]", detail = "near-duplicate pairs across the corpus, closest first; candidates via shared bottom-16 seed hashes, every emitted pair exactly verified against both sketches" }
-patterns = { argv = "gist patterns -e P [-e P...] [-f FILE] [-F] [-i] [--by pattern|file] [--under GLOB] [--top N] [--json] [ROOT...]", detail = "one walk, N patterns, exact per-pattern attribution as path:line rows; --by groups into counts, --under/--top shape engine-side (loom); rows are total-ordered (path, line, pattern) so output is deterministic" }
+similar = { argv = "hydra similar <path> [--top N] [--json] [ROOT...]", detail = "nearest files to <path> by compression kinship, ascending distance; the target itself is excluded" }
+dups = { argv = "hydra dups [--max-distance T] [--top N] [--json] [ROOT...]", detail = "near-duplicate pairs across the corpus, closest first; candidates via shared bottom-16 seed hashes, every emitted pair exactly verified against both sketches" }
+patterns = { argv = "hydra patterns -e P [-e P...] [-f FILE] [-F] [-i] [--by pattern|file] [--under GLOB] [--top N] [--json] [ROOT...]", detail = "one walk, N patterns, exact per-pattern attribution as path:line rows; --by groups into counts, --under/--top shape engine-side (loom); rows are total-ordered (path, line, pattern) so output is deterministic" }
 
 # The agent / code-place tool boundary (ADR-352, plan step 5). Billy operating a
 # user's machine and a coding agent working a repository are the same actor: both

@@ -42,7 +42,6 @@ const schema = gist.commands.schema; // `--schema` JSON manifest
 const ripgrep = gist.commands.ripgrep; // the unified search engine (bare shorthand + `gist rg`)
 const serve = gist.commands.serve; // `gist serve` — the resident warm daemon
 const client = gist.commands.client; // the warm CLI fast path (daemon dial + cold fallback)
-const irregex_cmd = gist.commands.irregex; // `similar`/`dups`/`patterns` — the irregex faces
 const default_roots = gist.corpus.default_roots;
 
 /// Try the resident daemon for an eligible query; on a served answer this exits
@@ -78,11 +77,6 @@ fn usage() void {
         \\                                     fresh index to skip non-candidate reads
         \\  index                              build + persist the trigram index
         \\  status [--json]                    is an index ready, how fresh, how big
-        \\
-        \\  similar <path> [--top N]           nearest files by compression kinship (LZ distance)
-        \\  dups [--max-distance T]            near-duplicate file pairs, closest first
-        \\  patterns -e P [-e P...] [--by pattern|file] [--under GLOB]
-        \\                                     one walk, N patterns, per-pattern attribution
         \\
         \\  rg / search <pattern> [PATH...]    the same engine, addressed with a verb (habit-safe aliases)
         \\  --no-index / --index               force the live walk / the index-accelerated path
@@ -158,24 +152,13 @@ pub fn main(init: std.process.Init) !void {
         try serve.run(gpa, io, roots.items, sock);
         return;
     }
-    // ── the irregex verbs: gist-native shapes with no rg equivalent ──
-    // `similar <path>` (nearest files by compression kinship), `dups`
-    // (near-duplicate pairs), `patterns -e P…` (one walk, N patterns, exact
-    // per-pattern attribution, loom-shaped). Like `search`, each verb shadows
-    // a bare-literal search for its own name; `gist rg similar` still greps
-    // the word.
+    // ── shed verbs: similar/dups/patterns live in the `hydra` binary now ──
+    // These verbs used to shadow a bare-literal search for their own names, so
+    // a redirect stub regresses nothing a literal searcher could reach; it just
+    // routes muscle memory (and agents replaying old argv) to the new face.
     if (std.mem.eql(u8, mode, "similar") or std.mem.eql(u8, mode, "dups") or std.mem.eql(u8, mode, "patterns")) {
-        var rest: std.ArrayList([]const u8) = .empty;
-        defer rest.deinit(gpa);
-        while (it.next()) |arg| try rest.append(gpa, arg);
-        if (std.mem.eql(u8, mode, "similar")) {
-            try irregex_cmd.runSimilar(gpa, io, rest.items);
-        } else if (std.mem.eql(u8, mode, "dups")) {
-            try irregex_cmd.runDups(gpa, io, rest.items);
-        } else {
-            try irregex_cmd.runPatterns(gpa, io, rest.items);
-        }
-        return;
+        std.debug.print("gist: '{s}' moved to the hydra binary — run `hydra {s} ...` (same flags; `make install-gist` installs both)\n", .{ mode, mode });
+        std.process.exit(2);
     }
 
     // `rg [flags] <pattern> [PATH...]` — the same whole-tree engine the bare

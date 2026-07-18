@@ -31,21 +31,9 @@ const manifest_prefix =
     \\        "roots": "string[]"
     \\      }
     \\    },
-    \\    "similar": {
-    \\      "summary": "nearest files to <path> by compression kinship (LZ dictionary distance, closest first)",
-    \\      "args": [{"name": "path", "type": "string", "required": true, "description": "the probe file"}, {"name": "ROOT...", "type": "string[]", "required": false, "description": "corpus roots (default: the index roots)"}],
-    \\      "flags": [{"name": "--top", "type": "int", "default": 20, "description": "rows surfaced"}, {"name": "--json", "type": "bool", "default": false, "description": "NDJSON {path, distance} rows"}]
-    \\    },
-    \\    "dups": {
-    \\      "summary": "near-duplicate file pairs across the corpus, closest first (copy-paste drift, forked fixtures)",
-    \\      "args": [{"name": "ROOT...", "type": "string[]", "required": false, "description": "corpus roots (default: the index roots)"}],
-    \\      "flags": [{"name": "--max-distance", "type": "float", "default": 0.25, "description": "pair admission threshold in [0,1]"}, {"name": "--top", "type": "int", "default": 100, "description": "rows surfaced"}, {"name": "--json", "type": "bool", "default": false, "description": "NDJSON {a, b, distance} rows"}]
-    \\    },
-    \\    "patterns": {
-    \\      "summary": "N patterns, one pass, exact per-pattern attribution; index-elides reads when every pattern has a sound trigram prefilter",
-    \\      "args": [{"name": "ROOT...", "type": "string[]", "required": false, "description": "corpus roots (default: the index roots)"}],
-    \\      "flags": [{"name": "-e/--regexp", "type": "string[]", "default": null, "description": "a pattern (repeatable)"}, {"name": "-f/--file", "type": "string", "default": null, "description": "newline-separated pattern file"}, {"name": "-F/--fixed-strings", "type": "bool", "default": false, "description": "patterns are literals"}, {"name": "-i/--ignore-case", "type": "bool", "default": false, "description": "case-insensitive (disables index elision)"}, {"name": "--by", "type": "string", "default": null, "description": "group rows into counts: pattern | file"}, {"name": "--under", "type": "string", "default": null, "description": "keep rows whose path matches this glob"}, {"name": "--top", "type": "int", "default": 0, "description": "cap rows/groups (0 = all)"}, {"name": "--json", "type": "bool", "default": false, "description": "NDJSON rows ({path, line, pattern_id, pattern}) or groups ({label, count})"}]
-    \\    }
+    \\    "similar": {"moved": "the hydra binary owns this verb — see `hydra --schema`"},
+    \\    "dups": {"moved": "the hydra binary owns this verb — see `hydra --schema`"},
+    \\    "patterns": {"moved": "the hydra binary owns this verb — see `hydra --schema`"}
     \\  },
     \\  "search": {
     \\    "summary": "gist <pattern> [PATH...] [flags] live-scans with ripgrep-like defaults and automatically uses a covering index only to elide provable non-candidate reads",

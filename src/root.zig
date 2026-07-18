@@ -120,8 +120,10 @@ pub const commands = struct {
     /// `gist serve` — the resident daemon that keeps a `session` warm behind a
     /// Unix socket (ADR-352 rung 2.5).
     pub const serve = @import("faces/gist/serve/serve.zig");
-    /// The irregex faces — `similar`/`dups`/`patterns` over `src/irregex/`.
+    /// The hydra verbs — `similar`/`dups`/`patterns` over `src/primitives/`.
     pub const irregex = @import("faces/hydra/irregex.zig");
+    /// `hydra --schema` JSON capability manifest (the hydra binary's).
+    pub const hydra_schema = @import("faces/hydra/schema.zig");
     /// The CLI's warm fast path — dial the daemon for an eligible query, emit
     /// byte-identically to cold, else fall back (`attempt`).
     pub const client = @import("faces/gist/client/client.zig");
@@ -233,6 +235,7 @@ test {
     _ = @import("kernel/scope/glob_test.zig"); // glob matcher + type/glob/root path scope
     _ = @import("faces/gist/status/status.zig"); // read-only index introspection
     _ = @import("faces/cli/schema.zig"); // `--schema` manifest
+    _ = @import("faces/hydra/schema.zig"); // hydra's `--schema` manifest
     _ = @import("faces/gist/ripgrep/run.zig"); // the unified engine (rgsuite parity drop-in)
     _ = @import("faces/gist/ripgrep/ingest.zig"); // -z/--pre/-E content transforms (decompress/preprocess/transcode)
     _ = @import("faces/gist/ripgrep/encoding.zig"); // -E WHATWG legacy-code-page decoders (single-byte + CJK multi-byte)

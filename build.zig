@@ -156,6 +156,18 @@ pub fn build(b: *std.Build) void {
     const cli_exe = b.addExecutable(.{ .name = "gist", .root_module = cli_mod });
     b.installArtifact(cli_exe);
 
+    // ── the `hydra` binary — compression-as-search (similar/dups/patterns) ──
+    // Same engine module, same ReleaseFast product posture; a second thin face
+    // over the shared kernel, not a second engine.
+    const hydra_mod = b.createModule(.{
+        .root_source_file = b.path("src/faces/hydra/main.zig"),
+        .target = k.target,
+        .optimize = cli_optimize,
+    });
+    hydra_mod.addImport("irregex", cli_engine);
+    const hydra_exe = b.addExecutable(.{ .name = "hydra", .root_module = hydra_mod });
+    b.installArtifact(hydra_exe);
+
     const run_cli = b.addRunArtifact(cli_exe);
     run_cli.setCwd(b.path("../../..")); // pkg/kernels/irregex → repo root
     if (b.args) |args| run_cli.addArgs(args);

@@ -41,7 +41,7 @@ piped stdin, exit codes) so it's a true drop-in for an agent's `rg` reflex.
 | `faces/gist/status/`  | read-only index introspection — the `status` verb (is an index ready, how fresh, how big)                                                                |
 | `faces/gist/serve/`   | the resident-session daemon face (`gist serve`)                                                                                                          |
 | `faces/gist/client/`  | the thin client that spawns/dials the resident session                                                                                                   |
-| `faces/hydra/`        | the compression-search faces — `similar` / `dups` / `patterns` verbs over the primitives tier                                                            |
+| `faces/hydra/`        | the `hydra` binary — compression-as-search: `similar` / `dups` / `patterns` verbs over the primitives tier (`main.zig` dispatch + `--schema` manifest)   |
 | `faces/ffi/`          | the in-process C-ABI search session (ADR-352 rung 3) — `irregex_open`/`irregex_search`/`irregex_close`, streaming Match records to a caller callback              |
 
 `root.zig` is the package/C-ABI root: it re-exports each tier, pins
