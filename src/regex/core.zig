@@ -24,8 +24,7 @@ const compile_mod = @import("compile.zig");
 const prefilter = @import("prefilter.zig");
 const dfa_mod = @import("dfa.zig");
 const powerset = @import("powerset.zig");
-const udec = @import("unicode/decode.zig");
-const utables = @import("unicode/tables.zig");
+const word = @import("word.zig");
 const ByteSet = syn.ByteSet;
 const Node = syn.Node;
 
@@ -36,32 +35,10 @@ pub const ParseError = syn.ParseError;
 // Aliased here to keep the engine's references unchanged.
 const State = syn.State;
 
-/// A "word" byte for ASCII `\b`/`\B` (`(?-u)`): `[0-9A-Za-z_]` — exactly `\w`
-/// and rg's `--no-unicode` word class.
-fn isWordByte(b: u8) bool {
-    return std.ascii.isAlphanumeric(b) or b == '_';
-}
-/// Is the codepoint STARTING at gap-position `p` a word character? In Unicode
-/// mode (rg default) the scalar straddling the gap is decoded forward and tested
-/// against the full `\w` set (Alphabetic ∪ M ∪ Nd ∪ Pc ∪ Join_Control); an
-/// ill-formed byte or line end is never a word char (rust-regex
-/// `is_word_char::fwd`). ASCII mode is the single-byte fast path.
-fn wordAt(unicode: bool, line: []const u8, p: usize) bool {
-    if (p >= line.len) return false;
-    if (!unicode or line[p] < 0x80) return isWordByte(line[p]);
-    const d = udec.decode(line[p..]) orelse return false;
-    return utables.isWord(d.cp);
-}
-/// Is the codepoint ending immediately BEFORE gap-position `p` a word character?
-/// Unicode mode decodes the scalar backward (`decodeLast`); ASCII/`(?-u)` mode is
-/// the single-byte test. False at BOL / on an ill-formed tail (rust-regex
-/// `is_word_char::rev`).
-fn wordBefore(unicode: bool, line: []const u8, p: usize) bool {
-    if (p == 0) return false;
-    if (!unicode or line[p - 1] < 0x80) return isWordByte(line[p - 1]);
-    const d = udec.decodeLast(line[0..p]) orelse return false;
-    return utables.isWord(d.cp);
-}
+// The shared `\b`/`\B`/`\<`/`\>` word test (`word.zig`) — one definition for
+// this VM and the capture VM, so the two engines can never disagree.
+const wordAt = word.wordAt;
+const wordBefore = word.wordBefore;
 
 pub const Regex = struct {
     states: []State,

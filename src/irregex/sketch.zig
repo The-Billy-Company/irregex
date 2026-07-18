@@ -40,6 +40,16 @@ const std = @import("std");
 /// error at ~1/√k ≈ 0.09 — ample for nearest-neighbor ranking.
 pub const k = 128;
 
+/// Phrases shorter than this stay in the LZ dictionary (they must — the
+/// parse's phrase boundaries depend on them) but are NOT offered to the
+/// sketch. Every text over one character set shares the 1–2 byte phrase
+/// base, so admitting it spends sketch slots on a constant noise floor that
+/// washes out kinship (measured on this repo with min=1: `gist similar` on a
+/// Zig kernel surfaced Rust, Markdown, and TSX within ±0.02 of each other).
+/// Three bytes is where style begins — the same floor the trigram index is
+/// built on. Length, not content — the parse itself stays classic LZ78.
+pub const min_phrase = 3;
+
 /// A file's compression-kinship summary: the `len` smallest distinct phrase
 /// hashes of its LZ78 dictionary, ascending in `h[0..len]`. `len < k` only
 /// for tiny inputs whose whole dictionary fits. A value type — copy, persist,
@@ -173,11 +183,14 @@ pub fn build(gpa: std.mem.Allocator, bytes: []const u8) !Sketch {
     var low: BottomK = .init;
 
     var h: u64 = fnv_offset;
+    var plen: usize = 0;
     for (bytes) |b| {
         h = (h ^ b) *% fnv_prime;
+        plen += 1;
         if (try seen.insert(gpa, h)) {
-            low.offer(finalize(h));
+            if (plen >= min_phrase) low.offer(finalize(h));
             h = fnv_offset; // phrase complete — start the next one
+            plen = 0;
         }
         // else: the phrase is already in the dictionary; keep extending it.
     }

@@ -26,6 +26,9 @@ const Regex = @import("../../regex/core.zig").Regex;
 const mirror = @import("../../rank/mirror.zig");
 const signals = @import("../../rank/signals.zig");
 const rank_mod = @import("../../rank/rank.zig");
+const gl = @import("../scope/glob.zig");
+const query_mod = @import("../../engine/query.zig");
+const args_mod = @import("args.zig");
 const Dir = std.Io.Dir;
 
 const Doc = rank_mod.Doc;
@@ -43,13 +46,11 @@ const Source = union(enum) {
     }
 };
 
-fn nowNs(io: std.Io) i128 {
-    return std.Io.Clock.now(.awake, io).nanoseconds;
-}
-fn ms(ns: i128) f64 {
-    return @as(f64, @floatFromInt(ns)) / 1e6;
-}
+const nowNs = args_mod.nowNs;
+const ms = args_mod.ms;
 
+/// Slash COUNT (not walker depth — `run.zig`'s `pathDepth` is slashes+1):
+/// a shallow-path prior for the ranked view, u16 to pack the score row.
 fn pathDepth(path: []const u8) u16 {
     var d: u16 = 0;
     for (path) |c| if (c == '/') {
@@ -58,32 +59,22 @@ fn pathDepth(path: []const u8) u16 {
     return d;
 }
 
-/// Same boundary rule as `commands/scope/glob.zig::underRoot`: exact file hit,
-/// or a directory prefix ending at `/` (so `services` never admits `services_old`).
-fn underRoot(path: []const u8, root_raw: []const u8) bool {
-    var root = root_raw;
-    while (std.mem.startsWith(u8, root, "./")) root = root[2..];
-    root = std.mem.trimEnd(u8, root, "/");
-    if (root.len == 0 or (root.len == 1 and root[0] == '.')) return true;
-    if (path.len == root.len) return std.mem.eql(u8, path, root);
-    return path.len > root.len and std.mem.startsWith(u8, path, root) and path[root.len] == '/';
-}
-
 fn underAnyRoot(path: []const u8, roots: []const []const u8) bool {
     if (roots.len == 0) return true;
-    for (roots) |r| if (underRoot(path, r)) return true;
+    // Shared boundary rule (`scope/glob.zig::underRoot` after `normalizeRoot`):
+    // exact file hit, or a directory prefix ending at `/` (so `services` never
+    // admits `services_old`). The extra trim folds a lone `/` root to
+    // match-all, as this call site always has.
+    for (roots) |r| if (gl.underRoot(path, std.mem.trimEnd(u8, gl.normalizeRoot(r), "/"))) return true;
     return false;
 }
 
-/// Sound trigram prefilter for the compiled regex — same rule as
-/// `run.zig::trigramFilter` (minus CLI flags the ranked path never sets).
+/// Sound trigram prefilter for the compiled regex — the engine-shared rule
+/// (`engine/query.zig::regexPrefilter`), minus any prefilter when the fold is
+/// caseless (the trigram index is case-exact, so pruning would be unsound).
 fn rankFilters(re: *const Regex, caseless: bool, one: *[1][]const u8) []const []const u8 {
     if (caseless) return &.{};
-    if (re.required.len >= 3) {
-        one[0] = re.required;
-        return one[0..];
-    }
-    return re.alts;
+    return query_mod.regexPrefilter(re, one);
 }
 
 /// Does this matching line define the symbol? Prefer the analyzer's required
@@ -405,13 +396,13 @@ pub fn runLive(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, files: []co
     });
 }
 
-test "underRoot gates directory prefixes and exact files" {
+test "underAnyRoot gates directory prefixes and exact files" {
     const t = std.testing;
-    try t.expect(underRoot("services/ai/x.py", "services/ai"));
-    try t.expect(underRoot("services/ai", "services/ai"));
-    try t.expect(underRoot("services/ai/x.py", "./services/ai/"));
-    try t.expect(!underRoot("services/ai_old/x.py", "services/ai"));
-    try t.expect(!underRoot("services/backend/x.go", "services/ai"));
+    try t.expect(underAnyRoot("services/ai/x.py", &.{"services/ai"}));
+    try t.expect(underAnyRoot("services/ai", &.{"services/ai"}));
+    try t.expect(underAnyRoot("services/ai/x.py", &.{"./services/ai/"}));
+    try t.expect(!underAnyRoot("services/ai_old/x.py", &.{"services/ai"}));
+    try t.expect(!underAnyRoot("services/backend/x.go", &.{"services/ai"}));
     try t.expect(underAnyRoot("services/ai/x.py", &.{ "services/backend", "services/ai" }));
     try t.expect(!underAnyRoot("pkg/kernels/gist/x.zig", &.{ "services/ai", "services/backend" }));
     try t.expect(underAnyRoot("anywhere.go", &.{}));

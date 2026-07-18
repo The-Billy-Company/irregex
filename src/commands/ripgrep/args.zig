@@ -254,6 +254,30 @@ pub fn die(comptime msg: []const u8, args: anytype) noreturn {
     std.process.exit(2);
 }
 
+/// The one OOM exit — sugar for the ubiquitous `… catch oom()`,
+/// which is this CLI's contract for allocation failure (fail loud, exit 2).
+pub fn oom() noreturn {
+    die("oom\n", .{});
+}
+
+/// The one environment read — a `getenv` that arrives as a slice. Every
+/// `GIST_*` / `HOME` / XDG probe goes through here, never a scattered
+/// `std.c.getenv` + `std.mem.span` pair per site.
+pub fn envSpan(key: [*:0]const u8) ?[]const u8 {
+    return if (std.c.getenv(key)) |v| std.mem.span(v) else null;
+}
+
+/// CLI-plane clock read — the monotonic-awake nanosecond stamp behind the
+/// `--rank` timing line and `gist index`'s build report.
+pub fn nowNs(io: std.Io) i128 {
+    return std.Io.Clock.now(.awake, io).nanoseconds;
+}
+
+/// Nanoseconds → fractional milliseconds for human timing output.
+pub fn ms(ns: i128) f64 {
+    return @as(f64, @floatFromInt(ns)) / 1e6;
+}
+
 /// Does the pattern carry an uppercase letter? Codepoint-aware for smart-case
 /// (`-S`): any Unicode uppercase (`Ä`, `Σ`, …) — not just ASCII `A-Z` — disables
 /// the automatic fold, matching rg's Unicode default. Ill-formed bytes are
@@ -277,7 +301,7 @@ fn hasUpper(s: []const u8) bool {
 }
 
 fn lowerDup(a: std.mem.Allocator, s: []const u8) []u8 {
-    const o = a.alloc(u8, s.len) catch die("oom\n", .{});
+    const o = a.alloc(u8, s.len) catch oom();
     for (s, 0..) |c, i| o[i] = std.ascii.toLower(c);
     return o;
 }
@@ -290,18 +314,6 @@ fn globAppliesCI(a: std.mem.Allocator, pat: []const u8, path: []const u8) bool {
 /// anchor byte yields the same root-relative semantics.
 fn stripAnchor(g: []const u8) []const u8 {
     return if (g.len > 0 and g[0] == '/') g[1..] else g;
-}
-
-/// RE2 metacharacters: a pattern containing any of these is a regex, otherwise
-/// it's a plain literal an SIMD substring scan can serve directly. `-F`/`--fixed`
-/// forces literal regardless (the whole string is data), so callers check that
-/// before this — see `run.zig`'s `literalGate`, the one caller.
-pub fn looksLikeRegex(pat: []const u8) bool {
-    for (pat) |c| switch (c) {
-        '.', '^', '$', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '\\' => return true,
-        else => {},
-    };
-    return false;
 }
 
 /// Mutable parse state: resolves flags into Opts, collects type/glob sets, and
@@ -335,7 +347,7 @@ const Builder = struct {
     /// becomes `pat`; each subsequent one is OR-combined at finalize (ripgrep ORs
     /// multiple `-e`). A literal (`-F`) alternation is handled downstream.
     fn addPat(self: *Builder, p: []const u8) void {
-        if (self.pat == null) self.pat = p else self.extra_pats.append(self.a, p) catch die("oom\n", .{});
+        if (self.pat == null) self.pat = p else self.extra_pats.append(self.a, p) catch oom();
     }
     fn addType(self: *Builder, name: []const u8, negate: bool) void {
         if (std.mem.eql(u8, name, "all")) {
@@ -345,11 +357,11 @@ const Builder = struct {
         // A user-defined `--type-add` type resolves to include/exclude globs; a
         // built-in resolves to its own glob set (scope/types.zig).
         if (self.customGlobs(name)) |globs| {
-            (if (negate) &self.excludes else &self.includes).appendSlice(self.a, globs) catch die("oom\n", .{});
+            (if (negate) &self.excludes else &self.includes).appendSlice(self.a, globs) catch oom();
             return;
         }
         const e = types.extsForType(name) orelse die("unrecognized type: {s}\n", .{name});
-        (if (negate) &self.neg_exts else &self.exts).appendSlice(self.a, e) catch die("oom\n", .{});
+        (if (negate) &self.neg_exts else &self.exts).appendSlice(self.a, e) catch oom();
     }
     /// Register a `--type-add` spec: `name:glob` appends a glob to `name`; the
     /// `name:include:t1,t2` form aliases `name` to the union of other types.
@@ -362,24 +374,24 @@ const Builder = struct {
             var it = std.mem.splitScalar(u8, rest["include:".len..], ',');
             while (it.next()) |t| {
                 if (self.customGlobs(t)) |g| {
-                    globs.appendSlice(self.a, g) catch die("oom\n", .{});
+                    globs.appendSlice(self.a, g) catch oom();
                 } else if (types.extsForType(t)) |exts| {
                     // A built-in type's rows are already valid globs (scope/types.zig),
                     // so they slot straight into the `include:` union with no conversion.
-                    globs.appendSlice(self.a, exts) catch die("oom\n", .{});
+                    globs.appendSlice(self.a, exts) catch oom();
                 } else die("unrecognized type: {s}\n", .{t});
             }
         } else {
-            globs.append(self.a, rest) catch die("oom\n", .{});
+            globs.append(self.a, rest) catch oom();
         }
-        self.custom_types.append(self.a, .{ .name = name, .globs = globs.toOwnedSlice(self.a) catch die("oom\n", .{}) }) catch die("oom\n", .{});
+        self.custom_types.append(self.a, .{ .name = name, .globs = globs.toOwnedSlice(self.a) catch oom() }) catch oom();
     }
     /// The accumulated globs for a user-defined type, or null if `name` is not one.
     fn customGlobs(self: *Builder, name: []const u8) ?[]const []const u8 {
         var out: std.ArrayList([]const u8) = .empty;
         var found = false;
         for (self.custom_types.items) |ct| if (std.mem.eql(u8, ct.name, name)) {
-            out.appendSlice(self.a, ct.globs) catch die("oom\n", .{});
+            out.appendSlice(self.a, ct.globs) catch oom();
             found = true;
         };
         return if (found) out.items else null;
@@ -396,18 +408,18 @@ const Builder = struct {
     /// same way `-g` globs are, so both match against the full display path.
     fn addPreGlob(self: *Builder, g: []const u8) void {
         if (g.len > 0 and g[0] == '!') {
-            self.pre_excludes.append(self.a, stripAnchor(g[1..])) catch die("oom\n", .{});
+            self.pre_excludes.append(self.a, stripAnchor(g[1..])) catch oom();
         } else {
-            self.pre_globs.append(self.a, stripAnchor(g)) catch die("oom\n", .{});
+            self.pre_globs.append(self.a, stripAnchor(g)) catch oom();
         }
     }
     fn addGlobOne(self: *Builder, g: []const u8, insensitive: bool) void {
         if (g.len > 0 and g[0] == '!') {
-            self.excludes.append(self.a, stripAnchor(g[1..])) catch die("oom\n", .{});
+            self.excludes.append(self.a, stripAnchor(g[1..])) catch oom();
         } else if (insensitive) {
-            self.iglobs.append(self.a, stripAnchor(g)) catch die("oom\n", .{});
+            self.iglobs.append(self.a, stripAnchor(g)) catch oom();
         } else {
-            self.includes.append(self.a, stripAnchor(g)) catch die("oom\n", .{});
+            self.includes.append(self.a, stripAnchor(g)) catch oom();
         }
     }
 };
@@ -417,7 +429,7 @@ const Builder = struct {
 /// itself; an unbalanced `{` is left literal.
 fn braceExpand(a: std.mem.Allocator, pat: []const u8, out: *std.ArrayList([]const u8)) void {
     const open = std.mem.indexOfScalar(u8, pat, '{') orelse {
-        out.append(a, a.dupe(u8, pat) catch die("oom\n", .{})) catch die("oom\n", .{});
+        out.append(a, a.dupe(u8, pat) catch oom()) catch oom();
         return;
     };
     var depth: usize = 0;
@@ -433,7 +445,7 @@ fn braceExpand(a: std.mem.Allocator, pat: []const u8, out: *std.ArrayList([]cons
         }
     }
     const c = close orelse {
-        out.append(a, a.dupe(u8, pat) catch die("oom\n", .{})) catch die("oom\n", .{});
+        out.append(a, a.dupe(u8, pat) catch oom()) catch oom();
         return;
     };
     const prefix = pat[0..open];
@@ -446,7 +458,7 @@ fn braceExpand(a: std.mem.Allocator, pat: []const u8, out: *std.ArrayList([]cons
         const at_end = j == inner.len;
         if (!at_end and inner[j] == '{') d += 1 else if (!at_end and inner[j] == '}') d -= 1;
         if (at_end or (inner[j] == ',' and d == 0)) {
-            const combined = std.fmt.allocPrint(a, "{s}{s}{s}", .{ prefix, inner[start..j], suffix }) catch die("oom\n", .{});
+            const combined = std.fmt.allocPrint(a, "{s}{s}{s}", .{ prefix, inner[start..j], suffix }) catch oom();
             braceExpand(a, combined, out); // recurse to expand any remaining groups
             start = j + 1;
         }
@@ -482,30 +494,30 @@ fn unescape(a: std.mem.Allocator, s: []const u8) []const u8 {
     var i: usize = 0;
     while (i < s.len) : (i += 1) {
         if (s[i] != '\\' or i + 1 >= s.len) {
-            out.append(a, s[i]) catch die("oom\n", .{});
+            out.append(a, s[i]) catch oom();
             continue;
         }
         i += 1;
         switch (s[i]) {
-            'n' => out.append(a, '\n') catch die("oom\n", .{}),
-            'r' => out.append(a, '\r') catch die("oom\n", .{}),
-            't' => out.append(a, '\t') catch die("oom\n", .{}),
-            '0' => out.append(a, 0) catch die("oom\n", .{}),
-            '\\' => out.append(a, '\\') catch die("oom\n", .{}),
+            'n' => out.append(a, '\n') catch oom(),
+            'r' => out.append(a, '\r') catch oom(),
+            't' => out.append(a, '\t') catch oom(),
+            '0' => out.append(a, 0) catch oom(),
+            '\\' => out.append(a, '\\') catch oom(),
             'x' => {
                 if (i + 2 < s.len) {
                     const hi = std.fmt.parseInt(u8, s[i + 1 .. i + 3], 16) catch die("bad \\x escape\n", .{});
-                    out.append(a, hi) catch die("oom\n", .{});
+                    out.append(a, hi) catch oom();
                     i += 2;
                 } else die("bad \\x escape\n", .{});
             },
             else => {
-                out.append(a, '\\') catch die("oom\n", .{});
-                out.append(a, s[i]) catch die("oom\n", .{});
+                out.append(a, '\\') catch oom();
+                out.append(a, s[i]) catch oom();
             },
         }
     }
-    return out.toOwnedSlice(a) catch die("oom\n", .{});
+    return out.toOwnedSlice(a) catch oom();
 }
 
 /// Parse a `--max-filesize` value: a decimal with an optional `K`/`M`/`G` (1024-
@@ -855,7 +867,7 @@ fn parseShort(b: *Builder, arg: []const u8, i: *usize, all: []const []const u8) 
                 return;
             },
             .file => {
-                b.pat_files.append(b.a, takeVal(arg, j, i, all)) catch die("oom\n", .{});
+                b.pat_files.append(b.a, takeVal(arg, j, i, all)) catch oom();
                 return;
             },
             .after => {
@@ -1053,7 +1065,7 @@ fn parseLong(b: *Builder, arg: []const u8, i: *usize, all: []const []const u8) v
         .no_require_git => o.no_require_git = true,
         .require_git => o.no_require_git = false, // undo an earlier --no-require-git
         .ignore_file_ci => o.ignore_case_insensitive = true,
-        .ignore_file => b.ignore_files.append(b.a, val(inl, i, all)) catch die("oom\n", .{}),
+        .ignore_file => b.ignore_files.append(b.a, val(inl, i, all)) catch oom(),
         .no_index => o.no_index = true,
         .index => o.no_index = false,
         // --rank takes an OPTIONAL inline count only (`--rank=N`); a bare `--rank`
@@ -1091,7 +1103,7 @@ fn parseLong(b: *Builder, arg: []const u8, i: *usize, all: []const []const u8) v
         .ctxsep => o.ctx_sep = unescape(b.a, val(inl, i, all)),
         .no_ctxsep => o.ctx_sep = null,
         .replace => o.replace = val(inl, i, all),
-        .file => b.pat_files.append(b.a, val(inl, i, all)) catch die("oom\n", .{}),
+        .file => b.pat_files.append(b.a, val(inl, i, all)) catch oom(),
         // --color WHEN: resolved to an actual go/no-go (stdout tty + env) by
         // `color.zig` at emit time — this just records the requested mode.
         .color => {
@@ -1132,13 +1144,13 @@ pub fn parseArgv(a: std.mem.Allocator, args: []const []const u8) Parsed {
             // exists (`-f FILE`), in which case every positional is a PATH.
             b.pat = arg;
         } else {
-            b.roots.append(a, arg) catch die("oom\n", .{});
+            b.roots.append(a, arg) catch oom();
         }
     }
     // --files / --type-list take no pattern; a stray "pattern" is actually a path.
     if (b.o.noPattern()) {
         if (b.pat) |p0| {
-            b.roots.insert(a, 0, p0) catch die("oom\n", .{});
+            b.roots.insert(a, 0, p0) catch oom();
             b.pat = null;
         }
     } else if (b.pat == null and b.pat_files.items.len == 0) {
@@ -1147,8 +1159,8 @@ pub fn parseArgv(a: std.mem.Allocator, args: []const []const u8) Parsed {
     // Assemble the in-argv patterns (bare / -e / --regexp); pattern FILES are read
     // later by the caller (needs IO) and appended there.
     var pats: std.ArrayList([]const u8) = .empty;
-    if (b.pat) |p0| pats.append(a, p0) catch die("oom\n", .{});
-    pats.appendSlice(a, b.extra_pats.items) catch die("oom\n", .{});
+    if (b.pat) |p0| pats.append(a, p0) catch oom();
+    pats.appendSlice(a, b.extra_pats.items) catch oom();
     // -A/-B take precedence over -C regardless of order (ripgrep's rule).
     b.o.after = b.a_val orelse b.c_val orelse 0;
     b.o.before = b.b_val orelse b.c_val orelse 0;
@@ -1170,26 +1182,26 @@ pub fn parseArgv(a: std.mem.Allocator, args: []const []const u8) Parsed {
     }
     // --glob-case-insensitive: fold case-sensitive includes into the iglob set.
     if (b.glob_ci) {
-        b.iglobs.appendSlice(a, b.includes.items) catch die("oom\n", .{});
+        b.iglobs.appendSlice(a, b.includes.items) catch oom();
         b.includes.clearRetainingCapacity();
     }
     b.o.filter = .{
-        .exts = b.exts.toOwnedSlice(a) catch die("oom\n", .{}),
-        .neg_exts = b.neg_exts.toOwnedSlice(a) catch die("oom\n", .{}),
-        .includes = b.includes.toOwnedSlice(a) catch die("oom\n", .{}),
-        .iglobs = b.iglobs.toOwnedSlice(a) catch die("oom\n", .{}),
-        .excludes = b.excludes.toOwnedSlice(a) catch die("oom\n", .{}),
+        .exts = b.exts.toOwnedSlice(a) catch oom(),
+        .neg_exts = b.neg_exts.toOwnedSlice(a) catch oom(),
+        .includes = b.includes.toOwnedSlice(a) catch oom(),
+        .iglobs = b.iglobs.toOwnedSlice(a) catch oom(),
+        .excludes = b.excludes.toOwnedSlice(a) catch oom(),
         .type_all = b.type_all,
         .ntype_all = b.ntype_all,
     };
-    b.o.ignore_files = b.ignore_files.toOwnedSlice(a) catch die("oom\n", .{});
-    b.o.pre_globs = b.pre_globs.toOwnedSlice(a) catch die("oom\n", .{});
-    b.o.pre_excludes = b.pre_excludes.toOwnedSlice(a) catch die("oom\n", .{});
+    b.o.ignore_files = b.ignore_files.toOwnedSlice(a) catch oom();
+    b.o.pre_globs = b.pre_globs.toOwnedSlice(a) catch oom();
+    b.o.pre_excludes = b.pre_excludes.toOwnedSlice(a) catch oom();
     return .{
-        .patterns = pats.toOwnedSlice(a) catch die("oom\n", .{}),
+        .patterns = pats.toOwnedSlice(a) catch oom(),
         .opts = b.o,
-        .roots = b.roots.toOwnedSlice(a) catch die("oom\n", .{}),
-        .pattern_files = b.pat_files.toOwnedSlice(a) catch die("oom\n", .{}),
+        .roots = b.roots.toOwnedSlice(a) catch oom(),
+        .pattern_files = b.pat_files.toOwnedSlice(a) catch oom(),
     };
 }
 

@@ -40,15 +40,10 @@ pub const trigram = @import("index/trigram.zig");
 pub const persist = @import("index/persist.zig");
 
 // ── regex engine ──
+// Submodules are imported by their consumers directly; only the core + DFA
+// surfaces are re-exported at the root for the C-ABI / library consumers.
 pub const regex = @import("regex/core.zig");
-pub const regex_syntax = @import("regex/syntax.zig");
-pub const regex_analysis = @import("regex/analysis.zig");
-pub const regex_compile = @import("regex/compile.zig");
-pub const regex_prefilter = @import("regex/prefilter.zig");
 pub const regex_dfa = @import("regex/dfa.zig");
-pub const regex_captures = @import("regex/captures.zig");
-pub const regex_pcre2 = @import("regex/pcre2.zig");
-pub const regex_matcher = @import("regex/matcher.zig");
 
 // ── ranking ──
 pub const rank = @import("rank/rank.zig");
@@ -63,6 +58,18 @@ pub const corpus = @import("corpus/corpus.zig");
 pub const haystack = @import("corpus/haystack.zig");
 pub const bulkstat = @import("corpus/bulkstat.zig");
 pub const fresh = @import("corpus/fresh.zig");
+
+// ── irregex: the irregular-expression primitives (match ∪ relate ∪ weave) ──
+// The set-shaped tier over the engine: PatternSet compiles MANY intents with
+// exact per-pattern attribution (the match half), Sketch measures compression
+// kinship between byte bodies (the relate half — LZ dictionaries, no parsing),
+// and loom executes a closed filter/group/sort/limit plan over the attributed
+// stream engine-side. Primitives only — faces (CLI verbs, bindings) consume.
+pub const irregex = struct {
+    pub const patterns = @import("irregex/patterns.zig");
+    pub const sketch = @import("irregex/sketch.zig");
+    pub const loom = @import("irregex/loom.zig");
+};
 
 // ── the transport-neutral compiled query (the shared search core) ──
 // One deep module owns "a search intent, compiled": the fail-closed, thread-safe
@@ -113,6 +120,8 @@ pub const commands = struct {
     /// `gist serve` — the resident daemon that keeps a `session` warm behind a
     /// Unix socket (ADR-352 rung 2.5).
     pub const serve = @import("commands/serve/serve.zig");
+    /// The irregex faces — `similar`/`dups`/`patterns` over `src/irregex/`.
+    pub const irregex = @import("commands/irregex/irregex.zig");
     /// The CLI's warm fast path — dial the daemon for an eligible query, emit
     /// byte-identically to cold, else fall back (`attempt`).
     pub const client = @import("commands/client/client.zig");
@@ -193,6 +202,9 @@ test {
     _ = @import("scan/simd_test.zig"); // SIMD `contains` differential fuzz vs std
     _ = @import("corpus/fresh_test.zig"); // T3 freshness `widen` set-algebra
     _ = @import("engine/query_test.zig"); // shared compiled-query: compile/prefilter/match vs oracle
+    _ = @import("irregex/sketch_test.zig"); // relate half: kinship metric semantics + clustering gate
+    _ = @import("irregex/patterns_test.zig"); // match half: set ≡ N single-pattern oracles (gate off/on)
+    _ = @import("irregex/loom_test.zig"); // weave: closed op set — total, deterministic, hand-tallied
     _ = @import("session/request_test.zig"); // resident request eligibility classifier
     _ = @import("session/mirror.zig"); // faithful corpus ingest: BOM/UTF-16 decode, whole-body NUL, no cap
     _ = @import("session/render.zig"); // warm lines renderer: cold-Emitter byte parity

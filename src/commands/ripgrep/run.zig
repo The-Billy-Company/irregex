@@ -50,9 +50,12 @@ const persist = @import("../../index/persist.zig");
 const fresh = @import("../../corpus/fresh.zig");
 const rank = @import("rank.zig");
 const query_mod = @import("../../engine/query.zig");
+const paths_mod = @import("paths.zig");
+const replaceSep = paths_mod.replaceSep;
 const Opts = args.Opts;
 const Emitter = output.Emitter;
 const die = args.die;
+const oom = args.oom;
 const Regex = @import("../../regex/core.zig").Regex;
 const Matcher = @import("../../regex/matcher.zig").Matcher;
 const pcre2 = @import("../../regex/pcre2.zig");
@@ -76,42 +79,22 @@ const emitStats = grepfile.emitStats;
 
 const InFile = struct { path: []const u8, bytes: []const u8, explicit: bool = false, sort_time: i96 = 0, root: u32 = 0 };
 
-/// Replace every `/` in `path` with the (arbitrary-length) `sep` string for
-/// `--path-separator`. Returns `path` unchanged when it has no separator.
-fn replaceSep(a: std.mem.Allocator, path: []const u8, sep: []const u8) []const u8 {
-    if (std.mem.indexOfScalar(u8, path, '/') == null) return path;
-    var out: std.ArrayList(u8) = .empty;
-    for (path) |c| {
-        if (c == '/') out.appendSlice(a, sep) catch die("oom\n", .{}) else out.append(a, c) catch die("oom\n", .{});
-    }
-    return out.toOwnedSlice(a) catch die("oom\n", .{});
-}
-
-fn escapeLiteral(a: std.mem.Allocator, pat: []const u8) []u8 {
-    var out: std.ArrayList(u8) = .empty;
-    for (pat) |c| {
-        switch (c) {
-            '.', '^', '$', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '\\' => out.append(a, '\\') catch die("oom\n", .{}),
-            else => {},
-        }
-        out.append(a, c) catch die("oom\n", .{});
-    }
-    return out.toOwnedSlice(a) catch die("oom\n", .{});
-}
-
 /// Depth of a walker-relative path (root children = 1). `--max-depth` caps it.
 fn pathDepth(rel: []const u8) usize {
     return std.mem.count(u8, rel, "/") + 1;
 }
 
 /// A walker entry's path relative to CWD (prefix-joined), for output + ignore.
+/// Deliberate near-twin of the pipeline's `joinRel`: this one ALWAYS allocates
+/// because `p` aliases the walker's reused path buffer (invalid once the walk
+/// advances); `joinRel` may borrow — its `name` is already arena-owned.
 fn relPath(a: std.mem.Allocator, prefix: []const u8, p: []const u8) []const u8 {
-    return if (prefix.len == 0) a.dupe(u8, p) catch die("oom\n", .{}) else std.fmt.allocPrint(a, "{s}/{s}", .{ prefix, p }) catch die("oom\n", .{});
+    return if (prefix.len == 0) a.dupe(u8, p) catch oom() else std.fmt.allocPrint(a, "{s}/{s}", .{ prefix, p }) catch oom();
 }
 
 /// A walker entry's on-disk path (root-joined), for opening/reading ignore files.
 fn diskPath(a: std.mem.Allocator, root_path: []const u8, p: []const u8) []const u8 {
-    return if (std.mem.eql(u8, root_path, ".")) a.dupe(u8, p) catch die("oom\n", .{}) else std.fmt.allocPrint(a, "{s}/{s}", .{ root_path, p }) catch die("oom\n", .{});
+    return if (std.mem.eql(u8, root_path, ".")) a.dupe(u8, p) catch oom() else std.fmt.allocPrint(a, "{s}/{s}", .{ root_path, p }) catch oom();
 }
 
 /// A file the walk found but hasn't read yet: `rel` is the display path
@@ -127,13 +110,12 @@ fn diskPath(a: std.mem.Allocator, root_path: []const u8, p: []const u8) []const 
 /// only the files WITHIN each root sort (rg hiargs.rs `sort_by_file_name`).
 const Candidate = struct { rel: []const u8, disk: []const u8, explicit: bool = false, root: u32 = 0 };
 
-/// ripgrep prints a walk error to stderr (`rg: <path>: <errno>`) and lets the run
-/// exit 2: a directory it could not descend is a POTENTIAL false negative that
-/// MUST be signaled, never skipped in silence. Mirror that — name the path,
-/// carry the errno phrase (`pathErrNote`, shared with the explicit-PATH path),
-/// and set the shared error flag so `collectFiles` surfaces exit 2.
+/// ripgrep prints a walk error to stderr and lets the run exit 2: a directory
+/// it could not descend is a POTENTIAL false negative that MUST be signaled,
+/// never skipped in silence. Rendering is the shared `grepfile.printWalkError`;
+/// this sets the serial engine's error flag so `collectFiles` surfaces exit 2.
 fn reportWalkError(rel: []const u8, e: anyerror, walk_error: *bool) void {
-    std.debug.print("gist: {s}: {s}\n", .{ rel, grepfile.pathErrNote(e) });
+    grepfile.printWalkError(rel, e);
     walk_error.* = true;
 }
 
@@ -179,19 +161,12 @@ fn containsPath(haystack_paths: []const []const u8, needle_path: []const u8) boo
 /// stat'd. Powers `--one-file-system`: a directory whose device differs from
 /// the walk's starting device is a mount point we refuse to descend. `i128`
 /// holds every platform's `dev_t` (darwin `i32`, linux `u64`) without loss.
-/// Raw `stat(2)` (via `fstatat` at CWD) — the one syscall behind both
-/// `--one-file-system` (device id) and `--sort created` (birth time), neither of
-/// which the portable `std.Io` `Stat` exposes. Null on any stat failure.
-fn rawStat(path: []const u8) ?std.posix.Stat {
-    const cpath = std.posix.toPosixPath(path) catch return null;
-    var st: std.posix.Stat = undefined;
-    if (std.c.fstatat(std.posix.AT.FDCWD, &cpath, &st, 0) != 0) return null;
-    return st;
-}
-
+/// Raw stat via the shared portable shim (`grepfile.statPath`) — the one call
+/// behind both `--one-file-system` (device id) and `--sort created` (birth
+/// time), neither of which the portable `std.Io` `Stat` exposes.
 fn deviceOf(path: []const u8) ?i128 {
-    const st = rawStat(path) orelse return null;
-    return @intCast(st.dev);
+    const st = grepfile.statPath(path) orelse return null;
+    return st.dev;
 }
 
 /// True iff `--one-file-system` is active AND `path` sits on a different device
@@ -258,7 +233,7 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
                 }
             } else |_| {
                 if (o.max_depth != 0 and depth > o.max_depth) continue;
-                out.append(a, .{ .rel = rel, .disk = full }) catch die("oom\n", .{});
+                out.append(a, .{ .rel = rel, .disk = full }) catch oom();
             }
             continue;
         }
@@ -283,7 +258,7 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
         if (entry.kind != .file) continue;
         if (ig.shouldSkip(rel, false, entry.basename, wl_ig, wl_hid)) continue;
         if (o.max_depth != 0 and depth > o.max_depth) continue;
-        out.append(a, .{ .rel = rel, .disk = diskPath(a, root_path, entry.path) }) catch die("oom\n", .{});
+        out.append(a, .{ .rel = rel, .disk = diskPath(a, root_path, entry.path) }) catch oom();
     }
 }
 
@@ -327,7 +302,7 @@ fn gather(a: std.mem.Allocator, io: std.Io, roots: []const []const u8, o: Opts, 
             // to stderr and forces the error exit — never dropped silently.
             if (std.posix.openat(std.posix.AT.FDCWD, r, .{ .ACCMODE = .RDONLY }, 0)) |fd| {
                 _ = std.posix.system.close(fd);
-                out.append(a, .{ .rel = r, .disk = r, .explicit = true }) catch die("oom\n", .{});
+                out.append(a, .{ .rel = r, .disk = r, .explicit = true }) catch oom();
             } else |ferr| {
                 std.debug.print("gist: {s}: {s}\n", .{ r, grepfile.pathErrNote(ferr) });
                 path_error = true;
@@ -359,7 +334,7 @@ pub fn defaultFileSet(a: std.mem.Allocator, io: std.Io, roots: []const []const u
     var ig = ignore.Ignore.init(a, io, o, roots);
     var candidates: std.ArrayList(Candidate) = .empty;
     const g = gather(a, io, roots, o, &ig, &candidates);
-    const paths = a.alloc([]const u8, candidates.items.len) catch die("oom\n", .{});
+    const paths = a.alloc([]const u8, candidates.items.len) catch oom();
     for (candidates.items, paths) |c, *p| p.* = c.rel;
     return .{ .paths = paths, .path_error = g.path_error };
 }
@@ -449,7 +424,7 @@ fn readCandidates(dest: std.mem.Allocator, gpa: std.mem.Allocator, candidates: [
     // shared datum, the `--pre` failure latch, is an atomic store. Parallelizing
     // the decode is the whole point: it's the bottleneck rg pays per file.
     const nshards = if (candidates.len < par_threshold) 1 else @min(candidates.len, ncpu);
-    const shards = gpa.alloc(ReadShard, nshards) catch die("oom\n", .{});
+    const shards = gpa.alloc(ReadShard, nshards) catch oom();
     defer gpa.free(shards);
     const per = (candidates.len + nshards - 1) / nshards;
     var off: usize = 0;
@@ -462,14 +437,14 @@ fn readCandidates(dest: std.mem.Allocator, gpa: std.mem.Allocator, candidates: [
     if (nshards == 1) {
         readShard(&shards[0]);
     } else {
-        const threads = gpa.alloc(std.Thread, nshards) catch die("oom\n", .{});
+        const threads = gpa.alloc(std.Thread, nshards) catch oom();
         defer gpa.free(threads);
         for (shards, 0..) |*sh, k| threads[k] = std.Thread.spawn(.{}, readShard, .{sh}) catch die("thread spawn failed\n", .{});
         for (threads) |t| t.join();
     }
-    out.ensureUnusedCapacity(dest, candidates.len) catch die("oom\n", .{});
+    out.ensureUnusedCapacity(dest, candidates.len) catch oom();
     for (shards) |*sh| {
-        for (sh.out.items) |f| out.appendAssumeCapacity(.{ .path = f.path, .bytes = dest.dupe(u8, f.bytes) catch die("oom\n", .{}), .explicit = f.explicit, .root = f.root });
+        for (sh.out.items) |f| out.appendAssumeCapacity(.{ .path = f.path, .bytes = dest.dupe(u8, f.bytes) catch oom(), .explicit = f.explicit, .root = f.root });
         sh.out.deinit(gpa);
         sh.arena.deinit();
     }
@@ -644,10 +619,10 @@ fn collectFiles(
         // match, which lists every non-matching file — so there it's kept as an
         // unread (empty-body) entry, which the run loop treats as "no match".
         var to_read: std.ArrayList(Candidate) = .empty;
-        to_read.ensureTotalCapacity(a, candidates.items.len) catch die("oom\n", .{});
+        to_read.ensureTotalCapacity(a, candidates.items.len) catch oom();
         for (candidates.items) |c| {
             if (s.skip(c.rel)) {
-                if (o.files_without) all.append(a, .{ .path = c.rel, .bytes = "", .explicit = c.explicit, .root = c.root }) catch die("oom\n", .{});
+                if (o.files_without) all.append(a, .{ .path = c.rel, .bytes = "", .explicit = c.explicit, .root = c.root }) catch oom();
             } else to_read.appendAssumeCapacity(c);
         }
         break :blk to_read.items;
@@ -655,7 +630,7 @@ fn collectFiles(
     readCandidates(a, gpa, read_list, file_needle, &all, cfg);
 
     var files: std.ArrayList(InFile) = .empty;
-    files.ensureTotalCapacity(a, all.items.len) catch die("oom\n", .{});
+    files.ensureTotalCapacity(a, all.items.len) catch oom();
     for (all.items) |f| {
         if (o.filter.active() and !o.filter.admits(a, f.path)) continue;
         if (o.max_filesize != 0 and f.bytes.len > o.max_filesize) continue;
@@ -720,7 +695,7 @@ fn stripLeadingFlags(pat: []const u8) ?LeadingFlags {
 /// exactly as in rg.
 fn combinePatterns(a: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: *Opts) ?[]const u8 {
     var pats: std.ArrayList([]const u8) = .empty;
-    pats.appendSlice(a, parsed.patterns) catch die("oom\n", .{});
+    pats.appendSlice(a, parsed.patterns) catch oom();
     for (parsed.pattern_files) |pf| {
         const buf = Dir.cwd().readFileAlloc(io, pf, a, .limited(corpus_mod.per_file_cap)) catch
             die("cannot read pattern file: {s}\n", .{pf});
@@ -730,12 +705,12 @@ fn combinePatterns(a: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: *Op
             // The piece after a final '\n' is a phantom (not a pattern); every
             // other line — including a genuinely empty one — is a real pattern.
             if (it.index == null and ln.len == 0) break;
-            pats.append(a, std.mem.trimEnd(u8, ln, "\r")) catch die("oom\n", .{});
+            pats.append(a, std.mem.trimEnd(u8, ln, "\r")) catch oom();
         }
     }
     if (pats.items.len == 0) return null;
     if (parsed.opts.fixed) {
-        for (pats.items) |*p| p.* = escapeLiteral(a, p.*);
+        for (pats.items) |*p| p.* = query_mod.escapeLiteral(a, p.*) catch oom();
     } else {
         // Resolve leading `(?flags)` directives. `demand` is the caseless
         // setting some pattern explicitly asked for; `inherit` marks a pattern
@@ -779,12 +754,12 @@ fn combinePatterns(a: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: *Op
     if (pats.items.len > 1) {
         var buf: std.ArrayList(u8) = .empty;
         for (pats.items, 0..) |p, i| {
-            if (i != 0) buf.append(a, '|') catch die("oom\n", .{});
-            buf.print(a, "(?:{s})", .{p}) catch die("oom\n", .{});
+            if (i != 0) buf.append(a, '|') catch oom();
+            buf.print(a, "(?:{s})", .{p}) catch oom();
         }
-        combined = buf.toOwnedSlice(a) catch die("oom\n", .{});
+        combined = buf.toOwnedSlice(a) catch oom();
     }
-    if (parsed.opts.line_regexp) combined = std.fmt.allocPrint(a, "^(?:{s})$", .{combined}) catch die("oom\n", .{});
+    if (parsed.opts.line_regexp) combined = std.fmt.allocPrint(a, "^(?:{s})$", .{combined}) catch oom();
     return combined;
 }
 
@@ -865,14 +840,13 @@ fn sortTimeOf(io: std.Io, key: args.SortKey, path: []const u8) i96 {
     };
 }
 
-/// File birth time in ns, or null where the platform doesn't record it (then the
-/// caller falls back to ctime). macOS carries it in `struct stat`; gist declines
-/// to invent one elsewhere rather than silently mislabel ctime as creation.
+/// File birth time in ns, or null where the platform/filesystem doesn't record
+/// one (then the caller falls back to ctime). macOS carries it in `struct
+/// stat`, Linux in `statx` BTIME; gist declines to invent one elsewhere rather
+/// than silently mislabel ctime as creation.
 fn createdTimeNs(path: []const u8) ?i96 {
-    if (builtin.target.os.tag != .macos) return null;
-    const st = rawStat(path) orelse return null;
-    const bt = st.birthtime();
-    return @as(i96, bt.sec) * std.time.ns_per_s + bt.nsec;
+    const st = grepfile.statPath(path) orelse return null;
+    return st.birthtime_ns;
 }
 
 /// ripgrep's `is_readable_stdin` (grep/cli): `!is_terminal(fd0) && (is_file ||
@@ -902,8 +876,7 @@ const stdin_poll_timeout_ms = 200;
 /// the daemon's tree corpus can never answer — the client must detect the same
 /// condition, with the same fd-type rules, and decline to cold.
 pub fn readableStdin() bool {
-    var st: std.posix.Stat = undefined;
-    if (std.posix.system.fstat(0, &st) != 0) return false;
+    const st = grepfile.statFd(0) orelse return false;
     const fmt = st.mode & std.posix.S.IFMT;
     if (fmt == std.posix.S.IFREG) return true;
     if (fmt != std.posix.S.IFIFO and fmt != std.posix.S.IFSOCK) return false;
@@ -930,9 +903,9 @@ fn readStdin(a: std.mem.Allocator) []const u8 {
         if (ready == 0) break; // silent for too long — stop waiting, not hanging
         const n = std.posix.read(0, &tmp) catch break;
         if (n == 0) break;
-        buf.appendSlice(a, tmp[0..n]) catch die("oom\n", .{});
+        buf.appendSlice(a, tmp[0..n]) catch oom();
     }
-    return buf.toOwnedSlice(a) catch die("oom\n", .{});
+    return buf.toOwnedSlice(a) catch oom();
 }
 
 // ─────────────────────────── run ───────────────────────────
@@ -1027,7 +1000,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // listing is rg-shaped and rg-sorted while covering more types + globs.
     if (o.type_list) {
         var out: std.ArrayList(u8) = .empty;
-        types.writeTypeList(a, &out) catch die("oom\n", .{});
+        types.writeTypeList(a, &out) catch oom();
         corpus_mod.emitStdout(out.items);
         std.process.exit(0);
     }
@@ -1043,7 +1016,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         const c = collectFiles(a, gpa, io, parsed, &.{}, null, &icfg);
         if (o.quiet) std.process.exit(if (c.path_error) 2 else if (c.files.len > 0) 0 else 1);
         var out: std.ArrayList(u8) = .empty;
-        for (c.files) |f| out.print(a, "{s}{c}", .{ f.path, if (o.null_sep) @as(u8, 0) else '\n' }) catch die("oom\n", .{});
+        for (c.files) |f| out.print(a, "{s}{c}", .{ f.path, if (o.null_sep) @as(u8, 0) else '\n' }) catch oom();
         corpus_mod.emitStdout(out.items);
         std.process.exit(if (c.path_error) 2 else if (c.files.len > 0) 0 else 1);
     }
@@ -1085,7 +1058,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         // `ingest`), keeping the ranked view correct over the rewritten stream.
         if (!o.no_index and !transforming and try rank.run(gpa, io, rex, parsed.roots, o.rank_k, o.caseless)) return;
         const c = collectFiles(a, gpa, io, parsed, &.{}, requiredLiteralGate(o, &re), &icfg);
-        const live = a.alloc(rank.LiveFile, c.files.len) catch die("oom\n", .{});
+        const live = a.alloc(rank.LiveFile, c.files.len) catch oom();
         for (c.files, live) |file, *dst| dst.* = .{ .path = file.path, .bytes = file.bytes };
         try rank.runLive(gpa, io, rex, live, o.rank_k);
         if (c.path_error or pre_error.load(.seq_cst)) std.process.exit(2);
@@ -1161,7 +1134,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // --json: ripgrep's JSON Lines record stream (own printer, shared engine).
     if (o.json) {
         var jf: std.ArrayList(json.File) = .empty;
-        for (files) |f| jf.append(a, .{ .path = f.path, .body = stripBom(f.bytes) }) catch die("oom\n", .{});
+        for (files) |f| jf.append(a, .{ .path = f.path, .body = stripBom(f.bytes) }) catch oom();
         var out: std.ArrayList(u8) = .empty;
         const matched = json.run(a, &out, &re, caps, o, jf.items);
         corpus_mod.emitStdout(out.items);
@@ -1214,7 +1187,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
                 }
                 break :blk false;
             };
-            if (!any) out.print(a, "{s}{c}", .{ f.path, if (o.null_sep) @as(u8, 0) else '\n' }) catch die("oom\n", .{});
+            if (!any) out.print(a, "{s}{c}", .{ f.path, if (o.null_sep) @as(u8, 0) else '\n' }) catch oom();
         }
         corpus_mod.emitStdout(out.items);
         pcreFaultExit(&re);
@@ -1253,12 +1226,12 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         }
         const before = out.items.len;
         // --heading: a blank-line-separated group per file, path on its own line.
-        if (heading) out.print(a, "{s}{s}\n", .{ if (first) "" else "\n", f.path }) catch die("oom\n", .{});
+        if (heading) out.print(a, "{s}{s}\n", .{ if (first) "" else "\n", f.path }) catch oom();
         em.base = @intFromPtr(body.ptr);
         const hits = if (o.multiline) em.buffer(f.path, body) else em.file(f.path, lines.items);
         if (hits > 0) {
             if (join_groups and !first and out.items.len > before)
-                out.insertSlice(a, before, "--\n") catch die("oom\n", .{});
+                out.insertSlice(a, before, "--\n") catch oom();
             first = false;
             matched_files += 1;
         } else if (heading) {

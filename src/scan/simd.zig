@@ -81,6 +81,8 @@ pub fn containsAny(hay: []const u8, needles: []const []const u8) bool {
     return false;
 }
 
+/// Substring presence, byte-exact with `std.mem.indexOf != null` (see the
+/// module doc for the first+last-byte SIMD scheme and why it beats std here).
 pub fn contains(hay: []const u8, needle: []const u8) bool {
     const n = needle.len;
     if (n == 0) return true;

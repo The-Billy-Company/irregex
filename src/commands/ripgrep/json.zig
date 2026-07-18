@@ -22,6 +22,7 @@ const output = @import("output.zig");
 const ml = @import("multiline.zig");
 const Opts = args.Opts;
 const die = args.die;
+const oom = args.oom;
 const Regex = @import("../../regex/core.zig").Regex;
 const Matcher = @import("../../regex/matcher.zig").Matcher;
 const captures_mod = @import("../../regex/captures.zig");
@@ -63,7 +64,7 @@ fn emitFile(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, s
         const content_end = nl orelse f.body.len;
         const text_end = if (nl) |n| n + 1 else f.body.len;
         const content = f.body[pos..content_end];
-        lines.append(a, .{ .off = pos, .view = if (o.crlf) std.mem.trimEnd(u8, content, "\r") else content, .text = f.body[pos..text_end] }) catch die("oom\n", .{});
+        lines.append(a, .{ .off = pos, .view = if (o.crlf) std.mem.trimEnd(u8, content, "\r") else content, .text = f.body[pos..text_end] }) catch oom();
         if (nl == null) break;
         pos = text_end;
     }
@@ -94,25 +95,25 @@ fn emitFile(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, s
     st.matches += fm;
     if (o.quiet) return; // --quiet: tally stats, suppress the record stream
 
-    out.print(a, "{{\"type\":\"begin\",\"data\":{{\"path\":{{\"text\":", .{}) catch die("oom\n", .{});
+    out.print(a, "{{\"type\":\"begin\",\"data\":{{\"path\":{{\"text\":", .{}) catch oom();
     jsonStr(a, out, f.path);
-    out.appendSlice(a, "}}}\n") catch die("oom\n", .{});
+    add(a, out, "}}}\n");
 
     for (lines.items) |ln| {
         if (ln.kind == 0) continue;
         const is_match = ln.kind == 2;
-        out.print(a, "{{\"type\":\"{s}\",\"data\":{{\"path\":{{\"text\":", .{if (is_match) "match" else "context"}) catch die("oom\n", .{});
+        out.print(a, "{{\"type\":\"{s}\",\"data\":{{\"path\":{{\"text\":", .{if (is_match) "match" else "context"}) catch oom();
         jsonStr(a, out, f.path);
-        out.appendSlice(a, "},\"lines\":{\"text\":") catch die("oom\n", .{});
+        add(a, out, "},\"lines\":{\"text\":");
         jsonStr(a, out, ln.text);
-        out.print(a, "}},\"line_number\":{d},\"absolute_offset\":{d},\"submatches\":[", .{ lineNo(lines.items, ln), ln.off }) catch die("oom\n", .{});
+        out.print(a, "}},\"line_number\":{d},\"absolute_offset\":{d},\"submatches\":[", .{ lineNo(lines.items, ln), ln.off }) catch oom();
         if (is_match and !o.invert) _ = emitSubmatches(a, out, re, ss, caps, o, ln.view);
-        out.appendSlice(a, "]}}\n") catch die("oom\n", .{});
+        add(a, out, "]}}\n");
     }
 
-    out.print(a, "{{\"type\":\"end\",\"data\":{{\"path\":{{\"text\":", .{}) catch die("oom\n", .{});
+    out.print(a, "{{\"type\":\"end\",\"data\":{{\"path\":{{\"text\":", .{}) catch oom();
     jsonStr(a, out, f.path);
-    out.print(a, "}},\"binary_offset\":null,\"stats\":{{\"elapsed\":{{\"secs\":0,\"nanos\":0,\"human\":\"0.000000s\"}},\"searches\":1,\"searches_with_match\":1,\"bytes_searched\":{d},\"bytes_printed\":0,\"matched_lines\":{d},\"matches\":{d}}}}}}}\n", .{ f.body.len, fml, fm }) catch die("oom\n", .{});
+    out.print(a, "}},\"binary_offset\":null,\"stats\":{{\"elapsed\":{{\"secs\":0,\"nanos\":0,\"human\":\"0.000000s\"}},\"searches\":1,\"searches_with_match\":1,\"bytes_searched\":{d},\"bytes_printed\":0,\"matched_lines\":{d},\"matches\":{d}}}}}}}\n", .{ f.body.len, fml, fm }) catch oom();
 }
 
 /// The `--json` record stream under `-U`/`--multiline`: one `match` record per
@@ -127,7 +128,7 @@ fn emitFileMulti(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Match
     const lines = ml.splitLines(a, body, o.term());
     // Non-empty spans only — a submatch is a real, painted span in rg's JSON.
     var spans: std.ArrayList(ml.Span) = .empty;
-    for (ml.collect(a, re, o, body)) |sp| if (sp.end > sp.start) spans.append(a, sp) catch die("oom\n", .{});
+    for (ml.collect(a, re, o, body)) |sp| if (sp.end > sp.start) spans.append(a, sp) catch oom();
 
     if (o.invert) return emitFileMultiInvert(a, out, o, f, lines, spans.items, st);
     if (spans.items.len == 0) return;
@@ -146,7 +147,7 @@ fn emitFileMulti(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Match
             const ll = ml.lineIndexAt(lines, ml.spanLast(spans.items[j]));
             if (ll > last) last = ll;
         }
-        blocks.append(a, .{ .first = first, .last = last, .s0 = i, .s1 = j }) catch die("oom\n", .{});
+        blocks.append(a, .{ .first = first, .last = last, .s0 = i, .s1 = j }) catch oom();
         i = j;
     }
 
@@ -159,9 +160,9 @@ fn emitFileMulti(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Match
 
     // Per-line record plan: which block starts here, and which lines are `-A/-B/-C`
     // context (never a covered line).
-    const starts = a.alloc(?usize, lines.len) catch die("oom\n", .{});
-    const covered = a.alloc(bool, lines.len) catch die("oom\n", .{});
-    const ctx = a.alloc(bool, lines.len) catch die("oom\n", .{});
+    const starts = a.alloc(?usize, lines.len) catch oom();
+    const covered = a.alloc(bool, lines.len) catch oom();
+    const ctx = a.alloc(bool, lines.len) catch oom();
     @memset(starts, null);
     @memset(covered, false);
     @memset(ctx, false);
@@ -198,7 +199,7 @@ fn emitFileMulti(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Match
 /// `-v` under `-U --json`: a `match` record (empty submatches) for each physical
 /// line NOT covered by any match's line span.
 fn emitFileMultiInvert(a: std.mem.Allocator, out: *std.ArrayList(u8), o: Opts, f: File, lines: []const ml.Line, spans: []const ml.Span, st: *Stats) void {
-    const covered = a.alloc(bool, lines.len) catch die("oom\n", .{});
+    const covered = a.alloc(bool, lines.len) catch oom();
     @memset(covered, false);
     for (spans) |sp| {
         const l1 = ml.lineIndexAt(lines, ml.spanLast(sp));
@@ -221,37 +222,37 @@ fn emitFileMultiInvert(a: std.mem.Allocator, out: *std.ArrayList(u8), o: Opts, f
 }
 
 fn begin(a: std.mem.Allocator, out: *std.ArrayList(u8), path: []const u8) void {
-    out.appendSlice(a, "{\"type\":\"begin\",\"data\":{\"path\":{\"text\":") catch die("oom\n", .{});
+    add(a, out, "{\"type\":\"begin\",\"data\":{\"path\":{\"text\":");
     jsonStr(a, out, path);
-    out.appendSlice(a, "}}}\n") catch die("oom\n", .{});
+    add(a, out, "}}}\n");
 }
 
 /// A whole-BLOCK `match` record: `lines.text` spans every physical line of the
 /// block, submatches carry offsets relative to the block's first-line offset.
 fn matchRecord(a: std.mem.Allocator, out: *std.ArrayList(u8), caps: ?*Caps, o: Opts, f: File, lines: []const ml.Line, body: []const u8, first: usize, last: usize, spans: []const ml.Span) void {
     const base = lines[first].start;
-    out.appendSlice(a, "{\"type\":\"match\",\"data\":{\"path\":{\"text\":") catch die("oom\n", .{});
+    add(a, out, "{\"type\":\"match\",\"data\":{\"path\":{\"text\":");
     jsonStr(a, out, f.path);
-    out.appendSlice(a, "},\"lines\":{\"text\":") catch die("oom\n", .{});
+    add(a, out, "},\"lines\":{\"text\":");
     jsonStr(a, out, body[base..lines[last].term_end]);
-    out.print(a, "}},\"line_number\":{d},\"absolute_offset\":{d},\"submatches\":[", .{ first + 1, base }) catch die("oom\n", .{});
-    const slots: []isize = if (caps) |c| a.alloc(isize, c.nslots()) catch die("oom\n", .{}) else &.{};
+    out.print(a, "}},\"line_number\":{d},\"absolute_offset\":{d},\"submatches\":[", .{ first + 1, base }) catch oom();
+    const slots: []isize = if (caps) |c| a.alloc(isize, c.nslots()) catch oom() else &.{};
     for (spans, 0..) |sp, n| {
-        if (n != 0) out.append(a, ',') catch die("oom\n", .{});
-        out.appendSlice(a, "{\"match\":{\"text\":") catch die("oom\n", .{});
+        if (n != 0) out.append(a, ',') catch oom();
+        add(a, out, "{\"match\":{\"text\":");
         jsonStr(a, out, body[sp.start..sp.end]);
-        out.appendSlice(a, "}") catch die("oom\n", .{});
+        add(a, out, "}");
         if (o.replace) |tmpl| if (caps) |c| {
             _ = c.find(body, sp.start, slots);
             var rep: std.ArrayList(u8) = .empty;
             output.expandInto(a, c, &rep, tmpl, body, slots);
-            out.appendSlice(a, ",\"replacement\":{\"text\":") catch die("oom\n", .{});
+            add(a, out, ",\"replacement\":{\"text\":");
             jsonStr(a, out, rep.items);
-            out.appendSlice(a, "}") catch die("oom\n", .{});
+            add(a, out, "}");
         };
-        out.print(a, ",\"start\":{d},\"end\":{d}}}", .{ sp.start - base, sp.end - base }) catch die("oom\n", .{});
+        out.print(a, ",\"start\":{d},\"end\":{d}}}", .{ sp.start - base, sp.end - base }) catch oom();
     }
-    out.appendSlice(a, "]}}\n") catch die("oom\n", .{});
+    add(a, out, "]}}\n");
 }
 
 fn contextRecord(a: std.mem.Allocator, out: *std.ArrayList(u8), path: []const u8, lines: []const ml.Line, body: []const u8, k: usize) void {
@@ -260,17 +261,17 @@ fn contextRecord(a: std.mem.Allocator, out: *std.ArrayList(u8), path: []const u8
 
 /// A single-line record (`match` with empty submatches for invert, or `context`).
 fn emitLineRecord(a: std.mem.Allocator, out: *std.ArrayList(u8), kind: []const u8, path: []const u8, lineno: usize, off: usize, text: []const u8) void {
-    out.print(a, "{{\"type\":\"{s}\",\"data\":{{\"path\":{{\"text\":", .{kind}) catch die("oom\n", .{});
+    out.print(a, "{{\"type\":\"{s}\",\"data\":{{\"path\":{{\"text\":", .{kind}) catch oom();
     jsonStr(a, out, path);
-    out.appendSlice(a, "},\"lines\":{\"text\":") catch die("oom\n", .{});
+    add(a, out, "},\"lines\":{\"text\":");
     jsonStr(a, out, text);
-    out.print(a, "}},\"line_number\":{d},\"absolute_offset\":{d},\"submatches\":[]}}}}\n", .{ lineno, off }) catch die("oom\n", .{});
+    out.print(a, "}},\"line_number\":{d},\"absolute_offset\":{d},\"submatches\":[]}}}}\n", .{ lineno, off }) catch oom();
 }
 
 fn endRecord(a: std.mem.Allocator, out: *std.ArrayList(u8), path: []const u8, bytes: usize, matched_lines: usize, matches: usize) void {
-    out.appendSlice(a, "{\"type\":\"end\",\"data\":{\"path\":{\"text\":") catch die("oom\n", .{});
+    add(a, out, "{\"type\":\"end\",\"data\":{\"path\":{\"text\":");
     jsonStr(a, out, path);
-    out.print(a, "}},\"binary_offset\":null,\"stats\":{{\"elapsed\":{{\"secs\":0,\"nanos\":0,\"human\":\"0.000000s\"}},\"searches\":1,\"searches_with_match\":1,\"bytes_searched\":{d},\"bytes_printed\":0,\"matched_lines\":{d},\"matches\":{d}}}}}}}\n", .{ bytes, matched_lines, matches }) catch die("oom\n", .{});
+    out.print(a, "}},\"binary_offset\":null,\"stats\":{{\"elapsed\":{{\"secs\":0,\"nanos\":0,\"human\":\"0.000000s\"}},\"searches\":1,\"searches_with_match\":1,\"bytes_searched\":{d},\"bytes_printed\":0,\"matched_lines\":{d},\"matches\":{d}}}}}}}\n", .{ bytes, matched_lines, matches }) catch oom();
 }
 
 fn lineNo(all: []const Line, ln: Line) usize {
@@ -287,7 +288,7 @@ fn lineNo(all: []const Line, ln: Line) usize {
 fn emitSubmatches(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, ss: *Matcher.SpanSim, caps: ?*Caps, o: Opts, view: []const u8) usize {
     var n: usize = 0;
     var from: usize = 0;
-    const slots: []isize = if (caps) |c| a.alloc(isize, c.nslots()) catch die("oom\n", .{}) else &.{};
+    const slots: []isize = if (caps) |c| a.alloc(isize, c.nslots()) catch oom() else &.{};
     while (from <= view.len) {
         const sp = re.matchSpan(ss, view, from) orelse break;
         if (sp.end == sp.start) {
@@ -298,19 +299,19 @@ fn emitSubmatches(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matc
             from = sp.end;
             continue;
         }
-        if (n != 0) out.append(a, ',') catch die("oom\n", .{});
-        out.appendSlice(a, "{\"match\":{\"text\":") catch die("oom\n", .{});
+        if (n != 0) out.append(a, ',') catch oom();
+        add(a, out, "{\"match\":{\"text\":");
         jsonStr(a, out, view[sp.start..sp.end]);
-        out.appendSlice(a, "}") catch die("oom\n", .{});
+        add(a, out, "}");
         if (o.replace) |tmpl| if (caps) |c| {
             _ = c.find(view, sp.start, slots);
             var rep: std.ArrayList(u8) = .empty;
             output.expandInto(a, c, &rep, tmpl, view, slots);
-            out.appendSlice(a, ",\"replacement\":{\"text\":") catch die("oom\n", .{});
+            add(a, out, ",\"replacement\":{\"text\":");
             jsonStr(a, out, rep.items);
-            out.appendSlice(a, "}") catch die("oom\n", .{});
+            add(a, out, "}");
         };
-        out.print(a, ",\"start\":{d},\"end\":{d}}}", .{ sp.start, sp.end }) catch die("oom\n", .{});
+        out.print(a, ",\"start\":{d},\"end\":{d}}}", .{ sp.start, sp.end }) catch oom();
         n += 1;
         from = sp.end;
     }
@@ -318,7 +319,7 @@ fn emitSubmatches(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matc
 }
 
 fn summary(a: std.mem.Allocator, out: *std.ArrayList(u8), st: Stats) void {
-    out.print(a, "{{\"data\":{{\"elapsed_total\":{{\"human\":\"0.000000s\",\"nanos\":0,\"secs\":0}},\"stats\":{{\"bytes_printed\":0,\"bytes_searched\":{d},\"elapsed\":{{\"human\":\"0.000000s\",\"nanos\":0,\"secs\":0}},\"matched_lines\":{d},\"matches\":{d},\"searches\":{d},\"searches_with_match\":{d}}}}},\"type\":\"summary\"}}\n", .{ st.bytes_searched, st.matched_lines, st.matches, st.searches, st.with_match }) catch die("oom\n", .{});
+    out.print(a, "{{\"data\":{{\"elapsed_total\":{{\"human\":\"0.000000s\",\"nanos\":0,\"secs\":0}},\"stats\":{{\"bytes_printed\":0,\"bytes_searched\":{d},\"elapsed\":{{\"human\":\"0.000000s\",\"nanos\":0,\"secs\":0}},\"matched_lines\":{d},\"matches\":{d},\"searches\":{d},\"searches_with_match\":{d}}}}},\"type\":\"summary\"}}\n", .{ st.bytes_searched, st.matched_lines, st.matches, st.searches, st.with_match }) catch oom();
 }
 
 // ─────────────────────────── helpers ───────────────────────────
@@ -455,21 +456,26 @@ test "-U --json -r attaches replacement to each submatch" {
     try std.testing.expect(contains(s, "\"submatches\":[{\"match\":{\"text\":\"a\\nb\"},\"replacement\":{\"text\":\"Z\"},\"start\":0,\"end\":3}]"));
 }
 
+/// Append a raw record fragment (OOM is fatal — the CLI contract).
+fn add(a: std.mem.Allocator, out: *std.ArrayList(u8), s: []const u8) void {
+    out.appendSlice(a, s) catch oom();
+}
+
 /// Write a JSON string literal (including the surrounding quotes) with ripgrep's
 /// escaping: `"` `\` and C0 controls escaped, `\n`/`\r`/`\t` short forms, the rest
 /// as `\u00XX`. (All harness fixtures are UTF-8; the bytes/base64 form rg uses for
 /// invalid UTF-8 is out of scope for this text-oriented locator.)
 fn jsonStr(a: std.mem.Allocator, out: *std.ArrayList(u8), s: []const u8) void {
-    out.append(a, '"') catch die("oom\n", .{});
+    out.append(a, '"') catch oom();
     for (s) |c| switch (c) {
-        '"' => out.appendSlice(a, "\\\"") catch die("oom\n", .{}),
-        '\\' => out.appendSlice(a, "\\\\") catch die("oom\n", .{}),
-        '\n' => out.appendSlice(a, "\\n") catch die("oom\n", .{}),
-        '\r' => out.appendSlice(a, "\\r") catch die("oom\n", .{}),
-        '\t' => out.appendSlice(a, "\\t") catch die("oom\n", .{}),
+        '"' => add(a, out, "\\\""),
+        '\\' => add(a, out, "\\\\"),
+        '\n' => add(a, out, "\\n"),
+        '\r' => add(a, out, "\\r"),
+        '\t' => add(a, out, "\\t"),
         else => if (c < 0x20) {
-            out.print(a, "\\u{x:0>4}", .{c}) catch die("oom\n", .{});
-        } else out.append(a, c) catch die("oom\n", .{}),
+            out.print(a, "\\u{x:0>4}", .{c}) catch oom();
+        } else out.append(a, c) catch oom(),
     };
-    out.append(a, '"') catch die("oom\n", .{});
+    out.append(a, '"') catch oom();
 }

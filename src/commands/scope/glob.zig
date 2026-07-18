@@ -149,7 +149,7 @@ pub fn normalizeRoot(arg: []const u8) []const u8 {
 /// corpus (matches all). An exact-length equality is a file arg; otherwise the
 /// root must be a *directory* prefix (`services` admits `services/x.go` but not
 /// `services_old/x.go`, hence the mandatory `/` boundary).
-fn underRoot(path: []const u8, root: []const u8) bool {
+pub fn underRoot(path: []const u8, root: []const u8) bool {
     if (root.len == 0 or (root.len == 1 and root[0] == '.')) return true;
     if (path.len == root.len) return std.mem.eql(u8, path, root);
     return path.len > root.len and std.mem.startsWith(u8, path, root) and path[root.len] == '/';

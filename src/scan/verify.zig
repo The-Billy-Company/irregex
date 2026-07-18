@@ -176,8 +176,17 @@ pub fn parallelVerify(gpa: std.mem.Allocator, docs: []const []const u8, ids: []c
         const lo = bounds[t];
         const hi = bounds[t + 1];
         shards[t] = .{ .docs = docs, .ids = ids[lo..hi], .needle = needle, .out = outbuf[lo..hi] };
-        threads[t] = try std.Thread.spawn(.{}, verifyShard, .{&shards[t]});
     }
-    for (0..nthr) |t| threads[t].join();
+    // Partial-spawn fallback: a mid-fan-out spawn failure must not return with
+    // live threads still scanning buffers the defers above would free. The
+    // unspawned tail runs inline on the calling thread — exactness preserved,
+    // just less parallelism — then the spawned shards are joined as usual.
+    var spawned: usize = 0;
+    for (shards) |*sh| {
+        threads[spawned] = std.Thread.spawn(.{}, verifyShard, .{sh}) catch break;
+        spawned += 1;
+    }
+    for (shards[spawned..]) |*sh| verifyShard(sh);
+    for (threads[0..spawned]) |t| t.join();
     for (0..nthr) |t| try out.appendSlice(gpa, shards[t].out[0..shards[t].n]);
 }

@@ -11,6 +11,8 @@
 //! — the width the whole gist byte pipeline speaks. Opaque structs mirror
 //! PCRE2's own incomplete types; we only ever hold them behind pointers.
 
+const std = @import("std");
+
 pub const Code = opaque {};
 pub const MatchData = opaque {};
 pub const GeneralContext = opaque {};
@@ -48,8 +50,6 @@ pub const INFO_CAPTURECOUNT: u32 = 4;
 /// `PCRE2_UNSET` — the ovector sentinel for a group that did not participate in
 /// the match (`SIZE_MAX`). Mapped to gist's `-1` "unset slot" convention.
 pub const UNSET: Size = std.math.maxInt(Size);
-
-const std = @import("std");
 
 // ── compile / free ──
 pub extern fn pcre2_compile_8(

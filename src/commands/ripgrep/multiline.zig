@@ -19,6 +19,7 @@ const args = @import("args.zig");
 const output = @import("output.zig");
 const Opts = args.Opts;
 const die = args.die;
+const oom = args.oom;
 const Matcher = @import("../../regex/matcher.zig").Matcher;
 
 pub const Span = Matcher.Span;
@@ -40,7 +41,7 @@ pub fn spanLast(sp: Span) usize {
 /// Pre-sized from one terminator count so the split is a single allocation.
 pub fn splitLines(a: std.mem.Allocator, body: []const u8, term: u8) []Line {
     var out: std.ArrayList(Line) = .empty;
-    out.ensureUnusedCapacity(a, std.mem.count(u8, body, &.{term}) + 1) catch die("oom\n", .{});
+    out.ensureUnusedCapacity(a, std.mem.count(u8, body, &.{term}) + 1) catch oom();
     var pos: usize = 0;
     while (pos < body.len) {
         const nl = std.mem.indexOfScalarPos(u8, body, pos, term);
@@ -49,7 +50,7 @@ pub fn splitLines(a: std.mem.Allocator, body: []const u8, term: u8) []Line {
         if (nl == null) break;
         pos = ce + 1;
     }
-    return out.toOwnedSlice(a) catch die("oom\n", .{});
+    return out.toOwnedSlice(a) catch oom();
 }
 
 /// 0-based index of the physical line containing byte `off` (`off` in
@@ -91,12 +92,12 @@ pub fn collect(a: std.mem.Allocator, re: *const Matcher, o: Opts, body: []const 
                 continue;
             }
         }
-        out.append(a, sp) catch die("oom\n", .{});
+        out.append(a, sp) catch oom();
         last_end = sp.end;
         from = if (sp.end > sp.start) sp.end else sp.start + 1;
         if (o.max_per_file != 0 and out.items.len >= o.max_per_file) break;
     }
-    return out.toOwnedSlice(a) catch die("oom\n", .{});
+    return out.toOwnedSlice(a) catch oom();
 }
 
 /// `--count-matches` (and `-c --only-matching`): total emitted matches, empty
@@ -156,7 +157,7 @@ pub fn spansLines(lines: []const Line, sp: Span) bool {
 /// column (`x?` over `a\nb` ⇒ cols 1,2,1,2), while a genuine cross-line run
 /// stays block-relative (`a\nb|b\nc` ⇒ 1,1,5,5). Arena-owned, one per span.
 pub fn blockBases(a: std.mem.Allocator, lines: []const Line, spans: []const Span) []usize {
-    const bases = a.alloc(usize, spans.len) catch die("oom\n", .{});
+    const bases = a.alloc(usize, spans.len) catch oom();
     var i: usize = 0;
     while (i < spans.len) {
         const base = lines[lineIndexAt(lines, spans[i].start)].start;

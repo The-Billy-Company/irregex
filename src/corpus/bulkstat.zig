@@ -69,7 +69,8 @@ const FSOPT_PACK_INVAL_ATTRS: u64 = 0x00000008;
 const VREG: u32 = 1;
 const VDIR: u32 = 2;
 
-const attrlist_t = extern struct {
+/// Mirror of C `struct attrlist` (<sys/attr.h>) — field order is the ABI.
+const AttrList = extern struct {
     bitmapcount: u16,
     reserved: u16 = 0,
     commonattr: u32,
@@ -126,7 +127,7 @@ pub const BulkDir = struct {
     }
 
     fn refill(self: *BulkDir) !void {
-        var al = attrlist_t{ .bitmapcount = ATTR_BIT_MAP_COUNT, .commonattr = requested_commonattr };
+        var al = AttrList{ .bitmapcount = ATTR_BIT_MAP_COUNT, .commonattr = requested_commonattr };
         const n = getattrlistbulk(self.dirfd, &al, &self.buf, self.buf.len, FSOPT_PACK_INVAL_ATTRS);
         if (n < 0) return error.BulkStatUnsupported;
         self.off = 0;
@@ -336,7 +337,9 @@ pub fn listNamesOnly(gpa: Allocator, dirfd: std.posix.fd_t) ![]OwnedEntry {
 /// The pre-bulkstat walk (readdir + `statFile` per entry), scoped to one
 /// subtree — reused verbatim as `visitFresh`'s degrade path so a bulk-call
 /// failure can only fall back to previously-proven-correct behavior.
-fn fallbackWalk(a: Allocator, io: std.Io, root_path: []const u8, built_ns: i128, out: *std.ArrayList([]const u8)) void {
+/// `pub` because `fresh.zig::visitItem` is the same walk on a non-Darwin
+/// target — one definition, so the two paths cannot drift (§Boilerplate).
+pub fn fallbackWalk(a: Allocator, io: std.Io, root_path: []const u8, built_ns: i128, out: *std.ArrayList([]const u8)) void {
     var w = haystack.Walker.init(io, a, root_path) catch return;
     defer w.deinit(io);
     while (w.next(io) catch return) |hay| {

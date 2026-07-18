@@ -138,7 +138,7 @@ pub const Watcher = struct {
         self.running.store(false, .release);
         if (comptime builtin.os.tag == .linux) {
             if (self.inotify_fd >= 0) {
-                std.posix.close(self.inotify_fd);
+                _ = std.os.linux.close(self.inotify_fd);
                 self.inotify_fd = -1;
             }
         } else if (comptime is_macos) {
@@ -169,7 +169,7 @@ pub const Watcher = struct {
             const fd_usize = linux.inotify_init1(linux.IN.NONBLOCK);
             const fd: i32 = @intCast(fd_usize);
             if (fd < 0) return; // no inotify → stay in baseline
-            errdefer std.posix.close(fd);
+            errdefer _ = linux.close(fd);
 
             // Recursively watch every directory under the roots. If ANY watch
             // fails to register we cannot prove quiescence for that subtree, so
@@ -179,7 +179,7 @@ pub const Watcher = struct {
                 linux.IN.CLOSE_WRITE | linux.IN.ONLYDIR;
             for (self.watchRoots()) |root| {
                 if (!self.addWatchesRecursive(fd, root, mask)) {
-                    std.posix.close(fd);
+                    _ = linux.close(fd);
                     self.freeWdPaths();
                     return;
                 }
@@ -191,7 +191,7 @@ pub const Watcher = struct {
             self.thread = std.Thread.spawn(.{}, inotifyLoop, .{self}) catch {
                 self.running.store(false, .release);
                 self.inotify_fd = -1;
-                std.posix.close(fd);
+                _ = linux.close(fd);
                 self.freeWdPaths();
                 return; // spawn failed — unarm by leaving watcher inactive
             };
@@ -265,7 +265,10 @@ pub const Watcher = struct {
                 // reconciles every query (fail-closed).
                 var off: usize = 0;
                 while (off + @sizeOf(linux.inotify_event) <= n) {
-                    const ev: *const linux.inotify_event = @ptrCast(@alignCast(&buf[off]));
+                    // Cast-free record view (zig-safety): the fixed header is
+                    // copied out by value — 16 bytes on a cold path — instead
+                    // of reinterpreting the buffer pointer.
+                    const ev = std.mem.bytesToValue(linux.inotify_event, buf[off..][0..@sizeOf(linux.inotify_event)]);
                     off += @sizeOf(linux.inotify_event) + ev.len;
                     if (ev.mask & linux.IN.Q_OVERFLOW != 0) {
                         self.session.markDoubtForever();
@@ -274,7 +277,7 @@ pub const Watcher = struct {
                     const grew_dir = ev.mask & linux.IN.ISDIR != 0 and
                         ev.mask & (linux.IN.CREATE | linux.IN.MOVED_TO) != 0;
                     if (!grew_dir) continue;
-                    const name = nameOf(ev, &buf, off) orelse {
+                    const name = nameOf(&ev, &buf, off) orelse {
                         self.session.markDoubtForever();
                         continue;
                     };

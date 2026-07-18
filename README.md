@@ -1,10 +1,10 @@
 ---
 doc_radar:
   counts:
-    - description: "gist src/ subfolders — 6 pipeline tiers (engine · index · regex · rank · scan · corpus) + commands/ CLI + session/ resident transport (ADR-352 rung 2.5) + ffi/ in-process C-ABI search session (rung 3)"
+    - description: "gist src/ subfolders — 6 pipeline tiers (engine · index · regex · rank · scan · corpus) + commands/ CLI + session/ resident transport (ADR-352 rung 2.5) + ffi/ in-process C-ABI search session (rung 3) + irregex/ IR sketch (rung 4)"
       glob: pkg/kernels/gist/src/*
       unit: dirs
-      equals: 9
+      equals: 10
   sentinels:
     - description: "gist registered in the changelog roster (OSS-package membership)"
       file: pkg/tools/support/chronicle/packages.py

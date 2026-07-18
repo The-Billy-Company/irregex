@@ -474,16 +474,30 @@ pub const Index = struct {
     /// propagates so the caller full-scans rather than drop a branch's matches.
     pub fn queryAny(self: *const Index, allocator: std.mem.Allocator, needles: []const []const u8) QueryError![]u32 {
         if (needles.len == 1) return self.queryLiteral(allocator, needles[0]);
-        var buf = try allocator.alloc(u32, 0);
+        // Resolve every branch first so the union buffer is allocated ONCE at
+        // its exact size — the old shape realloc'd (and re-copied) the growing
+        // buffer per needle, O(total·k) moves for a k-branch alternation.
+        const lists = try allocator.alloc([]u32, needles.len);
+        var got: usize = 0;
+        defer {
+            for (lists[0..got]) |l| allocator.free(l);
+            allocator.free(lists);
+        }
+        var total: usize = 0;
+        for (needles, lists) |needle, *slot| {
+            slot.* = try self.queryLiteral(allocator, needle);
+            got += 1;
+            total += slot.len;
+        }
+        const buf = try allocator.alloc(u32, total);
         errdefer allocator.free(buf);
         var n: usize = 0;
-        for (needles) |needle| {
-            const c = try self.queryLiteral(allocator, needle);
-            defer allocator.free(c);
-            if (n + c.len > buf.len) buf = try allocator.realloc(buf, n + c.len);
-            @memcpy(buf[n..][0..c.len], c);
-            n += c.len;
+        for (lists) |l| {
+            @memcpy(buf[n..][0..l.len], l);
+            n += l.len;
         }
+        // Each branch is already sorted, so the concatenation is k sorted runs
+        // — a shape the stable block sort handles near-linearly.
         std.mem.sort(u32, buf[0..n], {}, comptime std.sort.asc(u32));
         const w = ngram.dedupSorted(u32, buf, n); // dedup the now-sorted union
         return allocator.realloc(buf, w) catch buf[0..w];

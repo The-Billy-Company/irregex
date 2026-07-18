@@ -10,11 +10,13 @@
 //! both call these, so the two engines cannot drift on per-file semantics.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const corpus_mod = @import("../../corpus/corpus.zig");
 const args = @import("args.zig");
 const output = @import("output.zig");
 const Opts = args.Opts;
 const die = args.die;
+const oom = args.oom;
 const multiline = @import("multiline.zig");
 const Emitter = output.Emitter;
 const Regex = @import("../../regex/core.zig").Regex;
@@ -69,9 +71,9 @@ pub fn utf16ToUtf8(a: std.mem.Allocator, bytes: []const u8, endian: std.builtin.
             enc[0..3].* = .{ 0xEF, 0xBF, 0xBD };
             break :blk 3;
         };
-        out.appendSlice(a, enc[0..n]) catch die("oom\n", .{});
+        out.appendSlice(a, enc[0..n]) catch oom();
     }
-    return out.toOwnedSlice(a) catch die("oom\n", .{});
+    return out.toOwnedSlice(a) catch oom();
 }
 
 /// rg line semantics: `\n` terminates; trailing `\n` yields no phantom empty
@@ -82,7 +84,7 @@ pub fn utf16ToUtf8(a: std.mem.Allocator, bytes: []const u8, endian: std.builtin.
 /// loop calls this once per candidate file, so the saved reallocations
 /// scale with the corpus, not just one file.
 pub fn collectLines(a: std.mem.Allocator, buf: []const u8, term: u8, out: *std.ArrayList([]const u8)) void {
-    out.ensureUnusedCapacity(a, std.mem.count(u8, buf, &.{term}) + 1) catch die("oom\n", .{});
+    out.ensureUnusedCapacity(a, std.mem.count(u8, buf, &.{term}) + 1) catch oom();
     var rest = buf;
     while (true) {
         const nl = std.mem.indexOfScalar(u8, rest, term);
@@ -197,8 +199,8 @@ fn bufAnyMatch(a: std.mem.Allocator, re: *const Matcher, body: []const u8) bool 
 /// Append ripgrep's binary note: `[<path>: ]<msg> (found "\0" byte around offset
 /// N)`. The path prefix (with `: ` separator) is shown only when filenames are on.
 pub fn binNote(a: std.mem.Allocator, out: *std.ArrayList(u8), o: Opts, path: []const u8, nul: usize, show_name: bool, msg: []const u8) void {
-    if (show_name) out.print(a, "{s}: ", .{path}) catch die("oom\n", .{});
-    out.print(a, "{s} (found \"\\0\" byte around offset {d}){c}", .{ msg, nul, o.term() }) catch die("oom\n", .{});
+    if (show_name) out.print(a, "{s}: ", .{path}) catch oom();
+    out.print(a, "{s} (found \"\\0\" byte around offset {d}){c}", .{ msg, nul, o.term() }) catch oom();
 }
 
 /// Does any line match (used for the explicit binary summary)? Honors `-w` and
@@ -307,7 +309,7 @@ pub fn emitStats(a: std.mem.Allocator, out: *std.ArrayList(u8), s: Stats) void {
         \\0.000000 seconds spent searching
         \\0.000000 seconds total
         \\
-    , .{ s.matches, s.matched_lines, s.files_with_match, s.files_searched, s.bytes_printed, s.bytes_searched }) catch die("oom\n", .{});
+    , .{ s.matches, s.matched_lines, s.files_with_match, s.files_searched, s.bytes_printed, s.bytes_searched }) catch oom();
 }
 
 /// ripgrep's `<bin>: <path>: <errno phrase>` note for a path that can't be
@@ -327,6 +329,14 @@ pub fn pathErrNote(err: anyerror) []const u8 {
         error.NameTooLong => "File name too long (os error 63)",
         else => @errorName(err),
     };
+}
+
+/// ripgrep's walk-error stderr line (`rg: <path>: <errno>` → `gist: …`) — THE
+/// one rendering, shared by the serial and parallel engines' `reportWalkError`
+/// so a directory neither could descend is reported byte-identically. Each
+/// engine layers its own exit-2 flagging on top (plain bool vs queue atomic).
+pub fn printWalkError(rel: []const u8, e: anyerror) void {
+    std.debug.print("gist: {s}: {s}\n", .{ rel, pathErrNote(e) });
 }
 
 /// One candidate's raw bytes: POSIX open/read/close into the caller's reused
@@ -423,6 +433,99 @@ pub fn readTail(a: std.mem.Allocator, fd: std.posix.fd_t, scratch: []const u8) ?
     return out.toOwnedSlice(a) catch null;
 }
 
+// ─────────────────────── raw stat plane (portable) ───────────────────────
+
+/// The slice of `stat(2)` gist actually consumes, projected portably: device
+/// identity (`--one-file-system`), type+mode bits (fd classification, lstat
+/// reconcile), byte size (mmap bounds), and birth time where the platform
+/// records one. THE one raw-stat definition — Zig 0.16's `std.c` deliberately
+/// declares no `fstat`/`fstatat` on Linux (libc wrappers there are legacy
+/// shims), so the Linux leg rides `statx(2)` directly while every other libc
+/// target keeps the `fstatat`/`fstat` calls this replaced, byte-identically.
+pub const RawStat = struct {
+    dev: i128,
+    mode: u32,
+    size: u64,
+    /// Birth (creation) time in ns when the platform+filesystem record one
+    /// (macOS `st_birthtimespec`, Linux `statx` BTIME); null otherwise —
+    /// callers fall back rather than mislabel ctime as creation.
+    birthtime_ns: ?i96,
+};
+
+/// `stat(2)` following symlinks — `--one-file-system` device ids and
+/// `--sort created` birth times. Null on any failure (caller falls back).
+pub fn statPath(path: []const u8) ?RawStat {
+    return statAt(path, false);
+}
+
+/// `lstat(2)` — never follows the final symlink (the walk treats a symlink
+/// as its own entry). Null when the path is gone/unreachable.
+pub fn lstatPath(path: []const u8) ?RawStat {
+    return statAt(path, true);
+}
+
+fn statAt(path: []const u8, nofollow: bool) ?RawStat {
+    const cpath = std.posix.toPosixPath(path) catch return null;
+    if (comptime builtin.os.tag == .linux) {
+        const linux = std.os.linux;
+        var stx: linux.Statx = undefined;
+        const flags: u32 = if (nofollow) linux.AT.SYMLINK_NOFOLLOW else 0;
+        const rc = linux.statx(linux.AT.FDCWD, &cpath, flags, statx_mask, &stx);
+        if (linux.errno(rc) != .SUCCESS) return null;
+        return fromStatx(stx);
+    }
+    var st: std.posix.Stat = undefined;
+    const flags: u32 = if (nofollow) std.posix.AT.SYMLINK_NOFOLLOW else 0;
+    if (std.c.fstatat(std.posix.AT.FDCWD, &cpath, &st, flags) != 0) return null;
+    return fromStat(st);
+}
+
+/// `fstat(2)` on an already-open fd — stdin classification and mmap sizing.
+pub fn statFd(fd: std.posix.fd_t) ?RawStat {
+    if (comptime builtin.os.tag == .linux) {
+        const linux = std.os.linux;
+        var stx: linux.Statx = undefined;
+        const rc = linux.statx(fd, "", linux.AT.EMPTY_PATH, statx_mask, &stx);
+        if (linux.errno(rc) != .SUCCESS) return null;
+        return fromStatx(stx);
+    }
+    var st: std.posix.Stat = undefined;
+    if (std.c.fstat(fd, &st) != 0) return null;
+    return fromStat(st);
+}
+
+/// Exactly the fields `RawStat` projects — BTIME rides along; the kernel's
+/// returned mask (not this request) decides whether it was actually filled.
+const statx_mask: std.os.linux.STATX = .{ .TYPE = true, .MODE = true, .SIZE = true, .BTIME = true };
+
+fn fromStatx(stx: std.os.linux.Statx) RawStat {
+    return .{
+        // statx splits dev_t into major/minor; recombine losslessly — only
+        // equality matters (mount-point detection), not the packed encoding.
+        .dev = (@as(i128, stx.dev_major) << 32) | stx.dev_minor,
+        .mode = stx.mode,
+        .size = stx.size,
+        .birthtime_ns = if (stx.mask.BTIME)
+            @as(i96, stx.btime.sec) * std.time.ns_per_s + stx.btime.nsec
+        else
+            null,
+    };
+}
+
+fn fromStat(st: std.posix.Stat) RawStat {
+    return .{
+        .dev = st.dev,
+        .mode = st.mode,
+        .size = std.math.cast(u64, st.size) orelse 0,
+        // Darwin records birth time in `struct stat` itself; gist declines to
+        // invent one on libc targets that don't (matching ripgrep).
+        .birthtime_ns = if (comptime builtin.os.tag.isDarwin()) blk: {
+            const bt = st.birthtime();
+            break :blk @as(i96, bt.sec) * std.time.ns_per_s + bt.nsec;
+        } else null,
+    };
+}
+
 /// Map the whole regular file behind `fd` read-only, from offset 0 (the bytes
 /// already drained into scratch are simply re-viewed through the mapping — one
 /// consistent snapshot instead of a scratch+tail stitch). Null when the fd is
@@ -430,8 +533,7 @@ pub fn readTail(a: std.mem.Allocator, fd: std.posix.fd_t, scratch: []const u8) ?
 /// truncation the read loop handles conservatively), or `mmap` itself fails —
 /// the caller then takes the copying path, never a silent drop.
 fn mapWhole(fd: std.posix.fd_t, min_len: usize) ?[]const u8 {
-    var st: std.posix.Stat = undefined;
-    if (std.posix.system.fstat(fd, &st) != 0) return null;
+    const st = statFd(fd) orelse return null;
     if (st.mode & std.posix.S.IFMT != std.posix.S.IFREG) return null;
     const size = std.math.cast(usize, st.size) orelse return null;
     if (size < min_len) return null;

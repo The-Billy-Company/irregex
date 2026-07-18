@@ -14,6 +14,7 @@ const std = @import("std");
 const args = @import("args.zig");
 const Opts = args.Opts;
 const die = args.die;
+const oom = args.oom;
 const palette = @import("color.zig");
 const simd = @import("../../scan/simd.zig");
 const ml = @import("multiline.zig");
@@ -57,12 +58,12 @@ pub fn expandInto(a: std.mem.Allocator, caps: *const Caps, buf: *std.ArrayList(u
     var i: usize = 0;
     while (i < tmpl.len) {
         if (tmpl[i] != '$') {
-            buf.append(a, tmpl[i]) catch die("oom\n", .{});
+            buf.append(a, tmpl[i]) catch oom();
             i += 1;
             continue;
         }
         if (i + 1 < tmpl.len and tmpl[i + 1] == '$') {
-            buf.append(a, '$') catch die("oom\n", .{});
+            buf.append(a, '$') catch oom();
             i += 2;
             continue;
         }
@@ -80,14 +81,14 @@ pub fn expandInto(a: std.mem.Allocator, caps: *const Caps, buf: *std.ArrayList(u
             name = tmpl[st..i];
         }
         if (name.len == 0) {
-            buf.append(a, '$') catch die("oom\n", .{});
+            buf.append(a, '$') catch oom();
             continue;
         }
         const gi = groupIndexOf(caps, name) orelse continue;
         if (2 * gi + 1 >= slots.len) continue; // out-of-range group → empty
         const so = slots[2 * gi];
         const eo = slots[2 * gi + 1];
-        if (so >= 0 and eo >= 0) buf.appendSlice(a, line[@intCast(so)..@intCast(eo)]) catch die("oom\n", .{});
+        if (so >= 0 and eo >= 0) buf.appendSlice(a, line[@intCast(so)..@intCast(eo)]) catch oom();
     }
 }
 
@@ -130,7 +131,7 @@ pub const Emitter = struct {
     /// (so `$`/`\b` anchor before it) but is KEPT in the emitted line — ripgrep's
     /// CRLF behavior. Spans computed on this view index the original line 1:1
     /// (it's a prefix), so display bytes are unaffected.
-    fn mview(self: *Emitter, line: []const u8) []const u8 {
+    fn mview(self: *const Emitter, line: []const u8) []const u8 {
         return if (self.o.crlf) std.mem.trimEnd(u8, line, "\r") else line;
     }
 
@@ -150,22 +151,24 @@ pub const Emitter = struct {
         return if (is_match) self.o.field_match_sep else self.o.field_ctx_sep;
     }
 
+    /// Append raw bytes to the render buffer (OOM is fatal — the CLI contract).
+    fn add(self: *Emitter, s: []const u8) void {
+        self.out.appendSlice(self.a, s) catch oom();
+    }
+
     /// Wrap `s` in `on` .. `reset` when color is active, else emit it plain.
     fn paint(self: *Emitter, on: []const u8, s: []const u8) void {
-        if (!self.use_color) {
-            self.out.appendSlice(self.a, s) catch die("oom\n", .{});
-            return;
-        }
-        self.out.appendSlice(self.a, on) catch die("oom\n", .{});
-        self.out.appendSlice(self.a, s) catch die("oom\n", .{});
-        self.out.appendSlice(self.a, palette.reset) catch die("oom\n", .{});
+        if (!self.use_color) return self.add(s);
+        self.add(on);
+        self.add(s);
+        self.add(palette.reset);
     }
 
     /// Write `path` followed by its terminator — NUL under `--null` (ripgrep's
     /// path-terminator), else the field separator. Used by the count/prefix paths.
     fn writePath(self: *Emitter, path: []const u8, is_match: bool) void {
         self.paint(palette.path_on, path);
-        if (self.o.null_sep) self.out.append(self.a, 0) catch die("oom\n", .{}) else self.paint(palette.sep_on, self.fieldSep(is_match));
+        if (self.o.null_sep) self.out.append(self.a, 0) catch oom() else self.paint(palette.sep_on, self.fieldSep(is_match));
     }
 
     /// Emit the `path:line:col:byteoff:` locator prefix (fields present per flags,
@@ -180,8 +183,8 @@ pub const Emitter = struct {
             self.paint(palette.line_on, std.fmt.bufPrint(&buf, "{d}", .{lineno}) catch die("line number too long\n", .{}));
             self.paint(palette.sep_on, sep);
         }
-        if (self.o.column and is_match and col != 0) self.out.print(self.a, "{d}{s}", .{ col, sep }) catch die("oom\n", .{});
-        if (self.o.byte_offset) self.out.print(self.a, "{d}{s}", .{ byteoff, sep }) catch die("oom\n", .{});
+        if (self.o.column and is_match and col != 0) self.out.print(self.a, "{d}{s}", .{ col, sep }) catch oom();
+        if (self.o.byte_offset) self.out.print(self.a, "{d}{s}", .{ byteoff, sep }) catch oom();
     }
 
     /// Append a line's text honoring `--trim` (drop leading blanks) and
@@ -216,7 +219,7 @@ pub const Emitter = struct {
             const trimmed = std.mem.trimStart(u8, s, " \t");
             const n = s.len - trimmed.len;
             if (n != 0 and starts.len != 0) {
-                const adj = self.a.alloc(usize, starts.len) catch die("oom\n", .{});
+                const adj = self.a.alloc(usize, starts.len) catch oom();
                 for (starts, 0..) |st, i| adj[i] = st -| n;
                 starts = adj;
             }
@@ -226,9 +229,48 @@ pub const Emitter = struct {
             self.exceeded(s, is_match, starts);
         } else if (is_match and self.use_color and self.o.replace == null) {
             self.highlightSpans(s);
-        } else self.out.appendSlice(self.a, s) catch die("oom\n", .{});
-        self.out.append(self.a, self.o.term()) catch die("oom\n", .{});
+        } else self.add(s);
+        self.out.append(self.a, self.o.term()) catch oom();
     }
+
+    /// Leftmost non-overlapping, non-empty, `-w`-filtered match spans of a
+    /// line's `--crlf` view — THE span iteration, consumed by both the
+    /// highlighter and the over-long-line renderer so the two can never drift
+    /// on which spans count as "a match" (zero-width skip, word filter).
+    const SpanIter = struct {
+        ssim: Matcher.SpanSim,
+        em: *const Emitter,
+        mv: []const u8,
+        from: usize = 0,
+
+        /// Null when the span simulator can't be built (engine without span
+        /// support) — callers fall back to their unpainted/empty shapes.
+        fn init(em: *const Emitter, s: []const u8) ?SpanIter {
+            return .{
+                .ssim = Matcher.SpanSim.init(em.a, em.re) catch return null,
+                .em = em,
+                .mv = em.mview(s),
+            };
+        }
+
+        fn deinit(self: *SpanIter) void {
+            self.ssim.deinit();
+        }
+
+        fn next(self: *SpanIter) ?Matcher.Span {
+            while (self.from <= self.mv.len) {
+                const sp = self.em.re.matchSpan(&self.ssim, self.mv, self.from) orelse return null;
+                if (sp.end == sp.start) {
+                    self.from = sp.start + 1;
+                    continue;
+                }
+                self.from = sp.end;
+                if (self.em.o.word and !wordOk(self.mv, sp.start, sp.end)) continue;
+                return sp;
+            }
+            return null;
+        }
+    };
 
     /// Paint every match span within `s` (a matching line, post-trim), leaving
     /// non-matching text untouched. `s` is re-scanned independently of the
@@ -237,56 +279,28 @@ pub const Emitter = struct {
     /// `-r/--replace` output is excluded by the caller (the substituted text
     /// isn't "the match" any more).
     fn highlightSpans(self: *Emitter, s: []const u8) void {
-        var ssim = Matcher.SpanSim.init(self.a, self.re) catch {
-            self.out.appendSlice(self.a, s) catch die("oom\n", .{});
+        var it = SpanIter.init(self, s) orelse {
+            self.add(s);
             return;
         };
-        defer ssim.deinit();
-        const mv = self.mview(s);
-        var from: usize = 0;
+        defer it.deinit();
         var last: usize = 0;
-        while (from <= mv.len) {
-            const sp = self.re.matchSpan(&ssim, mv, from) orelse break;
-            if (sp.end == sp.start) {
-                from = sp.start + 1;
-                continue;
-            }
-            if (self.o.word and !wordOk(mv, sp.start, sp.end)) {
-                from = sp.end;
-                continue;
-            }
-            self.out.appendSlice(self.a, s[last..sp.start]) catch die("oom\n", .{});
+        while (it.next()) |sp| {
+            self.add(s[last..sp.start]);
             self.paint(palette.match_on, s[sp.start..sp.end]);
             last = sp.end;
-            from = sp.end;
         }
-        self.out.appendSlice(self.a, s[last..]) catch die("oom\n", .{});
+        self.add(s[last..]);
     }
 
-    /// Non-empty, `-w`-filtered match spans of `s` (on its `--crlf` view), leftmost
-    /// non-overlapping — the "match granularity" `--color` gives the over-long-line
-    /// renderer (rg counts/paints matches once it's highlighting). Same iteration
-    /// as `highlightSpans`, materialized so `exceeded` can both paint the shown
-    /// preview AND count the matches past the cut in one pass. Arena-owned.
+    /// `SpanIter` materialized, so `exceeded` can both paint the shown preview
+    /// AND count the matches past the cut in one pass — the "match granularity"
+    /// `--color` gives the over-long-line renderer. Arena-owned.
     fn matchSpans(self: *Emitter, s: []const u8) []const Matcher.Span {
         var out: std.ArrayList(Matcher.Span) = .empty;
-        var ssim = Matcher.SpanSim.init(self.a, self.re) catch return &.{};
-        defer ssim.deinit();
-        const mv = self.mview(s);
-        var from: usize = 0;
-        while (from <= mv.len) {
-            const sp = self.re.matchSpan(&ssim, mv, from) orelse break;
-            if (sp.end == sp.start) {
-                from = sp.start + 1;
-                continue;
-            }
-            if (self.o.word and !wordOk(mv, sp.start, sp.end)) {
-                from = sp.end;
-                continue;
-            }
-            out.append(self.a, sp) catch die("oom\n", .{});
-            from = sp.end;
-        }
+        var it = SpanIter.init(self, s) orelse return &.{};
+        defer it.deinit();
+        while (it.next()) |sp| out.append(self.a, sp) catch oom();
         return out.toOwnedSlice(self.a) catch &.{};
     }
 
@@ -309,32 +323,32 @@ pub const Emitter = struct {
                         remaining += 1;
                         continue;
                     }
-                    self.out.appendSlice(self.a, s[last..sp.start]) catch die("oom\n", .{});
+                    self.add(s[last..sp.start]);
                     const e = @min(sp.end, cut);
                     self.paint(palette.match_on, s[sp.start..e]);
                     last = e;
                 }
-                self.out.appendSlice(self.a, s[last..cut]) catch die("oom\n", .{});
-                self.out.print(self.a, " [... {d} more {s}]", .{ remaining, if (remaining == 1) "match" else "matches" }) catch die("oom\n", .{});
+                self.add(s[last..cut]);
+                self.out.print(self.a, " [... {d} more {s}]", .{ remaining, if (remaining == 1) "match" else "matches" }) catch oom();
                 return;
             }
-            self.out.appendSlice(self.a, s[0..cut]) catch die("oom\n", .{});
+            self.add(s[0..cut]);
             if (!gran) {
-                self.out.appendSlice(self.a, " [... omitted end of long line]") catch die("oom\n", .{});
+                self.add(" [... omitted end of long line]");
             } else {
                 var remaining: usize = 0;
                 for (starts) |st| if (st >= cut) {
                     remaining += 1;
                 };
-                self.out.print(self.a, " [... {d} more {s}]", .{ remaining, if (remaining == 1) "match" else "matches" }) catch die("oom\n", .{});
+                self.out.print(self.a, " [... {d} more {s}]", .{ remaining, if (remaining == 1) "match" else "matches" }) catch oom();
             }
             return;
         }
         if (!is_match) {
-            self.out.appendSlice(self.a, "[Omitted long context line]") catch die("oom\n", .{});
+            self.add("[Omitted long context line]");
         } else if (gran and !self.o.only_matching) {
-            self.out.print(self.a, "[Omitted long line with {d} matches]", .{starts.len}) catch die("oom\n", .{});
-        } else self.out.appendSlice(self.a, "[Omitted long matching line]") catch die("oom\n", .{});
+            self.out.print(self.a, "[Omitted long line with {d} matches]", .{starts.len}) catch oom();
+        } else self.add("[Omitted long matching line]");
     }
 
     /// The result of applying a `-r` template to a line: the rewritten text plus
@@ -349,7 +363,7 @@ pub const Emitter = struct {
     /// `find_iter` progress rule), else empties advance one byte. Arena-owned.
     fn buildReplaced(self: *Emitter, tmpl: []const u8, line: []const u8) Replaced {
         const caps = self.caps orelse return .{ .text = line, .starts = &.{} };
-        const slots = self.a.alloc(isize, caps.nslots()) catch die("oom\n", .{});
+        const slots = self.a.alloc(isize, caps.nslots()) catch oom();
         var buf: std.ArrayList(u8) = .empty;
         var starts: std.ArrayList(usize) = .empty;
         var from: usize = 0;
@@ -357,23 +371,23 @@ pub const Emitter = struct {
         while (from <= line.len and caps.find(line, from, slots)) {
             const s: usize = @intCast(slots[0]);
             const e: usize = @intCast(slots[1]);
-            buf.appendSlice(self.a, line[from..s]) catch die("oom\n", .{});
+            buf.appendSlice(self.a, line[from..s]) catch oom();
             const empty_adjacent = e == s and last_end != null and s == last_end.?;
             if (empty_adjacent or (self.o.word and !wordOk(line, s, e))) {
-                if (s < line.len) buf.append(self.a, line[s]) catch die("oom\n", .{});
+                if (s < line.len) buf.append(self.a, line[s]) catch oom();
                 from = s + 1;
                 continue;
             }
-            starts.append(self.a, buf.items.len) catch die("oom\n", .{});
+            starts.append(self.a, buf.items.len) catch oom();
             self.expand(&buf, tmpl, line, slots);
             last_end = e;
             if (e == s) {
-                if (s < line.len) buf.append(self.a, line[s]) catch die("oom\n", .{});
+                if (s < line.len) buf.append(self.a, line[s]) catch oom();
                 from = s + 1;
             } else from = e;
         }
-        if (from < line.len) buf.appendSlice(self.a, line[from..]) catch die("oom\n", .{});
-        return .{ .text = buf.toOwnedSlice(self.a) catch die("oom\n", .{}), .starts = starts.toOwnedSlice(self.a) catch die("oom\n", .{}) };
+        if (from < line.len) buf.appendSlice(self.a, line[from..]) catch oom();
+        return .{ .text = buf.toOwnedSlice(self.a) catch oom(), .starts = starts.toOwnedSlice(self.a) catch oom() };
     }
 
     fn expand(self: *Emitter, buf: *std.ArrayList(u8), tmpl: []const u8, line: []const u8, slots: []const isize) void {
@@ -398,7 +412,7 @@ pub const Emitter = struct {
     fn emitLineRepl(self: *Emitter, path: []const u8, lineno: usize, line: []const u8, so_far: usize) usize {
         const caps = self.caps.?;
         const tmpl = self.o.replace.?;
-        const slots = self.a.alloc(isize, caps.nslots()) catch die("oom\n", .{});
+        const slots = self.a.alloc(isize, caps.nslots()) catch oom();
         var n: usize = 0;
         var from: usize = 0;
         while (from <= line.len and caps.find(line, from, slots)) {
@@ -414,7 +428,7 @@ pub const Emitter = struct {
             }
             self.prefix(path, lineno, s + 1, self.offOf(line) + s, true);
             self.expand(self.out, tmpl, line, slots);
-            self.out.append(self.a, self.o.term()) catch die("oom\n", .{});
+            self.out.append(self.a, self.o.term()) catch oom();
             n += 1;
             if (self.o.max_per_file != 0 and so_far + n >= self.o.max_per_file) break;
             from = e;
@@ -474,19 +488,19 @@ pub const Emitter = struct {
             // the first proof instead of scanning the rest of the file and
             // accumulating line indexes that no output mode will consume.
             if (o.files_only) {
-                self.out.print(self.a, "{s}{c}", .{ path, if (o.null_sep) @as(u8, 0) else '\n' }) catch die("oom\n", .{});
+                self.out.print(self.a, "{s}{c}", .{ path, if (o.null_sep) @as(u8, 0) else '\n' }) catch oom();
                 return 1;
             }
-            idx.append(self.a, k) catch die("oom\n", .{});
+            idx.append(self.a, k) catch oom();
             if (o.max_per_file != 0 and idx.items.len >= o.max_per_file) break;
         }
         if (idx.items.len == 0) return 0;
         if (o.count_only or o.count_matches) {
             if (self.show_name) self.writePath(path, true);
-            self.out.print(self.a, "{d}\n", .{idx.items.len}) catch die("oom\n", .{});
+            self.out.print(self.a, "{d}\n", .{idx.items.len}) catch oom();
             return idx.items.len;
         }
-        const is_match = self.a.alloc(bool, lines.len) catch die("oom\n", .{});
+        const is_match = self.a.alloc(bool, lines.len) catch oom();
         @memset(is_match, false);
         for (idx.items) |m| is_match[m] = true;
         // Column locators need a span scan per match line; only pay for it under
@@ -572,7 +586,7 @@ pub const Emitter = struct {
                     continue;
                 }
                 self.prefix(path, lineno, span.start + 1, self.offOf(line) + span.start, true);
-                self.out.append(self.a, self.o.term()) catch die("oom\n", .{});
+                self.out.append(self.a, self.o.term()) catch oom();
                 n += 1;
                 last_end = span.end;
                 from = span.start + 1;
@@ -585,7 +599,7 @@ pub const Emitter = struct {
             self.prefix(path, lineno, span.start + 1, self.offOf(line) + span.start, true);
             const end = if (self.o.crlf and span.end == mv.len) line.len else span.end;
             self.paint(palette.match_on, line[span.start..end]);
-            self.out.append(self.a, self.o.term()) catch die("oom\n", .{});
+            self.out.append(self.a, self.o.term()) catch oom();
             n += 1;
             last_end = span.end;
             from = span.end;
@@ -596,7 +610,7 @@ pub const Emitter = struct {
     /// The `--`-style separator between non-adjacent context groups, honoring
     /// `--context-separator` (custom string) and `--no-context-separator` (none).
     fn groupSep(self: *Emitter) void {
-        if (self.o.ctx_sep) |sep| self.out.print(self.a, "{s}\n", .{sep}) catch die("oom\n", .{});
+        if (self.o.ctx_sep) |sep| self.out.print(self.a, "{s}\n", .{sep}) catch oom();
     }
 
     /// `--vimgrep`: one `path:line:col:text` row per match (all matches on a line),
@@ -682,7 +696,7 @@ pub const Emitter = struct {
         }
         if (total == 0) return 0;
         if (self.show_name) self.writePath(path, true);
-        self.out.print(self.a, "{d}\n", .{total}) catch die("oom\n", .{});
+        self.out.print(self.a, "{d}\n", .{total}) catch oom();
         return total;
     }
 
@@ -714,7 +728,7 @@ pub const Emitter = struct {
         if (spans.len == 0) return 0;
         const lines = ml.splitLines(self.a, body, o.term());
         if (o.files_only) {
-            self.out.print(self.a, "{s}{c}", .{ path, if (o.null_sep) @as(u8, 0) else '\n' }) catch die("oom\n", .{});
+            self.out.print(self.a, "{s}{c}", .{ path, if (o.null_sep) @as(u8, 0) else '\n' }) catch oom();
             return 1;
         }
         if (o.count_only) return self.bufTally(path, ml.countStartLines(lines, spans));
@@ -735,8 +749,8 @@ pub const Emitter = struct {
         if (!self.o.crlf or body.len > std.math.maxInt(u32) or
             std.mem.indexOf(u8, body, "\r\n") == null)
             return ml.collect(self.a, self.re, o, body);
-        const view = self.a.alloc(u8, body.len) catch die("oom\n", .{});
-        const origin = self.a.alloc(u32, body.len) catch die("oom\n", .{});
+        const view = self.a.alloc(u8, body.len) catch oom();
+        const origin = self.a.alloc(u32, body.len) catch oom();
         var vlen: usize = 0;
         for (body, 0..) |c, i| {
             if (c == '\r' and i + 1 < body.len and body[i + 1] == '\n') continue;
@@ -757,7 +771,7 @@ pub const Emitter = struct {
     fn bufTally(self: *Emitter, path: []const u8, n: usize) usize {
         if (n == 0) return 0;
         if (self.show_name) self.writePath(path, true);
-        self.out.print(self.a, "{d}\n", .{n}) catch die("oom\n", .{});
+        self.out.print(self.a, "{d}\n", .{n}) catch oom();
         return n;
     }
 
@@ -767,7 +781,7 @@ pub const Emitter = struct {
     fn bufInvert(self: *Emitter, path: []const u8, body: []const u8) usize {
         const o = self.o;
         const lines = ml.splitLines(self.a, body, o.term());
-        const covered = self.a.alloc(bool, lines.len) catch die("oom\n", .{});
+        const covered = self.a.alloc(bool, lines.len) catch oom();
         @memset(covered, false);
         // Coverage needs EVERY match (no `-m` cap); `-m` bounds only the printed
         // inverted lines below. `collect` reads only `-w` from these opts.
@@ -839,7 +853,7 @@ pub const Emitter = struct {
                 } else {
                     self.paint(palette.match_on, frag);
                 }
-                self.out.append(self.a, self.o.term()) catch die("oom\n", .{});
+                self.out.append(self.a, self.o.term()) catch oom();
             }
         }
         return spans.len;
@@ -851,14 +865,14 @@ pub const Emitter = struct {
     fn bufOnlyRepl(self: *Emitter, path: []const u8, lines: []const ml.Line, spans: []const ml.Span, body: []const u8) usize {
         const caps = self.caps orelse return 0;
         const tmpl = self.o.replace.?;
-        const slots = self.a.alloc(isize, caps.nslots()) catch die("oom\n", .{});
+        const slots = self.a.alloc(isize, caps.nslots()) catch oom();
         for (spans) |sp| {
             _ = caps.find(body, sp.start, slots);
             var rep: std.ArrayList(u8) = .empty;
             self.expand(&rep, tmpl, body, slots);
             self.prefix(path, ml.lineIndexAt(lines, sp.start) + 1, 1 + (sp.start - lines[ml.lineIndexAt(lines, sp.start)].start), sp.start, true);
-            self.out.appendSlice(self.a, rep.items) catch die("oom\n", .{});
-            self.out.append(self.a, self.o.term()) catch die("oom\n", .{});
+            self.add(rep.items);
+            self.out.append(self.a, self.o.term()) catch oom();
         }
         return spans.len;
     }
@@ -889,8 +903,8 @@ pub const Emitter = struct {
     fn bufBlocks(self: *Emitter, path: []const u8, lines: []const ml.Line, spans: []const ml.Span, body: []const u8) usize {
         const o = self.o;
         const n = lines.len;
-        const is_match = self.a.alloc(bool, n) catch die("oom\n", .{});
-        const col = self.a.alloc(usize, n) catch die("oom\n", .{});
+        const is_match = self.a.alloc(bool, n) catch oom();
+        const col = self.a.alloc(usize, n) catch oom();
         @memset(is_match, false);
         @memset(col, 0);
         for (spans) |sp| {
@@ -906,7 +920,7 @@ pub const Emitter = struct {
             }
         }
         var idx: std.ArrayList(usize) = .empty;
-        for (0..n) |k| if (is_match[k]) idx.append(self.a, k) catch die("oom\n", .{});
+        for (0..n) |k| if (is_match[k]) idx.append(self.a, k) catch oom();
 
         const B = if (o.passthru) n else o.before;
         const A = if (o.passthru) n else o.after;
@@ -945,7 +959,7 @@ pub const Emitter = struct {
         const o = self.o;
         const caps = self.caps orelse return 0;
         const tmpl = o.replace.?;
-        const slots = self.a.alloc(isize, caps.nslots()) catch die("oom\n", .{});
+        const slots = self.a.alloc(isize, caps.nslots()) catch oom();
         const n = lines.len;
         const B = if (o.passthru) n else o.before;
         const A = if (o.passthru) n else o.after;
@@ -988,13 +1002,13 @@ pub const Emitter = struct {
             var starts: std.ArrayList(usize) = .empty;
             var cursor = lines[blo].start;
             for (spans[i..j]) |sp| {
-                buf.appendSlice(self.a, body[cursor..sp.start]) catch die("oom\n", .{});
-                starts.append(self.a, buf.items.len) catch die("oom\n", .{});
+                buf.appendSlice(self.a, body[cursor..sp.start]) catch oom();
+                starts.append(self.a, buf.items.len) catch oom();
                 _ = caps.find(body, sp.start, slots);
                 self.expand(&buf, tmpl, body, slots);
                 cursor = @max(cursor, sp.end);
             }
-            buf.appendSlice(self.a, body[cursor..lines[bhi].term_end]) catch die("oom\n", .{});
+            buf.appendSlice(self.a, body[cursor..lines[bhi].term_end]) catch oom();
             self.emitReplacedBlock(path, blo, lines[blo].start, buf.items, starts.items);
             k = bhi + 1;
             while (k <= hi) : (k += 1) {
@@ -1026,7 +1040,7 @@ pub const Emitter = struct {
             var line_starts: std.ArrayList(usize) = .empty;
             for (starts) |st| {
                 if (st >= end) break;
-                line_starts.append(self.a, st -| pos) catch die("oom\n", .{});
+                line_starts.append(self.a, st -| pos) catch oom();
             }
             self.prefix(path, lineno, col, block_off + pos, true);
             self.emitBody(rep[pos..end], true, line_starts.items);

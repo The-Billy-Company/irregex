@@ -17,49 +17,150 @@ const gpa = std.testing.allocator;
 // Two "languages": Zig-flavored and Python-flavored source, two samples each,
 // plus an English prose sample. Kinship must pair like with like.
 
+// NOTE on fixture size: the kinship signal is statistical — an LZ78
+// dictionary over a few hundred bytes is mostly single-character phrases and
+// carries no style. The source papers operate on kilobyte-scale texts; these
+// fixtures are sized to match (~1 KiB each), DIFFERENT in content within a
+// language, alike only in the language's own idiom.
+
 const zig_a =
     \\const std = @import("std");
+    \\
     \\pub fn build(gpa: std.mem.Allocator, bytes: []const u8) !Sketch {
     \\    var seen = try PhraseSet.init(gpa, bytes.len / 8);
     \\    defer seen.deinit(gpa);
-    \\    for (bytes) |b| { h = (h ^ b) *% fnv_prime; }
+    \\    var low: BottomK = .init;
+    \\    var h: u64 = fnv_offset;
+    \\    for (bytes) |b| {
+    \\        h = (h ^ b) *% fnv_prime;
+    \\        if (try seen.insert(gpa, h)) {
+    \\            low.offer(finalize(h));
+    \\            h = fnv_offset;
+    \\        }
+    \\    }
+    \\    var out = Sketch.empty;
+    \\    out.len = low.len;
+    \\    @memcpy(out.h[0..low.len], low.heap[0..low.len]);
+    \\    std.mem.sort(u64, out.h[0..out.len], {}, comptime std.sort.asc(u64));
     \\    return out;
+    \\}
+    \\
+    \\test "sketch is deterministic" {
+    \\    const a = try build(std.testing.allocator, "abc");
+    \\    const b = try build(std.testing.allocator, "abc");
+    \\    try std.testing.expectEqualSlices(u64, a.slots(), b.slots());
     \\}
 ;
 
 const zig_b =
     \\const std = @import("std");
-    \\pub fn distance(a: *const Sketch, b: *const Sketch) f64 {
-    \\    const as = a.slots();
-    \\    const bs = b.slots();
-    \\    if (as.len == 0 or bs.len == 0) return 1.0;
-    \\    return 1.0 - jaccard;
+    \\
+    \\pub fn load(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !Corpus {
+    \\    var arena = std.heap.ArenaAllocator.init(gpa);
+    \\    const a = arena.allocator();
+    \\    var docs: std.ArrayList([]const u8) = .empty;
+    \\    var paths: std.ArrayList([]const u8) = .empty;
+    \\    var total: u64 = 0;
+    \\    for (roots) |root_path| {
+    \\        var w = haystack.Walker.init(io, a, root_path) catch |e| {
+    \\            std.debug.print("  skip {s}: {s}\n", .{ root_path, @errorName(e) });
+    \\            continue;
+    \\        };
+    \\        defer w.deinit(io);
+    \\        while (try w.next(io)) |hay| {
+    \\            const buf = hay.dir.readFileAlloc(io, hay.name, a, .limited(cap)) catch continue;
+    \\            if (buf.len == 0 or isBinary(buf)) continue;
+    \\            try docs.append(a, buf);
+    \\            try paths.append(a, hay.path);
+    \\            total += buf.len;
+    \\        }
+    \\    }
+    \\    return .{ .docs = docs.items, .paths = paths.items, .bytes = total, .arena = arena };
     \\}
 ;
 
 const py_a =
     \\import pathlib
-    \\def candidate_files(repo, literals):
-    \\    rows = [rel.removeprefix("./") for rel in scan(repo, literals).split("\0") if rel]
+    \\from collections import defaultdict
+    \\
+    \\
+    \\def candidate_files(repo: pathlib.Path, literals: list[str]) -> list[str]:
+    \\    """One batched scan; the caller re-classifies per literal."""
+    \\    rows = [
+    \\        rel.removeprefix("./")
+    \\        for rel in scan(repo, literals).split("\0")
+    \\        if rel and not rel.startswith(".git/")
+    \\    ]
     \\    return sorted(set(rows))
+    \\
+    \\
+    \\def classify(rows: list[str], literals: list[str]) -> dict[str, list[str]]:
+    \\    """Group candidate paths by the literal that implicated them."""
+    \\    hits: dict[str, list[str]] = defaultdict(list)
+    \\    for row in rows:
+    \\        for needle in literals:
+    \\            if needle in row:
+    \\                hits[needle].append(row)
+    \\    return {needle: sorted(found) for needle, found in hits.items()}
+    \\
+    \\
+    \\def main(argv: list[str]) -> int:
+    \\    repo = pathlib.Path(argv[1]) if len(argv) > 1 else pathlib.Path.cwd()
+    \\    for needle, found in classify(candidate_files(repo, argv[2:]), argv[2:]).items():
+    \\        print(f"{needle}: {len(found)} files")
+    \\    return 0
 ;
 
 const py_b =
-    \\import itertools
-    \\def lzset(data):
-    \\    seen, cur = set(), b''
-    \\    for ch in data:
-    \\        cur += bytes([ch])
-    \\        if cur not in seen:
-    \\            seen.add(cur); cur = b''
-    \\    return seen
+    \\import dataclasses
+    \\import json
+    \\import urllib.request
+    \\from collections import Counter
+    \\
+    \\
+    \\@dataclasses.dataclass(frozen=True)
+    \\class LogRow:
+    \\    """One structured log record from the VictoriaLogs tail endpoint."""
+    \\
+    \\    stream: str
+    \\    level: str
+    \\    message: str
+    \\
+    \\
+    \\def fetch_rows(base_url: str, query: str, limit: int = 200) -> list[LogRow]:
+    \\    """Pull up to *limit* rows for *query*, newest first."""
+    \\    params = urllib.parse.urlencode({"query": query, "limit": limit})
+    \\    with urllib.request.urlopen(f"{base_url}/select/logsql/query?{params}") as resp:
+    \\        payload = [json.loads(line) for line in resp.read().splitlines() if line]
+    \\    return [
+    \\        LogRow(
+    \\            stream=row.get("_stream", ""),
+    \\            level=row.get("level", "info"),
+    \\            message=row.get("_msg", ""),
+    \\        )
+    \\        for row in payload
+    \\    ]
+    \\
+    \\
+    \\def summarize(rows: list[LogRow]) -> dict[str, int]:
+    \\    """Count rows per level, error-heavy streams first."""
+    \\    counts: Counter[str] = Counter(row.level for row in rows)
+    \\    return dict(counts.most_common())
 ;
 
 const prose =
     \\In this letter we present a very general method to extract information
     \\from a generic string of characters, based on data-compression techniques,
     \\whose key point is a suitable measure of the remoteness of two bodies of
-    \\knowledge. The zipper learns the language and changes its rules.
+    \\knowledge. The zipper learns the language and changes its rules. Suppose
+    \\we take a long English text and we append to it an Italian sentence: the
+    \\compression program will start reading the new file using the rules it
+    \\has learned from English, and only gradually will it adapt to the new
+    \\language. The length of the compressed appended part measures, in bits,
+    \\how far the second language sits from the first — a distance one can use
+    \\to build phylogenetic trees of languages, to attribute a disputed text to
+    \\its author, and generally to classify any sequence of symbols for which
+    \\a dictionary can be learned, with no prior knowledge of the domain.
 ;
 
 fn dist(x: []const u8, y: []const u8) !f64 {
@@ -141,11 +242,16 @@ test "disjoint alphabets are near-maximally distant" {
 }
 
 test "empty and tiny inputs are total, not panics" {
+    // Below `min_phrase` bytes no phrase qualifies: the sketch is empty and
+    // two sub-phrase inputs are indistinguishable (distance 0) — documented,
+    // total behavior, never a panic.
     var e = try sketch.build(gpa, "");
-    var one = try sketch.build(gpa, "x");
+    var tiny = try sketch.build(gpa, "x");
+    var real = try sketch.build(gpa, zig_a);
+    try std.testing.expectEqual(@as(u16, 0), tiny.len);
     try std.testing.expectEqual(@as(f64, 0.0), sketch.distance(&e, &e));
-    try std.testing.expectEqual(@as(f64, 1.0), sketch.distance(&e, &one));
-    try std.testing.expect(one.len >= 1);
+    try std.testing.expectEqual(@as(f64, 0.0), sketch.distance(&e, &tiny));
+    try std.testing.expectEqual(@as(f64, 1.0), sketch.distance(&e, &real));
 }
 
 test "sketch is bounded and sorted regardless of input size" {

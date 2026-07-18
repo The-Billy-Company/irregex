@@ -56,6 +56,7 @@ pub fn isBinary(bytes: []const u8) bool {
     return std.mem.indexOfScalar(u8, window, 0) != null;
 }
 
+/// Every loaded doc + its root-joined path, arena-owned; `deinit` frees all.
 pub const Corpus = struct {
     docs: [][]const u8,
     paths: [][]const u8,
@@ -67,6 +68,9 @@ pub const Corpus = struct {
     }
 };
 
+/// Read every non-binary file under `roots` into one arena (per-file cap
+/// applies; an unreadable root is reported to stderr and skipped, matching
+/// rg's walk-on behavior).
 pub fn load(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !Corpus {
     var arena = std.heap.ArenaAllocator.init(gpa);
     const a = arena.allocator();

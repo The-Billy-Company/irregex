@@ -507,39 +507,6 @@ test "powerset: pathological alternation blows past max_states ⇒ bails to null
 
 // ─────────── compile-cost regression guard: allocations scale w/ states ───────
 
-/// A pass-through allocator that tallies `alloc` calls only, forwarding every op
-/// to a child. Lets a test pin the interning cost deterministically — no
-/// wall-clock, so it never flakes on a loaded CI box.
-const AllocCounter = struct {
-    child: std.mem.Allocator,
-    allocs: usize = 0,
-
-    fn allocator(self: *AllocCounter) std.mem.Allocator {
-        return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = resize, .remap = remap, .free = free } };
-    }
-    /// The `std.mem.Allocator` vtable contract hands back the untyped `ctx` pointer it
-    /// was constructed with — recovering the concrete type is unavoidably a pointer
-    /// cast (same pattern `std.testing.FailingAllocator` uses); isolated here as the
-    /// single cast site instead of repeating it per vtable method.
-    fn self_(ctx: *anyopaque) *AllocCounter {
-        return @ptrCast(@alignCast(ctx));
-    }
-    fn alloc(ctx: *anyopaque, len: usize, al: std.mem.Alignment, ra: usize) ?[*]u8 {
-        const self = self_(ctx);
-        self.allocs += 1;
-        return self.child.rawAlloc(len, al, ra);
-    }
-    fn resize(ctx: *anyopaque, m: []u8, al: std.mem.Alignment, n: usize, ra: usize) bool {
-        return self_(ctx).child.rawResize(m, al, n, ra);
-    }
-    fn remap(ctx: *anyopaque, m: []u8, al: std.mem.Alignment, n: usize, ra: usize) ?[*]u8 {
-        return self_(ctx).child.rawRemap(m, al, n, ra);
-    }
-    fn free(ctx: *anyopaque, m: []u8, al: std.mem.Alignment, ra: usize) void {
-        self_(ctx).child.rawFree(m, al, ra);
-    }
-};
-
 test "powerset: cap-busting compile allocates O(states), not O(transitions)" {
     // Determinizing it explodes past `max_states` (~4k DFA states over 12 byte-classes) so `build` bails to the
     // Pike VM. The determinizer probes the subset map ~states×ncls×2 (≈86k) times;
@@ -547,8 +514,13 @@ test "powerset: cap-busting compile allocates O(states), not O(transitions)" {
     // genuinely NEW state — one alloc per interned state, not one per probe. If a
     // future edit reintroduces alloc-per-probe, allocations jump ~20× (≈86k) and
     // compile time with it. This pins the O(states) bound with no flaky timer.
+    // Counting rides std.testing.FailingAllocator (never failing via maxInt
+    // fail_index): its `allocations` field tallies each successful `alloc`
+    // exactly like the bespoke counter it replaced — and any alloc failure
+    // under std.testing.allocator would fail the compile below anyway, so the
+    // success-only count is the same number.
     const pat = "^[a-c]{3,5}[^a-c]+.{0,2}|\\S{0}\\S{2,}(\\D[a-c]{2}.{4,6}|0{4,6}\\w[ace1]*){1,3}|[^ -~]{0,2}[^a-c]+$";
-    var counter = AllocCounter{ .child = std.testing.allocator };
+    var counter = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = std.math.maxInt(usize) });
     const a = counter.allocator();
 
     var re = try Regex.compile(a, pat);
@@ -558,7 +530,7 @@ test "powerset: cap-busting compile allocates O(states), not O(transitions)" {
     // Permanent allocations are bounded by the interned-state count (≤ max_states
     // + a handful of amortized ArrayList/HashMap growth reallocations), so ~4.2k.
     // 2×max_states leaves headroom while staying far under the pre-fix ~86k.
-    try expect(counter.allocs < 2 * powerset.max_states);
+    try expect(counter.allocations < 2 * powerset.max_states);
 }
 
 // ───────────────────────── randomized invariant fuzz ─────────────────────────

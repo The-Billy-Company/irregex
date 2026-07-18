@@ -14,8 +14,7 @@
 const std = @import("std");
 const syn = @import("syntax.zig");
 const compile_mod = @import("compile.zig");
-const udec = @import("unicode/decode.zig");
-const utables = @import("unicode/tables.zig");
+const word = @import("word.zig");
 const ByteSet = syn.ByteSet;
 const Node = syn.Node;
 
@@ -76,25 +75,10 @@ const Inst = union(enum) {
     match,
 };
 
-fn isWordByte(b: u8) bool {
-    return std.ascii.isAlphanumeric(b) or b == '_';
-}
-/// Word-ness of the codepoint STARTING at gap `p` (Unicode mode decodes forward;
-/// ASCII/`(?-u)` mode is the single-byte test) — see `core.zig` for the contract.
-fn wordAt(unicode: bool, line: []const u8, p: usize) bool {
-    if (p >= line.len) return false;
-    if (!unicode or line[p] < 0x80) return isWordByte(line[p]);
-    const d = udec.decode(line[p..]) orelse return false;
-    return utables.isWord(d.cp);
-}
-/// Word-ness of the codepoint ending just BEFORE gap `p` (Unicode mode decodes
-/// backward via `decodeLast`; ASCII mode is the single-byte test).
-fn wordBefore(unicode: bool, line: []const u8, p: usize) bool {
-    if (p == 0) return false;
-    if (!unicode or line[p - 1] < 0x80) return isWordByte(line[p - 1]);
-    const d = udec.decodeLast(line[0..p]) orelse return false;
-    return utables.isWord(d.cp);
-}
+// The shared `\b`/`\B`/`\<`/`\>` word test (`word.zig`) — one definition for
+// this VM and the boolean Pike VM, so the two engines can never disagree.
+const wordAt = word.wordAt;
+const wordBefore = word.wordBefore;
 
 /// A compiled capture matcher: the program plus per-find scratch. `nslots` =
 /// `2*(ngroups+1)`; `slots[2g]`/`slots[2g+1]` bracket group `g` (0 = whole match).

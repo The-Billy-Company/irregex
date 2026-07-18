@@ -22,7 +22,11 @@
 const std = @import("std");
 const gl = @import("../scope/glob.zig");
 const args = @import("args.zig");
+const paths = @import("paths.zig");
+const stripDot = paths.stripDot;
+const join = paths.join;
 const die = args.die;
+const oom = args.oom;
 const Opts = args.Opts;
 const Dir = std.Io.Dir;
 
@@ -190,10 +194,10 @@ pub const Compiled = struct {
             } else if (!r.anchored and extKey(r.glob) != null) {
                 slotPut(&self.ext, extKey(r.glob).?, rank, r.dir_only);
             } else {
-                cx.append(a, rank) catch die("oom\n", .{});
+                cx.append(a, rank) catch oom();
             }
         }
-        self.complex = cx.toOwnedSlice(a) catch die("oom\n", .{});
+        self.complex = cx.toOwnedSlice(a) catch oom();
         return self;
     }
 
@@ -241,7 +245,7 @@ pub const Compiled = struct {
     }
 
     fn slotPut(map: *std.StringHashMap(Slot), key: []const u8, rank: u32, dir_only: bool) void {
-        const gop = map.getOrPut(key) catch die("oom\n", .{});
+        const gop = map.getOrPut(key) catch oom();
         if (!gop.found_existing) gop.value_ptr.* = .{};
         if (dir_only) gop.value_ptr.dironly = rank else gop.value_ptr.plain = rank;
     }
@@ -350,7 +354,7 @@ pub const Ignore = struct {
         const cwd = Dir.cwd().realPathFileAlloc(self.io, ".", self.a) catch return;
         var comps: std.ArrayList([]const u8) = .empty;
         var it = std.mem.splitScalar(u8, cwd, '/');
-        while (it.next()) |c| if (c.len != 0) comps.append(self.a, c) catch die("oom\n", .{});
+        while (it.next()) |c| if (c.len != 0) comps.append(self.a, c) catch oom();
         var k: usize = comps.items.len; // k levels up (1 = parent, len = filesystem root)
         while (k >= 1) : (k -= 1) {
             const anc = ascend(self.a, k);
@@ -415,7 +419,7 @@ pub const Ignore = struct {
         const cd = std.mem.trimEnd(u8, firstLine(commondir), "\r");
         // A relative commondir is joined to the worktree git dir; an absolute one
         // is used as-is (the OS resolves the embedded `..`).
-        return if (cd.len > 0 and cd[0] == '.') join(self.a, real_git_dir, cd) else self.a.dupe(u8, cd) catch die("oom\n", .{});
+        return if (cd.len > 0 and cd[0] == '.') join(self.a, real_git_dir, cd) else self.a.dupe(u8, cd) catch oom();
     }
 
     /// Scope subsequent `decide`/`shouldSkip` calls to a positional root path
@@ -425,18 +429,16 @@ pub const Ignore = struct {
     /// PATH arg) so ancestor/CWD-sourced rules (`Rule.base == ""`) can't match
     /// the root's own path components — only its descendants.
     pub fn scopeToRoot(self: *Ignore, prefix: []const u8) void {
-        var s = prefix;
-        while (std.mem.startsWith(u8, s, "./")) s = s[2..];
-        self.explicit_root_depth = if (s.len == 0 or std.mem.eql(u8, s, ".")) 0 else std.mem.count(u8, s, "/") + 1;
+        self.explicit_root_depth = paths.rootDepth(prefix);
     }
 
     /// Load the per-directory ignore files for `rel` (relative to the walk root;
     /// on-disk path `disk`) exactly once, as the walk is about to descend into it.
     pub fn loadDir(self: *Ignore, disk: []const u8, rel: []const u8) void {
         if (self.o.no_ignore) return;
-        const gop = self.loaded.getOrPut(rel) catch die("oom\n", .{});
+        const gop = self.loaded.getOrPut(rel) catch oom();
         if (gop.found_existing) return;
-        gop.key_ptr.* = self.a.dupe(u8, rel) catch die("oom\n", .{}); // own the key (rel may be transient)
+        gop.key_ptr.* = self.a.dupe(u8, rel) catch oom(); // own the key (rel may be transient)
         if (self.use_git) self.readFile(join(self.a, disk, ".gitignore"), rel, "", true);
         if (self.use_dot) {
             self.readFile(join(self.a, disk, ".ignore"), rel, "", false);
@@ -531,38 +533,29 @@ pub const Ignore = struct {
         // Bucket by the source directory (normalized like `ruleMatch` does, so a
         // "." / "./x" base and its rel-side counterpart collapse to the same key).
         const key = stripDot(base);
-        const gop = self.groups.getOrPut(key) catch die("oom\n", .{});
+        const gop = self.groups.getOrPut(key) catch oom();
         if (!gop.found_existing) {
-            gop.key_ptr.* = self.a.dupe(u8, key) catch die("oom\n", .{});
+            gop.key_ptr.* = self.a.dupe(u8, key) catch oom();
             gop.value_ptr.* = .empty;
         }
         var owned = parsed;
-        owned.glob = self.a.dupe(u8, parsed.glob) catch die("oom\n", .{});
+        owned.glob = self.a.dupe(u8, parsed.glob) catch oom();
         owned.reanchor_multi_root = reanchor_multi_root;
-        gop.value_ptr.append(self.a, owned) catch die("oom\n", .{});
+        gop.value_ptr.append(self.a, owned) catch oom();
     }
 };
 
 fn lower(a: std.mem.Allocator, s: []const u8) []const u8 {
-    const o = a.alloc(u8, s.len) catch die("oom\n", .{});
+    const o = a.alloc(u8, s.len) catch oom();
     for (s, 0..) |c, i| o[i] = std.ascii.toLower(c);
     return o;
 }
 
-fn join(a: std.mem.Allocator, dir: []const u8, name: []const u8) []const u8 {
-    if (dir.len == 0 or std.mem.eql(u8, dir, ".")) return name;
-    return std.fmt.allocPrint(a, "{s}/{s}", .{ dir, name }) catch die("oom\n", .{});
-}
-
-/// A process env var's value, or null if unset — the leaf used by
-/// `globalExcludesPath` to locate git's config/ignore homes. Reads the process
-/// environment directly (`std.c.getenv`, as the pipeline does for its `GIST_*`
-/// knobs): HOME/XDG_CONFIG_HOME are stable for the per-user gist server's
-/// lifetime, so this matches ripgrep's own `std::env` resolution. The returned
-/// slice borrows libc's stable environ storage (no copy).
-fn envSpan(key: [*:0]const u8) ?[]const u8 {
-    return if (std.c.getenv(key)) |v| std.mem.span(v) else null;
-}
+// Env resolution (HOME/XDG for git's config/ignore homes) goes through the
+// shared `args.envSpan` — stable for the per-user gist server's lifetime,
+// matching ripgrep's own `std::env` resolution; the slice borrows libc's
+// stable environ storage (no copy).
+const envSpan = args.envSpan;
 
 /// Best-effort whole-file read (≤1 MiB); null on any error (missing/unreadable),
 /// matching git/ripgrep's "absent global config is simply no rules" behavior.
@@ -602,14 +595,14 @@ fn excludesValue(line: []const u8) ?[]const u8 {
 /// just a leading-`~` rule). Always returns an arena-owned copy so the caller can
 /// hold it past `data`'s lifetime.
 fn expandTilde(a: std.mem.Allocator, home: ?[]const u8, s: []const u8) []const u8 {
-    const h = home orelse return a.dupe(u8, s) catch die("oom\n", .{});
-    if (std.mem.indexOfScalar(u8, s, '~') == null) return a.dupe(u8, s) catch die("oom\n", .{});
+    const h = home orelse return a.dupe(u8, s) catch oom();
+    if (std.mem.indexOfScalar(u8, s, '~') == null) return a.dupe(u8, s) catch oom();
     var buf: std.ArrayList(u8) = .empty;
     for (s) |c| if (c == '~')
-        buf.appendSlice(a, h) catch die("oom\n", .{})
+        buf.appendSlice(a, h) catch oom()
     else
-        buf.append(a, c) catch die("oom\n", .{});
-    return buf.toOwnedSlice(a) catch die("oom\n", .{});
+        buf.append(a, c) catch oom();
+    return buf.toOwnedSlice(a) catch oom();
 }
 
 /// Resolve git's global excludes path from explicit `home`/`xdg` (env-free, so
@@ -631,14 +624,6 @@ fn globalExcludesFrom(io: std.Io, a: std.mem.Allocator, home: ?[]const u8, xdg: 
     return join(a, c, "git/ignore");
 }
 
-/// Drop a leading `./` (or a bare `.`) so a `./root` positional's paths compare
-/// against ignore rules the same as a bare `root` positional's do.
-fn stripDot(s: []const u8) []const u8 {
-    if (std.mem.startsWith(u8, s, "./")) return s[2..];
-    if (std.mem.eql(u8, s, ".")) return "";
-    return s;
-}
-
 /// Remove `count` leading path components, counting a leading `/` as the empty
 /// component exactly as `rootDepth` does for absolute positional roots.
 fn stripComponents(path: []const u8, count: usize) []const u8 {
@@ -654,18 +639,18 @@ fn stripComponents(path: []const u8, count: usize) []const u8 {
 fn ascend(a: std.mem.Allocator, k: usize) []const u8 {
     var buf: std.ArrayList(u8) = .empty;
     var i: usize = 0;
-    while (i < k) : (i += 1) buf.appendSlice(a, if (i == 0) ".." else "/..") catch die("oom\n", .{});
-    return buf.toOwnedSlice(a) catch die("oom\n", .{});
+    while (i < k) : (i += 1) buf.appendSlice(a, if (i == 0) ".." else "/..") catch oom();
+    return buf.toOwnedSlice(a) catch oom();
 }
 
 /// Join path components with `/` (e.g. `["a","b"]` → `a/b`).
 fn joinComps(a: std.mem.Allocator, comps: []const []const u8) []const u8 {
     var buf: std.ArrayList(u8) = .empty;
     for (comps, 0..) |c, i| {
-        if (i != 0) buf.append(a, '/') catch die("oom\n", .{});
-        buf.appendSlice(a, c) catch die("oom\n", .{});
+        if (i != 0) buf.append(a, '/') catch oom();
+        buf.appendSlice(a, c) catch oom();
     }
-    return buf.toOwnedSlice(a) catch die("oom\n", .{});
+    return buf.toOwnedSlice(a) catch oom();
 }
 
 /// Levels from CWD up to the nearest ancestor (inclusive of CWD = 0) holding a

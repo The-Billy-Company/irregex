@@ -40,11 +40,33 @@ OUT = HERE.parent / "src" / "commands" / "ripgrep" / "encoding_tables.gen.zig"
 # windows-1252 subsumes ISO-8859-1/ASCII; windows-1254 subsumes ISO-8859-9;
 # windows-874 subsumes ISO-8859-11/TIS-620 — all handled by the label map below.
 SINGLE_BYTE = [
-    "ibm866", "iso-8859-2", "iso-8859-3", "iso-8859-4", "iso-8859-5", "iso-8859-6",
-    "iso-8859-7", "iso-8859-8", "iso-8859-10", "iso-8859-13", "iso-8859-14",
-    "iso-8859-15", "iso-8859-16", "koi8-r", "koi8-u", "macintosh", "windows-874",
-    "windows-1250", "windows-1251", "windows-1252", "windows-1253", "windows-1254",
-    "windows-1255", "windows-1256", "windows-1257", "windows-1258", "x-mac-cyrillic",
+    "ibm866",
+    "iso-8859-2",
+    "iso-8859-3",
+    "iso-8859-4",
+    "iso-8859-5",
+    "iso-8859-6",
+    "iso-8859-7",
+    "iso-8859-8",
+    "iso-8859-10",
+    "iso-8859-13",
+    "iso-8859-14",
+    "iso-8859-15",
+    "iso-8859-16",
+    "koi8-r",
+    "koi8-u",
+    "macintosh",
+    "windows-874",
+    "windows-1250",
+    "windows-1251",
+    "windows-1252",
+    "windows-1253",
+    "windows-1254",
+    "windows-1255",
+    "windows-1256",
+    "windows-1257",
+    "windows-1258",
+    "x-mac-cyrillic",
 ]
 
 # Multi-byte decode indexes (dense pointer -> code point). Widths chosen from the
@@ -63,18 +85,43 @@ MULTI_BYTE = {
 NAME_TO_TAG = {
     "UTF-8": "utf8",
     "IBM866": "ibm866",
-    "ISO-8859-2": "iso_8859_2", "ISO-8859-3": "iso_8859_3", "ISO-8859-4": "iso_8859_4",
-    "ISO-8859-5": "iso_8859_5", "ISO-8859-6": "iso_8859_6", "ISO-8859-7": "iso_8859_7",
-    "ISO-8859-8": "iso_8859_8", "ISO-8859-8-I": "iso_8859_8", "ISO-8859-10": "iso_8859_10",
-    "ISO-8859-13": "iso_8859_13", "ISO-8859-14": "iso_8859_14", "ISO-8859-15": "iso_8859_15",
-    "ISO-8859-16": "iso_8859_16", "KOI8-R": "koi8_r", "KOI8-U": "koi8_u",
-    "macintosh": "macintosh", "windows-874": "windows_874", "windows-1250": "windows_1250",
-    "windows-1251": "windows_1251", "windows-1252": "windows_1252", "windows-1253": "windows_1253",
-    "windows-1254": "windows_1254", "windows-1255": "windows_1255", "windows-1256": "windows_1256",
-    "windows-1257": "windows_1257", "windows-1258": "windows_1258", "x-mac-cyrillic": "x_mac_cyrillic",
-    "GBK": "gb18030", "gb18030": "gb18030", "Big5": "big5", "EUC-JP": "euc_jp",
-    "ISO-2022-JP": "iso_2022_jp", "Shift_JIS": "shift_jis", "EUC-KR": "euc_kr",
-    "replacement": "replacement", "UTF-16BE": "utf16be", "UTF-16LE": "utf16le",
+    "ISO-8859-2": "iso_8859_2",
+    "ISO-8859-3": "iso_8859_3",
+    "ISO-8859-4": "iso_8859_4",
+    "ISO-8859-5": "iso_8859_5",
+    "ISO-8859-6": "iso_8859_6",
+    "ISO-8859-7": "iso_8859_7",
+    "ISO-8859-8": "iso_8859_8",
+    "ISO-8859-8-I": "iso_8859_8",
+    "ISO-8859-10": "iso_8859_10",
+    "ISO-8859-13": "iso_8859_13",
+    "ISO-8859-14": "iso_8859_14",
+    "ISO-8859-15": "iso_8859_15",
+    "ISO-8859-16": "iso_8859_16",
+    "KOI8-R": "koi8_r",
+    "KOI8-U": "koi8_u",
+    "macintosh": "macintosh",
+    "windows-874": "windows_874",
+    "windows-1250": "windows_1250",
+    "windows-1251": "windows_1251",
+    "windows-1252": "windows_1252",
+    "windows-1253": "windows_1253",
+    "windows-1254": "windows_1254",
+    "windows-1255": "windows_1255",
+    "windows-1256": "windows_1256",
+    "windows-1257": "windows_1257",
+    "windows-1258": "windows_1258",
+    "x-mac-cyrillic": "x_mac_cyrillic",
+    "GBK": "gb18030",
+    "gb18030": "gb18030",
+    "Big5": "big5",
+    "EUC-JP": "euc_jp",
+    "ISO-2022-JP": "iso_2022_jp",
+    "Shift_JIS": "shift_jis",
+    "EUC-KR": "euc_kr",
+    "replacement": "replacement",
+    "UTF-16BE": "utf16be",
+    "UTF-16LE": "utf16le",
     "x-user-defined": "x_user_defined",
 }
 
@@ -108,8 +155,7 @@ def dense(idx: dict[int, int]) -> list[int]:
 def blob(values: list[int], width: int) -> str:
     r"""Return a Zig `\xNN` string literal of values packed little-endian at `width` bits."""
     nbytes = width // 8
-    return "".join(f"\\x{(v >> (8 * k)) & 0xFF:02X}"
-                   for v in values for k in range(nbytes))
+    return "".join(f"\\x{(v >> (8 * k)) & 0xFF:02X}" for v in values for k in range(nbytes))
 
 
 def blob_decl(name: str, values: list[int], width: int) -> str:
@@ -148,7 +194,9 @@ def build() -> str:
     # ── gb18030 four-byte ranges: (pointer, code point) sorted by pointer ──
     ranges = sorted(parse_index("gb18030-ranges").items())
     flat: list[int] = [v for pair in ranges for v in pair]
-    lines.append("// ── gb18030 four-byte ranges: interleaved (pointer, code point) u32 LE, pointer-sorted ──")
+    lines.append(
+        "// ── gb18030 four-byte ranges: interleaved (pointer, code point) u32 LE, pointer-sorted ──"
+    )
     lines.append(blob_decl("gb18030_ranges", flat, 32))
     lines.append("")
 
@@ -180,7 +228,9 @@ def build() -> str:
             raise SystemExit(msg)
         seen[label] = tag
     lines.append("pub const LabelEntry = struct { label: []const u8, tag: []const u8 };")
-    body = ", ".join(f'.{{ .label = "{lbl}", .tag = "{tag}" }}' for lbl, tag in sorted(seen.items()))
+    body = ", ".join(
+        f'.{{ .label = "{lbl}", .tag = "{tag}" }}' for lbl, tag in sorted(seen.items())
+    )
     lines.append(f"pub const labels = [_]LabelEntry{{ {body} }};")
     lines.append("")
     return "\n".join(lines)

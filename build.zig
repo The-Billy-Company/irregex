@@ -162,6 +162,33 @@ pub fn build(b: *std.Build) void {
     b.step("cli", "gist CLI: `-- index`, `-- status`, `-- <pattern> [flags]`")
         .dependOn(&run_cli.step);
 
+    // ── cross-target drift gate (`zig build check-linux`, folded into `test`) ──
+    // The Linux legs — the statx raw-stat shim (grepfile.zig), the inotify
+    // watcher (session/watch.zig), and every `std.os.linux` call they make —
+    // are comptime-pruned on the macOS dev boxes, so only a cross compile can
+    // see them break (exactly how a `std.posix.close`/`std.c.fstatat` removal
+    // in Zig 0.16 rotted unnoticed). Compile the full CLI module for
+    // x86_64-linux-gnu as an OBJECT: full Sema + codegen over every
+    // Linux-reachable line, no PCRE2 C cross-build and no link (the extern
+    // declarations suffice), so the gate stays cheap and cache-friendly.
+    const linux_target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu });
+    const check_engine = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = linux_target,
+        .optimize = .Debug,
+        .link_libc = true,
+    });
+    const check_mod = b.createModule(.{
+        .root_source_file = b.path("src/commands/cli/main.zig"),
+        .target = linux_target,
+        .optimize = .Debug,
+    });
+    check_mod.addImport("gist", check_engine);
+    const check_obj = b.addObject(.{ .name = "gist-check-linux", .root_module = check_mod });
+    const check_linux = b.step("check-linux", "Cross-compile the CLI for x86_64-linux (Sema+codegen, no link) — keeps the comptime-pruned Linux legs building");
+    check_linux.dependOn(&check_obj.step);
+    k.test_step.dependOn(&check_obj.step);
+
     // Machine lifecycle contract: valid JSON is emitted whether the shared
     // machine-local index is ready or unavailable. Unit tests pin every field;
     // this black-box guard pins CLI dispatch and keeps prose off stderr.

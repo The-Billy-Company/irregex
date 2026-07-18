@@ -53,32 +53,6 @@ pub fn readAnchor(gpa: std.mem.Allocator, io: std.Io) ?i128 {
     return built_ns;
 }
 
-/// The set of paths under `roots` that require a live read relative to
-/// `built_ns` — every file whose mtime OR ctime is at/after the anchor, plus
-/// any whose metadata could not be read (conservative). This is the *exact*
-/// "needs a live read" set the index-elision path computes internally
-/// (`walkFresh`), lifted to a standalone primitive so the resident session's
-/// reconcile barrier (`src/session/`) re-reads precisely the files the cold
-/// path would — the shared machinery is why `resident == --no-index == rg`
-/// holds by construction rather than by a second, drift-prone walk. Paths are
-/// owned by the returned arena; caller `deinit`s it after copying what it keeps.
-pub const ChangedSet = struct {
-    paths: []const []const u8,
-    arena: std.heap.ArenaAllocator,
-    pub fn deinit(self: *ChangedSet) void {
-        self.arena.deinit();
-    }
-};
-
-pub fn changedSince(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, built_ns: i128) !ChangedSet {
-    var arena = std.heap.ArenaAllocator.init(gpa);
-    errdefer arena.deinit();
-    const a = arena.allocator();
-    var out: std.ArrayList([]const u8) = .empty;
-    try walkFresh(gpa, io, roots, built_ns, a, &out);
-    return .{ .paths = try a.dupe([]const u8, out.items), .arena = arena };
-}
-
 /// Candidate doc-ids + a private arena owning any new-file paths appended to the
 /// caller's `paths` list. Keep it alive until after the candidate read.
 pub const Candidates = struct {
@@ -179,24 +153,18 @@ fn visitItem(io: std.Io, prefix: []const u8, built_ns: i128, a: std.mem.Allocato
     // `getattrlistbulk` (Darwin-only — see `bulkstat.zig`) turns this from
     // O(files) `stat()` syscalls into O(directories) bulk calls, each
     // returning name+type+mtime+ctime for every sibling at once; it degrades
-    // directory-by-directory back to the exact stat-based walk below on any
-    // failure, preserving the same conservative metadata decision.
+    // directory-by-directory back to the exact stat-based walk
+    // (`bulkstat.fallbackWalk`) on any failure, preserving the same
+    // conservative metadata decision.
     if (bulkstat.supported) {
         var dir = Dir.cwd().openDir(io, prefix, .{ .iterate = true }) catch return;
         defer dir.close(io);
         bulkstat.visitFresh(a, io, dir, prefix, built_ns, out);
         return;
     }
-    var w = haystack.Walker.init(io, a, prefix) catch return;
-    defer w.deinit(io);
-    while (w.next(io) catch return) |hay| {
-        const st = hay.dir.statFile(io, hay.name, .{}) catch {
-            out.append(a, hay.path) catch return;
-            continue;
-        };
-        if (!bulkstat.needsLiveRead(built_ns, st.mtime.nanoseconds, st.ctime.nanoseconds)) continue;
-        out.append(a, hay.path) catch return;
-    }
+    // Non-Darwin: the same proven stat-based walk bulkstat degrades to —
+    // one definition, so the two paths cannot drift (§Boilerplate).
+    bulkstat.fallbackWalk(a, io, prefix, built_ns, out);
 }
 
 /// A directory subtree still awaiting a full `visitItem` walk.

@@ -14,13 +14,8 @@ const corpus_mod = @import("../../corpus/corpus.zig");
 const fresh = @import("../../corpus/fresh.zig");
 const persist = @import("../../index/persist.zig");
 const Index = @import("../../index/trigram.zig").Index;
-
-fn nowNs(io: std.Io) i128 {
-    return std.Io.Clock.now(.awake, io).nanoseconds;
-}
-fn ms(ns: i128) f64 {
-    return @as(f64, @floatFromInt(ns)) / 1e6;
-}
+const nowNs = @import("args.zig").nowNs;
+const ms = @import("args.zig").ms;
 
 /// Build once, persist the index + the doc→path table (NUL-separated, doc-id
 /// order) so a later fresh process can map candidate ids back to files.

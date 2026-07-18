@@ -32,6 +32,7 @@
 
 const std = @import("std");
 const ignore = @import("../commands/ripgrep/ignore.zig");
+const grepfile = @import("../commands/ripgrep/grepfile.zig");
 const Dir = std.Io.Dir;
 
 /// One resolved watcher path, in KEY SPACE (the exact path-string dialect the
@@ -350,11 +351,10 @@ fn realpathAlloc(a: std.mem.Allocator, path: []const u8) ?[]const u8 {
 }
 
 /// `lstat` mode bits for `rel` (never following a symlink — the walk treats a
-/// symlink as absent), or null when the path is gone/unreachable.
-fn lstatMode(rel: []const u8) ?std.posix.mode_t {
-    const cpath = std.posix.toPosixPath(rel) catch return null;
-    var st: std.posix.Stat = undefined;
-    if (std.c.fstatat(std.posix.AT.FDCWD, &cpath, &st, std.posix.AT.SYMLINK_NOFOLLOW) != 0) return null;
+/// symlink as absent), or null when the path is gone/unreachable. Rides the
+/// shared portable raw-stat shim (`grepfile.lstatPath`).
+fn lstatMode(rel: []const u8) ?u32 {
+    const st = grepfile.lstatPath(rel) orelse return null;
     return st.mode;
 }
 

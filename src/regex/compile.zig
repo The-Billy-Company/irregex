@@ -107,7 +107,6 @@ fn splitKey(a: u32, b: u32) u64 {
 const Cache = std.AutoHashMap(u64, u32);
 
 const Woven = struct {
-    gpa: std.mem.Allocator,
     consume: Cache,
     split: Cache,
 
@@ -175,7 +174,7 @@ pub fn lowerUtf8(gpa: std.mem.Allocator, ranges: []const [2]u21, next: u32, ctx:
     if (seqs.items.len == 0) return ctx.emitConsume(1, 0, next);
 
     std.mem.sort(u8seq.Sequence, seqs.items, {}, lessSeq);
-    var w = Woven{ .gpa = gpa, .consume = Cache.init(gpa), .split = Cache.init(gpa) };
+    var w = Woven{ .consume = Cache.init(gpa), .split = Cache.init(gpa) };
     defer w.consume.deinit();
     defer w.split.deinit();
     return weave(seqs.items, 0, next, &w, ctx);

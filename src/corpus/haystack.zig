@@ -57,6 +57,7 @@ const skip_dirs = std.StaticStringMap(void).initComptime(.{
     .{".idea"},         .{".vscode"},     .{".parcel-cache"}, .{".pnpm-store"}, .{"graphify-out"},
 });
 
+/// Is `name` a directory basename every corpus walk skips? (See `skip_dirs`.)
 pub fn isSkipDir(name: []const u8) bool {
     return skip_dirs.has(name);
 }

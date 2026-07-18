@@ -16,8 +16,9 @@ Run: python3 pkg/kernels/gist/tools/build_unicode_tables.py           # writes t
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
+import sys
+
 
 UNICODE_VERSION = "16.0.0"
 HERE = Path(__file__).resolve().parent
@@ -166,7 +167,9 @@ def build() -> str:
     lines.append("")
     lines.append("// ── simple case-fold orbits (CaseFolding C+S) ──")
     lines.append("pub const FoldEntry = struct { cp: u21, off: u32, len: u16 };")
-    fe = ", ".join(f".{{ .cp = 0x{cp:X}, .off = {off}, .len = {ln} }}" for cp, off, ln in fold_entries)
+    fe = ", ".join(
+        f".{{ .cp = 0x{cp:X}, .off = {off}, .len = {ln} }}" for cp, off, ln in fold_entries
+    )
     lines.append(f"pub const fold_entries: []const FoldEntry = &.{{ {fe} }};")
     fm = ", ".join(f"0x{m:X}" for m in fold_members)
     lines.append(f"pub const fold_members: []const u21 = &.{{ {fm} }};")

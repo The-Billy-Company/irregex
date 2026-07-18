@@ -138,6 +138,27 @@ matched = { code = 0, detail = "at least one match" }
 no_match = { code = 1, detail = "ran cleanly, found nothing" }
 error = { code = 2, detail = "unsupported pattern/flag, or an I/O/walk error — never a silent empty result" }
 
+# ── irregex: the irregular-expression surface (native shapes, no rg parity) ──
+# The set-shaped tier over the engine (src/irregex/): pattern SETS with exact
+# per-pattern attribution (match), compression-kinship sketches (relate — LZ78
+# dictionary bottom-k MinHash, LZJD distance), and a closed filter/group/sort/
+# limit plan executed engine-side (weave). Surfaced as three CLI verbs; like
+# `--rank` these are gist vocabulary with no rg equivalent, so they carry no
+# parity obligation — their contract is the semantics pinned here.
+#
+# Corpus policy: the verbs load the INDEX corpus (every non-binary file under
+# the roots minus VCS/build subtrees), not the rg-parity gitignore walk. They
+# are corpus analytics, not per-file greps. Results stream NDJSON under
+# `--json`; diagnostics stay on stderr.
+[irregex]
+sketch = { k = 128, min_phrase = 3, algorithm = "LZ78 phrase dictionary -> bottom-k (KMV) of 64-bit phrase hashes; distance = 1 - KMV-estimated Jaccard (LZJD)", detail = "deterministic: same bytes => same sketch on every platform" }
+attribution = { detail = "a PatternSet answer is bit-identical to N independent single-pattern runs; the fused (?:a)|(?:b) gate is an accelerator that may only skip work, never change an answer (tests hold it to the single-pattern oracle)" }
+
+[irregex.verbs]
+similar = { argv = "gist similar <path> [--top N] [--json] [ROOT...]", detail = "nearest files to <path> by compression kinship, ascending distance; the target itself is excluded" }
+dups = { argv = "gist dups [--max-distance T] [--top N] [--json] [ROOT...]", detail = "near-duplicate pairs across the corpus, closest first; candidates via shared bottom-16 seed hashes, every emitted pair exactly verified against both sketches" }
+patterns = { argv = "gist patterns -e P [-e P...] [-f FILE] [-F] [-i] [--by pattern|file] [--under GLOB] [--top N] [--json] [ROOT...]", detail = "one walk, N patterns, exact per-pattern attribution as path:line rows; --by groups into counts, --under/--top shape engine-side (loom); rows are total-ordered (path, line, pattern) so output is deterministic" }
+
 # The agent / code-place tool boundary (ADR-352, plan step 5). Billy operating a
 # user's machine and a coding agent working a repository are the same actor: both
 # express "find these matches in this tree" as one SearchRequest. Billy's

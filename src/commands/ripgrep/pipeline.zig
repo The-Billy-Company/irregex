@@ -50,9 +50,15 @@ const verify = @import("../../scan/verify.zig");
 const persist = @import("../../index/persist.zig");
 const fresh = @import("../../corpus/fresh.zig");
 const bulkstat = @import("../../corpus/bulkstat.zig");
+const paths_mod = @import("paths.zig");
+const stripDot = paths_mod.stripDot;
+const replaceSep = paths_mod.replaceSep;
+const joinPath = paths_mod.join;
+const rootDepth = paths_mod.rootDepth;
 const Opts = args.Opts;
 const Emitter = output.Emitter;
 const die = args.die;
+const oom = args.oom;
 const Regex = @import("../../regex/core.zig").Regex;
 const Matcher = @import("../../regex/matcher.zig").Matcher;
 const pcre2 = @import("../../regex/pcre2.zig");
@@ -72,7 +78,7 @@ const Dir = std.Io.Dir;
 /// same whitelist-override pair `shouldSkip` does). No production caller sets
 /// this; it is never exposed as a CLI flag.
 pub fn eligible(io: std.Io, parsed: args.Parsed, o: Opts) bool {
-    if (std.c.getenv("GIST_NO_PARALLEL") != null) return false;
+    if (args.envSpan("GIST_NO_PARALLEL") != null) return false;
     if (o.follow or o.json or o.quiet or o.stats or o.files_without or
         o.replace != null or o.max_filesize != 0 or o.multiline) return false;
     // A globally ordered result (`--sort`/`--sortr`) and a device-bounded walk
@@ -192,7 +198,7 @@ fn appendRules(a: std.mem.Allocator, list: *std.ArrayList(ignore.Rule), path: []
     var it = std.mem.splitScalar(u8, buf, '\n');
     while (it.next()) |raw| {
         const line = std.mem.trimEnd(u8, raw, "\r");
-        if (ignore.parseRuleLine(line, base, "")) |r| list.append(a, r) catch die("oom\n", .{});
+        if (ignore.parseRuleLine(line, base, "")) |r| list.append(a, r) catch oom();
     }
 }
 
@@ -214,8 +220,8 @@ fn loadNode(ig: *const ignore.Ignore, a: std.mem.Allocator, parent: ?*const IgNo
         if (present.rgignore) appendRules(a, &rules, joinPath(a, disk, ".rgignore"), rel);
     }
     if (rules.items.len == 0) return parent;
-    const node = a.create(IgNode) catch die("oom\n", .{});
-    node.* = .{ .parent = parent, .rules = rules.toOwnedSlice(a) catch die("oom\n", .{}) };
+    const node = a.create(IgNode) catch oom();
+    node.* = .{ .parent = parent, .rules = rules.toOwnedSlice(a) catch oom() };
     return node;
 }
 
@@ -455,7 +461,7 @@ const Queue = struct {
     fn donate(q: *Queue, tasks: []const DirTask) void {
         if (tasks.len == 0) return;
         q.mu.lockUncancelable(q.io);
-        q.items.appendSlice(q.gpa, tasks) catch die("oom\n", .{});
+        q.items.appendSlice(q.gpa, tasks) catch oom();
         q.avail.store(q.items.items.len - q.head, .release);
         const wake = @min(tasks.len, q.waiting);
         q.mu.unlock(q.io);
@@ -714,28 +720,21 @@ fn flushPending(w: *Worker, a: std.mem.Allocator, scratch: []u8, final: bool) vo
     w.pending.clearRetainingCapacity();
 }
 
-/// On-disk (openable) join: a `.` root contributes no prefix.
-fn joinPath(a: std.mem.Allocator, dir: []const u8, name: []const u8) []const u8 {
-    if (dir.len == 0 or std.mem.eql(u8, dir, ".")) return name;
-    return std.fmt.allocPrint(a, "{s}/{s}", .{ dir, name }) catch die("oom\n", .{});
-}
-
 /// Display/ignore join: an explicit `.` root KEEPS its `./` prefix on every
 /// emitted path (serial `relPath` / rg parity); only the implicit whole-CWD
 /// walk ("" prefix) emits bare paths.
 fn joinRel(a: std.mem.Allocator, prefix: []const u8, name: []const u8) []const u8 {
     if (prefix.len == 0) return name;
-    return std.fmt.allocPrint(a, "{s}/{s}", .{ prefix, name }) catch die("oom\n", .{});
+    return std.fmt.allocPrint(a, "{s}/{s}", .{ prefix, name }) catch oom();
 }
 
-/// ripgrep prints a walk error to stderr (`rg: <path>: <errno>`) and lets the
-/// run exit 2 — the same contract `run.zig`'s serial `reportWalkError`
-/// enforces, mirrored here for the parallel engine: a directory this walk
-/// discovered but could not open/descend is a POTENTIAL false negative that
-/// MUST be signaled, never dropped in silence just because a peer worker is
-/// mid-flight. Thread-safe (any worker may call this concurrently).
+/// The same walk-error contract `run.zig`'s serial `reportWalkError` enforces
+/// (rendering shared via `grepfile.printWalkError`), for the parallel engine:
+/// a directory this walk discovered but could not open/descend is a POTENTIAL
+/// false negative that MUST be signaled, never dropped in silence just because
+/// a peer worker is mid-flight. Thread-safe (any worker may call concurrently).
 fn reportWalkError(q: *Queue, rel: []const u8, e: anyerror) void {
-    std.debug.print("gist: {s}: {s}\n", .{ rel, grepfile.pathErrNote(e) });
+    grepfile.printWalkError(rel, e);
     q.walk_error.store(true, .release);
 }
 
@@ -775,7 +774,7 @@ fn processDir(w: *Worker, a: std.mem.Allocator, scratch: []u8, task: DirTask, lo
                     .is_file = e.is_file,
                     .mtime_ns = e.mtime_ns,
                     .ctime_ns = e.ctime_ns,
-                }) catch die("oom\n", .{});
+                }) catch oom();
             }
             bulk_ok = true;
         } else |_| {}
@@ -822,7 +821,7 @@ fn processDir(w: *Worker, a: std.mem.Allocator, scratch: []u8, task: DirTask, lo
             }
             // The iterator's name buffer is reused on the next `next()` —
             // fragments/tasks hold rel paths built from it, so own a copy.
-            const name = a.dupe(u8, e.name) catch die("oom\n", .{});
+            const name = a.dupe(u8, e.name) catch oom();
             noteIgnoreFile(&present, name, e.kind == .file);
             entries.append(a, .{
                 .name = name,
@@ -830,7 +829,7 @@ fn processDir(w: *Worker, a: std.mem.Allocator, scratch: []u8, task: DirTask, lo
                 .is_file = e.kind == .file,
                 .mtime_ns = mtime,
                 .ctime_ns = ctime,
-            }) catch die("oom\n", .{});
+            }) catch oom();
         }
     }
 
@@ -883,7 +882,7 @@ fn handleEntry(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.posix
             .depth = depth,
             .root_depth = task.root_depth,
             .chain = chain,
-        }) catch die("oom\n", .{});
+        }) catch oom();
         return;
     }
     if (o.max_depth != 0 and depth > o.max_depth) return;
@@ -899,7 +898,7 @@ fn handleEntry(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.posix
                 .rel = rel,
                 .mtime_ns = e.mtime_ns,
                 .ctime_ns = e.ctime_ns,
-            }) catch die("oom\n", .{});
+            }) catch oom();
             return;
         }
     }
@@ -968,7 +967,7 @@ fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.posix.
         // tail. Absence proves nothing; fall through to the full read.
         if (cfg.fast_l and sf.more and prefixProvesMatch(w, re, grepfile.stripBom(sf.prefix))) {
             var buf: std.ArrayList(u8) = .empty;
-            buf.print(a, "{s}{c}", .{ dpath, @as(u8, if (o.null_sep) 0 else '\n') }) catch die("oom\n", .{});
+            buf.print(a, "{s}{c}", .{ dpath, @as(u8, if (o.null_sep) 0 else '\n') }) catch oom();
             cfg.sink.emit(.text_hit, buf.items);
             return;
         }
@@ -1040,7 +1039,7 @@ fn emitBody(w: *Worker, a: std.mem.Allocator, dpath: []const u8, body: []const u
             break :blk re.docMatch(sim, body);
         };
         if (hit) {
-            buf.print(a, "{s}{c}", .{ dpath, @as(u8, if (o.null_sep) 0 else '\n') }) catch die("oom\n", .{});
+            buf.print(a, "{s}{c}", .{ dpath, @as(u8, if (o.null_sep) 0 else '\n') }) catch oom();
             cfg.sink.emit(.text_hit, buf.items);
         }
         return;
@@ -1048,7 +1047,7 @@ fn emitBody(w: *Worker, a: std.mem.Allocator, dpath: []const u8, body: []const u
 
     var lines: std.ArrayList([]const u8) = .empty;
     grepfile.collectLines(a, body, o.term(), &lines);
-    if (cfg.heading) buf.print(a, "{s}\n", .{dpath}) catch die("oom\n", .{});
+    if (cfg.heading) buf.print(a, "{s}\n", .{dpath}) catch oom();
     const before_body = buf.items.len;
     const hits = em.file(dpath, lines.items);
     if (hits == 0) {
@@ -1078,30 +1077,7 @@ fn prefixProvesMatch(w: *Worker, re: *const Matcher, prefix: []const u8) bool {
     return re.docMatch(sim, prefix[0 .. nl + 1]);
 }
 
-fn replaceSep(a: std.mem.Allocator, path: []const u8, sep: []const u8) []const u8 {
-    if (std.mem.indexOfScalar(u8, path, '/') == null) return path;
-    var out: std.ArrayList(u8) = .empty;
-    for (path) |c| {
-        if (c == '/') out.appendSlice(a, sep) catch die("oom\n", .{}) else out.append(a, c) catch die("oom\n", .{});
-    }
-    return out.toOwnedSlice(a) catch die("oom\n", .{});
-}
-
-fn stripDot(s: []const u8) []const u8 {
-    if (std.mem.startsWith(u8, s, "./")) return s[2..];
-    if (std.mem.eql(u8, s, ".")) return "";
-    return s;
-}
-
 // ─────────────────────────── run ───────────────────────────
-
-/// Component depth of an explicit positional root (`Ignore.scopeToRoot`'s rule).
-fn rootDepth(prefix: []const u8) usize {
-    var s = prefix;
-    while (std.mem.startsWith(u8, s, "./")) s = s[2..];
-    if (s.len == 0 or std.mem.eql(u8, s, ".")) return 0;
-    return std.mem.count(u8, s, "/") + 1;
-}
 
 /// Fan out, walk, search, stream, exit. `filters` powers inline index elision;
 /// `file_needle` may reject a whole body, while `line_needle` only avoids regex
@@ -1124,7 +1100,7 @@ pub fn run(
     // the real elision oracle is admitted. This makes freshness_fs.sh prove the
     // accelerated path instead of accidentally passing via an async/full-read
     // fallback. It is intentionally not a CLI flag.
-    const require_elision = std.c.getenv("GIST_TEST_REQUIRE_ELISION") != null;
+    const require_elision = args.envSpan("GIST_TEST_REQUIRE_ELISION") != null;
     if (require_elision and !want_elision) die("gist: test-required index elision was not eligible\n", .{});
     // The elide oracle loads on its own thread while the walk runs, keeping
     // mmap validation, sparse posting decode, and path-table setup off the
@@ -1212,7 +1188,7 @@ pub fn run(
         defer seed.deinit(gpa);
         for (roots) |r| {
             const prefix = if (std.mem.eql(u8, r, ".") and parsed.roots.len == 0) "" else std.mem.trimEnd(u8, r, "/");
-            seed.append(gpa, .{ .disk = r, .rel = prefix, .depth = 0, .root_depth = rootDepth(prefix), .chain = null }) catch die("oom\n", .{});
+            seed.append(gpa, .{ .disk = r, .rel = prefix, .depth = 0, .root_depth = rootDepth(prefix), .chain = null }) catch oom();
         }
         q.push(seed.items);
     }
@@ -1238,17 +1214,17 @@ pub fn run(
     // -j/--threads caps the pool explicitly (rg's `--threads`); 0 keeps gist's
     // adaptive topology. `GIST_WORKERS` still overrides everything (parity gates).
     if (o.threads != 0) nworkers = @max(1, o.threads);
-    if (std.c.getenv("GIST_WORKERS")) |s| {
-        if (std.fmt.parseInt(usize, std.mem.span(s), 10)) |n| {
+    if (args.envSpan("GIST_WORKERS")) |s| {
+        if (std.fmt.parseInt(usize, s, 10)) |n| {
             nworkers = @max(1, n);
         } else |_| {}
     }
-    const workers = gpa.alloc(Worker, nworkers) catch die("oom\n", .{});
+    const workers = gpa.alloc(Worker, nworkers) catch oom();
     defer gpa.free(workers);
     for (workers) |*w| w.* = .{ .q = &q, .io = io, .gpa = gpa, .cfg = &cfg, .arena = std.heap.ArenaAllocator.init(std.heap.page_allocator) };
     defer for (workers) |*w| w.arena.deinit();
 
-    const threads = gpa.alloc(std.Thread, nworkers) catch die("oom\n", .{});
+    const threads = gpa.alloc(std.Thread, nworkers) catch oom();
     defer gpa.free(threads);
     var spawned: usize = 0;
     for (workers[1..]) |*w| {
