@@ -84,6 +84,10 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, socket
     var watcher = watch.Watcher.init(gpa, io, &session);
     watcher.start();
     defer watcher.stop();
+    note("gist serve: watcher {s}, exact dirty log {s}\n", .{
+        if (session.watcher_active) "armed" else "unavailable (reconcile-always)",
+        if (session.dirty_log.exact) "on" else "off",
+    });
 
     if (std.fs.path.dirnamePosix(socket_path)) |dir| Dir.cwd().createDirPath(io, dir) catch {};
     Dir.cwd().deleteFile(io, socket_path) catch {}; // clear a stale socket from a crashed daemon
@@ -96,6 +100,8 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, socket
 
     var pfd = [_]std.posix.pollfd{.{ .fd = server.socket.handle, .events = std.posix.POLL.IN, .revents = 0 }};
     var session_gen: u64 = 0;
+    var last_scoped: u64 = 0;
+    var last_full: u64 = 0;
     while (true) {
         // Wait for a pending connection, but no longer than the idle TTL: a
         // timeout (ready == 0) means the daemon has gone cold and self-exits.
@@ -105,6 +111,15 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, socket
         session_gen +%= 1;
         const after = serveConn(&session, gpa, io, stream.socket.handle, session_gen);
         stream.close(io);
+        // Operator-facing reconcile telemetry (foreground daemons; an
+        // auto-spawned daemon's stderr is detached anyway): which freshness
+        // barrier each batch of queries paid — the O(changed) scoped drain or
+        // the O(tree) covering walk. Printed only when a reconcile ran.
+        if (session.scoped_reconciles != last_scoped or session.full_reconciles != last_full) {
+            last_scoped = session.scoped_reconciles;
+            last_full = session.full_reconciles;
+            note("gist serve: reconciled (scoped={d} full={d})\n", .{ last_scoped, last_full });
+        }
         if (after == .stop) break;
     }
 }

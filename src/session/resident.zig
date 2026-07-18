@@ -71,6 +71,8 @@ const render = @import("render.zig");
 // session), so no import cycle.
 const run = @import("../commands/ripgrep/run.zig");
 const grepfile = @import("../commands/ripgrep/grepfile.zig");
+const dirtylog = @import("dirty.zig");
+const delta_mod = @import("delta.zig");
 const persist = @import("../index/persist.zig");
 const Index = @import("../index/trigram.zig").Index;
 const query_mod = @import("../engine/query.zig");
@@ -190,6 +192,22 @@ pub const ResidentSession = struct {
     dirty_seq: std.atomic.Value(u64) = .init(0),
     /// True only when a watcher has proven no event since the last reconcile.
     clean: std.atomic.Value(bool) = .init(false),
+    /// Set once by a watcher backend that lost coverage it cannot recover (an
+    /// inotify queue overflow, an unwatchable new directory): the clean fast
+    /// path is permanently disabled and every query reconciles (fail-closed).
+    poisoned: std.atomic.Value(bool) = .init(false),
+
+    /// The exact dirty-path hand-off from a path-reporting watcher backend
+    /// (macOS FSEvents today). When its drain is exact and doubt-free, the
+    /// reconcile verifies ONLY the drained paths — O(changed), not O(tree).
+    dirty_log: dirtylog.DirtyLog,
+    /// A scoped reconcile is sound only downstream of one full walk that
+    /// overlapped the live event stream (the watcher arms before the first
+    /// query, so the first reconcile is always the covering full pass).
+    full_pass_done: bool = false,
+    /// Observability + test hooks: how many reconciles took each path.
+    scoped_reconciles: u64 = 0,
+    full_reconciles: u64 = 0,
 
     /// Monotonic per-daemon-boot id, echoed to clients so they can detect a
     /// restarted daemon and re-handshake. Assigned by the server.
@@ -247,10 +265,12 @@ pub const ResidentSession = struct {
             .index_gen = gen,
             .fresh_ns = load_ns,
             .overlay = std.StringHashMap(Overlay).init(gpa),
+            .dirty_log = dirtylog.DirtyLog.init(gpa),
         };
     }
 
     pub fn deinit(self: *ResidentSession) void {
+        self.dirty_log.deinit();
         self.clearOverlay();
         self.overlay.deinit();
         self.gpa.free(self.index_gen);
@@ -291,10 +311,21 @@ pub const ResidentSession = struct {
 
     // ── watcher hooks (called from the watch thread; lock-free) ──
 
-    /// A filesystem event arrived: the next query must reconcile.
+    /// A filesystem event arrived: the next query must reconcile. A backend
+    /// that reports exact paths `note`s them into `dirty_log` FIRST, so any
+    /// event counted by a reconcile's pre-drain seq read is already visible
+    /// to that drain.
     pub fn markDirty(self: *ResidentSession) void {
         _ = self.dirty_seq.fetchAdd(1, .monotonic);
         self.clean.store(false, .release);
+    }
+
+    /// The watcher lost event coverage it cannot win back (inotify queue
+    /// overflow, an unwatchable new directory): permanently disable the clean
+    /// fast path. Every later query reconciles — slower, never stale.
+    pub fn markDoubtForever(self: *ResidentSession) void {
+        self.poisoned.store(true, .release);
+        self.markDirty();
     }
 
     /// Declare that a watcher is live and proving quiescence.
@@ -317,7 +348,12 @@ pub const ResidentSession = struct {
         // rebuild failure leaves this session fully intact (→ Stale, cold
         // fallback). init dupes `self.roots` into its own arena before we free
         // the old roots_arena below.
-        const fresh = ResidentSession.init(self.gpa, self.io, self.roots) catch return QueryError.Stale;
+        var fresh = ResidentSession.init(self.gpa, self.io, self.roots) catch return QueryError.Stale;
+        // The watcher notes into THIS session's log; the replacement's own
+        // (empty) log is surplus. `full_pass_done` survives: the event stream
+        // ran across the rebuild, so init's fresh corpus read IS a covering
+        // full pass and pending events stay queued for the next drain.
+        fresh.dirty_log.deinit();
 
         // Free only the stale DATA.
         self.clearOverlay();
@@ -360,11 +396,41 @@ pub const ResidentSession = struct {
     /// as `error.Stale` (→ cold fallback); see the module header on walk OOM.
     fn reconcile(self: *ResidentSession) QueryError!void {
         try self.maybeReload();
-        if (self.watcher_active and self.clean.load(.acquire)) return;
+        const poisoned = self.poisoned.load(.acquire);
+        if (self.watcher_active and !poisoned and self.clean.load(.acquire)) return;
 
         const seq0 = self.dirty_seq.load(.acquire);
         const now = std.Io.Clock.now(.real, self.io).nanoseconds;
 
+        // Drain the exact dirty set (always — even a full walk must consume
+        // it, or stale entries would replay forever). The scoped path is taken
+        // only when EVERY soundness gate holds: a live watcher whose backend
+        // reports exact paths, no doubt (overflow/drop/unclassifiable event),
+        // no poison, and one prior full pass that overlapped the stream.
+        var drained = self.dirty_log.drain(self.gpa);
+        defer drained.deinit(self.gpa);
+        const scoped_eligible = self.watcher_active and !poisoned and
+            self.full_pass_done and drained.exact and !drained.doubt;
+        var applied = false;
+        if (scoped_eligible) applied = try self.reconcileScoped(drained.paths);
+        if (applied) {
+            self.scoped_reconciles += 1;
+        } else {
+            try self.reconcileFull();
+            if (self.watcher_active) self.full_pass_done = true;
+            self.full_reconciles += 1;
+        }
+
+        self.fresh_ns = now;
+        // Only trust the clean short-circuit if a watcher is live AND no event
+        // raced this reconcile (seqlock recheck). Without a watcher, stay dirty.
+        if (self.watcher_active and !poisoned and self.dirty_seq.load(.acquire) == seq0)
+            self.clean.store(true, .release);
+    }
+
+    /// The O(tree) barrier: re-derive the whole authoritative set and diff it
+    /// against base + overlay. Always sound; the scoped path's fallback.
+    fn reconcileFull(self: *ResidentSession) QueryError!void {
         var walk_arena = std.heap.ArenaAllocator.init(self.gpa);
         defer walk_arena.deinit();
         const fs = run.defaultFileSet(walk_arena.allocator(), self.io, self.roots);
@@ -382,13 +448,134 @@ pub const ResidentSession = struct {
 
         for (cur) |p| try self.reconcileOne(p);
         try self.tombstoneVanished(&cur_set);
-
-        self.fresh_ns = now;
-        // Only trust the clean short-circuit if a watcher is live AND no event
-        // raced this reconcile (seqlock recheck). Without a watcher, stay dirty.
-        if (self.watcher_active and self.dirty_seq.load(.acquire) == seq0)
-            self.clean.store(true, .release);
     }
+
+    /// The O(changed) barrier: verify ONLY the drained watcher paths against
+    /// the live tree, with `delta.Delta` re-deriving each membership verdict
+    /// through the walk's own ignore machinery. Returns false whenever ANY
+    /// resolution cannot be scoped soundly (ignore-source edit, root event,
+    /// unmappable or non-ASCII path, unreadable directory) — the caller then
+    /// runs the full walk. Partial overlay mutations before a false return are
+    /// harmless: each only moved a path toward its current on-disk truth, and
+    /// the full walk re-derives everything.
+    fn reconcileScoped(self: *ResidentSession, abs_paths: []const []const u8) QueryError!bool {
+        var arena = std.heap.ArenaAllocator.init(self.gpa);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var dl = delta_mod.Delta.init(a, self.io, self.roots);
+        if (!dl.enabled) return false;
+
+        var gones: std.StringHashMapUnmanaged(void) = .empty; // ASCII-folded gone keys
+        var subtrees: std.ArrayList([]const u8) = .empty;
+        for (abs_paths) |p| {
+            const verdict = dl.resolve(p);
+            switch (verdict) {
+                .skip => {},
+                .needs_full => return false,
+                .file => |rel| try self.reconcileOne(rel),
+                .subtree => |rel| try subtrees.append(a, rel),
+                .gone => |rel| try gones.put(a, try delta_mod.foldLower(a, rel), {}),
+            }
+            // A case-insensitive filesystem resolves an event's own spelling to
+            // a possibly-different canonical key (a case-rename's OLD spelling
+            // realpaths to the NEW file). When they differ, the raw spelling
+            // names a corpus key that may have just become stale — sweep it
+            // like a gone (its keys survive only if still provably current).
+            const canon_rel: ?[]const u8 = switch (verdict) {
+                .file, .subtree, .gone => |rel| rel,
+                else => null,
+            };
+            if (canon_rel) |rel| if (dl.rawKey(p)) |raw| {
+                if (!std.mem.eql(u8, raw, rel)) try gones.put(a, try delta_mod.foldLower(a, raw), {});
+            };
+        }
+        for (subtrees.items) |rel| if (!try self.applySubtree(&dl, a, rel)) return false;
+        if (gones.count() != 0) try self.applyGones(&dl, a, &gones);
+        return true;
+    }
+
+    /// Fold one live-directory event into the overlay: read/refresh everything
+    /// the walk admits under it right now, then tombstone every corpus key in
+    /// its (ASCII-fold) scope that the fresh enumeration didn't produce and
+    /// that is no longer a current, canonically-spelled member — deletes,
+    /// newly-hidden files, and stale case spellings after a rename all fall
+    /// out of the same predicate.
+    fn applySubtree(self: *ResidentSession, dl: *delta_mod.Delta, a: std.mem.Allocator, rel: []const u8) QueryError!bool {
+        var sink: std.StringHashMapUnmanaged(void) = .empty;
+        dl.walkSubtree(rel, &sink) catch |e| switch (e) {
+            error.NeedFull => return false,
+            error.OutOfMemory => return QueryError.OutOfMemory,
+        };
+        var it = sink.keyIterator();
+        while (it.next()) |k| try self.reconcileOne(k.*);
+
+        const fold_rel = try delta_mod.foldLower(a, rel);
+        var doomed: std.ArrayList([]const u8) = .empty;
+        defer doomed.deinit(self.gpa);
+        var keys = self.liveKeys();
+        while (keys.next()) |k| {
+            if (!delta_mod.foldUnderLower(k, fold_rel)) continue;
+            if (sink.contains(k)) continue; // freshly verified member
+            if (dl.keyIsCurrent(k)) continue; // distinct sibling on a case-sensitive fs
+            try doomed.append(self.gpa, k);
+        }
+        for (doomed.items) |k| try self.putOverlay(k, .tombstone);
+        return true;
+    }
+
+    /// Fold the drained gone-set into the overlay: any corpus key at-or-under
+    /// a gone path (ASCII-folded, so a case-variant event spelling still finds
+    /// its canonical key) is tombstoned unless the live tree proves it is
+    /// still a current, canonically-spelled member.
+    fn applyGones(self: *ResidentSession, dl: *delta_mod.Delta, a: std.mem.Allocator, gones: *const std.StringHashMapUnmanaged(void)) QueryError!void {
+        var doomed: std.ArrayList([]const u8) = .empty;
+        defer doomed.deinit(self.gpa);
+        var keys = self.liveKeys();
+        while (keys.next()) |k| {
+            const lk = try delta_mod.foldLower(a, k);
+            var hit = gones.contains(lk);
+            var i: usize = 0;
+            while (!hit) {
+                const slash = std.mem.indexOfScalarPos(u8, lk, i, '/') orelse break;
+                hit = gones.contains(lk[0..slash]);
+                i = slash + 1;
+            }
+            if (!hit) continue;
+            if (dl.keyIsCurrent(k)) continue;
+            try doomed.append(self.gpa, k);
+        }
+        for (doomed.items) |k| try self.putOverlay(k, .tombstone);
+    }
+
+    /// Iterate every key currently answerable from the session: base docs not
+    /// yet tombstoned, plus overlay replacement docs for paths outside the
+    /// base corpus. (A tombstoned key is already gone; re-checking it is
+    /// wasted work, and re-tombstoning would be a no-op anyway.)
+    fn liveKeys(self: *ResidentSession) LiveKeys {
+        return .{ .session = self, .overlay_it = self.overlay.iterator() };
+    }
+
+    const LiveKeys = struct {
+        session: *ResidentSession,
+        base_idx: usize = 0,
+        overlay_it: std.StringHashMap(Overlay).Iterator,
+
+        fn next(self: *LiveKeys) ?[]const u8 {
+            const s = self.session;
+            while (self.base_idx < s.mir.paths.len) {
+                const p = s.mir.paths[self.base_idx];
+                self.base_idx += 1;
+                if (s.overlay.get(p)) |ov| if (ov == .tombstone) continue;
+                return p;
+            }
+            while (self.overlay_it.next()) |e| {
+                if (e.value_ptr.* != .doc) continue;
+                if (s.by_path.contains(e.key_ptr.*)) continue; // yielded above
+                return e.key_ptr.*;
+            }
+            return null;
+        }
+    };
 
     /// Fold one currently-authoritative path into the overlay. A new or
     /// reappeared (previously tombstoned) path is read unconditionally; an

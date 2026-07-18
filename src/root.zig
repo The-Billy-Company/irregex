@@ -200,6 +200,9 @@ test {
     _ = @import("session/protocol_test.zig"); // UDS frame codec round-trip + adversarial
     _ = @import("session/watch_test.zig"); // freshness watcher: dirty/clean seqlock barrier
     _ = @import("session/freshness_test.zig"); // barrier hardening: differential vs on-disk oracle, concurrency, overflow/bound
+    _ = @import("session/dirty.zig"); // exact dirty-path log: dedupe, bound→doubt, exact promise
+    _ = @import("session/delta.zig"); // O(changed) resolver: path classes, fold aliasing helpers
+    _ = @import("session/scoped_test.zig"); // scoped reconcile adversarial: vs full-walk ground truth
     _ = @import("corpus/haystack_test.zig"); // shared walk: isSkipDir + joinPath hot-path decisions
     _ = @import("corpus/bulkstat_test.zig"); // getattrlistbulk ≡ stat-walk differential
     _ = @import("regex/syntax_test.zig"); // T2 syntax: ByteSet + recursive-descent parser

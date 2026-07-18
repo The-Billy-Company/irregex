@@ -15,9 +15,23 @@
 //! Backends: Linux `inotify` (recursive watches, arm-only-on-full-success) and
 //! macOS `FSEvents` (one recursive stream over the roots, driven on a private
 //! CFRunLoop thread — the OS's native subtree watcher, coalesced at the kernel);
-//! every other target uses the reconcile-always baseline. Each backend only ever
-//! calls `markDirty`/`armWatcher`, so the barrier and the query path never learn
-//! which one armed them — the acceleration is fully behind that two-call seam.
+//! every other target uses the reconcile-always baseline. A rootless session
+//! (the common auto-spawned daemon) watches `.` — the same CWD tree its
+//! corpus walks.
+//!
+//! The macOS backend additionally requests PER-FILE events and `note`s every
+//! delivered path into the session's `DirtyLog` (arming its `exact` promise),
+//! which is what lets the reconcile verify only the changed paths — O(changed)
+//! instead of O(tree). Any event flag it cannot attribute to exact paths
+//! (`MustScanSubDirs`, kernel/user drops, id wrap, mount churn) becomes
+//! `noteDoubt`, forcing that drain onto the full walk. The Linux backend stays
+//! coarse (never arms `exact` — its drains always walk), but it now parses its
+//! event stream for the two conditions that would silently BREAK the clean
+//! fast path itself: a queue overflow, and a directory created/moved in after
+//! arming (inotify watches don't recurse on their own). It re-registers new
+//! subtrees on the fly and, if it cannot, calls `markDoubtForever` — the
+//! session then reconciles every query instead of ever trusting a blind
+//! quiescence claim (fail-closed).
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -43,6 +57,14 @@ const darwin = if (is_macos) struct {
     const kFSEventStreamEventIdSinceNow: u64 = 0xFFFF_FFFF_FFFF_FFFF;
     // NoDefer: deliver the first event immediately, then coalesce at `latency`.
     const kFSEventStreamCreateFlagNoDefer: u32 = 0x0000_0002;
+    // FileEvents: report the changed ITEM's own path (file or dir) instead of
+    // its parent directory — the exact dirty set the scoped reconcile needs.
+    const kFSEventStreamCreateFlagFileEvents: u32 = 0x0000_0010;
+    // Event flags that mean "these paths are NOT an exact account of what
+    // changed": subtree-rescan hints, kernel/user queue drops, id wrap,
+    // history replay boundary, root moves, mount churn. Any of them makes the
+    // batch a doubt (→ full walk), never a silent gap.
+    const inexact_flags: u32 = 0x0000_00FF;
     // Coalescing window (s): small keeps the read-your-writes stale window tight
     // while still folding a build's event storm into a handful of markDirty calls.
     const latency: f64 = 0.05;
@@ -81,6 +103,11 @@ pub const Watcher = struct {
     thread: ?std.Thread = null,
     running: std.atomic.Value(bool) = .init(false),
     inotify_fd: i32 = -1,
+    /// Linux: watch descriptor → the directory it covers (gpa-owned), so a
+    /// dir-create event can be resolved to a path and its subtree watched
+    /// before the next reconcile walks it. Built on the main thread before the
+    /// loop thread spawns; grown only by the loop thread afterward.
+    wd_paths: std.AutoHashMapUnmanaged(i32, []u8) = .empty,
     /// macOS: the watch thread's CFRunLoop, published so `stop` can wake it. Null
     /// until the loop thread stores it (before it signals `ready`).
     run_loop: std.atomic.Value(?*anyopaque) = .init(null),
@@ -123,6 +150,17 @@ pub const Watcher = struct {
             t.join();
             self.thread = null;
         }
+        var it = self.wd_paths.valueIterator();
+        while (it.next()) |p| self.gpa.free(p.*);
+        self.wd_paths.deinit(self.gpa);
+        self.wd_paths = .empty;
+    }
+
+    /// The roots the watcher must cover: the session's roots, or the CWD walk
+    /// (`.`) when the session is rootless — the same tree its corpus reads. A
+    /// rootless daemon that watched nothing could never prove quiescence.
+    fn watchRoots(self: *const Watcher) []const []const u8 {
+        return if (self.session.roots.len != 0) self.session.roots else &[_][]const u8{"."};
     }
 
     fn startInotify(self: *Watcher) void {
@@ -139,9 +177,10 @@ pub const Watcher = struct {
             const mask = linux.IN.MODIFY | linux.IN.CREATE | linux.IN.DELETE |
                 linux.IN.MOVED_FROM | linux.IN.MOVED_TO | linux.IN.ATTRIB |
                 linux.IN.CLOSE_WRITE | linux.IN.ONLYDIR;
-            for (self.session.roots) |root| {
+            for (self.watchRoots()) |root| {
                 if (!self.addWatchesRecursive(fd, root, mask)) {
                     std.posix.close(fd);
+                    self.freeWdPaths();
                     return;
                 }
             }
@@ -153,19 +192,38 @@ pub const Watcher = struct {
                 self.running.store(false, .release);
                 self.inotify_fd = -1;
                 std.posix.close(fd);
+                self.freeWdPaths();
                 return; // spawn failed — unarm by leaving watcher inactive
             };
         }
     }
 
-    /// Register a watch on `path` and every non-skipped subdirectory. Returns
-    /// false on the first failure (caller bails unarmed).
+    fn freeWdPaths(self: *Watcher) void {
+        var it = self.wd_paths.valueIterator();
+        while (it.next()) |p| self.gpa.free(p.*);
+        self.wd_paths.clearRetainingCapacity();
+    }
+
+    /// Register a watch on `path` and every non-skipped subdirectory, recording
+    /// wd → path so the event loop can extend coverage into directories created
+    /// later. Returns false on the first failure (caller bails unarmed, or —
+    /// post-arm — poisons the session).
     fn addWatchesRecursive(self: *Watcher, fd: i32, path: []const u8, mask: u32) bool {
         if (comptime builtin.os.tag == .linux) {
             const linux = std.os.linux;
             const cpath = std.posix.toPosixPath(path) catch return false;
             const wd = linux.inotify_add_watch(fd, &cpath, mask);
             if (@as(isize, @bitCast(wd)) < 0) return false;
+            {
+                const owned = self.gpa.dupe(u8, path) catch return false;
+                const slot = self.wd_paths.getOrPut(self.gpa, @intCast(wd)) catch {
+                    self.gpa.free(owned);
+                    return false;
+                };
+                // A re-registered wd (same dir watched again) replaces its path.
+                if (slot.found_existing) self.gpa.free(slot.value_ptr.*);
+                slot.value_ptr.* = owned;
+            }
 
             var dir = Dir.cwd().openDir(self.io, path, .{ .iterate = true }) catch return true;
             defer dir.close(self.io);
@@ -184,7 +242,11 @@ pub const Watcher = struct {
 
     fn inotifyLoop(self: *Watcher) void {
         if (comptime builtin.os.tag == .linux) {
-            var buf: [4096]u8 align(@alignOf(std.os.linux.inotify_event)) = undefined;
+            const linux = std.os.linux;
+            const mask = linux.IN.MODIFY | linux.IN.CREATE | linux.IN.DELETE |
+                linux.IN.MOVED_FROM | linux.IN.MOVED_TO | linux.IN.ATTRIB |
+                linux.IN.CLOSE_WRITE | linux.IN.ONLYDIR;
+            var buf: [8192]u8 align(@alignOf(linux.inotify_event)) = undefined;
             var pfd = [_]std.posix.pollfd{.{ .fd = self.inotify_fd, .events = std.posix.POLL.IN, .revents = 0 }};
             while (self.running.load(.acquire)) {
                 const ready = std.posix.poll(&pfd, 500) catch break;
@@ -194,13 +256,59 @@ pub const Watcher = struct {
                     else => break,
                 };
                 if (n == 0) continue;
-                // Any event (including a queue overflow, which zeroes wd) means
-                // something under the roots may have changed: mark dirty and let
-                // the next query reconcile precisely. We deliberately don't parse
-                // per-file detail — the reconcile walk is the source of truth.
+                // Walk the event records for the two conditions that would
+                // silently break the clean fast path: a queue overflow (events
+                // were LOST — quiescence can never be proven again on this fd)
+                // and a directory created/moved in after arming (inotify does
+                // not recurse; an unwatched subtree is a blind spot). Extend
+                // coverage inline; if that fails, poison the session so it
+                // reconciles every query (fail-closed).
+                var off: usize = 0;
+                while (off + @sizeOf(linux.inotify_event) <= n) {
+                    const ev: *const linux.inotify_event = @ptrCast(@alignCast(&buf[off]));
+                    off += @sizeOf(linux.inotify_event) + ev.len;
+                    if (ev.mask & linux.IN.Q_OVERFLOW != 0) {
+                        self.session.markDoubtForever();
+                        continue;
+                    }
+                    const grew_dir = ev.mask & linux.IN.ISDIR != 0 and
+                        ev.mask & (linux.IN.CREATE | linux.IN.MOVED_TO) != 0;
+                    if (!grew_dir) continue;
+                    const name = nameOf(ev, &buf, off) orelse {
+                        self.session.markDoubtForever();
+                        continue;
+                    };
+                    if (haystack.isSkipDir(name)) continue;
+                    const parent = self.wd_paths.get(ev.wd) orelse {
+                        self.session.markDoubtForever();
+                        continue;
+                    };
+                    const child = haystack.joinPath(self.gpa, parent, name) catch {
+                        self.session.markDoubtForever();
+                        continue;
+                    };
+                    defer self.gpa.free(child);
+                    // Racing creations inside the new dir before its watch lands
+                    // are covered: the recursive registration below re-lists the
+                    // subtree AFTER each watch is added, and markDirty forces
+                    // the next query's reconcile to walk it regardless.
+                    if (!self.addWatchesRecursive(self.inotify_fd, child, mask))
+                        self.session.markDoubtForever();
+                }
                 self.session.markDirty();
             }
         }
+    }
+
+    /// The NUL-terminated name trailing a variable-length inotify record, or
+    /// null when the record is malformed (caller treats that as doubt).
+    fn nameOf(ev: *const std.os.linux.inotify_event, buf: []const u8, rec_end: usize) ?[]const u8 {
+        if (ev.len == 0) return null;
+        if (rec_end > buf.len) return null;
+        const raw = buf[rec_end - ev.len .. rec_end];
+        const z = std.mem.indexOfScalar(u8, raw, 0) orelse return null;
+        if (z == 0) return null;
+        return raw[0..z];
     }
 
     // ── macOS FSEvents backend ──
@@ -220,7 +328,12 @@ pub const Watcher = struct {
         const deadline = std.Io.Clock.now(.real, self.io).nanoseconds + 2 * std.time.ns_per_s;
         while (self.start_result.load(.acquire) == 0 and std.Io.Clock.now(.real, self.io).nanoseconds < deadline)
             std.atomic.spinLoopHint();
-        if (self.start_result.load(.acquire) == 1) self.session.armWatcher();
+        if (self.start_result.load(.acquire) == 1) {
+            // Per-file events are live from stream start, so every markDirty is
+            // now preceded by a note/noteDoubt: promise exactness, then arm.
+            self.session.dirty_log.armExact();
+            self.session.armWatcher();
+        }
     }
 
     /// Build one recursive FSEvents stream over the roots, run its CFRunLoop
@@ -247,7 +360,7 @@ pub const Watcher = struct {
             paths,
             darwin.kFSEventStreamEventIdSinceNow,
             darwin.latency,
-            darwin.kFSEventStreamCreateFlagNoDefer,
+            darwin.kFSEventStreamCreateFlagNoDefer | darwin.kFSEventStreamCreateFlagFileEvents,
         ) orelse return fail(self);
         defer {
             darwin.FSEventStreamStop(stream);
@@ -271,18 +384,20 @@ pub const Watcher = struct {
     }
 
     /// Realpath each root into a retaining CFArray of CFStrings (FSEvents wants
-    /// absolute paths; the daemon's cwd is the repo root). Returns null on any
-    /// allocation/CF failure so the caller stays unarmed. The array retains the
-    /// strings, so we release our own references before returning it.
+    /// absolute paths; the daemon's cwd is the repo root — a rootless session
+    /// watches `.`, its whole CWD walk). Returns null on any allocation/CF
+    /// failure so the caller stays unarmed. The array retains the strings, so
+    /// we release our own references before returning it.
     fn buildPathsArray(self: *Watcher) ?darwin.Ref {
         if (comptime !is_macos) return null;
-        const refs = self.gpa.alloc(darwin.Ref, self.session.roots.len) catch return null;
+        const roots = self.watchRoots();
+        const refs = self.gpa.alloc(darwin.Ref, roots.len) catch return null;
         defer self.gpa.free(refs);
 
         var made: usize = 0;
         defer for (refs[0..made]) |r| darwin.CFRelease(r);
         var buf: [std.fs.max_path_bytes]u8 = undefined;
-        for (self.session.roots) |root| {
+        for (roots) |root| {
             const rootz = self.gpa.dupeZ(u8, root) catch return null;
             defer self.gpa.free(rootz);
             const resolved = std.c.realpath(rootz, &buf) orelse return null;
@@ -295,15 +410,26 @@ pub const Watcher = struct {
         return darwin.CFArrayCreate(null, items, @intCast(made), &darwin.kCFTypeArrayCallBacks);
     }
 
-    /// FSEvents delivers here on any change under the roots. We don't inspect the
-    /// paths/flags — an event (including a coalesced drop, which sets an overflow
-    /// flag) only means "reconcile next query"; the barrier's own metadata walk
-    /// re-derives the exact changed set. `markDirty` is lock-free, callable from
-    /// this CFRunLoop thread.
-    fn fseventsCallback(_: darwin.Ref, info: ?*anyopaque, _: usize, _: ?*anyopaque, _: [*c]const u32, _: [*c]const u64) callconv(.c) void {
-        if (info) |p| {
-            const session: *ResidentSession = @ptrFromInt(@intFromPtr(p));
-            session.markDirty();
-        }
+    /// FSEvents delivers here on any change under the roots. With per-file
+    /// events on (and no `UseCFTypes`), `event_paths` is a `char**` of the
+    /// changed items' own absolute paths. Every path is `note`d into the
+    /// session's dirty log BEFORE `markDirty` bumps the seqlock (the ordering
+    /// the log's drain contract relies on); any flag that means the paths are
+    /// not an exact account of what changed (rescan hints, drops, id wrap,
+    /// mounts) becomes `noteDoubt`, so that batch's reconcile walks fully.
+    fn fseventsCallback(_: darwin.Ref, info: ?*anyopaque, num_events: usize, event_paths: ?*anyopaque, event_flags: [*c]const u32, _: [*c]const u64) callconv(.c) void {
+        const p = info orelse return;
+        const session: *ResidentSession = @ptrFromInt(@intFromPtr(p));
+        if (event_paths) |ep| {
+            const paths: [*]const [*:0]const u8 = @ptrFromInt(@intFromPtr(ep));
+            for (0..num_events) |i| {
+                if (event_flags != null and event_flags[i] & darwin.inexact_flags != 0) {
+                    session.dirty_log.noteDoubt();
+                } else {
+                    session.dirty_log.note(std.mem.span(paths[i]));
+                }
+            }
+        } else session.dirty_log.noteDoubt();
+        session.markDirty();
     }
 };

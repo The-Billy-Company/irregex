@@ -7,11 +7,17 @@ doc_radar:
     - pkg/kernels/gist/src/session/request.zig
     - pkg/kernels/gist/src/session/protocol.zig
     - pkg/kernels/gist/src/session/watch.zig
+    - pkg/kernels/gist/src/session/dirty.zig
+    - pkg/kernels/gist/src/session/delta.zig
   sentinels:
     - file: pkg/kernels/gist/contract/search_api.toml
       contains: ["[session]", "eligible_modes", "fail-closed-reconcile", "\"lines\""]
     - file: pkg/kernels/gist/src/session/protocol.zig
       contains: ["chunk = 11", "protocol_version: u8 = 1"]
+    - file: pkg/kernels/gist/src/session/dirty.zig
+      contains: ["armExact", "noteDoubt"]
+    - file: pkg/kernels/gist/src/session/delta.zig
+      contains: ["needs_full", "keyIsCurrent"]
 -->
 
 # `src/session/` — the resident search session (ADR-352 rung 2.5)
@@ -35,7 +41,9 @@ sidesteps the exit hazard ADR-352 defers the in-process C FFI on.
 | [`render.zig`](render.zig)     | The warm `lines` renderer: the default `path:text` / `-n` `path:line:text` frame, produced through the cold engine's **own** `Emitter` + `grepfile.handleBinary` — byte-parity by construction, never a re-derived formatter.                                             |
 | [`request.zig`](request.zig)   | The eligibility classifier — accepts only the supported argv surface (bare pattern → `lines`, `-l`/`-c`, `-F`, `-i`, `-n`/`-N`, `-e`/`--regexp`; **rootless only** — any explicit PATH arg, even `.`, stays cold), everything else → `error.Unsupported` (cold fallback). |
 | [`protocol.zig`](protocol.zig) | The length-prefixed UDS frame codec (`[u32 len][u8 opcode][payload]`) + fd send/recv, fail-closed on oversized/truncated/unknown frames. A `lines` answer streams as `chunk` frames + a terminal `result` (additive; protocol stays v1).                                  |
-| [`watch.zig`](watch.zig)       | The freshness watcher — a pure accelerator (Linux inotify · macOS FSEvents; reconcile-always baseline on other targets) that only ever decides _whether the reconcile walk may be skipped_, never correctness.                                                            |
+| [`watch.zig`](watch.zig)       | The freshness watcher — a pure accelerator (Linux inotify · macOS FSEvents; reconcile-always baseline on other targets) that only ever decides _whether — and how narrowly — the reconcile walk may run_, never correctness. FSEvents runs with per-file events and feeds the exact dirty log; inotify stays coarse (never arms exactness) and poisons the session on queue overflow or an unwatchable new directory. |
+| [`dirty.zig`](dirty.zig)       | The exact dirty-path log: a bounded, deduped set of watcher-reported paths plus two soundness bits — `exact` (the backend promises every dirty bump was preceded by a note) and `doubt` (overflow / OOM / unattributable event ⇒ the next reconcile walks fully). The O(changed) hand-off between backend and reconcile.                                                  |
+| [`delta.zig`](delta.zig)       | The O(changed) resolver: maps one drained batch of absolute watcher paths into walk-certified verdicts (`file`/`subtree`/`gone`/`skip`/`needs_full`) using the cold walk's **own** `Ignore` machinery, so a scoped reconcile cannot drift from `defaultFileSet`. Ignore-source edits, `.git` topology, unmapped or non-ASCII paths all answer `needs_full`.               |
 
 ## The invariant
 
@@ -50,9 +58,15 @@ mode applies cold's binary rule (`-l` observes only complete buffers before the
 NUL one; `-c` suppresses the file; the line search emits pre-cut matches + the
 WARNING), rather than being skipped by an approximate sniff. A query is
 answered from resident bytes directly only in a watcher-proven-clean window;
-otherwise the session re-walks that authoritative set and diffs it against
-base + overlay (left the set → tombstone; new → read in; mtime/ctime advanced →
-re-read) before answering. A delete that races the walk→report window is caught
+otherwise the session reconciles before answering — **scoped** when it can
+prove the drained dirty-path set covers every possible divergence (an exact
+per-file backend, a doubt-free bounded log, one prior covering full pass, no
+ignore-semantics path in the batch: verify exactly those paths via `delta.zig`
+against the walk's own admission rules), else **full** (re-walk the
+authoritative set and diff it against base + overlay: left the set →
+tombstone; new → read in; mtime/ctime advanced → re-read). Every scoped-path
+refusal degrades to the full walk — never to trusting stale bytes. A delete
+that races the walk→report window is caught
 by a per-match existence check whenever the session is not watcher-clean. A
 rebuilt index (`pair.gen` drift) or an errored walk (unreadable directory —
 cold reports it and exits 2) surfaces as `error.Stale`, and the daemon declines
