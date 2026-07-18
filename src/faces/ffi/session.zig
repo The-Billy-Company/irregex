@@ -141,13 +141,19 @@ const Relay = struct {
 /// Open a warm session over `roots[0..nroots]` (each a NUL-terminated path).
 /// `nroots == 0` means the ROOTLESS current-working-directory walk — the exact
 /// tree a bare `gist <pattern>` walks (CWD-relative paths, no `./` prefix), so
-/// the in-process answer is byte-identical to a rootless cold run. Writes the
-/// handle to `out` and returns `.ok`, or leaves `out` untouched and returns a
-/// negative status.
-pub fn open(roots_ptr: [*]const [*:0]const u8, nroots: usize, out: **Session) Status {
+/// the in-process answer is byte-identical to a rootless cold run; `roots_ptr`
+/// may then be null (the Python binding passes NULL, not an empty array) and
+/// is never read. Writes the handle to `out` and returns `.ok`, or leaves
+/// `out` untouched and returns a negative status (`.invalid` for a null `out`,
+/// or a null `roots_ptr` with `nroots > 0`).
+pub fn open(roots_ptr: ?[*]const [*:0]const u8, nroots: usize, out: ?**Session) Status {
+    const out_slot = out orelse return .invalid;
     const roots = gpa.alloc([]const u8, nroots) catch return .out_of_memory;
     defer gpa.free(roots);
-    for (0..nroots) |i| roots[i] = std.mem.span(roots_ptr[i]);
+    if (nroots != 0) {
+        const rp = roots_ptr orelse return .invalid;
+        for (roots, 0..) |*r, i| r.* = std.mem.span(rp[i]);
+    }
 
     const s = gpa.create(Session) catch return .out_of_memory;
     s.threaded = std.Io.Threaded.init(gpa, .{});
@@ -166,9 +172,16 @@ pub fn open(roots_ptr: [*]const [*:0]const u8, nroots: usize, out: **Session) St
 /// negative status (`.stale` → the caller answers cold, unchanged). `on_match`
 /// may return non-zero to stop early — a bounded / first-match query then still
 /// returns `.match` (a line was seen) without scanning the rest of the corpus.
-pub fn search(s: *Session, pattern_ptr: [*]const u8, pattern_len: usize, flags: u32, on_match: MatchFn, ctx: ?*anyopaque) Status {
+/// A null `pattern_ptr` with `pattern_len > 0` is `.invalid`, never a blind
+/// deref; `pattern_len == 0` never reads the pointer (the empty pattern keeps
+/// its engine-defined meaning).
+pub fn search(s: *Session, pattern_ptr: ?[*]const u8, pattern_len: usize, flags: u32, on_match: MatchFn, ctx: ?*anyopaque) Status {
+    const pattern: []const u8 = if (pattern_len == 0) "" else blk: {
+        const p = pattern_ptr orelse return .invalid;
+        break :blk p[0..pattern_len];
+    };
     const req = request.Request{
-        .pattern = pattern_ptr[0..pattern_len],
+        .pattern = pattern,
         .mode = .files, // ignored by the match stream; any value compiles
         .fixed = flags & flag_fixed != 0,
         .ignore_case = flags & flag_ignore_case != 0,
