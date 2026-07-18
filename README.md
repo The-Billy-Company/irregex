@@ -1,28 +1,28 @@
 ---
 doc_radar:
   counts:
-    - description: "gist src/ subfolders — 6 pipeline tiers (engine · index · regex · rank · scan · corpus) + commands/ CLI + session/ resident transport (ADR-352 rung 2.5) + ffi/ in-process C-ABI search session (rung 3) + irregex/ IR sketch (rung 4)"
+    - description: "gist src/ tiers — kernel/ (engine · index · regex · rank · scan · corpus · scope) + primitives/ (patterns · sketch · loom) + faces/ (cli · gist · hydra · ffi) + session/ resident transport (ADR-352 rung 2.5)"
       glob: pkg/kernels/gist/src/*
       unit: dirs
-      equals: 10
+      equals: 4
   sentinels:
     - description: "gist registered in the changelog roster (OSS-package membership)"
       file: pkg/tools/support/chronicle/packages.py
       contains: 'Package("pkg/kernels/gist"'
     - description: "Unicode is default-on at the CLI (rg-parity); --no-unicode / (?-u) opt out"
-      file: pkg/kernels/gist/src/commands/ripgrep/args.zig
+      file: pkg/kernels/gist/src/faces/gist/ripgrep/args.zig
       contains: "unicode: bool = true,"
     - description: "Unicode data tables generated from a pinned UCD version"
-      file: pkg/kernels/gist/src/regex/unicode/tables.gen.zig
+      file: pkg/kernels/gist/src/kernel/regex/unicode/tables.gen.zig
       contains: 'unicode_version = "16.0.0"'
     - description: "-E honors the full WHATWG label table incl. the CJK multi-byte decoders"
-      file: pkg/kernels/gist/src/commands/ripgrep/encoding.zig
+      file: pkg/kernels/gist/src/faces/gist/ripgrep/encoding.zig
       contains:
         - "gb18030"
         - "shift_jis"
         - "euc_jp"
     - description: "status has a versioned machine-readable lifecycle contract"
-      file: pkg/kernels/gist/src/commands/status/status.zig
+      file: pkg/kernels/gist/src/faces/gist/status/status.zig
       contains: ["pub const schema_version = 1;", "pub const Snapshot = struct"]
 ---
 
@@ -66,7 +66,7 @@ tools against real questions about this repo — is everywhere else:
 `gist` targets exactly those: a persistent **index** (don't rescan), a
 **freshness** overlay that is zero-false-negative _under stated local-filesystem
 assumptions_ (ordinary writes advance status ctime, metadata is readable, and
-live bytes are re-verified before output — see `src/corpus/README.md`), and
+live bytes are re-verified before output — see `src/kernel/corpus/README.md`), and
 **ranked, token-compressed** output. The frontier
 survey and decision trail
 live in
@@ -78,7 +78,7 @@ The pipeline is six cooperating tiers, each a concern-scoped subfolder under
 `src/` (`index/` · `regex/` · `rank/` · `scan/` · `corpus/` · `engine/`), driven
 by the command surfaces under `src/commands/`:
 
-**Trigram candidate index** (`src/index/trigram.zig`). Any file containing a literal
+**Trigram candidate index** (`src/kernel/index/trigram.zig`). Any file containing a literal
 must contain every trigram of that literal, so the AND of the per-trigram
 posting lists is a _sound_ candidate set — a superset of the true matches,
 computed by binary search with no scanning. It's a **filter, not a matcher**:
@@ -97,22 +97,22 @@ so a cold first query faults in only the handful of pages the binary search
 probes (~0.4 ms) instead of reading + allocating + copying the 100+ MiB table.
 Build once per session, warm-start every process after.
 
-**Regex** (`src/regex/`). A linear-time **Thompson NFA** over bytes (the
+**Regex** (`src/kernel/regex/`). A linear-time **Thompson NFA** over bytes (the
 RE2/ripgrep philosophy — no catastrophic backtracking) with sound
 required-literal extraction, so a regex reuses the trigram prefilter, including a
 **multi-literal cover set** for alternations (`foo|bar|baz` prefilters on the
 union of all three). When a pattern has no usable literal, the full-scan path
-runs on an immutable **byte-class DFA** (`src/regex/dfa.zig`) that spends one
+runs on an immutable **byte-class DFA** (`src/kernel/regex/dfa.zig`) that spends one
 table lookup per byte regardless of match density — anchors and all — in a
 single fused pass that detects newlines inline. The Pike VM stays the capped
 fallback and the differential-fuzz correctness reference. For the constructs a
 linear engine provably can't express — lookaround, backreferences — the opt-in
-`-P`/`--pcre2` backend (`src/regex/pcre2.zig`, vendored PCRE2 10.47 JIT) reuses
+`-P`/`--pcre2` backend (`src/kernel/regex/pcre2.zig`, vendored PCRE2 10.47 JIT) reuses
 the _same_ required-literal prefilter, making gist the only indexed PCRE search
 in the field; `--engine auto` compiles linear first and escalates only when the
-pattern needs it. See [`src/regex/README.md`](src/regex/README.md).
+pattern needs it. See [`src/kernel/regex/README.md`](src/kernel/regex/README.md).
 
-**Freshness overlay** (`src/corpus/fresh.zig`). Keeps a persisted index correct
+**Freshness overlay** (`src/kernel/corpus/fresh.zig`). Keeps a persisted index correct
 under heavy concurrent commit churn **without rebuilding or consulting git**.
 The build stamps a wall-clock anchor; a file is conservatively fresh when its
 mtime **or status ctime** reaches the anchor, so restored/backdated mtimes still
@@ -121,7 +121,7 @@ from the directory listing it already needed, eliminating the old second
 corpus-wide `stat()` walk; exotic serial modes retain the standalone overlay.
 Queries have before/after semantics under concurrent writes, not snapshots.
 
-**Ranking** (`src/rank/rank.zig`). Turns the verified match set into the list an agent
+**Ranking** (`src/kernel/rank/rank.zig`). Turns the verified match set into the list an agent
 wants via weighted **Reciprocal Rank Fusion** (Cormack et al. 2009) over four
 intrinsic signals — lexical density, a **definition boost** (a match on a decl
 line outranks its call sites — the win `grep` can't express), shallow-path
@@ -134,7 +134,7 @@ class; exact mirrored bytes are annotated with their canonical result.
 An optional external ranking supplies a graph-centrality hook. `--rank` emits
 token-compressed `path:line [def|use|gen|mirror] ×n <line>`.
 
-**Compiled query core** (`src/engine/query.zig`). One deep module owns "a search
+**Compiled query core** (`src/kernel/engine/query.zig`). One deep module owns "a search
 intent, compiled": a `(pattern, fixed, ignore_case, mode)` spec lowers into an
 immutable matcher — a literal for the `-F` no-fold SIMD fast path, else the
 linear-time regex engine — from which every face draws the two things it needs:
@@ -142,7 +142,7 @@ the sound trigram **prefilter** that prunes index candidates (required literal,
 else the alternation cover) and the per-doc **match / line-count** decision. It
 is fail-closed (a pattern outside the linear-time syntax is `error.Unsupported`,
 never a `die()`) and thread-safe (the compiled query is immutable; per-worker
-regex scratch is caller-owned), so the cold CLI (`src/commands/ripgrep/`) and the
+regex scratch is caller-owned), so the cold CLI (`src/faces/gist/ripgrep/`) and the
 warm resident session (`src/session/`) execute through the **same** compile,
 prefilter, and match kernels and cannot drift on what matches.
 
@@ -152,7 +152,7 @@ gist has **two lifecycle verbs** — what it _does_, not which competitor's argv
 it apes — plus a single unified search engine reached with no verb at all,
 addressed the way an agent's `rg <pattern>` reflex already types it, and
 **three irregex verbs** (`patterns` / `similar` / `dups` — ADR-363,
-[`src/irregex/`](src/irregex/README.md)) for the set-shaped questions regex
+[`src/primitives/`](src/primitives/README.md)) for the set-shaped questions regex
 alone can't express:
 
 ```bash
@@ -179,14 +179,14 @@ zig build cli -- <pat> --no-index         # force the pure live walk (also with 
 zig build cli -- --help                   # broad tested rg-compatible subset
 zig build cli -- --schema                 # a JSON capability manifest for agents
 
-# The irregex verbs (ADR-363) — set-shaped questions no rg flag can express:
+# The irregex verbs — set-shaped questions no rg flag can express:
 zig build cli -- patterns -e P1 -e P2 --by pattern   # N patterns, ONE pass, exact attribution
 zig build cli -- similar path/to/file.py             # nearest files by compression kinship
 zig build cli -- dups --max-distance 0.25            # near-duplicate pairs, closest first
 ```
 
 The bare `gist <pattern>` shorthand and its explicit `gist rg` alias are ONE
-engine (`src/commands/ripgrep/run.zig`) — a ripgrep-DEFAULT drop-in on its
+engine (`src/faces/gist/ripgrep/run.zig`) — a ripgrep-DEFAULT drop-in on its
 **supported surface** (gitignore precedence, exit codes, piped stdin;
 **0 FAIL and 0 ORDER** on the mined rgsuite corpus: every case matches `rg`
 at its own upstream assertion bar — byte-exact where ripgrep's suite pins
@@ -201,7 +201,7 @@ equivalent — a definition-first RRF-ranked view (see "Why gist" below).
 exactly can this tool do" without running a query. Programs use `gist status
 --json`, a versioned snapshot derived from the same model as the unchanged
 human report; its exact v1 fields and unavailable-state semantics are documented
-in [`src/commands/status/README.md`](src/commands/status/README.md). The full
+in [`src/faces/gist/status/README.md`](src/faces/gist/status/README.md). The full
 flag surface is documented in "How it works as a drop-in" below, and
 exhaustively in `--help` / `--schema`.
 
@@ -305,7 +305,7 @@ Exact byte-identical classes are additionally gated by
 (both engines plus deterministic exact-output generators for the 265,286- and
 147,087-line result classes). The by-design boundaries are listed under "Where
 gist departs from ripgrep." The exhaustive rg-compatible flag reference lives in
-[`src/commands/ripgrep/args.zig`](src/commands/ripgrep/args.zig).
+[`src/faces/gist/ripgrep/args.zig`](src/faces/gist/ripgrep/args.zig).
 
 Streams follow the `rg` convention too, so gist composes in a pipeline the
 same way: matches go to **stdout**, and — a stronger bar than `rg` itself, not
@@ -367,7 +367,7 @@ didn't understand you" — so gist never does it.
 
 **Transforms content faster than rg — in-process, not fork-per-file.** The three
 rg flags that reshape a file's bytes before matching all land, coordinated by one
-deep module ([`src/commands/ripgrep/ingest.zig`](src/commands/ripgrep/ingest.zig))
+deep module ([`src/faces/gist/ripgrep/ingest.zig`](src/faces/gist/ripgrep/ingest.zig))
 that owns the `decompress → preprocess → transcode` ordering so neither walk
 engine re-implements it. `-z`/`--search-zip` decodes the common formats (gzip,
 zlib, zstd, xz) **in-process** via Zig's `std.compress` — no `gzip -dc` fork per
@@ -392,14 +392,14 @@ generated file otherwise wins on raw occurrence count for a common symbol,
 yet the repo forbids editing it, so it's never the actual answer. This runs
 on indexed candidates when warm, or the same live-walk matches when cold, via
 weighted Reciprocal Rank Fusion
-([`src/rank/rank.zig`](src/rank/rank.zig), Cormack et al. 2009) over four
+([`src/kernel/rank/rank.zig`](src/kernel/rank/rank.zig), Cormack et al. 2009) over four
 signals — it isn't expressible as a line-scanner's output ordering at all.
 
 Linear-engine regex syntax (the default): literals, `.`, `[...]`/`[^...]`,
 `a-z` ranges, `* + ? {n,m}`, alternation, groups, `^ $`, the haystack anchors
 `\A \z`, the word boundaries `\b \B` and one-sided `\< \>`, and the classes
 `\d \w \s \t \n \r` (NUL is `\x00`) — see
-[`src/regex/syntax.zig`](src/regex/syntax.zig). The escape parser is rg-parity
+[`src/kernel/regex/syntax.zig`](src/kernel/regex/syntax.zig). The escape parser is rg-parity
 **fail-loud**: `\0`–`\9` (backreference syntax), unrecognized letter escapes
 (`\q`, `\e`, `\Z`, …), and assertion escapes inside a class (`[\b]`, `[\A]`,
 `[\<]`) all exit 2 with the reason and the **native `gist -P` / `gist --engine
@@ -415,13 +415,13 @@ simple-fold **orbit** (`café` ⇄ `CAFÉ`, `ß`, the Greek final-sigma `Σ`/`σ
 smart-case (`-S`) is disabled by any Unicode uppercase, and word boundaries
 decode the straddling codepoint (an invalid-UTF-8 byte is a non-word unit). A
 codepoint class lowers to a compact UTF-8 byte sub-automaton
-([`src/regex/unicode/`](src/regex/unicode/)) woven into the same byte NFA, so
+([`src/kernel/regex/unicode/`](src/kernel/regex/unicode/)) woven into the same byte NFA, so
 the byte-class DFA still runs at the O(1)/byte floor; Unicode `\b`/fold queries
 run the Pike VM only on trigram-prefiltered candidates. `(?-u)` (leading flag)
 or `--no-unicode` opt out to the exact ASCII byte behavior. The Unicode data
 tables are generated from a pinned UCD
 (`pkg/kernels/gist/tools/build_unicode_tables.py` →
-`pkg/kernels/gist/src/regex/unicode/tables.gen.zig`, `make gen-gist-unicode`),
+`pkg/kernels/gist/src/kernel/regex/unicode/tables.gen.zig`, `make gen-gist-unicode`),
 drift-gated against regeneration.
 
 ## Build & test
@@ -650,4 +650,4 @@ than inventing a number for hardware it can't measure.
 
 Index BUILD lifecycle stays a Zig/CLI surface (a session searches the live
 tree). `zig build test` compiles, links, and runs a real C consumer against
-these symbols — including the rung-3 session end to end (see `src/ffi/`).
+these symbols — including the rung-3 session end to end (see `src/faces/ffi/`).

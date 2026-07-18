@@ -1,7 +1,7 @@
 ---
 doc_radar:
   sentinels:
-    - file: pkg/kernels/gist/src/regex/unicode/tables.gen.zig
+    - file: pkg/kernels/gist/src/kernel/regex/unicode/tables.gen.zig
       contains: ['pub const unicode_version = "16.0.0";']
 ---
 
@@ -25,7 +25,7 @@ The tables are lowered from a pinned **UCD 16.0.0** subset vendored under
 [`../../../tools/build_unicode_tables.py`](../../../tools/build_unicode_tables.py):
 
 ```bash
-make gen-gist-unicode    # regenerate src/regex/unicode/tables.gen.zig
+make gen-gist-unicode    # regenerate src/kernel/regex/unicode/tables.gen.zig
 make gen-gist-verify     # drift gate: regenerate + diff (CI)
 ```
 

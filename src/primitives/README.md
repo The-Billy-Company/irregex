@@ -2,7 +2,7 @@
 doc_radar:
   counts:
     - description: "the tier is exactly three primitives + three test siblings + this README"
-      glob: pkg/kernels/gist/src/irregex/*
+      glob: pkg/kernels/gist/src/primitives/*
       unit: files
       equals: 7
   sentinels:
@@ -10,11 +10,11 @@ doc_radar:
       file: pkg/kernels/gist/src/root.zig
       contains: ['pub const irregex = struct', 'irregex/sketch_test.zig', 'irregex/patterns_test.zig', 'irregex/loom_test.zig']
     - description: "the frozen sketch resolution this README quotes (bottom-k size, phrase floor)"
-      file: pkg/kernels/gist/src/irregex/sketch.zig
+      file: pkg/kernels/gist/src/primitives/sketch.zig
       contains: ['pub const k = 128', 'pub const min_phrase = 3']
 ---
 
-# `src/irregex/` — the irregular-expression primitives
+# `src/primitives/` — the irregular-expression primitives
 
 The tier that makes gist's engine _set-shaped_. A regular expression answers
 one question about one pattern; the agent workload asks three others, and this
