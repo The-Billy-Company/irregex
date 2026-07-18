@@ -228,6 +228,11 @@ pub const Opts = struct {
     // = 0 means the default 20; --no-index explicitly selects live ranking.
     rank: bool = false,
     rank_k: usize = 0,
+    // --uncap: lift the soft output budget (the ~25k-token agent-context guard,
+    // corpus.zig) for THIS query — the agent deliberately wants the full result.
+    // The hard OOM ceiling still applies. `GIST_UNCAP=1` is the env equivalent
+    // (what the bench harness sets to keep rg byte-parity exact).
+    uncap: bool = false,
     filter: Filter = .{},
     pub fn wantsContext(self: Opts) bool {
         return self.before > 0 or self.after > 0;
@@ -300,11 +305,9 @@ fn hasUpper(s: []const u8) bool {
     return false;
 }
 
-fn lowerDup(a: std.mem.Allocator, s: []const u8) []u8 {
-    const o = a.alloc(u8, s.len) catch oom();
-    for (s, 0..) |c, i| o[i] = std.ascii.toLower(c);
-    return o;
-}
+// The shared ASCII case fold (`paths.zig`) — one definition for the caseless
+// glob path here and ignore.zig's git config-key folding.
+const lowerDup = @import("paths.zig").lowerDup;
 fn globAppliesCI(a: std.mem.Allocator, pat: []const u8, path: []const u8) bool {
     return glob.globApplies(lowerDup(a, pat), lowerDup(a, path));
 }
@@ -625,6 +628,7 @@ const Act = enum {
     no_index,
     index,
     rank,
+    uncap, // --uncap: lift the soft output budget (hard OOM ceiling still applies)
     pcre, // -P/--pcre2: select the PCRE2 backend
     engine, // --engine=<default|pcre2|auto>: select the match backend by name
     auto_hybrid, // --auto-hybrid-regex: rg's deprecated spelling of --engine auto
@@ -743,6 +747,7 @@ pub const flag_catalog = [_]FlagSpec{
     .{ .longs = &.{"no-index"}, .action = .no_index, .compatibility = .native },
     .{ .longs = &.{"index"}, .action = .index, .compatibility = .native },
     .{ .longs = &.{"rank"}, .action = .rank, .compatibility = .native },
+    .{ .longs = &.{"uncap"}, .action = .uncap, .compatibility = .native, .note = "lift the ~25k-token soft output cap for this query; the hard OOM ceiling still applies (GIST_UNCAP=1 is the env form)" },
     // Accepted spellings whose requested behavior is intentionally not applied.
     .{ .longs = &.{ "mmap", "no-mmap" }, .action = .noop, .compatibility = .accepted_but_ignored },
     .{ .longs = &.{"one-file-system"}, .action = .one_file_system, .compatibility = .supported },
@@ -1074,6 +1079,7 @@ fn parseLong(b: *Builder, arg: []const u8, i: *usize, all: []const []const u8) v
             o.rank = true;
             if (inl) |v| o.rank_k = toU(v);
         },
+        .uncap => o.uncap = true,
         .type_add => b.addTypeDef(val(inl, i, all)),
         .after => {
             b.a_val = toU(val(inl, i, all));

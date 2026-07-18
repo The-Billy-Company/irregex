@@ -73,9 +73,8 @@ pub fn readDocOwned(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ?Owned
         // UTF-16 transcode: `body` is a fresh allocation typed `[]const u8`
         // (decodeBom). Re-own as `[]u8` without `@constCast` — dupe then free.
         gpa.free(raw);
-        const d = gpa.dupe(u8, body) catch return null;
-        gpa.free(body);
-        break :blk d;
+        defer gpa.free(body);
+        break :blk gpa.dupe(u8, body) catch return null;
     };
     if (owned.len == 0) {
         gpa.free(owned);

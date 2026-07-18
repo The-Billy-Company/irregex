@@ -1,3 +1,4 @@
+// MONOLITHIC: WHATWG encoding decoders — per-codec streaming state machines (gb18030, big5, euc-jp, shift_jis, …) share label resolution and one dispatch; each codec is a section, not a module
 //! gist `rg` — the `-E`/`--encoding` legacy-code-page decoders (WHATWG Encoding Standard).
 //!
 //! ripgrep transcodes a file's source encoding to UTF-8 (via encoding_rs) before

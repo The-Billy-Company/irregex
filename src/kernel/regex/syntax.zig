@@ -1,3 +1,4 @@
+// MONOLITHIC: regex syntax plane — ByteSet/ScalarSet classes, the AST, the recursive-descent parser, and NFA instruction lowering share one grammar; splitting forks the class/AST invariants the parser and compiler co-maintain
 //! gist — regex *syntax*: byte classes, the AST, the compiled NFA instruction,
 //! and a recursive-descent parser for the supported subset. The sound AST
 //! analyses that feed the prefilter (required-literal extraction, anchored-start
@@ -114,6 +115,9 @@ pub fn foldCaseAst(gpa: std.mem.Allocator, n: *Node, unicode: bool) ParseError!v
     }
 }
 
+/// The regex AST — what recursive descent (`Parser`) produces and every
+/// downstream compiler/analysis consumes (`compile.zig`, `captures.zig`,
+/// `analysis.zig`). Arena-allocated; nodes are never freed piecewise.
 pub const Node = union(enum) {
     empty,
     class: ByteSet, // a single consuming step (literal byte, ., \d, [..])
@@ -175,6 +179,8 @@ pub const State = union(enum) {
     match,
 };
 
+/// The one error set of the whole compile pipeline: a pattern the grammar
+/// rejects, or allocation failure. Re-exported by every engine module.
 pub const ParseError = error{ BadPattern, OutOfMemory };
 
 /// A mutable set of Unicode scalar ranges, accumulated while parsing a class in
@@ -298,6 +304,8 @@ pub const ScalarSet = struct {
     }
 };
 
+/// Recursive-descent parser over the rg-compatible pattern grammar. Entry point
+/// is `parseAlt`; the caller checks `pos == src.len` for a full-input parse.
 pub const Parser = struct {
     src: []const u8,
     pos: usize = 0,

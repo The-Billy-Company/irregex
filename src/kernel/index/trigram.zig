@@ -418,6 +418,16 @@ pub const Index = struct {
     /// the rarest seed (not lexicographically-first) stays small and shrinks
     /// fastest — e.g. "context.Context" no longer seeds on "con".
     pub fn queryLiteral(self: *const Index, allocator: std.mem.Allocator, needle: []const u8) QueryError![]u32 {
+        var lazy: ?[]u32 = null;
+        defer if (lazy) |s| allocator.free(s);
+        return self.queryLiteralWith(allocator, needle, &lazy);
+    }
+
+    /// `queryLiteral` over a caller-owned lazy scratch cell: the `doc_count`-
+    /// sized decode buffer is allocated at most ONCE into `lazy` (only when a
+    /// needle actually has >1 trigram group) and reused across calls, so a
+    /// k-branch `queryAny` pays one scratch instead of k. Caller frees `lazy`.
+    fn queryLiteralWith(self: *const Index, allocator: std.mem.Allocator, needle: []const u8, lazy: *?[]u32) QueryError![]u32 {
         if (needle.len < 3) return QueryError.NeedleTooShort;
         const qbuf = try allocator.alloc(Trigram, needle.len);
         defer allocator.free(qbuf);
@@ -435,8 +445,10 @@ pub const Index = struct {
         var n = try self.decodeGroup(seed, cand);
 
         if (groups.len > 1) {
-            const scratch = try allocator.alloc(u32, self.doc_count);
-            defer allocator.free(scratch);
+            const scratch = lazy.* orelse blk: {
+                lazy.* = try allocator.alloc(u32, self.doc_count);
+                break :blk lazy.*.?;
+            };
             for (groups[1..]) |gi| {
                 const cnt = try self.decodeGroup(gi, scratch);
                 n = intersectAscending(cand[0..n], scratch[0..cnt]);
@@ -477,6 +489,10 @@ pub const Index = struct {
         // Resolve every branch first so the union buffer is allocated ONCE at
         // its exact size — the old shape realloc'd (and re-copied) the growing
         // buffer per needle, O(total·k) moves for a k-branch alternation.
+        // One lazy `doc_count`-sized decode scratch is shared by every branch
+        // (each branch used to allocate + free its own).
+        var scratch: ?[]u32 = null;
+        defer if (scratch) |s| allocator.free(s);
         const lists = try allocator.alloc([]u32, needles.len);
         var got: usize = 0;
         defer {
@@ -485,7 +501,7 @@ pub const Index = struct {
         }
         var total: usize = 0;
         for (needles, lists) |needle, *slot| {
-            slot.* = try self.queryLiteral(allocator, needle);
+            slot.* = try self.queryLiteralWith(allocator, needle, &scratch);
             got += 1;
             total += slot.len;
         }

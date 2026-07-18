@@ -1,3 +1,4 @@
+// MONOLITHIC: per-file search machinery shared by BOTH walk engines — BOM/UTF-16 ingest, binary policy, staged reads, the portable raw-stat shim, and stats tally must stay one module or the serial and parallel engines drift on per-file semantics
 //! gist `rg` — the per-FILE search machinery, shared by the two walk engines.
 //!
 //! Split from `run.zig` when the parallel pipeline (`pipeline.zig`) landed:

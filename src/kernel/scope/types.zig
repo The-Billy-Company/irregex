@@ -22,6 +22,8 @@
 const std = @import("std");
 const glob = @import("glob.zig");
 
+/// One registry row: every alias name that resolves to one shared glob slice
+/// (comptime-deduplicated so aliases can never drift — see module header).
 pub const TypeRow = struct { names: []const []const u8, globs: []const []const u8 };
 
 pub const type_table = [_]TypeRow{

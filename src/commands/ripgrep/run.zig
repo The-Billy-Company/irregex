@@ -608,10 +608,33 @@ fn collectFiles(
     const o = parsed.opts;
     var candidates: std.ArrayList(Candidate) = .empty;
     var ig = ignore.Ignore.init(a, io, o, parsed.roots);
+
+    // The elision oracle's freshness stat-walk and the gather walk are
+    // INDEPENDENT tree passes (gather reads no bodies; `buildIndexSkip`
+    // touches only the persisted index + file metadata, allocating through
+    // the thread-safe `gpa`), so overlap them: the serial engine's second
+    // metadata pass now costs ~zero wall time instead of doubling the
+    // walk phase. Spawn failure (or elision not wanted) degrades to the
+    // old sequential compute — never a lost oracle.
+    const SkipBox = struct {
+        out: ?IndexSkip = null,
+        fn compute(box: *@This(), gpa2: std.mem.Allocator, io2: std.Io, parsed2: args.Parsed, filters2: []const []const u8) void {
+            box.out = buildIndexSkip(gpa2, io2, parsed2, filters2);
+        }
+    };
+    var box: SkipBox = .{};
+    const skip_thread: ?std.Thread = if (pipeline.indexElisionWanted(parsed, filters))
+        std.Thread.spawn(.{}, SkipBox.compute, .{ &box, gpa, io, parsed, filters }) catch null
+    else
+        null;
+
     const g = gather(a, io, parsed.roots, o, &ig, &candidates);
 
     var all: std.ArrayList(InFile) = .empty;
-    var skip = buildIndexSkip(gpa, io, parsed, filters);
+    var skip: ?IndexSkip = if (skip_thread) |t| blk: {
+        t.join();
+        break :blk box.out;
+    } else buildIndexSkip(gpa, io, parsed, filters);
     defer if (skip) |*s| s.deinit();
     const read_list = if (skip) |*s| blk: {
         // Partition the walked set: read only what the index can't prove out.
@@ -966,6 +989,12 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
 
     const parsed = args.parseArgv(a, argv);
     var o = parsed.opts;
+    // Resolve the output budget for this run: the ~25k-token soft agent-context
+    // guard + the hard OOM ceiling (corpus.zig), honoring `--uncap`/`GIST_UNCAP`
+    // and the `GIST_MAX_OUTPUT_*` knobs. Applied at the single stdout seam
+    // (`writeStdout`/`emitStdout`) every engine emits through, plus the serial
+    // accumulation guard (`outputFull`) below.
+    corpus_mod.initOutputBudget(o.uncap);
     // Resolved ONCE per run (not per file/emitter): stdout tty + `--color` +
     // env. Every emitter below shares this single yes/no.
     const use_color = color.enabled(o, io, env);
@@ -1151,7 +1180,13 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     };
 
     var out: std.ArrayList(u8) = .empty;
-    var em = Emitter{ .a = a, .re = &re, .o = o, .show_name = if (o.heading) false else show_name, .out = &out, .caps = caps, .use_color = use_color, .needle = line_needle };
+    // Run-scoped boolean scratch, threaded through the Emitter so the per-file
+    // loop below reuses one Sim instead of re-allocating it for every file
+    // (mirrors the parallel engine's per-worker `workerSim`). Null on OOM ⇒
+    // the Emitter degrades to its file-local build.
+    var run_sim: ?Matcher.Sim = Matcher.Sim.init(a, &re) catch null;
+    defer if (run_sim) |*s| s.deinit();
+    var em = Emitter{ .a = a, .re = &re, .o = o, .show_name = if (o.heading) false else show_name, .out = &out, .caps = caps, .use_color = use_color, .needle = line_needle, .sim = if (run_sim) |*s| s else null };
 
     // --quiet short-circuits on first match — unless --stats is also asked for,
     // which must run the full search to tally (then print only the stats block).
@@ -1237,6 +1272,11 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         } else if (heading) {
             out.shrinkRetainingCapacity(before); // no matches → drop the header we wrote
         }
+        // Serial engine renders into `out` before one flush — stop growing it once
+        // the output budget is spent, bounding peak memory (the OOM guard) at the
+        // exact point the flush below would truncate anyway. `--stats` runs the
+        // full search regardless (it tallies over every file), so never short it.
+        if (!o.stats and corpus_mod.outputFull(out.items.len)) break;
     }
     if (o.stats) {
         stat.files_with_match = matched_files;

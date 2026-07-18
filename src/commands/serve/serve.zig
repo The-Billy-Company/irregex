@@ -109,7 +109,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, socket
         if (ready == 0) break;
         const stream = server.accept(io) catch break;
         session_gen +%= 1;
-        const after = serveConn(&session, gpa, io, stream.socket.handle, session_gen);
+        const after = serveConn(&session, gpa, stream.socket.handle, session_gen);
         stream.close(io);
         // Operator-facing reconcile telemetry (foreground daemons; an
         // auto-spawned daemon's stderr is detached anyway): which freshness
@@ -142,14 +142,14 @@ fn acquireSingleton(io: std.Io, socket_path: []const u8) ?std.posix.fd_t {
 
 /// Drive one client's frame loop to completion. Returns `.stop` only on an
 /// explicit `shutdown` opcode; a closed/again-errored connection is `.next`.
-fn serveConn(session: *ResidentSession, gpa: std.mem.Allocator, io: std.Io, fd: std.posix.fd_t, session_gen: u64) After {
+fn serveConn(session: *ResidentSession, gpa: std.mem.Allocator, fd: std.posix.fd_t, session_gen: u64) After {
     while (true) {
         var frame = protocol.recvFrame(gpa, fd) catch return .next; // closed/oversized/bad → drop peer
         defer frame.deinit();
         switch (frame.op) {
             .hello, .status => sendReady(session, gpa, fd, session_gen) catch return .next,
             .ping => protocol.sendFrame(gpa, fd, .pong, "") catch return .next,
-            .query => handleQuery(session, gpa, io, fd, frame.payload()) catch return .next,
+            .query => handleQuery(session, gpa, fd, frame.payload()) catch return .next,
             .shutdown => return .stop,
             // Anything server→client, or an unknown verb, is not a request: refuse
             // it as decline so a confused client falls back cold rather than hangs.
@@ -158,6 +158,8 @@ fn serveConn(session: *ResidentSession, gpa: std.mem.Allocator, io: std.Io, fd: 
     }
 }
 
+/// Answer a `hello`/`status` frame with the READY triple (daemon gen, session
+/// gen, index gen) the client's handshake validates against its own protocol.
 fn sendReady(session: *ResidentSession, gpa: std.mem.Allocator, fd: std.posix.fd_t, session_gen: u64) !void {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(gpa);
@@ -168,8 +170,7 @@ fn sendReady(session: *ResidentSession, gpa: std.mem.Allocator, fd: std.posix.fd
 /// Decode + answer one query. A malformed frame or an unservable request
 /// (`error.Stale` from a lost freshness anchor / rebuilt index, OOM) comes back
 /// as `decline` — the client re-runs it on the certified cold path.
-fn handleQuery(session: *ResidentSession, gpa: std.mem.Allocator, io: std.Io, fd: std.posix.fd_t, payload: []const u8) !void {
-    _ = io;
+fn handleQuery(session: *ResidentSession, gpa: std.mem.Allocator, fd: std.posix.fd_t, payload: []const u8) !void {
     const req = protocol.decodeQuery(payload) catch
         return protocol.sendFrame(gpa, fd, .decline, "");
 

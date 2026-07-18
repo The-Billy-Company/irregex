@@ -18,6 +18,8 @@ const State = syn.State;
 const ByteSet = syn.ByteSet;
 const ParseError = syn.ParseError;
 
+/// The literal facts provable about an AST node, feeding the trigram prefilter
+/// and the pure-literal fast path. All fields are conservative under-claims.
 pub const LitInfo = struct {
     exact: ?[]const u8, // node matches EXACTLY this literal and nothing else
     prefix: []const u8, // every match must START with this literal run

@@ -115,6 +115,8 @@ pub fn matchErrorMessage(buf: []u8) []const u8 {
     return ffi.errorMessage(code, buf);
 }
 
+/// Render a PCRE2 compile error code into the thread-local diagnostic buffer
+/// (read back via `lastError` after a `BadPattern`).
 pub fn recordError(code: c_int) void {
     const msg = ffi.errorMessage(code, &last_error_buf);
     // `errorMessage` wrote into the buffer (or returned a static fallback).

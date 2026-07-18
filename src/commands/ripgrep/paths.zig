@@ -35,6 +35,16 @@ pub fn join(a: std.mem.Allocator, dir: []const u8, name: []const u8) []const u8 
     return std.fmt.allocPrint(a, "{s}/{s}", .{ dir, name }) catch oom();
 }
 
+/// ASCII-lowered copy of `s` — the one case fold shared by the `--iglob`
+/// caseless glob path (`args.zig`) and git's case-insensitive config keys /
+/// ignore homes (`ignore.zig`). Byte-wise ASCII on purpose: gitignore and
+/// glob folding are defined over bytes, never Unicode.
+pub fn lowerDup(a: std.mem.Allocator, s: []const u8) []u8 {
+    const o = a.alloc(u8, s.len) catch oom();
+    for (s, 0..) |c, i| o[i] = std.ascii.toLower(c);
+    return o;
+}
+
 /// Replace every `/` in `path` with the (arbitrary-length) `sep` string for
 /// `--path-separator`. Returns `path` unchanged when it has no separator.
 pub fn replaceSep(a: std.mem.Allocator, path: []const u8, sep: []const u8) []const u8 {

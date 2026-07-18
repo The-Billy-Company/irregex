@@ -9,6 +9,7 @@
 
 const std = @import("std");
 
+/// One decoded scalar: the codepoint and how many bytes its encoding spans.
 pub const Decoded = struct { cp: u21, len: u3 };
 
 /// Decode the first codepoint of `bytes`; null on empty or ill-formed UTF-8.

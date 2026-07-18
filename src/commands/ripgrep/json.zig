@@ -40,6 +40,10 @@ pub fn run(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, ca
     defer ss.deinit();
     var st = Stats{};
     for (files) |f| {
+        // Bound the record buffer at the output ceiling (corpus.zig) before the
+        // next file — the JSON stream, like the serial line path, accumulates
+        // before a single flush, so this is the OOM guard for `--json`.
+        if (!o.quiet and corpus_mod.outputFull(out.items.len)) break;
         const body = f.body;
         if (body.len == 0) continue;
         if (!o.text and corpus_mod.isBinary(body)) continue;

@@ -20,13 +20,19 @@ const fresh = @import("../../corpus/fresh.zig");
 const corpus_mod = @import("../../corpus/corpus.zig");
 const Dir = std.Io.Dir;
 
+/// Version of the `--json` machine contract; bumped only on a breaking field
+/// change (see `Snapshot`).
 pub const schema_version = 1;
 
+/// Whether a loadable index pair exists. `unavailable` is an actionable state
+/// (run `gist index`), never an error — status must be safe to call blind.
 pub const State = enum {
     ready,
     unavailable,
 };
 
+/// Everything the persisted index pair reveals about itself: coverage,
+/// cardinality, and on-disk cost. Present only when `state == .ready`.
 pub const Index = struct {
     path: []const u8,
     paths_file: []const u8,
@@ -37,6 +43,8 @@ pub const Index = struct {
     paths_bytes: u64,
 };
 
+/// The freshness anchor the cold path folds changed files in against; both
+/// fields are null when no anchor was published (pre-overlay index).
 pub const Freshness = struct {
     anchor_unix_ns: ?i64,
     age_seconds: ?f64,

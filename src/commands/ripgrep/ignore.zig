@@ -545,11 +545,9 @@ pub const Ignore = struct {
     }
 };
 
-fn lower(a: std.mem.Allocator, s: []const u8) []const u8 {
-    const o = a.alloc(u8, s.len) catch oom();
-    for (s, 0..) |c, i| o[i] = std.ascii.toLower(c);
-    return o;
-}
+// The shared ASCII case fold (`paths.zig`) — one definition for gitignore's
+// byte-wise caseless glob tier and args.zig's `--iglob` fold.
+const lower = paths.lowerDup;
 
 // Env resolution (HOME/XDG for git's config/ignore homes) goes through the
 // shared `args.envSpan` — stable for the per-user gist server's lifetime,

@@ -124,15 +124,16 @@ pub const MatchRecord = struct {
     spans: []const Span,
 };
 
-/// The caller's streaming sink for `search` — the FFI's no-stdout, no-exit
-/// output channel. Any pointer type `*Sink` with a `pub fn emit(self: *Sink,
-/// rec: MatchRecord) bool` method qualifies (checked at the `search`/`emitDoc`
-/// call site, comptime-monomorphized — no vtable, no `*anyopaque`, no reverse
-/// pointer cast). `emit` is invoked once per matching line, synchronously,
-/// under the session lock; it must not re-enter the session. It returns `true`
-/// to STOP the stream early (the caller has enough — a bound, a first hit, its
-/// own abort) or `false` to keep receiving lines; a stop leaves the corpus
-/// otherwise unscanned, so bounded queries cost only what they read.
+// The caller's streaming sink for `search` — the FFI's no-stdout, no-exit
+// output channel. Any pointer type `*Sink` with a `pub fn emit(self: *Sink,
+// rec: MatchRecord) bool` method qualifies (checked at the `search`/`emitDoc`
+// call site, comptime-monomorphized — no vtable, no `*anyopaque`, no reverse
+// pointer cast). `emit` is invoked once per matching line, synchronously,
+// under the session lock; it must not re-enter the session. It returns `true`
+// to STOP the stream early (the caller has enough — a bound, a first hit, its
+// own abort) or `false` to keep receiving lines; a stop leaves the corpus
+// otherwise unscanned, so bounded queries cost only what they read.
+
 /// A candidate doc gathered before answering so results leave in a
 /// deterministic path order. `bytes` aliases mirror/overlay memory; `nul` is
 /// the first-NUL byte offset (null ⇒ text), driving each mode's binary rule.
@@ -854,24 +855,25 @@ pub const ResidentSession = struct {
         buf.* = all;
         return all;
     }
-
-    /// Does `path` still exist? The fail-closed stat-per-hit the match stream
-    /// uses off the watcher-clean path (mirrors `Accumulator.exists`).
-    fn pathExists(self: *const ResidentSession, path: []const u8) bool {
-        _ = Dir.cwd().statFile(self.io, path, .{}) catch return false;
-        return true;
-    }
 };
+
+/// Does `path` still exist right now? The fail-closed stat-per-hit every
+/// answer face applies off the watcher-clean path — one definition, so the
+/// fold accumulator and the doc gather can never drift on this check.
+fn fileExists(io: std.Io, path: []const u8) bool {
+    _ = Dir.cwd().statFile(io, path, .{}) catch return false;
+    return true;
+}
 
 /// One `matchingDocs` admission decision: binary policy, whole-doc gate,
 /// existence check, append. Free function (not a method) so the hot loop's
 /// shape is explicit at both call sites.
-fn considerDoc(docs: *std.ArrayList(DocRef), arena: std.mem.Allocator, d: DocRef, cq: *const CompiledQuery, sc: *Scratch, admit: Admit, check_exists: bool, self: *const ResidentSession) QueryError!void {
+fn considerDoc(docs: *std.ArrayList(DocRef), arena: std.mem.Allocator, d: DocRef, cq: *const CompiledQuery, sc: *Scratch, admit: Admit, check_exists: bool, session: *const ResidentSession) QueryError!void {
     // Cold `--json` skips a doc its 8 KiB `isBinary` window flags; a doc whose
     // first NUL sits past the window is streamed in full. Match that exactly.
     if (admit == .json_stream and d.nul != null and corpus_mod.isBinary(d.bytes)) return;
     if (!cq.docMatches(d.bytes, sc)) return; // trigram false positive / no match
-    if (check_exists and !self.pathExists(d.path)) return;
+    if (check_exists and !fileExists(session.io, d.path)) return;
     try docs.append(arena, d);
 }
 
@@ -929,7 +931,7 @@ const Accumulator = struct {
                 const gated = if (nul) |n| bytes[0 .. (n / grepfile.BUFCAP) * grepfile.BUFCAP] else bytes;
                 if (gated.len == 0) return; // NUL in the first buffer ⇒ cold sees zero lines
                 if (!cq.docMatches(gated, sc)) return;
-                if (check_exists and !self.exists(path)) return;
+                if (check_exists and !fileExists(self.io, path)) return;
                 try self.files.append(self.arena, path);
             },
             .count => {
@@ -939,18 +941,13 @@ const Accumulator = struct {
                 if (nul != null) return;
                 const n = cq.countLines(bytes, sc);
                 if (n == 0) return;
-                if (check_exists and !self.exists(path)) return;
+                if (check_exists and !fileExists(self.io, path)) return;
                 self.count += n;
             },
             // The lines presentation never routes through the fold — `query`
             // rejects it up front and `queryLines` renders via `render.zig`.
             .lines => unreachable,
         }
-    }
-
-    fn exists(self: *Accumulator, path: []const u8) bool {
-        _ = Dir.cwd().statFile(self.io, path, .{}) catch return false;
-        return true;
     }
 };
 

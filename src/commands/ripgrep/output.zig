@@ -126,6 +126,12 @@ pub const Emitter = struct {
     /// Resolved once per run by `color.zig` (stdout tty + `--color` + env).
     /// Paints path/line-number chrome and highlights match spans when true.
     use_color: bool = false,
+    /// Caller-owned reusable boolean-match scratch (`Matcher.Sim` is
+    /// generation-counted and file-agnostic by design), threaded in per-worker
+    /// by the parallel engine and per-run by the serial one so its three
+    /// n_states allocations amortize across every file this Emitter emits.
+    /// Null ⇒ the per-file paths build (and free) a local one, as before.
+    sim: ?*Matcher.Sim = null,
 
     /// `--crlf` match view: a trailing `\r` is treated as part of the terminator
     /// (so `$`/`\b` anchor before it) but is KEPT in the emitted line — ripgrep's
@@ -457,8 +463,6 @@ pub const Emitter = struct {
 
     pub fn file(self: *Emitter, path: []const u8, lines: []const []const u8) usize {
         const o = self.o;
-        var sim = Matcher.Sim.init(self.a, self.re) catch return 0;
-        defer sim.deinit();
         if (o.passthru and !o.invert and !o.count_only and !o.count_matches and !o.files_only) return self.passthru(path, lines);
         if (o.vimgrep and !o.invert) return self.vimgrep(path, lines);
         // `--count --only-matching` counts every match span (like --count-matches),
@@ -466,6 +470,10 @@ pub const Emitter = struct {
         if ((o.count_matches or (o.count_only and o.only_matching)) and !o.invert) return self.countMatches(path, lines);
         if (o.only_matching and !o.invert) return if (o.replace != null) self.onlyMatchingRepl(path, lines) else self.onlyMatching(path, lines);
 
+        // Borrow the caller-threaded scratch when present; else pay a file-local.
+        var local_sim: ?Matcher.Sim = if (self.sim == null) (Matcher.Sim.init(self.a, self.re) catch return 0) else null;
+        defer if (local_sim) |*s| s.deinit();
+        const sim = self.sim orelse &local_sim.?;
         // `-w` decides a line via the span predicate; the plain path uses the
         // boolean DFA. Only `-w` pays for the SpanSim scratch.
         var wss: ?Matcher.SpanSim = if (o.word) (Matcher.SpanSim.init(self.a, self.re) catch null) else null;
@@ -477,7 +485,7 @@ pub const Emitter = struct {
             // without the literal bytes cannot match, and a SIMD memmem is an
             // order of magnitude cheaper than an engine run per line.
             const hit = self.lineCanMatch(mv) and
-                (if (wss) |*s| self.lineHitWord(s, mv) else self.re.lineMatch(&sim, mv));
+                (if (wss) |*s| self.lineHitWord(s, mv) else self.re.lineMatch(sim, mv));
             if (hit == o.invert) {
                 // --stop-on-nonmatch: once matching has begun, the first non-match
                 // ends the file (ripgrep stops reading further lines).
@@ -538,8 +546,10 @@ pub const Emitter = struct {
     /// matching lines (for the exit code); output is written regardless of matches.
     fn passthru(self: *Emitter, path: []const u8, lines: []const []const u8) usize {
         const o = self.o;
-        var sim = Matcher.Sim.init(self.a, self.re) catch return 0;
-        defer sim.deinit();
+        // Same lease as `file`: borrowed caller scratch, or a file-local build.
+        var local_sim: ?Matcher.Sim = if (self.sim == null) (Matcher.Sim.init(self.a, self.re) catch return 0) else null;
+        defer if (local_sim) |*s| s.deinit();
+        const sim = self.sim orelse &local_sim.?;
         var wss: ?Matcher.SpanSim = if (o.word) (Matcher.SpanSim.init(self.a, self.re) catch null) else null;
         defer if (wss) |*s| s.deinit();
         var css: ?Matcher.SpanSim = if (o.column) (Matcher.SpanSim.init(self.a, self.re) catch null) else null;
@@ -550,7 +560,7 @@ pub const Emitter = struct {
         for (lines, 0..) |line, k| {
             const mv = self.mview(line);
             const is_m = self.lineCanMatch(mv) and
-                (if (wss) |*s| self.lineHitWord(s, mv) else self.re.lineMatch(&sim, mv));
+                (if (wss) |*s| self.lineHitWord(s, mv) else self.re.lineMatch(sim, mv));
             if (is_m) matched += 1;
             // --passthru -o: a matching line contributes each match span (only-
             // matching frame), a non-matching line still prints in full (context).

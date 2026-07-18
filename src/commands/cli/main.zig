@@ -56,6 +56,7 @@ fn tryWarm(gpa: std.mem.Allocator, io: std.Io, env: *const std.process.Environ.M
     switch (client.attempt(gpa, io, argv, sock)) {
         .served => |code| {
             if (debug) std.debug.print("gist: [warm]\n", .{});
+            gist.corpus.finishOutput(); // announce a budget cut on the warm flush (idempotent, stderr-only)
             std.process.exit(code);
         },
         // Cold miss on an eligible shape with no daemon up: fork one detached so
@@ -117,6 +118,13 @@ pub fn main(init: std.process.Init) !void {
         schema.emit();
         return;
     }
+
+    // Resolve the output budget from the environment once, before any search
+    // dispatch, so the warm client path (which emits without re-parsing flags)
+    // honors `GIST_UNCAP`/`GIST_MAX_OUTPUT_*`. The cold engine re-resolves it
+    // with the parsed `--uncap` flag (`ripgrep.run`); `--uncap` always routes
+    // cold (the resident classifier declines it), so the flag still takes effect.
+    gist.corpus.initOutputBudget(false);
 
     if (std.mem.eql(u8, mode, "index")) {
         try indexer.run(gpa, io, &default_roots);

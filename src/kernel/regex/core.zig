@@ -1,3 +1,4 @@
+// MONOLITHIC: Pike-VM execution core — thread lists, generation-counted Sim scratch, literal analysis, and the match loop share one engine state; splitting breaks the linear-time execution contract
 //! gist — T2 regex execution: a linear-time Thompson NFA over bytes (RE2 /
 //! ripgrep philosophy — no backtracking, no catastrophic blowup), compiled from
 //! the AST in `syntax.zig` and run with a Pike simulation. Plus the public
@@ -40,6 +41,10 @@ const State = syn.State;
 const wordAt = word.wordAt;
 const wordBefore = word.wordBefore;
 
+/// A compiled pattern: the Thompson-NFA program plus every verify-time
+/// accelerator the scanner consults (required literal, cover/equivalence sets,
+/// first-byte prefilter, optional byte-class DFA). Immutable after compile;
+/// per-thread scratch lives in `Sim`/`SpanSim`.
 pub const Regex = struct {
     states: []State,
     start: u32,

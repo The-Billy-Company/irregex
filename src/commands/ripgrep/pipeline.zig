@@ -1017,6 +1017,9 @@ fn emitBody(w: *Worker, a: std.mem.Allocator, dpath: []const u8, body: []const u
         .base = @intFromPtr(body.ptr),
         .use_color = cfg.use_color,
         .needle = cfg.line_needle,
+        // The worker's reusable scratch (null only on OOM ⇒ Emitter builds a
+        // local) — one Sim per worker instead of three allocs per file.
+        .sim = workerSim(w),
     };
 
     // Stage 1 already proved `body[0..covered]` NUL-free (or we'd have
@@ -1239,6 +1242,10 @@ pub fn run(
     // left to stitch or write; a walk error (unreadable dir) trumps match/
     // no-match (rg parity — see `reportWalkError`), otherwise `sink.matched_files`
     // alone decides the exit code.
+    // Announce a soft/hard output-budget cut (the streaming `Sink` aborted the
+    // walk when `writeStdout` refused past the ceiling — corpus.zig). One-time,
+    // stderr-only, a no-op when nothing was truncated; runs before either exit.
+    corpus_mod.finishOutput();
     // A `-P` worker that tripped a resource limit on catastrophic input latched
     // the process-global fault — mirror ripgrep's exit 2 over the accumulated
     // (already-streamed) output, exactly as the serial engine's `pcreFaultExit`.
