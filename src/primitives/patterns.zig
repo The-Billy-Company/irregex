@@ -27,7 +27,7 @@
 //! thread), mirroring `CompiledQuery`'s own discipline.
 
 const std = @import("std");
-const query = @import("../kernel/engine/query.zig");
+const query = @import("../gist/kernel/engine/query.zig");
 
 pub const Spec = query.Spec;
 pub const CompiledQuery = query.CompiledQuery;
@@ -159,7 +159,7 @@ pub fn maskHas(mask: []const u64, i: usize) bool {
 }
 
 /// Build the fused `(?:p0)|(?:p1)|…` gate when the set can honestly share one
-/// engine: every spec on the same `ignore_case`/`unicode` setting (gist
+/// engine: every spec on the same `ignore_case`/`unicode` setting (irregex
 /// compiles ONE engine — the same constraint `combinePatterns` enforces for
 /// the CLI), fixed patterns escaped exactly as the CLI escapes them. Any
 /// failure (a body outside the linear syntax, allocation) leaves the gate

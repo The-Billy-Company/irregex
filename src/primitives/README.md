@@ -16,7 +16,7 @@ doc_radar:
 
 # `src/primitives/` — the irregular-expression primitives
 
-The tier that makes gist's engine _set-shaped_. A regular expression answers
+The tier that makes irregex's engine _set-shaped_. A regular expression answers
 one question about one pattern; the agent workload asks three others, and this
 folder owns their primitives — match ∪ relate ∪ weave — for the faces (CLI
 verbs, Python bindings, a future FFI) to consume:
