@@ -456,6 +456,28 @@ pub fn build(b: *std.Build) void {
     b.step("lowerbound", "Layer-D optimality cert: fail-closed algorithmic-floor byte-touch audit")
         .dependOn(&run_lowerbound.step);
 
+    // ── `gist-portbound` — Layer B′: the port bound MEASURED on this machine ──
+    // Runs the same drift-guarded probes as portcert.sh's static llvm-mca bound,
+    // natively under the PMU (cycles/byte + cycles/step). Fail-closed without
+    // root: reports wall-clock and labels cycles NOT-measured; the sudo rung is
+    // `sudo zig-out/bin/gist-portbound` after `zig build -Doptimize=ReleaseFast`.
+    const portbound_mod = b.createModule(.{
+        .root_source_file = b.path("bench/portcert/portbound.zig"),
+        .target = k.target,
+        .optimize = k.optimize,
+    });
+    portbound_mod.addImport("gist", k.root_module);
+    portbound_mod.addImport("pmu", pmu_mod);
+    portbound_mod.link_libc = true; // pmu.zig's kperf dlopen path, same as bench_mod
+    const portbound_exe = b.addExecutable(.{ .name = "gist-portbound", .root_module = portbound_mod });
+    b.installArtifact(portbound_exe);
+    const run_portbound = b.addRunArtifact(portbound_exe);
+    run_portbound.setCwd(b.path("../../.."));
+    if (b.args) |args| run_portbound.addArgs(args);
+    b.step("portbound", "Layer-B′ optimality cert: measured on-machine port bound (sudo for cycles)")
+        .dependOn(&run_portbound.step);
+    k.test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = portbound_mod })).step);
+
     // Layer-B drift guard (`probes/` copies ≡ the real production hot loops) —
     // wired into `zig build test` so a silent copy/production divergence fails
     // CI loudly instead of shipping a stale certificate.

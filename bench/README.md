@@ -1,3 +1,16 @@
+---
+doc_radar:
+  counts:
+    - description: "nine bench concern folders, one per row of the table below"
+      glob: pkg/kernels/gist/bench/*/
+      unit: dirs
+      equals: 9
+  sentinels:
+    - description: "the Layer B′ measured rung exists as a build step"
+      file: pkg/kernels/gist/build.zig
+      contains: 'b.step("portbound"'
+---
+
 # gist/bench
 
 Benchmark, verification, and competitive-proof harness for the `gist`
@@ -12,7 +25,7 @@ Nine concerns, nine folders:
 | [`certify/`](certify/README.md)       | The macroscopic half of the Layer-A optimality certificate — races the whole field per pattern class with a fail-closed statistical verdict.                                                        |
 | [`session/`](session/README.md)       | The **resident-session** certificate — the honest warm-product path (persistent client → `gist serve` daemon over a Unix socket), the only sound basis for a warm-speedup claim (ADR-352 rung 2.5). |
 | [`rgsuite/`](rgsuite/README.md)       | The `gist rg` ⇄ real-ripgrep drop-in proof — mined `rgtest!` correctness replay plus the performance scoreboard.                                                                                    |
-| [`portcert/`](portcert/README.md)     | Layer B — port-optimality: cross-compiled `llvm-mca` static microarchitectural bound on gist's two hot loops, drift-guarded against production.                                                     |
+| [`portcert/`](portcert/README.md)     | Layer B — port-optimality: cross-compiled `llvm-mca` static microarchitectural bound on gist's two hot loops, drift-guarded against production, plus Layer B′ — the same probes **measured on this machine** under the PMU (`gist-portbound`). |
 | [`roofline/`](roofline/README.md)     | Layer C — roofline: this machine's measured STREAM read-bandwidth ceiling vs gist's real scan throughput.                                                                                           |
 | [`lowerbound/`](lowerbound/README.md) | Layer D — algorithmic lower bound: a fail-closed structural audit proving gist's verify touches the information-theoretic floor of candidate bytes.                                                 |
 
@@ -142,6 +155,11 @@ RUNS=20 bench/certify/certify.sh
 # Layer B — port-optimality (static llvm-mca bound; needs `brew install llvm`)
 bench/portcert/portcert.sh
 
+# Layer B′ — the port bound MEASURED on this machine (same drift-guarded probes)
+zig build -Doptimize=ReleaseFast portbound                          # wall-clock; labels cycles NOT measured
+(cd ../../.. && sudo pkg/kernels/gist/zig-out/bin/gist-portbound)  # measured cycles (kpc is root-gated)
+bench/portcert/portcert.sh                                          # re-splice the measured subsection
+
 # Layer C — roofline (this machine's memory-bandwidth ceiling)
 zig build -Doptimize=ReleaseFast roofline && bench/roofline/roofline_report.py
 
@@ -149,7 +167,11 @@ zig build -Doptimize=ReleaseFast roofline && bench/roofline/roofline_report.py
 zig build -Doptimize=ReleaseFast lowerbound && bench/lowerbound/lowerbound_report.py
 ```
 
-Each layer degrades gracefully rather than failing the whole pipeline: Layer A
-without `sudo` reports wall-clock only; Layer B without `llvm-mca` prints a
-documented skip; none invents a number for hardware it can't measure (e.g. no
-fabricated Apple-Silicon `llvm-mca` model — see `portcert/README.md`).
+Each layer degrades gracefully rather than failing the whole pipeline — but
+**loudly in the artifact**: Layer A without `sudo` reports wall-clock only and
+the certificate states *"cycles/byte: NOT measured on this machine"* with the
+`sudo` rerun rung; Layer B without `llvm-mca` prints a documented skip; Layer B′
+without `sudo` records wall-clock ns and fail-closed labels cycles as
+cross-checked-only. None invents a number for hardware it can't measure (no
+fabricated Apple-Silicon `llvm-mca` model, no wall-clock dressed up as cycles
+via an assumed frequency — see `portcert/README.md`).
