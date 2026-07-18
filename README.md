@@ -150,7 +150,10 @@ prefilter, and match kernels and cannot drift on what matches.
 
 gist has **two lifecycle verbs** — what it _does_, not which competitor's argv
 it apes — plus a single unified search engine reached with no verb at all,
-addressed the way an agent's `rg <pattern>` reflex already types it:
+addressed the way an agent's `rg <pattern>` reflex already types it, and
+**three irregex verbs** (`patterns` / `similar` / `dups` — ADR-363,
+[`src/irregex/`](src/irregex/README.md)) for the set-shaped questions regex
+alone can't express:
 
 ```bash
 make install-gist       # from repo root: build (ReleaseFast) + symlink ~/.local/bin/gist + index
@@ -175,6 +178,11 @@ zig build cli -- <pat> --no-index         # force the pure live walk (also with 
 
 zig build cli -- --help                   # broad tested rg-compatible subset
 zig build cli -- --schema                 # a JSON capability manifest for agents
+
+# The irregex verbs (ADR-363) — set-shaped questions no rg flag can express:
+zig build cli -- patterns -e P1 -e P2 --by pattern   # N patterns, ONE pass, exact attribution
+zig build cli -- similar path/to/file.py             # nearest files by compression kinship
+zig build cli -- dups --max-distance 0.25            # near-duplicate pairs, closest first
 ```
 
 The bare `gist <pattern>` shorthand and its explicit `gist rg` alias are ONE

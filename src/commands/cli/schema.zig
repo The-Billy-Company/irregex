@@ -30,6 +30,21 @@ const manifest_prefix =
     \\        "freshness": "{anchor_unix_ns:null|integer, age_seconds:null|number}",
     \\        "roots": "string[]"
     \\      }
+    \\    },
+    \\    "similar": {
+    \\      "summary": "nearest files to <path> by compression kinship (LZ dictionary distance, closest first)",
+    \\      "args": [{"name": "path", "type": "string", "required": true, "description": "the probe file"}, {"name": "ROOT...", "type": "string[]", "required": false, "description": "corpus roots (default: the index roots)"}],
+    \\      "flags": [{"name": "--top", "type": "int", "default": 20, "description": "rows surfaced"}, {"name": "--json", "type": "bool", "default": false, "description": "NDJSON {path, distance} rows"}]
+    \\    },
+    \\    "dups": {
+    \\      "summary": "near-duplicate file pairs across the corpus, closest first (copy-paste drift, forked fixtures)",
+    \\      "args": [{"name": "ROOT...", "type": "string[]", "required": false, "description": "corpus roots (default: the index roots)"}],
+    \\      "flags": [{"name": "--max-distance", "type": "float", "default": 0.25, "description": "pair admission threshold in [0,1]"}, {"name": "--top", "type": "int", "default": 100, "description": "rows surfaced"}, {"name": "--json", "type": "bool", "default": false, "description": "NDJSON {a, b, distance} rows"}]
+    \\    },
+    \\    "patterns": {
+    \\      "summary": "N patterns, one pass, exact per-pattern attribution; index-elides reads when every pattern has a sound trigram prefilter",
+    \\      "args": [{"name": "ROOT...", "type": "string[]", "required": false, "description": "corpus roots (default: the index roots)"}],
+    \\      "flags": [{"name": "-e/--regexp", "type": "string[]", "default": null, "description": "a pattern (repeatable)"}, {"name": "-f/--file", "type": "string", "default": null, "description": "newline-separated pattern file"}, {"name": "-F/--fixed-strings", "type": "bool", "default": false, "description": "patterns are literals"}, {"name": "-i/--ignore-case", "type": "bool", "default": false, "description": "case-insensitive (disables index elision)"}, {"name": "--by", "type": "string", "default": null, "description": "group rows into counts: pattern | file"}, {"name": "--under", "type": "string", "default": null, "description": "keep rows whose path matches this glob"}, {"name": "--top", "type": "int", "default": 0, "description": "cap rows/groups (0 = all)"}, {"name": "--json", "type": "bool", "default": false, "description": "NDJSON rows ({path, line, pattern_id, pattern}) or groups ({label, count})"}]
     \\    }
     \\  },
     \\  "search": {
@@ -51,7 +66,8 @@ const manifest_suffix =
     \\    "native_additions": [
     \\      {"native": "--rank", "type": "int?", "default": 20, "description": "definition-first ranked view over the same regex + PATH scope as the line engine; optional =N caps top-K and requires an index"},
     \\      {"native": "--no-index", "type": "bool", "default": false, "description": "force the pure live walk"},
-    \\      {"native": "--index", "type": "bool", "default": false, "description": "re-enable automatic index acceleration after --no-index"}
+    \\      {"native": "--index", "type": "bool", "default": false, "description": "re-enable automatic index acceleration after --no-index"},
+    \\      {"native": "--uncap", "type": "bool", "default": false, "description": "lift the ~25k-token (100 KiB) soft output cap for this query; the hard 256 MiB OOM ceiling still applies. Env: GIST_UNCAP=1, GIST_MAX_OUTPUT_TOKENS, GIST_MAX_OUTPUT_BYTES"}
     \\    ],
     \\    "alias": "gist rg [flags] <pattern> [PATH...] and gist search <pattern> [PATH...] address the same engine"
     \\  },
