@@ -1,35 +1,31 @@
 ---
 doc_radar:
-  counts:
-    - description: "gist src/ tiers — kernel/ (engine · index · regex · rank · scan · corpus · scope) + primitives/ (patterns · sketch · loom) + faces/ (cli · gist · hydra · ffi) + session/ resident transport (ADR-352 rung 2.5)"
-      glob: pkg/kernels/gist/src/*
-      unit: dirs
-      equals: 4
   sentinels:
     - description: "gist registered in the changelog roster (OSS-package membership)"
       file: pkg/tools/support/chronicle/packages.py
-      contains: 'Package("pkg/kernels/gist"'
+      contains: 'Package("pkg/kernels/irregex"'
     - description: "Unicode is default-on at the CLI (rg-parity); --no-unicode / (?-u) opt out"
-      file: pkg/kernels/gist/src/faces/gist/ripgrep/args.zig
+      file: pkg/kernels/irregex/src/faces/gist/ripgrep/args.zig
       contains: "unicode: bool = true,"
     - description: "Unicode data tables generated from a pinned UCD version"
-      file: pkg/kernels/gist/src/kernel/regex/unicode/tables.gen.zig
+      file: pkg/kernels/irregex/src/kernel/regex/unicode/tables.gen.zig
       contains: 'unicode_version = "16.0.0"'
     - description: "-E honors the full WHATWG label table incl. the CJK multi-byte decoders"
-      file: pkg/kernels/gist/src/faces/gist/ripgrep/encoding.zig
+      file: pkg/kernels/irregex/src/faces/gist/ripgrep/encoding.zig
       contains:
         - "gb18030"
         - "shift_jis"
         - "euc_jp"
     - description: "status has a versioned machine-readable lifecycle contract"
-      file: pkg/kernels/gist/src/faces/gist/status/status.zig
+      file: pkg/kernels/irregex/src/faces/gist/status/status.zig
       contains: ["pub const schema_version = 1;", "pub const Snapshot = struct"]
 ---
 
 # gist
 
-A fast, regex-first, **agent-friendly** code locator kernel for the Billy
-monorepo, implemented in Zig with a minimal C ABI for its trigram oracle.
+A fast, regex-first, **agent-friendly** code locator — the flagship product
+face of the [irregex kernel](../../../README.md), implemented in Zig with a
+minimal C ABI for its trigram oracle.
 
 > **Scope:** this is build-time dev tooling for the coding agents that work _on_
 > Billy. It has nothing to do with Billy-the-product.
@@ -67,10 +63,7 @@ tools against real questions about this repo — is everywhere else:
 **freshness** overlay that is zero-false-negative _under stated local-filesystem
 assumptions_ (ordinary writes advance status ctime, metadata is readable, and
 live bytes are re-verified before output — see `src/kernel/corpus/README.md`), and
-**ranked, token-compressed** output. The frontier
-survey and decision trail
-live in
-[`research/dossiers/locator-sota.dossier.toml`](../../../research/dossiers).
+**ranked, token-compressed** output.
 
 ## How it works
 
@@ -110,7 +103,7 @@ linear engine provably can't express — lookaround, backreferences — the opt-
 `-P`/`--pcre2` backend (`src/kernel/regex/pcre2.zig`, vendored PCRE2 10.47 JIT) reuses
 the _same_ required-literal prefilter, making gist the only indexed PCRE search
 in the field; `--engine auto` compiles linear first and escalates only when the
-pattern needs it. See [`src/kernel/regex/README.md`](src/kernel/regex/README.md).
+pattern needs it. See [`src/kernel/regex/README.md`](../../../src/kernel/regex/README.md).
 
 **Freshness overlay** (`src/kernel/corpus/fresh.zig`). Keeps a persisted index correct
 under heavy concurrent commit churn **without rebuilding or consulting git**.
@@ -152,7 +145,7 @@ gist has **two lifecycle verbs** — what it _does_, not which competitor's argv
 it apes — plus a single unified search engine reached with no verb at all,
 addressed the way an agent's `rg <pattern>` reflex already types it, and
 **three irregex verbs** (`patterns` / `similar` / `dups` — ADR-363,
-[`src/primitives/`](src/primitives/README.md)) for the set-shaped questions regex
+[`src/primitives/`](../../../src/primitives/README.md)) for the set-shaped questions regex
 alone can't express:
 
 ```bash
@@ -164,7 +157,7 @@ gist status --json      # the same snapshot as stable JSON for programs/agents
 Or drive the CLI straight from the build graph, no install:
 
 ```bash
-cd pkg/kernels/gist
+cd pkg/kernels/irregex
 
 zig build cli -- index                    # build + persist the index once (~3.2 s here)
 zig build cli -- status                   # is an index ready, how fresh, how big
@@ -201,7 +194,7 @@ equivalent — a definition-first RRF-ranked view (see "Why gist" below).
 exactly can this tool do" without running a query. Programs use `gist status
 --json`, a versioned snapshot derived from the same model as the unchanged
 human report; its exact v1 fields and unavailable-state semantics are documented
-in [`src/faces/gist/status/README.md`](src/faces/gist/status/README.md). The full
+in [`src/faces/gist/status/README.md`](../../../src/faces/gist/status/README.md). The full
 flag surface is documented in "How it works as a drop-in" below, and
 exhaustively in `--help` / `--schema`.
 
@@ -221,7 +214,7 @@ repo:
 - **A cold one-shot usually wins too.** Trusted mmap loading, fused freshness,
   compact path lookup, topology-aware workers, and regex literal gates deliver
   fail-closed cold dominance versus ripgrep — the published certificate under
-  [`bench/certify/artifact/`](bench/certify/artifact/) reads **12 win / 0
+  [`bench/certify/artifact/`](../../../bench/certify/artifact/) reads **12 win / 0
   parity / 0 loss**, gated by `make bench-gist-ratio`.
 - **Freshness is a guarantee, not a cron job.** A coworker commit landing
   mid-query cannot make the index lie under the documented local-filesystem
@@ -238,7 +231,7 @@ indexed search) — the honest trade remains freshness: they may win a selective
 cold cell by trusting a stale-until-rebuilt corpus; gist verifies live changes.
 The full eight-tool field certificate (gist plus seven competitors), including
 every loss, is in Benchmarks.
-See [Prior art and scope](PRIOR_ART.md) for the wider search/code-intelligence
+See [Prior art and scope](../../../PRIOR_ART.md) for the wider search/code-intelligence
 landscape and the boundaries of Gist's novelty claim.
 
 ## How it works as a drop-in
@@ -288,11 +281,11 @@ where gist can (`(?i)` → caseless) and fails loud where it genuinely can't
 
 `--rank` is gist's one native shape with no rg equivalent; everything else on
 this page is the parity surface, guarded by two **distinct** gates. **File-set
-soundness** ([`bench/gates/equality.sh`](bench/gates/equality.sh)) diffs gist's
+soundness** ([`bench/gates/equality.sh`](../../../bench/gates/equality.sh)) diffs gist's
 matching _file set_ against `rg -F -l` / `rg -l '(?-u)…'` over a byte-identical
 corpus snapshot — proving zero false negatives / positives (the candidate filter
 is sound), but it is a file-set oracle, **not** a line-output diff. **Line-output
-parity** is the job of [`bench/rgsuite/`](bench/rgsuite/README.md) (441 mined `rg`
+parity** is the job of [`bench/rgsuite/`](../../../bench/rgsuite/README.md) (441 mined `rg`
 argv replays, on **both** the parallel and serial walk engines — see that
 README's "Two engines, one suite"); the committed `results.json` reads **306
 PASS / 0 ORDER / 0 FAIL / 14 NA / 121 SKIP**. Supported-surface parity is
@@ -301,11 +294,11 @@ every case meets its upstream assertion's own bar (byte-exact for `eqnice!`
 cases; sorted-lines only for the 5 cases ripgrep's own suite compares sorted
 because rg's parallel walk order is genuinely nondeterministic).
 Exact byte-identical classes are additionally gated by
-[`bench/gates/line_parity.sh`](bench/gates/line_parity.sh)
+[`bench/gates/line_parity.sh`](../../../bench/gates/line_parity.sh)
 (both engines plus deterministic exact-output generators for the 265,286- and
 147,087-line result classes). The by-design boundaries are listed under "Where
 gist departs from ripgrep." The exhaustive rg-compatible flag reference lives in
-[`src/faces/gist/ripgrep/args.zig`](src/faces/gist/ripgrep/args.zig).
+[`src/faces/gist/ripgrep/args.zig`](../../../src/faces/gist/ripgrep/args.zig).
 
 Streams follow the `rg` convention too, so gist composes in a pipeline the
 same way: matches go to **stdout**, and — a stronger bar than `rg` itself, not
@@ -313,7 +306,7 @@ just parity with it — the default path puts NOTHING on stderr at all (`gist
 Foo -l > files` captures only the paths; `gist Foo | head` shows only
 matches). The one deliberate exception is `--rank`, which prints its
 cold-load/rank timing to stderr so an agent can see the cost of the ranked
-view — guarded by [`bench/gates/streams.sh`](bench/gates/streams.sh).
+view — guarded by [`bench/gates/streams.sh`](../../../bench/gates/streams.sh).
 
 ## Where gist departs from ripgrep — on purpose
 
@@ -352,7 +345,7 @@ provably can't match; it never adds a file the walk itself would have
 skipped. A 13-pattern battery (literal, dot, alternation, anchors, character
 classes, counted repetition, case-insensitive) diffs gist's output to 0 lines
 against `rg -n --no-heading --no-unicode` over the same scope
-([`.local/gist-grep-bench/battery.sh`](.local)) — this is genuine parity, not
+([`.local/gist-grep-bench/battery.sh`](../../../.local)) — this is genuine parity, not
 a neutralized-knobs equivalence.
 
 **Fails loud on what it can't express — never silent.** No ripgrep long flag
@@ -367,7 +360,7 @@ didn't understand you" — so gist never does it.
 
 **Transforms content faster than rg — in-process, not fork-per-file.** The three
 rg flags that reshape a file's bytes before matching all land, coordinated by one
-deep module ([`src/faces/gist/ripgrep/ingest.zig`](src/faces/gist/ripgrep/ingest.zig))
+deep module ([`src/faces/gist/ripgrep/ingest.zig`](../../../src/faces/gist/ripgrep/ingest.zig))
 that owns the `decompress → preprocess → transcode` ordering so neither walk
 engine re-implements it. `-z`/`--search-zip` decodes the common formats (gzip,
 zlib, zstd, xz) **in-process** via Zig's `std.compress` — no `gzip -dc` fork per
@@ -392,14 +385,14 @@ generated file otherwise wins on raw occurrence count for a common symbol,
 yet the repo forbids editing it, so it's never the actual answer. This runs
 on indexed candidates when warm, or the same live-walk matches when cold, via
 weighted Reciprocal Rank Fusion
-([`src/kernel/rank/rank.zig`](src/kernel/rank/rank.zig), Cormack et al. 2009) over four
+([`src/kernel/rank/rank.zig`](../../../src/kernel/rank/rank.zig), Cormack et al. 2009) over four
 signals — it isn't expressible as a line-scanner's output ordering at all.
 
 Linear-engine regex syntax (the default): literals, `.`, `[...]`/`[^...]`,
 `a-z` ranges, `* + ? {n,m}`, alternation, groups, `^ $`, the haystack anchors
 `\A \z`, the word boundaries `\b \B` and one-sided `\< \>`, and the classes
 `\d \w \s \t \n \r` (NUL is `\x00`) — see
-[`src/kernel/regex/syntax.zig`](src/kernel/regex/syntax.zig). The escape parser is rg-parity
+[`src/kernel/regex/syntax.zig`](../../../src/kernel/regex/syntax.zig). The escape parser is rg-parity
 **fail-loud**: `\0`–`\9` (backreference syntax), unrecognized letter escapes
 (`\q`, `\e`, `\Z`, …), and assertion escapes inside a class (`[\b]`, `[\A]`,
 `[\<]`) all exit 2 with the reason and the **native `gist -P` / `gist --engine
@@ -415,20 +408,20 @@ simple-fold **orbit** (`café` ⇄ `CAFÉ`, `ß`, the Greek final-sigma `Σ`/`σ
 smart-case (`-S`) is disabled by any Unicode uppercase, and word boundaries
 decode the straddling codepoint (an invalid-UTF-8 byte is a non-word unit). A
 codepoint class lowers to a compact UTF-8 byte sub-automaton
-([`src/kernel/regex/unicode/`](src/kernel/regex/unicode/)) woven into the same byte NFA, so
+([`src/kernel/regex/unicode/`](../../../src/kernel/regex/unicode/)) woven into the same byte NFA, so
 the byte-class DFA still runs at the O(1)/byte floor; Unicode `\b`/fold queries
 run the Pike VM only on trigram-prefiltered candidates. `(?-u)` (leading flag)
 or `--no-unicode` opt out to the exact ASCII byte behavior. The Unicode data
 tables are generated from a pinned UCD
-(`pkg/kernels/gist/tools/build_unicode_tables.py` →
-`pkg/kernels/gist/src/kernel/regex/unicode/tables.gen.zig`, `make gen-gist-unicode`),
+(`pkg/kernels/irregex/tools/build_unicode_tables.py` →
+`pkg/kernels/irregex/src/kernel/regex/unicode/tables.gen.zig`, `make gen-gist-unicode`),
 drift-gated against regeneration.
 
 ## Build & test
 
 ```bash
 zig build test                    # unit tests (index · persist · regex NFA + DFA · RRF)
-zig build                         # emit libgist.{a,dylib} + include/gist.h into zig-out/
+zig build                         # emit libirregex.{a,dylib} + include/irregex.h into zig-out/
 zig build bench                   # corpus build/footprint + full-pipeline latency p50/p95/p99
 zig build verify -- 150 1         # emit gist match sets + corpus snapshot for the rg oracle
 zig build coverage                # tests under kcov → .local/coverage/ (needs kcov on PATH)
@@ -441,7 +434,7 @@ gist is raced against a **seven-tool field**: two other _indexed_ searchers
 `zoekt`, Sourcegraph's production indexed search) and five unindexed scanners
 (`rg`, `ugrep`, `ag`, GNU `grep`, `git grep`), each on its honest fastest path.
 The field, fairness scoping, and per-tool invocations live in
-[`bench/races/_compete.sh`](bench/races/_compete.sh).
+[`bench/races/_compete.sh`](../../../bench/races/_compete.sh).
 
 ```bash
 bench/gates/equality.sh          # gist ≡ rg over a byte-exact corpus SNAPSHOT, per needle
@@ -524,7 +517,7 @@ gate holds over time, and re-cutting the certificate
   worker reuses one match-scratch arena across every file it searches. The
   remaining floor is per-file `openat` + read + close, not regex execution.
 
-![gist no-prefilter scan path optimization progression](assets/gist-scan-progression.png)
+![gist no-prefilter scan path optimization progression](../../../assets/gist-scan-progression.png)
 
 > _The no-prefilter scan tier, profiled to the floor. **(a)** the phased→fused
 > work-stealing rewrite collapsed per-core finish spread (worker-span Δ 169 → 2.5
@@ -539,13 +532,13 @@ gate holds over time, and re-cutting the certificate
 
 ### Macroscopic field race — the fail-closed certificate (`certify.sh`)
 
-[`bench/certify/certify.sh`](bench/certify/certify.sh) is the most adversarial cut: a
+[`bench/certify/certify.sh`](../../../bench/certify/certify.sh) is the most adversarial cut: a
 fresh-process **cold** query for gist **and all seven field tools** over the
 same declared roots (csearch gets gist's exact path list; zoekt's documented
 ignore-limited superset), with hyperfine 20 runs + 3 warmup, a 95% bootstrap-CI
 median per cell, and a gist-vs-ripgrep verdict that is **fail-closed** — a WIN
 needs a lower median _and_ Mann-Whitney `p<0.05`. The certificate is **committed
-and reproducible** under [`bench/certify/artifact/`](bench/certify/artifact/):
+and reproducible** under [`bench/certify/artifact/`](../../../bench/certify/artifact/):
 the rendered `CERTIFICATE.md`, microscopic `certify.csv`, `certify_macro.csv`
 (median + 95% CI + verdict per cell), per-cell hyperfine JSON, exact tool
 identities, the timed command log, and a per-file SHA-256 corpus manifest. The
@@ -553,7 +546,7 @@ figure below renders from the committed macro CSV; `check_artifacts.py` gates th
 bundle and required-cache accounting. Every plotted number is
 `certify_macro.csv` verbatim, all 12 classes.
 
-![gist fail-closed statistical certificate forest plot](assets/gist-certify-forest.png)
+![gist fail-closed statistical certificate forest plot](../../../assets/gist-certify-forest.png)
 
 > _The certificate itself, rendered from the committed `certify_macro.csv`.
 > **(a)** gist's median (blue diamond) vs rg's median + 95% bootstrap CI per
@@ -563,7 +556,7 @@ bundle and required-cache accounting. Every plotted number is
 
 - **gist vs ripgrep — cold fail-closed path.** Twelve classes are both faster in
   median and Mann-Whitney significant on the published certificate
-  ([`bench/certify/artifact/`](bench/certify/artifact/)): selective literals,
+  ([`bench/certify/artifact/`](../../../bench/certify/artifact/)): selective literals,
   anchored/dotted/declaration regexes, alternation, the dense scan, EOL, the
   punct saturator, the UUID-like classcount, and the pure-literal alternation
   (`panic|0x`, a sub-trigram branch no index can prefilter). **12 win · 0
@@ -583,7 +576,7 @@ bundle and required-cache accounting. Every plotted number is
   throughput optimization, not required architecture. The daemon path itself —
   a persistent client dialing `gist serve` once over a Unix socket (ADR-352 rung
   2.5) — has its own honest warm certificate under
-  [`bench/session/`](bench/session/), gated by `make bench-gist-session`: even on
+  [`bench/session/`](../../../bench/session/), gated by `make bench-gist-session`: even on
   a platform with no filesystem watcher (every query pays the reconcile
   freshness tax) it measures **7.2× geomean over ripgrep-cold**, because rg
   re-walks and re-scans the whole tree each call while the warm client pays only
@@ -596,7 +589,7 @@ broad: freshness itself was not the floor. Full posting validation on every load
 a redundant freshness walk, all-path hash construction, fixed worker topology,
 and missed regex literals were removable overheads. The current committed raw
 samples supersede that artifact. Ratio floors in
-[`bench/certify/ratio_baseline.json`](bench/certify/ratio_baseline.json) are
+[`bench/certify/ratio_baseline.json`](../../../bench/certify/ratio_baseline.json) are
 gated by `make bench-gist-ratio` so a cold-path regression can't silently ship.
 
 ### Certificate of Optimality — the scan kernel is at the hardware limit
@@ -607,21 +600,21 @@ itself**: once gist is reading candidate bytes, that inner loop is at the chip's
 implementation on this core can scan materially faster. Each layer is
 cheapest-evidence-first, splicing into one generated `CERTIFICATE.md` (recipe +
 full tables in
-[`bench/README.md`](bench/README.md), rationale in
-[ADR-320](../../../docs/architecture/3-decisions/320-gist-optimality-certificate-layers.md)):
+[`bench/README.md`](../../../bench/README.md), rationale in
+[ADR-320](../../../../../../docs/architecture/3-decisions/320-gist-optimality-certificate-layers.md)):
 
-- **Layer B — port-optimality** ([`bench/portcert/`](bench/portcert/README.md)):
+- **Layer B — port-optimality** ([`bench/portcert/`](../../../bench/portcert/README.md)):
   byte-faithful copies of the two hot loops, cross-compiled and scored by
   `llvm-mca`. `simd_contains` is throughput-bound at its port ceiling
   (**0.031 cyc/byte** on znver4); `dfa_step` is a latency-bound pointer chase
   (**1.3 cyc/byte**, the loop-carried transition recurrence). LLVM has no
   Apple-Silicon model, so the bound is taken on `znver4`/`neoverse-v2` reference
   cores — an honest cross-check, not a fabricated M-series number.
-- **Layer C — roofline** ([`bench/roofline/`](bench/roofline/README.md)):
+- **Layer C — roofline** ([`bench/roofline/`](../../../bench/roofline/README.md)):
   gist's scan runs at **~29% of the measured single-core DRAM ceiling**, so the
   verify path is **memory-bandwidth-bound** — the real win is the trigram
   prefilter keeping bytes away from it, not the scan going faster.
-- **Layer D — algorithmic lower bound** ([`bench/lowerbound/`](bench/lowerbound/README.md)):
+- **Layer D — algorithmic lower bound** ([`bench/lowerbound/`](../../../bench/lowerbound/README.md)):
   a fail-closed byte-touch audit proving verify reads each candidate byte
   **exactly once** (fused DFA, `passes ≡ 1.0000`) or fewer (SIMD skips) —
   the Ω(candidate-bytes) floor — with the trigram filter pruning the rest of the
@@ -634,18 +627,18 @@ converges toward. The probe copies are drift-guarded against the production hot
 loops (`zig build test`), and each layer degrades to a documented skip rather
 than inventing a number for hardware it can't measure.
 
-## C ABI (`include/gist.h`)
+## C ABI (`include/irregex.h`)
 
-- `gist_abi_version() -> u32`
-- `gist_version() -> const char *` — engine semver, for version-gating
-- `gist_trigram_count(text, len, out) -> usize` — distinct ascending trigrams
+- `irregex_abi_version() -> u32`
+- `irregex_version() -> const char *` — engine semver, for version-gating
+- `irregex_trigram_count(text, len, out) -> usize` — distinct ascending trigrams
   (the cross-language parity oracle)
-- `gist_open` / `gist_search` / `gist_close` — the in-process warm search
+- `irregex_open` / `irregex_search` / `irregex_close` — the in-process warm search
   session (ADR-352 rung 3): a non-Zig host holds one corpus warm in its own
-  process and streams a `gist_match` per matching line to a callback, with no
+  process and streams a `irregex_match` per matching line to a callback, with no
   subprocess, socket, `stdout`, or `exit`. The callback returns 0 to continue or
   non-zero to stop early (a bounded / first-match query); every call returns a
-  status code (`GIST_STALE` → answer cold), so a bad query never terminates the
+  status code (`IRREGEX_STALE` → answer cold), so a bad query never terminates the
   host.
 
 Index BUILD lifecycle stays a Zig/CLI surface (a session searches the live

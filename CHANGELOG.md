@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to the `gist` kernel are documented here. Format follows
+All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is its flagship face) are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versions track `build.zig.zon`.
 
 <!-- towncrier release notes start -->

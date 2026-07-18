@@ -1,4 +1,4 @@
-# Towncrier configuration for gist — DO NOT hand-edit.
+# Towncrier configuration for irregex — DO NOT hand-edit.
 #
 # Generated from the canonical template in the chronicle changelog driver
 # (pkg/tools/support/chronicle/config.py). The package roster lives in
@@ -6,14 +6,14 @@
 #
 #   make changelog-init             (re)materialize this file + changelog.d/
 #   make changelog-verify           drift gate (byte-parity vs this template)
-#   make changelog-create PKG=gist TYPE=added SLUG=my-change
-#   make changelog-build  PKG=gist VERSION=x.y.z
+#   make changelog-create PKG=irregex TYPE=added SLUG=my-change
+#   make changelog-build  PKG=irregex VERSION=x.y.z
 #
 # News fragments live in changelog.d/<issue>.<type>.md and are assembled into
 # CHANGELOG.md at the `<!-- towncrier release notes start -->` marker on build.
 
 [tool.towncrier]
-name = "gist"
+name = "irregex"
 directory = "changelog.d"
 filename = "CHANGELOG.md"
 start_string = "<!-- towncrier release notes start -->\n"
