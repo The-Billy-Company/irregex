@@ -85,8 +85,8 @@ computed by binary search with no scanning. It's a **filter, not a matcher**:
 false positives are expected and verified away; false negatives (the one
 unforgivable bug) are impossible for literals ≥ 3 bytes. The build fans
 extraction across all cores into private regions, then orders postings with an
-O(n) counting sort on the 24-bit key (~3.2 s over 143 MiB on the certificate
-machine). Queries resolve each
+O(n) counting sort on the 24-bit key (~3.2 s over the live 237 MiB corpus on an
+Apple M2). Queries resolve each
 trigram's posting range, **seed from the rarest** gram, and intersect outward —
 which collapses dense tails (e.g. `context.Context` went 530 µs → 9 µs at libs
 scale).
@@ -449,8 +449,26 @@ coworker agents — the snapshot freezes the bytes so the diff can't race), runs
 a trigram false negative (the one unforgivable bug); a file in gist's but not
 rg's = an unsound verify. Both must be zero.
 
-**Current measured corpus (15,840 files · 142.9 MiB ·
-`services libs clients contracts scripts quality`, Apple M2):**
+**Live corpus today (2026-07: 29,057 files · 236.9 MiB — `gist status` for the
+current footprint).** The tree has roughly doubled since the committed
+certificate below was cut; on the live corpus the same machine measures a full
+index build at **~3.2 s → 43.7 MiB index**, a warm indexed literal (`gist
+pgxpool -l`) at **~60–70 ms**, and an explicit two-root query (`gist pgxpool
+services libs -l`) at **~84 ms** vs rg's ~140–270 ms over the same roots (the
+multi-root walk legitimately admits ~4.5 GiB of gitignored training blobs via
+rg's per-root re-anchor; gist maps them with sequential+willneed advice and
+fans the presence gate across cores past 16 MiB — see `scan/verify.zig`'s
+`containsAnyWide`) — the shape and ratios of the certificate hold at 2× scale,
+the absolutes just track the bigger tree.
+
+**Certificate-time corpus (15,840 files · 142.9 MiB ·
+`services libs clients contracts scripts quality`, Apple M2).** Every number
+below is a per-artifact claim about the frozen, SHA-256-manifested corpus the
+committed certificate was cut over — that's what makes each one reproducible
+and falsifiable. Absolute milliseconds describe that snapshot, not today's
+checkout; the _ratios and verdicts_ are what the `make bench-gist-ratio` floor
+gate holds over time, and re-cutting the certificate
+(`bench/certify/certify.sh`) refreshes the absolutes.
 
 - **Correctness first.** The frozen oracle checks **140 literals + 70 regexes**
   with **0 false negatives / 0 false positives**. The live no-prefilter gate

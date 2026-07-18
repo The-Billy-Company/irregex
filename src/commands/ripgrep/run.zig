@@ -45,6 +45,7 @@ const ingest = @import("ingest.zig");
 const pipeline = @import("pipeline.zig");
 const types = @import("../scope/types.zig");
 const simd = @import("../../scan/simd.zig");
+const verify = @import("../../scan/verify.zig");
 const persist = @import("../../index/persist.zig");
 const fresh = @import("../../corpus/fresh.zig");
 const rank = @import("rank.zig");
@@ -405,7 +406,10 @@ fn readOneCandidate(a: std.mem.Allocator, scratch: []u8, c: Candidate, needle: ?
         (ingest.apply(a, cfg, c.disk, c.rel, raw) orelse return null)
     else
         decodeBom(a, raw);
-    if (needle) |needle_v| if (!simd.contains(body, needle_v)) return null;
+    // `containsWide` ≡ `simd.contains` until the body crosses 16 MiB, then the
+    // presence gate fans out across cores (a huge explicit file shouldn't
+    // serialize the serial engine's read loop behind one thread's scan).
+    if (needle) |needle_v| if (!verify.containsWide(a, body, needle_v)) return null;
     // A tail-read (≥ cap) or UTF-16-transcoded body is already `a`-owned; a
     // body still inside `scratch` must be duped to outlive scratch's next reuse.
     const in_scratch = @intFromPtr(body.ptr) >= @intFromPtr(scratch.ptr) and

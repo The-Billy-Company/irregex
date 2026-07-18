@@ -15,6 +15,105 @@ pub inline fn contains(hay: []const u8, needle: []const u8) bool {
     return simd.contains(hay, needle);
 }
 
+/// One buffer this large stops being "a file" and becomes "a corpus": fan its
+/// presence gate across cores. Below it, the single-thread kernel's early exit
+/// and zero spawn cost win. 16 MiB ≈ 1 ms of single-thread scan — the smallest
+/// buffer where ~30 µs/thread of spawn+join noise is decisively amortized.
+pub const wide_threshold: usize = 16 << 20;
+
+/// Slab granularity for the cooperative early-exit poll inside a shard: one
+/// atomic load per MiB scanned (~40 µs), so a hit anywhere stops every shard
+/// within a millisecond while the no-hit case pays ~0.003% overhead.
+const wide_slab: usize = 1 << 20;
+
+const WideShard = struct {
+    hay: []const u8,
+    needles: []const []const u8,
+    overlap: usize,
+    hit: *std.atomic.Value(bool),
+
+    /// Scan this shard slab-by-slab through the proven single-thread kernels,
+    /// each slab extended `overlap` bytes so an occurrence straddling a slab
+    /// seam is seen whole; shards themselves overlap the same way, so the
+    /// union of shards sees every occurrence exactly as one contiguous scan
+    /// would. Polls `hit` between slabs and stops early on any shard's find.
+    fn run(sh: *const WideShard) void {
+        var i: usize = 0;
+        while (i < sh.hay.len) : (i += wide_slab) {
+            if (sh.hit.load(.monotonic)) return;
+            const end = @min(sh.hay.len, i + wide_slab + sh.overlap);
+            const found = if (sh.needles.len == 1)
+                simd.contains(sh.hay[i..end], sh.needles[0])
+            else
+                simd.containsAny(sh.hay[i..end], sh.needles);
+            if (found) {
+                sh.hit.store(true, .monotonic);
+                return;
+            }
+        }
+    }
+};
+
+/// Whole-buffer any-of presence for a HUGE body (an mmap'd multi-GiB blob the
+/// rg-parity walk legitimately admits): chunk it across cores with a
+/// `max(len)-1` overlap so no straddling occurrence can hide, and let any hit
+/// cancel the remaining shards. Byte-equivalent to `simd.containsAny` (proven
+/// by the differential test in `simd_test.zig`); ~4× faster on a 2.1 GiB
+/// page-cached blob (160 ms single-thread faulting → ~40 ms fanned). Falls
+/// back to the single-thread kernel below `wide_threshold`, for degenerate
+/// needle sets, or if a thread can't spawn — never a behavior change.
+pub fn containsAnyWide(gpa: std.mem.Allocator, hay: []const u8, needles: []const []const u8) bool {
+    // Sub-threshold bodies (the overwhelmingly common case) branch out here
+    // on one comparison — no cpu-count syscall, no allocation, no spawn.
+    if (hay.len < wide_threshold) {
+        if (needles.len == 1) return simd.contains(hay, needles[0]);
+        return simd.containsAny(hay, needles);
+    }
+    var overlap: usize = 0;
+    for (needles) |n| {
+        if (n.len == 0) return true;
+        overlap = @max(overlap, n.len - 1);
+    }
+    const ncpu = std.Thread.getCpuCount() catch 1;
+    const nthr = @min(hay.len / wide_threshold + 1, ncpu);
+    if (nthr < 2) {
+        if (needles.len == 1) return simd.contains(hay, needles[0]);
+        return simd.containsAny(hay, needles);
+    }
+
+    var hit = std.atomic.Value(bool).init(false);
+    const shards = gpa.alloc(WideShard, nthr) catch
+        return if (needles.len == 1) simd.contains(hay, needles[0]) else simd.containsAny(hay, needles);
+    defer gpa.free(shards);
+    const threads = gpa.alloc(std.Thread, nthr) catch
+        return if (needles.len == 1) simd.contains(hay, needles[0]) else simd.containsAny(hay, needles);
+    defer gpa.free(threads);
+
+    const chunk = hay.len / nthr;
+    var spawned: usize = 0;
+    for (0..nthr) |k| {
+        const start = k * chunk;
+        const end = if (k == nthr - 1) hay.len else @min(hay.len, (k + 1) * chunk + overlap);
+        shards[k] = .{ .hay = hay[start..end], .needles = needles, .overlap = overlap, .hit = &hit };
+        threads[k] = std.Thread.spawn(.{}, WideShard.run, .{&shards[k]}) catch break;
+        spawned += 1;
+    }
+    if (spawned < nthr) {
+        // Partial spawn: cover the unspawned tail inline (still exact), then join.
+        const start = spawned * chunk;
+        shards[nthr - 1] = .{ .hay = hay[start..], .needles = needles, .overlap = overlap, .hit = &hit };
+        WideShard.run(&shards[nthr - 1]);
+    }
+    for (threads[0..spawned]) |t| t.join();
+    return hit.load(.monotonic);
+}
+
+/// Single-needle sugar over `containsAnyWide` — the shape the file-level
+/// required-literal gate calls with.
+pub fn containsWide(gpa: std.mem.Allocator, hay: []const u8, needle: []const u8) bool {
+    return containsAnyWide(gpa, hay, &.{needle});
+}
+
 const VerifyShard = struct {
     docs: []const []const u8,
     ids: []const u32,

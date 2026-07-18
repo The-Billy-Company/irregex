@@ -34,6 +34,7 @@
 //! disconnecting just frees the daemon for the next one.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const resident = @import("../../session/resident.zig");
 const protocol = @import("../../session/protocol.zig");
 const watch = @import("../../session/watch.zig");
@@ -49,6 +50,15 @@ extern "c" fn close(fd: std.posix.fd_t) c_int;
 /// What a completed connection tells the accept loop to do next.
 const After = enum { next, stop };
 
+/// Operator-facing lifecycle line on stderr. Silenced under `zig build test`:
+/// the daemon is spawned in-process by `serve_test.zig`, and any stderr from a
+/// passing unit-test binary makes the build runner dump the step tree with a
+/// spurious "failed command:" banner — a green run must read green.
+fn note(comptime fmt: []const u8, args: anytype) void {
+    if (builtin.is_test) return;
+    std.debug.print(fmt, args);
+}
+
 /// Idle window with zero connections before a warm daemon self-exits: the
 /// resident index/corpus stops earning its RAM once nobody is querying, and a
 /// fresh query re-spawns one in the background anyway (see `client/spawn.zig`).
@@ -62,7 +72,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, socket
     // Singleton FIRST — before any socket mutation — so a losing racer never
     // unlinks the winner's live socket during the stale-socket cleanup below.
     const lock_fd = acquireSingleton(io, socket_path) orelse {
-        std.debug.print("gist serve: another daemon already warm on {s}\n", .{socket_path});
+        note("gist serve: another daemon already warm on {s}\n", .{socket_path});
         return;
     };
     defer _ = close(lock_fd); // closing releases the advisory flock
@@ -82,7 +92,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, socket
     defer server.deinit(io);
     defer Dir.cwd().deleteFile(io, socket_path) catch {};
 
-    std.debug.print("gist serve: warm on {s} ({d} roots)\n", .{ socket_path, roots.len });
+    note("gist serve: warm on {s} ({d} roots)\n", .{ socket_path, roots.len });
 
     var pfd = [_]std.posix.pollfd{.{ .fd = server.socket.handle, .events = std.posix.POLL.IN, .revents = 0 }};
     var session_gen: u64 = 0;

@@ -13,6 +13,7 @@
 //! `--schema` compatibility source of truth.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const glob = @import("../scope/glob.zig");
 const types = @import("../scope/types.zig");
 const uni = @import("../../regex/unicode/tables.zig");
@@ -806,6 +807,10 @@ fn looksLikeFlagBundle(v: []const u8) bool {
 /// output as a display bug.
 fn noteGrepStyleReplace(v: []const u8) void {
     if (!looksLikeFlagBundle(v)) return;
+    // Silent under `zig build test`: the unit test parses "-rn" on purpose, and
+    // stderr from a passing test binary makes the build runner print a spurious
+    // "failed command:" banner. The note is user-guidance, not behavior.
+    if (builtin.is_test) return;
     std.debug.print(
         "gist: note: '-r{s}' parses as --replace={s} (ripgrep semantics: -r takes a value; recursion is already the default). Spell flags separately (e.g. -n), or use --replace to silence this note.\n",
         .{ v, v },

@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const simd = @import("simd.zig");
+const verify = @import("verify.zig");
 const contains = simd.contains;
 
 test "simd contains ≡ std.mem.indexOf" {
@@ -41,6 +42,54 @@ test "simd contains ≡ std.mem.indexOf" {
         const want = std.mem.indexOf(u8, buf[0..hlen], ndl[0..nlen]) != null;
         try std.testing.expectEqual(want, contains(buf[0..hlen], ndl[0..nlen]));
     }
+}
+
+test "containsWide ≡ std.mem.indexOf across the parallel threshold (seam adversarial)" {
+    const gpa = std.testing.allocator;
+    // Big enough to actually fan out (≥ wide_threshold ⇒ ≥ 2 shards when the
+    // machine has ≥ 2 cores), small enough to stay a fast test.
+    const len = verify.wide_threshold * 3;
+    const hay = try gpa.alloc(u8, len);
+    defer gpa.free(hay);
+    var prng = std.Random.DefaultPrng.init(0xBEEF);
+    const rng = prng.random();
+    for (hay) |*b| b.* = 'a' + rng.uintLessThan(u8, 4);
+
+    const needle = "xqzk_needle"; // alphabet-disjoint ⇒ absent until spliced
+    try std.testing.expect(!verify.containsWide(gpa, hay, needle));
+
+    // Splice the needle at every adversarial seam the sharding geometry has:
+    // buffer start/end, slab multiples ±1 (the intra-shard slab loop), and
+    // chunk-boundary straddles for every plausible thread count (2..16 —
+    // whatever `getCpuCount` says at runtime is one of these). Each position
+    // must flip the answer to true, then restore to noise and re-verify false.
+    var positions: std.ArrayList(usize) = .empty;
+    defer positions.deinit(gpa);
+    try positions.appendSlice(gpa, &.{ 0, len - needle.len, (1 << 20) - needle.len / 2, (1 << 20) * 7 - 1 });
+    var nthr: usize = 2;
+    while (nthr <= 16) : (nthr += 1) {
+        const chunk = len / nthr;
+        for (1..nthr) |k| {
+            const seam = k * chunk;
+            if (seam >= needle.len / 2 and seam + needle.len / 2 + needle.len <= len)
+                try positions.append(gpa, seam - needle.len / 2); // straddles the seam
+        }
+    }
+    for (positions.items) |at| {
+        var saved: [needle.len]u8 = undefined;
+        @memcpy(&saved, hay[at .. at + needle.len]);
+        @memcpy(hay[at .. at + needle.len], needle);
+        const want = std.mem.indexOf(u8, hay, needle) != null;
+        try std.testing.expect(want); // sanity: the splice really is present
+        try std.testing.expectEqual(want, verify.containsWide(gpa, hay, needle));
+        @memcpy(hay[at .. at + needle.len], &saved);
+    }
+    try std.testing.expect(!verify.containsWide(gpa, hay, needle));
+
+    // Any-of shape over the same buffer: one absent + one spliced needle.
+    @memcpy(hay[len / 2 .. len / 2 + needle.len], needle);
+    try std.testing.expect(verify.containsAnyWide(gpa, hay, &.{ "zzqq_absent", needle }));
+    try std.testing.expect(!verify.containsAnyWide(gpa, hay, &.{ "zzqq_absent", "yyww_absent" }));
 }
 
 test "simd containsAny ≡ any-of std.mem.indexOf (fused kernel differential)" {

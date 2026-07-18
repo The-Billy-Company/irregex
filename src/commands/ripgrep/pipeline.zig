@@ -46,6 +46,7 @@ const ignore = @import("ignore.zig");
 const grepfile = @import("grepfile.zig");
 const ingest = @import("ingest.zig");
 const simd = @import("../../scan/simd.zig");
+const verify = @import("../../scan/verify.zig");
 const persist = @import("../../index/persist.zig");
 const fresh = @import("../../corpus/fresh.zig");
 const bulkstat = @import("../../corpus/bulkstat.zig");
@@ -997,8 +998,13 @@ fn emitBody(w: *Worker, a: std.mem.Allocator, dpath: []const u8, body: []const u
     const cfg = w.cfg;
     const o = cfg.o;
     const re = cfg.re.?;
-    if (cfg.file_needle) |n| if (!simd.contains(body[gate_from..], n)) return;
-    if (cfg.file_alts.len > 0 and !simd.containsAny(body[gate_from..], cfg.file_alts)) return;
+    // The `Wide` gates are the plain SIMD kernels until a body crosses
+    // `verify.wide_threshold` (16 MiB) — then the presence test itself fans
+    // out across cores. One worker owning an mmap'd multi-GiB blob (which the
+    // rg-parity walk legitimately admits via explicit-root re-anchoring) stops
+    // serializing the whole walk behind a single-thread scan.
+    if (cfg.file_needle) |n| if (!verify.containsWide(a, body[gate_from..], n)) return;
+    if (cfg.file_alts.len > 0 and !verify.containsAnyWide(a, body[gate_from..], cfg.file_alts)) return;
 
     var buf: std.ArrayList(u8) = .empty;
     var em = Emitter{

@@ -82,7 +82,14 @@ fn linkWatcherFrameworks(m: *std.Build.Module, frameworks: ?[]const u8) void {
 }
 
 pub fn build(b: *std.Build) void {
-    const k = kernelkit.addKernel(b, .{ .name = "gist" });
+    // The unit-test binary is pinned to ReleaseSafe: gist's suite is dominated
+    // by differential-fuzz loops (DFA vs Pike, powerset language equivalence,
+    // adversarial oracles, index-loader mutation soak) that exist to trip
+    // safety checks — which ReleaseSafe keeps, at optimized speed. Debug ran
+    // the same suite ~4× slower (5.5 min vs ~80 s) for no extra checking.
+    // `-Dtest-optimize=Debug` still yields a Debug test binary when stepping
+    // through a failure; the kcov `coverage` binary stays build-wide Debug.
+    const k = kernelkit.addKernel(b, .{ .name = "gist", .test_optimize = .ReleaseSafe });
 
     // kernelkit pins `os_version_min`, so Zig treats the target as cross-ish and
     // skips native SDK auto-detection — resolve the SDK's framework dir once here
@@ -99,6 +106,14 @@ pub fn build(b: *std.Build) void {
     // links its own copy built at the CLI optimize level (below).
     const pcre2_engine = pcre2Library(b, k.target, k.optimize);
     k.root_module.linkLibrary(pcre2_engine);
+
+    // The ReleaseSafe-pinned test module is a twin of the root module, so it
+    // needs the same decorations: the frameworks and a PCRE2 built at ITS
+    // optimize (the PCRE2 adversarial tests shouldn't run a Debug C library).
+    if (k.test_module != k.root_module) {
+        linkWatcherFrameworks(k.test_module, darwin_frameworks);
+        k.test_module.linkLibrary(pcre2Library(b, k.target, k.test_module.optimize.?));
+    }
 
     // ── the `gist` CLI executable (the product surface) ──
     // `zig build cli -- index` (build + persist once) / `-- status` /
