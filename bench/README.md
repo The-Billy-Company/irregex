@@ -1,10 +1,10 @@
 ---
 doc_radar:
   counts:
-    - description: "eleven bench concern folders, one per row of the table below"
+    - description: "twelve bench concern folders, one per row of the table below"
       glob: pkg/kernels/irregex/bench/*/
       unit: dirs
-      equals: 11
+      equals: 12
   sentinels:
     - description: "the Layer B′ measured rung exists as a build step"
       file: pkg/kernels/irregex/build.zig
@@ -15,11 +15,12 @@ doc_radar:
 
 Benchmark, verification, and competitive-proof harness for the `gist`
 code-locator kernel — no engine code lives here (that's all under `src/`).
-Eleven concerns, eleven folders:
+Twelve concerns, twelve folders:
 
 | Folder                                | Concern                                                                                                                                                                                                                                        |
 | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [`harness/`](harness/README.md)       | The native `gist-bench` Zig binary — corpus load + latency slate, the microscopic cycles/byte certificate, PMU counters, bootstrap statistics, the shared probe registry.                                                                      |
+| [`corpora/`](corpora/)                | Multi-corpus fetcher (`fetch.sh` + `torture.py`) — pinned external trees (linux/cpython/typescript/subtitles/torture) under `.local/gist-corpora/` so differential sweeps aren't Billy-home-corpus-only.                                       |
 | [`races/`](races/README.md)           | The competitor registry (`_compete.sh`) + the three multi-tool field races (warm, cold literal, cold regex).                                                                                                                                   |
 | [`gates/`](gates/README.md)           | Permanent correctness/contract gates: the `gist ≡ rg` equality oracle, the scan-path regression, the stdout/stderr stream-contract check.                                                                                                      |
 | [`certify/`](certify/README.md)       | The macroscopic half of the Layer-A optimality certificate — races the whole field per pattern class with a fail-closed statistical verdict.                                                                                                   |
@@ -28,8 +29,8 @@ Eleven concerns, eleven folders:
 | [`portcert/`](portcert/README.md)     | Layer B — port-optimality: cross-compiled `llvm-mca` static microarchitectural bound on gist's two hot loops, drift-guarded against production, plus Layer B′ — the same probes **measured on this machine** under the PMU (`gist-portbound`). |
 | [`roofline/`](roofline/README.md)     | Layer C — roofline: this machine's measured STREAM read-bandwidth ceiling vs gist's real scan throughput.                                                                                                                                      |
 | [`lowerbound/`](lowerbound/README.md) | Layer D â algorithmic lower bound: a fail-closed structural audit proving gist's verify touches the information-theoretic floor of candidate bytes.                                                                                            |
-| [`relate/`](relate/README.md)         | The hydra **relate** proof (`relate-knn`) — the real cross-parse / LZJD / pivot engine run as a k-NN classifier; the measured basis for the compression-vs-embeddings verdict (`spikes/compression-vs-embeddings/`).                    |
-| [`codex/`](codex/README.md)           | The **self-index** at-scale proof (`codex-scale`) — the real `src/codex/` FM-index over ~187MB of repo source: entropy-bound space vs gzip/bzip2/zstd/xz, flat-in-n count latency, byte-exact restore from the index alone.                    |
+| [`relate/`](relate/README.md)         | The **relate** proof (`relate-knn`) — the real cross-parse / LZJD / pivot engine run as a k-NN classifier; the measured basis for the compression-vs-embeddings verdict (`spikes/compression-vs-embeddings/`).                          |
+| [`codex/`](codex/README.md)           | The **self-index** at-scale proof (`codex-scale`) — the real `src/index/codex/` FM-index over ~187MB of repo source: entropy-bound space vs gzip/bzip2/zstd/xz, flat-in-n count latency, byte-exact restore from the index alone.              |
 
 ```bash
 cd pkg/kernels/irregex
@@ -136,8 +137,9 @@ Every layer writes into the same `.local/gist-verify/CERTIFICATE.md`. Layer A
 has two halves — the **microscopic** half (`zig build certify`,
 `harness/certify.zig` + `harness/pmu.zig` + `harness/stats.zig`, see
 `harness/README.md`) and the **macroscopic** half (`certify/certify.sh` +
-`certify/certify_stats.py`, see `certify/README.md`). **Layer A's run
-rewrites the whole file**, so re-splice B/C/D afterward, in this order:
+`certify/certify_stats.py`, see `certify/README.md`). **One command** mints
+or refreshes the whole thing — Layers B/B′/C/D are spliced automatically and
+`check_artifacts.py` fail-closes if any section is missing.
 
 Always build **`-Doptimize=ReleaseFast`** — a Debug build is not vectorized and
 its cycles/byte + bandwidth numbers are meaningless (a Debug scan measures loop
@@ -145,35 +147,23 @@ overhead, not the memory hierarchy). The report splicers resolve `.local/` at th
 repo root, so they run from anywhere.
 
 ```bash
-cd pkg/kernels/irregex
+# Refresh Layers B/B′/C/D onto an existing Layer-A bundle (the common path):
+make bench-gist-certify
+# or:  bash pkg/kernels/irregex/bench/certify/certify_layers.sh
 
-# Layer A — microscopic (cycles/byte; wall-clock fallback without sudo)
-zig build -Doptimize=ReleaseFast certify                 # installs + runs; wall-clock without sudo
-sudo zig-out/bin/gist-bench certify                      # re-run the installed ReleaseFast binary for cycles
-
-# Layer A — macroscopic (whole field, fail-closed vs ripgrep)
-RUNS=20 bench/certify/certify.sh
-
-# Layer B — port-optimality (static llvm-mca bound; needs `brew install llvm`)
-bench/portcert/portcert.sh
-
-# Layer B′ — the port bound MEASURED on this machine (same drift-guarded probes)
-zig build -Doptimize=ReleaseFast portbound                          # wall-clock; labels cycles NOT measured
-(cd ../../.. && sudo pkg/kernels/irregex/zig-out/bin/gist-portbound)  # measured cycles (kpc is root-gated)
-bench/portcert/portcert.sh                                          # re-splice the measured subsection
-
-# Layer C — roofline (this machine's memory-bandwidth ceiling)
-zig build -Doptimize=ReleaseFast roofline && bench/roofline/roofline_report.py
-
-# Layer D — algorithmic lower bound (fail-closed byte-touch audit)
-zig build -Doptimize=ReleaseFast lowerbound && bench/lowerbound/lowerbound_report.py
+# Full mint (A micro + PMU if sudo available + A macro race + B–D) + publish:
+CERT_FULL=1 CERT_PUBLISH=1 CERT_SUDO=1 make bench-gist-certify
+# or:  CERT_PUBLISH_DIR=bench/certify/artifact CERT_SUDO=1 \
+#        bash pkg/kernels/irregex/bench/certify/certify.sh
 ```
 
+`CERT_SUDO=auto` (default) uses passwordless `sudo -n` when configured, else
+degrades loudly; `CERT_SUDO=1` prompts once; `CERT_SUDO=0` never escalates.
 Each layer degrades gracefully rather than failing the whole pipeline — but
 **loudly in the artifact**: Layer A without `sudo` reports wall-clock only and
-the certificate states _"cycles/byte: NOT measured on this machine"_ with the
-`sudo` rerun rung; Layer B without `llvm-mca` prints a documented skip; Layer B′
-without `sudo` records wall-clock ns and fail-closed labels cycles as
-cross-checked-only. None invents a number for hardware it can't measure (no
-fabricated Apple-Silicon `llvm-mca` model, no wall-clock dressed up as cycles
-via an assumed frequency — see `portcert/README.md`).
+the certificate states _"cycles/byte: NOT measured on this machine"_; Layer B
+without `llvm-mca` prints a documented skip; Layer B′ without `sudo` records
+wall-clock ns and fail-closed labels cycles as cross-checked-only. None invents
+a number for hardware it can't measure (no fabricated Apple-Silicon `llvm-mca`
+model, no wall-clock dressed up as cycles via an assumed frequency — see
+`portcert/README.md`).
