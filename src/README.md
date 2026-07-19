@@ -36,14 +36,14 @@ I organized the tree **by concern, not by product**. Both binaries are thin
 faces over the same kernels: `gist` finds exact patterns; `relate` finds
 compression kinship. Neither gets a private corpus walk, scope layer, or index.
 
-| Tier       | What lives there                                                                                                                                                                                                                            |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `math/`    | the shared identity floor: `bits`, the two's-complement bit-set primitives (set-bit walks, word-packed sets) every other tier rides instead of hand-rolling, and `crest`, the forced-class-run sieve calculus (a novel sound necessary condition — proof in `../research/crest/`)                |
-| `corpus/`  | the shared source substrate: `tree/` (loading + the Haystack walk + `getattrlistbulk` bulk stat) and `scope/` (`-g` glob + `-t` type table)                                                                                                |
-| `index/`   | the candidate + self + kinship indexes: `trigrams/` (T0 candidate index + T3 mtime freshness), `postings/` (varint + persisted-blob posting codecs), `codex/` (the compressed self-index), `atlas/` (relate's persisted per-file sketches) |
-| `search/`  | the pure search kernels: `match/` (exact matching), `rank/` (T4 RRF), `similarity/` (compression kinship), and `batch/` (closed set ops)                                                                                                  |
-| `runtime/` | the execution hosts: `cold/` (rg-compatible walk/read/emit), `session/` (resident transport, ADR-352 rung 2.5), and `ffi/` (in-process C-ABI session, rung 3)                                                                                |
-| `cli/`     | the thin product faces: `gist/` (exact locator) and `relate/` (compression search)                                                                                                                                                         |
+| Tier | What lives there | README |
+| ---- | ---------------- | ------ |
+| [`math/`](math) | Shared identity floor: `bits` + crest sieve calculus | [`math/README.md`](math/README.md) |
+| [`corpus/`](corpus) | Shared source substrate: `tree/` walk + `scope/` `-g`/`-t` | [`corpus/README.md`](corpus/README.md) |
+| [`index/`](index) | Candidate / self / kinship indexes (accelerator only) | [`index/README.md`](index/README.md) |
+| [`search/`](search) | Pure kernels: match · rank · similarity · batch | [`search/README.md`](search/README.md) |
+| [`runtime/`](runtime) | Execution hosts: cold · session · ffi | [`runtime/README.md`](runtime/README.md) |
+| [`cli/`](cli) | Thin product faces: `gist` · `relate` | [`cli/README.md`](cli/README.md) |
 
 ## The anatomy of a query
 

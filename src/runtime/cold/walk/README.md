@@ -27,3 +27,9 @@ parallel walkers both call — kept here so neither engine forks a private copy.
 The warm session's O(changed) reconcile ([`session/delta.zig`](../../session/delta.zig))
 imports this same `Ignore` machinery, so a scoped warm update cannot drift from
 `defaultFileSet`.
+
+## When to edit
+
+Ignore dialect edges (negation, anchoring, dir-only), or hot-path helpers both
+walkers share. The coarse Haystack recursion skeleton lives in
+`corpus/tree/haystack.zig`; `-g`/`-t` tables live in `corpus/scope/`.

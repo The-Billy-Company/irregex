@@ -1,27 +1,45 @@
-# `engine/` — the transport-neutral compiled query
+---
+doc_radar:
+  counts:
+    - description: "match keeps regex + scan execution packages"
+      glob: pkg/kernels/irregex/src/search/match/*/
+      unit: dirs
+      equals: 2
+  sentinels:
+    - description: "CompiledQuery remains the shared fail-closed core"
+      file: pkg/kernels/irregex/src/search/match/query.zig
+      contains: ["error.Unsupported", "immutable after", "pub const CompiledQuery"]
+---
 
-The shared search core (ADR-352). One deep module owns _"a search intent,
-compiled"_, so the cold CLI (`faces/cli/search/`) and the warm resident session
-(`session/`) cannot drift on **what matches** or **which literals are safe to
-prune by** — they compile and match through the same code here.
+# `src/search/match/` — exact-match engine
 
-| File             | Role                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `query.zig`      | `CompiledQuery` — lower a `(pattern, fixed, ignore_case, mode)` spec into an immutable matcher (literal SIMD fast path, else the linear-time regex engine), and expose the two things every face needs: the sound trigram `prefilter` for index candidate pruning, and the per-doc `docMatches` / `countLines` decision. Plus `regexPrefilter`, the required-literal-vs-alternation-cover selector the cold `trigramFilter` shares. |
-| `query_test.zig` | Compile shapes (literal / regex / escaped `-F -i`), prefilter selection, the fail-closed `error.Unsupported` boundary, and the match/count kernels against hand-computed answers.                                                                                                                                                                                                                                                   |
+The transport-neutral match core ([ADR-352](../../../../../../docs/architecture/3-decisions/352-gist-unified-search-api.md)).
+One deep module owns *"a search intent, compiled"*, so the cold CLI, warm
+session, FFI face, and language bindings cannot drift on **what matches** or
+**which literals are safe to prune**.
+
+## Layout
+
+| Piece | Job |
+| ----- | --- |
+| `query.zig` | `CompiledQuery` — lower `(pattern, fixed, ignore_case, mode)` into an immutable matcher; expose the sound trigram `prefilter` + per-doc `docMatches` / `countLines` |
+| [`regex/`](regex) | Linear-time NFA + byte-class DFA + Pike + opt-in PCRE2 (`syntax → analysis → compile → linear`) |
+| [`scan/`](scan) | SIMD substring presence + fused parallel verify (fixed-string hot path) |
 
 ## Two invariants make it the shared boundary
 
-- **Fail-closed, never fatal.** Every entry point returns a typed error — a
-  pattern outside the linear-time syntax is `error.Unsupported`, allocation
-  failure is `error.OutOfMemory`. A bad query can never `die()`/exit an embedding
-  host (the resident daemon, and later the C FFI). The CLI keeps its own `die()`
-  shell around this core; the core itself does not.
-- **Thread-safe for the parallel walk.** A `CompiledQuery` is immutable after
-  `compile`; the only per-query mutable state (the regex Pike-VM simulation) is a
-  caller-owned `Scratch`, one per worker, threaded into the match primitives — so
-  N walk workers share one compiled query with N scratches.
+1. **Fail-closed, never fatal.** Typed `error.Unsupported` /
+   `error.OutOfMemory` — a bad pattern can never `die()` / exit an embedding
+   host. The CLI wraps this core with its own `die()` shell; the core does not.
+2. **Immutable after compile.** N walk workers share one `CompiledQuery` with
+   N caller-owned `Scratch` buffers (Pike simulation state).
 
-Richer cold-only presentations (content, context, `--json`) stay in
-`faces/cli/search/` — they consume the same match decision but shape their own
-output.
+## Match ladder (cheapest sound rung first)
+
+Fixed `-F` → `scan/` SIMD → linear regex (DFA primary, Pike fallback) →
+PCRE2 only when `-P` / `--engine auto` needs lookaround or backrefs. Unicode
+default-on at rg parity; details in [`regex/README.md`](regex/README.md).
+
+Richer cold-only presentations (context, `--json`, color) stay in
+`runtime/cold/emit/` — they consume the same match decision but shape their
+own output.

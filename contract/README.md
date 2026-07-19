@@ -1,33 +1,49 @@
-# gist/contract — the unified search-API contract
+---
+doc_radar:
+  sentinels:
+    - description: "unified search contract keeps request options + transports + relate verbs"
+      file: pkg/kernels/irregex/contract/search_api.toml
+      contains: ["[request_options]", "[transports]", "[irregex.verbs]", "abi_version"]
+---
 
-[`search_api.toml`](search_api.toml) is the single source of truth for GIST's
-**unified search contract** ([ADR-352](../../../../docs/architecture/3-decisions/352-gist-unified-search-api.md)):
-the `SearchRequest` options every face accepts, the `Match` kinds it returns,
-the process exit codes it speaks, the C ABI version, and the transports that
-realize it.
+# `contract/` — unified search-API contract
+
+[`search_api.toml`](search_api.toml) is the single source of truth for irregex's
+**unified search contract**
+([ADR-352](../../../../docs/architecture/3-decisions/352-gist-unified-search-api.md)):
+
+- `SearchRequest` options every face accepts
+- `Match` kinds it returns
+- Process exit codes
+- C ABI version
+- Transports (subprocess authoritative; UDS / FFI accelerators)
+- Relate verbs + lifecycle
+- Session eligibility rules
+- Tool-boundary mapping notes
 
 ## Why it exists
 
-GIST is reachable several ways — the `gist` CLI, the importable `billy-gist`
-Python package, the standalone Rust `gist` crate, and Billy's agent code-search
-tool. All express **one** request shape and consume **one** engine (the certified
-rg-parity walk); this file freezes the enumerations they share so a package
-constant and the binary's own version can never silently diverge. It is a
-_contract_, reviewed as an interface change — widening `[request_options]` is a
-deliberate deepening of the `SearchRequest` surface, not a casual edit.
+The `gist` CLI, `billy-gist` Python package, Rust `gist` crate, and Billy's
+agent code-search tool all speak **one** request shape over **one** engine.
+This file freezes the enumerations they share so a package constant and the
+binary's version can never silently diverge. Widening `[request_options]` is
+an interface change — review it like an ABI bump, not a casual edit.
 
 ## Who reads it
 
-- The Python package
-  ([`../bindings/python/gist`](../bindings/python)) mirrors these constants in
-  `gist.contract` and asserts them against the live binary in its parity test.
-- The Rust crate ([`../bindings/rust`](../bindings/rust)) mirrors them in
-  `gist::contract` and asserts them in `tests/contract.rs` — same drift gate,
-  second language.
-- Reviewers, when deciding whether a new search capability belongs in the deep
-  contract or stays a CLI-only presentation flag.
+| Consumer | How |
+| -------- | --- |
+| Python [`../bindings/python/gist`](../bindings/python) | `gist.contract` + parity tests |
+| Rust [`../bindings/rust`](../bindings/rust) | `gist::contract` + `tests/contract.rs` |
+| CLI `--schema` | Flag rows name the rg-parity flags in `runtime/cold/argv` `flag_catalog` |
+| Reviewers | Decide deep contract vs CLI-only presentation flag |
 
-The engine's actual flag surface lives in
-[`../src/gist/faces/cli/search/argv/args.zig`](../src/gist/faces/cli/search/argv/args.zig)
-(`flag_catalog`); each `flag = …` here names the rg-parity flag the package
-lowers a request option into.
+## When to edit
+
+- New matcher controls that every face must honor → add here first.
+- Transport status / session eligibility / relate verb changes.
+- Then update bindings + Zig `flag_catalog` / relate dispatch in the same PR.
+
+Flag *parsing* still lives in
+[`../src/runtime/cold/argv/args.zig`](../src/runtime/cold/argv/args.zig);
+each `flag = …` here names the rg-parity flag a request option lowers into.

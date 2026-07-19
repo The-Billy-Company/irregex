@@ -25,3 +25,10 @@ the differential harness scores those N/A rather than silently wrong. The
 declarative `flag_catalog` in `args.zig` is both the parser's dispatch table
 and the rows [`cli/gist/schema/`](../../../cli/gist/schema) renders into `gist --schema` —
 one catalog, two consumers, no prose drift.
+
+## When to edit
+
+New rg-parity flags, precedence between `-A`/`-B`/`-C`, or default Unicode
+behavior. Deep request options that bindings must share also update
+[`../../../../contract/search_api.toml`](../../../../contract/search_api.toml).
+Do not put walk / match / emit logic here — parsing only.
