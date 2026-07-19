@@ -109,9 +109,15 @@ def fold_orbits(path: Path) -> dict[int, list[int]]:
 
 
 def fmt_ranges(name: str, ranges: list[Range]) -> str:
-    """Render one Zig `pub const <name>: []const Range` table literal."""
+    """Render one Zig `pub const <name>: []const Range` table literal.
+
+    `zig fmt` keeps a single-element array literal tight (`&.{.{…}}`) and only
+    pads multi-element literals (`&.{ .{…}, .{…} }`); match that so the emitted
+    table is already fmt-clean and never trips the zig-fmt gate.
+    """
     body = ", ".join(f".{{ 0x{lo:X}, 0x{hi:X} }}" for lo, hi in ranges)
-    return f"pub const {name}: []const Range = &.{{ {body} }};"
+    lit = f"&.{{{body}}}" if len(ranges) == 1 else f"&.{{ {body} }}"
+    return f"pub const {name}: []const Range = {lit};"
 
 
 def build() -> str:
