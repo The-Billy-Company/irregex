@@ -18,11 +18,16 @@ test "widen: new file is appended + id'd; existing fresh file is forced once" {
     defer ids.deinit(gpa);
     try ids.append(gpa, 0); // base candidate: only doc 0
 
+    var fresh_ids: std.ArrayList(u32) = .empty;
+    defer fresh_ids.deinit(gpa);
+
     // y.zig (existing, trigram-skipped) + z.zig (brand new) both changed.
-    try fresh.widen(gpa, &paths, &ids, &.{ "a/y.zig", "a/z.zig", "a/y.zig" });
+    try fresh.widen(gpa, &paths, &ids, &fresh_ids, &.{ "a/y.zig", "a/z.zig", "a/y.zig" });
 
     try std.testing.expectEqual(@as(usize, 3), paths.items.len); // z.zig appended once
     try std.testing.expectEqualStrings("a/z.zig", paths.items[2]);
     // ids: 0 (base) + 1 (y forced) + 2 (z new), each exactly once.
     try std.testing.expectEqualSlices(u32, &.{ 0, 1, 2 }, ids.items);
+    // fresh_ids: exactly the changed docs (y, z), deduped, base-independent.
+    try std.testing.expectEqualSlices(u32, &.{ 1, 2 }, fresh_ids.items);
 }

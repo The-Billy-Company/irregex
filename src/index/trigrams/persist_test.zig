@@ -5,6 +5,8 @@
 
 const std = @import("std");
 const persist = @import("persist.zig");
+const crest = @import("../../math/crest.zig");
+const crest_sidecar = @import("../crest/sidecar.zig");
 const Index = @import("trigram.zig").Index;
 const Dir = std.Io.Dir;
 
@@ -63,12 +65,19 @@ test "persistIndexAndPathsAt: generation publish keeps readers off a torn pair" 
     const paths_a = [_][]const u8{ "a.txt", "b.txt" };
     var idx_a = try Index.build(gpa, &docs_a);
     defer idx_a.deinit();
-    _ = try persist.persistIndexAndPathsAt(gpa, io, root, &idx_a, &paths_a);
+    const crest_a = try crest_sidecar.build(gpa, &docs_a);
+    defer gpa.free(crest_a);
+    _ = try persist.persistIndexAndPathsAt(gpa, io, root, &idx_a, &paths_a, &.{"src"}, crest_a);
 
     var loaded_a = (try persist.loadAt(gpa, io, root, false)).?;
     defer loaded_a.deinit();
     try std.testing.expectEqual(@as(u32, 2), loaded_a.idx.doc_count);
     try std.testing.expectEqualStrings("a.txt", loaded_a.paths.items[0]);
+    // Crest sidecar rides the same generation: mapped back doc-for-doc.
+    try std.testing.expectEqualSlices(crest.Vector, crest_a, loaded_a.crest.?);
+    // Build roots round-trip beside the pair (the un-hardcoded corpus scope).
+    try std.testing.expectEqual(@as(usize, 1), loaded_a.roots.items.len);
+    try std.testing.expectEqualStrings("src", loaded_a.roots.items[0]);
 
     // Stage a second generation WITHOUT flipping pair.gen — the classic torn
     // window if index.gist/paths.list were published as two independent renames.
@@ -108,13 +117,15 @@ test "persistIndexAndPathsAt: generation publish keeps readers off a torn pair" 
     try std.testing.expectEqual(@as(usize, 2), loaded_mid.paths.items.len);
     try std.testing.expectEqualStrings("a.txt", loaded_mid.paths.items[0]);
 
-    // Completing publish flips the generation; load now sees B.
-    _ = try persist.persistIndexAndPathsAt(gpa, io, root, &idx_b, &paths_b);
+    // Completing publish flips the generation; load now sees B. No crest was
+    // staged for B, so the loader reports null — never a stale A table.
+    _ = try persist.persistIndexAndPathsAt(gpa, io, root, &idx_b, &paths_b, &.{"src"}, null);
     var loaded_b = (try persist.loadAt(gpa, io, root, false)).?;
     defer loaded_b.deinit();
     try std.testing.expectEqual(@as(u32, 3), loaded_b.idx.doc_count);
     try std.testing.expectEqual(@as(usize, 3), loaded_b.paths.items.len);
     try std.testing.expectEqualStrings("c.txt", loaded_b.paths.items[0]);
+    try std.testing.expectEqual(@as(?[]const crest.Vector, null), loaded_b.crest);
 }
 
 test "persistIndexAndPathsAt: concurrent loaders never observe a mixed generation" {
@@ -132,7 +143,7 @@ test "persistIndexAndPathsAt: concurrent loaders never observe a mixed generatio
     const paths0 = [_][]const u8{"seed.txt"};
     var idx0 = try Index.build(gpa, &docs0);
     defer idx0.deinit();
-    _ = try persist.persistIndexAndPathsAt(gpa, io, root, &idx0, &paths0);
+    _ = try persist.persistIndexAndPathsAt(gpa, io, root, &idx0, &paths0, &.{"."}, null);
 
     const Worker = struct {
         root: []const u8,
@@ -169,7 +180,7 @@ test "persistIndexAndPathsAt: concurrent loaders never observe a mixed generatio
         var idx = try Index.build(gpa, if (n % 2 == 0) docs[0..2] else docs[0..3]);
         defer idx.deinit();
         const paths: []const []const u8 = if (n % 2 == 0) &paths_even else &paths_odd;
-        _ = try persist.persistIndexAndPathsAt(gpa, io, root, &idx, paths);
+        _ = try persist.persistIndexAndPathsAt(gpa, io, root, &idx, paths, &.{"."}, null);
     }
 
     t1.join();

@@ -9,7 +9,7 @@
 //! and benchmark tooling no longer share a binary.
 //!
 //! Build-speed contract: a bare `zig build` installs ONLY the product surface
-//! (gist + hydra CLIs and the C-ABI libs). The six bench/certificate lab
+//! (gist + relate CLIs and the C-ABI libs). The six bench/certificate lab
 //! executables (gist-bench, gist-roofline, gist-lowerbound, gist-portbound,
 //! relate-knn, codex-scale) install on their own named steps — and all at once
 //! via `zig build lab` — so the everyday build/install loop never pays for
@@ -163,17 +163,17 @@ pub fn build(b: *std.Build) void {
     const cli_exe = b.addExecutable(.{ .name = "gist", .root_module = cli_mod });
     b.installArtifact(cli_exe);
 
-    // ── the `mutual` binary — compression-as-search (similar/dups/patterns) ──
+    // ── the `relate` binary — compression-as-search (similar/dups/patterns) ──
     // Same engine module, same ReleaseFast product posture; a second thin face
     // over the shared kernel, not a second engine.
-    const mutual_mod = b.createModule(.{
-        .root_source_file = b.path("src/cli/mutual/main.zig"),
+    const relate_mod = b.createModule(.{
+        .root_source_file = b.path("src/cli/relate/main.zig"),
         .target = k.target,
         .optimize = cli_optimize,
     });
-    mutual_mod.addImport("irregex", cli_engine);
-    const mutual_exe = b.addExecutable(.{ .name = "mutual", .root_module = mutual_mod });
-    b.installArtifact(mutual_exe);
+    relate_mod.addImport("irregex", cli_engine);
+    const relate_exe = b.addExecutable(.{ .name = "relate", .root_module = relate_mod });
+    b.installArtifact(relate_exe);
 
     // ── `zig build lab` — the measurement-lab install umbrella ──
     // The six bench/certificate executables below are deliberately OFF the
@@ -468,7 +468,7 @@ pub fn build(b: *std.Build) void {
     k.test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = bench_mod })).step);
 
     // ── `relate-knn` — the compression-as-embedding proof harness ──
-    // Runs the REAL hydra relate engine (zipper cross-parse / LZJD sketch) as a
+    // Runs the REAL relate engine (zipper cross-parse / LZJD sketch) as a
     // k-NN text classifier over a labeled manifest, emitting accuracy + build/
     // query cost as JSON. The sibling driver (bench/relate/) races it against
     // gzip-kNN (ACL 2023) and a static-embedding model. Run from the repo root.
@@ -484,7 +484,7 @@ pub fn build(b: *std.Build) void {
     const run_relate_knn = b.addRunArtifact(relate_knn_exe);
     run_relate_knn.setCwd(b.path("../../.."));
     if (b.args) |args| run_relate_knn.addArgs(args);
-    const relate_knn_step = b.step("relate-knn", "Run the hydra relate engine as a k-NN classifier over a labeled manifest");
+    const relate_knn_step = b.step("relate-knn", "Run the relate engine as a k-NN classifier over a labeled manifest");
     relate_knn_step.dependOn(&run_relate_knn.step);
     relate_knn_step.dependOn(relate_knn_install);
 
@@ -562,6 +562,30 @@ pub fn build(b: *std.Build) void {
     const lowerbound_step = b.step("lowerbound", "Layer-D optimality cert: fail-closed algorithmic-floor byte-touch audit");
     lowerbound_step.dependOn(&run_lowerbound.step);
     lowerbound_step.dependOn(lowerbound_install);
+
+    // ── `crest` — production proof: the forced-class-run necessary condition ──
+    // Links the REAL engine (the crest kernel now lives INSIDE it, at
+    // src/math/crest.zig, wired into the index sidecar + both read-elision
+    // oracles) and walks the REAL corpus to prove the sieve is sound
+    // (matched ⇒ ¬pruned, fail-closed) and prunes the literal-free
+    // class-repetition zone where the trigram index prunes 0%. Writing +
+    // proofs: research/crest/. Kernel unit tests ride `zig build test` via
+    // root.zig's test block (math/crest_test.zig, index/crest/sidecar_test.zig).
+    const crest_bench_mod = b.createModule(.{
+        .root_source_file = b.path("bench/crest/bench.zig"),
+        .target = k.target,
+        .optimize = cli_optimize, // product-speed posture — this is a timing tool
+    });
+    crest_bench_mod.addImport("irregex", cli_engine);
+    const crest_exe = b.addExecutable(.{ .name = "crest", .root_module = crest_bench_mod });
+    const crest_install = &b.addInstallArtifact(crest_exe, .{}).step;
+    lab_step.dependOn(crest_install);
+    const run_crest = b.addRunArtifact(crest_exe);
+    run_crest.setCwd(b.path("../../.."));
+    if (b.args) |args| run_crest.addArgs(args);
+    const crest_step = b.step("crest", "Crest production proof: sound forced-class-run sieve — pruning + speed vs the real matcher");
+    crest_step.dependOn(&run_crest.step);
+    crest_step.dependOn(crest_install);
 
     // ── `gist-portbound` — Layer B′: the port bound MEASURED on this machine ──
     // Runs the same drift-guarded probes as portcert.sh's static llvm-mca bound,

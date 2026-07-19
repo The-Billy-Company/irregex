@@ -18,13 +18,24 @@
 const std = @import("std");
 const Index = @import("trigram.zig").Index;
 const corpus_mod = @import("../../corpus/tree/corpus.zig");
+const crest = @import("../../math/crest.zig");
+const crest_sidecar = @import("../crest/sidecar.zig");
 const Dir = std.Io.Dir;
 
 /// Stable aliases (status / bench size accounting). The query loader prefers the
 /// generation published by `pair.gen` when present.
-pub const index_file = corpus_mod.out_dir ++ "/index.gist";
-pub const paths_file = corpus_mod.out_dir ++ "/paths.list";
-pub const generation_file = corpus_mod.out_dir ++ "/pair.gen";
+const index_alias = corpus_mod.ArtifactPath("index.gist");
+const paths_alias = corpus_mod.ArtifactPath("paths.list");
+const generation_alias = corpus_mod.ArtifactPath("pair.gen");
+pub fn indexFile() []const u8 {
+    return index_alias.get();
+}
+pub fn pathsFile() []const u8 {
+    return paths_alias.get();
+}
+pub fn generationFile() []const u8 {
+    return generation_alias.get();
+}
 pub const gens_subdir = "gens";
 
 /// A read-only, page-aligned file mapping (zero-copy view of the bytes on disk).
@@ -65,12 +76,26 @@ pub const Persisted = struct {
     imap: Mapping,
     pmap: Mapping,
     idx: Index,
+    /// The crest-sieve sidecar (`index/crest/sidecar.zig`), mapped zero-copy —
+    /// null for a legacy cache or any blob `decode` rejects. Purely additive:
+    /// queries without it just lose the sieve, never correctness.
+    cmap: ?Mapping = null,
+    crest: ?[]const crest.Vector = null,
     paths: std.ArrayList([]const u8),
+    /// Heap copy of `roots.list` — null for a legacy pre-roots cache.
+    roots_blob: ?[]u8,
+    /// The roots this index was BUILT over (NUL-separated in `roots_blob`,
+    /// or `.` for a legacy cache — the sound superset). Query paths fold
+    /// freshness over these, never a re-derived guess.
+    roots: std.ArrayList([]const u8),
     gpa: std.mem.Allocator,
 
     pub fn deinit(self: *Persisted) void {
+        self.roots.deinit(self.gpa);
+        if (self.roots_blob) |b| self.gpa.free(b);
         self.paths.deinit(self.gpa);
         self.idx.deinit(); // borrowed ⇒ frees nothing
+        if (self.cmap) |m| std.posix.munmap(m);
         std.posix.munmap(self.pmap);
         std.posix.munmap(self.imap);
     }
@@ -81,7 +106,7 @@ pub const Persisted = struct {
 /// expected miss. Paths are NUL-separated in doc-id order; the list is pre-sized
 /// from the NUL count so the split is one allocation.
 pub fn load(gpa: std.mem.Allocator, io: std.Io) !?Persisted {
-    return loadAt(gpa, io, corpus_mod.out_dir, true);
+    return loadAt(gpa, io, corpus_mod.outDir(), true);
 }
 
 /// `load`, but SILENT on a miss (no "run `gist index`" guidance). The bare
@@ -91,7 +116,7 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io) !?Persisted {
 /// stay quiet: a missing index there is the normal case, not something to nag
 /// about, and the walk falls back to reading every file exactly as before.
 pub fn loadQuiet(gpa: std.mem.Allocator, io: std.Io) !?Persisted {
-    return loadAt(gpa, io, corpus_mod.out_dir, false);
+    return loadAt(gpa, io, corpus_mod.outDir(), false);
 }
 
 /// Doc→path table integrity: the index guarantees every candidate id < doc_count,
@@ -120,49 +145,48 @@ pub fn parsePathTable(gpa: std.mem.Allocator, pmap: []const u8) !std.ArrayList([
     return paths;
 }
 
-fn join2(buf: []u8, a: []const u8, b: []const u8) ![]u8 {
-    return std.fmt.bufPrint(buf, "{s}/{s}", .{ a, b });
+fn joinPath(buf: []u8, parts: anytype) ![]u8 {
+    comptime var fmt: []const u8 = "{s}";
+    inline for (1..parts.len) |_| fmt = fmt ++ "/{s}";
+    return std.fmt.bufPrint(buf, fmt, parts);
 }
 
-fn join3(buf: []u8, a: []const u8, b: []const u8, c: []const u8) ![]u8 {
-    return std.fmt.bufPrint(buf, "{s}/{s}/{s}", .{ a, b, c });
-}
+/// The four per-pair blob paths (index / paths / roots / crest sidecar) under
+/// one directory, formatted into caller-lifetime buffers.
+const PairFiles = struct {
+    bufs: [4][512]u8 = undefined,
+    index: []const u8 = undefined,
+    paths: []const u8 = undefined,
+    roots: []const u8 = undefined,
+    crest: []const u8 = undefined,
 
-fn join4(buf: []u8, a: []const u8, b: []const u8, c: []const u8, d: []const u8) ![]u8 {
-    return std.fmt.bufPrint(buf, "{s}/{s}/{s}/{s}", .{ a, b, c, d });
-}
+    fn init(self: *PairFiles, dir: []const u8) !void {
+        self.index = try joinPath(&self.bufs[0], .{ dir, "index.gist" });
+        self.paths = try joinPath(&self.bufs[1], .{ dir, "paths.list" });
+        self.roots = try joinPath(&self.bufs[2], .{ dir, "roots.list" });
+        self.crest = try joinPath(&self.bufs[3], .{ dir, crest_sidecar.file_name });
+    }
+};
 
 fn readGenerationFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !?[]u8 {
     const buf = Dir.cwd().readFileAlloc(io, path, gpa, .limited(128)) catch return null;
-    errdefer gpa.free(buf);
     const trimmed = std.mem.trimEnd(u8, buf, "\r\n");
-    if (trimmed.len == 0) {
-        gpa.free(buf);
-        return null;
-    }
-    if (trimmed.len == buf.len) return buf;
-    const out = try gpa.dupe(u8, trimmed);
-    gpa.free(buf);
-    return out;
+    if (trimmed.len == buf.len and buf.len > 0) return buf;
+    defer gpa.free(buf);
+    return if (trimmed.len == 0) null else try gpa.dupe(u8, trimmed);
 }
 
-fn loadMappedPair(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    index_path: []const u8,
-    paths_path: []const u8,
-    comptime verbose: bool,
-) !?Persisted {
-    const imap = mmapFile(io, index_path) catch {
-        if (verbose) std.debug.print("no index at {s} — run `gist index` first\n", .{index_path});
+fn loadMappedPair(gpa: std.mem.Allocator, io: std.Io, pf: *const PairFiles, comptime verbose: bool) !?Persisted {
+    const imap = mmapFile(io, pf.index) catch {
+        if (verbose) std.debug.print("no index at {s} — run `gist index` first\n", .{pf.index});
         return null;
     };
     errdefer std.posix.munmap(imap);
     var idx = try Index.fromTrustedMappedBytes(imap);
     errdefer idx.deinit();
 
-    const pmap = mmapFile(io, paths_path) catch {
-        if (verbose) std.debug.print("incomplete index — {s} missing; run `gist index` to rebuild\n", .{paths_path});
+    const pmap = mmapFile(io, pf.paths) catch {
+        if (verbose) std.debug.print("incomplete index — {s} missing; run `gist index` to rebuild\n", .{pf.paths});
         std.posix.munmap(imap);
         return null;
     };
@@ -176,56 +200,77 @@ fn loadMappedPair(
         std.posix.munmap(imap);
         return null;
     };
-    return .{ .imap = imap, .pmap = pmap, .idx = idx, .paths = paths, .gpa = gpa };
+
+    // Build roots (NUL-separated, tiny). A legacy cache predates roots.list
+    // (and an empty file is corruption); either way fall back to `.` — the
+    // whole tree is a sound superset of whatever the index was built over
+    // (elision keys on the persisted path set, never on roots; a wider
+    // freshness walk only re-reads more, it never wrongly skips).
+    var roots_blob: ?[]u8 = Dir.cwd().readFileAlloc(io, pf.roots, gpa, .limited(1 << 16)) catch null;
+    errdefer if (roots_blob) |b| gpa.free(b);
+    var roots = if (roots_blob) |b| try parsePathTable(gpa, b) else std.ArrayList([]const u8).empty;
+    errdefer roots.deinit(gpa);
+    if (roots.items.len == 0) {
+        if (roots_blob) |b| gpa.free(b);
+        roots_blob = null;
+        roots.clearRetainingCapacity();
+        try roots.append(gpa, ".");
+    }
+
+    // Crest sidecar: optional, fail-closed. A miss or a rejected blob costs
+    // only the sieve (the query still answers exactly), so both read as null.
+    var cmap: ?Mapping = mmapFile(io, pf.crest) catch null;
+    const crest_view: ?[]const crest.Vector = if (cmap) |m| crest_sidecar.decode(m, idx.doc_count) else null;
+    if (cmap != null and crest_view == null) {
+        std.posix.munmap(cmap.?);
+        cmap = null;
+    }
+    return .{ .imap = imap, .pmap = pmap, .idx = idx, .cmap = cmap, .crest = crest_view, .paths = paths, .roots_blob = roots_blob, .roots = roots, .gpa = gpa };
 }
 
-/// Load from an arbitrary cache root (production uses `corpus.out_dir`; tests
+/// Load from an arbitrary cache root (production uses `corpus.outDir()`; tests
 /// inject a tempdir). When `pair.gen` is present, both blobs must come from
 /// `gens/<id>/` and the generation must still match after the maps succeed.
 pub fn loadAt(gpa: std.mem.Allocator, io: std.Io, out_dir: []const u8, comptime verbose: bool) !?Persisted {
     var gen_path_buf: [512]u8 = undefined;
-    const gen_path = try join2(&gen_path_buf, out_dir, "pair.gen");
+    const gen_path = try joinPath(&gen_path_buf, .{ out_dir, "pair.gen" });
     if (try readGenerationFile(gpa, io, gen_path)) |gen| {
         defer gpa.free(gen);
-        var index_buf: [512]u8 = undefined;
-        var paths_buf: [512]u8 = undefined;
-        const index_path = try join4(&index_buf, out_dir, gens_subdir, gen, "index.gist");
-        const paths_path = try join4(&paths_buf, out_dir, gens_subdir, gen, "paths.list");
-        const loaded = try loadMappedPair(gpa, io, index_path, paths_path, verbose) orelse return null;
+        var gen_dir_buf: [512]u8 = undefined;
+        var pf: PairFiles = .{};
+        try pf.init(try joinPath(&gen_dir_buf, .{ out_dir, gens_subdir, gen }));
+        const loaded = try loadMappedPair(gpa, io, &pf, verbose) orelse return null;
         // Seqlock-style recheck: a concurrent publisher may have advanced
         // pair.gen after we started mapping. Reject rather than mix gens.
-        const gen_after = try readGenerationFile(gpa, io, gen_path) orelse {
+        const gen_after = try readGenerationFile(gpa, io, gen_path);
+        defer if (gen_after) |g| gpa.free(g);
+        if (gen_after == null or !std.mem.eql(u8, gen, gen_after.?)) {
             var tmp = loaded;
             tmp.deinit();
-            if (verbose) std.debug.print("index generation retracted mid-load — run `gist index` to rebuild\n", .{});
+            const what: []const u8 = if (gen_after == null) "retracted" else "changed";
+            if (verbose) std.debug.print("index generation {s} mid-load — run `gist index` to rebuild\n", .{what});
             return null;
-        };
-        defer gpa.free(gen_after);
-        validateGeneration(gen, gen_after) catch {
-            var tmp = loaded;
-            tmp.deinit();
-            if (verbose) std.debug.print("index generation changed mid-load — run `gist index` to rebuild\n", .{});
-            return null;
-        };
+        }
         return loaded;
     }
 
     // Legacy caches (pre-generation publish): stable paths only.
-    var index_buf: [512]u8 = undefined;
-    var paths_buf: [512]u8 = undefined;
-    const index_path = try join2(&index_buf, out_dir, "index.gist");
-    const paths_path = try join2(&paths_buf, out_dir, "paths.list");
-    return loadMappedPair(gpa, io, index_path, paths_path, verbose);
+    var pf: PairFiles = .{};
+    try pf.init(out_dir);
+    return loadMappedPair(gpa, io, &pf, verbose);
 }
 
-/// Serialize + generation-publish the index/path pair under `out_dir`.
-/// Returns the posting-blob byte length.
+/// Serialize + generation-publish the index/path/roots triple (plus the crest
+/// sidecar when the builder computed one) under `out_dir`. Returns the
+/// posting-blob byte length.
 pub fn persistIndexAndPathsAt(
     gpa: std.mem.Allocator,
     io: std.Io,
     out_dir: []const u8,
     idx: *const Index,
     paths: []const []const u8,
+    roots: []const []const u8,
+    crest_vectors: ?[]const crest.Vector,
 ) !usize {
     try Dir.cwd().createDirPath(io, out_dir);
 
@@ -233,7 +278,7 @@ pub fn persistIndexAndPathsAt(
     const gen = try std.fmt.bufPrint(&gen_buf, "{x}", .{@as(u64, @truncate(@as(u128, @intCast(std.Io.Clock.now(.real, io).nanoseconds))))});
 
     var gen_dir_buf: [512]u8 = undefined;
-    const gen_dir = try join3(&gen_dir_buf, out_dir, gens_subdir, gen);
+    const gen_dir = try joinPath(&gen_dir_buf, .{ out_dir, gens_subdir, gen });
     try Dir.cwd().createDirPath(io, gen_dir);
 
     const blob = try gpa.alloc(u8, idx.serializedSize());
@@ -247,28 +292,44 @@ pub fn persistIndexAndPathsAt(
         try pl.append(gpa, 0);
     }
 
-    var index_buf: [512]u8 = undefined;
-    var paths_buf: [512]u8 = undefined;
-    const gen_index = try join2(&index_buf, gen_dir, "index.gist");
-    const gen_paths = try join2(&paths_buf, gen_dir, "paths.list");
-    // Stage both blobs under the unpublished generation directory first.
-    try writeAtomic(io, gen_index, blob);
-    try writeAtomic(io, gen_paths, pl.items);
+    var rl: std.ArrayList(u8) = .empty;
+    defer rl.deinit(gpa);
+    for (roots) |r| {
+        try rl.appendSlice(gpa, r);
+        try rl.append(gpa, 0);
+    }
+
+    // Crest sidecar bytes (empty when the builder skipped the pass).
+    const cblob: []u8 = if (crest_vectors) |cv| blk: {
+        const b = try gpa.alloc(u8, crest_sidecar.encodedSize(cv.len));
+        _ = crest_sidecar.writeInto(cv, b);
+        break :blk b;
+    } else &.{};
+    defer if (cblob.len > 0) gpa.free(cblob);
+
+    // Stage all blobs under the unpublished generation directory first.
+    try writePairBlobs(io, gen_dir, blob, pl.items, rl.items, cblob);
 
     // Single atomic publish of the pair.
     var gen_path_buf: [512]u8 = undefined;
-    const gen_path = try join2(&gen_path_buf, out_dir, "pair.gen");
+    const gen_path = try joinPath(&gen_path_buf, .{ out_dir, "pair.gen" });
     try writeAtomic(io, gen_path, gen);
 
     // Stable aliases for status / bench tooling (after publish; load prefers gens/).
-    var stable_index_buf: [512]u8 = undefined;
-    var stable_paths_buf: [512]u8 = undefined;
-    const stable_index = try join2(&stable_index_buf, out_dir, "index.gist");
-    const stable_paths = try join2(&stable_paths_buf, out_dir, "paths.list");
-    try writeAtomic(io, stable_index, blob);
-    try writeAtomic(io, stable_paths, pl.items);
+    try writePairBlobs(io, out_dir, blob, pl.items, rl.items, cblob);
 
     return blob.len;
+}
+
+/// Atomically write the index/paths/roots blobs (plus the crest sidecar when
+/// non-empty) under `dir`.
+fn writePairBlobs(io: std.Io, dir: []const u8, blob: []const u8, pl: []const u8, rl: []const u8, cblob: []const u8) !void {
+    var pf: PairFiles = .{};
+    try pf.init(dir);
+    try writeAtomic(io, pf.index, blob);
+    try writeAtomic(io, pf.paths, pl);
+    try writeAtomic(io, pf.roots, rl);
+    if (cblob.len > 0) try writeAtomic(io, pf.crest, cblob);
 }
 
 pub fn persistIndexAndPaths(
@@ -276,6 +337,8 @@ pub fn persistIndexAndPaths(
     io: std.Io,
     idx: *const Index,
     paths: []const []const u8,
+    roots: []const []const u8,
+    crest_vectors: ?[]const crest.Vector,
 ) !usize {
-    return persistIndexAndPathsAt(gpa, io, corpus_mod.out_dir, idx, paths);
+    return persistIndexAndPathsAt(gpa, io, corpus_mod.outDir(), idx, paths, roots, crest_vectors);
 }

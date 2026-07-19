@@ -45,6 +45,14 @@ pub const ngram = @import("index/trigrams/ngram.zig");
 pub const trigram = @import("index/trigrams/trigram.zig");
 pub const persist = @import("index/trigrams/persist.zig");
 
+// ── the crest sieve (math floor + persisted sidecar) ──
+// The forced-class-run necessary condition that prunes the trigram index's one
+// structural hole — literal-free class-repetition patterns ([0-9a-f]{8}) that
+// extract no required substring. Kernel is pure math; the sidecar rides the
+// same generation-atomic publish as the trigram pair. Proof: research/crest/.
+pub const crest = @import("math/crest.zig");
+pub const crest_sidecar = @import("index/crest/sidecar.zig");
+
 // ── regex engine ──
 // Submodules are imported by their consumers directly; only the core + DFA
 // surfaces are re-exported at the root for the C-ABI / library consumers.
@@ -258,6 +266,8 @@ test {
     _ = @import("index/trigrams/fresh_test.zig"); // T3 freshness `widen` set-algebra
     _ = @import("search/match/query_test.zig"); // shared compiled-query: compile/prefilter/match vs oracle
     _ = @import("math/bits_test.zig"); // shared two's-complement bit identities vs bool-slice oracle
+    _ = @import("math/crest_test.zig"); // crest sieve: forced-run calculus vs hand-computed ĝ + sieve decision
+    _ = @import("index/crest/sidecar_test.zig"); // crest sidecar codec: round-trip + fail-closed adversarial
     _ = @import("search/similarity/sketch_test.zig"); // relate half: kinship metric semantics + clustering gate
     _ = @import("search/similarity/lexicon.zig"); // mutual: corpus-priced fingerprint recall index
     _ = @import("search/similarity/zipper.zig"); // mutual: suffix-automaton Ziv–Merhav cross-parse (exact ΔAb)

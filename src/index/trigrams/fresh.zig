@@ -28,7 +28,7 @@ const persist = @import("persist.zig");
 const Index = @import("trigram.zig").Index;
 const Dir = std.Io.Dir;
 
-const anchor_file = corpus_mod.out_dir ++ "/built.ns";
+const anchor_path = corpus_mod.ArtifactPath("built.ns");
 
 /// Persist the build instant (wall-clock ns) as the freshness anchor. Atomic
 /// (temp-then-rename, see `persist.writeAtomic`) so a concurrent reader never
@@ -38,14 +38,14 @@ const anchor_file = corpus_mod.out_dir ++ "/built.ns";
 pub fn writeAnchor(io: std.Io, built_ns: i128) !void {
     var buf: [8]u8 = undefined;
     std.mem.writeInt(i64, &buf, @intCast(built_ns), .little); // epoch-ns fits i64 until 2262
-    try persist.writeAtomic(io, anchor_file, &buf);
+    try persist.writeAtomic(io, anchor_path.get(), &buf);
 }
 
 /// The anchor, or null when it is missing, truncated, or in the future. Query
 /// callers fail closed to reading every walked file when this proof is absent.
 /// `pub` so the `status` verb can report the build instant without a query.
 pub fn readAnchor(gpa: std.mem.Allocator, io: std.Io) ?i128 {
-    const b = Dir.cwd().readFileAlloc(io, anchor_file, gpa, .limited(64)) catch return null;
+    const b = Dir.cwd().readFileAlloc(io, anchor_path.get(), gpa, .limited(64)) catch return null;
     defer gpa.free(b);
     if (b.len < 8) return null;
     const built_ns: i128 = std.mem.readInt(i64, b[0..8], .little);
@@ -57,9 +57,18 @@ pub fn readAnchor(gpa: std.mem.Allocator, io: std.Io) ?i128 {
 /// caller's `paths` list. Keep it alive until after the candidate read.
 pub const Candidates = struct {
     ids: []u32,
+    /// Doc ids the freshness walk proved changed at/after the anchor (every id
+    /// the fresh-path fold touched, dedupe-independent). A doc listed here has
+    /// live bytes the persisted per-doc artifacts (trigram postings, crest
+    /// sidecar) no longer describe — content-conditioned pruning must skip it.
+    fresh_ids: []u32,
+    /// False when no trustworthy build anchor existed: NO doc is provably
+    /// unchanged, so `ids` seeds everything and content pruning must stand down.
+    anchored: bool,
     arena: std.heap.ArenaAllocator,
     gpa: std.mem.Allocator,
     pub fn deinit(self: *Candidates) void {
+        self.gpa.free(self.fresh_ids);
         self.gpa.free(self.ids);
         self.arena.deinit();
     }
@@ -87,11 +96,10 @@ pub fn candidates(
 
     var ids: std.ArrayList(u32) = .empty;
     errdefer ids.deinit(gpa);
+    var fresh_ids: std.ArrayList(u32) = .empty;
+    errdefer fresh_ids.deinit(gpa);
     var usable = filters.len > 0;
-    for (filters) |f| if (f.len < 3) {
-        usable = false;
-        break;
-    };
+    for (filters) |f| usable = usable and f.len >= 3;
     if (usable) {
         if (idx.queryAny(gpa, filters)) |cand| {
             defer gpa.free(cand);
@@ -99,11 +107,13 @@ pub fn candidates(
         } else |_| try seedAll(gpa, &ids, paths.items.len);
     } else try seedAll(gpa, &ids, paths.items.len);
 
+    var anchored = false;
     if (readAnchor(gpa, io)) |built_ns| {
+        anchored = true;
         const a = arena.allocator();
         var freshlist: std.ArrayList([]const u8) = .empty; // arena-owned strings
         try walkFresh(gpa, io, roots, built_ns, a, &freshlist);
-        if (freshlist.items.len > 0) try widen(gpa, paths, &ids, freshlist.items);
+        if (freshlist.items.len > 0) try widen(gpa, paths, &ids, &fresh_ids, freshlist.items);
     } else {
         // Without a trustworthy anchor no indexed non-candidate is provably
         // unchanged. Seed all so the caller declines elision and live-reads.
@@ -111,7 +121,7 @@ pub fn candidates(
         try seedAll(gpa, &ids, paths.items.len);
     }
 
-    return .{ .ids = try ids.toOwnedSlice(gpa), .arena = arena, .gpa = gpa };
+    return .{ .ids = try ids.toOwnedSlice(gpa), .fresh_ids = try fresh_ids.toOwnedSlice(gpa), .anchored = anchored, .arena = arena, .gpa = gpa };
 }
 
 /// Paths under `roots` whose metadata says they changed at/after `since_ns` —
@@ -141,13 +151,20 @@ fn seedAll(gpa: std.mem.Allocator, ids: *std.ArrayList(u32), total: usize) !void
 
 /// Fold the fresh paths into `ids`: existing → its id, new → append to `paths`.
 /// Dedup against the base set so a fresh file that's also a trigram candidate is
-/// read once. The path→id map is built only when there *are* fresh files.
+/// read once. Every fresh doc id ALSO lands in `fresh_ids` (dedupe-independent
+/// of the base set — a fresh trigram candidate is still fresh), the set the
+/// crest sieve consults before trusting a persisted per-doc vector.
+/// The path→id map is built only when there *are* fresh files.
 /// `pub` so the sibling `fresh_test.zig` can exercise it directly.
-pub fn widen(gpa: std.mem.Allocator, paths: *std.ArrayList([]const u8), ids: *std.ArrayList(u32), fresh: []const []const u8) !void {
+pub fn widen(gpa: std.mem.Allocator, paths: *std.ArrayList([]const u8), ids: *std.ArrayList(u32), fresh_ids: *std.ArrayList(u32), fresh: []const []const u8) !void {
     var seen = std.AutoHashMap(u32, void).init(gpa);
     defer seen.deinit();
     try seen.ensureTotalCapacity(@intCast(ids.items.len + fresh.len));
     for (ids.items) |d| seen.putAssumeCapacity(d, {});
+
+    var fresh_seen = std.AutoHashMap(u32, void).init(gpa);
+    defer fresh_seen.deinit();
+    try fresh_seen.ensureTotalCapacity(@intCast(fresh.len));
 
     var by_path = std.StringHashMap(u32).init(gpa);
     defer by_path.deinit();
@@ -159,6 +176,7 @@ pub fn widen(gpa: std.mem.Allocator, paths: *std.ArrayList([]const u8), ids: *st
             try paths.append(gpa, fp); // fp lives in the Candidates arena
             break :blk @as(u32, @intCast(paths.items.len - 1));
         };
+        if (!(try fresh_seen.getOrPut(id)).found_existing) try fresh_ids.append(gpa, id);
         if ((try seen.getOrPut(id)).found_existing) continue;
         try ids.append(gpa, id);
     }
@@ -213,9 +231,9 @@ fn expandOneLevel(gpa: std.mem.Allocator, io: std.Io, prefix: []const u8, built_
         for (entries) |e| {
             if (e.is_dir) {
                 if (haystack.isSkipDir(e.name)) continue;
-                try children.append(gpa, .{ .prefix = try haystack.joinPath(a, prefix, e.name) });
+                try children.append(gpa, .{ .prefix = try haystack.joinRoot(a, prefix, e.name) });
             } else if (e.is_file and bulkstat.needsLiveRead(built_ns, e.mtime_ns, e.ctime_ns)) {
-                try out.append(a, try haystack.joinPath(a, prefix, e.name));
+                try out.append(a, try haystack.joinRoot(a, prefix, e.name));
             }
         }
         return true;
@@ -226,9 +244,9 @@ fn expandOneLevel(gpa: std.mem.Allocator, io: std.Io, prefix: []const u8, built_
     while (it.next(io) catch null) |e| {
         if (e.kind == .directory) {
             if (haystack.isSkipDir(e.name)) continue;
-            try children.append(gpa, .{ .prefix = try haystack.joinPath(a, prefix, e.name) });
+            try children.append(gpa, .{ .prefix = try haystack.joinRoot(a, prefix, e.name) });
         } else if (e.kind == .file) {
-            const path = try haystack.joinPath(a, prefix, e.name);
+            const path = try haystack.joinRoot(a, prefix, e.name);
             const st = dir.statFile(io, e.name, .{}) catch {
                 try out.append(a, path);
                 continue;
