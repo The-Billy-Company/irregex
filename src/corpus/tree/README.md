@@ -1,22 +1,22 @@
-# irregex/src/corpus
+# `src/corpus/tree/` — corpus loading and traversal
 
-Corpus loading and the freshness overlay — shared by the CLI drivers, the `grep`
-verb, and the bench/verify harness.
+The source-tree substrate shared by indexing, cold search, resident search, and
+the verification harness. It owns corpus loading and the one coarse Haystack
+walk; rg-compatible ignore and path selection live beside it in `../scope/`.
 
 | File           | Role                                                                                                     |
 | -------------- | -------------------------------------------------------------------------------------------------------- |
-| `corpus.zig`   | Loads non-binary files under the corpus roots and owns the stdout results contract.                      |
+| `corpus.zig`   | Loads non-binary files under the corpus roots and owns the process output budget.                         |
 | `haystack.zig` | Defines the shared recursive walk and skip-directory policy.                                             |
-| `fresh.zig`    | Widens serial index candidates with files whose metadata cannot prove they predate the index.            |
 | `bulkstat.zig` | Reads Darwin name/type/mtime/ctime in bulk, with a portable stat fallback and one shared freshness rule. |
 | `*_test.zig`   | Pins path policy, metadata boundaries, and Darwin bulk-stat parity against the portable reference walk.  |
 
 ## Local-filesystem freshness model
 
 The persisted trigram index is an acceleration structure, not the authority on
-which files exist. Each query performs a live walk. For an indexed
-non-candidate, it elides the file read only when both timestamps are available
-and strictly older than the build anchor:
+which files exist. Its freshness overlay lives in `../../index/trigrams/` and
+drives this live walk. For an indexed non-candidate, it elides the file read only
+when both timestamps are available and strictly older than the build anchor:
 
 ```text
 live_read =

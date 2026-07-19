@@ -35,7 +35,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const haystack = @import("../corpus/haystack.zig");
+const haystack = @import("../../corpus/tree/haystack.zig");
 const ResidentSession = @import("resident.zig").ResidentSession;
 const Dir = std.Io.Dir;
 

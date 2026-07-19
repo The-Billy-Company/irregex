@@ -21,9 +21,9 @@
 //! the older index without appearing in the working-tree diff.
 
 const std = @import("std");
-const corpus_mod = @import("../../runtime/corpus/corpus.zig");
-const haystack = @import("../../runtime/corpus/haystack.zig");
-const bulkstat = @import("../../runtime/corpus/bulkstat.zig");
+const corpus_mod = @import("../../corpus/tree/corpus.zig");
+const haystack = @import("../../corpus/tree/haystack.zig");
+const bulkstat = @import("../../corpus/tree/bulkstat.zig");
 const persist = @import("persist.zig");
 const Index = @import("trigram.zig").Index;
 const Dir = std.Io.Dir;
@@ -121,6 +121,17 @@ pub fn candidates(
 /// Strings land in `a`; the caller owns their lifetime.
 pub fn changedSince(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, since_ns: i128, a: std.mem.Allocator, out: *std.ArrayList([]const u8)) !void {
     try walkFresh(gpa, io, roots, since_ns, a, out);
+}
+
+/// `changedSince` reduced to its count — the honest staleness number every
+/// anchor-carrying status/report surface prints. Walk errors read as 0:
+/// staleness here is advisory, never load-bearing.
+pub fn staleCount(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, since_ns: i128) usize {
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    var changed: std.ArrayList([]const u8) = .empty;
+    changedSince(gpa, io, roots, since_ns, arena.allocator(), &changed) catch return 0;
+    return changed.items.len;
 }
 
 fn seedAll(gpa: std.mem.Allocator, ids: *std.ArrayList(u32), total: usize) !void {
@@ -261,9 +272,12 @@ fn buildWorkItems(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8,
         var children: std.ArrayList(WorkItem) = .empty;
         defer children.deinit(gpa);
         const expanded = expandOneLevel(gpa, io, item.prefix, built_ns, a, out, &children) catch false;
-        if (!expanded or children.items.len == 0) {
-            try final.append(gpa, item); // leaf: unopenable, empty, or all-files
+        if (!expanded) {
+            try final.append(gpa, item); // unopenable: leave the whole subtree to visitItem
         } else {
+            // The level's files are already in `out`; only child directories
+            // continue. An all-files directory queues nothing — re-adding it
+            // as a leaf would double-emit every fresh file it holds.
             try q.appendSlice(gpa, children.items);
         }
     }

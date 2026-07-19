@@ -1,4 +1,4 @@
-# irregex/src/scope
+# `src/corpus/scope/` — path selection
 
 Shared **path scoping** — the `-t <lang>` / `-g <glob>` / positional-`PATH`
 affordances an agent reaches for to confine a search to a subtree. Because irregex

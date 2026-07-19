@@ -23,9 +23,9 @@
 //! connection falls back cold.)
 
 const std = @import("std");
-const args = @import("../../cli/gist/search/argv/args.zig");
-const output = @import("../../cli/gist/search/emit/output.zig");
-const grepfile = @import("../../cli/gist/search/read/grepfile.zig");
+const args = @import("../cold/argv/args.zig");
+const output = @import("../cold/emit/output.zig");
+const grepfile = @import("../cold/read/grepfile.zig");
 const query_mod = @import("../../search/match/query.zig");
 const request = @import("request.zig");
 const Regex = @import("../../search/match/regex/linear/core.zig").Regex;

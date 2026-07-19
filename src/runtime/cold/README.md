@@ -2,16 +2,16 @@
 doc_radar:
   counts:
     - description: "search face keeps the five concern packages"
-      glob: pkg/kernels/irregex/src/gist/faces/cli/search/*/
+      glob: pkg/kernels/irregex/src/runtime/cold/*/
       equals: 5
       unit: dirs
   sentinels:
     - description: "serial engine remains the commands.search re-export"
       file: pkg/kernels/irregex/src/root.zig
-      contains: 'pub const search = @import("gist/faces/cli/search/engine/serial.zig");'
+      contains: 'pub const search = @import("runtime/cold/engine/serial.zig");'
 ---
 
-# gist/faces/cli/search — the unified rg-DEFAULT engine
+# runtime/cold — the unified rg-DEFAULT engine
 
 The cold search path. This is what backs bare `gist <pattern>`, `gist rg`, and
 `gist search`: a byte-for-byte ripgrep-DEFAULT drop-in over an arbitrary tree
@@ -26,7 +26,7 @@ One matcher, three orchestration modes under [`engine/`](engine):
 - **ranked** — `--rank` definition-first view (gist's one native shape)
 
 The warm daemon and the FFI session do **not** reimplement matching: they call
-the shared `kernel/engine/query.zig` core and, for line frames, reuse this
+the shared `search/match/query.zig` core and, for line frames, reuse this
 face's own `Emitter` / `grepfile` so warm bytes cannot drift from cold.
 
 ## Concern packages

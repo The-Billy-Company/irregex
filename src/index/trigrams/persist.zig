@@ -1,12 +1,12 @@
 //! gist — the persisted-index loader, shared by every cold-query path.
 //!
-//! `faces/cli/lifecycle/index.zig`'s `run` (the `gist index` verb) serializes the trigram
+//! `cli/gist/lifecycle/index.zig`'s `run` (the `gist index` verb) serializes the trigram
 //! `Index` + the doc→path table to disk; each later fresh process maps them back
 //! **zero-copy** and validates only the compact directory up front. Posting
 //! groups are checked when queried, avoiding a full body decode on every fresh
 //! process. That cold-load path is shared by every shape the unified engine
-//! serves — the index-accelerated read-elision walk (`faces/cli/search/engine/serial.zig`)
-//! and the `--rank` ranked view (`faces/cli/search/engine/ranked.zig`) — so it lives
+//! serves — the index-accelerated read-elision walk (`runtime/cold/engine/serial.zig`)
+//! and the `--rank` ranked view (`runtime/cold/engine/ranked.zig`) — so it lives
 //! here, in the index layer, rather than in a command (a command importing
 //! another command's internals is the coupling this split exists to kill).
 //!
@@ -17,7 +17,7 @@
 
 const std = @import("std");
 const Index = @import("trigram.zig").Index;
-const corpus_mod = @import("../../runtime/corpus/corpus.zig");
+const corpus_mod = @import("../../corpus/tree/corpus.zig");
 const Dir = std.Io.Dir;
 
 /// Stable aliases (status / bench size accounting). The query loader prefers the
@@ -87,7 +87,7 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io) !?Persisted {
 /// `load`, but SILENT on a miss (no "run `gist index`" guidance). The bare
 /// `gist <pattern>` front door probes for an index on every invocation to
 /// accelerate its live walk (skip reading provable-non-candidate files —
-/// `faces/cli/search/engine/serial.zig`), and outside an indexed corpus that probe MUST
+/// `runtime/cold/engine/serial.zig`), and outside an indexed corpus that probe MUST
 /// stay quiet: a missing index there is the normal case, not something to nag
 /// about, and the walk falls back to reading every file exactly as before.
 pub fn loadQuiet(gpa: std.mem.Allocator, io: std.Io) !?Persisted {

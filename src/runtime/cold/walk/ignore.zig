@@ -20,7 +20,7 @@
 //!     unless `--no-require-git`; `--no-ignore*` / `-u` disable the relevant tier.
 
 const std = @import("std");
-const gl = @import("../../../../runtime/scope/glob.zig");
+const gl = @import("../../../corpus/scope/glob.zig");
 const args = @import("../argv/args.zig");
 const paths = @import("paths.zig");
 const stripDot = paths.stripDot;

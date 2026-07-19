@@ -4,7 +4,7 @@
 //! delivered them) into walk-certified verdicts the session can apply to its
 //! overlay WITHOUT re-walking the tree: for each path it answers "would the
 //! cold path's certified rg-default walk admit this right now?" using the very
-//! same `Ignore` machinery (`faces/cli/search/walk/ignore.zig`) the walk itself
+//! same `Ignore` machinery (`runtime/cold/walk/ignore.zig`) the walk itself
 //! runs — same rule parsing, same precedence, same hidden/`.git` folding — so
 //! a scoped reconcile cannot drift from `defaultFileSet`.
 //!
@@ -31,8 +31,8 @@
 //! drain that saw it).
 
 const std = @import("std");
-const ignore = @import("../../cli/gist/search/walk/ignore.zig");
-const grepfile = @import("../../cli/gist/search/read/grepfile.zig");
+const ignore = @import("../cold/walk/ignore.zig");
+const grepfile = @import("../cold/read/grepfile.zig");
 const Dir = std.Io.Dir;
 
 /// One resolved watcher path, in KEY SPACE (the exact path-string dialect the

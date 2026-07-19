@@ -19,15 +19,15 @@
 //! candidate set the same way a scoped walk would.
 
 const std = @import("std");
-const corpus_mod = @import("../../../../runtime/corpus/corpus.zig");
-const fresh = @import("../../../../index/trigrams/fresh.zig");
-const persist = @import("../../../../index/trigrams/persist.zig");
-const Regex = @import("../../../../search/match/regex/linear/core.zig").Regex;
-const mirror = @import("../../../../search/rank/mirror.zig");
-const signals = @import("../../../../search/rank/signals.zig");
-const rank_mod = @import("../../../../search/rank/rank.zig");
-const gl = @import("../../../../runtime/scope/glob.zig");
-const query_mod = @import("../../../../search/match/query.zig");
+const corpus_mod = @import("../../../corpus/tree/corpus.zig");
+const fresh = @import("../../../index/trigrams/fresh.zig");
+const persist = @import("../../../index/trigrams/persist.zig");
+const Regex = @import("../../../search/match/regex/linear/core.zig").Regex;
+const mirror = @import("../../../search/rank/mirror.zig");
+const signals = @import("../../../search/rank/signals.zig");
+const rank_mod = @import("../../../search/rank/rank.zig");
+const gl = @import("../../../corpus/scope/glob.zig");
+const query_mod = @import("../../../search/match/query.zig");
 const args_mod = @import("../argv/args.zig");
 const Dir = std.Io.Dir;
 
@@ -135,20 +135,7 @@ fn fileDoc(buf: []const u8, path: []const u8, re: *const Regex, sim: *Regex.Sim,
     };
 }
 
-/// Read one file fully into `scratch` (capped); returns bytes read or null.
-fn readFileInto(path: []const u8, scratch: []u8) ?usize {
-    const fd = std.posix.openat(std.posix.AT.FDCWD, path, .{ .ACCMODE = .RDONLY }, 0) catch return null;
-    defer {
-        _ = std.posix.system.close(fd);
-    }
-    var n: usize = 0;
-    while (n < scratch.len) {
-        const r = std.posix.read(fd, scratch[n..]) catch break;
-        if (r == 0) break;
-        n += r;
-    }
-    return n;
-}
+const readFileInto = @import("../read/grepfile.zig").readFileInto;
 
 /// Below this candidate count the thread-spawn overhead isn't worth it and the
 /// read runs inline (mirrors `run.zig`'s `par_threshold`).

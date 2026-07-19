@@ -1,5 +1,5 @@
-//! irregex — corpus loading, shared by the CLI drivers (`gist/faces/cli/`), the
-//! unified search engine (`gist/faces/cli/search/`) and the bench/verify harness
+//! irregex — corpus loading, shared by the CLI drivers (`cli/gist/`), the
+//! unified search engine (`runtime/cold/`) and the bench/verify harness
 //! (`bench/harness/bench.zig`). The corpus is every non-binary file under the roots
 //! (rg-style: a NUL byte ⇒ binary ⇒ skipped), minus the build/VCS subtrees rg
 //! also skips. Also owns the stdout results contract (`emitResults`) every
@@ -66,7 +66,7 @@ fn envUncap() bool {
 /// `GIST_HINTS` — the kill switch for the stderr guidance channel (`gist:
 /// try` / `gist: note:` lines). Unset or any value except `0`/`false`/`no` keeps hints on;
 /// a byte-counting capture or parity harness exports `GIST_HINTS=0`. Shared
-/// by the CLI hint module (`gist/faces/cli/search/emit/hints.zig`) and the
+/// by the CLI hint module (`runtime/cold/emit/hints.zig`) and the
 /// truncation notice below — one env read, one policy. Results on stdout are
 /// untouched either way; this only governs stderr guidance.
 pub fn hintsEnabled() bool {

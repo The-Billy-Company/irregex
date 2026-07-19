@@ -2,21 +2,21 @@
 doc_radar:
   sentinels:
     - description: "three orchestration modes remain the public engine surface"
-      file: pkg/kernels/irregex/src/gist/faces/cli/search/engine/serial.zig
+      file: pkg/kernels/irregex/src/runtime/cold/engine/serial.zig
       contains: ["pub fn run", "defaultFileSet", "IndexSkip"]
     - description: "parallel fused pipeline still falls through to serial when ineligible"
-      file: pkg/kernels/irregex/src/gist/faces/cli/search/engine/parallel.zig
+      file: pkg/kernels/irregex/src/runtime/cold/engine/parallel.zig
       contains: ["pub fn run"]
     - description: "ranked view remains the --rank native shape"
-      file: pkg/kernels/irregex/src/gist/faces/cli/search/engine/ranked.zig
+      file: pkg/kernels/irregex/src/runtime/cold/engine/ranked.zig
       contains: ["pub fn run", "rank"]
 ---
 
-# gist/faces/cli/search/engine — walk + match orchestration
+# runtime/cold/engine — walk + match orchestration
 
 The control planes that wire [`argv`](../argv) → [`walk`](../walk) →
 [`read`](../read) → [`emit`](../emit) into a finished search. Matching itself
-lives in `kernel/engine/query.zig`; these modules own *when* to walk, *which*
+lives in `search/match/query.zig`; these modules own *when* to walk, *which*
 files to open, and *how* to stream results.
 
 | File | Role |

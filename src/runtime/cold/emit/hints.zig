@@ -19,7 +19,7 @@
 //! parity harnesses; stdout is untouched either way.
 const std = @import("std");
 const args = @import("../argv/args.zig");
-const corpus_mod = @import("../../../../runtime/corpus/corpus.zig");
+const corpus_mod = @import("../../../corpus/tree/corpus.zig");
 
 /// What was searched — drives the summary tail and the widen/unhide hints.
 pub const Scope = union(enum) {

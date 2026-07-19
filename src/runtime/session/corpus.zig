@@ -2,7 +2,7 @@
 //! (ADR-352 rung 2.5).
 //!
 //! `load` reads a pre-selected path list (the certified rg-default walk,
-//! `faces/cli/search/engine/serial.zig::defaultFileSet`) into resident documents with the
+//! `runtime/cold/engine/serial.zig::defaultFileSet`) into resident documents with the
 //! SAME per-file ingest the cold engine applies, so the warm corpus is a true
 //! mirror of what a cold run would read — not an approximation of it:
 //!
@@ -31,7 +31,7 @@
 //! plain `[][]const u8` so the trigram index builds over it directly.
 
 const std = @import("std");
-const grepfile = @import("../../cli/gist/search/read/grepfile.zig");
+const grepfile = @import("../cold/read/grepfile.zig");
 const Dir = std.Io.Dir;
 
 /// One faithfully ingested document body: decoded bytes plus the byte offset of

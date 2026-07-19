@@ -1,4 +1,4 @@
-# gist/kernel/index
+# index/trigrams
 
 **T0** — the positional-trigram candidate index, gist's structural edge over a
 whole-tree scan.

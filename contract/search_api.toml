@@ -36,14 +36,14 @@ package_import = "gist"
 # Honesty note (status tokens are truthful about disk, not aspiration): both
 # `subprocess` and `uds` are callable transports today. The `uds` resident stack
 # is landed and verified end to end — the eligibility classifier
-# (`src/gist/session/request.zig`), the length-prefixed wire codec
-# (`src/gist/session/protocol.zig`), the warm error-returning engine
-# (`src/gist/session/resident.zig`), the fail-closed freshness watcher
-# (`src/gist/session/watch.zig`), the `gist serve` daemon accept-loop
-# (`src/gist/faces/cli/daemon/serve/serve.zig`), and the fail-open connecting client
-# (`src/gist/faces/cli/daemon/client/client.zig`, wired into the bare-`gist` front door in
-# `src/gist/faces/cli/main.zig`) — under an end-to-end lifecycle test
-# (`src/gist/faces/cli/daemon/serve/serve_test.zig`). The warm path is a pure accelerator that
+# (`src/runtime/session/request.zig`), the length-prefixed wire codec
+# (`src/runtime/session/protocol.zig`), the warm error-returning engine
+# (`src/runtime/session/resident.zig`), the fail-closed freshness watcher
+# (`src/runtime/session/watch.zig`), the `gist serve` daemon accept-loop
+# (`src/cli/gist/daemon/serve/serve.zig`), and the fail-open connecting client
+# (`src/cli/gist/daemon/client/client.zig`, wired into the bare-`gist` front door in
+# `src/cli/gist/main.zig`) — under an end-to-end lifecycle test
+# (`src/cli/gist/daemon/serve/serve_test.zig`). The warm path is a pure accelerator that
 # routes only what it can answer with cold's own per-file bytes and exit code
 # (`-l`/files-with-matches and the bare default `lines` search, incl. `-n`;
 # file order is the deterministic pathLess canonicalization of cold's parallel
@@ -51,8 +51,8 @@ package_import = "gist"
 # never a new source of truth or a new failure mode.
 [transports]
 subprocess = { status = "authoritative", detail = "certified `gist` binary + --json; results produced by the same combinePatterns->collectFiles->json.run path the CLI uses" }
-uds = { status = "operational-accelerator", detail = "`gist serve` daemon holds a warm ResidentSession behind a Unix socket; the front-door client dials it for eligible queries (`-l`/files-with-matches, and the bare default `lines` search whose `path:[line:]text` bytes the daemon pre-renders through the cold Emitter and chunk-streams) and falls open to `subprocess` on any ineligible argv, TTY stdout, readable stdin, absent daemon, decline, or wire hiccup — a pure fail-open accelerator, never a distinct answer path (src/gist/faces/cli/daemon/{serve,client}, src/gist/session/*)" }
-ffi = { status = "operational-accelerator", detail = "in-process irregex_open/irregex_search/irregex_close C session ABI (src/gist/faces/ffi/session.zig) over the same error-returning resident engine as `uds`; a bad query returns IRREGEX_STALE, never a dead host. The match callback carries an i32 abort return (0 continue / non-zero stop) for bounded / first-match streaming. Unlike `uds` (files/count only), it streams full Match records, so the Python `Session.run/files/count/absent` route through it via cffi (bindings/python/gist/_ffi.py) when the shared library + cffi are present in-process, falling open to the `uds` daemon or `subprocess` otherwise — a pure fail-open accelerator, never a distinct answer path. cffi stays optional; the wheel is pure-Python without it. Verified by the C-ABI smoke (build.zig) and FFI-vs-cold byte-parity tests (bindings/python/tests/test_ffi_parity.py)." }
+uds = { status = "operational-accelerator", detail = "`gist serve` daemon holds a warm ResidentSession behind a Unix socket; the front-door client dials it for eligible queries (`-l`/files-with-matches, and the bare default `lines` search whose `path:[line:]text` bytes the daemon pre-renders through the cold Emitter and chunk-streams) and falls open to `subprocess` on any ineligible argv, TTY stdout, readable stdin, absent daemon, decline, or wire hiccup — a pure fail-open accelerator, never a distinct answer path (src/cli/gist/daemon/{serve,client}, src/runtime/session/*)" }
+ffi = { status = "operational-accelerator", detail = "in-process irregex_open/irregex_search/irregex_close C session ABI (src/runtime/ffi/session.zig) over the same error-returning resident engine as `uds`; a bad query returns IRREGEX_STALE, never a dead host. The match callback carries an i32 abort return (0 continue / non-zero stop) for bounded / first-match streaming. Unlike `uds` (files/count only), it streams full Match records, so the Python `Session.run/files/count/absent` route through it via cffi (bindings/python/gist/_ffi.py) when the shared library + cffi are present in-process, falling open to the `uds` daemon or `subprocess` otherwise — a pure fail-open accelerator, never a distinct answer path. cffi stays optional; the wheel is pure-Python without it. Verified by the C-ABI smoke (build.zig) and FFI-vs-cold byte-parity tests (bindings/python/tests/test_ffi_parity.py)." }
 
 # Resident-session semantics for the `uds` transport (ADR-352 rung 2.5). A client
 # opens a persistent connection to one daemon generation and issues many queries;
@@ -63,7 +63,7 @@ ffi = { status = "operational-accelerator", detail = "in-process irregex_open/ir
 [session]
 socket_env = "GIST_SESSION_SOCK"                 # override the default per-repo socket path
 default_socket = ".local/gist-verify/gistd.sock"
-protocol_version = 1                             # length-prefixed frame protocol (src/gist/session/protocol.zig)
+protocol_version = 1                             # length-prefixed frame protocol (src/runtime/session/protocol.zig)
 # Monotonic generations carried in every READY/STATUS frame.
 generations = [
   "daemon",
@@ -95,7 +95,7 @@ watchers = [
 ] # linux inotify accelerator; portable metadata-reconcile barrier
 
 # The exact request surface the deep contract exposes. Each option maps to the
-# rg-parity flag the engine already honors (see src/gist/faces/cli/search/argv/args.zig
+# rg-parity flag the engine already honors (see src/runtime/cold/argv/args.zig
 # `flag_catalog`); the package lowers a SearchRequest into that argv. Only
 # match-finding intent belongs here — presentation, ranking, stats, replace,
 # and stdin remain CLI-only and are deliberately NOT contract options.
@@ -139,7 +139,7 @@ no_match = { code = 1, detail = "ran cleanly, found nothing" }
 error = { code = 2, detail = "unsupported pattern/flag, or an I/O/walk error — never a silent empty result" }
 
 # ── irregex: the irregular-expression surface (native shapes, no rg parity) ──
-# The set-shaped tier over the engine (src/irregex/): pattern SETS with exact
+# The set-shaped tier over the engine (src/search/): pattern SETS with exact
 # per-pattern attribution (match), compression-kinship sketches (relate — LZ78
 # dictionary bottom-k MinHash, LZJD distance), and a closed filter/group/sort/
 # limit plan executed engine-side (weave). Surfaced as three CLI verbs; like
@@ -155,9 +155,23 @@ sketch = { k = 128, min_phrase = 3, algorithm = "LZ78 phrase dictionary -> botto
 attribution = { detail = "a PatternSet answer is bit-identical to N independent single-pattern runs; the fused (?:a)|(?:b) gate is an accelerator that may only skip work, never change an answer (tests hold it to the single-pattern oracle)" }
 
 [irregex.verbs]
-similar = { argv = "hydra similar <path> [--top N] [--json] [ROOT...]", detail = "nearest files to <path> by compression kinship, ascending distance; the target itself is excluded" }
-dups = { argv = "hydra dups [--max-distance T] [--top N] [--json] [ROOT...]", detail = "near-duplicate pairs across the corpus, closest first; candidates via shared bottom-16 seed hashes, every emitted pair exactly verified against both sketches" }
-patterns = { argv = "hydra patterns -e P [-e P...] [-f FILE] [-F] [-i] [--by pattern|file] [--under GLOB] [--top N] [--json] [ROOT...]", detail = "one walk, N patterns, exact per-pattern attribution as path:line rows; --by groups into counts, --under/--top shape engine-side (loom); rows are total-ordered (path, line, pattern) so output is deterministic" }
+similar = { argv = "relate similar <path> [--top N] [--json] [--no-index] [ROOT...]", detail = "nearest files to <path> by compression kinship, ascending distance; the target itself is excluded; answers from the kinship atlas when one is fresh-foldable, live otherwise — identical answers (--no-index forces live)" }
+dups = { argv = "relate dups [--max-distance T] [--top N] [--json] [--no-index] [ROOT...]", detail = "near-duplicate pairs across the corpus, closest first; candidates via shared bottom-16 seed hashes, every emitted pair exactly verified against both sketches; atlas-accelerated like similar" }
+clusters = { argv = "relate clusters [--max-distance T] [--min-size N] [--top N] [--json] [--no-index] [ROOT...]", detail = "fork families — connected components of the verified dup graph, size-desc then exemplar-asc, members path-asc; exactly the transitive closure of dups at the same threshold" }
+patterns = { argv = "relate patterns -e P [-e P...] [-f FILE] [-F] [-i] [--by pattern|file] [--under GLOB] [--top N] [--json] [ROOT...]", detail = "one walk, N patterns, exact per-pattern attribution as path:line rows; --by groups into counts, --under/--top shape engine-side (loom); rows are total-ordered (path, line, pattern) so output is deterministic" }
+pack = { argv = "relate pack <text> [--top N] [--json] [ROOT...]", detail = "the SET of files that jointly describes <text> cheapest — greedy submodular max-coverage over corpus-priced fingerprints (lazy-greedy, (1-1/e)-optimal); each pick's marginal_bits is exactly the priced bits it adds beyond earlier picks; foreign fingerprints (df=0) are reported, never silently absorbed" }
+search = { argv = "relate search <text> [--top N] [--json] [ROOT...]", detail = "which files would describe <text> most cheaply — two-stage compression retrieval: the corpus-priced fingerprint lexicon nominates, the suffix-automaton Ziv-Merhav cross-parse decides; score = coding gain in [0,1], higher = closer" }
+quote = { argv = "relate quote <text> [--json]", detail = "rewrite <text> as maximal verbatim quotations from the WHOLE corpus, priced in bits (cross-parse on the persisted codex shelf, O(|text|)); each phrase attributed to one exemplar file; corpus-conditional bits/byte is the novelty meter" }
+
+# relate owns its warm tier the way gist owns the trigram index (a full
+# engine, not a shim): the kinship atlas persists one LZJD sketch per corpus
+# file; queries fold in every file changed since the build anchor (same T3
+# stat walk) and gate emitted rows against deletion. An accelerator, never an
+# authority — a missing/corrupt atlas answers live with identical bytes.
+[irregex.lifecycle]
+atlas = { file = ".local/gist-verify/kinship.atlas", detail = "magic ATLS v1: anchor + NUL-separated path catalog + fixed-width sketch rows + FNV-1a checksum; fails closed on any framing/checksum violation" }
+index = { argv = "relate index [--shelf]", detail = "build + persist the atlas atomically (anchor captured BEFORE the corpus read); --shelf also rebuilds the codex shelf quote reads — the same artifact `gist codex build` writes" }
+status = { argv = "relate status [--json]", detail = "atlas + shelf readiness and staleness; exit 0 when the atlas is ready, 1 otherwise (verbs still answer, live)" }
 
 # The agent / code-place tool boundary (ADR-352, plan step 5). Billy operating a
 # user's machine and a coding agent working a repository are the same actor: both

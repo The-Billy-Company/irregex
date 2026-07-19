@@ -2,14 +2,14 @@
 doc_radar:
   sentinels:
     - description: "per-file search stays one module shared by both walk engines"
-      file: pkg/kernels/irregex/src/gist/faces/cli/search/read/grepfile.zig
+      file: pkg/kernels/irregex/src/runtime/cold/read/grepfile.zig
       contains: ["pub fn handleBinary", "pub fn readFileRaw", "pub const Stats"]
     - description: "-E still covers the WHATWG CJK multi-byte decoders"
-      file: pkg/kernels/irregex/src/gist/faces/cli/search/read/encoding.zig
+      file: pkg/kernels/irregex/src/runtime/cold/read/encoding.zig
       contains: ["gb18030", "shift_jis", "euc_jp"]
 ---
 
-# gist/faces/cli/search/read — per-file ingest
+# runtime/cold/read — per-file ingest
 
 Everything that turns a path into matchable UTF-8 bytes — and the per-file
 search that consumes those bytes. Serial and parallel engines both call into

@@ -3,7 +3,7 @@
 //! between classifying a walk entry as searchable and actually opening it, but
 //! adapted to irregex's general program: no ignore files, no explicit-file-arg
 //! concept, one skip-dir policy (`isSkipDir`) shared by every corpus consumer.
-//! Before this, `corpus.zig`'s index build, `faces/cli/search/engine/serial.zig`'s tree-walk
+//! Before this, `corpus.zig`'s index build, `runtime/cold/engine/serial.zig`'s tree-walk
 //! enumeration, `corpus/fresh.zig`'s mtime+ctime freshness stat-walk, and the
 //! no-prefilter live scan each re-derived the identical
 //! walk skeleton (open root → skip/enter dirs → join a file's path) around a

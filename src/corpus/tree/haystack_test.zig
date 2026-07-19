@@ -52,7 +52,7 @@ test "joinPath: byte-identical to `root ++ \"/\" ++ rel` for every shape the wal
     const cases = [_]struct { root: []const u8, rel: []const u8 }{
         .{ .root = "services", .rel = "backend/gateway/main.go" },
         .{ .root = ".", .rel = "README.md" },
-        .{ .root = "libs", .rel = "kernels/irregex/src/corpus/haystack.zig" },
+        .{ .root = "libs", .rel = "kernels/irregex/src/corpus/tree/haystack.zig" },
         .{ .root = "a", .rel = "b" },
     };
     for (cases) |c| {

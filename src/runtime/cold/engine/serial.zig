@@ -22,7 +22,7 @@
 //!   • exit 0 = matched, 1 = no match, 2 = error/unsupported (ripgrep's codes).
 //! It reuses gist's linear-time RE2-style matcher for the default per-line and
 //! the `-U`/`--multiline` whole-buffer paths, and routes `-P`/`--pcre2` to the
-//! opt-in PCRE2 JIT backend (`kernel/regex/pcre2/backend.zig`) — both behind the
+//! opt-in PCRE2 JIT backend (`search/match/regex/pcre2/backend.zig`) — both behind the
 //! engine-neutral `Matcher` seam, so `multiline.zig` + `Emitter.buffer` own
 //! cross-line emission regardless of which engine produced a span. This module
 //! is the walk + presentation shell that makes both engines addressable the way
@@ -34,7 +34,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const corpus_mod = @import("../../../../runtime/corpus/corpus.zig");
+const corpus_mod = @import("../../../corpus/tree/corpus.zig");
 const args = @import("../argv/args.zig");
 const output = @import("../emit/output.zig");
 const ignore = @import("../walk/ignore.zig");
@@ -43,24 +43,24 @@ const color = @import("../emit/color.zig");
 const grepfile = @import("../read/grepfile.zig");
 const ingest = @import("../read/ingest.zig");
 const parallel = @import("parallel.zig");
-const types = @import("../../../../runtime/scope/types.zig");
-const simd = @import("../../../../search/match/scan/simd.zig");
-const verify = @import("../../../../search/match/scan/verify.zig");
-const persist = @import("../../../../index/trigrams/persist.zig");
-const fresh = @import("../../../../index/trigrams/fresh.zig");
+const types = @import("../../../corpus/scope/types.zig");
+const simd = @import("../../../search/match/scan/simd.zig");
+const verify = @import("../../../search/match/scan/verify.zig");
+const persist = @import("../../../index/trigrams/persist.zig");
+const fresh = @import("../../../index/trigrams/fresh.zig");
 const ranked = @import("ranked.zig");
-const query_mod = @import("../../../../search/match/query.zig");
+const query_mod = @import("../../../search/match/query.zig");
 const paths_mod = @import("../walk/paths.zig");
 const replaceSep = paths_mod.replaceSep;
 const Opts = args.Opts;
 const Emitter = output.Emitter;
 const die = args.die;
 const oom = args.oom;
-const Regex = @import("../../../../search/match/regex/linear/core.zig").Regex;
-const Matcher = @import("../../../../search/match/regex/linear/matcher.zig").Matcher;
-const pcre2 = @import("../../../../search/match/regex/pcre2/backend.zig");
+const Regex = @import("../../../search/match/regex/linear/core.zig").Regex;
+const Matcher = @import("../../../search/match/regex/linear/matcher.zig").Matcher;
+const pcre2 = @import("../../../search/match/regex/pcre2/backend.zig");
 const Pcre = pcre2.Pcre;
-const captures_mod = @import("../../../../search/match/regex/compile/captures.zig");
+const captures_mod = @import("../../../search/match/regex/compile/captures.zig");
 const Captures = captures_mod.Captures;
 const Caps = captures_mod.Caps;
 /// `pub`: the CLI shell (`main.zig`) reuses the same hint module on the warm
@@ -898,7 +898,7 @@ fn createdTimeNs(path: []const u8) ?i96 {
 /// the poll entirely.
 const stdin_poll_timeout_ms = 200;
 
-/// `pub` for the warm client (`faces/cli/daemon/client/client.zig`): a rootless query
+/// `pub` for the warm client (`cli/gist/daemon/client/client.zig`): a rootless query
 /// with a readable stdin is a STREAM search in the cold engine (below), which
 /// the daemon's tree corpus can never answer — the client must detect the same
 /// condition, with the same fd-type rules, and decline to cold.
