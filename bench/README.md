@@ -1,10 +1,10 @@
 ---
 doc_radar:
   counts:
-    - description: "ten bench concern folders, one per row of the table below"
+    - description: "eleven bench concern folders, one per row of the table below"
       glob: pkg/kernels/irregex/bench/*/
       unit: dirs
-      equals: 10
+      equals: 11
   sentinels:
     - description: "the Layer B′ measured rung exists as a build step"
       file: pkg/kernels/irregex/build.zig
@@ -15,7 +15,7 @@ doc_radar:
 
 Benchmark, verification, and competitive-proof harness for the `gist`
 code-locator kernel — no engine code lives here (that's all under `src/`).
-Ten concerns, ten folders:
+Eleven concerns, eleven folders:
 
 | Folder                                | Concern                                                                                                                                                                                                                                        |
 | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -28,7 +28,8 @@ Ten concerns, ten folders:
 | [`portcert/`](portcert/README.md)     | Layer B — port-optimality: cross-compiled `llvm-mca` static microarchitectural bound on gist's two hot loops, drift-guarded against production, plus Layer B′ — the same probes **measured on this machine** under the PMU (`gist-portbound`). |
 | [`roofline/`](roofline/README.md)     | Layer C — roofline: this machine's measured STREAM read-bandwidth ceiling vs gist's real scan throughput.                                                                                                                                      |
 | [`lowerbound/`](lowerbound/README.md) | Layer D â algorithmic lower bound: a fail-closed structural audit proving gist's verify touches the information-theoretic floor of candidate bytes.                                                                                            |
-| [`relate/`](relate/README.md)         | The hydra **relate** proof (`relate-knn`) — the real cross-parse / LZJD / pivot engine run as a k-NN classifier; the measured basis for the compression-vs-embeddings verdict (`spikes/compression-vs-embeddings/`).      |
+| [`relate/`](relate/README.md)         | The hydra **relate** proof (`relate-knn`) — the real cross-parse / LZJD / pivot engine run as a k-NN classifier; the measured basis for the compression-vs-embeddings verdict (`spikes/compression-vs-embeddings/`).                    |
+| [`codex/`](codex/README.md)           | The **self-index** at-scale proof (`codex-scale`) — the real `src/codex/` FM-index over ~187MB of repo source: entropy-bound space vs gzip/bzip2/zstd/xz, flat-in-n count latency, byte-exact restore from the index alone.                    |
 
 ```bash
 cd pkg/kernels/irregex

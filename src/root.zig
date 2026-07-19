@@ -32,6 +32,7 @@
 //!   gist/session/ — the resident-session transport (ADR-352 rung 2.5): warm engine · UDS codec · classifier · watcher
 //!   gist/faces/   — the gist product surfaces (cli[search·lifecycle·status·daemon·schema] · ffi)
 //!   hydra/        — the compression-search engine: engine/ verb drivers + cli/ binary shell
+//!   codex/        — the compressed self-index: SA-IS → BWT → RRR wavelet tree (count/find/restore at entropy space)
 
 const std = @import("std");
 
@@ -73,6 +74,22 @@ pub const irregex = struct {
     pub const patterns = @import("primitives/patterns.zig");
     pub const sketch = @import("primitives/sketch.zig");
     pub const loom = @import("primitives/loom.zig");
+};
+
+// ── codex: the compressed self-index (the book that IS its own index) ──
+// FM-index over SA-IS + Huffman-shaped wavelet tree + RRR bitvectors: holds a
+// corpus at entropy-bound size while answering count(P) in O(|P|) — flat in
+// corpus size — plus locate (sampled) and byte-exact restore, all after the
+// text, suffix array, and BWT are freed. The Shannon rung under both engines:
+// gist gets an exact zero-false-positive tier, hydra a corpus-global
+// matching-statistics substrate. See src/codex/README.md for the math.
+pub const codex = struct {
+    pub const sais = @import("codex/sais.zig");
+    pub const rrr = @import("codex/rrr.zig");
+    pub const wavelet = @import("codex/wavelet.zig");
+    pub const index = @import("codex/codex.zig");
+    pub const cento = @import("codex/cento.zig");
+    pub const shelf = @import("codex/shelf.zig");
 };
 
 // ── hydra: the compression-search engine ──
@@ -135,6 +152,8 @@ pub const commands = struct {
     pub const search = @import("gist/faces/cli/search/engine/serial.zig");
     /// The `index` verb — build + persist the trigram index the engine reads.
     pub const indexer = @import("gist/faces/cli/lifecycle/index.zig");
+    /// The `codex` verbs — exact existence/count tier over the self-index shelf.
+    pub const codex = @import("gist/faces/cli/lifecycle/codex.zig");
     /// `gist serve` — the resident daemon that keeps a `session` warm behind a
     /// Unix socket (ADR-352 rung 2.5).
     pub const serve = @import("gist/faces/cli/daemon/serve/serve.zig");
@@ -142,6 +161,7 @@ pub const commands = struct {
     pub const irregex = @import("hydra/engine/verbs.zig");
     /// `hydra search` — two-stage compression retrieval (lexicon → zipper).
     pub const hydra_search = @import("hydra/engine/search.zig");
+    pub const hydra_quote = @import("hydra/engine/quote.zig");
     /// `hydra --schema` JSON capability manifest (the hydra binary's).
     pub const hydra_schema = @import("hydra/cli/schema.zig");
     /// The CLI's warm fast path — dial the daemon for an eligible query, emit
@@ -229,6 +249,7 @@ test {
     _ = @import("hydra/engine/lexicon.zig"); // hydra: corpus-priced fingerprint recall index
     _ = @import("hydra/engine/zipper.zig"); // hydra: suffix-automaton Ziv–Merhav cross-parse (exact ΔAb)
     _ = @import("hydra/engine/lexicon_test.zig"); // hydra: retrieval proof (short-query recall, ΔAb sidedness, zero-bit boilerplate)
+    _ = @import("codex/codex_test.zig"); // codex: SA-IS/RRR/wavelet/index differential vs naive oracles
     _ = @import("primitives/patterns_test.zig"); // match half: set ≡ N single-pattern oracles (gate off/on)
     _ = @import("primitives/loom_test.zig"); // weave: closed op set — total, deterministic, hand-tallied
     _ = @import("gist/session/request_test.zig"); // resident request eligibility classifier

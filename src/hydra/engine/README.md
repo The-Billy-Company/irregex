@@ -6,6 +6,7 @@ doc_radar:
       contains:
         - 'pub const zipper = @import("hydra/engine/zipper.zig");'
         - 'pub const hydra_search = @import("hydra/engine/search.zig");'
+        - 'pub const hydra_quote = @import("hydra/engine/quote.zig");'
     - description: "the lexicon prices fingerprints, not LZ78 phrases (the measured misranking this replaced)"
       file: pkg/kernels/irregex/src/hydra/engine/lexicon.zig
       contains: "winnowing"
@@ -36,6 +37,10 @@ boilerplate, byte-identical determinism.
 `patterns` over the shared floor: the
 [`../../primitives/`](../../primitives/README.md) math tier (LZ78 dictionary
 sketches, multi-pattern attribution, loom shaping) and the
-[`../../corpus/`](../../corpus/README.md) walk. Everything here is
-corpus-scale analytics: load once, answer a set-shaped question, keep results
-on stdout and diagnostics on stderr.
+[`../../corpus/`](../../corpus/README.md) walk; `search.zig` drives the
+two-stage retrieval (lexicon → zipper); `quote.zig` drives the corpus-global
+cross-parse (`hydra quote`) over the persisted codex shelf via
+[`../../codex/cento.zig`](../../codex/README.md) — zipper's Ziv–Merhav parse
+lifted from per-candidate automata to the whole corpus in one O(|query|)
+pass. Everything here is corpus-scale analytics: load once, answer a
+set-shaped question, keep results on stdout and diagnostics on stderr.

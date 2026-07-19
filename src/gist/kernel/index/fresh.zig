@@ -114,6 +114,15 @@ pub fn candidates(
     return .{ .ids = try ids.toOwnedSlice(gpa), .arena = arena, .gpa = gpa };
 }
 
+/// Paths under `roots` whose metadata says they changed at/after `since_ns` —
+/// the same conservative stat walk the T3 overlay runs (mtime OR ctime ≥
+/// anchor, metadata-unknown counted as changed), exposed for tiers that carry
+/// their OWN build anchor (the codex shelf) instead of the trigram one.
+/// Strings land in `a`; the caller owns their lifetime.
+pub fn changedSince(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, since_ns: i128, a: std.mem.Allocator, out: *std.ArrayList([]const u8)) !void {
+    try walkFresh(gpa, io, roots, since_ns, a, out);
+}
+
 fn seedAll(gpa: std.mem.Allocator, ids: *std.ArrayList(u32), total: usize) !void {
     try ids.ensureTotalCapacity(gpa, total);
     for (0..total) |i| ids.appendAssumeCapacity(@intCast(i));

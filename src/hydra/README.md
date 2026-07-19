@@ -34,7 +34,7 @@ sketches, multi-pattern attribution, loom shaping) and the
 
 | Folder    | What                                                                                        |
 | --------- | -------------------------------------------------------------------------------------------- |
-| `engine/` | the retrieval core (`lexicon.zig` recall + `zipper.zig` precision) and the verb drivers (`verbs.zig`) |
+| `engine/` | the retrieval core (`lexicon.zig` recall + `zipper.zig` precision) and the verb drivers (`verbs.zig` · `search.zig` · `quote.zig`) |
 | `cli/`    | the `hydra` binary — dispatch shell (`main.zig`) + `--schema` capability manifest (`schema.zig`) |
 
 ## Verbs
@@ -42,6 +42,7 @@ sketches, multi-pattern attribution, loom shaping) and the
 | Verb                   | Machinery           | Question it answers                                                                           |
 | ---------------------- | ------------------- | --------------------------------------------------------------------------------------------- |
 | `hydra search <text>`  | `lexicon` + `zipper` | which files would _describe_ this text most cheaply? (retrieval by conditional description length; score = coding gain ∈ [0,1]) |
+| `hydra quote <text>`   | `cento` over the codex shelf | how much of this does the _whole corpus_ already know, and where? (Ziv–Merhav cross-parse priced in bits, each phrase attributed to a source file; needs `gist codex build`) |
 | `hydra similar <path>` | `sketch`            | what else in this tree is _like_ this file?                                                   |
 | `hydra dups`           | `sketch`            | which files are near-duplicates of each other?                                                |
 | `hydra patterns -e P…` | `patterns` + `loom` | one walk, N patterns — which pattern hit where, shaped (`--by`/`--under`/`--top`) engine-side |
@@ -49,7 +50,11 @@ sketches, multi-pattern attribution, loom shaping) and the
 Corpus policy: the verbs load the **index corpus** (every non-binary file
 under the roots minus VCS/build subtrees — `corpus.load`), the same
 wider-than-gitignore policy `gist index` uses. They are corpus analytics, not
-per-file greps; the rg-parity walk stays with gist.
+per-file greps; the rg-parity walk stays with gist. The one exception is
+`quote`, which reads the **persisted** codex shelf (`gist codex build`)
+instead of building per-invocation — an FM-index build is a lifecycle event,
+not a query cost — and reports shelf staleness the same way `gist codex`
+does.
 
 Output contract: results on stdout (`--json` = NDJSON), diagnostics and the
 timing line on stderr — the same split every gist face keeps.

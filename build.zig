@@ -7,6 +7,13 @@
 //! front door) and the separate `gist-bench` harness
 //! (`bench/harness/bench.zig`, the `bench`/`verify`/`certify` tooling). Production CLI
 //! and benchmark tooling no longer share a binary.
+//!
+//! Build-speed contract: a bare `zig build` installs ONLY the product surface
+//! (gist + hydra CLIs and the C-ABI libs). The six bench/certificate lab
+//! executables (gist-bench, gist-roofline, gist-lowerbound, gist-portbound,
+//! relate-knn, codex-scale) install on their own named steps — and all at once
+//! via `zig build lab` — so the everyday build/install loop never pays for
+//! measurement tooling it doesn't run.
 
 const std = @import("std");
 const kernelkit = @import("kernelkit");
@@ -167,6 +174,15 @@ pub fn build(b: *std.Build) void {
     hydra_mod.addImport("irregex", cli_engine);
     const hydra_exe = b.addExecutable(.{ .name = "hydra", .root_module = hydra_mod });
     b.installArtifact(hydra_exe);
+
+    // ── `zig build lab` — the measurement-lab install umbrella ──
+    // The six bench/certificate executables below are deliberately OFF the
+    // default install step: a bare `zig build` (and `make build-gist` /
+    // `make install-gist` / every parity gate that rebuilds the CLI) pays only
+    // for the product surface. Each lab exe still installs on its own named
+    // step, so the documented `sudo zig-out/bin/<exe>` re-runs keep working
+    // after e.g. `zig build certify`; `zig build lab` installs all six.
+    const lab_step = b.step("lab", "Build + install the bench/certificate lab executables (gist-bench, roofline, lowerbound, portbound, relate-knn, codex-scale) → zig-out/bin");
 
     const run_cli = b.addRunArtifact(cli_exe);
     run_cli.setCwd(b.path("../../..")); // pkg/kernels/irregex → repo root
@@ -410,17 +426,20 @@ pub fn build(b: *std.Build) void {
     // kperf framework via `dlopen` (std.DynLib) — needs libc.
     bench_mod.link_libc = true;
     const bench_exe = b.addExecutable(.{ .name = "gist-bench", .root_module = bench_mod });
-    // Install to zig-out/bin so the cycles/byte pass can run under sudo without a
-    // root-cache recompile: `sudo pkg/kernels/irregex/zig-out/bin/gist-bench certify`.
-    b.installArtifact(bench_exe);
+    // Installed to zig-out/bin (on the named steps + `lab`, not the default
+    // install) so the cycles/byte pass can run under sudo without a root-cache
+    // recompile: `sudo pkg/kernels/irregex/zig-out/bin/gist-bench certify`.
+    const bench_install = &b.addInstallArtifact(bench_exe, .{}).step;
+    lab_step.dependOn(bench_install);
 
     // `zig build bench [-- <dirs…>]` — load a real corpus, build the index, time
     // the query slate (`-- scanbench` isolates the SIMD scan primitive).
     const run_bench = b.addRunArtifact(bench_exe);
     run_bench.setCwd(b.path("../../.."));
     if (b.args) |args| run_bench.addArgs(args);
-    b.step("bench", "Build the index over given dirs and time the query slate")
-        .dependOn(&run_bench.step);
+    const bench_step = b.step("bench", "Build the index over given dirs and time the query slate");
+    bench_step.dependOn(&run_bench.step);
+    bench_step.dependOn(bench_install);
 
     // `zig build verify [-- <battery_n> <seed>]` — emit gist's verified match
     // sets + the exact corpus list for the rg equality oracle (equality.sh).
@@ -428,8 +447,9 @@ pub fn build(b: *std.Build) void {
     run_verify.setCwd(b.path("../../.."));
     run_verify.addArg("verify");
     if (b.args) |args| run_verify.addArgs(args);
-    b.step("verify", "Emit gist match sets + corpus list for the rg equality diff")
-        .dependOn(&run_verify.step);
+    const verify_step = b.step("verify", "Emit gist match sets + corpus list for the rg equality diff");
+    verify_step.dependOn(&run_verify.step);
+    verify_step.dependOn(bench_install);
 
     // `zig build certify` — Layer A of the optimality certificate: per-class
     // single-thread cycles/byte + bootstrap-CI (PMU via kperf; run under `sudo`
@@ -438,8 +458,9 @@ pub fn build(b: *std.Build) void {
     run_certify.setCwd(b.path("../../.."));
     run_certify.addArg("certify");
     if (b.args) |args| run_certify.addArgs(args);
-    b.step("certify", "Layer-A optimality cert: per-class cycles/byte + bootstrap CI")
-        .dependOn(&run_certify.step);
+    const certify_step = b.step("certify", "Layer-A optimality cert: per-class cycles/byte + bootstrap CI");
+    certify_step.dependOn(&run_certify.step);
+    certify_step.dependOn(bench_install);
 
     // Bench-side tests too — the harness-local `stats.zig` bootstrap-CI +
     // Mann-Whitney unit tests. (`bench/harness/bench.zig` imports `gist`; reuse the
@@ -458,12 +479,36 @@ pub fn build(b: *std.Build) void {
     });
     relate_knn_mod.addImport("irregex", cli_engine);
     const relate_knn_exe = b.addExecutable(.{ .name = "relate-knn", .root_module = relate_knn_mod });
-    b.installArtifact(relate_knn_exe);
+    const relate_knn_install = &b.addInstallArtifact(relate_knn_exe, .{}).step;
+    lab_step.dependOn(relate_knn_install);
     const run_relate_knn = b.addRunArtifact(relate_knn_exe);
     run_relate_knn.setCwd(b.path("../../.."));
     if (b.args) |args| run_relate_knn.addArgs(args);
-    b.step("relate-knn", "Run the hydra relate engine as a k-NN classifier over a labeled manifest")
-        .dependOn(&run_relate_knn.step);
+    const relate_knn_step = b.step("relate-knn", "Run the hydra relate engine as a k-NN classifier over a labeled manifest");
+    relate_knn_step.dependOn(&run_relate_knn.step);
+    relate_knn_step.dependOn(relate_knn_install);
+
+    // ── `codex-scale` — the compressed self-index proof harness ──
+    // Runs the REAL codex (src/codex/) over slices of an on-disk corpus:
+    // index bits/char vs measured H0/H2, count/find latency across sizes
+    // (flat in n), byte-exact restore from the index alone, every timed count
+    // verified against a naive scan. bench/codex/race.sh adds compressor
+    // baselines on identical slices. Run from the repo root.
+    const codex_scale_mod = b.createModule(.{
+        .root_source_file = b.path("bench/codex/scale.zig"),
+        .target = k.target,
+        .optimize = cli_optimize, // the product-speed posture — this is a timing tool
+    });
+    codex_scale_mod.addImport("irregex", cli_engine);
+    const codex_scale_exe = b.addExecutable(.{ .name = "codex-scale", .root_module = codex_scale_mod });
+    const codex_scale_install = &b.addInstallArtifact(codex_scale_exe, .{}).step;
+    lab_step.dependOn(codex_scale_install);
+    const run_codex_scale = b.addRunArtifact(codex_scale_exe);
+    run_codex_scale.setCwd(b.path("../../.."));
+    if (b.args) |args| run_codex_scale.addArgs(args);
+    const codex_scale_step = b.step("codex-scale", "Prove the codex self-index at scale: entropy-bound space, flat-in-n count, exact restore");
+    codex_scale_step.dependOn(&run_codex_scale.step);
+    codex_scale_step.dependOn(codex_scale_install);
 
     // Shared modules for the Layer B/C/D executables below, each living outside
     // `bench/harness/`'s module root (Zig forbids importing a source file
@@ -490,12 +535,14 @@ pub fn build(b: *std.Build) void {
     roofline_mod.addImport("pmu", pmu_mod);
     roofline_mod.link_libc = true; // pmu.zig's kperf dlopen path, same as bench_mod
     const roofline_exe = b.addExecutable(.{ .name = "gist-roofline", .root_module = roofline_mod });
-    b.installArtifact(roofline_exe);
+    const roofline_install = &b.addInstallArtifact(roofline_exe, .{}).step;
+    lab_step.dependOn(roofline_install);
     const run_roofline = b.addRunArtifact(roofline_exe);
     run_roofline.setCwd(b.path("../../.."));
     if (b.args) |args| run_roofline.addArgs(args);
-    b.step("roofline", "Layer-C optimality cert: STREAM read-bandwidth ceiling vs gist's scan")
-        .dependOn(&run_roofline.step);
+    const roofline_step = b.step("roofline", "Layer-C optimality cert: STREAM read-bandwidth ceiling vs gist's scan");
+    roofline_step.dependOn(&run_roofline.step);
+    roofline_step.dependOn(roofline_install);
     k.test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = roofline_mod })).step);
 
     // ── `gist-lowerbound` — Layer D: algorithmic-floor byte-touch audit ──
@@ -507,12 +554,14 @@ pub fn build(b: *std.Build) void {
     lowerbound_mod.addImport("irregex", k.root_module);
     lowerbound_mod.addImport("probes", probes_mod);
     const lowerbound_exe = b.addExecutable(.{ .name = "gist-lowerbound", .root_module = lowerbound_mod });
-    b.installArtifact(lowerbound_exe);
+    const lowerbound_install = &b.addInstallArtifact(lowerbound_exe, .{}).step;
+    lab_step.dependOn(lowerbound_install);
     const run_lowerbound = b.addRunArtifact(lowerbound_exe);
     run_lowerbound.setCwd(b.path("../../.."));
     if (b.args) |args| run_lowerbound.addArgs(args);
-    b.step("lowerbound", "Layer-D optimality cert: fail-closed algorithmic-floor byte-touch audit")
-        .dependOn(&run_lowerbound.step);
+    const lowerbound_step = b.step("lowerbound", "Layer-D optimality cert: fail-closed algorithmic-floor byte-touch audit");
+    lowerbound_step.dependOn(&run_lowerbound.step);
+    lowerbound_step.dependOn(lowerbound_install);
 
     // ── `gist-portbound` — Layer B′: the port bound MEASURED on this machine ──
     // Runs the same drift-guarded probes as portcert.sh's static llvm-mca bound,
@@ -528,12 +577,14 @@ pub fn build(b: *std.Build) void {
     portbound_mod.addImport("pmu", pmu_mod);
     portbound_mod.link_libc = true; // pmu.zig's kperf dlopen path, same as bench_mod
     const portbound_exe = b.addExecutable(.{ .name = "gist-portbound", .root_module = portbound_mod });
-    b.installArtifact(portbound_exe);
+    const portbound_install = &b.addInstallArtifact(portbound_exe, .{}).step;
+    lab_step.dependOn(portbound_install);
     const run_portbound = b.addRunArtifact(portbound_exe);
     run_portbound.setCwd(b.path("../../.."));
     if (b.args) |args| run_portbound.addArgs(args);
-    b.step("portbound", "Layer-B′ optimality cert: measured on-machine port bound (sudo for cycles)")
-        .dependOn(&run_portbound.step);
+    const portbound_step = b.step("portbound", "Layer-B′ optimality cert: measured on-machine port bound (sudo for cycles)");
+    portbound_step.dependOn(&run_portbound.step);
+    portbound_step.dependOn(portbound_install);
     k.test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = portbound_mod })).step);
 
     // Layer-B drift guard (`probes/` copies ≡ the real production hot loops) —
