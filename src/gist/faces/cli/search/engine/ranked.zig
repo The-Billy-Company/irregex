@@ -328,8 +328,9 @@ fn emitRanked(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, docs: []cons
 /// for the compiled regex (optionally scoped to PATH roots), extract per-file
 /// features, fuse via the RRF kernel, print the top-K as token-compressed
 /// `path:line` + surfaced line. `k` caps the surfaced rows (`--rank[=N]`,
-/// default 20). Returns false when no complete index is available so the caller
-/// can live-rank. `caseless` disables the trigram prefilter.
+/// default 20). Returns null when no complete index is available so the caller
+/// can live-rank; otherwise the ranked-match count (0 ⇒ the caller may hint).
+/// `caseless` disables the trigram prefilter.
 pub fn run(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -337,9 +338,9 @@ pub fn run(
     roots: []const []const u8,
     k: usize,
     caseless: bool,
-) !bool {
+) !?usize {
     const l0 = nowNs(io);
-    var p = (persist.loadQuiet(gpa, io) catch null) orelse return false;
+    var p = (persist.loadQuiet(gpa, io) catch null) orelse return null;
     defer p.deinit();
     const load_ns = nowNs(io) - l0;
 
@@ -373,14 +374,15 @@ pub fn run(
     // (codegen demotion), RRF-fused. null is the external graph-centrality hook.
     const query_ns = nowNs(io) - q0;
     const top = try emitRanked(gpa, io, re, docs.items, .{ .disk = p.paths.items }, k);
-    std.debug.print("— {d} ranked matches (top {d}) · read {d}/{d} candidates · cold-load {d:.1} ms · rank {d:.1} ms · total {d:.1} ms\n", .{
+    std.debug.print("gist: {d} ranked matches (top {d}) · read {d}/{d} candidates · cold-load {d:.1} ms · rank {d:.1} ms · total {d:.1} ms\n", .{
         docs.items.len, top, read_files, p.paths.items.len, ms(load_ns), ms(query_ns), ms(load_ns + query_ns),
     });
-    return true;
+    return docs.items.len;
 }
 
-/// Rank bytes already gathered by the rg-compatible live walk.
-pub fn runLive(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, files: []const LiveFile, k: usize) !void {
+/// Rank bytes already gathered by the rg-compatible live walk. Returns the
+/// ranked-match count (0 ⇒ the caller may hint).
+pub fn runLive(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, files: []const LiveFile, k: usize) !usize {
     const q0 = nowNs(io);
     var docs: std.ArrayList(Doc) = .empty;
     defer docs.deinit(gpa);
@@ -391,9 +393,10 @@ pub fn runLive(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, files: []co
     }
     const top = try emitRanked(gpa, io, re, docs.items, .{ .memory = files }, k);
     const query_ns = nowNs(io) - q0;
-    std.debug.print("— {d} ranked matches (top {d}) · live-scanned {d} files · rank {d:.1} ms\n", .{
+    std.debug.print("gist: {d} ranked matches (top {d}) · live-scanned {d} files · rank {d:.1} ms\n", .{
         docs.items.len, top, files.len, ms(query_ns),
     });
+    return docs.items.len;
 }
 
 test "underAnyRoot gates directory prefixes and exact files" {

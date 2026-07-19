@@ -286,8 +286,9 @@ pub fn ms(ns: i128) f64 {
 /// Does the pattern carry an uppercase letter? Codepoint-aware for smart-case
 /// (`-S`): any Unicode uppercase (`Ä`, `Σ`, …) — not just ASCII `A-Z` — disables
 /// the automatic fold, matching rg's Unicode default. Ill-formed bytes are
-/// skipped (never counted as uppercase).
-fn hasUpper(s: []const u8) bool {
+/// skipped (never counted as uppercase). Public so the no-match hint module
+/// (`emit/hints.zig`) shares the exact detection smart-case uses.
+pub fn hasUpper(s: []const u8) bool {
     var i: usize = 0;
     while (i < s.len) {
         if (s[i] < 0x80) {

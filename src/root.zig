@@ -265,6 +265,7 @@ test {
     _ = @import("gist/faces/cli/search/read/ingest.zig"); // -z/--pre/-E content transforms (decompress/preprocess/transcode)
     _ = @import("gist/faces/cli/search/read/encoding.zig"); // -E WHATWG legacy-code-page decoders (single-byte + CJK multi-byte)
     _ = @import("gist/faces/cli/search/emit/multiline.zig"); // -U whole-buffer match model (Emitter.buffer + --json)
+    _ = @import("gist/faces/cli/search/emit/hints.zig"); // no-match stderr guidance: shape analysis + exact render bytes
     _ = @import("gist/faces/cli/search/engine/ranked.zig"); // `--rank` definition-first ranked view
     _ = @import("gist/faces/cli/lifecycle/index.zig"); // the `index` verb: build + persist
     _ = @import("gist/faces/cli/daemon/serve/serve.zig"); // the resident daemon driver body

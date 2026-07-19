@@ -63,6 +63,10 @@ const Pcre = pcre2.Pcre;
 const captures_mod = @import("../../../../kernel/regex/compile/captures.zig");
 const Captures = captures_mod.Captures;
 const Caps = captures_mod.Caps;
+/// `pub`: the CLI shell (`main.zig`) reuses the same hint module on the warm
+/// daemon path, where no engine ran in-process but a no-match still deserves
+/// the identical stderr guidance.
+pub const hints = @import("../emit/hints.zig");
 const Dir = std.Io.Dir;
 
 // Per-file semantics (BOM/UTF-16 ingest, rg line split, binary handling, the
@@ -963,10 +967,23 @@ fn buildMatcher(gpa: std.mem.Allocator, eff: []const u8, o: Opts) Matcher {
     switch (o.engine) {
         .pcre2 => return .{ .pcre = Pcre.compileOpts(gpa, eff, .{ .caseless = o.caseless, .multiline = o.multiline, .dotall = o.multiline_dotall, .unicode = o.pcre_unicode }) catch |e| switch (e) {
             error.OutOfMemory => die("oom\n", .{}),
-            else => die("bad PCRE2 pattern '{s}': {s}\n", .{ eff, pcre2.lastError() }),
+            else => die("gist: error: bad PCRE2 pattern '{s}': {s}\n", .{ eff, pcre2.lastError() }),
         } },
+        // The multi-line diagnostic shares the `gist: try` / `gist: note:`
+        // grammar (`emit/hints.zig`); these lines always print — they ARE the
+        // exit-2 explanation, not a courtesy (`GIST_HINTS` governs only the
+        // no-match channel). "linear-time syntax" on line 1 is load-bearing:
+        // the Python/Rust bindings classify unsupported-pattern exits by it.
         .default => return .{ .linear = Regex.compileOpts(gpa, eff, .{ .caseless = o.caseless, .multiline = o.multiline, .dotall = o.multiline_dotall, .unicode = o.unicode }) catch
-            die("bad pattern '{s}' — outside gist's linear-time syntax: no lookaround, no backreferences (\\0–\\9; NUL is \\x00), no unrecognized escapes (\\q, \\e, …), no assertion escapes inside [...], no mid-pattern inline flags (--schema lists the surface). Fallback: rg '{s}' (add --pcre2 for backreferences/lookaround, or --engine auto to escalate automatically)\n", .{ eff, eff }) },
+            die(
+                \\gist: error: bad pattern '{s}' — outside gist's linear-time syntax
+                \\gist: note: not owned by the linear engine: lookaround, backreferences (\0-\9; NUL is \x00),
+                \\gist: note:   unrecognized escapes (\q, \e, ...), assertion escapes inside [...], mid-pattern
+                \\gist: note:   inline flags (--schema lists the exact surface)
+                \\gist: try -P / --pcre2 — run this pattern on the vendored PCRE2 JIT backend
+                \\gist: try --engine auto — linear first, escalating to PCRE2 only when it declines
+                \\
+            , .{eff}) },
         .auto => {
             // Hybrid: prefer the linear engine (faster, trigram-AST, --rank-able);
             // its decline is the ONLY signal to escalate. A linear compile error
@@ -976,7 +993,12 @@ fn buildMatcher(gpa: std.mem.Allocator, eff: []const u8, o: Opts) Matcher {
             else |_| {}
             return .{ .pcre = Pcre.compileOpts(gpa, eff, .{ .caseless = o.caseless, .multiline = o.multiline, .dotall = o.multiline_dotall, .unicode = o.pcre_unicode }) catch |e| switch (e) {
                 error.OutOfMemory => die("oom\n", .{}),
-                else => die("regex '{s}' compiles under neither engine — gist's linear engine declined it (lookaround / backreferences / an unknown escape) and PCRE2 rejected it too: {s}\n", .{ eff, pcre2.lastError() }),
+                else => die(
+                    \\gist: error: regex '{s}' compiles under neither engine
+                    \\gist: note: the linear engine declined it (lookaround / backreferences / an unknown escape)
+                    \\gist: note: PCRE2 rejected it too: {s}
+                    \\
+                , .{ eff, pcre2.lastError() }),
             } };
         },
     }
@@ -1085,12 +1107,18 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         // A persisted-index rank reads raw indexed bytes, so it's only taken when
         // not transforming; -z/--pre/-E fall to the live walk (which reads through
         // `ingest`), keeping the ranked view correct over the rewritten stream.
-        if (!o.no_index and !transforming and try ranked.run(gpa, io, rex, parsed.roots, o.rank_k, o.caseless)) return;
+        if (!o.no_index and !transforming) {
+            if (try ranked.run(gpa, io, rex, parsed.roots, o.rank_k, o.caseless)) |n| {
+                if (n == 0) hints.noMatches(hints.shape(parsed.patterns, o, parsed.roots, parsed.roots.len > 0), null);
+                return;
+            }
+        }
         const c = collectFiles(a, gpa, io, parsed, &.{}, requiredLiteralGate(o, &re), &icfg);
         const live = a.alloc(ranked.LiveFile, c.files.len) catch oom();
         for (c.files, live) |file, *dst| dst.* = .{ .path = file.path, .bytes = file.bytes };
-        try ranked.runLive(gpa, io, rex, live, o.rank_k);
+        const n = try ranked.runLive(gpa, io, rex, live, o.rank_k);
         if (c.path_error or pre_error.load(.seq_cst)) std.process.exit(2);
+        if (n == 0) hints.noMatches(hints.shape(parsed.patterns, o, parsed.roots, parsed.roots.len > 0), c.files.len);
         return;
     }
 
@@ -1108,7 +1136,11 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
                 else => die("bad PCRE2 pattern '{s}': {s}\n", .{ eff, pcre2.lastError() }),
             } }
         else
-            Caps{ .linear = Captures.compile(gpa, eff, o.caseless, o.unicode) catch die("bad pattern '{s}' — outside gist's linear-time syntax. Fallback: rg '{s}' (add --pcre2 for backreferences/lookaround)\n", .{ eff, eff }) })
+            Caps{ .linear = Captures.compile(gpa, eff, o.caseless, o.unicode) catch die(
+                \\gist: error: bad pattern '{s}' — outside gist's linear-time syntax
+                \\gist: try -P / --pcre2 — run this pattern on the PCRE2 backend (lookaround, backreferences)
+                \\
+            , .{eff}) })
     else
         null;
     defer if (caps_store) |*cp| cp.deinit();
@@ -1134,6 +1166,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         pcreFaultExit(&re);
         if (o.quiet) std.process.exit(if (hits > 0) 0 else 1);
         corpus_mod.emitStdout(out0.items);
+        if (hits == 0) hints.noMatches(hints.shapeStream(parsed.patterns, o), null);
         std.process.exit(if (hits > 0) 0 else 1);
     }
 
@@ -1287,6 +1320,12 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     }
     corpus_mod.emitStdout(out.items);
     pcreFaultExit(&re);
+    // The no-match hint seam: exit-1 with a clean run (no walk error) is the
+    // moment an agent needs guidance — derived from the query's own shape, on
+    // stderr, after the (empty) stdout flush. --json and --quiet stay silent
+    // by contract; error exits already carry their own diagnostic.
+    if (matched_files == 0 and !err_exit)
+        hints.noMatches(hints.shape(parsed.patterns, o, parsed.roots, parsed.roots.len > 0), files.len);
     std.process.exit(if (err_exit) 2 else if (matched_files > 0) 0 else 1);
 }
 

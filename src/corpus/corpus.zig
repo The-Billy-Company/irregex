@@ -63,6 +63,18 @@ fn envUncap() bool {
     return !(s.len == 0 or std.mem.eql(u8, s, "0") or std.ascii.eqlIgnoreCase(s, "false") or std.ascii.eqlIgnoreCase(s, "no"));
 }
 
+/// `GIST_HINTS` — the kill switch for the stderr guidance channel (`gist:
+/// try` / `gist: note:` lines). Unset or any value except `0`/`false`/`no` keeps hints on;
+/// a byte-counting capture or parity harness exports `GIST_HINTS=0`. Shared
+/// by the CLI hint module (`gist/faces/cli/search/emit/hints.zig`) and the
+/// truncation notice below — one env read, one policy. Results on stdout are
+/// untouched either way; this only governs stderr guidance.
+pub fn hintsEnabled() bool {
+    const v = std.c.getenv("GIST_HINTS") orelse return true;
+    const s = std.mem.span(v);
+    return !(std.mem.eql(u8, s, "0") or std.ascii.eqlIgnoreCase(s, "false") or std.ascii.eqlIgnoreCase(s, "no"));
+}
+
 /// Resolve this process's output ceilings from the `--uncap` flag and the
 /// `GIST_UNCAP` / `GIST_MAX_OUTPUT_TOKENS` / `GIST_MAX_OUTPUT_BYTES` env knobs,
 /// and reset the run counters. Idempotent: the CLI calls it once from the
@@ -140,15 +152,23 @@ pub fn outputFull(pending: usize) bool {
 /// (idempotent, a no-op when nothing was cut). Kept off stdout so a redirected
 /// capture stays clean rg-shaped bytes. Under `--uncap` it still fires if the
 /// hard OOM ceiling did the cutting, so a firehose caller still learns the output
-/// was clipped.
+/// was clipped. The outcome line always prints; the follow-up `gist: try`
+/// lines respect the `GIST_HINTS` gate (shared grammar with `hints.zig`).
 pub fn finishOutput() void {
     if (!output_budget.truncated.load(.monotonic)) return;
     if (output_budget.announced.swap(true, .monotonic)) return;
     const cap = output_budget.ceiling;
-    if (output_budget.soft_disabled)
-        std.debug.print("gist: output truncated at the hard {d}-byte OOM ceiling — scope the query or raise GIST_MAX_OUTPUT_BYTES\n", .{cap})
-    else
-        std.debug.print("gist: output truncated (~{d} tokens / {d} bytes) — narrow the query (-l, -c, or scope a path) or pass --uncap for the full result\n", .{ cap / bytes_per_token, cap });
+    if (output_budget.soft_disabled) {
+        std.debug.print("gist: output truncated at the hard {d}-byte OOM ceiling\n", .{cap});
+        if (hintsEnabled())
+            std.debug.print("gist: try PATH args / -t / -g to scope the query, or raise GIST_MAX_OUTPUT_BYTES\n", .{});
+    } else {
+        std.debug.print("gist: output truncated at ~{d} tokens ({d} bytes)\n", .{ cap / bytes_per_token, cap });
+        if (hintsEnabled()) {
+            std.debug.print("gist: try -l / -c — file list or per-file counts instead of every line\n", .{});
+            std.debug.print("gist: try --uncap — stream the full result (or scope with PATH args / -t / -g)\n", .{});
+        }
+    }
 }
 
 /// Directory basenames rg skips by default (gitignore + VCS + build output) —

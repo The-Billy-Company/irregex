@@ -305,11 +305,19 @@ gist departs from ripgrep." The exhaustive rg-compatible flag reference lives in
 
 Streams follow the `rg` convention too, so gist composes in a pipeline the
 same way: matches go to **stdout**, and — a stronger bar than `rg` itself, not
-just parity with it — the default path puts NOTHING on stderr at all (`gist
+just parity with it — a query with a hit puts NOTHING on stderr at all (`gist
 Foo -l > files` captures only the paths; `gist Foo | head` shows only
-matches). The one deliberate exception is `--rank`, which prints its
-cold-load/rank timing to stderr so an agent can see the cost of the ranked
-view — guarded by [`bench/gates/streams.sh`](../../bench/gates/streams.sh).
+matches). stderr is reserved for the structured **guidance channel**, every
+line `gist:`-prefixed: `--rank` prints its cold-load/rank timing there so an
+agent can see the cost of the ranked view, and a **no-match** run gets a
+one-line summary plus up to three ranked `gist: try` / `gist: note:` lines
+(rustc's help/note split — a concrete retry vs. a fact worth knowing) derived
+from the query's own shape (`-i` when the pattern has uppercase, `-U` when it spans a
+line break, `-F` when it carries regex metacharacters, `-uu`/scope-widening
+when the walk was filtered — `src/gist/faces/cli/search/emit/hints.zig`).
+`GIST_HINTS=0` mutes the channel wholesale for parity harnesses and
+byte-counting captures; `--quiet`, `--json`, and `--files` never hint. Both
+shapes are guarded by [`bench/gates/streams.sh`](../../bench/gates/streams.sh).
 
 ## Where gist departs from ripgrep — on purpose
 
