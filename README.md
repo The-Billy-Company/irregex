@@ -50,7 +50,7 @@ The two CLIs are separate engines over a small shared floor (`src/corpus/`,
 | Dir | What |
 |---|---|
 | `src/corpus/` + `src/scope/` | the shared floor both engines ride — corpus walk/loading + path scoping |
-| `src/primitives/` | the shared irregex math — `patterns` (match ∪ attribute), `sketch` (LZJD relate), `loom` (weave) |
+| `src/primitives/` | the shared irregex math — `bits` (two's-complement identity floor), `patterns` (match ∪ attribute), `sketch` (LZJD relate), `loom` (weave) |
 | `src/gist/` | the exact-search engine — `kernel/` (engine, trigram index, regex, rank, scan), `session/` (ADR-352 rung 2.5), `faces/` (cli · ffi) |
 | `src/hydra/` | the compression-search engine — `engine/` verb drivers + `cli/` binary shell |
 | `include/` | `irregex.h` — the flat C ABI (`irregex_*` symbols) |

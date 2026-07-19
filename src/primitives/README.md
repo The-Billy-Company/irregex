@@ -1,14 +1,14 @@
 ---
 doc_radar:
   counts:
-    - description: "the tier is exactly three primitives + three test siblings + this README"
+    - description: "the tier is exactly four primitives + four test siblings + this README"
       glob: pkg/kernels/irregex/src/primitives/*
       unit: files
-      equals: 7
+      equals: 9
   sentinels:
     - description: "the tier is a first-class root export, tests wired into zig build test"
       file: pkg/kernels/irregex/src/root.zig
-      contains: ['pub const irregex = struct', 'primitives/sketch_test.zig', 'primitives/patterns_test.zig', 'primitives/loom_test.zig']
+      contains: ['pub const irregex = struct', 'primitives/bits_test.zig', 'primitives/sketch_test.zig', 'primitives/patterns_test.zig', 'primitives/loom_test.zig']
     - description: "the frozen sketch resolution this README quotes (bottom-k size, phrase floor)"
       file: pkg/kernels/irregex/src/primitives/sketch.zig
       contains: ['pub const k = 128', 'pub const min_phrase = 3']
@@ -23,6 +23,7 @@ verbs, Python bindings, a future FFI) to consume:
 
 | Module         | Half       | Primitive                                                                                                                                                                                                        |
 | -------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bits.zig`     | **floor**  | The shared two's-complement identity floor: `ones` walks a word's set bits in popcount steps (`@ctz` + `x & (x-1)`, *Hacker's Delight* §2-1); `prefixMask`/`rank` are the edge-safe low-k mask and in-word rank1; `Stream` is the shift-window cursor over dense packed bit fields (the profiled hot walk of rrr's `seek`); `Field(Word)` is the word-packed bit set (1 bit/flag vs a `[]bool`'s byte, word-masked `setRange`) over caller-owned slices — powerset, patterns, syntax's ByteSet, sais, rrr, and the SIMD survivor walks all ride it |
 | `patterns.zig` | **match**  | `PatternSet` — N intents compiled once, exact per-pattern attribution (`docMask` / `lineHits`), a fused `(?:a)\|(?:b)` gate that can only skip work, never change an answer                                      |
 | `sketch.zig`   | **relate** | `Sketch` — compression kinship: an LZ78 phrase dictionary bottom-k min-hashed to 128×u64; `distance` = 1 − Jaccard (LZJD, Raff & Nicholas 2017; signal per Benedetto/Caglioti/Loreto's relative-entropy zipping) |
 | `loom.zig`     | **weave**  | `Plan` — a closed filter → group → sort → limit op set executed engine-side over attributed `Row`s; data, not a language                                                                                         |

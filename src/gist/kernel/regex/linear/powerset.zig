@@ -26,8 +26,10 @@
 const std = @import("std");
 const syn = @import("../syntax/syntax.zig");
 const prefilter = @import("../analysis/prefilter.zig");
+const bits = @import("../../../../primitives/bits.zig");
 const State = syn.State;
 const Dfa = @import("dfa.zig").Dfa;
+const B64 = bits.Field(u64);
 
 /// Start-state acceleration eligibility (mirrors rust-regex `accel.rs`): only
 /// accelerate when the start state's escape set is ≤ this many bytes, past which
@@ -51,16 +53,6 @@ const SetCtx = struct {
     }
 };
 const SetMap = std.HashMap([]const u64, u32, SetCtx, std.hash_map.default_max_load_percentage);
-
-fn setBit(bits: []u64, i: u32) void {
-    bits[i >> 6] |= @as(u64, 1) << @intCast(i & 63);
-}
-fn hasBit(bits: []const u64, i: u32) bool {
-    return (bits[i >> 6] >> @intCast(i & 63)) & 1 != 0;
-}
-fn isZero(bits: []const u64) bool {
-    return std.mem.allEqual(u64, bits, 0);
-}
 
 /// Builder scratch — the powerset machinery (subset map, NFA-closure stack,
 /// reusable bitsets) that produces the immutable `Dfa`. Discarded after `build`.
@@ -93,8 +85,8 @@ const Builder = struct {
     sp: usize = 0,
 
     fn pushIf(b: *Builder, s: u32) void {
-        if (!hasBit(b.visited, s)) {
-            setBit(b.visited, s);
+        if (!B64.get(b.visited, s)) {
+            B64.set(b.visited, s);
             b.stack[b.sp] = s;
             b.sp += 1;
         }
@@ -116,7 +108,7 @@ const Builder = struct {
             b.sp -= 1;
             const s = b.stack[b.sp];
             switch (b.states[s]) {
-                .consume => setBit(b.out, s),
+                .consume => B64.set(b.out, s),
                 .split => |sp| {
                     b.pushIf(sp.a);
                     b.pushIf(sp.b);
@@ -148,13 +140,9 @@ const Builder = struct {
     fn step(b: *Builder, from: []const u64, k: u16, at_end: bool) bool {
         b.reset();
         const rep = b.rep[k];
-        var wi: usize = 0;
-        while (wi < b.words) : (wi += 1) {
-            var w = from[wi];
-            while (w != 0) : (w &= w - 1) {
-                const s: u32 = @intCast(wi * 64 + @ctz(w));
-                if (b.states[s].consume.set.has(rep)) b.pushIf(b.states[s].consume.out);
-            }
+        var it = B64.ones(from[0..b.words]);
+        while (it.next()) |s| {
+            if (b.states[s].consume.set.has(rep)) b.pushIf(b.states[s].consume.out);
         }
         if (!b.anchored) b.pushIf(b.start_nfa);
         return b.close(false, at_end);
@@ -183,7 +171,7 @@ const Builder = struct {
         try b.queued.append(b.gpa, false);
         try b.trans_in.appendNTimes(b.gpa, unknown, b.ncls);
         try b.trans_fin.appendNTimes(b.gpa, unknown, b.ncls);
-        if (!matched and isZero(b.out)) b.dead = id;
+        if (!matched and B64.none(b.out)) b.dead = id;
         return .{ .id = id, .is_new = true };
     }
 
@@ -247,7 +235,7 @@ pub fn build(gpa: std.mem.Allocator, states: []const State, start: u32, anchored
     var class: [256]u8 = undefined;
     var rep: [256]u8 = undefined;
     const ncls = buildClasses(states, &class, &rep);
-    const words = (states.len + 63) >> 6;
+    const words = B64.words(states.len);
 
     var b = Builder{
         .gpa = gpa,

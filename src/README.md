@@ -15,7 +15,7 @@ the corpus substrate.
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `corpus/`     | the shared corpus substrate — loading (rg-style binary/skip rules, stdout results contract), the Haystack walk, `getattrlistbulk` bulk stat  |
 | `scope/`      | shared path scoping — `-g <glob>` matching (`glob.zig`) + the `-t <lang>` type table (`types.zig`)                                           |
-| `primitives/` | the shared irregex math (ADR-363) — `patterns` (match), `sketch` (relate), `loom` (weave)                                                    |
+| `primitives/` | the shared irregex math (ADR-363) — `bits` (the two's-complement identity floor), `patterns` (match), `sketch` (relate), `loom` (weave)      |
 | `gist/`       | the exact-search engine + the `gist` product faces — nothing here is consumed by hydra's relate math                                         |
 | `hydra/`      | the compression-search engine + the `hydra` binary                                                                                           |
 

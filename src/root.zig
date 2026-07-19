@@ -64,9 +64,12 @@ pub const fresh = @import("gist/kernel/index/fresh.zig");
 // The set-shaped tier over the engine: PatternSet compiles MANY intents with
 // exact per-pattern attribution (the match half), Sketch measures compression
 // kinship between byte bodies (the relate half — LZ dictionaries, no parsing),
-// and loom executes a closed filter/group/sort/limit plan over the attributed
-// stream engine-side. Primitives only — faces (CLI verbs, bindings) consume.
+// loom executes a closed filter/group/sort/limit plan over the attributed
+// stream engine-side, and bits is the shared two's-complement identity floor
+// (set-bit walks, word-packed bit sets) the other tiers ride instead of
+// hand-rolling. Primitives only — faces (CLI verbs, bindings) consume.
 pub const irregex = struct {
+    pub const bits = @import("primitives/bits.zig");
     pub const patterns = @import("primitives/patterns.zig");
     pub const sketch = @import("primitives/sketch.zig");
     pub const loom = @import("primitives/loom.zig");
@@ -221,6 +224,7 @@ test {
     _ = @import("gist/kernel/scan/simd_test.zig"); // SIMD `contains` differential fuzz vs std
     _ = @import("gist/kernel/index/fresh_test.zig"); // T3 freshness `widen` set-algebra
     _ = @import("gist/kernel/engine/query_test.zig"); // shared compiled-query: compile/prefilter/match vs oracle
+    _ = @import("primitives/bits_test.zig"); // shared two's-complement bit identities vs bool-slice oracle
     _ = @import("primitives/sketch_test.zig"); // relate half: kinship metric semantics + clustering gate
     _ = @import("hydra/engine/lexicon.zig"); // hydra: corpus-priced fingerprint recall index
     _ = @import("hydra/engine/zipper.zig"); // hydra: suffix-automaton Ziv–Merhav cross-parse (exact ΔAb)

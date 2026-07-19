@@ -28,6 +28,9 @@
 
 const std = @import("std");
 const query = @import("../gist/kernel/engine/query.zig");
+const bits = @import("bits.zig");
+
+const B64 = bits.Field(u64);
 
 pub const Spec = query.Spec;
 pub const CompiledQuery = query.CompiledQuery;
@@ -124,7 +127,7 @@ pub const PatternSet = struct {
         var any = false;
         for (self.queries, sc.per, 0..) |*q, *s, i| {
             if (q.docMatches(bytes, s)) {
-                mask[i >> 6] |= @as(u64, 1) << @intCast(i & 63);
+                B64.set(mask, i);
                 any = true;
             }
         }
@@ -149,14 +152,10 @@ pub const PatternSet = struct {
 };
 
 /// Words needed for a `docMask` bitmask over `n` patterns.
-pub fn maskWords(n: usize) usize {
-    return (n + 63) / 64;
-}
+pub const maskWords = B64.words;
 
 /// Is bit `i` set in a `docMask` bitmask?
-pub fn maskHas(mask: []const u64, i: usize) bool {
-    return (mask[i >> 6] >> @intCast(i & 63)) & 1 == 1;
-}
+pub const maskHas = B64.get;
 
 /// Build the fused `(?:p0)|(?:p1)|…` gate when the set can honestly share one
 /// engine: every spec on the same `ignore_case`/`unicode` setting (irregex

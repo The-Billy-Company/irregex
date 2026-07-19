@@ -21,7 +21,9 @@
 //! comparison-sort oracle across random, adversarial, and degenerate texts.
 
 const std = @import("std");
+const bits = @import("../primitives/bits.zig");
 
+const B8 = bits.Field(u8);
 const EMPTY = std.math.maxInt(u32);
 
 /// Suffix array of `text` + sentinel: returns `sa` of length `text.len + 1`
@@ -50,9 +52,9 @@ const Types = struct {
     bits: []u8,
 
     fn init(gpa: std.mem.Allocator, n: usize) !Types {
-        const bits = try gpa.alloc(u8, (n + 7) / 8);
-        @memset(bits, 0);
-        return .{ .bits = bits };
+        const b = try gpa.alloc(u8, B8.words(n));
+        @memset(b, 0);
+        return .{ .bits = b };
     }
 
     fn deinit(self: Types, gpa: std.mem.Allocator) void {
@@ -60,12 +62,11 @@ const Types = struct {
     }
 
     fn set(self: Types, i: usize, v: bool) void {
-        const mask = @as(u8, 1) << @intCast(i & 7);
-        if (v) self.bits[i >> 3] |= mask else self.bits[i >> 3] &= ~mask;
+        if (v) B8.set(self.bits, i) else B8.clear(self.bits, i);
     }
 
     fn isS(self: Types, i: usize) bool {
-        return (self.bits[i >> 3] >> @intCast(i & 7)) & 1 == 1;
+        return B8.get(self.bits, i);
     }
 
     /// LMS position: an S-type suffix whose left neighbor is L-type.

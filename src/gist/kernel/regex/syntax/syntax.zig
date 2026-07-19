@@ -28,20 +28,24 @@
 const std = @import("std");
 const uni = @import("../unicode/tables.zig");
 const udec = @import("../unicode/decode.zig");
+const bitsmod = @import("../../../../primitives/bits.zig");
+
+const B64 = bitsmod.Field(u64);
 
 /// 256-bit byte class (which bytes a consuming state accepts).
 pub const ByteSet = struct {
     bits: [4]u64 = @splat(0),
 
     pub fn set(self: *ByteSet, b: u8) void {
-        self.bits[b >> 6] |= @as(u64, 1) << @intCast(b & 63);
+        B64.set(&self.bits, b);
     }
+    /// Inclusive [lo, hi]; a reversed range adds nothing (parser contract).
     pub fn setRange(self: *ByteSet, lo: u8, hi: u8) void {
-        var c: usize = lo;
-        while (c <= hi) : (c += 1) self.set(@intCast(c));
+        if (lo > hi) return;
+        B64.setRange(&self.bits, lo, hi); // word-masked: O(words), not O(hi−lo)
     }
     pub fn has(self: *const ByteSet, b: u8) bool {
-        return (self.bits[b >> 6] >> @intCast(b & 63)) & 1 != 0;
+        return B64.get(&self.bits, b);
     }
     pub fn negate(self: *ByteSet) void {
         for (&self.bits) |*w| w.* = ~w.*;
@@ -50,16 +54,13 @@ pub const ByteSet = struct {
         for (&self.bits, o.bits) |*w, ow| w.* |= ow;
     }
     pub fn count(self: *const ByteSet) usize {
-        var n: usize = 0;
-        for (self.bits) |w| n += @popCount(w);
-        return n;
+        return B64.count(&self.bits);
     }
     /// The sole member when the set is a singleton (drives the SIMD `memchr`
     /// skip in the regex scanner); null for empty or multi-byte sets.
     pub fn only(self: *const ByteSet) ?u8 {
         if (self.count() != 1) return null;
-        for (self.bits, 0..) |w, wi| if (w != 0) return @intCast(wi * 64 + @ctz(w));
-        return null;
+        return @intCast(B64.first(&self.bits).?);
     }
     /// ASCII case-fold: for every letter present, also admit its opposite-case
     /// twin (`a`⇄`A`). Drives the `-i` flag — applied to every consuming class so

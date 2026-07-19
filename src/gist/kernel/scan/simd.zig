@@ -13,6 +13,7 @@
 //! with `std.mem.indexOf` — proven end-to-end by the rg equality oracle.
 
 const std = @import("std");
+const bitsmod = @import("../../../primitives/bits.zig");
 
 const vlen: usize = std.simd.suggestVectorLength(u8) orelse 16;
 const Vec = @Vector(vlen, u8);
@@ -66,14 +67,13 @@ pub fn containsAny(hay: []const u8, needles: []const []const u8) bool {
             per[k] = @bitCast((b0 == f[k]) & (bl == l[k]));
             any |= per[k];
         }
-        while (any != 0) {
-            const j: std.math.Log2Int(Mask) = @intCast(@ctz(any));
+        var survivors = bitsmod.ones(any);
+        while (survivors.next()) |j| {
             const pos = i + j;
             const bit = @as(Mask, 1) << j;
             for (needles, 0..) |n, k| {
                 if (per[k] & bit != 0 and std.mem.eql(u8, hay[pos..][0..n.len], n)) return true;
             }
-            any &= any - 1; // clear lowest set bit
         }
     }
     // Scalar tail: candidate starts in [i, hay.len) the vector loop never saw.
@@ -98,12 +98,11 @@ pub fn contains(hay: []const u8, needle: []const u8) bool {
     while (i + last_off + vlen <= hay.len) : (i += vlen) {
         const bf: Vec = hay[i..][0..vlen].*;
         const bl: Vec = hay[i + last_off ..][0..vlen].*;
-        var bits: Mask = @bitCast((bf == first) & (bl == last));
-        while (bits != 0) {
-            const j = @ctz(bits);
+        const bits: Mask = @bitCast((bf == first) & (bl == last));
+        var survivors = bitsmod.ones(bits);
+        while (survivors.next()) |j| {
             const pos = i + j;
             if (std.mem.eql(u8, hay[pos .. pos + n], needle)) return true;
-            bits &= bits - 1; // clear lowest set bit
         }
     }
     // Scalar tail for the < vlen remainder.
