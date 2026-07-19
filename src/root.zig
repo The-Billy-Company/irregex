@@ -37,29 +37,29 @@
 const std = @import("std");
 
 // ── candidate index ──
-pub const ngram = @import("gist/kernel/index/ngram.zig");
-pub const trigram = @import("gist/kernel/index/trigram.zig");
-pub const persist = @import("gist/kernel/index/persist.zig");
+pub const ngram = @import("index/trigrams/ngram.zig");
+pub const trigram = @import("index/trigrams/trigram.zig");
+pub const persist = @import("index/trigrams/persist.zig");
 
 // ── regex engine ──
 // Submodules are imported by their consumers directly; only the core + DFA
 // surfaces are re-exported at the root for the C-ABI / library consumers.
-pub const regex = @import("gist/kernel/regex/linear/core.zig");
-pub const regex_dfa = @import("gist/kernel/regex/linear/dfa.zig");
+pub const regex = @import("search/match/regex/linear/core.zig");
+pub const regex_dfa = @import("search/match/regex/linear/dfa.zig");
 
 // ── ranking ──
-pub const rank = @import("gist/kernel/rank/rank.zig");
-pub const signals = @import("gist/kernel/rank/signals.zig");
+pub const rank = @import("search/rank/rank.zig");
+pub const signals = @import("search/rank/signals.zig");
 
 // ── byte-level match execution ──
-pub const simd = @import("gist/kernel/scan/simd.zig");
-pub const verify = @import("gist/kernel/scan/verify.zig");
+pub const simd = @import("search/match/scan/simd.zig");
+pub const verify = @import("search/match/scan/verify.zig");
 
 // ── corpus + freshness ──
-pub const corpus = @import("corpus/corpus.zig");
-pub const haystack = @import("corpus/haystack.zig");
-pub const bulkstat = @import("corpus/bulkstat.zig");
-pub const fresh = @import("gist/kernel/index/fresh.zig");
+pub const corpus = @import("runtime/corpus/corpus.zig");
+pub const haystack = @import("runtime/corpus/haystack.zig");
+pub const bulkstat = @import("runtime/corpus/bulkstat.zig");
+pub const fresh = @import("index/trigrams/fresh.zig");
 
 // ── irregex: the irregular-expression primitives (match ∪ relate ∪ weave) ──
 // The set-shaped tier over the engine: PatternSet compiles MANY intents with
@@ -70,10 +70,10 @@ pub const fresh = @import("gist/kernel/index/fresh.zig");
 // (set-bit walks, word-packed bit sets) the other tiers ride instead of
 // hand-rolling. Primitives only — faces (CLI verbs, bindings) consume.
 pub const irregex = struct {
-    pub const bits = @import("primitives/bits.zig");
-    pub const patterns = @import("primitives/patterns.zig");
-    pub const sketch = @import("primitives/sketch.zig");
-    pub const loom = @import("primitives/loom.zig");
+    pub const bits = @import("math/bits.zig");
+    pub const patterns = @import("search/batch/patterns.zig");
+    pub const sketch = @import("search/similarity/sketch.zig");
+    pub const loom = @import("search/batch/loom.zig");
 };
 
 // ── codex: the compressed self-index (the book that IS its own index) ──
@@ -84,12 +84,12 @@ pub const irregex = struct {
 // gist gets an exact zero-false-positive tier, hydra a corpus-global
 // matching-statistics substrate. See src/codex/README.md for the math.
 pub const codex = struct {
-    pub const sais = @import("codex/sais.zig");
-    pub const rrr = @import("codex/rrr.zig");
-    pub const wavelet = @import("codex/wavelet.zig");
-    pub const index = @import("codex/codex.zig");
-    pub const cento = @import("codex/cento.zig");
-    pub const shelf = @import("codex/shelf.zig");
+    pub const sais = @import("index/codex/sais.zig");
+    pub const rrr = @import("index/codex/rrr.zig");
+    pub const wavelet = @import("index/codex/wavelet.zig");
+    pub const index = @import("index/codex/codex.zig");
+    pub const cento = @import("index/codex/cento.zig");
+    pub const shelf = @import("index/codex/shelf.zig");
 };
 
 // ── hydra: the compression-search engine ──
@@ -100,9 +100,9 @@ pub const codex = struct {
 // suffix-automaton Ziv–Merhav cross-parse charging real code lengths (the
 // paper's ΔAb with no compressor run). See src/hydra/engine/.
 pub const hydra = struct {
-    pub const lexicon = @import("hydra/engine/lexicon.zig");
-    pub const zipper = @import("hydra/engine/zipper.zig");
-    pub const verbs = @import("hydra/engine/verbs.zig");
+    pub const lexicon = @import("search/similarity/lexicon.zig");
+    pub const zipper = @import("search/similarity/zipper.zig");
+    pub const verbs = @import("cli/mutual/verbs.zig");
 };
 
 // ── the transport-neutral compiled query (the shared search core) ──
@@ -111,62 +111,62 @@ pub const hydra = struct {
 // cold CLI (`gist/faces/cli/search`) and the warm resident session (`session`)
 // execute through, so the two engines cannot drift on what matches.
 pub const engine = struct {
-    pub const query = @import("gist/kernel/engine/query.zig");
+    pub const query = @import("search/match/query.zig");
 };
 
 // ── resident search session (ADR-352 rung 2.5): the warm in-memory engine +
 // its Unix-socket transport, sharing the kernels above but returning errors
 // instead of `die()`ing so a bad request can't take down the daemon. ──
 pub const session = struct {
-    pub const resident = @import("gist/session/resident.zig");
-    pub const corpus = @import("gist/session/corpus.zig");
-    pub const render = @import("gist/session/render.zig");
-    pub const request = @import("gist/session/request.zig");
-    pub const protocol = @import("gist/session/protocol.zig");
-    pub const watch = @import("gist/session/watch.zig");
+    pub const resident = @import("runtime/session/resident.zig");
+    pub const corpus = @import("runtime/session/corpus.zig");
+    pub const render = @import("runtime/session/render.zig");
+    pub const request = @import("runtime/session/request.zig");
+    pub const protocol = @import("runtime/session/protocol.zig");
+    pub const watch = @import("runtime/session/watch.zig");
 };
 
 // ── in-process C-ABI search session (ADR-352 rung 3) ──
 // The warm engine above, exposed to non-Zig hosts as an `open`/`search`/`close`
 // callback-streaming C ABI — no subprocess, socket, stdout, or exit. Backs the
 // `cffi` Python transport; the `export fn`s below forward into it.
-pub const ffi = @import("gist/faces/ffi/session.zig");
+pub const ffi = @import("runtime/ffi/session.zig");
 
 /// CLI surfaces built on the engine above. Not part of the C ABI — the `gist`
 /// executable (`gist/faces/cli/main.zig`) and the bench harness dispatch through
 /// these; grouped here so the whole command tree resolves through the module.
 pub const commands = struct {
     pub const scope = struct {
-        pub const glob = @import("scope/glob.zig");
-        pub const types = @import("scope/types.zig");
+        pub const glob = @import("runtime/scope/glob.zig");
+        pub const types = @import("runtime/scope/types.zig");
     };
     /// Read-only index introspection (the `status` verb).
-    pub const status = @import("gist/faces/cli/status/status.zig");
+    pub const status = @import("cli/gist/status/status.zig");
     /// `gist --schema` JSON capability manifest.
-    pub const schema = @import("gist/faces/cli/schema/schema.zig");
+    pub const schema = @import("cli/gist/schema/schema.zig");
     /// The unified search engine — the certified ripgrep-parity walk-and-emit
     /// control plane (`engine/serial.zig`), its index-backed read-elision +
     /// `--no-index`/`--rank` candidate sources, and the ranked view
     /// (`engine/ranked.zig`). Backs the bare `gist <pattern>` shorthand,
     /// `gist rg`, and the rgsuite parity certificate.
-    pub const search = @import("gist/faces/cli/search/engine/serial.zig");
+    pub const search = @import("cli/gist/search/engine/serial.zig");
     /// The `index` verb — build + persist the trigram index the engine reads.
-    pub const indexer = @import("gist/faces/cli/lifecycle/index.zig");
+    pub const indexer = @import("cli/gist/lifecycle/index.zig");
     /// The `codex` verbs — exact existence/count tier over the self-index shelf.
-    pub const codex = @import("gist/faces/cli/lifecycle/codex.zig");
+    pub const codex = @import("cli/gist/lifecycle/codex.zig");
     /// `gist serve` — the resident daemon that keeps a `session` warm behind a
     /// Unix socket (ADR-352 rung 2.5).
-    pub const serve = @import("gist/faces/cli/daemon/serve/serve.zig");
+    pub const serve = @import("cli/gist/daemon/serve/serve.zig");
     /// The hydra verbs — `similar`/`dups`/`patterns` over `src/primitives/`.
-    pub const irregex = @import("hydra/engine/verbs.zig");
+    pub const irregex = @import("cli/mutual/verbs.zig");
     /// `hydra search` — two-stage compression retrieval (lexicon → zipper).
-    pub const hydra_search = @import("hydra/engine/search.zig");
-    pub const hydra_quote = @import("hydra/engine/quote.zig");
+    pub const hydra_search = @import("cli/mutual/search.zig");
+    pub const hydra_quote = @import("cli/mutual/quote.zig");
     /// `hydra --schema` JSON capability manifest (the hydra binary's).
-    pub const hydra_schema = @import("hydra/cli/schema.zig");
+    pub const hydra_schema = @import("cli/mutual/schema.zig");
     /// The CLI's warm fast path — dial the daemon for an eligible query, emit
     /// byte-identically to cold, else fall back (`attempt`).
-    pub const client = @import("gist/faces/cli/daemon/client/client.zig");
+    pub const client = @import("cli/gist/daemon/client/client.zig");
 };
 
 pub const version_string: [:0]const u8 = "0.1.0"; // x-release-please-version
@@ -232,66 +232,66 @@ test {
     // NOT re-exported — so every test file is wired in explicitly here.
     std.testing.refAllDecls(@This());
     // engine tiers
-    _ = @import("gist/kernel/index/ngram_test.zig"); // n-gram extraction strategy primitives
-    _ = @import("gist/kernel/index/varint_test.zig"); // LEB128 varint codec (compact posting bodies)
-    _ = @import("gist/kernel/index/trigram_test.zig"); // T0 candidate index: query + serialize + build
-    _ = @import("gist/kernel/index/trigram_load_test.zig"); // T0 loader adversarial suite: malformed blobs fail closed
-    _ = @import("gist/kernel/index/persist_test.zig"); // T0 persisted index/path-table integrity (doc-id OOB guard)
-    _ = @import("gist/kernel/index/trigram_fuzz.zig"); // T0 loader long fuzz (seeds + mutations; GIST_FUZZ_ITERS)
-    _ = @import("gist/kernel/rank/rank_test.zig"); // T4 RRF fusion ranking
-    _ = @import("gist/kernel/rank/signals_test.zig"); // cross-language def-detection + generated-file signals
-    _ = @import("gist/kernel/rank/mirror.zig"); // cached-source mirror classification + exact canonical duplicate
-    _ = @import("gist/kernel/scan/simd_test.zig"); // SIMD `contains` differential fuzz vs std
-    _ = @import("gist/kernel/index/fresh_test.zig"); // T3 freshness `widen` set-algebra
-    _ = @import("gist/kernel/engine/query_test.zig"); // shared compiled-query: compile/prefilter/match vs oracle
-    _ = @import("primitives/bits_test.zig"); // shared two's-complement bit identities vs bool-slice oracle
-    _ = @import("primitives/sketch_test.zig"); // relate half: kinship metric semantics + clustering gate
-    _ = @import("hydra/engine/lexicon.zig"); // hydra: corpus-priced fingerprint recall index
-    _ = @import("hydra/engine/zipper.zig"); // hydra: suffix-automaton Ziv–Merhav cross-parse (exact ΔAb)
-    _ = @import("hydra/engine/lexicon_test.zig"); // hydra: retrieval proof (short-query recall, ΔAb sidedness, zero-bit boilerplate)
-    _ = @import("codex/codex_test.zig"); // codex: SA-IS/RRR/wavelet/index differential vs naive oracles
-    _ = @import("primitives/patterns_test.zig"); // match half: set ≡ N single-pattern oracles (gate off/on)
-    _ = @import("primitives/loom_test.zig"); // weave: closed op set — total, deterministic, hand-tallied
-    _ = @import("gist/session/request_test.zig"); // resident request eligibility classifier
-    _ = @import("gist/session/corpus.zig"); // faithful corpus ingest: BOM/UTF-16 decode, whole-body NUL, no cap
-    _ = @import("gist/session/render.zig"); // warm lines renderer: cold-Emitter byte parity
-    _ = @import("gist/session/resident_test.zig"); // resident session: parity vs cold, overlay, RYW, deletion
-    _ = @import("gist/session/protocol_test.zig"); // UDS frame codec round-trip + adversarial
-    _ = @import("gist/session/watch_test.zig"); // freshness watcher: dirty/clean seqlock barrier
-    _ = @import("gist/session/freshness_test.zig"); // barrier hardening: differential vs on-disk oracle, concurrency, overflow/bound
-    _ = @import("gist/session/dirty.zig"); // exact dirty-path log: dedupe, bound→doubt, exact promise
-    _ = @import("gist/session/delta.zig"); // O(changed) resolver: path classes, fold aliasing helpers
-    _ = @import("gist/session/scoped_test.zig"); // scoped reconcile adversarial: vs full-walk ground truth
-    _ = @import("corpus/haystack_test.zig"); // shared walk: isSkipDir + joinPath hot-path decisions
-    _ = @import("corpus/bulkstat_test.zig"); // getattrlistbulk ≡ stat-walk differential
-    _ = @import("gist/kernel/regex/syntax/syntax_test.zig"); // T2 syntax: ByteSet + recursive-descent parser
-    _ = @import("gist/kernel/regex/analysis/analysis_test.zig"); // T2 analysis: required-literal + cover + anchored
-    _ = @import("gist/kernel/regex/linear/core_test.zig"); // T2 engine: parser + Pike VM + prefilters
-    _ = @import("gist/kernel/regex/linear/matcher.zig"); // engine-neutral match seam: linear-arm forwarding
-    _ = @import("gist/kernel/regex/pcre2/backend.zig"); // PCRE2 `-P` backend: engine + literal co-located tests
-    _ = @import("gist/kernel/regex/pcre2/backend_test.zig"); // PCRE2 adversarial: lookaround/backref/limit/JIT parity
-    _ = @import("gist/kernel/regex/oracle/adversarial_test.zig"); // independent-oracle differential + prefilter brute force
-    _ = @import("gist/kernel/regex/linear/dfa_test.zig"); // byte-class DFA unit + differential fuzz
-    _ = @import("gist/kernel/regex/linear/powerset_test.zig"); // determinizer structural invariants
-    _ = @import("gist/kernel/regex/unicode/utf8seq.zig"); // scalar-range → UTF-8 byte-range decomposition
-    _ = @import("gist/kernel/regex/unicode/decode.zig"); // UTF-8 codepoint decode (fwd/last) for \b
-    _ = @import("gist/kernel/regex/unicode/tables.zig"); // Unicode data API: Perl/\p classes, fold orbits
+    _ = @import("index/trigrams/ngram_test.zig"); // n-gram extraction strategy primitives
+    _ = @import("index/postings/varint_test.zig"); // LEB128 varint codec (compact posting bodies)
+    _ = @import("index/trigrams/trigram_test.zig"); // T0 candidate index: query + serialize + build
+    _ = @import("index/trigrams/trigram_load_test.zig"); // T0 loader adversarial suite: malformed blobs fail closed
+    _ = @import("index/trigrams/persist_test.zig"); // T0 persisted index/path-table integrity (doc-id OOB guard)
+    _ = @import("index/trigrams/trigram_fuzz.zig"); // T0 loader long fuzz (seeds + mutations; GIST_FUZZ_ITERS)
+    _ = @import("search/rank/rank_test.zig"); // T4 RRF fusion ranking
+    _ = @import("search/rank/signals_test.zig"); // cross-language def-detection + generated-file signals
+    _ = @import("search/rank/mirror.zig"); // cached-source mirror classification + exact canonical duplicate
+    _ = @import("search/match/scan/simd_test.zig"); // SIMD `contains` differential fuzz vs std
+    _ = @import("index/trigrams/fresh_test.zig"); // T3 freshness `widen` set-algebra
+    _ = @import("search/match/query_test.zig"); // shared compiled-query: compile/prefilter/match vs oracle
+    _ = @import("math/bits_test.zig"); // shared two's-complement bit identities vs bool-slice oracle
+    _ = @import("search/similarity/sketch_test.zig"); // relate half: kinship metric semantics + clustering gate
+    _ = @import("search/similarity/lexicon.zig"); // hydra: corpus-priced fingerprint recall index
+    _ = @import("search/similarity/zipper.zig"); // hydra: suffix-automaton Ziv–Merhav cross-parse (exact ΔAb)
+    _ = @import("search/similarity/lexicon_test.zig"); // hydra: retrieval proof (short-query recall, ΔAb sidedness, zero-bit boilerplate)
+    _ = @import("index/codex/codex_test.zig"); // codex: SA-IS/RRR/wavelet/index differential vs naive oracles
+    _ = @import("search/batch/patterns_test.zig"); // match half: set ≡ N single-pattern oracles (gate off/on)
+    _ = @import("search/batch/loom_test.zig"); // weave: closed op set — total, deterministic, hand-tallied
+    _ = @import("runtime/session/request_test.zig"); // resident request eligibility classifier
+    _ = @import("runtime/session/corpus.zig"); // faithful corpus ingest: BOM/UTF-16 decode, whole-body NUL, no cap
+    _ = @import("runtime/session/render.zig"); // warm lines renderer: cold-Emitter byte parity
+    _ = @import("runtime/session/resident_test.zig"); // resident session: parity vs cold, overlay, RYW, deletion
+    _ = @import("runtime/session/protocol_test.zig"); // UDS frame codec round-trip + adversarial
+    _ = @import("runtime/session/watch_test.zig"); // freshness watcher: dirty/clean seqlock barrier
+    _ = @import("runtime/session/freshness_test.zig"); // barrier hardening: differential vs on-disk oracle, concurrency, overflow/bound
+    _ = @import("runtime/session/dirty.zig"); // exact dirty-path log: dedupe, bound→doubt, exact promise
+    _ = @import("runtime/session/delta.zig"); // O(changed) resolver: path classes, fold aliasing helpers
+    _ = @import("runtime/session/scoped_test.zig"); // scoped reconcile adversarial: vs full-walk ground truth
+    _ = @import("runtime/corpus/haystack_test.zig"); // shared walk: isSkipDir + joinPath hot-path decisions
+    _ = @import("runtime/corpus/bulkstat_test.zig"); // getattrlistbulk ≡ stat-walk differential
+    _ = @import("search/match/regex/syntax/syntax_test.zig"); // T2 syntax: ByteSet + recursive-descent parser
+    _ = @import("search/match/regex/analysis/analysis_test.zig"); // T2 analysis: required-literal + cover + anchored
+    _ = @import("search/match/regex/linear/core_test.zig"); // T2 engine: parser + Pike VM + prefilters
+    _ = @import("search/match/regex/linear/matcher.zig"); // engine-neutral match seam: linear-arm forwarding
+    _ = @import("search/match/regex/pcre2/backend.zig"); // PCRE2 `-P` backend: engine + literal co-located tests
+    _ = @import("search/match/regex/pcre2/backend_test.zig"); // PCRE2 adversarial: lookaround/backref/limit/JIT parity
+    _ = @import("search/match/regex/oracle/adversarial_test.zig"); // independent-oracle differential + prefilter brute force
+    _ = @import("search/match/regex/linear/dfa_test.zig"); // byte-class DFA unit + differential fuzz
+    _ = @import("search/match/regex/linear/powerset_test.zig"); // determinizer structural invariants
+    _ = @import("search/match/regex/unicode/utf8seq.zig"); // scalar-range → UTF-8 byte-range decomposition
+    _ = @import("search/match/regex/unicode/decode.zig"); // UTF-8 codepoint decode (fwd/last) for \b
+    _ = @import("search/match/regex/unicode/tables.zig"); // Unicode data API: Perl/\p classes, fold orbits
     // command surfaces (tests + driver bodies, so `zig build test` type-checks all)
-    _ = @import("scope/glob_test.zig"); // glob matcher + type/glob/root path scope
-    _ = @import("gist/faces/cli/status/status.zig"); // read-only index introspection
-    _ = @import("gist/faces/cli/schema/schema.zig"); // `--schema` manifest
-    _ = @import("hydra/cli/schema.zig"); // hydra's `--schema` manifest
-    _ = @import("gist/faces/cli/search/engine/serial.zig"); // the unified engine (rgsuite parity drop-in)
-    _ = @import("gist/faces/cli/search/engine/parallel.zig"); // the fused work-stealing parallel walk/read/emit pass
-    _ = @import("gist/faces/cli/search/read/ingest.zig"); // -z/--pre/-E content transforms (decompress/preprocess/transcode)
-    _ = @import("gist/faces/cli/search/read/encoding.zig"); // -E WHATWG legacy-code-page decoders (single-byte + CJK multi-byte)
-    _ = @import("gist/faces/cli/search/emit/multiline.zig"); // -U whole-buffer match model (Emitter.buffer + --json)
-    _ = @import("gist/faces/cli/search/emit/hints.zig"); // no-match stderr guidance: shape analysis + exact render bytes
-    _ = @import("gist/faces/cli/search/engine/ranked.zig"); // `--rank` definition-first ranked view
-    _ = @import("gist/faces/cli/lifecycle/index.zig"); // the `index` verb: build + persist
-    _ = @import("gist/faces/cli/daemon/serve/serve.zig"); // the resident daemon driver body
-    _ = @import("gist/faces/cli/daemon/client/client.zig"); // the warm CLI fast-path client body
-    _ = @import("gist/faces/cli/daemon/client/spawn.zig"); // best-effort detached daemon auto-spawn
-    _ = @import("gist/faces/cli/daemon/client/client_test.zig"); // wedged-daemon → cold deadline (no hang)
-    _ = @import("gist/faces/cli/daemon/serve/serve_test.zig"); // end-to-end daemon lifecycle + client round-trip
+    _ = @import("runtime/scope/glob_test.zig"); // glob matcher + type/glob/root path scope
+    _ = @import("cli/gist/status/status.zig"); // read-only index introspection
+    _ = @import("cli/gist/schema/schema.zig"); // `--schema` manifest
+    _ = @import("cli/mutual/schema.zig"); // hydra's `--schema` manifest
+    _ = @import("cli/gist/search/engine/serial.zig"); // the unified engine (rgsuite parity drop-in)
+    _ = @import("cli/gist/search/engine/parallel.zig"); // the fused work-stealing parallel walk/read/emit pass
+    _ = @import("cli/gist/search/read/ingest.zig"); // -z/--pre/-E content transforms (decompress/preprocess/transcode)
+    _ = @import("cli/gist/search/read/encoding.zig"); // -E WHATWG legacy-code-page decoders (single-byte + CJK multi-byte)
+    _ = @import("cli/gist/search/emit/multiline.zig"); // -U whole-buffer match model (Emitter.buffer + --json)
+    _ = @import("cli/gist/search/emit/hints.zig"); // no-match stderr guidance: shape analysis + exact render bytes
+    _ = @import("cli/gist/search/engine/ranked.zig"); // `--rank` definition-first ranked view
+    _ = @import("cli/gist/lifecycle/index.zig"); // the `index` verb: build + persist
+    _ = @import("cli/gist/daemon/serve/serve.zig"); // the resident daemon driver body
+    _ = @import("cli/gist/daemon/client/client.zig"); // the warm CLI fast-path client body
+    _ = @import("cli/gist/daemon/client/spawn.zig"); // best-effort detached daemon auto-spawn
+    _ = @import("cli/gist/daemon/client/client_test.zig"); // wedged-daemon → cold deadline (no hang)
+    _ = @import("cli/gist/daemon/serve/serve_test.zig"); // end-to-end daemon lifecycle + client round-trip
 }

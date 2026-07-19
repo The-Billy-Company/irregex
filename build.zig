@@ -2,7 +2,7 @@
 //! static+dynamic C-ABI artifact, the macOS archive realign, and the
 //! `test`/`coverage` steps live in the shared `kernelkit` chassis
 //! (pkg/kernels/core). This file declares the kernel plus two executables
-//! built on it: the production `gist` CLI (`src/gist/faces/cli/main.zig`, the
+//! built on it: the production `gist` CLI (`src/cli/gist/main.zig`, the
 //! `index`/`status` lifecycle verbs plus the bare `<pattern>`/`rg` search
 //! front door) and the separate `gist-bench` harness
 //! (`bench/harness/bench.zig`, the `bench`/`verify`/`certify` tooling). Production CLI
@@ -75,7 +75,7 @@ fn pcre2Library(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.b
 }
 
 /// Wire the CoreServices (FSEvents) + CoreFoundation (CFRunLoop) frameworks the
-/// macOS resident watcher (`src/gist/session/watch.zig`) calls into. Applied to every
+/// macOS resident watcher (`src/runtime/session/watch.zig`) calls into. Applied to every
 /// module that compiles the engine and produces a final link — including the
 /// C-ABI smoke exe, which links the engine as an object (framework flags don't
 /// propagate across `addObject`, only `addImport`). No-op off macOS. `link_libc`
@@ -155,7 +155,7 @@ pub fn build(b: *std.Build) void {
     cli_engine.linkLibrary(pcre2Library(b, k.target, cli_optimize));
     linkWatcherFrameworks(cli_engine, darwin_frameworks);
     const cli_mod = b.createModule(.{
-        .root_source_file = b.path("src/gist/faces/cli/main.zig"),
+        .root_source_file = b.path("src/cli/gist/main.zig"),
         .target = k.target,
         .optimize = cli_optimize,
     });
@@ -163,17 +163,17 @@ pub fn build(b: *std.Build) void {
     const cli_exe = b.addExecutable(.{ .name = "gist", .root_module = cli_mod });
     b.installArtifact(cli_exe);
 
-    // ── the `hydra` binary — compression-as-search (similar/dups/patterns) ──
+    // ── the `mutual` binary — compression-as-search (similar/dups/patterns) ──
     // Same engine module, same ReleaseFast product posture; a second thin face
     // over the shared kernel, not a second engine.
-    const hydra_mod = b.createModule(.{
-        .root_source_file = b.path("src/hydra/cli/main.zig"),
+    const mutual_mod = b.createModule(.{
+        .root_source_file = b.path("src/cli/mutual/main.zig"),
         .target = k.target,
         .optimize = cli_optimize,
     });
-    hydra_mod.addImport("irregex", cli_engine);
-    const hydra_exe = b.addExecutable(.{ .name = "hydra", .root_module = hydra_mod });
-    b.installArtifact(hydra_exe);
+    mutual_mod.addImport("irregex", cli_engine);
+    const mutual_exe = b.addExecutable(.{ .name = "mutual", .root_module = mutual_mod });
+    b.installArtifact(mutual_exe);
 
     // ── `zig build lab` — the measurement-lab install umbrella ──
     // The six bench/certificate executables below are deliberately OFF the
@@ -207,7 +207,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     const check_mod = b.createModule(.{
-        .root_source_file = b.path("src/gist/faces/cli/main.zig"),
+        .root_source_file = b.path("src/cli/gist/main.zig"),
         .target = linux_target,
         .optimize = .Debug,
     });
@@ -489,7 +489,7 @@ pub fn build(b: *std.Build) void {
     relate_knn_step.dependOn(relate_knn_install);
 
     // ── `codex-scale` — the compressed self-index proof harness ──
-    // Runs the REAL codex (src/codex/) over slices of an on-disk corpus:
+    // Runs the REAL codex (src/index/codex/) over slices of an on-disk corpus:
     // index bits/char vs measured H0/H2, count/find latency across sizes
     // (flat in n), byte-exact restore from the index alone, every timed count
     // verified against a naive scan. bench/codex/race.sh adds compressor
