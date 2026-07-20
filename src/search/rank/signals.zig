@@ -1,5 +1,5 @@
 //! gist ranking signals — the language-agnostic, byte-level heuristics the T4
-//! ranker (sibling `rank.zig`) consumes as `Doc` features. Two questions,
+//! ranker (sibling `rank.zig`) consumes as `Doc` features. Three questions,
 //! answered from raw bytes with no parser:
 //!
 //!   • **`definesNeedle`** — does this line *define* the needle (vs use it)? The
@@ -9,21 +9,55 @@
 //!     lexical density and the def boost (their boilerplate stubs parse as
 //!     decls) yet are almost never an agent's edit target, so the ranker demotes
 //!     them.
+//!   • **`shapeFingerprint`** — what remains of a matching line after vocabulary
+//!     is erased, so repeated use geometry carries less information.
 //!
 //! Both are deliberately **cross-language, not Billy-specific**.
-//! `declarationConfidence` reads geometry rather than a language catalogue:
-//! identifier boundaries, delimiter nesting, assignment, and body-opening
-//! punctuation. `shapeFingerprint` applies relate's model-free normalization
-//! idea to one match line (query identifier → Q, other identifiers → I,
-//! strings → S, numbers → N), letting the ranker price repeated use shapes
-//! below rarer explanatory shapes. `isGenerated` trusts universal header
-//! markers first and filename conventions only when bytes are unavailable.
-//! Every signal only reorders results; none can hide a match.
+//! `declarationConfidence` reads Unicode word boundaries and geometry rather
+//! than a language catalogue: delimiter nesting, labels, equations, prefix
+//! forms, and body-opening punctuation. `shapeFingerprint` applies relate's
+//! model-free normalization idea to one match line (query identifier → Q,
+//! other identifiers → I, strings → S, numbers → N), letting the ranker price
+//! repeated use shapes below rarer explanatory shapes. `isGenerated` trusts
+//! universal header markers first and filename conventions only when bytes are
+//! unavailable. Every signal only reorders results; none can hide a match.
 
 const std = @import("std");
+const decode = @import("../match/regex/unicode/decode.zig");
+const unicode = @import("../match/regex/unicode/tables.zig");
 
-fn isIdentByte(c: u8) bool {
-    return std.ascii.isAlphanumeric(c) or c == '_';
+fn wordLen(bytes: []const u8) usize {
+    if (bytes.len == 0) return 0;
+    if (bytes[0] < 0x80)
+        return @intFromBool(std.ascii.isAlphanumeric(bytes[0]) or bytes[0] == '_');
+    const scalar = decode.decode(bytes) orelse return 0;
+    return if (unicode.isWord(scalar.cp)) scalar.len else 0;
+}
+
+fn isWordBefore(bytes: []const u8) bool {
+    if (bytes.len == 0) return false;
+    if (bytes[bytes.len - 1] < 0x80)
+        return std.ascii.isAlphanumeric(bytes[bytes.len - 1]) or bytes[bytes.len - 1] == '_';
+    const scalar = decode.decodeLast(bytes) orelse return false;
+    return unicode.isWord(scalar.cp);
+}
+
+fn isWordAfter(bytes: []const u8) bool {
+    if (bytes.len == 0) return false;
+    if (bytes[0] < 0x80)
+        return std.ascii.isAlphanumeric(bytes[0]) or bytes[0] == '_';
+    const scalar = decode.decode(bytes) orelse return false;
+    return unicode.isWord(scalar.cp);
+}
+
+fn wordEnd(bytes: []const u8, start: usize) usize {
+    var end = start;
+    while (end < bytes.len) {
+        const len = wordLen(bytes[end..]);
+        if (len == 0) break;
+        end += len;
+    }
+    return end;
 }
 
 fn isComment(line: []const u8) bool {
@@ -35,10 +69,12 @@ fn isComment(line: []const u8) bool {
 
 fn nextWhole(hay: []const u8, needle: []const u8, from: usize) ?usize {
     var i = from;
+    const left_word = isWordAfter(needle);
+    const right_word = isWordBefore(needle);
     while (std.mem.indexOfPos(u8, hay, i, needle)) |pos| : (i = pos + 1) {
         const end = pos + needle.len;
-        if ((pos == 0 or !isIdentByte(hay[pos - 1])) and
-            (end == hay.len or !isIdentByte(hay[end]))) return pos;
+        if ((!left_word or !isWordBefore(hay[0..pos])) and
+            (!right_word or !isWordAfter(hay[end..]))) return pos;
     }
     return null;
 }
@@ -63,10 +99,9 @@ fn prefixGeometry(prefix: []const u8) Geometry {
             g.disqualifying = true;
             break;
         }
-        if (isIdentByte(c) and !std.ascii.isDigit(c)) {
+        if (wordLen(prefix[i..]) > 0) {
             g.identifiers +|= 1;
-            i += 1;
-            while (i < prefix.len and isIdentByte(prefix[i])) i += 1;
+            i = wordEnd(prefix, i);
             continue;
         }
         switch (c) {
@@ -110,8 +145,8 @@ fn bodyAfterCall(s: []const u8) bool {
             depth += 1;
         } else if (c == ')' and depth > 0) {
             depth -= 1;
-        } else if (depth == 0 and (c == '{' or c == ':' or
-            (c == '=' and i + 1 < s.len and s[i + 1] == '>')))
+        } else if (depth == 0 and (c == '{' or bodyOperatorAt(s, i) or (c == ':' and
+            (i + 1 >= s.len or s[i + 1] != ':') and (i == 0 or s[i - 1] != ':'))))
         {
             return true;
         }
@@ -121,9 +156,62 @@ fn bodyAfterCall(s: []const u8) bool {
 
 fn singleIdentifier(s: []const u8) bool {
     const t = std.mem.trim(u8, s, " \t\r;");
-    if (t.len == 0 or std.ascii.isDigit(t[0])) return false;
-    for (t) |c| if (!isIdentByte(c)) return false;
+    return t.len > 0 and wordEnd(t, 0) == t.len;
+}
+
+fn hasBodyTail(s: []const u8) bool {
+    const brace = std.mem.indexOfScalar(u8, s, '{') orelse return false;
+    const lead = s[0..brace];
+    for ([_]u8{ '=', ',', ';', '"', '\'', '`' }) |c|
+        if (std.mem.indexOfScalar(u8, lead, c) != null) return false;
     return true;
+}
+
+fn bodyOperatorAt(s: []const u8, i: usize) bool {
+    if (i + 1 >= s.len) return false;
+    return (s[i] == '=' and s[i + 1] == '>') or
+        (s[i] == '-' and s[i + 1] == '>') or
+        (s[i] == ':' and (s[i + 1] == '-' or s[i + 1] == '='));
+}
+
+fn topLevelAssignment(s: []const u8) bool {
+    var round: i16 = 0;
+    var square: i16 = 0;
+    var curly: i16 = 0;
+    var quote: ?u8 = null;
+    for (s, 0..) |c, i| {
+        if (quote) |q| {
+            if (c == q and (i == 0 or s[i - 1] != '\\')) quote = null;
+            continue;
+        }
+        if (c == '"' or c == '\'' or c == '`') {
+            quote = c;
+            continue;
+        }
+        switch (c) {
+            '(' => round += 1,
+            ')' => round -= 1,
+            '[' => square += 1,
+            ']' => square -= 1,
+            '{' => curly += 1,
+            '}' => curly -= 1,
+            '=' => if (round == 0 and square == 0 and curly == 0 and
+                (i == 0 or (s[i - 1] != '=' and s[i - 1] != '!' and s[i - 1] != '<' and s[i - 1] != '>')) and
+                (i + 1 == s.len or (s[i + 1] != '=' and s[i + 1] != '>'))) return true,
+            else => {},
+        }
+    }
+    return false;
+}
+
+fn prefixForm(g: Geometry, before: []const u8, rest: []const u8) u8 {
+    if (g.disqualifying or g.identifiers != 1 or g.brackets != 0 or g.braces != 0 or
+        g.parens < 1 or g.parens > 2) return 0;
+    if (!std.mem.startsWith(u8, std.mem.trimStart(u8, before, " \t"), "(")) return 0;
+    const prior = nonSpaceBefore(before) orelse return 0;
+    if (rest.len == 0) return 0;
+    if (g.parens == 2 and prior == '(') return 2;
+    return if (rest[0] == '(' or rest[0] == '[' or rest[0] == '{') 2 else 1;
 }
 
 /// Parser-free declaration evidence, 0 (use) through 3 (body/value-bearing
@@ -139,22 +227,37 @@ pub fn declarationConfidence(line: []const u8, needle: []const u8) u8 {
         from = pos + 1;
         const before = t[0..pos];
         const g = prefixGeometry(before);
-        if (g.disqualifying or g.parens != 0 or g.brackets != 0 or g.braces != 0) continue;
-        if (nonSpaceBefore(before)) |c| if (c == '.' or c == ':' or c == '>' or c == '@') continue;
-
         const rest = std.mem.trimStart(u8, t[pos + needle.len ..], " \t");
         if (rest.len == 0) continue;
+        const prefix_form = prefixForm(g, before, rest);
+        if (prefix_form > 0) {
+            best = @max(best, prefix_form);
+            continue;
+        }
+        if (g.disqualifying or g.parens != 0 or g.brackets != 0 or g.braces != 0) continue;
+        if (nonSpaceBefore(before)) |c| {
+            if (c == ':' and std.mem.eql(u8, std.mem.trim(u8, before, " \t"), ":")) {
+                if (std.mem.endsWith(u8, std.mem.trim(u8, rest, " \t\r"), ";")) best = @max(best, 3);
+                continue;
+            }
+            if (c == '.' or c == ':' or c == '<' or c == '>' or c == '@') continue;
+        }
+
         if (rest[0] == '=') {
-            best = @max(best, 3);
-        } else if (rest[0] == '{') {
+            const confidence: u8 = if (g.identifiers > 0) 3 else 1;
+            best = @max(best, confidence);
+        } else if (rest[0] == '{' or hasBodyTail(rest)) {
             best = @max(best, 3);
         } else if (rest[0] == ':') {
+            if (rest.len > 1 and rest[1] == ':') continue;
             const annotation = std.mem.trim(u8, rest[1..], " \t\r;");
             const confidence: u8 = if (annotation.len == 0) 3 else if (std.mem.indexOfScalar(u8, annotation, '=') != null) 2 else 1;
             best = @max(best, confidence);
         } else if (rest[0] == '(' or rest[0] == '<') {
-            if (bodyAfterCall(rest)) best = @max(best, 3) else if (g.identifiers > 0) best = @max(best, 2);
-        } else if (g.identifiers > 0 and singleIdentifier(rest)) {
+            if (bodyAfterCall(rest)) best = @max(best, 3);
+        } else if (topLevelAssignment(rest)) {
+            best = @max(best, 3);
+        } else if (singleIdentifier(rest)) {
             best = @max(best, 1);
         }
     }
@@ -188,10 +291,9 @@ pub fn shapeFingerprint(line: []const u8, needle: []const u8) u64 {
         } else if (std.ascii.isDigit(c)) {
             hashByte(&h, 'N');
             i += 1;
-            while (i < line.len and (isIdentByte(line[i]) or line[i] == '.')) i += 1;
-        } else if (isIdentByte(c) and !std.ascii.isDigit(c)) {
-            var end = i + 1;
-            while (end < line.len and isIdentByte(line[end])) end += 1;
+            while (i < line.len and (std.ascii.isAlphanumeric(line[i]) or line[i] == '_' or line[i] == '.')) i += 1;
+        } else if (wordLen(line[i..]) > 0) {
+            const end = wordEnd(line, i);
             if (std.mem.eql(u8, line[i..end], needle)) {
                 hashByte(&h, 'Q');
                 found = true;
@@ -206,23 +308,19 @@ pub fn shapeFingerprint(line: []const u8, needle: []const u8) u64 {
     return if (found) h else 0;
 }
 
-/// Known generated-filename suffixes across ecosystems (protoc/Connect/sqlc
-/// conventions + the common protobuf/Dart/C#/minified outputs). Path-suffix
-/// first (no bytes needed); the marker sniff below catches everything else.
-const gen_suffixes = [_][]const u8{
-    // protoc / Connect-RPC / sqlc / *.gen.* codegen conventions
-    ".pb.go",        ".pb.gw.go", ".connect.go",   ".sql.go",          ".gen.go",      "_gen.go",
-    "_pb2.py",       "_pb2.pyi",  "_pb2_grpc.pyi", ".gen.py",          "_gen.py",      ".pb.swift",
-    ".gen.swift",    "_pb.ts",    "_connect.ts",   "_connectquery.ts", ".gen.ts",      ".gen.tsx",
-    ".generated.ts", "_gen.rs",   ".gen.json",
-    // wider ecosystem: protobuf (C++/Python-grpc/Dart), Dart codegen, C#, minified
-        ".pb.cc",           ".pb.h",        "_pb2_grpc.py",
-    ".pb.dart",      ".g.dart",   ".freezed.dart", ".g.cs",            ".designer.cs", ".min.js",
-    ".min.css",      "_pb.d.ts",
+/// Compact filename grammar for conventional generated names. Most formats
+/// collapse to a handful of separators (`.gen.`, `_pb2.`, `.min.`); only
+/// conventions without a stable generator token need an exact suffix.
+const gen_fragments = [_][]const u8{
+    ".generated.",    ".gen.", "_gen.", "_generated.", ".min.",
+    ".pb.",           "_pb.",  "_pb2.", "_pb2_",       "_connect.",
+    "_connectquery.",
 };
-/// First-line markers — the *universal* generated signal, language-independent
-/// and far more reliable than any suffix list. Checked only on the first line
-/// (the conventional codegen header), so a body mention can't false-trip it.
+const gen_exact_suffixes = [_][]const u8{
+    ".sql.go", ".g.dart", ".freezed.dart", ".g.cs", ".designer.cs",
+};
+/// Header markers — the universal generated signal, language-independent and
+/// more reliable than filename inference. Only the first eight lines count.
 const gen_markers = [_][]const u8{
     "code generated", "generated by",  "@generated",        "do not edit",
     "auto-generated", "autogenerated", "machine generated",
@@ -250,13 +348,14 @@ fn generatedHeaderLine(line: []const u8) bool {
 /// to demote codegen from a path alone — it misses only marker-headed files
 /// with an unconventional name, a liberal-by-design gap that just reorders.
 pub fn isGeneratedPath(path: []const u8) bool {
-    for (gen_suffixes) |s| if (std.mem.endsWith(u8, path, s)) return true;
+    const name = std.fs.path.basename(path);
+    for (gen_fragments) |fragment| if (std.mem.indexOf(u8, name, fragment) != null) return true;
+    for (gen_exact_suffixes) |suffix| if (std.mem.endsWith(u8, name, suffix)) return true;
     return false;
 }
 
-/// Is this a codegen artifact? A known generated filename suffix, or a generated
-/// marker on the first line. Liberal by design — a false demote only reorders a
-/// match, never drops it (same contract the repo's shape gates use).
+/// Is this a codegen artifact? A conventional generated name, or a generated
+/// marker in the header. Liberal by design: a false demote only reorders.
 pub fn isGenerated(path: []const u8, buf: []const u8) bool {
     if (isGeneratedPath(path)) return true;
     const head = buf[0..@min(buf.len, 2048)];

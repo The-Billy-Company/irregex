@@ -1,0 +1,1 @@
+Ranked search now identifies declarations from Unicode-aware delimiter geometry—including labels, prefix forms, equations, and symbolic bodies—instead of a project/language keyword catalogue, and applies Relate-style corpus pricing to normalized match-line shapes so definitions outrank repeated imports, annotations, and calls across diverse repositories.

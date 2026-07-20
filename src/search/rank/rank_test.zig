@@ -22,6 +22,35 @@ test "rrf: definition beats a higher-frequency call site" {
     try std.testing.expectEqual(@as(u32, 0), order[1]);
 }
 
+test "rrf: full definition beats a type-only declaration" {
+    const docs = [_]Doc{
+        .{ .id = 1, .matches = 2, .is_def = true, .definition = 1, .best_line = 2, .depth = 2 },
+        .{ .id = 2, .matches = 2, .is_def = true, .definition = 3, .best_line = 4, .depth = 2 },
+    };
+    const order = try rank(std.testing.allocator, &docs, .{}, null);
+    defer std.testing.allocator.free(order);
+    try std.testing.expectEqual(@as(u32, 1), order[0]);
+}
+
+test "rrf: relate-style shape pricing discounts repeated use geometry" {
+    const docs = [_]Doc{
+        .{ .id = 1, .matches = 1, .is_def = false, .shape_hash = 11, .best_line = 1, .depth = 2 },
+        .{ .id = 2, .matches = 1, .is_def = false, .shape_hash = 11, .best_line = 1, .depth = 2 },
+        .{ .id = 3, .matches = 1, .is_def = false, .shape_hash = 11, .best_line = 1, .depth = 2 },
+        .{ .id = 4, .matches = 1, .is_def = false, .shape_hash = 99, .best_line = 1, .depth = 2 },
+    };
+    const order = try rank(std.testing.allocator, &docs, .{
+        .lexical = 0,
+        .symbol = 0,
+        .structure = 1,
+        .shallow = 0,
+        .graph = 0,
+        .generated = 0,
+    }, null);
+    defer std.testing.allocator.free(order);
+    try std.testing.expectEqual(@as(u32, 3), order[0]);
+}
+
 test "rrf: among non-defs, density then shallowness win" {
     const docs = [_]Doc{
         .{ .id = 1, .matches = 1, .is_def = false, .best_line = 9, .depth = 6 },

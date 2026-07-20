@@ -93,18 +93,23 @@ fn addDefinitionSignal(score: []f64, docs: []const Doc, w: f64, k: f64) void {
     }
 }
 
-/// Relate's corpus-pricing idea at match-line scale: normalize away vocabulary,
-/// count each surviving shape, then give rare shapes more RRF credit. Equal
-/// frequencies are true ties; missing shapes receive no credit.
+/// Relate's Shannon pricing at match-line scale: normalize away vocabulary,
+/// then credit a shape by log₂(N/df), normalized to [0,1] and scaled by one
+/// top-rank RRF term. Ubiquitous use geometry is worth exactly zero.
 fn addStructureSignal(gpa: std.mem.Allocator, score: []f64, docs: []const Doc, w: f64, k: f64) !void {
     var counts: std.AutoHashMapUnmanaged(u64, u32) = .empty;
     defer counts.deinit(gpa);
+    var shaped: usize = 0;
     for (docs) |d| if (d.shape_hash != 0) {
+        shaped += 1;
         const slot = try counts.getOrPut(gpa, d.shape_hash);
         slot.value_ptr.* = if (slot.found_existing) slot.value_ptr.* + 1 else 1;
     };
+    if (shaped <= 1) return;
+    const n = @as(f64, @floatFromInt(shaped));
+    const scale = rrf(w, k, 0) / std.math.log2(n);
     for (docs, 0..) |d, i| if (counts.get(d.shape_hash)) |frequency| {
-        score[i] += rrf(w, k, @intCast(frequency - 1));
+        score[i] += scale * std.math.log2(n / @as(f64, @floatFromInt(frequency)));
     };
 }
 
