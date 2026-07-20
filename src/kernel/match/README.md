@@ -14,17 +14,17 @@ doc_radar:
 # `src/search/match/` — exact-match engine
 
 The transport-neutral match core ([ADR-352](../../../../../../docs/architecture/3-decisions/352-gist-unified-search-api.md)).
-One deep module owns *"a search intent, compiled"*, so the cold CLI, warm
+One deep module owns _"a search intent, compiled"_, so the cold CLI, warm
 session, FFI face, and language bindings cannot drift on **what matches** or
 **which literals are safe to prune**.
 
 ## Layout
 
-| Piece | Job |
-| ----- | --- |
-| `query.zig` | `CompiledQuery` — lower `(pattern, fixed, ignore_case, mode)` into an immutable matcher; expose the sound trigram `prefilter` + per-doc `docMatches` / `countLines` |
-| [`regex/`](regex) | Linear-time NFA + byte-class DFA + Pike + opt-in PCRE2 (`syntax → analysis → compile → linear`) |
-| [`scan/`](scan) | SIMD substring presence + fused parallel verify (fixed-string hot path) |
+| Piece             | Job                                                                                                                                                                 |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `query.zig`       | `CompiledQuery` — lower `(pattern, fixed, ignore_case, mode)` into an immutable matcher; expose the sound trigram `prefilter` + per-doc `docMatches` / `countLines` |
+| [`regex/`](regex) | Linear-time NFA + byte-class DFA + Pike + opt-in PCRE2 (`syntax → analysis → compile → linear`)                                                                     |
+| [`scan/`](scan)   | SIMD substring presence + fused parallel verify (fixed-string hot path)                                                                                             |
 
 ## Two invariants make it the shared boundary
 

@@ -13,9 +13,9 @@ Pinned Unicode / encoding data and the Python builders that lower them into
 generated Zig tables. CI never fetches the network; regenerating is an
 explicit `make` step after a deliberate pin bump.
 
-| Tool | Input (vendored) | Output (generated — do not hand-edit) |
-| ---- | ---------------- | ------------------------------------- |
-| [`ucd/`](ucd) | Unicode 16.0.0 UCD text | `src/search/match/regex/unicode/tables.gen.zig` |
+| Tool                | Input (vendored)        | Output (generated — do not hand-edit)           |
+| ------------------- | ----------------------- | ----------------------------------------------- |
+| [`ucd/`](ucd)       | Unicode 16.0.0 UCD text | `src/search/match/regex/unicode/tables.gen.zig` |
 | [`whatwg/`](whatwg) | WHATWG encoding indexes | `src/runtime/cold/read/encoding_tables.gen.zig` |
 
 ```bash

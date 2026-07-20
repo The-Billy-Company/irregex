@@ -36,8 +36,8 @@ DEST="${GIST_CORPORA_DIR:-${REPO}/.local/gist-corpora}"
 mkdir -p "${DEST}"
 
 # name → repo-url tag  (shallow, single-branch: the tree, not the history)
-LINUX_URL="https://github.com/torvalds/linux"    LINUX_TAG="v6.10"
-CPYTHON_URL="https://github.com/python/cpython"  CPYTHON_TAG="v3.13.0"
+LINUX_URL="https://github.com/torvalds/linux" LINUX_TAG="v6.10"
+CPYTHON_URL="https://github.com/python/cpython" CPYTHON_TAG="v3.13.0"
 TS_URL="https://github.com/microsoft/TypeScript" TS_TAG="v5.8.3"
 # OpenSubtitles v2016 monolingual dumps (the ripgrep benchsuite URLs). The full
 # decompressed files are ~9 GiB / ~2.5 GiB; we keep a fixed-length prefix — the
@@ -50,7 +50,9 @@ SUB_BYTES=$((256 * 1024 * 1024)) # 256 MiB per language
 clone_pinned() { # <dir> <url> <tag>
   local dir="${DEST}/$1" url="$2" tag="$3"
   if [[ -f "${dir}/.corpus-ready" ]]; then
-    echo "  $1: ready ($(cat "${dir}/.corpus-ready"))"
+    local ready
+    ready="$(cat "${dir}/.corpus-ready")"
+    echo "  $1: ready (${ready})"
     return 0
   fi
   rm -rf "${dir}"
@@ -62,7 +64,9 @@ clone_pinned() { # <dir> <url> <tag>
 fetch_subtitles() {
   local dir="${DEST}/subtitles"
   if [[ -f "${dir}/.corpus-ready" ]]; then
-    echo "  subtitles: ready ($(cat "${dir}/.corpus-ready"))"
+    local ready
+    ready="$(cat "${dir}/.corpus-ready")"
+    echo "  subtitles: ready (${ready})"
     return 0
   fi
   rm -rf "${dir}"
@@ -88,7 +92,9 @@ fetch_subtitles() {
 fetch_torture() {
   local dir="${DEST}/torture"
   if [[ -f "${dir}/.corpus-ready" ]]; then
-    echo "  torture: ready ($(cat "${dir}/.corpus-ready"))"
+    local ready
+    ready="$(cat "${dir}/.corpus-ready")"
+    echo "  torture: ready (${ready})"
     return 0
   fi
   rm -rf "${dir}"

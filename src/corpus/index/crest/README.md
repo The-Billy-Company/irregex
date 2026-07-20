@@ -22,16 +22,16 @@ foreign doc-id space.
 
 ## Why it exists
 
-Trigrams prove absence of required *literals*. Crest proves absence for
+Trigrams prove absence of required _literals_. Crest proves absence for
 **literal-free class repetitions** (`\d+`, `[a-z]{8}`, …) that trigrams
 concede. Together they elide more `open(2)`s without changing answers.
 
 ## Files
 
-| File | Job |
-| ---- | --- |
-| `sidecar.zig` | Codec (`writeInto` / `decode`, fail-closed) + parallel `build` pass |
-| `sidecar_test.zig` | Round-trip identity + adversarial malformed-blob suite |
+| File               | Job                                                                 |
+| ------------------ | ------------------------------------------------------------------- |
+| `sidecar.zig`      | Codec (`writeInto` / `decode`, fail-closed) + parallel `build` pass |
+| `sidecar_test.zig` | Round-trip identity + adversarial malformed-blob suite              |
 
 ## Invariants
 

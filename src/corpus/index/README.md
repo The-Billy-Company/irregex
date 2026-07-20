@@ -19,15 +19,15 @@ prove that some of them cannot match (or answer count/find/restore /
 kinship without a full scan). `--no-index`, a missing anchor, or a corrupt
 artifact always degrades to slower-but-identical answers.
 
-| Package | Job |
-| ------- | --- |
-| [`trigrams/`](trigrams) | **T0** positional trigram candidate index + **T3** mtime/ctime freshness |
-| [`postings/`](postings) | LEB128 + CSR blob codecs the trigram bodies ride |
-| [`crest/`](crest) | Per-doc forced-class-run vectors (`crest.bin`) for literal-free class runs |
-| [`codex/`](codex) | FM-index self-index: `count` / `find` / `restore` at entropy space |
-| [`atlas/`](atlas) | Persisted LZJD sketches for warm `relate similar` / `dups` / `clusters` |
-| [`frag/`](frag) | Persisted per-function silhouettes (`concepts.frag`) for warm `relate concepts` |
-| [`frame/`](frame) | Shared wire discipline: LE ints, fail-closed cursor, NUL catalogs, `onDisk` gate |
+| Package                 | Job                                                                              |
+| ----------------------- | -------------------------------------------------------------------------------- |
+| [`trigrams/`](trigrams) | **T0** positional trigram candidate index + **T3** mtime/ctime freshness         |
+| [`postings/`](postings) | LEB128 + CSR blob codecs the trigram bodies ride                                 |
+| [`crest/`](crest)       | Per-doc forced-class-run vectors (`crest.bin`) for literal-free class runs       |
+| [`codex/`](codex)       | FM-index self-index: `count` / `find` / `restore` at entropy space               |
+| [`atlas/`](atlas)       | Persisted LZJD sketches for warm `relate similar` / `dups` / `clusters`          |
+| [`frag/`](frag)         | Persisted per-function silhouettes (`concepts.frag`) for warm `relate concepts`  |
+| [`frame/`](frame)       | Shared wire discipline: LE ints, fail-closed cursor, NUL catalogs, `onDisk` gate |
 
 ## The one law
 

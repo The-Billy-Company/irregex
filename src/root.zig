@@ -12,7 +12,7 @@
 //! introspection, allocation-free trigram extraction, AND — since ADR-352
 //! rung 3 — an in-process warm search SESSION (`irregex_open`/`irregex_search`/
 //! `irregex_close`, implemented in
-//! `runtime/ffi/session.zig`): a non-Zig host holds a corpus warm in its own
+//! `surface/ffi/session.zig`): a non-Zig host holds a corpus warm in its own
 //! process and streams match records over a callback, with no subprocess,
 //! socket, `stdout`, or `exit`. Every entry returns a status code instead of
 //! `die()`ing, so a bad query can never terminate an embedding host — the
@@ -99,7 +99,7 @@ pub const irregex = struct {
 // hits into functions / bounded windows before kinship, so a small
 // implementation is not drowned by unrelated file bytes. Provenance closes quote's loop:
 // a quoted phrase is re-verified against the source's CURRENT bytes. Pure
-// kernels — no I/O, no argv; the `cli/irregex` face loads the corpus and renders.
+// kernels — no I/O, no argv; the `surface/face/irregex` face loads the corpus and renders.
 pub const compose = struct {
     pub const candidates = @import("kernel/compose/candidates.zig");
     pub const context = @import("kernel/compose/context.zig");
@@ -114,7 +114,7 @@ pub const compose = struct {
 // corpus size — plus locate (sampled) and byte-exact restore, all after the
 // text, suffix array, and BWT are freed. The Shannon rung under both engines:
 // gist gets an exact zero-false-positive tier, mutual a corpus-global
-// matching-statistics substrate. See src/index/codex/README.md for the math.
+// matching-statistics substrate. See src/corpus/index/codex/README.md for the math.
 pub const codex = struct {
     pub const sais = @import("corpus/index/codex/sais.zig");
     pub const rrr = @import("corpus/index/codex/rrr.zig");
@@ -128,7 +128,7 @@ pub const codex = struct {
 // The asymmetric successor to the symmetric sketch for SEARCH: persisted
 // trigram evidence nominates a bounded pool, then the zipper decides with a
 // suffix-automaton Ziv–Merhav cross-parse. The live lexicon remains the
-// missing-index oracle. See src/search/similarity/.
+// missing-index oracle. See src/kernel/kinship/.
 pub const relate = struct {
     pub const lexicon = @import("kernel/kinship/recall/lexicon.zig");
     pub const retrieval = @import("surface/exec/cold/engine/retrieval.zig");
@@ -141,7 +141,7 @@ pub const relate = struct {
 // ── the transport-neutral compiled query (the shared search core) ──
 // One deep module owns "a search intent, compiled": the fail-closed, thread-safe
 // compile → sound-trigram-prefilter → per-doc match/count kernels that BOTH the
-// cold CLI (`runtime/cold`) and the warm resident session (`runtime/session`)
+// cold CLI (`surface/exec/cold`) and the warm resident session (`surface/exec/session`)
 // execute through, so the two engines cannot drift on what matches.
 pub const engine = struct {
     pub const query = @import("kernel/match/query.zig");
@@ -174,7 +174,7 @@ pub const ffi = struct {
 };
 
 /// CLI surfaces built on the engine above. Not part of the C ABI — the `gist`
-/// executable (`cli/gist/main.zig`) and the bench harness dispatch through
+/// executable (`surface/face/gist/main.zig`) and the bench harness dispatch through
 /// these; grouped here so the whole command tree resolves through the module.
 pub const commands = struct {
     pub const scope = struct {
@@ -198,7 +198,7 @@ pub const commands = struct {
     /// `gist serve` — the resident daemon that keeps a `session` warm behind a
     /// Unix socket (ADR-352 rung 2.5).
     pub const serve = @import("surface/face/gist/daemon/serve/serve.zig");
-    /// The relate verbs — `similar`/`dups`/`patterns` over `src/search/`.
+    /// The relate verbs — `similar`/`dups`/`patterns` over `src/kernel/`.
     pub const irregex = @import("surface/face/relate/verbs.zig");
     /// `relate search` — two-stage compression retrieval (lexicon → zipper).
     pub const relate_search = @import("surface/face/relate/search.zig");
@@ -243,7 +243,7 @@ pub const version_string: [:0]const u8 = "0.1.0"; // x-release-please-version
 /// (`irregex_match_fn`) gaining an `i32` abort return was a breaking signature
 /// change that stepped it to 2 (ADR-352). Bump only for a breaking layout or
 /// signature change; additive symbols preserve the version. This is the single
-/// C-ABI axis — the semantic contract revision, result schema, index/atlas
+/// C-ABI axis — the semantic contract revision, result schema, corpus/index/atlas
 /// formats, and engine semver version independently (see `contract/search_api.toml`).
 pub fn abi() u32 {
     return 2;
@@ -373,7 +373,7 @@ test {
     _ = @import("corpus/index/postings/varint_test.zig"); // LEB128 varint codec (compact posting bodies)
     _ = @import("corpus/index/trigrams/trigram_test.zig"); // T0 candidate index: query + serialize + build
     _ = @import("corpus/index/trigrams/trigram_load_test.zig"); // T0 loader adversarial suite: malformed blobs fail closed
-    _ = @import("corpus/index/trigrams/persist_test.zig"); // T0 persisted index/path-table integrity (doc-id OOB guard)
+    _ = @import("corpus/index/trigrams/persist_test.zig"); // T0 persisted corpus/index/path-table integrity (doc-id OOB guard)
     _ = @import("corpus/index/trigrams/trigram_fuzz.zig"); // T0 loader long fuzz (seeds + mutations; GIST_FUZZ_ITERS)
     _ = @import("kernel/rank/rank_test.zig"); // T4 RRF fusion ranking
     _ = @import("kernel/rank/signals_test.zig"); // cross-language def-detection + generated-file signals

@@ -30,5 +30,5 @@ grammar change touches one file, not the match loop.
 ## When to edit
 
 Parser / AST / class vocabulary, Unicode fold orbits, or the shared `\w` test.
-If you are changing how a compiled program *runs*, you want `../linear/` or
+If you are changing how a compiled program _runs_, you want `../linear/` or
 `../compile/`, not the grammar.

@@ -17,7 +17,7 @@ doc_radar:
 # gist/bench/matrix — the CLI-shape admission matrix
 
 The races and the certificate prove gist beats the field on a handful of
-regex *classes*. This folder proves it across the **shape** dimensions a
+regex _classes_. This folder proves it across the **shape** dimensions a
 real invocation turns on — `mode` (linear / `-U` / `-P`), match `flags`,
 walk `scope`, `emit` shape, `select`ivity, and pattern `kind` — with the
 plan's discipline: **parity before speed, every divergence declared.**
@@ -62,7 +62,7 @@ mistaken for a regression either. Today's declared losses:
 - **`multiline-*`** (`-U`) — the multiline emit runs on the serial engine
   (whole-buffer cross-line spans the parallel pipeline deliberately does not
   own, to protect its 30/30 parity), forfeiting the parallel walk. Even a
-  *rare* span loses; a *common* lazy-dotstar (`[\s\S]*?`) loses hardest.
+  _rare_ span loses; a _common_ lazy-dotstar (`[\s\S]*?`) loses hardest.
 - **`pcre-backref-files`** — a pure backreference has no extractable required
   literal, so the trigram index has nothing to prefilter on and gist scans the
   whole corpus like rg does.

@@ -6,8 +6,8 @@ exits non-zero, and the fix is always the calculus, never the assertion
 (sins.mdc Sin #2 — no bandaids).
 
 The one property that matters is **soundness**: `matched ⇒ ¬pruned`, for
-every document, every pattern, every mode. A false *positive* (a survivor the
-matcher rejects) costs only time; a false *negative* (a pruned match) is a
+every document, every pattern, every mode. A false _positive_ (a survivor the
+matcher rejects) costs only time; a false _negative_ (a pruned match) is a
 wrong answer from gist. Every suite below exists to make a false negative
 unable to hide.
 
@@ -17,17 +17,17 @@ unable to hide.
 
 Hand-computed oracles against the calculus, one test per load-bearing rule:
 
-| test | pins |
-|---|---|
-| crest vector: longest per-class run | `ρ(d)` against hand-counted runs, all 8 classes, including the 0-run absent class |
-| forced-crest: class repetition | `[0-9a-f]{8}` ⇒ ĝ(hex)=8 and every superclass (word) inherits |
-| forced-crest: concatenation straddle | `S(E₁)+P(E₂)` — the cross-seam term — against hand-derived values, incl. the `all_in` guard collapsing it |
-| forced-crest: alternation | componentwise min; `all_in` survives only if both branches are all-in |
-| soundness by degradation | backreferences, lookaround, POSIX classes, octal escapes, unknown escapes ⇒ `ĝ = 0⃗` (never a guess) |
-| escapes | `\d`/`\w`/`\s` (ASCII mode), `\n`/`\t`/`\r`/`\f`/`\v` as literal bytes, class-internal escape-range refusal |
-| unicode mode certification | in `.unicode = true`, `\d`/`\w`/`\s` and any class reaching ≥ 0x80 contribute ĝ=0 (Alphabet Contract); pure-ASCII explicit classes still certify |
-| tightness gap is under-prune | `[0-9](?:)[0-9]`: ĝ=1 < g=2 — incompleteness demonstrated as *under*-pruning, pinned so a "fix" that over-tightens fails |
-| sieve decision + saturation monotonicity | `pruned` at the u16 saturation boundary: saturated crests only ever *survive* more, never prune more |
+| test                                     | pins                                                                                                                                             |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| crest vector: longest per-class run      | `ρ(d)` against hand-counted runs, all 8 classes, including the 0-run absent class                                                                |
+| forced-crest: class repetition           | `[0-9a-f]{8}` ⇒ ĝ(hex)=8 and every superclass (word) inherits                                                                                    |
+| forced-crest: concatenation straddle     | `S(E₁)+P(E₂)` — the cross-seam term — against hand-derived values, incl. the `all_in` guard collapsing it                                        |
+| forced-crest: alternation                | componentwise min; `all_in` survives only if both branches are all-in                                                                            |
+| soundness by degradation                 | backreferences, lookaround, POSIX classes, octal escapes, unknown escapes ⇒ `ĝ = 0⃗` (never a guess)                                             |
+| escapes                                  | `\d`/`\w`/`\s` (ASCII mode), `\n`/`\t`/`\r`/`\f`/`\v` as literal bytes, class-internal escape-range refusal                                      |
+| unicode mode certification               | in `.unicode = true`, `\d`/`\w`/`\s` and any class reaching ≥ 0x80 contribute ĝ=0 (Alphabet Contract); pure-ASCII explicit classes still certify |
+| tightness gap is under-prune             | `[0-9](?:)[0-9]`: ĝ=1 < g=2 — incompleteness demonstrated as _under_-pruning, pinned so a "fix" that over-tightens fails                         |
+| sieve decision + saturation monotonicity | `pruned` at the u16 saturation boundary: saturated crests only ever _survive_ more, never prune more                                             |
 
 ## 2. Sidecar codec tests — `src/index/crest/sidecar_test.zig` (rides `zig build test`)
 
@@ -65,7 +65,7 @@ certificate uses. Four gates per run:
 ## 4. Integration correctness (the wiring, not the math)
 
 The sieve rides both read-elision oracles (`serial.zig` `IndexSkip`,
-`parallel.zig` `Elide`) behind gates that each default to *not pruning*:
+`parallel.zig` `Elide`) behind gates that each default to _not pruning_:
 
 - **Caseless** (`-i`): sieve disabled (ĝ=0⃗) — case-folding changes class
   membership, so no certification is attempted.
@@ -78,7 +78,7 @@ The sieve rides both read-elision oracles (`serial.zig` `IndexSkip`,
 - **Missing/invalid sidecar**: `decode` → null → sieve off. An old index
   without `crest.bin` keeps working, just without the new pruning.
 - **Content transforms** (`-z`/`--pre`/`-E`): the sieve is computed from the
-  *effective* pattern only when no transform rewrites the bytes the matcher
+  _effective_ pattern only when no transform rewrites the bytes the matcher
   sees; otherwise disabled.
 
 End-to-end: the full `zig build test` suite — including the rg-parity

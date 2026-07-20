@@ -14,18 +14,18 @@ identical call sites. This is the shape `rg` cannot express — `gist --rank`.
 
 ## Files
 
-| File | Job |
-| ---- | --- |
-| `rank.zig` | Weighted **Reciprocal Rank Fusion** (Cormack et al. 2009) over the signals below; emits `path:line [def\|use\|gen\|mirror] ×n <line>` |
-| `signals.zig` | Language-agnostic byte features: declaration detection and codegen demotion |
-| `mirror.zig` | Narrow cache/VCS snapshot classification, byte fingerprints, exact canonical-duplicate resolution |
+| File          | Job                                                                                                                                   |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `rank.zig`    | Weighted **Reciprocal Rank Fusion** (Cormack et al. 2009) over the signals below; emits `path:line [def\|use\|gen\|mirror] ×n <line>` |
+| `signals.zig` | Language-agnostic byte features: declaration detection and codegen demotion                                                           |
+| `mirror.zig`  | Narrow cache/VCS snapshot classification, byte fingerprints, exact canonical-duplicate resolution                                     |
 
 ## What the boosts do
 
 - **Definition boost** — a decl line outranks its call sites.
 - **Authored boost** — sinks codegen (`*_pb2.py`, `*.sql.go`, …) and
   cache/VCS mirrors below hand-written code.
-- **Class-split, tie-aware** — ranking stays neutral *within* each class so
+- **Class-split, tie-aware** — ranking stays neutral _within_ each class so
   you never invent a total order the signals don't support.
 - Exact duplicate mirrors name their canonical result instead of flooding
   the list.

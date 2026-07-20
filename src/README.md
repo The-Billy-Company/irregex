@@ -37,10 +37,10 @@ face over the same kernels: `gist` finds exact patterns; `relate` finds
 compression kinship; `irregex` composes both (exact narrows, compression
 reasons inside). None gets a private corpus walk, scope layer, or index.
 
-| Layer | What lives there | README |
-| ----- | ---------------- | ------ |
-| [`kernel/`](kernel) | Pure compute — no argv, walk, or emit: `match` · `rank` · `kinship` · `batch` · `compose` · `primitives` | [`kernel/README.md`](kernel/README.md) |
-| [`corpus/`](corpus) | The body of text and its persisted forms: `tree/` walk · `scope/` `-g`/`-t` · `index/` accelerators | [`corpus/README.md`](corpus/README.md) |
+| Layer                 | What lives there                                                                                                                  | README                                   |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| [`kernel/`](kernel)   | Pure compute — no argv, walk, or emit: `match` · `rank` · `kinship` · `batch` · `compose` · `primitives`                          | [`kernel/README.md`](kernel/README.md)   |
+| [`corpus/`](corpus)   | The body of text and its persisted forms: `tree/` walk · `scope/` `-g`/`-t` · `index/` accelerators                               | [`corpus/README.md`](corpus/README.md)   |
 | [`surface/`](surface) | Transports + faces: `exec/` (cold + session) · `ffi/` · `face/` (gist · relate · irregex) · `cli/` (shared flags/emit vocabulary) | [`surface/README.md`](surface/README.md) |
 
 ## The anatomy of a query
@@ -93,14 +93,14 @@ statuses, per-call arenas, never `exit()`.
 
 ## `kernel/`: the two engines' kernels
 
-| Folder               | Concern                                                                                                                                                                                                                                    |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `kernel/match/`      | the exact-match engine: the transport-neutral compiled query (`query.zig`) every face executes through, over `regex/` (linear-time NFA + byte-class DFA + Pike + PCRE2 `-P`) and `scan/` (SIMD substring presence + fused parallel verify) |
-| `kernel/rank/`       | **T4** ranked output: weighted Reciprocal Rank Fusion over intrinsic, language-agnostic signals (`gist --rank`)                                                                                                                           |
+| Folder               | Concern                                                                                                                                                                                                                                         |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `kernel/match/`      | the exact-match engine: the transport-neutral compiled query (`query.zig`) every face executes through, over `regex/` (linear-time NFA + byte-class DFA + Pike + PCRE2 `-P`) and `scan/` (SIMD substring presence + fused parallel verify)      |
+| `kernel/rank/`       | **T4** ranked output: weighted Reciprocal Rank Fusion over intrinsic, language-agnostic signals (`gist --rank`)                                                                                                                                 |
 | `kernel/kinship/`    | the compression-relatedness math, split by question: `metric/` (how far apart — LZJD sketch + winnowed silhouette), `cluster/` (which are the same — pairs · families · concepts), `recall/` (query → best files — lexicon · zipper · coverage) |
-| `kernel/batch/`      | the closed set ops (ADR-363): `patterns` (N intents compiled once, exact per-pattern attribution) and `loom` (a filter → group → sort → limit plan executed engine-side)                                                                  |
-| `kernel/compose/`    | exact-before-statistical (ADR-367): a `PatternSet` narrows a typed `CandidateSet`, then coverage/kinship run inside it — the `irregex` face's kernels                                                                                     |
-| `kernel/primitives/` | the numeric + sharding floor: `bits` two's-complement bit sets, `crest` sieve calculus, `parallel` byte-balanced fan-out — shared instead of hand-rolled per consumer                                                                     |
+| `kernel/batch/`      | the closed set ops (ADR-363): `patterns` (N intents compiled once, exact per-pattern attribution) and `loom` (a filter → group → sort → limit plan executed engine-side)                                                                        |
+| `kernel/compose/`    | exact-before-statistical (ADR-367): a `PatternSet` narrows a typed `CandidateSet`, then coverage/kinship run inside it — the `irregex` face's kernels                                                                                           |
+| `kernel/primitives/` | the numeric + sharding floor: `bits` two's-complement bit sets, `crest` sieve calculus, `parallel` byte-balanced fan-out — shared instead of hand-rolled per consumer                                                                           |
 
 **The match ladder.** A fixed string (`-F`, caseful) never builds an automaton;
 `scan/` answers presence with a memchr-style first+last-byte SIMD gate. A regex
@@ -137,15 +137,15 @@ answer, and `loom` shapes the rows engine-side. Design rules and measurements:
 
 ## `corpus/index/`: the candidate, self, and kinship indexes
 
-| Folder                   | Concern                                                                                                                                                                                                                        |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `corpus/index/trigrams/` | **T0** trigram candidate index: n-gram extraction, posting-list build/query, zero-copy `mmap` persistence, + the T3 mtime freshness overlay                                                                                   |
-| `corpus/index/postings/` | the compact posting-body codecs: LEB128 varint (`varint.zig`) + the persisted-blob layout (`persisted_blob.zig`) the trigram index rides                                                                                      |
-| `corpus/index/codex/`    | the compressed self-index: SA-IS → BWT → RRR wavelet tree; `count`/`find`/`restore` at entropy space, O(m) flat in corpus size (the Shannon rung under both engines)                                          |
-| `corpus/index/atlas/`    | relate's persisted kinship index: one LZJD sketch per corpus file behind `relate index`/`status`, folded fresh at query time through the same T3 stat walk ([`corpus/index/atlas/README.md`](corpus/index/atlas/README.md)) |
-| `corpus/index/crest/`    | the crest sidecar (`crest.bin`): one forced-class-run vector per doc (16 B), generation-atomic with the trigram pair; prunes the literal-free class-repetition patterns trigrams concede (theory: [`../research/crest/PROOF.md`](../research/crest/PROOF.md))    |
-| `corpus/index/frame/`    | the shared wire discipline the persisted artifacts are framed with: little-endian ints behind a fail-closed cursor, length-prefixed u64 payloads, the NUL-joined path/roots catalogs, and the `onDisk` deletion gate every folded view checks                     |
-| `corpus/index/frag/`     | relate's persisted **fragment** atlas (`concepts.frag`): one structural silhouette per authored function behind `relate concepts`, folded fresh at query time through the same T3 stat walk ([`corpus/index/frag/README.md`](corpus/index/frag/README.md))                       |
+| Folder                   | Concern                                                                                                                                                                                                                                                       |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `corpus/index/trigrams/` | **T0** trigram candidate index: n-gram extraction, posting-list build/query, zero-copy `mmap` persistence, + the T3 mtime freshness overlay                                                                                                                   |
+| `corpus/index/postings/` | the compact posting-body codecs: LEB128 varint (`varint.zig`) + the persisted-blob layout (`persisted_blob.zig`) the trigram index rides                                                                                                                      |
+| `corpus/index/codex/`    | the compressed self-index: SA-IS → BWT → RRR wavelet tree; `count`/`find`/`restore` at entropy space, O(m) flat in corpus size (the Shannon rung under both engines)                                                                                          |
+| `corpus/index/atlas/`    | relate's persisted kinship index: one LZJD sketch per corpus file behind `relate index`/`status`, folded fresh at query time through the same T3 stat walk ([`corpus/index/atlas/README.md`](corpus/index/atlas/README.md))                                   |
+| `corpus/index/crest/`    | the crest sidecar (`crest.bin`): one forced-class-run vector per doc (16 B), generation-atomic with the trigram pair; prunes the literal-free class-repetition patterns trigrams concede (theory: [`../research/crest/PROOF.md`](../research/crest/PROOF.md)) |
+| `corpus/index/frame/`    | the shared wire discipline the persisted artifacts are framed with: little-endian ints behind a fail-closed cursor, length-prefixed u64 payloads, the NUL-joined path/roots catalogs, and the `onDisk` deletion gate every folded view checks                 |
+| `corpus/index/frag/`     | relate's persisted **fragment** atlas (`concepts.frag`): one structural silhouette per authored function behind `relate concepts`, folded fresh at query time through the same T3 stat walk ([`corpus/index/frag/README.md`](corpus/index/frag/README.md))    |
 
 **Trigrams** (`trigrams/trigram.zig`). A file containing a literal must
 contain every trigram of that literal, so the AND of per-trigram posting
@@ -196,8 +196,8 @@ protocol; `ffi/` exposes that resident session in-process. `face/` holds the
 three thin product binaries, and `cli/` is the argv/root/emit vocabulary all
 three speak (`flags` + `emit`) so no face forks a flag value or the JSON escaper.
 
-| Folder                  | Concern                                                                                                                                                                                           |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Folder                  | Concern                                                                                                                                                                                          |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `surface/face/gist/`    | the `gist` binary: entrypoint, `--schema`, `index`/`status`/`serve`/`codex` lifecycle, and the unified search engine (rg-DEFAULT drop-in) over `kernel/`, plus the daemon client/serve transport |
 | `surface/face/relate/`  | the `relate` binary: thin dispatch (`main.zig`) over the `similar`/`dups`/`patterns`/`search`/`quote` verbs, with its own `--schema` manifest                                                    |
 | `surface/face/irregex/` | the `irregex` binary: composed verbs (context · family · provenance) driving `kernel/compose/`, exact-narrows-statistical over one pass                                                          |

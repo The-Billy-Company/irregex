@@ -18,12 +18,12 @@ verified away; false negatives impossible for literals ≥ 3 bytes.
 
 ## Files
 
-| File | Job |
-| ---- | --- |
-| `ngram.zig` | Extract distinct ascending trigrams from a byte slice |
-| `trigram.zig` | In-memory `Index`: build, rarest-first intersect, query |
-| `persist.zig` | Zero-copy `mmap` load / publish of the CSR posting blob |
-| `fresh.zig` | Wall-clock mtime/ctime freshness overlay vs build anchor |
+| File          | Job                                                      |
+| ------------- | -------------------------------------------------------- |
+| `ngram.zig`   | Extract distinct ascending trigrams from a byte slice    |
+| `trigram.zig` | In-memory `Index`: build, rarest-first intersect, query  |
+| `persist.zig` | Zero-copy `mmap` load / publish of the CSR posting blob  |
+| `fresh.zig`   | Wall-clock mtime/ctime freshness overlay vs build anchor |
 
 Codecs live in [`../postings/`](../postings). Crest sidecar (literal-free
 class runs) lives in [`../crest/`](../crest).

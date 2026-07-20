@@ -12,13 +12,13 @@ The source-tree substrate shared by indexing, cold search, resident search, and
 the verification harness. It owns corpus loading, the Haystack walk, and the
 rg-compatible ignore protocol; path selection lives beside it in `../scope/`.
 
-| File           | Role                                                                                                     |
-| -------------- | -------------------------------------------------------------------------------------------------------- |
-| `corpus.zig`   | Loads non-binary files under the corpus roots and owns the process output budget.                        |
-| `haystack.zig` | Defines the shared recursive walk, applying `ignore.zig` plus corpus-only skip-directory policy. |
+| File           | Role                                                                                                          |
+| -------------- | ------------------------------------------------------------------------------------------------------------- |
+| `corpus.zig`   | Loads non-binary files under the corpus roots and owns the process output budget.                             |
+| `haystack.zig` | Defines the shared recursive walk, applying `ignore.zig` plus corpus-only skip-directory policy.              |
 | `ignore.zig`   | Compiles gitignore / `.ignore` / `.rgignore` precedence once for gist, indexes, relate, and composed irregex. |
-| `bulkstat.zig` | Reads Darwin name/type/mtime/ctime in bulk, with a portable stat fallback and one shared freshness rule. |
-| `*_test.zig`   | Pins path policy, metadata boundaries, and Darwin bulk-stat parity against the portable reference walk.  |
+| `bulkstat.zig` | Reads Darwin name/type/mtime/ctime in bulk, with a portable stat fallback and one shared freshness rule.      |
+| `*_test.zig`   | Pins path policy, metadata boundaries, and Darwin bulk-stat parity against the portable reference walk.       |
 
 ## Local-filesystem freshness model
 

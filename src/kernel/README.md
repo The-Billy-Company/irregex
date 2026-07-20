@@ -17,14 +17,14 @@ Match, rank, kinship, set ops, and the numeric floor — **no argv, no walk, no
 emit**. Every transport (cold CLI, warm session, FFI, bindings) compiles
 through here so they cannot drift on what a hit is.
 
-| Kernel | Job |
-| ------ | --- |
-| [`match/`](match) | Exact matching: `CompiledQuery` + regex ladder + SIMD scan |
-| [`rank/`](rank) | **T4** weighted RRF for `gist --rank` (def-first, codegen demoted) |
-| [`kinship/`](kinship) | Compression relatedness, split by question: `metric/` (how far apart) · `cluster/` (which are the same) · `recall/` (query → best files) |
-| [`batch/`](batch) | Closed set ops (ADR-363): `PatternSet` + `loom.Plan` |
-| [`compose/`](compose) | Exact-before-statistical (ADR-367): a `PatternSet` narrows a typed `CandidateSet`, then coverage/kinship run inside it — the `irregex` face's kernels |
-| [`primitives/`](primitives) | The numeric + sharding floor: bit vectors, `crest` sketches, `parallel` byte-balanced fan-out |
+| Kernel                      | Job                                                                                                                                                   |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`match/`](match)           | Exact matching: `CompiledQuery` + regex ladder + SIMD scan                                                                                            |
+| [`rank/`](rank)             | **T4** weighted RRF for `gist --rank` (def-first, codegen demoted)                                                                                    |
+| [`kinship/`](kinship)       | Compression relatedness, split by question: `metric/` (how far apart) · `cluster/` (which are the same) · `recall/` (query → best files)              |
+| [`batch/`](batch)           | Closed set ops (ADR-363): `PatternSet` + `loom.Plan`                                                                                                  |
+| [`compose/`](compose)       | Exact-before-statistical (ADR-367): a `PatternSet` narrows a typed `CandidateSet`, then coverage/kinship run inside it — the `irregex` face's kernels |
+| [`primitives/`](primitives) | The numeric + sharding floor: bit vectors, `crest` sketches, `parallel` byte-balanced fan-out                                                         |
 
 ## The match ladder (cheapest sound rung first)
 

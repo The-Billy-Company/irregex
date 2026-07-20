@@ -194,13 +194,13 @@ workflows, the `CandidateSet` model, and mandatory-scope rules.
 
 ## Choose a face
 
-| Face       | What it is                                                                                                                                                       | Docs                                                     |
-| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| **gist**   | the rg-parity code locator CLI: trigram + crest read-elision, ranked search, and a resident session; the agents' everyday search reflex                          | [`src/cli/gist/README.md`](src/cli/gist/README.md)       |
-| **relate** | compression-as-search: retrieval/packing, quotation, kinship/families/echoes, and exact pattern sets; `index` / `status` own the warm lifecycle                  | [`src/cli/relate/README.md`](src/cli/relate/README.md)   |
+| Face        | What it is                                                                                                                                                                  | Docs                                                     |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| **gist**    | the rg-parity code locator CLI: trigram + crest read-elision, ranked search, and a resident session; the agents' everyday search reflex                                     | [`src/cli/gist/README.md`](src/cli/gist/README.md)       |
+| **relate**  | compression-as-search: retrieval/packing, quotation, kinship/families/echoes, and exact pattern sets; `index` / `status` own the warm lifecycle                             | [`src/cli/relate/README.md`](src/cli/relate/README.md)   |
 | **irregex** | the composed face: exact match narrows a `CandidateSet`, compression reasons inside it — `context` (reading set), `family` (forks/twins), `provenance` (quote, re-verified) | [`src/cli/irregex/README.md`](src/cli/irregex/README.md) |
-| **codex**  | the compressed self-index: a corpus stored at entropy-bound size with exact O(m) `count`/`find` and byte-exact restoration; powers `gist codex` + `relate quote` | [`src/index/codex/README.md`](src/index/codex/README.md) |
-| **ffi**    | the in-process C-ABI warm session (`irregex_open` / `irregex_search` / `irregex_close` over `libirregex`)                                                        | [`src/runtime/ffi/README.md`](src/runtime/ffi/README.md) |
+| **codex**   | the compressed self-index: a corpus stored at entropy-bound size with exact O(m) `count`/`find` and byte-exact restoration; powers `gist codex` + `relate quote`            | [`src/index/codex/README.md`](src/index/codex/README.md) |
+| **ffi**     | the in-process C-ABI warm session (`irregex_open` / `irregex_search` / `irregex_close` over `libirregex`)                                                                   | [`src/runtime/ffi/README.md`](src/runtime/ffi/README.md) |
 
 The three CLIs are separate faces over one shared floor (`src/math/`,
 `src/corpus/`, `src/index/`, `src/search/`, `src/runtime/`); none owns a
@@ -343,17 +343,17 @@ place only when the tool feels obvious in the hand.
 
 ## Package layout
 
-| Dir            | What                                                                                                                   |
-| -------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `src/runtime/` | the shared floor: `corpus/` walk/loading, `scope/` path scoping, `session/` warm resident transport, `ffi/` C-ABI face |
-| `src/math/`    | the shared bit-identity floor (`bits.zig`) + the crest sieve calculus (`crest.zig`)                                    |
+| Dir            | What                                                                                                                           |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `src/runtime/` | the shared floor: `corpus/` walk/loading, `scope/` path scoping, `session/` warm resident transport, `ffi/` C-ABI face         |
+| `src/math/`    | the shared bit-identity floor (`bits.zig`) + the crest sieve calculus (`crest.zig`)                                            |
 | `src/search/`  | match (`match/`), rank, batch (`patterns` · `loom`), similarity (`sketch` · `lexicon` · `zipper`), compose (exact→statistical) |
-| `src/index/`   | trigram postings (`trigrams/` · `postings/`) + the compressed self-index (`codex/`) + the crest sidecar (`crest/`)     |
-| `src/cli/`     | the three product binaries: `gist/` (exact locator), `relate/` (compression-search), `irregex/` (composed, ADR-367)     |
-| `include/`     | `irregex.h`: the flat C ABI (`irregex_*` symbols)                                                                      |
-| `bindings/`    | Python (`billy-irregex`, subprocess + optional cffi over `libirregex`) and Rust (subprocess) faces                        |
-| `contract/`    | `search_api.toml`: the unified SearchRequest/irregex contract (ADR-352)                                                |
-| `bench/`       | certification + competitive benchmark harness (rgsuite, races, certify, roofline)                                      |
+| `src/index/`   | trigram postings (`trigrams/` · `postings/`) + the compressed self-index (`codex/`) + the crest sidecar (`crest/`)             |
+| `src/cli/`     | the three product binaries: `gist/` (exact locator), `relate/` (compression-search), `irregex/` (composed, ADR-367)            |
+| `include/`     | `irregex.h`: the flat C ABI (`irregex_*` symbols)                                                                              |
+| `bindings/`    | Python (`billy-irregex`, subprocess + optional cffi over `libirregex`) and Rust (subprocess) faces                             |
+| `contract/`    | `search_api.toml`: the unified SearchRequest/irregex contract (ADR-352)                                                        |
+| `bench/`       | certification + competitive benchmark harness (rgsuite, races, certify, roofline)                                              |
 
 See [`src/README.md`](src/README.md) for the tier-by-tier map and
 [`src/cli/gist/README.md`](src/cli/gist/README.md) for the gist architecture

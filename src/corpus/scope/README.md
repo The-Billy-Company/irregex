@@ -17,15 +17,15 @@ doc_radar:
 Shared **path scoping** — the `-t <lang>` / `-g <glob>` / positional-`PATH`
 affordances an agent reaches for to confine a search. Because irregex already
 holds the path list, these prune candidates **before** touching disk, which
-makes scoping make the search *faster* (rg filters while walking the whole
+makes scoping make the search _faster_ (rg filters while walking the whole
 tree).
 
 ## Files
 
-| File | Job |
-| ---- | --- |
-| `glob.zig` | Gitignore-shaped glob matching (`*` per-segment, `**` across `/`, `!`-exclude) + `PathFilter` |
-| `paths.zig` | Shared path normalization, joining, depth, and ASCII-fold helpers |
+| File        | Job                                                                                                  |
+| ----------- | ---------------------------------------------------------------------------------------------------- |
+| `glob.zig`  | Gitignore-shaped glob matching (`*` per-segment, `**` across `/`, `!`-exclude) + `PathFilter`        |
+| `paths.zig` | Shared path normalization, joining, depth, and ASCII-fold helpers                                    |
 | `types.zig` | Language → extension/filename table (`-t go` / `py` / `rust` / …) with `extsForType` / `isKnownType` |
 
 ## Invariants

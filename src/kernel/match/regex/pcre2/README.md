@@ -20,13 +20,13 @@ Hermetic sources: [`../../../../../../vendor/pcre2/`](../../../../../../vendor/p
 
 ## Files
 
-| File | Job |
-| ---- | --- |
-| `ffi.zig` | Minimal explicit-`extern` C-ABI surface of the vendored 8-bit library (`_8` symbols). No `@cImport`; `build.zig` links `pcre2Library`. |
-| `engine.zig` | `Pcre` handle: compile (JIT + interpreter fallback), immutable shared program, per-thread `Sim` scratch, `lineMatch` / `docMatch` / `bufMatch` |
-| `literal.zig` | Sound required-literal extraction for the trigram prefilter — longest ASCII run every match must contain, or `""`. Never over-claims. |
-| `captures.zig` | Capture-group bridge unified with the linear capture shape |
-| `backend.zig` | Wiring into the engine-neutral `Matcher` seam in `../linear/matcher.zig` |
+| File           | Job                                                                                                                                            |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ffi.zig`      | Minimal explicit-`extern` C-ABI surface of the vendored 8-bit library (`_8` symbols). No `@cImport`; `build.zig` links `pcre2Library`.         |
+| `engine.zig`   | `Pcre` handle: compile (JIT + interpreter fallback), immutable shared program, per-thread `Sim` scratch, `lineMatch` / `docMatch` / `bufMatch` |
+| `literal.zig`  | Sound required-literal extraction for the trigram prefilter — longest ASCII run every match must contain, or `""`. Never over-claims.          |
+| `captures.zig` | Capture-group bridge unified with the linear capture shape                                                                                     |
+| `backend.zig`  | Wiring into the engine-neutral `Matcher` seam in `../linear/matcher.zig`                                                                       |
 
 ## Invariants
 

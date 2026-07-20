@@ -26,15 +26,15 @@
 # Roots default to the six Billy source roots (mirrors corpus.resolveRoots and
 # _compete.sh); a row may override `roots` to exercise a bounded subtree.
 
-default_roots = ["services", "libs", "clients", "contracts", "scripts", "quality"]
+default_roots = [ "services", "libs", "clients", "contracts", "scripts", "quality" ]
 
 # ─────────────────────────── mode: linear default ───────────────────────────
 
 [[shape]]
 id = "literal-rare-files"
 pattern = "WalletService"
-gist = ["-F", "-l"]
-rg = ["-F", "-l"]
+gist = [ "-F", "-l" ]
+rg = [ "-F", "-l" ]
 bar = "set"
 expect = "win"
 dims = { mode = "linear", flags = "fixed", scope = "rootless", emit = "files", select = "rare", kind = "literal" }
@@ -42,8 +42,8 @@ dims = { mode = "linear", flags = "fixed", scope = "rootless", emit = "files", s
 [[shape]]
 id = "literal-common-files"
 pattern = "error"
-gist = ["-F", "-l"]
-rg = ["-F", "-l"]
+gist = [ "-F", "-l" ]
+rg = [ "-F", "-l" ]
 bar = "set"
 expect = "parity"
 dims = { mode = "linear", flags = "fixed", scope = "rootless", emit = "files", select = "common", kind = "literal" }
@@ -51,8 +51,8 @@ dims = { mode = "linear", flags = "fixed", scope = "rootless", emit = "files", s
 [[shape]]
 id = "literal-rare-count"
 pattern = "WalletService"
-gist = ["-F", "-c"]
-rg = ["-F", "-c"]
+gist = [ "-F", "-c" ]
+rg = [ "-F", "-c" ]
 bar = "count"
 expect = "win"
 dims = { mode = "linear", flags = "fixed", scope = "rootless", emit = "count", select = "rare", kind = "literal" }
@@ -60,8 +60,8 @@ dims = { mode = "linear", flags = "fixed", scope = "rootless", emit = "count", s
 [[shape]]
 id = "literal-rare-lines"
 pattern = "WalletService"
-gist = ["-F", "-n"]
-rg = ["-F", "-n"]
+gist = [ "-F", "-n" ]
+rg = [ "-F", "-n" ]
 bar = "lines"
 expect = "win"
 dims = { mode = "linear", flags = "fixed", scope = "rootless", emit = "lines", select = "rare", kind = "literal" }
@@ -69,8 +69,8 @@ dims = { mode = "linear", flags = "fixed", scope = "rootless", emit = "lines", s
 [[shape]]
 id = "literal-rare-only-matching"
 pattern = "WalletService"
-gist = ["-F", "-o"]
-rg = ["-F", "-o"]
+gist = [ "-F", "-o" ]
+rg = [ "-F", "-o" ]
 bar = "lines"
 expect = "win"
 dims = { mode = "linear", flags = "only-matching", scope = "rootless", emit = "lines", select = "rare", kind = "literal" }
@@ -78,8 +78,8 @@ dims = { mode = "linear", flags = "only-matching", scope = "rootless", emit = "l
 [[shape]]
 id = "word-common-files"
 pattern = "ctx"
-gist = ["-w", "-l"]
-rg = ["-w", "-l"]
+gist = [ "-w", "-l" ]
+rg = [ "-w", "-l" ]
 bar = "set"
 expect = "parity"
 dims = { mode = "linear", flags = "word", scope = "rootless", emit = "files", select = "common", kind = "literal" }
@@ -87,8 +87,8 @@ dims = { mode = "linear", flags = "word", scope = "rootless", emit = "files", se
 [[shape]]
 id = "ignore-case-rare-files"
 pattern = "walletservice"
-gist = ["-i", "-l"]
-rg = ["-i", "-l"]
+gist = [ "-i", "-l" ]
+rg = [ "-i", "-l" ]
 bar = "set"
 expect = "win"
 dims = { mode = "linear", flags = "ignore-case", scope = "rootless", emit = "files", select = "rare", kind = "literal" }
@@ -96,8 +96,8 @@ dims = { mode = "linear", flags = "ignore-case", scope = "rootless", emit = "fil
 [[shape]]
 id = "maxcount-common-lines"
 pattern = "error"
-gist = ["-F", "-m", "1", "-n"]
-rg = ["-F", "-m", "1", "-n"]
+gist = [ "-F", "-m", "1", "-n" ]
+rg = [ "-F", "-m", "1", "-n" ]
 bar = "lines"
 expect = "parity"
 dims = { mode = "linear", flags = "max-count", scope = "rootless", emit = "lines", select = "common", kind = "literal" }
@@ -105,18 +105,18 @@ dims = { mode = "linear", flags = "max-count", scope = "rootless", emit = "lines
 [[shape]]
 id = "invert-count-subtree"
 pattern = "import"
-gist = ["-F", "-v", "-c"]
-rg = ["-F", "-v", "-c"]
+gist = [ "-F", "-v", "-c" ]
+rg = [ "-F", "-v", "-c" ]
 bar = "count"
 expect = "parity"
-roots = ["services/backend/gateway"]
+roots = [ "services/backend/gateway" ]
 dims = { mode = "linear", flags = "invert", scope = "subtree", emit = "count", select = "common", kind = "literal" }
 
 [[shape]]
 id = "regex-anchored-rare-files"
 pattern = 'func \w+\(ctx'
-gist = ["-l"]
-rg = ["-l"]
+gist = [ "-l" ]
+rg = [ "-l" ]
 bar = "set"
 expect = "win"
 dims = { mode = "linear", flags = "plain", scope = "rootless", emit = "files", select = "rare", kind = "anchored-regex" }
@@ -124,8 +124,8 @@ dims = { mode = "linear", flags = "plain", scope = "rootless", emit = "files", s
 [[shape]]
 id = "regex-alternation-files"
 pattern = "TODO|FIXME|XXX"
-gist = ["-l"]
-rg = ["-l"]
+gist = [ "-l" ]
+rg = [ "-l" ]
 bar = "set"
 expect = "parity"
 dims = { mode = "linear", flags = "plain", scope = "rootless", emit = "files", select = "common", kind = "alternation" }
@@ -135,8 +135,8 @@ dims = { mode = "linear", flags = "plain", scope = "rootless", emit = "files", s
 [[shape]]
 id = "glob-go-rare-files"
 pattern = "WalletService"
-gist = ["-F", "-l", "-g", "*.go"]
-rg = ["-F", "-l", "-g", "*.go"]
+gist = [ "-F", "-l", "-g", "*.go" ]
+rg = [ "-F", "-l", "-g", "*.go" ]
 bar = "set"
 expect = "win"
 dims = { mode = "linear", flags = "fixed", scope = "glob", emit = "files", select = "rare", kind = "literal" }
@@ -144,8 +144,8 @@ dims = { mode = "linear", flags = "fixed", scope = "glob", emit = "files", selec
 [[shape]]
 id = "type-go-rare-files"
 pattern = "WalletService"
-gist = ["-F", "-l", "-t", "go"]
-rg = ["-F", "-l", "-t", "go"]
+gist = [ "-F", "-l", "-t", "go" ]
+rg = [ "-F", "-l", "-t", "go" ]
 bar = "set"
 expect = "win"
 dims = { mode = "linear", flags = "fixed", scope = "type", emit = "files", select = "rare", kind = "literal" }
@@ -153,11 +153,11 @@ dims = { mode = "linear", flags = "fixed", scope = "type", emit = "files", selec
 [[shape]]
 id = "subtree-rare-lines"
 pattern = "WalletService"
-gist = ["-F", "-n"]
-rg = ["-F", "-n"]
+gist = [ "-F", "-n" ]
+rg = [ "-F", "-n" ]
 bar = "lines"
 expect = "win"
-roots = ["services/backend/api"]
+roots = [ "services/backend/api" ]
 dims = { mode = "linear", flags = "fixed", scope = "subtree", emit = "lines", select = "rare", kind = "literal" }
 
 # ─────────────────────────── mode: -P PCRE2 ─────────────────────────────────
@@ -165,8 +165,8 @@ dims = { mode = "linear", flags = "fixed", scope = "subtree", emit = "lines", se
 [[shape]]
 id = "pcre-lookahead-rare-files"
 pattern = 'WalletService(?=[\s\S]*ctx)'
-gist = ["-P", "-l"]
-rg = ["-P", "-l"]
+gist = [ "-P", "-l" ]
+rg = [ "-P", "-l" ]
 bar = "set"
 expect = "win"
 dims = { mode = "pcre", flags = "lookahead", scope = "rootless", emit = "files", select = "rare", kind = "lookaround" }
@@ -174,8 +174,8 @@ dims = { mode = "pcre", flags = "lookahead", scope = "rootless", emit = "files",
 [[shape]]
 id = "pcre-lookahead-common-files"
 pattern = 'func \w+\((?=.*ctx)'
-gist = ["-P", "-l"]
-rg = ["-P", "-l"]
+gist = [ "-P", "-l" ]
+rg = [ "-P", "-l" ]
 bar = "set"
 expect = "win"
 dims = { mode = "pcre", flags = "lookahead", scope = "rootless", emit = "files", select = "common", kind = "lookaround" }
@@ -188,8 +188,8 @@ dims = { mode = "pcre", flags = "lookahead", scope = "rootless", emit = "files",
 [[shape]]
 id = "pcre-backref-files"
 pattern = '(\w{4,})\s+\1'
-gist = ["-P", "-l"]
-rg = ["-P", "-l"]
+gist = [ "-P", "-l" ]
+rg = [ "-P", "-l" ]
 bar = "set"
 expect = "loss"
 dims = { mode = "pcre", flags = "backref", scope = "rootless", emit = "files", select = "common", kind = "backreference" }
@@ -204,8 +204,8 @@ dims = { mode = "pcre", flags = "backref", scope = "rootless", emit = "files", s
 [[shape]]
 id = "multiline-rare-files"
 pattern = 'WalletService[\s\S]{0,80}?\{'
-gist = ["-U", "-l"]
-rg = ["-U", "-l"]
+gist = [ "-U", "-l" ]
+rg = [ "-U", "-l" ]
 bar = "set"
 expect = "loss"
 dims = { mode = "multiline", flags = "plain", scope = "rootless", emit = "files", select = "rare", kind = "cross-line" }
@@ -219,8 +219,8 @@ dims = { mode = "multiline", flags = "plain", scope = "rootless", emit = "files"
 [[shape]]
 id = "multiline-common-lazy-dotstar-files"
 pattern = 'import \([\s\S]*?\)'
-gist = ["-U", "-l"]
-rg = ["-U", "-l"]
+gist = [ "-U", "-l" ]
+rg = [ "-U", "-l" ]
 bar = "set"
 expect = "loss"
 dims = { mode = "multiline", flags = "lazy-dotstar", scope = "rootless", emit = "files", select = "common", kind = "cross-line" }

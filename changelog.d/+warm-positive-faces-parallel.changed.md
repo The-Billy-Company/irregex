@@ -19,7 +19,7 @@ existence check is preserved per shard.
 
 Measured on the live 20k-file / 193 MiB repo corpus (warm files-mode p50,
 serial → sharded): `import` (13838 files) 10.5 → 5.9 ms, `})` (7780) 12.7 → 5.0 ms
-(2.5×), `def ` (4908) 6.4 → 3.0 ms (2.1×), `func ` (3690) 5.1 → 2.5 ms (2.0×),
+(2.5×), `def` (4908) 6.4 → 3.0 ms (2.1×), `func` (3690) 5.1 → 2.5 ms (2.0×),
 `context.Context` (1756) 2.8 → 1.4 ms (2.0×); small/rare needles stay on the
 serial core, unchanged. Byte-parity proven `warm == --no-index == rg` (with
 `--uncap` past the soft output budget) on a controlled 400-file fixture crossing

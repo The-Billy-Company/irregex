@@ -13,16 +13,16 @@ doc_radar:
 
 The hot per-file kernels that decide whether a candidate matches. This is
 the half of the head-to-head that has to out-throughput ripgrep's multi-core
-scan. The fused work-stealing walk that *feeds* these kernels lives in
+scan. The fused work-stealing walk that _feeds_ these kernels lives in
 `runtime/cold/engine/parallel.zig`; the resident session drives `verify`
 directly.
 
 ## Files
 
-| File | Job |
-| ---- | --- |
-| `simd.zig` | SIMD substring presence (`contains ≡ std.mem.indexOf`) — memchr-style first+last-byte gate for fixed strings |
-| `verify.zig` | Pure data-parallel candidate-verify kernel + SIMD scan wrappers callers drive |
+| File         | Job                                                                                                          |
+| ------------ | ------------------------------------------------------------------------------------------------------------ |
+| `simd.zig`   | SIMD substring presence (`contains ≡ std.mem.indexOf`) — memchr-style first+last-byte gate for fixed strings |
+| `verify.zig` | Pure data-parallel candidate-verify kernel + SIMD scan wrappers callers drive                                |
 
 ## Where it sits on the ladder
 
@@ -37,5 +37,5 @@ Soundness (0 FN / 0 FP vs `rg (?-u)`) and the straggler-balance canary:
 
 ## When to edit
 
-SIMD strategy, verify fusion, or hot-loop invariants. Changing *which* files
+SIMD strategy, verify fusion, or hot-loop invariants. Changing _which_ files
 are candidates is `index/` + cold engine work, not this package.

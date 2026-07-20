@@ -35,20 +35,20 @@ negatives.
 
 ## This folder (research: writing + proofs only)
 
-| file | role |
-|---|---|
-| `PROOF.md` | definitions, Sieve Theorem, forced-crest calculus + soundness lemma, alphabet contract, selectivity model, measured results |
-| `PRIOR_ART.md` | the full adversarial prior-art review: every neighboring family, why each is a different object, the referee verdict |
-| `TESTING.md` | the complete testing story: unit calculus tests, sidecar codec adversarial tests, corpus-wide fail-closed soundness, randomized sweeps, ablation, reproduction commands |
+| file           | role                                                                                                                                                                    |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PROOF.md`     | definitions, Sieve Theorem, forced-crest calculus + soundness lemma, alphabet contract, selectivity model, measured results                                             |
+| `PRIOR_ART.md` | the full adversarial prior-art review: every neighboring family, why each is a different object, the referee verdict                                                    |
+| `TESTING.md`   | the complete testing story: unit calculus tests, sidecar codec adversarial tests, corpus-wide fail-closed soundness, randomized sweeps, ablation, reproduction commands |
 
 ## The code (lives with the system, not here)
 
-| where | what |
-|---|---|
-| `src/math/crest.zig` | the pure kernel: class lattice, crest vector, `Profile` calculus, `ghat`, `pruned` (tests: `src/math/crest_test.zig`) |
-| `src/index/crest/sidecar.zig` | the persisted per-document crest table (`crest.bin`), riding the trigram pair's generation-atomic publish |
+| where                                                 | what                                                                                                                                       |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `src/math/crest.zig`                                  | the pure kernel: class lattice, crest vector, `Profile` calculus, `ghat`, `pruned` (tests: `src/math/crest_test.zig`)                      |
+| `src/index/crest/sidecar.zig`                         | the persisted per-document crest table (`crest.bin`), riding the trigram pair's generation-atomic publish                                  |
 | `src/runtime/cold/engine/serial.zig` + `parallel.zig` | the wiring: `crestSieve` computes ĝ from the effective pattern; both read-elision oracles fold crest pruning in beside trigram + freshness |
-| `bench/crest/bench.zig` | production proof harness (`zig build crest`) — fail-closed soundness + pruning + speed + ablation over the live corpus |
+| `bench/crest/bench.zig`                               | production proof harness (`zig build crest`) — fail-closed soundness + pruning + speed + ablation over the live corpus                     |
 
 ## Run
 
@@ -64,10 +64,11 @@ gist '[0-9a-f]{12}'   # the sieve elides pruned reads in production
 
 Narrow-class repetitions: **91–95% of files pruned, 8–15× wall-clock** vs the
 real matcher's full scan, with **0 false negatives** (fail-closed, corpus-wide
-+ 48k randomized pairs across both engine modes). Wide classes (`\w{3,8}`):
-≈0% pruned, ≈1× — the honest scope boundary. The count-population cousin at
-the same thresholds prunes ≤1% on hex-8 vs Crest's 91% — the *run* is the
-operative condition. Full table: `PROOF.md` §5.
+
+- 48k randomized pairs across both engine modes). Wide classes (`\w{3,8}`):
+  ≈0% pruned, ≈1× — the honest scope boundary. The count-population cousin at
+  the same thresholds prunes ≤1% on hex-8 vs Crest's 91% — the _run_ is the
+  operative condition. Full table: `PROOF.md` §5.
 
 ## Status
 

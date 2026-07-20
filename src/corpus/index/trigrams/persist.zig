@@ -37,6 +37,18 @@ pub fn pathsFile() []const u8 {
 pub fn generationFile() []const u8 {
     return generation_alias.get();
 }
+
+/// Published `pair.gen` contents (gpa-owned; "" when absent). A rebuilt index
+/// changes this — both resident sessions probe it to decide `maybeReload`.
+pub fn readPublishedGeneration(gpa: std.mem.Allocator, io: std.Io) ![]u8 {
+    const buf = Dir.cwd().readFileAlloc(io, generationFile(), gpa, .limited(128)) catch
+        return gpa.alloc(u8, 0);
+    const trimmed = std.mem.trimEnd(u8, buf, "\r\n");
+    if (trimmed.len == buf.len) return buf;
+    defer gpa.free(buf);
+    return gpa.dupe(u8, trimmed);
+}
+
 pub const gens_subdir = "gens";
 
 /// A read-only, page-aligned file mapping (zero-copy view of the bytes on disk).

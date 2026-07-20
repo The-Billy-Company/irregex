@@ -119,7 +119,7 @@ def _canon(bar: str, out: str) -> object:
 
 
 def _exit_class(rc: int) -> int:
-    """rg exit taxonomy collapsed to its class: 0 match / 1 no-match / 2+ error."""
+    """Rg exit taxonomy collapsed to its class: 0 match / 1 no-match / 2+ error."""
     return rc if rc in (0, 1) else 2
 
 
@@ -228,8 +228,11 @@ def cmd_bench(shapes: list[dict], default_roots: list[str], *, publish: bool, wa
 
 
 def _floor(row: dict) -> float:
-    """Conservative committed floor: 0.75× the measured win (≥1.0); a fixed 0.75
-    parity band; loss rows record the measured speedup but are never enforced."""
+    """Conservative committed floor for a matrix row.
+
+    0.75× the measured win (≥1.0); a fixed 0.75 parity band; loss rows record
+    the measured speedup but are never enforced.
+    """
     if row["expect"] == "loss":
         return round(row["speedup"], 3)
     if row["expect"] == "win":

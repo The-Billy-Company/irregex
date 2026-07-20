@@ -21,6 +21,14 @@ pub fn putInt(gpa: std.mem.Allocator, out: *std.ArrayList(u8), comptime T: type,
     try out.appendSlice(gpa, &buf);
 }
 
+/// FNV-1a 64-bit over `bytes` — the integrity checksum every persisted
+/// artifact (atlas, frag, …) appends and re-checks on load.
+pub fn fnv64(bytes: []const u8) u64 {
+    var h: u64 = 0xcbf29ce484222325;
+    for (bytes) |b| h = (h ^ b) *% 0x100000001b3;
+    return h;
+}
+
 pub fn putWords(gpa: std.mem.Allocator, out: *std.ArrayList(u8), words: []const u64) !void {
     try putInt(gpa, out, u64, @intCast(words.len));
     for (words) |w| try putInt(gpa, out, u64, w);

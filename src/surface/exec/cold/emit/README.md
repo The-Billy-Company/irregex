@@ -31,5 +31,5 @@ warm `path:line:text` frames are cold frames by construction.
 ## When to edit
 
 Output framing, color policy, `--json` event shapes, multiline buffer model,
-or the no-match coaching channel. Changing *what* matched belongs in
-`search/match/`; changing *which files* were searched belongs in walk/engine.
+or the no-match coaching channel. Changing _what_ matched belongs in
+`search/match/`; changing _which files_ were searched belongs in walk/engine.

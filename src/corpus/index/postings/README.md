@@ -12,14 +12,14 @@ doc_radar:
 # `src/index/postings/` — compact posting-body codecs
 
 How a posting list of document ids becomes bytes on disk and maps back
-zero-copy. The trigram index ([`../trigrams/`](../trigrams)) owns *what* is
+zero-copy. The trigram index ([`../trigrams/`](../trigrams)) owns _what_ is
 indexed; this package owns the wire.
 
 ## Files
 
-| File | Job |
-| ---- | --- |
-| `varint.zig` | LEB128 variable-length integer codec — delta-compressed posting bodies (smallest wire per gap) |
+| File                 | Job                                                                                               |
+| -------------------- | ------------------------------------------------------------------------------------------------- |
+| `varint.zig`         | LEB128 variable-length integer codec — delta-compressed posting bodies (smallest wire per gap)    |
 | `persisted_blob.zig` | Persisted index blob layout: header, section offsets, `mmap`-friendly CSR shape (csearch lineage) |
 
 ## Invariants
@@ -34,4 +34,4 @@ indexed; this package owns the wire.
 ## When to edit
 
 Codec edge cases, CSR header fields, or mmap alignment. If you are changing
-*which* docs appear in a posting list, you want `../trigrams/`, not here.
+_which_ docs appear in a posting list, you want `../trigrams/`, not here.
