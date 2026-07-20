@@ -31,12 +31,12 @@ an interface change — review it like an ABI bump, not a casual edit.
 
 ## Who reads it
 
-| Consumer | How |
-| -------- | --- |
-| Python [`../bindings/python/irregex`](../bindings/python) | `irregex.contract` + parity tests |
-| Rust [`../bindings/rust`](../bindings/rust) | `gist::contract` + `tests/contract.rs` |
-| CLI `--schema` | Flag rows name the rg-parity flags in `runtime/cold/argv` `flag_catalog` |
-| Reviewers | Decide deep contract vs CLI-only presentation flag |
+| Consumer                                                  | How                                                                           |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| Python [`../bindings/python/irregex`](../bindings/python) | `irregex.contract` + parity tests                                             |
+| Rust [`../bindings/rust`](../bindings/rust)               | `gist::contract` + `tests/contract.rs`                                        |
+| CLI `--schema`                                            | Flag rows name the rg-parity flags in `surface/exec/cold/argv` `flag_catalog` |
+| Reviewers                                                 | Decide deep contract vs CLI-only presentation flag                            |
 
 ## When to edit
 
@@ -44,6 +44,6 @@ an interface change — review it like an ABI bump, not a casual edit.
 - Transport status / session eligibility / relate verb changes.
 - Then update bindings + Zig `flag_catalog` / relate dispatch in the same PR.
 
-Flag *parsing* still lives in
-[`../src/runtime/cold/argv/args.zig`](../src/runtime/cold/argv/args.zig);
+Flag _parsing_ still lives in
+[`../src/surface/exec/cold/argv/args.zig`](../src/surface/exec/cold/argv/args.zig);
 each `flag = …` here names the rg-parity flag a request option lowers into.
