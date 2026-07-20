@@ -1,0 +1,1 @@
+Add research/relate/ dossier (CLAIM + PRIOR_ART + TESTING) matching crest/gist: Language Trees and Zipping lineage, 3Blue1Brown cross-entropy video, and every citation the shipped engines actually use.

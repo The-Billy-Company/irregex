@@ -75,8 +75,11 @@ calculus, and its own prior-art survey live in
 
 I deliberately keep model-free byte kinship rather than dress it up as semantic
 retrieval, and per-pattern confirmation rather than Hyperscan-style fused
-attribution. [`PRIOR_ART.md`](PRIOR_ART.md) contains the full survey and
-explicit non-claims.
+attribution. Research dossiers:
+
+- [`research/gist/`](research/gist/) — gist composition claim, landscape, evidence
+- [`research/relate/`](research/relate/) — relate / Language Trees lineage, citations we used, evidence
+- [`research/crest/`](research/crest/) — the one novel math claim (forced-class-run sieve)
 
 ## Quick start
 
