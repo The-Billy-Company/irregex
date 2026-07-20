@@ -259,6 +259,18 @@ pub fn isBinary(bytes: []const u8) bool {
     return std.mem.indexOfScalar(u8, window, 0) != null;
 }
 
+/// Read `sub_path` (under `dir`) as a corpus member: its body capped at
+/// `per_file_cap`, or `null` when the path is not a member — unreadable,
+/// empty, or binary. This is the ONE membership rule `load` and every
+/// freshness fold (atlas / frag / trigram) apply, so a warm folded view and a
+/// cold live build can never disagree on what counts as corpus. `null` folds
+/// all three rejection reasons together because every fold treats them
+/// identically (tombstone the entry / skip the file).
+pub fn readMember(io: std.Io, dir: std.Io.Dir, sub_path: []const u8, a: std.mem.Allocator) ?[]u8 {
+    const buf = dir.readFileAlloc(io, sub_path, a, .limited(per_file_cap)) catch return null;
+    return if (buf.len == 0 or isBinary(buf)) null else buf;
+}
+
 /// Every loaded doc + its root-joined path, arena-owned; `deinit` frees all.
 pub const Corpus = struct {
     docs: [][]const u8,
@@ -288,8 +300,7 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !Corp
         };
         defer w.deinit(io);
         while (try w.next(io)) |hay| {
-            const buf = hay.dir.readFileAlloc(io, hay.name, a, .limited(per_file_cap)) catch continue;
-            if (buf.len == 0 or isBinary(buf)) continue;
+            const buf = readMember(io, hay.dir, hay.name, a) orelse continue;
             try docs.append(a, buf);
             try paths.append(a, hay.path);
             total += buf.len;
