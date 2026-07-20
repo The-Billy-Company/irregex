@@ -41,7 +41,7 @@ reasons inside). None gets a private corpus walk, scope layer, or index.
 | ----- | ---------------- | ------ |
 | [`kernel/`](kernel) | Pure compute — no argv, walk, or emit: `match` · `rank` · `kinship` · `batch` · `compose` · `primitives` | [`kernel/README.md`](kernel/README.md) |
 | [`corpus/`](corpus) | The body of text and its persisted forms: `tree/` walk · `scope/` `-g`/`-t` · `index/` accelerators | [`corpus/README.md`](corpus/README.md) |
-| [`surface/`](surface) | Transports + faces: `exec/` (cold + session) · `ffi/` · `face/` (gist · relate · irregex) | [`surface/README.md`](surface/README.md) |
+| [`surface/`](surface) | Transports + faces: `exec/` (cold + session) · `ffi/` · `face/` (gist · relate · irregex) · `cli/` (shared flags/emit vocabulary) | [`surface/README.md`](surface/README.md) |
 
 ## The anatomy of a query
 
@@ -193,7 +193,8 @@ the DFA share instead of five hand-rolled copies, beside `crest` and the
 `exec/cold/` owns the rg-compatible argv → walk → read → emit execution path;
 `exec/session/` keeps the same corpus and kernels warm behind the daemon
 protocol; `ffi/` exposes that resident session in-process. `face/` holds the
-three thin product binaries.
+three thin product binaries, and `cli/` is the argv/root/emit vocabulary all
+three speak (`flags` + `emit`) so no face forks a flag value or the JSON escaper.
 
 | Folder                  | Concern                                                                                                                                                                                           |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

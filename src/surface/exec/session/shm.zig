@@ -30,6 +30,13 @@ const page = std.heap.page_size_min;
 
 pub const Error = error{ Unsupported, ShmFailed, MapFailed };
 
+/// Test-only fault injection for the forced-fallback proof: when set, `create`
+/// reports `ShmFailed` so `render.renderLinesShm` returns its `.chunk` variant
+/// and the daemon streams the answer as chunk frames for an otherwise fd-eligible
+/// answer — proving the fd→chunk fallback is byte-identical. Compiled out
+/// entirely outside `zig build test`, so the production path pays nothing.
+pub var force_fail_for_test: std.atomic.Value(bool) = .init(false);
+
 // Not `pub` in this Zig's `std.c`; declared here at the C ABI it uses elsewhere.
 extern "c" fn shm_open(name: [*:0]const u8, flag: c_int, mode: std.c.mode_t) c_int;
 
@@ -48,6 +55,9 @@ pub const Buffer = struct {
     /// An anonymous shared object of exactly `len` bytes, mapped writable.
     pub fn create(len: usize) Error!Buffer {
         if (!supported or len == 0) return Error.Unsupported;
+        if (comptime builtin.is_test) {
+            if (force_fail_for_test.load(.monotonic)) return Error.ShmFailed;
+        }
         const fd = try openAnon(len);
         errdefer _ = std.c.close(fd);
         const m = std.posix.mmap(null, len, .{ .READ = true, .WRITE = true }, .{ .TYPE = .SHARED }, fd, 0) catch
@@ -68,7 +78,15 @@ pub const Buffer = struct {
         }
     }
 
+    /// Release the daemon's handle. Unmaps the writable view first if `freeze`
+    /// was never called (the below-floor path reads `map` then closes without
+    /// handing the fd off), so no mapping leaks either way. The shared object
+    /// itself lives until the client's fd closes too.
     pub fn close(self: *Buffer) void {
+        if (self.map.len != 0) {
+            std.posix.munmap(self.map);
+            self.map = self.map[0..0];
+        }
         _ = std.c.close(self.fd);
     }
 };

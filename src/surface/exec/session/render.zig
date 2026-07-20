@@ -29,6 +29,7 @@ const grepfile = @import("../cold/read/grepfile.zig");
 const parallel = @import("../../../kernel/primitives/parallel.zig");
 const query_mod = @import("../../../kernel/match/query.zig");
 const request = @import("request.zig");
+const shm = @import("shm.zig");
 const Regex = @import("../../../kernel/match/regex/linear/core.zig").Regex;
 const Matcher = @import("../../../kernel/match/regex/linear/matcher.zig").Matcher;
 
@@ -189,6 +190,114 @@ pub fn renderLinesParallel(
 
 fn docWeight(_: void, d: Doc) usize {
     return d.bytes.len;
+}
+
+/// A `lines` answer assembled in shared memory (the fd-transport daemon path):
+/// filled but NOT yet frozen. The caller freezes it, hands off `buffer.fd`, then
+/// closes its own handle — the object lives until the client's fd closes.
+pub const ShmLines = struct { buffer: shm.Buffer, len: usize, matched: bool };
+
+/// How a rendered `lines` answer leaves `renderLinesShm`: either a shared-memory
+/// buffer to pass as an fd (answer ≥ `floor`, shm available — the zero-socket-copy
+/// win), or the rendered bytes to stream as ordinary `chunk` frames (answer below
+/// the floor, or shm unavailable — the fail-open path). Byte-identical either way;
+/// `chunk` is never a new failure mode.
+pub const LinesEmit = union(enum) {
+    fd: ShmLines,
+    chunk: struct { bytes: []const u8, matched: bool },
+};
+
+/// Render the warm `lines` answer and choose its transport by ANSWER SIZE, not
+/// shard count: at/above `floor` the bytes are gathered into a shared-memory
+/// buffer the daemon hands off as an fd (`sendChunkFd`) so the multi-MB answer
+/// never traverses the socket; below it — or if shm setup fails — the same bytes
+/// come back to stream as `chunk` frames. A large SINGLE-doc answer is fd-eligible
+/// too: the win is the eliminated socket copy, independent of how many docs (or
+/// shards) produced it.
+///
+/// The bytes are byte-identical to `renderLinesParallel`: the same shards, the
+/// same per-shard `renderLines` core, the same doc-order concatenation. For the
+/// fd case the shard buffers are copied STRAIGHT into shm (one copy, no arena
+/// concatenation first); for the chunk case a single shard's bytes are returned
+/// as-is and multiple shards are concatenated into the arena.
+pub fn renderLinesShm(
+    gpa: std.mem.Allocator,
+    a: std.mem.Allocator,
+    req: request.Request,
+    docs: []const Doc,
+    floor: usize,
+) RenderError!LinesEmit {
+    // Serial render (corpus below `par_min_bytes`, one core, or a single doc a
+    // shard split can't divide): one arena buffer holds the whole answer, then
+    // the same floor decision — a huge single doc still earns the fd path.
+    const bounds = parallel.shardBounds(Doc, docs, {}, docWeight, par_min_bytes, par_max_shards, a) orelse {
+        var out: std.ArrayList(u8) = .empty;
+        const matched = try renderLines(a, req, docs, &out);
+        return emit(a, &.{out.items}, matched, floor);
+    };
+    const nthr = bounds.len - 1;
+
+    const Shard = struct {
+        req: request.Request,
+        docs: []const Doc,
+        buf: std.ArrayList(u8) = .empty,
+        arena: std.heap.ArenaAllocator = undefined,
+        matched: bool = false,
+        err: ?RenderError = null,
+
+        fn run(sh: *@This()) void {
+            const sa = sh.arena.allocator();
+            sh.matched = renderLines(sa, sh.req, sh.docs, &sh.buf) catch |e| {
+                sh.err = e;
+                return;
+            };
+        }
+    };
+
+    const shards = try a.alloc(Shard, nthr);
+    for (shards, 0..) |*sh, i| sh.* = .{
+        .req = req,
+        .docs = docs[bounds[i]..bounds[i + 1]],
+        .arena = std.heap.ArenaAllocator.init(gpa),
+    };
+    defer for (shards) |*sh| sh.arena.deinit();
+
+    const threads = try a.alloc(std.Thread, nthr);
+    parallel.fanOut(Shard, shards, threads, Shard.run);
+
+    const pieces = try a.alloc([]const u8, nthr);
+    var matched = false;
+    for (shards, pieces) |*sh, *p| {
+        if (sh.err) |e| return e;
+        p.* = sh.buf.items;
+        matched = matched or sh.matched;
+    }
+    return emit(a, pieces, matched, floor);
+}
+
+/// Hand the rendered `pieces` (in doc order, ≥1) to the caller as an fd or a
+/// chunk stream. At/above `floor` they're copied contiguously into a fresh shm
+/// buffer (one copy); on an shm failure or below the floor they fall to `chunk` —
+/// a single piece as-is, several concatenated into `a`. The shard/serial arenas
+/// backing `pieces` stay alive until the caller returns, so both reads are safe.
+fn emit(a: std.mem.Allocator, pieces: []const []const u8, matched: bool, floor: usize) RenderError!LinesEmit {
+    var total: usize = 0;
+    for (pieces) |p| total += p.len;
+    if (total >= floor) {
+        if (shm.Buffer.create(total)) |created| {
+            var buffer = created;
+            var off: usize = 0;
+            for (pieces) |p| {
+                @memcpy(buffer.map[off..][0..p.len], p);
+                off += p.len;
+            }
+            return .{ .fd = .{ .buffer = buffer, .len = total, .matched = matched } };
+        } else |_| {} // shm unavailable → fall open to chunk frames
+    }
+    if (pieces.len == 1) return .{ .chunk = .{ .bytes = pieces[0], .matched = matched } };
+    var out: std.ArrayList(u8) = .empty;
+    for (pieces) |p| try out.appendSlice(a, p);
+    return .{ .chunk = .{ .bytes = out.items, .matched = matched } };
 }
 
 fn renderToString(a: std.mem.Allocator, req: request.Request, docs: []const Doc) ![]const u8 {
