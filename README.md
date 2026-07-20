@@ -38,6 +38,9 @@ I kept coming back to one fact: text is bits. Flip one bit and the patterns
 change. Gist started with a question: _can I use those differences to reject
 most files before reading them?_ That pulled me from exact matching into
 compression, similarity, and information retrieval. irregex is what came out.
+The research record keeps that path auditable: product claims, inherited
+ideas, and falsification evidence live separately under
+[`research/`](research/README.md).
 
 > **Scope:** build-time dev tooling for the coding agents that work _on_
 > Billy. It has nothing to do with Billy-the-product.
@@ -51,8 +54,9 @@ the index can save reads, but it never gets to overrule current bytes.
 Then I started thinking about compressors. They turn repeated structure into
 shorter descriptions. What if I used that same math, but returned the files
 most like a query instead of one compressed blob? That became `relate`. It aims
-at the same job as embeddings by a different route: embeddings compare learned
-vectors; relate compares shared bytes and coding cost.
+at a lane beside embeddings, not a disguised replacement: embeddings compare
+learned semantic vectors; Relate exposes repeated bytes, compression kinship,
+structural echoes, marginal information, and corpus provenance.
 
 ## Prior art
 
@@ -73,13 +77,24 @@ family concedes. New math, adversarially refereed for priority; the theorem,
 calculus, and its own prior-art survey live in
 [`research/crest/`](research/crest/PROOF.md).
 
-I deliberately keep model-free byte kinship rather than dress it up as semantic
-retrieval, and per-pattern confirmation rather than Hyperscan-style fused
-attribution. Research dossiers:
+I deliberately keep model-free byte kinship rather than dress it up as
+semantic retrieval. `PatternSet` uses a fused gate only to skip all-miss files,
+then confirms each pattern through Gist's own matcher; Hyperscan already owns
+high-throughput expression-ID attribution, while this kernel claims equality
+with N independent Gist searches. Research dossiers:
 
-- [`research/gist/`](research/gist/) — gist composition claim, landscape, evidence
-- [`research/relate/`](research/relate/) — relate / Language Trees lineage, citations we used, evidence
-- [`research/crest/`](research/crest/) — the one novel math claim (forced-class-run sieve)
+- [`research/gist/CLAIM.md`](research/gist/CLAIM.md) ·
+  [`PRIOR_ART.md`](research/gist/PRIOR_ART.md) ·
+  [`TESTING.md`](research/gist/TESTING.md) — product thesis, competitive
+  ancestry, and evidence for agent-loop exact search
+- [`research/relate/CLAIM.md`](research/relate/CLAIM.md) ·
+  [`PRIOR_ART.md`](research/relate/PRIOR_ART.md) ·
+  [`TESTING.md`](research/relate/TESTING.md) — compression-as-search,
+  Language Trees lineage, and measured boundaries
+- [`research/crest/PROOF.md`](research/crest/PROOF.md) ·
+  [`PRIOR_ART.md`](research/crest/PRIOR_ART.md) ·
+  [`TESTING.md`](research/crest/TESTING.md) — the novel forced-class-run
+  sieve, its priority review, and its falsification plan
 
 ## Quick start
 
@@ -103,18 +118,73 @@ Indexes are optional accelerators. Missing, stale, or uncertain state falls
 back to current files rather than changing the answer. See the face-specific
 docs for the complete CLI surfaces and standalone `zig build` commands.
 
+## Gist in brief
+
+Use `gist` when the question contains an exact string, regex, symbol, path
+scope, or familiar grep-shaped output. Start with the ripgrep-shaped reflex —
+`gist PATTERN [PATH...] [FLAGS]` — then choose Gist-native `--rank`,
+`--no-index`, resident, or codex behavior only when the intent calls for it.
+See the [`gist` README](src/cli/gist/README.md) for the full ergonomics guide,
+niche flag choices, compatibility boundaries, and evidence.
+
+## Relate in brief
+
+Use `relate` when the question is about resemblance, non-redundant context,
+provenance, duplicate families, renamed structure, or many attributed
+patterns. Choose the verb from the answer shape: `search`, `pack`, `quote`,
+`similar`, `dups`, `clusters`, `echoes`, or `patterns`. See the
+[`relate` README](src/cli/relate/README.md) for the complete verb guide,
+score directions, corpus policy, warm-tier behavior, and evidence.
+
+## Use Gist and Relate in tandem
+
+The tools are strongest as a loop: Relate finds the neighborhood; Gist proves
+the exact claim inside it. A practical sequence is:
+
+1. **Locate what you can name.** Start with `gist SYMBOL --rank` or a normal
+   regex search. This gives exact, current-byte evidence.
+2. **Recover what you cannot name.** If spelling is uncertain or the question
+   is descriptive, use `relate search "DESCRIPTION"`; use `relate pack` when
+   the goal is a compact reading set rather than another ranked list.
+3. **Return to exact search.** Feed the surfaced symbol, phrase, or narrowed
+   paths back into Gist to verify definitions, uses, and absence.
+4. **Check for siblings before adding code.** Run `relate similar PATH`;
+   use `dups` or `clusters` for copy families and `echoes` for the same
+   structure hidden behind renamed vocabulary.
+5. **Batch exact intents once.** When several independent Gist searches form
+   one audit, use `relate patterns -e A -e B …` for one walk with exact
+   per-pattern attribution.
+6. **Trace provenance when wording matters.** Use `relate quote TEXT` to
+   attribute corpus-known phrases, then Gist the cited source for surrounding
+   context.
+
+```bash
+gist 'ResidentSession' --rank
+relate similar src/runtime/session/resident.zig --lens structure --top 5
+relate pack "fail-closed resident freshness and cold fallback" --top 6
+gist 'decline|fallback' src/runtime/session -n
+```
+
+That is the intended division of labor, not a rigid pipeline. Keep exact
+questions in Gist and set-, similarity-, or provenance-shaped questions in
+Relate; check each individual README when choosing flags, lenses, thresholds,
+or lifecycle controls.
+
 ## Choose a face
 
-| Face       | What it is                                                                                                                                                                                  | Docs                                                     |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| **gist**   | the rg-parity code locator CLI: trigram + crest read-elision, ranked search, and a resident session; the agents' everyday search reflex                                              | [`src/cli/gist/README.md`](src/cli/gist/README.md)       |
-| **relate** | compression-as-search: `search` / `quote` / `similar` / `dups` / `patterns` through description length, corpus quotation, LZ kinship, and pattern attribution                         | [`src/cli/relate/README.md`](src/cli/relate/README.md)   |
-| **codex**  | the compressed self-index: a corpus stored at entropy-bound size with exact O(m) `count`/`find` and byte-exact restoration; powers `gist codex` + `relate quote`                     | [`src/index/codex/README.md`](src/index/codex/README.md) |
-| **ffi**    | the in-process C-ABI warm session (`irregex_open` / `irregex_search` / `irregex_close` over `libirregex`)                                                                                   | [`src/runtime/ffi/README.md`](src/runtime/ffi/README.md) |
+| Face       | What it is                                                                                                                                                       | Docs                                                     |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| **gist**   | the rg-parity code locator CLI: trigram + crest read-elision, ranked search, and a resident session; the agents' everyday search reflex                          | [`src/cli/gist/README.md`](src/cli/gist/README.md)       |
+| **relate** | compression-as-search: retrieval/packing, quotation, kinship/families/echoes, and exact pattern sets; `index` / `status` own the warm lifecycle                  | [`src/cli/relate/README.md`](src/cli/relate/README.md)   |
+| **codex**  | the compressed self-index: a corpus stored at entropy-bound size with exact O(m) `count`/`find` and byte-exact restoration; powers `gist codex` + `relate quote` | [`src/index/codex/README.md`](src/index/codex/README.md) |
+| **ffi**    | the in-process C-ABI warm session (`irregex_open` / `irregex_search` / `irregex_close` over `libirregex`)                                                        | [`src/runtime/ffi/README.md`](src/runtime/ffi/README.md) |
 
 The two CLIs are separate faces over one shared floor (`src/math/`,
 `src/corpus/`, `src/index/`, `src/search/`, `src/runtime/`); neither owns a
 private copy of the corpus walk, scope machinery, indexes, or execution hosts.
+Operational READMEs explain how to use each face; the
+[`research dossiers`](research/README.md) explain why the claims deserve to
+exist and where they stop.
 
 ## Guarantees and limits
 
@@ -133,8 +203,9 @@ private copy of the corpus walk, scope machinery, indexes, or execution hosts.
 ## Evidence: six runnable claims
 
 The idea started the work. It did not prove anything. Every claim below has a
-checked-in harness that tries to break it. “Only” means only the competitive
-field that harness actually runs.
+checked-in harness that tries to break it, with the complete claim → prior art
+→ evidence chain indexed in [`research/README.md`](research/README.md).
+“Only” means only the competitive field that harness actually runs.
 
 ### 1. PCRE2 semantics can ride a sound code-search index
 
@@ -188,17 +259,18 @@ maximal quotation attributed to a source file; a measured ~90× separation.
 
 `PatternSet` compiles N intents once and walks once without erasing which
 pattern hit which file. Its fused prefilter is skip-only: every emitted answer
-must equal N independent single-pattern searches. On the relocator-shaped
-10-pattern slate that is **~195 ms** versus **~1.2 s** for ten sequential
-`gist -l` calls (~6×), while a plain alternation cannot return attribution at
-all (`bench/races/multipattern.sh`).
+must equal N independent single-pattern searches. The fused alternation alone
+cannot satisfy that per-pattern Gist-equivalence contract; confirmation
+restores exact attribution. Unit tests gate equality with the prefilter both
+on and off; `bench/races/multipattern.sh` remains an ad hoc throughput race,
+not a committed performance certificate.
 
 Instead of collapsing shared information into a compressed blob, I use the
 same accounting to return a **set**. In `relate pack`, corpus-priced
 fingerprints make every pick pay only for bits not already covered by earlier
-picks. The greedy max-coverage plan carries the standard (1−1/e) bound and
-emits marginal-bit receipts, so near-duplicate files cannot quietly consume an
-agent's context budget as independent value.
+picks. The greedy max-coverage plan carries the standard (1−1/e)
+approximation bound and emits marginal-bit receipts, so near-duplicate files
+cannot quietly consume an agent's context budget as independent value.
 
 ### 5. A new necessary condition can close the trigram index's blind spot
 
@@ -231,11 +303,13 @@ dominance (A), static and native port pressure (B/B′), the hardware roofline
 lower median and Mann–Whitney p < 0.05; missing counters or tools are printed
 as missing, never inferred.
 
-On the recorded 22,827-file / 223.8 MiB corpus, the end-to-end linear/literal
-path beats ripgrep in all 12 query classes by **1.97×–23.57×**. Layer D then
-checks the narrower structural statement: trigram pruning touches no rejected
-file bytes, and the DFA verifies each admitted byte exactly once. The artifact,
-raw data, machine identity, losses, and rerun commands live in
+On the recorded **17,739-file / 166.1 MiB macroscopic corpus**, the
+end-to-end linear/literal path beats ripgrep in all 12 query classes by
+**1.97×–23.57×**. The microscopic cycles/byte and lower-bound layers use a
+separate ~22.8k-file / ~223.8 MiB in-memory corpus. Layer D checks the narrower
+structural statement: trigram pruning touches no rejected file bytes, and the
+DFA verifies each admitted byte exactly once. The artifact, raw data, machine
+identity, losses, and rerun commands live in
 [`bench/certify/artifact/CERTIFICATE.md`](bench/certify/artifact/CERTIFICATE.md);
 `make bench-gist-certify` remints the full A–D bundle.
 
@@ -246,17 +320,17 @@ place only when the tool feels obvious in the hand.
 
 ## Package layout
 
-| Dir            | What                                                                                                                    |
-| -------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Dir            | What                                                                                                                   |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `src/runtime/` | the shared floor: `corpus/` walk/loading, `scope/` path scoping, `session/` warm resident transport, `ffi/` C-ABI face |
-| `src/math/`    | the shared bit-identity floor (`bits.zig`) + the crest sieve calculus (`crest.zig`)                                     |
-| `src/search/`  | match (`match/`), rank, batch (`patterns` · `loom`), similarity (`sketch` · `lexicon` · `zipper`)                       |
-| `src/index/`   | trigram postings (`trigrams/` · `postings/`) + the compressed self-index (`codex/`) + the crest sidecar (`crest/`)      |
+| `src/math/`    | the shared bit-identity floor (`bits.zig`) + the crest sieve calculus (`crest.zig`)                                    |
+| `src/search/`  | match (`match/`), rank, batch (`patterns` · `loom`), similarity (`sketch` · `lexicon` · `zipper`)                      |
+| `src/index/`   | trigram postings (`trigrams/` · `postings/`) + the compressed self-index (`codex/`) + the crest sidecar (`crest/`)     |
 | `src/cli/`     | the two product binaries: `gist/` (exact locator) and `relate/` (compression-search)                                   |
 | `include/`     | `irregex.h`: the flat C ABI (`irregex_*` symbols)                                                                      |
-| `bindings/`    | Python (`billy-gist`, subprocess + optional cffi over `libirregex`) and Rust (subprocess) faces                         |
+| `bindings/`    | Python (`billy-irregex`, subprocess + optional cffi over `libirregex`) and Rust (subprocess) faces                        |
 | `contract/`    | `search_api.toml`: the unified SearchRequest/irregex contract (ADR-352)                                                |
-| `bench/`       | certification + competitive benchmark harness (rgsuite, races, certify, roofline)                                       |
+| `bench/`       | certification + competitive benchmark harness (rgsuite, races, certify, roofline)                                      |
 
 See [`src/README.md`](src/README.md) for the tier-by-tier map and
 [`src/cli/gist/README.md`](src/cli/gist/README.md) for the gist architecture

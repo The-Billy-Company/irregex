@@ -23,7 +23,7 @@ doc_radar:
 
 ## Why it exists
 
-The `gist` CLI, `billy-gist` Python package, Rust `gist` crate, and Billy's
+The `gist` CLI, `billy-irregex` Python package, Rust `gist` crate, and Billy's
 agent code-search tool all speak **one** request shape over **one** engine.
 This file freezes the enumerations they share so a package constant and the
 binary's version can never silently diverge. Widening `[request_options]` is
@@ -33,7 +33,7 @@ an interface change — review it like an ABI bump, not a casual edit.
 
 | Consumer | How |
 | -------- | --- |
-| Python [`../bindings/python/gist`](../bindings/python) | `gist.contract` + parity tests |
+| Python [`../bindings/python/irregex`](../bindings/python) | `irregex.contract` + parity tests |
 | Rust [`../bindings/rust`](../bindings/rust) | `gist::contract` + `tests/contract.rs` |
 | CLI `--schema` | Flag rows name the rg-parity flags in `runtime/cold/argv` `flag_catalog` |
 | Reviewers | Decide deep contract vs CLI-only presentation flag |

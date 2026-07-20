@@ -3,7 +3,7 @@
 # Single source of truth for the cross-face search contract: the request
 # options every face accepts, the match kinds it returns, the process exit
 # codes it speaks, the ABI version, and the transports that realize it. The two
-# importable faces — the Python package (`bindings/python/gist`) and the
+# importable faces — the Python package (`bindings/python/irregex`) and the
 # standalone Rust crate (`bindings/rust`) — each mirror these constants, and a
 # parity test in each asserts the mirror against this file (and the Rust/Python
 # `version()` against the live binary), so the contract cannot silently drift
@@ -20,7 +20,7 @@ name = "gist-unified-search"
 abi_version = 2
 # Tracks src/root.zig `version_string` / build.zig.zon `version`.
 engine_version = "0.1.0"
-package_dist = "billy-gist"
+package_dist = "billy-irregex"
 package_import = "gist"
 
 # How the one contract is carried to the engine. `subprocess` is authoritative
@@ -52,7 +52,7 @@ package_import = "gist"
 [transports]
 subprocess = { status = "authoritative", detail = "certified `gist` binary + --json; results produced by the same combinePatterns->collectFiles->json.run path the CLI uses" }
 uds = { status = "operational-accelerator", detail = "`gist serve` daemon holds a warm ResidentSession behind a Unix socket; the front-door client dials it for eligible queries (`-l`/files-with-matches, and the bare default `lines` search whose `path:[line:]text` bytes the daemon pre-renders through the cold Emitter and chunk-streams) and falls open to `subprocess` on any ineligible argv, TTY stdout, readable stdin, absent daemon, decline, or wire hiccup — a pure fail-open accelerator, never a distinct answer path (src/cli/gist/daemon/{serve,client}, src/runtime/session/*)" }
-ffi = { status = "operational-accelerator", detail = "in-process irregex_open/irregex_search/irregex_close C session ABI (src/runtime/ffi/session.zig) over the same error-returning resident engine as `uds`; a bad query returns IRREGEX_STALE, never a dead host. The match callback carries an i32 abort return (0 continue / non-zero stop) for bounded / first-match streaming. Unlike `uds` (files/count only), it streams full Match records, so the Python `Session.run/files/count/absent` route through it via cffi (bindings/python/gist/_ffi.py) when the shared library + cffi are present in-process, falling open to the `uds` daemon or `subprocess` otherwise — a pure fail-open accelerator, never a distinct answer path. cffi stays optional; the wheel is pure-Python without it. Verified by the C-ABI smoke (build.zig) and FFI-vs-cold byte-parity tests (bindings/python/tests/test_ffi_parity.py)." }
+ffi = { status = "operational-accelerator", detail = "in-process irregex_open/irregex_search/irregex_search_with_options/irregex_close C session ABI (src/runtime/ffi/session.zig) over the same error-returning resident engine as `uds`; a bad query returns IRREGEX_STALE, never a dead host. The match callback carries an i32 abort return (0 continue / non-zero stop) for bounded / first-match streaming; the additive, size-checked options entry carries raw smart-case, explicit Unicode/ASCII mode, invert-match, quiet, and the u64 per-file max-count payload without breaking existing callers. Invert scans every live document (positive trigram candidates cannot soundly select negative lines) and emits zero-submatch records byte-identical to cold JSON. Zig's effectiveIgnoreCase and CompiledQuery unicode field remain the sole case/class authorities. Unlike rootless-only `uds` (files/count only), FFI streams full Match records and passes explicit SearchRequest.paths as irregex_open roots; Python bounds and keys handles by (cwd, roots), so scopes cannot cross-contaminate. engine=auto optimistically tries this linear FFI path, then IRREGEX_STALE falls through to the authoritative cold PCRE2 selection. Session.run/files/count/absent route through cffi when available, falling open to `uds` or `subprocess` otherwise — a pure fail-open accelerator, never a distinct answer path. cffi stays optional; the wheel is pure-Python without it. Verified by the C-ABI smoke (build.zig) and FFI-vs-cold byte-parity tests (bindings/python/tests/test_ffi_parity.py)." }
 
 # Resident-session semantics for the `uds` transport (ADR-352 rung 2.5). A client
 # opens a persistent connection to one daemon generation and issues many queries;
@@ -63,7 +63,7 @@ ffi = { status = "operational-accelerator", detail = "in-process irregex_open/ir
 [session]
 socket_env = "GIST_SESSION_SOCK"                 # override the default per-repo socket path
 default_socket = ".local/gist-verify/gistd.sock"
-protocol_version = 1                             # length-prefixed frame protocol (src/runtime/session/protocol.zig)
+protocol_version = 2                             # length-prefixed frame protocol (src/runtime/session/protocol.zig); v2 grew the query flags byte (smart_case bit 5, word bit 3, quiet bit 6, max_count bit 7 all live — bit 7 also writes a u64 LE cap immediately after the flags byte; invert bit 4 reserved) and the daemon FAILS CLOSED on any unimplemented bit (BadFrame -> decline -> cold)
 # Monotonic generations carried in every READY/STATUS frame.
 generations = [
   "daemon",
@@ -73,11 +73,19 @@ generations = [
 # The request shapes the resident fast path answers directly. Everything else
 # (--json, context, --rank, replace, invert, multiline, explicit file lists,
 # stdin, a TTY stdout) is unsupported on the fast path and falls back to the
-# cold subprocess transport, byte-for-byte identically. `lines` is the bare
-# default `path:text` search (`-n` for `path:line:text`), pre-rendered daemon-
-# side through the cold Emitter and chunk-streamed; the CLI routes `files` and
-# `lines` warm, while `count` stays a wire-only corpus-wide total for embedders
-# (rg's `-c` is per-file, so the CLI answers it cold).
+# cold subprocess transport, byte-for-byte identically. The case family is
+# fully eligible: `-i`, `-s`, and `-S` smart-case (the raw smart_case bit
+# crosses the wire and the SESSION resolves it against the pattern via
+# request.zig::effectiveIgnoreCase — clients never implement hasUpper). `-w`
+# (word), `-q` (quiet — the existence early-halt) and `-m N` (max-count — the
+# per-file cap, incl rg's `-m0` = match nothing) are eligible too, the session
+# applying cold's exact rules. FFI additionally opens explicit paths as C root
+# arrays and carries explicit Unicode/ASCII mode into the shared compile seam.
+# `lines` is the bare default `path:text` search (`-n` for `path:line:text`),
+# pre-rendered daemon-side through the cold Emitter and chunk-streamed; the
+# CLI routes `files` and `lines` warm, while `count` stays a wire-only
+# corpus-wide total for embedders (rg's `-c` is per-file, so the CLI answers
+# it cold).
 eligible_modes = [
   "files",
   "count",
@@ -106,6 +114,7 @@ fixed = { type = "bool", flag = "-F", detail = "treat pattern as a literal strin
 ignore_case = { type = "bool", flag = "-i", detail = "Unicode case-insensitive by default; `unicode = false` selects ASCII folding" }
 smart_case = { type = "bool", flag = "-S", detail = "Unicode-case-insensitive unless the pattern has uppercase text" }
 word = { type = "bool", flag = "-w", detail = "match whole Unicode words by default; `unicode = false` selects ASCII boundaries" }
+quiet = { type = "bool", flag = "-q", detail = "print nothing; exit 0 at the first match, 1 if none (an existence early-halt)" }
 invert = { type = "bool", flag = "-v", detail = "select non-matching lines" }
 globs = { type = "list[str]", flag = "-g", detail = "include/exclude globs (a leading ! excludes)" }
 iglobs = { type = "list[str]", flag = "--iglob", detail = "case-insensitive include/exclude globs" }
@@ -114,7 +123,7 @@ not_types = { type = "list[str]", flag = "-T", detail = "exclude a registered fi
 before = { type = "int", flag = "-B", detail = "lines of leading context" }
 after = { type = "int", flag = "-A", detail = "lines of trailing context" }
 context = { type = "int", flag = "-C", detail = "lines of context on both sides" }
-max_count = { type = "int", flag = "-m", detail = "stop after N matches per file (0 = unlimited)" }
+max_count = { type = "int", flag = "-m", detail = "stop after N matching lines per file; rg's `-m0` matches nothing (exit 1). Python `None` = unset; the Rust builder's `0` = unlimited" }
 max_depth = { type = "int", flag = "--max-depth", detail = "cap directory descent depth (0 = unlimited)" }
 hidden = { type = "bool", flag = "--hidden", detail = "search hidden files/dirs" }
 no_ignore = { type = "bool", flag = "--no-ignore", detail = "disable .gitignore/.ignore/.rgignore filtering" }
@@ -141,10 +150,11 @@ error = { code = 2, detail = "unsupported pattern/flag, or an I/O/walk error —
 # ── irregex: the irregular-expression surface (native shapes, no rg parity) ──
 # The set-shaped tier over the engine (src/search/): pattern SETS with exact
 # per-pattern attribution (match), compression-kinship sketches (relate — LZ78
-# dictionary bottom-k MinHash, LZJD distance), and a closed filter/group/sort/
-# limit plan executed engine-side (weave). Surfaced as three CLI verbs; like
-# `--rank` these are gist vocabulary with no rg equivalent, so they carry no
-# parity obligation — their contract is the semantics pinned here.
+# dictionary bottom-k MinHash, LZJD distance — plus the winnowed structure
+# silhouette), and a closed filter/group/sort/limit plan executed engine-side
+# (weave). Surfaced as CLI verbs; like `--rank` these are gist vocabulary with
+# no rg equivalent, so they carry no parity obligation — their contract is the
+# semantics pinned here.
 #
 # Corpus policy: the verbs load the INDEX corpus (every non-binary file under
 # the roots minus VCS/build subtrees), not the rg-parity gitignore walk. They
@@ -152,24 +162,27 @@ error = { code = 2, detail = "unsupported pattern/flag, or an I/O/walk error —
 # `--json`; diagnostics stay on stderr.
 [irregex]
 sketch = { k = 128, min_phrase = 3, algorithm = "LZ78 phrase dictionary -> bottom-k (KMV) of 64-bit phrase hashes; distance = 1 - KMV-estimated Jaccard (LZJD)", detail = "deterministic: same bytes => same sketch on every platform" }
+silhouette = { k = 256, gram = 5, window = 4, algorithm = "normalize (identifiers->I, numbers->N, strings->S, comments dropped, pan-language keywords kept) -> hash every gram-token shingle -> winnow (min of every window) -> bottom-k (KMV); distance = 1 - KMV-estimated Jaccard", detail = "the STRUCTURE channel: a renamed Type-2 twin normalizes to the identical token stream, so its silhouette distance is exactly 0 while its byte distance stays far; deterministic, language-agnostic (a squint, not a parse)" }
 attribution = { detail = "a PatternSet answer is bit-identical to N independent single-pattern runs; the fused (?:a)|(?:b) gate is an accelerator that may only skip work, never change an answer (tests hold it to the single-pattern oracle)" }
 
 [irregex.verbs]
-similar = { argv = "relate similar <path> [--top N] [--json] [--no-index] [ROOT...]", detail = "nearest files to <path> by compression kinship, ascending distance; the target itself is excluded; answers from the kinship atlas when one is fresh-foldable, live otherwise — identical answers (--no-index forces live)" }
+similar = { argv = "relate similar <path> [--lens bytes|structure|fused] [--top N] [--json] [--no-index] [ROOT...]", detail = "nearest files to <path> by compression kinship, ascending distance; --lens picks the channel — bytes (LZJD, default), structure (silhouette; renamed twins surface), or fused (min of both); the target itself is excluded; answers from the kinship atlas when one is fresh-foldable, live otherwise — identical answers (--no-index forces live)" }
 dups = { argv = "relate dups [--max-distance T] [--top N] [--json] [--no-index] [ROOT...]", detail = "near-duplicate pairs across the corpus, closest first; candidates via shared bottom-16 seed hashes, every emitted pair exactly verified against both sketches; atlas-accelerated like similar" }
 clusters = { argv = "relate clusters [--max-distance T] [--min-size N] [--top N] [--json] [--no-index] [ROOT...]", detail = "fork families — connected components of the verified dup graph, size-desc then exemplar-asc, members path-asc; exactly the transitive closure of dups at the same threshold" }
+echoes = { argv = "relate echoes [--min-echo E] [--top N] [--json] [--no-index] [ROOT...]", detail = "DRY candidates dups cannot see: pairs with echo = byte_distance - structure_distance >= E (default 0.15), widest gap first — same skeleton under different vocabulary (Type-2 clones); silhouette seed buckets nominate, both channels verify exactly; deliberately rank-shaped: the echo is self-calibrated per pair, no absolute dup threshold exists across corpora" }
 patterns = { argv = "relate patterns -e P [-e P...] [-f FILE] [-F] [-i] [--by pattern|file] [--under GLOB] [--top N] [--json] [ROOT...]", detail = "one walk, N patterns, exact per-pattern attribution as path:line rows; --by groups into counts, --under/--top shape engine-side (loom); rows are total-ordered (path, line, pattern) so output is deterministic" }
-pack = { argv = "relate pack <text> [--top N] [--json] [ROOT...]", detail = "the SET of files that jointly describes <text> cheapest — greedy submodular max-coverage over corpus-priced fingerprints (lazy-greedy, (1-1/e)-optimal); each pick's marginal_bits is exactly the priced bits it adds beyond earlier picks; foreign fingerprints (df=0) are reported, never silently absorbed" }
-search = { argv = "relate search <text> [--top N] [--json] [ROOT...]", detail = "which files would describe <text> most cheaply — two-stage compression retrieval: the corpus-priced fingerprint lexicon nominates, the suffix-automaton Ziv-Merhav cross-parse decides; score = coding gain in [0,1], higher = closer" }
+pack = { argv = "relate pack <text> [--top N] [--json] [ROOT...]", detail = "the SET of files that jointly describes <text> cheapest — greedy max-coverage over corpus-priced query chunks nominated by Gist's persisted trigram codebook; each pick's marginal_bits is exactly the priced bits it adds beyond earlier picks; foreign chunks are reported, never silently absorbed" }
+search = { argv = "relate search <text> [--top N] [--json] [ROOT...]", detail = "which files would describe <text> most cheaply — Gist's mmap-backed trigram codebook nominates with corpus-priced query evidence, then a suffix-automaton Ziv-Merhav cross-parse over bounded query-bearing windows decides; score = 1 - cost/cold, higher = closer" }
 quote = { argv = "relate quote <text> [--json]", detail = "rewrite <text> as maximal verbatim quotations from the WHOLE corpus, priced in bits (cross-parse on the persisted codex shelf, O(|text|)); each phrase attributed to one exemplar file; corpus-conditional bits/byte is the novelty meter" }
 
 # relate owns its warm tier the way gist owns the trigram index (a full
-# engine, not a shim): the kinship atlas persists one LZJD sketch per corpus
-# file; queries fold in every file changed since the build anchor (same T3
-# stat walk) and gate emitted rows against deletion. An accelerator, never an
+# engine, not a shim): the kinship atlas persists one LZJD sketch + one
+# structure silhouette per corpus file; queries fold in every file changed
+# since the build anchor (same T3 stat walk, both channels refreshed
+# together) and gate emitted rows against deletion. An accelerator, never an
 # authority — a missing/corrupt atlas answers live with identical bytes.
 [irregex.lifecycle]
-atlas = { file = ".local/gist-verify/kinship.atlas", detail = "magic ATLS v1: anchor + NUL-separated path catalog + fixed-width sketch rows + FNV-1a checksum; fails closed on any framing/checksum violation" }
+atlas = { file = ".local/gist-verify/kinship.atlas", detail = "magic ATLS v3: anchor + NUL-separated path catalog + fixed-width sketch rows + fixed-width silhouette rows + FNV-1a checksum; broad kinship scopes use it, narrow explicit scopes sketch live when cheaper; fails closed on corruption" }
 index = { argv = "relate index [--shelf]", detail = "build + persist the atlas atomically (anchor captured BEFORE the corpus read); --shelf also rebuilds the codex shelf quote reads — the same artifact `gist codex build` writes" }
 status = { argv = "relate status [--json]", detail = "atlas + shelf readiness and staleness; exit 0 when the atlas is ready, 1 otherwise (verbs still answer, live)" }
 
