@@ -29,12 +29,34 @@ pub const Request = struct {
     smart_case: bool = false,
     /// `-w`/`--word-regexp` — see `search/match/query.zig::wordOk`.
     word: bool = false,
+    /// `-v`/`--invert-match` — select lines with no matching span. The FFI
+    /// record stream supports this; the rootless daemon classifier stays narrow.
+    invert: bool = false,
+    /// Effective context window. Python resolves `-C` into both sides unless
+    /// explicit `-A`/`-B` take precedence, matching the cold argv fold.
+    before: u64 = 0,
+    after: u64 = 0,
+    /// Unicode matching semantics. Resident-daemon requests stay at the rg
+    /// default (`true`); the in-process FFI may explicitly select ASCII.
+    unicode: bool = true,
+    /// `-q`/`--quiet` — print nothing, exit 0 on the first match, else 1. The
+    /// session answers this as an early-halting existence query.
+    quiet: bool = false,
+    /// `-m N`/`--max-count N` — cap matching lines per file at N (`null` = unset,
+    /// the unlimited default; `0` = rg's explicit "match nothing", see `matchNothing`).
+    max_count: ?u64 = null,
 
     /// Engine-effective caseless state. `-S` folds only when the pattern has no
     /// (Unicode) uppercase (`args.hasUpper`). Compile sites must use this, not
     /// raw `ignore_case`.
     pub fn effectiveIgnoreCase(self: Request) bool {
         return self.ignore_case or (self.smart_case and !args.hasUpper(self.pattern));
+    }
+
+    /// `-m0`: ripgrep short-circuits before emitting or counting a single hit —
+    /// no output, exit 1, in every mode. The session honors it before compiling.
+    pub fn matchNothing(self: Request) bool {
+        return self.max_count == 0;
     }
 };
 
@@ -57,6 +79,8 @@ pub fn classify(argv: []const []const u8) ClassifyError!Request {
     var smart_case = false;
     var word = false;
     var line_num = false;
+    var quiet = false;
+    var max_count: ?u64 = null;
     var end_of_flags = false;
 
     var i: usize = 0;
@@ -82,6 +106,22 @@ pub fn classify(argv: []const []const u8) ClassifyError!Request {
             ignore_case, smart_case = .{ false, true };
         } else if (!end_of_flags and (std.mem.eql(u8, arg, "-w") or std.mem.eql(u8, arg, "--word-regexp"))) {
             word = true;
+        } else if (!end_of_flags and (std.mem.eql(u8, arg, "-q") or std.mem.eql(u8, arg, "--quiet"))) {
+            quiet = true;
+        } else if (!end_of_flags and (std.mem.eql(u8, arg, "-m") or std.mem.eql(u8, arg, "--max-count"))) {
+            // Value in the next token. A missing or non-decimal value is not the
+            // fast path's to reinterpret — decline so cold parses (and diagnoses) it.
+            i += 1;
+            if (i >= argv.len) return ClassifyError.Unsupported;
+            max_count = std.fmt.parseInt(u64, argv[i], 10) catch return ClassifyError.Unsupported;
+        } else if (!end_of_flags and std.mem.startsWith(u8, arg, "-m=")) {
+            max_count = std.fmt.parseInt(u64, arg["-m=".len..], 10) catch return ClassifyError.Unsupported;
+        } else if (!end_of_flags and std.mem.startsWith(u8, arg, "--max-count=")) {
+            max_count = std.fmt.parseInt(u64, arg["--max-count=".len..], 10) catch return ClassifyError.Unsupported;
+        } else if (!end_of_flags and arg.len > 2 and std.mem.startsWith(u8, arg, "-m")) {
+            // rg's glued short form `-mN` (e.g. `-m1`). A non-decimal tail is
+            // cold's to diagnose, so decline rather than reinterpret.
+            max_count = std.fmt.parseInt(u64, arg[2..], 10) catch return ClassifyError.Unsupported;
         } else if (!end_of_flags and (std.mem.eql(u8, arg, "-n") or std.mem.eql(u8, arg, "--line-number"))) {
             line_num = true;
         } else if (!end_of_flags and (std.mem.eql(u8, arg, "-N") or std.mem.eql(u8, arg, "--no-line-number"))) {
@@ -114,5 +154,5 @@ pub fn classify(argv: []const []const u8) ClassifyError!Request {
     // (warm whole-doc gates would match ACROSS lines where cold cannot; a NUL
     // interacts with binary detection) — the cold engine owns those bytes.
     if (std.mem.indexOfAny(u8, p, "\n\x00") != null) return ClassifyError.Unsupported;
-    return .{ .pattern = p, .mode = m, .fixed = fixed, .ignore_case = ignore_case, .line_num = line_num, .smart_case = smart_case, .word = word };
+    return .{ .pattern = p, .mode = m, .fixed = fixed, .ignore_case = ignore_case, .line_num = line_num, .smart_case = smart_case, .word = word, .quiet = quiet, .max_count = max_count };
 }

@@ -144,7 +144,10 @@ pub const session = struct {
 // The warm engine above, exposed to non-Zig hosts as an `open`/`search`/`close`
 // callback-streaming C ABI — no subprocess, socket, stdout, or exit. Backs the
 // `cffi` Python transport; the `export fn`s below forward into it.
-pub const ffi = @import("runtime/ffi/session.zig");
+pub const ffi = struct {
+    pub const contract = @import("runtime/ffi/contract.zig");
+    pub const session = @import("runtime/ffi/session.zig");
+};
 
 /// CLI surfaces built on the engine above. Not part of the C ABI — the `gist`
 /// executable (`cli/gist/main.zig`) and the bench harness dispatch through
@@ -195,12 +198,10 @@ pub const commands = struct {
 
 pub const version_string: [:0]const u8 = "0.1.0"; // x-release-please-version
 
-/// Bump on any BREAK to the C ABI. Additive symbols (e.g. `irregex_version`) do
-/// not bump it — a consumer compiled against an older header keeps working.
-/// v2: the rung-3 match callback (`irregex_match_fn`) gained an `i32` abort return
-/// (0 continue / non-zero stop), a signature change, so the ABI stepped 1 → 2.
+/// The unified open/search/close contract starts at ABI 1. Bump only for a
+/// breaking layout or signature change; additive symbols preserve the version.
 pub fn abi() u32 {
-    return 2;
+    return 1;
 }
 
 export fn irregex_abi_version() u32 {
@@ -227,13 +228,12 @@ export fn irregex_trigram_count(text: [*]const u8, len: usize, out: [*]u32) usiz
 // Thin C shims over `ffi/session.zig`; the `Status` enum lowers to its `i32`
 // tag. `irregex_session` is opaque to C (`ffi.Session` by pointer). These are the
 // first ABI symbols that open/query a corpus; their match callback carries an
-// `i32` abort return (0 continue / non-zero stop), the signature refinement
-// that took `irregex_abi_version` to 2.
+// `i32` abort return (0 continue / non-zero stop).
 
 /// Open a warm session over `roots[0..nroots]` (NUL-terminated paths); writes
 /// the handle to `*out`. Returns 0 on success, negative on failure.
-export fn irregex_open(roots: [*]const [*:0]const u8, nroots: usize, out: **ffi.Session) i32 {
-    return @intFromEnum(ffi.open(roots, nroots, out));
+export fn irregex_open(roots: [*]const [*:0]const u8, nroots: usize, out: **ffi.session.Session) i32 {
+    return @intFromEnum(ffi.session.open(roots, nroots, out));
 }
 
 /// Stream each matching line of `pattern[0..pattern_len]` to `on_match`.
@@ -241,13 +241,13 @@ export fn irregex_open(roots: [*]const [*:0]const u8, nroots: usize, out: **ffi.
 /// should answer cold). `on_match` returns 0 to continue or non-zero to stop the
 /// stream early (a bounded / first-match query still returns 1). `flags`: bit0
 /// `-F` fixed, bit1 `-i` ignore-case.
-export fn irregex_search(s: *ffi.Session, pattern: [*]const u8, pattern_len: usize, flags: u32, on_match: ffi.MatchFn, ctx: ?*anyopaque) i32 {
-    return @intFromEnum(ffi.search(s, pattern, pattern_len, flags, on_match, ctx));
+export fn irregex_search(s: *ffi.session.Session, pattern: [*]const u8, pattern_len: usize, options: ?*const ffi.contract.SearchOptions, on_match: ffi.contract.MatchFn, ctx: ?*anyopaque) i32 {
+    return @intFromEnum(ffi.session.search(s, pattern, pattern_len, options, on_match, ctx));
 }
 
 /// Free a session opened by `irregex_open`.
-export fn irregex_close(s: *ffi.Session) void {
-    ffi.close(s);
+export fn irregex_close(s: *ffi.session.Session) void {
+    ffi.session.close(s);
 }
 
 test {

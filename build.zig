@@ -315,7 +315,7 @@ pub fn build(b: *std.Build) void {
     // return IRREGEX_OK without firing (never `die()`s). The needle lives ONLY in
     // the fixture (a separate dir from this C source), so it can never self-match.
     const ffi_fixture = b.addWriteFiles();
-    _ = ffi_fixture.add("fixture.txt", "gist_ffi_smoke_needle on line one\ngist_ffi_smoke_needle on line two\n");
+    _ = ffi_fixture.add("fixture.txt", "gist_ffi_smoke_needle on line one\ngist_ffi_smoke_needle on line two\nsmartcase_needle\nSMARTCASE_NEEDLE\n");
     const c_smoke_source = b.addWriteFiles().add("gist_c_abi_smoke.c",
         \\#include "irregex.h"
         \\#include <stddef.h>
@@ -324,6 +324,7 @@ pub fn build(b: *std.Build) void {
         \\static int g_hits;
         \\static uint64_t g_first_line;
         \\static size_t g_first_nsub, g_first_start, g_first_end;
+        \\static uint32_t g_first_kind;
         \\
         \\/* Records the FIRST hit's shape, then continues the stream. */
         \\static int32_t on_match(void *ctx, const irregex_match *m) {
@@ -331,6 +332,7 @@ pub fn build(b: *std.Build) void {
         \\    if (g_hits == 0) {
         \\        g_first_line = m->line_number;
         \\        g_first_nsub = m->nsubmatches;
+        \\        g_first_kind = m->kind;
         \\        if (m->nsubmatches > 0u) { g_first_start = m->submatches[0].start; g_first_end = m->submatches[0].end; }
         \\    }
         \\    g_hits++;
@@ -348,7 +350,7 @@ pub fn build(b: *std.Build) void {
         \\int main(void) {
         \\    const uint8_t text[] = {'a', 'b', 'c', 'a', 'b', 'c'};
         \\    uint32_t out[sizeof text] = {0};
-        \\    if (irregex_abi_version() != 2u) return 10;
+        \\    if (irregex_abi_version() != 1u) return 10;
         \\    if (irregex_trigram_count(text, 2u, out) != 0u) return 11;
         \\    const size_t count = irregex_trigram_count(text, sizeof text, out);
         \\    if (count != 3u) return 12;
@@ -364,21 +366,62 @@ pub fn build(b: *std.Build) void {
         \\    if (s == NULL) return 21;
         \\    const char needle[] = "gist_ffi_smoke_needle";
         \\    const size_t nlen = sizeof needle - 1u;
+        \\    irregex_search_options opts = {sizeof opts, IRREGEX_FIXED, 0u, 0u, 0u};
         \\
         \\    /* full stream: both lines match; first hit is line 1, whole-needle span. */
-        \\    if (irregex_search(s, (const uint8_t *)needle, nlen, IRREGEX_FIXED, on_match, NULL) != IRREGEX_MATCH) return 22;
+        \\    if (irregex_search(s, (const uint8_t *)needle, nlen, &opts, on_match, NULL) != IRREGEX_MATCH) return 22;
         \\    if (g_hits != 2 || g_first_line != 1u || g_first_nsub != 1u) return 23;
         \\    if (g_first_start != 0u || g_first_end != nlen) return 24;
         \\
         \\    /* early stop: the callback aborts after the first line -> one hit, MATCH. */
         \\    g_hits = 0;
-        \\    if (irregex_search(s, (const uint8_t *)needle, nlen, IRREGEX_FIXED, on_match_stop, NULL) != IRREGEX_MATCH) return 25;
+        \\    if (irregex_search(s, (const uint8_t *)needle, nlen, &opts, on_match_stop, NULL) != IRREGEX_MATCH) return 25;
         \\    if (g_hits != 1) return 26;
         \\
         \\    /* no match still returns OK and never fires. */
+        \\    /* options path: cap per file, quiet suppresses callbacks, -m0 matches nothing. */
+        \\    opts.flags = IRREGEX_FIXED | IRREGEX_MAX_COUNT;
+        \\    opts.max_count = 1u;
         \\    g_hits = 0;
-        \\    if (irregex_search(s, (const uint8_t *)"zzz_absent_needle_zzz", 21u, IRREGEX_FIXED, on_match, NULL) != IRREGEX_OK) return 27;
-        \\    if (g_hits != 0) return 28;
+        \\    if (irregex_search(s, (const uint8_t *)needle, nlen, &opts, on_match, NULL) != IRREGEX_MATCH) return 27;
+        \\    if (g_hits != 1) return 28;
+        \\    opts.flags = IRREGEX_FIXED | IRREGEX_QUIET;
+        \\    g_hits = 0;
+        \\    if (irregex_search(s, (const uint8_t *)needle, nlen, &opts, on_match, NULL) != IRREGEX_MATCH) return 29;
+        \\    if (g_hits != 0) return 30;
+        \\    opts.flags = IRREGEX_FIXED | IRREGEX_MAX_COUNT;
+        \\    opts.max_count = 0u;
+        \\    if (irregex_search(s, (const uint8_t *)needle, nlen, &opts, on_match, NULL) != IRREGEX_OK) return 31;
+        \\    const char smart_lower[] = "smartcase_needle";
+        \\    opts.flags = IRREGEX_FIXED | IRREGEX_SMART_CASE;
+        \\    g_hits = 0;
+        \\    if (irregex_search(s, (const uint8_t *)smart_lower, sizeof smart_lower - 1u, &opts, on_match, NULL) != IRREGEX_MATCH) return 32;
+        \\    if (g_hits != 2) return 33;
+        \\    const char smart_upper[] = "SMARTCASE_NEEDLE";
+        \\    g_hits = 0;
+        \\    if (irregex_search(s, (const uint8_t *)smart_upper, sizeof smart_upper - 1u, &opts, on_match, NULL) != IRREGEX_MATCH) return 34;
+        \\    if (g_hits != 1) return 35;
+        \\    opts.flags = IRREGEX_FIXED | IRREGEX_NO_UNICODE;
+        \\    g_hits = 0;
+        \\    if (irregex_search(s, (const uint8_t *)needle, nlen, &opts, on_match, NULL) != IRREGEX_MATCH) return 36;
+        \\    if (g_hits != 2) return 37;
+        \\    opts.flags = IRREGEX_FIXED | IRREGEX_INVERT;
+        \\    g_hits = 0;
+        \\    if (irregex_search(s, (const uint8_t *)needle, nlen, &opts, on_match, NULL) != IRREGEX_MATCH) return 41;
+        \\    if (g_hits != 2 || g_first_line != 3u || g_first_nsub != 0u) return 42;
+        \\    opts.flags = IRREGEX_FIXED;
+        \\    opts.before_context = 1u;
+        \\    opts.after_context = 1u;
+        \\    g_hits = 0;
+        \\    if (irregex_search(s, (const uint8_t *)smart_lower, sizeof smart_lower - 1u, &opts, on_match, NULL) != IRREGEX_MATCH) return 43;
+        \\    if (g_hits != 3 || g_first_line != 2u || g_first_kind != IRREGEX_KIND_CONTEXT) return 44;
+        \\    opts.struct_size = 0u;
+        \\    if (irregex_search(s, (const uint8_t *)needle, nlen, &opts, on_match, NULL) != IRREGEX_INVALID) return 38;
+        \\
+        \\    g_hits = 0;
+        \\    opts = (irregex_search_options){sizeof opts, IRREGEX_FIXED, 0u, 0u, 0u};
+        \\    if (irregex_search(s, (const uint8_t *)"zzz_absent_needle_zzz", 21u, &opts, on_match, NULL) != IRREGEX_OK) return 39;
+        \\    if (g_hits != 0) return 40;
         \\    irregex_close(s);
         \\    return 0;
         \\}
