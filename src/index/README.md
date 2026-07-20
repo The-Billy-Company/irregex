@@ -1,10 +1,10 @@
 ---
 doc_radar:
   counts:
-    - description: "index keeps five packages: trigrams · postings · atlas · codex · crest"
+    - description: "index keeps seven packages: trigrams · postings · atlas · codex · crest · frame · frag"
       glob: pkg/kernels/irregex/src/index/*
       unit: dirs
-      equals: 5
+      equals: 7
   sentinels:
     - description: "the elision contract every index package is built on"
       file: pkg/kernels/irregex/src/runtime/cold/engine/README.md
@@ -26,6 +26,8 @@ artifact always degrades to slower-but-identical answers.
 | [`crest/`](crest) | Per-doc forced-class-run vectors (`crest.bin`) for literal-free class runs |
 | [`codex/`](codex) | FM-index self-index: `count` / `find` / `restore` at entropy space |
 | [`atlas/`](atlas) | Persisted LZJD sketches for warm `relate similar` / `dups` / `clusters` |
+| [`frag/`](frag) | Persisted per-function silhouettes (`concepts.frag`) for warm `relate concepts` |
+| [`frame/`](frame) | Shared wire discipline: LE ints, fail-closed cursor, NUL catalogs, `onDisk` gate |
 
 ## The one law
 

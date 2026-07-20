@@ -20,6 +20,7 @@ const corpus_mod = @import("../../../corpus/tree/corpus.zig");
 const grepfile = @import("../read/grepfile.zig");
 const args = @import("../argv/args.zig");
 const output = @import("output.zig");
+const jsonstr = @import("jsonstr.zig");
 const ml = @import("multiline.zig");
 const Opts = args.Opts;
 const die = args.die;
@@ -414,27 +415,6 @@ fn add(a: std.mem.Allocator, out: *std.ArrayList(u8), s: []const u8) void {
     out.appendSlice(a, s) catch oom();
 }
 
-/// Write a JSON string literal (including the surrounding quotes) with ripgrep's
-/// (serde_json's) escaping: `"` `\` and C0 controls escaped, `\b`/`\t`/`\n`/`\f`/
-/// `\r` short forms, other controls as `\u00XX`; valid multi-byte UTF-8 passes
-/// through raw. Callers guarantee `s` is valid UTF-8 (`jsonData` gates).
-fn jsonStr(a: std.mem.Allocator, out: *std.ArrayList(u8), s: []const u8) void {
-    out.append(a, '"') catch oom();
-    for (s) |c| switch (c) {
-        '"' => add(a, out, "\\\""),
-        '\\' => add(a, out, "\\\\"),
-        0x08 => add(a, out, "\\b"),
-        '\t' => add(a, out, "\\t"),
-        '\n' => add(a, out, "\\n"),
-        0x0C => add(a, out, "\\f"),
-        '\r' => add(a, out, "\\r"),
-        else => if (c < 0x20) {
-            out.print(a, "\\u{x:0>4}", .{c}) catch oom();
-        } else out.append(a, c) catch oom(),
-    };
-    out.append(a, '"') catch oom();
-}
-
 /// Write one rg JSON data object: `{"text":<escaped>}` when the bytes are valid
 /// UTF-8, else `{"bytes":"<base64>"}` — ripgrep's `Data::from_bytes` (jsont.rs).
 /// Lines, submatch text, replacements, and paths all take this shape, so a
@@ -442,7 +422,7 @@ fn jsonStr(a: std.mem.Allocator, out: *std.ArrayList(u8), s: []const u8) void {
 fn jsonData(a: std.mem.Allocator, out: *std.ArrayList(u8), s: []const u8) void {
     if (std.unicode.utf8ValidateSlice(s)) {
         add(a, out, "{\"text\":");
-        jsonStr(a, out, s);
+        jsonstr.write(out, a, s);
         add(a, out, "}");
         return;
     }

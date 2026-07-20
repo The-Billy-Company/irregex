@@ -5,7 +5,9 @@
 //! (`putInt`) read back through a fail-closed byte cursor (`Cursor`),
 //! length-prefixed u64-slice payloads (`putWords`/`Cursor.words`), and the
 //! NUL-joined string tables every artifact uses for its path/roots catalogs
-//! (`nulLen`/`joinNul` to write; `splitNulExact`/`parsePathTable` to read).
+//! (`nulLen`/`joinNul` to write; `splitNulExact`/`parsePathTable`/
+//! `ownedNulTable` to read), the shared `onDisk` deletion gate every folded
+//! view checks at emit, and the shared `loadQuiet` fail-open artifact loader.
 //! Consumers: the codex + shelf blobs (`../codex/`), the kinship atlas
 //! (`../atlas/`), and the trigram pair loader (`../trigrams/persist.zig`).
 //! Framing only — magic bytes, versions, and checksums stay with each format,
@@ -66,6 +68,56 @@ pub fn joinNul(gpa: std.mem.Allocator, out: *std.ArrayList(u8), parts: []const [
         try out.appendSlice(gpa, p);
         try out.append(gpa, 0);
     }
+}
+
+/// Owned NUL-joined table + borrowing slices — the uniform ownership shape a
+/// parsed artifact frees for its path/roots catalog: one heap blob (`nulLen`
+/// bytes) plus a slice array that aliases into it. Free `.slices` then `.blob`.
+pub fn ownedNulTable(gpa: std.mem.Allocator, entries: []const []const u8) !struct { blob: []u8, slices: []const []const u8 } {
+    const blob = try gpa.alloc(u8, nulLen(entries));
+    errdefer gpa.free(blob);
+    const slices = try gpa.alloc([]const u8, entries.len);
+    errdefer gpa.free(slices);
+    var off: usize = 0;
+    for (entries, slices) |e, *s| {
+        @memcpy(blob[off .. off + e.len], e);
+        blob[off + e.len] = 0;
+        s.* = blob[off .. off + e.len];
+        off += e.len + 1;
+    }
+    return .{ .blob = blob, .slices = slices };
+}
+
+/// Does `path` still exist as a file? The emit-time deletion gate every
+/// folded-artifact consumer shares (O(results), not O(corpus)).
+pub fn onDisk(io: std.Io, path: []const u8) bool {
+    const st = std.Io.Dir.cwd().statFile(io, path, .{}) catch return false;
+    return st.kind == .file;
+}
+
+/// Read + parse a persisted artifact, failing OPEN to null — the shared loader
+/// every warm index shares. A missing file is the normal cold case (silent, the
+/// caller answers live like `gist` without a trigram index); any other read
+/// error or a `parse` failure (torn bytes) gets one stderr line naming `what`
+/// and returns null so no answer is served from corruption.
+pub fn loadQuiet(
+    comptime T: type,
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    comptime what: []const u8,
+    parse: fn (std.mem.Allocator, []const u8) anyerror!T,
+) ?T {
+    const blob = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .unlimited) catch |e| {
+        if (e != error.FileNotFound)
+            std.debug.print("relate: " ++ what ++ " unreadable ({s}) — answering live; `relate index` rebuilds\n", .{@errorName(e)});
+        return null;
+    };
+    defer gpa.free(blob);
+    return parse(gpa, blob) catch {
+        std.debug.print("relate: corrupt " ++ what ++ " at {s} — answering live; `relate index` rebuilds\n", .{path});
+        return null;
+    };
 }
 
 /// Split a NUL-terminated path blob into exactly `n` borrowed slices.

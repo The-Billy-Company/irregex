@@ -62,7 +62,7 @@ package_import = "gist"
 [transports]
 subprocess = { status = "authoritative", detail = "certified `gist` binary + --json; results produced by the same combinePatterns->collectFiles->json.run path the CLI uses" }
 uds = { status = "operational-accelerator", detail = "`gist serve` daemon holds a warm ResidentSession behind a Unix socket; the front-door client dials it for eligible queries (`-l`/files-with-matches, and the bare default `lines` search whose `path:[line:]text` bytes the daemon pre-renders through the cold Emitter and chunk-streams) and falls open to `subprocess` on any ineligible argv, TTY stdout, readable stdin, absent daemon, decline, or wire hiccup — a pure fail-open accelerator, never a distinct answer path (src/cli/gist/daemon/{serve,client}, src/runtime/session/*)" }
-ffi = { status = "operational-accelerator", detail = "ABI 1 exposes one coherent open/search/close session. irregex_search accepts the complete size-checked options shape and streams typed records. src/runtime/ffi/contract.zig owns stable statuses, flags, options, and record layouts; relay.zig translates resident records; session.zig owns handle lifecycle and execution over the error-returning resident engine. A bad query returns IRREGEX_STALE, never a dead host. Options carry smart-case, explicit Unicode/ASCII mode, invert, before/after context, quiet, and per-file max-count; records explicitly distinguish match from context, while invert selections remain match records with zero submatches, byte-identical to cold JSON. Invert scans every live document because positive trigram candidates cannot soundly select negative lines. Zig's effectiveIgnoreCase and CompiledQuery unicode field remain the sole case/class authorities. Unlike rootless-only `uds` (files/count only), FFI streams full Match records and passes SearchRequest.paths as irregex_open roots; Python bounds and keys handles by (cwd, roots), so scopes cannot cross-contaminate. engine=auto optimistically tries linear FFI, then IRREGEX_STALE falls through to authoritative cold PCRE2. Session.run/files/count/absent route through cffi when available, falling open to `uds` or `subprocess` otherwise—a fail-open accelerator, never a distinct answer path. cffi stays optional. Verified by the C-ABI smoke and FFI-vs-cold parity tests." }
+ffi = { status = "operational-accelerator", detail = "ABI 1 exposes one coherent open/search/close session. irregex_search accepts the complete size-checked options shape and streams typed records. src/runtime/ffi/contract.zig owns stable statuses, flags, options, and record layouts; relay.zig translates resident records; session.zig owns handle lifecycle and execution over the error-returning resident engine. A bad query returns IRREGEX_STALE, never a dead host. Options carry smart-case, explicit Unicode/ASCII mode, invert, before/after context, quiet, and per-file max-count; records explicitly distinguish match from context, while invert selections remain match records with zero submatches, byte-identical to cold JSON. The record stream surfaces non-matching lines from every live document (a presentation requirement, not an index limitation — the `-v -l`/`-v -c` faces prove the match set is soundly trigram-prunable via the set-complement `lines(f) − matching(f)`). Zig's effectiveIgnoreCase and CompiledQuery unicode field remain the sole case/class authorities. Unlike rootless-only `uds` (files/count only), FFI streams full Match records and passes SearchRequest.paths as irregex_open roots; Python bounds and keys handles by (cwd, roots), so scopes cannot cross-contaminate. engine=auto optimistically tries linear FFI, then IRREGEX_STALE falls through to authoritative cold PCRE2. Session.run/files/count/absent route through cffi when available, falling open to `uds` or `subprocess` otherwise—a fail-open accelerator, never a distinct answer path. cffi stays optional. Verified by the C-ABI smoke and FFI-vs-cold parity tests." }
 
 # Resident-session semantics for the `uds` transport (ADR-352 rung 2.5). A client
 # opens a persistent connection to one daemon generation and issues many queries;
@@ -73,7 +73,7 @@ ffi = { status = "operational-accelerator", detail = "ABI 1 exposes one coherent
 [session]
 socket_env = "GIST_SESSION_SOCK"                 # override the default per-repo socket path
 default_socket = ".local/gist-verify/gistd.sock"
-protocol_version = 2                             # length-prefixed frame protocol (src/runtime/session/protocol.zig); v2 grew the query flags byte (smart_case bit 5, word bit 3, quiet bit 6, max_count bit 7 all live — bit 7 also writes a u64 LE cap immediately after the flags byte; invert bit 4 reserved) and the daemon FAILS CLOSED on any unimplemented bit (BadFrame -> decline -> cold)
+protocol_version = 2                             # length-prefixed frame protocol (src/runtime/session/protocol.zig); v2's query flags byte is now fully assigned (fixed 0, ignore_case 1, line_num 2, word 3, invert 4, smart_case 5, quiet 6, max_count 7 all live — bit 7 also writes a u64 LE cap immediately after the flags byte) and the daemon FAILS CLOSED on any unimplemented bit (BadFrame -> decline -> cold; with the byte full, fail-closed now rests on the version handshake + length/opcode gates)
 # Monotonic generations carried in every READY/STATUS frame.
 generations = [
   "daemon",
@@ -81,7 +81,7 @@ generations = [
   "index",
 ] # daemon boot id · per-connection id · published pair.gen
 # The request shapes the resident fast path answers directly. Everything else
-# (--json, context, --rank, replace, invert, multiline, explicit file lists,
+# (--json, context, --rank, replace, multiline, explicit file lists,
 # stdin, a TTY stdout) is unsupported on the fast path and falls back to the
 # cold subprocess transport, byte-for-byte identically. The case family is
 # fully eligible: `-i`, `-s`, and `-S` smart-case (the raw smart_case bit
@@ -89,7 +89,15 @@ generations = [
 # request.zig::effectiveIgnoreCase — clients never implement hasUpper). `-w`
 # (word), `-q` (quiet — the existence early-halt) and `-m N` (max-count — the
 # per-file cap, incl rg's `-m0` = match nothing) are eligible too, the session
-# applying cold's exact rules. FFI additionally opens explicit paths as C root
+# applying cold's exact rules. `-v` (invert) is eligible via the set-complement
+# `non_matching(f) = lines(f) − matching(f)`: the trigram prefilter stays sound
+# for the MATCH set (a ruled-out file matches nothing) and cached per-file line
+# counts supply the rest with no scan. EVERY warm face — the positive and invert
+# `-c`/`-l` folds, the bare/`-n` emit, and the FFI record stream — shards its
+# scan over cores above a byte floor through ONE shared primitive
+# (src/math/parallel.zig), byte-identical to the serial core below it, so a large
+# positive result no longer loses to cold's fused 16-core scan on core count.
+# FFI additionally opens explicit paths as C root
 # arrays and carries explicit Unicode/ASCII mode into the shared compile seam.
 # `lines` is the bare default `path:text` search (`-n` for `path:line:text`),
 # pre-rendered daemon-side through the cold Emitter and chunk-streamed; the
@@ -184,6 +192,7 @@ patterns = { argv = "relate patterns -e P [-e P...] [-f FILE] [-F] [-i] [--by pa
 pack = { argv = "relate pack <text> [--top N] [--json] [ROOT...]", detail = "the SET of files that jointly describes <text> cheapest — greedy max-coverage over corpus-priced query chunks nominated by Gist's persisted trigram codebook; each pick's marginal_bits is exactly the priced bits it adds beyond earlier picks; foreign chunks are reported, never silently absorbed" }
 search = { argv = "relate search <text> [--top N] [--json] [ROOT...]", detail = "which files would describe <text> most cheaply — Gist's mmap-backed trigram codebook nominates with corpus-priced query evidence, then a suffix-automaton Ziv-Merhav cross-parse over bounded query-bearing windows decides; score = 1 - cost/cold, higher = closer" }
 quote = { argv = "relate quote <text> [--json]", detail = "rewrite <text> as maximal verbatim quotations from the WHOLE corpus, priced in bits (cross-parse on the persisted codex shelf, O(|text|)); each phrase attributed to one exemplar file; corpus-conditional bits/byte is the novelty meter" }
+concepts = { argv = "relate concepts [TEXT] [--lens structure|bytes|echo] [--max-distance T] [--min-echo E] [--min-lines N] [--min-size N] [--top N] [--brief] [--json] [--no-index] [ROOT...]", detail = "the FUNCTION-level sibling of clusters/echoes: the comparison unit is the function fragment (regions.extractAll over authored brace-family + Python source), not the file. With no TEXT, package-wide FAMILIES of theoretically-similar functions (the repeated engine, the duplicated JSON dump, the copy-pasted validator), ranked by consolidation opportunity — conservative repeated_lines (shortest member span × redundant copies) then channel confidence, NEVER a fused score; channels (structure/bytes/echo) reported side by side. With TEXT, the nearest fragments to that concept by structure. --lens picks the channel: structure (silhouette, default, warm-only) nominates and groups; bytes (LZJD) finds near-verbatim clones; echo (byte−structure gap ≥ E) finds renamed Type-2 twins. Byte sketches are computed only for the fragments a query nominates (byteTargets), never a repo-wide byte pass. Noise floors: --min-lines (default 5) and a generated-path skip; a fragment needs gram+window−1 structural fingerprints to pair. Atlas-class warm tier via concepts.frag; --no-index (or a missing/corrupt artifact) forces the live extract + build with byte-identical answers" }
 
 # relate owns its warm tier the way gist owns the trigram index (a full
 # engine, not a shim): the kinship atlas persists one LZJD sketch + one
@@ -193,10 +202,41 @@ quote = { argv = "relate quote <text> [--json]", detail = "rewrite <text> as max
 # authority — a missing/corrupt atlas answers live with identical bytes.
 [irregex.lifecycle]
 atlas = { file = ".local/gist-verify/kinship.atlas", detail = "magic ATLS v3: anchor + NUL-separated path catalog + fixed-width sketch rows + fixed-width silhouette rows + FNV-1a checksum; broad kinship scopes use it, narrow explicit scopes sketch live when cheaper; fails closed on corruption" }
-index = { argv = "relate index [--shelf]", detail = "build + persist the atlas atomically (anchor captured BEFORE the corpus read); --shelf also rebuilds the codex shelf quote reads — the same artifact `gist codex build` writes" }
-status = { argv = "relate status [--json]", detail = "atlas + shelf readiness and staleness; exit 0 when the atlas is ready, 1 otherwise (verbs still answer, live)" }
+frag = { file = ".local/gist-verify/concepts.frag", detail = "magic FRAG: anchor + roots blob + NUL-separated path catalog + per-fragment records (path index, byte/line span, variable-length structure silhouette) + FNV-1a checksum. The warm tier for `relate concepts`: one function-fragment table folded for freshness the same way the atlas is (files changed since the anchor re-extracted, deletions gated), so a warm answer is byte-identical to --no-index. Only structural silhouettes persist; byte sketches for the bytes/echo lenses are computed live for nominated fragments. Fails closed on corruption" }
+index = { argv = "relate index [--shelf]", detail = "build + persist the atlas AND the concepts.frag fragment table atomically (anchor captured BEFORE the corpus read); --shelf also rebuilds the codex shelf quote reads — the same artifact `gist codex build` writes" }
+status = { argv = "relate status [--json]", detail = "atlas + frag + shelf readiness and staleness; exit 0 when the atlas is ready, 1 otherwise (verbs still answer, live)" }
 
-# The agent / code-place tool boundary (ADR-352, plan step 5). Billy operating a
+# ── compose: the third face — exact ∩ compression over one candidate set ────
+# The `irregex` binary (ADR-367). Its verbs GENUINELY compose the two engines:
+# the exact PatternSet (match) narrows the corpus to a typed CandidateSet, then
+# the compression kernels (relate) run ONLY inside that subset. It does not
+# forward gist/relate verbs — gist and relate stay the direct faces; this face
+# owns workflows. Kernels are pure and I/O-free under src/search/compose/;
+# cli/irregex/ orchestrates corpus/shelf load + NDJSON/human rendering.
+#
+# The CandidateSet is the shared exact seam. Family may then lift its hits into
+# enclosing functions or bounded match windows before compression, preventing
+# unrelated bytes in a matching file from dominating implementation kinship.
+#
+# Corpus policy: `context`/`family` load the INDEX corpus under the roots (like
+# relate) and REQUIRE an explicit scope — a ROOT... arg or --all — so a composed
+# query cannot silently sweep vendor/.etc trees. `provenance` reads the
+# corpus-wide codex shelf (`relate index --shelf` / `gist codex build`) and
+# needs no scope. Two scores stay separate (exact mask vs compression bits);
+# there is deliberately NO fused relevance number. Results stream NDJSON under
+# `--json`; diagnostics stay on stderr; exit codes match rg's (0/1/2).
+[compose]
+candidate_set = { detail = "the subset of loaded docs a PatternSet selects under match=any|all, each carrying a per-pattern match mask (up to 64 patterns); the exact-before-statistical seam context/family narrow through so compression never sees a non-matching file" }
+comparison_unit = { detail = "family defaults to exact-hit enclosing functions; --unit match compares bounded match windows and --unit file preserves whole-file kinship. Region candidate sets verify every pair exactly rather than relying on seed nomination." }
+distinct = { detail = "exact-hit regions outside every admitted family remain first-class rows carrying their nearest structural neighbor plus separate structure_distance and byte_distance; --only selects family, distinct, or all rows without changing analysis" }
+scoring = { detail = "exact and compression signals stay in SEPARATE fields (the match mask + the compression score); no fused relevance. Family display order uses a transparent consolidation heuristic only: repeated_lines = shortest member span × redundant copies; opportunity score = repeated_lines × channel confidence (1-distance for byte/structure, echo for echo)." }
+scope = { detail = "context/family require an explicit ROOT... or --all (fail-closed against silent vendor/.etc sweeps); provenance reads the whole codex shelf" }
+
+[compose.verbs]
+context = { argv = "irregex context TEXT -e P [-e P...] [--match any|all] [-F] [-i] [--top N] [--json] ROOT...", detail = "exact PatternSet filter first (match any = ≥1 pattern hit, all = every pattern hit), then greedy submodular coverage packing over a sub-lexicon built from ONLY the candidate docs — the minimal non-redundant reading set among files that actually match, each pick carrying the patterns that admitted it (marginal_bits = priced bits it adds beyond earlier picks)" }
+family = { argv = "irregex family PATTERN [--unit function|match|file] [--max-structure-distance T | --max-distance T | --echo-min E] [-C N] [--min-size N] [--only family|distinct|all] [--brief] [-F] [-i] [--top N] [--json] ROOT...", detail = "exact hits become enclosing functions by default (or bounded match windows / whole files), then verified structure, byte-duplicate, or echo families are built only among those units. Function/match regions use exhaustive exact pair verification. Families rank by conservative repeated-line opportunity; --brief returns one scope-relative line per family, while --only retains either or both answer classes." }
+provenance = { argv = "irregex provenance TEXT [--min-phrase N] [-C N] [--json]", detail = "relate quotation attribution against the codex shelf, then current-byte gist verification + line context for every emitted phrase; a phrase is surfaced ONLY if its attributed exemplar file CURRENTLY contains it (default ≥12-byte phrase floor) — never points at a phrase the live tree cannot show; -C N adds context lines around the current occurrence" }
+
 # user's machine and a coding agent working a repository are the same actor: both
 # express "find these matches in this tree" as one SearchRequest. Billy's
 # `fs_search(place, query, glob, context_lines, semantic, at)` verb

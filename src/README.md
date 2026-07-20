@@ -5,14 +5,14 @@ doc_radar:
       glob: pkg/kernels/irregex/src/*
       unit: dirs
       equals: 6
-    - description: "search/ keeps its four kernels: match · rank · similarity · batch"
+    - description: "search/ keeps its five kernels: match · rank · similarity · batch · compose"
       glob: pkg/kernels/irregex/src/search/*
       unit: dirs
-      equals: 4
-    - description: "index/ keeps its five indexes: trigrams · postings · codex · atlas · crest"
+      equals: 5
+    - description: "index/ keeps its seven packages: trigrams · postings · codex · atlas · crest · frame · frag"
       glob: pkg/kernels/irregex/src/index/*
       unit: dirs
-      equals: 5
+      equals: 7
   sentinels:
     - description: "the linear engine's eager-DFA cap the prose quotes (past it, Pike verifies)"
       file: pkg/kernels/irregex/src/search/match/regex/linear/powerset.zig
@@ -27,23 +27,24 @@ doc_radar:
 
 # irregex/src
 
-This is the source map. The Zig tree holds two engines (`gist` · `relate`), 
-four indexes, and one shared floor. `root.zig` re-exports
+This is the source map. The Zig tree holds three faces (`gist` · `relate` ·
+`irregex`), four indexes, and one shared floor. `root.zig` re-exports
 every module through the flat C ABI in `../include/irregex.h`;
 `../bench/` holds the proof harness, never engine code.
 
-I organized the tree **by concern, not by product**. Both binaries are thin
-faces over the same kernels: `gist` finds exact patterns; `relate` finds
-compression kinship. Neither gets a private corpus walk, scope layer, or index.
+I organized the tree **by concern, not by product**. Every binary is a thin
+face over the same kernels: `gist` finds exact patterns; `relate` finds
+compression kinship; `irregex` composes both (exact narrows, compression
+reasons inside). None gets a private corpus walk, scope layer, or index.
 
 | Tier | What lives there | README |
 | ---- | ---------------- | ------ |
 | [`math/`](math) | Shared identity floor: `bits` + crest sieve calculus | [`math/README.md`](math/README.md) |
 | [`corpus/`](corpus) | Shared source substrate: `tree/` walk + `scope/` `-g`/`-t` | [`corpus/README.md`](corpus/README.md) |
 | [`index/`](index) | Candidate / self / kinship indexes (accelerator only) | [`index/README.md`](index/README.md) |
-| [`search/`](search) | Pure kernels: match · rank · similarity · batch | [`search/README.md`](search/README.md) |
+| [`search/`](search) | Pure kernels: match · rank · similarity · batch · compose | [`search/README.md`](search/README.md) |
 | [`runtime/`](runtime) | Execution hosts: cold · session · ffi | [`runtime/README.md`](runtime/README.md) |
-| [`cli/`](cli) | Thin product faces: `gist` · `relate` | [`cli/README.md`](cli/README.md) |
+| [`cli/`](cli) | Thin product faces: `gist` · `relate` · `irregex` | [`cli/README.md`](cli/README.md) |
 
 ## The anatomy of a query
 
@@ -144,6 +145,8 @@ engine-side. Design rules and measurements:
 | `index/codex/`    | the compressed self-index: SA-IS → BWT → RRR wavelet tree; `count`/`find`/`restore` at entropy space, O(m) flat in corpus size (the Shannon rung under both engines)                                          |
 | `index/atlas/`    | relate's persisted kinship index: one LZJD sketch per corpus file behind `relate index`/`status`, folded fresh at query time through the same T3 stat walk ([`index/atlas/README.md`](index/atlas/README.md)) |
 | `index/crest/`    | the crest sidecar (`crest.bin`): one forced-class-run vector per doc (16 B), generation-atomic with the trigram pair; prunes the literal-free class-repetition patterns trigrams concede (theory: [`../research/crest/PROOF.md`](../research/crest/PROOF.md))    |
+| `index/frame/`    | the shared wire discipline the persisted artifacts are framed with: little-endian ints behind a fail-closed cursor, length-prefixed u64 payloads, the NUL-joined path/roots catalogs, and the `onDisk` deletion gate every folded view checks                     |
+| `index/frag/`     | relate's persisted **fragment** atlas (`concepts.frag`): one structural silhouette per authored function behind `relate concepts`, folded fresh at query time through the same T3 stat walk ([`index/frag/README.md`](index/frag/README.md))                       |
 
 **Trigrams** (`trigrams/trigram.zig`). A file containing a literal must
 contain every trigram of that literal, so the AND of per-trigram posting
