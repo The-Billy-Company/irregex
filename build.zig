@@ -350,7 +350,7 @@ pub fn build(b: *std.Build) void {
         \\int main(void) {
         \\    const uint8_t text[] = {'a', 'b', 'c', 'a', 'b', 'c'};
         \\    uint32_t out[sizeof text] = {0};
-        \\    if (irregex_abi_version() != 1u) return 10;
+        \\    if (irregex_abi_version() != 2u) return 10;
         \\    if (irregex_trigram_count(text, 2u, out) != 0u) return 11;
         \\    const size_t count = irregex_trigram_count(text, sizeof text, out);
         \\    if (count != 3u) return 12;
@@ -440,6 +440,75 @@ pub fn build(b: *std.Build) void {
     });
     c_smoke_mod.addObject(b.addObject(.{
         .name = "gist-c-abi-smoke-kernel",
+        \\
+        \\    /* ── the PULL-cursor surface (additive; same warm engine) ── */
+        \\    irregex_engine *e = NULL;
+        \\    if (irregex_engine_open(roots, 1u, &e) != IRREGEX_OK || e == NULL) return 45;
+        \\    irregex_search_request req = {0};
+        \\    req.struct_size = sizeof req;
+        \\    req.flags = IRREGEX_FIXED;
+        \\    req.pattern = (const uint8_t *)needle;
+        \\    req.pattern_len = nlen;
+        \\
+        \\    /* pull every record: two lines match; first is line 1, whole-needle span. */
+        \\    irregex_cursor *cur = NULL;
+        \\    if (irregex_search_cursor(e, &req, &cur) != IRREGEX_OK || cur == NULL) return 46;
+        \\    if (irregex_cursor_matched(cur) != 1) return 47;
+        \\    irregex_match rec;
+        \\    int32_t st = irregex_cursor_next(cur, &rec);
+        \\    if (st != IRREGEX_MATCH || rec.line_number != 1u || rec.nsubmatches != 1u) return 48;
+        \\    if (rec.submatches[0].start != 0u || rec.submatches[0].end != nlen) return 49;
+        \\    int pulled = 1;
+        \\    while ((st = irregex_cursor_next(cur, &rec)) == IRREGEX_MATCH) pulled++;
+        \\    if (st != IRREGEX_OK || pulled != 2) return 50;
+        \\    irregex_cursor_close(cur);
+        \\
+        \\    /* next_batch: one call drains both records into a slice. */
+        \\    cur = NULL;
+        \\    if (irregex_search_cursor(e, &req, &cur) != IRREGEX_OK) return 51;
+        \\    irregex_match batch[4];
+        \\    size_t written = 0;
+        \\    if (irregex_cursor_next_batch(cur, batch, 4u, &written) != IRREGEX_MATCH || written != 2u) return 52;
+        \\    if (batch[0].line_number != 1u || batch[1].line_number != 2u) return 53;
+        \\    if (irregex_cursor_next_batch(cur, batch, 4u, &written) != IRREGEX_OK || written != 0u) return 54;
+        \\    irregex_cursor_close(cur);
+        \\
+        \\    /* max_results budget stops at a record boundary but still reports matched. */
+        \\    req.max_results = 1u;
+        \\    cur = NULL;
+        \\    if (irregex_search_cursor(e, &req, &cur) != IRREGEX_OK) return 55;
+        \\    if (irregex_cursor_matched(cur) != 1) return 56;
+        \\    pulled = 0;
+        \\    while (irregex_cursor_next(cur, &rec) == IRREGEX_MATCH) pulled++;
+        \\    if (pulled != 1) return 57;
+        \\    irregex_cursor_close(cur);
+        \\    req.max_results = 0u;
+        \\
+        \\    /* a pre-tripped cancel token yields a clean empty result, never a crash. */
+        \\    irregex_cancel *tok = NULL;
+        \\    if (irregex_cancel_new(&tok) != IRREGEX_OK || tok == NULL) return 58;
+        \\    irregex_cancel_request(tok);
+        \\    req.cancel = tok;
+        \\    cur = NULL;
+        \\    if (irregex_search_cursor(e, &req, &cur) != IRREGEX_OK) return 59;
+        \\    if (irregex_cursor_next(cur, &rec) != IRREGEX_OK) return 60;
+        \\    irregex_cursor_close(cur);
+        \\    irregex_cancel_free(tok);
+        \\    req.cancel = NULL;
+        \\
+        \\    /* an unsupported pattern declines with STALE (answer cold), never a cursor. */
+        \\    const char look[] = "needle(?=X)";
+        \\    req.flags = 0u;
+        \\    req.pattern = (const uint8_t *)look;
+        \\    req.pattern_len = sizeof look - 1u;
+        \\    cur = NULL;
+        \\    if (irregex_search_cursor(e, &req, &cur) != IRREGEX_STALE) return 61;
+        \\
+        \\    /* fail-closed: a bad struct_size is rejected; status_message is never NULL. */
+        \\    req.struct_size = 0u;
+        \\    if (irregex_search_cursor(e, &req, &cur) != IRREGEX_INVALID) return 62;
+        \\    if (irregex_status_message(IRREGEX_STALE) == NULL) return 63;
+        \\    irregex_engine_close(e);
         .root_module = k.root_module,
     }));
     // The kernel object carries the engine's PCRE2 extern references; the smoke

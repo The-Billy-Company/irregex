@@ -166,6 +166,11 @@ pub const commands = struct {
     /// `--no-index`/`--rank` candidate sources, and the ranked view
     /// (`engine/ranked.zig`). Backs the bare `gist <pattern>` shorthand,
     /// `gist rg`, and the rgsuite parity certificate.
+    /// The pull-cursor sibling of `session` (ADR-352): open an `Engine`, run a
+    /// `search` that materializes a `Cursor`, then `next`/`next_batch` it — with
+    /// thread-safe cancellation and per-operation budgets. Additive over the
+    /// legacy triad; backs the Go/cgo binding and any callback-averse host.
+    pub const cursor = @import("runtime/ffi/cursor.zig");
     pub const search = @import("runtime/cold/engine/serial.zig");
     /// The `index` verb — build + persist the trigram index the engine reads.
     pub const indexer = @import("cli/gist/lifecycle/index.zig");
@@ -198,10 +203,15 @@ pub const commands = struct {
 
 pub const version_string: [:0]const u8 = "0.1.0"; // x-release-please-version
 
-/// The unified open/search/close contract starts at ABI 1. Bump only for a
-/// breaking layout or signature change; additive symbols preserve the version.
+/// The C-ABI compatibility integer. Started at 1 (introspection + the
+/// allocation-free trigram primitive); the rung-3 warm session's match callback
+/// (`irregex_match_fn`) gaining an `i32` abort return was a breaking signature
+/// change that stepped it to 2 (ADR-352). Bump only for a breaking layout or
+/// signature change; additive symbols preserve the version. This is the single
+/// C-ABI axis — the semantic contract revision, result schema, index/atlas
+/// formats, and engine semver version independently (see `contract/search_api.toml`).
 pub fn abi() u32 {
-    return 1;
+    return 2;
 }
 
 export fn irregex_abi_version() u32 {
@@ -223,6 +233,13 @@ export fn irregex_trigram_count(text: [*]const u8, len: usize, out: [*]u32) usiz
     if (len < 3) return 0;
     return ngram.extractSortedUnique(text[0..len], out[0..len]);
 }
+
+/// The curated Zig-native hosted API (ADR-352): a small vocabulary of owned
+/// handles — `Engine`, `SearchQuery`, `Cursor` (pull `next`/`nextBatch`),
+/// `CancelToken`, `RunOptions` — over the same error-returning warm engine the
+/// resident daemon and the C-ABI shims ride. What a Zig embedder (and the C ABI
+/// + bindings above it) programs to, distinct from the internal tiers above.
+pub const api = @import("api.zig");
 
 // ── in-process warm search session (ADR-352 rung 3) ──
 // Thin C shims over `ffi/session.zig`; the `Status` enum lowers to its `i32`
@@ -278,11 +295,79 @@ test {
     _ = @import("search/similarity/lexicon_test.zig"); // mutual: retrieval proof (short-query recall, ΔAb sidedness, zero-bit boilerplate)
     _ = @import("index/atlas/atlas.zig"); // relate warm tier: persisted kinship atlas (save/parse/fold)
     _ = @import("index/atlas/atlas_test.zig"); // atlas round-trip, fail-closed parse, freshness-fold semantics
+// ── the pull-cursor surface (ADR-352) ──
+// Additive siblings of the callback triad: a host opens an `irregex_engine`,
+// runs `irregex_search_cursor` to materialize an `irregex_cursor`, then walks it
+// with `irregex_cursor_next`/`_next_batch` — inverting control for a caller that
+// can't yield its stack to a callback. Cancellation is an `irregex_cancel` handle
+// any thread may trip. All statuses are the same `Status` tags; nothing here can
+// `die()` the host, and none of it bumps `abi()` (purely additive symbols).
+
+/// Open a warm engine over `roots[0..nroots]`; writes the handle to `*out`.
+export fn irregex_engine_open(roots: ?[*]const [*:0]const u8, nroots: usize, out: ?**api.Engine) i32 {
+    return @intFromEnum(ffi.cursor.engineOpen(roots, nroots, out));
+}
+
+/// Free an engine opened by `irregex_engine_open`.
+export fn irregex_engine_close(eng: *api.Engine) void {
+    ffi.cursor.engineClose(eng);
+}
+
+/// Allocate a fresh (unset) cancellation token; writes it to `*out`.
+export fn irregex_cancel_new(out: ?**api.CancelToken) i32 {
+    return @intFromEnum(ffi.cursor.cancelNew(out));
+}
+
+/// Request cancellation of any in-flight search using this token (thread-safe).
+export fn irregex_cancel_request(token: *api.CancelToken) void {
+    ffi.cursor.cancelRequest(token);
+}
+
+/// Free a token from `irregex_cancel_new` (after searches using it complete).
+export fn irregex_cancel_free(token: *api.CancelToken) void {
+    ffi.cursor.cancelFree(token);
+}
+
+/// Run one search and materialize a pull cursor; writes it to `*out`. Returns 0
+/// on success, 1 unused here, negative on failure (−1 = stale → answer cold).
+export fn irregex_search_cursor(eng: *api.Engine, request: ?*const ffi.contract.SearchRequest, out: ?**ffi.cursor.Cursor) i32 {
+    return @intFromEnum(ffi.cursor.searchCursor(eng, request, out));
+}
+
+/// Fill `*out` with the next record. Returns 1 (record written), 0 (end of
+/// stream), or negative on error. The view borrows cursor/scratch memory.
+export fn irregex_cursor_next(cursor: *ffi.cursor.Cursor, out: ?*ffi.contract.Match) i32 {
+    return @intFromEnum(ffi.cursor.cursorNext(cursor, out));
+}
+
+/// Fill up to `cap` records into `out[0..cap]`; writes the count to `*written`.
+/// Returns 1 (≥1 written), 0 (end), or negative on error.
+export fn irregex_cursor_next_batch(cursor: *ffi.cursor.Cursor, out: ?[*]ffi.contract.Match, cap: usize, written: ?*usize) i32 {
+    return @intFromEnum(ffi.cursor.cursorNextBatch(cursor, out, cap, written));
+}
+
+/// Whether any file matched (cold's exit-code boolean): 1 matched, 0 none.
+export fn irregex_cursor_matched(cursor: *ffi.cursor.Cursor) i32 {
+    return ffi.cursor.cursorMatched(cursor);
+}
+
+/// Free a cursor from `irregex_search_cursor`.
+export fn irregex_cursor_close(cursor: *ffi.cursor.Cursor) void {
+    ffi.cursor.cursorClose(cursor);
+}
+
+/// A stable, static, NUL-terminated human message for a status code (for logs;
+/// the typed code stays the contract).
+export fn irregex_status_message(code: i32) [*:0]const u8 {
+    return ffi.cursor.statusMessage(code);
+}
+
     _ = @import("index/codex/codex_test.zig"); // codex: SA-IS/RRR/wavelet/index differential vs naive oracles
     _ = @import("search/batch/patterns_test.zig"); // match half: set ≡ N single-pattern oracles (gate off/on)
     _ = @import("search/batch/loom_test.zig"); // weave: closed op set — total, deterministic, hand-tallied
     _ = @import("runtime/session/request_test.zig"); // resident request eligibility classifier
     _ = @import("runtime/session/corpus.zig"); // faithful corpus ingest: BOM/UTF-16 decode, whole-body NUL, no cap
+    _ = @import("api_test.zig"); // hosted API facade: Engine/Cursor/CancelToken over a live warm tree
     _ = @import("runtime/session/render.zig"); // warm lines renderer: cold-Emitter byte parity
     _ = @import("runtime/session/resident_test.zig"); // resident session: parity vs cold, overlay, RYW, deletion
     _ = @import("runtime/session/protocol_test.zig"); // UDS frame codec round-trip + adversarial

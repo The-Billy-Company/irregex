@@ -14,11 +14,21 @@
 
 [meta]
 name = "gist-unified-search"
-# Tracks src/root.zig `abi()` (the C ABI compatibility integer). Additive C
-# symbols (irregex_version) do not bump it; a breaking C ABI change does. v2: the
-# rung-3 match callback (irregex_match_fn) gained an i32 abort return.
+# The version axes are deliberately DISTINCT — a change on one does not force a
+# bump on the others, and each is pinned against a different live artifact:
+#   • abi_version      → the C-ABI compatibility integer `src/root.zig abi()` /
+#                        `irregex_abi_version()` return (mirrored + gated by the
+#                        Python/Rust `ABI_VERSION` and the FFI loader). Additive
+#                        C symbols (irregex_version) do NOT bump it; a breaking
+#                        layout/signature change does. v2: the rung-3 match
+#                        callback (irregex_match_fn) gained an i32 abort return.
+#   • engine_version   → the engine semver (`src/root.zig version_string` /
+#                        build.zig.zon `.version`; `irregex_version()`).
+#   • protocol_version → the UDS resident wire protocol ([session] below).
+#   • the persisted-format revisions → the trigram index and the kinship atlas
+#                        (ATLS v3, see [irregex.lifecycle].atlas) carry their own
+#                        magic/version in their headers, not here.
 abi_version = 2
-# Tracks src/root.zig `version_string` / build.zig.zon `version`.
 engine_version = "0.1.0"
 package_dist = "billy-irregex"
 package_import = "gist"
