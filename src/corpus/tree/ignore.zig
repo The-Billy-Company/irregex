@@ -82,7 +82,13 @@ pub fn parseRuleLine(raw: []const u8, base: []const u8, strip: []const u8) ?Rule
     // escaped leading '#'/'!' → literal
     if (negated or (line.len > 1 and line[0] == '\\' and (line[1] == '#' or line[1] == '!'))) line = line[1..];
     const dir_only = line.len > 0 and line[line.len - 1] == '/';
-    if (dir_only) line = line[0 .. line.len - 1];
+    if (dir_only) {
+        line = line[0 .. line.len - 1];
+        // rg #2236: a trailing `/` that was itself escaped (`foo\/`) still marks
+        // the rule dir-only, but the escaping `\` must not survive into the glob —
+        // drop it so the rule matches directory `foo`, not `foo\`.
+        if (line.len > 0 and line[line.len - 1] == '\\') line = line[0 .. line.len - 1];
+    }
     const anchored = (line.len > 0 and line[0] == '/') or std.mem.indexOfScalar(u8, line, '/') != null;
     if (line.len > 0 and line[0] == '/') line = line[1..];
     if (line.len == 0) return null;
@@ -92,7 +98,13 @@ pub fn parseRuleLine(raw: []const u8, base: []const u8, strip: []const u8) ?Rule
     // drop the rule if it targets a sibling. A slash-less rule matches a
     // basename at any depth, so it already applies under CWD unchanged.
     if (strip.len != 0 and anchored) {
-        if (line.len > strip.len and std.mem.startsWith(u8, line, strip) and line[strip.len] == '/') {
+        if (std.mem.startsWith(u8, line, "**/")) {
+            // A leading `**/` is git's "in this directory or any subdirectory" —
+            // depth-independent, so an anchored ancestor rule with this prefix
+            // applies under the search subtree UNCHANGED. Never strip it to the
+            // CWD-relative prefix (there is none to strip) nor drop it as a
+            // sibling: `**/bar/*` at the repo root still governs `bar/*` from CWD.
+        } else if (line.len > strip.len and std.mem.startsWith(u8, line, strip) and line[strip.len] == '/') {
             line = line[strip.len + 1 ..];
         } else return null;
     }
@@ -329,7 +341,30 @@ pub const Ignore = struct {
             }
         }
         self.loadDir(".", "");
+        // rg's `add_parents` for a NAMED path arg: a positional root nested below
+        // CWD (`a/b`) is governed by the ignore files of every directory between
+        // CWD and it (`a/`), not just CWD's own — so `a/.ignore` prunes `a/b`'s
+        // descendants. CWD ("" tier) is already loaded above; the root leaf itself
+        // is loaded by the walker as it descends; here we fill the strict middle.
+        for (roots) |r| self.loadRootAncestors(r);
         return self;
+    }
+
+    /// Load the per-directory ignore files of every directory STRICTLY BETWEEN
+    /// CWD and an explicit positional root — root `a/b` ⇒ `a`; `a/b/c` ⇒ `a`,
+    /// `a/b`. Each is bucketed under its own path so `decideAt` scopes it to that
+    /// subtree (a slash-less `a/.ignore` rule matches basenames only under `a/`).
+    /// CWD and the leaf are loaded elsewhere (see `init`); an absolute or `.`
+    /// root contributes nothing here.
+    fn loadRootAncestors(self: *Ignore, root: []const u8) void {
+        if (self.o.no_ignore) return;
+        const r = stripDot(std.mem.trimEnd(u8, root, "/"));
+        var i: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, r, i, '/')) |slash| {
+            const dir = r[0..slash];
+            i = slash + 1;
+            if (dir.len != 0) self.loadDir(dir, dir);
+        }
     }
 
     /// Read every ancestor directory's ignore files, shallow→deep so a deeper
@@ -665,6 +700,56 @@ fn hasDotGit(io: std.Io, path: []const u8) bool {
 fn anyRootRepo(io: std.Io, roots: []const []const u8) bool {
     for (roots) |r| if (!std.mem.eql(u8, r, ".") and hasDotGit(io, std.mem.trimEnd(u8, r, "/"))) return true;
     return false;
+}
+
+test "parseRuleLine: an escaped trailing slash stays dir-only but drops the escape (rg #2236)" {
+    const t = std.testing;
+    // `.ignore` line `foo\/` ⇒ rg strips the trailing `/` (dir-only) THEN the
+    // escaping `\`, globbing on `foo` — so directory `foo` is pruned. A stray `\`
+    // in the glob would make it match nothing and leave `foo/` searchable.
+    const r = parseRuleLine("foo\\/", "", "").?;
+    try t.expectEqualStrings("foo", r.glob);
+    try t.expect(r.dir_only);
+    try t.expect(!r.anchored); // slash-less ⇒ matches the `foo` basename at any depth
+    try t.expect(!r.negated);
+}
+
+test "parseRuleLine: a leading **/ ancestor rule floats through re-anchoring (rg leading-doublestar)" {
+    const t = std.testing;
+    // A root `.gitignore` `**/bar/*` seen from CWD `foo` (strip = "foo"): git's
+    // leading `**/` means "in this dir or any subdir", so it is depth-independent
+    // and must survive UNCHANGED — not be dropped as a non-`foo/` sibling.
+    const r = parseRuleLine("**/bar/*", "", "foo").?;
+    try t.expectEqualStrings("**/bar/*", r.glob);
+    try t.expect(r.anchored);
+    // A plainly-anchored ancestor rule that does NOT target the CWD subtree is
+    // still dropped (only the CWD-relative slice can affect the walk).
+    try t.expectEqual(@as(?Rule, null), parseRuleLine("sib/bar", "", "foo"));
+}
+
+test "an explicit nested root loads its intermediate ancestors' ignores (rg add_parents)" {
+    const t = std.testing;
+    var threaded = std.Io.Threaded.init(t.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const dir = "/tmp/gist_root_ancestor_fixture";
+    Dir.cwd().deleteTree(io, dir) catch {};
+    try Dir.cwd().createDirPath(io, join(a, dir, "a/b"));
+    defer Dir.cwd().deleteTree(io, dir) catch {};
+    // `a/.ignore` sits BETWEEN the fixture root and the explicit search root
+    // `a/b`; rg loads it as a parent of the named path, so `a/b/.foo` is pruned.
+    try Dir.cwd().writeFile(io, .{ .sub_path = join(a, dir, "a/.ignore"), .data = ".foo\n" });
+
+    var ig = Ignore{ .a = a, .io = io, .o = .{ .hidden = true }, .groups = std.StringHashMap(std.ArrayList(Rule)).init(a), .loaded = std.StringHashMap(void).init(a), .use_dot = true };
+    ig.loadRootAncestors(join(a, dir, "a/b")); // absolute-safe: buckets under the `a` prefix dirs
+    // The rule lives in the intermediate dir's bucket and prunes the descendant,
+    // never the root's own components (only what is found beneath it).
+    ig.scopeToRoot(join(a, dir, "a/b"));
+    try t.expectEqual(@as(?bool, true), ig.decide(join(a, dir, "a/b/.foo"), false));
 }
 
 test "parseExcludesFile mirrors ripgrep's core.excludesfile extraction" {

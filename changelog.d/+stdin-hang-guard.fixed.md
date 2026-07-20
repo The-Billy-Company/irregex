@@ -5,11 +5,14 @@ pipe, but some sandboxed shell/tool-call harnesses wire fd 0 to a long-lived
 socket that never writes a byte and never closes. A blocking `read(2)` against
 that blocks indefinitely; an agent-facing tool can't afford that.
 
-`readableStdin()` now `poll(2)`s a FIFO/socket fd 0 for actual readiness (data
-or HUP) with a 200 ms deadline before ever committing to the stdin path — a
-real producer signals within milliseconds, so this is unobservable in normal
-use; only the "open forever, silent" case now times out and falls through to
-the ordinary directory walk instead of hanging. The same bounded poll guards
-each iteration of the stdin read loop itself, so a producer that goes silent
-_mid-stream_ can't hang gist either — whatever arrived before the stall is
-still searched. Piped stdin search (`cmd | gist pattern`) is unaffected.
+`readableStdin()` now classifies fd 0 by stream type (`stdinKind`) and guards
+_only a socket_: a socket is admitted to the stdin path — and each chunk of its
+read loop is gated — through a 200 ms `poll(2)` deadline, so the pathological
+"open forever, silent" control channel times out and falls through to the
+directory walk instead of hanging. A FIFO (pipe) or regular file is classified
+readable immediately and block-read straight to true EOF with **no** poll guard:
+`cmd | gist pattern` is the canonical stream, a slow or paused writer just makes
+`read` wait, and the writer's close is the EOF — byte-for-byte ripgrep, with no
+delayed-pipe truncation. (An earlier revision poll-guarded FIFOs too, which
+dropped a producer whose first bytes arrived after the deadline to the walk — a
+delayed-pipe false negative this split eliminates.)

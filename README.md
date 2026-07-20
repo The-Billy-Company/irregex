@@ -255,11 +255,13 @@ walk still chooses the corpus; changed files widen the candidate set; current
 bytes verify every survivor; deletion and uncertainty make resident paths
 decline to the cold path. Staleness can therefore cost time, never matches.
 
-`bench/gates/index_elision_parity.sh` compares every indexed answer and exit
-code byte-for-byte with `--no-index`, including a match written after the
-index anchor. The filesystem and resident-session gates separately exercise
-new, modified, deleted, overflowed, and reconcile-racing files. This is the
-proof behind “freshness-aware,” not a promise delegated to a watcher.
+`bench/gates/index_elision_parity.sh` compares every indexed answer's byte-exact
+line multiset and exit code with `--no-index`, including a match written after
+the index anchor. Cross-file order is normalized because the parallel engine
+streams worker-discovery order. The filesystem and resident-session gates
+separately exercise new, modified, deleted, overflowed, and reconcile-racing
+files. This is the proof behind “freshness-aware,” not a promise delegated to a
+watcher.
 
 ### 3. A code index can replace the corpus and still answer it exactly
 

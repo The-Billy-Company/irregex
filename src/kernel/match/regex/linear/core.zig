@@ -90,6 +90,13 @@ pub const Regex = struct {
     // multiline regex is matched by the Pike whole-buffer scan (`bufMatch`), never
     // the per-line `lineMatch`/`docMatch`. False ⇒ the per-line model, unchanged.
     multiline: bool,
+    // The regex `m` flag, decoupled from `multiline` (the `-U` whole-buffer
+    // search): true ⇒ `^`/`$` anchor at every `\n` (a line boundary), false ⇒
+    // only at the buffer ends. Under `-U` it defaults true (rg's `m`-on default)
+    // and `(?-m)` clears it — the buffer stays one haystack, but `^` holds only
+    // at position 0. In the per-line model it tracks `multiline` (false), where a
+    // line's own edges already are its anchors, so the distinction is inert.
+    line_anchors: bool,
     // Unicode mode (rg default; `(?-u)`/`--no-unicode` clears it). Drives the
     // word test behind `\b`/`\B`/`\<`/`\>` and `-w`: set, the codepoint straddling
     // a gap is decoded and tested against the full `\w` set; cleared, it's the
@@ -126,7 +133,13 @@ pub const Regex = struct {
     /// codepoint-aware: non-ASCII literals, `.`, `\w`/`\d`/`\s`, `\p{…}`, and
     /// non-ASCII `[…]` lower to a `uclass` (UTF-8 byte sub-automaton). Cleared, the
     /// engine is a pure byte matcher (today's `(?-u)` behavior, byte-for-byte).
-    pub const Options = struct { caseless: bool = false, multiline: bool = false, dotall: bool = false, unicode: bool = false };
+    /// `line_anchors` decouples the regex `m` flag from `-U`: `^`/`$` anchor at
+    /// every `\n` (true) or only the buffer ends (false). `null` inherits
+    /// `multiline` — rg's `-U` default is `m` ON, and `(?-m)` clears it while the
+    /// whole-buffer search stays live (`multiline` unchanged). Per-line mode
+    /// (`multiline == false`) is unaffected: a single-line haystack's edges ARE
+    /// its line boundaries either way.
+    pub const Options = struct { caseless: bool = false, multiline: bool = false, dotall: bool = false, unicode: bool = false, line_anchors: ?bool = null };
 
     pub fn compile(allocator: std.mem.Allocator, pattern: []const u8) ParseError!Regex {
         return compileOpts(allocator, pattern, .{});
@@ -138,8 +151,31 @@ pub const Regex = struct {
     /// one slice — every consuming instruction is a `.consume` byte set, so a
     /// program-walk is a complete answer.
     pub fn canMatchNewline(self: *const Regex) bool {
+        return self.canMatchByte('\n');
+    }
+
+    /// Can any match consume byte `b`? Walks the consuming instructions — a
+    /// program-complete answer, since every byte a match eats is some `.consume`
+    /// set.
+    pub fn canMatchByte(self: *const Regex, b: u8) bool {
         for (self.states) |st| switch (st) {
-            .consume => |c| if (c.set.has('\n')) return true,
+            .consume => |c| if (c.set.has(b)) return true,
+            else => {},
+        };
+        return false;
+    }
+
+    /// Does the pattern *require* byte `b` somewhere — i.e. is `b` a literal or a
+    /// single-byte class? Backs rg's NUL policy (`crates/regex/src/ban.rs`): a
+    /// byte is banned only when a sub-expression *must* match it, never when a
+    /// broad class (`.`, `[^\x00]`, `[\x00a]`) incidentally includes it. A
+    /// literal byte and a `[b]`-style singleton class each lower to a `.consume`
+    /// whose set is exactly `{b}` (`only() == b`); wider classes are non-singleton
+    /// and never ban. Walking every `.consume` covers all alternation branches,
+    /// so `\x00|ab` bans while `[^\x00]` does not — matching rg's HIR walk.
+    pub fn bansByte(self: *const Regex, b: u8) bool {
+        for (self.states) |st| switch (st) {
+            .consume => |c| if (c.set.only() == b) return true,
             else => {},
         };
         return false;
@@ -199,6 +235,7 @@ pub const Regex = struct {
             .first = prefilter.Prefilter.init(first_set),
             .dfa = dfa,
             .multiline = opts.multiline,
+            .line_anchors = opts.line_anchors orelse opts.multiline,
             .unicode = opts.unicode,
             .allocator = allocator,
         };
@@ -487,10 +524,10 @@ pub const Regex = struct {
     /// adjacency (a line boundary), the per-line default against the buffer ends.
     /// Shared by `matchSpan` so one span engine serves both modes.
     fn atStart(re: *const Regex, buf: []const u8, p: usize) bool {
-        return if (re.multiline) lineStart(buf, p) else p == 0;
+        return if (re.line_anchors) lineStart(buf, p) else p == 0;
     }
     fn atEnd(re: *const Regex, buf: []const u8, p: usize) bool {
-        return if (re.multiline) lineEnd(buf, p) else p == buf.len;
+        return if (re.line_anchors) lineEnd(buf, p) else p == buf.len;
     }
 
     /// Epsilon-closure at a whole-buffer position `p`, resolving `^`/`$` against
@@ -498,7 +535,11 @@ pub const Regex = struct {
     /// `\A`/`\z` (assert_buf_*) resolve against the true buffer edges here — a
     /// line boundary is NOT a buffer edge under multiline.
     fn closureBuf(re: *const Regex, sim: *Sim, list: *ThreadList, buf: []const u8, p: usize) Closure {
-        var c = re.closure(sim, list, lineStart(buf, p), lineEnd(buf, p), wordBefore(re.unicode, buf, p), wordAt(re.unicode, buf, p));
+        // `^`/`$` resolve against `\n` adjacency when the `m` flag is live, else
+        // only the true buffer ends (`(?-m)` under `-U`).
+        const at_start = if (re.line_anchors) lineStart(buf, p) else p == 0;
+        const at_end = if (re.line_anchors) lineEnd(buf, p) else p == buf.len;
+        var c = re.closure(sim, list, at_start, at_end, wordBefore(re.unicode, buf, p), wordAt(re.unicode, buf, p));
         c.at_buf_start = p == 0;
         c.at_buf_end = p == buf.len;
         return c;

@@ -74,8 +74,9 @@ an agent types `gist 'pgxpool\.\w+' services/`:
    entire authority the index has: _"Index is an accelerator, not an authority."_
    The walk decides the file set, `--no-index` forces the pure scan, and
    `bench/gates/index_elision_parity.sh` mechanically asserts indexed ≡
-   unindexed output. A stale index degrades to slower, never to different
-   bytes.
+   unindexed byte-exact line multisets and exit codes. A stale index degrades to
+   slower, never to different results; cross-file order remains the parallel
+   walk's intentionally unsorted worker-discovery order.
 5. **Match** (`kernel/match/`). Take the cheapest sound rung first; see below.
 6. **Emit** (`surface/exec/cold/emit/`). rg-shaped `path:line:text` on stdout;
    diagnostics, timing, and the coaching channel (`gist: try -i …`) on stderr

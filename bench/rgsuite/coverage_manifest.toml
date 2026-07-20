@@ -80,35 +80,8 @@ reason = "the case creates a file named with invalid UTF-8 (`foo\\xffbar`); the 
 cases = [ "r210" ]
 
 # ─────────────────────────── deferred divergences ───────────────────────────
-
-[[deferred]]
-phase = "rich-output"
-reason = "--include-zero / --no-include-zero (print `file:0` rows for zero-match files in --count/--count-matches) is not yet implemented; gist fails loud on the unknown flag."
-cases = [
-  "include_zero#1",
-  "include_zero#2",
-  "include_zero_override#1",
-  "include_zero_override#2",
-]
-
-[[deferred]]
-phase = "walk-scope"
-reason = "ancestor ignore-file traversal above the search root/CWD, plus the `foo\\/` escape in an ignore glob; gist scopes ignore rules to the walked subtree and reads the escape literally."
-cases = [
-  "r2711#4",
-  "r2770_gitignore_error#2",
-  "r2236",
-]
-
-[[deferred]]
-phase = "hard-paths"
-reason = "PCRE2 whole-buffer multiline lookahead crossing newlines under --multiline; inline `(?-m)` anchoring under -U; and rejecting a `\\x00` NUL literal in the pattern when binary detection is on."
-cases = [
-  "r1573#1",
-  "r1573#2",
-  "r3139_multiline_lookahead_files_with_matches#1",
-  "r3139_multiline_lookahead_files_with_matches#2",
-  "r1878#3",
-  "r1878#4",
-  "r1838_nul_error_with_binary_detection#1",
-]
+#
+# EMPTY — the zero-gap target is reached: every supported-surface case PASSes
+# (405/405), so no divergence remains to defer. `check_results.py` (without
+# `--allow-fail`) requires this list to stay empty; a NEW `[[deferred]]` entry
+# is only ever a temporary, phase-tracked record of a real, still-open FAIL.

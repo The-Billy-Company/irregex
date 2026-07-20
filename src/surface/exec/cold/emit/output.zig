@@ -488,8 +488,8 @@ pub const Emitter = struct {
             idx.append(self.a, k) catch oom();
             if (o.max_per_file != 0 and idx.items.len >= o.max_per_file) break;
         }
-        if (idx.items.len == 0) return 0;
         if (o.count_only or o.count_matches) return self.bufTally(path, idx.items.len);
+        if (idx.items.len == 0) return 0;
         const is_match = self.a.alloc(bool, lines.len) catch oom();
         @memset(is_match, false);
         for (idx.items) |m| is_match[m] = true;
@@ -676,10 +676,12 @@ pub const Emitter = struct {
         // `--count-matches` and `-c -o` tally every match span (empties included).
         if (o.count_matches or (o.count_only and o.only_matching)) return self.bufTally(path, ml.countAll(spans));
         if (o.invert) return self.bufInvert(path, body);
+        // `--count` (matching lines) is emitted before the empty-spans short
+        // circuit so `--include-zero` can still print a `path:0` line.
+        if (o.count_only) return self.bufTally(path, ml.countStartLines(ml.splitLines(self.a, body, o.term()), spans));
         if (spans.len == 0) return 0;
         const lines = ml.splitLines(self.a, body, o.term());
         if (o.files_only) return self.emitPathOnly(path);
-        if (o.count_only) return self.bufTally(path, ml.countStartLines(lines, spans));
         if (o.only_matching) return if (o.replace != null) self.bufOnlyRepl(path, lines, spans, body) else self.bufOnly(path, lines, spans, body);
         if (o.vimgrep) return self.bufVimgrep(path, lines, spans, body);
         if (o.replace != null) return self.bufReplaceBlocks(path, lines, spans, body);
@@ -722,9 +724,12 @@ pub const Emitter = struct {
         return 1;
     }
 
-    /// Emit a `[path:]N` count line (0 ⇒ nothing), returning `n` for the caller.
+    /// Emit a `[path:]N` count line, returning `n` for the caller. A zero count
+    /// normally emits nothing; `--include-zero` prints the `path:0` line anyway
+    /// (the return stays `n`, so a zero count still reads as "no match" for the
+    /// exit code — rg exits 1 while printing the zero lines).
     fn bufTally(self: *Emitter, path: []const u8, n: usize) usize {
-        if (n == 0) return 0;
+        if (n == 0 and !self.o.include_zero) return 0;
         if (self.show_name) self.writePath(path, true);
         self.out.print(self.a, "{d}{s}", .{ n, self.o.outTerm() }) catch oom();
         return n;

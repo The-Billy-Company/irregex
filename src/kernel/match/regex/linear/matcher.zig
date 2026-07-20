@@ -91,6 +91,14 @@ pub const Matcher = union(Backend) {
         return self.* == .pcre or self.linear.canMatchNewline();
     }
 
+    /// Does the pattern *require* byte `b` (literal or single-byte class)? Backs
+    /// rg's NUL policy: rg applies the ban only to its default engine
+    /// (`crates/regex/src/config.rs` gates `ban::check`), so the pcre arm — which
+    /// handles NUL natively — never bans and returns false.
+    pub fn bansByte(self: *const Matcher, b: u8) bool {
+        return self.* == .linear and self.linear.bansByte(b);
+    }
+
     /// The sticky match-time error latched during this run (0 = none). Only the
     /// PCRE2 arm can fault (a resource limit on catastrophic input); the linear
     /// engine is failure-free by construction, so it always reports 0. The CLI

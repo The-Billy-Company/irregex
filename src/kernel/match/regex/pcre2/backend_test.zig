@@ -159,6 +159,48 @@ test "multiline doc and buffer matching" {
     try t.expect(!re.bufMatch(&sim, ""));
 }
 
+test "whole-buffer dotall lookahead crosses newlines (the -U (?s)…(?=.*…) contract)" {
+    // rg `-P -U '(?s)alpha(?=.*bar)'`: DOTALL lets `.*` span `\n`, so the
+    // zero-width lookahead can see a `bar` on a LATER line than the `alpha`
+    // anchor — the whole buffer is one subject. The span is the anchor only.
+    var re = try Pcre.compileOpts(t.allocator, "alpha(?=.*bar)", .{ .multiline = true, .dotall = true });
+    defer re.deinit();
+    var sim = try Pcre.Sim.init(t.allocator, &re);
+    defer sim.deinit();
+
+    // Anchor on line 1, target on line 3: only whole-buffer dotall can bridge it.
+    try t.expect(re.bufMatch(&sim, "alpha x\nmid\nyy bar\n"));
+    const sp = re.matchSpan(&sim, "alpha x\nmid\nyy bar\n", 0).?;
+    try t.expectEqual(@as(usize, 0), sp.start);
+    try t.expectEqual(@as(usize, 5), sp.end); // "alpha" only — the lookahead is zero-width
+    // Target absent ⇒ no match; target only BEFORE the anchor ⇒ no match (the
+    // forward `.*` cannot see it), so gist never over-matches a satisfied-earlier
+    // lookahead.
+    try t.expect(!re.bufMatch(&sim, "alpha x\nmid\nno target\n"));
+    try t.expect(!re.bufMatch(&sim, "bar first\nalpha here\n"));
+}
+
+test "JIT and interpreter agree on whole-buffer multiline dotall lookahead" {
+    // The `-U` cross-line lookahead must not diverge between the JIT and the
+    // interpreter fallback — the same fail-closed guarantee as the single-line
+    // parity slate, on the whole-buffer path.
+    const buf = "alpha x\nmid\nyy bar\n";
+    var jit = try engine.compileMode(t.allocator, "alpha(?=.*bar)", .{ .multiline = true, .dotall = true }, true);
+    defer jit.deinit();
+    var interp = try engine.compileMode(t.allocator, "alpha(?=.*bar)", .{ .multiline = true, .dotall = true }, false);
+    defer interp.deinit();
+    try t.expect(!interp.jit);
+    var js = try Pcre.Sim.init(t.allocator, &jit);
+    defer js.deinit();
+    var is = try Pcre.Sim.init(t.allocator, &interp);
+    defer is.deinit();
+    const a = jit.matchSpan(&js, buf, 0);
+    const b = interp.matchSpan(&is, buf, 0);
+    try t.expectEqual(a == null, b == null);
+    try t.expectEqual(a.?.start, b.?.start);
+    try t.expectEqual(a.?.end, b.?.end);
+}
+
 // ── compile diagnostics ────────────────────────────────────────────────────
 
 test "an invalid pattern is a BadPattern with a diagnostic message" {

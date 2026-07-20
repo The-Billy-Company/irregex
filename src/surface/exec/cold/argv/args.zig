@@ -143,6 +143,12 @@ pub const Opts = struct {
     max_per_file_set: bool = false,
     count_only: bool = false,
     count_matches: bool = false,
+    // --include-zero / --no-include-zero (rg default OFF, last-wins): in a count
+    // mode, emit a `path:0` line for every searched file with no match instead of
+    // suppressing it. The exit code is unchanged (0 matches ⇒ exit 1) — only the
+    // per-file zero line is added. Forces the serial engine and disables the
+    // whole-file literal gate + index elision so every searched file is counted.
+    include_zero: bool = false,
     files_only: bool = false,
     files_without: bool = false,
     hidden: bool = false,
@@ -186,6 +192,11 @@ pub const Opts = struct {
     null_data: bool = false, // --null-data (NUL line terminator)
     multiline: bool = false, // -U/--multiline
     multiline_dotall: bool = false, // --multiline-dotall
+    // The regex `m` flag, resolved after leading `(?m)`/`(?-m)` directives. Base
+    // = `multiline` (rg's `-U` default is `m` ON); `(?-m)` clears it so `^`/`$`
+    // anchor only at the buffer ends while the whole-buffer search stays live.
+    // Threaded into the matcher compile (`line_anchors`); inert in per-line mode.
+    re_line_anchors: bool = false,
     // Match-backend selection (-P/--pcre2, --engine, --auto-hybrid-regex).
     // `default` = the linear RE2/Pike engine; `pcre2` routes to the vendored
     // PCRE2 JIT backend; `auto` compiles linear and escalates to PCRE2 only for a
@@ -655,6 +666,8 @@ pub const flag_catalog = [_]FlagSpec{
     .{ .longs = &.{"files-without-match"}, .action = .{ .set = .files_without }, .compatibility = .supported },
     .{ .short = 'c', .longs = &.{"count"}, .action = .{ .set = .count_only }, .compatibility = .supported },
     .{ .longs = &.{"count-matches"}, .action = .{ .set = .count_matches }, .compatibility = .supported },
+    .{ .longs = &.{"include-zero"}, .action = .{ .set = .include_zero }, .compatibility = .supported, .note = "in a count mode, print a path:0 line for every searched file with no match (exit code unchanged)" },
+    .{ .longs = &.{"no-include-zero"}, .action = .{ .unset = .include_zero }, .compatibility = .supported },
     .{ .longs = &.{"hidden"}, .action = .{ .set = .hidden }, .compatibility = .supported },
     .{ .short = 'a', .longs = &.{"text"}, .action = .{ .set = .text }, .compatibility = .supported },
     .{ .longs = &.{"binary"}, .action = .{ .set = .binary }, .compatibility = .supported_with_differences, .note = "searches binary files in full and prints every matching line (a superset), rather than rg's binary-summary suppression" },

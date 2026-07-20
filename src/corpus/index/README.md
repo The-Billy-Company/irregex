@@ -34,7 +34,8 @@ artifact always degrades to slower-but-identical answers.
 > Index is an accelerator, not an authority.
 
 That sentence is load-bearing. `bench/gates/index_elision_parity.sh` asserts
-indexed ≡ unindexed output byte-for-byte. Soundness rules:
+indexed ≡ unindexed byte-exact line multisets and exit codes, normalizing only
+the parallel walk's incidental cross-file scheduling order. Soundness rules:
 
 - Trigram AND of required literals ≥ 3 bytes is a **sound** candidate set
   (false positives OK; false negatives forbidden).

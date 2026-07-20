@@ -775,24 +775,49 @@ fn collectFiles(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, parsed
 ///     reason and the rg fallback.
 /// Anything else after `(?` (lookaround, a scoped `(?i:…)` group, `(?P<…>`) is
 /// not a flag directive — returns null and the regex parser decides.
-const LeadingFlags = struct { rest: []const u8, caseless: ?bool = null, unicode: ?bool = null };
+const LeadingFlags = struct { rest: []const u8, caseless: ?bool = null, unicode: ?bool = null, line_anchors: ?bool = null, dotall: ?bool = null };
 fn stripLeadingFlags(pat: []const u8) ?LeadingFlags {
     if (!std.mem.startsWith(u8, pat, "(?")) return null;
     const close = std.mem.indexOfScalar(u8, pat, ')') orelse return null;
     if (close == 2) return null; // `(?)` — empty directive, the parser rejects it
-    var caseless: ?bool = null;
-    var unicode: ?bool = null;
+    var f: LeadingFlags = .{ .rest = pat[close + 1 ..] };
     var neg = false;
-    for (pat[2..close]) |f| switch (f) {
+    for (pat[2..close]) |c| switch (c) {
         '-' => neg = true,
-        'i' => caseless = !neg,
-        'u' => unicode = !neg,
-        'm', 's' => {},
-        'x', 'U', 'R' => die("(?{c}) unsupported by gist's engine — use ripgrep for this\n", .{f}),
+        'i' => f.caseless = !neg,
+        'u' => f.unicode = !neg,
+        'm' => f.line_anchors = !neg, // `^`/`$` per line (on) vs buffer ends (`(?-m)`)
+        's' => f.dotall = !neg, // `.` matches `\n` (`(?s)`), meaningful under `-U`
+        'x', 'U', 'R' => die("(?{c}) unsupported by gist's engine — use ripgrep for this\n", .{c}),
         else => return null,
     };
-    return .{ .rest = pat[close + 1 ..], .caseless = caseless, .unicode = unicode };
+    return f;
 }
+
+/// One leading-directive flag reconciled across every pattern source. gist
+/// compiles a single engine, so a value one pattern explicitly `demand`s must
+/// agree with any pattern that only `inherit`s the CLI base — `see` collects
+/// each pattern's stance, `resolve` folds them onto the effective option (or
+/// fails loud when a demand contradicts an inheritor, rg's per-branch scoping).
+const Directive = struct {
+    name: []const u8,
+    demand: ?bool = null,
+    inherit: bool = false,
+    fn see(self: *Directive, v: ?bool) void {
+        if (v) |w| {
+            if (self.demand != null and self.demand.? != w)
+                die("mixed per-pattern (?{s}) demands — gist compiles one engine; use rg for this\n", .{self.name});
+            self.demand = w;
+        } else self.inherit = true;
+    }
+    fn resolve(self: Directive, cur: *bool) void {
+        if (self.demand) |w| {
+            if (self.inherit and w != cur.*)
+                die("(?{s}) on some patterns but not others — gist compiles one engine; use rg for this\n", .{self.name});
+            cur.* = w;
+        }
+    }
+};
 
 /// Combine every pattern source — bare/`-e`/`--regexp` plus each `-f/--file`
 /// line — into one regex: `-F` escapes each literal, multiple patterns OR via
@@ -819,46 +844,37 @@ fn combinePatterns(a: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: *Op
         }
     }
     if (pats.items.len == 0) return null;
+    // The regex `m` flag rides `-U` by default (rg: `-U` is `m` ON); leading
+    // `(?m)`/`(?-m)` directives below override it. Set before both branches so
+    // the `-F` and no-directive paths inherit the base unchanged.
+    o.re_line_anchors = o.multiline;
     if (parsed.opts.fixed) {
         for (pats.items) |*p| p.* = query_mod.escapeLiteral(a, p.*) catch oom();
     } else {
-        // Resolve leading `(?flags)` directives. `demand` is the caseless
-        // setting some pattern explicitly asked for; `inherit` marks a pattern
-        // riding the CLI's own `-i`/`-s`/resolved `-S` setting. gist compiles
-        // one engine, so the two may not disagree (rg scopes flags per branch).
-        var demand: ?bool = null;
-        var inherit = false;
-        // Same one-engine reconciliation for Unicode mode (`(?u)`/`(?-u)`).
-        var udemand: ?bool = null;
-        var uinherit = false;
+        // Resolve leading `(?flags)` directives. gist compiles ONE engine, so a
+        // flag some pattern explicitly demands may not disagree with a pattern
+        // that merely inherits the CLI's own setting (rg scopes flags per branch).
+        // `(?i)` case, `(?u)` Unicode, `(?m)` line anchors, `(?s)` dotall each
+        // reconcile through the same demand/inherit rule.
+        var ci = Directive{ .name = "i" };
+        var uni = Directive{ .name = "u" };
+        var mln = Directive{ .name = "m" };
+        var dot = Directive{ .name = "s" };
         for (pats.items) |*p| {
             const sf = stripLeadingFlags(p.*) orelse {
-                inherit = true;
-                uinherit = true;
+                for ([_]*Directive{ &ci, &uni, &mln, &dot }) |d| d.inherit = true;
                 continue;
             };
             p.* = sf.rest;
-            if (sf.caseless) |w| {
-                if (demand != null and demand.? != w)
-                    die("mixed per-pattern (?i) case demands — gist compiles one engine; use rg for this\n", .{});
-                demand = w;
-            } else inherit = true;
-            if (sf.unicode) |w| {
-                if (udemand != null and udemand.? != w)
-                    die("mixed per-pattern (?u) Unicode demands — gist compiles one engine; use rg for this\n", .{});
-                udemand = w;
-            } else uinherit = true;
+            ci.see(sf.caseless);
+            uni.see(sf.unicode);
+            mln.see(sf.line_anchors);
+            dot.see(sf.dotall);
         }
-        if (demand) |w| {
-            if (inherit and w != o.caseless)
-                die("(?i) on some patterns but not others — gist compiles one engine; use rg for this\n", .{});
-            o.caseless = w;
-        }
-        if (udemand) |w| {
-            if (uinherit and w != o.unicode)
-                die("(?u)/(?-u) on some patterns but not others — gist compiles one engine; use rg for this\n", .{});
-            o.unicode = w;
-        }
+        ci.resolve(&o.caseless);
+        uni.resolve(&o.unicode);
+        mln.resolve(&o.re_line_anchors);
+        dot.resolve(&o.multiline_dotall);
     }
     var combined: []const u8 = pats.items[0];
     if (pats.items.len > 1) {
@@ -965,49 +981,78 @@ fn createdTimeNs(path: []const u8) ?i96 {
 /// directory walk. The socket case matters for exec APIs that wire fd0 to a
 /// socketpair; omitting it silently diverged from rg on piped-socket input.
 ///
-/// Deliberate departure from raw rg parity: a FIFO or socket can be a
-/// long-lived control channel that never writes a byte and never closes (seen
-/// in the wild — some sandboxed shell/tool-call harnesses wire fd 0 to exactly
-/// such a socket). Blocking `read(2)` against that hangs forever, which is
-/// unacceptable for an agent-facing tool. Before committing to the stdin path,
-/// `poll(2)` fd 0 for actual readiness with a short deadline: a real pipe or
-/// socket producer signals within milliseconds (data, or HUP on an
-/// already-closed/empty write end); only the pathological "open forever,
-/// silent" case times out, and that falls through to the ordinary directory
-/// walk instead of hanging. A regular file never blocks on `read`, so it skips
-/// the poll entirely.
+/// Deliberate departure from raw rg parity — but ONLY for a socket. A socket can
+/// be a long-lived control channel that never writes a byte and never closes
+/// (seen in the wild — some sandboxed shell/tool-call harnesses wire fd 0 to
+/// exactly such a socket); a blocking `read(2)` against that hangs forever,
+/// unacceptable for an agent-facing tool. So a socket is admitted only when
+/// `poll(2)` shows it ready within a short deadline (a real producer signals in
+/// milliseconds; only the pathological silent-forever socket times out, falling
+/// through to the directory walk instead of hanging).
+///
+/// A FIFO (pipe) gets NO such guard: `cmd | gist pat` is the canonical stream,
+/// and a slow producer — bytes arriving after a pause, or the first byte only
+/// after setup work — is normal, not pathological. A pipe's blocking `read`
+/// always terminates: when the writer finishes it closes the write end and
+/// `read` returns EOF. Polling it with a deadline is exactly the delayed-pipe
+/// false negative we must avoid (a 500 ms-late producer was being dropped to the
+/// walk). So a FIFO is classified readable immediately and block-read to true
+/// EOF, byte-for-byte rg. A regular file never blocks on `read` either.
 const stdin_poll_timeout_ms = 200;
 
-/// `pub` for the warm client (`cli/gist/daemon/client/client.zig`): a rootless query
-/// with a readable stdin is a STREAM search in the cold engine (below), which
-/// the daemon's tree corpus can never answer — the client must detect the same
-/// condition, with the same fd-type rules, and decline to cold.
+/// fd 0's stream class, deciding stdin admission + the read strategy below.
+const StdinKind = enum { none, blocking, socket };
+
+/// Classify fd 0 (ripgrep's `is_readable_stdin`: not a tty, and a file / FIFO /
+/// socket). A regular file or FIFO is `.blocking` — safe to block-read to EOF;
+/// a socket is `.socket` — admitted only through the bounded poll guard.
+fn stdinKind() StdinKind {
+    const st = grepfile.statFd(0) orelse return .none;
+    return switch (st.mode & std.posix.S.IFMT) {
+        std.posix.S.IFREG, std.posix.S.IFIFO => .blocking,
+        std.posix.S.IFSOCK => .socket,
+        else => .none, // tty, /dev/null char device, … ⇒ fall through to the walk
+    };
+}
+
+/// True iff fd 0 is a readable stdin stream. `pub` for the warm client
+/// (`cli/gist/daemon/client/client.zig`): a rootless query with a readable stdin
+/// is a STREAM search only the cold engine can answer, so the client detects the
+/// same condition — with the same fd-type rules — and declines to cold. This is
+/// a non-consuming probe (stat, plus a `poll` for a socket): the delayed pipe's
+/// bytes are never touched here, so nothing the cold `readStdin` will read is
+/// stolen.
 pub fn readableStdin() bool {
-    const st = grepfile.statFd(0) orelse return false;
-    const fmt = st.mode & std.posix.S.IFMT;
-    if (fmt == std.posix.S.IFREG) return true;
-    if (fmt != std.posix.S.IFIFO and fmt != std.posix.S.IFSOCK) return false;
-    var fds = [_]std.posix.pollfd{.{ .fd = 0, .events = std.posix.POLL.IN, .revents = 0 }};
-    const n = std.posix.poll(&fds, stdin_poll_timeout_ms) catch return false;
-    return n > 0;
+    return switch (stdinKind()) {
+        .none => false,
+        .blocking => true, // a regular file or a (possibly slow) pipe
+        .socket => blk: {
+            var fds = [_]std.posix.pollfd{.{ .fd = 0, .events = std.posix.POLL.IN, .revents = 0 }};
+            const n = std.posix.poll(&fds, stdin_poll_timeout_ms) catch break :blk false;
+            break :blk n > 0;
+        },
+    };
 }
 
 /// Ripgrep has no default cap on stdin size (only `--max-filesize`, which
 /// doesn't apply to a stream with no a-priori length) — read to EOF, not to
 /// `per_file_cap` (that constant is an indexing-corpus budget, not a search
 /// ceiling; see `readOneCandidate`'s identical reasoning for on-disk files).
-/// Same hang guard as `readableStdin`'s initial check, applied per read: a
-/// FIFO/socket producer that goes silent mid-stream (never writing again, never
-/// closing) must not block this loop forever, so each iteration polls with the
-/// same bounded deadline before reading and treats a timeout as EOF — whatever
-/// arrived before the stall is still searched, nothing is ever discarded.
+/// A regular file or FIFO is block-read straight to EOF: a slow or paused pipe
+/// writer just makes `read` wait, and the writer's close is the EOF — exactly
+/// rg, no delayed-pipe truncation. Only a socket keeps the mid-stream silence
+/// guard (poll each chunk, treat a timeout as EOF), since a socket peer can go
+/// silent forever without closing; whatever arrived before the stall is kept.
 fn readStdin(a: std.mem.Allocator) []const u8 {
+    const guard = stdinKind() == .socket;
     var buf: std.ArrayList(u8) = .empty;
     var tmp: [64 * 1024]u8 = undefined;
     while (true) {
-        var fds = [_]std.posix.pollfd{.{ .fd = 0, .events = std.posix.POLL.IN, .revents = 0 }};
-        const ready = std.posix.poll(&fds, stdin_poll_timeout_ms) catch break;
-        if (ready == 0) break; // silent for too long — stop waiting, not hanging
+        if (guard) {
+            var fds = [_]std.posix.pollfd{.{ .fd = 0, .events = std.posix.POLL.IN, .revents = 0 }};
+            const ready = std.posix.poll(&fds, stdin_poll_timeout_ms) catch break;
+            if (ready == 0) break; // socket silent for too long — stop waiting, not hanging
+        }
         const n = std.posix.read(0, &tmp) catch break;
         if (n == 0) break;
         buf.appendSlice(a, tmp[0..n]) catch oom();
@@ -1045,7 +1090,7 @@ const tty_long_line_cols: usize = 16 * 1024;
 /// caller reads the resolved backend off the union tag.
 fn buildMatcher(gpa: std.mem.Allocator, eff: []const u8, o: Opts) Matcher {
     switch (o.engine) {
-        .pcre2 => return .{ .pcre = Pcre.compileOpts(gpa, eff, .{ .caseless = o.caseless, .multiline = o.multiline, .dotall = o.multiline_dotall, .unicode = o.pcre_unicode }) catch |e| switch (e) {
+        .pcre2 => return .{ .pcre = Pcre.compileOpts(gpa, eff, .{ .caseless = o.caseless, .multiline = o.re_line_anchors, .dotall = o.multiline_dotall, .unicode = o.pcre_unicode }) catch |e| switch (e) {
             error.OutOfMemory => die("oom\n", .{}),
             else => die("gist: error: bad PCRE2 pattern '{s}': {s}\n", .{ eff, pcre2.lastError() }),
         } },
@@ -1054,7 +1099,7 @@ fn buildMatcher(gpa: std.mem.Allocator, eff: []const u8, o: Opts) Matcher {
         // exit-2 explanation, not a courtesy (`GIST_HINTS` governs only the
         // no-match channel). "linear-time syntax" on line 1 is load-bearing:
         // the Python/Rust bindings classify unsupported-pattern exits by it.
-        .default => return .{ .linear = Regex.compileOpts(gpa, eff, .{ .caseless = o.caseless, .multiline = o.multiline, .dotall = o.multiline_dotall, .unicode = o.unicode }) catch
+        .default => return .{ .linear = Regex.compileOpts(gpa, eff, .{ .caseless = o.caseless, .multiline = o.multiline, .dotall = o.multiline_dotall, .unicode = o.unicode, .line_anchors = o.re_line_anchors }) catch
             die(
                 \\gist: error: bad pattern '{s}' — outside gist's linear-time syntax
                 \\gist: note: not owned by the linear engine: lookaround, backreferences (\0-\9; NUL is \x00),
@@ -1068,10 +1113,10 @@ fn buildMatcher(gpa: std.mem.Allocator, eff: []const u8, o: Opts) Matcher {
             // Hybrid: prefer the linear engine (faster, trigram-AST, --rank-able);
             // its decline is the ONLY signal to escalate. A linear compile error
             // is discarded here precisely because PCRE2 is the fallback.
-            if (Regex.compileOpts(gpa, eff, .{ .caseless = o.caseless, .multiline = o.multiline, .dotall = o.multiline_dotall, .unicode = o.unicode })) |r|
+            if (Regex.compileOpts(gpa, eff, .{ .caseless = o.caseless, .multiline = o.multiline, .dotall = o.multiline_dotall, .unicode = o.unicode, .line_anchors = o.re_line_anchors })) |r|
                 return .{ .linear = r }
             else |_| {}
-            return .{ .pcre = Pcre.compileOpts(gpa, eff, .{ .caseless = o.caseless, .multiline = o.multiline, .dotall = o.multiline_dotall, .unicode = o.pcre_unicode }) catch |e| switch (e) {
+            return .{ .pcre = Pcre.compileOpts(gpa, eff, .{ .caseless = o.caseless, .multiline = o.re_line_anchors, .dotall = o.multiline_dotall, .unicode = o.pcre_unicode }) catch |e| switch (e) {
                 error.OutOfMemory => die("oom\n", .{}),
                 else => die(
                     \\gist: error: regex '{s}' compiles under neither engine
@@ -1175,6 +1220,21 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     const is_pcre = std.meta.activeTag(re) == .pcre;
     if (is_pcre) pcre2.clearMatchError(); // fresh sticky-error latch per run
 
+    // rg's NUL policy: with binary detection live (no `-a`/`--text`/`--null-data`),
+    // the searcher never feeds a `\0`, so a pattern that *requires* one — a NUL
+    // literal or `[\x00]` singleton class — is impossible; rg refuses it (exit 2)
+    // rather than silently matching nothing (`crates/regex/src/ban.rs`). Broad
+    // classes that merely include NUL (`.`, `[^\x00]`) are fine, so `bansByte`
+    // uses the singleton rule, not "can consume". `-a`/`--text` treats NUL as an
+    // ordinary byte, so the check is skipped there.
+    if (!o.text and !o.binary and !o.null_data and re.bansByte(0))
+        die(
+            \\gist: error: pattern contains "\0" but it is impossible to match
+            \\gist: note: binary detection is enabled, so a NUL byte can never match
+            \\gist: try -a / --text — treat NUL as ordinary bytes and match it
+            \\
+        , .{});
+
     // --rank: definition-first ranked view over the SAME compiled pattern and
     // PATH scope. Prefer the persisted candidate set; an absent/incomplete index
     // (or --no-index) degrades to the normal live walk, then the same RRF kernel.
@@ -1203,7 +1263,10 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     }
 
     const line_needle = requiredLiteralGate(o, &re);
-    const file_needle = wholeFileLiteralGate(o, line_needle);
+    // `--include-zero` must count every searched file, so the whole-file literal
+    // gate (which would skip a file lacking the required literal) stands down —
+    // the per-line `line_needle` still accelerates matching within each file.
+    const file_needle = if (o.include_zero) null else wholeFileLiteralGate(o, line_needle);
 
     // -r/--replace: build the group-aware capture matcher once and share it
     // across every emitter for template expansion. The PCRE2 arm captures from
@@ -1211,7 +1274,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // Pike VM over the same AST. Same engine choice as the search matcher above.
     var caps_store: ?Caps = if (o.replace != null)
         (if (is_pcre)
-            Caps{ .pcre = captures_mod.PcreCaptures.compile(gpa, eff, .{ .caseless = o.caseless, .multiline = o.multiline, .dotall = o.multiline_dotall, .unicode = o.pcre_unicode }) catch |e| switch (e) {
+            Caps{ .pcre = captures_mod.PcreCaptures.compile(gpa, eff, .{ .caseless = o.caseless, .multiline = o.re_line_anchors, .dotall = o.multiline_dotall, .unicode = o.pcre_unicode }) catch |e| switch (e) {
                 error.OutOfMemory => die("oom\n", .{}),
                 else => die("bad PCRE2 pattern '{s}': {s}\n", .{ eff, pcre2.lastError() }),
             } }
@@ -1258,8 +1321,10 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // A transforming run searches rewritten bytes, so the on-disk trigram index
     // can neither elide reads nor prefilter — force the plain live walk. The
     // crest sieve reads the same on-disk artifacts, so it stands down too.
-    const filters = if (transforming) &[_][]const u8{} else trigramFilter(o, &re, &req_one);
-    const sieve = if (transforming) crest.zero_vector else crestSieve(o, eff, &re);
+    // `--include-zero` also stands down index elision: an elided (provably
+    // non-matching) read would never reach the emitter to print its `path:0`.
+    const filters = if (transforming or o.include_zero) &[_][]const u8{} else trigramFilter(o, &re, &req_one);
+    const sieve = if (transforming or o.include_zero) crest.zero_vector else crestSieve(o, eff, &re);
 
     // The common recursive-walk case runs on the parallel fused engine
     // (parallel.zig): work-stealing directory walk, bulk-stat listings, inline
@@ -1366,9 +1431,12 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // flavor prints every matching line rather than a binary summary).
     const binary_detect = !o.text and !o.binary and !o.null_data;
     var stat = Stats{};
+    // `--include-zero` count: an empty file is still a searched file and rg
+    // prints its `path:0`, so don't skip it (the emitter tallies 0 below).
+    const count_zero = o.include_zero and (o.count_only or o.count_matches);
     for (files) |f| {
         const body = stripBom(f.bytes);
-        if (body.len == 0) continue;
+        if (body.len == 0 and !count_zero) continue;
         if (binary_detect) if (std.mem.indexOfScalar(u8, body, 0)) |nul| {
             // rg's -U slice model runs only when the pattern can actually match
             // `\n` (multi_line_with_matcher); a `\n`-free -U pattern keeps the
@@ -1600,12 +1668,24 @@ test "stripLeadingFlags honors i/-i and strips the directive" {
     try t.expectEqualStrings("x", both.rest);
 }
 
-test "stripLeadingFlags treats m/s as inert; u/-u select Unicode mode" {
+test "stripLeadingFlags resolves m/s flags; u/-u select Unicode mode" {
     const t = std.testing;
+    // `(?sm)` turns dotall + line anchors ON; `-` negates only what follows it.
     const sf = stripLeadingFlags("(?sm)^func$").?;
     try t.expectEqualStrings("^func$", sf.rest);
     try t.expectEqual(@as(?bool, null), sf.caseless);
     try t.expectEqual(@as(?bool, null), sf.unicode);
+    try t.expectEqual(@as(?bool, true), sf.dotall);
+    try t.expectEqual(@as(?bool, true), sf.line_anchors);
+    // `(?-m)` clears line anchors (rg's whole-buffer `^`/`$`-at-BOF), dotall untouched.
+    const nm = stripLeadingFlags("(?-m)^baz").?;
+    try t.expectEqualStrings("^baz", nm.rest);
+    try t.expectEqual(@as(?bool, false), nm.line_anchors);
+    try t.expectEqual(@as(?bool, null), nm.dotall);
+    // `(?-s)` clears dotall only.
+    const ns = stripLeadingFlags("(?-s).").?;
+    try t.expectEqual(@as(?bool, false), ns.dotall);
+    try t.expectEqual(@as(?bool, null), ns.line_anchors);
     // `(?-u)` selects the byte/ASCII engine; `(?u)` re-selects the default.
     const nu = stripLeadingFlags("(?-u)\\w+").?;
     try t.expectEqualStrings("\\w+", nu.rest);
