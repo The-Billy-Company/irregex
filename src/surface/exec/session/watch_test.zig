@@ -43,7 +43,7 @@ test "barrier: an armed, event-free query flips clean; markDirty clears it" {
     // Simulate a live watcher proving quiescence (no real backend needed to
     // exercise the seqlock the query path reads).
     session.armWatcher();
-    try std.testing.expect(!session.clean.load(.acquire)); // nothing proven yet
+    try std.testing.expect(!session.seqlock.provenClean()); // nothing proven yet
 
     {
         var q = std.heap.ArenaAllocator.init(gpa);
@@ -52,11 +52,11 @@ test "barrier: an armed, event-free query flips clean; markDirty clears it" {
         try std.testing.expectEqual(@as(usize, 1), r.files.len);
     }
     // An armed reconcile with no racing event flips the clean fast path on.
-    try std.testing.expect(session.clean.load(.acquire));
+    try std.testing.expect(session.seqlock.provenClean());
 
     // A filesystem event clears the proof; the next query must reconcile again.
     session.markDirty();
-    try std.testing.expect(!session.clean.load(.acquire));
+    try std.testing.expect(!session.seqlock.provenClean());
 
     {
         var q = std.heap.ArenaAllocator.init(gpa);
@@ -64,7 +64,7 @@ test "barrier: an armed, event-free query flips clean; markDirty clears it" {
         const r = try session.query(q.allocator(), .{ .pattern = "needle", .mode = .files, .fixed = true });
         try std.testing.expectEqual(@as(usize, 1), r.files.len); // still correct
     }
-    try std.testing.expect(session.clean.load(.acquire)); // re-proven clean
+    try std.testing.expect(session.seqlock.provenClean()); // re-proven clean
 }
 
 test "Watcher.start/stop is crash-free, arms where a backend exists, fail-closed where none does" {
@@ -91,9 +91,9 @@ test "Watcher.start/stop is crash-free, arms where a backend exists, fail-closed
     // require it not to crash. Any other target has no backend and must stay
     // unarmed so every query reconciles — soundness never rests on the watcher.
     switch (builtin.os.tag) {
-        .macos => try std.testing.expect(session.watcher_active),
+        .macos => try std.testing.expect(session.seqlock.active),
         .linux => {},
-        else => try std.testing.expect(!session.watcher_active),
+        else => try std.testing.expect(!session.seqlock.active),
     }
 
     var q = std.heap.ArenaAllocator.init(gpa);
