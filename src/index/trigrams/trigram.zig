@@ -381,13 +381,22 @@ pub const Index = struct {
     /// k-branch `queryAny` pays one scratch instead of k. Caller frees `lazy`.
     fn queryLiteralWith(self: *const Index, allocator: std.mem.Allocator, needle: []const u8, lazy: *?[]u32) QueryError![]u32 {
         if (needle.len < 3) return QueryError.NeedleTooShort;
-        const qbuf = try allocator.alloc(Trigram, needle.len);
-        defer allocator.free(qbuf);
+        const local_cap = 128;
+        var local_trigrams: [local_cap]Trigram = undefined;
+        const qbuf = if (needle.len <= local_cap)
+            local_trigrams[0..needle.len]
+        else
+            try allocator.alloc(Trigram, needle.len);
+        defer if (needle.len > local_cap) allocator.free(qbuf);
         const m = ngram.extractSortedUnique(needle, qbuf);
         if (m == 0) return QueryError.NeedleTooShort;
 
-        const groups = try allocator.alloc(usize, m);
-        defer allocator.free(groups);
+        var local_groups: [local_cap]usize = undefined;
+        const groups = if (m <= local_cap)
+            local_groups[0..m]
+        else
+            try allocator.alloc(usize, m);
+        defer if (m > local_cap) allocator.free(groups);
         for (qbuf[0..m], 0..) |t, i| groups[i] = self.dirIndexOf(t) orelse return allocator.alloc(u32, 0);
         std.mem.sort(usize, groups, self, dirCountLess);
 

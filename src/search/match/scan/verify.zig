@@ -9,6 +9,7 @@ const std = @import("std");
 const simd = @import("simd.zig");
 
 pub const par_threshold = 512; // below this candidate count, threading isn't worth it
+const local_worker_cap = 128;
 
 /// SIMD first+last-byte scan — ~18x std's naive 2–4 byte path (see `simd.zig`).
 pub inline fn contains(hay: []const u8, needle: []const u8) bool {
@@ -184,16 +185,31 @@ pub fn parallelVerify(gpa: std.mem.Allocator, docs: []const []const u8, ids: []c
     }
 
     // Byte-greedy boundaries over the (arbitrary-order) candidate list.
-    const bounds = try gpa.alloc(usize, nthr + 1);
-    defer gpa.free(bounds);
+    var local_bounds: [local_worker_cap + 1]usize = undefined;
+    const bounds = if (nthr <= local_worker_cap)
+        local_bounds[0 .. nthr + 1]
+    else
+        try gpa.alloc(usize, nthr + 1);
+    defer if (nthr > local_worker_cap) gpa.free(bounds);
     greedyBounds(u32, ids, docs, docWeight, total, bounds);
 
-    const shards = try gpa.alloc(VerifyShard, nthr);
-    defer gpa.free(shards);
-    const threads = try gpa.alloc(std.Thread, nthr);
-    defer gpa.free(threads);
-    const outbuf = try gpa.alloc(u32, ids.len);
-    defer gpa.free(outbuf);
+    var local_shards: [local_worker_cap]VerifyShard = undefined;
+    const shards = if (nthr <= local_worker_cap)
+        local_shards[0..nthr]
+    else
+        try gpa.alloc(VerifyShard, nthr);
+    defer if (nthr > local_worker_cap) gpa.free(shards);
+    var local_threads: [local_worker_cap]std.Thread = undefined;
+    const threads = if (nthr <= local_worker_cap)
+        local_threads[0..nthr]
+    else
+        try gpa.alloc(std.Thread, nthr);
+    defer if (nthr > local_worker_cap) gpa.free(threads);
+    // Borrow the caller's retained capacity as private shard storage. Repeated
+    // queries therefore pay no full-candidate allocation/free, and the final
+    // compaction grows `out` in place instead of copying through a second list.
+    try out.ensureUnusedCapacity(gpa, ids.len);
+    const outbuf = out.unusedCapacitySlice()[0..ids.len];
 
     for (0..nthr) |t| {
         const lo = bounds[t];
@@ -201,5 +217,31 @@ pub fn parallelVerify(gpa: std.mem.Allocator, docs: []const []const u8, ids: []c
         shards[t] = .{ .docs = docs, .ids = ids[lo..hi], .needle = needle, .out = outbuf[lo..hi] };
     }
     fanOut(VerifyShard, shards, threads, verifyShard);
-    for (0..nthr) |t| try out.appendSlice(gpa, shards[t].out[0..shards[t].n]);
+    var n: usize = 0;
+    for (shards) |sh| {
+        const matches = sh.out[0..sh.n];
+        std.mem.copyForwards(u32, outbuf[n..][0..matches.len], matches);
+        n += matches.len;
+    }
+    out.items.len += n;
+}
+
+test "parallel verify compacts retained output capacity in place" {
+    const n = par_threshold + 1;
+    const body = "x" ** 1024;
+    var docs: [n][]const u8 = undefined;
+    var ids: [n]u32 = undefined;
+    for (&docs, &ids, 0..) |*doc, *id, i| {
+        doc.* = body;
+        id.* = @intCast(i);
+    }
+
+    var out: std.ArrayList(u32) = .empty;
+    defer out.deinit(std.testing.allocator);
+    try out.append(std.testing.allocator, std.math.maxInt(u32));
+    try parallelVerify(std.testing.allocator, &docs, &ids, "x", &out);
+
+    try std.testing.expectEqual(n + 1, out.items.len);
+    try std.testing.expectEqual(std.math.maxInt(u32), out.items[0]);
+    for (out.items[1..], 0..) |id, i| try std.testing.expectEqual(@as(u32, @intCast(i)), id);
 }
