@@ -1,7 +1,7 @@
 //! One JSON string escaper for every irregex face that writes JSON/NDJSON.
 //!
 //! `rg --json` (emit/json.zig), the relate/irregex NDJSON verb rows
-//! (cli/relate/kinship.zig, re-exported as `jsonStr`), and the gist `--schema`
+//! (surface/cli/emit.zig, re-exported as `jsonStr`), and the gist `--schema`
 //! manifest all need the identical operation: append a byte slice as a JSON
 //! string literal, surrounding quotes included. They used to carry three
 //! near-copies that had quietly diverged — the schema one emitted RAW control
