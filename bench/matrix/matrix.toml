@@ -1,0 +1,226 @@
+# gist CLI-shape admission matrix (ADR-352).
+#
+# One machine-readable row per SUPPORTED CLI shape gist claims, spanning the
+# dimensions a locator's behavior actually turns on: `mode` (linear / -U / -P),
+# match `flags`, walk `scope`, `emit` shape, `select`ivity, and pattern `kind`.
+# `matrix.py` lowers each row into a REAL argv it drives through three paths —
+# gist cold-indexed, gist cold-unindexed (`--no-index`), and ripgrep — so
+# eligibility and index-elision are MEASURED, never inferred:
+#
+#   * `matrix.py parity`  asserts gist-idx == gist-noidx == rg at each row's `bar`
+#                         (set / lines / count / exit). This is the parity-first
+#                         gate — a shape that diverges never earns a perf verdict.
+#   * `matrix.py bench`   times gist-idx vs rg with the SAME bootstrap-CI +
+#                         Mann-Whitney machinery the certificate uses
+#                         (`certify/certify_stats.py`), one fail-closed verdict
+#                         per row, and (with --publish) refreshes matrix_baseline.json.
+#   * `matrix.py gate`    asserts the committed per-shape floors, with one honest
+#                         asymmetry: a row DECLARED `expect="loss"` is report-only
+#                         (the known common-`-U` lazy-dotstar hole is here on
+#                         purpose, so an aggregate can never bury it), while any
+#                         `expect="win"`/`"parity"` row regressing below its floor
+#                         is a hard failure.
+#
+# Patterns are chosen for known corpus selectivity (rare = one service symbol,
+# common = a ubiquitous keyword) so the selectivity dimension is real, not a label.
+# Roots default to the six Billy source roots (mirrors corpus.resolveRoots and
+# _compete.sh); a row may override `roots` to exercise a bounded subtree.
+
+default_roots = ["services", "libs", "clients", "contracts", "scripts", "quality"]
+
+# ─────────────────────────── mode: linear default ───────────────────────────
+
+[[shape]]
+id = "literal-rare-files"
+pattern = "WalletService"
+gist = ["-F", "-l"]
+rg = ["-F", "-l"]
+bar = "set"
+expect = "win"
+dims = { mode = "linear", flags = "fixed", scope = "rootless", emit = "files", select = "rare", kind = "literal" }
+
+[[shape]]
+id = "literal-common-files"
+pattern = "error"
+gist = ["-F", "-l"]
+rg = ["-F", "-l"]
+bar = "set"
+expect = "parity"
+dims = { mode = "linear", flags = "fixed", scope = "rootless", emit = "files", select = "common", kind = "literal" }
+
+[[shape]]
+id = "literal-rare-count"
+pattern = "WalletService"
+gist = ["-F", "-c"]
+rg = ["-F", "-c"]
+bar = "count"
+expect = "win"
+dims = { mode = "linear", flags = "fixed", scope = "rootless", emit = "count", select = "rare", kind = "literal" }
+
+[[shape]]
+id = "literal-rare-lines"
+pattern = "WalletService"
+gist = ["-F", "-n"]
+rg = ["-F", "-n"]
+bar = "lines"
+expect = "win"
+dims = { mode = "linear", flags = "fixed", scope = "rootless", emit = "lines", select = "rare", kind = "literal" }
+
+[[shape]]
+id = "literal-rare-only-matching"
+pattern = "WalletService"
+gist = ["-F", "-o"]
+rg = ["-F", "-o"]
+bar = "lines"
+expect = "win"
+dims = { mode = "linear", flags = "only-matching", scope = "rootless", emit = "lines", select = "rare", kind = "literal" }
+
+[[shape]]
+id = "word-common-files"
+pattern = "ctx"
+gist = ["-w", "-l"]
+rg = ["-w", "-l"]
+bar = "set"
+expect = "parity"
+dims = { mode = "linear", flags = "word", scope = "rootless", emit = "files", select = "common", kind = "literal" }
+
+[[shape]]
+id = "ignore-case-rare-files"
+pattern = "walletservice"
+gist = ["-i", "-l"]
+rg = ["-i", "-l"]
+bar = "set"
+expect = "win"
+dims = { mode = "linear", flags = "ignore-case", scope = "rootless", emit = "files", select = "rare", kind = "literal" }
+
+[[shape]]
+id = "maxcount-common-lines"
+pattern = "error"
+gist = ["-F", "-m", "1", "-n"]
+rg = ["-F", "-m", "1", "-n"]
+bar = "lines"
+expect = "parity"
+dims = { mode = "linear", flags = "max-count", scope = "rootless", emit = "lines", select = "common", kind = "literal" }
+
+[[shape]]
+id = "invert-count-subtree"
+pattern = "import"
+gist = ["-F", "-v", "-c"]
+rg = ["-F", "-v", "-c"]
+bar = "count"
+expect = "parity"
+roots = ["services/backend/gateway"]
+dims = { mode = "linear", flags = "invert", scope = "subtree", emit = "count", select = "common", kind = "literal" }
+
+[[shape]]
+id = "regex-anchored-rare-files"
+pattern = 'func \w+\(ctx'
+gist = ["-l"]
+rg = ["-l"]
+bar = "set"
+expect = "win"
+dims = { mode = "linear", flags = "plain", scope = "rootless", emit = "files", select = "rare", kind = "anchored-regex" }
+
+[[shape]]
+id = "regex-alternation-files"
+pattern = "TODO|FIXME|XXX"
+gist = ["-l"]
+rg = ["-l"]
+bar = "set"
+expect = "parity"
+dims = { mode = "linear", flags = "plain", scope = "rootless", emit = "files", select = "common", kind = "alternation" }
+
+# ─────────────────────────── walk scope: glob / type / subtree ───────────────
+
+[[shape]]
+id = "glob-go-rare-files"
+pattern = "WalletService"
+gist = ["-F", "-l", "-g", "*.go"]
+rg = ["-F", "-l", "-g", "*.go"]
+bar = "set"
+expect = "win"
+dims = { mode = "linear", flags = "fixed", scope = "glob", emit = "files", select = "rare", kind = "literal" }
+
+[[shape]]
+id = "type-go-rare-files"
+pattern = "WalletService"
+gist = ["-F", "-l", "-t", "go"]
+rg = ["-F", "-l", "-t", "go"]
+bar = "set"
+expect = "win"
+dims = { mode = "linear", flags = "fixed", scope = "type", emit = "files", select = "rare", kind = "literal" }
+
+[[shape]]
+id = "subtree-rare-lines"
+pattern = "WalletService"
+gist = ["-F", "-n"]
+rg = ["-F", "-n"]
+bar = "lines"
+expect = "win"
+roots = ["services/backend/api"]
+dims = { mode = "linear", flags = "fixed", scope = "subtree", emit = "lines", select = "rare", kind = "literal" }
+
+# ─────────────────────────── mode: -P PCRE2 ─────────────────────────────────
+
+[[shape]]
+id = "pcre-lookahead-rare-files"
+pattern = 'WalletService(?=[\s\S]*ctx)'
+gist = ["-P", "-l"]
+rg = ["-P", "-l"]
+bar = "set"
+expect = "win"
+dims = { mode = "pcre", flags = "lookahead", scope = "rootless", emit = "files", select = "rare", kind = "lookaround" }
+
+[[shape]]
+id = "pcre-lookahead-common-files"
+pattern = 'func \w+\((?=.*ctx)'
+gist = ["-P", "-l"]
+rg = ["-P", "-l"]
+bar = "set"
+expect = "win"
+dims = { mode = "pcre", flags = "lookahead", scope = "rootless", emit = "files", select = "common", kind = "lookaround" }
+
+# A pure backreference with NO extractable required literal: the trigram index
+# has nothing to prefilter on, so gist scans the whole corpus with PCRE2 exactly
+# as rg does — and carries a little walk overhead on top. A declared structural
+# loss (report-only): gist's index edge is literal-anchored by construction, and
+# this pattern denies it an anchor. Hard-paths / PCRE2 work owns narrowing it.
+[[shape]]
+id = "pcre-backref-files"
+pattern = '(\w{4,})\s+\1'
+gist = ["-P", "-l"]
+rg = ["-P", "-l"]
+bar = "set"
+expect = "loss"
+dims = { mode = "pcre", flags = "backref", scope = "rootless", emit = "files", select = "common", kind = "backreference" }
+
+# ─────────────────────────── mode: -U multiline ─────────────────────────────
+
+# Even a RARE cross-line span loses today: the -U emit runs on the serial engine
+# (whole-buffer spans the parallel per-file pipeline deliberately does not own, to
+# protect its 30/30 parity), so it forfeits the parallel walk that carries every
+# linear win. A declared loss (report-only) — correctness still gates it (parity
+# passes). Parallelizing the -U emit owns turning both -U rows green.
+[[shape]]
+id = "multiline-rare-files"
+pattern = 'WalletService[\s\S]{0,80}?\{'
+gist = ["-U", "-l"]
+rg = ["-U", "-l"]
+bar = "set"
+expect = "loss"
+dims = { mode = "multiline", flags = "plain", scope = "rootless", emit = "files", select = "rare", kind = "cross-line" }
+
+# The declared, known loss: a COMMON lazy-dotstar cross-line span. gist's -U emit
+# runs on the serial engine (whole-buffer spans the parallel per-file pipeline
+# deliberately does not own, to protect its 30/30 parity), so a ubiquitous
+# `[\s\S]*?` trails rg's lazy DFA. Declared here on purpose (`expect="loss"`,
+# report-only in the gate) so no aggregate win can ever conceal it. Parallelizing
+# the -U emit path owns the fix; correctness is unaffected — parity still gates it.
+[[shape]]
+id = "multiline-common-lazy-dotstar-files"
+pattern = 'import \([\s\S]*?\)'
+gist = ["-U", "-l"]
+rg = ["-U", "-l"]
+bar = "set"
+expect = "loss"
+dims = { mode = "multiline", flags = "lazy-dotstar", scope = "rootless", emit = "files", select = "common", kind = "cross-line" }

@@ -1,0 +1,1 @@
+Rewrote the package root and relate READMEs to the OSS convention (What it is / Why it exists / Prior art): measured wins with harness citations, honest prior-art framing (csearch/RE2/FM-index/LZJD lineage, Hyperscan and embeddings deliberately declined), and the relate corpus-policy asymmetries documented.

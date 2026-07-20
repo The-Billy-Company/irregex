@@ -1,9 +1,9 @@
 //! irregex — corpus loading, shared by the CLI drivers (`cli/gist/`), the
 //! unified search engine (`runtime/cold/`) and the bench/verify harness
-//! (`bench/harness/bench.zig`). The corpus is every non-binary file under the roots
-//! (rg-style: a NUL byte ⇒ binary ⇒ skipped), minus the build/VCS subtrees rg
-//! also skips. Also owns the stdout results contract (`emitResults`) every
-//! search path emits through.
+//! (`bench/harness/bench.zig`). The corpus is every non-binary, non-gitignored
+//! file under the roots (rg-style: a NUL byte ⇒ binary ⇒ skipped), minus the
+//! corpus-only build/VCS skip list. Also owns the stdout results contract
+//! (`emitResults`) every search path emits through.
 
 const std = @import("std");
 const haystack = @import("haystack.zig");
@@ -282,7 +282,7 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !Corp
     var total: u64 = 0;
 
     for (roots) |root_path| {
-        var w = haystack.Walker.init(io, a, root_path) catch |e| {
+        var w = haystack.Walker.initWithRoots(io, a, root_path, roots) catch |e| {
             std.debug.print("  skip {s}: {s}\n", .{ root_path, @errorName(e) });
             continue;
         };

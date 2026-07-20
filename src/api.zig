@@ -33,25 +33,25 @@
 //! never fatal.
 
 const std = @import("std");
-const resident = @import("runtime/session/resident.zig");
-const request = @import("runtime/session/request.zig");
+const resident = @import("surface/exec/session/resident.zig");
+const request = @import("surface/exec/session/request.zig");
 
 /// The relate (compression-kinship) and compose (exact ∩ compression) kernels
 /// are pure and I/O-free; a hosted embedder reaches them through these same
 /// paths `root.zig` re-exports. Named here so the product vocabulary
 /// (`api.relate.*`, `api.compose.*`) reads as one surface beside `Engine`.
 pub const relate = struct {
-    pub const sketch = @import("search/similarity/sketch.zig");
-    pub const silhouette = @import("search/similarity/silhouette.zig");
-    pub const lexicon = @import("search/similarity/lexicon.zig");
-    pub const zipper = @import("search/similarity/zipper.zig");
+    pub const sketch = @import("kernel/kinship/metric/sketch.zig");
+    pub const silhouette = @import("kernel/kinship/metric/silhouette.zig");
+    pub const lexicon = @import("kernel/kinship/recall/lexicon.zig");
+    pub const zipper = @import("kernel/kinship/recall/zipper.zig");
 };
 
 pub const compose = struct {
-    pub const candidates = @import("search/compose/candidates.zig");
-    pub const context = @import("search/compose/context.zig");
-    pub const family = @import("search/compose/family.zig");
-    pub const provenance = @import("search/compose/provenance.zig");
+    pub const candidates = @import("kernel/compose/candidates.zig");
+    pub const context = @import("kernel/compose/context.zig");
+    pub const family = @import("kernel/compose/family.zig");
+    pub const provenance = @import("kernel/compose/provenance.zig");
 };
 
 /// A cooperative, thread-safe cancellation flag. One token is shared by

@@ -1,6 +1,6 @@
 **Trigram index switches from a flat `(trigram,doc)` pair table to a CSR
-directory over delta-varint posting bodies** (`src/index/trigram.zig`, new
-`src/index/varint.zig`) — the fix for the README's own documented weak point:
+directory over delta-varint posting bodies** (`src/index/trigrams/trigram.zig`, new
+`src/index/postings/varint.zig`) — the fix for the README's own documented weak point:
 "gist trails csearch/zoekt on the cold literal one-shot because it maps a
 177 MiB index where csearch mmaps 28 MiB." A flat table spent 8 bytes/posting
 (4 tag + 4 doc) and most of the tag was redundant — a distinct trigram carries
@@ -26,7 +26,7 @@ gist now outright _wins_ 7/11 needles against zoekt (up from a near-total
 loss) and still trails csearch geomean, but by roughly half the prior margin.
 The residual gap is no longer index size (gist's is now the smaller of the
 two) — profiling traces it to the corpus-wide freshness `stat()` walk
-(`src/corpus/fresh.zig`) that runs on every cold query regardless of hit/miss;
+(`src/index/trigrams/fresh.zig`) that runs on every cold query regardless of hit/miss;
 that is the next rung, tracked separately, not hidden.
 
 Correctness re-proven: format bumped to `format_version = 2` (a v1 cache is

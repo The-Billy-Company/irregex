@@ -1,20 +1,20 @@
 ---
 doc_radar:
   paths_exist:
-    - pkg/kernels/irregex/src/math/crest.zig
-    - pkg/kernels/irregex/src/math/crest_test.zig
-    - pkg/kernels/irregex/src/index/crest/sidecar.zig
+    - pkg/kernels/irregex/src/kernel/primitives/crest.zig
+    - pkg/kernels/irregex/src/kernel/primitives/crest_test.zig
+    - pkg/kernels/irregex/src/corpus/index/crest/sidecar.zig
     - pkg/kernels/irregex/bench/crest/bench.zig
   sentinels:
     - file: pkg/kernels/irregex/build.zig
       contains:
         - 'b.step("crest"'
-    - file: pkg/kernels/irregex/src/math/crest.zig
+    - file: pkg/kernels/irregex/src/kernel/primitives/crest.zig
       contains:
         - "pub fn ghat"
         - "pub fn crest"
         - "pub fn pruned"
-    - file: pkg/kernels/irregex/src/runtime/cold/engine/serial.zig
+    - file: pkg/kernels/irregex/src/surface/exec/cold/engine/serial.zig
       contains:
         - "crestSieve"
 ---

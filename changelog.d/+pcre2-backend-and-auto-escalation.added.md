@@ -12,7 +12,7 @@ search in the field: it wins the `bench/races/pcre_headtohead.sh` lookaround /
 backreference slate against every PCRE-capable competitor (rg -P, ugrep, ag,
 grep -P, git grep -P), with rg -P as the correctness oracle. `--rank` and
 template replace remain linear-engine-only. The flag catalog, `--schema`,
-`README.md`, and `.cursor/rules/gist.mdc` now reflect that no ripgrep long flag
+`README.md`, and `.cursor/rules/irregex.mdc` now reflect that no ripgrep long flag
 is unsupported-fail-loud any more; the fail-loud contract now guards unknown
 flags and patterns outside the chosen engine, always naming the `-P` / `--engine
 auto` fallback.

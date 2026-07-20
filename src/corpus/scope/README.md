@@ -7,6 +7,9 @@ doc_radar:
     - description: "language type table stays lookup-driven"
       file: pkg/kernels/irregex/src/corpus/scope/types.zig
       contains: ["extsForType", "isKnownType"]
+    - description: "path normalization remains shared with corpus ignore"
+      file: pkg/kernels/irregex/src/corpus/scope/paths.zig
+      contains: ["stripDot", "rootDepth"]
 ---
 
 # `src/corpus/scope/` — path selection
@@ -22,6 +25,7 @@ tree).
 | File | Job |
 | ---- | --- |
 | `glob.zig` | Gitignore-shaped glob matching (`*` per-segment, `**` across `/`, `!`-exclude) + `PathFilter` |
+| `paths.zig` | Shared path normalization, joining, depth, and ASCII-fold helpers |
 | `types.zig` | Language → extension/filename table (`-t go` / `py` / `rust` / …) with `extsForType` / `isKnownType` |
 
 ## Invariants
@@ -32,5 +36,5 @@ tree).
 
 ## When to edit
 
-New `-t` language aliases, glob dialect edges, or `PathFilter` composition.
-Walk / ignore *file* discovery stays in `../tree/` + `runtime/cold/walk/`.
+New `-t` language aliases, glob dialect edges, path normalization, or
+`PathFilter` composition. Ignore-file discovery stays in `../tree/`.

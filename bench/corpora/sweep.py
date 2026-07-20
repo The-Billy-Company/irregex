@@ -33,6 +33,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
@@ -177,6 +178,8 @@ PER_CORPUS: dict[str, list[tuple[str, list[str], str]]] = {
         ("torture-utf16-E", ["-E", "utf-16", "-l", "-e", "NEEDLE_UTF16", "enc/utf16le_bom.txt"], "exact"),
         ("torture-latin1-E", ["-E", "latin-1", "-n", "-e", "café", "enc/latin1.txt"], "exact"),
         ("torture-follow-links", ["-L", "-l", "-e", "NEEDLE_LINK_TARGET", "links"], "set"),
+        ("torture-dangling-link", ["-L", "-l", "-e", "NEEDLE_BESIDE_DANGLING", "broken"], "set"),
+        ("torture-link-cycle", ["-L", "-l", "-e", "NEEDLE_CYCLE", "links"], "set"),
     ],
 }
 
@@ -197,6 +200,19 @@ def run_one(argv: list[str], cwd: Path, env: dict[str, str] | None) -> tuple[int
 def sorted_lines(b: bytes) -> bytes:
     """Return ``b`` with lines sorted for order-insensitive stdout compare."""
     return b"\n".join(sorted(b.split(b"\n")))
+
+
+# `--json` carries inherently non-reproducible accounting (wall-clock elapsed
+# objects + printer-internal bytes_printed); ripgrep's own tests never assert
+# them, so both sides are normalized before the byte diff (same policy as
+# ../rgsuite/run.py::norm_json). Everything else in the stream stays exact.
+_ELAPSED = re.compile(rb'"elapsed(?:_total)?":\{[^}]*\}')
+_BYTES_PRINTED = re.compile(rb'"bytes_printed":\d+')
+
+
+def norm_json(b: bytes) -> bytes:
+    """Zero the non-reproducible accounting fields on both sides of the diff."""
+    return _BYTES_PRINTED.sub(rb'"bytes_printed":0', _ELAPSED.sub(rb'"elapsed":{}', b))
 
 
 def preview_diff(rg_out: bytes, g_out: bytes, limit: int = 6) -> list[str]:
@@ -225,6 +241,8 @@ def sweep_corpus(name: str, root: Path, engine: str, results: list[dict]) -> tup
     for label, args, mode in cases:
         rc_r, out_r, _err_r, t_r = run_one(["rg", *args], root, env)
         rc_g, out_g, err_g, t_g = run_one([str(GIST), "rg", *args], root, env)
+        if "--json" in args:
+            out_r, out_g = norm_json(out_r), norm_json(out_g)
         ok = rc_r == rc_g and (
             out_r == out_g if mode == "exact" else sorted_lines(out_r) == sorted_lines(out_g)
         )

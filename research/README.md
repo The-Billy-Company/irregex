@@ -17,17 +17,24 @@ doc_radar:
       contains: "compression kinship"
 ---
 
-# `research/` — theory dossiers (not production code)
+# `research/` — claim, ancestry, and falsification
 
-Writing that backs claims in the kernel. Production math and wiring live
-under `src/`; harnesses live under `bench/`. If you need a behavior change,
-edit source — then update the dossier if the claim moved.
+This is irregex's research record, not production code. Each dossier separates
+three questions that engineering prose too often collapses: **what useful
+thing did we build, what did the world already know, and what evidence could
+prove us wrong?** Production math and wiring live under `src/`; executable
+evidence lives under `bench/`.
 
-| Dossier | About |
-| ------- | ----- |
-| [`crest/`](crest) | Crest sieve: Sieve Theorem proof, prior art, testing narrative |
-| [`gist/`](gist) | Gist product claim: composition scope, prior-art landscape, evidence story |
-| [`relate/`](relate) | Relate compression-as-search: Language Trees lineage, prior art we used, evidence |
+| Dossier             | Research program                                                                                                                                |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`crest/`](crest)   | new mathematics: [Sieve Theorem](crest/PROOF.md), [prior-art review](crest/PRIOR_ART.md), and [falsification strategy](crest/TESTING.md)        |
+| [`gist/`](gist)     | agent-loop exact search: [product claim](gist/CLAIM.md), [competitive ancestry](gist/PRIOR_ART.md), and [evidence story](gist/TESTING.md)       |
+| [`relate/`](relate) | compression-as-search: [product claim](relate/CLAIM.md), [Language Trees lineage](relate/PRIOR_ART.md), and [evidence story](relate/TESTING.md) |
+
+Read each row left to right: the claim earns attention, prior art limits what
+is ours, and testing decides whether the implementation deserves the claim.
+If behavior changes, edit source first; then update the dossier only where the
+claim or evidence truly moved.
 
 Crest production code: [`../src/math/crest.zig`](../src/math/crest.zig) +
 [`../src/index/crest/`](../src/index/crest/). Production harness:

@@ -1,13 +1,13 @@
 // MONOLITHIC: one ignore protocol owns parsing, precedence, root scoping, compiled matching, and hidden-file folding so serial and parallel walkers cannot drift
-//! gist `rg` — the gitignore / .ignore / .rgignore filter that makes gist's
-//! directory walk honor the same "what's tracked" boundary ripgrep does.
+//! irregex — the shared gitignore / .ignore / .rgignore corpus boundary.
 //!
 //! Split from `run.zig` (the walk shell) the way `args`/`output` are: this
 //! module owns ONLY the ignore-rule model — parsing `.gitignore`-dialect lines
 //! into anchored/negated/dir-only globs, accumulating them per directory as the
 //! walk descends, and deciding whether a candidate path is ignored. It reuses
 //! the shared `scope/glob.zig` matcher for the segment-aware `*`/`**`/`?`/`[…]`
-//! matching, so there is one glob dialect across `-g` scoping and ignore rules.
+//! matching, so gist search, every persisted index, relate, and composed
+//! irregex all enumerate the same files.
 //!
 //! Semantics implemented (ripgrep/git parity):
 //!   • a leading or embedded `/` anchors the pattern to the ignore file's dir;
@@ -20,15 +20,46 @@
 //!     unless `--no-require-git`; `--no-ignore*` / `-u` disable the relevant tier.
 
 const std = @import("std");
-const gl = @import("../../../corpus/scope/glob.zig");
-const args = @import("../argv/args.zig");
-const paths = @import("paths.zig");
+const gl = @import("../scope/glob.zig");
+const paths = @import("../scope/paths.zig");
 const stripDot = paths.stripDot;
 const join = paths.join;
-const die = args.die;
-const oom = args.oom;
-const Opts = args.Opts;
 const Dir = std.Io.Dir;
+const oom = paths.allocFailure;
+
+/// Filesystem-admission options independent of any CLI grammar. Gist lowers its
+/// richer argv state through `from`; corpus/index consumers use the defaults.
+pub const Options = struct {
+    hidden: bool = false,
+    sorted: bool = false,
+    no_ignore: bool = false,
+    no_ignore_vcs: bool = false,
+    no_ignore_dot: bool = false,
+    no_ignore_parent: bool = false,
+    no_ignore_exclude: bool = false,
+    no_ignore_global: bool = false,
+    no_ignore_files: bool = false,
+    no_require_git: bool = false,
+    ignore_case_insensitive: bool = false,
+    ignore_files: []const []const u8 = &.{},
+
+    pub fn from(o: anytype) Options {
+        return .{
+            .hidden = o.hidden,
+            .sorted = o.sorted,
+            .no_ignore = o.no_ignore,
+            .no_ignore_vcs = o.no_ignore_vcs,
+            .no_ignore_dot = o.no_ignore_dot,
+            .no_ignore_parent = o.no_ignore_parent,
+            .no_ignore_exclude = o.no_ignore_exclude,
+            .no_ignore_global = o.no_ignore_global,
+            .no_ignore_files = o.no_ignore_files,
+            .no_require_git = o.no_require_git,
+            .ignore_case_insensitive = o.ignore_case_insensitive,
+            .ignore_files = o.ignore_files,
+        };
+    }
+};
 
 /// One compiled ignore rule. `glob` is the pattern core (leading `/` and trailing
 /// `/` stripped); `base` is the directory (relative to the walk root, "" = root)
@@ -228,7 +259,7 @@ pub const Compiled = struct {
 pub const Ignore = struct {
     a: std.mem.Allocator,
     io: std.Io,
-    o: Opts,
+    o: Options,
     // Ignore rules bucketed by the directory (relative to the walk root; "" = the
     // CWD/ancestor tier) whose ignore file contributed them. A candidate path can
     // only be governed by rules from its OWN ANCESTOR directories — a `.gitignore`
@@ -265,7 +296,7 @@ pub const Ignore = struct {
     /// `roots` are the search's positional path args (empty = walk CWD); each is
     /// probed for its own `.git` so a git repo (or worktree) named as a path arg is
     /// honored, not just CWD.
-    pub fn init(a: std.mem.Allocator, io: std.Io, o: Opts, roots: []const []const u8) Ignore {
+    pub fn init(a: std.mem.Allocator, io: std.Io, o: Options, roots: []const []const u8) Ignore {
         var self = Ignore{ .a = a, .io = io, .o = o, .groups = std.StringHashMap(std.ArrayList(Rule)).init(a), .loaded = std.StringHashMap(void).init(a), .reanchor_root_rules = roots.len > 1 and !o.sorted };
         // `--ignore-file` is EXPLICIT user intent: lowest precedence (added first,
         // so an in-tree `.ignore`/`.gitignore` overrides it — rg's f45 rule) and
@@ -436,6 +467,26 @@ pub const Ignore = struct {
         return self.skipFromVerdict(self.decide(rel, is_dir), is_dir, basename, wl_ignore, wl_hidden);
     }
 
+    /// Certify one already-discovered file against the same ancestor-pruning
+    /// semantics as a live walk. Freshness overlays use this after their
+    /// metadata-only fan-out so a newly changed ignored file cannot enter an
+    /// otherwise gitignore-clean persisted corpus.
+    pub fn admitsPath(self: *Ignore, root: []const u8, rel_in: []const u8) bool {
+        const rel = stripDot(rel_in);
+        self.scopeToRoot(root);
+        var i: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, rel, i, '/')) |slash| {
+            const dir = rel[0..slash];
+            i = slash + 1;
+            if (dir.len == 0) continue;
+            const name = if (std.mem.lastIndexOfScalar(u8, dir, '/')) |s| dir[s + 1 ..] else dir;
+            if (self.shouldSkip(dir, true, name, false, false)) return false;
+            self.loadDir(dir, dir);
+        }
+        const name = if (std.mem.lastIndexOfScalar(u8, rel, '/')) |s| rel[s + 1 ..] else rel;
+        return !self.shouldSkip(rel, false, name, false, false);
+    }
+
     /// Fold a base-tier verdict (`decideAt`) with the hidden-dotfile rule the same
     /// way `shouldSkip` does, but from an ALREADY-COMPUTED verdict — the parallel
     /// pipeline computes the base verdict and its per-directory chain verdicts
@@ -486,11 +537,10 @@ pub const Ignore = struct {
 // byte-wise caseless glob tier and args.zig's `--iglob` fold.
 const lower = paths.lowerDup;
 
-// Env resolution (HOME/XDG for git's config/ignore homes) goes through the
-// shared `args.envSpan` — stable for the per-user gist server's lifetime,
-// matching ripgrep's own `std::env` resolution; the slice borrows libc's
-// stable environ storage (no copy).
-const envSpan = args.envSpan;
+// HOME/XDG resolution borrows libc's process-stable environment storage.
+fn envSpan(key: [*:0]const u8) ?[]const u8 {
+    return std.mem.span(std.c.getenv(key) orelse return null);
+}
 
 /// Best-effort whole-file read (≤1 MiB); null on any error (missing/unreadable),
 /// matching git/ripgrep's "absent global config is simply no rules" behavior.

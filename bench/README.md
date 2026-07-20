@@ -1,10 +1,10 @@
 ---
 doc_radar:
   counts:
-    - description: "twelve bench concern folders, one per row of the table below"
+    - description: "bench concern folders, one per row of the table below"
       glob: pkg/kernels/irregex/bench/*/
       unit: dirs
-      equals: 12
+      min: 13
   sentinels:
     - description: "the Layer B′ measured rung exists as a build step"
       file: pkg/kernels/irregex/build.zig
@@ -15,7 +15,7 @@ doc_radar:
 
 Benchmark, verification, and competitive-proof harness for the `gist`
 code-locator kernel — no engine code lives here (that's all under `src/`).
-Twelve concerns, twelve folders:
+One concern per folder:
 
 | Folder                                | Concern                                                                                                                                                                                                                                        |
 | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -26,6 +26,7 @@ Twelve concerns, twelve folders:
 | [`certify/`](certify/README.md)       | The macroscopic half of the Layer-A optimality certificate — races the whole field per pattern class with a fail-closed statistical verdict.                                                                                                   |
 | [`session/`](session/README.md)       | The **resident-session** certificate — the honest warm-product path (persistent client → `gist serve` daemon over a Unix socket), the only sound basis for a warm-speedup claim (ADR-352 rung 2.5).                                            |
 | [`rgsuite/`](rgsuite/README.md)       | The `gist rg` ⇄ real-ripgrep drop-in proof — mined `rgtest!` correctness replay plus the performance scoreboard.                                                                                                                               |
+| [`matrix/`](matrix/README.md)         | The **CLI-shape admission matrix** — one machine-readable row per supported shape (mode × flags × walk-scope × emit × selectivity), driven as real argv three ways (gist-idx / gist-noidx / rg) with a parity-first gate + per-shape statistical floors. |
 | [`portcert/`](portcert/README.md)     | Layer B — port-optimality: cross-compiled `llvm-mca` static microarchitectural bound on gist's two hot loops, drift-guarded against production, plus Layer B′ — the same probes **measured on this machine** under the PMU (`gist-portbound`). |
 | [`roofline/`](roofline/README.md)     | Layer C — roofline: this machine's measured STREAM read-bandwidth ceiling vs gist's real scan throughput.                                                                                                                                      |
 | [`lowerbound/`](lowerbound/README.md) | Layer D â algorithmic lower bound: a fail-closed structural audit proving gist's verify touches the information-theoretic floor of candidate bytes.                                                                                            |
@@ -93,8 +94,9 @@ basis for a "warm is Nx faster than ripgrep" claim.
 
 ## Fairness — stated, not hand-waved
 
-Every tool is scoped to the same source roots (`services libs clients contracts
-scripts quality`) and given its honest fastest path:
+Every tool is scoped to the same source roots (`$GIST_ROOTS` when set, else the
+tree's own roots — `_compete.sh` resolves them once, mirroring
+`corpus.resolveRoots`) and given its honest fastest path:
 
 - **rg / git grep** honor `.gitignore` natively (skip the gitignored ~99 GB of
   build artifacts). **ag** is handed `--path-to-ignore .gitignore` (the root

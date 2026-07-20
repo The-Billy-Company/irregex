@@ -105,21 +105,15 @@ pub fn build(b: *std.Build) void {
         b.fmt("{s}/System/Library/Frameworks", .{std.mem.trimEnd(u8, b.run(&.{ "xcrun", "--show-sdk-path" }), "\n")})
     else
         null;
-    linkWatcherFrameworks(k.root_module, darwin_frameworks);
 
-    // Link the vendored PCRE2 backend into the engine module (and thus every
-    // artifact built from it: the C-ABI libs, the test binary, and the
-    // bench/roofline/lowerbound/portcert executables that import it). The CLI
-    // links its own copy built at the CLI optimize level (below).
-    const pcre2_engine = pcre2Library(b, k.target, k.optimize);
-    k.root_module.linkLibrary(pcre2_engine);
-
-    // The ReleaseSafe-pinned test module is a twin of the root module, so it
-    // needs the same decorations: the frameworks and a PCRE2 built at ITS
-    // optimize (the PCRE2 adversarial tests shouldn't run a Debug C library).
-    if (k.test_module != k.root_module) {
-        linkWatcherFrameworks(k.test_module, darwin_frameworks);
-        k.test_module.linkLibrary(pcre2Library(b, k.target, k.test_module.optimize.?));
+    // Decorate every engine module that compiles the kernel (root + the
+    // ReleaseSafe test twin when `test_optimize` diverges): CoreServices/
+    // CoreFoundation for the macOS resident watcher, and a PCRE2 built at THAT
+    // module's optimize (the adversarial tests shouldn't run a Debug C library).
+    var engine_buf: [2]*std.Build.Module = undefined;
+    for (kernelkit.engineModules(k, &engine_buf)) |m| {
+        linkWatcherFrameworks(m, darwin_frameworks);
+        m.linkLibrary(pcre2Library(b, k.target, m.optimize.?));
     }
 
     // ── the `gist` CLI executable (the product surface) ──
@@ -144,18 +138,12 @@ pub fn build(b: *std.Build) void {
         "cli-optimize",
         "optimize mode for the installed gist CLI (default ReleaseFast — the product surface's whole point is speed)",
     ) orelse .ReleaseFast;
-    const cli_engine = b.createModule(.{
-        .root_source_file = b.path("src/root.zig"),
-        .target = k.target,
-        .optimize = cli_optimize,
-    });
-    // The installed CLI is the speed-critical product surface (ReleaseFast by
-    // default), so it links a PCRE2 built at the same optimize level rather than
-    // the (possibly Debug) engine copy.
+    // Twin of the root at the CLI optimize — decorations aren't copied.
+    const cli_engine = kernelkit.twin(k, cli_optimize);
     cli_engine.linkLibrary(pcre2Library(b, k.target, cli_optimize));
     linkWatcherFrameworks(cli_engine, darwin_frameworks);
     const cli_mod = b.createModule(.{
-        .root_source_file = b.path("src/cli/gist/main.zig"),
+        .root_source_file = b.path("src/surface/face/gist/main.zig"),
         .target = k.target,
         .optimize = cli_optimize,
     });
@@ -167,13 +155,26 @@ pub fn build(b: *std.Build) void {
     // Same engine module, same ReleaseFast product posture; a second thin face
     // over the shared kernel, not a second engine.
     const relate_mod = b.createModule(.{
-        .root_source_file = b.path("src/cli/relate/main.zig"),
+        .root_source_file = b.path("src/surface/face/relate/main.zig"),
         .target = k.target,
         .optimize = cli_optimize,
     });
     relate_mod.addImport("irregex", cli_engine);
     const relate_exe = b.addExecutable(.{ .name = "relate", .root_module = relate_mod });
     b.installArtifact(relate_exe);
+
+    // ── the `irregex` binary — the composed face (context/family/provenance) ──
+    // ADR-367: exact match narrows a CandidateSet, compression reasons inside
+    // it. Same engine module, same ReleaseFast product posture; a third thin
+    // face over the shared kernel, not a third engine.
+    const compose_mod = b.createModule(.{
+        .root_source_file = b.path("src/surface/face/irregex/main.zig"),
+        .target = k.target,
+        .optimize = cli_optimize,
+    });
+    compose_mod.addImport("irregex", cli_engine);
+    const compose_exe = b.addExecutable(.{ .name = "irregex", .root_module = compose_mod });
+    b.installArtifact(compose_exe);
 
     // ── `zig build lab` — the measurement-lab install umbrella ──
     // The six bench/certificate executables below are deliberately OFF the
@@ -207,7 +208,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     const check_mod = b.createModule(.{
-        .root_source_file = b.path("src/cli/gist/main.zig"),
+        .root_source_file = b.path("src/surface/face/gist/main.zig"),
         .target = linux_target,
         .optimize = .Debug,
     });
@@ -227,6 +228,20 @@ pub fn build(b: *std.Build) void {
     status_json_test.expectStdOutMatch("\"schema_version\":1");
     status_json_test.expectStdOutMatch("\"state\":");
     k.test_step.dependOn(&status_json_test.step);
+
+    // Similarity thresholds are probabilities/distances, not arbitrary floats.
+    // Reject NaN, infinities, and out-of-range values before any corpus work;
+    // otherwise IEEE comparisons silently turn a malformed query into no rows.
+    const bad_distance_test = b.addRunArtifact(relate_exe);
+    bad_distance_test.addArgs(&.{ "dups", "--max-distance", "nan" });
+    bad_distance_test.expectExitCode(2);
+    bad_distance_test.expectStdErrMatch("finite number in [0,1]");
+    k.test_step.dependOn(&bad_distance_test.step);
+    const bad_echo_test = b.addRunArtifact(relate_exe);
+    bad_echo_test.addArgs(&.{ "echoes", "--min-echo", "1.1" });
+    bad_echo_test.expectExitCode(2);
+    bad_echo_test.expectStdErrMatch("finite number in [0,1]");
+    k.test_step.dependOn(&bad_echo_test.step);
 
     // Black-box CLI regression guard (wired into `zig build test`): an explicit
     // PATH arg that can't be opened must be reported to stderr and force exit 2
@@ -307,13 +322,15 @@ pub fn build(b: *std.Build) void {
     // calling-convention, header, symbol, and contract drift that the
     // toolchain-free gist-contract text gate cannot observe. Beyond the version
     // + trigram primitives it drives the rung-3 warm session end to end
-    // (`irregex_open`/`irregex_search`/`irregex_close`) over a generated two-line fixture:
+    // (`irregex_open`/`irregex_search[_with_options]`/`irregex_close`) over a generated two-line fixture:
     // a full stream must fire on BOTH matching lines with the first hit on line 1
     // and a single whole-needle submatch (byte-accurate offsets reach C); a
     // callback that returns non-zero must STOP after the first line yet still
-    // report IRREGEX_MATCH (the abort return, ABI v2); and a no-match query must
-    // return IRREGEX_OK without firing (never `die()`s). The needle lives ONLY in
-    // the fixture (a separate dir from this C source), so it can never self-match.
+    // report IRREGEX_MATCH (the abort return, ABI v2); the additive options
+    // entry must enforce smart-case/Unicode/invert/quiet/max-count and reject malformed
+    // options; and a no-match query must return IRREGEX_OK without firing.
+    // The needle lives ONLY in the fixture (a separate dir from this C source),
+    // so it can never self-match.
     const ffi_fixture = b.addWriteFiles();
     _ = ffi_fixture.add("fixture.txt", "gist_ffi_smoke_needle on line one\ngist_ffi_smoke_needle on line two\nsmartcase_needle\nSMARTCASE_NEEDLE\n");
     const c_smoke_source = b.addWriteFiles().add("gist_c_abi_smoke.c",
@@ -378,7 +395,6 @@ pub fn build(b: *std.Build) void {
         \\    if (irregex_search(s, (const uint8_t *)needle, nlen, &opts, on_match_stop, NULL) != IRREGEX_MATCH) return 25;
         \\    if (g_hits != 1) return 26;
         \\
-        \\    /* no match still returns OK and never fires. */
         \\    /* options path: cap per file, quiet suppresses callbacks, -m0 matches nothing. */
         \\    opts.flags = IRREGEX_FIXED | IRREGEX_MAX_COUNT;
         \\    opts.max_count = 1u;
@@ -418,28 +434,12 @@ pub fn build(b: *std.Build) void {
         \\    opts.struct_size = 0u;
         \\    if (irregex_search(s, (const uint8_t *)needle, nlen, &opts, on_match, NULL) != IRREGEX_INVALID) return 38;
         \\
+        \\    /* no match still returns OK and never fires. */
         \\    g_hits = 0;
         \\    opts = (irregex_search_options){sizeof opts, IRREGEX_FIXED, 0u, 0u, 0u};
         \\    if (irregex_search(s, (const uint8_t *)"zzz_absent_needle_zzz", 21u, &opts, on_match, NULL) != IRREGEX_OK) return 39;
         \\    if (g_hits != 0) return 40;
         \\    irregex_close(s);
-        \\    return 0;
-        \\}
-        \\
-    );
-    const c_smoke_mod = b.createModule(.{
-        .target = k.target,
-        .optimize = k.optimize,
-        .link_libc = true,
-    });
-    linkWatcherFrameworks(c_smoke_mod, darwin_frameworks); // engine object pulls in FSEvents externs
-    c_smoke_mod.addIncludePath(b.path("include"));
-    c_smoke_mod.addCSourceFile(.{
-        .file = c_smoke_source,
-        .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" },
-    });
-    c_smoke_mod.addObject(b.addObject(.{
-        .name = "gist-c-abi-smoke-kernel",
         \\
         \\    /* ── the PULL-cursor surface (additive; same warm engine) ── */
         \\    irregex_engine *e = NULL;
@@ -509,12 +509,29 @@ pub fn build(b: *std.Build) void {
         \\    if (irregex_search_cursor(e, &req, &cur) != IRREGEX_INVALID) return 62;
         \\    if (irregex_status_message(IRREGEX_STALE) == NULL) return 63;
         \\    irregex_engine_close(e);
+        \\    return 0;
+        \\}
+        \\
+    );
+    const c_smoke_mod = b.createModule(.{
+        .target = k.target,
+        .optimize = k.optimize,
+        .link_libc = true,
+    });
+    linkWatcherFrameworks(c_smoke_mod, darwin_frameworks); // engine object pulls in FSEvents externs
+    c_smoke_mod.addIncludePath(b.path("include"));
+    c_smoke_mod.addCSourceFile(.{
+        .file = c_smoke_source,
+        .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" },
+    });
+    c_smoke_mod.addObject(b.addObject(.{
+        .name = "gist-c-abi-smoke-kernel",
         .root_module = k.root_module,
     }));
     // The kernel object carries the engine's PCRE2 extern references; the smoke
     // exe links a matching PCRE2 so those symbols resolve (the C ABI itself does
     // not touch PCRE2, but the whole engine module is compiled into the object).
-    c_smoke_mod.linkLibrary(pcre2_engine);
+    c_smoke_mod.linkLibrary(pcre2Library(b, k.target, k.optimize));
     const c_smoke = b.addExecutable(.{
         .name = "gist-c-abi-smoke",
         .root_module = c_smoke_mod,

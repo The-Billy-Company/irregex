@@ -1,10 +1,10 @@
 ---
 doc_radar:
   counts:
-    - description: "irregex src/ tiers: math · corpus · index · search · runtime · cli"
+    - description: "irregex src/ layers: kernel · corpus · surface"
       glob: pkg/kernels/irregex/src/*
       unit: dirs
-      equals: 6
+      equals: 3
   sentinels:
     - description: "the Zig package identity is irregex"
       file: pkg/kernels/irregex/build.zig.zon
@@ -102,7 +102,7 @@ From the Billy checkout (the package requires the Zig version declared in
 [`build.zig.zon`](build.zig.zon)):
 
 ```bash
-make install-gist                    # build both CLIs, link them, index the tree
+make install-gist                    # build all three CLIs, link them, index the tree
 
 gist 'SearchRequest' --rank          # ranked exact/regex search
 gist 'foo(?=bar)' -P                 # indexed PCRE2 when a sound literal exists
@@ -170,17 +170,40 @@ questions in Gist and set-, similarity-, or provenance-shaped questions in
 Relate; check each individual README when choosing flags, lenses, thresholds,
 or lifecycle controls.
 
+## irregex in brief
+
+When a question needs **both** engines in one step — not a hand-run pipeline —
+reach for the `irregex` CLI, the third face
+([ADR-367](../../../docs/architecture/3-decisions/367-composed-irregex-cli.md)).
+Exact match narrows a typed candidate set, then compression reasons only inside
+it, so the statistical work never re-includes files the patterns excluded:
+
+- `irregex context TEXT -e P… {ROOT… | --all}` — the minimal non-redundant
+  reading set among files that actually match the patterns (exact filter, then
+  coverage packing over only those files).
+- `irregex family PATTERN [--max-distance T | --echo-min E] {ROOT… | --all}` —
+  of the files matching PATTERN, which are forks (`--max-distance`) or renamed
+  structural twins (`--echo-min`) of each other.
+- `irregex provenance TEXT` — quotation attribution, then re-verification
+  against the source's current bytes; a phrase surfaces only if the live file
+  still holds it.
+
+`gist` and `relate` stay the direct faces; `irregex` forwards none of their
+verbs. See the [`irregex` README](src/cli/irregex/README.md) for the composed
+workflows, the `CandidateSet` model, and mandatory-scope rules.
+
 ## Choose a face
 
 | Face       | What it is                                                                                                                                                       | Docs                                                     |
 | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
 | **gist**   | the rg-parity code locator CLI: trigram + crest read-elision, ranked search, and a resident session; the agents' everyday search reflex                          | [`src/cli/gist/README.md`](src/cli/gist/README.md)       |
 | **relate** | compression-as-search: retrieval/packing, quotation, kinship/families/echoes, and exact pattern sets; `index` / `status` own the warm lifecycle                  | [`src/cli/relate/README.md`](src/cli/relate/README.md)   |
+| **irregex** | the composed face: exact match narrows a `CandidateSet`, compression reasons inside it — `context` (reading set), `family` (forks/twins), `provenance` (quote, re-verified) | [`src/cli/irregex/README.md`](src/cli/irregex/README.md) |
 | **codex**  | the compressed self-index: a corpus stored at entropy-bound size with exact O(m) `count`/`find` and byte-exact restoration; powers `gist codex` + `relate quote` | [`src/index/codex/README.md`](src/index/codex/README.md) |
 | **ffi**    | the in-process C-ABI warm session (`irregex_open` / `irregex_search` / `irregex_close` over `libirregex`)                                                        | [`src/runtime/ffi/README.md`](src/runtime/ffi/README.md) |
 
-The two CLIs are separate faces over one shared floor (`src/math/`,
-`src/corpus/`, `src/index/`, `src/search/`, `src/runtime/`); neither owns a
+The three CLIs are separate faces over one shared floor (`src/math/`,
+`src/corpus/`, `src/index/`, `src/search/`, `src/runtime/`); none owns a
 private copy of the corpus walk, scope machinery, indexes, or execution hosts.
 Operational READMEs explain how to use each face; the
 [`research dossiers`](research/README.md) explain why the claims deserve to
@@ -324,9 +347,9 @@ place only when the tool feels obvious in the hand.
 | -------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `src/runtime/` | the shared floor: `corpus/` walk/loading, `scope/` path scoping, `session/` warm resident transport, `ffi/` C-ABI face |
 | `src/math/`    | the shared bit-identity floor (`bits.zig`) + the crest sieve calculus (`crest.zig`)                                    |
-| `src/search/`  | match (`match/`), rank, batch (`patterns` · `loom`), similarity (`sketch` · `lexicon` · `zipper`)                      |
+| `src/search/`  | match (`match/`), rank, batch (`patterns` · `loom`), similarity (`sketch` · `lexicon` · `zipper`), compose (exact→statistical) |
 | `src/index/`   | trigram postings (`trigrams/` · `postings/`) + the compressed self-index (`codex/`) + the crest sidecar (`crest/`)     |
-| `src/cli/`     | the two product binaries: `gist/` (exact locator) and `relate/` (compression-search)                                   |
+| `src/cli/`     | the three product binaries: `gist/` (exact locator), `relate/` (compression-search), `irregex/` (composed, ADR-367)     |
 | `include/`     | `irregex.h`: the flat C ABI (`irregex_*` symbols)                                                                      |
 | `bindings/`    | Python (`billy-irregex`, subprocess + optional cffi over `libirregex`) and Rust (subprocess) faces                        |
 | `contract/`    | `search_api.toml`: the unified SearchRequest/irregex contract (ADR-352)                                                |
@@ -339,7 +362,7 @@ narrative, competitive benchmarks, and the full rg-parity flag table.
 ## Build & test
 
 ```bash
-make install-gist   # build (ReleaseFast) + symlink ~/.local/bin/gist + index
+make install-gist   # build (ReleaseFast) + symlink ~/.local/bin/{gist,relate,irregex} + index
 make build-gist     # staticlib + dynlib (libirregex) + irregex.h → zig-out/
 make test-gist      # zig build test: unit + differential-fuzz suites
 ```

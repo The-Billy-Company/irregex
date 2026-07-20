@@ -1,8 +1,8 @@
 //! irregex — the Haystack abstraction: WHAT to search/index, decoupled from HOW to
 //! read it. Takes its shape from ripgrep's own split (`crates/core/haystack.rs`)
 //! between classifying a walk entry as searchable and actually opening it, but
-//! adapted to irregex's general program: no ignore files, no explicit-file-arg
-//! concept, one skip-dir policy (`isSkipDir`) shared by every corpus consumer.
+//! adapted to irregex's general program: the shared gitignore engine plus one
+//! corpus-only skip-dir policy (`isSkipDir`) govern every consumer.
 //! Before this, `corpus.zig`'s index build, `runtime/cold/engine/serial.zig`'s tree-walk
 //! enumeration, `corpus/fresh.zig`'s mtime+ctime freshness stat-walk, and the
 //! no-prefilter live scan each re-derived the identical
@@ -21,6 +21,8 @@
 const std = @import("std");
 const Dir = std.Io.Dir;
 const corpus_mod = @import("corpus.zig"); // mutual import; only `outDir()` is touched
+const ignore = @import("ignore.zig");
+const paths = @import("../scope/paths.zig");
 
 /// A file discovered by the walk: a resolved, root-joined path plus the
 /// directory handle + basename needed to read or stat it right now.
@@ -41,7 +43,7 @@ pub const Haystack = struct {
 /// lookup uses (`std.zig.primitives.names`, `std.zig.Token.getKeyword`) —
 /// buckets these 34 names by length at comptime, so a lookup is one length
 /// check + a compare against only the few same-length candidates, instead of
-/// testing all 34 in the worst (most common) case of "not a skip dir".
+/// testing all 35 in the worst (most common) case of "not a skip dir".
 /// Measured (standalone ReleaseFast micro-bench, 1786 real repo directory
 /// basenames pulled from `git ls-tree`, 2000 passes): a linear `std.mem.eql`
 /// scan over the flat list runs 18.5 ns/call; this runs 2.8 ns/call — a 6.6×
@@ -52,13 +54,13 @@ pub const Haystack = struct {
 /// output) — nothing project-specific; a tree with its own heavy dirs extends
 /// the policy per invocation via `GIST_SKIP`.
 const skip_dirs = std.StaticStringMap(void).initComptime(.{
-    .{".git"},          .{".github"},     .{".hg"},           .{".svn"},        .{"node_modules"},
-    .{"target"},        .{"dist"},        .{"dist-types"},    .{"build"},       .{".build"},
-    .{"out"},           .{".next"},       .{"coverage"},      .{".venv"},       .{"venv"},
-    .{"site-packages"}, .{"__pycache__"}, .{".pytest_cache"}, .{".mypy_cache"}, .{".ruff_cache"},
-    .{".zig-cache"},    .{"zig-out"},     .{".cache"},        .{".local"},      .{".turbo"},
-    .{"vendor"},        .{".swiftpm"},    .{"Pods"},          .{"DerivedData"}, .{".cursor"},
-    .{".idea"},         .{".vscode"},     .{".parcel-cache"}, .{".pnpm-store"},
+    .{".git"},          .{".github"},     .{".hg"},           .{".svn"},          .{"node_modules"},
+    .{"target"},        .{"dist"},        .{"dist-types"},    .{"build"},         .{".build"},
+    .{"out"},           .{".next"},       .{"coverage"},      .{".venv"},         .{"venv"},
+    .{"site-packages"}, .{"__pycache__"}, .{".pytest_cache"}, .{".mypy_cache"},   .{".ruff_cache"},
+    .{".zig-cache"},    .{"zig-out"},     .{"zig-pkg"},       .{".cache"},        .{".local"},
+    .{".turbo"},        .{"vendor"},      .{".swiftpm"},      .{"Pods"},          .{"DerivedData"},
+    .{".cursor"},       .{".idea"},       .{".vscode"},       .{".parcel-cache"}, .{".pnpm-store"},
 });
 
 /// Extra skip basenames, parsed once per process from two optional sources:
@@ -163,12 +165,23 @@ pub const Walker = struct {
     inner: Dir.SelectiveWalker,
     root_path: []const u8,
     a: std.mem.Allocator,
+    ig: ignore.Ignore,
 
     pub fn init(io: std.Io, a: std.mem.Allocator, root_path: []const u8) !Walker {
+        return initWithRoots(io, a, root_path, &.{root_path});
+    }
+
+    /// Initialize one root while compiling ignore precedence against the full
+    /// invocation's roots. This preserves gist's multi-root re-anchoring.
+    pub fn initWithRoots(io: std.Io, a: std.mem.Allocator, root_path: []const u8, roots: []const []const u8) !Walker {
         var root = try Dir.cwd().openDir(io, root_path, .{ .iterate = true });
         errdefer root.close(io);
         const inner = try root.walkSelectively(a);
-        return .{ .root = root, .inner = inner, .root_path = root_path, .a = a };
+        var ig = ignore.Ignore.init(a, io, .{}, roots);
+        const rel = paths.stripDot(root_path);
+        ig.scopeToRoot(rel);
+        ig.loadDir(root_path, rel);
+        return .{ .root = root, .inner = inner, .root_path = root_path, .a = a, .ig = ig };
     }
 
     pub fn deinit(self: *Walker, io: std.Io) void {
@@ -179,13 +192,17 @@ pub const Walker = struct {
     pub fn next(self: *Walker, io: std.Io) !?Haystack {
         while (true) {
             const entry = try self.inner.next(io) orelse return null;
+            const path = try joinRoot(self.a, self.root_path, entry.path);
             if (entry.kind == .directory) {
-                if (!isSkipDir(entry.basename)) try self.inner.enter(io, entry);
+                if (isSkipDir(entry.basename) or self.ig.shouldSkip(path, true, entry.basename, false, false)) continue;
+                self.ig.loadDir(path, path);
+                try self.inner.enter(io, entry);
                 continue;
             }
             if (entry.kind != .file) continue;
+            if (self.ig.shouldSkip(path, false, entry.basename, false, false)) continue;
             return .{
-                .path = try joinRoot(self.a, self.root_path, entry.path),
+                .path = path,
                 .dir = entry.dir,
                 .name = entry.basename,
             };

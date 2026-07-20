@@ -2,7 +2,7 @@
 doc_radar:
   paths_exist:
     - pkg/kernels/irregex/bench/crest/bench.zig
-    - pkg/kernels/irregex/src/math/crest.zig
+    - pkg/kernels/irregex/src/kernel/primitives/crest.zig
     - pkg/kernels/irregex/research/crest/PROOF.md
   sentinels:
     - file: pkg/kernels/irregex/bench/crest/bench.zig

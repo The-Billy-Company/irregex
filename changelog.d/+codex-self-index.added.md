@@ -1,4 +1,4 @@
-`src/codex/` — the compressed self-index: an FM-index (SA-IS suffix array →
+`src/index/codex/` — the compressed self-index: an FM-index (SA-IS suffix array →
 BWT → canonical-Huffman wavelet tree over RRR-compressed bitvectors) that
 holds a corpus at entropy-bound size while answering `count(P)` in O(|P|)
 flat in corpus size, `find` at a tunable sampling stride, and `restore()` —

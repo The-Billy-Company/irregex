@@ -1,0 +1,114 @@
+# rgsuite coverage manifest — complete obligation accounting.
+#
+# `run.py` replays every mined case it CAN lower to a single argv against live
+# ripgrep and buckets it in `results.json` (PASS / ORDER / FAIL / NA). The rest —
+# and every remaining FAIL — are accounted for here, so the 441 mined obligations
+# have ZERO unexplained gaps. `check_results.py` enforces the accounting: every
+# SKIP is claimed by exactly one `[[companion]]` / `[[boundary]]` / `[[irreplayable]]`
+# entry, every FAIL by exactly one `[[deferred]]` entry, no case is double-credited,
+# and no entry names a case the spec doesn't contain. The four dispositions:
+#
+#   companion    — the miner couldn't lower the upstream `rgtest!` to one argv
+#                  (a control-flow / fixture-helper loop), but gist HAS the feature
+#                  it exercises, proven byte-for-byte by a sibling parity harness
+#                  that drives the same flags. The SKIP is credited to that proof.
+#   boundary     — a purposeful, documented divergence gist declines by design;
+#                  the adverse proof is the loud decline itself (`_oracle` /
+#                  `run.py` re-bucketing, or gist's own exit-2 diagnostic).
+#   irreplayable — the mined spec's own JSON encoding cannot represent the case
+#                  (e.g. a non-UTF-8 filename); gist handles it, but no replay
+#                  is expressible in this harness's format.
+#   deferred     — a real divergence gist should still close, tracked to the plan
+#                  phase that owns the fix. An EXPLAINED gap, never a silent accept.
+
+# ─────────────────────────── companion proofs ───────────────────────────
+
+[[companion]]
+proof = "transforms.py"
+feature = "-z/--search-zip decompression (every codec) and --pre/--pre-glob preprocessing"
+note = "transforms.py mints a corpus per codec (gz/bz2/xz/lz4/lzma/br/zst/uncompress) and per --pre pipeline, then diffs gist vs rg byte-for-byte on both engines."
+cases = [
+    "compressed_gzip",
+    "compressed_bzip2",
+    "compressed_xz",
+    "compressed_lz4",
+    "compressed_lzma",
+    "compressed_brotli",
+    "compressed_zstd",
+    "compressed_uncompress",
+    "compressed_failing_gzip",
+    "preprocessing",
+    "preprocessing_glob",
+]
+
+[[companion]]
+proof = "flags.py"
+feature = "--sort/--sortr ordering across every key (path/modified/accessed/created) + --sort-files"
+note = "flags.py drives `sort:<key>`/`sortr:<key>` (and the `--sort-files` alias) with distinct-birthtime fixtures, and the serial engine carries the `cmpFiles`/`pathLess` sort-comparator unit tests."
+cases = [
+    "sort_files",
+    "sort_accessed",
+    "sortr_accessed",
+    "f2361_sort_nested_files",
+]
+
+[[companion]]
+proof = "modes.py"
+feature = "--json record stream, including an invalid-UTF-8 payload"
+note = "modes.py drives `--json` across core/multiline/pcre modes and a `badutf.txt` fixture, diffing gist's JSON-lines stream against rg after normalizing only the wall-clock duration fields."
+cases = [
+    "notutf8",
+    "notutf8_file",
+]
+
+# ─────────────────────────── design boundaries ───────────────────────────
+
+[[boundary]]
+reason = "global gitignore (git core.excludesFile / $XDG_CONFIG_HOME) is machine-external state a locator must not read"
+adverse = "_oracle.UNSUPPORTED_IGNORE_* + run.py `exercises_ignore` design-boundary re-bucketing (NA)"
+cases = ["r3179_global_gitignore_cwd"]
+
+[[boundary]]
+reason = "binary files are text/source-oriented by design: gist searches past a NUL and never emits ripgrep's 'binary file matches' summary line"
+adverse = "run.py `_cmp_stdout` binary re-bucketing (NA); serial.zig binary_detect path"
+cases = ["matching_files_inconsistent_with_count"]
+
+# ─────────────────────────── irreplayable upstream ───────────────────────────
+
+[[irreplayable]]
+reason = "the case creates a file named with invalid UTF-8 (`foo\\xffbar`); the mined spec encodes every path as a UTF-8 JSON string and cannot represent it. gist is byte-oriented and searches such paths (read/grepfile), but no replay is expressible in this format."
+cases = ["r210"]
+
+# ─────────────────────────── deferred divergences ───────────────────────────
+
+[[deferred]]
+phase = "rich-output"
+reason = "--include-zero / --no-include-zero (print `file:0` rows for zero-match files in --count/--count-matches) is not yet implemented; gist fails loud on the unknown flag."
+cases = [
+    "include_zero#1",
+    "include_zero#2",
+    "include_zero_override#1",
+    "include_zero_override#2",
+]
+
+[[deferred]]
+phase = "walk-scope"
+reason = "ancestor ignore-file traversal above the search root/CWD, plus the `foo\\/` escape in an ignore glob; gist scopes ignore rules to the walked subtree and reads the escape literally."
+cases = [
+    "r2711#4",
+    "r2770_gitignore_error#2",
+    "r2236",
+]
+
+[[deferred]]
+phase = "hard-paths"
+reason = "PCRE2 whole-buffer multiline lookahead crossing newlines under --multiline; inline `(?-m)` anchoring under -U; and rejecting a `\\x00` NUL literal in the pattern when binary detection is on."
+cases = [
+    "r1573#1",
+    "r1573#2",
+    "r3139_multiline_lookahead_files_with_matches#1",
+    "r3139_multiline_lookahead_files_with_matches#2",
+    "r1878#3",
+    "r1878#4",
+    "r1838_nul_error_with_binary_detection#1",
+]

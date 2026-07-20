@@ -1,5 +1,5 @@
-`hydra search <text>` — compression-as-search retrieval, hand-rolled. The
-relate engine gained two modules under `src/hydra/engine/`: `lexicon.zig`, a
+`relate search <text>` — compression-as-search retrieval, hand-rolled. The
+relate engine gained two modules under `src/search/similarity/`: `lexicon.zig`, a
 corpus-priced fingerprint index (winnowed 8-gram fingerprints à la MOSS,
 priced at their corpus information content −log2(df/N) bits — boilerplate is
 worth exactly 0), and `zipper.zig`, a per-candidate suffix automaton driving

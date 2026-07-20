@@ -1,5 +1,5 @@
 A bare `zig build` now installs only the product surface — the `gist` +
-`hydra` CLIs and the C-ABI static/dynamic libraries — instead of also
+`relate` CLIs and the C-ABI static/dynamic libraries — instead of also
 compiling the six measurement-lab executables (`gist-bench`, `relate-knn`,
 `codex-scale`, `gist-roofline`, `gist-lowerbound`, `gist-portbound`). Each
 lab exe still installs via its named step (`zig build bench`, `zig build

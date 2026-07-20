@@ -1,6 +1,5 @@
-//! gist `rg` — the one path-string vocabulary shared by the serial engine
-//! (`run.zig`), the parallel pipeline (`pipeline.zig`), and the ignore
-//! protocol (`ignore.zig`).
+//! irregex — the path-string vocabulary shared by corpus traversal, gist's
+//! serial/parallel engines, and the gitignore protocol.
 //!
 //! These four helpers used to live as per-file copies; any drift between the
 //! copies was a parity bug by construction (the serial and parallel engines
@@ -8,7 +7,11 @@
 //! output and ignore verdicts). One definition each makes drift impossible.
 
 const std = @import("std");
-const oom = @import("../argv/args.zig").oom;
+
+pub fn allocFailure() noreturn {
+    std.debug.print("oom\n", .{});
+    std.process.exit(2);
+}
 
 /// Drop a leading `./` (or a bare `.`) so a `./root` positional's paths compare
 /// against ignore rules / index keys the same as a bare `root` positional's do.
@@ -31,7 +34,7 @@ pub fn rootDepth(prefix: []const u8) usize {
 /// stays CWD-relative exactly as the walker discovered it.
 pub fn join(a: std.mem.Allocator, dir: []const u8, name: []const u8) []const u8 {
     if (dir.len == 0 or std.mem.eql(u8, dir, ".")) return name;
-    return std.fmt.allocPrint(a, "{s}/{s}", .{ dir, name }) catch oom();
+    return std.fmt.allocPrint(a, "{s}/{s}", .{ dir, name }) catch allocFailure();
 }
 
 /// ASCII-lowered copy of `s` — the one case fold shared by the `--iglob`
@@ -39,7 +42,7 @@ pub fn join(a: std.mem.Allocator, dir: []const u8, name: []const u8) []const u8 
 /// ignore homes (`ignore.zig`). Byte-wise ASCII on purpose: gitignore and
 /// glob folding are defined over bytes, never Unicode.
 pub fn lowerDup(a: std.mem.Allocator, s: []const u8) []u8 {
-    const o = a.alloc(u8, s.len) catch oom();
+    const o = a.alloc(u8, s.len) catch allocFailure();
     for (s, 0..) |c, i| o[i] = std.ascii.toLower(c);
     return o;
 }
@@ -49,8 +52,8 @@ pub fn lowerDup(a: std.mem.Allocator, s: []const u8) []u8 {
 pub fn replaceSep(a: std.mem.Allocator, path: []const u8, sep: []const u8) []const u8 {
     if (std.mem.indexOfScalar(u8, path, '/') == null) return path;
     var out: std.ArrayList(u8) = .empty;
-    for (path) |c| (if (c == '/') out.appendSlice(a, sep) else out.append(a, c)) catch oom();
-    return out.toOwnedSlice(a) catch oom();
+    for (path) |c| (if (c == '/') out.appendSlice(a, sep) else out.append(a, c)) catch allocFailure();
+    return out.toOwnedSlice(a) catch allocFailure();
 }
 
 test "stripDot peels one ./ and collapses bare dot" {

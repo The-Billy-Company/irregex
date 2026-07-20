@@ -1,0 +1,1 @@
+Composed family search now compares exact-hit functions or match windows instead of only whole files, ranks families by conservative repeated-line opportunity, offers a scope-relative `--brief` worklist and `--only` answer filtering, and retains nearest-neighbor receipts for genuinely distinct implementations.
