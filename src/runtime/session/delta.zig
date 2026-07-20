@@ -92,7 +92,7 @@ pub const Delta = struct {
     /// reconciled case-insensitively by the caller via `keyIsCurrent`.
     pub fn resolve(self: *Delta, abs: []const u8) Verdict {
         const canon = realpathAlloc(self.a, abs) orelse abs;
-        const rel = self.mapToKey(canon) orelse return .needs_full;
+        const rel = self.keyFor(canon, false) orelse return .needs_full;
         if (rel.len == 0) return .needs_full; // the walk root itself
         for (rel) |b| if (b >= 0x80) return .needs_full; // Unicode aliasing unmodeled
         switch (classify(rel)) {
@@ -101,31 +101,33 @@ pub const Delta = struct {
             .normal => {},
         }
         for (self.roots) |r| if (std.mem.eql(u8, rel, r)) return .needs_full;
-        const mode = lstatMode(rel) orelse return .{ .gone = rel };
-        if (std.posix.S.ISDIR(mode)) return .{ .subtree = rel };
-        if (!std.posix.S.ISREG(mode)) return .{ .gone = rel };
-        return if (self.fileAdmitted(rel)) .{ .file = rel } else .{ .gone = rel };
+        return self.statVerdict(rel);
     }
 
     /// Would the certified walk, run right now, admit `rel` as a searched
     /// file? (Regular file on disk + every ancestor directory descended + the
-    /// leaf not ignored/hidden.) The membership half of the freshness proof.
-    pub fn wouldWalkFile(self: *Delta, rel: []const u8) bool {
-        const mode = lstatMode(rel) orelse return false;
-        if (!std.posix.S.ISREG(mode)) return false;
-        return self.fileAdmitted(rel);
+    /// leaf not ignored/hidden.) The membership half of the freshness proof —
+    /// `.file` — plus the disk-truth verdicts for everything else `rel` may be.
+    fn statVerdict(self: *Delta, rel: []const u8) Verdict {
+        // `lstat` mode bits (never following a symlink — the walk treats a
+        // symlink as absent), null when the path is gone/unreachable. Rides the
+        // shared portable raw-stat shim (`grepfile.lstatPath`).
+        const st = grepfile.lstatPath(rel) orelse return .{ .gone = rel };
+        if (std.posix.S.ISDIR(st.mode)) return .{ .subtree = rel };
+        if (!std.posix.S.ISREG(st.mode)) return .{ .gone = rel };
+        return if (self.fileAdmitted(rel)) .{ .file = rel } else .{ .gone = rel };
     }
 
     /// Is corpus key `rel` still a current, canonically-spelled member of the
-    /// walked set? Beyond `wouldWalkFile`, the kernel's own canonical spelling
-    /// (`realpath`) must map back to exactly this key — on a case-insensitive
-    /// filesystem a stale spelling (`Lib/x` after a case-rename to `lib/x`)
-    /// resolves but is NOT current, and must be tombstoned so the freshly-read
-    /// spelling isn't reported twice.
+    /// walked set? Beyond the membership proof, the kernel's own canonical
+    /// spelling (`realpath`) must map back to exactly this key — on a
+    /// case-insensitive filesystem a stale spelling (`Lib/x` after a
+    /// case-rename to `lib/x`) resolves but is NOT current, and must be
+    /// tombstoned so the freshly-read spelling isn't reported twice.
     pub fn keyIsCurrent(self: *Delta, rel: []const u8) bool {
-        if (!self.wouldWalkFile(rel)) return false;
+        if (self.statVerdict(rel) != .file) return false;
         const canon = realpathAlloc(self.a, rel) orelse return false;
-        const back = self.mapToKey(canon) orelse return false;
+        const back = self.keyFor(canon, false) orelse return false;
         return std.mem.eql(u8, back, rel);
     }
 
@@ -166,6 +168,7 @@ pub const Delta = struct {
     fn chainAdmitted(self: *Delta, root: []const u8, dir: []const u8) bool {
         self.ig.scopeToRoot(root);
         if (root.len != 0) self.ig.loadDir(root, root); // walkDir's first act per root
+        if (dir.len <= root.len) return true; // the root itself: chain is empty
         var i: usize = if (root.len == 0) 0 else root.len + 1;
         while (i <= dir.len) {
             const slash = std.mem.indexOfScalarPos(u8, dir, i, '/') orelse dir.len;
@@ -183,14 +186,9 @@ pub const Delta = struct {
     /// (no globs/types, so both whitelist overrides are false).
     fn fileAdmitted(self: *Delta, rel: []const u8) bool {
         const root = self.rootOf(rel) orelse return false;
-        const parent = if (std.mem.lastIndexOfScalar(u8, rel, '/')) |s| rel[0..s] else "";
-        if (parent.len > root.len) {
-            if (!self.chainAdmitted(root, parent)) return false;
-        } else {
-            self.ig.scopeToRoot(root);
-            if (root.len != 0) self.ig.loadDir(root, root);
-        }
-        const base = if (std.mem.lastIndexOfScalar(u8, rel, '/')) |s| rel[s + 1 ..] else rel;
+        const cut = std.mem.lastIndexOfScalar(u8, rel, '/');
+        if (!self.chainAdmitted(root, if (cut) |s| rel[0..s] else "")) return false;
+        const base = if (cut) |s| rel[s + 1 ..] else rel;
         return !self.ig.shouldSkip(rel, false, base, false, false);
     }
 
@@ -226,27 +224,25 @@ pub const Delta = struct {
     /// unless it is still a current member (`keyIsCurrent`).
     pub fn rawKey(self: *Delta, abs: []const u8) ?[]const u8 {
         for (abs) |b| if (b >= 0x80) return null;
-        for (self.maps) |m| {
-            if (foldEq(abs, m.canon)) return m.key;
-            if (abs.len > m.canon.len and abs[m.canon.len] == '/' and foldEq(abs[0..m.canon.len], m.canon)) {
-                const suffix = abs[m.canon.len + 1 ..];
-                if (m.key.len == 0) return suffix;
-                return std.fmt.allocPrint(self.a, "{s}/{s}", .{ m.key, suffix }) catch null;
-            }
-        }
-        return null;
+        return self.keyFor(abs, true);
     }
 
     /// Rewrite a canonical absolute path into key space via the longest
-    /// matching root mapping; null when it sits under no served root.
-    fn mapToKey(self: *const Delta, canon: []const u8) ?[]const u8 {
+    /// matching root mapping; null when it sits under no served root. The
+    /// shared root-prefix rewrite behind `rawKey` (ASCII-fold prefix
+    /// equality) and `resolve`/`keyIsCurrent` (exact prefix equality).
+    fn keyFor(self: *const Delta, path: []const u8, comptime fold: bool) ?[]const u8 {
         for (self.maps) |m| {
-            if (std.mem.eql(u8, canon, m.canon)) return m.key;
-            if (canon.len > m.canon.len and std.mem.startsWith(u8, canon, m.canon) and canon[m.canon.len] == '/') {
-                const suffix = canon[m.canon.len + 1 ..];
-                if (m.key.len == 0) return suffix;
-                return std.fmt.allocPrint(self.a, "{s}/{s}", .{ m.key, suffix }) catch null;
-            }
+            const under = path.len > m.canon.len and path[m.canon.len] == '/';
+            if (!under and path.len != m.canon.len) continue;
+            const head = path[0..m.canon.len];
+            // Case-insensitive (ASCII fold) equality, neither side pre-folded.
+            const eq = if (fold) std.ascii.eqlIgnoreCase(head, m.canon) else std.mem.eql(u8, head, m.canon);
+            if (!eq) continue;
+            if (!under) return m.key;
+            const suffix = path[m.canon.len + 1 ..];
+            if (m.key.len == 0) return suffix;
+            return std.fmt.allocPrint(self.a, "{s}/{s}", .{ m.key, suffix }) catch null;
         }
         return null;
     }
@@ -275,31 +271,14 @@ pub fn classify(rel: []const u8) Class {
 
 /// ASCII-lowercased copy (the fold `keyIsCurrent`'s aliasing model uses).
 pub fn foldLower(a: std.mem.Allocator, s: []const u8) error{OutOfMemory}![]u8 {
-    const out = try a.alloc(u8, s.len);
-    for (s, out) |c, *o| o.* = std.ascii.toLower(c);
-    return out;
-}
-
-/// Case-insensitive (ASCII fold) equality, neither side pre-folded.
-pub fn foldEq(x: []const u8, y: []const u8) bool {
-    if (x.len != y.len) return false;
-    for (x, y) |c, d| if (std.ascii.toLower(c) != std.ascii.toLower(d)) return false;
-    return true;
-}
-
-/// Does `s`, ASCII-folded, equal `lower` (already folded)?
-pub fn foldEqLower(s: []const u8, lower: []const u8) bool {
-    if (s.len != lower.len) return false;
-    for (s, lower) |c, l| if (std.ascii.toLower(c) != l) return false;
-    return true;
+    return std.ascii.lowerString(try a.alloc(u8, s.len), s);
 }
 
 /// Does `s`, ASCII-folded, sit at-or-under folded prefix `lower` (component
 /// boundary respected)?
 pub fn foldUnderLower(s: []const u8, lower: []const u8) bool {
-    if (foldEqLower(s, lower)) return true;
-    if (s.len <= lower.len or s[lower.len] != '/') return false;
-    return foldEqLower(s[0..lower.len], lower);
+    if (s.len < lower.len or !std.ascii.eqlIgnoreCase(s[0..lower.len], lower)) return false;
+    return s.len == lower.len or s[lower.len] == '/';
 }
 
 /// Canonical→key mappings for the served roots, or null when the shape is not
@@ -309,9 +288,7 @@ pub fn foldUnderLower(s: []const u8, lower: []const u8) bool {
 fn buildMappings(a: std.mem.Allocator, roots: []const []const u8) ?[]const Mapping {
     if (roots.len == 0) {
         const canon = realpathAlloc(a, ".") orelse return null;
-        const one = a.alloc(Mapping, 1) catch return null;
-        one[0] = .{ .canon = canon, .key = "" };
-        return one;
+        return a.dupe(Mapping, &.{.{ .canon = canon, .key = "" }}) catch null;
     }
     for (roots, 0..) |r, i| {
         if (r.len == 0 or std.mem.eql(u8, r, ".") or r[r.len - 1] == '/') return null;
@@ -336,8 +313,8 @@ fn buildMappings(a: std.mem.Allocator, roots: []const []const u8) ?[]const Mappi
 fn foldOverlap(x: []const u8, y: []const u8) bool {
     const short = if (x.len <= y.len) x else y;
     const long = if (x.len <= y.len) y else x;
-    for (short, long[0..short.len]) |c, d| if (std.ascii.toLower(c) != std.ascii.toLower(d)) return false;
-    return long.len == short.len or long[short.len] == '/';
+    return std.ascii.eqlIgnoreCase(short, long[0..short.len]) and
+        (long.len == short.len or long[short.len] == '/');
 }
 
 /// POSIX `realpath(3)` into an `a`-owned copy; null when unresolvable. On
@@ -348,14 +325,6 @@ fn realpathAlloc(a: std.mem.Allocator, path: []const u8) ?[]const u8 {
     var buf: [std.posix.PATH_MAX]u8 = undefined;
     const resolved = std.c.realpath(&cpath, &buf) orelse return null;
     return a.dupe(u8, std.mem.sliceTo(resolved, 0)) catch null;
-}
-
-/// `lstat` mode bits for `rel` (never following a symlink — the walk treats a
-/// symlink as absent), or null when the path is gone/unreachable. Rides the
-/// shared portable raw-stat shim (`grepfile.lstatPath`).
-fn lstatMode(rel: []const u8) ?u32 {
-    const st = grepfile.lstatPath(rel) orelse return null;
-    return st.mode;
 }
 
 test "classify: ignore sources and .git topology demand the walk, internals don't" {
@@ -377,8 +346,8 @@ test "classify: ignore sources and .git topology demand the walk, internals don'
 
 test "fold helpers: ASCII aliasing with component boundaries" {
     const t = std.testing;
-    try t.expect(foldEqLower("Foo.TXT", "foo.txt"));
-    try t.expect(!foldEqLower("foo.txt", "foo.txt2"));
+    try t.expect(foldUnderLower("Foo.TXT", "foo.txt"));
+    try t.expect(!foldUnderLower("foo.txt", "foo.txt2"));
     try t.expect(foldUnderLower("Lib/Sub/X.txt", "lib"));
     try t.expect(foldUnderLower("LIB", "lib"));
     try t.expect(!foldUnderLower("library/x", "lib")); // no boundary

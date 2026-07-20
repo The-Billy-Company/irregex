@@ -52,6 +52,21 @@ fn matchClass(pat: []const u8, c: u8) ?ClassHit {
     return null; // no closing ']' ⇒ '[' is literal
 }
 
+/// Does `g` open a `[` character class that is never closed by `]`? ripgrep
+/// compiles an explicit `-g`/`--glob` pattern strictly and errors on exactly
+/// this ("unclosed character class; missing ']'"), whereas an unclosed `[` in a
+/// lenient `.gitignore` line is treated as a literal `[` (see `matchClass`).
+/// Reuses that same terminator scan (probing with an arbitrary byte, since only
+/// the class LENGTH matters here, not the match verdict) so the strict
+/// arg-parse validation can never drift from the matcher's own class parsing.
+pub fn unterminatedClass(g: []const u8) bool {
+    var i: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, g, i, '[')) |lb| {
+        if (matchClass(g[lb..], 0)) |hit| i = lb + hit.len else return true;
+    }
+    return false;
+}
+
 /// gitignore/rg-shaped glob match of `pat` against `str`. `*` spans one segment
 /// (stops at `/`), `**` spans `/`, `?` is one non-`/` byte, `[...]` a class.
 /// Recursive with backtracking at each star; paths are short so this is cheap.
@@ -174,20 +189,14 @@ pub const PathFilter = struct {
     pub fn admits(self: PathFilter, path: []const u8) bool {
         for (self.excludes) |g| if (globApplies(g, path)) return false;
         if (self.roots.len > 0) {
-            var ok = false;
-            for (self.roots) |r| if (underRoot(path, r)) {
-                ok = true;
-                break;
-            };
-            if (!ok) return false;
+            for (self.roots) |r| {
+                if (underRoot(path, r)) break;
+            } else return false;
         }
         if (self.exts.len > 0) {
-            var ok = false;
-            for (self.exts) |e| if (globApplies(e, path)) {
-                ok = true;
-                break;
-            };
-            if (!ok) return false;
+            for (self.exts) |e| {
+                if (globApplies(e, path)) break;
+            } else return false;
         }
         if (self.includes.len > 0) {
             for (self.includes) |g| if (globApplies(g, path)) return true;

@@ -69,12 +69,12 @@ const Builder = struct {
     rep: *const [256]u8, // representative byte per class (for `set.has`)
 
     map: SetMap,
-    sets: std.ArrayList([]u64), // sets[id] = consume bits ++ [match flag]
-    is_match: std.ArrayList(bool),
-    trans_in: std.ArrayList(u32),
-    trans_fin: std.ArrayList(u32),
-    queued: std.ArrayList(bool),
-    worklist: std.ArrayList(u32),
+    sets: std.ArrayList([]u64) = .empty, // sets[id] = consume bits ++ [match flag]
+    is_match: std.ArrayList(bool) = .empty,
+    trans_in: std.ArrayList(u32) = .empty,
+    trans_fin: std.ArrayList(u32) = .empty,
+    queued: std.ArrayList(bool) = .empty,
+    worklist: std.ArrayList(u32) = .empty,
     nstates: u32 = 0,
     dead: u32 = unknown,
 
@@ -85,11 +85,10 @@ const Builder = struct {
     sp: usize = 0,
 
     fn pushIf(b: *Builder, s: u32) void {
-        if (!B64.get(b.visited, s)) {
-            B64.set(b.visited, s);
-            b.stack[b.sp] = s;
-            b.sp += 1;
-        }
+        if (B64.get(b.visited, s)) return;
+        B64.set(b.visited, s);
+        b.stack[b.sp] = s;
+        b.sp += 1;
     }
 
     /// Clear the closure scratch (dedup bitset, accumulator, stack) for a fresh pass.
@@ -160,9 +159,8 @@ const Builder = struct {
         @memcpy(b.key_scratch[0..b.words], b.out);
         b.key_scratch[b.words] = @intFromBool(matched);
         if (b.map.get(b.key_scratch)) |id| return .{ .id = id, .is_new = false };
-        const key = try b.gpa.alloc(u64, b.words + 1);
+        const key = try b.gpa.dupe(u64, b.key_scratch);
         errdefer b.gpa.free(key);
-        @memcpy(key, b.key_scratch);
         const id = b.nstates;
         b.nstates += 1;
         try b.map.put(key, id);
@@ -176,10 +174,9 @@ const Builder = struct {
     }
 
     fn enqueue(b: *Builder, id: u32) std.mem.Allocator.Error!void {
-        if (!b.queued.items[id]) {
-            b.queued.items[id] = true;
-            try b.worklist.append(b.gpa, id);
-        }
+        if (b.queued.items[id]) return;
+        b.queued.items[id] = true;
+        try b.worklist.append(b.gpa, id);
     }
 };
 
@@ -246,18 +243,12 @@ pub fn build(gpa: std.mem.Allocator, states: []const State, start: u32, anchored
         .ncls = ncls,
         .rep = &rep,
         .map = SetMap.init(gpa),
-        .sets = .empty,
-        .is_match = .empty,
-        .trans_in = .empty,
-        .trans_fin = .empty,
-        .queued = .empty,
-        .worklist = .empty,
         .visited = try gpa.alloc(u64, words),
         .out = try gpa.alloc(u64, words),
         .stack = try gpa.alloc(u32, states.len),
         .key_scratch = try gpa.alloc(u64, words + 1),
     };
-    // Builder scratch + the subset map/sets are discarded once the immutable tables are sliced out (or on a bail). `sets` owns every state key.
+    // Builder scratch + the subset map/sets are discarded once the immutable tables are sliced out (or on a bail). `sets` owns every state key. The table lists ride the same defer on every path: on success `toOwnedSlice` empties `trans_in`/`trans_fin` (deinit is then a no-op) and `is_match` was replaced by the offset-indexed `im_pm`; on a blow-up bail or an error the deinits reclaim them.
     defer {
         b.map.deinit();
         for (b.sets.items) |s| gpa.free(s);
@@ -268,8 +259,6 @@ pub fn build(gpa: std.mem.Allocator, states: []const State, start: u32, anchored
         gpa.free(b.out);
         gpa.free(b.stack);
         gpa.free(b.key_scratch);
-    }
-    errdefer {
         b.is_match.deinit(gpa);
         b.trans_in.deinit(gpa);
         b.trans_fin.deinit(gpa);
@@ -294,12 +283,7 @@ pub fn build(gpa: std.mem.Allocator, states: []const State, start: u32, anchored
             const m_fin = b.step(b.sets.items[id][0..b.words], k, true);
             const r_fin = try b.intern(m_fin);
             b.trans_fin.items[@as(usize, id) * ncls + k] = r_fin.id;
-            if (b.nstates > max_states) { // powerset blow-up ⇒ keep the Pike VM
-                b.is_match.deinit(gpa); // (not held by `defer`/`errdefer` on this path)
-                b.trans_in.deinit(gpa);
-                b.trans_fin.deinit(gpa);
-                return null;
-            }
+            if (b.nstates > max_states) return null; // powerset blow-up ⇒ keep the Pike VM
         }
     }
 
@@ -348,7 +332,6 @@ pub fn build(gpa: std.mem.Allocator, states: []const State, start: u32, anchored
         .accel = accel,
         .allocator = gpa,
     };
-    b.is_match.deinit(gpa); // replaced by the offset-indexed `im_pm`
     return dfa;
 }
 
@@ -372,18 +355,13 @@ pub fn build(gpa: std.mem.Allocator, states: []const State, start: u32, anchored
 fn computeAccel(anchored: bool, empty_match: bool, trans_in: []const u32, trans_fin: []const u32, is_match: []const bool, class: *const [256]u8, ncls: u16, start_id: u32) ?prefilter.Prefilter {
     if (anchored) return null;
     const base = @as(usize, start_id) * ncls;
-    const relevantByte = struct {
-        fn f(ti: []const u32, tf: []const u32, im: []const bool, off: usize, sid: u32) bool {
-            return ti[off] != sid or im[tf[off]];
-        }
-    }.f;
     var relevant: syn.ByteSet = .{};
     var n: usize = 0;
-    var bi: usize = 0;
-    while (bi < 256) : (bi += 1) {
+    for (0..256) |bi| {
         const b: u8 = @intCast(bi);
         if (b == '\n') continue; // line-boundary stop, decided separately below
-        if (relevantByte(trans_in, trans_fin, is_match, base + class[b], start_id)) {
+        const off = base + class[b];
+        if (trans_in[off] != start_id or is_match[trans_fin[off]]) {
             relevant.set(b);
             n += 1;
         }
@@ -391,7 +369,8 @@ fn computeAccel(anchored: bool, empty_match: bool, trans_in: []const u32, trans_
     if (n == 0 or n > max_accel_bytes) return null;
     // Keep the skip inside one line only when it must: an empty line can match, or
     // `\n` itself is relevant. Otherwise let the skip `memchr` across newlines.
-    const nl_relevant = relevantByte(trans_in, trans_fin, is_match, base + class['\n'], start_id);
+    const nl = base + class['\n'];
+    const nl_relevant = trans_in[nl] != start_id or is_match[trans_fin[nl]];
     if (empty_match or nl_relevant) relevant.set('\n');
     return prefilter.Prefilter.init(relevant);
 }

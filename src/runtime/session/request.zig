@@ -1,74 +1,61 @@
 //! gist resident session — the eligible-request classifier (ADR-352 rung 2.5).
 //!
-//! The resident daemon accelerates exactly the three broad-tree request shapes
-//! an agent reaches for most — the bare default `path:text` line search (the
-//! `gist <pattern>` reflex itself, mode `lines`), "which files contain this"
-//! (`-l`), and "how many matching lines" (`-c`) — over the ROOTLESS
-//! current-working-directory tree, for a literal (`-F`) or a plain
-//! (linear-time) regex, optionally caseless (`-i`), with `-n`/`--line-number`
-//! carried for the lines shape. Everything else — `--json`, context, `--rank`,
-//! replace, invert, `-w`, multiline, ANY explicit PATH arg, globs/types,
-//! stdin — is deliberately NOT eligible and is answered by the certified cold
-//! subprocess, byte-for-byte.
+//! Warm surface: rootless `-l` / `-c` / bare `lines`, literal (`-F`) or plain
+//! regex, ±case (`-i`/`-s`/`-S`), optional `-w` / `-n`. Everything else
+//! (`--json`, context, `--rank`, PATH args, globs, stdin, …) → cold.
 //!
-//! Rootless-only is the parity contract: the daemon serves exactly the tree a
-//! bare `gist <pattern>` walks (`gather` with empty roots → `walkDir(".", "")`,
-//! CWD-relative paths with no `./` prefix). An explicit `PATH` arg — even `.`,
-//! which cold prefixes as `./file` — would scope or shape the output
-//! differently from the daemon's served corpus, so it stays cold. The wire
-//! carries no roots; the daemon always answers over its whole served corpus, so
-//! only the rootless query is byte-parity-safe to route warm.
-//!
-//! `classify` is a self-contained argv scanner, NOT a second copy of
-//! `runtime/cold/argv/args.zig`: it recognizes only the supported surface and
-//! returns `error.Unsupported` for anything outside it (so the client falls
-//! back to cold), and — crucially — it never calls `die()`. That is the whole
-//! reason the resident path sidesteps the ADR-352 exit hazard: an ineligible or
-//! malformed request is a typed error on the wire, never a dead daemon.
+//! Rootless-only: the daemon serves the bare-`gist <pattern>` CWD tree (no
+//! `./` prefix). An explicit PATH — even `.` — stays cold. `classify` is a
+//! narrow argv scanner (not a fork of `args.zig`); it returns typed errors and
+//! never calls `die()`.
 
 const std = @import("std");
+// `hasUpper` only — shared smart-case authority with cold's finalize fold.
+// One-way edge: args.zig never imports session.
+const args = @import("../cold/argv/args.zig");
 
-/// The two eligible answer shapes. Aliases the shared search core's `Mode`
-/// (`engine/query.zig`) so the classifier, the wire protocol, and the compiled
-/// query all speak one enum — no cross-layer conversion, no drift.
+/// Eligible answer shapes — shared with the search core (`engine/query.zig`).
 pub const Mode = @import("../../search/match/query.zig").Mode;
 
-/// A classified, eligible resident request. `pattern` aliases into the argv the
-/// classifier scanned (or, for the wire path, the frame buffer) — the caller
-/// keeps that memory alive across the query.
+/// Classified eligible request. `pattern` aliases into argv / the frame buffer.
 pub const Request = struct {
     pattern: []const u8,
     mode: Mode,
     fixed: bool = false,
     ignore_case: bool = false,
-    /// `-n`/`--line-number`: prefix each `lines`-mode row with its 1-based
-    /// line number. Carried (and ignored) for `-l`/`-c`, exactly as cold does.
+    /// `-n`/`--line-number` (ignored for `-l`/`-c`, as cold does).
     line_num: bool = false,
+    /// `-S`/`--smart-case`, raw on the wire; resolved via `effectiveIgnoreCase`.
+    smart_case: bool = false,
+    /// `-w`/`--word-regexp` — see `search/match/query.zig::wordOk`.
+    word: bool = false,
+
+    /// Engine-effective caseless state. `-S` folds only when the pattern has no
+    /// (Unicode) uppercase (`args.hasUpper`). Compile sites must use this, not
+    /// raw `ignore_case`.
+    pub fn effectiveIgnoreCase(self: Request) bool {
+        return self.ignore_case or (self.smart_case and !args.hasUpper(self.pattern));
+    }
 };
 
 pub const ClassifyError = error{
-    /// The argv is outside the resident fast path — answer it cold.
+    /// Outside the resident fast path — answer cold.
     Unsupported,
-    /// No pattern at all (a bare `-l`) — also cold (the walk lists files).
+    /// No pattern (a bare `-l`) — also cold.
     NoPattern,
 };
 
-/// Classify an rg-style argv into an eligible `Request`, or fail so the caller
-/// uses the cold transport. Recognizes: `-l`/`--files-with-matches`,
-/// `-c`/`--count`, `-F`/`--fixed-strings`, `-i`/`--ignore-case`,
-/// `-n`/`--line-number` (and `-N`/`--no-line-number`), and the pattern via a
-/// leading bare token or `-e`/`--regexp[=]VALUE`; a bare pattern with no mode
-/// flag is the default LINE search (`mode = .lines`). The query must be
-/// ROOTLESS: ANY positional PATH arg (including after a `--` separator, and
-/// including `.`) makes it ineligible, because the daemon serves only the
-/// rootless CWD tree and the wire carries no roots — a scoped or `./`-prefixed
-/// answer would not match. Any other flag is likewise ineligible; the cold
-/// engine owns all of those, unchanged.
+/// Classify rg-style argv into an eligible `Request`, or fail → cold.
+/// Recognizes `-l`/`-c`/`-F`, case family `-i`/`-s`/`-S`, `-w`, `-n`/`-N`,
+/// pattern via bare token or `-e`/`--regexp`. Bare pattern → `mode = .lines`.
+/// Any positional PATH (incl. `.` / after `--`) or other flag → ineligible.
 pub fn classify(argv: []const []const u8) ClassifyError!Request {
     var pattern: ?[]const u8 = null;
     var mode: ?Mode = null;
     var fixed = false;
     var ignore_case = false;
+    var smart_case = false;
+    var word = false;
     var line_num = false;
     var end_of_flags = false;
 
@@ -87,7 +74,14 @@ pub fn classify(argv: []const []const u8) ClassifyError!Request {
         } else if (!end_of_flags and (std.mem.eql(u8, arg, "-F") or std.mem.eql(u8, arg, "--fixed-strings"))) {
             fixed = true;
         } else if (!end_of_flags and (std.mem.eql(u8, arg, "-i") or std.mem.eql(u8, arg, "--ignore-case"))) {
-            ignore_case = true;
+            // Case mode is last-wins across -i/-s/-S (each clears the other two).
+            ignore_case, smart_case = .{ true, false };
+        } else if (!end_of_flags and (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--case-sensitive"))) {
+            ignore_case, smart_case = .{ false, false };
+        } else if (!end_of_flags and (std.mem.eql(u8, arg, "-S") or std.mem.eql(u8, arg, "--smart-case"))) {
+            ignore_case, smart_case = .{ false, true };
+        } else if (!end_of_flags and (std.mem.eql(u8, arg, "-w") or std.mem.eql(u8, arg, "--word-regexp"))) {
+            word = true;
         } else if (!end_of_flags and (std.mem.eql(u8, arg, "-n") or std.mem.eql(u8, arg, "--line-number"))) {
             line_num = true;
         } else if (!end_of_flags and (std.mem.eql(u8, arg, "-N") or std.mem.eql(u8, arg, "--no-line-number"))) {
@@ -100,7 +94,7 @@ pub fn classify(argv: []const []const u8) ClassifyError!Request {
             if (pattern != null) return ClassifyError.Unsupported;
             pattern = arg["--regexp=".len..];
         } else if (!end_of_flags and arg[0] == '-') {
-            // Any other flag (context, --json, -w, -v, -g/-t, --hidden, …)
+            // Any other flag (context, --json, -v, -g/-t, --hidden, …)
             // is outside the fast path — hand the whole request to cold.
             return ClassifyError.Unsupported;
         } else if (pattern == null) {
@@ -120,5 +114,5 @@ pub fn classify(argv: []const []const u8) ClassifyError!Request {
     // (warm whole-doc gates would match ACROSS lines where cold cannot; a NUL
     // interacts with binary detection) — the cold engine owns those bytes.
     if (std.mem.indexOfAny(u8, p, "\n\x00") != null) return ClassifyError.Unsupported;
-    return .{ .pattern = p, .mode = m, .fixed = fixed, .ignore_case = ignore_case, .line_num = line_num };
+    return .{ .pattern = p, .mode = m, .fixed = fixed, .ignore_case = ignore_case, .line_num = line_num, .smart_case = smart_case, .word = word };
 }

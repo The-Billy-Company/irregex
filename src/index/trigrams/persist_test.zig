@@ -1,10 +1,11 @@
 //! gist T0 persisted index/path-table tests — split per the shape cap, wired via
 //! `root.zig`'s test block. Exercises the doc→path integrity invariant
-//! (`validatePersistedPair`), the NUL-split (`parsePathTable`), generation
+//! (`validatePersistedPair`), the NUL-split (`frame.parsePathTable`), generation
 //! matching, and a filesystem concurrency regression for generation publish.
 
 const std = @import("std");
 const persist = @import("persist.zig");
+const frame = @import("../frame/frame.zig");
 const crest = @import("../../math/crest.zig");
 const crest_sidecar = @import("../crest/sidecar.zig");
 const Index = @import("trigram.zig").Index;
@@ -12,7 +13,7 @@ const Dir = std.Io.Dir;
 
 test "parsePathTable: splits NUL-separated paths in doc-id order, dropping a trailing NUL" {
     const a = std.testing.allocator;
-    var p = try persist.parsePathTable(a, "a\x00bb\x00ccc\x00");
+    var p = try frame.parsePathTable(a, "a\x00bb\x00ccc\x00");
     defer p.deinit(a);
     try std.testing.expectEqual(@as(usize, 3), p.items.len);
     try std.testing.expectEqualStrings("a", p.items[0]);
@@ -22,7 +23,7 @@ test "parsePathTable: splits NUL-separated paths in doc-id order, dropping a tra
 
 test "parsePathTable: a coalesced double-NUL drops the empty (a count mismatch then catches it)" {
     const a = std.testing.allocator;
-    var p = try persist.parsePathTable(a, "a\x00\x00b");
+    var p = try frame.parsePathTable(a, "a\x00\x00b");
     defer p.deinit(a);
     try std.testing.expectEqual(@as(usize, 2), p.items.len);
     try std.testing.expectEqualStrings("a", p.items[0]);

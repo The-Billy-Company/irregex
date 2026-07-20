@@ -26,55 +26,16 @@
 const std = @import("std");
 const gen = @import("encoding_tables.gen.zig");
 
+// ibm866…x_mac_cyrillic below are the
+// single-byte (§9) — windows-1252 subsumes ISO-8859-1/ASCII, windows-1254
+// ISO-8859-9, windows-874 ISO-8859-11/TIS-620, iso_8859_8 also ISO-8859-8-I.
+// gb18030…x_user_defined are the
+// multi-byte CJK + specials
+// (GBK decodes through this (§10.1.1) — through gb18030).
 /// The resolved `-E`/`--encoding` source encoding. `auto`/`none`/the UTF families
 /// are consumed by `ingest.zig`; the remaining variants are the WHATWG legacy
 /// encodings this module decodes. Label→variant resolution is `fromLabel`.
-pub const Encoding = enum {
-    auto,
-    none,
-    utf8,
-    utf16,
-    utf16le,
-    utf16be,
-    // single-byte (§9) — windows-1252 subsumes ISO-8859-1/ASCII, windows-1254
-    // ISO-8859-9, windows-874 ISO-8859-11/TIS-620, iso_8859_8 also ISO-8859-8-I.
-    ibm866,
-    iso_8859_2,
-    iso_8859_3,
-    iso_8859_4,
-    iso_8859_5,
-    iso_8859_6,
-    iso_8859_7,
-    iso_8859_8,
-    iso_8859_10,
-    iso_8859_13,
-    iso_8859_14,
-    iso_8859_15,
-    iso_8859_16,
-    koi8_r,
-    koi8_u,
-    macintosh,
-    windows_874,
-    windows_1250,
-    windows_1251,
-    windows_1252,
-    windows_1253,
-    windows_1254,
-    windows_1255,
-    windows_1256,
-    windows_1257,
-    windows_1258,
-    x_mac_cyrillic,
-    // multi-byte CJK + specials
-    gb18030, // GBK decodes through this (§10.1.1)
-    big5,
-    euc_jp,
-    iso_2022_jp,
-    shift_jis,
-    euc_kr,
-    replacement,
-    x_user_defined,
-};
+pub const Encoding = enum { auto, none, utf8, utf16, utf16le, utf16be, ibm866, iso_8859_2, iso_8859_3, iso_8859_4, iso_8859_5, iso_8859_6, iso_8859_7, iso_8859_8, iso_8859_10, iso_8859_13, iso_8859_14, iso_8859_15, iso_8859_16, koi8_r, koi8_u, macintosh, windows_874, windows_1250, windows_1251, windows_1252, windows_1253, windows_1254, windows_1255, windows_1256, windows_1257, windows_1258, x_mac_cyrillic, gb18030, big5, euc_jp, iso_2022_jp, shift_jis, euc_kr, replacement, x_user_defined };
 
 fn oom() noreturn {
     std.debug.print("oom\n", .{});
@@ -97,80 +58,43 @@ pub fn fromLabel(s: []const u8) ?Encoding {
     const trimmed = std.mem.trim(u8, s, "\t\n\x0c\r ");
     if (trimmed.len == 0 or trimmed.len > 64) return null;
     var lower: [64]u8 = undefined;
-    for (trimmed, 0..) |c, i| lower[i] = std.ascii.toLower(c);
-    const key = lower[0..trimmed.len];
+    const key: []const u8 = std.ascii.lowerString(&lower, trimmed);
     if (std.mem.eql(u8, key, "auto")) return .auto;
     if (std.mem.eql(u8, key, "none")) return .none;
-    var lo: usize = 0;
-    var hi: usize = gen.labels.len;
-    while (lo < hi) {
-        const mid = lo + (hi - lo) / 2;
-        switch (std.mem.order(u8, gen.labels[mid].label, key)) {
-            .lt => lo = mid + 1,
-            .gt => hi = mid,
-            .eq => return std.meta.stringToEnum(Encoding, gen.labels[mid].tag),
+    const idx = std.sort.binarySearch(gen.LabelEntry, &gen.labels, key, struct {
+        fn cmp(k: []const u8, e: gen.LabelEntry) std.math.Order {
+            return std.mem.order(u8, k, e.label);
         }
-    }
-    return null;
+    }.cmp) orelse return null;
+    return std.meta.stringToEnum(Encoding, gen.labels[idx].tag);
 }
 
 // ─────────────────────────── table accessors ───────────────────────────
 
-fn u16at(blob: []const u8, i: usize) u16 {
-    return std.mem.readInt(u16, blob[i * 2 ..][0..2], .little);
-}
 fn u32at(blob: []const u8, i: usize) u32 {
     return std.mem.readInt(u32, blob[i * 4 ..][0..4], .little);
 }
 
-/// `index code point for pointer` over a u16 blob of `len` entries; null when the
-/// pointer is out of range or maps to nothing (0 sentinel — no index maps to U+0000).
-fn cp16(blob: []const u8, len: usize, pointer: usize) ?u21 {
+/// `index code point for pointer` over a blob of `len` entries; null when the
+/// pointer is out of range or maps to nothing (0 sentinel — no index maps to
+/// U+0000). Entries are u16 except Big5's — the one index reaching the
+/// supplementary planes, so it is stored u32.
+fn cpAt(comptime T: type, blob: []const u8, len: usize, pointer: usize) ?u21 {
     if (pointer >= len) return null;
-    const v = u16at(blob, pointer);
-    return if (v == 0) null else v;
-}
-
-/// Big5 is the one index reaching the supplementary planes, so it is stored u32.
-fn cpBig5(pointer: usize) ?u21 {
-    if (pointer >= gen.big5_len) return null;
-    const v = u32at(gen.big5, pointer);
+    const v = std.mem.readInt(T, blob[pointer * @sizeOf(T) ..][0..@sizeOf(T)], .little);
     return if (v == 0) null else @intCast(v);
 }
 
 /// The single-byte index for one variant (byte 0x80..0xFF → code point), or null
-/// for the non-single-byte variants (which `decode` dispatches before this).
+/// for the non-single-byte variants (which `decode` dispatches before this) —
+/// each single-byte variant's tag names its generated `gen.sb_<tag>` table.
 fn singleTable(enc: Encoding) ?[]const u8 {
-    return switch (enc) {
-        .ibm866 => gen.sb_ibm866,
-        .iso_8859_2 => gen.sb_iso_8859_2,
-        .iso_8859_3 => gen.sb_iso_8859_3,
-        .iso_8859_4 => gen.sb_iso_8859_4,
-        .iso_8859_5 => gen.sb_iso_8859_5,
-        .iso_8859_6 => gen.sb_iso_8859_6,
-        .iso_8859_7 => gen.sb_iso_8859_7,
-        .iso_8859_8 => gen.sb_iso_8859_8,
-        .iso_8859_10 => gen.sb_iso_8859_10,
-        .iso_8859_13 => gen.sb_iso_8859_13,
-        .iso_8859_14 => gen.sb_iso_8859_14,
-        .iso_8859_15 => gen.sb_iso_8859_15,
-        .iso_8859_16 => gen.sb_iso_8859_16,
-        .koi8_r => gen.sb_koi8_r,
-        .koi8_u => gen.sb_koi8_u,
-        .macintosh => gen.sb_macintosh,
-        .windows_874 => gen.sb_windows_874,
-        .windows_1250 => gen.sb_windows_1250,
-        .windows_1251 => gen.sb_windows_1251,
-        .windows_1252 => gen.sb_windows_1252,
-        .windows_1253 => gen.sb_windows_1253,
-        .windows_1254 => gen.sb_windows_1254,
-        .windows_1255 => gen.sb_windows_1255,
-        .windows_1256 => gen.sb_windows_1256,
-        .windows_1257 => gen.sb_windows_1257,
-        .windows_1258 => gen.sb_windows_1258,
-        .x_mac_cyrillic => gen.sb_x_mac_cyrillic,
-        else => null,
-    };
+    switch (enc) {
+        inline else => |e| {
+            const name = "sb_" ++ @tagName(e);
+            return if (@hasDecl(gen, name)) @field(gen, name) else null;
+        },
+    }
 }
 
 // ─────────────────────────── output sink + input queue ───────────────────────────
@@ -182,15 +106,8 @@ const Sink = struct {
     out: std.ArrayList(u8) = .empty,
 
     fn cp(self: *Sink, c: u21) void {
-        if (c < 0x80) {
-            self.out.append(self.a, @intCast(c)) catch oom();
-            return;
-        }
         var enc: [4]u8 = undefined;
-        const n = std.unicode.utf8Encode(c, &enc) catch {
-            self.err();
-            return;
-        };
+        const n = std.unicode.utf8Encode(c, &enc) catch return self.err();
         self.out.appendSlice(self.a, enc[0..n]) catch oom();
     }
     fn err(self: *Sink) void {
@@ -216,26 +133,14 @@ const Queue = struct {
             self.pbn -= 1;
             return self.pb[self.pbn];
         }
-        if (self.pos < self.in.len) {
-            defer self.pos += 1;
-            return self.in[self.pos];
-        }
-        return null;
+        if (self.pos >= self.in.len) return null;
+        defer self.pos += 1;
+        return self.in[self.pos];
     }
-    fn restore1(self: *Queue, b: u8) void {
-        self.pb[self.pbn] = b;
-        self.pbn += 1;
-    }
-    fn restore2(self: *Queue, a1: u8, b: u8) void {
-        self.pb[self.pbn] = b;
-        self.pb[self.pbn + 1] = a1;
-        self.pbn += 2;
-    }
-    fn restore3(self: *Queue, a1: u8, a2: u8, b: u8) void {
-        self.pb[self.pbn] = b;
-        self.pb[self.pbn + 1] = a2;
-        self.pb[self.pbn + 2] = a1;
-        self.pbn += 3;
+    /// Push bytes back so `next` re-yields them in this order.
+    fn restore(self: *Queue, bytes: []const u8) void {
+        for (0..bytes.len) |j| self.pb[self.pbn + j] = bytes[bytes.len - 1 - j];
+        self.pbn += bytes.len;
     }
 };
 
@@ -250,53 +155,190 @@ const Queue = struct {
 pub fn decode(a: std.mem.Allocator, enc: Encoding, buf: []const u8) []const u8 {
     if (enc != .replacement and asciiClean(enc, buf)) return buf;
     return switch (enc) {
-        .x_user_defined => xUserDefined(a, buf),
+        .x_user_defined => singleByte(a, null, buf),
         .replacement => if (buf.len == 0) buf else "\xEF\xBF\xBD",
-        .gb18030 => gb18030(a, buf),
-        .big5 => big5(a, buf),
-        .euc_jp => eucJp(a, buf),
-        .shift_jis => shiftJis(a, buf),
-        .euc_kr => eucKr(a, buf),
+        .gb18030 => multiByte(Gb18030{}, a, buf),
+        .big5 => multiByte(Big5{}, a, buf),
+        .euc_jp => multiByte(EucJp{}, a, buf),
+        .shift_jis => multiByte(ShiftJis{}, a, buf),
+        .euc_kr => multiByte(EucKr{}, a, buf),
         .iso_2022_jp => iso2022jp(a, buf),
         else => singleByte(a, singleTable(enc).?, buf),
     };
 }
 
 fn asciiClean(enc: Encoding, buf: []const u8) bool {
-    for (buf) |b| {
-        if (b >= 0x80) return false;
-        if (enc == .iso_2022_jp and b == 0x1B) return false;
-    }
+    for (buf) |b| if (b >= 0x80 or (enc == .iso_2022_jp and b == 0x1B)) return false;
     return true;
 }
 
 // ─────────────────────────── single-byte + algorithmic ───────────────────────────
 
 /// WHATWG single-byte decoder (§9.1): ASCII passes through; a high byte indexes the
-/// 128-entry table (byte − 0x80), an undefined slot yielding U+FFFD.
-fn singleByte(a: std.mem.Allocator, table: []const u8, buf: []const u8) []const u8 {
+/// 128-entry table (byte − 0x80), an undefined slot yielding U+FFFD. A null table
+/// is the x-user-defined decoder (§14.5.1): a high byte maps to the Private Use
+/// area at 0xF780 + (byte − 0x80). The `buf.len` reservation is a prealloc hint
+/// only — high bytes expand to 2-3 UTF-8 bytes, so ASCII appends stay
+/// bounds-checked (an assume-capacity append here overran the reservation).
+fn singleByte(a: std.mem.Allocator, table: ?[]const u8, buf: []const u8) []const u8 {
     var s = Sink{ .a = a };
     s.out.ensureTotalCapacity(a, buf.len) catch oom();
     for (buf) |b| {
         if (b < 0x80) {
-            s.out.appendAssumeCapacity(b);
-        } else if (cp16(table, 128, b - 0x80)) |c| {
-            s.cp(c);
-        } else s.err();
+            s.out.append(a, b) catch oom();
+        } else if (table) |t| {
+            if (cpAt(u16, t, 128, b - 0x80)) |c| s.cp(c) else s.err();
+        } else s.cp(@as(u21, 0xF780) + b - 0x80);
     }
     return s.slice();
 }
 
-/// x-user-defined decoder (§14.5.1): ASCII passes through; a high byte maps to the
-/// Private Use area at 0xF780 + (byte − 0x80).
-fn xUserDefined(a: std.mem.Allocator, buf: []const u8) []const u8 {
+// ─────────────────────────── two-byte CJK skeleton ───────────────────────────
+
+/// One lead+trail step's outcome: `ok` emitted, `fail` applies the driver's
+/// restore-to-queue rule, `rearm` re-arms the trail byte as the next lead
+/// (EUC-JP's three-byte JIS X 0212 and gb18030's four-byte sequences), and
+/// `errored` means the codec already restored its own over-read (gb18030's
+/// multi-byte pushbacks) — the driver only emits the U+FFFD.
+const Paired = enum { ok, fail, rearm, errored };
+
+/// The WHATWG two-byte `pointer` shared by every banded CJK codec: the trail
+/// byte must land in one of `trails`' `{lo, hi, offset}` bands, and the pointer
+/// is `(lead − lead_base) × width + (trail − offset)` — null when the trail is
+/// outside every band (the codec's `.fail`).
+fn pairPointer(l: u8, b: u8, lead_base: u8, width: u32, comptime trails: []const [3]u8) ?u32 {
+    inline for (trails) |t| if (b >= t[0] and b <= t[1])
+        return (@as(u32, l) - lead_base) * width + (b - t[2]);
+    return null;
+}
+
+/// Emit `index code point for pointer` through the sink, or report the pair
+/// failed (an unmapped pointer) — the tail every table-backed codec shares.
+fn emitTable(comptime T: type, blob: []const u8, len: usize, s: *Sink, p: u32) Paired {
+    s.cp(cpAt(T, blob, len, p) orelse return .fail);
+    return .ok;
+}
+
+/// The WHATWG multi-byte decode loop shared by gb18030/GBK (§10.2.1), Big5
+/// (§11.1.1), EUC-JP (§12.1.1), Shift_JIS (§12.3.1), and EUC-KR (§13.1.1): ASCII
+/// passes through, a `codec.isLead` byte arms, `codec.pair` maps lead+trail, and
+/// a failed pair yields U+FFFD after restoring an ASCII trail so it can never be
+/// masked. A codec may carry decoder state (EUC-JP's JIS X 0212 flag, gb18030's
+/// pending four-byte prefix) and an optional `single` hook for the extra bytes
+/// it maps directly (Shift_JIS's 0x80 and half-width katakana, gb18030's €).
+fn multiByte(codec: anytype, a: std.mem.Allocator, buf: []const u8) []const u8 {
+    var c = codec;
     var s = Sink{ .a = a };
-    s.out.ensureTotalCapacity(a, buf.len) catch oom();
-    for (buf) |b| {
-        if (b < 0x80) s.out.appendAssumeCapacity(b) else s.cp(@as(u21, 0xF780) + b - 0x80);
+    var q = Queue{ .in = buf };
+    var lead: u8 = 0;
+    while (q.next()) |b| {
+        if (lead != 0) {
+            const l = lead;
+            lead = 0;
+            switch (c.pair(&s, &q, l, b)) {
+                .ok => {},
+                .rearm => lead = b,
+                .errored => s.err(),
+                .fail => {
+                    if (b < 0x80) q.restore(&.{b});
+                    s.err();
+                },
+            }
+            continue;
+        }
+        if (comptime @hasDecl(@TypeOf(c), "single")) {
+            if (c.single(&s, b)) continue;
+        } else if (b < 0x80) {
+            s.cp(b);
+            continue;
+        }
+        if (c.isLead(b)) lead = b else s.err();
     }
+    if (lead != 0) s.err();
     return s.slice();
 }
+
+// ─────────────────────────── Big5 (§11.1.1) ───────────────────────────
+
+const Big5 = struct {
+    // Four pointers decode to a base letter + combining mark pair
+    // (indexes hold single code points, so the spec tables them).
+    const double = [_][3]u21{ .{ 1133, 0x00CA, 0x0304 }, .{ 1135, 0x00CA, 0x030C }, .{ 1164, 0x00EA, 0x0304 }, .{ 1166, 0x00EA, 0x030C } };
+
+    fn isLead(_: @This(), b: u8) bool {
+        return b >= 0x81 and b <= 0xFE;
+    }
+    fn pair(_: @This(), s: *Sink, _: *Queue, l: u8, b: u8) Paired {
+        const p = pairPointer(l, b, 0x81, 157, &.{ .{ 0x40, 0x7E, 0x40 }, .{ 0xA1, 0xFE, 0x62 } }) orelse return .fail;
+        for (double) |d| if (p == d[0]) {
+            s.cp(d[1]);
+            s.cp(d[2]);
+            return .ok;
+        };
+        return emitTable(u32, gen.big5, gen.big5_len, s, p);
+    }
+};
+
+// ─────────────────────────── EUC-JP (§12.1.1) ───────────────────────────
+
+const EucJp = struct {
+    jis0212: bool = false,
+
+    fn isLead(_: @This(), b: u8) bool {
+        return b == 0x8E or b == 0x8F or (b >= 0xA1 and b <= 0xFE);
+    }
+    fn pair(self: *@This(), s: *Sink, _: *Queue, l: u8, b: u8) Paired {
+        if (l == 0x8E and b >= 0xA1 and b <= 0xDF) {
+            s.cp(@as(u21, 0xFF61) - 0xA1 + b);
+            return .ok;
+        }
+        if (l == 0x8F and b >= 0xA1 and b <= 0xFE) {
+            self.jis0212 = true;
+            return .rearm;
+        }
+        const in0212 = self.jis0212;
+        self.jis0212 = false;
+        if (l < 0xA1) return .fail;
+        const p = pairPointer(l, b, 0xA1, 94, &.{.{ 0xA1, 0xFE, 0xA1 }}) orelse return .fail;
+        return if (in0212) emitTable(u16, gen.jis0212, gen.jis0212_len, s, p) else emitTable(u16, gen.jis0208, gen.jis0208_len, s, p);
+    }
+};
+
+// ─────────────────────────── Shift_JIS (§12.3.1) ───────────────────────────
+
+const ShiftJis = struct {
+    fn single(_: @This(), s: *Sink, b: u8) bool {
+        if (b <= 0x80) {
+            s.cp(b);
+        } else if (b >= 0xA1 and b <= 0xDF) {
+            s.cp(@as(u21, 0xFF61) - 0xA1 + b);
+        } else return false;
+        return true;
+    }
+    fn isLead(_: @This(), b: u8) bool {
+        return (b >= 0x81 and b <= 0x9F) or (b >= 0xE0 and b <= 0xFC);
+    }
+    fn pair(_: @This(), s: *Sink, _: *Queue, l: u8, b: u8) Paired {
+        const p = pairPointer(l, b, if (l < 0xA0) 0x81 else 0xC1, 188, &.{ .{ 0x40, 0x7E, 0x40 }, .{ 0x80, 0xFC, 0x41 } }) orelse return .fail;
+        if (p >= 8836 and p <= 10715) { // EUDC Private Use range (Windows legacy)
+            s.cp(@intCast(@as(u32, 0xE000) - 8836 + p));
+            return .ok;
+        }
+        return emitTable(u16, gen.jis0208, gen.jis0208_len, s, p);
+    }
+};
+
+// ─────────────────────────── EUC-KR (§13.1.1) ───────────────────────────
+
+const EucKr = struct {
+    fn isLead(_: @This(), b: u8) bool {
+        return b >= 0x81 and b <= 0xFE;
+    }
+    fn pair(_: @This(), s: *Sink, _: *Queue, l: u8, b: u8) Paired {
+        const p = pairPointer(l, b, 0x81, 190, &.{.{ 0x41, 0xFE, 0x41 }}) orelse return .fail;
+        return emitTable(u16, gen.euc_kr, gen.euc_kr_len, s, p);
+    }
+};
 
 // ─────────────────────────── gb18030 / GBK (§10.2.1) ───────────────────────────
 
@@ -319,249 +361,63 @@ fn gbRangesCp(pointer: u32) ?u21 {
     return @intCast(base_cp + (pointer - base_ptr));
 }
 
-fn gb18030(a: std.mem.Allocator, buf: []const u8) []const u8 {
-    var s = Sink{ .a = a };
-    var q = Queue{ .in = buf };
-    var first: u8 = 0;
-    var second: u8 = 0;
-    var third: u8 = 0;
-    while (q.next()) |b| {
-        if (third != 0) {
-            if (b < 0x30 or b > 0x39) {
-                q.restore3(second, third, b);
-                first = 0;
-                second = 0;
-                third = 0;
-                s.err();
-                continue;
-            }
-            const pointer = (@as(u32, first) - 0x81) * (10 * 126 * 10) +
-                (@as(u32, second) - 0x30) * (10 * 126) +
-                (@as(u32, third) - 0x81) * 10 + (@as(u32, b) - 0x30);
-            first = 0;
-            second = 0;
-            third = 0;
-            if (gbRangesCp(pointer)) |c| s.cp(c) else s.err();
-            continue;
-        }
-        if (second != 0) {
-            if (b >= 0x81 and b <= 0xFE) {
-                third = b;
-                continue;
-            }
-            q.restore2(second, b);
-            first = 0;
-            second = 0;
-            s.err();
-            continue;
-        }
-        if (first != 0) {
+/// gb18030 rides the shared driver with a pending four-byte prefix: a lead + digit
+/// opens a FOUR-byte sequence (§10.2.1), threaded through `.rearm` (`first` holds
+/// the 0x81..0xFE lead, `second` the first digit; 0 = unset — neither band
+/// contains 0), so the codec restores its own multi-byte over-reads.
+const Gb18030 = struct {
+    first: u8 = 0,
+    second: u8 = 0,
+
+    fn single(_: @This(), s: *Sink, b: u8) bool {
+        if (b < 0x80) s.cp(b) else if (b == 0x80) s.cp(0x20AC) else return false;
+        return true;
+    }
+    fn isLead(_: @This(), b: u8) bool {
+        return b >= 0x81 and b <= 0xFE;
+    }
+    fn pair(self: *@This(), s: *Sink, q: *Queue, l: u8, b: u8) Paired {
+        if (self.first == 0) { // l is a fresh lead: digit opens four-byte, else the two-byte GBK leg
             if (b >= 0x30 and b <= 0x39) {
-                second = b;
-                continue;
+                self.first = l;
+                return .rearm;
             }
-            const leading = first;
-            first = 0;
-            const offset: u32 = if (b < 0x7F) 0x40 else 0x41;
-            const pointer: ?u32 = if ((b >= 0x40 and b <= 0x7E) or (b >= 0x80 and b <= 0xFE))
-                (@as(u32, leading) - 0x81) * 190 + (@as(u32, b) - offset)
-            else
-                null;
-            if (pointer) |p| {
-                if (cp16(gen.gb18030, gen.gb18030_len, p)) |c| {
-                    s.cp(c);
-                    continue;
-                }
-            }
-            if (b < 0x80) q.restore1(b);
-            s.err();
-            continue;
+            const p = pairPointer(l, b, 0x81, 190, &.{ .{ 0x40, 0x7E, 0x40 }, .{ 0x80, 0xFE, 0x41 } }) orelse return .fail;
+            return emitTable(u16, gen.gb18030, gen.gb18030_len, s, p);
         }
-        if (b < 0x80) {
-            s.out.append(a, b) catch oom();
-        } else if (b == 0x80) {
-            s.cp(0x20AC);
-        } else if (b >= 0x81 and b <= 0xFE) {
-            first = b;
-        } else s.err();
+        if (self.second == 0) { // l is the first digit; a 0x81..0xFE third byte keeps the sequence alive
+            if (b >= 0x81 and b <= 0xFE) {
+                self.second = l;
+                return .rearm;
+            }
+            self.first = 0;
+            q.restore(&.{ l, b });
+            return .errored;
+        }
+        const f = self.first; // l is the third byte; b must close with a digit
+        const sec = self.second;
+        self.first = 0;
+        self.second = 0;
+        if (b < 0x30 or b > 0x39) {
+            q.restore(&.{ sec, l, b });
+            return .errored;
+        }
+        const pointer = (@as(u32, f) - 0x81) * (10 * 126 * 10) +
+            (@as(u32, sec) - 0x30) * (10 * 126) +
+            (@as(u32, l) - 0x81) * 10 + (@as(u32, b) - 0x30);
+        s.cp(gbRangesCp(pointer) orelse return .errored);
+        return .ok;
     }
-    if (first != 0 or second != 0 or third != 0) s.err();
-    return s.slice();
-}
-
-// ─────────────────────────── Big5 (§11.1.1) ───────────────────────────
-
-fn big5(a: std.mem.Allocator, buf: []const u8) []const u8 {
-    var s = Sink{ .a = a };
-    var q = Queue{ .in = buf };
-    var lead: u8 = 0;
-    while (q.next()) |b| {
-        if (lead != 0) {
-            const l = lead;
-            lead = 0;
-            const offset: u32 = if (b < 0x7F) 0x40 else 0x62;
-            const pointer: ?u32 = if ((b >= 0x40 and b <= 0x7E) or (b >= 0xA1 and b <= 0xFE))
-                (@as(u32, l) - 0x81) * 157 + (@as(u32, b) - offset)
-            else
-                null;
-            if (pointer) |p| {
-                // Four pointers decode to a base letter + combining mark pair
-                // (indexes hold single code points, so the spec tables them).
-                const pair: ?[2]u21 = switch (p) {
-                    1133 => .{ 0x00CA, 0x0304 },
-                    1135 => .{ 0x00CA, 0x030C },
-                    1164 => .{ 0x00EA, 0x0304 },
-                    1166 => .{ 0x00EA, 0x030C },
-                    else => null,
-                };
-                if (pair) |two| {
-                    s.cp(two[0]);
-                    s.cp(two[1]);
-                    continue;
-                }
-                if (cpBig5(p)) |c| {
-                    s.cp(c);
-                    continue;
-                }
-            }
-            if (b < 0x80) q.restore1(b);
-            s.err();
-            continue;
-        }
-        if (b < 0x80) {
-            s.out.append(a, b) catch oom();
-        } else if (b >= 0x81 and b <= 0xFE) {
-            lead = b;
-        } else s.err();
-    }
-    if (lead != 0) s.err();
-    return s.slice();
-}
-
-// ─────────────────────────── EUC-JP (§12.1.1) ───────────────────────────
-
-fn eucJp(a: std.mem.Allocator, buf: []const u8) []const u8 {
-    var s = Sink{ .a = a };
-    var q = Queue{ .in = buf };
-    var jis0212 = false;
-    var lead: u8 = 0;
-    while (q.next()) |b| {
-        if (lead == 0x8E and b >= 0xA1 and b <= 0xDF) {
-            lead = 0;
-            s.cp(@as(u21, 0xFF61) - 0xA1 + b);
-            continue;
-        }
-        if (lead == 0x8F and b >= 0xA1 and b <= 0xFE) {
-            jis0212 = true;
-            lead = b;
-            continue;
-        }
-        if (lead != 0) {
-            const l = lead;
-            lead = 0;
-            var c: ?u21 = null;
-            if (l >= 0xA1 and l <= 0xFE and b >= 0xA1 and b <= 0xFE) {
-                const pointer = (@as(usize, l) - 0xA1) * 94 + (@as(usize, b) - 0xA1);
-                c = if (jis0212) cp16(gen.jis0212, gen.jis0212_len, pointer) else cp16(gen.jis0208, gen.jis0208_len, pointer);
-            }
-            jis0212 = false;
-            if (c) |cc| {
-                s.cp(cc);
-                continue;
-            }
-            if (b < 0x80) q.restore1(b);
-            s.err();
-            continue;
-        }
-        if (b < 0x80) {
-            s.out.append(a, b) catch oom();
-        } else if (b == 0x8E or b == 0x8F or (b >= 0xA1 and b <= 0xFE)) {
-            lead = b;
-        } else s.err();
-    }
-    if (lead != 0) s.err();
-    return s.slice();
-}
-
-// ─────────────────────────── Shift_JIS (§12.3.1) ───────────────────────────
-
-fn shiftJis(a: std.mem.Allocator, buf: []const u8) []const u8 {
-    var s = Sink{ .a = a };
-    var q = Queue{ .in = buf };
-    var lead: u8 = 0;
-    while (q.next()) |b| {
-        if (lead != 0) {
-            const l = lead;
-            lead = 0;
-            const offset: u32 = if (b < 0x7F) 0x40 else 0x41;
-            const lead_offset: u32 = if (l < 0xA0) 0x81 else 0xC1;
-            const pointer: ?u32 = if ((b >= 0x40 and b <= 0x7E) or (b >= 0x80 and b <= 0xFC))
-                (@as(u32, l) - lead_offset) * 188 + (@as(u32, b) - offset)
-            else
-                null;
-            if (pointer) |p| {
-                if (p >= 8836 and p <= 10715) { // EUDC Private Use range (Windows legacy)
-                    s.cp(@intCast(@as(u32, 0xE000) - 8836 + p));
-                    continue;
-                }
-                if (cp16(gen.jis0208, gen.jis0208_len, p)) |c| {
-                    s.cp(c);
-                    continue;
-                }
-            }
-            if (b < 0x80) q.restore1(b);
-            s.err();
-            continue;
-        }
-        if (b < 0x80 or b == 0x80) {
-            s.cp(b);
-        } else if (b >= 0xA1 and b <= 0xDF) {
-            s.cp(@as(u21, 0xFF61) - 0xA1 + b);
-        } else if ((b >= 0x81 and b <= 0x9F) or (b >= 0xE0 and b <= 0xFC)) {
-            lead = b;
-        } else s.err();
-    }
-    if (lead != 0) s.err();
-    return s.slice();
-}
-
-// ─────────────────────────── EUC-KR (§13.1.1) ───────────────────────────
-
-fn eucKr(a: std.mem.Allocator, buf: []const u8) []const u8 {
-    var s = Sink{ .a = a };
-    var q = Queue{ .in = buf };
-    var lead: u8 = 0;
-    while (q.next()) |b| {
-        if (lead != 0) {
-            const l = lead;
-            lead = 0;
-            const pointer: ?u32 = if (b >= 0x41 and b <= 0xFE)
-                (@as(u32, l) - 0x81) * 190 + (@as(u32, b) - 0x41)
-            else
-                null;
-            if (pointer) |p| {
-                if (cp16(gen.euc_kr, gen.euc_kr_len, p)) |c| {
-                    s.cp(c);
-                    continue;
-                }
-            }
-            if (b < 0x80) q.restore1(b);
-            s.err();
-            continue;
-        }
-        if (b < 0x80) {
-            s.out.append(a, b) catch oom();
-        } else if (b >= 0x81 and b <= 0xFE) {
-            lead = b;
-        } else s.err();
-    }
-    if (lead != 0) s.err();
-    return s.slice();
-}
+};
 
 // ─────────────────────────── ISO-2022-JP (§12.2.1) ───────────────────────────
 
 const IsoState = enum { ascii, roman, katakana, leading, trailing, escape_start, escape };
+
+/// The recognized ESC sequences: `ESC ( B/J/I` (ASCII / JIS X 0201 Roman /
+/// katakana) and `ESC $ @/B` (both JIS X 0208 double-byte) — any other pair
+/// restores and errors.
+const esc_modes = [_]struct { u8, u8, IsoState }{ .{ 0x28, 0x42, .ascii }, .{ 0x28, 0x4A, .roman }, .{ 0x28, 0x49, .katakana }, .{ 0x24, 0x40, .leading }, .{ 0x24, 0x42, .leading } };
 
 /// ISO-2022-JP is the one stateful decoder: ESC (0x1B) sequences switch between
 /// ASCII, JIS X 0201 Roman/katakana, and JIS X 0208 double-byte modes. The escape
@@ -577,68 +433,27 @@ fn iso2022jp(a: std.mem.Allocator, buf: []const u8) []const u8 {
     while (true) {
         const item = q.next();
         switch (state) {
-            .ascii => {
+            // The four steady modes share the ESC arm and the output-flag reset.
+            .ascii, .roman, .katakana, .leading => {
                 const b = item orelse break;
                 if (b == 0x1B) {
                     state = .escape_start;
-                } else if (b <= 0x7F and b != 0x0E and b != 0x0F) {
-                    output = false;
-                    s.cp(b);
-                } else {
-                    output = false;
-                    s.err();
+                    continue;
                 }
-            },
-            .roman => {
-                const b = item orelse break;
-                switch (b) {
-                    0x1B => state = .escape_start,
-                    0x5C => {
-                        output = false;
-                        s.cp(0x00A5);
+                output = false;
+                switch (state) {
+                    .ascii => if (b <= 0x7F and b != 0x0E and b != 0x0F) s.cp(b) else s.err(),
+                    .roman => switch (b) {
+                        0x5C => s.cp(0x00A5),
+                        0x7E => s.cp(0x203E),
+                        else => if (b <= 0x7F and b != 0x0E and b != 0x0F) s.cp(b) else s.err(),
                     },
-                    0x7E => {
-                        output = false;
-                        s.cp(0x203E);
-                    },
-                    0x0E, 0x0F => {
-                        output = false;
-                        s.err();
-                    },
-                    else => {
-                        if (b <= 0x7F) {
-                            output = false;
-                            s.cp(b);
-                        } else {
-                            output = false;
-                            s.err();
-                        }
-                    },
-                }
-            },
-            .katakana => {
-                const b = item orelse break;
-                if (b == 0x1B) {
-                    state = .escape_start;
-                } else if (b >= 0x21 and b <= 0x5F) {
-                    output = false;
-                    s.cp(@as(u21, 0xFF61) - 0x21 + b);
-                } else {
-                    output = false;
-                    s.err();
-                }
-            },
-            .leading => {
-                const b = item orelse break;
-                if (b == 0x1B) {
-                    state = .escape_start;
-                } else if (b >= 0x21 and b <= 0x7E) {
-                    output = false;
-                    lead = b;
-                    state = .trailing;
-                } else {
-                    output = false;
-                    s.err();
+                    .katakana => if (b >= 0x21 and b <= 0x5F) s.cp(@as(u21, 0xFF61) - 0x21 + b) else s.err(),
+                    .leading => if (b >= 0x21 and b <= 0x7E) {
+                        lead = b;
+                        state = .trailing;
+                    } else s.err(),
+                    else => unreachable,
                 }
             },
             .trailing => {
@@ -650,14 +465,13 @@ fn iso2022jp(a: std.mem.Allocator, buf: []const u8) []const u8 {
                 if (b == 0x1B) {
                     state = .escape_start;
                     s.err();
-                } else if (b >= 0x21 and b <= 0x7E) {
-                    state = .leading;
-                    const pointer = (@as(usize, lead) - 0x21) * 94 + (@as(usize, b) - 0x21);
-                    if (cp16(gen.jis0208, gen.jis0208_len, pointer)) |c| s.cp(c) else s.err();
-                } else {
-                    state = .leading;
-                    s.err();
+                    continue;
                 }
+                state = .leading;
+                if (b >= 0x21 and b <= 0x7E) {
+                    const pointer = (@as(usize, lead) - 0x21) * 94 + (@as(usize, b) - 0x21);
+                    if (cpAt(u16, gen.jis0208, gen.jis0208_len, pointer)) |c| s.cp(c) else s.err();
+                } else s.err();
             },
             .escape_start => {
                 if (item) |b| {
@@ -666,7 +480,7 @@ fn iso2022jp(a: std.mem.Allocator, buf: []const u8) []const u8 {
                         state = .escape;
                         continue;
                     }
-                    q.restore1(b);
+                    q.restore(&.{b});
                 }
                 output = false;
                 state = out_state;
@@ -675,15 +489,9 @@ fn iso2022jp(a: std.mem.Allocator, buf: []const u8) []const u8 {
             .escape => {
                 const l = lead;
                 lead = 0;
-                const newstate: ?IsoState = if (item) |b| switch (l) {
-                    0x28 => switch (b) {
-                        0x42 => .ascii,
-                        0x4A => .roman,
-                        0x49 => .katakana,
-                        else => null,
-                    },
-                    0x24 => if (b == 0x40 or b == 0x42) .leading else null,
-                    else => null,
+                const newstate: ?IsoState = if (item) |b| blk: {
+                    for (esc_modes) |m| if (m[0] == l and m[1] == b) break :blk m[2];
+                    break :blk null;
                 } else null;
                 if (newstate) |ns| {
                     state = ns;
@@ -692,7 +500,7 @@ fn iso2022jp(a: std.mem.Allocator, buf: []const u8) []const u8 {
                     output = true;
                     if (was) s.err();
                 } else {
-                    if (item) |b| q.restore2(l, b) else q.restore1(l);
+                    if (item) |b| q.restore(&.{ l, b }) else q.restore(&.{l});
                     output = false;
                     state = out_state;
                     s.err();

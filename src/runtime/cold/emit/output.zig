@@ -16,38 +16,55 @@ const Opts = args.Opts;
 const die = args.die;
 const oom = args.oom;
 const palette = @import("color.zig");
-const simd = @import("../../../../search/match/scan/simd.zig");
+const simd = @import("../../../search/match/scan/simd.zig");
 const ml = @import("multiline.zig");
-const Regex = @import("../../../../search/match/regex/linear/core.zig").Regex;
-const Matcher = @import("../../../../search/match/regex/linear/matcher.zig").Matcher;
-const captures_mod = @import("../../../../search/match/regex/compile/captures.zig");
+const Regex = @import("../../../search/match/regex/linear/core.zig").Regex;
+const Matcher = @import("../../../search/match/regex/linear/matcher.zig").Matcher;
+const captures_mod = @import("../../../search/match/regex/compile/captures.zig");
 const Caps = captures_mod.Caps;
 const Captures = captures_mod.Captures;
+const word = @import("../../../search/match/regex/syntax/word.zig");
 
 pub fn isWordByte(c: u8) bool {
-    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '_';
+    return std.ascii.isAlphanumeric(c) or c == '_';
 }
 
 /// ripgrep `-w`: a match span `[s,e)` is a word match iff bounded by a non-word
-/// byte (or the line edge) on BOTH sides. Unlike `\b(pat)\b` this does not
-/// require the match to contain word bytes, so a punctuation match (e.g. `.`
-/// matching `.`) is still a valid word match — rg's actual semantics.
-pub fn wordOk(line: []const u8, s: usize, e: usize) bool {
-    const before = s == 0 or !isWordByte(line[s - 1]);
-    const after = e == line.len or !isWordByte(line[e]);
-    return before and after;
+/// CODEPOINT (or the line edge) on BOTH sides. Unlike `\b(pat)\b` this does not
+/// require the match to contain word chars, so a punctuation match (e.g. `.`
+/// matching `.`) is still a valid word match — rg's actual semantics. The word
+/// test is the engines' shared `\b` oracle (`syntax/word.zig`): Unicode-aware
+/// by default (`中`/`é`/Cyrillic beside a match kill it, exactly as rg), the
+/// ASCII byte class under `--no-unicode` — caught by the multi-corpus sweep
+/// (linux/subtitles/typescript `-w` counts all diverged on non-ASCII text).
+pub fn wordOk(unicode: bool, line: []const u8, s: usize, e: usize) bool {
+    return !word.wordBefore(unicode, line, s) and !word.wordAt(unicode, line, e);
+}
+
+/// Next non-empty (and, under `-w`, word-valid) match span at/after `from.*`,
+/// advancing `from` past it: a zero-width span skips one byte (the progress
+/// rule), a word-rejected span advances to its end. THE span-iteration loop —
+/// the text emitter and the `--json` stream both step through it, so the two
+/// can never drift on which spans count as "a match".
+pub fn nextSpan(re: *const Matcher, ss: *Matcher.SpanSim, o: Opts, s: []const u8, from: *usize) ?Matcher.Span {
+    while (from.* <= s.len) {
+        const sp = re.matchSpan(ss, s, from.*) orelse return null;
+        if (sp.end == sp.start) {
+            from.* = sp.start + 1;
+            continue;
+        }
+        from.* = sp.end;
+        if (o.word and !wordOk(o.unicode, s, sp.start, sp.end)) continue;
+        return sp;
+    }
+    return null;
 }
 
 /// Resolve a `-r` group reference: an all-digit name is the numeric index; else
 /// a named group looked up in the capture program. Null ⇒ unknown (→ empty).
 pub fn groupIndexOf(caps: *const Caps, name: []const u8) ?u32 {
-    var all_digits = true;
-    for (name) |c| if (c < '0' or c > '9') {
-        all_digits = false;
-        break;
-    };
-    if (all_digits) return std.fmt.parseInt(u32, name, 10) catch null;
-    return caps.groupByName(name);
+    for (name) |c| if (!std.ascii.isDigit(c)) return caps.groupByName(name);
+    return std.fmt.parseInt(u32, name, 10) catch null;
 }
 
 /// Expand a `-r` replacement template into `buf`: `$1`/`${1}` numeric groups,
@@ -68,18 +85,16 @@ pub fn expandInto(a: std.mem.Allocator, caps: *const Caps, buf: *std.ArrayList(u
             continue;
         }
         i += 1;
-        var name: []const u8 = "";
-        if (i < tmpl.len and tmpl[i] == '{') {
+        const name = if (i < tmpl.len and tmpl[i] == '{') blk: {
             const st = i + 1;
-            var j = st;
-            while (j < tmpl.len and tmpl[j] != '}') j += 1;
-            name = tmpl[st..j];
-            i = if (j < tmpl.len) j + 1 else j;
-        } else {
+            const j = std.mem.indexOfScalarPos(u8, tmpl, st, '}') orelse tmpl.len;
+            i = @min(j + 1, tmpl.len);
+            break :blk tmpl[st..j];
+        } else blk: {
             const st = i;
             while (i < tmpl.len and isWordByte(tmpl[i])) i += 1;
-            name = tmpl[st..i];
-        }
+            break :blk tmpl[st..i];
+        };
         if (name.len == 0) {
             buf.append(a, '$') catch oom();
             continue;
@@ -132,6 +147,12 @@ pub const Emitter = struct {
     /// n_states allocations amortize across every file this Emitter emits.
     /// Null ⇒ the per-file paths build (and free) a local one, as before.
     sim: ?*Matcher.Sim = null,
+    /// Absolute address one past the current file's last byte (set with `base`).
+    /// A raw line slice ending exactly here is the file's UNTERMINATED tail —
+    /// a terminated final line's slice stops before its terminator byte — and
+    /// rg appends the full output terminator (`\r\n` under `--crlf`) to such a
+    /// line instead of reconstructing a bare `\n`. 0 ⇒ unknown (never a tail).
+    body_end: usize = 0,
 
     /// `--crlf` match view: a trailing `\r` is treated as part of the terminator
     /// (so `$`/`\b` anchor before it) but is KEPT in the emitted line — ripgrep's
@@ -139,6 +160,15 @@ pub const Emitter = struct {
     /// (it's a prefix), so display bytes are unaffected.
     fn mview(self: *const Emitter, line: []const u8) []const u8 {
         return if (self.o.crlf) std.mem.trimEnd(u8, line, "\r") else line;
+    }
+
+    /// Was this raw line slice terminated in the file? The split drops the
+    /// terminator byte, so only the slice ending exactly at `body_end` (when
+    /// known) is the file's unterminated tail. rg writes a terminated line
+    /// verbatim (dos keeps `\r\n`, unix keeps `\n` even under `--crlf`) but
+    /// appends the full output terminator to an unterminated one.
+    fn lineTerminated(self: *const Emitter, line: []const u8) bool {
+        return self.body_end == 0 or @intFromPtr(line.ptr) + line.len != self.body_end;
     }
 
     fn lineCanMatch(self: *const Emitter, line: []const u8) bool {
@@ -204,12 +234,15 @@ pub const Emitter = struct {
         // order). `starts` = replacement offsets, the "match granularity" ripgrep's
         // over-long-line placeholders count against. Context lines are untouched.
         var starts: []const usize = &.{};
+        // Terminator provenance reads off the RAW slice (a rewritten `-r` body
+        // is not file-backed, but rg keys the append off the original line).
+        const terminated = self.lineTerminated(line);
         if (is_match) if (self.o.replace) |tmpl| {
             const r = self.buildReplaced(tmpl, line);
             s = r.text;
             starts = r.starts;
         };
-        self.emitBody(s, is_match, starts);
+        self.emitBody(s, is_match, starts, terminated);
     }
 
     /// The presentation tail shared by every "print this line body" path:
@@ -218,7 +251,7 @@ pub const Emitter = struct {
     /// replacement offsets within `s_in`; trimming rebases them (an offset
     /// inside the trimmed whitespace clamps to 0 — before any cut, like rg's
     /// block-coordinate comparison).
-    fn emitBody(self: *Emitter, s_in: []const u8, is_match: bool, starts_in: []const usize) void {
+    fn emitBody(self: *Emitter, s_in: []const u8, is_match: bool, starts_in: []const usize, terminated: bool) void {
         var s = s_in;
         var starts = starts_in;
         if (self.o.trim) {
@@ -231,67 +264,44 @@ pub const Emitter = struct {
             }
             s = trimmed;
         }
-        if (self.o.max_cols != 0 and s.len > self.o.max_cols) {
+        // Terminator model (rg parity): a REWRITTEN body (`-M` placeholder /
+        // preview, colored line) lost its `\r`, so rg appends the full output
+        // terminator; a verbatim body reconstructs its original bytes — the
+        // split `\n`/NUL for a terminated line (any `\r` is still in `s`), the
+        // full terminator for the file's unterminated tail.
+        //
+        // `-M` measures the line WITH its terminator byte (rg slices lines
+        // terminator-inclusive, and appends the terminator to a `-r` rewrite
+        // before the width check) — an unterminated tail measures bare, and
+        // `-o` fragments (bufOnly) measure bare too.
+        const width = s.len + @intFromBool(terminated);
+        if (self.o.max_cols != 0 and width > self.o.max_cols) {
             self.exceeded(s, is_match, starts);
+            self.add(self.o.outTerm());
         } else if (is_match and self.use_color and self.o.replace == null) {
-            self.highlightSpans(s);
-        } else self.add(s);
-        self.out.append(self.a, self.o.term()) catch oom();
+            // rg's colored writer trims the terminator (incl. `\r`) and
+            // re-appends it, normalizing even a unix line to `\r\n` under
+            // `--crlf` — mirror that exactly.
+            self.highlightSpans(self.mview(s));
+            self.add(self.o.outTerm());
+        } else {
+            self.add(s);
+            self.add(if (terminated) self.o.termStr() else self.o.outTerm());
+        }
     }
-
-    /// Leftmost non-overlapping, non-empty, `-w`-filtered match spans of a
-    /// line's `--crlf` view — THE span iteration, consumed by both the
-    /// highlighter and the over-long-line renderer so the two can never drift
-    /// on which spans count as "a match" (zero-width skip, word filter).
-    const SpanIter = struct {
-        ssim: Matcher.SpanSim,
-        em: *const Emitter,
-        mv: []const u8,
-        from: usize = 0,
-
-        /// Null when the span simulator can't be built (engine without span
-        /// support) — callers fall back to their unpainted/empty shapes.
-        fn init(em: *const Emitter, s: []const u8) ?SpanIter {
-            return .{
-                .ssim = Matcher.SpanSim.init(em.a, em.re) catch return null,
-                .em = em,
-                .mv = em.mview(s),
-            };
-        }
-
-        fn deinit(self: *SpanIter) void {
-            self.ssim.deinit();
-        }
-
-        fn next(self: *SpanIter) ?Matcher.Span {
-            while (self.from <= self.mv.len) {
-                const sp = self.em.re.matchSpan(&self.ssim, self.mv, self.from) orelse return null;
-                if (sp.end == sp.start) {
-                    self.from = sp.start + 1;
-                    continue;
-                }
-                self.from = sp.end;
-                if (self.em.o.word and !wordOk(self.mv, sp.start, sp.end)) continue;
-                return sp;
-            }
-            return null;
-        }
-    };
 
     /// Paint every match span within `s` (a matching line, post-trim), leaving
     /// non-matching text untouched. `s` is re-scanned independently of the
     /// caller's line-hit check — cheap (one line) and keeps this self-contained
     /// rather than threading span positions through every call site of `text`.
     /// `-r/--replace` output is excluded by the caller (the substituted text
-    /// isn't "the match" any more).
+    /// isn't "the match" any more). Spans step through `nextSpan` over the
+    /// `--crlf` view (a prefix of `s`, so indexes carry over 1:1); if the span
+    /// simulator can't be built (engine without span support) the line emits
+    /// unpainted (`matchSpans` returns no spans).
     fn highlightSpans(self: *Emitter, s: []const u8) void {
-        var it = SpanIter.init(self, s) orelse {
-            self.add(s);
-            return;
-        };
-        defer it.deinit();
         var last: usize = 0;
-        while (it.next()) |sp| {
+        for (self.matchSpans(s)) |sp| {
             self.add(s[last..sp.start]);
             self.paint(palette.match_on, s[sp.start..sp.end]);
             last = sp.end;
@@ -299,14 +309,17 @@ pub const Emitter = struct {
         self.add(s[last..]);
     }
 
-    /// `SpanIter` materialized, so `exceeded` can both paint the shown preview
-    /// AND count the matches past the cut in one pass — the "match granularity"
-    /// `--color` gives the over-long-line renderer. Arena-owned.
+    /// The same span walk materialized, so `exceeded` can both paint the shown
+    /// preview AND count the matches past the cut in one pass — the "match
+    /// granularity" `--color` gives the over-long-line renderer. Arena-owned;
+    /// empty when the span simulator can't be built.
     fn matchSpans(self: *Emitter, s: []const u8) []const Matcher.Span {
         var out: std.ArrayList(Matcher.Span) = .empty;
-        var it = SpanIter.init(self, s) orelse return &.{};
-        defer it.deinit();
-        while (it.next()) |sp| out.append(self.a, sp) catch oom();
+        var ss = Matcher.SpanSim.init(self.a, self.re) catch return &.{};
+        defer ss.deinit();
+        const mv = self.mview(s);
+        var from: usize = 0;
+        while (nextSpan(self.re, &ss, self.o, mv, &from)) |sp| out.append(self.a, sp) catch oom();
         return out.toOwnedSlice(self.a) catch &.{};
     }
 
@@ -319,11 +332,11 @@ pub const Emitter = struct {
         const gran = starts.len != 0 or (self.o.replace != null and is_match);
         if (self.o.max_cols_preview) {
             const cut = previewEnd(s, self.o.max_cols);
+            var remaining: usize = 0;
             // `--color` (no `-r`): paint matches inside the shown preview and count
             // the ones that begin past the cut — rg's colored-preview behavior.
             if (self.use_color and is_match and self.o.replace == null) {
                 var last: usize = 0;
-                var remaining: usize = 0;
                 for (self.matchSpans(s)) |sp| {
                     if (sp.start >= cut) {
                         remaining += 1;
@@ -335,20 +348,12 @@ pub const Emitter = struct {
                     last = e;
                 }
                 self.add(s[last..cut]);
-                self.out.print(self.a, " [... {d} more {s}]", .{ remaining, if (remaining == 1) "match" else "matches" }) catch oom();
-                return;
-            }
-            self.add(s[0..cut]);
-            if (!gran) {
-                self.add(" [... omitted end of long line]");
             } else {
-                var remaining: usize = 0;
-                for (starts) |st| if (st >= cut) {
-                    remaining += 1;
-                };
-                self.out.print(self.a, " [... {d} more {s}]", .{ remaining, if (remaining == 1) "match" else "matches" }) catch oom();
+                self.add(s[0..cut]);
+                if (!gran) return self.add(" [... omitted end of long line]");
+                for (starts) |st| remaining += @intFromBool(st >= cut);
             }
-            return;
+            return self.out.print(self.a, " [... {d} more {s}]", .{ remaining, if (remaining == 1) "match" else "matches" }) catch oom();
         }
         if (!is_match) {
             self.add("[Omitted long context line]");
@@ -379,15 +384,15 @@ pub const Emitter = struct {
             const e: usize = @intCast(slots[1]);
             buf.appendSlice(self.a, line[from..s]) catch oom();
             const empty_adjacent = e == s and last_end != null and s == last_end.?;
-            if (empty_adjacent or (self.o.word and !wordOk(line, s, e))) {
-                if (s < line.len) buf.append(self.a, line[s]) catch oom();
-                from = s + 1;
-                continue;
+            const rejected = empty_adjacent or (self.o.word and !wordOk(self.o.unicode, line, s, e));
+            if (!rejected) {
+                starts.append(self.a, buf.items.len) catch oom();
+                self.expand(&buf, tmpl, line, slots);
+                last_end = e;
             }
-            starts.append(self.a, buf.items.len) catch oom();
-            self.expand(&buf, tmpl, line, slots);
-            last_end = e;
-            if (e == s) {
+            // A rejected or empty span keeps/advances past one source byte;
+            // an accepted non-empty span resumes after its end.
+            if (rejected or e == s) {
                 if (s < line.len) buf.append(self.a, line[s]) catch oom();
                 from = s + 1;
             } else from = e;
@@ -398,18 +403,6 @@ pub const Emitter = struct {
 
     fn expand(self: *Emitter, buf: *std.ArrayList(u8), tmpl: []const u8, line: []const u8, slots: []const isize) void {
         expandInto(self.a, self.caps.?, buf, tmpl, line, slots);
-    }
-
-    /// `-o` with `-r`: emit the expanded template (not the raw match) for each match
-    /// span across `lines`. Returns the number emitted (respecting `--max-count`).
-    fn onlyMatchingRepl(self: *Emitter, path: []const u8, lines: []const []const u8) usize {
-        var emitted: usize = 0;
-        for (lines, 0..) |line, k| {
-            if (!self.lineCanMatch(self.mview(line))) continue;
-            emitted += self.emitLineRepl(path, k + 1, line, emitted);
-            if (self.o.max_per_file != 0 and emitted >= self.o.max_per_file) break;
-        }
-        return emitted;
     }
 
     /// Emit each match on one line as its expanded `-r` template (the `-o` frame),
@@ -424,17 +417,13 @@ pub const Emitter = struct {
         while (from <= line.len and caps.find(line, from, slots)) {
             const s: usize = @intCast(slots[0]);
             const e: usize = @intCast(slots[1]);
-            if (e == s) {
-                from = s + 1;
-                continue;
-            }
-            if (self.o.word and !wordOk(line, s, e)) {
-                from = e;
+            if (e == s or (self.o.word and !wordOk(self.o.unicode, line, s, e))) {
+                from = if (e == s) s + 1 else e;
                 continue;
             }
             self.prefix(path, lineno, s + 1, self.offOf(line) + s, true);
             self.expand(self.out, tmpl, line, slots);
-            self.out.append(self.a, self.o.term()) catch oom();
+            self.add(self.o.outTerm()); // expanded text carries no terminator — rg appends the full one
             n += 1;
             if (self.o.max_per_file != 0 and so_far + n >= self.o.max_per_file) break;
             from = e;
@@ -446,19 +435,19 @@ pub const Emitter = struct {
     /// or 0 if none — the value ripgrep prints under `--column`.
     fn firstCol(self: *Emitter, ssim: *Matcher.SpanSim, line: []const u8) usize {
         var from: usize = 0;
-        while (from <= line.len) {
-            const sp = self.re.matchSpan(ssim, line, from) orelse return 0;
-            if (sp.end == sp.start) {
-                from = sp.start + 1;
-                continue;
-            }
-            if (self.o.word and !wordOk(line, sp.start, sp.end)) {
-                from = sp.end;
-                continue;
-            }
-            return sp.start + 1;
-        }
-        return 0;
+        const sp = nextSpan(self.re, ssim, self.o, line, &from) orelse return 0;
+        return sp.start + 1;
+    }
+
+    /// One framed output row: the locator prefix followed by the line body.
+    fn row(self: *Emitter, path: []const u8, lineno: usize, col: usize, off: usize, body: []const u8, is_match: bool) void {
+        self.prefix(path, lineno, col, off, is_match);
+        self.text(body, is_match);
+    }
+
+    /// Emit lines `[lo, hi_ex)` of the physical grid as context rows.
+    fn ctxRows(self: *Emitter, path: []const u8, lines: []const ml.Line, body: []const u8, lo: usize, hi_ex: usize) void {
+        for (lo..hi_ex) |k| self.row(path, k + 1, 0, lines[k].start, body[lines[k].start..lines[k].content_end], false);
     }
 
     pub fn file(self: *Emitter, path: []const u8, lines: []const []const u8) usize {
@@ -468,7 +457,7 @@ pub const Emitter = struct {
         // `--count --only-matching` counts every match span (like --count-matches),
         // not matching lines — ripgrep's documented override.
         if ((o.count_matches or (o.count_only and o.only_matching)) and !o.invert) return self.countMatches(path, lines);
-        if (o.only_matching and !o.invert) return if (o.replace != null) self.onlyMatchingRepl(path, lines) else self.onlyMatching(path, lines);
+        if (o.only_matching and !o.invert) return self.onlyMatching(path, lines);
 
         // Borrow the caller-threaded scratch when present; else pay a file-local.
         var local_sim: ?Matcher.Sim = if (self.sim == null) (Matcher.Sim.init(self.a, self.re) catch return 0) else null;
@@ -495,19 +484,12 @@ pub const Emitter = struct {
             // `-l` asks only whether this file has any matching line. Emit on
             // the first proof instead of scanning the rest of the file and
             // accumulating line indexes that no output mode will consume.
-            if (o.files_only) {
-                self.out.print(self.a, "{s}{c}", .{ path, if (o.null_sep) @as(u8, 0) else '\n' }) catch oom();
-                return 1;
-            }
+            if (o.files_only) return self.emitPathOnly(path);
             idx.append(self.a, k) catch oom();
             if (o.max_per_file != 0 and idx.items.len >= o.max_per_file) break;
         }
         if (idx.items.len == 0) return 0;
-        if (o.count_only or o.count_matches) {
-            if (self.show_name) self.writePath(path, true);
-            self.out.print(self.a, "{d}\n", .{idx.items.len}) catch oom();
-            return idx.items.len;
-        }
+        if (o.count_only or o.count_matches) return self.bufTally(path, idx.items.len);
         const is_match = self.a.alloc(bool, lines.len) catch oom();
         @memset(is_match, false);
         for (idx.items) |m| is_match[m] = true;
@@ -515,28 +497,15 @@ pub const Emitter = struct {
         // --column (or --column implied by --vimgrep, handled separately).
         var css: ?Matcher.SpanSim = if (o.column) (Matcher.SpanSim.init(self.a, self.re) catch null) else null;
         defer if (css) |*s| s.deinit();
-        const B = o.before;
-        const A = o.after;
         var prev_end: ?usize = null;
         for (idx.items) |m| {
-            const lo = if (m >= B) m - B else 0;
-            const hi = @min(m + A, lines.len - 1);
-            var start = lo;
-            if (prev_end) |pe| {
-                if (lo > pe + 1) {
-                    if (o.wantsContext()) self.groupSep();
-                } else if (hi <= pe) {
-                    continue;
-                } else start = pe + 1;
-            }
-            var k = start;
+            const hi = @min(m + o.after, lines.len - 1);
+            var k = self.windowStart(m -| o.before, hi, &prev_end) orelse continue;
             while (k <= hi) : (k += 1) {
                 const is_m = is_match[k];
                 const col: usize = if (is_m and css != null) self.firstCol(&css.?, self.mview(lines[k])) else 0;
-                self.prefix(path, k + 1, col, self.offOf(lines[k]), is_m);
-                self.text(lines[k], is_m);
+                self.row(path, k + 1, col, self.offOf(lines[k]), lines[k], is_m);
             }
-            prev_end = hi;
         }
         return idx.items.len;
     }
@@ -569,8 +538,7 @@ pub const Emitter = struct {
                 continue;
             }
             const col: usize = if (is_m and css != null) self.firstCol(&css.?, mv) else 0;
-            self.prefix(path, k + 1, col, self.offOf(line), is_m);
-            self.text(line, is_m);
+            self.row(path, k + 1, col, self.offOf(line), line, is_m);
         }
         return matched;
     }
@@ -584,35 +552,24 @@ pub const Emitter = struct {
         var last_end: ?usize = null;
         while (from <= mv.len) {
             const span = self.re.matchSpan(ssim, mv, from) orelse break;
-            if (span.end == span.start) {
-                // rg `find_iter` yields zero-width matches too, but only for a
-                // nullable regex (`-o ''`, `a*`) and never one adjacent to the
-                // previous match's end (the progress rule) — so a non-nullable
-                // pattern's output is byte-identical to before. An empty match
-                // prints an empty `-o` line (word-checked under `-w`).
-                const adjacent = last_end != null and span.start == last_end.?;
-                if (!self.re.nullable() or adjacent or (self.o.word and !wordOk(mv, span.start, span.end))) {
-                    from = span.start + 1;
-                    continue;
-                }
-                self.prefix(path, lineno, span.start + 1, self.offOf(line) + span.start, true);
-                self.out.append(self.a, self.o.term()) catch oom();
-                n += 1;
-                last_end = span.end;
-                from = span.start + 1;
-                continue;
-            }
-            if (self.o.word and !wordOk(mv, span.start, span.end)) {
-                from = span.end;
-                continue;
-            }
+            const empty = span.end == span.start;
+            from = if (empty) span.start + 1 else span.end;
+            // rg `find_iter` yields zero-width matches too, but only for a
+            // nullable regex (`-o ''`, `a*`) and never one adjacent to the
+            // previous match's end (the progress rule) — so a non-nullable
+            // pattern's output is byte-identical to before. An empty match
+            // prints an empty `-o` line (word-checked under `-w`).
+            const adjacent = empty and last_end != null and span.start == last_end.?;
+            if ((empty and !self.re.nullable()) or adjacent or
+                (self.o.word and !wordOk(self.o.unicode, mv, span.start, span.end))) continue;
             self.prefix(path, lineno, span.start + 1, self.offOf(line) + span.start, true);
-            const end = if (self.o.crlf and span.end == mv.len) line.len else span.end;
-            self.paint(palette.match_on, line[span.start..end]);
-            self.out.append(self.a, self.o.term()) catch oom();
+            // `-o` emits bare match bytes + the full output terminator (rg's
+            // printer): under `--crlf` every fragment ends `\r\n`, so a match
+            // reaching the logical line end needs no `\r`-reattachment.
+            if (!empty) self.paint(palette.match_on, line[span.start..span.end]);
+            self.add(self.o.outTerm());
             n += 1;
             last_end = span.end;
-            from = span.end;
         }
         return n;
     }
@@ -620,7 +577,24 @@ pub const Emitter = struct {
     /// The `--`-style separator between non-adjacent context groups, honoring
     /// `--context-separator` (custom string) and `--no-context-separator` (none).
     fn groupSep(self: *Emitter) void {
-        if (self.o.ctx_sep) |sep| self.out.print(self.a, "{s}\n", .{sep}) catch oom();
+        if (self.o.ctx_sep) |sep| self.out.print(self.a, "{s}{s}", .{ sep, self.o.outTerm() }) catch oom();
+    }
+
+    /// Resolve one `-A/-B` window `[lo,hi]` against the previous group: prints
+    /// the `--` separator across a gap, clamps the start past any overlap, and
+    /// returns the first line to emit — null when the window is swallowed
+    /// entirely. Shared by the per-line and whole-buffer block frames.
+    fn windowStart(self: *Emitter, lo: usize, hi: usize, prev_end: *?usize) ?usize {
+        var start = lo;
+        if (prev_end.*) |pe| {
+            if (lo > pe + 1) {
+                if (self.o.wantsContext()) self.groupSep();
+            } else if (hi <= pe) {
+                return null;
+            } else start = pe + 1;
+        }
+        prev_end.* = hi;
+        return start;
     }
 
     /// `--vimgrep`: one `path:line:col:text` row per match (all matches on a line),
@@ -633,49 +607,32 @@ pub const Emitter = struct {
             const mv = self.mview(line);
             if (!self.lineCanMatch(mv)) continue;
             var from: usize = 0;
-            while (from <= mv.len) {
-                const sp = self.re.matchSpan(&ssim, mv, from) orelse break;
-                if (sp.end == sp.start) {
-                    from = sp.start + 1;
-                    continue;
-                }
-                if (self.o.word and !wordOk(mv, sp.start, sp.end)) {
-                    from = sp.end;
-                    continue;
-                }
-                self.prefix(path, k + 1, sp.start + 1, self.offOf(line) + sp.start, true);
-                self.text(line, true);
+            while (nextSpan(self.re, &ssim, self.o, mv, &from)) |sp| {
+                self.row(path, k + 1, sp.start + 1, self.offOf(line) + sp.start, line, true);
                 emitted += 1;
                 if (self.o.max_per_file != 0 and emitted >= self.o.max_per_file) return emitted;
-                from = sp.end;
             }
         }
         return emitted;
     }
 
-    /// Does any word-bounded match span exist on this line? (`-w` boolean path.)
+    /// Does any word-bounded match span exist on this line? (`-w` boolean path
+    /// — every caller holds `o.word`, so `nextSpan` applies the word filter.)
     pub fn lineHitWord(self: *Emitter, ssim: *Matcher.SpanSim, line: []const u8) bool {
-        var from: usize = 0;
-        while (from <= line.len) {
-            const sp = self.re.matchSpan(ssim, line, from) orelse return false;
-            if (sp.end == sp.start) {
-                from = sp.start + 1;
-                continue;
-            }
-            if (wordOk(line, sp.start, sp.end)) return true;
-            from = sp.end;
-        }
-        return false;
+        return self.firstCol(ssim, line) != 0;
     }
 
+    /// `-o` frame across `lines`: each match span as its raw bytes, or — with
+    /// `-r` — the expanded template (not the raw match) per span. Returns the
+    /// number emitted (respecting `--max-count`).
     fn onlyMatching(self: *Emitter, path: []const u8, lines: []const []const u8) usize {
-        var ssim = Matcher.SpanSim.init(self.a, self.re) catch return 0;
-        defer ssim.deinit();
+        var ssim: ?Matcher.SpanSim = if (self.o.replace == null) Matcher.SpanSim.init(self.a, self.re) catch return 0 else null;
+        defer if (ssim) |*s| s.deinit();
         var emitted: usize = 0;
         for (lines, 0..) |line, k| {
             const mv = self.mview(line);
             if (!self.lineCanMatch(mv)) continue;
-            emitted += self.emitMatches(&ssim, path, k + 1, line, mv);
+            emitted += if (ssim) |*s| self.emitMatches(s, path, k + 1, line, mv) else self.emitLineRepl(path, k + 1, line, emitted);
             if (self.o.max_per_file != 0 and emitted >= self.o.max_per_file) break;
         }
         return emitted;
@@ -689,25 +646,12 @@ pub const Emitter = struct {
             const mv = self.mview(line);
             if (!self.lineCanMatch(mv)) continue;
             var from: usize = 0;
-            while (from <= mv.len) {
-                const span = self.re.matchSpan(&ssim, mv, from) orelse break;
-                if (span.end == span.start) {
-                    from = span.start + 1;
-                    continue;
-                }
-                if (self.o.word and !wordOk(mv, span.start, span.end)) {
-                    from = span.end;
-                    continue;
-                }
+            while (nextSpan(self.re, &ssim, self.o, mv, &from)) |_| {
                 total += 1;
                 if (self.o.max_per_file != 0 and total >= self.o.max_per_file) break;
-                from = span.end;
             }
         }
-        if (total == 0) return 0;
-        if (self.show_name) self.writePath(path, true);
-        self.out.print(self.a, "{d}\n", .{total}) catch oom();
-        return total;
+        return self.bufTally(path, total);
     }
 
     // ─────────────────────── whole-buffer (-U) emit ───────────────────────
@@ -730,17 +674,11 @@ pub const Emitter = struct {
         const o = self.o;
         const spans = self.collectSpans(o, body);
         // `--count-matches` and `-c -o` tally every match span (empties included).
-        if (o.count_matches or (o.count_only and o.only_matching)) {
-            const n = ml.countAll(spans);
-            return self.bufTally(path, n);
-        }
+        if (o.count_matches or (o.count_only and o.only_matching)) return self.bufTally(path, ml.countAll(spans));
         if (o.invert) return self.bufInvert(path, body);
         if (spans.len == 0) return 0;
         const lines = ml.splitLines(self.a, body, o.term());
-        if (o.files_only) {
-            self.out.print(self.a, "{s}{c}", .{ path, if (o.null_sep) @as(u8, 0) else '\n' }) catch oom();
-            return 1;
-        }
+        if (o.files_only) return self.emitPathOnly(path);
         if (o.count_only) return self.bufTally(path, ml.countStartLines(lines, spans));
         if (o.only_matching) return if (o.replace != null) self.bufOnlyRepl(path, lines, spans, body) else self.bufOnly(path, lines, spans, body);
         if (o.vimgrep) return self.bufVimgrep(path, lines, spans, body);
@@ -777,11 +715,18 @@ pub const Emitter = struct {
         return spans;
     }
 
+    /// `-l`: emit the path once, NUL-terminated under `--null` (rg's
+    /// path-terminator), else the output terminator. Returns 1 for the tally.
+    fn emitPathOnly(self: *Emitter, path: []const u8) usize {
+        self.out.print(self.a, "{s}{s}", .{ path, if (self.o.null_sep) "\x00" else self.o.outTerm() }) catch oom();
+        return 1;
+    }
+
     /// Emit a `[path:]N` count line (0 ⇒ nothing), returning `n` for the caller.
     fn bufTally(self: *Emitter, path: []const u8, n: usize) usize {
         if (n == 0) return 0;
         if (self.show_name) self.writePath(path, true);
-        self.out.print(self.a, "{d}\n", .{n}) catch oom();
+        self.out.print(self.a, "{d}{s}", .{ n, self.o.outTerm() }) catch oom();
         return n;
     }
 
@@ -796,9 +741,8 @@ pub const Emitter = struct {
         // Coverage needs EVERY match (no `-m` cap); `-m` bounds only the printed
         // inverted lines below. `collect` reads only `-w` from these opts.
         for (self.collectSpans(.{ .word = o.word }, body)) |sp| {
-            const l1 = ml.lineIndexAt(lines, ml.spanLast(sp));
-            var li = ml.lineIndexAt(lines, sp.start);
-            while (li <= l1) : (li += 1) covered[li] = true;
+            const l0 = ml.lineIndexAt(lines, sp.start);
+            for (l0..ml.lineIndexAt(lines, ml.spanLast(sp)) + 1) |li| covered[li] = true;
         }
         var printed: usize = 0;
         for (lines, 0..) |ln, k| {
@@ -831,8 +775,7 @@ pub const Emitter = struct {
             // starts there (spans are ascending, so same-line spans are a run).
             const lone = (si == 0 or ml.lineIndexAt(lines, spans[si - 1].start) != l0) and
                 (si + 1 == spans.len or ml.lineIndexAt(lines, spans[si + 1].start) != l0);
-            var li = l0;
-            while (li <= l1) : (li += 1) {
+            for (l0..l1 + 1) |li| {
                 const ln = lines[li];
                 if (ln.content_end == ln.start) continue; // blank line: rg emits nothing
                 var fs = @max(sp.start, ln.start);
@@ -847,9 +790,11 @@ pub const Emitter = struct {
                     if (fe <= ts) continue;
                     fs = @max(fs, ts);
                 }
-                // --crlf: a fragment reaching the \r-trimmed line end keeps the \r
-                // (rg emits the terminator's carriage return with the last line).
-                if (self.o.crlf and ln.content_end > ln.start and body[ln.content_end - 1] == '\r' and fe == ln.content_end - 1) fe = ln.content_end;
+                // --crlf: every `-o` line below ends with the full `\r\n`
+                // terminator, so a fragment reaching a terminated dos line's
+                // content end sheds the `\r` it covered (content_end keeps it)
+                // instead of doubling it — rg emits `frag\r\n`, never `\r\r\n`.
+                if (self.o.crlf and fe == ln.content_end and ln.term_end > ln.content_end and fe > fs and body[fe - 1] == '\r') fe -= 1;
                 self.prefix(path, li + 1, col, sp.start, true);
                 const frag = body[fs..fe];
                 // -M/--max-columns on the fragment. `-o` always has match
@@ -863,7 +808,7 @@ pub const Emitter = struct {
                 } else {
                     self.paint(palette.match_on, frag);
                 }
-                self.out.append(self.a, self.o.term()) catch oom();
+                self.add(self.o.outTerm());
             }
         }
         return spans.len;
@@ -878,11 +823,10 @@ pub const Emitter = struct {
         const slots = self.a.alloc(isize, caps.nslots()) catch oom();
         for (spans) |sp| {
             _ = caps.find(body, sp.start, slots);
-            var rep: std.ArrayList(u8) = .empty;
-            self.expand(&rep, tmpl, body, slots);
-            self.prefix(path, ml.lineIndexAt(lines, sp.start) + 1, 1 + (sp.start - lines[ml.lineIndexAt(lines, sp.start)].start), sp.start, true);
-            self.add(rep.items);
-            self.out.append(self.a, self.o.term()) catch oom();
+            const li = ml.lineIndexAt(lines, sp.start);
+            self.prefix(path, li + 1, 1 + (sp.start - lines[li].start), sp.start, true);
+            self.expand(self.out, tmpl, body, slots);
+            self.add(self.o.outTerm()); // expanded text carries no terminator
         }
         return spans.len;
     }
@@ -900,7 +844,7 @@ pub const Emitter = struct {
             const li = ml.lineIndexAt(lines, sp.start);
             const ln = lines[li];
             self.prefix(path, li + 1, 1 + (sp.start - ln.start), ln.start, true);
-            self.emitBody(body[ln.start..ln.content_end], true, &.{sp.start - ln.start});
+            self.emitBody(body[ln.start..ln.content_end], true, &.{sp.start - ln.start}, ln.term_end > ln.content_end);
             emitted += 1;
         }
         return emitted;
@@ -919,15 +863,11 @@ pub const Emitter = struct {
         @memset(col, 0);
         for (spans) |sp| {
             const l0 = ml.lineIndexAt(lines, sp.start);
-            const l1 = ml.lineIndexAt(lines, ml.spanLast(sp));
             const c = 1 + (sp.start - lines[l0].start);
-            var li = l0;
-            while (li <= l1) : (li += 1) {
-                if (!is_match[li]) {
-                    is_match[li] = true;
-                    col[li] = c;
-                }
-            }
+            for (l0..ml.lineIndexAt(lines, ml.spanLast(sp)) + 1) |li| if (!is_match[li]) {
+                is_match[li] = true;
+                col[li] = c;
+            };
         }
         var idx: std.ArrayList(usize) = .empty;
         for (0..n) |k| if (is_match[k]) idx.append(self.a, k) catch oom();
@@ -936,23 +876,12 @@ pub const Emitter = struct {
         const A = if (o.passthru) n else o.after;
         var prev_end: ?usize = null;
         for (idx.items) |m| {
-            const lo = if (m >= B) m - B else 0;
             const hi = @min(m + A, n - 1);
-            var start = lo;
-            if (prev_end) |pe| {
-                if (lo > pe + 1) {
-                    if (o.wantsContext()) self.groupSep();
-                } else if (hi <= pe) {
-                    continue;
-                } else start = pe + 1;
-            }
-            var k = start;
+            var k = self.windowStart(m -| B, hi, &prev_end) orelse continue;
             while (k <= hi) : (k += 1) {
                 const is_m = is_match[k];
-                self.prefix(path, k + 1, if (is_m) col[k] else 0, lines[k].start, is_m);
-                self.text(body[lines[k].start..lines[k].content_end], is_m);
+                self.row(path, k + 1, if (is_m) col[k] else 0, lines[k].start, body[lines[k].start..lines[k].content_end], is_m);
             }
-            prev_end = hi;
         }
         return idx.items.len;
     }
@@ -973,60 +902,43 @@ pub const Emitter = struct {
         const n = lines.len;
         const B = if (o.passthru) n else o.before;
         const A = if (o.passthru) n else o.after;
+        // The searcher blocks: spans whose covered lines overlap or are
+        // adjacent join into one sink block (glue.rs `last_match.end() >=
+        // line.start()`) — the shared `ml.blocks` grouping.
+        const bs = ml.blocks(self.a, lines, spans);
         var covered: usize = 0;
         var prev_end: ?usize = null;
-        var i: usize = 0;
-        while (i < spans.len) {
-            // The searcher block: grow while the next span's first line is
-            // within one line of the block's last covered line (overlap OR
-            // adjacency both join — glue.rs `last_match.end() >= line.start()`).
-            const blo = ml.lineIndexAt(lines, spans[i].start);
-            var bhi = ml.lineIndexAt(lines, ml.spanLast(spans[i]));
-            var j = i + 1;
-            while (j < spans.len) : (j += 1) {
-                if (ml.lineIndexAt(lines, spans[j].start) > bhi + 1) break;
-                const e = ml.lineIndexAt(lines, ml.spanLast(spans[j]));
-                if (e > bhi) bhi = e;
-            }
-            covered += bhi - blo + 1;
+        for (bs, 0..) |b, bi| {
+            covered += b.last - b.first + 1;
             // Context window over the ORIGINAL grid. After-context never
             // reaches the next block's first line — the searcher sinks that
             // line as a match, so context stops short of it.
-            const lo = if (blo >= B) blo - B else 0;
-            var hi = @min(bhi + A, n - 1);
-            if (j < spans.len) hi = @min(hi, ml.lineIndexAt(lines, spans[j].start) - 1);
+            const lo = b.first -| B;
+            var hi = @min(b.last + A, n - 1);
+            if (bi + 1 < bs.len) hi = @min(hi, bs[bi + 1].first - 1);
             var start = lo;
             if (prev_end) |pe| {
                 if (lo > pe + 1) {
                     if (o.wantsContext()) self.groupSep();
                 } else start = @max(start, pe + 1);
             }
-            var k = start;
-            while (k < blo) : (k += 1) {
-                self.prefix(path, k + 1, 0, lines[k].start, false);
-                self.text(body[lines[k].start..lines[k].content_end], false);
-            }
+            self.ctxRows(path, lines, body, start, b.first);
             // Build the replaced block: each span expands its template, every
             // other byte (including the trailing terminator) copies verbatim.
             var buf: std.ArrayList(u8) = .empty;
             var starts: std.ArrayList(usize) = .empty;
-            var cursor = lines[blo].start;
-            for (spans[i..j]) |sp| {
+            var cursor = lines[b.first].start;
+            for (spans[b.s0..b.s1]) |sp| {
                 buf.appendSlice(self.a, body[cursor..sp.start]) catch oom();
                 starts.append(self.a, buf.items.len) catch oom();
                 _ = caps.find(body, sp.start, slots);
                 self.expand(&buf, tmpl, body, slots);
                 cursor = @max(cursor, sp.end);
             }
-            buf.appendSlice(self.a, body[cursor..lines[bhi].term_end]) catch oom();
-            self.emitReplacedBlock(path, blo, lines[blo].start, buf.items, starts.items);
-            k = bhi + 1;
-            while (k <= hi) : (k += 1) {
-                self.prefix(path, k + 1, 0, lines[k].start, false);
-                self.text(body[lines[k].start..lines[k].content_end], false);
-            }
+            buf.appendSlice(self.a, body[cursor..lines[b.last].term_end]) catch oom();
+            self.emitReplacedBlock(path, b.first, lines[b.first].start, buf.items, starts.items);
+            self.ctxRows(path, lines, body, b.last + 1, hi + 1);
             prev_end = hi;
-            i = j;
         }
         return covered;
     }
@@ -1053,7 +965,9 @@ pub const Emitter = struct {
                 line_starts.append(self.a, st -| pos) catch oom();
             }
             self.prefix(path, lineno, col, block_off + pos, true);
-            self.emitBody(rep[pos..end], true, line_starts.items);
+            // A split found a term byte ⇒ this physical line was terminated in
+            // the (replaced) block; only the final unsplit tail can lack one.
+            self.emitBody(rep[pos..end], true, line_starts.items, nl != null);
             if (nl == null) break;
             pos = end + 1;
             lineno += 1;
@@ -1104,7 +1018,7 @@ test "files-only emits once and stops after the first matching line" {
 // Every expected string below was captured from `upstream/ripgrep` (`rg -U …`) on the
 // same input, so these are ripgrep-parity assertions, not self-consistency checks.
 
-const MlHarness = struct {
+pub const MlHarness = struct {
     arena: std.heap.ArenaAllocator,
     m: Matcher,
     caps: ?Caps = null,
@@ -1142,208 +1056,94 @@ const MlHarness = struct {
     }
 };
 
-test "-U cross-line span prints the full run of lines" {
-    var h = try MlHarness.init("a\\nb", .{});
-    defer h.deinit();
-    try std.testing.expectEqualStrings("1:a\n2:b\n", try h.run(.{ .multiline = true, .line_num = true }, "a\nb\nc\n"));
-}
+/// One parity row: rg's captured output for a pattern + option set over a
+/// body. Harness knobs derive from the options (`dotall` from
+/// `multiline_dotall`, capture compilation from `-r`).
+const MlCase = struct { pat: []const u8, o: Opts, body: []const u8, want: []const u8 };
 
-test "-U match ending exactly at EOF with no trailing newline" {
-    var h = try MlHarness.init("a\\nb", .{});
-    defer h.deinit();
-    try std.testing.expectEqualStrings("1:a\n2:b\n", try h.run(.{ .multiline = true, .line_num = true }, "a\nb"));
-}
-
-test "-U -o emits each line fragment of the match" {
-    var h = try MlHarness.init("x\\ny", .{});
-    defer h.deinit();
-    const o = Opts{ .multiline = true, .line_num = true, .only_matching = true };
-    try std.testing.expectEqualStrings("1:x\n2:y\n3:x\n4:y\n", try h.run(o, "x\ny\nx\ny\n"));
-}
-
-test "-U -o --column -b: match-start col (block-relative) + abs offset per fragment" {
-    var h = try MlHarness.init("YZcd\\nef", .{});
-    defer h.deinit();
-    const o = Opts{ .multiline = true, .line_num = true, .only_matching = true, .column = true, .byte_offset = true };
-    try std.testing.expectEqualStrings("1:3:2:YZcd\n2:3:2:ef\n", try h.run(o, "abYZcd\nef\n"));
-}
-
-test "-U -o --column: block-relative columns across coalesced matches" {
-    var h = try MlHarness.init("a\\nb|b\\nc", .{});
-    defer h.deinit();
-    const o = Opts{ .multiline = true, .line_num = true, .only_matching = true, .column = true };
-    // block base = line 1; match2 starts at buffer byte 4 ⇒ column 5.
-    try std.testing.expectEqualStrings("1:1:a\n2:1:b\n3:5:b\n4:5:c\n", try h.run(o, "a\nb\nb\nc\n"));
-}
-
-test "-U non-o --column repeats the match-start column on every line" {
-    var h = try MlHarness.init("YZcd\\nef", .{});
-    defer h.deinit();
-    try std.testing.expectEqualStrings("1:3:abYZcd\n2:3:ef\n", try h.run(.{ .multiline = true, .line_num = true, .column = true }, "abYZcd\nef\n"));
-}
-
-test "-U non-o -b reports each printed line's own offset" {
-    var h = try MlHarness.init("YZcd\\nef", .{});
-    defer h.deinit();
-    try std.testing.expectEqualStrings("1:0:abYZcd\n2:7:ef\n", try h.run(.{ .multiline = true, .line_num = true, .byte_offset = true }, "abYZcd\nef\n"));
-}
-
-test "-U -C1 context frames the multiline match" {
-    var h = try MlHarness.init("c\\nd", .{});
-    defer h.deinit();
-    const o = Opts{ .multiline = true, .line_num = true, .before = 1, .after = 1 };
-    try std.testing.expectEqualStrings("2-b\n3:c\n4:d\n5-e\n", try h.run(o, "a\nb\nc\nd\ne\nf\ng\n"));
-}
-
-test "-U -A1 separates non-adjacent blocks with --" {
-    var h = try MlHarness.init("a\\nb|e\\nf", .{});
-    defer h.deinit();
-    const o = Opts{ .multiline = true, .line_num = true, .after = 1 };
-    try std.testing.expectEqualStrings("1:a\n2:b\n3-c\n--\n5:e\n6:f\n7-g\n", try h.run(o, "a\nb\nc\nd\ne\nf\ng\n"));
-}
-
-test "-U -c counts distinct match-start lines; --count-matches counts spans" {
-    var h = try MlHarness.init("a\\nb", .{});
-    defer h.deinit();
-    try std.testing.expectEqualStrings("2\n", try h.run(.{ .multiline = true, .count_only = true }, "a\nb\nx\na\nb\n"));
-    try std.testing.expectEqualStrings("2\n", try h.run(.{ .multiline = true, .count_matches = true }, "a\nb\nx\na\nb\n"));
-}
-
-test "-U -c with a nullable pattern counts start-lines, not all empties" {
-    var h = try MlHarness.init("a*", .{});
-    defer h.deinit();
-    try std.testing.expectEqualStrings("2\n", try h.run(.{ .multiline = true, .count_only = true }, "aa\nbb\n"));
-    try std.testing.expectEqualStrings("4\n", try h.run(.{ .multiline = true, .count_matches = true }, "aa\nbb\n"));
-}
-
-test "-U -v prints lines outside every match's span" {
-    var h = try MlHarness.init("a\\nb", .{});
-    defer h.deinit();
-    try std.testing.expectEqualStrings("3:x\n", try h.run(.{ .multiline = true, .line_num = true, .invert = true }, "a\nb\nx\na\nb\n"));
-}
-
-test "-U -m caps the number of matches" {
-    var h = try MlHarness.init("a\\nb", .{});
-    defer h.deinit();
-    try std.testing.expectEqualStrings("1:a\n2:b\n3:a\n4:b\n", try h.run(.{ .multiline = true, .line_num = true, .max_per_file = 2 }, "a\nb\na\nb\na\nb\n"));
-}
-
-test "-U -w rejects a span not on word boundaries" {
-    var h = try MlHarness.init("b\\nc", .{});
-    defer h.deinit();
-    // 'b' is preceded by 'a' (a word byte) ⇒ not a word match ⇒ no output.
-    try std.testing.expectEqualStrings("", try h.run(.{ .multiline = true, .line_num = true, .word = true }, "ab\ncd\n"));
-    // Isolated: 'b' at line start, 'c' at line end ⇒ word match.
-    try std.testing.expectEqualStrings("1:b\n2:c\n", try h.run(.{ .multiline = true, .line_num = true, .word = true }, "b\nc\n"));
-}
-
-test "-U -x (line-anchored pattern) matches whole lines only" {
-    var h = try MlHarness.init("^(?:a\\nb)$", .{});
-    defer h.deinit();
-    try std.testing.expectEqualStrings("1:a\n2:b\n", try h.run(.{ .multiline = true, .line_num = true }, "a\nb\nc\n"));
-}
-
-test "-U --multiline-dotall lets . cross newlines" {
-    var h = try MlHarness.init("a.b", .{ .dotall = true });
-    defer h.deinit();
-    try std.testing.expectEqualStrings("1:a\n2:b\n", try h.run(.{ .multiline = true, .multiline_dotall = true, .line_num = true }, "a\nb\n"));
-}
-
-test "-U without dotall: . does not cross a newline" {
-    var h = try MlHarness.init("a.b", .{});
-    defer h.deinit();
-    try std.testing.expectEqualStrings("", try h.run(.{ .multiline = true, .line_num = true }, "a\nb\n"));
-}
-
-test "-U match spanning many lines prints them all once" {
-    var h = try MlHarness.init("a.*e", .{ .dotall = true });
-    defer h.deinit();
-    try std.testing.expectEqualStrings("1:a\n2:b\n3:c\n4:d\n5:e\n", try h.run(.{ .multiline = true, .multiline_dotall = true, .line_num = true }, "a\nb\nc\nd\ne\n"));
-}
-
-test "-U -o zero-width matches follow rg's progress rule" {
-    var h = try MlHarness.init("a*", .{});
-    defer h.deinit();
-    // "aa" then three empties on line 2 (offsets 3,4,5); the phantom at EOF is dropped.
-    // rg: `rg -U -o -n 'a*'` ⇒ 1:aa / 2: / 2: / 2: (empties emit — not lone on line 2).
-    try std.testing.expectEqualStrings("1:aa\n2:\n2:\n2:\n", try h.run(.{ .multiline = true, .line_num = true, .only_matching = true }, "aa\nbb\n"));
-}
-
-test "-U -o empties on line 2 take line-relative columns (not block-absolute)" {
-    var h = try MlHarness.init("a*", .{});
-    defer h.deinit();
-    // rg `-U -o -n --column 'a*'` ⇒ 1:1:aa / 2:1: / 2:2: / 2:3: — the line-2 block
-    // resets its column base to line 2, so the empties read 1,2,3 (not 4,5,6).
-    const o = Opts{ .multiline = true, .line_num = true, .only_matching = true, .column = true };
-    try std.testing.expectEqualStrings("1:1:aa\n2:1:\n2:2:\n2:3:\n", try h.run(o, "aa\nbb\n"));
-}
-
-test "-U -o skips a blank line covered by a cross-line span" {
-    var h = try MlHarness.init("a.*b", .{ .dotall = true });
-    defer h.deinit();
-    // rg `-U --multiline-dotall -o -n 'a.*b'` over "a\n\nb\n" ⇒ 1:a / 3:b — the blank
-    // middle line emits nothing, and the line number jumps 1→3.
-    const o = Opts{ .multiline = true, .multiline_dotall = true, .line_num = true, .only_matching = true };
-    try std.testing.expectEqualStrings("1:a\n3:b\n", try h.run(o, "a\n\nb\n"));
-}
-
-test "-U -o lone ^ zero-width at line start emits nothing" {
-    var h = try MlHarness.init("^", .{});
-    defer h.deinit();
-    // rg `-U -o -n --column '^'` over "a\nb\n" ⇒ (empty). Each ^ is the only match
-    // on its (non-blank) line and sits at the line start ⇒ rg emits nothing.
-    const o = Opts{ .multiline = true, .line_num = true, .only_matching = true, .column = true };
-    try std.testing.expectEqualStrings("", try h.run(o, "a\nb\n"));
-}
-
-test "-U -o separate empties on adjacent lines are line-relative, not one block" {
-    var h = try MlHarness.init("x?", .{});
-    defer h.deinit();
-    // rg `-U -o -n --column 'x?'` over "a\nb\n" ⇒ 1:1: / 1:2: / 2:1: / 2:2: — two empties
-    // per line; because neither span crosses a line, the two lines are separate blocks,
-    // so line 2's columns reset (1,2) rather than continuing (3,4).
-    const o = Opts{ .multiline = true, .line_num = true, .only_matching = true, .column = true };
-    try std.testing.expectEqualStrings("1:1:\n1:2:\n2:1:\n2:2:\n", try h.run(o, "a\nb\n"));
-}
-
-test "-U --crlf keeps the carriage return in the emitted line" {
-    var h = try MlHarness.init("a\\r?\\nb", .{});
-    defer h.deinit();
-    try std.testing.expectEqualStrings("1:a\r\n2:b\r\n", try h.run(.{ .multiline = true, .line_num = true, .crlf = true }, "a\r\nb\r\nc\r\n"));
-}
-
-test "-U --null-data uses NUL as the line terminator" {
-    var h = try MlHarness.init("a", .{});
-    defer h.deinit();
-    try std.testing.expectEqualStrings("1:a\x00", try h.run(.{ .multiline = true, .line_num = true, .null_data = true }, "a\x00b\x00"));
-}
-
-test "-U -o -r emits the expanded template once per match" {
-    var h = try MlHarness.init("(a)\\n(b)", .{ .replace = true });
-    defer h.deinit();
-    const o = Opts{ .multiline = true, .line_num = true, .only_matching = true, .replace = "<$1>" };
-    try std.testing.expectEqualStrings("1:<a>\n", try h.run(o, "a\nb\n"));
-}
-
-test "-U -r replaces the cross-line match and re-splits the result" {
-    var collapse = try MlHarness.init("a\\nb", .{ .replace = true });
-    defer collapse.deinit();
-    try std.testing.expectEqualStrings("1:Z\n", try collapse.run(.{ .multiline = true, .line_num = true, .replace = "Z" }, "a\nb\nc\n"));
-
-    var keep = try MlHarness.init("(a\\nb)", .{ .replace = true });
-    defer keep.deinit();
-    try std.testing.expectEqualStrings("1:Pa\n2:bQ\n", try keep.run(.{ .multiline = true, .line_num = true, .replace = "P${1}Q" }, "a\nb\nc\n"));
-}
-
-test "-U -r keeps context line numbers original after a collapsing replace" {
-    var h = try MlHarness.init("a\\nb", .{ .replace = true });
-    defer h.deinit();
-    try std.testing.expectEqualStrings("1:Z\n3-c\n", try h.run(.{ .multiline = true, .line_num = true, .after = 1, .replace = "Z" }, "a\nb\nc\n"));
-}
-
-test "-U empty buffer and no-match produce no output" {
-    var h = try MlHarness.init("a\\nb", .{});
-    defer h.deinit();
-    try std.testing.expectEqualStrings("", try h.run(.{ .multiline = true, .line_num = true }, ""));
-    try std.testing.expectEqualStrings("", try h.run(.{ .multiline = true, .line_num = true }, "x\ny\nz\n"));
+test "-U whole-buffer emit parity table (captured from ripgrep)" {
+    const cases = [_]MlCase{
+        // -U cross-line span prints the full run of lines
+        .{ .pat = "a\\nb", .o = .{ .multiline = true, .line_num = true }, .body = "a\nb\nc\n", .want = "1:a\n2:b\n" },
+        // -U match ending exactly at EOF with no trailing newline
+        .{ .pat = "a\\nb", .o = .{ .multiline = true, .line_num = true }, .body = "a\nb", .want = "1:a\n2:b\n" },
+        // -U -o emits each line fragment of the match
+        .{ .pat = "x\\ny", .o = .{ .multiline = true, .line_num = true, .only_matching = true }, .body = "x\ny\nx\ny\n", .want = "1:x\n2:y\n3:x\n4:y\n" },
+        // -U -o --column -b: match-start col (block-relative) + abs offset per fragment
+        .{ .pat = "YZcd\\nef", .o = .{ .multiline = true, .line_num = true, .only_matching = true, .column = true, .byte_offset = true }, .body = "abYZcd\nef\n", .want = "1:3:2:YZcd\n2:3:2:ef\n" },
+        // -U -o --column: block-relative columns across coalesced matches
+        // block base = line 1; match2 starts at buffer byte 4 ⇒ column 5.
+        .{ .pat = "a\\nb|b\\nc", .o = .{ .multiline = true, .line_num = true, .only_matching = true, .column = true }, .body = "a\nb\nb\nc\n", .want = "1:1:a\n2:1:b\n3:5:b\n4:5:c\n" },
+        // -U non-o --column repeats the match-start column on every line
+        .{ .pat = "YZcd\\nef", .o = .{ .multiline = true, .line_num = true, .column = true }, .body = "abYZcd\nef\n", .want = "1:3:abYZcd\n2:3:ef\n" },
+        // -U non-o -b reports each printed line's own offset
+        .{ .pat = "YZcd\\nef", .o = .{ .multiline = true, .line_num = true, .byte_offset = true }, .body = "abYZcd\nef\n", .want = "1:0:abYZcd\n2:7:ef\n" },
+        // -U -C1 context frames the multiline match
+        .{ .pat = "c\\nd", .o = .{ .multiline = true, .line_num = true, .before = 1, .after = 1 }, .body = "a\nb\nc\nd\ne\nf\ng\n", .want = "2-b\n3:c\n4:d\n5-e\n" },
+        // -U -A1 separates non-adjacent blocks with --
+        .{ .pat = "a\\nb|e\\nf", .o = .{ .multiline = true, .line_num = true, .after = 1 }, .body = "a\nb\nc\nd\ne\nf\ng\n", .want = "1:a\n2:b\n3-c\n--\n5:e\n6:f\n7-g\n" },
+        // -U -c counts distinct match-start lines; --count-matches counts spans
+        .{ .pat = "a\\nb", .o = .{ .multiline = true, .count_only = true }, .body = "a\nb\nx\na\nb\n", .want = "2\n" },
+        .{ .pat = "a\\nb", .o = .{ .multiline = true, .count_matches = true }, .body = "a\nb\nx\na\nb\n", .want = "2\n" },
+        // -U -c with a nullable pattern counts start-lines, not all empties
+        .{ .pat = "a*", .o = .{ .multiline = true, .count_only = true }, .body = "aa\nbb\n", .want = "2\n" },
+        .{ .pat = "a*", .o = .{ .multiline = true, .count_matches = true }, .body = "aa\nbb\n", .want = "4\n" },
+        // -U -v prints lines outside every match's span
+        .{ .pat = "a\\nb", .o = .{ .multiline = true, .line_num = true, .invert = true }, .body = "a\nb\nx\na\nb\n", .want = "3:x\n" },
+        // -U -m caps the number of matches
+        .{ .pat = "a\\nb", .o = .{ .multiline = true, .line_num = true, .max_per_file = 2 }, .body = "a\nb\na\nb\na\nb\n", .want = "1:a\n2:b\n3:a\n4:b\n" },
+        // -U -w rejects a span not on word boundaries
+        // 'b' is preceded by 'a' (a word byte) ⇒ not a word match ⇒ no output.
+        .{ .pat = "b\\nc", .o = .{ .multiline = true, .line_num = true, .word = true }, .body = "ab\ncd\n", .want = "" },
+        // Isolated: 'b' at line start, 'c' at line end ⇒ word match.
+        .{ .pat = "b\\nc", .o = .{ .multiline = true, .line_num = true, .word = true }, .body = "b\nc\n", .want = "1:b\n2:c\n" },
+        // -U -x (line-anchored pattern) matches whole lines only
+        .{ .pat = "^(?:a\\nb)$", .o = .{ .multiline = true, .line_num = true }, .body = "a\nb\nc\n", .want = "1:a\n2:b\n" },
+        // -U --multiline-dotall lets . cross newlines
+        .{ .pat = "a.b", .o = .{ .multiline = true, .multiline_dotall = true, .line_num = true }, .body = "a\nb\n", .want = "1:a\n2:b\n" },
+        // -U without dotall: . does not cross a newline
+        .{ .pat = "a.b", .o = .{ .multiline = true, .line_num = true }, .body = "a\nb\n", .want = "" },
+        // -U match spanning many lines prints them all once
+        .{ .pat = "a.*e", .o = .{ .multiline = true, .multiline_dotall = true, .line_num = true }, .body = "a\nb\nc\nd\ne\n", .want = "1:a\n2:b\n3:c\n4:d\n5:e\n" },
+        // -U -o zero-width matches follow rg's progress rule
+        // "aa" then three empties on line 2 (offsets 3,4,5); the phantom at EOF is dropped.
+        // rg: `rg -U -o -n 'a*'` ⇒ 1:aa / 2: / 2: / 2: (empties emit — not lone on line 2).
+        .{ .pat = "a*", .o = .{ .multiline = true, .line_num = true, .only_matching = true }, .body = "aa\nbb\n", .want = "1:aa\n2:\n2:\n2:\n" },
+        // -U -o empties on line 2 take line-relative columns (not block-absolute)
+        // rg `-U -o -n --column 'a*'` ⇒ 1:1:aa / 2:1: / 2:2: / 2:3: — the line-2 block
+        // resets its column base to line 2, so the empties read 1,2,3 (not 4,5,6).
+        .{ .pat = "a*", .o = .{ .multiline = true, .line_num = true, .only_matching = true, .column = true }, .body = "aa\nbb\n", .want = "1:1:aa\n2:1:\n2:2:\n2:3:\n" },
+        // -U -o skips a blank line covered by a cross-line span
+        // rg `-U --multiline-dotall -o -n 'a.*b'` over "a\n\nb\n" ⇒ 1:a / 3:b — the blank
+        // middle line emits nothing, and the line number jumps 1→3.
+        .{ .pat = "a.*b", .o = .{ .multiline = true, .multiline_dotall = true, .line_num = true, .only_matching = true }, .body = "a\n\nb\n", .want = "1:a\n3:b\n" },
+        // -U -o lone ^ zero-width at line start emits nothing
+        // rg `-U -o -n --column '^'` over "a\nb\n" ⇒ (empty). Each ^ is the only match
+        // on its (non-blank) line and sits at the line start ⇒ rg emits nothing.
+        .{ .pat = "^", .o = .{ .multiline = true, .line_num = true, .only_matching = true, .column = true }, .body = "a\nb\n", .want = "" },
+        // -U -o separate empties on adjacent lines are line-relative, not one block
+        // rg `-U -o -n --column 'x?'` over "a\nb\n" ⇒ 1:1: / 1:2: / 2:1: / 2:2: — two empties
+        // per line; because neither span crosses a line, the two lines are separate blocks,
+        // so line 2's columns reset (1,2) rather than continuing (3,4).
+        .{ .pat = "x?", .o = .{ .multiline = true, .line_num = true, .only_matching = true, .column = true }, .body = "a\nb\n", .want = "1:1:\n1:2:\n2:1:\n2:2:\n" },
+        // -U --crlf keeps the carriage return in the emitted line
+        .{ .pat = "a\\r?\\nb", .o = .{ .multiline = true, .line_num = true, .crlf = true }, .body = "a\r\nb\r\nc\r\n", .want = "1:a\r\n2:b\r\n" },
+        // -U --null-data uses NUL as the line terminator
+        .{ .pat = "a", .o = .{ .multiline = true, .line_num = true, .null_data = true }, .body = "a\x00b\x00", .want = "1:a\x00" },
+        // -U -o -r emits the expanded template once per match
+        .{ .pat = "(a)\\n(b)", .o = .{ .multiline = true, .line_num = true, .only_matching = true, .replace = "<$1>" }, .body = "a\nb\n", .want = "1:<a>\n" },
+        // -U -r replaces the cross-line match and re-splits the result
+        .{ .pat = "a\\nb", .o = .{ .multiline = true, .line_num = true, .replace = "Z" }, .body = "a\nb\nc\n", .want = "1:Z\n" },
+        .{ .pat = "(a\\nb)", .o = .{ .multiline = true, .line_num = true, .replace = "P${1}Q" }, .body = "a\nb\nc\n", .want = "1:Pa\n2:bQ\n" },
+        // -U -r keeps context line numbers original after a collapsing replace
+        .{ .pat = "a\\nb", .o = .{ .multiline = true, .line_num = true, .after = 1, .replace = "Z" }, .body = "a\nb\nc\n", .want = "1:Z\n3-c\n" },
+        // -U empty buffer and no-match produce no output
+        .{ .pat = "a\\nb", .o = .{ .multiline = true, .line_num = true }, .body = "", .want = "" },
+        .{ .pat = "a\\nb", .o = .{ .multiline = true, .line_num = true }, .body = "x\ny\nz\n", .want = "" },
+    };
+    for (&cases) |c| {
+        var h = try MlHarness.init(c.pat, .{ .dotall = c.o.multiline_dotall, .replace = c.o.replace != null });
+        defer h.deinit();
+        try std.testing.expectEqualStrings(c.want, try h.run(c.o, c.body));
+    }
 }

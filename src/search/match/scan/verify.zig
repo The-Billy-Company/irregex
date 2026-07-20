@@ -42,11 +42,7 @@ const WideShard = struct {
         while (i < sh.hay.len) : (i += wide_slab) {
             if (sh.hit.load(.monotonic)) return;
             const end = @min(sh.hay.len, i + wide_slab + sh.overlap);
-            const found = if (sh.needles.len == 1)
-                simd.contains(sh.hay[i..end], sh.needles[0])
-            else
-                simd.containsAny(sh.hay[i..end], sh.needles);
-            if (found) {
+            if (simd.containsAny(sh.hay[i..end], sh.needles)) {
                 sh.hit.store(true, .monotonic);
                 return;
             }
@@ -65,10 +61,8 @@ const WideShard = struct {
 pub fn containsAnyWide(gpa: std.mem.Allocator, hay: []const u8, needles: []const []const u8) bool {
     // Sub-threshold bodies (the overwhelmingly common case) branch out here
     // on one comparison — no cpu-count syscall, no allocation, no spawn.
-    if (hay.len < wide_threshold) {
-        if (needles.len == 1) return simd.contains(hay, needles[0]);
-        return simd.containsAny(hay, needles);
-    }
+    // (`simd.containsAny` itself takes the single-needle kernel for len 1.)
+    if (hay.len < wide_threshold) return simd.containsAny(hay, needles);
     var overlap: usize = 0;
     for (needles) |n| {
         if (n.len == 0) return true;
@@ -76,35 +70,23 @@ pub fn containsAnyWide(gpa: std.mem.Allocator, hay: []const u8, needles: []const
     }
     const ncpu = std.Thread.getCpuCount() catch 1;
     const nthr = @min(hay.len / wide_threshold + 1, ncpu);
-    if (nthr < 2) {
-        if (needles.len == 1) return simd.contains(hay, needles[0]);
-        return simd.containsAny(hay, needles);
-    }
+    if (nthr < 2) return simd.containsAny(hay, needles);
 
     var hit = std.atomic.Value(bool).init(false);
     const shards = gpa.alloc(WideShard, nthr) catch
-        return if (needles.len == 1) simd.contains(hay, needles[0]) else simd.containsAny(hay, needles);
+        return simd.containsAny(hay, needles);
     defer gpa.free(shards);
     const threads = gpa.alloc(std.Thread, nthr) catch
-        return if (needles.len == 1) simd.contains(hay, needles[0]) else simd.containsAny(hay, needles);
+        return simd.containsAny(hay, needles);
     defer gpa.free(threads);
 
     const chunk = hay.len / nthr;
-    var spawned: usize = 0;
     for (0..nthr) |k| {
         const start = k * chunk;
         const end = if (k == nthr - 1) hay.len else @min(hay.len, (k + 1) * chunk + overlap);
         shards[k] = .{ .hay = hay[start..end], .needles = needles, .overlap = overlap, .hit = &hit };
-        threads[k] = std.Thread.spawn(.{}, WideShard.run, .{&shards[k]}) catch break;
-        spawned += 1;
     }
-    if (spawned < nthr) {
-        // Partial spawn: cover the unspawned tail inline (still exact), then join.
-        const start = spawned * chunk;
-        shards[nthr - 1] = .{ .hay = hay[start..], .needles = needles, .overlap = overlap, .hit = &hit };
-        WideShard.run(&shards[nthr - 1]);
-    }
-    for (threads[0..spawned]) |t| t.join();
+    fanOut(WideShard, shards, threads, WideShard.run);
     return hit.load(.monotonic);
 }
 
@@ -112,6 +94,54 @@ pub fn containsAnyWide(gpa: std.mem.Allocator, hay: []const u8, needles: []const
 /// required-literal gate calls with.
 pub fn containsWide(gpa: std.mem.Allocator, hay: []const u8, needle: []const u8) bool {
     return containsAnyWide(gpa, hay, &.{needle});
+}
+
+/// Byte-greedy shard boundaries over `items` (`bounds.len − 1` shards): each
+/// shard takes ~equal total `weight`, not equal item count, so a few large
+/// files can't stall one thread while the rest idle — the load-imbalance that
+/// capped the earlier speedup. Shared by the candidate verify below and the
+/// relate sketch build (`cli/relate/kinship.zig`).
+pub fn greedyBounds(
+    comptime T: type,
+    items: []const T,
+    ctx: anytype,
+    comptime weight: fn (@TypeOf(ctx), T) usize,
+    total: usize,
+    bounds: []usize,
+) void {
+    const nthr = bounds.len - 1;
+    const target = total / nthr;
+    bounds[0] = 0;
+    var b: usize = 1;
+    var acc: usize = 0;
+    for (items, 0..) |item, i| {
+        acc += weight(ctx, item);
+        if (b < nthr and acc >= target * b) {
+            bounds[b] = i + 1;
+            b += 1;
+        }
+    }
+    while (b <= nthr) : (b += 1) bounds[b] = items.len;
+}
+
+/// The byte-length weight most callers shard by (`items` are the docs themselves).
+pub fn sliceLen(_: void, d: []const u8) usize {
+    return d.len;
+}
+
+/// Spawn one thread per shard and join them — with the partial-spawn fallback
+/// every fan-out here shares: a mid-fan-out spawn failure must not return with
+/// live threads still scanning buffers the caller's defers would free. The
+/// unspawned tail runs inline on the calling thread — exactness preserved,
+/// just less parallelism — then the spawned shards are joined as usual.
+pub fn fanOut(comptime S: type, shards: []S, threads: []std.Thread, comptime runFn: anytype) void {
+    var spawned: usize = 0;
+    for (shards) |*sh| {
+        threads[spawned] = std.Thread.spawn(.{}, runFn, .{sh}) catch break;
+        spawned += 1;
+    }
+    for (shards[spawned..]) |*sh| runFn(sh);
+    for (threads[0..spawned]) |t| t.join();
 }
 
 const VerifyShard = struct {
@@ -129,6 +159,10 @@ fn verifyShard(sh: *VerifyShard) void {
         w += 1;
     };
     sh.n = w;
+}
+
+fn docWeight(docs: []const []const u8, d: u32) usize {
+    return docs[d].len;
 }
 
 /// Verify `ids` against `needle`, fanning out across cores when the candidate
@@ -152,18 +186,7 @@ pub fn parallelVerify(gpa: std.mem.Allocator, docs: []const []const u8, ids: []c
     // Byte-greedy boundaries over the (arbitrary-order) candidate list.
     const bounds = try gpa.alloc(usize, nthr + 1);
     defer gpa.free(bounds);
-    const target = total / nthr;
-    bounds[0] = 0;
-    var b: usize = 1;
-    var acc: usize = 0;
-    for (ids, 0..) |d, i| {
-        acc += docs[d].len;
-        if (b < nthr and acc >= target * b) {
-            bounds[b] = i + 1;
-            b += 1;
-        }
-    }
-    while (b <= nthr) : (b += 1) bounds[b] = ids.len;
+    greedyBounds(u32, ids, docs, docWeight, total, bounds);
 
     const shards = try gpa.alloc(VerifyShard, nthr);
     defer gpa.free(shards);
@@ -177,16 +200,6 @@ pub fn parallelVerify(gpa: std.mem.Allocator, docs: []const []const u8, ids: []c
         const hi = bounds[t + 1];
         shards[t] = .{ .docs = docs, .ids = ids[lo..hi], .needle = needle, .out = outbuf[lo..hi] };
     }
-    // Partial-spawn fallback: a mid-fan-out spawn failure must not return with
-    // live threads still scanning buffers the defers above would free. The
-    // unspawned tail runs inline on the calling thread — exactness preserved,
-    // just less parallelism — then the spawned shards are joined as usual.
-    var spawned: usize = 0;
-    for (shards) |*sh| {
-        threads[spawned] = std.Thread.spawn(.{}, verifyShard, .{sh}) catch break;
-        spawned += 1;
-    }
-    for (shards[spawned..]) |*sh| verifyShard(sh);
-    for (threads[0..spawned]) |t| t.join();
+    fanOut(VerifyShard, shards, threads, verifyShard);
     for (0..nthr) |t| try out.appendSlice(gpa, shards[t].out[0..shards[t].n]);
 }

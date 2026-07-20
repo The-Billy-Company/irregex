@@ -52,22 +52,17 @@ fn classifyBrace(p: []const u8, at: usize) Quant {
     const lo_start = i;
     while (i < p.len and std.ascii.isDigit(p[i])) i += 1;
     const lo_digits = p[lo_start..i];
-    var closed = false;
     if (i < p.len and p[i] == ',') {
         i += 1;
         while (i < p.len and std.ascii.isDigit(p[i])) i += 1;
     }
-    if (i < p.len and p[i] == '}') {
-        closed = true;
-        i += 1;
-    }
-    if (!closed or (lo_digits.len == 0 and p[at + 1] != ',')) {
+    if (i >= p.len or p[i] != '}' or (lo_digits.len == 0 and p[at + 1] != ',')) {
         // `{abc}` or unterminated — a literal brace, not a quantifier.
         return .{ .kind = .none, .next = at };
     }
     const lo: usize = std.fmt.parseInt(usize, lo_digits, 10) catch 0;
     const kind: @FieldType(Quant, "kind") = if (lo == 0) .optional else .mandatory;
-    return .{ .kind = kind, .next = foldSuffix(p, i) };
+    return .{ .kind = kind, .next = foldSuffix(p, i + 1) };
 }
 
 /// Index just past a `[...]` class beginning at `p[i]=='['` (handles a leading
@@ -220,20 +215,14 @@ fn emitLiteral(r: *Runner, b: u8, pattern: []const u8, after: usize) std.mem.All
         return q.next;
     }
     switch (q.kind) {
-        .none => {
-            try r.push(b);
-            return q.next;
-        },
-        .optional => {
-            try r.flush();
-            return q.next;
-        },
+        .none => try r.push(b),
+        .optional => try r.flush(),
         .mandatory => {
             try r.push(b);
             try r.flush();
-            return q.next;
         },
     }
+    return q.next;
 }
 
 /// Skip a quantifier that binds to a just-consumed group/class/anchor (it does

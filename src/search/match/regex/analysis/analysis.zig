@@ -25,6 +25,16 @@ pub const LitInfo = struct {
     prefix: []const u8, // every match must START with this literal run
     suffix: []const u8, // every match must END with this literal run
     best: []const u8, // longest literal that MUST appear (contiguously) in every match
+
+    /// Proves nothing (caller scans all docs).
+    const unknown: LitInfo = .{ .exact = null, .prefix = "", .suffix = "", .best = "" };
+    /// Matches exactly the empty string (zero-width nodes).
+    const zero_width: LitInfo = .{ .exact = "", .prefix = "", .suffix = "", .best = "" };
+
+    /// The node matches exactly `lit` and nothing else.
+    fn exactly(lit: []const u8) LitInfo {
+        return .{ .exact = lit, .prefix = lit, .suffix = lit, .best = lit };
+    }
 };
 
 fn longer(a: []const u8, b: []const u8) []const u8 {
@@ -49,22 +59,18 @@ pub fn literalInfo(arena: std.mem.Allocator, node: *Node) ParseError!LitInfo {
         // Zero-width: matches the empty string at a position. exact="" lets a
         // mandatory literal run span the anchor (e.g. `^func` ⇒ required "func",
         // `\bfunc\b` ⇒ "func" — the word boundaries are zero-width too).
-        .empty, .anchor_start, .anchor_end, .anchor_buf_start, .anchor_buf_end, .word_boundary, .not_word_boundary, .word_start, .word_end => return .{ .exact = "", .prefix = "", .suffix = "", .best = "" },
+        .empty, .anchor_start, .anchor_end, .anchor_buf_start, .anchor_buf_end, .word_boundary, .not_word_boundary, .word_start, .word_end => return .zero_width,
         .class => |set| {
             // A singleton class is an exact literal; anything wider proves nothing.
-            if (set.only()) |b| {
-                const lit = try arena.dupe(u8, &[_]u8{b});
-                return .{ .exact = lit, .prefix = lit, .suffix = lit, .best = lit };
-            }
-            return .{ .exact = null, .prefix = "", .suffix = "", .best = "" };
+            const b = set.only() orelse return .unknown;
+            return LitInfo.exactly(try arena.dupe(u8, &[_]u8{b}));
         },
         // A single-codepoint `uclass` (a non-ASCII literal) is exact — its UTF-8
         // bytes feed the trigram prefilter exactly like an ASCII literal. A wider
         // codepoint class (`\w`, `[é-ÿ]`) proves no literal.
         .uclass => |ranges| {
-            if (try uclassLiteral(arena, ranges)) |l|
-                return .{ .exact = l, .prefix = l, .suffix = l, .best = l };
-            return .{ .exact = null, .prefix = "", .suffix = "", .best = "" };
+            const l = (try uclassLiteral(arena, ranges)) orelse return .unknown;
+            return LitInfo.exactly(l);
         },
         .concat => |ab| {
             const x = try literalInfo(arena, ab[0]);
@@ -97,7 +103,7 @@ pub fn literalInfo(arena: std.mem.Allocator, node: *Node) ParseError!LitInfo {
         // A capture is transparent — its literal info is exactly its child's.
         .capture => |g| return literalInfo(arena, g.child),
         // Optional / alternation: nothing is guaranteed to appear.
-        .star, .quest, .alt => return .{ .exact = null, .prefix = "", .suffix = "", .best = "" },
+        .star, .quest, .alt => return .unknown,
     }
 }
 
@@ -197,8 +203,7 @@ pub fn pureLiterals(arena: std.mem.Allocator, node: *Node) ParseError!?[]const [
         .capture => |g| return pureLiterals(arena, g.child), // transparent
         else => {
             const lit = (try pureLit(arena, node)) orelse return null;
-            if (lit.len == 0) return null;
-            if (std.mem.indexOfAny(u8, lit, "\n\x00") != null) return null;
+            if (lit.len == 0 or std.mem.indexOfAny(u8, lit, "\n\x00") != null) return null;
             return try arena.dupe([]const u8, &.{lit});
         },
     }
@@ -234,6 +239,11 @@ const Worklist = struct {
         self.stack[self.sp] = t;
         self.sp += 1;
     }
+    /// Enqueue both arms of a `split`.
+    fn push2(self: *Worklist, a: u32, b: u32) void {
+        self.push(a);
+        self.push(b);
+    }
 };
 
 /// Collect every byte that can be the FIRST consumed byte of a match at SOME
@@ -248,10 +258,7 @@ pub fn analyzeFirst(gpa: std.mem.Allocator, states: []const State, start: u32, o
     defer wl.deinit(gpa);
     while (wl.pop()) |s| switch (states[s]) {
         .consume => |cn| out.unionWith(cn.set),
-        .split => |spl| {
-            wl.push(spl.a);
-            wl.push(spl.b);
-        },
+        .split => |spl| wl.push2(spl.a, spl.b),
         .assert_start => |o| wl.push(o), // holds at line start
         .assert_buf_start => |o| wl.push(o), // holds at buffer start (same soundness)
         // A word-context assertion (`\b` `\B` `\<` `\>`) can hold at SOME
@@ -273,10 +280,7 @@ pub fn reachesMatchEol(gpa: std.mem.Allocator, states: []const State, start: u32
     defer wl.deinit(gpa);
     while (wl.pop()) |s| switch (states[s]) {
         .match => return true,
-        .split => |spl| {
-            wl.push(spl.a);
-            wl.push(spl.b);
-        },
+        .split => |spl| wl.push2(spl.a, spl.b),
         .assert_end => |o| wl.push(o), // `$` holds at EOL
         .assert_start, .consume => {}, // at_start=false blocks `^`; consume isn't zero-width
         // A word-context assertion (`\b` `\B` `\<` `\>`) at EOL is
@@ -309,10 +313,7 @@ pub fn reachesMatchZeroWidth(gpa: std.mem.Allocator, states: []const State, star
     defer wl.deinit(gpa);
     while (wl.pop()) |s| switch (states[s]) {
         .match => return true,
-        .split => |spl| {
-            wl.push(spl.a);
-            wl.push(spl.b);
-        },
+        .split => |spl| wl.push2(spl.a, spl.b),
         .assert_start, .assert_end, .assert_buf_start, .assert_buf_end, .assert_word_b, .assert_not_word_b, .assert_word_start, .assert_word_end => |o| wl.push(o),
         .consume => {}, // consumes a byte ⇒ this path is not zero-width
     };

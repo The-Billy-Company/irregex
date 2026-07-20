@@ -94,9 +94,7 @@ pub fn execute(gpa: std.mem.Allocator, plan: Plan, rows: []const Row, patterns: 
     var kept: std.ArrayList(Row) = .empty;
     defer kept.deinit(gpa);
     for (rows) |r| {
-        if (plan.filter_glob) |g| {
-            if (!glob.globApplies(g, r.path)) continue;
-        }
+        if (plan.filter_glob) |g| if (!glob.globApplies(g, r.path)) continue;
         try kept.append(gpa, r);
     }
 
@@ -127,11 +125,8 @@ pub fn execute(gpa: std.mem.Allocator, plan: Plan, rows: []const Row, patterns: 
             .count_desc => std.mem.sort(Group, groups, {}, groupCountDesc),
             .path => std.mem.sort(Group, groups, {}, groupLabelAsc),
         }
-        if (plan.limit != 0 and groups.len > plan.limit) {
-            const cut = try gpa.dupe(Group, groups[0..plan.limit]);
-            gpa.free(groups);
-            return .{ .groups = cut };
-        }
+        if (plan.limit != 0 and groups.len > plan.limit)
+            return .{ .groups = try gpa.realloc(groups, plan.limit) };
         return .{ .groups = groups };
     }
 

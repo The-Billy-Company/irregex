@@ -59,10 +59,6 @@ pub const Shape = struct {
 /// `.` `*` `|` are deliberately absent: too weak a literal-intent signal.
 const code_metas = "()[]{}+?^$\\";
 
-fn hasAny(s: []const u8, comptime set: []const u8) bool {
-    return std.mem.indexOfAny(u8, s, set) != null;
-}
-
 /// A line break the default per-line search can never cross: a raw newline
 /// byte always; the two-byte `\n`/`\r` escapes too when the pattern is regex.
 fn spansLines(s: []const u8, fixed: bool) bool {
@@ -85,7 +81,7 @@ pub fn shape(patterns: []const []const u8, o: args.Opts, roots: []const []const 
     };
     for (patterns) |p| {
         if (args.hasUpper(p)) s.has_upper = true;
-        if (hasAny(p, code_metas)) s.has_meta = true;
+        if (std.mem.indexOfAny(u8, p, code_metas) != null) s.has_meta = true;
         if (spansLines(p, o.fixed)) s.has_newline = true;
         if (std.mem.indexOfScalar(u8, p, ' ') != null) s.has_space = true;
     }

@@ -86,6 +86,7 @@ pub const irregex = struct {
     pub const bits = @import("math/bits.zig");
     pub const patterns = @import("search/batch/patterns.zig");
     pub const sketch = @import("search/similarity/sketch.zig");
+    pub const silhouette = @import("search/similarity/silhouette.zig");
     pub const loom = @import("search/batch/loom.zig");
 };
 
@@ -179,6 +180,8 @@ pub const commands = struct {
     pub const relate_pack = @import("cli/relate/pack.zig");
     /// `relate clusters` — fork families over the verified dup graph.
     pub const relate_family = @import("cli/relate/family.zig");
+    /// `relate echoes` — structure-vs-bytes DRY candidates (the echo signal).
+    pub const relate_echoes = @import("cli/relate/echoes.zig");
     /// `relate index`/`status` — the kinship-atlas lifecycle (relate's warm tier).
     pub const relate_lifecycle = @import("cli/relate/lifecycle.zig");
     /// The shared kinship plumbing: view resolver (atlas ∪ live) + pair machinery.
@@ -269,6 +272,7 @@ test {
     _ = @import("math/crest_test.zig"); // crest sieve: forced-run calculus vs hand-computed ĝ + sieve decision
     _ = @import("index/crest/sidecar_test.zig"); // crest sidecar codec: round-trip + fail-closed adversarial
     _ = @import("search/similarity/sketch_test.zig"); // relate half: kinship metric semantics + clustering gate
+    _ = @import("search/similarity/silhouette_test.zig"); // structure channel: normalization invariance + winnow guarantee
     _ = @import("search/similarity/lexicon.zig"); // mutual: corpus-priced fingerprint recall index
     _ = @import("search/similarity/zipper.zig"); // mutual: suffix-automaton Ziv–Merhav cross-parse (exact ΔAb)
     _ = @import("search/similarity/lexicon_test.zig"); // mutual: retrieval proof (short-query recall, ΔAb sidedness, zero-bit boilerplate)

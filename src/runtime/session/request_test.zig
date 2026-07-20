@@ -39,6 +39,52 @@ test "classify: -F and -i are carried onto the request" {
     try std.testing.expect(b.ignore_case);
 }
 
+test "classify: -S/-s case family is eligible with rg's last-wins precedence" {
+    // Each of -i/-s/-S clears the other two (args.zig's `.case` arm): the
+    // final spelling on the argv decides the case mode.
+    const smart = try ok(&.{ "-S", "needle" });
+    try std.testing.expect(smart.smart_case);
+    try std.testing.expect(!smart.ignore_case);
+    const long = try ok(&.{ "--smart-case", "needle" });
+    try std.testing.expect(long.smart_case);
+
+    const sensitive = try ok(&.{ "-s", "needle" });
+    try std.testing.expect(!sensitive.smart_case and !sensitive.ignore_case);
+    const long_s = try ok(&.{ "--case-sensitive", "needle" });
+    try std.testing.expect(!long_s.smart_case and !long_s.ignore_case);
+
+    // -s -S ⇒ smart · -S -s ⇒ sensitive · -i -s ⇒ sensitive · -S -i ⇒ ignore.
+    const s_then_smart = try ok(&.{ "-s", "-S", "needle" });
+    try std.testing.expect(s_then_smart.smart_case and !s_then_smart.ignore_case);
+    const smart_then_s = try ok(&.{ "-S", "-s", "needle" });
+    try std.testing.expect(!smart_then_s.smart_case and !smart_then_s.ignore_case);
+    const i_then_s = try ok(&.{ "-i", "-s", "needle" });
+    try std.testing.expect(!i_then_s.smart_case and !i_then_s.ignore_case);
+    const smart_then_i = try ok(&.{ "-S", "-i", "needle" });
+    try std.testing.expect(!smart_then_i.smart_case and smart_then_i.ignore_case);
+    const i_then_smart = try ok(&.{ "-i", "-S", "needle" });
+    try std.testing.expect(i_then_smart.smart_case and !i_then_smart.ignore_case);
+}
+
+test "Request.effectiveIgnoreCase mirrors cold's finalize-time smart-case fold" {
+    // -S + all-lowercase pattern ⇒ folds caseless, exactly like -i.
+    const lower = request.Request{ .pattern = "walkdir", .mode = .lines, .smart_case = true };
+    try std.testing.expect(lower.effectiveIgnoreCase());
+    // -S + any uppercase ⇒ stays case-sensitive.
+    const upper = request.Request{ .pattern = "WalkDir", .mode = .lines, .smart_case = true };
+    try std.testing.expect(!upper.effectiveIgnoreCase());
+    // hasUpper is codepoint-aware: a non-ASCII uppercase (É) blocks the fold.
+    const uni = request.Request{ .pattern = "caf\xc3\x89", .mode = .lines, .smart_case = true };
+    try std.testing.expect(!uni.effectiveIgnoreCase());
+    const uni_lower = request.Request{ .pattern = "caf\xc3\xa9", .mode = .lines, .smart_case = true };
+    try std.testing.expect(uni_lower.effectiveIgnoreCase());
+    // -i always folds regardless of pattern shape; bare stays sensitive.
+    const icase = request.Request{ .pattern = "WalkDir", .mode = .lines, .ignore_case = true };
+    try std.testing.expect(icase.effectiveIgnoreCase());
+    const bare = request.Request{ .pattern = "walkdir", .mode = .lines };
+    try std.testing.expect(!bare.effectiveIgnoreCase());
+}
+
 test "classify: pattern via a bare token, -e VALUE, or --regexp=VALUE" {
     const bare = try ok(&.{ "needle", "-l" }); // order-free: flag after the pattern
     try std.testing.expectEqualStrings("needle", bare.pattern);
@@ -113,9 +159,31 @@ test "classify: ANY explicit PATH arg is ineligible (rootless-only parity)" {
     try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "needle", "--", "services" }));
 }
 
+test "classify: -w/--word-regexp is eligible and carried onto the request" {
+    // Lane 2: the shared search core applies cold's exact post-match word
+    // rule, so `-w` routes warm across all three answer shapes.
+    const a = try ok(&.{ "-l", "-w", "needle" });
+    try std.testing.expectEqual(request.Mode.files, a.mode);
+    try std.testing.expect(a.word);
+    const b = try ok(&.{ "-c", "--word-regexp", "needle" });
+    try std.testing.expectEqual(request.Mode.count, b.mode);
+    try std.testing.expect(b.word);
+    const c = try ok(&.{ "-w", "needle" }); // bare lines search
+    try std.testing.expectEqual(request.Mode.lines, c.mode);
+    try std.testing.expect(c.word);
+    // Composes with -F and the case family (the word check runs on the
+    // original bytes regardless of the fold).
+    const d = try ok(&.{ "-l", "-F", "-i", "-w", "needle" });
+    try std.testing.expect(d.word and d.fixed and d.ignore_case);
+    const e = try ok(&.{ "-w", "-S", "needle" });
+    try std.testing.expect(e.word and e.smart_case);
+    // Absent ⇒ false.
+    const f = try ok(&.{ "-l", "needle" });
+    try std.testing.expect(!f.word);
+}
+
 test "classify: any unrecognized flag hands the whole request to cold" {
     for ([_][]const []const u8{
-        &.{ "-l", "-w", "needle" }, // whole-word
         &.{ "-l", "-v", "needle" }, // invert
         &.{ "-l", "-C", "2", "needle" }, // context
         &.{ "-l", "--json", "needle" }, // structured output

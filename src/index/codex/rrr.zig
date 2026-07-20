@@ -12,7 +12,7 @@
 //!          wavelet tree over a BWT this is what buys k-th order compression:
 //!          the BWT makes bits run-heavy, runs make blocks extreme-class, and
 //!          extreme classes cost ~0 bits (implicit compression boosting —
-//!          Mäkinen & Navarro, CPM 2007).
+//!          Mäkinen & Navarro, SPIRE 2007).
 //!
 //! `Bits.adopt` takes a finished Plain vector and keeps whichever encoding is
 //! smaller, so a caller can never lose space to the choice. Rank never decodes
@@ -99,8 +99,8 @@ fn writeBits(words: []u64, bitpos: usize, nbits: u7, v: u64) void {
     if (@as(usize, sh) + nbits > 64) words[w + 1] |= v >> @intCast(64 - @as(usize, sh));
 }
 
-/// Combinadic rank of a 63-bit block among all patterns with the same
-/// popcount: patterns are ordered bit-0-first, 0-bit before 1-bit.
+/// Raman–Raman–Rao combinadic offset: rank of this 63-bit pattern among the
+/// C(63,popcount) same-class patterns (bit-0-first, 0 before 1).
 fn encodeBlock(bits: u64) u64 {
     var off: u64 = 0;
     var k: u32 = @popCount(bits);

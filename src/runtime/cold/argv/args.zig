@@ -19,6 +19,7 @@ const types = @import("../../../corpus/scope/types.zig");
 const uni = @import("../../../search/match/regex/unicode/tables.zig");
 const udec = @import("../../../search/match/regex/unicode/decode.zig");
 const encoding = @import("../read/encoding.zig");
+const color = @import("../emit/color.zig");
 
 pub const Filename = enum { auto, always, never };
 
@@ -115,11 +116,6 @@ pub const Engine = enum { default, pcre2, auto };
 /// still beats rg's single-threaded sort walk.
 pub const SortKey = enum { none, path, modified, accessed, created };
 
-fn parseSortKey(v: []const u8) SortKey {
-    return std.meta.stringToEnum(SortKey, v) orelse
-        die("bad --sort value: {s} (expected none, path, modified, accessed, or created)\n", .{v});
-}
-
 pub const Opts = struct {
     caseless: bool = false,
     smart_case: bool = false,
@@ -138,6 +134,12 @@ pub const Opts = struct {
     before: usize = 0,
     after: usize = 0,
     max_per_file: usize = 0,
+    // Was --max-count/-m given? Distinguishes an explicit `-m0` (ripgrep's
+    // "match nothing" — search short-circuits before emitting/counting a single
+    // hit, exit 1, no output, in EVERY mode) from the unset default where 0 is
+    // the "unlimited" sentinel the per-file emit guards read. Mirrors
+    // `max_cols_set` below.
+    max_per_file_set: bool = false,
     count_only: bool = false,
     count_matches: bool = false,
     files_only: bool = false,
@@ -242,6 +244,24 @@ pub const Opts = struct {
     pub fn term(self: Opts) u8 {
         return if (self.null_data) 0 else '\n';
     }
+    /// The terminator the PRINTER appends to every line it emits (match/context
+    /// bodies, `-l` paths, `-c` counts, headings, `--` separators). Under
+    /// `--crlf` ripgrep's printer writes `\r\n` — its own output adopts the
+    /// CRLF convention, not just the input split — while the INPUT terminator
+    /// (`term()`, above) stays `\n` with the `\r` folded into the match view.
+    /// A line body's own trailing `\r` is stripped before this is appended
+    /// (`Emitter.emitBody`), mirroring rg's `trim_line_terminator`.
+    pub fn outTerm(self: Opts) []const u8 {
+        return if (self.null_data) "\x00" else if (self.crlf) "\r\n" else "\n";
+    }
+    /// The single-byte reconstruction terminator for a body line that WAS
+    /// terminated in the file: the emitter's line slices keep any `\r` but
+    /// drop the split byte, so appending this re-materializes the original
+    /// bytes exactly (dos `…\r`+`\n`, unix `…`+`\n`) — rg writes such lines
+    /// verbatim and only falls back to `outTerm()` when one is missing.
+    pub fn termStr(self: Opts) []const u8 {
+        return if (self.null_data) "\x00" else "\n";
+    }
     /// True for the two "no pattern needed" modes.
     pub fn noPattern(self: Opts) bool {
         return self.files_list or self.type_list;
@@ -294,14 +314,10 @@ pub fn hasUpper(s: []const u8) bool {
         if (s[i] < 0x80) {
             if (s[i] >= 'A' and s[i] <= 'Z') return true;
             i += 1;
-            continue;
-        }
-        const d = udec.decode(s[i..]) orelse {
-            i += 1;
-            continue;
-        };
-        if (uni.isUpper(d.cp)) return true;
-        i += d.len;
+        } else if (udec.decode(s[i..])) |d| {
+            if (uni.isUpper(d.cp)) return true;
+            i += d.len;
+        } else i += 1;
     }
     return false;
 }
@@ -355,17 +371,15 @@ const Builder = struct {
     }
     fn addType(self: *Builder, name: []const u8, negate: bool) void {
         if (std.mem.eql(u8, name, "all")) {
-            if (negate) self.ntype_all = true else self.type_all = true;
-            return;
-        }
-        // A user-defined `--type-add` type resolves to include/exclude globs; a
-        // built-in resolves to its own glob set (scope/types.zig).
-        if (self.customGlobs(name)) |globs| {
+            (if (negate) &self.ntype_all else &self.type_all).* = true;
+            // A user-defined `--type-add` type resolves to include/exclude globs; a
+            // built-in resolves to its own glob set (scope/types.zig).
+        } else if (self.customGlobs(name)) |globs| {
             (if (negate) &self.excludes else &self.includes).appendSlice(self.a, globs) catch oom();
-            return;
+        } else {
+            const e = types.extsForType(name) orelse die("unrecognized type: {s}\n", .{name});
+            (if (negate) &self.neg_exts else &self.exts).appendSlice(self.a, e) catch oom();
         }
-        const e = types.extsForType(name) orelse die("unrecognized type: {s}\n", .{name});
-        (if (negate) &self.neg_exts else &self.exts).appendSlice(self.a, e) catch oom();
     }
     /// Register a `--type-add` spec: `name:glob` appends a glob to `name`; the
     /// `name:include:t1,t2` form aliases `name` to the union of other types.
@@ -376,14 +390,14 @@ const Builder = struct {
         var globs: std.ArrayList([]const u8) = .empty;
         if (std.mem.startsWith(u8, rest, "include:")) {
             var it = std.mem.splitScalar(u8, rest["include:".len..], ',');
-            while (it.next()) |t| {
-                if (self.customGlobs(t)) |g| {
+            while (it.next()) |ty| {
+                if (self.customGlobs(ty)) |g| {
                     globs.appendSlice(self.a, g) catch oom();
-                } else if (types.extsForType(t)) |exts| {
+                } else if (types.extsForType(ty)) |exts| {
                     // A built-in type's rows are already valid globs (scope/types.zig),
                     // so they slot straight into the `include:` union with no conversion.
                     globs.appendSlice(self.a, exts) catch oom();
-                } else die("unrecognized type: {s}\n", .{t});
+                } else die("unrecognized type: {s}\n", .{ty});
             }
         } else {
             globs.append(self.a, rest) catch oom();
@@ -413,18 +427,18 @@ const Builder = struct {
     fn addPreGlob(self: *Builder, g: []const u8) void {
         if (g.len > 0 and g[0] == '!') {
             self.pre_excludes.append(self.a, stripAnchor(g[1..])) catch oom();
-        } else {
-            self.pre_globs.append(self.a, stripAnchor(g)) catch oom();
-        }
+        } else self.pre_globs.append(self.a, stripAnchor(g)) catch oom();
     }
     fn addGlobOne(self: *Builder, g: []const u8, insensitive: bool) void {
-        if (g.len > 0 and g[0] == '!') {
-            self.excludes.append(self.a, stripAnchor(g[1..])) catch oom();
-        } else if (insensitive) {
-            self.iglobs.append(self.a, stripAnchor(g)) catch oom();
-        } else {
-            self.includes.append(self.a, stripAnchor(g)) catch oom();
-        }
+        const neg = g.len > 0 and g[0] == '!';
+        const core = stripAnchor(if (neg) g[1..] else g);
+        // An explicit `-g`/`--glob` compiles strictly (rg's `Glob::new`): an
+        // unclosed `[` character class is an error, not the literal `[` a lenient
+        // gitignore line would treat it as. Fail loud (exit 2) here, at the seam.
+        if (glob.unterminatedClass(core))
+            die("gist: error parsing glob '{s}': unclosed character class; missing ']'\n", .{g});
+        const list = if (neg) &self.excludes else if (insensitive) &self.iglobs else &self.includes;
+        list.append(self.a, core) catch oom();
     }
 };
 
@@ -432,23 +446,20 @@ const Builder = struct {
 /// product across groups, nesting-aware). A pattern with no brace group yields
 /// itself; an unbalanced `{` is left literal.
 fn braceExpand(a: std.mem.Allocator, pat: []const u8, out: *std.ArrayList([]const u8)) void {
-    const open = std.mem.indexOfScalar(u8, pat, '{') orelse {
-        out.append(a, a.dupe(u8, pat) catch oom()) catch oom();
-        return;
-    };
-    var depth: usize = 0;
-    var close: ?usize = null;
-    var i = open;
-    while (i < pat.len) : (i += 1) {
-        if (pat[i] == '{') depth += 1 else if (pat[i] == '}') {
-            depth -= 1;
-            if (depth == 0) {
-                close = i;
-                break;
+    // Find the first balanced `{…}` group; no group (or an unbalanced `{`) ⇒
+    // the pattern is emitted literally.
+    const grp: ?[2]usize = blk: {
+        const open = std.mem.indexOfScalar(u8, pat, '{') orelse break :blk null;
+        var depth: usize = 0;
+        for (open..pat.len) |i| {
+            if (pat[i] == '{') depth += 1 else if (pat[i] == '}') {
+                depth -= 1;
+                if (depth == 0) break :blk .{ open, i };
             }
         }
-    }
-    const c = close orelse {
+        break :blk null;
+    };
+    const open, const c = grp orelse {
         out.append(a, a.dupe(u8, pat) catch oom()) catch oom();
         return;
     };
@@ -469,23 +480,14 @@ fn braceExpand(a: std.mem.Allocator, pat: []const u8, out: *std.ArrayList([]cons
     }
 }
 
-fn takeVal(a: []const u8, k: usize, i: *usize, all: []const []const u8) []const u8 {
-    if (k + 1 < a.len) return a[k + 1 ..];
-    if (i.* + 1 < all.len) {
-        i.* += 1;
-        return all[i.*];
-    }
-    die("flag -{c} needs a value\n", .{a[k]});
-}
-fn nextTok(i: *usize, all: []const []const u8) []const u8 {
-    if (i.* + 1 < all.len) {
-        i.* += 1;
-        return all[i.*];
-    }
-    die("flag needs a value\n", .{});
-}
 fn toU(s: []const u8) usize {
     return std.fmt.parseInt(usize, s, 10) catch die("bad number '{s}'\n", .{s});
+}
+
+/// Resolve a value to its enum member, or fail loud with the flag's own
+/// message — the shared back end of `--color`/`--engine`/`--sort`/`--sortr`.
+fn enumOrDie(comptime T: type, comptime fmt: []const u8, s: []const u8) T {
+    return std.meta.stringToEnum(T, s) orelse die(fmt, .{s});
 }
 
 /// Decode ripgrep's C-style escapes in a separator value (`--field-*-separator`,
@@ -502,30 +504,31 @@ fn unescape(a: std.mem.Allocator, s: []const u8) []const u8 {
             continue;
         }
         i += 1;
-        switch (s[i]) {
-            'n' => out.append(a, '\n') catch oom(),
-            'r' => out.append(a, '\r') catch oom(),
-            't' => out.append(a, '\t') catch oom(),
-            '0' => out.append(a, 0) catch oom(),
-            '\\' => out.append(a, '\\') catch oom(),
-            'x' => {
-                if (i + 2 < s.len) {
-                    const hi = std.fmt.parseInt(u8, s[i + 1 .. i + 3], 16) catch die("bad \\x escape\n", .{});
-                    out.append(a, hi) catch oom();
-                    i += 2;
-                } else die("bad \\x escape\n", .{});
+        out.append(a, switch (s[i]) {
+            'n' => '\n',
+            'r' => '\r',
+            't' => '\t',
+            '0' => 0,
+            '\\' => '\\',
+            'x' => blk: {
+                if (i + 2 >= s.len) die("bad \\x escape\n", .{});
+                defer i += 2;
+                break :blk std.fmt.parseInt(u8, s[i + 1 .. i + 3], 16) catch die("bad \\x escape\n", .{});
             },
-            else => {
+            else => |c| blk: {
                 out.append(a, '\\') catch oom();
-                out.append(a, s[i]) catch oom();
+                break :blk c;
             },
-        }
+        }) catch oom();
     }
     return out.toOwnedSlice(a) catch oom();
 }
 
 /// Parse a `--max-filesize` value: a decimal with an optional `K`/`M`/`G` (1024-
-/// based) suffix, e.g. `50`, `4K`, `1M` (ripgrep's grammar).
+/// based) suffix, e.g. `50`, `4K`, `1M` (ripgrep's grammar). A value that
+/// overflows `usize` after applying the suffix fails loud (exit 2) exactly like
+/// ripgrep — `34359738368G` names ~2^65 bytes, which cannot be represented, and
+/// silently wrapping it into a tiny cap would drop files the user meant to keep.
 fn toBytes(s: []const u8) usize {
     if (s.len == 0) die("bad size ''\n", .{});
     const mult: usize = switch (s[s.len - 1]) {
@@ -535,112 +538,84 @@ fn toBytes(s: []const u8) usize {
         else => 1,
     };
     const digits = if (mult == 1) s else s[0 .. s.len - 1];
-    return toU(digits) * mult;
+    return std.math.mul(usize, toU(digits), mult) catch
+        die("invalid --max-filesize: {s} overflows the maximum representable size\n", .{s});
 }
 
-const Act = enum {
-    icase,
-    scase,
-    smart,
-    word,
-    fixed,
-    invert,
-    only,
-    lnum,
-    no_lnum,
-    with_fn,
-    no_fn,
-    fwm,
-    fwithout,
-    count,
-    cmatches,
-    hidden,
-    text,
-    binary,
-    search_zip,
-    pre,
-    pre_glob,
-    encoding,
+/// The `Opts` field a declarative catalog row drives, by name.
+const OptField = std.meta.FieldEnum(Opts);
+
+/// A flag's parse effect. Most flags declaratively set or clear one `Opts`
+/// bool — `.set`/`.unset` carry the exact field the catalog row drives (the
+/// comptime block below proves each names a bool). Everything value-taking or
+/// compound keeps a named action handled in `apply`.
+const Act = union(enum) {
+    set: OptField, // set the named Opts bool
+    unset: OptField, // clear it (the --no-X / undo spellings)
+    set_many: []const OptField, // set several Opts bools at once
+    filename: Filename, // -H/--with-filename, -I/--no-filename
+    case: enum { icase, scase, smart }, // -i / -s / -S
     unrestrict,
-    column,
-    no_column,
-    byteoff,
-    vimgrep,
-    heading,
-    no_heading,
-    trim,
-    nul,
-    nul_data,
-    xline,
-    quiet,
-    stats,
     passthru,
-    maxcols_preview,
-    stop_nonmatch,
-    crlf,
-    ml,
-    ml_dotall,
-    json,
-    files,
-    type_list,
-    follow,
-    no_follow,
-    threads,
-    one_file_system,
-    no_stats,
-    no_trim,
     sort_files,
-    sort,
-    sortr,
+    sort: bool, // --sort (false) / --sortr (true = descending)
     glob_ci, // value-taking below
-    no_ignore,
-    no_ignore_vcs,
-    no_ignore_dot,
-    no_ignore_parent,
-    no_ignore_exclude,
-    no_ignore_global,
-    no_ignore_files,
-    ignore_files,
-    no_require_git,
-    require_git,
-    ignore_file_ci,
-    after,
-    before,
-    ctx,
-    maxcount,
+    ctx_at: enum { after, before, ctx },
     regexp,
-    typ,
-    typ_not,
-    glob,
-    iglob,
-    maxcols,
-    pathsep,
-    maxdepth,
+    typ: bool, // -t/--type (false) / -T/--type-not (true = negate)
+    glob: bool, // -g/--glob (false) / --iglob (true = case-insensitive)
+    num_set: [2]OptField, // set the named usize field from a decimal value + its was-set marker
+    set_num: OptField, // set the named usize field from a decimal value
+    set_str: OptField, // set the named string field from the raw value
+    sep: OptField, // as .set_str, but through the C-escape decoder
     maxfsize,
-    ctxsep,
     no_ctxsep,
-    fieldmsep,
-    fieldcsep,
     replace,
     file,
     ignore_file,
     type_add,
     color,
-    no_index,
-    index,
+    encoding,
+    pre_glob,
     rank,
-    uncap, // --uncap: lift the soft output budget (hard OOM ceiling still applies)
-    pcre, // -P/--pcre2: select the PCRE2 backend
+    // -P/--pcre2: select the PCRE2 backend
+    // --auto-hybrid-regex: rg's deprecated spelling of --engine auto
+    engine_is: Engine, // the fixed-backend spellings above, by target backend
     engine, // --engine=<default|pcre2|auto>: select the match backend by name
-    auto_hybrid, // --auto-hybrid-regex: rg's deprecated spelling of --engine auto
-    pcre_unicode, // --pcre2-unicode: PCRE2 Unicode mode on
-    no_pcre_unicode, // --no-pcre2-unicode: PCRE2 Unicode mode off
-    unicode, // --unicode: linear-engine Unicode mode on (rg default)
-    no_unicode, // --no-unicode: linear-engine Unicode mode off (byte/ASCII)
     noop,
     noop_val,
+    colors, // --colors: validate the spec's syntax (fail loud), then discard it
     unsupported,
 };
+
+// Every declarative `.set`/`.unset` row must name a bool field — proven here
+// at comptime so `setBool`'s non-bool arm is genuinely unreachable.
+// (setBool has since been generalized into `setVal`; the same proof now also
+// covers the `.set_num`/`.set_str`/`.sep` rows and their field types.)
+comptime {
+    for (flag_catalog) |spec| switch (spec.action) {
+        .set, .unset => |f| std.debug.assert(@FieldType(Opts, @tagName(f)) == bool),
+        .set_many => |fs| for (fs) |f| std.debug.assert(@FieldType(Opts, @tagName(f)) == bool),
+        .set_num => |f| std.debug.assert(@FieldType(Opts, @tagName(f)) == usize),
+        .num_set => |p| std.debug.assert(@FieldType(Opts, @tagName(p[0])) == usize and @FieldType(Opts, @tagName(p[1])) == bool),
+        .set_str, .sep => |f| std.debug.assert(@FieldType(Opts, @tagName(f)) == []const u8 or
+            @FieldType(Opts, @tagName(f)) == ?[]const u8),
+        else => {},
+    };
+}
+
+/// Assign the named `Opts` bool — the back end of `.set`/`.unset`.
+/// Generalized over the value's type: the same inline dispatch also lands the
+/// `.set_num` (usize) and `.set_str`/`.sep` (plain or optional string) rows.
+fn setVal(o: *Opts, f: OptField, v: anytype) void {
+    switch (f) {
+        inline else => |ff| if (@FieldType(Opts, @tagName(ff)) == @TypeOf(v) or
+            @FieldType(Opts, @tagName(ff)) == ?@TypeOf(v))
+        {
+            @field(o, @tagName(ff)) = v;
+        } else unreachable, // comptime-verified: catalog rows only name bools
+    }
+}
 
 /// Public compatibility buckets emitted by `gist --schema`. `.native` rows are
 /// gist additions, emitted separately from the four-bucket ripgrep matrix.
@@ -664,139 +639,131 @@ pub const FlagSpec = struct {
 };
 
 pub const flag_catalog = [_]FlagSpec{
-    .{ .short = 'i', .longs = &.{"ignore-case"}, .action = .icase, .compatibility = .supported, .note = "Unicode case folding by default (full simple case-fold orbits); (?-u)/--no-unicode selects ASCII folding" },
-    .{ .short = 's', .longs = &.{"case-sensitive"}, .action = .scase, .compatibility = .supported },
-    .{ .short = 'S', .longs = &.{"smart-case"}, .action = .smart, .compatibility = .supported, .note = "codepoint-aware uppercase detection and Unicode folding by default; (?-u)/--no-unicode selects ASCII" },
-    .{ .short = 'w', .longs = &.{"word-regexp"}, .action = .word, .compatibility = .supported, .note = "-w and regex \\b/\\w use Unicode word characters by default (rg parity); (?-u)/--no-unicode selects ASCII byte word chars" },
-    .{ .short = 'F', .longs = &.{"fixed-strings"}, .action = .fixed, .compatibility = .supported },
-    .{ .short = 'v', .longs = &.{"invert-match"}, .action = .invert, .compatibility = .supported },
-    .{ .short = 'o', .longs = &.{"only-matching"}, .action = .only, .compatibility = .supported },
-    .{ .short = 'n', .longs = &.{"line-number"}, .action = .lnum, .compatibility = .supported },
-    .{ .short = 'N', .longs = &.{"no-line-number"}, .action = .no_lnum, .compatibility = .supported },
-    .{ .short = 'H', .longs = &.{"with-filename"}, .action = .with_fn, .compatibility = .supported },
-    .{ .short = 'I', .longs = &.{"no-filename"}, .action = .no_fn, .compatibility = .supported },
-    .{ .short = 'l', .longs = &.{"files-with-matches"}, .action = .fwm, .compatibility = .supported },
-    .{ .longs = &.{"files-without-match"}, .action = .fwithout, .compatibility = .supported },
-    .{ .short = 'c', .longs = &.{"count"}, .action = .count, .compatibility = .supported },
-    .{ .longs = &.{"count-matches"}, .action = .cmatches, .compatibility = .supported },
-    .{ .longs = &.{"hidden"}, .action = .hidden, .compatibility = .supported },
-    .{ .short = 'a', .longs = &.{"text"}, .action = .text, .compatibility = .supported },
-    .{ .longs = &.{"binary"}, .action = .binary, .compatibility = .supported_with_differences, .note = "searches binary files in full and prints every matching line (a superset), rather than rg's binary-summary suppression" },
+    .{ .short = 'i', .longs = &.{"ignore-case"}, .action = .{ .case = .icase }, .compatibility = .supported, .note = "Unicode case folding by default (full simple case-fold orbits); (?-u)/--no-unicode selects ASCII folding" },
+    .{ .short = 's', .longs = &.{"case-sensitive"}, .action = .{ .case = .scase }, .compatibility = .supported },
+    .{ .short = 'S', .longs = &.{"smart-case"}, .action = .{ .case = .smart }, .compatibility = .supported, .note = "codepoint-aware uppercase detection and Unicode folding by default; (?-u)/--no-unicode selects ASCII" },
+    .{ .short = 'w', .longs = &.{"word-regexp"}, .action = .{ .set = .word }, .compatibility = .supported, .note = "-w and regex \\b/\\w use Unicode word characters by default (rg parity); (?-u)/--no-unicode selects ASCII byte word chars" },
+    .{ .short = 'F', .longs = &.{"fixed-strings"}, .action = .{ .set = .fixed }, .compatibility = .supported },
+    .{ .short = 'v', .longs = &.{"invert-match"}, .action = .{ .set = .invert }, .compatibility = .supported },
+    .{ .short = 'o', .longs = &.{"only-matching"}, .action = .{ .set = .only_matching }, .compatibility = .supported },
+    .{ .short = 'n', .longs = &.{"line-number"}, .action = .{ .set = .line_num }, .compatibility = .supported },
+    .{ .short = 'N', .longs = &.{"no-line-number"}, .action = .{ .unset = .line_num }, .compatibility = .supported },
+    .{ .short = 'H', .longs = &.{"with-filename"}, .action = .{ .filename = .always }, .compatibility = .supported },
+    .{ .short = 'I', .longs = &.{"no-filename"}, .action = .{ .filename = .never }, .compatibility = .supported },
+    .{ .short = 'l', .longs = &.{"files-with-matches"}, .action = .{ .set = .files_only }, .compatibility = .supported },
+    .{ .longs = &.{"files-without-match"}, .action = .{ .set = .files_without }, .compatibility = .supported },
+    .{ .short = 'c', .longs = &.{"count"}, .action = .{ .set = .count_only }, .compatibility = .supported },
+    .{ .longs = &.{"count-matches"}, .action = .{ .set = .count_matches }, .compatibility = .supported },
+    .{ .longs = &.{"hidden"}, .action = .{ .set = .hidden }, .compatibility = .supported },
+    .{ .short = 'a', .longs = &.{"text"}, .action = .{ .set = .text }, .compatibility = .supported },
+    .{ .longs = &.{"binary"}, .action = .{ .set = .binary }, .compatibility = .supported_with_differences, .note = "searches binary files in full and prints every matching line (a superset), rather than rg's binary-summary suppression" },
     .{ .short = 'u', .longs = &.{"unrestricted"}, .action = .unrestrict, .compatibility = .supported_with_differences, .note = "-u=--no-ignore, -uu adds hidden, -uuu adds --binary (search binary files in full)" },
-    .{ .longs = &.{"column"}, .action = .column, .compatibility = .supported },
-    .{ .longs = &.{"no-column"}, .action = .no_column, .compatibility = .supported },
-    .{ .short = 'b', .longs = &.{"byte-offset"}, .action = .byteoff, .compatibility = .supported },
-    .{ .longs = &.{"vimgrep"}, .action = .vimgrep, .compatibility = .supported },
-    .{ .longs = &.{"heading"}, .action = .heading, .compatibility = .supported },
-    .{ .longs = &.{"no-heading"}, .action = .no_heading, .compatibility = .supported },
-    .{ .longs = &.{"trim"}, .action = .trim, .compatibility = .supported },
-    .{ .short = '0', .longs = &.{"null"}, .action = .nul, .compatibility = .supported },
-    .{ .longs = &.{"null-data"}, .action = .nul_data, .compatibility = .supported },
-    .{ .short = 'x', .longs = &.{"line-regexp"}, .action = .xline, .compatibility = .supported },
-    .{ .short = 'q', .longs = &.{"quiet"}, .action = .quiet, .compatibility = .supported },
-    .{ .longs = &.{"stats"}, .action = .stats, .compatibility = .supported },
-    .{ .longs = &.{"stop-on-nonmatch"}, .action = .stop_nonmatch, .compatibility = .supported },
+    .{ .longs = &.{"column"}, .action = .{ .set_many = &.{ .column, .line_num } }, .compatibility = .supported },
+    .{ .longs = &.{"no-column"}, .action = .{ .unset = .column }, .compatibility = .supported },
+    .{ .short = 'b', .longs = &.{"byte-offset"}, .action = .{ .set = .byte_offset }, .compatibility = .supported },
+    .{ .longs = &.{"vimgrep"}, .action = .{ .set_many = &.{ .vimgrep, .column, .line_num } }, .compatibility = .supported },
+    .{ .longs = &.{"heading"}, .action = .{ .set = .heading }, .compatibility = .supported },
+    .{ .longs = &.{"no-heading"}, .action = .{ .unset = .heading }, .compatibility = .supported },
+    .{ .longs = &.{"trim"}, .action = .{ .set = .trim }, .compatibility = .supported },
+    .{ .short = '0', .longs = &.{"null"}, .action = .{ .set = .null_sep }, .compatibility = .supported },
+    .{ .longs = &.{"null-data"}, .action = .{ .set = .null_data }, .compatibility = .supported },
+    .{ .short = 'x', .longs = &.{"line-regexp"}, .action = .{ .set = .line_regexp }, .compatibility = .supported },
+    .{ .short = 'q', .longs = &.{"quiet"}, .action = .{ .set = .quiet }, .compatibility = .supported },
+    .{ .longs = &.{"stats"}, .action = .{ .set = .stats }, .compatibility = .supported },
+    .{ .longs = &.{"stop-on-nonmatch"}, .action = .{ .set = .stop_on_nonmatch }, .compatibility = .supported },
     .{ .longs = &.{ "passthru", "passthrough" }, .action = .passthru, .compatibility = .supported },
-    .{ .longs = &.{"max-columns-preview"}, .action = .maxcols_preview, .compatibility = .supported },
-    .{ .longs = &.{"field-match-separator"}, .action = .fieldmsep, .compatibility = .supported },
-    .{ .longs = &.{"field-context-separator"}, .action = .fieldcsep, .compatibility = .supported },
-    .{ .longs = &.{"crlf"}, .action = .crlf, .compatibility = .supported },
-    .{ .short = 'U', .longs = &.{"multiline"}, .action = .ml, .compatibility = .supported },
-    .{ .longs = &.{"multiline-dotall"}, .action = .ml_dotall, .compatibility = .supported },
-    .{ .longs = &.{"json"}, .action = .json, .compatibility = .supported },
-    .{ .longs = &.{"files"}, .action = .files, .compatibility = .supported },
-    .{ .longs = &.{"type-list"}, .action = .type_list, .compatibility = .supported_with_differences, .note = "rg-sorted, rg-framed output over a strict SUPERSET of rg's type registry (most rows byte-identical; the rest richer, plus gist-only types)" },
-    .{ .short = 'L', .longs = &.{"follow"}, .action = .follow, .compatibility = .supported },
-    .{ .longs = &.{"no-follow"}, .action = .no_follow, .compatibility = .supported },
+    .{ .longs = &.{"max-columns-preview"}, .action = .{ .set = .max_cols_preview }, .compatibility = .supported },
+    .{ .longs = &.{"field-match-separator"}, .action = .{ .sep = .field_match_sep }, .compatibility = .supported },
+    .{ .longs = &.{"field-context-separator"}, .action = .{ .sep = .field_ctx_sep }, .compatibility = .supported },
+    .{ .longs = &.{"crlf"}, .action = .{ .set = .crlf }, .compatibility = .supported },
+    .{ .short = 'U', .longs = &.{"multiline"}, .action = .{ .set = .multiline }, .compatibility = .supported },
+    .{ .longs = &.{"multiline-dotall"}, .action = .{ .set_many = &.{ .multiline, .multiline_dotall } }, .compatibility = .supported },
+    .{ .longs = &.{"json"}, .action = .{ .set = .json }, .compatibility = .supported },
+    .{ .longs = &.{"files"}, .action = .{ .set = .files_list }, .compatibility = .supported },
+    .{ .longs = &.{"type-list"}, .action = .{ .set = .type_list }, .compatibility = .supported_with_differences, .note = "rg-sorted, rg-framed output over a strict SUPERSET of rg's type registry (most rows byte-identical; the rest richer, plus gist-only types)" },
+    .{ .short = 'L', .longs = &.{"follow"}, .action = .{ .set = .follow }, .compatibility = .supported },
+    .{ .longs = &.{"no-follow"}, .action = .{ .unset = .follow }, .compatibility = .supported },
     .{ .longs = &.{"sort-files"}, .action = .sort_files, .compatibility = .supported, .note = "deprecated rg spelling of --sort=path" },
-    .{ .longs = &.{"sort"}, .action = .sort, .compatibility = .supported_with_differences, .note = "path/modified/accessed/created, ascending; gist orders a parallel read (rg single-threads sort). created falls back to ctime where the platform lacks birth time" },
-    .{ .longs = &.{"sortr"}, .action = .sortr, .compatibility = .supported_with_differences, .note = "as --sort but descending; same parallel-read ordering and created fallback" },
+    .{ .longs = &.{"sort"}, .action = .{ .sort = false }, .compatibility = .supported_with_differences, .note = "path/modified/accessed/created, ascending; gist orders a parallel read (rg single-threads sort). created falls back to ctime where the platform lacks birth time" },
+    .{ .longs = &.{"sortr"}, .action = .{ .sort = true }, .compatibility = .supported_with_differences, .note = "as --sort but descending; same parallel-read ordering and created fallback" },
     .{ .longs = &.{"glob-case-insensitive"}, .action = .glob_ci, .compatibility = .supported },
-    .{ .short = 'A', .longs = &.{"after-context"}, .action = .after, .compatibility = .supported },
-    .{ .short = 'B', .longs = &.{"before-context"}, .action = .before, .compatibility = .supported },
-    .{ .short = 'C', .longs = &.{"context"}, .action = .ctx, .compatibility = .supported },
-    .{ .short = 'm', .longs = &.{"max-count"}, .action = .maxcount, .compatibility = .supported },
+    .{ .short = 'A', .longs = &.{"after-context"}, .action = .{ .ctx_at = .after }, .compatibility = .supported },
+    .{ .short = 'B', .longs = &.{"before-context"}, .action = .{ .ctx_at = .before }, .compatibility = .supported },
+    .{ .short = 'C', .longs = &.{"context"}, .action = .{ .ctx_at = .ctx }, .compatibility = .supported },
+    .{ .short = 'm', .longs = &.{"max-count"}, .action = .{ .num_set = .{ .max_per_file, .max_per_file_set } }, .compatibility = .supported },
     .{ .short = 'e', .longs = &.{"regexp"}, .action = .regexp, .compatibility = .supported },
-    .{ .short = 't', .longs = &.{"type"}, .action = .typ, .compatibility = .supported },
-    .{ .short = 'T', .longs = &.{"type-not"}, .action = .typ_not, .compatibility = .supported },
-    .{ .short = 'g', .longs = &.{"glob"}, .action = .glob, .compatibility = .supported },
-    .{ .longs = &.{"iglob"}, .action = .iglob, .compatibility = .supported },
-    .{ .short = 'M', .longs = &.{"max-columns"}, .action = .maxcols, .compatibility = .supported },
-    .{ .longs = &.{"path-separator"}, .action = .pathsep, .compatibility = .supported },
-    .{ .longs = &.{ "max-depth", "maxdepth" }, .action = .maxdepth, .compatibility = .supported },
+    .{ .short = 't', .longs = &.{"type"}, .action = .{ .typ = false }, .compatibility = .supported },
+    .{ .short = 'T', .longs = &.{"type-not"}, .action = .{ .typ = true }, .compatibility = .supported },
+    .{ .short = 'g', .longs = &.{"glob"}, .action = .{ .glob = false }, .compatibility = .supported },
+    .{ .longs = &.{"iglob"}, .action = .{ .glob = true }, .compatibility = .supported },
+    .{ .short = 'M', .longs = &.{"max-columns"}, .action = .{ .num_set = .{ .max_cols, .max_cols_set } }, .compatibility = .supported },
+    .{ .longs = &.{"path-separator"}, .action = .{ .set_str = .path_sep }, .compatibility = .supported },
+    .{ .longs = &.{ "max-depth", "maxdepth" }, .action = .{ .set_num = .max_depth }, .compatibility = .supported },
     .{ .longs = &.{"max-filesize"}, .action = .maxfsize, .compatibility = .supported },
-    .{ .longs = &.{"context-separator"}, .action = .ctxsep, .compatibility = .supported },
+    .{ .longs = &.{"context-separator"}, .action = .{ .sep = .ctx_sep }, .compatibility = .supported },
     .{ .longs = &.{"no-context-separator"}, .action = .no_ctxsep, .compatibility = .supported },
     .{ .short = 'r', .longs = &.{"replace"}, .action = .replace, .compatibility = .supported },
     .{ .short = 'f', .longs = &.{"file"}, .action = .file, .compatibility = .supported },
     .{ .longs = &.{"type-add"}, .action = .type_add, .compatibility = .supported },
     .{ .longs = &.{"color"}, .action = .color, .compatibility = .supported },
     // Ignore-rule controls honored by the in-tree .gitignore/.ignore engine.
-    .{ .longs = &.{"no-ignore"}, .action = .no_ignore, .compatibility = .supported },
-    .{ .longs = &.{"no-ignore-vcs"}, .action = .no_ignore_vcs, .compatibility = .supported },
-    .{ .longs = &.{"no-ignore-dot"}, .action = .no_ignore_dot, .compatibility = .supported },
-    .{ .longs = &.{"no-ignore-parent"}, .action = .no_ignore_parent, .compatibility = .supported },
-    .{ .longs = &.{"no-ignore-exclude"}, .action = .no_ignore_exclude, .compatibility = .supported },
-    .{ .longs = &.{"no-ignore-files"}, .action = .no_ignore_files, .compatibility = .supported },
-    .{ .longs = &.{"ignore-files"}, .action = .ignore_files, .compatibility = .supported },
-    .{ .longs = &.{"no-require-git"}, .action = .no_require_git, .compatibility = .supported },
-    .{ .longs = &.{"require-git"}, .action = .require_git, .compatibility = .supported },
-    .{ .longs = &.{"ignore-file-case-insensitive"}, .action = .ignore_file_ci, .compatibility = .supported },
+    .{ .longs = &.{"no-ignore"}, .action = .{ .set = .no_ignore }, .compatibility = .supported },
+    .{ .longs = &.{"no-ignore-vcs"}, .action = .{ .set = .no_ignore_vcs }, .compatibility = .supported },
+    .{ .longs = &.{"no-ignore-dot"}, .action = .{ .set = .no_ignore_dot }, .compatibility = .supported },
+    .{ .longs = &.{"no-ignore-parent"}, .action = .{ .set = .no_ignore_parent }, .compatibility = .supported },
+    .{ .longs = &.{"no-ignore-exclude"}, .action = .{ .set = .no_ignore_exclude }, .compatibility = .supported },
+    .{ .longs = &.{"no-ignore-files"}, .action = .{ .set = .no_ignore_files }, .compatibility = .supported },
+    // --ignore-files re-enables --ignore-file sources after --no-ignore-files.
+    .{ .longs = &.{"ignore-files"}, .action = .{ .unset = .no_ignore_files }, .compatibility = .supported },
+    .{ .longs = &.{"no-require-git"}, .action = .{ .set = .no_require_git }, .compatibility = .supported },
+    // --require-git undoes an earlier --no-require-git.
+    .{ .longs = &.{"require-git"}, .action = .{ .unset = .no_require_git }, .compatibility = .supported },
+    .{ .longs = &.{"ignore-file-case-insensitive"}, .action = .{ .set = .ignore_case_insensitive }, .compatibility = .supported },
     .{ .longs = &.{"ignore-file"}, .action = .ignore_file, .compatibility = .supported },
-    .{ .longs = &.{"no-ignore-global"}, .action = .no_ignore_global, .compatibility = .supported, .note = "git core.excludesFile ($HOME/.gitconfig or $XDG_CONFIG_HOME/git/config → default $XDG_CONFIG_HOME/git/ignore) is read by default in a repo; this disables that global tier only" },
+    .{ .longs = &.{"no-ignore-global"}, .action = .{ .set = .no_ignore_global }, .compatibility = .supported, .note = "git core.excludesFile ($HOME/.gitconfig or $XDG_CONFIG_HOME/git/config → default $XDG_CONFIG_HOME/git/ignore) is read by default in a repo; this disables that global tier only" },
     // Gist-native index controls are not ripgrep compatibility claims.
-    .{ .longs = &.{"no-index"}, .action = .no_index, .compatibility = .native },
-    .{ .longs = &.{"index"}, .action = .index, .compatibility = .native },
+    .{ .longs = &.{"no-index"}, .action = .{ .set = .no_index }, .compatibility = .native },
+    .{ .longs = &.{"index"}, .action = .{ .unset = .no_index }, .compatibility = .native },
     .{ .longs = &.{"rank"}, .action = .rank, .compatibility = .native },
-    .{ .longs = &.{"uncap"}, .action = .uncap, .compatibility = .native, .note = "lift the ~25k-token soft output cap for this query; the hard OOM ceiling still applies (GIST_UNCAP=1 is the env form)" },
+    // --uncap: lift the soft output budget (hard OOM ceiling still applies).
+    .{ .longs = &.{"uncap"}, .action = .{ .set = .uncap }, .compatibility = .native, .note = "lift the ~25k-token soft output cap for this query; the hard OOM ceiling still applies (GIST_UNCAP=1 is the env form)" },
     // Accepted spellings whose requested behavior is intentionally not applied.
     .{ .longs = &.{ "mmap", "no-mmap" }, .action = .noop, .compatibility = .accepted_but_ignored },
-    .{ .longs = &.{"one-file-system"}, .action = .one_file_system, .compatibility = .supported },
-    .{ .longs = &.{"unicode"}, .action = .unicode, .compatibility = .supported, .note = "linear-engine Unicode mode (rg default): full case-fold orbits, codepoint \\w/\\d/\\s/./\\p{…}, and Unicode \\b/\\B/\\<\\>/-w" },
-    .{ .longs = &.{"no-unicode"}, .action = .no_unicode, .compatibility = .supported, .note = "byte/ASCII mode: single-byte classes and ASCII \\w/\\b (equivalent to a leading (?-u))" },
-    .{ .longs = &.{"no-stats"}, .action = .no_stats, .compatibility = .supported },
-    .{ .longs = &.{"no-trim"}, .action = .no_trim, .compatibility = .supported },
-    .{ .longs = &.{"colors"}, .action = .noop_val, .compatibility = .accepted_but_ignored },
-    .{ .short = 'j', .longs = &.{"threads"}, .action = .threads, .compatibility = .supported_with_differences, .note = "caps the work-stealing worker pool at N (0 = gist's own topology); rg's thread count is advisory here since gist adapts workers to scan breadth" },
+    .{ .longs = &.{"one-file-system"}, .action = .{ .set = .one_file_system }, .compatibility = .supported },
+    // --unicode / --no-unicode: linear-engine Unicode mode on (rg default) / off (byte/ASCII).
+    .{ .longs = &.{"unicode"}, .action = .{ .set = .unicode }, .compatibility = .supported, .note = "linear-engine Unicode mode (rg default): full case-fold orbits, codepoint \\w/\\d/\\s/./\\p{…}, and Unicode \\b/\\B/\\<\\>/-w" },
+    .{ .longs = &.{"no-unicode"}, .action = .{ .unset = .unicode }, .compatibility = .supported, .note = "byte/ASCII mode: single-byte classes and ASCII \\w/\\b (equivalent to a leading (?-u))" },
+    .{ .longs = &.{"no-stats"}, .action = .{ .unset = .stats }, .compatibility = .supported },
+    .{ .longs = &.{"no-trim"}, .action = .{ .unset = .trim }, .compatibility = .supported },
+    .{ .longs = &.{"colors"}, .action = .colors, .compatibility = .accepted_but_ignored },
+    .{ .short = 'j', .longs = &.{"threads"}, .action = .{ .set_num = .threads }, .compatibility = .supported_with_differences, .note = "caps the work-stealing worker pool at N (0 = gist's own topology); rg's thread count is advisory here since gist adapts workers to scan breadth" },
     // Match-backend selection. `--engine default` is the linear engine; `--engine
     // auto` compiles linear and escalates to the PCRE2 backend only for a pattern
     // the linear engine declines; `--engine pcre2` / `-P` select PCRE2 outright.
     .{ .longs = &.{"engine"}, .action = .engine, .compatibility = .supported_with_differences, .note = "default = linear RE2/Pike engine; auto escalates to PCRE2 only for lookaround/backreferences the linear engine declines; pcre2 selects PCRE2 outright. --rank is linear-only" },
     // PCRE2 Unicode (UTF+UCP) mode — effective under -P / escalated auto; inert
     // under the linear default, which is always ASCII-byte based.
-    .{ .longs = &.{"pcre2-unicode"}, .action = .pcre_unicode, .compatibility = .supported_with_differences, .note = "PCRE2 UTF+UCP mode (rg's -P default); effective under -P/auto, inert under the linear default" },
-    .{ .longs = &.{"no-pcre2-unicode"}, .action = .no_pcre_unicode, .compatibility = .supported_with_differences, .note = "PCRE2 raw-byte/ASCII mode; effective under -P/auto, inert under the linear default" },
+    .{ .longs = &.{"pcre2-unicode"}, .action = .{ .set = .pcre_unicode }, .compatibility = .supported_with_differences, .note = "PCRE2 UTF+UCP mode (rg's -P default); effective under -P/auto, inert under the linear default" },
+    .{ .longs = &.{"no-pcre2-unicode"}, .action = .{ .unset = .pcre_unicode }, .compatibility = .supported_with_differences, .note = "PCRE2 raw-byte/ASCII mode; effective under -P/auto, inert under the linear default" },
     .{ .longs = &.{ "dfa-size-limit", "regex-size-limit" }, .action = .noop_val, .compatibility = .accepted_but_ignored },
     // The opt-in PCRE2 JIT backend (vendored 10.47) and rg's deprecated hybrid alias.
-    .{ .short = 'P', .longs = &.{"pcre2"}, .action = .pcre, .compatibility = .supported_with_differences, .note = "selects the vendored PCRE2 JIT backend (lookaround, backreferences, Unicode properties); trigram-prefiltered like the linear engine, so it is the only indexed PCRE search in the field. --rank is linear-only" },
-    .{ .longs = &.{"auto-hybrid-regex"}, .action = .auto_hybrid, .compatibility = .supported_with_differences, .note = "rg's deprecated spelling of --engine auto; escalates to PCRE2 only for a pattern the linear engine declines" },
+    .{ .short = 'P', .longs = &.{"pcre2"}, .action = .{ .engine_is = .pcre2 }, .compatibility = .supported_with_differences, .note = "selects the vendored PCRE2 JIT backend (lookaround, backreferences, Unicode properties); trigram-prefiltered like the linear engine, so it is the only indexed PCRE search in the field. --rank is linear-only" },
+    .{ .longs = &.{"auto-hybrid-regex"}, .action = .{ .engine_is = .auto }, .compatibility = .supported_with_differences, .note = "rg's deprecated spelling of --engine auto; escalates to PCRE2 only for a pattern the linear engine declines" },
     // Content-transform flags: decompression + preprocessing + transcoding. The
     // common compressed formats decode in-process (no fork) — see `ingest.zig`.
-    .{ .short = 'z', .longs = &.{"search-zip"}, .action = .search_zip, .compatibility = .supported_with_differences, .note = "gzip/zlib/zstd/xz decode in-process (faster than rg's per-file fork); bzip2/lz4/brotli/lzma/.Z shell the standard tool" },
-    .{ .longs = &.{"pre"}, .action = .pre, .compatibility = .supported_with_differences, .note = "the command receives the file path as argv[1] (stdin is closed); a non-zero exit is an error (exit 2)" },
+    .{ .short = 'z', .longs = &.{"search-zip"}, .action = .{ .set = .search_zip }, .compatibility = .supported_with_differences, .note = "gzip/zlib/zstd/xz decode in-process (faster than rg's per-file fork); bzip2/lz4/brotli/lzma/.Z shell the standard tool" },
+    .{ .longs = &.{"pre"}, .action = .{ .set_str = .pre }, .compatibility = .supported_with_differences, .note = "the command receives the file path as argv[1] (stdin is closed); a non-zero exit is an error (exit 2)" },
     .{ .longs = &.{"pre-glob"}, .action = .pre_glob, .compatibility = .supported },
     .{ .short = 'E', .longs = &.{"encoding"}, .action = .encoding, .compatibility = .supported, .note = "auto/none + the full WHATWG label table (rg's encoding_rs set): UTF-8/16, the single-byte pages, and CJK gb18030/GBK, Big5, EUC-JP, Shift_JIS, EUC-KR, ISO-2022-JP; an unrecognized label fails loud" },
 };
 
-const LongPair = struct { []const u8, usize };
-
-fn longPairCount() usize {
-    var count: usize = 0;
-    for (flag_catalog) |spec| count += spec.longs.len;
-    return count;
-}
-
-fn makeLongPairs() [longPairCount()]LongPair {
-    var pairs: [longPairCount()]LongPair = undefined;
-    var n: usize = 0;
+const long_map = std.StaticStringMap(usize).initComptime(blk: {
+    var pairs: []const struct { []const u8, usize } = &.{};
     for (flag_catalog, 0..) |spec, spec_i| for (spec.longs) |name| {
-        pairs[n] = .{ name, spec_i };
-        n += 1;
+        pairs = pairs ++ .{.{ name, spec_i }};
     };
-    return pairs;
-}
-
-const long_map = std.StaticStringMap(usize).initComptime(makeLongPairs());
+    break :blk pairs;
+});
 const short_map: [256]?usize = blk: {
     var map: [256]?usize = @splat(null);
     for (flag_catalog, 0..) |spec, spec_i| if (spec.short) |short| {
@@ -835,301 +802,145 @@ fn noteGrepStyleReplace(v: []const u8) void {
     );
 }
 
+/// Where a flag's value comes from: a short bundle's tail / next argv token,
+/// or a long flag's inline `=value` / next argv token. `take` consumes it;
+/// `consumed` tells the short-bundle loop the value ate the rest of the token.
+const ValSrc = struct {
+    mode: enum { short, long },
+    i: *usize,
+    all: []const []const u8,
+    arg: []const u8 = "", // short mode: the whole `-abc` token
+    j: usize = 0, // short mode: index of the current flag char
+    name: []const u8 = "", // long mode: the flag name (for error text)
+    inl: ?[]const u8 = null, // long mode: the inline `=value`, if any
+    consumed: bool = false,
+
+    fn take(self: *ValSrc) []const u8 {
+        self.consumed = true;
+        switch (self.mode) {
+            .short => if (self.j + 1 < self.arg.len) return self.arg[self.j + 1 ..] else if (self.i.* + 1 >= self.all.len) die("flag -{c} needs a value\n", .{self.arg[self.j]}),
+            .long => if (self.inl) |x| return x else if (self.i.* + 1 >= self.all.len) die("flag needs a value\n", .{}),
+        }
+        self.i.* += 1;
+        return self.all[self.i.*];
+    }
+};
+
+/// Apply one catalog action to the parse state — the single dispatch behind
+/// both the short-bundle and long-flag paths.
+fn apply(b: *Builder, action: Act, v: *ValSrc) void {
+    const o = &b.o;
+    switch (action) {
+        .set => |f| setVal(o, f, true),
+        .unset => |f| setVal(o, f, false),
+        // --column implies line numbers; --vimgrep implies both. Setting them here
+        // (not at finalize) lets a later -N / --no-column override, matching rg's
+        // left-to-right resolution.
+        .set_many => |fs| for (fs) |f| setVal(o, f, true),
+        .set_num => |f| setVal(o, f, toU(v.take())),
+        .set_str => |f| setVal(o, f, v.take()),
+        .sep => |f| setVal(o, f, unescape(b.a, v.take())),
+        .filename => |f| o.filename = f,
+        // Case mode is last-wins across -i/-s/-S (ripgrep resolves the three
+        // to a single final state): each spelling clears the other two, so
+        // `-S -s` ends case-sensitive (not smart) and `-i -s` ends sensitive.
+        .case => |c| {
+            o.caseless, o.smart_case = .{ c == .icase, c == .smart };
+        },
+        .unrestrict => b.urestrict += 1,
+        // --passthru and -A/-B/-C are mutually overriding — the last one on the
+        // argv wins (ripgrep writes the same context setting). Reset any pending
+        // context here; the context actions reset passthru symmetrically.
+        .passthru => {
+            o.passthru, b.a_val, b.b_val, b.c_val = .{ true, null, null, null };
+        },
+        // --sort-files is rg's deprecated alias for --sort=path. --sort/--sortr
+        // take a key; `none` clears the ordering (back to the fast discovery
+        // order). `sorted` mirrors "any explicit order" for the ignore reanchor.
+        .sort_files => {
+            o.sort_key, o.sort_reverse, o.sorted = .{ .path, false, true };
+        },
+        .sort => |desc| {
+            o.sort_key = enumOrDie(SortKey, "bad --sort value: {s} (expected none, path, modified, accessed, or created)\n", v.take());
+            o.sort_reverse, o.sorted = .{ desc and o.sort_key != .none, o.sort_key != .none };
+        },
+        .glob_ci => b.glob_ci = true,
+        // -A/-B/-C record into a_val/b_val/c_val so -A/-B outrank -C at
+        // finalize regardless of argv order; each resets a pending --passthru.
+        .ctx_at => |which| {
+            const n = toU(v.take());
+            (switch (which) {
+                .after => &b.a_val,
+                .before => &b.b_val,
+                .ctx => &b.c_val,
+            }).* = n;
+            o.passthru = false;
+        },
+        .num_set => |pair| {
+            setVal(o, pair[0], toU(v.take()));
+            setVal(o, pair[1], true);
+        },
+        .regexp => b.addPat(v.take()),
+        .typ => |negate| b.addType(v.take(), negate),
+        .glob => |insensitive| b.addGlob(v.take(), insensitive),
+        .maxfsize => o.max_filesize = toBytes(v.take()),
+        .no_ctxsep => o.ctx_sep = null,
+        // The `-rn` grep-ism note fires only when the value was bundled into the
+        // same short token (taken from this token, not the next argv).
+        .replace => {
+            const bundled = v.mode == .short and v.j + 1 < v.arg.len;
+            o.replace = v.take();
+            if (bundled) noteGrepStyleReplace(o.replace.?);
+        },
+        .file => b.pat_files.append(b.a, v.take()) catch oom(),
+        .ignore_file => b.ignore_files.append(b.a, v.take()) catch oom(),
+        .type_add => b.addTypeDef(v.take()),
+        // --color WHEN: resolved to an actual go/no-go (stdout tty + env) by
+        // `color.zig` at emit time — this just records the requested mode.
+        .color => o.color = enumOrDie(ColorChoice, "bad --color value: {s}\n", v.take()),
+        .encoding => {
+            const label = v.take();
+            o.encoding = encodingFromLabel(label) orelse switch (v.mode) {
+                .short => die("bad -E/--encoding value\n", .{}),
+                .long => die("bad --encoding value: {s}\n", .{label}),
+            };
+        },
+        .pre_glob => b.addPreGlob(v.take()),
+        // --rank takes an OPTIONAL inline count only (`--rank=N`); a bare `--rank`
+        // must not swallow the following token — that's the pattern (`gist --rank foo`).
+        .rank => {
+            o.rank, o.rank_k = .{ true, if (v.inl) |x| toU(x) else o.rank_k };
+        },
+        .engine_is => |e| o.engine = e,
+        .engine => o.engine = enumOrDie(Engine, "bad --engine value: {s} (expected default, pcre2, or auto)\n", v.take()),
+        .noop => {},
+        .noop_val => _ = v.take(),
+        .colors => if (color.validateColorSpec(v.take())) |msg|
+            die("gist: error parsing flag --colors: {s}\n", .{msg}),
+        .unsupported => switch (v.mode) {
+            .short => die("-{c} unsupported by design — use ripgrep for this\n", .{v.arg[v.j]}),
+            .long => die("--{s} unsupported by design — use ripgrep for this\n", .{v.name}),
+        },
+    }
+}
+
 fn parseShort(b: *Builder, arg: []const u8, i: *usize, all: []const []const u8) void {
     var j: usize = 1;
     while (j < arg.len) : (j += 1) {
         const spec = flag_catalog[short_map[arg[j]] orelse die("unknown flag -{c}\n", .{arg[j]})];
-        switch (spec.action) {
-            .icase => b.o.caseless = true,
-            .scase => b.o.caseless = false,
-            .smart => b.o.smart_case = true,
-            .word => b.o.word = true,
-            .fixed => b.o.fixed = true,
-            .invert => b.o.invert = true,
-            .only => b.o.only_matching = true,
-            .lnum => b.o.line_num = true,
-            .no_lnum => b.o.line_num = false,
-            .with_fn => b.o.filename = .always,
-            .no_fn => b.o.filename = .never,
-            .fwm => b.o.files_only = true,
-            .count => b.o.count_only = true,
-            .text => b.o.text = true,
-            .binary => b.o.binary = true,
-            .search_zip => b.o.search_zip = true,
-            .encoding => {
-                b.o.encoding = encodingFromLabel(takeVal(arg, j, i, all)) orelse die("bad -E/--encoding value\n", .{});
-                return;
-            },
-            .unrestrict => b.urestrict += 1,
-            .xline => b.o.line_regexp = true,
-            .quiet => b.o.quiet = true,
-            .byteoff => b.o.byte_offset = true,
-            .nul => b.o.null_sep = true,
-            .follow => b.o.follow = true,
-            .replace => {
-                const bundled = j + 1 < arg.len; // value taken from this token, not the next argv
-                b.o.replace = takeVal(arg, j, i, all);
-                if (bundled) noteGrepStyleReplace(b.o.replace.?);
-                return;
-            },
-            .file => {
-                b.pat_files.append(b.a, takeVal(arg, j, i, all)) catch oom();
-                return;
-            },
-            .after => {
-                b.a_val = toU(takeVal(arg, j, i, all));
-                b.o.passthru = false;
-                return;
-            },
-            .before => {
-                b.b_val = toU(takeVal(arg, j, i, all));
-                b.o.passthru = false;
-                return;
-            },
-            .ctx => {
-                b.c_val = toU(takeVal(arg, j, i, all));
-                b.o.passthru = false;
-                return;
-            },
-            .maxcount => {
-                b.o.max_per_file = toU(takeVal(arg, j, i, all));
-                return;
-            },
-            .maxcols => {
-                b.o.max_cols = toU(takeVal(arg, j, i, all));
-                b.o.max_cols_set = true;
-                return;
-            },
-            .regexp => {
-                b.addPat(takeVal(arg, j, i, all));
-                return;
-            },
-            .typ => {
-                b.addType(takeVal(arg, j, i, all), false);
-                return;
-            },
-            .typ_not => {
-                b.addType(takeVal(arg, j, i, all), true);
-                return;
-            },
-            .glob => {
-                b.addGlob(takeVal(arg, j, i, all), false);
-                return;
-            },
-            .noop_val => {
-                _ = takeVal(arg, j, i, all);
-                return;
-            },
-            .threads => {
-                b.o.threads = toU(takeVal(arg, j, i, all));
-                return;
-            },
-            .ml => b.o.multiline = true,
-            .pcre => b.o.engine = .pcre2,
-            .unsupported => die("-{c} unsupported by design — use ripgrep for this\n", .{arg[j]}),
-            else => unreachable,
-        }
+        var v = ValSrc{ .mode = .short, .i = i, .all = all, .arg = arg, .j = j };
+        apply(b, spec.action, &v);
+        if (v.consumed) return; // the value ate the rest of the bundle (or the next argv)
     }
 }
 
 fn parseLong(b: *Builder, arg: []const u8, i: *usize, all: []const []const u8) void {
     const body = arg[2..];
-    var name = body;
-    var inl: ?[]const u8 = null;
-    if (std.mem.indexOfScalar(u8, body, '=')) |eq| {
-        name = body[0..eq];
-        inl = body[eq + 1 ..];
-    }
-    const val = struct {
-        fn get(v: ?[]const u8, ii: *usize, aa: []const []const u8) []const u8 {
-            return v orelse nextTok(ii, aa);
-        }
-    }.get;
-    const o = &b.o;
+    const eq = std.mem.indexOfScalar(u8, body, '=');
+    const name = body[0 .. eq orelse body.len];
     const spec = flag_catalog[long_map.get(name) orelse die("unknown flag --{s}\n", .{name})];
-    switch (spec.action) {
-        .icase => o.caseless = true,
-        .scase => o.caseless = false,
-        .smart => o.smart_case = true,
-        .word => o.word = true,
-        .fixed => o.fixed = true,
-        .invert => o.invert = true,
-        .only => o.only_matching = true,
-        .lnum => o.line_num = true,
-        .no_lnum => o.line_num = false,
-        .with_fn => o.filename = .always,
-        .no_fn => o.filename = .never,
-        .fwm => o.files_only = true,
-        .fwithout => o.files_without = true,
-        .count => o.count_only = true,
-        .cmatches => o.count_matches = true,
-        .hidden => o.hidden = true,
-        .text => o.text = true,
-        .binary => o.binary = true,
-        .search_zip => o.search_zip = true,
-        .pre => o.pre = val(inl, i, all),
-        .pre_glob => b.addPreGlob(val(inl, i, all)),
-        .encoding => {
-            const label = val(inl, i, all);
-            o.encoding = encodingFromLabel(label) orelse die("bad --encoding value: {s}\n", .{label});
-        },
-        .unrestrict => b.urestrict += 1,
-        // --column implies line numbers; --vimgrep implies both. Setting them here
-        // (not at finalize) lets a later -N / --no-column override, matching rg's
-        // left-to-right resolution.
-        .column => {
-            o.column = true;
-            o.line_num = true;
-        },
-        .no_column => o.column = false,
-        .byteoff => o.byte_offset = true,
-        .vimgrep => {
-            o.vimgrep = true;
-            o.line_num = true;
-            o.column = true;
-        },
-        .heading => o.heading = true,
-        .no_heading => o.heading = false,
-        .trim => o.trim = true,
-        .no_trim => o.trim = false,
-        .nul => o.null_sep = true,
-        .nul_data => o.null_data = true,
-        .xline => o.line_regexp = true,
-        .quiet => o.quiet = true,
-        .stats => o.stats = true,
-        .no_stats => o.stats = false,
-        // --passthru and -A/-B/-C are mutually overriding — the last one on the
-        // argv wins (ripgrep writes the same context setting). Reset any pending
-        // context here; the context actions reset passthru symmetrically.
-        .passthru => {
-            o.passthru = true;
-            b.a_val = null;
-            b.b_val = null;
-            b.c_val = null;
-        },
-        .maxcols_preview => o.max_cols_preview = true,
-        .fieldmsep => o.field_match_sep = unescape(b.a, val(inl, i, all)),
-        .fieldcsep => o.field_ctx_sep = unescape(b.a, val(inl, i, all)),
-        .stop_nonmatch => o.stop_on_nonmatch = true,
-        .crlf => o.crlf = true,
-        .ml => o.multiline = true,
-        .ml_dotall => {
-            o.multiline = true;
-            o.multiline_dotall = true;
-        },
-        .pcre => o.engine = .pcre2,
-        .engine => {
-            const v = val(inl, i, all);
-            o.engine = if (std.mem.eql(u8, v, "default"))
-                .default
-            else if (std.mem.eql(u8, v, "pcre2"))
-                .pcre2
-            else if (std.mem.eql(u8, v, "auto"))
-                .auto
-            else
-                die("bad --engine value: {s} (expected default, pcre2, or auto)\n", .{v});
-        },
-        .auto_hybrid => o.engine = .auto,
-        .pcre_unicode => o.pcre_unicode = true,
-        .no_pcre_unicode => o.pcre_unicode = false,
-        .unicode => o.unicode = true,
-        .no_unicode => o.unicode = false,
-        .json => o.json = true,
-        .files => o.files_list = true,
-        .type_list => o.type_list = true,
-        .follow => o.follow = true,
-        .no_follow => o.follow = false,
-        .threads => o.threads = toU(val(inl, i, all)),
-        .one_file_system => o.one_file_system = true,
-        // --sort-files is rg's deprecated alias for --sort=path. --sort/--sortr
-        // take a key; `none` clears the ordering (back to the fast discovery
-        // order). `sorted` mirrors "any explicit order" for the ignore reanchor.
-        .sort_files => {
-            o.sort_key = .path;
-            o.sort_reverse = false;
-            o.sorted = true;
-        },
-        .sort => {
-            o.sort_key = parseSortKey(val(inl, i, all));
-            o.sort_reverse = false;
-            o.sorted = o.sort_key != .none;
-        },
-        .sortr => {
-            o.sort_key = parseSortKey(val(inl, i, all));
-            o.sort_reverse = o.sort_key != .none;
-            o.sorted = o.sort_key != .none;
-        },
-        .glob_ci => b.glob_ci = true,
-        .no_ignore => o.no_ignore = true,
-        .no_ignore_vcs => o.no_ignore_vcs = true,
-        .no_ignore_dot => o.no_ignore_dot = true,
-        .no_ignore_parent => o.no_ignore_parent = true,
-        .no_ignore_exclude => o.no_ignore_exclude = true,
-        .no_ignore_global => o.no_ignore_global = true,
-        .no_ignore_files => o.no_ignore_files = true,
-        .ignore_files => o.no_ignore_files = false, // re-enable --ignore-file sources
-        .no_require_git => o.no_require_git = true,
-        .require_git => o.no_require_git = false, // undo an earlier --no-require-git
-        .ignore_file_ci => o.ignore_case_insensitive = true,
-        .ignore_file => b.ignore_files.append(b.a, val(inl, i, all)) catch oom(),
-        .no_index => o.no_index = true,
-        .index => o.no_index = false,
-        // --rank takes an OPTIONAL inline count only (`--rank=N`); a bare `--rank`
-        // must not swallow the following token — that's the pattern (`gist --rank foo`).
-        .rank => {
-            o.rank = true;
-            if (inl) |v| o.rank_k = toU(v);
-        },
-        .uncap => o.uncap = true,
-        .type_add => b.addTypeDef(val(inl, i, all)),
-        .after => {
-            b.a_val = toU(val(inl, i, all));
-            o.passthru = false;
-        },
-        .before => {
-            b.b_val = toU(val(inl, i, all));
-            o.passthru = false;
-        },
-        .ctx => {
-            b.c_val = toU(val(inl, i, all));
-            o.passthru = false;
-        },
-        .maxcount => o.max_per_file = toU(val(inl, i, all)),
-        .regexp => b.addPat(val(inl, i, all)),
-        .typ => b.addType(val(inl, i, all), false),
-        .typ_not => b.addType(val(inl, i, all), true),
-        .glob => b.addGlob(val(inl, i, all), false),
-        .iglob => b.addGlob(val(inl, i, all), true),
-        .maxcols => {
-            o.max_cols = toU(val(inl, i, all));
-            o.max_cols_set = true;
-        },
-        .pathsep => o.path_sep = val(inl, i, all),
-        .maxdepth => o.max_depth = toU(val(inl, i, all)),
-        .maxfsize => o.max_filesize = toBytes(val(inl, i, all)),
-        .ctxsep => o.ctx_sep = unescape(b.a, val(inl, i, all)),
-        .no_ctxsep => o.ctx_sep = null,
-        .replace => o.replace = val(inl, i, all),
-        .file => b.pat_files.append(b.a, val(inl, i, all)) catch oom(),
-        // --color WHEN: resolved to an actual go/no-go (stdout tty + env) by
-        // `color.zig` at emit time — this just records the requested mode.
-        .color => {
-            const c = val(inl, i, all);
-            o.color = if (std.mem.eql(u8, c, "never"))
-                .never
-            else if (std.mem.eql(u8, c, "always"))
-                .always
-            else if (std.mem.eql(u8, c, "ansi"))
-                .ansi
-            else if (std.mem.eql(u8, c, "auto"))
-                .auto
-            else
-                die("bad --color value: {s}\n", .{c});
-        },
-        .noop => {},
-        .noop_val => _ = val(inl, i, all),
-        .unsupported => die("--{s} unsupported by design — use ripgrep for this\n", .{name}),
-    }
+    var v = ValSrc{ .mode = .long, .i = i, .all = all, .name = name, .inl = if (eq) |e| body[e + 1 ..] else null };
+    apply(b, spec.action, &v);
 }
 
 /// Parse a full `rg [flags] <pattern> [PATH...]` argv into a `Parsed`. Fails loud
@@ -1177,33 +988,19 @@ pub fn parseArgv(a: std.mem.Allocator, args: []const []const u8) Parsed {
     if (b.urestrict >= 1) b.o.no_ignore = true;
     if (b.urestrict >= 2) b.o.hidden = true;
     if (b.urestrict >= 3) b.o.binary = true;
-    if (b.o.smart_case and !b.o.caseless) {
-        var any_upper = false;
-        for (pats.items) |pp| {
-            if (hasUpper(pp)) {
-                any_upper = true;
-                break;
-            }
-        }
-        if (!any_upper) b.o.caseless = true;
-    }
+    if (b.o.smart_case and !b.o.caseless) b.o.caseless = for (pats.items) |pp| {
+        if (hasUpper(pp)) break false;
+    } else true;
     // --glob-case-insensitive: fold case-sensitive includes into the iglob set.
     if (b.glob_ci) {
         b.iglobs.appendSlice(a, b.includes.items) catch oom();
         b.includes.clearRetainingCapacity();
     }
-    b.o.filter = .{
-        .exts = b.exts.toOwnedSlice(a) catch oom(),
-        .neg_exts = b.neg_exts.toOwnedSlice(a) catch oom(),
-        .includes = b.includes.toOwnedSlice(a) catch oom(),
-        .iglobs = b.iglobs.toOwnedSlice(a) catch oom(),
-        .excludes = b.excludes.toOwnedSlice(a) catch oom(),
-        .type_all = b.type_all,
-        .ntype_all = b.ntype_all,
-    };
-    b.o.ignore_files = b.ignore_files.toOwnedSlice(a) catch oom();
-    b.o.pre_globs = b.pre_globs.toOwnedSlice(a) catch oom();
-    b.o.pre_excludes = b.pre_excludes.toOwnedSlice(a) catch oom();
+    inline for (.{ "exts", "neg_exts", "includes", "iglobs", "excludes" }) |f|
+        @field(b.o.filter, f) = @field(b, f).toOwnedSlice(a) catch oom();
+    b.o.filter.type_all, b.o.filter.ntype_all = .{ b.type_all, b.ntype_all };
+    inline for (.{ "ignore_files", "pre_globs", "pre_excludes" }) |f|
+        @field(b.o, f) = @field(b, f).toOwnedSlice(a) catch oom();
     return .{
         .patterns = pats.toOwnedSlice(a) catch oom(),
         .opts = b.o,
@@ -1212,92 +1009,72 @@ pub fn parseArgv(a: std.mem.Allocator, args: []const []const u8) Parsed {
     };
 }
 
-test "sort modes preserve ripgrep walker semantics" {
-    const t = std.testing;
-    var arena = std.heap.ArenaAllocator.init(t.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
+// Test-plane shorthand: `parseArgv` borrows from a caller-owned parse-time
+// arena by contract, so the tests lean on the process-lifetime page allocator
+// instead of re-declaring a per-test arena (nothing to free before exit).
+const t = std.testing;
+const ta = std.heap.page_allocator;
 
-    const sorted = parseArgv(a, &.{ "--sort", "path", "needle", "root-a", "root-b" });
+test "sort modes preserve ripgrep walker semantics" {
+    const sorted = parseArgv(ta, &.{ "--sort", "path", "needle", "root-a", "root-b" });
     try t.expect(sorted.opts.sorted);
     try t.expectEqual(SortKey.path, sorted.opts.sort_key);
     try t.expect(!sorted.opts.sort_reverse);
 
-    const unsorted = parseArgv(a, &.{ "--sort=none", "needle", "root-a", "root-b" });
+    const unsorted = parseArgv(ta, &.{ "--sort=none", "needle", "root-a", "root-b" });
     try t.expect(!unsorted.opts.sorted);
     try t.expectEqual(SortKey.none, unsorted.opts.sort_key);
 }
 
 test "sort key + direction: every rg key, ascending and reversed" {
-    const t = std.testing;
-    var arena = std.heap.ArenaAllocator.init(t.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
 
     // --sort <key> is ascending; --sortr <key> flips only the direction bit.
     inline for (.{ "modified", "accessed", "created", "path" }) |k| {
-        const asc = parseArgv(a, &.{ "--sort", k, "needle" });
+        const asc = parseArgv(ta, &.{ "--sort", k, "needle" });
         try t.expectEqual(std.meta.stringToEnum(SortKey, k).?, asc.opts.sort_key);
         try t.expect(!asc.opts.sort_reverse and asc.opts.sorted);
-        const desc = parseArgv(a, &.{ "--sortr", k, "needle" });
+        const desc = parseArgv(ta, &.{ "--sortr", k, "needle" });
         try t.expectEqual(std.meta.stringToEnum(SortKey, k).?, desc.opts.sort_key);
         try t.expect(desc.opts.sort_reverse and desc.opts.sorted);
     }
     // --sort-files is rg's deprecated alias for --sort=path (ascending).
-    const sf = parseArgv(a, &.{ "--sort-files", "needle" });
+    const sf = parseArgv(ta, &.{ "--sort-files", "needle" });
     try t.expectEqual(SortKey.path, sf.opts.sort_key);
     try t.expect(sf.opts.sorted and !sf.opts.sort_reverse);
     // `--sortr none` collapses to no ordering (reverse of nothing is nothing).
-    const rnone = parseArgv(a, &.{ "--sortr=none", "needle" });
+    const rnone = parseArgv(ta, &.{ "--sortr=none", "needle" });
     try t.expect(!rnone.opts.sorted and !rnone.opts.sort_reverse);
     try t.expectEqual(SortKey.none, rnone.opts.sort_key);
 }
 
 test "-j/--threads caps the worker pool; both spellings, inline + spaced" {
-    const t = std.testing;
-    var arena = std.heap.ArenaAllocator.init(t.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-
-    try t.expectEqual(@as(usize, 3), parseArgv(a, &.{ "-j3", "needle" }).opts.threads);
-    try t.expectEqual(@as(usize, 4), parseArgv(a, &.{ "-j", "4", "needle" }).opts.threads);
-    try t.expectEqual(@as(usize, 8), parseArgv(a, &.{ "--threads=8", "needle" }).opts.threads);
-    try t.expectEqual(@as(usize, 0), parseArgv(a, &.{"needle"}).opts.threads); // unset = adaptive
+    try t.expectEqual(@as(usize, 3), parseArgv(ta, &.{ "-j3", "needle" }).opts.threads);
+    try t.expectEqual(@as(usize, 4), parseArgv(ta, &.{ "-j", "4", "needle" }).opts.threads);
+    try t.expectEqual(@as(usize, 8), parseArgv(ta, &.{ "--threads=8", "needle" }).opts.threads);
+    try t.expectEqual(@as(usize, 0), parseArgv(ta, &.{"needle"}).opts.threads); // unset = adaptive
 }
 
 test "negation flags are last-wins toggles, not default-state no-ops" {
-    const t = std.testing;
-    var arena = std.heap.ArenaAllocator.init(t.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
 
     // Each --no-X genuinely undoes an earlier --X (ripgrep's left-to-right rule),
     // and a later --X wins again.
-    try t.expect(!parseArgv(a, &.{ "--heading", "--no-heading", "x" }).opts.heading);
-    try t.expect(parseArgv(a, &.{ "--no-heading", "--heading", "x" }).opts.heading);
-    try t.expect(!parseArgv(a, &.{ "--trim", "--no-trim", "x" }).opts.trim);
-    try t.expect(!parseArgv(a, &.{ "--stats", "--no-stats", "x" }).opts.stats);
-    try t.expect(!parseArgv(a, &.{ "-L", "--no-follow", "x" }).opts.follow);
-    try t.expect(parseArgv(a, &.{ "--no-follow", "-L", "x" }).opts.follow);
+    try t.expect(!parseArgv(ta, &.{ "--heading", "--no-heading", "x" }).opts.heading);
+    try t.expect(parseArgv(ta, &.{ "--no-heading", "--heading", "x" }).opts.heading);
+    try t.expect(!parseArgv(ta, &.{ "--trim", "--no-trim", "x" }).opts.trim);
+    try t.expect(!parseArgv(ta, &.{ "--stats", "--no-stats", "x" }).opts.stats);
+    try t.expect(!parseArgv(ta, &.{ "-L", "--no-follow", "x" }).opts.follow);
+    try t.expect(parseArgv(ta, &.{ "--no-follow", "-L", "x" }).opts.follow);
 }
 
 test "--one-file-system records the device-boundary intent" {
-    const t = std.testing;
-    var arena = std.heap.ArenaAllocator.init(t.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    try t.expect(parseArgv(a, &.{ "--one-file-system", "x" }).opts.one_file_system);
-    try t.expect(!parseArgv(a, &.{"x"}).opts.one_file_system);
+    try t.expect(parseArgv(ta, &.{ "--one-file-system", "x" }).opts.one_file_system);
+    try t.expect(!parseArgv(ta, &.{"x"}).opts.one_file_system);
 }
 
 test "-rn keeps ripgrep replace semantics but is flagged as a grep-ism" {
-    const t = std.testing;
-    var arena = std.heap.ArenaAllocator.init(t.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
 
     // Parity is sacred: `-rn` must still parse as --replace=n, exactly like rg.
-    const p = parseArgv(a, &.{ "-rn", "needle", "root" });
+    const p = parseArgv(ta, &.{ "-rn", "needle", "root" });
     try t.expectEqualStrings("n", p.opts.replace.?);
     try t.expect(!p.opts.line_num);
 
@@ -1308,12 +1085,11 @@ test "-rn keeps ripgrep replace semantics but is flagged as a grep-ism" {
     try t.expect(!looksLikeFlagBundle("$1"));
     try t.expect(!looksLikeFlagBundle("REDACTED"));
     try t.expect(!looksLikeFlagBundle(""));
-    const spaced = parseArgv(a, &.{ "-r", "n", "needle", "root" });
+    const spaced = parseArgv(ta, &.{ "-r", "n", "needle", "root" });
     try t.expectEqualStrings("n", spaced.opts.replace.?);
 }
 
 test "flag catalog is the parser compatibility source of truth" {
-    const t = std.testing;
     var bucket_counts: [4]usize = @splat(0);
     // Post-Unicode-flip: -i/-S/-w are `supported` (rg-parity, Unicode by default),
     // and --unicode/--no-unicode are real `supported` flags (no longer ignored).
@@ -1354,25 +1130,20 @@ test "flag catalog is the parser compatibility source of truth" {
 }
 
 test "content-transform flags parse into Opts" {
-    const t = std.testing;
-    var arena = std.heap.ArenaAllocator.init(t.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-
-    const z = parseArgv(a, &.{ "-z", "needle", "logs" });
+    const z = parseArgv(ta, &.{ "-z", "needle", "logs" });
     try t.expect(z.opts.search_zip);
 
-    const e = parseArgv(a, &.{ "-E", "utf-16le", "needle", "f" });
+    const e = parseArgv(ta, &.{ "-E", "utf-16le", "needle", "f" });
     try t.expectEqual(Encoding.utf16le, e.opts.encoding);
     // WHATWG folds latin1 into windows-1252 (encoding_rs parity), and the CJK
     // labels the pitch names explicitly now resolve rather than failing loud.
-    const e2 = parseArgv(a, &.{ "--encoding=latin1", "needle", "f" });
+    const e2 = parseArgv(ta, &.{ "--encoding=latin1", "needle", "f" });
     try t.expectEqual(Encoding.windows_1252, e2.opts.encoding);
-    try t.expectEqual(Encoding.shift_jis, parseArgv(a, &.{ "-E", "sjis", "needle", "f" }).opts.encoding);
-    try t.expectEqual(Encoding.gb18030, parseArgv(a, &.{ "-E", "gbk", "needle", "f" }).opts.encoding);
-    try t.expectEqual(Encoding.euc_jp, parseArgv(a, &.{ "--encoding=euc-jp", "needle", "f" }).opts.encoding);
+    try t.expectEqual(Encoding.shift_jis, parseArgv(ta, &.{ "-E", "sjis", "needle", "f" }).opts.encoding);
+    try t.expectEqual(Encoding.gb18030, parseArgv(ta, &.{ "-E", "gbk", "needle", "f" }).opts.encoding);
+    try t.expectEqual(Encoding.euc_jp, parseArgv(ta, &.{ "--encoding=euc-jp", "needle", "f" }).opts.encoding);
 
-    const pre = parseArgv(a, &.{ "--pre", "/bin/cat", "--pre-glob", "*.gz", "--pre-glob", "!*.tmp", "needle", "d" });
+    const pre = parseArgv(ta, &.{ "--pre", "/bin/cat", "--pre-glob", "*.gz", "--pre-glob", "!*.tmp", "needle", "d" });
     try t.expectEqualStrings("/bin/cat", pre.opts.pre.?);
     try t.expectEqual(@as(usize, 1), pre.opts.pre_globs.len);
     try t.expectEqualStrings("*.gz", pre.opts.pre_globs[0]);
@@ -1380,6 +1151,6 @@ test "content-transform flags parse into Opts" {
     try t.expectEqualStrings("*.tmp", pre.opts.pre_excludes[0]);
 
     // -uuu now brings the whole tree online: --no-ignore + hidden + --binary.
-    const uuu = parseArgv(a, &.{ "-uuu", "needle", "d" });
+    const uuu = parseArgv(ta, &.{ "-uuu", "needle", "d" });
     try t.expect(uuu.opts.no_ignore and uuu.opts.hidden and uuu.opts.binary);
 }

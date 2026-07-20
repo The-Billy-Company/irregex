@@ -7,8 +7,9 @@ const std = @import("std");
 const haystack = @import("haystack.zig");
 
 /// The pre-`StaticStringMap` reference: a plain linear scan over the exact
-/// same 35-name list. `isSkipDir`'s speedup must never change WHICH names are
-/// skipped — this differential is the guardrail.
+/// same 34-name list. `isSkipDir`'s speedup must never change WHICH names are
+/// skipped — this differential is the guardrail. (Project-specific extras ride
+/// `GIST_SKIP` at runtime and are deliberately absent here.)
 const skip_list = [_][]const u8{
     ".git",          ".github",     ".hg",           ".svn",        "node_modules",
     "target",        "dist",        "dist-types",    "build",       ".build",
@@ -16,7 +17,7 @@ const skip_list = [_][]const u8{
     "site-packages", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
     ".zig-cache",    "zig-out",     ".cache",        ".local",      ".turbo",
     "vendor",        ".swiftpm",    "Pods",          "DerivedData", ".cursor",
-    ".idea",         ".vscode",     ".parcel-cache", ".pnpm-store", "graphify-out",
+    ".idea",         ".vscode",     ".parcel-cache", ".pnpm-store",
 };
 fn isSkipDirLinear(name: []const u8) bool {
     for (skip_list) |s| if (std.mem.eql(u8, name, s)) return true;
@@ -32,6 +33,7 @@ test "isSkipDir: near-misses (prefix/suffix/case/substring) are NOT skipped" {
         "git",           ".gitx",   "gitt",    ".GIT",  "targets",
         "ta",            "builds",  ".buildx", "outer", "node_module",
         "node_modules2", "vendors", "cache",   ".cach", "",
+        "graphify-out", // was a hardcoded Billy-ism; now GIST_SKIP territory
     };
     for (near_misses) |name| try std.testing.expect(!haystack.isSkipDir(name));
 }

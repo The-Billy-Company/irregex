@@ -1,32 +1,28 @@
-//! Tests for the ranking signals. The risk is twofold: a def-keyword set that
-//! only fires on a few languages (silently flattening the def-boost on the rest)
-//! and a generated detector that misses a marker an agent then can't demote. So
-//! these assert definition detection across the mainstream ecosystem, the
-//! use-vs-decl discriminators (a `=`/quote/comma before the needle is a use),
-//! and generated detection by both suffix and universal header marker.
+//! Tests for language-free ranking geometry and generated-artifact evidence.
+//! Real regressions from Billy, ripgrep, OpenClaw, Headroom, and OpenHuman are
+//! represented by syntax shape rather than project or language labels.
 
 const std = @import("std");
 const signals = @import("signals.zig");
 const expect = std.testing.expect;
 
-test "definesNeedle fires across the language ecosystem" {
-    try expect(signals.definesNeedle("func NewWallet(cc grpc.ClientConn) Wallet {", "NewWallet"));
-    try expect(signals.definesNeedle("pub fn parse(self: *T) !void {", "parse"));
-    try expect(signals.definesNeedle("def charge(self, amount):", "charge"));
-    try expect(signals.definesNeedle("class WalletService:", "WalletService"));
-    try expect(signals.definesNeedle("fun computeBalance(): Long {", "computeBalance")); // Kotlin
-    try expect(signals.definesNeedle("function getWallet() {", "getWallet")); // JS/TS
-    try expect(signals.definesNeedle("type Wallet struct {", "Wallet")); // Go type
-    try expect(signals.definesNeedle("interface WalletService {", "WalletService"));
-    try expect(signals.definesNeedle("trait Charge {", "Charge")); // Rust
-    try expect(signals.definesNeedle("defmodule Wallet do", "Wallet")); // Elixir
-    try expect(signals.definesNeedle("sub charge {", "charge")); // Perl
-    try expect(signals.definesNeedle("    const MaxRetries = 5", "MaxRetries"));
-    // Go method with a receiver — the `(` before the name must stay legal.
-    try expect(signals.definesNeedle("func (s *Service) Charge(amount int64) error {", "Charge"));
+test "declaration confidence follows geometry across syntax families" {
+    const confidence = signals.declarationConfidence;
+    try expect(confidence("func NewWallet(cc grpc.ClientConn) Wallet {", "NewWallet") == 3);
+    try expect(confidence("pub fn parse(self: *T) !void {", "parse") == 3);
+    try expect(confidence("def charge(self, amount):", "charge") == 3);
+    try expect(confidence("class WalletService:", "WalletService") == 3);
+    try expect(confidence("function getWallet() {", "getWallet") == 3);
+    try expect(confidence("type Wallet struct {", "Wallet") == 3);
+    try expect(confidence("interface WalletService {", "WalletService") == 3);
+    try expect(confidence("defmodule Wallet do", "Wallet") == 1); // word-delimited, punctuation-free declaration
+    try expect(confidence("const OpenhumanLinkModal = () => {", "OpenhumanLinkModal") == 3);
+    try expect(confidence("    const MaxRetries = 5", "MaxRetries") == 3);
+    try expect(confidence("func (s *Service) Charge(amount int64) error {", "Charge") == 3); // balanced receiver
+    try expect(confidence("let normalizeExecHost: typeof import('./x').normalizeExecHost;", "normalizeExecHost") == 1);
 }
 
-test "definesNeedle rejects uses, strings, RHS, and mid-identifier hits" {
+test "declaration geometry rejects parameters, imports, uses, and fragments" {
     try expect(!signals.definesNeedle("    w := NewWallet(cc)", "NewWallet")); // call site
     try expect(!signals.definesNeedle("    return charge(amount)", "charge")); // call site
     try expect(!signals.definesNeedle("    var x = WalletService", "WalletService")); // RHS of =
@@ -34,6 +30,19 @@ test "definesNeedle rejects uses, strings, RHS, and mid-identifier hits" {
     try expect(!signals.definesNeedle("    fields := []T{Wallet, Ledger}", "Wallet")); // list element (comma)
     try expect(!signals.definesNeedle("type WalletServiceImpl struct {", "WalletService")); // mid-identifier
     try expect(!signals.definesNeedle("plain text with charge in it", "charge")); // no def kw
+    try expect(!signals.definesNeedle("def verdict(req: SearchRequest) -> bool:", "SearchRequest")); // parameter annotation
+    try expect(!signals.definesNeedle("import type { ApiError } from './api';", "ApiError")); // import member
+    try expect(!signals.definesNeedle("let back: ApiError = decode(value);", "ApiError")); // type annotation
+    try expect(!signals.definesNeedle("result: Result<DirEntry, Error>,", "DirEntry")); // nested generic
+}
+
+test "shape fingerprint erases vocabulary but preserves query role" {
+    const a = signals.shapeFingerprint("def workspace_dir() -> Path:", "workspace_dir");
+    const b = signals.shapeFingerprint("def cache_home() -> Root:", "cache_home");
+    const use = signals.shapeFingerprint("return paths.workspace_dir()", "workspace_dir");
+    try expect(a != 0);
+    try expect(a == b);
+    try expect(a != use);
 }
 
 test "isGenerated by ecosystem suffix" {
@@ -55,7 +64,9 @@ test "isGenerated by universal first-line marker (language-independent)" {
     try expect(signals.isGenerated("a.ts", "/* @generated */\nexport {}\n"));
     try expect(signals.isGenerated("a.rs", "// AUTO-GENERATED FILE, DO NOT EDIT\n"));
     try expect(signals.isGenerated("a.sql", "-- Autogenerated migration\n"));
-    // a body mention must NOT trip it — markers are first-line only.
+    try expect(signals.isGenerated("a.go", "// Copyright holder\n// CODE GENERATED by tool\npackage x\n"));
+    // Explanatory prose and a body mention must not trip the header detector.
+    try expect(!signals.isGenerated("a.go", "// this discusses Code generated files\npackage x\n"));
     try expect(!signals.isGenerated("a.go", "package x\n// this discusses Code generated files\n"));
     try expect(!signals.isGenerated("a.go", "package main\nfunc main() {}\n"));
 }

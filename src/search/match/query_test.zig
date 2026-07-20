@@ -117,6 +117,112 @@ test "countLines: regex over rg's line model" {
     try testing.expectEqual(@as(u64, 2), cq.countLines("foo\nf\nfooo\n", &sc));
 }
 
+// ── -w (word) rows: expectations hand-derived from ripgrep's post-match word
+// rule as cold implements it (`output.zig::wordOk`/`nextSpan`) — never from a
+// self-run of this engine. ──
+
+test "word: literal occurrences filter by wordOk over the non-overlapping scan" {
+    var cq = try compile(.{ .pattern = "run", .fixed = true, .word = true });
+    defer cq.deinit(testing.allocator);
+    var sc = try cq.scratch(testing.allocator);
+    defer sc.deinit();
+    try testing.expect(cq.docMatches("run runner\n", &sc)); // valid at [0,3)
+    try testing.expect(cq.docMatches("rerun run\n", &sc)); // rejected at [2,5), valid at [6,9)
+    try testing.expect(!cq.docMatches("runner rerun\n", &sc)); // every occurrence word-rejected
+    try testing.expect(!cq.docMatches("\xc3\xa9run \xe4\xb8\xadrun\n", &sc)); // é / 中 neighbors reject
+    try testing.expectEqual(@as(u64, 2), cq.countLines("run runner\nrerun run\nrunner only\n", &sc));
+}
+
+test "word: -F adjacent repeats scan leftmost non-overlapping (aa in aaa)" {
+    var cq = try compile(.{ .pattern = "aa", .fixed = true, .word = true });
+    defer cq.deinit(testing.allocator);
+    var sc = try cq.scratch(testing.allocator);
+    defer sc.deinit();
+    // `aaa`: [0,2) is word-rejected; the scan resumes AT 2 (never 1), where no
+    // full occurrence remains — cold reports no match. `aaaa`: [0,2) and [2,4)
+    // are both rejected by their word neighbor. ` aa ` is valid.
+    try testing.expect(!cq.docMatches("aaa\n", &sc));
+    try testing.expect(!cq.docMatches("aaaa\n", &sc));
+    try testing.expect(cq.docMatches(" aa aaa\n", &sc));
+    try testing.expectEqual(@as(u64, 1), cq.countLines(" aa aaa\naaaa\n", &sc));
+}
+
+test "word: punctuation-only matches are word-valid; regex spans use nextSpan's rule" {
+    var cq = try compile(.{ .pattern = "\\.", .word = true });
+    defer cq.deinit(testing.allocator);
+    var sc = try cq.scratch(testing.allocator);
+    defer sc.deinit();
+    try testing.expect(cq.docMatches("a . b\n", &sc)); // `.` bounded by spaces — a word match
+    try testing.expect(!cq.docMatches(".dot\n", &sc)); // `d` after the span rejects it
+    try testing.expectEqual(@as(u64, 1), cq.countLines("a . b\n.dot\n", &sc));
+}
+
+test "word: zero-width matches never count under -w" {
+    var cq = try compile(.{ .pattern = "x*", .word = true, .mode = .count });
+    defer cq.deinit(testing.allocator);
+    var sc = try cq.scratch(testing.allocator);
+    defer sc.deinit();
+    // Without -w the boolean path counts every line (`x*` matches empty);
+    // under -w only a NON-EMPTY word-valid x-run counts (cold lineHitWord).
+    try testing.expectEqual(@as(u64, 1), cq.countLines("x x\nyy\n", &sc));
+    try testing.expect(!cq.docMatches("yy\n", &sc));
+    try testing.expect(cq.docMatches("x x\n", &sc));
+}
+
+test "word: composes with the case fold; the word check reads original bytes" {
+    var cq = try compile(.{ .pattern = "run", .fixed = true, .ignore_case = true, .word = true });
+    defer cq.deinit(testing.allocator);
+    try testing.expect(cq.body == .regex); // -F -i escapes through the engine
+    var sc = try cq.scratch(testing.allocator);
+    defer sc.deinit();
+    try testing.expect(cq.docMatches("RUN loud\n", &sc));
+    try testing.expect(!cq.docMatches("RERUNNING\n", &sc)); // folded hit, still word-rejected
+    try testing.expectEqual(@as(u64, 1), cq.countLines("RUN loud\nrerunning\n", &sc));
+}
+
+test "word: collectSpans emits only word-valid spans with nextSpan's progress" {
+    const a = testing.allocator;
+    // Literal body: the rejected `rerun` occurrence is skipped, the later
+    // ` run` on the same line survives.
+    {
+        var cq = try compile(.{ .pattern = "run", .fixed = true, .word = true });
+        defer cq.deinit(a);
+        var ms = try cq.matchScratch(a);
+        defer ms.deinit();
+        var spans: std.ArrayList(q.Span) = .empty;
+        defer spans.deinit(a);
+        try cq.collectSpans(a, "rerun run", &ms, &spans);
+        try testing.expectEqual(@as(usize, 1), spans.items.len);
+        try testing.expectEqual(@as(usize, 6), spans.items[0].start);
+        try testing.expectEqual(@as(usize, 9), spans.items[0].end);
+    }
+    // Regex body: same rule through the span VM.
+    {
+        var cq = try compile(.{ .pattern = "ru.", .word = true });
+        defer cq.deinit(a);
+        var ms = try cq.matchScratch(a);
+        defer ms.deinit();
+        var spans: std.ArrayList(q.Span) = .empty;
+        defer spans.deinit(a);
+        try cq.collectSpans(a, "rerun run runt", &ms, &spans);
+        // `run` at [2,5) rejected (word char before); ` run` at [6,9) valid
+        // (space after); `run` in `runt` at [10,13) matches `ru.`+`n`… the
+        // span [10,13) is `run` inside `runt` → `t` after rejects it.
+        try testing.expectEqual(@as(usize, 1), spans.items.len);
+        try testing.expectEqual(@as(usize, 6), spans.items[0].start);
+        try testing.expectEqual(@as(usize, 9), spans.items[0].end);
+    }
+    // The prefilter is unchanged by -w: the literal still prunes.
+    {
+        var cq = try compile(.{ .pattern = "foobar", .fixed = true, .word = true });
+        defer cq.deinit(a);
+        var one: [1][]const u8 = undefined;
+        const pf = cq.prefilter(&one);
+        try testing.expectEqual(@as(usize, 1), pf.len);
+        try testing.expect(pfHas(pf, "foobar"));
+    }
+}
+
 test "docMatches vs countLines>0 agree on whether any line matches" {
     const inputs = [_][]const u8{ "", "foo\n", "x\ny\nzfooz\n", "no\nmatch\n", "foo" };
     for (inputs) |doc| {

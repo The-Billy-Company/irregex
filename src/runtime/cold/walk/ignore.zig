@@ -37,14 +37,7 @@ const Dir = std.Io.Dir;
 /// is already ascending, so `decide` just takes the last matching rule's verdict.
 /// `pub` (with `parseRuleLine`/`ruleMatch` below) so the parallel pipeline can
 /// build immutable per-directory rule chains out of the same parse + match core.
-pub const Rule = struct {
-    glob: []const u8,
-    base: []const u8,
-    negated: bool,
-    anchored: bool,
-    dir_only: bool,
-    reanchor_multi_root: bool = false,
-};
+pub const Rule = struct { glob: []const u8, base: []const u8, negated: bool, anchored: bool, dir_only: bool, reanchor_multi_root: bool = false };
 
 /// Parse one gitignore-dialect line into a `Rule` (comments/blank lines → null).
 /// The standalone core of `Ignore.addLine`: `base` anchors the rule to the
@@ -54,25 +47,13 @@ pub const Rule = struct {
 pub fn parseRuleLine(raw: []const u8, base: []const u8, strip: []const u8) ?Rule {
     var line = raw;
     if (line.len == 0 or line[0] == '#') return null;
-    var negated = false;
-    if (line[0] == '!') {
-        negated = true;
-        line = line[1..];
-    } else if (line.len > 1 and line[0] == '\\' and (line[1] == '#' or line[1] == '!')) {
-        line = line[1..]; // escaped leading '#'/'!' → literal
-    }
-    var dir_only = false;
-    if (line.len > 0 and line[line.len - 1] == '/') {
-        dir_only = true;
-        line = line[0 .. line.len - 1];
-    }
-    var anchored = false;
-    if (line.len > 0 and line[0] == '/') {
-        anchored = true;
-        line = line[1..];
-    } else if (std.mem.indexOfScalar(u8, line, '/') != null) {
-        anchored = true;
-    }
+    const negated = line[0] == '!';
+    // escaped leading '#'/'!' → literal
+    if (negated or (line.len > 1 and line[0] == '\\' and (line[1] == '#' or line[1] == '!'))) line = line[1..];
+    const dir_only = line.len > 0 and line[line.len - 1] == '/';
+    if (dir_only) line = line[0 .. line.len - 1];
+    const anchored = (line.len > 0 and line[0] == '/') or std.mem.indexOfScalar(u8, line, '/') != null;
+    if (line.len > 0 and line[0] == '/') line = line[1..];
     if (line.len == 0) return null;
     // Parent-file re-anchoring: an ANCHORED ancestor rule is anchored to that
     // ancestor, so only the slice under the search subtree (`strip` = CWD
@@ -93,15 +74,7 @@ pub fn parseRuleLine(raw: []const u8, base: []const u8, strip: []const u8) ?Rule
 /// method drew from `self` — explicit-root depth/re-anchoring and
 /// case-insensitive matching (`a` backs the lowercase copies; only touched when
 /// `ci` is set). Thread-safe: reads only its arguments.
-pub fn ruleMatch(
-    a: std.mem.Allocator,
-    ci: bool,
-    root_depth: usize,
-    reanchor_root: bool,
-    r: Rule,
-    rel_in: []const u8,
-    is_dir: bool,
-) bool {
+pub fn ruleMatch(a: std.mem.Allocator, ci: bool, root_depth: usize, reanchor_root: bool, r: Rule, rel_in: []const u8, is_dir: bool) bool {
     const rel = stripDot(rel_in); // a `./root` positional prefixes every path
     var sub = rel;
     const base = stripDot(r.base);
@@ -147,8 +120,7 @@ pub fn ruleMatch(
 }
 
 fn ruleGlob(a: std.mem.Allocator, ci: bool, pat: []const u8, str: []const u8) bool {
-    if (!ci) return gl.globMatch(pat, str);
-    return gl.globMatch(lower(a, pat), lower(a, str));
+    return if (ci) gl.globMatch(lower(a, pat), lower(a, str)) else gl.globMatch(pat, str);
 }
 
 /// The CWD/ancestor rule tier ("" bucket) compiled for O(1)-per-entry
@@ -177,13 +149,7 @@ pub const Compiled = struct {
         if (ig.o.ignore_case_insensitive) return null;
         var keys = ig.groups.keyIterator();
         while (keys.next()) |k| if (k.len != 0) return null;
-        var self = Compiled{
-            .rules = &.{},
-            .lit = std.StringHashMap(Slot).init(a),
-            .ext = std.StringHashMap(Slot).init(a),
-            .complex = &.{},
-            .a = a,
-        };
+        var self = Compiled{ .rules = &.{}, .lit = std.StringHashMap(Slot).init(a), .ext = std.StringHashMap(Slot).init(a), .complex = &.{}, .a = a };
         const bucket = ig.groups.getPtr("") orelse return self;
         self.rules = bucket.items;
         var cx: std.ArrayList(u32) = .empty;
@@ -191,8 +157,8 @@ pub const Compiled = struct {
             const rank: u32 = @intCast(i);
             if (!r.anchored and !hasMeta(r.glob)) {
                 slotPut(&self.lit, r.glob, rank, r.dir_only);
-            } else if (!r.anchored and extKey(r.glob) != null) {
-                slotPut(&self.ext, extKey(r.glob).?, rank, r.dir_only);
+            } else if (if (r.anchored) null else extKey(r.glob)) |k| {
+                slotPut(&self.ext, k, rank, r.dir_only);
             } else {
                 cx.append(a, rank) catch oom();
             }
@@ -221,10 +187,7 @@ pub const Compiled = struct {
             if (best != null and rank <= best.?) break;
             const r = self.rules[rank];
             if (r.dir_only and !is_dir) continue;
-            const anchored_rel = if (reanchor_root and r.reanchor_multi_root and root_depth != 0)
-                stripComponents(rel, root_depth)
-            else
-                rel;
+            const anchored_rel = if (reanchor_root and r.reanchor_multi_root and root_depth != 0) stripComponents(rel, root_depth) else rel;
             const hit = if (r.anchored) gl.globMatch(r.glob, anchored_rel) else gl.globMatch(r.glob, base);
             if (hit) {
                 best = rank;
@@ -236,11 +199,9 @@ pub const Compiled = struct {
 
     fn fold(best: *?u32, slot: ?Slot, is_dir: bool) void {
         const s = slot orelse return;
-        if (s.plain) |r| if (best.* == null or r > best.*.?) {
-            best.* = r;
-        };
-        if (is_dir) if (s.dironly) |r| if (best.* == null or r > best.*.?) {
-            best.* = r;
+        if (s.plain) |r| best.* = @max(best.* orelse r, r);
+        if (is_dir) if (s.dironly) |r| {
+            best.* = @max(best.* orelse r, r);
         };
     }
 
@@ -305,14 +266,7 @@ pub const Ignore = struct {
     /// probed for its own `.git` so a git repo (or worktree) named as a path arg is
     /// honored, not just CWD.
     pub fn init(a: std.mem.Allocator, io: std.Io, o: Opts, roots: []const []const u8) Ignore {
-        var self = Ignore{
-            .a = a,
-            .io = io,
-            .o = o,
-            .groups = std.StringHashMap(std.ArrayList(Rule)).init(a),
-            .loaded = std.StringHashMap(void).init(a),
-            .reanchor_root_rules = roots.len > 1 and !o.sorted,
-        };
+        var self = Ignore{ .a = a, .io = io, .o = o, .groups = std.StringHashMap(std.ArrayList(Rule)).init(a), .loaded = std.StringHashMap(void).init(a), .reanchor_root_rules = roots.len > 1 and !o.sorted };
         // `--ignore-file` is EXPLICIT user intent: lowest precedence (added first,
         // so an in-tree `.ignore`/`.gitignore` overrides it — rg's f45 rule) and
         // honored even under `-u`/`--no-ignore` (only `--no-ignore-files` drops it).
@@ -360,7 +314,7 @@ pub const Ignore = struct {
             const anc = ascend(self.a, k);
             // CWD's path relative to this ancestor = its last k components — an
             // anchored ancestor rule is re-anchored by stripping this prefix.
-            const subpath = joinComps(self.a, comps.items[comps.items.len - k ..]);
+            const subpath = std.mem.join(self.a, "/", comps.items[comps.items.len - k ..]) catch oom();
             if (self.use_git and git_depth != null and k <= git_depth.?)
                 self.readFile(join(self.a, anc, ".gitignore"), "", subpath, true);
             if (self.use_dot) {
@@ -383,22 +337,14 @@ pub const Ignore = struct {
     /// resolved exactly as ripgrep does (see `globalExcludesPath`); it may not
     /// exist, in which case `readFile` is a no-op. `reanchor_multi_root = true`
     /// mirrors `.git/info/exclude`: an ancestor-tier source, re-anchored per root.
-    fn loadGlobalExclude(self: *Ignore) void {
-        const path = self.globalExcludesPath() orelse return;
-        self.readFile(path, "", "", true);
-    }
-
     /// git's global gitignore path (ripgrep parity, `gitconfig_excludes_path`),
     /// reading `$HOME`/`$XDG_CONFIG_HOME` from the process env (stable for the
     /// per-user gist server's lifetime). The env-free resolution is delegated to
     /// `globalExcludesFrom`.
-    fn globalExcludesPath(self: *Ignore) ?[]const u8 {
-        const home = envSpan("HOME");
-        const xdg = blk: {
-            const x = envSpan("XDG_CONFIG_HOME");
-            break :blk if (x != null and x.?.len != 0) x else null;
-        };
-        return globalExcludesFrom(self.io, self.a, home, xdg);
+    fn loadGlobalExclude(self: *Ignore) void {
+        const xdg = envSpan("XDG_CONFIG_HOME");
+        const path = globalExcludesFrom(self.io, self.a, envSpan("HOME"), if (xdg != null and xdg.?.len != 0) xdg else null) orelse return;
+        self.readFile(path, "", "", true);
     }
 
     /// The git common-dir for the repo at `root` (a path openable from CWD), or
@@ -406,11 +352,7 @@ pub const Ignore = struct {
     /// FILE (linked worktree) is followed through `gitdir:` then its `commondir`.
     fn resolveGitDir(self: *Ignore, root: []const u8) ?[]const u8 {
         const dot_git = join(self.a, root, ".git");
-        if (Dir.cwd().openDir(self.io, dot_git, .{})) |d_const| {
-            var d = d_const;
-            d.close(self.io);
-            return dot_git; // plain repo: `.git` is the git dir
-        } else |_| {}
+        if (dirExists(self.io, dot_git)) return dot_git; // plain repo: `.git` is the git dir
         const gitfile = Dir.cwd().readFileAlloc(self.io, dot_git, self.a, .limited(4096)) catch return null;
         const line0 = std.mem.trimEnd(u8, firstLine(gitfile), "\r");
         if (!std.mem.startsWith(u8, line0, "gitdir: ")) return null;
@@ -491,12 +433,7 @@ pub const Ignore = struct {
     /// bypasses only the hidden-dotfile skip. A type filter un-hides but never
     /// un-ignores; an override does both. `wl_hidden ⊇ wl_ignore` by construction.
     pub fn shouldSkip(self: *const Ignore, rel: []const u8, is_dir: bool, basename: []const u8, wl_ignore: bool, wl_hidden: bool) bool {
-        if (is_dir and std.mem.eql(u8, basename, ".git")) return !wl_ignore;
-        const v = self.decide(rel, is_dir);
-        if (v == true) return !wl_ignore;
-        const hidden = basename.len > 0 and basename[0] == '.';
-        if (hidden and !self.o.hidden and v != false) return !wl_hidden;
-        return false;
+        return self.skipFromVerdict(self.decide(rel, is_dir), is_dir, basename, wl_ignore, wl_hidden);
     }
 
     /// Fold a base-tier verdict (`decideAt`) with the hidden-dotfile rule the same
@@ -521,7 +458,7 @@ pub const Ignore = struct {
     /// only for a parent-directory file) is CWD's path relative to that ancestor;
     /// it re-anchors the ancestor's anchored rules onto the search subtree.
     fn readFile(self: *Ignore, path: []const u8, base: []const u8, strip: []const u8, reanchor_multi_root: bool) void {
-        const buf = Dir.cwd().readFileAlloc(self.io, path, self.a, .limited(1 << 20)) catch return;
+        const buf = readOpt(self.io, self.a, path) orelse return;
         var it = std.mem.splitScalar(u8, buf, '\n');
         while (it.next()) |raw| self.addLine(std.mem.trimEnd(u8, raw, "\r"), base, strip, reanchor_multi_root);
     }
@@ -581,9 +518,8 @@ fn excludesValue(line: []const u8) ?[]const u8 {
     if (s.len < key.len or !std.ascii.eqlIgnoreCase(s[0..key.len], key)) return null;
     s = std.mem.trimStart(u8, s[key.len..], ws);
     if (s.len == 0 or s[0] != '=') return null;
-    s = std.mem.trimStart(u8, s[1..], ws);
+    s = std.mem.trim(u8, s[1..], ws);
     if (s.len != 0 and s[0] == '"') s = std.mem.trimStart(u8, s[1..], ws);
-    s = std.mem.trimEnd(u8, s, ws);
     if (s.len != 0 and s[s.len - 1] == '"') s = std.mem.trimEnd(u8, s[0 .. s.len - 1], ws);
     if (s.len == 0 or std.mem.indexOfAny(u8, s, ws) != null) return null;
     return s;
@@ -596,10 +532,7 @@ fn expandTilde(a: std.mem.Allocator, home: ?[]const u8, s: []const u8) []const u
     const h = home orelse return a.dupe(u8, s) catch oom();
     if (std.mem.indexOfScalar(u8, s, '~') == null) return a.dupe(u8, s) catch oom();
     var buf: std.ArrayList(u8) = .empty;
-    for (s) |c| if (c == '~')
-        buf.appendSlice(a, h) catch oom()
-    else
-        buf.append(a, c) catch oom();
+    for (s) |c| (if (c == '~') buf.appendSlice(a, h) else buf.append(a, c)) catch oom();
     return buf.toOwnedSlice(a) catch oom();
 }
 
@@ -626,48 +559,30 @@ fn globalExcludesFrom(io: std.Io, a: std.mem.Allocator, home: ?[]const u8, xdg: 
 /// component exactly as `rootDepth` does for absolute positional roots.
 fn stripComponents(path: []const u8, count: usize) []const u8 {
     var rest = path;
-    for (0..count) |_| {
-        const slash = std.mem.indexOfScalar(u8, rest, '/') orelse return "";
-        rest = rest[slash + 1 ..];
-    }
+    for (0..count) |_| rest = rest[(std.mem.indexOfScalar(u8, rest, '/') orelse return "") + 1 ..];
     return rest;
 }
 
 /// The relative path `k` directories above CWD: 1→`..`, 2→`../..`, … .
 fn ascend(a: std.mem.Allocator, k: usize) []const u8 {
     var buf: std.ArrayList(u8) = .empty;
-    var i: usize = 0;
-    while (i < k) : (i += 1) buf.appendSlice(a, if (i == 0) ".." else "/..") catch oom();
-    return buf.toOwnedSlice(a) catch oom();
-}
-
-/// Join path components with `/` (e.g. `["a","b"]` → `a/b`).
-fn joinComps(a: std.mem.Allocator, comps: []const []const u8) []const u8 {
-    var buf: std.ArrayList(u8) = .empty;
-    for (comps, 0..) |c, i| {
-        if (i != 0) buf.append(a, '/') catch oom();
-        buf.appendSlice(a, c) catch oom();
-    }
+    for (0..k) |i| buf.appendSlice(a, if (i == 0) ".." else "/..") catch oom();
     return buf.toOwnedSlice(a) catch oom();
 }
 
 /// Levels from CWD up to the nearest ancestor (inclusive of CWD = 0) holding a
 /// `.git`, or null if none within a bounded climb — ripgrep's repo discovery.
+/// The `../..` probe path grows incrementally in one stack buffer (k=0 = "").
 fn gitRootDepth(io: std.Io) ?usize {
-    var k: usize = 0;
-    while (k < 64) : (k += 1) {
-        var buf: [256]u8 = undefined;
-        const path = if (k == 0) "." else blk: {
-            var w: usize = 0;
-            var i: usize = 0;
-            while (i < k) : (i += 1) {
-                const seg = if (i == 0) ".." else "/..";
-                @memcpy(buf[w .. w + seg.len], seg);
-                w += seg.len;
-            }
-            break :blk buf[0..w];
-        };
-        if (hasDotGit(io, if (std.mem.eql(u8, path, ".")) "" else path)) return k;
+    var buf: [256]u8 = undefined;
+    var w: usize = 0;
+    for (0..64) |k| {
+        if (k > 0) {
+            const seg: []const u8 = if (k == 1) ".." else "/..";
+            @memcpy(buf[w..][0..seg.len], seg);
+            w += seg.len;
+        }
+        if (hasDotGit(io, buf[0..w])) return k;
     }
     return null;
 }
@@ -678,15 +593,18 @@ fn firstLine(buf: []const u8) []const u8 {
     return buf[0..nl];
 }
 
+/// True if `path` opens as a directory — the shared `.git` dir probe.
+fn dirExists(io: std.Io, path: []const u8) bool {
+    var d = Dir.cwd().openDir(io, path, .{}) catch return false;
+    d.close(io);
+    return true;
+}
+
 /// True if `path/.git` exists as a dir or a worktree `.git`-file.
 fn hasDotGit(io: std.Io, path: []const u8) bool {
     var buf: [512]u8 = undefined;
     const dg = if (path.len == 0) ".git" else std.fmt.bufPrint(&buf, "{s}/.git", .{path}) catch return false;
-    if (Dir.cwd().openDir(io, dg, .{})) |d_const| {
-        var d = d_const;
-        d.close(io);
-        return true;
-    } else |_| {}
+    if (dirExists(io, dg)) return true;
     const b = Dir.cwd().readFileAlloc(io, dg, std.heap.page_allocator, .limited(4096)) catch return false;
     std.heap.page_allocator.free(b);
     return true;
@@ -695,10 +613,7 @@ fn hasDotGit(io: std.Io, path: []const u8) bool {
 /// True if any positional search root is itself a git repo/worktree — so
 /// `rg <flags> some-repo` honors that repo's VCS ignores even when CWD isn't one.
 fn anyRootRepo(io: std.Io, roots: []const []const u8) bool {
-    for (roots) |r| {
-        if (std.mem.eql(u8, r, ".")) continue;
-        if (hasDotGit(io, std.mem.trimEnd(u8, r, "/"))) return true;
-    }
+    for (roots) |r| if (!std.mem.eql(u8, r, ".") and hasDotGit(io, std.mem.trimEnd(u8, r, "/"))) return true;
     return false;
 }
 
@@ -774,13 +689,7 @@ test "a global-sourced ignore file drives the CWD-tier verdict (loadGlobalExclud
     const gi = try std.fmt.allocPrint(a, "{s}/globalignore", .{dir});
     try Dir.cwd().writeFile(io, .{ .sub_path = gi, .data = "*.log\n!keep.log\n" });
 
-    var ig = Ignore{
-        .a = a,
-        .io = io,
-        .o = .{},
-        .groups = std.StringHashMap(std.ArrayList(Rule)).init(a),
-        .loaded = std.StringHashMap(void).init(a),
-    };
+    var ig = Ignore{ .a = a, .io = io, .o = .{}, .groups = std.StringHashMap(std.ArrayList(Rule)).init(a), .loaded = std.StringHashMap(void).init(a) };
     // Exactly what `loadGlobalExclude` does with the resolved path: fold the
     // global file into the "" (CWD/ancestor) tier, lowest precedence.
     ig.readFile(gi, "", "", true);
@@ -791,14 +700,7 @@ test "a global-sourced ignore file drives the CWD-tier verdict (loadGlobalExclud
 
 test "multi-root VCS rules re-anchor without changing one-root semantics" {
     const t = std.testing;
-    const rule = Rule{
-        .glob = "scripts/observe/build",
-        .base = "",
-        .negated = true,
-        .anchored = true,
-        .dir_only = true,
-        .reanchor_multi_root = true,
-    };
+    const rule = Rule{ .glob = "scripts/observe/build", .base = "", .negated = true, .anchored = true, .dir_only = true, .reanchor_multi_root = true };
     try t.expect(ruleMatch(t.allocator, false, 1, false, rule, "scripts/observe/build", true));
     try t.expect(!ruleMatch(t.allocator, false, 1, true, rule, "scripts/observe/build", true));
 }
@@ -807,23 +709,10 @@ test "compiled matcher preserves multi-root VCS re-anchoring" {
     const t = std.testing;
     const rules = [_]Rule{
         .{ .glob = "build", .base = "", .negated = false, .anchored = false, .dir_only = true },
-        .{
-            .glob = "scripts/observe/build",
-            .base = "",
-            .negated = true,
-            .anchored = true,
-            .dir_only = true,
-            .reanchor_multi_root = true,
-        },
+        .{ .glob = "scripts/observe/build", .base = "", .negated = true, .anchored = true, .dir_only = true, .reanchor_multi_root = true },
     };
     var complex = [_]u32{1};
-    var compiled = Compiled{
-        .rules = &rules,
-        .lit = std.StringHashMap(Compiled.Slot).init(t.allocator),
-        .ext = std.StringHashMap(Compiled.Slot).init(t.allocator),
-        .complex = &complex,
-        .a = t.allocator,
-    };
+    var compiled = Compiled{ .rules = &rules, .lit = std.StringHashMap(Compiled.Slot).init(t.allocator), .ext = std.StringHashMap(Compiled.Slot).init(t.allocator), .complex = &complex, .a = t.allocator };
     defer compiled.lit.deinit();
     defer compiled.ext.deinit();
     Compiled.slotPut(&compiled.lit, "build", 0, true);

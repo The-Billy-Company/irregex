@@ -36,26 +36,22 @@ pub const Caps = union(enum) {
 
     pub fn nslots(self: *const Caps) usize {
         return switch (self.*) {
-            .linear => |*c| c.nslots,
-            .pcre => |*c| c.nslots,
+            inline else => |*c| c.nslots,
         };
     }
     pub fn find(self: *Caps, line: []const u8, from: usize, out: []isize) bool {
         return switch (self.*) {
-            .linear => |*c| c.find(line, from, out),
-            .pcre => |*c| c.find(line, from, out),
+            inline else => |*c| c.find(line, from, out),
         };
     }
     pub fn groupByName(self: *const Caps, name: []const u8) ?u32 {
         return switch (self.*) {
-            .linear => |*c| c.groupByName(name),
-            .pcre => |*c| c.groupByName(name),
+            inline else => |*c| c.groupByName(name),
         };
     }
     pub fn deinit(self: *Caps) void {
         switch (self.*) {
-            .linear => |*c| c.deinit(),
-            .pcre => |*c| c.deinit(),
+            inline else => |*c| c.deinit(),
         }
     }
 };
@@ -143,6 +139,13 @@ pub const Captures = struct {
             a.* = try gpa.alloc(isize, nslots);
             b.* = try gpa.alloc(isize, nslots);
         }
+        // MUST be zeroed: the generation dedup compares `seen[pc] == gen`
+        // and `gen` counts up from 0 — heap garbage that happens to equal
+        // a live generation silently drops a VM thread (a nondeterministic
+        // missed capture in ReleaseFast; caught by the torture-corpus `-r`
+        // differential flaking against rg).
+        const seen = try gpa.alloc(u32, n);
+        @memset(seen, 0);
         return .{
             .prog = prog,
             .start = start,
@@ -153,7 +156,7 @@ pub const Captures = struct {
             .allocator = gpa,
             .cur = try gpa.alloc(u32, n),
             .nxt = try gpa.alloc(u32, n),
-            .seen = try gpa.alloc(u32, n),
+            .seen = seen,
             .cslots = cslots,
             .nslots_buf = nslots_buf,
         };
@@ -181,16 +184,14 @@ pub const Captures = struct {
         return null;
     }
 
+    /// A priority-ordered thread list plus each pc's slot snapshot.
+    const St = struct { list: []u32, len: usize = 0, slots: [][]isize };
+
     /// Leftmost-first match of the whole pattern within `line[from..]`. On success
     /// fills `out` (length `nslots`) with byte offsets (−1 = unset) and returns
     /// true; `out[0]`/`out[1]` bracket the whole match. Priority mirrors the main
     /// engine: leftmost start, earliest alternation branch, greedy quantifiers.
     pub fn find(self: *Captures, line: []const u8, from: usize, out: []isize) bool {
-        const St = struct {
-            list: []u32,
-            len: usize = 0,
-            slots: [][]isize,
-        };
         var clist = St{ .list = self.cur, .slots = self.cslots };
         var nlist = St{ .list = self.nxt, .slots = self.nslots_buf };
 
@@ -202,12 +203,7 @@ pub const Captures = struct {
         self.addThread(&clist.list, &clist.len, clist.slots, self.start, init_slots, from, line);
 
         var have = false;
-        var cut = clist.len;
-        if (self.firstMatch(clist.list[0..clist.len])) |mi| {
-            @memcpy(out, clist.slots[clist.list[mi]]);
-            have = true;
-            cut = mi;
-        }
+        var cut = self.takeMatch(&clist, out, &have);
 
         var i: usize = from;
         while (i < line.len) : (i += 1) {
@@ -224,21 +220,22 @@ pub const Captures = struct {
                 self.addThread(&nlist.list, &nlist.len, nlist.slots, self.start, init_slots, i + 1, line);
             }
             std.mem.swap(St, &clist, &nlist);
-            cut = clist.len;
-            if (self.firstMatch(clist.list[0..clist.len])) |mi| {
-                @memcpy(out, clist.slots[clist.list[mi]]);
-                have = true;
-                cut = mi;
-            }
+            cut = self.takeMatch(&clist, out, &have);
             if (have and cut == 0) break;
         }
         return have;
     }
 
-    /// First `.match` pc in priority order, or null.
-    fn firstMatch(self: *const Captures, list: []const u32) ?usize {
-        for (list, 0..) |pc, k| if (self.prog[pc] == .match) return k;
-        return null;
+    /// Copy the first (highest-priority) `.match` thread's slots into `out`, if
+    /// any, and return its index — the priority CUT below which threads can no
+    /// longer win (or the full list length when no match landed yet).
+    fn takeMatch(self: *const Captures, st: *const St, out: []isize, have: *bool) usize {
+        for (st.list[0..st.len], 0..) |pc, k| if (self.prog[pc] == .match) {
+            @memcpy(out, st.slots[pc]);
+            have.* = true;
+            return k;
+        };
+        return st.len;
     }
 
     /// ε-closure of `pc` into `list`, applying `save`/assertions at input position

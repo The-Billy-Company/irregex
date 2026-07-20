@@ -40,9 +40,7 @@ pub const Sequence = struct {
     /// True iff a prefix of `bytes` matches this sequence (used by tests).
     pub fn matches(self: *const Sequence, bytes: []const u8) bool {
         if (bytes.len < self.len) return false;
-        for (self.ranges[0..self.len], bytes[0..self.len]) |r, b| {
-            if (!r.matches(b)) return false;
-        }
+        for (self.ranges[0..self.len], bytes[0..self.len]) |r, b| if (!r.matches(b)) return false;
         return true;
     }
 
@@ -72,13 +70,8 @@ const ScalarRange = struct {
     /// never appear in an emitted byte sequence. Either half may be empty/invalid
     /// (the caller drops invalid halves).
     fn split(self: ScalarRange) ?[2]ScalarRange {
-        if (self.start < 0xE000 and self.end > 0xD7FF) {
-            return .{
-                .{ .start = self.start, .end = 0xD7FF },
-                .{ .start = 0xE000, .end = self.end },
-            };
-        }
-        return null;
+        if (self.start >= 0xE000 or self.end <= 0xD7FF) return null;
+        return .{ .{ .start = self.start, .end = 0xD7FF }, .{ .start = 0xE000, .end = self.end } };
     }
 
     fn valid(self: ScalarRange) bool {
@@ -86,10 +79,8 @@ const ScalarRange = struct {
     }
 
     fn ascii(self: ScalarRange) ?ByteRange {
-        if (self.valid() and self.end <= 0x7F) {
-            return .{ .start = @intCast(self.start), .end = @intCast(self.end) };
-        }
-        return null;
+        if (!self.valid() or self.end > 0x7F) return null;
+        return .{ .start = @intCast(self.start), .end = @intCast(self.end) };
     }
 };
 

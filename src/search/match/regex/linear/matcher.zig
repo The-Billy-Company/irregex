@@ -38,8 +38,7 @@ pub const Matcher = union(Backend) {
 
     pub fn deinit(self: *Matcher) void {
         switch (self.*) {
-            .linear => |*r| r.deinit(),
-            .pcre => |*p| p.deinit(),
+            inline else => |*e| e.deinit(),
         }
     }
 
@@ -48,16 +47,14 @@ pub const Matcher = union(Backend) {
     /// only ever elide a provable non-candidate read.
     pub fn required(self: *const Matcher) []const u8 {
         return switch (self.*) {
-            .linear => |*r| r.required,
-            .pcre => |*p| p.required,
+            inline else => |*e| e.required,
         };
     }
 
     /// The per-branch alternation cover set (`foo|bar` ⇒ {foo,bar}), or empty.
     pub fn alts(self: *const Matcher) []const []const u8 {
         return switch (self.*) {
-            .linear => |*r| r.alts,
-            .pcre => |*p| p.alts,
+            inline else => |*e| e.alts,
         };
     }
 
@@ -65,18 +62,14 @@ pub const Matcher = union(Backend) {
     /// these), or empty. PCRE syntax is analyzed by the library, not gist's AST,
     /// so the pcre arm never claims one (empty ⇒ callers take the engine path).
     pub fn lits(self: *const Matcher) []const []const u8 {
-        return switch (self.*) {
-            .linear => |*r| r.lits,
-            .pcre => &.{},
-        };
+        return if (self.* == .linear) self.linear.lits else &.{};
     }
 
     /// Can the pattern match zero-width (`a*`, a bare lookaround)? Governs the
     /// `-o` empty-match progress rule in the shared emitter.
     pub fn nullable(self: *const Matcher) bool {
         return switch (self.*) {
-            .linear => |*r| r.nullable,
-            .pcre => |*p| p.nullable,
+            inline else => |*e| e.nullable,
         };
     }
 
@@ -84,9 +77,18 @@ pub const Matcher = union(Backend) {
     /// at line boundaries — so callers scan the whole buffer, not split lines.
     pub fn multiline(self: *const Matcher) bool {
         return switch (self.*) {
-            .linear => |*r| r.multiline,
-            .pcre => |*p| p.multiline,
+            inline else => |*e| e.multiline,
         };
+    }
+
+    /// Can any match consume a `\n`? rg's `-U` searcher silently keeps the
+    /// LINE-oriented model (roll buffer, line-mode binary semantics) when the
+    /// pattern provably can't match its line terminator — the slice model, with
+    /// its 64K binary sniff, runs only when this is true. The linear arm walks
+    /// the compiled program; rg's PCRE2 matcher never claims a non-matching
+    /// line terminator, so `-P -U` is always the slice model (return true).
+    pub fn canMatchNewline(self: *const Matcher) bool {
+        return self.* == .pcre or self.linear.canMatchNewline();
     }
 
     /// The sticky match-time error latched during this run (0 = none). Only the
@@ -94,65 +96,49 @@ pub const Matcher = union(Backend) {
     /// engine is failure-free by construction, so it always reports 0. The CLI
     /// mirrors ripgrep's exit-2 when this is non-zero after the search.
     pub fn matchError(self: *const Matcher) c_int {
-        return switch (self.*) {
-            .linear => 0,
-            .pcre => pcre2.matchError(),
-        };
+        return if (self.* == .pcre) pcre2.matchError() else 0;
     }
 
     /// Per-query boolean-match scratch (one per worker thread; never shared). Its
     /// active tag always matches the matcher it was made from, so the dispatch
     /// below can index the correct arm without a runtime tag check of its own.
-    pub const Sim = union(Backend) {
-        linear: Regex.Sim,
-        pcre: Pcre.Sim,
-
-        pub fn init(allocator: std.mem.Allocator, m: *const Matcher) !Sim {
-            return switch (m.*) {
-                .linear => |*r| .{ .linear = try Regex.Sim.init(allocator, r) },
-                .pcre => |*p| .{ .pcre = try Pcre.Sim.init(allocator, p) },
-            };
-        }
-        pub fn deinit(self: *Sim) void {
-            switch (self.*) {
-                .linear => |*s| s.deinit(),
-                .pcre => |*s| s.deinit(),
-            }
-        }
-    };
+    pub const Sim = Scratch(Regex.Sim, Pcre.Sim);
 
     /// Per-query span-extraction scratch (the `-o`/`--json`/`-w`/`--column` path).
-    pub const SpanSim = union(Backend) {
-        linear: Regex.SpanSim,
-        pcre: Pcre.SpanSim,
+    pub const SpanSim = Scratch(Regex.SpanSim, Pcre.SpanSim);
 
-        pub fn init(allocator: std.mem.Allocator, m: *const Matcher) !SpanSim {
-            return switch (m.*) {
-                .linear => |*r| .{ .linear = try Regex.SpanSim.init(allocator, r) },
-                .pcre => |*p| .{ .pcre = try Pcre.SpanSim.init(allocator, p) },
-            };
-        }
-        pub fn deinit(self: *SpanSim) void {
-            switch (self.*) {
-                .linear => |*s| s.deinit(),
-                .pcre => |*s| s.deinit(),
+    /// Both scratch grains are the same union shape over per-engine scratch
+    /// types; one comptime factory owns the init/deinit dispatch for each.
+    fn Scratch(comptime L: type, comptime P: type) type {
+        return union(Backend) {
+            linear: L,
+            pcre: P,
+
+            pub fn init(allocator: std.mem.Allocator, m: *const Matcher) !@This() {
+                return switch (m.*) {
+                    .linear => |*r| .{ .linear = try L.init(allocator, r) },
+                    .pcre => |*p| .{ .pcre = try P.init(allocator, p) },
+                };
             }
-        }
-    };
+            pub fn deinit(self: *@This()) void {
+                switch (self.*) {
+                    inline else => |*s| s.deinit(),
+                }
+            }
+        };
+    }
 
     /// Does the pattern match any substring of `line`? (Per-line boolean path.)
     pub fn lineMatch(self: *const Matcher, sim: *Sim, line: []const u8) bool {
         return switch (self.*) {
-            .linear => |*r| r.lineMatch(&sim.linear, line),
-            .pcre => |*p| p.lineMatch(&sim.pcre, line),
+            inline else => |*e, t| e.lineMatch(&@field(sim, @tagName(t)), line),
         };
     }
 
     /// Does any line of `doc` match? (rg `-l` line model.)
     pub fn docMatch(self: *const Matcher, sim: *Sim, doc: []const u8) bool {
         return switch (self.*) {
-            .linear => |*r| r.docMatch(&sim.linear, doc),
-            .pcre => |*p| p.docMatch(&sim.pcre, doc),
+            inline else => |*e, t| e.docMatch(&@field(sim, @tagName(t)), doc),
         };
     }
 
@@ -160,8 +146,7 @@ pub const Matcher = union(Backend) {
     /// semantics? (The `-U` whole-buffer twin of `docMatch`.)
     pub fn bufMatch(self: *const Matcher, sim: *Sim, buf: []const u8) bool {
         return switch (self.*) {
-            .linear => |*r| r.bufMatch(&sim.linear, buf),
-            .pcre => |*p| p.bufMatch(&sim.pcre, buf),
+            inline else => |*e, t| e.bufMatch(&@field(sim, @tagName(t)), buf),
         };
     }
 
@@ -169,8 +154,7 @@ pub const Matcher = union(Backend) {
     /// null (`hay` is a line in the per-line default, the buffer under multiline).
     pub fn matchSpan(self: *const Matcher, sim: *SpanSim, hay: []const u8, from: usize) ?Span {
         return switch (self.*) {
-            .linear => |*r| r.matchSpan(&sim.linear, hay, from),
-            .pcre => |*p| p.matchSpan(&sim.pcre, hay, from),
+            inline else => |*e, t| e.matchSpan(&@field(sim, @tagName(t)), hay, from),
         };
     }
 };

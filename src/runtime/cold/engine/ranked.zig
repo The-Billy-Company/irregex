@@ -53,9 +53,7 @@ const ms = args_mod.ms;
 /// a shallow-path prior for the ranked view, u16 to pack the score row.
 fn pathDepth(path: []const u8) u16 {
     var d: u16 = 0;
-    for (path) |c| if (c == '/') {
-        d +%= 1;
-    };
+    for (path) |c| d +%= @intFromBool(c == '/');
     return d;
 }
 
@@ -77,14 +75,24 @@ fn rankFilters(re: *const Regex, caseless: bool, one: *[1][]const u8) []const []
     return query_mod.regexPrefilter(re, one);
 }
 
-/// Does this matching line define the symbol? Prefer the analyzer's required
-/// literal; otherwise try each alternation branch that actually appears.
-fn lineDefines(line: []const u8, re: *const Regex) bool {
-    if (re.required.len > 0) return signals.definesNeedle(line, re.required);
-    for (re.alts) |alt| {
-        if (std.mem.indexOf(u8, line, alt) != null and signals.definesNeedle(line, alt)) return true;
-    }
-    return false;
+const LineSignals = struct { definition: u8 = 0, shape_hash: u64 = 0 };
+
+/// Query-relative, parser-free geometry for one matching line. Prefer the
+/// analyzer's required literal; otherwise keep the strongest alternation.
+fn lineSignals(line: []const u8, re: *const Regex) LineSignals {
+    if (re.required.len > 0) return .{
+        .definition = signals.declarationConfidence(line, re.required),
+        .shape_hash = signals.shapeFingerprint(line, re.required),
+    };
+    var best: LineSignals = .{};
+    for (re.alts) |alt| if (std.mem.indexOf(u8, line, alt) != null) {
+        const candidate = LineSignals{
+            .definition = signals.declarationConfidence(line, alt),
+            .shape_hash = signals.shapeFingerprint(line, alt),
+        };
+        if (candidate.definition > best.definition or best.shape_hash == 0) best = candidate;
+    };
+    return best;
 }
 
 /// One pass over a candidate file's bytes → its ranking features (matching-line
@@ -95,44 +103,29 @@ fn fileDoc(buf: []const u8, path: []const u8, re: *const Regex, sim: *Regex.Sim,
     var match_lines: u32 = 0;
     var first: u32 = 0;
     var defline: u32 = 0;
+    var definition: u8 = 0;
+    var shape_hash: u64 = 0;
     var it = std.mem.splitScalar(u8, buf, '\n');
     while (it.next()) |line| {
         line_no += 1;
         if (!re.lineMatch(sim, line)) continue;
         match_lines += 1;
-        if (first == 0) first = line_no;
-        if (defline == 0 and lineDefines(line, re)) defline = line_no;
+        const sig = lineSignals(line, re);
+        if (first == 0) {
+            first = line_no;
+            shape_hash = sig.shape_hash;
+        }
+        if (sig.definition > definition) {
+            definition = sig.definition;
+            defline = line_no;
+            shape_hash = sig.shape_hash;
+        }
     }
-    const generated = signals.isGenerated(path, buf);
-    const is_mirror = mirror.isPath(path);
-    const content_hash = mirror.fingerprint(buf);
-    if (match_lines == 0) {
-        // Multi-line / whole-buffer match the per-line scan missed: keep the
-        // file if the document matcher still fires, surface L1.
-        if (!re.docMatch(sim, buf)) return null;
-        return .{
-            .id = id,
-            .matches = 1,
-            .is_def = false,
-            .best_line = 1,
-            .depth = pathDepth(path),
-            .is_generated = generated,
-            .is_mirror = is_mirror,
-            .content_hash = content_hash,
-            .content_len = buf.len,
-        };
-    }
-    return .{
-        .id = id,
-        .matches = match_lines,
-        .is_def = defline != 0,
-        .best_line = if (defline != 0) defline else first,
-        .depth = pathDepth(path),
-        .is_generated = generated,
-        .is_mirror = is_mirror,
-        .content_hash = content_hash,
-        .content_len = buf.len,
-    };
+    // Multi-line / whole-buffer match the per-line scan missed: keep the
+    // file if the document matcher still fires, surface L1 (the `@max`es
+    // below resolve to matches=1 / best_line=1 for that zero-line case).
+    if (match_lines == 0 and !re.docMatch(sim, buf)) return null;
+    return .{ .id = id, .matches = @max(match_lines, 1), .is_def = definition > 0, .definition = definition, .shape_hash = shape_hash, .best_line = if (defline != 0) defline else @max(first, 1), .depth = pathDepth(path), .is_generated = signals.isGenerated(path, buf), .is_mirror = mirror.isPath(path), .content_hash = mirror.fingerprint(buf), .content_len = buf.len };
 }
 
 const readFileInto = @import("../read/grepfile.zig").readFileInto;
@@ -141,15 +134,7 @@ const readFileInto = @import("../read/grepfile.zig").readFileInto;
 /// read runs inline (mirrors `run.zig`'s `par_threshold`).
 const read_par_threshold = 64;
 
-const RankShard = struct {
-    paths: []const []const u8,
-    ids: []const u32,
-    re: *const Regex,
-    gpa: std.mem.Allocator,
-    out: []Doc,
-    n: usize = 0,
-    reads: usize = 0,
-};
+const RankShard = struct { paths: []const []const u8, ids: []const u32, re: *const Regex, gpa: std.mem.Allocator, out: []Doc, n: usize = 0, reads: usize = 0 };
 fn rankShard(sh: *RankShard) void {
     const scratch = sh.gpa.alloc(u8, corpus_mod.per_file_cap) catch return;
     defer sh.gpa.free(scratch);
@@ -179,16 +164,12 @@ fn parallelRank(gpa: std.mem.Allocator, paths: []const []const u8, ids: []const 
     const outbuf = try gpa.alloc(Doc, ids.len);
     defer gpa.free(outbuf);
     const per = (ids.len + nshards - 1) / nshards;
-    var off: usize = 0;
-    for (shards) |*sh| {
-        const lo = off;
-        const hi = @min(off + per, ids.len);
-        off = hi;
+    for (shards, 0..) |*sh, k| {
+        const lo = @min(k * per, ids.len);
+        const hi = @min(lo + per, ids.len);
         sh.* = .{ .paths = paths, .ids = ids[lo..hi], .re = re, .gpa = gpa, .out = outbuf[lo..hi] };
     }
-    if (nshards == 1) {
-        rankShard(&shards[0]);
-    } else {
+    if (nshards == 1) rankShard(&shards[0]) else {
         const threads = try gpa.alloc(std.Thread, nshards);
         defer gpa.free(threads);
         for (shards, 0..) |*sh, k| threads[k] = try std.Thread.spawn(.{}, rankShard, .{sh});
@@ -302,9 +283,7 @@ fn emitRanked(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, docs: []cons
         defer gpa.free(snip);
         const kind = if (doc.is_mirror) "mirror" else if (doc.is_generated) "gen" else if (doc.is_def) "def" else "use";
         try buf.print(gpa, "{d:>2}. {s}:{d}  [{s}]  ×{d}  {s}", .{ i + 1, path, doc.best_line, kind, doc.matches, snip });
-        if (doc.is_mirror) {
-            if (mirror.canonical(Doc, docs, doc)) |canonical| try buf.print(gpa, "  (mirror of {s})", .{source.path(canonical)});
-        }
+        if (doc.is_mirror) if (mirror.canonical(Doc, docs, doc)) |canonical| try buf.print(gpa, "  (mirror of {s})", .{source.path(canonical)});
         try buf.append(gpa, '\n');
     }
     corpus_mod.emitStdout(buf.items);
@@ -318,14 +297,7 @@ fn emitRanked(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, docs: []cons
 /// default 20). Returns null when no complete index is available so the caller
 /// can live-rank; otherwise the ranked-match count (0 ⇒ the caller may hint).
 /// `caseless` disables the trigram prefilter.
-pub fn run(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    re: *const Regex,
-    roots: []const []const u8,
-    k: usize,
-    caseless: bool,
-) !?usize {
+pub fn run(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, roots: []const []const u8, k: usize, caseless: bool) !?usize {
     const l0 = nowNs(io);
     var p = (persist.loadQuiet(gpa, io) catch null) orelse return null;
     defer p.deinit();
@@ -334,7 +306,7 @@ pub fn run(
     const q0 = nowNs(io);
     var one: [1][]const u8 = undefined;
     const filters = rankFilters(re, caseless, &one);
-    var cand = try fresh.candidates(gpa, io, &p.idx, &p.paths, filters, &corpus_mod.default_roots);
+    var cand = try fresh.candidates(gpa, io, &p.idx, &p.paths, filters, p.roots.items);
     defer cand.deinit();
 
     // PATH roots gate before the read — without this, `gist pat dir/ --rank`
@@ -342,14 +314,9 @@ pub fn run(
     // out-of-scope hits, or hid in-scope ones behind an empty top-K).
     var scoped: std.ArrayList(u32) = .empty;
     defer scoped.deinit(gpa);
-    if (roots.len == 0) {
-        try scoped.appendSlice(gpa, cand.ids);
-    } else {
+    if (roots.len == 0) try scoped.appendSlice(gpa, cand.ids) else {
         try scoped.ensureTotalCapacity(gpa, cand.ids.len);
-        for (cand.ids) |d| {
-            if (d >= p.paths.items.len) continue;
-            if (underAnyRoot(p.paths.items[d], roots)) scoped.appendAssumeCapacity(d);
-        }
+        for (cand.ids) |d| if (d < p.paths.items.len and underAnyRoot(p.paths.items[d], roots)) scoped.appendAssumeCapacity(d);
     }
 
     var docs: std.ArrayList(Doc) = .empty;
@@ -361,9 +328,7 @@ pub fn run(
     // (codegen demotion), RRF-fused. null is the external graph-centrality hook.
     const query_ns = nowNs(io) - q0;
     const top = try emitRanked(gpa, io, re, docs.items, .{ .disk = p.paths.items }, k);
-    std.debug.print("gist: {d} ranked matches (top {d}) · read {d}/{d} candidates · cold-load {d:.1} ms · rank {d:.1} ms · total {d:.1} ms\n", .{
-        docs.items.len, top, read_files, p.paths.items.len, ms(load_ns), ms(query_ns), ms(load_ns + query_ns),
-    });
+    std.debug.print("gist: {d} ranked matches (top {d}) · read {d}/{d} candidates · cold-load {d:.1} ms · rank {d:.1} ms · total {d:.1} ms\n", .{ docs.items.len, top, read_files, p.paths.items.len, ms(load_ns), ms(query_ns), ms(load_ns + query_ns) });
     return docs.items.len;
 }
 
@@ -375,14 +340,10 @@ pub fn runLive(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, files: []co
     defer docs.deinit(gpa);
     var sim = try Regex.Sim.init(gpa, re);
     defer sim.deinit();
-    for (files, 0..) |file, id| {
-        if (fileDoc(file.bytes, file.path, re, &sim, @intCast(id))) |doc| try docs.append(gpa, doc);
-    }
+    for (files, 0..) |file, id| if (fileDoc(file.bytes, file.path, re, &sim, @intCast(id))) |doc| try docs.append(gpa, doc);
     const top = try emitRanked(gpa, io, re, docs.items, .{ .memory = files }, k);
     const query_ns = nowNs(io) - q0;
-    std.debug.print("gist: {d} ranked matches (top {d}) · live-scanned {d} files · rank {d:.1} ms\n", .{
-        docs.items.len, top, files.len, ms(query_ns),
-    });
+    std.debug.print("gist: {d} ranked matches (top {d}) · live-scanned {d} files · rank {d:.1} ms\n", .{ docs.items.len, top, files.len, ms(query_ns) });
     return docs.items.len;
 }
 

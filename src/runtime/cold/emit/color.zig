@@ -21,6 +21,48 @@ pub const line_on = "\x1b[32m"; // green — ripgrep's line-number color
 pub const sep_on = "\x1b[2m"; // dim — recedes so the match text dominates
 pub const match_on = "\x1b[1;4;91m"; // bold + underline + bright red — letters only, no fill
 
+// gist paints its OWN palette (the constants above), so it does not APPLY a
+// user `--colors` spec — but it still validates the spec's SYNTAX and fails loud
+// (exit 2) on a malformed one exactly as ripgrep does, rather than silently
+// accepting garbage (gist's fail-closed contract). The vocabularies mirror
+// grep-printer's `UserColorSpec`/`Style`/`termcolor::Color` parsers.
+const color_types = [_][]const u8{ "path", "line", "column", "match" };
+const color_styles = [_][]const u8{ "nobold", "bold", "nointense", "intense", "nounderline", "underline", "noitalic", "italic" };
+const named_colors = [_][]const u8{ "black", "blue", "green", "red", "cyan", "magenta", "yellow", "white" };
+
+fn inSet(set: []const []const u8, s: []const u8) bool {
+    for (set) |x| if (std.mem.eql(u8, x, s)) return true;
+    return false;
+}
+
+/// A `--colors` value is a named color, a 0-255 ANSI number, or an `r,g,b`
+/// triple (each component 0-255) — `termcolor::Color::from_str`.
+fn validColorValue(v: []const u8) bool {
+    if (inSet(&named_colors, v)) return true;
+    if (std.fmt.parseInt(u8, v, 10)) |_| return true else |_| {}
+    var n: usize = 0;
+    var it = std.mem.splitScalar(u8, v, ',');
+    while (it.next()) |p| : (n += 1) _ = std.fmt.parseInt(u8, p, 10) catch return false;
+    return n == 3;
+}
+
+/// Validate one `--colors` spec (`{type}:none` or `{type}:{fg|bg|style}:{value}`),
+/// returning a human diagnostic when malformed, else null. Mirrors ripgrep's
+/// `UserColorSpec::from_str` failure taxonomy (unrecognized type / spec type /
+/// style attribute / color value), so gist rejects exactly what rg rejects.
+pub fn validateColorSpec(spec: []const u8) ?[]const u8 {
+    var it = std.mem.splitScalar(u8, spec, ':');
+    const otype = it.next().?; // splitScalar always yields ≥1 piece
+    if (!inSet(&color_types, otype)) return "unrecognized output type";
+    const attr = it.next() orelse return "invalid color spec format (expected 'type:attribute:value')";
+    if (std.mem.eql(u8, attr, "none")) return if (it.next() == null) null else "invalid color spec format";
+    const value = it.next() orelse return "invalid color spec format (missing value)";
+    if (it.next() != null) return "invalid color spec format (too many components)";
+    if (std.mem.eql(u8, attr, "style")) return if (inSet(&color_styles, value)) null else "unrecognized style attribute";
+    if (std.mem.eql(u8, attr, "fg") or std.mem.eql(u8, attr, "bg")) return if (validColorValue(value)) null else "unrecognized color value";
+    return "unrecognized spec type";
+}
+
 /// ripgrep's env-override rules for `auto` mode: `NO_COLOR` (any value —
 /// https://no-color.org) or an absent/`dumb` `TERM` suppresses color. An
 /// explicit `--color=always`/`ansi` bypasses this entirely (see `enabled`).

@@ -195,7 +195,7 @@ pub const ScalarSet = struct {
 
     fn addRange(self: *ScalarSet, lo: u21, hi: u21) ParseError!void {
         if (lo > hi) return; // empty/reversed contributes nothing
-        self.list.append(self.gpa, .{ lo, hi }) catch return ParseError.OutOfMemory;
+        try self.list.append(self.gpa, .{ lo, hi });
     }
     fn addTable(self: *ScalarSet, t: []const [2]u21) ParseError!void {
         for (t) |r| try self.addRange(r[0], r[1]);
@@ -243,10 +243,10 @@ pub const ScalarSet = struct {
         var out: std.ArrayList([2]u21) = .empty;
         var next: u32 = 0;
         for (self.list.items) |r| {
-            if (r[0] > next) out.append(self.gpa, .{ @intCast(next), r[0] - 1 }) catch return ParseError.OutOfMemory;
+            if (r[0] > next) try out.append(self.gpa, .{ @intCast(next), r[0] - 1 });
             next = @as(u32, r[1]) + 1;
         }
-        if (next <= 0x10FFFF) out.append(self.gpa, .{ @intCast(next), 0x10FFFF }) catch return ParseError.OutOfMemory;
+        if (next <= 0x10FFFF) try out.append(self.gpa, .{ @intCast(next), 0x10FFFF });
         self.list = out;
     }
 
@@ -258,11 +258,11 @@ pub const ScalarSet = struct {
         var out: std.ArrayList([2]u21) = .empty;
         for (self.list.items) |r| {
             if (cp < r[0] or cp > r[1]) {
-                out.append(self.gpa, r) catch return ParseError.OutOfMemory;
+                try out.append(self.gpa, r);
                 continue;
             }
-            if (cp > r[0]) out.append(self.gpa, .{ r[0], cp - 1 }) catch return ParseError.OutOfMemory;
-            if (cp < r[1]) out.append(self.gpa, .{ cp + 1, r[1] }) catch return ParseError.OutOfMemory;
+            if (cp > r[0]) try out.append(self.gpa, .{ r[0], cp - 1 });
+            if (cp < r[1]) try out.append(self.gpa, .{ cp + 1, r[1] });
         }
         self.list = out;
     }
@@ -278,7 +278,7 @@ pub const ScalarSet = struct {
     fn foldExpand(self: *ScalarSet) ParseError!void {
         self.coalesce();
         var members: std.ArrayList(u21) = .empty;
-        uni.foldMembers(self.list.items, self.gpa, &members) catch return ParseError.OutOfMemory;
+        try uni.foldMembers(self.list.items, self.gpa, &members);
         for (members.items) |cp| try self.addRange(cp, cp);
     }
 
@@ -293,8 +293,7 @@ pub const ScalarSet = struct {
             n.* = .{ .class = bs };
             return;
         }
-        const owned = gpa.dupe([2]u21, self.list.items) catch return ParseError.OutOfMemory;
-        n.* = .{ .uclass = owned };
+        n.* = .{ .uclass = try gpa.dupe([2]u21, self.list.items) };
     }
 
     /// Lower to a fresh node (the parse-time entry point).
@@ -350,6 +349,12 @@ pub const Parser = struct {
         p.pos += 1;
         return c;
     }
+    /// Consume the next byte iff it equals `c`; report whether it did.
+    fn eat(p: *Parser, c: u8) bool {
+        if (p.pos >= p.src.len or p.src[p.pos] != c) return false;
+        p.pos += 1;
+        return true;
+    }
     fn node(p: *Parser, v: Node) ParseError!*Node {
         const n = try p.arena.create(Node);
         n.* = v;
@@ -359,6 +364,13 @@ pub const Parser = struct {
     /// shared by concat sequencing and `{n,m}` expansion.
     fn chain(p: *Parser, acc: ?*Node, n: *Node) ParseError!*Node {
         return if (acc) |a| try p.node(.{ .concat = .{ a, n } }) else n;
+    }
+    /// A single-codepoint node (Unicode mode): a byte `class` when ASCII, else a
+    /// one-range `uclass`.
+    fn cpNode(p: *Parser, cp: u21) ParseError!*Node {
+        var ss = ScalarSet{ .gpa = p.arena };
+        try ss.addRange(cp, cp);
+        return ss.finish(p);
     }
     /// Parse a run of ASCII digits at `pos` as a decimal `usize`; null (without
     /// advancing) when the next byte isn't a digit.
@@ -379,11 +391,7 @@ pub const Parser = struct {
     // alt := concat ('|' concat)*
     pub fn parseAlt(p: *Parser) ParseError!*Node {
         var left = try p.parseConcat();
-        while (p.peek() == '|') {
-            _ = p.take();
-            const right = try p.parseConcat();
-            left = try p.node(.{ .alt = .{ left, right } });
-        }
+        while (p.eat('|')) left = try p.node(.{ .alt = .{ left, try p.parseConcat() } });
         return left;
     }
 
@@ -429,11 +437,7 @@ pub const Parser = struct {
 
     /// Consume a trailing `?` laziness marker after a quantifier, if present.
     fn lazyMark(p: *Parser) bool {
-        if (p.peek() == '?') {
-            _ = p.take();
-            return true;
-        }
-        return false;
+        return p.eat('?');
     }
 
     /// `{n}` exact · `{n,}` n-or-more · `{n,m}` range. `n` is required; `max` is
@@ -454,15 +458,11 @@ pub const Parser = struct {
             return null;
         };
         var max: ?usize = min; // `{n}` ⇒ exactly n
-        if (p.peek() == ',') {
-            _ = p.take();
-            max = p.digits(); // digits ⇒ `{n,m}`; none ⇒ `{n,}` unbounded
-        }
-        if (p.peek() != '}') {
+        if (p.eat(',')) max = p.digits(); // digits ⇒ `{n,m}`; none ⇒ `{n,}` unbounded
+        if (!p.eat('}')) {
             p.pos = save;
             return null;
         }
-        _ = p.take(); // '}'
         return .{ .min = min, .max = max };
     }
 
@@ -475,14 +475,12 @@ pub const Parser = struct {
         if (b.max) |mx| if (mx < b.min) return ParseError.BadPattern;
 
         var result: ?*Node = null;
-        var i: usize = 0;
-        while (i < b.min) : (i += 1) result = try p.chain(result, atom);
+        for (0..b.min) |_| result = try p.chain(result, atom);
 
         // The optional tail carries the laziness: `a{2,5}?` prefers FEWER copies
         // (each optional copy is a lazy `quest`), `a{2,}?` a lazy trailing `star`.
         if (b.max) |mx| {
-            var k = b.min;
-            while (k < mx) : (k += 1) result = try p.chain(result, try p.node(.{ .quest = .{ .node = atom, .lazy = lazy } }));
+            for (b.min..mx) |_| result = try p.chain(result, try p.node(.{ .quest = .{ .node = atom, .lazy = lazy } }));
         } else {
             result = try p.chain(result, try p.node(.{ .star = .{ .node = atom, .lazy = lazy } }));
         }
@@ -492,19 +490,23 @@ pub const Parser = struct {
     /// Read a group name up to (and consuming) the closing `>` — the `<` already
     /// consumed. Returns the name slice into `src`.
     fn nameUntilGt(p: *Parser) ParseError![]const u8 {
-        const s = p.pos;
-        while (p.peek()) |ch| {
-            if (ch == '>') {
-                const nm = p.src[s..p.pos];
-                _ = p.take();
-                return nm;
-            }
-            _ = p.take();
-        }
-        return ParseError.BadPattern;
+        const end = std.mem.indexOfScalarPos(u8, p.src, p.pos, '>') orelse return ParseError.BadPattern;
+        defer p.pos = end + 1;
+        return p.src[p.pos..end];
     }
 
     // ─────────────────────────── Unicode-mode parsing ───────────────────────────
+
+    /// Union `table`'s complement over the whole scalar space into `ss`, minus
+    /// `\n` in the per-line model (so it can't bridge a line) — the shared
+    /// negated-class tail of `\D \W \S` and `\P{…}`.
+    fn addNegated(p: *Parser, ss: *ScalarSet, table: []const [2]u21) ParseError!void {
+        var tmp = ScalarSet{ .gpa = p.arena };
+        try tmp.addTable(table);
+        try tmp.negate();
+        if (!p.multiline) try tmp.dropCp('\n');
+        try ss.addTable(tmp.list.items);
+    }
 
     /// Union a Perl class (`\d \w \s`, or its negation `\D \W \S`) into `ss` using
     /// the Unicode tables. A negated class is the complement over the whole scalar
@@ -516,28 +518,17 @@ pub const Parser = struct {
             's' => uni.space,
             else => unreachable,
         };
-        if (!std.ascii.isUpper(e)) return ss.addTable(table);
-        var tmp = ScalarSet{ .gpa = p.arena };
-        try tmp.addTable(table);
-        try tmp.negate();
-        if (!p.multiline) try tmp.dropCp('\n');
-        try ss.addTable(tmp.list.items);
+        return if (std.ascii.isUpper(e)) p.addNegated(ss, table) else ss.addTable(table);
     }
 
     /// Parse a `\p{…}` / `\pL` property body and union its ranges into `ss`; `\P…`
     /// unions the complement. Unknown property ⇒ BadPattern (rg rejects too).
     fn addProp(p: *Parser, ss: *ScalarSet, negated: bool) ParseError!void {
         var name: []const u8 = undefined;
-        if (p.peek() == '{') {
-            _ = p.take();
-            const s = p.pos;
-            while (p.peek()) |ch| {
-                if (ch == '}') break;
-                _ = p.take();
-            }
-            if (p.peek() != '}') return ParseError.BadPattern;
-            name = p.src[s..p.pos];
-            _ = p.take(); // '}'
+        if (p.eat('{')) {
+            const end = std.mem.indexOfScalarPos(u8, p.src, p.pos, '}') orelse return ParseError.BadPattern;
+            name = p.src[p.pos..end];
+            p.pos = end + 1;
         } else {
             // Single-letter form `\pL`, `\pN` (one ASCII category letter).
             const ch = p.peek() orelse return ParseError.BadPattern;
@@ -546,38 +537,39 @@ pub const Parser = struct {
             _ = p.take();
         }
         const ranges = uni.property(name) orelse return ParseError.BadPattern;
-        if (!negated) return ss.addTable(ranges);
-        var tmp = ScalarSet{ .gpa = p.arena };
-        try tmp.addTable(ranges);
-        try tmp.negate();
-        if (!p.multiline) try tmp.dropCp('\n');
-        try ss.addTable(tmp.list.items);
+        return if (negated) p.addNegated(ss, ranges) else ss.addTable(ranges);
+    }
+
+    /// Scan the digits of a `\x` escape (the `x` already consumed): two hex
+    /// digits `\xNN`, or a braced run `\x{H..H}`. `mid_cap`, when set, rejects a
+    /// braced value the moment it exceeds the cap (guarding u32 overflow on long
+    /// runs); the caller applies its own final range check either way.
+    fn hexScan(p: *Parser, comptime mid_cap: ?u32) ParseError!u32 {
+        var val: u32 = 0;
+        if (p.eat('{')) {
+            var got = false;
+            while (p.peek()) |h| : (got = true) {
+                if (h == '}') break;
+                val = val * 16 + (std.fmt.charToDigit(h, 16) catch return ParseError.BadPattern);
+                if (mid_cap) |cap| if (val > cap) return ParseError.BadPattern;
+                _ = p.take();
+            }
+            if (!got or !p.eat('}')) return ParseError.BadPattern;
+        } else {
+            for (0..2) |_| {
+                const h = p.peek() orelse return ParseError.BadPattern;
+                val = val * 16 + (std.fmt.charToDigit(h, 16) catch return ParseError.BadPattern);
+                _ = p.take();
+            }
+        }
+        return val;
     }
 
     /// Decode a `\x` escape as a Unicode codepoint (the `x` already consumed):
     /// `\xNN` or `\x{H..H}`. In Unicode mode `\xNN` is codepoint U+00NN (encoded as
     /// UTF-8), not the raw byte. Rejects surrogates and values past U+10FFFF.
     fn hexCp(p: *Parser) ParseError!u21 {
-        var val: u32 = 0;
-        if (p.peek() == '{') {
-            _ = p.take();
-            var got = false;
-            while (p.peek()) |h| : (got = true) {
-                if (h == '}') break;
-                val = val * 16 + @as(u32, hexVal(h) orelse return ParseError.BadPattern);
-                if (val > 0x10FFFF) return ParseError.BadPattern;
-                _ = p.take();
-            }
-            if (!got or p.peek() != '}') return ParseError.BadPattern;
-            _ = p.take();
-        } else {
-            var i: usize = 0;
-            while (i < 2) : (i += 1) {
-                const h = p.peek() orelse return ParseError.BadPattern;
-                val = val * 16 + @as(u32, hexVal(h) orelse return ParseError.BadPattern);
-                _ = p.take();
-            }
-        }
+        const val = try p.hexScan(0x10FFFF);
         if (val > 0x10FFFF or (val >= 0xD800 and val <= 0xDFFF)) return ParseError.BadPattern;
         return @intCast(val);
     }
@@ -600,51 +592,22 @@ pub const Parser = struct {
             return .{ .cp = c };
         }
         _ = p.take(); // '\'
-        const e = p.peek() orelse return ParseError.BadPattern;
+        const e = if (p.pos < p.src.len) p.take() else return ParseError.BadPattern;
         switch (e) {
             'd', 'D', 'w', 'W', 's', 'S' => {
-                _ = p.take();
                 try p.addPerl(ss, e);
                 return .class;
             },
             'p', 'P' => {
-                _ = p.take();
                 try p.addProp(ss, e == 'P');
                 return .class;
             },
-            'x' => {
-                _ = p.take();
-                return .{ .cp = try p.hexCp() };
-            },
-            't' => {
-                _ = p.take();
-                return .{ .cp = '\t' };
-            },
-            'n' => {
-                _ = p.take();
-                return .{ .cp = '\n' };
-            },
-            'r' => {
-                _ = p.take();
-                return .{ .cp = '\r' };
-            },
-            'f' => {
-                _ = p.take();
-                return .{ .cp = 0x0C };
-            },
-            'v' => {
-                _ = p.take();
-                return .{ .cp = 0x0B };
-            },
-            'a' => {
-                _ = p.take();
-                return .{ .cp = 0x07 };
-            },
+            'x' => return .{ .cp = try p.hexCp() },
+            't', 'n', 'r', 'f', 'v', 'a' => return .{ .cp = ctrlByte(e) },
             // Backrefs (`\0`–`\9`) and assertion escapes (`\b \B \A \z \< \>`,
             // all alphabetic/`<`/`>`) are invalid inside a class — rg rejects them.
             '0'...'9', '<', '>' => return ParseError.BadPattern,
             else => {
-                _ = p.take();
                 if (std.ascii.isAlphabetic(e)) return ParseError.BadPattern;
                 return .{ .cp = e }; // escaped punctuation → the literal codepoint
             },
@@ -658,11 +621,7 @@ pub const Parser = struct {
     fn parseClassU(p: *Parser) ParseError!*Node {
         _ = p.take(); // '['
         var ss = ScalarSet{ .gpa = p.arena };
-        var neg = false;
-        if (p.peek() == '^') {
-            _ = p.take();
-            neg = true;
-        }
+        const neg = p.eat('^');
         var first = true;
         while (p.peek()) |c| {
             if (c == ']' and !first) {
@@ -721,8 +680,7 @@ pub const Parser = struct {
                 // can't do → BadPattern.
                 var capturing = true;
                 var name: ?[]const u8 = null;
-                if (p.peek() == '?') {
-                    _ = p.take();
+                if (p.eat('?')) {
                     switch (p.peek() orelse return ParseError.BadPattern) {
                         ':' => {
                             _ = p.take();
@@ -730,8 +688,7 @@ pub const Parser = struct {
                         },
                         'P' => { // (?P<name>…) or (?P=name) backref (unsupported)
                             _ = p.take();
-                            if (p.peek() != '<') return ParseError.BadPattern;
-                            _ = p.take();
+                            if (!p.eat('<')) return ParseError.BadPattern;
                             name = try p.nameUntilGt();
                         },
                         '<' => { // (?<name>…) — but (?<= / (?<! are lookbehind
@@ -748,11 +705,10 @@ pub const Parser = struct {
                 if (capturing) {
                     p.ncaps += 1;
                     idx = p.ncaps;
-                    if (name) |nm| if (p.names) |lst| lst.append(p.arena, .{ .name = nm, .idx = idx }) catch return ParseError.OutOfMemory;
+                    if (name) |nm| if (p.names) |lst| try lst.append(p.arena, .{ .name = nm, .idx = idx });
                 }
                 const inner = try p.parseAlt();
-                if (p.peek() != ')') return ParseError.BadPattern;
-                _ = p.take();
+                if (!p.eat(')')) return ParseError.BadPattern;
                 if (!capturing) return inner;
                 return p.node(.{ .capture = .{ .idx = idx, .child = inner } });
             },
@@ -767,8 +723,7 @@ pub const Parser = struct {
                     if (!(p.dotall and p.multiline)) try ss.dropCp('\n');
                     return ss.finish(p);
                 }
-                var s = ByteSet{};
-                s.bits = @splat(~@as(u64, 0));
+                var s = ByteSet{ .bits = @splat(~@as(u64, 0)) };
                 // `.` excludes `\n` (rg default) unless dotall is on for a
                 // whole-buffer match; in the per-line model dotall is inert
                 // (no line carries a `\n`), so gate it on `multiline` too.
@@ -784,25 +739,24 @@ pub const Parser = struct {
                 // BadPattern (rg: "invalid escape sequence found in character
                 // class") — `parseEscape` enforces that.
                 if (p.peek()) |e| switch (e) {
-                    'b', 'B' => {
+                    'b', 'B', '<', '>', 'A', 'z' => {
                         _ = p.take();
-                        return p.node(if (e == 'b') .word_boundary else .not_word_boundary);
-                    },
-                    '<', '>' => { // rg's one-sided word boundaries (word start/end)
-                        _ = p.take();
-                        return p.node(if (e == '<') .word_start else .word_end);
-                    },
-                    // `\A`/`\z` anchor the HAYSTACK. In the per-line default the
-                    // haystack is the line, so they coincide with `^`/`$` and
-                    // lower to the existing nodes (zero engine changes); under
-                    // multiline the haystack is the whole buffer — a distinct
-                    // assertion from the line-boundary `^`/`$` — so they get
-                    // their own nodes. (`\Z` is NOT rg syntax — it falls through
-                    // to `parseEscape`'s unrecognized-letter rejection.)
-                    'A', 'z' => {
-                        _ = p.take();
-                        if (e == 'A') return p.node(if (p.multiline) .anchor_buf_start else .anchor_start);
-                        return p.node(if (p.multiline) .anchor_buf_end else .anchor_end);
+                        return p.node(switch (e) {
+                            'b' => .word_boundary,
+                            'B' => .not_word_boundary,
+                            // rg's one-sided word boundaries (word start/end)
+                            '<' => .word_start,
+                            '>' => .word_end,
+                            // `\A`/`\z` anchor the HAYSTACK. In the per-line default the
+                            // haystack is the line, so they coincide with `^`/`$` and
+                            // lower to the existing nodes (zero engine changes); under
+                            // multiline the haystack is the whole buffer — a distinct
+                            // assertion from the line-boundary `^`/`$` — so they get
+                            // their own nodes. (`\Z` is NOT rg syntax — it falls through
+                            // to `parseEscape`'s unrecognized-letter rejection.)
+                            'A' => if (p.multiline) .anchor_buf_start else .anchor_start,
+                            else => if (p.multiline) .anchor_buf_end else .anchor_end,
+                        });
                     },
                     else => {},
                 };
@@ -811,24 +765,15 @@ pub const Parser = struct {
                 // through to the ASCII `parseEscape` (their UTF-8 == the byte).
                 if (p.unicode) {
                     if (p.peek()) |e| switch (e) {
-                        'd', 'D', 'w', 'W', 's', 'S' => {
+                        'd', 'D', 'w', 'W', 's', 'S', 'p', 'P' => {
                             _ = p.take();
                             var ss = ScalarSet{ .gpa = p.arena };
-                            try p.addPerl(&ss, e);
-                            return ss.finish(p);
-                        },
-                        'p', 'P' => {
-                            _ = p.take();
-                            var ss = ScalarSet{ .gpa = p.arena };
-                            try p.addProp(&ss, e == 'P');
+                            if (e == 'p' or e == 'P') try p.addProp(&ss, e == 'P') else try p.addPerl(&ss, e);
                             return ss.finish(p);
                         },
                         'x' => {
                             _ = p.take();
-                            const cp = try p.hexCp();
-                            var ss = ScalarSet{ .gpa = p.arena };
-                            try ss.addRange(cp, cp);
-                            return ss.finish(p);
+                            return p.cpNode(try p.hexCp());
                         },
                         else => {},
                     };
@@ -845,11 +790,7 @@ pub const Parser = struct {
                 // A non-ASCII literal is one codepoint (its multi-byte UTF-8
                 // sequence), so `-i` can fold it and `.`/`[^…]` treat it atomically.
                 if (p.unicode and c >= 0x80) {
-                    if (p.decodeCp()) |cp| {
-                        var ss = ScalarSet{ .gpa = p.arena };
-                        try ss.addRange(cp, cp);
-                        return ss.finish(p);
-                    }
+                    if (p.decodeCp()) |cp| return p.cpNode(cp);
                 }
                 _ = p.take();
                 var s = ByteSet{};
@@ -864,27 +805,16 @@ pub const Parser = struct {
         var s = ByteSet{};
         // The uppercase form of each class is its lowercase set, negated.
         switch (e) {
-            'd', 'D' => {
-                s.setRange('0', '9');
-                if (e == 'D') s.negate();
+            // `\d \w \s` are byte-for-byte the POSIX `digit`/`word`/`space` sets.
+            'd', 'D', 'w', 'W', 's', 'S' => {
+                _ = fillPosix(&s, switch (std.ascii.toLower(e)) {
+                    'd' => "digit",
+                    'w' => "word",
+                    else => "space",
+                });
+                if (std.ascii.isUpper(e)) s.negate();
             },
-            'w', 'W' => {
-                s.setRange('0', '9');
-                s.setRange('A', 'Z');
-                s.setRange('a', 'z');
-                s.set('_');
-                if (e == 'W') s.negate();
-            },
-            's', 'S' => {
-                for ([_]u8{ '\t', '\n', 0x0B, 0x0C, '\r', ' ' }) |b| s.set(b);
-                if (e == 'S') s.negate();
-            },
-            't' => s.set('\t'),
-            'n' => s.set('\n'),
-            'r' => s.set('\r'),
-            'f' => s.set(0x0C),
-            'v' => s.set(0x0B),
-            'a' => s.set(0x07),
+            't', 'n', 'r', 'f', 'v', 'a' => s.set(ctrlByte(e)),
             'x' => s.set(try p.hexByte()), // \xNN or \x{H..H}
             // `\0`–`\9` are backreference syntax — unsupported in a linear-time
             // engine and rejected by rg too ("backreferences are not supported",
@@ -912,85 +842,50 @@ pub const Parser = struct {
     /// two hex digits `\xNN`, or a braced codepoint `\x{H..H}`. gist is a byte
     /// engine, so a value > 0xFF is BadPattern (rg's `(?-u)` byte mode).
     fn hexByte(p: *Parser) ParseError!u8 {
-        var val: u32 = 0;
-        if (p.peek() == '{') {
-            _ = p.take();
-            var got = false;
-            while (p.peek()) |h| : (got = true) {
-                if (h == '}') break;
-                val = val * 16 + @as(u32, hexVal(h) orelse return ParseError.BadPattern);
-                _ = p.take();
-            }
-            if (!got or p.peek() != '}') return ParseError.BadPattern;
-            _ = p.take();
-        } else {
-            var i: usize = 0;
-            while (i < 2) : (i += 1) {
-                const h = p.peek() orelse return ParseError.BadPattern;
-                val = val * 16 + @as(u32, hexVal(h) orelse return ParseError.BadPattern);
-                _ = p.take();
-            }
-        }
+        const val = try p.hexScan(null);
         if (val > 0xFF) return ParseError.BadPattern;
         return @intCast(val);
     }
 
-    /// A single hex digit's value, or null if `c` is not `[0-9A-Fa-f]`.
-    fn hexVal(c: u8) ?u4 {
-        return switch (c) {
-            '0'...'9' => @intCast(c - '0'),
-            'a'...'f' => @intCast(c - 'a' + 10),
-            'A'...'F' => @intCast(c - 'A' + 10),
-            else => null,
+    /// The control byte a single-letter escape denotes (`\t \n \r \f \v \a`) —
+    /// the one decode shared by atom position (`parseEscape`) and class bodies
+    /// (`readClassAtom`), whose value is byte == codepoint in both modes.
+    fn ctrlByte(e: u8) u8 {
+        return switch (e) {
+            't' => '\t',
+            'n' => '\n',
+            'r' => '\r',
+            'f' => 0x0C,
+            'v' => 0x0B,
+            else => 0x07, // 'a'
         };
     }
+
+    /// Each POSIX class's ASCII members as inclusive byte ranges (rg's `(?-u)`
+    /// byte sets; singletons are lo==hi — `\t`–`\r` is the contiguous whitespace
+    /// run `\t \n \v \f \r`).
+    const posix_classes = std.StaticStringMap([]const [2]u8).initComptime(.{
+        .{ "alnum", &[_][2]u8{ .{ '0', '9' }, .{ 'A', 'Z' }, .{ 'a', 'z' } } },
+        .{ "alpha", &[_][2]u8{ .{ 'A', 'Z' }, .{ 'a', 'z' } } },
+        .{ "ascii", &[_][2]u8{.{ 0, 0x7F }} },
+        .{ "blank", &[_][2]u8{ .{ '\t', '\t' }, .{ ' ', ' ' } } },
+        .{ "cntrl", &[_][2]u8{ .{ 0, 0x1F }, .{ 0x7F, 0x7F } } },
+        .{ "digit", &[_][2]u8{.{ '0', '9' }} },
+        .{ "graph", &[_][2]u8{.{ 0x21, 0x7E }} },
+        .{ "lower", &[_][2]u8{.{ 'a', 'z' }} },
+        .{ "print", &[_][2]u8{.{ 0x20, 0x7E }} },
+        .{ "punct", &[_][2]u8{ .{ 0x21, 0x2F }, .{ 0x3A, 0x40 }, .{ 0x5B, 0x60 }, .{ 0x7B, 0x7E } } },
+        .{ "space", &[_][2]u8{ .{ '\t', '\r' }, .{ ' ', ' ' } } },
+        .{ "upper", &[_][2]u8{.{ 'A', 'Z' }} },
+        .{ "word", &[_][2]u8{ .{ '0', '9' }, .{ 'A', 'Z' }, .{ 'a', 'z' }, .{ '_', '_' } } },
+        .{ "xdigit", &[_][2]u8{ .{ '0', '9' }, .{ 'A', 'F' }, .{ 'a', 'f' } } },
+    });
 
     /// Fill `s` with a POSIX class's ASCII members (rg's `(?-u)` byte sets).
     /// Returns false for an unknown name so the caller raises BadPattern.
     fn fillPosix(s: *ByteSet, name: []const u8) bool {
-        const eq = std.mem.eql;
-        if (eq(u8, name, "alnum")) {
-            s.setRange('0', '9');
-            s.setRange('A', 'Z');
-            s.setRange('a', 'z');
-        } else if (eq(u8, name, "alpha")) {
-            s.setRange('A', 'Z');
-            s.setRange('a', 'z');
-        } else if (eq(u8, name, "ascii")) {
-            s.setRange(0, 0x7F);
-        } else if (eq(u8, name, "blank")) {
-            s.set('\t');
-            s.set(' ');
-        } else if (eq(u8, name, "cntrl")) {
-            s.setRange(0, 0x1F);
-            s.set(0x7F);
-        } else if (eq(u8, name, "digit")) {
-            s.setRange('0', '9');
-        } else if (eq(u8, name, "graph")) {
-            s.setRange(0x21, 0x7E);
-        } else if (eq(u8, name, "lower")) {
-            s.setRange('a', 'z');
-        } else if (eq(u8, name, "print")) {
-            s.setRange(0x20, 0x7E);
-        } else if (eq(u8, name, "punct")) {
-            s.setRange(0x21, 0x2F);
-            s.setRange(0x3A, 0x40);
-            s.setRange(0x5B, 0x60);
-            s.setRange(0x7B, 0x7E);
-        } else if (eq(u8, name, "space")) {
-            for ([_]u8{ '\t', '\n', 0x0B, 0x0C, '\r', ' ' }) |b| s.set(b);
-        } else if (eq(u8, name, "upper")) {
-            s.setRange('A', 'Z');
-        } else if (eq(u8, name, "word")) {
-            s.setRange('0', '9');
-            s.setRange('A', 'Z');
-            s.setRange('a', 'z');
-            s.set('_');
-        } else if (eq(u8, name, "xdigit")) {
-            s.setRange('0', '9');
-            s.setRange('A', 'F');
-            s.setRange('a', 'f');
-        } else return false;
+        const ranges = posix_classes.get(name) orelse return false;
+        for (ranges) |r| s.setRange(r[0], r[1]);
         return true;
     }
 
@@ -1004,25 +899,19 @@ pub const Parser = struct {
         if (p.pos + 1 >= p.src.len or p.src[p.pos] != '[' or p.src[p.pos + 1] != ':') return false;
         const save = p.pos;
         p.pos += 2; // consume `[:`
-        var negate = false;
-        if (p.peek() == '^') {
-            _ = p.take();
-            negate = true;
-        }
-        const ns = p.pos;
-        while (p.peek()) |ch| {
-            if (ch == ':') break;
-            _ = p.take();
-        }
+        const negate = p.eat('^');
         // A well-formed POSIX class closes with `:]`; otherwise the leading `[`
         // was a literal — rewind and let the caller consume it as a byte.
-        if (p.peek() != ':' or p.pos + 1 >= p.src.len or p.src[p.pos + 1] != ']') {
+        const colon = std.mem.indexOfScalarPos(u8, p.src, p.pos, ':') orelse {
+            p.pos = save;
+            return false;
+        };
+        if (colon + 1 >= p.src.len or p.src[colon + 1] != ']') {
             p.pos = save;
             return false;
         }
-        const name = p.src[ns..p.pos];
-        _ = p.take(); // ':'
-        _ = p.take(); // ']'
+        const name = p.src[p.pos..colon];
+        p.pos = colon + 2; // past `:]`
         var cls = ByteSet{};
         if (!fillPosix(&cls, name)) return ParseError.BadPattern;
         if (negate) {
@@ -1040,11 +929,7 @@ pub const Parser = struct {
     fn parseClass(p: *Parser) ParseError!*Node {
         _ = p.take(); // '['
         var s = ByteSet{};
-        var neg = false;
-        if (p.peek() == '^') {
-            _ = p.take();
-            neg = true;
-        }
+        const neg = p.eat('^');
         var first = true;
         while (p.peek()) |c| {
             if (c == ']' and !first) {

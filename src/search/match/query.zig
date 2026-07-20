@@ -29,6 +29,7 @@
 const std = @import("std");
 const simd = @import("scan/simd.zig");
 const Regex = @import("regex/linear/core.zig").Regex;
+const word_mod = @import("regex/syntax/word.zig");
 
 /// The three mode shapes the shared core answers: `files` (any line matches),
 /// `count` (how many lines match), and `lines` (the default `path:text` match
@@ -55,6 +56,12 @@ pub const Spec = struct {
     /// explicit `--no-unicode`/`(?-u)` (its classifier hands those to the cold
     /// engine), so it always compiles at the rg-parity default.
     unicode: bool = true,
+    /// `-w`/`--word-regexp`: only word-bounded match spans count. This is rg's
+    /// POST-MATCH rule, NOT `\b(pat)\b` — a span `[s,e)` counts iff a non-word
+    /// codepoint (or the line edge) bounds it on BOTH sides (`wordOk` below,
+    /// mirroring `runtime/cold/emit/output.zig::wordOk` over the same shared
+    /// `\b` oracle), so a punctuation-only match is still a valid word match.
+    word: bool = false,
 };
 
 pub const CompileError = error{
@@ -69,14 +76,28 @@ pub const CompileError = error{
 pub const Scratch = union(enum) {
     none,
     sim: Regex.Sim,
+    /// `-w` over a regex body. The boolean DFA cannot decide `-w` (it has no
+    /// span), so a word query carries BOTH VMs: the boolean sim stays the
+    /// cheap doc/line pre-gate (word only narrows the match set — a doc/line
+    /// the plain engine rejects can never hold a word-valid span), and the
+    /// span VM decides word validity per span. Only word queries pay for the
+    /// extra scratch; the non-word variants and their hot loops are untouched.
+    word: WordScratch,
 
     pub fn deinit(self: *Scratch) void {
         switch (self.*) {
             .sim => |*s| s.deinit(),
+            .word => |*w| {
+                w.sim.deinit();
+                w.span.deinit();
+            },
             .none => {},
         }
     }
 };
+
+/// The `-w` regex scratch pair (see `Scratch.word`).
+pub const WordScratch = struct { sim: Regex.Sim, span: Regex.SpanSim };
 
 /// A matched byte span `[start, end)` within one line. Aliases the regex
 /// engine's own span so the FFI reports the exact offsets the cold `--json`
@@ -109,6 +130,14 @@ pub const CompiledQuery = struct {
     /// prefilter an UNsafe proxy for "can match" (the fold changes which bytes
     /// appear), so `prefilter` must decline for a caseless regex.
     caseless: bool,
+    /// `-w` was requested: every match face routes through the word-valid span
+    /// decision (`docMatchesWord`/`countLinesWord`/`collectSpansWord`). The
+    /// trigram prefilter stays FULLY sound under `-w` (word only narrows the
+    /// match set; the required literal is still required — cold's
+    /// `trigramFilter` likewise keeps the index on), so `prefilter` ignores it.
+    word: bool = false,
+    /// Unicode mode for the word oracle (`Spec.unicode`; rg-parity default ON).
+    unicode: bool = true,
     body: union(enum) {
         /// `-F` no-fold: verified by `simd.contains`. Aliases `Spec.pattern`.
         literal: []const u8,
@@ -125,19 +154,14 @@ pub const CompiledQuery = struct {
     /// scan, applies the case fold.
     pub fn compile(gpa: std.mem.Allocator, spec: Spec) CompileError!CompiledQuery {
         if (spec.fixed and !spec.ignore_case)
-            return .{ .mode = spec.mode, .caseless = false, .body = .{ .literal = spec.pattern } };
+            return .{ .mode = spec.mode, .caseless = false, .word = spec.word, .unicode = spec.unicode, .body = .{ .literal = spec.pattern } };
 
-        var escaped: ?[]u8 = null;
-        const pat = if (spec.fixed) blk: {
-            const e = try escapeLiteral(gpa, spec.pattern);
-            escaped = e;
-            break :blk e;
-        } else spec.pattern;
+        const escaped: ?[]u8 = if (spec.fixed) try escapeLiteral(gpa, spec.pattern) else null;
         errdefer if (escaped) |e| gpa.free(e);
 
-        const re = Regex.compileOpts(gpa, pat, .{ .caseless = spec.ignore_case, .unicode = spec.unicode }) catch
+        const re = Regex.compileOpts(gpa, escaped orelse spec.pattern, .{ .caseless = spec.ignore_case, .unicode = spec.unicode }) catch
             return CompileError.Unsupported;
-        return .{ .mode = spec.mode, .caseless = spec.ignore_case, .body = .{ .regex = re }, .escaped = escaped };
+        return .{ .mode = spec.mode, .caseless = spec.ignore_case, .word = spec.word, .unicode = spec.unicode, .body = .{ .regex = re }, .escaped = escaped };
     }
 
     pub fn deinit(self: *CompiledQuery, gpa: std.mem.Allocator) void {
@@ -148,13 +172,22 @@ pub const CompiledQuery = struct {
         if (self.escaped) |e| gpa.free(e);
     }
 
-    /// A fresh per-thread match scratch: the regex simulation for a regex body,
-    /// or `.none` for a literal (SIMD substring needs no state).
+    /// A fresh per-thread match scratch: the regex simulation for a regex body
+    /// (plus the span VM under `-w` — see `Scratch.word`), or `.none` for a
+    /// literal (SIMD substring / `indexOf` occurrence scans need no state).
     pub fn scratch(self: *const CompiledQuery, gpa: std.mem.Allocator) CompileError!Scratch {
-        return switch (self.body) {
-            .literal => .none,
-            .regex => |*re| .{ .sim = Regex.Sim.init(gpa, re) catch return CompileError.OutOfMemory },
-        };
+        switch (self.body) {
+            .literal => return .none,
+            .regex => |*re| {
+                var sim = Regex.Sim.init(gpa, re) catch return CompileError.OutOfMemory;
+                if (!self.word) return .{ .sim = sim };
+                const span = Regex.SpanSim.init(gpa, re) catch {
+                    sim.deinit();
+                    return CompileError.OutOfMemory;
+                };
+                return .{ .word = .{ .sim = sim, .span = span } };
+            },
+        }
     }
 
     /// The sound trigram prefilter literals for pruning index candidates, or
@@ -177,17 +210,49 @@ pub const CompiledQuery = struct {
     }
 
     /// Does any line of `bytes` match? (rg `-l` semantics.) Literal → substring
-    /// presence; regex → whole-doc match over the caller's `scratch`.
+    /// presence; regex → whole-doc match over the caller's `scratch`. Under
+    /// `-w` the decision routes through the word-valid span scan — one branch
+    /// HERE, so the non-word bodies below stay byte-for-byte the hot path they
+    /// were (the perf guard for the existing warm slate).
     pub fn docMatches(self: *const CompiledQuery, bytes: []const u8, sc: *Scratch) bool {
+        if (self.word) return self.docMatchesWord(bytes, sc);
         return switch (self.body) {
             .literal => |needle| simd.contains(bytes, needle),
             .regex => |*re| re.docMatch(&sc.sim, bytes),
         };
     }
 
+    /// The `-w` doc gate: does any WORD-VALID span exist anywhere in `bytes`?
+    /// A literal body scans whole-doc occurrences directly — the pattern never
+    /// carries a newline (session-classifier guarantee) and `\n` is a non-word
+    /// byte, so a word neighbor checked against doc bytes is exactly the
+    /// per-line rule (`\n` and the line edge are both "not a word char"), and
+    /// occurrences in different lines can never overlap. A regex body pre-gates
+    /// with the cheap boolean `docMatch` (sound: word only NARROWS the match
+    /// set) and then span-scans line by line until one word-valid span appears.
+    fn docMatchesWord(self: *const CompiledQuery, bytes: []const u8, sc: *Scratch) bool {
+        switch (self.body) {
+            .literal => |needle| return firstWordHit(self.unicode, bytes, needle) != null,
+            .regex => |*re| {
+                if (!re.docMatch(&sc.word.sim, bytes)) return false;
+                var rest = bytes;
+                while (rest.len > 0) {
+                    const nl = std.mem.indexOfScalar(u8, rest, '\n');
+                    const end = nl orelse rest.len;
+                    if (lineHasWordMatch(self.unicode, re, rest[0..end], &sc.word)) return true;
+                    if (nl == null) break;
+                    rest = rest[end + 1 ..];
+                }
+                return false;
+            },
+        }
+    }
+
     /// Count matching LINES in `bytes` (rg `-c` semantics), over rg's line model
-    /// (`\n` terminates; no phantom final line).
+    /// (`\n` terminates; no phantom final line). Word queries branch once at the
+    /// top into the span-based twin; this loop is untouched for the plain slate.
     pub fn countLines(self: *const CompiledQuery, bytes: []const u8, sc: *Scratch) u64 {
+        if (self.word) return self.countLinesWord(bytes, sc);
         var n: u64 = 0;
         var rest = bytes;
         while (rest.len > 0) {
@@ -197,6 +262,27 @@ pub const CompiledQuery = struct {
             const hit = switch (self.body) {
                 .literal => |needle| simd.contains(line, needle),
                 .regex => |*re| re.lineMatch(&sc.sim, line),
+            };
+            if (hit) n += 1;
+            if (nl == null) break;
+            rest = rest[end + 1 ..];
+        }
+        return n;
+    }
+
+    /// The `-w` twin of `countLines`: a line counts iff it holds ≥1 word-valid
+    /// NON-EMPTY span (cold's `lineHitWord` — so a line whose only matches are
+    /// zero-width never counts under `-w`, unlike the boolean path).
+    fn countLinesWord(self: *const CompiledQuery, bytes: []const u8, sc: *Scratch) u64 {
+        var n: u64 = 0;
+        var rest = bytes;
+        while (rest.len > 0) {
+            const nl = std.mem.indexOfScalar(u8, rest, '\n');
+            const end = nl orelse rest.len;
+            const line = rest[0..end];
+            const hit = switch (self.body) {
+                .literal => |needle| firstWordHit(self.unicode, line, needle) != null,
+                .regex => |*re| lineHasWordMatch(self.unicode, re, line, &sc.word),
             };
             if (hit) n += 1;
             if (nl == null) break;
@@ -221,9 +307,11 @@ pub const CompiledQuery = struct {
     /// byte exactly as the cold `--json` submatch iterator does
     /// (`runtime/cold/emit/json.zig::emitSubmatches`), so a match record emitted
     /// here carries byte-identical submatch offsets to the subprocess `--json`
-    /// stream. The FFI's eligible class is plain/literal/±case (no `-w`/`-r`), so
-    /// none of that path's word-boundary or replacement filtering applies.
+    /// stream. Under `-w` the word-invalid spans are filtered with cold
+    /// `nextSpan`'s exact progress rule (branch once at the top — the plain
+    /// bodies below are untouched); `-r` replacement stays cold-only.
     pub fn collectSpans(self: *const CompiledQuery, a: std.mem.Allocator, line: []const u8, sc: *MatchScratch, out: *std.ArrayList(Span)) error{OutOfMemory}!void {
+        if (self.word) return self.collectSpansWord(a, line, sc, out);
         switch (self.body) {
             .literal => |needle| {
                 if (needle.len == 0) return;
@@ -247,7 +335,83 @@ pub const CompiledQuery = struct {
             },
         }
     }
+
+    /// The `-w` twin of `collectSpans` — cold `output.zig::nextSpan`'s exact
+    /// span-iteration progress rule: a zero-width span skips one byte, a
+    /// word-REJECTED span advances to its end and keeps scanning the same line
+    /// (a later occurrence may be word-valid). Only word-valid spans append,
+    /// so the FFI record stream stays byte-identical to cold `-w --json`.
+    fn collectSpansWord(self: *const CompiledQuery, a: std.mem.Allocator, line: []const u8, sc: *MatchScratch, out: *std.ArrayList(Span)) error{OutOfMemory}!void {
+        switch (self.body) {
+            .literal => |needle| {
+                if (needle.len == 0) return;
+                var from: usize = 0;
+                while (std.mem.indexOfPos(u8, line, from, needle)) |i| {
+                    from = i + needle.len; // non-overlapping, rejected or not (nextSpan's rule)
+                    if (!wordOk(self.unicode, line, i, i + needle.len)) continue;
+                    try out.append(a, .{ .start = i, .end = i + needle.len });
+                }
+            },
+            .regex => |*re| {
+                var from: usize = 0;
+                while (from <= line.len) {
+                    const sp = re.matchSpan(&sc.sim, line, from) orelse break;
+                    if (sp.end == sp.start) {
+                        from = sp.start + 1;
+                        continue;
+                    }
+                    from = sp.end;
+                    if (!wordOk(self.unicode, line, sp.start, sp.end)) continue;
+                    try out.append(a, sp);
+                }
+            },
+        }
+    }
 };
+
+/// ripgrep `-w`: a match span `[s,e)` is a word match iff bounded by a non-word
+/// CODEPOINT (or the line edge) on BOTH sides. The same 2-term composition of
+/// the engines' shared `\b` oracle (`regex/syntax/word.zig`) that cold's
+/// `runtime/cold/emit/output.zig::wordOk` applies — restated here because the
+/// search core cannot import the cold runtime (dependency direction), and both
+/// reduce to the one oracle, so they cannot drift.
+pub fn wordOk(unicode: bool, hay: []const u8, s: usize, e: usize) bool {
+    return !word_mod.wordBefore(unicode, hay, s) and !word_mod.wordAt(unicode, hay, e);
+}
+
+/// Leftmost word-valid occurrence of `needle` in `hay`, over rg's
+/// non-overlapping leftmost scan — the literal twin of `nextSpan`'s progress
+/// rule (a word-rejected occurrence advances past its own end and the scan
+/// continues; adjacent repeats like "aa" in "aaa" never overlap). Null when no
+/// occurrence is word-valid. An empty needle is never word-valid (a zero-width
+/// span never counts under `-w`).
+fn firstWordHit(unicode: bool, hay: []const u8, needle: []const u8) ?usize {
+    if (needle.len == 0) return null;
+    var from: usize = 0;
+    while (std.mem.indexOfPos(u8, hay, from, needle)) |i| {
+        if (wordOk(unicode, hay, i, i + needle.len)) return i;
+        from = i + needle.len;
+    }
+    return null;
+}
+
+/// One line's `-w` verdict for a regex body: the cheap boolean pre-gate first
+/// (a line the plain engine rejects can never hold a word-valid span), then
+/// cold `nextSpan`'s exact loop until the first word-valid non-empty span.
+fn lineHasWordMatch(unicode: bool, re: *const Regex, line: []const u8, w: *WordScratch) bool {
+    if (!re.lineMatch(&w.sim, line)) return false;
+    var from: usize = 0;
+    while (from <= line.len) {
+        const sp = re.matchSpan(&w.span, line, from) orelse return false;
+        if (sp.end == sp.start) {
+            from = sp.start + 1;
+            continue;
+        }
+        from = sp.end;
+        if (wordOk(unicode, line, sp.start, sp.end)) return true;
+    }
+    return false;
+}
 
 /// The sound trigram prefilter for a compiled regex, independent of the
 /// caseless/mode guards a specific face layers on top: the engine's guaranteed
@@ -270,10 +434,7 @@ pub fn regexPrefilter(re: *const Regex, one: *[1][]const u8) []const []const u8 
 pub fn escapeLiteral(a: std.mem.Allocator, pat: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     for (pat) |c| {
-        switch (c) {
-            '.', '^', '$', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '\\' => try out.append(a, '\\'),
-            else => {},
-        }
+        if (std.mem.indexOfScalar(u8, ".^$*+?()[]{}|\\", c) != null) try out.append(a, '\\');
         try out.append(a, c);
     }
     return out.toOwnedSlice(a);

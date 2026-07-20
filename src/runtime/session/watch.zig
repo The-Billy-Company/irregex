@@ -40,6 +40,13 @@ const ResidentSession = @import("resident.zig").ResidentSession;
 const Dir = std.Io.Dir;
 
 const is_macos = builtin.os.tag == .macos;
+const linux = std.os.linux;
+
+/// The inotify event mask shared by root registration and the loop's on-the-fly
+/// re-registration of directories created after arming.
+const in_mask: u32 = linux.IN.MODIFY | linux.IN.CREATE | linux.IN.DELETE |
+    linux.IN.MOVED_FROM | linux.IN.MOVED_TO | linux.IN.ATTRIB |
+    linux.IN.CLOSE_WRITE | linux.IN.ONLYDIR;
 
 /// The minimal CoreServices/CoreFoundation surface the macOS FSEvents backend
 /// needs — analyzed only on macOS (the `if (is_macos)` guard is comptime, so no
@@ -138,7 +145,7 @@ pub const Watcher = struct {
         self.running.store(false, .release);
         if (comptime builtin.os.tag == .linux) {
             if (self.inotify_fd >= 0) {
-                _ = std.os.linux.close(self.inotify_fd);
+                _ = linux.close(self.inotify_fd);
                 self.inotify_fd = -1;
             }
         } else if (comptime is_macos) {
@@ -150,8 +157,7 @@ pub const Watcher = struct {
             t.join();
             self.thread = null;
         }
-        var it = self.wd_paths.valueIterator();
-        while (it.next()) |p| self.gpa.free(p.*);
+        self.freeWdPaths();
         self.wd_paths.deinit(self.gpa);
         self.wd_paths = .empty;
     }
@@ -164,38 +170,32 @@ pub const Watcher = struct {
     }
 
     fn startInotify(self: *Watcher) void {
-        if (comptime builtin.os.tag == .linux) {
-            const linux = std.os.linux;
-            const fd_usize = linux.inotify_init1(linux.IN.NONBLOCK);
-            const fd: i32 = @intCast(fd_usize);
-            if (fd < 0) return; // no inotify → stay in baseline
-            errdefer _ = linux.close(fd);
+        if (comptime builtin.os.tag != .linux) return;
+        const fd: i32 = @intCast(linux.inotify_init1(linux.IN.NONBLOCK));
+        if (fd < 0) return; // no inotify → stay in baseline
 
-            // Recursively watch every directory under the roots. If ANY watch
-            // fails to register we cannot prove quiescence for that subtree, so
-            // we bail out unarmed (fail-closed): the session keeps reconciling.
-            const mask = linux.IN.MODIFY | linux.IN.CREATE | linux.IN.DELETE |
-                linux.IN.MOVED_FROM | linux.IN.MOVED_TO | linux.IN.ATTRIB |
-                linux.IN.CLOSE_WRITE | linux.IN.ONLYDIR;
-            for (self.watchRoots()) |root| {
-                if (!self.addWatchesRecursive(fd, root, mask)) {
-                    _ = linux.close(fd);
-                    self.freeWdPaths();
-                    return;
-                }
-            }
-
-            self.inotify_fd = fd;
-            self.running.store(true, .release);
-            self.session.armWatcher();
-            self.thread = std.Thread.spawn(.{}, inotifyLoop, .{self}) catch {
-                self.running.store(false, .release);
-                self.inotify_fd = -1;
-                _ = linux.close(fd);
-                self.freeWdPaths();
-                return; // spawn failed — unarm by leaving watcher inactive
-            };
+        // Recursively watch every directory under the roots. If ANY watch
+        // fails to register we cannot prove quiescence for that subtree, so
+        // we bail out unarmed (fail-closed): the session keeps reconciling.
+        for (self.watchRoots()) |root| {
+            if (!self.addWatchesRecursive(fd, root)) return self.closeUnarmed(fd);
         }
+
+        self.inotify_fd = fd;
+        self.running.store(true, .release);
+        self.session.armWatcher();
+        self.thread = std.Thread.spawn(.{}, inotifyLoop, .{self}) catch {
+            self.running.store(false, .release);
+            self.inotify_fd = -1;
+            return self.closeUnarmed(fd); // spawn failed — unarm by leaving watcher inactive
+        };
+    }
+
+    /// Shared inotify bail-out: release the fd and every recorded watch path.
+    fn closeUnarmed(self: *Watcher, fd: i32) void {
+        if (comptime builtin.os.tag != .linux) return;
+        _ = linux.close(fd);
+        self.freeWdPaths();
     }
 
     fn freeWdPaths(self: *Watcher) void {
@@ -208,110 +208,94 @@ pub const Watcher = struct {
     /// wd → path so the event loop can extend coverage into directories created
     /// later. Returns false on the first failure (caller bails unarmed, or —
     /// post-arm — poisons the session).
-    fn addWatchesRecursive(self: *Watcher, fd: i32, path: []const u8, mask: u32) bool {
-        if (comptime builtin.os.tag == .linux) {
-            const linux = std.os.linux;
-            const cpath = std.posix.toPosixPath(path) catch return false;
-            const wd = linux.inotify_add_watch(fd, &cpath, mask);
-            if (@as(isize, @bitCast(wd)) < 0) return false;
-            {
-                const owned = self.gpa.dupe(u8, path) catch return false;
-                const slot = self.wd_paths.getOrPut(self.gpa, @intCast(wd)) catch {
-                    self.gpa.free(owned);
-                    return false;
-                };
-                // A re-registered wd (same dir watched again) replaces its path.
-                if (slot.found_existing) self.gpa.free(slot.value_ptr.*);
-                slot.value_ptr.* = owned;
-            }
+    fn addWatchesRecursive(self: *Watcher, fd: i32, path: []const u8) bool {
+        if (comptime builtin.os.tag != .linux) return false;
+        const cpath = std.posix.toPosixPath(path) catch return false;
+        const wd = linux.inotify_add_watch(fd, &cpath, in_mask);
+        if (@as(isize, @bitCast(wd)) < 0) return false;
+        const owned = self.gpa.dupe(u8, path) catch return false;
+        const slot = self.wd_paths.getOrPut(self.gpa, @intCast(wd)) catch {
+            self.gpa.free(owned);
+            return false;
+        };
+        // A re-registered wd (same dir watched again) replaces its path.
+        if (slot.found_existing) self.gpa.free(slot.value_ptr.*);
+        slot.value_ptr.* = owned;
 
-            var dir = Dir.cwd().openDir(self.io, path, .{ .iterate = true }) catch return true;
-            defer dir.close(self.io);
-            var it = dir.iterate();
-            while (it.next(self.io) catch null) |e| {
-                if (e.kind != .directory) continue;
-                if (haystack.isSkipDir(e.name)) continue;
-                const child = haystack.joinPath(self.gpa, path, e.name) catch return false;
-                defer self.gpa.free(child);
-                if (!self.addWatchesRecursive(fd, child, mask)) return false;
-            }
-            return true;
+        var dir = Dir.cwd().openDir(self.io, path, .{ .iterate = true }) catch return true;
+        defer dir.close(self.io);
+        var it = dir.iterate();
+        while (it.next(self.io) catch null) |e| {
+            if (e.kind != .directory) continue;
+            if (haystack.isSkipDir(e.name)) continue;
+            const child = haystack.joinPath(self.gpa, path, e.name) catch return false;
+            defer self.gpa.free(child);
+            if (!self.addWatchesRecursive(fd, child)) return false;
         }
-        return false;
+        return true;
     }
 
     fn inotifyLoop(self: *Watcher) void {
-        if (comptime builtin.os.tag == .linux) {
-            const linux = std.os.linux;
-            const mask = linux.IN.MODIFY | linux.IN.CREATE | linux.IN.DELETE |
-                linux.IN.MOVED_FROM | linux.IN.MOVED_TO | linux.IN.ATTRIB |
-                linux.IN.CLOSE_WRITE | linux.IN.ONLYDIR;
-            var buf: [8192]u8 align(@alignOf(linux.inotify_event)) = undefined;
-            var pfd = [_]std.posix.pollfd{.{ .fd = self.inotify_fd, .events = std.posix.POLL.IN, .revents = 0 }};
-            while (self.running.load(.acquire)) {
-                const ready = std.posix.poll(&pfd, 500) catch break;
-                if (ready == 0) continue;
-                const n = std.posix.read(self.inotify_fd, &buf) catch |e| switch (e) {
-                    error.WouldBlock => continue,
-                    else => break,
-                };
-                if (n == 0) continue;
-                // Walk the event records for the two conditions that would
-                // silently break the clean fast path: a queue overflow (events
-                // were LOST — quiescence can never be proven again on this fd)
-                // and a directory created/moved in after arming (inotify does
-                // not recurse; an unwatched subtree is a blind spot). Extend
-                // coverage inline; if that fails, poison the session so it
-                // reconciles every query (fail-closed).
-                var off: usize = 0;
-                while (off + @sizeOf(linux.inotify_event) <= n) {
-                    // Cast-free record view (zig-safety): the fixed header is
-                    // copied out by value — 16 bytes on a cold path — instead
-                    // of reinterpreting the buffer pointer.
-                    const ev = std.mem.bytesToValue(linux.inotify_event, buf[off..][0..@sizeOf(linux.inotify_event)]);
-                    off += @sizeOf(linux.inotify_event) + ev.len;
-                    if (ev.mask & linux.IN.Q_OVERFLOW != 0) {
-                        self.session.markDoubtForever();
-                        continue;
-                    }
-                    const grew_dir = ev.mask & linux.IN.ISDIR != 0 and
-                        ev.mask & (linux.IN.CREATE | linux.IN.MOVED_TO) != 0;
-                    if (!grew_dir) continue;
-                    const name = nameOf(&ev, &buf, off) orelse {
-                        self.session.markDoubtForever();
-                        continue;
-                    };
-                    if (haystack.isSkipDir(name)) continue;
-                    const parent = self.wd_paths.get(ev.wd) orelse {
-                        self.session.markDoubtForever();
-                        continue;
-                    };
-                    const child = haystack.joinPath(self.gpa, parent, name) catch {
-                        self.session.markDoubtForever();
-                        continue;
-                    };
-                    defer self.gpa.free(child);
-                    // Racing creations inside the new dir before its watch lands
-                    // are covered: the recursive registration below re-lists the
-                    // subtree AFTER each watch is added, and markDirty forces
-                    // the next query's reconcile to walk it regardless.
-                    if (!self.addWatchesRecursive(self.inotify_fd, child, mask))
-                        self.session.markDoubtForever();
+        if (comptime builtin.os.tag != .linux) return;
+        var buf: [8192]u8 align(@alignOf(linux.inotify_event)) = undefined;
+        var pfd = [_]std.posix.pollfd{.{ .fd = self.inotify_fd, .events = std.posix.POLL.IN, .revents = 0 }};
+        while (self.running.load(.acquire)) {
+            const ready = std.posix.poll(&pfd, 500) catch break;
+            if (ready == 0) continue;
+            const n = std.posix.read(self.inotify_fd, &buf) catch |e| switch (e) {
+                error.WouldBlock => continue,
+                else => break,
+            };
+            if (n == 0) continue;
+            // Walk the event records for the two conditions that would
+            // silently break the clean fast path: a queue overflow (events
+            // were LOST — quiescence can never be proven again on this fd)
+            // and a directory created/moved in after arming (inotify does
+            // not recurse; an unwatched subtree is a blind spot). Extend
+            // coverage inline; if that fails, poison the session so it
+            // reconciles every query (fail-closed).
+            var off: usize = 0;
+            while (off + @sizeOf(linux.inotify_event) <= n) {
+                // Cast-free record view (zig-safety): the fixed header is
+                // copied out by value — 16 bytes on a cold path — instead
+                // of reinterpreting the buffer pointer.
+                const ev = std.mem.bytesToValue(linux.inotify_event, buf[off..][0..@sizeOf(linux.inotify_event)]);
+                off += @sizeOf(linux.inotify_event) + ev.len;
+                if (ev.mask & linux.IN.Q_OVERFLOW != 0) {
+                    self.session.markDoubtForever();
+                    continue;
                 }
-                self.session.markDirty();
+                const grew_dir = ev.mask & linux.IN.ISDIR != 0 and
+                    ev.mask & (linux.IN.CREATE | linux.IN.MOVED_TO) != 0;
+                if (grew_dir) self.coverNewDir(&ev, &buf, off);
             }
+            self.session.markDirty();
         }
+    }
+
+    /// Extend watch coverage into a directory created/moved in after arming;
+    /// any step that cannot be resolved poisons the session (fail-closed).
+    fn coverNewDir(self: *Watcher, ev: *const linux.inotify_event, buf: []const u8, rec_end: usize) void {
+        const name = nameOf(ev, buf, rec_end) orelse return self.session.markDoubtForever();
+        if (haystack.isSkipDir(name)) return;
+        const parent = self.wd_paths.get(ev.wd) orelse return self.session.markDoubtForever();
+        const child = haystack.joinPath(self.gpa, parent, name) catch return self.session.markDoubtForever();
+        defer self.gpa.free(child);
+        // Racing creations inside the new dir before its watch lands
+        // are covered: the recursive registration below re-lists the
+        // subtree AFTER each watch is added, and markDirty forces
+        // the next query's reconcile to walk it regardless.
+        if (!self.addWatchesRecursive(self.inotify_fd, child))
+            self.session.markDoubtForever();
     }
 
     /// The NUL-terminated name trailing a variable-length inotify record, or
     /// null when the record is malformed (caller treats that as doubt).
-    fn nameOf(ev: *const std.os.linux.inotify_event, buf: []const u8, rec_end: usize) ?[]const u8 {
-        if (ev.len == 0) return null;
-        if (rec_end > buf.len) return null;
+    fn nameOf(ev: *const linux.inotify_event, buf: []const u8, rec_end: usize) ?[]const u8 {
+        if (ev.len == 0 or rec_end > buf.len) return null;
         const raw = buf[rec_end - ev.len .. rec_end];
         const z = std.mem.indexOfScalar(u8, raw, 0) orelse return null;
-        if (z == 0) return null;
-        return raw[0..z];
+        return if (z == 0) null else raw[0..z];
     }
 
     // ── macOS FSEvents backend ──
@@ -344,13 +328,7 @@ pub const Watcher = struct {
     /// `start_result = 2` and returns unarmed.
     fn fseventsLoop(self: *Watcher) void {
         if (comptime !is_macos) return;
-        const fail = struct {
-            fn f(w: *Watcher) void {
-                w.start_result.store(2, .release);
-            }
-        }.f;
-
-        const paths = self.buildPathsArray() orelse return fail(self);
+        const paths = self.buildPathsArray() orelse return self.start_result.store(2, .release);
         defer darwin.CFRelease(paths);
 
         // intFromPtr/ptrFromInt keeps the FFI opaque seam free of @ptrCast
@@ -364,7 +342,7 @@ pub const Watcher = struct {
             darwin.kFSEventStreamEventIdSinceNow,
             darwin.latency,
             darwin.kFSEventStreamCreateFlagNoDefer | darwin.kFSEventStreamCreateFlagFileEvents,
-        ) orelse return fail(self);
+        ) orelse return self.start_result.store(2, .release);
         defer {
             darwin.FSEventStreamStop(stream);
             darwin.FSEventStreamInvalidate(stream);
@@ -374,7 +352,7 @@ pub const Watcher = struct {
         const rl = darwin.CFRunLoopGetCurrent();
         self.run_loop.store(rl, .release);
         darwin.FSEventStreamScheduleWithRunLoop(stream, rl, darwin.kCFRunLoopDefaultMode);
-        if (darwin.FSEventStreamStart(stream) == 0) return fail(self);
+        if (darwin.FSEventStreamStart(stream) == 0) return self.start_result.store(2, .release);
 
         self.running.store(true, .release);
         self.start_result.store(1, .release);

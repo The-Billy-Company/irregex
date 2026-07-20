@@ -7,11 +7,86 @@
 
 const std = @import("std");
 const haystack = @import("haystack.zig");
-const Dir = std.Io.Dir;
 
 pub const per_file_cap: usize = 4 << 20; // 4 MiB
-pub const out_dir = ".local/gist-verify";
-pub const default_roots = [_][]const u8{ "services", "libs", "clients", "contracts", "scripts", "quality" };
+
+/// Default artifact home, relative to the working directory — where the
+/// trigram index, kinship atlas, codex shelf, freshness anchor, and daemon
+/// socket live. `GIST_DIR` overrides it per invocation (`outDir`).
+pub const default_out_dir = ".local/gist-verify";
+
+/// The artifact directory for THIS process: `GIST_DIR` when set (trailing
+/// slashes trimmed), else `default_out_dir`. The env string outlives the
+/// process, so the returned slice is borrow-safe everywhere.
+pub fn outDir() []const u8 {
+    const v = std.c.getenv("GIST_DIR") orelse return default_out_dir;
+    const s = std.mem.trimEnd(u8, std.mem.span(v), "/");
+    return if (s.len == 0) default_out_dir else s;
+}
+
+/// A named artifact's full path (`<outDir()>/<name>`), formatted once per
+/// process into a static buffer. Env-stable, so the first fill is final; a
+/// spinlock + release-published length make the fill race-free without an
+/// `std.Io` handle (same idiom as `runtime/session/dirty.zig` — these are
+/// per-command lookups, never a hot loop). Instantiate per artifact:
+/// `const atlas_path = corpus.ArtifactPath("kinship.atlas");` → `.get()`.
+pub fn ArtifactPath(comptime name: []const u8) type {
+    return struct {
+        var locked: std.atomic.Value(bool) = .init(false);
+        var len: std.atomic.Value(usize) = .init(0);
+        var buf: [1024]u8 = undefined;
+        pub fn get() []const u8 {
+            if (len.load(.acquire) == 0) {
+                while (locked.swap(true, .acquire)) std.atomic.spinLoopHint();
+                defer locked.store(false, .release);
+                if (len.load(.acquire) == 0) {
+                    const d = outDir();
+                    std.debug.assert(d.len + 1 + name.len <= buf.len);
+                    @memcpy(buf[0..d.len], d);
+                    buf[d.len] = '/';
+                    @memcpy(buf[d.len + 1 ..][0..name.len], name);
+                    len.store(d.len + 1 + name.len, .release);
+                }
+            }
+            return buf[0..len.load(.acquire)];
+        }
+    };
+}
+
+/// The corpus roots for THIS working directory — the shared resolution every
+/// build verb (`gist index`, `gist codex build`, `relate index`, live relate
+/// verbs) runs when no explicit roots were given. Query paths that ride a
+/// persisted artifact prefer the roots persisted BESIDE it (`roots.list`,
+/// atlas roots blob) so a query always folds freshness over the corpus the
+/// artifact was actually built from; this resolver is the build-time (and
+/// no-artifact) answer. Two rungs:
+///   1. `GIST_ROOTS` — explicit override, `:`/space/comma-separated paths;
+///   2. `.` — the whole tree (the skip-dir policy still prunes VCS/build
+///      output). No tree layout is ever assumed; a corpus that wants a
+///      narrower scope passes roots positionally or via the env.
+/// Every returned string is owned by `gpa`; release with `freeRoots`.
+pub fn resolveRoots(gpa: std.mem.Allocator) ![]const []const u8 {
+    var roots: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (roots.items) |r| gpa.free(r);
+        roots.deinit(gpa);
+    }
+
+    if (std.c.getenv("GIST_ROOTS")) |v| {
+        var it = std.mem.tokenizeAny(u8, std.mem.span(v), ": ,");
+        while (it.next()) |tok| try roots.append(gpa, try gpa.dupe(u8, tok));
+        if (roots.items.len > 0) return roots.toOwnedSlice(gpa);
+    }
+
+    try roots.append(gpa, try gpa.dupe(u8, "."));
+    return roots.toOwnedSlice(gpa);
+}
+
+/// Free a `resolveRoots` result (each string + the outer slice).
+pub fn freeRoots(gpa: std.mem.Allocator, roots: []const []const u8) void {
+    for (roots) |r| gpa.free(r);
+    gpa.free(roots);
+}
 
 // ── output budget — the agent-context guard + the OOM ceiling ────────────────
 // irregex "pays tokens for every line of output": an unbounded result dump can blow
@@ -55,12 +130,16 @@ fn envUsize(key: [*:0]const u8) ?usize {
     return std.fmt.parseInt(usize, std.mem.trim(u8, std.mem.span(v), " \t"), 10) catch null;
 }
 
+/// The shared "explicitly off" spelling for boolean env knobs: `0`/`false`/`no`.
+fn envFalsy(s: []const u8) bool {
+    return std.mem.eql(u8, s, "0") or std.ascii.eqlIgnoreCase(s, "false") or std.ascii.eqlIgnoreCase(s, "no");
+}
+
 /// `GIST_UNCAP` truthiness — set to any value except `0`/`false`/`no`/empty
 /// lifts the soft guard (the bench harness sets `GIST_UNCAP=1`).
 fn envUncap() bool {
-    const v = std.c.getenv("GIST_UNCAP") orelse return false;
-    const s = std.mem.span(v);
-    return !(s.len == 0 or std.mem.eql(u8, s, "0") or std.ascii.eqlIgnoreCase(s, "false") or std.ascii.eqlIgnoreCase(s, "no"));
+    const s = std.mem.span(std.c.getenv("GIST_UNCAP") orelse return false);
+    return s.len != 0 and !envFalsy(s);
 }
 
 /// `GIST_HINTS` — the kill switch for the stderr guidance channel (`gist:
@@ -70,9 +149,7 @@ fn envUncap() bool {
 /// truncation notice below — one env read, one policy. Results on stdout are
 /// untouched either way; this only governs stderr guidance.
 pub fn hintsEnabled() bool {
-    const v = std.c.getenv("GIST_HINTS") orelse return true;
-    const s = std.mem.span(v);
-    return !(std.mem.eql(u8, s, "0") or std.ascii.eqlIgnoreCase(s, "false") or std.ascii.eqlIgnoreCase(s, "no"));
+    return !envFalsy(std.mem.span(std.c.getenv("GIST_HINTS") orelse return true));
 }
 
 /// Resolve this process's output ceilings from the `--uncap` flag and the

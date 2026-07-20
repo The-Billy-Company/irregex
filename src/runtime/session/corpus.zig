@@ -61,19 +61,15 @@ pub fn readDocOwned(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ?Owned
     const body = grepfile.decodeBom(gpa, raw);
     const owned: []u8 = if (body.ptr == raw.ptr and body.len == raw.len)
         raw // untouched
-    else if (@intFromPtr(body.ptr) >= @intFromPtr(raw.ptr) and @intFromPtr(body.ptr) <= @intFromPtr(raw.ptr) + raw.len) blk: {
-        // UTF-8 BOM strip: `body` is `raw[3..]` — re-own it as a fresh allocation.
-        const d = gpa.dupe(u8, body) catch {
-            gpa.free(raw);
-            return null;
-        };
-        gpa.free(raw);
-        break :blk d;
-    } else blk: {
+    else blk: {
+        // UTF-8 BOM strip: `body` is `raw[3..]` (an interior slice — freeing
+        // `raw` frees it) — re-own it as a fresh allocation.
         // UTF-16 transcode: `body` is a fresh allocation typed `[]const u8`
         // (decodeBom). Re-own as `[]u8` without `@constCast` — dupe then free.
-        gpa.free(raw);
-        defer gpa.free(body);
+        const interior = @intFromPtr(body.ptr) >= @intFromPtr(raw.ptr) and
+            @intFromPtr(body.ptr) <= @intFromPtr(raw.ptr) + raw.len;
+        defer if (!interior) gpa.free(body);
+        defer gpa.free(raw);
         break :blk gpa.dupe(u8, body) catch return null;
     };
     if (owned.len == 0) {

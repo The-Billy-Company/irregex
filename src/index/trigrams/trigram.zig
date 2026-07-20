@@ -2,9 +2,10 @@
 //!
 //! A document that *contains a literal* must contain every trigram of that
 //! literal, so the AND of the per-trigram posting lists is a sound *candidate
-//! set*: a superset of the true matches, cheaply computed without scanning. It
-//! is a FILTER, not a matcher — the caller still verifies each candidate with
-//! the real regex engine (false positives are expected and harmless; false
+//! set*: a superset of the true matches, cheaply computed without scanning
+//! (Cox 2012 / google codesearch — required-trigram filter + verify). It is a
+//! FILTER, not a matcher — the caller still verifies each candidate with the
+//! real regex engine (false positives are expected and harmless; false
 //! negatives are not, and the trigram filter has none for literals ≥ 3 bytes).
 //!
 //! **On-disk/in-memory shape — a CSR directory over delta-varint posting
@@ -35,6 +36,7 @@ const std = @import("std");
 const blob = @import("../postings/persisted_blob.zig");
 const ngram = @import("ngram.zig");
 const varint = @import("../postings/varint.zig");
+const verify = @import("../../search/match/scan/verify.zig");
 
 /// A trigram packed big-endian into the low 24 bits of a u32 (re-exported from
 /// `ngram` so the index's public surface stays self-contained).
@@ -129,25 +131,9 @@ pub const Index = struct {
         const nthr = @min(@max(ncpu, 1), docs.len);
 
         // Byte-balanced contiguous [lo, hi) shards keep concat doc-major.
-        const target = upper / nthr;
-        const bounds = try allocator.alloc([2]usize, nthr);
+        const bounds = try allocator.alloc(usize, nthr + 1);
         defer allocator.free(bounds);
-        {
-            var t: usize = 0;
-            var acc: usize = 0;
-            var start: usize = 0;
-            for (docs, 0..) |d, di| {
-                acc += d.len;
-                if (t + 1 < nthr and acc >= target * (t + 1)) {
-                    bounds[t] = .{ start, di + 1 };
-                    start = di + 1;
-                    t += 1;
-                }
-            }
-            bounds[t] = .{ start, docs.len };
-            t += 1;
-            while (t < nthr) : (t += 1) bounds[t] = .{ docs.len, docs.len };
-        }
+        verify.greedyBounds([]const u8, docs, {}, verify.sliceLen, upper, bounds);
 
         const shards = try allocator.alloc(ExtractShard, nthr);
         defer allocator.free(shards);
@@ -157,10 +143,10 @@ pub const Index = struct {
         var allocated: usize = 0;
         errdefer for (shards[0..allocated]) |*sh| allocator.free(sh.buf);
         for (0..nthr) |t| {
-            const slice = docs[bounds[t][0]..bounds[t][1]];
+            const slice = docs[bounds[t]..bounds[t + 1]];
             var bytes: usize = 0;
             for (slice) |d| bytes += d.len;
-            shards[t] = .{ .docs = slice, .base_doc = @intCast(bounds[t][0]), .buf = try allocator.alloc(Posting, @max(bytes, 1)) };
+            shards[t] = .{ .docs = slice, .base_doc = @intCast(bounds[t]), .buf = try allocator.alloc(Posting, @max(bytes, 1)) };
             allocated += 1;
         }
         defer for (shards) |*sh| allocator.free(sh.buf);
@@ -278,14 +264,7 @@ pub const Index = struct {
     }
 
     fn blobView(self: *const Index) blob.Structure {
-        return .{
-            .dir_tri = self.dir_tri,
-            .dir_off = self.dir_off,
-            .dir_count = self.dir_count,
-            .body = self.body,
-            .doc_count = self.doc_count,
-            .posting_count = self.posting_count,
-        };
+        return .{ .dir_tri = self.dir_tri, .dir_off = self.dir_off, .dir_count = self.dir_count, .body = self.body, .doc_count = self.doc_count, .posting_count = self.posting_count };
     }
 
     /// Bytes needed to serialize this index (header + directory + body).
@@ -303,54 +282,27 @@ pub const Index = struct {
     pub fn fromBytes(allocator: std.mem.Allocator, bytes: []const u8) LoadError!Index {
         const h = try blob.parseHeader(bytes);
         var off: usize = header_len;
-        const dir_tri = try allocator.alloc(u32, h.n_tri);
-        errdefer allocator.free(dir_tri);
-        @memcpy(std.mem.sliceAsBytes(dir_tri), bytes[off..][0 .. h.n_tri * 4]);
-        off += h.n_tri * 4;
-        const dir_off = try allocator.alloc(u32, h.n_tri);
-        errdefer allocator.free(dir_off);
-        @memcpy(std.mem.sliceAsBytes(dir_off), bytes[off..][0 .. h.n_tri * 4]);
-        off += h.n_tri * 4;
-        const dir_count = try allocator.alloc(u32, h.n_tri);
-        errdefer allocator.free(dir_count);
-        @memcpy(std.mem.sliceAsBytes(dir_count), bytes[off..][0 .. h.n_tri * 4]);
-        off += h.n_tri * 4;
-        const body_len = bytes.len - off;
+        var dirs: [3][]u32 = undefined;
+        var made: usize = 0;
+        errdefer for (dirs[0..made]) |d| allocator.free(d);
+        for (&dirs) |*d| {
+            d.* = try allocator.alloc(u32, h.n_tri);
+            made += 1;
+            @memcpy(std.mem.sliceAsBytes(d.*), bytes[off..][0 .. h.n_tri * 4]);
+            off += h.n_tri * 4;
+        }
         // Exact length (including zero) keeps `deinit`'s free shape identical.
-        const body = try allocator.alloc(u8, body_len);
+        const body = try allocator.alloc(u8, bytes.len - off);
         errdefer allocator.free(body);
         @memcpy(body, bytes[off..]);
         // Reject corrupt copied bodies; errdefers release every region.
-        try blob.validateStructure(.{
-            .dir_tri = dir_tri,
-            .dir_off = dir_off,
-            .dir_count = dir_count,
-            .body = body,
-            .doc_count = h.doc_count,
-            .posting_count = h.posting_count,
-        });
-        return .{
-            .dir_tri = dir_tri,
-            .dir_off = dir_off,
-            .dir_count = dir_count,
-            .body = body,
-            .doc_count = h.doc_count,
-            .posting_count = h.posting_count,
-            .allocator = allocator,
-        };
+        try blob.validateStructure(.{ .dir_tri = dirs[0], .dir_off = dirs[1], .dir_count = dirs[2], .body = body, .doc_count = h.doc_count, .posting_count = h.posting_count });
+        return .{ .dir_tri = dirs[0], .dir_off = dirs[1], .dir_count = dirs[2], .body = body, .doc_count = h.doc_count, .posting_count = h.posting_count, .allocator = allocator };
     }
 
     fn borrowMapped(m: blob.MappedRegions) Index {
-        return .{
-            .dir_tri = m.dir_tri,
-            .dir_off = m.dir_off,
-            .dir_count = m.dir_count,
-            .body = m.body,
-            .doc_count = m.header.doc_count,
-            .posting_count = m.header.posting_count,
-            .allocator = undefined, // unused: `borrowed` ⇒ `deinit` frees nothing
-            .borrowed = true,
-        };
+        // `allocator` is undefined — unused: `borrowed` ⇒ `deinit` frees nothing
+        return .{ .dir_tri = m.dir_tri, .dir_off = m.dir_off, .dir_count = m.dir_count, .body = m.body, .doc_count = m.header.doc_count, .posting_count = m.header.posting_count, .allocator = undefined, .borrowed = true };
     }
 
     /// Borrow after FULL eager posting validation: the untrusted/test contract.
@@ -445,10 +397,8 @@ pub const Index = struct {
         var n = try self.decodeGroup(seed, cand);
 
         if (groups.len > 1) {
-            const scratch = lazy.* orelse blk: {
-                lazy.* = try allocator.alloc(u32, self.doc_count);
-                break :blk lazy.*.?;
-            };
+            if (lazy.* == null) lazy.* = try allocator.alloc(u32, self.doc_count);
+            const scratch = lazy.*.?;
             for (groups[1..]) |gi| {
                 const cnt = try self.decodeGroup(gi, scratch);
                 n = intersectAscending(cand[0..n], scratch[0..cnt]);

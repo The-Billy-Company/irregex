@@ -153,6 +153,23 @@ pub const BulkDir = struct {
 
 const Parsed = struct { value: Entry, advance: usize };
 
+/// Bounds-checked little-endian field read — `std.mem.readInt` on a byte
+/// slice (never a direct pointer cast): the kernel's packing isn't guaranteed
+/// to leave every field naturally aligned for a typed load.
+inline fn readAt(comptime T: type, buf: []const u8, pos: usize) !T {
+    if (pos + @sizeOf(T) > buf.len) return error.BulkStatUnsupported;
+    return std.mem.readInt(T, buf[pos..][0..@sizeOf(T)], .little);
+}
+
+/// One packed `timespec` (i64 sec + i64 nsec) → nanoseconds, or null when
+/// `returned_common` says the kernel didn't have the value (the field still
+/// occupies its 16 bytes under `FSOPT_PACK_INVAL_ATTRS`).
+inline fn readTimespec(buf: []const u8, pos: usize, valid: bool) !?i128 {
+    const sec = try readAt(i64, buf, pos);
+    const nsec = try readAt(i64, buf, pos + 8);
+    return if (valid) @as(i128, sec) * std.time.ns_per_s + @as(i128, nsec) else null;
+}
+
 /// Parse one entry at `start`. Layout (Apple's fixed group order for our
 /// exact request): `u32 length` │ `attribute_set_t returned` (5×u32=20 B) │
 /// `attrreference_t name` (i32 offset + u32 length, 8 B — the offset is
@@ -165,21 +182,18 @@ const Parsed = struct { value: Entry, advance: usize };
 /// packs every requested field; `returned_common` says whether each value is
 /// valid, so invalid timestamps still advance `pos` but become null metadata.
 fn parseEntry(buf: []const u8, start: usize) !Parsed {
-    if (start + 4 > buf.len) return error.BulkStatUnsupported;
-    const length = std.mem.readInt(u32, buf[start..][0..4], .little);
+    const length = try readAt(u32, buf, start);
     if (length == 0 or start + length > buf.len) return error.BulkStatUnsupported;
 
     var pos = start + 4;
-    if (pos + 20 > buf.len) return error.BulkStatUnsupported;
-    const returned_common = std.mem.readInt(u32, buf[pos..][0..4], .little);
+    const returned_common = try readAt(u32, buf, pos);
     pos += 20; // attribute_set_t: commonattr, volattr, dirattr, fileattr, forkattr
 
     if (returned_common & ATTR_CMN_NAME == 0 or returned_common & ATTR_CMN_OBJTYPE == 0)
         return error.BulkStatUnsupported;
 
-    if (pos + 8 > buf.len) return error.BulkStatUnsupported;
-    const data_offset = std.mem.readInt(i32, buf[pos..][0..4], .little);
-    const data_len = std.mem.readInt(u32, buf[pos + 4 ..][0..4], .little);
+    const data_offset = try readAt(i32, buf, pos);
+    const data_len = try readAt(u32, buf, pos + 4);
     const name_start = @as(i64, @intCast(pos)) + data_offset;
     if (name_start < 0) return error.BulkStatUnsupported;
     const ns: usize = @intCast(name_start);
@@ -189,26 +203,12 @@ fn parseEntry(buf: []const u8, start: usize) !Parsed {
     if (std.mem.indexOfScalar(u8, name, 0)) |nul| name = name[0..nul]; // NUL-terminated
     pos += 8;
 
-    if (pos + 4 > buf.len) return error.BulkStatUnsupported;
-    const objtype = std.mem.readInt(u32, buf[pos..][0..4], .little);
+    const objtype = try readAt(u32, buf, pos);
     pos += 4;
 
-    if (pos + 16 > buf.len) return error.BulkStatUnsupported;
-    const mtime_sec = std.mem.readInt(i64, buf[pos..][0..8], .little);
-    const mtime_nsec = std.mem.readInt(i64, buf[pos + 8 ..][0..8], .little);
-    const mtime_ns: ?i128 = if (returned_common & ATTR_CMN_MODTIME != 0)
-        @as(i128, mtime_sec) * std.time.ns_per_s + @as(i128, mtime_nsec)
-    else
-        null;
+    const mtime_ns = try readTimespec(buf, pos, returned_common & ATTR_CMN_MODTIME != 0);
     pos += 16;
-
-    if (pos + 16 > buf.len) return error.BulkStatUnsupported;
-    const ctime_sec = std.mem.readInt(i64, buf[pos..][0..8], .little);
-    const ctime_nsec = std.mem.readInt(i64, buf[pos + 8 ..][0..8], .little);
-    const ctime_ns: ?i128 = if (returned_common & ATTR_CMN_CHGTIME != 0)
-        @as(i128, ctime_sec) * std.time.ns_per_s + @as(i128, ctime_nsec)
-    else
-        null;
+    const ctime_ns = try readTimespec(buf, pos, returned_common & ATTR_CMN_CHGTIME != 0);
 
     return .{
         .value = .{
@@ -240,13 +240,13 @@ pub fn visitFresh(a: Allocator, io: std.Io, dir: Dir, prefix: []const u8, built_
             if (haystack.isSkipDir(entry.name)) continue;
             var sub = dir.openDir(io, entry.name, .{ .iterate = true }) catch continue;
             defer sub.close(io);
-            const sub_prefix = std.fmt.allocPrint(a, "{s}/{s}", .{ prefix, entry.name }) catch return;
+            const sub_prefix = haystack.joinRoot(a, prefix, entry.name) catch return;
             visitFresh(a, io, sub, sub_prefix, built_ns, out);
             continue;
         }
         if (!entry.is_file) continue; // symlinks/etc — never followed, matches haystack.Walker
         if (!needsLiveRead(built_ns, entry.mtime_ns, entry.ctime_ns)) continue;
-        const full = std.fmt.allocPrint(a, "{s}/{s}", .{ prefix, entry.name }) catch return;
+        const full = haystack.joinRoot(a, prefix, entry.name) catch return;
         out.append(a, full) catch return;
     }
 }

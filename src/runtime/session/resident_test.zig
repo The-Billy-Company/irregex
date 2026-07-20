@@ -402,3 +402,243 @@ test "resident: regex and caseless paths agree with the literal path" {
         try expectFileSet(&tree, files, &.{ "lower.txt", "upper.txt" });
     }
 }
+
+/// A `search`-face sink that renders each record as `path:lineno:text [s,e)…`
+/// so a test pins the FULL record stream (paths, line numbers, span offsets).
+const RecSink = struct {
+    a: std.mem.Allocator,
+    out: std.ArrayList(u8) = .empty,
+
+    pub fn emit(self: *RecSink, rec: resident.MatchRecord) bool {
+        self.out.print(self.a, "{s}:{d}:{s}", .{ rec.path, rec.line_number, rec.text }) catch return true;
+        for (rec.spans) |sp| self.out.print(self.a, " [{d},{d})", .{ sp.start, sp.end }) catch return true;
+        self.out.append(self.a, '\n') catch return true;
+        return false;
+    }
+};
+
+test "resident: -w applies cold's exact word rule on every answer face" {
+    // Expected values are derived from ripgrep's post-match word rule as cold
+    // implements it (`output.zig::wordOk`/`nextSpan`), verified against a live
+    // cold `gist -w` run over these fixtures — never from the warm engine:
+    //   - a word-REJECTED occurrence keeps scanning its line (`rerun run`);
+    //   - a doc can boolean-match with ZERO word-valid lines (b.txt) and must
+    //     vanish from every face;
+    //   - Unicode neighbors kill a span (`érun`, `中run`);
+    //   - a punctuation-only match is still a word match (`a . b`);
+    //   - `-F` adjacent repeats scan leftmost non-overlapping (`aa` in `aaa`);
+    //   - zero-width matches never count under -w (`x*` on a letters-only line).
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var fixture = std.heap.ArenaAllocator.init(gpa);
+    defer fixture.deinit();
+
+    var tree = try Tree.init(fixture.allocator(), io, "word", @intFromPtr(&threaded));
+    defer tree.deinit();
+    try tree.write("a.txt", "run runner\nrerun run\n"); // line 1 valid at [0,3); line 2 valid only at [6,9)
+    try tree.write("b.txt", "runner rerun\n"); // boolean-matches `run`, zero word-valid spans
+    try tree.write("c.txt", "\xc3\xa9run \xe4\xb8\xadrun\n"); // érun · 中run — both rejected
+    try tree.write("d.txt", "RUN loud\n"); // case-composition fixture
+    try tree.write("e.txt", "a . b\n.dot\n"); // punctuation-only match; `.dot` rejected
+    try tree.write("f.txt", " aa aaa\naaaa\n"); // -F adjacent repeats; line 2 has no valid occurrence
+    try tree.write("g.txt", "x x\nyy\n"); // zero-width-adjacent regex fixture
+
+    var session = try ResidentSession.init(gpa, io, &.{tree.root});
+    defer session.deinit();
+
+    // ── files face (-l) ──
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        const w = try queryFiles(&session, q.allocator(), .{ .pattern = "run", .mode = .files, .fixed = true, .word = true });
+        try expectFileSet(&tree, w, &.{"a.txt"});
+        // Without -w the same pattern reaches the substring/Unicode-neighbor docs.
+        const plain = try queryFiles(&session, q.allocator(), .{ .pattern = "run", .mode = .files, .fixed = true });
+        try expectFileSet(&tree, plain, &.{ "a.txt", "b.txt", "c.txt" });
+    }
+    // ── count face (-c): word-valid LINES, zero-width never counts ──
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        const counted = try session.query(q.allocator(), .{ .pattern = "run", .mode = .count, .fixed = true, .word = true });
+        try std.testing.expectEqual(@as(u64, 2), counted.count); // a.txt both lines
+        const punct = try session.query(q.allocator(), .{ .pattern = "\\.", .mode = .count, .word = true });
+        try std.testing.expectEqual(@as(u64, 1), punct.count); // `a . b` yes, `.dot` no
+        const rep = try session.query(q.allocator(), .{ .pattern = "aa", .mode = .count, .fixed = true, .word = true });
+        try std.testing.expectEqual(@as(u64, 1), rep.count); // ` aa aaa` yes, `aaaa` no
+        const star = try session.query(q.allocator(), .{ .pattern = "x*", .mode = .count, .word = true });
+        try std.testing.expectEqual(@as(u64, 1), star.count); // `x x` yes; every zero-width-only line no
+    }
+    // ── case composition: -w with -i / smart-case; word runs on original bytes ──
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        const folded = try queryFiles(&session, q.allocator(), .{ .pattern = "run", .mode = .files, .fixed = true, .ignore_case = true, .word = true });
+        try expectFileSet(&tree, folded, &.{ "a.txt", "d.txt" }); // RUN now word-valid; érun/中run still rejected
+        const smart = try queryFiles(&session, q.allocator(), .{ .pattern = "run", .mode = .files, .fixed = true, .smart_case = true, .word = true });
+        try expectFileSet(&tree, smart, &.{ "a.txt", "d.txt" }); // lowercase -S folds like -i
+        const smart_upper = try queryFiles(&session, q.allocator(), .{ .pattern = "RUN", .mode = .files, .fixed = true, .smart_case = true, .word = true });
+        try expectFileSet(&tree, smart_upper, &.{"d.txt"}); // uppercase -S stays sensitive
+    }
+    // ── lines face: rendered through the cold Emitter with o.word set ──
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        const ans = try session.queryLines(q.allocator(), .{ .pattern = "run", .mode = .lines, .fixed = true, .word = true });
+        try std.testing.expect(ans.matched);
+        const want = try std.fmt.allocPrint(q.allocator(), "{s}/a.txt:run runner\n{s}/a.txt:rerun run\n", .{ tree.root, tree.root });
+        try std.testing.expectEqualStrings(want, ans.out);
+    }
+    // ── search face (FFI record stream): word-filtered spans, byte offsets ──
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        var sink = RecSink{ .a = q.allocator() };
+        const any = try session.search(q.allocator(), .{ .pattern = "run", .mode = .files, .fixed = true, .word = true }, &sink);
+        try std.testing.expect(any);
+        // b.txt/c.txt boolean-match but emit NO records and never flip `any`;
+        // a.txt line 2's rejected `rerun` span is absent, only ` run` remains.
+        const want = try std.fmt.allocPrint(q.allocator(), "{s}/a.txt:1:run runner [0,3)\n{s}/a.txt:2:rerun run [6,9)\n", .{ tree.root, tree.root });
+        try std.testing.expectEqualStrings(want, sink.out.items);
+    }
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        var sink = RecSink{ .a = q.allocator() };
+        const any = try session.search(q.allocator(), .{ .pattern = "aa", .mode = .files, .fixed = true, .word = true }, &sink);
+        try std.testing.expect(any);
+        // ` aa aaa`: [1,3) valid; the `aaa` occurrence [4,6) is word-rejected and
+        // the non-overlapping scan finds nothing after it. `aaaa` emits nothing.
+        const want = try std.fmt.allocPrint(q.allocator(), "{s}/f.txt:1: aa aaa [1,3)\n", .{tree.root});
+        try std.testing.expectEqualStrings(want, sink.out.items);
+    }
+    // A pattern whose EVERY occurrence is word-rejected (`unner` always has a
+    // word char before it): the stream emits nothing and reports no match.
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        var sink = RecSink{ .a = q.allocator() };
+        const any = try session.search(q.allocator(), .{ .pattern = "unner", .mode = .files, .fixed = true, .word = true }, &sink);
+        try std.testing.expect(!any);
+        try std.testing.expectEqualStrings("", sink.out.items);
+    }
+}
+
+test "resident: -w composes with the binary pre-NUL slice per mode" {
+    // The word check runs WITHIN the mode's gated bytes: `-l` observes complete
+    // buffers before the NUL one, `-c` suppresses an implicit binary entirely,
+    // the lines face emits pre-cut matches + WARNING — all with word-filtered
+    // spans, exactly cold's composition of the two rules.
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var fixture = std.heap.ArenaAllocator.init(gpa);
+    defer fixture.deinit();
+
+    var tree = try Tree.init(fixture.allocator(), io, "wordbin", @intFromPtr(&threaded));
+    defer tree.deinit();
+    try tree.write("early.dat", "run\x00tail"); // NUL in the first buffer ⇒ invisible to -l
+    var big: std.ArrayList(u8) = .empty;
+    defer big.deinit(gpa);
+    try big.appendSlice(gpa, "run early\nrunner noise\n");
+    try big.appendNTimes(gpa, 'z', 65536);
+    try big.append(gpa, 0);
+    try tree.write("late.dat", big.items); // word-valid match in a complete pre-NUL buffer
+    try tree.write("plain.txt", "a run here\n");
+
+    var session = try ResidentSession.init(gpa, io, &.{tree.root});
+    defer session.deinit();
+
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        const files = try queryFiles(&session, q.allocator(), .{ .pattern = "run", .mode = .files, .fixed = true, .word = true });
+        try expectFileSet(&tree, files, &.{ "late.dat", "plain.txt" });
+    }
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        const counted = try session.query(q.allocator(), .{ .pattern = "run", .mode = .count, .fixed = true, .word = true });
+        try std.testing.expectEqual(@as(u64, 1), counted.count); // plain.txt only (binaries suppressed)
+    }
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        const ans = try session.queryLines(q.allocator(), .{ .pattern = "run", .mode = .lines, .fixed = true, .word = true });
+        try std.testing.expect(ans.matched);
+        const late = try tree.abs("late.dat");
+        const head = try std.fmt.allocPrint(q.allocator(), "{s}:run early\n", .{late});
+        try std.testing.expect(std.mem.startsWith(u8, ans.out, head));
+        try std.testing.expect(std.mem.indexOf(u8, ans.out, "runner noise") == null); // word-rejected line never prints
+        try std.testing.expect(std.mem.indexOf(u8, ans.out, "WARNING: stopped searching binary file") != null);
+    }
+}
+
+test "resident: smart-case resolves like cold's fold on every answer face" {
+    // A lowercase pattern under -S answers exactly like -i; any uppercase in
+    // the pattern keeps it case-sensitive. The resolution happens once in
+    // `Request.effectiveIgnoreCase`, so the fold faces (files/count) and the
+    // lines renderer must all agree with it.
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var fixture = std.heap.ArenaAllocator.init(gpa);
+    defer fixture.deinit();
+
+    var tree = try Tree.init(fixture.allocator(), io, "smartcase", @intFromPtr(&threaded));
+    defer tree.deinit();
+    try tree.write("lower.txt", "the needle is here\n");
+    try tree.write("upper.txt", "the Needle is HERE\n");
+
+    var session = try ResidentSession.init(gpa, io, &.{tree.root});
+    defer session.deinit();
+
+    // -S + all-lowercase pattern ⇒ folds caseless: both files, like -i.
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        const files = try queryFiles(&session, q.allocator(), .{ .pattern = "needle", .mode = .files, .fixed = true, .smart_case = true });
+        try expectFileSet(&tree, files, &.{ "lower.txt", "upper.txt" });
+    }
+    // -S + uppercase pattern ⇒ stays case-sensitive: only the exact match.
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        const files = try queryFiles(&session, q.allocator(), .{ .pattern = "Needle", .mode = .files, .fixed = true, .smart_case = true });
+        try expectFileSet(&tree, files, &.{"upper.txt"});
+    }
+    // The count face resolves through the same seam.
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        const counted = try session.query(q.allocator(), .{ .pattern = "needle", .mode = .count, .fixed = true, .smart_case = true });
+        try std.testing.expectEqual(@as(u64, 2), counted.count);
+    }
+    // The lines renderer folds identically (both rows, cold's frame).
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        const ans = try session.queryLines(q.allocator(), .{ .pattern = "needle", .mode = .lines, .fixed = true, .smart_case = true });
+        try std.testing.expect(ans.matched);
+        const want = try std.fmt.allocPrint(q.allocator(), "{s}/lower.txt:the needle is here\n{s}/upper.txt:the Needle is HERE\n", .{ tree.root, tree.root });
+        try std.testing.expectEqualStrings(want, ans.out);
+    }
+    // Regex smart-case: the resolved caseless drives the compiled query (and
+    // its trigram-prefilter decline), not just the literal path.
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        const files = try queryFiles(&session, q.allocator(), .{ .pattern = "n.edle", .mode = .files, .smart_case = true });
+        try expectFileSet(&tree, files, &.{ "lower.txt", "upper.txt" });
+    }
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        const files = try queryFiles(&session, q.allocator(), .{ .pattern = "N.edle", .mode = .files, .smart_case = true });
+        try expectFileSet(&tree, files, &.{"upper.txt"});
+    }
+}

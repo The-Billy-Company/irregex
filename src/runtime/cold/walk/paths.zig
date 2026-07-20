@@ -14,8 +14,7 @@ const oom = @import("../argv/args.zig").oom;
 /// against ignore rules / index keys the same as a bare `root` positional's do.
 pub fn stripDot(s: []const u8) []const u8 {
     if (std.mem.startsWith(u8, s, "./")) return s[2..];
-    if (std.mem.eql(u8, s, ".")) return "";
-    return s;
+    return if (std.mem.eql(u8, s, ".")) "" else s;
 }
 
 /// Component depth of an explicit positional root (`Ignore.scopeToRoot`'s
@@ -50,9 +49,7 @@ pub fn lowerDup(a: std.mem.Allocator, s: []const u8) []u8 {
 pub fn replaceSep(a: std.mem.Allocator, path: []const u8, sep: []const u8) []const u8 {
     if (std.mem.indexOfScalar(u8, path, '/') == null) return path;
     var out: std.ArrayList(u8) = .empty;
-    for (path) |c| {
-        if (c == '/') out.appendSlice(a, sep) catch oom() else out.append(a, c) catch oom();
-    }
+    for (path) |c| (if (c == '/') out.appendSlice(a, sep) else out.append(a, c)) catch oom();
     return out.toOwnedSlice(a) catch oom();
 }
 

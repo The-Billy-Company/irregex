@@ -12,7 +12,7 @@
 //! offered to `rrr.Bits.adopt`, which keeps the RRR encoding wherever it
 //! measures smaller. Over a BWT the levels are run-heavy, RRR prices runs at
 //! ~0, and the whole tree lands near the k-th order entropy of the ORIGINAL
-//! text (implicit compression boosting — Mäkinen & Navarro, CPM 2007).
+//! text (implicit compression boosting — Mäkinen & Navarro, SPIRE 2007).
 //!
 //! The alphabet is `u16` symbols in [0, sigma) — the codex feeds bytes shifted
 //! +1 with sentinel 0, so σ = 257; nothing here assumes that beyond σ ≤ 4096.
@@ -49,12 +49,10 @@ pub const Huff = struct {
         var order = try gpa.alloc(u16, sigma);
         defer gpa.free(order);
         var np: usize = 0;
-        for (freq, 0..) |f, c| {
-            if (f > 0) {
-                order[np] = @intCast(c);
-                np += 1;
-            }
-        }
+        for (freq, 0..) |f, c| if (f > 0) {
+            order[np] = @intCast(c);
+            np += 1;
+        };
         std.debug.assert(np >= 1);
         if (np == 1) {
             h.len[order[0]] = 1; // degenerate σ=1: one-bit code "0"
@@ -222,16 +220,10 @@ pub const Tree = struct {
         // stable in-place partition via cycle-free two-pointer copy through a stack slice
         {
             var buf: [512]u16 = undefined;
-            var right_tmp: []u16 = undefined;
-            var heap_tmp: ?[]u16 = null;
-            defer if (heap_tmp) |t| gpa.free(t);
             const nright = seq.len - nzero;
-            if (nright <= buf.len) {
-                right_tmp = buf[0..nright];
-            } else {
-                heap_tmp = try gpa.alloc(u16, nright);
-                right_tmp = heap_tmp.?;
-            }
+            const heap_tmp: ?[]u16 = if (nright > buf.len) try gpa.alloc(u16, nright) else null;
+            defer if (heap_tmp) |t| gpa.free(t);
+            const right_tmp = heap_tmp orelse buf[0..nright];
             var li: usize = 0;
             var ri: usize = 0;
             for (seq) |c| {

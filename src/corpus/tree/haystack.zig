@@ -20,6 +20,7 @@
 
 const std = @import("std");
 const Dir = std.Io.Dir;
+const corpus_mod = @import("corpus.zig"); // mutual import; only `outDir()` is touched
 
 /// A file discovered by the walk: a resolved, root-joined path plus the
 /// directory handle + basename needed to read or stat it right now.
@@ -38,15 +39,18 @@ pub const Haystack = struct {
 ///
 /// `std.StaticStringMap` — the same technique Zig's own tokenizer keyword
 /// lookup uses (`std.zig.primitives.names`, `std.zig.Token.getKeyword`) —
-/// buckets these 35 names by length at comptime, so a lookup is one length
+/// buckets these 34 names by length at comptime, so a lookup is one length
 /// check + a compare against only the few same-length candidates, instead of
-/// testing all 35 in the worst (most common) case of "not a skip dir".
+/// testing all 34 in the worst (most common) case of "not a skip dir".
 /// Measured (standalone ReleaseFast micro-bench, 1786 real repo directory
 /// basenames pulled from `git ls-tree`, 2000 passes): a linear `std.mem.eql`
 /// scan over the flat list runs 18.5 ns/call; this runs 2.8 ns/call — a 6.6×
 /// win — free of any hand-maintained per-length table (a hand-rolled `switch`
 /// on length shaved a further ~6% but risks silently drifting out of sync
 /// with this list; not worth it for noise-level gain on an already-cheap op).
+/// Every name is a cross-ecosystem convention (VCS, package caches, build
+/// output) — nothing project-specific; a tree with its own heavy dirs extends
+/// the policy per invocation via `GIST_SKIP`.
 const skip_dirs = std.StaticStringMap(void).initComptime(.{
     .{".git"},          .{".github"},     .{".hg"},           .{".svn"},        .{"node_modules"},
     .{"target"},        .{"dist"},        .{"dist-types"},    .{"build"},       .{".build"},
@@ -54,12 +58,69 @@ const skip_dirs = std.StaticStringMap(void).initComptime(.{
     .{"site-packages"}, .{"__pycache__"}, .{".pytest_cache"}, .{".mypy_cache"}, .{".ruff_cache"},
     .{".zig-cache"},    .{"zig-out"},     .{".cache"},        .{".local"},      .{".turbo"},
     .{"vendor"},        .{".swiftpm"},    .{"Pods"},          .{"DerivedData"}, .{".cursor"},
-    .{".idea"},         .{".vscode"},     .{".parcel-cache"}, .{".pnpm-store"}, .{"graphify-out"},
+    .{".idea"},         .{".vscode"},     .{".parcel-cache"}, .{".pnpm-store"},
 });
 
-/// Is `name` a directory basename every corpus walk skips? (See `skip_dirs`.)
+/// Extra skip basenames, parsed once per process from two optional sources:
+/// the `GIST_SKIP` env (`:`/`,`/space separated — one-shot override) and the
+/// per-tree config `<outDir()>/skips.list` (one name per line, `#` comments —
+/// the durable policy a project seeds once, e.g. `graphify-out`). The comptime
+/// baseline above stays generic; anything project-specific rides these. Env
+/// tokens borrow the env string (it outlives the process); file tokens borrow
+/// a static buffer filled under the same lock. The spinlock idiom matches
+/// `corpus.ArtifactPath` (per-directory lookups against a near-always-empty
+/// list, never a hot loop once `done` publishes).
+const extra_skips = struct {
+    var locked: std.atomic.Value(bool) = .init(false);
+    var done: std.atomic.Value(bool) = .init(false);
+    var file_buf: [4096]u8 = undefined;
+    var names: [32][]const u8 = undefined;
+    var count: usize = 0;
+
+    fn add(tok: []const u8) void {
+        if (count < names.len) {
+            names[count] = tok;
+            count += 1;
+        }
+    }
+
+    fn fill() void {
+        if (std.c.getenv("GIST_SKIP")) |v| {
+            var it = std.mem.tokenizeAny(u8, std.mem.span(v), ": ,");
+            while (it.next()) |tok| add(tok);
+        }
+        var path_buf: [1024]u8 = undefined;
+        const path = std.fmt.bufPrint(&path_buf, "{s}/skips.list", .{corpus_mod.outDir()}) catch return;
+        const fd = std.posix.openat(std.posix.AT.FDCWD, path, .{ .ACCMODE = .RDONLY }, 0) catch return;
+        defer _ = std.posix.system.close(fd);
+        const n = std.posix.read(fd, &file_buf) catch return;
+        var lines = std.mem.tokenizeAny(u8, file_buf[0..n], "\r\n");
+        while (lines.next()) |line| {
+            const t = std.mem.trim(u8, line, " \t");
+            if (t.len == 0 or t[0] == '#') continue;
+            add(t);
+        }
+    }
+
+    fn list() []const []const u8 {
+        if (!done.load(.acquire)) {
+            while (locked.swap(true, .acquire)) std.atomic.spinLoopHint();
+            defer locked.store(false, .release);
+            if (!done.load(.acquire)) {
+                fill();
+                done.store(true, .release);
+            }
+        }
+        return names[0..count];
+    }
+};
+
+/// Is `name` a directory basename every corpus walk skips? (`skip_dirs`
+/// baseline + `GIST_SKIP` extension.)
 pub fn isSkipDir(name: []const u8) bool {
-    return skip_dirs.has(name);
+    if (skip_dirs.has(name)) return true;
+    for (extra_skips.list()) |n| if (std.mem.eql(u8, n, name)) return true;
+    return false;
 }
 
 /// `root/rel`, exactly sized + `memcpy`'d — this runs once per FILE the walk
@@ -78,6 +139,15 @@ pub fn joinPath(a: std.mem.Allocator, root: []const u8, rel: []const u8) ![]cons
     buf[root.len] = '/';
     @memcpy(buf[root.len + 1 ..], rel);
     return buf;
+}
+
+/// `joinPath` with the whole-tree root normalized away: a corpus rooted at
+/// `.` yields plain CWD-relative paths (`Lib/os.py`, never `./Lib/os.py`),
+/// so indexed paths, walk output, and query root-scoping all compare
+/// byte-equal — the same shape a rootless `gist <pattern>` walk emits.
+pub fn joinRoot(a: std.mem.Allocator, root: []const u8, rel: []const u8) ![]const u8 {
+    if (std.mem.eql(u8, root, ".")) return a.dupe(u8, rel);
+    return joinPath(a, root, rel);
 }
 
 /// Recursively walks one root, transparently entering every non-skipped
@@ -115,7 +185,7 @@ pub const Walker = struct {
             }
             if (entry.kind != .file) continue;
             return .{
-                .path = try joinPath(self.a, self.root_path, entry.path),
+                .path = try joinRoot(self.a, self.root_path, entry.path),
                 .dir = entry.dir,
                 .name = entry.basename,
             };

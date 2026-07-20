@@ -20,12 +20,7 @@ pub const Span = core.Regex.Span;
 
 /// Compile-time engine knobs mirroring `Regex.Options`. `unicode` selects
 /// PCRE2 UTF+UCP semantics (ripgrep's `-P` default); off ⇒ raw bytes / ASCII.
-pub const Options = struct {
-    caseless: bool = false,
-    multiline: bool = false,
-    dotall: bool = false,
-    unicode: bool = true,
-};
+pub const Options = struct { caseless: bool = false, multiline: bool = false, dotall: bool = false, unicode: bool = true };
 
 /// `Unsupported` = built without / unavailable; `BadPattern` = a compile
 /// diagnostic (message in `last_error`); `OutOfMemory` = allocation failure.
@@ -76,7 +71,7 @@ pub fn lastError() []const u8 {
     return last_error_buf[0..last_error_len];
 }
 
-/// Sticky match-time error code for the whole run (0 = none). `Scratch.find`
+/// Sticky match-time error code for the whole run (0 = none). `Sim.find`
 /// latches any `pcre2_match` failure that is NOT a clean no-match here —
 /// catastrophic backtracking (match/depth limit), a JIT stack overflow, an
 /// internal fault. ripgrep aborts the run and exits 2 on exactly these, so the
@@ -100,7 +95,7 @@ pub fn clearMatchError() void {
 
 /// Latch a `pcre2_match` return code as a fault iff it is worse than a clean
 /// no-match (`< ERROR_NOMATCH`) — the match/depth-limit and JIT-stack failures
-/// ripgrep exits 2 on. Shared by the boolean/span `Scratch` and the capture
+/// ripgrep exits 2 on. Shared by the boolean/span `Sim` and the capture
 /// engine (and safe across the parallel pipeline's workers) so all paths
 /// surface catastrophic input identically.
 pub fn recordMatchFault(rc: c_int) void {
@@ -162,15 +157,17 @@ pub const Pcre = struct {
         self.* = undefined;
     }
 
-    /// Per-thread PCRE2 match scratch: a match-data block, a match context with
-    /// the resource ceilings, and (when JIT'd) a private 10 MiB JIT stack. One
-    /// per worker; never shared — this is the thread-local half of the engine.
-    const Scratch = struct {
+    /// Per-thread PCRE2 match scratch (the `Regex.Sim` twin): a match-data block,
+    /// a match context with the resource ceilings, and (when JIT'd) a private
+    /// 10 MiB JIT stack. One per worker; never shared — this is the thread-local
+    /// half of the engine. The allocator satisfies the `matcher.zig` seam only;
+    /// PCRE2 owns its own allocations.
+    pub const Sim = struct {
         md: *ffi.MatchData,
         mc: *ffi.MatchContext,
         jit_stack: ?*ffi.JitStack,
 
-        fn init(re: *const Pcre) CompileError!Scratch {
+        pub fn init(_: std.mem.Allocator, re: *const Pcre) CompileError!Sim {
             const md = ffi.pcre2_match_data_create_from_pattern_8(re.code, null) orelse
                 return CompileError.OutOfMemory;
             errdefer ffi.pcre2_match_data_free_8(md);
@@ -187,7 +184,7 @@ pub const Pcre = struct {
             }
             return .{ .md = md, .mc = mc, .jit_stack = jit_stack };
         }
-        fn deinit(self: *Scratch) void {
+        pub fn deinit(self: *Sim) void {
             if (self.jit_stack) |js| ffi.pcre2_jit_stack_free_8(js);
             ffi.pcre2_match_context_free_8(self.mc);
             ffi.pcre2_match_data_free_8(self.md);
@@ -195,7 +192,7 @@ pub const Pcre = struct {
         }
         /// Leftmost match in `hay[from..]`, or null (no match OR a resource
         /// limit — fail-closed: never report a match we could not verify).
-        fn find(self: *Scratch, re: *const Pcre, hay: []const u8, from: usize) ?Span {
+        fn find(self: *Sim, re: *const Pcre, hay: []const u8, from: usize) ?Span {
             if (from > hay.len) return null;
             const subject: [*]const u8 = if (hay.len == 0) empty_subject else hay.ptr;
             const rc = ffi.pcre2_match_8(re.code, subject, hay.len, from, match_options, self.md, self.mc);
@@ -211,47 +208,24 @@ pub const Pcre = struct {
         }
     };
 
-    /// Per-query boolean-match scratch (the `Regex.Sim` twin).
-    pub const Sim = struct {
-        scratch: Scratch,
-        pub fn init(allocator: std.mem.Allocator, re: *const Pcre) CompileError!Sim {
-            _ = allocator; // PCRE2 owns its own allocations
-            return .{ .scratch = try Scratch.init(re) };
-        }
-        pub fn deinit(self: *Sim) void {
-            self.scratch.deinit();
-        }
-    };
-
-    /// Per-query span-extraction scratch (the `Regex.SpanSim` twin).
-    pub const SpanSim = struct {
-        scratch: Scratch,
-        pub fn init(allocator: std.mem.Allocator, re: *const Pcre) CompileError!SpanSim {
-            _ = allocator;
-            return .{ .scratch = try Scratch.init(re) };
-        }
-        pub fn deinit(self: *SpanSim) void {
-            self.scratch.deinit();
-        }
-    };
+    /// Per-query span-extraction scratch (the `Regex.SpanSim` twin) — the same
+    /// PCRE2 scratch serves both grains, so it is one type.
+    pub const SpanSim = Sim;
 
     /// Does the pattern match any substring of `line`? (Per-line boolean path.)
     pub fn lineMatch(self: *const Pcre, sim: *Sim, line: []const u8) bool {
-        return sim.scratch.find(self, line, 0) != null;
+        return sim.find(self, line, 0) != null;
     }
 
     /// Does any line of `doc` match? rg `-l` line model: `\n` terminates a line
     /// (no phantom empty final line for a trailing newline); content after the
     /// last `\n` is a line. Mirrors `Regex.docMatch` so `^`/`$` anchor per line.
     pub fn docMatch(self: *const Pcre, sim: *Sim, doc: []const u8) bool {
-        if (doc.len == 0) return false;
-        var rest = doc;
-        while (rest.len > 0) {
-            const nl = std.mem.indexOfScalar(u8, rest, '\n');
-            const end = nl orelse rest.len;
-            if (sim.scratch.find(self, rest[0..end], 0) != null) return true;
-            if (nl == null) break;
-            rest = rest[end + 1 ..];
+        var i: usize = 0;
+        while (i < doc.len) {
+            const end = std.mem.indexOfScalarPos(u8, doc, i, '\n') orelse doc.len;
+            if (sim.find(self, doc[i..end], 0) != null) return true;
+            i = end + 1;
         }
         return false;
     }
@@ -262,13 +236,13 @@ pub const Pcre = struct {
     /// `docMatch`; empty buffer never matches (rg's line model).
     pub fn bufMatch(self: *const Pcre, sim: *Sim, buf: []const u8) bool {
         if (buf.len == 0) return false;
-        return sim.scratch.find(self, buf, 0) != null;
+        return sim.find(self, buf, 0) != null;
     }
 
     /// Leftmost match of the pattern within `hay[from..]` as a byte span, or
     /// null. `hay` is a line in the per-line default, the buffer under `-U`.
     pub fn matchSpan(self: *const Pcre, sim: *SpanSim, hay: []const u8, from: usize) ?Span {
-        return sim.scratch.find(self, hay, from);
+        return sim.find(self, hay, from);
     }
 };
 
@@ -283,14 +257,7 @@ pub fn compileMode(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
 
     var errorcode: c_int = 0;
     var erroroffset: ffi.Size = 0;
-    const code = ffi.pcre2_compile_8(
-        pattern.ptr,
-        pattern.len,
-        compile_options,
-        &errorcode,
-        &erroroffset,
-        null,
-    ) orelse {
+    const code = ffi.pcre2_compile_8(pattern.ptr, pattern.len, compile_options, &errorcode, &erroroffset, null) orelse {
         recordError(errorcode);
         return CompileError.BadPattern;
     };
@@ -335,10 +302,8 @@ fn containsZeroWidthAssertion(pattern: []const u8) bool {
             if (pattern[i + 1] == 'b' or pattern[i + 1] == 'B') return true;
             i += 1; // skip the escaped byte
         } else if (pattern[i] == '(' and i + 2 < pattern.len and pattern[i + 1] == '?') {
-            switch (pattern[i + 2]) {
-                '=', '!', '<' => return true, // (?= (?! (?<= (?<!
-                else => {},
-            }
+            // (?= (?! (?<= (?<!
+            if (std.mem.indexOfScalar(u8, "=!<", pattern[i + 2]) != null) return true;
         }
     }
     return false;

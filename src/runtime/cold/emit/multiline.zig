@@ -2,7 +2,7 @@
 //!
 //! Under `-U`/`--multiline` the linear engine already matches over a WHOLE
 //! buffer (`^`/`$` anchor at `\n` boundaries, `.` crosses `\n` only under
-//! dotall — see `kernel/regex/linear/matcher.zig`). What the output layer still needs is a
+//! dotall — see `search/match/regex/linear/matcher.zig`). What the output layer still needs is a
 //! faithful, byte-index model of THAT: the leftmost run of matches under
 //! ripgrep's progress rule, the physical-line grid they land on, the way rg
 //! coalesces contiguous matches into one block, and the three multiline count
@@ -20,7 +20,7 @@ const output = @import("output.zig");
 const Opts = args.Opts;
 const die = args.die;
 const oom = args.oom;
-const Matcher = @import("../../../../search/match/regex/linear/matcher.zig").Matcher;
+const Matcher = @import("../../../search/match/regex/linear/matcher.zig").Matcher;
 
 pub const Span = Matcher.Span;
 
@@ -81,7 +81,7 @@ pub fn collect(a: std.mem.Allocator, re: *const Matcher, o: Opts, body: []const 
     var last_end: ?usize = null;
     while (from <= body.len) {
         const sp = re.matchSpan(&ss, body, from) orelse break;
-        if (o.word and !output.wordOk(body, sp.start, sp.end)) {
+        if (o.word and !output.wordOk(o.unicode, body, sp.start, sp.end)) {
             from = if (sp.end > sp.start) sp.end else sp.start + 1;
             continue;
         }
@@ -146,6 +146,40 @@ pub fn spansLines(lines: []const Line, sp: Span) bool {
     return lineIndexAt(lines, spanLast(sp)) > lineIndexAt(lines, sp.start);
 }
 
+/// A maximal line-contiguous group of ascending spans — rg's multiline
+/// searcher's sink block: consecutive spans join when the next span's first
+/// line overlaps OR is exactly adjacent to the block's last covered line
+/// (glue.rs `last_match.end() >= line.start()`). `s0..s1` index the member
+/// spans. Shared by `-U -r` (output.zig) and the `--json` record stream.
+pub const Block = struct { first: usize, last: usize, s0: usize, s1: usize };
+
+/// The one grouping walk behind `blocks` and `blockBases`. `bridged` selects
+/// the stricter `-o` column-base rule (see `blockBases`): an exactly-adjacent
+/// pair joins only when one of the two bridging spans itself crosses a line.
+fn blocksWith(a: std.mem.Allocator, lines: []const Line, spans: []const Span, bridged: bool) []Block {
+    var out: std.ArrayList(Block) = .empty;
+    var i: usize = 0;
+    while (i < spans.len) {
+        const first = lineIndexAt(lines, spans[i].start);
+        var last = lineIndexAt(lines, spanLast(spans[i]));
+        var j = i + 1;
+        while (j < spans.len) : (j += 1) {
+            const fl = lineIndexAt(lines, spans[j].start);
+            if (fl > last + 1) break;
+            if (bridged and fl == last + 1 and
+                !spansLines(lines, spans[j]) and !spansLines(lines, spans[j - 1])) break;
+            last = @max(last, lineIndexAt(lines, spanLast(spans[j])));
+        }
+        out.append(a, .{ .first = first, .last = last, .s0 = i, .s1 = j }) catch oom();
+        i = j;
+    }
+    return out.toOwnedSlice(a) catch oom();
+}
+
+pub fn blocks(a: std.mem.Allocator, lines: []const Line, spans: []const Span) []Block {
+    return blocksWith(a, lines, spans, false);
+}
+
 /// For each span, the byte offset of its BLOCK's first matched line — the base
 /// ripgrep measures `-o` columns against (a match's `-o` column is `1 + (start -
 /// block_base)`, repeated on every line the match spans). A block is a maximal
@@ -158,23 +192,9 @@ pub fn spansLines(lines: []const Line, sp: Span) bool {
 /// stays block-relative (`a\nb|b\nc` ⇒ 1,1,5,5). Arena-owned, one per span.
 pub fn blockBases(a: std.mem.Allocator, lines: []const Line, spans: []const Span) []usize {
     const bases = a.alloc(usize, spans.len) catch oom();
-    var i: usize = 0;
-    while (i < spans.len) {
-        const base = lines[lineIndexAt(lines, spans[i].start)].start;
-        var last_line = lineIndexAt(lines, spanLast(spans[i]));
-        var j = i;
-        while (j < spans.len) : (j += 1) {
-            if (j > i) {
-                const fl = lineIndexAt(lines, spans[j].start);
-                if (fl > last_line + 1) break;
-                if (fl == last_line + 1 and
-                    !spansLines(lines, spans[j]) and !spansLines(lines, spans[j - 1])) break;
-            }
-            const ll = lineIndexAt(lines, spanLast(spans[j]));
-            if (ll > last_line) last_line = ll;
-            bases[j] = base;
-        }
-        i = j;
+    for (blocksWith(a, lines, spans, true)) |b| {
+        const base = lines[b.first].start;
+        for (b.s0..b.s1) |j| bases[j] = base;
     }
     return bases;
 }
@@ -182,7 +202,7 @@ pub fn blockBases(a: std.mem.Allocator, lines: []const Line, spans: []const Span
 // ─────────────────────────────── tests ───────────────────────────────
 
 const t = std.testing;
-const Regex = @import("../../../../search/match/regex/linear/core.zig").Regex;
+const Regex = @import("../../../search/match/regex/linear/core.zig").Regex;
 
 /// Test scaffold: an arena for the model's `[]…` allocations (mirrors the
 /// per-run arena the CLI hands the emitter, so nothing leaks) plus a compiled

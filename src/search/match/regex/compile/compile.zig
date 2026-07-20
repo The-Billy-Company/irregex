@@ -12,7 +12,8 @@ const State = syn.State;
 const ByteSet = syn.ByteSet;
 const ParseError = syn.ParseError;
 
-/// Lowers the AST into a flat NFA-state program (Thompson construction).
+/// Lowers the AST into a flat NFA-state program (Thompson 1968 construction —
+/// linear-time matching ancestry of the Pike/RE2 lane).
 pub const Compiler = struct {
     states: std.ArrayList(State) = .empty,
     gpa: std.mem.Allocator,
@@ -96,14 +97,6 @@ pub const Compiler = struct {
 // O(1)/byte floor. Emits through the caller's `emitConsume`/`emitSplit` hooks so
 // the same routine serves the boolean compiler here and the capture VM.
 
-/// Interning key for a consume state: `(lo, hi, out)` packed into a u64.
-fn consumeKey(lo: u8, hi: u8, out: u32) u64 {
-    return (@as(u64, lo) << 40) | (@as(u64, hi) << 32) | out;
-}
-fn splitKey(a: u32, b: u32) u64 {
-    return (@as(u64, a) << 32) | b;
-}
-
 const Cache = std.AutoHashMap(u64, u32);
 
 const Woven = struct {
@@ -112,13 +105,14 @@ const Woven = struct {
 
     /// Reuse or create a byte-range consume state; hash-consed so shared suffixes
     /// (and duplicate branches) collapse to one state.
+    /// Interning key for a consume state: `(lo, hi, out)` packed into a u64.
     fn cons(w: *Woven, ctx: anytype, lo: u8, hi: u8, out: u32) ParseError!u32 {
-        const gop = w.consume.getOrPut(consumeKey(lo, hi, out)) catch return ParseError.OutOfMemory;
+        const gop = try w.consume.getOrPut((@as(u64, lo) << 40) | (@as(u64, hi) << 32) | out);
         if (!gop.found_existing) gop.value_ptr.* = try ctx.emitConsume(lo, hi, out);
         return gop.value_ptr.*;
     }
     fn alt(w: *Woven, ctx: anytype, a: u32, b: u32) ParseError!u32 {
-        const gop = w.split.getOrPut(splitKey(a, b)) catch return ParseError.OutOfMemory;
+        const gop = try w.split.getOrPut((@as(u64, a) << 32) | b);
         if (!gop.found_existing) gop.value_ptr.* = try ctx.emitSplit(a, b);
         return gop.value_ptr.*;
     }
@@ -135,10 +129,6 @@ fn lessSeq(_: void, x: u8seq.Sequence, y: u8seq.Sequence) bool {
     return x.len < y.len;
 }
 
-fn rangeEq(a: u8seq.ByteRange, b: u8seq.ByteRange) bool {
-    return a.start == b.start and a.end == b.end;
-}
-
 /// Build the trie for the (sorted) sequences at byte position `depth`, flowing to
 /// `next`; returns the entry state. Groups by the range at `depth`, recurses on
 /// each group's tails, and combines the group entries with hash-consed splits.
@@ -148,7 +138,7 @@ fn weave(seqs: []const u8seq.Sequence, depth: usize, next: u32, w: *Woven, ctx: 
     while (idx < seqs.len) {
         const f = seqs[idx].ranges[depth];
         var j = idx + 1;
-        while (j < seqs.len and rangeEq(seqs[j].ranges[depth], f)) j += 1;
+        while (j < seqs.len and std.meta.eql(seqs[j].ranges[depth], f)) j += 1;
         // Every sequence in this group shares byte `f` at `depth`, hence the same
         // UTF-8 length, so `seqs[idx].len` is the group's length.
         const child = if (depth + 1 == seqs[idx].len) next else try weave(seqs[idx..j], depth + 1, next, w, ctx);

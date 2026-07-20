@@ -20,6 +20,7 @@ const Index = @import("trigram.zig").Index;
 const corpus_mod = @import("../../corpus/tree/corpus.zig");
 const crest = @import("../../math/crest.zig");
 const crest_sidecar = @import("../crest/sidecar.zig");
+const frame = @import("../frame/frame.zig");
 const Dir = std.Io.Dir;
 
 /// Stable aliases (status / bench size accounting). The query loader prefers the
@@ -131,20 +132,6 @@ pub fn validateGeneration(observed: []const u8, published: []const u8) PairError
     if (!std.mem.eql(u8, observed, published)) return PairError.GenerationMismatch;
 }
 
-/// Split the mmap'd `paths.list` (NUL-separated, doc-id order) into borrowed
-/// slices, dropping empties (a trailing NUL, or a coalesced double-NUL). The
-/// slices alias `pmap`, which must outlive the returned list. Factored out of
-/// `loadAt` so both the split and the count invariant above are unit-testable
-/// without touching the filesystem.
-pub fn parsePathTable(gpa: std.mem.Allocator, pmap: []const u8) !std.ArrayList([]const u8) {
-    var paths: std.ArrayList([]const u8) = .empty;
-    errdefer paths.deinit(gpa);
-    try paths.ensureTotalCapacity(gpa, std.mem.count(u8, pmap, &[_]u8{0}) + 1);
-    var pit = std.mem.splitScalar(u8, pmap, 0);
-    while (pit.next()) |p| if (p.len > 0) paths.appendAssumeCapacity(p);
-    return paths;
-}
-
 fn joinPath(buf: []u8, parts: anytype) ![]u8 {
     comptime var fmt: []const u8 = "{s}";
     inline for (1..parts.len) |_| fmt = fmt ++ "/{s}";
@@ -191,7 +178,7 @@ fn loadMappedPair(gpa: std.mem.Allocator, io: std.Io, pf: *const PairFiles, comp
         return null;
     };
     errdefer std.posix.munmap(pmap);
-    var paths = try parsePathTable(gpa, pmap);
+    var paths = try frame.parsePathTable(gpa, pmap);
     errdefer paths.deinit(gpa);
     validatePersistedPair(idx.doc_count, paths.items) catch {
         if (verbose) std.debug.print("index/paths mismatch ({d} paths != {d} docs) — run `gist index` to rebuild\n", .{ paths.items.len, idx.doc_count });
@@ -208,7 +195,7 @@ fn loadMappedPair(gpa: std.mem.Allocator, io: std.Io, pf: *const PairFiles, comp
     // freshness walk only re-reads more, it never wrongly skips).
     var roots_blob: ?[]u8 = Dir.cwd().readFileAlloc(io, pf.roots, gpa, .limited(1 << 16)) catch null;
     errdefer if (roots_blob) |b| gpa.free(b);
-    var roots = if (roots_blob) |b| try parsePathTable(gpa, b) else std.ArrayList([]const u8).empty;
+    var roots = if (roots_blob) |b| try frame.parsePathTable(gpa, b) else std.ArrayList([]const u8).empty;
     errdefer roots.deinit(gpa);
     if (roots.items.len == 0) {
         if (roots_blob) |b| gpa.free(b);
@@ -287,17 +274,11 @@ pub fn persistIndexAndPathsAt(
 
     var pl: std.ArrayList(u8) = .empty;
     defer pl.deinit(gpa);
-    for (paths) |p| {
-        try pl.appendSlice(gpa, p);
-        try pl.append(gpa, 0);
-    }
+    try frame.joinNul(gpa, &pl, paths);
 
     var rl: std.ArrayList(u8) = .empty;
     defer rl.deinit(gpa);
-    for (roots) |r| {
-        try rl.appendSlice(gpa, r);
-        try rl.append(gpa, 0);
-    }
+    try frame.joinNul(gpa, &rl, roots);
 
     // Crest sidecar bytes (empty when the builder skipped the pass).
     const cblob: []u8 = if (crest_vectors) |cv| blk: {

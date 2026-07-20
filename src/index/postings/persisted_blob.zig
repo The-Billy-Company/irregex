@@ -39,14 +39,7 @@ pub const MappedRegions = struct {
     body: []const u8,
 
     pub fn structure(self: MappedRegions) Structure {
-        return .{
-            .dir_tri = self.dir_tri,
-            .dir_off = self.dir_off,
-            .dir_count = self.dir_count,
-            .body = self.body,
-            .doc_count = self.header.doc_count,
-            .posting_count = self.header.posting_count,
-        };
+        return .{ .dir_tri = self.dir_tri, .dir_off = self.dir_off, .dir_count = self.dir_count, .body = self.body, .doc_count = self.header.doc_count, .posting_count = self.header.posting_count };
     }
 };
 
@@ -93,19 +86,12 @@ pub fn parseMapped(bytes: []const u8) Error!MappedRegions {
     if (@intFromPtr(bytes.ptr) % @alignOf(u32) != 0) return Error.BadFormat;
     var off: usize = header_len;
     const dir_bytes = header.n_tri * @sizeOf(u32);
-    const tri_raw: []align(@alignOf(u32)) const u8 = @alignCast(bytes[off..][0..dir_bytes]);
-    off += dir_bytes;
-    const off_raw: []align(@alignOf(u32)) const u8 = @alignCast(bytes[off..][0..dir_bytes]);
-    off += dir_bytes;
-    const count_raw: []align(@alignOf(u32)) const u8 = @alignCast(bytes[off..][0..dir_bytes]);
-    off += dir_bytes;
-    return .{
-        .header = header,
-        .dir_tri = std.mem.bytesAsSlice(u32, tri_raw),
-        .dir_off = std.mem.bytesAsSlice(u32, off_raw),
-        .dir_count = std.mem.bytesAsSlice(u32, count_raw),
-        .body = bytes[off..],
-    };
+    var dirs: [3][]const u32 = undefined;
+    for (&dirs) |*d| {
+        d.* = std.mem.bytesAsSlice(u32, @as([]align(@alignOf(u32)) const u8, @alignCast(bytes[off..][0..dir_bytes])));
+        off += dir_bytes;
+    }
+    return .{ .header = header, .dir_tri = dirs[0], .dir_off = dirs[1], .dir_count = dirs[2], .body = bytes[off..] };
 }
 
 /// O(distinct trigrams): validate layout/count invariants without reading body.

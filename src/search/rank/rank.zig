@@ -12,8 +12,10 @@
 //! signals. score(d) = Σ_i wᵢ / (k + rankᵢ(d)). We fuse four intrinsic signals
 //! computed from the matches themselves —
 //!   • **lexical** density (more occurrences ⇒ more relevant),
-//!   • **symbol** boost (a match on a *definition* line ⇨ what you were looking
-//!     for; weighted high — this is the agent win rg can't express),
+//!   • **symbol** boost (parser-free structural confidence that the match names
+//!     a declaration rather than occurring inside one),
+//!   • **shape rarity** (relate-style normalized match geometry; repeated call /
+//!     import shapes carry less information than a rare explanatory shape),
 //!   • **shallow path** (fewer path segments ⇒ closer to a package root, usually
 //!     more central than a deep test/vendor file),
 //!   • **authored** boost (codegen output and cached source mirrors are demoted:
@@ -31,6 +33,8 @@ pub const Doc = struct {
     id: u32, // caller's document id (index into its own path table)
     matches: u32, // needle occurrences in the file
     is_def: bool, // any match sits on a definition line
+    definition: u8 = 0, // structural declaration confidence, 0 (use) .. 3 (body/value)
+    shape_hash: u64 = 0, // normalized best-line geometry; 0 means unavailable
     best_line: u32, // 1-based line to surface (the def line if any, else first match)
     depth: u16, // path segment count (number of '/'); shallower ranks higher
     is_generated: bool = false, // codegen output (*.pb.go, *_pb2.py, …) — almost never the agent's target, so demoted
@@ -40,8 +44,9 @@ pub const Doc = struct {
 };
 
 /// Tunable fusion constants. `k` damps the head so rank-1 isn't pathologically dominant (60 is the canonical RRF value).
-/// Weights encode the editorial call definition > raw frequency > shallowness; the external graph signal, when present, is co-equal with lexical.
-/// `generated` is weighted *above* both lexical and symbol on purpose: a codegen
+/// Classification signals receive one top-rank RRF credit rather than an
+/// arbitrary position inside a tied class. `generated` is weighted above
+/// lexical on purpose: a codegen
 /// file (e.g. `*_grpc.pb.go`) is the worst pollutant of this corpus because it
 /// wins both — most match occurrences (lexical) and its boilerplate stubs parse
 /// as defs (symbol) — yet is almost never what an agent is hunting (the repo
@@ -50,7 +55,8 @@ pub const Weights = struct {
     k: f64 = 60.0,
     lexical: f64 = 1.0,
     symbol: f64 = 2.0,
-    shallow: f64 = 0.5,
+    structure: f64 = 0.75,
+    shallow: f64 = 0.25,
     graph: f64 = 1.0,
     generated: f64 = 3.0,
 };
@@ -58,11 +64,6 @@ pub const Weights = struct {
 fn byMatchesDesc(docs: []const Doc, a: u32, b: u32) bool {
     if (docs[a].matches != docs[b].matches) return docs[a].matches > docs[b].matches;
     return docs[a].best_line < docs[b].best_line; // stable, deterministic tiebreak
-}
-fn byDefFirst(docs: []const Doc, a: u32, b: u32) bool {
-    if (docs[a].is_def != docs[b].is_def) return docs[a].is_def;
-    if (docs[a].matches != docs[b].matches) return docs[a].matches > docs[b].matches;
-    return docs[a].best_line < docs[b].best_line;
 }
 fn byShallow(docs: []const Doc, a: u32, b: u32) bool {
     if (docs[a].depth != docs[b].depth) return docs[a].depth < docs[b].depth;
@@ -72,19 +73,39 @@ fn isAuthored(d: Doc) bool {
     return !d.is_generated and !d.is_mirror;
 }
 
-/// The authored-vs-artifact split is a *binary class*, not a ranking, so it is
-/// fused as a tie-aware RRF signal: every authored doc shares rank 0, every
-/// generated or mirrored doc shares rank `n_authored` (standard competition
-/// ranking). That keeps the signal perfectly **neutral within a class** while
-/// uniformly sinking incidental copies below canonical source.
+/// Classification is membership, not a total order: every authored document
+/// receives the same top-rank credit and artifacts receive none.
 fn addAuthoredSignal(score: []f64, docs: []const Doc, w: f64, k: f64) void {
-    var n_authored: usize = 0;
-    for (docs) |d| {
-        if (isAuthored(d)) n_authored += 1;
-    }
     const authored_credit = rrf(w, k, 0);
-    const artifact_credit = rrf(w, k, n_authored);
-    for (docs, 0..) |d, i| score[i] += if (isAuthored(d)) authored_credit else artifact_credit;
+    for (docs, 0..) |d, i| if (isAuthored(d)) {
+        score[i] += authored_credit;
+    };
+}
+
+/// Graded declaration membership. A body/value-bearing definition receives one
+/// full top-rank credit; weaker forward/type-only declarations receive a
+/// proportional credit. Uses receive none.
+fn addDefinitionSignal(score: []f64, docs: []const Doc, w: f64, k: f64) void {
+    const credit = rrf(w, k, 0) / 3.0;
+    for (docs, 0..) |d, i| {
+        const confidence: u8 = if (d.definition > 0) d.definition else if (d.is_def) 3 else 0;
+        score[i] += credit * @as(f64, @floatFromInt(confidence));
+    }
+}
+
+/// Relate's corpus-pricing idea at match-line scale: normalize away vocabulary,
+/// count each surviving shape, then give rare shapes more RRF credit. Equal
+/// frequencies are true ties; missing shapes receive no credit.
+fn addStructureSignal(gpa: std.mem.Allocator, score: []f64, docs: []const Doc, w: f64, k: f64) !void {
+    var counts: std.AutoHashMapUnmanaged(u64, u32) = .empty;
+    defer counts.deinit(gpa);
+    for (docs) |d| if (d.shape_hash != 0) {
+        const slot = try counts.getOrPut(gpa, d.shape_hash);
+        slot.value_ptr.* = if (slot.found_existing) slot.value_ptr.* + 1 else 1;
+    };
+    for (docs, 0..) |d, i| if (counts.get(d.shape_hash)) |frequency| {
+        score[i] += rrf(w, k, @intCast(frequency - 1));
+    };
 }
 
 /// Fill `buf` with 0,1,2,… — the identity permutation we sort in place.
@@ -92,7 +113,7 @@ fn iota(buf: []u32) void {
     for (buf, 0..) |*v, i| v.* = @intCast(i);
 }
 
-/// One RRF term: weight wᵢ over the damped rank (k + position).
+/// One RRF term (Cormack et al. SIGIR 2009): wᵢ / (k + rankᵢ).
 fn rrf(w: f64, k: f64, pos: usize) f64 {
     return w / (k + @as(f64, @floatFromInt(pos)));
 }
@@ -132,7 +153,8 @@ pub fn rank(gpa: std.mem.Allocator, docs: []const Doc, w: Weights, graph_rank: ?
     defer gpa.free(scratch);
 
     addSignal(score, docs, scratch, w.lexical, w.k, byMatchesDesc);
-    addSignal(score, docs, scratch, w.symbol, w.k, byDefFirst);
+    addDefinitionSignal(score, docs, w.symbol, w.k);
+    try addStructureSignal(gpa, score, docs, w.structure, w.k);
     addSignal(score, docs, scratch, w.shallow, w.k, byShallow);
     addAuthoredSignal(score, docs, w.generated, w.k);
     if (graph_rank) |gr| addExternal(score, docs, gr, w.graph, w.k);

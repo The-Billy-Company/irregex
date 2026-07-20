@@ -45,23 +45,32 @@ pub const Doc = struct { path: []const u8, bytes: []const u8, nul: ?usize };
 /// engine, line lists, and every transient are freed with it as a unit.
 pub fn renderLines(a: std.mem.Allocator, req: request.Request, docs: []const Doc, out: *std.ArrayList(u8)) RenderError!bool {
     // Compile the SAME effective pattern the cold path feeds `buildMatcher`:
-    // `-F` escapes the literal (`combinePatterns`), `-i` sets the engine's
-    // case fold, Unicode stays at the rg-parity default. A pattern outside the
+    // `-F` escapes the literal (`combinePatterns`), the RESOLVED case state
+    // (`effectiveIgnoreCase` — `-i`, or `-S` folded through the single
+    // session-side smart-case resolution) sets the engine's case fold,
+    // Unicode stays at the rg-parity default. A pattern outside the
     // linear-time syntax is the caller's cue to answer cold.
+    const caseless = req.effectiveIgnoreCase();
     const eff = if (req.fixed) try query_mod.escapeLiteral(a, req.pattern) else req.pattern;
-    const linear = Regex.compileOpts(a, eff, .{ .caseless = req.ignore_case, .unicode = true }) catch |e| switch (e) {
+    const linear = Regex.compileOpts(a, eff, .{ .caseless = caseless, .unicode = true }) catch |e| switch (e) {
         error.OutOfMemory => return RenderError.OutOfMemory,
         else => return RenderError.Unsupported,
     };
     var re = Matcher{ .linear = linear };
     // `requiredLiteralGate` (run.zig): the SIMD line gate is sound only when
-    // the engine isn't folding case (and `-v` is never eligible here).
+    // the engine isn't folding case (RESOLVED, so a folding `-S` declines it
+    // exactly like `-i`; `-v` is never eligible here). It stays sound under
+    // `-w` too: the gate only SKIPS engine work on needle-FREE lines, and no
+    // needle ⇒ no match ⇒ no word-valid match (a needle-bearing line with zero
+    // word-valid spans is still classified by the Emitter's own word scan).
     const req_lit = re.required();
-    const needle: ?[]const u8 = if (!req.ignore_case and req_lit.len > 0) req_lit else null;
+    const needle: ?[]const u8 = if (!caseless and req_lit.len > 0) req_lit else null;
 
-    // Defaults everywhere except `-n`: exactly the option state a piped
-    // rootless `gist <pattern> [-n]` reaches the cold emit loop with.
-    const o = args.Opts{ .line_num = req.line_num };
+    // Defaults everywhere except `-n` and `-w`: exactly the option state a
+    // piped rootless `gist <pattern> [-n] [-w]` reaches the cold emit loop
+    // with. The cold Emitter owns the whole `-w` presentation (its wordOk /
+    // nextSpan span filter), so setting the flag here IS the parity.
+    const o = args.Opts{ .line_num = req.line_num, .word = req.word };
     var em = output.Emitter{ .a = a, .re = &re, .o = o, .show_name = true, .out = out, .needle = needle };
 
     var matched = false;
@@ -125,6 +134,40 @@ test "renderLines: regex, caseless, and CR-keeping line semantics" {
     try t.expectEqualStrings(
         "f.txt:Needle\r\nf.txt:plain needle\n",
         try renderToString(a, .{ .pattern = "needle", .mode = .lines, .fixed = true, .ignore_case = true }, &docs),
+    );
+    // -S resolves HERE (the renderer reads `effectiveIgnoreCase`, never the
+    // raw bit): a lowercase pattern folds — identical bytes to the -i row —
+    // and an uppercase pattern stays case-sensitive.
+    try t.expectEqualStrings(
+        "f.txt:Needle\r\nf.txt:plain needle\n",
+        try renderToString(a, .{ .pattern = "needle", .mode = .lines, .fixed = true, .smart_case = true }, &docs),
+    );
+    try t.expectEqualStrings(
+        "f.txt:Needle\r\n",
+        try renderToString(a, .{ .pattern = "Needle", .mode = .lines, .fixed = true, .smart_case = true }, &docs),
+    );
+}
+
+test "renderLines: -w flows through the cold Emitter's own word filter" {
+    const t = std.testing;
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Substring hits (`runner`), Unicode-neighbor hits (`érun`), and a
+    // word-rejected-then-valid line (`rerun run`) — the Emitter's wordOk /
+    // nextSpan pass decides, the renderer only sets the flag.
+    const docs = [_]Doc{.{ .path = "w.txt", .bytes = "run runner\nrerun run\nrunner only\n\xc3\xa9run there\n", .nul = null }};
+    try t.expectEqualStrings(
+        "w.txt:run runner\nw.txt:rerun run\n",
+        try renderToString(a, .{ .pattern = "run", .mode = .lines, .fixed = true, .word = true }, &docs),
+    );
+    // -w composes with the resolved case fold; the word check runs on the
+    // original bytes (`RUN` bounded by space/edge is word-valid once folded).
+    const cased = [_]Doc{.{ .path = "c.txt", .bytes = "RUN loud\nrerunning\n", .nul = null }};
+    try t.expectEqualStrings(
+        "c.txt:RUN loud\n",
+        try renderToString(a, .{ .pattern = "run", .mode = .lines, .fixed = true, .ignore_case = true, .word = true }, &cased),
     );
 }
 

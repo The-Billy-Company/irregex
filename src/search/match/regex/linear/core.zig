@@ -132,6 +132,19 @@ pub const Regex = struct {
         return compileOpts(allocator, pattern, .{});
     }
 
+    /// Can any match consume a `\n`? Mirrors rg's `multi_line_with_matcher`
+    /// gate: under `-U` a pattern that can never match the line terminator is
+    /// searched line-by-line (roll buffer, line-mode binary semantics), not as
+    /// one slice — every consuming instruction is a `.consume` byte set, so a
+    /// program-walk is a complete answer.
+    pub fn canMatchNewline(self: *const Regex) bool {
+        for (self.states) |st| switch (st) {
+            .consume => |c| if (c.set.has('\n')) return true,
+            else => {},
+        };
+        return false;
+    }
+
     pub fn compileOpts(allocator: std.mem.Allocator, pattern: []const u8, opts: Options) ParseError!Regex {
         var arena_state = std.heap.ArenaAllocator.init(allocator);
         defer arena_state.deinit();
@@ -194,35 +207,30 @@ pub const Regex = struct {
     /// Own a copy of the alternation cover set (empty when a single-literal
     /// prefilter already applies, i.e. `best` ≥ 3, or none is provable).
     fn dupeCover(gpa: std.mem.Allocator, arena: std.mem.Allocator, ast: *Node, best: []const u8) ParseError![]const []const u8 {
-        if (best.len >= 3) return &[_][]const u8{}; // single-literal prefilter wins
-        const cover = (try analysis.requiredAny(arena, ast)) orelse return &[_][]const u8{};
-        if (cover.len == 0) return &[_][]const u8{};
-        const dst = try gpa.alloc([]const u8, cover.len);
-        var n: usize = 0;
-        errdefer {
-            for (dst[0..n]) |s| gpa.free(s);
-            gpa.free(dst);
-        }
-        for (cover) |s| {
-            dst[n] = try gpa.dupe(u8, s);
-            n += 1;
-        }
-        return dst;
+        if (best.len >= 3) return &.{}; // single-literal prefilter wins
+        const cover = (try analysis.requiredAny(arena, ast)) orelse return &.{};
+        return dupeAll(gpa, cover);
     }
 
     /// Own a copy of the pure-literal equivalence set (`analysis.pureLiterals`),
     /// or empty. Multiline (`-U`) changes the match model (a match may cross
     /// `\n`), so the per-line equivalence claim doesn't hold there — skip it.
     fn dupeLits(gpa: std.mem.Allocator, arena: std.mem.Allocator, ast: *Node, multiline: bool) ParseError![]const []const u8 {
-        if (multiline) return &[_][]const u8{};
-        const lits = (try analysis.pureLiterals(arena, ast)) orelse return &[_][]const u8{};
-        const dst = try gpa.alloc([]const u8, lits.len);
+        if (multiline) return &.{};
+        const lits = (try analysis.pureLiterals(arena, ast)) orelse return &.{};
+        return dupeAll(gpa, lits);
+    }
+
+    /// Own a heap copy of an arena-backed literal set (shared by the two above).
+    fn dupeAll(gpa: std.mem.Allocator, src: []const []const u8) ParseError![]const []const u8 {
+        if (src.len == 0) return &.{};
+        const dst = try gpa.alloc([]const u8, src.len);
         var n: usize = 0;
         errdefer {
             for (dst[0..n]) |s| gpa.free(s);
             gpa.free(dst);
         }
-        for (lits) |s| {
+        for (src) |s| {
             dst[n] = try gpa.dupe(u8, s);
             n += 1;
         }
@@ -244,31 +252,44 @@ pub const Regex = struct {
     };
 
     /// Reusable Pike-simulation scratch (sized to the program once).
-    pub const Sim = struct {
-        cur: ThreadList,
-        nxt: ThreadList,
-        seen: []u32,
-        gen: u32 = 0,
-        allocator: std.mem.Allocator,
+    pub const Sim = PikeScratch(false);
 
-        pub fn init(allocator: std.mem.Allocator, re: *const Regex) ParseError!Sim {
-            const n = re.states.len;
-            const seen = try allocator.alloc(u32, n);
-            @memset(seen, 0);
-            return .{
-                .cur = .{ .buf = try allocator.alloc(u32, n) },
-                .nxt = .{ .buf = try allocator.alloc(u32, n) },
-                .seen = seen,
-                .allocator = allocator,
-            };
-        }
-        pub fn deinit(self: *Sim) void {
-            self.allocator.free(self.cur.buf);
-            self.allocator.free(self.nxt.buf);
-            self.allocator.free(self.seen);
-            self.* = undefined;
-        }
-    };
+    /// One shape for both Pike scratch grains: `spans=true` adds the per-state
+    /// start-offset maps `matchSpan` threads through its closures; `false` leaves
+    /// them empty slices (never allocated — the hot boolean path stays map-free).
+    fn PikeScratch(comptime spans: bool) type {
+        return struct {
+            cur: ThreadList,
+            nxt: ThreadList,
+            seen: []u32,
+            scur: []usize = &.{},
+            snxt: []usize = &.{},
+            gen: u32 = 0,
+            allocator: std.mem.Allocator,
+
+            pub fn init(allocator: std.mem.Allocator, re: *const Regex) ParseError!@This() {
+                const n = re.states.len;
+                const seen = try allocator.alloc(u32, n);
+                @memset(seen, 0);
+                return .{
+                    .cur = .{ .buf = try allocator.alloc(u32, n) },
+                    .nxt = .{ .buf = try allocator.alloc(u32, n) },
+                    .seen = seen,
+                    .scur = if (spans) try allocator.alloc(usize, n) else &.{},
+                    .snxt = if (spans) try allocator.alloc(usize, n) else &.{},
+                    .allocator = allocator,
+                };
+            }
+            pub fn deinit(self: *@This()) void {
+                self.allocator.free(self.cur.buf);
+                self.allocator.free(self.nxt.buf);
+                self.allocator.free(self.seen);
+                self.allocator.free(self.scur); // frees nothing when `spans` is off
+                self.allocator.free(self.snxt);
+                self.* = undefined;
+            }
+        };
+    }
 
     /// One epsilon-closure pass at a fixed input position; bundles the invariants (target `list`, per-pass `seen`/`gen` dedup, position flags) so the recursion carries only the varying state index.
     const Closure = struct {
@@ -320,7 +341,8 @@ pub const Regex = struct {
         }
     };
 
-    fn closure(re: *const Regex, sim: *Sim, list: *ThreadList, at_start: bool, at_end: bool, word_before: bool, word_after: bool) Closure {
+    // `sim` is either Pike scratch grain (`Sim`/`SpanSim` — only `seen`/`gen` are read).
+    fn closure(re: *const Regex, sim: anytype, list: *ThreadList, at_start: bool, at_end: bool, word_before: bool, word_after: bool) Closure {
         // Per-line callers: the line IS the haystack, so the buffer edges
         // coincide with `at_start`/`at_end` (and `\A`/`\z` were lowered to
         // `^`/`$` anyway). `closureBuf` overrides both for multiline.
@@ -427,13 +449,11 @@ pub const Regex = struct {
         // powerset blow-up past the cap leaves it null, and then the Pike VM (proven
         // oracle) serves per line. Equivalence held by the doc-level differential fuzz.
         if (re.dfa) |d| return d.docMatch(doc);
-        var rest = doc;
-        while (rest.len > 0) {
-            const nl = std.mem.indexOfScalar(u8, rest, '\n');
-            const end = nl orelse rest.len;
-            if (re.lineMatchPike(sim, rest[0..end])) return true;
-            if (nl == null) break;
-            rest = rest[end + 1 ..];
+        var i: usize = 0;
+        while (i < doc.len) {
+            const end = std.mem.indexOfScalarPos(u8, doc, i, '\n') orelse doc.len;
+            if (re.lineMatchPike(sim, doc[i..end])) return true;
+            i = end + 1;
         }
         return false;
     }
@@ -541,37 +561,7 @@ pub const Regex = struct {
     /// Reusable Pike scratch for `matchSpan`, plus the per-state start-offset maps
     /// (`scur`/`snxt`, one entry per state id, valid for the list's generation).
     /// Kept apart from `Sim` so the hot boolean path never allocates the maps.
-    pub const SpanSim = struct {
-        cur: ThreadList,
-        nxt: ThreadList,
-        seen: []u32,
-        scur: []usize,
-        snxt: []usize,
-        gen: u32 = 0,
-        allocator: std.mem.Allocator,
-
-        pub fn init(allocator: std.mem.Allocator, re: *const Regex) ParseError!SpanSim {
-            const n = re.states.len;
-            const seen = try allocator.alloc(u32, n);
-            @memset(seen, 0);
-            return .{
-                .cur = .{ .buf = try allocator.alloc(u32, n) },
-                .nxt = .{ .buf = try allocator.alloc(u32, n) },
-                .seen = seen,
-                .scur = try allocator.alloc(usize, n),
-                .snxt = try allocator.alloc(usize, n),
-                .allocator = allocator,
-            };
-        }
-        pub fn deinit(self: *SpanSim) void {
-            self.allocator.free(self.cur.buf);
-            self.allocator.free(self.nxt.buf);
-            self.allocator.free(self.seen);
-            self.allocator.free(self.scur);
-            self.allocator.free(self.snxt);
-            self.* = undefined;
-        }
-    };
+    pub const SpanSim = PikeScratch(true);
 
     /// The highest-priority match in a priority-ordered thread `list`: the first
     /// `.match` state and where its thread began (`starts`), paired with `end`.
@@ -592,23 +582,14 @@ pub const Regex = struct {
     pub fn matchSpan(re: *const Regex, sim: *SpanSim, line: []const u8, from: usize) ?Span {
         sim.gen += 1;
         sim.cur.len = 0;
-        var cl = Closure{
-            .re = re,
-            .list = &sim.cur,
-            .seen = sim.seen,
-            .gen = sim.gen,
-            .at_start = re.atStart(line, from),
-            .at_end = re.atEnd(line, from),
-            // `line` is the whole haystack handed to the span engine (a line in
-            // the per-line default, the buffer under multiline), so its edges
-            // ARE the `\A`/`\z` buffer edges in both modes.
-            .at_buf_start = from == 0,
-            .at_buf_end = from == line.len,
-            .word_before = wordBefore(re.unicode, line, from),
-            .word_after = wordAt(re.unicode, line, from),
-            .starts = sim.scur,
-            .cur_start = from,
-        };
+        var cl = re.closure(sim, &sim.cur, re.atStart(line, from), re.atEnd(line, from), wordBefore(re.unicode, line, from), wordAt(re.unicode, line, from));
+        // `line` is the whole haystack handed to the span engine (a line in
+        // the per-line default, the buffer under multiline), so its edges
+        // ARE the `\A`/`\z` buffer edges in both modes.
+        cl.at_buf_start = from == 0;
+        cl.at_buf_end = from == line.len;
+        cl.starts = sim.scur;
+        cl.cur_start = from;
         _ = cl.add(re.start);
 
         var best: ?Span = null;

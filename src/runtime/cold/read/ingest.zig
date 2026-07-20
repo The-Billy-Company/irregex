@@ -33,8 +33,6 @@ const grepfile = @import("grepfile.zig");
 const flate = std.compress.flate;
 const zstd = std.compress.zstd;
 const xz = std.compress.xz;
-const die = args.die;
-
 /// The transform configuration for one run, assembled once by `run.zig` from the
 /// parsed `Opts` (plus the shared preprocessor-failure latch and the `io` handle
 /// the external subprocess path needs). Copyable by value — every field is a
@@ -77,7 +75,7 @@ pub fn apply(a: std.mem.Allocator, cfg: *const Config, disk: []const u8, rel: []
     if (cfg.pre) |pre| {
         // `--pre` overrides `-z` entirely (rg): a file the glob selects is fed
         // through the command; one it doesn't is searched raw (never decompressed).
-        if (preSelects(cfg, rel)) bytes = runPre(a, cfg, pre, disk) orelse return null;
+        if (preSelects(cfg, rel)) bytes = spawnCapture(a, cfg, &.{ pre, disk }, disk) orelse return null;
     } else if (cfg.search_zip) {
         if (decompress(a, cfg, disk, raw)) |d| bytes = d; // else: passthru raw
     }
@@ -112,11 +110,8 @@ pub fn applyEncoding(a: std.mem.Allocator, enc: args.Encoding, buf: []const u8) 
 /// Drop a UTF-16 BOM matching `endian` so the transcoder never emits a leading
 /// U+FEFF (which would keep `^` from anchoring the first real character).
 fn dropUtf16Bom(buf: []const u8, endian: std.builtin.Endian) []const u8 {
-    if (buf.len < 2) return buf;
-    const le = buf[0] == 0xFF and buf[1] == 0xFE;
-    const be = buf[0] == 0xFE and buf[1] == 0xFF;
-    if ((endian == .little and le) or (endian == .big and be)) return buf[2..];
-    return buf;
+    const bom: []const u8 = if (endian == .little) "\xFF\xFE" else "\xFE\xFF";
+    return if (std.mem.startsWith(u8, buf, bom)) buf[2..] else buf;
 }
 
 // ─────────────────────────── decompression ───────────────────────────
@@ -131,11 +126,7 @@ const Codec = enum { gzip, zlib, zstd, xz, bzip2, lz4, brotli, lzma, dot_z };
 /// The `.tXX` aliases decompress the OUTER layer only (a `.tgz` yields tar bytes),
 /// exactly as ripgrep's own extension table does.
 fn codecFor(path: []const u8) ?Codec {
-    const has = struct {
-        fn f(p: []const u8, comptime suf: []const u8) bool {
-            return std.ascii.endsWithIgnoreCase(p, suf);
-        }
-    }.f;
+    const has = std.ascii.endsWithIgnoreCase;
     if (has(path, ".gz") or has(path, ".tgz") or has(path, ".taz")) return .gzip;
     if (has(path, ".zst") or has(path, ".zstd") or has(path, ".tzst")) return .zstd;
     if (has(path, ".xz") or has(path, ".txz")) return .xz;
@@ -154,53 +145,45 @@ fn codecFor(path: []const u8) ?Codec {
 fn decompress(a: std.mem.Allocator, cfg: *const Config, disk: []const u8, raw: []const u8) ?[]const u8 {
     const codec = codecFor(disk) orelse return null;
     return switch (codec) {
-        .gzip => native(a, .gzip, raw),
-        .zlib => native(a, .zlib, raw),
-        .zstd => nativeZstd(a, raw),
-        .xz => nativeXz(a, raw),
+        .gzip, .zlib, .zstd, .xz => native(a, codec, raw),
         // The long tail: the standard tool, path in, stdout captured, no fork of a
         // decompressor gist can already do in-process.
-        .bzip2 => spawnCapture(a, cfg, &.{ "bzip2", "-d", "-c", disk }),
-        .lz4 => spawnCapture(a, cfg, &.{ "lz4", "-d", "-c", disk }),
-        .brotli => spawnCapture(a, cfg, &.{ "brotli", "-d", "-c", disk }),
-        .lzma => spawnCapture(a, cfg, &.{ "xz", "-d", "-c", disk }),
-        .dot_z => spawnCapture(a, cfg, &.{ "gzip", "-d", "-c", disk }),
+        .bzip2 => spawnCapture(a, cfg, &.{ "bzip2", "-d", "-c", disk }, null),
+        .lz4 => spawnCapture(a, cfg, &.{ "lz4", "-d", "-c", disk }, null),
+        .brotli => spawnCapture(a, cfg, &.{ "brotli", "-d", "-c", disk }, null),
+        .lzma => spawnCapture(a, cfg, &.{ "xz", "-d", "-c", disk }, null),
+        .dot_z => spawnCapture(a, cfg, &.{ "gzip", "-d", "-c", disk }, null),
     };
 }
 
-/// In-process DEFLATE-family decode (gzip / zlib container). The 64 KiB window is
-/// the format maximum, so a stack buffer is exact and allocation-free; the output
-/// grows in the caller's arena. Any malformed-stream error degrades to passthru.
-fn native(a: std.mem.Allocator, container: flate.Container, raw: []const u8) ?[]const u8 {
+/// In-process decode via `std.compress`; any malformed-stream error degrades to
+/// passthru (null). Windows: the DEFLATE family's (gzip/zlib) 64 KiB window is
+/// the format maximum, so a stack buffer is exact and allocation-free; zstd's is
+/// heap-sized to its recommended default (streams above it can't be decoded —
+/// rare for source artifacts) and lives in the arena; `xz.Decompress` owns and
+/// grows its own LZMA2 dictionary buffer via `a` as blocks demand, and its magic
+/// check makes a non-XZ `.xz` degrade to passthru rather than error.
+fn native(a: std.mem.Allocator, codec: Codec, raw: []const u8) ?[]const u8 {
     var in: std.Io.Reader = .fixed(raw);
-    var win: [flate.max_window_len]u8 = undefined;
-    var d = flate.Decompress.init(&in, container, &win);
     var out: std.Io.Writer.Allocating = .init(a);
-    _ = d.reader.streamRemaining(&out.writer) catch return null;
-    return out.toOwnedSlice() catch null;
-}
-
-/// In-process Zstandard decode. The window buffer is heap-sized to zstd's
-/// recommended default (streams above it can't be decoded — rare for source
-/// artifacts) and lives in the arena.
-fn nativeZstd(a: std.mem.Allocator, raw: []const u8) ?[]const u8 {
-    const win = a.alloc(u8, zstd.default_window_len) catch return null;
-    var in: std.Io.Reader = .fixed(raw);
-    var d = zstd.Decompress.init(&in, win, .{});
-    var out: std.Io.Writer.Allocating = .init(a);
-    _ = d.reader.streamRemaining(&out.writer) catch return null;
-    return out.toOwnedSlice() catch null;
-}
-
-/// In-process XZ decode. `xz.Decompress` owns and grows its own LZMA2 dictionary
-/// buffer via `a` as blocks demand; the magic check makes a non-XZ `.xz` degrade
-/// to passthru rather than error.
-fn nativeXz(a: std.mem.Allocator, raw: []const u8) ?[]const u8 {
-    var in: std.Io.Reader = .fixed(raw);
-    const scratch = a.alloc(u8, 1 << 16) catch return null;
-    var d = xz.Decompress.init(&in, a, scratch) catch return null;
-    var out: std.Io.Writer.Allocating = .init(a);
-    _ = d.reader.streamRemaining(&out.writer) catch return null;
+    switch (codec) {
+        .gzip, .zlib => {
+            var win: [flate.max_window_len]u8 = undefined;
+            var d = flate.Decompress.init(&in, if (codec == .gzip) .gzip else .zlib, &win);
+            _ = d.reader.streamRemaining(&out.writer) catch return null;
+        },
+        .zstd => {
+            const win = a.alloc(u8, zstd.default_window_len) catch return null;
+            var d = zstd.Decompress.init(&in, win, .{});
+            _ = d.reader.streamRemaining(&out.writer) catch return null;
+        },
+        .xz => {
+            const scratch = a.alloc(u8, 1 << 16) catch return null;
+            var d = xz.Decompress.init(&in, a, scratch) catch return null;
+            _ = d.reader.streamRemaining(&out.writer) catch return null;
+        },
+        else => unreachable,
+    }
     return out.toOwnedSlice() catch null;
 }
 
@@ -215,25 +198,6 @@ fn preSelects(cfg: *const Config, rel: []const u8) bool {
     return false;
 }
 
-/// Run the `--pre` command over one file (`argv = {pre, path}`) and return its
-/// stdout. A spawn failure or non-zero exit is an ERROR (rg): it prints the tool's
-/// stderr, latches exit 2, and drops the file (null). gist's `--pre` command reads
-/// the file via its path argument (stdin is closed), the wrapper idiom rg's own
-/// docs lead with (`exec gzip -dc "$1"`).
-fn runPre(a: std.mem.Allocator, cfg: *const Config, pre: []const u8, disk: []const u8) ?[]const u8 {
-    const res = std.process.run(a, cfg.io, .{
-        .argv = &.{ pre, disk },
-        .stdout_limit = .unlimited,
-        .stderr_limit = .limited(64 * 1024),
-    }) catch return preFail(cfg, disk, "");
-    const ok = switch (res.term) {
-        .exited => |code| code == 0,
-        else => false,
-    };
-    if (!ok) return preFail(cfg, disk, res.stderr);
-    return res.stdout;
-}
-
 /// Latch the exit-2 preprocessor error and name the offending file on stderr,
 /// echoing the tool's own stderr when it produced any. Returns null (drop file).
 fn preFail(cfg: *const Config, disk: []const u8, tool_stderr: []const u8) ?[]const u8 {
@@ -246,20 +210,25 @@ fn preFail(cfg: *const Config, disk: []const u8, tool_stderr: []const u8) ?[]con
     return null;
 }
 
-/// Run `argv` (an external decompressor), capture stdout, and return it, or null
-/// on spawn failure / non-zero exit (⇒ `decompress` passthru). stderr is bounded
-/// and discarded; the arena reclaims every allocation at run teardown.
-fn spawnCapture(a: std.mem.Allocator, cfg: *const Config, argv: []const []const u8) ?[]const u8 {
+/// Run `argv` (a `--pre` command or an external decompressor), capture stdout,
+/// and return it, or null on spawn failure / non-zero exit. `pre_of` non-null
+/// marks a `--pre` invocation over that file: failure is then an ERROR (rg
+/// parity) — it prints the tool's stderr and latches exit 2 via `preFail` —
+/// while a null `pre_of` (decompressor) degrades silently to passthru. stderr
+/// is bounded; the arena reclaims every allocation at run teardown. gist's
+/// `--pre` command reads the file via its path argument (stdin is closed), the
+/// wrapper idiom rg's own docs lead with (`exec gzip -dc "$1"`).
+fn spawnCapture(a: std.mem.Allocator, cfg: *const Config, argv: []const []const u8, pre_of: ?[]const u8) ?[]const u8 {
     const res = std.process.run(a, cfg.io, .{
         .argv = argv,
         .stdout_limit = .unlimited,
         .stderr_limit = .limited(64 * 1024),
-    }) catch return null;
+    }) catch return if (pre_of) |p| preFail(cfg, p, "") else null;
     switch (res.term) {
-        .exited => |code| if (code != 0) return null,
-        else => return null,
+        .exited => |code| if (code == 0) return res.stdout,
+        else => {},
     }
-    return res.stdout;
+    return if (pre_of) |p| preFail(cfg, p, res.stderr) else null;
 }
 
 test "codecFor maps extensions (case-insensitive), null otherwise" {
