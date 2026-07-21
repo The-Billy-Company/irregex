@@ -68,7 +68,8 @@ fn classifyBrace(p: []const u8, at: usize) Quant {
 /// Index just past a `[...]` class beginning at `p[i]=='['` (handles a leading
 /// `^`, a first-position literal `]`, and `\]` escapes). Class contents never
 /// contribute to the required literal — a class matches one of several bytes.
-fn skipClass(p: []const u8, i: usize) usize {
+/// `pub`: the shadow rewriter walks the same PCRE syntax (`shadow.zig`).
+pub fn skipClass(p: []const u8, i: usize) usize {
     var j = i + 1;
     if (j < p.len and p[j] == '^') j += 1;
     if (j < p.len and p[j] == ']') j += 1;
@@ -85,7 +86,8 @@ fn skipClass(p: []const u8, i: usize) usize {
 /// Index just past a balanced group beginning at `p[i]=='('` (nesting-, class-,
 /// and escape-aware). A group is treated as opaque: it may be optional,
 /// alternated, or a zero-width assertion, so it contributes no required bytes.
-fn skipGroup(p: []const u8, i: usize) usize {
+/// `pub`: the shadow rewriter walks the same PCRE syntax (`shadow.zig`).
+pub fn skipGroup(p: []const u8, i: usize) usize {
     var depth: usize = 0;
     var j = i;
     while (j < p.len) : (j += 1) {

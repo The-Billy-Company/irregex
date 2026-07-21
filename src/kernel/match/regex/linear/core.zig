@@ -86,10 +86,17 @@ pub const Regex = struct {
     // Multiline (`-U`): the pattern matches the WHOLE buffer as one haystack — a
     // match may span `\n`, and `^`/`$` anchor at every line boundary (rg's `-U`
     // default), resolved per-position against `\n` adjacency (content-dependent,
-    // exactly like `\b`), so the eager `at_start`/`at_end` DFA can't serve it — a
-    // multiline regex is matched by the Pike whole-buffer scan (`bufMatch`), never
-    // the per-line `lineMatch`/`docMatch`. False ⇒ the per-line model, unchanged.
+    // exactly like `\b`), so the eager `at_start`/`at_end` DFA can't serve an
+    // assertion-BEARING multiline regex — it runs the Pike whole-buffer scan
+    // (`bufMatch`). An assertion-FREE one (`assert_free`) has nothing positional
+    // to resolve, so the DFA serves the whole buffer as one haystack at
+    // O(1)/byte. False ⇒ the per-line model, unchanged.
     multiline: bool,
+    // No zero-width assertion states in the compiled program (`^ $ \b \B \< \>
+    // \A \z`): match validity then depends ONLY on the consumed bytes, which is
+    // what licenses the multiline DFA above and makes any prefix-found match a
+    // match of the full buffer (substring closure — see `bufMatch` callers).
+    assert_free: bool,
     // The regex `m` flag, decoupled from `multiline` (the `-U` whole-buffer
     // search): true ⇒ `^`/`$` anchor at every `\n` (a line boundary), false ⇒
     // only at the buffer ends. Under `-U` it defaults true (rg's `m`-on default)
@@ -217,10 +224,15 @@ pub const Regex = struct {
         // Byte-class DFA, the primary engine: determinizes the Thompson program
         // (anchors and all); null only on powerset blow-up, when the Pike VM serves.
         // Multiline resolves `^`/`$` per-position against `\n` adjacency (a match
-        // spans lines), which the eager BOL/EOL determinization can't encode — so a
-        // multiline regex runs the Pike whole-buffer scan and needs no DFA. Skipping
-        // the build also saves its compile cost for that (opt-in) surface.
-        const dfa: ?*dfa_mod.Dfa = if (opts.multiline) null else try powerset.build(allocator, states, start, anchored);
+        // spans lines), which the eager BOL/EOL determinization can't encode — so an
+        // assertion-BEARING multiline regex runs the Pike whole-buffer scan and
+        // needs no DFA. An assertion-FREE multiline pattern (`import \([\s\S]*?\)`,
+        // the whole `-U` bench class) has no positional predicate at all: its
+        // determinization is exact over any haystack, so `bufMatch` gets the same
+        // O(1)/byte floor the per-line model enjoys instead of the O(states)/byte
+        // Pike re-seed rg's lazy DFA was beating.
+        const assert_free = assertFree(states);
+        const dfa: ?*dfa_mod.Dfa = if (opts.multiline and !assert_free) null else try powerset.build(allocator, states, start, anchored);
         errdefer if (dfa) |d| d.deinit();
 
         return .{
@@ -234,11 +246,23 @@ pub const Regex = struct {
             .nullable = nullable,
             .first = prefilter.Prefilter.init(first_set),
             .dfa = dfa,
+            .assert_free = assert_free,
             .multiline = opts.multiline,
             .line_anchors = opts.line_anchors orelse opts.multiline,
             .unicode = opts.unicode,
             .allocator = allocator,
         };
+    }
+
+    /// No zero-width assertion instruction anywhere in the program — the
+    /// compiled-program (not AST) answer, so every lowering (case fold, uclass
+    /// expansion) is already reflected. Powers the multiline DFA admission.
+    fn assertFree(states: []const State) bool {
+        for (states) |st| switch (st) {
+            .consume, .split, .match => {},
+            else => return false,
+        };
+        return true;
     }
 
     /// Own a copy of the alternation cover set (empty when a single-literal
@@ -557,6 +581,12 @@ pub const Regex = struct {
         // nullable `a*`/`^$`). This is the whole-buffer twin of `docMatch`'s
         // `doc.len > 0` guard; without it a nullable pattern would spuriously hit.
         if (buf.len == 0) return false;
+        // Assertion-free multiline: the DFA is exact over the whole buffer as one
+        // haystack (no `^`/`$`/`\b` to resolve; `trans_fin` ≡ `trans_in` when no
+        // assert_end exists, so the last-byte table is inert) — one table lookup
+        // per byte instead of a Pike closure per byte. Equivalence held by the
+        // multiline differential fuzz in `dfa_test.zig`.
+        if (re.assert_free) if (re.dfa) |d| return d.match(buf);
         sim.gen += 1;
         sim.cur.len = 0;
         // Position 0 (buffer start ⇒ a line start; also a line end iff empty).

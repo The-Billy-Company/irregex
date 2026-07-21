@@ -1,10 +1,10 @@
 ---
 doc_radar:
   counts:
-    - description: "index keeps seven packages: trigrams · postings · atlas · codex · crest · frame · frag"
+    - description: "index keeps eight packages: trigrams · postings · atlas · codex · crest · frame · frag · phantom"
       glob: pkg/kernels/irregex/src/corpus/index/*
       unit: dirs
-      equals: 7
+      equals: 8
   sentinels:
     - description: "the elision contract every index package is built on"
       file: pkg/kernels/irregex/src/surface/exec/cold/engine/README.md
@@ -28,6 +28,7 @@ artifact always degrades to slower-but-identical answers.
 | [`atlas/`](atlas)       | Persisted LZJD sketches for warm `relate similar` / `dups` / `clusters`          |
 | [`frag/`](frag)         | Persisted per-function silhouettes (`concepts.frag`) for warm `relate concepts`  |
 | [`frame/`](frame)       | Shared wire discipline: LE ints, fail-closed cursor, NUL catalogs, `onDisk` gate |
+| [`phantom/`](phantom)   | Directory-membership snapshot (`tree.map`): one lstat proves a dir, walk elided  |
 
 ## The one law
 

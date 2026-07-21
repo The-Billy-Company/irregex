@@ -414,7 +414,7 @@ const ReadShard = struct {
     // exact reasoning `emit.zig`'s `Shard.arena` documents).
     arena: std.heap.ArenaAllocator,
     candidates: []const Candidate,
-    needle: ?[]const u8,
+    needle: ?simd.Gate,
     cfg: *const ingest.Config,
     out: std.ArrayList(InFile) = .empty,
 };
@@ -436,7 +436,7 @@ const ReadShard = struct {
 /// applied downstream in `collectFiles`). A file that fills `scratch`
 /// completely is ambiguous (exactly cap-sized, or bigger) — `readTail` keeps
 /// reading past it into a growable buffer instead of silently truncating.
-fn readOneCandidate(a: std.mem.Allocator, scratch: []u8, c: Candidate, needle: ?[]const u8, cfg: *const ingest.Config) ?InFile {
+fn readOneCandidate(a: std.mem.Allocator, scratch: []u8, c: Candidate, needle: ?simd.Gate, cfg: *const ingest.Config) ?InFile {
     const raw = grepfile.readFileRaw(a, scratch, c.disk) orelse return null;
     // -z/--pre/-E rewrite a file's bytes before matching (decompress, preprocess,
     // transcode); `ingest.apply` owns that whole pipeline (and folds in BOM/
@@ -447,10 +447,10 @@ fn readOneCandidate(a: std.mem.Allocator, scratch: []u8, c: Candidate, needle: ?
         (ingest.apply(a, cfg, c.disk, c.rel, raw) orelse return null)
     else
         decodeBom(a, raw);
-    // `containsWide` ≡ `simd.contains` until the body crosses 16 MiB, then the
-    // presence gate fans out across cores (a huge explicit file shouldn't
+    // `gateWide` ≡ the plain SIMD kernel until the body crosses 16 MiB, then
+    // the presence gate fans out across cores (a huge explicit file shouldn't
     // serialize the serial engine's read loop behind one thread's scan).
-    if (needle) |needle_v| if (!verify.containsWide(a, body, needle_v)) return null;
+    if (needle) |gate| if (!verify.gateWide(a, body, gate)) return null;
     // A tail-read (≥ cap) or UTF-16-transcoded body is already `a`-owned; a
     // body still inside `scratch` must be duped to outlive scratch's next reuse.
     const in_scratch = @intFromPtr(body.ptr) >= @intFromPtr(scratch.ptr) and @intFromPtr(body.ptr) < @intFromPtr(scratch.ptr) + scratch.len;
@@ -471,7 +471,7 @@ fn readShard(sh: *ReadShard) void {
 /// (`ignore::WalkParallel`) — and append the kept `InFile`s (bytes duped into
 /// `dest`, the caller's long-lived arena) into `out`. Below the threshold this
 /// runs inline: for a handful of files, spawn cost dwarfs the read itself.
-fn readCandidates(dest: std.mem.Allocator, gpa: std.mem.Allocator, candidates: []const Candidate, needle: ?[]const u8, out: *std.ArrayList(InFile), cfg: *const ingest.Config) void {
+fn readCandidates(dest: std.mem.Allocator, gpa: std.mem.Allocator, candidates: []const Candidate, needle: ?simd.Gate, out: *std.ArrayList(InFile), cfg: *const ingest.Config) void {
     const ncpu = std.Thread.getCpuCount() catch 8;
     // A transforming run (-z/--pre/-E) reads in parallel like any other: each
     // shard decompresses/transcodes on its OWN arena + scratch, and `ingest`'s
@@ -499,20 +499,51 @@ fn readCandidates(dest: std.mem.Allocator, gpa: std.mem.Allocator, candidates: [
     }
 }
 
-/// The compiled analyzer's longest literal present in every match. This works
-/// for literals and regexes alike (including 1–2 byte literals that cannot use
-/// the trigram index), and stays null for alternations without a common literal.
-/// Engine-neutral: `Matcher.required()` is the sound per-match literal from
-/// either backend (`Regex.required` / the PCRE2 `literal.zig` extractor).
-fn requiredLiteralGate(o: Opts, re: *const Matcher) ?[]const u8 {
+/// The compiled analyzer's longest literal present in every match, as a SIMD
+/// `Gate`. This works for literals and regexes alike (including 1–2 byte
+/// literals that cannot use the trigram index), and stays null for
+/// alternations without a common literal. Engine-neutral: `Matcher.required()`
+/// is the sound per-match literal from either backend (`Regex.required` / the
+/// PCRE2 `literal.zig` extractor). A caseless run (`-i`/resolved `-S`) no
+/// longer stands the gate down: the raw (pre-fold) required literal is still
+/// required in SOME case, so an ASCII-fold-closed literal gates through the
+/// caseless SIMD kernel instead (`caselessGate`).
+fn requiredLiteralGate(a: std.mem.Allocator, o: Opts, eff: []const u8, re: *const Matcher) ?simd.Gate {
+    if (o.invert) return null;
+    if (o.caseless) return caselessGate(a, o, eff, re);
     const req = re.required();
-    if (o.caseless or o.invert or req.len == 0) return null;
-    return req;
+    if (req.len == 0) return null;
+    return .{ .bytes = req };
+}
+
+/// The caseless twin of the required-literal gate: recompile the effective
+/// pattern CASE-SENSITIVELY (the fold is what erases `required`, so the
+/// unfolded twin still carries it), take the longest fold-closed WINDOW of
+/// that raw literal (`query.zig::foldClosedWindow` — ASCII-only; Kelvin/long-s
+/// orbits split the window under Unicode fold), and gate through
+/// `simd.containsCaseless` against the lowered spelling. When the window IS
+/// the whole literal and the raw twin IS one pure literal, the gate is a
+/// match EQUIVALENCE (`.equiv`) — the caseless `-l` fast path may then emit
+/// on a gate hit alone, no engine run at all. `a` is the run arena: the
+/// lowered literal lives for the whole invocation.
+fn caselessGate(a: std.mem.Allocator, o: Opts, eff: []const u8, re: *const Matcher) ?simd.Gate {
+    switch (re.*) {
+        .linear => {},
+        .pcre => return null, // no raw-literal twin to mine (literal.zig declines caseless)
+    }
+    var raw = Regex.compileOpts(a, eff, .{ .unicode = o.unicode, .multiline = o.multiline }) catch return null;
+    defer raw.deinit();
+    const win = query_mod.foldClosedWindow(raw.required, o.unicode) orelse return null;
+    const low = a.dupe(u8, win) catch oom();
+    for (low) |*b| b.* = std.ascii.toLower(b.*);
+    const whole = win.len == raw.required.len;
+    const equiv = whole and raw.lits.len == 1 and std.mem.eql(u8, raw.lits[0], raw.required);
+    return .{ .bytes = low, .ci = true, .equiv = equiv };
 }
 
 /// A line gate merely avoids a regex run. A whole-file gate drops the file, so
 /// modes that emit/tally non-matching bytes must still read every body.
-fn wholeFileLiteralGate(o: Opts, needle: ?[]const u8) ?[]const u8 {
+fn wholeFileLiteralGate(o: Opts, needle: ?simd.Gate) ?simd.Gate {
     if (o.files_without or o.stats or o.json or o.passthru) return null;
     return needle;
 }
@@ -579,15 +610,20 @@ const IndexSkip = struct {
 
 /// The sound trigram prefilter for this invocation, or empty (⇒ no read is ever
 /// elided) whenever anything makes "contains the required literal" an unsafe
-/// proxy for "can match": `--no-index`, case-folding (`-i`/resolved `-S`),
+/// proxy for "can match": `--no-index`,
 /// inversion (`-v` emits zero-hit files too), or the whole-file scans
 /// (`--stats`, `--json` — whose summary message carries the same stats —
 /// `--passthru`) that must read every byte regardless. Otherwise the
 /// engine's own required literal (`re.required`, present in EVERY match) or, for
 /// an alternation, its per-branch cover set (`re.alts` — `foo|bar` ⇒ {foo,bar}),
-/// both of which `fresh.candidates` treats as sound supersets.
-fn trigramFilter(o: Opts, re: *const Matcher, one: *[1][]const u8) []const []const u8 {
-    if (o.no_index or o.caseless or o.invert or o.stats or o.json or o.passthru) return &.{};
+/// both of which `fresh.candidates` treats as sound supersets. Case-folding
+/// (`-i`/resolved `-S`) no longer stands the index down wholesale: the raw
+/// (pre-fold) required literal is still required in SOME case, so one window
+/// of it expands into the ≤16-variant OR-set the index can query
+/// (`caselessFilter`) — declining only when no admissible window exists.
+fn trigramFilter(a: std.mem.Allocator, o: Opts, eff: []const u8, re: *const Matcher, one: *[1][]const u8) []const []const u8 {
+    if (o.no_index or o.invert or o.stats or o.json or o.passthru) return &.{};
+    if (o.caseless) return caselessFilter(a, o, eff, re);
     // The regex→sound-literals mapping is the shared search core's, so the cold
     // elision and the warm resident session prune by identical literals. The
     // PCRE2 arm has no gist AST, so it prunes by its required literal alone
@@ -603,6 +639,26 @@ fn trigramFilter(o: Opts, re: *const Matcher, one: *[1][]const u8) []const []con
             break :blk re.alts();
         },
     };
+}
+
+/// The caseless prefilter: recompile the effective pattern CASE-SENSITIVELY (a
+/// throwaway parse — the fold is what erases `required`, so the unfolded twin
+/// still carries it), then expand one window of that raw literal into its
+/// case-variant OR-set (`query.zig::caselessVariants`, which owns the
+/// soundness bounds: ASCII-only, Kelvin/long-s orbits excluded under Unicode
+/// fold). Every decline returns the empty filter — exactly the old
+/// "caseless ⇒ no elision" behavior. `a` is the run arena: the variant strings
+/// live for the whole invocation, like every other filter source.
+fn caselessFilter(a: std.mem.Allocator, o: Opts, eff: []const u8, re: *const Matcher) []const []const u8 {
+    switch (re.*) {
+        .linear => {},
+        .pcre => return &.{}, // no raw-literal twin to mine (literal.zig declines caseless)
+    }
+    var raw = Regex.compileOpts(a, eff, .{ .unicode = o.unicode, .multiline = o.multiline }) catch return &.{};
+    defer raw.deinit();
+    if (raw.required.len < 3) return &.{};
+    const vars = query_mod.caselessVariants(a, raw.required, o.unicode) catch return &.{};
+    return vars orelse &.{};
 }
 
 /// The crest sieve's forced-crest vector ĝ for this invocation, or 0⃗ (⇒ the
@@ -695,7 +751,7 @@ fn assembleIndexSkip(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, fi
 /// "the filters excluded everything", never on "the index proved everything
 /// out" or "the pattern missed".
 const Collected = struct { files: []InFile, recursive: bool, path_error: bool, walked: usize };
-fn collectFiles(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, filters: []const []const u8, sieve: crest.Vector, file_needle: ?[]const u8, cfg: *const ingest.Config) Collected {
+fn collectFiles(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, filters: []const []const u8, sieve: crest.Vector, file_needle: ?simd.Gate, cfg: *const ingest.Config) Collected {
     const o = parsed.opts;
     var candidates: std.ArrayList(Candidate) = .empty;
     var ig = ignore.Ignore.init(a, io, ignore.Options.from(o), parsed.roots);
@@ -1253,7 +1309,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
                 return;
             }
         }
-        const c = collectFiles(a, gpa, io, parsed, &.{}, crest.zero_vector, requiredLiteralGate(o, &re), &icfg);
+        const c = collectFiles(a, gpa, io, parsed, &.{}, crest.zero_vector, requiredLiteralGate(a, o, eff, &re), &icfg);
         const live = a.alloc(ranked.LiveFile, c.files.len) catch oom();
         for (c.files, live) |file, *dst| dst.* = .{ .path = file.path, .bytes = file.bytes };
         const n = try ranked.runLive(gpa, io, rex, live, o.rank_k);
@@ -1262,7 +1318,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         return;
     }
 
-    const line_needle = requiredLiteralGate(o, &re);
+    const line_needle = requiredLiteralGate(a, o, eff, &re);
     // `--include-zero` must count every searched file, so the whole-file literal
     // gate (which would skip a file lacking the required literal) stands down —
     // the per-line `line_needle` still accelerates matching within each file.
@@ -1323,7 +1379,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // crest sieve reads the same on-disk artifacts, so it stands down too.
     // `--include-zero` also stands down index elision: an elided (provably
     // non-matching) read would never reach the emitter to print its `path:0`.
-    const filters = if (transforming or o.include_zero) &[_][]const u8{} else trigramFilter(o, &re, &req_one);
+    const filters = if (transforming or o.include_zero) &[_][]const u8{} else trigramFilter(a, o, eff, &re, &req_one);
     const sieve = if (transforming or o.include_zero) crest.zero_vector else crestSieve(o, eff, &re);
 
     // The common recursive-walk case runs on the parallel fused engine
@@ -1535,15 +1591,15 @@ pub fn pcreFaultExit(re: *const Matcher) void {
 /// classify the per-line emit path applies): shared by --files-without-match
 /// and the -q/--quiet scan so the two can't drift. Inline: it sits in those
 /// modes' per-line loops.
-inline fn lineHit(em: *Emitter, sim: *Matcher.Sim, wss: ?*Matcher.SpanSim, needle: ?[]const u8, line: []const u8) bool {
+inline fn lineHit(em: *Emitter, sim: *Matcher.Sim, wss: ?*Matcher.SpanSim, needle: ?simd.Gate, line: []const u8) bool {
     const mv = if (em.o.crlf) std.mem.trimEnd(u8, line, "\r") else line;
-    return (needle == null or simd.contains(mv, needle.?)) and (if (wss) |s| em.lineHitWord(s, mv) else em.re.lineMatch(sim, mv));
+    return (needle == null or needle.?.in(mv)) and (if (wss) |s| em.lineHitWord(s, mv) else em.re.lineMatch(sim, mv));
 }
 
 /// `-U` whole-buffer boolean: render into a throwaway buffer and reuse the
 /// multiline emitter's tally (invert/word/zero-width baked in). Shared by the
 /// --files-without-match and -q/--quiet scans so the two can't drift.
-fn bufferAnyHit(a: std.mem.Allocator, re: *const Matcher, o: Opts, caps: ?*Caps, needle: ?[]const u8, path: []const u8, body: []const u8) bool {
+fn bufferAnyHit(a: std.mem.Allocator, re: *const Matcher, o: Opts, caps: ?*Caps, needle: ?simd.Gate, path: []const u8, body: []const u8) bool {
     var scratch: std.ArrayList(u8) = .empty;
     var em = Emitter{ .a = a, .re = re, .o = o, .show_name = false, .out = &scratch, .base = @intFromPtr(body.ptr), .caps = caps, .needle = needle };
     return em.buffer(path, body) > 0;
@@ -1552,7 +1608,7 @@ fn bufferAnyHit(a: std.mem.Allocator, re: *const Matcher, o: Opts, caps: ?*Caps,
 /// `-q/--quiet`: true as soon as any file matches (short-circuits). Under `-U` the
 /// whole-buffer emitter's tally (invert/word/zero-width baked in) is the boolean;
 /// otherwise the per-line scan against the (possibly inverted) line selection.
-fn anyMatch(a: std.mem.Allocator, re: *const Matcher, o: Opts, needle: ?[]const u8, files: []const InFile) bool {
+fn anyMatch(a: std.mem.Allocator, re: *const Matcher, o: Opts, needle: ?simd.Gate, files: []const InFile) bool {
     var sim = Matcher.Sim.init(a, re) catch return false;
     defer sim.deinit();
     var wss: ?Matcher.SpanSim = if (o.word) (Matcher.SpanSim.init(a, re) catch null) else null;
@@ -1714,27 +1770,62 @@ test "required literal gate reuses sound regex analysis" {
     const t = std.testing;
     var decl = Matcher{ .linear = try Regex.compile(t.allocator, "func\\s+\\w+\\(") };
     defer decl.deinit();
-    try t.expectEqualStrings("func", requiredLiteralGate(.{}, &decl).?);
+    try t.expectEqualStrings("func", requiredLiteralGate(t.allocator, .{}, "func\\s+\\w+\\(", &decl).?.bytes);
 
     var short = Matcher{ .linear = try Regex.compile(t.allocator, "[0-9a-f]{8}-[0-9a-f]{4}") };
     defer short.deinit();
-    try t.expectEqualStrings("-", requiredLiteralGate(.{}, &short).?);
+    try t.expectEqualStrings("-", requiredLiteralGate(t.allocator, .{}, "[0-9a-f]{8}-[0-9a-f]{4}", &short).?.bytes);
 
     var common = Matcher{ .linear = try Regex.compile(t.allocator, "(foo|bar)baz") };
     defer common.deinit();
-    try t.expectEqualStrings("baz", requiredLiteralGate(.{}, &common).?);
+    try t.expectEqualStrings("baz", requiredLiteralGate(t.allocator, .{}, "(foo|bar)baz", &common).?.bytes);
 
     var alternatives = Matcher{ .linear = try Regex.compile(t.allocator, "(?:foo)|(?:bar)") };
     defer alternatives.deinit();
-    try t.expectEqual(@as(?[]const u8, null), requiredLiteralGate(.{}, &alternatives));
+    try t.expect(requiredLiteralGate(t.allocator, .{}, "(?:foo)|(?:bar)", &alternatives) == null);
+}
+
+test "caseless gate: fold-closed literal, lowered spelling, pure-literal equivalence" {
+    const t = std.testing;
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // A pure literal with an ASCII-closed fold: gate present, lowered, equiv.
+    var lit = Matcher{ .linear = try Regex.compileOpts(a, "WalletProvider", .{ .caseless = true, .unicode = true }) };
+    const g = requiredLiteralGate(a, .{ .caseless = true }, "WalletProvider", &lit).?;
+    try t.expect(g.ci);
+    try t.expect(g.equiv);
+    try t.expectEqualStrings("walletprovider", g.bytes);
+
+    // A regex body keeps the gate (fold-closed required literal) without equiv.
+    var rex = Matcher{ .linear = try Regex.compileOpts(a, "provider\\d+", .{ .caseless = true, .unicode = true }) };
+    const gr = requiredLiteralGate(a, .{ .caseless = true }, "provider\\d+", &rex).?;
+    try t.expect(gr.ci and !gr.equiv);
+    try t.expectEqualStrings("provider", gr.bytes);
+
+    // Kelvin/long-s orbits split the window under Unicode fold: "task" gates
+    // on its "ta" prefix (containment only, never equivalence)…
+    var risky = Matcher{ .linear = try Regex.compileOpts(a, "task", .{ .caseless = true, .unicode = true }) };
+    const gk = requiredLiteralGate(a, .{ .caseless = true }, "task", &risky).?;
+    try t.expect(gk.ci and !gk.equiv);
+    try t.expectEqualStrings("ta", gk.bytes);
+    // …an all-escaping literal declines entirely…
+    var sks = Matcher{ .linear = try Regex.compileOpts(a, "sks", .{ .caseless = true, .unicode = true }) };
+    try t.expect(requiredLiteralGate(a, .{ .caseless = true }, "sks", &sks) == null);
+    // …and ASCII fold admits the whole literal, equivalence included.
+    var ascii = Matcher{ .linear = try Regex.compileOpts(a, "task", .{ .caseless = true, .unicode = false }) };
+    const ga = requiredLiteralGate(a, .{ .caseless = true, .unicode = false }, "task", &ascii).?;
+    try t.expect(ga.ci and ga.equiv);
+    try t.expectEqualStrings("task", ga.bytes);
 }
 
 test "whole-file gate preserves all-byte modes" {
     const t = std.testing;
-    const needle: ?[]const u8 = "func";
-    try t.expectEqualStrings("func", wholeFileLiteralGate(.{}, needle).?);
-    try t.expectEqual(@as(?[]const u8, null), wholeFileLiteralGate(.{ .passthru = true }, needle));
-    try t.expectEqual(@as(?[]const u8, null), wholeFileLiteralGate(.{ .stats = true }, needle));
-    try t.expectEqual(@as(?[]const u8, null), wholeFileLiteralGate(.{ .json = true }, needle));
-    try t.expectEqual(@as(?[]const u8, null), wholeFileLiteralGate(.{ .files_without = true }, needle));
+    const needle: ?simd.Gate = .{ .bytes = "func" };
+    try t.expectEqualStrings("func", wholeFileLiteralGate(.{}, needle).?.bytes);
+    try t.expect(wholeFileLiteralGate(.{ .passthru = true }, needle) == null);
+    try t.expect(wholeFileLiteralGate(.{ .stats = true }, needle) == null);
+    try t.expect(wholeFileLiteralGate(.{ .json = true }, needle) == null);
+    try t.expect(wholeFileLiteralGate(.{ .files_without = true }, needle) == null);
 }

@@ -57,19 +57,23 @@ python3 matrix.py bench --only <id> --runs 20     # re-measure one shape (no pub
 
 A row may be born `expect="loss"`. The gate reports it but never fails on it,
 so a **known** hole can never be hidden by an aggregate win — and can never be
-mistaken for a regression either. Today's declared losses:
+mistaken for a regression either. Today there are **no declared losses** —
+every shape is `expect="win"`. The two former holes fell to design, not
+declaration:
 
-- **`multiline-*`** (`-U`) — the multiline emit runs on the serial engine
-  (whole-buffer cross-line spans the parallel pipeline deliberately does not
-  own, to protect its 30/30 parity), forfeiting the parallel walk. Even a
-  _rare_ span loses; a _common_ lazy-dotstar (`[\s\S]*?`) loses hardest.
-- **`pcre-backref-files`** — a pure backreference has no extractable required
-  literal, so the trigram index has nothing to prefilter on and gist scans the
-  whole corpus like rg does.
+- **`multiline-*`** (`-U`) once ran on the serial engine, forfeiting the
+  parallel walk. Now `-U` rides the parallel per-file pipeline and an
+  assertion-free multiline pattern answers from the byte-class DFA at
+  O(1)/byte, so even the _common_ lazy-dotstar (`[\s\S]*?`) row wins.
+- **`pcre-backref-files`** once scanned the whole corpus with raw PCRE2 like
+  rg does (no extractable required literal). The PCRE2 shadow gate
+  (`src/kernel/match/regex/pcre2/shadow.zig`) rewrites the pattern into a
+  linear over-approximation whose DFA rejects what backtracking would have
+  choked on — and whose required literal feeds the trigram index.
 
-Correctness still gates every loss (parity passes). Parallelizing `-U` and
-narrowing the literal-less PCRE2 path owns turning them green; when that lands,
-flip `expect` to `win`/`parity` and the gate starts enforcing a floor.
+Should a future shape be born a loss, correctness still gates it (parity must
+pass); when the design catches up, flip `expect` to `win`/`parity` and the
+gate starts enforcing a floor.
 
 ## Why cold-indexed vs rg (not warm here)
 

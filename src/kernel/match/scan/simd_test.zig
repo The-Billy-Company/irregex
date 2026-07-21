@@ -44,6 +44,71 @@ test "simd contains ≡ std.mem.indexOf" {
     }
 }
 
+/// Scalar reference for the caseless kernel: a sliding `eqlIgnoreCase` scan.
+fn scalarCaseless(hay: []const u8, needle_lower: []const u8) bool {
+    if (needle_lower.len == 0) return true;
+    if (needle_lower.len > hay.len) return false;
+    var i: usize = 0;
+    while (i + needle_lower.len <= hay.len) : (i += 1)
+        if (std.ascii.eqlIgnoreCase(hay[i .. i + needle_lower.len], needle_lower)) return true;
+    return false;
+}
+
+test "simd containsCaseless ≡ sliding eqlIgnoreCase" {
+    const cases = [_]struct { hay: []const u8, ndl: []const u8 }{
+        .{ .hay = "", .ndl = "x" },
+        .{ .hay = "abc", .ndl = "" },
+        .{ .hay = "A", .ndl = "a" },
+        .{ .hay = "The Quick Brown Fox", .ndl = "quick" },
+        .{ .hay = "WALLETPROVIDER", .ndl = "walletprovider" },
+        .{ .hay = "WaLlEtPrOvIdEr in the middle", .ndl = "walletprovider" },
+        .{ .hay = "no match here at all", .ndl = "zzzz" },
+        .{ .hay = "edge at the very END>>", .ndl = "end>>" },
+        .{ .hay = "punct_1234 unchanged", .ndl = "_1234" },
+        .{ .hay = "needle longer than the haystack", .ndl = "this needle is far too long to ever fit" },
+    };
+    for (cases) |c| try std.testing.expectEqual(scalarCaseless(c.hay, c.ndl), simd.containsCaseless(c.hay, c.ndl));
+
+    // Randomized differential fuzz over a mixed-case tiny alphabet (many
+    // survivor verifies, both case spellings of the anchor bytes).
+    var prng = std.Random.DefaultPrng.init(0xCA5E1E55);
+    const rng = prng.random();
+    var buf: [4096]u8 = undefined;
+    for (&buf) |*b| {
+        const c = 'a' + rng.uintLessThan(u8, 3);
+        b.* = if (rng.boolean()) std.ascii.toUpper(c) else c;
+    }
+    var ndl: [6]u8 = undefined;
+    var t: usize = 0;
+    while (t < 5000) : (t += 1) {
+        const nlen = 1 + rng.uintLessThan(usize, 6);
+        for (ndl[0..nlen]) |*b| b.* = 'a' + rng.uintLessThan(u8, 3); // pre-lowered
+        const hlen = rng.uintLessThan(usize, buf.len);
+        const want = scalarCaseless(buf[0..hlen], ndl[0..nlen]);
+        try std.testing.expectEqual(want, simd.containsCaseless(buf[0..hlen], ndl[0..nlen]));
+    }
+}
+
+test "Gate dispatches the caseless kernel; gateWide agrees across the wide threshold" {
+    const gpa = std.testing.allocator;
+    const cs = simd.Gate{ .bytes = "Needle" };
+    const ci = simd.Gate{ .bytes = "needle", .ci = true };
+    try std.testing.expect(cs.in("a Needle here"));
+    try std.testing.expect(!cs.in("a NEEDLE here"));
+    try std.testing.expect(ci.in("a NEEDLE here"));
+    try std.testing.expect(!ci.in("a nee dle here"));
+
+    // Wide path: the caseless needle only appears (uppercased) near the tail,
+    // past several shard seams.
+    const hay = try gpa.alloc(u8, verify.wide_threshold * 2 + 64);
+    defer gpa.free(hay);
+    @memset(hay, 'x');
+    std.mem.copyForwards(u8, hay[hay.len - 40 ..], "NEEDLE");
+    try std.testing.expect(verify.gateWide(gpa, hay, ci));
+    try std.testing.expect(!verify.gateWide(gpa, hay, cs));
+    try std.testing.expect(!verify.gateWide(gpa, hay, .{ .bytes = "absent", .ci = true }));
+}
+
 test "containsWide ≡ std.mem.indexOf across the parallel threshold (seam adversarial)" {
     const gpa = std.testing.allocator;
     // Big enough to actually fan out (≥ wide_threshold ⇒ ≥ 2 shards when the

@@ -375,6 +375,7 @@ test {
     _ = @import("corpus/index/trigrams/trigram_load_test.zig"); // T0 loader adversarial suite: malformed blobs fail closed
     _ = @import("corpus/index/trigrams/persist_test.zig"); // T0 persisted corpus/index/path-table integrity (doc-id OOB guard)
     _ = @import("corpus/index/trigrams/trigram_fuzz.zig"); // T0 loader long fuzz (seeds + mutations; GIST_FUZZ_ITERS)
+    _ = @import("corpus/index/phantom/treemap_test.zig"); // phantom tree.map layout: round-trip, root resolve, torn blobs fail closed
     _ = @import("kernel/rank/rank_test.zig"); // T4 RRF fusion ranking
     _ = @import("kernel/rank/signals_test.zig"); // cross-language def-detection + generated-file signals
     _ = @import("kernel/rank/mirror.zig"); // cached-source mirror classification + exact canonical duplicate

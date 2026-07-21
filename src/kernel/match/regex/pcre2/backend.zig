@@ -59,4 +59,5 @@ test {
     _ = engine;
     _ = @import("literal.zig");
     _ = @import("captures.zig");
+    _ = @import("shadow.zig");
 }

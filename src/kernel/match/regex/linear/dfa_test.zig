@@ -197,6 +197,52 @@ fn pikeDoc(re: *Regex, sim: *Regex.Sim, doc: []const u8) bool {
     return false;
 }
 
+test "dfa: assertion-free multiline bufMatch ≡ whole-buffer Pike (matches cross \\n)" {
+    const a = std.testing.allocator;
+    const alphabet = "abcd01_ xy\n"; // '\n' included: matches may cross lines under -U
+    var buf_bytes: [40]u8 = undefined;
+
+    var seed: u64 = 0;
+    var checked: usize = 0;
+    while (seed < 6000) : (seed += 1) {
+        var prng = std.Random.DefaultPrng.init(seed *% 0x9E3779B97F4A7C15);
+        const r = prng.random();
+
+        // Assertion-free body only (no optional `^`/`$` — the DFA admission
+        // under multiline is exactly the assertion-free class).
+        var pat: std.ArrayList(u8) = .empty;
+        defer pat.deinit(a);
+        var g = Gen{ .r = r, .buf = &pat, .a = a };
+        try g.alt(2);
+
+        var re = Regex.compileOpts(a, pat.items, .{ .multiline = true, .dotall = r.boolean() }) catch continue;
+        defer re.deinit();
+        try std.testing.expect(re.assert_free); // the generator emits no anchors
+        if (re.dfa == null) continue; // powerset cap ⇒ Pike serves; not under test
+        var sim = try Regex.Sim.init(a, &re);
+        defer sim.deinit();
+
+        for (0..8) |trial| {
+            const len = if (trial == 0) 0 else r.uintLessThan(usize, buf_bytes.len + 1);
+            for (0..len) |i| buf_bytes[i] = alphabet[r.uintLessThan(usize, alphabet.len)];
+            const buf = buf_bytes[0..len];
+            const got = re.bufMatch(&sim, buf); // dispatches to the DFA
+            // Force the Pike whole-buffer scan (the proven reference) by
+            // hiding the DFA for one call; restore before deinit.
+            const stashed = re.dfa;
+            re.dfa = null;
+            const want = re.bufMatch(&sim, buf);
+            re.dfa = stashed;
+            if (got != want) {
+                std.debug.print("BUF DIVERGENCE pat=/{s}/ buf=\"{s}\" dfa={} pike={}\n", .{ pat.items, buf, got, want });
+                return error.DfaPikeBufDivergence;
+            }
+            checked += 1;
+        }
+    }
+    try std.testing.expect(checked > 20_000);
+}
+
 test "dfa: docMatch single-pass scan ≡ per-line Pike over multi-line buffers" {
     const a = std.testing.allocator;
     const alphabet = "abcd01_ xy\n"; // include '\n' so docs span lines, empty lines, runs

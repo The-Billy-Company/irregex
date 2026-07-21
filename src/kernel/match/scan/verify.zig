@@ -32,6 +32,7 @@ const WideShard = struct {
     hay: []const u8,
     needles: []const []const u8,
     overlap: usize,
+    ci: bool,
     hit: *std.atomic.Value(bool),
 
     /// Scan this shard slab-by-slab through the proven single-thread kernels,
@@ -44,7 +45,8 @@ const WideShard = struct {
         while (i < sh.hay.len) : (i += wide_slab) {
             if (sh.hit.load(.monotonic)) return;
             const end = @min(sh.hay.len, i + wide_slab + sh.overlap);
-            if (simd.containsAny(sh.hay[i..end], sh.needles)) {
+            const found = if (sh.ci) simd.containsCaseless(sh.hay[i..end], sh.needles[0]) else simd.containsAny(sh.hay[i..end], sh.needles);
+            if (found) {
                 sh.hit.store(true, .monotonic);
                 return;
             }
@@ -61,10 +63,18 @@ const WideShard = struct {
 /// back to the single-thread kernel below `wide_threshold`, for degenerate
 /// needle sets, or if a thread can't spawn — never a behavior change.
 pub fn containsAnyWide(gpa: std.mem.Allocator, hay: []const u8, needles: []const []const u8) bool {
+    return wideAny(gpa, hay, needles, false);
+}
+
+fn oneShot(hay: []const u8, needles: []const []const u8, ci: bool) bool {
+    return if (ci) simd.containsCaseless(hay, needles[0]) else simd.containsAny(hay, needles);
+}
+
+fn wideAny(gpa: std.mem.Allocator, hay: []const u8, needles: []const []const u8, ci: bool) bool {
     // Sub-threshold bodies (the overwhelmingly common case) branch out here
     // on one comparison — no cpu-count syscall, no allocation, no spawn.
     // (`simd.containsAny` itself takes the single-needle kernel for len 1.)
-    if (hay.len < wide_threshold) return simd.containsAny(hay, needles);
+    if (hay.len < wide_threshold) return oneShot(hay, needles, ci);
     var overlap: usize = 0;
     for (needles) |n| {
         if (n.len == 0) return true;
@@ -72,21 +82,21 @@ pub fn containsAnyWide(gpa: std.mem.Allocator, hay: []const u8, needles: []const
     }
     const ncpu = std.Thread.getCpuCount() catch 1;
     const nthr = @min(hay.len / wide_threshold + 1, ncpu);
-    if (nthr < 2) return simd.containsAny(hay, needles);
+    if (nthr < 2) return oneShot(hay, needles, ci);
 
     var hit = std.atomic.Value(bool).init(false);
     const shards = gpa.alloc(WideShard, nthr) catch
-        return simd.containsAny(hay, needles);
+        return oneShot(hay, needles, ci);
     defer gpa.free(shards);
     const threads = gpa.alloc(std.Thread, nthr) catch
-        return simd.containsAny(hay, needles);
+        return oneShot(hay, needles, ci);
     defer gpa.free(threads);
 
     const chunk = hay.len / nthr;
     for (0..nthr) |k| {
         const start = k * chunk;
         const end = if (k == nthr - 1) hay.len else @min(hay.len, (k + 1) * chunk + overlap);
-        shards[k] = .{ .hay = hay[start..end], .needles = needles, .overlap = overlap, .hit = &hit };
+        shards[k] = .{ .hay = hay[start..end], .needles = needles, .overlap = overlap, .ci = ci, .hit = &hit };
     }
     parallel.fanOut(WideShard, shards, threads, WideShard.run);
     return hit.load(.monotonic);
@@ -96,6 +106,14 @@ pub fn containsAnyWide(gpa: std.mem.Allocator, hay: []const u8, needles: []const
 /// required-literal gate calls with.
 pub fn containsWide(gpa: std.mem.Allocator, hay: []const u8, needle: []const u8) bool {
     return containsAnyWide(gpa, hay, &.{needle});
+}
+
+/// The `Gate`-shaped wide presence test: dispatches the case-sensitive or
+/// ASCII-caseless kernel with the same fan-out policy. This is the whole-file
+/// drop every engine calls, so a caseless gate rides the identical wide path
+/// a case-sensitive one does (multi-GiB blobs included).
+pub fn gateWide(gpa: std.mem.Allocator, hay: []const u8, gate: simd.Gate) bool {
+    return wideAny(gpa, hay, &.{gate.bytes}, gate.ci);
 }
 
 const VerifyShard = struct {

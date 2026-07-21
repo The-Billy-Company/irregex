@@ -23,10 +23,10 @@ Three subcommands, one discipline (correctness before speed):
 
   gate     assert the committed per-shape floors hermetically (no re-timing),
            mirroring `session/gate_session.py`. One honest asymmetry: a row
-           declared `expect="loss"` is report-only (the known common-`-U`
-           lazy-dotstar hole lives there on purpose, so no aggregate can bury
-           it), while any win/parity row below its floor is a hard failure.
-           `--live` re-benches first.
+           declared `expect="loss"` is report-only (a declared hole lives in
+           its own row on purpose, so no aggregate can bury it — currently
+           none: all 19 shapes are declared wins/parity), while any win/parity
+           row below its floor is a hard failure. `--live` re-benches first.
 
 Usage:
   matrix.py parity                 # correctness gate (all three paths agree)
@@ -246,7 +246,7 @@ def _publish(rows: list[dict], warmup: int, runs: int) -> None:
     BASELINE.write_text(json.dumps(
         {"_comment": "Per-shape committed floors for `matrix.py gate`. win → 0.75× the "
                      "measured speedup (≥1.0); parity → a fixed 0.75× band; loss → recorded, "
-                     "report-only (the declared common-`-U` lazy-dotstar hole). Refresh with "
+                     "report-only (currently none declared). Refresh with "
                      "`GIST_BENCH=1 matrix.py bench --publish` after a deliberate change.",
          "warmup": warmup, "runs": runs, "floors": floors}, indent=2) + "\n")
     hdr = "id\texpect\tverdict\tspeedup\tp\tgist_ms\trg_ms\tfloor"
@@ -266,8 +266,9 @@ def _render_cert(rows: list[dict]) -> None:
            "_gist cold-indexed vs ripgrep over the six Billy source roots. A WIN needs "
            f"a lower median **and** Mann-Whitney p < {S.ALPHA:.2f} (fail-closed). Parity is "
            "correctness-proven separately (`matrix.py parity`: gist-idx == gist-noidx == rg). "
-           "The one declared `loss` is the known common-`-U` lazy-dotstar hole, kept visible "
-           "on purpose until the `-U` emit path is parallelized._", "",
+           "Every shape is a declared win — the former `-U` losses fell to the parallel "
+           "multiline DFA and the former backref parity to the PCRE2 shadow gate; a future "
+           "declared `loss` would stay report-only in its own row so no aggregate can bury it._", "",
            "| shape | dims | gist ms | rg ms | speedup | p | verdict |",
            "|---|---|--:|--:|--:|--:|:--|"]
     for r in rows:

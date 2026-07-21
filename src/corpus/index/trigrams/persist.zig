@@ -59,7 +59,9 @@ pub const Mapping = []align(std.heap.page_size_min) const u8;
 /// scans the directory but not the much larger posting body; later queries
 /// fault in and validate only their groups. A genuinely empty file is rejected
 /// (`mmap` can't map zero length, and a 0-byte index is corruption anyway).
-fn mmapFile(io: std.Io, path: []const u8) !Mapping {
+/// `pub`: the phantom tree.map loader (`../phantom/treemap.zig`) maps its
+/// artifact through the same primitive.
+pub fn mmapFile(io: std.Io, path: []const u8) !Mapping {
     const file = try Dir.cwd().openFile(io, path, .{}); // .read_only default
     defer file.close(io);
     const len: usize = @intCast((try file.stat(io)).size);

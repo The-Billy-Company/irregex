@@ -130,11 +130,12 @@ pub const Emitter = struct {
     /// Absolute address of the current file's byte-0 (set per file by the caller);
     /// `--byte-offset` reports `@intFromPtr(line.ptr) - base` for each line/match.
     base: usize = 0,
-    /// Optional required literal from the compiled regex: every match must
-    /// contain these bytes, so lines without them are rejected by SIMD
-    /// memmem before any engine run. Purely an accelerator; alternations only
-    /// set it when the analyzer proves one literal common to every branch.
-    needle: ?[]const u8 = null,
+    /// Optional required-literal gate from the compiled regex: every match
+    /// must contain these bytes (in some ASCII case spelling when `.ci`), so
+    /// lines without them are rejected by the SIMD kernels before any engine
+    /// run. Purely an accelerator; alternations only set it when the analyzer
+    /// proves one literal common to every branch.
+    needle: ?simd.Gate = null,
     /// `-r/--replace` capture matcher (linear Pike VM or PCRE2), non-null only
     /// when a replacement template is active. Built once per run by the caller.
     caps: ?*Caps = null,
@@ -173,7 +174,7 @@ pub const Emitter = struct {
 
     fn lineCanMatch(self: *const Emitter, line: []const u8) bool {
         const needle = self.needle orelse return true;
-        return simd.contains(line, needle);
+        return needle.in(line);
     }
 
     /// Absolute byte offset of a slice (line or match span) within the file.
@@ -672,6 +673,23 @@ pub const Emitter = struct {
     /// for the count modes. Zero ⇒ no output was written for this file.
     pub fn buffer(self: *Emitter, path: []const u8, body: []const u8) usize {
         const o = self.o;
+        // `-l` needs only "does one kept span exist" — never walk every match
+        // in the buffer. When the whole-buffer boolean provably equals the emit
+        // model's verdict (`bufBoolExact`), one `bufMatch` run answers (the
+        // assertion-free class rides the multiline DFA at O(1)/byte); `-w`
+        // reshapes spans and `--crlf` matches a rewritten view, so both keep
+        // the span path — capped at the FIRST kept span instead of all of them.
+        if (o.files_only and !o.count_matches and !o.count_only and !o.invert) {
+            if (!o.word and !o.crlf and self.re.bufBoolExact()) {
+                var local_sim: ?Matcher.Sim = if (self.sim == null) (Matcher.Sim.init(self.a, self.re) catch return 0) else null;
+                defer if (local_sim) |*s| s.deinit();
+                const sim = self.sim orelse &local_sim.?;
+                return if (self.re.bufMatch(sim, body)) self.emitPathOnly(path) else 0;
+            }
+            var first = o;
+            first.max_per_file = 1;
+            return if (self.collectSpans(first, body).len == 0) 0 else self.emitPathOnly(path);
+        }
         const spans = self.collectSpans(o, body);
         // `--count-matches` and `-c -o` tally every match span (empties included).
         if (o.count_matches or (o.count_only and o.only_matching)) return self.bufTally(path, ml.countAll(spans));
@@ -991,7 +1009,7 @@ test "required literal line gate handles sub-trigram needles" {
         .o = .{},
         .show_name = false,
         .out = &out,
-        .needle = m.required(),
+        .needle = .{ .bytes = m.required() },
     };
 
     try t.expectEqualStrings("-", m.required());
@@ -1011,7 +1029,7 @@ test "files-only emits once and stops after the first matching line" {
         .o = .{ .files_only = true },
         .show_name = true,
         .out = &out,
-        .needle = m.required(),
+        .needle = .{ .bytes = m.required() },
     };
 
     try t.expectEqual(@as(usize, 1), em.file("fixture.txt", &.{ "needle first", "needle second" }));

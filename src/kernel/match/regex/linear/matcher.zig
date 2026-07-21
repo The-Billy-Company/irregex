@@ -81,6 +81,27 @@ pub const Matcher = union(Backend) {
         };
     }
 
+    /// Under `-U`, is the whole-buffer boolean (`bufMatch`) exactly the emit
+    /// model's "some kept span exists" (rg's `-l`)? A non-nullable pattern
+    /// always is: its spans consume bytes, and the emit model only ever drops
+    /// zero-width spans (the `\z`-at-EOF style match `bufMatch` still reports).
+    /// A nullable pattern keeps the equivalence only when assertion-free — it
+    /// then matches zero-width at position 0, which the emit model keeps. The
+    /// pcre arm's program isn't inspectable, so nullable pcre declines.
+    pub fn bufBoolExact(self: *const Matcher) bool {
+        if (!self.nullable()) return true;
+        return self.* == .linear and self.linear.assert_free;
+    }
+
+    /// Positive prefix-proof soundness under `-U`: may a match found inside a
+    /// PREFIX of a body be claimed as a match of the whole body? Requires an
+    /// assertion-free pattern — `$`/`\z`/`\b` at the cut would assert against
+    /// bytes the prefix doesn't hold. Only the linear arm can prove it (the
+    /// compiled program is inspectable); PCRE2 conservatively declines.
+    pub fn bufPrefixClosed(self: *const Matcher) bool {
+        return self.* == .linear and self.linear.assert_free;
+    }
+
     /// Can any match consume a `\n`? rg's `-U` searcher silently keeps the
     /// LINE-oriented model (roll buffer, line-mode binary semantics) when the
     /// pattern provably can't match its line terminator — the slice model, with

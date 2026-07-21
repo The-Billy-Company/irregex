@@ -9,10 +9,10 @@ doc_radar:
       glob: pkg/kernels/irregex/src/kernel/*
       unit: dirs
       equals: 6
-    - description: "corpus/index/ keeps its seven packages: trigrams · postings · codex · atlas · crest · frame · frag"
+    - description: "corpus/index/ keeps its eight packages: trigrams · postings · codex · atlas · crest · frame · frag · phantom"
       glob: pkg/kernels/irregex/src/corpus/index/*
       unit: dirs
-      equals: 7
+      equals: 8
   sentinels:
     - description: "the linear engine's eager-DFA cap the prose quotes (past it, Pike verifies)"
       file: pkg/kernels/irregex/src/kernel/match/regex/linear/powerset.zig
@@ -138,15 +138,16 @@ answer, and `loom` shapes the rows engine-side. Design rules and measurements:
 
 ## `corpus/index/`: the candidate, self, and kinship indexes
 
-| Folder                   | Concern                                                                                                                                                                                                                                                       |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `corpus/index/trigrams/` | **T0** trigram candidate index: n-gram extraction, posting-list build/query, zero-copy `mmap` persistence, + the T3 mtime freshness overlay                                                                                                                   |
-| `corpus/index/postings/` | the compact posting-body codecs: LEB128 varint (`varint.zig`) + the persisted-blob layout (`persisted_blob.zig`) the trigram index rides                                                                                                                      |
-| `corpus/index/codex/`    | the compressed self-index: SA-IS → BWT → RRR wavelet tree; `count`/`find`/`restore` at entropy space, O(m) flat in corpus size (the Shannon rung under both engines)                                                                                          |
-| `corpus/index/atlas/`    | relate's persisted kinship index: one LZJD sketch per corpus file behind `relate index`/`status`, folded fresh at query time through the same T3 stat walk ([`corpus/index/atlas/README.md`](corpus/index/atlas/README.md))                                   |
-| `corpus/index/crest/`    | the crest sidecar (`crest.bin`): one forced-class-run vector per doc (16 B), generation-atomic with the trigram pair; prunes the literal-free class-repetition patterns trigrams concede (theory: [`../research/crest/PROOF.md`](../research/crest/PROOF.md)) |
-| `corpus/index/frame/`    | the shared wire discipline the persisted artifacts are framed with: little-endian ints behind a fail-closed cursor, length-prefixed u64 payloads, the NUL-joined path/roots catalogs, and the `onDisk` deletion gate every folded view checks                 |
-| `corpus/index/frag/`     | relate's persisted **fragment** atlas (`concepts.frag`): one structural silhouette per authored function behind `relate concepts`, folded fresh at query time through the same T3 stat walk ([`corpus/index/frag/README.md`](corpus/index/frag/README.md))    |
+| Folder                   | Concern                                                                                                                                                                                                                                                                    |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `corpus/index/trigrams/` | **T0** trigram candidate index: n-gram extraction, posting-list build/query, zero-copy `mmap` persistence, + the T3 mtime freshness overlay                                                                                                                                |
+| `corpus/index/postings/` | the compact posting-body codecs: LEB128 varint (`varint.zig`) + the persisted-blob layout (`persisted_blob.zig`) the trigram index rides                                                                                                                                   |
+| `corpus/index/codex/`    | the compressed self-index: SA-IS → BWT → RRR wavelet tree; `count`/`find`/`restore` at entropy space, O(m) flat in corpus size (the Shannon rung under both engines)                                                                                                       |
+| `corpus/index/atlas/`    | relate's persisted kinship index: one LZJD sketch per corpus file behind `relate index`/`status`, folded fresh at query time through the same T3 stat walk ([`corpus/index/atlas/README.md`](corpus/index/atlas/README.md))                                                |
+| `corpus/index/crest/`    | the crest sidecar (`crest.bin`): one forced-class-run vector per doc (16 B), generation-atomic with the trigram pair; prunes the literal-free class-repetition patterns trigrams concede (theory: [`../research/crest/PROOF.md`](../research/crest/PROOF.md))              |
+| `corpus/index/frame/`    | the shared wire discipline the persisted artifacts are framed with: little-endian ints behind a fail-closed cursor, length-prefixed u64 payloads, the NUL-joined path/roots catalogs, and the `onDisk` deletion gate every folded view checks                              |
+| `corpus/index/frag/`     | relate's persisted **fragment** atlas (`concepts.frag`): one structural silhouette per authored function behind `relate concepts`, folded fresh at query time through the same T3 stat walk ([`corpus/index/frag/README.md`](corpus/index/frag/README.md))                 |
+| `corpus/index/phantom/`  | the phantom walk snapshot (`tree.map`): directory membership recorded at `gist index`, each dir proven current at query time by ONE lstat against the snapshot anchor — the whole live listing elided ([`corpus/index/phantom/README.md`](corpus/index/phantom/README.md)) |
 
 **Trigrams** (`trigrams/trigram.zig`). A file containing a literal must
 contain every trigram of that literal, so the AND of per-trigram posting

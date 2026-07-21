@@ -61,11 +61,25 @@ test "prefilter: a >=3 literal prunes by itself; a short one declines" {
     try testing.expectEqual(@as(usize, 0), small.prefilter(&one).len);
 }
 
-test "prefilter: a caseless query never prunes (the fold makes a literal unsafe)" {
+test "prefilter: a caseless query prunes by case variants; escape orbits decline" {
+    // A fold-closed literal prunes by the caseless variant OR-set (one window
+    // of the raw literal in every case spelling) — the warm twin of cold's
+    // `caselessFilter`.
     var cq = try compile(.{ .pattern = "foobar", .ignore_case = true });
     defer cq.deinit(testing.allocator);
     var one: [1][]const u8 = undefined;
-    try testing.expectEqual(@as(usize, 0), cq.prefilter(&one).len);
+    const pf = cq.prefilter(&one);
+    try testing.expect(pf.len > 0);
+    for (pf) |v| try testing.expect(std.ascii.eqlIgnoreCase(v, pf[0]));
+    // …and the whole-literal caseless SIMD gate is mined alongside it.
+    try testing.expectEqualStrings("foobar", cq.gate.?);
+
+    // Every window of "sks" holds a Kelvin/long-s escape orbit under Unicode
+    // fold, so both accelerations decline — the old engine-only path remains.
+    var risky = try compile(.{ .pattern = "sks", .ignore_case = true });
+    defer risky.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 0), risky.prefilter(&one).len);
+    try testing.expect(risky.gate == null);
 }
 
 test "prefilter: a regex prunes by its required literal" {

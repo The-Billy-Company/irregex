@@ -102,7 +102,7 @@ pub fn renderLines(a: std.mem.Allocator, req: request.Request, docs: []const Doc
         .max_per_file = if (req.max_count) |m| std.math.cast(usize, m) orelse std.math.maxInt(usize) else 0,
         .max_per_file_set = req.max_count != null,
     };
-    var em = output.Emitter{ .a = a, .re = &re, .o = o, .show_name = true, .out = out, .needle = needle };
+    var em = output.Emitter{ .a = a, .re = &re, .o = o, .show_name = true, .out = out, .needle = if (needle) |n| .{ .bytes = n } else null };
 
     var matched = false;
     for (docs) |d| {

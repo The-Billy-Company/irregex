@@ -156,6 +156,17 @@ pub const CompiledQuery = struct {
     /// Owns the escaped-literal buffer for the `-F -i` path (regex over a fixed
     /// string); null otherwise. Freed by `deinit`.
     escaped: ?[]u8 = null,
+    /// ASCII-caseless SIMD gate for a caseless body: the raw (unfolded)
+    /// required literal, pre-folded to lowercase. Sound because
+    /// `foldClosedWindow` proved every byte's simple-fold orbit
+    /// ASCII-closed, so every caseless
+    /// match contains these bytes in SOME ASCII case spelling. Owned.
+    gate: ?[]u8 = null,
+    /// Caseless trigram prefilter variants (`caselessVariants` over one window
+    /// of the raw required literal) — the warm twin of cold `caselessFilter`,
+    /// so a caseless query prunes index candidates instead of scanning the
+    /// whole corpus. Owned (each variant + the slice).
+    variants: ?[]const []const u8 = null,
 
     /// Lower a spec into a compiled query. `-F` without `-i` becomes a literal
     /// (the SIMD fast path); everything else compiles to the regex engine, with
@@ -170,7 +181,26 @@ pub const CompiledQuery = struct {
 
         const re = Regex.compileOpts(gpa, escaped orelse spec.pattern, .{ .caseless = spec.ignore_case, .unicode = spec.unicode }) catch
             return CompileError.Unsupported;
-        return .{ .mode = spec.mode, .caseless = spec.ignore_case, .word = spec.word, .unicode = spec.unicode, .max_count = spec.max_count, .body = .{ .regex = re }, .escaped = escaped };
+        var q = CompiledQuery{ .mode = spec.mode, .caseless = spec.ignore_case, .word = spec.word, .unicode = spec.unicode, .max_count = spec.max_count, .body = .{ .regex = re }, .escaped = escaped };
+        if (spec.ignore_case) q.mineCaselessGate(gpa, escaped orelse spec.pattern);
+        return q;
+    }
+
+    /// The caseless acceleration pair, mined from the raw (unfolded) twin of
+    /// the pattern: the whole-literal SIMD `gate` when the fold is
+    /// ASCII-closed, and the trigram `variants` of one window. Both are pure
+    /// accelerations — every decline just leaves the caseless query on the
+    /// engine-only path it always ran.
+    fn mineCaselessGate(self: *CompiledQuery, gpa: std.mem.Allocator, pattern: []const u8) void {
+        var raw = Regex.compileOpts(gpa, pattern, .{ .unicode = self.unicode }) catch return;
+        defer raw.deinit();
+        if (raw.required.len == 0) return;
+        if (foldClosedWindow(raw.required, self.unicode)) |win| {
+            const low = gpa.dupe(u8, win) catch return;
+            for (low) |*b| b.* = std.ascii.toLower(b.*);
+            self.gate = low;
+        }
+        self.variants = caselessVariants(gpa, raw.required, self.unicode) catch null orelse null;
     }
 
     pub fn deinit(self: *CompiledQuery, gpa: std.mem.Allocator) void {
@@ -179,6 +209,11 @@ pub const CompiledQuery = struct {
             .literal => {},
         }
         if (self.escaped) |e| gpa.free(e);
+        if (self.gate) |g| gpa.free(g);
+        if (self.variants) |vs| {
+            for (vs) |v| gpa.free(v);
+            gpa.free(vs);
+        }
     }
 
     /// A fresh per-thread match scratch: the regex simulation for a regex body
@@ -207,7 +242,7 @@ pub const CompiledQuery = struct {
     /// {foo,bar}), both of which the index treats as sound supersets. `one`
     /// backs the single-literal return so the callee allocates nothing.
     pub fn prefilter(self: *const CompiledQuery, one: *[1][]const u8) []const []const u8 {
-        if (self.caseless) return &.{};
+        if (self.caseless) return self.variants orelse &.{};
         switch (self.body) {
             .literal => |needle| {
                 if (needle.len < 3) return &.{};
@@ -224,6 +259,11 @@ pub const CompiledQuery = struct {
     /// HERE, so the non-word bodies below stay byte-for-byte the hot path they
     /// were (the perf guard for the existing warm slate).
     pub fn docMatches(self: *const CompiledQuery, bytes: []const u8, sc: *Scratch) bool {
+        // Caseless SIMD pre-gate: every caseless match contains the raw
+        // required literal in some ASCII case spelling (`gate` soundness), so
+        // a gate-free doc is rejected without an engine run. Sound under `-w`
+        // too (word only narrows the match set).
+        if (self.gate) |g| if (!simd.containsCaseless(bytes, g)) return false;
         if (self.word) return self.docMatchesWord(bytes, sc);
         return switch (self.body) {
             .literal => |needle| simd.contains(bytes, needle),
@@ -264,6 +304,8 @@ pub const CompiledQuery = struct {
     /// N hits, so `-c` reports min(actual, N)). Every branch is compiled out of
     /// the plain, uncapped loop, keeping it byte-identical to the warm slate.
     pub fn countLines(self: *const CompiledQuery, bytes: []const u8, sc: *Scratch) u64 {
+        // Same caseless SIMD pre-gate as `docMatches`: no gate hit ⇒ 0 lines.
+        if (self.gate) |g| if (!simd.containsCaseless(bytes, g)) return 0;
         const capped = self.max_count != 0;
         if (self.word) return if (capped) self.countGeneric(true, true, bytes, sc) else self.countGeneric(true, false, bytes, sc);
         return if (capped) self.countGeneric(false, true, bytes, sc) else self.countGeneric(false, false, bytes, sc);
@@ -279,7 +321,11 @@ pub const CompiledQuery = struct {
             const nl = std.mem.indexOfScalar(u8, rest, '\n');
             const end = nl orelse rest.len;
             const line = rest[0..end];
-            const hit = if (word) switch (self.body) {
+            // Per-line twin of the caseless doc gate: a gate-free line cannot
+            // match, so the engine run is skipped (the dominant case even
+            // inside a doc the whole-doc gate admitted).
+            const gated = if (self.gate) |g| simd.containsCaseless(line, g) else true;
+            const hit = gated and if (word) switch (self.body) {
                 .literal => |needle| firstWordHit(self.unicode, line, needle) != null,
                 .regex => |*re| lineHasWordMatch(self.unicode, re, line, &sc.word),
             } else switch (self.body) {
@@ -432,6 +478,97 @@ pub fn regexPrefilter(re: *const Regex, one: *[1][]const u8) []const []const u8 
     return re.alts;
 }
 
+/// The longest ASCII-fold-CLOSED window of a literal, or null when none
+/// reaches 2 bytes. A byte is fold-closed when its case-fold orbit stays
+/// within its two ASCII spellings: non-ASCII bytes decline (multi-byte
+/// positional orbits), and under Unicode fold (rg's `-i` default) `k`/`K`
+/// (KELVIN SIGN U+212A) and `s`/`S` (LONG S U+017F) decline — the same two
+/// escape orbits `caselessVariants` excludes; ASCII fold (`(?-u)`) admits
+/// them. A caseless match must contain every segment of the raw literal in
+/// some case spelling, so gating on one admissible window stays a sound
+/// necessary condition even when the whole literal declines (`walletservice`
+/// carries an `s` whose Unicode orbit escapes ASCII — but its `wallet` prefix
+/// gates cleanly). Only a window covering the ENTIRE literal can ever prove
+/// match equivalence; a partial window is containment-only.
+pub fn foldClosedWindow(lit: []const u8, unicode: bool) ?[]const u8 {
+    var best: ?[]const u8 = null;
+    var start: usize = 0;
+    var i: usize = 0;
+    while (i <= lit.len) : (i += 1) {
+        const closed = i < lit.len and lit[i] < 0x80 and
+            !(unicode and (lit[i] == 'k' or lit[i] == 'K' or lit[i] == 's' or lit[i] == 'S'));
+        if (!closed) {
+            if (i - start >= 2 and (best == null or i - start > best.?.len)) best = lit[start..i];
+            start = i + 1;
+        }
+    }
+    return best;
+}
+
+/// The sound trigram prefilter for a CASELESS query: the OR-set of case
+/// variants of one window of the pattern's raw (unfolded) required literal.
+/// Every caseless match must contain the window's bytes in SOME case, so
+/// "contains any variant" is a necessary condition the index can query —
+/// the caseless prefilter gap closed without a case-folded index.
+///
+/// Soundness bounds the window:
+///   • ASCII only — a non-ASCII byte's fold orbit is multi-byte and positional.
+///   • Under Unicode fold (rg's `-i` default), a letter whose simple-fold
+///     orbit escapes ASCII is inadmissible: `k`/`K` also match KELVIN SIGN
+///     (U+212A) and `s`/`S` match LONG S (U+017F), so a `[kK]`-style variant
+///     set would under-claim and elide a real match. ASCII fold (`(?-u)`)
+///     admits them.
+/// A window of `window_len` letters yields ≤2^4 = 16 variants — selective
+/// enough for the index, cheap enough to enumerate. Null when no admissible
+/// window ≥3 bytes exists (the caller declines, exactly the old behavior).
+pub fn caselessVariants(a: std.mem.Allocator, lit: []const u8, unicode: bool) error{OutOfMemory}!?[]const []const u8 {
+    const window_len = 4;
+    if (lit.len < 3) return null;
+    const w = @min(window_len, lit.len);
+
+    // Choose the admissible window with the FEWEST letters (fewest variants);
+    // leftmost wins ties.
+    var best: ?usize = null;
+    var best_letters: usize = window_len + 1;
+    var start: usize = 0;
+    while (start + w <= lit.len) : (start += 1) {
+        var letters: usize = 0;
+        const ok = for (lit[start .. start + w]) |b| {
+            if (b >= 0x80) break false;
+            if (std.ascii.isAlphabetic(b)) {
+                if (unicode and (b == 'k' or b == 'K' or b == 's' or b == 'S')) break false;
+                letters += 1;
+            }
+        } else true;
+        if (ok and letters < best_letters) {
+            best = start;
+            best_letters = letters;
+        }
+    }
+    const at = best orelse return null;
+    const win = lit[at .. at + w];
+
+    const n = @as(usize, 1) << @intCast(best_letters);
+    const out = try a.alloc([]const u8, n);
+    var made: usize = 0;
+    errdefer {
+        for (out[0..made]) |v| a.free(v);
+        a.free(out);
+    }
+    for (0..n) |mask| {
+        const v = try a.dupe(u8, win);
+        var bit: usize = 0;
+        for (v) |*b| {
+            if (!std.ascii.isAlphabetic(b.*)) continue;
+            b.* = if (mask >> @intCast(bit) & 1 != 0) std.ascii.toUpper(b.*) else std.ascii.toLower(b.*);
+            bit += 1;
+        }
+        out[mask] = v;
+        made += 1;
+    }
+    return out;
+}
+
 /// Escape a literal into a regex (for the caseless `-F -i` path, where the
 /// trigram prefilter is unsafe and the regex engine does the case fold).
 /// `pub` because the warm lines renderer (`session/render.zig`) builds its
@@ -443,4 +580,50 @@ pub fn escapeLiteral(a: std.mem.Allocator, pat: []const u8) ![]u8 {
         try out.append(a, c);
     }
     return out.toOwnedSlice(a);
+}
+
+const t = std.testing;
+
+fn freeVariants(vs: []const []const u8) void {
+    for (vs) |v| t.allocator.free(v);
+    t.allocator.free(vs);
+}
+
+test "caselessVariants: full case cross-product of one window" {
+    const vs = (try caselessVariants(t.allocator, "abc", false)).?;
+    defer freeVariants(vs);
+    try t.expectEqual(@as(usize, 8), vs.len); // 3 letters ⇒ 2³
+    // Every variant is a case-spelling of "abc"; all distinct.
+    for (vs, 0..) |v, i| {
+        try t.expect(std.ascii.eqlIgnoreCase("abc", v));
+        for (vs[i + 1 ..]) |w| try t.expect(!std.mem.eql(u8, v, w));
+    }
+}
+
+test "caselessVariants: prefers the window with fewest letters" {
+    // "err_1234" — the leftmost letter-free window needs exactly 1 variant.
+    const vs = (try caselessVariants(t.allocator, "err_1234", false)).?;
+    defer freeVariants(vs);
+    try t.expectEqual(@as(usize, 1), vs.len);
+    try t.expectEqualStrings("_123", vs[0]);
+}
+
+test "caselessVariants: Kelvin/long-s orbits inadmissible under Unicode fold" {
+    // Every window of "sks" holds a k/s — whose simple-fold orbits (U+017F,
+    // U+212A) escape ASCII — so Unicode fold must decline entirely…
+    try t.expect((try caselessVariants(t.allocator, "sks", true)) == null);
+    // …while ASCII fold admits them,
+    const ascii = (try caselessVariants(t.allocator, "sks", false)).?;
+    defer freeVariants(ascii);
+    try t.expectEqual(@as(usize, 8), ascii.len);
+    // and Unicode fold routes around them when a clean window exists
+    // ("kelvin" ⇒ "elvi", skipping the k).
+    const uni = (try caselessVariants(t.allocator, "kelvin", true)).?;
+    defer freeVariants(uni);
+    for (uni) |v| try t.expect(std.ascii.eqlIgnoreCase("elvi", v));
+}
+
+test "caselessVariants: non-ASCII and short literals decline" {
+    try t.expect((try caselessVariants(t.allocator, "caf\xc3\xa9", true)) == null); // é in every window
+    try t.expect((try caselessVariants(t.allocator, "ab", false)) == null); // below trigram floor
 }

@@ -13,6 +13,7 @@ const std = @import("std");
 const core = @import("../linear/core.zig");
 const ffi = @import("ffi.zig");
 const literal = @import("literal.zig");
+const shadow_mod = @import("shadow.zig");
 
 /// One byte span `[start, end)` — the linear engine's type, so the shared
 /// output layer names a single `Span` across both engines.
@@ -143,6 +144,14 @@ pub const Pcre = struct {
     code: *ffi.Code = undefined,
     /// True iff `pcre2_jit_compile` succeeded; false ⇒ interpreter fallback.
     jit: bool = false,
+    /// The linear-time over-approximation gate (`shadow.zig`): a compiled
+    /// linear `Regex` whose language provably CONTAINS this pattern's, so a
+    /// haystack it rejects cannot match and PCRE2 never scans it — the
+    /// O(1)/byte DFA absorbs the worst-case-exponential inputs backtracking
+    /// chokes on. Null when no over-approximation is provable (PCRE2 runs raw,
+    /// exactly the old behavior) or when the shadow is nullable (a gate that
+    /// admits everything is pure overhead). Immutable, shared like `code`.
+    shadow: ?core.Regex = null,
 
     /// Compile `pattern` into a PCRE2 program, JIT-compiling when the platform
     /// supports it. Declines with `BadPattern` (diagnostic in `lastError`) for
@@ -154,6 +163,9 @@ pub const Pcre = struct {
     pub fn deinit(self: *Pcre) void {
         ffi.pcre2_code_free_8(self.code);
         if (self.required.len > 0) self.allocator.free(self.required);
+        for (self.alts) |s| self.allocator.free(s);
+        if (self.alts.len > 0) self.allocator.free(self.alts);
+        if (self.shadow) |*sh| sh.deinit();
         self.* = undefined;
     }
 
@@ -166,8 +178,11 @@ pub const Pcre = struct {
         md: *ffi.MatchData,
         mc: *ffi.MatchContext,
         jit_stack: ?*ffi.JitStack,
+        /// Pike scratch for the shadow gate's rare no-DFA fallback (a powerset
+        /// blow-up). Present iff `re.shadow` is — the gates below unwrap it.
+        shadow: ?core.Regex.Sim,
 
-        pub fn init(_: std.mem.Allocator, re: *const Pcre) CompileError!Sim {
+        pub fn init(allocator: std.mem.Allocator, re: *const Pcre) CompileError!Sim {
             const md = ffi.pcre2_match_data_create_from_pattern_8(re.code, null) orelse
                 return CompileError.OutOfMemory;
             errdefer ffi.pcre2_match_data_free_8(md);
@@ -178,13 +193,19 @@ pub const Pcre = struct {
             _ = ffi.pcre2_set_depth_limit_8(mc, depth_limit);
 
             var jit_stack: ?*ffi.JitStack = null;
+            errdefer if (jit_stack) |js| ffi.pcre2_jit_stack_free_8(js);
             if (re.jit) {
                 jit_stack = ffi.pcre2_jit_stack_create_8(jit_stack_start, jit_stack_max, null);
                 if (jit_stack) |js| ffi.pcre2_jit_stack_assign_8(mc, null, js);
             }
-            return .{ .md = md, .mc = mc, .jit_stack = jit_stack };
+            const sh_sim: ?core.Regex.Sim = if (re.shadow) |*sh|
+                core.Regex.Sim.init(allocator, sh) catch return CompileError.OutOfMemory
+            else
+                null;
+            return .{ .md = md, .mc = mc, .jit_stack = jit_stack, .shadow = sh_sim };
         }
         pub fn deinit(self: *Sim) void {
+            if (self.shadow) |*s| s.deinit();
             if (self.jit_stack) |js| ffi.pcre2_jit_stack_free_8(js);
             ffi.pcre2_match_context_free_8(self.mc);
             ffi.pcre2_match_data_free_8(self.md);
@@ -212,19 +233,33 @@ pub const Pcre = struct {
     /// PCRE2 scratch serves both grains, so it is one type.
     pub const SpanSim = Sim;
 
+    /// The shadow gate: false iff the linear over-approximation PROVES no PCRE
+    /// match exists in `hay` (language containment — see `shadow.zig`). The
+    /// shadow is assertion-free by construction, so its boolean is
+    /// substring-complete over any haystack (line or whole buffer alike) and
+    /// almost always answers from the O(1)/byte DFA. True when no shadow.
+    inline fn admits(self: *const Pcre, sim: anytype, hay: []const u8) bool {
+        if (self.shadow) |*sh| return sh.lineMatch(&sim.shadow.?, hay);
+        return true;
+    }
+
     /// Does the pattern match any substring of `line`? (Per-line boolean path.)
     pub fn lineMatch(self: *const Pcre, sim: *Sim, line: []const u8) bool {
+        if (!self.admits(sim, line)) return false;
         return sim.find(self, line, 0) != null;
     }
 
     /// Does any line of `doc` match? rg `-l` line model: `\n` terminates a line
     /// (no phantom empty final line for a trailing newline); content after the
     /// last `\n` is a line. Mirrors `Regex.docMatch` so `^`/`$` anchor per line.
+    /// Each line passes the shadow gate before PCRE2 sees it — a pathological
+    /// line (one 120 KB base64 run) costs one DFA pass, never backtracking.
     pub fn docMatch(self: *const Pcre, sim: *Sim, doc: []const u8) bool {
         var i: usize = 0;
         while (i < doc.len) {
             const end = std.mem.indexOfScalarPos(u8, doc, i, '\n') orelse doc.len;
-            if (sim.find(self, doc[i..end], 0) != null) return true;
+            const line = doc[i..end];
+            if (self.admits(sim, line) and sim.find(self, line, 0) != null) return true;
             i = end + 1;
         }
         return false;
@@ -236,12 +271,18 @@ pub const Pcre = struct {
     /// `docMatch`; empty buffer never matches (rg's line model).
     pub fn bufMatch(self: *const Pcre, sim: *Sim, buf: []const u8) bool {
         if (buf.len == 0) return false;
+        if (!self.admits(sim, buf)) return false;
         return sim.find(self, buf, 0) != null;
     }
 
     /// Leftmost match of the pattern within `hay[from..]` as a byte span, or
     /// null. `hay` is a line in the per-line default, the buffer under `-U`.
+    /// The shadow gates only the FIRST probe of a haystack (`from == 0`): a
+    /// zero-match haystack is exactly the backtracking worst case, while a
+    /// later probe means a match already landed and the haystack is hot — and
+    /// re-gating every step of a span walk would be quadratic.
     pub fn matchSpan(self: *const Pcre, sim: *SpanSim, hay: []const u8, from: usize) ?Span {
+        if (from == 0 and !self.admits(sim, hay)) return null;
         return sim.find(self, hay, from);
     }
 };
@@ -266,17 +307,78 @@ pub fn compileMode(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
     // Best-effort JIT; the interpreter is always the guaranteed fallback.
     const jit = enable_jit and ffi.pcre2_jit_compile_8(code, ffi.JIT_COMPLETE) == 0;
 
-    const req = try literal.required(allocator, pattern, opts.caseless);
+    var req = try literal.required(allocator, pattern, opts.caseless);
     errdefer allocator.free(req);
+
+    // The shadow gate + prefilter upgrade — best-effort at every step: any
+    // bail leaves this Pcre exactly as it was (raw PCRE2, textual literal).
+    var shadow: ?core.Regex = try buildShadow(allocator, pattern, opts);
+    errdefer if (shadow) |*sh| sh.deinit();
+    var alts: []const []const u8 = &.{};
+    if (shadow) |*sh| {
+        // L(pcre) ⊆ L(shadow), so any literal every SHADOW match requires is
+        // required by every PCRE match too — adopt whichever is longer, and
+        // the shadow's alternation cover when the single literal is too short.
+        // (The pure-literal EQUIVALENCE set does not transfer: containment is
+        // one-directional.) This hands `-P` the trigram index it never had.
+        if (sh.required.len > req.len) {
+            allocator.free(req);
+            req = try allocator.dupe(u8, sh.required);
+        }
+        if (sh.alts.len > 0) {
+            const dst = try allocator.alloc([]const u8, sh.alts.len);
+            var n: usize = 0;
+            errdefer {
+                for (dst[0..n]) |s| allocator.free(s);
+                allocator.free(dst);
+            }
+            for (sh.alts) |s| {
+                dst[n] = try allocator.dupe(u8, s);
+                n += 1;
+            }
+            alts = dst;
+        }
+    }
 
     return .{
         .required = req,
+        .alts = alts,
         .nullable = computeNullable(code, pattern),
         .multiline = opts.multiline,
         .allocator = allocator,
         .code = code,
         .jit = jit,
+        .shadow = shadow,
     };
+}
+
+/// Compile the linear over-approximation gate for `pattern`, or null when none
+/// is provable / useful. Every failure short of OOM is a silent decline —
+/// PCRE2 then runs raw, exactly the pre-shadow behavior (fail-open by design).
+fn buildShadow(allocator: std.mem.Allocator, pattern: []const u8, opts: Options) error{OutOfMemory}!?core.Regex {
+    const text = (try shadow_mod.overapprox(allocator, pattern)) orelse return null;
+    defer allocator.free(text);
+    // Mirror the PCRE2 compile knobs so the two languages align (fold, `.`-vs-
+    // `\n`, Unicode classes). `line_anchors` is irrelevant: the shadow is
+    // assertion-free by construction.
+    var sh = core.Regex.compileOpts(allocator, text, .{
+        .caseless = opts.caseless,
+        .multiline = opts.multiline,
+        .dotall = opts.dotall,
+        .unicode = opts.unicode,
+    }) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        // A rewrite the linear engine still declines (e.g. an exotic class) —
+        // the bail path, not an error.
+        else => return null,
+    };
+    // A nullable shadow admits every haystack — a gate that never gates. Its
+    // literals are worthless too (a nullable pattern requires no bytes).
+    if (sh.nullable or sh.eol_empty) {
+        sh.deinit();
+        return null;
+    }
+    return sh;
 }
 
 /// Whether the pattern can match zero-width. Biased toward `true`: the emitter

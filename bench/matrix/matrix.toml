@@ -16,8 +16,9 @@
 #                         per row, and (with --publish) refreshes matrix_baseline.json.
 #   * `matrix.py gate`    asserts the committed per-shape floors, with one honest
 #                         asymmetry: a row DECLARED `expect="loss"` is report-only
-#                         (the known common-`-U` lazy-dotstar hole is here on
-#                         purpose, so an aggregate can never bury it), while any
+#                         (a declared hole lives in its own row on purpose, so an
+#                         aggregate can never bury it — currently none: every
+#                         shape is a declared win), while any
 #                         `expect="win"`/`"parity"` row regressing below its floor
 #                         is a hard failure.
 #
@@ -45,7 +46,7 @@ pattern = "error"
 gist = [ "-F", "-l" ]
 rg = [ "-F", "-l" ]
 bar = "set"
-expect = "parity"
+expect = "win"
 dims = { mode = "linear", flags = "fixed", scope = "rootless", emit = "files", select = "common", kind = "literal" }
 
 [[shape]]
@@ -81,7 +82,7 @@ pattern = "ctx"
 gist = [ "-w", "-l" ]
 rg = [ "-w", "-l" ]
 bar = "set"
-expect = "parity"
+expect = "win"
 dims = { mode = "linear", flags = "word", scope = "rootless", emit = "files", select = "common", kind = "literal" }
 
 [[shape]]
@@ -99,7 +100,7 @@ pattern = "error"
 gist = [ "-F", "-m", "1", "-n" ]
 rg = [ "-F", "-m", "1", "-n" ]
 bar = "lines"
-expect = "parity"
+expect = "win"
 dims = { mode = "linear", flags = "max-count", scope = "rootless", emit = "lines", select = "common", kind = "literal" }
 
 [[shape]]
@@ -108,7 +109,7 @@ pattern = "import"
 gist = [ "-F", "-v", "-c" ]
 rg = [ "-F", "-v", "-c" ]
 bar = "count"
-expect = "parity"
+expect = "win"
 roots = [ "services/backend/gateway" ]
 dims = { mode = "linear", flags = "invert", scope = "subtree", emit = "count", select = "common", kind = "literal" }
 
@@ -127,7 +128,7 @@ pattern = "TODO|FIXME|XXX"
 gist = [ "-l" ]
 rg = [ "-l" ]
 bar = "set"
-expect = "parity"
+expect = "win"
 dims = { mode = "linear", flags = "plain", scope = "rootless", emit = "files", select = "common", kind = "alternation" }
 
 # ─────────────────────────── walk scope: glob / type / subtree ───────────────
@@ -180,47 +181,49 @@ bar = "set"
 expect = "win"
 dims = { mode = "pcre", flags = "lookahead", scope = "rootless", emit = "files", select = "common", kind = "lookaround" }
 
-# A pure backreference with NO extractable required literal: the trigram index
-# has nothing to prefilter on, so gist scans the whole corpus with PCRE2 exactly
-# as rg does — and carries a little walk overhead on top. A declared structural
-# loss (report-only): gist's index edge is literal-anchored by construction, and
-# this pattern denies it an anchor. Hard-paths / PCRE2 work owns narrowing it.
+# A pure backreference with NO extractable required literal — once a declared
+# structural loss (nothing for the trigram index to anchor on, so both engines
+# scanned the corpus with PCRE2 and split ~11 s of catastrophic backtracking on
+# one 3.6 MB base64 fixture). The PCRE2 shadow gate (`pcre2/shadow.zig`) turned
+# it: `\1` splices to a copy of its group's source, giving an assertion-free
+# linear over-approximation whose O(1)/byte DFA rejects every line PCRE2 would
+# have backtracked through — PCRE2 only confirms candidates. rg still pays the
+# full backtracking bill.
 [[shape]]
 id = "pcre-backref-files"
 pattern = '(\w{4,})\s+\1'
 gist = [ "-P", "-l" ]
 rg = [ "-P", "-l" ]
 bar = "set"
-expect = "loss"
+expect = "win"
 dims = { mode = "pcre", flags = "backref", scope = "rootless", emit = "files", select = "common", kind = "backreference" }
 
 # ─────────────────────────── mode: -U multiline ─────────────────────────────
 
-# Even a RARE cross-line span loses today: the -U emit runs on the serial engine
-# (whole-buffer spans the parallel per-file pipeline deliberately does not own, to
-# protect its 30/30 parity), so it forfeits the parallel walk that carries every
-# linear win. A declared loss (report-only) — correctness still gates it (parity
-# passes). Parallelizing the -U emit owns turning both -U rows green.
+# Once a declared loss (the -U emit ran on the serial engine, forfeiting the
+# parallel walk). Now: `-U` rides the parallel per-file pipeline, and an
+# assertion-free multiline pattern determinizes exactly (nothing positional to
+# resolve), so `bufMatch` answers from the byte-class DFA at O(1)/byte instead
+# of a Pike re-seed per position. Parity still gates it (byte-identical sets).
 [[shape]]
 id = "multiline-rare-files"
 pattern = 'WalletService[\s\S]{0,80}?\{'
 gist = [ "-U", "-l" ]
 rg = [ "-U", "-l" ]
 bar = "set"
-expect = "loss"
+expect = "win"
 dims = { mode = "multiline", flags = "plain", scope = "rootless", emit = "files", select = "rare", kind = "cross-line" }
 
-# The declared, known loss: a COMMON lazy-dotstar cross-line span. gist's -U emit
-# runs on the serial engine (whole-buffer spans the parallel per-file pipeline
-# deliberately does not own, to protect its 30/30 parity), so a ubiquitous
-# `[\s\S]*?` trails rg's lazy DFA. Declared here on purpose (`expect="loss"`,
-# report-only in the gate) so no aggregate win can ever conceal it. Parallelizing
-# the -U emit path owns the fix; correctness is unaffected — parity still gates it.
+# The COMMON lazy-dotstar cross-line span — once the table's deepest declared
+# loss (0.36x: serial -U emit + Pike whole-buffer scan vs rg's lazy DFA). The
+# parallel -U pipeline plus the assertion-free multiline DFA (with the `-l`
+# first-kept-span fast path in `Emitter.buffer`) turned it; kept as its own row
+# so any regression in the -U emit model surfaces here first.
 [[shape]]
 id = "multiline-common-lazy-dotstar-files"
 pattern = 'import \([\s\S]*?\)'
 gist = [ "-U", "-l" ]
 rg = [ "-U", "-l" ]
 bar = "set"
-expect = "loss"
+expect = "win"
 dims = { mode = "multiline", flags = "lazy-dotstar", scope = "rootless", emit = "files", select = "common", kind = "cross-line" }

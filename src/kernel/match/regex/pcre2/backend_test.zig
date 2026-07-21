@@ -307,5 +307,146 @@ test "compiled Pcre exposes the required literal" {
     var re = try compile("needle.*haystack");
     defer re.deinit();
     try t.expectEqualStrings("haystack", re.required); // 8 > 6, the longer run
-    try t.expect(re.alts.len == 0); // this backend never claims an alt-cover set
+    try t.expect(re.alts.len == 0); // required ≥ 3 bytes ⇒ no cover set needed
+}
+
+// ── the shadow gate (pcre2/shadow.zig) ──────────────────────────────────────
+
+test "shadow: gateable patterns carry one; ungateable/nullable ones don't" {
+    var backref = try compile("(\\w{4,})\\s+\\1");
+    defer backref.deinit();
+    try t.expect(backref.shadow != null);
+
+    var look = try compile("func \\w+\\((?=.*ctx)");
+    defer look.deinit();
+    try t.expect(look.shadow != null);
+
+    var nullable = try compile("a*"); // shadow would admit everything — discarded
+    defer nullable.deinit();
+    try t.expect(nullable.shadow == null);
+
+    var recur = try compile("(a)(?1)"); // subroutine call — no containment proof
+    defer recur.deinit();
+    try t.expect(recur.shadow == null);
+}
+
+test "shadow: upgrades the trigram prefilter with the spliced-backref literal" {
+    // literal.zig alone proves only "bar" (groups are opaque to it); the shadow
+    // `(foo)bar(?:foo)` proves the contiguous "foobarfoo" — a 9-byte trigram
+    // anchor for a pattern class that used to force a whole-corpus scan.
+    var re = try compile("(foo)bar\\1");
+    defer re.deinit();
+    try t.expectEqualStrings("foobarfoo", re.required);
+}
+
+test "shadow gate: differential — gated ≡ ungated on every primitive" {
+    // The one invariant that keeps the gate sound: stripping the shadow off a
+    // compiled Pcre must never change any verdict. Adversarial corpus: empty
+    // strings/lines, zero-width candidates, near-misses the shadow admits but
+    // PCRE2 rejects (backref mismatch, lookahead failure), matches at every
+    // boundary, multi-line docs, and the catastrophic-backtracking shape.
+    const pats = [_][]const u8{
+        "(\\w{4,})\\s+\\1",
+        "(\\w+) \\1",
+        "foo(?=bar)",
+        "foo(?!bar)",
+        "(?<=@)\\w+",
+        "\\bword\\b",
+        "^start",
+        "end$",
+        "(?P<w>\\d+)-(?P=w)",
+        "(?>ab|a)c",
+        "a++b",
+        "<(\\w+)>.*</\\1>",
+        "(a+)+$",
+    };
+    const hays = [_][]const u8{
+        "",
+        "\n",
+        "word",
+        "sword fish",
+        "abcd abcd",
+        "abcd efgh",
+        "foobar",
+        "foobaz",
+        "x @tag y",
+        "12-12 34-56",
+        "abc\nac\nabc",
+        "start middle end",
+        "middle start\nend\n",
+        "<b>bold</b>",
+        "<b>bold</i>",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!",
+        "go go stop\n\ngo stop go",
+    };
+    for (pats) |pat| {
+        var gated = try compile(pat);
+        defer gated.deinit();
+        var raw = try compile(pat);
+        defer raw.deinit();
+        if (raw.shadow) |*sh| sh.deinit();
+        raw.shadow = null;
+
+        var gsim = try Pcre.Sim.init(t.allocator, &gated);
+        defer gsim.deinit();
+        var rsim = try Pcre.Sim.init(t.allocator, &raw);
+        defer rsim.deinit();
+
+        for (hays) |hay| {
+            try t.expectEqual(raw.lineMatch(&rsim, hay), gated.lineMatch(&gsim, hay));
+            try t.expectEqual(raw.docMatch(&rsim, hay), gated.docMatch(&gsim, hay));
+            try t.expectEqual(raw.bufMatch(&rsim, hay), gated.bufMatch(&gsim, hay));
+            // The full span walk (the -o/--json/--count-matches surface).
+            var gfrom: usize = 0;
+            var rfrom: usize = 0;
+            while (true) {
+                const gs = gated.matchSpan(&gsim, hay, gfrom);
+                const rs = raw.matchSpan(&rsim, hay, rfrom);
+                try t.expectEqual(rs == null, gs == null);
+                const sp = gs orelse break;
+                try t.expectEqual(rs.?.start, sp.start);
+                try t.expectEqual(rs.?.end, sp.end);
+                gfrom = if (sp.end > gfrom) sp.end else gfrom + 1;
+                rfrom = gfrom;
+                if (gfrom > hay.len) break;
+            }
+        }
+    }
+}
+
+test "shadow gate: differential under multiline (-U) options" {
+    const pats = [_][]const u8{ "(\\w{3,})\\n\\1", "alpha(?=.*bar)", "^bar$" };
+    const hays = [_][]const u8{ "", "abc\nabc\n", "abc\nabd\n", "alpha x\nmid\nyy bar\n", "foo\nbar\nbaz", "bar first\nalpha here\n" };
+    for (pats) |pat| {
+        var gated = try Pcre.compileOpts(t.allocator, pat, .{ .multiline = true, .dotall = true });
+        defer gated.deinit();
+        var raw = try Pcre.compileOpts(t.allocator, pat, .{ .multiline = true, .dotall = true });
+        defer raw.deinit();
+        if (raw.shadow) |*sh| sh.deinit();
+        raw.shadow = null;
+
+        var gsim = try Pcre.Sim.init(t.allocator, &gated);
+        defer gsim.deinit();
+        var rsim = try Pcre.Sim.init(t.allocator, &raw);
+        defer rsim.deinit();
+        for (hays) |hay| {
+            try t.expectEqual(raw.bufMatch(&rsim, hay), gated.bufMatch(&gsim, hay));
+            const gs = gated.matchSpan(&gsim, hay, 0);
+            const rs = raw.matchSpan(&rsim, hay, 0);
+            try t.expectEqual(rs == null, gs == null);
+            if (gs) |sp| {
+                try t.expectEqual(rs.?.start, sp.start);
+                try t.expectEqual(rs.?.end, sp.end);
+            }
+        }
+    }
+}
+
+test "shadow gate: caseless folds into the gate" {
+    var re = try Pcre.compileOpts(t.allocator, "(FOO)bar\\1", .{ .caseless = true });
+    defer re.deinit();
+    var sim = try Pcre.Sim.init(t.allocator, &re);
+    defer sim.deinit();
+    try t.expect(re.lineMatch(&sim, "xFooBARfOox")); // gate must not reject the folded form
+    try t.expect(!re.lineMatch(&sim, "foobarbaz"));
 }
