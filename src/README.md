@@ -9,10 +9,10 @@ doc_radar:
       glob: pkg/kernels/irregex/src/kernel/*
       unit: dirs
       equals: 6
-    - description: "corpus/index/ keeps its eight packages: trigrams · postings · codex · atlas · crest · frame · frag · phantom"
+    - description: "corpus/index/ keeps its nine packages: trigrams · postings · codex · atlas · crest · frame · frag · phantom · content"
       glob: pkg/kernels/irregex/src/corpus/index/*
       unit: dirs
-      equals: 8
+      equals: 9
   sentinels:
     - description: "the linear engine's eager-DFA cap the prose quotes (past it, Pike verifies)"
       file: pkg/kernels/irregex/src/kernel/match/regex/linear/powerset.zig
@@ -148,6 +148,7 @@ answer, and `loom` shapes the rows engine-side. Design rules and measurements:
 | `corpus/index/frame/`    | the shared wire discipline the persisted artifacts are framed with: little-endian ints behind a fail-closed cursor, length-prefixed u64 payloads, the NUL-joined path/roots catalogs, and the `onDisk` deletion gate every folded view checks                              |
 | `corpus/index/frag/`     | relate's persisted **fragment** atlas (`concepts.frag`): one structural silhouette per authored function behind `relate concepts`, folded fresh at query time through the same T3 stat walk ([`corpus/index/frag/README.md`](corpus/index/frag/README.md))                 |
 | `corpus/index/phantom/`  | the phantom walk snapshot (`tree.map`): directory membership recorded at `gist index`, each dir proven current at query time by ONE lstat against the snapshot anchor — the whole live listing elided ([`corpus/index/phantom/README.md`](corpus/index/phantom/README.md)) |
+| `corpus/index/content/`  | the content shard (`content.shard`): every corpus body concatenated into one mmap at `gist index`, each unchanged file's bytes served from the map at query time under the same T3 clock gate — the per-file open elided ([`corpus/index/content/README.md`](corpus/index/content/README.md))     |
 
 **Trigrams** (`trigrams/trigram.zig`). A file containing a literal must
 contain every trigram of that literal, so the AND of per-trigram posting

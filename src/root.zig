@@ -75,6 +75,10 @@ pub const bulkstat = @import("corpus/tree/bulkstat.zig");
 pub const fresh = @import("corpus/index/trigrams/fresh.zig");
 pub const atlas = @import("corpus/index/atlas/atlas.zig");
 pub const frag = @import("corpus/index/frag/frag.zig");
+// The content shard (`content.shard`) — concatenated corpus bodies + doc→offset
+// catalog, mmap'd so a full-scan query serves each unchanged file from one map
+// instead of ~20k opens. Read accelerator, freshness-gated, fail-open.
+pub const content_shard = @import("corpus/index/content/shard.zig");
 
 // ── irregex: the irregular-expression primitives (match ∪ relate ∪ weave) ──
 // The set-shaped tier over the engine: PatternSet compiles MANY intents with
@@ -376,6 +380,7 @@ test {
     _ = @import("corpus/index/trigrams/persist_test.zig"); // T0 persisted corpus/index/path-table integrity (doc-id OOB guard)
     _ = @import("corpus/index/trigrams/trigram_fuzz.zig"); // T0 loader long fuzz (seeds + mutations; GIST_FUZZ_ITERS)
     _ = @import("corpus/index/phantom/treemap_test.zig"); // phantom tree.map layout: round-trip, root resolve, torn blobs fail closed
+    _ = @import("corpus/index/content/shard.zig"); // content shard: body round-trip, freshness gate, torn blobs fail closed
     _ = @import("kernel/rank/rank_test.zig"); // T4 RRF fusion ranking
     _ = @import("kernel/rank/signals_test.zig"); // cross-language def-detection + generated-file signals
     _ = @import("kernel/rank/mirror.zig"); // cached-source mirror classification + exact canonical duplicate
