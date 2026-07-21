@@ -28,8 +28,9 @@ document that never crests that high cannot contain a match.
 
 The full adversarial review — every neighboring family, the load-bearing
 difference to each, and the referee trail — lives in `PRIOR_ART.md`; this
-section is the summary. Every indexed regex system reduces the pattern to
-**required substrings** and tests substring _presence_:
+section is the summary. The dominant production document-candidate indexes
+surveyed reduce the pattern to **required substrings** and test substring
+_presence_:
 
 - Cox, _Regular Expression Matching with a Trigram Index_ (2012) — required
   trigrams, AND/OR query; a pattern with no extractable trigrams degenerates
@@ -44,6 +45,16 @@ section is the summary. Every indexed regex system reduces the pattern to
   (REI SIGMOD'25, the VLDB'25 selection study) — all n-gram _presence_
   filters; all concede literal-free class patterns.
 
+The closest published neighbor is Bannai et al., _Text Indexing for Simple
+Regular Expressions_ (CPM 2025). It genuinely indexes character-class runs
+and interval lengths, so class-run indexing itself is prior art. Its result is
+different: a positional, near-linear-space index over one text for exact
+occurrence reporting on restricted **anchored** forms `P₁D*P₂` and
+`P₁D^{[l,r]}P₂`. It neither stores a fixed `O(k)` max-run vector per document
+nor derives forced runs compositionally from a general regex AST; its
+unanchored lower bound does not apply to a coarse sieve that admits false
+positives and scans survivors. `PRIOR_ART.md` §2 gives the full comparison.
+
 Scan-time counting automata are a different layer entirely: MIN-MAX counter
 automata (TPDS 2012) and synchronizing counting-set automata (CAV 2023) make
 the _matcher_ cheap on `C{n,m}`; they build **no per-document index** and prune
@@ -56,8 +67,9 @@ regex necessary condition.
 > _consecutive-class-run_ lengths over a fixed class lattice, paired with a
 > sound lower-bound _forced-crest_ functional `ĝ(R,·) ∈ ℕ^k` extracted from
 > the regex by a segment-composition run algebra, such that `R` can match
-> inside `d` **only if** `ρ(d) ≥ ĝ(R)` componentwise. No prior system indexes
-> forced runs; the necessary condition is not a substring test.
+> inside `d` **only if** `ρ(d) ≥ ĝ(R)` componentwise. The novel claim is this
+> exact composite—not class-run indexing by itself—and the necessary condition
+> is not a substring test.
 >
 > Independently refereed for originality (adversarial prior-art review,
 > 2026-07-19, verdict **NOVEL** — see the spike dossier trail): the _composite_

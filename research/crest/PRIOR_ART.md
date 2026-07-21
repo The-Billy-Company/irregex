@@ -16,11 +16,12 @@ listed with a link and annotation in [§ References](#references).
 The review process: every idea was submitted to an independent adversarial
 referee (Grok 4.5 subagent) instructed to kill it — find the paper, the
 system, or the folklore trick that already is this object. The families below
-are everything the referee and our own sweeps surfaced. Web sweeps ran
-continuously through design (2026-07); search terms included every phrasing of
-"run-length regex index", "counting constraint prefilter", "character class
-repetition index", "necessary condition regex pruning", "forced substring
-automaton", and the systems literature by name.
+are everything the referee and our own sweeps surfaced, including the CPM 2025
+character-class-run index added on the 2026-07-20 follow-up review. Web sweeps
+ran continuously through design (2026-07); search terms included every
+phrasing of "run-length regex index", "counting constraint prefilter",
+"character class repetition index", "necessary condition regex pruning",
+"forced substring automaton", and the systems literature by name.
 
 ---
 
@@ -47,7 +48,42 @@ one is neither necessary nor implied). Conversely Crest extracts nothing from
 literal-rich patterns — the two filters own complementary pattern families,
 which is why the integration _intersects_ survivor sets.
 
-## 2. Scan-time counting automata (matcher-layer, not index-layer)
+## 2. Character-class-run text indexing (the closest published neighbor)
+
+[Bannai et al., _Text Indexing for Simple Regular Expressions_ (CPM
+2025)](#r-cpm25) is the strongest neighboring work. It does **not** reduce
+character classes to n-gram presence. For one text `T`, it indexes
+right-maximal substrings whose symbols belong to a queried class `D`, with
+positional range-reporting structures that can locate matches of restricted
+anchored forms `P₁D*P₂` and the interval variants `P₁D^{≥l}P₂`,
+`P₁D^{≤r}P₂`, and `P₁D^{[l,r]}P₂`. It therefore establishes genuine prior art
+for indexing character-class runs and their lengths; Crest does not claim to
+originate that broad idea.
+
+The overlap ends there:
+
+- **Different result.** CPM reports exact occurrence positions in one text for
+  a restricted query grammar. Crest stores one coarse signature per document
+  and only rejects impossible documents; survivors still go to the matcher.
+- **Different query contract.** CPM receives `D` and its interval directly,
+  with an anchor in `P₁P₂`. Crest derives a conservative forced-run vector from
+  a general regex AST by composition across concatenation, alternation, and
+  repetition; a bare unanchored `[0-9a-f]{8}` is its central case.
+- **Different index object and scale.** CPM stores positional structures over
+  text runs and class subsets in near-linear/polylogarithmic space. Crest stores
+  the maximum run for each member of one fixed class lattice: `O(k)` small
+  integers per document, independent of positions and query classes.
+- **No conflict with CPM's lower bound.** Its conditional lower bound concerns
+  efficient exact occurrence or existential queries for unanchored
+  `P₁D*P₂`. Crest allows false-positive documents and subsequently scans
+  survivors, so it does not solve that indexed-reporting problem.
+
+**Difference.** CPM is prior art for _class-run text indexing_; it is not prior
+art for Crest's composite of a fixed per-document max-run vector, an
+AST-derived forced-run lower-bound functional, and a componentwise
+no-false-negative sieve. That narrower composite remains the novelty claim.
+
+## 3. Scan-time counting automata (matcher-layer, not index-layer)
 
 | work                                                                                | mechanism                                                       | why it is not Crest                                                                                                                              |
 | ----------------------------------------------------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -59,7 +95,7 @@ which is why the integration _intersects_ survivor sets.
 reading the bytes_. Crest is _how to never read the bytes_. The layers
 compose: a counting matcher still benefits from Crest's candidate pruning.
 
-## 3. Run-length structures in string indexing (different query class)
+## 4. Run-length structures in string indexing (different query class)
 
 | work                                                 | mechanism                                                                               | why it is not Crest                                                                                        |
 | ---------------------------------------------------- | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
@@ -71,7 +107,7 @@ compose: a counting matcher still benefits from Crest's candidate pruning.
 queries or to compress. None derives a **forced-run lower bound from a regex
 AST**, and none uses per-class max-runs as a document-pruning signature.
 
-## 4. Segment-summary algebras (the calculus's algebraic shape, repurposed)
+## 5. Segment-summary algebras (the calculus's algebraic shape, repurposed)
 
 The `(F, P, S, minLen, all_in)` profile composes like [Bentley's 1984](#r-bentley)
 maximum-subarray divide-and-conquer summary (best/prefix/suffix/total), and
@@ -93,7 +129,7 @@ The regex-analysis cousin is required-literal / minimum-length extraction
 lower-bound functional, but over _length_ and _literals_ — never over
 per-class run structure, and never paired with a per-document run index.
 
-## 5. Sketches and signatures (Bloom, minhash, class histograms)
+## 6. Sketches and signatures (Bloom, minhash, class histograms)
 
 | object                                                     | why it is not Crest                                                                                                                                                                                          |
 | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -101,14 +137,17 @@ per-class run structure, and never paired with a per-document run index.
 | Class histograms / population counts (the "count cousin")  | sound but strictly dominated: forced run `n` ⇒ forced count `≥ n`, never the reverse. Measured: hex-8 prunes 0.7% by count vs 91.4% by run (PROOF.md §3.7, §5) — kept in the harness as a permanent ablation |
 | Suffix-automaton / FM-index exact tiers (gist's own codex) | exact substring machinery; a class repetition is not a substring                                                                                                                                             |
 
-## 6. Referee summary
+## 7. Referee summary
 
 The adversarial reviewer's final position, condensed: presence-family indexes
-(§1) cannot express the property; counting automata (§2) live at the wrong
-layer; run-length string structures (§3) index a different object for a
-different query; the algebra (§4) is a known _shape_ carrying new semantics
+(§1) cannot express the property; CPM 2025 (§2) directly indexes class runs
+but solves exact positional queries for a restricted anchored grammar rather
+than document sieving from a general regex AST; counting automata (§3) live at
+the wrong layer; run-length string structures (§4) index a different object
+for a different query; the algebra (§5) is a known _shape_ carrying new semantics
 (language-level adversarial lower bounds with an exactness guard); and the
-count cousin (§5) is the nearest sound sibling and is empirically dominated.
+count cousin (§6) is the nearest sound signature sibling and is empirically
+dominated.
 No single work combines: (a) a per-document per-class max-run signature,
 (b) a regex-derived sound forced-run functional, (c) a componentwise-compare
 sieve with a no-false-negative theorem. That composite is the contribution.
@@ -221,3 +260,13 @@ but over one string, maximizing; Crest minimizes over a language.
 (CACM).
 _Annotation:_ Probabilistic set membership for n-grams — cannot express
 "run of class C at least r".
+
+<span id="r-cpm25"></span> 18. **Bannai, Bille, Gørtz, Landau, Navarro,
+Prezza, Steiner & Tarnow (2025).**
+[_Text Indexing for Simple Regular Expressions_](https://doi.org/10.4230/LIPIcs.CPM.2025.20)
+(CPM 2025).
+_Annotation:_ The closest published neighbor: directly indexes
+character-class runs and interval lengths for exact positional queries of
+restricted anchored patterns. It does not store a fixed per-document max-run
+vector, derive forced runs compositionally from a general regex AST, or use
+their componentwise comparison as a coarse document sieve.
