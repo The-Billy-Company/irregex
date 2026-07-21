@@ -328,6 +328,14 @@ dominance (A), static and native port pressure (B/B′), the hardware roofline
 lower median and Mann–Whitney p < 0.05; missing counters or tools are printed
 as missing, never inferred.
 
+The claim is deliberately narrow: it certifies `gist`'s fresh-process,
+cold exact-search path over 12 literal/regex classes. It does **not** certify
+every CLI shape (`--include-zero` is a serial count mode), the warm daemon,
+`relate`, or the composed `irregex` face. Those surfaces keep separate
+correctness and performance evidence under `bench/rgsuite/`, `bench/matrix/`,
+`bench/session/`, and the relate harnesses; none inherits Layer A's dominance
+claim by association.
+
 On the recorded **17,739-file / 166.1 MiB macroscopic corpus**, the
 end-to-end linear/literal path beats ripgrep in all 12 query classes by
 **1.97×–23.57×**. The microscopic cycles/byte and lower-bound layers use a
@@ -336,7 +344,9 @@ structural statement: trigram pruning touches no rejected file bytes, and the
 DFA verifies each admitted byte exactly once. The artifact, raw data, machine
 identity, losses, and rerun commands live in
 [`bench/certify/artifact/CERTIFICATE.md`](bench/certify/artifact/CERTIFICATE.md);
-`make bench-gist-certify` remints the full A–D bundle.
+`make bench-gist-certify` refreshes B–D on an existing Layer A, while
+`CERT_FULL=1 CERT_PUBLISH=1 CERT_SUDO=1 make bench-gist-certify` remints and
+publishes the full A–D bundle.
 
 I carried the same discipline into the agent surface: `--rank` puts definitions
 above call sites and demotes codegen; misses coach on stderr while stdout stays

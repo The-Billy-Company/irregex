@@ -128,9 +128,15 @@ confidence interval and (vs ripgrep) a Mann-Whitney significance test, so a
 "win" is **statistically real**, not box noise. It is built in four layers,
 cheapest evidence first, and **all four are now implemented**:
 
+Its scope is the fresh-process, cold `gist` exact-search path across the shared
+12-class literal/regex probe registry. It does not certify every accepted argv:
+serial count shapes such as `--include-zero`, the resident daemon, `relate`,
+and composed `irregex` require their own evidence. In particular, rgsuite
+parity proves `--include-zero` is correct; it is not a Layer-A speed claim.
+
 | Layer | Claim                                                                 | Status         |
 | ----- | --------------------------------------------------------------------- | -------------- |
-| **A** | empirical dominance — fastest in class on real workloads, fail-closed | ✅ implemented |
+| **A** | empirical dominance over ripgrep on registered workloads, fail-closed | ✅ implemented |
 | **B** | port-optimality — hot loop matches the static µarch bound (llvm-mca)  | ✅ implemented |
 | **C** | roofline — cycles/byte sits on the hardware ceiling                   | ✅ implemented |
 | **D** | algorithmic lower bound — matches the information-theoretic floor     | ✅ implemented |
@@ -158,6 +164,12 @@ CERT_FULL=1 CERT_PUBLISH=1 CERT_SUDO=1 make bench-gist-certify
 # or:  CERT_PUBLISH_DIR=bench/certify/artifact CERT_SUDO=1 \
 #        bash pkg/kernels/irregex/bench/certify/certify.sh
 ```
+
+Run a full mint in a clean, stable checkout or isolated worktree. A live
+coworking tree is not a benchmark corpus: files can change between tools,
+invalidating equivalence, timing, and corpus hashes. `CERT_ALLOW_DIRTY=1`
+permits local exploratory evidence only; it does not make a dirty result a
+publishable, commit-reproducible certificate.
 
 `CERT_SUDO=auto` (default) uses passwordless `sudo -n` when configured, else
 degrades loudly; `CERT_SUDO=1` prompts once; `CERT_SUDO=0` never escalates.
