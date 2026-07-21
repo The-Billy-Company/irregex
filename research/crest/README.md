@@ -72,10 +72,22 @@ real matcher's full scan, with **0 false negatives** (fail-closed, corpus-wide
 
 ## Status
 
-**Integrated.** Referee-verified novel (adversarial prior-art review,
-2026-07-19 — `PRIOR_ART.md`). `gist index` persists the crest sidecar; both
-the serial and parallel engines prune candidates with it (caseless disables
-the sieve; Unicode mode certifies only alphabet-safe constructs — the
-Alphabet Contract, `PROOF.md` §3.6). Lineage:
+**Integrated (single-run sieve).** Referee-verified novel (adversarial
+prior-art review, 2026-07-19 — `PRIOR_ART.md`). `gist index` persists the crest
+sidecar; both the serial and parallel engines prune candidates with it
+(caseless disables the sieve; Unicode mode certifies only alphabet-safe
+constructs — the Alphabet Contract, `PROOF.md` §3.6). Lineage:
 `spikes/classrun-formula/` (Python reference + 240k-pair property
 suite + originality dossier).
+
+**Two proven extensions (`PROOF.md` §3.5, §7).** (1) An _independent exact
+oracle_ — `g(R,C)` by NFA × run-monitor emptiness — shows the shipped forced-run
+calculus is **98% exactly tight** against the true language minimum, not merely
+sound. (2) The forced-run **spectrum** (Ridge): store the top-q maximal runs
+per class and force a run _multiset_ via a gap-aware `all_out` calculus, so
+`[0-9]{4}-[0-9]{2}-[0-9]{2}` forces `digit:{4,2,2}` — pruning multi-field
+tokens Crest's single run cannot (+5.9pp on dates, no regression on single-run
+queries). Referee 2026-07-20: no collision, re-scoped to the run-order-statistic
+
+- multiset calculus (`PRIOR_ART.md` §8). Lineage + reproduction:
+  `spikes/ridge-spectrum/`.

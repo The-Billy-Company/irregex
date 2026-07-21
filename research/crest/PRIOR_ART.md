@@ -13,11 +13,20 @@ we could find. This file is the paper trail: each neighboring family, what it
 actually does, and the load-bearing difference. Every external source is
 listed with a link and annotation in [§ References](#references).
 
+**Extension verdict:** the run-_spectrum_ lift (Ridge — top-q maximal-run order
+statistics + forced-run multiset, `PROOF.md` §7) drew a second referee pass on
+2026-07-20: **PARTIAL / no collision**, re-scoped in §8. The count-sieve
+_shape_ (§7) and the exact oracle's automata machinery are cited, not claimed;
+the surviving novelty is the run order-statistic quantity + gap-aware
+forced-run-multiset calculus.
+
 The review process: every idea was submitted to an independent adversarial
 referee (Grok 4.5 subagent) instructed to kill it — find the paper, the
 system, or the folklore trick that already is this object. The families below
 are everything the referee and our own sweeps surfaced, including the CPM 2025
-character-class-run index added on the 2026-07-20 follow-up review. Web sweeps
+character-class-run index and, on the 2026-07-20 Ridge follow-up review (§8),
+the count-histogram/Parikh sieve-shape neighbors and the min/max-automata
+oracle family. Web sweeps
 ran continuously through design (2026-07); search terms included every
 phrasing of "run-length regex index", "counting constraint prefilter",
 "character class repetition index", "necessary condition regex pruning",
@@ -50,8 +59,7 @@ which is why the integration _intersects_ survivor sets.
 
 ## 2. Character-class-run text indexing (the closest published neighbor)
 
-[Bannai et al., _Text Indexing for Simple Regular Expressions_ (CPM
-2025)](#r-cpm25) is the strongest neighboring work. It does **not** reduce
+[Bannai et al., _Text Indexing for Simple Regular Expressions_ (CPM 2025)](#r-cpm25) is the strongest neighboring work. It does **not** reduce
 character classes to n-gram presence. For one text `T`, it indexes
 right-maximal substrings whose symbols belong to a queried class `D`, with
 positional range-reporting structures that can locate matches of restricted
@@ -82,6 +90,30 @@ The overlap ends there:
 art for Crest's composite of a fixed per-document max-run vector, an
 AST-derived forced-run lower-bound functional, and a componentwise
 no-false-negative sieve. That narrower composite remains the novelty claim.
+
+### 2.1 The decisive design-point comparison (Crest/Ridge vs CPM 2025)
+
+The two works occupy _different design points_ on the same object
+(character-class runs); the contrast, not a benchmark race, is the artifact:
+
+| axis                              | CPM 2025 (Bannai et al.)                                                          | Crest / Ridge                                                                                                   |
+| --------------------------------- | --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| **result**                        | exact **positional** occurrence reporting                                         | corpus-level document **sieve** (survivors rescanned)                                                           |
+| **query grammar**                 | restricted **anchored** `P₁D^{[l,r]}P₂`                                           | **general regex AST** (concat/alt/bounded-rep), unanchored `[0-9a-f]{8}` is the central case                    |
+| **anchoring**                     | anchor required in `P₁P₂`                                                         | none — bare class repetitions                                                                                   |
+| **per-doc metadata**              | positional structures over runs+class subsets, near-linear/polylog in text length | **fixed `O(k·q)`** small ints/doc — 16 B (Crest) / 64 B (Ridge q=4), independent of positions and query classes |
+| **index overhead (measured)**     | (positional, text-scaled)                                                         | **0.09% / 0.35%** of corpus bytes                                                                               |
+| **build**                         | index construction over one text                                                  | one `O(L)` streaming pass/doc, ~1.7 GiB/s parallel                                                              |
+| **error model**                   | exact                                                                             | **false-positive-tolerant, zero false negative** (Theorems 1, 3)                                                |
+| **multi-run / structured tokens** | interval form handles one `D`-run between anchors                                 | Ridge forces a **run multiset** (`date → digit:{4,2,2}`, `uuid → hex:{8,4,4}`) via the gap-aware calculus       |
+| **composability**                 | standalone index                                                                  | intersects survivor sets with the trigram index + freshness overlay (all necessary conditions)                  |
+
+Crest/Ridge deliberately **cede** CPM's territory (exact positions, anchored
+grammar) to **own** the coarse-filter point CPM does not target: general-AST,
+constant-size-per-doc, false-positive-tolerant corpus pruning that composes
+with n-gram and freshness filters. CPM's unanchored conditional lower bound
+concerns _indexed exact reporting_ and does not bind a sieve that admits false
+positives and rescans survivors.
 
 ## 3. Scan-time counting automata (matcher-layer, not index-layer)
 
@@ -137,7 +169,59 @@ per-class run structure, and never paired with a per-document run index.
 | Class histograms / population counts (the "count cousin")  | sound but strictly dominated: forced run `n` ⇒ forced count `≥ n`, never the reverse. Measured: hex-8 prunes 0.7% by count vs 91.4% by run (PROOF.md §3.7, §5) — kept in the harness as a permanent ablation |
 | Suffix-automaton / FM-index exact tiers (gist's own codex) | exact substring machinery; a class repetition is not a substring                                                                                                                                             |
 
-## 7. Referee summary
+## 7. Count-vector sieves and the Parikh ceiling (the _shape_, not the quantity)
+
+The sieve _shape_ — a per-document vector signature, a query-derived required
+vector, componentwise dominance, fail-to-candidate, zero false negatives — is
+**not** original to Crest; only the _quantity_ in the vector is. The honest
+structural neighbor is the **character/class-population histogram prefilter**
+([per-doc byte-frequency histogram compared against required counts](#r-charhist)):
+identical shape, but over **counts**, so it can demand "≥ 12 digits" and a
+single 12-run satisfies it — it cannot demand a _contiguous_ run, still less
+_two_ of them. This is Crest's own §3.7 count cousin, and it is dominated for
+exactly this reason.
+
+Its theoretical ceiling is the **Parikh / semilinear image** of a regular
+language ([Parikh's theorem](#r-parikh); [Stjerna & Rümmer, OOPSLA
+2024](#r-parikh-solve)): the tightest count necessary condition derivable from
+a regex is its commutative image, and being order-free it _provably_ cannot
+encode any run/contiguity predicate. Crest and Ridge live strictly outside the
+Parikh ceiling — that gap is the reason a run sieve exists at all.
+
+## 8. The run _spectrum_ (Ridge) — referee re-scope, 2026-07-20
+
+Ridge (`PROOF.md` §7) lifts Crest's single max run to the top-`q` maximal-run
+order statistics per class, with an AST-derived forced-run **multiset**. It was
+submitted to a fresh independent adversarial referee (kill mandate, 16 web
+sweeps). **Verdict: PARTIAL — no collision, two honest downgrades**, both
+adopted in `PROOF.md` §7.5:
+
+1. Ridge is a **strict generalization of Crest**, not an independent object
+   (`q=1` is Crest); the referee-able delta is _single max → sorted top-q_ and
+   _single forced run → forced-run multiset_.
+2. The multiset-**dominance sieve shape** is anticipated by the count-histogram
+   family (§7 above) and the Parikh ceiling; the surviving novelty is the
+   **run order-statistic quantity + gap-aware forced-run-multiset calculus**,
+   and there the referee found no equal.
+
+| family                       | representative                                               | load-bearing difference                                                                                                               |
+| ---------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
+| single-run sieve (Crest)     | this work, §0                                                | only the _single_ longest run/class — cannot force two distinct runs (`[0-9]{6}[^0-9]+[0-9]{6}`) nor a multiset                       |
+| count/char histogram         | [byte-frequency prefilter](#r-charhist)                      | per-doc-vector dominance shape, but over **counts** — order/contiguity abstracted away                                                |
+| Parikh / semilinear          | [Parikh](#r-parikh) · [Stjerna–Rümmer 2024](#r-parikh-solve) | the exact count-necessary-condition ceiling; commutative ⇒ no run predicate expressible                                               |
+| per-doc run-length signature | [doc-image run-length histogram descriptors](#r-rlhist)      | a per-doc run signature — but a _similarity/retrieval_ descriptor over single-symbol runs, no query lower bound, no dominance theorem |
+| scan-layer digit prefilter   | [coregex `DigitPrefilter`](#r-coregex) · Hyperscan           | accelerates _reading bytes_ (SIMD skip to digit regions); builds no per-doc index, prunes no documents                                |
+
+**Secondary — the exact oracle** (`g_i(R,C)`, min over `L(R)` of the _i_-th
+largest maximal C-run, via NFA×run-monitor emptiness + binary search): a
+textbook instance of **min-over-a-max/distance automaton**
+([Kuperberg–Vanden Boom, STACS 2015](#r-minmaxaut); [Alur et al.
+CRA, LICS 2013](#r-cra); ranked = [Mohri–Riley N-best](#r-nbest)). We found no
+published treatment of this _specific_ functional, but it is unambiguously a
+special case of that machinery — **cited as a family, claimed by neither Crest
+nor Ridge.** It is used only as an independent soundness+tightness referee.
+
+## 9. Referee summary
 
 The adversarial reviewer's final position, condensed: presence-family indexes
 (§1) cannot express the property; CPM 2025 (§2) directly indexes class runs
@@ -152,11 +236,12 @@ No single work combines: (a) a per-document per-class max-run signature,
 (b) a regex-derived sound forced-run functional, (c) a componentwise-compare
 sieve with a no-false-negative theorem. That composite is the contribution.
 
-**Standing obligation.** The novelty claim is dated (2026-07-19) and was
-verified against the literature reachable at that date. If a prior instance
-surfaces, the correct move is to cite it and re-scope the claim — never to
-quietly drop this file. The math stands regardless; only the priority claim
-would change.
+**Standing obligation.** Two dated verdicts: the Crest composite (2026-07-19,
+NOVEL) and the Ridge spectrum extension (2026-07-20, PARTIAL / no-collision,
+re-scoped in §8). Each was verified against the literature reachable at its
+date. If a prior instance surfaces, the correct move is to cite it and re-scope
+the claim — never to quietly drop this file. The math stands regardless; only
+the priority claim would change.
 
 ---
 
@@ -270,3 +355,54 @@ character-class runs and interval lengths for exact positional queries of
 restricted anchored patterns. It does not store a fixed per-document max-run
 vector, derive forced runs compositionally from a general regex AST, or use
 their componentwise comparison as a coarse document sieve.
+
+<span id="r-charhist"></span> 19. **Character-frequency histogram prefilter.**
+[Per-document byte-frequency histogram vs required counts](https://ayoob.ai/blog/ai-anti-cheat-software-gaming-gpu).
+_Annotation:_ The count sieve in production form — same per-doc-vector +
+componentwise-dominance + fail-to-candidate shape as Crest/Ridge, but over
+**counts**, so it cannot demand a contiguous run (Crest §3.7 cousin, dominated).
+
+<span id="r-parikh"></span> 20. **Parikh (1966).**
+[_On Context-Free Languages_](https://doi.org/10.1145/321356.321364) (JACM).
+_Annotation:_ The commutative (count) image of a regular language — the exact
+theoretical ceiling of any count necessary condition; order-free, so no run
+predicate is expressible. Ridge lives strictly outside it.
+
+<span id="r-parikh-solve"></span> 21. **Stjerna & Rümmer (2024).**
+[_A Constraint Solving Approach to Parikh Images of Regular Languages_](https://doi.org/10.1145/3649855)
+(OOPSLA).
+_Annotation:_ Contemporary Parikh-image reasoning — the strongest count
+necessary condition derivable from a regex; contiguity/run structure is
+provably outside its reach.
+
+<span id="r-rlhist"></span> 22. **Run-length histogram document descriptors.**
+[Document-image retrieval with run-length histograms](https://www.kiphub.com/paper/61e5011d3ee3040691f6280e);
+[run-histogram features (arXiv:1404.0627)](https://arxiv.org/pdf/1404.0627).
+_Annotation:_ A per-document run-length _signature_ exists — but as a
+similarity/classification descriptor over single-symbol/pixel runs, with no
+query-derived lower bound and no no-false-negative dominance theorem.
+
+<span id="r-coregex"></span> 23. **coregex `DigitPrefilter`.**
+[github.com/coregx/coregex](https://github.com/coregx/coregex/blob/v0.12.22/docs/OPTIMIZATIONS.md).
+_Annotation:_ A current scan-layer digit-run prefilter (SIMD skip to digit
+regions) — accelerates reading bytes, builds no per-document index, prunes no
+documents; the tighter modern cousin of the Hyperscan cite.
+
+<span id="r-minmaxaut"></span> 24. **Kuperberg & Vanden Boom (2015).**
+[_On the Expressive Power of Cost Automata / min-max automata_](https://perso.ens-lyon.fr/denis.kuperberg/papers/STACS2015_MinMax.pdf)
+(STACS).
+_Annotation:_ Min/max cost automata — the family the exact oracle
+`g_i(R,C) = min_{w∈L(R)} (i-th largest maximal C-run)` is a special case of.
+Cited, not claimed.
+
+<span id="r-cra"></span> 25. **Alur, D'Antoni, Deshmukh, Raghothaman & Yuan (2013).**
+[_Regular Functions and Cost Register Automata_](https://www.cis.upenn.edu/~alur/Lics13reg.pdf)
+(LICS).
+_Annotation:_ Cost register automata — general machinery for values computed
+along an automaton run; the oracle's run-length monitor is an instance.
+
+<span id="r-nbest"></span> 26. **Mohri & Riley; Büchse et al. (2018).**
+[_N-best / ranked paths over weighted automata_](https://www.sciencedirect.com/science/article/pii/S002200001730034X)
+(JCSS).
+_Annotation:_ The "i-th largest" ranking in the oracle is the N-best-paths
+problem over a monitor automaton — standard, cited as a family.

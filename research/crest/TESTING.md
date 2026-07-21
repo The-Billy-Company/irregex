@@ -86,19 +86,41 @@ differential/adversarial oracles that diff gist's match sets against
 independent oracles — runs with the sieve live in the engine, so any wiring
 false negative breaks parity loudly.
 
-## 5. Lineage — the Python spike (`spikes/classrun-formula/`)
+## 5. Independent exact-automaton oracle (`spikes/ridge-spectrum/ridge.py`)
 
-Before a line of Zig: a Python reference implementation with a
-**240,000-pair randomized property suite** (random regex × random text,
-oracle = Python `re`), the count-cousin ablation, and the Erdős–Rényi
-selectivity model validated against measured prune rates. Zero violations.
-The spike dossier also carries the originality referee trail (PRIOR_ART.md).
+The tightness claim (PROOF.md §3.5) is refereed, not asserted, by an
+**independent** implementation of the exact forced run `g(R,C)` — built from a
+_separate_ Thompson NFA compiler, so the AST calculus never grades itself:
 
-## 6. Reproduce everything
+- `g_exact` decides `g_i(R,C)` by emptiness of `NFA(R) × monitor(C,r,i)` (the
+  monitor DFA counts maximal C-runs reaching length `r`), binary-searched over
+  `r` — a textbook min-over-a-max-automaton value (Kuperberg–Vanden Boom;
+  Mohri–Riley N-best for the rank), claimed by neither Crest nor Ridge.
+- `ridge.py --oracle` asserts `ĝ_i ≤ g_i` on thousands of random (regex, class,
+  rank) triples: **sound on every one**, and the shipped `q=1` calculus is
+  **98.0% exactly tight**, mean gap `g − ĝ = 0.043`.
+- `ridge.py --selftest` runs the Spectrum Sieve property suite — **160,000**
+  (regex, text) pairs, oracle = Python `re`, `matched ⇒ ¬pruned`, 0 false
+  negatives.
+- `ridge.py --bench` is the base-vs-ridge ablation (q=1 = shipped Crest vs
+  q=4), soundness re-asserted per row.
+
+## 6. Lineage — the Python spikes
+
+Crest before a line of Zig: `spikes/classrun-formula/` — a Python
+reference with a **240,000-pair** randomized property suite (oracle = Python
+`re`), the count-cousin ablation, and the Erdős–Rényi selectivity model
+validated against measured prune rates. Zero violations. The run-spectrum
+extension (Ridge) and the exact oracle above come from
+`spikes/ridge-spectrum/`. Both dossiers carry the originality referee
+trail (PRIOR_ART.md §7–8).
+
+## 7. Reproduce everything
 
 ```bash
 cd pkg/kernels/irregex
 zig build test        # §1 + §2 + engine parity suites
 zig build crest       # §3 — prints the gates, writes .local/gist-verify/crest.csv
 gist index && gist status   # §4 — sidecar persisted alongside index.gist
+python3 spikes/ridge-spectrum/ridge.py --oracle --selftest  # §5 — oracle + property suite
 ```

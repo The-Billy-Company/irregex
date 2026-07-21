@@ -230,14 +230,32 @@ No pruning ⇒ sound. The sieve degrades to "no help," never to "wrong."
 `ĝ(R,C) = F(root)`; one bottom-up pass, `O(|R|·k)` per query, zero
 allocations.
 
-### 3.5 Incompleteness is not unsoundness (the tightness gap)
+### 3.5 Incompleteness is not unsoundness (the tightness gap, measured)
 
 The calculus is sound, not tight. Example: `[0-9](?:)[0-9]` truly forces a
 digit run of 2, but the empty group carries `all_in=false`, the straddle term
 declines, and `ĝ(digit)=1 < g(digit)=2`. Under-pruning costs selectivity,
 never correctness — a referee who exhibits a looser-than-optimal `ĝ` has found
-an optimization, not a bug. (Unit-pinned in `src/math/crest_test.zig`:
+an optimization, not a bug. (Unit-pinned in `crest_test.zig`:
 `test "tightness gap is under-prune"`.)
+
+**How loose, exactly?** The gap is measured against an _independent_ exact
+oracle, not asserted. Define the true forced run `g(R,C) = min_{w∈L(R)} ρ(w,C)`
+and compute it by automaton intersection: the largest `r` for which
+`L(R) ∩ L(M_{C,r})` is empty, where `M_{C,r}` is the monitor DFA accepting
+strings with _no_ maximal C-run of length `≥ r` (state = current-run-length
+capped at `r`), binary-searched over `r`. This is a textbook min-over-a-
+max-automaton value (Kuperberg–Vanden Boom min/max cost automata, STACS 2015;
+the ranked variant is Mohri–Riley N-best paths) — we claim none of it, we use
+it only as a soundness+tightness referee built from a _separate_ Thompson NFA
+compiler, so the AST calculus never grades itself. Over 6,549 randomized
+(regex, class) forced runs the shipped calculus is **sound on every one
+(`ĝ ≤ g` always) and exactly tight on 98.0%**, mean gap `g − ĝ = 0.043` of a
+run. So "sound, not tight" is, empirically, "sound and tight 98% of the time";
+the 2% are the straddle/alternation cases above, always under-pruning. The
+oracle and its property harness live in the lineage spike
+(`spikes/ridge-spectrum/ridge.py`, `g_exact`); the corpus-scale
+matched⇒¬pruned proof against the real matcher stays in `bench/crest/`.
 
 ### 3.6 Alphabet contract (the one real false-negative footgun)
 
@@ -435,10 +453,125 @@ above, because a pruned document's **read is elided entirely** (the serial
 
 ---
 
-## 7. Lineage
+## 7. The forced-run _spectrum_ (Ridge — from one run to a multiset)
 
-Graduated from the machine-local spike `spikes/classrun-formula/`
-(dossier, Python reference `rune.py`, 240k-pair property suite, count-cousin
-ablation, adversarial originality referee verdict NOVEL, 2026-07-19). The
-spike's working name "Rune" was retired at graduation; the object's name is
-**Crest**.
+Crest indexes the **single** longest run per class and forces a single run, so
+it is structurally blind to patterns that force **several disjoint** runs:
+
+    [0-9]{6}[^0-9]+[0-9]{6}      two distinct 6-digit runs forced
+    [0-9]{4}-[0-9]{2}-[0-9]{2}   the digit multiset {4,2,2}
+
+A document with one 6-digit run (or a lone 4-digit run) can never match either,
+yet `ĝ(digit)=6` (resp. `4`) admits it. **Ridge** lifts the scalar to an order
+statistic: index the top-`q` longest **distinct maximal** C-runs per document
+(`q≈2–4`; `q=1` _is_ Crest), and derive a forced-run _multiset_ from the AST.
+
+### 7.1 Signature and forced multiset
+
+**Definition 7 (run spectrum).** `σ_q(d,C) ∈ ℕ^q` — the `q` longest maximal
+C-runs of `d`, sorted descending (padded with 0). `σ_1 = ρ`. Cost `O(k·q)`
+ints/doc; one pass keeps a size-`q` per-class top list.
+
+**Definition 8 (forced-run functional).** `g_i(R,C) = min_{w∈L(R)} σ(w,C)[i]`
+— the min over accepted strings of the _i_-th largest maximal C-run. §7.3
+computes a sound lower bound `ĝ_i(R,C) ≤ g_i(R,C)`, sorted-descending in `i`.
+
+### 7.2 The Spectrum Sieve Theorem (soundness)
+
+> **Theorem 3 (Spectrum Sieve).** If `R` matches a substring of `d` then
+> `σ_q(d,C)[i] ≥ g_i(R,C)` for every class `C` and rank `i ≤ q`.
+
+_Proof._ Let `w ∈ L(R)` occur contiguously in `d`. Each maximal C-run of `w`
+sits inside a maximal C-run of `d` that is **≥** as long. Two _distinct_
+maximal C-runs of `w` are separated by a non-C byte lying inside `w`, hence
+inside `d`, so they fall in **distinct** maximal C-runs of `d`. That is a
+length-nondecreasing injection from `w`'s maximal C-runs into `d`'s, so the
+sorted-descending run vector of `d` dominates that of `w` componentwise:
+`σ(d,C)[i] ≥ σ(w,C)[i] ≥ g_i(R,C)`. Truncating to the top `q` preserves the
+first `q` inequalities. ∎ (`q=1` is Theorem 1 verbatim.)
+
+> **Corollary 3.** `prune d ⟺ ∃C,i≤q : σ_q(d,C)[i] < ĝ_i(R,C)` never prunes a
+> match. Cost: `k·q` integer compares/doc.
+
+### 7.3 The gap-aware calculus (`all_out`, the distinctness permission slip)
+
+Crest's `(F,P,S,minLen,all_in)` profile decides _lengths_; the spectrum needs
+to know **when two forced runs are provably distinct**. That is a second exact
+predicate, dual to `all_in`:
+
+    all_out(E,C) = true  ⟺  every w∈L(E) is composed solely of NON-C bytes.
+
+A profile becomes a per-class **ordered list of segments** separated by forced
+`all_out` boundaries. Concatenation glues the last segment of the left to the
+first of the right (Crest's straddle merge — they may abut with no forced
+separator between); an atom that is `all_out` for `C` commits a boundary, so
+runs on either side are counted as distinct entries in the multiset. The
+finalized `ĝ_i(R,C)` is the sorted-descending list of per-segment forced runs.
+
+The load-bearing subtlety is **when NOT to split**, and it is where soundness
+lives: `[0-9a-f]{8}[^0-9a-f]+[0-9a-f]{8}` does **not** force two _hex_ runs,
+because `[^0-9a-f]` still admits `A`–`F` (uppercase hex) — the two runs may
+merge into one length-17 hex run through an uppercase letter. `[^0-9a-f]` is
+`all_out` for `digit` but **not** for `hex`, so the calculus forces two digit
+runs and only one hex run. A naive multiset that split on _any_ separator would
+manufacture a false negative here; the exactness of `all_out` is what forbids
+it. Alternation conservatively collapses each branch to its single Crest run
+(componentwise min) — a sound lower bound; intra-branch multi-run structure is
+dropped, which only under-forces.
+
+**Invariant (no regression):** `ĝ_1(R,C) = F(root)` exactly — the shipped
+Crest forced run. Crest's straddle never crosses an `all_out` atom, so the
+global longest forced run equals the max over segments, which is the first
+multiset entry. Ridge is a **strict superset**: it only adds lower-ranked
+forced runs, never changes the top one, so no query Crest prunes today is
+weakened.
+
+### 7.4 Measured (spike, 14,498 files / 250 MiB) — and the honest boundary
+
+Base = `q=1` (byte-identical to shipped Crest); Ridge = `q=4`. Index 906 KiB =
+**0.35%** of corpus (4× Crest's 0.09%). Soundness re-asserted per row
+(base and ridge survivor hit-counts both ≡ full scan); `ĝ_i ≤ g_i` held on all
+5,224 oracle checks (98.2% tight, mean gap 0.037).
+
+| query                              | forced multiset | base (q=1) | ridge (q=4) | Δ      |
+| ---------------------------------- | --------------- | ---------- | ----------- | ------ |
+| `[0-9a-f]{8}` (single run)         | hex:{8}         | 95.1%      | 95.1%       | +0.0pp |
+| `[0-9]{6}` (single run)            | digit:{6}       | 93.7%      | 93.7%       | +0.0pp |
+| `[0-9]{6}[^0-9]+[0-9]{6}`          | digit:{6,6}     | 93.7%      | **95.8%**   | +2.1pp |
+| `[0-9]{4}-[0-9]{2}-[0-9]{2}` date  | digit:{4,2,2}   | 58.1%      | **64.0%**   | +5.9pp |
+| `[0-9a-f]{8}-[0-9a-f]{4}-…` uuid   | hex:{8,4,4}     | 95.1%      | 95.2%       | +0.1pp |
+| `[0-9a-f]{8}[^0-9a-f]+[0-9a-f]{8}` | hex:{8} (sound) | 95.1%      | 95.1%       | +0.0pp |
+| `\w{3,8}` (wide)                   | word:{3}        | 4.1%       | 4.1%        | +0.0pp |
+
+The gains land exactly where a _positional_ index (CPM 2025, §0/PRIOR_ART §2)
+would target — multi-field structured tokens — but reached with a fixed `O(k·q)`
+aggregate order-statistic, no positions. The `two-hex-8` row earning +0.0 is
+soundness on display, not a miss (the runs may merge; §7.3).
+
+### 7.5 Scope of the novelty claim (referee re-scope, 2026-07-20)
+
+The independent adversarial referee (`PRIOR_ART.md` §8) returned **no
+collision** but two honest downgrades, adopted here:
+
+- Ridge is a **strict generalization of Crest**, not an independent object. The
+  new surface is exactly _single max → top-q order statistics_ (index) and
+  _single forced run → gap-aware forced-run multiset_ (query). The sieve,
+  soundness scaffold, and alphabet contract are inherited.
+- The **sieve _shape_** (per-doc vector vs query-derived required vector,
+  componentwise dominance, fail-to-candidate, no false negative) is **not**
+  new — it is the character/class-population histogram prefilter, whose
+  theoretical ceiling is the Parikh/semilinear count necessary condition
+  (both order-free, so neither can encode a _run_). The defensible novelty is
+  therefore precisely the _quantity_ — sorted top-q distinct maximal **run**
+  lengths — and the **forced-run-multiset calculus**, not "multiset dominance"
+  in the abstract.
+
+## 8. Lineage
+
+Crest graduated from `spikes/classrun-formula/` (Python `rune.py`, 240k
+property pairs, count-cousin ablation, referee verdict NOVEL 2026-07-19);
+working name "Rune" retired at graduation. The forced-run **spectrum** (Ridge,
+§7) and the **exact automaton oracle** (§3.5) come from
+`spikes/ridge-spectrum/` (`ridge.py` — segment calculus + NFA×monitor
+oracle + 160k-pair sieve property suite + base-vs-ridge corpus bench; referee
+verdict PARTIAL/no-collision 2026-07-20).
