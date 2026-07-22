@@ -568,6 +568,92 @@ pub const Ignore = struct {
     }
 };
 
+// ─────────────────── parallel-walk ignore chain (shared) ───────────────────
+// A serial walker folds each directory's ignore files into the shared `Ignore`
+// as it descends (`loadDir`); a PARALLEL walker cannot mutate that shared state
+// per directory concurrently, so it carries an immutable per-directory rule
+// CHAIN instead — built from this module's same `parseRuleLine`/`ruleMatch`
+// core, so the two walkers cannot drift (the reason this file is MONOLITHIC).
+// Both the search engine (`exec/cold/engine/parallel.zig`) and the fused corpus
+// loader (`loadpar.zig`) build and fold chains through these helpers.
+
+/// One directory's own ignore rules (.gitignore + .ignore/.rgignore, in
+/// `loadDir`'s load order), chained to the parent directory's node. Immutable
+/// after construction; `rules` and the links live in the building worker's
+/// arena, which must outlive the whole walk.
+pub const IgNode = struct {
+    parent: ?*const IgNode,
+    rules: []const Rule,
+};
+
+/// Fold the chain's rules into `verdict`, parent-first (shallow→deep, so the
+/// deepest matching rule wins — git precedence, same as `decideAt`).
+pub fn applyChain(node: ?*const IgNode, a: std.mem.Allocator, ci: bool, root_depth: usize, reanchor_root: bool, rel: []const u8, is_dir: bool, verdict: *?bool) void {
+    const n = node orelse return;
+    applyChain(n.parent, a, ci, root_depth, reanchor_root, rel, is_dir, verdict);
+    for (n.rules) |r| if (ruleMatch(a, ci, root_depth, reanchor_root, r, rel, is_dir)) {
+        verdict.* = !r.negated;
+    };
+}
+
+/// Read one ignore file (raw POSIX, worker-thread safe) into `a`. Null when
+/// absent/unreadable — the same silent degrade as `readFile`.
+pub fn readIgnoreFile(a: std.mem.Allocator, path: []const u8) ?[]const u8 {
+    const fd = std.posix.openat(std.posix.AT.FDCWD, path, .{ .ACCMODE = .RDONLY }, 0) catch return null;
+    defer _ = std.posix.system.close(fd);
+    var buf: std.ArrayList(u8) = .empty;
+    var tmp: [16 * 1024]u8 = undefined;
+    while (buf.items.len < (1 << 20)) {
+        const r = std.posix.read(fd, &tmp) catch break;
+        if (r == 0) break;
+        buf.appendSlice(a, tmp[0..r]) catch return null;
+    }
+    return buf.toOwnedSlice(a) catch null;
+}
+
+pub fn appendRules(a: std.mem.Allocator, list: *std.ArrayList(Rule), path: []const u8, base: []const u8) void {
+    const buf = readIgnoreFile(a, path) orelse return;
+    var it = std.mem.splitScalar(u8, buf, '\n');
+    while (it.next()) |raw| {
+        const line = std.mem.trimEnd(u8, raw, "\r");
+        if (parseRuleLine(line, base, "")) |r| list.append(a, r) catch oom();
+    }
+}
+
+/// Which ignore files a directory's LISTING says are present — the walk already
+/// read every sibling name, so `loadNode` only `openat`s files that exist
+/// instead of blind-probing all three in every directory (the biggest syscall
+/// sink in the whole walk: ~3 failed opens × every dir).
+pub const IgPresent = struct { gitignore: bool = false, dotignore: bool = false, rgignore: bool = false };
+
+/// Note whether `name` is one of the three ignore files, from a listing entry.
+pub fn noteIgnoreFile(present: *IgPresent, name: []const u8, is_file: bool) void {
+    if (!is_file or name.len < 7 or name[0] != '.') return;
+    if (std.mem.eql(u8, name, ".gitignore"))
+        present.gitignore = true
+    else if (std.mem.eql(u8, name, ".ignore"))
+        present.dotignore = true
+    else if (std.mem.eql(u8, name, ".rgignore"))
+        present.rgignore = true;
+}
+
+/// Build the `IgNode` for a directory the walk just entered (its `.gitignore`
+/// then `.ignore`/`.rgignore`, mirroring `loadDir`'s order so last-match-wins
+/// precedence is identical). Returns `parent` unchanged when the directory
+/// contributes no rules — the chain link is skipped, not empty.
+pub fn loadNode(ig: *const Ignore, a: std.mem.Allocator, parent: ?*const IgNode, disk: []const u8, rel: []const u8, present: IgPresent) ?*const IgNode {
+    var rules: std.ArrayList(Rule) = .empty;
+    if (ig.use_git and present.gitignore) appendRules(a, &rules, join(a, disk, ".gitignore"), rel);
+    if (ig.use_dot) {
+        if (present.dotignore) appendRules(a, &rules, join(a, disk, ".ignore"), rel);
+        if (present.rgignore) appendRules(a, &rules, join(a, disk, ".rgignore"), rel);
+    }
+    if (rules.items.len == 0) return parent;
+    const node = a.create(IgNode) catch oom();
+    node.* = .{ .parent = parent, .rules = rules.toOwnedSlice(a) catch oom() };
+    return node;
+}
+
 // The shared ASCII case fold (`paths.zig`) — one definition for gitignore's
 // byte-wise caseless glob tier and args.zig's `--iglob` fold.
 const lower = paths.lowerDup;

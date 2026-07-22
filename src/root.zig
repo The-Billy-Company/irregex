@@ -450,6 +450,7 @@ test {
     _ = @import("surface/exec/session/scoped_test.zig"); // scoped reconcile adversarial: vs full-walk ground truth
     _ = @import("corpus/tree/haystack_test.zig"); // shared walk: isSkipDir + joinPath hot-path decisions
     _ = @import("corpus/tree/bulkstat_test.zig"); // getattrlistbulk ≡ stat-walk differential
+    _ = @import("corpus/tree/loadpar.zig"); // fused parallel walk+read: byte-identical membership vs serial oracle
     _ = @import("kernel/match/regex/syntax/syntax_test.zig"); // T2 syntax: ByteSet + recursive-descent parser
     _ = @import("kernel/match/regex/analysis/analysis_test.zig"); // T2 analysis: required-literal + cover + anchored
     _ = @import("kernel/match/regex/linear/core_test.zig"); // T2 engine: parser + Pike VM + prefilters

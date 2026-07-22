@@ -311,21 +311,52 @@ pub fn readMember(io: std.Io, dir: std.Io.Dir, sub_path: []const u8, a: std.mem.
 }
 
 /// Every loaded doc + its root-joined path, arena-owned; `deinit` frees all.
+/// The serial `load` owns every byte in `arena`; the fused parallel loader
+/// (`loadpar`) accumulates doc/path bytes in per-worker arenas that outlive the
+/// walk — it hands them off as `shards` (freed with `shards_gpa` in `deinit`),
+/// while the slice HEADERS still live in `arena`.
 pub const Corpus = struct {
     docs: [][]const u8,
     paths: [][]const u8,
     bytes: u64,
     arena: std.heap.ArenaAllocator,
+    shards: []std.heap.ArenaAllocator = &.{},
+    shards_gpa: ?std.mem.Allocator = null,
 
     pub fn deinit(self: *Corpus) void {
         self.arena.deinit();
+        if (self.shards_gpa) |g| {
+            for (self.shards) |*s| s.deinit();
+            g.free(self.shards);
+        }
     }
 };
 
-/// Read every non-binary file under `roots` into one arena (per-file cap
-/// applies; an unreadable root is reported to stderr and skipped, matching
-/// rg's walk-on behavior).
+/// `GIST_NO_PARALLEL_LOAD` truthy (any value but `0`/`false`/`no`/empty) forces
+/// the serial loader — the parity gate + escape hatch, mirroring the search
+/// engine's `GIST_NO_PARALLEL`.
+fn parallelLoadDisabled() bool {
+    const s = std.mem.span(std.c.getenv("GIST_NO_PARALLEL_LOAD") orelse return false);
+    return s.len != 0 and !envFalsy(s);
+}
+
+/// Read every non-binary file under `roots` into memory (per-file cap applies;
+/// an unreadable root is reported to stderr and skipped, matching rg's walk-on
+/// behavior). Dispatches to the fused parallel walk+read (`loadpar`) by default
+/// — ~3× faster on a broad build — and to the serial walk below under
+/// `GIST_NO_PARALLEL_LOAD` (parity gate) or when the parallel path fails to
+/// start (fail-open: the result is never worse than the serial build).
 pub fn load(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !Corpus {
+    if (!parallelLoadDisabled()) {
+        if (@import("loadpar.zig").load(gpa, io, roots)) |c| return c else |_| {}
+    }
+    return loadSerial(gpa, io, roots);
+}
+
+/// The single-cursor reference loader: walk one directory at a time, read each
+/// member as it is yielded. Kept as the parallel loader's fallback + parity
+/// oracle (`GIST_NO_PARALLEL_LOAD`, and `loadpar`'s membership test).
+pub fn loadSerial(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !Corpus {
     var arena = std.heap.ArenaAllocator.init(gpa);
     const a = arena.allocator();
     var docs: std.ArrayList([]const u8) = .empty;
