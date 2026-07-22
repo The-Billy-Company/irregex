@@ -47,8 +47,11 @@ const unfilled: u32 = std.math.maxInt(u32); // powerset's `unknown` slot sentine
 
 /// Compile and require an actual DFA (not a powerset-cap fallback) — so every
 /// invariant case genuinely exercises the determinizer. Caller owns `deinit`.
+/// `force_dfa`: many invariant patterns are byte-exact class runs, whose
+/// production compile skips the (dead-weight) determinization — this harness
+/// exists to test subset construction itself.
 fn compileDfa(pattern: []const u8) !Regex {
-    var re = try Regex.compile(std.testing.allocator, pattern);
+    var re = try Regex.compileOpts(std.testing.allocator, pattern, .{ .force_dfa = true });
     if (re.dfa == null) {
         re.deinit();
         return error.PowersetCapHit;
@@ -59,7 +62,7 @@ fn compileDfa(pattern: []const u8) !Regex {
 /// `compileDfa`'s Unicode-mode twin — compiles with `.unicode = true` so the
 /// pattern lowers non-ASCII content to a UTF-8 byte sub-automaton.
 fn compileDfaU(pattern: []const u8) !Regex {
-    var re = try Regex.compileOpts(std.testing.allocator, pattern, .{ .unicode = true });
+    var re = try Regex.compileOpts(std.testing.allocator, pattern, .{ .unicode = true, .force_dfa = true });
     if (re.dfa == null) {
         re.deinit();
         return error.PowersetCapHit;
@@ -607,7 +610,9 @@ test "powerset: structural invariants + bounded-exhaustive language equivalence 
         var g = Gen{ .r = r, .buf = &pat, .a = a };
         try g.pattern();
 
-        var re = Regex.compile(a, pat.items) catch continue; // skip rare BadPattern
+        // `force_dfa`: keep class-run-shaped random patterns in determinizer
+        // coverage (production compile skips their dead-weight DFA).
+        var re = Regex.compileOpts(a, pat.items, .{ .force_dfa = true }) catch continue; // skip rare BadPattern
         defer re.deinit();
         if (re.dfa == null) continue; // powerset cap ⇒ Pike serves; nothing to check
         assertInvariants(&re) catch |e| {

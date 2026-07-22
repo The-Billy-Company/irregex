@@ -27,6 +27,7 @@ const dfa_mod = @import("dfa.zig");
 const powerset = @import("powerset.zig");
 const word = @import("../syntax/word.zig");
 const simd = @import("../../scan/simd.zig");
+const classrun_mod = @import("../../scan/classrun.zig");
 const ByteSet = syn.ByteSet;
 const Node = syn.Node;
 
@@ -84,6 +85,17 @@ pub const Regex = struct {
     // pass. Non-null unless the powerset blew past the cap, when the Pike VM serves
     // (the `first` prefilter accelerates that fallback's skip search).
     dfa: ?*dfa_mod.Dfa,
+    // SIMD class-run kernel (`scan/classrun.zig`): non-null iff the pattern
+    // provably reduces to "≥ min consecutive members of one byte set"
+    // (`analysis.classRunShape` — the dense-class family: `\w+`, `[a-z]{3,}`,
+    // `[0-9a-f]{8}`). Boolean dispatch consults it FIRST — it answers at load
+    // bandwidth where the DFA's chained table walk pays load latency — and a
+    // `.unproven` verdict (codepoint-class projection meeting a high byte)
+    // falls through to the DFA/Pike engines unchanged. Boolean paths only;
+    // `matchSpan` never consults it. Per-line compiles drop `\n` from the set
+    // (a line never contains one), which licenses the whole-buffer `docMatch`
+    // scan: runs then provably break at every line boundary.
+    classrun: ?classrun_mod.ClassRun,
     // Multiline (`-U`): the pattern matches the WHOLE buffer as one haystack — a
     // match may span `\n`, and `^`/`$` anchor at every line boundary (rg's `-U`
     // default), resolved per-position against `\n` adjacency (content-dependent,
@@ -121,6 +133,7 @@ pub const Regex = struct {
         freeAlts(self.allocator, self.alts);
         freeAlts(self.allocator, self.lits);
         if (self.dfa) |d| d.deinit();
+        if (self.classrun) |cr| if (cr.cp) |r| self.allocator.free(r);
         self.* = undefined;
     }
 
@@ -147,7 +160,11 @@ pub const Regex = struct {
     /// whole-buffer search stays live (`multiline` unchanged). Per-line mode
     /// (`multiline == false`) is unaffected: a single-line haystack's edges ARE
     /// its line boundaries either way.
-    pub const Options = struct { caseless: bool = false, multiline: bool = false, dotall: bool = false, unicode: bool = false, line_anchors: ?bool = null };
+    /// `force_dfa` builds the byte-class DFA even when a byte-exact class-run
+    /// kernel makes it dead weight for every production path — the hook the
+    /// determinizer's own proof harness (powerset/dfa tests) uses to keep
+    /// exercising subset construction on class-shaped patterns.
+    pub const Options = struct { caseless: bool = false, multiline: bool = false, dotall: bool = false, unicode: bool = false, line_anchors: ?bool = null, force_dfa: bool = false };
 
     pub fn compile(allocator: std.mem.Allocator, pattern: []const u8) ParseError!Regex {
         return compileOpts(allocator, pattern, .{});
@@ -233,7 +250,59 @@ pub const Regex = struct {
         // O(1)/byte floor the per-line model enjoys instead of the O(states)/byte
         // Pike re-seed rg's lazy DFA was beating.
         const assert_free = assertFree(states);
-        const dfa: ?*dfa_mod.Dfa = if (opts.multiline and !assert_free) null else try powerset.build(allocator, states, start, anchored);
+
+        // SIMD class-run reduction (post-fold, so `-i` classes are final). In
+        // the per-line model a haystack line never contains `\n`, so dropping
+        // it from the set is an identity there — and it makes every run
+        // provably line-local, licensing the one-pass whole-buffer `docMatch`.
+        // Multiline keeps the set verbatim: the buffer IS the haystack.
+        // A codepoint class whose full ranges survived the AST algebra hands
+        // them (gpa-duped; the arena dies with this frame) to the kernel,
+        // whose scalar UTF-8 resolver then settles high bytes itself.
+        const cr: ?classrun_mod.ClassRun = if (analysis.classRunShape(ast)) |shape| blk: {
+            var set = shape.set;
+            if (!opts.multiline) set.remove('\n');
+            const cp: ?[]const [2]u21 = if (shape.cp) |r|
+                if (classrun_mod.ClassRun.cpResolvable(r)) try allocator.dupe([2]u21, r) else null
+            else
+                null;
+            var run = classrun_mod.ClassRun.build(set.bits, shape.min, shape.exact, cp) orelse {
+                if (cp) |r| allocator.free(r);
+                break :blk null;
+            };
+            // Span-exactness is a strictly stronger recognizer (window rule,
+            // not just existence) — when it accepts, its leaves are the same
+            // ones the boolean algebra folded, so set/min/exact agree; the
+            // guard is pure paranoia. `max`/`lazy` arm `nextSpan`'s chunking.
+            if (analysis.classSpanShape(ast)) |sp| {
+                if (sp.min == shape.min and sp.exact == shape.exact and std.mem.eql(u64, &sp.set.bits, &shape.set.bits)) {
+                    run.span = true;
+                    run.max = sp.max;
+                    run.lazy = sp.lazy;
+                }
+            }
+            break :blk run;
+        } else null;
+        errdefer if (cr) |run| if (run.cp) |r| allocator.free(r);
+
+        // A byte-exact class run — or a codepoint one whose full ranges the
+        // kernel holds — answers every boolean entry point finally (the
+        // kernel never defers), and the span path is the kernel window walk
+        // (span-exact shapes) or the Pike VM (the rest) — never the DFA, so
+        // it would be dead weight. Skipping determinization here is a pure
+        // compile-time win: measured 77–178 ms on `(?-u)\w{3}`…`\w{3,8}`
+        // (the `{n,m}` expansion clones the class sub-automaton per copy),
+        // and ~168 ms on Unicode `\w{3,8}`, whose codepoint lowering makes
+        // the powerset step the whole cost of compilation. Only a projection
+        // WITHOUT carried ranges keeps the DFA: its `.unproven` verdicts on
+        // high-byte haystacks land there.
+        const kernel_final = if (cr) |run| run.exact or run.cp != null else false;
+        const dfa: ?*dfa_mod.Dfa = if (opts.multiline and !assert_free)
+            null
+        else if (kernel_final and !opts.force_dfa)
+            null
+        else
+            try powerset.build(allocator, states, start, anchored);
         errdefer if (dfa) |d| d.deinit();
 
         return .{
@@ -247,6 +316,7 @@ pub const Regex = struct {
             .nullable = nullable,
             .first = prefilter.Prefilter.init(first_set),
             .dfa = dfa,
+            .classrun = cr,
             .assert_free = assert_free,
             .multiline = opts.multiline,
             .line_anchors = opts.line_anchors orelse opts.multiline,
@@ -426,6 +496,14 @@ pub const Regex = struct {
         // Equivalence held by the rg oracle + the DFA-vs-Pike differential fuzz —
         // this is purely dispatch.
         if (re.eol_empty) return true; // matches every line's zero-width end (`\d*$`)
+        // Class-run patterns skip the automaton entirely: SIMD membership +
+        // word-trick run detection at load bandwidth. `.unproven` (codepoint
+        // projection met a high byte) falls through to the engines below.
+        if (re.classrun) |*cr| switch (cr.scan(line)) {
+            .hit => return true,
+            .miss => return false,
+            .unproven => {},
+        };
         if (re.dfa) |d| return d.match(line);
         return re.lineMatchPike(sim, line);
     }
@@ -507,6 +585,15 @@ pub const Regex = struct {
         // one empty line) is false. rg agrees: an empty input never matches, even
         // `a*`. Conflating "every" with "some" here over-matched empty files.
         if (re.eol_empty) return doc.len > 0;
+        // One SIMD pass over the raw buffer: per-line compiles removed `\n`
+        // from the set (`nl_free`), so a run can never cross a line boundary —
+        // "some line holds a run" ≡ "the buffer holds a run", newlines and the
+        // no-phantom-final-line rule included (min ≥ 1 needs real bytes).
+        if (re.classrun) |*cr| if (cr.nl_free) switch (cr.scan(doc)) {
+            .hit => return true,
+            .miss => return false,
+            .unproven => {},
+        };
         // The DFA scans the whole buffer in one fused pass (one byte-touch); only a
         // powerset blow-up past the cap leaves it null, and then the Pike VM (proven
         // oracle) serves per line. Equivalence held by the doc-level differential fuzz.
@@ -518,6 +605,37 @@ pub const Regex = struct {
             i = end + 1;
         }
         return false;
+    }
+
+    /// Is `docMatch` a single fused whole-buffer pass (class-run kernel or
+    /// DFA) rather than the per-line Pike fallback? Callers with their own
+    /// gated per-line loops (the `-l` emit path) use this to prefer one
+    /// whole-buffer boolean only when it is actually the faster machine.
+    pub fn docMatchFused(re: *const Regex) bool {
+        if (re.eol_empty) return true;
+        if (re.classrun) |*cr| if (cr.nl_free and (cr.exact or cr.cp != null)) return true;
+        return re.dfa != null;
+    }
+
+    /// Can `countRunLines` settle this pattern's `-c` tally? True exactly for
+    /// a `\n`-free class run the kernel decides FINALLY — byte-exact, or a
+    /// codepoint class whose full ranges it holds. A bare projection defers
+    /// on high bytes and a `\n`-bearing set's runs cross lines, so both
+    /// decline. The emit layers consult this BEFORE paying the line split.
+    pub fn countRunFused(re: *const Regex) bool {
+        if (re.eol_empty) return false;
+        if (re.classrun) |*cr| return (cr.exact or cr.cp != null) and cr.nl_free;
+        return false;
+    }
+
+    /// Count matching lines of `doc` (rg `-c` line model) in ONE hit-jumping
+    /// whole-buffer class-run pass, or null when the reduction cannot settle
+    /// counts (`!countRunFused`). Exactly the per-line `lineMatch` tally —
+    /// held by the differential fuzz — minus the line split and per-line
+    /// dispatch.
+    pub fn countRunLines(re: *const Regex, doc: []const u8) ?u64 {
+        if (!re.countRunFused()) return null;
+        return re.classrun.?.countLines(doc);
     }
 
     // ─────────────────────── multiline (`-U`) whole-buffer match ───────────────────────
@@ -582,6 +700,17 @@ pub const Regex = struct {
         // nullable `a*`/`^$`). This is the whole-buffer twin of `docMatch`'s
         // `doc.len > 0` guard; without it a nullable pattern would spuriously hit.
         if (buf.len == 0) return false;
+        // Class-run existence is position-independent, so it holds under `-U`
+        // exactly as written: the buffer is the haystack, `\n` stayed in the
+        // set if the pattern admits it. Sound even when the program carries
+        // assertions (a nullable wrapper can hide `^`/`\b` without weakening
+        // the reduction — see `analysis.classRunShape`), which also rescues
+        // patterns the multiline DFA refused.
+        if (re.classrun) |*cr| switch (cr.scan(buf)) {
+            .hit => return true,
+            .miss => return false,
+            .unproven => {},
+        };
         // Assertion-free multiline: the DFA is exact over the whole buffer as one
         // haystack (no `^`/`$`/`\b` to resolve; `trans_fin` ≡ `trans_in` when no
         // assert_end exists, so the last-byte table is inert) — one table lookup
@@ -682,6 +811,14 @@ pub const Regex = struct {
     pub fn matchSpan(re: *const Regex, sim: *SpanSim, line: []const u8, from: usize) ?Span {
         // Pure-literal fast path: SIMD substring scan, no Pike VM (see `litSpan`).
         if (re.lits.len > 0) return re.litSpan(line, from);
+        // Span-exact class run (`\w+`, `[a-z]{3,8}` — `analysis.classSpanShape`):
+        // the SIMD window kernel chunks member runs directly, no thread
+        // closures. Final only when the kernel settles high bytes itself
+        // (byte-exact set, or the full codepoint class in hand).
+        if (re.classrun) |*cr| if (cr.span and (cr.exact or cr.cp != null)) {
+            const sp = cr.nextSpan(line, from) orelse return null;
+            return .{ .start = sp.start, .end = sp.end };
+        };
         sim.gen += 1;
         sim.cur.len = 0;
         var cl = re.closure(sim, &sim.cur, re.atStart(line, from), re.atEnd(line, from), wordBefore(re.unicode, line, from), wordAt(re.unicode, line, from));

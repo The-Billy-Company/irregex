@@ -1644,8 +1644,11 @@ fn renderFile(em: *Emitter, f: InFile, stat: *Stats, matched_files: *usize, firs
     // `collectLines` entirely when it's eligible (its guards exclude `--stats`,
     // so the stats block below still collects lines when it needs them).
     const fast = !o.multiline and em.litFastEligible();
+    // The fused `-c`/`-l` class-run paths answer from the whole buffer —
+    // skip the line split they'd never read (`--stats` still needs it).
+    const fused = !o.multiline and !fast and !o.stats and em.fusedFileEligible();
     var lines: std.ArrayList([]const u8) = .empty;
-    if (!o.multiline and !fast) collectLines(a, body, o.term(), &lines);
+    if (!o.multiline and !fast and !fused) collectLines(a, body, o.term(), &lines);
     if (o.stats) {
         const fs = fileMatchStats(re, a, o, body, lines.items, em.needle);
         stat.add(.{ .files_searched = 1, .matches = fs.matches, .matched_lines = fs.lines, .bytes_searched = fs.bytes });

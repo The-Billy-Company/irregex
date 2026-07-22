@@ -7,6 +7,12 @@ doc_radar:
     - description: "verify is the fused parallel confirm kernel"
       file: pkg/kernels/irregex/src/kernel/match/scan/verify.zig
       contains: "pub fn"
+    - description: "classrun ships the boolean scan, the fused -c line count, and the -o span walker"
+      file: pkg/kernels/irregex/src/kernel/match/scan/classrun.zig
+      contains:
+        - "pub fn scan"
+        - "pub fn countLines"
+        - "pub fn nextSpan"
 ---
 
 # `src/search/match/scan/` — byte-level verify primitives
@@ -19,10 +25,12 @@ directly.
 
 ## Files
 
-| File         | Job                                                                                                          |
-| ------------ | ------------------------------------------------------------------------------------------------------------ |
-| `simd.zig`   | SIMD substring presence (`contains ≡ std.mem.indexOf`) — memchr-style first+last-byte gate for fixed strings |
-| `verify.zig` | Pure data-parallel candidate-verify kernel + SIMD scan wrappers callers drive                                |
+| File           | Job                                                                                                                                                                                             |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `simd.zig`     | SIMD substring presence (`contains ≡ std.mem.indexOf`) — memchr-style first+last-byte gate for fixed strings                                                                                    |
+| `verify.zig`   | Pure data-parallel candidate-verify kernel + SIMD scan wrappers callers drive                                                                                                                    |
+| `teddy.zig`    | Teddy nibble-shuffle multi-literal prefilter for small alternation covers                                                                                                                        |
+| `classrun.zig` | Dense-class kernel: a class-repetition pattern (`\w+`, `[a-z]{3,}`) decided as "≥ min consecutive members of a byte set" — range-compare / truffle SIMD membership + word-trick run detection, a streaming whole-buffer `-c` line count (membership + newline masks in one pass), a `-o` span walker (`nextSpan` chunks member runs by the leftmost-first window rule `analysis.classSpanShape` proves — no Pike VM), and a scalar-UTF-8 codepoint resolver so Unicode classes (`\w`) settle high bytes in-kernel. Bypasses the DFA's serial table walk *and* its powerset compile; `analysis.classRunShape` decides eligibility |
 
 ## Where it sits on the ladder
 

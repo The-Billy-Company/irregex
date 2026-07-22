@@ -407,6 +407,7 @@ test {
     _ = @import("kernel/rank/signals_test.zig"); // cross-language def-detection + generated-file signals
     _ = @import("kernel/rank/mirror.zig"); // cached-source mirror classification + exact canonical duplicate
     _ = @import("kernel/match/scan/simd_test.zig"); // SIMD `contains` differential fuzz vs std
+    _ = @import("kernel/match/scan/classrun_test.zig"); // SIMD class-run kernel vs scalar oracle (both backends)
     _ = @import("corpus/index/trigrams/fresh_test.zig"); // T3 freshness `widen` set-algebra
     _ = @import("kernel/match/query_test.zig"); // shared compiled-query: compile/prefilter/match vs oracle
     _ = @import("kernel/primitives/bits_test.zig"); // shared two's-complement bit identities vs bool-slice oracle

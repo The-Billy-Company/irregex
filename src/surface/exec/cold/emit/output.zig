@@ -551,19 +551,82 @@ pub const Emitter = struct {
         for (lo..hi_ex) |k| self.row(path, k + 1, 0, lines[k].start, body[lines[k].start..lines[k].content_end], false);
     }
 
+    /// Will `file()` answer its mode from the whole buffer without reading
+    /// `lines`? The render drivers consult this to skip `collectLines`
+    /// entirely — the fused `-c`/`-l` paths below never touch the line grid.
+    /// Callers must have `base`/`body_end` set (they do: both drivers set the
+    /// pair right before dispatch). Mirrors `file()`'s own gating exactly.
+    pub fn fusedFileEligible(self: *const Emitter) bool {
+        const o = self.o;
+        if (o.invert or o.word or o.crlf or o.null_data or o.stop_on_nonmatch or
+            o.passthru or o.vimgrep or o.only_matching or o.count_matches) return false;
+        if (o.files_only) return self.re.docMatchFused();
+        if (o.count_only) return self.re.countRunFused();
+        return false;
+    }
+
     pub fn file(self: *Emitter, path: []const u8, lines: []const []const u8) usize {
         const o = self.o;
         if (o.passthru and !o.invert and !o.count_only and !o.count_matches and !o.files_only) return self.passthru(path, lines);
         if (o.vimgrep and !o.invert) return self.vimgrep(path, lines);
+        // Span modes (`-o`, `--count-matches`): a fused whole-buffer MISS (one
+        // class-run/DFA doc pass) proves zero spans, sparing the per-line span
+        // walk entirely — the miss-heavy regime rg's lazy-DFA doc scan used to
+        // win. A hit still takes the per-line loop (spans need positions).
+        // `--crlf`/`--null-data` change the line view an anchored DFA pattern
+        // judges against, so they keep the plain path (same fence as the
+        // fused `-c`/`-l` gates below).
+        if ((o.only_matching or o.count_matches) and !o.invert and !o.crlf and
+            !o.null_data and !o.stop_on_nonmatch and self.body_end > self.base and
+            self.re.docMatchFused())
+        {
+            const body = @as([*]const u8, @ptrFromInt(self.base))[0 .. self.body_end - self.base];
+            var s: ?Matcher.Sim = Matcher.Sim.init(self.a, self.re) catch null;
+            defer if (s) |*ss| ss.deinit();
+            if (s != null and !self.re.docMatch(&s.?, body))
+                return if (o.count_matches or o.count_only) self.bufTally(path, 0) else 0;
+        }
         // `--count --only-matching` counts every match span (like --count-matches),
         // not matching lines — ripgrep's documented override.
         if ((o.count_matches or (o.count_only and o.only_matching)) and !o.invert) return self.countMatches(path, lines);
         if (o.only_matching and !o.invert) return self.onlyMatching(path, lines);
 
+        // The plain-flag whole-buffer regime: the per-line loop below computes
+        // exactly "which lines match" under rg's `\n` line model, so when no
+        // flag changes the line view (`--crlf` trims `\r`, `--null-data`
+        // re-terminates) or the predicate (`-v`/`-w`/--stop-on-nonmatch) and
+        // the file body is addressable, a fused whole-buffer machine may
+        // answer the mode outright. The gates (needle/lits) are skipped —
+        // they only ever accelerate the same verdicts.
+        const whole_buf = !o.invert and !o.word and !o.crlf and !o.null_data and
+            !o.stop_on_nonmatch and self.body_end > self.base;
+
+        // `-c` fused fast path: the class-run kernel counts matching lines in
+        // one hit-jumping pass over the body — no line split consumed, no
+        // per-line dispatch (the overhead rg's fused count never paid).
+        // `countRunLines` is non-null only when that pass is exact.
+        if (whole_buf and o.count_only and !o.files_only) {
+            const body = @as([*]const u8, @ptrFromInt(self.base))[0 .. self.body_end - self.base];
+            if (self.re.countRunLines(body)) |n| {
+                const capped = if (o.max_per_file != 0) @min(n, o.max_per_file) else n;
+                return self.bufTally(path, @intCast(capped));
+            }
+        }
+
         // Borrow the caller-threaded scratch when present; else pay a file-local.
         var local_sim: ?Matcher.Sim = if (self.sim == null) (Matcher.Sim.init(self.a, self.re) catch return 0) else null;
         defer if (local_sim) |*s| s.deinit();
         const sim = self.sim orelse &local_sim.?;
+
+        // `-l` fused fast path: one whole-buffer boolean (`docMatch` — the
+        // class-run scan or the DFA's fused doc pass) answers "any line
+        // matches", replacing the per-line loop the serial single-file `-l`
+        // otherwise pays. Only when `docMatch` really is that machine
+        // (`docMatchFused`) — the Pike fallback would forfeit the gates.
+        if (whole_buf and o.files_only and self.re.docMatchFused()) {
+            const body = @as([*]const u8, @ptrFromInt(self.base))[0 .. self.body_end - self.base];
+            return if (self.re.docMatch(sim, body)) self.emitPathOnly(path) else 0;
+        }
         // `-w` decides a line via the span predicate; the plain path uses the
         // boolean DFA. Only `-w` pays for the SpanSim scratch.
         var wss: ?Matcher.SpanSim = if (o.word) (Matcher.SpanSim.init(self.a, self.re) catch null) else null;

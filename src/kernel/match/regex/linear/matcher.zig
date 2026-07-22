@@ -171,6 +171,24 @@ pub const Matcher = union(Backend) {
         };
     }
 
+    /// Is `docMatch` a fused whole-buffer pass (class-run kernel / DFA)?
+    /// PCRE2 has no fused doc machine — its docMatch is the per-line loop.
+    pub fn docMatchFused(self: *const Matcher) bool {
+        return self.* == .linear and self.linear.docMatchFused();
+    }
+
+    /// Whole-buffer `-c` line tally via the class-run kernel, or null when
+    /// the pattern isn't a byte-exact newline-free class run (PCRE2 included).
+    pub fn countRunLines(self: *const Matcher, doc: []const u8) ?u64 {
+        return if (self.* == .linear) self.linear.countRunLines(doc) else null;
+    }
+
+    /// Will `countRunLines` answer (never null)? The emit layers consult this
+    /// BEFORE paying the per-file line split the fused count doesn't need.
+    pub fn countRunFused(self: *const Matcher) bool {
+        return self.* == .linear and self.linear.countRunFused();
+    }
+
     /// Does the pattern match any substring of the WHOLE buffer under multiline
     /// semantics? (The `-U` whole-buffer twin of `docMatch`.)
     pub fn bufMatch(self: *const Matcher, sim: *Sim, buf: []const u8) bool {

@@ -489,6 +489,124 @@ test "analysis/repeat: counted repetition of a multi-byte group keeps the run ex
     }
 }
 
+// ── classRunShape: the SIMD class-run reduction ──────────────────────────────
+
+/// Parse under Unicode mode (so `\w`/`\d` lower to a `uclass`), as rg defaults.
+fn parseU(src: []const u8) ParseError!Parsed {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    errdefer arena.deinit();
+    var p = syn.Parser{ .src = src, .arena = arena.allocator(), .unicode = true };
+    const n = try p.parseAlt();
+    if (p.pos != src.len) return ParseError.BadPattern;
+    return .{ .arena = arena, .node = n };
+}
+
+/// Assert the pattern reduces to a class run with this floor + exactness, and
+/// that the set matches on the probe bytes given (`ins` members, `outs` not).
+fn expectShape(pr: *Parsed, min: u32, exact: bool, ins: []const u8, outs: []const u8) !void {
+    const s = ana.classRunShape(pr.node) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(min, s.min);
+    try std.testing.expectEqual(exact, s.exact);
+    for (ins) |b| try std.testing.expect(s.set.has(b));
+    for (outs) |b| try std.testing.expect(!s.set.has(b));
+}
+
+fn expectNoShape(pattern: []const u8) !void {
+    var pr = try parse(pattern);
+    defer pr.deinit();
+    try std.testing.expect(ana.classRunShape(pr.node) == null);
+}
+
+test "analysis/classrun: the dense-class family reduces with exact floors" {
+    // `+` is existence-transparent: one copy is the witness.
+    {
+        var pr = try parse("[a-z]+");
+        defer pr.deinit();
+        try expectShape(&pr, 1, true, "az", "AZ09 ");
+    }
+    // `{n}` expands to a forced concat chain: floors add.
+    {
+        var pr = try parse("[0-9]{4}");
+        defer pr.deinit();
+        try expectShape(&pr, 4, true, "09", "az");
+    }
+    // `{n,}` = n forced copies then a transparent star.
+    {
+        var pr = try parse("[0-9a-f]{2,}");
+        defer pr.deinit();
+        try expectShape(&pr, 2, true, "09af", "gz");
+    }
+    // `{n,m}` = n forced copies then transparent quests.
+    {
+        var pr = try parse("x{2,4}");
+        defer pr.deinit();
+        try expectShape(&pr, 2, true, "x", "y");
+    }
+    // ASCII `\w` (non-unicode parse) is a plain 4-range class.
+    {
+        var pr = try parse("\\w{3,8}");
+        defer pr.deinit();
+        try expectShape(&pr, 3, true, "aZ9_", " .-");
+    }
+}
+
+test "analysis/classrun: same-set alternation takes the weaker floor" {
+    {
+        var pr = try parse("[0-9]{4}|[0-9]{2}");
+        defer pr.deinit();
+        try expectShape(&pr, 2, true, "09", "az");
+    }
+    // Different sets can't merge — existence would need per-branch tracking.
+    try expectNoShape("[a-z]+|[0-9]+");
+}
+
+test "analysis/classrun: captures are transparent, nullable wrappers vanish" {
+    {
+        var pr = try parse("([a-z])+");
+        defer pr.deinit();
+        try expectShape(&pr, 1, true, "az", "09");
+    }
+    // A nullable prefix of ANY shape (even a non-class-run literal group)
+    // drops out of the existence question entirely.
+    {
+        var pr = try parse("(foo)?[0-9]{3}");
+        defer pr.deinit();
+        try expectShape(&pr, 3, true, "09", "fo");
+    }
+    {
+        var pr = try parse("(bar)*[a-f]+");
+        defer pr.deinit();
+        try expectShape(&pr, 1, true, "af", "gz");
+    }
+}
+
+test "analysis/classrun: unicode \\w reduces to its ASCII projection" {
+    var pr = try parseU("\\w{3,}");
+    defer pr.deinit();
+    const s = ana.classRunShape(pr.node) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u32, 3), s.min);
+    try std.testing.expect(!s.exact); // projection: high bytes defer to the engine
+    try std.testing.expect(s.set.has('a') and s.set.has('_') and s.set.has('9'));
+    try std.testing.expect(!s.set.has(' ') and !s.set.has(0xC3));
+}
+
+test "analysis/classrun: everything outside the family declines" {
+    try expectNoShape("foo"); // multi-set concat (f·o·o sets differ)
+    try expectNoShape("[a-z]+[0-9]"); // mixed forced sets
+    try expectNoShape("^[a-z]+"); // positioned assertion
+    try expectNoShape("[a-z]+$");
+    try expectNoShape("\\b[a-z]+"); // word boundary outside a nullable wrapper
+    try expectNoShape("[a-z]*"); // nullable whole pattern: eol_empty owns it
+    try expectNoShape("a?"); // likewise
+}
+
+test "analysis/classrun: a repeated singleton literal is legitimately a class run" {
+    // `aa` ≡ [a]{2} — the reduction is real and sound (memchr-grade scan).
+    var pr = try parse("aa");
+    defer pr.deinit();
+    try expectShape(&pr, 2, true, "a", "b");
+}
+
 test "analysis/first+eol: a bare .* takes any non-newline byte and matches every EOL" {
     const s = try firstSet(".*");
     try std.testing.expect(!s.has('\n') and s.has('a') and s.has(0) and s.has(255));

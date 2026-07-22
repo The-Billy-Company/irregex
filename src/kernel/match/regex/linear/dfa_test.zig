@@ -16,9 +16,11 @@ const Regex = regex.Regex;
 
 /// Compile, assert a DFA was actually built (not a powerset-cap fallback), and
 /// return its verdict for `line`. Fails the test if the pattern fell back to
-/// Pike, so the unit cases genuinely exercise the DFA.
+/// Pike, so the unit cases genuinely exercise the DFA. `force_dfa`: several
+/// slate patterns are byte-exact class runs, whose production compile now
+/// skips the (dead-weight) determinization — this harness tests the DFA itself.
 fn dfaMatch(pattern: []const u8, line: []const u8) !bool {
-    var re = try Regex.compile(std.testing.allocator, pattern);
+    var re = try Regex.compileOpts(std.testing.allocator, pattern, .{ .force_dfa = true });
     defer re.deinit();
     try std.testing.expect(re.dfa != null);
     return re.dfa.?.match(line);
@@ -159,7 +161,9 @@ test "dfa: differential fuzz vs the Pike VM (0 divergences), anchors included" {
         var g = Gen{ .r = r, .buf = &pat, .a = a };
         try g.pattern();
 
-        var re = Regex.compile(a, pat.items) catch continue; // skip rare BadPattern
+        // `force_dfa`: keep class-run-shaped random patterns in DFA coverage
+        // (production compile skips their dead-weight determinization).
+        var re = Regex.compileOpts(a, pat.items, .{ .force_dfa = true }) catch continue; // skip rare BadPattern
         defer re.deinit();
         if (re.dfa == null) continue; // powerset cap ⇒ Pike serves; not under test
         var sim = try Regex.Sim.init(a, &re);
@@ -215,10 +219,14 @@ test "dfa: assertion-free multiline bufMatch ≡ whole-buffer Pike (matches cros
         var g = Gen{ .r = r, .buf = &pat, .a = a };
         try g.alt(2);
 
-        var re = Regex.compileOpts(a, pat.items, .{ .multiline = true, .dotall = r.boolean() }) catch continue;
+        var re = Regex.compileOpts(a, pat.items, .{ .multiline = true, .dotall = r.boolean(), .force_dfa = true }) catch continue;
         defer re.deinit();
         try std.testing.expect(re.assert_free); // the generator emits no anchors
         if (re.dfa == null) continue; // powerset cap ⇒ Pike serves; not under test
+        // This differential targets the DFA-vs-Pike seam; a class-run shape
+        // would answer both calls from the kernel and test nothing here (it
+        // has its own oracle + integration differentials).
+        re.classrun = null;
         var sim = try Regex.Sim.init(a, &re);
         defer sim.deinit();
 
@@ -259,7 +267,10 @@ test "dfa: docMatch single-pass scan ≡ per-line Pike over multi-line buffers" 
         var g = Gen{ .r = r, .buf = &pat, .a = a };
         try g.pattern();
 
-        var re = Regex.compile(a, pat.items) catch continue; // skip rare BadPattern
+        // `force_dfa`: class-run-shaped random patterns keep DFA coverage here
+        // (this differential calls `re.dfa.?.docMatch` directly, so the live
+        // classrun dispatch never interposes).
+        var re = Regex.compileOpts(a, pat.items, .{ .force_dfa = true }) catch continue; // skip rare BadPattern
         defer re.deinit();
         if (re.dfa == null) continue; // powerset cap ⇒ Pike serves; not under test
         var sim = try Regex.Sim.init(a, &re);

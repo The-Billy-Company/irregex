@@ -47,6 +47,9 @@ pub const ByteSet = struct {
     pub fn has(self: *const ByteSet, b: u8) bool {
         return B64.get(&self.bits, b);
     }
+    pub fn remove(self: *ByteSet, b: u8) void {
+        B64.clear(&self.bits, b);
+    }
     pub fn negate(self: *ByteSet) void {
         for (&self.bits) |*w| w.* = ~w.*;
     }

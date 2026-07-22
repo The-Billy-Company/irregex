@@ -637,3 +637,148 @@ test "regex: multiline \\A/\\z are BUFFER anchors while ^/$ hold at every line" 
     try std.testing.expect(try bufMatches("\\<beta\\>", "alpha\nbeta\n"));
     try std.testing.expect(!try bufMatches("\\<eta", "alpha\nbeta\n"));
 }
+
+// ── SIMD class-run dispatch: kernel path ≡ Pike VM, all three entries ────────
+
+/// The dense-class family the kernel exists for, plus shapes that must have
+/// DECLINED at compile (their presence here proves dispatch stays sound when
+/// `classrun` is null and when it's live side by side).
+const classrun_slate = [_][]const u8{
+    "[a-z]+",   "[0-9]{4}",       "[0-9a-f]{2,}",      "\\w{3,8}",
+    "x{2,4}",   "\\d+",           "[A-Za-z0-9_]{5,}",  "aa",
+    "([a-z])+", "(foo)?[0-9]{3}", "[0-9]{4}|[0-9]{2}", "[a-z]+[0-9]",
+    "^[a-z]+",  "\\b\\w{4}",
+};
+
+test "regex/classrun: lineMatch (kernel dispatch) ≡ lineMatchPike on the dense-class slate" {
+    var prng = std.Random.DefaultPrng.init(0xc1a5_5817);
+    const rnd = prng.random();
+    var buf: [300]u8 = undefined;
+    const alphabet = "abcxyzXYZ0189af_ .-\t";
+
+    for (classrun_slate) |pat| {
+        var re = try Regex.compile(std.testing.allocator, pat);
+        defer re.deinit();
+        var sim = try Regex.Sim.init(std.testing.allocator, &re);
+        defer sim.deinit();
+
+        for (0..300) |_| {
+            const len = rnd.intRangeAtMost(usize, 0, buf.len);
+            const line = buf[0..len];
+            for (line) |*b| b.* = alphabet[rnd.intRangeAtMost(usize, 0, alphabet.len - 1)];
+            try std.testing.expectEqual(re.lineMatchPike(&sim, line), re.lineMatch(&sim, line));
+        }
+    }
+}
+
+test "regex/classrun: unicode \\w projection defers on high bytes instead of lying" {
+    var re = try Regex.compileOpts(std.testing.allocator, "\\w{3,}", .{ .unicode = true });
+    defer re.deinit();
+    var sim = try Regex.Sim.init(std.testing.allocator, &re);
+    defer sim.deinit();
+    // Pure-ASCII verdicts are final in the kernel — and correct.
+    try std.testing.expect(re.lineMatch(&sim, "abc"));
+    try std.testing.expect(!re.lineMatch(&sim, "a b c"));
+    // é (0xC3 0xA9) is a word codepoint: `wéb` is 3 word chars. The kernel
+    // sees only 2 ASCII members + high bytes ⇒ `.unproven` ⇒ the engine must
+    // answer true. A kernel that returned its own miss would fail here.
+    try std.testing.expect(re.lineMatch(&sim, "w\xc3\xa9b"));
+    // And the engine's miss survives the detour: ° (0xC2 0xB0) is not \w.
+    try std.testing.expect(!re.lineMatch(&sim, "a\xc2\xb0b"));
+}
+
+test "regex/classrun: docMatch one-pass buffer scan ≡ per-line loop" {
+    var prng = std.Random.DefaultPrng.init(0xd0c_5ca9);
+    const rnd = prng.random();
+    var buf: [600]u8 = undefined;
+    const alphabet = "ab09 _\n\n"; // newline-heavy: line-boundary runs abound
+
+    for ([_][]const u8{ "[a-z]+", "[0-9]{3}", "\\w{5,}", "[0-9a-f]{2,}" }) |pat| {
+        var re = try Regex.compile(std.testing.allocator, pat);
+        defer re.deinit();
+        var sim = try Regex.Sim.init(std.testing.allocator, &re);
+        defer sim.deinit();
+
+        for (0..200) |_| {
+            const len = rnd.intRangeAtMost(usize, 0, buf.len);
+            const doc = buf[0..len];
+            for (doc) |*b| b.* = alphabet[rnd.intRangeAtMost(usize, 0, alphabet.len - 1)];
+            // Oracle: the per-line Pike loop over the same line model.
+            var want = false;
+            var i: usize = 0;
+            while (i < doc.len) {
+                const end = std.mem.indexOfScalarPos(u8, doc, i, '\n') orelse doc.len;
+                if (re.lineMatchPike(&sim, doc[i..end])) {
+                    want = true;
+                    break;
+                }
+                i = end + 1;
+            }
+            try std.testing.expectEqual(want, re.docMatch(&sim, doc));
+        }
+    }
+}
+
+test "regex/classrun: a run split by a newline must NOT count across lines" {
+    var re = try Regex.compile(std.testing.allocator, "[a-z]{6}");
+    defer re.deinit();
+    var sim = try Regex.Sim.init(std.testing.allocator, &re);
+    defer sim.deinit();
+    // 3+3 letters around a `\n`: 6 consecutive set bytes in the raw buffer
+    // ONLY if `\n` stayed in the set — the per-line compile removed it.
+    try std.testing.expect(!re.docMatch(&sim, "abc\ndef"));
+    try std.testing.expect(re.docMatch(&sim, "abc\nqwerty"));
+}
+
+test "regex/classrun: matchSpan (kernel window rule) ≡ Pike span iteration" {
+    var prng = std.Random.DefaultPrng.init(0x59a2_c1a5);
+    const rnd = prng.random();
+    var buf: [300]u8 = undefined;
+    const alphabet = "abcxyzXYZ0189af_ .-\t";
+
+    // Span-eligible shapes (greedy, lazy, bounded, capture-wrapped, mixed
+    // quantifier chains) plus decliners (alternation, anchors, boundaries,
+    // literal+class) — the latter prove dispatch falls back to Pike cleanly.
+    const slate = [_][]const u8{
+        "[a-z]+",            "[0-9]{4}",    "[0-9a-f]{2,}", "\\w{3,8}",
+        "x{2,4}",            "x{2,4}?",     "\\d+?",        "([a-z])+",
+        "\\w\\w+",           "[a-z]?[a-z]", "\\d{2}",       "[a-z]{2,5}?",
+        "[0-9]{4}|[0-9]{2}", "^[a-z]+",     "\\b\\w{4}",    "[a-z]+[0-9]",
+    };
+
+    for (slate) |pat| {
+        var re = try Regex.compile(std.testing.allocator, pat);
+        defer re.deinit();
+        // The Pike oracle: same compiled program with the kernel span gate
+        // cleared (value copy; the original still owns every allocation).
+        var pike = re;
+        if (pike.classrun) |*cr| cr.span = false;
+        var ss = try Regex.SpanSim.init(std.testing.allocator, &re);
+        defer ss.deinit();
+
+        for (0..300) |_| {
+            const len = rnd.intRangeAtMost(usize, 0, buf.len);
+            const line = buf[0..len];
+            for (line) |*b| b.* = alphabet[rnd.intRangeAtMost(usize, 0, alphabet.len - 1)];
+            // Full non-overlapping iteration, not just the first span.
+            var from: usize = 0;
+            while (true) {
+                const got = re.matchSpan(&ss, line, from);
+                const want = pike.matchSpan(&ss, line, from);
+                try std.testing.expectEqual(want, got);
+                const sp = got orelse break;
+                from = if (sp.end == sp.start) sp.start + 1 else sp.end;
+                if (from > line.len) break;
+            }
+        }
+    }
+}
+
+test "regex/classrun: multiline keeps \\n-crossing runs when the set admits them" {
+    // Under -U the buffer IS the haystack: `[\s\S]` includes `\n`, so a run
+    // may legitimately cross lines.
+    try std.testing.expect(try bufMatches("[a-z\\n]{6}", "abc\ndef"));
+    // But a set without `\n` still breaks at the boundary.
+    try std.testing.expect(!try bufMatches("[a-z]{6}", "abc\ndef"));
+    try std.testing.expect(try bufMatches("[a-z]{6}", "abc\nqwerty"));
+}
