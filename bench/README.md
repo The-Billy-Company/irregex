@@ -28,7 +28,7 @@ One concern per folder:
 | [`rgsuite/`](rgsuite/README.md)       | The `gist rg` ⇄ real-ripgrep drop-in proof — mined `rgtest!` correctness replay plus the performance scoreboard.                                                                                                                                         |
 | [`matrix/`](matrix/README.md)         | The **CLI-shape admission matrix** — one machine-readable row per supported shape (mode × flags × walk-scope × emit × selectivity), driven as real argv three ways (gist-idx / gist-noidx / rg) with a parity-first gate + per-shape statistical floors. |
 | [`portcert/`](portcert/README.md)     | Layer B — port-optimality: cross-compiled `llvm-mca` static microarchitectural bound on gist's two hot loops, drift-guarded against production, plus Layer B′ — the same probes **measured on this machine** under the PMU (`gist-portbound`).           |
-| [`roofline/`](roofline/README.md)     | Layer C — roofline: this machine's measured STREAM read-bandwidth ceiling vs gist's real scan throughput.                                                                                                                                                |
+| [`roofline/`](roofline/README.md)     | Layer C — roofline headroom: STREAM roof plus matched dual-window, contiguous-production, and corpus-production stages.                                                                                                                                   |
 | [`lowerbound/`](lowerbound/README.md) | Layer D â algorithmic lower bound: a fail-closed structural audit proving gist's verify touches the information-theoretic floor of candidate bytes.                                                                                                      |
 | [`relate/`](relate/README.md)         | The **relate** proof (`relate-knn`) — the real cross-parse / LZJD / pivot engine run as a k-NN classifier; the measured basis for the compression-vs-embeddings verdict (`spikes/compression-vs-embeddings/`).                                    |
 | [`codex/`](codex/README.md)           | The **self-index** at-scale proof (`codex-scale`) — the real `src/index/codex/` FM-index over ~187MB of repo source: entropy-bound space vs gzip/bzip2/zstd/xz, flat-in-n count latency, byte-exact restore from the index alone.                        |
@@ -138,7 +138,7 @@ parity proves `--include-zero` is correct; it is not a Layer-A speed claim.
 | ----- | --------------------------------------------------------------------- | -------------- |
 | **A** | empirical dominance over ripgrep on registered workloads, fail-closed | ✅ implemented |
 | **B** | port-optimality — hot loop matches the static µarch bound (llvm-mca)  | ✅ implemented |
-| **C** | roofline — cycles/byte sits on the hardware ceiling                   | ✅ implemented |
+| **C** | roofline — measures and decomposes distance from the hardware roof    | ✅ implemented |
 | **D** | algorithmic lower bound — matches the information-theoretic floor     | ✅ implemented |
 
 Every layer writes into the same `.local/gist-verify/CERTIFICATE.md`. Layer A
