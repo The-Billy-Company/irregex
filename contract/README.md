@@ -4,6 +4,9 @@ doc_radar:
     - description: "unified search contract keeps request options + transports + relate verbs"
       file: pkg/kernels/irregex/contract/search_api.toml
       contains: ["[request_options]", "[transports]", "[irregex.verbs]", "abi_version"]
+    - description: "performance-evidence contract keeps its regimes + competitors + claims"
+      file: pkg/kernels/irregex/contract/performance_evidence.toml
+      contains: ["[[regime]]", "[competitors]", "[[claim]]", "[provenance]"]
 ---
 
 # `contract/` — unified search-API contract
@@ -47,3 +50,18 @@ an interface change — review it like an ABI bump, not a casual edit.
 Flag _parsing_ still lives in
 [`../src/surface/exec/cold/argv/args.zig`](../src/surface/exec/cold/argv/args.zig);
 each `flag = …` here names the rg-parity flag a request option lowers into.
+
+## `performance_evidence.toml` — the evidence contract
+
+[`performance_evidence.toml`](performance_evidence.toml) is the source of truth
+for every published Gist **operational-envelope** claim, the way `search_api.toml`
+is for correctness. It freezes the measurement regimes (lifecycle / resource /
+scale / concurrency, with parity as a build-sanity precondition), the corpora, the
+required competitors, the provenance every bundle must carry, and the publication
+rule (clean tree only) — plus the `[[claim]]` rows that bind a prose number to one
+artifact. Cold/warm query dominance is **not** re-timed here; that is the
+Certificate of Optimality's job (`../bench/certify/`). The evaluator that reads it
+lives in [`../bench/evaluate/`](../bench/evaluate/README.md);
+`make gist-evaluate-verify` holds it fail-closed. Absolute latency is
+machine-specific and never gated across machines — only the index/corpus footprint
+ratio and scaling shape are.
