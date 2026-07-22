@@ -83,6 +83,57 @@ pub fn skipClass(p: []const u8, i: usize) usize {
     return p.len;
 }
 
+/// Index just past a `{…}` / `<…>` / `'…'` delimited run beginning at `p[at]`
+/// (the opener). Unterminated ⇒ end of pattern. Used to skip the interior of a
+/// braced escape (`\x{…}`, `\p{…}`, `\g<…>`) whose bytes must never leak into a
+/// required-literal run.
+fn skipDelimited(p: []const u8, at: usize, close: u8) usize {
+    var j = at + 1;
+    while (j < p.len and p[j] != close) j += 1;
+    return if (j < p.len) j + 1 else p.len;
+}
+
+/// Index just past a backslash-escape atom beginning at `p[i]=='\\'`, for the
+/// escapes that are NOT a single fixed byte (those go through `escapedLiteral`).
+/// It skips the WHOLE atom — the two-byte shorthands (`\d \w \s \b …`), the
+/// braced/bracketed forms (`\x{…}` `\o{…}` `\p{…}` `\P{…}` `\N{…}` `\g{…}` `\g<…>`
+/// `\k<…>` `\k'…'`), `\xHH`, `\cX`, and numeric back/octal refs — so the caller
+/// can fold a following quantifier instead of scanning the escape's interior
+/// bytes as literals (the over-claim that silently elides matching files).
+fn skipEscape(p: []const u8, i: usize) usize {
+    if (i + 1 >= p.len) return p.len; // dangling backslash
+    var j = i + 2;
+    switch (p[i + 1]) {
+        'x', 'o' => {
+            if (j < p.len and p[j] == '{') return skipDelimited(p, j, '}');
+            if (p[i + 1] == 'x') { // \xHH — up to two hex digits (\x alone is NUL)
+                var n: usize = 0;
+                while (n < 2 and j < p.len and std.ascii.isHex(p[j])) : (n += 1) j += 1;
+            }
+            return j;
+        },
+        'p', 'P', 'N' => return if (j < p.len and p[j] == '{') skipDelimited(p, j, '}') else j,
+        'c' => return if (j < p.len) j + 1 else j, // \cX control letter
+        'g', 'k' => {
+            if (j < p.len) switch (p[j]) {
+                '{' => return skipDelimited(p, j, '}'),
+                '<' => return skipDelimited(p, j, '>'),
+                '\'' => return skipDelimited(p, j, '\''),
+                else => {
+                    while (j < p.len and (std.ascii.isDigit(p[j]) or p[j] == '-')) j += 1;
+                    return j;
+                },
+            };
+            return j;
+        },
+        '1'...'9' => { // backreference / octal — a run of digits
+            while (j < p.len and std.ascii.isDigit(p[j])) j += 1;
+            return j;
+        },
+        else => return j, // simple two-byte escape
+    }
+}
+
 /// Index just past a balanced group beginning at `p[i]=='('` (nesting-, class-,
 /// and escape-aware). A group is treated as opaque: it may be optional,
 /// alternated, or a zero-width assertion, so it contributes no required bytes.
@@ -187,8 +238,10 @@ pub fn required(a: std.mem.Allocator, pattern: []const u8, caseless: bool) std.m
                 if (escapedLiteral(pattern[i + 1])) |b| {
                     i = try emitLiteral(&r, b, pattern, i + 2);
                 } else {
-                    try r.flush(); // \d \w \b \1 … — not a fixed byte
-                    i += 2;
+                    try r.flush(); // \d \w \b \1 \x{..} \p{..} … — not a fixed byte
+                    // Skip the whole escape atom AND any quantifier bound to it,
+                    // so a `{n,m}` interval's digits never scan as required bytes.
+                    i = foldQuantAfter(pattern, skipEscape(pattern, i));
                 }
             },
             else => i = try emitLiteral(&r, c, pattern, i + 1),

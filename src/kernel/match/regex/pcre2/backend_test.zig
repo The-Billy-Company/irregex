@@ -280,6 +280,36 @@ test "required-literal: conservative on ambiguity (never over-claims)" {
     try expectRequired("a[bc]defg", "defg"); // class breaks; tail survives
 }
 
+test "required-literal: a bound quantifier on a class shorthand claims nothing (regression)" {
+    // The atoms `\s`/`\w`/`\d` match a CLASS, so nothing in `\s{1,2}` is a fixed
+    // required byte. The extractor once scanned the interval's digits (`1`,`,`,`2`)
+    // as literals → the bogus required run "1,2" (≥ the 3-byte floor), so the
+    // trigram/in-file prefilter elided every line and `-P '\s{1,2}'` matched
+    // NOTHING — fast but wrong. Every one of these MUST be "" (no over-claim).
+    try expectRequired("\\s{1,2}", ""); // the exact reported false-negative
+    try expectRequired("\\w{1,2}", "");
+    try expectRequired("\\d{1,2}", "");
+    try expectRequired("\\s{2,2}", "");
+    try expectRequired("\\w{10,20}", ""); // wide interval: "10,20" is 5 bytes
+    try expectRequired("\\d{3,4}\\s{1,2}", ""); // adjacent bound shorthands
+    // A real literal AFTER a bound-quantified shorthand still survives — the
+    // quantifier is folded, its digits never join the run.
+    try expectRequired("\\w{2,3}foobar", "foobar");
+    try expectRequired("id=\\d{4,8}done", "done"); // "id=" (3) and "done" (4) are separate runs; longer wins
+}
+
+test "required-literal: braced/multi-char escapes never leak their interior (over-claim floor)" {
+    // A braced escape denotes ONE codepoint/byte; its interior name/hex is not a
+    // required literal. Scanning it would over-claim (e.g. "Latin"/"2028") and
+    // silently elide matching files.
+    try expectRequired("\\p{Latin}", ""); // matches one Latin letter, not "Latin"
+    try expectRequired("\\x{2028}", ""); // one codepoint U+2028, not "2028"
+    try expectRequired("\\p{L}{2,4}", ""); // braced escape + bound quantifier
+    try expectRequired("\\x41\\x42\\x43", ""); // \xHH bytes are not their hex spelling
+    // A genuine literal tail past a braced escape is still required.
+    try expectRequired("\\p{Lu}SECTION", "SECTION");
+}
+
 test "required-literal: lookaround/backreferences prefilter soundly (the PCRE-race premise)" {
     // gist beats every PCRE competitor on this class BECAUSE it prunes the read
     // set on a sound required literal these lookaround patterns still carry (the

@@ -252,7 +252,7 @@ test "classify: any unrecognized flag hands the whole request to cold" {
     for ([_][]const []const u8{
         &.{ "-l", "-C", "2", "needle" }, // context
         &.{ "-l", "--json", "needle" }, // structured output
-        &.{ "-l", "-g", "*.zig", "needle" }, // glob scope
+        &.{ "-l", "--iglob", "*.zig", "needle" }, // case-insensitive glob (not the includes model)
         &.{ "-l", "--hidden", "needle" }, // hidden files
     }) |argv| {
         try std.testing.expectError(request.ClassifyError.Unsupported, ok(argv));
