@@ -59,6 +59,9 @@ pub const crest_sidecar = @import("corpus/index/crest/sidecar.zig");
 // surfaces are re-exported at the root for the C-ABI / library consumers.
 pub const regex = @import("kernel/match/regex/linear/core.zig");
 pub const regex_dfa = @import("kernel/match/regex/linear/dfa.zig");
+/// The engine-neutral match seam (`Matcher`) the presentation layer programs
+/// to — re-exported for the bench lab's isolated output-path profiles.
+pub const matcher = @import("kernel/match/regex/linear/matcher.zig");
 
 // ── ranking ──
 pub const rank = @import("kernel/rank/rank.zig");
@@ -67,6 +70,24 @@ pub const signals = @import("kernel/rank/signals.zig");
 // ── byte-level match execution ──
 pub const simd = @import("kernel/match/scan/simd.zig");
 pub const verify = @import("kernel/match/scan/verify.zig");
+
+// ── the presentation layer (rg-shaped output; -n/-v/-o/-c frames) ──
+// The `Emitter` that turns one file's matches into ripgrep-shaped bytes, and
+// the `Opts` flag record that steers it. Re-exported so the bench lab can
+// profile individual output-path functions (line-number formatting, the
+// invert selection loop) in isolation.
+pub const emit = @import("surface/exec/cold/emit/output.zig");
+/// The `rg --json` record-stream encoder — re-exported so the bench lab can
+/// profile the per-record hot path (`pathData` cache, `writeUint`, `asciiOnly`)
+/// over the real corpus in isolation, the same way it profiles the text
+/// Emitter's line-number itoa and invert loop.
+pub const emit_json = @import("surface/exec/cold/emit/json.zig");
+pub const argv = @import("surface/exec/cold/argv/args.zig");
+/// The `-r`/`--replace` capture seam (`Caps`/`Captures`) — re-exported so the
+/// bench lab can profile the replacement template expander (`emit.expandInto`)
+/// against a naive reference in isolation, the same way it profiles the
+/// line-number itoa and the invert loop.
+pub const captures = @import("kernel/match/regex/compile/captures.zig");
 
 // ── corpus + freshness ──
 pub const corpus = @import("corpus/tree/corpus.zig");
@@ -110,6 +131,8 @@ pub const compose = struct {
     pub const family = @import("kernel/compose/family.zig");
     pub const provenance = @import("kernel/compose/provenance.zig");
     pub const regions = @import("kernel/compose/regions.zig");
+    pub const lexspan = @import("kernel/compose/lexspan.zig");
+    pub const blast = @import("kernel/compose/blast.zig");
 };
 
 // ── codex: the compressed self-index (the book that IS its own index) ──
@@ -227,6 +250,10 @@ pub const commands = struct {
     pub const compose_context = @import("surface/face/irregex/context.zig");
     pub const compose_family = @import("surface/face/irregex/family.zig");
     pub const compose_provenance = @import("surface/face/irregex/provenance.zig");
+    /// The composed `blast` verb: a live symbol blast radius for editing agents
+    /// (seed → dependents/dependencies → twins/ripple → comments), computed from
+    /// current bytes with no precomputed graph.
+    pub const compose_blast = @import("surface/face/irregex/blast.zig");
     pub const compose_schema = @import("surface/face/irregex/schema.zig");
     /// The CLI's warm fast path — dial the daemon for an eligible query, emit
     /// byte-identically to cold, else fall back (`attempt`).
@@ -405,6 +432,8 @@ test {
     _ = @import("kernel/compose/family.zig"); // compose: fork families / echoes inside the exact filter
     _ = @import("kernel/compose/provenance.zig"); // compose: quote attribution re-verified against current bytes
     _ = @import("kernel/compose/regions.zig"); // compose: exact-hit functions / match windows as comparison units
+    _ = @import("kernel/compose/lexspan.zig"); // compose: shared comment/code/string span lexer (regions + comment-scope + blast)
+    _ = @import("kernel/compose/blast.zig"); // compose: live symbol blast radius (seed → tiers → comments)
     _ = @import("corpus/index/atlas/atlas.zig"); // relate warm tier: persisted kinship atlas (save/parse/fold)
     _ = @import("corpus/index/atlas/atlas_test.zig"); // atlas round-trip, fail-closed parse, freshness-fold semantics
     _ = @import("corpus/index/frag/frag.zig"); // concept warm tier: persisted fragment silhouettes (save/parse/fold)
@@ -451,6 +480,7 @@ test {
     _ = @import("surface/face/irregex/context.zig"); // composed `context` driver body
     _ = @import("surface/face/irregex/family.zig"); // composed `family` driver body
     _ = @import("surface/face/irregex/provenance.zig"); // composed `provenance` driver body
+    _ = @import("surface/face/irregex/blast.zig"); // composed `blast` driver body (budget accountant + render)
     _ = @import("surface/face/irregex/schema.zig"); // `irregex --schema` manifest (JSON-validity test)
     _ = @import("surface/face/irregex/shared.zig"); // composed CLI shared plumbing
     _ = @import("surface/exec/cold/engine/serial.zig"); // the unified engine (rgsuite parity drop-in)

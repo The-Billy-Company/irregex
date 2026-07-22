@@ -29,6 +29,46 @@ pub fn isWordByte(c: u8) bool {
     return std.ascii.isAlphanumeric(c) or c == '_';
 }
 
+/// The "00".."99" two-digit table `writeDecimal` writes a pair at a time (the
+/// classic Andrei Alexandrescu / rust-`itoa` scheme) — built once at comptime.
+const dec2: [200]u8 = blk: {
+    var t: [200]u8 = undefined;
+    var i: usize = 0;
+    while (i < 100) : (i += 1) {
+        t[i * 2] = '0' + @as(u8, i / 10);
+        t[i * 2 + 1] = '0' + @as(u8, i % 10);
+    }
+    break :blk t;
+};
+
+/// Unsigned integer → base-10 ASCII, into the tail of `buf`, returning the
+/// written slice. Byte-identical to `std.fmt.bufPrint("{d}", .{v})` (plain
+/// decimal, no sign, no leading zero) but specialized: two digits per iteration
+/// off a comptime table, so it halves the divisions std's generic `formatInt`
+/// pays and skips its base/case/fill machinery. This is the `-n` (and
+/// `--column`/`-b`) hot path — one call per emitted line. `buf` must be ≥ 20
+/// bytes (the widest u64 is 20 digits); the emitter's locators pass a `[20]u8`.
+pub fn writeDecimal(buf: []u8, v: u64) []u8 {
+    var n = v;
+    var i: usize = buf.len;
+    while (n >= 100) : (n /= 100) {
+        const r = (n % 100) * 2;
+        i -= 2;
+        buf[i] = dec2[r];
+        buf[i + 1] = dec2[r + 1];
+    }
+    if (n < 10) {
+        i -= 1;
+        buf[i] = '0' + @as(u8, @intCast(n));
+    } else {
+        const r = n * 2;
+        i -= 2;
+        buf[i] = dec2[@intCast(r)];
+        buf[i + 1] = dec2[@intCast(r + 1)];
+    }
+    return buf[i..];
+}
+
 /// ripgrep `-w`: a match span `[s,e)` is a word match iff bounded by a non-word
 /// CODEPOINT (or the line edge) on BOTH sides. Unlike `\b(pat)\b` this does not
 /// require the match to contain word chars, so a punctuation match (e.g. `.`
@@ -46,6 +86,18 @@ pub fn wordOk(unicode: bool, line: []const u8, s: usize, e: usize) bool {
 /// rule), a word-rejected span advances to its end. THE span-iteration loop —
 /// the text emitter and the `--json` stream both step through it, so the two
 /// can never drift on which spans count as "a match".
+/// Is the literal set prefix-free — no literal a prefix of another? Then at
+/// most one literal matches at any offset (two matching one start ⟺ one is a
+/// prefix of the other), which is exactly the condition under which the
+/// NFA-free `litNextSpan` reproduces `matchSpan`'s leftmost-first spans. O(k²)
+/// over a ≤8-literal set, computed once per file.
+pub fn prefixFree(lits: []const []const u8) bool {
+    for (lits, 0..) |a, i| for (lits, 0..) |b, j| {
+        if (i != j and a.len <= b.len and std.mem.eql(u8, b[0..a.len], a)) return false;
+    };
+    return true;
+}
+
 pub fn nextSpan(re: *const Matcher, ss: *Matcher.SpanSim, o: Opts, s: []const u8, from: *usize) ?Matcher.Span {
     while (from.* <= s.len) {
         const sp = re.matchSpan(ss, s, from.*) orelse return null;
@@ -75,8 +127,12 @@ pub fn expandInto(a: std.mem.Allocator, caps: *const Caps, buf: *std.ArrayList(u
     var i: usize = 0;
     while (i < tmpl.len) {
         if (tmpl[i] != '$') {
-            buf.append(a, tmpl[i]) catch oom();
-            i += 1;
+            // Copy the whole literal run up to the next `$` in one appendSlice (a
+            // template is mostly literal between group refs) — vectorized scan,
+            // byte-identical to a per-char walk.
+            const st = i;
+            i = std.mem.indexOfScalarPos(u8, tmpl, i, '$') orelse tmpl.len;
+            buf.appendSlice(a, tmpl[st..i]) catch oom();
             continue;
         }
         if (i + 1 < tmpl.len and tmpl[i + 1] == '$') {
@@ -107,14 +163,14 @@ pub fn expandInto(a: std.mem.Allocator, caps: *const Caps, buf: *std.ArrayList(u
     }
 }
 
-/// `--max-columns-preview` cut point: the largest byte index ≤ `cols` that lands
-/// on a UTF-8 char boundary (ripgrep counts graphemes; byte-accurate for ASCII,
-/// and never splits a multi-byte scalar for the rest).
 /// Byte length of a line's `--trim`-able blank prefix (spaces and tabs).
 fn blankPrefix(s: []const u8) usize {
     return s.len - std.mem.trimStart(u8, s, " \t").len;
 }
 
+/// `--max-columns-preview` cut point: the largest byte index ≤ `cols` that lands
+/// on a UTF-8 char boundary (ripgrep counts graphemes; byte-accurate for ASCII,
+/// and never splits a multi-byte scalar for the rest).
 fn previewEnd(s: []const u8, cols: usize) usize {
     var end = @min(cols, s.len);
     while (end > 0 and end < s.len and (s[end] & 0xC0) == 0x80) end -= 1;
@@ -177,6 +233,44 @@ pub const Emitter = struct {
         return needle.in(line);
     }
 
+    /// Per-line candidate mask for a pure-literal pattern — rg's Teddy prefilter
+    /// at line grain. ONE fused whole-buffer `indexOfAnyPos` sweep marks only the
+    /// lines around literal hits, jumping non-matching regions at SIMD speed, so
+    /// the per-line classify below skips ~every non-candidate without an engine
+    /// run — the win a needle-less alternation (`function|const|…`) otherwise
+    /// can't get (no single required literal to gate on). `re.lits` is a match
+    /// EQUIVALENCE (a line matches ⟺ it holds one literal — `analysis.pureLiterals`,
+    /// empty under `-i`/`-w`/`-U`), so the mask is a SUPERSET of the true match set
+    /// (a hit landing in a line's trailing `\r`/terminator maps to that line —
+    /// harmless: the caller still confirms each candidate with the engine) and
+    /// never a subset, keeping output byte-identical. Returns null (caller keeps
+    /// its per-line path) unless the shortcut is sound & profitable: pure literals,
+    /// no single needle already gating, not inverted (a `-v` match LACKS the
+    /// literals), not `--stop-on-nonmatch` (which acts on non-matches mid-stream),
+    /// and a materialized body.
+    fn litCandidates(self: *Emitter, lines: []const []const u8) ?[]const bool {
+        if (self.needle != null or self.o.invert or self.o.stop_on_nonmatch) return null;
+        if (lines.len == 0 or self.body_end <= self.base) return null;
+        const lits = self.re.lits();
+        if (lits.len == 0) return null;
+        const body = @as([*]const u8, @ptrFromInt(self.base))[0 .. self.body_end - self.base];
+        const cand = self.a.alloc(bool, lines.len) catch return null;
+        @memset(cand, false);
+        var lc: usize = 0;
+        var from: usize = 0;
+        // Hits and lines are both sorted by offset, so the line cursor only
+        // advances — O(lines + hits) total. A literal carries no newline, so a
+        // hit `p` lands within one line's span; map it, mark it, then resume at
+        // the next line's start (skipping the rest of the hit's line).
+        while (simd.indexOfAnyPos(body, from, lits)) |p| {
+            while (lc + 1 < lines.len and @intFromPtr(lines[lc + 1].ptr) - self.base <= p) lc += 1;
+            cand[lc] = true;
+            if (lc + 1 >= lines.len) break;
+            from = @intFromPtr(lines[lc + 1].ptr) - self.base;
+        }
+        return cand;
+    }
+
     /// Absolute byte offset of a slice (line or match span) within the file.
     fn offOf(self: *Emitter, slice: []const u8) usize {
         return @intFromPtr(slice.ptr) - self.base;
@@ -215,13 +309,19 @@ pub const Emitter = struct {
     fn prefix(self: *Emitter, path: []const u8, lineno: usize, col: usize, byteoff: usize, is_match: bool) void {
         const sep = self.fieldSep(is_match);
         if (self.show_name) self.writePath(path, is_match);
+        var buf: [20]u8 = undefined;
         if (self.o.line_num) {
-            var buf: [20]u8 = undefined;
-            self.paint(palette.line_on, std.fmt.bufPrint(&buf, "{d}", .{lineno}) catch die("line number too long\n", .{}));
+            self.paint(palette.line_on, writeDecimal(&buf, lineno));
             self.paint(palette.sep_on, sep);
         }
-        if (self.o.column and is_match and col != 0) self.out.print(self.a, "{d}{s}", .{ col, sep }) catch oom();
-        if (self.o.byte_offset) self.out.print(self.a, "{d}{s}", .{ byteoff, sep }) catch oom();
+        if (self.o.column and is_match and col != 0) {
+            self.add(writeDecimal(&buf, col));
+            self.add(sep);
+        }
+        if (self.o.byte_offset) {
+            self.add(writeDecimal(&buf, byteoff));
+            self.add(sep);
+        }
     }
 
     /// Append a line's text honoring `--trim` (drop leading blanks) and
@@ -468,8 +568,24 @@ pub const Emitter = struct {
         // boolean DFA. Only `-w` pays for the SpanSim scratch.
         var wss: ?Matcher.SpanSim = if (o.word) (Matcher.SpanSim.init(self.a, self.re) catch null) else null;
         defer if (wss) |*s| s.deinit();
+        // `-v` with no context/count/files-only degenerates to "emit every line
+        // the gate+engine rejects, in order, col 0" — the whole two-pass machinery
+        // below (idx list, a lines.len bool grid + memset, the windowStart re-walk,
+        // the always-0 firstCol) collapses to one streamed pass. Byte-identical
+        // (self-checked in flagbench + the rg parity suite); the excluded flags keep
+        // their existing branches untouched.
+        if (o.invert and o.before == 0 and o.after == 0 and
+            !o.count_only and !o.count_matches and !o.files_only and
+            !o.stop_on_nonmatch and !o.passthru)
+            return self.invertPlain(path, lines, sim, &wss);
+        // Whole-buffer literal prefilter (see `litCandidates`): a non-candidate
+        // line provably cannot match, so skip it before `mview`/the engine.
+        // `--stop-on-nonmatch` disables the mask, so a non-candidate here is a
+        // plain non-match (never mid-stream stop bookkeeping).
+        const cand = self.litCandidates(lines);
         var idx: std.ArrayList(usize) = .empty;
         for (lines, 0..) |line, k| {
+            if (cand) |c| if (!c[k]) continue;
             const mv = self.mview(line);
             // A required-literal gate (when the caller derived one): a line
             // without the literal bytes cannot match, and a SIMD memmem is an
@@ -511,6 +627,28 @@ pub const Emitter = struct {
         return idx.items.len;
     }
 
+    /// `-v` with no context window (`-A/-B/-C`), count, or `-l`: the one-pass
+    /// invert emit. A line the required-literal gate or the engine REJECTS is a
+    /// non-match, so under invert it prints — framed as a match (`:`) with its
+    /// own line number and column 0 (a non-matching line has no span, so the
+    /// two-pass path's `firstCol` is always 0 here). `-m` caps printed lines.
+    /// Returns that count. Byte-identical to the general `file` invert branch,
+    /// without its per-file `idx` list and `lines.len` bool grid.
+    fn invertPlain(self: *Emitter, path: []const u8, lines: []const []const u8, sim: *Matcher.Sim, wss: *?Matcher.SpanSim) usize {
+        const o = self.o;
+        var printed: usize = 0;
+        for (lines, 0..) |line, k| {
+            const mv = self.mview(line);
+            const hit = self.lineCanMatch(mv) and
+                (if (wss.*) |*s| self.lineHitWord(s, mv) else self.re.lineMatch(sim, mv));
+            if (hit) continue; // invert: a matching line is excluded
+            self.row(path, k + 1, 0, self.offOf(line), line, true);
+            printed += 1;
+            if (o.max_per_file != 0 and printed >= o.max_per_file) break;
+        }
+        return printed;
+    }
+
     /// `--passthru`: emit EVERY line of the file (matching lines framed as matches,
     /// the rest as context) — ripgrep's "context of infinity". Returns the count of
     /// matching lines (for the exit code); output is written regardless of matches.
@@ -526,10 +664,13 @@ pub const Emitter = struct {
         defer if (css) |*s| s.deinit();
         var mss: ?Matcher.SpanSim = if (o.only_matching) (Matcher.SpanSim.init(self.a, self.re) catch null) else null;
         defer if (mss) |*s| s.deinit();
+        // `--passthru` prints every line, so the prefilter can't skip lines — but
+        // a non-candidate is a proven non-match, so it still spares the engine.
+        const cand = self.litCandidates(lines);
         var matched: usize = 0;
         for (lines, 0..) |line, k| {
             const mv = self.mview(line);
-            const is_m = self.lineCanMatch(mv) and
+            const is_m = (if (cand) |c| c[k] else self.lineCanMatch(mv)) and
                 (if (wss) |*s| self.lineHitWord(s, mv) else self.re.lineMatch(sim, mv));
             if (is_m) matched += 1;
             // --passthru -o: a matching line contributes each match span (only-
@@ -571,6 +712,36 @@ pub const Emitter = struct {
             self.add(self.o.outTerm());
             n += 1;
             last_end = span.end;
+        }
+        return n;
+    }
+
+    /// Prefix-free pure-literal span at/after `from` — the NFA-free twin of
+    /// `nextSpan` for `-o`/`--count-matches`/`--column` on the fast path. When
+    /// no literal is a prefix of another (`prefixFree`), at most one literal
+    /// matches at any offset, so leftmost-first collapses to "nearest literal,
+    /// span `[p, p+len)`": one `indexOfAnyPos` jump, then identify the (unique)
+    /// literal at `p`. Byte-identical to `matchSpan` for such a set, with no
+    /// Pike-VM run per line. Literals are non-empty, so there is no zero-width
+    /// case; `-w`/`-i` are already excluded by `litFastEligible`.
+    fn litNextSpan(lits: []const []const u8, mv: []const u8, from: usize) ?Matcher.Span {
+        const p = simd.indexOfAnyPos(mv, from, lits) orelse return null;
+        for (lits) |lit| if (p + lit.len <= mv.len and std.mem.eql(u8, mv[p..][0..lit.len], lit))
+            return .{ .start = p, .end = p + lit.len };
+        return null; // unreachable for a prefix-free set (the jump found a hit)
+    }
+
+    /// `-o` emit for a prefix-free literal set — `emitMatches` without the
+    /// Pike VM. Same helpers (`prefix`/`paint`/`add`), so output is byte-exact.
+    fn emitMatchesLit(self: *Emitter, lits: []const []const u8, path: []const u8, lineno: usize, line: []const u8, mv: []const u8) usize {
+        var from: usize = 0;
+        var n: usize = 0;
+        while (litNextSpan(lits, mv, from)) |span| {
+            from = span.end;
+            self.prefix(path, lineno, span.start + 1, self.offOf(line) + span.start, true);
+            self.paint(palette.match_on, line[span.start..span.end]);
+            self.add(self.o.outTerm());
+            n += 1;
         }
         return n;
     }
@@ -629,8 +800,10 @@ pub const Emitter = struct {
     fn onlyMatching(self: *Emitter, path: []const u8, lines: []const []const u8) usize {
         var ssim: ?Matcher.SpanSim = if (self.o.replace == null) Matcher.SpanSim.init(self.a, self.re) catch return 0 else null;
         defer if (ssim) |*s| s.deinit();
+        const cand = self.litCandidates(lines);
         var emitted: usize = 0;
         for (lines, 0..) |line, k| {
+            if (cand) |c| if (!c[k]) continue;
             const mv = self.mview(line);
             if (!self.lineCanMatch(mv)) continue;
             emitted += if (ssim) |*s| self.emitMatches(s, path, k + 1, line, mv) else self.emitLineRepl(path, k + 1, line, emitted);
@@ -642,8 +815,10 @@ pub const Emitter = struct {
     fn countMatches(self: *Emitter, path: []const u8, lines: []const []const u8) usize {
         var ssim = Matcher.SpanSim.init(self.a, self.re) catch return 0;
         defer ssim.deinit();
+        const cand = self.litCandidates(lines);
         var total: usize = 0;
-        for (lines) |line| {
+        for (lines, 0..) |line, k| {
+            if (cand) |c| if (!c[k]) continue;
             const mv = self.mview(line);
             if (!self.lineCanMatch(mv)) continue;
             var from: usize = 0;
@@ -653,6 +828,126 @@ pub const Emitter = struct {
             }
         }
         return self.bufTally(path, total);
+    }
+
+    // ──────────────────── line-free literal fast path ─────────────────────
+
+    /// Eligible for the line-free literal fast path (`fileLit`)? Needs the
+    /// pure-literal match EQUIVALENCE (`re.lits`, empty under `-i`/`-w`/`-U`) so
+    /// every candidate line provably matches, and a mode whose output does not
+    /// depend on the physical line grid: no context window (`-A/-B/-C`), invert,
+    /// passthru, vimgrep, `--stats`, `--stop-on-nonmatch`, or `-r` replacement.
+    /// The eligible modes — plain, `-n`, `--column`, `-o`, `-c`,
+    /// `--count-matches`, `-l` — reuse the SAME `row`/`emitMatches`/`bufTally`
+    /// helpers as `file`, so output is byte-identical.
+    pub fn litFastEligible(self: *const Emitter) bool {
+        const o = self.o;
+        if (self.re.lits().len == 0) return false;
+        if (o.invert or o.word or o.passthru or o.vimgrep or o.stats or o.stop_on_nonmatch) return false;
+        if (o.before != 0 or o.after != 0) return false;
+        if (o.replace != null) return false;
+        return true;
+    }
+
+    /// The line-free literal fast path — ripgrep's searcher-loop architecture
+    /// (candidate jump → line bounds → confirm → skip the line), the piece gist
+    /// was missing. For a pure-literal pattern it NEVER builds the line array:
+    /// one `indexOfAnyPos` sweep jumps hit→hit over `body`; each hit's line
+    /// bounds come from a reverse/forward memchr (`lastIndexOfScalar`/`memchr`);
+    /// the line is emitted through the same helpers as `file`; and the scan
+    /// resumes past the line terminator, so each matching line is visited exactly
+    /// once — a literal carries no `\n`, so a hit `p` lands strictly inside
+    /// `[ls,le)`, hence the line matches (the `re.lits` equivalence). `-c` need
+    /// not even run the engine (candidate line ⟺ matching line). Line numbers are
+    /// counted incrementally over the inter-match gap (SIMD `countByte`), paid
+    /// only under `-n`. `base`/`body_end` are set by the caller, so `offOf` and
+    /// unterminated-tail handling — and therefore every output byte — match
+    /// `file`. Returns the mode's tally (matching lines, or spans under `-o`/
+    /// `--count-matches`).
+    ///
+    /// The scan is restricted to hits in `[lo, hi)` and line numbers start at
+    /// `base_lineno` — `0`/`0`/`body.len` for a whole file, and a line-aligned
+    /// sub-range for a single-file SHARD (the parallelism ripgrep can't use: it
+    /// is hard-wired single-threaded on one file). `hi` is always a line start,
+    /// so no matching line straddles two shards. `tally=false` makes a count mode
+    /// RETURN its partial count instead of emitting the `path:N` line, so the
+    /// shard driver can sum partials and print one total.
+    pub fn fileLit(self: *Emitter, path: []const u8, body: []const u8, lo: usize, hi: usize, base_lineno: usize, tally: bool) usize {
+        const o = self.o;
+        const lits = self.re.lits();
+        const term = o.term();
+        const count_spans = o.count_matches or (o.count_only and o.only_matching);
+        const counting = o.count_only or o.count_matches;
+        const emit_spans = o.only_matching and !counting;
+        // Prefix-free literals resolve spans without the Pike VM (`litNextSpan`),
+        // so a span-emitting mode over such a set never allocates a `SpanSim`.
+        const lit_span = prefixFree(lits);
+        const wants_span = emit_spans or count_spans or (o.column and !counting);
+        var ssim: ?Matcher.SpanSim = if (wants_span and !lit_span)
+            (Matcher.SpanSim.init(self.a, self.re) catch return 0)
+        else
+            null;
+        defer if (ssim) |*s| s.deinit();
+
+        var lineno: usize = base_lineno; // newlines in body[0..counted] (only advanced under -n)
+        var counted: usize = lo;
+        var pos: usize = lo;
+        var lines_hit: usize = 0;
+        var spans: usize = 0;
+        const max = o.max_per_file;
+        // Pure `-c` counts matching LINES and never emits, so it needs only the
+        // line END (to skip past a counted line) — its reverse-memchr line START
+        // is dead work. Every other mode builds the line slice, so needs both.
+        const need_start = !(counting and !count_spans);
+        while (simd.indexOfAnyPos(body, pos, lits)) |p| {
+            if (p >= hi) break; // this shard owns only lines whose hit falls in [lo,hi)
+            if (o.files_only) return self.emitPathOnly(path);
+            const le = simd.memchr(body, p, term) orelse body.len;
+            lines_hit += 1;
+            if (need_start) {
+                const ls = if (simd.lastIndexOfScalar(body, p, term)) |nl| nl + 1 else 0;
+                const line = body[ls..le];
+                if (count_spans) {
+                    const mv = self.mview(line);
+                    if (lit_span) {
+                        var from: usize = 0;
+                        while (litNextSpan(lits, mv, from)) |sp| {
+                            from = sp.end;
+                            spans += 1;
+                            if (max != 0 and spans >= max) break;
+                        }
+                    } else {
+                        var from: usize = 0;
+                        while (nextSpan(self.re, &ssim.?, o, mv, &from)) |_| {
+                            spans += 1;
+                            if (max != 0 and spans >= max) break;
+                        }
+                    }
+                } else {
+                    if (o.line_num) {
+                        lineno += simd.countByte(body[counted..ls], term);
+                        counted = ls;
+                    }
+                    const mv = self.mview(line);
+                    if (emit_spans) {
+                        spans += if (lit_span) self.emitMatchesLit(lits, path, lineno + 1, line, mv) else self.emitMatches(&ssim.?, path, lineno + 1, line, mv);
+                    } else {
+                        const col: usize = if (!o.column) 0 else if (lit_span) blk: {
+                            const sp = litNextSpan(lits, mv, 0) orelse break :blk 0;
+                            break :blk sp.start + 1;
+                        } else self.firstCol(&ssim.?, mv);
+                        self.row(path, lineno + 1, col, ls, line, true);
+                    }
+                }
+            }
+            if (le >= body.len) break;
+            pos = le + 1;
+            const done = if (count_spans or emit_spans) spans else lines_hit;
+            if (max != 0 and done >= max) break;
+        }
+        const n = if (count_spans) spans else lines_hit;
+        if (counting) return if (tally) self.bufTally(path, n) else n;
+        return if (emit_spans) spans else lines_hit;
     }
 
     // ─────────────────────── whole-buffer (-U) emit ───────────────────────
@@ -737,8 +1032,11 @@ pub const Emitter = struct {
 
     /// `-l`: emit the path once, NUL-terminated under `--null` (rg's
     /// path-terminator), else the output terminator. Returns 1 for the tally.
+    /// The one emit per matching file — two raw appends beat routing a bare
+    /// `"{s}{s}"` through the format machinery (byte-identical to it).
     fn emitPathOnly(self: *Emitter, path: []const u8) usize {
-        self.out.print(self.a, "{s}{s}", .{ path, if (self.o.null_sep) "\x00" else self.o.outTerm() }) catch oom();
+        self.add(path);
+        self.add(if (self.o.null_sep) "\x00" else self.o.outTerm());
         return 1;
     }
 
@@ -746,10 +1044,14 @@ pub const Emitter = struct {
     /// normally emits nothing; `--include-zero` prints the `path:0` line anyway
     /// (the return stays `n`, so a zero count still reads as "no match" for the
     /// exit code — rg exits 1 while printing the zero lines).
-    fn bufTally(self: *Emitter, path: []const u8, n: usize) usize {
+    pub fn bufTally(self: *Emitter, path: []const u8, n: usize) usize {
         if (n == 0 and !self.o.include_zero) return 0;
         if (self.show_name) self.writePath(path, true);
-        self.out.print(self.a, "{d}{s}", .{ n, self.o.outTerm() }) catch oom();
+        // The `-c`/`--count-matches` count emit (one per counted file): the
+        // specialized itoa + a raw append, not a `"{d}{s}"` format parse.
+        var buf: [20]u8 = undefined;
+        self.add(writeDecimal(&buf, n));
+        self.add(self.o.outTerm());
         return n;
     }
 
@@ -1046,7 +1348,10 @@ pub const MlHarness = struct {
     m: Matcher,
     caps: ?Caps = null,
 
-    fn init(pat: []const u8, o: struct { dotall: bool = false, replace: bool = false }) !MlHarness {
+    // `pub`: `json.zig`'s `-U --json` ripgrep-parity test reuses this harness
+    // (same compile + caps shape) from another module, so its constructor and
+    // teardown cross the file boundary.
+    pub fn init(pat: []const u8, o: struct { dotall: bool = false, replace: bool = false }) !MlHarness {
         const ta = std.testing.allocator;
         var h = MlHarness{
             .arena = std.heap.ArenaAllocator.init(ta),
@@ -1055,7 +1360,7 @@ pub const MlHarness = struct {
         if (o.replace) h.caps = .{ .linear = try Captures.compile(ta, pat, false, false) };
         return h;
     }
-    fn deinit(self: *MlHarness) void {
+    pub fn deinit(self: *MlHarness) void {
         self.arena.deinit();
         self.m.deinit();
         if (self.caps) |*c| c.deinit();
