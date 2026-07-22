@@ -1,21 +1,61 @@
 //! gist resident session — the eligible-request classifier (ADR-352 rung 2.5).
 //!
-//! Warm surface: rootless `-l` / `-c` / bare `lines`, literal (`-F`) or plain
-//! regex, ±case (`-i`/`-s`/`-S`), optional `-w` / `-n`. Everything else
-//! (`--json`, context, `--rank`, PATH args, globs, stdin, …) → cold.
+//! Warm surface: `-l` / `-c` / bare `lines`, literal (`-F`) or plain regex,
+//! ±case (`-i`/`-s`/`-S`), optional `-w` / `-n`, `-A`/`-B`/`-C` context windows,
+//! a clean relative PATH scope, `-g <glob>` / `-t <type>` file scoping, and the
+//! gist-native `--rank[=N]` definition-first view (regex pattern + case + PATH
+//! roots only — see the `rank_k` guard below). Everything else (`--json`,
+//! `--iglob`, `-T`, stdin, …) → cold.
 //!
-//! Rootless-only: the daemon serves the bare-`gist <pattern>` CWD tree (no
-//! `./` prefix). An explicit PATH — even `.` — stays cold. `classify` is a
-//! narrow argv scanner (not a fork of `args.zig`); it returns typed errors and
-//! never calls `die()`.
+//! Scope: a bare `gist <pattern>` searches the rootless CWD tree the daemon was
+//! born serving. An explicit positional PATH is admitted only when it is a clean
+//! repo-root-relative subtree/file (`gist pat pkg/kernels`) — the resident
+//! mirror stores CWD-relative paths with no `./` prefix, so a root cold would
+//! render with a prefix the mirror lacks (`.`, `./libs`, an absolute path, a
+//! `..` escape) still declines to cold. `-g`/`-t` add glob/type constraints
+//! (case-sensitive include, `!`-exclude, type→extension globs) — only the forms
+//! the shared `PathFilter` models identically to cold; an anchored/unterminated
+//! glob, `--iglob`, `-t all`, or an unknown type declines. A scoped answer is a
+//! strict subset of the served corpus, pruned through that same `PathFilter`.
+//! `classify` is a narrow argv scanner (not a fork of `args.zig`); it returns
+//! typed errors and never calls `die()`.
 
 const std = @import("std");
 // `hasUpper` only — shared smart-case authority with cold's finalize fold.
 // One-way edge: args.zig never imports session.
 const args = @import("../cold/argv/args.zig");
+// The resolved path-scope constraint (roots ∧ `-g` globs ∧ `-t` types) — the
+// SAME `PathFilter` the cold engine and relate's warm twin apply, so a scoped
+// warm answer prunes candidates by the identical rule cold walks with.
+const scope = @import("../../../corpus/scope/glob.zig");
+// The `-t <lang>` name → globs table (`extsForType`), the same registry the
+// cold argv parser resolves a type against.
+const types = @import("../../../corpus/scope/types.zig");
 
 /// Eligible answer shapes — shared with the search core (`engine/query.zig`).
 pub const Mode = @import("../../../kernel/match/query.zig").Mode;
+
+/// The resolved path-scope filter a classified request carries (empty ⇒ the
+/// rootless whole-CWD search). Re-exported so call sites name one type.
+pub const PathFilter = scope.PathFilter;
+
+/// Per-kind cap on scope tokens `classify` collects before declining to cold.
+/// Generous vs any realistic `gist pat a b c` shape, and a wall that keeps the
+/// wire frame + the client's stack scratch bounded: more scope tokens than this
+/// simply fall back to the certified cold path (fail-open, never wrong).
+pub const max_scope = 64;
+
+/// Caller-owned scratch backing a classified request's `PathFilter` slices. The
+/// tokens themselves alias argv (or the immutable `types` table, for `exts`),
+/// but the slice-of-slices HEADERS live here, so this must outlive every use of
+/// the returned `Request`. One per `classify` call — a stack local in the warm
+/// client, a throwaway everywhere else.
+pub const ScopeArgs = struct {
+    roots: [max_scope][]const u8 = undefined, // positional PATH args
+    includes: [max_scope][]const u8 = undefined, // `-g <glob>`
+    excludes: [max_scope][]const u8 = undefined, // `-g '!<glob>'`
+    exts: [max_scope][]const u8 = undefined, // `-t <type>` → its globs (flattened)
+};
 
 /// Classified eligible request. `pattern` aliases into argv / the frame buffer.
 pub const Request = struct {
@@ -45,6 +85,21 @@ pub const Request = struct {
     /// `-m N`/`--max-count N` — cap matching lines per file at N (`null` = unset,
     /// the unlimited default; `0` = rg's explicit "match nothing", see `matchNothing`).
     max_count: ?u64 = null,
+    /// Positional-PATH / glob / type scope. Empty (the default) is the rootless
+    /// whole-CWD search the daemon was born serving; a non-empty filter confines
+    /// the answer to a subtree the resident mirror already holds (a strict subset
+    /// of the served corpus — the daemon re-checks that before answering). Applied
+    /// through the shared `PathFilter.prune`/`admits`, so warm scoping is the same
+    /// rule cold walks with.
+    filter: PathFilter = .{},
+    /// `--rank[=N]`: gist's definition-first ranked view (`ranked.zig`), the one
+    /// shape rg can't express. `null` ⇒ not a rank query; `Some(k)` ⇒ surface the
+    /// top-k rows (`0` ⇒ cold's default 20). Carried ONLY by `query_ext` (never a
+    /// flag bit), and the daemon dispatches on it before the mode. `classify`
+    /// admits it only alongside a regex pattern, case flags, and PATH roots —
+    /// every richer combo (`-F`/`-w`/`-v`/`-q`/`-l`/`-c`/`-n`/`-m`/`-g`/`-t`)
+    /// declines to cold, whose own index-vs-live rank paths own those edges.
+    rank_k: ?usize = null,
 
     /// Engine-effective caseless state. `-S` folds only when the pattern has no
     /// (Unicode) uppercase (`args.hasUpper`). Compile sites must use this, not
@@ -67,11 +122,77 @@ pub const ClassifyError = error{
     NoPattern,
 };
 
+/// A positional PATH the warm path can serve byte-identically to cold: a clean
+/// repo-root-relative subtree or file. Returns the trailing-slash-stripped root
+/// to store, or null to decline (→ cold). Declines an absolute path, a `./`- or
+/// `../`-prefixed one (cold renders that exact prefix, which the CWD-relative
+/// mirror lacks), any `..` segment, `.`/empty (the rootless path already serves
+/// the whole CWD), and a glob (that is `-g`, resolved separately).
+fn cleanRoot(arg: []const u8) ?[]const u8 {
+    if (arg.len == 0 or arg[0] == '/') return null;
+    if (std.mem.startsWith(u8, arg, "./") or std.mem.startsWith(u8, arg, "../")) return null;
+    if (std.mem.indexOfAny(u8, arg, "*?[]") != null) return null; // a glob, not a plain root
+    var r = arg;
+    while (r.len > 1 and r[r.len - 1] == '/') r = r[0 .. r.len - 1]; // rg parity: `libs/` == `libs`
+    if (r.len == 0 or std.mem.eql(u8, r, ".") or std.mem.eql(u8, r, "..")) return null;
+    var it = std.mem.splitScalar(u8, r, '/');
+    while (it.next()) |seg| if (seg.len == 0 or std.mem.eql(u8, seg, "..")) return null;
+    return r;
+}
+
+/// A running slice-of-slices builder over a fixed `ScopeArgs` array: appends a
+/// token, declining (→ cold) once the array is full so the wire frame + the
+/// client's stack scratch stay bounded (`max_scope`).
+const Collector = struct {
+    buf: *[max_scope][]const u8,
+    n: usize = 0,
+    fn push(self: *Collector, s: []const u8) ClassifyError!void {
+        if (self.n == self.buf.len) return ClassifyError.Unsupported;
+        self.buf[self.n] = s;
+        self.n += 1;
+    }
+    fn slice(self: *const Collector) []const []const u8 {
+        return self.buf[0..self.n];
+    }
+};
+
+/// Route one `-g <glob>` token: a leading `!` is an exclude, else an include.
+/// Declines (→ cold) the forms the warm `PathFilter` does not model identically
+/// to the cold engine — an empty glob, an unterminated `[…]` class (rg errors on
+/// it; cold owns that exit 2), and a leading-`/` anchored glob (cold strips the
+/// anchor against the search root, a rule the flat prune does not reproduce).
+fn addGlob(inc: *Collector, exc: *Collector, raw: []const u8) ClassifyError!void {
+    if (raw.len == 0) return ClassifyError.Unsupported;
+    const neg = raw[0] == '!';
+    const g = if (neg) raw[1..] else raw;
+    if (g.len == 0 or g[0] == '/' or scope.unterminatedClass(g)) return ClassifyError.Unsupported;
+    try (if (neg) exc else inc).push(g);
+}
+
+/// Route one `-t <type>` token: resolve it to its extension globs and flatten
+/// them into the `exts` OR-set. An unknown type declines (→ cold, which emits
+/// rg's exit-2 "unrecognized type"); `all` (every known type) is outside the
+/// flat `PathFilter` model and also declines.
+fn addType(ext: *Collector, name: []const u8) ClassifyError!void {
+    if (name.len == 0 or std.mem.eql(u8, name, "all")) return ClassifyError.Unsupported;
+    const globs = types.extsForType(name) orelse return ClassifyError.Unsupported;
+    for (globs) |g| try ext.push(g);
+}
+
+/// Parse a `-A`/`-B`/`-C` (or `--after/before-context`) decimal window value. A
+/// non-decimal / overflowing tail is not the fast path's to reinterpret — decline
+/// so cold parses (and diagnoses with rg's exit-2) whatever the user actually meant.
+fn ctxNum(s: []const u8) ClassifyError!u64 {
+    return std.fmt.parseInt(u64, s, 10) catch ClassifyError.Unsupported;
+}
+
 /// Classify rg-style argv into an eligible `Request`, or fail → cold.
 /// Recognizes `-l`/`-c`/`-F`, case family `-i`/`-s`/`-S`, `-w`, `-n`/`-N`,
-/// pattern via bare token or `-e`/`--regexp`. Bare pattern → `mode = .lines`.
-/// Any positional PATH (incl. `.` / after `--`) or other flag → ineligible.
-pub fn classify(argv: []const []const u8) ClassifyError!Request {
+/// pattern via bare token or `-e`/`--regexp`, and clean relative PATH roots
+/// (`cleanRoot`) collected into `sa`. Bare pattern → `mode = .lines`. An
+/// ineligible PATH (`.`, `./x`, absolute, glob) or other flag → ineligible.
+/// `sa` backs `req.filter.roots` and must outlive the returned `Request`.
+pub fn classify(argv: []const []const u8, sa: *ScopeArgs) ClassifyError!Request {
     var pattern: ?[]const u8 = null;
     var mode: ?Mode = null;
     var fixed = false;
@@ -82,7 +203,17 @@ pub fn classify(argv: []const []const u8) ClassifyError!Request {
     var line_num = false;
     var quiet = false;
     var max_count: ?u64 = null;
+    var rank_k: ?usize = null;
+    // `-A`/`-B`/`-C` windows recorded separately so `-A`/`-B` outrank `-C` at
+    // the fold regardless of argv order — cold's exact rule (`args.zig`).
+    var a_val: ?u64 = null;
+    var b_val: ?u64 = null;
+    var c_val: ?u64 = null;
     var end_of_flags = false;
+    var roots: Collector = .{ .buf = &sa.roots };
+    var includes: Collector = .{ .buf = &sa.includes };
+    var excludes: Collector = .{ .buf = &sa.excludes };
+    var exts: Collector = .{ .buf = &sa.exts };
 
     var i: usize = 0;
     while (i < argv.len) : (i += 1) {
@@ -125,6 +256,37 @@ pub fn classify(argv: []const []const u8) ClassifyError!Request {
             // rg's glued short form `-mN` (e.g. `-m1`). A non-decimal tail is
             // cold's to diagnose, so decline rather than reinterpret.
             max_count = std.fmt.parseInt(u64, arg[2..], 10) catch return ClassifyError.Unsupported;
+        } else if (!end_of_flags and std.mem.eql(u8, arg, "--rank")) {
+            // Bare `--rank` REQUESTS the ranked view but does not set the cap —
+            // cold keeps whatever `o.rank_k` holds, so a prior `--rank=5` survives
+            // a trailing bare `--rank` (only `null` ⇒ cold's default-20 sentinel 0).
+            if (rank_k == null) rank_k = 0;
+        } else if (!end_of_flags and std.mem.startsWith(u8, arg, "--rank=")) {
+            rank_k = std.fmt.parseInt(usize, arg["--rank=".len..], 10) catch return ClassifyError.Unsupported; // explicit, last-wins
+        } else if (!end_of_flags and (std.mem.eql(u8, arg, "-A") or std.mem.eql(u8, arg, "--after-context"))) {
+            i += 1;
+            if (i >= argv.len) return ClassifyError.Unsupported;
+            a_val = try ctxNum(argv[i]);
+        } else if (!end_of_flags and std.mem.startsWith(u8, arg, "--after-context=")) {
+            a_val = try ctxNum(arg["--after-context=".len..]);
+        } else if (!end_of_flags and arg.len > 2 and std.mem.startsWith(u8, arg, "-A")) {
+            a_val = try ctxNum(arg[2..]); // glued `-A2`
+        } else if (!end_of_flags and (std.mem.eql(u8, arg, "-B") or std.mem.eql(u8, arg, "--before-context"))) {
+            i += 1;
+            if (i >= argv.len) return ClassifyError.Unsupported;
+            b_val = try ctxNum(argv[i]);
+        } else if (!end_of_flags and std.mem.startsWith(u8, arg, "--before-context=")) {
+            b_val = try ctxNum(arg["--before-context=".len..]);
+        } else if (!end_of_flags and arg.len > 2 and std.mem.startsWith(u8, arg, "-B")) {
+            b_val = try ctxNum(arg[2..]); // glued `-B2`
+        } else if (!end_of_flags and (std.mem.eql(u8, arg, "-C") or std.mem.eql(u8, arg, "--context"))) {
+            i += 1;
+            if (i >= argv.len) return ClassifyError.Unsupported;
+            c_val = try ctxNum(argv[i]);
+        } else if (!end_of_flags and std.mem.startsWith(u8, arg, "--context=")) {
+            c_val = try ctxNum(arg["--context=".len..]);
+        } else if (!end_of_flags and arg.len > 2 and std.mem.startsWith(u8, arg, "-C")) {
+            c_val = try ctxNum(arg[2..]); // glued `-C2`
         } else if (!end_of_flags and (std.mem.eql(u8, arg, "-n") or std.mem.eql(u8, arg, "--line-number"))) {
             line_num = true;
         } else if (!end_of_flags and (std.mem.eql(u8, arg, "-N") or std.mem.eql(u8, arg, "--no-line-number"))) {
@@ -136,17 +298,34 @@ pub fn classify(argv: []const []const u8) ClassifyError!Request {
         } else if (!end_of_flags and std.mem.startsWith(u8, arg, "--regexp=")) {
             if (pattern != null) return ClassifyError.Unsupported;
             pattern = arg["--regexp=".len..];
+        } else if (!end_of_flags and (std.mem.eql(u8, arg, "-g") or std.mem.eql(u8, arg, "--glob"))) {
+            i += 1;
+            if (i >= argv.len) return ClassifyError.Unsupported;
+            try addGlob(&includes, &excludes, argv[i]);
+        } else if (!end_of_flags and std.mem.startsWith(u8, arg, "--glob=")) {
+            try addGlob(&includes, &excludes, arg["--glob=".len..]);
+        } else if (!end_of_flags and arg.len > 2 and std.mem.startsWith(u8, arg, "-g")) {
+            try addGlob(&includes, &excludes, arg[2..]); // glued `-gGLOB`
+        } else if (!end_of_flags and (std.mem.eql(u8, arg, "-t") or std.mem.eql(u8, arg, "--type"))) {
+            i += 1;
+            if (i >= argv.len) return ClassifyError.Unsupported;
+            try addType(&exts, argv[i]);
+        } else if (!end_of_flags and std.mem.startsWith(u8, arg, "--type=")) {
+            try addType(&exts, arg["--type=".len..]);
+        } else if (!end_of_flags and arg.len > 2 and std.mem.startsWith(u8, arg, "-t")) {
+            try addType(&exts, arg[2..]); // glued `-tTYPE`
         } else if (!end_of_flags and arg[0] == '-') {
-            // Any other flag (context, --json, -v, -g/-t, --hidden, …)
-            // is outside the fast path — hand the whole request to cold.
+            // Any other flag (context, --json, --iglob, -T, --hidden, …) is
+            // outside the fast path — hand the whole request to cold.
             return ClassifyError.Unsupported;
         } else if (pattern == null) {
             pattern = arg; // the first bare token is the pattern
         } else {
-            // A PATH arg: the daemon serves only the rootless CWD tree, so any
-            // explicit scope (subtree, foreign path, or even `.`, which cold
-            // renders with a `./` prefix) is answered cold, unchanged.
-            return ClassifyError.Unsupported;
+            // A positional PATH: served warm only when it is a clean relative
+            // root the resident mirror can render byte-identically to cold (see
+            // `cleanRoot`); anything else — or more roots than the scratch holds
+            // — falls back to the certified cold path unchanged.
+            try roots.push(cleanRoot(arg) orelse return ClassifyError.Unsupported);
         }
     }
 
@@ -157,5 +336,19 @@ pub fn classify(argv: []const []const u8) ClassifyError!Request {
     // (warm whole-doc gates would match ACROSS lines where cold cannot; a NUL
     // interacts with binary detection) — the cold engine owns those bytes.
     if (std.mem.indexOfAny(u8, p, "\n\x00") != null) return ClassifyError.Unsupported;
-    return .{ .pattern = p, .mode = m, .fixed = fixed, .ignore_case = ignore_case, .line_num = line_num, .smart_case = smart_case, .word = word, .invert = invert, .quiet = quiet, .max_count = max_count };
+    // Fold the context windows exactly as cold's argv parser does: an explicit
+    // `-A`/`-B` outranks `-C` on its own side, and `-C` fills the side left
+    // unset (`args.zig`). A window only matters for the `lines` render.
+    const after = a_val orelse c_val orelse 0;
+    const before = b_val orelse c_val orelse 0;
+    // `--rank` is the definition-first regex view: it IGNORES `-F`/`-w`/`-l`/
+    // `-c`/`-n`/`-m`/`-v`/`-q` and context in cold and gates only by PATH roots
+    // (its index path even bypasses `-g`/`-t`). Rather than mirror those quirks
+    // warm, admit only the clean rank surface — pattern + case + roots — and
+    // decline every richer combo to cold, which owns its index-vs-live rank.
+    if (rank_k != null and (fixed or word or invert or quiet or line_num or max_count != null or before != 0 or after != 0 or m != .lines or includes.n != 0 or excludes.n != 0 or exts.n != 0))
+        return ClassifyError.Unsupported;
+    // Context only shapes the `lines` render; `-l`/`-c` never emit a window (rg
+    // parity), so a context request under those modes stays cold-free of it.
+    return .{ .pattern = p, .mode = m, .fixed = fixed, .ignore_case = ignore_case, .line_num = line_num, .smart_case = smart_case, .word = word, .invert = invert, .quiet = quiet, .max_count = max_count, .before = before, .after = after, .rank_k = rank_k, .filter = .{ .roots = roots.slice(), .includes = includes.slice(), .excludes = excludes.slice(), .exts = exts.slice() } };
 }

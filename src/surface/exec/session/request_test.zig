@@ -8,8 +8,15 @@
 const std = @import("std");
 const request = @import("request.zig");
 
+// `classify` writes its `PathFilter` root headers into caller scratch that must
+// outlive the returned request. A file-scope buffer is safe here: each `test`
+// runs to completion before the next, and no case retains a request across the
+// next `ok`. A case that needs to read `.filter.roots` after another `ok` copies
+// the roots first (see the scoped-roots cases).
+var scratch: request.ScopeArgs = .{};
+
 fn ok(argv: []const []const u8) !request.Request {
-    return request.classify(argv);
+    return request.classify(argv, &scratch);
 }
 
 test "classify: -l / --files-with-matches select the files mode" {
@@ -145,18 +152,121 @@ test "classify: a rootless -l/-c query is eligible" {
     try std.testing.expectEqual(request.Mode.count, b.mode);
 }
 
-test "classify: ANY explicit PATH arg is ineligible (rootless-only parity)" {
-    // The daemon serves only the rootless CWD tree and the wire carries no
-    // roots, so every explicit scope stays cold — a subtree (would over-report
-    // against the whole tree), a foreign path, the full former default-root set,
-    // and even `.` (which cold renders with a `./` prefix the daemon omits).
-    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "needle", "services" }));
-    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "needle", "services", "libs" }));
-    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "needle", "/tmp/foreign" }));
+test "classify: a clean relative PATH scope is eligible; unrenderable roots decline" {
+    // A subtree/file the resident mirror stores byte-identically to cold's walk
+    // is served warm, carried on the request's `PathFilter.roots`.
+    {
+        const a = try ok(&.{ "-l", "needle", "services" });
+        try std.testing.expectEqual(request.Mode.files, a.mode);
+        try std.testing.expectEqual(@as(usize, 1), a.filter.roots.len);
+        try std.testing.expectEqualStrings("services", a.filter.roots[0]);
+    }
+    {
+        const b = try ok(&.{ "-l", "needle", "services", "libs" });
+        try std.testing.expectEqual(@as(usize, 2), b.filter.roots.len);
+        try std.testing.expectEqualStrings("services", b.filter.roots[0]);
+        try std.testing.expectEqualStrings("libs", b.filter.roots[1]);
+    }
+    {
+        // A single-file root and a nested subtree are both clean.
+        const c = try ok(&.{ "needle", "pkg/kernels/irregex/README.md" });
+        try std.testing.expectEqual(request.Mode.lines, c.mode);
+        try std.testing.expectEqualStrings("pkg/kernels/irregex/README.md", c.filter.roots[0]);
+    }
+    {
+        // A trailing slash is stripped (rg parity: `libs/` == `libs`).
+        const d = try ok(&.{ "-l", "needle", "libs/" });
+        try std.testing.expectEqualStrings("libs", d.filter.roots[0]);
+    }
+    {
+        // A `--` separator ends flag parsing; the path after it is a clean root.
+        const e = try ok(&.{ "-l", "needle", "--", "services" });
+        try std.testing.expectEqualStrings("services", e.filter.roots[0]);
+    }
+    // Roots cold would render with a prefix the CWD-relative mirror lacks — or
+    // that escape/blur the walk set — stay cold: `.` (a `./` display prefix), an
+    // explicit `./`/`../`, an absolute path, and a glob (that is `-g`).
     try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "needle", "." }));
-    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "needle", "services", "libs", "clients", "contracts", "scripts", "quality" }));
-    // A `--` separator ends flag parsing; the paths after it are still paths.
-    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "needle", "--", "services" }));
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "needle", "./services" }));
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "needle", "../sibling" }));
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "needle", "a/../b" }));
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "needle", "/tmp/foreign" }));
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "needle", "src/*.zig" }));
+}
+
+test "classify: -g / --glob is eligible and routed to includes/excludes" {
+    {
+        // `-g <glob>` (value in the next token) and `--glob=<glob>` are includes.
+        const a = try ok(&.{ "-l", "-g", "*.go", "needle" });
+        try std.testing.expectEqual(@as(usize, 1), a.filter.includes.len);
+        try std.testing.expectEqualStrings("*.go", a.filter.includes[0]);
+        try std.testing.expectEqual(@as(usize, 0), a.filter.excludes.len);
+    }
+    {
+        const b = try ok(&.{ "--glob=*.zig", "needle" });
+        try std.testing.expectEqualStrings("*.zig", b.filter.includes[0]);
+    }
+    {
+        // Glued short form `-g<glob>`.
+        const c = try ok(&.{ "-l", "-g*.rs", "needle" });
+        try std.testing.expectEqualStrings("*.rs", c.filter.includes[0]);
+    }
+    {
+        // A leading `!` is an exclude, stripped of the `!`.
+        const d = try ok(&.{ "-l", "-g", "!*_test.go", "needle" });
+        try std.testing.expectEqual(@as(usize, 0), d.filter.includes.len);
+        try std.testing.expectEqual(@as(usize, 1), d.filter.excludes.len);
+        try std.testing.expectEqualStrings("*_test.go", d.filter.excludes[0]);
+    }
+    {
+        // Includes and excludes compose; both accumulate in order.
+        const e = try ok(&.{ "-l", "-g", "*.go", "-g", "!vendor/**", "needle" });
+        try std.testing.expectEqualStrings("*.go", e.filter.includes[0]);
+        try std.testing.expectEqualStrings("vendor/**", e.filter.excludes[0]);
+    }
+}
+
+test "classify: -g forms outside the warm PathFilter model decline to cold" {
+    // rg errors on an unterminated class (its exit 2) — cold owns that.
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "-g", "*.[ch", "needle" }));
+    // A leading-`/` anchored glob: cold strips the anchor vs the search root, a
+    // rule the flat prune does not reproduce → cold.
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "-g", "/src/*.go", "needle" }));
+    // An empty glob value, and a dangling `-g` with no value.
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "-g", "", "needle" }));
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "needle", "-g" }));
+    // `--iglob` (case-insensitive) is not the includes model → cold.
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "--iglob", "*.go", "needle" }));
+}
+
+test "classify: -t / --type resolves to its extension globs" {
+    {
+        // `-t go` flattens to the type's globs (*.go, go.mod, go.sum).
+        const a = try ok(&.{ "-l", "-t", "go", "needle" });
+        try std.testing.expectEqual(@as(usize, 3), a.filter.exts.len);
+        try std.testing.expectEqualStrings("*.go", a.filter.exts[0]);
+    }
+    {
+        // `--type=py` and the glued `-tpy` both resolve `py` → *.py, *.pyi.
+        const b = try ok(&.{ "--type=py", "needle" });
+        try std.testing.expectEqual(@as(usize, 2), b.filter.exts.len);
+        const c = try ok(&.{ "-tpy", "needle" });
+        try std.testing.expectEqual(@as(usize, 2), c.filter.exts.len);
+    }
+    {
+        // Two `-t` flags union their globs.
+        const d = try ok(&.{ "-l", "-t", "rust", "-t", "zig", "needle" });
+        try std.testing.expectEqual(@as(usize, 3), d.filter.exts.len); // *.rs + *.zig + *.zon
+    }
+}
+
+test "classify: an unknown or `all` type declines to cold" {
+    // Unknown type: cold emits rg's exit-2 "unrecognized type".
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "-t", "nosuchlang", "needle" }));
+    // `-t all` (every known type) is outside the flat PathFilter model → cold.
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "-t", "all", "needle" }));
+    // A dangling `-t` with no value.
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "needle", "-t" }));
 }
 
 test "classify: -w/--word-regexp is eligible and carried onto the request" {
@@ -250,7 +360,7 @@ test "classify: -v/--invert-match is eligible and carried onto the request" {
 
 test "classify: any unrecognized flag hands the whole request to cold" {
     for ([_][]const []const u8{
-        &.{ "-l", "-C", "2", "needle" }, // context
+        &.{ "-l", "-U", "needle" }, // multiline (whole-buffer emit — cold only)
         &.{ "-l", "--json", "needle" }, // structured output
         &.{ "-l", "--iglob", "*.zig", "needle" }, // case-insensitive glob (not the includes model)
         &.{ "-l", "--hidden", "needle" }, // hidden files
@@ -262,12 +372,103 @@ test "classify: any unrecognized flag hands the whole request to cold" {
 test "classify: conflicting modes and duplicate patterns are ineligible" {
     try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "-c", "needle" }));
     try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "-e", "a", "-e", "b" }));
-    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "-e", "a", "b" }));
-    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "--regexp=a", "b" }));
+    // A bare token after an `-e` pattern is now a scope root, not a second
+    // pattern: `gist -e a b` == pattern `a` under path `b` (rg parity).
+    {
+        const a = try ok(&.{ "-l", "-e", "a", "b" });
+        try std.testing.expectEqualStrings("a", a.pattern);
+        try std.testing.expectEqualStrings("b", a.filter.roots[0]);
+    }
+    {
+        const b = try ok(&.{ "-l", "--regexp=a", "b" });
+        try std.testing.expectEqualStrings("a", b.pattern);
+        try std.testing.expectEqualStrings("b", b.filter.roots[0]);
+    }
 }
 
 test "classify: a dangling -e and empty patterns fail closed" {
     try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "-e" }));
     try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "--regexp=" }));
     try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "" }));
+}
+
+test "classify: --rank[=N] is eligible with a regex pattern, case, and PATH roots" {
+    // Bare `--rank` ⇒ the default-top-20 sentinel (0), mode stays .lines.
+    const bare = try ok(&.{ "--rank", "WalletService" });
+    try std.testing.expectEqual(@as(?usize, 0), bare.rank_k);
+    try std.testing.expectEqual(request.Mode.lines, bare.mode);
+    try std.testing.expectEqualStrings("WalletService", bare.pattern);
+    // `--rank=N` carries the explicit top-k.
+    const n = try ok(&.{ "--rank=5", "needle" });
+    try std.testing.expectEqual(@as(?usize, 5), n.rank_k);
+    // Composes with the case family and a clean PATH root (the whole warm-rank
+    // surface: pattern + case + roots).
+    {
+        const scoped = try ok(&.{ "--rank=3", "-i", "needle", "services/ai" });
+        try std.testing.expectEqual(@as(?usize, 3), scoped.rank_k);
+        try std.testing.expect(scoped.ignore_case);
+        try std.testing.expectEqualStrings("services/ai", scoped.filter.roots[0]);
+    }
+    // Absent ⇒ null (not a rank query).
+    const none = try ok(&.{"needle"});
+    try std.testing.expectEqual(@as(?usize, null), none.rank_k);
+    // A non-decimal top-k is cold's to diagnose.
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "--rank=x", "needle" }));
+}
+
+test "classify: --rank declines every richer combo to cold" {
+    // Cold `--rank` ignores `-F`/`-w`/`-v`/`-q`/`-l`/`-c`/`-n`/`-m` and its index
+    // path even bypasses `-g`/`-t`; rather than mirror those quirks, the warm
+    // classifier admits only the clean rank surface and hands each of these to
+    // cold, which owns its own index-vs-live rank behavior.
+    for ([_][]const []const u8{
+        &.{ "--rank", "-F", "needle" },
+        &.{ "--rank", "-w", "needle" },
+        &.{ "--rank", "-v", "needle" },
+        &.{ "--rank", "-q", "needle" },
+        &.{ "--rank", "-l", "needle" },
+        &.{ "--rank", "-c", "needle" },
+        &.{ "--rank", "-n", "needle" },
+        &.{ "--rank", "-m", "3", "needle" },
+        &.{ "--rank", "-g", "*.zig", "needle" },
+        &.{ "--rank", "-t", "py", "needle" },
+        &.{ "--rank", "-C", "2", "needle" }, // a window has no meaning in the ranked view
+    }) |argv| {
+        try std.testing.expectError(request.ClassifyError.Unsupported, ok(argv));
+    }
+}
+
+test "classify: -A/-B/-C context windows are eligible and fold like cold" {
+    // Separate-token and glued short forms both parse.
+    {
+        const a = try ok(&.{ "-A", "3", "needle" });
+        try std.testing.expectEqual(@as(u64, 0), a.before);
+        try std.testing.expectEqual(@as(u64, 3), a.after);
+    }
+    {
+        const b = try ok(&.{ "-B2", "needle" });
+        try std.testing.expectEqual(@as(u64, 2), b.before);
+        try std.testing.expectEqual(@as(u64, 0), b.after);
+    }
+    // `-C` fills both sides; the long forms parse identically.
+    {
+        const c = try ok(&.{ "--context=4", "needle" });
+        try std.testing.expectEqual(@as(u64, 4), c.before);
+        try std.testing.expectEqual(@as(u64, 4), c.after);
+    }
+    // An explicit `-A`/`-B` outranks `-C` on its own side regardless of order
+    // (cold's fold: `after = a ?? c`, `before = b ?? c`).
+    {
+        const mix = try ok(&.{ "-C", "5", "-A", "1", "needle" });
+        try std.testing.expectEqual(@as(u64, 5), mix.before);
+        try std.testing.expectEqual(@as(u64, 1), mix.after);
+    }
+    {
+        const mix2 = try ok(&.{ "-A1", "-C5", "needle" });
+        try std.testing.expectEqual(@as(u64, 5), mix2.before);
+        try std.testing.expectEqual(@as(u64, 1), mix2.after);
+    }
+    // A non-decimal / missing window value is cold's to diagnose.
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-A", "x", "needle" }));
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-C", "needle" })); // "needle" isn't a number, then no pattern
 }

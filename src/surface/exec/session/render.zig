@@ -39,18 +39,12 @@ pub const RenderError = error{ Unsupported, OutOfMemory };
 /// byte offset of the first NUL (null ⇒ text). Mirrors `mirror.Doc` + path.
 pub const Doc = struct { path: []const u8, bytes: []const u8, nul: ?usize };
 
-/// Below this many total corpus bytes a warm face emits/folds serially: thread
-/// spawn + arena setup + the per-shard `Regex` recompile / scratch only pay off
-/// once the scan itself dominates. Cold's own parallel engine has the same floor
-/// (a tiny tree is faster single-threaded), so matching it keeps the small-corpus
-/// warm answer from regressing while the big-corpus one wins. `pub` so every warm
-/// face (this render emit, the resident `-l`/`-c` fold, the FFI record stream)
-/// crosses into parallelism at the SAME corpus size through `parallel.shardBounds`.
-pub const par_min_bytes: usize = 256 << 10;
-
-/// Hard cap on emit/fold shards — the realistic core count, so a giant corpus
-/// doesn't spawn hundreds of threads that thrash the scheduler.
-pub const par_max_shards: usize = 16;
+/// The shared parallel floor + shard cap (`parallel.min_bytes`/`max_shards`),
+/// re-exported so every warm face (this render emit, the resident `-l`/`-c`
+/// fold, the FFI record stream) and the cold match/emit cross into parallelism
+/// at the SAME corpus size — one definition, no drift.
+pub const par_min_bytes = parallel.min_bytes;
+pub const par_max_shards = parallel.max_shards;
 
 /// Render every doc's matching lines into `out`, in the docs' given order
 /// (the caller path-sorts with `run.pathLess`, the warm canonical order). Returns
@@ -99,24 +93,45 @@ pub fn renderLines(a: std.mem.Allocator, req: request.Request, docs: []const Doc
         // parity — a non-matching line is framed as a match row (`:`) with its
         // own line number, exactly as a piped `rg -v` produces.
         .invert = req.invert,
+        // `-A`/`-B`/`-C`: the cold Emitter's `file` path draws the whole context
+        // window and the intra-file `--` group separator off these two fields, so
+        // wiring them here IS the parity (the classifier admits only the default
+        // separator/terminator, which `Opts`'s defaults already carry). The
+        // inter-file `--` is drawn below, exactly as cold's serial `renderFile`.
+        .before = req.before,
+        .after = req.after,
         .max_per_file = if (req.max_count) |m| std.math.cast(usize, m) orelse std.math.maxInt(usize) else 0,
         .max_per_file_set = req.max_count != null,
     };
     var em = output.Emitter{ .a = a, .re = &re, .o = o, .show_name = true, .out = out, .needle = if (needle) |n| .{ .bytes = n } else null };
 
     var matched = false;
+    // rg's cross-file context separator: a `--` line precedes every EMITTING file
+    // after the first whenever a window is active — the serial-only state cold
+    // gates onto `renderFile` (`serial.zig`), so a context answer renders serial
+    // (see `renderLinesParallel`/`renderLinesShm`) and this loop owns the join.
+    const join_groups = o.wantsContext();
+    var first = true;
     for (docs) |d| {
         if (d.bytes.len == 0) continue; // cold skips empty bodies in every mode
         em.base = @intFromPtr(d.bytes.ptr);
         if (d.nul) |nul| {
             // Walked (implicit) binary file: cold's exact policy — matches from
-            // complete buffers before the NUL, then the WARNING note.
+            // complete buffers before the NUL, then the WARNING note. Cold's
+            // `renderFile` returns on this path before the join-groups insert, so
+            // a binary answer neither draws nor consumes the `--` separator.
             if (grepfile.handleBinary(a, &re, o, out, &em, d.path, false, d.bytes, nul, true)) matched = true;
             continue;
         }
         var lines: std.ArrayList([]const u8) = .empty;
         grepfile.collectLines(a, d.bytes, o.term(), &lines);
-        if (em.file(d.path, lines.items) > 0) matched = true;
+        const before = out.items.len;
+        if (em.file(d.path, lines.items) > 0) {
+            if (join_groups and !first and out.items.len > before)
+                out.insertSlice(a, before, "--\n") catch return RenderError.OutOfMemory;
+            first = false;
+            matched = true;
+        }
     }
     return matched;
 }
@@ -145,6 +160,10 @@ pub fn renderLinesParallel(
     docs: []const Doc,
     out: *std.ArrayList(u8),
 ) RenderError!bool {
+    // A context window carries cross-file `--` separator state that an order-free
+    // shard split can't reproduce — cold gates it onto its serial loop, so we do
+    // too (context queries are narrow; the walk-elimination win still stands).
+    if (req.before != 0 or req.after != 0) return renderLines(a, req, docs, out);
     const bounds = parallel.shardBounds(Doc, docs, {}, docWeight, par_min_bytes, par_max_shards, a) orelse
         return renderLines(a, req, docs, out);
     const nthr = bounds.len - 1;
@@ -227,15 +246,19 @@ pub fn renderLinesShm(
     docs: []const Doc,
     floor: usize,
 ) RenderError!LinesEmit {
-    // Serial render (corpus below `par_min_bytes`, one core, or a single doc a
-    // shard split can't divide): one arena buffer holds the whole answer, then
-    // the same floor decision — a huge single doc still earns the fd path.
-    const bounds = parallel.shardBounds(Doc, docs, {}, docWeight, par_min_bytes, par_max_shards, a) orelse {
+    // Serial render (corpus below `par_min_bytes`, one core, a single doc a shard
+    // split can't divide, OR a context window whose cross-file `--` state resists
+    // an order-free split — same serial gate cold applies): one arena buffer holds
+    // the whole answer, then the same floor decision — a huge single doc still
+    // earns the fd path.
+    const ctx = req.before != 0 or req.after != 0;
+    const bounds = if (ctx) null else parallel.shardBounds(Doc, docs, {}, docWeight, par_min_bytes, par_max_shards, a);
+    const bnds = bounds orelse {
         var out: std.ArrayList(u8) = .empty;
         const matched = try renderLines(a, req, docs, &out);
         return emit(a, &.{out.items}, matched, floor);
     };
-    const nthr = bounds.len - 1;
+    const nthr = bnds.len - 1;
 
     const Shard = struct {
         req: request.Request,
@@ -257,7 +280,7 @@ pub fn renderLinesShm(
     const shards = try a.alloc(Shard, nthr);
     for (shards, 0..) |*sh, i| sh.* = .{
         .req = req,
-        .docs = docs[bounds[i]..bounds[i + 1]],
+        .docs = docs[bnds[i]..bnds[i + 1]],
         .arena = std.heap.ArenaAllocator.init(gpa),
     };
     defer for (shards) |*sh| sh.arena.deinit();
