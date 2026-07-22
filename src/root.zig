@@ -45,6 +45,7 @@ const std = @import("std");
 pub const ngram = @import("corpus/index/trigrams/ngram.zig");
 pub const trigram = @import("corpus/index/trigrams/trigram.zig");
 pub const persist = @import("corpus/index/trigrams/persist.zig");
+pub const codicil = @import("corpus/index/trigrams/codicil.zig");
 
 // ── the crest sieve (math floor + persisted sidecar) ──
 // The forced-class-run necessary condition that prunes the trigram index's one
@@ -400,6 +401,7 @@ test {
     _ = @import("corpus/index/trigrams/trigram_test.zig"); // T0 candidate index: query + serialize + build
     _ = @import("corpus/index/trigrams/trigram_load_test.zig"); // T0 loader adversarial suite: malformed blobs fail closed
     _ = @import("corpus/index/trigrams/persist_test.zig"); // T0 persisted corpus/index/path-table integrity (doc-id OOB guard)
+    _ = @import("corpus/index/trigrams/codicil_test.zig"); // incremental codicil: round-trip, fail-closed decode, layered-query parity
     _ = @import("corpus/index/trigrams/trigram_fuzz.zig"); // T0 loader long fuzz (seeds + mutations; GIST_FUZZ_ITERS)
     _ = @import("corpus/index/phantom/treemap_test.zig"); // phantom tree.map layout: round-trip, root resolve, torn blobs fail closed
     _ = @import("corpus/index/content/shard.zig"); // content shard: body round-trip, freshness gate, torn blobs fail closed

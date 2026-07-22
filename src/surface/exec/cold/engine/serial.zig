@@ -736,7 +736,7 @@ fn assembleIndexSkip(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, fi
     // Freshness folds over the roots the index was BUILT with (persisted
     // beside it), unless the query's own explicit roots narrow the walk.
     const fresh_roots = if (parsed.roots.len > 0) parsed.roots else p.roots.items;
-    var cand = try fresh.candidates(gpa, io, &p.idx, &p.paths, filters, fresh_roots);
+    var cand = try fresh.candidates(gpa, io, &p, &p.paths, filters, fresh_roots);
     errdefer cand.deinit();
     var candidates = try std.DynamicBitSet.initEmpty(gpa, p.paths.items.len);
     errdefer candidates.deinit();

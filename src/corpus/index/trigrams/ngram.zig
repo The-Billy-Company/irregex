@@ -33,3 +33,32 @@ pub fn extractSortedUnique(text: []const u8, buf: []Trigram) usize {
     std.mem.sort(Trigram, buf[0..n], {}, comptime std.sort.asc(Trigram));
     return dedupSorted(Trigram, buf, n);
 }
+
+/// One presence bit per possible trigram (2^24 bits = 2 MiB of u64 words) —
+/// the scratch `extractUniqueUnordered` dedups against.
+pub const bitmap_words = (1 << 24) / 64;
+
+/// Distinct trigrams of `text` in FIRST-APPEARANCE order (unsorted), into
+/// `buf` (≥ `text.len` long). O(len) — the index build's replacement for
+/// `extractSortedUnique`'s per-doc O(len·log len) sort: both build paths
+/// order postings globally afterwards (serial: one whole-corpus sort;
+/// parallel: a stable 24-bit counting sort), so per-doc order is dead work.
+/// `bitmap` must be `bitmap_words` long and ALL-ZERO on entry; it is restored
+/// to all-zero before return by clearing exactly the bits this doc set —
+/// O(distinct), no per-doc memset of the 2 MiB. Returns the distinct count.
+pub fn extractUniqueUnordered(text: []const u8, bitmap: []u64, buf: []Trigram) usize {
+    if (text.len < 3) return 0;
+    var w: usize = 0;
+    for (0..text.len - 2) |i| {
+        const t = key(text[i], text[i + 1], text[i + 2]);
+        const word = &bitmap[t >> 6];
+        const bit = @as(u64, 1) << @intCast(t & 63);
+        if (word.* & bit == 0) {
+            word.* |= bit;
+            buf[w] = t;
+            w += 1;
+        }
+    }
+    for (buf[0..w]) |t| bitmap[t >> 6] &= ~(@as(u64, 1) << @intCast(t & 63));
+    return w;
+}

@@ -315,7 +315,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, roots: []const 
     const q0 = nowNs(io);
     var one: [1][]const u8 = undefined;
     const filters = rankFilters(re, caseless, &one);
-    var cand = try fresh.candidates(gpa, io, &p.idx, &p.paths, filters, p.roots.items);
+    var cand = try fresh.candidates(gpa, io, &p, &p.paths, filters, p.roots.items);
     defer cand.deinit();
 
     // PATH roots gate before the read — without this, `gist pat dir/ --rank`

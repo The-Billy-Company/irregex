@@ -68,7 +68,7 @@ test "persistIndexAndPathsAt: generation publish keeps readers off a torn pair" 
     defer idx_a.deinit();
     const crest_a = try crest_sidecar.build(gpa, &docs_a);
     defer gpa.free(crest_a);
-    _ = try persist.persistIndexAndPathsAt(gpa, io, root, &idx_a, &paths_a, &.{"src"}, crest_a);
+    _ = try persist.persistIndexAndPathsAt(gpa, io, root, &idx_a, &paths_a, &.{"src"}, crest_a, std.Io.Clock.now(.real, io).nanoseconds);
 
     var loaded_a = (try persist.loadAt(gpa, io, root, false)).?;
     defer loaded_a.deinit();
@@ -120,7 +120,7 @@ test "persistIndexAndPathsAt: generation publish keeps readers off a torn pair" 
 
     // Completing publish flips the generation; load now sees B. No crest was
     // staged for B, so the loader reports null — never a stale A table.
-    _ = try persist.persistIndexAndPathsAt(gpa, io, root, &idx_b, &paths_b, &.{"src"}, null);
+    _ = try persist.persistIndexAndPathsAt(gpa, io, root, &idx_b, &paths_b, &.{"src"}, null, std.Io.Clock.now(.real, io).nanoseconds);
     var loaded_b = (try persist.loadAt(gpa, io, root, false)).?;
     defer loaded_b.deinit();
     try std.testing.expectEqual(@as(u32, 3), loaded_b.idx.doc_count);
@@ -144,7 +144,7 @@ test "persistIndexAndPathsAt: concurrent loaders never observe a mixed generatio
     const paths0 = [_][]const u8{"seed.txt"};
     var idx0 = try Index.build(gpa, &docs0);
     defer idx0.deinit();
-    _ = try persist.persistIndexAndPathsAt(gpa, io, root, &idx0, &paths0, &.{"."}, null);
+    _ = try persist.persistIndexAndPathsAt(gpa, io, root, &idx0, &paths0, &.{"."}, null, std.Io.Clock.now(.real, io).nanoseconds);
 
     const Worker = struct {
         root: []const u8,
@@ -181,7 +181,7 @@ test "persistIndexAndPathsAt: concurrent loaders never observe a mixed generatio
         var idx = try Index.build(gpa, if (n % 2 == 0) docs[0..2] else docs[0..3]);
         defer idx.deinit();
         const paths: []const []const u8 = if (n % 2 == 0) &paths_even else &paths_odd;
-        _ = try persist.persistIndexAndPathsAt(gpa, io, root, &idx, paths, &.{"."}, null);
+        _ = try persist.persistIndexAndPathsAt(gpa, io, root, &idx, paths, &.{"."}, null, std.Io.Clock.now(.real, io).nanoseconds);
     }
 
     t1.join();

@@ -56,11 +56,16 @@ fn postingLess(_: void, a: Posting, b: Posting) bool {
 }
 
 /// Emit each doc's distinct trigrams into `out` as postings tagged `base_doc + i`,
-/// reusing `scratch` (≥ longest doc). Returns the posting count written.
-fn emitPostings(docs: []const []const u8, base_doc: u32, scratch: []Trigram, out: []Posting) usize {
+/// reusing `scratch` (≥ longest doc) and an all-zero presence `bitmap`
+/// (`ngram.bitmap_words`, left all-zero again). Returns the posting count.
+/// Per-doc trigrams land UNORDERED: both callers order postings globally
+/// afterwards (serial: the whole-corpus `postingLess` sort; parallel: the
+/// stable 24-bit counting scatter), so the old per-doc sort was dead work —
+/// this is the O(bytes) extraction that halves the build's CPU bill.
+fn emitPostings(docs: []const []const u8, base_doc: u32, bitmap: []u64, scratch: []Trigram, out: []Posting) usize {
     var w: usize = 0;
     for (docs, 0..) |d, i| {
-        const k = ngram.extractSortedUnique(d, scratch);
+        const k = ngram.extractUniqueUnordered(d, bitmap, scratch);
         const doc: u32 = base_doc + @as(u32, @intCast(i));
         for (scratch[0..k]) |t| {
             out[w] = .{ .tri = t, .doc = doc };
@@ -117,8 +122,11 @@ pub const Index = struct {
         errdefer allocator.free(postings);
         const scratch = try allocator.alloc(Trigram, maxDocLen(docs));
         defer allocator.free(scratch);
+        const bitmap = try allocator.alloc(u64, ngram.bitmap_words);
+        defer allocator.free(bitmap);
+        @memset(bitmap, 0);
 
-        const final = postings[0..emitPostings(docs, 0, scratch, postings)];
+        const final = postings[0..emitPostings(docs, 0, bitmap, scratch, postings)];
         std.mem.sort(Posting, final, {}, postingLess);
         return allocator.realloc(postings, final.len) catch final;
     }
@@ -177,7 +185,15 @@ pub const Index = struct {
             return;
         };
         defer std.heap.page_allocator.free(scratch);
-        sh.n = emitPostings(sh.docs, sh.base_doc, scratch, sh.buf);
+        // One private 2 MiB presence bitmap per shard, zeroed once — each doc
+        // clears only its own bits on the way out (O(distinct), no re-memset).
+        const bitmap = std.heap.page_allocator.alloc(u64, ngram.bitmap_words) catch {
+            sh.err = true;
+            return;
+        };
+        defer std.heap.page_allocator.free(bitmap);
+        @memset(bitmap, 0);
+        sh.n = emitPostings(sh.docs, sh.base_doc, bitmap, scratch, sh.buf);
     }
 
     /// Counting-sort doc-major shards into one `(trigram, doc)` slice. O(n+radix).

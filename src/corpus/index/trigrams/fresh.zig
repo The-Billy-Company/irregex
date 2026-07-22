@@ -27,11 +27,12 @@ const ignore = @import("../../tree/ignore.zig");
 const scope = @import("../../scope/glob.zig");
 const path_utils = @import("../../scope/paths.zig");
 const bulkstat = @import("../../tree/bulkstat.zig");
+const journal = @import("../../tree/journal.zig");
 const persist = @import("persist.zig");
-const Index = @import("trigram.zig").Index;
 const Dir = std.Io.Dir;
 
 const anchor_path = corpus_mod.ArtifactPath("built.ns");
+const journal_tok_path = corpus_mod.ArtifactPath(journal.file_name);
 
 /// Persist the build instant (wall-clock ns) as the freshness anchor. Atomic
 /// (temp-then-rename, see `persist.writeAtomic`) so a concurrent reader never
@@ -42,6 +43,24 @@ pub fn writeAnchor(io: std.Io, built_ns: i128) !void {
     var buf: [8]u8 = undefined;
     std.mem.writeInt(i64, &buf, @intCast(built_ns), .little); // epoch-ns fits i64 until 2262
     try persist.writeAtomic(io, anchor_path.get(), &buf);
+}
+
+/// Persist the filesystem-journal since-token (macOS FSEvents id + device +
+/// mint instant) captured at full-build time. Best-effort: a missing token
+/// only costs the journal fast path — every freshness question still has the
+/// stat walk. Written AFTER the pair publishes, same as the anchor.
+pub fn writeJournalToken(io: std.Io, tok: journal.Token) void {
+    const bytes = journal.encode(tok);
+    persist.writeAtomic(io, journal_tok_path.get(), &bytes) catch {};
+}
+
+/// The persisted journal since-token, or null when absent/undecodable. `pub`
+/// so the resident daemon can boot-seed its annals from the same token the
+/// one-shot replay rides (`serve.zig`).
+pub fn readJournalToken(gpa: std.mem.Allocator, io: std.Io) ?journal.Token {
+    const b = Dir.cwd().readFileAlloc(io, journal_tok_path.get(), gpa, .limited(64)) catch return null;
+    defer gpa.free(b);
+    return journal.decode(b);
 }
 
 /// The anchor, or null when it is missing, truncated, or in the future. Query
@@ -86,10 +105,13 @@ pub const Candidates = struct {
 /// Files already in `paths` contribute their existing id (forced into the set
 /// even if the trigram filter skipped them); brand-new files are appended to
 /// `paths` (id = new index) so the caller's read path resolves them unchanged.
+/// Queries go through the LAYERED view (`Persisted.queryAny` — base ∪ codicil
+/// ∪ tombstones), so an amended generation's candidates are exactly as sound
+/// as a full rebuild's.
 pub fn candidates(
     gpa: std.mem.Allocator,
     io: std.Io,
-    idx: *const Index,
+    p: *const persist.Persisted,
     paths: *std.ArrayList([]const u8),
     filters: []const []const u8,
     roots: []const []const u8,
@@ -104,7 +126,7 @@ pub fn candidates(
     var usable = filters.len > 0;
     for (filters) |f| usable = usable and f.len >= 3;
     if (usable) {
-        if (idx.queryAny(gpa, filters)) |cand| {
+        if (p.queryAny(gpa, filters)) |cand| {
             defer gpa.free(cand);
             try ids.appendSlice(gpa, cand);
         } else |_| try seedAll(gpa, &ids, paths.items.len);
@@ -344,6 +366,119 @@ fn retainAdmitted(io: std.Io, roots: []const []const u8, a: std.mem.Allocator, o
     out.items.len = write;
 }
 
+fn journalDisabled() bool {
+    const v = std.c.getenv("GIST_NO_JOURNAL") orelse return false;
+    const s = std.mem.span(v);
+    return s.len != 0 and !std.mem.eql(u8, s, "0") and
+        !std.ascii.eqlIgnoreCase(s, "false") and !std.ascii.eqlIgnoreCase(s, "no");
+}
+
+/// Past this many replayed file paths the per-path confirm stats stop being
+/// decisively cheaper than the walk (and the base is stale enough that a
+/// compaction is due anyway).
+const max_journal_changes: usize = 8192;
+
+/// Does any DIRECTORY component of `path` sit in the corpus skip set? The
+/// walk never enters such subtrees, so a journaled change under one must not
+/// widen a candidate set. The basename is deliberately NOT checked — a FILE
+/// named like a skip dir is corpus-admissible, exactly as the walk sees it.
+fn underSkippedDir(path: []const u8) bool {
+    var rest = path;
+    while (std.mem.indexOfScalar(u8, rest, '/')) |i| {
+        if (haystack.isSkipDir(rest[0..i])) return true;
+        rest = rest[i + 1 ..];
+    }
+    return false;
+}
+
+/// The journal fast path: answer `walkFresh` from the OS filesystem journal
+/// (macOS FSEvents historical replay — `tree/journal.zig`) instead of the
+/// whole-tree stat walk. Sound by construction against the SAME local-VFS
+/// model the walk already assumes (header above): a token minted BEFORE the
+/// base build covers every vnode change in (token, now) ⊇ (built_ns, now),
+/// each replayed path is then re-confirmed by the walk's own metadata
+/// predicate (`needsLiveRead`), and every doubt — foreign device, dropped
+/// events, rescan hints, id wrap, deadline, flood — falls back to the walk.
+/// Walk-parity choices: directory events are dropped (the walk emits files
+/// only, and files inside a renamed directory keep pre-anchor metadata under
+/// either strategy); a path whose live lstat is not a regular file is dropped
+/// (the walk never yields symlinks/specials) — but an UNSTATTABLE path is
+/// kept, conservatively fresh, which is how deleted files become tombstones
+/// (a strict superset of the walk, which cannot see deletions at all).
+/// False ⇒ run the walk.
+fn journalFresh(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, built_ns: i128, a: std.mem.Allocator, out: *std.ArrayList([]const u8)) bool {
+    if (comptime !journal.supported) return false;
+    if (journalDisabled()) return false;
+    const trace = std.c.getenv("GIST_JOURNAL_TRACE") != null;
+    const t0 = std.Io.Clock.now(.awake, io).nanoseconds;
+    const tok = readJournalToken(gpa, io) orelse return false;
+    if (tok.captured_ns > built_ns) return false; // blind window before the anchor
+
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    var entries: std.ArrayList(journal.Entry) = .empty;
+    if (!journal.replay(gpa, io, roots, tok, arena.allocator(), &entries)) return false;
+    const t1 = std.Io.Clock.now(.awake, io).nanoseconds;
+    if (trace) std.debug.print("journal: replay {d:.1} ms ({d} entries)\n", .{ @as(f64, @floatFromInt(t1 - t0)) / 1e6, entries.items.len });
+    if (entries.items.len > max_journal_changes) return false;
+
+    const start = out.items.len;
+    journalCollect(gpa, io, built_ns, entries.items, a, out) catch {
+        out.items.len = start; // partial journal answer is no answer
+        return false;
+    };
+    const t2 = std.Io.Clock.now(.awake, io).nanoseconds;
+    if (trace) std.debug.print("journal: confirm {d:.1} ms ({d} kept)\n", .{ @as(f64, @floatFromInt(t2 - t1)) / 1e6, out.items.len - start });
+    retainAdmitted(io, roots, a, out, start);
+    if (trace) std.debug.print("journal: admit {d:.1} ms ({d} admitted)\n", .{ @as(f64, @floatFromInt(std.Io.Clock.now(.awake, io).nanoseconds - t2)) / 1e6, out.items.len - start });
+    return true;
+}
+
+/// Filter + confirm the raw replay into walk-shaped fresh paths (see
+/// `journalFresh` for the parity argument behind each drop/keep). Directory
+/// entries are dropped up front (the walk emits files only); everything else
+/// runs the shared confirm pipeline.
+fn journalCollect(gpa: std.mem.Allocator, io: std.Io, built_ns: i128, entries: []const journal.Entry, a: std.mem.Allocator, out: *std.ArrayList([]const u8)) !void {
+    var files: std.ArrayList([]const u8) = .empty;
+    defer files.deinit(gpa);
+    for (entries) |e| if (!e.is_dir) try files.append(gpa, e.path);
+    try confirmRaw(gpa, io, built_ns, files.items, a, out);
+}
+
+/// Confirm + admit an externally-sourced repo-relative changed-path list (the
+/// resident daemon's annals answer) into walk-shaped fresh paths — the same
+/// dedupe / skip-dir / live-stat (`needsLiveRead`) / ignore-admission pipeline
+/// the journal fast path applies to its replay, so a daemon answer and a
+/// journal answer describe the same corpus surface. The source has no kind
+/// information (the annals note directories too), which the live stat absorbs:
+/// a statable non-file drops, a vanished path stays conservatively fresh.
+/// False ⇒ partial (OOM); `out` is restored and the caller falls back.
+pub fn confirmChanged(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, since_ns: i128, raw: []const []const u8, a: std.mem.Allocator, out: *std.ArrayList([]const u8)) bool {
+    const start = out.items.len;
+    confirmRaw(gpa, io, since_ns, raw, a, out) catch {
+        out.items.len = start; // a partial answer is no answer
+        return false;
+    };
+    retainAdmitted(io, roots, a, out, start);
+    return true;
+}
+
+/// The shared confirm pipeline: dedupe, drop walk-skipped subtrees, then hold
+/// each path to the stat walk's own keep/drop predicate against live metadata.
+fn confirmRaw(gpa: std.mem.Allocator, io: std.Io, since_ns: i128, raw: []const []const u8, a: std.mem.Allocator, out: *std.ArrayList([]const u8)) !void {
+    var seen = std.StringHashMap(void).init(gpa);
+    defer seen.deinit();
+    for (raw) |path| {
+        if (underSkippedDir(path)) continue;
+        if ((try seen.getOrPut(path)).found_existing) continue;
+        const keep = if (Dir.cwd().statFile(io, path, .{ .follow_symlinks = false })) |st|
+            st.kind == .file and bulkstat.needsLiveRead(since_ns, st.mtime.nanoseconds, st.ctime.nanoseconds)
+        else |_|
+            true; // vanished/unstatable: conservatively fresh (deletion → tombstone)
+        if (keep) try out.append(a, try a.dupe(u8, path));
+    }
+}
+
 /// Stat-walk every root via a self-balancing work-stealing pool, then merge
 /// fresh paths into `a`. Replaces the old static one-thread-per-root split
 /// (see `buildWorkItems`'s doc comment for why): `target` asks for enough
@@ -353,6 +488,7 @@ fn retainAdmitted(io: std.Io, roots: []const []const u8, a: std.mem.Allocator, o
 /// work items mean one delayed thread stalls a sliver of the walk, not an
 /// entire multi-thousand-file root).
 fn walkFresh(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, built_ns: i128, a: std.mem.Allocator, out: *std.ArrayList([]const u8)) !void {
+    if (journalFresh(gpa, io, roots, built_ns, a, out)) return;
     const start = out.items.len;
     const ncpu = std.Thread.getCpuCount() catch 8;
     const items = try buildWorkItems(gpa, io, roots, built_ns, a, out, ncpu * 8);

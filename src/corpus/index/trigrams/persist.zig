@@ -16,10 +16,12 @@
 //! `paths.list` (or the reverse).
 
 const std = @import("std");
-const Index = @import("trigram.zig").Index;
+const trigram = @import("trigram.zig");
+const Index = trigram.Index;
 const corpus_mod = @import("../../tree/corpus.zig");
 const crest = @import("../../../kernel/primitives/crest.zig");
 const crest_sidecar = @import("../crest/sidecar.zig");
+const codicil_mod = @import("codicil.zig");
 const frame = @import("../frame/frame.zig");
 const Dir = std.Io.Dir;
 
@@ -87,15 +89,31 @@ pub fn writeAtomic(io: std.Io, sub_path: []const u8, data: []const u8) !void {
 /// files. Both are mmap'd: `idx`'s directory + body slices alias into `imap`
 /// (borrowed, no copy) and every `paths` slice aliases into `pmap`, so all
 /// lifetimes bind to the two mappings and `deinit` simply unmaps them.
+///
+/// A generation may additionally carry a CODICIL (`codicil.zig`) — the
+/// incremental amendment `gist index` publishes when only a few files changed.
+/// The loader folds it in here so every consumer sees ONE layered view:
+/// `paths` is extended with the codicil's new docs, `crest` becomes the merged
+/// owned table (dirty rows replaced, tombs never-prune), and candidate queries
+/// go through `queryLiteral`/`queryAny` below (base ∪ codicil ∪ tombstones)
+/// instead of `idx` directly. A missing/rejected codicil costs nothing: the
+/// base index answers exactly as before.
 pub const Persisted = struct {
     imap: Mapping,
     pmap: Mapping,
     idx: Index,
     /// The crest-sieve sidecar (`index/crest/sidecar.zig`), mapped zero-copy —
     /// null for a legacy cache or any blob `decode` rejects. Purely additive:
-    /// queries without it just lose the sieve, never correctness.
+    /// queries without it just lose the sieve, never correctness. When a
+    /// codicil is live this is instead an OWNED merged table (`crest_owned`).
     cmap: ?Mapping = null,
     crest: ?[]const crest.Vector = null,
+    /// True when `crest` is a gpa-owned codicil-merged table, not a map view.
+    crest_owned: bool = false,
+    /// The codicil mapping + decoded view (slices alias `codmap`); null when
+    /// this generation has none (a fresh full build, or a rejected blob).
+    codmap: ?Mapping = null,
+    cod: ?codicil_mod.Decoded = null,
     paths: std.ArrayList([]const u8),
     /// Heap copy of `roots.list` — null for a legacy pre-roots cache.
     roots_blob: ?[]u8,
@@ -103,18 +121,89 @@ pub const Persisted = struct {
     /// or `.` for a legacy cache — the sound superset). Query paths fold
     /// freshness over these, never a re-derived guess.
     roots: std.ArrayList([]const u8),
+    /// The published generation id this pair was loaded from (gpa-owned);
+    /// null for a legacy stable-alias cache. The amend path binds to it.
+    gen: ?[]u8 = null,
     gpa: std.mem.Allocator,
 
     pub fn deinit(self: *Persisted) void {
+        if (self.gen) |g| self.gpa.free(g);
         self.roots.deinit(self.gpa);
         if (self.roots_blob) |b| self.gpa.free(b);
         self.paths.deinit(self.gpa);
         self.idx.deinit(); // borrowed ⇒ frees nothing
+        if (self.crest_owned) self.gpa.free(@constCast(self.crest.?));
+        if (self.codmap) |m| std.posix.munmap(m);
         if (self.cmap) |m| std.posix.munmap(m);
         std.posix.munmap(self.pmap);
         std.posix.munmap(self.imap);
     }
+
+    /// Candidate docs that may contain `needle` across BOTH layers: base-index
+    /// hits ∪ codicil hits (mapped to global ids) ∪ tombstoned docs (their
+    /// base postings are stale, so they are always read, never elided).
+    /// Same contract as `Index.queryLiteral`: sorted ascending, caller-owned.
+    pub fn queryLiteral(self: *const Persisted, gpa: std.mem.Allocator, needle: []const u8) trigram.QueryError![]u32 {
+        const base = try self.idx.queryLiteral(gpa, needle);
+        const c = self.cod orelse return base;
+        const local = c.idx.queryLiteral(gpa, needle) catch |e| {
+            gpa.free(base);
+            return e;
+        };
+        defer gpa.free(local);
+        return mergeLayers(gpa, base, local, c.ids, c.tombs);
+    }
+
+    /// `Index.queryAny` across both layers (see `queryLiteral`).
+    pub fn queryAny(self: *const Persisted, gpa: std.mem.Allocator, needles: []const []const u8) trigram.QueryError![]u32 {
+        const base = try self.idx.queryAny(gpa, needles);
+        const c = self.cod orelse return base;
+        const local = c.idx.queryAny(gpa, needles) catch |e| {
+            gpa.free(base);
+            return e;
+        };
+        defer gpa.free(local);
+        return mergeLayers(gpa, base, local, c.ids, c.tombs);
+    }
 };
+
+/// Three-way sorted union: `base` (consumed/freed) ∪ `local` mapped through
+/// `map` (codicil local→global, both ascending ⇒ mapped stays ascending) ∪
+/// `tombs`. Deduplicated, ascending, caller-owned.
+fn mergeLayers(gpa: std.mem.Allocator, base: []u32, local: []const u32, map: []const u32, tombs: []const u32) trigram.QueryError![]u32 {
+    const out = gpa.alloc(u32, base.len + local.len + tombs.len) catch |e| {
+        gpa.free(base);
+        return e;
+    };
+    var i: usize = 0; // base cursor
+    var j: usize = 0; // local (codicil) cursor
+    var k: usize = 0; // tombs cursor
+    var w: usize = 0;
+    while (true) {
+        var next: u32 = std.math.maxInt(u32);
+        var any = false;
+        if (i < base.len) {
+            next = base[i];
+            any = true;
+        }
+        if (j < local.len and map[local[j]] <= next) {
+            next = map[local[j]];
+            any = true;
+        }
+        if (k < tombs.len and tombs[k] <= next) {
+            next = tombs[k];
+            any = true;
+        }
+        if (!any) break;
+        while (i < base.len and base[i] == next) i += 1;
+        while (j < local.len and map[local[j]] == next) j += 1;
+        while (k < tombs.len and tombs[k] == next) k += 1;
+        out[w] = next;
+        w += 1;
+    }
+    gpa.free(base);
+    return gpa.realloc(out, w) catch out[0..w];
+}
 
 /// Cold-load the persisted index + doc→path table by mmap (zero-copy). Returns
 /// null (after printing guidance) when no index has been built yet — the one
@@ -152,20 +241,24 @@ fn joinPath(buf: []u8, parts: anytype) ![]u8 {
     return std.fmt.bufPrint(buf, fmt, parts);
 }
 
-/// The four per-pair blob paths (index / paths / roots / crest sidecar) under
-/// one directory, formatted into caller-lifetime buffers.
+/// The per-pair blob paths (index / paths / roots / crest sidecar / codicil /
+/// base anchor) under one directory, formatted into caller-lifetime buffers.
 const PairFiles = struct {
-    bufs: [4][512]u8 = undefined,
+    bufs: [6][512]u8 = undefined,
     index: []const u8 = undefined,
     paths: []const u8 = undefined,
     roots: []const u8 = undefined,
     crest: []const u8 = undefined,
+    codicil: []const u8 = undefined,
+    basens: []const u8 = undefined,
 
     fn init(self: *PairFiles, dir: []const u8) !void {
         self.index = try joinPath(&self.bufs[0], .{ dir, "index.gist" });
         self.paths = try joinPath(&self.bufs[1], .{ dir, "paths.list" });
         self.roots = try joinPath(&self.bufs[2], .{ dir, "roots.list" });
         self.crest = try joinPath(&self.bufs[3], .{ dir, crest_sidecar.file_name });
+        self.codicil = try joinPath(&self.bufs[4], .{ dir, codicil_mod.file_name });
+        self.basens = try joinPath(&self.bufs[5], .{ dir, codicil_mod.base_ns_name });
     }
 };
 
@@ -177,7 +270,7 @@ fn readGenerationFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !?[]
     return if (trimmed.len == 0) null else try gpa.dupe(u8, trimmed);
 }
 
-fn loadMappedPair(gpa: std.mem.Allocator, io: std.Io, pf: *const PairFiles, comptime verbose: bool) !?Persisted {
+fn loadMappedPair(gpa: std.mem.Allocator, io: std.Io, pf: *const PairFiles, gen: ?[]const u8, comptime verbose: bool) !?Persisted {
     const imap = mmapFile(io, pf.index) catch {
         if (verbose) std.debug.print("no index at {s} — run `gist index` first\n", .{pf.index});
         return null;
@@ -221,12 +314,52 @@ fn loadMappedPair(gpa: std.mem.Allocator, io: std.Io, pf: *const PairFiles, comp
     // Crest sidecar: optional, fail-closed. A miss or a rejected blob costs
     // only the sieve (the query still answers exactly), so both read as null.
     var cmap: ?Mapping = mmapFile(io, pf.crest) catch null;
-    const crest_view: ?[]const crest.Vector = if (cmap) |m| crest_sidecar.decode(m, idx.doc_count) else null;
+    var crest_view: ?[]const crest.Vector = if (cmap) |m| crest_sidecar.decode(m, idx.doc_count) else null;
     if (cmap != null and crest_view == null) {
         std.posix.munmap(cmap.?);
         cmap = null;
     }
-    return .{ .imap = imap, .pmap = pmap, .idx = idx, .cmap = cmap, .crest = crest_view, .paths = paths, .roots_blob = roots_blob, .roots = roots, .gpa = gpa };
+
+    // Codicil: optional, fail-closed, and bound to the EXACT generation id (a
+    // legacy stable-alias load has no gen, so it never sees one). On admit the
+    // layered view is materialized here once: paths extended with the new
+    // docs, crest replaced by an owned merged table whose codicil rows are the
+    // recomputed vectors (tombstones never-prune) — so every consumer's
+    // per-doc lookup stays a plain slice index.
+    const gen_owned: ?[]u8 = if (gen) |g| try gpa.dupe(u8, g) else null;
+    errdefer if (gen_owned) |g| gpa.free(g);
+    var codmap: ?Mapping = null;
+    var cod: ?codicil_mod.Decoded = null;
+    var crest_owned = false;
+    errdefer if (codmap) |m| std.posix.munmap(m);
+    if (gen) |g| blk: {
+        const m = mmapFile(io, pf.codicil) catch break :blk;
+        const d = codicil_mod.decode(m, idx.doc_count, g) orelse {
+            std.posix.munmap(m);
+            break :blk;
+        };
+        const new_paths = frame.splitNulExact(gpa, d.new_paths_blob, d.n_new, true) catch {
+            std.posix.munmap(m);
+            break :blk;
+        };
+        defer gpa.free(new_paths);
+        try paths.appendSlice(gpa, new_paths); // slices alias the codicil map
+        codmap = m;
+        cod = d;
+        if (crest_view) |base_table| {
+            const merged = try gpa.alloc(crest.Vector, paths.items.len);
+            @memcpy(merged[0..base_table.len], base_table);
+            for (merged[base_table.len..]) |*v| v.* = codicil_mod.never_prune;
+            for (d.ids, d.rows) |gid, row| merged[gid] = row;
+            for (d.tombs) |gid| merged[gid] = codicil_mod.never_prune;
+            std.posix.munmap(cmap.?);
+            cmap = null;
+            crest_view = merged;
+            crest_owned = true;
+        }
+    }
+
+    return .{ .imap = imap, .pmap = pmap, .idx = idx, .cmap = cmap, .crest = crest_view, .crest_owned = crest_owned, .codmap = codmap, .cod = cod, .paths = paths, .roots_blob = roots_blob, .roots = roots, .gen = gen_owned, .gpa = gpa };
 }
 
 /// Load from an arbitrary cache root (production uses `corpus.outDir()`; tests
@@ -240,7 +373,7 @@ pub fn loadAt(gpa: std.mem.Allocator, io: std.Io, out_dir: []const u8, comptime 
         var gen_dir_buf: [512]u8 = undefined;
         var pf: PairFiles = .{};
         try pf.init(try joinPath(&gen_dir_buf, .{ out_dir, gens_subdir, gen }));
-        const loaded = try loadMappedPair(gpa, io, &pf, verbose) orelse return null;
+        const loaded = try loadMappedPair(gpa, io, &pf, gen, verbose) orelse return null;
         // Seqlock-style recheck: a concurrent publisher may have advanced
         // pair.gen after we started mapping. Reject rather than mix gens.
         const gen_after = try readGenerationFile(gpa, io, gen_path);
@@ -258,11 +391,13 @@ pub fn loadAt(gpa: std.mem.Allocator, io: std.Io, out_dir: []const u8, comptime 
     // Legacy caches (pre-generation publish): stable paths only.
     var pf: PairFiles = .{};
     try pf.init(out_dir);
-    return loadMappedPair(gpa, io, &pf, verbose);
+    return loadMappedPair(gpa, io, &pf, null, verbose);
 }
 
 /// Serialize + generation-publish the index/path/roots triple (plus the crest
-/// sidecar when the builder computed one) under `out_dir`. Returns the
+/// sidecar when the builder computed one) under `out_dir`, and record
+/// `built_ns` as the generation's BASE instant (`base.ns` — what a later
+/// `gist index` amend measures "changed since" against). Returns the
 /// posting-blob byte length.
 pub fn persistIndexAndPathsAt(
     gpa: std.mem.Allocator,
@@ -272,11 +407,12 @@ pub fn persistIndexAndPathsAt(
     paths: []const []const u8,
     roots: []const []const u8,
     crest_vectors: ?[]const crest.Vector,
+    built_ns: i128,
 ) !usize {
     try Dir.cwd().createDirPath(io, out_dir);
 
     var gen_buf: [32]u8 = undefined;
-    const gen = try std.fmt.bufPrint(&gen_buf, "{x}", .{@as(u64, @truncate(@as(u128, @intCast(std.Io.Clock.now(.real, io).nanoseconds))))});
+    const gen = try newGenId(io, &gen_buf);
 
     var gen_dir_buf: [512]u8 = undefined;
     const gen_dir = try joinPath(&gen_dir_buf, .{ out_dir, gens_subdir, gen });
@@ -304,16 +440,34 @@ pub fn persistIndexAndPathsAt(
 
     // Stage all blobs under the unpublished generation directory first.
     try writePairBlobs(io, gen_dir, blob, pl.items, rl.items, cblob);
+    var ns_buf: [8]u8 = undefined;
+    std.mem.writeInt(i64, &ns_buf, @intCast(built_ns), .little);
+    var pf_gen: PairFiles = .{};
+    try pf_gen.init(gen_dir);
+    try writeAtomic(io, pf_gen.basens, &ns_buf);
 
     // Single atomic publish of the pair.
     var gen_path_buf: [512]u8 = undefined;
     const gen_path = try joinPath(&gen_path_buf, .{ out_dir, "pair.gen" });
     try writeAtomic(io, gen_path, gen);
 
-    // Stable aliases for status / bench tooling (after publish; load prefers gens/).
-    try writePairBlobs(io, out_dir, blob, pl.items, rl.items, cblob);
+    // Stable aliases for status / bench tooling (after publish; load prefers
+    // gens/). Hardlinked from the staged generation — the blobs are already on
+    // disk, so re-WRITING ~80 MiB here was pure duplicate I/O; a link + rename
+    // is atomic per file and byte-identical. Any failure falls back to the
+    // proven full write (cross-FS out_dir, restrictive mounts).
+    linkPairBlobs(io, gen_dir, out_dir, gen, cblob.len > 0) catch
+        try writePairBlobs(io, out_dir, blob, pl.items, rl.items, cblob);
 
     return blob.len;
+}
+
+/// A fresh generation id: hex wall-clock ns, unique per publish on one box.
+/// Public so the amend path can mint the id BEFORE encoding its codicil —
+/// the blob embeds the generation it publishes as (`codicil.decode` binds it
+/// to the directory it is loaded from).
+pub fn newGenId(io: std.Io, buf: *[32]u8) ![]const u8 {
+    return std.fmt.bufPrint(buf, "{x}", .{@as(u64, @truncate(@as(u128, @intCast(std.Io.Clock.now(.real, io).nanoseconds))))});
 }
 
 /// Atomically write the index/paths/roots blobs (plus the crest sidecar when
@@ -327,6 +481,30 @@ fn writePairBlobs(io: std.Io, dir: []const u8, blob: []const u8, pl: []const u8,
     if (cblob.len > 0) try writeAtomic(io, pf.crest, cblob);
 }
 
+/// Replace `dest` with a hardlink to `src` atomically: link to a unique temp
+/// name, then rename over the destination (POSIX rename atomicity — the same
+/// guarantee `writeAtomic` provides, without rewriting the bytes).
+fn linkAtomic(io: std.Io, src: []const u8, dest: []const u8, tag: []const u8) !void {
+    var tmp_buf: [512]u8 = undefined;
+    const tmp = try std.fmt.bufPrint(&tmp_buf, "{s}.{s}.lnk", .{ dest, tag });
+    Dir.cwd().deleteFile(io, tmp) catch {};
+    try Dir.cwd().hardLink(src, Dir.cwd(), tmp, io, .{});
+    errdefer Dir.cwd().deleteFile(io, tmp) catch {};
+    try Dir.cwd().rename(tmp, Dir.cwd(), dest, io);
+}
+
+/// Hardlink the stable aliases at the staged generation's blobs.
+fn linkPairBlobs(io: std.Io, gen_dir: []const u8, out_dir: []const u8, tag: []const u8, with_crest: bool) !void {
+    var src: PairFiles = .{};
+    try src.init(gen_dir);
+    var dst: PairFiles = .{};
+    try dst.init(out_dir);
+    try linkAtomic(io, src.index, dst.index, tag);
+    try linkAtomic(io, src.paths, dst.paths, tag);
+    try linkAtomic(io, src.roots, dst.roots, tag);
+    if (with_crest) try linkAtomic(io, src.crest, dst.crest, tag);
+}
+
 pub fn persistIndexAndPaths(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -334,6 +512,93 @@ pub fn persistIndexAndPaths(
     paths: []const []const u8,
     roots: []const []const u8,
     crest_vectors: ?[]const crest.Vector,
+    built_ns: i128,
 ) !usize {
-    return persistIndexAndPathsAt(gpa, io, corpus_mod.outDir(), idx, paths, roots, crest_vectors);
+    return persistIndexAndPathsAt(gpa, io, corpus_mod.outDir(), idx, paths, roots, crest_vectors, built_ns);
+}
+
+/// The base build instant of generation `gen` (`gens/<gen>/base.ns`), or null
+/// when missing/torn/future — the amend path then falls back to a full build.
+pub fn readBaseNs(gpa: std.mem.Allocator, io: std.Io, out_dir: []const u8, gen: []const u8) ?i128 {
+    var buf: [512]u8 = undefined;
+    var pf: PairFiles = .{};
+    const dir = joinPath(&buf, .{ out_dir, gens_subdir, gen }) catch return null;
+    pf.init(dir) catch return null;
+    const b = Dir.cwd().readFileAlloc(io, pf.basens, gpa, .limited(64)) catch return null;
+    defer gpa.free(b);
+    if (b.len < 8) return null;
+    const ns: i128 = std.mem.readInt(i64, b[0..8], .little);
+    if (ns <= 0 or ns > std.Io.Clock.now(.real, io).nanoseconds) return null;
+    return ns;
+}
+
+/// The build roots of generation `gen` (`gens/<gen>/roots.list`), read cheaply
+/// — no index mmap, no doc path-table parse. This is what lets a no-change
+/// `gist index` amend answer without ever loading the pair. Null when the
+/// list is missing/empty/torn (legacy layout or a torn publish; the amend
+/// caller falls back to the full build).
+pub const RootsList = struct {
+    blob: []u8,
+    roots: std.ArrayList([]const u8), // slices alias `blob`
+    gpa: std.mem.Allocator,
+    pub fn deinit(self: *RootsList) void {
+        self.roots.deinit(self.gpa);
+        self.gpa.free(self.blob);
+    }
+};
+
+pub fn readRootsAt(gpa: std.mem.Allocator, io: std.Io, out_dir: []const u8, gen: []const u8) ?RootsList {
+    var buf: [512]u8 = undefined;
+    var pf: PairFiles = .{};
+    const dir = joinPath(&buf, .{ out_dir, gens_subdir, gen }) catch return null;
+    pf.init(dir) catch return null;
+    const blob = Dir.cwd().readFileAlloc(io, pf.roots, gpa, .limited(1 << 16)) catch return null;
+    var roots = frame.parsePathTable(gpa, blob) catch {
+        gpa.free(blob);
+        return null;
+    };
+    if (roots.items.len == 0) {
+        roots.deinit(gpa);
+        gpa.free(blob);
+        return null;
+    }
+    return .{ .blob = blob, .roots = roots, .gpa = gpa };
+}
+
+/// Publish a codicil as the NEW generation `gen` (pre-minted via `newGenId`
+/// and embedded in `blob`, so `codicil.decode` binds the blob to the exact
+/// directory it is loaded from): hardlink (or copy) the base generation's
+/// blobs forward unchanged, stage `blob` as `codicil.bin`, then flip
+/// `pair.gen` — the same single-file atomic publish full builds use, so
+/// concurrent readers (and both resident daemons, which key reloads on the
+/// generation id) observe either the old pair or the complete amended one.
+/// The stable aliases still point at the base blobs, which ARE this
+/// generation's base — status/bench size accounting stays truthful.
+pub fn publishCodicil(io: std.Io, out_dir: []const u8, base_gen: []const u8, gen: []const u8, blob: []const u8) !void {
+    var base_dir_buf: [512]u8 = undefined;
+    const base_dir = try joinPath(&base_dir_buf, .{ out_dir, gens_subdir, base_gen });
+    var new_dir_buf: [512]u8 = undefined;
+    const new_dir = try joinPath(&new_dir_buf, .{ out_dir, gens_subdir, gen });
+    try Dir.cwd().createDirPath(io, new_dir);
+
+    var src: PairFiles = .{};
+    try src.init(base_dir);
+    var dst: PairFiles = .{};
+    try dst.init(new_dir);
+    try linkOrCopy(io, src.index, dst.index);
+    try linkOrCopy(io, src.paths, dst.paths);
+    try linkOrCopy(io, src.roots, dst.roots);
+    try linkOrCopy(io, src.basens, dst.basens);
+    linkOrCopy(io, src.crest, dst.crest) catch {}; // sidecar is optional
+
+    try writeAtomic(io, dst.codicil, blob);
+
+    var gen_path_buf: [512]u8 = undefined;
+    const gen_path = try joinPath(&gen_path_buf, .{ out_dir, "pair.gen" });
+    try writeAtomic(io, gen_path, gen);
+}
+
+fn linkOrCopy(io: std.Io, src: []const u8, dest: []const u8) !void {
+    Dir.cwd().hardLink(src, Dir.cwd(), dest, io, .{}) catch
+        try Dir.cwd().copyFile(src, Dir.cwd(), dest, io, .{});
 }
