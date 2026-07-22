@@ -13,23 +13,24 @@ unable to hide.
 
 ---
 
-## 1. Kernel unit tests — `src/math/crest_test.zig` (rides `zig build test`)
+## 1. Kernel unit tests — `src/kernel/primitives/crest_test.zig`
 
 Hand-computed oracles against the calculus, one test per load-bearing rule:
 
-| test                                     | pins                                                                                                                                             |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| crest vector: longest per-class run      | `ρ(d)` against hand-counted runs, all 8 classes, including the 0-run absent class                                                                |
-| forced-crest: class repetition           | `[0-9a-f]{8}` ⇒ ĝ(hex)=8 and every superclass (word) inherits                                                                                    |
-| forced-crest: concatenation straddle     | `S(E₁)+P(E₂)` — the cross-seam term — against hand-derived values, incl. the `all_in` guard collapsing it                                        |
-| forced-crest: alternation                | componentwise min; `all_in` survives only if both branches are all-in                                                                            |
-| soundness by degradation                 | backreferences, lookaround, POSIX classes, octal escapes, unknown escapes ⇒ `ĝ = 0⃗` (never a guess)                                             |
-| escapes                                  | `\d`/`\w`/`\s` (ASCII mode), `\n`/`\t`/`\r`/`\f`/`\v` as literal bytes, class-internal escape-range refusal                                      |
-| unicode mode certification               | in `.unicode = true`, `\d`/`\w`/`\s` and any class reaching ≥ 0x80 contribute ĝ=0 (Alphabet Contract); pure-ASCII explicit classes still certify |
-| tightness gap is under-prune             | `[0-9](?:)[0-9]`: ĝ=1 < g=2 — incompleteness demonstrated as _under_-pruning, pinned so a "fix" that over-tightens fails                         |
-| sieve decision + saturation monotonicity | `pruned` at the u16 saturation boundary: saturated crests only ever _survive_ more, never prune more                                             |
+| test                  | pins                                                                                  |
+| --------------------- | ------------------------------------------------------------------------------------- |
+| document crest        | hand-counted runs for all eight classes                                               |
+| class repetition      | `[0-9a-f]{8}` forces hex and word runs of 8                                           |
+| concatenation         | saturated seam addition and exact epsilon identity                                    |
+| optional certificates | digit and non-digit optionals cannot be confused across `?`, `*`, `{0,m}`, or `{0,0}` |
+| alternation           | componentwise minima and conjunctive `only_c_cert`                                    |
+| degradation           | unsupported syntax and caseless matching yield `0⃗`                                   |
+| escapes and Unicode   | real escaped bytes plus the byte/codepoint alphabet contract                          |
+| counted repetition    | malformed bounds degrade; 70,000 copies saturate without a 4,096 clamp                |
+| profile constructors  | epsilon certifies every class; unknown certifies none                                 |
+| common saturation     | 70,000-byte query and document values both compare as 65,535                          |
 
-## 2. Sidecar codec tests — `src/index/crest/sidecar_test.zig` (rides `zig build test`)
+## 2. Sidecar codec tests — `src/corpus/index/crest/sidecar_test.zig`
 
 The persistence layer is where silent corruption would become a wrong answer
 years later, so it gets the adversarial treatment the trigram loader gets:
@@ -88,7 +89,7 @@ false negative breaks parity loudly.
 
 ## 5. Independent exact-automaton oracle (`spikes/ridge-spectrum/ridge.py`)
 
-The tightness claim (PROOF.md §3.5) is refereed, not asserted, by an
+The tightness measurement (PROOF.md §3.6) is refereed, not asserted, by an
 **independent** implementation of the exact forced run `g(R,C)` — built from a
 _separate_ Thompson NFA compiler, so the AST calculus never grades itself:
 
@@ -97,8 +98,9 @@ _separate_ Thompson NFA compiler, so the AST calculus never grades itself:
   `r` — a textbook min-over-a-max-automaton value (Kuperberg–Vanden Boom;
   Mohri–Riley N-best for the rank), claimed by neither Crest nor Ridge.
 - `ridge.py --oracle` asserts `ĝ_i ≤ g_i` on thousands of random (regex, class,
-  rank) triples: **sound on every one**, and the shipped `q=1` calculus is
-  **98.0% exactly tight**, mean gap `g − ĝ = 0.043`.
+  rank) triples. Its 2026-07-19 pre-repair run was sound on every case and
+  98.0% tight (mean gap 0.043); rerun it before assigning that percentage to
+  the repaired epsilon/optional-certificate calculus.
 - `ridge.py --selftest` runs the Spectrum Sieve property suite — **160,000**
   (regex, text) pairs, oracle = Python `re`, `matched ⇒ ¬pruned`, 0 false
   negatives.

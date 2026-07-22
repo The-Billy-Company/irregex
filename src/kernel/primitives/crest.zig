@@ -1,3 +1,4 @@
+// MONOLITHIC: Crest's document signature, query calculus, and parser co-maintain one soundness proof.
 //! Crest — the forced-class-run necessary condition (research/crest/PROOF.md).
 //!
 //! The contiguity bound the trigram index concedes: a literal-free
@@ -85,7 +86,6 @@ fn isSpace(b: u8) bool {
 fn isPunct(b: u8) bool {
     return b >= '!' and b <= '~' and !isWord(b);
 }
-
 fn classMember(c: Class, b: u8) bool {
     return switch (c) {
         .digit => isDigit(b),
@@ -99,8 +99,8 @@ fn classMember(c: Class, b: u8) bool {
     };
 }
 
-/// `membership[b]` has bit `1<<i` set ⟺ byte b ∈ class i. Comptime table —
-/// the crest pass and the atom certification share one source of truth.
+/// `membership[b]` bit `1<<i` is set ⟺ byte b ∈ class i; Crest and atom
+/// certification share this comptime source of truth.
 pub const membership: [256]u8 = blk: {
     @setEvalBranchQuota(20_000);
     var m: [256]u8 = @splat(0);
@@ -114,8 +114,8 @@ pub const membership: [256]u8 = blk: {
     break :blk m;
 };
 
-/// The crest vector ρ(d): longest per-class run, one forward pass, O(|d|·k)
-/// with the k-lane inner update comptime-unrolled over the bit table.
+/// The crest vector ρ(d): longest per-class run in one O(|d|·k) forward pass,
+/// with its k-lane update comptime-unrolled over the bit table.
 pub fn crest(doc: []const u8) Vector {
     var best: Vector = @splat(0);
     var cur: [K]u32 = @splat(0);
@@ -135,9 +135,8 @@ pub fn crest(doc: []const u8) Vector {
     return best;
 }
 
-/// The sieve decision: prune ⟺ some class's crest falls short of the forced
-/// crest. k integer compares — never a byte scan. Sound by the Sieve Theorem
-/// (ρ(d,C) ≥ g(R,C) ≥ ĝ(R,C) whenever R matches in d).
+/// Prune ⟺ some class crest falls short of its forced crest: k integer
+/// compares, no byte scan. Sound because a match implies ρ(d,C) ≥ g ≥ ĝ.
 pub fn pruned(doc_crest: Vector, ghat_vec: Vector) bool {
     inline for (0..K) |i| {
         if (doc_crest[i] < ghat_vec[i]) return true;
@@ -145,30 +144,24 @@ pub fn pruned(doc_crest: Vector, ghat_vec: Vector) bool {
     return false;
 }
 
-/// How `ghat` must interpret the pattern — mirrors the engine flags that change
-/// byte-level match semantics. Wrong flags here would be unsound; the callers
-/// thread the ALREADY-RESOLVED engine options (post smart-case).
+/// Pattern semantics that alter byte membership; callers pass the engine's
+/// already-resolved flags (post smart-case).
 pub const Opts = struct {
-    /// rg-parity Unicode mode: `\d`/`\w`/`\s` are codepoint classes (force
-    /// nothing here); explicit ASCII classes certify byte-exactly over UTF-8.
+    /// Unicode `\d`/`\w`/`\s` force nothing; explicit ASCII remains byte-exact.
     unicode: bool = true,
     /// `-i` (or resolved `-S`): the fold changes byte membership ⇒ decline all.
     caseless: bool = false,
 };
 
-/// Parse `pattern` and return its forced-crest vector ĝ(R). Sound by
-/// degradation: a caseless query, an unsupported construct, or trailing
-/// garbage yields 0⃗ — no pruning, never a wrong prune.
+/// Return ĝ(R); caseless, unsupported, or trailing garbage yields 0⃗.
 pub fn ghat(pattern: []const u8, opts: Opts) Vector {
     if (opts.caseless) return zero_vector;
     var p = Parser{ .s = pattern, .unicode = opts.unicode };
-    const prof = p.parseAll() catch return zero_vector;
+    const prof = p.parseAll() catch Profile.unknown();
     return prof.F;
 }
 
-/// ĝ over several patterns searched together (multi `-e` = alternation): the
-/// adversary picks the weakest pattern, so the forced crest is the
-/// componentwise min. Empty input ⇒ 0⃗.
+/// Multi-`-e` means alternation: componentwise min, or 0⃗ for no patterns.
 pub fn ghatMany(patterns: []const []const u8, opts: Opts) Vector {
     if (patterns.len == 0) return zero_vector;
     var out = ghat(patterns[0], opts);
@@ -185,34 +178,37 @@ pub fn className(i: usize) []const u8 {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// The forced-crest calculus (PROOF.md §3). Each AST node carries a per-class
-// summary whose fields are SOUND LOWER BOUNDS over L(node) (except `all_in`,
-// which is exact). Composition mirrors the max-subarray prefix/suffix/best
-// summary, inverted so the adversary MINIMIZES the forced run. All arithmetic
-// saturates at maxInt(u16) — monotone, so saturation never over-claims.
+// Forced-crest calculus (PROOF.md §3): numeric fields are sound lower bounds;
+// `only_c_cert` is one-sided. This is max-subarray prefix/suffix/best inverted
+// for adversarial minima, entirely in the document's saturated u16 domain.
 // ─────────────────────────────────────────────────────────────────────────────
+
+fn satAdd(a: u16, b: u16) u16 {
+    const sum: u32 = @as(u32, a) + @as(u32, b);
+    return @intCast(@min(sum, std.math.maxInt(u16)));
+}
 
 pub const Profile = struct {
     F: Vector, // forced longest run:  F ≤ min_{w∈L} ρ(w,C)
     P: Vector, // forced leading run
     S: Vector, // forced trailing run
     min_len: u16, // forced minimum word length (saturating)
-    all_in: [K]bool, // EXACT: every w∈L is composed solely of class-C bytes
+    only_c_cert: [K]bool, // true ⇒ every w∈L is composed solely of class-C bytes
 
-    pub const empty: Profile = .{
-        .F = @splat(0),
-        .P = @splat(0),
-        .S = @splat(0),
-        .min_len = 0,
-        .all_in = @splat(false),
-    };
+    /// Language {ε}: the concatenation identity, certified for every class.
+    pub fn epsilon() Profile {
+        return .{ .F = @splat(0), .P = @splat(0), .S = @splat(0), .min_len = 0, .only_c_cert = @splat(true) };
+    }
 
-    /// One mandatory unit drawn from byte-set `members` (a literal, a class, or
-    /// `.`). Certifies class C ⟺ every allowed byte ∈ C — the adversary cannot
-    /// escape. `certifiable=false` (a codepoint-class atom under Unicode mode)
-    /// forces length but never class membership.
+    /// No usable semantics: numerically harmless and never licenses a seam.
+    pub fn unknown() Profile {
+        return .{ .F = @splat(0), .P = @splat(0), .S = @splat(0), .min_len = 0, .only_c_cert = @splat(false) };
+    }
+
+    /// One mandatory unit from `members`. It certifies C iff every allowed byte
+    /// is in C; an uncertifiable Unicode codepoint atom forces length only.
     fn atom(members: *const [256]bool, certifiable: bool) Profile {
-        var p: Profile = .{ .F = @splat(0), .P = @splat(0), .S = @splat(0), .min_len = 1, .all_in = @splat(false) };
+        var p: Profile = .{ .F = @splat(0), .P = @splat(0), .S = @splat(0), .min_len = 1, .only_c_cert = @splat(false) };
         if (!certifiable) return p;
         inline for (0..K) |i| {
             var all = true;
@@ -226,47 +222,54 @@ pub const Profile = struct {
                 p.F[i] = 1;
                 p.P[i] = 1;
                 p.S[i] = 1;
-                p.all_in[i] = true;
+                p.only_c_cert[i] = true;
             }
         }
         return p;
     }
 
-    /// Concatenation E₁·E₂. The only cross-boundary term is `S₁+P₂` (a suffix
-    /// run of E₁'s worst word abutting a prefix run of E₂'s worst word); the
-    /// `all_in?` guards are exact, so when a side can emit an out-of-class byte
-    /// the straddle safely collapses to the non-crossing bound.
+    /// E₁·E₂: S₁+P₂ is the only seam term; certificates alone license extension.
     fn concat(a: Profile, b: Profile) Profile {
-        var r: Profile = .{ .F = undefined, .P = undefined, .S = undefined, .min_len = a.min_len +| b.min_len, .all_in = undefined };
+        var r: Profile = .{ .F = undefined, .P = undefined, .S = undefined, .min_len = satAdd(a.min_len, b.min_len), .only_c_cert = undefined };
         inline for (0..K) |i| {
-            const straddle = a.S[i] +| b.P[i];
+            const straddle = satAdd(a.S[i], b.P[i]);
             r.F[i] = @max(@max(a.F[i], b.F[i]), straddle);
-            r.P[i] = if (a.all_in[i]) a.min_len +| b.P[i] else a.P[i];
-            r.S[i] = if (b.all_in[i]) b.min_len +| a.S[i] else b.S[i];
-            r.all_in[i] = a.all_in[i] and b.all_in[i];
+            r.P[i] = if (a.only_c_cert[i]) satAdd(a.min_len, b.P[i]) else a.P[i];
+            r.S[i] = if (b.only_c_cert[i]) satAdd(b.min_len, a.S[i]) else b.S[i];
+            r.only_c_cert[i] = a.only_c_cert[i] and b.only_c_cert[i];
         }
         return r;
     }
 
     /// Alternation E₁|E₂ — the adversary picks the branch minimizing each field.
     fn alt(a: Profile, b: Profile) Profile {
-        var r: Profile = .{ .F = undefined, .P = undefined, .S = undefined, .min_len = @min(a.min_len, b.min_len), .all_in = undefined };
+        var r: Profile = .{ .F = undefined, .P = undefined, .S = undefined, .min_len = @min(a.min_len, b.min_len), .only_c_cert = undefined };
         inline for (0..K) |i| {
             r.F[i] = @min(a.F[i], b.F[i]);
             r.P[i] = @min(a.P[i], b.P[i]);
             r.S[i] = @min(a.S[i], b.S[i]);
-            r.all_in[i] = a.all_in[i] and b.all_in[i];
+            r.only_c_cert[i] = a.only_c_cert[i] and b.only_c_cert[i];
         }
         return r;
     }
 
-    /// Repetition keeps only the `n` FORCED copies (the optional m−n are
-    /// emptied by the adversary). n=0 (`*`,`?`,`{0,m}`) forces nothing.
-    fn repeat(p: Profile, n: u32) Profile {
-        if (n == 0) return .empty;
-        var out = p;
-        var i: u32 = 1;
-        while (i < n) : (i += 1) out = concat(out, p);
+    fn concatPower(p: Profile, count: u32) Profile {
+        var n = count;
+        var out = Profile.epsilon();
+        var base = p;
+        while (n != 0) : (n >>= 1) {
+            if ((n & 1) != 0) out = concat(out, base);
+            if (n > 1) base = concat(base, base);
+        }
+        return out;
+    }
+
+    /// Numeric bounds use mandatory copies; the certificate covers all copies.
+    fn repeat(p: Profile, lower: u32, upper: ?u32) Profile {
+        std.debug.assert(upper == null or upper.? >= lower);
+        var out = concatPower(p, lower);
+        const can_emit_copy = upper == null or upper.? > 0;
+        inline for (0..K) |i| out.only_c_cert[i] = !can_emit_copy or p.only_c_cert[i];
         return out;
     }
 };
@@ -298,7 +301,7 @@ const Parser = struct {
     }
 
     fn concatenation(self: *Parser) ParseError!Profile {
-        var out: Profile = .empty;
+        var out = Profile.epsilon();
         while (self.i < self.s.len and self.peek() != '|' and self.peek() != ')') {
             out = Profile.concat(out, try self.quantified());
         }
@@ -308,30 +311,45 @@ const Parser = struct {
     fn quantified(self: *Parser) ParseError!Profile {
         const base = try self.atom();
         switch (self.peek()) {
-            '*', '?' => {
+            '*' => {
                 self.i += 1;
-                return Profile.repeat(base, 0);
+                return Profile.repeat(base, 0, null);
+            },
+            '?' => {
+                self.i += 1;
+                return Profile.repeat(base, 0, 1);
             },
             '+' => {
                 self.i += 1;
-                return base; // ≥1 forced copy
+                return Profile.repeat(base, 1, null);
             },
             '{' => return self.counted(base),
             else => return base,
         }
     }
 
-    /// `{n}` / `{n,}` / `{n,m}` — only the forced floor `n` matters. A cap on
-    /// the repeat count guards O(n) profile folding against `{100000}` abuse
-    /// (declining large n keeps ĝ smaller — sound).
+    /// `{n}` / `{n,}` / `{n,m}`. Exponentiation by squaring makes the full u32
+    /// range cheap; malformed bounds decline the whole Crest analysis.
     fn counted(self: *Parser, base: Profile) ParseError!Profile {
         const close = std.mem.indexOfScalarPos(u8, self.s, self.i, '}') orelse return error.Unsupported;
         const body = self.s[self.i + 1 .. close];
         self.i = close + 1;
         const comma = std.mem.indexOfScalar(u8, body, ',');
-        const lo_str = if (comma) |c| body[0..c] else body;
-        const lo = std.fmt.parseInt(u32, std.mem.trim(u8, lo_str, " "), 10) catch return error.Unsupported;
-        return Profile.repeat(base, @min(lo, 4096));
+        if (comma) |c| {
+            if (std.mem.indexOfScalarPos(u8, body, c + 1, ',') != null) return error.Unsupported;
+            const lo = try parseCount(body[0..c]);
+            const hi = if (body[c + 1 ..].len == 0) null else try parseCount(body[c + 1 ..]);
+            if (hi) |n| if (n < lo) return error.Unsupported;
+            return Profile.repeat(base, lo, hi);
+        }
+        const count = try parseCount(body);
+        return Profile.repeat(base, count, count);
+    }
+
+    fn parseCount(s: []const u8) ParseError!u32 {
+        if (s.len == 0) return error.Unsupported;
+        for (s) |c| if (!isDigit(c)) return error.Unsupported;
+        return std.fmt.parseInt(u32, s, 10) catch error.Unsupported;
     }
 
     fn atom(self: *Parser) ParseError!Profile {
@@ -352,13 +370,13 @@ const Parser = struct {
             '[' => return self.charClass(),
             '^', '$' => {
                 self.i += 1;
-                return zeroWidth();
+                return Profile.epsilon();
             },
             '\\' => {
                 self.i += 1;
                 var m: [256]bool = @splat(false);
                 switch (try self.escapeMembers(&m)) {
-                    .zero_width => return zeroWidth(),
+                    .zero_width => return Profile.epsilon(),
                     .certifiable => return Profile.atom(&m, true),
                     .opaque_unit => return Profile.atom(&m, false),
                 }
@@ -486,12 +504,6 @@ const Parser = struct {
         return Profile.atom(&m, certifiable);
     }
 };
-
-/// Anchors / `\b`: concatenation identity — they emit no byte, runs cross
-/// freely. `all_in=true` with `min_len=0` is the exact identity element.
-fn zeroWidth() Profile {
-    return .{ .F = @splat(0), .P = @splat(0), .S = @splat(0), .min_len = 0, .all_in = @splat(true) };
-}
 
 /// `.` — any unit except newline. Byte superset (never certifies anyway).
 const dot_members: [256]bool = blk: {

@@ -96,11 +96,6 @@ pub const bulkstat = @import("corpus/tree/bulkstat.zig");
 pub const fresh = @import("corpus/index/trigrams/fresh.zig");
 pub const atlas = @import("corpus/index/atlas/atlas.zig");
 pub const frag = @import("corpus/index/frag/frag.zig");
-// The content shard (`content.shard`) — concatenated corpus bodies + doc→offset
-// catalog, mmap'd so a full-scan query serves each unchanged file from one map
-// instead of ~20k opens. Read accelerator, freshness-gated, fail-open.
-pub const content_shard = @import("corpus/index/content/shard.zig");
-
 // ── irregex: the irregular-expression primitives (match ∪ relate ∪ weave) ──
 // The set-shaped tier over the engine: PatternSet compiles MANY intents with
 // exact per-pattern attribution (the match half), Sketch measures compression

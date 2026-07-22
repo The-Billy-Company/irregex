@@ -141,16 +141,17 @@ AST**, and none uses per-class max-runs as a document-pruning signature.
 
 ## 5. Segment-summary algebras (the calculus's algebraic shape, repurposed)
 
-The `(F, P, S, minLen, all_in)` profile composes like [Bentley's 1984](#r-bentley)
-maximum-subarray divide-and-conquer summary (best/prefix/suffix/total), and
-like the max-plus segment trees used for longest-run-in-range queries over
-_strings_. Two honest acknowledgements and the two inversions that make it a
-different object:
+The `(F, P, S, minLen, only_c_cert)` profile composes like
+[Bentley's 1984](#r-bentley) maximum-subarray divide-and-conquer summary
+(best/prefix/suffix/total), and like max-plus segment trees used for
+longest-run-in-range queries over _strings_. Two honest acknowledgements and
+the two inversions that make it a different object:
 
 - Those algebras summarize **one concrete string** bottom-up; Crest's profile
   summarizes **a language** (every string the regex accepts), which forces the
-  min-of-max adversarial semantics: each field is a lower bound over `L(E)`,
-  with `all_in` the one exact predicate licensing runs to cross seams.
+  min-of-max adversarial semantics: numeric fields are lower bounds over
+  `L(E)`, while one-sided `only_c_cert=true` licenses a seam only when all
+  accepted strings are proved all-C.
 - Those algebras _maximize_ over positions; Crest's adversary _minimizes_ over
   accepted strings. Alternation is a componentwise min (tropical sum), and
   repetition pumps optional copies to zero — neither exists in the
@@ -166,7 +167,7 @@ per-class run structure, and never paired with a per-document run index.
 | object                                                     | why it is not Crest                                                                                                                                                                                          |
 | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | [Bloom filters](#r-bloom) over n-grams                     | substring presence again, probabilistic; false positives fine, but cannot express "run ≥ r"                                                                                                                  |
-| Class histograms / population counts (the "count cousin")  | sound but strictly dominated: forced run `n` ⇒ forced count `≥ n`, never the reverse. Measured: hex-8 prunes 0.7% by count vs 91.4% by run (PROOF.md §3.7, §5) — kept in the harness as a permanent ablation |
+| Class histograms / population counts (the "count cousin")  | sound but strictly dominated: forced run `n` ⇒ forced count `≥ n`, never the reverse. Measured: hex-8 prunes 0.7% by count vs 91.4% by run (PROOF.md §3.8, §5) — kept in the harness as a permanent ablation |
 | Suffix-automaton / FM-index exact tiers (gist's own codex) | exact substring machinery; a class repetition is not a substring                                                                                                                                             |
 
 ## 7. Count-vector sieves and the Parikh ceiling (the _shape_, not the quantity)
@@ -178,7 +179,7 @@ structural neighbor is the **character/class-population histogram prefilter**
 ([per-doc byte-frequency histogram compared against required counts](#r-charhist)):
 identical shape, but over **counts**, so it can demand "≥ 12 digits" and a
 single 12-run satisfies it — it cannot demand a _contiguous_ run, still less
-_two_ of them. This is Crest's own §3.7 count cousin, and it is dominated for
+_two_ of them. This is Crest's own §3.8 count cousin, and it is dominated for
 exactly this reason.
 
 Its theoretical ceiling is the **Parikh / semilinear image** of a regular
@@ -360,7 +361,7 @@ their componentwise comparison as a coarse document sieve.
 [Per-document byte-frequency histogram vs required counts](https://ayoob.ai/blog/ai-anti-cheat-software-gaming-gpu).
 _Annotation:_ The count sieve in production form — same per-doc-vector +
 componentwise-dominance + fail-to-candidate shape as Crest/Ridge, but over
-**counts**, so it cannot demand a contiguous run (Crest §3.7 cousin, dominated).
+**counts**, so it cannot demand a contiguous run (Crest §3.8 cousin, dominated).
 
 <span id="r-parikh"></span> 20. **Parikh (1966).**
 [_On Context-Free Languages_](https://doi.org/10.1145/321356.321364) (JACM).

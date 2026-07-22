@@ -43,12 +43,12 @@ negatives.
 
 ## The code (lives with the system, not here)
 
-| where                                                 | what                                                                                                                                       |
-| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `src/math/crest.zig`                                  | the pure kernel: class lattice, crest vector, `Profile` calculus, `ghat`, `pruned` (tests: `src/math/crest_test.zig`)                      |
-| `src/index/crest/sidecar.zig`                         | the persisted per-document crest table (`crest.bin`), riding the trigram pair's generation-atomic publish                                  |
-| `src/runtime/cold/engine/serial.zig` + `parallel.zig` | the wiring: `crestSieve` computes ĝ from the effective pattern; both read-elision oracles fold crest pruning in beside trigram + freshness |
-| `bench/crest/bench.zig`                               | production proof harness (`zig build crest`) — fail-closed soundness + pruning + speed + ablation over the live corpus                     |
+| where                                                | what                                                                                                                    |
+| ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `src/kernel/primitives/crest.zig`                    | pure kernel: class lattice, crest vector, profile calculus, parser, `ghat`, and `pruned`                                |
+| `src/corpus/index/crest/sidecar.zig`                 | persisted per-document crest table (`crest.bin`), generation-atomic with the trigram pair                               |
+| `src/surface/exec/cold/engine/{serial,parallel}.zig` | `crestSieve` and both read-elision oracles, composed with trigram candidates and freshness                              |
+| `bench/crest/bench.zig`                              | production proof harness (`zig build crest`) — fail-closed soundness, pruning, speed, and ablation over the live corpus |
 
 ## Run
 
@@ -76,11 +76,11 @@ real matcher's full scan, with **0 false negatives** (fail-closed, corpus-wide
 prior-art review, 2026-07-19 — `PRIOR_ART.md`). `gist index` persists the crest
 sidecar; both the serial and parallel engines prune candidates with it
 (caseless disables the sieve; Unicode mode certifies only alphabet-safe
-constructs — the Alphabet Contract, `PROOF.md` §3.6). Lineage:
+constructs — the Alphabet Contract, `PROOF.md` §3.7). Lineage:
 `spikes/classrun-formula/` (Python reference + 240k-pair property
 suite + originality dossier).
 
-**Two proven extensions (`PROOF.md` §3.5, §7).** (1) An _independent exact
+**Two proven extensions (`PROOF.md` §3.6, §7).** (1) An _independent exact
 oracle_ — `g(R,C)` by NFA × run-monitor emptiness — shows the shipped forced-run
 calculus is **98% exactly tight** against the true language minimum, not merely
 sound. (2) The forced-run **spectrum** (Ridge): store the top-q maximal runs

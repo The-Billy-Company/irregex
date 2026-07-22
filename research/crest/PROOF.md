@@ -1,10 +1,12 @@
 # Crest — a forced-class-run necessary condition for regex indexing
 
 **Status:** theory + soundness proof + Zig implementation + production
-integration. Kernel: `src/math/crest.zig` (pure, engine-free; tests
-`src/math/crest_test.zig`). Persisted sidecar: `src/index/crest/sidecar.zig`
+integration. Kernel: `src/kernel/primitives/crest.zig` (pure, engine-free;
+tests `src/kernel/primitives/crest_test.zig`). Persisted sidecar:
+`src/corpus/index/crest/sidecar.zig`
 (`crest.bin`, generation-atomic with the trigram pair). Wiring: both
-read-elision oracles (`src/runtime/cold/engine/serial.zig` + `parallel.zig`).
+read-elision oracles (`src/surface/exec/cold/engine/serial.zig` +
+`parallel.zig`).
 Proof harness: `bench/crest/bench.zig` (links the real gist engine, walks the
 real corpus, fail-closed). Run: `zig build crest` from `pkg/kernels/irregex/`;
 unit tests ride `zig build test`. Prior art: `PRIOR_ART.md`; test inventory:
@@ -78,7 +80,7 @@ regex necessary condition.
 
 Deliberately **non**-claimed: Crest does not subsume the trigram index (it is
 complementary — literals still win where they exist); it is a _filter_, never a
-matcher; and the calculus is sound, not tight (§3.5).
+matcher; and the calculus is sound, not tight (§3.6).
 
 ---
 
@@ -87,7 +89,7 @@ matcher; and the calculus is sound, not tight (§3.5).
 Fix the byte alphabet `Σ = {0,…,255}`. A **class** `C ⊆ Σ` is a set of bytes.
 Fix a small **class lattice** `𝒞 = {C₁,…,C_k}`; the implementation ships
 `k = 8`: digit, hexdigit, upper, lower, alpha, word, space, punct
-(`src/math/crest.zig` `Class`). `k` is a small constant, chosen once,
+(`src/kernel/primitives/crest.zig` `Class`). `k` is a small constant, chosen once,
 query-independent.
 
 For a string `w = w₁…w_L` and class `C`, a **C-run** is a maximal contiguous
@@ -150,94 +152,131 @@ The obstruction to computing `g(R,C)` compositionally is that a C-run can
 homomorphism over the AST. The fix is the prefix/suffix/best segment summary
 (the shape Bentley's 1984 maximum-subarray divide-and-conquer carries),
 inverted: here an **adversary minimizes** the forced run — picks the accepted
-string whose longest run is as short as the pattern allows — so every field is
-a per-class **lower bound**.
+string whose longest run is as short as the pattern allows — so each numeric
+field is a per-class **lower bound**.
 
 For a fixed class `C`, each AST node `E` carries the summary
-(`src/math/crest.zig` `Profile`):
+(`src/kernel/primitives/crest.zig` `Profile`):
 
-| field       | meaning (sound lower bound over `L(E)`, except `all_in` which is exact) |
-| ----------- | ----------------------------------------------------------------------- |
-| `F(E)`      | forced longest C-run: `F(E) ≤ min_{w∈L(E)} ρ(w,C)`                      |
-| `P(E)`      | forced leading C-run (prefix)                                           |
-| `S(E)`      | forced trailing C-run (suffix)                                          |
-| `minLen(E)` | `≤ min_{w∈L(E)}                                                         | w   | `   |
-| `all_in(E)` | **true only if** every `w∈L(E)` consists solely of C-bytes              |
+| field            | one-sided invariant for every `w ∈ L(E)` |
+| ---------------- | ---------------------------------------- |
+| `F(E)`           | `F(E) ≤ cap(ρ(w,C))`                     |
+| `P(E)`           | `P(E) ≤ cap(leading_C_run(w))`           |
+| `S(E)`           | `S(E) ≤ cap(trailing_C_run(w))`          |
+| `minLen(E)`      | `minLen(E) ≤ cap(length(w))`             |
+| `only_c_cert(E)` | `true ⇒ w ∈ C*`                          |
 
-`all_in` is the load-bearing exact predicate — the permission slip that lets a
-run extend across a boundary. Every other field is a lower bound, so rounding
-down anywhere preserves soundness.
+Here `cap(x)=min(x,65535)`. The Boolean is deliberately a **one-sided
+certificate**, not an exact classifier: `false` may mean either "not all-C" or
+"not proved all-C." Only `true` licenses a run to extend through a whole
+child. A conservative false loses pruning but cannot create a false negative.
+
+Three numerically identical zero profiles therefore remain semantically
+distinct:
+
+| meaning                         | `F,P,S,minLen` | `only_c_cert`    |
+| ------------------------------- | -------------- | ---------------- |
+| language `{ε}`                  | `0,0,0,0`      | `true`           |
+| unsupported / unknown semantics | `0,0,0,0`      | `false`          |
+| optional `E?`                   | `0,0,0,0`      | `only_c_cert(E)` |
+
+The implementation exposes named `Profile.epsilon()` and `Profile.unknown()`
+constructors and has no generic empty/zero profile constructor.
 
 ### 3.1 Base case — one mandatory byte from set `B ⊆ Σ`
 
 (`B={c}` literal; `B=[…]` class; `B=Σ∖{\n}` for `.`)
 
-- `B ⊆ C` (the adversary cannot escape the class):
-  `F=P=S=minLen=1`, `all_in=true`.
-- otherwise (`B` offers an out-of-class byte): `F=P=S=0`, `minLen=1`,
-  `all_in=false`.
+- If the byte semantics are certifiable and `B ⊆ C`:
+  `F=P=S=minLen=1`, `only_c_cert=true`.
+- Otherwise: `F=P=S=0`, `minLen=1`, `only_c_cert=false`. This includes both
+  an actual out-of-class choice and semantics the byte analysis declines.
 
 This is the sole source of selectivity: `[0-9]` forces an in-class byte for
 `digit` (and every superclass: hex, word); `.` forces nothing.
 
 ### 3.2 Concatenation `E = E₁·E₂`
 
-    F(E)      = max( F(E₁), F(E₂), S(E₁) + P(E₂) )          // straddle
-    P(E)      = all_in(E₁) ? minLen(E₁) + P(E₂) : P(E₁)
-    S(E)      = all_in(E₂) ? minLen(E₂) + S(E₁) : S(E₂)
-    minLen(E) = minLen(E₁) + minLen(E₂)
-    all_in(E) = all_in(E₁) ∧ all_in(E₂)
+    F(E)           = max(F(E₁), F(E₂), satAdd(S(E₁), P(E₂)))
+    P(E)           = only_c_cert(E₁) ? satAdd(minLen(E₁), P(E₂)) : P(E₁)
+    S(E)           = only_c_cert(E₂) ? satAdd(minLen(E₂), S(E₁)) : S(E₂)
+    minLen(E)      = satAdd(minLen(E₁), minLen(E₂))
+    only_c_cert(E) = only_c_cert(E₁) ∧ only_c_cert(E₂)
 
-`S(E₁)+P(E₂)` is the only cross-boundary term: a forced suffix run of every
-`w₁` abuts a forced prefix run of every `w₂`. The `all_in?` guards are exact,
-so when a side can emit an out-of-class byte the straddle collapses to the safe
-non-crossing bound.
+`satAdd(S(E₁),P(E₂))` is the only cross-boundary term: a forced suffix run of
+every `w₁` abuts a forced prefix run of every `w₂`. Prefix/suffix extension
+uses a certificate only in the proven-true direction; a false certificate
+falls back to the child's own bound.
 
 ### 3.3 Alternation `E = E₁ | E₂`
 
     F = min(F₁,F₂),  P = min(P₁,P₂),  S = min(S₁,S₂),
-    minLen = min(minLen₁, minLen₂),   all_in = all_in₁ ∧ all_in₂
+    minLen = min(minLen₁,minLen₂),
+    only_c_cert = only_c_cert₁ ∧ only_c_cert₂
 
 The adversary picks the branch minimizing each field; a min of lower bounds
-over a union of languages is a lower bound. `all_in` survives only if **both**
-branches are all-in-class.
+over a union is a lower bound. The certificate survives only if both branch
+certificates prove the implication.
 
 ### 3.4 Repetition `E{n,m}` (`0 ≤ n ≤ m ≤ ∞`)
 
-The adversary empties the `m−n` optional copies; the forced part is `E`
-concatenated `n` times:
+The four numeric fields come from `n` mandatory copies:
 
-    profile(E{n,m}) = profile( E · E · ⋯ · E )   (n copies, by §3.2)
+    numeric(E{n,m}) = numeric(E · E · ⋯ · E)   (n copies)
 
-`n = 0` (`E*`, `E?`, `E{0,m}`) yields the empty profile
-(`F=P=S=minLen=0, all_in=false`) — the empty string is accepted, nothing is
-forced. Closed form for the frequent case (class atom `B ⊆ C` repeated `n`):
-`F=P=S=minLen=n, all_in=true` — this is what turns `[0-9a-f]{8}` into
-`ĝ(hex)=8` (and `ĝ(word)=8`, since hex ⊂ word).
+The certificate must account for **every permitted copy**, not merely the
+mandatory floor:
+
+    only_c_cert(E{n,m}) = (m = 0) ∨ only_c_cert(E)
+
+Thus `E?`, `E*`, and `E{0,m}` have zero numeric fields but retain the child's
+certificate when a copy may be emitted; `E{0,0}` is epsilon and certifies
+`true`; `E+` and positive-floor repetitions use their mandatory-copy numeric
+profile and the same child certificate.
+
+This distinction is correctness-critical. For the digit class,
+`[0-9][a-z]?[0-9]` derives `ĝ=1`, because the optional middle can separate the
+digits, while `[0-9][0-9]?[0-9]` derives `ĝ=2`, because every byte the optional
+child may emit is still a digit.
+
+The implementation computes the `n`-fold concatenation by exponentiation by
+squaring in `O(k log n)`, not by an arbitrary repetition clamp. Saturating
+arithmetic bounds every intermediate even for `u32`-sized counts.
 
 ### Anchors / zero-width (`^`, `$`, `\b`)
 
-Concatenation identity: `F=P=S=minLen=0`, `all_in=true`. They emit no byte, so
-runs cross them freely; still a lower bound.
+`Profile.epsilon()`: `F=P=S=minLen=0`, `only_c_cert=true`. They emit no byte,
+so runs cross them freely.
 
 ### Unsupported constructs (backreferences, lookaround, flags, …)
 
-The trivial profile — equivalently `ĝ = 0⃗` for the whole pattern
-(`src/math/crest.zig` `ghat` returns the zero vector on any parse it cannot
-certify).
-No pruning ⇒ sound. The sieve degrades to "no help," never to "wrong."
+The entire query analysis becomes `Profile.unknown()`, whose root `F` is `0⃗`.
+Unsupported syntax is never represented as epsilon and never composed into a
+partially trusted profile. No pruning is sound.
 
-`ĝ(R,C) = F(root)`; one bottom-up pass, `O(|R|·k)` per query, zero
-allocations.
+`ĝ(R,C) = F(root)`; one bottom-up pass, `O(|R|·k)` including logarithmic
+counted powers, zero allocations.
 
-### 3.5 Incompleteness is not unsoundness (the tightness gap, measured)
+### 3.5 Common saturated domain
 
-The calculus is sound, not tight. Example: `[0-9](?:)[0-9]` truly forces a
-digit run of 2, but the empty group carries `all_in=false`, the straddle term
-declines, and `ĝ(digit)=1 < g(digit)=2`. Under-pruning costs selectivity,
-never correctness — a referee who exhibits a looser-than-optimal `ĝ` has found
-an optimization, not a bug. (Unit-pinned in `crest_test.zig`:
-`test "tightness gap is under-prune"`.)
+Document crests and every query profile field inhabit the same `u16` domain:
+
+    cap(x) = min(x, 65535)
+    satAdd(a,b) = cap(a+b)
+
+No profile operation wraps. The root `ĝ` is already capped before comparison
+with `crest.bin`. Since `x ≥ y ⇒ cap(x) ≥ cap(y)`, common saturation preserves
+the necessary-condition order. A real 70,000-byte run and a query requiring
+70,000 bytes both compare as 65,535; an uncapped query threshold must never be
+compared to a capped document value.
+
+### 3.6 Incompleteness is not unsoundness (the tightness gap, measured)
+
+The calculus is sound, not necessarily tight: one-sided false certificates,
+unsupported sublanguages, and componentwise alternation may all understate a
+true forced run. Under-pruning costs selectivity, never correctness. Exact
+epsilon and optional certificates now close the former empty-group gap:
+`[0-9](?:)[0-9]` derives 2 rather than 1.
 
 **How loose, exactly?** The gap is measured against an _independent_ exact
 oracle, not asserted. Define the true forced run `g(R,C) = min_{w∈L(R)} ρ(w,C)`
@@ -248,16 +287,16 @@ capped at `r`), binary-searched over `r`. This is a textbook min-over-a-
 max-automaton value (Kuperberg–Vanden Boom min/max cost automata, STACS 2015;
 the ranked variant is Mohri–Riley N-best paths) — we claim none of it, we use
 it only as a soundness+tightness referee built from a _separate_ Thompson NFA
-compiler, so the AST calculus never grades itself. Over 6,549 randomized
-(regex, class) forced runs the shipped calculus is **sound on every one
-(`ĝ ≤ g` always) and exactly tight on 98.0%**, mean gap `g − ĝ = 0.043` of a
-run. So "sound, not tight" is, empirically, "sound and tight 98% of the time";
-the 2% are the straddle/alternation cases above, always under-pruning. The
-oracle and its property harness live in the lineage spike
+compiler, so the AST calculus never grades itself. The 2026-07-19 harness run,
+before the epsilon/optional-certificate repair, was sound on all 6,549 random
+(regex, class) checks and exactly tight on 98.0%, with mean gap 0.043. That
+number is retained only as a dated baseline; it must be remeasured before being
+claimed for the repaired calculus. The exact oracle and property harness live
+in the lineage spike
 (`spikes/ridge-spectrum/ridge.py`, `g_exact`); the corpus-scale
 matched⇒¬pruned proof against the real matcher stays in `bench/crest/`.
 
-### 3.6 Alphabet contract (the one real false-negative footgun)
+### 3.7 Alphabet contract (the one real false-negative footgun)
 
 Theorem 1 is stated over one alphabet, and its instantiation is sound **only
 if** the class lattice and the matcher decide over the _same_ alphabet. A
@@ -283,7 +322,7 @@ reaching ≥ 0x80 contribute `ĝ=0`, and caseless disables the sieve entirely.
 `bench/crest/bench.zig` exercises both mode pairings against the real
 matcher; option (b) — indexing codepoint-runs — remains open future work.
 
-### 3.7 Why the _run_, not the _count_ (the weaker cousin, ruled out)
+### 3.8 Why the _run_, not the _count_ (the weaker cousin, ruled out)
 
 The tempting sibling indexes total class population `#{i : dᵢ ∈ C}` and prunes
 below the forced count. Also sound — and strictly dominated: a forced C-run of
@@ -293,45 +332,57 @@ gap is decisive because source files carry hundreds of _scattered_ digits but
 rarely a _consecutive_ run of 8 hex bytes: measured on the live corpus
 (§5), `[0-9a-f]{8}` → run-prune **91.4%** vs count-prune **0.7%**.
 
-### Lemma 1 (calculus soundness)
+### Lemma 1 (profile invariant)
 
-> For every node `E` and class `C`: `F(E) ≤ min_{w∈L(E)} ρ(w,C)`;
-> `P(E) ≤ min_w (leading C-run of w)`; `S(E) ≤ min_w (trailing C-run of w)`;
-> `minLen(E) ≤ min_w |w|`; and `all_in(E) ⇒ every w ∈ L(E)` is all C-bytes.
+> For every supported `E`, class `C`, and `w ∈ L(E)`:
+>
+>     F(E)      ≤ cap(ρ(w,C))
+>     P(E)      ≤ cap(prefix_C(w))
+>     S(E)      ≤ cap(suffix_C(w))
+>     minLen(E) ≤ cap(|w|)
+>     only_c_cert(E) = true  ⇒  w ∈ C*
 
 _Proof._ Structural induction over the AST.
 
-_Base._ A mandatory byte from `B`: if `B ⊆ C` every accepted `w` is a single
-C-byte — all five fields exact. Otherwise the adversary picks an out-of-class
-byte: leading/trailing/longest runs can be 0, and `all_in` must be false;
-`minLen=1` holds either way.
+_Epsilon and degraded analysis._ `Profile.epsilon()` denotes `{ε}`: its
+numeric fields are zero and `ε ∈ C*`. `Profile.unknown()` also has zero numeric
+fields but a false certificate: zero safely lower-bounds any possible word and
+the Boolean claims nothing. A parse failure returns this whole-query profile;
+unknown syntax is never composed as epsilon.
 
-_Concatenation._ Any `w ∈ L(E)` factors as `w = w₁w₂`, `wᵢ ∈ L(Eᵢ)`. Its
-longest C-run either lies inside one factor (length `≥ F(Eᵢ)` by IH) or
-crosses the seam — in which case it _contains_ the trailing run of `w₁` abutted
-to the leading run of `w₂`, of length `≥ S(E₁)+P(E₂)` by IH. In all cases
-`ρ(w,C) ≥ max(F₁, F₂, S₁+P₂)`, and a max of lower bounds valid for every `w`
-is a valid lower bound of the min. For `P(E)`: if `all_in(E₁)`, every `w₁` is
-all-C of length `≥ minLen(E₁)`, so `w`'s leading run is `≥ minLen(E₁)+P(E₂)`;
-otherwise some `w₁` contains an out-of-class byte, the leading run of `w` is
-the leading run of `w₁` for that adversarial choice, and `P(E₁)` bounds it.
-`S` symmetric. `minLen` adds. `all_in` conjuncts exactly.
+_Atom._ A certifiable mandatory byte set `B ⊆ C` yields one in-class byte, so
+all numeric fields are 1 and the certificate is valid. Otherwise the class-run
+bounds are zero and the certificate false; `minLen=1` remains valid.
 
-_Alternation._ `L(E) = L(E₁) ∪ L(E₂)`: a min over a union is the min of the
-mins, and each componentwise min of lower bounds lower-bounds it. `all_in`
-must survive both branches.
+_Concatenation._ Any `w=w₁w₂` contains internal runs of at least `F₁` and
+`F₂`, plus the seam formed by the trailing C-run of `w₁` and leading C-run of
+`w₂`; monotone saturation preserves their sum. If `only_c_cert(E₁)` is true,
+all of `w₁` extends the leading run by at least `minLen₁`; otherwise `P₁`
+still lower-bounds the leading run. The suffix argument is symmetric. Lengths
+saturating-add, and conjunction of valid certificates stays valid.
 
-_Repetition._ Reduces to `n`-fold concatenation (adversary empties optional
-copies — legal since those copies accept ε or can be pumped down). ∎
+_Alternation._ Each word comes from one branch. Componentwise minima
+lower-bound both branches; the conjunctive certificate implies the property
+for either branch.
+
+_Repetition._ Every word in `E{n,m}` contains `k` copies for some `n≤k≤m`.
+The `n` mandatory copies establish the numeric lower bounds; extra copies
+cannot invalidate those internal, length, or boundary bounds. The certificate
+is true when no copy can occur (`m=0`) or the child certificate proves every
+copy lies in `C*`. Exponentiation by squaring equals `n`-fold concatenation
+because saturated `concat` is associative.
+
+_Saturation._ Every addition is `cap(a+b)`. Monotonicity of `cap` preserves
+the inequalities, and no operation wraps. ∎
 
 Together with Theorem 1: `ĝ(R,C) = F(root) ≤ g(R,C)`, so Corollary 1's sieve
 is sound. ∎
 
-**Remark (algebraic shape).** Fields `(F,P,S,minLen)` compose in a min-plus /
-max-plus (tropical) fashion with an exactness guard `all_in`; alternation is
-the tropical sum (min), concatenation a guarded tropical product. We do not
-lean on semiring machinery for the proof — the direct induction is shorter —
-but the shape explains why one bottom-up pass suffices.
+**Remark (algebraic shape).** Fields `(F,P,S,minLen)` compose in a saturated
+min/max-plus shape guarded by `only_c_cert`; alternation is componentwise min
+and concatenation a guarded product. The direct induction is shorter than a
+semiring treatment, but the algebra explains one-pass evaluation and
+logarithmic powers.
 
 ---
 
@@ -370,7 +421,7 @@ corpus:
   `matched ⇒ ¬pruned`, plus a 400-pattern randomized adversarial sweep in
   BOTH engine modes (24,000 ASCII + 24,000 Unicode (pattern,file) pairs);
   any violation exits non-zero;
-- **ablation** — the §3.7 count cousin at identical thresholds;
+- **ablation** — the §3.8 count cousin at identical thresholds;
 - **speed** — full scan vs sieve+survivors, same matcher both sides, so the
   ratio is purely avoided verification.
 
@@ -397,7 +448,7 @@ Reading the table against the theory:
   91–95% on the narrow-class queries at 8–15× wall-clock, exactly the §4
   narrow-class prediction.
 - The **count cousin collapses** (0.7% vs 91.4% on hex-8): the run, not the
-  population, is the operative necessary condition — §3.7 made empirical.
+  population, is the operative necessary condition — §3.8 made empirical.
 - The **wide-class rows are the honest scope boundary**: ≈0% pruning, ≈1×,
   never a slowdown beyond the k-compare noise floor.
 - **Soundness held everywhere**: 0 false negatives over 8 × 52,724 corpus
@@ -493,34 +544,34 @@ first `q` inequalities. ∎ (`q=1` is Theorem 1 verbatim.)
 > **Corollary 3.** `prune d ⟺ ∃C,i≤q : σ_q(d,C)[i] < ĝ_i(R,C)` never prunes a
 > match. Cost: `k·q` integer compares/doc.
 
-### 7.3 The gap-aware calculus (`all_out`, the distinctness permission slip)
+### 7.3 The gap-aware calculus (`only_not_c_cert`, distinctness permission)
 
-Crest's `(F,P,S,minLen,all_in)` profile decides _lengths_; the spectrum needs
-to know **when two forced runs are provably distinct**. That is a second exact
-predicate, dual to `all_in`:
+Crest's `(F,P,S,minLen,only_c_cert)` profile decides _lengths_; the spectrum
+needs to know **when two forced runs are provably distinct**. That is a second
+one-sided certificate:
 
-    all_out(E,C) = true  ⟺  every w∈L(E) is composed solely of NON-C bytes.
+    only_not_c_cert(E,C) = true  ⇒  every w∈L(E) uses only NON-C bytes.
 
 A profile becomes a per-class **ordered list of segments** separated by forced
-`all_out` boundaries. Concatenation glues the last segment of the left to the
+`only_not_c_cert` boundaries. Concatenation glues the last segment of the left to the
 first of the right (Crest's straddle merge — they may abut with no forced
-separator between); an atom that is `all_out` for `C` commits a boundary, so
+separator between); an atom certified only-not-C commits a boundary, so
 runs on either side are counted as distinct entries in the multiset. The
 finalized `ĝ_i(R,C)` is the sorted-descending list of per-segment forced runs.
 
 The load-bearing subtlety is **when NOT to split**, and it is where soundness
 lives: `[0-9a-f]{8}[^0-9a-f]+[0-9a-f]{8}` does **not** force two _hex_ runs,
 because `[^0-9a-f]` still admits `A`–`F` (uppercase hex) — the two runs may
-merge into one length-17 hex run through an uppercase letter. `[^0-9a-f]` is
-`all_out` for `digit` but **not** for `hex`, so the calculus forces two digit
-runs and only one hex run. A naive multiset that split on _any_ separator would
-manufacture a false negative here; the exactness of `all_out` is what forbids
-it. Alternation conservatively collapses each branch to its single Crest run
+merge into one length-17 hex run through an uppercase letter. `[^0-9a-f]` can
+certify only-not-digit but **not** only-not-hex, so the calculus forces two
+digit runs and only one hex run. A naive multiset that split on _any_ separator
+would manufacture a false negative here; one-sided certification forbids it.
+Alternation conservatively collapses each branch to its single Crest run
 (componentwise min) — a sound lower bound; intra-branch multi-run structure is
 dropped, which only under-forces.
 
 **Invariant (no regression):** `ĝ_1(R,C) = F(root)` exactly — the shipped
-Crest forced run. Crest's straddle never crosses an `all_out` atom, so the
+Crest forced run. Crest's straddle never crosses a certified separator, so the
 global longest forced run equals the max over segments, which is the first
 multiset entry. Ridge is a **strict superset**: it only adds lower-ranked
 forced runs, never changes the top one, so no query Crest prunes today is
@@ -571,7 +622,7 @@ collision** but two honest downgrades, adopted here:
 Crest graduated from `spikes/classrun-formula/` (Python `rune.py`, 240k
 property pairs, count-cousin ablation, referee verdict NOVEL 2026-07-19);
 working name "Rune" retired at graduation. The forced-run **spectrum** (Ridge,
-§7) and the **exact automaton oracle** (§3.5) come from
+§7) and the **exact automaton oracle** (§3.6) come from
 `spikes/ridge-spectrum/` (`ridge.py` — segment calculus + NFA×monitor
 oracle + 160k-pair sieve property suite + base-vs-ridge corpus bench; referee
 verdict PARTIAL/no-collision 2026-07-20).

@@ -38,6 +38,27 @@ test "forced-crest: straddle across concatenation" {
     try testing.expectEqual(@as(u16, 1), g("[0-9]+", uni, .digit)); // one forced copy
     // anchors are zero-width identity: runs cross them freely.
     try testing.expectEqual(@as(u16, 4), g("^[0-9]{4}$", uni, .digit));
+    try testing.expectEqual(@as(u16, 2), g("[0-9](?:)[0-9]", uni, .digit));
+}
+
+test "optional profiles preserve only-class certificates without joining separators" {
+    try testing.expectEqual(@as(u16, 1), g("[0-9][a-z]?[0-9]", uni, .digit));
+    try testing.expectEqual(@as(u16, 2), g("[0-9][0-9]?[0-9]", uni, .digit));
+    try testing.expectEqual(@as(u16, 1), g("[0-9][a-z]*[0-9]", uni, .digit));
+    try testing.expectEqual(@as(u16, 2), g("[0-9][0-9]*[0-9]", uni, .digit));
+    try testing.expectEqual(@as(u16, 2), g("[0-9][a-z]{0,0}[0-9]", uni, .digit));
+    try testing.expectEqual(@as(u16, 1), g("[0-9][a-z]{0,1}[0-9]", uni, .digit));
+    try testing.expect(!crest.pruned(crest.crest("1a2"), crest.ghat("[0-9][a-z]?[0-9]", uni)));
+    try testing.expect(crest.pruned(crest.crest("1a2"), crest.ghat("[0-9][0-9]?[0-9]", uni)));
+}
+
+test "epsilon and unknown profiles cannot be confused" {
+    const epsilon = crest.Profile.epsilon();
+    const unknown = crest.Profile.unknown();
+    inline for (0..crest.K) |i| {
+        try testing.expect(epsilon.only_c_cert[i]);
+        try testing.expect(!unknown.only_c_cert[i]);
+    }
 }
 
 test "forced-crest: alternation takes the adversary's cheaper branch" {
@@ -55,6 +76,9 @@ test "soundness by degradation: unsupported or caseless ⇒ zero ⇒ no prune" {
     try testing.expectEqual(@as(u16, 0), g("[0-9]{0,8}", uni, .digit));
     try testing.expectEqual(@as(u16, 0), g("\\p{L}{4}", uni, .alpha)); // \p unsupported
     try testing.expectEqual(@as(u16, 0), g("\\x41{4}", uni, .upper)); // \x unsupported
+    try testing.expectEqual(@as(u16, 0), g("[0-9]{3,x}", uni, .digit));
+    try testing.expectEqual(@as(u16, 0), g("[0-9]{3,2}", uni, .digit));
+    try testing.expectEqual(@as(u16, 0), g("[0-9]{,3}", uni, .digit));
     // caseless: the fold changes byte membership — decline everything.
     try testing.expectEqual(@as(u16, 0), g("[0-9a-f]{8}", .{ .unicode = true, .caseless = true }, .hex));
 }
@@ -79,19 +103,17 @@ test "unicode mode certifies explicit ASCII classes only" {
     try testing.expectEqual(@as(u16, 0), g("[^x]{9}", uni, .word));
 }
 
-test "tightness gap is under-prune (sound, not tight)" {
-    // [0-9](?:)[0-9] truly forces 2; the empty group breaks the straddle and
-    // the calculus reports 1. Under-pruning is sound — never a false negative.
-    try testing.expectEqual(@as(u16, 1), g("[0-9](?:)[0-9]", uni, .digit));
-}
-
 test "sieve decision + saturation monotonicity" {
     const gv = crest.ghat("[0-9a-f]{8}", uni);
     try testing.expect(crest.active(gv));
     try testing.expect(crest.pruned(crest.crest("no hex run here: zz zz"), gv));
     try testing.expect(!crest.pruned(crest.crest("id=0123abcdef more"), gv));
     try testing.expect(!crest.active(crest.ghat("\\w+", uni)));
-    // saturation: a huge forced count clamps but stays comparable.
-    const big = crest.ghat("[0-9]{4000}", uni);
-    try testing.expect(big[@intFromEnum(crest.Class.digit)] == 4000);
+    // Both query and document values share the saturated u16 domain.
+    const big = crest.ghat("[0-9]{70000}", uni);
+    try testing.expectEqual(std.math.maxInt(u16), big[@intFromEnum(crest.Class.digit)]);
+    var long_doc: [70_000]u8 = @splat('0');
+    const long_crest = crest.crest(&long_doc);
+    try testing.expectEqual(std.math.maxInt(u16), long_crest[@intFromEnum(crest.Class.digit)]);
+    try testing.expect(!crest.pruned(long_crest, big));
 }
