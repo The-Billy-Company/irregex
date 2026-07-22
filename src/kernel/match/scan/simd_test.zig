@@ -8,6 +8,7 @@
 const std = @import("std");
 const simd = @import("simd.zig");
 const verify = @import("verify.zig");
+const teddy = @import("teddy.zig");
 const contains = simd.contains;
 
 test "simd contains ≡ std.mem.indexOf" {
@@ -189,4 +190,113 @@ test "simd containsAny ≡ any-of std.mem.indexOf (fused kernel differential)" {
         for (set[0..nn]) |n| want = want or std.mem.indexOf(u8, buf[0..hlen], n) != null;
         try std.testing.expectEqual(want, any(buf[0..hlen], set[0..nn]));
     }
+}
+
+test "simd indexOfAnyPos ≡ leftmost of std.mem.indexOfPos (fused kernel differential)" {
+    const at = simd.indexOfAnyPos;
+    // Edge shapes: empty set, singleton, tail hit, no hit, resume `from` past a hit.
+    try std.testing.expectEqual(@as(?usize, null), at("panic at the disco", 0, &.{}));
+    try std.testing.expectEqual(@as(?usize, 0), at("panic", 0, &.{"panic"}));
+    try std.testing.expectEqual(@as(?usize, 3), at("aa 0x1234", 0, &.{ "panic", "0x" }));
+    try std.testing.expectEqual(@as(?usize, 5), at("aaaa 0x", 0, &.{ "0x", "zz" })); // tail
+    try std.testing.expectEqual(@as(?usize, null), at("deadbeef", 0, &.{ "panic", "0x" }));
+    try std.testing.expectEqual(@as(?usize, 6), at("0x aa 0x", 3, &.{"0x"})); // from-skip
+    // Randomized differential fuzz: leftmost hit over a tiny alphabet (⇒ dense
+    // fused survivors), from a random resume offset, vs the std reference min.
+    var prng = std.Random.DefaultPrng.init(0xC0FFEE);
+    const rng = prng.random();
+    var buf: [4096]u8 = undefined;
+    for (&buf) |*b| b.* = 'a' + rng.uintLessThan(u8, 4);
+    var store: [8][6]u8 = undefined;
+    var set: [8][]const u8 = undefined;
+    var t: usize = 0;
+    while (t < 3000) : (t += 1) {
+        const nn = 2 + rng.uintLessThan(usize, 7);
+        for (0..nn) |k| {
+            const nlen = 2 + rng.uintLessThan(usize, 5);
+            for (store[k][0..nlen]) |*b| b.* = 'a' + rng.uintLessThan(u8, 4);
+            set[k] = store[k][0..nlen];
+        }
+        const hlen = rng.uintLessThan(usize, buf.len);
+        const from = rng.uintLessThan(usize, hlen + 1);
+        var want: ?usize = null;
+        for (set[0..nn]) |n| if (std.mem.indexOfPos(u8, buf[0..hlen], from, n)) |p| {
+            if (want == null or p < want.?) want = p;
+        };
+        try std.testing.expectEqual(want, at(buf[0..hlen], from, set[0..nn]));
+    }
+}
+
+test "teddy ≡ leftmost of std.mem.indexOfPos (2-load nibble-bucket prefilter)" {
+    // Edge shapes: eligibility floor, tail hit, no hit, resume `from` past a hit.
+    try std.testing.expect(teddy.Teddy.init(&.{"x"}) == null); // <2 needles
+    try std.testing.expect(teddy.Teddy.init(&.{ "ab", "c" }) == null); // a 1-byte needle
+    try std.testing.expect(teddy.Teddy.init(&.{ "ab", "cd", "ef", "gh", "ij", "kl", "mn", "op", "qr" }) == null); // >8
+    {
+        const td = teddy.Teddy.init(&.{ "panic", "0x" }).?;
+        try std.testing.expectEqual(@as(?usize, 3), td.find("aa 0x1234", 0));
+        try std.testing.expectEqual(@as(?usize, 5), td.find("aaaa 0x", 0)); // tail
+        try std.testing.expect(!td.contains("deadbeef"));
+    }
+    // Randomized differential: 2–8 needles of 2–6 bytes over a tiny alphabet
+    // (⇒ dense candidate lanes), from a random resume offset, vs the std min.
+    var prng = std.Random.DefaultPrng.init(0x7EDD1);
+    const rng = prng.random();
+    var buf: [4096]u8 = undefined;
+    for (&buf) |*b| b.* = 'a' + rng.uintLessThan(u8, 4);
+    var st: [8][6]u8 = undefined;
+    var set: [8][]const u8 = undefined;
+    var t: usize = 0;
+    while (t < 4000) : (t += 1) {
+        const nn = 2 + rng.uintLessThan(usize, 7);
+        for (0..nn) |k| {
+            const nlen = 2 + rng.uintLessThan(usize, 5);
+            for (st[k][0..nlen]) |*b| b.* = 'a' + rng.uintLessThan(u8, 4);
+            set[k] = st[k][0..nlen];
+        }
+        const hlen = rng.uintLessThan(usize, buf.len);
+        const from = rng.uintLessThan(usize, hlen + 1);
+        var want: ?usize = null;
+        for (set[0..nn]) |n| if (std.mem.indexOfPos(u8, buf[0..hlen], from, n)) |p| {
+            if (want == null or p < want.?) want = p;
+        };
+        const td = teddy.Teddy.init(set[0..nn]).?;
+        try std.testing.expectEqual(want, td.find(buf[0..hlen], from));
+    }
+}
+
+test "simd memchr / lastIndexOfScalar / countByte ≡ std (line-scanner primitives)" {
+    const t = std.testing;
+    // Hand shapes crossing the vector/scalar boundary.
+    try t.expectEqual(@as(?usize, 3), simd.memchr("abc\ndef", 0, '\n'));
+    try t.expectEqual(@as(?usize, null), simd.memchr("abcdef", 0, '\n'));
+    try t.expectEqual(@as(?usize, 3), simd.lastIndexOfScalar("a\nb\nc", 4, '\n')); // last '\n' in [0,4)
+    try t.expectEqual(@as(?usize, 1), simd.lastIndexOfScalar("a\nb\nc", 3, '\n'));
+    try t.expectEqual(@as(?usize, null), simd.lastIndexOfScalar("abc", 3, '\n'));
+    try t.expectEqual(@as(usize, 3), simd.countByte("a\nb\nc\n", '\n'));
+    // Randomized differential vs std over a sparse-newline buffer that spans
+    // many vector blocks (exercises SIMD body + scalar tail on all three).
+    var prng = std.Random.DefaultPrng.init(0xF00D);
+    const rng = prng.random();
+    var buf: [8192]u8 = undefined;
+    var trial: usize = 0;
+    while (trial < 2000) : (trial += 1) {
+        for (&buf) |*b| b.* = if (rng.uintLessThan(u8, 12) == 0) '\n' else 'x';
+        const hlen = rng.uintLessThan(usize, buf.len + 1);
+        const hay = buf[0..hlen];
+        const from = rng.uintLessThan(usize, hlen + 1);
+        try t.expectEqual(std.mem.indexOfScalarPos(u8, hay, from, '\n'), simd.memchr(hay, from, '\n'));
+        const upto = rng.uintLessThan(usize, hlen + 1);
+        try t.expectEqual(std.mem.lastIndexOfScalar(u8, hay[0..upto], '\n'), simd.lastIndexOfScalar(hay, upto, '\n'));
+        try t.expectEqual(std.mem.count(u8, hay, "\n"), simd.countByte(hay, '\n'));
+        // Fused count-and-flag ≡ separate countByte + indexOfScalar presence.
+        const f = simd.countByteWithFlag(hay, '\n', 0);
+        try t.expectEqual(simd.countByte(hay, '\n'), f.count);
+        try t.expectEqual(std.mem.indexOfScalar(u8, hay, 0) != null, f.seen);
+    }
+    // A spliced NUL is seen; the newline count is unaffected by the other byte.
+    var withnul = [_]u8{ 'a', '\n', 0, 'b', '\n' };
+    const r = simd.countByteWithFlag(&withnul, '\n', 0);
+    try t.expectEqual(@as(usize, 2), r.count);
+    try t.expect(r.seen);
 }
