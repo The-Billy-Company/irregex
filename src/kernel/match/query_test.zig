@@ -1,7 +1,11 @@
 //! Unit + oracle coverage for the shared compiled-query core (`query.zig`):
-//! the compile shapes (literal vs regex vs escaped `-F -i`), the sound trigram
-//! prefilter selection each face prunes by, the fail-closed compile boundary,
-//! and the per-doc match/line-count kernels against hand-computed answers.
+//! the compile shapes (literal vs linear vs PCRE2 vs escaped `-F -i`), the sound
+//! trigram prefilter selection each face prunes by, the fail-closed compile
+//! boundary, and the per-doc match/line-count kernels against hand-computed
+//! answers. The `-P` rows exercise constructs the linear engine DECLINES
+//! (lookaround, backreferences), so a passing match proves the PCRE2 arm does
+//! the work — the expectations are hand-derived from PCRE semantics, never a
+//! self-run of the engine under test.
 
 const std = @import("std");
 const testing = std.testing;
@@ -25,16 +29,17 @@ test "compile: -F no-fold lowers to a literal body" {
     try testing.expect(!cq.caseless);
 }
 
-test "compile: plain pattern lowers to a regex body" {
+test "compile: plain pattern lowers to a linear engine body" {
     var cq = try compile(.{ .pattern = "foo.*bar" });
     defer cq.deinit(testing.allocator);
-    try testing.expect(cq.body == .regex);
+    try testing.expect(cq.body == .engine);
+    try testing.expect(cq.body.engine == .linear);
 }
 
 test "compile: -F -i escapes the literal and folds via the regex body" {
     var cq = try compile(.{ .pattern = "a.b+c", .fixed = true, .ignore_case = true });
     defer cq.deinit(testing.allocator);
-    try testing.expect(cq.body == .regex);
+    try testing.expect(cq.body == .engine);
     try testing.expect(cq.caseless);
     try testing.expect(cq.escaped != null); // the escaped `.`/`+` buffer is owned
     var sc = try cq.scratch(testing.allocator);
@@ -46,6 +51,91 @@ test "compile: -F -i escapes the literal and folds via the regex body" {
 
 test "compile: a pattern outside the linear-time syntax is Unsupported, not fatal" {
     try testing.expectError(error.Unsupported, compile(.{ .pattern = "(foo" }));
+}
+
+// ── -P (PCRE2) rows: each uses a construct the linear engine declines, so a
+// passing match is the PCRE2 arm at work. Expectations hand-derived from PCRE
+// semantics. ──
+
+test "compile: -P lowers to a PCRE2 engine body" {
+    var cq = try compile(.{ .pattern = "foo(?=bar)", .pcre = true });
+    defer cq.deinit(testing.allocator);
+    try testing.expect(cq.body == .engine);
+    try testing.expect(cq.body.engine == .pcre);
+}
+
+test "compile: -P is inert under -F (fixed wins → literal body)" {
+    var cq = try compile(.{ .pattern = "a.b", .fixed = true, .pcre = true });
+    defer cq.deinit(testing.allocator);
+    try testing.expect(cq.body == .literal); // a fixed string needs no engine
+}
+
+test "-P: lookahead matches only when the assertion holds (linear declines it)" {
+    // `foo(?=bar)` matches `foo` iff immediately followed by `bar`. The linear
+    // engine cannot express lookahead, so its compile declines — proving the
+    // warm hit below is the PCRE2 backend.
+    try testing.expectError(error.Unsupported, compile(.{ .pattern = "foo(?=bar)" }));
+    var cq = try compile(.{ .pattern = "foo(?=bar)", .pcre = true, .mode = .files });
+    defer cq.deinit(testing.allocator);
+    var sc = try cq.scratch(testing.allocator);
+    defer sc.deinit();
+    try testing.expect(cq.docMatches("x foobar y\n", &sc));
+    try testing.expect(!cq.docMatches("x foobaz y\n", &sc));
+}
+
+test "-P: backreference over rg's line model (count)" {
+    // `(\w+)\s+\1` = a doubled word (backrefs are PCRE2-only). Lines 1 and 3
+    // hold a repeat; line 2 does not.
+    var cq = try compile(.{ .pattern = "(\\w+)\\s+\\1", .pcre = true, .mode = .count });
+    defer cq.deinit(testing.allocator);
+    var sc = try cq.scratch(testing.allocator);
+    defer sc.deinit();
+    try testing.expectEqual(@as(u64, 2), cq.countLines("the the\nthe cat\ngo go now\n", &sc));
+}
+
+test "-P: collectSpans yields the PCRE2 leftmost non-overlapping spans" {
+    const a = testing.allocator;
+    var cq = try compile(.{ .pattern = "a(?=b)", .pcre = true });
+    defer cq.deinit(a);
+    var ms = try cq.matchScratch(a);
+    defer ms.deinit();
+    var spans: std.ArrayList(q.Span) = .empty;
+    defer spans.deinit(a);
+    // "abXab": `a` at 0 (b follows) and at 3 (b follows) match; the middle X
+    // breaks the run. Each span is the zero-consumed-lookahead `a` only.
+    try cq.collectSpans(a, "abXab", &ms, &spans);
+    try testing.expectEqual(@as(usize, 2), spans.items.len);
+    try testing.expectEqual(@as(usize, 0), spans.items[0].start);
+    try testing.expectEqual(@as(usize, 1), spans.items[0].end);
+    try testing.expectEqual(@as(usize, 3), spans.items[1].start);
+    try testing.expectEqual(@as(usize, 4), spans.items[1].end);
+}
+
+test "-P -w: the word rule composes with the PCRE2 engine" {
+    // `ru\w` (matches e.g. `run`) under -w: the span must be word-bounded both
+    // sides. ` run ` is valid; every `ru\w` inside `rerunning` is embedded.
+    var cq = try compile(.{ .pattern = "ru\\w", .pcre = true, .word = true, .mode = .files });
+    defer cq.deinit(testing.allocator);
+    var sc = try cq.scratch(testing.allocator);
+    defer sc.deinit();
+    try testing.expect(cq.docMatches("go run now\n", &sc));
+    try testing.expect(!cq.docMatches("rerunning\n", &sc));
+}
+
+test "-P: prefilter prunes by the backend required literal; caseless declines" {
+    var one: [1][]const u8 = undefined;
+    var cq = try compile(.{ .pattern = "foobar", .pcre = true });
+    defer cq.deinit(testing.allocator);
+    try testing.expect(pfHas(cq.prefilter(&one), "foobar"));
+    // Caseless -P soundly declines the prefilter (full warm scan — the same
+    // match set, unpruned; PCRE2 caseless variant-mining is deferred).
+    var ci = try compile(.{ .pattern = "foobar", .pcre = true, .ignore_case = true });
+    defer ci.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 0), ci.prefilter(&one).len);
+}
+
+test "-P: an invalid PCRE2 pattern is Unsupported, not fatal" {
+    try testing.expectError(error.Unsupported, compile(.{ .pattern = "foo(", .pcre = true }));
 }
 
 test "prefilter: a >=3 literal prunes by itself; a short one declines" {
@@ -186,7 +276,7 @@ test "word: zero-width matches never count under -w" {
 test "word: composes with the case fold; the word check reads original bytes" {
     var cq = try compile(.{ .pattern = "run", .fixed = true, .ignore_case = true, .word = true });
     defer cq.deinit(testing.allocator);
-    try testing.expect(cq.body == .regex); // -F -i escapes through the engine
+    try testing.expect(cq.body == .engine); // -F -i escapes through the linear engine
     var sc = try cq.scratch(testing.allocator);
     defer sc.deinit();
     try testing.expect(cq.docMatches("RUN loud\n", &sc));

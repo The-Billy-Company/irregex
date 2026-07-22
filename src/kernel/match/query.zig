@@ -1,12 +1,14 @@
 //! gist search core — the compiled, transport-neutral query (ADR-352).
 //!
 //! One deep module owns "a search intent, compiled". A `(pattern, fixed,
-//! ignore_case, mode)` spec — the whole shape the unified search contract admits
-//! — lowers into an immutable matcher: a bare literal for the `-F` no-fold fast
-//! path (SIMD substring), else gist's linear-time regex engine (a `-F -i` literal
-//! is escaped so the engine does the ASCII case fold). From that one compiled
-//! form every face draws the two things it needs — the sound TRIGRAM PREFILTER
-//! that prunes index candidates, and the per-doc MATCH / line-COUNT decision.
+//! ignore_case, pcre, mode)` spec — the whole shape the unified search contract
+//! admits — lowers into an immutable matcher: a bare literal for the `-F`
+//! no-fold fast path (SIMD substring), else the regex behind the engine-neutral
+//! `Matcher` seam — the linear-time default (a `-F -i` literal is escaped so the
+//! engine does the ASCII case fold), or the vendored PCRE2 backend under `-P`.
+//! From that one compiled form every face draws the two things it needs — the
+//! sound TRIGRAM PREFILTER that prunes index candidates, and the per-doc MATCH
+//! / line-COUNT decision — WITHOUT knowing which engine backs the query.
 //!
 //! Two invariants make this the shared core the CLI, the resident daemon, and
 //! (later) the C FFI can all execute through instead of forking the logic:
@@ -29,6 +31,13 @@
 const std = @import("std");
 const simd = @import("scan/simd.zig");
 const Regex = @import("regex/linear/core.zig").Regex;
+// The engine-neutral match seam (`linear` | `pcre`). The regex body compiles
+// into one `Matcher`, so the shared core dispatches ONCE per line/span to
+// whichever engine backs the query — the linear-time default, or (for `-P`)
+// the PCRE2 backend, whose `Pcre` mirrors `Regex`'s primitives behind the seam.
+const matcher_mod = @import("regex/linear/matcher.zig");
+const Matcher = matcher_mod.Matcher;
+const Pcre = matcher_mod.Pcre;
 const word_mod = @import("regex/syntax/word.zig");
 
 /// The three mode shapes the shared core answers: `files` (any line matches),
@@ -66,6 +75,13 @@ pub const Spec = struct {
     /// before compilation (`session/request.zig::matchNothing`), so a compiled
     /// query never carries a zero cap that means "nothing".
     max_count: u64 = 0,
+    /// `-P`/`--pcre2`: compile the regex body through the vendored PCRE2 JIT
+    /// backend (lookaround, backreferences, Unicode properties) rather than the
+    /// linear engine. Inert under `-F` (a fixed string needs no engine — fixed
+    /// wins). The compiled query then dispatches through the same `Matcher`
+    /// seam, so every face (`docMatches`/`countLines`/`collectSpans`) is
+    /// byte-identical to the cold `-P` path it shares the engine with.
+    pcre: bool = false,
 };
 
 pub const CompileError = error{
@@ -79,7 +95,7 @@ pub const CompileError = error{
 /// a literal query. One per thread; never shared. Made by `CompiledQuery.scratch`.
 pub const Scratch = union(enum) {
     none,
-    sim: Regex.Sim,
+    sim: Matcher.Sim,
     /// `-w` over a regex body. The boolean DFA cannot decide `-w` (it has no
     /// span), so a word query carries BOTH VMs: the boolean sim stays the
     /// cheap doc/line pre-gate (word only narrows the match set — a doc/line
@@ -100,8 +116,9 @@ pub const Scratch = union(enum) {
     }
 };
 
-/// The `-w` regex scratch pair (see `Scratch.word`).
-pub const WordScratch = struct { sim: Regex.Sim, span: Regex.SpanSim };
+/// The `-w` regex scratch pair (see `Scratch.word`). Both grains ride the
+/// `Matcher` seam, so `-w` works over either engine (linear or `-P` PCRE2).
+pub const WordScratch = struct { sim: Matcher.Sim, span: Matcher.SpanSim };
 
 /// A matched byte span `[start, end)` within one line. Aliases the regex
 /// engine's own span so the FFI reports the exact offsets the cold `--json`
@@ -109,14 +126,14 @@ pub const WordScratch = struct { sim: Regex.Sim, span: Regex.SpanSim };
 pub const Span = Regex.Span;
 
 /// Per-query span scratch for match-record emission (`collectSpans`) — the
-/// slot-free span VM (`Regex.SpanSim`) for a regex body, or nothing for a
+/// slot-free span VM (`Matcher.SpanSim`) for a regex body, or nothing for a
 /// literal (whose spans are plain `indexOf` occurrences). Kept apart from
 /// `Scratch`: the boolean `docMatches`/`countLines` hot path never allocates
 /// the span maps, and match emission never needs the cheaper boolean scratch.
 /// One per thread; never shared. Made by `CompiledQuery.matchScratch`.
 pub const MatchScratch = union(enum) {
     none,
-    sim: Regex.SpanSim,
+    sim: Matcher.SpanSim,
 
     pub fn deinit(self: *MatchScratch) void {
         switch (self.*) {
@@ -150,8 +167,10 @@ pub const CompiledQuery = struct {
     body: union(enum) {
         /// `-F` no-fold: verified by `simd.contains`. Aliases `Spec.pattern`.
         literal: []const u8,
-        /// The compiled linear-time engine (plain regex, or an escaped `-F -i`).
-        regex: Regex,
+        /// The compiled regex behind the engine-neutral `Matcher` seam: the
+        /// linear-time engine (plain regex, or an escaped `-F -i`), or the
+        /// PCRE2 backend under `-P`. Every match face dispatches through it.
+        engine: Matcher,
     },
     /// Owns the escaped-literal buffer for the `-F -i` path (regex over a fixed
     /// string); null otherwise. Freed by `deinit`.
@@ -176,12 +195,25 @@ pub const CompiledQuery = struct {
         if (spec.fixed and !spec.ignore_case)
             return .{ .mode = spec.mode, .caseless = false, .word = spec.word, .unicode = spec.unicode, .max_count = spec.max_count, .body = .{ .literal = spec.pattern } };
 
+        // `-P`: the PCRE2 backend, behind the same seam (fixed wins over `-P`,
+        // so this never runs under `-F`). A pattern PCRE2 rejects, or one the
+        // backend was built without, is `Unsupported` — the caller answers cold,
+        // which diagnoses it. The caseless SIMD gate/variants are a linear-only
+        // acceleration; PCRE2 folds inside the program and mines its own
+        // required literal, so a `-P` body skips them (its prefilter reads the
+        // backend's `required`/`alts` directly — see `prefilter`).
+        if (spec.pcre and !spec.fixed) {
+            const p = Pcre.compileOpts(gpa, spec.pattern, .{ .caseless = spec.ignore_case, .unicode = spec.unicode }) catch |e|
+                return if (e == error.OutOfMemory) CompileError.OutOfMemory else CompileError.Unsupported;
+            return .{ .mode = spec.mode, .caseless = spec.ignore_case, .word = spec.word, .unicode = spec.unicode, .max_count = spec.max_count, .body = .{ .engine = .{ .pcre = p } } };
+        }
+
         const escaped: ?[]u8 = if (spec.fixed) try escapeLiteral(gpa, spec.pattern) else null;
         errdefer if (escaped) |e| gpa.free(e);
 
         const re = Regex.compileOpts(gpa, escaped orelse spec.pattern, .{ .caseless = spec.ignore_case, .unicode = spec.unicode }) catch
             return CompileError.Unsupported;
-        var q = CompiledQuery{ .mode = spec.mode, .caseless = spec.ignore_case, .word = spec.word, .unicode = spec.unicode, .max_count = spec.max_count, .body = .{ .regex = re }, .escaped = escaped };
+        var q = CompiledQuery{ .mode = spec.mode, .caseless = spec.ignore_case, .word = spec.word, .unicode = spec.unicode, .max_count = spec.max_count, .body = .{ .engine = .{ .linear = re } }, .escaped = escaped };
         if (spec.ignore_case) q.mineCaselessGate(gpa, escaped orelse spec.pattern);
         return q;
     }
@@ -205,7 +237,7 @@ pub const CompiledQuery = struct {
 
     pub fn deinit(self: *CompiledQuery, gpa: std.mem.Allocator) void {
         switch (self.body) {
-            .regex => |*re| re.deinit(),
+            .engine => |*m| m.deinit(),
             .literal => {},
         }
         if (self.escaped) |e| gpa.free(e);
@@ -222,10 +254,10 @@ pub const CompiledQuery = struct {
     pub fn scratch(self: *const CompiledQuery, gpa: std.mem.Allocator) CompileError!Scratch {
         switch (self.body) {
             .literal => return .none,
-            .regex => |*re| {
-                var sim = Regex.Sim.init(gpa, re) catch return CompileError.OutOfMemory;
+            .engine => |*m| {
+                var sim = Matcher.Sim.init(gpa, m) catch return CompileError.OutOfMemory;
                 if (!self.word) return .{ .sim = sim };
-                const span = Regex.SpanSim.init(gpa, re) catch {
+                const span = Matcher.SpanSim.init(gpa, m) catch {
                     sim.deinit();
                     return CompileError.OutOfMemory;
                 };
@@ -242,14 +274,23 @@ pub const CompiledQuery = struct {
     /// {foo,bar}), both of which the index treats as sound supersets. `one`
     /// backs the single-literal return so the callee allocates nothing.
     pub fn prefilter(self: *const CompiledQuery, one: *[1][]const u8) []const []const u8 {
-        if (self.caseless) return self.variants orelse &.{};
         switch (self.body) {
             .literal => |needle| {
-                if (needle.len < 3) return &.{};
+                if (self.caseless or needle.len < 3) return &.{};
                 one[0] = needle;
                 return one[0..1];
             },
-            .regex => |*re| return regexPrefilter(re, one),
+            .engine => |*m| {
+                // Caseless: the linear arm prunes by the mined case-variant
+                // OR-set (`caselessVariants`); the PCRE2 arm soundly DECLINES
+                // (empty ⇒ full warm scan — the same match set cold's
+                // `caselessFilter` yields, just unpruned; its variant-mining is
+                // deferred). Non-caseless: both arms use the seam's guaranteed
+                // required literal / alternation cover — cold's exact
+                // non-caseless rule (`serial.zig::trigramFilter`).
+                if (self.caseless) return if (m.* == .linear) (self.variants orelse &.{}) else &.{};
+                return matcherPrefilter(m, one);
+            },
         }
     }
 
@@ -267,7 +308,7 @@ pub const CompiledQuery = struct {
         if (self.word) return self.docMatchesWord(bytes, sc);
         return switch (self.body) {
             .literal => |needle| simd.contains(bytes, needle),
-            .regex => |*re| re.docMatch(&sc.sim, bytes),
+            .engine => |*m| m.docMatch(&sc.sim, bytes),
         };
     }
 
@@ -282,13 +323,13 @@ pub const CompiledQuery = struct {
     fn docMatchesWord(self: *const CompiledQuery, bytes: []const u8, sc: *Scratch) bool {
         switch (self.body) {
             .literal => |needle| return firstWordHit(self.unicode, bytes, needle) != null,
-            .regex => |*re| {
-                if (!re.docMatch(&sc.word.sim, bytes)) return false;
+            .engine => |*m| {
+                if (!m.docMatch(&sc.word.sim, bytes)) return false;
                 var rest = bytes;
                 while (rest.len > 0) {
                     const nl = std.mem.indexOfScalar(u8, rest, '\n');
                     const end = nl orelse rest.len;
-                    if (lineHasWordMatch(self.unicode, re, rest[0..end], &sc.word)) return true;
+                    if (lineHasWordMatch(self.unicode, m, rest[0..end], &sc.word)) return true;
                     if (nl == null) break;
                     rest = rest[end + 1 ..];
                 }
@@ -306,6 +347,14 @@ pub const CompiledQuery = struct {
     pub fn countLines(self: *const CompiledQuery, bytes: []const u8, sc: *Scratch) u64 {
         // Same caseless SIMD pre-gate as `docMatches`: no gate hit ⇒ 0 lines.
         if (self.gate) |g| if (!simd.containsCaseless(bytes, g)) return 0;
+        // Class-run fused count: one hit-jumping whole-buffer pass replaces
+        // the line split + per-line engine below (non-null only when exact —
+        // a byte-exact `\n`-free class run; `-m` reports min(actual, N)).
+        if (!self.word) switch (self.body) {
+            .engine => |*m| if (m.countRunLines(bytes)) |n|
+                return if (self.max_count != 0) @min(n, self.max_count) else n,
+            else => {},
+        };
         const capped = self.max_count != 0;
         if (self.word) return if (capped) self.countGeneric(true, true, bytes, sc) else self.countGeneric(true, false, bytes, sc);
         return if (capped) self.countGeneric(false, true, bytes, sc) else self.countGeneric(false, false, bytes, sc);
@@ -327,10 +376,10 @@ pub const CompiledQuery = struct {
             const gated = if (self.gate) |g| simd.containsCaseless(line, g) else true;
             const hit = gated and if (word) switch (self.body) {
                 .literal => |needle| firstWordHit(self.unicode, line, needle) != null,
-                .regex => |*re| lineHasWordMatch(self.unicode, re, line, &sc.word),
+                .engine => |*m| lineHasWordMatch(self.unicode, m, line, &sc.word),
             } else switch (self.body) {
                 .literal => |needle| simd.contains(line, needle),
-                .regex => |*re| re.lineMatch(&sc.sim, line),
+                .engine => |*m| m.lineMatch(&sc.sim, line),
             };
             if (hit) {
                 n += 1;
@@ -348,7 +397,7 @@ pub const CompiledQuery = struct {
     pub fn matchScratch(self: *const CompiledQuery, gpa: std.mem.Allocator) CompileError!MatchScratch {
         return switch (self.body) {
             .literal => .none,
-            .regex => |*re| .{ .sim = Regex.SpanSim.init(gpa, re) catch return CompileError.OutOfMemory },
+            .engine => |*m| .{ .sim = Matcher.SpanSim.init(gpa, m) catch return CompileError.OutOfMemory },
         };
     }
 
@@ -372,10 +421,10 @@ pub const CompiledQuery = struct {
                     from = i + needle.len; // non-overlapping, like rg's leftmost scan
                 }
             },
-            .regex => |*re| {
+            .engine => |*m| {
                 var from: usize = 0;
                 while (from <= line.len) {
-                    const sp = re.matchSpan(&sc.sim, line, from) orelse break;
+                    const sp = m.matchSpan(&sc.sim, line, from) orelse break;
                     if (sp.end == sp.start) {
                         from = sp.start + 1; // step past a zero-width match (json.zig parity)
                         continue;
@@ -403,10 +452,10 @@ pub const CompiledQuery = struct {
                     try out.append(a, .{ .start = i, .end = i + needle.len });
                 }
             },
-            .regex => |*re| {
+            .engine => |*m| {
                 var from: usize = 0;
                 while (from <= line.len) {
-                    const sp = re.matchSpan(&sc.sim, line, from) orelse break;
+                    const sp = m.matchSpan(&sc.sim, line, from) orelse break;
                     if (sp.end == sp.start) {
                         from = sp.start + 1;
                         continue;
@@ -449,11 +498,11 @@ fn firstWordHit(unicode: bool, hay: []const u8, needle: []const u8) ?usize {
 /// One line's `-w` verdict for a regex body: the cheap boolean pre-gate first
 /// (a line the plain engine rejects can never hold a word-valid span), then
 /// cold `nextSpan`'s exact loop until the first word-valid non-empty span.
-fn lineHasWordMatch(unicode: bool, re: *const Regex, line: []const u8, w: *WordScratch) bool {
-    if (!re.lineMatch(&w.sim, line)) return false;
+fn lineHasWordMatch(unicode: bool, m: *const Matcher, line: []const u8, w: *WordScratch) bool {
+    if (!m.lineMatch(&w.sim, line)) return false;
     var from: usize = 0;
     while (from <= line.len) {
-        const sp = re.matchSpan(&w.span, line, from) orelse return false;
+        const sp = m.matchSpan(&w.span, line, from) orelse return false;
         if (sp.end == sp.start) {
             from = sp.start + 1;
             continue;
@@ -476,6 +525,21 @@ pub fn regexPrefilter(re: *const Regex, one: *[1][]const u8) []const []const u8 
         return one[0..1];
     }
     return re.alts;
+}
+
+/// The engine-neutral twin of `regexPrefilter`, over the `Matcher` seam: the
+/// guaranteed required literal (≥3 bytes) present in EVERY match, else the
+/// per-branch alternation cover. The linear arm's `required`/`alts` are its AST
+/// literals; the PCRE2 arm's are the library-derived required literal (`alts`
+/// empty). Mirrors cold's NON-caseless `trigramFilter` arm for both engines, so
+/// warm and cold prune a `-P` query by the identical, sound literal set.
+pub fn matcherPrefilter(m: *const Matcher, one: *[1][]const u8) []const []const u8 {
+    const req = m.required();
+    if (req.len >= 3) {
+        one[0] = req;
+        return one[0..1];
+    }
+    return m.alts();
 }
 
 /// The longest ASCII-fold-CLOSED window of a literal, or null when none

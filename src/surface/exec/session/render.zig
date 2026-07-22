@@ -16,8 +16,9 @@
 //! filename prefix is always on. What remains is exactly the default piped
 //! frame, which this module reproduces verbatim.
 //!
-//! Fail-closed like the rest of the session: a pattern the linear engine
-//! declines is `error.Unsupported` (→ decline → certified cold answer), never
+//! Fail-closed like the rest of the session: a pattern the chosen engine
+//! declines (the linear default, or the PCRE2 backend under `-P`) is
+//! `error.Unsupported` (→ decline → certified cold answer), never
 //! a `die()`. (The Emitter's own internal OOM `die` remains the documented
 //! catastrophic-OOM fail-open: the daemon exits, the client's dropped
 //! connection falls back cold.)
@@ -31,7 +32,9 @@ const query_mod = @import("../../../kernel/match/query.zig");
 const request = @import("request.zig");
 const shm = @import("shm.zig");
 const Regex = @import("../../../kernel/match/regex/linear/core.zig").Regex;
-const Matcher = @import("../../../kernel/match/regex/linear/matcher.zig").Matcher;
+const matcher_mod = @import("../../../kernel/match/regex/linear/matcher.zig");
+const Matcher = matcher_mod.Matcher;
+const Pcre = matcher_mod.Pcre;
 
 pub const RenderError = error{ Unsupported, OutOfMemory };
 
@@ -57,15 +60,28 @@ pub fn renderLines(a: std.mem.Allocator, req: request.Request, docs: []const Doc
     // `-F` escapes the literal (`combinePatterns`), the RESOLVED case state
     // (`effectiveIgnoreCase` — `-i`, or `-S` folded through the single
     // session-side smart-case resolution) sets the engine's case fold,
-    // Unicode stays at the rg-parity default. A pattern outside the
-    // linear-time syntax is the caller's cue to answer cold.
+    // Unicode stays at the rg-parity default. A pattern outside the chosen
+    // engine's syntax is the caller's cue to answer cold.
     const caseless = req.effectiveIgnoreCase();
     const eff = if (req.fixed) try query_mod.escapeLiteral(a, req.pattern) else req.pattern;
-    const linear = Regex.compileOpts(a, eff, .{ .caseless = caseless, .unicode = true }) catch |e| switch (e) {
-        error.OutOfMemory => return RenderError.OutOfMemory,
-        else => return RenderError.Unsupported,
-    };
-    var re = Matcher{ .linear = linear };
+    // The SAME engine seam the shared core compiles through (`query.zig`): `-P`
+    // (never under `-F`, where fixed wins) realizes the PCRE2 backend —
+    // lookaround/backreferences the linear engine declines — else the linear
+    // arm. A pattern the CHOSEN engine rejects is `Unsupported`, the caller's
+    // cue to answer cold. Multiline/dotall stay off (classifier-ineligible).
+    var re: Matcher = if (req.pcre and !req.fixed)
+        .{ .pcre = Pcre.compileOpts(a, eff, .{ .caseless = caseless, .unicode = true }) catch |e| switch (e) {
+            error.OutOfMemory => return RenderError.OutOfMemory,
+            else => return RenderError.Unsupported,
+        } }
+    else
+        .{ .linear = Regex.compileOpts(a, eff, .{ .caseless = caseless, .unicode = true }) catch |e| switch (e) {
+            error.OutOfMemory => return RenderError.OutOfMemory,
+            else => return RenderError.Unsupported,
+        } };
+    // The linear arm lives in `a` (arena-freed as a unit); the PCRE2 arm holds
+    // libc-owned program memory, so `re` must self-free regardless of the arena.
+    defer re.deinit();
     // `requiredLiteralGate` (run.zig): the SIMD line gate is sound only when
     // the engine isn't folding case (RESOLVED, so a folding `-S` declines it
     // exactly like `-i`). It stays sound under `-w` too: the gate only SKIPS
@@ -482,4 +498,23 @@ test "renderLines: a pattern outside the linear engine declines (never dies)" {
     defer arena.deinit();
     var out: std.ArrayList(u8) = .empty;
     try t.expectError(RenderError.Unsupported, renderLines(arena.allocator(), .{ .pattern = "(?<=look)behind", .mode = .lines }, &.{}, &out));
+}
+
+test "renderLines: -P renders the PCRE2 engine's lookahead (linear declines it)" {
+    const t = std.testing;
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // `foo(?=bar)` is a lookahead the linear engine declines; under `-P` the
+    // PCRE2 arm renders through the SAME cold Emitter, so only the line whose
+    // assertion holds prints. Expected from PCRE semantics, never a self-run.
+    const docs = [_]Doc{.{ .path = "look.txt", .bytes = "foobar yes\nfoobaz no\n", .nul = null }};
+    try t.expectEqualStrings(
+        "look.txt:foobar yes\n",
+        try renderToString(a, .{ .pattern = "foo(?=bar)", .mode = .lines, .pcre = true }, &docs),
+    );
+    // The very same pattern WITHOUT `-P` stays a linear decline → cold.
+    var out: std.ArrayList(u8) = .empty;
+    try t.expectError(RenderError.Unsupported, renderLines(a, .{ .pattern = "foo(?=bar)", .mode = .lines }, &docs, &out));
 }

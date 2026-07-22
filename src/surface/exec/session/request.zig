@@ -1,7 +1,8 @@
 //! gist resident session — the eligible-request classifier (ADR-352 rung 2.5).
 //!
-//! Warm surface: `-l` / `-c` / bare `lines`, literal (`-F`) or plain regex,
-//! ±case (`-i`/`-s`/`-S`), optional `-w` / `-n`, `-A`/`-B`/`-C` context windows,
+//! Warm surface: `-l` / `-c` / bare `lines`, literal (`-F`), linear regex, or
+//! `-P`/`--pcre2` (`--engine=pcre2`) PCRE2 regex, ±case (`-i`/`-s`/`-S`),
+//! optional `-w` / `-n`, `-A`/`-B`/`-C` context windows,
 //! a clean relative PATH scope, `-g <glob>` / `-t <type>` file scoping, and the
 //! gist-native `--rank[=N]` definition-first view (regex pattern + case + PATH
 //! roots only — see the `rank_k` guard below). Everything else (`--json`,
@@ -69,6 +70,12 @@ pub const Request = struct {
     smart_case: bool = false,
     /// `-w`/`--word-regexp` — see `search/match/query.zig::wordOk`.
     word: bool = false,
+    /// `-P`/`--pcre2` (or `--engine=pcre2`): realize the regex body with the
+    /// vendored PCRE2 JIT backend (lookaround, backreferences, Unicode
+    /// properties) behind the shared `Matcher` seam. Inert under `-F` (fixed
+    /// wins). Declined alongside `--rank` (linear-only) at classify time; a
+    /// pattern PCRE2 rejects falls to cold at compile.
+    pcre: bool = false,
     /// `-v`/`--invert-match` — select lines with no matching span. The FFI
     /// record stream supports this; the rootless daemon classifier stays narrow.
     invert: bool = false,
@@ -179,6 +186,17 @@ fn addType(ext: *Collector, name: []const u8) ClassifyError!void {
     for (globs) |g| try ext.push(g);
 }
 
+/// Resolve an `--engine <name>` value to whether the warm path uses PCRE2:
+/// `pcre2` ⇒ true, `default` ⇒ false (the linear engine). `auto` — rg's
+/// linear-first hybrid that escalates to PCRE2 only for a pattern the linear
+/// engine declines — and any unknown name decline to cold, which owns the
+/// escalation decision (and rg's exit-2 diagnostic for a bad name).
+fn engineIsPcre(v: []const u8) ClassifyError!bool {
+    if (std.mem.eql(u8, v, "pcre2")) return true;
+    if (std.mem.eql(u8, v, "default")) return false;
+    return ClassifyError.Unsupported;
+}
+
 /// Parse a `-A`/`-B`/`-C` (or `--after/before-context`) decimal window value. A
 /// non-decimal / overflowing tail is not the fast path's to reinterpret — decline
 /// so cold parses (and diagnoses with rg's exit-2) whatever the user actually meant.
@@ -199,6 +217,7 @@ pub fn classify(argv: []const []const u8, sa: *ScopeArgs) ClassifyError!Request 
     var ignore_case = false;
     var smart_case = false;
     var word = false;
+    var pcre = false;
     var invert = false;
     var line_num = false;
     var quiet = false;
@@ -238,6 +257,16 @@ pub fn classify(argv: []const []const u8, sa: *ScopeArgs) ClassifyError!Request 
             ignore_case, smart_case = .{ false, true };
         } else if (!end_of_flags and (std.mem.eql(u8, arg, "-w") or std.mem.eql(u8, arg, "--word-regexp"))) {
             word = true;
+        } else if (!end_of_flags and (std.mem.eql(u8, arg, "-P") or std.mem.eql(u8, arg, "--pcre2"))) {
+            pcre = true; // the vendored PCRE2 JIT backend behind the shared seam
+        } else if (!end_of_flags and std.mem.eql(u8, arg, "--engine")) {
+            // `--engine <name>`: pcre2 ⇒ warm PCRE2; default ⇒ warm linear;
+            // `auto` (linear→PCRE escalation) / unknown ⇒ cold owns it.
+            i += 1;
+            if (i >= argv.len) return ClassifyError.Unsupported;
+            pcre = try engineIsPcre(argv[i]);
+        } else if (!end_of_flags and std.mem.startsWith(u8, arg, "--engine=")) {
+            pcre = try engineIsPcre(arg["--engine=".len..]);
         } else if (!end_of_flags and (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--invert-match"))) {
             invert = true;
         } else if (!end_of_flags and (std.mem.eql(u8, arg, "-q") or std.mem.eql(u8, arg, "--quiet"))) {
@@ -346,9 +375,9 @@ pub fn classify(argv: []const []const u8, sa: *ScopeArgs) ClassifyError!Request 
     // (its index path even bypasses `-g`/`-t`). Rather than mirror those quirks
     // warm, admit only the clean rank surface — pattern + case + roots — and
     // decline every richer combo to cold, which owns its index-vs-live rank.
-    if (rank_k != null and (fixed or word or invert or quiet or line_num or max_count != null or before != 0 or after != 0 or m != .lines or includes.n != 0 or excludes.n != 0 or exts.n != 0))
+    if (rank_k != null and (fixed or word or pcre or invert or quiet or line_num or max_count != null or before != 0 or after != 0 or m != .lines or includes.n != 0 or excludes.n != 0 or exts.n != 0))
         return ClassifyError.Unsupported;
     // Context only shapes the `lines` render; `-l`/`-c` never emit a window (rg
     // parity), so a context request under those modes stays cold-free of it.
-    return .{ .pattern = p, .mode = m, .fixed = fixed, .ignore_case = ignore_case, .line_num = line_num, .smart_case = smart_case, .word = word, .invert = invert, .quiet = quiet, .max_count = max_count, .before = before, .after = after, .rank_k = rank_k, .filter = .{ .roots = roots.slice(), .includes = includes.slice(), .excludes = excludes.slice(), .exts = exts.slice() } };
+    return .{ .pattern = p, .mode = m, .fixed = fixed, .ignore_case = ignore_case, .line_num = line_num, .smart_case = smart_case, .word = word, .pcre = pcre, .invert = invert, .quiet = quiet, .max_count = max_count, .before = before, .after = after, .rank_k = rank_k, .filter = .{ .roots = roots.slice(), .includes = includes.slice(), .excludes = excludes.slice(), .exts = exts.slice() } };
 }

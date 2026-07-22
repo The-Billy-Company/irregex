@@ -847,3 +847,67 @@ test "resident: smart-case resolves like cold's fold on every answer face" {
         try expectFileSet(&tree, files, &.{"upper.txt"});
     }
 }
+
+test "resident: -P serves the PCRE2 engine warm on every answer face" {
+    // The warm-PCRE contract end to end: a `Request{ .pcre = true }` flows
+    // through the SAME session path a `-P` daemon query rides — classify →
+    // `compileFor` (Spec.pcre) → the PCRE2 arm of the `Matcher` seam → match
+    // over the live in-memory corpus. Every pattern here uses a construct the
+    // linear engine DECLINES (lookahead, backreference), so a passing warm
+    // answer proves the PCRE2 backend did the work — expectations are
+    // hand-derived from PCRE semantics, never a self-run of the engine.
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var fixture = std.heap.ArenaAllocator.init(gpa);
+    defer fixture.deinit();
+
+    var tree = try Tree.init(fixture.allocator(), io, "pcre", @intFromPtr(&threaded));
+    defer tree.deinit();
+    try tree.write("look.txt", "foobar here\n"); // foo(?=bar) ✓
+    try tree.write("nolook.txt", "foobaz here\n"); // foo(?=bar) ✗ (both hold `foo`)
+    try tree.write("dup.txt", "hello hello world\nsingle line\n"); // (\w+) \1 → 1 line
+    try tree.write("nodup.txt", "alpha beta gamma\n"); // (\w+) \1 → 0
+
+    var session = try ResidentSession.init(gpa, io, &.{tree.root});
+    defer session.deinit();
+
+    // ── files face: lookahead admits only the file whose assertion holds ──
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        const files = try queryFiles(&session, q.allocator(), .{ .pattern = "foo(?=bar)", .mode = .files, .pcre = true });
+        try expectFileSet(&tree, files, &.{"look.txt"});
+    }
+    // ── count face: a backreference counts only the doubled-word line ──
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        const counted = try session.query(q.allocator(), .{ .pattern = "(\\w+) \\1", .mode = .count, .pcre = true });
+        try std.testing.expectEqual(@as(u64, 1), counted.count); // dup.txt line 1 only
+    }
+    // ── lines face: the PCRE2 body renders through the cold default frame ──
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        const ans = try session.queryLines(q.allocator(), .{ .pattern = "foo(?=bar)", .mode = .lines, .pcre = true });
+        try std.testing.expect(ans.matched);
+        const want = try std.fmt.allocPrint(q.allocator(), "{s}/look.txt:foobar here\n", .{tree.root});
+        try std.testing.expectEqualStrings(want, ans.out);
+    }
+    // ── -w composes with the PCRE2 engine: the lookahead span is word-gated ──
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        try tree.write("w1.txt", "bar! ok\n"); // bar(?=!) span [0,3) — word-valid
+        try tree.write("w2.txt", "rebar! no\n"); // `bar` preceded by `e` — word-rejected
+        try advanceClock(io);
+        // Without -w both files match the lookahead.
+        const plain = try queryFiles(&session, q.allocator(), .{ .pattern = "bar(?=!)", .mode = .files, .pcre = true });
+        try expectFileSet(&tree, plain, &.{ "w1.txt", "w2.txt" });
+        // With -w only the word-bounded span survives.
+        const worded = try queryFiles(&session, q.allocator(), .{ .pattern = "bar(?=!)", .mode = .files, .pcre = true, .word = true });
+        try expectFileSet(&tree, worded, &.{"w1.txt"});
+    }
+}

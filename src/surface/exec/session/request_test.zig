@@ -433,9 +433,38 @@ test "classify: --rank declines every richer combo to cold" {
         &.{ "--rank", "-g", "*.zig", "needle" },
         &.{ "--rank", "-t", "py", "needle" },
         &.{ "--rank", "-C", "2", "needle" }, // a window has no meaning in the ranked view
+        &.{ "--rank", "-P", "needle" }, // --rank is linear-only; PCRE2 declines
     }) |argv| {
         try std.testing.expectError(request.ClassifyError.Unsupported, ok(argv));
     }
+}
+
+test "classify: -P/--pcre2/--engine=pcre2 select the warm PCRE2 engine" {
+    // Every spelling of the PCRE2 selector sets `pcre`; it composes with modes,
+    // case, `-w`, `-n`, context, and a clean PATH scope.
+    try std.testing.expect((try ok(&.{ "-P", "foo(?=bar)" })).pcre);
+    try std.testing.expect((try ok(&.{ "--pcre2", "foo(?=bar)" })).pcre);
+    try std.testing.expect((try ok(&.{ "--engine=pcre2", "foo(?=bar)" })).pcre);
+    try std.testing.expect((try ok(&.{ "--engine", "pcre2", "foo(?=bar)" })).pcre);
+    // `--engine=default` stays on the linear engine (pcre unset).
+    try std.testing.expect(!(try ok(&.{ "--engine=default", "needle" })).pcre);
+    // A plain (non-`-P`) request never sets it.
+    try std.testing.expect(!(try ok(&.{"needle"})).pcre);
+    // Composes with the eligible surface.
+    {
+        const a = try ok(&.{ "-c", "-P", "-i", "(\\w+)\\s+\\1", "services/ai" });
+        try std.testing.expect(a.pcre and a.ignore_case);
+        try std.testing.expectEqual(request.Mode.count, a.mode);
+        try std.testing.expectEqualStrings("services/ai", a.filter.roots[0]);
+    }
+}
+
+test "classify: --engine auto / unknown decline to cold (linear-first escalation is cold's)" {
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "--engine", "auto", "needle" }));
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "--engine=auto", "needle" }));
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "--engine=bogus", "needle" }));
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "--auto-hybrid-regex", "needle" }));
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "--engine", "needle" })); // missing value consumes the pattern-ish, non-value declines
 }
 
 test "classify: -A/-B/-C context windows are eligible and fold like cold" {
