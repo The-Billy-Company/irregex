@@ -26,6 +26,7 @@ const prefilter = @import("../analysis/prefilter.zig");
 const dfa_mod = @import("dfa.zig");
 const powerset = @import("powerset.zig");
 const word = @import("../syntax/word.zig");
+const simd = @import("../../scan/simd.zig");
 const ByteSet = syn.ByteSet;
 const Node = syn.Node;
 
@@ -650,7 +651,37 @@ pub const Regex = struct {
     /// quantifier wins (rg `(?-u)` semantics). Once any thread matches we stop
     /// seeding new starts (leftmost) but keep strictly-higher-priority survivors
     /// running, so a greedy branch can still extend the end.
+    /// Leftmost-first span of a PURE-LITERAL pattern (`re.lits` non-empty), found
+    /// by SIMD substring scan instead of the Pike VM — the code-search common
+    /// case (`TODO`, `func`, `panic|0x`, symbol names). `re.lits` is set only for
+    /// an assertion-free alternation of pure literals (`analysis.pureLiterals`,
+    /// per-line only), so the match span IS a literal occurrence: leftmost START
+    /// dominates branch priority, and at a shared start the lowest branch index
+    /// (pattern order) wins — exactly the Pike-VM `matchSpan` result. Iterating
+    /// `re.lits` in order and taking the strictly-earliest occurrence (keeping the
+    /// first on a positional tie) yields that lowest-index-at-leftmost-start rule,
+    /// because no literal occurring at the winning position `p` can have its own
+    /// leftmost occurrence before `p`. One SIMD `indexOfPos` per literal (≤ 8)
+    /// replaces per-byte closure work — the 6–15× loss on literal/alternation
+    /// queries vs ripgrep's memmem/Teddy prefilters.
+    fn litSpan(re: *const Regex, line: []const u8, from: usize) ?Span {
+        var best: usize = std.math.maxInt(usize);
+        var end: usize = 0;
+        for (re.lits) |lit| {
+            const q = simd.indexOfPos(line, from, lit) orelse continue;
+            if (q < best) {
+                best = q;
+                end = q + lit.len;
+                if (q == from) break; // can't beat a hit at the search origin
+            }
+        }
+        if (best == std.math.maxInt(usize)) return null;
+        return .{ .start = best, .end = end };
+    }
+
     pub fn matchSpan(re: *const Regex, sim: *SpanSim, line: []const u8, from: usize) ?Span {
+        // Pure-literal fast path: SIMD substring scan, no Pike VM (see `litSpan`).
+        if (re.lits.len > 0) return re.litSpan(line, from);
         sim.gen += 1;
         sim.cur.len = 0;
         var cl = re.closure(sim, &sim.cur, re.atStart(line, from), re.atEnd(line, from), wordBefore(re.unicode, line, from), wordAt(re.unicode, line, from));

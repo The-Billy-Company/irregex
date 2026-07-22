@@ -74,18 +74,15 @@ fn pcre2Library(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.b
     return b.addLibrary(.{ .name = "pcre2irregex", .linkage = .static, .root_module = mod });
 }
 
-/// Wire the CoreServices (FSEvents) + CoreFoundation (CFRunLoop) frameworks the
-/// macOS resident watcher (`src/runtime/session/watch.zig`) calls into. Applied to every
-/// module that compiles the engine and produces a final link — including the
-/// C-ABI smoke exe, which links the engine as an object (framework flags don't
-/// propagate across `addObject`, only `addImport`). No-op off macOS. `link_libc`
-/// only wires the SDK sysroot; macOS links libSystem regardless.
-fn linkWatcherFrameworks(m: *std.Build.Module, frameworks: ?[]const u8) void {
-    const fw = frameworks orelse return;
+/// Every module that compiles the engine links libc: the vendored PCRE2 static
+/// archive is C, and the macOS resident watcher (`src/surface/exec/session/watch.zig`)
+/// reaches CoreServices/CoreFoundation through libc's `dlopen`/`dlsym` at runtime
+/// rather than link-time framework bindings — so the cold search binary never
+/// loads (or pays the launch-time initializers of) frameworks only the daemon's
+/// watcher arms. `link_libc` also wires the SDK sysroot; macOS links libSystem
+/// regardless.
+fn linkEngineLibc(m: *std.Build.Module) void {
     m.link_libc = true;
-    m.addSystemFrameworkPath(.{ .cwd_relative = fw });
-    m.linkFramework("CoreServices", .{});
-    m.linkFramework("CoreFoundation", .{});
 }
 
 pub fn build(b: *std.Build) void {
@@ -98,21 +95,14 @@ pub fn build(b: *std.Build) void {
     // through a failure; the kcov `coverage` binary stays build-wide Debug.
     const k = kernelkit.addKernel(b, .{ .name = "irregex", .test_optimize = .ReleaseSafe });
 
-    // kernelkit pins `os_version_min`, so Zig treats the target as cross-ish and
-    // skips native SDK auto-detection — resolve the SDK's framework dir once here
-    // (null off macOS) and hand it to every engine-linking module below.
-    const darwin_frameworks: ?[]const u8 = if (k.target.result.os.tag == .macos)
-        b.fmt("{s}/System/Library/Frameworks", .{std.mem.trimEnd(u8, b.run(&.{ "xcrun", "--show-sdk-path" }), "\n")})
-    else
-        null;
-
     // Decorate every engine module that compiles the kernel (root + the
-    // ReleaseSafe test twin when `test_optimize` diverges): CoreServices/
-    // CoreFoundation for the macOS resident watcher, and a PCRE2 built at THAT
-    // module's optimize (the adversarial tests shouldn't run a Debug C library).
+    // ReleaseSafe test twin when `test_optimize` diverges): libc (the macOS
+    // watcher's runtime `dlopen` of CoreServices/CoreFoundation + PCRE2's C ABI)
+    // and a PCRE2 built at THAT module's optimize (the adversarial tests
+    // shouldn't run a Debug C library).
     var engine_buf: [2]*std.Build.Module = undefined;
     for (kernelkit.engineModules(k, &engine_buf)) |m| {
-        linkWatcherFrameworks(m, darwin_frameworks);
+        linkEngineLibc(m);
         m.linkLibrary(pcre2Library(b, k.target, m.optimize.?));
     }
 
@@ -141,7 +131,7 @@ pub fn build(b: *std.Build) void {
     // Twin of the root at the CLI optimize — decorations aren't copied.
     const cli_engine = kernelkit.twin(k, cli_optimize);
     cli_engine.linkLibrary(pcre2Library(b, k.target, cli_optimize));
-    linkWatcherFrameworks(cli_engine, darwin_frameworks);
+    linkEngineLibc(cli_engine);
     const cli_mod = b.createModule(.{
         .root_source_file = b.path("src/surface/face/gist/main.zig"),
         .target = k.target,
@@ -518,7 +508,8 @@ pub fn build(b: *std.Build) void {
         .optimize = k.optimize,
         .link_libc = true,
     });
-    linkWatcherFrameworks(c_smoke_mod, darwin_frameworks); // engine object pulls in FSEvents externs
+    // No framework wiring: the engine object reaches CoreServices/CoreFoundation
+    // via runtime `dlopen` (watch.zig), so it exports no FSEvents/CF externs.
     c_smoke_mod.addIncludePath(b.path("include"));
     c_smoke_mod.addCSourceFile(.{
         .file = c_smoke_source,
@@ -590,6 +581,17 @@ pub fn build(b: *std.Build) void {
     const certify_step = b.step("certify", "Layer-A optimality cert: per-class cycles/byte + bootstrap CI");
     certify_step.dependOn(&run_certify.step);
     certify_step.dependOn(bench_install);
+
+    // `zig build flagbench` — per-function micro-profiles for the three flags
+    // agents reach for most (-i / -n / -v): the ONE hot function each adds,
+    // timed in isolation and self-checked byte-identical (bench/harness/flagbench.zig).
+    const run_flagbench = b.addRunArtifact(bench_exe);
+    run_flagbench.setCwd(b.path("../../.."));
+    run_flagbench.addArg("flagbench");
+    if (b.args) |args| run_flagbench.addArgs(args);
+    const flagbench_step = b.step("flagbench", "Per-function micro-profiles for -i / -n / -v (byte-identity self-checked)");
+    flagbench_step.dependOn(&run_flagbench.step);
+    flagbench_step.dependOn(bench_install);
 
     // Bench-side tests too — the harness-local `stats.zig` bootstrap-CI +
     // Mann-Whitney unit tests. (`bench/harness/bench.zig` imports `gist`; reuse the

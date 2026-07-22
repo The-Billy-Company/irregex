@@ -247,6 +247,15 @@ pub const Opts = struct {
     // The hard OOM ceiling still applies. `GIST_UNCAP=1` is the env equivalent
     // (what the bench harness sets to keep rg byte-parity exact).
     uncap: bool = false,
+    // --in-comments / --in-code: gist-native match SCOPING built on the shared
+    // comment/code span lexer (kernel/compose/lexspan.zig). `--in-comments`
+    // keeps only matches whose span begins inside a `//`/`#`/`/* */` comment
+    // (doc mentions, TODOs, stale-invariant surface); `--in-code` keeps only
+    // matches OUTSIDE any comment. Mutually exclusive. They select an early
+    // native view (like `--rank`) rather than threading through the certified
+    // rg-parity per-line engine, so ripgrep parity is untouched.
+    in_comments: bool = false,
+    in_code: bool = false,
     filter: Filter = .{},
     pub fn wantsContext(self: Opts) bool {
         return self.before > 0 or self.after > 0;
@@ -277,6 +286,17 @@ pub const Opts = struct {
     /// True for the two "no pattern needed" modes.
     pub fn noPattern(self: Opts) bool {
         return self.files_list or self.type_list;
+    }
+    /// The compact per-file ENUMERATION modes: one short line per file — a path
+    /// (`-l`, `--files-without-match`, `--files`) or a count (`-c`,
+    /// `--count-matches`). A partial answer here is misleading, and on the
+    /// unordered parallel engine a soft-cap cut yields a nondeterministic SUBSET
+    /// run-to-run; these are exempted from the soft context cap
+    /// (`corpus.exemptSoftCap`) so the SET is complete and reproducible. The
+    /// full-content modes (default, `-o`, context, `--json`) keep the cap — their
+    /// volume is the reason it exists, and their truncation is already ordered.
+    pub fn enumeration(self: Opts) bool {
+        return self.files_only or self.files_without or self.count_only or self.count_matches or self.files_list;
     }
 };
 
@@ -741,6 +761,9 @@ pub const flag_catalog = [_]FlagSpec{
     .{ .longs = &.{"rank"}, .action = .rank, .compatibility = .native },
     // --uncap: lift the soft output budget (hard OOM ceiling still applies).
     .{ .longs = &.{"uncap"}, .action = .{ .set = .uncap }, .compatibility = .native, .note = "lift the ~25k-token soft output cap for this query; the hard OOM ceiling still applies (GIST_UNCAP=1 is the env form)" },
+    // --in-comments / --in-code: native comment/code match scoping (lexspan.zig).
+    .{ .longs = &.{"in-comments"}, .action = .{ .set = .in_comments }, .compatibility = .native, .note = "keep only matches whose span begins inside a //, #, or /* */ comment (native span-lexed view; mutually exclusive with --in-code)" },
+    .{ .longs = &.{"in-code"}, .action = .{ .set = .in_code }, .compatibility = .native, .note = "keep only matches OUTSIDE any comment (native span-lexed view; mutually exclusive with --in-comments)" },
     // Accepted spellings whose requested behavior is intentionally not applied.
     .{ .longs = &.{ "mmap", "no-mmap" }, .action = .noop, .compatibility = .accepted_but_ignored },
     .{ .longs = &.{"one-file-system"}, .action = .{ .set = .one_file_system }, .compatibility = .supported },
@@ -1167,4 +1190,26 @@ test "content-transform flags parse into Opts" {
     // -uuu now brings the whole tree online: --no-ignore + hidden + --binary.
     const uuu = parseArgv(ta, &.{ "-uuu", "needle", "d" });
     try t.expect(uuu.opts.no_ignore and uuu.opts.hidden and uuu.opts.binary);
+}
+
+test "enumeration() marks every compact per-file mode, and no content mode" {
+    // The set exempted from the soft context cap (`corpus.exemptSoftCap`): each
+    // must classify as enumeration so its result SET stays complete + reproducible
+    // rather than a soft-cap-truncated, order-dependent subset.
+    for ([_][]const []const u8{
+        &.{ "-l", "needle", "d" }, // --files-with-matches
+        &.{ "--files-without-match", "needle", "d" },
+        &.{ "-c", "needle", "d" }, // --count
+        &.{ "--count-matches", "needle", "d" },
+        &.{"--files"}, // pattern-free listing
+    }) |argv| try t.expect(parseArgv(ta, argv).opts.enumeration());
+
+    // Content/structured modes carry real volume — the cap is theirs to keep,
+    // and their truncation is already ordered/deterministic.
+    for ([_][]const []const u8{
+        &.{ "needle", "d" }, // default line search
+        &.{ "-o", "needle", "d" }, // only-matching
+        &.{ "-C", "2", "needle", "d" }, // context
+        &.{ "--json", "needle", "d" },
+    }) |argv| try t.expect(!parseArgv(ta, argv).opts.enumeration());
 }

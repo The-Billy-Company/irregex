@@ -270,22 +270,31 @@ fn snippetOf(gpa: std.mem.Allocator, io: std.Io, source: Source, id: u32, line: 
     };
 }
 
-fn emitRanked(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, docs: []const Doc, source: Source, k: usize) !usize {
+/// Render the ranked top-K rows INTO `out` (no stdout, no diagnostics) — the
+/// pure kernel `emitRanked` and the warm daemon both build on. Returns the
+/// surfaced-row count (`k`, default 20, clamped to the ranked set). `out` and
+/// every transient (order permutation, per-row snippet) draw from `gpa`.
+fn renderRanked(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, docs: []const Doc, source: Source, k: usize, out: *std.ArrayList(u8)) !usize {
     const order = try rank_mod.rank(gpa, docs, .{}, null);
     defer gpa.free(order);
     const top = @min(order.len, if (k == 0) 20 else k);
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(gpa);
     for (order[0..top], 0..) |di, i| {
         const doc = docs[di];
         const path = source.path(doc.id);
         const snip = try snippetOf(gpa, io, source, doc.id, doc.best_line, re);
         defer gpa.free(snip);
         const kind = if (doc.is_mirror) "mirror" else if (doc.is_generated) "gen" else if (doc.is_def) "def" else "use";
-        try buf.print(gpa, "{d:>2}. {s}:{d}  [{s}]  ×{d}  {s}", .{ i + 1, path, doc.best_line, kind, doc.matches, snip });
-        if (doc.is_mirror) if (mirror.canonical(Doc, docs, doc)) |canonical| try buf.print(gpa, "  (mirror of {s})", .{source.path(canonical)});
-        try buf.append(gpa, '\n');
+        try out.print(gpa, "{d:>2}. {s}:{d}  [{s}]  ×{d}  {s}", .{ i + 1, path, doc.best_line, kind, doc.matches, snip });
+        if (doc.is_mirror) if (mirror.canonical(Doc, docs, doc)) |canonical| try out.print(gpa, "  (mirror of {s})", .{source.path(canonical)});
+        try out.append(gpa, '\n');
     }
+    return top;
+}
+
+fn emitRanked(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, docs: []const Doc, source: Source, k: usize) !usize {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(gpa);
+    const top = try renderRanked(gpa, io, re, docs, source, k, &buf);
     corpus_mod.emitStdout(buf.items);
     return top;
 }
@@ -344,6 +353,22 @@ pub fn runLive(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, files: []co
     const top = try emitRanked(gpa, io, re, docs.items, .{ .memory = files }, k);
     const query_ns = nowNs(io) - q0;
     std.debug.print("gist: {d} ranked matches (top {d}) · live-scanned {d} files · rank {d:.1} ms\n", .{ docs.items.len, top, files.len, ms(query_ns) });
+    return docs.items.len;
+}
+
+/// Warm-daemon rank: extract features over in-memory `files`, fuse, and render
+/// the top-K INTO `out` — the byte-identical twin of `runLive`'s emission, but
+/// returned to the caller (to stream over the session wire) instead of written
+/// to stdout, and with no stderr timing line. `out` and every transient draw
+/// from `gpa`. Returns the ranked-match count (0 ⇒ the daemon streams an empty
+/// answer; cold's hint is stderr-only and outside the byte-parity envelope).
+pub fn renderLive(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, files: []const LiveFile, k: usize, out: *std.ArrayList(u8)) !usize {
+    var docs: std.ArrayList(Doc) = .empty;
+    defer docs.deinit(gpa);
+    var sim = try Regex.Sim.init(gpa, re);
+    defer sim.deinit();
+    for (files, 0..) |file, id| if (fileDoc(file.bytes, file.path, re, &sim, @intCast(id))) |doc| try docs.append(gpa, doc);
+    _ = try renderRanked(gpa, io, re, docs.items, .{ .memory = files }, k, out);
     return docs.items.len;
 }
 

@@ -43,6 +43,7 @@ const color = @import("../emit/color.zig");
 const grepfile = @import("../read/grepfile.zig");
 const ingest = @import("../read/ingest.zig");
 const parallel = @import("parallel.zig");
+const par = @import("../../../../kernel/primitives/parallel.zig");
 const types = @import("../../../../corpus/scope/types.zig");
 const simd = @import("../../../../kernel/match/scan/simd.zig");
 const verify = @import("../../../../kernel/match/scan/verify.zig");
@@ -50,6 +51,7 @@ const persist = @import("../../../../corpus/index/trigrams/persist.zig");
 const fresh = @import("../../../../corpus/index/trigrams/fresh.zig");
 const crest = @import("../../../../kernel/primitives/crest.zig");
 const ranked = @import("ranked.zig");
+const commentscope = @import("commentscope.zig");
 const query_mod = @import("../../../../kernel/match/query.zig");
 const paths_mod = @import("../../../../corpus/scope/paths.zig");
 const replaceSep = paths_mod.replaceSep;
@@ -436,7 +438,21 @@ const ReadShard = struct {
 /// applied downstream in `collectFiles`). A file that fills `scratch`
 /// completely is ambiguous (exactly cap-sized, or bigger) — `readTail` keeps
 /// reading past it into a growable buffer instead of silently truncating.
+/// Large regular files are memory-MAPPED rather than read-loop + arena-duped:
+/// the ~2× serial copy of a big single file is the Amdahl tail under single-file
+/// sharding, and a mapping's pages fault in lazily during the (sharded) scan —
+/// exactly ripgrep's large-file strategy. Small files stay on the copying path
+/// (one read syscall beats mmap+fault setup below this size).
+const mmap_min_bytes: usize = 4 << 20;
+
 fn readOneCandidate(a: std.mem.Allocator, scratch: []u8, c: Candidate, needle: ?simd.Gate, cfg: *const ingest.Config) ?InFile {
+    // Untransformed large file: map it (no read loop, no dupe). A transforming
+    // run (-z/--pre/-E) must read + rewrite the raw bytes, so it can't map.
+    if (!cfg.active()) if (grepfile.mapFile(c.disk, mmap_min_bytes)) |mapped| {
+        const body = decodeBom(a, mapped);
+        if (needle) |gate| if (!verify.gateWide(a, body, gate)) return null;
+        return .{ .path = c.rel, .bytes = body, .explicit = c.explicit, .root = c.root };
+    };
     const raw = grepfile.readFileRaw(a, scratch, c.disk) orelse return null;
     // -z/--pre/-E rewrite a file's bytes before matching (decompress, preprocess,
     // transcode); `ingest.apply` owns that whole pipeline (and folds in BOM/
@@ -468,9 +484,16 @@ fn readShard(sh: *ReadShard) void {
 
 /// Read every discovered candidate — in parallel across the machine's cores
 /// above `par_threshold` candidates, the multi-core walk ripgrep itself runs
-/// (`ignore::WalkParallel`) — and append the kept `InFile`s (bytes duped into
-/// `dest`, the caller's long-lived arena) into `out`. Below the threshold this
-/// runs inline: for a handful of files, spawn cost dwarfs the read itself.
+/// (`ignore::WalkParallel`) — and append the kept `InFile`s into `out`, BORROWING
+/// each body straight from its shard arena. Below the threshold this runs inline:
+/// for a handful of files, spawn cost dwarfs the read itself.
+///
+/// The shard arenas are intentionally kept alive (never deinit'd): the cold
+/// engine is one-shot — `run` owns a single query arena and every terminal path
+/// `std.process.exit`s right after emit — so the read arenas outlive every
+/// match/emit pass that reads their bytes, and the OS reclaims them at exit. This
+/// deletes what was a serial ~½-GB `dest.dupe` of the whole kept corpus (the
+/// bandwidth floor sitting UNDER the already-parallel read), for zero copies.
 fn readCandidates(dest: std.mem.Allocator, gpa: std.mem.Allocator, candidates: []const Candidate, needle: ?simd.Gate, out: *std.ArrayList(InFile), cfg: *const ingest.Config) void {
     const ncpu = std.Thread.getCpuCount() catch 8;
     // A transforming run (-z/--pre/-E) reads in parallel like any other: each
@@ -492,10 +515,13 @@ fn readCandidates(dest: std.mem.Allocator, gpa: std.mem.Allocator, candidates: [
         for (threads) |t| t.join();
     }
     out.ensureUnusedCapacity(dest, candidates.len) catch oom();
+    // Borrow bodies from the shard arenas (kept alive to process exit — see the
+    // doc comment): copy only the small `InFile` structs, never the bytes. The
+    // shard's own `out` list (its struct storage) is freed; the arena that backs
+    // the bytes is not.
     for (shards) |*sh| {
-        for (sh.out.items) |f| out.appendAssumeCapacity(.{ .path = f.path, .bytes = dest.dupe(u8, f.bytes) catch oom(), .explicit = f.explicit, .root = f.root });
+        out.appendSliceAssumeCapacity(sh.out.items);
         sh.out.deinit(gpa);
-        sh.arena.deinit();
     }
 }
 
@@ -687,7 +713,7 @@ fn crestSieve(o: Opts, pattern: []const u8, re: *const Matcher) crest.Vector {
 /// scopes the freshness stat-walk to the query's own roots (else the indexed
 /// corpus) so a scoped query doesn't pay a whole-corpus stat pass.
 fn buildIndexSkip(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, filters: []const []const u8, sieve: crest.Vector) ?IndexSkip {
-    if (!parallel.indexElisionWanted(parsed, filters, sieve)) return null;
+    if (!parallel.indexElisionWanted(io, parsed, filters, sieve)) return null;
     return assembleIndexSkip(gpa, io, parsed, filters, sieve) catch null;
 }
 
@@ -764,7 +790,7 @@ fn collectFiles(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, parsed
     // walk phase. Spawn failure (or elision not wanted) degrades to the
     // old sequential compute — never a lost oracle.
     var box: ?IndexSkip = null;
-    const skip_thread: ?std.Thread = if (parallel.indexElisionWanted(parsed, filters, sieve))
+    const skip_thread: ?std.Thread = if (parallel.indexElisionWanted(io, parsed, filters, sieve))
         std.Thread.spawn(.{}, computeIndexSkip, .{ &box, gpa, io, parsed, filters, sieve }) catch null
     else
         null;
@@ -791,7 +817,17 @@ fn collectFiles(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, parsed
         }
         break :blk to_read.items;
     } else candidates.items;
-    readCandidates(a, gpa, read_list, file_needle, &all, cfg);
+    // A lone explicitly-named file is searched regardless of the whole-file
+    // presence gate: it can't be skipped (it was named), so the gate proves
+    // nothing the mode's own scan doesn't. Worse, that scan already runs — the
+    // sharded count/match pass, or the `-l`/`-q` early-exit — so gating here
+    // means faulting the body TWICE, and `gateWide`'s parallel fan-out faults
+    // every core's contiguous region before an early-exit can short-circuit,
+    // exactly defeating rg's fault-to-first-hit locality. Drop it for the single
+    // explicit file (output-neutral: absence yields no match either way); the
+    // recursive/multi-file walk keeps it, where it skips whole non-matching files.
+    const read_needle = if (read_list.len == 1 and read_list[0].explicit) null else file_needle;
+    readCandidates(a, gpa, read_list, read_needle, &all, cfg);
 
     var files: std.ArrayList(InFile) = .empty;
     files.ensureTotalCapacity(a, all.items.len) catch oom();
@@ -1198,6 +1234,11 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // (`writeStdout`/`emitStdout`) every engine emits through, plus the serial
     // accumulation guard (`outputFull`) below.
     corpus_mod.initOutputBudget(o.uncap);
+    // Enumeration modes list one compact line per file; lift the soft context
+    // guard so the returned set is COMPLETE and reproducible instead of a
+    // truncated (and, on the unordered parallel engine, nondeterministic) subset.
+    // The hard OOM ceiling still bounds a genuine blowup. See `Opts.enumeration`.
+    if (o.enumeration()) corpus_mod.exemptSoftCap();
     // Resolved ONCE per run (not per file/emitter): stdout tty + `--color` +
     // env. Every emitter below shares this single yes/no.
     const use_color = color.enabled(o, io, env);
@@ -1318,6 +1359,29 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         return;
     }
 
+    // --in-comments / --in-code: the native comment/code-scoped view. Like
+    // --rank, it branches early over the SAME compiled matcher and PATH scope
+    // and returns, so the certified rg-parity walk/emit paths below stay
+    // untouched. The exact engine still decides IF a line matches; the span
+    // lexer only filters WHICH matches survive by comment membership.
+    if (o.in_comments or o.in_code) {
+        if (o.in_comments and o.in_code) die("--in-comments and --in-code are mutually exclusive\n", .{});
+        const needle0 = requiredLiteralGate(a, o, eff, &re);
+        const c = collectFiles(a, gpa, io, parsed, &.{}, crest.zero_vector, needle0, &icfg);
+        const show = switch (o.filename) {
+            .always => true,
+            .never => false,
+            .auto => c.recursive or c.files.len > 1 or parsed.roots.len > 1,
+        };
+        const scoped = a.alloc(commentscope.File, c.files.len) catch oom();
+        for (c.files, scoped) |file, *dst| dst.* = .{ .path = file.path, .bytes = stripBom(file.bytes) };
+        var out0: std.ArrayList(u8) = .empty;
+        const kept = commentscope.run(a, &re, o, scoped, show, &out0);
+        if (!o.quiet) corpus_mod.emitStdout(out0.items);
+        pcreFaultExit(&re);
+        std.process.exit(if (c.path_error or pre_error.load(.seq_cst)) 2 else if (kept > 0) 0 else 1);
+    }
+
     const line_needle = requiredLiteralGate(a, o, eff, &re);
     // `--include-zero` must count every searched file, so the whole-file literal
     // gate (which would skip a file lacking the required literal) stands down —
@@ -1328,20 +1392,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // across every emitter for template expansion. The PCRE2 arm captures from
     // real backreference/lookaround programs; the linear arm is the save-carrying
     // Pike VM over the same AST. Same engine choice as the search matcher above.
-    var caps_store: ?Caps = if (o.replace != null)
-        (if (is_pcre)
-            Caps{ .pcre = captures_mod.PcreCaptures.compile(gpa, eff, .{ .caseless = o.caseless, .multiline = o.re_line_anchors, .dotall = o.multiline_dotall, .unicode = o.pcre_unicode }) catch |e| switch (e) {
-                error.OutOfMemory => die("oom\n", .{}),
-                else => die("bad PCRE2 pattern '{s}': {s}\n", .{ eff, pcre2.lastError() }),
-            } }
-        else
-            Caps{ .linear = Captures.compile(gpa, eff, o.caseless, o.unicode) catch die(
-                \\gist: error: bad pattern '{s}' — outside gist's linear-time syntax
-                \\gist: try -P / --pcre2 — run this pattern on the PCRE2 backend (lookaround, backreferences)
-                \\
-            , .{eff}) })
-    else
-        null;
+    var caps_store: ?Caps = if (o.replace != null) compileCaps(gpa, o, eff, is_pcre) else null;
     defer if (caps_store) |*cp| cp.deinit();
     const caps: ?*Caps = if (caps_store) |*cp| cp else null;
 
@@ -1409,7 +1460,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         var jf: std.ArrayList(json.File) = .empty;
         for (files) |f| jf.append(a, .{ .path = f.path, .body = stripBom(f.bytes), .explicit = f.explicit }) catch oom();
         var out: std.ArrayList(u8) = .empty;
-        const matched = json.run(a, &out, &re, caps, o, jf.items);
+        const matched = json.runParallel(gpa, a, &out, &re, caps, o, jf.items, line_needle);
         corpus_mod.emitStdout(out.items);
         pcreFaultExit(&re);
         std.process.exit(if (err_exit) 2 else if (matched) 0 else 1);
@@ -1451,19 +1502,16 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         var wss: ?Matcher.SpanSim = if (o.word) (Matcher.SpanSim.init(a, &re) catch null) else null;
         defer if (wss) |*s| s.deinit();
         const wssp: ?*Matcher.SpanSim = if (wss) |*s| s else null;
-        for (files) |f| {
-            const body = stripBom(f.bytes);
-            if (body.len > 0 and corpus_mod.isBinary(body) and !o.text and !o.binary) continue;
-            // `-U`: "match" is a whole-buffer hit — render into a throwaway buffer
-            // and reuse the multiline emitter's tally (which already bakes in `-w`,
-            // `-v`, and the zero-width progress rule) as the boolean.
-            const any = if (o.multiline) bufferAnyHit(a, &re, o, caps, line_needle, f.path, body) else blk: {
-                var lines: std.ArrayList([]const u8) = .empty;
-                collectLines(a, body, o.term(), &lines);
-                for (lines.items) |line| if (lineHit(&em, &lsim, wssp, line_needle, line)) break :blk true;
-                break :blk false;
-            };
-            if (!any) out.print(a, "{s}{s}", .{ f.path, if (o.null_sep) "\x00" else o.outTerm() }) catch oom();
+        // Per-file independent with no output budget — fan out across cores like
+        // the parallel READ that preceded it, falling back to the serial loop
+        // below the corpus floor, on one core, or under the `GIST_NO_PARALLEL`
+        // parity-gate idiom. `-U`'s "match" is a whole-buffer hit; the per-line
+        // path reuses the same `-w`/`-v`/zero-width classify as the emit loop.
+        const bounds = if (args.envSpan("GIST_NO_PARALLEL") != null) null else par.shardBounds(InFile, files, {}, inFileWeight, par.min_bytes, par.max_shards, a);
+        if (bounds) |b| {
+            filesWithoutSharded(gpa, a, &out, &re, o, line_needle, files, b);
+        } else for (files) |f| {
+            fileWithoutMatch(a, &re, o, &em, &lsim, wssp, line_needle, f, &out);
         }
         // Under -q the stream is suppressed; the found-a-without-match file still
         // decides the exit (0 = at least one file lacked the pattern, ripgrep's
@@ -1490,63 +1538,28 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // `--include-zero` count: an empty file is still a searched file and rg
     // prints its `path:0`, so don't skip it (the emitter tallies 0 below).
     const count_zero = o.include_zero and (o.count_only or o.count_matches);
-    for (files) |f| {
-        const body = stripBom(f.bytes);
-        if (body.len == 0 and !count_zero) continue;
-        if (binary_detect) if (std.mem.indexOfScalar(u8, body, 0)) |nul| {
-            // rg's -U slice model runs only when the pattern can actually match
-            // `\n` (multi_line_with_matcher); a `\n`-free -U pattern keeps the
-            // LINE model. Slice model + NUL beyond the 64K sniff: the searcher
-            // never notices it — ordinary text (matches after the NUL included,
-            // no binary summary). Fall through.
-            const slice_model = o.multiline and re.canMatchNewline();
-            if (!(slice_model and !grepfile.multilineBinary(body.len, nul))) {
-                em.base = @intFromPtr(body.ptr);
-                em.body_end = em.base + body.len;
-                if (o.stats) {
-                    // rg tallies a binary file too. Explicit (convert): matches
-                    // over the whole body; the slice model's byte_count clamps
-                    // at the binary offset. Implicit line model: the committed
-                    // prefix. Implicit slice-model sniff quit: zero bytes, zero
-                    // matches — only the search itself counts.
-                    const searched: []const u8 = if (f.explicit)
-                        body
-                    else if (slice_model)
-                        body[0..0]
-                    else
-                        body[0..grepfile.committedPrefix(body, nul)];
-                    var blines: std.ArrayList([]const u8) = .empty;
-                    defer blines.deinit(a);
-                    if (!o.multiline) collectLines(a, searched, o.term(), &blines);
-                    const fs = fileMatchStats(&re, a, o, searched, blines.items);
-                    stat.add(.{ .files_searched = 1, .matches = fs.matches, .matched_lines = fs.lines, .bytes_searched = if (f.explicit and slice_model) nul else fs.bytes });
-                }
-                if (grepfile.handleBinary(a, &re, o, &out, &em, f.path, f.explicit, body, nul, show_name)) matched_files += 1;
-                continue;
-            }
-        };
-        // `-U` matches the whole buffer (no line split); the per-line path splits
-        // into rg lines. `fileMatchStats`/`Emitter` are multiline-aware internally.
-        var lines: std.ArrayList([]const u8) = .empty;
-        if (!o.multiline) collectLines(a, body, o.term(), &lines);
-        if (o.stats) {
-            const fs = fileMatchStats(&re, a, o, body, lines.items);
-            stat.add(.{ .files_searched = 1, .matches = fs.matches, .matched_lines = fs.lines, .bytes_searched = fs.bytes });
-        }
-        const before = out.items.len;
-        // --heading: a blank-line-separated group per file, path on its own
-        // line ending with the output terminator; the BLANK separator between
-        // groups stays a bare `\n` (rg's buffer-writer separator, hardcoded).
-        if (heading) out.print(a, "{s}{s}{s}", .{ if (first) "" else "\n", f.path, o.outTerm() }) catch oom();
-        em.base = @intFromPtr(body.ptr);
-        em.body_end = em.base + body.len;
-        const hits = if (o.multiline) em.buffer(f.path, body) else em.file(f.path, lines.items);
-        if (hits > 0) {
-            if (join_groups and !first and out.items.len > before)
-                out.insertSlice(a, before, "--\n") catch oom();
-            first = false;
-            matched_files += 1;
-        } else if (heading) out.shrinkRetainingCapacity(before); // no matches → drop the header we wrote
+    // `--heading`/context `join_groups` carry cross-file separator state (the
+    // leading blank line, the `--\n` between context groups) that an order-free
+    // split can't reproduce; everything else here is per-file independent and
+    // fans out across cores (`emitSharded`) exactly like the parallel READ that
+    // preceded it. `shardBounds` returns null below the corpus floor / on one
+    // core, keeping the small-corpus answer on this proven serial loop.
+    // `GIST_NO_PARALLEL` (the parity-gate idiom, mirrored from `json.runParallel`)
+    // forces the serial emit so `rgsuite/run.py`'s serial pass exercises this path
+    // too. No production caller sets it.
+    const no_par = args.envSpan("GIST_NO_PARALLEL") != null;
+    const bounds = if (heading or join_groups or no_par) null else par.shardBounds(InFile, files, {}, inFileWeight, par.min_bytes, par.max_shards, a);
+    // A single large file the multi-file shard gate leaves serial (`bounds` is
+    // null for one file): fan the line-free literal fast path across cores over
+    // its own body — the parallelism ripgrep can't apply to one file. `-l`
+    // (files_only) is excluded (a lone first hit, nothing to parallelize).
+    const solo_fast = files.len == 1 and !heading and !join_groups and !no_par and !o.stats and !o.files_only and em.litFastEligible();
+    if (solo_fast and emitFileSharded(gpa, a, &out, &em, &re, o, use_color, line_needle, files[0], &matched_files, binary_detect, show_name)) {
+        // handled by the single-file shard driver
+    } else if (bounds) |b| {
+        emitSharded(gpa, a, &out, &re, o, eff, is_pcre, use_color, line_needle, files, b, &stat, &matched_files, binary_detect, count_zero, show_name);
+    } else for (files) |f| {
+        renderFile(&em, f, &stat, &matched_files, &first, binary_detect, count_zero, heading, join_groups, show_name);
         // Serial engine renders into `out` before one flush — stop growing it once
         // the output budget is spent, bounding peak memory (the OOM guard) at the
         // exact point the flush below would truncate anyway. `--stats` runs the
@@ -1569,6 +1582,348 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     if (matched_files == 0 and !err_exit)
         hints.noMatches(hints.shape(parsed.patterns, o, parsed.roots, parsed.roots.len > 0), files.len);
     std.process.exit(if (err_exit) 2 else if (matched_files > 0) 0 else 1);
+}
+
+/// Compile the `-r/--replace` capture matcher (linear Pike VM or PCRE2) for the
+/// effective pattern `eff`. One definition shared by the top-level run and every
+/// parallel emit shard — `Caps` carries mutable Pike-VM scratch, so a shard can
+/// never share the run's instance and must compile its own.
+fn compileCaps(gpa: std.mem.Allocator, o: Opts, eff: []const u8, is_pcre: bool) Caps {
+    return if (is_pcre)
+        Caps{ .pcre = captures_mod.PcreCaptures.compile(gpa, eff, .{ .caseless = o.caseless, .multiline = o.re_line_anchors, .dotall = o.multiline_dotall, .unicode = o.pcre_unicode }) catch |e| switch (e) {
+            error.OutOfMemory => die("oom\n", .{}),
+            else => die("bad PCRE2 pattern '{s}': {s}\n", .{ eff, pcre2.lastError() }),
+        } }
+    else
+        Caps{ .linear = Captures.compile(gpa, eff, o.caseless, o.unicode) catch die(
+            \\gist: error: bad pattern '{s}' — outside gist's linear-time syntax
+            \\gist: try -P / --pcre2 — run this pattern on the PCRE2 backend (lookaround, backreferences)
+            \\
+        , .{eff}) };
+}
+
+/// Render one file's search result into `em.out` exactly as the serial bottom
+/// loop does — the per-file core shared by that loop and every parallel emit
+/// shard (`emitSharded`). Threads the running `--stats` tally, the
+/// `files_with_match` counter, and the `--heading`/context `first`-group flag
+/// through pointers so a shard folds its slice independently and the driver
+/// merges. It owns no loop control (no output-budget break — the caller's) and,
+/// when the driver has gated `--heading`/`join_groups` onto the serial path,
+/// those branches stay inert.
+fn renderFile(em: *Emitter, f: InFile, stat: *Stats, matched_files: *usize, first: *bool, binary_detect: bool, count_zero: bool, heading: bool, join_groups: bool, show_name: bool) void {
+    const a = em.a;
+    const o = em.o;
+    const re = em.re;
+    const out = em.out;
+    const body = stripBom(f.bytes);
+    if (body.len == 0 and !count_zero) return;
+    if (binary_detect) if (verify.firstNulWide(a, body)) |nul| {
+        const slice_model = o.multiline and re.canMatchNewline();
+        if (!(slice_model and !grepfile.multilineBinary(body.len, nul))) {
+            em.base = @intFromPtr(body.ptr);
+            em.body_end = em.base + body.len;
+            if (o.stats) {
+                const searched: []const u8 = if (f.explicit)
+                    body
+                else if (slice_model)
+                    body[0..0]
+                else
+                    body[0..grepfile.committedPrefix(body, nul)];
+                var blines: std.ArrayList([]const u8) = .empty;
+                defer blines.deinit(a);
+                if (!o.multiline) collectLines(a, searched, o.term(), &blines);
+                const fs = fileMatchStats(re, a, o, searched, blines.items, em.needle);
+                stat.add(.{ .files_searched = 1, .matches = fs.matches, .matched_lines = fs.lines, .bytes_searched = if (f.explicit and slice_model) nul else fs.bytes });
+            }
+            if (grepfile.handleBinary(a, re, o, out, em, f.path, f.explicit, body, nul, show_name)) matched_files.* += 1;
+            return;
+        }
+    };
+    // The line-free literal fast path (`Emitter.fileLit`) reads `body` directly —
+    // a candidate-jump scanner that never materializes the line array — so skip
+    // `collectLines` entirely when it's eligible (its guards exclude `--stats`,
+    // so the stats block below still collects lines when it needs them).
+    const fast = !o.multiline and em.litFastEligible();
+    var lines: std.ArrayList([]const u8) = .empty;
+    if (!o.multiline and !fast) collectLines(a, body, o.term(), &lines);
+    if (o.stats) {
+        const fs = fileMatchStats(re, a, o, body, lines.items, em.needle);
+        stat.add(.{ .files_searched = 1, .matches = fs.matches, .matched_lines = fs.lines, .bytes_searched = fs.bytes });
+    }
+    const before = out.items.len;
+    if (heading) out.print(a, "{s}{s}{s}", .{ if (first.*) "" else "\n", f.path, o.outTerm() }) catch oom();
+    em.base = @intFromPtr(body.ptr);
+    em.body_end = em.base + body.len;
+    const hits = if (o.multiline) em.buffer(f.path, body) else if (fast) em.fileLit(f.path, body, 0, body.len, 0, true) else em.file(f.path, lines.items);
+    if (hits > 0) {
+        if (join_groups and !first.* and out.items.len > before)
+            out.insertSlice(a, before, "--\n") catch oom();
+        first.* = false;
+        matched_files.* += 1;
+    } else if (heading) out.shrinkRetainingCapacity(before);
+}
+
+fn inFileWeight(_: void, f: InFile) usize {
+    return f.bytes.len;
+}
+
+/// The cold bottom emit loop, data-parallel over `files` (covers `--stats`,
+/// `--sort/--sortr`, `-r` replace, `--count`, and plain line output — every
+/// mode that lands here after the parallel READ). Precondition: the caller has
+/// already gated OUT `--heading`, context `join_groups`, and `--quiet` (their
+/// cross-file separator / short-circuit state resists an order-free split), so
+/// each file is independent. Shards are CONTIGUOUS file ranges (byte-balanced by
+/// `shardBounds`), each rendered by the SAME `renderFile` into its own arena
+/// buffer with its own `Emitter`/`Sim`/(replace) `Caps` and running `Stats`;
+/// the driver then concatenates the buffers in file order and SUMS the tallies —
+/// byte-identical to the serial loop. Merges into the caller's `out`, `stat`,
+/// and `matched_files`. `bounds` is the precomputed `shardBounds` result.
+fn emitSharded(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, o: Opts, eff: []const u8, is_pcre: bool, use_color: bool, line_needle: ?simd.Gate, files: []const InFile, bounds: []const usize, stat: *Stats, matched_files: *usize, binary_detect: bool, count_zero: bool, show_name: bool) void {
+    const nthr = bounds.len - 1;
+    const Shard = struct {
+        re: *const Matcher,
+        o: Opts,
+        eff: []const u8,
+        is_pcre: bool,
+        use_color: bool,
+        needle: ?simd.Gate,
+        files: []const InFile,
+        binary_detect: bool,
+        count_zero: bool,
+        show_name: bool,
+        arena: std.heap.ArenaAllocator,
+        buf: std.ArrayList(u8) = .empty,
+        // One entry per file, in order: buffer length after that file — the
+        // boundary the ordered merge (`appendBudgeted`) truncates on so the
+        // parallel soft-cap cut lands byte-identical to the serial loop's break.
+        marks: std.ArrayList(usize) = .empty,
+        stat: Stats = .{},
+        matched: usize = 0,
+
+        fn run(sh: *@This()) void {
+            const sa = sh.arena.allocator();
+            var sim: ?Matcher.Sim = Matcher.Sim.init(sa, sh.re) catch null;
+            var caps_store: ?Caps = if (sh.o.replace != null) compileCaps(sa, sh.o, sh.eff, sh.is_pcre) else null;
+            var em = Emitter{ .a = sa, .re = sh.re, .o = sh.o, .show_name = if (sh.o.heading) false else sh.show_name, .out = &sh.buf, .caps = if (caps_store) |*cp| cp else null, .use_color = sh.use_color, .needle = sh.needle, .sim = if (sim) |*s| s else null };
+            var first = true;
+            for (sh.files) |f| {
+                renderFile(&em, f, &sh.stat, &sh.matched, &first, sh.binary_detect, sh.count_zero, false, false, sh.show_name);
+                sh.marks.append(sa, sh.buf.items.len) catch oom();
+            }
+        }
+    };
+
+    const shards = a.alloc(Shard, nthr) catch oom();
+    for (shards, 0..) |*sh, i| sh.* = .{
+        .re = re,
+        .o = o,
+        .eff = eff,
+        .is_pcre = is_pcre,
+        .use_color = use_color,
+        .needle = line_needle,
+        .files = files[bounds[i]..bounds[i + 1]],
+        .binary_detect = binary_detect,
+        .count_zero = count_zero,
+        .show_name = show_name,
+        .arena = std.heap.ArenaAllocator.init(gpa),
+    };
+    defer for (shards) |*sh| sh.arena.deinit();
+
+    const threads = a.alloc(std.Thread, nthr) catch oom();
+    par.fanOut(Shard, shards, threads, Shard.run);
+
+    // Merge in file order through the one budget-aware concatenation. `--stats`
+    // (which searches every file and truncates nothing) merges whole; otherwise
+    // the soft cap cuts at the first file crossing the ceiling, and later shards
+    // are dropped — the serial loop's early break, reproduced deterministically.
+    // `matched_files` only gates the exit code / no-match hint (never emitted
+    // bytes), so the cut shard's whole tally is a safe upper bound.
+    for (shards) |*sh| {
+        stat.add(sh.stat);
+        matched_files.* += sh.matched;
+        if (corpus_mod.appendBudgeted(a, out, sh.buf.items, sh.marks.items, !o.stats) != null) break;
+    }
+}
+
+/// Byte-balanced, LINE-ALIGNED split points over one file's `body` for the
+/// single-file fast-path shards. ripgrep is hard-wired single-threaded on one
+/// file (`paths.is_one_file ⇒ threads=1`); this is the parallelism it
+/// structurally can't use. Each interior boundary is advanced to the next line
+/// START (`\n`+1) so every shard owns whole lines and no matching line straddles
+/// two shards. Returns `n+1` offsets (`[0]=0`, `[n]=body.len`), or null when the
+/// body is below the parallel floor, one core, or collapses to a single range.
+fn lineShardBounds(body: []const u8, term: u8, a: std.mem.Allocator) ?[]const usize {
+    if (body.len < par.min_bytes) return null;
+    const cores = std.Thread.getCpuCount() catch 1;
+    const nthr = @min(@min(cores, body.len / par.min_bytes), par.max_shards);
+    if (nthr < 2) return null;
+    const cuts = a.alloc(usize, nthr + 1) catch return null;
+    cuts[0] = 0;
+    var n: usize = 1;
+    var i: usize = 1;
+    while (i < nthr) : (i += 1) {
+        const approx = body.len / nthr * i;
+        const nl = simd.memchr(body, approx, term) orelse break; // no terminator ahead → last shard swallows the tail
+        const start = nl + 1;
+        if (start >= body.len) break;
+        if (start > cuts[n - 1]) {
+            cuts[n] = start;
+            n += 1;
+        }
+    }
+    cuts[n] = body.len;
+    n += 1;
+    if (n < 3) return null; // fewer than two real shards → keep it serial
+    return cuts[0..n];
+}
+
+/// Single-file data parallelism for the line-free literal fast path — the win
+/// ripgrep leaves on the table for a lone big file. Splits `f`'s body into
+/// line-aligned shards (`lineShardBounds`), runs `Emitter.fileLit` on each in
+/// parallel over the SHARED global body (so byte offsets, the unterminated tail,
+/// and `-n` line numbers via each shard's precomputed base are all global), then
+/// merges: emit modes concatenate the shard buffers in line order; count modes
+/// SUM the partials and print one `path:N`. Returns false (caller falls back to
+/// the serial `renderFile`) when the file is binary, below the shard floor, or
+/// otherwise ineligible. Byte-identical to the serial fast path — same
+/// `fileLit`, just cut at line boundaries and folded back in order.
+fn emitFileSharded(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.ArrayList(u8), em: *Emitter, re: *const Matcher, o: Opts, use_color: bool, needle: ?simd.Gate, f: InFile, matched_files: *usize, binary_detect: bool, show_name: bool) bool {
+    const body = stripBom(f.bytes);
+    if (body.len == 0) return false;
+    // A NUL flips this file onto the binary path (summary/quit-at-NUL) — leave
+    // that to the serial `renderFile`, which owns the binary decision.
+    if (binary_detect and verify.firstNulWide(gpa, body) != null) return false;
+    const cuts = lineShardBounds(body, o.term(), a) orelse return false;
+    const nthr = cuts.len - 1;
+
+    // `-n` needs each shard's starting (global) line number: a cumulative newline
+    // count over the gaps (one SIMD pass total), paid only when line numbers show.
+    const base_ln = a.alloc(usize, nthr) catch return false;
+    if (o.line_num) {
+        base_ln[0] = 0;
+        for (1..nthr) |i| {
+            base_ln[i] = base_ln[i - 1] + simd.countByte(body[cuts[i - 1]..cuts[i]], o.term());
+        }
+    } else @memset(base_ln, 0);
+
+    const counting = o.count_only or o.count_matches;
+    const Shard = struct {
+        re: *const Matcher,
+        o: Opts,
+        use_color: bool,
+        needle: ?simd.Gate,
+        show_name: bool,
+        path: []const u8,
+        body: []const u8,
+        base_addr: usize,
+        end_addr: usize,
+        lo: usize,
+        hi: usize,
+        base_lineno: usize,
+        arena: std.heap.ArenaAllocator,
+        buf: std.ArrayList(u8) = .empty,
+        n: usize = 0,
+
+        fn run(sh: *@This()) void {
+            const sa = sh.arena.allocator();
+            var sim: ?Matcher.Sim = Matcher.Sim.init(sa, sh.re) catch null;
+            var e = Emitter{ .a = sa, .re = sh.re, .o = sh.o, .show_name = sh.show_name, .out = &sh.buf, .use_color = sh.use_color, .needle = sh.needle, .sim = if (sim) |*s| s else null, .base = sh.base_addr, .body_end = sh.end_addr };
+            sh.n = e.fileLit(sh.path, sh.body, sh.lo, sh.hi, sh.base_lineno, false);
+        }
+    };
+
+    const shards = a.alloc(Shard, nthr) catch return false;
+    const base_addr = @intFromPtr(body.ptr);
+    for (shards, 0..) |*sh, i| sh.* = .{
+        .re = re,
+        .o = o,
+        .use_color = use_color,
+        .needle = needle,
+        .show_name = show_name,
+        .path = f.path,
+        .body = body,
+        .base_addr = base_addr,
+        .end_addr = base_addr + body.len,
+        .lo = cuts[i],
+        .hi = cuts[i + 1],
+        .base_lineno = base_ln[i],
+        .arena = std.heap.ArenaAllocator.init(gpa),
+    };
+    defer for (shards) |*sh| sh.arena.deinit();
+
+    const threads = a.alloc(std.Thread, nthr) catch oom();
+    par.fanOut(Shard, shards, threads, Shard.run);
+
+    var total: usize = 0;
+    for (shards) |*sh| total += sh.n;
+    if (counting) {
+        // One tally line for the whole file (`bufTally` honors `--include-zero`).
+        _ = em.bufTally(f.path, total);
+    } else {
+        for (shards) |*sh| out.appendSlice(a, sh.buf.items) catch oom();
+    }
+    if (total > 0) matched_files.* += 1;
+    return true;
+}
+
+/// One file's `--files-without-match` verdict + emit: skip a detected binary,
+/// else test whether the pattern appears anywhere (the `-U` whole-buffer tally
+/// or the per-line scan) and print the path when it does NOT. `caps` is
+/// irrelevant to a boolean hit — replacement text never changes the count — so,
+/// like `anyMatch`, the buffer scan passes null: no shared capture VM to race
+/// across shards. Shared by the serial loop and every parallel shard so the two
+/// can't drift.
+fn fileWithoutMatch(a: std.mem.Allocator, re: *const Matcher, o: Opts, em: *Emitter, lsim: *Matcher.Sim, wssp: ?*Matcher.SpanSim, needle: ?simd.Gate, f: InFile, out: *std.ArrayList(u8)) void {
+    const body = stripBom(f.bytes);
+    if (body.len > 0 and corpus_mod.isBinary(body) and !o.text and !o.binary) return;
+    const any = if (o.multiline) bufferAnyHit(a, re, o, null, needle, f.path, body) else blk: {
+        var lines: std.ArrayList([]const u8) = .empty;
+        collectLines(a, body, o.term(), &lines);
+        for (lines.items) |line| if (lineHit(em, lsim, wssp, needle, line)) break :blk true;
+        break :blk false;
+    };
+    if (!any) out.print(a, "{s}{s}", .{ f.path, if (o.null_sep) "\x00" else o.outTerm() }) catch oom();
+}
+
+/// `--files-without-match`, data-parallel over `files`. Each file is independent
+/// (a file lacking the pattern prints its path, in file order, with NO output
+/// budget — the serial loop has none either), so shards render contiguous ranges
+/// through the SAME `fileWithoutMatch` into per-arena buffers with their own
+/// boolean `Sim` / (word) `SpanSim` / `Emitter`, then the driver concatenates the
+/// buffers in file order — byte-identical to the serial loop. Merges into `out`.
+fn filesWithoutSharded(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, o: Opts, needle: ?simd.Gate, files: []const InFile, bounds: []const usize) void {
+    const nthr = bounds.len - 1;
+    const Shard = struct {
+        re: *const Matcher,
+        o: Opts,
+        needle: ?simd.Gate,
+        files: []const InFile,
+        arena: std.heap.ArenaAllocator,
+        buf: std.ArrayList(u8) = .empty,
+
+        fn run(sh: *@This()) void {
+            const sa = sh.arena.allocator();
+            var lsim = Matcher.Sim.init(sa, sh.re) catch die("engine init failed\n", .{});
+            var wss: ?Matcher.SpanSim = if (sh.o.word) (Matcher.SpanSim.init(sa, sh.re) catch null) else null;
+            const wssp: ?*Matcher.SpanSim = if (wss) |*s| s else null;
+            var em = Emitter{ .a = sa, .re = sh.re, .o = sh.o, .show_name = false, .out = &sh.buf, .needle = sh.needle };
+            for (sh.files) |f| fileWithoutMatch(sa, sh.re, sh.o, &em, &lsim, wssp, sh.needle, f, &sh.buf);
+        }
+    };
+
+    const shards = a.alloc(Shard, nthr) catch oom();
+    for (shards, 0..) |*sh, i| sh.* = .{
+        .re = re,
+        .o = o,
+        .needle = needle,
+        .files = files[bounds[i]..bounds[i + 1]],
+        .arena = std.heap.ArenaAllocator.init(gpa),
+    };
+    defer for (shards) |*sh| sh.arena.deinit();
+
+    const threads = a.alloc(std.Thread, nthr) catch oom();
+    par.fanOut(Shard, shards, threads, Shard.run);
+    for (shards) |*sh| out.appendSlice(a, sh.buf.items) catch oom();
 }
 
 /// Mirror ripgrep's exit 2 when a `-P` search tripped a resource limit mid-run
@@ -1615,9 +1970,21 @@ fn anyMatch(a: std.mem.Allocator, re: *const Matcher, o: Opts, needle: ?simd.Gat
     defer if (wss) |*s| s.deinit();
     const wssp: ?*Matcher.SpanSim = if (wss) |*s| s else null;
     var em = Emitter{ .a = a, .re = re, .o = o, .show_name = false, .out = undefined };
+    // Pure-literal presence short-circuit (`-q`'s early-exit twin of `-l`): a
+    // literal carries no terminator, so it always lands inside some line, and
+    // `litFastEligible` guarantees that line matches — hence a match EXISTS iff
+    // any literal occurs. One `indexOfAnyPos` sweep stops at the first hit
+    // instead of materializing every line of a huge body (the `collectLines`
+    // tail that made `-q` scan the whole file). `-v` is excluded by eligibility.
+    const lit_fast = !o.multiline and em.litFastEligible();
+    const lits = re.lits();
     for (files) |f| {
         const body = stripBom(f.bytes);
         if (body.len == 0 or (corpus_mod.isBinary(body) and !o.text and !o.binary)) continue;
+        if (lit_fast) {
+            if (simd.indexOfAnyPos(body, 0, lits) != null) return true;
+            continue;
+        }
         if (o.multiline) {
             if (bufferAnyHit(a, re, o, null, needle, f.path, body)) return true;
             continue;

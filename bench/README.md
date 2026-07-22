@@ -120,13 +120,13 @@ tree's own roots — `_compete.sh` resolves them once, mirroring
   number — robust to this shared dev box's load because each query's tools run
   back-to-back under the same conditions.
 
-## Certificate of Optimality (Layers A–D)
+## Certificate of Optimality (Layers A–E)
 
 The race scripts above report _means and ratios_. The **certificate** turns that
 into a claim that is beyond reproach — every number carries a 95% bootstrap
 confidence interval and (vs ripgrep) a Mann-Whitney significance test, so a
-"win" is **statistically real**, not box noise. It is built in four layers,
-cheapest evidence first, and **all four are now implemented**:
+"win" is **statistically real**, not box noise. It is built in five layers,
+cheapest evidence first, and **all five are now implemented**:
 
 Its scope is the fresh-process, cold `gist` exact-search path across the shared
 12-class literal/regex probe registry. It does not certify every accepted argv:
@@ -140,13 +140,14 @@ parity proves `--include-zero` is correct; it is not a Layer-A speed claim.
 | **B** | port-optimality — hot loop matches the static µarch bound (llvm-mca)  | ✅ implemented |
 | **C** | roofline — measures and decomposes distance from the hardware roof    | ✅ implemented |
 | **D** | algorithmic lower bound — matches the information-theoretic floor     | ✅ implemented |
+| **E** | crest sieve — fail-closed pruning of the literal-free class-repetition blind spot every trigram index concedes (index completeness) | ✅ implemented |
 
 Every layer writes into the same `.local/gist-verify/CERTIFICATE.md`. Layer A
 has two halves — the **microscopic** half (`zig build certify`,
 `harness/certify.zig` + `harness/pmu.zig` + `harness/stats.zig`, see
 `harness/README.md`) and the **macroscopic** half (`certify/certify.sh` +
 `certify/certify_stats.py`, see `certify/README.md`). **One command** mints
-or refreshes the whole thing — Layers B/B′/C/D are spliced automatically and
+or refreshes the whole thing — Layers B/B′/C/D/E are spliced automatically and
 `check_artifacts.py` fail-closes if any section is missing.
 
 Always build **`-Doptimize=ReleaseFast`** — a Debug build is not vectorized and
@@ -159,7 +160,7 @@ repo root, so they run from anywhere.
 make bench-gist-certify
 # or:  bash pkg/kernels/irregex/bench/certify/certify_layers.sh
 
-# Full mint (A micro + PMU if sudo available + A macro race + B–D) + publish:
+# Full mint (A micro + PMU if sudo available + A macro race + B–E) + publish:
 CERT_FULL=1 CERT_PUBLISH=1 CERT_SUDO=1 make bench-gist-certify
 # or:  CERT_PUBLISH_DIR=bench/certify/artifact CERT_SUDO=1 \
 #        bash pkg/kernels/irregex/bench/certify/certify.sh

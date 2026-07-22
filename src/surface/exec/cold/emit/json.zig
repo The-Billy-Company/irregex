@@ -22,6 +22,8 @@ const args = @import("../argv/args.zig");
 const output = @import("output.zig");
 const jsonstr = @import("jsonstr.zig");
 const ml = @import("multiline.zig");
+const parallel = @import("../../../../kernel/primitives/parallel.zig");
+const simd = @import("../../../../kernel/match/scan/simd.zig");
 const Opts = args.Opts;
 const die = args.die;
 const oom = args.oom;
@@ -30,68 +32,389 @@ const Caps = @import("../../../../kernel/match/regex/compile/captures.zig").Caps
 
 pub const File = struct { path: []const u8, body: []const u8, explicit: bool = false };
 
-const Stats = struct { searches: usize = 0, with_match: usize = 0, matched_lines: usize = 0, matches: usize = 0, bytes_searched: usize = 0 };
+/// Running `--json` tallies (rg's `summary` fields). `pub` because the parallel
+/// walk engine (`engine/parallel.zig`) accumulates one per worker over its
+/// streamed per-file records, then sums them for the single trailing `summary` —
+/// the same numbers the collect-then-shard path threads through `runParallel`.
+pub const Stats = struct {
+    searches: usize = 0,
+    with_match: usize = 0,
+    matched_lines: usize = 0,
+    matches: usize = 0,
+    bytes_searched: usize = 0,
+
+    /// Fold another tally in (per-worker → run total).
+    pub fn add(self: *Stats, o: Stats) void {
+        self.searches += o.searches;
+        self.with_match += o.with_match;
+        self.matched_lines += o.matched_lines;
+        self.matches += o.matches;
+        self.bytes_searched += o.bytes_searched;
+    }
+};
 
 /// Emit the full `--json` stream for `files` into `out`. Returns true if any file
 /// matched (drives the process exit code).
-pub fn run(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, caps: ?*Caps, o: Opts, files: []const File) bool {
+pub fn run(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, caps: ?*Caps, o: Opts, files: []const File, needle: ?simd.Gate) bool {
     var ss = Matcher.SpanSim.init(a, re) catch die("engine init failed\n", .{});
     defer ss.deinit();
     var st = Stats{};
+    runFiles(a, out, re, &ss, caps, o, files, &st, needle);
+    summary(a, out, st);
+    return st.with_match > 0;
+}
+
+/// The serial `--json` record loop: stream every file's records into `out`,
+/// threading the running `st` (no `summary` — the caller emits it once). Polls
+/// the shared output budget between files, exactly the file-boundary truncation
+/// `appendBudgeted` reproduces for the parallel shards.
+fn runFiles(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, ss: *Matcher.SpanSim, caps: ?*Caps, o: Opts, files: []const File, st: *Stats, needle: ?simd.Gate) void {
     for (files) |f| {
         // Bound the record buffer at the output ceiling (corpus.zig) before the
         // next file — the JSON stream, like the serial line path, accumulates
         // before a single flush, so this is the OOM guard for `--json`.
         if (!o.quiet and corpus_mod.outputFull(out.items.len)) break;
-        // An empty file is still a search in rg's tally (0 bytes, no records).
-        if (f.body.len == 0) {
-            st.searches += 1;
-            continue;
+        emitOne(a, out, re, ss, caps, o, f, st, needle);
+    }
+}
+
+/// Emit one file's `--json` records into `out`, tallying into `st` — the per-file
+/// core shared by the serial `runFiles` and every parallel shard (`runParallel`),
+/// so both encode byte-identically. No budget poll: serial polls between calls,
+/// a shard renders its full range and the ordered merge (`appendBudgeted`) is the
+/// one place the ceiling applies.
+/// `pub`: the parallel walk engine calls this per streamed file (its own arena +
+/// per-worker `SpanSim` and running `Stats`), so the walk-emitted `--json` stream
+/// is produced by the identical encoder as the serial/shard path.
+pub fn emitOne(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, ss: *Matcher.SpanSim, caps: ?*Caps, o: Opts, f: File, st: *Stats, needle: ?simd.Gate) void {
+    // An empty file is still a search in rg's tally (0 bytes, no records).
+    if (f.body.len == 0) {
+        st.searches += 1;
+        return;
+    }
+    // Binary model (rg parity, mirrors `grepfile.handleBinary`):
+    //   • implicit (walked) line-mode file — rg's "quit" strategy searches
+    //     only the committed prefix (`grepfile.committedPrefix`): the lines
+    //     its buffer had consumed before the fill that read the first NUL.
+    //     An empty prefix ⇒ one search, zero bytes, zero records.
+    //   • implicit slice-model file (`-U` whose pattern can match `\n`) —
+    //     the slice searcher sniffs min(len, 64K): a NUL inside quits
+    //     before searching anything; beyond it the file is ordinary text
+    //     (binary_offset null).
+    //   • explicit path arg — searched in full (line model: NUL doubles as
+    //     a line terminator below; slice model: byte_count clamps at the
+    //     offset), records emitted, `binary_offset` reported.
+    //   • `-a/--text` disables detection entirely.
+    var eff = f;
+    var bin: ?usize = if (o.text) null else std.mem.indexOfScalar(u8, f.body, 0);
+    var searched = f.body.len;
+    if (bin) |q| {
+        if (re.multiline() and re.canMatchNewline()) {
+            if (!f.explicit and grepfile.multilineBinary(f.body.len, q)) {
+                st.searches += 1;
+                return; // sniff quit: nothing searched, no records
+            }
+            if (!f.explicit) bin = null else searched = q;
+        } else if (!f.explicit) {
+            const cut = grepfile.committedPrefix(f.body, q);
+            if (cut == 0) {
+                st.searches += 1;
+                return;
+            }
+            eff.body = f.body[0..cut];
+            searched = cut;
         }
-        // Binary model (rg parity, mirrors `grepfile.handleBinary`):
-        //   • implicit (walked) line-mode file — rg's "quit" strategy searches
-        //     only the committed prefix (`grepfile.committedPrefix`): the lines
-        //     its buffer had consumed before the fill that read the first NUL.
-        //     An empty prefix ⇒ one search, zero bytes, zero records.
-        //   • implicit slice-model file (`-U` whose pattern can match `\n`) —
-        //     the slice searcher sniffs min(len, 64K): a NUL inside quits
-        //     before searching anything; beyond it the file is ordinary text
-        //     (binary_offset null).
-        //   • explicit path arg — searched in full (line model: NUL doubles as
-        //     a line terminator below; slice model: byte_count clamps at the
-        //     offset), records emitted, `binary_offset` reported.
-        //   • `-a/--text` disables detection entirely.
-        var eff = f;
-        var bin: ?usize = if (o.text) null else std.mem.indexOfScalar(u8, f.body, 0);
-        var searched = f.body.len;
-        if (bin) |q| {
-            if (re.multiline() and re.canMatchNewline()) {
-                if (!f.explicit and grepfile.multilineBinary(f.body.len, q)) {
-                    st.searches += 1;
-                    continue; // sniff quit: nothing searched, no records
-                }
-                if (!f.explicit) bin = null else searched = q;
-            } else if (!f.explicit) {
-                const cut = grepfile.committedPrefix(f.body, q);
-                if (cut == 0) {
-                    st.searches += 1;
-                    continue;
-                }
-                eff.body = f.body[0..cut];
-                searched = cut;
+    }
+    st.searches += 1;
+    st.bytes_searched += searched;
+    emitFile(a, out, re, ss, caps, o, eff, st, bin, searched, needle);
+}
+
+fn fileWeight(_: void, f: File) usize {
+    return f.body.len;
+}
+
+/// The `--json` record stream, data-parallel over files (the highest-traffic
+/// agent/FFI output format). `readCandidates` already read every file's bytes in
+/// parallel; this fans the per-file span scan + JSON encode across cores too,
+/// mirroring the warm FFI's `streamParallel`: shard the files by byte weight
+/// (`shardBounds` → `greedyBounds`, so one huge file can't stall a thread), run
+/// the SAME `runFiles` core over each contiguous slice into its own arena buffer
+/// with its own span scratch + running `Stats`, then concatenate the buffers in
+/// file order and SUM the per-shard stats before the single trailing `summary`.
+/// Output is byte-identical to `run`: the shards are contiguous file ranges, the
+/// records within each are produced by the same encoder, and per-file stats add.
+/// Below `min_bytes`, with one usable core, or under `-r` (whose capture VM
+/// carries per-thread scratch a shard can't share) it falls straight through to
+/// the serial `run`. `a` is a per-query arena; `gpa` backs each shard's own arena
+/// (arenas aren't safe for concurrent allocation).
+pub fn runParallel(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, caps: ?*Caps, o: Opts, files: []const File, needle: ?simd.Gate) bool {
+    // `GIST_NO_PARALLEL` (the parity-gate idiom) forces the serial emit so
+    // `rgsuite/run.py`'s serial engine pass actually exercises the serial `--json`
+    // path — not just the walk — closing the same both-engines gap `eligible`
+    // documents. No production caller sets it.
+    if (args.envSpan("GIST_NO_PARALLEL") != null) return run(a, out, re, caps, o, files, needle);
+    // A single large file: fan the record stream across cores over ITS OWN body
+    // (line-aligned shards), the parallelism rg can't apply to one file — the
+    // `--json` twin of `serial.emitFileSharded`. Restricted to the plain,
+    // line-mode case (no `-r`/context/`-v`/`--max-count`/`-U`); a binary body
+    // (a NUL, detected in `soloShard`'s parallel base pass) and every other
+    // shape fall through to the file-sharded (or serial) path below.
+    if (files.len == 1 and caps == null and !re.multiline() and !o.invert and
+        o.before == 0 and o.after == 0 and o.max_per_file == 0 and files[0].body.len >= parallel.min_bytes)
+    {
+        if (soloShard(gpa, a, out, re, o, files[0], needle)) |st| {
+            summary(a, out, st);
+            return st.with_match > 0;
+        }
+    }
+    const bounds = if (caps != null) null else parallel.shardBounds(File, files, {}, fileWeight, parallel.min_bytes, parallel.max_shards, a);
+    const b = bounds orelse return run(a, out, re, caps, o, files, needle);
+    const nthr = b.len - 1;
+
+    const Shard = struct {
+        re: *const Matcher,
+        o: Opts,
+        files: []const File,
+        needle: ?simd.Gate,
+        arena: std.heap.ArenaAllocator,
+        buf: std.ArrayList(u8) = .empty,
+        // One entry per file, in order: `marks[j]` = buffer length after file j
+        // (the boundary the ordered merge truncates on), `stat_marks[j]` = the
+        // running tally through file j. A soft-cap cut at file j takes `buf[0..
+        // marks[j]]` and `stat_marks[j]`, so the merged stream AND summary are
+        // byte-identical to the serial loop's break-before-next-file.
+        marks: std.ArrayList(usize) = .empty,
+        stat_marks: std.ArrayList(Stats) = .empty,
+        st: Stats = .{},
+
+        fn run(sh: *@This()) void {
+            const sa = sh.arena.allocator();
+            var ss = Matcher.SpanSim.init(sa, sh.re) catch die("engine init failed\n", .{});
+            for (sh.files) |f| {
+                emitOne(sa, &sh.buf, sh.re, &ss, null, sh.o, f, &sh.st, sh.needle);
+                sh.marks.append(sa, sh.buf.items.len) catch oom();
+                sh.stat_marks.append(sa, sh.st) catch oom();
             }
         }
-        st.searches += 1;
-        st.bytes_searched += searched;
-        emitFile(a, out, re, &ss, caps, o, eff, &st, bin, searched);
+    };
+
+    const shards = a.alloc(Shard, nthr) catch oom();
+    for (shards, 0..) |*sh, i| sh.* = .{
+        .re = re,
+        .o = o,
+        .files = files[b[i]..b[i + 1]],
+        .needle = needle,
+        .arena = std.heap.ArenaAllocator.init(gpa),
+    };
+    defer for (shards) |*sh| sh.arena.deinit();
+
+    const threads = a.alloc(std.Thread, nthr) catch oom();
+    parallel.fanOut(Shard, shards, threads, Shard.run);
+
+    var st = Stats{};
+    for (shards) |*sh| {
+        const cut = corpus_mod.appendBudgeted(a, out, sh.buf.items, sh.marks.items, !o.quiet);
+        // On a soft-cap cut the serial loop breaks before the next file, so this
+        // shard contributes only its through-cut tally and no later shard runs.
+        const sst = if (cut) |j| sh.stat_marks.items[j] else sh.st;
+        st.searches += sst.searches;
+        st.with_match += sst.with_match;
+        st.matched_lines += sst.matched_lines;
+        st.matches += sst.matches;
+        st.bytes_searched += sst.bytes_searched;
+        if (cut != null) break;
     }
     summary(a, out, st);
     return st.with_match > 0;
 }
 
-const Line = struct { off: usize, view: []const u8, text: []const u8, kind: u8 = 0 }; // kind: 0 none,1 ctx,2 match
+/// Line-aligned shard cuts over `body` (`\n`-terminated boundaries, byte-balanced
+/// across cores) — the `--json` twin of `serial.lineShardBounds`. `null` below
+/// the shard floor or when fewer than two real shards survive.
+fn lineCuts(body: []const u8, a: std.mem.Allocator) ?[]const usize {
+    if (body.len < parallel.min_bytes) return null;
+    const cores = std.Thread.getCpuCount() catch 1;
+    const nthr = @min(@min(cores, body.len / parallel.min_bytes), parallel.max_shards);
+    if (nthr < 2) return null;
+    const cuts = a.alloc(usize, nthr + 1) catch return null;
+    cuts[0] = 0;
+    var n: usize = 1;
+    var i: usize = 1;
+    while (i < nthr) : (i += 1) {
+        const approx = body.len / nthr * i;
+        const nl = simd.memchr(body, approx, '\n') orelse break;
+        const start = nl + 1;
+        if (start >= body.len) break;
+        if (start > cuts[n - 1]) {
+            cuts[n] = start;
+            n += 1;
+        }
+    }
+    cuts[n] = body.len;
+    n += 1;
+    if (n < 3) return null;
+    return cuts[0..n];
+}
 
-fn emitFile(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, ss: *Matcher.SpanSim, caps: ?*Caps, o: Opts, f: File, st: *Stats, bin: ?usize, searched: usize) void {
+/// Single-file `--json` data parallelism (the win rg leaves on one file). Splits
+/// `f`'s body into line-aligned shards, classifies + JSON-encodes each shard's
+/// records over the SHARED global body on its own core (global `line_number` via
+/// each shard's cumulative-newline base, global `absolute_offset` since offsets
+/// are body-relative), then wraps the concatenated records in one `begin`/`end`
+/// and returns the summed `Stats`. Byte-identical to the serial `emitFile`: same
+/// encoder, same line grid, records folded in line order. `null` ⇒ ineligible
+/// (below the shard floor), caller falls through to the serial path.
+fn soloShard(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, o: Opts, f: File, needle: ?simd.Gate) ?Stats {
+    const cuts = lineCuts(f.body, a) orelse return null;
+    const nthr = cuts.len - 1;
+
+    // Phase 0 — one parallel sweep over the chunks yields each chunk's newline
+    // count AND whether it holds a NUL, folding the binary sniff and the line
+    // base together (rg pays a single scan; this keeps parity to one, fanned).
+    // Prefix-summing the counts gives every shard's global line base; a NUL in a
+    // non-`--text` body means "binary" — bail so the caller's path reports it.
+    const Count = struct {
+        body: []const u8,
+        lo: usize,
+        hi: usize,
+        nl: usize = 0,
+        nul: bool = false,
+        fn run(c: *@This()) void {
+            const r = simd.countByteWithFlag(c.body[c.lo..c.hi], '\n', 0);
+            c.nl = r.count;
+            c.nul = r.seen;
+        }
+    };
+    const counts = a.alloc(Count, nthr) catch return null;
+    for (counts, 0..) |*c, i| c.* = .{ .body = f.body, .lo = cuts[i], .hi = cuts[i + 1] };
+    const cthreads = a.alloc(std.Thread, nthr) catch oom();
+    parallel.fanOut(Count, counts, cthreads, Count.run);
+    const base_ln = a.alloc(usize, nthr) catch return null;
+    base_ln[0] = 0;
+    for (1..nthr) |i| base_ln[i] = base_ln[i - 1] + counts[i - 1].nl;
+    if (!o.text) for (counts) |c| if (c.nul) return null; // binary ⇒ caller reports it
+
+    const Shard = struct {
+        re: *const Matcher,
+        o: Opts,
+        f: File,
+        needle: ?simd.Gate,
+        lo: usize,
+        hi: usize,
+        base: usize,
+        arena: std.heap.ArenaAllocator,
+        buf: std.ArrayList(u8) = .empty,
+        fml: usize = 0,
+        fm: usize = 0,
+
+        fn run(sh: *@This()) void {
+            const sa = sh.arena.allocator();
+            var ss = Matcher.SpanSim.init(sa, sh.re) catch die("engine init failed\n", .{});
+            soloShardRecords(sa, &sh.buf, sh.re, &ss, sh.o, sh.f, sh.lo, sh.hi, sh.base, sh.needle, &sh.fml, &sh.fm);
+        }
+    };
+
+    const shards = a.alloc(Shard, nthr) catch return null;
+    for (shards, 0..) |*sh, i| sh.* = .{
+        .re = re,
+        .o = o,
+        .f = f,
+        .needle = needle,
+        .lo = cuts[i],
+        .hi = cuts[i + 1],
+        .base = base_ln[i],
+        .arena = std.heap.ArenaAllocator.init(gpa),
+    };
+    defer for (shards) |*sh| sh.arena.deinit();
+
+    const threads = a.alloc(std.Thread, nthr) catch oom();
+    parallel.fanOut(Shard, shards, threads, Shard.run);
+
+    var fml: usize = 0;
+    var fm: usize = 0;
+    for (shards) |*sh| {
+        fml += sh.fml;
+        fm += sh.fm;
+    }
+    var st = Stats{ .searches = 1, .bytes_searched = f.body.len };
+    if (fml == 0) return st; // searched, no match: no begin/end, exit via summary
+    st.with_match = 1;
+    st.matched_lines = fml;
+    st.matches = fm;
+    if (o.quiet) return st; // --quiet: tally only, suppress the record stream
+    const pj = pathData(a, f.path);
+    begin(a, out, pj);
+    for (shards) |*sh| out.appendSlice(a, sh.buf.items) catch oom();
+    endRecord(a, out, pj, f.body.len, fml, fm, null);
+    return st;
+}
+
+/// One shard's `--json` records for the global lines in `[lo, hi)` (a line-mode,
+/// non-binary, no-context slice), tallying matched lines/spans into `fml`/`fm`.
+/// `base` is the shard's global line count so `line_number` stays absolute; byte
+/// offsets are already global (the scan is over `f.body`). No `begin`/`end` — the
+/// driver wraps the merged stream once.
+///
+/// Line-free, like `output.Emitter.fileLit`: it NEVER materializes the shard's
+/// lines. When a required literal (or a caller `needle`) gates the pattern, one
+/// candidate-jump sweep (`indexOfAnyPos`/`Gate.find`) lands only on lines that
+/// hold a literal — the sole lines that can match — and each hit's bounds come
+/// from a reverse/forward `memchr`; `line_number` is counted incrementally over
+/// the inter-hit gap (`countByte`). A literal-free pattern falls back to a
+/// streaming per-line walk (still no line array). Either way the record head,
+/// `view` (CRLF-trimmed), terminator-inclusive `lines.text`, and submatch
+/// offsets are byte-identical to the serial `emitFile`'s plain branch.
+fn soloShardRecords(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, ss: *Matcher.SpanSim, o: Opts, f: File, lo: usize, hi: usize, base: usize, needle: ?simd.Gate, fml: *usize, fm: *usize) void {
+    const body = f.body;
+    const lits = re.lits();
+    const jump = needle != null or lits.len != 0; // a hit-to-hit prefilter exists
+    const pj = pathData(a, f.path); // path object, encoded once per shard
+    var lineno: usize = base; // 0-based line index at `counted`; +1 on emit
+    var counted: usize = lo;
+    var ml_ct: usize = 0;
+    var m_ct: usize = 0;
+    var pos: usize = lo;
+    while (pos < hi) {
+        // Next candidate line start: jump to the next literal/needle hit (skipping
+        // every provably non-matching line) and walk back to its line start, or —
+        // for a literal-free pattern — take the next line as-is.
+        var ls: usize = pos;
+        if (jump) {
+            const p = (if (needle) |g| g.find(body, pos) else simd.indexOfAnyPos(body, pos, lits)) orelse break;
+            if (p >= hi) break;
+            ls = if (simd.lastIndexOfScalar(body, p, '\n')) |nl| nl + 1 else 0;
+        }
+        const le = simd.memchr(body, ls, '\n') orelse body.len;
+        const content = body[ls..le];
+        const view = if (o.crlf) std.mem.trimEnd(u8, content, "\r") else content;
+        const spans = matchSpans(a, re, ss, o, view);
+        if (spans.len != 0) { // solo path is non-inverted
+            if (!o.quiet) {
+                lineno += simd.countByte(body[counted..ls], '\n');
+                counted = ls;
+                const text_end = if (le < body.len) le + 1 else body.len;
+                recordOpen(a, out, "match", pj, body[ls..text_end], lineno + 1, ls);
+                emitSubmatches(a, out, null, o, view, spans);
+                add(a, out, "]}}\n");
+            }
+            ml_ct += 1;
+            m_ct += spans.len;
+        }
+        if (le >= body.len) break;
+        pos = le + 1;
+    }
+    fml.* = ml_ct;
+    fm.* = m_ct;
+}
+
+// `spans` are a match line's non-overlapping spans, enumerated ONCE at
+// classification and reused for both the `matches` tally and `submatches`
+// emission (no second/third engine pass per matched line). Empty for context
+// (`kind` 1) and inverted match lines, which carry no submatch structure.
+const Line = struct { off: usize, view: []const u8, text: []const u8, kind: u8 = 0, spans: []const Matcher.Span = &.{} }; // kind: 0 none,1 ctx,2 match
+
+fn emitFile(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, ss: *Matcher.SpanSim, caps: ?*Caps, o: Opts, f: File, st: *Stats, bin: ?usize, searched: usize, needle: ?simd.Gate) void {
     if (re.multiline()) return emitFileMulti(a, out, re, caps, o, f, st, bin, searched);
     // Split into lines, keeping each line's file offset and its raw text (with the
     // trailing terminator, as ripgrep reports it in `lines.text`). In a binary
@@ -119,13 +442,27 @@ fn emitFile(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, s
     }
 
     // Classify: a match line (respecting -v), then paint -A/-B/-C context windows.
+    // The classification scan over EVERY line is the `--json` serial-engine
+    // hotspot — a line that cannot match skips the NFA entirely. Either the
+    // pattern's single required literal (`requiredLiteralGate`) or, for a
+    // needle-less pure-literal alternation, the whole-buffer multi-literal
+    // prefilter (`litCandidates` — one fused sweep marking candidate lines). Both
+    // are sound only when non-inverted (a `-v` match LACKS the literals), so
+    // `litCandidates` declines under `o.invert` and `needle` is null there too,
+    // leaving the `has == o.invert` classification below unchanged. On a hit we
+    // enumerate the line's spans ONCE and cache them for the `matches` tally and
+    // `submatches` emission below — no redundant re-run of the engine.
+    const cand = litCandidates(a, re, needle, o, f.body, lines.items);
     var file_matches: usize = 0;
     for (lines.items, 0..) |*ln, i| {
-        const has = firstSpan(re, ss, o, ln.view) != null;
+        const gate_ok = if (needle) |g| g.in(ln.view) else if (cand) |c| c[i] else true;
+        const spans = if (gate_ok) matchSpans(a, re, ss, o, ln.view) else &.{};
+        const has = spans.len > 0;
         if (has == o.invert) continue;
         if (o.max_per_file != 0 and file_matches >= o.max_per_file) break;
         file_matches += 1;
         ln.kind = 2;
+        ln.spans = spans;
         var b: usize = 0;
         while (b < o.before and i >= b + 1) : (b += 1) if (lines.items[i - b - 1].kind == 0) {
             lines.items[i - b - 1].kind = 1;
@@ -138,23 +475,24 @@ fn emitFile(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, s
     if (file_matches == 0) return;
 
     const fml = countMatched(o, lines.items);
-    const fm = countMatches(re, ss, o, lines.items);
+    const fm = countMatches(lines.items);
     st.with_match += 1;
     st.matched_lines += fml;
     st.matches += fm;
     if (o.quiet) return; // --quiet: tally stats, suppress the record stream
 
-    begin(a, out, f.path);
+    const pj = pathData(a, f.path);
+    begin(a, out, pj);
 
     for (lines.items, 1..) |ln, lineno| {
         if (ln.kind == 0) continue;
         const is_match = ln.kind == 2;
-        recordOpen(a, out, if (is_match) "match" else "context", f.path, ln.text, lineno, ln.off);
-        if (is_match and !o.invert) _ = emitSubmatches(a, out, re, ss, caps, o, ln.view);
+        recordOpen(a, out, if (is_match) "match" else "context", pj, ln.text, lineno, ln.off);
+        if (is_match and !o.invert) emitSubmatches(a, out, caps, o, ln.view, ln.spans);
         add(a, out, "]}}\n");
     }
 
-    endRecord(a, out, f.path, searched, fml, fm, bin);
+    endRecord(a, out, pj, searched, fml, fm, bin);
 }
 
 /// The `--json` record stream under `-U`/`--multiline`: one `match` record per
@@ -208,19 +546,20 @@ fn emitFileMulti(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Match
         };
     }
 
-    begin(a, out, f.path);
+    const pj = pathData(a, f.path);
+    begin(a, out, pj);
     var k: usize = 0;
     while (k < lines.len) {
         if (starts[k]) |bi| {
             const b = blocks[bi];
-            matchRecord(a, out, caps, o, f, lines, body, b.first, b.last, spans.items[b.s0..b.s1]);
+            matchRecord(a, out, caps, o, pj, lines, body, b.first, b.last, spans.items[b.s0..b.s1]);
             k = b.last + 1;
             continue;
         }
-        if (ctx[k]) emitLineRecord(a, out, "context", f.path, k + 1, lines[k].start, body[lines[k].start..lines[k].term_end]);
+        if (ctx[k]) emitLineRecord(a, out, "context", pj, k + 1, lines[k].start, body[lines[k].start..lines[k].term_end]);
         k += 1;
     }
-    endRecord(a, out, f.path, searched, fml, fm, bin);
+    endRecord(a, out, pj, searched, fml, fm, bin);
 }
 
 /// `-v` under `-U --json`: a `match` record (empty submatches) for each physical
@@ -238,68 +577,77 @@ fn emitFileMultiInvert(a: std.mem.Allocator, out: *std.ArrayList(u8), o: Opts, f
     st.with_match += 1;
     st.matched_lines += printed;
     if (o.quiet) return;
-    begin(a, out, f.path);
+    const pj = pathData(a, f.path);
+    begin(a, out, pj);
     for (lines, 0..) |ln, k| {
         if (covered[k]) continue;
-        emitLineRecord(a, out, "match", f.path, k + 1, ln.start, f.body[ln.start..ln.term_end]);
+        emitLineRecord(a, out, "match", pj, k + 1, ln.start, f.body[ln.start..ln.term_end]);
     }
-    endRecord(a, out, f.path, searched, printed, 0, bin);
+    endRecord(a, out, pj, searched, printed, 0, bin);
 }
 
-/// The `{"type":"<kind>","data":{"path":<path>` opener every record shares.
-fn openData(a: std.mem.Allocator, out: *std.ArrayList(u8), kind: []const u8, path: []const u8) void {
-    out.print(a, "{{\"type\":\"{s}\",\"data\":{{\"path\":", .{kind}) catch oom();
-    jsonData(a, out, path);
+/// The `{"type":"<kind>","data":{"path":<path_json>` opener every record shares.
+/// `path_json` is the file's `pathData`-cached `{"text":…}`/`{"bytes":…}` object,
+/// appended verbatim (no per-record re-validate/re-escape of the repeated path).
+fn openData(a: std.mem.Allocator, out: *std.ArrayList(u8), kind: []const u8, path_json: []const u8) void {
+    add(a, out, "{\"type\":\"");
+    add(a, out, kind);
+    add(a, out, "\",\"data\":{\"path\":");
+    add(a, out, path_json);
 }
 
 /// A line-record head through `"submatches":[` — the caller appends the
 /// submatch objects (possibly none) and the `]}}\n` close.
-fn recordOpen(a: std.mem.Allocator, out: *std.ArrayList(u8), kind: []const u8, path: []const u8, text: []const u8, lineno: usize, off: usize) void {
-    openData(a, out, kind, path);
+fn recordOpen(a: std.mem.Allocator, out: *std.ArrayList(u8), kind: []const u8, path_json: []const u8, text: []const u8, lineno: usize, off: usize) void {
+    openData(a, out, kind, path_json);
     add(a, out, ",\"lines\":");
     jsonData(a, out, text);
-    out.print(a, ",\"line_number\":{d},\"absolute_offset\":{d},\"submatches\":[", .{ lineno, off }) catch oom();
+    add(a, out, ",\"line_number\":");
+    writeUint(a, out, lineno);
+    add(a, out, ",\"absolute_offset\":");
+    writeUint(a, out, off);
+    add(a, out, ",\"submatches\":[");
 }
 
-fn begin(a: std.mem.Allocator, out: *std.ArrayList(u8), path: []const u8) void {
-    openData(a, out, "begin", path);
+fn begin(a: std.mem.Allocator, out: *std.ArrayList(u8), path_json: []const u8) void {
+    openData(a, out, "begin", path_json);
     add(a, out, "}}\n");
 }
 
 /// A whole-BLOCK `match` record: `lines.text` spans every physical line of the
 /// block, submatches carry offsets relative to the block's first-line offset.
-fn matchRecord(a: std.mem.Allocator, out: *std.ArrayList(u8), caps: ?*Caps, o: Opts, f: File, lines: []const ml.Line, body: []const u8, first: usize, last: usize, spans: []const ml.Span) void {
+fn matchRecord(a: std.mem.Allocator, out: *std.ArrayList(u8), caps: ?*Caps, o: Opts, path_json: []const u8, lines: []const ml.Line, body: []const u8, first: usize, last: usize, spans: []const ml.Span) void {
     const base = lines[first].start;
-    recordOpen(a, out, "match", f.path, body[base..lines[last].term_end], first + 1, base);
+    recordOpen(a, out, "match", path_json, body[base..lines[last].term_end], first + 1, base);
     const slots: []isize = if (caps) |c| a.alloc(isize, c.nslots()) catch oom() else &.{};
     for (spans, 0..) |sp, n| submatch(a, out, caps, o, body, sp, base, n, slots);
     add(a, out, "]}}\n");
 }
 
 /// A single-line record (`match` with empty submatches for invert, or `context`).
-fn emitLineRecord(a: std.mem.Allocator, out: *std.ArrayList(u8), kind: []const u8, path: []const u8, lineno: usize, off: usize, text: []const u8) void {
-    recordOpen(a, out, kind, path, text, lineno, off);
+fn emitLineRecord(a: std.mem.Allocator, out: *std.ArrayList(u8), kind: []const u8, path_json: []const u8, lineno: usize, off: usize, text: []const u8) void {
+    recordOpen(a, out, kind, path_json, text, lineno, off);
     add(a, out, "]}}\n");
 }
 
-fn endRecord(a: std.mem.Allocator, out: *std.ArrayList(u8), path: []const u8, bytes: usize, matched_lines: usize, matches: usize, bin: ?usize) void {
-    openData(a, out, "end", path);
+fn endRecord(a: std.mem.Allocator, out: *std.ArrayList(u8), path_json: []const u8, bytes: usize, matched_lines: usize, matches: usize, bin: ?usize) void {
+    openData(a, out, "end", path_json);
     add(a, out, ",\"binary_offset\":");
-    if (bin) |q| out.print(a, "{d}", .{q}) catch oom() else add(a, out, "null");
-    out.print(a, ",\"stats\":{{\"elapsed\":{{\"secs\":0,\"nanos\":0,\"human\":\"0.000000s\"}},\"searches\":1,\"searches_with_match\":1,\"bytes_searched\":{d},\"bytes_printed\":0,\"matched_lines\":{d},\"matches\":{d}}}}}}}\n", .{ bytes, matched_lines, matches }) catch oom();
+    if (bin) |q| writeUint(a, out, q) else add(a, out, "null");
+    add(a, out, ",\"stats\":{\"elapsed\":{\"secs\":0,\"nanos\":0,\"human\":\"0.000000s\"},\"searches\":1,\"searches_with_match\":1,\"bytes_searched\":");
+    writeUint(a, out, bytes);
+    add(a, out, ",\"bytes_printed\":0,\"matched_lines\":");
+    writeUint(a, out, matched_lines);
+    add(a, out, ",\"matches\":");
+    writeUint(a, out, matches);
+    add(a, out, "}}}\n");
 }
 
 /// Emit each non-empty (word-valid) match span on `view` as a submatch object;
 /// under `-r` include the expanded `replacement`. Returns the count emitted.
-fn emitSubmatches(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, ss: *Matcher.SpanSim, caps: ?*Caps, o: Opts, view: []const u8) usize {
-    var n: usize = 0;
-    var from: usize = 0;
+fn emitSubmatches(a: std.mem.Allocator, out: *std.ArrayList(u8), caps: ?*Caps, o: Opts, view: []const u8, spans: []const Matcher.Span) void {
     const slots: []isize = if (caps) |c| a.alloc(isize, c.nslots()) catch oom() else &.{};
-    while (output.nextSpan(re, ss, o, view, &from)) |sp| {
-        submatch(a, out, caps, o, view, sp, 0, n, slots);
-        n += 1;
-    }
-    return n;
+    for (spans, 0..) |sp, n| submatch(a, out, caps, o, view, sp, 0, n, slots);
 }
 
 /// One submatch object — `{"match":…[,"replacement":…],"start":…,"end":…}`,
@@ -316,21 +664,59 @@ fn submatch(a: std.mem.Allocator, out: *std.ArrayList(u8), caps: ?*Caps, o: Opts
         add(a, out, ",\"replacement\":");
         jsonData(a, out, rep.items);
     };
-    out.print(a, ",\"start\":{d},\"end\":{d}}}", .{ sp.start - base, sp.end - base }) catch oom();
+    add(a, out, ",\"start\":");
+    writeUint(a, out, sp.start - base);
+    add(a, out, ",\"end\":");
+    writeUint(a, out, sp.end - base);
+    add(a, out, "}");
 }
 
-fn summary(a: std.mem.Allocator, out: *std.ArrayList(u8), st: Stats) void {
+/// `pub`: the parallel walk engine emits the single trailing `summary` record
+/// after every worker has streamed its files and their tallies are summed.
+pub fn summary(a: std.mem.Allocator, out: *std.ArrayList(u8), st: Stats) void {
     out.print(a, "{{\"data\":{{\"elapsed_total\":{{\"human\":\"0.000000s\",\"nanos\":0,\"secs\":0}},\"stats\":{{\"bytes_printed\":0,\"bytes_searched\":{d},\"elapsed\":{{\"human\":\"0.000000s\",\"nanos\":0,\"secs\":0}},\"matched_lines\":{d},\"matches\":{d},\"searches\":{d},\"searches_with_match\":{d}}}}},\"type\":\"summary\"}}\n", .{ st.bytes_searched, st.matched_lines, st.matches, st.searches, st.with_match }) catch oom();
 }
 
 // ─────────────────────────── helpers ───────────────────────────
 
-fn firstSpan(re: *const Matcher, ss: *Matcher.SpanSim, o: Opts, view: []const u8) ?Matcher.Span {
+/// A match line's non-overlapping spans (rg's `submatches`), enumerated once.
+/// Returns `&.{}` without allocating on a non-match, so the classification scan
+/// over context/non-matching lines stays as cheap as a first-span probe — the
+/// engine walks each line exactly once and its spans are cached on the `Line`.
+/// Per-line candidate mask for a pure-literal pattern — the `--json` twin of
+/// `output.Emitter.litCandidates` (see it for the equivalence/superset proof).
+/// ONE fused whole-buffer `indexOfAnyPos` sweep over `body` marks only the lines
+/// around literal hits (mapped via each `Line.off`, a forward-only two-pointer),
+/// so classification skips ~every non-candidate without an NFA run. Null unless
+/// sound & profitable: pure literals, no single needle already gating, and not
+/// inverted (a `-v` match LACKS the literals).
+fn litCandidates(a: std.mem.Allocator, re: *const Matcher, needle: ?simd.Gate, o: Opts, body: []const u8, lines: []const Line) ?[]const bool {
+    if (needle != null or o.invert or lines.len == 0) return null;
+    const lits = re.lits();
+    if (lits.len == 0) return null;
+    const cand = a.alloc(bool, lines.len) catch return null;
+    @memset(cand, false);
+    var lc: usize = 0;
     var from: usize = 0;
-    return output.nextSpan(re, ss, o, view, &from);
+    while (simd.indexOfAnyPos(body, from, lits)) |p| {
+        while (lc + 1 < lines.len and lines[lc + 1].off <= p) lc += 1;
+        cand[lc] = true;
+        if (lc + 1 >= lines.len) break;
+        from = lines[lc + 1].off;
+    }
+    return cand;
 }
 
-/// A `kind == 2` line is exactly a `firstSpan` hit (classification already ran
+fn matchSpans(a: std.mem.Allocator, re: *const Matcher, ss: *Matcher.SpanSim, o: Opts, view: []const u8) []const Matcher.Span {
+    var from: usize = 0;
+    const first = output.nextSpan(re, ss, o, view, &from) orelse return &.{};
+    var list: std.ArrayList(Matcher.Span) = .empty;
+    list.append(a, first) catch oom();
+    while (output.nextSpan(re, ss, o, view, &from)) |sp| list.append(a, sp) catch oom();
+    return list.items;
+}
+
+/// A `kind == 2` line is exactly a `matchSpans` hit (classification already ran
 /// under the same options), so the matched-lines stat is a plain tally — and 0
 /// under `-v`, rg's stat shape for the inverted single-line stream.
 fn countMatched(o: Opts, lines: []const Line) usize {
@@ -340,13 +726,13 @@ fn countMatched(o: Opts, lines: []const Line) usize {
     return n;
 }
 
-fn countMatches(re: *const Matcher, ss: *Matcher.SpanSim, o: Opts, lines: []const Line) usize {
+/// Sum of cached per-line spans — no engine re-run. Only `kind == 2` lines carry
+/// spans (context/inverted lines keep the empty default), and an inverted stream
+/// reports 0 matches (rg parity), which holds because inverted match lines are
+/// classified without span collection.
+fn countMatches(lines: []const Line) usize {
     var n: usize = 0;
-    for (lines) |ln| {
-        if (ln.kind != 2 or o.invert) continue;
-        var from: usize = 0;
-        while (output.nextSpan(re, ss, o, ln.view, &from)) |_| n += 1;
-    }
+    for (lines) |ln| n += ln.spans.len;
     return n;
 }
 
@@ -364,7 +750,7 @@ fn runJson(h: *output.MlHarness, o: Opts, body: []const u8) ![]const u8 {
     var opts = o;
     opts.multiline = true;
     opts.json = true;
-    _ = run(a, out, &h.m, if (h.caps) |*c| c else null, opts, &.{.{ .path = "f.txt", .body = body }});
+    _ = run(a, out, &h.m, if (h.caps) |*c| c else null, opts, &.{.{ .path = "f.txt", .body = body }}, null);
     return out.items;
 }
 
@@ -415,12 +801,57 @@ fn add(a: std.mem.Allocator, out: *std.ArrayList(u8), s: []const u8) void {
     out.appendSlice(a, s) catch oom();
 }
 
+/// Append `v` as decimal — the record stream's `line_number`/`absolute_offset`/
+/// `start`/`end` are emitted once PER SUBMATCH, so this hand-rolled writer
+/// (digits into a stack buffer, one bulk copy) sheds `std.fmt.format`'s writer
+/// vtable + branch overhead on the hottest per-record integers. Byte-identical
+/// to `{d}`: a plain unsigned base-10 with no padding or sign.
+fn writeUint(a: std.mem.Allocator, out: *std.ArrayList(u8), v: usize) void {
+    var buf: [20]u8 = undefined; // ceil(log10(2^64)) = 20 digits
+    var i: usize = buf.len;
+    var n = v;
+    while (true) {
+        i -= 1;
+        buf[i] = '0' + @as(u8, @intCast(n % 10));
+        n /= 10;
+        if (n == 0) break;
+    }
+    add(a, out, buf[i..]);
+}
+
+/// The `{"text":…}`/`{"bytes":…}` data object for a path, encoded ONCE per file.
+/// A file's `begin`, every `match`/`context`, and its `end` all repeat the same
+/// path; re-running `jsonData` (UTF-8 validation + SIMD escape) for each was
+/// pure O(records) waste. Callers pass the returned slice as `path_json`.
+fn pathData(a: std.mem.Allocator, path: []const u8) []const u8 {
+    var b: std.ArrayList(u8) = .empty;
+    jsonData(a, &b, path);
+    return b.items;
+}
+
+/// All bytes < 0x80 — a SIMD pre-check that proves valid UTF-8 without the full
+/// validator (ASCII ⊂ UTF-8). The overwhelming majority of source lines/paths/
+/// match spans are ASCII, so this shaves the per-string validation `jsonData`
+/// runs on every record; a high byte falls through to `utf8ValidateSlice`.
+fn asciiOnly(s: []const u8) bool {
+    const vlen = std.simd.suggestVectorLength(u8) orelse 16;
+    const Vec = @Vector(vlen, u8);
+    const hi: Vec = @splat(0x80);
+    var i: usize = 0;
+    while (i + vlen <= s.len) : (i += vlen) {
+        const blk: Vec = s[i..][0..vlen].*;
+        if (@reduce(.Or, blk >= hi)) return false;
+    }
+    while (i < s.len) : (i += 1) if (s[i] >= 0x80) return false;
+    return true;
+}
+
 /// Write one rg JSON data object: `{"text":<escaped>}` when the bytes are valid
 /// UTF-8, else `{"bytes":"<base64>"}` — ripgrep's `Data::from_bytes` (jsont.rs).
 /// Lines, submatch text, replacements, and paths all take this shape, so a
 /// latin-1 or binary-adjacent line degrades to base64 instead of mojibake.
 fn jsonData(a: std.mem.Allocator, out: *std.ArrayList(u8), s: []const u8) void {
-    if (std.unicode.utf8ValidateSlice(s)) {
+    if (asciiOnly(s) or std.unicode.utf8ValidateSlice(s)) {
         add(a, out, "{\"text\":");
         jsonstr.write(out, a, s);
         add(a, out, "}");

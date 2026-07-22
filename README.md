@@ -21,6 +21,9 @@ doc_radar:
     - description: "correctness remains ahead of performance in the proof pipeline"
       file: pkg/kernels/irregex/bench/gates/ci_order.sh
       contains: ["pcre parity -P", "index-elision parity", "macro certificate"]
+    - description: "prose cites the live certificate corpus + cold speedup band (re-mint updates both)"
+      file: pkg/kernels/irregex/bench/certify/artifact/CERTIFICATE.md
+      contains: ["20393 files · 194.3 MiB", "14.27x", "2.13x"]
 ---
 
 # irregex
@@ -187,6 +190,10 @@ it, so the statistical work never re-includes files the patterns excluded:
 - `irregex provenance TEXT` — quotation attribution, then re-verification
   against the source's current bytes; a phrase surfaces only if the live file
   still holds it.
+- `irregex blast SYMBOL [--budget N] [ROOT…]` — the live blast radius of a
+  symbol from CURRENT bytes (no precomputed graph): seed definition + kind,
+  direct dependents/dependencies, tangential twins/ripple, and the comments
+  that mention it, as a compact token-budgeted report for an editing agent.
 
 `gist` and `relate` stay the direct faces; `irregex` forwards none of their
 verbs. See the [`irregex` README](src/cli/irregex/README.md) for the composed
@@ -198,7 +205,7 @@ workflows, the `CandidateSet` model, and mandatory-scope rules.
 | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
 | **gist**    | the rg-parity code locator CLI: trigram + crest read-elision, ranked search, and a resident session; the agents' everyday search reflex                                     | [`src/cli/gist/README.md`](src/cli/gist/README.md)       |
 | **relate**  | compression-as-search: retrieval/packing, quotation, kinship/families/echoes, and exact pattern sets; `index` / `status` own the warm lifecycle                             | [`src/cli/relate/README.md`](src/cli/relate/README.md)   |
-| **irregex** | the composed face: exact match narrows a `CandidateSet`, compression reasons inside it — `context` (reading set), `family` (forks/twins), `provenance` (quote, re-verified) | [`src/cli/irregex/README.md`](src/cli/irregex/README.md) |
+| **irregex** | the composed face: exact match narrows a `CandidateSet`, compression reasons inside it — `context` (reading set), `family` (forks/twins), `provenance` (quote, re-verified), `blast` (live symbol radius) | [`src/cli/irregex/README.md`](src/cli/irregex/README.md) |
 | **codex**   | the compressed self-index: a corpus stored at entropy-bound size with exact O(m) `count`/`find` and byte-exact restoration; powers `gist codex` + `relate quote`            | [`src/index/codex/README.md`](src/index/codex/README.md) |
 | **ffi**     | the in-process C-ABI warm session (`irregex_open` / `irregex_search` / `irregex_close` over `libirregex`)                                                                   | [`src/runtime/ffi/README.md`](src/runtime/ffi/README.md) |
 
@@ -321,10 +328,11 @@ thresholds prunes ≤1% where the run prunes 91%: the run is the condition.
 ### 6. Performance claims can be certificates, not benchmark anecdotes
 
 The idea got me moving. It did not prove the system. So I built the checked-in
-**Certificate of Optimality**. Correctness gates run first; only then do four
+**Certificate of Optimality**. Correctness gates run first; only then do five
 independent layers measure empirical
 dominance (A), static and native port pressure (B/B′), the hardware roofline
-(C), and the algorithmic read lower bound (D). A Layer-A win requires both a
+(C), the algorithmic read lower bound (D), and the crest sieve's fail-closed
+pruning of the trigram blind spot (E). A Layer-A win requires both a
 lower median and Mann–Whitney p < 0.05; missing counters or tools are printed
 as missing, never inferred.
 
@@ -336,17 +344,17 @@ correctness and performance evidence under `bench/rgsuite/`, `bench/matrix/`,
 `bench/session/`, and the relate harnesses; none inherits Layer A's dominance
 claim by association.
 
-On the recorded **17,739-file / 166.1 MiB macroscopic corpus**, the
+On the recorded **20,393-file / 194.3 MiB macroscopic corpus**, the
 end-to-end linear/literal path beats ripgrep in all 12 query classes by
-**1.97×–23.57×**. The microscopic cycles/byte and lower-bound layers use a
-separate ~22.8k-file / ~223.8 MiB in-memory corpus. Layer D checks the narrower
+**2.13×–14.27×**. The microscopic cycles/byte and lower-bound layers run over
+that same RAM-resident corpus. Layer D checks the narrower
 structural statement: trigram pruning touches no rejected file bytes, and the
 DFA verifies each admitted byte exactly once. The artifact, raw data, machine
 identity, losses, and rerun commands live in
 [`bench/certify/artifact/CERTIFICATE.md`](bench/certify/artifact/CERTIFICATE.md);
-`make bench-gist-certify` refreshes B–D on an existing Layer A, while
+`make bench-gist-certify` refreshes B–E on an existing Layer A, while
 `CERT_FULL=1 CERT_PUBLISH=1 CERT_SUDO=1 make bench-gist-certify` remints and
-publishes the full A–D bundle.
+publishes the full A–E bundle.
 
 I carried the same discipline into the agent surface: `--rank` puts definitions
 above call sites and demotes codegen; misses coach on stderr while stdout stays

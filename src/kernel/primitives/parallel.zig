@@ -8,6 +8,17 @@
 
 const std = @import("std");
 
+/// Below this many total bytes of candidate work a sharded face stays SERIAL:
+/// thread spawn + per-shard scratch (a recompiled engine, a span VM, an arena)
+/// only amortizes once the scan itself dominates. One floor for every parallel
+/// face — the warm fold/render/stream AND the cold match/emit — so small-corpus
+/// answers never regress and the crossover lives in exactly one place.
+pub const min_bytes: usize = 256 << 10;
+
+/// Hard cap on shards — the realistic core ceiling, so a giant corpus doesn't
+/// spawn hundreds of scheduler-thrashing threads.
+pub const max_shards: usize = 16;
+
 /// Byte-greedy shard boundaries over `items` (`bounds.len − 1` shards): each
 /// shard takes ~equal total `weight`, not equal item count, so a few large
 /// files can't stall one thread while the rest idle — the load-imbalance that
@@ -53,15 +64,15 @@ pub fn shardBounds(
     items: []const T,
     ctx: anytype,
     comptime weight: fn (@TypeOf(ctx), T) usize,
-    min_bytes: usize,
-    max_shards: usize,
+    floor: usize,
+    cap: usize,
     a: std.mem.Allocator,
 ) ?[]usize {
     var total: usize = 0;
     for (items) |item| total += weight(ctx, item);
-    if (total < min_bytes) return null;
+    if (total < floor) return null;
     const cores = std.Thread.getCpuCount() catch 1;
-    const nthr = @min(@min(cores, items.len), max_shards);
+    const nthr = @min(@min(cores, items.len), cap);
     if (nthr < 2) return null;
     const bounds = a.alloc(usize, nthr + 1) catch return null;
     greedyBounds(T, items, ctx, weight, total, bounds);

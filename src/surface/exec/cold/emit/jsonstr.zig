@@ -18,24 +18,70 @@
 const std = @import("std");
 const oom = @import("../argv/args.zig").oom;
 
+const vlen: usize = std.simd.suggestVectorLength(u8) orelse 16;
+const Vec = @Vector(vlen, u8);
+const Mask = std.meta.Int(.unsigned, vlen);
+
+/// Index of the first byte at/after `from` that JSON must escape — `"`, `\`, or
+/// any control (`< 0x20`) — else `s.len`. The overwhelming majority of a source
+/// line is none of these, so a vectorized run-scan lets `write` bulk-copy whole
+/// spans between escapes instead of touching the ArrayList once per byte.
+inline fn nextEscape(s: []const u8, from: usize) usize {
+    const quote: Vec = @splat('"');
+    const bslash: Vec = @splat('\\');
+    const ctl: Vec = @splat(0x20);
+    var i = from;
+    while (i + vlen <= s.len) : (i += vlen) {
+        const blk: Vec = s[i..][0..vlen].*;
+        const hit: Mask = @bitCast((blk == quote) | (blk == bslash) | (blk < ctl));
+        if (hit != 0) return i + @ctz(hit);
+    }
+    while (i < s.len) : (i += 1) {
+        const c = s[i];
+        if (c == '"' or c == '\\' or c < 0x20) return i;
+    }
+    return s.len;
+}
+
+/// Emit the escape sequence for one byte `nextEscape` flagged (≤6 bytes; the
+/// caller has reserved that headroom, so every write is AssumeCapacity).
+inline fn escape(out: *std.ArrayList(u8), c: u8) void {
+    switch (c) {
+        '"' => out.appendSliceAssumeCapacity("\\\""),
+        '\\' => out.appendSliceAssumeCapacity("\\\\"),
+        0x08 => out.appendSliceAssumeCapacity("\\b"),
+        '\t' => out.appendSliceAssumeCapacity("\\t"),
+        '\n' => out.appendSliceAssumeCapacity("\\n"),
+        0x0C => out.appendSliceAssumeCapacity("\\f"),
+        '\r' => out.appendSliceAssumeCapacity("\\r"),
+        else => { // remaining C0 control → \u00XX (c < 0x20, top two nibbles zero)
+            const hex = "0123456789abcdef";
+            out.appendSliceAssumeCapacity("\\u00");
+            out.appendAssumeCapacity(hex[c >> 4]);
+            out.appendAssumeCapacity(hex[c & 0xf]);
+        },
+    }
+}
+
 /// Append `s` to `out` as a JSON string literal, surrounding quotes included.
 /// Argument order matches the relate face's `(buf, gpa, s)` convention so
 /// `kinship.jsonStr` re-exports this directly.
 pub fn write(out: *std.ArrayList(u8), gpa: std.mem.Allocator, s: []const u8) void {
-    out.append(gpa, '"') catch oom();
-    for (s) |c| switch (c) {
-        '"' => out.appendSlice(gpa, "\\\"") catch oom(),
-        '\\' => out.appendSlice(gpa, "\\\\") catch oom(),
-        0x08 => out.appendSlice(gpa, "\\b") catch oom(),
-        '\t' => out.appendSlice(gpa, "\\t") catch oom(),
-        '\n' => out.appendSlice(gpa, "\\n") catch oom(),
-        0x0C => out.appendSlice(gpa, "\\f") catch oom(),
-        '\r' => out.appendSlice(gpa, "\\r") catch oom(),
-        else => if (c < 0x20)
-            out.print(gpa, "\\u{x:0>4}", .{c}) catch oom()
-        else
-            out.append(gpa, c) catch oom(),
-    };
+    // Reserve the no-escape size (bytes + both quotes) up front. The bulk copy of
+    // each escape-free run self-ensures (one comparison the reserve almost always
+    // satisfies, then a single memcpy) instead of appending byte-by-byte; the rare
+    // escape tops up its own ≤6-byte headroom and writes through AssumeCapacity.
+    out.ensureUnusedCapacity(gpa, s.len + 2) catch oom();
+    out.appendAssumeCapacity('"');
+    var i: usize = 0;
+    while (i < s.len) {
+        const j = nextEscape(s, i);
+        out.appendSlice(gpa, s[i..j]) catch oom();
+        if (j == s.len) break;
+        out.ensureUnusedCapacity(gpa, 6) catch oom();
+        escape(out, s[j]);
+        i = j + 1;
+    }
     out.append(gpa, '"') catch oom();
 }
 

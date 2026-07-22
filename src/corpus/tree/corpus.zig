@@ -168,6 +168,20 @@ pub fn initOutputBudget(flag_uncap: bool) void {
     output_budget.announced.store(false, .monotonic);
 }
 
+/// Lift the SOFT context cap for this run, leaving only the hard OOM ceiling —
+/// the enumeration modes (`Opts.enumeration`: `-l`/`-c`/`--count-matches`/
+/// `--files-without-match`/`--files`) call this so their result SET is complete
+/// and reproducible, never a soft-cap-truncated (and, on the unordered parallel
+/// engine, nondeterministic) subset. Must run AFTER `initOutputBudget`, which it
+/// overrides. An EXPLICIT soft budget (`GIST_MAX_OUTPUT_TOKENS`) is honored —
+/// the caller asked to be bounded; only the DEFAULT ~25k-token guard is lifted.
+/// `--uncap` already leaves only the hard ceiling, so this is a no-op there.
+pub fn exemptSoftCap() void {
+    if (std.c.getenv("GIST_MAX_OUTPUT_TOKENS") != null) return;
+    output_budget.soft_disabled = true;
+    output_budget.ceiling = envUsize("GIST_MAX_OUTPUT_BYTES") orelse default_hard_output_bytes;
+}
+
 /// Write RESULTS (the match list / ranked rows) to **stdout** — the Unix
 /// convention `rg` follows: data on stdout, any diagnostic (`[pipeline]`, "no
 /// index"/"bad pattern" guidance, `--rank`'s timing line) stays on stderr via
@@ -223,6 +237,31 @@ pub fn outputFull(pending: usize) bool {
     if (ceiling == 0 or pending +| output_budget.written.load(.monotonic) < ceiling) return false;
     output_budget.truncated.store(true, .monotonic);
     return true;
+}
+
+/// Concatenate one parallel emit shard's rendered `buf` into the merged `out`,
+/// honoring the SAME output budget at each per-file boundary so the parallel
+/// truncation point is byte-identical to the serial loop's file-boundary break.
+/// A shard renders its whole file range into `buf` without polling the budget
+/// (its buffer isn't the real cumulative output); the ordered merge is the ONE
+/// place the budget applies — exactly as the warm engine's serial record feed
+/// halts a fully-collected shard. `marks[j]` is `buf`'s length after shard file
+/// `j` (one entry per file, in order), so the first mark whose GLOBAL position
+/// (`out.len + mark`) reaches the ceiling is the cut: append the prefix through
+/// it and return that file index so the driver caps its per-file side data (the
+/// `--json` summary tally) at the same file and stops merging later shards.
+/// Returns null when the whole buffer fit. When `budgeted` is false (`--stats`
+/// searches every file regardless; `--quiet --json` suppresses the stream) the
+/// whole buffer is appended. `a` owns `out`.
+pub fn appendBudgeted(a: std.mem.Allocator, out: *std.ArrayList(u8), buf: []const u8, marks: []const usize, budgeted: bool) ?usize {
+    if (budgeted) for (marks, 0..) |m, i| {
+        if (outputFull(out.items.len + m)) {
+            out.appendSlice(a, buf[0..m]) catch @panic("oom");
+            return i;
+        }
+    };
+    out.appendSlice(a, buf) catch @panic("oom");
+    return null;
 }
 
 /// One-time truncation notice on STDERR — called at the end of every emit path

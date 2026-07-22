@@ -116,6 +116,63 @@ pub fn gateWide(gpa: std.mem.Allocator, hay: []const u8, gate: simd.Gate) bool {
     return wideAny(gpa, hay, &.{gate.bytes}, gate.ci);
 }
 
+const NulShard = struct {
+    hay: []const u8,
+    base: usize, // this slice's offset within the whole body
+    hit: *std.atomic.Value(usize), // global-min NUL offset (maxInt = none yet)
+
+    /// Find this slice's first NUL and lower the shared global minimum to it.
+    /// Slabbed with a between-slab poll so, once some earlier shard has found a
+    /// NUL at a smaller offset than anything this shard could still yield, this
+    /// shard abandons the rest of its scan — the whole-body cost collapses to
+    /// "fault up to the first NUL", never the full buffer, exactly like rg's
+    /// quit-at-NUL. No overlap needed: a NUL is one byte, it can't straddle.
+    fn run(sh: *const NulShard) void {
+        var i: usize = 0;
+        while (i < sh.hay.len) : (i += wide_slab) {
+            if (sh.base + i >= sh.hit.load(.monotonic)) return; // a smaller NUL already won
+            const end = @min(sh.hay.len, i + wide_slab);
+            if (std.mem.indexOfScalar(u8, sh.hay[i..end], 0)) |p| {
+                atomicMin(sh.hit, sh.base + i + p);
+                return;
+            }
+        }
+    }
+};
+
+fn atomicMin(cell: *std.atomic.Value(usize), v: usize) void {
+    var cur = cell.load(.monotonic);
+    while (v < cur) cur = cell.cmpxchgWeak(cur, v, .monotonic, .monotonic) orelse break;
+}
+
+/// First NUL offset in `hay`, fanned across cores for a huge body (the mmap'd
+/// blob the rg-parity walk admits) so its page faults parallelize like rg's
+/// scan instead of serializing on one core — the binary-detection twin of
+/// `gateWide`. Byte-equivalent to `std.mem.indexOfScalar(hay, 0)`; below
+/// `wide_threshold`, for one core, or on spawn failure it IS that call.
+pub fn firstNulWide(gpa: std.mem.Allocator, hay: []const u8) ?usize {
+    if (hay.len < wide_threshold) return std.mem.indexOfScalar(u8, hay, 0);
+    const ncpu = std.Thread.getCpuCount() catch 1;
+    const nthr = @min(hay.len / wide_threshold + 1, ncpu);
+    if (nthr < 2) return std.mem.indexOfScalar(u8, hay, 0);
+
+    var hit = std.atomic.Value(usize).init(std.math.maxInt(usize));
+    const shards = gpa.alloc(NulShard, nthr) catch return std.mem.indexOfScalar(u8, hay, 0);
+    defer gpa.free(shards);
+    const threads = gpa.alloc(std.Thread, nthr) catch return std.mem.indexOfScalar(u8, hay, 0);
+    defer gpa.free(threads);
+
+    const chunk = hay.len / nthr;
+    for (0..nthr) |k| {
+        const start = k * chunk;
+        const end = if (k == nthr - 1) hay.len else (k + 1) * chunk;
+        shards[k] = .{ .hay = hay[start..end], .base = start, .hit = &hit };
+    }
+    parallel.fanOut(NulShard, shards, threads, NulShard.run);
+    const m = hit.load(.monotonic);
+    return if (m == std.math.maxInt(usize)) null else m;
+}
+
 const VerifyShard = struct {
     docs: []const []const u8,
     ids: []const u32,
