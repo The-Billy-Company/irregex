@@ -117,10 +117,19 @@ const extra_skips = struct {
     }
 };
 
+/// Comptime-baseline membership only — the generic VCS/build/cache basenames,
+/// with no runtime `GIST_SKIP`/`skips.list` overlay folded in. This is the pure
+/// decision the `StaticStringMap`↔linear differential guardrail pins; it stays
+/// deterministic regardless of a machine's seeded per-tree policy. Production
+/// callers want the full-policy `isSkipDir` below.
+pub fn inBaselineSkipSet(name: []const u8) bool {
+    return skip_dirs.has(name);
+}
+
 /// Is `name` a directory basename every corpus walk skips? (`skip_dirs`
-/// baseline + `GIST_SKIP` extension.)
+/// baseline + `GIST_SKIP`/`skips.list` extension.)
 pub fn isSkipDir(name: []const u8) bool {
-    if (skip_dirs.has(name)) return true;
+    if (inBaselineSkipSet(name)) return true;
     for (extra_skips.list()) |n| if (std.mem.eql(u8, n, name)) return true;
     return false;
 }

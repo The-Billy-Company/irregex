@@ -7,9 +7,11 @@ const std = @import("std");
 const haystack = @import("haystack.zig");
 
 /// The pre-`StaticStringMap` reference: a plain linear scan over the exact
-/// same 35-name list. `isSkipDir`'s speedup must never change WHICH names are
-/// skipped — this differential is the guardrail. (Project-specific extras ride
-/// `GIST_SKIP` at runtime and are deliberately absent here.)
+/// same 35-name list. The comptime-baseline lookup's speedup must never change
+/// WHICH names are skipped — this differential is the guardrail, so it pins
+/// `inBaselineSkipSet` (the pure map), not the full-policy `isSkipDir`.
+/// Project-specific extras ride the runtime `GIST_SKIP`/`skips.list` overlay
+/// and are deliberately absent from the baseline the guardrail compares.
 const skip_list = [_][]const u8{
     ".git",          ".github",     ".hg",           ".svn",          "node_modules",
     "target",        "dist",        "dist-types",    "build",         ".build",
@@ -24,21 +26,21 @@ fn isSkipDirLinear(name: []const u8) bool {
     return false;
 }
 
-test "isSkipDir: every entry in the skip list is skipped" {
-    for (skip_list) |name| try std.testing.expect(haystack.isSkipDir(name));
+test "skip-dir baseline: every entry in the skip list is skipped" {
+    for (skip_list) |name| try std.testing.expect(haystack.inBaselineSkipSet(name));
 }
 
-test "isSkipDir: near-misses (prefix/suffix/case/substring) are NOT skipped" {
+test "skip-dir baseline: near-misses (prefix/suffix/case/substring) are NOT skipped" {
     const near_misses = [_][]const u8{
         "git",           ".gitx",   "gitt",    ".GIT",  "targets",
         "ta",            "builds",  ".buildx", "outer", "node_module",
         "node_modules2", "vendors", "cache",   ".cach", "",
         "graphify-out", // was a hardcoded Billy-ism; now GIST_SKIP territory
     };
-    for (near_misses) |name| try std.testing.expect(!haystack.isSkipDir(name));
+    for (near_misses) |name| try std.testing.expect(!haystack.inBaselineSkipSet(name));
 }
 
-test "isSkipDir: matches the naive linear scan across a mixed sample" {
+test "skip-dir baseline: matches the naive linear scan across a mixed sample" {
     const sample = [_][]const u8{
         "services",     "libs",    "src",     ".git",     "node_modules",
         "commands",     "corpus",  "regex",   "target",   "dist-types",
@@ -47,7 +49,7 @@ test "isSkipDir: matches the naive linear scan across a mixed sample" {
         "graphify-out", "quality", ".turbo",  "internal", "pkg",
         "zig-pkg",
     };
-    for (sample) |name| try std.testing.expectEqual(isSkipDirLinear(name), haystack.isSkipDir(name));
+    for (sample) |name| try std.testing.expectEqual(isSkipDirLinear(name), haystack.inBaselineSkipSet(name));
 }
 
 test "joinPath: byte-identical to `root ++ \"/\" ++ rel` for every shape the walk feeds it" {
