@@ -1,0 +1,1 @@
+Add `Ward.reconcileHeld`: a double-checked reconcile that starts from an already-held read lease and keeps a live lease on every path (error included), returning the refresh error beside the lease rather than in place of it. The resident session's `guardExtras` now rides it instead of hand-rolling the release/upgrade/recheck/downgrade dance.

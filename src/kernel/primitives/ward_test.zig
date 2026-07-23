@@ -1,6 +1,7 @@
-//! Ward tests: lease guards exclude correctly, and `readReconciled` takes the
-//! fast/miss/error paths exactly — the double-checked dance verified against a
-//! call-counting oracle, plus a threaded reader/writer invariant.
+//! Ward tests: lease guards exclude correctly, and both reconcile faces —
+//! `readReconciled` (holds nothing on error) and `reconcileHeld` (keeps a lease
+//! on every path, error included) — take the fast/miss/race/error paths exactly,
+//! verified against a call-counting oracle, plus a threaded reader/writer invariant.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -96,6 +97,77 @@ test "readReconciled: a refresh error holds nothing" {
     // Nothing is held: exclusive is immediately available.
     const w = ward.tryWrite(io).?;
     w.release();
+}
+
+// A miss whose freshness flips true once the writer holds exclusive — models a
+// racing writer that refreshed in the release→reacquire gap, so the second
+// (under-exclusive) check must skip the refresh.
+const RaceOracle = struct {
+    checks: usize = 0,
+    refresh_calls: usize = 0,
+
+    fn fresh(self: *RaceOracle) bool {
+        self.checks += 1;
+        return self.checks > 1; // stale on the fast check, fresh once exclusive
+    }
+    fn refresh(self: *RaceOracle) error{}!void {
+        self.refresh_calls += 1;
+    }
+};
+
+test "reconcileHeld: fast path returns the held lease, never refreshes" {
+    const io = testing.io;
+    var ward: Ward = .{};
+    var oracle: Oracle = .{ .fresh_now = true };
+
+    const held = ward.read(io);
+    const res = ward.reconcileHeld(held, &oracle, Oracle.fresh, Oracle.refresh);
+    try testing.expectEqual(@as(usize, 0), oracle.refresh_calls);
+    try testing.expect(res.err == null);
+    try testing.expect(ward.tryWrite(io) == null); // still shared
+    res.lease.release();
+    try testing.expect(ward.tryWrite(io) != null);
+}
+
+test "reconcileHeld: miss upgrades, refreshes once, downgrades to shared" {
+    const io = testing.io;
+    var ward: Ward = .{};
+    var oracle: Oracle = .{ .fresh_now = false };
+
+    const held = ward.read(io);
+    const res = ward.reconcileHeld(held, &oracle, Oracle.fresh, Oracle.refresh);
+    try testing.expectEqual(@as(usize, 1), oracle.refresh_calls);
+    try testing.expect(res.err == null);
+    try testing.expect(ward.tryWrite(io) == null); // ends shared, not exclusive
+    res.lease.release();
+    try testing.expect(ward.tryWrite(io) != null);
+}
+
+test "reconcileHeld: a racing refresh under exclusive skips our own" {
+    const io = testing.io;
+    var ward: Ward = .{};
+    var oracle: RaceOracle = .{};
+
+    const held = ward.read(io);
+    const res = ward.reconcileHeld(held, &oracle, RaceOracle.fresh, RaceOracle.refresh);
+    try testing.expectEqual(@as(usize, 0), oracle.refresh_calls); // second check won
+    try testing.expect(res.err == null);
+    try testing.expect(ward.tryWrite(io) == null);
+    res.lease.release();
+}
+
+test "reconcileHeld: a refresh error is returned BESIDE a still-held lease" {
+    const io = testing.io;
+    var ward: Ward = .{};
+    var oracle: Oracle = .{ .fresh_now = false };
+
+    const held = ward.read(io);
+    const res = ward.reconcileHeld(held, &oracle, Oracle.fresh, Oracle.refreshFail);
+    try testing.expectEqual(@as(usize, 1), oracle.refresh_calls);
+    try testing.expectEqual(@as(?error{Boom}, error.Boom), res.err);
+    try testing.expect(ward.tryWrite(io) == null); // lease STILL held on the error path
+    res.lease.release();
+    try testing.expect(ward.tryWrite(io) != null);
 }
 
 test "concurrent readers and writers keep the guarded pair consistent" {

@@ -21,11 +21,21 @@
 //!      The tricky invariant — on a refresh error NOTHING is held, so the
 //!      caller's `defer …release()` (registered only after the `try`) never runs
 //!      on the error path — lives here once rather than at every answer face.
+//!      Its sibling **`reconcileHeld`** serves the mirror-image caller — one that
+//!      already holds a `Read` lease under a `defer release()` and so must end
+//!      holding a lease on EVERY path, error included — by returning the refresh
+//!      error *beside* a still-live lease instead of in place of it.
 //!
 //! Writer-preferring, inherited from `std.Io.RwLock`: a pending writer parks new
 //! readers on the mutex, so a stream of readers can't starve a queued refresh.
 
 const std = @import("std");
+
+/// The error set of a `refresh` callback (`fn (ctx) E!void`), lifted out so a
+/// `reconcileHeld` result can carry `?E` beside a still-held lease.
+fn RefreshError(comptime Refresh: type) type {
+    return @typeInfo(@typeInfo(Refresh).@"fn".return_type.?).error_union.error_set;
+}
 
 pub const Ward = struct {
     rw: std.Io.RwLock = .init,
@@ -113,5 +123,35 @@ pub const Ward = struct {
             return err;
         };
         return held.downgrade();
+    }
+
+    /// Double-checked reconcile from an ALREADY-HELD shared lease, keeping a
+    /// read lease on EVERY path — the variant for a caller whose
+    /// `defer lease.release()` was registered before the reconcile and must stay
+    /// balanced even when `refresh` fails. If `fresh(ctx)` holds, `held` is
+    /// returned untouched (the fast path — no upgrade, readers overlap).
+    /// Otherwise drop shared, take EXCLUSIVE, and re-check `fresh(ctx)`: a writer
+    /// that raced us into the gap and already refreshed makes this a no-op
+    /// (double-checked locking). On a genuine miss run `refresh(ctx)`, then
+    /// downgrade back to shared. The returned `.lease` is ALWAYS live; `.err` is
+    /// `refresh`'s error if it failed — surfaced *beside* the lease, since unlike
+    /// `readReconciled` the lease is still held. This owns BOTH freshness checks,
+    /// so `refresh` need only perform the update.
+    pub fn reconcileHeld(
+        self: *Ward,
+        held: Read,
+        ctx: anytype,
+        comptime fresh: fn (@TypeOf(ctx)) bool,
+        comptime refresh: anytype,
+    ) struct { lease: Read, err: ?RefreshError(@TypeOf(refresh)) } {
+        if (fresh(ctx)) return .{ .lease = held, .err = null };
+        const io = held.io;
+        held.release();
+        const w = self.write(io);
+        const err: ?RefreshError(@TypeOf(refresh)) = if (fresh(ctx)) null else e: {
+            refresh(ctx) catch |x| break :e x;
+            break :e null;
+        };
+        return .{ .lease = w.downgrade(), .err = err };
     }
 };

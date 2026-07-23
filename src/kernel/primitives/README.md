@@ -26,7 +26,7 @@ each call site.
 | `bits.zig`     | Two's-complement bit identities over plain `u64` limb slices: set-bit walks, word-packed sets, popcount/rank, width-edge-safe masks                             |
 | `crest.zig`    | Forced-class-run sieve calculus: `Class` / `K` / `Vector` / `Profile`, `ghat`, prune helpers — a sound _necessary_ condition for literal-free class repetitions |
 | `parallel.zig` | Shared data-parallel floor: byte-balanced shard `greedyBounds`, the `sliceLen` weight, and the partial-spawn-safe `fanOut` both engines ride                    |
-| `ward.zig`     | Shared reader/writer discipline over `std.Io.RwLock`: `Read`/`Write` lease guards + the double-checked `readReconciled` dance (fast shared read, upgrade + refresh on a miss, downgrade) the warm session rides |
+| `ward.zig`     | Shared reader/writer discipline over `std.Io.RwLock`: `Read`/`Write` lease guards + the double-checked reconcile dance (fast shared read, upgrade + refresh on a miss, downgrade) — `readReconciled` (acquires shared, holds nothing on error) and `reconcileHeld` (from a held lease, keeps a lease on every path) — the warm session rides |
 
 ## Why it is separate
 
@@ -42,8 +42,9 @@ theory dossier at [`../../../research/crest/`](../../../research/crest/).
   negative). Caseless → zero vector; Unicode certifies only ASCII-safe classes.
 - `bits_test.zig` checks the packed representation against a `bool`-slice
   oracle; `crest_test.zig` pins lattice / `ghat` edges; `ward_test.zig` proves
-  the lease guards exclude and the `readReconciled` fast/miss/error paths against
-  a call-counting oracle plus a threaded reader/writer invariant.
+  the lease guards exclude and both reconcile faces' (`readReconciled` /
+  `reconcileHeld`) fast/miss/race/error paths against a call-counting oracle plus
+  a threaded reader/writer invariant.
 - `ward.zig` is the one primitive that touches the `std.Io` seam (it wraps
   `std.Io.RwLock`) — still no file I/O, walk policy, or CLI.
 
