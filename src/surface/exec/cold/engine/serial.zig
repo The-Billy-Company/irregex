@@ -1397,7 +1397,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         // not transforming; -z/--pre/-E fall to the live walk (which reads through
         // `ingest`), keeping the ranked view correct over the rewritten stream.
         if (!o.no_index and !transforming) {
-            if (try ranked.run(gpa, io, rex, parsed.roots, o.rank_k, o.caseless)) |n| {
+            if (try ranked.run(gpa, io, rex, parsed.roots, o.rank_k, o.caseless, !o.text and !o.binary and !o.null_data)) |n| {
                 if (n == 0) hints.noMatches(hints.shape(parsed.patterns, o, parsed.roots, parsed.roots.len > 0), null);
                 return;
             }
@@ -1405,7 +1405,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         const c = collectFiles(a, gpa, io, parsed, &.{}, crest.zero_vector, requiredLiteralGate(a, o, eff, &re), &icfg);
         const live = a.alloc(ranked.LiveFile, c.files.len) catch oom();
         for (c.files, live) |file, *dst| dst.* = .{ .path = file.path, .bytes = file.bytes };
-        const n = try ranked.runLive(gpa, io, rex, live, o.rank_k);
+        const n = try ranked.runLive(gpa, io, rex, live, o.rank_k, !o.text and !o.binary and !o.null_data);
         if (c.path_error or pre_error.load(.seq_cst)) std.process.exit(2);
         if (n == 0) hints.noMatches(hints.shape(parsed.patterns, o, parsed.roots, parsed.roots.len > 0), c.files.len);
         return;

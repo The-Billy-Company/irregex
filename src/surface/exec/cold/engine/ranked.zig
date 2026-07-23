@@ -98,7 +98,18 @@ fn lineSignals(line: []const u8, re: *const Regex) LineSignals {
 /// One pass over a candidate file's bytes → its ranking features (matching-line
 /// count, whether any match is a definition, the best line to surface). Returns
 /// null when the regex doesn't actually match (a trigram false positive).
-fn fileDoc(buf: []const u8, path: []const u8, re: *const Regex, sim: *Regex.Sim, id: u32) ?Doc {
+///
+/// `binary_detect` mirrors the locate/`-l` path's default (`!-a`): a walked file
+/// carrying a NUL is searched only through the bytes rg's quit strategy committed
+/// before it (`committedPrefix`), so `--rank`'s file SET matches `gist -l`
+/// exactly — a compiled binary whose only "match" sits past the NUL in its symbol
+/// table is excluded, never surfaced as ranked noise. Under `-a` the whole body
+/// is scanned as text, again matching the locate path.
+fn fileDoc(buf_in: []const u8, path: []const u8, re: *const Regex, sim: *Regex.Sim, id: u32, binary_detect: bool) ?Doc {
+    const buf = if (binary_detect) blk: {
+        const nul = std.mem.indexOfScalar(u8, buf_in, 0) orelse break :blk buf_in;
+        break :blk buf_in[0..committedPrefix(buf_in, nul)];
+    } else buf_in;
     var line_no: u32 = 0;
     var match_lines: u32 = 0;
     var first: u32 = 0;
@@ -129,12 +140,13 @@ fn fileDoc(buf: []const u8, path: []const u8, re: *const Regex, sim: *Regex.Sim,
 }
 
 const readFileInto = @import("../read/grepfile.zig").readFileInto;
+const committedPrefix = @import("../read/grepfile.zig").committedPrefix;
 
 /// Below this candidate count the thread-spawn overhead isn't worth it and the
 /// read runs inline (mirrors `run.zig`'s `par_threshold`).
 const read_par_threshold = 64;
 
-const RankShard = struct { paths: []const []const u8, ids: []const u32, re: *const Regex, gpa: std.mem.Allocator, out: []Doc, n: usize = 0, reads: usize = 0 };
+const RankShard = struct { paths: []const []const u8, ids: []const u32, re: *const Regex, gpa: std.mem.Allocator, out: []Doc, binary_detect: bool, n: usize = 0, reads: usize = 0 };
 fn rankShard(sh: *RankShard) void {
     const scratch = sh.gpa.alloc(u8, corpus_mod.per_file_cap) catch return;
     defer sh.gpa.free(scratch);
@@ -146,7 +158,7 @@ fn rankShard(sh: *RankShard) void {
     for (sh.ids) |d| {
         const n = readFileInto(sh.paths[d], scratch) orelse continue;
         sh.reads += 1;
-        if (fileDoc(scratch[0..n], sh.paths[d], sh.re, &sim, d)) |doc| {
+        if (fileDoc(scratch[0..n], sh.paths[d], sh.re, &sim, d, sh.binary_detect)) |doc| {
             sh.out[w] = doc;
             w += 1;
         }
@@ -156,7 +168,7 @@ fn rankShard(sh: *RankShard) void {
 
 /// Parallel feature extraction over candidate `ids` — one std.Thread per core,
 /// blocking posix reads (the same proven pattern as `run.zig`'s `readCandidates`).
-fn parallelRank(gpa: std.mem.Allocator, paths: []const []const u8, ids: []const u32, re: *const Regex, docs: *std.ArrayList(Doc), read_files: *usize) !void {
+fn parallelRank(gpa: std.mem.Allocator, paths: []const []const u8, ids: []const u32, re: *const Regex, docs: *std.ArrayList(Doc), read_files: *usize, binary_detect: bool) !void {
     const ncpu = std.Thread.getCpuCount() catch 8;
     const nshards = if (ids.len < read_par_threshold) 1 else @min(ids.len, ncpu);
     const shards = try gpa.alloc(RankShard, nshards);
@@ -167,7 +179,7 @@ fn parallelRank(gpa: std.mem.Allocator, paths: []const []const u8, ids: []const 
     for (shards, 0..) |*sh, k| {
         const lo = @min(k * per, ids.len);
         const hi = @min(lo + per, ids.len);
-        sh.* = .{ .paths = paths, .ids = ids[lo..hi], .re = re, .gpa = gpa, .out = outbuf[lo..hi] };
+        sh.* = .{ .paths = paths, .ids = ids[lo..hi], .re = re, .gpa = gpa, .out = outbuf[lo..hi], .binary_detect = binary_detect };
     }
     if (nshards == 1) rankShard(&shards[0]) else {
         const threads = try gpa.alloc(std.Thread, nshards);
@@ -305,8 +317,10 @@ fn emitRanked(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, docs: []cons
 /// `path:line` + surfaced line. `k` caps the surfaced rows (`--rank[=N]`,
 /// default 20). Returns null when no complete index is available so the caller
 /// can live-rank; otherwise the ranked-match count (0 ⇒ the caller may hint).
-/// `caseless` disables the trigram prefilter.
-pub fn run(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, roots: []const []const u8, k: usize, caseless: bool) !?usize {
+/// `caseless` disables the trigram prefilter. `binary_detect` (the locate path's
+/// `!-a` default) skips NUL-bearing walked files past their committed prefix, so
+/// the ranked set matches `gist -l`.
+pub fn run(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, roots: []const []const u8, k: usize, caseless: bool, binary_detect: bool) !?usize {
     const l0 = nowNs(io);
     var p = (persist.loadQuiet(gpa, io) catch null) orelse return null;
     defer p.deinit();
@@ -331,7 +345,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, roots: []const 
     var docs: std.ArrayList(Doc) = .empty;
     defer docs.deinit(gpa);
     var read_files: usize = 0;
-    try parallelRank(gpa, p.paths.items, scoped.items, re, &docs, &read_files);
+    try parallelRank(gpa, p.paths.items, scoped.items, re, &docs, &read_files, binary_detect);
 
     // The fusion: lexical density + symbol(def) boost + shallow-path + authored
     // (codegen demotion), RRF-fused. null is the external graph-centrality hook.
@@ -343,13 +357,13 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, roots: []const 
 
 /// Rank bytes already gathered by the rg-compatible live walk. Returns the
 /// ranked-match count (0 ⇒ the caller may hint).
-pub fn runLive(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, files: []const LiveFile, k: usize) !usize {
+pub fn runLive(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, files: []const LiveFile, k: usize, binary_detect: bool) !usize {
     const q0 = nowNs(io);
     var docs: std.ArrayList(Doc) = .empty;
     defer docs.deinit(gpa);
     var sim = try Regex.Sim.init(gpa, re);
     defer sim.deinit();
-    for (files, 0..) |file, id| if (fileDoc(file.bytes, file.path, re, &sim, @intCast(id))) |doc| try docs.append(gpa, doc);
+    for (files, 0..) |file, id| if (fileDoc(file.bytes, file.path, re, &sim, @intCast(id), binary_detect)) |doc| try docs.append(gpa, doc);
     const top = try emitRanked(gpa, io, re, docs.items, .{ .memory = files }, k);
     const query_ns = nowNs(io) - q0;
     std.debug.print("gist: {d} ranked matches (top {d}) · live-scanned {d} files · rank {d:.1} ms\n", .{ docs.items.len, top, files.len, ms(query_ns) });
@@ -362,12 +376,12 @@ pub fn runLive(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, files: []co
 /// to stdout, and with no stderr timing line. `out` and every transient draw
 /// from `gpa`. Returns the ranked-match count (0 ⇒ the daemon streams an empty
 /// answer; cold's hint is stderr-only and outside the byte-parity envelope).
-pub fn renderLive(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, files: []const LiveFile, k: usize, out: *std.ArrayList(u8)) !usize {
+pub fn renderLive(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, files: []const LiveFile, k: usize, out: *std.ArrayList(u8), binary_detect: bool) !usize {
     var docs: std.ArrayList(Doc) = .empty;
     defer docs.deinit(gpa);
     var sim = try Regex.Sim.init(gpa, re);
     defer sim.deinit();
-    for (files, 0..) |file, id| if (fileDoc(file.bytes, file.path, re, &sim, @intCast(id))) |doc| try docs.append(gpa, doc);
+    for (files, 0..) |file, id| if (fileDoc(file.bytes, file.path, re, &sim, @intCast(id), binary_detect)) |doc| try docs.append(gpa, doc);
     _ = try renderRanked(gpa, io, re, docs.items, .{ .memory = files }, k, out);
     return docs.items.len;
 }
@@ -399,7 +413,7 @@ test "fileDoc matches alternation and wildcard regexes, not raw pattern bytes" {
         \\fn BAR_CLAIM() void {}
         \\use FOO_CLAIM here
     ;
-    const doc_alt = fileDoc(hay_alt, "src/claim.zig", &re_alt, &sim_alt, 7) orelse {
+    const doc_alt = fileDoc(hay_alt, "src/claim.zig", &re_alt, &sim_alt, 7, true) orelse {
         try t.expect(false); // must match both branches
         return;
     };
@@ -415,7 +429,7 @@ test "fileDoc matches alternation and wildcard regexes, not raw pattern bytes" {
         \\// claim the job via SET NX
         \\const other = 1;
     ;
-    const doc_wild = fileDoc(hay_wild, "queue.py", &re_wild, &sim_wild, 3) orelse {
+    const doc_wild = fileDoc(hay_wild, "queue.py", &re_wild, &sim_wild, 3, true) orelse {
         try t.expect(false); // must match claim…job span
         return;
     };
@@ -424,7 +438,41 @@ test "fileDoc matches alternation and wildcard regexes, not raw pattern bytes" {
 
     // No claim…job span at all ⇒ not a match (the old literal path would also
     // miss this; the point is the engine doesn't false-positive on noise).
-    try t.expect(fileDoc("no relevant tokens here", "doc.md", &re_wild, &sim_wild, 1) == null);
+    try t.expect(fileDoc("no relevant tokens here", "doc.md", &re_wild, &sim_wild, 1, true) == null);
+}
+
+test "fileDoc honors rg's default binary policy: a match past a NUL is excluded unless -a" {
+    const t = std.testing;
+    const a = t.allocator;
+
+    // The bug the `--rank` no-fabrication invariant caught: `--rank` read the
+    // FULL bytes of every candidate and matched a symbol inside a committed Go
+    // binary (`atomic.(*Int32).Store`) that `gist -l` (and ripgrep) skip by
+    // default — so the ranked set was a strict SUPERSET of the located set, not
+    // a reordering. A walked file whose only hit sits past an early NUL must be
+    // excluded under the locate default, and searched whole only under `-a`.
+    var re = try Regex.compile(a, "Store");
+    defer re.deinit();
+    var sim = try Regex.Sim.init(a, &re);
+    defer sim.deinit();
+
+    // NUL at byte 3, "Store" only after it — a compiled-binary shape in
+    // miniature. `committedPrefix` commits nothing before the NUL-bearing fill.
+    const bin = "hi\x00 internal.atomic.Store here\n";
+    try t.expect(fileDoc(bin, "mdns_verify", &re, &sim, 0, true) == null); // default: excluded
+    const forced = fileDoc(bin, "mdns_verify", &re, &sim, 0, false) orelse { // -a: read as text
+        try t.expect(false);
+        return;
+    };
+    try t.expectEqual(@as(u32, 1), forced.matches);
+
+    // A text file (no NUL) with the same match is unaffected by binary detection.
+    const text = "internal.atomic.Store here\n";
+    const doc = fileDoc(text, "wallet.go", &re, &sim, 0, true) orelse {
+        try t.expect(false);
+        return;
+    };
+    try t.expectEqual(@as(u32, 1), doc.matches);
 }
 
 test "rankFilters prefers required literal then alternation cover" {
