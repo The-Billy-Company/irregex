@@ -1,3 +1,4 @@
+// MONOLITHIC: CompiledQuery — the transport-neutral compiled search intent (ADR-352); scanners, the PCRE shadow, and mode dispatch are the single shape CLI, daemon, and FFI all share
 //! gist search core — the compiled, transport-neutral query (ADR-352).
 //!
 //! One deep module owns "a search intent, compiled". A `(pattern, fixed,

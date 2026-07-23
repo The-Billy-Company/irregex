@@ -1,3 +1,4 @@
+// MONOLITHIC: rg --json emitter — the begin/match/context/end record sequence plus submatch and replacement encoding share one per-file message-stream state (sibling protocol to output.zig)
 //! gist `rg --json` — ripgrep's JSON Lines record stream (ADR-parity output).
 //!
 //! Split from `run.zig`/`output.zig`: given each file's already-read bytes,

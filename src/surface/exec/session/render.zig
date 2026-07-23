@@ -1,3 +1,4 @@
+// MONOLITHIC: warm lines renderer — path:text / -n / -c presentation for a pre-gated document list shares one emission state with the cold output modes (ADR-352 rung 2.5)
 //! gist resident session — the warm `lines` renderer (ADR-352 rung 2.5).
 //!
 //! Renders the default `gist <pattern>` presentation (`path:text`, `-n` for

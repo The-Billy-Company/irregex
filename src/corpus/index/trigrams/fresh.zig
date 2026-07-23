@@ -1,3 +1,4 @@
+// MONOLITHIC: local-FS freshness overlay — anchor read, candidate widening, dual-clock elision, and seed-all fallbacks co-maintain the "index elides reads, never owns truth" contract
 //! gist T3 — local-filesystem freshness overlay. A persisted trigram index only
 //! elides a live read when the path was indexed and both filesystem change
 //! clocks prove it predates the build anchor. Every other file is read and

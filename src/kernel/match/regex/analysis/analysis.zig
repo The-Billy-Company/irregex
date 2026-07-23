@@ -1,3 +1,4 @@
+// MONOLITHIC: regex static analysis — the conservative AST/NFA visitors (required-literal, prefix, class-run) share one soundness contract feeding every scanner accelerator
 //! gist — regex *static analysis*: sound, read-only visitors that feed the
 //! scanner's accelerators. Every one is conservative (a wrong "don't know" only
 //! costs a full scan, never a missed match). Two layers:
