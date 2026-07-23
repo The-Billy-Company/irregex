@@ -31,7 +31,7 @@ One concern per folder:
 | [`roofline/`](roofline/README.md)     | Layer C — roofline headroom: STREAM roof plus matched dual-window, contiguous-production, and corpus-production stages.                                                                                                                                   |
 | [`lowerbound/`](lowerbound/README.md) | Layer D â algorithmic lower bound: a fail-closed structural audit proving gist's verify touches the information-theoretic floor of candidate bytes.                                                                                                      |
 | [`relate/`](relate/README.md)         | The **relate** proof (`relate-knn`) — the real cross-parse / LZJD / pivot engine run as a k-NN classifier; the measured basis for the compression-vs-embeddings verdict (`spikes/compression-vs-embeddings/`).                                    |
-| [`codex/`](codex/README.md)           | The **self-index** at-scale proof (`codex-scale`) — the real `src/index/codex/` FM-index over ~187MB of repo source: entropy-bound space vs gzip/bzip2/zstd/xz, flat-in-n count latency, byte-exact restore from the index alone.                        |
+| [`codex/`](codex/README.md)           | The **self-index** at-scale proof (`codex-scale`) — the real `src/corpus/index/codex/` FM-index over ~187MB of repo source: entropy-bound space vs gzip/bzip2/zstd/xz, flat-in-n count latency, byte-exact restore from the index alone.                        |
 
 ```bash
 cd pkg/kernels/irregex

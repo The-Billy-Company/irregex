@@ -68,7 +68,7 @@ fn underAnyRoot(path: []const u8, roots: []const []const u8) bool {
 }
 
 /// Sound trigram prefilter for the compiled regex — the engine-shared rule
-/// (`engine/query.zig::regexPrefilter`), minus any prefilter when the fold is
+/// (`kernel/match/query.zig::regexPrefilter`), minus any prefilter when the fold is
 /// caseless (the trigram index is case-exact, so pruning would be unsound).
 fn rankFilters(re: *const Regex, caseless: bool, one: *[1][]const u8) []const []const u8 {
     if (caseless) return &.{};

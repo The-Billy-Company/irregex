@@ -14,7 +14,7 @@ doc_radar:
 # bench/crest — the Crest sieve's production proof harness
 
 `zig build crest` (from `pkg/kernels/irregex/`) links the real engine, walks
-the real Billy corpus, and proves the **crest sieve** (`src/math/crest.zig`,
+the real Billy corpus, and proves the **crest sieve** (`src/kernel/primitives/crest.zig`,
 theory in `research/crest/PROOF.md`) fail-closed:
 
 1. **Soundness** — for every file, matched ⇒ ¬pruned, against the production

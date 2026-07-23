@@ -4,7 +4,7 @@ These are the exact upstream UCD text files gist's Unicode tables are lowered
 from. They are pinned and vendored so table generation is **hermetic** (no
 network at build/CI time) and the drift gate is reproducible. The lowering lives
 in [`../build_unicode_tables.py`](../build_unicode_tables.py) → emits
-`src/regex/unicode/tables.gen.zig`.
+`src/kernel/match/regex/unicode/tables.gen.zig`.
 
 ## Provenance
 

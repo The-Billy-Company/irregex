@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-r"""Lower the pinned UCD subset in tools/ucd/ into src/search/match/regex/unicode/tables.gen.zig.
+r"""Lower the pinned UCD subset in tools/ucd/ into src/kernel/match/regex/unicode/tables.gen.zig.
 
 gist is a byte automaton; to match Unicode *codepoint* classes it needs compact,
 sorted scalar-range tables for the Perl classes (\\w \\d \\s), the simple
@@ -23,7 +23,7 @@ import sys
 UNICODE_VERSION = "16.0.0"
 HERE = Path(__file__).resolve().parent
 UCD = HERE / "ucd"
-OUT = HERE.parent / "src" / "gist" / "kernel" / "regex" / "unicode" / "tables.gen.zig"
+OUT = HERE.parent / "src" / "kernel" / "match" / "regex" / "unicode" / "tables.gen.zig"
 
 Range = tuple[int, int]
 

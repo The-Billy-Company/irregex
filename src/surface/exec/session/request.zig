@@ -33,7 +33,7 @@ const scope = @import("../../../corpus/scope/glob.zig");
 // cold argv parser resolves a type against.
 const types = @import("../../../corpus/scope/types.zig");
 
-/// Eligible answer shapes — shared with the search core (`engine/query.zig`).
+/// Eligible answer shapes — shared with the search core (`kernel/match/query.zig`).
 pub const Mode = @import("../../../kernel/match/query.zig").Mode;
 
 /// The resolved path-scope filter a classified request carries (empty ⇒ the
@@ -68,7 +68,7 @@ pub const Request = struct {
     line_num: bool = false,
     /// `-S`/`--smart-case`, raw on the wire; resolved via `effectiveIgnoreCase`.
     smart_case: bool = false,
-    /// `-w`/`--word-regexp` — see `search/match/query.zig::wordOk`.
+    /// `-w`/`--word-regexp` — see `kernel/match/query.zig::wordOk`.
     word: bool = false,
     /// `-P`/`--pcre2` (or `--engine=pcre2`): realize the regex body with the
     /// vendored PCRE2 JIT backend (lookaround, backreferences, Unicode

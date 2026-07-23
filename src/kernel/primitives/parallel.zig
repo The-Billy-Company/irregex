@@ -1,8 +1,8 @@
 //! gist — the shared data-parallel sharding floor: byte-balanced work division
 //! and the partial-spawn-safe fan-out both engines ride. Pure `std.Thread`
 //! plumbing with no search, index, or corpus knowledge — the candidate verify
-//! (`search/match/scan/verify.zig`), the trigram index build
-//! (`index/trigrams/trigram.zig`), the relate sketch build, and the relate
+//! (`kernel/match/scan/verify.zig`), the trigram index build
+//! (`corpus/index/trigrams/trigram.zig`), the relate sketch build, and the relate
 //! attribution pass all divide their work through these three primitives
 //! instead of five hand-rolled copies.
 

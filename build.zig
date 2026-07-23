@@ -2,7 +2,7 @@
 //! static+dynamic C-ABI artifact, the macOS archive realign, and the
 //! `test`/`coverage` steps live in the shared `kernelkit` chassis
 //! (pkg/kernels/core). This file declares the kernel plus two executables
-//! built on it: the production `gist` CLI (`src/cli/gist/main.zig`, the
+//! built on it: the production `gist` CLI (`src/surface/face/gist/main.zig`, the
 //! `index`/`status` lifecycle verbs plus the bare `<pattern>`/`rg` search
 //! front door) and the separate `gist-bench` harness
 //! (`bench/harness/bench.zig`, the `bench`/`verify`/`certify` tooling). Production CLI
@@ -620,7 +620,7 @@ pub fn build(b: *std.Build) void {
     relate_knn_step.dependOn(relate_knn_install);
 
     // ── `codex-scale` — the compressed self-index proof harness ──
-    // Runs the REAL codex (src/index/codex/) over slices of an on-disk corpus:
+    // Runs the REAL codex (src/corpus/index/codex/) over slices of an on-disk corpus:
     // index bits/char vs measured H0/H2, count/find latency across sizes
     // (flat in n), byte-exact restore from the index alone, every timed count
     // verified against a naive scan. bench/codex/race.sh adds compressor
@@ -696,12 +696,12 @@ pub fn build(b: *std.Build) void {
 
     // ── `crest` — production proof: the forced-class-run necessary condition ──
     // Links the REAL engine (the crest kernel now lives INSIDE it, at
-    // src/math/crest.zig, wired into the index sidecar + both read-elision
+    // src/kernel/primitives/crest.zig, wired into the index sidecar + both read-elision
     // oracles) and walks the REAL corpus to prove the sieve is sound
     // (matched ⇒ ¬pruned, fail-closed) and prunes the literal-free
     // class-repetition zone where the trigram index prunes 0%. Writing +
     // proofs: research/crest/. Kernel unit tests ride `zig build test` via
-    // root.zig's test block (math/crest_test.zig, index/crest/sidecar_test.zig).
+    // root.zig's test block (kernel/primitives/crest.zig tests, corpus/index/crest/sidecar_test.zig).
     const crest_bench_mod = b.createModule(.{
         .root_source_file = b.path("bench/crest/bench.zig"),
         .target = k.target,

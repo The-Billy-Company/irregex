@@ -6,7 +6,7 @@ doc_radar:
       contains: ["pub const Caps"]
 ---
 
-# search/match/regex/compile — AST → NFA lowering + captures
+# kernel/match/regex/compile — AST → NFA lowering + captures
 
 The **middle of the pipeline**: lower the parsed AST into the flat instruction
 program the executors run, and — separately — extract capture-group boundaries

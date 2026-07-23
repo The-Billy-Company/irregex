@@ -9,7 +9,7 @@ doc_radar:
       contains: "pub const Plan"
 ---
 
-# `src/search/batch/` — closed set ops (ADR-363)
+# `src/kernel/batch/` — closed set ops (ADR-363)
 
 Operate on **many intents** or a **whole result stream** at once, engine-side,
 with exact answers. This is the set-shaped half of the irregex primitives —
@@ -19,7 +19,7 @@ what backs `relate patterns` and any future multipattern weave.
 
 | File           | Job                                                                                                                                 |
 | -------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `patterns.zig` | `PatternSet` — compile N patterns once through `search/match/query.zig` with exact per-pattern attribution (`docMask` / `lineHits`) |
+| `patterns.zig` | `PatternSet` — compile N patterns once through `kernel/match/query.zig` with exact per-pattern attribution (`docMask` / `lineHits`) |
 | `loom.zig`     | `loom.Plan` — closed filter → group → sort → limit over attributed rows; total-ordered and deterministic                            |
 
 ## Invariants
@@ -33,7 +33,7 @@ what backs `relate patterns` and any future multipattern weave.
 ## When to edit
 
 New closed ops in the loom vocabulary, attribution shape changes, or fused
-gate soundness. Verb UX lives in `cli/relate/`; match semantics in
-`search/match/`.
+gate soundness. Verb UX lives in `surface/face/relate/`; match semantics in
+`kernel/match/`.
 
 Design: [ADR-363](../../../../../../docs/architecture/3-decisions/363-irregex-primitives.md).

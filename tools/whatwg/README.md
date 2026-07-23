@@ -4,8 +4,8 @@ These are the exact upstream index files gist's `-E`/`--encoding` legacy-code-pa
 decoders are lowered from. They are pinned and vendored so table generation is
 **hermetic** (no network at build/CI time) and the drift gate is reproducible.
 The lowering lives in [`../build_encoding_tables.py`](../build_encoding_tables.py)
-→ emits `src/runtime/cold/read/encoding_tables.gen.zig`, which
-[`../../src/runtime/cold/read/encoding.zig`](../../src/runtime/cold/read/encoding.zig)
+→ emits `src/surface/exec/cold/read/encoding_tables.gen.zig`, which
+[`../../src/surface/exec/cold/read/encoding.zig`](../../src/surface/exec/cold/read/encoding.zig)
 rides. This is the same set `encoding_rs` (ripgrep's transcoder) is built from, so
 gist reaches byte-for-byte `-E` parity with `rg` (proven in
 [`../../bench/rgsuite/transforms.py`](../../bench/rgsuite/transforms.py)).

@@ -12,11 +12,11 @@ doc_radar:
       contains: ["pub fn run", "rank"]
 ---
 
-# runtime/cold/engine — walk + match orchestration
+# surface/exec/cold/engine — walk + match orchestration
 
-The control planes that wire [`argv`](../argv) → [`walk`](../walk) →
+The control planes that wire [`argv`](../argv) → [`corpus/tree`](../../../../corpus/tree) walk →
 [`read`](../read) → [`emit`](../emit) into a finished search. Matching itself
-lives in `search/match/query.zig`; these modules own _when_ to walk, _which_
+lives in `kernel/match/query.zig`; these modules own _when_ to walk, _which_
 files to open, and _how_ to stream results.
 
 | File            | Role                                                                                                                                                                                                                                                                                                                     |
@@ -24,7 +24,7 @@ files to open, and _how_ to stream results.
 | `serial.zig`    | the certified rg-compat control plane — argv dispatch, walk/read fallbacks, index admission (`IndexSkip`), stdin / JSON / stats branches, exit semantics. Re-exported as `gist.commands.search`.                                                                                                                         |
 | `parallel.zig`  | fused work-stealing walk+read+match when the flag set allows; ineligible combinations fall through to serial unchanged.                                                                                                                                                                                                  |
 | `ranked.zig`    | `--rank[=N]` — definition-first ranked view over the same candidate set (gist's one native shape ripgrep can't express).                                                                                                                                                                                                 |
-| `retrieval.zig` | relate's cold recall engine (`relate search` / `pack`): nominate a bounded pool from the mmap trigram postings, fold the freshness overlay, price it with the `zipper` cross-parse. Reads the persisted index (never a walk+match), so it shares this tier with the gist engines rather than the pure `search/` kernels. |
+| `retrieval.zig` | relate's cold recall engine (`relate search` / `pack`): nominate a bounded pool from the mmap trigram postings, fold the freshness overlay, price it with the `zipper` cross-parse. Reads the persisted index (never a walk+match), so it shares this tier with the gist engines rather than the pure `kernel/` kernels. |
 
 **Index is an accelerator, not an authority.** When a covering, fresh index is
 present, `IndexSkip` elides reads of files whose trigrams cannot match; the

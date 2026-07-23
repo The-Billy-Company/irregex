@@ -340,7 +340,7 @@ test "classify: ignore sources and .git topology demand the walk, internals don'
     try t.expectEqual(Class.noise, classify(".git/index.lock"));
     try t.expectEqual(Class.noise, classify(".git/objects/ab/cdef"));
     try t.expectEqual(Class.noise, classify("nested/.git/HEAD"));
-    try t.expectEqual(Class.normal, classify("src/session/delta.zig"));
+    try t.expectEqual(Class.normal, classify("src/surface/exec/session/delta.zig"));
     try t.expectEqual(Class.normal, classify("gitignore.md")); // substring, not component
 }
 

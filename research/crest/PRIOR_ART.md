@@ -47,7 +47,7 @@ substring _presence_ in an inverted index.
 | [Zoekt](#r-zoekt) (Sourcegraph)                             | positional trigram index                                           | presence + position of trigrams; class repetitions yield none                                                                          |
 | [GitHub Blackbird](#r-blackbird)                            | sparse n-gram selection over code                                  | same object class: substring presence                                                                                                  |
 | [REI](#r-rei) (SIGMOD 2025), [Zhang et al. 2025](#r-zhang)  | learned / cost-based _selection_ of which n-grams to index         | optimizes the same presence test; concedes the same literal-free hole                                                                  |
-| gist's own trigram prefilter (`src/search/match/query.zig`) | Cox-family required-trigram intersection                           | the Certificate records the hole honestly: `cand% = 100%` on `regex-classcount`                                                        |
+| gist's own trigram prefilter (`src/kernel/match/query.zig`) | Cox-family required-trigram intersection                           | the Certificate records the hole honestly: `cand% = 100%` on `regex-classcount`                                                        |
 
 **Difference.** All of these answer "does the document contain substring s?"
 Crest answers "does the document contain a _run of class-C bytes at least r

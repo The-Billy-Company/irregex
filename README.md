@@ -127,7 +127,7 @@ Use `gist` when the question contains an exact string, regex, symbol, path
 scope, or familiar grep-shaped output. Start with the ripgrep-shaped reflex —
 `gist PATTERN [PATH...] [FLAGS]` — then choose Gist-native `--rank`,
 `--no-index`, resident, or codex behavior only when the intent calls for it.
-See the [`gist` README](src/cli/gist/README.md) for the full ergonomics guide,
+See the [`gist` README](src/surface/face/gist/README.md) for the full ergonomics guide,
 niche flag choices, compatibility boundaries, and evidence.
 
 ## Relate in brief
@@ -136,7 +136,7 @@ Use `relate` when the question is about resemblance, non-redundant context,
 provenance, duplicate families, renamed structure, or many attributed
 patterns. Choose the verb from the answer shape: `search`, `pack`, `quote`,
 `similar`, `dups`, `clusters`, `echoes`, or `patterns`. See the
-[`relate` README](src/cli/relate/README.md) for the complete verb guide,
+[`relate` README](src/surface/face/relate/README.md) for the complete verb guide,
 score directions, corpus policy, warm-tier behavior, and evidence.
 
 ## Use Gist and Relate in tandem
@@ -163,9 +163,9 @@ the exact claim inside it. A practical sequence is:
 
 ```bash
 gist 'ResidentSession' --rank
-relate similar src/runtime/session/resident.zig --lens structure --top 5
+relate similar src/surface/exec/session/resident.zig --lens structure --top 5
 relate pack "fail-closed resident freshness and cold fallback" --top 6
-gist 'decline|fallback' src/runtime/session -n
+gist 'decline|fallback' src/surface/exec/session -n
 ```
 
 That is the intended division of labor, not a rigid pipeline. Keep exact
@@ -196,21 +196,21 @@ it, so the statistical work never re-includes files the patterns excluded:
   that mention it, as a compact token-budgeted report for an editing agent.
 
 `gist` and `relate` stay the direct faces; `irregex` forwards none of their
-verbs. See the [`irregex` README](src/cli/irregex/README.md) for the composed
+verbs. See the [`irregex` README](src/surface/face/irregex/README.md) for the composed
 workflows, the `CandidateSet` model, and mandatory-scope rules.
 
 ## Choose a face
 
 | Face        | What it is                                                                                                                                                                  | Docs                                                     |
 | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| **gist**    | the rg-parity code locator CLI: trigram + crest read-elision, ranked search, and a resident session; the agents' everyday search reflex                                     | [`src/cli/gist/README.md`](src/cli/gist/README.md)       |
-| **relate**  | compression-as-search: retrieval/packing, quotation, kinship/families/echoes, and exact pattern sets; `index` / `status` own the warm lifecycle                             | [`src/cli/relate/README.md`](src/cli/relate/README.md)   |
-| **irregex** | the composed face: exact match narrows a `CandidateSet`, compression reasons inside it — `context` (reading set), `family` (forks/twins), `provenance` (quote, re-verified), `blast` (live symbol radius) | [`src/cli/irregex/README.md`](src/cli/irregex/README.md) |
-| **codex**   | the compressed self-index: a corpus stored at entropy-bound size with exact O(m) `count`/`find` and byte-exact restoration; powers `gist codex` + `relate quote`            | [`src/index/codex/README.md`](src/index/codex/README.md) |
-| **ffi**     | the in-process C-ABI warm session (`irregex_open` / `irregex_search` / `irregex_close` over `libirregex`)                                                                   | [`src/runtime/ffi/README.md`](src/runtime/ffi/README.md) |
+| **gist**    | the rg-parity code locator CLI: trigram + crest read-elision, ranked search, and a resident session; the agents' everyday search reflex                                     | [`src/surface/face/gist/README.md`](src/surface/face/gist/README.md)       |
+| **relate**  | compression-as-search: retrieval/packing, quotation, kinship/families/echoes, and exact pattern sets; `index` / `status` own the warm lifecycle                             | [`src/surface/face/relate/README.md`](src/surface/face/relate/README.md)   |
+| **irregex** | the composed face: exact match narrows a `CandidateSet`, compression reasons inside it — `context` (reading set), `family` (forks/twins), `provenance` (quote, re-verified), `blast` (live symbol radius) | [`src/surface/face/irregex/README.md`](src/surface/face/irregex/README.md) |
+| **codex**   | the compressed self-index: a corpus stored at entropy-bound size with exact O(m) `count`/`find` and byte-exact restoration; powers `gist codex` + `relate quote`            | [`src/corpus/index/codex/README.md`](src/corpus/index/codex/README.md) |
+| **ffi**     | the in-process C-ABI warm session (`irregex_open` / `irregex_search` / `irregex_close` over `libirregex`)                                                                   | [`src/surface/ffi/README.md`](src/surface/ffi/README.md) |
 
-The three CLIs are separate faces over one shared floor (`src/math/`,
-`src/corpus/`, `src/index/`, `src/search/`, `src/runtime/`); none owns a
+The three CLIs are separate faces over one shared floor (`src/kernel/`,
+`src/corpus/`, `src/surface/`); none owns a
 private copy of the corpus walk, scope machinery, indexes, or execution hosts.
 Operational READMEs explain how to use each face; the
 [`research dossiers`](research/README.md) explain why the claims deserve to
@@ -220,7 +220,7 @@ exist and where they stop.
 
 - Indexes may skip reads, never own truth; current bytes verify every result.
 - `gist` preserves rg-shaped output and 0/1/2 exit codes, but
-  [`gist --schema`](src/cli/gist/README.md#the-search-contract), not folklore
+  [`gist --schema`](src/surface/face/gist/README.md#the-search-contract), not folklore
   about ripgrep, defines supported flags.
 - PCRE2 is opt-in (`-P` or `--engine auto`) and resource-capped. If required
   literals cannot be proven, gist scans instead of risking a false negative.
@@ -228,7 +228,7 @@ exist and where they stop.
   it serves a retrieval-shaped purpose without pretending compression distance
   is learned semantic meaning.
 - The C ABI is versioned and flat; the header and
-  [`ffi` documentation](src/runtime/ffi/README.md) are its public contract.
+  [`ffi` documentation](src/surface/ffi/README.md) are its public contract.
 
 ## Evidence: six runnable claims
 
@@ -365,18 +365,16 @@ place only when the tool feels obvious in the hand.
 
 | Dir            | What                                                                                                                           |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `src/runtime/` | the shared floor: `corpus/` walk/loading, `scope/` path scoping, `session/` warm resident transport, `ffi/` C-ABI face         |
-| `src/math/`    | the shared bit-identity floor (`bits.zig`) + the crest sieve calculus (`crest.zig`)                                            |
-| `src/search/`  | match (`match/`), rank, batch (`patterns` · `loom`), similarity (`sketch` · `lexicon` · `zipper`), compose (exact→statistical) |
-| `src/index/`   | trigram postings (`trigrams/` · `postings/`) + the compressed self-index (`codex/`) + the crest sidecar (`crest/`)             |
-| `src/cli/`     | the three product binaries: `gist/` (exact locator), `relate/` (compression-search), `irregex/` (composed, ADR-367)            |
+| `src/kernel/`  | pure compute: `match/` · `rank/` · `kinship/` · `batch/` · `compose/` · `primitives/` (incl. bits + crest)                    |
+| `src/corpus/`  | tree walk · scope · persisted indexes (`trigrams/` · `postings/` · `codex/` · `atlas/` · `crest/`)                             |
+| `src/surface/` | transports + faces: `exec/{cold,session}` · `ffi/` · `face/{gist,relate,irregex}` · `cli/` shared vocabulary                 |
 | `include/`     | `irregex.h`: the flat C ABI (`irregex_*` symbols)                                                                              |
 | `bindings/`    | Python (`billy-irregex`, subprocess + optional cffi over `libirregex`) and Rust (subprocess) faces                             |
 | `contract/`    | `search_api.toml`: the unified SearchRequest/irregex contract (ADR-352)                                                        |
 | `bench/`       | certification + competitive benchmark harness (rgsuite, races, certify, roofline)                                              |
 
 See [`src/README.md`](src/README.md) for the tier-by-tier map and
-[`src/cli/gist/README.md`](src/cli/gist/README.md) for the gist architecture
+[`src/surface/face/gist/README.md`](src/surface/face/gist/README.md) for the gist architecture
 narrative, competitive benchmarks, and the full rg-parity flag table.
 
 ## Build & test

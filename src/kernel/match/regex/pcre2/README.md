@@ -9,13 +9,13 @@ doc_radar:
       contains: "pub fn"
 ---
 
-# `search/match/regex/pcre2/` — opt-in PCRE2 JIT backend
+# `kernel/match/regex/pcre2/` — opt-in PCRE2 JIT backend
 
 The escape hatch for lookaround, backreferences, and named captures the
 linear Thompson/DFA tier cannot express. Selected by `-P` / `--pcre2`, or by
 `--engine auto` only when the linear compiler returns unsupported.
 
-Hermetic sources: [`../../../../../../vendor/pcre2/`](../../../../../../vendor/pcre2/)
+Hermetic sources: [`../../../../../vendor/pcre2/`](../../../../../vendor/pcre2/)
 (PCRE2 10.47). No system `libpcre2`.
 
 ## Files

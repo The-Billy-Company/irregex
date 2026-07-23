@@ -15,8 +15,8 @@ explicit `make` step after a deliberate pin bump.
 
 | Tool                | Input (vendored)        | Output (generated — do not hand-edit)           |
 | ------------------- | ----------------------- | ----------------------------------------------- |
-| [`ucd/`](ucd)       | Unicode 16.0.0 UCD text | `src/search/match/regex/unicode/tables.gen.zig` |
-| [`whatwg/`](whatwg) | WHATWG encoding indexes | `src/runtime/cold/read/encoding_tables.gen.zig` |
+| [`ucd/`](ucd)       | Unicode 16.0.0 UCD text | `src/kernel/match/regex/unicode/tables.gen.zig` |
+| [`whatwg/`](whatwg) | WHATWG encoding indexes | `src/surface/exec/cold/read/encoding_tables.gen.zig` |
 
 ```bash
 make gen-gist-unicode    # UCD → unicode tables

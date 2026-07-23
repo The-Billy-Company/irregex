@@ -18,8 +18,8 @@
 //!     provably no false negatives (Sieve Theorem, PROOF.md §2).
 //!
 //! This module is the pure kernel — no I/O, no allocation, no engine dep. The
-//! persisted per-doc table lives in `index/crest/sidecar.zig`; the read-elision
-//! wiring in `runtime/cold/engine/{serial,parallel}.zig`; the production proof
+//! persisted per-doc table lives in `corpus/index/crest/sidecar.zig`; the read-elision
+//! wiring in `surface/exec/cold/engine/{serial,parallel}.zig`; the production proof
 //! harness in `bench/crest/`.
 //!
 //! SOUNDNESS POSTURE (everything rounds DOWN):

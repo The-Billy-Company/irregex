@@ -9,7 +9,7 @@ doc_radar:
       contains: ["pub fn noMatches", "hintsEnabled()"]
 ---
 
-# runtime/cold/emit — match presentation
+# surface/exec/cold/emit — match presentation
 
 Turns match spans into the bytes on stdout. One `Emitter` carries shared match,
 context-window, byte-offset, and replacement state across every
@@ -24,7 +24,7 @@ disagree with each other.
 | `multiline.zig` | `-U` whole-buffer match model (`Emitter.buffer` + `--json` spans)                                                                                                                                                                     |
 | `hints.zig`     | the no-match **stderr** guidance channel — `gist: no matches …` + up to three ranked `gist: try` / `gist: note:` lines derived from the query's own shape (`-i`/`-U`/`-F`/`-uu`/scope); muted by `GIST_HINTS=0`, never touches stdout |
 
-The warm session's line renderer ([`session/render.zig`](../../session/render.zig))
+The warm session's line renderer ([`exec/session/render.zig`](../../session/render.zig))
 deliberately drives **this** `Emitter` rather than a re-derived formatter —
 warm `path:line:text` frames are cold frames by construction.
 
@@ -32,4 +32,4 @@ warm `path:line:text` frames are cold frames by construction.
 
 Output framing, color policy, `--json` event shapes, multiline buffer model,
 or the no-match coaching channel. Changing _what_ matched belongs in
-`search/match/`; changing _which files_ were searched belongs in walk/engine.
+`kernel/match/`; changing _which files_ were searched belongs in walk/engine.

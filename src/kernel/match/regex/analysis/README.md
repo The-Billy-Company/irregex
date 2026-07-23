@@ -6,7 +6,7 @@ doc_radar:
       contains: ["pub fn analyzeFirst", "pub fn reachesMatchEol"]
 ---
 
-# search/match/regex/analysis — sound accelerator analyses
+# kernel/match/regex/analysis — sound accelerator analyses
 
 Read-only static analyses that feed the scanner's accelerators. Every one is
 **conservative**: a "don't know" degrades to a full scan, never to a missed

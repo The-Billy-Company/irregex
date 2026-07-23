@@ -9,11 +9,11 @@ doc_radar:
       contains: "pub fn ghat"
 ---
 
-# `src/index/crest/` — persisted crest-vector sidecar
+# `src/corpus/index/crest/` — persisted crest-vector sidecar
 
 The disk half of the **crest sieve**. Kernel math:
-[`../../math/crest.zig`](../../math/crest.zig). Theory:
-[`../../../research/crest/PROOF.md`](../../../research/crest/PROOF.md).
+[`../../../kernel/primitives/crest.zig`](../../../kernel/primitives/crest.zig). Theory:
+[`../../../../research/crest/PROOF.md`](../../../../research/crest/PROOF.md).
 
 One `u16^K` crest vector per indexed doc (16 B), doc-id order, staged under
 the same `gens/<id>/` directory and published by the same `pair.gen` flip as
@@ -40,10 +40,10 @@ concede. Together they elide more `open(2)`s without changing answers.
   alignment) → the query simply runs without the sieve.
 - Soundness rounds down only (under-prune); see math + `research/crest`.
 - Consumers: read-elision oracles in
-  `runtime/cold/engine/{serial,parallel}.zig`.
+  `surface/exec/cold/engine/{serial,parallel}.zig`.
 
 ## When to edit
 
 On-disk framing, publish atomicity with the trigram pair, or build
-parallelism. Changing the lattice / `ghat` math is `src/math/crest.zig` +
+parallelism. Changing the lattice / `ghat` math is `src/kernel/primitives/crest.zig` +
 the research proof, not this codec alone.

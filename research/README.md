@@ -36,14 +36,14 @@ is ours, and testing decides whether the implementation deserves the claim.
 If behavior changes, edit source first; then update the dossier only where the
 claim or evidence truly moved.
 
-Crest production code: [`../src/math/crest.zig`](../src/math/crest.zig) +
-[`../src/index/crest/`](../src/index/crest/). Production harness:
+Crest production code: [`../src/kernel/primitives/crest.zig`](../src/kernel/primitives/crest.zig) +
+[`../src/corpus/index/crest/`](../src/corpus/index/crest/). Production harness:
 `zig build crest` / [`../bench/crest/`](../bench/crest/).
 
-Gist production face: [`../src/cli/gist/`](../src/cli/gist/). Evidence:
+Gist production face: [`../src/surface/face/gist/`](../src/surface/face/gist/). Evidence:
 [`../bench/gates/`](../bench/gates/), [`../bench/rgsuite/`](../bench/rgsuite/),
 [`../bench/certify/`](../bench/certify/).
 
-Relate production face: [`../src/cli/relate/`](../src/cli/relate/). Engines:
-[`../src/search/similarity/`](../src/search/similarity/). Evidence:
+Relate production face: [`../src/surface/face/relate/`](../src/surface/face/relate/). Engines:
+[`../src/kernel/kinship/`](../src/kernel/kinship/). Evidence:
 [`../bench/relate/`](../bench/relate/).

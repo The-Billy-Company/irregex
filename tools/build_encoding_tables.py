@@ -7,7 +7,7 @@ UTF-8 before matching. This generator is the single source of the *decode* table
 it reads the vendored WHATWG index files (provenance in tools/whatwg/README.md) and
 emits one generated Zig module of pointer -> code point tables plus the authoritative
 label -> encoding map from `encodings.json`. The decoder state machines that consume
-these tables live in `src/runtime/cold/read/encoding.zig` (one per WHATWG algorithm).
+these tables live in `src/surface/exec/cold/read/encoding.zig` (one per WHATWG algorithm).
 
 Only the *decode* direction is lowered (gist never encodes to a legacy page), so a
 single dense `pointer -> code point` array per index is all that is needed. Tables
@@ -33,7 +33,7 @@ import sys
 
 HERE = Path(__file__).resolve().parent
 WHATWG = HERE / "whatwg"
-OUT = HERE.parent / "src" / "gist" / "faces" / "cli" / "search" / "read" / "encoding_tables.gen.zig"
+OUT = HERE.parent / "src" / "surface" / "exec" / "cold" / "read" / "encoding_tables.gen.zig"
 
 # WHATWG single-byte encodings whose 128-entry (0x80..0xFF) index gist lowers.
 # ISO-8859-8-I shares ISO-8859-8's index; x-mac-ukrainian shares x-mac-cyrillic;

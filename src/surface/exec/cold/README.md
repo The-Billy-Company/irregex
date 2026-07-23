@@ -6,7 +6,7 @@ doc_radar:
       contains: 'pub const search = @import("surface/exec/cold/engine/serial.zig");'
 ---
 
-# runtime/cold — the unified rg-DEFAULT engine
+# surface/exec/cold — the unified rg-DEFAULT engine
 
 The cold search path. This is what backs bare `gist <pattern>`, `gist rg`, and
 `gist search`: a byte-for-byte ripgrep-DEFAULT drop-in over an arbitrary tree
@@ -21,7 +21,7 @@ One matcher, three orchestration modes under [`engine/`](engine):
 - **ranked** — `--rank` definition-first view (gist's one native shape)
 
 The warm daemon and the FFI session do **not** reimplement matching: they call
-the shared `search/match/query.zig` core and, for line frames, reuse this
+the shared `kernel/match/query.zig` core and, for line frames, reuse this
 face's own `Emitter` / `grepfile` so warm bytes cannot drift from cold.
 
 ## Concern packages
@@ -34,7 +34,7 @@ face's own `Emitter` / `grepfile` so warm bytes cannot drift from cold.
 | [`engine/`](engine) | orchestration that drives the packages above                |
 
 Corpus admission and path vocabulary are shared below the CLI in
-[`corpus/tree/`](../../corpus/tree) and [`corpus/scope/`](../../corpus/scope).
+[`corpus/tree/`](../../../corpus/tree) and [`corpus/scope/`](../../../corpus/scope).
 
 Named for what each module _is_, not to mirror ripgrep's source layout. The
 rgsuite certificate (`bench/rgsuite/`) is the parity gate for this face.

@@ -2,7 +2,7 @@
 //!
 //! gist ships two match engines: the linear-time RE2/Pike default (`core.zig`,
 //! `Regex`) and the opt-in PCRE2 backend (`pcre2.zig`, `Pcre`) for `-P`. The
-//! entire `faces/search` output layer — the `Emitter`, the `--json` stream,
+//! entire `surface/exec/cold` output layer — the `Emitter`, the `--json` stream,
 //! the per-file binary/stats machinery — needs exactly four match primitives
 //! (`lineMatch`, `matchSpan`, `docMatch`, `bufMatch`) plus a required-literal for
 //! the trigram prefilter and a `nullable`/`multiline` flag, and it needs them

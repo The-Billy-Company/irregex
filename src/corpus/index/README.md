@@ -11,10 +11,10 @@ doc_radar:
       contains: "Index is an accelerator, not an authority."
 ---
 
-# `src/index/` — candidate, self, and kinship indexes
+# `src/corpus/index/` — candidate, self, and kinship indexes
 
 Persisted structures that may **elide reads, never own truth**. The live walk
-(`corpus/` + `runtime/cold/walk/`) decides which files exist; indexes only
+(`corpus/` + `corpus/tree/`) decides which files exist; indexes only
 prove that some of them cannot match (or answer count/find/restore /
 kinship without a full scan). `--no-index`, a missing anchor, or a corrupt
 artifact always degrades to slower-but-identical answers.
@@ -55,5 +55,5 @@ the parallel walk's incidental cross-file scheduling order. Soundness rules:
   update in the same change.
 
 Theory for the crest sieve lives in
-[`../../research/crest/`](../../research/crest/); production math is
-[`../math/crest.zig`](../math/crest.zig).
+[`../../../research/crest/`](../../../research/crest/); production math is
+[`../../kernel/primitives/crest.zig`](../../kernel/primitives/crest.zig).

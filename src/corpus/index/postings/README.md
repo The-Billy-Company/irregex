@@ -9,7 +9,7 @@ doc_radar:
       contains: ["GISTIDX", "pub const MappedRegions", "format_version"]
 ---
 
-# `src/index/postings/` — compact posting-body codecs
+# `src/corpus/index/postings/` — compact posting-body codecs
 
 How a posting list of document ids becomes bytes on disk and maps back
 zero-copy. The trigram index ([`../trigrams/`](../trigrams)) owns _what_ is

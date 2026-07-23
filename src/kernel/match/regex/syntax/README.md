@@ -9,7 +9,7 @@ doc_radar:
       contains: ["pub fn foldCaseAst"]
 ---
 
-# search/match/regex/syntax — grammar, classes, and the AST
+# kernel/match/regex/syntax — grammar, classes, and the AST
 
 The **front of the regex pipeline**: the shared vocabulary every downstream
 stage is written against. It turns pattern bytes into an AST, defines the

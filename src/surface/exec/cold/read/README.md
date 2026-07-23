@@ -9,7 +9,7 @@ doc_radar:
       contains: ["gb18030", "shift_jis", "euc_jp"]
 ---
 
-# runtime/cold/read — per-file ingest
+# surface/exec/cold/read — per-file ingest
 
 Everything that turns a path into matchable UTF-8 bytes — and the per-file
 search that consumes those bytes. Serial and parallel engines both call into
@@ -24,7 +24,7 @@ here so binary policy, BOM/UTF-16, and stats cannot drift between walk modes.
 `auto` encoding (the default) sniffs BOM — UTF-8 stripped, UTF-16 transcoded.
 `none` disables even that; an explicit WHATWG label forces a transcode.
 Generated tables are refreshed by `make gen-gist-encoding` (see
-[`../../../../tools/whatwg/`](../../../../tools/whatwg/)).
+[`../../../../../tools/whatwg/`](../../../../../tools/whatwg/)).
 
 ## When to edit
 

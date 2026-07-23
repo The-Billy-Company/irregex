@@ -11,7 +11,7 @@ doc_radar:
       contains: ["error.Unsupported", "immutable after", "pub const CompiledQuery"]
 ---
 
-# `src/search/match/` — exact-match engine
+# `src/kernel/match/` — exact-match engine
 
 The transport-neutral match core ([ADR-352](../../../../../../docs/architecture/3-decisions/352-gist-unified-search-api.md)).
 One deep module owns _"a search intent, compiled"_, so the cold CLI, warm
@@ -41,5 +41,5 @@ PCRE2 only when `-P` / `--engine auto` needs lookaround or backrefs. Unicode
 default-on at rg parity; details in [`regex/README.md`](regex/README.md).
 
 Richer cold-only presentations (context, `--json`, color) stay in
-`runtime/cold/emit/` — they consume the same match decision but shape their
+`surface/exec/cold/emit/` — they consume the same match decision but shape their
 own output.

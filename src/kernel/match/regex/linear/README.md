@@ -9,7 +9,7 @@ doc_radar:
       contains: ["pub const Matcher"]
 ---
 
-# search/match/regex/linear — the linear-time execution engine
+# kernel/match/regex/linear — the linear-time execution engine
 
 The **back of the pipeline**: the RE2/ripgrep-philosophy engine that actually
 runs a compiled pattern over bytes — no backtracking, no catastrophic blowup.

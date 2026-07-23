@@ -23,8 +23,8 @@
 //!     simulation — is a caller-owned `Scratch`, one per worker, threaded into
 //!     the match primitives. N workers share one compiled query with N scratches.
 //!
-//! Before this module, the warm engine (`session/resident.zig`) and the cold
-//! engine (`runtime/cold/`) each re-derived the required-literal-vs-alts
+//! Before this module, the warm engine (`surface/exec/session/resident.zig`) and the cold
+//! engine (`surface/exec/cold/`) each re-derived the required-literal-vs-alts
 //! prefilter and re-implemented literal/regex verification; the two "cannot
 //! drift" only because they now compile and match through the same code here.
 
@@ -44,12 +44,12 @@ const word_mod = @import("regex/syntax/word.zig");
 /// `count` (how many lines match), and `lines` (the default `path:text` match
 /// lines — rendered by the warm session through the cold `Emitter` itself, so
 /// the presentation cannot drift). Richer cold-only presentations (context,
-/// JSON, replace, --only-matching) stay in `runtime/cold/` — they consume
+/// JSON, replace, --only-matching) stay in `surface/exec/cold/` — they consume
 /// the same match decision but shape their own output.
 pub const Mode = enum(u8) { files = 0, count = 1, lines = 2 };
 
 /// A search intent before compilation. Mirrors the resident classifier's
-/// `Request` fields (`session/request.zig`) — the transport-neutral subset of
+/// `Request` fields (`surface/exec/session/request.zig`) — the transport-neutral subset of
 /// the contract's request options.
 pub const Spec = struct {
     /// The search pattern. For a `literal` body it is aliased, not copied — the
@@ -67,12 +67,12 @@ pub const Spec = struct {
     /// `-w`/`--word-regexp`: only word-bounded match spans count. This is rg's
     /// POST-MATCH rule, NOT `\b(pat)\b` — a span `[s,e)` counts iff a non-word
     /// codepoint (or the line edge) bounds it on BOTH sides (`wordOk` below,
-    /// mirroring `runtime/cold/emit/output.zig::wordOk` over the same shared
+    /// mirroring `surface/exec/cold/emit/output.zig::wordOk` over the same shared
     /// `\b` oracle), so a punctuation-only match is still a valid word match.
     word: bool = false,
     /// `-m N`/`--max-count`: cap matching lines PER FILE at N (`0` = unlimited).
     /// rg's explicit `-m0` (match nothing) is resolved at the session boundary
-    /// before compilation (`session/request.zig::matchNothing`), so a compiled
+    /// before compilation (`surface/exec/session/request.zig::matchNothing`), so a compiled
     /// query never carries a zero cap that means "nothing".
     max_count: u64 = 0,
     /// `-P`/`--pcre2`: compile the regex body through the vendored PCRE2 JIT
@@ -405,7 +405,7 @@ pub const CompiledQuery = struct {
     /// to `out`. A literal body walks successive `indexOf` occurrences; a regex
     /// body drives the leftmost-first span VM, skipping a zero-width match by one
     /// byte exactly as the cold `--json` submatch iterator does
-    /// (`runtime/cold/emit/json.zig::emitSubmatches`), so a match record emitted
+    /// (`surface/exec/cold/emit/json.zig::emitSubmatches`), so a match record emitted
     /// here carries byte-identical submatch offsets to the subprocess `--json`
     /// stream. Under `-w` the word-invalid spans are filtered with cold
     /// `nextSpan`'s exact progress rule (branch once at the top — the plain
@@ -472,7 +472,7 @@ pub const CompiledQuery = struct {
 /// ripgrep `-w`: a match span `[s,e)` is a word match iff bounded by a non-word
 /// CODEPOINT (or the line edge) on BOTH sides. The same 2-term composition of
 /// the engines' shared `\b` oracle (`regex/syntax/word.zig`) that cold's
-/// `runtime/cold/emit/output.zig::wordOk` applies — restated here because the
+/// `surface/exec/cold/emit/output.zig::wordOk` applies — restated here because the
 /// search core cannot import the cold runtime (dependency direction), and both
 /// reduce to the one oracle, so they cannot drift.
 pub fn wordOk(unicode: bool, hay: []const u8, s: usize, e: usize) bool {
@@ -635,7 +635,7 @@ pub fn caselessVariants(a: std.mem.Allocator, lit: []const u8, unicode: bool) er
 
 /// Escape a literal into a regex (for the caseless `-F -i` path, where the
 /// trigram prefilter is unsafe and the regex engine does the case fold).
-/// `pub` because the warm lines renderer (`session/render.zig`) builds its
+/// `pub` because the warm lines renderer (`surface/exec/session/render.zig`) builds its
 /// emission `Matcher` from the SAME escaped form the cold `-F` path compiles.
 pub fn escapeLiteral(a: std.mem.Allocator, pat: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;

@@ -1,7 +1,7 @@
 //! Crest sidecar — the persisted per-doc crest-vector table.
 //!
 //! One fixed-width record per indexed doc: the crest vector ρ(d) ∈ u16^K
-//! (`math/crest.zig`), doc-id order, little-endian. The table rides the SAME
+//! (`kernel/primitives/crest.zig`), doc-id order, little-endian. The table rides the SAME
 //! generation-atomic publish as `index.gist`/`paths.list` (persist.zig stages
 //! it under `gens/<id>/` and the seqlock recheck covers it), so a reader can
 //! never pair a crest table with a foreign doc-id space.

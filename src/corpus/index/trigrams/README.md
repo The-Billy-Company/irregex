@@ -9,7 +9,7 @@ doc_radar:
       contains: "anchor"
 ---
 
-# `src/index/trigrams/` — T0 candidate index + T3 freshness
+# `src/corpus/index/trigrams/` — T0 candidate index + T3 freshness
 
 Gist's structural edge over a whole-tree scan. A file containing a literal
 must contain every trigram of that literal, so the AND of per-trigram
@@ -36,7 +36,7 @@ class runs) lives in [`../crest/`](../crest).
   live-read; missing anchor seeds every doc fresh (fail closed).
 - Equality at the anchor boundary is live (`mtime >= anchor` or
   `ctime >= anchor`). Model assumes a local FS whose ctime advances on
-  ordinary writes — see [`../../corpus/tree/README.md`](../../corpus/tree/README.md).
+  ordinary writes — see [`../../tree/README.md`](../../tree/README.md).
 
 ## When to edit
 

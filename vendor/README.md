@@ -20,7 +20,7 @@ not depend on system packages for match semantics.
 | ---- | ---- | ------------ |
 | [`pcre2/`](pcre2) | PCRE2 10.47 (8-bit + JIT/sljit) | Opt-in `-P` / `--engine auto` — no system `libpcre2` |
 
-Zig wrappers live under `src/search/match/regex/pcre2/`; `build.zig` compiles
+Zig wrappers live under `src/kernel/match/regex/pcre2/`; `build.zig` compiles
 the C sources as `pcre2Library`. Version bumps: re-pin the tarball sha in
 the pcre2 README / build wiring, keep `src/` ↔ `deps/sljit/` layout, and
 re-run the PCRE parity gates.

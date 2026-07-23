@@ -6,7 +6,7 @@ doc_radar:
       contains: "Reciprocal"
 ---
 
-# `src/search/rank/` — T4 definition-first ranking
+# `src/kernel/rank/` — T4 definition-first ranking
 
 Turns the verified match set into the ranked, token-compressed list an agent
 actually wants: the one line that answers the question first, not 200
@@ -34,4 +34,4 @@ identical call sites. This is the shape `rg` cannot express — `gist --rank`.
 
 New intrinsic signals, class labels, or RRF weights. Do not put walk or
 emit logic here — rank consumes an already-verified hit set from
-`search/match/` + `runtime/cold/engine/ranked.zig`.
+`kernel/match/` + `surface/exec/cold/engine/ranked.zig`.

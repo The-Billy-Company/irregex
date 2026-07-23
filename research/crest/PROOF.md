@@ -37,7 +37,7 @@ _presence_:
 - Cox, _Regular Expression Matching with a Trigram Index_ (2012) — required
   trigrams, AND/OR query; a pattern with no extractable trigrams degenerates
   to a full scan. gist's own prefilter is this family
-  (`src/search/match/query.zig`), and gist's Certificate records the hole
+  (`src/kernel/match/query.zig`), and gist's Certificate records the hole
   honestly: `cand% = 100%` on `regex-classcount`.
 - PostgreSQL `pg_trgm` (`trgm_regexp.c`) — color-trigram graph; same
   degeneration.

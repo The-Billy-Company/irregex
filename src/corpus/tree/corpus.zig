@@ -1,5 +1,5 @@
-//! irregex — corpus loading, shared by the CLI drivers (`cli/gist/`), the
-//! unified search engine (`runtime/cold/`) and the bench/verify harness
+//! irregex — corpus loading, shared by the CLI drivers (`surface/face/gist/`), the
+//! unified search engine (`surface/exec/cold/`) and the bench/verify harness
 //! (`bench/harness/bench.zig`). The corpus is every non-binary, non-gitignored
 //! file under the roots (rg-style: a NUL byte ⇒ binary ⇒ skipped), minus the
 //! corpus-only build/VCS skip list. Also owns the stdout results contract
@@ -27,7 +27,7 @@ pub fn outDir() []const u8 {
 /// A named artifact's full path (`<outDir()>/<name>`), formatted once per
 /// process into a static buffer. Env-stable, so the first fill is final; a
 /// spinlock + release-published length make the fill race-free without an
-/// `std.Io` handle (same idiom as `runtime/session/dirty.zig` — these are
+/// `std.Io` handle (same idiom as `surface/exec/session/dirty.zig` — these are
 /// per-command lookups, never a hot loop). Instantiate per artifact:
 /// `const atlas_path = corpus.ArtifactPath("kinship.atlas");` → `.get()`.
 pub fn ArtifactPath(comptime name: []const u8) type {
@@ -145,7 +145,7 @@ fn envUncap() bool {
 /// `GIST_HINTS` — the kill switch for the stderr guidance channel (`gist:
 /// try` / `gist: note:` lines). Unset or any value except `0`/`false`/`no` keeps hints on;
 /// a byte-counting capture or parity harness exports `GIST_HINTS=0`. Shared
-/// by the CLI hint module (`runtime/cold/emit/hints.zig`) and the
+/// by the CLI hint module (`surface/exec/cold/emit/hints.zig`) and the
 /// truncation notice below — one env read, one policy. Results on stdout are
 /// untouched either way; this only governs stderr guidance.
 pub fn hintsEnabled() bool {

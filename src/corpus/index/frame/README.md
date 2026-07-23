@@ -10,7 +10,7 @@ doc_radar:
         - "pub fn parsePathTable"
 ---
 
-# `src/index/frame/` — the wire discipline every persisted artifact shares
+# `src/corpus/index/frame/` — the wire discipline every persisted artifact shares
 
 One home for the framing primitives the index blobs are built from, so the
 formats can't drift on conventions:

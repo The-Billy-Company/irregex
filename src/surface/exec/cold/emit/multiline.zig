@@ -2,7 +2,7 @@
 //!
 //! Under `-U`/`--multiline` the linear engine already matches over a WHOLE
 //! buffer (`^`/`$` anchor at `\n` boundaries, `.` crosses `\n` only under
-//! dotall — see `search/match/regex/linear/matcher.zig`). What the output layer still needs is a
+//! dotall — see `kernel/match/regex/linear/matcher.zig`). What the output layer still needs is a
 //! faithful, byte-index model of THAT: the leftmost run of matches under
 //! ripgrep's progress rule, the physical-line grid they land on, the way rg
 //! coalesces contiguous matches into one block, and the three multiline count

@@ -1,7 +1,7 @@
 ---
 doc_radar:
   counts:
-    - description: "math keeps bits + crest + parallel (bits/crest carry tests)"
+    - description: "primitives keeps bits + crest + parallel (bits/crest carry tests)"
       glob: pkg/kernels/irregex/src/kernel/primitives/*.zig
       unit: files
       equals: 5
@@ -11,7 +11,7 @@ doc_radar:
       contains: ["pub const Class", "pub fn ghat"]
 ---
 
-# `src/math/` — shared identity floor
+# `src/kernel/primitives/` — shared identity floor
 
 The lowest tier: pure, dependency-free numeric primitives. No I/O, no walk
 policy, no CLI. Both engines ride this instead of hand-rolling bit twiddling
@@ -30,7 +30,7 @@ or crest lattice math at each call site.
 SA-IS, RRR, the DFA `ByteSet`, posting codecs, and `PatternSet` all need the
 same packed-bit walks. Crest's class lattice order is load-bearing — the
 persisted sidecar stores vectors verbatim — so the math has one home and a
-theory dossier at [`../../research/crest/`](../../research/crest/).
+theory dossier at [`../../../research/crest/`](../../../research/crest/).
 
 ## Invariants
 
@@ -43,6 +43,6 @@ theory dossier at [`../../research/crest/`](../../research/crest/).
 ## When to edit
 
 New shared bit ops; crest lattice / Alphabet Contract changes. Never put
-file I/O or ignore rules here — that is `corpus/` / `runtime/cold/`.
+file I/O or ignore rules here — that is `corpus/` / `surface/exec/cold/`.
 
 Root re-exports: `irregex.bits`, crest symbols via `src/root.zig`.

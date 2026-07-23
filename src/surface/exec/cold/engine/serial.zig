@@ -22,7 +22,7 @@
 //!   • exit 0 = matched, 1 = no match, 2 = error/unsupported (ripgrep's codes).
 //! It reuses gist's linear-time RE2-style matcher for the default per-line and
 //! the `-U`/`--multiline` whole-buffer paths, and routes `-P`/`--pcre2` to the
-//! opt-in PCRE2 JIT backend (`search/match/regex/pcre2/backend.zig`) — both behind the
+//! opt-in PCRE2 JIT backend (`kernel/match/regex/pcre2/backend.zig`) — both behind the
 //! engine-neutral `Matcher` seam, so `multiline.zig` + `Emitter.buffer` own
 //! cross-line emission regardless of which engine produced a span. This module
 //! is the walk + presentation shell that makes both engines addressable the way
@@ -385,7 +385,7 @@ pub const FileSet = struct { paths: []const []const u8, path_error: bool };
 /// `gather`/`ignore.zig` walk the bare cold search uses (hidden-file exclusion,
 /// `.gitignore`/`.ignore`/`.rgignore` precedence, `.git` skip, per-root
 /// scoping), but paths only, no reads. Empty `roots` walks CWD, exactly like a
-/// rootless `gist <pattern>`. Exposed so the resident daemon (`src/session/`)
+/// rootless `gist <pattern>`. Exposed so the resident daemon (`src/surface/exec/session/`)
 /// builds its corpus and reconciles over a selection BYTE-IDENTICAL to cold,
 /// instead of `haystack`'s coarse superset — the whole basis of the warm-path
 /// parity guarantee. Paths (and the returned slice) are owned by `a`; the walk's
@@ -1011,7 +1011,7 @@ fn lessAscPathWalk(x: InFile, y: InFile) bool {
 /// byte compare would flip them (`.`=0x2e < `/`=0x2f). Mapping `/`→0 and every
 /// other byte→byte+1 keeps all other orderings intact while making the separator
 /// the smallest, so gist's ordered output stays byte-identical to ripgrep's.
-/// `pub` so the in-process FFI match stream (`session/resident.zig::search`)
+/// `pub` so the in-process FFI match stream (`surface/exec/session/resident.zig::search`)
 /// emits docs in the SAME order the cold `--json` file sort produces — a caller
 /// gets one byte-identical record order across both transports.
 pub fn pathLess(a: []const u8, b: []const u8) bool {
@@ -1108,7 +1108,7 @@ fn stdinKind() StdinKind {
 }
 
 /// True iff fd 0 is a readable stdin stream. `pub` for the warm client
-/// (`cli/gist/daemon/client/client.zig`): a rootless query with a readable stdin
+/// (`surface/face/gist/daemon/client/client.zig`): a rootless query with a readable stdin
 /// is a STREAM search only the cold engine can answer, so the client detects the
 /// same condition — with the same fd-type rules — and declines to cold. This is
 /// a non-consuming probe (stat, plus a `poll` for a socket): the delayed pipe's

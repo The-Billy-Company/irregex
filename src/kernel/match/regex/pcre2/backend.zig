@@ -10,7 +10,7 @@
 //! engine family ripgrep's `-P` uses (PCRE2 with JIT). It presents the exact
 //! surface `matcher.zig` needs — `lineMatch` / `matchSpan` / `docMatch` /
 //! `bufMatch`, a required-literal for the trigram prefilter, and per-thread
-//! scratch — so the whole `faces/search` output layer consumes it through
+//! scratch — so the whole `surface/exec/cold` output layer consumes it through
 //! the `Matcher` seam without knowing which engine produced a span.
 //!
 //! This file is the STABLE module entry: it re-exports the exact

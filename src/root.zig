@@ -17,27 +17,19 @@
 //! socket, `stdout`, or `exit`. Every entry returns a status code instead of
 //! `die()`ing, so a bad query can never terminate an embedding host — the
 //! property ADR-352 gated the search ABI on. It rides the
-//! error-returning shared core (`engine/query.zig`) + resident engine, so an
+//! error-returning shared core (`kernel/match/query.zig`) + resident engine, so an
 //! in-process answer is byte-identical to the cold `gist --json` stream. Index
 //! BUILD lifecycle stays a Zig/CLI surface (a session searches the live tree).
 //!
 //! Package shape: two engines over a shared floor, grouped by concern and
-//! re-exported here:
+//! re-exported here (three layers under `src/`):
 //!
-//!   math/     — SHARED identity floor: two's-complement bit sets both engines ride
-//!   corpus/   — SHARED source substrate: loading + Haystack walk (tree/) and
-//!               path selection (-g glob, -t type table) in scope/
-//!   index/    — the candidate + self indexes: trigram candidates + T3 freshness
-//!               (trigrams/), compact posting codecs (postings/), and the compressed
-//!               self-index — SA-IS → BWT → RRR wavelet tree (codex/, entropy-space count/find/restore)
-//!   search/   — the two engines' search kernels: exact match (match/ — linear RE2-style
-//!               NFA + byte-class DFA + prefilter, SIMD scan, the transport-neutral
-//!               compiled query both cold CLI and warm session execute through),
-//!               RRF ranking (rank/), compression kinship (similarity/ — sketch · lexicon
-//!               · zipper), and the batched set ops (batch/ — patterns · loom)
-//!   runtime/  — execution hosts: cold rg-compatible control plane, resident
-//!               session (ADR-352 rung 2.5), and in-process C ABI (rung 3)
-//!   cli/      — thin product faces: gist and relate
+//!   kernel/   — pure compute, no argv/walk/emit: match · rank · kinship · batch ·
+//!               compose · primitives
+//!   corpus/   — the body of text + persisted forms: tree/ walk · scope/ · index/
+//!               (trigrams · postings · codex · atlas · crest · …)
+//!   surface/  — transports + faces: exec/{cold,session} · ffi · face/{gist,relate,irregex}
+//!               · cli/ (shared flag/emit vocabulary)
 
 const std = @import("std");
 

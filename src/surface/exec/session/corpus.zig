@@ -2,7 +2,7 @@
 //! (ADR-352 rung 2.5).
 //!
 //! `load` reads a pre-selected path list (the certified rg-default walk,
-//! `runtime/cold/engine/serial.zig::defaultFileSet`) into resident documents with the
+//! `surface/exec/cold/engine/serial.zig::defaultFileSet`) into resident documents with the
 //! SAME per-file ingest the cold engine applies, so the warm corpus is a true
 //! mirror of what a cold run would read — not an approximation of it:
 //!

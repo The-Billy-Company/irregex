@@ -100,7 +100,7 @@ pub const Filter = struct {
 /// Which match backend realizes the pattern (`-P`/`--pcre2`, `--engine=<name>`).
 /// `default` is gist's linear-time RE2/Pike engine — no backtracking, no
 /// lookaround/backreferences, safe over an adversarial tree. `pcre2` is the
-/// opt-in vendored PCRE2 JIT backend (`search/match/regex/pcre2/backend.zig`) for the constructs
+/// opt-in vendored PCRE2 JIT backend (`kernel/match/regex/pcre2/backend.zig`) for the constructs
 /// the linear engine can't express. `auto` is ripgrep's hybrid: `run.zig` compiles
 /// the linear engine first (its speed + trigram AST) and only escalates to PCRE2
 /// for a pattern the linear engine declines (lookaround / backreferences). Both

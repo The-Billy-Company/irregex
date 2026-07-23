@@ -6,7 +6,7 @@ doc_radar:
       contains: ["ADVERSARIAL"]
 ---
 
-# search/match/regex/oracle — independent differential oracle
+# kernel/match/regex/oracle — independent differential oracle
 
 The correctness backstop the in-family fuzz can't provide. `../linear/dfa_test.zig`
 checks the DFA against the Pike VM — but the Pike VM is its own reference, so a
