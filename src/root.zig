@@ -418,6 +418,7 @@ test {
     _ = @import("kernel/kinship/recall/coverage.zig"); // relate pack core: greedy submodular max-coverage
     _ = @import("surface/exec/session/recall.zig"); // relate resident retrieval session: warm index + cached anchor overlay + watcher conformance
     _ = @import("kernel/compose/candidates.zig"); // compose: exact PatternSet → typed CandidateSet (≡ N single-pattern runs)
+    _ = @import("kernel/compose/candidates_test.zig"); // compose: CandidateSet ≡ substring set-algebra (any/all masks, 64-cap, error paths)
     _ = @import("kernel/compose/context.zig"); // compose: coverage packing inside the exact filter
     _ = @import("kernel/compose/family.zig"); // compose: fork families / echoes inside the exact filter
     _ = @import("kernel/compose/provenance.zig"); // compose: quote attribution re-verified against current bytes
