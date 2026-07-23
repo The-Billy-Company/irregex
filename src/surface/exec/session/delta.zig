@@ -15,10 +15,17 @@
 //!   - an ignore-semantics source (`.gitignore`/`.ignore`/`.rgignore`,
 //!     the `.git` entry, `.git/info/*`, `.git/commondir`) — editing one can
 //!     flip the verdict of ARBITRARY other paths, so only the full walk is
-//!     sound;
-//!   - any non-ASCII key: APFS/HFS+ alias Unicode normalization forms, and we
-//!     refuse to model that equivalence (ASCII case aliasing IS modeled — see
-//!     `keyIsCurrent`'s canonical-spelling check).
+//!     sound.
+//!
+//! Non-ASCII keys ARE scoped (Workstream D): `realpath` is the canonicalization
+//! oracle for both ASCII case AND Unicode normalization aliasing (APFS/HFS+
+//! fold NFC/NFD to one on-disk spelling), so a non-ASCII event resolves to a
+//! normal `file`/`subtree`/`gone` verdict just like any other. The one residual
+//! hazard — a corpus key that is a stale normalization/case TWIN of a path the
+//! batch never named, which the ASCII fold in `applyGones`/`applySubtree` can't
+//! equate — is swept separately by the session's non-ASCII key re-verification
+//! (`keyIsCurrent` over the small set of keys carrying a byte ≥ 0x80), so this
+//! resolver models only the direct, canonicalizable verdicts.
 //!
 //! `.git` INTERNAL churn (`.git/index`, objects, refs — the `git status`
 //! heartbeat of a live repo) resolves to `.skip`: those paths are never walked
@@ -94,7 +101,6 @@ pub const Delta = struct {
         const canon = realpathAlloc(self.a, abs) orelse abs;
         const rel = self.keyFor(canon, false) orelse return .needs_full;
         if (rel.len == 0) return .needs_full; // the walk root itself
-        for (rel) |b| if (b >= 0x80) return .needs_full; // Unicode aliasing unmodeled
         switch (classify(rel)) {
             .semantics => return .needs_full,
             .noise => return .skip,
@@ -223,7 +229,6 @@ pub const Delta = struct {
     /// differs from the canonical key, the caller tombstones the raw spelling
     /// unless it is still a current member (`keyIsCurrent`).
     pub fn rawKey(self: *Delta, abs: []const u8) ?[]const u8 {
-        for (abs) |b| if (b >= 0x80) return null;
         return self.keyFor(abs, true);
     }
 

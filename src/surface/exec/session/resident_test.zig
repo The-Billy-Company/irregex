@@ -11,6 +11,7 @@
 //! one. Assertions pin the expected shape, not a self-run of the engine.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const resident = @import("resident.zig");
 const request = @import("request.zig");
 const Dir = std.Io.Dir;
@@ -972,5 +973,292 @@ test "resident: -P serves the PCRE2 engine warm on every answer face" {
         // With -w only the word-bounded span survives.
         const worded = try queryFiles(&session, q.allocator(), .{ .pattern = "bar(?=!)", .mode = .files, .pcre = true, .word = true });
         try expectFileSet(&tree, worded, &.{"w1.txt"});
+    }
+}
+
+// ── concurrency (ADR-352 rung 2.5 Workstream A2): the reader/writer session ──
+//
+// The RwLock discipline promises two things the single-thread daemon never
+// had to prove: (1) many answer faces may read the immutable mirror+overlay AT
+// ONCE without a torn or wrong answer, and (2) a reconcile writer racing those
+// readers (the drop-to-write / double-checked-upgrade / drop-to-read dance in
+// `beginRead`) never corrupts an in-flight answer. Both assert PARITY with the
+// serial answer — the exact set/count a single-threaded replay produces — so a
+// data race that flipped a bit would surface as a wrong count, not just a
+// sanitizer note.
+
+test "resident: concurrent readers on the clean fast path all answer with serial parity" {
+    if (builtin.single_threaded) return;
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var fixture = std.heap.ArenaAllocator.init(gpa);
+    defer fixture.deinit();
+
+    var tree = try Tree.init(fixture.allocator(), io, "concurrent_read", @intFromPtr(&threaded));
+    defer tree.deinit();
+    try tree.write("a.txt", "alpha\nneedle one\n"); // 1 matching line
+    try tree.write("b.txt", "needle two\nneedle three\n"); // 2
+    try tree.write("c.txt", "no match here\n"); // 0
+    try tree.write("d.txt", "needle four\n"); // 1
+
+    var session = try ResidentSession.init(gpa, io, &.{tree.root});
+    defer session.deinit();
+
+    // Arm the watcher and run one warm-up query so the seqlock publishes CLEAN
+    // over the quiescent tree: every subsequent query then takes `beginRead`'s
+    // shared-lock fast path (no reconcile, no write lock), so the N readers
+    // genuinely OVERLAP on the read lock — the concurrency this workstream buys.
+    session.armWatcher();
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        _ = try session.query(q.allocator(), .{ .pattern = "needle", .mode = .files, .fixed = true });
+    }
+    try std.testing.expect(session.seqlock.skip()); // fast path is open
+
+    const Reader = struct {
+        session: *ResidentSession,
+        gpa: std.mem.Allocator,
+        iters: usize,
+        failed: bool = false,
+
+        fn run(self: *@This()) void {
+            var i: usize = 0;
+            while (i < self.iters) : (i += 1) {
+                var q = std.heap.ArenaAllocator.init(self.gpa);
+                defer q.deinit();
+                const a = q.allocator();
+                // files: exactly {a,b,d}; count: 1+2+0+1 = 4 matching lines;
+                // lines: renders and matches. Any torn read breaks one of these.
+                const fr = self.session.query(a, .{ .pattern = "needle", .mode = .files, .fixed = true }) catch {
+                    self.failed = true;
+                    return;
+                };
+                if (fr.files.len != 3) {
+                    self.failed = true;
+                    return;
+                }
+                const cr = self.session.query(a, .{ .pattern = "needle", .mode = .count, .fixed = true }) catch {
+                    self.failed = true;
+                    return;
+                };
+                if (cr.count != 4) {
+                    self.failed = true;
+                    return;
+                }
+                const ln = self.session.queryLines(a, .{ .pattern = "needle", .mode = .lines, .fixed = true }) catch {
+                    self.failed = true;
+                    return;
+                };
+                if (!ln.matched) {
+                    self.failed = true;
+                    return;
+                }
+            }
+        }
+    };
+
+    const n = 8;
+    var readers: [n]Reader = undefined;
+    for (&readers) |*r| r.* = .{ .session = &session, .gpa = gpa, .iters = 300 };
+    var threads: [n]std.Thread = undefined;
+    for (&threads, &readers) |*t, *r| t.* = try std.Thread.spawn(.{}, Reader.run, .{r});
+    for (threads) |t| t.join();
+    for (readers) |r| try std.testing.expect(!r.failed);
+}
+
+test "resident: a churning writer never corrupts a concurrent reader's answer" {
+    if (builtin.single_threaded) return;
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var fixture = std.heap.ArenaAllocator.init(gpa);
+    defer fixture.deinit();
+
+    var tree = try Tree.init(fixture.allocator(), io, "concurrent_churn", @intFromPtr(&threaded));
+    defer tree.deinit();
+    // Stable set: three files that ALWAYS match `NEEDLE` and are never touched.
+    try tree.write("stable/s0.txt", "NEEDLE\n");
+    try tree.write("stable/s1.txt", "NEEDLE\n");
+    try tree.write("stable/s2.txt", "NEEDLE\n");
+    // Churn set: pre-created so the writer only REWRITES them (no create/delete
+    // that could error the walk). Their filler content never contains NEEDLE,
+    // so the `NEEDLE` files-mode answer is invariant under any amount of churn.
+    try tree.write("churn/c0.txt", "filler\n");
+    try tree.write("churn/c1.txt", "filler\n");
+    const churn = [_][]const u8{ try tree.abs("churn/c0.txt"), try tree.abs("churn/c1.txt") };
+
+    var session = try ResidentSession.init(gpa, io, &.{tree.root});
+    defer session.deinit();
+    // No watcher: every query reconciles (full walk), so readers exercise the
+    // drop-to-write / reconcile / drop-to-read path repeatedly while the writer
+    // mutates the tree underneath them — the write path under concurrency.
+
+    var stop = std.atomic.Value(bool).init(false);
+
+    const Writer = struct {
+        io: std.Io,
+        paths: []const []const u8,
+        stop: *std.atomic.Value(bool),
+
+        fn run(self: *@This()) void {
+            var buf: [64]u8 = undefined;
+            var n: usize = 0;
+            while (!self.stop.load(.monotonic)) : (n +%= 1) {
+                const body = std.fmt.bufPrint(&buf, "filler {d}\n", .{n}) catch continue;
+                Dir.cwd().writeFile(self.io, .{ .sub_path = self.paths[n % self.paths.len], .data = body }) catch {};
+            }
+        }
+    };
+
+    const Reader = struct {
+        session: *ResidentSession,
+        gpa: std.mem.Allocator,
+        iters: usize,
+        failed: bool = false,
+
+        fn run(self: *@This()) void {
+            var i: usize = 0;
+            while (i < self.iters) : (i += 1) {
+                var q = std.heap.ArenaAllocator.init(self.gpa);
+                defer q.deinit();
+                const fr = self.session.query(q.allocator(), .{ .pattern = "NEEDLE", .mode = .files, .fixed = true }) catch |e| {
+                    // Heavy churn can momentarily race the walk into a decline
+                    // (`error.Stale`) — the client would answer cold. Sound, not
+                    // a corruption; only a WRONG set fails the test.
+                    if (e == error.Stale) continue;
+                    self.failed = true;
+                    return;
+                };
+                if (fr.files.len != 3) {
+                    self.failed = true;
+                    return;
+                }
+            }
+        }
+    };
+
+    var writer = Writer{ .io = io, .paths = &churn, .stop = &stop };
+    const wt = try std.Thread.spawn(.{}, Writer.run, .{&writer});
+
+    const n = 6;
+    var readers: [n]Reader = undefined;
+    for (&readers) |*r| r.* = .{ .session = &session, .gpa = gpa, .iters = 250 };
+    var threads: [n]std.Thread = undefined;
+    for (&threads, &readers) |*t, *r| t.* = try std.Thread.spawn(.{}, Reader.run, .{r});
+    for (threads) |t| t.join();
+    stop.store(true, .monotonic);
+    wt.join();
+    for (readers) |r| try std.testing.expect(!r.failed);
+}
+
+// ── the Extra gap: `-t`/`-g` un-hide/un-ignore parity (serial.zig `Extra`) ──
+//
+// The default walk drops hidden dotfiles and gitignored leaves, so the warm
+// mirror cannot hold them — yet a `-t`/`-g` query un-hides/un-ignores exactly
+// those files in cold/rg. The session records the reachable file-level skips as
+// `extras` and DECLINES (→ certified cold) any filtered query that would surface
+// one, restoring the flagship "index changes speed, never results" claim. These
+// prove the decline fires when (and only when) it must.
+
+test "resident: a -t query declines when the type would un-hide a hidden file" {
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var fixture = std.heap.ArenaAllocator.init(gpa);
+    defer fixture.deinit();
+
+    var tree = try Tree.init(fixture.allocator(), io, "extra_hidden", @intFromPtr(&threaded));
+    defer tree.deinit();
+    try tree.write("keep.zig", "const needle = 1;\n"); // walked normally
+    try tree.write(".hidden.zig", "hidden needle\n"); // file-level dotfile skip → an Extra
+
+    var session = try ResidentSession.init(gpa, io, &.{tree.root});
+    defer session.deinit();
+
+    var q = std.heap.ArenaAllocator.init(gpa);
+    defer q.deinit();
+    // `-t zig` (its glob is `*.zig`) un-hides `.hidden.zig`, which the mirror
+    // lacks — the warm path must refuse and let the client answer cold.
+    try std.testing.expectError(error.Stale, session.query(q.allocator(), .{
+        .pattern = "needle",
+        .mode = .files,
+        .fixed = true,
+        .filter = .{ .exts = &.{"*.zig"} },
+    }));
+}
+
+test "resident: a -t query stays warm when no extra matches the type (no over-decline)" {
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var fixture = std.heap.ArenaAllocator.init(gpa);
+    defer fixture.deinit();
+
+    var tree = try Tree.init(fixture.allocator(), io, "extra_precise", @intFromPtr(&threaded));
+    defer tree.deinit();
+    try tree.write("keep.zig", "const needle = 1;\n");
+    try tree.write(".notes.md", "hidden needle\n"); // a hidden Extra, but NOT a .zig
+
+    var session = try ResidentSession.init(gpa, io, &.{tree.root});
+    defer session.deinit();
+
+    // `-t zig` cannot surface `.notes.md`, so the query stays warm and returns
+    // the real set — the decline is exact, never a blanket cold-fallback for `-t`.
+    var q = std.heap.ArenaAllocator.init(gpa);
+    defer q.deinit();
+    const files = try queryFiles(&session, q.allocator(), .{
+        .pattern = "needle",
+        .mode = .files,
+        .fixed = true,
+        .filter = .{ .exts = &.{"*.zig"} },
+    });
+    try expectFileSet(&tree, files, &.{"keep.zig"});
+}
+
+test "resident: -g un-ignores (declines) but -t never un-ignores (stays warm)" {
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var fixture = std.heap.ArenaAllocator.init(gpa);
+    defer fixture.deinit();
+
+    var tree = try Tree.init(fixture.allocator(), io, "extra_ignore", @intFromPtr(&threaded));
+    defer tree.deinit();
+    try tree.write("keep.zig", "const needle = 1;\n");
+    try tree.write("secret.zig", "ignored needle\n");
+    try tree.write(".ignore", "secret.zig\n"); // gitignore-dialect, honored without git
+
+    var session = try ResidentSession.init(gpa, io, &.{tree.root});
+    defer session.deinit();
+
+    // `-g '*.zig'` un-ignores `secret.zig` (mirror lacks it) → decline.
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        try std.testing.expectError(error.Stale, session.query(q.allocator(), .{
+            .pattern = "needle",
+            .mode = .files,
+            .fixed = true,
+            .filter = .{ .includes = &.{"*.zig"} },
+        }));
+    }
+    // `-t zig` never un-ignores, so the warm answer (only `keep.zig`) matches cold.
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        const files = try queryFiles(&session, q.allocator(), .{
+            .pattern = "needle",
+            .mode = .files,
+            .fixed = true,
+            .filter = .{ .exts = &.{"*.zig"} },
+        });
+        try expectFileSet(&tree, files, &.{"keep.zig"});
     }
 }

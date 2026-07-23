@@ -88,11 +88,14 @@ test "Watcher.start/stop is crash-free, arms where a backend exists, fail-closed
     // macOS FSEvents arms here (the /tmp fixture is a watchable subtree), which
     // is the whole point of the backend — prove the stream actually came up.
     // Linux inotify arming is env-dependent (the runner's watch limits), so only
-    // require it not to crash. Any other target has no backend and must stay
-    // unarmed so every query reconciles — soundness never rests on the watcher.
+    // require it not to crash; but WHEN it arms, it must arm EXACT — /tmp is a
+    // case-sensitive ext4/tmpfs tree, so Workstream C's exact scoped path is
+    // live (a regression that dropped Linux back to coarse would flip this).
+    // Any other target has no backend and must stay unarmed so every query
+    // reconciles — soundness never rests on the watcher.
     switch (builtin.os.tag) {
         .macos => try std.testing.expect(session.seqlock.active),
-        .linux => {},
+        .linux => if (session.seqlock.active) try std.testing.expect(session.dirty_log.exact),
         else => try std.testing.expect(!session.seqlock.active),
     }
 

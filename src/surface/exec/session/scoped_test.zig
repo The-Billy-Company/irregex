@@ -23,6 +23,7 @@
 //!     walk restores truth even for mutations the log never heard about.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const resident = @import("resident.zig");
 const truth = @import("truth.zig");
 const Dir = std.Io.Dir;
@@ -145,7 +146,7 @@ test "scoped: exact add/modify/delete answers match the oracle WITHOUT a full wa
     var session = try ResidentSession.init(gpa, io, &.{corpus.root});
     defer session.deinit();
     try bootExact(&session, &corpus, gpa);
-    const full0 = session.full_reconciles;
+    const full0 = session.full_reconciles.load(.monotonic);
 
     // Modify (content edit: the dir's mtime does NOT change — the classic trap
     // a dir-mtime pruner falls into; the per-file note must carry it).
@@ -173,8 +174,8 @@ test "scoped: exact add/modify/delete answers match the oracle WITHOUT a full wa
 
     // Every mutation above must have reconciled SCOPED: the full-walk counter
     // may not have moved, and the scoped counter must cover all four bursts.
-    try std.testing.expectEqual(full0, session.full_reconciles);
-    try std.testing.expect(session.scoped_reconciles >= 4);
+    try std.testing.expectEqual(full0, session.full_reconciles.load(.monotonic));
+    try std.testing.expect(session.scoped_reconciles.load(.monotonic) >= 4);
 }
 
 test "scoped: a directory event folds in its whole admitted subtree, create and destroy" {
@@ -193,7 +194,7 @@ test "scoped: a directory event folds in its whole admitted subtree, create and 
     var session = try ResidentSession.init(gpa, io, &.{corpus.root});
     defer session.deinit();
     try bootExact(&session, &corpus, gpa);
-    const full0 = session.full_reconciles;
+    const full0 = session.full_reconciles.load(.monotonic);
 
     // A new nested subtree, noted ONLY by its topmost directory (FSEvents may
     // coalesce the children into the ancestor's event).
@@ -208,8 +209,8 @@ test "scoped: a directory event folds in its whole admitted subtree, create and 
     fire(&session, &.{try corpus.event("sub")});
     try assertMatchesOracle(&session, &corpus, gpa, "needle");
 
-    try std.testing.expectEqual(full0, session.full_reconciles);
-    try std.testing.expect(session.scoped_reconciles >= 2);
+    try std.testing.expectEqual(full0, session.full_reconciles.load(.monotonic));
+    try std.testing.expect(session.scoped_reconciles.load(.monotonic) >= 2);
 }
 
 test "scoped: an ignore-source edit refuses the scope and the full walk restores truth" {
@@ -229,7 +230,7 @@ test "scoped: an ignore-source edit refuses the scope and the full walk restores
     var session = try ResidentSession.init(gpa, io, &.{corpus.root});
     defer session.deinit();
     try bootExact(&session, &corpus, gpa);
-    const full0 = session.full_reconciles;
+    const full0 = session.full_reconciles.load(.monotonic);
 
     // Writing `.gitignore` flips the admission verdict of a file the log never
     // noted (`drop.txt`) — only the full walk is sound, and the session must
@@ -240,7 +241,7 @@ test "scoped: an ignore-source edit refuses the scope and the full walk restores
     corpus.dropLive("drop.txt"); // now ignored: oracle must not count it
     fire(&session, &.{try corpus.event(".gitignore")});
     try assertMatchesOracle(&session, &corpus, gpa, "needle");
-    try std.testing.expect(session.full_reconciles > full0);
+    try std.testing.expect(session.full_reconciles.load(.monotonic) > full0);
 
     // And deleting it un-ignores: same refusal, opposite direction.
     try advanceClock(io);
@@ -274,9 +275,9 @@ test "scoped: doubt, overflow, and a non-exact backend all force the covering fu
     try corpus.write("b.txt", "a needle sneaks in\n");
     session.dirty_log.noteDoubt();
     session.markDirty();
-    const full_before_doubt = session.full_reconciles;
+    const full_before_doubt = session.full_reconciles.load(.monotonic);
     try assertMatchesOracle(&session, &corpus, gpa, "needle");
-    try std.testing.expect(session.full_reconciles > full_before_doubt);
+    try std.testing.expect(session.full_reconciles.load(.monotonic) > full_before_doubt);
 
     // 2. Overflow: shrink the bound and note more distinct paths than fit; the
     //    log must degrade to doubt, and the UN-noted mutation still surfaces.
@@ -287,9 +288,9 @@ test "scoped: doubt, overflow, and a non-exact backend all force the covering fu
     session.dirty_log.note(try corpus.event("b.txt"));
     session.dirty_log.note(try corpus.event("x.txt")); // over the bound → doubt
     session.markDirty();
-    const full_before_ovf = session.full_reconciles;
+    const full_before_ovf = session.full_reconciles.load(.monotonic);
     try assertMatchesOracle(&session, &corpus, gpa, "needle");
-    try std.testing.expect(session.full_reconciles > full_before_ovf);
+    try std.testing.expect(session.full_reconciles.load(.monotonic) > full_before_ovf);
     session.dirty_log.cap = 4096;
 
     // 3. A non-exact backend (Linux inotify shape): dirty bumps with NO note
@@ -301,10 +302,10 @@ test "scoped: doubt, overflow, and a non-exact backend all force the covering fu
     try advanceClock(io);
     try corpus.write("d.txt", "needle four\n");
     coarse.markDirty();
-    const full_before = coarse.full_reconciles;
+    const full_before = coarse.full_reconciles.load(.monotonic);
     try assertMatchesOracle(&coarse, &corpus, gpa, "needle");
-    try std.testing.expect(coarse.full_reconciles > full_before);
-    try std.testing.expectEqual(@as(u64, 0), coarse.scoped_reconciles);
+    try std.testing.expect(coarse.full_reconciles.load(.monotonic) > full_before);
+    try std.testing.expectEqual(@as(u64, 0), coarse.scoped_reconciles.load(.monotonic));
 }
 
 test "scoped: a poisoned watcher reconciles every query and never trusts the scope" {
@@ -330,9 +331,9 @@ test "scoped: a poisoned watcher reconciles every query and never trusts the sco
     session.markDoubtForever();
     try advanceClock(io);
     try corpus.write("ghost.txt", "needle unseen by any event\n");
-    const scoped0 = session.scoped_reconciles;
+    const scoped0 = session.scoped_reconciles.load(.monotonic);
     try assertMatchesOracle(&session, &corpus, gpa, "needle");
-    try std.testing.expectEqual(scoped0, session.scoped_reconciles);
+    try std.testing.expectEqual(scoped0, session.scoped_reconciles.load(.monotonic));
 
     // Even a fully-noted exact batch may not re-enable scoping: poison is
     // permanent (the backend already proved it can lie by omission).
@@ -340,7 +341,7 @@ test "scoped: a poisoned watcher reconciles every query and never trusts the sco
     try corpus.write("late.txt", "needle late\n");
     fire(&session, &.{try corpus.event("late.txt")});
     try assertMatchesOracle(&session, &corpus, gpa, "needle");
-    try std.testing.expectEqual(scoped0, session.scoped_reconciles);
+    try std.testing.expectEqual(scoped0, session.scoped_reconciles.load(.monotonic));
 }
 
 test "scoped: write racing the scoped reconcile is re-read, never lost" {
@@ -371,4 +372,124 @@ test "scoped: write racing the scoped reconcile is re-read, never lost" {
         fire(&session, &.{try corpus.event("hot.txt")});
         try assertMatchesOracle(&session, &corpus, gpa, try std.fmt.allocPrint(fa, "needle v{d}", .{v}));
     }
+}
+
+// ── Workstream D: non-ASCII paths scope instead of forcing the full walk ──
+//
+// These live on a case-INsensitive filesystem (macOS APFS/HFS+), the only place
+// the Unicode aliasing the non-ASCII sweep guards against exists. Each renames a
+// non-ASCII corpus key to an ALIASING spelling the fs treats as the same file,
+// delivers ONLY the new (current) spelling — so the raw-key rename detector
+// can't see the stale twin (raw == canon) and the closing `sweepNonAscii` is the
+// sole line of defense — then asserts the answer stays oracle-exact AND the pass
+// stayed SCOPED (a `.needs_full` refusal would make the whole workstream vacuous).
+// A skip guards the rare case-sensitive volume where the twin never aliases.
+
+/// True on a case-insensitive fs: after a rename, the OLD non-ASCII spelling
+/// must still resolve to the (renamed) file. When it doesn't, the twin never
+/// aliased and the sweep scenario can't be staged — the caller skips.
+fn twinAliases(corpus: *Corpus, old_rel: []const u8) bool {
+    _ = Dir.cwd().statFile(corpus.io, corpus.abs(old_rel) catch return false, .{}) catch return false;
+    return true;
+}
+
+/// Rename `old_rel` → `new_rel` (an aliasing non-ASCII spelling), deliver only
+/// the current spelling as an exact burst, and assert the stale twin was swept
+/// out scoped. Skips where the twin doesn't alias (case-sensitive volume).
+fn expectTwinSwept(session: *ResidentSession, corpus: *Corpus, gpa: std.mem.Allocator, io: std.Io, fa: std.mem.Allocator, old_rel: []const u8, new_rel: []const u8) !void {
+    const full0 = session.full_reconciles.load(.monotonic);
+    const scoped0 = session.scoped_reconciles.load(.monotonic);
+    try advanceClock(io);
+    try Dir.cwd().rename(try corpus.abs(old_rel), Dir.cwd(), try corpus.abs(new_rel), io);
+    if (!twinAliases(corpus, old_rel)) return error.SkipZigTest;
+    corpus.dropLive(old_rel);
+    try corpus.live.append(fa, try fa.dupe(u8, new_rel));
+
+    fire(session, &.{try corpus.event(new_rel)});
+    try assertMatchesOracle(session, corpus, gpa, "needle");
+    try std.testing.expectEqual(full0, session.full_reconciles.load(.monotonic));
+    try std.testing.expect(session.scoped_reconciles.load(.monotonic) > scoped0);
+}
+
+test "scoped: a non-ASCII case-rename sweeps the stale twin without a full walk" {
+    if (comptime builtin.os.tag != .macos) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var fixture = std.heap.ArenaAllocator.init(gpa);
+    defer fixture.deinit();
+    const fa = fixture.allocator();
+
+    var corpus = try Corpus.init(fa, io, "unicase", @intFromPtr(&threaded));
+    defer corpus.deinit();
+    try corpus.write("caf\u{e9}.txt", "needle accented\n"); // café.txt (lower é, U+00E9)
+    try corpus.write("plain.txt", "needle plain\n");
+
+    var session = try ResidentSession.init(gpa, io, &.{corpus.root});
+    defer session.deinit();
+    try bootExact(&session, &corpus, gpa);
+
+    // café.txt → CAFÉ.txt (É = U+00C9): a Unicode case-rename the ASCII fold
+    // can't equate (é/É are non-ASCII), so only the sweep retires the old key.
+    try expectTwinSwept(&session, &corpus, gpa, io, fa, "caf\u{e9}.txt", "CAF\u{c9}.txt");
+}
+
+test "scoped: an NFC↔NFD normalization twin is swept without a full walk" {
+    if (comptime builtin.os.tag != .macos) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var fixture = std.heap.ArenaAllocator.init(gpa);
+    defer fixture.deinit();
+    const fa = fixture.allocator();
+
+    var corpus = try Corpus.init(fa, io, "uninorm", @intFromPtr(&threaded));
+    defer corpus.deinit();
+    try corpus.write("caf\u{e9}.txt", "needle nfc\n"); // NFC: single é (U+00E9)
+    try corpus.write("plain.txt", "needle plain\n");
+
+    var session = try ResidentSession.init(gpa, io, &.{corpus.root});
+    defer session.deinit();
+    try bootExact(&session, &corpus, gpa);
+
+    // Re-normalize café.txt to NFD (e + combining acute U+0301): a normalization
+    // twin APFS aliases but neither byte- nor ASCII-fold matching can equate.
+    try expectTwinSwept(&session, &corpus, gpa, io, fa, "caf\u{e9}.txt", "cafe\u{301}.txt");
+}
+
+test "scoped: delete-then-recreate under another normalization leaves no ghost" {
+    if (comptime builtin.os.tag != .macos) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var fixture = std.heap.ArenaAllocator.init(gpa);
+    defer fixture.deinit();
+    const fa = fixture.allocator();
+
+    var corpus = try Corpus.init(fa, io, "unighost", @intFromPtr(&threaded));
+    defer corpus.deinit();
+    try corpus.write("r\u{e9}sum\u{e9}.md", "needle before\n"); // résumé.md, NFC
+    try corpus.write("plain.txt", "needle plain\n");
+
+    var session = try ResidentSession.init(gpa, io, &.{corpus.root});
+    defer session.deinit();
+    try bootExact(&session, &corpus, gpa);
+    const full0 = session.full_reconciles.load(.monotonic);
+    const scoped0 = session.scoped_reconciles.load(.monotonic);
+
+    // Physically delete the NFC file and recreate it in NFD with new content.
+    // The fresh NFD spelling is what the exact burst carries; the stale NFC key
+    // must be swept, not double-counted as a ghost sibling.
+    try advanceClock(io);
+    try corpus.remove("r\u{e9}sum\u{e9}.md"); // NFC gone from disk + ledger
+    try corpus.write("re\u{301}sume\u{301}.md", "needle after\n"); // NFD twin
+    if (!twinAliases(&corpus, "r\u{e9}sum\u{e9}.md")) return error.SkipZigTest;
+
+    fire(&session, &.{try corpus.event("re\u{301}sume\u{301}.md")});
+    try assertMatchesOracle(&session, &corpus, gpa, "needle");
+    try std.testing.expectEqual(full0, session.full_reconciles.load(.monotonic));
+    try std.testing.expect(session.scoped_reconciles.load(.monotonic) > scoped0);
 }

@@ -10,10 +10,11 @@
 //! Fail-closed by construction, in three independent ways:
 //!
 //!   1. `exact` is armed only by a backend that promises every `markDirty` is
-//!      preceded by a `note`/`noteDoubt` for the same event (macOS FSEvents
-//!      with per-file events today). A coarse backend (Linux inotify) never
-//!      arms it, so its drains always force the full walk — exactly today's
-//!      behavior.
+//!      preceded by a `note`/`noteDoubt` for the same event — macOS FSEvents
+//!      (per-file events) and Linux inotify over case-sensitive roots both do.
+//!      A backend that can't make that promise (a casefolded Linux root, an
+//!      unsupported target) never arms it, so its drains always force the full
+//!      walk — the fail-closed baseline.
 //!   2. The set is BOUNDED (`cap` distinct paths). Overflow, or any allocation
 //!      failure while noting, raises `doubt` — the drain then reports an
 //!      incomplete set and the reconcile falls back to the full walk.

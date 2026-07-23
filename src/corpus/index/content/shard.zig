@@ -124,7 +124,13 @@ pub const View = struct {
 /// anchor — the same rejections `treemap.load`/`fresh.readAnchor` make). The
 /// caller loses only the shard read tier, never correctness.
 pub fn load(gpa: std.mem.Allocator, io: std.Io) ?View {
-    const map = persist.mmapFile(io, shardFile()) catch return null;
+    return loadFrom(gpa, io, shardFile());
+}
+
+/// `load` from an explicit shard path — the dependency-injected seam so a
+/// caller (or a test) can bind a shard outside the fixed artifact directory.
+pub fn loadFrom(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ?View {
+    const map = persist.mmapFile(io, path) catch return null;
     var v = decode(gpa, map) catch {
         std.posix.munmap(map);
         return null;
@@ -174,6 +180,12 @@ fn decode(gpa: std.mem.Allocator, map: persist.Mapping) !View {
 /// error, losing only this tier. A `.` prefix on a path is NOT stripped here —
 /// the query keys with `stripDot(rel)`, matching the trigram pair's own table.
 pub fn build(gpa: std.mem.Allocator, io: std.Io, docs: []const []const u8, paths: []const []const u8, anchor_ns: i128) !void {
+    return buildAt(gpa, io, shardFile(), docs, paths, anchor_ns);
+}
+
+/// `build` to an explicit shard path — the write-side twin of `loadFrom`, so a
+/// test can mint a shard outside the fixed artifact directory.
+pub fn buildAt(gpa: std.mem.Allocator, io: std.Io, path: []const u8, docs: []const []const u8, paths: []const []const u8, anchor_ns: i128) !void {
     std.debug.assert(docs.len == paths.len);
     if (docs.len == 0 or docs.len > std.math.maxInt(u32)) return;
 
@@ -215,7 +227,7 @@ pub fn build(gpa: std.mem.Allocator, io: std.Io, docs: []const []const u8, paths
     }
     for (docs) |d| blob.appendSliceAssumeCapacity(d);
 
-    try persist.writeAtomic(io, shardFile(), blob.items);
+    try persist.writeAtomic(io, path, blob.items);
 }
 
 // ─────────────────────────── tests ───────────────────────────
