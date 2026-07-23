@@ -31,7 +31,6 @@ const oom = paths.allocFailure;
 /// richer argv state through `from`; corpus/index consumers use the defaults.
 pub const Options = struct {
     hidden: bool = false,
-    sorted: bool = false,
     no_ignore: bool = false,
     no_ignore_vcs: bool = false,
     no_ignore_dot: bool = false,
@@ -46,7 +45,6 @@ pub const Options = struct {
     pub fn from(o: anytype) Options {
         return .{
             .hidden = o.hidden,
-            .sorted = o.sorted,
             .no_ignore = o.no_ignore,
             .no_ignore_vcs = o.no_ignore_vcs,
             .no_ignore_dot = o.no_ignore_dot,
@@ -68,7 +66,7 @@ pub const Options = struct {
 /// is already ascending, so `decide` just takes the last matching rule's verdict.
 /// `pub` (with `parseRuleLine`/`ruleMatch` below) so the parallel pipeline can
 /// build immutable per-directory rule chains out of the same parse + match core.
-pub const Rule = struct { glob: []const u8, base: []const u8, negated: bool, anchored: bool, dir_only: bool, reanchor_multi_root: bool = false };
+pub const Rule = struct { glob: []const u8, base: []const u8, negated: bool, anchored: bool, dir_only: bool };
 
 /// Parse one gitignore-dialect line into a `Rule` (comments/blank lines → null).
 /// The standalone core of `Ignore.addLine`: `base` anchors the rule to the
@@ -117,7 +115,7 @@ pub fn parseRuleLine(raw: []const u8, base: []const u8, strip: []const u8) ?Rule
 /// method drew from `self` — explicit-root depth/re-anchoring and
 /// case-insensitive matching (`a` backs the lowercase copies; only touched when
 /// `ci` is set). Thread-safe: reads only its arguments.
-pub fn ruleMatch(a: std.mem.Allocator, ci: bool, root_depth: usize, reanchor_root: bool, r: Rule, rel_in: []const u8, is_dir: bool) bool {
+pub fn ruleMatch(a: std.mem.Allocator, ci: bool, root_depth: usize, r: Rule, rel_in: []const u8, is_dir: bool) bool {
     const rel = stripDot(rel_in); // a `./root` positional prefixes every path
     var sub = rel;
     const base = stripDot(r.base);
@@ -129,18 +127,15 @@ pub fn ruleMatch(a: std.mem.Allocator, ci: bool, root_depth: usize, reanchor_roo
     // depth so a rule can't fire against the root's own path (ripgrep
     // exempts a depth-0/root entry from every ignore check; see
     // `scopeToRoot`'s doc comment) while its genuine descendants (deeper
-    // than the root) are still filtered normally.
-    var floor: usize = if (base.len == 0) root_depth else 0;
+    // than the root) are still filtered normally. Multiple explicit roots
+    // sharing a common ancestor evaluate that ancestor's rules against the
+    // same CWD-relative path for EVERY root (rg 15.2's #3320/#3376 fix — the
+    // parent matcher is keyed by absolute base, so it is order-independent),
+    // which is exactly this single, un-reanchored path.
+    const floor: usize = if (base.len == 0) root_depth else 0;
     if (base.len != 0) {
         if (rel.len <= base.len or !std.mem.startsWith(u8, rel, base) or rel[base.len] != '/') return false;
         sub = rel[base.len + 1 ..];
-    } else if (reanchor_root and r.reanchor_multi_root and root_depth != 0 and r.anchored) {
-        // ripgrep builds a separate parent-ignore matcher when argv names
-        // multiple roots. Its anchored CWD rules are therefore evaluated
-        // relative to each root (`scripts/foo` → `foo`), unlike the one-root
-        // walker, which preserves the CWD-relative prefix.
-        sub = stripComponents(rel, root_depth);
-        floor = 0;
     }
     if (sub.len == 0) return false;
     // ENTITY-ONLY matching (git model): a rule is tested against the candidate
@@ -192,11 +187,22 @@ pub const Compiled = struct {
         if (ig.o.ignore_case_insensitive) return null;
         var keys = ig.groups.keyIterator();
         while (keys.next()) |k| if (k.len != 0) return null;
-        var self = Compiled{ .rules = &.{}, .lit = std.StringHashMap(Slot).init(a), .ext = std.StringHashMap(Slot).init(a), .complex = &.{}, .a = a };
-        const bucket = ig.groups.getPtr("") orelse return self;
-        self.rules = bucket.items;
+        const bucket = ig.groups.getPtr("") orelse return empty(a);
+        return compileBase(a, bucket.items);
+    }
+
+    /// The fast tier over a single CWD/ancestor ("" base) rule slice — the reusable
+    /// core of `build`, also driven directly by the serial engine's per-tier
+    /// `Ignore.base_compiled` so its `decideAt` folds the universal "" bucket in
+    /// O(1) probes instead of a glob call per rule per path (ripgrep's globset
+    /// parity on the single-threaded walk). Caller guarantees case-sensitive
+    /// matching (the tier can't fold case) and base == "" rules (entity-only,
+    /// see `matchRank`). `rules` must outlive the returned matcher.
+    pub fn compileBase(a: std.mem.Allocator, rules: []const Rule) Compiled {
+        var self = empty(a);
+        self.rules = rules;
         var cx: std.ArrayList(u32) = .empty;
-        for (bucket.items, 0..) |r, i| {
+        for (rules, 0..) |r, i| {
             const rank: u32 = @intCast(i);
             if (!r.anchored and !hasMeta(r.glob)) {
                 slotPut(&self.lit, r.glob, rank, r.dir_only);
@@ -210,11 +216,15 @@ pub const Compiled = struct {
         return self;
     }
 
+    fn empty(a: std.mem.Allocator) Compiled {
+        return .{ .rules = &.{}, .lit = std.StringHashMap(Slot).init(a), .ext = std.StringHashMap(Slot).init(a), .complex = &.{}, .a = a };
+    }
+
     /// Max rank matching `rel` (stripped, no `./`). Byte-equivalent to folding
     /// the whole bucket through `ruleMatch` (see `decideAt`) — the root-depth
     /// exemption is structural here: every walked entry sits strictly BELOW
     /// its root, so the entry itself is never the exempt root component.
-    pub fn matchRank(self: *const Compiled, rel: []const u8, is_dir: bool, root_depth: usize, reanchor_root: bool) ?u32 {
+    pub fn matchRank(self: *const Compiled, rel: []const u8, is_dir: bool) ?u32 {
         var best: ?u32 = null;
         const base = if (std.mem.lastIndexOfScalar(u8, rel, '/')) |s| rel[s + 1 ..] else rel;
         fold(&best, self.lit.get(base), is_dir);
@@ -230,8 +240,7 @@ pub const Compiled = struct {
             if (best != null and rank <= best.?) break;
             const r = self.rules[rank];
             if (r.dir_only and !is_dir) continue;
-            const anchored_rel = if (reanchor_root and r.reanchor_multi_root and root_depth != 0) stripComponents(rel, root_depth) else rel;
-            const hit = if (r.anchored) gl.globMatch(r.glob, anchored_rel) else gl.globMatch(r.glob, base);
+            const hit = if (r.anchored) gl.globMatch(r.glob, rel) else gl.globMatch(r.glob, base);
             if (hit) {
                 best = rank;
                 break;
@@ -288,10 +297,6 @@ pub const Ignore = struct {
     loaded: std.StringHashMap(void), // dirs whose ignore files were read (dedupe)
     use_git: bool = false,
     use_dot: bool = false,
-    // ripgrep's unsorted parallel walker re-anchors parent ignore rules for each
-    // positional root; its sorted walker and one-root path retain the
-    // CWD-relative prefix. This affects anchored `!path/to/root/...` exceptions.
-    reanchor_root_rules: bool = false,
     // Component-depth of the positional root currently being walked (0 for the
     // implicit whole-CWD walk). ripgrep NEVER ignore-filters a root path named
     // explicitly on argv — only entries strictly BELOW it (see `walk.rs`'s
@@ -302,6 +307,14 @@ pub const Ignore = struct {
     // floor slash-less/anchored matching at this depth to reproduce the same
     // "the root itself is exempt, its subtree is not" boundary.
     explicit_root_depth: usize = 0,
+    // The "" (CWD/ancestor) tier compiled to the globset fast path, or null when
+    // this run can't use it (case-insensitive matching folds no case here). The
+    // "" bucket is FINAL once `init` returns — `loadDir` only ever appends to
+    // per-directory keys — so it is compiled once at construction and read
+    // lock-free thereafter (safe for the parallel `decideAt` fallback, which runs
+    // it from many threads against a frozen `Ignore`). `applyGroup` folds the ""
+    // tier through this instead of a glob call per rule per path.
+    base_compiled: ?Compiled = null,
 
     /// Build the matcher and load the root-level ignore sources (repo `.gitignore`
     /// + `.git/info/exclude`, `.ignore`/`.rgignore`, and every `--ignore-file`).
@@ -309,11 +322,11 @@ pub const Ignore = struct {
     /// probed for its own `.git` so a git repo (or worktree) named as a path arg is
     /// honored, not just CWD.
     pub fn init(a: std.mem.Allocator, io: std.Io, o: Options, roots: []const []const u8) Ignore {
-        var self = Ignore{ .a = a, .io = io, .o = o, .groups = std.StringHashMap(std.ArrayList(Rule)).init(a), .loaded = std.StringHashMap(void).init(a), .reanchor_root_rules = roots.len > 1 and !o.sorted };
+        var self = Ignore{ .a = a, .io = io, .o = o, .groups = std.StringHashMap(std.ArrayList(Rule)).init(a), .loaded = std.StringHashMap(void).init(a) };
         // `--ignore-file` is EXPLICIT user intent: lowest precedence (added first,
         // so an in-tree `.ignore`/`.gitignore` overrides it — rg's f45 rule) and
         // honored even under `-u`/`--no-ignore` (only `--no-ignore-files` drops it).
-        if (!o.no_ignore_files) for (o.ignore_files) |p| self.readFile(p, "", "", false);
+        if (!o.no_ignore_files) for (o.ignore_files) |p| self.readFile(p, "", "");
         if (o.no_ignore) return self; // -u / --no-ignore: honor nothing else on disk
         // Detect the repo by ASCENDING from CWD — ripgrep finds `.git` at any
         // ancestor, not just CWD; the depth bounds how far VCS ignores climb.
@@ -347,6 +360,12 @@ pub const Ignore = struct {
         // descendants. CWD ("" tier) is already loaded above; the root leaf itself
         // is loaded by the walker as it descends; here we fill the strict middle.
         for (roots) |r| self.loadRootAncestors(r);
+        // The "" tier is now complete (every source above targets base ""); compile
+        // it once for `applyGroup`'s O(1) fold. `loadRootAncestors` only touched
+        // per-directory keys, so this slice is stable for the run.
+        if (!o.ignore_case_insensitive) {
+            if (self.groups.getPtr("")) |b| self.base_compiled = Compiled.compileBase(a, b.items);
+        }
         return self;
     }
 
@@ -382,10 +401,10 @@ pub const Ignore = struct {
             // anchored ancestor rule is re-anchored by stripping this prefix.
             const subpath = std.mem.join(self.a, "/", comps.items[comps.items.len - k ..]) catch oom();
             if (self.use_git and git_depth != null and k <= git_depth.?)
-                self.readFile(join(self.a, anc, ".gitignore"), "", subpath, true);
+                self.readFile(join(self.a, anc, ".gitignore"), "", subpath);
             if (self.use_dot) {
-                self.readFile(join(self.a, anc, ".ignore"), "", subpath, false);
-                self.readFile(join(self.a, anc, ".rgignore"), "", subpath, false);
+                self.readFile(join(self.a, anc, ".ignore"), "", subpath);
+                self.readFile(join(self.a, anc, ".rgignore"), "", subpath);
             }
         }
     }
@@ -396,13 +415,13 @@ pub const Ignore = struct {
     /// `resolve_git_commondir`) so a linked worktree honors the shared exclude.
     fn loadGitExclude(self: *Ignore, root: []const u8, base: []const u8) void {
         const git_dir = self.resolveGitDir(root) orelse return;
-        self.readFile(join(self.a, git_dir, "info/exclude"), base, "", true);
+        self.readFile(join(self.a, git_dir, "info/exclude"), base, "");
     }
 
     /// Read git's global excludes file into the CWD tier ("" bucket). The path is
     /// resolved exactly as ripgrep does (see `globalExcludesPath`); it may not
-    /// exist, in which case `readFile` is a no-op. `reanchor_multi_root = true`
-    /// mirrors `.git/info/exclude`: an ancestor-tier source, re-anchored per root.
+    /// exist, in which case `readFile` is a no-op. Like `.git/info/exclude`, it is
+    /// an ancestor-tier source that spans the whole tree from the CWD.
     /// git's global gitignore path (ripgrep parity, `gitconfig_excludes_path`),
     /// reading `$HOME`/`$XDG_CONFIG_HOME` from the process env (stable for the
     /// per-user gist server's lifetime). The env-free resolution is delegated to
@@ -410,7 +429,7 @@ pub const Ignore = struct {
     fn loadGlobalExclude(self: *Ignore) void {
         const xdg = envSpan("XDG_CONFIG_HOME");
         const path = globalExcludesFrom(self.io, self.a, envSpan("HOME"), if (xdg != null and xdg.?.len != 0) xdg else null) orelse return;
-        self.readFile(path, "", "", true);
+        self.readFile(path, "", "");
     }
 
     /// The git common-dir for the repo at `root` (a path openable from CWD), or
@@ -447,10 +466,10 @@ pub const Ignore = struct {
         const gop = self.loaded.getOrPut(rel) catch oom();
         if (gop.found_existing) return;
         gop.key_ptr.* = self.a.dupe(u8, rel) catch oom(); // own the key (rel may be transient)
-        if (self.use_git) self.readFile(join(self.a, disk, ".gitignore"), rel, "", true);
+        if (self.use_git) self.readFile(join(self.a, disk, ".gitignore"), rel, "");
         if (self.use_dot) {
-            self.readFile(join(self.a, disk, ".ignore"), rel, "", false);
-            self.readFile(join(self.a, disk, ".rgignore"), rel, "", false);
+            self.readFile(join(self.a, disk, ".ignore"), rel, "");
+            self.readFile(join(self.a, disk, ".rgignore"), rel, "");
         }
     }
 
@@ -486,8 +505,19 @@ pub const Ignore = struct {
     /// `match` still does its own base/anchor/dir-only work, so feeding it only
     /// ancestor-sourced rules changes which rules are *tried*, never the verdict.
     fn applyGroup(self: *const Ignore, base_key: []const u8, rel: []const u8, is_dir: bool, root_depth: usize, verdict: *?bool) void {
+        // The universal "" tier folds through the compiled globset (one basename
+        // probe + a short complex scan) when available — byte-identical to the
+        // linear fold below (max-rank == last-match-wins), but O(1) per path where
+        // the root `.gitignore`'s many `*.o`/anchored rules would otherwise cost a
+        // glob call each, per path. Per-directory buckets stay linear: each is
+        // small and scoped to its own subtree.
+        if (base_key.len == 0) if (self.base_compiled) |*c| {
+            if (c.matchRank(stripDot(rel), is_dir)) |rank|
+                verdict.* = !c.rules[rank].negated;
+            return;
+        };
         const g = self.groups.getPtr(base_key) orelse return;
-        for (g.items) |r| if (ruleMatch(self.a, self.o.ignore_case_insensitive, root_depth, self.reanchor_root_rules, r, rel, is_dir)) {
+        for (g.items) |r| if (ruleMatch(self.a, self.o.ignore_case_insensitive, root_depth, r, rel, is_dir)) {
             verdict.* = !r.negated;
         };
     }
@@ -543,15 +573,15 @@ pub const Ignore = struct {
     /// Read `path`'s ignore lines, anchoring each to `base`. `strip` (non-empty
     /// only for a parent-directory file) is CWD's path relative to that ancestor;
     /// it re-anchors the ancestor's anchored rules onto the search subtree.
-    fn readFile(self: *Ignore, path: []const u8, base: []const u8, strip: []const u8, reanchor_multi_root: bool) void {
+    fn readFile(self: *Ignore, path: []const u8, base: []const u8, strip: []const u8) void {
         const buf = readOpt(self.io, self.a, path) orelse return;
         var it = std.mem.splitScalar(u8, buf, '\n');
-        while (it.next()) |raw| self.addLine(std.mem.trimEnd(u8, raw, "\r"), base, strip, reanchor_multi_root);
+        while (it.next()) |raw| self.addLine(std.mem.trimEnd(u8, raw, "\r"), base, strip);
     }
 
     /// Parse one gitignore-dialect line into a `Rule` (comments/blank lines drop)
     /// and bucket it by source directory — the container half of `parseRuleLine`.
-    fn addLine(self: *Ignore, raw: []const u8, base: []const u8, strip: []const u8, reanchor_multi_root: bool) void {
+    fn addLine(self: *Ignore, raw: []const u8, base: []const u8, strip: []const u8) void {
         const parsed = parseRuleLine(raw, base, strip) orelse return;
         // Bucket by the source directory (normalized like `ruleMatch` does, so a
         // "." / "./x" base and its rel-side counterpart collapse to the same key).
@@ -563,7 +593,6 @@ pub const Ignore = struct {
         }
         var owned = parsed;
         owned.glob = self.a.dupe(u8, parsed.glob) catch oom();
-        owned.reanchor_multi_root = reanchor_multi_root;
         gop.value_ptr.append(self.a, owned) catch oom();
     }
 };
@@ -588,10 +617,10 @@ pub const IgNode = struct {
 
 /// Fold the chain's rules into `verdict`, parent-first (shallow→deep, so the
 /// deepest matching rule wins — git precedence, same as `decideAt`).
-pub fn applyChain(node: ?*const IgNode, a: std.mem.Allocator, ci: bool, root_depth: usize, reanchor_root: bool, rel: []const u8, is_dir: bool, verdict: *?bool) void {
+pub fn applyChain(node: ?*const IgNode, a: std.mem.Allocator, ci: bool, root_depth: usize, rel: []const u8, is_dir: bool, verdict: *?bool) void {
     const n = node orelse return;
-    applyChain(n.parent, a, ci, root_depth, reanchor_root, rel, is_dir, verdict);
-    for (n.rules) |r| if (ruleMatch(a, ci, root_depth, reanchor_root, r, rel, is_dir)) {
+    applyChain(n.parent, a, ci, root_depth, rel, is_dir, verdict);
+    for (n.rules) |r| if (ruleMatch(a, ci, root_depth, r, rel, is_dir)) {
         verdict.* = !r.negated;
     };
 }
@@ -913,24 +942,26 @@ test "a global-sourced ignore file drives the CWD-tier verdict (loadGlobalExclud
     var ig = Ignore{ .a = a, .io = io, .o = .{}, .groups = std.StringHashMap(std.ArrayList(Rule)).init(a), .loaded = std.StringHashMap(void).init(a) };
     // Exactly what `loadGlobalExclude` does with the resolved path: fold the
     // global file into the "" (CWD/ancestor) tier, lowest precedence.
-    ig.readFile(gi, "", "", true);
+    ig.readFile(gi, "", "");
     try t.expectEqual(@as(?bool, true), ig.decide("app.log", false)); // *.log ignored
     try t.expectEqual(@as(?bool, false), ig.decide("keep.log", false)); // later !keep.log re-includes
     try t.expectEqual(@as(?bool, null), ig.decide("app.txt", false)); // untouched
 }
 
-test "multi-root VCS rules re-anchor without changing one-root semantics" {
+test "anchored ancestor rule matches its full path order-independently (rg 15.2 #3320/#3376)" {
     const t = std.testing;
-    const rule = Rule{ .glob = "scripts/observe/build", .base = "", .negated = true, .anchored = true, .dir_only = true, .reanchor_multi_root = true };
-    try t.expect(ruleMatch(t.allocator, false, 1, false, rule, "scripts/observe/build", true));
-    try t.expect(!ruleMatch(t.allocator, false, 1, true, rule, "scripts/observe/build", true));
+    // An anchored CWD/ancestor-tier rule matches the full CWD-relative path the
+    // same way regardless of how many explicit roots share the ancestor — no
+    // per-root re-anchoring, matching rg 15.2's fixed multi-directory behavior.
+    const rule = Rule{ .glob = "scripts/observe/build", .base = "", .negated = true, .anchored = true, .dir_only = true };
+    try t.expect(ruleMatch(t.allocator, false, 1, rule, "scripts/observe/build", true));
 }
 
-test "compiled matcher preserves multi-root VCS re-anchoring" {
+test "compiled matcher folds the anchored ancestor rule by full path" {
     const t = std.testing;
     const rules = [_]Rule{
         .{ .glob = "build", .base = "", .negated = false, .anchored = false, .dir_only = true },
-        .{ .glob = "scripts/observe/build", .base = "", .negated = true, .anchored = true, .dir_only = true, .reanchor_multi_root = true },
+        .{ .glob = "scripts/observe/build", .base = "", .negated = true, .anchored = true, .dir_only = true },
     };
     var complex = [_]u32{1};
     var compiled = Compiled{ .rules = &rules, .lit = std.StringHashMap(Compiled.Slot).init(t.allocator), .ext = std.StringHashMap(Compiled.Slot).init(t.allocator), .complex = &complex, .a = t.allocator };
@@ -938,6 +969,7 @@ test "compiled matcher preserves multi-root VCS re-anchoring" {
     defer compiled.ext.deinit();
     Compiled.slotPut(&compiled.lit, "build", 0, true);
 
-    try t.expectEqual(@as(?u32, 1), compiled.matchRank("scripts/observe/build", true, 1, false));
-    try t.expectEqual(@as(?u32, 0), compiled.matchRank("scripts/observe/build", true, 1, true));
+    // The anchored rule (rank 1) matches the full path, so its rank wins over
+    // the slash-less `build` (rank 0) — order-independent.
+    try t.expectEqual(@as(?u32, 1), compiled.matchRank("scripts/observe/build", true));
 }

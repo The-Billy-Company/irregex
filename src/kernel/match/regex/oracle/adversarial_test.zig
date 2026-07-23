@@ -1172,7 +1172,7 @@ test "adversarial: rg -o span differential (lazy vs greedy leftmost-first)" {
     var col = Collector.init(a);
     defer col.deinit();
 
-    // Curated lazy/greedy pairs (each byte-verified against rg 15.1.0). The greedy
+    // Curated lazy/greedy pairs (each byte-verified against rg 15.2.0). The greedy
     // twin sits beside each lazy pattern so a priority-swap regression that made
     // lazy behave greedily (or vice-versa) is caught in the SAME run.
     const cases = [_]Case{

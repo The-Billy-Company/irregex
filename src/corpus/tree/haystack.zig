@@ -181,7 +181,8 @@ pub const Walker = struct {
     }
 
     /// Initialize one root while compiling ignore precedence against the full
-    /// invocation's roots. This preserves gist's multi-root re-anchoring.
+    /// invocation's roots, so a shared ancestor's rules apply order-independently
+    /// across every root (rg 15.2's #3320/#3376 multi-directory behavior).
     pub fn initWithRoots(io: std.Io, a: std.mem.Allocator, root_path: []const u8, roots: []const []const u8) !Walker {
         var root = try Dir.cwd().openDir(io, root_path, .{ .iterate = true });
         errdefer root.close(io);

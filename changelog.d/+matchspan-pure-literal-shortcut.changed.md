@@ -14,7 +14,7 @@ earlier occurrence of its own. `-i` folds a literal byte to a non-singleton
 class, so `re.lits` is empty and the shortcut cleanly declines to the Pike VM;
 `-U` disables `re.lits` outright, so multiline is untouched.
 
-Byte-identical to ripgrep — `bench/rgsuite` `run.py` 405/405 (parallel and
+Byte-identical to ripgrep — `bench/rgsuite` `run.py` 409/409 (parallel and
 serial), the differential-fuzz oracle green, and byte-exact `-o`/`--column`/
 `--vimgrep`/`-w`/`--json` spot-checks including the `return|ret` tie-break.
 Measured on a 57 MB single-file corpus (A/B vs the pre-change binary):

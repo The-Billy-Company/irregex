@@ -15,7 +15,7 @@ line's trailing `\r`/terminator maps to that line — the engine still confirms
 each candidate), never a subset, and declines under `-v` (a match LACKS the
 literals) and `--stop-on-nonmatch`, so output stays byte-identical.
 
-Byte-identical to ripgrep — `bench/rgsuite` `run.py` 405/405 (parallel and
+Byte-identical to ripgrep — `bench/rgsuite` `run.py` 409/409 (parallel and
 serial), the `indexOfAnyPos` differential-fuzz oracle green (leftmost-hit vs the
 `std.mem.indexOfPos` minimum over random needle sets/resume offsets), and 49/49
 edge-corpus spot-checks (no-trailing-newline, CRLF, single-line, first/last-line

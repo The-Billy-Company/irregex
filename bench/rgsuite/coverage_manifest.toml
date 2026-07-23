@@ -2,7 +2,7 @@
 #
 # `run.py` replays every mined case it CAN lower to a single argv against live
 # ripgrep and buckets it in `results.json` (PASS / ORDER / FAIL / NA). The rest —
-# and every remaining FAIL — are accounted for here, so the 441 mined obligations
+# and every remaining FAIL — are accounted for here, so the 446 mined obligations
 # have ZERO unexplained gaps. `check_results.py` enforces the accounting: every
 # SKIP is claimed by exactly one `[[companion]]` / `[[boundary]]` / `[[irreplayable]]`
 # entry, every FAIL by exactly one `[[deferred]]` entry, no case is double-credited,
@@ -79,9 +79,13 @@ cases = [ "matching_files_inconsistent_with_count" ]
 reason = "the case creates a file named with invalid UTF-8 (`foo\\xffbar`); the mined spec encodes every path as a UTF-8 JSON string and cannot represent it. gist is byte-oriented and searches such paths (read/grepfile), but no replay is expressible in this format."
 cases = [ "r210" ]
 
+[[irreplayable]]
+reason = "rg 15.2's GIT_CONFIG_GLOBAL/GIT_CONFIG_SYSTEM test (#3275): its determinism rides a `format!`-built config file that embeds a RUN-TIME absolute `core.excludesFile` path plus a `GIT_CONFIG_GLOBAL` env var — neither the config content nor the env is expressible in the self-contained, path-relative mined spec (the miner flags the config `dir.create` unresolved). Doubly out of replay: even fully materialized it is the SAME design boundary as `r3179_global_gitignore_cwd` — global/machine-external git config is state a monorepo locator must not read (its results must not depend on each of ~10 coworkers' personal ~/.config/git/ignore), so gist declines it by design. run.py SKIPs any record whose fixture the miner could not fully build."
+cases = [ "r3275_git_global_config_env" ]
+
 # ─────────────────────────── deferred divergences ───────────────────────────
 #
 # EMPTY — the zero-gap target is reached: every supported-surface case PASSes
-# (405/405), so no divergence remains to defer. `check_results.py` (without
+# (409/409), so no divergence remains to defer. `check_results.py` (without
 # `--allow-fail`) requires this list to stay empty; a NEW `[[deferred]]` entry
 # is only ever a temporary, phase-tracked record of a real, still-open FAIL.

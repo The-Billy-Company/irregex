@@ -878,8 +878,23 @@ fn collectFiles(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, parsed
     // exactly defeating rg's fault-to-first-hit locality. Drop it for the single
     // explicit file (output-neutral: absence yields no match either way); the
     // recursive/multi-file walk keeps it, where it skips whole non-matching files.
-    const read_needle = if (read_list.len == 1 and read_list[0].explicit) null else file_needle;
-    readCandidates(a, gpa, read_list, read_needle, &all, cfg);
+    if (o.files_list) {
+        // --files lists paths, not contents: never fault a body. rg's --files
+        // and the parallel --files path both walk-only, so a `--sort`/`-L`-forced
+        // serial run must be too — else a listing pays a full-corpus read. The
+        // sole metadata need is a size cap: one stat, never an open+read.
+        all.ensureTotalCapacity(a, candidates.items.len) catch oom();
+        for (candidates.items) |c| {
+            if (o.max_filesize != 0) {
+                const st = grepfile.statPath(c.disk) orelse continue;
+                if (st.size > o.max_filesize) continue;
+            }
+            all.appendAssumeCapacity(.{ .path = c.rel, .bytes = "", .explicit = c.explicit, .root = c.root });
+        }
+    } else {
+        const read_needle = if (read_list.len == 1 and read_list[0].explicit) null else file_needle;
+        readCandidates(a, gpa, read_list, read_needle, &all, cfg);
+    }
 
     var files: std.ArrayList(InFile) = .empty;
     files.ensureTotalCapacity(a, all.items.len) catch oom();

@@ -525,7 +525,7 @@ test "matchSpan: greedy quantifiers extend the end maximally" {
 
 // Lazy (non-greedy) quantifiers prefer the FEWEST repetitions — the split
 // PRIORITY flips (exit before body) so the leftmost match ends as early as
-// possible. Every expectation is byte-verified against `rg -o` (ripgrep 15.1.0,
+// possible. Every expectation is byte-verified against `rg -o` (ripgrep 15.2.0,
 // the Rust regex crate default engine, which shares gist's leftmost-first
 // semantics) — see the probe battery in the same-PR proof log.
 test "matchSpan: lazy quantifiers end the match as early as possible" {

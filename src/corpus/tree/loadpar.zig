@@ -267,7 +267,7 @@ fn handleEntry(w: *Worker, a: std.mem.Allocator, dirfd: std.posix.fd_t, task: Di
 /// no `-g`/`-t` whitelist to thread (both false, as `haystack.Walker` passes).
 fn shouldSkip(ig: *const ignore.Ignore, chain: ?*const ignore.IgNode, a: std.mem.Allocator, root_depth: usize, rel: []const u8, is_dir: bool, basename: []const u8) bool {
     var v = ig.decideAt(rel, is_dir, root_depth);
-    ignore.applyChain(chain, a, ig.o.ignore_case_insensitive, root_depth, ig.reanchor_root_rules, rel, is_dir, &v);
+    ignore.applyChain(chain, a, ig.o.ignore_case_insensitive, root_depth, rel, is_dir, &v);
     return ig.skipFromVerdict(v, is_dir, basename, false, false);
 }
 

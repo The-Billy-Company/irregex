@@ -31,7 +31,7 @@ and **mmap'd reads**, plus an NFA-free span path. On a 57 MB single-file corpus
   occurrence (`indexOfAnyPos`) instead of materializing every line of the body
   — an 11× → parity swing on a top-matching 57 MB file.
 
-Byte-identical to ripgrep — `bench/rgsuite/run.py` 405/405 (parallel and
+Byte-identical to ripgrep — `bench/rgsuite/run.py` 409/409 (parallel and
 serial), full Zig unit + differential-fuzz suite green (new `memchr` /
 `lastIndexOfScalar` / `countByte` / `firstNulWide` oracles vs `std.mem`), and
 span-mode spot-checks over `-o`/`-n`/`-b`/`--column`/`--count-matches` including

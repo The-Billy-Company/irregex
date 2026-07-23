@@ -14,7 +14,7 @@ output-identical shaves that compound across a match-dense stream:
   overwhelmingly common all-ASCII line/path/match span.
 
 Byte-identical to ripgrep by construction — `bench/rgsuite` `run.py` stays
-405/405 on both engines, and a `sort -u` set-compare of the normalized record
+409/409 on both engines, and a `sort -u` set-compare of the normalized record
 stream matches `rg --json` across sparse/dense/`-n`/multi-word patterns.
 
 Measured on a 48 MB single-file corpus, gist vs `rg --json` (fresh process,

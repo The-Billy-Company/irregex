@@ -13,7 +13,7 @@ file, where it only re-faulted the body the mode's own scan already reads.
 Output-neutral by construction — index elision only ever ELIDES reads that
 provably can't match, so reading the named file instead changes cost, never
 results (`--files-without-match` still lists a no-match named file either way).
-`bench/rgsuite` `run.py` stays 405/405 on both engines.
+`bench/rgsuite` `run.py` stays 409/409 on both engines.
 
 Measured on a 48 MB single-file corpus (warm page cache, resident daemon off),
 gist vs `rg` — the index-load tax was ~1.5 ms of every explicit-file query:

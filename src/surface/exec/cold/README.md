@@ -16,7 +16,7 @@ searched roots.
 
 One matcher, three orchestration modes under [`engine/`](engine):
 
-- **serial** — the certified control plane (fallbacks, stdin, JSON, stats, exit)
+- **serial** — the certified control plane (fallbacks, stdin, JSON, quiet, exit)
 - **parallel** — fused work-stealing walk+read+match when the flag set allows
 - **ranked** — `--rank` definition-first view (gist's one native shape)
 

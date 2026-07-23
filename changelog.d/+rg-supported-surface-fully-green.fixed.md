@@ -1,5 +1,5 @@
 Closed the last supported-surface divergences between `gist rg` and ripgrep
-15.1.0: the mined differential suite now scores **405/405 = 100%** on _both_
+15.2.0: the mined differential suite now scores **409/409 = 100%** on _both_
 walk engines (parallel and serial), zero FAIL, zero deferred entries.
 
 - **`--include-zero` / `--no-include-zero`** (last-wins) are honored across

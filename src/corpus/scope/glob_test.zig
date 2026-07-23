@@ -202,7 +202,7 @@ test "writeTypeList is byte-identical to rg for representative shared rows" {
     defer arena.deinit();
     var out: std.ArrayList(u8) = .empty;
     try types.writeTypeList(arena.allocator(), &out);
-    // Frozen against `rg --type-list` (ripgrep 15.1.0): these rows are pure
+    // Frozen against `rg --type-list` (ripgrep 15.2.0): these rows are pure
     // parity — irregex adds nothing, so they must match ripgrep verbatim, proving
     // the sort/framing is rg-faithful, not merely "close".
     // Framed with surrounding newlines so a match is a whole line, not a

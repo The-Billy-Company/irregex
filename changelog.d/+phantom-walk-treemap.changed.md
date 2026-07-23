@@ -14,4 +14,4 @@ missing/corrupt/future-dated `tree.map` (or `GIST_NO_PHANTOM=1`) returns the
 walk to its live path byte-identically. Walk-bound shapes moved most: on the
 Billy corpus `-g '*.go'`/`-t go` races went 2.2× → **7.6–7.8×** over ripgrep,
 the whole-matrix span is now 2.3×–16.1× (19/19 wins, floors republished), and
-rgsuite holds 405/405 on both engines.
+rgsuite holds 409/409 on both engines.
