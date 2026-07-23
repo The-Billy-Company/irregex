@@ -117,6 +117,38 @@ fn diskPath(a: std.mem.Allocator, root_path: []const u8, p: []const u8) []const 
 /// only the files WITHIN each root sort (rg hiargs.rs `sort_by_file_name`).
 const Candidate = struct { rel: []const u8, disk: []const u8, explicit: bool = false, root: u32 = 0 };
 
+/// A file the DEFAULT walk skipped at the FILE level — its parent directory was
+/// descended, but the leaf itself was dropped by the hidden-dotfile rule
+/// (`hidden`) or a gitignore verdict (`ignored`). These are EXACTLY the files a
+/// `-t <type>` / `-g <glob>` query un-hides / un-ignores back into the result set
+/// (`ignore.zig::skipFromVerdict`: `-t` un-hides only, `-g` does both), yet the
+/// persisted default corpus — and the resident daemon's mirror — cannot supply
+/// them, since they build from this same hidden/ignore-excluding walk. A file
+/// under a PRUNED hidden/ignored directory never reaches this list, because the
+/// walk stops descending at the directory (rg/gist never un-hide *into* a hidden
+/// or ignored dir — proven in `bench/gates/index_elision_parity.sh`), so it
+/// captures precisely the reachable un-hide/un-ignore candidates and nothing
+/// more. Consumed by the warm session (`session/resident.zig`) to keep
+/// `resident == gist --no-index == rg` for `-t`/`-g`. `rel` is owned by the
+/// caller's walk arena.
+pub const ExtraKind = enum { hidden, ignored };
+pub const Extra = struct { rel: []const u8, kind: ExtraKind };
+
+/// Classify a file the walk just skipped (with default `Opts`, so the skip was
+/// due only to hidden/ignore) into an `Extra`, appending it to `list`. The raw
+/// gitignore verdict (`ignore.decide`) distinguishes an ignored leaf (needs `-g`
+/// to un-ignore) from a hidden dotfile (needs `-t`/`-g` to un-hide); a file that
+/// is neither (should not occur at a skip site under default opts) is dropped.
+fn collectExtra(a: std.mem.Allocator, list: *std.ArrayList(Extra), ig: *const ignore.Ignore, rel: []const u8, basename: []const u8) void {
+    const kind: ExtraKind = if (ig.decide(rel, false) == true)
+        .ignored
+    else if (basename.len > 0 and basename[0] == '.')
+        .hidden
+    else
+        return;
+    list.append(a, .{ .rel = rel, .kind = kind }) catch oom();
+}
+
 /// ripgrep prints a walk error to stderr and lets the run exit 2: a directory
 /// it could not descend is a POTENTIAL false negative that MUST be signaled,
 /// never skipped in silence. Rendering is the shared `grepfile.printWalkError`;
@@ -126,7 +158,7 @@ fn reportWalkError(rel: []const u8, e: anyerror, walk_error: *bool) void {
     walk_error.* = true;
 }
 
-fn walkDir(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix: []const u8, o: Opts, ig: *ignore.Ignore, out: *std.ArrayList(Candidate), walk_error: *bool) void {
+fn walkDir(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix: []const u8, o: Opts, ig: *ignore.Ignore, out: *std.ArrayList(Candidate), walk_error: *bool, extras: ?*std.ArrayList(Extra)) void {
     ig.loadDir(root_path, prefix);
     // `-L`/`--follow` cycle guard: the real (canonicalized) path of every
     // directory currently on this DFS's ancestor chain — ripgrep's own
@@ -140,7 +172,7 @@ fn walkDir(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix: []co
     // --one-file-system: pin the device of the root the walk starts on; the
     // descent below refuses any directory sitting on a different device.
     const root_dev: ?i128 = if (o.one_file_system) deviceOf(root_path) else null;
-    walkDirLinked(a, io, root_path, prefix, o, ig, out, 0, &visited, walk_error, root_dev);
+    walkDirLinked(a, io, root_path, prefix, o, ig, out, 0, &visited, walk_error, root_dev, extras);
 }
 
 /// `-L` symlink-recursion depth cap — defense in depth alongside the realpath
@@ -231,7 +263,7 @@ fn crossesDevice(root_dev: ?i128, path: []const u8) bool {
 /// actual reads happen afterward, in parallel, over the flat list this builds
 /// (see `readCandidates`), matching ripgrep's own split between walking the
 /// tree and reading what it finds.
-fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix: []const u8, o: Opts, ig: *ignore.Ignore, out: *std.ArrayList(Candidate), link_depth: usize, visited: *std.ArrayList(VisitedDir), walk_error: *bool, root_dev: ?i128) void {
+fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix: []const u8, o: Opts, ig: *ignore.Ignore, out: *std.ArrayList(Candidate), link_depth: usize, visited: *std.ArrayList(VisitedDir), walk_error: *bool, root_dev: ?i128, extras: ?*std.ArrayList(Extra)) void {
     var root = Dir.cwd().openDir(io, root_path, .{ .iterate = true }) catch |e| return reportWalkError(prefix, e, walk_error);
     defer root.close(io);
     var walker = root.walkSelectively(a) catch return;
@@ -282,7 +314,7 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
                         visited.append(a, .{ .real = rp, .display = rel }) catch {};
                     }
                     ig.loadDir(full, rel);
-                    walkDirLinked(a, io, full, rel, o, ig, out, link_depth + 1, visited, walk_error, root_dev);
+                    walkDirLinked(a, io, full, rel, o, ig, out, link_depth + 1, visited, walk_error, root_dev, extras);
                     visited.shrinkRetainingCapacity(mark);
                 }
             } else |e| switch (e) {
@@ -318,7 +350,15 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
             continue;
         }
         if (entry.kind != .file) continue;
-        if (ig.shouldSkip(rel, false, entry.basename, wl_ig, wl_hid)) continue;
+        if (ig.shouldSkip(rel, false, entry.basename, wl_ig, wl_hid)) {
+            // A file the DEFAULT walk drops (hidden dotfile or gitignored) whose
+            // parent dir we still descended: the exact leaf a `-t`/`-g` query can
+            // un-hide/un-ignore. Record it (with default opts, so `wl_ig`/`wl_hid`
+            // are empty and this branch is a pure hidden/ignore skip) for the warm
+            // session's parity list. See `Extra`.
+            if (extras) |ex| collectExtra(a, ex, ig, rel, entry.basename);
+            continue;
+        }
         if (o.max_depth != 0 and depth > o.max_depth) continue;
         out.append(a, .{ .rel = rel, .disk = diskPath(a, root_path, entry.path) }) catch oom();
     }
@@ -334,13 +374,13 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
 /// run exits 2, matching rg (error trumps match/no-match).
 const Gathered = struct { recursive: bool, path_error: bool };
 
-fn gather(a: std.mem.Allocator, io: std.Io, roots: []const []const u8, o: Opts, ig: *ignore.Ignore, out: *std.ArrayList(Candidate)) Gathered {
+fn gather(a: std.mem.Allocator, io: std.Io, roots: []const []const u8, o: Opts, ig: *ignore.Ignore, out: *std.ArrayList(Candidate), extras: ?*std.ArrayList(Extra)) Gathered {
     // A dir the walk discovers but cannot descend (unreadable / EACCES) sets this
     // — folded into `path_error` so, like ripgrep, an unsignaled walk gap forces
     // exit 2 rather than a silent "no match".
     var walk_error = false;
     if (roots.len == 0) {
-        walkDir(a, io, ".", "", o, ig, out, &walk_error);
+        walkDir(a, io, ".", "", o, ig, out, &walk_error, extras);
         return .{ .recursive = true, .path_error = walk_error };
     }
     var recursive = false;
@@ -355,7 +395,7 @@ fn gather(a: std.mem.Allocator, io: std.Io, roots: []const []const u8, o: Opts, 
             // ignore rules (ripgrep never ignore-filters an explicitly named
             // root — only what's found beneath it); see `Ignore.scopeToRoot`.
             ig.scopeToRoot(prefix);
-            walkDir(a, io, r, prefix, o, ig, out, &walk_error);
+            walkDir(a, io, r, prefix, o, ig, out, &walk_error, extras);
             recursive = true;
         } else |_| {
             // Not a directory. Probe it as a file: ripgrep searches an explicitly
@@ -392,12 +432,24 @@ pub const FileSet = struct { paths: []const []const u8, path_error: bool };
 /// default `Opts` mean no `-g`/`-t`/`--hidden`, which is exactly the query
 /// surface `request.classify` admits to the warm path.
 pub fn defaultFileSet(a: std.mem.Allocator, io: std.Io, roots: []const []const u8) FileSet {
+    return defaultFileSetExtras(a, io, roots, null);
+}
+
+/// `defaultFileSet` PLUS the reachable file-level un-hide/un-ignore candidates
+/// the same walk skipped (see `Extra`). Both slices are owned by `a`. Passing a
+/// non-null `extras` costs the walk one extra `ignore.decide` classification per
+/// SKIPPED file (never per kept file), so a corpus with few dotfiles/ignored
+/// leaves pays essentially nothing; it lets the warm session (`session/resident.zig`)
+/// answer `-t`/`-g` queries with rg/cold parity instead of declining them.
+pub fn defaultFileSetExtras(a: std.mem.Allocator, io: std.Io, roots: []const []const u8, extras_out: ?*[]const Extra) FileSet {
     const o: Opts = .{};
     var ig = ignore.Ignore.init(a, io, ignore.Options.from(o), roots);
     var candidates: std.ArrayList(Candidate) = .empty;
-    const g = gather(a, io, roots, o, &ig, &candidates);
+    var extras: std.ArrayList(Extra) = .empty;
+    const g = gather(a, io, roots, o, &ig, &candidates, if (extras_out != null) &extras else null);
     const paths = a.alloc([]const u8, candidates.items.len) catch oom();
     for (candidates.items, paths) |c, *p| p.* = c.rel;
+    if (extras_out) |eo| eo.* = extras.toOwnedSlice(a) catch oom();
     return .{ .paths = paths, .path_error = g.path_error };
 }
 
@@ -795,7 +847,7 @@ fn collectFiles(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, parsed
     else
         null;
 
-    const g = gather(a, io, parsed.roots, o, &ig, &candidates);
+    const g = gather(a, io, parsed.roots, o, &ig, &candidates, null);
 
     var all: std.ArrayList(InFile) = .empty;
     var skip: ?IndexSkip = if (skip_thread) |t| blk: {

@@ -205,6 +205,31 @@ pub const PathFilter = struct {
         return true;
     }
 
+    /// Would this filter drag a DEFAULT-walk-skipped file back into the result
+    /// set — the un-hide/un-ignore question the warm session asks of each
+    /// reachable `Extra` (`serial.zig`)? A hidden dotfile is un-hidden by a `-t`
+    /// type OR a `-g` glob match; a gitignored leaf (`ignored = true`) is
+    /// un-ignored ONLY by a `-g` glob — a `-t` type never un-ignores
+    /// (rg / `ignore.zig::skipFromVerdict`, where `-t` sets only `wl_hidden`).
+    /// In both cases the path must still clear the positional roots and survive
+    /// every exclude, so this front-loads the same root/exclude gate as `admits`
+    /// and is a SUPERSET of the true result-set admission (the un-hide trigger
+    /// is an OR, not `admits`'s type∧glob AND) — safe for a fail-closed decline:
+    /// over-declining a warm query answers it cold (correct), never wrong. The
+    /// resident session declines to cold when any extra answers true here, since
+    /// its mirror (built from the hidden/ignore-excluding walk) cannot supply it.
+    pub fn surfacesHidden(self: PathFilter, path: []const u8, ignored: bool) bool {
+        for (self.excludes) |g| if (globApplies(g, path)) return false;
+        if (self.roots.len > 0) {
+            for (self.roots) |r| {
+                if (underRoot(path, r)) break;
+            } else return false;
+        }
+        if (!ignored) for (self.exts) |e| if (globApplies(e, path)) return true;
+        for (self.includes) |g| if (globApplies(g, path)) return true;
+        return false;
+    }
+
     /// Keep only the candidate ids whose path the filter admits, in place.
     /// Returns the surviving prefix. A no-op filter returns `ids` untouched, so
     /// the unscoped path pays nothing.
