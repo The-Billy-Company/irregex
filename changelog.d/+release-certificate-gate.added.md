@@ -1,0 +1,1 @@
+A release is now gated on the Certificate of Optimality being freshly re-minted and attached on **both** the Mac and the Linux machine (`bench/certify/check_release.py`). Cold-CLI dominance is machine-specific (ADR-320), so per-platform bundles publish under `artifact/<platform-id>/` and Town Crier refuses the release until both are present, valid, and current.
