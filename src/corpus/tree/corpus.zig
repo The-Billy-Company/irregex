@@ -100,7 +100,11 @@ pub fn freeRoots(gpa: std.mem.Allocator, roots: []const []const u8) void {
 //     results and `finishOutput` prints a one-line notice to STDERR (never
 //     stdout — a redirected capture stays clean rg-shaped bytes, just fewer of
 //     them). Lifted by `--uncap` / `GIST_UNCAP` for the agent that wants the
-//     firehose.
+//     firehose. Applied symmetrically across every content path: the cold serial
+//     loop polls `outputFull` at file boundaries, the streaming parallel sink
+//     refuses fragments past the ceiling, and a WARM-served pre-rendered answer
+//     is cut at a whole-line boundary by `writeStdoutCapped` (so a daemon hit no
+//     longer emits the firehose a daemon-less run would truncate).
 //   • hard — the OOM ceiling. Always on, even under `--uncap`; the most irregex will
 //     ever stream/accumulate. Tunable only via `GIST_MAX_OUTPUT_BYTES` (0 ⇒ truly
 //     unlimited — the parity-harness escape hatch).
@@ -203,16 +207,58 @@ pub fn writeStdout(bytes: []const u8) bool {
         output_budget.truncated.store(true, .monotonic);
         return false;
     }
+    if (!rawWriteStdout(bytes)) return false;
+    if (ceiling != 0) _ = output_budget.written.fetchAdd(bytes.len, .monotonic);
+    return true;
+}
+
+/// The partial-write retry loop `writeStdout`/`writeStdoutCapped` share — the
+/// budget accounting is the caller's, this only lands the bytes. `false` ⇒ the
+/// pipe is gone (EPIPE) or a signal cut the call (EINTR). `std.posix.system.write`
+/// is the raw C-ABI extern (returns isize; <=0 ⇒ error/closed-pipe), the same
+/// `std.posix.system.*` layer the read path's `close` already rides on —
+/// `std.posix.write` is absent this Zig cut.
+fn rawWriteStdout(bytes: []const u8) bool {
     var off: usize = 0;
     while (off < bytes.len) {
-        // `std.posix.system.write` is the raw C-ABI extern (returns isize; <=0 ⇒
-        // error/closed-pipe), the same `std.posix.system.*` layer the read path's
-        // `close` already rides on — `std.posix.write` is absent this Zig cut.
         const n = std.posix.system.write(1, bytes.ptr + off, bytes.len - off);
         if (n <= 0) return false;
         off += @intCast(n);
     }
-    if (ceiling != 0) _ = output_budget.written.fetchAdd(bytes.len, .monotonic);
+    return true;
+}
+
+/// Emit a fully-assembled ONE-SHOT answer, honoring the output budget by cutting
+/// at the last whole LINE that fits under the ceiling. `writeStdout`'s "the first
+/// crossing fragment lands whole" rule assumes each call is one small per-file
+/// fragment (the streaming parallel sink, whose next fragment is refused past the
+/// ceiling). A WARM-served answer instead arrives pre-rendered as a SINGLE buffer,
+/// so that rule would let the entire corpus dump land in one call — silently
+/// defeating the ~25k-token agent-context guard the cold engines enforce. This
+/// treats `bytes` as the whole result and bounds it: the daemon renders in the
+/// canonical path-sorted order (`render`/`docLess`), so the surviving prefix is
+/// the SAME reproducible cut the cold serial loop's `outputFull` poll produces —
+/// never a nondeterministic subset. The line that crosses the ceiling lands whole
+/// (no mid-line cut), mirroring the cold budget's per-file "crossing fragment
+/// lands whole" shape. Marks the run truncated (for `finishOutput`) when it cuts.
+/// `false` ⇒ stdout is spent/closed (nothing more to send), like `writeStdout`.
+pub fn writeStdoutCapped(bytes: []const u8) bool {
+    const ceiling = output_budget.ceiling;
+    if (ceiling == 0) return rawWriteStdout(bytes); // GIST_MAX_OUTPUT_BYTES=0 ⇒ truly unbounded
+    const already = output_budget.written.load(.monotonic);
+    if (already >= ceiling) {
+        if (bytes.len != 0) output_budget.truncated.store(true, .monotonic);
+        return false;
+    }
+    const room = ceiling - already;
+    if (bytes.len <= room) return writeStdout(bytes); // fits under the ceiling whole
+    // Extend past `room` to the newline that ends the crossing line (or the
+    // buffer end for a newline-free tail) — whole lines, no mid-line cut.
+    var cut = room;
+    while (cut < bytes.len and bytes[cut - 1] != '\n') cut += 1;
+    if (!rawWriteStdout(bytes[0..cut])) return false;
+    _ = output_budget.written.fetchAdd(cut, .monotonic);
+    if (cut < bytes.len) output_budget.truncated.store(true, .monotonic);
     return true;
 }
 
