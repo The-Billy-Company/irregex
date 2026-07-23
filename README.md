@@ -23,7 +23,7 @@ doc_radar:
       contains: ["pcre parity -P", "index-elision parity", "macro certificate"]
     - description: "prose cites the live certificate corpus + cold speedup band (re-mint updates both)"
       file: pkg/kernels/irregex/bench/certify/artifact/CERTIFICATE.md
-      contains: ["20393 files · 194.3 MiB", "14.27x", "2.13x"]
+      contains: ["20591 files · 196.8 MiB", "28.73x", "16.33x"]
 ---
 
 # irregex
@@ -344,9 +344,9 @@ correctness and performance evidence under `bench/rgsuite/`, `bench/matrix/`,
 `bench/session/`, and the relate harnesses; none inherits Layer A's dominance
 claim by association.
 
-On the recorded **20,393-file / 194.3 MiB macroscopic corpus**, the
+On the recorded **20,591-file / 196.8 MiB macroscopic corpus**, the
 end-to-end linear/literal path beats ripgrep in all 12 query classes by
-**2.13×–14.27×**. The microscopic cycles/byte and lower-bound layers run over
+**16.33×–28.73×**. The microscopic cycles/byte and lower-bound layers run over
 that same RAM-resident corpus. Layer D checks the narrower
 structural statement: trigram pruning touches no rejected file bytes, and the
 DFA verifies each admitted byte exactly once. The artifact, raw data, machine
