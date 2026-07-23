@@ -18,12 +18,13 @@
 //!                     time, or `nextBatch()` to amortize the call boundary.
 //!                     Records are owned by the cursor (copied off the engine's
 //!                     transient scratch), valid until `deinit()`.
-//!   * `CancelToken` — a thread-safe cooperative stop, checked at every record
-//!                     boundary, so a long scan on one thread is abortable from
-//!                     another.
-//!   * `RunOptions`  — per-operation budgets: cancellation, a wall-clock
-//!                     deadline, and a result cap, each honored at record
-//!                     boundaries (never a torn or partial record).
+//!   * `CancelToken` — a thread-safe cooperative stop, checked at a strided
+//!                     gather checkpoint AND at every record boundary, so a long
+//!                     scan on one thread is abortable from another even before
+//!                     it emits its first record.
+//!   * `RunOptions`  — per-operation budgets: cancellation and a wall-clock
+//!                     deadline bound the SCAN (a partial cursor, never a torn
+//!                     record); a result cap stops at the record boundary.
 //!
 //! Ownership is explicit end to end: the caller owns the `gpa`; `Engine.open`
 //! and `Engine.search` return heap-stable handles (the threaded-I/O interface
@@ -56,24 +57,12 @@ pub const compose = struct {
 
 /// A cooperative, thread-safe cancellation flag. One token is shared by
 /// reference into `RunOptions.cancel`; any thread may `cancel()` while the
-/// engine scans, and the collector observes it at the next record boundary and
-/// stops cleanly (the cursor keeps whatever it gathered so far). Uses relaxed
-/// atomics via the builtins so it needs no allocation and no std version pin.
-pub const CancelToken = struct {
-    flag: bool = false,
-
-    pub fn cancel(self: *CancelToken) void {
-        @atomicStore(bool, &self.flag, true, .seq_cst);
-    }
-
-    pub fn requested(self: *const CancelToken) bool {
-        return @atomicLoad(bool, &self.flag, .seq_cst);
-    }
-
-    pub fn reset(self: *CancelToken) void {
-        @atomicStore(bool, &self.flag, false, .seq_cst);
-    }
-};
+/// engine scans, and it is observed at a strided gather checkpoint AND at the
+/// next record boundary — so a long scan stops cleanly whether or not it has
+/// reached the emit yet (the cursor keeps whatever it gathered so far). The
+/// primitive lives with the engine core it bounds (`resident.CancelToken`);
+/// this is the hosted name for it.
+pub const CancelToken = resident.CancelToken;
 
 /// One match-finding intent — the deep `SearchRequest` surface, minus the
 /// presentation/stats/replace concerns that stay CLI-only. Field semantics
@@ -101,15 +90,20 @@ pub const SearchQuery = struct {
     max_count: ?u64 = null,
 };
 
-/// Per-operation budgets, all fail-safe: honored only at record boundaries, so
-/// a hit is never truncated mid-record. Absent budgets mean "run to completion."
+/// Per-operation budgets, all fail-safe: a stop is always CLEAN — the cursor
+/// keeps whatever it gathered, a hit is never truncated mid-record. Absent
+/// budgets mean "run to completion."
 pub const RunOptions = struct {
-    /// Cooperative cancellation shared across threads.
+    /// Cooperative cancellation shared across threads. Observed at a strided
+    /// gather checkpoint and at every record boundary, so it bounds a scan that
+    /// has not yet emitted (a rare pattern, an invert walk) too.
     cancel: ?*const CancelToken = null,
     /// A monotonic wall-clock budget in nanoseconds, measured from the start of
-    /// the search; the scan stops at the first record boundary at or past it.
+    /// the search. Bounds both the doc scan (sampled at strided checkpoints) and
+    /// the emit; the cursor holds whatever landed before it lapsed.
     timeout_ns: ?u64 = null,
-    /// Stop after this many records land (a result budget).
+    /// Stop after this many records land (a result budget), at the record
+    /// boundary — the gather produces no records to cap.
     max_results: ?usize = null,
 };
 
@@ -234,6 +228,15 @@ const Collector = struct {
 
         if (self.max_results) |m| if (self.list.items.len >= m) return true;
         return false;
+    }
+
+    /// The gather-phase view of this collector's budget: the same cancel token
+    /// and deadline it enforces at the record boundary, handed to the doc scan
+    /// that precedes any emit so `cancel`/`timeout_ns` also bound a no-match or
+    /// invert scan (one that never reaches `emit`). `max_results` stays
+    /// record-boundary-only — the gather produces no records to cap.
+    pub fn runBudget(self: *const Collector) resident.RunBudget {
+        return .{ .cancel = self.cancel, .deadline_ns = self.deadline };
     }
 
     fn fail(self: *Collector) bool {

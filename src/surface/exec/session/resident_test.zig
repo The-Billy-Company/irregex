@@ -422,6 +422,26 @@ const OrderSink = struct {
     }
 };
 
+/// A `search` sink that carries a cooperative `runBudget` (a shared cancel
+/// token) and counts its emits. It distinguishes the DOC GATHER honoring the
+/// budget (emit never reached) from the old record-boundary-only stop (emit
+/// reached once): a sink that lacks `runBudget` leaves the gather unbounded, so
+/// exposing it is exactly what the hosted collector does.
+const BudgetSink = struct {
+    cancel: *const resident.CancelToken,
+    emits: usize = 0,
+
+    pub fn emit(self: *BudgetSink, rec: resident.MatchRecord) bool {
+        _ = rec;
+        self.emits += 1;
+        return true; // halt at once — only whether emit was reached matters
+    }
+
+    pub fn runBudget(self: *const BudgetSink) resident.RunBudget {
+        return .{ .cancel = self.cancel };
+    }
+};
+
 test "resident: the sharded positive faces answer ground truth over a >256KiB corpus" {
     // Cross `render.par_min_bytes` (256 KiB) so the `-l`/`-c` fold, the lines
     // emit, and the FFI record stream all take the PARALLEL path (on any host
@@ -507,6 +527,49 @@ test "resident: the sharded positive faces answer ground truth over a >256KiB co
         const files = try queryFiles(&session, q.allocator(), .{ .pattern = "zebra", .mode = .files, .fixed = true });
         try expectFileSet(&tree, files, &.{"d0000.txt"});
     }
+}
+
+test "resident: a hosted cancel bounds the doc gather before the first emit" {
+    // The gather-phase cooperative halt: a `search` sink that exposes a tripped
+    // `runBudget` cancel stops the doc gather CLEANLY — no docs gathered, so no
+    // record reaches `emit` — rather than scanning the whole matching set and
+    // stopping only at the first record boundary. Distinct from the daemon's
+    // `query_budget_ns` ceiling, it raises no `Stale`. The un-tripped baseline
+    // (emit reached once) vs the tripped run (emit never reached) is the exact
+    // observable difference the gather wiring makes.
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var fixture = std.heap.ArenaAllocator.init(gpa);
+    defer fixture.deinit();
+
+    var tree = try Tree.init(fixture.allocator(), io, "cancel", 0xB0);
+    defer tree.deinit();
+    try tree.write("a.txt", "needle one\nneedle two\n");
+    try tree.write("b.txt", "needle three\n");
+
+    var session = try ResidentSession.init(gpa, io, &.{tree.root});
+    defer session.deinit();
+
+    var q = std.heap.ArenaAllocator.init(gpa);
+    defer q.deinit();
+    const req = request.Request{ .pattern = "needle", .mode = .files, .fixed = true };
+
+    // Baseline: an un-tripped budget ⇒ the stream reaches emit (halts at #1).
+    var token = resident.CancelToken{};
+    var live = BudgetSink{ .cancel = &token };
+    const any_live = try session.search(q.allocator(), req, &live);
+    try std.testing.expectEqual(@as(usize, 1), live.emits);
+    try std.testing.expect(any_live);
+
+    // Tripped cancel ⇒ the gather stops before appending any doc, so emit is
+    // never reached — a clean empty result, no error, no crash.
+    token.cancel();
+    var cancelled = BudgetSink{ .cancel = &token };
+    const any_cancelled = try session.search(q.allocator(), req, &cancelled);
+    try std.testing.expectEqual(@as(usize, 0), cancelled.emits);
+    try std.testing.expect(!any_cancelled);
 }
 
 /// A `search`-face sink that renders each record as `path:lineno:text [s,e)…`
