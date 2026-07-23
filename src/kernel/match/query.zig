@@ -1,4 +1,3 @@
-// MONOLITHIC: CompiledQuery — the transport-neutral compiled search intent (ADR-352); scanners, the PCRE shadow, and mode dispatch are the single shape CLI, daemon, and FFI all share
 //! gist search core — the compiled, transport-neutral query (ADR-352).
 //!
 //! One deep module owns "a search intent, compiled". A `(pattern, fixed,
@@ -39,7 +38,11 @@ const Regex = @import("regex/linear/core.zig").Regex;
 const matcher_mod = @import("regex/linear/matcher.zig");
 const Matcher = matcher_mod.Matcher;
 const Pcre = matcher_mod.Pcre;
-const word_mod = @import("regex/syntax/word.zig");
+// Two private sub-modules of the compiled query (same folder, imported only
+// here): the index-pruning SOUNDNESS derivation (`prefilter.zig`) and the rg
+// `-w` word-boundary rule (`word.zig`), re-exported below to keep `query.<name>`.
+const pf = @import("prefilter.zig");
+const word = @import("word.zig");
 
 /// The three mode shapes the shared core answers: `files` (any line matches),
 /// `count` (how many lines match), and `lines` (the default `path:text` match
@@ -117,9 +120,9 @@ pub const Scratch = union(enum) {
     }
 };
 
-/// The `-w` regex scratch pair (see `Scratch.word`). Both grains ride the
-/// `Matcher` seam, so `-w` works over either engine (linear or `-P` PCRE2).
-pub const WordScratch = struct { sim: Matcher.Sim, span: Matcher.SpanSim };
+/// The `-w` regex scratch pair (see `Scratch.word`). Owned by the `-w` rule
+/// sub-module (`word.zig`); re-exported so the public shape is unchanged.
+pub const WordScratch = word.WordScratch;
 
 /// A matched byte span `[start, end)` within one line. Aliases the regex
 /// engine's own span so the FFI reports the exact offsets the cold `--json`
@@ -177,9 +180,8 @@ pub const CompiledQuery = struct {
     /// string); null otherwise. Freed by `deinit`.
     escaped: ?[]u8 = null,
     /// ASCII-caseless SIMD gate for a caseless body: the raw (unfolded)
-    /// required literal, pre-folded to lowercase. Sound because
-    /// `foldClosedWindow` proved every byte's simple-fold orbit
-    /// ASCII-closed, so every caseless
+    /// required literal, pre-folded to lowercase. Sound because `foldClosedWindow`
+    /// proved every byte's simple-fold orbit ASCII-closed, so every caseless
     /// match contains these bytes in SOME ASCII case spelling. Owned.
     gate: ?[]u8 = null,
     /// Caseless trigram prefilter variants (`caselessVariants` over one window
@@ -197,9 +199,9 @@ pub const CompiledQuery = struct {
             return .{ .mode = spec.mode, .caseless = false, .word = spec.word, .unicode = spec.unicode, .max_count = spec.max_count, .body = .{ .literal = spec.pattern } };
 
         // `-P`: the PCRE2 backend, behind the same seam (fixed wins over `-P`,
-        // so this never runs under `-F`). A pattern PCRE2 rejects, or one the
-        // backend was built without, is `Unsupported` — the caller answers cold,
-        // which diagnoses it. The caseless SIMD gate/variants are a linear-only
+        // so this never runs under `-F`). A pattern PCRE2 rejects (or a backend
+        // built without it) is `Unsupported` — the caller answers cold, which
+        // diagnoses it. The caseless SIMD gate/variants are a linear-only
         // acceleration; PCRE2 folds inside the program and mines its own
         // required literal, so a `-P` body skips them (its prefilter reads the
         // backend's `required`/`alts` directly — see `prefilter`).
@@ -219,21 +221,20 @@ pub const CompiledQuery = struct {
         return q;
     }
 
-    /// The caseless acceleration pair, mined from the raw (unfolded) twin of
-    /// the pattern: the whole-literal SIMD `gate` when the fold is
-    /// ASCII-closed, and the trigram `variants` of one window. Both are pure
-    /// accelerations — every decline just leaves the caseless query on the
-    /// engine-only path it always ran.
+    /// The caseless acceleration pair, mined from the raw (unfolded) twin of the
+    /// pattern: the whole-literal SIMD `gate` when the fold is ASCII-closed, and
+    /// the trigram `variants` of one window. Both are pure accelerations — every
+    /// decline just leaves the caseless query on the engine-only path it always ran.
     fn mineCaselessGate(self: *CompiledQuery, gpa: std.mem.Allocator, pattern: []const u8) void {
         var raw = Regex.compileOpts(gpa, pattern, .{ .unicode = self.unicode }) catch return;
         defer raw.deinit();
         if (raw.required.len == 0) return;
-        if (foldClosedWindow(raw.required, self.unicode)) |win| {
+        if (pf.foldClosedWindow(raw.required, self.unicode)) |win| {
             const low = gpa.dupe(u8, win) catch return;
             for (low) |*b| b.* = std.ascii.toLower(b.*);
             self.gate = low;
         }
-        self.variants = caselessVariants(gpa, raw.required, self.unicode) catch null orelse null;
+        self.variants = pf.caselessVariants(gpa, raw.required, self.unicode) catch null orelse null;
     }
 
     pub fn deinit(self: *CompiledQuery, gpa: std.mem.Allocator) void {
@@ -290,7 +291,7 @@ pub const CompiledQuery = struct {
                 // required literal / alternation cover — cold's exact
                 // non-caseless rule (`serial.zig::trigramFilter`).
                 if (self.caseless) return if (m.* == .linear) (self.variants orelse &.{}) else &.{};
-                return matcherPrefilter(m, one);
+                return pf.matcherPrefilter(m, one);
             },
         }
     }
@@ -323,14 +324,14 @@ pub const CompiledQuery = struct {
     /// set) and then span-scans line by line until one word-valid span appears.
     fn docMatchesWord(self: *const CompiledQuery, bytes: []const u8, sc: *Scratch) bool {
         switch (self.body) {
-            .literal => |needle| return firstWordHit(self.unicode, bytes, needle) != null,
+            .literal => |needle| return word.firstWordHit(self.unicode, bytes, needle) != null,
             .engine => |*m| {
                 if (!m.docMatch(&sc.word.sim, bytes)) return false;
                 var rest = bytes;
                 while (rest.len > 0) {
                     const nl = std.mem.indexOfScalar(u8, rest, '\n');
                     const end = nl orelse rest.len;
-                    if (lineHasWordMatch(self.unicode, m, rest[0..end], &sc.word)) return true;
+                    if (word.lineHasWordMatch(self.unicode, m, rest[0..end], &sc.word)) return true;
                     if (nl == null) break;
                     rest = rest[end + 1 ..];
                 }
@@ -361,10 +362,10 @@ pub const CompiledQuery = struct {
         return if (capped) self.countGeneric(false, true, bytes, sc) else self.countGeneric(false, false, bytes, sc);
     }
 
-    /// The one count loop, specialized at `comptime` on `word`/`capped`. The
-    /// word variant counts a line iff it holds ≥1 word-valid NON-EMPTY span
+    /// The one count loop, specialized at `comptime` on `word_mode`/`capped`.
+    /// The word variant counts a line iff it holds ≥1 word-valid NON-EMPTY span
     /// (cold's `lineHitWord`); the capped variant halts the file at `max_count`.
-    inline fn countGeneric(self: *const CompiledQuery, comptime word: bool, comptime capped: bool, bytes: []const u8, sc: *Scratch) u64 {
+    inline fn countGeneric(self: *const CompiledQuery, comptime word_mode: bool, comptime capped: bool, bytes: []const u8, sc: *Scratch) u64 {
         var n: u64 = 0;
         var rest = bytes;
         while (rest.len > 0) {
@@ -375,9 +376,9 @@ pub const CompiledQuery = struct {
             // match, so the engine run is skipped (the dominant case even
             // inside a doc the whole-doc gate admitted).
             const gated = if (self.gate) |g| simd.containsCaseless(line, g) else true;
-            const hit = gated and if (word) switch (self.body) {
-                .literal => |needle| firstWordHit(self.unicode, line, needle) != null,
-                .engine => |*m| lineHasWordMatch(self.unicode, m, line, &sc.word),
+            const hit = gated and if (word_mode) switch (self.body) {
+                .literal => |needle| word.firstWordHit(self.unicode, line, needle) != null,
+                .engine => |*m| word.lineHasWordMatch(self.unicode, m, line, &sc.word),
             } else switch (self.body) {
                 .literal => |needle| simd.contains(line, needle),
                 .engine => |*m| m.lineMatch(&sc.sim, line),
@@ -449,7 +450,7 @@ pub const CompiledQuery = struct {
                 var from: usize = 0;
                 while (std.mem.indexOfPos(u8, line, from, needle)) |i| {
                     from = i + needle.len; // non-overlapping, rejected or not (nextSpan's rule)
-                    if (!wordOk(self.unicode, line, i, i + needle.len)) continue;
+                    if (!word.wordOk(self.unicode, line, i, i + needle.len)) continue;
                     try out.append(a, .{ .start = i, .end = i + needle.len });
                 }
             },
@@ -462,7 +463,7 @@ pub const CompiledQuery = struct {
                         continue;
                     }
                     from = sp.end;
-                    if (!wordOk(self.unicode, line, sp.start, sp.end)) continue;
+                    if (!word.wordOk(self.unicode, line, sp.start, sp.end)) continue;
                     try out.append(a, sp);
                 }
             },
@@ -470,225 +471,19 @@ pub const CompiledQuery = struct {
     }
 };
 
-/// ripgrep `-w`: a match span `[s,e)` is a word match iff bounded by a non-word
-/// CODEPOINT (or the line edge) on BOTH sides. The same 2-term composition of
-/// the engines' shared `\b` oracle (`regex/syntax/word.zig`) that cold's
-/// `surface/exec/cold/emit/output.zig::wordOk` applies — restated here because the
-/// search core cannot import the cold runtime (dependency direction), and both
-/// reduce to the one oracle, so they cannot drift.
-pub fn wordOk(unicode: bool, hay: []const u8, s: usize, e: usize) bool {
-    return !word_mod.wordBefore(unicode, hay, s) and !word_mod.wordAt(unicode, hay, e);
-}
+// Pub surface of the two private sub-modules, re-exported so the `query.<name>`
+// public shape (consumed verbatim by cold `serial`/`ranked`) is unchanged.
+pub const wordOk = word.wordOk;
+pub const regexPrefilter = pf.regexPrefilter;
+pub const matcherPrefilter = pf.matcherPrefilter;
+pub const foldClosedWindow = pf.foldClosedWindow;
+pub const caselessVariants = pf.caselessVariants;
+pub const escapeLiteral = pf.escapeLiteral;
 
-/// Leftmost word-valid occurrence of `needle` in `hay`, over rg's
-/// non-overlapping leftmost scan — the literal twin of `nextSpan`'s progress
-/// rule (a word-rejected occurrence advances past its own end and the scan
-/// continues; adjacent repeats like "aa" in "aaa" never overlap). Null when no
-/// occurrence is word-valid. An empty needle is never word-valid (a zero-width
-/// span never counts under `-w`).
-fn firstWordHit(unicode: bool, hay: []const u8, needle: []const u8) ?usize {
-    if (needle.len == 0) return null;
-    var from: usize = 0;
-    while (std.mem.indexOfPos(u8, hay, from, needle)) |i| {
-        if (wordOk(unicode, hay, i, i + needle.len)) return i;
-        from = i + needle.len;
-    }
-    return null;
-}
-
-/// One line's `-w` verdict for a regex body: the cheap boolean pre-gate first
-/// (a line the plain engine rejects can never hold a word-valid span), then
-/// cold `nextSpan`'s exact loop until the first word-valid non-empty span.
-fn lineHasWordMatch(unicode: bool, m: *const Matcher, line: []const u8, w: *WordScratch) bool {
-    if (!m.lineMatch(&w.sim, line)) return false;
-    var from: usize = 0;
-    while (from <= line.len) {
-        const sp = m.matchSpan(&w.span, line, from) orelse return false;
-        if (sp.end == sp.start) {
-            from = sp.start + 1;
-            continue;
-        }
-        from = sp.end;
-        if (wordOk(unicode, line, sp.start, sp.end)) return true;
-    }
-    return false;
-}
-
-/// The sound trigram prefilter for a compiled regex, independent of the
-/// caseless/mode guards a specific face layers on top: the engine's guaranteed
-/// required literal (present in EVERY match) when it is ≥3 bytes, else its
-/// per-branch alternation cover (`re.alts`). Shared verbatim by the compiled
-/// query above and the cold CLI's `trigramFilter`, so warm and cold cannot drift
-/// on which literals are safe to prune by.
-pub fn regexPrefilter(re: *const Regex, one: *[1][]const u8) []const []const u8 {
-    if (re.required.len >= 3) {
-        one[0] = re.required;
-        return one[0..1];
-    }
-    return re.alts;
-}
-
-/// The engine-neutral twin of `regexPrefilter`, over the `Matcher` seam: the
-/// guaranteed required literal (≥3 bytes) present in EVERY match, else the
-/// per-branch alternation cover. The linear arm's `required`/`alts` are its AST
-/// literals; the PCRE2 arm's are the library-derived required literal (`alts`
-/// empty). Mirrors cold's NON-caseless `trigramFilter` arm for both engines, so
-/// warm and cold prune a `-P` query by the identical, sound literal set.
-pub fn matcherPrefilter(m: *const Matcher, one: *[1][]const u8) []const []const u8 {
-    const req = m.required();
-    if (req.len >= 3) {
-        one[0] = req;
-        return one[0..1];
-    }
-    return m.alts();
-}
-
-/// The longest ASCII-fold-CLOSED window of a literal, or null when none
-/// reaches 2 bytes. A byte is fold-closed when its case-fold orbit stays
-/// within its two ASCII spellings: non-ASCII bytes decline (multi-byte
-/// positional orbits), and under Unicode fold (rg's `-i` default) `k`/`K`
-/// (KELVIN SIGN U+212A) and `s`/`S` (LONG S U+017F) decline — the same two
-/// escape orbits `caselessVariants` excludes; ASCII fold (`(?-u)`) admits
-/// them. A caseless match must contain every segment of the raw literal in
-/// some case spelling, so gating on one admissible window stays a sound
-/// necessary condition even when the whole literal declines (`walletservice`
-/// carries an `s` whose Unicode orbit escapes ASCII — but its `wallet` prefix
-/// gates cleanly). Only a window covering the ENTIRE literal can ever prove
-/// match equivalence; a partial window is containment-only.
-pub fn foldClosedWindow(lit: []const u8, unicode: bool) ?[]const u8 {
-    var best: ?[]const u8 = null;
-    var start: usize = 0;
-    var i: usize = 0;
-    while (i <= lit.len) : (i += 1) {
-        const closed = i < lit.len and lit[i] < 0x80 and
-            !(unicode and (lit[i] == 'k' or lit[i] == 'K' or lit[i] == 's' or lit[i] == 'S'));
-        if (!closed) {
-            if (i - start >= 2 and (best == null or i - start > best.?.len)) best = lit[start..i];
-            start = i + 1;
-        }
-    }
-    return best;
-}
-
-/// The sound trigram prefilter for a CASELESS query: the OR-set of case
-/// variants of one window of the pattern's raw (unfolded) required literal.
-/// Every caseless match must contain the window's bytes in SOME case, so
-/// "contains any variant" is a necessary condition the index can query —
-/// the caseless prefilter gap closed without a case-folded index.
-///
-/// Soundness bounds the window:
-///   • ASCII only — a non-ASCII byte's fold orbit is multi-byte and positional.
-///   • Under Unicode fold (rg's `-i` default), a letter whose simple-fold
-///     orbit escapes ASCII is inadmissible: `k`/`K` also match KELVIN SIGN
-///     (U+212A) and `s`/`S` match LONG S (U+017F), so a `[kK]`-style variant
-///     set would under-claim and elide a real match. ASCII fold (`(?-u)`)
-///     admits them.
-/// A window of `window_len` letters yields ≤2^4 = 16 variants — selective
-/// enough for the index, cheap enough to enumerate. Null when no admissible
-/// window ≥3 bytes exists (the caller declines, exactly the old behavior).
-pub fn caselessVariants(a: std.mem.Allocator, lit: []const u8, unicode: bool) error{OutOfMemory}!?[]const []const u8 {
-    const window_len = 4;
-    if (lit.len < 3) return null;
-    const w = @min(window_len, lit.len);
-
-    // Choose the admissible window with the FEWEST letters (fewest variants);
-    // leftmost wins ties.
-    var best: ?usize = null;
-    var best_letters: usize = window_len + 1;
-    var start: usize = 0;
-    while (start + w <= lit.len) : (start += 1) {
-        var letters: usize = 0;
-        const ok = for (lit[start .. start + w]) |b| {
-            if (b >= 0x80) break false;
-            if (std.ascii.isAlphabetic(b)) {
-                if (unicode and (b == 'k' or b == 'K' or b == 's' or b == 'S')) break false;
-                letters += 1;
-            }
-        } else true;
-        if (ok and letters < best_letters) {
-            best = start;
-            best_letters = letters;
-        }
-    }
-    const at = best orelse return null;
-    const win = lit[at .. at + w];
-
-    const n = @as(usize, 1) << @intCast(best_letters);
-    const out = try a.alloc([]const u8, n);
-    var made: usize = 0;
-    errdefer {
-        for (out[0..made]) |v| a.free(v);
-        a.free(out);
-    }
-    for (0..n) |mask| {
-        const v = try a.dupe(u8, win);
-        var bit: usize = 0;
-        for (v) |*b| {
-            if (!std.ascii.isAlphabetic(b.*)) continue;
-            b.* = if (mask >> @intCast(bit) & 1 != 0) std.ascii.toUpper(b.*) else std.ascii.toLower(b.*);
-            bit += 1;
-        }
-        out[mask] = v;
-        made += 1;
-    }
-    return out;
-}
-
-/// Escape a literal into a regex (for the caseless `-F -i` path, where the
-/// trigram prefilter is unsafe and the regex engine does the case fold).
-/// `pub` because the warm lines renderer (`surface/exec/session/render.zig`) builds its
-/// emission `Matcher` from the SAME escaped form the cold `-F` path compiles.
-pub fn escapeLiteral(a: std.mem.Allocator, pat: []const u8) ![]u8 {
-    var out: std.ArrayList(u8) = .empty;
-    for (pat) |c| {
-        if (std.mem.indexOfScalar(u8, ".^$*+?()[]{}|\\", c) != null) try out.append(a, '\\');
-        try out.append(a, c);
-    }
-    return out.toOwnedSlice(a);
-}
-
-const t = std.testing;
-
-fn freeVariants(vs: []const []const u8) void {
-    for (vs) |v| t.allocator.free(v);
-    t.allocator.free(vs);
-}
-
-test "caselessVariants: full case cross-product of one window" {
-    const vs = (try caselessVariants(t.allocator, "abc", false)).?;
-    defer freeVariants(vs);
-    try t.expectEqual(@as(usize, 8), vs.len); // 3 letters ⇒ 2³
-    // Every variant is a case-spelling of "abc"; all distinct.
-    for (vs, 0..) |v, i| {
-        try t.expect(std.ascii.eqlIgnoreCase("abc", v));
-        for (vs[i + 1 ..]) |w| try t.expect(!std.mem.eql(u8, v, w));
-    }
-}
-
-test "caselessVariants: prefers the window with fewest letters" {
-    // "err_1234" — the leftmost letter-free window needs exactly 1 variant.
-    const vs = (try caselessVariants(t.allocator, "err_1234", false)).?;
-    defer freeVariants(vs);
-    try t.expectEqual(@as(usize, 1), vs.len);
-    try t.expectEqualStrings("_123", vs[0]);
-}
-
-test "caselessVariants: Kelvin/long-s orbits inadmissible under Unicode fold" {
-    // Every window of "sks" holds a k/s — whose simple-fold orbits (U+017F,
-    // U+212A) escape ASCII — so Unicode fold must decline entirely…
-    try t.expect((try caselessVariants(t.allocator, "sks", true)) == null);
-    // …while ASCII fold admits them,
-    const ascii = (try caselessVariants(t.allocator, "sks", false)).?;
-    defer freeVariants(ascii);
-    try t.expectEqual(@as(usize, 8), ascii.len);
-    // and Unicode fold routes around them when a clean window exists
-    // ("kelvin" ⇒ "elvi", skipping the k).
-    const uni = (try caselessVariants(t.allocator, "kelvin", true)).?;
-    defer freeVariants(uni);
-    for (uni) |v| try t.expect(std.ascii.eqlIgnoreCase("elvi", v));
-}
-
-test "caselessVariants: non-ASCII and short literals decline" {
-    try t.expect((try caselessVariants(t.allocator, "caf\xc3\xa9", true)) == null); // é in every window
-    try t.expect((try caselessVariants(t.allocator, "ab", false)) == null); // below trigram floor
+test {
+    // Wire the private sub-modules' inline tests (`prefilter.zig` owns the
+    // caseless soundness suite) into this file's test set, per root.zig's
+    // explicit-wiring convention, without editing root.zig.
+    _ = @import("prefilter.zig");
+    _ = @import("word.zig");
 }
