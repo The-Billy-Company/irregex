@@ -1,0 +1,1 @@
+New `ward` primitive (`kernel/primitives/ward.zig`): a shared reader/writer discipline over `std.Io.RwLock` with `Read`/`Write` lease guards and the double-checked `readReconciled` fast-read / upgrade-refresh / downgrade dance. The warm resident session now rides it instead of hand-rolling `RwLock` lock/unlock pairs at each answer face.

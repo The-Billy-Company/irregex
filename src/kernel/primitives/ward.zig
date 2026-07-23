@@ -1,0 +1,117 @@
+//! gist — Ward: the shared reader/writer discipline both engines and the warm
+//! session ride, instead of hand-rolling `std.Io.RwLock` lock/unlock pairs at
+//! each call site. Pure `std.Io` plumbing with no search, index, or corpus
+//! knowledge — the peer of `parallel.zig` on the concurrency axis.
+//!
+//! Two things a raw `RwLock` makes easy to get wrong, gathered into one place:
+//!
+//!   1. **Lease guards** (`Read` / `Write`) pair acquisition with release: you
+//!      hold a value whose `release()` drops exactly the mode you took, so a
+//!      `defer lease.release()` can never unbalance a shared vs. exclusive
+//!      unlock. `tryRead` / `tryWrite` return the same guard or null.
+//!
+//!   2. **`readReconciled`** — the read-mostly "answer over an immutable
+//!      snapshot, refresh on a miss" dance (ADR-352 rung 2.5): enter shared and,
+//!      when the snapshot is already fresh, answer under the shared lock so
+//!      readers overlap; otherwise drop shared, take EXCLUSIVE, refresh, then
+//!      **downgrade** back to shared to answer. This is textbook double-checked
+//!      locking (Schmidt & Harrison, "Double-Checked Locking", PLoP '96): the
+//!      writer re-verifies freshness under exclusivity, so a reader that lost the
+//!      upgrade race and a writer that already refreshed both settle on one pass.
+//!      The tricky invariant — on a refresh error NOTHING is held, so the
+//!      caller's `defer …release()` (registered only after the `try`) never runs
+//!      on the error path — lives here once rather than at every answer face.
+//!
+//! Writer-preferring, inherited from `std.Io.RwLock`: a pending writer parks new
+//! readers on the mutex, so a stream of readers can't starve a queued refresh.
+
+const std = @import("std");
+
+pub const Ward = struct {
+    rw: std.Io.RwLock = .init,
+
+    /// A held SHARED lease: while alive the warded state is immutable to every
+    /// holder, and many `Read` leases overlap. `{ *Ward, io }`-cheap; `release`
+    /// drops the shared count. Never release twice.
+    pub const Read = struct {
+        ward: *Ward,
+        io: std.Io,
+
+        pub fn release(self: Read) void {
+            self.ward.rw.unlockShared(self.io);
+        }
+    };
+
+    /// A held EXCLUSIVE lease: sole access to the warded state. `release` drops
+    /// it; `downgrade` trades it for a `Read` lease. Never release twice.
+    pub const Write = struct {
+        ward: *Ward,
+        io: std.Io,
+
+        pub fn release(self: Write) void {
+            self.ward.rw.unlock(self.io);
+        }
+
+        /// Drop exclusivity and re-take shared, returning the `Read` lease. NOT
+        /// atomic: a competing writer may slip into the release→reacquire gap, so
+        /// only downgrade once every mutation this writer made is published and
+        /// any staleness a racing writer could introduce is independently
+        /// re-checked by the reader (the resident session's existence stat).
+        pub fn downgrade(self: Write) Read {
+            self.ward.rw.unlock(self.io);
+            self.ward.rw.lockSharedUncancelable(self.io);
+            return .{ .ward = self.ward, .io = self.io };
+        }
+    };
+
+    /// Enter shared, blocking behind any active/pending writer. Pair with the
+    /// returned lease's `release()`.
+    pub fn read(self: *Ward, io: std.Io) Read {
+        self.rw.lockSharedUncancelable(io);
+        return .{ .ward = self, .io = io };
+    }
+
+    /// Enter exclusive, blocking until no reader or writer remains. Pair with the
+    /// returned lease's `release()` (or `downgrade()`).
+    pub fn write(self: *Ward, io: std.Io) Write {
+        self.rw.lockUncancelable(io);
+        return .{ .ward = self, .io = io };
+    }
+
+    /// Try to enter shared without blocking; null if a writer holds or is queued.
+    pub fn tryRead(self: *Ward, io: std.Io) ?Read {
+        return if (self.rw.tryLockShared(io)) .{ .ward = self, .io = io } else null;
+    }
+
+    /// Try to enter exclusive without blocking; null if any lease is held.
+    pub fn tryWrite(self: *Ward, io: std.Io) ?Write {
+        return if (self.rw.tryLock(io)) .{ .ward = self, .io = io } else null;
+    }
+
+    /// Double-checked read-mostly acquisition. Take shared and, if `fresh(ctx)`
+    /// holds, return the `Read` lease immediately — the fast path where readers
+    /// overlap with no writer and no refresh. Otherwise drop shared, take
+    /// EXCLUSIVE, run `refresh(ctx)`, and downgrade back to shared, returning the
+    /// `Read` lease. `refresh` OWNS the second freshness check (it runs under
+    /// exclusivity, so a writer that raced us and already refreshed makes it a
+    /// no-op) and any side effects the refresh entails. On a `refresh` error the
+    /// error is propagated with NOTHING held. The inferred error set is exactly
+    /// `refresh`'s, so a caller's typed error union threads straight through.
+    pub fn readReconciled(
+        self: *Ward,
+        io: std.Io,
+        ctx: anytype,
+        comptime fresh: fn (@TypeOf(ctx)) bool,
+        comptime refresh: anytype,
+    ) !Read {
+        const lease = self.read(io);
+        if (fresh(ctx)) return lease;
+        lease.release();
+        const held = self.write(io);
+        refresh(ctx) catch |err| {
+            held.release();
+            return err;
+        };
+        return held.downgrade();
+    }
+};

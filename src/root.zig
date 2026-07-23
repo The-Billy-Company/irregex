@@ -47,6 +47,12 @@ pub const codicil = @import("corpus/index/trigrams/codicil.zig");
 pub const crest = @import("kernel/primitives/crest.zig");
 pub const crest_sidecar = @import("corpus/index/crest/sidecar.zig");
 
+// ── the ward (shared reader/writer discipline) ──
+// The concurrency-axis peer of `parallel.zig`: lease guards + the double-checked
+// read-mostly `readReconciled` dance the warm session rides instead of
+// hand-rolling `std.Io.RwLock` lock/unlock pairs. Pure `std.Io` plumbing.
+pub const ward = @import("kernel/primitives/ward.zig");
+
 // ── regex engine ──
 // Submodules are imported by their consumers directly; only the core + DFA
 // surfaces are re-exported at the root for the C-ABI / library consumers.
@@ -407,6 +413,7 @@ test {
     _ = @import("kernel/primitives/bits_test.zig"); // shared two's-complement bit identities vs bool-slice oracle
     _ = @import("kernel/primitives/crest_test.zig"); // crest sieve: forced-run calculus vs hand-computed ĝ + sieve decision
     _ = @import("kernel/primitives/parallel.zig"); // shared byte-balanced sharding + partial-spawn-safe fan-out
+    _ = @import("kernel/primitives/ward_test.zig"); // reader/writer lease guards + double-checked readReconciled dance
     _ = @import("corpus/index/crest/sidecar_test.zig"); // crest sidecar codec: round-trip + fail-closed adversarial
     _ = @import("kernel/kinship/metric/sketch_test.zig"); // relate half: kinship metric semantics + clustering gate
     _ = @import("kernel/kinship/metric/silhouette_test.zig"); // structure channel: normalization invariance + winnow guarantee

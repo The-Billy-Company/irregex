@@ -1,10 +1,10 @@
 ---
 doc_radar:
   counts:
-    - description: "primitives keeps bits + crest + parallel (bits/crest carry tests)"
+    - description: "primitives keeps bits + crest + parallel + ward (bits/crest/ward carry tests)"
       glob: pkg/kernels/irregex/src/kernel/primitives/*.zig
       unit: files
-      equals: 5
+      equals: 7
   sentinels:
     - description: "crest calculus stays a pure math export"
       file: pkg/kernels/irregex/src/kernel/primitives/crest.zig
@@ -13,9 +13,11 @@ doc_radar:
 
 # `src/kernel/primitives/` — shared identity floor
 
-The lowest tier: pure, dependency-free numeric primitives. No I/O, no walk
-policy, no CLI. Both engines ride this instead of hand-rolling bit twiddling
-or crest lattice math at each call site.
+The lowest tier: pure, dependency-free primitives — numeric identities plus the
+shared data-parallel and reader/writer disciplines. No walk policy, no CLI.
+Both engines and the warm session ride these instead of hand-rolling bit
+twiddling, crest lattice math, thread fan-out, or `RwLock` lock/unlock pairs at
+each call site.
 
 ## What lives here
 
@@ -24,6 +26,7 @@ or crest lattice math at each call site.
 | `bits.zig`     | Two's-complement bit identities over plain `u64` limb slices: set-bit walks, word-packed sets, popcount/rank, width-edge-safe masks                             |
 | `crest.zig`    | Forced-class-run sieve calculus: `Class` / `K` / `Vector` / `Profile`, `ghat`, prune helpers — a sound _necessary_ condition for literal-free class repetitions |
 | `parallel.zig` | Shared data-parallel floor: byte-balanced shard `greedyBounds`, the `sliceLen` weight, and the partial-spawn-safe `fanOut` both engines ride                    |
+| `ward.zig`     | Shared reader/writer discipline over `std.Io.RwLock`: `Read`/`Write` lease guards + the double-checked `readReconciled` dance (fast shared read, upgrade + refresh on a miss, downgrade) the warm session rides |
 
 ## Why it is separate
 
@@ -38,11 +41,16 @@ theory dossier at [`../../../research/crest/`](../../../research/crest/).
 - Crest soundness rounds **down** only (under-prune, never introduce a false
   negative). Caseless → zero vector; Unicode certifies only ASCII-safe classes.
 - `bits_test.zig` checks the packed representation against a `bool`-slice
-  oracle; `crest_test.zig` pins lattice / `ghat` edges.
+  oracle; `crest_test.zig` pins lattice / `ghat` edges; `ward_test.zig` proves
+  the lease guards exclude and the `readReconciled` fast/miss/error paths against
+  a call-counting oracle plus a threaded reader/writer invariant.
+- `ward.zig` is the one primitive that touches the `std.Io` seam (it wraps
+  `std.Io.RwLock`) — still no file I/O, walk policy, or CLI.
 
 ## When to edit
 
-New shared bit ops; crest lattice / Alphabet Contract changes. Never put
-file I/O or ignore rules here — that is `corpus/` / `surface/exec/cold/`.
+New shared bit ops; crest lattice / Alphabet Contract changes; shared
+concurrency disciplines (`ward`). Never put file I/O or ignore rules here —
+that is `corpus/` / `surface/exec/cold/`.
 
-Root re-exports: `irregex.bits`, crest symbols via `src/root.zig`.
+Root re-exports: `irregex.bits`, `crest`, and `ward` via `src/root.zig`.
