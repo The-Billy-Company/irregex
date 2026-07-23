@@ -51,6 +51,27 @@ test "renderLines: default and -n frames match the cold presentation" {
     );
 }
 
+test "renderLines: one explicit file suppresses its name and keeps explicit binary semantics" {
+    const t = std.testing;
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const filter: request.PathFilter = .{ .roots = &.{"simple.txt"} };
+
+    const text = [_]Doc{.{ .path = "simple.txt", .bytes = "alpha\nbeta gamma\ndelta\n", .nul = null }};
+    try t.expectEqualStrings(
+        "1:alpha\n3:delta\n",
+        try renderToString(a, .{ .pattern = "^\\w+$", .mode = .lines, .pcre = true, .line_num = true, .filter = filter }, &text),
+    );
+
+    // An exact root is explicit: unlike a walked binary file, cold scans the
+    // whole body and reports the match instead of applying the implicit cut.
+    const binary = [_]Doc{.{ .path = "simple.txt", .bytes = "needle\x00tail", .nul = 6 }};
+    var out: std.ArrayList(u8) = .empty;
+    try t.expect(try renderLines(a, .{ .pattern = "needle", .mode = .lines, .fixed = true, .filter = filter }, &binary, &out));
+    try t.expectEqualStrings("binary file matches (found \"\\0\" byte around offset 6)\n", out.items);
+}
+
 test "renderLines: regex, caseless, and CR-keeping line semantics" {
     const t = std.testing;
     var arena = std.heap.ArenaAllocator.init(t.allocator);

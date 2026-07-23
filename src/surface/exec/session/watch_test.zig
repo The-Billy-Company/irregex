@@ -4,10 +4,9 @@
 //! takes the microsecond clean path; on any event it forces a reconcile. These
 //! tests pin that barrier's two halves — an armed, event-free window flips
 //! `clean` true (fast path) and a `markDirty` clears it (back to reconcile) —
-//! and prove the real `Watcher` lifecycle (`start`/`stop`) is crash-free: it
-//! arms the session where a recursive-watch backend exists (Linux inotify /
-//! macOS FSEvents) and, on a target without one, leaves the session unarmed so
-//! it keeps reconciling (fail-closed: a missing watcher costs speed, not soundness).
+//! and prove the real `Watcher` lifecycle (`start`/`stop`) is crash-free. Only
+//! Linux inotify arms causal quiescence; asynchronous macOS FSEvents and targets
+//! without a causal backend stay reconcile-always.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -67,7 +66,7 @@ test "barrier: an armed, event-free query flips clean; markDirty clears it" {
     try std.testing.expect(session.seqlock.provenClean()); // re-proven clean
 }
 
-test "Watcher.start/stop is crash-free, arms where a backend exists, fail-closed where none does" {
+test "Watcher.start/stop arms only a causally complete backend" {
     const gpa = std.testing.allocator;
     var threaded = std.Io.Threaded.init(gpa, .{});
     defer threaded.deinit();
@@ -85,16 +84,12 @@ test "Watcher.start/stop is crash-free, arms where a backend exists, fail-closed
     w.start();
     defer w.stop();
 
-    // macOS FSEvents arms here (the /tmp fixture is a watchable subtree), which
-    // is the whole point of the backend — prove the stream actually came up.
-    // Linux inotify arming is env-dependent (the runner's watch limits), so only
-    // require it not to crash; but WHEN it arms, it must arm EXACT — /tmp is a
-    // case-sensitive ext4/tmpfs tree, so Workstream C's exact scoped path is
-    // live (a regression that dropped Linux back to coarse would flip this).
-    // Any other target has no backend and must stay unarmed so every query
-    // reconciles — soundness never rests on the watcher.
+    // FSEvents is asynchronous to writer syscalls, so macOS must remain
+    // reconcile-always. Linux inotify arming is environment-dependent (runner
+    // watch limits), but when it arms this case-sensitive fixture it must be
+    // exact. Other targets have no causal backend and stay unarmed.
     switch (builtin.os.tag) {
-        .macos => try std.testing.expect(session.seqlock.active),
+        .macos => try std.testing.expect(!session.seqlock.active),
         .linux => if (session.seqlock.active) try std.testing.expect(session.dirty_log.exact),
         else => try std.testing.expect(!session.seqlock.active),
     }

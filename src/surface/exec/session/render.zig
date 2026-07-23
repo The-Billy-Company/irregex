@@ -11,10 +11,10 @@
 //!
 //! The eligible warm surface never reaches the presentation states that need
 //! run-wide resolution in `run.zig`: the client declines a TTY stdout (color +
-//! the interactive long-line cap), context/heading/replace flags are
-//! classifier-ineligible, and the rootless walk is always recursive so the
-//! filename prefix is always on. What remains is exactly the default piped
-//! frame, which this module reproduces verbatim.
+//! the interactive long-line cap), and context/heading/replace flags are
+//! classifier-ineligible. Scoped requests derive explicit-file identity and
+//! the run-wide filename prefix from their roots, matching cold's auto mode.
+//! What remains is exactly the default piped frame, reproduced verbatim.
 //!
 //! Fail-closed like the rest of the session: a pattern the chosen engine
 //! declines (the linear default, or the PCRE2 backend under `-P`) is
@@ -41,6 +41,22 @@ pub const RenderError = error{ Unsupported, OutOfMemory };
 /// One renderable document: display path, decoded resident bytes, and the
 /// byte offset of the first NUL (null ⇒ text). Mirrors `mirror.Doc` + path.
 pub const Doc = struct { path: []const u8, bytes: []const u8, nul: ?usize };
+
+/// A root names an explicit file iff it exactly names the resident document.
+/// Directory roots only prefix their descendants, so this also distinguishes
+/// walked files without another stat or an extra wire-protocol field.
+fn explicitRoot(req: request.Request, path: []const u8) bool {
+    for (req.filter.roots) |root| if (std.mem.eql(u8, root, path)) return true;
+    return false;
+}
+
+/// Cold's auto rule suppresses filenames only for one explicit file. Multiple
+/// roots always show them; a single directory root has no exact document.
+fn showFilename(req: request.Request, docs: []const Doc) bool {
+    if (req.filter.roots.len != 1) return true;
+    for (docs) |d| if (explicitRoot(req, d.path)) return false;
+    return true;
+}
 
 /// The shared parallel floor + shard cap (`parallel.min_bytes`/`max_shards`),
 /// re-exported so every warm face (this render emit, the resident `-l`/`-c`
@@ -119,7 +135,8 @@ pub fn renderLines(a: std.mem.Allocator, req: request.Request, docs: []const Doc
         .max_per_file = if (req.max_count) |m| std.math.cast(usize, m) orelse std.math.maxInt(usize) else 0,
         .max_per_file_set = req.max_count != null,
     };
-    var em = output.Emitter{ .a = a, .re = &re, .o = o, .show_name = true, .out = out, .needle = if (needle) |n| .{ .bytes = n } else null };
+    const show_name = showFilename(req, docs);
+    var em = output.Emitter{ .a = a, .re = &re, .o = o, .show_name = show_name, .out = out, .needle = if (needle) |n| .{ .bytes = n } else null };
 
     var matched = false;
     // rg's cross-file context separator: a `--` line precedes every EMITTING file
@@ -136,7 +153,7 @@ pub fn renderLines(a: std.mem.Allocator, req: request.Request, docs: []const Doc
             // complete buffers before the NUL, then the WARNING note. Cold's
             // `renderFile` returns on this path before the join-groups insert, so
             // a binary answer neither draws nor consumes the `--` separator.
-            if (grepfile.handleBinary(a, &re, o, out, &em, d.path, false, d.bytes, nul, true)) matched = true;
+            if (grepfile.handleBinary(a, &re, o, out, &em, d.path, explicitRoot(req, d.path), d.bytes, nul, show_name)) matched = true;
             continue;
         }
         var lines: std.ArrayList([]const u8) = .empty;
