@@ -8,8 +8,11 @@
 #     • cold fresh-process dominance vs ripgrep  → Layer A macroscopic (certify.sh)
 #     • single-thread cycles/byte                → Layer A microscopic (harness/)
 #     • warm resident-daemon latency             → Layer A warm tier (certify_warm.sh + session/)
+#     • --rank definition-first shape rg can't   → Layer A --rank lane (certify_rank.sh)
 #     • rg drop-in correctness                   → rgsuite/
 #     • port / roofline / lower-bound / crest    → Layers B–E
+#     • codex self-index space + decodability    → Layer F (certify_codex_report.py + codex/)
+#     • relate retrieval quality + boundary      → Layer G (certify_relate.sh)
 #   Those are NOT re-measured here. This contract owns only the operational
 #   envelope the certificate does not: index LIFECYCLE cost (build + incremental
 #   refresh), footprint RESOURCE ratios (index bytes / corpus bytes, peak RSS,

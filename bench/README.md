@@ -120,34 +120,40 @@ tree's own roots — `_compete.sh` resolves them once, mirroring
   number — robust to this shared dev box's load because each query's tools run
   back-to-back under the same conditions.
 
-## Certificate of Optimality (Layers A–E)
+## Certificate of Optimality (Layers A–G)
 
 The race scripts above report _means and ratios_. The **certificate** turns that
 into a claim that is beyond reproach — every number carries a 95% bootstrap
 confidence interval and (vs ripgrep) a Mann-Whitney significance test, so a
-"win" is **statistically real**, not box noise. It is built in five layers,
-cheapest evidence first, and **all five are now implemented**:
+"win" is **statistically real**, not box noise. It is built in seven layers,
+cheapest evidence first, and **all seven are now implemented**:
 
-Its scope is the fresh-process, cold `gist` exact-search path across the shared
-12-class literal/regex probe registry. It does not certify every accepted argv:
-serial count shapes such as `--include-zero`, the resident daemon, `relate`,
-and composed `irregex` require their own evidence. In particular, rgsuite
-parity proves `--include-zero` is correct; it is not a Layer-A speed claim.
+Its headline (Layer A macroscopic) is the fresh-process, cold `gist` exact-search
+path across the shared 12-class literal/regex probe registry. The narrower
+surfaces that path used to disclaim now each carry their own **fail-closed**
+section, so no claim ships without a receipt — the warm resident daemon and the
+`--rank` lane are certified sub-sections of Layer A, the codex self-index is
+Layer F, and the relate face is Layer G (a retrieval-quality contract, not a
+dominance claim). Only `--include-zero` and composed `irregex` stay outside;
+rgsuite parity proves `--include-zero` correct, which is not a speed claim.
 
 | Layer | Claim                                                                 | Status         |
 | ----- | --------------------------------------------------------------------- | -------------- |
-| **A** | empirical dominance over ripgrep on registered workloads, fail-closed | ✅ implemented |
+| **A** | empirical dominance over ripgrep on registered workloads, fail-closed (+ warm-tier dominance + the `--rank` lane's no-fabrication/def-boost/demotion/overhead/beats-rg) | ✅ implemented |
 | **B** | port-optimality — hot loop matches the static µarch bound (llvm-mca)  | ✅ implemented |
 | **C** | roofline — measures and decomposes distance from the hardware roof    | ✅ implemented |
 | **D** | algorithmic lower bound — matches the information-theoretic floor     | ✅ implemented |
 | **E** | crest sieve — fail-closed pruning of the literal-free class-repetition blind spot every trigram index concedes (index completeness) | ✅ implemented |
+| **F** | codex self-index — compressed below the order-0 entropy coder yet searchable, n-free O(m) count, byte-exact decodable, self-recognizing (cento) | ✅ implemented |
+| **G** | relate — retrieval by description length: boundary (paraphrases outside exact search) + recall@1 + anti-redundant pack (a contract, not a race) | ✅ implemented |
 
 Every layer writes into the same `.local/gist-verify/CERTIFICATE.md`. Layer A
-has two halves — the **microscopic** half (`zig build certify`,
+has several lanes — the **microscopic** half (`zig build certify`,
 `harness/certify.zig` + `harness/pmu.zig` + `harness/stats.zig`, see
-`harness/README.md`) and the **macroscopic** half (`certify/certify.sh` +
-`certify/certify_stats.py`, see `certify/README.md`). **One command** mints
-or refreshes the whole thing — Layers B/B′/C/D/E are spliced automatically and
+`harness/README.md`), the **macroscopic** half (`certify/certify.sh` +
+`certify/certify_stats.py`, see `certify/README.md`), the warm resident tier, and
+the `--rank` lane. **One command** mints or refreshes the whole thing — Layers
+B/B′/C/D/E/F and the warm/`--rank`/relate lanes are spliced automatically and
 `check_artifacts.py` fail-closes if any section is missing.
 
 Always build **`-Doptimize=ReleaseFast`** — a Debug build is not vectorized and
@@ -156,11 +162,11 @@ overhead, not the memory hierarchy). The report splicers resolve `.local/` at th
 repo root, so they run from anywhere.
 
 ```bash
-# Refresh Layers B/B′/C/D onto an existing Layer-A bundle (the common path):
+# Refresh Layers B/B′/C/D/E/F onto an existing Layer-A bundle (the common path):
 make bench-gist-certify
 # or:  bash pkg/kernels/irregex/bench/certify/certify_layers.sh
 
-# Full mint (A micro + PMU if sudo available + A macro race + B–E) + publish:
+# Full mint (A micro + PMU if sudo + A macro race + warm + --rank + B–F + relate) + publish:
 CERT_FULL=1 CERT_PUBLISH=1 CERT_SUDO=1 make bench-gist-certify
 # or:  CERT_PUBLISH_DIR=bench/certify/artifact CERT_SUDO=1 \
 #        bash pkg/kernels/irregex/bench/certify/certify.sh
