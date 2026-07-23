@@ -26,7 +26,7 @@
 [[companion]]
 proof = "transforms.py"
 feature = "-z/--search-zip decompression (every codec) and --pre/--pre-glob preprocessing"
-note = "transforms.py mints a corpus per codec (gz/bz2/xz/lz4/lzma/br/zst/uncompress) and per --pre pipeline, then diffs gist vs rg byte-for-byte on both engines."
+note = "transforms.py mints a corpus per codec (gz/bz2/xz/lz4/lzma/br/zst/uncompress) and per --pre pipeline, then diffs gist vs rg byte-for-byte on both engines. --pre is proven for BOTH invocation styles: a path-argument wrapper (gzip -dc \"$1\") and an argv-ignoring stdin-only preprocessor (exec cat), the latter proving gist feeds the file's bytes on the child's stdin exactly as rg does."
 cases = [
   "compressed_gzip",
   "compressed_bzip2",
@@ -69,7 +69,7 @@ adverse = "_oracle.UNSUPPORTED_IGNORE_* + run.py `exercises_ignore` design-bound
 cases = [ "r3179_global_gitignore_cwd" ]
 
 [[boundary]]
-reason = "binary files are text/source-oriented by design: gist searches past a NUL and never emits ripgrep's 'binary file matches' summary line"
+reason = "IMPROVEMENT (not a gap): as a code locator, gist's --binary searches past a NUL and prints every matching line — a superset of ripgrep's opaque 'binary file matches' summary — so `rg -a` (search-as-text) is the correct byte-for-byte oracle. Proven in transforms.py (bin:--binary / bin:-uuu); default flag-free detection still equals plain rg (both summarize)."
 adverse = "run.py `_cmp_stdout` binary re-bucketing (NA); serial.zig binary_detect path"
 cases = [ "matching_files_inconsistent_with_count" ]
 

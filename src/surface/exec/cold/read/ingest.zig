@@ -9,8 +9,11 @@
 //!     decompressor for every format. The long-tail formats (bzip2, lz4, brotli,
 //!     lzma, `.Z`) fall back to the standard external tool, path-in / stdout-out.
 //!   • `--pre` (+ `--pre-glob`) — run an arbitrary preprocessor command over each
-//!     file (the path as `argv[1]`) and search its stdout. `--pre` overrides `-z`
-//!     entirely (rg parity); `--pre-glob` scopes WHICH files are fed through it.
+//!     file and search its stdout. As in ripgrep, the command receives the path
+//!     as `argv[1]` AND the file's bytes on stdin (the open file is wired straight
+//!     to the child's stdin fd, so a stdin-reading preprocessor works and there is
+//!     no pipe to deadlock). `--pre` overrides `-z` entirely (rg parity);
+//!     `--pre-glob` scopes WHICH files are fed through it.
 //!   • `-E`/`--encoding` — transcode the (post-decompress / post-pre) bytes from a
 //!     named source encoding to UTF-8 so a UTF-8 pattern matches. `auto` (default)
 //!     is BOM sniffing (shared with the untransformed fast path); `none` disables
@@ -75,7 +78,7 @@ pub fn apply(a: std.mem.Allocator, cfg: *const Config, disk: []const u8, rel: []
     if (cfg.pre) |pre| {
         // `--pre` overrides `-z` entirely (rg): a file the glob selects is fed
         // through the command; one it doesn't is searched raw (never decompressed).
-        if (preSelects(cfg, rel)) bytes = spawnCapture(a, cfg, &.{ pre, disk }, disk) orelse return null;
+        if (preSelects(cfg, rel)) bytes = spawnPre(a, cfg, &.{ pre, disk }, disk) orelse return null;
     } else if (cfg.search_zip) {
         if (decompress(a, cfg, disk, raw)) |d| bytes = d; // else: passthru raw
     }
@@ -148,11 +151,11 @@ fn decompress(a: std.mem.Allocator, cfg: *const Config, disk: []const u8, raw: [
         .gzip, .zlib, .zstd, .xz => native(a, codec, raw),
         // The long tail: the standard tool, path in, stdout captured, no fork of a
         // decompressor gist can already do in-process.
-        .bzip2 => spawnCapture(a, cfg, &.{ "bzip2", "-d", "-c", disk }, null),
-        .lz4 => spawnCapture(a, cfg, &.{ "lz4", "-d", "-c", disk }, null),
-        .brotli => spawnCapture(a, cfg, &.{ "brotli", "-d", "-c", disk }, null),
-        .lzma => spawnCapture(a, cfg, &.{ "xz", "-d", "-c", disk }, null),
-        .dot_z => spawnCapture(a, cfg, &.{ "gzip", "-d", "-c", disk }, null),
+        .bzip2 => spawnCapture(a, cfg, &.{ "bzip2", "-d", "-c", disk }),
+        .lz4 => spawnCapture(a, cfg, &.{ "lz4", "-d", "-c", disk }),
+        .brotli => spawnCapture(a, cfg, &.{ "brotli", "-d", "-c", disk }),
+        .lzma => spawnCapture(a, cfg, &.{ "xz", "-d", "-c", disk }),
+        .dot_z => spawnCapture(a, cfg, &.{ "gzip", "-d", "-c", disk }),
     };
 }
 
@@ -210,25 +213,68 @@ fn preFail(cfg: *const Config, disk: []const u8, tool_stderr: []const u8) ?[]con
     return null;
 }
 
-/// Run `argv` (a `--pre` command or an external decompressor), capture stdout,
-/// and return it, or null on spawn failure / non-zero exit. `pre_of` non-null
-/// marks a `--pre` invocation over that file: failure is then an ERROR (rg
-/// parity) — it prints the tool's stderr and latches exit 2 via `preFail` —
-/// while a null `pre_of` (decompressor) degrades silently to passthru. stderr
-/// is bounded; the arena reclaims every allocation at run teardown. gist's
-/// `--pre` command reads the file via its path argument (stdin is closed), the
-/// wrapper idiom rg's own docs lead with (`exec gzip -dc "$1"`).
-fn spawnCapture(a: std.mem.Allocator, cfg: *const Config, argv: []const []const u8, pre_of: ?[]const u8) ?[]const u8 {
+/// Run an external decompressor (`bzip2 -dc "$1"`, …), capture stdout, and
+/// return it, or null on spawn failure / non-zero exit. A decompressor reads the
+/// file via its path argument, so stdin is `.ignore` (the `std.process.run`
+/// default) and a failure degrades SILENTLY to passthru — searching the raw
+/// compressed bytes, never a fabricated match or a dead run. stderr is bounded;
+/// the arena reclaims every allocation at run teardown.
+fn spawnCapture(a: std.mem.Allocator, cfg: *const Config, argv: []const []const u8) ?[]const u8 {
     const res = std.process.run(a, cfg.io, .{
         .argv = argv,
         .stdout_limit = .unlimited,
         .stderr_limit = .limited(64 * 1024),
-    }) catch return if (pre_of) |p| preFail(cfg, p, "") else null;
+    }) catch return null;
     switch (res.term) {
         .exited => |code| if (code == 0) return res.stdout,
         else => {},
     }
-    return if (pre_of) |p| preFail(cfg, p, res.stderr) else null;
+    return null;
+}
+
+/// Run a `--pre` preprocessor over `disk` and capture its stdout, or null (an
+/// ERROR that latches exit 2 via `preFail`, rg parity) on open / spawn / drain
+/// failure or a non-zero exit. Unlike a decompressor, the command receives the
+/// file's bytes on stdin AS WELL AS the path as `argv[1]` (ripgrep's contract):
+/// the open file is handed to the child as its stdin fd, so a stdin-reading
+/// preprocessor works and — because a regular file, not a pipe, backs stdin —
+/// there is nothing to deadlock, no feeder thread, and no double read into this
+/// process. stdout is drained unbounded and stderr is capped, both concurrently
+/// (`MultiReader`), the same shape `std.process.run` uses.
+fn spawnPre(a: std.mem.Allocator, cfg: *const Config, argv: []const []const u8, disk: []const u8) ?[]const u8 {
+    const io = cfg.io;
+    const stdin_file = std.Io.Dir.cwd().openFile(io, disk, .{}) catch return preFail(cfg, disk, "");
+    defer stdin_file.close(io);
+
+    var child = std.process.spawn(io, .{
+        .argv = argv,
+        .stdin = .{ .file = stdin_file },
+        .stdout = .pipe,
+        .stderr = .pipe,
+    }) catch return preFail(cfg, disk, "");
+    defer child.kill(io);
+
+    var mr_buf: std.Io.File.MultiReader.Buffer(2) = undefined;
+    var mr: std.Io.File.MultiReader = undefined;
+    mr.init(a, io, mr_buf.toStreams(), &.{ child.stdout.?, child.stderr.? });
+    defer mr.deinit();
+    const stderr_reader = mr.reader(1);
+
+    while (mr.fill(64, .none)) |_| {
+        if (stderr_reader.buffered().len > 64 * 1024) return preFail(cfg, disk, "");
+    } else |err| switch (err) {
+        error.EndOfStream => {},
+        else => return preFail(cfg, disk, ""),
+    }
+    mr.checkAnyError() catch return preFail(cfg, disk, "");
+
+    const term = child.wait(io) catch return preFail(cfg, disk, "");
+    const stderr_bytes = mr.toOwnedSlice(1) catch "";
+    switch (term) {
+        .exited => |code| if (code == 0) return mr.toOwnedSlice(0) catch return preFail(cfg, disk, stderr_bytes),
+        else => {},
+    }
+    return preFail(cfg, disk, stderr_bytes);
 }
 
 test "codecFor maps extensions (case-insensitive), null otherwise" {

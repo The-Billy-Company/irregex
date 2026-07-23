@@ -201,13 +201,13 @@ workflows, the `CandidateSet` model, and mandatory-scope rules.
 
 ## Choose a face
 
-| Face        | What it is                                                                                                                                                                  | Docs                                                     |
-| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| **gist**    | the rg-parity code locator CLI: trigram + crest read-elision, ranked search, and a resident session; the agents' everyday search reflex                                     | [`src/surface/face/gist/README.md`](src/surface/face/gist/README.md)       |
-| **relate**  | compression-as-search: retrieval/packing, quotation, kinship/families/echoes, and exact pattern sets; `index` / `status` own the warm lifecycle                             | [`src/surface/face/relate/README.md`](src/surface/face/relate/README.md)   |
+| Face        | What it is                                                                                                                                                                                                | Docs                                                                       |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| **gist**    | the rg-parity code locator CLI: trigram + crest read-elision, ranked search, and a resident session; the agents' everyday search reflex                                                                   | [`src/surface/face/gist/README.md`](src/surface/face/gist/README.md)       |
+| **relate**  | compression-as-search: retrieval/packing, quotation, kinship/families/echoes, and exact pattern sets; `index` / `status` own the warm lifecycle                                                           | [`src/surface/face/relate/README.md`](src/surface/face/relate/README.md)   |
 | **irregex** | the composed face: exact match narrows a `CandidateSet`, compression reasons inside it — `context` (reading set), `family` (forks/twins), `provenance` (quote, re-verified), `blast` (live symbol radius) | [`src/surface/face/irregex/README.md`](src/surface/face/irregex/README.md) |
-| **codex**   | the compressed self-index: a corpus stored at entropy-bound size with exact O(m) `count`/`find` and byte-exact restoration; powers `gist codex` + `relate quote`            | [`src/corpus/index/codex/README.md`](src/corpus/index/codex/README.md) |
-| **ffi**     | the in-process C-ABI warm session (`irregex_open` / `irregex_search` / `irregex_close` over `libirregex`)                                                                   | [`src/surface/ffi/README.md`](src/surface/ffi/README.md) |
+| **codex**   | the compressed self-index: a corpus stored at entropy-bound size with exact O(m) `count`/`find` and byte-exact restoration; powers `gist codex` + `relate quote`                                          | [`src/corpus/index/codex/README.md`](src/corpus/index/codex/README.md)     |
+| **ffi**     | the in-process C-ABI warm session (`irregex_open` / `irregex_search` / `irregex_close` over `libirregex`)                                                                                                 | [`src/surface/ffi/README.md`](src/surface/ffi/README.md)                   |
 
 The three CLIs are separate faces over one shared floor (`src/kernel/`,
 `src/corpus/`, `src/surface/`); none owns a
@@ -363,19 +363,20 @@ place only when the tool feels obvious in the hand.
 
 ## Package layout
 
-| Dir            | What                                                                                                                           |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `src/kernel/`  | pure compute: `match/` · `rank/` · `kinship/` · `batch/` · `compose/` · `primitives/` (incl. bits + crest)                    |
-| `src/corpus/`  | tree walk · scope · persisted indexes (`trigrams/` · `postings/` · `codex/` · `atlas/` · `crest/`)                             |
-| `src/surface/` | transports + faces: `exec/{cold,session}` · `ffi/` · `face/{gist,relate,irregex}` · `cli/` shared vocabulary                 |
-| `include/`     | `irregex.h`: the flat C ABI (`irregex_*` symbols)                                                                              |
-| `bindings/`    | Python (`billy-irregex`, subprocess + optional cffi over `libirregex`) and Rust (subprocess) faces                             |
-| `contract/`    | `search_api.toml`: the unified SearchRequest/irregex contract (ADR-352)                                                        |
-| `bench/`       | certification + competitive benchmark harness (rgsuite, races, certify, roofline)                                              |
+| Dir            | What                                                                                                         |
+| -------------- | ------------------------------------------------------------------------------------------------------------ |
+| `src/kernel/`  | pure compute: `match/` · `rank/` · `kinship/` · `batch/` · `compose/` · `primitives/` (incl. bits + crest)   |
+| `src/corpus/`  | tree walk · scope · persisted indexes (`trigrams/` · `postings/` · `codex/` · `atlas/` · `crest/`)           |
+| `src/surface/` | transports + faces: `exec/{cold,session}` · `ffi/` · `face/{gist,relate,irregex}` · `cli/` shared vocabulary |
+| `include/`     | `irregex.h`: the flat C ABI (`irregex_*` symbols)                                                            |
+| `bindings/`    | Python (`billy-irregex`, subprocess + optional cffi over `libirregex`) and Rust (subprocess) faces           |
+| `contract/`    | `search_api.toml`: the unified SearchRequest/irregex contract (ADR-352)                                      |
+| `bench/`       | certification + competitive benchmark harness (rgsuite, races, certify, roofline)                            |
 
 See [`src/README.md`](src/README.md) for the tier-by-tier map and
 [`src/surface/face/gist/README.md`](src/surface/face/gist/README.md) for the gist architecture
-narrative, competitive benchmarks, and the full rg-parity flag table.
+narrative, competitive benchmarks, and the full flag table (supported +
+improvements, where gist is strictly better than rg — never a regression).
 
 ## Build & test
 

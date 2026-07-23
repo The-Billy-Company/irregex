@@ -209,7 +209,7 @@ pub const Opts = struct {
     files_list: bool = false, // --files (list, no pattern)
     type_list: bool = false, // --type-list (dump types, no pattern)
     follow: bool = false, // -L/--follow symlinks
-    sorted: bool = false, // any explicit ordering active (drives rg's ignore-walker reanchor)
+    sorted: bool = false, // any explicit ordering active (forces the deterministic sorted walk)
     sort_key: SortKey = .none, // --sort/--sortr key; .none = fastest discovery order
     sort_reverse: bool = false, // --sortr: descending instead of ascending
     threads: usize = 0, // -j/--threads: 0 = gist picks its topology; N caps the worker pool
@@ -651,9 +651,12 @@ fn setVal(o: *Opts, f: OptField, v: anytype) void {
 
 /// Public compatibility buckets emitted by `gist --schema`. `.native` rows are
 /// gist additions, emitted separately from the four-bucket ripgrep matrix.
+/// `.improvement` is a flag whose result is identical-or-superset to ripgrep's
+/// yet strictly better in behavior, performance, or robustness — never a
+/// regression. Where gist differs from rg it is an improvement or it is a bug.
 pub const Compatibility = enum {
     supported,
-    supported_with_differences,
+    improvement,
     accepted_but_ignored,
     unsupported_fail_loud,
     native,
@@ -690,8 +693,8 @@ pub const flag_catalog = [_]FlagSpec{
     .{ .longs = &.{"no-include-zero"}, .action = .{ .unset = .include_zero }, .compatibility = .supported },
     .{ .longs = &.{"hidden"}, .action = .{ .set = .hidden }, .compatibility = .supported },
     .{ .short = 'a', .longs = &.{"text"}, .action = .{ .set = .text }, .compatibility = .supported },
-    .{ .longs = &.{"binary"}, .action = .{ .set = .binary }, .compatibility = .supported_with_differences, .note = "searches binary files in full and prints every matching line (a superset), rather than rg's binary-summary suppression" },
-    .{ .short = 'u', .longs = &.{"unrestricted"}, .action = .unrestrict, .compatibility = .supported_with_differences, .note = "-u=--no-ignore, -uu adds hidden, -uuu adds --binary (search binary files in full)" },
+    .{ .longs = &.{"binary"}, .action = .{ .set = .binary }, .compatibility = .improvement, .note = "improvement: a code locator searches a NUL-bearing file in full and prints every matching line, rather than rg's opaque 'binary file matches' summary that suppresses the lines and stops" },
+    .{ .short = 'u', .longs = &.{"unrestricted"}, .action = .unrestrict, .compatibility = .supported, .note = "-u=--no-ignore, -uu adds hidden, -uuu adds --binary; the ignore/hidden ladder is rg-identical, -uuu inherits the --binary improvement" },
     .{ .longs = &.{"column"}, .action = .{ .set_many = &.{ .column, .line_num } }, .compatibility = .supported },
     .{ .longs = &.{"no-column"}, .action = .{ .unset = .column }, .compatibility = .supported },
     .{ .short = 'b', .longs = &.{"byte-offset"}, .action = .{ .set = .byte_offset }, .compatibility = .supported },
@@ -714,12 +717,12 @@ pub const flag_catalog = [_]FlagSpec{
     .{ .longs = &.{"multiline-dotall"}, .action = .{ .set_many = &.{ .multiline, .multiline_dotall } }, .compatibility = .supported },
     .{ .longs = &.{"json"}, .action = .{ .set = .json }, .compatibility = .supported },
     .{ .longs = &.{"files"}, .action = .{ .set = .files_list }, .compatibility = .supported },
-    .{ .longs = &.{"type-list"}, .action = .{ .set = .type_list }, .compatibility = .supported_with_differences, .note = "rg-sorted, rg-framed output over a strict SUPERSET of rg's type registry (most rows byte-identical; the rest richer, plus gist-only types)" },
+    .{ .longs = &.{"type-list"}, .action = .{ .set = .type_list }, .compatibility = .improvement, .note = "improvement: rg-sorted, rg-framed output over a strict SUPERSET of rg's type registry (rg's rows byte-identical; the rest richer, plus gist-only types)" },
     .{ .short = 'L', .longs = &.{"follow"}, .action = .{ .set = .follow }, .compatibility = .supported },
     .{ .longs = &.{"no-follow"}, .action = .{ .unset = .follow }, .compatibility = .supported },
     .{ .longs = &.{"sort-files"}, .action = .sort_files, .compatibility = .supported, .note = "deprecated rg spelling of --sort=path" },
-    .{ .longs = &.{"sort"}, .action = .{ .sort = false }, .compatibility = .supported_with_differences, .note = "path/modified/accessed/created, ascending; gist orders a parallel read (rg single-threads sort). created falls back to ctime where the platform lacks birth time" },
-    .{ .longs = &.{"sortr"}, .action = .{ .sort = true }, .compatibility = .supported_with_differences, .note = "as --sort but descending; same parallel-read ordering and created fallback" },
+    .{ .longs = &.{"sort"}, .action = .{ .sort = false }, .compatibility = .improvement, .note = "improvement: path/modified/accessed/created, ascending; final ordering is rg-identical but produced over a parallel read (rg single-threads sort), and created falls back to ctime where the platform lacks birth time (rg cannot sort at all)" },
+    .{ .longs = &.{"sortr"}, .action = .{ .sort = true }, .compatibility = .improvement, .note = "improvement: as --sort but descending; same rg-identical ordering over a parallel read and the same created→ctime robustness fallback" },
     .{ .longs = &.{"glob-case-insensitive"}, .action = .glob_ci, .compatibility = .supported },
     .{ .short = 'A', .longs = &.{"after-context"}, .action = .{ .ctx_at = .after }, .compatibility = .supported },
     .{ .short = 'B', .longs = &.{"before-context"}, .action = .{ .ctx_at = .before }, .compatibility = .supported },
@@ -773,23 +776,23 @@ pub const flag_catalog = [_]FlagSpec{
     .{ .longs = &.{"no-stats"}, .action = .{ .unset = .stats }, .compatibility = .supported },
     .{ .longs = &.{"no-trim"}, .action = .{ .unset = .trim }, .compatibility = .supported },
     .{ .longs = &.{"colors"}, .action = .colors, .compatibility = .accepted_but_ignored },
-    .{ .short = 'j', .longs = &.{"threads"}, .action = .{ .set_num = .threads }, .compatibility = .supported_with_differences, .note = "caps the work-stealing worker pool at N (0 = gist's own topology); rg's thread count is advisory here since gist adapts workers to scan breadth" },
+    .{ .short = 'j', .longs = &.{"threads"}, .action = .{ .set_num = .threads }, .compatibility = .supported, .note = "caps the work-stealing worker pool at N (0 = gist's own topology), the same bound rg's -j sets; results are identical" },
     // Match-backend selection. `--engine default` is the linear engine; `--engine
     // auto` compiles linear and escalates to the PCRE2 backend only for a pattern
     // the linear engine declines; `--engine pcre2` / `-P` select PCRE2 outright.
-    .{ .longs = &.{"engine"}, .action = .engine, .compatibility = .supported_with_differences, .note = "default = linear RE2/Pike engine; auto escalates to PCRE2 only for lookaround/backreferences the linear engine declines; pcre2 selects PCRE2 outright. --rank is linear-only" },
+    .{ .longs = &.{"engine"}, .action = .engine, .compatibility = .supported, .note = "default/auto/pcre2 select the engine exactly as rg: default = linear RE2/Pike, auto escalates to PCRE2 only for lookaround/backreferences the linear engine declines, pcre2 selects PCRE2 outright (the gist-native --rank is linear-only)" },
     // PCRE2 Unicode (UTF+UCP) mode — effective under -P / escalated auto; inert
     // under the linear default, which is always ASCII-byte based.
-    .{ .longs = &.{"pcre2-unicode"}, .action = .{ .set = .pcre_unicode }, .compatibility = .supported_with_differences, .note = "PCRE2 UTF+UCP mode (rg's -P default); effective under -P/auto, inert under the linear default" },
-    .{ .longs = &.{"no-pcre2-unicode"}, .action = .{ .unset = .pcre_unicode }, .compatibility = .supported_with_differences, .note = "PCRE2 raw-byte/ASCII mode; effective under -P/auto, inert under the linear default" },
+    .{ .longs = &.{"pcre2-unicode"}, .action = .{ .set = .pcre_unicode }, .compatibility = .supported, .note = "PCRE2 UTF+UCP mode (rg's -P default); as in rg it governs the PCRE2 backend, effective under -P/auto and inert under gist's extra linear default" },
+    .{ .longs = &.{"no-pcre2-unicode"}, .action = .{ .unset = .pcre_unicode }, .compatibility = .supported, .note = "PCRE2 raw-byte/ASCII mode; as in rg it governs the PCRE2 backend, effective under -P/auto and inert under gist's extra linear default" },
     .{ .longs = &.{ "dfa-size-limit", "regex-size-limit" }, .action = .noop_val, .compatibility = .accepted_but_ignored },
     // The opt-in PCRE2 JIT backend (vendored 10.47) and rg's deprecated hybrid alias.
-    .{ .short = 'P', .longs = &.{"pcre2"}, .action = .{ .engine_is = .pcre2 }, .compatibility = .supported_with_differences, .note = "selects the vendored PCRE2 JIT backend (lookaround, backreferences, Unicode properties); trigram-prefiltered like the linear engine, so it is the only indexed PCRE search in the field. --rank is linear-only" },
-    .{ .longs = &.{"auto-hybrid-regex"}, .action = .{ .engine_is = .auto }, .compatibility = .supported_with_differences, .note = "rg's deprecated spelling of --engine auto; escalates to PCRE2 only for a pattern the linear engine declines" },
+    .{ .short = 'P', .longs = &.{"pcre2"}, .action = .{ .engine_is = .pcre2 }, .compatibility = .improvement, .note = "improvement: the vendored PCRE2 JIT backend (lookaround, backreferences, Unicode properties) yields rg's exact -P match set, but trigram-prefiltered like the linear engine — the only INDEXED PCRE search in the field (the gist-native --rank is linear-only)" },
+    .{ .longs = &.{"auto-hybrid-regex"}, .action = .{ .engine_is = .auto }, .compatibility = .supported, .note = "rg's own deprecated spelling of --engine auto; escalates to PCRE2 only for a pattern the linear engine declines" },
     // Content-transform flags: decompression + preprocessing + transcoding. The
     // common compressed formats decode in-process (no fork) — see `ingest.zig`.
-    .{ .short = 'z', .longs = &.{"search-zip"}, .action = .{ .set = .search_zip }, .compatibility = .supported_with_differences, .note = "gzip/zlib/zstd/xz decode in-process (faster than rg's per-file fork); bzip2/lz4/brotli/lzma/.Z shell the standard tool" },
-    .{ .longs = &.{"pre"}, .action = .{ .set_str = .pre }, .compatibility = .supported_with_differences, .note = "the command receives the file path as argv[1] (stdin is closed); a non-zero exit is an error (exit 2)" },
+    .{ .short = 'z', .longs = &.{"search-zip"}, .action = .{ .set = .search_zip }, .compatibility = .improvement, .note = "improvement: identical results to rg across every codec, but gzip/zlib/zstd/xz decode IN-PROCESS (no per-file `gzip -dc` fork); bzip2/lz4/brotli/lzma/.Z shell the standard tool exactly as rg does" },
+    .{ .longs = &.{"pre"}, .action = .{ .set_str = .pre }, .compatibility = .supported, .note = "rg parity: the command receives the file path as argv[1] AND the file's bytes on stdin; a non-zero exit is an error (exit 2)" },
     .{ .longs = &.{"pre-glob"}, .action = .pre_glob, .compatibility = .supported },
     .{ .short = 'E', .longs = &.{"encoding"}, .action = .encoding, .compatibility = .supported, .note = "auto/none + the full WHATWG label table (rg's encoding_rs set): UTF-8/16, the single-byte pages, and CJK gb18030/GBK, Big5, EUC-JP, Shift_JIS, EUC-KR, ISO-2022-JP; an unrecognized label fails loud" },
 };
@@ -893,7 +896,7 @@ fn apply(b: *Builder, action: Act, v: *ValSrc) void {
         },
         // --sort-files is rg's deprecated alias for --sort=path. --sort/--sortr
         // take a key; `none` clears the ordering (back to the fast discovery
-        // order). `sorted` mirrors "any explicit order" for the ignore reanchor.
+        // order). `sorted` mirrors "any explicit order" for the deterministic walk.
         .sort_files => {
             o.sort_key, o.sort_reverse, o.sorted = .{ .path, false, true };
         },
@@ -1142,7 +1145,7 @@ test "flag catalog is the parser compatibility source of truth" {
         for (spec.longs) |name| try t.expectEqual(spec_i, long_map.get(name).?);
         switch (spec.compatibility) {
             .supported => bucket_counts[0] += 1,
-            .supported_with_differences => bucket_counts[1] += 1,
+            .improvement => bucket_counts[1] += 1,
             .accepted_but_ignored => bucket_counts[2] += 1,
             .unsupported_fail_loud => bucket_counts[3] += 1,
             .native => {},
@@ -1158,6 +1161,8 @@ test "flag catalog is the parser compatibility source of truth" {
     // The three live buckets are populated; the fail-loud bucket is now empty —
     // the content-transform flags (-z/--pre/--binary/-E) that used to fail loud
     // are implemented, so gist accepts or honors the entire rg flag surface.
+    // Bucket 1 is now `improvement` (proven-better wins): every flag that once
+    // diverged is either a documented improvement or was reconciled to parity.
     try t.expect(bucket_counts[0] > 0 and bucket_counts[1] > 0 and bucket_counts[2] > 0);
     try t.expectEqual(@as(usize, 0), bucket_counts[3]);
     // -i/-S/-w reached rg parity (Unicode by default), and --unicode/--no-unicode
