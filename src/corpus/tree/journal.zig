@@ -380,7 +380,6 @@ pub fn replay(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, tok
     const paths_arr = s.CFArrayCreate(null, refs.ptr, @intCast(made), s.array_callbacks) orelse return false;
     defer s.CFRelease(paths_arr);
 
-    var ctx = Ctx{ .a = aa };
     var cfctx = Syms.Events.Context{ .info = &ctx };
     const stream = s.FSEventStreamCreate(
         null,
