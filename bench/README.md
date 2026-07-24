@@ -28,10 +28,10 @@ One concern per folder:
 | [`rgsuite/`](rgsuite/README.md)       | The `gist rg` ⇄ real-ripgrep drop-in proof — mined `rgtest!` correctness replay plus the performance scoreboard.                                                                                                                                         |
 | [`matrix/`](matrix/README.md)         | The **CLI-shape admission matrix** — one machine-readable row per supported shape (mode × flags × walk-scope × emit × selectivity), driven as real argv three ways (gist-idx / gist-noidx / rg) with a parity-first gate + per-shape statistical floors. |
 | [`portcert/`](portcert/README.md)     | Layer B — port-optimality: cross-compiled `llvm-mca` static microarchitectural bound on gist's two hot loops, drift-guarded against production, plus Layer B′ — the same probes **measured on this machine** under the PMU (`gist-portbound`).           |
-| [`roofline/`](roofline/README.md)     | Layer C — roofline headroom: STREAM roof plus matched dual-window, contiguous-production, and corpus-production stages.                                                                                                                                   |
+| [`roofline/`](roofline/README.md)     | Layer C — roofline headroom: STREAM roof plus matched dual-window, contiguous-production, and corpus-production stages.                                                                                                                                  |
 | [`lowerbound/`](lowerbound/README.md) | Layer D â algorithmic lower bound: a fail-closed structural audit proving gist's verify touches the information-theoretic floor of candidate bytes.                                                                                                      |
 | [`relate/`](relate/README.md)         | The **relate** proof (`relate-knn`) — the real cross-parse / LZJD / pivot engine run as a k-NN classifier; the measured basis for the compression-vs-embeddings verdict (`spikes/compression-vs-embeddings/`).                                    |
-| [`codex/`](codex/README.md)           | The **self-index** at-scale proof (`codex-scale`) — the real `src/corpus/index/codex/` FM-index over ~187MB of repo source: entropy-bound space vs gzip/bzip2/zstd/xz, flat-in-n count latency, byte-exact restore from the index alone.                        |
+| [`codex/`](codex/README.md)           | The **self-index** at-scale proof (`codex-scale`) — the real `src/corpus/index/codex/` FM-index over ~187MB of repo source: entropy-bound space vs gzip/bzip2/zstd/xz, flat-in-n count latency, byte-exact restore from the index alone.                 |
 
 ```bash
 cd pkg/kernels/irregex
@@ -137,15 +137,15 @@ Layer F, and the relate face is Layer G (a retrieval-quality contract, not a
 dominance claim). Only `--include-zero` and composed `irregex` stay outside;
 rgsuite parity proves `--include-zero` correct, which is not a speed claim.
 
-| Layer | Claim                                                                 | Status         |
-| ----- | --------------------------------------------------------------------- | -------------- |
+| Layer | Claim                                                                                                                                                                   | Status         |
+| ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------- |
 | **A** | empirical dominance over ripgrep on registered workloads, fail-closed (+ warm-tier dominance + the `--rank` lane's no-fabrication/def-boost/demotion/overhead/beats-rg) | ✅ implemented |
-| **B** | port-optimality — hot loop matches the static µarch bound (llvm-mca)  | ✅ implemented |
-| **C** | roofline — measures and decomposes distance from the hardware roof    | ✅ implemented |
-| **D** | algorithmic lower bound — matches the information-theoretic floor     | ✅ implemented |
-| **E** | crest sieve — fail-closed pruning of the literal-free class-repetition blind spot every trigram index concedes (index completeness) | ✅ implemented |
-| **F** | codex self-index — compressed below the order-0 entropy coder yet searchable, n-free O(m) count, byte-exact decodable, self-recognizing (cento) | ✅ implemented |
-| **G** | relate — retrieval by description length: boundary (paraphrases outside exact search) + recall@1 + anti-redundant pack (a contract, not a race) | ✅ implemented |
+| **B** | port-optimality — hot loop matches the static µarch bound (llvm-mca)                                                                                                    | ✅ implemented |
+| **C** | roofline — measures and decomposes distance from the hardware roof                                                                                                      | ✅ implemented |
+| **D** | algorithmic lower bound — matches the information-theoretic floor                                                                                                       | ✅ implemented |
+| **E** | crest sieve — fail-closed pruning of the literal-free class-repetition blind spot every trigram index concedes (index completeness)                                     | ✅ implemented |
+| **F** | codex self-index — compressed below the order-0 entropy coder yet searchable, n-free O(m) count, byte-exact decodable, self-recognizing (cento)                         | ✅ implemented |
+| **G** | relate — retrieval by description length: boundary (paraphrases outside exact search) + recall@1 + anti-redundant pack (a contract, not a race)                         | ✅ implemented |
 
 Every layer writes into the same `.local/gist-verify/CERTIFICATE.md`. Layer A
 has several lanes — the **microscopic** half (`zig build certify`,

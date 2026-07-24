@@ -14,7 +14,7 @@ doc_radar:
 second walk floor. Once the phantom snapshot removed the directory-listing
 syscalls, the residual cost on a full-scan query — a 2-byte literal like `})`,
 a dense class count, a bare `-c`, anything with **no usable trigram filter** —
-is the per-file `openat`+`read`+`close` over *every* corpus file (~20k opens on
+is the per-file `openat`+`read`+`close` over _every_ corpus file (~20k opens on
 this repo). That syscall wall is what leaves gist behind a static memory-mapped
 server index (zoekt) on exactly those classes.
 
@@ -38,7 +38,7 @@ which diff the shard-served run against `--no-index` (pure live walk).
 
 Build: `gist index` (whole-CWD indexed corpora only), self-anchored — its own
 build instant rides in the `GISTSHD1` header, so the freshness gate binds to the
-shard's *own* anchor and a stale shard beside a fresh index (or the reverse)
-only serves *fewer* slices, never a wrong one. Fail-open everywhere: a missing,
+shard's _own_ anchor and a stale shard beside a fresh index (or the reverse)
+only serves _fewer_ slices, never a wrong one. Fail-open everywhere: a missing,
 corrupt, foreign, or future-dated blob loads as null and every file is read live
 exactly as before. `GIST_NO_SHARD=1` and `--no-index` both disable it.

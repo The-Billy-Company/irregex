@@ -78,6 +78,19 @@ test "dfa: classes, repeats, alternation, overlapping starts" {
     try std.testing.expect(try dfaMatch("a.c", "aaac")); // match at offset 1
 }
 
+test "dfa: optional class preserves both concatenation seams" {
+    const pattern = "[0-9][a-z]?[0-9]";
+    var re = try Regex.compileOpts(std.testing.allocator, pattern, .{ .force_dfa = true });
+    defer re.deinit();
+    try std.testing.expect(re.dfa != null);
+    try std.testing.expect(re.dfa.?.match("1a2"));
+    try std.testing.expect(re.dfa.?.match("12"));
+    try std.testing.expect(re.dfa.?.docMatch("before\n1a2\nafter"));
+    var sim = try Regex.Sim.init(std.testing.allocator, &re);
+    defer sim.deinit();
+    try std.testing.expect(re.docMatch(&sim, "before\n1a2\nafter"));
+}
+
 // ─────────────────────────── differential fuzz ───────────────────────────
 
 /// A random pattern generator over the supported subset, with an optional leading

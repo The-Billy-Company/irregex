@@ -1,7 +1,7 @@
 Stop loading the persisted trigram index when every positional root is an
 explicit regular file (`gist PAT file.txt`, or several named files). The index
-answers exactly one question — *which of the WALKED files can't match, so skip
-reading them* — but a named file is read no matter what the trigrams say, so
+answers exactly one question — _which of the WALKED files can't match, so skip
+reading them_ — but a named file is read no matter what the trigrams say, so
 loading + decompressing the index and reading the freshness anchor was pure
 launch-time tax that only a directory walk ever amortizes. `indexElisionWanted`
 now stats each root up front (one syscall apiece, dwarfed by the load it

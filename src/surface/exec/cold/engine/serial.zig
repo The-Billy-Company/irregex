@@ -726,17 +726,24 @@ fn caselessFilter(a: std.mem.Allocator, o: Opts, eff: []const u8, re: *const Mat
 }
 
 /// The crest sieve's forced-crest vector ĝ for this invocation, or 0⃗ (⇒ the
-/// sieve never elides) under exactly the same unsafety guards as
+/// sieve never elides) under the same whole-file-scan / no-index guards as
 /// `trigramFilter` — the sieve only ever EXTENDS the pruning criterion where
 /// index elision is already admissible, it never widens where elision runs.
 /// `pattern` is the EFFECTIVE combined pattern the engine actually compiled
 /// (post `-f` fold, `-F` escaping, and leading-flag strip — multi `-e` arrives
 /// as `(?:a)|(?:b)`, whose alternation the calculus min-folds natively), so ĝ
 /// can never be derived from fewer branches than the engine matches.
+/// Unlike `trigramFilter`, caseless does NOT stand the sieve down: the calculus
+/// case-closes each atom so the case-closed classes still force runs (only the
+/// linear engine, whose fold it is validated against — PCRE2 keeps declining).
 /// The Unicode flag is the ACTIVE engine's (linear `-u` vs PCRE2's own), since
 /// that is what decides `\d`/`\w` byte semantics (the Alphabet Contract).
 fn crestSieve(o: Opts, pattern: []const u8, re: *const Matcher) crest.Vector {
-    if (o.no_index or o.caseless or o.invert or o.stats or o.json or o.passthru) return crest.zero_vector;
+    if (o.no_index or o.invert or o.stats or o.json or o.passthru) return crest.zero_vector;
+    // Caseless still sieves the case-closed classes, but only for the linear
+    // engine whose fold the calculus is validated against (ASCII a⇄A plus the
+    // Unicode k/K/s/S escape guard); PCRE2's own fold keeps declining `-i`.
+    if (o.caseless and re.* == .pcre) return crest.zero_vector;
     const uni = switch (re.*) {
         .linear => o.unicode,
         .pcre => o.pcre_unicode,

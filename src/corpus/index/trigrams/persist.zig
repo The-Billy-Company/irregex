@@ -433,8 +433,9 @@ pub fn persistIndexAndPathsAt(
 
     // Crest sidecar bytes (empty when the builder skipped the pass).
     const cblob: []u8 = if (crest_vectors) |cv| blk: {
-        const b = try gpa.alloc(u8, crest_sidecar.encodedSize(cv.len));
-        _ = crest_sidecar.writeInto(cv, b);
+        const b = try gpa.alloc(u8, try crest_sidecar.encodedSize(cv.len));
+        errdefer gpa.free(b);
+        _ = try crest_sidecar.writeInto(cv, b);
         break :blk b;
     } else &.{};
     defer if (cblob.len > 0) gpa.free(cblob);

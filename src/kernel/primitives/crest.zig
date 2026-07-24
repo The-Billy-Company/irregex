@@ -8,7 +8,7 @@
 //! DIFFERENT sound necessary condition:
 //!
 //!   • per document d, the CREST VECTOR ρ(d) ∈ ℕ^k — the length of the longest
-//!     run of consecutive bytes in each class of a fixed k-class lattice — one
+//!     run of consecutive bytes in each member of a fixed k-class family — one
 //!     O(|d|) pass, k small ints;
 //!   • per query R, the FORCED CREST ĝ(R) ≤ min_{w∈L(R)} ρ(w) — a sound lower
 //!     bound extracted from the pattern AST by a min-of-max prefix/suffix/best
@@ -25,7 +25,13 @@
 //! SOUNDNESS POSTURE (everything rounds DOWN):
 //!   • any construct `ghat` cannot certify contributes nothing (or zeroes the
 //!     whole vector) — under-pruning is the only failure mode;
-//!   • caseless queries return 0⃗ (the fold changes byte membership);
+//!   • caseless queries (`-i`) still sieve the CASE-CLOSED classes: the fold
+//!     only moves bytes between `upper`/`lower`, so every atom's byte set is
+//!     widened to its ASCII case-closure (a⇄A) before certification — `upper`
+//!     and `lower` then self-decline, while `digit`/`hex`/`alpha`/`word`/
+//!     `space`/`punct` (all case-closed) still force their run. Under Unicode
+//!     fold the four letters k/K/s/S reach non-ASCII (KELVIN, LONG S), so an
+//!     atom containing them certifies nothing (the Alphabet Contract §3.7);
 //!   • Unicode mode (rg default) keeps only certifications that are exact over
 //!     UTF-8 bytes: an explicit class certifies iff all its members are ASCII
 //!     (codepoint ≡ byte), while `\d`/`\w`/`\s` — codepoint classes with
@@ -35,7 +41,7 @@
 
 const std = @import("std");
 
-/// The fixed class lattice. Order is load-bearing: a crest vector is a k-tuple
+/// The fixed class family. Order is load-bearing: a crest vector is a k-tuple
 /// in exactly this order, and the persisted sidecar stores it verbatim. Chosen
 /// for code corpora — narrow classes (digit, hex, upper) are where forced runs
 /// are long and chance runs are short (PROOF.md §4).
@@ -114,6 +120,43 @@ pub const membership: [256]u8 = blk: {
     break :blk m;
 };
 
+/// Semantic contract carried by every persisted Crest sidecar. The SHA-256
+/// digest of `canonical_bytes` invalidates a cache whenever the class family or
+/// meaning of one stored u16 changes, even if its physical width stays fixed.
+pub const SidecarSchema = struct {
+    pub const format_version: u16 = 2;
+    pub const saturation_cap: u16 = std.math.maxInt(u16);
+    pub const element_interpretation = "longest consecutive input-byte run belonging to the class, per document, saturated at the numeric cap";
+    pub const class_order = "digit\x00hex\x00upper\x00lower\x00alpha\x00word\x00space\x00punct";
+
+    const domain = "irregex/crest-sidecar-semantic-schema\x00";
+    const version_le = le16(format_version);
+    const cap_le = le16(saturation_cap);
+    const membership_len_le = le16(membership.len);
+
+    /// Canonical, architecture-independent schema bytes. Field labels and
+    /// fixed little-endian scalars make the preimage self-delimiting; the full
+    /// 256-byte table is the final field, not a derived or abbreviated ID.
+    pub const canonical_bytes = (domain ++
+        "format-version/u16le\x00" ++ version_le ++
+        "class-count/u8\x00" ++ [_]u8{@intCast(K)} ++
+        "element-width/u8\x00" ++ [_]u8{@sizeOf(u16)} ++
+        "class-order/nul-separated\x00" ++ le16(class_order.len) ++ class_order ++
+        "saturation-cap/u16le\x00" ++ cap_le ++
+        "element-interpretation/utf8\x00" ++ le16(element_interpretation.len) ++ element_interpretation ++
+        "membership-table/u8x256\x00" ++ membership_len_le ++ membership).*;
+
+    pub fn hash() [std.crypto.hash.sha2.Sha256.digest_length]u8 {
+        var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(&canonical_bytes, &digest, .{});
+        return digest;
+    }
+
+    fn le16(comptime value: u16) [2]u8 {
+        return .{ @truncate(value), @truncate(value >> 8) };
+    }
+};
+
 /// The crest vector ρ(d): longest per-class run in one O(|d|·k) forward pass,
 /// with its k-lane update comptime-unrolled over the bit table.
 pub fn crest(doc: []const u8) Vector {
@@ -149,14 +192,15 @@ pub fn pruned(doc_crest: Vector, ghat_vec: Vector) bool {
 pub const Opts = struct {
     /// Unicode `\d`/`\w`/`\s` force nothing; explicit ASCII remains byte-exact.
     unicode: bool = true,
-    /// `-i` (or resolved `-S`): the fold changes byte membership ⇒ decline all.
+    /// `-i` (or resolved `-S`): each atom also matches its ASCII case sibling,
+    /// so the calculus case-closes every byte set — `upper`/`lower` self-decline
+    /// while the case-closed classes still force runs (see `caseFoldMembers`).
     caseless: bool = false,
 };
 
-/// Return ĝ(R); caseless, unsupported, or trailing garbage yields 0⃗.
+/// Return ĝ(R); unsupported syntax or trailing garbage yields 0⃗.
 pub fn ghat(pattern: []const u8, opts: Opts) Vector {
-    if (opts.caseless) return zero_vector;
-    var p = Parser{ .s = pattern, .unicode = opts.unicode };
+    var p = Parser{ .s = pattern, .unicode = opts.unicode, .caseless = opts.caseless };
     const prof = p.parseAll() catch Profile.unknown();
     return prof.F;
 }
@@ -279,10 +323,21 @@ const ParseError = error{Unsupported};
 const Parser = struct {
     s: []const u8,
     unicode: bool,
+    caseless: bool = false,
     i: usize = 0,
 
     fn peek(self: *const Parser) u8 {
         return if (self.i < self.s.len) self.s[self.i] else 0;
+    }
+
+    /// Build an atom, applying the caseless fold when `-i` is active. The
+    /// matcher accepts each letter's case sibling, so the certifiable byte set
+    /// widens to its ASCII case-closure (`caseFoldMembers`) before the ⊆-tests
+    /// in `Profile.atom`; that alone makes `upper`/`lower` self-decline and
+    /// keeps every case-closed class sound. Rounds down — never manufactures.
+    fn mkAtom(self: *const Parser, m: *[256]bool, certifiable: bool) Profile {
+        const cert = if (self.caseless and certifiable) caseFoldMembers(m, self.unicode) else certifiable;
+        return Profile.atom(m, cert);
     }
 
     fn parseAll(self: *Parser) ParseError!Profile {
@@ -377,7 +432,7 @@ const Parser = struct {
                 var m: [256]bool = @splat(false);
                 switch (try self.escapeMembers(&m)) {
                     .zero_width => return Profile.epsilon(),
-                    .certifiable => return Profile.atom(&m, true),
+                    .certifiable => return self.mkAtom(&m, true),
                     .opaque_unit => return Profile.atom(&m, false),
                 }
             },
@@ -392,7 +447,7 @@ const Parser = struct {
                 if (c >= 0x80) return error.Unsupported; // raw non-ASCII: codepoint semantics
                 var m: [256]bool = @splat(false);
                 m[c] = true;
-                return Profile.atom(&m, true);
+                return self.mkAtom(&m, true);
             },
         }
     }
@@ -501,9 +556,32 @@ const Parser = struct {
             // the certification below stays exact-or-declined.
             for (0..256) |b| m[b] = !m[b];
         }
-        return Profile.atom(&m, certifiable);
+        // Caseless fold on the FINAL (already-complemented) set stays sound:
+        // fold∘complement ⊇ complement∘fold, so `m` over-approximates the
+        // matcher's byte set and `Profile.atom`'s ⊆-test only under-certifies.
+        return self.mkAtom(&m, certifiable);
     }
 };
+
+/// Case-close `m` in place (`a`⇄`A`) and report whether the atom can still
+/// certify an ASCII class under the matcher's fold. Sound in both engine modes:
+/// ASCII `-i` folds only within ASCII, so the closure is exactly the matched
+/// byte set. Under the Unicode fold four ASCII letters escape to non-ASCII
+/// codepoints — k/K→U+212A (KELVIN SIGN), s/S→U+017F (LONG S) — the only such
+/// orbits over ASCII (`../match/regex/unicode/tables.gen.zig` `fold_members`);
+/// an atom holding one may match multi-byte bytes in no ASCII class, so it
+/// certifies nothing.
+fn caseFoldMembers(m: *[256]bool, unicode: bool) bool {
+    var b: u8 = 'A';
+    while (b <= 'Z') : (b += 1) {
+        const lower = b + 32;
+        if (m[b] or m[lower]) {
+            m[b] = true;
+            m[lower] = true;
+        }
+    }
+    return !unicode or !(m['k'] or m['s']); // post-closure k⟺K, s⟺S
+}
 
 /// `.` — any unit except newline. Byte superset (never certifies anyway).
 const dot_members: [256]bool = blk: {

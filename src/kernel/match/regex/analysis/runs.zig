@@ -31,17 +31,23 @@ const ByteSet = syn.ByteSet;
 /// bytes itself (no verdict deferral, no DFA needed at all).
 pub const ClassRunShape = struct { set: ByteSet, min: u32, exact: bool, cp: ?[]const [2]u21 };
 
-/// A sub-pattern's class-run summary. `set == null` ⇔ the node is nullable
-/// (matches ε), which makes it existence-transparent: concatenating it
-/// changes nothing about WHETHER a match exists (ε on one side embeds the
-/// other side's match; any combined match contains the other side's match as
-/// a substring). `min ≥ 1` parts carry two exact invariants over L(node):
-/// every word is `set`-only with length ≥ min, and `set^min ⊆ L(node)`.
-/// `cp` (codepoint-class leaves only) survives merges exactly when both
-/// sides' FULL codepoint sets are identical — the condition under which the
-/// two invariants keep holding codepoint-wise.
-const RunPart = struct { set: ?ByteSet, exact: bool, min: u32, cp: ?[]const [2]u21 = null };
+/// A sub-pattern's class-run summary. `set == null` means nullable; `empty_only`
+/// distinguishes literal ε from a quantifier that may also consume bytes.
+/// A consumed nullable prefix/suffix remains existence-transparent at the whole
+/// pattern edge, but it dirties that edge: a later concat may not merge a run
+/// through it (`digit [a-z]? digit` must decline, not invent digit{2}).
+/// `cp` survives only when both forcing leaves carry the same full ranges.
+const RunPart = struct {
+    set: ?ByteSet,
+    exact: bool,
+    min: u32,
+    cp: ?[]const [2]u21 = null,
+    left_clean: bool = true,
+    right_clean: bool = true,
+    empty_only: bool = false,
+};
 
+const epsilon_part: RunPart = .{ .set = null, .exact = true, .min = 0, .empty_only = true };
 const nullable_part: RunPart = .{ .set = null, .exact = true, .min = 0 };
 
 /// If the whole pattern reduces to a class run, return its shape; else null.
@@ -49,10 +55,10 @@ const nullable_part: RunPart = .{ .set = null, .exact = true, .min = 0 };
 /// existence-transparent (any child match IS a witness, any `+` match
 /// contains one); `*`/`?` are nullable ⇒ transparent (regardless of what
 /// they wrap — even a non-class-run child); concat sums forced floors when
-/// both sides force bytes, and drops a nullable side entirely; alternation
-/// takes the weaker floor. Anything with a positioned assertion outside a
-/// nullable wrapper declines. Conservative: a null only forgoes the SIMD
-/// kernel, never a match.
+/// both sides force adjacent bytes, and drops a nullable edge while recording
+/// that no later merge may cross bytes it could consume; alternation takes the
+/// weaker floor. Anything with a positioned assertion outside a nullable
+/// wrapper declines. Conservative: a null only forgoes the SIMD kernel.
 pub fn classRunShape(node: *Node) ?ClassRunShape {
     const p = runPart(node) orelse return null;
     const set = p.set orelse return null; // nullable pattern: eol_empty machinery owns it
@@ -61,7 +67,7 @@ pub fn classRunShape(node: *Node) ?ClassRunShape {
 
 fn runPart(node: *Node) ?RunPart {
     switch (node.*) {
-        .empty => return nullable_part,
+        .empty => return epsilon_part,
         .class => |s| return .{ .set = s, .exact = true, .min = 1 },
         // A codepoint class forces one CODEPOINT; its ASCII members are the
         // byte-exact projection (codepoint ≡ byte below 0x80), so a run of
@@ -77,19 +83,43 @@ fn runPart(node: *Node) ?RunPart {
         .plus => |r| return runPart(r.node),
         .capture => |g| return runPart(g.child), // transparent to boolean match
         .concat => |ab| {
-            const x = runPart(ab[0]) orelse return null;
-            const y = runPart(ab[1]) orelse return null;
-            if (x.set == null) return y; // nullable side: existence-transparent
-            if (y.set == null) return x;
+            var x = runPart(ab[0]) orelse return null;
+            var y = runPart(ab[1]) orelse return null;
+            if (x.set == null and y.set == null) {
+                return if (x.empty_only and y.empty_only) epsilon_part else nullable_part;
+            }
+            if (x.set == null) {
+                y.left_clean = y.left_clean and x.empty_only;
+                return y;
+            }
+            if (y.set == null) {
+                x.right_clean = x.right_clean and y.empty_only;
+                return x;
+            }
+            if (!x.right_clean or !y.left_clean) return null;
             const m = mergeLeaf(x, y) orelse return null;
-            return .{ .set = m.set, .exact = m.exact, .min = x.min +| y.min, .cp = m.cp };
+            return .{
+                .set = m.set,
+                .exact = m.exact,
+                .min = x.min +| y.min,
+                .cp = m.cp,
+                .left_clean = x.left_clean,
+                .right_clean = y.right_clean,
+            };
         },
         .alt => |ab| {
             const x = runPart(ab[0]) orelse return null;
             const y = runPart(ab[1]) orelse return null;
             if (x.set == null or y.set == null) return nullable_part; // a nullable branch nullifies the alt
             const m = mergeLeaf(x, y) orelse return null;
-            return .{ .set = m.set, .exact = m.exact, .min = @min(x.min, y.min), .cp = m.cp };
+            return .{
+                .set = m.set,
+                .exact = m.exact,
+                .min = @min(x.min, y.min),
+                .cp = m.cp,
+                .left_clean = x.left_clean and y.left_clean,
+                .right_clean = x.right_clean and y.right_clean,
+            };
         },
         // Positioned assertions gate on WHERE, which a run count can't see.
         .anchor_start, .anchor_end, .anchor_buf_start, .anchor_buf_end, .word_boundary, .not_word_boundary, .word_start, .word_end => return null,

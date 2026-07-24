@@ -1,17 +1,17 @@
 # Crest — prior art (the full adversarial review)
 
 **Claim under review.** A per-document signature `ρ(d) ∈ ℕ^k` of maximal
-_consecutive-class-run_ lengths over a fixed class lattice, paired with a sound
+_consecutive-class-run_ lengths over a fixed class family, paired with a sound
 lower-bound _forced-crest_ functional `ĝ(R,·) ∈ ℕ^k` extracted from the regex
 by a segment-composition run algebra, such that `R` can match inside `d`
 **only if** `ρ(d) ≥ ĝ(R)` componentwise.
 
-**Verdict:** NOVEL as a composite (adversarial referee review, 2026-07-19).
-Every ingredient is deliberately standard; the _object_ — forced-run
-per-document indexing as a regex necessary condition — has no published equal
-we could find. This file is the paper trail: each neighboring family, what it
-actually does, and the load-bearing difference. Every external source is
-listed with a link and annotation in [§ References](#references).
+**Dated search result:** no instance of the complete composite was found in the
+stated adversarial search as of 2026-07-20. Every ingredient is deliberately
+standard. This is not proof of absence; it is the reproducible paper trail for
+the databases, search families, neighboring work, and exclusions reviewed.
+Every external source is listed with a link and annotation in
+[§ References](#references).
 
 **Extension verdict:** the run-_spectrum_ lift (Ridge — top-q maximal-run order
 statistics + forced-run multiset, `PROOF.md` §7) drew a second referee pass on
@@ -79,7 +79,7 @@ The overlap ends there:
   repetition; a bare unanchored `[0-9a-f]{8}` is its central case.
 - **Different index object and scale.** CPM stores positional structures over
   text runs and class subsets in near-linear/polylogarithmic space. Crest stores
-  the maximum run for each member of one fixed class lattice: `O(k)` small
+  the maximum run for each member of one fixed class family: `O(k)` small
   integers per document, independent of positions and query classes.
 - **No conflict with CPM's lower bound.** Its conditional lower bound concerns
   efficient exact occurrence or existential queries for unanchored
@@ -133,7 +133,7 @@ compose: a counting matcher still benefits from Crest's candidate pruning.
 | ---------------------------------------------------- | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | [SBC-tree](#r-sbc) (RLE-string indexing)             | index runs of _one repeated character_ for substring search over RLE-compressed strings | single-character runs, substring queries — not a per-class max-run vector, not a regex necessary condition |
 | [RLE-BWT / r-index](#r-rindex) long-match structures | run-length-compressed BWT for pattern _location_                                        | compression artifact of the text, not a query-derived lower bound; answers exact substring location        |
-| [Kolpakov–Kucherov](#r-runs) maximal-run literature  | combinatorics of all maximal repetitions in a string                                    | studies runs of _periodic factors_; no class lattice, no query-side functional, no sieve                   |
+| [Kolpakov–Kucherov](#r-runs) maximal-run literature  | combinatorics of all maximal repetitions in a string                                    | studies runs of _periodic factors_; no fixed class family, no query-side functional, no sieve              |
 
 **Difference.** The string-index literature indexes runs to answer _substring_
 queries or to compress. None derives a **forced-run lower bound from a regex
@@ -164,11 +164,11 @@ per-class run structure, and never paired with a per-document run index.
 
 ## 6. Sketches and signatures (Bloom, minhash, class histograms)
 
-| object                                                     | why it is not Crest                                                                                                                                                                                          |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| [Bloom filters](#r-bloom) over n-grams                     | substring presence again, probabilistic; false positives fine, but cannot express "run ≥ r"                                                                                                                  |
-| Class histograms / population counts (the "count cousin")  | sound but strictly dominated: forced run `n` ⇒ forced count `≥ n`, never the reverse. Measured: hex-8 prunes 0.7% by count vs 91.4% by run (PROOF.md §3.8, §5) — kept in the harness as a permanent ablation |
-| Suffix-automaton / FM-index exact tiers (gist's own codex) | exact substring machinery; a class repetition is not a substring                                                                                                                                             |
+| object                                                     | why it is not Crest                                                                                                                                         |
+| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [Bloom filters](#r-bloom) over n-grams                     | substring presence again, probabilistic; false positives fine, but cannot express "run ≥ r"                                                                 |
+| Class histograms / population counts (the "count cousin")  | sound but strictly dominated: forced run `n` ⇒ forced count `≥ n`, never the reverse; kept at identical thresholds in every revision-bound evidence package |
+| Suffix-automaton / FM-index exact tiers (gist's own codex) | exact substring machinery; a class repetition is not a substring                                                                                            |
 
 ## 7. Count-vector sieves and the Parikh ceiling (the _shape_, not the quantity)
 
@@ -233,16 +233,16 @@ for a different query; the algebra (§5) is a known _shape_ carrying new semanti
 (language-level adversarial lower bounds with an exactness guard); and the
 count cousin (§6) is the nearest sound signature sibling and is empirically
 dominated.
-No single work combines: (a) a per-document per-class max-run signature,
+No reviewed work combines: (a) a per-document per-class max-run signature,
 (b) a regex-derived sound forced-run functional, (c) a componentwise-compare
 sieve with a no-false-negative theorem. That composite is the contribution.
 
-**Standing obligation.** Two dated verdicts: the Crest composite (2026-07-19,
-NOVEL) and the Ridge spectrum extension (2026-07-20, PARTIAL / no-collision,
-re-scoped in §8). Each was verified against the literature reachable at its
-date. If a prior instance surfaces, the correct move is to cite it and re-scope
-the claim — never to quietly drop this file. The math stands regardless; only
-the priority claim would change.
+**Standing obligation.** Two dated searches are recorded: the Crest composite
+(through 2026-07-20, no instance found) and the Ridge spectrum extension
+(2026-07-20, partial/no collision, re-scoped in §8). Each is limited to the
+literature reachable at its date. If a prior instance surfaces, cite it and
+re-scope the claim — never quietly drop this file. The math stands regardless;
+only the priority claim changes.
 
 ---
 
@@ -332,8 +332,8 @@ artifact, not a regex-derived forced-run lower bound.
 
 <span id="r-runs"></span> 15. **Kolpakov & Kucherov (1999).**
 [_Finding maximal repetitions in a word in linear time_](https://doi.org/10.1109/SFFCS.1999.814634).
-_Annotation:_ Combinatorics of maximal _periodic_ runs — no class
-lattice, no query-side ĝ, no document sieve.
+_Annotation:_ Combinatorics of maximal _periodic_ runs — no fixed class family,
+no query-side ĝ, no document sieve.
 
 <span id="r-bentley"></span> 16. **Bentley (1984).**
 [_Programming pearls: algorithm design techniques_](https://doi.org/10.1145/358234.381162)

@@ -1,0 +1,182 @@
+# CREST release-evidence contract. This freezes the proof inputs and the
+# fail-closed package shape; weakening it is an evidence-integrity change.
+
+[meta]
+name = "crest-release-evidence"
+schema_version = 2
+artifact_kind = "crest-production-proof"
+
+[paths]
+raw_dir = ".local/crest-evidence"
+kernel_root = "pkg/kernels/irregex"
+harness = "pkg/kernels/irregex/bench/crest/bench.zig"
+run_json = ".local/crest-evidence/crest-run.json"
+aggregate_csv = ".local/crest-evidence/crest.csv"
+corpus_manifest = ".local/crest-evidence/corpus-manifest.tsv"
+source_archive_paths = [ "." ]
+monograph_sources = [
+  "pkg/kernels/irregex/research/crest/PROOF.md",
+  "pkg/kernels/irregex/research/crest/PRIOR_ART.md",
+  "pkg/kernels/irregex/research/crest/TESTING.md",
+]
+
+[benchmark]
+runs = 20
+warmup = 3
+timing_clock = "awake-monotonic-nanoseconds"
+aggregation = "upper-median"
+ascii_seed = 12648430                        # 0xC0FFEE
+unicode_seed = 3203386110                    # 0xBEEFCAFE
+caseless_seed_mask = 1511115358              # 0x5A11CA5E
+random_patterns_per_mode = 400
+random_files_per_pattern = 60
+
+[[benchmark.query]]
+label = "hex-8  (uuid/sha)"
+pattern = "[0-9a-f]{8}"
+caseless = false
+unicode = false
+
+[[benchmark.query]]
+label = "hex-12 (mac/hash)"
+pattern = "[0-9a-f]{12}"
+caseless = false
+unicode = false
+
+[[benchmark.query]]
+label = "digit-4 (year)"
+pattern = "[0-9]{4}"
+caseless = false
+unicode = false
+
+[[benchmark.query]]
+label = "digit-6"
+pattern = "[0-9]{6}"
+caseless = false
+unicode = false
+
+[[benchmark.query]]
+label = "upper-4 (CONST)"
+pattern = "[A-Z]{4}"
+caseless = false
+unicode = false
+
+[[benchmark.query]]
+label = "upper-6"
+pattern = "[A-Z]{6}"
+caseless = false
+unicode = false
+
+[[benchmark.query]]
+label = "ci-hex-8  (?i)uuid"
+pattern = "[0-9a-f]{8}"
+caseless = true
+unicode = true
+
+[[benchmark.query]]
+label = "ci-hex-12 (?i)mac"
+pattern = "[0-9a-f]{12}"
+caseless = true
+unicode = true
+
+[[benchmark.query]]
+label = "ci-upper-6 -iu A-Z"
+pattern = "[A-Z]{6}"
+caseless = true
+unicode = false
+
+[[benchmark.query]]
+label = "word-3 (wide)"
+pattern = "\\w{3,8}"
+caseless = false
+unicode = false
+
+[[benchmark.query]]
+label = "alpha-5 (wide)"
+pattern = "[A-Za-z]{5}"
+caseless = false
+unicode = false
+
+[[fixed_regression]]
+pattern = "[0-9][a-z]?[0-9]"
+document = "1a2"
+matched = true
+pruned = false
+digit_threshold = 1
+
+[[fixed_regression]]
+pattern = "[0-9][0-9]?[0-9]"
+document = "1a2"
+matched = false
+pruned = true
+digit_threshold = 2
+
+[commands]
+cwd = "pkg/kernels/irregex"
+benchmark = [ "zig", "build", "crest", "--", "--runs", "{runs}", "--warmup", "{warmup}" ]
+test = [ "zig", "build", "test", "--summary", "all" ]
+
+[publication]
+require_clean_tree = true
+bind_head_commit = true
+source_archive = "source.tar"
+source_archive_format = "git-archive-tar"
+source_archive_sha256 = "sha256"
+file_hash = "sha256"
+manifest_hash = "sha256"
+output_must_be_ignored = true
+
+[artifacts]
+# Every payload is SHA-256-bound by evidence-manifest.json. The two manifest
+# files are detached because a manifest cannot include its own final hash.
+payload_required = [
+  "source.tar",
+  "source-commit.txt",
+  "crest.csv",
+  "crest-run.json",
+  "corpus-manifest.tsv",
+  "benchmark-transcript.txt",
+  "test-transcript.txt",
+  "test-artifact.json",
+  "machine.json",
+  "command-log.json",
+  "CREST-MONOGRAPH.md",
+  "CREST-MONOGRAPH.sha256",
+]
+envelope_required = [
+  "evidence-manifest.json",
+  "EVIDENCE-MANIFEST.sha256",
+]
+
+[machine]
+required_keys = [
+  "captured_at_utc",
+  "hostname",
+  "os",
+  "kernel",
+  "architecture",
+  "cpu_model",
+  "logical_cpu_count",
+  "memory_bytes",
+  "filesystem",
+  "storage",
+  "power",
+  "cache_condition",
+]
+nullable_with_note = [
+  "cpu_model",
+  "memory_bytes",
+  "filesystem",
+  "storage",
+  "power",
+]
+
+[verification]
+require_zero_violations = true
+require_matched_implies_not_pruned = true
+require_exact_sample_count = true
+require_sorted_corpus_manifest = true
+require_archive_revision = true
+require_archive_git_object_identity = true
+require_monograph_canonical_hash = true
+require_detached_full_file_hash = true

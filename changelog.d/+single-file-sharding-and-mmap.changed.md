@@ -35,5 +35,5 @@ Byte-identical to ripgrep — `bench/rgsuite/run.py` 409/409 (parallel and
 serial), full Zig unit + differential-fuzz suite green (new `memchr` /
 `lastIndexOfScalar` / `countByte` / `firstNulWide` oracles vs `std.mem`), and
 span-mode spot-checks over `-o`/`-n`/`-b`/`--column`/`--count-matches` including
-the prefix-overlap adverse case. The repo-wide *indexed* `-l`/`-c` race is
+the prefix-overlap adverse case. The repo-wide _indexed_ `-l`/`-c` race is
 unaffected and still 6–100× over rg's unindexed walk.

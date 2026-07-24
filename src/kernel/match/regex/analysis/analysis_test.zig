@@ -580,6 +580,11 @@ test "analysis/classrun: captures are transparent, nullable wrappers vanish" {
     }
 }
 
+test "analysis/classrun: an interior optional blocks seam merging" {
+    try expectNoShape("[0-9][a-z]?[0-9]");
+    try expectNoShape("[0-9](foo)*[0-9]");
+}
+
 test "analysis/classrun: unicode \\w reduces to its ASCII projection" {
     var pr = try parseU("\\w{3,}");
     defer pr.deinit();

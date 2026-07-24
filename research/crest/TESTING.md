@@ -17,18 +17,18 @@ unable to hide.
 
 Hand-computed oracles against the calculus, one test per load-bearing rule:
 
-| test                  | pins                                                                                  |
-| --------------------- | ------------------------------------------------------------------------------------- |
-| document crest        | hand-counted runs for all eight classes                                               |
-| class repetition      | `[0-9a-f]{8}` forces hex and word runs of 8                                           |
-| concatenation         | saturated seam addition and exact epsilon identity                                    |
-| optional certificates | digit and non-digit optionals cannot be confused across `?`, `*`, `{0,m}`, or `{0,0}` |
-| alternation           | componentwise minima and conjunctive `only_c_cert`                                    |
-| degradation           | unsupported syntax and caseless matching yield `0⃗`                                   |
-| escapes and Unicode   | real escaped bytes plus the byte/codepoint alphabet contract                          |
-| counted repetition    | malformed bounds degrade; 70,000 copies saturate without a 4,096 clamp                |
-| profile constructors  | epsilon certifies every class; unknown certifies none                                 |
-| common saturation     | 70,000-byte query and document values both compare as 65,535                          |
+| test                  | pins                                                                                            |
+| --------------------- | ----------------------------------------------------------------------------------------------- |
+| document crest        | hand-counted runs for all eight classes                                                         |
+| class repetition      | `[0-9a-f]{8}` forces hex and word runs of 8                                                     |
+| concatenation         | saturated seam addition and exact epsilon identity                                              |
+| optional certificates | digit and non-digit optionals cannot be confused across `?`, `*`, `{0,m}`, or `{0,0}`           |
+| alternation           | componentwise minima and conjunctive `only_c_cert`                                              |
+| degradation           | unsupported syntax and unsafe case folds yield `0⃗`; case-closed caseless classes remain active |
+| escapes and Unicode   | real escaped bytes plus the byte/codepoint alphabet contract                                    |
+| counted repetition    | malformed bounds degrade; 70,000 copies saturate without a 4,096 clamp                          |
+| profile constructors  | epsilon certifies every class; unknown certifies none                                           |
+| common saturation     | 70,000-byte query and document values both compare as 65,535                                    |
 
 ## 2. Sidecar codec tests — `src/corpus/index/crest/sidecar_test.zig`
 
@@ -38,38 +38,45 @@ years later, so it gets the adversarial treatment the trigram loader gets:
 - **Round-trip identity** — `build → writeInto → decode` reproduces every
   vector bit-for-bit.
 - **Fail-closed decode** — every malformed blob (truncated header, wrong
-  magic, wrong K, wrong doc count, torn tail, misaligned body) decodes to
-  `null`, which the loader treats as "no sidecar": the sieve silently
-  disables rather than pruning on garbage.
+  magic/version/schema hash, wrong K/width/doc count, nonzero reserved byte,
+  torn/padded tail, misaligned body) decodes to `null`, which the loader treats
+  as "no sidecar": the sieve disables rather than pruning on garbage.
+- **Semantic identity** — the pinned hash preimage includes class order, all
+  256 membership masks, the 65,535 cap, element interpretation, and format
+  version; `GISTCRS1` is rejected rather than guessed compatible.
 
 ## 3. Production proof harness — `bench/crest/bench.zig` (`zig build crest`)
 
 Links the **real** engine (`Regex.docMatch`) and walks the **real** Billy
-corpus (52.7k files, ~494 MiB) via the same `corpus.load` the optimality
-certificate uses. Four gates per run:
+corpus via the same `corpus.load` the optimality certificate uses. Five gates
+per run:
 
-1. **Corpus-wide soundness, fail-closed.** For every file × every slate
+1. **Fixed production regression.** The real matcher accepts `1a2` for
+   `[0-9][a-z]?[0-9]` and Crest retains it. The positive precision control
+   `[0-9][0-9]?[0-9]` derives a digit threshold of 2.
+2. **Corpus-wide soundness, fail-closed.** For every file × every slate
    query: if the production matcher matches, the sieve must not have pruned.
    One violation → exit 1. This is Theorem 1 checked against the shipped
    matcher on every file, not a model of it.
-2. **Randomized adversarial sweep, both modes.** 400 random class-repetition
+3. **Randomized adversarial sweep, all four modes.** 400 random class-repetition
    patterns (random classes, counts, concatenation, alternation) × 60 random
-   files × **both** engine modes — byte/ASCII and rg-default Unicode — each
-   mode paired with its own ĝ exactly as the production `crestSieve` pairs
-   them (Alphabet Contract). 48,000 (pattern, file) checks per run.
-3. **Ablation.** The count-population cousin at identical thresholds, kept
-   permanently so the "why the run, not the count" claim stays measured
-   (hex-8: 0.7% vs 91.4%).
-4. **Speed.** Full-scan wall time vs sieve+survivors wall time, same matcher
-   both sides — the ratio is purely avoided work. Results → `crest.csv`.
+   files × byte/ASCII and rg-default Unicode × case-sensitive and caseless,
+   each paired with its own ĝ exactly as production `crestSieve` does
+   (Alphabet Contract). 96,000 (pattern, file) checks per run.
+4. **Ablation.** The count-population cousin at identical thresholds, kept
+   permanently so the "why the run, not the count" claim stays measured.
+5. **Speed.** Full-scan wall time vs sieve+survivors wall time, same matcher
+   both sides. Ordered raw samples, seeds, differentials, and medians are
+   preserved in `crest-run.json`; aggregates remain in `crest.csv`.
 
 ## 4. Integration correctness (the wiring, not the math)
 
 The sieve rides both read-elision oracles (`serial.zig` `IndexSkip`,
 `parallel.zig` `Elide`) behind gates that each default to _not pruning_:
 
-- **Caseless** (`-i`): sieve disabled (ĝ=0⃗) — case-folding changes class
-  membership, so no certification is attempted.
+- **Caseless** (`-i`): explicit ASCII atoms are case-closed before
+  certification. Case-closed classes remain active; upper/lower and unsafe
+  Unicode k/K/s/S folds decline to 0.
 - **Unicode default**: ĝ computed under `.unicode = true`, which certifies
   only constructs whose byte and codepoint semantics coincide (explicit
   ASCII-only classes); everything else contributes 0.
@@ -86,6 +93,12 @@ End-to-end: the full `zig build test` suite — including the rg-parity
 differential/adversarial oracles that diff gist's match sets against
 independent oracles — runs with the sieve live in the engine, so any wiring
 false negative breaks parity loudly.
+
+These tests deliberately keep the three proof obligations separate:
+`crest_test.zig` checks the **Calculus theorem**; sidecar and generation tests
+check the **Artifact theorem**; filesystem freshness suites check the
+conditional **Freshness theorem**. Only their conjunction authorizes read
+elision (`PROOF.md` §2.1).
 
 ## 5. Independent exact-automaton oracle (`spikes/ridge-spectrum/ridge.py`)
 
@@ -122,7 +135,10 @@ trail (PRIOR_ART.md §7–8).
 ```bash
 cd pkg/kernels/irregex
 zig build test        # §1 + §2 + engine parity suites
-zig build crest       # §3 — prints the gates, writes .local/gist-verify/crest.csv
+zig build crest       # §3 — exploratory raw evidence in .local/crest-evidence/
 gist index && gist status   # §4 — sidecar persisted alongside index.gist
 python3 spikes/ridge-spectrum/ridge.py --oracle --selftest  # §5 — oracle + property suite
+cd ../../..
+python3 pkg/kernels/irregex/bench/crest/evidence/crest_evidence.py package
+# clean committed HEAD only: source archive + manifests + samples + monograph
 ```
