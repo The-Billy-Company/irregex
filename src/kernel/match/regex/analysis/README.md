@@ -1,8 +1,8 @@
 ---
 doc_radar:
   sentinels:
-    - description: "analysis is sound and conservative — a wrong answer only costs a full scan, never a missed match"
-      file: pkg/kernels/irregex/src/kernel/match/regex/analysis/analysis.zig
+    - description: "the compiled-NFA reachability analysis is sound and conservative — a wrong answer only costs a full scan, never a missed match"
+      file: pkg/kernels/irregex/src/kernel/match/regex/analysis/reach.zig
       contains: ["pub fn analyzeFirst", "pub fn reachesMatchEol"]
 ---
 
@@ -15,7 +15,9 @@ risking a false negative (the one unforgivable bug).
 
 | File                | Role                                                                                                                                                                                                                                                               |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `analysis.zig`      | Two layers of visitors: AST visitors over `syntax.zig` (required-literal / alternation-cover extraction, anchored-start) that feed the T0 trigram prefilter, and compiled-NFA visitors (`analyzeFirst` first-byte set, `reachesMatchEol`) that feed the scan loop. |
+| `analysis.zig`      | The AST literal layer + the public face of the whole analysis module: required-literal extraction, alternation cover set, pure-literal match-equivalence, and the anchored-start predicate (the T0 trigram / seeding accelerators). Re-exports `runs.zig` and `reach.zig`. |
+| `runs.zig`          | AST class-run / class-span reductions: `classRunShape` (boolean "≥ min consecutive class members") and the strictly stronger `classSpanShape` window rule, feeding the SIMD class-run kernel (`../../scan/classrun.zig`).                                            |
+| `reach.zig`         | Compiled-NFA reachability visitors over the `State` program: `analyzeFirst` (first-byte set), `reachesMatchEol` (zero-width EOL), and `reachesMatchZeroWidth` (nullable) that feed the scan loop.                                                                   |
 | `prefilter.zig`     | The `Prefilter`: given the first-byte set from `analysis.analyzeFirst`, picks a skip strategy (singleton `memchr` · SIMD byte-range · scalar probe) so the Pike scanner jumps over dead spans instead of re-seeding a closure per byte.                            |
 | `analysis_test.zig` | Required-literal, cover-set, and anchored-start extraction cases.                                                                                                                                                                                                  |
 

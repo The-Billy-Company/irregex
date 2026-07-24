@@ -23,6 +23,8 @@ session, FFI face, and language bindings cannot drift on **what matches** or
 | Piece             | Job                                                                                                                                                                 |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `query.zig`       | `CompiledQuery` — lower `(pattern, fixed, ignore_case, mode)` into an immutable matcher; expose the sound trigram `prefilter` + per-doc `docMatches` / `countLines` |
+| `prefilter.zig`   | `query.zig`'s private sub-module: the sound literal derivations warm + cold share verbatim — required/alt cover, caseless fold-window + case-variant OR-set, `-F -i` escape |
+| `word.zig`        | `query.zig`'s private sub-module: the ripgrep `-w` word-boundary post-match rule (`wordOk` + the literal / regex word-span scans) over the shared `\b` oracle       |
 | [`regex/`](regex) | Linear-time NFA + byte-class DFA + Pike + opt-in PCRE2 (`syntax → analysis → compile → linear`)                                                                     |
 | [`scan/`](scan)   | SIMD substring presence + fused parallel verify (fixed-string hot path) + the dense class-run boolean/count kernel                                                  |
 
