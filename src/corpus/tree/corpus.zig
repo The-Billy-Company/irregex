@@ -391,12 +391,85 @@ fn parallelLoadDisabled() bool {
 /// behavior). Dispatches to the fused parallel walk+read (`loadpar`) by default
 /// — ~3× faster on a broad build — and to the serial walk below under
 /// `GIST_NO_PARALLEL_LOAD` (parity gate) or when the parallel path fails to
-/// start (fail-open: the result is never worse than the serial build).
+/// start (fail-open: the result is never worse than the serial build). Then
+/// `compact`s the doc bodies into one contiguous scan-order buffer (unless
+/// `GIST_NO_COMPACT`) so a full-corpus scan streams across document boundaries.
 pub fn load(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !Corpus {
-    if (!parallelLoadDisabled()) {
-        if (@import("loadpar.zig").load(gpa, io, roots)) |c| return c else |_| {}
+    var c = blk: {
+        if (!parallelLoadDisabled()) {
+            if (@import("loadpar.zig").load(gpa, io, roots)) |c| break :blk c else |_| {}
+        }
+        break :blk try loadSerial(gpa, io, roots);
+    };
+    if (!compactDisabled()) compact(gpa, &c);
+    return c;
+}
+
+/// `GIST_NO_COMPACT` truthy (any value but `0`/`false`/`no`/empty) keeps the
+/// scattered per-worker-arena doc layout — the A/B toggle for the contiguity
+/// win and a parity escape hatch, mirroring `GIST_NO_PARALLEL_LOAD`.
+fn compactDisabled() bool {
+    const s = std.mem.span(std.c.getenv("GIST_NO_COMPACT") orelse return false);
+    return s.len != 0 and !envFalsy(s);
+}
+
+/// Relocate every doc body into ONE contiguous, scan-order buffer so a
+/// full-corpus scan (`for (docs) |d| contains(d, …)`) streams across document
+/// boundaries. The default parallel loader leaves ~20k bodies scattered across
+/// per-worker arenas at unrelated addresses, so the scan restarts the hardware
+/// prefetcher's ramp at every one of them — the per-doc ramp being the dominant
+/// tax on this many-small-files corpus (Layer C: contiguous 52.8 GB/s vs
+/// fragmented corpus 28.7 GB/s on M4). Laid back-to-back in the exact order they
+/// are scanned, the HW prefetcher — which streams linearly and does not stop at
+/// a slice boundary — warms the next doc's head while the current doc's tail is
+/// still in flight. Each doc slice stays independent (scanned within its own
+/// bounds), so no separator is needed and no cross-doc match can appear.
+/// Content, paths, iteration order, and doc ids are byte-identical to the input
+/// — only the addresses change (`loadpar`'s parity test doubles as the proof).
+/// Paths are copied along, which lets the scattered source arenas + worker
+/// shards free, so steady-state retention is one tight blob (a transient 2×
+/// during the copy). Fail-open: any allocation failure leaves the corpus in its
+/// original scattered layout, never worse than before.
+fn compact(gpa: std.mem.Allocator, c: *Corpus) void {
+    compactFallible(gpa, c) catch {};
+}
+
+fn compactFallible(gpa: std.mem.Allocator, c: *Corpus) !void {
+    if (c.docs.len == 0) return;
+    var blob_arena = std.heap.ArenaAllocator.init(gpa);
+    errdefer blob_arena.deinit(); // only reachable while allocating; the swap below is infallible
+    const ba = blob_arena.allocator();
+
+    // Bodies first, so the blob sits at the arena base as one uninterrupted run
+    // (the slice headers + copied paths trail it and never split the stream).
+    const blob = try ba.alloc(u8, c.bytes);
+    const new_docs = try ba.alloc([]const u8, c.docs.len);
+    const new_paths = try ba.alloc([]const u8, c.paths.len);
+    var off: usize = 0;
+    for (c.docs, c.paths, new_docs, new_paths) |d, p, *nd, *np| {
+        @memcpy(blob[off..][0..d.len], d);
+        nd.* = blob[off..][0..d.len];
+        off += d.len;
+        np.* = try ba.dupe(u8, p);
     }
-    return loadSerial(gpa, io, roots);
+
+    // Infallible swap-and-free: retarget the corpus at the blob, then release
+    // the scattered source (old main arena + any worker shards). No `try` runs
+    // past this point, so the errdefer above can never double-free the moved
+    // arena, and `ba` is not touched after the move.
+    var old_arena = c.arena;
+    const old_shards = c.shards;
+    const old_shards_gpa = c.shards_gpa;
+    c.arena = blob_arena;
+    c.docs = new_docs;
+    c.paths = new_paths;
+    c.shards = &.{};
+    c.shards_gpa = null;
+    old_arena.deinit();
+    if (old_shards_gpa) |g| {
+        for (old_shards) |*s| s.deinit();
+        g.free(old_shards);
+    }
 }
 
 /// The single-cursor reference loader: walk one directory at a time, read each
