@@ -8,15 +8,19 @@
 //! Grep semantics: a line matches if the pattern matches ANY substring of it
 //! (unanchored). We never construct `.*pat.*`; the Pike simulation re-seeds the
 //! start thread at every position — the standard linear search. Line anchors
-//! `^` / `$` and word boundaries `\b` / `\B` are zero-width assertions resolved
-//! during the epsilon-closure: `^`/`$` from the (start, end)-of-line flags at each
-//! position, and `\b`/`\B` from the word-ness of the bytes straddling it (ASCII
-//! `[0-9A-Za-z_]`, exactly rg `--no-unicode`). A `\b`/`\B` pattern keeps the Pike
-//! VM (the byte-class DFA can't resolve word context without a separate
-//! determinization, so `powerset.build` bails to null), yet still rides the
-//! trigram prefilter on its bounded literal (`\bfunc\b` ⇒ "func"). Unicode classes
-//! remain out of scope this tier. The equality oracle runs `rg (?-u)…` so
-//! semantics coincide exactly.
+//! `^` / `$` and word boundaries `\b` / `\B` / `\<` / `\>` are zero-width
+//! assertions resolved during the epsilon-closure: `^`/`$` from the (start,
+//! end)-of-line flags at each position, and the word boundaries from the word-ness
+//! of the bytes straddling it (ASCII `[0-9A-Za-z_]`, exactly rg `--no-unicode`).
+//! Word-boundary patterns are ALSO determinized: `powerset.build` refines byte
+//! classes by ASCII word-ness and doubles the interior table so the DFA selects
+//! the transition by the *next* byte's word-ness (`trans_in`/`trans_in_w`,
+//! `start`/`start_w`) — resolving `\b`/`\B`/`\<`/`\>` at the DFA floor
+//! (`dfa.matchWord`). Under Unicode a gap abutting a non-ASCII scalar is
+//! undecidable by an ASCII-classed DFA, so `matchWord` QUITS and the Pike VM (the
+//! oracle) resolves that line; a bounded literal still rides the trigram prefilter
+//! (`\bfunc\b` ⇒ "func"). Broader Unicode word classes remain out of scope this
+//! tier. The equality oracle runs `rg (?-u)…` so semantics coincide exactly.
 
 const std = @import("std");
 const syn = @import("../syntax/syntax.zig");
@@ -302,7 +306,7 @@ pub const Regex = struct {
         else if (kernel_final and !opts.force_dfa)
             null
         else
-            try powerset.build(allocator, states, start, anchored);
+            try powerset.build(allocator, states, start, anchored, opts.unicode);
         errdefer if (dfa) |d| d.deinit();
 
         return .{
@@ -504,7 +508,13 @@ pub const Regex = struct {
             .miss => return false,
             .unproven => {},
         };
-        if (re.dfa) |d| return d.match(line);
+        if (re.dfa) |d| {
+            // Word-boundary DFA (`\b`/`\B`/`\<`/`\>`): resolves word context at the
+            // DFA floor, but under Unicode QUITS (null) on a non-ASCII gap — the
+            // Pike VM (the oracle) then resolves that line. `(?-u)` never quits.
+            if (d.word_ctx) return d.matchWord(line) orelse re.lineMatchPike(sim, line);
+            return d.match(line);
+        }
         return re.lineMatchPike(sim, line);
     }
 
@@ -597,11 +607,13 @@ pub const Regex = struct {
         // The DFA scans the whole buffer in one fused pass (one byte-touch); only a
         // powerset blow-up past the cap leaves it null, and then the Pike VM (proven
         // oracle) serves per line. Equivalence held by the doc-level differential fuzz.
-        if (re.dfa) |d| return d.docMatch(doc);
+        // A word-boundary DFA has no fused doc scan this rung (`word_ctx`); it runs
+        // per line through `lineMatch` (the DFA floor, Pike on a Unicode quit).
+        if (re.dfa) |d| if (!d.word_ctx) return d.docMatch(doc);
         var i: usize = 0;
         while (i < doc.len) {
             const end = std.mem.indexOfScalarPos(u8, doc, i, '\n') orelse doc.len;
-            if (re.lineMatchPike(sim, doc[i..end])) return true;
+            if (re.lineMatch(sim, doc[i..end])) return true;
             i = end + 1;
         }
         return false;
@@ -614,7 +626,10 @@ pub const Regex = struct {
     pub fn docMatchFused(re: *const Regex) bool {
         if (re.eol_empty) return true;
         if (re.classrun) |*cr| if (cr.nl_free and (cr.exact or cr.cp != null)) return true;
-        return re.dfa != null;
+        // A word-boundary DFA runs per line (no fused doc scan this rung), so it
+        // is not a whole-buffer machine — callers keep their per-line loop.
+        if (re.dfa) |d| return !d.word_ctx;
+        return false;
     }
 
     /// Can `countRunLines` settle this pattern's `-c` tally? True exactly for

@@ -15,12 +15,15 @@
 //! This file is the immutable, scratch-free automaton — read-only after build and
 //! freely shared across threads, exactly like the bit engine it supersedes. It is
 //! determinized **eagerly** at compile time by the powerset construction in
-//! `powerset.zig` (which collapses the byte alphabet into classes and resolves
-//! `^`/`$` line anchors into the `start`/`trans_fin` tables); `Dfa` only consumes
-//! the finished tables.
+//! `powerset.zig` (which collapses the byte alphabet into classes, resolves
+//! `^`/`$` line anchors into the `start`/`trans_fin` tables, and — for
+//! word-boundary patterns — refines classes by word-ness and doubles the interior
+//! table so `matchWord` resolves `\b`/`\B`/`\<`/`\>` at the floor); `Dfa` only
+//! consumes the finished tables.
 
 const std = @import("std");
 const prefilter = @import("../analysis/prefilter.zig");
+const word = @import("../syntax/word.zig");
 
 /// An immutable byte-class DFA. `class[b]` maps a byte to its equivalence-class
 /// column; `trans_in`/`trans_fin` are row-major `[state][class]` next-state
@@ -43,6 +46,21 @@ pub const Dfa = struct {
     start: u32, // premultiplied start row offset (at_start=true, at_end=false)
     empty_match: bool, // does the pattern match an empty line? (^$, a*, …)
     anchored: bool, // `^`-anchored ⇒ never re-seed; dead state ⇒ no match
+    // ── Word-context axis (`\b \B \< \>`; the `matchWord` path only) ──
+    // A word-boundary assertion gates on the word-ness of the bytes straddling a
+    // gap — a second determinization axis a plain byte-class DFA lacks. Rather
+    // than carry look-behind in the state, we resolve it as a look-AHEAD-selected
+    // transition (RE2 / rust-`regex`-`automata`): byte classes are refined by
+    // ASCII word-ness so the *just-consumed* byte fixes `word_before`, and the
+    // interior table is split by the *next* byte's word-ness — `trans_in` when it
+    // is a non-word byte, `trans_in_w` when it is a word byte (`trans_fin`, the
+    // EOL table, already carries `word_after=false`). The start likewise splits on
+    // the first byte's word-ness (`start`=non-word, `start_w`=word). `trans_in_w`
+    // is empty and `start_w == start` unless `word_ctx`.
+    word_ctx: bool = false,
+    unicode_word: bool = false, // `word_ctx` under Unicode: a byte ≥0x80 straddling a gap needs its full scalar decoded, which this ASCII-classed DFA can't — `matchWord` QUITS (returns null) so the Pike VM (the oracle) resolves that haystack. `(?-u)` word patterns never quit (a byte ≥0x80 is non-word, byte-for-byte).
+    trans_in_w: []const u32 = &.{}, // word-context interior table: NEXT byte is a word byte
+    start_w: u32 = 0, // word-context start when the FIRST byte is a word byte
     dead: u32, // premultiplied offset of the empty/non-matching sink (maxInt if unreachable)
     // Start-state acceleration (rust-regex / RE2 trick — see `accel.rs`): when the
     // unanchored start state's only escape is a few "exit bytes" (e.g. `;` for
@@ -60,12 +78,14 @@ pub const Dfa = struct {
         a.free(self.trans_in);
         a.free(self.trans_fin);
         a.free(self.is_match);
+        if (self.trans_in_w.len != 0) a.free(self.trans_in_w);
         a.destroy(self);
     }
 
     /// Does the pattern match any substring of `line`? Linear, one table lookup
     /// per byte. The last byte takes the `trans_fin` table so `$` can fire.
     pub fn match(self: *const Dfa, line: []const u8) bool {
+        std.debug.assert(!self.word_ctx); // word-boundary DFAs go through `matchWord`
         if (line.len == 0) return self.empty_match;
         if (self.accel) |*pf| return self.matchAccel(line, pf);
         var s = self.start; // premultiplied: `s` IS the row offset `id*ncls`
@@ -112,6 +132,37 @@ pub const Dfa = struct {
         return false;
     }
 
+    /// Word-context line matcher (`word_ctx`): resolves `\b`/`\B`/`\<`/`\>` at
+    /// the byte-class-DFA floor by selecting the interior table on the *next*
+    /// byte's ASCII word-ness (and the start on the first byte's). Returns null
+    /// — "quit, run the Pike VM" — only under `unicode_word`, the instant a gap
+    /// abuts a byte ≥0x80 whose scalar this ASCII-classed automaton can't judge
+    /// (rust-`regex`-`automata`'s quit-byte strategy). `(?-u)` word patterns
+    /// never quit: a byte ≥0x80 is a non-word byte, byte-for-byte, so every gap
+    /// is decidable. Equivalence to the Pike VM is held by the differential fuzz
+    /// (`dfa_test.zig`) and the exhaustive NFA-spec proof (`powerset_test.zig`).
+    pub fn matchWord(self: *const Dfa, line: []const u8) ?bool {
+        std.debug.assert(self.word_ctx);
+        if (line.len == 0) return self.empty_match;
+        const uni = self.unicode_word;
+        if (uni and line[0] >= 0x80) return null; // first scalar non-ASCII ⇒ can't fix `word_after` at BOL
+        var s = if (word.isWordByte(line[0])) self.start_w else self.start;
+        if (self.is_match[s]) return true;
+        const last = line.len - 1;
+        var j: usize = 0;
+        while (j < last) : (j += 1) {
+            const nb = line[j + 1]; // the byte after the gap we're about to land on
+            if (uni and nb >= 0x80) return null; // its scalar's word-ness is undecidable here
+            const tbl = if (word.isWordByte(nb)) self.trans_in_w else self.trans_in;
+            s = tbl[s + self.class[line[j]]];
+            if (self.is_match[s]) return true;
+            if (self.anchored and s == self.dead) return false;
+        }
+        // Last content byte: EOL gap ⇒ `word_after=false`, resolved by `trans_fin`.
+        s = self.trans_fin[s + self.class[line[last]]];
+        return self.is_match[s];
+    }
+
     /// Does the pattern match any line of `doc`? A single fused pass over the
     /// whole buffer — `\n` is detected inline inside the transition loop, so each
     /// byte is touched exactly once (the per-line `match` path memchr-scans for
@@ -121,6 +172,7 @@ pub const Dfa = struct {
     /// line head. Equivalence to the per-line path is held by the doc-level
     /// differential fuzz vs the Pike VM in `dfa_test.zig`.
     pub fn docMatch(self: *const Dfa, doc: []const u8) bool {
+        std.debug.assert(!self.word_ctx); // word-boundary DFAs go per-line through `matchWord`
         if (self.accel) |*pf| return self.docMatchAccel(doc, pf);
         const n = doc.len;
         var i: usize = 0;

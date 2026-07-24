@@ -334,14 +334,18 @@ test "regex: \\B non-boundary is the complement of \\b" {
     try std.testing.expect(try matches("\\B", ""));
 }
 
-test "regex: \\b keeps the trigram prefilter and skips the DFA" {
+test "regex: \\b keeps the trigram prefilter and builds a word-context DFA" {
     const a = std.testing.allocator;
     var re = try Regex.compile(a, "\\bfunc\\b");
     defer re.deinit();
     // The bounded literal is still extracted ⇒ the T0 trigram prefilter applies.
     try std.testing.expectEqualStrings("func", re.required);
-    // A word-boundary pattern keeps the Pike VM (no byte-class DFA built).
-    try std.testing.expect(re.dfa == null);
+    // A word-boundary pattern is now resolved at the DFA floor — look-ahead-selected
+    // transitions refined by ASCII word-ness (`trans_in`/`trans_in_w` + `start`/
+    // `start_w`), not bailed to the Pike VM. Under Unicode the DFA still quits to
+    // Pike on a non-ASCII gap (see `matchWord`); the build itself is a DFA.
+    try std.testing.expect(re.dfa != null);
+    try std.testing.expect(re.dfa.?.word_ctx);
 }
 
 test "regex: \\b across lines via docMatch picks the whole-word line" {

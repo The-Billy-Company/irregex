@@ -105,11 +105,19 @@ const Gen = struct {
     r: std.Random,
     buf: *std.ArrayList(u8),
     a: std.mem.Allocator,
+    // When set, sprinkle word-boundary assertions (`\b \B \< \>`) between atoms
+    // and at the pattern edges — the word-context DFA's differential coverage.
+    // Default false ⇒ the anchor-only generator is byte-identical to before.
+    words: bool = false,
 
     const E = std.mem.Allocator.Error;
 
     fn lit(g: *Gen) E!void {
         try g.buf.append(g.a, "abc"[g.r.uintLessThan(usize, 3)]);
+    }
+    /// A zero-width word-boundary assertion (two-sided `\b`/`\B`, one-sided `\<`/`\>`).
+    fn wb(g: *Gen) E!void {
+        try g.buf.appendSlice(g.a, ([_][]const u8{ "\\b", "\\B", "\\<", "\\>" })[g.r.uintLessThan(usize, 4)]);
     }
     fn atom(g: *Gen, depth: u8) E!void {
         switch (g.r.uintLessThan(u8, if (depth > 0) 7 else 6)) {
@@ -140,7 +148,11 @@ const Gen = struct {
     }
     fn concat(g: *Gen, depth: u8) E!void {
         const n = 1 + g.r.uintLessThan(usize, 3);
-        for (0..n) |_| try g.quant(depth);
+        for (0..n) |_| {
+            if (g.words and g.r.uintLessThan(u8, 3) == 0) try g.wb(); // boundary before an atom
+            try g.quant(depth);
+        }
+        if (g.words and g.r.boolean()) try g.wb(); // boundary after the run
     }
     fn alt(g: *Gen, depth: u8) E!void {
         try g.concat(depth);
@@ -150,7 +162,8 @@ const Gen = struct {
             try g.concat(depth);
         }
     }
-    /// Top level: optional `^`, a body, optional `$`.
+    /// Top level: optional `^`, a body, optional `$` (word boundaries sprinkled
+    /// inside when `words`).
     fn pattern(g: *Gen) E!void {
         if (g.r.boolean()) try g.buf.append(g.a, '^');
         try g.alt(2);
@@ -197,6 +210,107 @@ test "dfa: differential fuzz vs the Pike VM (0 divergences), anchors included" {
         }
     }
     try std.testing.expect(checked > 20_000); // the fuzz actually ran
+}
+
+test "dfa: word-boundary differential vs Pike (ASCII haystack, Unicode on & off), 0 divergences" {
+    // The word-context DFA (`\b \B \< \>`) proven against the Pike VM over
+    // ASCII haystacks, in BOTH engine modes: `(?-u)` (byte word test) and the
+    // default Unicode mode restricted to ASCII bytes (where the two word tests
+    // coincide, so `matchWord` never quits). Any divergence is a real bug.
+    const a = std.testing.allocator;
+    const alphabet = "ab_1 .cd"; // word bytes (a b c d _ 1) + non-word (space, '.')
+    var line_buf: [24]u8 = undefined;
+    var checked: usize = 0;
+    // Compiling a word-context DFA is the costly step under the leak-tracking
+    // test allocator (doubled interior table + word-ness class split), while a
+    // line probe is nearly free — so we compile a modest set of patterns and
+    // hammer each with many random lines to clear the coverage floor cheaply.
+    for ([_]bool{ false, true }) |uni| {
+        var seed: u64 = 0;
+        while (seed < 700) : (seed += 1) {
+            var prng = std.Random.DefaultPrng.init(seed *% 0x2545F4914F6CDD1D +% @intFromBool(uni));
+            const r = prng.random();
+            var pat: std.ArrayList(u8) = .empty;
+            defer pat.deinit(a);
+            var g = Gen{ .r = r, .buf = &pat, .a = a, .words = true };
+            try g.pattern();
+            var re = Regex.compileOpts(a, pat.items, .{ .force_dfa = true, .unicode = uni }) catch continue;
+            defer re.deinit();
+            if (re.dfa == null) continue; // powerset cap ⇒ Pike serves
+            const d = re.dfa.?;
+            if (!d.word_ctx) continue; // only the word-context axis is under test here
+            var sim = try Regex.Sim.init(a, &re);
+            defer sim.deinit();
+            for (0..30) |trial| {
+                const len = if (trial == 0) 0 else r.uintLessThan(usize, line_buf.len + 1);
+                for (0..len) |i| line_buf[i] = alphabet[r.uintLessThan(usize, alphabet.len)];
+                const line = line_buf[0..len];
+                const got = d.matchWord(line) orelse { // ASCII ⇒ must never quit
+                    std.debug.print("UNEXPECTED QUIT (ASCII) pat=/{s}/ uni={} line=\"{s}\"\n", .{ pat.items, uni, line });
+                    return error.UnexpectedQuit;
+                };
+                const want = re.lineMatchPike(&sim, line); // proven reference
+                if (got != want) {
+                    std.debug.print("WORD DIVERGENCE pat=/{s}/ uni={} line=\"{s}\" dfa={} pike={}\n", .{ pat.items, uni, line, got, want });
+                    return error.WordDfaPikeDivergence;
+                }
+                checked += 1;
+            }
+        }
+    }
+    try std.testing.expect(checked > 20_000);
+}
+
+test "dfa: word-boundary Unicode quit path is sound (commit ⇒ Pike; quit ⇒ Pike serves)" {
+    // Under Unicode a gap abutting a non-ASCII scalar is undecidable by the
+    // ASCII-classed DFA, so `matchWord` QUITS (null). Two invariants over
+    // haystacks laced with multi-byte scalars: (1) whenever it COMMITS it equals
+    // the Unicode Pike VM, and (2) the integrated dispatch (`matchWord` orelse
+    // Pike) ALWAYS equals Pike — the fallback is wired soundly. Plus proof the
+    // quit path is actually exercised.
+    const a = std.testing.allocator;
+    // Word + non-word ASCII, the UTF-8 of é (C3 A9) and 中 (E4 B8 AD), and a lone
+    // continuation byte (80) so gaps straddle non-ASCII — the quit trigger.
+    const alphabet = [_]u8{ 'a', 'b', '_', '1', ' ', 0xC3, 0xA9, 0xE4, 0xB8, 0xAD, 0x80 };
+    var line_buf: [24]u8 = undefined;
+    var checked: usize = 0;
+    var quits: usize = 0;
+    var seed: u64 = 0;
+    while (seed < 1100) : (seed += 1) { // compile-bound; many line probes per pattern
+        var prng = std.Random.DefaultPrng.init(seed *% 0x9E3779B97F4A7C15);
+        const r = prng.random();
+        var pat: std.ArrayList(u8) = .empty;
+        defer pat.deinit(a);
+        var g = Gen{ .r = r, .buf = &pat, .a = a, .words = true };
+        try g.pattern();
+        var re = Regex.compileOpts(a, pat.items, .{ .force_dfa = true, .unicode = true }) catch continue;
+        defer re.deinit();
+        if (re.dfa == null) continue;
+        const d = re.dfa.?;
+        if (!d.word_ctx) continue;
+        try std.testing.expect(d.unicode_word); // Unicode + word ctx ⇒ quit-capable
+        var sim = try Regex.Sim.init(a, &re);
+        defer sim.deinit();
+        for (0..30) |trial| {
+            const len = if (trial == 0) 0 else r.uintLessThan(usize, line_buf.len + 1);
+            for (0..len) |i| line_buf[i] = alphabet[r.uintLessThan(usize, alphabet.len)];
+            const line = line_buf[0..len];
+            const want = re.lineMatchPike(&sim, line); // Unicode word test, proven
+            if (d.matchWord(line)) |got| {
+                if (got != want) {
+                    std.debug.print("UNI COMMIT DIVERGENCE pat=/{s}/ line=\"{s}\" dfa={} pike={}\n", .{ pat.items, line, got, want });
+                    return error.WordUniCommitDivergence;
+                }
+            } else quits += 1;
+            if (re.lineMatch(&sim, line) != want) { // integrated dispatch must always agree
+                std.debug.print("UNI DISPATCH DIVERGENCE pat=/{s}/ line=\"{s}\" want={}\n", .{ pat.items, line, want });
+                return error.WordUniDispatchDivergence;
+            }
+            checked += 1;
+        }
+    }
+    try std.testing.expect(checked > 20_000);
+    try std.testing.expect(quits > 0); // the quit path was actually taken
 }
 
 /// Per-line Pike verdict over a whole buffer — the proven reference for the

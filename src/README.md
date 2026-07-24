@@ -109,12 +109,16 @@ compiles to a Thompson NFA from the RE2/rust-regex lineage. It is linear by
 construction, so catastrophic backtracking is impossible. The NFA then
 eagerly determinizes into a **byte-class DFA** with premultiplied transition
 rows and start-state acceleration: one table lookup per byte, newlines
-detected inline in a single fused pass. Three shapes step down to the **Pike
-VM** instead: word-boundary asserts (`\b`/`\B`; a word-context-aware DFA is
-the recorded next rung), multiline mode, and patterns whose powerset build
-exceeds the `max_states = 4096` cap (an eager build must bound itself;
-rust-regex pays that cost lazily per haystack instead, a real trade taken
-knowingly). Lookaround and backreferences escalate to the vendored, hermetic
+detected inline in a single fused pass. Word-boundary asserts
+(`\b`/`\B`/`\<`/`\>`) determinize too: byte classes refine by ASCII word-ness
+and the interior table doubles on the *next* byte's word-ness, so the DFA
+resolves word context at the floor — quitting to the Pike VM only under Unicode,
+and only when a gap abuts a non-ASCII scalar an ASCII-classed DFA can't judge.
+Two shapes step down to the **Pike VM** wholesale instead: multiline mode (and
+its `\A`/`\z` buffer anchors), and patterns whose powerset build exceeds the
+`max_states = 4096` cap (an eager build must bound itself; rust-regex pays that
+cost lazily per haystack instead, a real trade taken knowingly). Lookaround and
+backreferences escalate to the vendored, hermetic
 **PCRE2 10.47** JIT (`-P`, or `--engine auto` to try linear first) with match
 and depth limits so `-P` cannot ReDoS the host. Unicode is default-on at rg
 parity: case folding, `\b`, `\w`/`\d`/`\s`, `\p{…}` over codepoints, via

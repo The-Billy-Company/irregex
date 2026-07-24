@@ -39,6 +39,7 @@ const std = @import("std");
 const core = @import("core.zig");
 const syn = @import("../syntax/syntax.zig");
 const powerset = @import("powerset.zig");
+const word = @import("../syntax/word.zig");
 const Regex = core.Regex;
 const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
@@ -95,8 +96,11 @@ fn assertInvariants(re: *const Regex) !void {
     try expectEqual(ns * ncls, d.trans_in.len);
     try expectEqual(ns * ncls, d.trans_fin.len);
     try expect(d.start < ns * ncls and d.start % ncls == 0);
+    try expect(d.start_w < ns * ncls and d.start_w % ncls == 0); // == start when !word_ctx
     try expect(d.dead == unfilled or (d.dead < ns * ncls and d.dead % ncls == 0));
     try expectEqual(re.anchored, d.anchored);
+    // The word-context interior table exists iff the DFA carries word context.
+    if (d.word_ctx) try expectEqual(ns * ncls, d.trans_in_w.len) else try expect(d.trans_in_w.len == 0);
 
     // classes are dense [0,ncls) and every byte maps inside that range.
     var class_present = [_]bool{false} ** 256;
@@ -123,9 +127,12 @@ fn assertInvariants(re: *const Regex) !void {
 
     // (3) byte-class minimality: bytes with an identical membership signature
     // across ALL consuming sets must land in the same class (≤64 sets ⇒ pack the
-    // signature into a u64; every test/fuzz program is far under that).
+    // signature into a u64; every test/fuzz program is far under that). Under
+    // `word_ctx` the partition is ALSO refined by ASCII word-ness, so word-ness
+    // joins the signature (bit 63) and the consume-set budget drops to 63.
     const nconsume = countConsume(re.states);
-    if (nconsume <= 64) {
+    const sig_cap: usize = if (d.word_ctx) 63 else 64;
+    if (nconsume <= sig_cap) {
         var sig = [_]u64{0} ** 256;
         var j: usize = 0;
         for (re.states) |st| switch (st) {
@@ -136,6 +143,9 @@ fn assertInvariants(re: *const Regex) !void {
                 j += 1;
             },
             else => {},
+        };
+        if (d.word_ctx) for (0..256) |bi| if (word.isWordByte(@intCast(bi))) {
+            sig[bi] |= @as(u64, 1) << 63;
         };
         var by_sig = std.AutoHashMap(u64, u8).init(a);
         defer by_sig.deinit();
@@ -154,9 +164,14 @@ fn assertInvariants(re: *const Regex) !void {
     @memset(reached, false);
     const stack = try a.alloc(u32, ns); // holds offsets; ≤ ns distinct states
     defer a.free(stack);
-    reached[d.start / ncls] = true;
-    stack[0] = d.start;
-    var sp: usize = 1;
+    var sp: usize = 0;
+    // Seed BOTH starts: `start` (first byte non-word) and `start_w` (first byte a
+    // word byte). They coincide when !word_ctx, so the extra push is a harmless dup.
+    for ([_]u32{ d.start, d.start_w }) |s0| if (!reached[s0 / ncls]) {
+        reached[s0 / ncls] = true;
+        stack[sp] = s0;
+        sp += 1;
+    };
     while (sp > 0) {
         sp -= 1;
         const s = stack[sp]; // row offset
@@ -165,11 +180,18 @@ fn assertInvariants(re: *const Regex) !void {
             const tf = d.trans_fin[s + k];
             try expect(ti != unfilled and ti < ns * ncls and ti % ncls == 0); // interior slot total + valid
             try expect(tf != unfilled and tf < ns * ncls and tf % ncls == 0); // final slot total + valid
-            const tid = ti / ncls;
-            if (!reached[tid]) {
-                reached[tid] = true;
-                stack[sp] = ti;
-                sp += 1;
+            // Interior edges from `trans_in`, plus `trans_in_w` under word context —
+            // states reachable only through the word-byte table are real, so the BFS
+            // must follow both or falsely flag them as orphans.
+            const edges = [_]u32{ ti, if (d.word_ctx) d.trans_in_w[s + k] else ti };
+            if (d.word_ctx) try expect(edges[1] != unfilled and edges[1] < ns * ncls and edges[1] % ncls == 0);
+            for (edges[0 .. if (d.word_ctx) 2 else 1]) |e| {
+                const tid = e / ncls;
+                if (!reached[tid]) {
+                    reached[tid] = true;
+                    stack[sp] = e;
+                    sp += 1;
+                }
             }
         }
     }
@@ -192,6 +214,7 @@ fn assertInvariants(re: *const Regex) !void {
         try expect(!d.is_match[d.dead]); // `dead` is an offset; `is_match` is offset-indexed
         if (reached[d.dead / ncls]) for (0..ncls) |k| {
             try expectEqual(d.dead, d.trans_in[d.dead + k]); // self-loop (offset → same offset)
+            if (d.word_ctx) try expectEqual(d.dead, d.trans_in_w[d.dead + k]); // and in the word-byte table
             try expect(!d.is_match[d.trans_fin[d.dead + k]]);
         };
     }
@@ -285,8 +308,13 @@ const Spec = struct {
         for ([_][]u32{ s.seen, s.stack, s.cur, s.nxt, s.seeds }) |buf| s.a.free(buf);
     }
     /// ε-close `inject` at the given boundary flags; write the reached consume
-    /// states into `out`, return (len, matched).
-    fn close(s: *Spec, inject: []const u32, at_start: bool, at_end: bool, out: []u32) struct { n: usize, m: bool } {
+    /// states into `out`, return (len, matched). `word_before`/`word_after` are the
+    /// ASCII word-ness of the bytes straddling this gap — resolving `\b`/`\B`/`\<`/
+    /// `\>` with the SAME predicates as `powerset.close` (and the Pike VM), so this
+    /// independent acceptor also defines the word-context language the DFA must
+    /// reproduce. (Under `(?-u)` a byte ≥0x80 is non-word, byte-for-byte, which is
+    /// exactly what `matchWord` commits to when the DFA doesn't quit.)
+    fn close(s: *Spec, inject: []const u32, at_start: bool, at_end: bool, word_before: bool, word_after: bool, out: []u32) struct { n: usize, m: bool } {
         s.gen +%= 1;
         var sp: usize = 0;
         for (inject) |t| if (s.seen[t] != s.gen) {
@@ -296,6 +324,15 @@ const Spec = struct {
         };
         var n: usize = 0;
         var matched = false;
+        const push = struct {
+            fn f(sp_p: *usize, sk: []u32, sn: []u32, g: u32, o: u32) void {
+                if (sn[o] != g) {
+                    sn[o] = g;
+                    sk[sp_p.*] = o;
+                    sp_p.* += 1;
+                }
+            }
+        }.f;
         while (sp > 0) {
             sp -= 1;
             const st = s.stack[sp];
@@ -304,34 +341,29 @@ const Spec = struct {
                     out[n] = st;
                     n += 1;
                 },
-                .split => |x| for ([_]u32{ x.a, x.b }) |o| if (s.seen[o] != s.gen) {
-                    s.seen[o] = s.gen;
-                    s.stack[sp] = o;
-                    sp += 1;
-                },
-                .assert_start => |o| if (at_start and s.seen[o] != s.gen) {
-                    s.seen[o] = s.gen;
-                    s.stack[sp] = o;
-                    sp += 1;
-                },
-                .assert_end => |o| if (at_end and s.seen[o] != s.gen) {
-                    s.seen[o] = s.gen;
-                    s.stack[sp] = o;
-                    sp += 1;
-                },
-                // This Spec is a DFA structural reference, fed only patterns free
-                // of word-context assertions and buffer anchors (those have no
-                // DFA to compare against — `powerset.build` bails to null).
-                .assert_word_b, .assert_not_word_b, .assert_word_start, .assert_word_end, .assert_buf_start, .assert_buf_end => {},
+                .split => |x| for ([_]u32{ x.a, x.b }) |o| push(&sp, s.stack, s.seen, s.gen, o),
+                .assert_start => |o| if (at_start) push(&sp, s.stack, s.seen, s.gen, o),
+                .assert_end => |o| if (at_end) push(&sp, s.stack, s.seen, s.gen, o),
+                .assert_word_b => |o| if (word_before != word_after) push(&sp, s.stack, s.seen, s.gen, o),
+                .assert_not_word_b => |o| if (word_before == word_after) push(&sp, s.stack, s.seen, s.gen, o),
+                .assert_word_start => |o| if (!word_before and word_after) push(&sp, s.stack, s.seen, s.gen, o),
+                .assert_word_end => |o| if (word_before and !word_after) push(&sp, s.stack, s.seen, s.gen, o),
+                // Buffer anchors (`\A`/`\z`) only exist under multiline, where no
+                // DFA is built — such patterns are never fed to this Spec.
+                .assert_buf_start, .assert_buf_end => {},
                 .match => matched = true,
             }
         }
         return .{ .n = n, .m = matched };
     }
-    /// Does the pattern match any substring of `line`? (no '\n' in `line`).
+    /// Does the pattern match any substring of `line`? (no '\n' in `line`). Word
+    /// context is ASCII (`(?-u)` / Unicode-restricted-to-ASCII): `word_before` is
+    /// false at BOL (nothing precedes), the just-consumed byte's word-ness in the
+    /// interior; `word_after` is the next byte's word-ness, false at EOL.
     fn lineMatch(s: *Spec, line: []const u8) bool {
+        const wa0 = line.len > 0 and word.isWordByte(line[0]);
         var seed1 = [_]u32{s.start};
-        var r = s.close(&seed1, true, line.len == 0, s.cur); // BOL
+        var r = s.close(&seed1, true, line.len == 0, false, wa0, s.cur); // BOL
         if (r.m) return true;
         var cur_len = r.n;
         for (line, 0..) |c, i| {
@@ -345,7 +377,10 @@ const Spec = struct {
             };
             s.seeds[ns] = s.start; // re-seed (grep); `^` dies at at_start=false
             ns += 1;
-            r = s.close(s.seeds[0..ns], false, i + 1 == line.len, s.nxt);
+            const at_eol = i + 1 == line.len;
+            const wb = word.isWordByte(c); // byte just consumed
+            const wa = !at_eol and word.isWordByte(line[i + 1]); // next byte (false at EOL)
+            r = s.close(s.seeds[0..ns], false, at_eol, wb, wa, s.nxt);
             if (r.m) return true;
             std.mem.swap([]u32, &s.cur, &s.nxt);
             cur_len = r.n;
@@ -465,6 +500,68 @@ test "powerset: EXHAUSTIVE language equivalence for Unicode classes (DFA ≡ NFA
     }
 }
 
+/// Line-level exhaustive equivalence for a word-CONTEXT DFA: every string ≤
+/// `maxlen` over `alphabet` (ASCII-only, so `matchWord` never quits) is asserted
+/// to match identically under `Dfa.matchWord` and the word-resolving NFA `Spec`.
+/// This pins the doubled interior table (`trans_in`/`trans_in_w`) and the
+/// `start`/`start_w` selection against an independent acceptor — the transition-
+/// function bug class the structural invariants can't see.
+fn exhaustiveWordEquiv(pat: []const u8, re: *const Regex, alphabet: []const u8, maxlen: usize) !void {
+    var spec = try Spec.init(std.testing.allocator, re);
+    defer spec.deinit();
+    const d = re.dfa.?;
+    std.debug.assert(d.word_ctx);
+    var buf: [8]u8 = undefined;
+    var len: usize = 0;
+    while (len <= maxlen) : (len += 1) {
+        var idx = [_]usize{0} ** 8;
+        while (true) {
+            for (0..len) |i| buf[i] = alphabet[idx[i]];
+            const sline = buf[0..len];
+            const got = d.matchWord(sline) orelse unreachable; // ASCII alphabet ⇒ never quits
+            if (spec.lineMatch(sline) != got) {
+                std.debug.print("WORD MISMATCH pat=/{s}/ s=\"{s}\" spec={} dfa={}\n", .{ pat, sline, spec.lineMatch(sline), got });
+                return error.WordLangMismatch;
+            }
+            var c: usize = 0; // odometer over alphabet^len
+            while (c < len) : (c += 1) {
+                idx[c] += 1;
+                if (idx[c] < alphabet.len) break;
+                idx[c] = 0;
+            }
+            if (c == len) break;
+        }
+    }
+}
+
+test "powerset: EXHAUSTIVE word-boundary equivalence vs the NFA spec (every string ≤ 6)" {
+    // The word-context proof case: for each `\b`/`\B`/`\<`/`\>` pattern, every
+    // string up to length 6 over {a (∈[a-c]/\\w), z (∈\\w, ∉[a-c]), 1 (∈\\d),
+    // '_' (∈\\w), ' ' (non-word)} is checked both ways — enough to exceed each
+    // DFA's state count and pin the FULL word-context language (Myhill-Nerode).
+    // The NFA spec resolves the same word predicates as `powerset.close`, so this
+    // is a SECOND independent oracle beyond the Pike differential in `dfa_test`.
+    const pats = [_][]const u8{
+        "\\bcat\\b", "\\bcat",     "cat\\b",     "\\b\\w+\\b",   "\\b\\d+\\b",
+        "\\b",       "\\B",        "a\\Bb",      "\\Ba",         "\\ba\\b",
+        "\\<cat",    "cat\\>",     "\\<\\w+\\>", "\\b[a-c]+\\b", "\\b.\\b",
+        "z\\Bz",     "\\b_\\b",    "\\B\\w+",    "\\w+\\B",      "^\\bfoo",
+        "bar\\b$",   "\\b(a|z)\\b", "\\w\\b\\w", "\\b\\w\\w?\\b",
+    };
+    for (pats) |p| {
+        var re = compileDfa(p) catch |e| {
+            if (e == error.PowersetCapHit) continue; // Pike serves this one; no DFA to diff
+            return e;
+        };
+        defer re.deinit();
+        try expect(re.dfa.?.word_ctx); // it really is the word-context path under test
+        exhaustiveWordEquiv(p, &re, "az1_ ", 6) catch |e| {
+            std.debug.print("WORD EXHAUSTIVE FAILURE on /{s}/: {}\n", .{ p, e });
+            return e;
+        };
+    }
+}
+
 test "powerset: build is deterministic (byte-identical tables across two compiles)" {
     const pats = [_][]const u8{ "a.c", "foo|bar", "^abc$", "(a|b)*c", "[a-f0-9]{2,}", "\\w{3,8}" };
     for (pats) |p| {
@@ -546,10 +643,17 @@ const Gen = struct {
     r: std.Random,
     buf: *std.ArrayList(u8),
     a: std.mem.Allocator,
+    // When set, sprinkle word-boundary assertions (`\b \B \< \>`) between atoms
+    // and at the edges — the word-context determinizer's fuzz coverage. Default
+    // false ⇒ the anchor-only generator is byte-identical to before.
+    words: bool = false,
     const E = std.mem.Allocator.Error;
 
     fn lit(g: *Gen) E!void {
         try g.buf.append(g.a, "abc"[g.r.uintLessThan(usize, 3)]);
+    }
+    fn wb(g: *Gen) E!void {
+        try g.buf.appendSlice(g.a, ([_][]const u8{ "\\b", "\\B", "\\<", "\\>" })[g.r.uintLessThan(usize, 4)]);
     }
     fn atom(g: *Gen, depth: u8) E!void {
         switch (g.r.uintLessThan(u8, if (depth > 0) 7 else 6)) {
@@ -580,7 +684,11 @@ const Gen = struct {
     }
     fn concat(g: *Gen, depth: u8) E!void {
         const n = 1 + g.r.uintLessThan(usize, 3);
-        for (0..n) |_| try g.quant(depth);
+        for (0..n) |_| {
+            if (g.words and g.r.uintLessThan(u8, 3) == 0) try g.wb();
+            try g.quant(depth);
+        }
+        if (g.words and g.r.boolean()) try g.wb();
     }
     fn alt(g: *Gen, depth: u8) E!void {
         try g.concat(depth);
@@ -629,4 +737,39 @@ test "powerset: structural invariants + bounded-exhaustive language equivalence 
         checked += 1;
     }
     try expect(checked > 1500); // the fuzz actually exercised the determinizer
+}
+
+test "powerset: word-context invariants + exhaustive equivalence vs the NFA spec on random programs" {
+    // The word-context twin of the fuzz above — random `\b`/`\B`/`\<`/`\>`
+    // programs, each run through the full structural-invariant battery AND (when
+    // small enough) exhaustively diffed against the word-resolving `Spec` over
+    // every string ≤ 4. A second independent oracle beyond `dfa_test`'s Pike
+    // differential. `(?-u)`: ASCII word-ness, so `matchWord` never quits.
+    const a = std.testing.allocator;
+    var seed: u64 = 0;
+    var checked: usize = 0;
+    while (seed < 1500) : (seed += 1) {
+        var prng = std.Random.DefaultPrng.init(seed *% 0x2545F4914F6CDD1D);
+        const r = prng.random();
+
+        var pat: std.ArrayList(u8) = .empty;
+        defer pat.deinit(a);
+        var g = Gen{ .r = r, .buf = &pat, .a = a, .words = true };
+        try g.pattern();
+
+        var re = Regex.compileOpts(a, pat.items, .{ .force_dfa = true }) catch continue; // ASCII word test
+        defer re.deinit();
+        if (re.dfa == null) continue; // powerset cap ⇒ Pike serves
+        if (!re.dfa.?.word_ctx) continue; // only the word-context axis here
+        assertInvariants(&re) catch |e| {
+            std.debug.print("WORD FUZZ INVARIANT FAILURE pat=/{s}/ seed={}: {}\n", .{ pat.items, seed, e });
+            return e;
+        };
+        if (re.states.len <= 128) exhaustiveWordEquiv(pat.items, &re, "az1_ ", 4) catch |e| {
+            std.debug.print("WORD FUZZ LANG FAILURE pat=/{s}/ seed={}: {}\n", .{ pat.items, seed, e });
+            return e;
+        };
+        checked += 1;
+    }
+    try expect(checked > 800); // the word-context determinizer was actually exercised
 }
