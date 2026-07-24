@@ -416,6 +416,7 @@ test {
     _ = @import("kernel/primitives/ward_test.zig"); // reader/writer lease guards + double-checked readReconciled dance
     _ = @import("corpus/index/crest/sidecar_test.zig"); // crest sidecar codec: round-trip + fail-closed adversarial
     _ = @import("kernel/kinship/metric/sketch_test.zig"); // relate half: kinship metric semantics + clustering gate
+    _ = @import("kernel/kinship/metric/sketch_oracle_test.zig"); // relate half: external oracles — exact bottom-k, set-Jaccard, deflate NCD rank
     _ = @import("kernel/kinship/metric/silhouette_test.zig"); // structure channel: normalization invariance + winnow guarantee
     _ = @import("kernel/kinship/recall/lexicon.zig"); // mutual: corpus-priced fingerprint recall index
     _ = @import("kernel/kinship/recall/zipper.zig"); // mutual: suffix-automaton Ziv–Merhav cross-parse (exact ΔAb)

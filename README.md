@@ -21,7 +21,7 @@ doc_radar:
     - description: "correctness remains ahead of performance in the proof pipeline"
       file: pkg/kernels/irregex/bench/gates/ci_order.sh
       contains: ["pcre parity -P", "index-elision parity", "macro certificate"]
-    - description: "prose cites the live certificate corpus + cold speedup band (re-mint updates both)"
+    - description: "the certificate carries the live ripgrep macro comparison and its honest optimality disclaimer (re-mint preserves both)"
       file: pkg/kernels/irregex/bench/certify/artifact/CERTIFICATE.md
       contains: ["20492 files · 195.8 MiB", "7.76x", "2.10x"]
 ---
@@ -336,6 +336,16 @@ dominance (A), static and native port pressure (B/B′), the hardware roofline
 pruning of the trigram blind spot (E). A Layer-A win requires both a
 lower median and Mann–Whitney p < 0.05; missing counters or tools are printed
 as missing, never inferred.
+
+"Optimality" names the aspiration, and each layer is deliberately honest about
+how far it actually reaches: Layer C measures the scan's *distance* from the
+DRAM roofline and reports that headroom rather than claiming the roof (the mint
+run sits well below it); Layer A's cycles/byte are cross-checked against Layer
+B's static microarchitectural bound, not measured on the mint machine; and
+Layer D certifies the minimum candidate set the filter can *prove*, not a global
+algorithmic minimum. It is a dominance-and-fit certificate — every line a
+measured number with a provenance — not a proof of universal or hardware
+optimality; the certificate itself carries the same per-layer disclaimers.
 
 The claim is deliberately narrow: it certifies `gist`'s fresh-process,
 cold exact-search path over 12 literal/regex classes. It does **not** certify
