@@ -1,1 +1,0 @@
-An explicit PATH arg that can't be opened (missing/unreadable) is now reported to stderr and forces exit 2, matching ripgrep; previously such a path was dropped silently with a no-match exit 1, which read like an instant crash on a typo'd path (e.g. 'gist search tel').

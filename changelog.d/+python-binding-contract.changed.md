@@ -1,1 +1,0 @@
-The Python binding now exposes PCRE2/automatic engine selection, multiline and Unicode matching semantics in `SearchRequest`; typed index and capability lifecycle APIs; and daemon/session/index generations on reusable sessions. Structured-match parity now covers complete records, while rank correctly reflects the engine's live fallback when no index exists.

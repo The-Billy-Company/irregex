@@ -261,7 +261,7 @@ pub const commands = struct {
 /// + bindings above it) programs to, distinct from the internal tiers above.
 pub const api = @import("api.zig");
 
-pub const version_string: [:0]const u8 = "0.1.0"; // x-release-please-version
+pub const version_string: [:0]const u8 = "0.2.0"; // x-release-please-version
 
 /// The C-ABI compatibility integer. Started at 1 (introspection + the
 /// allocation-free trigram primitive); the rung-3 warm session's match callback

@@ -1,1 +1,0 @@
-Reworked Layer C from an overstated saturation claim into a matched roofline ladder that separates pure-read bandwidth, dual-window instruction/load cost, contiguous production scanning, and corpus fragmentation. The certificate now calls 35% of the measured DRAM roof material headroom and requires 80% before reporting a near-roof result.

@@ -1,1 +1,0 @@
-`-w` word searches now ride the required-literal gate (`\bLIT\b` can only match where LIT occurs — the boundary check only ever rejects), and the emitter gained a per-line SIMD memmem gate so lines without the literal never touch the regex engine. `-w Config services/backend` dropped from 72ms to 43ms (user CPU 297ms → 62ms), 1.5x faster than ripgrep.

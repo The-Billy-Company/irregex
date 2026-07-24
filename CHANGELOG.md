@@ -5,6 +5,2810 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
 
 <!-- towncrier release notes start -->
 
+## [0.2.0] - 2026-07-24
+
+### Added
+
+- A SIMD class-run kernel for dense character classes
+  (`src/kernel/match/scan/classrun.zig`) — the family the byte-class DFA was
+  slowest on. A pattern that _is_ a class repetition (`\w+`, `[a-z]{3,}`,
+  `[0-9a-f]{8}` — decided algebraically by `analysis.classRunShape`) is no
+  longer an automaton problem: boolean match reduces to "≥ min consecutive
+  members of one byte set", classified 64 bytes at a time (two-compare range
+  lanes for ≤ 4 contiguous ranges, Hyperscan-truffle nibble shuffles otherwise;
+  on aarch64 the four chunk verdicts fold into the block mask via the simdjson
+  `addp` chain instead of per-chunk movemask ladders) with shift-AND run
+  detection and a cross-block carry — load _bandwidth_ instead of the DFA's
+  loop-carried load latency. Unicode codepoint classes go further than a
+  projection: the analysis carries the class's full codepoint ranges, so the
+  kernel resolves ≥ 0x80 spans itself (scalar UTF-8 with an inlined 2-byte
+  decode + a direct ≤ 0x7FF membership bitmap; ASCII blocks stay pure SIMD) —
+  Unicode `\w{3,8}` compiles skip powerset determinization exactly like `(?-u)`
+  ones (was ~168 ms of dead-weight subset construction per compile), and no
+  verdict ever defers. The kernel also ships a STREAMING whole-buffer
+  `countLines` (rg `-c` line model): membership and newline masks from one
+  pass, lines settled with segment bit-tests — no `memchr` re-read, no per-line
+  restart — and the emit layers answer `-c`/`-l` for these patterns from the
+  whole buffer with no line split at all. The kernel also EXTRACTS spans:
+  `analysis.classSpanShape` proves the strictly stronger window rule — for a
+  concatenation of same-class quantifiers (`\w+`, `[a-z]{3,8}`, `\w\w+?`;
+  alternations/anchors decline), the leftmost-first match at `p` is exactly
+  "run(p) ≥ min, cut at lazy ? min : min(run, max)" — so `nextSpan` chunks
+  member runs straight off the membership masks (codepoint-counted,
+  byte-addressed in Unicode mode) and
+  `-o`/`--count-matches`/`--column`/`--vimgrep`/`--json` never run the Pike
+  VM's per-byte thread closures for these patterns; a fused whole-buffer doc
+  pre-gate settles span-mode misses without walking a single line. `force_dfa`
+  keeps the determinizer's own proof harness honest. Held by scalar-oracle
+  differential fuzzes (boolean, per-line count, codepoint-mode with junk-byte
+  corpora, and byte/codepoint span-window fuzzes — all on both backends), a
+  kernel-vs-Pike `matchSpan` iteration fuzz, and the 446-case rgsuite at 100%
+  parity on both engines. Measured vs ripgrep 15.1.0: dense `-c '(?-u)\w{3,8}'`
+  2.4–2.8× faster (was 1.5× _slower_), Unicode-mode `-c '\w{3,8}'` 2.5× (was
+  **8.5× slower**), miss-heavy Unicode `-c` 1.7× (was 19× slower), miss-heavy
+  `-c`/`-l` 1.7–2.0×, a 50%-non-ASCII adversarial corpus 1.12×; spans: dense
+  `-o '\w+'` 1.8–1.9× (was 3.1× slower), Unicode `-o '\w{3,8}'` 1.9–2.1× (was
+  **~100× slower**), `--count-matches` 1.9–2.2×, miss-heavy span modes at
+  parity.
+- A `flagbench` micro-profiler (`zig build flagbench`) that isolates and times
+  the single hot function each of the flags agents reach for most adds — `-i`
+  (the caseless required-literal gate against its case-sensitive twin, the
+  ratio being the case-insensitivity tax), `-n` (line-number integer→decimal
+  formatting), and `Emitter.file` in each emit mode: `-v` invert, `-l`
+  files-with-matches, `-c` count, `-o` only-matching, `-w` word-regexp, and
+  `-r`/`-rn` replace — over the real rg-style corpus, best-of-N to escape clock
+  noise, with hardware cycle counts when run under a PMU. Every profile whose
+  hot function this change touched self-checks byte-identity as it runs (a
+  scalar caseless oracle for `-i`, `{d}`-vs-`writeDecimal` for `-n`, an
+  independent reference invert emit for `-v`, and a line-hit oracle for the
+  `-l`/`-c` emit rewrites), so an optimization that drifts output fails the
+  bench rather than slipping to review; `-o`/`-w`/`-r` byte-identity stays the
+  CLI parity suite's job. It also carries conservative regression floors — the
+  caseless tax and `writeDecimal` speedup as same-run ratios (jitter cancels),
+  the emit-mode throughputs as absolutes far below observed — advisory by
+  default and blocking under `zig build flagbench -- --gate`, wired into
+  `bench/gates/ci_order.sh` so a lost optimization fails CI's performance phase
+  instead of silently regressing.
+- A count-mode lane in the resident-session certificate (`bench/session/`), the
+  warm analog of the new cold `-c` race. The `gist-bench session` harness now
+  replays its slate over the same warm daemon connection a second time in count
+  mode — the protocol already carries `.count`, so the daemon answers each with
+  its `countLines` tally (grep `-c` semantics) — and emits `session_count.csv`.
+  `certify_session.sh` pairs each warm `-c` p50 with a ripgrep-cold `-c` timing
+  and reports a geomean count speedup + a per-needle table in
+  `CERTIFICATE_SESSION.md` (`session_count_macro.csv`). Because `-c` scans
+  every candidate whole with no first-hit short-circuit, it is the harder proof
+  the resident-index win survives more per-file work: on an armed macOS box the
+  warm count path measures ~137× over ripgrep cold — enormous, and honestly
+  narrower than files-mode's ~693× for exactly that reason. The lane is
+  **reported, not gated** (absolute count latency is box-specific;
+  `gate_session.py` still enforces only the files-mode armed floor), and
+  `d_count`/`rg_count` carry the same not-like-for-like caveat as
+  `d_files`/`rg_files` — the daemon counts over its own live watcher-reconciled
+  corpus while rg re-walks, so the speedup is the claim, not count equality
+  (exact parity stays the hermetic Zig suite's job).
+- A cross-language eligibility parity suite
+  (`bindings/python/tests/test_classify_parity.py`) now pins Python's
+  `session.warm_eligible` predicate to the Zig `request.zig::classify`
+  authority. Both are projections of one contract — which requests answer warm
+  — over different inputs (request fields vs an rg argv), so they cannot share
+  code, only agree. The suite lowers each request to its real argv, reads the
+  built binary's `GIST_DEBUG_WARM` verdict, and asserts both sides land on the
+  same declared eligible/ineligible outcome across every accepted clause and
+  every ineligible dimension — anchored so it can never pass by both
+  mislabeling the same shape, so the two can never drift.
+- A fused parallel walk+read corpus loader (`corpus/tree/loadpar.zig`), now the
+  default path for every build verb that funnels through `corpus.load` (`gist
+  index`, `relate index`, `codex build`). The serial loader walked one
+  directory at a time with a single cursor for the whole tree — ~⅓ of the
+  index-build wall clock, but every core but one idle. The new loader fuses
+  walking and reading into one work-stealing pipeline: each worker pops a
+  directory, opens it ONCE, and reads that directory's member files through the
+  still-open directory fd (`openat(dirfd, name)` — one-component namei) before
+  donating its surplus subdirectories to idle peers. On the whole-repo corpus
+  (20,497 files · 196 MiB) that cuts the index build from ~1.78 s to ~1.39 s
+  (~22%), with the load phase itself dropping ~575 ms → ~170 ms; 8 workers is
+  the sweet spot (the walk is syscall/namei-bound, so 12/16 add contention
+  without shortening the tail). Membership is byte-identical to the serial
+  `haystack.Walker` by construction — the ignore verdict comes from the SAME
+  `ignore.zig` rule core (a frozen base `Ignore` plus the immutable
+  per-directory `IgNode` chain each worker builds as it descends — the
+  parallel-walk plumbing now lives in `ignore.zig`, one source shared with the
+  search engine so the two walkers cannot drift), directory pruning applies
+  `haystack.isSkipDir` then the ignore verdict in the same order, and file
+  admission reuses the shared `corpus.per_file_cap`/`corpus.isBinary`
+  predicates. Doc ids are assigned by sorting on path, so the build is
+  deterministic run-to-run (reproducible index bytes) despite the
+  nondeterministic walk order. A hermetic fixture test pins the parallel
+  membership to the serial oracle across gitignore
+  (anchored/slash-less/negated), nested per-dir ignores, hidden files, the
+  build-dir skip list, binary, empty, and oversize files.
+  `GIST_NO_PARALLEL_LOAD` forces the serial reference (parity gate + escape
+  hatch, mirroring the engine's `GIST_NO_PARALLEL`); `GIST_WORKERS` overrides
+  the worker count.
+- A new `relate concepts` verb drops kinship from the file to the FUNCTION
+  (ADR-363): where `clusters`/`echoes` answer "which files are forks?",
+  `concepts` answers the finer question an agent actually asks — "which
+  functions across the tree are the same idea (the repeated engine, the
+  duplicated JSON dump, the copy-pasted validator), regardless of name or
+  file?" The comparison unit is the function fragment (`regions.extractAll`
+  over authored brace-family + Python source): a helper cloned into six files
+  surfaces as one six-member family, not six unrelated files. With no `TEXT` it
+  returns package-wide families ranked by consolidation opportunity —
+  conservative `repeated_lines` (shortest member span × redundant copies) then
+  channel confidence, never a fused score; with `TEXT` it retrieves the nearest
+  fragments to that concept. `--lens structure|bytes|echo` picks the channel
+  (structure is default and warm-only; byte sketches are computed only for the
+  fragments a query nominates, never a repo-wide byte pass). It reuses the
+  shared silhouette/sketch channels, seed nomination, and the union-find
+  `components` pass, over a new persisted **fragment atlas** (`concepts.frag`)
+  folded for freshness exactly like the kinship atlas, so function-level
+  discovery answers warm with `--no-index`-identical bytes. Documented in
+  `contract/search_api.toml` `[irregex.verbs]`/`[irregex.lifecycle]` and
+  advertised by `--schema`; `relate index` builds it and `relate status`
+  reports its readiness.
+- A new `src/engine/query.zig` deep module owns the transport-neutral compiled
+  query (ADR-352): a `(pattern, fixed, ignore_case, mode)` spec lowers once
+  into an immutable matcher (literal SIMD fast path, else the linear-time regex
+  engine, escaping a `-F -i` literal), exposing the sound trigram `prefilter`
+  for index candidate pruning and the per-doc `docMatches`/`countLines`
+  decision. It is fail-closed (a pattern outside the linear-time syntax is
+  `error.Unsupported`, never a `die()`) and thread-safe (immutable query;
+  per-worker `Scratch` is caller-owned), so the cold CLI and the warm resident
+  session now execute through one shared compile → prefilter → match core.
+- A new `src/search/` primitives tier (ADR-363) makes the engine set-shaped —
+  match ∪ relate ∪ weave: `PatternSet` compiles N patterns once through the
+  shared `engine/query.zig` core with exact per-pattern attribution
+  (`docMask`/`lineHits`) behind a skip-only fused alternation gate; `Sketch`
+  measures compression kinship via LZJD (LZ78 phrase dictionary, bottom-k=128
+  MinHash, `min_phrase=3` noise floor) with no parsing or language list; and
+  `loom.Plan` executes a closed filter → group → sort → limit op set
+  engine-side over attributed rows. Three CLI faces surface them through the
+  dedicated `relate` binary — `relate similar <path>` (nearest files by
+  kinship), `relate dups` (near-duplicate pairs, closest first), `relate
+  patterns -e P…` (one pass, N patterns, attributed, loom-shaped via
+  `--by`/`--under`/`--top`) — each documented in `contract/search_api.toml`
+  `[irregex]`, advertised by `--schema`, and mirrored by typed Python bindings
+  (`gist.similar`/`dups`/`patterns`/`pattern_counts`).
+- A persisted **kinship atlas** (`src/index/atlas/`) gives `relate` its own
+  warm tier: `relate index` snapshots every corpus file's LZJD sketch (plus
+  path table, wall-clock anchor, FNV-1a checksum) atomically to
+  `.local/gist-verify/kinship.atlas`, and `relate status` reports readiness,
+  freshness, and staleness for both the atlas and the optional codex shelf
+  (`relate index --shelf` now builds the quote shelf without shelling out to
+  gist). The sketch verbs (`similar`/`dups`/`clusters`) load the atlas and fold
+  in only files changed since the anchor — re-sketched from live bytes,
+  deletions gated out — so warm answers are byte-identical to a cold rebuild,
+  just ~12× faster (95 ms vs 1.2 s for `similar` over the 22.8k-file live
+  corpus); `--no-index` or a missing atlas falls back to the live build with
+  identical output.
+- A release is now gated on the Certificate of Optimality being freshly
+  re-minted and attached on **both** the Mac and the Linux machine
+  (`bench/certify/check_release.py`). Cold-CLI dominance is machine-specific
+  (ADR-320), so per-platform bundles publish under `artifact/<platform-id>/`
+  and Town Crier refuses the release until both are present, valid, and
+  current.
+- A second emit lane in the cold field race (`bench/races/coldquery.sh`): after
+  the existing `-l` files-with-matches lane, the same needle spread —
+  guaranteed miss, very-selective, medium, common, and the 2-byte-punct
+  fallback — now also races in `-c` per-file count mode against the unindexed
+  grep-`-c` field (rg/ugrep/ag/GNU-grep/git-grep). Where `-l` short-circuits at
+  the first hit per candidate, `-c` scans every candidate whole and tallies, so
+  it's the harder proof that gist's trigram-index pruning still dominates when
+  per-file work rises — and it does: ~8× geomean vs rg, won every query against
+  every unindexed scanner, mirroring the `-l` lane. gist's `-c` is byte-parity
+  with rg's (already gated by the CLI matrix + `flagbench`), so the timed gist
+  cell stays oracle-gated against rg exactly like `-l`; a count-set drift
+  aborts the race instead of publishing a bogus speedup. Both indexed rivals
+  are absent by construction — zoekt exposes no per-file `-c`, and csearch's
+  `-c` is a total-match tally rather than grep's per-line-per-file count, so
+  neither is an apples-to-apples count oracle. Rows land in
+  `.local/gist-compete/cold_count.csv`.
+- Add a habit-safe search verb: gist search PATTERN PATHS now aliases the same
+  engine as gist rg and the bare gist PATTERN shorthand. Previously it
+  misparsed the pattern as a path and failed with os error 2; a bare gist
+  search with no pattern still searches for the literal word search, so nothing
+  regresses.
+- Add research/relate/ dossier (CLAIM + PRIOR_ART + TESTING) matching
+  crest/gist: Language Trees and Zipping lineage, 3Blue1Brown cross-entropy
+  video, and every citation the shipped engines actually use.
+- Added **Layer D of the Certificate of Optimality — the algorithmic lower
+  bound** (`bench/lowerbound/`): a fail-closed byte-touch audit proving gist
+  sits at the information-theoretic floor, verified structurally against an
+  independent single-pass reference on the real 160 MiB corpus — the fused
+  byte-class DFA touches each candidate byte **exactly once** (`passes ≡
+  1.0000`, no memchr-then-rescan double traffic; KMP'77 / Boyer-Moore'77 Ω(n)
+  verify floor), the SIMD literal path reads **≤** the floor, and the trigram
+  prefilter prunes as much as 95.65% of the corpus untouched before verify
+  (Cox'12). 11/11 classes at the floor; the gate is proven non-tautological by
+  fault injection (a single extra byte-read per line trips `exit 1`).
+- Added Layer B (port-optimality) of the Certificate of Optimality:
+  `bench/portcert/` cross-compiles byte-faithful copies of gist's two hot loops
+  (`simd.contains`, the byte-class DFA transition) to two real reference
+  microarchitectures — AMD Zen 4 (`znver4`) and Arm Neoverse V2 (`neoverse-v2`,
+  AWS Graviton4 / Google Axion) — and scores each with `llvm-mca` for its
+  static port-pressure bound (cycles/byte), splicing a `## Layer B` section
+  into `CERTIFICATE.md` and a machine-readable `portcert.json` the roofline
+  layer consumes. The probes are drift-guarded (`probes_test.zig` asserts
+  bit-identical results vs the real functions), and Layer B is a static-only
+  certificate over cross-compiled cores because LLVM has no real scheduling
+  model for any Apple CPU (all map to the 2013 Cyclone model; LLVM #63698); it
+  degrades gracefully to a documented skip when `llvm-mca` is not installed.
+- Added Layer C (roofline) of the performance certificate under
+  `bench/roofline/`: a zero-dependency STREAM-style read-bandwidth
+  microbenchmark that measures this machine's single-core L1/L2/DRAM roof and
+  gist's SIMD scan throughput. The report records distance from the roof
+  without treating a sub-ceiling result as proof of saturation.
+- Added a zero-copy emit transport to the warm `gist serve` daemon: a large
+  `lines` answer now reaches the client as an anonymous shared-memory fd passed
+  over the UDS `SCM_RIGHTS` control channel instead of being copied through the
+  socket. After the parallel render, the emit was output-transfer-bound — the
+  rendered bytes were copied user→kernel→user twice as `chunk` frames — so the
+  daemon gathers the shards straight into one shm buffer (Linux `memfd_create`
+  +
+  `F_SEAL_*` · macOS `shm_open`→`ftruncate`→`mmap`→immediate `shm_unlink`,
+  mapping
+  bounded to the exact length) and hands its fd to the client in a single
+  `chunk_fd` frame carrying `{length, matched}`; the client mmaps it read-only
+  and
+  writes it out in one shot, so the answer never traverses the socket.
+
+  The path is a negotiated SESSION capability, not a query flag (the flags byte
+  is
+  full): the client appends a `cap_fd_transport` byte after the version in its
+  HELLO, and the daemon uses the fd path only when the client advertised it AND
+  the
+  answer clears `fd_transport_floor` (1 MiB). Fail-open, never a new failure
+  mode —
+  any shm/`sendmsg` error, a below-floor or unadvertised answer, an old peer
+  (no
+  caps byte), or a non-shm target transparently falls to the byte-identical
+  `chunk`
+  frames; a peer that never advertises keeps working unchanged (the Python and
+  Rust
+  UDS clients answer files/count and simply don't advertise).
+  `GIST_NO_FD_TRANSPORT`
+  opts the CLI client out for A/B.
+
+  Measured warm emit-heavy A/B on macOS (fd vs chunk, same daemon, `the
+  --uncap`):
+  32 MiB answer (services corpus) 112 → not-copied ≈1.10× to `/dev/null`, and
+  1.6× (min-time 1.19×) when the output is actually consumed (`| wc -c`); 68
+  MiB
+  answer (repo-wide) 528 → 353 ms ≈1.50× piped. The win scales with the emit
+  and
+  with a real downstream reader, which is the agent-capture workload. The
+  committed
+  session gate is unregressed (armed geomean 474× vs the 5× floor).
+
+  Byte-identity is the whole ballgame and is proven two ways. Within one render
+  the
+  fd bytes are byte-for-byte identical to that render's `chunk` framing —
+  asserted
+  deterministically over a single-doc corpus in `serve_test` (plus an explicit
+  forced-fallback test: an injected shm-create failure drops the fd-eligible
+  answer
+  onto `chunk` frames and the bytes match). Across the live tree the CLI
+  answers
+  agree on content: warm(fd) == warm(chunk) == cold(`--no-index`) == `rg`
+  (sort-normalized, since the parallel render's doc order is unstable across
+  separate invocations independent of transport; the only gist↔rg gap is gist's
+  pre-existing dotfile skip). New: `shm.zig` portable buffer, `wire.zig`
+  `sendWithFd`/`recvFrameWithFd`, the `chunk_fd` opcode + capability
+  negotiation,
+  `render.renderLinesShm`, and `resident.queryLinesShm`.
+- Added the gist operational-envelope matrix under `bench/evaluate/` (ADR-352):
+  a closed-verb evaluator (`run`/`verify`/`compare`/`brief`) over the regimes
+  frozen in `contract/performance_evidence.toml` — lifecycle, resource, scale,
+  and concurrency — that reuses the existing race registry (`_compete.sh`),
+  hyperfine harness, and certificate statistics rather than re-encoding them.
+  It is the operational complement to the Certificate of Optimality, which owns
+  cold/warm query dominance, cycles/byte, rg drop-in correctness, and the
+  optimality layers: the matrix measures only the envelope the certificate does
+  not — index build + incremental refresh cost, footprint (index/corpus ratio,
+  peak RSS, scan throughput), scaling shape, and concurrent-load qps/tail — and
+  never re-times or restates a certificate number. Absolute build ms, RSS, and
+  qps stay machine-local while the index/corpus footprint ratio and scaling
+  shape are the only cross-machine gates; a byte-exact parity-vs-ripgrep
+  precondition (both engines) guards each lane before its timings are trusted.
+  Bundles are machine-labeled and published only from a clean tree; an
+  unmeasurable value is an honest null, never fabricated. Each run first
+  freezes the scoped corpus into an immutable same-volume snapshot
+  (`GIST_CORPUS_ROOT`) so a live ~10-agent coworking tree cannot churn under a
+  capture, and carries `_compete.sh`'s uncapped-output env contract
+  (`GIST_UNCAP=1`) into every command so gist's default output budget can't
+  clip a repo-wide result and desync the ripgrep oracle. A Billy-native,
+  idle-gated Anvil path (`scripts/observe/delivery/anvilbox/gist_eval.py`)
+  borrows the GPU box for a second x86_64-linux datapoint over the pinned-key
+  transport, never raw ssh and never stopping the forge's day job.
+- CREST's production proof now fixes and pins the class-run optional-seam false
+  negative against the real matcher, records all ASCII/Unicode ×
+  case-sensitive/caseless differentials, corpus identities, and every raw
+  timing sample behind `crest.csv`, and ships a stdlib-only release-evidence
+  packager. Clean-tree packages bind one Git revision, source archive, test and
+  benchmark receipts, machine/cache metadata, and a `git show`-rendered
+  monograph through fail-closed SHA-256 manifests, detached hashes, and exact
+  path/byte/mode reproduction from the claimed Git object.
+- Closed the certificate's PMU truth gap. New Layer B′
+  (`bench/portcert/portbound.zig`, `zig build portbound` → `gist-portbound`):
+  runs the same drift-guarded hot-loop probes as Layer B's static llvm-mca
+  bound natively under the PMU, minting a measured-on-this-machine cycles/byte
+  (`simd_contains`, throughput) and cycles/step (`dfa_step`, recurrence
+  latency) with full provenance — CPU brand via `machdep.cpu.brand_string`, a
+  P-core note (USER_INTERACTIVE QoS + measured effective GHz), and the PMU
+  source — spliced into `CERTIFICATE.md` as its own subsection alongside (not
+  replacing) the znver4/neoverse-v2 static bounds, with the unmarked production
+  `simd.contains` timed alongside as a marker-overhead cross-check. PMU state
+  is now a first-class fail-closed certificate fact: without root the artifacts
+  state "cycles/byte: cross-checked (reference cores), NOT measured on this
+  machine" and name the exact `sudo` rung, never converting wall-clock to
+  cycles via an assumed frequency. `pmu.zig`'s dlsym plumbing collapsed to
+  comptime symbol tables + one resolve loop (init-time only; counter reads
+  unchanged at exactly two per measured window).
+- Composed family search now compares exact-hit functions or match windows
+  instead of only whole files, ranks families by conservative repeated-line
+  opportunity, offers a scope-relative `--brief` worklist and `--only` answer
+  filtering, and retains nearest-neighbor receipts for genuinely distinct
+  implementations.
+- Extend the Certificate of Optimality to the narrower surfaces that previously
+  carried no first-class evidence: the `--rank` lane (Layer A — no-fabrication,
+  coverage, def-boost, codegen-demote, bounded overhead, and beats-rg where the
+  trigram prefilter prunes the corpus; saturating needles are bound by the
+  overhead claim instead), Layer F (codex self-index — sub-entropy searchable
+  space, n-free O(m) count, byte-exact decode, cento self-recognition), and
+  Layer G (relate — retrieval-by-description-length boundary, recall@1, and
+  anti-redundant pack). Each is fail-closed and gated by `check_artifacts.py`;
+  the warm tier is upgraded to a per-class Mann-Whitney dominance verdict.
+- Multi-corpus differential battery (`bench/corpora/`): a pinned fetcher
+  installs
+  five foreign trees (linux v6.10 · cpython v3.13.0 · typescript v5.8.3 ·
+  OpenSubtitles en+ru 256 MiB prefixes · a deterministic adversarial `torture`
+  generator) under `.local/gist-corpora/`, and `sweep.py` replays an rg-oracle
+  slate on each — 472 cases across both engines, all green. The first runs
+  flushed out and fixed at the root: JSON base64 `bytes` for invalid UTF-8 ·
+  full `--crlf` terminator parity · rg's implicit-path "No files were searched"
+  exit-2 heuristic · `-L` dangling-symlink reporting + ancestor-loop detection
+  with rg's message · Unicode-aware `-w` word boundaries · `-M` terminator-
+  inclusive width · rg's full binary model (the line-buffer
+  **committed-prefix**
+  geometry — 3-byte BOM-sniff read, per-fill commit at the last newline, the
+  NUL-bearing fill discarded — plus the `-U` slice-vs-line routing keyed on
+  whether the pattern can actually match `\n`, explicit-file convert semantics,
+  and the byte-count clamps in `--json`/`--stats`) · an uninitialized
+  generation
+  array in the capture VM that made `-r` nondeterministic under ReleaseFast.
+- New Go binding (`bindings/go/`, module
+  `irregex/bindings/go`) over the pull-cursor C ABI
+  (ADR-352) — a cgo wrapper linking the self-contained `libirregex.a`, in its
+  own `go.mod` so it never enters the `CGO_ENABLED=0` static Cloud Run services
+  (ADR-110). A warm `Engine` opened over roots (none = the rootless CWD walk)
+  runs many `Search(ctx, Request)` queries, each materializing a pull `Cursor`
+  driven scanner-style (`Next`/`Match`/`Err`) or via a Go 1.23 `All()`
+  range-over-func; the cursor refills an internal batch under the hood, paying
+  the cgo crossing once per 64 records. Cancellation and deadlines flow
+  straight from the `context.Context`: a watcher goroutine trips a native
+  cancel token the engine observes at the next record boundary, torn down
+  before the token frees, so a canceled ctx surfaces as `ctx.Err()` and a long
+  scan on one goroutine is abortable from another. Records are copied into
+  Go-owned `Match` values that outlive both handles; `ErrUnsupportedPattern`
+  (test with `errors.Is`) wraps a lookaround/backreference the linear engine
+  declines, never a dead process. Every handle has an idempotent `Close` plus a
+  GC finalizer. Tests use the certified `gist --json` binary as a cross-face
+  oracle and skip cleanly when none resolves.
+- New `irregex` binary — the composed third face (ADR-367) over the one kernel:
+  the exact engine narrows a typed `CandidateSet`, then the compression engine
+  reasons only inside that subset, so an exact intent scopes the statistical
+  one
+  instead of a caller unioning two independent queries by hand. Three closed
+  verbs: `context TEXT -e P…` (coverage packing over only the files that match
+  the patterns — each pick carries its exact mask AND its marginal bits, never
+  a
+  fused score), `family PATTERN {--max-distance | --echo-min}` (fork families —
+  byte near-duplicates or renamed structural twins — among only the matching
+  files), and `provenance TEXT` (quote attribution re-verified against each
+  source's CURRENT bytes, so a phrase surfaces only if the live file still
+  holds
+  it — never a stale line). `context`/`family` require an explicit scope
+  (`ROOT…` or `--all`); results on stdout (`--json` = NDJSON), diagnostics on
+  stderr, unknown verbs exit 2. The pure composition kernels live under
+  `src/search/compose/`; `gist` and `relate` stay the direct faces and forward
+  none of their verbs. Installed alongside them by `make install-gist`.
+- New `ward` primitive (`kernel/primitives/ward.zig`): a shared reader/writer
+  discipline over `std.Io.RwLock` with `Read`/`Write` lease guards and the
+  double-checked `readReconciled` fast-read / upgrade-refresh / downgrade
+  dance. The warm resident session now rides it instead of hand-rolling
+  `RwLock` lock/unlock pairs at each answer face.
+- New one-shot install surface: 'make install-gist' builds the ReleaseFast CLI,
+  symlinks it onto PATH (~/.local/bin/gist), and builds/refreshes the persisted
+  trigram index — the setup step for agents dogfooding gist as the repo's
+  default code search.
+- New shared bit-identities primitive src/math/bits.zig: a two's-complement
+  floor (ones set-bit iterator via ctz + x&(x-1); edge-safe prefixMask +
+  in-word rank; Stream, a shift-window cursor over dense packed bit fields; and
+  Field(Word) word-packed bit sets with word-masked setRange over caller-owned
+  slices) now backing powerset determinization, PatternSet attribution masks,
+  ByteSet (setRange went O(words) instead of O(hi−lo)), SA-IS suffix-type maps,
+  RRR bitvectors, and the SIMD survivor walks — one audited implementation, 1
+  bit per flag instead of a byte. Profiled on the codex FM-index (macOS sample
+  over codex-scale, 16MB): the seek class walk was ~41% of count() samples; the
+  Stream cursor with paired 12-bit takes plus an O(1) offset-0 scanBlock fast
+  path measured ~5% median / ~14% best count-latency improvement, with the
+  evidence pinned in PROFILING-DERIVED comments at each site.
+- Python bindings gain a result-side aggregation API: gist.summary() searches
+  then buckets matches, and gist.tally() groups any Match sequence by a named
+  axis (file/dir/ext/match) or a custom callable, ranked by count. It is
+  contract-safe (does not widen SearchRequest) and pure over the engine's
+  results.
+- Python bindings gain gist.rank(): the engine's definition-first --rank view
+  as typed Ranked rows carrying the engine's own def/use/gen classification
+  (RankKind) — a symbol's declaration ahead of its call sites, codegen demoted.
+  The classification is read from the engine, never reclassified in Python, so
+  aggregation can exclude generated files without forking the classifier.
+- Rust crate gains gist::rank(): the engine's definition-first --rank view as
+  typed Ranked rows carrying the engine's own def/use/gen classification
+  (RankKind) — a symbol's declaration ahead of its call sites, codegen demoted.
+  The classification is read from the engine, never reclassified in Rust, so
+  aggregation can exclude generated files without forking the classifier.
+  Reaches parity with the Python face.
+- Rust crate gains the same result-side aggregation API as the Python face:
+  gist::summary() searches then buckets matches, and gist::tally()/tally_by()
+  group any Match sequence by a named Axis (File/Dir/Ext/Match) or a custom
+  Fn(&Match) -> String, ranked by count. It is contract-safe (does not widen
+  SearchRequest) and pure over the engine's results.
+- Structured stderr guidance channel for agents
+  (src/runtime/cold/emit/hints.zig): a no-match run now ends with a one-line
+  `gist: no matches for '…' · N files scanned · scope: …` summary plus up to
+  three ranked suggestion lines in rustc's help/note split — `gist: try <flag
+  or move> — <why>` for a concrete retry (`-i` when the pattern carries
+  uppercase, `-U` when it spans a line break, `-F` when it has regex
+  metacharacters, `-uu`/scope-widening when the walk was filtered) and `gist:
+  note: <fact>` for what can't be flagged away (an inverted `-v` miss,
+  literal-space semantics) — derived purely from the query's own shape and
+  wired into every engine exit seam (serial, parallel, ranked live+indexed,
+  stdin, and the warm daemon client via the resident classifier). The
+  bad-pattern and truncation diagnostics share the same `gist: error:` / `gist:
+  try` / `gist: note:` grammar, `--rank`'s timing line gained the `gist:`
+  prefix, `usage()` was reorganized (search views / lifecycle / aliases /
+  introspection / channels+env) and moved to stdout, and `--schema` documents
+  the new `hints` channel. `GIST_HINTS=0` mutes the channel wholesale;
+  `--quiet`/`--json`/`--files` never hint; a query with a hit still emits
+  nothing on stderr — asserted by the extended bench/gates/streams.sh contract
+  (structured-miss + kill-switch cases).
+- The Certificate of Optimality gains Layer E — the crest sieve: a fail-closed,
+  measured proof that gist closes the literal-free class-repetition blind spot
+  (the Layer A `regex-classcount` cand%=100% hole) every trigram-family index
+  concedes, with a count-cousin ablation proving the forced run is the
+  necessary condition. Minted by `zig build crest` and spliced by
+  `certify_crest_report.py`; the reproducibility gate now requires the Layer E
+  section + `crest.csv` sidecar.
+- The Python bindings now ship `gist.ensure_serve` and the
+  `gist.opening_session` context manager (ADR-352 rung 2.5): a batch caller
+  opens one warm `Session` — auto-spawning a detached `gist serve` daemon when
+  none is listening (herd-safe, `GIST_NO_AUTOSERVE`-gated, fail-open to cold) —
+  so its multi-query loop rides the resident UDS path instead of re-paying the
+  cold subprocess + index-mmap startup per call. First consumers: the doc-radar
+  `still_here` batch and the codegen/trust lint file scans.
+- The Python package now drives the in-process C session ABI (ADR-352 rung 3)
+  over cffi (`irregex/_ffi.py` ABI-mode `dlopen` of `libirregex.{dylib,so}`),
+  so a persistent `Session` serves eligible queries WARM inside the host
+  process — no subprocess, no Unix socket. Unlike the rootless UDS transport
+  (files/count only), it streams full `Match` records and opens explicit
+  `SearchRequest.paths` as C root arrays, giving `Session.run` a scoped warm
+  path; `files`/`count`/`absent` prefer it too, each byte-identical to the cold
+  `gist --json` stream (records, `-l`, `-c`). It is fail-open by construction:
+  `_ffi` returns `None` (→ UDS daemon, then cold subprocess) when the shared
+  library or `cffi` is absent, the ABI version disagrees, the corpus can't
+  open, or the pattern is unsupported (`IRREGEX_STALE`) — so `cffi` stays
+  OPTIONAL and the wheel stays pure-Python and dependency-free (opt out with
+  `GIST_NO_FFI`, override the library with `GIST_LIB`). Handles are bounded and
+  keyed by `(process CWD, roots)`, preventing scope reuse; each
+  `irregex_search` runs over its own per-call arena, so overlapping calls can't
+  corrupt one another's scratch. Proven by `tests/test_ffi_parity.py` (FFI ≡
+  cold: records, files, count, explicit relative/file/absolute roots,
+  read-your-writes, deletion reconcile, unsupported→cold, ABI parity).
+- The Rust `gist` crate gained an opt-in `native` feature exposing an
+  in-process warm `Engine`/`Cursor` over the pull-cursor C ABI (ADR-352), the
+  graduation rung beside the default subprocess transport.
+  `Engine::open(roots)` holds a warm corpus; `search`/`run` return a pull
+  `Cursor` implementing `Iterator<Item = Result<Match>>` (plus `batches(n)` to
+  amortize the FFI crossing), with a thread-safe `CancelToken` and
+  per-operation `Run` budgets (deadline, `max_results`) honored at record
+  boundaries. Records are copied into owned `Match` values, so they outlive
+  both handles; a materialized cursor is independent of the engine. Every
+  failure is the crate's typed `Error` — a pattern outside the linear engine is
+  `Error::UnsupportedPattern`, an option the ABI can't carry (glob/type
+  scoping, multiline, a non-linear engine) is the new `Error::Unrepresentable`
+  — never a `die()`ed host. Its `build.rs` links the self-contained
+  `libirregex` resolved beside the kernel or at `$GIST_LIB_DIR`; the default
+  crate still links no native archive and lifts out cleanly for the OSS
+  release. A `--features native` parity test asserts the warm cursor's records
+  are byte-identical to the certified cold subprocess.
+- The `-P` PCRE2 backend gains a _shadow gate_ (`pcre2/shadow.zig`): every
+  backreference/lookaround pattern is rewritten into a provably
+  language-containing linear over-approximation — assertions erase, backrefs
+  splice a copy of their group's source, atomic/possessive relax to greedy —
+  and the compiled shadow's O(1)/byte byte-class DFA rejects lines/buffers
+  PCRE2 would have backtracked through, so the backtracking engine only ever
+  confirms candidates. The same containment makes the shadow's NFA-derived
+  required-literal/cover sound for the PCRE pattern (`(foo)bar\1` now
+  prefilters on `foobarfoo`, not `bar`), handing `-P` the trigram index it
+  never had. Any construct outside the provable subset (recursion, subroutines,
+  conditionals, inline flags) declines silently and PCRE2 runs raw, exactly as
+  before. The matrix's one declared structural loss flips: `pcre-backref-files`
+  (`(\w{4,})\s+\1`, dominated by ~11 s of catastrophic backtracking both
+  engines paid on one 3.6 MB base64 fixture) goes 0.94x parity → **15.7x win**
+  (735 ms vs rg's 11.6 s), with byte-identical output across all 19 parity
+  shapes; a gated≡ungated differential test holds every primitive on
+  adversarial corpora, including caseless folding and `-U` multiline.
+- The `compose` tier (ADR-367) gains a sibling contract differential for its
+  typed `CandidateSet`: `candidates_test.zig` proves `select` equals the plain
+  set-algebra of N independent single-pattern substring runs — union under
+  `.any`, intersection under `.all`, with exact per-pattern masks — against an
+  engine-independent `std.mem.indexOf` oracle over a randomized 260-doc corpus,
+  plus overlapping-literal attribution, the 64-pattern bit-63 boundary, and the
+  empty / over-cap error paths. The kernel is now wired into the merge-blocking
+  CI test fan-out as `TestGist` (an internal `TestResultsAll` leg beside
+  `TestBillog`/`TestPrincipia`/`TestLamina`), running `zig build test` + `zig
+  build -Doptimize=ReleaseFast` in the shared Go-cgo + pinned-Zig base, so a
+  regression in the search kernel now fails a PR rather than only a local run.
+  The twelve remaining 500+ line modules
+  (json/query/classrun/shadow/analysis/persist/fresh/protocol/watch/render/blast/regions)
+  carry honest `MONOLITHIC` markers + registry rows, closing the
+  shape-discipline debt.
+- The content-transform flags (`-z`/`--search-zip`, `--pre`/`--pre-glob`,
+  `-E`/`--encoding`, `--binary`/`-uuu`) now carry permanent regression coverage
+  in the Certify Benchmark. `bench/rgsuite/transforms.py run` is a
+  hand-authored differential vs ripgrep over minted fixtures (compressed blobs
+  per container, UTF-16/Latin-1 text, a NUL-bearing file, a `gzip -dc "$1"`
+  preprocessor) — byte-for-byte on `-z`/`-E`/`--pre`, and `rg -a` as the oracle
+  for `--binary`'s deliberate whole-file superset — each case also asserting
+  indexed == `--no-index`, run once per engine; it is wired into the
+  correctness phase of `bench/gates/ci_order.sh`. `transforms.py bench` adds a
+  blocking `-z` speed floor: gist's in-process `std.compress` decode of
+  gzip/zstd/xz must stay ~2×+ faster than ripgrep's
+  fork-a-decompressor-per-file (`--floor-rg`, conservative vs the real ~4-15×
+  so jitter never false-trips), wired into the perf phase.
+  `bench/races/searchzip_headtohead.sh` adds ugrep to the `-z` field over a
+  nested compressed corpus. A pure `pipeline.transformsRidePipeline` seam +
+  unit test pins the routing contract (`-z`/`-E` ride the parallel engine,
+  `--pre`/`--binary` stay serial) so a future edit can't silently drop `-z` to
+  the serial path.
+- The fail-closed cold certificate gains a twelfth class, `regex-litalt`
+  (`panic|0x`) — the sparse sub-trigram pure-literal alternation that was the
+  table's one documented loss (0.93×) before the fused `containsAny`
+  equivalence path. The class is wired through the shared probe registry
+  (`bench/harness/probes.zig`, so Layers A and D pick it up by construction),
+  `certify.sh`, `ratio_regress.py` (committed floor 1.15×), and
+  `check_artifacts.py`. The republished committed certificate reads **12 win ·
+  0 parity · 0 loss** vs official ripgrep (hyperfine 20 runs + 3 warmup, 95%
+  bootstrap-CI medians, Mann-Whitney p<0.001 on every class), with
+  `regex-litalt` at 1.66×; Layer D's byte-touch audit holds all 12 classes at
+  the Ω(candidate-bytes) floor.
+- The four remaining figure scripts now read committed data instead of
+  transcribing it. `gist_cold_field.py`, `gist_warm_dominance.py`, and
+  `gist_regex_matrix.py` read `bench/races/artifact/{cold,warm,regex}.csv`
+  (reproducible snapshots published from `bench/races/*.sh`);
+  `gist_scan_progression.py` reads `bench/races/artifact/scan_progression.json`
+  (curated PMU / optimization history). All fail loud if the data is missing,
+  so a figure can never be silently drawn from stale numbers —
+  `check_artifacts.py --dataviz` now passes on all five gist figures. This also
+  fixes a CSV-injection bug in `regex_headtohead.sh`: patterns containing
+  commas (`\w{3,8}`, `[a-f0-9]{2,}`) were written unquoted, splitting into
+  extra columns and corrupting `regex.csv`; the pattern field is now quoted,
+  and the figure parser skips any non-numeric cell.
+
+  The committed race data (Apple M2, ~15.3k-file worktree) confirms the split
+  the macro certificate found: gist's WARM resident path dominates (rg 807×,
+  git grep 1158×, 20/20), while its COLD literal and regex CLI lose to the
+  whole field (rg ~0.3×; csearch/zoekt ~0.1–0.4×) — the per-query freshness
+  `stat()`-walk cost. The regenerated `assets/gist-*.png` figures now show this
+  honestly.
+- The index loader now fails closed on a corrupt blob, and the benchmark-timer
+  fail-closed contract is committed as a runnable gate.
+  `Index.fromBytes`/`fromMappedBytes` previously trusted most of a `writeInto`
+  body — unchecked `dir_off`, no varint length/canonical bound, doc ids never
+  bounded against `doc_count`, and `fromMappedBytes` `@alignCast`ing an
+  arbitrary slice — so a corrupt or hostile index (the format is a
+  native-endian local rebuildable cache, not a portable/untrusted artifact, but
+  still) could panic, be silently accepted, or read out of bounds. Both loaders
+  now run one `validateStructure` pass and reject anything that violates it
+  with `LoadError.BadFormat`: `posting_count` fits u32; trigrams distinct +
+  strictly ascending; every group non-empty, in-bounds, and EXACTLY consumed;
+  every posting-body varint canonical, `<= 5` bytes, and `<= maxInt(u32)` via
+  the new `varint.decodeBoundedCanonical`; doc ids strictly ascending, `<
+  doc_count`, with no wrap; and `sum(dir_count) == posting_count`.
+  `fromMappedBytes` also verifies 4-byte alignment before the `@alignCast`
+  instead of trapping. A ~30-case adversarial suite
+  (`src/index/trigram_load_test.zig`) plus a bit-flip mutation fuzz-lite (both
+  loaders must agree, accepted blobs must be safe) exercises all of it — and
+  surfaced a pre-existing 1-byte leak where an empty-body index
+  (canonical-empty / all-docs-under-three-bytes) allocated `@max(len, 1)` but
+  freed a zero-length slice, now fixed in both `fromBytes` and `compact`.
+  Separately, `bench/gates/fail_closed.sh` pins the benchmark-timer contract as
+  a committed gate: its `run_drained` helper drains output (full work + swallow
+  the exit-1 no-match) while surfacing a hard error (exit >= 2), proven against
+  pure-shell cases and the wired gist CLI (an unbalanced regex and an unknown
+  flag must fail, not be timed as a fast search).
+- The irregex verbs ship as their own product face: a `relate` binary
+  (`similar` / `dups` / `patterns` + `--schema`) built from
+  `src/cli/relate/main.zig` over the same kernel, corpus policy, and persisted
+  trigram index as `gist` — one engine, two faces. `make install-gist` installs
+  both (`~/.local/bin/{gist,relate}`); the Python bindings drive the verbs
+  through `relate` (`RELATE_BIN` override); the `gist` CLI sheds them with a
+  redirect stub (exit 2) rather than a silent literal search, and its
+  `--schema` marks the three verbs moved.
+- The resident (warm) session now serves `-P`/`--pcre2`/`--engine=pcre2`
+  queries
+  warm instead of punting them to a cold process. `CompiledQuery.body` migrated
+  from a linear-only regex arm to an engine-neutral `Matcher` union, so the
+  shared
+  query core compiles, prefilters, and matches through the same PCRE2 JIT
+  backend
+  the cold path uses — including lookahead, lookbehind, backreferences, and
+  negative lookahead. A single `pcre` trailer byte rides the additive
+  `query_ext`
+  opcode (protocol v4→v5); `request.classify` sets `Request.pcre` and still
+  declines `-P`+`--rank` (ranked view stays linear-only). Caseless PCRE
+  prefilters
+  decline soundly rather than risk a false narrow. Proven byte-exact against
+  the
+  cold `--no-index` walk across lines/`-n`/`-c`/`-l`/`-c -w` on the live corpus
+  —
+  the warm hit is identical, just without the per-query trigram-index + corpus
+  load.
+- The resident (warm) session now serves scoped searches it previously punted
+  back to the cold path: an explicit `ROOT…` path argument and `-g`/`-t`
+  glob/type filters. A new additive `query_ext` wire opcode carries the
+  request's
+  roots, include/exclude globs, and file-type set alongside the pattern;
+  `request.classify` parses them into a borrowed `ScopeArgs` scratch that
+  aliases
+  `argv`, the daemon admits a query only when its requested roots are a subset
+  of
+  the roots it already serves (`ResidentSession.servesScope`), and prunes
+  candidates daemon-side through the very same `PathFilter.admits` the cold
+  walk
+  uses — so a scoped warm hit is byte-identical to cold, just without the
+  per-query trigram-index + corpus load. Measured ~5× on `-l` against a cold
+  no-index walk of the same scope.
+- The resident daemon now enforces a per-query wall-clock budget
+  (GIST_QUERY_BUDGET_MS, default 30s), armed under the session lock and sampled
+  at strided checkpoints in the O(corpus) walks. A runaway or client-abandoned
+  scan is declined to the cold path instead of pinning the single daemon thread
+  the coworker fleet shares; the fast path stays zero-cost (embedders/FFI
+  remain unbudgeted). The hosted API's RunOptions cancel/timeout_ns now also
+  bound the doc scan (not just the record boundary): a cooperative gather halt
+  honors them cleanly — the cursor keeps its partial results, no Stale — so a
+  rare-pattern or invert scan that never reaches an emit is abortable too,
+  while max_results stays record-boundary-only.
+- The resident session now arms a native macOS **FSEvents** watcher — one
+  recursive stream over the roots driven on a private CFRunLoop thread — so
+  warm
+  queries take the microsecond clean path during quiescent windows instead of
+  always paying the corpus-wide freshness reconcile that macOS previously fell
+  back to (`src/runtime/session/watch.zig`; frameworks wired in `build.zig`).
+  It mirrors
+  the Linux inotify backend's fail-closed contract: it only ever calls
+  `markDirty`/`armWatcher`, arms the session solely on a fully-started stream,
+  and
+  degrades to the reconcile-always baseline if the stream can't start — so
+  read-your-writes and ripgrep parity are unchanged and soundness never rests
+  on
+  the watcher.
+- The resident-session machinery (ADR-352 rung 2.5) now carries its unit suite:
+  the eligibility classifier's fail-closed boundary, the UDS wire codec's
+  lossless round-trip and fail-closed framing, and — over a real directory tree
+  — resident==rg parity, read-your-writes, and the watcher-barrier seqlock.
+- The rg CLI now prints a stderr note when a bundled -r value looks like a
+  grep-style flag bundle (e.g. -rn parsing as --replace=n), pointing at the
+  ripgrep semantics instead of leaving silently rewritten output. Parsing is
+  unchanged — stdout parity with ripgrep is preserved.
+- Two committed gates keep the rgsuite report and the index-size claims honest.
+  `bench/rgsuite/check_results.py` fails the build if the rgsuite README's
+  bucket counts or supported-surface parity drift from the committed
+  `results.json` (the exact README-vs-results drift the audit found), if any
+  FAIL case carries a `null`/empty `detail`, or — without `--allow-fail` — if
+  there is any FAIL at all, so a not-zero-FAIL suite is always explicit.
+  `bench/gates/index_size_accounting.py` measures the FULL on-disk gist cache
+  (`index.gist` posting blob + `paths.list` + the `built.ns` freshness anchor),
+  emits `index-sizes.json`, and can `--assert-total-under-csearch`, so any
+  "smaller than csearch" comparison cites gist's total cache rather than the
+  posting blob alone.
+- Warm `lines` mode: the bare default `gist <pattern>` search (and `-n`) now
+  routes through the resident daemon, pre-rendered daemon-side through the cold
+  Emitter itself and chunk-streamed over the v1 wire — cold's own per-file
+  bytes and exit code, in the deterministic `pathLess` file order warm `-l`
+  already speaks. The resident corpus became faithful (`session/mirror.zig`:
+  full reads with no size cap, BOM/UTF-16 decode, whole-body first-NUL
+  offsets), closing latent warm-vs-cold gaps for binary, UTF-16, and >4 MiB
+  files across all modes; TTY-stdout and readable-stdin queries decline to
+  cold, and an errored walk declines instead of serving a gapped set.
+- Warm resident session eligibility for `-q`/`--quiet` and `-m N`/`--max-count
+  N`,
+  byte-identical to cold. `-q` becomes an existence early-halt: the daemon
+  walks
+  the corpus only until the first match, answers a single matched bit, and the
+  client prints nothing and sets the exit code (0 found / 1 not) — the no-match
+  hint stays silent, exactly as cold's quiet path. `-m N` caps matching lines
+  per
+  file (per-file reset) across `-c`, `-l`, and the default line emit, mirroring
+  rg's `-m0` = match-nothing (exit 1) at the session boundary. The v2 query
+  flags
+  byte now carries `quiet` (bit 6) and `max_count` (bit 7) live alongside
+  `smart_case`/`word`; `max_count` is the first flag with a payload — a `u64
+  LE`
+  cap written immediately after the flags byte — and `decodeQuery` fails closed
+  on
+  a truncated cap (BadFrame → decline → cold). The engine branches once at the
+  top
+  of each face (a comptime-generic count cap; the warm line renderer routes the
+  cap
+  through cold's own `Emitter`), leaving the uncapped hot loops byte-for-byte
+  unchanged. Python `SearchRequest.max_count` becomes `int | None` so the falsy
+  `-m0` is distinguishable from unset. Both flags are UDS- and FFI-eligible:
+  the
+  size-checked `irregex_search` options contract carries quiet plus the
+  `u64` per-file cap. Smart-case is
+  FFI-eligible too: C carries the raw bit and Zig's `effectiveIgnoreCase`
+  remains
+  the sole Unicode uppercase authority. Explicit path scopes also route through
+  FFI's existing root-array ABI; Python bounds and keys handles by `(cwd,
+  roots)`
+  so one request can never reuse another scope's corpus. Explicit Unicode/ASCII
+  mode is FFI-eligible as well, lowered into the shared `CompiledQuery` rather
+  than reimplemented by the binding. `engine="auto"` now tries FFI for
+  linear-compatible patterns and treats `IRREGEX_STALE` as the existing signal
+  to fall through to cold PCRE2. Invert-match (`-v`) is now FFI-eligible: the
+  resident stream scans every live document, selects only lines with zero
+  spans,
+  and keeps quiet/max-count/files/count semantics byte-identical to cold.
+  Context
+  windows are FFI-eligible too, with explicit match/context record kinds. C ABI
+  1
+  starts with one coherent options and match shape; its Zig layout
+  lives in `runtime/ffi/contract.zig`, separate from session execution. The UDS
+  protocol version is unchanged (bits 6/7 were reserved).
+- Warm resident session eligibility for `-v`/`--invert-match`, byte-identical
+  to
+  cold and now FASTER on the faces the math proves winnable — overturning the
+  earlier "keep invert cold" result. The daemon answers `-v` by the
+  set-complement
+  `non_matching(f) = lines(f) − matching(f)`: the trigram prefilter stays SOUND
+  for
+  the positive MATCH set (a ruled-out file matches nothing by construction, a
+  candidate false positive is corrected by the scan), so `matching(f)` is exact
+  and
+  the complement is exact. Per-file line counts and the corpus total are
+  counted
+  once at Mirror load and maintained on reconcile, so `-c -v` = `TOTAL − Σ
+  match`
+  and `-l -v` (file qualifies iff `match(f) < lines(f)`) subtract cached
+  invariants
+  with ZERO scan on the ruled-out majority — strictly less work than cold's
+  full-corpus `-v` scan. On a 1833-file / 238k-line corpus warm `-c -v` runs
+  0.05–5.3 ms vs cold 39–48 ms (9–760×, versus the prior warm 106–286 ms), and
+  `-l -v` wins 2.7–10.8×. The bare-`-v` emit selects nearly every line of every
+  doc, so it shards its render over cores through `src/math/parallel.zig`
+  (`greedyBounds` + `fanOut`, concatenated in original doc order) and stays
+  byte-identical to the serial core; end-to-end it holds parity with cold's
+  16-core
+  scan (output-transfer-bound, winning for common patterns). The v2 query flags
+  byte is now fully assigned — `invert` (bit 4) joins `known_flags` alongside
+  fixed/ignore_case/line_num/word/smart_case/quiet/max_count — and, with every
+  bit
+  carrying a semantic, fail-closed now rests on the version handshake plus the
+  length/opcode gates. Non-invert hot paths stay byte-for-byte unchanged; the
+  session gate is unregressed (geomean 474×). Eligible across the UDS daemon
+  (`-l`/`-c`/emit), the in-process FFI, and the Python + Rust bindings
+  (`_FLAG_INVERT`, `invert` out of the warm-ineligible set), all proven against
+  cold on controlled fixtures.
+- Warm resident session protocol v2 with smart-case eligibility:
+  `-S`/`--smart-case`
+  (and its precedence siblings `-s`/`--case-sensitive`) now route warm,
+  byte-identical
+  to cold. The v2 query flags byte carries the frozen flag-family table
+  (`smart_case`
+  bit live; `word`/`invert`/`quiet`/`max_count` reserved) and `decodeQuery`
+  fails
+  closed on any bit outside `known_flags` (BadFrame → decline → cold), so an
+  unimplemented flag is never silently dropped server-side. Smart-case resolves
+  at
+  exactly one Zig site — `request.Request.effectiveIgnoreCase` (cold's
+  `hasUpper`
+  fold) — feeding the engine fold, the trigram-prefilter caseless decline, and
+  the
+  no-match hints; Python/Rust clients ship the raw bit and never re-implement
+  the
+  fold. The Python eligibility predicate forked: `warm_eligible` (UDS) admits
+  smart-case while the new stricter `ffi_eligible` keeps the in-process
+  transport
+  declining flags its C flag word cannot express.
+- `--rank` now answers from the resident session instead of falling back to
+  cold. The daemon ranks over its in-memory `LiveFile` set
+  (`renderRanked`/`renderLive`) — a symbol's definition ahead of its call
+  sites,
+  generated files demoted — reusing the same chunk transport as plain warm line
+  output. `request.classify` mirrors cold's last-explicit-wins `--rank[=k]`
+  semantics and declines the combination of `--rank` with context
+  (`-A`/`-B`/`-C`), which has no meaning in a ranked view. Output matches
+  cold's
+  ranked cap; measured ~2× over the cold no-index baseline.
+- `-A`/`-B`/`-C` context windows now render warm. `request.classify` accepts
+  the
+  short forms (glued `-A2` and separated `-A 2`), the long forms
+  (`--after-context`/`--before-context`/`--context`, `=`- or space-joined),
+  folds
+  them with cold's precedence (`after = A ?? C`, `before = B ?? C`), and
+  declines
+  non-decimal or missing values. The `query_ext` opcode gained a
+  back-compatible
+  context trailer (protocol v4 — older daemons tolerate its absence via
+  `takeContext`), and the warm `lines` renderer reuses the cold
+  `output.Emitter`
+  for in-file windows plus cold's inter-file `--` separator, forcing serial
+  emission on context queries so the cross-file separator state stays exact.
+  Byte-identical to `gist --sort path` under an uncapped output
+  (`GIST_UNCAP=1`); measured 4–6× on narrow context queries over the cold
+  no-index baseline.
+- `-P`/`--pcre2` selects a vendored PCRE2 10.47 JIT backend
+  (`src/regex/pcre2.zig`) for the constructs the linear engine can't express —
+  lookaround, backreferences, named captures — with per-thread match scratch
+  and
+  fail-closed resource ceilings (10M match / 10k depth) so pathological input
+  trips a clean no-match instead of hanging. `--engine auto` (and rg's
+  deprecated
+  `--auto-hybrid-regex` alias) is the hybrid: compile the linear engine first
+  for
+  its speed + trigram AST, escalate to PCRE2 only for a pattern the linear
+  engine
+  declines. Crucially, PCRE2 patterns are **trigram-prefiltered** too — sound
+  required-literal extraction (`src/regex/pcre2/literal.zig`) skips files that
+  provably can't match before PCRE2 runs, making gist the only _indexed_ PCRE
+  search in the field: it wins the `bench/races/pcre_headtohead.sh` lookaround
+  /
+  backreference slate against every PCRE-capable competitor (rg -P, ugrep, ag,
+  grep -P, git grep -P), with rg -P as the correctness oracle. `--rank` and
+  template replace remain linear-engine-only. The flag catalog, `--schema`,
+  `README.md`, and `.cursor/rules/irregex.mdc` now reflect that no ripgrep long
+  flag
+  is unsupported-fail-loud any more; the fail-loud contract now guards unknown
+  flags and patterns outside the chosen engine, always naming the `-P` /
+  `--engine
+  auto` fallback.
+- `GIST_DEBUG_WARM=1` now prints the classifier's routing verdict — `gist:
+  [eligible]` / `gist: [ineligible]` — _before_ the daemon dial, so a cold
+  outcome from "ineligible argv" is distinguishable from "eligible but no
+  daemon listening". This makes `src/runtime/session/request.zig::classify`
+  observable independently of any running daemon, giving the cross-binding
+  parity test a daemon-free oracle for the exact argv the resident path will
+  accept.
+- `bench/certify/check_artifacts.py` — a certificate-reproducibility gate that
+  defines what a third-party-reproducible macro certificate must contain and
+  fails until it does. `--artifacts` requires the certificate output dir to
+  hold every file needed to regenerate the result (`CERTIFICATE.md`,
+  `certify.csv`, `certify_macro.csv`, raw hyperfine JSON, `machine.json`,
+  `tool-versions.txt`, `corpus-manifest.tsv`, `command-log.txt`) and every
+  metadata key a reviewer needs (cpu_model / cpu_count / ram_bytes / os /
+  kernel / filesystem, the zig/rg/csearch/zoekt/hyperfine versions, git_commit,
+  corpus_file_count, corpus_total_bytes); it exits 2 (not 1) when no
+  certificate has been produced yet. `--dataviz` enforces figures-from-raw: it
+  fails if any `gist_*.py` figure script still transcribes numbers
+  ("transcribe" / "hardcoded" / "manual") or never actually reads its committed
+  source CSV — currently flagging all five, which stay transcribed pending a
+  committed certificate run. Producing that committed run (and then converting
+  the figure scripts to read it) needs the full field — rg + csearch + zoekt +
+  hyperfine.
+- `bench/gates/ci_order.sh` — the canonical gist CI order as one runner:
+  correctness before performance. Every correctness gate (`zig build test`,
+  rgsuite parity, line-output parity, index-elision parity, the fail-closed
+  contract, freshness) runs first, and the performance certificate
+  (`certify.sh` + the certificate-artifacts and index-size checks) runs ONLY
+  after they ALL pass — a benchmark verdict over unproven behavior is
+  untrustworthy, so perf is skipped with a clear message when any correctness
+  gate fails or when the field tools (rg/csearch/zoekt/hyperfine) aren't
+  installed. `--gates-only` skips the compile for a fast orchestration check;
+  `--allow-known` treats the tracked rgsuite FAILs as non-blocking so a
+  developer can still reach the perf phase.
+- `bench/gates/freshness_fs.sh` — the live-filesystem half of the "no false
+  negatives under stated assumptions" claim (`corpus/fresh_test.zig` only
+  unit-tests the `widen` set algebra). It builds the index ONCE, then mutates a
+  real corpus and requires the index-accelerated `gist rg -l` to equal `rg -l`
+  on the live tree (rg = ground truth) after each change: a new file under the
+  indexed root, an edited indexed file that gains the needle, a deleted file
+  (dropped), a renamed file (old path gone / new path found), and — notably —
+  two preserved-mtime edits (an append and a same-size overwrite, each with the
+  exact pre-edit mtime restored) that gist STILL finds, because it re-verifies
+  live bytes rather than trusting mtime alone. One tracked divergence is
+  reported without failing the gate: an unreadable directory is a SILENT
+  traversal failure — gist exits 0 with empty stderr where rg exits 2 with a
+  "Permission denied" warning, so a skipped directory currently produces an
+  unsignalled false negative (candidate bug: the freshness/walk layer should
+  report traversal errors).
+- `bench/gates/line_parity.sh` — a committed line-output parity gate proving
+  `gist rg -n --no-heading` is byte-for-byte identical to `rg -n --no-heading`
+  over a frozen corpus, case by case (the committed `equality.sh` only proves
+  file-SET soundness via `rg -l`, not line output). 22 core cases pass
+  byte-identical — literal, `-F`, multi-`-e`, context `-A/-B/-C`, `-o`,
+  `-c`/`--count-matches`, `-w`, `-i`, `-x`, empty-line, `-r` captures,
+  `--crlf`, `--hidden`, `--no-ignore`, non-UTF-8 `-a`, `--max-columns-preview`,
+  and paths containing a colon, a space, or a leading dash. Unsupported flags
+  (`-U`, `-P`) must fail loud (exit >= 2), never silently accept-and-differ.
+  Four divergences are documented and tracked without failing the gate: a
+  **candidate bug** where `gist -g <glob>` includes hidden/ignored files that
+  `rg` keeps filtered (default hidden/ignore parity is otherwise exact — only
+  `-g` overrides it); the known rgsuite f917 FAIL (`--trim` +
+  `--max-columns-preview` + `--color`); and the two documented
+  byte/ASCII-vs-Unicode-default boundaries (word boundary `\b` and `-i` case
+  folding on non-ASCII). `--sort path` is passed to both sides so multi-file
+  output has one deterministic order, making a raw compare a true byte diff.
+- `bench/session/` certifies the honest warm-product path: a persistent client
+  dialing a `gist serve` daemon once over a Unix socket and replaying a slate
+  over
+  that warm connection (ADR-352 rung 2.5). A new `zig build bench -- session`
+  mode
+  times the real client→daemon round-trip (daemon on its own thread, one reused
+  connection); `certify_session.sh` pairs each needle with ripgrep-cold and
+  writes
+  `session_macro.csv` + `session_meta.json`; `gate_session.py` (`make
+  bench-gist-session`) enforces the armed-path geomean floor and is report-only
+  on
+  platforms with no watcher backend (every query pays the reconcile freshness
+  tax).
+  Even unarmed on macOS it measures **7.2× geomean over ripgrep-cold** — rg
+  re-walks and re-scans the whole tree each call while the warm client pays
+  only
+  the reconcile plus an in-RAM index query. `ci_order.sh` runs the committed
+  session gate alongside the cold ratio gate in the performance phase.
+- `certify.sh` now emits a **committed, reproducible** certificate. Beyond
+  `CERTIFICATE.md` + `certify_macro.csv` it writes the full provenance a third
+  party needs to regenerate the numbers — `machine.json` (CPU / RAM / OS /
+  kernel / filesystem / git commit / corpus file-count + byte-count),
+  `tool-versions.txt`, `corpus-manifest.tsv`, `command-log.txt`, and the raw
+  per-cell `hyperfine` JSONs — and `CERT_PUBLISH_DIR=… certify.sh` publishes
+  the set to a committed dir (`bench/certify/artifact/`, gated by
+  `check_artifacts.py`). `gist_certify_forest.py` now reads `certify_macro.csv`
+  at render time instead of transcribing it, and `certify.sh`'s field-tool
+  version capture is hardened (falls back to `installed`). Requires bash 4+
+  (uses `mapfile`) and the field (rg / csearch / zoekt / hyperfine).
+
+  **The first committed run refutes the "9 win / 2 loss" claim on this
+  hardware.** On an Apple M2 over the 15,265-file worktree, the fresh-process
+  cold-CLI certificate reads **0 win / 0 parity / 11 loss** vs ripgrep: gist's
+  cold query is ~2–3× _slower_ than `rg` across every class (gist `pgxpool` 639
+  ms vs rg 200 ms; csearch 19 ms, zoekt 57 ms), because the per-query
+  corpus-wide freshness `stat()` walk over 15k files dominates the cold path —
+  the residual the README downplayed is, here, larger than the index-pruning
+  win. The published `9 win / 2 loss` was machine/corpus-specific (or stale);
+  the cold-CLI claim does not reproduce on this box. (gist's warm in-process
+  kernel, `gist-bench`, is a separate path and not measured by this
+  certificate.) This is precisely why the certificate now ships with
+  `machine.json` provenance instead of a transcribed table.
+- `flagbench` gains a `--json` record-emit floor — the hermetic, blocking guard
+  that locks in the per-record hot-path shaves (the `pathData` object cache,
+  `writeUint`, and the `asciiOnly` UTF-8 pre-check) so they can't silently rot.
+  It times the public per-file encoder core `json.emitOne` over the real corpus
+  (the exact serial stream every serial/shard/walk path shares, isolated from
+  the
+  walk/read/fan-out), and self-checks the emitted `match`-record count against
+  the
+  same independent per-line-hit oracle the `-l`/`-c` floors trust — a
+  dropped/duplicated record fails loud, byte-shape parity staying rgsuite's
+  job.
+  The floor (≥ 500 MiB/s of bytes searched, ~half the observed slowest needle
+  so
+  the shared coworking box's load never false-trips it) is advisory by default
+  and
+  blocking under `--gate`, joining the `-i/-n/-v/-l/-c/-o/-w/-r` slate the
+  `ci_order.sh` performance phase already runs. Wiring it in also compiled the
+  formerly-dormant `-U --json` ripgrep-parity table test into `zig build test`
+  (the encoder is now reachable from the module root, so `refAllDecls` reaches
+  its
+  tests), and made `output.MlHarness`'s constructor/teardown `pub` for the
+  cross-module reuse that test always intended.
+- `gist index` is now incremental and answers in ~2 ms when nothing changed
+  (~450× the ~950 ms full rebuild; ≈1,400× the pre-sweep ~3 s). The default
+  path is an AMEND: with a generation-published base for the same roots, it
+  derives the changed set since the last freshness anchor and publishes a
+  CODICIL (`corpus/index/trigrams/codicil.zig`) — a small delta segment
+  carrying re-indexed postings, crest rows, appended new-doc paths, and
+  tombstones, hardlinked forward over the base blobs and generation-atomic like
+  every publish. Queries union base ∪ codicil ∪ tombstones with byte-identical
+  answers (proven against a full rebuild on live-corpus probes). The changed
+  set comes from three tiers, each the next one's fallback: (1) the resident
+  daemon's new ANNALS — a never-drained `path → last-delivery-instant` ledger
+  fed by the live FSEvents stream, queried over the UDS protocol (v6,
+  `changed`/`annals` opcodes) behind an `FSEventStreamFlushSync` causal
+  barrier, ~0.6 ms; (2) a one-shot FSEvents historical-journal replay from the
+  `journal.tok` since-token minted at full-build time (~25 ms); (3) the proven
+  stat walk. The annals are fail-closed end to end:
+  unarmed/multi-root/pre-coverage/poisoned ledgers decline (sticky doubt on any
+  inexact event; eviction advances the coverage floor so an amputated answer is
+  impossible), a declined consult auto-spawns the daemon for the next round and
+  falls back, and every daemon answer is re-confirmed by live stat and the
+  walk's own admission filter before use. A small change amends in ~8–25 ms
+  (pair load, delta index, and publish, proportional to accumulated drift; past
+  `GIST_AMEND_MAX` it compacts via full rebuild). `GIST_NO_AMEND=1` forces the
+  full build and `GIST_NO_ANNALS=1` forces the non-daemon tiers (parity gates
+  and escape hatches); full builds also got a bitmap trigram dedup and
+  hardlinked stable aliases (~950 ms whole-repo, down ~3×).
+- `gist index` now emits a **content shard** (`corpus/index/content/shard.zig`,
+  `content.shard`): every corpus body the trigram index already ingested is
+  concatenated into one mmap'd blob with a doc→offset catalog, so a query
+  serves each unchanged file's bytes from a single memory map instead of
+  `openat`+`read`+`close`-ing it. This closes the last full-scan floor — the
+  per-file syscall wall on queries with no usable trigram filter (a 2-byte
+  literal like `})`, a dense class count, a bare `-c`) where ~20k file opens
+  had left gist behind zoekt's static server index. The blob is a read
+  accelerator only: a slice is handed back exactly when the same T3 clock rule
+  the elide overlay uses proves the file unchanged (`bulkstat.needsLiveRead` —
+  `mtime < anchor AND ctime < anchor`), and a
+  changed/new/binary/oversize/out-of-scope file misses the lookup and is read
+  live, so the walk's answer is identical whether or not a shard loads.
+  Self-anchored and fail-open — a missing/corrupt/foreign/future-dated blob
+  loads as null; `GIST_NO_SHARD=1` and `--no-index` disable it. Measured
+  across-the-board: 2-byte punct full scan (`-cF '})'`) 174.3 ms → 49.3 ms
+  (**3.53×**, beating zoekt's ~68 ms) and `-l` **5.33×**; the rare literal (`-c
+  pgxpool`) 32.0 ms → 30.4 ms (**1.05×**, beating csearch's 34.4 ms) — the two
+  classes gist had been losing. Byte-exact parity vs the `--no-index` live walk
+  is held continuously by new `shard-*` and post-index `shard-freshness` cases
+  in `bench/gates/index_elision_parity.sh`.
+- `gist status --json` now exposes a versioned lifecycle snapshot for Python,
+  Rust, and agent consumers, derived from the same data model as the human
+  report
+  so callers no longer need to parse status prose.
+- `irregex blast SYMBOL` — a live symbol blast radius for editing agents
+  (ADR-367): the seed's definition + kind, direct dependents (functions
+  referencing it, def/use classified) and dependencies (identifiers its body
+  resolves), tangential twins (compression kin of its file) and ripple
+  (same-language second-hop callers), and comments that mention it — computed
+  from CURRENT bytes with no precomputed graph, as compact `--json` or a human
+  digest with a `--budget` token cap. Built on a new shared
+  `kernel/compose/lexspan.zig` span lexer that also powers `gist --in-comments`
+  / `--in-code`.
+- `ratio_regress.py` + `ratio_baseline.json` gate gist's cold gist/rg speedup
+  floors (principia-style ratios). The hermetic `--committed` mode reads the
+  published `certify_macro.csv`; `GIST_BENCH=1 make bench-gist-ratio`
+  optionally
+  remeasures live. The certificate artifact is republished under
+  `bench/certify/artifact/` (**11 win / 0 parity / 0 loss** vs ripgrep on Apple
+  M4 Max) so README cold-dominance claims are evidence again, and `ci_order.sh`
+  runs the ratio gate after the bundle integrity check.
+- `relate search <text>` — compression-as-search retrieval, hand-rolled. The
+  relate engine gained two modules under `src/search/similarity/`:
+  `lexicon.zig`, a
+  corpus-priced fingerprint index (winnowed 8-gram fingerprints à la MOSS,
+  priced at their corpus information content −log2(df/N) bits — boilerplate is
+  worth exactly 0), and `zipper.zig`, a per-candidate suffix automaton driving
+  an exact Ziv–Merhav cross-parse (the "Language Trees and Zipping" ΔAb
+  computed in closed form — no compressor run, no entropy coder). `retrieve`
+  composes them: the lexicon nominates, the zipper decides; the score surfaced
+  is coding gain ∈ [0,1]. The first LZ78-phrase draft was measured misranking
+  short queries to parse-boundary noise and replaced. Proven by an adversarial
+  fixture suite (short-query recall where the symmetric LZJD sketch provably
+  collapses, ΔAb sidedness/asymmetry, zero-bit boilerplate, determinism) and
+  `bench/races/relate_headtohead.sh` — paraphrase queries gist answers with 0
+  hits, planted-source top-1 as a hard gate, ~2x one-pass speedup over the
+  K-token gist emulation.
+- `relate` grows a structure channel beside LZJD: every corpus file gets a
+  silhouette — identifiers/numbers/strings normalized to `I`/`N`/`S`, comments
+  and whitespace dropped, 5-token grams winnowed (w=4) into a k=256 KMV sketch
+  —
+  so a renamed Type-2 twin lands at exactly distance 0. Surfaced two ways:
+  `relate similar --lens bytes|structure|fused` (bytes stays the default), and
+  the new `relate echoes` verb, which ranks pairs by `bytes − structure`
+  distance
+  (`--min-echo`, default 0.15) to report DRY/abstraction candidates that `dups`
+  can't see — same skeleton, different vocabulary. The kinship atlas is now v3
+  (silhouette rows persisted beside sketch rows, both folded on freshness);
+  older
+  atlases read as corrupt and degrade to a live build with a `relate index`
+  hint.
+- `relate` grows from a five-verb sketch face into a standalone engine with two
+  new set-shaped verbs: `relate pack <query|file>` selects an anti-redundant
+  context set by greedy submodular max-coverage over corpus-priced fingerprints
+  — each pick is scored by _marginal_ bits saved given everything already
+  chosen, so near-duplicates of a prior pick contribute nothing and never make
+  the cut; `relate clusters` union-finds verified near-duplicate pairs into
+  fork families (size-sorted, `--min-size`/`--max-dist`/`--json`), turning
+  pairwise `dups` output into the restructure-ready unit of work. Both are
+  documented in `contract/search_api.toml` `[irregex]` and advertised by
+  `relate --schema`.
+- `src/index/codex/` — the compressed self-index: an FM-index (SA-IS suffix
+  array →
+  BWT → canonical-Huffman wavelet tree over RRR-compressed bitvectors) that
+  holds a corpus at entropy-bound size while answering `count(P)` in O(|P|)
+  flat in corpus size, `find` at a tunable sampling stride, and `restore()` —
+  the entire original text, byte-exact, from the index alone. Differential +
+  property tests against naive oracles at every layer; `zig build codex-scale`
+  (+ `bench/codex/race.sh`) proves space/time/decodability on ~187MB of real
+  repo source against gzip/bzip2/zstd/xz.
+- `src/index/trigram_fuzz.zig` — the long / nightly companion to the CI-safe
+  fuzz-lite. It seeds a corpus (empty index · one trigram/one doc · one
+  trigram/many docs · many trigrams/sparse · zero-trigram with `doc_count > 0`
+  · a max-width 5-byte doc id · realistic built indexes · the deterministic
+  malformed blobs) and mutates it (truncation, bit flips, byte overwrites),
+  asserting on every input: `fromBytes` never panics or reads out of bounds (it
+  either rejects with `BadFormat` or returns an index `queryLiteral` can walk
+  under ReleaseSafe/Debug memory safety); an accepted index also passes an
+  **independent** canonical re-walk (`safeCanonical` — deliberately not the
+  loader's own `validateStructure`, so a bug that accepts a noncanonical blob
+  is caught); and `fromBytes` / `fromMappedBytes` always agree. `fuzz_iters` is
+  the CI-safe default budget (10k mutations per `zig build test`); raise it and
+  run `-Doptimize=ReleaseSafe` for a nightly/pre-release soak.
+
+### Changed
+
+- **The two search engines merged into one.** `gist`'s certified ripgrep-parity
+  walk-and-emit pipeline (`src/runtime/cold/`) is now the _sole_ engine, and it
+  gained a second, much faster candidate source: the persisted trigram index.
+  When
+  a fresh index covers the searched subtree it is used automatically as an
+  _acceleration structure_ — reads of files the index can prove cannot match
+  (trigram non-candidates unchanged since the index was built) are elided,
+  while
+  the live walk stays authoritative for path discovery and `.gitignore`
+  semantics,
+  so output is byte-identical to a pure walk. `--no-index` forces the live
+  walk;
+  `--index` forces the accelerated path (default: auto-detect). A new
+  `bench/gates/index_elision_parity.sh` differential gate proves the core
+  safety
+  claim continuously — every query's index-accelerated output equals its
+  `--no-index` full read across literal / regex / caseless / word / count /
+  files-with(out) / context / invert / only-matching / type- / path-scoped
+  cases,
+  plus the freshness overlay (16/16 byte-identical).
+
+  `--rank[=N]` folds in gist's one output shape ripgrep can't express — the
+  definition-first ranked view (RRF fusion over per-file signals, a symbol's
+  definition outranking its call sites, codegen demoted) — now a flag on the
+  unified engine (`src/runtime/cold/engine/ranked.zig`) instead of a separate
+  verb.
+
+  **The `search` verb is gone.** Bare `gist <pattern> [PATH...]` is canonical
+  (`index` and `status` remain the only lifecycle verbs); `gist rg` is the same
+  engine addressed explicitly. rgsuite parity held at the 278/282 baseline
+  throughout and the full `zig build test` slate stays green.
+- **Trigram index switches from a flat `(trigram,doc)` pair table to a CSR
+  directory over delta-varint posting bodies**
+  (`src/index/trigrams/trigram.zig`, new
+  `src/index/postings/varint.zig`) — the fix for the README's own documented
+  weak point:
+  "gist trails csearch/zoekt on the cold literal one-shot because it maps a
+  177 MiB index where csearch mmaps 28 MiB." A flat table spent 8 bytes/posting
+  (4 tag + 4 doc) and most of the tag was redundant — a distinct trigram
+  carries
+  dozens of postings on average. The index now stores three parallel arrays
+  over
+  the `n` DISTINCT trigrams (`dir_tri`/`dir_off`/`dir_count` — csearch's own
+  per-trigram index-entry triple, `index/write.go`) plus one `body` blob: each
+  group's ascending doc ids are delta-encoded (successor `doc[i]-doc[i-1]`,
+  always ≥ 1) and LEB128-varint-packed, so a locally-clustered doc-id run — the
+  common case — costs ~1 byte/posting instead of 4, while the zero-copy `mmap`
+  load (`persist.zig`) is unchanged: `dir_*`/`body` still alias the mapped
+  pages
+  directly (`fromMappedBytes`), so a cold query still touches only the handful
+  of pages its binary search + a few small per-trigram decodes probe.
+  Rarest-first
+  query intersection is preserved via the explicit `dir_count` column (sort
+  groups by size before decoding, same algorithm as before).
+
+  **Measured on this repo (18,910 files, 160.1 MiB corpus, 343,857 distinct
+  trigrams, 25.56M postings):** index footprint **195.0 MiB flat → 30.1 MiB
+  CSR+varint (6.5×)** — smaller than `csearch`'s own index over the identical
+  corpus (31.1 MiB) for the first time. `bench/coldquery.sh`'s cross-tool cold
+  literal race (fresh process, hyperfine mean, 8 runs, 8 needles) moves the
+  geomean gist/csearch ratio **0.3× → 0.7×** and gist/zoekt **0.5× → 0.8×** —
+  gist now outright _wins_ 7/11 needles against zoekt (up from a near-total
+  loss) and still trails csearch geomean, but by roughly half the prior margin.
+  The residual gap is no longer index size (gist's is now the smaller of the
+  two) — profiling traces it to the corpus-wide freshness `stat()` walk
+  (`src/index/trigrams/fresh.zig`) that runs on every cold query regardless of
+  hit/miss;
+  that is the next rung, tracked separately, not hidden.
+
+  Correctness re-proven: format bumped to `format_version = 2` (a v1 cache is
+  rejected, not misread); the full trigram/varint/ngram unit suite (`zig build
+  test`, 207/207) and the `gist ≡ rg` equality oracle are green on the new
+  format.
+
+  **Confirmed on the fail-closed macro certificate**
+  (`bench/certify/certify.sh`
+  — fresh-process, hyperfine 20 runs + 3 warmup, gist-vs-rg verdict requires a
+  lower median _and_ Mann-Whitney p<0.05): **7 win · 1 parity · 1 loss** across
+  9 measured classes (up from a documented 8 win/3 loss at the old index size —
+  methodology differs slightly, see README), and the vs-csearch/vs-zoekt split
+  moved from "rivals win most cold classes" to a genuine ~50/50 split
+  (geomean ≈1.0× csearch, ≈0.8× zoekt). `certify_stats.py` also hardened to
+  skip a rival's malformed/empty hyperfine export (a transient hiccup, not a
+  real result) instead of aborting the whole certificate for one missing cell.
+- A bare `zig build` now installs only the product surface — the `gist` +
+  `relate` CLIs and the C-ABI static/dynamic libraries — instead of also
+  compiling the six measurement-lab executables (`gist-bench`, `relate-knn`,
+  `codex-scale`, `gist-roofline`, `gist-lowerbound`, `gist-portbound`). Each
+  lab exe still installs via its named step (`zig build bench`, `zig build
+  roofline`, …) and the new `zig build lab` umbrella installs all six;
+  `certify_session.sh` builds the lab step explicitly. Cuts the default
+  rebuild to 4 artifacts from 10.
+- A transforming (`-z`/`--pre`/`-E`) pipeline run now scales its worker pool to
+  all logical CPUs instead of the 6-worker ceiling tuned for the
+  syscall/namei-bound plaintext walk. Per-file decompression (gzip/zstd/xz
+  inflate) and transcoding are CPU-bound and embarrassingly parallel — exactly
+  like the serial engine's parallel read-shards, which already fan out to
+  `min(candidates, ncpu)` — so the old cap throttled decode-heavy codecs
+  (xz/zstd) below the serial path on wide machines. On a 16-core box over a
+  nested compressed corpus this lifts `-z` past ripgrep AND ugrep on the
+  in-process formats (gzip/zstd/xz), where gist decodes in-process while both
+  rivals fork a decompressor per file.
+- Accelerate the SIMD scan floor on two load-port-bound fronts. First, widen
+  the
+  single-load byte scanners in `scan.simd` from the 16-byte NEON register to a
+  64-byte stride (`scan_vlen`): `memchr` (line-end find), `countByte`
+  (line-number
+  counter), `countByteWithFlag` (`--json` base pass), the reverse
+  `lastIndexOfScalar`
+  (line-start walk), and the caseless single-byte find. These issue one load
+  per
+  block, so the out-of-order core runs the four independent 16-byte loads
+  across its
+  NEON pipes — measured ~35% faster (17→23 GiB/s, Apple M4). A `vlen`-wide
+  second
+  tier runs before the scalar tail so a haystack under 64 bytes still
+  vectorizes (no
+  short-line/small-gap regression). The two-load substring kernel (`indexOfPos`
+  &
+  co.) deliberately stays at `vlen` — its strided second load already saturates
+  the
+  ports, so widening measured flat.
+
+  Second, add `scan.teddy` — the Hyperscan/ripgrep Teddy multi-literal
+  prefilter —
+  and hand the fused any-of gate (`scan.simd.containsAny`/`indexOfAnyPos`, the
+  whole-buffer prefilter for needle-less alternations like
+  `func|const|return|struct`)
+  off to it at 4+ needles. The fused first+last gate pays `1 + N` loads per
+  block, so
+  its cost grows linearly in the alternation size; Teddy pre-bakes every
+  needle's
+  first two bytes into nibble→bucket tables and resolves all N with one `tbl`
+  (NEON) /
+  `pshufb` (SSSE3) shuffle per position, collapsing the block cost to a
+  CONSTANT 2
+  loads regardless of N. Slim Teddy, one bucket per needle (≤ 8), fixed
+  16-wide, with
+  a scalar-gather fallback on other arches. The N ≥ 4 handoff is where the
+  load-count
+  win dominates on every architecture regardless of vector width, so N = 2,3
+  keep the
+  fused gate (better on wide-vector AVX2/512); both paths are byte-exact — a
+  throughput dispatch, not a fallback.
+
+  Byte-exact throughout: the `simd_test.zig` differential oracles stay green
+  (the new
+  Teddy fuzz vs the `std.mem.indexOfPos` leftmost minimum over random needle
+  sets/resume offsets, plus the widened
+  `memchr`/`lastIndexOfScalar`/`countByte`
+  scanners vs `std`), and `gist` counts match `rg` exactly on 4- and 8-literal
+  alternations across ~290k lines. Measured Teddy speedup over the fused path
+  on the
+  mostly-miss file-gate corpus (Apple M4): N=4 1.6×, N=8 2.2×.
+- Add `Ward.reconcileHeld`: a double-checked reconcile that starts from an
+  already-held read lease and keeps a live lease on every path (error
+  included), returning the refresh error beside the lease rather than in place
+  of it. The resident session's `guardExtras` now rides it instead of
+  hand-rolling the release/upgrade/recheck/downgrade dance.
+- Beat ripgrep on the single-file line-scan modes by adopting the two things
+  its
+  one-file-one-thread architecture can't: **data-parallel single-file
+  sharding**
+  and **mmap'd reads**, plus an NFA-free span path. On a 57 MB single-file
+  corpus
+  (`function|const|return|struct`, warm cache, hyperfine): `-c` 2.0×, `-o`
+  2.0×,
+  `-b` 1.95×, `--count-matches` 1.96×, `-n` 1.81× faster than `rg` — the
+  `--json` match stream stays byte-identical and ahead.
+
+  - **Single-file sharding** (`serial.zig`
+  `emitFileSharded`/`lineShardBounds`):
+    a lone big file is split at line boundaries into byte-balanced shards, each
+    running the line-free literal fast path (`Emitter.fileLit`) over the SHARED
+    global body on its own core, then merged in line order (emit modes) or
+  summed
+    (count modes). Byte offsets, the unterminated tail, and `-n` line numbers
+    (each shard's global base via one cumulative `countByte` pass) all stay
+    global, so output is identical to the serial scan — this is the win rg
+  leaves
+    on the table for a single file.
+  - **mmap for large files** (`grepfile.mapFile`, wired into
+  `readOneCandidate`):
+    an untransformed file ≥ 4 MiB is memory-mapped instead of read-loop + arena
+    duped, so its pages fault in lazily during the (sharded) scan rather than
+    paying a serial ~2× copy up front — ripgrep's large-file strategy.
+  - **Parallel binary detection** (`verify.firstNulWide`): the whole-buffer NUL
+    scan that gates the fast path is fanned across cores with a
+  quit-at-first-NUL
+    poll (the binary-detection twin of `gateWide`), so it faults pages in
+  parallel
+    instead of serializing one redundant full pass ahead of the scan.
+  - **NFA-free literal spans** (`output.zig` `litNextSpan`/`emitMatchesLit`,
+    `prefixFree`): for a prefix-free literal set (no literal a prefix of
+  another —
+    so at most one matches at any offset), `-o`/`--count-matches`/`--column`
+    resolve each span with one `indexOfAnyPos` jump + a length lookup instead
+  of a
+    Pike-VM run per line, and never allocate a `SpanSim`. A non-prefix-free set
+    (e.g. `con|const|co`) falls back to `matchSpan`, so spans stay byte-exact.
+  - **Early-exit presence** (`anyMatch`): `-q` short-circuits on the first
+  literal
+    occurrence (`indexOfAnyPos`) instead of materializing every line of the
+  body
+    — an 11× → parity swing on a top-matching 57 MB file.
+
+  Byte-identical to ripgrep — `bench/rgsuite/run.py` 409/409 (parallel and
+  serial), full Zig unit + differential-fuzz suite green (new `memchr` /
+  `lastIndexOfScalar` / `countByte` / `firstNulWide` oracles vs `std.mem`), and
+  span-mode spot-checks over `-o`/`-n`/`-b`/`--column`/`--count-matches`
+  including
+  the prefix-overlap adverse case. The repo-wide _indexed_ `-l`/`-c` race is
+  unaffected and still 6–100× over rg's unindexed walk.
+- CREST sidecars now bind their full semantic schema with a canonical SHA-256
+  digest under `GISTCRS2`; stale v1 or semantically incompatible caches fail
+  closed and rebuild without changing search results.
+- Caseless runs (`-i`/resolved `-S`) now ride the same SIMD literal gates as
+  case-sensitive ones instead of paying the fold-heavy engine per byte. A new
+  ASCII-caseless kernel (`simd.containsCaseless` — first+last byte splatted in
+  both case spellings, survivors verified bytewise) backs a `Gate` type
+  threaded through every needle consumer (whole-file drop, per-line engine
+  bypass, the wide multi-GiB fan-out); the gate literal is the longest
+  fold-closed window of the raw (pre-fold) required literal
+  (`query.zig::foldClosedWindow` — ASCII-only, `k`/`s` split the window under
+  Unicode fold since KELVIN SIGN/LONG S escape ASCII), and when the window is
+  the whole pattern and the pattern is one pure literal the gate is a proven
+  match equivalence, so caseless `-l` emits with zero engine runs. A
+  containment-only gate still drives `-l` hit-to-hit (`gatedDocMatch`: SIMD
+  jump to each gate hit, engine on just that line). The warm compiled query
+  mines the same gate + caseless trigram variants, so the resident daemon
+  prunes and gates `-i` identically. Multi-root caseless `-l` over eight source
+  roots: 1.24s → 0.33s (rg 0.45s); matrix `ignore-case-rare-files` holds
+  ~4.2–5.0x with 19/19 parity and rgsuite 409/409 intact.
+- Chasing the roofline Layer C headroom found the substring kernel paying a
+  per-block movemask it almost never needed: on NEON the `@bitCast`-to-integer
+  mask emulation is a multi-µop cross-lane sequence, spent on every 16-byte
+  block of a miss-dominated stream. Every scan loop (`indexOfPos`, `memchrPos`,
+  the fused any-of pair, the caseless kernel) now runs 64-byte blocks gated on
+  `anyLane` — a word-wide OR-reduce "did anything hit?" — with the movemask
+  paid only inside proven-hot blocks. Anchors got smarter too: a corpus-derived
+  byte-density table (`rarity.zig`, the memchr crate's rare-byte idea measured
+  over the Billy tree) picks the needle's two rarest bytes at any offsets
+  instead of first+last, a genuinely-rare probe earns a single-load block
+  filter, and a runtime hit counter demotes that shape mid-buffer when the
+  table misdescribes the bytes (base64, random-looking text) — the
+  misprediction collapse that costs, measured on a uniform-random buffer, half
+  the throughput. Per-file tails stopped calling `std.mem.indexOfPos`, whose
+  Boyer-Moore-Horspool preprocessing built a 256-entry skip table per call — a
+  many-small-files corpus paid it ~20k times per scan — replaced by one
+  overlapped final vector block. Roofline on M4: contiguous streaming 44.8 →
+  53.6 GB/s, per-file corpus full-scan 20.8 → 30.2 GB/s (24% → 36% of the DRAM
+  ceiling), matched lanes up 3–5%. Byte-parity proven by `zig build test`, the
+  SIMD differential fuzz, `scan_regress.sh` (0 FN / 0 FP), and an rg-parity
+  battery over indexed + live paths.
+- Close the searcher-loop gap to ripgrep on needle-less literal alternations
+  (`function|const|return|struct`) — the case with no single required literal
+  for
+  the existing per-line gate to skip on, so gist ran the engine on EVERY line
+  while `rg` scanned the whole buffer through a Teddy prefilter. A new fused
+  multi-literal primitive `scan.simd.indexOfAnyPos` (the position-returning
+  twin of
+  `containsAny`: one pass, per-needle first+last-byte SIMD fingerprints OR'd
+  into a
+  survivor mask, leftmost verified survivor wins) drives a whole-buffer
+  prefilter:
+  one sweep marks the candidate lines around literal hits, and the per-line
+  classify then skips ~every non-candidate without an engine run. Wired into
+  both
+  the text emit (`output.zig` —
+  `file`/`onlyMatching`/`countMatches`/`passthru`)
+  and the `--json` classification (`json.zig`), gated on `re.lits`
+  (`analysis.pureLiterals` — the same match-equivalence set `matchSpan` uses,
+  empty
+  under `-i`/`-w`/`-U`). The mask is a SUPERSET of the true match set (a hit in
+  a
+  line's trailing `\r`/terminator maps to that line — the engine still confirms
+  each candidate), never a subset, and declines under `-v` (a match LACKS the
+  literals) and `--stop-on-nonmatch`, so output stays byte-identical.
+
+  Byte-identical to ripgrep — `bench/rgsuite` `run.py` 409/409 (parallel and
+  serial), the `indexOfAnyPos` differential-fuzz oracle green (leftmost-hit vs
+  the
+  `std.mem.indexOfPos` minimum over random needle sets/resume offsets), and
+  49/49
+  edge-corpus spot-checks (no-trailing-newline, CRLF, single-line,
+  first/last-line
+  hits, blank-line runs, empty) across
+  `-o`/`-c`/plain/`-n`/`--column`/`-A`/`-v`.
+  Measured on a 57 MB single-file corpus (A/B vs the pre-change litSpan
+  binary):
+  `-o function|const|return|struct` 257→76 ms (3.4×), `--json` 283→102 ms
+  (2.8×),
+  `-c` 230→51 ms (4.5×). The gap to `rg` on the alternation collapses from
+  11.8× to
+  3.6× (`-o`), 3.9× to 1.5× (`--json`), and 14× to 3.0× (`-c`).
+- Committed certificate carries all four layers (A–D), and minting is one
+  command: `make bench-gist-certify` (or `certify.sh`, which auto-splices
+  B/B′/C/D). `check_artifacts.py` fail-closes if any layer section or side-car
+  is missing; `CERT_SUDO=1` prompts once for measured kperf cycles.
+- Cut the `--json` record stream's serial-engine cost with two byte-identical
+  emit-path changes (`src/surface/exec/cold/emit/json.zig`). The classification
+  loop now threads the engine's required-literal `simd.Gate`
+  (`serial.zig::requiredLiteralGate`, the same gate the line path uses) from
+  `run`
+  → `runParallel`/shards → `emitOne` → `emitFile`: a line lacking the pattern's
+  forced literal skips the NFA entirely. Sound only when non-inverted — exactly
+  when the gate exists — so the `-v` classification is unchanged. And each
+  matched
+  line's spans are now enumerated ONCE at classification and cached on the
+  `Line`
+  (`matchSpans`), reused for both the `matches` tally (`countMatches` became a
+  sum,
+  no engine) and `submatches` emission (`emitSubmatches` iterates the cache),
+  so a
+  matched line pays the engine once instead of up to three times; the dead
+  `firstSpan` is removed. Byte-identical to `rg --json` on both engines
+  (`bench/rgsuite` core/multiline/pcre cases green). Measured on a frozen 54 MB
+  /
+  1.7 M-line single-file corpus (read/walk ≈ 0, serial emit isolated, A/B vs
+  the
+  pre-change binary): `func` 638→124 ms (5.2×), `func\s+\w+` 966→277 ms (3.5×),
+  `WalletService` 523→92 ms (5.7×), `import` 591→100 ms (5.9×) — a 3.5–5.9×
+  internal emit speedup on top of the earlier `jsonstr` SIMD rewrite. This
+  narrows
+  but does not overtake `rg --json`, which still leads because `--json`
+  disables
+  gist's index read-elision (it must tally `searches`/`bytes_searched` for
+  every
+  searched file), racing rg's parallel walk+search+emit without gist's index
+  advantage; the standing `--json` claim remains byte-parity, not a speed win.
+- Eliminated Gist's remaining cold-query structural overheads without weakening
+  freshness: trusted local indexes now mmap with bounded structural validation
+  and defer posting-group decode until queried; the parallel path folds
+  freshness into directory enumeration, uses a compact exact path table,
+  declines unprofitable/narrow index loads, routes selective work to
+  topology-aware worker counts, and reuses compiled regex required literals as
+  SIMD file/line gates. The fail-closed 20-run full-field certificate moves
+  from 0/11 to 10/11 wins versus ripgrep on the same Apple M2, while the
+  140-literal + 70-regex oracle and live dense-scan gate remain 0 FN / 0 FP.
+
+  The adversarial verification pass also fixed two pre-existing rg-parity
+  defects the live gate exposed: walked binary files can no longer match after
+  the NUL cutoff under `-l`, and unsorted multi-root walks now reproduce
+  ripgrep's VCS-ignore re-anchoring. The persisted blob codec/validator moved
+  out of `trigram.zig`, dropping the index core below the 500-line cap;
+  oversized rg protocol modules are now explicitly registered rather than
+  remaining undocumented shape debt.
+
+  The benchmark field now copies the deterministic `zig-out/bin/gist` produced
+  by the immediately preceding ReleaseFast build. It no longer guesses among
+  hash-named Zig cache artifacts by mtime, which could silently benchmark an
+  older intermediate binary and certify code other than the current tree.
+- Expand Gist and Relate help into intent-first ergonomics guides so people and
+  agents can choose familiar, native, and niche search shapes from the CLI
+  itself.
+- Files-only searches now stop after the first matching line, and the committed
+  performance gate bounds the two known csearch-selective gaps without
+  overstating them as wins.
+- Generalized the warm session's data-parallelism from the invert emit to EVERY
+  positive warm face, so a common token no longer loses to cold purely on core
+  count. The invert-only `renderLinesInvertParallel` became the shared
+  `render.renderLinesParallel`, and its floor/shard gate was lifted into one
+  `math/parallel.zig::shardBounds` primitive that all faces now cross into
+  parallelism through: (1) `queryLines` positive emit shards the candidate doc
+  slice byte-balanced and renders each shard through the cold `Emitter` into
+  its
+  own buffer, concatenated in doc order; (2) the `-l`/`-c` fold (`query`)
+  splits
+  its candidate walk into `eachBase` (sharded, per-thread scratch +
+  `Accumulator`
+  over the immutable mirror — `-c` sums, `-l` concatenates then sorts once) and
+  `eachOverlay` (the bounded mutation set, always serial); (3) the FFI `search`
+  record stream collects each shard's per-line spans into its own buffer, then
+  feeds the sink SERIALLY in doc order honoring early `halt`, so the stream
+  stays
+  byte-identical and stops at the same record. All share the 256 KiB byte floor
+  —
+  below it (or on one core) each face falls straight through to its serial
+  core, so
+  tiny queries never pay thread-spawn. Every shard is read-only over the mirror
+  under the held session lock with its own arena, and the fail-closed per-hit
+  existence check is preserved per shard.
+
+  Measured on the live 20k-file / 193 MiB repo corpus (warm files-mode p50,
+  serial → sharded): `import` (13838 files) 10.5 → 5.9 ms, `})` (7780) 12.7 →
+  5.0 ms
+  (2.5×), `def` (4908) 6.4 → 3.0 ms (2.1×), `func` (3690) 5.1 → 2.5 ms (2.0×),
+  `context.Context` (1756) 2.8 → 1.4 ms (2.0×); small/rare needles stay on the
+  serial core, unchanged. Byte-parity proven `warm == --no-index == rg` (with
+  `--uncap` past the soft output budget) on a controlled 400-file fixture
+  crossing
+  the floor (8/8 cases: `-l`/`-c`/bare/`-n`, large + rare set) and the live
+  tree
+  (16/16), plus a resident-suite test over a >256 KiB tree asserting the
+  sharded
+  `-l`/`-c`/emit/stream against ground truth (path-sorted `-l`, exact `-c` sum,
+  ascending record stream). The committed session gate is unregressed (armed
+  geomean 474×). The now-orphaned invert-only render helper was removed.
+- Gist `research/gist/PRIOR_ART.md` covers gist-face citations only (rg peers,
+  trigram/indexed neighbors, matcher/ranking ancestry). Shannon–Manzini /
+  FM-index
+  codex literature stays in the relate dossier.
+- Give the span engine a pure-literal fast path, so every "where is the match"
+  operation (`-o`, `--json`, `--column`, `--vimgrep`, `-w`, `-r`, colored
+  highlighting) stops paying the Pike VM on literal and literal-alternation
+  queries — the code-search common case. `Regex.matchSpan`
+  (`src/kernel/match/regex/linear/core.zig`) now short-circuits through
+  `litSpan`
+  whenever `re.lits` is non-empty (the `analysis.pureLiterals`
+  match-equivalence
+  set — an assertion-free alternation of pure literals, per-line only): the
+  span
+  is found by one SIMD `scan.simd.indexOfPos` per literal (≤ 8) instead of a
+  per-byte NFA closure. Leftmost-first semantics are preserved exactly — the
+  strictly-earliest occurrence wins (leftmost start dominates branch priority),
+  and a positional tie keeps the lowest branch index (pattern order = NFA
+  priority), because no literal occurring at the winning position can have an
+  earlier occurrence of its own. `-i` folds a literal byte to a non-singleton
+  class, so `re.lits` is empty and the shortcut cleanly declines to the Pike
+  VM;
+  `-U` disables `re.lits` outright, so multiline is untouched.
+
+  Byte-identical to ripgrep — `bench/rgsuite` `run.py` 409/409 (parallel and
+  serial), the differential-fuzz oracle green, and byte-exact `-o`/`--column`/
+  `--vimgrep`/`-w`/`--json` spot-checks including the `return|ret` tie-break.
+  Measured on a 57 MB single-file corpus (A/B vs the pre-change binary):
+  `--json TODO` 560→69 ms (8.2×), `--json function|const|return|struct`
+  3363→284 ms (11.9×), `--json return|ret` 1452→130 ms (11.2×),
+  `-o function|const|return|struct` 2914→256 ms (11.4×). The remaining gap to
+  `rg` on these is no longer span-finding but the searcher loop — gist splits
+  and
+  verifies per line where rg scans the whole buffer through a Teddy/memmem
+  prefilter and touches only candidate lines.
+- Graduate GIST from the doc-radar canary to the repository-wide search
+  substrate (ADR-352): every first-party executable ripgrep consumer now drives
+  the certified `gist` engine — the trust/codegen lints (`user-id`, `policy`,
+  `fronts`, `boundary-gates`), doc-radar's count/files/still-here wrappers, the
+  relocator + restructure + comment-quality + pentest tooling, the
+  `fetchjson`/`readjson`/`resource_static`/`vox`/chaos shell scripts, and the
+  Bridge's `atelier_grep` (resolved binary, with `atelier_health` reporting
+  `gist_available`). Patternless `rg --files` inventories moved to the git
+  index,
+  each consumer carries a committed `*_gist_parity.py` guard, and a fail-closed
+  `gist-adoption` ratchet ratchets first-party ripgrep executions to zero. Raw
+  `rg` survives only as GIST's independent parity/benchmark oracle.
+- Index read-elision now engages in two places it used to stand down. Scoped
+  roots: `indexElisionWanted` no longer requires a broad root — the
+  elide-oracle loader already runs concurrently with the walk and the
+  end-of-walk flush never blocks on it, so a nested-root query (`gist Foo
+  services/backend/api`) gets its non-candidate reads elided like a rootless
+  scan (subtree matrix shape 1.66x → ~4.5–7.8x) while a tiny scope that outruns
+  the load pays only the deferral append. Caseless: `-i`/resolved `-S` no
+  longer disables the trigram prefilter wholesale — the raw (pre-fold) required
+  literal is recovered from a case-sensitive throwaway compile and one window
+  of it expands into a ≤16-variant case OR-set the index can query
+  (`query.zig::caselessVariants`), with the soundness bounds owned there:
+  ASCII-only windows, and `k`/`s` inadmissible under Unicode fold since their
+  simple-fold orbits (KELVIN SIGN U+212A, LONG S U+017F) escape ASCII
+  (ignore-case matrix shape 1.43x → ~4.9x). Any decline reproduces the old
+  no-elision behavior exactly; 19/19 parity holds gist-idx == gist-noidx == rg.
+- Move gist's prior-art / scope essay into research/gist/ (CLAIM + PRIOR_ART +
+  TESTING), matching the crest research dossier layout; delete the package-root
+  PRIOR_ART.md.
+- Profiling the cold `--rank` path on a fat-candidate probe found 4.2 s hiding
+  in two places, neither of them ranking. First, freshness: the macOS journal
+  replay blocked ~1.9 s in `FSEventStreamFlushSync` before draining a single
+  event — the flush is gone, the runloop drain now runs under an explicit
+  budget (75 ms per query, 500 ms at daemon boot), a lost race writes a
+  per-token `journal.skip` marker so later queries jump straight to the sweep
+  walk, and `amend` re-mints the since-token exactly like a full build so the
+  replay window stays "since the last amend" instead of growing forever.
+  Second, feature extraction: `fileDoc` ran a full per-line pass over every
+  candidate and only then consulted `docMatch` — inverted, one fused
+  whole-buffer `docMatch` now rejects trigram false positives at the one-pass
+  floor and only real matchers fund the per-line signals (also fixing a
+  phantom-final-line overcount for `^$`-shaped patterns under rg's line model).
+  Cold fat-probe rank drops 4.2 s → ~30 ms with a fresh index (~150 ms on a
+  busy tree paying the bounded probe), set-equal with `gist -l` and
+  def-boost/gen-demotion invariants intact.
+- Purposeful profiling of the per-file pipeline (walk → literal gate → staged
+  read → SIMD scan → emit) found the residual multi-root tax living entirely in
+  giant mmap'd bodies: the pager faulted the 2.1 GiB blob in one page-cluster
+  at a time (13.7 GiB/s) and its whole-file presence gate ran on a single
+  worker thread. Two fixes, measured on the live corpus: `mapWhole` now advises
+  `MADV_SEQUENTIAL|WILLNEED` (fault-ahead batching, 13.7 → ~40 GiB/s on the
+  page-cached blob), and the file-level required-literal gate routes through
+  `verify.containsAnyWide` — identical single-thread SIMD kernels below 16 MiB
+  (one length compare, no syscalls, no spawn), chunked across cores with
+  needle-overlap seams and cooperative early-exit above it. `gist pgxpool
+  services libs -l` drops 196 → ~84 ms (rg: ~160–230 ms on the same roots); a
+  no-hit scan of the single 2.1 GiB file drops 190 → ~79 ms (rg: ~199 ms).
+  Byte-parity proven by the seam-adversarial differential test in
+  `simd_test.zig`, `scan_regress.sh` (0 FN / 0 FP over five no-prefilter
+  patterns), and `index_elision_parity.sh`.
+- Ranked search now identifies declarations from Unicode-aware delimiter
+  geometry—including labels, prefix forms, equations, and symbolic
+  bodies—instead of a project/language keyword catalogue, and applies
+  Relate-style corpus pricing to normalized match-line shapes so definitions
+  outrank repeated imports, annotations, and calls across diverse repositories.
+- Ranked searches now demote cached source mirrors and identify exact canonical
+  duplicates, keeping widened searches focused on editable code.
+- Register `billy-irregex` in the root uv workspace so AI development and tests
+  import the local binding reliably. Production AI deliberately omits the
+  package,
+  binary, and proprietary repository corpus, making repository search
+  unavailable
+  instead of searching an unrelated container filesystem.
+- Replaced the README's two pre-CSR-index-rewrite figures (`gist-competitive`,
+  `gist-field-race`) with four new ones driven by a full fresh run of the
+  seven-tool field race and the fail-closed certificate:
+  `gist-cold-field` (11-needle cold literal range + win rate),
+  `gist-warm-dominance`
+  (warm-session geomean/miss plus a 50-query session-time comparison),
+  `gist-regex-matrix` (all 22 regex tiers × all 7 tools), and
+  `gist-certify-forest`
+  (median + 95% CI forest plot for the fail-closed certificate). The
+  certificate's
+  2 previously-flaky-export classes finished clean on re-run: gist now goes
+  9 win · 2 loss vs ripgrep across all 11 probe classes (up from 8/3
+  pre-rewrite),
+  and edges out zoekt on cold-query geomean (1.09×) for the first time — the
+  accompanying prose numbers throughout the Benchmarks section were updated to
+  match.
+- Replaced the T3 freshness overlay's per-file `readdir()` + `statFile()` walk
+  with `getattrlistbulk(2)` batched directory enumeration on Darwin
+  (src/corpus/tree/bulkstat.zig — hand-declared FFI, no Zig std binding
+  exists), collapsing O(files) metadata syscalls into O(directories) bulk calls
+  that return name+type+mtime for every sibling at once. Fails soft,
+  directory-by-directory, back to the exact prior stat-based walk on any
+  bulk-call error — never a false negative, only a speed trade. Differentially
+  tested against the old walk (bulkstat_test.zig) for byte-identical output.
+  Measured on this corpus (18.9k files, ReleaseFast, back-to-back A/B toggle
+  under identical load): the freshness+cold-load "pre" phase dropped from a
+  52-66ms range (median ~57.6ms) to 47-54ms (median ~51ms), an ~11% cut with
+  roughly half the variance.
+- Replaced the freshness walk's static one-thread-per-root sharding with a
+  self-balancing work-stealing pool (src/index/trigrams/fresh.zig:
+  buildWorkItems/Worker/workerRun). The old scheme pinned one thread per entry
+  in `default_roots` regardless of size — on this repo `services`+`clients`
+  outweigh `contracts`+`quality` by 40x+, so wall time tracked the single
+  slowest root while the other threads sat idle well before it finished, and
+  never used more than 6 threads no matter how many cores were free. The walk
+  now breadth-expands roots one directory level at a time (via
+  `getattrlistbulk`/`Dir.Iterator` one-level listings) until there are `ncpu *
+  8` fine-grained work items, then dispatches them across an atomic-cursor pool
+  of `ncpu` workers — self-balancing regardless of which subtree happens to be
+  huge, and more resilient under contention since a stalled thread only holds
+  up one small unit of work instead of an entire multi-thousand-file root.
+  Measured on this corpus (16 cores, real contention from concurrent
+  coworking-agent load, load avg ~9.4): the "pre" phase (cold-load + freshness)
+  median dropped from ~51ms (post-bulkstat, static shards) to ~40ms, and a
+  head-to-head against ripgrep on the same corpus flipped from GIST trailing to
+  1.93x faster (σ 9.8ms vs rg's 54ms) on `billy` — the exact high-match
+  "saturating pattern" the README previously called out as GIST's weak spot —
+  and 6.45x faster on a selective literal (`fetchAdd`).
+- Reworked Layer C from an overstated saturation claim into a matched roofline
+  ladder that separates pure-read bandwidth, dual-window instruction/load cost,
+  contiguous production scanning, and corpus fragmentation. The certificate now
+  calls 35% of the measured DRAM roof material headroom and requires 80% before
+  reporting a near-roof result.
+- Rewrote the package root and relate READMEs to the OSS convention (What it is
+  / Why it exists / Prior art): measured wins with harness citations, honest
+  prior-art framing (csearch/RE2/FM-index/LZJD lineage, Hyperscan and
+  embeddings deliberately declined), and the relate corpus-policy asymmetries
+  documented.
+- Scrubbed the last project-specific hardcoding out of the kernel for OSS-clean
+  defaults. The artifact home is `GIST_DIR`-relocatable (default
+  `.local/gist-verify`; every derived path — index, atlas, shelf, anchor,
+  daemon socket — resolves through `corpus.outDir()` / `corpus.ArtifactPath`,
+  and the Python/Rust bindings honor the same env). The skip-dir policy is now
+  generic-only: `graphify-out` left the comptime baseline (34 cross-ecosystem
+  names — VCS, package caches, build output), and per-tree extras ride
+  `GIST_SKIP` (env, `:`/`,`/space separated) or `<GIST_DIR>/skips.list` (one
+  name per line, `#` comments) — both scope only the corpus walks (index build,
+  freshness, relate); rg-mode search keeps pure gitignore parity and ignores
+  them. Billy seeds `graphify-out` into `skips.list` via `make install-gist`.
+  The bench harness follows suit: `_compete.sh`/`multipattern.sh`/`race.sh`
+  resolve their corpus scope via `GIST_ROOTS` → published-corpus roots when
+  present → the whole tree, mirroring `corpus.resolveRoots`.
+- Stack-backs common query and worker scratch while reusing retained verifier
+  output capacity, removing up to six allocator round trips from repeated
+  searches without changing match order or semantics.
+- Stop loading the persisted trigram index when every positional root is an
+  explicit regular file (`gist PAT file.txt`, or several named files). The
+  index
+  answers exactly one question — _which of the WALKED files can't match, so
+  skip
+  reading them_ — but a named file is read no matter what the trigrams say, so
+  loading + decompressing the index and reading the freshness anchor was pure
+  launch-time tax that only a directory walk ever amortizes.
+  `indexElisionWanted`
+  now stats each root up front (one syscall apiece, dwarfed by the load it
+  avoids) and declines the oracle when all roots are regular files; the mixed,
+  directory, and implicit-CWD-walk cases keep it unchanged. The companion
+  `file_needle` whole-file presence gate is likewise dropped for a lone
+  explicit
+  file, where it only re-faulted the body the mode's own scan already reads.
+
+  Output-neutral by construction — index elision only ever ELIDES reads that
+  provably can't match, so reading the named file instead changes cost, never
+  results (`--files-without-match` still lists a no-match named file either
+  way).
+  `bench/rgsuite` `run.py` stays 409/409 on both engines.
+
+  Measured on a 48 MB single-file corpus (warm page cache, resident daemon
+  off),
+  gist vs `rg` — the index-load tax was ~1.5 ms of every explicit-file query:
+
+  - `-c pgvector` (sparse): rg was 1.29× FASTER → now gist **1.80×** faster.
+  - `pgvector` matches (sparse): rg was 1.32× faster → now gist **1.77×**
+  faster.
+  - `-c CREATE` (dense): **2.33×**; plain matches **2.01×**; `-n` **1.88×**.
+  - `--json` clears the same bar it did on the walk: single-file dense
+    **5.26–6.60×**, 48 MB sparse **~1.98×**; repo-wide **3.17–4.22×**.
+
+  Startup-bound tiny/sparse single-file queries stay below 2× because there the
+  whole cost is the OS process spawn both tools pay identically — and gist's
+  cold
+  start is now already under `rg`'s (`--version` 1.6 ms vs 2.1 ms; tiny-file
+  search 1.9 ms vs 2.8 ms, **1.49×**).
+- Structural-debt and efficiency sweep across the search planes. The serial
+  engine's index-freshness stat-walk now overlaps the gather walk on its own
+  thread (mirroring the parallel engine's lazy elide loader) — ~10% faster
+  serial runs on a warm indexed corpus. `Emitter` gained a caller-threaded
+  reusable `Matcher.Sim` slot (per-worker in the pipeline, per-run in the
+  serial
+  engine), replacing three allocations per file; `queryAny` branches share one
+  lazy `doc_count`-sized decode scratch instead of alloc/freeing per needle.
+  The
+  last ASCII case-fold twins (`args.lowerDup` / `ignore.lower`) collapsed into
+  `paths.lowerDup`. Four >500-line files (`syntax.zig`, `regex/core.zig`,
+  `encoding.zig`, `grepfile.zig`) got MONOLITHIC markers + registry rows.
+  Byte-parity verified before/after on literals, alternations, and regex
+  queries; the rg line-parity, equality, and freshness gates all pass.
+- The Python binding now exposes PCRE2/automatic engine selection, multiline
+  and Unicode matching semantics in `SearchRequest`; typed index and capability
+  lifecycle APIs; and daemon/session/index generations on reusable sessions.
+  Structured-match parity now covers complete records, while rank correctly
+  reflects the engine's live fallback when no index exists.
+- The Python binding now imports as irregex and exposes search and kinship
+  through one package-wide API; the Gist and Relate CLI identities remain
+  unchanged.
+- The `gist` CLI — the on-PATH product binary (`~/.local/bin/gist` →
+  `zig-out/bin/gist`) whose whole reason to exist is out-running ripgrep — now
+  builds **ReleaseFast by default**, so a bare `zig build` (the step that
+  refreshes the installed binary) can no longer silently install a Debug build.
+  A Debug `gist` is 4–8× slower — a rare literal over the repo took ~4.5 s and
+  a
+  common substring (`tel`) ~8.3 s — which reads to a caller like a hang ("runs
+  forever"). The same queries on the ReleaseFast binary are ~0.9 s (near
+  ripgrep's ~0.5 s over the same six roots), the search path it was always
+  meant
+  to be. The build stays overridable: `zig build -Dcli-optimize=Debug` yields a
+  debug CLI for engine work, and tests / kcov coverage / the C-ABI libs keep
+  their standard safety-checked, DWARF-carrying default optimize untouched —
+  the
+  CLI now links a dedicated ReleaseFast engine module so only the product
+  surface
+  is affected.
+
+  The gitignore matcher (`ignore.zig`) is now bucketed by source directory
+  instead of one flat rule list. A candidate path can only be governed by rules
+  from its own ancestor directories — a `.gitignore` scopes its subtree, never
+  a
+  sibling's — so `decide` consults just the CWD/ancestor tier plus each
+  ancestor
+  dir's bucket (O(path depth)) rather than testing every path against every
+  rule
+  ever loaded anywhere in the tree (O(paths × rules): rules were never scoped
+  back out as the walk unwound). Loaded-dir dedup moved from a linear scan to a
+  hash set (O(dirs), not O(dirs²)). Verdicts are byte-identical — the same rule
+  sequence per path, minus the sibling rules that could never match — verified
+  against the full `rgsuite` differential harness (275 supported-surface PASS,
+  no ignore regression) and an unchanged 16 179-file walk set; ~10–13% faster
+  on
+  whole-tree queries here, and asymptotically far better on deep, ignore-heavy
+  trees.
+- The `relate` warm retrieval session (`recall.zig`) now guards its
+  `search`/`pack` with the shared `Ward` reader/writer primitive instead of a
+  plain `Io.Mutex`, so concurrent relate queries overlap under a shared lease
+  on the watcher-clean fast path (only an overlay recompute takes the exclusive
+  lease) — the same reader-overlap gist queries already had. Read safety is
+  sound because the retrieval lane is read-only over the session's
+  `persisted`/`fresh_ids`.
+- The `rg`-compatible engine now runs on a parallel fused walk+read+match
+  pipeline (`src/runtime/cold/engine/parallel.zig`): work-stealing directory
+  walk with immutable per-dir ignore chains + a compiled literal/extension
+  ignore tier, bulk-stat listings, inline index/freshness read-elision loaded
+  asynchronously, a required-literal SIMD line gate (now also under `-w`), and
+  per-worker sorted fragments k-way-merged into byte-identical (sorted) output.
+  Ineligible flag combinations fall through to the proven serial engine
+  unchanged. Warm-tree result: gist beats ripgrep on every benchmarked shape —
+  1.2x on `--files`, 1.5–1.8x on scoped/filtered searches, 2.9–4x on whole-repo
+  literal queries.
+- The benchmark + differential-parity oracle is now **ripgrep 15.2.0**
+  everywhere (local `rg`, the pinned `upstream/ripgrep` checkout, every
+  doc/count/comment). Re-mining 15.2.0's `tests/*.rs` grew the self-contained
+  spec from 441 → **446** invocations, and `gist rg` clears the whole supported
+  surface at ripgrep's own assertion bar on both walk engines: **409/409 =
+  100%** (0 ORDER, 0 FAIL, 16 NA, 21 SKIP). Two miner-fidelity fixes keep the
+  score honest and deterministic rather than papering over 15.2.0's new cases:
+
+  - **Comparison-bar classification** now mirrors the macro a block asserts
+  stdout with: a block that never byte-asserts (`eqnice!`) but checks output
+  via `assert!(got.contains(…))` is order-agnostic, like
+  `eqnice!(sort_lines(…), …)`. This fixes 15.2.0's new multi-directory
+  ignore-order tests (#3320/#3376, `ignore_git_multi_root_order` /
+  `ignore_rgignore_multi_root_order`) and the `f411`/`r2944` probes, whose own
+  bar is substring presence, not byte order — holding them to byte-exact
+  spuriously flapped PASS↔ORDER on the genuinely nondeterministic parallel
+  walk.
+  - **Unreproducible fixtures are SKIP, not scored.** A record whose fixture
+  the miner could not fully build (a non-empty `skip` on an otherwise-`ok`
+  record) is credited out-of-band instead of diffed against an incomplete tree.
+  This claims 15.2.0's `r3275_git_global_config_env` (#3275,
+  `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM`): its determinism rides a
+  `format!`-built config embedding a run-time absolute `excludesFile` path the
+  self-contained spec can't template — and, materialized or not, it is the same
+  design boundary as `r3179` (global/machine-external git config is state a
+  monorepo locator must not read), so gist declines it by design.
+
+  Verified by `python3 bench/rgsuite/run.py` (both engines, stable across
+  repeat runs), the strict `bench/rgsuite/check_results.py`, and `zig build
+  test`.
+- The cold engine's match+emit phase now fans out across cores for the modes
+  the parallel work-stealing engine leaves on the serial path — `--json`,
+  `--stats`, `--sort`/`--sortr`, `-r` replace, and `--files-without-match`.
+  Each shards its per-file work over byte-balanced `shardBounds`/`fanOut` (the
+  shared `kernel/primitives/parallel.zig` primitive the warm engine's
+  `streamParallel` already proved), renders into a per-shard buffer, and merges
+  in file order, so the bytes stay identical to the serial loop. The soft/hard
+  output budget is unified into one `corpus.appendBudgeted` helper that cuts
+  the merged stream at the same per-file boundary the serial `outputFull` break
+  would hit — the parallel truncation point is byte-for-byte the serial one
+  (`--json` carries its per-file summary tally to the matching cut).
+  `GIST_NO_PARALLEL` forces the serial emit so the parity harness exercises
+  both paths against each other.
+- The cold walk no longer re-enumerates an unchanged tree. `gist index` now
+  publishes `tree.map` — a self-anchored directory-membership snapshot (names +
+  kinds, recorded with the query walk's own admission semantics) — and the
+  parallel engine proves each recorded directory current with ONE `lstat`
+  (POSIX bumps a directory's mtime/ctime on any direct membership change,
+  compared conservatively against the snapshot anchor exactly like the T3
+  freshness overlay), serving its child list straight from the mapping instead
+  of `openat`+`getattrlistbulk`+`close`. Membership only, fail-open everywhere:
+  ignore/hidden/glob admission is decided live per entry, a stale or unrecorded
+  directory (and any subtree behind a changed level) live-lists and resumes
+  phantom below it, admitted files still `lstat` live before index elision may
+  skip them, explicit positional roots resolve into the snapshot by name, and a
+  missing/corrupt/future-dated `tree.map` (or `GIST_NO_PHANTOM=1`) returns the
+  walk to its live path byte-identically. Walk-bound shapes moved most: on the
+  Billy corpus `-g '*.go'`/`-t go` races went 2.2× → **7.6–7.8×** over ripgrep,
+  the whole-matrix span is now 2.3×–16.1× (19/19 wins, floors republished), and
+  rgsuite holds 409/409 on both engines.
+- The flags agents reach for most get hot-path rewrites, each byte-identical to
+  before (rg parity re-proven end-to-end, plus a per-function self-check).
+  `-n`: line/column/byte-offset formatting drops `std.fmt.bufPrint("{d}")` for
+  a specialized two-digit-table itoa (`writeDecimal`) on the
+  one-call-per-emitted-line prefix path — ~2× the integer→decimal throughput.
+  `-v`: the no-context invert emit no longer routes through the full
+  match+context two-pass (an `idx` list, a `lines.len` match bitmap + memset, a
+  `windowStart` re-walk, and an always-0 `firstCol`); a one-pass `invertPlain`
+  streams every gate/engine-rejected line straight out — ~+20% invert-emit
+  throughput. `-i`: the caseless SIMD gate now folds via bit 5 (`b | 0x20`)
+  with a per-anchor mask (`0x20` for a letter, `0` for a non-letter — so
+  non-letter anchors stay exact with no spurious survivors), collapsing the old
+  four-compare/two-OR window to two ORs, two compares, and a single mask
+  reduction. The enumeration + replace emits follow the same "drop the format
+  machinery on the per-file hot path" pattern: `-l` (`emitPathOnly`) and
+  `-c`/`--count-matches` (`bufTally`, now via `writeDecimal`) replace their
+  bare `"{s}{s}"`/`"{d}{s}"` `print` calls with raw appends, and the
+  `-r`/`--replace` template expander (`expandInto`, the path grep-muscle-memory
+  `-rn` actually lands on — ripgrep parses `-rn` as `--replace=n`) copies each
+  literal run between group refs in one `appendSlice` instead of a byte at a
+  time.
+- The in-process C search callback (`irregex_match_fn`) now returns `int32_t`
+  instead of `void`: return 0 to keep receiving matching lines, or non-zero to
+  STOP the stream early — a bounded / first-match query then returns
+  `IRREGEX_MATCH` and leaves the rest of the corpus unscanned, so it costs only
+  what it reads. This one general primitive subsumes per-call max-count /
+  first-only / exists-early without widening the ABI surface. The callback
+  signature change bumps `irregex_abi_version` 1 → 2 (mirrored across
+  `contract/search_api.toml`, the Python `ABI_VERSION`, and the Rust
+  `ABI_VERSION`); the halt is plumbed through the shared resident match stream
+  (`emitDoc`/`search`) and exercised end to end by the C-ABI smoke test.
+- The no-prefilter scan floor dropped across the board — every pattern in the
+  permanent gate now beats ripgrep by 1.48–2.25×, including the formerly-losing
+  sparse `panic|0x` case (0.93× → 1.60×). The structural changes: candidate
+  files are read in two stages (a 64 KiB prefix first; `-l` emits from a
+  prefix-proven match without reading the tail — 86% of corpus bytes are tails
+  of >64 KiB files — and the tail read rescans only unseen bytes plus a
+  literal-width seam window), opens resolve one path component against the
+  walk's still-open parent directory fd (`openat`) instead of re-walking the
+  full path, a pattern that is exactly a pure-literal alternation is answered
+  by a fused single-pass SIMD `containsAny` (per-needle first+last-byte
+  fingerprints over shared block loads) as a match equivalence with no regex
+  engine run at all, and each pipeline worker reuses one match-scratch across
+  every file it searches. Match sets stay byte-identical to rg (0 FN / 0 FP on
+  the live-tree gate; 140-literal + 70-regex oracle clean; all 11 live certify
+  ratio classes clear their committed floors).
+- The resident `gist serve` daemon now scales across the coworker fleet and the
+  largest corpora without regressing warm latency or the parity contract
+  (`resident == gist --no-index == rg`):
+
+  - **Concurrent warm queries.** The poll thread stays the sole connection
+  owner
+    but now dispatches `query`/`query_ext` frames to a persistent worker pool
+    (`min(cpu/2, 8)`, `GIST_SERVE_WORKERS` override, `serve.zig`): an in-flight
+    query leaves the poll set, its worker owns the fd and writes the response
+    (incl. `chunk_fd`) directly, and a self-pipe wakeup re-registers the fd on
+    completion — so one slow scan no longer stalls every other client's
+    clean-window probe. `hello`/`status`/`ping`/`changed`/`shutdown` stay
+  inline;
+    the reconcile/abort counters the poll thread samples are now atomic. The
+    session rides the `ward` reader/writer discipline, so readers answer in
+    parallel and only a reconcile takes the writer lease.
+
+  - **Shard-backed resident mirror.** `corpus.load` is now a two-tier byte
+  store
+    (`session/corpus.zig`): an unchanged member binds its bytes to the
+  persisted
+    `content.shard` mmap (zero heap, page-cache-evictable) and only a
+    changed/new/binary/oversize/BOM-carrying doc — or the whole corpus when no
+    shard is on disk — heap-reads. Resident heap drops from O(corpus) to
+    O(churn + exceptions) with byte-identical ingest (full body, BOM/UTF-16
+    decode, whole-body first-NUL offsets, empty docs dropped); no shard ⇒
+    fail-open to the old full-heap mirror.
+
+  - **Linux exact scoped reconcile.** The inotify backend realpaths its roots
+  and
+    `note`s each changed path into the dirty log (unmapped wd / malformed
+  record /
+    `Q_OVERFLOW` ⇒ doubt), arming exactness on case-sensitive roots
+    (`FS_IOC_GETFLAGS`/`FS_CASEFOLD_FL` gates a casefolded root back to
+  coarse).
+    Linux now reconciles O(changed) like macOS FSEvents instead of always
+  walking
+    the tree.
+
+  - **Non-ASCII paths scope too.** The `delta` resolver drops its "any byte ≥
+  0x80
+    ⇒ needs_full" gate: `realpath` canonicalizes macOS case + NFC/NFD aliasing
+  to
+    the on-disk spelling, so non-ASCII events resolve to normal
+    `file`/`subtree`/`gone` verdicts. The one residual hazard — a stale
+    normalization/case TWIN of a path the batch never named — is retired by a
+    session-side sweep of the (almost always empty) set of non-ASCII corpus
+  keys
+    through `keyIsCurrent`, O(changed + |non-ASCII keys|). Adversarial
+    `scoped_test.zig` cases (case-rename, NFC↔NFD twin, delete-then-recreate
+  under
+    another normalization) assert scoped answers stay oracle-exact.
+- The resident session's freshness proof is now O(changed) instead of O(tree)
+  whenever it can be proven sound. macOS FSEvents runs with per-file events and
+  feeds an exact dirty-path log (`src/runtime/session/dirty.zig`: bounded,
+  deduped,
+  overflow/OOM ⇒ sticky doubt); the reconcile drains it and — when the backend
+  promised exactness, the batch is doubt-free, one covering full pass already
+  ran, and no ignore-semantics path (`.gitignore`/`.ignore`/`.rgignore`, `.git`
+  topology) is in the batch — verifies exactly those paths through the cold
+  walk's own `Ignore` admission rules (`src/runtime/session/delta.zig`:
+  canonical
+  realpath mapping, ASCII case-alias tombstoning, subtree enumeration for
+  coalesced directory events) instead of re-walking the tree. Every refusal
+  degrades to the full walk, never to trusting stale bytes; `.git` internal
+  churn (index/objects/refs) now costs a hash probe instead of a full
+  reconcile.
+  Rootless daemons previously armed an FSEvents stream over an empty path array
+  and silently watched nothing (reconcile-always); they now watch `.`. Linux
+  inotify stays coarse (never arms exactness) and now poisons the session
+  permanently on queue overflow or an unwatchable newly-created directory
+  instead of racing a staleness hole. Measured on this 150k-file repo: an
+  edit-then-query warm cycle drops from ~290 ms (full covering walk per dirty
+  query) to ~6.6 ms (scoped drain), ~44× on the O(changed) path, with
+  warm-clean
+  latency and the cold/unindexed paths unchanged. Adversarial suite
+  (`src/runtime/session/scoped_test.zig`) asserts scoped answers against an
+  independent
+  on-disk oracle and proves the fail-closed degradations (ignore-source edit,
+  doubted/overflowed batch, non-exact backend, poisoned watcher, racing
+  writes).
+- The unified-search contract (`contract/search_api.toml`) now reports `uds` as
+  an `operational-accelerator` rather than `machinery-landed-daemon-planned`:
+  the `gist serve` daemon, its fail-open front-door client, and the `gist
+  serve` verb are landed, wired into the bare-`gist` path, and covered end to
+  end (`src/commands/{serve,client}`, `src/commands/serve/serve_test.zig`), so
+  both `subprocess` and `uds` are callable transports today — the warm path
+  routes only what it answers byte-identically to cold
+  (`-l`/files-with-matches) and falls open to `subprocess` otherwise.
+- The warm resident session (`src/runtime/session/resident.zig`) and the cold
+  CLI (`src/runtime/cold/engine/serial.zig`) now share the compiled-query core
+  instead of each re-deriving it: resident's inline
+  `Matcher`/`fileMatches`/`countLines`/`escapeLiteral` and its literal-vs-regex
+  candidate dispatch collapse into one `answer` over
+  `engine.query.CompiledQuery`, and the cold `trigramFilter` prunes by the same
+  `regexPrefilter` (required literal, else alternation cover) — so warm and
+  cold cannot drift on which literals are safe to prune by or on what matches.
+  `session.request.Mode` now aliases the engine's `Mode`, unifying the
+  classifier, wire protocol, and compiled query on one enum. Behavior is
+  unchanged (resident parity, read-your-writes, and deletion tests stay green).
+- Tighten Python/Rust gist bindings and session protocol; refresh bench/certify
+  READMEs and search_api contract after the CSR index rewrite.
+- Tighten the `--json` record encoder's per-record hot path — three
+  output-identical shaves that compound across a match-dense stream:
+
+  - **Path object cached once per file.** A file's `begin`, every `match`/
+    `context`, and its `end` all repeat the identical path; each record was
+    re-running full UTF-8 validation + the SIMD string escape on it. `pathData`
+    now encodes the `{"text":…}`/`{"bytes":…}` object once and every record
+    appends the cached bytes — O(1) path work per file instead of O(records).
+  - **Hand-rolled unsigned integer writer** (`writeUint`) for the four
+    per-submatch integers (`line_number`, `absolute_offset`, `start`, `end`),
+    shedding `std.fmt.format`'s writer-vtable indirection on the hottest
+  fields.
+  - **ASCII fast-path for the string encoder** (`asciiOnly`): a SIMD high-bit
+    scan proves valid UTF-8 without the full validator (ASCII ⊂ UTF-8) for the
+    overwhelmingly common all-ASCII line/path/match span.
+
+  Byte-identical to ripgrep by construction — `bench/rgsuite` `run.py` stays
+  409/409 on both engines, and a `sort -u` set-compare of the normalized record
+  stream matches `rg --json` across sparse/dense/`-n`/multi-word patterns.
+
+  Measured on a 48 MB single-file corpus, gist vs `rg --json` (fresh process,
+  resident daemon off): dense `id` **7.74× → 8.19×**, `NOT NULL` 6.60× →
+  **6.84×**,
+  `CREATE` 5.26× → **5.56×**, sparse `pgvector` 1.95× → **2.06×**. Repo-wide
+  `--json` stays **3.2–4.2×** (walk-bound: it still rides the cold parallel
+  walk,
+  not the warm resident index — the remaining structural lever).
+- Two changes that let the parallel engine win the high-hit path-list race
+  (`\w{3,8} -l` — the dense-class trigram blind spot where nearly every file
+  matches) on Linux, where cheap `open`/`mmap` had left gist scaling-bound
+  behind ripgrep. **(1) Coalesced path-list output.** `-l`/`--files` used to
+  take the shared sink mutex and issue a raw `write(2)` per matching file; a
+  scan that lists ~every file (20k on the whole-repo corpus) therefore
+  serialized every worker behind one lock and syscall storm — the parallel
+  `\w{3,8} -l` walk scaled only ~1.4× from 1→6 workers. Each worker now batches
+  its `path+terminator` records into a private ~64 KiB buffer (`bufferPath`)
+  and flushes them in one locked `Sink.emitFilesChunk` write, so the
+  lock+syscall is a per-chunk cost, not per file. Output stays contiguous per
+  worker and order-free by the files-list contract (the rgsuite harness already
+  treats path order as a soft diff), and the batched match count is byte-exact
+  — `-l` file count equals `-c`'s nonzero-file count, and the emitted set is
+  identical across 1/6/16 workers. **(2) OS-aware worker topology.** The
+  six-worker ceiling (and its selective-run halving) is a macOS mitigation —
+  there the walk serializes in the kernel on the `vm_map` fault lock over the
+  mmap'd content shard and on syspolicyd/vnode locks at `open`/namei, so past a
+  small pool more threads only add contention (measured flat 6→16 on the shard
+  path, slower on the open path). Every other OS has a scalable fault + open
+  path and ripgrep saturates all logical CPUs, so `defaultWorkerCount` now
+  returns `ncpu` off macOS instead of idling more than half the cores on an
+  8-core/16-thread box. macOS behavior is unchanged; `GIST_WORKERS` and `-j`
+  still override.
+- Two serial floors sitting UNDER the already-parallel cold read are gone. (1)
+  `readCandidates` now BORROWS each kept file's body straight from its shard
+  arena instead of serially duping the whole kept corpus into the query arena —
+  the read arenas ride to process exit (the cold engine is one-shot: `run` owns
+  a single query arena and every terminal path `std.process.exit`s after emit),
+  deleting a ~½-GB single-threaded memcpy for zero copies. (2) `fileMatchStats`
+  (the `--stats` tally) gained the required-literal SIMD gate every other mode
+  already used: a body or line without the literal every match must contain
+  holds zero matches, so one `contains` replaces a full NFA sweep of it. Output
+  is byte-identical throughout (verified against pre-change references and
+  serial↔parallel). Measured on this corpus (`--no-index`): `--stats 'fn '`
+  dropped 340 → 133 ms parallel and 652 → 157 ms serial (4.2×), and the copy
+  removal shaves ~25–30 ms off every full-read mode.
+- Un-hardcoded the corpus roots — gist and relate now index and query any tree,
+  not just the Billy monorepo. `gist index [ROOT...]` / `relate index` take
+  roots positionally; with none given, `corpus.resolveRoots` picks per tree (a
+  `GIST_ROOTS` env override split on `:`/`,`/space, else `.` — the whole tree).
+  Every artifact is now self-describing: the trigram index generation-publishes
+  a NUL-separated `roots.list` beside `index.gist`/`paths.list`, and the
+  kinship atlas format bumped to v2 with an embedded roots blob — queries,
+  read-elision, `--rank`, freshness stat-walks, `status`, and the codex shelf
+  all scope to the _persisted_ build roots instead of a compile-time constant.
+  A `.` root normalizes to bare relative paths (`joinRoot`), so foreign-tree
+  output is byte-identical to a live scan. Legacy pre-roots artifacts (missing
+  `roots.list`) fall back to `.` on load — a sound superset (elision keys on
+  the persisted path set); atlas v1 reads as corrupt and rebuilds. Verified
+  end-to-end on the CPython corpus: `gist index` inside the foreign tree,
+  indexed-vs-`--no-index` output parity, and ~4× warm elision (11 ms vs 48 ms).
+- Unified the four duplicated corpus walkers (index build, --live, T3 freshness
+  stat-walk, no-prefilter live scan) onto one shared Haystack/Walker
+  abstraction (src/corpus/tree/haystack.zig), and hand-tuned its two per-call
+  hot paths in the process: isSkipDir moved from a 35-entry linear std.mem.eql
+  scan to a comptime std.StaticStringMap (18.5ns to 2.8ns/call, 6.6x, measured
+  over 1786 real repo directory basenames), and the per-file root/rel path join
+  moved from std.fmt.allocPrint to a manual sized alloc + memcpy (20.9ns to
+  9.9ns/call, 2.1x, measured over 200k calls) since the walk yields 18.9k files
+  but only thousands of directories.
+- _2026-07-19_ — Build: **`engineModules` + `twin` for post-hoc decorations.**
+  The root/test-twin framework + PCRE2 wiring collapses to one loop; the CLI
+  engine is a `kernelkit.twin` at `-Dcli-optimize` instead of a hand-rolled
+  `createModule`.
+- `--sort`/`--sortr path` now rides the fused parallel walk instead of the
+  serial engine. The streaming sink can't globally order, so ordered runs
+  previously fell to the serial path — a single-threaded gather walk plus a
+  concurrent index-freshness walk that traversed the tree twice, leaving `gist
+  -l --sort path` ~1.6x SLOWER than ripgrep 15.2 (the redundant freshness walk
+  cost more than the index it validated saved). Workers now hold each rendered
+  fragment in their arena keyed by path (already arena-lived, so zero copies)
+  rather than racing it to stdout, and `run` orders the whole result once
+  (`emitSorted`) — a parallel walk+read+match+inline-index-elision feeding one
+  final sort. The ordered emit replays through the SAME `Sink`, so
+  heading/context separators and the matched-files exit code stay
+  byte-identical to the serial oracle, just sorted. Ascending path takes
+  `serial.pathLess` (rg's `Path::cmp`, valid for single/implicit root where
+  rg's per-argv-root walker order collapses to it); descending is the global
+  mirror for any root count. Time keys (modified/accessed/created), `--files`,
+  `--json`, and multi-root ascending stay on the serial engine. Result: `gist
+  -l --sort path WalletService` went from 935 ms to 36 ms — **34.8x faster**
+  than rg 15.2 (content `--sort path` 26x); non-sorted paths and the stat-only
+  `--files --sort` listing are unchanged.
+- `--stats` and `--files-without-match` now ride the fused parallel walk
+  instead of the serial collect-then-shard path. Both were hard-declined by
+  `eligible` (cross-file tally / inverted success predicate), so they paid a
+  single-threaded gather walk plus a sharded emit — leaving `gist --stats` /
+  `--files-without-match` ~1.5× slower than ripgrep 15.2 on the Linux corpus.
+  Workers now own the modes directly: `--files-without-match` is the invert of
+  `-l` (emit on a miss; index elision _is_ a miss → emit without reading; the
+  `fast_l` prefix proof skips the tail without emitting when a match is already
+  settled), and `--stats` streams the match body like any content mode while
+  summing a per-worker `grepfile.Stats` into one trailing block (same fold
+  shape as the `--json` summary — `files_with_match` / `bytes_printed` stamped
+  from the sink after join). A whole-file gate miss still tallies a zero-hit
+  searched file (binary cutoff via `committedPrefix`), so the stats block stays
+  byte-identical to the serial oracle. Result on the Linux corpus vs rg 15.2:
+  `--stats` 919 ms vs 2.13 s (**2.3×**), `--files-without-match` 997 ms vs 2.04
+  s (**2.0×**); `-l` and the sorted fused path are unchanged.
+- `--type-list` now prints in ripgrep's exact presentation — type names sorted
+  lexicographically (one line per alias) and each type's globs sorted
+  lexicographically — over a strict superset of ripgrep's type registry. Most
+  rows are byte-identical to `rg --type-list`; the remainder differ only by
+  being richer (gist-only types and per-type glob enrichments).
+- `-U` multiline now rides the parallel per-file pipeline instead of falling
+  through to the serial engine, and an assertion-free multiline pattern
+  (nothing positional to resolve — no `^ $ \b \A \z`) determinizes exactly, so
+  `bufMatch` answers from the O(1)/byte byte-class DFA instead of a Pike
+  re-seed per position; `-U -l` additionally short-circuits at the first kept
+  span (`Emitter.buffer` files-only fast path). Both declared `-U` matrix
+  losses flip to wins — `multiline-rare-files` 0.84x → ~3.5x and
+  `multiline-common-lazy-dotstar-files` (`import \([\s\S]*?\)`, the table's
+  deepest loss) 0.36x → ~2.8x — with byte-identical parity held by a new
+  assertion-free-multiline differential fuzz lane against the Pike oracle.
+- `-w` word searches now ride the required-literal gate (`\bLIT\b` can only
+  match where LIT occurs — the boundary check only ever rejects), and the
+  emitter gained a per-line SIMD memmem gate so lines without the literal never
+  touch the regex engine. `-w Config services/backend` dropped from 72ms to
+  43ms (user CPU 297ms → 62ms), 1.5x faster than ripgrep.
+- `relate patterns` now index-elides its reads: when every pattern yields a
+  sound trigram prefilter and the roots sit inside the indexed corpus, it
+  unions per-pattern candidates through the persisted index (freshness-widened,
+  root-scope gated before the read) and attributes only those files in parallel
+  shards — the same elide-only contract as the single-pattern engine, identical
+  answers proven against the `gist -l` oracle. The 10-pattern relocator-shaped
+  slate on the live corpus drops from ~1.2 s (10× sequential `gist -l`) to ~195
+  ms attributed (`bench/races/multipattern.sh`), ~6× faster with attribution
+  the fused alternation cannot give at any speed.
+- `walkFresh` now runs its first shard inline on the calling thread and only
+  spawns workers for the rest, so a single-shard walk (a small tree — the
+  common resident-reconcile case, hit on every non-clean query) spawns zero
+  threads instead of paying a spawn+join per query, while a multi-shard walk
+  still saturates every core with the caller taking a share rather than idling
+  on join. Output is byte-identical; this is a scheduling change only.
+- `zig build test` is ~4× faster (5.5 min → ~85 s) and a passing run is now
+  silent. The unit-test binary is pinned to ReleaseSafe via kernelkit's new
+  `test_optimize` knob — the differential-fuzz suites (DFA vs Pike, powerset
+  language equivalence, adversarial oracles, index-loader mutation soak) keep
+  every safety check at optimized speed; `-Dtest-optimize=Debug` restores a
+  debuggable binary and the kcov `coverage` step stays Debug for full DWARF.
+  The daemon's "serve: warm" lifecycle line and the `-rn` grep-ism note are
+  suppressed under test builds — any stderr from a passing test binary made
+  Zig's build runner print a spurious `failed command:` banner on green runs.
+- gist: collapse the ripgrep-compatibility matrix to two live categories —
+  `supported` (behaves as rg) and `improvements` (identical-or-superset results
+  that are strictly better: `--binary`, `-P/--pcre2`, `-z/--search-zip`,
+  `--sort`/`--sortr`, `--type-list`). The former "supported-with-differences"
+  bucket is gone: the six over-claiming rows were reconciled to parity and
+  `--pre` now feeds the file's bytes on the child's stdin as well as the path
+  argv (rg's exact contract, deadlock-free via the open file fd), closing the
+  last genuine gap. `gist --schema` reports the new `improvements` bucket; the
+  transforms parity slate adds an argv-ignoring stdin-only preprocessor case.
+
+### Removed
+
+- Drop the README-only cli/irg umbrella-CLI contract; gist and relate remain
+  the product faces.
+- Removed the orphaned `scan/sweep.zig` no-prefilter live-scan prototype: its
+  fused work-stealing walk+read+scan idiom had already graduated into the
+  production `faces/cli/search/engine/parallel.zig` engine, leaving the module
+  with zero callers repo-wide (proven via gist + repo-wide grep). The `scan/`
+  tier is now exactly the byte-level verify primitives (`simd` + `verify`); the
+  READMEs and source comments that cited the dead path are reweaved onto the
+  engine that actually drives the fan-out.
+
+### Fixed
+
+- **A leading `(?flags)` inline directive died with a bare `bad pattern`.** The
+  README promised rust-regex/rg's leading flag-group syntax was "honored where
+  gist can, loud where it can't", but the parser rejected every `(?…)` group
+  outright — `gist '(?i)todo'` exited 2 with no reason and no fallback, a
+  pattern ripgrep accepts.
+
+  `combinePatterns` now resolves a leading `(?flags)` directive per pattern
+  (`stripLeadingFlags`): `(?i)`/`(?-i)` set ASCII caseless run-wide (riding the
+  same plumbing as `-i`, overriding a resolved `-S`, exactly rg's
+  inline-beats-CLI precedence); `(?m)`/`(?s)` and negations are inert in the
+  per-line model (`^$` already anchor every line, no line carries a `\n`);
+  `(?-u)` is inert (byte semantics are gist's native behavior). Directives the
+  engine genuinely can't reproduce — `(?u)` `(?x)` `(?U)` `(?R)` — and mixed
+  per-pattern case demands across `-e`/`-f` patterns (gist compiles one global
+  engine; rg scopes flags per branch) fail loud with the reason and the rg
+  fallback. Under `-F` the bytes `(?i)` stay a literal, as in rg. The generic
+  bad-pattern death (lookaround, backreferences, mid-pattern flags) now names
+  the pattern, the reason, and the `rg` fallback instead of a bare
+  `bad pattern`. Guarded by unit tests plus a case-twisted black-box exit-code
+  guard in `build.zig` (`zig build test`).
+- **Finished the search-engine unification the previous entry started.** The
+  `search` verb's removal (see `unify-search-engine`) left the old
+  `src/commands/search/` package dead (deleted, minus its one still-needed
+  `looksLikeRegex` helper, moved into `ripgrep/args.zig`), `root.zig` still
+  exporting/testing it, and stale doc comments across `index/persist.zig`,
+  `corpus/corpus.zig`, and `corpus/haystack.zig` pointing at it.
+
+  **The bench gates and README were still asserting the pre-unification
+  contract.** `bench/gates/streams.sh` and `bench/gates/scan_regress.sh` (plus
+  `bench/races/_compete.sh`'s shared invocation helpers) still shelled the
+  removed `gist search <pattern> --show files` syntax and asserted the old
+  `search` verb's wider-than-`rg` corpus (`--no-ignore --hidden`) and a
+  "routes to the live scan" stderr announcement that no longer exists — so both
+  gates were silently non-functional (argument-parse failures, not green
+  checks) rather than actually verifying anything. Rewrote both against the
+  unified engine's real contract: `gist <pattern> -l`, `.gitignore`/hidden
+  parity with `rg`'s default, and stderr silent except `--rank`'s timing line.
+  `scan_regress.sh` now surfaces real FN/FP counts against `rg` for
+  no-prefilter patterns instead of skipping the comparison — worth a follow-up
+  look, since a first run found genuine mismatches (binary-file handling
+  divergence) it was never actually catching before.
+
+  `README.md`, `bench/gates/README.md`, `src/commands/cli/README.md`, and the
+  `project-overview.mdc` navigation line were all rewritten to match: the
+  canonical usage is the bare `gist <pattern>`/`gist rg`, `.gitignore` and
+  hidden-file semantics now match `rg` exactly (no more documented
+  superset-of-`rg` corpus), and `--rank`/`-l` replace the removed `search
+  --rank`/`--show files` spelling throughout.
+- **`gist` could hang forever with no output.** `readableStdin()` mirrors
+  ripgrep's own `is_readable_stdin` check (regular file, FIFO, or socket on fd
+  0
+  ⇒ search stdin instead of walking the tree) — correct against a real shell
+  pipe, but some sandboxed shell/tool-call harnesses wire fd 0 to a long-lived
+  socket that never writes a byte and never closes. A blocking `read(2)`
+  against
+  that blocks indefinitely; an agent-facing tool can't afford that.
+
+  `readableStdin()` now classifies fd 0 by stream type (`stdinKind`) and guards
+  _only a socket_: a socket is admitted to the stdin path — and each chunk of
+  its
+  read loop is gated — through a 200 ms `poll(2)` deadline, so the pathological
+  "open forever, silent" control channel times out and falls through to the
+  directory walk instead of hanging. A FIFO (pipe) or regular file is
+  classified
+  readable immediately and block-read straight to true EOF with **no** poll
+  guard:
+  `cmd | gist pattern` is the canonical stream, a slow or paused writer just
+  makes
+  `read` wait, and the writer's close is the EOF — byte-for-byte ripgrep, with
+  no
+  delayed-pipe truncation. (An earlier revision poll-guarded FIFOs too, which
+  dropped a producer whose first bytes arrived after the deadline to the walk —
+  a
+  delayed-pipe false negative this split eliminates.)
+- A resident file reconciled into the mutation overlay and then deleted is no
+  longer reported off the watcher-clean path: overlay matches are now
+  existence-checked with the same fail-closed stat-per-hit the base docs use,
+  so a delete that vanishes from the metadata walk can never surface a stale
+  hit (preserving resident==rg).
+- An explicit PATH arg that can't be opened (missing/unreadable) is now
+  reported to stderr and forces exit 2, matching ripgrep; previously such a
+  path was dropped silently with a no-match exit 1, which read like an instant
+  crash on a typo'd path (e.g. 'gist search tel').
+- Benchmark harness now fails closed on hard errors, and the crate's
+  parity/certificate claims are reconciled with the committed artifacts.
+  `bench/races/_compete.sh` (`hf_mean`), `bench/certify/certify.sh`
+  (`bench_one`, which also had a trailing `|| true`), and
+  `bench/gates/scan_regress.sh` masked non-zero exits: the `{ … ; } 2>&1 | wc
+  -l` drain neutralized a needle-miss exit 1 _and_ a hard failure (exit ≥ 2 —
+  unknown flag, crash, bad regex, unreadable path), so hyperfine could time a
+  failure path as a fast search; and `scan_regress`'s warm-up ran the fresh
+  binary against a non-matching needle behind a trailing `true`, so a failed
+  rebuild (exit 1, indistinguishable from the no-match) was papered over and a
+  stale binary got benchmarked. All three now pre-check the real exit code (0/1
+  valid, ≥ 2 hard-fails the cell; a gist failure aborts the certificate) and
+  the scan-regress warm-up uses the non-running default install step so a build
+  failure is unambiguous. Separately, `README.md`, `bench/rgsuite/README.md`,
+  and `--schema`'s `flag_surface` are corrected to match the committed
+  `results.json`: supported-surface parity is **98.6% (275 PASS / 3 ORDER / 4
+  FAIL / 38 NA / 121 SKIP)**, not zero-FAIL; the "byte-for-byte drop-in" /
+  "every rg flag keeps working" / reproducible "9 win · 2 loss" / "30.1 MiB
+  smaller than csearch" claims are scoped to the supported surface (with the
+  raw certificate still uncommitted); the file-set (`equality.sh`) vs
+  line-output (`rgsuite`) gate distinction is made explicit; and the freshness
+  guarantee is stated under its local-filesystem assumptions.
+- CREST now distinguishes epsilon, unknown, and optional profiles, preserves
+  one-sided class certificates through repetition, and saturates large counted
+  powers without the former 4,096-copy precision clamp.
+- Certificate assembly now copies Crest's canonical raw aggregate into the
+  release bundle instead of expecting the obsolete output path.
+- Closed the last supported-surface divergences between `gist rg` and ripgrep
+  15.2.0: the mined differential suite now scores **409/409 = 100%** on _both_
+  walk engines (parallel and serial), zero FAIL, zero deferred entries.
+
+  - **`--include-zero` / `--no-include-zero`** (last-wins) are honored across
+    `-c`/`--count` and `--count-matches`: a searched file with no match now
+  emits
+    its `path:0` line like rg, so the two flags round-trip. Zero-count output
+    disables the whole-file match gate and index read-elision (a file provably
+    without a match must still be _named_), and the request is routed to the
+    serial engine so every candidate is accounted for; exit status stays 1 when
+    nothing matched.
+  - **NUL-bearing patterns** are rejected under default binary detection
+  exactly
+    where rg's `regex::ban` rejects them — a pattern that _literally_ contains
+  a
+    NUL byte (`Regex.bansByte`: a singleton `{0}` consume state), not one that
+    merely _can_ match NUL (`.`, a range) — while `-a`/`--text` and
+  `--null-data`
+    still allow it. The ban rides the linear engine only; PCRE2 (`-P`) keeps
+  rg's
+    PCRE2 semantics.
+  - **Inline `(?-m)` / `(?s)` under `-U`** now reshape whole-buffer matching:
+    multiline mode and the `^`/`$` line-anchor behavior are tracked separately,
+  so
+    `gist -U '(?-m)…'` anchors to the buffer and `(?s)` lets `.` cross
+  newlines,
+    matching rg instead of being silently inert.
+  - **PCRE2 whole-buffer multiline lookahead** — `(?s)alpha(?=.*bar)` and
+  friends
+    operate over the entire multiline buffer in normal, count, and files-only
+    modes (JIT and interpreter agree), locked by adverse backend tests.
+  - **Ancestor-ignore parity**: ignore files in the directories _between_ CWD
+  and
+    an explicitly-named positional root are now loaded
+  (`Ignore.loadRootAncestors`,
+    rg's `add_parents`), an escaped trailing slash (`foo\/`) marks a rule
+  dir-only
+    without leaking the backslash into the glob, and a leading `**/` in an
+  anchored
+    ancestor rule floats depth-independently instead of being stripped.
+  - **`--schema` authority** advertises the real flag catalog at
+    `src/surface/exec/cold/argv/args.zig:flag_catalog` (was a stale
+  `runtime/cold`
+    path), proven by a compile-time `@embedFile` assertion so it cannot drift
+  again.
+
+  Verified by `python3 bench/rgsuite/run.py` (both engines), the strict
+  `bench/rgsuite/check_results.py` (no `--allow-fail`), and `zig build test`.
+- Cold-query evidence now fails closed before measurement: every gist timing
+  cell proves its complete file set against official rg, timed wrappers
+  preserve hard failures, and deterministic gates reject both status and
+  semantic faults. Line parity generates the cited 265,286- and 147,087-line
+  classes on demand and requires exact bytes for explicit files on both
+  engines. Certificate bundles now carry microscopic and macroscopic CSVs,
+  hashed corpus rows, exact executable identities, raw-cell/command parity, and
+  honest runtime-cache versus evidence-workspace accounting, with fresh and
+  committed bundles both gated.
+- Fixed a drift risk between Layer A (`certify.zig`) and Layer D
+  (`lowerbound.zig`) of the Certificate of Optimality: the eleven probe-class
+  definitions were hand-duplicated across the two files. Extracted them into a
+  single shared `bench/harness/probes.zig` module both layers import, so the
+  certificate's layers can no longer silently diverge. Also wired Layer C
+  (roofline) and Layer D (lowerbound) into `build.zig` as `zig build
+  roofline`/`zig build lowerbound` (previously unwired source with no
+  executable target) and added the Layer B probe-vs-production differential
+  test to `zig build test`.
+- Fixed two `rg`-compat bugs found by adversarial-testing against ripgrep's own
+  issue history: files at/above the 4 MiB indexing-corpus budget silently
+  returned zero matches instead of being searched in full (the read path reused
+  `per_file_cap` as a hard ceiling; it now keeps reading past it), and
+  `-L`/`--follow` hung forever on a self-referential symlink cycle (the depth
+  counter alone didn't stop it; the walk now also tracks each ancestor's
+  realpath and refuses to re-descend into one already on the current DFS stack,
+  while still following legitimate non-cyclic diamonds).
+- Gist's public claims now match its shipped surface: `--schema` renders a
+  four-bucket ripgrep compatibility matrix from the parser's own declarative
+  flag catalog, including ASCII-only `-i`/`\b`/`\w` differences and fail-loud
+  exclusions; the C ABI is documented and gated as the existing two-symbol
+  primitive surface, with a real C compile/link/run smoke in `zig build test`;
+  and `PRIOR_ART.md` distinguishes Gist's agent-workload composition from
+  established indexed, semantic, and structural code-search systems.
+- Index publish is now generation-atomic (`gens/<id>/` + `pair.gen`) so
+  concurrent
+  loaders never observe a mixed `index.gist`/`paths.list` pair; persist tests
+  cover
+  torn-stage and concurrent-load regressions. Certificate provenance requires
+  `machine.git_commit ==` clean HEAD (`check_artifacts.py --require-head`); the
+  committed artifact is stubbed pending republish. README parity language no
+  longer
+  counts ORDER as byte-identical, and documents `--sort`/`--sortr` as
+  accepted-but-ignored.
+- Index-elision parity now compares the byte-exact line multiset, preserving
+  duplicate and content checks without treating the parallel engine's
+  worker-discovery order as semantics. Daemon socket tests now always send
+  shutdown before joining, and the wedged-daemon regression proves timeout
+  causally through a short test-only deadline instead of scheduler-sensitive
+  wall-clock bounds. Full certificate cells retain diagnostics and retry once
+  from scratch after a transient tool failure, while persistent failures remain
+  excluded and visible. The full A–D mint again builds its k-NN lab and takes
+  the documented non-PMU fallback when sudo is disabled. Its docs now bound the
+  claim to cold exact search and measured ripgrep dominance, distinguish
+  wider-field context and exploratory dirty runs from publishable evidence, and
+  generate citations to the current production kernels.
+- Keep the fail-closed certificate freshness check resilient to Markdown
+  wrapping.
+- Linux targets build again. Zig 0.16's `std.c` declares no `fstat`/`fstatat`
+  on
+  Linux and `std.posix.close` is gone, which had silently rotted every
+  comptime-pruned Linux leg (`--one-file-system` device ids, `--sort created`
+  birth times, stdin classification, the mmap fast path's sizing stat, the
+  session reconciler's lstat, and the inotify watcher's fd closes) — invisible
+  from the macOS dev boxes. Raw stat now lives behind one portable shim
+  (`grepfile.RawStat` + `statPath`/`lstatPath`/`statFd`): `statx(2)` on Linux,
+  the exact libc `fstatat`/`fstat` calls it replaced everywhere else, so macOS
+  behavior is byte-identical while Linux additionally gains real `statx` BTIME
+  birth times for `--sort created`. Watcher closes use `std.os.linux.close`
+  directly in their comptime-Linux branches. A `zig build check-linux` drift
+  gate (folded into `zig build test`) cross-compiles the full CLI module for
+  x86_64-linux as a no-link object — full Sema + codegen over every
+  Linux-reachable line in ~1 s warm — proven to fail on exactly this class of
+  breakage; x86_64-gnu, x86_64-musl, and aarch64-gnu full builds all verified
+  green.
+- Made indexed read elision fail closed on local filesystem change metadata:
+  Darwin bulkstat and portable stat now carry both mtime and ctime, and a file
+  is live-read when either clock is at/after the build anchor or either value
+  is unavailable. This closes ordinary preserved-mtime append and same-size
+  overwrite false negatives without per-query content hashing. The tracked
+  model now qualifies timestamp resolution and concurrent-write semantics,
+  while the >1024-file filesystem gate synchronously requires real elision and
+  covers mtime/ctime equality, add/edit/delete/rename, unreadable directories,
+  and serial-overlay compatibility.
+- Make indexed lint searches worktree-safe and harden safety gates.
+- Multi-root queries that sweep large gitignored files (rg-parity re-anchors
+  CWD-tier ignore rules per explicit root, pulling multi-GiB training blobs
+  into the scan) no longer pay a copy-loop tax: `readTail` now maps the whole
+  regular file read-only via `mmap` and re-views the already-drained prefix
+  through the mapping — one consistent snapshot, zero intermediate copies —
+  falling back to the old growable-buffer read only when the fd isn't a regular
+  mappable file. `gist pgxpool services libs -l` dropped 543 ms → ~190 ms warm
+  (rg: ~180 ms), output byte-identical.
+- Promote gitignore admission into the shared corpus layer so gist indexes,
+  relate, and composed irregex exclude ignored and hidden files with the same
+  precedence as live gist search.
+- Published certificates now pass through the repository's canonical prose
+  formatter before artifact verification, preventing generated Markdown drift.
+- Ranked --rank snippets now window around the match instead of taking a
+  leading 120-byte prefix, so a hit past column 120 still surfaces the matched
+  token (with … markers on truncated edges) instead of a line of filler with
+  the token gone.
+- Reconciled the C-ABI compatibility integer so every axis agrees on the
+  truthful value. The rung-3 match callback (`irregex_match_fn`) had already
+  gained its `int32_t` abort return — a breaking signature change the changelog
+  documented as stepping `irregex_abi_version` 1 → 2 — but `src/root.zig`'s
+  `abi()`, the `build.zig` C smoke assertion, and the Python FFI loader
+  (`_ffi._ABI_VERSION`) were never bumped, so the live library reported `1`
+  while the contract, the Python/Rust mirrors, and the changelog all claimed
+  `2`. `abi()` now returns `2`, the C smoke asserts `2u`, and the loader gates
+  on `2`; the contract `[meta]` comment additionally spells out that the C-ABI
+  integer, engine semver, UDS protocol version, and persisted index/atlas
+  formats are independent version axes.
+- Relate search and pack now nominate from the persisted trigram codebook
+  instead of rebuilding a whole-corpus fingerprint lexicon per query, recover
+  three-byte queries such as `dog`, bound exact cross-parsing to query-bearing
+  evidence windows, and choose live sketching automatically when a narrow scope
+  is cheaper than loading the global atlas.
+  Warm retrieval now shares canonical scope and coverage kernels, distinguishes
+  foreign chunks from ubiquitous zero-bit evidence, rejects non-finite
+  similarity thresholds, and falls back live instead of retaining stale atlas
+  rows after refresh failure.
+- Restore the trailing newline on bench/rgsuite/results.json so the
+  editorconfig gate passes.
+- Serial-engine `-l`/`--files-with-matches` no longer lists binary files
+  (Mach-O, `.png`, `.dmg`, `.pak`) that ripgrep and the parallel engine
+  correctly reject. Root cause: `grepfile.emitRegion` rendered a binary file's
+  committed prefix through `Emitter.file`/`buffer`, but left the emitter's
+  `[base, body_end)` window on the WHOLE body — so the fused `-l` doc-match
+  read past rg's NUL cutoff and matched bytes in the discarded tail
+  (`-c`/`-o`/plain/`--stats` were unaffected: count is suppressed earlier and
+  the others render the `lines` slice). `emitRegion` now re-points the window
+  at exactly the rendered region — an empty committed prefix collapses
+  `body_end == base`, disabling every fused path. The evaluator's 12-class
+  `parity_lane` now passes 12/12 on both the parallel and serial
+  (`GIST_NO_PARALLEL`) engines; the shared fix also closes the same latent hole
+  for tail-NUL binaries on the parallel engine, and the `walked -l` regression
+  test now sets the emitter window production-identically so it guards against
+  a recurrence.
+- The compact enumeration modes — `-l`/`--files-with-matches`, `-c`/`--count`,
+  `--count-matches`, `--files-without-match`, and `--files` — are now exempt
+  from the soft ~25k-token context cap (only the hard OOM ceiling remains), so
+  they return the COMPLETE, reproducible set. The parallel work-stealing engine
+  emits in worker-discovery order (intended rg-parity, an ORDER-bucket soft
+  pass), and truncating that unordered stream at the soft cap silently returned
+  a nondeterministic SUBSET of files run-to-run — the same `gist -l foo`
+  yielding different results each invocation (e.g. 1692/1694/1692 lines), which
+  breaks caching and agent reproducibility. It also made the truncation
+  notice's own "try `-l`/`-c`" advice hollow. The full-content modes (default,
+  `-o`, context, `--json`) keep the cap — their volume is its reason, and their
+  truncation is already ordered — and an explicit `GIST_MAX_OUTPUT_TOKENS` is
+  still honored as a deliberate opt-in bound. Applied to both the cold engine
+  (`serial.run`) and the warm client (`tryWarm`) so the two never disagree on
+  which files `-l` returns; a new `Opts.enumeration` predicate carries the
+  parser-contract test, and `corpus.exemptSoftCap` lifts only the default
+  guard.
+- The freshness walk (`index/trigrams/fresh.zig`) no longer emits a file twice
+  when its parent directory expands to children but no subdirectories:
+  `buildWorkItems` re-queued such childless directories as leaf items after
+  `expandOneLevel` had already emitted their files, double-visiting every file
+  underneath. Surfaced by the kinship-atlas fold tests (a changed file
+  re-sketched twice inflated the folded path count); fixed at the walk so every
+  consumer of the changed-file report sees each path exactly once.
+- The in-process C-ABI session seam is now null-hardened: gist_open with a null
+  out (or null roots with nroots > 0) and gist_search with a null pattern
+  (pattern_len > 0) return GIST_INVALID instead of dereferencing blind, and
+  nroots == 0 / pattern_len == 0 never read their pointer. Also fixed an
+  OOM-path leak of the transcoded body in the mirror's readDocOwned.
+- The parallel engine's end-of-walk elision drain no longer forfeits the
+  crest/trigram prune when the loader lands a hair late.
+  `flushPending(final=true)` sampled `LazyElide.ready` once and, if the
+  concurrent oracle hadn't finished, re-read the _entire_ deferred backlog with
+  that stale verdict — the cold-page-cache race, where the fast metadata walk
+  defers every file before the 39 MiB index has faulted in from disk, so a
+  broad selective scan (`[0-9a-f]{8}`, sieve-pruned 94%) collapsed to a full
+  read (~1.0× vs `--no-index`) even though the oracle became ready microseconds
+  into the drain. The drain now re-polls `ready` per file, so a loader that
+  loses the walk by a whisker still elides the long tail instead of reading it:
+  once the flip is observed, every remaining unchanged non-candidate is
+  skipped. It never idles (the rejected alternative — blocking on the oracle —
+  measured 1.5× slower on warm `libs`-sized scopes), so the page-cache-warm
+  path is untouched (the re-poll branch is inert when the oracle is already
+  ready), and the result set stays byte-identical to `--no-index` (elision
+  soundness is timing-independent — `Elide.skip` still refuses any file the
+  build anchor can't prove unchanged). Measured on a cold-simulated drain (100
+  ms oracle load, disk-bound reads): 319 ms → 198 ms (1.61×), recovering the
+  same prune win the serial engine already banked; a truly cold page cache
+  lands the oracle even earlier in the long disk-bound drain, so the recovered
+  fraction is larger.
+- The parallel fused engine now takes the line-free literal fast path
+  (`Emitter.fileLit`) for every eligible per-file emit, not just `-l`. Its only
+  short-circuit was `fast_l` (files-only); a pure-literal
+  `-c`/`--count-matches`/`-o`/`-n`/plain query fell through to `collectLines` +
+  `Emitter.file`, so each worker split every candidate into a line array and
+  ran the per-line engine — even though a literal carries no `\n`, making
+  candidate line ⟺ matching line and the engine redundant. `emitBody` now
+  mirrors the serial engine's per-file dispatch exactly: when `!multiline and
+  litFastEligible()` it runs `fileLit` (rg's candidate-jump searcher —
+  `indexOfAnyPos` hit→hit, line bounds via memchr, count without the Pike VM)
+  and skips the line split entirely; the fast path's guards already exclude
+  context/invert/passthru/replace/stats, so output stays byte-identical
+  (oracle-gated against ripgrep in the cold `-c` race). This closes the regime
+  where the trigram index can't prune (ubiquitous literals like
+  `func`/`import`/`})`): the count lane went from ~3.8× the CPU of the list
+  lane — losing to rg at ~0.6× — to parity with it, so on the 20-core ext4
+  Anvil box `gist -c` now beats rg cold 4/4 at 1.2× geomean (`func -c` 52.8 ms
+  → 26.6 ms) instead of losing.
+- The parallel ripgrep engine (pipeline.zig) had regressed two rg-parity fixes
+  present in the serial engine: -g/--iglob whitelist overrides for ignore rules
+  were not respected, and directory-walk errors (e.g. EACCES) were silently
+  swallowed instead of exiting 2 like ripgrep. Both are now ported into the
+  parallel engine, and the line_parity, freshness_fs, and rgsuite test
+  harnesses now exercise both engines (serial forced via the internal
+  GIST_NO_PARALLEL env var), confirming genuine zero-FAIL parity on both.
+- The persisted-index loader now verifies the doc→path table matches the index.
+  `persist.load` mapped `paths.list` and split it without checking the count,
+  so a torn or stale table (fewer or more entries than the index's `doc_count`)
+  could let a candidate doc id — bounded `< doc_count` by the index but never
+  against the table — index past `paths.items`. `validatePersistedPair` now
+  requires `paths.len == doc_count`; a mismatch is treated as a no-usable-index
+  miss (fall back to the full walk with rebuild guidance) rather than a
+  possible out-of-bounds path lookup. The NUL-split is factored into
+  `parsePathTable`, and both are unit-tested in `persist_test.zig`.
+- The resident session's reconcile no longer re-reads the whole corpus on every
+  query: its freshness cursor is anchored at the session's own load instant
+  (captured before the corpus read, so a write racing the load is caught by the
+  first reconcile rather than baked into stale base bytes) and advances
+  incrementally per reconcile, instead of being pinned backward to the
+  persisted index's global build anchor — a different index's clock that
+  predates any file touched since the last `gist index` and silently defeated
+  the incremental catch-up, forcing a full corpus re-read (and a metadata-walk
+  thread pool) on every warm query.
+- The resident session's socket writes can no longer kill the daemon (or a
+  client) with SIGPIPE when the peer half-closes mid-write: `protocol.writeAll`
+  now issues a no-signal send (Linux `MSG_NOSIGNAL`; Darwin/BSD `SO_NOSIGPIPE`
+  armed idempotently on the fd), so a broken connection surfaces as EPIPE and
+  costs one dropped connection instead of a fatal signal that takes down the
+  whole process. The CLI's stdout SIGPIPE (the `gist | head` early exit) is
+  deliberately left intact.
+- The single-byte legacy decoders (`x-user-defined` and the windows/ISO/KOI/mac
+  table family) reserved `buf.len` bytes up front and then used
+  `appendAssumeCapacity` for ASCII bytes — but once an earlier high byte
+  expands to multi-byte UTF-8 via `appendSlice`, the geometric growth policy
+  guarantees no spare headroom, so a long ASCII tail after enough high bytes
+  could write past the reservation (undefined behavior in ReleaseFast, an
+  assert in Debug). Caught by a 4000-buffer differential fuzz over all 35
+  legacy encodings during the decoder consolidation; both paths now use
+  bounds-checked appends, decoding byte-identically on every input that didn't
+  crash before.
+- The soft output budget (the ~25k-token agent-context guard) now applies
+  symmetrically across every content-search path. A warm daemon-served answer
+  is pre-rendered as one buffer, so the client's single stdout write previously
+  let the whole result land — the crossing-fragment-lands-whole straddle
+  silently defeated the cap, dumping the full result (e.g. 9.4 MB) where a
+  daemon-less --no-index run truncated at ~100 KiB. The warm client
+  (emitRaw/emitFd) now bounds via corpus.writeStdoutCapped, cutting at a
+  whole-line boundary; because the daemon renders in canonical path-sorted
+  order the surviving prefix is the same reproducible cut the cold serial
+  loop's outputFull poll produces (stable run-to-run), not the parallel sink's
+  order-nondeterministic subset. Under the cap the paths stay byte-identical;
+  GIST_UNCAP still lifts it.
+- Use Python 3.14 multi-exception syntax in the warm-tier report helper.
+- Warm client gates every post-connect recv with a 2s poll deadline so a wedged
+  daemon (accepts but never READY) falls through to cold instead of parking
+  forever.
+- `--json` now disables index read-elision, exactly like `--stats` always has.
+  The JSON summary message embeds the same `searches`/`bytes_searched`
+  counters, so eliding index-cleared files under-reported both relative to
+  ripgrep (which reads every walked file) — acceleration was changing
+  observable output, caught by the multi-corpus sweep on CPython. With the gate
+  added to `trigramFilter`, the full 472-case sweep (5 corpora × both engines)
+  passes clean.
+- `--rank` now compiles the pattern through the same regex engine as the line
+  search (so `foo|bar` and `claim.*job` rank real matches instead of looking
+  for those bytes literally) and honors positional PATH roots when scoping the
+  candidate set.
+- `bench/rgsuite/run.py` now writes `results.json` with a trailing newline, so
+  a suite re-run no longer regenerates the editorconfig final-newline violation
+  the earlier one-off file fix papered over.
+- `codex.Cursor.bytes` guarded reads with `pos + len > buf.len`, which can wrap
+  on an adversarial huge length and risk a safety panic instead of a verdict.
+  The check is now the overflow-proof `len > buf.len - pos` — identical on
+  every non-overflowing input, and a corrupt blob declaring an absurd length
+  now fails closed with `error.Corrupt`. Atlas's near-identical private cursor
+  (which already used the subtraction form) is deleted in favor of the shared
+  `codex.Cursor`, so CDX1/SHLF/ATLS parsing all take the hardened path.
+- `engine.count` (the cold oracle behind `gist.count`/`Session.count`) counted
+  per-occurrence via `--count-matches`, contradicting its own docstring ("total
+  matching lines") and silently diverging from every warm path — the resident
+  daemon's `countLines`, and the in-process FFI's per-line stream — on any line
+  the pattern hits more than once. It now uses `-c`/`--count` (rg line
+  semantics: a line is counted once regardless of repeats), so cold ≡ UDS ≡ FFI
+  agree, matching the documented contract and doc_radar's own `count_matches`
+  ("number of matching lines"). The doc_radar canary's rg oracle was likewise
+  counting `--count-matches` (occurrences) while its docstring claimed
+  "matching lines" — a latent mismatch masked only because `gist.count` was
+  equally wrong; it now counts `--count` (lines), so the byte-equivalence gate
+  checks the real line contract. Caught by the new FFI-vs-cold parity test over
+  a corpus with a repeated-hit line, plus the doc_radar canary.
+- `gist --rank` now falls back to ranking the normal live-walk matches when the
+  persisted index is missing, incomplete, corrupt, or explicitly disabled with
+  `--no-index`.
+- `gist --rank` now honors ripgrep's default binary-file policy, so the ranked
+  view is a true reordering of the `gist -l` set rather than a superset. The
+  `--rank` no-fabrication certificate invariant caught the divergence: because
+  the ranked read pass scanned every candidate's full bytes, a symbol living
+  only in a committed binary's symbol table (e.g. `atomic.(*Int32).Store`
+  inside
+  `scripts/observe/trust/mdns_verify/mdns_verify`) surfaced as a ranked hit
+  that
+  the locate path — and rg — correctly skip.
+
+  - `ranked.zig`'s `fileDoc` clips a NUL-bearing walked file to the bytes rg's
+    quit strategy committed before the NUL (`grepfile.committedPrefix`),
+  matching
+    the locate default; `-a`/`--text` (`binary_detect = false`) reads the whole
+    body as text, exactly as `gist -la` does. The rule threads through all
+  three
+    rank paths — cold index (`run`), live `--no-index` (`runLive`), and the
+  warm
+    daemon (`renderLive`, where the resident rank path previously leaked
+  binaries
+    its own `-l`/`-c` visitors already dropped).
+  - The `--rank` certificate lane report (`certify_rank_report.py`) now parses
+    ranked rows whose paths contain spaces (`(.+?)` up to the `:line [kind]`
+    anchor, not `\S+?`) and decodes captures with `surrogateescape`, so a
+    non-UTF-8 source line can no longer abort the whole lane.
+
+  Proven by a new fail-closed `fileDoc` unit test and re-validated end-to-end:
+  all six rank probes hold 0 fabrication.
+- `gist --schema` and the bare `usage()` banner now document the
+  `gist <pattern> [PATH...]` shorthand (no verb, no index required) as a
+  first-class capability instead of leaving it undiscoverable — the schema
+  manifest gained a `"shorthand"` field and a corrected exit-code description.
+
+  Also fixed several stale doc comments left over from the pre-`search`-verb-
+  collapse design that misdescribed the whole-tree `rg`-compatible engine: a
+  dead `commands/grep/` reference (the folder itself, empty and unused, is
+  deleted), and incorrect claims that the engine ignores `.gitignore` and fails
+  loud on `--json`/`--column`, when it actually supports both.
+- `gist rg` no longer ignore-filters a positional PATH argument itself — only
+  what's found beneath it, matching ripgrep's own depth-0 exemption
+  (`crates/ignore/src/walk.rs`'s `add_parents`: ancestor ignore state is loaded
+  at the root, but the root entry is never matched against it, only its
+  descendants are). Previously, naming a directory that an ancestor
+  `.gitignore` happened to match (e.g. `gist rg pat upstream/some-dir` when `upstream/`
+  is gitignored at the repo root) silently returned zero results — a
+  divergence from real `rg`, which always searches an explicitly-named path
+  while still honoring ignore rules nested _inside_ it. This made `gist rg
+  --files`/`--iglob` unusable as a `find`/`find -iname` replacement for any
+  path under a gitignored ancestor, forcing a fallback to raw `find`.
+
+  Fixed with a new `Ignore.scopeToRoot` in `ignore.zig`: a component-depth
+  floor on the rule matcher that exempts a positional root's own path segments
+  from CWD/ancestor-sourced rules (`Rule.base == ""`) while leaving rules
+  loaded from _within_ the given root's own subtree unaffected. Verified
+  byte-identical against real `find -iname` and `rg -n -i <files>` on the
+  reproducing case, and against the full `rgsuite` differential-parity harness
+  (441 mined ripgrep cases, 278/278 supported-surface parity, zero
+  regressions).
+- `gist rg` now clears the whole mined rgsuite at ripgrep's own assertion bar —
+  **409 PASS / 0 ORDER / 0 FAIL** on both engines. The scoring harness honors
+  each mined test's upstream comparison mode (`eqnice!` pins bytes;
+  `eqnice_sorted!` compares sorted lines because rg's parallel walk is
+  genuinely nondeterministic there), which retires the ORDER bucket as a
+  soft-pass class. The multiline (`-U`) emitter closes its last nine
+  byte-parity holes: CRLF-aware span collection so `$` anchors at logical line
+  ends and remaps to original offsets; block-level `-r` replacement matching rg
+  #1311 (adjacent matches coalesce into one sink block, non-matching bytes
+  preserved, replaced text re-split into renumbered physical lines,
+  `--passthru` widens the window); `--vimgrep` per-match-one-line rows (rg
+  #1866) with the filename forced on even for a single explicit file; and
+  `--trim`/`-M --max-columns-preview` applied per fragment with rebased match
+  offsets. `--sort`/`--sortr` semantics now replicate rg exactly: ascending
+  `path` is the walker sort (per PATH argument in argv order, component-wise
+  within each root), while `--sortr path` and every time key are global
+  collect-and-sort with rg's error-files-last (ascending) placement; a
+  multi-root `--sort path` over the live tree is byte-identical to rg and ~2.6×
+  faster (parallel reads vs rg's forced single thread).
+- `index_size_accounting.py` now emits schema_version 2 (`posting_bytes` /
+  `path_bytes` / `freshness_bytes` / `required_bytes` / `workspace_bytes` +
+  `required_files`), matching `check_artifacts.py` — certificate/verify outputs
+  stay in `workspace_bytes` and no longer inflate the cache total. Unblocks
+  publishing a HEAD-bound certificate bundle.
+- `session.warm_eligible` (the Python leg's warm/cold router, ADR-352 rung 2.5)
+  accepted any non-scoped request regardless of pattern shape, so a `\n`, NUL,
+  or empty pattern was routed to the resident daemon — whose whole-document
+  engine can match across line boundaries where the cold per-line walk cannot,
+  a silent warm≠cold divergence. It now declines an empty, `\n`-, or
+  NUL-bearing pattern up front, mirroring `session/request.zig::classify`
+  term-for-term, so every request the two accept answers byte-identically on
+  both paths.
+- gist serve now poll-multiplexes its accept loop (listener + every connected
+  client in one poll set, one frame per readable client per wakeup), so an idle
+  persistent Session no longer starves other clients in the listen backlog —
+  previously one agent's long-lived warm session blocked every other agent's
+  connect for minutes. The Python binding's Session also arms a 2 s socket
+  deadline on connect/handshake/query (the twin of the Zig client's
+  client_io_timeout_ms), failing open to the certified cold path instead of
+  blocking indefinitely on a busy or wedged daemon.
+- gitignore negation semantics are now entity-only, matching git/ripgrep: a
+  rule is tested against the candidate itself (full path for anchored patterns,
+  basename for slash-less ones), never against ancestor components or path
+  prefixes — ancestor exclusion is the walk's directory pruning. Previously a
+  re-include like `!scripts/observe/build/` leaked everything beneath it (e.g.
+  its `__pycache__/`) into results in both the serial and parallel engines; two
+  rgsuite cases regained byte-identical PASS.
+- rg-parity fixes across the regex escape parser: \\0–\\9 (backreference
+  syntax), unrecognized letter escapes (\\q, \\e, \\Z, …), and assertion
+  escapes inside a class ([\\b], [\\A], [\\<]) now fail loud with exit 2
+  exactly like ripgrep instead of silently matching a wrong literal; \\A/\\z
+  (haystack anchors) and \\</\\> (word start/end boundaries) are now supported
+  with rg-identical semantics in both the per-line default and multiline
+  engine.
+
+
 ## [0.1.0] - 2026-07-01
 
 ### Added

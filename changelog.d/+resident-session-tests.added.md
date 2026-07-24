@@ -1,1 +1,0 @@
-The resident-session machinery (ADR-352 rung 2.5) now carries its unit suite: the eligibility classifier's fail-closed boundary, the UDS wire codec's lossless round-trip and fail-closed framing, and — over a real directory tree — resident==rg parity, read-your-writes, and the watcher-barrier seqlock.

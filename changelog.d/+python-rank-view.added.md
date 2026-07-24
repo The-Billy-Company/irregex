@@ -1,1 +1,0 @@
-Python bindings gain gist.rank(): the engine's definition-first --rank view as typed Ranked rows carrying the engine's own def/use/gen classification (RankKind) — a symbol's declaration ahead of its call sites, codegen demoted. The classification is read from the engine, never reclassified in Python, so aggregation can exclude generated files without forking the classifier.

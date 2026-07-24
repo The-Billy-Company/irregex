@@ -1,1 +1,0 @@
-Added Layer C (roofline) of the performance certificate under `bench/roofline/`: a zero-dependency STREAM-style read-bandwidth microbenchmark that measures this machine's single-core L1/L2/DRAM roof and gist's SIMD scan throughput. The report records distance from the roof without treating a sub-ceiling result as proof of saturation.
