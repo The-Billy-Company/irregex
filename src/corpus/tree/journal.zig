@@ -41,10 +41,14 @@ pub const file_name = "journal.tok";
 const magic = "GISTJRN1";
 pub const encoded_len = 32; // magic(8) + event_id u64 + dev u64 + captured_ns i64
 
-/// Replay budget: a journal answer must stay decisively cheaper than the
-/// ~100 ms walk it replaces, and an event flood means the base is so stale
-/// the walk wins anyway.
-const deadline_ns: i128 = 500 * std.time.ns_per_ms;
+/// Replay budgets. A PER-QUERY journal answer must stay decisively cheaper
+/// than the ~60–100 ms stat walk it replaces — past that, abandon and walk
+/// (measured: a 10-agent tree streams history for >500 ms without reaching
+/// HistoryDone, while the walk answers in ~60 ms). The resident daemon's
+/// one-time boot-seed can afford the generous window. An event flood past
+/// the cap means the base is so stale the walk wins anyway.
+pub const query_budget_ns: i128 = 75 * std.time.ns_per_ms;
+pub const boot_budget_ns: i128 = 500 * std.time.ns_per_ms;
 const max_events: usize = 1 << 17;
 
 pub const Token = struct {
@@ -103,6 +107,14 @@ const flag_item_is_file: u32 = 0x00010000;
 const flag_item_is_dir: u32 = 0x00020000;
 const flag_item_is_symlink: u32 = 0x00040000;
 const flag_item_is_hardlink: u32 = 0x00100000;
+/// Any bit that marks a record as an ITEMIZED (per-file journaling era) event:
+/// the Item* change bits (Created…XattrMod, 0xFF00) + every kind bit +
+/// IsLastHardlink/Cloned. A record carrying none of these predates FileEvents
+/// journaling and is genuinely unaccountable; a record carrying change bits
+/// but NO kind bit is a special (socket/fifo — e.g. gist's own daemon socket),
+/// which the confirm pipeline's live stat already classifies.
+const flag_item_any: u32 = 0x0000FF00 | flag_item_is_file | flag_item_is_dir |
+    flag_item_is_symlink | flag_item_is_hardlink | 0x00200000 | 0x00400000;
 /// Any of these ⇒ the delivered paths are NOT an exact account of the window.
 const doubt_flags: u32 = flag_must_scan | flag_user_dropped | flag_kernel_dropped |
     flag_ids_wrapped | flag_root_changed | flag_mount | flag_unmount;
@@ -138,7 +150,6 @@ const Syms = struct {
     CFRunLoopRunInMode: *const fn (Ref, f64, u8) callconv(.c) i32,
     FSEventsGetCurrentEventId: *const fn () callconv(.c) u64,
     FSEventStreamCreate: *const fn (Ref, FsCallback, ?*const CFContext, Ref, u64, f64, u32) callconv(.c) Ref,
-    FSEventStreamFlushSync: *const fn (Ref) callconv(.c) void,
     FSEventStreamSetExclusionPaths: *const fn (Ref, Ref) callconv(.c) u8,
     FSEventStreamScheduleWithRunLoop: *const fn (Ref, Ref, Ref) callconv(.c) void,
     FSEventStreamStart: *const fn (Ref) callconv(.c) u8,
@@ -193,7 +204,6 @@ const Syms = struct {
         s.array_callbacks = cf.lookup(*const anyopaque, "kCFTypeArrayCallBacks") orelse return s.fail();
         s.FSEventsGetCurrentEventId = cs.lookup(@TypeOf(s.FSEventsGetCurrentEventId), "FSEventsGetCurrentEventId") orelse return s.fail();
         s.FSEventStreamCreate = cs.lookup(@TypeOf(s.FSEventStreamCreate), "FSEventStreamCreate") orelse return s.fail();
-        s.FSEventStreamFlushSync = cs.lookup(@TypeOf(s.FSEventStreamFlushSync), "FSEventStreamFlushSync") orelse return s.fail();
         s.FSEventStreamSetExclusionPaths = cs.lookup(@TypeOf(s.FSEventStreamSetExclusionPaths), "FSEventStreamSetExclusionPaths") orelse return s.fail();
         s.FSEventStreamScheduleWithRunLoop = cs.lookup(@TypeOf(s.FSEventStreamScheduleWithRunLoop), "FSEventStreamScheduleWithRunLoop") orelse return s.fail();
         s.FSEventStreamStart = cs.lookup(@TypeOf(s.FSEventStreamStart), "FSEventStreamStart") orelse return s.fail();
@@ -233,17 +243,22 @@ const RootPrefix = struct {
     abs: []const u8, // a-owned
 };
 
+/// Why a replay could not give an exact account — surfaced under
+/// `GIST_JOURNAL_TRACE` so a persistent fallback is diagnosable in the field
+/// instead of a silent `false`.
+const Doubt = enum { none, no_paths, flagged, flood, no_kind, oom, unrooted };
+
 const Ctx = struct {
     a: std.mem.Allocator,
     raw: std.ArrayList(Entry) = .empty, // abs paths during collection
-    doubt: bool = false,
+    doubt: Doubt = .none,
     done: bool = false,
 };
 
 fn onEvents(_: Ref, info: ?*anyopaque, num_events: usize, event_paths: ?[*]const [*:0]const u8, event_flags: [*]const u32, _: [*]const u64) callconv(.c) void {
     const ctx: *Ctx = @ptrCast(@alignCast(info orelse return));
     const paths = event_paths orelse {
-        ctx.doubt = true;
+        ctx.doubt = .no_paths;
         return;
     };
     for (0..num_events) |i| {
@@ -253,28 +268,38 @@ fn onEvents(_: Ref, info: ?*anyopaque, num_events: usize, event_paths: ?[*]const
             continue;
         }
         if (flags & doubt_flags != 0) {
-            ctx.doubt = true;
+            ctx.doubt = .flagged;
             continue;
         }
         if (ctx.raw.items.len >= max_events) {
-            ctx.doubt = true; // flood — the walk is the cheaper answer now
+            ctx.doubt = .flood; // the walk is the cheaper answer now
             continue;
         }
-        // Symlinks/specials: the corpus walk never follows them. A record with
-        // NO item-kind bits predates per-file journaling — not an exact account.
+        // Symlinks: the corpus walk never follows them — drop. A kind-less
+        // record that still carries Item* bits is a SPECIAL (socket/fifo);
+        // forward it as a file and let `confirmRaw`'s live stat classify it
+        // (statable non-file drops, vanished stays conservatively fresh) —
+        // walk parity either way. Only a record with NO item bits at all
+        // (pre-FileEvents journal era) is an inexact account ⇒ doubt.
         const is_dir = flags & flag_item_is_dir != 0;
-        const is_file = flags & (flag_item_is_file | flag_item_is_hardlink) != 0;
+        var is_file = flags & (flag_item_is_file | flag_item_is_hardlink) != 0;
         if (!is_dir and !is_file) {
-            if (flags & flag_item_is_symlink == 0) ctx.doubt = true;
-            continue;
+            if (flags & flag_item_is_symlink != 0) continue;
+            if (flags & flag_item_any == 0) {
+                ctx.doubt = .no_kind;
+                if (std.c.getenv("GIST_JOURNAL_TRACE") != null)
+                    std.debug.print("journal: no_kind flags=0x{x} path={s}\n", .{ flags, std.mem.span(paths[i]) });
+                continue;
+            }
+            is_file = true; // special — the live-stat confirm is the authority
         }
         const abs = std.mem.span(paths[i]);
         const owned = ctx.a.dupe(u8, abs) catch {
-            ctx.doubt = true;
+            ctx.doubt = .oom;
             continue;
         };
         ctx.raw.append(ctx.a, .{ .path = owned, .is_dir = is_dir }) catch {
-            ctx.doubt = true;
+            ctx.doubt = .oom;
             continue;
         };
     }
@@ -299,9 +324,11 @@ fn relativize(a: std.mem.Allocator, rp: RootPrefix, abs: []const u8) !?[]const u
 }
 
 /// Replay every journaled change under `roots` since `token` into `out`
-/// (repo-relative, file/dir tagged, strings owned by `a`). False ⇒ the
-/// journal cannot give an exact account — run the stat walk instead.
-pub fn replay(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, token: Token, a: std.mem.Allocator, out: *std.ArrayList(Entry)) bool {
+/// (repo-relative, file/dir tagged, strings owned by `a`), within `budget_ns`
+/// (`query_budget_ns` for a per-query attempt, `boot_budget_ns` for the
+/// daemon's one-time seed). False ⇒ the journal cannot give an exact account
+/// in budget — run the stat walk instead.
+pub fn replay(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, token: Token, budget_ns: i128, a: std.mem.Allocator, out: *std.ArrayList(Entry)) bool {
     if (comptime !supported) return false;
     if (roots.len == 0) return false;
     const trace = std.c.getenv("GIST_JOURNAL_TRACE") != null;
@@ -363,22 +390,26 @@ pub fn replay(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, tok
     s.FSEventStreamScheduleWithRunLoop(stream, rl, s.run_loop_default_mode);
     if (s.FSEventStreamStart(stream) == 0) return false;
     if (trace) tlast = tracePhase(io, "start", tlast);
-    // Force the daemon to push everything it owes us NOW instead of on its
-    // own batching cadence — FlushSync blocks until the callback has seen
-    // every event up to the flush point (historical replay included).
-    if (std.c.getenv("GIST_JOURNAL_NOFLUSH") == null) s.FSEventStreamFlushSync(stream);
-    if (trace) tlast = tracePhase(io, "flush", tlast);
 
-    // Drain until the HistoryDone sentinel: replay is delivered on THIS
-    // run loop, so bounded slices observe it promptly; a wedged daemon
-    // hits the deadline and the caller walks.
-    const deadline = std.Io.Clock.now(.real, io).nanoseconds + deadline_ns;
-    while (!ctx.done and !ctx.doubt) {
-        if (std.Io.Clock.now(.real, io).nanoseconds > deadline) return false;
-        _ = s.CFRunLoopRunInMode(s.run_loop_default_mode, 0.05, 1);
+    // Drain until the HistoryDone sentinel: replay is delivered on THIS run
+    // loop, so bounded slices observe it promptly; a wedged daemon hits the
+    // deadline and the caller walks. Deliberately NO FSEventStreamFlushSync —
+    // it forces fseventsd to sync-flush the whole device's pending events and
+    // measured 1.7–1.9 s wall on a live tree, while the run-loop drain observes
+    // the full historical replay (HistoryDone included) in tens of ms.
+    const deadline = std.Io.Clock.now(.real, io).nanoseconds + budget_ns;
+    while (!ctx.done and ctx.doubt == .none) {
+        if (std.Io.Clock.now(.real, io).nanoseconds > deadline) {
+            if (trace) std.debug.print("journal: deadline after {d} entries (done={}, doubt={s})\n", .{ ctx.raw.items.len, ctx.done, @tagName(ctx.doubt) });
+            return false;
+        }
+        _ = s.CFRunLoopRunInMode(s.run_loop_default_mode, 0.005, 1);
     }
     if (trace) tlast = tracePhase(io, "drain", tlast);
-    if (ctx.doubt) return false;
+    if (ctx.doubt != .none) {
+        if (trace) std.debug.print("journal: doubt={s} after {d} entries\n", .{ @tagName(ctx.doubt), ctx.raw.items.len });
+        return false;
+    }
 
     // Map deliveries back under the roots. A path under none of them is a
     // stale pre-exclusion record for a subtree we don't index — droppable
@@ -394,7 +425,10 @@ pub fn replay(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, tok
                 break;
             }
         }
-        if (!matched) return false;
+        if (!matched) {
+            if (trace) std.debug.print("journal: doubt=unrooted ({s})\n", .{e.path});
+            return false;
+        }
     }
     return true;
 }

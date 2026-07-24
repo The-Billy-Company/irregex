@@ -34,6 +34,12 @@ const Dir = std.Io.Dir;
 
 const anchor_path = corpus_mod.ArtifactPath("built.ns");
 const journal_tok_path = corpus_mod.ArtifactPath(journal.file_name);
+/// Lost-race marker: the encoded token of a replay that could not answer
+/// within the per-query budget. While the persisted token still matches,
+/// later queries skip straight to the walk instead of re-paying the probe;
+/// any new token (index build/amend) makes the marker stale and re-arms
+/// the fast path. Best-effort on both ends — never load-bearing.
+const journal_skip_path = corpus_mod.ArtifactPath("journal.skip");
 
 /// Persist the build instant (wall-clock ns) as the freshness anchor. Atomic
 /// (temp-then-rename, see `persist.writeAtomic`) so a concurrent reader never
@@ -224,6 +230,14 @@ fn retainAdmitted(io: std.Io, roots: []const []const u8, a: std.mem.Allocator, o
     out.items.len = write;
 }
 
+/// Does the lost-race marker match `tok` byte-for-byte? A marker for any
+/// other token is stale and ignored.
+fn skippedToken(gpa: std.mem.Allocator, io: std.Io, tok: journal.Token) bool {
+    const b = Dir.cwd().readFileAlloc(io, journal_skip_path.get(), gpa, .limited(64)) catch return false;
+    defer gpa.free(b);
+    return std.mem.eql(u8, b, &journal.encode(tok));
+}
+
 fn journalDisabled() bool {
     const v = std.c.getenv("GIST_NO_JOURNAL") orelse return false;
     const s = std.mem.span(v);
@@ -271,11 +285,21 @@ fn journalFresh(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, b
     const t0 = std.Io.Clock.now(.awake, io).nanoseconds;
     const tok = readJournalToken(gpa, io) orelse return false;
     if (tok.captured_ns > built_ns) return false; // blind window before the anchor
+    if (skippedToken(gpa, io, tok)) {
+        if (trace) std.debug.print("journal: skipped (lost the race for this token)\n", .{});
+        return false;
+    }
 
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     var entries: std.ArrayList(journal.Entry) = .empty;
-    if (!journal.replay(gpa, io, roots, tok, arena.allocator(), &entries)) return false;
+    if (!journal.replay(gpa, io, roots, tok, journal.query_budget_ns, arena.allocator(), &entries)) {
+        // Remember the loss for THIS token: on a busy tree the event window
+        // only grows, so re-probing every query is a pure tax. A new build/
+        // amend mints a new token and re-arms the attempt.
+        persist.writeAtomic(io, journal_skip_path.get(), &journal.encode(tok)) catch {};
+        return false;
+    }
     const t1 = std.Io.Clock.now(.awake, io).nanoseconds;
     if (trace) std.debug.print("journal: replay {d:.1} ms ({d} entries)\n", .{ @as(f64, @floatFromInt(t1 - t0)) / 1e6, entries.items.len });
     if (entries.items.len > max_journal_changes) return false;

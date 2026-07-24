@@ -7,18 +7,24 @@
 //! (`})`, `ctx`, `func`, `=>`, `::`, `fn`), so that naive path is the hot loss.
 //!
 //! `contains` runs the memchr-style "generic SIMD" (as in Rust's memchr crate):
-//! splat the needle's first and last byte, vector-compare both lanes across a
-//! V-wide window, AND the masks, and only `eql`-verify the few surviving
-//! positions. Returns presence (the verify path only needs a bool). Byte-exact
-//! with `std.mem.indexOf` — proven end-to-end by the rg equality oracle.
+//! splat the needle's two RAREST bytes (corpus density — `rarity.zig`),
+//! vector-compare both windows across a 64-byte block, AND the masks, and only
+//! `eql`-verify the few surviving positions. Every block loop is gated on
+//! `anyLane` (a cheap OR-reduce) so miss blocks — the stream — never pay the
+//! movemask, and a genuinely-rare probe byte earns a single-load block filter
+//! with a runtime demotion guard for buffers the density table doesn't
+//! describe. Returns presence (the verify path only needs a bool). Byte-exact
+//! with `std.mem.indexOf` — proven end-to-end by the rg equality oracle and
+//! the differential fuzz in `bench/`.
 
 const std = @import("std");
 const bitsmod = @import("../../primitives/bits.zig");
 const teddy = @import("teddy.zig");
+const rarity = @import("rarity.zig");
 
 /// Needle count at which the fused any-of gate hands off to Teddy. Below this
-/// the fused first+last gate's `1 + N` loads/block are cheap and its wider
-/// (`vlen`) block wins on AVX2/512; at 4+ Teddy's constant 2 loads/block win on
+/// the fused first+last gate's `1 + N` loads/block are cheap and its wide
+/// (`scan_vlen`) block wins on AVX2/512; at 4+ Teddy's constant 2 loads/block win on
 /// every architecture regardless of vector width (measured: N=4 1.6×, N=8 2.2×
 /// on Apple M4). Both paths are byte-exact — this is a throughput dispatch, not
 /// a fallback. `teddy.max_buckets` (8) caps both, so the handoff never fails.
@@ -28,19 +34,40 @@ const vlen: usize = std.simd.suggestVectorLength(u8) orelse 16;
 const Vec = @Vector(vlen, u8);
 const Mask = std.meta.Int(.unsigned, vlen);
 
-/// Wide stride for the SINGLE-load byte scanners (`memchr`, `countByte`,
-/// reverse memchr, the caseless single-byte find). Measured on Apple M4
-/// (2026-07-22, `bench/harness/flagbench` + a width sweep): a 64-byte stride
-/// runs a pure one-load-per-block scan ~35% faster than the 16-byte NEON
-/// register (17→23 GiB/s) — the scan is load-port bound, so the out-of-order
-/// core issues the four independent 16-byte loads across its NEON pipes. The
-/// TWO-load substring kernel (`indexOfPos` & co.) gets NO such win (its second
-/// strided last-byte load already saturates the ports — measured flat 16→64),
-/// so it deliberately stays at `vlen`. A `vlen`-wide second tier runs before
-/// the scalar tail so a haystack shorter than `scan_vlen` still vectorizes.
+/// Wide stride for the streaming scanners (`memchr`, `countByte`, reverse
+/// memchr, the caseless single-byte find, AND `indexOfPos`'s block loop).
+/// Measured on Apple M4 (2026-07-22, `bench/harness/flagbench` + a width
+/// sweep): a 64-byte stride runs a one-load-per-block scan ~35% faster than
+/// the 16-byte NEON register — the out-of-order core issues the four
+/// independent 16-byte loads across its NEON pipes. A `vlen`-wide second tier
+/// runs before the scalar tail so a haystack shorter than `scan_vlen` still
+/// vectorizes.
 const scan_vlen: usize = @max(vlen, 64);
 const ScanVec = @Vector(scan_vlen, u8);
 const ScanMask = std.meta.Int(.unsigned, scan_vlen);
+
+/// The cheap per-block gate of every streaming loop: "did ANY lane hit?".
+/// `@reduce(.Or)` over the compare mask lowers to a short cross-lane OR tree
+/// (NEON: 3 `orr` + a halving reduce; AVX2: `vpmovmskb`+test), where
+/// `@bitCast`-to-integer — the movemask emulation — costs a multi-µop
+/// widen/shift/accumulate sequence PER BLOCK on NEON. Movemask still runs to
+/// name positions, but only inside blocks this gate already proved hot
+/// (roofline 2026-07-23 on M4: gating the dual-window kernel on this lifted
+/// the contiguous streaming scan 44.8 → 53.6 GB/s and the per-file corpus
+/// scan 20.8 → 30.2 GB/s with the tail + probe work; see bench/roofline).
+inline fn anyLane(eq: @Vector(scan_vlen, bool)) bool {
+    if (comptime @import("builtin").cpu.arch.isX86())
+        return @as(ScanMask, @bitCast(eq)) != 0; // vpmovmskb + test — already cheap
+    // NEON path: materialize the compare as its native 0xFF/0x00 byte mask
+    // (LLVM folds the select into the compare result), then OR-reduce u64
+    // lanes — a short word-wide tree. Both `@reduce(.Or, bool-vector)` and
+    // `@bitCast`-to-int lower to a multi-µop per-lane widen/accumulate here
+    // (measured: the i1 reduce ran the streaming scan 30% SLOWER on M4;
+    // this form ran it 21% faster than the per-block movemask baseline).
+    const m: ScanVec = @select(u8, eq, @as(ScanVec, @splat(0xff)), @as(ScanVec, @splat(0)));
+    const words: @Vector(scan_vlen / 8, u64) = @bitCast(m);
+    return @reduce(.Or, words) != 0;
+}
 
 /// Cap on the fused any-of kernel's needle fan-out — mirrors
 /// `analysis.pureLiterals`' cap, and bounds the fixed splat/mask arrays below.
@@ -75,34 +102,45 @@ pub fn containsAny(hay: []const u8, needles: []const []const u8) bool {
     }
     if (needles.len >= teddy_min) if (teddy.Teddy.init(needles)) |td| return td.contains(hay);
 
-    var f: [max_any]Vec = undefined;
-    var l: [max_any]Vec = undefined;
+    var f: [max_any]ScanVec = undefined;
+    var l: [max_any]ScanVec = undefined;
     for (needles, 0..) |n, k| {
         f[k] = @splat(n[0]);
         l[k] = @splat(n[n.len - 1]);
     }
     var i: usize = 0;
-    // Every window [i+off, i+off+vlen), off <= max_off, stays in bounds.
-    while (i + max_off + vlen <= hay.len) : (i += vlen) {
-        const b0: Vec = hay[i..][0..vlen].*;
-        var per: [max_any]Mask = undefined;
-        var any: Mask = 0;
+    // Wide fused blocks, gated on ONE `anyLane` over the OR of the per-needle
+    // masks — a miss block pays loads + compares + one cheap reduce, never
+    // the N movemasks the survivor walk needs (paid only in hit blocks).
+    // Every window [i+off, i+off+scan_vlen), off <= max_off, stays in bounds.
+    while (i + max_off + scan_vlen <= hay.len) : (i += scan_vlen) {
+        const b0: ScanVec = hay[i..][0..scan_vlen].*;
+        var eqs: [max_any]@Vector(scan_vlen, bool) = undefined;
+        var any: @Vector(scan_vlen, bool) = @splat(false);
         for (needles, 0..) |n, k| {
-            const bl: Vec = hay[i + n.len - 1 ..][0..vlen].*;
-            per[k] = @bitCast((b0 == f[k]) & (bl == l[k]));
-            any |= per[k];
+            const bl: ScanVec = hay[i + n.len - 1 ..][0..scan_vlen].*;
+            eqs[k] = (b0 == f[k]) & (bl == l[k]);
+            any |= eqs[k];
         }
-        var survivors = bitsmod.ones(any);
+        if (!anyLane(any)) continue;
+        var per: [max_any]ScanMask = undefined;
+        var mask: ScanMask = 0;
+        for (needles, 0..) |_, k| {
+            per[k] = @bitCast(eqs[k]);
+            mask |= per[k];
+        }
+        var survivors = bitsmod.ones(mask);
         while (survivors.next()) |j| {
             const pos = i + j;
-            const bit = @as(Mask, 1) << j;
+            const bit = @as(ScanMask, 1) << j;
             for (needles, 0..) |n, k| {
                 if (per[k] & bit != 0 and std.mem.eql(u8, hay[pos..][0..n.len], n)) return true;
             }
         }
     }
-    // Scalar tail: candidate starts in [i, hay.len) the vector loop never saw.
-    for (needles) |n| if (std.mem.indexOfPos(u8, hay, i, n) != null) return true;
+    // Vector tail: candidate starts in [i, hay.len) the fused loop never saw
+    // (our own kernel — no per-call BMH table like `std.mem.indexOfPos`).
+    for (needles) |n| if (indexOfPos(hay, i, n) != null) return true;
     return false;
 }
 
@@ -129,27 +167,37 @@ pub fn indexOfAnyPos(hay: []const u8, from: usize, needles: []const []const u8) 
     if (!fused) return leftmostOf(hay, from, needles);
     if (needles.len >= teddy_min) if (teddy.Teddy.init(needles)) |td| return td.find(hay, from);
 
-    var f: [max_any]Vec = undefined;
-    var l: [max_any]Vec = undefined;
+    var f: [max_any]ScanVec = undefined;
+    var l: [max_any]ScanVec = undefined;
     for (needles, 0..) |n, k| {
         f[k] = @splat(n[0]);
         l[k] = @splat(n[n.len - 1]);
     }
     var i: usize = from;
-    // Every window [i+off, i+off+vlen), off <= max_off, stays in bounds.
-    while (i + max_off + vlen <= hay.len) : (i += vlen) {
-        const b0: Vec = hay[i..][0..vlen].*;
-        var per: [max_any]Mask = undefined;
-        var any: Mask = 0;
+    // Wide fused blocks gated on one `anyLane` (see `containsAny`) — the N
+    // movemasks run only inside hit blocks, where the survivor walk needs
+    // per-needle attribution. Every window [i+off, i+off+scan_vlen),
+    // off <= max_off, stays in bounds.
+    while (i + max_off + scan_vlen <= hay.len) : (i += scan_vlen) {
+        const b0: ScanVec = hay[i..][0..scan_vlen].*;
+        var eqs: [max_any]@Vector(scan_vlen, bool) = undefined;
+        var any: @Vector(scan_vlen, bool) = @splat(false);
         for (needles, 0..) |n, k| {
-            const bl: Vec = hay[i + n.len - 1 ..][0..vlen].*;
-            per[k] = @bitCast((b0 == f[k]) & (bl == l[k]));
-            any |= per[k];
+            const bl: ScanVec = hay[i + n.len - 1 ..][0..scan_vlen].*;
+            eqs[k] = (b0 == f[k]) & (bl == l[k]);
+            any |= eqs[k];
         }
-        var survivors = bitsmod.ones(any);
+        if (!anyLane(any)) continue;
+        var per: [max_any]ScanMask = undefined;
+        var mask: ScanMask = 0;
+        for (needles, 0..) |_, k| {
+            per[k] = @bitCast(eqs[k]);
+            mask |= per[k];
+        }
+        var survivors = bitsmod.ones(mask);
         while (survivors.next()) |j| {
             const pos = i + j;
-            const bit = @as(Mask, 1) << j;
+            const bit = @as(ScanMask, 1) << j;
             for (needles, 0..) |n, k| {
                 if (per[k] & bit != 0 and std.mem.eql(u8, hay[pos..][0..n.len], n)) return pos;
             }
@@ -169,6 +217,18 @@ fn leftmostOf(hay: []const u8, from: usize, needles: []const []const u8) ?usize 
     return best;
 }
 
+/// Ascending survivor walk of one wide block: movemask (paid only in blocks
+/// `anyLane` proved hot), then eql-verify each candidate — the first match is
+/// the block's leftmost.
+inline fn verifyBlock(hay: []const u8, needle: []const u8, i: usize, eq: @Vector(scan_vlen, bool)) ?usize {
+    var survivors = bitsmod.ones(@as(ScanMask, @bitCast(eq)));
+    while (survivors.next()) |j| {
+        const pos = i + j;
+        if (std.mem.eql(u8, hay[pos .. pos + needle.len], needle)) return pos;
+    }
+    return null;
+}
+
 /// Substring presence, byte-exact with `std.mem.indexOf != null` (see the
 /// module doc for the first+last-byte SIMD scheme and why it beats std here).
 pub fn contains(hay: []const u8, needle: []const u8) bool {
@@ -184,12 +244,76 @@ pub fn indexOfPos(hay: []const u8, from: usize, needle: []const u8) ?usize {
     if (from >= hay.len or n > hay.len - from) return null;
     if (n == 1) return memchrPos(hay, from, needle[0]);
 
+    const last_off = n - 1;
+    var i: usize = from;
+
+    // Anchor selection: the needle's two RAREST bytes by corpus density
+    // (`rarity.zig`), at ANY offsets — a candidate start is `i + j` for any
+    // start-relative window, and the eql verify confirms the rest, so the
+    // filter is free to anchor on `Z…9` where first+last would anchor on
+    // `Z…_` (49% of blocks contain `_`). One L1-cheap pass over the needle.
+    var o1: usize = 0; // rarest byte's offset (the probe)
+    var o2: usize = last_off; // second-rarest (the confirm)
+    {
+        var best: u16 = 256;
+        var second: u16 = 256;
+        for (needle, 0..) |b, k| {
+            const d = rarity.density[b];
+            if (d < best) {
+                second = best;
+                o2 = o1;
+                best = d;
+                o1 = k;
+            } else if (d < second) {
+                second = d;
+                o2 = k;
+            }
+        }
+    }
+    const p1: ScanVec = @splat(needle[o1]);
+    const p2: ScanVec = @splat(needle[o2]);
+
+    // Wide tier: 64-byte blocks gated on `anyLane` — a miss block never pays
+    // the movemask. Two shapes: a GENUINELY rare probe (predictable,
+    // rarely-taken branch) earns a single-load block filter that touches the
+    // confirm window only on probe hits; a dense probe keeps both loads
+    // unconditional — its block-gate branch fires on the CONJUNCTION, where a
+    // single-probe branch on a dense byte mispredicts the loop into the
+    // ground (measured: halved throughput on a uniform-random buffer). The
+    // static density table nominates the shape; a runtime hit counter keeps
+    // it honest on buffers the table doesn't describe (base64 blobs, minified
+    // bundles, random-looking text): sustained probe-hit rate past ~12.5%
+    // demotes THIS call to the dual shape for the rest of the buffer.
+    if (rarity.density[needle[o1]] <= rarity.single_probe_max) {
+        var blocks: usize = 0;
+        var hot: usize = 0;
+        while (i + last_off + scan_vlen <= hay.len) : (i += scan_vlen) {
+            // Prefetch accelerates the HW prefetcher's ramp on fresh streams —
+            // a many-small-files scan restarts the stream at every doc
+            // boundary, and the ramp is the dominant per-doc tax.
+            @prefetch(&hay[@min(i + 8 * scan_vlen, hay.len - 1)], .{ .rw = .read, .locality = 2 });
+            const eq1 = @as(ScanVec, hay[i + o1 ..][0..scan_vlen].*) == p1;
+            blocks += 1;
+            if (!anyLane(eq1)) continue;
+            hot += 1;
+            if (hot << 3 > blocks + 8) break; // demote: probe isn't selective HERE (block unscanned — the dual loop below re-enters at this `i`)
+            const eq = eq1 & (@as(ScanVec, hay[i + o2 ..][0..scan_vlen].*) == p2);
+            if (!anyLane(eq)) continue;
+            if (verifyBlock(hay, needle, i, eq)) |pos| return pos;
+        }
+    }
+    while (i + last_off + scan_vlen <= hay.len) : (i += scan_vlen) {
+        @prefetch(&hay[@min(i + 8 * scan_vlen, hay.len - 1)], .{ .rw = .read, .locality = 2 });
+        const eq = (@as(ScanVec, hay[i + o1 ..][0..scan_vlen].*) == p1) &
+            (@as(ScanVec, hay[i + o2 ..][0..scan_vlen].*) == p2);
+        if (!anyLane(eq)) continue;
+        if (verifyBlock(hay, needle, i, eq)) |pos| return pos;
+    }
+
+    // Narrow tier: the < scan_vlen remainder (and any haystack too short for
+    // the wide tier) still vectorizes at `vlen`.
     const first: Vec = @splat(needle[0]);
     const last: Vec = @splat(needle[n - 1]);
-    const last_off = n - 1;
-
-    var i: usize = from;
-    // Both windows [i, i+vlen) and [i+last_off, i+last_off+vlen) stay in bounds.
     while (i + last_off + vlen <= hay.len) : (i += vlen) {
         const bf: Vec = hay[i..][0..vlen].*;
         const bl: Vec = hay[i + last_off ..][0..vlen].*;
@@ -200,8 +324,29 @@ pub fn indexOfPos(hay: []const u8, from: usize, needle: []const u8) ?usize {
             if (std.mem.eql(u8, hay[pos .. pos + n], needle)) return pos;
         }
     }
-    // Scalar tail for the < vlen remainder.
-    return std.mem.indexOfPos(u8, hay, i, needle);
+    // Overlapped final block: rewind to the last in-bounds `vlen` window so
+    // the remainder scans vectorized. Positions < i were already rejected and
+    // re-verify idempotently (and survivors ascend), so leftmost-first holds
+    // with no dedup. This replaces a `std.mem.indexOfPos` tail that, for a
+    // 5+-byte needle in a >= 52-byte haystack, built a 256-entry BMH skip
+    // table PER CALL — a ~2 KiB store burst that dominated per-file cost on
+    // a many-small-files corpus (roofline: 20693 files · ~10 KiB average).
+    if (hay.len >= last_off + vlen and hay.len - last_off - vlen >= from) {
+        const back = hay.len - last_off - vlen;
+        const bf: Vec = hay[back..][0..vlen].*;
+        const bl: Vec = hay[back + last_off ..][0..vlen].*;
+        const bits: Mask = @bitCast((bf == first) & (bl == last));
+        var survivors = bitsmod.ones(bits);
+        while (survivors.next()) |j| {
+            const pos = back + j;
+            if (std.mem.eql(u8, hay[pos .. pos + n], needle)) return pos;
+        }
+        return null;
+    }
+    // Tiny remainder (< vlen + last_off bytes): bounded linear verify.
+    while (i + n <= hay.len) : (i += 1)
+        if (std.mem.eql(u8, hay[i .. i + n], needle)) return i;
+    return null;
 }
 
 /// Leftmost occurrence of byte `c` at or after `from` — the public forward
@@ -285,8 +430,8 @@ fn memchrPos(hay: []const u8, from: usize, c: u8) ?usize {
     var i: usize = from;
     const wide: ScanVec = @splat(c);
     while (i + scan_vlen <= hay.len) : (i += scan_vlen) {
-        const bits: ScanMask = @bitCast(@as(ScanVec, hay[i..][0..scan_vlen].*) == wide);
-        if (bits != 0) return i + @ctz(bits);
+        const eq = @as(ScanVec, hay[i..][0..scan_vlen].*) == wide;
+        if (anyLane(eq)) return i + @ctz(@as(ScanMask, @bitCast(eq)));
     }
     const narrow: Vec = @splat(c);
     while (i + vlen <= hay.len) : (i += vlen) {
@@ -329,14 +474,32 @@ pub fn indexOfCaselessPos(hay: []const u8, from: usize, needle: []const u8) ?usi
     // that also hardens against an un-lowered byte.
     const mask0 = foldMask(needle[0]);
     const maskL = foldMask(needle[n - 1]);
+    const last_off = n - 1;
+    var i: usize = from;
+
+    // Wide tier: 64-byte blocks gated on `anyLane` — a miss block never pays
+    // the movemask (same shape as `indexOfPos`'s dense-probe loop).
+    const wfm0: ScanVec = @splat(mask0);
+    const wfmL: ScanVec = @splat(maskL);
+    const wfirst: ScanVec = @splat(needle[0] | mask0);
+    const wlast: ScanVec = @splat(needle[n - 1] | maskL);
+    while (i + last_off + scan_vlen <= hay.len) : (i += scan_vlen) {
+        const bf: ScanVec = hay[i..][0..scan_vlen].*;
+        const bl: ScanVec = hay[i + last_off ..][0..scan_vlen].*;
+        const eq = ((bf | wfm0) == wfirst) & ((bl | wfmL) == wlast);
+        if (!anyLane(eq)) continue;
+        var survivors = bitsmod.ones(@as(ScanMask, @bitCast(eq)));
+        while (survivors.next()) |j| {
+            const pos = i + j;
+            if (eqlCaseless(hay[pos .. pos + n], needle)) return pos;
+        }
+    }
+
+    // Narrow tier + scalar tail for the < scan_vlen remainder.
     const fm0: Vec = @splat(mask0);
     const fmL: Vec = @splat(maskL);
     const first: Vec = @splat(needle[0] | mask0);
     const last: Vec = @splat(needle[n - 1] | maskL);
-    const last_off = n - 1;
-
-    var i: usize = from;
-    // Both windows [i, i+vlen) and [i+last_off, i+last_off+vlen) stay in bounds.
     while (i + last_off + vlen <= hay.len) : (i += vlen) {
         const bf: Vec = hay[i..][0..vlen].*;
         const bl: Vec = hay[i + last_off ..][0..vlen].*;
@@ -347,7 +510,6 @@ pub fn indexOfCaselessPos(hay: []const u8, from: usize, needle: []const u8) ?usi
             if (eqlCaseless(hay[pos .. pos + n], needle)) return pos;
         }
     }
-    // Scalar tail for the < vlen remainder.
     while (i + n <= hay.len) : (i += 1) if (eqlCaseless(hay[i .. i + n], needle)) return i;
     return null;
 }

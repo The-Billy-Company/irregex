@@ -110,6 +110,14 @@ fn fileDoc(buf_in: []const u8, path: []const u8, re: *const Regex, sim: *Regex.S
         const nul = std.mem.indexOfScalar(u8, buf_in, 0) orelse break :blk buf_in;
         break :blk buf_in[0..committedPrefix(buf_in, nul)];
     } else buf_in;
+    // Reject non-matchers with ONE fused whole-buffer pass first (`docMatch`
+    // early-exits on the first hit). A trigram false positive — the common
+    // candidate — used to pay a full per-line pass AND a full docMatch pass;
+    // now it pays exactly the one-pass verify floor, and only real matchers
+    // fund the per-line feature extraction below. This is also the parity
+    // gate: `docMatch` speaks rg's line model, so the ranked SET is decided
+    // by the same machine `gist -l` uses.
+    if (!re.docMatch(sim, buf)) return null;
     var line_no: u32 = 0;
     var match_lines: u32 = 0;
     var first: u32 = 0;
@@ -118,6 +126,10 @@ fn fileDoc(buf_in: []const u8, path: []const u8, re: *const Regex, sim: *Regex.S
     var shape_hash: u64 = 0;
     var it = std.mem.splitScalar(u8, buf, '\n');
     while (it.next()) |line| {
+        // rg line model: `\n` TERMINATES a line — a newline-terminated buffer
+        // has no phantom empty final line (splitScalar emits one). Without
+        // this, `^$`-shaped patterns counted a match rg never reports.
+        if (line.len == 0 and it.peek() == null and buf.len > 0 and buf[buf.len - 1] == '\n') break;
         line_no += 1;
         if (!re.lineMatch(sim, line)) continue;
         match_lines += 1;
@@ -132,10 +144,9 @@ fn fileDoc(buf_in: []const u8, path: []const u8, re: *const Regex, sim: *Regex.S
             shape_hash = sig.shape_hash;
         }
     }
-    // Multi-line / whole-buffer match the per-line scan missed: keep the
-    // file if the document matcher still fires, surface L1 (the `@max`es
-    // below resolve to matches=1 / best_line=1 for that zero-line case).
-    if (match_lines == 0 and !re.docMatch(sim, buf)) return null;
+    // match_lines == 0 with a fired docMatch ⇒ a multi-line / whole-buffer
+    // match the per-line scan can't see: keep the file, surface L1 (the
+    // `@max`es below resolve to matches=1 / best_line=1 for that case).
     return .{ .id = id, .matches = @max(match_lines, 1), .is_def = definition > 0, .definition = definition, .shape_hash = shape_hash, .best_line = if (defline != 0) defline else @max(first, 1), .depth = pathDepth(path), .is_generated = signals.isGenerated(path, buf), .is_mirror = mirror.isPath(path), .content_hash = mirror.fingerprint(buf), .content_len = buf.len };
 }
 
