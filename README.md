@@ -318,9 +318,10 @@ min-of-max calculus over the AST, and an adversarially refereed priority
 review live in [`research/crest/`](research/crest/PROOF.md).
 
 `zig build crest` proves it fail-closed against the real matcher on the live
-corpus: matched ⇒ never pruned, over every file × query plus 48k randomized
-pattern/file pairs in both engine modes. Measured through the shipped CLI —
-same binary, same index, only the sidecar toggled — the narrow-class slate
+corpus: matched ⇒ never pruned, over every file × query plus 96k randomized
+pattern/file pairs spanning case-sensitive and caseless in both engine modes.
+Measured through the shipped CLI — same binary, same index, only the sidecar
+toggled — the narrow-class slate
 runs **3.2–4.3× faster end-to-end** with diff-identical match sets, and the
 wide-class rows cost nothing. The count-population cousin at the same
 thresholds prunes ≤1% where the run prunes 91%: the run is the condition.
