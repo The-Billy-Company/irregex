@@ -238,13 +238,6 @@ fn skippedToken(gpa: std.mem.Allocator, io: std.Io, tok: journal.Token) bool {
     return std.mem.eql(u8, b, &journal.encode(tok));
 }
 
-fn journalDisabled() bool {
-    const v = std.c.getenv("GIST_NO_JOURNAL") orelse return false;
-    const s = std.mem.span(v);
-    return s.len != 0 and !std.mem.eql(u8, s, "0") and
-        !std.ascii.eqlIgnoreCase(s, "false") and !std.ascii.eqlIgnoreCase(s, "no");
-}
-
 /// Past this many replayed file paths the per-path confirm stats stop being
 /// decisively cheaper than the walk (and the base is stale enough that a
 /// compaction is due anyway).
@@ -267,7 +260,7 @@ const max_journal_changes: usize = 8192;
 /// False ⇒ run the walk.
 fn journalFresh(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, built_ns: i128, a: std.mem.Allocator, out: *std.ArrayList([]const u8)) bool {
     if (comptime !journal.supported) return false;
-    if (journalDisabled()) return false;
+    if (journal.disabled()) return false;
     const trace = std.c.getenv("GIST_JOURNAL_TRACE") != null;
     const t0 = std.Io.Clock.now(.awake, io).nanoseconds;
     const tok = readJournalToken(gpa, io) orelse return false;

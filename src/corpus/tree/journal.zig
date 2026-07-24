@@ -64,6 +64,17 @@ pub const Token = struct {
 /// One replayed change, root-relative under the caller's roots.
 pub const Entry = struct { path: []const u8, is_dir: bool };
 
+/// `GIST_NO_JOURNAL` truthy (any value but `0`/`false`/`no`/empty) forces
+/// every caller off the replay path onto its certified fallback (the cold
+/// query's stat sweep, the warm daemon's full walk) — a parity gate and field
+/// escape hatch, the `GIST_NO_PARALLEL` idiom. The env var is the journal's
+/// contract, so its predicate lives here rather than duplicated per caller.
+pub fn disabled() bool {
+    const s = std.mem.span(std.c.getenv("GIST_NO_JOURNAL") orelse return false);
+    return s.len != 0 and !std.mem.eql(u8, s, "0") and
+        !std.ascii.eqlIgnoreCase(s, "false") and !std.ascii.eqlIgnoreCase(s, "no");
+}
+
 /// Mint a token for THIS instant: the global FSEvents id + the device the
 /// corpus lives on. Null ⇒ the platform/journal can't back a replay.
 pub fn capture(io: std.Io) ?Token {
@@ -337,6 +348,10 @@ fn relativize(a: std.mem.Allocator, rp: RootPrefix, abs: []const u8) !?[]const u
 pub fn replay(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, token: Token, budget_ns: i128, a: std.mem.Allocator, out: *std.ArrayList(Entry)) bool {
     if (comptime !supported) return false;
     if (roots.len == 0) return false;
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var ctx = Ctx{ .a = aa };
     const trace = std.c.getenv("GIST_JOURNAL_TRACE") != null;
     var tlast: i128 = std.Io.Clock.now(.awake, io).nanoseconds;
     const dev = cwdDev() orelse return false;
@@ -346,9 +361,6 @@ pub fn replay(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, tok
     if (trace) tlast = tracePhase(io, "dlopen", tlast);
 
     // Resolve each root to the absolute prefix deliveries are keyed under.
-    var arena = std.heap.ArenaAllocator.init(gpa);
-    defer arena.deinit();
-    const aa = arena.allocator();
     const prefixes = aa.alloc(RootPrefix, roots.len) catch return false;
     var pathbuf: [std.fs.max_path_bytes]u8 = undefined;
     for (roots, prefixes) |root, *rp| {
