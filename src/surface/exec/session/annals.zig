@@ -13,10 +13,10 @@
 //! Fail-closed, in the journal replay's exact posture — every uncertainty
 //! reads as "the annals cannot vouch" and the caller runs its proven fallback:
 //!
-//!   1. Answerable only when ARMED by a per-file-exact backend (macOS
-//!      FSEvents with FileEvents), and only for `since_ns >= floor_ns` — the
-//!      coverage floor, set at arm time (nothing before the stream started is
-//!      known) and advanced by every eviction.
+//!   1. Answerable only when ARMED by a per-file-exact backend (macOS kqueue ·
+//!      Linux inotify), and only for `since_ns >= floor_ns` — the coverage
+//!      floor, set once every watch is registered (nothing before a vnode was
+//!      watched is knowable) and advanced by every eviction.
 //!   2. `doubt` is STICKY FOREVER (unlike the dirty log's per-drain doubt):
 //!      an inexact event (rescan hint, kernel/user drop, id wrap, mount
 //!      churn), an unmappable delivery, or an OOM while noting poisons the
@@ -26,8 +26,8 @@
 //!      so old queries decline instead of reading an amputated answer.
 //!
 //! Entries are stored REPO-RELATIVE: `note` strips the armed absolute root
-//! prefix (accepting the `/System/Volumes/Data` firmlink alias fseventsd may
-//! key deliveries under) and drops paths under walk-skipped directories —
+//! prefix (accepting the `/System/Volumes/Data` firmlink alias a macOS path may
+//! resolve under) and drops paths under walk-skipped directories —
 //! the same shaping `journal.zig`'s replay applies, so an annals answer and a
 //! journal answer describe the same corpus surface.
 //!

@@ -448,6 +448,7 @@ test {
     _ = @import("surface/exec/session/protocol_test.zig"); // UDS frame codec round-trip + adversarial
     _ = @import("surface/exec/session/shm.zig"); // portable anonymous shm buffer: fd round-trip, zero-len unsupported
     _ = @import("surface/exec/session/watch_test.zig"); // freshness watcher: dirty/clean seqlock barrier
+    _ = @import("surface/exec/session/kqueue_test.zig"); // macOS kqueue barrier: real mutations → scoped reconcile (ADR-372)
     _ = @import("surface/exec/session/freshness_test.zig"); // barrier hardening: differential vs on-disk oracle, concurrency, overflow/bound
     _ = @import("surface/exec/session/dirty.zig"); // exact dirty-path log: dedupe, bound→doubt, exact promise
     _ = @import("surface/exec/session/delta.zig"); // O(changed) resolver: path classes, fold aliasing helpers

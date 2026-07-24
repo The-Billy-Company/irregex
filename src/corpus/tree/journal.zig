@@ -152,9 +152,10 @@ fn EventBindings(comptime Info: type) type {
     };
 }
 
-/// The dlopen'd CoreFoundation + CoreServices entry points — the one-shot
-/// twin of the resident watcher's `Syms` (`surface/exec/session/watch.zig`);
-/// duplicated here because the tree layer must not import the surface layer.
+/// The dlopen'd CoreFoundation + CoreServices entry points. Since ADR-372 these
+/// are the only FSEvents bindings left in the tree: the resident watcher moved to
+/// kqueue, which needs no framework at all, and this journal survives only because
+/// an amend must read history no live watch can supply.
 const Syms = struct {
     const Events = EventBindings(Ctx);
 
@@ -181,8 +182,7 @@ const Syms = struct {
 
     /// Process-lifetime cache: `dlopen` of CoreServices costs ~1–3 ms (dyld +
     /// CF initializers) and an amend calls into the journal twice (capture +
-    /// replay) — bind once, never close (the OS reclaims at exit; the resident
-    /// daemon legitimately keeps them for its own watcher anyway). Same
+    /// replay) — bind once, never close (the OS reclaims at exit). Same
     /// spinlock-once idiom as `haystack.extra_skips`.
     const cache = struct {
         var locked: std.atomic.Value(bool) = .init(false);

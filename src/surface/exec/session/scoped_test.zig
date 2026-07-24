@@ -4,8 +4,8 @@
 //! the SCOPED path (`dirty.zig` + `delta.zig` + `reconcileScoped`) — the one
 //! new skip decision this engine makes: "these exact watcher paths are the only
 //! places the tree can differ from my overlay". Every test drives the session
-//! through the same three-call backend contract the real macOS FSEvents
-//! backend honors (`dirty_log.armExact()`, `note(abs)` before `markDirty()`),
+//! through the same three-call backend contract every real backend honors
+//! (`dirty_log.armExact()`, `note(abs)` before `markDirty()`),
 //! then asserts the answers against an INDEPENDENT on-disk oracle (a naive
 //! re-read + substring scan that never runs the engine — sins.mdc Sin #2), so
 //! a scoped-path bug can't grade its own homework.
@@ -31,8 +31,8 @@ const Dir = std.Io.Dir;
 const ResidentSession = resident.ResidentSession;
 
 /// A throwaway on-disk tree plus the live-file bookkeeping the oracle needs.
-/// `canon` is the tree root's realpath — the spelling a real FSEvents stream
-/// prefixes every delivered event with (on macOS `/tmp` is a firmlink to
+/// `canon` is the tree root's realpath — the spelling a real backend prefixes
+/// every delivered event with (on macOS `/tmp` is a firmlink to
 /// `/private/tmp`, so the two differ), which is exactly how the tests must
 /// spell their `note`s to simulate the backend faithfully.
 const Corpus = struct {
@@ -61,7 +61,7 @@ const Corpus = struct {
         return std.fmt.allocPrint(self.a, "{s}/{s}", .{ self.root, rel });
     }
 
-    /// The event-spelling of `rel`: canonical-root-prefixed, as FSEvents would
+    /// The event-spelling of `rel`: canonical-root-prefixed, as a backend would
     /// deliver it.
     fn event(self: *Corpus, rel: []const u8) ![]const u8 {
         return std.fmt.allocPrint(self.a, "{s}/{s}", .{ self.canon, rel });
@@ -122,7 +122,7 @@ fn bootExact(session: *ResidentSession, corpus: *Corpus, gpa: std.mem.Allocator)
 }
 
 /// One simulated exact-backend event burst: note every path, then bump the seq
-/// — the same ordering the FSEvents callback honors.
+/// — the same ordering a real backend's drain honors.
 fn fire(session: *ResidentSession, paths: []const []const u8) void {
     for (paths) |p| session.dirty_log.note(p);
     session.markDirty();
@@ -165,7 +165,7 @@ test "scoped: exact add/modify/delete answers match the oracle WITHOUT a full wa
     fire(&session, &.{try corpus.event("c.txt")});
     try assertMatchesOracle(&session, &corpus, gpa, "needle");
 
-    // Rename (FSEvents delivers both spellings as separate item events).
+    // Rename (a backend reports both spellings — kqueue as two directory events).
     try Dir.cwd().rename(try corpus.abs("a.txt"), Dir.cwd(), try corpus.abs("z.txt"), io);
     corpus.dropLive("a.txt");
     try corpus.write("z.txt", "needle alpha\n"); // rewrite: same bytes, registers live
@@ -196,8 +196,8 @@ test "scoped: a directory event folds in its whole admitted subtree, create and 
     try bootExact(&session, &corpus, gpa);
     const full0 = session.full_reconciles.load(.monotonic);
 
-    // A new nested subtree, noted ONLY by its topmost directory (FSEvents may
-    // coalesce the children into the ancestor's event).
+    // A new nested subtree, noted ONLY by its topmost directory (a backend may
+    // report just the ancestor — kqueue never had a watch on the new children).
     try corpus.mkdir("sub/inner");
     try corpus.write("sub/inner/x.txt", "needle nested\n");
     try corpus.write("sub/y.txt", "nothing\n");

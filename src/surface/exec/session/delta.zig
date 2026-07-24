@@ -61,8 +61,8 @@ pub const Verdict = union(enum) {
 };
 
 /// One canonical→key-space rewrite: `canon` is the realpath of a served root
-/// (what FSEvents prefixes events with), `key` is that root as the corpus
-/// spells it ("" for the rootless CWD walk).
+/// (the spelling every watcher backend reports events under), `key` is that root
+/// as the corpus spells it ("" for the rootless CWD walk).
 const Mapping = struct { canon: []const u8, key: []const u8 };
 
 pub const Delta = struct {

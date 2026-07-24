@@ -75,12 +75,12 @@ fn pcre2Library(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.b
 }
 
 /// Every module that compiles the engine links libc: the vendored PCRE2 static
-/// archive is C, and the macOS resident watcher (`src/surface/exec/session/watch.zig`)
-/// reaches CoreServices/CoreFoundation through libc's `dlopen`/`dlsym` at runtime
-/// rather than link-time framework bindings — so the cold search binary never
-/// loads (or pays the launch-time initializers of) frameworks only the daemon's
-/// watcher arms. `link_libc` also wires the SDK sysroot; macOS links libSystem
-/// regardless.
+/// archive is C, and the macOS FSEvents historical journal (`src/corpus/tree/journal.zig`,
+/// the one-shot index-amend replay) reaches CoreServices/CoreFoundation through
+/// libc's `dlopen`/`dlsym` at runtime rather than link-time framework bindings —
+/// so the cold search binary never loads (or pays the launch-time initializers
+/// of) frameworks only an amend arms. `link_libc` also wires the SDK sysroot;
+/// macOS links libSystem regardless.
 fn linkEngineLibc(m: *std.Build.Module) void {
     m.link_libc = true;
 }
@@ -97,7 +97,7 @@ pub fn build(b: *std.Build) void {
 
     // Decorate every engine module that compiles the kernel (root + the
     // ReleaseSafe test twin when `test_optimize` diverges): libc (the macOS
-    // watcher's runtime `dlopen` of CoreServices/CoreFoundation + PCRE2's C ABI)
+    // journal's runtime `dlopen` of CoreServices/CoreFoundation + PCRE2's C ABI)
     // and a PCRE2 built at THAT module's optimize (the adversarial tests
     // shouldn't run a Debug C library).
     var engine_buf: [2]*std.Build.Module = undefined;
@@ -509,7 +509,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     // No framework wiring: the engine object reaches CoreServices/CoreFoundation
-    // via runtime `dlopen` (watch.zig), so it exports no FSEvents/CF externs.
+    // via runtime `dlopen` (journal.zig), so it exports no FSEvents/CF externs.
     c_smoke_mod.addIncludePath(b.path("include"));
     c_smoke_mod.addCSourceFile(.{
         .file = c_smoke_source,

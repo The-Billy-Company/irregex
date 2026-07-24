@@ -4,9 +4,10 @@
 //! takes the microsecond clean path; on any event it forces a reconcile. These
 //! tests pin that barrier's two halves — an armed, event-free window flips
 //! `clean` true (fast path) and a `markDirty` clears it (back to reconcile) —
-//! and prove the real `Watcher` lifecycle (`start`/`stop`) is crash-free. Only
-//! Linux inotify arms causal quiescence; asynchronous macOS FSEvents and targets
-//! without a causal backend stay reconcile-always.
+//! and prove the real `Watcher` lifecycle (`start`/`stop`) is crash-free. Both
+//! syscall-synchronous backends arm causal quiescence (Linux inotify · macOS
+//! kqueue, ADR-372); a target without one stays reconcile-always. The macOS
+//! backend's behavior under real mutations lives in `kqueue_test.zig`.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -84,13 +85,13 @@ test "Watcher.start/stop arms only a causally complete backend" {
     w.start();
     defer w.stop();
 
-    // FSEvents is asynchronous to writer syscalls, so macOS must remain
-    // reconcile-always. Linux inotify arming is environment-dependent (runner
-    // watch limits), but when it arms this case-sensitive fixture it must be
-    // exact. Other targets have no causal backend and stay unarmed.
+    // Arming is environment-dependent on both real backends (inotify watch
+    // limits, kqueue descriptor budget), so neither is asserted to arm here —
+    // but arming without the exactness promise would be the dangerous state: a
+    // session trusting quiescence from a backend that cannot account for what
+    // changed. Other targets have no causal backend and must stay unarmed.
     switch (builtin.os.tag) {
-        .macos => try std.testing.expect(!session.seqlock.active),
-        .linux => if (session.seqlock.active) try std.testing.expect(session.dirty_log.exact),
+        .macos, .linux => if (session.seqlock.active) try std.testing.expect(session.dirty_log.exact),
         else => try std.testing.expect(!session.seqlock.active),
     }
 
