@@ -138,7 +138,7 @@ pub const Annals = struct {
     /// shaping matches `note`. Returns false on OOM (caller aborts the seed
     /// WITHOUT extending coverage — the ledger stays sound, just younger).
     pub fn seed(self: *Annals, rel: []const u8, ts_ns: i128) bool {
-        if (rel.len == 0 or underSkippedDir(rel)) return true;
+        if (rel.len == 0 or haystack.underSkippedDir(rel)) return true;
         self.lock();
         defer self.unlock();
         if (self.map.getPtr(rel)) |ts| {
@@ -170,7 +170,7 @@ pub const Annals = struct {
             self.doubt = true;
             return;
         };
-        if (rel.len == 0 or underSkippedDir(rel)) return; // the root itself / never-walked subtree
+        if (rel.len == 0 or haystack.underSkippedDir(rel)) return; // the root itself / never-walked subtree
         if (self.map.getPtr(rel)) |ts| {
             ts.* = now_ns;
             return;
@@ -277,18 +277,6 @@ fn relativize(prefix: []const u8, abs: []const u8) ?[]const u8 {
     if (r.len == 0) return r; // the root itself
     if (r[0] != '/') return null; // prefix ended mid-component (/repo2 vs /repo)
     return r[1..];
-}
-
-/// Does any DIRECTORY component of `path` sit in the corpus skip set? The
-/// basename is deliberately NOT checked — a FILE named like a skip dir is
-/// corpus-admissible, exactly as the walk (and `fresh.zig`) treat it.
-fn underSkippedDir(path: []const u8) bool {
-    var rest = path;
-    while (std.mem.indexOfScalar(u8, rest, '/')) |i| {
-        if (haystack.isSkipDir(rest[0..i])) return true;
-        rest = rest[i + 1 ..];
-    }
-    return false;
 }
 
 /// Test shorthand: prefix + coverage in one call (production splits them

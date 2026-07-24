@@ -127,20 +127,26 @@ const data_volume_prefix = "/System/Volumes/Data";
 
 const Ref = ?*anyopaque;
 const CFIndex = isize;
-const FsCallback = *const fn (Ref, ?*anyopaque, usize, ?[*]const [*:0]const u8, [*]const u32, [*]const u64) callconv(.c) void;
 
-const CFContext = extern struct {
-    version: CFIndex = 0,
-    info: ?*anyopaque = null,
-    retain: ?*const anyopaque = null,
-    release: ?*const anyopaque = null,
-    copy_description: ?*const anyopaque = null,
-};
+fn EventBindings(comptime Info: type) type {
+    return struct {
+        const Callback = *const fn (Ref, ?*Info, usize, ?[*]const [*:0]const u8, [*]const u32, [*]const u64) callconv(.c) void;
+        const Context = extern struct {
+            version: CFIndex = 0,
+            info: ?*Info = null,
+            retain: ?*const anyopaque = null,
+            release: ?*const anyopaque = null,
+            copy_description: ?*const anyopaque = null,
+        };
+    };
+}
 
 /// The dlopen'd CoreFoundation + CoreServices entry points — the one-shot
 /// twin of the resident watcher's `Syms` (`surface/exec/session/watch.zig`);
 /// duplicated here because the tree layer must not import the surface layer.
 const Syms = struct {
+    const Events = EventBindings(Ctx);
+
     cf: std.DynLib,
     cs: std.DynLib,
     CFStringCreateWithBytes: *const fn (Ref, [*]const u8, CFIndex, u32, u8) callconv(.c) Ref,
@@ -149,7 +155,7 @@ const Syms = struct {
     CFRunLoopGetCurrent: *const fn () callconv(.c) Ref,
     CFRunLoopRunInMode: *const fn (Ref, f64, u8) callconv(.c) i32,
     FSEventsGetCurrentEventId: *const fn () callconv(.c) u64,
-    FSEventStreamCreate: *const fn (Ref, FsCallback, ?*const CFContext, Ref, u64, f64, u32) callconv(.c) Ref,
+    FSEventStreamCreate: *const fn (Ref, Events.Callback, ?*const Events.Context, Ref, u64, f64, u32) callconv(.c) Ref,
     FSEventStreamSetExclusionPaths: *const fn (Ref, Ref) callconv(.c) u8,
     FSEventStreamScheduleWithRunLoop: *const fn (Ref, Ref, Ref) callconv(.c) void,
     FSEventStreamStart: *const fn (Ref) callconv(.c) u8,
@@ -255,8 +261,8 @@ const Ctx = struct {
     done: bool = false,
 };
 
-fn onEvents(_: Ref, info: ?*anyopaque, num_events: usize, event_paths: ?[*]const [*:0]const u8, event_flags: [*]const u32, _: [*]const u64) callconv(.c) void {
-    const ctx: *Ctx = @ptrCast(@alignCast(info orelse return));
+fn onEvents(_: Ref, info: ?*Ctx, num_events: usize, event_paths: ?[*]const [*:0]const u8, event_flags: [*]const u32, _: [*]const u64) callconv(.c) void {
+    const ctx = info orelse return;
     const paths = event_paths orelse {
         ctx.doubt = .no_paths;
         return;
@@ -363,7 +369,7 @@ pub fn replay(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, tok
     defer s.CFRelease(paths_arr);
 
     var ctx = Ctx{ .a = aa };
-    var cfctx = CFContext{ .info = @ptrCast(&ctx) };
+    var cfctx = Syms.Events.Context{ .info = &ctx };
     const stream = s.FSEventStreamCreate(
         null,
         onEvents,

@@ -23,7 +23,7 @@ doc_radar:
       contains: ["pcre parity -P", "index-elision parity", "macro certificate"]
     - description: "prose cites the live certificate corpus + cold speedup band (re-mint updates both)"
       file: pkg/kernels/irregex/bench/certify/artifact/CERTIFICATE.md
-      contains: ["20591 files · 196.8 MiB", "28.73x", "16.33x"]
+      contains: ["20492 files · 195.8 MiB", "7.76x", "2.10x"]
 ---
 
 # irregex
@@ -344,13 +344,13 @@ correctness and performance evidence under `bench/rgsuite/`, `bench/matrix/`,
 `bench/session/`, and the relate harnesses; none inherits Layer A's dominance
 claim by association.
 
-On the recorded **20,591-file / 196.8 MiB macroscopic corpus**, the
+On the recorded **20,492-file / 195.8 MiB macroscopic corpus**, the
 end-to-end linear/literal path beats ripgrep in all 12 query classes by
-**16.33×–28.73×**. The microscopic cycles/byte and lower-bound layers run over
-that same RAM-resident corpus. Layer D checks the narrower
-structural statement: trigram pruning touches no rejected file bytes, and the
-DFA verifies each admitted byte exactly once. The artifact, raw data, machine
-identity, losses, and rerun commands live in
+**2.10×–7.76×**. The separately minted lower-bound layer covers a
+20,696-file / 199.6 MiB corpus and checks the narrower structural statement:
+trigram pruning touches no rejected file bytes, and the DFA verifies each
+admitted byte exactly once. The artifact, raw data, machine identity, losses,
+and rerun commands live in
 [`bench/certify/artifact/CERTIFICATE.md`](bench/certify/artifact/CERTIFICATE.md);
 `make bench-gist-certify` refreshes B–E on an existing Layer A, while
 `CERT_FULL=1 CERT_PUBLISH=1 CERT_SUDO=1 make bench-gist-certify` remints and

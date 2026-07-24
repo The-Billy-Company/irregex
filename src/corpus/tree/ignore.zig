@@ -373,12 +373,18 @@ pub const Ignore = struct {
     /// CWD and an explicit positional root — root `a/b` ⇒ `a`; `a/b/c` ⇒ `a`,
     /// `a/b`. Each is bucketed under its own path so `decideAt` scopes it to that
     /// subtree (a slash-less `a/.ignore` rule matches basenames only under `a/`).
-    /// CWD and the leaf are loaded elsewhere (see `init`); an absolute or `.`
-    /// root contributes nothing here.
+    /// CWD and the leaf are loaded elsewhere (see `init`). An absolute root under
+    /// CWD starts at that boundary; unrelated filesystem ancestors must not leak
+    /// their ignore files into an explicitly named nested repository/worktree.
     fn loadRootAncestors(self: *Ignore, root: []const u8) void {
         if (self.o.no_ignore) return;
         const r = stripDot(std.mem.trimEnd(u8, root, "/"));
-        var i: usize = 0;
+        var i: usize = if (std.fs.path.isAbsolute(r)) blk: {
+            const cwd = Dir.cwd().realPathFileAlloc(self.io, ".", self.a) catch return;
+            if (std.mem.eql(u8, r, cwd)) return;
+            if (r.len <= cwd.len or !std.mem.startsWith(u8, r, cwd) or r[cwd.len] != '/') return;
+            break :blk cwd.len + 1;
+        } else 0;
         while (std.mem.indexOfScalarPos(u8, r, i, '/')) |slash| {
             const dir = r[0..slash];
             i = slash + 1;
@@ -851,7 +857,7 @@ test "an explicit nested root loads its intermediate ancestors' ignores (rg add_
     defer arena.deinit();
     const a = arena.allocator();
 
-    const dir = "/tmp/gist_root_ancestor_fixture";
+    const dir = "gist_root_ancestor_fixture";
     Dir.cwd().deleteTree(io, dir) catch {};
     try Dir.cwd().createDirPath(io, join(a, dir, "a/b"));
     defer Dir.cwd().deleteTree(io, dir) catch {};
@@ -860,11 +866,13 @@ test "an explicit nested root loads its intermediate ancestors' ignores (rg add_
     try Dir.cwd().writeFile(io, .{ .sub_path = join(a, dir, "a/.ignore"), .data = ".foo\n" });
 
     var ig = Ignore{ .a = a, .io = io, .o = .{ .hidden = true }, .groups = std.StringHashMap(std.ArrayList(Rule)).init(a), .loaded = std.StringHashMap(void).init(a), .use_dot = true };
-    ig.loadRootAncestors(join(a, dir, "a/b")); // absolute-safe: buckets under the `a` prefix dirs
+    const abs_dir = try Dir.cwd().realPathFileAlloc(io, dir, a);
+    const root = join(a, abs_dir, "a/b");
+    ig.loadRootAncestors(root); // absolute-safe: starts at CWD, never ~/.cursor
     // The rule lives in the intermediate dir's bucket and prunes the descendant,
     // never the root's own components (only what is found beneath it).
-    ig.scopeToRoot(join(a, dir, "a/b"));
-    try t.expectEqual(@as(?bool, true), ig.decide(join(a, dir, "a/b/.foo"), false));
+    ig.scopeToRoot(root);
+    try t.expectEqual(@as(?bool, true), ig.decide(join(a, root, ".foo"), false));
 }
 
 test "parseExcludesFile mirrors ripgrep's core.excludesfile extraction" {

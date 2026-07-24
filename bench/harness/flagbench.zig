@@ -76,14 +76,14 @@ const Sample = struct {
 /// cannot delete the timed work as dead.
 var sink: u64 = 0;
 
-fn splitLines(a: std.mem.Allocator, buf: []const u8) []const []const u8 {
+fn splitLines(a: std.mem.Allocator, buf: []const u8) ![]const []const u8 {
     // rg line model (mirrors grepfile.collectLines): '\n' terminates, a trailing
     // terminator yields no phantom empty line, content after the last '\n' is a line.
     var out: std.ArrayList([]const u8) = .empty;
     var it = std.mem.splitScalar(u8, buf, '\n');
-    while (it.next()) |line| out.append(a, line) catch @panic("oom");
+    while (it.next()) |line| try out.append(a, line);
     if (buf.len == 0 or buf[buf.len - 1] == '\n') _ = out.pop();
-    return out.toOwnedSlice(a) catch @panic("oom");
+    return try out.toOwnedSlice(a);
 }
 
 // ─────────────────────────── -i: caseless gate ───────────────────────────
@@ -229,7 +229,7 @@ fn profileLineNum(gpa: std.mem.Allocator, io: std.Io, meter: *Meter, corpus: *co
     var c0 = meter.counters();
     var acc: u64 = 0;
     for (nums) |v| {
-        const f = std.fmt.bufPrint(&fbuf, "{d}", .{v}) catch unreachable;
+        const f = try std.fmt.bufPrint(&fbuf, "{d}", .{v});
         acc +%= f.len +% fbuf[0];
     }
     var c1 = meter.counters();
@@ -270,21 +270,21 @@ fn profileLineNum(gpa: std.mem.Allocator, io: std.Io, meter: *Meter, corpus: *co
 const emit_needles = [_][]const u8{ "func", "return", "err", "the" };
 
 /// Split every corpus doc into rg-model lines once (setup, untimed). Caller frees.
-fn splitCorpus(gpa: std.mem.Allocator, corpus: *const Corpus) ![]const []const []const u8 {
+fn splitCorpus(gpa: std.mem.Allocator, corpus: *const Corpus) ![][]const []const u8 {
     const per = try gpa.alloc([]const []const u8, corpus.docs.len);
-    for (corpus.docs, 0..) |d, i| per[i] = splitLines(gpa, d);
+    for (corpus.docs, 0..) |d, i| per[i] = try splitLines(gpa, d);
     return per;
 }
 
-fn freePer(gpa: std.mem.Allocator, per: []const []const []const u8) void {
+fn freePer(gpa: std.mem.Allocator, per: [][]const []const u8) void {
     for (per) |ls| gpa.free(ls);
-    gpa.free(@constCast(per));
+    gpa.free(per);
 }
 
 /// Reference matching-line count for a file (independent of the Emitter) — the
 /// oracle behind the `-l`/`-c` byte-identity self-checks.
-fn refLineHits(a: std.mem.Allocator, m: *const Matcher, lines: []const []const u8) usize {
-    var sim = Matcher.Sim.init(a, m) catch @panic("sim");
+fn refLineHits(a: std.mem.Allocator, m: *const Matcher, lines: []const []const u8) !usize {
+    var sim = try Matcher.Sim.init(a, m);
     defer sim.deinit();
     var n: usize = 0;
     for (lines) |line| n += @intFromBool(m.lineMatch(&sim, line));
@@ -334,8 +334,8 @@ fn emitHeader(label: []const u8) void {
 /// Independent reference for the simple invert frame (no context / column):
 /// emit `<lineno><sep><line><term>` for every line that does NOT match. Proves
 /// `Emitter.file` invert output byte-for-byte without trusting the emitter.
-fn refInvert(a: std.mem.Allocator, out: *std.ArrayList(u8), m: *const Matcher, o: Opts, lines: []const []const u8) void {
-    var sim = Matcher.Sim.init(a, m) catch @panic("sim");
+fn refInvert(a: std.mem.Allocator, out: *std.ArrayList(u8), m: *const Matcher, o: Opts, lines: []const []const u8) !void {
+    var sim = try Matcher.Sim.init(a, m);
     defer sim.deinit();
     var emitted: usize = 0;
     for (lines, 0..) |line, k| {
@@ -343,11 +343,11 @@ fn refInvert(a: std.mem.Allocator, out: *std.ArrayList(u8), m: *const Matcher, o
         if (hit) continue; // invert: skip matching lines
         if (o.line_num) {
             var b: [24]u8 = undefined;
-            out.appendSlice(a, std.fmt.bufPrint(&b, "{d}", .{k + 1}) catch unreachable) catch @panic("oom");
-            out.append(a, ':') catch @panic("oom");
+            try out.appendSlice(a, try std.fmt.bufPrint(&b, "{d}", .{k + 1}));
+            try out.append(a, ':');
         }
-        out.appendSlice(a, line) catch @panic("oom");
-        out.append(a, '\n') catch @panic("oom");
+        try out.appendSlice(a, line);
+        try out.append(a, '\n');
         emitted += 1;
         if (o.max_per_file != 0 and emitted >= o.max_per_file) break;
     }
@@ -376,7 +376,7 @@ fn profileInvert(gpa: std.mem.Allocator, io: std.Io, meter: *Meter, corpus: *con
             _ = em.file("f", per[ci]);
             var rout: std.ArrayList(u8) = .empty;
             defer rout.deinit(gpa);
-            refInvert(gpa, &rout, &m, o, per[ci]);
+            try refInvert(gpa, &rout, &m, o, per[ci]);
             if (!std.mem.eql(u8, eout.items, rout.items))
                 std.debug.panic("invert emit != reference on doc {d} needle '{s}'", .{ ci, ndl });
         }
@@ -420,11 +420,11 @@ fn profileEmitMode(gpa: std.mem.Allocator, io: std.Io, meter: *Meter, corpus: *c
                 defer eout.deinit(gpa);
                 var em = Emitter{ .a = gpa, .re = &m, .o = o, .show_name = false, .out = &eout, .base = @intFromPtr(corpus.docs[ci].ptr), .needle = gate, .sim = &sim };
                 _ = em.file("f", per[ci]);
-                const want_hits = refLineHits(gpa, &m, per[ci]);
+                const want_hits = try refLineHits(gpa, &m, per[ci]);
                 var wbuf: [24]u8 = undefined;
                 const want: []const u8 = switch (check) {
                     .files => if (want_hits > 0) "f\n" else "",
-                    .count => if (want_hits > 0) (std.fmt.bufPrint(&wbuf, "{d}\n", .{want_hits}) catch unreachable) else "",
+                    .count => if (want_hits > 0) try std.fmt.bufPrint(&wbuf, "{d}\n", .{want_hits}) else "",
                     .none => unreachable,
                 };
                 if (!std.mem.eql(u8, eout.items, want))
@@ -527,7 +527,7 @@ fn profileJson(gpa: std.mem.Allocator, io: std.Io, meter: *Meter, corpus: *const
             var st = json.Stats{};
             json.emitOne(gpa, &out, &m, &ss, null, o, files[ci], &st, gate);
             const got = countJsonMatchRecords(out.items);
-            const want = refLineHits(gpa, &m, per[ci]);
+            const want = try refLineHits(gpa, &m, per[ci]);
             if (got != want)
                 std.debug.panic("--json match records {d} != line-hit oracle {d} on doc {d} needle '{s}'", .{ got, want, ci, ndl });
         }
@@ -542,7 +542,7 @@ fn profileJson(gpa: std.mem.Allocator, io: std.Io, meter: *Meter, corpus: *const
         for (0..40) |_| {
             _ = work.reset(.retain_capacity);
             const a = work.allocator();
-            var ss = Matcher.SpanSim.init(a, &m) catch @panic("sim");
+            var ss = try Matcher.SpanSim.init(a, &m);
             out_bytes = 0;
             files_with = 0;
             const t0 = nowNs(io);

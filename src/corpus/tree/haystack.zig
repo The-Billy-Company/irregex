@@ -134,6 +134,18 @@ pub fn isSkipDir(name: []const u8) bool {
     return false;
 }
 
+/// Whether any directory component of `path` is excluded from the corpus.
+/// The basename is deliberately ignored: a file named like a skipped directory
+/// remains admissible, matching the walk.
+pub fn underSkippedDir(path: []const u8) bool {
+    var rest = path;
+    while (std.mem.indexOfScalar(u8, rest, '/')) |i| {
+        if (isSkipDir(rest[0..i])) return true;
+        rest = rest[i + 1 ..];
+    }
+    return false;
+}
+
 /// `root/rel`, exactly sized + `memcpy`'d — this runs once per FILE the walk
 /// yields (18.9k times over the current corpus, an order of magnitude hotter
 /// than `isSkipDir`), so it's the walker's actual hot spot. Measured

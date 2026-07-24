@@ -30,6 +30,18 @@ pub fn rootDepth(prefix: []const u8) usize {
     return std.mem.count(u8, s, "/") + 1;
 }
 
+/// Path spelling globs should inspect: relative to CWD when an absolute
+/// positional root sits beneath it, otherwise unchanged. Output keeps its
+/// original absolute spelling; this view exists only for `-g`/`-t` admission.
+pub fn cwdRelative(a: std.mem.Allocator, io: std.Io, path: []const u8) []const u8 {
+    if (!std.fs.path.isAbsolute(path)) return path;
+    const cwd = std.Io.Dir.cwd().realPathFileAlloc(io, ".", a) catch return path;
+    if (std.mem.eql(u8, path, cwd)) return "";
+    if (path.len > cwd.len and std.mem.startsWith(u8, path, cwd) and path[cwd.len] == '/')
+        return path[cwd.len + 1 ..];
+    return path;
+}
+
 /// On-disk (openable) join: a `""`/`.` dir contributes no prefix, so the name
 /// stays CWD-relative exactly as the walker discovered it.
 pub fn join(a: std.mem.Allocator, dir: []const u8, name: []const u8) []const u8 {

@@ -106,11 +106,11 @@ pub const Persisted = struct {
     /// The crest-sieve sidecar (`corpus/index/crest/sidecar.zig`), mapped zero-copy —
     /// null for a legacy cache or any blob `decode` rejects. Purely additive:
     /// queries without it just lose the sieve, never correctness. When a
-    /// codicil is live this is instead an OWNED merged table (`crest_owned`).
+    /// codicil is live this is instead an OWNED merged table (`crest_allocation`).
     cmap: ?Mapping = null,
     crest: ?[]const crest.Vector = null,
-    /// True when `crest` is a gpa-owned codicil-merged table, not a map view.
-    crest_owned: bool = false,
+    /// Mutable owner retained separately when `crest` views a merged allocation.
+    crest_allocation: ?[]crest.Vector = null,
     /// The codicil mapping + decoded view (slices alias `codmap`); null when
     /// this generation has none (a fresh full build, or a rejected blob).
     codmap: ?Mapping = null,
@@ -133,7 +133,7 @@ pub const Persisted = struct {
         if (self.roots_blob) |b| self.gpa.free(b);
         self.paths.deinit(self.gpa);
         self.idx.deinit(); // borrowed ⇒ frees nothing
-        if (self.crest_owned) self.gpa.free(@constCast(self.crest.?));
+        if (self.crest_allocation) |table| self.gpa.free(table);
         if (self.codmap) |m| std.posix.munmap(m);
         if (self.cmap) |m| std.posix.munmap(m);
         std.posix.munmap(self.pmap);
@@ -331,7 +331,7 @@ fn loadMappedPair(gpa: std.mem.Allocator, io: std.Io, pf: *const PairFiles, gen:
     errdefer if (gen_owned) |g| gpa.free(g);
     var codmap: ?Mapping = null;
     var cod: ?codicil_mod.Decoded = null;
-    var crest_owned = false;
+    var crest_allocation: ?[]crest.Vector = null;
     errdefer if (codmap) |m| std.posix.munmap(m);
     if (gen) |g| blk: {
         const m = mmapFile(io, pf.codicil) catch break :blk;
@@ -356,11 +356,11 @@ fn loadMappedPair(gpa: std.mem.Allocator, io: std.Io, pf: *const PairFiles, gen:
             std.posix.munmap(cmap.?);
             cmap = null;
             crest_view = merged;
-            crest_owned = true;
+            crest_allocation = merged;
         }
     }
 
-    return .{ .imap = imap, .pmap = pmap, .idx = idx, .cmap = cmap, .crest = crest_view, .crest_owned = crest_owned, .codmap = codmap, .cod = cod, .paths = paths, .roots_blob = roots_blob, .roots = roots, .gen = gen_owned, .gpa = gpa };
+    return .{ .imap = imap, .pmap = pmap, .idx = idx, .cmap = cmap, .crest = crest_view, .crest_allocation = crest_allocation, .codmap = codmap, .cod = cod, .paths = paths, .roots_blob = roots_blob, .roots = roots, .gen = gen_owned, .gpa = gpa };
 }
 
 /// Load from an arbitrary cache root (production uses `corpus.outDir()`; tests

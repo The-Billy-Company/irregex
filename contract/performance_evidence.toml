@@ -85,7 +85,7 @@ Peak RSS and CPU time (wall-clock decoupled), index size and write amplification
 Resource RATIOS (index/corpus) are hardware-invariant and ARE comparable across
 machines; absolute RSS is machine-specific.
 """
-gated_cross_machine = true       # only the index/corpus RATIO, not absolute RSS
+gated_cross_machine = true # only the index/corpus RATIO, not absolute RSS
 ratio_metric = "index_bytes_over_corpus_bytes"
 
 [[regime]]
@@ -97,7 +97,7 @@ across shape — many-small-files vs few-large-files. The SHAPE of the curve
 (sub-linear query growth, near-linear build growth) is the hardware-invariant
 claim; the per-point absolute times are machine-specific.
 """
-gated_cross_machine = true       # curve monotonicity/shape, not absolute points
+gated_cross_machine = true # curve monotonicity/shape, not absolute points
 
 [[regime]]
 id = "concurrency"
@@ -117,9 +117,9 @@ gated_cross_machine = false
 [[corpus]]
 id = "billy"
 kind = "home"
-roots = ["services", "libs", "clients", "contracts", "scripts", "quality"]
+roots = [ "services", "libs", "clients", "contracts", "scripts", "quality" ]
 shape = "mixed polyglot monorepo"
-pin = "git_commit"               # pinned by the bundle's own git_commit + manifest hash
+pin = "git_commit"                                                           # pinned by the bundle's own git_commit + manifest hash
 
 [[corpus]]
 id = "linux"
@@ -159,14 +159,14 @@ pin = "torture.py deterministic build"
 [competitors]
 # Required: the two indexed rivals + the unindexed gold standard. A query/cold
 # bundle is incomplete without a paired ratio against each present required tool.
-required = ["rg", "csearch", "zoekt"]
+required = [ "rg", "csearch", "zoekt" ]
 # Optional: reported when installed, never required (columns auto-skip).
-optional = ["ugrep", "ag", "ggrep", "gitgrep"]
+optional = [ "ugrep", "ag", "ggrep", "gitgrep" ]
 # rg + csearch are correctness ORACLES (byte-exact file sets); zoekt is a
 # production timing reference (documented corpus superset), not a correctness
 # oracle. The evaluator only requires paired ratios against installed tools.
-correctness_oracles = ["rg", "csearch"]
-timing_reference = ["zoekt"]
+correctness_oracles = [ "rg", "csearch" ]
+timing_reference = [ "zoekt" ]
 
 # ── statistics / methodology ────────────────────────────────────────────────
 [methodology]
@@ -175,7 +175,7 @@ warmup = 3                       # hyperfine warmup runs (fills page cache)
 bootstrap_resamples = 10000      # bootstrap CI on the median
 bootstrap_seed = 28181           # 0x6E15 — the certify_stats seed family
 alpha = 0.05                     # Mann-Whitney significance threshold
-quantiles = [0.50, 0.95, 0.99]   # reported latency quantiles
+quantiles = [ 0.50, 0.95, 0.99 ] # reported latency quantiles
 # A cell is timed ONLY after gist proves a byte-exact (order-insensitive) file
 # set equals the rg oracle, on BOTH the parallel and serial engines.
 parity_before_timing = true
@@ -190,16 +190,23 @@ fail_closed = true
 # certify machine.json keys). The verifier fails a bundle missing any of them.
 [provenance]
 machine_keys = [
-  "machine_id",                  # stable slug: <cpu-slug>-<os>-<arch>
-  "cpu_model", "cpu_count", "ram_bytes",
-  "os", "kernel", "arch", "filesystem",
-  "git_commit", "git_dirty",
-  "gist_engine_version", "gist_abi_version",
+  "machine_id",          # stable slug: <cpu-slug>-<os>-<arch>
+  "cpu_model",
+  "cpu_count",
+  "ram_bytes",
+  "os",
+  "kernel",
+  "arch",
+  "filesystem",
+  "git_commit",
+  "git_dirty",
+  "gist_engine_version",
+  "gist_abi_version",
 ]
 # Per-corpus: a sha256-hashed manifest so a measured corpus is byte-pinned.
-corpus_keys = ["corpus_id", "file_count", "total_bytes", "manifest_sha256"]
+corpus_keys = [ "corpus_id", "file_count", "total_bytes", "manifest_sha256" ]
 # Per-tool: exact identity (semver or executable sha256).
-tool_keys = ["tool", "identity"]
+tool_keys = [ "tool", "identity" ]
 # Honest capability degradation (recorded, never faked):
 #   PMU cycles/byte: macOS kperf only (Linux perf_event_open pending) → wall-clock.
 #   storage_cold: Linux drop_caches only → absent on macOS.

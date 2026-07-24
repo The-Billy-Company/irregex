@@ -299,14 +299,14 @@ pub fn outputFull(pending: usize) bool {
 /// Returns null when the whole buffer fit. When `budgeted` is false (`--stats`
 /// searches every file regardless; `--quiet --json` suppresses the stream) the
 /// whole buffer is appended. `a` owns `out`.
-pub fn appendBudgeted(a: std.mem.Allocator, out: *std.ArrayList(u8), buf: []const u8, marks: []const usize, budgeted: bool) ?usize {
+pub fn appendBudgeted(a: std.mem.Allocator, out: *std.ArrayList(u8), buf: []const u8, marks: []const usize, budgeted: bool) std.mem.Allocator.Error!?usize {
     if (budgeted) for (marks, 0..) |m, i| {
         if (outputFull(out.items.len + m)) {
-            out.appendSlice(a, buf[0..m]) catch @panic("oom");
+            try out.appendSlice(a, buf[0..m]);
             return i;
         }
     };
-    out.appendSlice(a, buf) catch @panic("oom");
+    try out.appendSlice(a, buf);
     return null;
 }
 

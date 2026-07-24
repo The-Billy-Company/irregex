@@ -215,7 +215,7 @@ pub fn runParallel(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.Array
 
     var st = Stats{};
     for (shards) |*sh| {
-        const cut = corpus_mod.appendBudgeted(a, out, sh.buf.items, sh.marks.items, !o.quiet);
+        const cut = corpus_mod.appendBudgeted(a, out, sh.buf.items, sh.marks.items, !o.quiet) catch oom();
         // On a soft-cap cut the serial loop breaks before the next file, so this
         // shard contributes only its through-cut tally and no later shard runs.
         const sst = if (cut) |j| sh.stat_marks.items[j] else sh.st;

@@ -84,7 +84,7 @@ const emitStats = grepfile.emitStats;
 
 // ─────────────────────────── file gathering ───────────────────────────
 
-const InFile = struct { path: []const u8, bytes: []const u8, explicit: bool = false, sort_time: i96 = 0, root: u32 = 0 };
+const InFile = struct { path: []const u8, scope: []const u8, bytes: []const u8, explicit: bool = false, sort_time: i96 = 0, root: u32 = 0 };
 
 /// Depth of a walker-relative path (root children = 1). `--max-depth` caps it.
 fn pathDepth(rel: []const u8) usize {
@@ -115,7 +115,7 @@ fn diskPath(a: std.mem.Allocator, root_path: []const u8, p: []const u8) []const 
 /// load-bearing for ascending `--sort path`, the one rg sort applied during
 /// traversal (per-directory sibling sort) so roots keep their argv order while
 /// only the files WITHIN each root sort (rg hiargs.rs `sort_by_file_name`).
-const Candidate = struct { rel: []const u8, disk: []const u8, explicit: bool = false, root: u32 = 0 };
+const Candidate = struct { rel: []const u8, scope: []const u8, disk: []const u8, explicit: bool = false, root: u32 = 0 };
 
 /// A file the DEFAULT walk skipped at the FILE level — its parent directory was
 /// descended, but the leaf itself was dropped by the hidden-dotfile rule
@@ -172,7 +172,7 @@ fn walkDir(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix: []co
     // --one-file-system: pin the device of the root the walk starts on; the
     // descent below refuses any directory sitting on a different device.
     const root_dev: ?i128 = if (o.one_file_system) deviceOf(root_path) else null;
-    walkDirLinked(a, io, root_path, prefix, o, ig, out, 0, &visited, walk_error, root_dev, extras);
+    walkDirLinked(a, io, root_path, prefix, paths_mod.cwdRelative(a, io, prefix), o, ig, out, 0, &visited, walk_error, root_dev, extras);
 }
 
 /// `-L` symlink-recursion depth cap — defense in depth alongside the realpath
@@ -263,7 +263,7 @@ fn crossesDevice(root_dev: ?i128, path: []const u8) bool {
 /// actual reads happen afterward, in parallel, over the flat list this builds
 /// (see `readCandidates`), matching ripgrep's own split between walking the
 /// tree and reading what it finds.
-fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix: []const u8, o: Opts, ig: *ignore.Ignore, out: *std.ArrayList(Candidate), link_depth: usize, visited: *std.ArrayList(VisitedDir), walk_error: *bool, root_dev: ?i128, extras: ?*std.ArrayList(Extra)) void {
+fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix: []const u8, scope_prefix: []const u8, o: Opts, ig: *ignore.Ignore, out: *std.ArrayList(Candidate), link_depth: usize, visited: *std.ArrayList(VisitedDir), walk_error: *bool, root_dev: ?i128, extras: ?*std.ArrayList(Extra)) void {
     var root = Dir.cwd().openDir(io, root_path, .{ .iterate = true }) catch |e| return reportWalkError(prefix, e, walk_error);
     defer root.close(io);
     var walker = root.walkSelectively(a) catch return;
@@ -280,13 +280,14 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
         const entry = maybe orelse break;
         const depth = pathDepth(entry.path);
         const rel = relPath(a, prefix, entry.path);
+        const scope_rel = relPath(a, scope_prefix, entry.path);
         // ripgrep whitelist-override, with rg's asymmetry (see `Ignore.shouldSkip`
         // + `Filter.whitelists`/`whitelistsHidden`): a `-g`/`--iglob` match
         // (`wl_ig`) force-searches even a hidden/gitignored path and descends a
         // whitelisted `.git`/ignored dir (rg's `-g '*'` searches `.git`); a `-t`
         // type match only additionally un-hides (`wl_hid`), never un-ignores.
-        const wl_ig = o.filter.whitelists(a, rel);
-        const wl_hid = o.filter.whitelistsHidden(a, rel);
+        const wl_ig = o.filter.whitelists(a, scope_rel);
+        const wl_hid = o.filter.whitelistsHidden(a, scope_rel);
         // -L/--follow: a symlink is resolved to its target — a dir is walked as a
         // subtree (path-prefixed by the link), a file is read like any other.
         if (entry.kind == .sym_link and o.follow) {
@@ -314,7 +315,7 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
                         visited.append(a, .{ .real = rp, .display = rel }) catch {};
                     }
                     ig.loadDir(full, rel);
-                    walkDirLinked(a, io, full, rel, o, ig, out, link_depth + 1, visited, walk_error, root_dev, extras);
+                    walkDirLinked(a, io, full, rel, scope_rel, o, ig, out, link_depth + 1, visited, walk_error, root_dev, extras);
                     visited.shrinkRetainingCapacity(mark);
                 }
             } else |e| switch (e) {
@@ -325,7 +326,7 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
                 // silent drop into "no match".
                 error.NotDir => {
                     if (o.max_depth != 0 and depth > o.max_depth) continue;
-                    out.append(a, .{ .rel = rel, .disk = full }) catch oom();
+                    out.append(a, .{ .rel = rel, .scope = scope_rel, .disk = full }) catch oom();
                 },
                 else => reportWalkError(rel, e, walk_error),
             }
@@ -360,7 +361,7 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
             continue;
         }
         if (o.max_depth != 0 and depth > o.max_depth) continue;
-        out.append(a, .{ .rel = rel, .disk = diskPath(a, root_path, entry.path) }) catch oom();
+        out.append(a, .{ .rel = rel, .scope = scope_rel, .disk = diskPath(a, root_path, entry.path) }) catch oom();
     }
 }
 
@@ -404,7 +405,7 @@ fn gather(a: std.mem.Allocator, io: std.Io, roots: []const []const u8, o: Opts, 
             // to stderr and forces the error exit — never dropped silently.
             if (std.posix.openat(std.posix.AT.FDCWD, r, .{ .ACCMODE = .RDONLY }, 0)) |fd| {
                 _ = std.posix.system.close(fd);
-                out.append(a, .{ .rel = r, .disk = r, .explicit = true }) catch oom();
+                out.append(a, .{ .rel = r, .scope = paths_mod.cwdRelative(a, io, r), .disk = r, .explicit = true }) catch oom();
             } else |ferr| {
                 std.debug.print("gist: {s}: {s}\n", .{ r, grepfile.pathErrNote(ferr) });
                 path_error = true;
@@ -415,32 +416,17 @@ fn gather(a: std.mem.Allocator, io: std.Io, roots: []const []const u8, o: Opts, 
     return .{ .recursive = recursive, .path_error = path_error or walk_error };
 }
 
-/// `defaultFileSet`'s answer: the walked paths plus whether the walk hit an
+/// The default walk's answer: the paths plus whether the walk hit an
 /// error (an unreadable directory / unopenable explicit root). Cold reports
 /// that to stderr and exits 2; the resident session must DECLINE (answer cold)
 /// rather than serve a silently gapped set with a clean exit code.
 pub const FileSet = struct { paths: []const []const u8, path_error: bool };
 
-/// The authoritative rg-default file set under `roots` — the SAME certified
-/// `gather`/`ignore.zig` walk the bare cold search uses (hidden-file exclusion,
-/// `.gitignore`/`.ignore`/`.rgignore` precedence, `.git` skip, per-root
-/// scoping), but paths only, no reads. Empty `roots` walks CWD, exactly like a
-/// rootless `gist <pattern>`. Exposed so the resident daemon (`src/surface/exec/session/`)
-/// builds its corpus and reconciles over a selection BYTE-IDENTICAL to cold,
-/// instead of `haystack`'s coarse superset — the whole basis of the warm-path
-/// parity guarantee. Paths (and the returned slice) are owned by `a`; the walk's
-/// default `Opts` mean no `-g`/`-t`/`--hidden`, which is exactly the query
-/// surface `request.classify` admits to the warm path.
-pub fn defaultFileSet(a: std.mem.Allocator, io: std.Io, roots: []const []const u8) FileSet {
-    return defaultFileSetExtras(a, io, roots, null);
-}
-
-/// `defaultFileSet` PLUS the reachable file-level un-hide/un-ignore candidates
-/// the same walk skipped (see `Extra`). Both slices are owned by `a`. Passing a
-/// non-null `extras` costs the walk one extra `ignore.decide` classification per
-/// SKIPPED file (never per kept file), so a corpus with few dotfiles/ignored
-/// leaves pays essentially nothing; it lets the warm session (`session/resident.zig`)
-/// answer `-t`/`-g` queries with rg/cold parity instead of declining them.
+/// The authoritative rg-default file set under `roots`, plus — when requested —
+/// the reachable file-level un-hide/un-ignore candidates the same walk skipped
+/// (see `Extra`). Both slices are owned by `a`. Passing non-null `extras_out`
+/// costs one extra `ignore.decide` classification per skipped file (never per
+/// kept file), letting the warm session answer `-t`/`-g` with cold parity.
 pub fn defaultFileSetExtras(a: std.mem.Allocator, io: std.Io, roots: []const []const u8, extras_out: ?*[]const Extra) FileSet {
     const o: Opts = .{};
     var ig = ignore.Ignore.init(a, io, ignore.Options.from(o), roots);
@@ -503,7 +489,7 @@ fn readOneCandidate(a: std.mem.Allocator, scratch: []u8, c: Candidate, needle: ?
     if (!cfg.active()) if (grepfile.mapFile(c.disk, mmap_min_bytes)) |mapped| {
         const body = decodeBom(a, mapped);
         if (needle) |gate| if (!verify.gateWide(a, body, gate)) return null;
-        return .{ .path = c.rel, .bytes = body, .explicit = c.explicit, .root = c.root };
+        return .{ .path = c.rel, .scope = c.scope, .bytes = body, .explicit = c.explicit, .root = c.root };
     };
     const raw = grepfile.readFileRaw(a, scratch, c.disk) orelse return null;
     // -z/--pre/-E rewrite a file's bytes before matching (decompress, preprocess,
@@ -523,7 +509,7 @@ fn readOneCandidate(a: std.mem.Allocator, scratch: []u8, c: Candidate, needle: ?
     // body still inside `scratch` must be duped to outlive scratch's next reuse.
     const in_scratch = @intFromPtr(body.ptr) >= @intFromPtr(scratch.ptr) and @intFromPtr(body.ptr) < @intFromPtr(scratch.ptr) + scratch.len;
     const owned = if (in_scratch) (a.dupe(u8, body) catch return null) else body;
-    return .{ .path = c.rel, .bytes = owned, .explicit = c.explicit, .root = c.root };
+    return .{ .path = c.rel, .scope = c.scope, .bytes = owned, .explicit = c.explicit, .root = c.root };
 }
 
 fn readShard(sh: *ReadShard) void {
@@ -864,7 +850,7 @@ fn collectFiles(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, parsed
         to_read.ensureTotalCapacity(a, candidates.items.len) catch oom();
         for (candidates.items) |c| {
             if (s.skip(c.rel)) {
-                if (o.files_without) all.append(a, .{ .path = c.rel, .bytes = "", .explicit = c.explicit, .root = c.root }) catch oom();
+                if (o.files_without) all.append(a, .{ .path = c.rel, .scope = c.scope, .bytes = "", .explicit = c.explicit, .root = c.root }) catch oom();
             } else to_read.appendAssumeCapacity(c);
         }
         break :blk to_read.items;
@@ -889,7 +875,7 @@ fn collectFiles(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, parsed
                 const st = grepfile.statPath(c.disk) orelse continue;
                 if (st.size > o.max_filesize) continue;
             }
-            all.appendAssumeCapacity(.{ .path = c.rel, .bytes = "", .explicit = c.explicit, .root = c.root });
+            all.appendAssumeCapacity(.{ .path = c.rel, .scope = c.scope, .bytes = "", .explicit = c.explicit, .root = c.root });
         }
     } else {
         const read_needle = if (read_list.len == 1 and read_list[0].explicit) null else file_needle;
@@ -899,7 +885,7 @@ fn collectFiles(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, parsed
     var files: std.ArrayList(InFile) = .empty;
     files.ensureTotalCapacity(a, all.items.len) catch oom();
     for (all.items) |f| {
-        if (o.filter.active() and !o.filter.admits(a, f.path)) continue;
+        if (o.filter.active() and !o.filter.admits(a, f.scope)) continue;
         if (o.max_filesize != 0 and f.bytes.len > o.max_filesize) continue;
         files.appendAssumeCapacity(f);
     }
@@ -915,7 +901,7 @@ fn collectFiles(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, parsed
     // Path-only filters decide `walked` (rg's `searched` flips as the walk
     // yields a haystack, before any body read); size caps apply post-read.
     var walked: usize = 0;
-    for (candidates.items) |c| walked += @intFromBool(!o.filter.active() or o.filter.admits(a, c.rel));
+    for (candidates.items) |c| walked += @intFromBool(!o.filter.active() or o.filter.admits(a, c.scope));
     return .{ .files = files.items, .recursive = g.recursive, .path_error = g.path_error, .walked = walked };
 }
 
@@ -1811,7 +1797,7 @@ fn emitSharded(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.ArrayList
     for (shards) |*sh| {
         stat.add(sh.stat);
         matched_files.* += sh.matched;
-        if (corpus_mod.appendBudgeted(a, out, sh.buf.items, sh.marks.items, !o.stats) != null) break;
+        if ((corpus_mod.appendBudgeted(a, out, sh.buf.items, sh.marks.items, !o.stats) catch oom()) != null) break;
     }
 }
 
@@ -2071,9 +2057,9 @@ fn anyMatch(a: std.mem.Allocator, re: *const Matcher, o: Opts, needle: ?simd.Gat
 // covers the end-to-end exit codes.
 test "sort comparator: path + time keys, ascending and reversed, path-tiebroken" {
     const t = std.testing;
-    const a = InFile{ .path = "a.zig", .bytes = "", .sort_time = 100 };
-    const b = InFile{ .path = "b.zig", .bytes = "", .sort_time = 200 };
-    const c = InFile{ .path = "c.zig", .bytes = "", .sort_time = 100 }; // ties a on time
+    const a = InFile{ .path = "a.zig", .scope = "a.zig", .bytes = "", .sort_time = 100 };
+    const b = InFile{ .path = "b.zig", .scope = "b.zig", .bytes = "", .sort_time = 200 };
+    const c = InFile{ .path = "c.zig", .scope = "c.zig", .bytes = "", .sort_time = 100 }; // ties a on time
 
     // Path key: separator-aware order (see pathLess); reverse is the exact mirror.
     try t.expect(cmpFiles(.{ .key = .path, .reverse = false }, a, b));
@@ -2107,9 +2093,9 @@ test "sort path: ascending is per-root walk order, descending is global (rg pari
     // argv `zz aa`: zz's files sort within zz, aa's within aa, roots keep argv
     // order — rg's walker sort. Descending ignores roots entirely (global
     // collect-and-sort with `.reverse()`).
-    const z0 = InFile{ .path = "zz/0.txt", .bytes = "", .root = 0 };
-    const z2 = InFile{ .path = "zz/2.txt", .bytes = "", .root = 0 };
-    const a1 = InFile{ .path = "aa/1.txt", .bytes = "", .root = 1 };
+    const z0 = InFile{ .path = "zz/0.txt", .scope = "zz/0.txt", .bytes = "", .root = 0 };
+    const z2 = InFile{ .path = "zz/2.txt", .scope = "zz/2.txt", .bytes = "", .root = 0 };
+    const a1 = InFile{ .path = "aa/1.txt", .scope = "aa/1.txt", .bytes = "", .root = 1 };
     var asc = [_]InFile{ a1, z2, z0 };
     std.mem.sort(InFile, &asc, SortCtx{ .key = .path, .reverse = false }, cmpFiles);
     try t.expectEqualStrings("zz/0.txt", asc[0].path);
@@ -2136,8 +2122,8 @@ test "pathLess: separator ranks below every byte (ripgrep Path::cmp parity)" {
     try t.expect(pathLess("a/x.go", "a/y.go"));
     try t.expect(!pathLess("a/x.go", "a/x.go"));
     // A full sort of the collision set is the exact mirror under reverse.
-    const wr = InFile{ .path = "svc/warroom.go", .bytes = "", .sort_time = 0 };
-    const ws = InFile{ .path = "svc/warroom/service.go", .bytes = "", .sort_time = 0 };
+    const wr = InFile{ .path = "svc/warroom.go", .scope = "svc/warroom.go", .bytes = "", .sort_time = 0 };
+    const ws = InFile{ .path = "svc/warroom/service.go", .scope = "svc/warroom/service.go", .bytes = "", .sort_time = 0 };
     var asc = [_]InFile{ wr, ws };
     std.mem.sort(InFile, &asc, SortCtx{ .key = .path, .reverse = false }, cmpFiles);
     try t.expectEqualStrings("svc/warroom/service.go", asc[0].path);

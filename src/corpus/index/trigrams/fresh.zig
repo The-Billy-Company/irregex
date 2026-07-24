@@ -250,19 +250,6 @@ fn journalDisabled() bool {
 /// compaction is due anyway).
 const max_journal_changes: usize = 8192;
 
-/// Does any DIRECTORY component of `path` sit in the corpus skip set? The
-/// walk never enters such subtrees, so a journaled change under one must not
-/// widen a candidate set. The basename is deliberately NOT checked — a FILE
-/// named like a skip dir is corpus-admissible, exactly as the walk sees it.
-fn underSkippedDir(path: []const u8) bool {
-    var rest = path;
-    while (std.mem.indexOfScalar(u8, rest, '/')) |i| {
-        if (haystack.isSkipDir(rest[0..i])) return true;
-        rest = rest[i + 1 ..];
-    }
-    return false;
-}
-
 /// The journal fast path: answer `walkFresh` from the OS filesystem journal
 /// (macOS FSEvents historical replay — `tree/journal.zig`) instead of the
 /// whole-tree stat walk. Sound by construction against the SAME local-VFS
@@ -351,7 +338,7 @@ fn confirmRaw(gpa: std.mem.Allocator, io: std.Io, since_ns: i128, raw: []const [
     var seen = std.StringHashMap(void).init(gpa);
     defer seen.deinit();
     for (raw) |path| {
-        if (underSkippedDir(path)) continue;
+        if (haystack.underSkippedDir(path)) continue;
         if ((try seen.getOrPut(path)).found_existing) continue;
         const keep = if (Dir.cwd().statFile(io, path, .{ .follow_symlinks = false })) |st|
             st.kind == .file and bulkstat.needsLiveRead(since_ns, st.mtime.nanoseconds, st.ctime.nanoseconds)
