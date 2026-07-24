@@ -163,17 +163,32 @@ pub const Dfa = struct {
         return self.is_match[s];
     }
 
-    /// Does the pattern match any line of `doc`? A single fused pass over the
-    /// whole buffer — `\n` is detected inline inside the transition loop, so each
-    /// byte is touched exactly once (the per-line `match` path memchr-scans for
-    /// `\n` AND then re-scans the bytes in the DFA: double byte-traffic, the
-    /// dominant cost of a no-prefilter full scan). Per line the last content byte
-    /// takes `trans_fin` so `$` fires; `^` is reset by re-seeding `start` at each
-    /// line head. Equivalence to the per-line path is held by the doc-level
-    /// differential fuzz vs the Pike VM in `dfa_test.zig`.
+    /// Does the pattern match any line of `doc`? Fused whole-buffer pass — `\n`
+    /// is resolved inline (per line the last content byte takes `trans_fin` so
+    /// `$` fires; `^` re-seeds `start` at each line head), so each byte is touched
+    /// once, avoiding the memchr-then-rescan double byte-traffic of a per-line
+    /// matcher. Three shapes, all held equivalent to the per-line path by the
+    /// doc-level differential fuzz vs the Pike VM in `dfa_test.zig`:
+    ///   * `accel`     — SIMD-skip the dead start run (`docMatchAccel`);
+    ///   * `!anchored` — the pure latency-bound table walk, run multi-lane so the
+    ///     loop-carried load chain overlaps across independent lines
+    ///     (`docMatchDense`);
+    ///   * anchored    — the scalar per-line walk that dead-states early
+    ///     (`docMatchScalar`).
     pub fn docMatch(self: *const Dfa, doc: []const u8) bool {
         std.debug.assert(!self.word_ctx); // word-boundary DFAs go per-line through `matchWord`
         if (self.accel) |*pf| return self.docMatchAccel(doc, pf);
+        if (!self.anchored) return self.docMatchDense(doc);
+        return self.docMatchScalar(doc);
+    }
+
+    /// Per-line scalar scan: `\n` detected inline, the last content byte resolved
+    /// via `trans_fin` (`$`), `^` re-seeded at each line head. It serves the
+    /// `^`-anchored program — which dead-states to `false` the instant its
+    /// anchored thread drains, then SIMD-`memchr`s straight to the next line
+    /// rather than walking the dead tail byte-by-byte — and is the byte-exact
+    /// reference the multi-lane `docMatchDense` replays (its non-`\n` tail drain).
+    fn docMatchScalar(self: *const Dfa, doc: []const u8) bool {
         const n = doc.len;
         var i: usize = 0;
         while (i < n) {
@@ -201,12 +216,139 @@ pub const Dfa = struct {
                 s = self.trans_fin[prev + self.class[doc[i - 1]]];
                 if (self.is_match[s]) return true;
                 if (i < n) i += 1; // skip the '\n'
-            } else { // dead: skip the rest of this line
-                while (i < n and doc[i] != '\n') i += 1;
+            } else { // dead `^`-thread: SIMD-`memchr` past the rest of this dead line
+                i = std.mem.indexOfScalarPos(u8, doc, i, '\n') orelse n;
                 if (i < n) i += 1;
             }
         }
         return false;
+    }
+
+    /// Where the next content line at/after `from` begins/ends. `.match`
+    /// short-circuits the whole doc (an empty line under `empty_match`, or a
+    /// content line whose BOL closure already matched — `is_match[start]`),
+    /// exactly as `docMatchScalar`'s per-line seed does. `\n` is found by SIMD
+    /// `memchr`, so seeding never re-walks the line byte-by-byte.
+    const Seed = union(enum) {
+        match,
+        done,
+        line: struct { start: usize, end: usize, next: usize },
+    };
+    fn seedLine(self: *const Dfa, doc: []const u8, from: usize) Seed {
+        var p = from;
+        while (p < doc.len) : (p += 1) {
+            if (doc[p] != '\n') {
+                if (self.is_match[self.start]) return .match; // BOL / zero-width
+                const e = std.mem.indexOfScalarPos(u8, doc, p, '\n') orelse doc.len;
+                return .{ .line = .{ .start = p, .end = e, .next = if (e < doc.len) e + 1 else e } };
+            }
+            if (self.empty_match) return .match; // empty line matches (`^$`, `a*`)
+        }
+        return .done;
+    }
+
+    /// The `!anchored`, `accel == null` doc scan — the pure latency-bound table
+    /// walk (`[0-9a-f]{8}-[0-9a-f]{4}` and every no-start-skip DFA). The scalar
+    /// recurrence `s = trans_in[s + class[b]]` is a single loop-carried dependent
+    /// LOAD (≈4 cyc/byte on Apple M4 — a pointer chase, not throughput-bound), so
+    /// one stream idles the load pipeline. Lines are independent in the per-line
+    /// model (a match never crosses `\n`), so we advance up to `lanes` lines in
+    /// lockstep: the out-of-order engine keeps `lanes` transition loads in flight
+    /// and overlaps the load-use latency — the interleaved pointer-chase that
+    /// exposes memory-level parallelism (Chen/Ailamaki group-prefetching for hash
+    /// probes; the same multi-block idea Hyperscan's DFA uses). Each lane replays
+    /// `docMatchScalar`'s per-line logic byte-for-byte (interior `trans_in`, then
+    /// the `$`-resolving `trans_fin` on the last content byte), so the doc-level
+    /// DFA-vs-Pike differential fuzz proves equivalence.
+    fn docMatchDense(self: *const Dfa, doc: []const u8) bool {
+        const lanes = 4;
+        const trans = self.trans_in;
+        const tfin = self.trans_fin;
+        const cls = &self.class;
+        const im = self.is_match;
+        const start = self.start;
+
+        var s = [_]u32{start} ** lanes;
+        var prev = [_]u32{start} ** lanes;
+        var cur = [_]usize{0} ** lanes;
+        var end = [_]usize{0} ** lanes;
+        var live = [_]bool{false} ** lanes;
+        var nlive: usize = 0;
+        var pos: usize = 0;
+
+        // Initial fill: one content line per lane (order-preserving).
+        var l: usize = 0;
+        while (l < lanes) : (l += 1) switch (self.seedLine(doc, pos)) {
+            .match => return true,
+            .done => break,
+            .line => |ln| {
+                cur[l] = ln.start;
+                end[l] = ln.end;
+                live[l] = true;
+                pos = ln.next;
+                nlive += 1;
+            },
+        };
+
+        // Bulk phase — every lane carries a line, so advance them in lockstep:
+        // each fast-loop iteration issues `lanes` INDEPENDENT transition loads
+        // that overlap. Burst to the shortest lane's line end (branch-free),
+        // then resolve `$`/`trans_fin` and refill every lane now at its end.
+        while (nlive == lanes) {
+            var burst: usize = std.math.maxInt(usize);
+            inline for (0..lanes) |i| {
+                const rem = end[i] - cur[i];
+                if (rem < burst) burst = rem; // ≥1: a live lane always has content left
+            }
+            while (burst > 0) : (burst -= 1) {
+                inline for (0..lanes) |i| {
+                    prev[i] = s[i];
+                    s[i] = trans[s[i] + cls[doc[cur[i]]]];
+                    cur[i] += 1;
+                }
+                inline for (0..lanes) |i| if (im[s[i]]) return true;
+            }
+            inline for (0..lanes) |i| {
+                if (cur[i] == end[i]) { // line consumed → resolve `$`, then refill
+                    if (im[tfin[prev[i] + cls[doc[end[i] - 1]]]]) return true;
+                    switch (self.seedLine(doc, pos)) {
+                        .match => return true,
+                        .done => {
+                            live[i] = false;
+                            nlive -= 1;
+                        },
+                        .line => |ln| {
+                            s[i] = start;
+                            prev[i] = start;
+                            cur[i] = ln.start;
+                            end[i] = ln.end;
+                            pos = ln.next;
+                        },
+                    }
+                }
+            }
+        }
+
+        // Drain: fewer than `lanes` lines remain. Finish each still-live lane's
+        // current line, then the unassigned tail (`doc[pos..]` is line-aligned)
+        // with the scalar walk — identical per-line logic, no double-processing
+        // (live lanes hold lines strictly before `pos`).
+        inline for (0..lanes) |i| {
+            if (live[i]) {
+                var si = s[i];
+                var pv = prev[i];
+                var ci = cur[i];
+                const ei = end[i];
+                while (ci < ei) {
+                    pv = si;
+                    si = trans[si + cls[doc[ci]]];
+                    ci += 1;
+                    if (im[si]) return true;
+                }
+                if (im[tfin[pv + cls[doc[ei - 1]]]]) return true;
+            }
+        }
+        return self.docMatchScalar(doc[pos..]);
     }
 
     /// `docMatch` with start-state acceleration. Structurally identical to
