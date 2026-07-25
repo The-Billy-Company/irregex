@@ -132,7 +132,7 @@ const Rig = struct {
         tree: *Tree,
     ) !?Rig {
         watcher.start();
-        if (!session.seqlock.active or !session.dirty_log.exact) return null;
+        if (!session.seqlock.armed() or !session.dirty_log.exact) return null;
         var rig = Rig{ .session = session, .watcher = watcher, .tree = tree, .gpa = gpa };
         // The covering first pass: full by construction (`full_pass_done` is
         // false until it completes), which is exactly why arming mid-registration
@@ -369,6 +369,53 @@ test "kqueue: an ignore-rule edit re-derives the admitted set AND the watch set"
             // this staler than the disk while claiming the session is clean.
             try advanceClock(rig.tree.io);
             try rig.tree.write("sub/shy.txt", "quiet at last\n");
+            try rig.expectScopedOracle("needle");
+        }
+    }.run);
+}
+
+test "kqueue: a shed watch set answers from the baseline, and re-arming re-covers the gap" {
+    try withRig("shed", struct {
+        fn run(rig: *Rig) !void {
+            try std.testing.expect(rig.watcher.held() > 0);
+
+            // Shedding gives every descriptor back and withdraws all three
+            // scoped-path preconditions with the stream that justified them.
+            rig.watcher.shed();
+            try std.testing.expectEqual(@as(usize, 0), rig.watcher.held());
+            try std.testing.expect(!rig.session.seqlock.armed());
+            try std.testing.expect(!rig.session.dirty_log.exact);
+            try std.testing.expect(!rig.session.full_pass_done);
+            // No backend, so no barrier to cross — a `flushSync` that claimed to
+            // have drained one would be a licence to trust a dead stream.
+            try std.testing.expect(!rig.watcher.flushSync());
+
+            // The adverse case: an IN-PLACE content edit with nothing watching.
+            // Its directory never changes, so only the reconcile-always baseline
+            // can catch it — which is exactly what shedding falls back to.
+            try advanceClock(rig.tree.io);
+            try rig.tree.write("sub/b.txt", "needle rewritten while shed\n");
+            try rig.expectOracle("needle");
+
+            // And one more change inside the shed window that NOTHING has
+            // observed by the time the watcher comes back.
+            try advanceClock(rig.tree.io);
+            try rig.tree.write("sub/b.txt", "quiet while shed\n");
+
+            rig.watcher.start();
+            try std.testing.expect(rig.session.seqlock.armed());
+            try std.testing.expect(rig.watcher.held() > 0);
+            // The first pass under the new stream must be the FULL one. A scoped
+            // pass here would drain an empty note set — nothing was noted while
+            // shed — and answer the disk staler than it is, which is precisely
+            // what a `full_pass_done` surviving the shed would allow.
+            try rig.expectFullOracle("needle");
+            try std.testing.expect(rig.session.full_pass_done);
+
+            // The rebuilt set is a real one, not a husk: an in-place edit scopes
+            // again, so re-arming restored coverage rather than just the flag.
+            try advanceClock(rig.tree.io);
+            try rig.tree.write("sub/b.txt", "needle back\n");
             try rig.expectScopedOracle("needle");
         }
     }.run);

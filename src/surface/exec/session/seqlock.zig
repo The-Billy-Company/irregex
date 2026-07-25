@@ -14,7 +14,11 @@
 //!
 //!   - watch thread: `markDirty` on every event, `markDoubtForever` when it
 //!     loses coverage it cannot recover (fail-closed — the fast path is then
-//!     permanently off), `arm` once a backend is proven live.
+//!     permanently off), `arm` once a backend is proven live, and `disarm` when
+//!     it gives live coverage back on purpose (an idle daemon releasing its
+//!     descriptors) — reversible, unlike doubt, but every query in the gap
+//!     reconciles and the session owes a fresh covering pass before the scoped
+//!     path can reopen.
 //!   - query thread (holding the session mutex): `skip` short-circuits the walk
 //!     when a live watcher has proven quiescence; otherwise snapshot `enter`,
 //!     recompute, then `commit` — which republishes "clean" ONLY if no event
@@ -31,10 +35,11 @@ const std = @import("std");
 /// Lock-free freshness barrier. Embed one per session; drive it from the
 /// watcher (event thread) and the reconcile (query thread, under the mutex).
 pub const Seqlock = struct {
-    /// A watcher backend is live and proving quiescence. Written once by `arm`
-    /// on the arming thread before any query reads it (never raced), so it needs
-    /// no atomic; every trust decision also gates on the atomic `poison`/`clean`.
-    active: bool = false,
+    /// A watcher backend is live and proving quiescence. Atomic because a
+    /// backend may hand its coverage back and take it up again (`disarm`/`arm`
+    /// — an idle daemon shedding its descriptors), so this is not a
+    /// write-once-before-any-reader flag; read it through `armed`.
+    active: std.atomic.Value(bool) = .init(false),
     /// Event counter, bumped on every filesystem event — the seqlock sequence.
     seq: std.atomic.Value(u64) = .init(0),
     /// True only when a watcher has proven no event since the last reconcile.
@@ -61,16 +66,34 @@ pub const Seqlock = struct {
         self.markDirty();
     }
 
-    /// Declare a watcher live and proving quiescence (see `active`).
+    /// Declare a watcher live and proving quiescence (see `active`). The clean
+    /// witness is dropped first: a NEW stream has proven nothing yet, so a
+    /// re-arm must never inherit the quiescence its predecessor published.
     pub fn arm(self: *Seqlock) void {
-        self.active = true;
+        self.clean.store(false, .release);
+        self.active.store(true, .release);
+    }
+
+    /// The watcher handed its coverage back on purpose (an idle daemon shedding
+    /// one descriptor per watched vnode): close the fast path until something
+    /// arms again. Deliberately NOT `poison` — that latch is for coverage LOST,
+    /// which can never be trusted again; this release is reversible, and every
+    /// query in between simply reconciles.
+    pub fn disarm(self: *Seqlock) void {
+        self.active.store(false, .release);
+        self.clean.store(false, .release);
     }
 
     // ── query thread (holds the session mutex) ──
 
+    /// Is a watcher backend live at all? (`eligible` is this AND unpoisoned.)
+    pub fn armed(self: *const Seqlock) bool {
+        return self.active.load(.acquire);
+    }
+
     /// A live, unpoisoned watcher — the precondition for ever trusting `clean`.
     pub fn eligible(self: *const Seqlock) bool {
-        return self.active and !self.poison.load(.acquire);
+        return self.armed() and !self.poison.load(.acquire);
     }
 
     /// The reconcile fast path: a live watcher has proven no event since the
@@ -126,6 +149,31 @@ test "clean is trusted only under a live, unpoisoned watcher" {
     try std.testing.expect(!s.skip());
     s.commit(seq2);
     try std.testing.expect(!s.skip());
+}
+
+test "a shed watcher closes the fast path, and re-arming never inherits it" {
+    var s: Seqlock = .{};
+    s.arm();
+    const seq0 = s.enter();
+    s.commit(seq0);
+    try std.testing.expect(s.skip());
+
+    // Coverage handed back: every query reconciles again — but this is a
+    // release, not doubt, so nothing is latched.
+    s.disarm();
+    try std.testing.expect(!s.armed());
+    try std.testing.expect(!s.skip());
+    try std.testing.expect(!s.provenClean());
+    try std.testing.expect(!s.poison.load(.acquire));
+
+    // Re-arming must not resurrect the stale clean witness: the new stream has
+    // proven nothing until a reconcile completes under it.
+    s.arm();
+    try std.testing.expect(s.armed());
+    try std.testing.expect(!s.skip());
+    const seq1 = s.enter();
+    s.commit(seq1);
+    try std.testing.expect(s.skip());
 }
 
 test "doubt is permanent: the fast path never reopens" {

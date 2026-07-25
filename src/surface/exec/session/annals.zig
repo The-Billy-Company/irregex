@@ -109,7 +109,7 @@ pub const Annals = struct {
         const owned = self.gpa.dupe(u8, abs_root) catch return;
         self.lock();
         defer self.unlock();
-        if (self.prefix) |p| self.gpa.free(p); // re-arm replaces (never happens today)
+        if (self.prefix) |p| self.gpa.free(p); // a re-armed watcher replaces it
         self.prefix = owned;
     }
 

@@ -83,11 +83,22 @@ pub const DirtyLog = struct {
     }
 
     /// The backend's completeness promise: from now on every `markDirty` is
-    /// preceded by a `note`/`noteDoubt` for the same event. Never un-armed.
+    /// preceded by a `note`/`noteDoubt` for the same event. Withdrawn only by
+    /// `disarmExact`, when the backend that made it is gone.
     pub fn armExact(self: *DirtyLog) void {
         self.lock();
         defer self.unlock();
         self.exact = true;
+    }
+
+    /// The promising backend released its coverage (a shed watch set): nothing
+    /// is noting paths any more, so the promise it made must not outlive it.
+    /// Every drain from here reports `exact = false` — full walks only — until
+    /// a new backend arms.
+    pub fn disarmExact(self: *DirtyLog) void {
+        self.lock();
+        defer self.unlock();
+        self.exact = false;
     }
 
     /// Record one changed path (deduped). Overflow or OOM degrades to `doubt`
@@ -193,6 +204,21 @@ test "armExact is sticky and echoed on every drain" {
     var d1 = log.drain(t.allocator);
     defer d1.deinit(t.allocator);
     try t.expect(d1.exact);
+}
+
+test "the exact promise does not outlive the backend that made it" {
+    const t = std.testing;
+    var log = DirtyLog.init(t.allocator);
+    defer log.deinit();
+    log.armExact();
+    log.disarmExact();
+    var d = log.drain(t.allocator);
+    defer d.deinit(t.allocator);
+    try t.expect(!d.exact); // nothing is noting → no drain may claim completeness
+    log.armExact();
+    var d2 = log.drain(t.allocator);
+    defer d2.deinit(t.allocator);
+    try t.expect(d2.exact);
 }
 
 test "noteDoubt forces the next drain only" {

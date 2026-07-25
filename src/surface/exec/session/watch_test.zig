@@ -91,8 +91,8 @@ test "Watcher.start/stop arms only a causally complete backend" {
     // session trusting quiescence from a backend that cannot account for what
     // changed. Other targets have no causal backend and must stay unarmed.
     switch (builtin.os.tag) {
-        .macos, .linux => if (session.seqlock.active) try std.testing.expect(session.dirty_log.exact),
-        else => try std.testing.expect(!session.seqlock.active),
+        .macos, .linux => if (session.seqlock.armed()) try std.testing.expect(session.dirty_log.exact),
+        else => try std.testing.expect(!session.seqlock.armed()),
     }
 
     var q = std.heap.ArenaAllocator.init(gpa);
