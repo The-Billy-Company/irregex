@@ -8,6 +8,7 @@
 const std = @import("std");
 const haystack = @import("haystack.zig");
 const assay = @import("../../assay/assay.zig");
+const fault = @import("../../fault.zig");
 
 pub const per_file_cap: usize = 4 << 20; // 4 MiB
 
@@ -28,7 +29,7 @@ pub fn outDir() []const u8 {
 /// A named artifact's full path (`<outDir()>/<name>`), formatted once per
 /// process into a static buffer. Env-stable, so the first fill is final; a
 /// spinlock + release-published length make the fill race-free without an
-/// `std.Io` handle (same idiom as `surface/exec/session/dirty.zig` — these are
+/// `std.Io` handle (same idiom as `surface/exec/session/freshness/dirty.zig` — these are
 /// per-command lookups, never a hot loop). Instantiate per artifact:
 /// `const atlas_path = corpus.ArtifactPath("kinship.atlas");` → `.get()`.
 pub fn ArtifactPath(comptime name: []const u8) type {
@@ -385,7 +386,7 @@ fn parallelLoadDisabled() bool {
 pub fn load(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !Corpus {
     var c = blk: {
         if (!parallelLoadDisabled()) {
-            if (@import("loadpar.zig").load(gpa, io, roots)) |c| break :blk c else |_| {}
+            if (@import("loadpar.zig").load(gpa, io, roots) catch null) |c| break :blk c;
         }
         break :blk try loadSerial(gpa, io, roots);
     };
@@ -418,7 +419,7 @@ fn compactDisabled() bool {
 /// during the copy). Fail-open: any allocation failure leaves the corpus in its
 /// original scattered layout, never worse than before.
 fn compact(gpa: std.mem.Allocator, c: *Corpus) void {
-    compactFallible(gpa, c) catch {};
+    fault.spare("compact doc bodies (keeps the scattered layout)", compactFallible(gpa, c));
 }
 
 fn compactFallible(gpa: std.mem.Allocator, c: *Corpus) !void {

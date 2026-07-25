@@ -15,7 +15,7 @@ doc_radar:
       equals: 9
   sentinels:
     - description: "the linear engine's eager-DFA cap the prose quotes (past it, Pike verifies)"
-      file: pkg/kernels/irregex/src/kernel/match/regex/linear/powerset.zig
+      file: pkg/kernels/irregex/src/kernel/match/regex/linear/dfa/powerset.zig
       contains: "pub const max_states: u32 = 4096;"
     - description: "the elision contract the whole index tier is built on"
       file: pkg/kernels/irregex/src/surface/exec/cold/engine/README.md
@@ -37,11 +37,11 @@ face over the same kernels: `gist` finds exact patterns; `relate` finds
 compression kinship; `irregex` composes both (exact narrows, compression
 reasons inside). None gets a private corpus walk, scope layer, or index.
 
-| Layer                 | What lives there                                                                                                                  | README                                   |
-| --------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
-| [`kernel/`](kernel)   | Pure compute — no argv, walk, or emit: `match` · `rank` · `kinship` · `batch` · `compose` · `primitives`                          | [`kernel/README.md`](kernel/README.md)   |
-| [`corpus/`](corpus)   | The body of text and its persisted forms: `tree/` walk · `scope/` `-g`/`-t` · `index/` accelerators                               | [`corpus/README.md`](corpus/README.md)   |
-| [`surface/`](surface) | Transports + faces: `exec/` (cold + session) · `ffi/` · `face/` (gist · relate · irregex) · `cli/` (shared flags/emit vocabulary) | [`surface/README.md`](surface/README.md) |
+| Layer                 | What lives there                                                                                                                                                                              | README                                   |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| [`kernel/`](kernel)   | Pure compute — no argv, walk, or emit: `match` · `rank` · `kinship` · `batch` · `compose` · `primitives`                                                                                      | [`kernel/README.md`](kernel/README.md)   |
+| [`corpus/`](corpus)   | The body of text and its persisted forms: `tree/` walk · `scope/` `-g`/`-t` · `index/` accelerators                                                                                           | [`corpus/README.md`](corpus/README.md)   |
+| [`surface/`](surface) | Transports + faces: `exec/` (cold + session) · `ffi/` · `face/` (gist · relate · irregex) · `cli/` (shared flags/emit vocabulary)                                                             | [`surface/README.md`](surface/README.md) |
 | [`assay/`](assay)     | The instrumentation floor (imports only `std`, beneath all three tiers): typed `Span`/`Duration`/`Anchor` clocks · `Tally(Schema)` counters · the `GIST_TRACE` lens + sink diagnostic channel | [`assay/README.md`](assay/README.md)     |
 
 ## The anatomy of a query
@@ -112,7 +112,7 @@ eagerly determinizes into a **byte-class DFA** with premultiplied transition
 rows and start-state acceleration: one table lookup per byte, newlines
 detected inline in a single fused pass. Word-boundary asserts
 (`\b`/`\B`/`\<`/`\>`) determinize too: byte classes refine by ASCII word-ness
-and the interior table doubles on the *next* byte's word-ness, so the DFA
+and the interior table doubles on the _next_ byte's word-ness, so the DFA
 resolves word context at the floor — quitting to the Pike VM only under Unicode,
 and only when a gap abuts a non-ASCII scalar an ASCII-classed DFA can't judge.
 Two shapes step down to the **Pike VM** wholesale instead: multiline mode (and
@@ -151,7 +151,7 @@ answer, and `loom` shapes the rows engine-side. Design rules and measurements:
 | `corpus/index/atlas/`    | relate's persisted kinship index: one LZJD sketch per corpus file behind `relate index`/`status`, folded fresh at query time through the same T3 stat walk ([`corpus/index/atlas/README.md`](corpus/index/atlas/README.md))                                                                   |
 | `corpus/index/crest/`    | the crest sidecar (`crest.bin`): one forced-class-run vector per doc (16 B), generation-atomic with the trigram pair; prunes the literal-free class-repetition patterns trigrams concede (theory: [`../research/crest/PROOF.md`](../research/crest/PROOF.md))                                 |
 | `corpus/index/frame/`    | the shared wire discipline the persisted artifacts are framed with: little-endian ints behind a fail-closed cursor, length-prefixed u64 payloads, the NUL-joined path/roots catalogs, and the `onDisk` deletion gate every folded view checks                                                 |
-| `corpus/index/frag/`     | relate's persisted **fragment** atlas (`concepts.frag`): one structural silhouette per authored function behind `relate concepts`, folded fresh at query time through the same T3 stat walk ([`corpus/index/frag/README.md`](corpus/index/frag/README.md))                                    |
+| `corpus/index/frag/`     | relate's persisted **fragment** atlas (`concepts.frag`): one structural silhouette per authored function behind `--unit function`, folded fresh at query time through the same T3 stat walk ([`corpus/index/frag/README.md`](corpus/index/frag/README.md))                                    |
 | `corpus/index/phantom/`  | the phantom walk snapshot (`tree.map`): directory membership recorded at `gist index`, each dir proven current at query time by ONE lstat against the snapshot anchor — the whole live listing elided ([`corpus/index/phantom/README.md`](corpus/index/phantom/README.md))                    |
 | `corpus/index/content/`  | the content shard (`content.shard`): every corpus body concatenated into one mmap at `gist index`, each unchanged file's bytes served from the map at query time under the same T3 clock gate — the per-file open elided ([`corpus/index/content/README.md`](corpus/index/content/README.md)) |
 

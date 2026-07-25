@@ -15,8 +15,8 @@
 
 const std = @import("std");
 const render = @import("render.zig");
-const request = @import("request.zig");
-const grepfile = @import("../cold/read/grepfile.zig");
+const request = @import("../answer/request.zig");
+const grepfile = @import("../../cold/read/grepfile.zig");
 
 const Doc = render.Doc;
 const RenderError = render.RenderError;

@@ -24,15 +24,16 @@
 //! connection falls back cold.)
 
 const std = @import("std");
-const args = @import("../cold/argv/args.zig");
-const output = @import("../cold/emit/output.zig");
-const grepfile = @import("../cold/read/grepfile.zig");
-const parallel = @import("../../../kernel/primitives/parallel.zig");
-const query_mod = @import("../../../kernel/match/query.zig");
-const request = @import("request.zig");
-const shm = @import("shm.zig");
-const Regex = @import("../../../kernel/match/regex/linear/core.zig").Regex;
-const matcher_mod = @import("../../../kernel/match/regex/linear/matcher.zig");
+const args = @import("../../cold/argv/args.zig");
+const output = @import("../../cold/emit/output.zig");
+const grepfile = @import("../../cold/read/grepfile.zig");
+const parallel = @import("../../../../kernel/primitives/parallel.zig");
+const query_mod = @import("../../../../kernel/match/query.zig");
+const request = @import("../answer/request.zig");
+const shm = @import("../conduit/shm.zig");
+const Regex = @import("../../../../kernel/match/regex/linear/core.zig").Regex;
+const matcher_mod = @import("../../../../kernel/match/regex/linear/matcher.zig");
+const fault = @import("../../../../fault.zig");
 const Matcher = matcher_mod.Matcher;
 const Pcre = matcher_mod.Pcre;
 
@@ -193,44 +194,8 @@ pub fn renderLinesParallel(
     docs: []const Doc,
     out: *std.ArrayList(u8),
 ) RenderError!bool {
-    // A context window carries cross-file `--` separator state that an order-free
-    // shard split can't reproduce — cold gates it onto its serial loop, so we do
-    // too (context queries are narrow; the walk-elimination win still stands).
-    if (req.before != 0 or req.after != 0) return renderLines(a, req, docs, out);
-    const bounds = parallel.shardBounds(Doc, docs, {}, docWeight, par_min_bytes, par_max_shards, a) orelse
-        return renderLines(a, req, docs, out);
-    const nthr = bounds.len - 1;
-
-    const Shard = struct {
-        gpa: std.mem.Allocator,
-        req: request.Request,
-        docs: []const Doc,
-        buf: std.ArrayList(u8) = .empty,
-        arena: std.heap.ArenaAllocator = undefined,
-        matched: bool = false,
-        err: ?RenderError = null,
-
-        fn run(sh: *@This()) void {
-            const sa = sh.arena.allocator();
-            sh.matched = renderLines(sa, sh.req, sh.docs, &sh.buf) catch |e| {
-                sh.err = e;
-                return;
-            };
-        }
-    };
-
-    const shards = try a.alloc(Shard, nthr);
-    for (shards, 0..) |*sh, i| sh.* = .{
-        .gpa = gpa,
-        .req = req,
-        .docs = docs[bounds[i]..bounds[i + 1]],
-        .arena = std.heap.ArenaAllocator.init(gpa),
-    };
-    defer for (shards) |*sh| sh.arena.deinit();
-
-    const threads = try a.alloc(std.Thread, nthr);
-    parallel.fanOut(Shard, shards, threads, Shard.run);
-
+    const shards = (try fanRender(gpa, a, req, docs)) orelse return renderLines(a, req, docs, out);
+    defer release(shards);
     var matched = false;
     for (shards) |*sh| {
         if (sh.err) |e| return e;
@@ -240,7 +205,62 @@ pub fn renderLinesParallel(
     return matched;
 }
 
-fn docWeight(_: void, d: Doc) usize {
+/// One shard of a sharded render: a contiguous doc range, the private arena its
+/// whole render lives in (compiled engine, line lists, output buffer), and the
+/// bytes the serial core produced for it.
+const Shard = struct {
+    req: request.Request,
+    docs: []const Doc,
+    buf: std.ArrayList(u8) = .empty,
+    arena: std.heap.ArenaAllocator = undefined,
+    matched: bool = false,
+    err: ?RenderError = null,
+
+    fn run(sh: *Shard) void {
+        sh.matched = renderLines(sh.arena.allocator(), sh.req, sh.docs, &sh.buf) catch |e| {
+            sh.err = e;
+            return;
+        };
+    }
+};
+
+/// The one sharded render both parallel faces ride: split `docs` by byte weight
+/// (`greedyBounds`, so one huge file can't stall a thread), render each range
+/// through the SAME serial `renderLines` core in parallel, and hand the shards
+/// back in ORIGINAL doc order — which is what makes either face's concatenation
+/// byte-identical to the serial render.
+///
+/// `null` ⇒ the split declined and the caller must render serial: below
+/// `par_min_bytes`, one usable core, one doc, or a context window whose
+/// cross-file `--` separator state an order-free split can't reproduce (cold
+/// gates that onto its own serial loop, so we do too; context queries are
+/// narrow and the walk-elimination win still stands).
+///
+/// Every `buf` points into its shard's arena, so the caller must finish reading
+/// them BEFORE calling `release`.
+fn fanRender(gpa: std.mem.Allocator, a: std.mem.Allocator, req: request.Request, docs: []const Doc) RenderError!?[]Shard {
+    if (req.before != 0 or req.after != 0) return null;
+    const bounds = parallel.shardBounds(Doc, docs, {}, docWeight, par_min_bytes, par_max_shards, a) orelse return null;
+    const shards = try a.alloc(Shard, bounds.len - 1);
+    for (shards, 0..) |*sh, i| sh.* = .{
+        .req = req,
+        .docs = docs[bounds[i]..bounds[i + 1]],
+        .arena = std.heap.ArenaAllocator.init(gpa),
+    };
+    errdefer release(shards);
+    const threads = try a.alloc(std.Thread, shards.len);
+    parallel.fanOut(Shard, shards, threads, Shard.run);
+    return shards;
+}
+
+fn release(shards: []Shard) void {
+    for (shards) |*sh| sh.arena.deinit();
+}
+
+/// The scanned-byte weight of one doc — the sharding key every warm face
+/// balances threads by (this render emit and the resident record stream), so a
+/// few large files can't stall one thread.
+pub fn docWeight(_: void, d: Doc) usize {
     return d.bytes.len;
 }
 
@@ -279,49 +299,19 @@ pub fn renderLinesShm(
     docs: []const Doc,
     floor: usize,
 ) RenderError!LinesEmit {
-    // Serial render (corpus below `par_min_bytes`, one core, a single doc a shard
-    // split can't divide, OR a context window whose cross-file `--` state resists
-    // an order-free split — same serial gate cold applies): one arena buffer holds
-    // the whole answer, then the same floor decision — a huge single doc still
-    // earns the fd path.
-    const ctx = req.before != 0 or req.after != 0;
-    const bounds = if (ctx) null else parallel.shardBounds(Doc, docs, {}, docWeight, par_min_bytes, par_max_shards, a);
-    const bnds = bounds orelse {
+    // Serial render (the `fanRender` decline — corpus below `par_min_bytes`, one
+    // core, a single doc a shard split can't divide, OR a context window whose
+    // cross-file `--` state resists an order-free split): one CALLER-arena buffer
+    // holds the whole answer, then the same floor decision — a huge single doc
+    // still earns the fd path, and its `chunk` bytes outlive this frame.
+    const shards = (try fanRender(gpa, a, req, docs)) orelse {
         var out: std.ArrayList(u8) = .empty;
         const matched = try renderLines(a, req, docs, &out);
         return emit(a, &.{out.items}, matched, floor);
     };
-    const nthr = bnds.len - 1;
+    defer release(shards);
 
-    const Shard = struct {
-        req: request.Request,
-        docs: []const Doc,
-        buf: std.ArrayList(u8) = .empty,
-        arena: std.heap.ArenaAllocator = undefined,
-        matched: bool = false,
-        err: ?RenderError = null,
-
-        fn run(sh: *@This()) void {
-            const sa = sh.arena.allocator();
-            sh.matched = renderLines(sa, sh.req, sh.docs, &sh.buf) catch |e| {
-                sh.err = e;
-                return;
-            };
-        }
-    };
-
-    const shards = try a.alloc(Shard, nthr);
-    for (shards, 0..) |*sh, i| sh.* = .{
-        .req = req,
-        .docs = docs[bnds[i]..bnds[i + 1]],
-        .arena = std.heap.ArenaAllocator.init(gpa),
-    };
-    defer for (shards) |*sh| sh.arena.deinit();
-
-    const threads = try a.alloc(std.Thread, nthr);
-    parallel.fanOut(Shard, shards, threads, Shard.run);
-
-    const pieces = try a.alloc([]const u8, nthr);
+    const pieces = try a.alloc([]const u8, shards.len);
     var matched = false;
     for (shards, pieces) |*sh, *p| {
         if (sh.err) |e| return e;
@@ -334,13 +324,18 @@ pub fn renderLinesShm(
 /// Hand the rendered `pieces` (in doc order, ≥1) to the caller as an fd or a
 /// chunk stream. At/above `floor` they're copied contiguously into a fresh shm
 /// buffer (one copy); on an shm failure or below the floor they fall to `chunk` —
-/// a single piece as-is, several concatenated into `a`. The shard/serial arenas
-/// backing `pieces` stay alive until the caller returns, so both reads are safe.
+/// a single piece as-is, several concatenated into `a`.
+///
+/// Returning a single piece BY REFERENCE is sound only because a lone piece is
+/// always the serial render's caller-arena buffer: `fanRender` yields shards
+/// only when `shardBounds` found ≥2, so a sharded answer never hands back one
+/// arena-owned piece that `release` would then free under the caller.
 fn emit(a: std.mem.Allocator, pieces: []const []const u8, matched: bool, floor: usize) RenderError!LinesEmit {
     var total: usize = 0;
     for (pieces) |p| total += p.len;
     if (total >= floor) {
-        if (shm.Buffer.create(total)) |created| {
+        // shm unavailable → fall open to chunk frames below
+        if (shm.Buffer.create(total) catch null) |created| {
             var buffer = created;
             var off: usize = 0;
             for (pieces) |p| {
@@ -348,7 +343,7 @@ fn emit(a: std.mem.Allocator, pieces: []const []const u8, matched: bool, floor: 
                 off += p.len;
             }
             return .{ .fd = .{ .buffer = buffer, .len = total, .matched = matched } };
-        } else |_| {} // shm unavailable → fall open to chunk frames
+        }
     }
     if (pieces.len == 1) return .{ .chunk = .{ .bytes = pieces[0], .matched = matched } };
     var out: std.ArrayList(u8) = .empty;

@@ -2,23 +2,42 @@
 #  The unified search contract
 # ═════════════════════════════════════════════════════════════════════════════
 #
-# One engine wears several faces: the `gist`, `relate` and `irregex` CLIs, an
+# One engine wears several faces: three CLIs (`gist`, `relate`, `irregex`), an
 # importable Python package (bindings/python/irregex), and a standalone Rust
 # crate (bindings/rust). This file is the single source of truth for everything
 # those faces must agree on.
 #
-#   [meta]             identity, and the version axes that move independently
-#   [request_options]  the SearchRequest surface every face accepts
-#   [match_kinds]      what a returned Match record can be
-#   [exit_codes]       the process contract — what `$?` means
-#   [status_codes]     the in-process C-ABI return vocabulary
-#   [decline_reasons]  why an accelerator tier stepped aside (not a failure)
-#   [fault_domains]    the flat taxonomy of genuine failures
-#   [transports]       how a request actually reaches the engine
-#   [session]          semantics of the resident-daemon transport
-#   [irregex]          the native tier — pattern sets and compression kinship
-#   [compose]          exact ∩ compression over one candidate set
-#   [tool_boundary]    how an embedding host's search verb maps onto a request
+#   1 · request — what may be asked for
+#         [meta]             identity, and the version axes that move apart
+#         [request_options]  the SearchRequest surface every face accepts
+#
+#   2 · answer — what comes back, and how failure is spelled
+#         [match_kinds]      what a returned Match record can be
+#         [row_enums]        the closed vocabularies a row field can hold
+#         [row_schemas]      the field list of every analytic result row
+#         [exit_codes]       the process contract — what `$?` means
+#         [status_codes]     the in-process C-ABI return vocabulary
+#         [decline_reasons]  why a tier stepped aside (never a failure)
+#         [fault_domains]    the flat taxonomy of genuine failures
+#
+#   3 · delivery — how a request reaches the engine
+#         [transports]       subprocess (authoritative) · uds · ffi
+#         [session]          semantics of the resident-daemon transport
+#         [analytic]         the ffi transport's ABI-3 analytic plane
+#
+#   4 · native tiers — vocabulary with no ripgrep equivalent
+#         [irregex]          pattern sets + compression kinship
+#                            · channels · grades · verbs · lifecycle
+#         [compose]          exact ∩ compression over one candidate set
+#                            · verbs
+#
+#   5 · embedding — [tool_boundary] · aliases · routing_keys
+#
+# Which binary owns which tables: `gist` is the ripgrep-parity face and answers
+# to parts 1–3; `relate` is the compression face ([irregex] and its subtables);
+# `irregex` is the composed face ([compose] and its subtable). The table names
+# predate that three-way split and are load-bearing for the bindings and gates
+# keyed on them, so they stay as they are.
 #
 # Each importable face mirrors these constants in its own source, and a parity
 # test in each asserts the mirror against this file — and its `version()`
@@ -30,9 +49,11 @@
 # not a casual edit.
 
 
-# ── meta ─────────────────────────────────────────────────────────────────────
-# The version axes are deliberately DISTINCT: a change on one does not force a
-# bump on the others, and each is pinned against a different live artifact.
+# ═══ 1 · request ═════════════════════════════════════════════════════════════
+
+# ── [meta] — identity, and three version axes ────────────────────────────────
+# The axes are deliberately DISTINCT: a change on one does not force a bump on
+# the others, and each is pinned against a different live artifact.
 #
 #   abi_version       the C-ABI compatibility integer that `src/root.zig abi()`
 #                     and `irregex_abi_version()` return, mirrored and gated by
@@ -53,11 +74,9 @@ engine_version = "0.2.0"
 package_dist = "billy-irregex"
 package_import = "gist"
 
-
-# ── request_options ──────────────────────────────────────────────────────────
-# The deep SearchRequest surface. Only match-finding INTENT belongs here:
-# presentation, ranking, stats, replace and stdin stay CLI-only and are
-# deliberately NOT contract options.
+# ── [request_options] — the deep SearchRequest surface ───────────────────────
+# Only match-finding INTENT belongs here: presentation, ranking, stats, replace
+# and stdin stay CLI-only and are deliberately NOT contract options.
 #
 # Every row names the ripgrep-parity flag the engine already honors (the
 # `flag_catalog` in src/surface/exec/cold/argv/args.zig), and a face lowers a
@@ -99,33 +118,15 @@ unicode = { type = "bool|null", flag = "--unicode/--no-unicode", detail = "expli
 no_index = { type = "bool", flag = "--no-index", detail = "force the pure live walk (skip index acceleration)" }
 
 
-# ── match_kinds ──────────────────────────────────────────────────────────────
-# What a returned record can be: a matching line carries its submatch spans, a
-# context line is the -A/-B/-C neighborhood and carries none.
-[match_kinds]
-match = { detail = "a line containing at least one submatch" }
-context = { detail = "a leading/trailing context line (no submatches)" }
-
-
-# ── exit_codes ───────────────────────────────────────────────────────────────
-# ripgrep's process exit codes, preserved end to end, so a script reading the
-# code means the same thing it does for rg.
-[exit_codes]
-matched = { code = 0, detail = "at least one match" }
-no_match = { code = 1, detail = "ran cleanly, found nothing" }
-error = { code = 2, detail = "unsupported pattern/flag, or an I/O/walk error — never a silent empty result" }
-
-
-# ── outcomes: result · declinature · fault ───────────────────────────────────
-# [exit_codes] above is the PROCESS contract — what a shell script reads from
-# `$?`. The three tables below are the IN-PROCESS contract the C ABI, the Zig
-# kernel, and both bindings speak, and they are deliberately NOT folded into
-# it: the two vocabularies use overlapping integers for opposite facts (exit 1
-# is "no match"; status 1 is "match"), so one merged table would be a live
-# hazard.
+# ═══ 2 · answer ══════════════════════════════════════════════════════════════
+# Two vocabularies, deliberately NOT folded together. [exit_codes] is the
+# PROCESS contract — what a shell script reads from `$?`. The three tables after
+# it are the IN-PROCESS contract the C ABI, the Zig kernel and both bindings
+# speak. They use overlapping integers for opposite facts (exit 1 is "no
+# match"; status 1 is "match"), so one merged table would be a live hazard.
 #
-# They live here because this vocabulary is otherwise hand-copied four times —
-# the `include/irregex.h` defines, the Zig `Status` enum
+# The in-process vocabulary lives here because it is otherwise hand-copied four
+# times — the `include/irregex.h` defines, the Zig `Status` enum
 # (src/surface/ffi/contract.zig), the Rust constants + `status_error` map
 # (bindings/rust/src/sys.rs, bindings/rust/src/cursor.rs), and the Python
 # constants (bindings/python/irregex/_ffi.py) — with no single source a gate
@@ -138,38 +139,358 @@ error = { code = 2, detail = "unsupported pattern/flag, or an I/O/walk error —
 #   declinature  this tier declines; a correct answer exists ONE TIER DOWN
 #   fault        a genuine failure, with no correct answer anywhere
 
-# Every C-ABI entry point returns one of these. Non-negative is success;
-# negative means the caller must do something else. The KEY is the Zig `Status`
-# field, `c` is the `include/irregex.h` macro, and each binding's own constant
-# is that macro's suffix (Rust `sys::OOM`; the Python face prefixes its own,
-# `_GIST_OK`, and names only the codes it branches on — a binding may declare
-# fewer, never a different code). Human text for a code comes from
-# `irregex_status_message`; a binding must not carry per-code prose of its own.
+# ── [match_kinds] — what a returned record can be ────────────────────────────
+# A matching line carries its submatch spans; a context line is the -A/-B/-C
+# neighborhood and carries none.
+[match_kinds]
+match = { detail = "a line containing at least one submatch" }
+context = { detail = "a leading/trailing context line (no submatches)" }
+
+# ── [row_enums] — the closed vocabularies a row field may hold ───────────────
+# A row field typed `enum:<name>` carries the ORDINAL of one of these variants,
+# not its text. The ordinal is the ABI: variants are append-only and never
+# reordered, so an older binding decoding a newer engine's row sees an unknown
+# ordinal (which it must surface as unknown) rather than a silently wrong label.
+# Every one of these already exists as a Zig enum; declaring it here is what
+# lets a generated decoder in each language stay in step with it.
+[row_enums]
+grade = { id = 1, variants = [
+  "none",
+  "weak",
+  "moderate",
+  "strong",
+  "identical",
+], detail = "the calibrated kinship band a distance falls in (surface/cli/grade.zig) — ordered weakest-first so `>=` is a threshold test" }
+channel = { id = 2, variants = [
+  "copies",
+  "twins",
+  "shapes",
+  "any",
+], detail = "which kinship signal produced a distance: byte copies, the bytes−structure gap, normalized structure, or the closer of either" }
+unit = { id = 3, variants = [
+  "file",
+  "function",
+  "match",
+], detail = "the comparison unit a kinship row was computed over (surface/face/relate/units.zig)" }
+rank_kind = { id = 4, variants = [
+  "definition",
+  "use",
+  "generated",
+], detail = "why `--rank` placed a row where it did: a definition site, a call site, or demoted codegen" }
+
+# ── [row_schemas] — the field list of every analytic result row ──────────────
+# The analytic plane returns ONE row type over the C ABI (`irregex_row`: a
+# schema id plus a flat value array). These tables are what that array means.
+# Declared here rather than in four hand-written struct definitions because the
+# alternative is the N verbs × M languages drift this contract exists to kill:
+# a new verb that reuses an existing schema needs zero new C surface, and a verb
+# with a new shape needs one table here and one generated decoder arm per
+# language.
 #
-# `disposition` is the load-bearing field: it names the channel a status
-# belongs to, so a binding cannot quietly turn a declinature into an error
-# value. That is why `stale` spells its disposition out below rather than
-# leaving it to each consumer's judgement.
+#   id        the wire discriminant. APPEND-ONLY — never renumbered, never
+#             reused, because a persisted or in-flight row is identified by it.
+#   fields    positional. Appending a field is compatible (an older decoder
+#             stops early); inserting or retyping one is a breaking change and
+#             takes a NEW id, not an edit.
+#   type      `text` · `i64` · `f64` · `bool` · `enum:<row_enums key>` ·
+#             `texts` (a string list) · `rows:<row_schemas key>` (a nested slice)
+#   optional  the field may be absent; the row's presence bitmask says which.
+#             Absent is NOT zero — `distance = 0.0` means identical, so a
+#             binding must be able to tell "no distance" from "no distance
+#             between them".
+#
+# `region` and `site` are the two shared leaf shapes; everything that names a
+# place in the tree reuses one of them rather than re-spelling path+line.
+
+[row_schemas.region]
+id = 1
+detail = "a span of one file — the unit view's file/function/match cell, and the member shape every grouped kinship row nests"
+fields = [
+  { name = "path", type = "text" },
+  { name = "line_start", type = "i64" },
+  { name = "line_end", type = "i64" },
+  { name = "headline", type = "text", optional = true },
+]
+
+[row_schemas.site]
+id = 2
+detail = "a bare point in the tree: the definition sites blast reports"
+fields = [
+  { name = "path", type = "text" },
+  { name = "line", type = "i64" },
+]
+
+[row_schemas.similar]
+id = 3
+detail = "one kinship neighbor — `relate similar`, and the twin tier of `irregex blast`"
+fields = [
+  { name = "path", type = "text" },
+  { name = "distance", type = "f64" },
+  { name = "grade", type = "enum:grade" },
+  { name = "channel", type = "enum:channel" },
+]
+
+[row_schemas.dup_pair]
+id = 4
+detail = "one near-duplicate pair — `relate dups`"
+fields = [
+  { name = "a", type = "text" },
+  { name = "b", type = "text" },
+  { name = "distance", type = "f64" },
+  { name = "grade", type = "enum:grade" },
+]
+
+[row_schemas.cluster]
+id = 5
+detail = "one fork family — `relate clusters`; graded by the family's loosest edge"
+fields = [
+  { name = "paths", type = "texts" },
+  { name = "max_distance", type = "f64" },
+  { name = "grade", type = "enum:grade" },
+]
+
+[row_schemas.echo]
+id = 6
+detail = "one structural echo — `relate echoes`: same skeleton, different vocabulary"
+fields = [
+  { name = "a", type = "text" },
+  { name = "b", type = "text" },
+  { name = "echo", type = "f64" },
+  { name = "byte_distance", type = "f64" },
+  { name = "structure_distance", type = "f64" },
+  { name = "grade", type = "enum:grade" },
+]
+
+[row_schemas.concept]
+id = 7
+detail = "one repeated concept — `relate concepts`: a group of regions that say the same thing"
+fields = [
+  { name = "members", type = "rows:region" },
+  { name = "repeated_lines", type = "i64" },
+  { name = "confidence", type = "f64" },
+  { name = "structure_distance", type = "f64" },
+  { name = "byte_distance", type = "f64", optional = true },
+  { name = "echo", type = "f64", optional = true },
+]
+
+[row_schemas.family]
+id = 8
+detail = "one repetition family — `relate fragments` / composed `irregex family`: unit × channel, members as regions"
+fields = [
+  { name = "rank", type = "i64" },
+  { name = "unit", type = "enum:unit" },
+  { name = "channel", type = "enum:channel" },
+  { name = "edge", type = "f64" },
+  { name = "repeated_lines", type = "i64" },
+  { name = "score", type = "f64" },
+  { name = "members", type = "rows:region" },
+]
+
+[row_schemas.distinct]
+id = 9
+detail = "one un-echoed unit and its nearest miss — the inverse polarity of `fragments`"
+fields = [
+  { name = "unit", type = "enum:unit" },
+  { name = "member", type = "rows:region" },
+  { name = "nearest", type = "rows:region", optional = true },
+  { name = "byte_distance", type = "f64" },
+  { name = "structure_distance", type = "f64" },
+]
+
+[row_schemas.recalled]
+id = 10
+detail = "one compression-retrieval hit — `relate recall`: how cheaply this file would describe the query"
+fields = [
+  { name = "path", type = "text" },
+  { name = "gain", type = "f64" },
+  { name = "cost_bits", type = "f64" },
+  { name = "bits_saved", type = "f64" },
+  { name = "factors", type = "i64" },
+  { name = "literals", type = "i64" },
+]
+
+[row_schemas.pick]
+id = 11
+detail = "one member of an anti-redundant reading set — `relate pack` / composed `irregex context`. `marginal_bits` is novelty BEYOND the picks before it, so rows are only meaningful in order; `patterns` is populated by the composed verb (which exact intents admitted this file) and empty for the bare pack"
+fields = [
+  { name = "rank", type = "i64" },
+  { name = "path", type = "text" },
+  { name = "marginal_bits", type = "f64" },
+  { name = "coverage", type = "f64" },
+  { name = "patterns", type = "texts" },
+]
+
+[row_schemas.phrase]
+id = 12
+detail = "one priced phrase of a quotation — the leaf of `relate quote`"
+fields = [
+  { name = "text", type = "text" },
+  { name = "occurrences", type = "i64" },
+  { name = "bits", type = "f64" },
+  { name = "source", type = "text", optional = true },
+]
+
+[row_schemas.quotation]
+id = 13
+detail = "the whole-query verdict of `relate quote`, with its phrases nested"
+fields = [
+  { name = "bits", type = "f64" },
+  { name = "bits_per_byte", type = "f64" },
+  { name = "quoted_bytes", type = "i64" },
+  { name = "query_bytes", type = "i64" },
+  { name = "escapes", type = "i64" },
+  { name = "phrases", type = "rows:phrase" },
+]
+
+[row_schemas.attribution]
+id = 14
+detail = "one provenance phrase re-verified against a source's CURRENT bytes — composed `irregex provenance`. `verified = false` means the shelf remembers it but the live file no longer holds it"
+fields = [
+  { name = "text", type = "text" },
+  { name = "occurrences", type = "i64" },
+  { name = "source", type = "text", optional = true },
+  { name = "verified", type = "bool" },
+  { name = "line", type = "i64", optional = true },
+]
+
+[row_schemas.pattern_hit]
+id = 15
+detail = "one attributed hit of a multi-pattern sweep — `relate patterns`; `pattern_id` indexes the request's pattern list"
+fields = [
+  { name = "path", type = "text" },
+  { name = "line", type = "i64" },
+  { name = "pattern_id", type = "i64" },
+]
+
+[row_schemas.pattern_count]
+id = 16
+detail = "one tally row of a `--by pattern` / `--by file` sweep"
+fields = [
+  { name = "label", type = "text" },
+  { name = "count", type = "i64" },
+]
+
+[row_schemas.reference]
+id = 17
+detail = "one dependent of a blast seed: a site that names the symbol, classified by whether it defines or uses it"
+fields = [
+  { name = "path", type = "text" },
+  { name = "line", type = "i64" },
+  { name = "enclosing", type = "text", optional = true },
+  { name = "defines", type = "bool" },
+]
+
+[row_schemas.dependency]
+id = 18
+detail = "one symbol the blast seed's own body depends on"
+fields = [
+  { name = "symbol", type = "text" },
+  { name = "path", type = "text" },
+  { name = "line", type = "i64" },
+]
+
+[row_schemas.ripple]
+id = 19
+detail = "one same-language file reached tangentially from the blast seed"
+fields = [
+  { name = "path", type = "text" },
+  { name = "via", type = "text" },
+  { name = "hops", type = "i64" },
+]
+
+[row_schemas.mention]
+id = 20
+detail = "one comment that names the blast seed — prose that goes stale when the symbol moves"
+fields = [
+  { name = "path", type = "text" },
+  { name = "line", type = "i64" },
+  { name = "text", type = "text" },
+]
+
+[row_schemas.blast]
+id = 21
+detail = "the whole live blast radius of one symbol — composed `irregex blast`. Exactly one row per query; every tier nests. `omitted` is what `--budget` trimmed, so a truncated answer says so instead of looking complete"
+fields = [
+  { name = "symbol", type = "text" },
+  { name = "kind", type = "text" },
+  { name = "definitions", type = "rows:site" },
+  { name = "dependents", type = "rows:reference" },
+  { name = "dependencies", type = "rows:dependency" },
+  { name = "twins", type = "rows:similar" },
+  { name = "ripple", type = "rows:ripple" },
+  { name = "comments", type = "rows:mention" },
+  { name = "notes", type = "texts" },
+  { name = "omitted", type = "i64" },
+]
+
+[row_schemas.ranked]
+id = 22
+detail = "one row of the `--rank` definition-first view. Over the ABI this is a typed row; the subprocess fallback recovers it by re-parsing human stdout, which is the fragility the analytic plane exists to remove"
+fields = [
+  { name = "path", type = "text" },
+  { name = "line_number", type = "i64" },
+  { name = "kind", type = "enum:rank_kind" },
+  { name = "count", type = "i64" },
+  { name = "snippet", type = "text", optional = true },
+]
+
+# ── [exit_codes] — the process contract ──────────────────────────────────────
+# ripgrep's three codes, preserved end to end, so a script reading the code
+# means the same thing it does for rg.
+[exit_codes]
+matched = { code = 0, detail = "at least one match" }
+no_match = { code = 1, detail = "ran cleanly, found nothing" }
+error = { code = 2, detail = "unsupported pattern/flag, or an I/O/walk error — never a silent empty result" }
+
+# ── [status_codes] — what every C-ABI entry point returns ────────────────────
+# Non-negative is success; negative means the caller must do something else.
+# The KEY is the Zig `Status` field, `c` is the `include/irregex.h` macro, and
+# each binding's own constant is that macro's suffix (Rust `sys::OOM`; the
+# Python face prefixes its own, `_GIST_OK`, and names only the codes it branches
+# on — a binding may declare fewer, never a different code). Human text for a
+# code comes from `irregex_status_message`; a binding must not carry per-code
+# prose of its own.
+#
+# `disposition` is the load-bearing field: it names the channel a status belongs
+# to, so a binding cannot quietly turn a declinature into an error value. That
+# is why `stale` spells its disposition out rather than leaving it to each
+# consumer's judgment.
+#
+# `domains` is required on every `fault` row and names the [fault_domains] it
+# carries. The five domains do not map 1:1 onto three statuses, so the fold is
+# DECLARED here rather than re-derived by each reader: every domain appears in
+# exactly one row, and a new domain with no home fails the gate instead of
+# quietly reporting as some neighbor. A binding that needs the distinction a
+# fold hides reads `name` from `irregex_last_fault`.
 [status_codes]
 ok = { code = 0, c = "IRREGEX_OK", disposition = "result", detail = "ran cleanly, no match" }
 match = { code = 1, c = "IRREGEX_MATCH", disposition = "result", detail = "ran cleanly, at least one match" }
 stale = { code = -1, c = "IRREGEX_STALE", disposition = "declinature", detail = "the warm in-process tier declines — the pattern is outside the linear engine, or freshness is unprovable. NOT a failure: the caller answers cold and gets the identical result, so a binding must not surface it as an error value" }
-out_of_memory = { code = -2, c = "IRREGEX_OOM", disposition = "fault", detail = "allocation failed (fault domain `resource`)" }
-open_failed = { code = -3, c = "IRREGEX_OPEN_FAILED", disposition = "fault", detail = "the warm corpus could not be stood up (fault domain `corpus`)" }
-invalid = { code = -4, c = "IRREGEX_INVALID", disposition = "fault", detail = "an unknown flag bit or a wrongly-sized request struct — fail-closed, never silently dropped (fault domain `pattern`)" }
+out_of_memory = { code = -2, c = "IRREGEX_OOM", disposition = "fault", domains = [
+  "resource",
+], detail = "allocation failed (fault domain `resource`)" }
+open_failed = { code = -3, c = "IRREGEX_OPEN_FAILED", disposition = "fault", domains = [
+  "corpus",
+  "persist",
+  "wire",
+], detail = "the warm corpus could not be stood up. Carries three domains: `corpus` (the tree would not open), `persist` (an artifact was corrupt or the wrong generation), and `wire` (the daemon transport failed) — all three mean the same thing to a host, that this corpus could not be stood up, and `irregex_last_fault` restores which one per incident" }
+invalid = { code = -4, c = "IRREGEX_INVALID", disposition = "fault", domains = [
+  "pattern",
+], detail = "an unknown flag bit or a wrongly-sized request struct — fail-closed, never silently dropped (fault domain `pattern`)" }
 
-# Why an accelerator tier declined. The key is the Zig `fault.Decline` member
-# (src/fault.zig); it rides the SUCCESS position of `fault.Answer(T)`, never
-# the error channel, so `try` at a tier seam cannot convert a routine fallback
-# into an abort. Five reasons cross six seams (warm→cold, linear→PCRE2,
-# indexed→live, shadow-rewriter→none, bulk-stat→per-file, daemon→subprocess);
-# they are deliberately not 1:1, because the reason is what a caller acts on
-# and two seams can decline for the same reason.
+# ── [decline_reasons] — why an accelerator tier declined ─────────────────────
+# The key is the Zig `fault.Decline` member (src/fault.zig). It rides the
+# SUCCESS position of `fault.Answer(T)`, never the error channel, so `try` at a
+# tier seam cannot convert a routine fallback into an abort.
 #
-# `fallback` is required on every row and names the slower tier that CAN
-# answer. That invariant is the whole warrant for keeping declinature out of
-# the error channel: if no member could name one, a declinature would just be
-# a fault.
+# Five reasons cross six seams (warm→cold, linear→PCRE2, indexed→live,
+# shadow-rewriter→none, bulk-stat→per-file, daemon→subprocess), deliberately
+# not 1:1: the reason is what a caller acts on, and two seams can decline for
+# the same reason.
+#
+# `fallback` is required on every row and names the slower tier that CAN answer.
+# That invariant is the whole warrant for keeping declinature out of the error
+# channel: if no member could name one, a declinature would just be a fault.
 [decline_reasons]
 unsupported_syntax = { fallback = "pcre2", detail = "the linear engine cannot express this pattern (lookaround, a backreference); also the PCRE2 shadow rewriter declining a pattern it cannot safely rewrite, which PCRE2 then answers unrewritten. The ONE reason that has a fault twin — see `pattern` in [fault_domains]" }
 freshness_unprovable = { fallback = "cold", detail = "the resident tier cannot prove its bytes still match the tree (the fail-closed watcher barrier), or the daemon is absent/wedged; the cold subprocess re-reads and answers byte-identically" }
@@ -177,269 +498,490 @@ index_absent = { fallback = "live_scan", detail = "no persisted index covers the
 not_worthwhile = { fallback = "live_scan", detail = "an index does cover them and the savings model priced the lookup above the scan; the live walk is the CHEAPER answer here, not a degraded one" }
 capability_missing = { fallback = "per_file", detail = "the platform lacks the syscall an accelerator rides (bulk stat), so the per-file path does the same work slower" }
 
-# The flat fault taxonomy: a genuine failure, with no correct answer anywhere.
-# Zig unifies error names GLOBALLY, so the merge has to be deliberate — this is
-# the one declaration, every producer imports src/fault.zig, and `members` is
-# each Zig error set exactly (the key's capitalization is the set: `corpus` is
-# `fault.Corpus`). `BadFormat` and `CorruptIndex` collapsed into `Corrupt`
-# here; the taxonomy gate reads this block to keep a sixth synonym from
-# accreting the same way.
+# ── [fault_domains] — the flat taxonomy of genuine failures ──────────────────
+# A fault is a failure with no correct answer anywhere. Zig unifies error names
+# GLOBALLY, so the merge has to be deliberate: this is the one declaration,
+# every producer imports src/fault.zig, and `members` is each Zig error set
+# exactly (the key's capitalization is the set — `corpus` is `fault.Corpus`).
+# `BadFormat` and `CorruptIndex` collapsed into `Corrupt` here, and the taxonomy
+# gate reads this block to keep a sixth synonym from accreting the same way.
 [fault_domains]
-corpus = { members = ["FileNotFound", "AccessDenied", "NotDir", "SymLinkLoop", "NameTooLong"], detail = "a path could not be read or descended. Exactly the set `fault.pathNote` switches EXHAUSTIVELY over to produce ripgrep's errno phrasing, so adding a member is a compile error at the renderer instead of a mystery string in a terminal" }
-persist = { members = ["Corrupt", "Truncated", "NonCanonical", "VersionMismatch", "GenerationMismatch"], detail = "persisted bytes are untrustworthy — trigram index, kinship atlas, codex shelf, fragment table. Every artifact fails CLOSED to the live path, so a persist fault costs speed, never answers" }
-pattern = { members = ["Unsupported", "TooManyPatterns", "PowersetCapHit", "NeedleTooShort"], detail = "the query itself has no answer under the selected engine. `Unsupported` deliberately also appears in [decline_reasons] as `unsupported_syntax`: one fact, two channels — a declinature while PCRE2 can still answer it, a fault once `--engine linear` has refused PCRE2. `fault.Decline.refused` is the single conversion point" }
-resource = { members = ["OutOfMemory", "TimedOut"], detail = "the machine or the budget ran out; `OutOfMemory` is the one held to a single canonical exit in the command plane" }
-wire = { members = ["ConnClosed", "UnexpectedFrame", "StreamTooLong"], detail = "the resident-session UDS protocol failed mid-frame. Does NOT cross the C seam (the FFI is in-process, with no daemon transport). The daemon CLIENT converts one into a declinature at its own boundary by falling open to the cold subprocess; the daemon itself has no slower tier, so it faults" }
+corpus = { members = [
+  "FileNotFound",
+  "AccessDenied",
+  "NotDir",
+  "SymLinkLoop",
+  "NameTooLong",
+], detail = "a path could not be read or descended. Exactly the set `fault.pathNote` switches EXHAUSTIVELY over to produce ripgrep's errno phrasing, so adding a member is a compile error at the renderer instead of a mystery string in a terminal" }
+persist = { members = [
+  "Corrupt",
+  "Truncated",
+  "NonCanonical",
+  "VersionMismatch",
+  "GenerationMismatch",
+], detail = "persisted bytes are untrustworthy — trigram index, kinship atlas, codex shelf, fragment table. Every artifact fails CLOSED to the live path, so a persist fault costs speed, never answers" }
+pattern = { members = [
+  "Unsupported",
+  "TooManyPatterns",
+  "PowersetCapHit",
+  "NeedleTooShort",
+], detail = "the query itself has no answer under the selected engine. `Unsupported` deliberately also appears in [decline_reasons] as `unsupported_syntax`: one fact, two channels — a declinature while PCRE2 can still answer it, a fault once `--engine linear` has refused PCRE2. `fault.Decline.refused` is the single conversion point" }
+resource = { members = [
+  "OutOfMemory",
+  "TimedOut",
+], detail = "the machine or the budget ran out; `OutOfMemory` is the one held to a single canonical exit in the command plane" }
+wire = { members = [
+  "ConnClosed",
+  "UnexpectedFrame",
+  "StreamTooLong",
+], detail = "the resident-session UDS protocol failed mid-frame. Does NOT cross the C seam (the FFI is in-process, with no daemon transport). The daemon CLIENT converts one into a declinature at its own boundary by falling open to the cold subprocess; the daemon itself has no slower tier, so it faults" }
 
 
-# ── transports ───────────────────────────────────────────────────────────────
-# How one contract is carried to the engine. Status tokens are truthful about
-# disk, not aspiration: all three are callable today.
+# ═══ 3 · delivery ════════════════════════════════════════════════════════════
+
+# ── [transports] — how one contract is carried to the engine ─────────────────
+# Status tokens are truthful about disk, not aspiration: all three are callable
+# today. Both accelerators fail OPEN to a slower tier, so neither is a second
+# source of truth or a new failure mode.
 #
-# subprocess — authoritative, and safe by construction: a bad pattern exits the
-#   child, never the host.
+# subprocess · authoritative
+#   Safe by construction: a bad pattern exits the child, never the host.
 #
-# uds — a per-repository `gist serve` daemon holds the corpus and trigram index
+# uds · accelerator
+#   A per-repository `gist serve` daemon holds the corpus and trigram index
 #   warm in memory and answers eligible requests over a length-prefixed
-#   Unix-domain-socket protocol. It sidesteps the die()->exit hazard because
-#   the resident query kernels RETURN errors instead of calling die(). The
-#   stack is landed and verified end to end: the eligibility classifier
-#   (src/surface/exec/session/request.zig), the wire codec
+#   Unix-domain-socket protocol (see [session]). It sidesteps the die()->exit
+#   hazard because the resident query kernels RETURN errors instead of calling
+#   die(). The stack is landed and verified end to end: the eligibility
+#   classifier (src/surface/exec/session/answer/request.zig), the wire codec
 #   (…/session/protocol.zig), the warm error-returning engine
 #   (…/session/resident.zig), the fail-closed freshness watcher
 #   (…/session/watch.zig), the daemon accept loop
-#   (src/surface/face/gist/daemon/serve/serve.zig), and the fail-open
-#   connecting client (…/daemon/client/client.zig, wired into the bare-`gist`
-#   front door in src/surface/face/gist/main.zig) — under an end-to-end
-#   lifecycle test (…/daemon/serve/serve_test.zig). The warm path routes only
-#   what it can answer with cold's own per-file bytes and exit code, and file
-#   order is the deterministic pathLess canonicalization of cold's parallel
-#   discovery order.
+#   (src/surface/face/gist/daemon/serve/serve.zig), and the fail-open connecting
+#   client (…/daemon/client/client.zig, wired into the bare-`gist` front door in
+#   src/surface/face/gist/main.zig) — under an end-to-end lifecycle test
+#   (…/daemon/serve/serve_test.zig). The warm path routes only what it can
+#   answer with cold's own per-file bytes and exit code, and file order is the
+#   deterministic pathLess canonicalization of cold's parallel discovery order.
 #
-# ffi — the same error-returning resident engine, in-process, so a bad query
+# ffi · accelerator
+#   The same error-returning resident engine, in-process, so a bad query
 #   surfaces as IRREGEX_STALE rather than a dead host. Layering:
 #   src/surface/ffi/contract.zig owns the stable statuses, flags, options and
 #   record layouts; relay.zig translates resident records; session.zig owns
-#   handle lifecycle and execution. Zig's `effectiveIgnoreCase` and the
-#   `CompiledQuery` unicode field remain the sole case/class authorities, so
-#   no binding reimplements either.
-#
-# Both accelerators fail OPEN to a slower tier, so neither is a second source
-# of truth or a new failure mode.
+#   handle lifecycle and execution. `irregex_search` takes the complete
+#   size-checked options shape — smart-case, explicit Unicode/ASCII mode,
+#   invert, before/after context, quiet, per-file max-count — and streams typed
+#   records that distinguish match from context, while invert selections stay
+#   match records with zero submatches, byte-identical to cold JSON. Streaming
+#   non-matching lines from every live document is a presentation requirement,
+#   not an index limitation: the `-v -l` and `-v -c` faces prove the match set
+#   is soundly trigram-prunable via the set complement `lines(f) − matching(f)`.
+#   Zig's `effectiveIgnoreCase` and the `CompiledQuery` unicode field remain the
+#   sole case/class authorities, so no binding reimplements either. Unlike
+#   rootless `uds`, FFI passes SearchRequest.paths as `irregex_open` roots, and
+#   Python bounds and keys handles by (cwd, roots) so scopes cannot
+#   cross-contaminate. engine=auto optimistically tries linear FFI, then lets
+#   IRREGEX_STALE fall through to authoritative cold PCRE2.
 [transports]
 subprocess = { status = "authoritative", detail = "the certified `gist` binary + --json; results come from the same combinePatterns->collectFiles->json.run path the CLI uses" }
-uds = { status = "operational-accelerator", detail = "the daemon holds a warm ResidentSession behind a Unix socket, and the front-door client dials it for eligible queries (see [session].eligible_modes) — falling open to `subprocess` on any ineligible argv, TTY stdout, readable stdin, absent daemon, decline, or wire hiccup. A large `lines` answer skips the socket copy via the negotiated fd transport ([session].capabilities): the daemon gathers the rendered bytes into an anonymous shared-memory buffer and hands its fd over `SCM_RIGHTS` in one `chunk_fd` frame carrying `{length, matched}`, which the client mmaps read-only and writes out — byte-identical to the chunk framing, and any shm/sendmsg failure or below-floor answer falls open to `chunk` frames" }
-ffi = { status = "operational-accelerator", detail = "one coherent open/search/close session: `irregex_search` accepts the complete size-checked options shape and streams typed records. Options carry smart-case, explicit Unicode/ASCII mode, invert, before/after context, quiet and per-file max-count; records distinguish match from context, while invert selections stay match records with zero submatches, byte-identical to cold JSON. Non-matching lines are streamed from every live document as a presentation requirement, not an index limitation — the `-v -l`/`-v -c` faces prove the match set is soundly trigram-prunable via the set complement `lines(f) − matching(f)`. Unlike rootless `uds`, FFI streams full Match records and passes SearchRequest.paths as `irregex_open` roots; Python bounds and keys handles by (cwd, roots), so scopes cannot cross-contaminate. engine=auto optimistically tries linear FFI, then IRREGEX_STALE falls through to authoritative cold PCRE2. Session.run/files/count/absent route through cffi when available and fall open to `uds` or `subprocess` otherwise; cffi stays optional. Verified by the C-ABI smoke and the FFI-vs-cold parity tests" }
+uds = { status = "operational-accelerator", detail = "the daemon answers eligible queries ([session].eligible_modes) from a warm ResidentSession behind a Unix socket, and the front-door client falls open to `subprocess` on any ineligible argv, TTY stdout, readable stdin, absent daemon, decline, or wire hiccup; a large `lines` answer may skip the socket copy entirely via the negotiated fd transport ([session].capabilities)" }
+ffi = { status = "operational-accelerator", detail = "one coherent open/search/close session over that same resident engine, streaming full Match records in-process; Session.run/files/count/absent route through cffi when available and fall open to `uds` or `subprocess` otherwise, so cffi stays optional. Verified by the C-ABI smoke and the FFI-vs-cold parity tests" }
 
-
-# ── session ──────────────────────────────────────────────────────────────────
-# The resident (`uds`) transport's semantics. A client opens a persistent
-# connection to one daemon generation and issues many queries; the daemon
-# carries three monotonic generations so a client can detect a rebuilt index or
-# a restarted daemon and re-handshake. Not mirrored as package constants — this
-# governs the wire the daemon and its clients speak, so there is no
-# per-language drift risk — but pinned here as the authoritative shape.
+# ── [session] — the resident (`uds`) transport's semantics ───────────────────
+# A client opens a persistent connection to one daemon generation and issues
+# many queries. Three monotonic generations ride every READY/STATUS frame — the
+# daemon's boot id, the per-connection id, and the published index pair.gen — so
+# a client can detect a rebuilt index or a restarted daemon and re-handshake.
+# None of this is mirrored as package constants: it governs the wire the daemon
+# and its clients speak, so there is no per-language drift risk, but it is
+# pinned here as the authoritative shape.
 #
-# The wire (src/surface/exec/session/protocol.zig) is a length-prefixed frame
-# protocol whose query-flags byte is now fully assigned: fixed 0, ignore_case
-# 1, line_num 2, word 3, invert 4, smart_case 5, quiet 6, max_count 7 (bit 7
-# also writes a u64 LE cap immediately after the flags byte). The daemon FAILS
-# CLOSED on any unimplemented bit (BadFrame -> decline -> cold); with the byte
-# full, fail-closed now rests on the version handshake plus the length/opcode
-# gates.
+# The wire · src/surface/exec/session/conduit/protocol.zig
+#   A length-prefixed frame protocol whose query-flags byte is now fully
+#   assigned: fixed 0, ignore_case 1, line_num 2, word 3, invert 4, smart_case
+#   5, quiet 6, max_count 7 (bit 7 also writes a u64 LE cap immediately after
+#   the flags byte). The daemon FAILS CLOSED on any unimplemented bit (BadFrame
+#   -> decline -> cold); with the byte full, fail-closed now rests on the
+#   version handshake plus the length and opcode gates.
+#
+# Capabilities · negotiated in the HELLO frame
+#   Additive, and NOT query flags — that byte is full. The client appends a caps
+#   byte after the version; an old peer sends none and the daemon reads 0, so a
+#   capability is used only when advertised AND supported on the build's target.
+#   `cap_fd_transport` (bit 0) lets a client receive a large `lines` answer as
+#   an anonymous-shm fd over SCM_RIGHTS — one `chunk_fd` frame carrying
+#   {length, matched}, which the client mmaps read-only and writes out. The
+#   daemon uses it only when the answer clears fd_transport_floor (1 MiB) and
+#   shm is available (Linux memfd+seal · macOS
+#   shm_open→ftruncate→shm_unlink); otherwise the byte-identical `chunk` frames.
+#
+# Eligible modes · what the fast path answers directly
+#   files   -l, files-with-matches.
+#   count   -c, a wire-only corpus-wide matching-line total for embedders (rg's
+#           -c is per-file, so the CLI answers that one cold).
+#   lines   the bare default `path:text` search (`-n` for `path:line:text`),
+#           pre-rendered daemon-side through the cold Emitter and
+#           chunk-streamed.
+#   The CLI routes `files` and `lines` warm. Everything else (--json, context,
+#   --rank, replace, multiline, explicit file lists, stdin, a TTY stdout) is
+#   unsupported on the fast path and falls back to the cold subprocess
+#   transport, byte for byte identically.
+#
+# Eligible flags · the session applies cold's exact rules
+#   The case family is fully eligible: `-i`, `-s`, and `-S` smart-case — the raw
+#   smart_case bit crosses the wire and the SESSION resolves it against the
+#   pattern via request.zig::effectiveIgnoreCase, so clients never implement
+#   hasUpper. `-w` (word), `-q` (quiet — the existence early-halt) and `-m N`
+#   (the per-file cap, including rg's `-m0` = match nothing) are eligible too.
+#   `-v` (invert) is eligible via the set complement `non_matching(f) = lines(f)
+#   − matching(f)`: the trigram prefilter stays sound for the MATCH set (a
+#   ruled-out file matches nothing) and cached per-file line counts supply the
+#   rest with no scan.
+#
+# Parallelism
+#   EVERY warm face — the positive and invert `-c`/`-l` folds, the bare/`-n`
+#   emit, and the FFI record stream — shards its scan over cores above a byte
+#   floor through ONE shared primitive (src/kernel/primitives/parallel.zig),
+#   byte-identical to the serial core below it, so a large positive result no
+#   longer loses to cold's fused 16-core scan on core count. FFI additionally
+#   opens explicit paths as C root arrays and carries explicit Unicode/ASCII
+#   mode into the shared compile seam.
+#
+# Freshness
+#   Fail-closed: a query is answered from resident bytes only when the barrier
+#   proves the searched roots unchanged since the daemon's build anchor (a
+#   watcher-clean window). Otherwise the daemon reconciles changed, new and
+#   deleted paths against the live filesystem before answering, preserving the
+#   invariant `resident matches == --no-index matches == rg matches`. Linux gets
+#   an inotify accelerator; the portable metadata-reconcile barrier is always
+#   there.
 [session]
-socket_env = "GIST_SESSION_SOCK" # overrides the default per-repo socket path
+socket_env = "GIST_SESSION_SOCK"                 # overrides the per-repo default below
 default_socket = ".local/gist-verify/gistd.sock"
-protocol_version = 7
+protocol_version = 7                             # the length-prefixed frame protocol
+generations = [ "daemon", "session", "index" ]   # boot id · connection id · published pair.gen
+capabilities = [ "cap_fd_transport" ]            # HELLO-negotiated, additive
+eligible_modes = [ "files", "count", "lines" ]   # -l · corpus-wide -c · the bare line search
+freshness = "fail-closed-reconcile"              # resident bytes only behind a proven barrier
+watchers = [ "inotify", "reconcile" ]            # linux accelerator · portable barrier
 
-# Carried in every READY/STATUS frame: daemon boot id · per-connection id ·
-# published pair.gen.
-generations = ["daemon", "session", "index"]
-
-# Transport capabilities negotiated in the HELLO frame — additive, and NOT
-# query flags (that byte is full). The client appends a caps byte after the
-# version; an old peer sends none and the daemon reads 0. Fail-open by
-# construction: a capability is used only when advertised AND supported on the
-# build's target.
+# ── [analytic] — the `ffi` transport's analytic plane (ABI-3) ────────────────
+# Everything in part 4 — kinship, retrieval, the composed verbs — was reachable
+# only by spawning `relate`/`irregex` and re-parsing their NDJSON. That made
+# every embedding package a parser of a human-facing CLI: three hand-written
+# decoders per verb, drifting independently, and a binding that cannot answer
+# without a child process. This plane exposes the same kernels in-process.
 #
-#   cap_fd_transport (bit 0) — the client can receive a large `lines` answer as
-#     an anonymous-shm fd over SCM_RIGHTS (one `chunk_fd` frame carrying
-#     {length, matched}). The daemon uses it only when the answer clears
-#     fd_transport_floor (1 MiB) and shm is available (Linux memfd+seal ·
-#     macOS shm_open→ftruncate→shm_unlink); otherwise the byte-identical
-#     `chunk` frames.
-capabilities = ["cap_fd_transport"]
-
-# What the resident fast path answers directly:
+# The shape is ONE dispatch and ONE row type, not a symbol per verb. A per-verb
+# C surface is N verbs × M languages of hand-mirrored structs, and it is exactly
+# the drift this contract was written to kill — so instead:
 #
-#   files  -l, files-with-matches
-#   count  -c, a wire-only corpus-wide matching-line total for embedders (rg's
-#          -c is per-file, so the CLI answers that one cold)
-#   lines  the bare default `path:text` search (`-n` for `path:line:text`),
-#          pre-rendered daemon-side through the cold Emitter and chunk-streamed
+#   irregex_analytic_run(engine, op, params, cancel, &cursor)
+#       one entry point. `op` is an [analytic.verbs] code; `params` is one of
+#       the [analytic.params] families, size-checked like SearchRequest so an
+#       older engine reading a newer struct fails closed with IRREGEX_INVALID
+#       rather than reading past its knowledge.
+#   irregex_rows_next / _next_batch / _close
+#       the pull cursor, mirroring the exact plane's `irregex_cursor_*` triad.
+#       Rows borrow cursor-owned memory and are valid until the next pull.
+#   irregex_rows_stats
+#       the answer-level facts a row cannot carry: elapsed, whether the atlas or
+#       live bytes answered, how many files were refreshed into a warm answer,
+#       how many query fingerprints the corpus has never seen. A binding that
+#       hides these turns "your text isn't in this repo" into "no results".
+#   irregex_schema_digest
+#       one call that proves the engine's row-schema table is the one this
+#       binding's decoder was generated from. Cheaper and stricter than
+#       per-field negotiation, and it makes a stale .so a loud startup failure
+#       instead of a silently mis-decoded row.
+#   irregex_schema_count / irregex_schema_get
+#       the table itself, for a decoder that wants to name the drift.
 #
-# The CLI routes `files` and `lines` warm. Everything else (--json, context,
-# --rank, replace, multiline, explicit file lists, stdin, a TTY stdout) is
-# unsupported on the fast path and falls back to the cold subprocess transport,
-# byte for byte identically.
+# A row is `{ schema_id, present_mask, nvalues, values }` over a tagged
+# `irregex_value`. Adding a verb that reuses a schema costs ZERO new C surface;
+# adding a new shape costs one [row_schemas] table and one generated arm per
+# language. No binding hand-writes a struct for a verb again.
 #
-# The case family is fully eligible: `-i`, `-s`, and `-S` smart-case — the raw
-# smart_case bit crosses the wire and the SESSION resolves it against the
-# pattern via request.zig::effectiveIgnoreCase, so clients never implement
-# hasUpper. `-w` (word), `-q` (quiet — the existence early-halt) and `-m N`
-# (the per-file cap, including rg's `-m0` = match nothing) are eligible too,
-# the session applying cold's exact rules. `-v` (invert) is eligible via the
-# set complement `non_matching(f) = lines(f) − matching(f)`: the trigram
-# prefilter stays sound for the MATCH set (a ruled-out file matches nothing)
-# and cached per-file line counts supply the rest with no scan.
+# The engine handle is the existing `irregex_engine` — the analytic ops load the
+# INDEX corpus (and fold the atlas/shelf) lazily on first use, so one open
+# serves both planes and a host pays for the analytic corpus only if it asks an
+# analytic question. Cancellation is the same `irregex_cancel` token.
 #
-# EVERY warm face — the positive and invert `-c`/`-l` folds, the bare/`-n`
-# emit, and the FFI record stream — shards its scan over cores above a byte
-# floor through ONE shared primitive (src/kernel/primitives/parallel.zig),
-# byte-identical to the serial core below it, so a large positive result no
-# longer loses to cold's fused 16-core scan on core count. FFI additionally
-# opens explicit paths as C root arrays and carries explicit Unicode/ASCII mode
-# into the shared compile seam.
-eligible_modes = ["files", "count", "lines"]
+# Everything here is additive: no existing symbol changes signature, so
+# `irregex_abi_version()` stays 2. `schema_digest` is the analytic plane's own
+# compatibility axis, versioned by the row-schema table rather than by the ABI.
+[analytic]
+entry = "irregex_analytic_run"
+cursor = [ "irregex_rows_next", "irregex_rows_next_batch", "irregex_rows_close" ]
+introspection = [ "irregex_schema_digest", "irregex_schema_count", "irregex_schema_get" ]
+stats = "irregex_rows_stats"
+handle = "irregex_engine"                                                                 # shared with the exact pull plane
+value_tags = [ "text", "i64", "f64", "bool", "enum", "texts", "rows" ]
+max_fields = 64                                                                           # the row presence mask is one u64
+fallback = "subprocess"                                                                   # fail-open, never a hard dependency
+corpus = "index"                                                                          # not the rg-parity gitignore walk
 
-# Freshness is fail-closed: a query is answered from resident bytes only when
-# the barrier proves the searched roots unchanged since the daemon's build
-# anchor (a watcher-clean window). Otherwise the daemon reconciles changed,
-# new and deleted paths against the live filesystem before answering,
-# preserving the invariant `resident matches == --no-index matches == rg
-# matches`.
-freshness = "fail-closed-reconcile"
-watchers = ["inotify", "reconcile"] # linux inotify accelerator · portable metadata-reconcile barrier
+# ── [analytic.params] — the size-checked request families ───────────────────
+# Five shapes, not seventeen. A family is shared by every verb whose question
+# has the same shape, so a caller learns one struct per KIND of question. Each
+# begins with `struct_size` (fail-closed, exactly as SearchRequest does) and a
+# `flags` word; unset numeric fields mean "the engine's documented default",
+# which is why they are declared here rather than left to each binding.
+[analytic.params]
+kinship = { c = "irregex_kinship_params", fields = [
+  "struct_size",
+  "flags",
+  "target",
+  "target_len",
+  "channel",
+  "unit",
+  "max_distance",
+  "min_echo",
+  "min_grade",
+  "min_size",
+  "min_lines",
+  "top",
+], detail = "every verb that asks `what resembles what` — a target (or none, for a corpus-wide sweep), a channel, an admission threshold, and a floor" }
+retrieval = { c = "irregex_retrieval_params", fields = [
+  "struct_size",
+  "flags",
+  "query",
+  "query_len",
+  "top",
+], detail = "every verb that prices free text against the corpus: recall, pack, quote" }
+sweep = { c = "irregex_sweep_params", fields = [
+  "struct_size",
+  "flags",
+  "patterns",
+  "npatterns",
+  "under",
+  "under_len",
+  "by",
+  "top",
+], detail = "the multi-pattern one-walk sweep; `by` selects row-per-hit, per-pattern tally, or per-file tally" }
+compose = { c = "irregex_compose_params", fields = [
+  "struct_size",
+  "flags",
+  "text",
+  "text_len",
+  "patterns",
+  "npatterns",
+  "match_mode",
+  "max_distance",
+  "min_echo",
+  "budget",
+  "top",
+], detail = "the both-engines verbs: an exact PatternSet narrows a candidate set and the compression kernel reasons inside it. `match_mode` is any|all; `budget` trims blast's low-priority tail into stats.omitted" }
+rank = { c = "irregex_rank_params", fields = [
+  "struct_size",
+  "flags",
+  "pattern",
+  "pattern_len",
+  "top",
+], detail = "the definition-first ranked view of an exact query — the one exact-plane verb whose rows are analytic rather than Match records" }
+
+# ── [analytic.verbs] — op code · params family · row schema ─────────────────
+# The dispatch table. `op` is the wire discriminant and is APPEND-ONLY. `schema`
+# names a [row_schemas] table and `params` an [analytic.params] family, so a
+# gate can prove every verb's decoder exists in every language without reading
+# any Zig. Prose for what each verb MEANS stays with the CLI verb tables in
+# part 4 — this is the wire, not the semantics.
+#
+# `stream` is load-bearing for a caller sizing a batch: `many` verbs can return
+# an unbounded row count and should be pulled in batches, while `one` verbs
+# answer with exactly one row (quote's phrases and blast's tiers nest inside it,
+# so the whole answer arrives in a single pull).
+[analytic.verbs]
+similar = { op = 1, params = "kinship", schema = "similar", stream = "many" }
+dups = { op = 2, params = "kinship", schema = "dup_pair", stream = "many" }
+clusters = { op = 3, params = "kinship", schema = "cluster", stream = "many" }
+echoes = { op = 4, params = "kinship", schema = "echo", stream = "many" }
+concepts = { op = 5, params = "kinship", schema = "concept", stream = "many" }
+fragments = { op = 6, params = "kinship", schema = "family", stream = "many" }
+distinct = { op = 7, params = "kinship", schema = "distinct", stream = "many" }
+recall = { op = 8, params = "retrieval", schema = "recalled", stream = "many" }
+pack = { op = 9, params = "retrieval", schema = "pick", stream = "many" }
+quote = { op = 10, params = "retrieval", schema = "quotation", stream = "one" }
+patterns = { op = 11, params = "sweep", schema = "pattern_hit", stream = "many" }
+pattern_counts = { op = 12, params = "sweep", schema = "pattern_count", stream = "many" }
+context = { op = 13, params = "compose", schema = "pick", stream = "many" }
+family = { op = 14, params = "compose", schema = "family", stream = "many" }
+provenance = { op = 15, params = "compose", schema = "attribution", stream = "many" }
+blast = { op = 16, params = "compose", schema = "blast", stream = "one" }
+rank = { op = 17, params = "rank", schema = "ranked", stream = "many" }
 
 
-# ── the native tier: pattern sets and compression kinship ────────────────────
-# The set-shaped tier over the engine (src/kernel/), surfaced by the `relate`
-# binary. Three primitives:
+# ═══ 4 · native tiers ════════════════════════════════════════════════════════
+# Vocabulary with no ripgrep equivalent, so — like `--rank` — it carries no
+# parity obligation, and the semantics pinned here ARE its contract.
+#
+# Corpus policy for every verb in this part: they load the INDEX corpus (every
+# non-binary file under the roots, minus VCS and build subtrees), not the
+# rg-parity gitignore walk. They are corpus analytics, not per-file greps.
+# Results stream NDJSON under `--json`; diagnostics stay on stderr; exit codes
+# stay rg's (0/1/2).
+
+# ── [irregex] — pattern sets and compression kinship (`relate`) ──────────────
+# The set-shaped tier over the engine (src/kernel/), built from three
+# primitives:
 #
 #   match   pattern SETS with exact per-pattern attribution
-#   relate  compression kinship — an LZ78 dictionary bottom-k MinHash with
-#           LZJD distance, plus the winnowed structure silhouette
+#   relate  compression kinship — an LZ78 dictionary bottom-k MinHash with LZJD
+#           distance, plus the winnowed structure silhouette
 #   weave   a closed filter/group/sort/limit plan executed engine-side
-#
-# Like `--rank`, this is native vocabulary with no ripgrep equivalent, so it
-# carries no parity obligation — its contract is the semantics pinned here.
-#
-# Corpus policy: these verbs load the INDEX corpus (every non-binary file under
-# the roots, minus VCS and build subtrees), not the rg-parity gitignore walk.
-# They are corpus analytics, not per-file greps. Results stream NDJSON under
-# `--json`; diagnostics stay on stderr.
-#
-# The table names predate the three-binary split and are load-bearing for the
-# bindings and gates that key on them: `[irregex]` is this native tier (the
-# `relate` binary), while `[compose]` further down is the `irregex` binary.
 [irregex]
 sketch = { k = 128, min_phrase = 3, algorithm = "LZ78 phrase dictionary -> bottom-k (KMV) of 64-bit phrase hashes; distance = 1 - KMV-estimated Jaccard (LZJD)", detail = "deterministic: same bytes => same sketch on every platform" }
 silhouette = { k = 256, gram = 5, window = 4, algorithm = "normalize (identifiers->I, numbers->N, strings->S, comments dropped, pan-language keywords kept) -> hash every gram-token shingle -> winnow (min of every window) -> bottom-k (KMV); distance = 1 - KMV-estimated Jaccard", detail = "the STRUCTURE channel: a renamed Type-2 twin normalizes to the identical token stream, so its silhouette distance is exactly 0 while its byte distance stays far; deterministic, language-agnostic (a squint, not a parse)" }
 attribution = { detail = "a PatternSet answer is bit-identical to N independent single-pattern runs; the fused (?:a)|(?:b) gate is an accelerator that may only skip work, never change an answer (tests hold it to the single-pattern oracle)" }
 
-# One channel vocabulary across every kinship verb. `--as` names the channel by
-# what it finds; the metric names (bytes|echo|structure|fused) stay accepted as
-# `--lens` aliases, so a caller who learned the metric is not stranded — they
-# are spellings of one enum, never a second code path.
+# ── [irregex.channels] — one channel vocabulary, every kinship verb ──────────
+# `--as` names the channel by what it finds. The metric names
+# (bytes|echo|structure|fused) stay accepted as `--lens` aliases, so a caller
+# who learned the metric is not stranded — they are spellings of one enum, never
+# a second code path.
+#
+# `quantity` is the JSON key a row's score arrives under, and it is per channel
+# on purpose: naming a gap or a gain `distance` would invert the meaning of
+# every downstream threshold. A row therefore carries one score column plus the
+# channel that names it, never a fused number.
 [irregex.channels]
-copies = { metric = "bytes", polarity = "distance", admits = "--max-distance", detail = "LZJD distance over raw bytes: verbatim duplication and its drift. the default" }
-shapes = { metric = "structure", polarity = "distance", admits = "--max-distance", detail = "normalized-structure silhouette distance: shared skeleton, vocabulary irrelevant" }
-twins = { metric = "echo", polarity = "gap", admits = "--min-echo", detail = "byte distance MINUS structure distance: the same skeleton wearing different vocabulary (Type-2 clones), the abstraction candidate. a GAP — higher is stronger, and byte-identical files score zero, which is the weakest twin evidence there is" }
-any = { metric = "fused", polarity = "distance", admits = "--max-distance", detail = "min(copies, shapes): close in EITHER channel counts" }
+copies = { metric = "bytes", polarity = "distance", quantity = "distance", admits = "--max-distance", detail = "LZJD distance over raw bytes: verbatim duplication and its drift. the default for a record probe" }
+shapes = { metric = "structure", polarity = "distance", quantity = "distance", admits = "--max-distance", detail = "normalized-structure silhouette distance: shared skeleton, vocabulary irrelevant" }
+twins = { metric = "echo", polarity = "gap", quantity = "echo", admits = "--min-echo", detail = "byte distance MINUS structure distance: the same skeleton wearing different vocabulary (Type-2 clones), the abstraction candidate. a GAP — higher is stronger, and byte-identical files score zero, which is the weakest twin evidence there is. the default for the repetition verb, because it is the only channel no other tool reports" }
+any = { metric = "fused", polarity = "distance", quantity = "distance", admits = "--max-distance", detail = "min(copies, shapes): close in EITHER channel counts" }
+recall = { metric = "gain", polarity = "gain", quantity = "gain", admits = "<none>", pairwise = false, detail = "Ziv-Merhav coding gain of a TEXT against one document (1 - cost/cold): how cheaply the corpus already describes it. NOT pairwise — it prices a text probe, so it is chosen by the probe's SHAPE (bare text to `relate similar`) and can never be named by --as. a gain rises with confidence, which is why it bands on its own scale rather than borrowing the distance bands" }
 
-# One calibration of what a score is worth. Ranking verbs always return rows,
-# so an answer with no real kin used to read exactly like a find. Every kinship
-# score is banded against the thresholds the tool already documented; the band
-# rides each --json row, --min-grade G withholds anything weaker than G, and an
-# answer that is entirely background reports itself on stderr in gist's hint
-# grammar (GIST_HINTS=0 mutes it). A trimmed but genuine answer accounts for
-# what it withheld without recanting.
+# ── [irregex.grades] — one calibration of what a score is worth ──────────────
+# Ranking verbs always return rows, so an answer with no real kin used to read
+# exactly like a find. Every kinship score is banded against the thresholds the
+# tool already documented; the band rides each --json row, --min-grade G
+# withholds anything weaker than G, and an answer that is entirely background
+# reports itself on stderr in gist's hint grammar (GIST_HINTS=0 mutes it). A
+# trimmed but genuine answer accounts for what it withheld without recanting.
 [irregex.grades]
-distance = { identical = 0.05, strong = 0.25, moderate = 0.50, weak = 0.75, detail = "upper bound per band; anything above weak is `none` — background, not a result. the cut points are the documented ones: 0.05 near-exact copy, 0.25 the dups/clusters admission default, 0.50 shares style not substance" }
-gap = { strong = 0.45, moderate = 0.30, weak = 0.15, detail = "lower bound per band; anything below weak is `none`. scaled from the 0.15 --min-echo floor, under which a structure-close pair is small-sample noise rather than a shared skeleton. a gap is never `identical`" }
+distance = { identical = 0.05, strong = 0.25, moderate = 0.50, weak = 0.75, detail = "upper bound per band; anything above weak is `none` — background, not a result. the cut points are the documented ones: 0.05 near-exact copy, 0.25 the --max-distance admission default, 0.50 shares style not substance" }
+gap = { strong = 0.45, moderate = 0.30, weak = 0.15, detail = "lower bound per band; anything below weak is `none`. scaled from the 0.15 --min-echo floor, under which a structure-close pair is small-sample noise rather than a shared skeleton. a gap is never `identical`, because two byte-identical files have a zero gap — the weakest twin evidence there is" }
+gain = { identical = 0.90, strong = 0.60, moderate = 0.45, weak = 0.30, detail = "lower bound per band for the `recall` channel; measured over this repo's ~20k-file corpus — a sentence lifted verbatim out of a source file scored 0.9496, an on-target descriptive query 0.63-0.82, an English query about a subject the scope does not contain 0.32-0.44, and nonsense 0.16-0.23. a one-word query is cheap to explain anywhere, which is why 0.43 for `def` has to land in the same band as `not really here`" }
 empty = { code = 1, detail = "a kinship verb that emits no row exits 1 — `no_match` in [exit_codes], the same code gist returns for a pattern that matches no line, whether the corpus held no kin or --min-grade withheld every candidate. the trace diagnostic still prints: how long the query took is a fact about the run, not about whether it found anything" }
 
-# The verbs themselves. Atlas-backed rows answer from the kinship atlas when
-# one is fresh-foldable and live otherwise, with identical answers either way
-# (--no-index forces live) — see [irregex.lifecycle].
+# ── [irregex.verbs] — the `relate` surface ───────────────────────────────────
+# TWO kinship questions, not six verbs. Everything a caller can ask about
+# resemblance is either the NEIGHBOR question (rank a corpus against one thing —
+# `similar`) or the REPETITION question (what repeats inside a corpus —
+# `echoes`), and the axes that used to be verb names are flags:
+#
+#   unit     file | function | match      what a row IS
+#   channel  copies | twins | shapes | any   which repetition ([irregex.channels])
+#   shape    pairs | families | distinct  what the answer is FOR
+#
+# So `dups` is `echoes --as copies`, `clusters` adds `--shape families`,
+# `concepts` adds `--unit function`, and `search` is `similar <text>` — see
+# [irregex.retired] for the coaching table the CLI prints. Kinship rows answer
+# from a persisted artifact when one is fresh-foldable and live otherwise, with
+# identical answers either way ([irregex.lifecycle]); `--no-index` forces live.
+#
+# Noise floors are uniform, because they are properties of the measurement
+# rather than of a verb: `--min-lines` (default 5 at `--unit function`) refuses
+# fragments too short to carry a signal, `--min-mass` refuses units too small to
+# shed a real fingerprint sample (two of them land at distance ~0 by arithmetic,
+# and a false `identical` is worse than no row), and generated paths are
+# withheld from a repetition sweep — a codegen twin is never a refactor
+# candidate, the fix lives in the template — while `--include-generated` turns
+# the sweep into a drift audit. A neighbor probe keeps generated files, because
+# "which generated file is closest to this hand-written one" is a real question.
 [irregex.verbs]
-similar = { argv = "relate similar <path> [--as copies|twins|shapes|any] [--min-grade G] [--top N] [--json] [--no-index] [ROOT...]", detail = "nearest files to <path> by compression kinship, strongest first; --as picks the channel (see [irregex.channels]); the target itself is excluded; every row carries its calibrated grade and --min-grade withholds background" }
-dups = { argv = "relate dups [--max-distance T] [--min-grade G] [--top N] [--json] [--no-index] [ROOT...]", detail = "near-duplicate pairs across the corpus, closest first; candidates via shared bottom-16 seed hashes, every emitted pair exactly verified against both sketches" }
-clusters = { argv = "relate clusters [--max-distance T] [--min-size N] [--min-grade G] [--top N] [--json] [--no-index] [ROOT...]", detail = "fork families — connected components of the verified dup graph, size-desc then exemplar-asc, members path-asc; exactly the transitive closure of dups at the same threshold. a family is graded by its LOOSEST verified edge, so the grade describes the whole family rather than its tightest pair, and --min-grade withholds loose ones" }
-echoes = { argv = "relate echoes [--min-echo E] [--min-grade G] [--top N] [--json] [--no-index] [ROOT...]", detail = "DRY candidates dups cannot see: pairs with echo = byte_distance - structure_distance >= E (default 0.15), widest gap first — same skeleton under different vocabulary (Type-2 clones); silhouette seed buckets nominate, both channels verify exactly; deliberately rank-shaped, because the echo is self-calibrated per pair and no absolute dup threshold exists across corpora" }
-concepts = { argv = "relate concepts [TEXT] [--lens structure|bytes|echo] [--max-distance T] [--min-echo E] [--min-lines N] [--min-size N] [--top N] [--brief] [--json] [--no-index] [ROOT...]", detail = "the FUNCTION-level sibling of clusters/echoes: the comparison unit is the function fragment (regions.extractAll over authored brace-family + Python source), not the file. With no TEXT, package-wide FAMILIES of theoretically-similar functions (the repeated engine, the duplicated JSON dump, the copy-pasted validator), ranked by consolidation opportunity — conservative repeated_lines (shortest member span × redundant copies) then channel confidence, NEVER a fused score, with the structure/bytes/echo channels reported side by side. With TEXT, the nearest fragments to that concept by structure. --lens picks the channel: structure (silhouette, default, warm-only) nominates and groups, bytes (LZJD) finds near-verbatim clones, echo (byte−structure gap ≥ E) finds renamed Type-2 twins. Byte sketches are computed only for the fragments a query nominates (byteTargets), never a repo-wide byte pass. Noise floors: --min-lines (default 5) and a generated-path skip; a fragment needs gram+window−1 structural fingerprints to pair" }
+similar = { argv = "relate similar <path | path#Lnnn | text> [--as copies|twins|shapes|any] [--unit file|function] [--matching PAT]... [--min-grade G] [--top N] [--json] [--no-index] [ROOT...]", detail = "the NEIGHBOR question: rank the corpus against ONE probe, strongest first, with the probe itself excluded. the probe's SHAPE decides how it is priced, so a caller never has to make a flag agree with an argument — a path scores kinship over files; `path#Lnnn` scores the function containing that line against function fragments (asking 'where else is this implementation' rather than 'which file resembles a function'); bare text scores the `recall` channel, Ziv-Merhav coding gain against the corpus; text WITH --as fingerprints the snippet and compares it as a record ('what is shaped like this'). every row carries its calibrated grade, --min-grade withholds background, and an answer made only of background says so on stderr" }
+echoes = { argv = "relate echoes [--unit file|function|match] [--as copies|twins|shapes|any] [--shape pairs|families|distinct] [--max-distance T] [--min-echo E] [--min-size N] [--min-lines N] [--min-mass N] [--include-generated] [--matching PAT]... [--min-grade G] [--top N] [--brief] [--json] [--no-index] [ROOT...]", detail = "the REPETITION question along the three axes above. pairs = two units to open side by side (nominated by shared seed hashes, every emitted pair exactly verified against both sketches — precision, not exhaustive recall). families = the transitive closure of that verified graph, which is the unit a dedup or restructure sweep acts on, graded by the family's LOOSEST admitted edge and ranked by consolidation opportunity (conservative repeated_lines, never a fused score). distinct = the complement, units that joined no family, each carrying its nearest miss and both measured distances — so 'which of these 14 implementations is genuinely unique' is a measurement with a receipt rather than an absence indistinguishable from too tight a threshold. `--unit function` extracts fragments (regions.extractAll over authored brace-family and Python source) and computes byte sketches only for nominated fragments, never a repo-wide byte pass" }
 patterns = { argv = "relate patterns -e P [-e P...] [-f FILE] [-F] [-i] [--by pattern|file] [--under GLOB] [--top N] [--json] [ROOT...]", detail = "one walk, N patterns, exact per-pattern attribution as path:line rows; --by groups into counts, --under/--top shape engine-side (loom); rows are total-ordered (path, line, pattern) so output is deterministic" }
-pack = { argv = "relate pack <text> [--top N] [--json] [ROOT...]", detail = "the SET of files that jointly describes <text> cheapest — greedy max-coverage over corpus-priced query chunks nominated by the persisted trigram codebook; each pick's marginal_bits is exactly the priced bits it adds beyond earlier picks; foreign chunks are reported, never silently absorbed" }
-search = { argv = "relate search <text> [--top N] [--json] [ROOT...]", detail = "which files would describe <text> most cheaply — the mmap-backed trigram codebook nominates with corpus-priced query evidence, then a suffix-automaton Ziv-Merhav cross-parse over bounded query-bearing windows decides; score = 1 - cost/cold, higher = closer" }
+pack = { argv = "relate pack <text> [--matching PAT]... [--match any|all] [-F] [-i] [--top N] [--json] [ROOT...]", detail = "the SET of files that jointly describes <text> cheapest — greedy max-coverage over corpus-priced query chunks nominated by the persisted trigram codebook; each pick's marginal_bits is exactly the priced bits it adds beyond earlier picks; foreign chunks are reported, never silently absorbed. with --matching the lexicon is built from ONLY the admitted files, so novelty is priced inside the matching set and each pick names the patterns that admitted it" }
 quote = { argv = "relate quote <text> [--json]", detail = "rewrite <text> as maximal verbatim quotations from the WHOLE corpus, priced in bits (cross-parse on the persisted codex shelf, O(|text|)); each phrase attributed to one exemplar file; corpus-conditional bits/byte is the novelty meter" }
 
-# The native tier owns its warm artifacts the way gist owns the trigram index —
-# a full engine, not a shim. Queries fold in every file changed since the build
-# anchor (the same stat walk, all channels refreshed together) and gate emitted
-# rows against deletion, so a warm answer is byte-identical to a live one. An
+# ── [irregex.retired] — folded verb names and where they went ────────────────
+# A retired name is not a hidden alias: it does not dispatch, so nothing runs on
+# stale semantics. It is a row in the manifest, which means `relate dups` exits
+# 2 with the invocation that replaces it and the reason the fold happened — and
+# `relate --schema` carries the same table, so an agent that learned the old
+# vocabulary re-learns it from the tool instead of from a changelog.
+[irregex.retired]
+search = { now = "relate similar <text>", because = "one probe verb: bare text scores the recall channel and a path scores kinship, so the split forced a caller to know which kind their question was before they could ask it" }
+dups = { now = "relate echoes --as copies", because = "a channel is a flag, not a verb" }
+clusters = { now = "relate echoes --as copies --shape families", because = "a shape is a flag, not a verb" }
+concepts = { now = "relate echoes --as shapes --shape families --unit function", because = "the comparison unit is a flag; every axis of a repetition question now composes with every other" }
+
+# ── [irregex.lifecycle] — the warm artifacts and their two verbs ─────────────
+# This tier owns its warm artifacts the way gist owns the trigram index — a full
+# engine, not a shim. A query folds in every file changed since the build anchor
+# (the same stat walk, all channels refreshed together) and gates emitted rows
+# against deletion, so a warm answer is byte-identical to a live one. An
 # accelerator, never an authority: a missing or corrupt artifact answers live.
 [irregex.lifecycle]
-atlas = { file = ".local/gist-verify/kinship.atlas", detail = "magic ATLS v3: anchor + NUL-separated path catalog + fixed-width sketch rows + fixed-width silhouette rows + FNV-1a checksum. One LZJD sketch and one structure silhouette per corpus file; broad kinship scopes use it, narrow explicit scopes sketch live when cheaper; fails closed on corruption" }
-frag = { file = ".local/gist-verify/concepts.frag", detail = "magic FRAG: anchor + roots blob + NUL-separated path catalog + per-fragment records (path index, byte/line span, variable-length structure silhouette) + FNV-1a checksum. The warm tier for `relate concepts`: one function-fragment table, folded for freshness the way the atlas is (files changed since the anchor re-extracted, deletions gated). Only structural silhouettes persist; byte sketches for the bytes/echo lenses are computed live for nominated fragments. Fails closed on corruption" }
+atlas = { file = ".local/gist-verify/kinship.atlas", detail = "magic ATLS v3: anchor + NUL-separated path catalog + fixed-width sketch rows + fixed-width silhouette rows + FNV-1a checksum. one LZJD sketch and one structure silhouette per corpus file; broad kinship scopes use it, narrow explicit scopes sketch live when cheaper; fails closed on corruption" }
+frag = { file = ".local/gist-verify/concepts.frag", detail = "magic FRAG: anchor + roots blob + NUL-separated path catalog + per-fragment records (path index, byte/line span, variable-length structure silhouette) + FNV-1a checksum. the warm tier for the function unit (`relate echoes --unit function`, and a `path#Lnnn` probe): one function-fragment table, folded for freshness the way the atlas is (files changed since the anchor re-extracted, deletions gated). only structural silhouettes persist; byte sketches for the copies/twins channels are computed live for nominated fragments; fails closed on corruption" }
 index = { argv = "relate index [--shelf]", detail = "build + persist the atlas AND the concepts.frag fragment table atomically (anchor captured BEFORE the corpus read); --shelf also rebuilds the codex shelf quote reads — the same artifact `gist codex build` writes" }
 status = { argv = "relate status [--json]", detail = "atlas + frag + shelf readiness and staleness; exit 0 when the atlas is ready, 1 otherwise (verbs still answer, live)" }
 
-
-# ── compose: exact ∩ compression over one candidate set ──────────────────────
-# The third face, the `irregex` binary. Its verbs GENUINELY compose the two
-# engines: the exact PatternSet (match) narrows the corpus to a typed
-# CandidateSet, then the compression kernels (relate) run ONLY inside that
-# subset. It forwards no gist or relate verb — those stay the direct faces,
-# while this one owns workflows. The kernels are pure and I/O-free under
-# src/kernel/compose/; surface/face/irregex/ orchestrates corpus and shelf load
-# plus NDJSON/human rendering.
+# ── [compose] — exact ∩ compression over one candidate set ───────────────────
+# Composition is a MODIFIER, not a face. The exact PatternSet (match) narrows
+# the corpus to a typed CandidateSet and the compression kernels (relate) run
+# ONLY inside that subset — and because that is one property of a question
+# rather than a different question, it is spelled `--matching PAT` on the relate
+# query verbs instead of duplicating their unit/channel/shape axes under second
+# names. `relate echoes --matching WalletService --shape families` is what
+# `irregex family` was; `relate pack --matching …` is what `irregex context`
+# was. The kernels stay pure and I/O-free under src/kernel/compose/.
 #
-# The CandidateSet is the shared exact seam. `family` may then lift its hits
-# into enclosing functions or bounded match windows before compression,
-# preventing unrelated bytes in a matching file from dominating implementation
-# kinship.
-#
-# Corpus policy: `context` and `family` load the INDEX corpus under the roots
-# (like relate) and REQUIRE an explicit scope, so a composed query cannot
-# silently sweep vendored trees. `provenance` reads the corpus-wide codex shelf
-# (`relate index --shelf` / `gist codex build`) and needs no scope. The exact
-# and statistical scores stay separate (a match mask versus compression bits);
-# there is deliberately NO fused relevance number. Results stream NDJSON under
-# `--json`, diagnostics stay on stderr, and exit codes match rg's (0/1/2).
+# The `irregex` binary keeps the two composed workflows that are NOT a relate
+# question with a filter bolted on: `provenance` (quotation re-verified against
+# current bytes) and `blast` (a symbol's live radius, assembled from several
+# kernels). Throughout, the exact and statistical scores stay in separate fields
+# (a match mask versus compression bits); there is deliberately NO fused
+# relevance number.
 [compose]
-candidate_set = { detail = "the subset of loaded docs a PatternSet selects under match=any|all, each carrying a per-pattern match mask (up to 64 patterns); the exact-before-statistical seam context/family narrow through, so compression never sees a non-matching file" }
-comparison_unit = { detail = "family defaults to exact-hit enclosing functions; --unit match compares bounded match windows and --unit file preserves whole-file kinship. Region candidate sets verify every pair exactly rather than relying on seed nomination" }
-distinct = { detail = "exact-hit regions outside every admitted family remain first-class rows carrying their nearest structural neighbor plus separate structure_distance and byte_distance; --only selects family, distinct, or all rows without changing the analysis" }
-scoring = { detail = "exact and compression signals stay in SEPARATE fields (the match mask + the compression score); no fused relevance. Family display order uses a transparent consolidation heuristic only: repeated_lines = shortest member span × redundant copies, and opportunity score = repeated_lines × channel confidence (1-distance for byte/structure, the echo itself for echo)" }
-scope = { detail = "context/family require an explicit ROOT... or --all (fail-closed against silent vendored sweeps); provenance reads the whole codex shelf; blast defaults to the whole CWD corpus, since its radius is corpus-wide by nature, and narrows with ROOT..." }
+candidate_set = { detail = "the subset of loaded docs a PatternSet selects under match=any|all, each carrying a per-pattern match mask (up to 64 patterns); the exact-before-statistical seam every --matching query narrows through, so compression never sees a non-matching file" }
+comparison_unit = { detail = "a narrowed repetition query lifts its hits to whole files (--unit file), their enclosing functions (--unit function), or bounded match windows (--unit match) before compression, so unrelated bytes in a matching file cannot dominate implementation kinship. Region candidate sets verify every pair exactly rather than relying on seed nomination" }
+distinct = { detail = "units outside every admitted family stay first-class rows (--shape distinct) carrying their nearest miss plus separate structure_distance and byte_distance, so the complement of a family sweep is a measurement rather than an absence" }
+scoring = { detail = "exact and compression signals stay in SEPARATE fields (the match mask + the compression score); no fused relevance. Family display order uses a transparent consolidation heuristic only: repeated_lines = shortest member span × redundant copies, and opportunity score = repeated_lines × channel confidence (1-distance for a distance channel, the gap itself for twins)" }
+scope = { detail = "a --matching query is scoped like any relate query (positional ROOT..., else the index roots); provenance reads the whole codex shelf, which is corpus-wide already; blast defaults to the whole CWD corpus, since its radius is corpus-wide by nature, and narrows with ROOT..." }
 blast_tiers = { detail = "blast composes existing kernels into one bounded report from CURRENT bytes: seed (definition sites + parser-free kind guess), direct.dependents (word-bounded refs lifted to enclosing functions, def/use classified), direct.dependencies (identifiers inside the seed's body resolved to their own definition sites), tangential.twins (compression kin of the seed's file — co-edit risk), tangential.ripple (second-hop callers of the dependents, hops=2), and comments (comment-span mentions — the stale-doc/TODO/invariant surface). No precomputed graph, so a mid-edit file is reflected the instant it is saved" }
 
+# ── [compose.verbs] — the `irregex` surface ──────────────────────────────────
+# Two workflows, because each assembles several kernels rather than filtering
+# one relate question. `provenance` reads the corpus-wide codex shelf
+# (`relate index --shelf` / `gist codex build`) and needs no scope; `blast`
+# defaults to the whole CWD corpus and narrows with ROOT.... See [compose].scope
+# for why the narrowed variants of `context`/`family` moved onto `relate`, and
+# [compose.retired] for the coaching table.
 [compose.verbs]
-context = { argv = "irregex context TEXT -e P [-e P...] [--match any|all] [-F] [-i] [--top N] [--json] ROOT...", detail = "exact PatternSet filter first (match any = ≥1 pattern hit, all = every pattern hit), then greedy submodular coverage packing over a sub-lexicon built from ONLY the candidate docs — the minimal non-redundant reading set among files that actually match, each pick carrying the patterns that admitted it (marginal_bits = priced bits it adds beyond earlier picks)" }
-family = { argv = "irregex family PATTERN [--unit function|match|file] [--max-structure-distance T | --max-distance T | --echo-min E] [-C N] [--min-size N] [--only family|distinct|all] [--brief] [-F] [-i] [--top N] [--json] ROOT...", detail = "exact hits become enclosing functions by default (or bounded match windows / whole files), then verified structure, byte-duplicate, or echo families are built only among those units. Function/match regions use exhaustive exact pair verification. Families rank by conservative repeated-line opportunity; --brief returns one scope-relative line per family, while --only retains either or both answer classes" }
 provenance = { argv = "irregex provenance TEXT [--min-phrase N] [-C N] [--json]", detail = "relate quotation attribution against the codex shelf, then current-byte gist verification + line context for every emitted phrase; a phrase is surfaced ONLY if its attributed exemplar file CURRENTLY contains it (default ≥12-byte phrase floor), so it never points at a phrase the live tree cannot show; -C N adds context lines around the current occurrence" }
-blast = { argv = "irregex blast SYMBOL [--budget N] [--json] [ROOT...]", detail = "the live blast radius of a symbol from CURRENT bytes (no precomputed graph): seed definition + kind, direct dependents (functions referencing it, def/use classified) and dependencies (identifiers the seed's body resolves), tangential twins (compression kin of its file) and ripple (second-hop callers, hops=2), and comments that mention it. Exact and statistical evidence stay in separate fields. --budget N is a soft token cap trimming the lowest-priority tail into stats.omitted; scope defaults to the whole CWD corpus" }
+blast = { argv = "irregex blast SYMBOL [--budget N] [--json] [ROOT...]", detail = "the live blast radius of a symbol from CURRENT bytes, with no precomputed graph — the tiers it reports are [compose].blast_tiers; --budget N is a soft token cap that trims the lowest-priority tail into stats.omitted" }
+
+# ── [compose.retired] — the composed verbs that became a flag ────────────────
+[compose.retired]
+context = { now = "relate pack <text> --matching PAT...", because = "narrowing is a modifier on a question, not a second question: as a flag it composes with pack's --top and roots instead of restating them" }
+family = { now = "relate echoes --matching PAT... --shape families", because = "the composed family verb WAS the repetition question with an exact filter — every axis it owned (unit, channel, shape, min-size) already exists on echoes" }
 
 
-# ── tool_boundary ────────────────────────────────────────────────────────────
+# ═══ 5 · embedding ═══════════════════════════════════════════════════════════
+
+# ── [tool_boundary] — an embedding host's search verb ────────────────────────
 # A person at a terminal and an agent working a repository are the same actor:
 # both express "find these matches in this tree" as one SearchRequest. A host
-# that exposes search as a callable tool usually spells a few parameters its
-# own way, so the mapping is declared here instead of being re-guessed at each
-# call site; `request_from_tool` in the Python face applies it.
-
-# `aliases` map a tool-boundary parameter name onto its canonical request
-# option.
+# that exposes search as a callable tool usually spells a few parameters its own
+# way, so the mapping is declared here instead of being re-guessed at each call
+# site; `request_from_tool` in the Python face applies it.
+#
+# `aliases` rename a tool-boundary parameter onto its canonical request option.
+# `routing_keys` are recognized-but-ignored: they select *where* the tree lives
+# and *how* results are ranked, which is the host adapter's decision, not this
+# engine's. Listing them is the contract statement that one semantic API does
+# not require one transport — placement and routing stay outside the search
+# contract.
 [tool_boundary.aliases]
 query = "pattern"         # a host's name for the pattern
 glob = "globs"            # a singular tool param -> the list option
 context_lines = "context" # a symmetric-context param
 
-# `routing_keys` are recognized-but-ignored by the request mapper: they select
-# *where* the tree lives and *how* results are ranked, which is the host
-# adapter's decision, not this engine's. Listing them here is the contract
-# statement that one semantic API does not require one transport — placement
-# and routing stay outside the search contract.
 [tool_boundary.routing_keys]
 place = "which store owns the tree (e.g. workspace | machine | scratch)"
 at = "addressing within that store (e.g. a named root, or an absolute granted path)"

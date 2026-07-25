@@ -20,8 +20,9 @@
 //!      (a re-touched path replaces its entry, never appends).
 
 const std = @import("std");
-const resident = @import("resident.zig");
-const truth = @import("truth.zig");
+const resident = @import("../warm/resident.zig");
+const truth = @import("../warm/truth.zig");
+const fault = @import("../../../../fault.zig");
 const Dir = std.Io.Dir;
 
 const ResidentSession = resident.ResidentSession;
@@ -35,13 +36,13 @@ const Corpus = struct {
 
     fn init(a: std.mem.Allocator, io: std.Io, tag: []const u8, seed: usize) !Corpus {
         const root = try std.fmt.allocPrint(a, "/tmp/gist_fresh_{s}_{x}", .{ tag, seed });
-        Dir.cwd().deleteTree(io, root) catch {};
+        fault.spare("clear leftover fixture", Dir.cwd().deleteTree(io, root));
         try Dir.cwd().createDirPath(io, root);
         return .{ .root = root, .io = io, .a = a };
     }
 
     fn deinit(self: *Corpus) void {
-        Dir.cwd().deleteTree(self.io, self.root) catch {};
+        fault.spare("remove fixture", Dir.cwd().deleteTree(self.io, self.root));
         self.live.deinit(self.a);
     }
 
@@ -111,7 +112,7 @@ fn assertMatchesOracle(session: *ResidentSession, corpus: *Corpus, gpa: std.mem.
     defer q.deinit();
     const qa = q.allocator();
     const want_count = try corpus.oracleCount(needle);
-    const got_count = try session.query(qa, .{ .pattern = needle, .mode = .count, .fixed = true });
+    const got_count = (try session.query(qa, .{ .pattern = needle, .mode = .count, .fixed = true })).got;
     try std.testing.expectEqual(want_count, got_count.count);
 }
 
@@ -171,7 +172,7 @@ const Flooder = struct {
     fn loop(self: *Flooder) void {
         while (self.run.load(.acquire)) {
             self.session.markDirty();
-            self.io.sleep(.fromNanoseconds(50 * std.time.ns_per_us), .real) catch {};
+            fault.spare("settle before the next stat", self.io.sleep(.fromNanoseconds(50 * std.time.ns_per_us), .real));
         }
     }
 };
@@ -220,9 +221,9 @@ test "concurrency: a watcher markDirty flood racing the query loop stays correct
     for (0..400) |_| {
         var q = std.heap.ArenaAllocator.init(gpa);
         for (needles, 0..) |n, i| {
-            const f = try session.query(q.allocator(), .{ .pattern = n, .mode = .files, .fixed = true });
+            const f = (try session.query(q.allocator(), .{ .pattern = n, .mode = .files, .fixed = true })).got;
             try std.testing.expectEqual(want_files[i], f.files.len);
-            const c = try session.query(q.allocator(), .{ .pattern = n, .mode = .count, .fixed = true });
+            const c = (try session.query(q.allocator(), .{ .pattern = n, .mode = .count, .fixed = true })).got;
             try std.testing.expectEqual(want_count[i], c.count);
         }
         q.deinit();

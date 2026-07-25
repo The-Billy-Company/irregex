@@ -23,10 +23,10 @@
 //!      log may have lost.
 //!
 //! Threading: `note`/`noteDoubt` are called from the watcher thread,
-//! `drain` from the query thread under the session mutex; a private spinlock
-//! guards the set (the critical sections are tiny and bounded, and the
-//! watcher's OS thread has no `std.Io` handle for an `Io.Mutex`; a plain
-//! atomic swap loop is the honest primitive). The ordering contract with the seqlock
+//! `drain` from the query thread under the session mutex; the shared
+//! `primitives/ward.zig::Latch` guards the set (the critical sections are tiny
+//! and bounded, and the watcher's OS thread has no `std.Io` handle for an
+//! `Io.Mutex`). The ordering contract with the seqlock
 //! is: the backend notes the path BEFORE it bumps `dirty_seq` (`markDirty`),
 //! and the reconcile reads `dirty_seq` BEFORE it drains — so any event counted
 //! by the pre-drain seq read is visible to that drain, and any event that
@@ -34,6 +34,7 @@
 //! already queued).
 
 const std = @import("std");
+const Latch = @import("../../../../kernel/primitives/ward.zig").Latch;
 
 /// Distinct-path bound. A drain larger than this means a tree-wide storm (a
 /// build, a checkout) — the full walk is the right tool there anyway, so the
@@ -56,7 +57,7 @@ pub const Drained = struct {
 
 pub const DirtyLog = struct {
     gpa: std.mem.Allocator,
-    locked: std.atomic.Value(bool) = .init(false),
+    mu: Latch = .{},
     /// Distinct noted paths (owned keys). Deduped so a hot file rewritten a
     /// thousand times in one window costs one slot, not the whole budget.
     set: std.StringHashMapUnmanaged(void) = .empty,
@@ -74,20 +75,12 @@ pub const DirtyLog = struct {
         self.set.deinit(self.gpa);
     }
 
-    fn lock(self: *DirtyLog) void {
-        while (self.locked.swap(true, .acquire)) std.atomic.spinLoopHint();
-    }
-
-    fn unlock(self: *DirtyLog) void {
-        self.locked.store(false, .release);
-    }
-
     /// The backend's completeness promise: from now on every `markDirty` is
     /// preceded by a `note`/`noteDoubt` for the same event. Withdrawn only by
     /// `disarmExact`, when the backend that made it is gone.
     pub fn armExact(self: *DirtyLog) void {
-        self.lock();
-        defer self.unlock();
+        self.mu.lock();
+        defer self.mu.unlock();
         self.exact = true;
     }
 
@@ -96,16 +89,16 @@ pub const DirtyLog = struct {
     /// Every drain from here reports `exact = false` — full walks only — until
     /// a new backend arms.
     pub fn disarmExact(self: *DirtyLog) void {
-        self.lock();
-        defer self.unlock();
+        self.mu.lock();
+        defer self.mu.unlock();
         self.exact = false;
     }
 
     /// Record one changed path (deduped). Overflow or OOM degrades to `doubt`
     /// — never a silent drop.
     pub fn note(self: *DirtyLog, path: []const u8) void {
-        self.lock();
-        defer self.unlock();
+        self.mu.lock();
+        defer self.mu.unlock();
         if (self.doubt) return; // already forcing a full walk; don't grow
         if (self.set.contains(path)) return;
         if (self.set.count() >= self.cap) {
@@ -125,16 +118,16 @@ pub const DirtyLog = struct {
     /// The backend saw an event it cannot attribute to an exact path set
     /// (kernel drop, subdir-scan flag, mount churn): the next drain must walk.
     pub fn noteDoubt(self: *DirtyLog) void {
-        self.lock();
-        defer self.unlock();
+        self.mu.lock();
+        defer self.mu.unlock();
         self.doubt = true;
     }
 
     /// Move the accumulated batch out (resetting the log). The caller owns the
     /// result (`Drained.deinit`). Paths come out in arbitrary order.
     pub fn drain(self: *DirtyLog, gpa: std.mem.Allocator) Drained {
-        self.lock();
-        defer self.unlock();
+        self.mu.lock();
+        defer self.mu.unlock();
         var out = Drained{ .doubt = self.doubt, .exact = self.exact };
         self.doubt = false;
         const n = self.set.count();

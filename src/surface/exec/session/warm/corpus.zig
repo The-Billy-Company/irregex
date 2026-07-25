@@ -46,9 +46,9 @@
 //! `nul`/`lines` invariant is computed the same way over either tier.
 
 const std = @import("std");
-const grepfile = @import("../cold/read/grepfile.zig");
-const shard = @import("../../../corpus/index/content/shard.zig");
-const path_utils = @import("../../../corpus/scope/paths.zig");
+const grepfile = @import("../../cold/read/grepfile.zig");
+const shard = @import("../../../../corpus/index/content/shard.zig");
+const path_utils = @import("../../../../corpus/scope/paths.zig");
 const Dir = std.Io.Dir;
 
 /// One faithfully ingested document body: decoded bytes plus the byte offset of
@@ -96,17 +96,27 @@ pub fn readDocOwned(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ?Owned
     return .{ .bytes = owned, .nul = std.mem.indexOfScalar(u8, owned, 0) };
 }
 
-/// Count lines over the region cold actually searches, by rg's line model
-/// (`\n` terminates; a body not ending in `\n` carries one final partial line;
-/// empty ⇒ 0). For a binary doc (`nul` set) that region is the whole complete
-/// buffers BEFORE the one that first revealed the NUL — the same cut
-/// `grepfile.handleBinary` / the `-l` accumulator apply — so a cached count is
-/// directly the `-v` complement denominator with no per-query rescan. This is a
-/// CORPUS INVARIANT (base doc bytes never mutate in place; a changed file is
-/// re-read into the overlay, which recomputes its own count), so it is paid
-/// once at load, ~0 per query.
+/// The region cold actually searches in one doc: the whole body of a text doc,
+/// or — for a binary doc (`nul` set) — only the COMPLETE buffers before the one
+/// that first revealed the first NUL, the same cut `grepfile.handleBinary`
+/// applies. Empty ⇒ cold saw zero searchable lines and suppresses the file.
+///
+/// Every warm face that must agree with cold's binary policy cuts through HERE:
+/// the cached line count below, the `-l` fold's match gate, and the `matching(f)`
+/// term of the `-v` complement — so `matches ≤ lines` holds by construction
+/// rather than by three call sites spelling the same arithmetic.
+pub inline fn gatedBody(bytes: []const u8, nul: ?usize) []const u8 {
+    return if (nul) |n| bytes[0 .. (n / grepfile.BUFCAP) * grepfile.BUFCAP] else bytes;
+}
+
+/// Count lines over `gatedBody`, by rg's line model (`\n` terminates; a body not
+/// ending in `\n` carries one final partial line; empty ⇒ 0) — so a cached count
+/// is directly the `-v` complement denominator with no per-query rescan. This is
+/// a CORPUS INVARIANT (base doc bytes never mutate in place; a changed file is
+/// re-read into the overlay, which recomputes its own count), so it is paid once
+/// at load, ~0 per query.
 pub fn gatedLineCount(bytes: []const u8, nul: ?usize) u32 {
-    const gated = if (nul) |n| bytes[0 .. (n / grepfile.BUFCAP) * grepfile.BUFCAP] else bytes;
+    const gated = gatedBody(bytes, nul);
     if (gated.len == 0) return 0;
     var n: u32 = @intCast(std.mem.count(u8, gated, "\n"));
     if (gated[gated.len - 1] != '\n') n += 1;

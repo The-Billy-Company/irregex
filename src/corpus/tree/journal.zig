@@ -12,7 +12,7 @@
 //! instead of a whole-tree walk.
 //!
 //! PURE ACCELERATOR, NEVER A CORRECTNESS DEPENDENCY (the exact posture of the
-//! resident watcher in `surface/exec/session/watch.zig`, whose dlopen'd
+//! resident watcher in `surface/exec/session/watch/watch.zig`, whose dlopen'd
 //! framework surface this mirrors — runtime `dlopen`, never link-time, so the
 //! cold search binary keeps zero framework load commands). Every uncertainty
 //! degrades to "journal can't answer" and the caller runs the proven walk:

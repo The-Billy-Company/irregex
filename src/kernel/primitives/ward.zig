@@ -28,8 +28,35 @@
 //!
 //! Writer-preferring, inherited from `std.Io.RwLock`: a pending writer parks new
 //! readers on the mutex, so a stream of readers can't starve a queued refresh.
+//!
+//! Its smaller sibling `Latch` covers the case a `Ward` cannot: a critical
+//! section entered from a thread that has no `std.Io` handle at all.
 
 const std = @import("std");
+
+/// Mutual exclusion for threads with **no `std.Io` handle** — an OS watcher
+/// thread, a signal-adjacent callback, a process-lifetime symbol cache — where
+/// `Ward`/`Io.Mutex` are simply unavailable. A plain atomic swap loop is then
+/// the honest primitive, and it is honest ONLY under the discipline this type
+/// enforces by existing: every critical section is a handful of map/field
+/// operations, bounded and allocation-shaped at worst, never a syscall or a
+/// wait. Callers get `lock`/`unlock` and never touch a raw ordering, so the
+/// `.acquire`/`.release` pair lives here once instead of at each ledger.
+///
+/// Not recursive and not fair: taking it twice on one thread deadlocks, and a
+/// contended waiter spins rather than parking. Both are correct for sections
+/// this short and wrong for anything longer — reach for `Ward` there.
+pub const Latch = struct {
+    held: std.atomic.Value(bool) = .init(false),
+
+    pub fn lock(self: *Latch) void {
+        while (self.held.swap(true, .acquire)) std.atomic.spinLoopHint();
+    }
+
+    pub fn unlock(self: *Latch) void {
+        self.held.store(false, .release);
+    }
+};
 
 /// The error set of a `refresh` callback (`fn (ctx) E!void`), lifted out so a
 /// `reconcileHeld` result can carry `?E` beside a still-held lease.

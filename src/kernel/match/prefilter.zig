@@ -153,7 +153,7 @@ pub fn caselessVariants(a: std.mem.Allocator, lit: []const u8, unicode: bool) er
 /// Escape a fixed string into regex source, for the caseless `-F -i` path where
 /// the trigram prefilter is unsafe (see `foldClosedWindow`) and the regex engine
 /// must apply the case fold. `pub` because the warm lines renderer
-/// (`surface/exec/session/render.zig`) and the cold `-F` path both build their
+/// (`surface/exec/session/facet/render.zig`) and the cold `-F` path both build their
 /// emission `Matcher` from the SAME escaped form, so they cannot drift.
 pub fn escapeLiteral(a: std.mem.Allocator, pat: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;

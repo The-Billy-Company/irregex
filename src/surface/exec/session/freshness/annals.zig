@@ -32,12 +32,13 @@
 //! journal answer describe the same corpus surface.
 //!
 //! Threading: `note`/`noteDoubt` run on the watcher (or FlushSync caller)
-//! thread, `since` on the serve thread; the same bounded-critical-section
-//! spinlock as the dirty log guards the map (the watcher thread has no
-//! `std.Io` handle for an `Io.Mutex`).
+//! thread, `since` on the serve thread; the same shared `Latch` the dirty log
+//! takes guards the map (the watcher thread has no `std.Io` handle for an
+//! `Io.Mutex`).
 
 const std = @import("std");
-const haystack = @import("../../../corpus/tree/haystack.zig");
+const haystack = @import("../../../../corpus/tree/haystack.zig");
+const Latch = @import("../../../../kernel/primitives/ward.zig").Latch;
 
 /// Distinct-path bound. Half again the journal replay's 8192-change answer
 /// cap: a ledger this full means tree-wide churn where the amend's own drift
@@ -65,7 +66,7 @@ pub const Snapshot = struct {
 
 pub const Annals = struct {
     gpa: std.mem.Allocator,
-    locked: std.atomic.Value(bool) = .init(false),
+    mu: Latch = .{},
     /// Repo-relative path (gpa-owned key) → wall instant of its LAST noted
     /// delivery. Delivery is at/after occurrence, so filtering deliveries
     /// `>= since` keeps every path that OCCURRED at/after `since` (a sound
@@ -93,22 +94,14 @@ pub const Annals = struct {
         if (self.prefix) |p| self.gpa.free(p);
     }
 
-    fn lock(self: *Annals) void {
-        while (self.locked.swap(true, .acquire)) std.atomic.spinLoopHint();
-    }
-
-    fn unlock(self: *Annals) void {
-        self.locked.store(false, .release);
-    }
-
     /// Arm the delivery prefix — called BEFORE the watcher stream starts, so no
     /// delivery is ever dropped for want of a prefix (a note before coverage
     /// opens is harmless: the floor still gates every query). OOM on the copy
     /// leaves the ledger unarmed — never answerable, still sound.
     pub fn arm(self: *Annals, abs_root: []const u8) void {
         const owned = self.gpa.dupe(u8, abs_root) catch return;
-        self.lock();
-        defer self.unlock();
+        self.mu.lock();
+        defer self.mu.unlock();
         if (self.prefix) |p| self.gpa.free(p); // a re-armed watcher replaces it
         self.prefix = owned;
     }
@@ -117,8 +110,8 @@ pub const Annals = struct {
     /// `coverage_start_ns` (captured AFTER the stream started, so every event
     /// at/after it is delivered — and, `arm` having run first, noted).
     pub fn openCoverage(self: *Annals, coverage_start_ns: i128) void {
-        self.lock();
-        defer self.unlock();
+        self.mu.lock();
+        defer self.mu.unlock();
         self.floor_ns = coverage_start_ns;
     }
 
@@ -126,8 +119,8 @@ pub const Annals = struct {
     /// journal replay has deposited every change in (older_ns, now) via `seed`,
     /// queries older than the stream-live instant become answerable too.
     pub fn extendCoverage(self: *Annals, older_ns: i128) void {
-        self.lock();
-        defer self.unlock();
+        self.mu.lock();
+        defer self.mu.unlock();
         self.floor_ns = @min(self.floor_ns, older_ns);
     }
 
@@ -139,8 +132,8 @@ pub const Annals = struct {
     /// WITHOUT extending coverage — the ledger stays sound, just younger).
     pub fn seed(self: *Annals, rel: []const u8, ts_ns: i128) bool {
         if (rel.len == 0 or haystack.underSkippedDir(rel)) return true;
-        self.lock();
-        defer self.unlock();
+        self.mu.lock();
+        defer self.mu.unlock();
         if (self.map.getPtr(rel)) |ts| {
             ts.* = @max(ts.*, ts_ns); // a live delivery already outran the seed
             return true;
@@ -162,8 +155,8 @@ pub const Annals = struct {
     /// prefix is the OS disagreeing with the stream's scope — sticky doubt,
     /// exactly like the journal replay. OOM while noting is doubt too.
     pub fn note(self: *Annals, abs: []const u8, now_ns: i128) void {
-        self.lock();
-        defer self.unlock();
+        self.mu.lock();
+        defer self.mu.unlock();
         if (self.doubt) return;
         const pfx = self.prefix orelse return; // unarmed: unanswerable anyway
         const rel = relativize(pfx, abs) orelse {
@@ -189,8 +182,8 @@ pub const Annals = struct {
     /// An event the backend cannot attribute to exact paths: poison the
     /// ledger for the daemon's lifetime (no walk exists here to recover).
     pub fn noteDoubt(self: *Annals) void {
-        self.lock();
-        defer self.unlock();
+        self.mu.lock();
+        defer self.mu.unlock();
         self.doubt = true;
     }
 
@@ -232,8 +225,8 @@ pub const Annals = struct {
     /// ledger cannot vouch (unarmed, poisoned, or `since_ns` predates the
     /// floor). The caller owns the snapshot (`Snapshot.deinit`).
     pub fn since(self: *Annals, gpa: std.mem.Allocator, since_ns: i128) ?Snapshot {
-        self.lock();
-        defer self.unlock();
+        self.mu.lock();
+        defer self.mu.unlock();
         const pfx = self.prefix orelse return null;
         if (self.doubt or since_ns < self.floor_ns) return null;
         return self.collect(gpa, pfx, since_ns) catch null; // OOM = cannot vouch

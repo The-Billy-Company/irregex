@@ -37,9 +37,10 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const resident = @import("resident.zig");
-const truth = @import("truth.zig");
+const resident = @import("../warm/resident.zig");
+const truth = @import("../warm/truth.zig");
 const watch = @import("watch.zig");
+const fault = @import("../../../../fault.zig");
 const Dir = std.Io.Dir;
 
 const ResidentSession = resident.ResidentSession;
@@ -56,13 +57,13 @@ const Tree = struct {
 
     fn init(a: std.mem.Allocator, io: std.Io, tag: []const u8, seed: usize) !Tree {
         const root = try std.fmt.allocPrint(a, "/tmp/gist_kq_{s}_{x}", .{ tag, seed });
-        Dir.cwd().deleteTree(io, root) catch {};
+        fault.spare("clear leftover fixture", Dir.cwd().deleteTree(io, root));
         try Dir.cwd().createDirPath(io, root);
         return .{ .root = root, .io = io, .a = a };
     }
 
     fn deinit(self: *Tree) void {
-        Dir.cwd().deleteTree(self.io, self.root) catch {};
+        fault.spare("remove fixture", Dir.cwd().deleteTree(self.io, self.root));
         self.live.deinit(self.a);
     }
 

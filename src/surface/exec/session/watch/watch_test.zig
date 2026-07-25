@@ -11,16 +11,17 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const resident = @import("resident.zig");
+const resident = @import("../warm/resident.zig");
 const watch = @import("watch.zig");
-const request = @import("request.zig");
+const request = @import("../answer/request.zig");
+const fault = @import("../../../../fault.zig");
 const Dir = std.Io.Dir;
 
 const ResidentSession = resident.ResidentSession;
 
 fn makeTree(a: std.mem.Allocator, io: std.Io, tag: []const u8, seed: usize) ![]const u8 {
     const root = try std.fmt.allocPrint(a, "/tmp/gist_watch_{s}_{x}", .{ tag, seed });
-    Dir.cwd().deleteTree(io, root) catch {};
+    fault.spare("clear leftover fixture", Dir.cwd().deleteTree(io, root));
     try Dir.cwd().createDirPath(io, root);
     try Dir.cwd().writeFile(io, .{ .sub_path = try std.fmt.allocPrint(a, "{s}/a.txt", .{root}), .data = "needle here\n" });
     return root;
@@ -35,7 +36,7 @@ test "barrier: an armed, event-free query flips clean; markDirty clears it" {
     defer fixture.deinit();
 
     const root = try makeTree(fixture.allocator(), io, "barrier", @intFromPtr(&threaded));
-    defer Dir.cwd().deleteTree(io, root) catch {};
+    defer fault.spare("clear leftover fixture", Dir.cwd().deleteTree(io, root));
 
     var session = try ResidentSession.init(gpa, io, &.{root});
     defer session.deinit();
@@ -48,7 +49,7 @@ test "barrier: an armed, event-free query flips clean; markDirty clears it" {
     {
         var q = std.heap.ArenaAllocator.init(gpa);
         defer q.deinit();
-        const r = try session.query(q.allocator(), .{ .pattern = "needle", .mode = .files, .fixed = true });
+        const r = (try session.query(q.allocator(), .{ .pattern = "needle", .mode = .files, .fixed = true })).got;
         try std.testing.expectEqual(@as(usize, 1), r.files.len);
     }
     // An armed reconcile with no racing event flips the clean fast path on.
@@ -61,7 +62,7 @@ test "barrier: an armed, event-free query flips clean; markDirty clears it" {
     {
         var q = std.heap.ArenaAllocator.init(gpa);
         defer q.deinit();
-        const r = try session.query(q.allocator(), .{ .pattern = "needle", .mode = .files, .fixed = true });
+        const r = (try session.query(q.allocator(), .{ .pattern = "needle", .mode = .files, .fixed = true })).got;
         try std.testing.expectEqual(@as(usize, 1), r.files.len); // still correct
     }
     try std.testing.expect(session.seqlock.provenClean()); // re-proven clean
@@ -76,7 +77,7 @@ test "Watcher.start/stop arms only a causally complete backend" {
     defer fixture.deinit();
 
     const root = try makeTree(fixture.allocator(), io, "lifecycle", @intFromPtr(&threaded));
-    defer Dir.cwd().deleteTree(io, root) catch {};
+    defer fault.spare("clear leftover fixture", Dir.cwd().deleteTree(io, root));
 
     var session = try ResidentSession.init(gpa, io, &.{root});
     defer session.deinit();
@@ -97,6 +98,6 @@ test "Watcher.start/stop arms only a causally complete backend" {
 
     var q = std.heap.ArenaAllocator.init(gpa);
     defer q.deinit();
-    const r = try session.query(q.allocator(), .{ .pattern = "needle", .mode = .files, .fixed = true });
+    const r = (try session.query(q.allocator(), .{ .pattern = "needle", .mode = .files, .fixed = true })).got;
     try std.testing.expectEqual(@as(usize, 1), r.files.len);
 }

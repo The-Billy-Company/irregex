@@ -38,9 +38,18 @@
 //! drain that saw it).
 
 const std = @import("std");
-const ignore = @import("../../../corpus/tree/ignore.zig");
-const grepfile = @import("../cold/read/grepfile.zig");
+const ignore = @import("../../../../corpus/tree/ignore.zig");
+const paths = @import("../../../../corpus/scope/paths.zig");
+const grepfile = @import("../../cold/read/grepfile.zig");
 const Dir = std.Io.Dir;
+const realpathAlloc = paths.realpathAlloc;
+
+/// Reading the ignore chain from disk can run out of memory, and this resolver
+/// runs inside `irregex_search`'s reconcile — so it RETURNS that rather than
+/// exiting the embedding host (ADR-373 law 1). It is not a `.needs_full`:
+/// declining to the full walk would only hit the same wall with the fault
+/// laundered into a slower path.
+const Oom = std.mem.Allocator.Error;
 
 /// One resolved watcher path, in KEY SPACE (the exact path-string dialect the
 /// session's corpus keys use: `prefix-joined-from-root`, CWD-relative when the
@@ -78,11 +87,11 @@ pub const Delta = struct {
 
     /// `a` should be a per-drain arena: every internal allocation (ignore
     /// rules, mappings, verdict strings) lives exactly one batch.
-    pub fn init(a: std.mem.Allocator, io: std.Io, roots: []const []const u8) Delta {
+    pub fn init(a: std.mem.Allocator, io: std.Io, roots: []const []const u8) Oom!Delta {
         var self = Delta{
             .a = a,
             .io = io,
-            .ig = ignore.Ignore.init(a, io, .{}, roots),
+            .ig = try ignore.Ignore.init(a, io, .{}, roots),
             .maps = &.{},
             .roots = roots,
             .enabled = false,
@@ -97,7 +106,7 @@ pub const Delta = struct {
     /// `realpath` canonicalizes ASCII case and firmlinks) whenever the path
     /// still exists; a vanished path keeps the event's spelling and is
     /// reconciled case-insensitively by the caller via `keyIsCurrent`.
-    pub fn resolve(self: *Delta, abs: []const u8) Verdict {
+    pub fn resolve(self: *Delta, abs: []const u8) Oom!Verdict {
         const canon = realpathAlloc(self.a, abs) orelse abs;
         const rel = self.keyFor(canon, false) orelse return .needs_full;
         if (rel.len == 0) return .needs_full; // the walk root itself
@@ -114,14 +123,14 @@ pub const Delta = struct {
     /// file? (Regular file on disk + every ancestor directory descended + the
     /// leaf not ignored/hidden.) The membership half of the freshness proof —
     /// `.file` — plus the disk-truth verdicts for everything else `rel` may be.
-    fn statVerdict(self: *Delta, rel: []const u8) Verdict {
+    fn statVerdict(self: *Delta, rel: []const u8) Oom!Verdict {
         // `lstat` mode bits (never following a symlink — the walk treats a
         // symlink as absent), null when the path is gone/unreachable. Rides the
         // shared portable raw-stat shim (`grepfile.lstatPath`).
         const st = grepfile.lstatPath(rel) orelse return .{ .gone = rel };
         if (std.posix.S.ISDIR(st.mode)) return .{ .subtree = rel };
         if (!std.posix.S.ISREG(st.mode)) return .{ .gone = rel };
-        return if (self.fileAdmitted(rel)) .{ .file = rel } else .{ .gone = rel };
+        return if (try self.fileAdmitted(rel)) .{ .file = rel } else .{ .gone = rel };
     }
 
     /// Is corpus key `rel` still a current, canonically-spelled member of the
@@ -130,8 +139,8 @@ pub const Delta = struct {
     /// case-insensitive filesystem a stale spelling (`Lib/x` after a
     /// case-rename to `lib/x`) resolves but is NOT current, and must be
     /// tombstoned so the freshly-read spelling isn't reported twice.
-    pub fn keyIsCurrent(self: *Delta, rel: []const u8) bool {
-        if (self.statVerdict(rel) != .file) return false;
+    pub fn keyIsCurrent(self: *Delta, rel: []const u8) Oom!bool {
+        if (try self.statVerdict(rel) != .file) return false;
         const canon = realpathAlloc(self.a, rel) orelse return false;
         const back = self.keyFor(canon, false) orelse return false;
         return std.mem.eql(u8, back, rel);
@@ -144,7 +153,7 @@ pub const Delta = struct {
     /// and exits 2, so a silently gapped subtree may never look clean.
     pub fn walkSubtree(self: *Delta, rel: []const u8, sink: *std.StringHashMapUnmanaged(void)) error{ NeedFull, OutOfMemory }!void {
         const root = self.rootOf(rel) orelse return error.NeedFull;
-        if (!self.chainAdmitted(root, rel)) return;
+        if (!try self.chainAdmitted(root, rel)) return;
         var d = Dir.cwd().openDir(self.io, rel, .{ .iterate = true }) catch |e| switch (e) {
             error.FileNotFound, error.NotDir => return, // vanished since resolve — scope is empty
             else => return error.NeedFull,
@@ -171,9 +180,9 @@ pub const Delta = struct {
     /// own ignore files in walk order (check the entry against the rules
     /// loaded so far, THEN load its own file before descending), exactly like
     /// `walkDirLinked`. `dir` is the deepest directory to admit.
-    fn chainAdmitted(self: *Delta, root: []const u8, dir: []const u8) bool {
+    fn chainAdmitted(self: *Delta, root: []const u8, dir: []const u8) Oom!bool {
         self.ig.scopeToRoot(root);
-        if (root.len != 0) self.ig.loadDir(root, root); // walkDir's first act per root
+        if (root.len != 0) try self.ig.loadDir(root, root); // walkDir's first act per root
         if (dir.len <= root.len) return true; // the root itself: chain is empty
         var i: usize = if (root.len == 0) 0 else root.len + 1;
         while (i <= dir.len) {
@@ -181,7 +190,7 @@ pub const Delta = struct {
             const prefix = dir[0..slash];
             const base = prefix[i..];
             if (self.ig.shouldSkip(prefix, true, base, false, false)) return false;
-            self.ig.loadDir(prefix, prefix);
+            try self.ig.loadDir(prefix, prefix);
             i = slash + 1;
         }
         return true;
@@ -190,10 +199,10 @@ pub const Delta = struct {
     /// The leaf admission test: ancestor chain descended + the file itself not
     /// ignored/hidden. Mirrors the walk's `.file` arm with default `Opts`
     /// (no globs/types, so both whitelist overrides are false).
-    fn fileAdmitted(self: *Delta, rel: []const u8) bool {
+    fn fileAdmitted(self: *Delta, rel: []const u8) Oom!bool {
         const root = self.rootOf(rel) orelse return false;
         const cut = std.mem.lastIndexOfScalar(u8, rel, '/');
-        if (!self.chainAdmitted(root, if (cut) |s| rel[0..s] else "")) return false;
+        if (!try self.chainAdmitted(root, if (cut) |s| rel[0..s] else "")) return false;
         const base = if (cut) |s| rel[s + 1 ..] else rel;
         return !self.ig.shouldSkip(rel, false, base, false, false);
     }
@@ -209,7 +218,7 @@ pub const Delta = struct {
             const child = try std.fmt.allocPrint(self.a, "{s}/{s}", .{ dir_rel, e.name });
             switch (e.kind) {
                 .directory => if (!self.ig.shouldSkip(child, true, e.name, false, false)) {
-                    self.ig.loadDir(child, child);
+                    try self.ig.loadDir(child, child);
                     try self.enumerate(child, sink);
                 },
                 .file => if (!self.ig.shouldSkip(child, false, e.name, false, false)) {
@@ -322,16 +331,6 @@ fn foldOverlap(x: []const u8, y: []const u8) bool {
         (long.len == short.len or long[short.len] == '/');
 }
 
-/// POSIX `realpath(3)` into an `a`-owned copy; null when unresolvable. On
-/// macOS this also canonicalizes ASCII case and `/tmp`-style firmlinks, which
-/// is exactly the aliasing oracle `resolve`/`keyIsCurrent` lean on.
-fn realpathAlloc(a: std.mem.Allocator, path: []const u8) ?[]const u8 {
-    const cpath = std.posix.toPosixPath(path) catch return null;
-    var buf: [std.posix.PATH_MAX]u8 = undefined;
-    const resolved = std.c.realpath(&cpath, &buf) orelse return null;
-    return a.dupe(u8, std.mem.sliceTo(resolved, 0)) catch null;
-}
-
 test "classify: ignore sources and .git topology demand the walk, internals don't" {
     const t = std.testing;
     try t.expectEqual(Class.semantics, classify(".gitignore"));
@@ -345,7 +344,7 @@ test "classify: ignore sources and .git topology demand the walk, internals don'
     try t.expectEqual(Class.noise, classify(".git/index.lock"));
     try t.expectEqual(Class.noise, classify(".git/objects/ab/cdef"));
     try t.expectEqual(Class.noise, classify("nested/.git/HEAD"));
-    try t.expectEqual(Class.normal, classify("src/surface/exec/session/delta.zig"));
+    try t.expectEqual(Class.normal, classify("src/surface/exec/session/freshness/delta.zig"));
     try t.expectEqual(Class.normal, classify("gitignore.md")); // substring, not component
 }
 

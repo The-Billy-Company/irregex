@@ -13,7 +13,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const resident = @import("resident.zig");
-const request = @import("request.zig");
+const request = @import("../answer/request.zig");
+const fault = @import("../../../../fault.zig");
 const Dir = std.Io.Dir;
 
 const ResidentSession = resident.ResidentSession;
@@ -27,13 +28,13 @@ const Tree = struct {
 
     fn init(a: std.mem.Allocator, io: std.Io, tag: []const u8, seed: usize) !Tree {
         const root = try std.fmt.allocPrint(a, "/tmp/gist_resident_{s}_{x}", .{ tag, seed });
-        Dir.cwd().deleteTree(io, root) catch {};
+        fault.spare("clear leftover fixture", Dir.cwd().deleteTree(io, root));
         try Dir.cwd().createDirPath(io, root);
         return .{ .root = root, .io = io, .a = a };
     }
 
     fn deinit(self: *Tree) void {
-        Dir.cwd().deleteTree(self.io, self.root) catch {};
+        fault.spare("remove fixture", Dir.cwd().deleteTree(self.io, self.root));
     }
 
     fn write(self: *Tree, rel: []const u8, data: []const u8) !void {
@@ -78,7 +79,7 @@ fn expectFileSet(tree: *Tree, files: []const []const u8, rels: []const []const u
 }
 
 fn queryFiles(session: *ResidentSession, arena: std.mem.Allocator, req: request.Request) ![]const []const u8 {
-    const r = try session.query(arena, req);
+    const r = (try session.query(arena, req)).got;
     return r.files;
 }
 
@@ -106,7 +107,7 @@ test "resident: files + count match ground truth over a warm tree" {
 
     var q2 = std.heap.ArenaAllocator.init(gpa);
     defer q2.deinit();
-    const counted = try session.query(q2.allocator(), .{ .pattern = "needle", .mode = .count, .fixed = true });
+    const counted = (try session.query(q2.allocator(), .{ .pattern = "needle", .mode = .count, .fixed = true })).got;
     try std.testing.expectEqual(@as(u64, 3), counted.count);
 }
 
@@ -238,7 +239,7 @@ test "resident: queryLines renders the cold default frame (path:text, -n, RYW)" 
     {
         var q = std.heap.ArenaAllocator.init(gpa);
         defer q.deinit();
-        const ans = try session.queryLines(q.allocator(), .{ .pattern = "needle", .mode = .lines, .fixed = true });
+        const ans = (try session.queryLines(q.allocator(), .{ .pattern = "needle", .mode = .lines, .fixed = true })).got;
         try std.testing.expect(ans.matched);
         const want = try std.fmt.allocPrint(q.allocator(), "{s}/a.txt:needle one\n{s}/b.txt:needle two\n{s}/b.txt:needle three\n", .{ tree.root, tree.root, tree.root });
         try std.testing.expectEqualStrings(want, ans.out);
@@ -248,7 +249,7 @@ test "resident: queryLines renders the cold default frame (path:text, -n, RYW)" 
     {
         var q = std.heap.ArenaAllocator.init(gpa);
         defer q.deinit();
-        const ans = try session.queryLines(q.allocator(), .{ .pattern = "needle", .mode = .lines, .fixed = true, .line_num = true });
+        const ans = (try session.queryLines(q.allocator(), .{ .pattern = "needle", .mode = .lines, .fixed = true, .line_num = true })).got;
         const want = try std.fmt.allocPrint(q.allocator(), "{s}/a.txt:2:needle one\n{s}/b.txt:1:needle two\n{s}/b.txt:3:needle three\n", .{ tree.root, tree.root, tree.root });
         try std.testing.expectEqualStrings(want, ans.out);
     }
@@ -259,7 +260,7 @@ test "resident: queryLines renders the cold default frame (path:text, -n, RYW)" 
     {
         var q = std.heap.ArenaAllocator.init(gpa);
         defer q.deinit();
-        const ans = try session.queryLines(q.allocator(), .{ .pattern = "needle late", .mode = .lines, .fixed = true });
+        const ans = (try session.queryLines(q.allocator(), .{ .pattern = "needle late", .mode = .lines, .fixed = true })).got;
         try std.testing.expect(ans.matched);
         const want = try std.fmt.allocPrint(q.allocator(), "{s}/c.txt:needle late\n", .{tree.root});
         try std.testing.expectEqualStrings(want, ans.out);
@@ -269,7 +270,7 @@ test "resident: queryLines renders the cold default frame (path:text, -n, RYW)" 
     {
         var q = std.heap.ArenaAllocator.init(gpa);
         defer q.deinit();
-        const ans = try session.queryLines(q.allocator(), .{ .pattern = "absent-needle", .mode = .lines, .fixed = true });
+        const ans = (try session.queryLines(q.allocator(), .{ .pattern = "absent-needle", .mode = .lines, .fixed = true })).got;
         try std.testing.expect(!ans.matched);
         try std.testing.expectEqualStrings("", ans.out);
     }
@@ -278,7 +279,10 @@ test "resident: queryLines renders the cold default frame (path:text, -n, RYW)" 
     {
         var q = std.heap.ArenaAllocator.init(gpa);
         defer q.deinit();
-        try std.testing.expectError(error.Stale, session.query(q.allocator(), .{ .pattern = "needle", .mode = .lines, .fixed = true }));
+        try std.testing.expectEqual(
+            fault.Decline.freshness_unprovable,
+            (try session.query(q.allocator(), .{ .pattern = "needle", .mode = .lines, .fixed = true })).declined,
+        );
     }
 }
 
@@ -320,13 +324,13 @@ test "resident: binary docs follow cold's per-mode NUL policy (faithful mirror)"
     {
         var q = std.heap.ArenaAllocator.init(gpa);
         defer q.deinit();
-        const counted = try session.query(q.allocator(), .{ .pattern = "needle", .mode = .count, .fixed = true });
+        const counted = (try session.query(q.allocator(), .{ .pattern = "needle", .mode = .count, .fixed = true })).got;
         try std.testing.expectEqual(@as(u64, 1), counted.count); // plain.txt only
     }
     {
         var q = std.heap.ArenaAllocator.init(gpa);
         defer q.deinit();
-        const ans = try session.queryLines(q.allocator(), .{ .pattern = "needle", .mode = .lines, .fixed = true });
+        const ans = (try session.queryLines(q.allocator(), .{ .pattern = "needle", .mode = .lines, .fixed = true })).got;
         try std.testing.expect(ans.matched);
         const late = try tree.abs("late.dat");
         const plain = try tree.abs("plain.txt");
@@ -497,10 +501,10 @@ test "resident: the sharded positive faces answer ground truth over a >256KiB co
         var q = std.heap.ArenaAllocator.init(gpa);
         defer q.deinit();
         // d0000 rewritten to 1 matching line; the other 299 keep 10 ⇒ 2991.
-        const counted = try session.query(q.allocator(), .{ .pattern = "needle", .mode = .count, .fixed = true });
+        const counted = (try session.query(q.allocator(), .{ .pattern = "needle", .mode = .count, .fixed = true })).got;
         try std.testing.expectEqual(@as(u64, 299 * 10 + 1), counted.count);
         // Per-file cap composes with the shard merge: min(hits,2) summed.
-        const capped = try session.query(q.allocator(), .{ .pattern = "needle", .mode = .count, .fixed = true, .max_count = 2 });
+        const capped = (try session.query(q.allocator(), .{ .pattern = "needle", .mode = .count, .fixed = true, .max_count = 2 })).got;
         try std.testing.expectEqual(@as(u64, 299 * 2 + 1), capped.count);
     }
     // ── FFI record stream (sharded): 2991 records, strictly ascending order ──
@@ -508,7 +512,7 @@ test "resident: the sharded positive faces answer ground truth over a >256KiB co
         var q = std.heap.ArenaAllocator.init(gpa);
         defer q.deinit();
         var sink = OrderSink{ .a = q.allocator() };
-        const any = try session.search(q.allocator(), .{ .pattern = "needle", .mode = .files, .fixed = true }, &sink);
+        const any = (try session.search(q.allocator(), .{ .pattern = "needle", .mode = .files, .fixed = true }, &sink)).got;
         try std.testing.expect(any);
         try std.testing.expect(sink.ordered);
         try std.testing.expectEqual(@as(usize, 299 * 10 + 1), sink.n);
@@ -517,7 +521,7 @@ test "resident: the sharded positive faces answer ground truth over a >256KiB co
     {
         var q = std.heap.ArenaAllocator.init(gpa);
         defer q.deinit();
-        const ans = try session.queryLines(q.allocator(), .{ .pattern = "needle", .mode = .lines, .fixed = true });
+        const ans = (try session.queryLines(q.allocator(), .{ .pattern = "needle", .mode = .lines, .fixed = true })).got;
         try std.testing.expect(ans.matched);
         try std.testing.expectEqual(@as(usize, 299 * 10 + 1), std.mem.count(u8, ans.out, "\n"));
     }
@@ -560,7 +564,7 @@ test "resident: a hosted cancel bounds the doc gather before the first emit" {
     // Baseline: an un-tripped budget ⇒ the stream reaches emit (halts at #1).
     var token = resident.CancelToken{};
     var live = BudgetSink{ .cancel = &token };
-    const any_live = try session.search(q.allocator(), req, &live);
+    const any_live = (try session.search(q.allocator(), req, &live)).got;
     try std.testing.expectEqual(@as(usize, 1), live.emits);
     try std.testing.expect(any_live);
 
@@ -568,7 +572,7 @@ test "resident: a hosted cancel bounds the doc gather before the first emit" {
     // never reached — a clean empty result, no error, no crash.
     token.cancel();
     var cancelled = BudgetSink{ .cancel = &token };
-    const any_cancelled = try session.search(q.allocator(), req, &cancelled);
+    const any_cancelled = (try session.search(q.allocator(), req, &cancelled)).got;
     try std.testing.expectEqual(@as(usize, 0), cancelled.emits);
     try std.testing.expect(!any_cancelled);
 }
@@ -632,13 +636,13 @@ test "resident: -w applies cold's exact word rule on every answer face" {
     {
         var q = std.heap.ArenaAllocator.init(gpa);
         defer q.deinit();
-        const counted = try session.query(q.allocator(), .{ .pattern = "run", .mode = .count, .fixed = true, .word = true });
+        const counted = (try session.query(q.allocator(), .{ .pattern = "run", .mode = .count, .fixed = true, .word = true })).got;
         try std.testing.expectEqual(@as(u64, 2), counted.count); // a.txt both lines
-        const punct = try session.query(q.allocator(), .{ .pattern = "\\.", .mode = .count, .word = true });
+        const punct = (try session.query(q.allocator(), .{ .pattern = "\\.", .mode = .count, .word = true })).got;
         try std.testing.expectEqual(@as(u64, 1), punct.count); // `a . b` yes, `.dot` no
-        const rep = try session.query(q.allocator(), .{ .pattern = "aa", .mode = .count, .fixed = true, .word = true });
+        const rep = (try session.query(q.allocator(), .{ .pattern = "aa", .mode = .count, .fixed = true, .word = true })).got;
         try std.testing.expectEqual(@as(u64, 1), rep.count); // ` aa aaa` yes, `aaaa` no
-        const star = try session.query(q.allocator(), .{ .pattern = "x*", .mode = .count, .word = true });
+        const star = (try session.query(q.allocator(), .{ .pattern = "x*", .mode = .count, .word = true })).got;
         try std.testing.expectEqual(@as(u64, 1), star.count); // `x x` yes; every zero-width-only line no
     }
     // ── case composition: -w with -i / smart-case; word runs on original bytes ──
@@ -656,7 +660,7 @@ test "resident: -w applies cold's exact word rule on every answer face" {
     {
         var q = std.heap.ArenaAllocator.init(gpa);
         defer q.deinit();
-        const ans = try session.queryLines(q.allocator(), .{ .pattern = "run", .mode = .lines, .fixed = true, .word = true });
+        const ans = (try session.queryLines(q.allocator(), .{ .pattern = "run", .mode = .lines, .fixed = true, .word = true })).got;
         try std.testing.expect(ans.matched);
         const want = try std.fmt.allocPrint(q.allocator(), "{s}/a.txt:run runner\n{s}/a.txt:rerun run\n", .{ tree.root, tree.root });
         try std.testing.expectEqualStrings(want, ans.out);
@@ -666,7 +670,7 @@ test "resident: -w applies cold's exact word rule on every answer face" {
         var q = std.heap.ArenaAllocator.init(gpa);
         defer q.deinit();
         var sink = RecSink{ .a = q.allocator() };
-        const any = try session.search(q.allocator(), .{ .pattern = "run", .mode = .files, .fixed = true, .word = true }, &sink);
+        const any = (try session.search(q.allocator(), .{ .pattern = "run", .mode = .files, .fixed = true, .word = true }, &sink)).got;
         try std.testing.expect(any);
         // b.txt/c.txt boolean-match but emit NO records and never flip `any`;
         // a.txt line 2's rejected `rerun` span is absent, only ` run` remains.
@@ -677,7 +681,7 @@ test "resident: -w applies cold's exact word rule on every answer face" {
         var q = std.heap.ArenaAllocator.init(gpa);
         defer q.deinit();
         var sink = RecSink{ .a = q.allocator() };
-        const any = try session.search(q.allocator(), .{ .pattern = "aa", .mode = .files, .fixed = true, .word = true }, &sink);
+        const any = (try session.search(q.allocator(), .{ .pattern = "aa", .mode = .files, .fixed = true, .word = true }, &sink)).got;
         try std.testing.expect(any);
         // ` aa aaa`: [1,3) valid; the `aaa` occurrence [4,6) is word-rejected and
         // the non-overlapping scan finds nothing after it. `aaaa` emits nothing.
@@ -690,7 +694,7 @@ test "resident: -w applies cold's exact word rule on every answer face" {
         var q = std.heap.ArenaAllocator.init(gpa);
         defer q.deinit();
         var sink = RecSink{ .a = q.allocator() };
-        const any = try session.search(q.allocator(), .{ .pattern = "unner", .mode = .files, .fixed = true, .word = true }, &sink);
+        const any = (try session.search(q.allocator(), .{ .pattern = "unner", .mode = .files, .fixed = true, .word = true }, &sink)).got;
         try std.testing.expect(!any);
         try std.testing.expectEqualStrings("", sink.out.items);
     }
@@ -731,13 +735,13 @@ test "resident: -w composes with the binary pre-NUL slice per mode" {
     {
         var q = std.heap.ArenaAllocator.init(gpa);
         defer q.deinit();
-        const counted = try session.query(q.allocator(), .{ .pattern = "run", .mode = .count, .fixed = true, .word = true });
+        const counted = (try session.query(q.allocator(), .{ .pattern = "run", .mode = .count, .fixed = true, .word = true })).got;
         try std.testing.expectEqual(@as(u64, 1), counted.count); // plain.txt only (binaries suppressed)
     }
     {
         var q = std.heap.ArenaAllocator.init(gpa);
         defer q.deinit();
-        const ans = try session.queryLines(q.allocator(), .{ .pattern = "run", .mode = .lines, .fixed = true, .word = true });
+        const ans = (try session.queryLines(q.allocator(), .{ .pattern = "run", .mode = .lines, .fixed = true, .word = true })).got;
         try std.testing.expect(ans.matched);
         const late = try tree.abs("late.dat");
         const head = try std.fmt.allocPrint(q.allocator(), "{s}:run early\n", .{late});
@@ -769,16 +773,16 @@ test "resident: -q is an early-halting existence query (rg's quiet contract)" {
     defer session.deinit();
 
     // A present pattern exists; an absent one does not.
-    try std.testing.expect(try session.queryExists(.{ .pattern = "needle", .mode = .lines, .fixed = true }));
-    try std.testing.expect(!try session.queryExists(.{ .pattern = "absent-token", .mode = .lines, .fixed = true }));
+    try std.testing.expect((try session.queryExists(.{ .pattern = "needle", .mode = .lines, .fixed = true })).got);
+    try std.testing.expect(!(try session.queryExists(.{ .pattern = "absent-token", .mode = .lines, .fixed = true })).got);
     // `-q -i`: the fold makes an uppercase pattern find the lowercase file.
-    try std.testing.expect(try session.queryExists(.{ .pattern = "NEEDLE", .mode = .lines, .fixed = true, .ignore_case = true }));
+    try std.testing.expect((try session.queryExists(.{ .pattern = "NEEDLE", .mode = .lines, .fixed = true, .ignore_case = true })).got);
     // `-q -w`: `run` is only a substring of `rerunner` (no word boundary), so
     // the word gate flips a plain-true existence to false — the halt honors -w.
-    try std.testing.expect(try session.queryExists(.{ .pattern = "run", .mode = .lines, .fixed = true }));
-    try std.testing.expect(!try session.queryExists(.{ .pattern = "run", .mode = .lines, .fixed = true, .word = true }));
+    try std.testing.expect((try session.queryExists(.{ .pattern = "run", .mode = .lines, .fixed = true })).got);
+    try std.testing.expect(!(try session.queryExists(.{ .pattern = "run", .mode = .lines, .fixed = true, .word = true })).got);
     // `-q -m0`: rg matches nothing regardless of the pattern's presence.
-    try std.testing.expect(!try session.queryExists(.{ .pattern = "needle", .mode = .lines, .fixed = true, .max_count = 0 }));
+    try std.testing.expect(!(try session.queryExists(.{ .pattern = "needle", .mode = .lines, .fixed = true, .max_count = 0 })).got);
 }
 
 test "resident: -m N caps matching lines per file (count total, lines emit; -m0 nothing)" {
@@ -808,13 +812,13 @@ test "resident: -m N caps matching lines per file (count total, lines emit; -m0 
         var q = std.heap.ArenaAllocator.init(gpa);
         defer q.deinit();
         // Uncapped: 3 + 1 = 4.
-        try std.testing.expectEqual(@as(u64, 4), (try session.query(q.allocator(), .{ .pattern = "needle", .mode = .count, .fixed = true })).count);
+        try std.testing.expectEqual(@as(u64, 4), (try session.query(q.allocator(), .{ .pattern = "needle", .mode = .count, .fixed = true })).got.count);
         // -m2: min(3,2) + min(1,2) = 3.
-        try std.testing.expectEqual(@as(u64, 3), (try session.query(q.allocator(), .{ .pattern = "needle", .mode = .count, .fixed = true, .max_count = 2 })).count);
+        try std.testing.expectEqual(@as(u64, 3), (try session.query(q.allocator(), .{ .pattern = "needle", .mode = .count, .fixed = true, .max_count = 2 })).got.count);
         // -m1: 1 + 1 = 2 (each file capped to its first hit).
-        try std.testing.expectEqual(@as(u64, 2), (try session.query(q.allocator(), .{ .pattern = "needle", .mode = .count, .fixed = true, .max_count = 1 })).count);
+        try std.testing.expectEqual(@as(u64, 2), (try session.query(q.allocator(), .{ .pattern = "needle", .mode = .count, .fixed = true, .max_count = 1 })).got.count);
         // -m0: match nothing — total 0, no files.
-        const zero = try session.query(q.allocator(), .{ .pattern = "needle", .mode = .count, .fixed = true, .max_count = 0 });
+        const zero = (try session.query(q.allocator(), .{ .pattern = "needle", .mode = .count, .fixed = true, .max_count = 0 })).got;
         try std.testing.expectEqual(@as(u64, 0), zero.count);
     }
     // ── files face: N≥1 leaves the set unchanged; -m0 empties it ──
@@ -830,17 +834,17 @@ test "resident: -m N caps matching lines per file (count total, lines emit; -m0 
     {
         var q = std.heap.ArenaAllocator.init(gpa);
         defer q.deinit();
-        const ans = try session.queryLines(q.allocator(), .{ .pattern = "needle", .mode = .lines, .fixed = true, .max_count = 2 });
+        const ans = (try session.queryLines(q.allocator(), .{ .pattern = "needle", .mode = .lines, .fixed = true, .max_count = 2 })).got;
         try std.testing.expect(ans.matched);
         // a.txt capped to its first 2 lines; b.txt's 1 line unaffected.
         const want = try std.fmt.allocPrint(q.allocator(), "{s}/a.txt:needle a1\n{s}/a.txt:needle a2\n{s}/b.txt:needle b1\n", .{ tree.root, tree.root, tree.root });
         try std.testing.expectEqualStrings(want, ans.out);
         // -m1: exactly one row per matching file.
-        const one = try session.queryLines(q.allocator(), .{ .pattern = "needle", .mode = .lines, .fixed = true, .max_count = 1 });
+        const one = (try session.queryLines(q.allocator(), .{ .pattern = "needle", .mode = .lines, .fixed = true, .max_count = 1 })).got;
         const want1 = try std.fmt.allocPrint(q.allocator(), "{s}/a.txt:needle a1\n{s}/b.txt:needle b1\n", .{ tree.root, tree.root });
         try std.testing.expectEqualStrings(want1, one.out);
         // -m0: nothing, no match.
-        const zero = try session.queryLines(q.allocator(), .{ .pattern = "needle", .mode = .lines, .fixed = true, .max_count = 0 });
+        const zero = (try session.queryLines(q.allocator(), .{ .pattern = "needle", .mode = .lines, .fixed = true, .max_count = 0 })).got;
         try std.testing.expect(!zero.matched);
         try std.testing.expectEqualStrings("", zero.out);
     }
@@ -884,14 +888,14 @@ test "resident: smart-case resolves like cold's fold on every answer face" {
     {
         var q = std.heap.ArenaAllocator.init(gpa);
         defer q.deinit();
-        const counted = try session.query(q.allocator(), .{ .pattern = "needle", .mode = .count, .fixed = true, .smart_case = true });
+        const counted = (try session.query(q.allocator(), .{ .pattern = "needle", .mode = .count, .fixed = true, .smart_case = true })).got;
         try std.testing.expectEqual(@as(u64, 2), counted.count);
     }
     // The lines renderer folds identically (both rows, cold's frame).
     {
         var q = std.heap.ArenaAllocator.init(gpa);
         defer q.deinit();
-        const ans = try session.queryLines(q.allocator(), .{ .pattern = "needle", .mode = .lines, .fixed = true, .smart_case = true });
+        const ans = (try session.queryLines(q.allocator(), .{ .pattern = "needle", .mode = .lines, .fixed = true, .smart_case = true })).got;
         try std.testing.expect(ans.matched);
         const want = try std.fmt.allocPrint(q.allocator(), "{s}/lower.txt:the needle is here\n{s}/upper.txt:the Needle is HERE\n", .{ tree.root, tree.root });
         try std.testing.expectEqualStrings(want, ans.out);
@@ -948,14 +952,14 @@ test "resident: -P serves the PCRE2 engine warm on every answer face" {
     {
         var q = std.heap.ArenaAllocator.init(gpa);
         defer q.deinit();
-        const counted = try session.query(q.allocator(), .{ .pattern = "(\\w+) \\1", .mode = .count, .pcre = true });
+        const counted = (try session.query(q.allocator(), .{ .pattern = "(\\w+) \\1", .mode = .count, .pcre = true })).got;
         try std.testing.expectEqual(@as(u64, 1), counted.count); // dup.txt line 1 only
     }
     // ── lines face: the PCRE2 body renders through the cold default frame ──
     {
         var q = std.heap.ArenaAllocator.init(gpa);
         defer q.deinit();
-        const ans = try session.queryLines(q.allocator(), .{ .pattern = "foo(?=bar)", .mode = .lines, .pcre = true });
+        const ans = (try session.queryLines(q.allocator(), .{ .pattern = "foo(?=bar)", .mode = .lines, .pcre = true })).got;
         try std.testing.expect(ans.matched);
         const want = try std.fmt.allocPrint(q.allocator(), "{s}/look.txt:foobar here\n", .{tree.root});
         try std.testing.expectEqualStrings(want, ans.out);
@@ -1032,26 +1036,26 @@ test "resident: concurrent readers on the clean fast path all answer with serial
                 const a = q.allocator();
                 // files: exactly {a,b,d}; count: 1+2+0+1 = 4 matching lines;
                 // lines: renders and matches. Any torn read breaks one of these.
-                const fr = self.session.query(a, .{ .pattern = "needle", .mode = .files, .fixed = true }) catch {
+                const fr = (self.session.query(a, .{ .pattern = "needle", .mode = .files, .fixed = true }) catch {
                     self.failed = true;
                     return;
-                };
+                }).got;
                 if (fr.files.len != 3) {
                     self.failed = true;
                     return;
                 }
-                const cr = self.session.query(a, .{ .pattern = "needle", .mode = .count, .fixed = true }) catch {
+                const cr = (self.session.query(a, .{ .pattern = "needle", .mode = .count, .fixed = true }) catch {
                     self.failed = true;
                     return;
-                };
+                }).got;
                 if (cr.count != 4) {
                     self.failed = true;
                     return;
                 }
-                const ln = self.session.queryLines(a, .{ .pattern = "needle", .mode = .lines, .fixed = true }) catch {
+                const ln = (self.session.queryLines(a, .{ .pattern = "needle", .mode = .lines, .fixed = true }) catch {
                     self.failed = true;
                     return;
-                };
+                }).got;
                 if (!ln.matched) {
                     self.failed = true;
                     return;
@@ -1125,13 +1129,16 @@ test "resident: a churning writer never corrupts a concurrent reader's answer" {
             while (i < self.iters) : (i += 1) {
                 var q = std.heap.ArenaAllocator.init(self.gpa);
                 defer q.deinit();
-                const fr = self.session.query(q.allocator(), .{ .pattern = "NEEDLE", .mode = .files, .fixed = true }) catch |e| {
-                    // Heavy churn can momentarily race the walk into a decline
-                    // (`error.Stale`) — the client would answer cold. Sound, not
-                    // a corruption; only a WRONG set fails the test.
-                    if (e == error.Stale) continue;
+                const answer = self.session.query(q.allocator(), .{ .pattern = "NEEDLE", .mode = .files, .fixed = true }) catch {
                     self.failed = true;
                     return;
+                };
+                // Heavy churn can momentarily race the walk into a typed
+                // declinature — the client would answer cold. Sound, not a
+                // corruption; only a WRONG set fails the test.
+                const fr = switch (answer) {
+                    .declined => continue,
+                    .got => |got| got,
                 };
                 if (fr.files.len != 3) {
                     self.failed = true;
@@ -1184,12 +1191,12 @@ test "resident: a -t query declines when the type would un-hide a hidden file" {
     defer q.deinit();
     // `-t zig` (its glob is `*.zig`) un-hides `.hidden.zig`, which the mirror
     // lacks — the warm path must refuse and let the client answer cold.
-    try std.testing.expectError(error.Stale, session.query(q.allocator(), .{
+    try std.testing.expectEqual(fault.Decline.freshness_unprovable, (try session.query(q.allocator(), .{
         .pattern = "needle",
         .mode = .files,
         .fixed = true,
         .filter = .{ .exts = &.{"*.zig"} },
-    }));
+    })).declined);
 }
 
 test "resident: a -t query stays warm when no extra matches the type (no over-decline)" {
@@ -1242,12 +1249,12 @@ test "resident: -g un-ignores (declines) but -t never un-ignores (stays warm)" {
     {
         var q = std.heap.ArenaAllocator.init(gpa);
         defer q.deinit();
-        try std.testing.expectError(error.Stale, session.query(q.allocator(), .{
+        try std.testing.expectEqual(fault.Decline.freshness_unprovable, (try session.query(q.allocator(), .{
             .pattern = "needle",
             .mode = .files,
             .fixed = true,
             .filter = .{ .includes = &.{"*.zig"} },
-        }));
+        })).declined);
     }
     // `-t zig` never un-ignores, so the warm answer (only `keep.zig`) matches cold.
     {

@@ -24,17 +24,17 @@
 const std = @import("std");
 // `hasUpper` only — shared smart-case authority with cold's finalize fold.
 // One-way edge: args.zig never imports session.
-const args = @import("../cold/argv/args.zig");
+const args = @import("../../cold/argv/args.zig");
 // The resolved path-scope constraint (roots ∧ `-g` globs ∧ `-t` types) — the
 // SAME `PathFilter` the cold engine and relate's warm twin apply, so a scoped
 // warm answer prunes candidates by the identical rule cold walks with.
-const scope = @import("../../../corpus/scope/glob.zig");
+const scope = @import("../../../../corpus/scope/glob.zig");
 // The `-t <lang>` name → globs table (`extsForType`), the same registry the
 // cold argv parser resolves a type against.
-const types = @import("../../../corpus/scope/types.zig");
+const types = @import("../../../../corpus/scope/types.zig");
 
 /// Eligible answer shapes — shared with the search core (`kernel/match/query.zig`).
-pub const Mode = @import("../../../kernel/match/query.zig").Mode;
+pub const Mode = @import("../../../../kernel/match/query.zig").Mode;
 
 /// The resolved path-scope filter a classified request carries (empty ⇒ the
 /// rootless whole-CWD search). Re-exported so call sites name one type.

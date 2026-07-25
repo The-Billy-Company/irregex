@@ -34,8 +34,8 @@
 //! never fatal.
 
 const std = @import("std");
-const resident = @import("surface/exec/session/resident.zig");
-const request = @import("surface/exec/session/request.zig");
+const resident = @import("surface/exec/session/warm/resident.zig");
+const request = @import("surface/exec/session/answer/request.zig");
 
 /// The relate (compression-kinship) and compose (exact ∩ compression) kernels
 /// are pure and I/O-free; a hosted embedder reaches them through these same
@@ -304,9 +304,10 @@ pub const Engine = struct {
         var scratch = std.heap.ArenaAllocator.init(self.gpa);
         defer scratch.deinit();
 
-        const any = self.inner.search(scratch.allocator(), req, &collector) catch |e| switch (e) {
-            error.Stale => return error.UnsupportedPattern,
-            error.OutOfMemory => return error.OutOfMemory,
+        const any = switch (self.inner.search(scratch.allocator(), req, &collector) catch
+            return error.OutOfMemory) {
+            .got => |got| got,
+            .declined => return error.UnsupportedPattern,
         };
         if (collector.oom) return error.OutOfMemory;
         cursor.matched = any;

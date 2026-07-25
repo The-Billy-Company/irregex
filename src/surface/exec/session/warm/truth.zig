@@ -21,7 +21,7 @@ pub fn expectFiles(session: anytype, corpus: anytype, gpa: std.mem.Allocator, ne
     const a = arena.allocator();
     var want: std.ArrayList([]const u8) = .empty;
     try files(corpus, &want, needle);
-    const got = try session.query(a, .{ .pattern = needle, .mode = .files, .fixed = true });
+    const got = (try session.query(a, .{ .pattern = needle, .mode = .files, .fixed = true })).got;
     try std.testing.expectEqual(want.items.len, got.files.len);
     const sorted = try a.dupe([]const u8, got.files);
     std.mem.sort([]const u8, sorted, {}, lessPath);

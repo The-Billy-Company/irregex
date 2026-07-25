@@ -140,9 +140,13 @@ niche flag choices, compatibility boundaries, and evidence.
 ## Relate in brief
 
 Use `relate` when the question is about resemblance, non-redundant context,
-provenance, duplicate families, renamed structure, or many attributed
-patterns. Choose the verb from the answer shape: `search`, `pack`, `quote`,
-`similar`, `dups`, `clusters`, `echoes`, or `patterns`. See the
+provenance, duplicate families, renamed structure, or many attributed patterns.
+Two verbs carry the kinship questions — **`similar`** (what is near _this_ one?)
+and **`echoes`** (what repeats among _all_ of them?) — and the axes that used to
+be separate verb names are flags on them: `--unit file|function`, `--as
+copies|twins|shapes|any`, `--shape pairs|families|distinct`, and `--matching PAT`
+to ask any of it inside an exact filter. `pack`, `quote`, and `patterns` answer
+the three non-kinship shapes. See the
 [`relate` README](src/surface/face/relate/README.md) for the complete verb guide,
 score directions, corpus policy, warm-tier behavior, and evidence.
 
@@ -154,13 +158,15 @@ the exact claim inside it. A practical sequence is:
 1. **Locate what you can name.** Start with `gist SYMBOL --rank` or a normal
    regex search. This gives exact, current-byte evidence.
 2. **Recover what you cannot name.** If spelling is uncertain or the question
-   is descriptive, use `relate search "DESCRIPTION"`; use `relate pack` when
-   the goal is a compact reading set rather than another ranked list.
+   is descriptive, hand `relate similar` free text instead of a path — a text
+   probe is priced by coding gain, not distance; use `relate pack` when the goal
+   is a compact reading set rather than another ranked list.
 3. **Return to exact search.** Feed the surfaced symbol, phrase, or narrowed
    paths back into Gist to verify definitions, uses, and absence.
-4. **Check for siblings before adding code.** Run `relate similar PATH`;
-   use `dups` or `clusters` for copy families and `echoes` for the same
-   structure hidden behind renamed vocabulary.
+4. **Check for siblings before adding code.** Run `relate similar PATH` (or
+   `PATH#Lnnn` for one function); `relate echoes --as copies` finds copy
+   families and the default `twins` channel finds the same structure hidden
+   behind renamed vocabulary.
 5. **Batch exact intents once.** When several independent Gist searches form
    one audit, use `relate patterns -e A -e B …` for one walk with exact
    per-pattern attribution.
@@ -170,7 +176,7 @@ the exact claim inside it. A practical sequence is:
 
 ```bash
 gist 'ResidentSession' --rank
-relate similar src/surface/exec/session/resident.zig --lens structure --top 5
+relate similar src/surface/exec/session/warm/resident.zig --as shapes --top 5
 relate pack "fail-closed resident freshness and cold fallback" --top 6
 gist 'decline|fallback' src/surface/exec/session -n
 ```
@@ -183,17 +189,24 @@ or lifecycle controls.
 ## irregex in brief
 
 When a question needs **both** engines in one step — not a hand-run pipeline —
-reach for the `irregex` CLI, the third face
-([ADR-367](../../../docs/architecture/3-decisions/367-composed-irregex-cli.md)).
+compose them ([ADR-367](../../../docs/architecture/3-decisions/367-composed-irregex-cli.md)).
 Exact match narrows a typed candidate set, then compression reasons only inside
-it, so the statistical work never re-includes files the patterns excluded:
+it, so the statistical work never re-includes files the patterns excluded.
 
-- `irregex context TEXT -e P… {ROOT… | --all}` — the minimal non-redundant
-  reading set among files that actually match the patterns (exact filter, then
-  coverage packing over only those files).
-- `irregex family PATTERN [--max-distance T | --echo-min E] {ROOT… | --all}` —
-  of the files matching PATTERN, which are forks (`--max-distance`) or renamed
-  structural twins (`--echo-min`) of each other.
+Composition-as-narrowing is a **modifier**: `--matching PAT` on `relate similar`,
+`echoes`, or `pack`. Being a flag, it combines with every other axis those verbs
+carry, which a fixed composed verb per corner of that space could not:
+
+- `relate pack TEXT --matching P` — the minimal non-redundant reading set among
+  files that actually match the patterns (exact filter, then coverage packing
+  over only those files).
+- `relate echoes --matching P` — of the files matching P, which are forks
+  (`--as copies`) or renamed structural twins (the default `twins`) of each
+  other, at either `--unit` and in any `--shape`.
+
+The `irregex` CLI keeps the two questions that need the tree's **current bytes**
+rather than a narrowing:
+
 - `irregex provenance TEXT` — quotation attribution, then re-verification
   against the source's current bytes; a phrase surfaces only if the live file
   still holds it.
@@ -204,7 +217,7 @@ it, so the statistical work never re-includes files the patterns excluded:
 
 `gist` and `relate` stay the direct faces; `irregex` forwards none of their
 verbs. See the [`irregex` README](src/surface/face/irregex/README.md) for the composed
-workflows, the `CandidateSet` model, and mandatory-scope rules.
+workflows and the `CandidateSet` model.
 
 ## Choose a face
 
@@ -345,11 +358,11 @@ lower median and Mann–Whitney p < 0.05; missing counters or tools are printed
 as missing, never inferred.
 
 "Optimality" names the aspiration, and each layer is deliberately honest about
-how far it actually reaches: Layer C measures the scan's *distance* from the
+how far it actually reaches: Layer C measures the scan's _distance_ from the
 DRAM roofline and reports that headroom rather than claiming the roof (the mint
 run sits well below it); Layer A's cycles/byte are cross-checked against Layer
 B's static microarchitectural bound, not measured on the mint machine; and
-Layer D certifies the minimum candidate set the filter can *prove*, not a global
+Layer D certifies the minimum candidate set the filter can _prove_, not a global
 algorithmic minimum. It is a dominance-and-fit certificate — every line a
 measured number with a provenance — not a proof of universal or hardware
 optimality; the certificate itself carries the same per-layer disclaimers.
@@ -381,16 +394,16 @@ place only when the tool feels obvious in the hand.
 
 ## Package layout
 
-| Dir            | What                                                                                                         |
-| -------------- | ------------------------------------------------------------------------------------------------------------ |
-| `src/kernel/`  | pure compute: `match/` · `rank/` · `kinship/` · `batch/` · `compose/` · `primitives/` (incl. bits + crest)   |
-| `src/corpus/`  | tree walk · scope · persisted indexes (`trigrams/` · `postings/` · `codex/` · `atlas/` · `crest/`)           |
-| `src/surface/` | transports + faces: `exec/{cold,session}` · `ffi/` · `face/{gist,relate,irregex}` · `cli/` shared vocabulary |
+| Dir            | What                                                                                                                                                                   |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/kernel/`  | pure compute: `match/` · `rank/` · `kinship/` · `batch/` · `compose/` · `primitives/` (incl. bits + crest)                                                             |
+| `src/corpus/`  | tree walk · scope · persisted indexes (`trigrams/` · `postings/` · `codex/` · `atlas/` · `crest/`)                                                                     |
+| `src/surface/` | transports + faces: `exec/{cold,session}` · `ffi/` · `face/{gist,relate,irregex}` · `cli/` shared vocabulary                                                           |
 | `src/assay/`   | the instrumentation floor (imports only `std`): typed `Span`/`Duration`/`Anchor` clocks, `Tally(Schema)` counters, and the `GIST_TRACE` lens + sink diagnostic channel |
-| `include/`     | `irregex.h`: the flat C ABI (`irregex_*` symbols)                                                            |
-| `bindings/`    | Python (`billy-irregex` — all three faces, subprocess + optional cffi) and Rust (subprocess) faces           |
-| `contract/`    | `search_api.toml`: the unified SearchRequest/irregex contract (ADR-352)                                      |
-| `bench/`       | certification + competitive benchmark harness (rgsuite, races, certify, roofline)                            |
+| `include/`     | `irregex.h`: the flat C ABI (`irregex_*` symbols)                                                                                                                      |
+| `bindings/`    | Python (`billy-irregex` — all three faces, subprocess + optional cffi) and Rust (subprocess) faces                                                                     |
+| `contract/`    | `search_api.toml`: the unified SearchRequest/irregex contract (ADR-352)                                                                                                |
+| `bench/`       | certification + competitive benchmark harness (rgsuite, races, certify, roofline)                                                                                      |
 
 See [`src/README.md`](src/README.md) for the tier-by-tier map and
 [`src/surface/face/gist/README.md`](src/surface/face/gist/README.md) for the gist architecture

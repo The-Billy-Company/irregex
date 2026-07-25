@@ -23,7 +23,7 @@
 //!     simulation — is a caller-owned `Scratch`, one per worker, threaded into
 //!     the match primitives. N workers share one compiled query with N scratches.
 //!
-//! Before this module, the warm engine (`surface/exec/session/resident.zig`) and the cold
+//! Before this module, the warm engine (`surface/exec/session/warm/resident.zig`) and the cold
 //! engine (`surface/exec/cold/`) each re-derived the required-literal-vs-alts
 //! prefilter and re-implemented literal/regex verification; the two "cannot
 //! drift" only because they now compile and match through the same code here.
@@ -53,7 +53,7 @@ const word = @import("word.zig");
 pub const Mode = enum(u8) { files = 0, count = 1, lines = 2 };
 
 /// A search intent before compilation. Mirrors the resident classifier's
-/// `Request` fields (`surface/exec/session/request.zig`) — the transport-neutral subset of
+/// `Request` fields (`surface/exec/session/answer/request.zig`) — the transport-neutral subset of
 /// the contract's request options.
 pub const Spec = struct {
     /// The search pattern. For a `literal` body it is aliased, not copied — the
@@ -76,7 +76,7 @@ pub const Spec = struct {
     word: bool = false,
     /// `-m N`/`--max-count`: cap matching lines PER FILE at N (`0` = unlimited).
     /// rg's explicit `-m0` (match nothing) is resolved at the session boundary
-    /// before compilation (`surface/exec/session/request.zig::matchNothing`), so a compiled
+    /// before compilation (`surface/exec/session/answer/request.zig::matchNothing`), so a compiled
     /// query never carries a zero cap that means "nothing".
     max_count: u64 = 0,
     /// `-P`/`--pcre2`: compile the regex body through the vendored PCRE2 JIT
