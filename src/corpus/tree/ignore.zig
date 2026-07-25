@@ -22,6 +22,7 @@
 const std = @import("std");
 const gl = @import("../scope/glob.zig");
 const paths = @import("../scope/paths.zig");
+const assay = @import("../../assay/assay.zig");
 const stripDot = paths.stripDot;
 const join = paths.join;
 const Dir = std.Io.Dir;
@@ -433,8 +434,8 @@ pub const Ignore = struct {
     /// per-user gist server's lifetime). The env-free resolution is delegated to
     /// `globalExcludesFrom`.
     fn loadGlobalExclude(self: *Ignore) void {
-        const xdg = envSpan("XDG_CONFIG_HOME");
-        const path = globalExcludesFrom(self.io, self.a, envSpan("HOME"), if (xdg != null and xdg.?.len != 0) xdg else null) orelse return;
+        const xdg = assay.envSpan("XDG_CONFIG_HOME");
+        const path = globalExcludesFrom(self.io, self.a, assay.envSpan("HOME"), if (xdg != null and xdg.?.len != 0) xdg else null) orelse return;
         self.readFile(path, "", "");
     }
 
@@ -692,11 +693,6 @@ pub fn loadNode(ig: *const Ignore, a: std.mem.Allocator, parent: ?*const IgNode,
 // The shared ASCII case fold (`paths.zig`) — one definition for gitignore's
 // byte-wise caseless glob tier and args.zig's `--iglob` fold.
 const lower = paths.lowerDup;
-
-// HOME/XDG resolution borrows libc's process-stable environment storage.
-fn envSpan(key: [*:0]const u8) ?[]const u8 {
-    return std.mem.span(std.c.getenv(key) orelse return null);
-}
 
 /// Best-effort whole-file read (≤1 MiB); null on any error (missing/unreadable),
 /// matching git/ripgrep's "absent global config is simply no rules" behavior.

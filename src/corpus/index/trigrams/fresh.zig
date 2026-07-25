@@ -21,6 +21,7 @@
 //! the older index without appearing in the working-tree diff.
 
 const std = @import("std");
+const assay = @import("../../../assay/assay.zig");
 const corpus_mod = @import("../../tree/corpus.zig");
 const haystack = @import("../../tree/haystack.zig");
 const ignore = @import("../../tree/ignore.zig");
@@ -46,9 +47,9 @@ const journal_skip_path = corpus_mod.ArtifactPath("journal.skip");
 /// observes a momentarily-truncated anchor file (which would silently disable
 /// the freshness overlay for that one query — a soft correctness gap, not a
 /// crash, but still avoidable at the same cost as the index/paths writes).
-pub fn writeAnchor(io: std.Io, built_ns: i128) !void {
+pub fn writeAnchor(io: std.Io, built: assay.Anchor) !void {
     var buf: [8]u8 = undefined;
-    std.mem.writeInt(i64, &buf, @intCast(built_ns), .little); // epoch-ns fits i64 until 2262
+    std.mem.writeInt(i64, &buf, @intCast(built.ns()), .little); // epoch-ns fits i64 until 2262
     try persist.writeAtomic(io, anchor_path.get(), &buf);
 }
 
@@ -73,13 +74,13 @@ pub fn readJournalToken(gpa: std.mem.Allocator, io: std.Io) ?journal.Token {
 /// The anchor, or null when it is missing, truncated, or in the future. Query
 /// callers fail closed to reading every walked file when this proof is absent.
 /// `pub` so the `status` verb can report the build instant without a query.
-pub fn readAnchor(gpa: std.mem.Allocator, io: std.Io) ?i128 {
+pub fn readAnchor(gpa: std.mem.Allocator, io: std.Io) ?assay.Anchor {
     const b = Dir.cwd().readFileAlloc(io, anchor_path.get(), gpa, .limited(64)) catch return null;
     defer gpa.free(b);
     if (b.len < 8) return null;
     const built_ns: i128 = std.mem.readInt(i64, b[0..8], .little);
     if (built_ns > std.Io.Clock.now(.real, io).nanoseconds) return null;
-    return built_ns;
+    return @enumFromInt(built_ns);
 }
 
 /// Candidate doc-ids + a private arena owning any new-file paths appended to the
@@ -140,11 +141,11 @@ pub fn candidates(
     } else try seedAll(gpa, &ids, paths.items.len);
 
     var anchored = false;
-    if (readAnchor(gpa, io)) |built_ns| {
+    if (readAnchor(gpa, io)) |built| {
         anchored = true;
         const a = arena.allocator();
         var freshlist: std.ArrayList([]const u8) = .empty; // arena-owned strings
-        try walkFresh(gpa, io, roots, built_ns, a, &freshlist);
+        try walkFresh(gpa, io, roots, built.ns(), a, &freshlist);
         if (freshlist.items.len > 0) try widen(gpa, paths, &ids, &fresh_ids, freshlist.items);
     } else {
         // Without a trustworthy anchor no indexed non-candidate is provably
@@ -261,12 +262,12 @@ const max_journal_changes: usize = 8192;
 fn journalFresh(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, built_ns: i128, a: std.mem.Allocator, out: *std.ArrayList([]const u8)) bool {
     if (comptime !journal.supported) return false;
     if (journal.disabled()) return false;
-    const trace = std.c.getenv("GIST_JOURNAL_TRACE") != null;
-    const t0 = std.Io.Clock.now(.awake, io).nanoseconds;
+    const trace = assay.lit(.journal);
+    var span = assay.Span.open(io);
     const tok = readJournalToken(gpa, io) orelse return false;
     if (tok.captured_ns > built_ns) return false; // blind window before the anchor
     if (skippedToken(gpa, io, tok)) {
-        if (trace) std.debug.print("journal: skipped (lost the race for this token)\n", .{});
+        if (trace) assay.diag("journal: skipped (lost the race for this token)\n", .{});
         return false;
     }
 
@@ -280,8 +281,7 @@ fn journalFresh(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, b
         persist.writeAtomic(io, journal_skip_path.get(), &journal.encode(tok)) catch {};
         return false;
     }
-    const t1 = std.Io.Clock.now(.awake, io).nanoseconds;
-    if (trace) std.debug.print("journal: replay {d:.1} ms ({d} entries)\n", .{ @as(f64, @floatFromInt(t1 - t0)) / 1e6, entries.items.len });
+    if (trace) assay.diag("journal: replay {d:.1} ms ({d} entries)\n", .{ span.lap(io).ms(), entries.items.len });
     if (entries.items.len > max_journal_changes) return false;
 
     const start = out.items.len;
@@ -289,10 +289,9 @@ fn journalFresh(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, b
         out.items.len = start; // partial journal answer is no answer
         return false;
     };
-    const t2 = std.Io.Clock.now(.awake, io).nanoseconds;
-    if (trace) std.debug.print("journal: confirm {d:.1} ms ({d} kept)\n", .{ @as(f64, @floatFromInt(t2 - t1)) / 1e6, out.items.len - start });
+    if (trace) assay.diag("journal: confirm {d:.1} ms ({d} kept)\n", .{ span.lap(io).ms(), out.items.len - start });
     retainAdmitted(io, roots, a, out, start);
-    if (trace) std.debug.print("journal: admit {d:.1} ms ({d} admitted)\n", .{ @as(f64, @floatFromInt(std.Io.Clock.now(.awake, io).nanoseconds - t2)) / 1e6, out.items.len - start });
+    if (trace) assay.diag("journal: admit {d:.1} ms ({d} admitted)\n", .{ span.read(io).ms(), out.items.len - start });
     return true;
 }
 

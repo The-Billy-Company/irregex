@@ -212,7 +212,7 @@ const Collector = struct {
     pub fn emit(self: *Collector, rec: resident.MatchRecord) bool {
         if (self.oom) return true;
         if (self.cancel) |c| if (c.requested()) return true;
-        if (self.deadline) |d| if (nowNs(self.io) >= d) return true;
+        if (self.deadline) |d| if (std.Io.Clock.now(.awake, self.io).nanoseconds >= d) return true;
 
         const path = self.arena.dupe(u8, rec.path) catch return self.fail();
         const text = self.arena.dupe(u8, rec.text) catch return self.fail();
@@ -244,11 +244,6 @@ const Collector = struct {
         return true;
     }
 };
-
-/// The monotonic (`.awake`) clock the whole engine reads, in nanoseconds.
-fn nowNs(io: std.Io) i128 {
-    return @intCast(std.Io.Clock.now(.awake, io).nanoseconds);
-}
 
 /// A hosted warm corpus. Heap-allocated so the threaded-I/O interface can
 /// capture a stable `&self.threaded` (the same reason the FFI session is boxed).
@@ -300,7 +295,7 @@ pub const Engine = struct {
             .list = &cursor.items,
             .cancel = opts.cancel,
             .io = self.io,
-            .deadline = if (opts.timeout_ns) |t| nowNs(self.io) + @as(i128, t) else null,
+            .deadline = if (opts.timeout_ns) |t| std.Io.Clock.now(.awake, self.io).nanoseconds + @as(i128, t) else null,
             .max_results = opts.max_results,
         };
 

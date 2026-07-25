@@ -33,6 +33,14 @@
 
 const std = @import("std");
 
+// ── assay: the instrumentation floor (time · count · debug) ──
+// The bottom of the package DAG (imports only std): typed monotonic `Span`/
+// `Duration` vs wall-clock `Anchor`, the comptime-checked `Tally(Schema)`
+// counter set, and the one lens-gated, sink-routed diagnostic channel every
+// timing/trace/summary line flows through (so the C-ABI never-write contract
+// and warm-query timing are properties of one seam). See src/assay/README.md.
+pub const assay = @import("assay/assay.zig");
+
 // ── candidate index ──
 pub const ngram = @import("corpus/index/trigrams/ngram.zig");
 pub const trigram = @import("corpus/index/trigrams/trigram.zig");
@@ -392,6 +400,7 @@ test {
     // but each tier's tests live in a sibling `*_test.zig` (shape cap), which is
     // NOT re-exported — so every test file is wired in explicitly here.
     std.testing.refAllDecls(@This());
+    _ = @import("assay/assay.zig"); // instrumentation floor: Span/Duration/Anchor, Tally(Schema), the diagnostic channel
     _ = @import("api_test.zig"); // hosted API facade: Engine/Cursor/CancelToken over a live warm tree
     // engine tiers
     _ = @import("corpus/index/trigrams/ngram_test.zig"); // n-gram extraction strategy primitives

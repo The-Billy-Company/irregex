@@ -36,6 +36,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const corpus_mod = @import("../../../../corpus/tree/corpus.zig");
 const args = @import("../argv/args.zig");
+const assay = @import("../../../../assay/assay.zig");
 const output = @import("../emit/output.zig");
 const ignore = @import("../../../../corpus/tree/ignore.zig");
 const json = @import("../emit/json.zig");
@@ -1493,6 +1494,12 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     const filters = if (transforming or o.include_zero) &[_][]const u8{} else trigramFilter(a, o, eff, &re, &req_one);
     const sieve = if (transforming or o.include_zero) crest.zero_vector else crestSieve(o, eff, &re);
 
+    // Run-scoped monotonic stopwatch for the search proper — feeds the real
+    // `elapsed`/`elapsed_total` in the `--stats`/`--json` summary (was hardcoded
+    // `0.000000`) and the `.query`-lens stderr diagnostic. Opened before the walk
+    // so it spans read + match + emit, exactly what rg's `elapsed_total` reports.
+    const search_span = assay.Span.open(io);
+
     // The common recursive-walk case runs on the parallel fused engine
     // (parallel.zig): work-stealing directory walk, bulk-stat listings, inline
     // index/freshness elision, per-file render on every core — byte-identical
@@ -1520,10 +1527,11 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         var jf: std.ArrayList(json.File) = .empty;
         for (files) |f| jf.append(a, .{ .path = f.path, .body = stripBom(f.bytes), .explicit = f.explicit }) catch oom();
         var out: std.ArrayList(u8) = .empty;
-        const matched = json.runParallel(gpa, a, &out, &re, caps, o, jf.items, line_needle);
+        const jst = json.runParallel(gpa, a, &out, &re, caps, o, jf.items, line_needle, search_span.read(io));
         corpus_mod.emitStdout(out.items);
+        grepfile.diagSearch(gpa, o.json, jst, search_span.read(io));
         pcreFaultExit(&re);
-        std.process.exit(if (err_exit) 2 else if (matched) 0 else 1);
+        std.process.exit(if (err_exit) 2 else if (jst.get(.files_with_match) > 0) 0 else 1);
     }
 
     // `--vimgrep` forces the filename on even for a single explicit file —
@@ -1567,7 +1575,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         // below the corpus floor, on one core, or under the `GIST_NO_PARALLEL`
         // parity-gate idiom. `-U`'s "match" is a whole-buffer hit; the per-line
         // path reuses the same `-w`/`-v`/zero-width classify as the emit loop.
-        const bounds = if (args.envSpan("GIST_NO_PARALLEL") != null) null else par.shardBounds(InFile, files, {}, inFileWeight, par.min_bytes, par.max_shards, a);
+        const bounds = if (assay.envSpan("GIST_NO_PARALLEL") != null) null else par.shardBounds(InFile, files, {}, inFileWeight, par.min_bytes, par.max_shards, a);
         if (bounds) |b| {
             filesWithoutSharded(gpa, a, &out, &re, o, line_needle, files, b);
         } else for (files) |f| {
@@ -1607,7 +1615,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // `GIST_NO_PARALLEL` (the parity-gate idiom, mirrored from `json.runParallel`)
     // forces the serial emit so `rgsuite/run.py`'s serial pass exercises this path
     // too. No production caller sets it.
-    const no_par = args.envSpan("GIST_NO_PARALLEL") != null;
+    const no_par = assay.envSpan("GIST_NO_PARALLEL") != null;
     const bounds = if (heading or join_groups or no_par) null else par.shardBounds(InFile, files, {}, inFileWeight, par.min_bytes, par.max_shards, a);
     // A single large file the multi-file shard gate leaves serial (`bounds` is
     // null for one file): fan the line-free literal fast path across cores over
@@ -1627,11 +1635,12 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         if (!o.stats and corpus_mod.outputFull(out.items.len)) break;
     }
     if (o.stats) {
-        stat.files_with_match = matched_files;
+        stat.set(.files_with_match, matched_files);
         // --quiet --stats: suppress the match stream, report 0 bytes printed.
-        stat.bytes_printed = if (o.quiet) 0 else out.items.len;
+        stat.set(.bytes_printed, if (o.quiet) 0 else out.items.len);
         if (o.quiet) out.clearRetainingCapacity();
-        emitStats(a, &out, stat);
+        emitStats(a, &out, stat, search_span.read(io));
+        grepfile.diagSearch(gpa, o.json, stat, search_span.read(io));
     }
     corpus_mod.emitStdout(out.items);
     pcreFaultExit(&re);
@@ -1693,7 +1702,10 @@ fn renderFile(em: *Emitter, f: InFile, stat: *Stats, matched_files: *usize, firs
                 defer blines.deinit(a);
                 if (!o.multiline) collectLines(a, searched, o.term(), &blines);
                 const fs = fileMatchStats(re, a, o, searched, blines.items, em.needle);
-                stat.add(.{ .files_searched = 1, .matches = fs.matches, .matched_lines = fs.lines, .bytes_searched = if (f.explicit and slice_model) nul else fs.bytes });
+                stat.bump(.files_searched);
+                stat.add(.matches, fs.matches);
+                stat.add(.matched_lines, fs.lines);
+                stat.add(.bytes_searched, if (f.explicit and slice_model) nul else fs.bytes);
             }
             if (grepfile.handleBinary(a, re, o, out, em, f.path, f.explicit, body, nul, show_name)) matched_files.* += 1;
             return;
@@ -1711,7 +1723,10 @@ fn renderFile(em: *Emitter, f: InFile, stat: *Stats, matched_files: *usize, firs
     if (!o.multiline and !fast and !fused) collectLines(a, body, o.term(), &lines);
     if (o.stats) {
         const fs = fileMatchStats(re, a, o, body, lines.items, em.needle);
-        stat.add(.{ .files_searched = 1, .matches = fs.matches, .matched_lines = fs.lines, .bytes_searched = fs.bytes });
+        stat.bump(.files_searched);
+        stat.add(.matches, fs.matches);
+        stat.add(.matched_lines, fs.lines);
+        stat.add(.bytes_searched, fs.bytes);
     }
     const before = out.items.len;
     if (heading) out.print(a, "{s}{s}{s}", .{ if (first.*) "" else "\n", f.path, o.outTerm() }) catch oom();
@@ -1802,7 +1817,7 @@ fn emitSharded(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.ArrayList
     // `matched_files` only gates the exit code / no-match hint (never emitted
     // bytes), so the cut shard's whole tally is a safe upper bound.
     for (shards) |*sh| {
-        stat.add(sh.stat);
+        stat.foldExcept(sh.stat, &.{.bytes_printed});
         matched_files.* += sh.matched;
         if ((corpus_mod.appendBudgeted(a, out, sh.buf.items, sh.marks.items, !o.stats) catch oom()) != null) break;
     }

@@ -9,17 +9,19 @@
 //! regex engine (`matchSpan` for spans, capture VM for `-r`) and `output`'s
 //! shared template expander, so there is no second matcher or replacer.
 //!
-//! The `stats` timing fields (`elapsed`, `elapsed_total`) and `bytes_printed` are
-//! ripgrep-printer-internal / wall-clock and inherently non-reproducible, so we
-//! emit fixed placeholders; the differential harness normalizes them on both
-//! sides exactly as it already does for `--stats` seconds. Every correctness
-//! field (`matches`, `matched_lines`, `searches`, `bytes_searched`, and the whole
-//! match/submatch structure) is emitted for real.
+//! The `stats` timing fields (`elapsed`, `elapsed_total`) now carry the run's
+//! real monotonic time (threaded in as an `assay.Duration`); `bytes_printed`
+//! stays a fixed placeholder (ripgrep-printer-internal). Both remain
+//! inherently non-reproducible, so the differential harness normalizes them on
+//! both sides exactly as it already does for `--stats` seconds. Every
+//! correctness field (`matches`, `matched_lines`, `searches`, `bytes_searched`,
+//! and the whole match/submatch structure) is emitted for real.
 
 const std = @import("std");
 const corpus_mod = @import("../../../../corpus/tree/corpus.zig");
 const grepfile = @import("../read/grepfile.zig");
 const args = @import("../argv/args.zig");
+const assay = @import("../../../../assay/assay.zig");
 const output = @import("output.zig");
 const jsonstr = @import("jsonstr.zig");
 const ml = @import("multiline.zig");
@@ -33,36 +35,25 @@ const Caps = @import("../../../../kernel/match/regex/compile/captures.zig").Caps
 
 pub const File = struct { path: []const u8, body: []const u8, explicit: bool = false };
 
-/// Running `--json` tallies (rg's `summary` fields). `pub` because the parallel
-/// walk engine (`engine/parallel.zig`) accumulates one per worker over its
-/// streamed per-file records, then sums them for the single trailing `summary` —
-/// the same numbers the collect-then-shard path threads through `runParallel`.
-pub const Stats = struct {
-    searches: usize = 0,
-    with_match: usize = 0,
-    matched_lines: usize = 0,
-    matches: usize = 0,
-    bytes_searched: usize = 0,
+/// Running `--json` tallies — the SAME unified counter set the `--stats` block
+/// uses (`grepfile.Stats`, an `assay.Tally`). `pub` because the parallel walk
+/// engine (`engine/parallel.zig`) accumulates one per worker over its streamed
+/// per-file records, then folds them for the single trailing `summary`. The JSON
+/// summary reads `files_searched`/`files_with_match` under rg's `searches`/
+/// `searches_with_match` names and never touches `bytes_printed`.
+pub const Stats = grepfile.Stats;
 
-    /// Fold another tally in (per-worker → run total).
-    pub fn add(self: *Stats, o: Stats) void {
-        self.searches += o.searches;
-        self.with_match += o.with_match;
-        self.matched_lines += o.matched_lines;
-        self.matches += o.matches;
-        self.bytes_searched += o.bytes_searched;
-    }
-};
-
-/// Emit the full `--json` stream for `files` into `out`. Returns true if any file
-/// matched (drives the process exit code).
-pub fn run(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, caps: ?*Caps, o: Opts, files: []const File, needle: ?simd.Gate) bool {
+/// Emit the full `--json` stream for `files` into `out`. Returns the final tally
+/// (the caller derives the exit code from `files_with_match` and emits the
+/// stderr search diagnostic). `elapsed` fills the trailing `summary` record's
+/// timing objects.
+pub fn run(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, caps: ?*Caps, o: Opts, files: []const File, needle: ?simd.Gate, elapsed: assay.Duration) Stats {
     var ss = Matcher.SpanSim.init(a, re) catch die("engine init failed\n", .{});
     defer ss.deinit();
     var st = Stats{};
     runFiles(a, out, re, &ss, caps, o, files, &st, needle);
-    summary(a, out, st);
-    return st.with_match > 0;
+    summary(a, out, st, elapsed);
+    return st;
 }
 
 /// The serial `--json` record loop: stream every file's records into `out`,
@@ -90,7 +81,7 @@ fn runFiles(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, s
 pub fn emitOne(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, ss: *Matcher.SpanSim, caps: ?*Caps, o: Opts, f: File, st: *Stats, needle: ?simd.Gate) void {
     // An empty file is still a search in rg's tally (0 bytes, no records).
     if (f.body.len == 0) {
-        st.searches += 1;
+        st.bump(.files_searched);
         return;
     }
     // Binary model (rg parity, mirrors `grepfile.handleBinary`):
@@ -112,22 +103,22 @@ pub fn emitOne(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher
     if (bin) |q| {
         if (re.multiline() and re.canMatchNewline()) {
             if (!f.explicit and grepfile.multilineBinary(f.body.len, q)) {
-                st.searches += 1;
+                st.bump(.files_searched);
                 return; // sniff quit: nothing searched, no records
             }
             if (!f.explicit) bin = null else searched = q;
         } else if (!f.explicit) {
             const cut = grepfile.committedPrefix(f.body, q);
             if (cut == 0) {
-                st.searches += 1;
+                st.bump(.files_searched);
                 return;
             }
             eff.body = f.body[0..cut];
             searched = cut;
         }
     }
-    st.searches += 1;
-    st.bytes_searched += searched;
+    st.bump(.files_searched);
+    st.add(.bytes_searched, searched);
     emitFile(a, out, re, ss, caps, o, eff, st, bin, searched, needle);
 }
 
@@ -149,12 +140,12 @@ fn fileWeight(_: void, f: File) usize {
 /// carries per-thread scratch a shard can't share) it falls straight through to
 /// the serial `run`. `a` is a per-query arena; `gpa` backs each shard's own arena
 /// (arenas aren't safe for concurrent allocation).
-pub fn runParallel(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, caps: ?*Caps, o: Opts, files: []const File, needle: ?simd.Gate) bool {
+pub fn runParallel(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, caps: ?*Caps, o: Opts, files: []const File, needle: ?simd.Gate, elapsed: assay.Duration) Stats {
     // `GIST_NO_PARALLEL` (the parity-gate idiom) forces the serial emit so
     // `rgsuite/run.py`'s serial engine pass actually exercises the serial `--json`
     // path — not just the walk — closing the same both-engines gap `eligible`
     // documents. No production caller sets it.
-    if (args.envSpan("GIST_NO_PARALLEL") != null) return run(a, out, re, caps, o, files, needle);
+    if (assay.envSpan("GIST_NO_PARALLEL") != null) return run(a, out, re, caps, o, files, needle, elapsed);
     // A single large file: fan the record stream across cores over ITS OWN body
     // (line-aligned shards), the parallelism rg can't apply to one file — the
     // `--json` twin of `serial.emitFileSharded`. Restricted to the plain,
@@ -165,12 +156,12 @@ pub fn runParallel(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.Array
         o.before == 0 and o.after == 0 and o.max_per_file == 0 and files[0].body.len >= parallel.min_bytes)
     {
         if (soloShard(gpa, a, out, re, o, files[0], needle)) |st| {
-            summary(a, out, st);
-            return st.with_match > 0;
+            summary(a, out, st, elapsed);
+            return st;
         }
     }
     const bounds = if (caps != null) null else parallel.shardBounds(File, files, {}, fileWeight, parallel.min_bytes, parallel.max_shards, a);
-    const b = bounds orelse return run(a, out, re, caps, o, files, needle);
+    const b = bounds orelse return run(a, out, re, caps, o, files, needle, elapsed);
     const nthr = b.len - 1;
 
     const Shard = struct {
@@ -219,15 +210,11 @@ pub fn runParallel(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.Array
         // On a soft-cap cut the serial loop breaks before the next file, so this
         // shard contributes only its through-cut tally and no later shard runs.
         const sst = if (cut) |j| sh.stat_marks.items[j] else sh.st;
-        st.searches += sst.searches;
-        st.with_match += sst.with_match;
-        st.matched_lines += sst.matched_lines;
-        st.matches += sst.matches;
-        st.bytes_searched += sst.bytes_searched;
+        st.fold(sst);
         if (cut != null) break;
     }
-    summary(a, out, st);
-    return st.with_match > 0;
+    summary(a, out, st, elapsed);
+    return st;
 }
 
 /// Line-aligned shard cuts over `body` (`\n`-terminated boundaries, byte-balanced
@@ -338,11 +325,13 @@ fn soloShard(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.ArrayList(u
         fml += sh.fml;
         fm += sh.fm;
     }
-    var st = Stats{ .searches = 1, .bytes_searched = f.body.len };
+    var st = Stats{};
+    st.bump(.files_searched);
+    st.add(.bytes_searched, f.body.len);
     if (fml == 0) return st; // searched, no match: no begin/end, exit via summary
-    st.with_match = 1;
-    st.matched_lines = fml;
-    st.matches = fm;
+    st.set(.files_with_match, 1);
+    st.set(.matched_lines, fml);
+    st.set(.matches, fm);
     if (o.quiet) return st; // --quiet: tally only, suppress the record stream
     const pj = pathData(a, f.path);
     begin(a, out, pj);
@@ -477,9 +466,9 @@ fn emitFile(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, s
 
     const fml = countMatched(o, lines.items);
     const fm = countMatches(lines.items);
-    st.with_match += 1;
-    st.matched_lines += fml;
-    st.matches += fm;
+    st.bump(.files_with_match);
+    st.add(.matched_lines, fml);
+    st.add(.matches, fm);
     if (o.quiet) return; // --quiet: tally stats, suppress the record stream
 
     const pj = pathData(a, f.path);
@@ -519,9 +508,9 @@ fn emitFileMulti(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Match
 
     const fml = ml.countMatchedLines(lines, spans.items);
     const fm = spans.items.len;
-    st.with_match += 1;
-    st.matched_lines += fml;
-    st.matches += fm;
+    st.bump(.files_with_match);
+    st.add(.matched_lines, fml);
+    st.add(.matches, fm);
     if (o.quiet) return;
 
     // Per-line record plan: which block starts here, and which lines are `-A/-B/-C`
@@ -575,8 +564,8 @@ fn emitFileMultiInvert(a: std.mem.Allocator, out: *std.ArrayList(u8), o: Opts, f
     var printed: usize = 0;
     for (covered) |c| printed += @intFromBool(!c);
     if (printed == 0) return;
-    st.with_match += 1;
-    st.matched_lines += printed;
+    st.bump(.files_with_match);
+    st.add(.matched_lines, printed);
     if (o.quiet) return;
     const pj = pathData(a, f.path);
     begin(a, out, pj);
@@ -673,9 +662,16 @@ fn submatch(a: std.mem.Allocator, out: *std.ArrayList(u8), caps: ?*Caps, o: Opts
 }
 
 /// `pub`: the parallel walk engine emits the single trailing `summary` record
-/// after every worker has streamed its files and their tallies are summed.
-pub fn summary(a: std.mem.Allocator, out: *std.ArrayList(u8), st: Stats) void {
-    out.print(a, "{{\"data\":{{\"elapsed_total\":{{\"human\":\"0.000000s\",\"nanos\":0,\"secs\":0}},\"stats\":{{\"bytes_printed\":0,\"bytes_searched\":{d},\"elapsed\":{{\"human\":\"0.000000s\",\"nanos\":0,\"secs\":0}},\"matched_lines\":{d},\"matches\":{d},\"searches\":{d},\"searches_with_match\":{d}}}}},\"type\":\"summary\"}}\n", .{ st.bytes_searched, st.matched_lines, st.matches, st.searches, st.with_match }) catch oom();
+/// after every worker has streamed its files and their tallies are summed. The
+/// `elapsed`/`elapsed_total` Duration objects now carry the run's real monotonic
+/// time (ripgrep's `{secs, subsec_nanos, human}` decomposition); the parity
+/// harness still normalizes these two objects away, so this stays byte-safe.
+pub fn summary(a: std.mem.Allocator, out: *std.ArrayList(u8), st: Stats, elapsed: assay.Duration) void {
+    const total = elapsed.ns();
+    const secs: u64 = @intCast(@divFloor(total, std.time.ns_per_s));
+    const sub: u64 = @intCast(@mod(total, std.time.ns_per_s));
+    const human = @as(f64, @floatFromInt(total)) / 1e9;
+    out.print(a, "{{\"data\":{{\"elapsed_total\":{{\"human\":\"{d:.6}s\",\"nanos\":{d},\"secs\":{d}}},\"stats\":{{\"bytes_printed\":0,\"bytes_searched\":{d},\"elapsed\":{{\"human\":\"{d:.6}s\",\"nanos\":{d},\"secs\":{d}}},\"matched_lines\":{d},\"matches\":{d},\"searches\":{d},\"searches_with_match\":{d}}}}},\"type\":\"summary\"}}\n", .{ human, sub, secs, st.get(.bytes_searched), human, sub, secs, st.get(.matched_lines), st.get(.matches), st.get(.files_searched), st.get(.files_with_match) }) catch oom();
 }
 
 // ─────────────────────────── helpers ───────────────────────────
@@ -751,7 +747,7 @@ fn runJson(h: *output.MlHarness, o: Opts, body: []const u8) ![]const u8 {
     var opts = o;
     opts.multiline = true;
     opts.json = true;
-    _ = run(a, out, &h.m, if (h.caps) |*c| c else null, opts, &.{.{ .path = "f.txt", .body = body }}, null);
+    _ = run(a, out, &h.m, if (h.caps) |*c| c else null, opts, &.{.{ .path = "f.txt", .body = body }}, null, @enumFromInt(0));
     return out.items;
 }
 

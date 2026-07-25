@@ -48,10 +48,7 @@ const corpus_mod = gist.corpus;
 const Corpus = corpus_mod.Corpus;
 const load = corpus_mod.load;
 const Dir = std.Io.Dir;
-
-fn nowNs(io: std.Io) i128 {
-    return std.Io.Clock.now(.awake, io).nanoseconds;
-}
+const Span = gist.assay.Span; // package instrumentation floor: monotonic Span
 
 /// One measured region: wall-ns and (when the PMU is live) retired cycles over
 /// `bytes` of work. `throughput`/`cpb` render the two numbers a scan cares
@@ -155,13 +152,13 @@ fn profileCaseless(io: std.Io, meter: *Meter, corpus: *const Corpus) !f64 {
         // Case-sensitive twin (the -i tax denominator).
         var cs = Sample{ .ns = std.math.maxInt(u64), .cycles = 0, .has_pmu = false, .bytes = corpus.bytes };
         for (0..reps) |_| {
-            const t0 = nowNs(io);
+            const sp = Span.open(io);
             const c0 = meter.counters();
             var hits_cs: usize = 0;
             for (corpus.docs) |d| hits_cs += @intFromBool(simd.contains(d, low));
             const c1 = meter.counters();
             sink +%= hits_cs;
-            const ns: u64 = @intCast(nowNs(io) - t0);
+            const ns: u64 = @intCast(sp.read(io).ns());
             if (ns < cs.ns) cs = .{ .ns = ns, .cycles = c1.cycles -% c0.cycles, .has_pmu = c0.valid and c1.valid, .bytes = corpus.bytes };
         }
 
@@ -169,13 +166,13 @@ fn profileCaseless(io: std.Io, meter: *Meter, corpus: *const Corpus) !f64 {
         var ci = Sample{ .ns = std.math.maxInt(u64), .cycles = 0, .has_pmu = false, .bytes = corpus.bytes };
         var hits_ci: usize = 0;
         for (0..reps) |_| {
-            const t0 = nowNs(io);
+            const sp = Span.open(io);
             const c0 = meter.counters();
             hits_ci = 0;
             for (corpus.docs) |d| hits_ci += @intFromBool(simd.containsCaseless(d, low));
             const c1 = meter.counters();
             sink +%= hits_ci;
-            const ns: u64 = @intCast(nowNs(io) - t0);
+            const ns: u64 = @intCast(sp.read(io).ns());
             if (ns < ci.ns) ci = .{ .ns = ns, .cycles = c1.cycles -% c0.cycles, .has_pmu = c0.valid and c1.valid, .bytes = corpus.bytes };
         }
 
@@ -225,7 +222,7 @@ fn profileLineNum(gpa: std.mem.Allocator, io: std.Io, meter: *Meter, corpus: *co
         if (!std.mem.eql(u8, f, w)) std.debug.panic("writeDecimal != fmt for {d}", .{v});
     }
 
-    var t0 = nowNs(io);
+    var sp = Span.open(io);
     var c0 = meter.counters();
     var acc: u64 = 0;
     for (nums) |v| {
@@ -233,10 +230,10 @@ fn profileLineNum(gpa: std.mem.Allocator, io: std.Io, meter: *Meter, corpus: *co
         acc +%= f.len +% fbuf[0];
     }
     var c1 = meter.counters();
-    const fmt = Sample{ .ns = @intCast(nowNs(io) - t0), .cycles = c1.cycles -% c0.cycles, .has_pmu = c0.valid and c1.valid, .bytes = N };
+    const fmt = Sample{ .ns = @intCast(sp.read(io).ns()), .cycles = c1.cycles -% c0.cycles, .has_pmu = c0.valid and c1.valid, .bytes = N };
     sink +%= acc;
 
-    t0 = nowNs(io);
+    sp = Span.open(io);
     c0 = meter.counters();
     acc = 0;
     for (nums) |v| {
@@ -244,7 +241,7 @@ fn profileLineNum(gpa: std.mem.Allocator, io: std.Io, meter: *Meter, corpus: *co
         acc +%= w.len +% wbuf[0];
     }
     c1 = meter.counters();
-    const wd = Sample{ .ns = @intCast(nowNs(io) - t0), .cycles = c1.cycles -% c0.cycles, .has_pmu = c0.valid and c1.valid, .bytes = N };
+    const wd = Sample{ .ns = @intCast(sp.read(io).ns()), .cycles = c1.cycles -% c0.cycles, .has_pmu = c0.valid and c1.valid, .bytes = N };
     sink +%= acc;
 
     const fmt_mps = @as(f64, @floatFromInt(N)) / (@as(f64, @floatFromInt(fmt.ns)) / 1e9) / 1e6;
@@ -306,7 +303,7 @@ fn emitBest(io: std.Io, meter: *Meter, work: *std.heap.ArenaAllocator, m: *const
     for (0..reps) |_| {
         out_bytes.* = 0;
         files_with.* = 0;
-        const t0 = nowNs(io);
+        const sp = Span.open(io);
         const c0 = meter.counters();
         for (per, 0..) |lines, i| {
             _ = work.reset(.retain_capacity);
@@ -318,7 +315,7 @@ fn emitBest(io: std.Io, meter: *Meter, work: *std.heap.ArenaAllocator, m: *const
             sink +%= eout.items.len;
         }
         const c1 = meter.counters();
-        const ns: u64 = @intCast(nowNs(io) - t0);
+        const ns: u64 = @intCast(sp.read(io).ns());
         if (ns < s.ns) s = .{ .ns = ns, .cycles = c1.cycles -% c0.cycles, .has_pmu = c0.valid and c1.valid, .bytes = corpus.bytes };
     }
     return s;
@@ -545,18 +542,18 @@ fn profileJson(gpa: std.mem.Allocator, io: std.Io, meter: *Meter, corpus: *const
             var ss = try Matcher.SpanSim.init(a, &m);
             out_bytes = 0;
             files_with = 0;
-            const t0 = nowNs(io);
+            const sp = Span.open(io);
             const c0 = meter.counters();
             for (files) |f| {
                 var out: std.ArrayList(u8) = .empty;
                 var st = json.Stats{};
                 json.emitOne(a, &out, &m, &ss, null, o, f, &st, gate);
                 out_bytes += out.items.len;
-                if (st.with_match > 0) files_with += 1;
+                if (st.get(.files_with_match) > 0) files_with += 1;
                 sink +%= out.items.len;
             }
             const c1 = meter.counters();
-            const ns: u64 = @intCast(nowNs(io) - t0);
+            const ns: u64 = @intCast(sp.read(io).ns());
             if (ns < s.ns) s = .{ .ns = ns, .cycles = c1.cycles -% c0.cycles, .has_pmu = c0.valid and c1.valid, .bytes = corpus.bytes };
         }
         slowest = @min(slowest, s.mibps());

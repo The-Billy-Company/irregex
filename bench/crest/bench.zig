@@ -35,6 +35,7 @@ const corpus_mod = gist.corpus;
 const Regex = gist.regex.Regex;
 const load = corpus_mod.load;
 const K = crest.K;
+const Span = gist.assay.Span; // package instrumentation floor: monotonic Span
 const evidence = @import("evidence/harness.zig");
 const out_dir = evidence.out_dir;
 const ascii_seed = evidence.ascii_seed;
@@ -99,10 +100,10 @@ pub fn main(init: std.process.Init) !void {
 
     // Build the crest table via the PRODUCTION builder (the same parallel pass
     // `gist index` persists as crest.bin) + the count index (ablation).
-    const build_t0 = evidence.nowNs(io);
+    const build_sp = Span.open(io);
     const crests = try gist.crest_sidecar.build(gpa, corpus.docs);
     defer gpa.free(crests);
-    const build_ns = evidence.nowNs(io) - build_t0;
+    const build = build_sp.read(io);
 
     const counts = try gpa.alloc([K]u32, n);
     defer gpa.free(counts);
@@ -113,7 +114,7 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("machine: {s} · zig {s}\n", .{ @tagName(builtin.target.cpu.arch), builtin.zig_version_string });
     std.debug.print("corpus:  {d} files · {d:.1} MiB\n", .{ n, mib });
     std.debug.print("index:   crest built in {d:.2} ms · {d} classes · ~{d:.1} KiB ({d:.4}% of corpus)\n\n", .{
-        @as(f64, @floatFromInt(build_ns)) / 1e6,     K,
+        build.ms(),                                  K,
         @as(f64, @floatFromInt(idx_bytes)) / 1024.0, @as(f64, @floatFromInt(idx_bytes)) / @as(f64, @floatFromInt(@max(corpus.bytes, 1))) * 100.0,
     });
 

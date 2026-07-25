@@ -28,7 +28,7 @@ const signals = @import("../../../../kernel/rank/signals.zig");
 const rank_mod = @import("../../../../kernel/rank/rank.zig");
 const gl = @import("../../../../corpus/scope/glob.zig");
 const query_mod = @import("../../../../kernel/match/query.zig");
-const args_mod = @import("../argv/args.zig");
+const assay = @import("../../../../assay/assay.zig");
 const Dir = std.Io.Dir;
 
 const Doc = rank_mod.Doc;
@@ -45,9 +45,6 @@ const Source = union(enum) {
         };
     }
 };
-
-const nowNs = args_mod.nowNs;
-const ms = args_mod.ms;
 
 /// Slash COUNT (not walker depth — `run.zig`'s `pathDepth` is slashes+1):
 /// a shallow-path prior for the ranked view, u16 to pack the score row.
@@ -332,12 +329,12 @@ fn emitRanked(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, docs: []cons
 /// `!-a` default) skips NUL-bearing walked files past their committed prefix, so
 /// the ranked set matches `gist -l`.
 pub fn run(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, roots: []const []const u8, k: usize, caseless: bool, binary_detect: bool) !?usize {
-    const l0 = nowNs(io);
+    const load_span = assay.Span.open(io);
     var p = (persist.loadQuiet(gpa, io) catch null) orelse return null;
     defer p.deinit();
-    const load_ns = nowNs(io) - l0;
+    const load = load_span.read(io);
 
-    const q0 = nowNs(io);
+    const query_span = assay.Span.open(io);
     var one: [1][]const u8 = undefined;
     const filters = rankFilters(re, caseless, &one);
     var cand = try fresh.candidates(gpa, io, &p, &p.paths, filters, p.roots.items);
@@ -360,40 +357,67 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, roots: []const 
 
     // The fusion: lexical density + symbol(def) boost + shallow-path + authored
     // (codegen demotion), RRF-fused. null is the external graph-centrality hook.
-    const query_ns = nowNs(io) - q0;
+    const query = query_span.read(io);
     const top = try emitRanked(gpa, io, re, docs.items, .{ .disk = p.paths.items }, k);
-    std.debug.print("gist: {d} ranked matches (top {d}) · read {d}/{d} candidates · cold-load {d:.1} ms · rank {d:.1} ms · total {d:.1} ms\n", .{ docs.items.len, top, read_files, p.paths.items.len, ms(load_ns), ms(query_ns), ms(load_ns + query_ns) });
+    assay.summary(gpa, false, "gist: {d} ranked matches (top {d}) · read {d}/{d} candidates · cold-load {d:.1} ms · rank {d:.1} ms · total {d:.1} ms\n", .{ docs.items.len, top, read_files, p.paths.items.len, load.ms(), query.ms(), load.add(query).ms() }, .{
+        .{ "verb", "s", "rank" },
+        .{ "ranked_matches", "d", docs.items.len },
+        .{ "top", "d", top },
+        .{ "read_candidates", "d", read_files },
+        .{ "total_candidates", "d", p.paths.items.len },
+        .{ "cold_load_ms", "d:.1", load.ms() },
+        .{ "rank_ms", "d:.1", query.ms() },
+        .{ "total_ms", "d:.1", load.add(query).ms() },
+    });
     return docs.items.len;
 }
 
 /// Rank bytes already gathered by the rg-compatible live walk. Returns the
 /// ranked-match count (0 ⇒ the caller may hint).
 pub fn runLive(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, files: []const LiveFile, k: usize, binary_detect: bool) !usize {
-    const q0 = nowNs(io);
+    const query_span = assay.Span.open(io);
     var docs: std.ArrayList(Doc) = .empty;
     defer docs.deinit(gpa);
     var sim = try Regex.Sim.init(gpa, re);
     defer sim.deinit();
     for (files, 0..) |file, id| if (fileDoc(file.bytes, file.path, re, &sim, @intCast(id), binary_detect)) |doc| try docs.append(gpa, doc);
     const top = try emitRanked(gpa, io, re, docs.items, .{ .memory = files }, k);
-    const query_ns = nowNs(io) - q0;
-    std.debug.print("gist: {d} ranked matches (top {d}) · live-scanned {d} files · rank {d:.1} ms\n", .{ docs.items.len, top, files.len, ms(query_ns) });
+    const query = query_span.read(io);
+    assay.summary(gpa, false, "gist: {d} ranked matches (top {d}) · live-scanned {d} files · rank {d:.1} ms\n", .{ docs.items.len, top, files.len, query.ms() }, .{
+        .{ "verb", "s", "rank" },
+        .{ "ranked_matches", "d", docs.items.len },
+        .{ "top", "d", top },
+        .{ "live_scanned", "d", files.len },
+        .{ "rank_ms", "d:.1", query.ms() },
+    });
     return docs.items.len;
 }
 
 /// Warm-daemon rank: extract features over in-memory `files`, fuse, and render
 /// the top-K INTO `out` — the byte-identical twin of `runLive`'s emission, but
 /// returned to the caller (to stream over the session wire) instead of written
-/// to stdout, and with no stderr timing line. `out` and every transient draw
-/// from `gpa`. Returns the ranked-match count (0 ⇒ the daemon streams an empty
-/// answer; cold's hint is stderr-only and outside the byte-parity envelope).
+/// to stdout. `out` and every transient draw from `gpa`. Returns the ranked-
+/// match count (0 ⇒ the daemon streams an empty answer; cold's hint is stderr-
+/// only and outside the byte-parity envelope). The timing summary routes through
+/// the current sink — the daemon worker runs this under a `.buffer` sink, so the
+/// line rides a `diag` frame to the client's stderr instead of vanishing (the
+/// warm-path measurability the buffer sink exists for).
 pub fn renderLive(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, files: []const LiveFile, k: usize, out: *std.ArrayList(u8), binary_detect: bool) !usize {
+    const query_span = assay.Span.open(io);
     var docs: std.ArrayList(Doc) = .empty;
     defer docs.deinit(gpa);
     var sim = try Regex.Sim.init(gpa, re);
     defer sim.deinit();
     for (files, 0..) |file, id| if (fileDoc(file.bytes, file.path, re, &sim, @intCast(id), binary_detect)) |doc| try docs.append(gpa, doc);
-    _ = try renderRanked(gpa, io, re, docs.items, .{ .memory = files }, k, out);
+    const top = try renderRanked(gpa, io, re, docs.items, .{ .memory = files }, k, out);
+    const query = query_span.read(io);
+    assay.summary(gpa, false, "gist: {d} ranked matches (top {d}) · warm-scanned {d} files · rank {d:.1} ms\n", .{ docs.items.len, top, files.len, query.ms() }, .{
+        .{ "verb", "s", "rank" },
+        .{ "ranked_matches", "d", docs.items.len },
+        .{ "top", "d", top },
+        .{ "warm_scanned", "d", files.len },
+        .{ "rank_ms", "d:.1", query.ms() },
+    });
     return docs.items.len;
 }
 

@@ -317,24 +317,6 @@ pub fn oom() noreturn {
     die("oom\n", .{});
 }
 
-/// The one environment read — a `getenv` that arrives as a slice. Every
-/// `GIST_*` / `HOME` / XDG probe goes through here, never a scattered
-/// `std.c.getenv` + `std.mem.span` pair per site.
-pub fn envSpan(key: [*:0]const u8) ?[]const u8 {
-    return if (std.c.getenv(key)) |v| std.mem.span(v) else null;
-}
-
-/// CLI-plane clock read — the monotonic-awake nanosecond stamp behind the
-/// `--rank` timing line and `gist index`'s build report.
-pub fn nowNs(io: std.Io) i128 {
-    return std.Io.Clock.now(.awake, io).nanoseconds;
-}
-
-/// Nanoseconds → fractional milliseconds for human timing output.
-pub fn ms(ns: i128) f64 {
-    return @as(f64, @floatFromInt(ns)) / 1e6;
-}
-
 /// Does the pattern carry an uppercase letter? Codepoint-aware for smart-case
 /// (`-S`): any Unicode uppercase (`Ä`, `Σ`, …) — not just ASCII `A-Z` — disables
 /// the automatic fold, matching rg's Unicode default. Ill-formed bytes are

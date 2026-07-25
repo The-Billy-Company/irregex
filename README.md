@@ -1,10 +1,10 @@
 ---
 doc_radar:
   counts:
-    - description: "irregex src/ layers: kernel · corpus · surface"
+    - description: "irregex src/ layers (kernel · corpus · surface) + the assay instrumentation floor"
       glob: pkg/kernels/irregex/src/*
       unit: dirs
-      equals: 3
+      equals: 4
   sentinels:
     - description: "the Zig package identity is irregex"
       file: pkg/kernels/irregex/build.zig.zon
@@ -21,9 +21,16 @@ doc_radar:
     - description: "correctness remains ahead of performance in the proof pipeline"
       file: pkg/kernels/irregex/bench/gates/ci_order.sh
       contains: ["pcre parity -P", "index-elision parity", "macro certificate"]
-    - description: "the certificate carries the live ripgrep macro comparison and its honest optimality disclaimer (re-mint preserves both)"
+    - description: "the certificate still carries the live ripgrep macro comparison (a re-mint may move every number, but never drop the section)"
       file: pkg/kernels/irregex/bench/certify/artifact/CERTIFICATE.md
-      contains: ["20492 files · 195.8 MiB", "7.76x", "2.10x"]
+      contains:
+        - "## Layer A — macroscopic dominance over ripgrep"
+        - "gist vs ripgrep across 12 classes"
+    - description: "the honest optimality disclaimer survives every re-mint — the certificate never claims hardware optimality"
+      file: pkg/kernels/irregex/bench/certify/artifact/CERTIFICATE.md
+      absent:
+        - "cycles/byte sits on the hardware ceiling"
+        - "no implementation on this chip can go faster"
 ---
 
 # irregex
@@ -379,6 +386,7 @@ place only when the tool feels obvious in the hand.
 | `src/kernel/`  | pure compute: `match/` · `rank/` · `kinship/` · `batch/` · `compose/` · `primitives/` (incl. bits + crest)   |
 | `src/corpus/`  | tree walk · scope · persisted indexes (`trigrams/` · `postings/` · `codex/` · `atlas/` · `crest/`)           |
 | `src/surface/` | transports + faces: `exec/{cold,session}` · `ffi/` · `face/{gist,relate,irregex}` · `cli/` shared vocabulary |
+| `src/assay/`   | the instrumentation floor (imports only `std`): typed `Span`/`Duration`/`Anchor` clocks, `Tally(Schema)` counters, and the `GIST_TRACE` lens + sink diagnostic channel |
 | `include/`     | `irregex.h`: the flat C ABI (`irregex_*` symbols)                                                            |
 | `bindings/`    | Python (`billy-irregex`, subprocess + optional cffi over `libirregex`) and Rust (subprocess) faces           |
 | `contract/`    | `search_api.toml`: the unified SearchRequest/irregex contract (ADR-352)                                      |

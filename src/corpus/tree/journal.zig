@@ -33,6 +33,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const haystack = @import("haystack.zig");
+const assay = @import("../../assay/assay.zig");
 
 pub const supported = builtin.os.tag == .macos;
 
@@ -70,9 +71,7 @@ pub const Entry = struct { path: []const u8, is_dir: bool };
 /// escape hatch, the `GIST_NO_PARALLEL` idiom. The env var is the journal's
 /// contract, so its predicate lives here rather than duplicated per caller.
 pub fn disabled() bool {
-    const s = std.mem.span(std.c.getenv("GIST_NO_JOURNAL") orelse return false);
-    return s.len != 0 and !std.mem.eql(u8, s, "0") and
-        !std.ascii.eqlIgnoreCase(s, "false") and !std.ascii.eqlIgnoreCase(s, "no");
+    return assay.envFlag("GIST_NO_JOURNAL");
 }
 
 /// Mint a token for THIS instant: the global FSEvents id + the device the
@@ -241,10 +240,8 @@ const Syms = struct {
     }
 };
 
-fn tracePhase(io: std.Io, name: []const u8, tlast: i128) i128 {
-    const now = std.Io.Clock.now(.awake, io).nanoseconds;
-    std.debug.print("journal: {s} {d:.1} ms\n", .{ name, @as(f64, @floatFromInt(now - tlast)) / 1e6 });
-    return now;
+fn tracePhase(io: std.Io, name: []const u8, span: *assay.Span) void {
+    assay.diag("journal: {s} {d:.1} ms\n", .{ name, span.lap(io).ms() });
 }
 
 fn cwdDev() ?u64 {
@@ -260,9 +257,9 @@ const RootPrefix = struct {
     abs: []const u8, // a-owned
 };
 
-/// Why a replay could not give an exact account — surfaced under
-/// `GIST_JOURNAL_TRACE` so a persistent fallback is diagnosable in the field
-/// instead of a silent `false`.
+/// Why a replay could not give an exact account — surfaced under the
+/// `journal` trace lens (`GIST_TRACE=journal`) so a persistent fallback is
+/// diagnosable in the field instead of a silent `false`.
 const Doubt = enum { none, no_paths, flagged, flood, no_kind, oom, unrooted };
 
 const Ctx = struct {
@@ -304,8 +301,8 @@ fn onEvents(_: Ref, info: ?*Ctx, num_events: usize, event_paths: ?[*]const [*:0]
             if (flags & flag_item_is_symlink != 0) continue;
             if (flags & flag_item_any == 0) {
                 ctx.doubt = .no_kind;
-                if (std.c.getenv("GIST_JOURNAL_TRACE") != null)
-                    std.debug.print("journal: no_kind flags=0x{x} path={s}\n", .{ flags, std.mem.span(paths[i]) });
+                if (assay.lit(.journal))
+                    assay.diag("journal: no_kind flags=0x{x} path={s}\n", .{ flags, std.mem.span(paths[i]) });
                 continue;
             }
             is_file = true; // special — the live-stat confirm is the authority
@@ -352,13 +349,13 @@ pub fn replay(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, tok
     defer arena.deinit();
     const aa = arena.allocator();
     var ctx = Ctx{ .a = aa };
-    const trace = std.c.getenv("GIST_JOURNAL_TRACE") != null;
-    var tlast: i128 = std.Io.Clock.now(.awake, io).nanoseconds;
+    const trace = assay.lit(.journal);
+    var span = assay.Span.open(io);
     const dev = cwdDev() orelse return false;
     if (dev != token.dev) return false; // the corpus moved volumes — foreign id space
 
     const s = Syms.get() orelse return false;
-    if (trace) tlast = tracePhase(io, "dlopen", tlast);
+    if (trace) tracePhase(io, "dlopen", &span);
 
     // Resolve each root to the absolute prefix deliveries are keyed under.
     const prefixes = aa.alloc(RootPrefix, roots.len) catch return false;
@@ -402,11 +399,11 @@ pub fn replay(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, tok
     // costs replay volume, never exactness.
     excludeNoise(s, stream, prefixes, aa);
 
-    if (trace) tlast = tracePhase(io, "create", tlast);
+    if (trace) tracePhase(io, "create", &span);
     const rl = s.CFRunLoopGetCurrent();
     s.FSEventStreamScheduleWithRunLoop(stream, rl, s.run_loop_default_mode);
     if (s.FSEventStreamStart(stream) == 0) return false;
-    if (trace) tlast = tracePhase(io, "start", tlast);
+    if (trace) tracePhase(io, "start", &span);
 
     // Drain until the HistoryDone sentinel: replay is delivered on THIS run
     // loop, so bounded slices observe it promptly; a wedged daemon hits the
@@ -417,14 +414,14 @@ pub fn replay(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, tok
     const deadline = std.Io.Clock.now(.real, io).nanoseconds + budget_ns;
     while (!ctx.done and ctx.doubt == .none) {
         if (std.Io.Clock.now(.real, io).nanoseconds > deadline) {
-            if (trace) std.debug.print("journal: deadline after {d} entries (done={}, doubt={s})\n", .{ ctx.raw.items.len, ctx.done, @tagName(ctx.doubt) });
+            if (trace) assay.diag("journal: deadline after {d} entries (done={}, doubt={s})\n", .{ ctx.raw.items.len, ctx.done, @tagName(ctx.doubt) });
             return false;
         }
         _ = s.CFRunLoopRunInMode(s.run_loop_default_mode, 0.005, 1);
     }
-    if (trace) tlast = tracePhase(io, "drain", tlast);
+    if (trace) tracePhase(io, "drain", &span);
     if (ctx.doubt != .none) {
-        if (trace) std.debug.print("journal: doubt={s} after {d} entries\n", .{ @tagName(ctx.doubt), ctx.raw.items.len });
+        if (trace) assay.diag("journal: doubt={s} after {d} entries\n", .{ @tagName(ctx.doubt), ctx.raw.items.len });
         return false;
     }
 
@@ -443,7 +440,7 @@ pub fn replay(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, tok
             }
         }
         if (!matched) {
-            if (trace) std.debug.print("journal: doubt=unrooted ({s})\n", .{e.path});
+            if (trace) assay.diag("journal: doubt=unrooted ({s})\n", .{e.path});
             return false;
         }
     }

@@ -1,10 +1,10 @@
 ---
 doc_radar:
   counts:
-    - description: "the three layers under src/: kernel · corpus · surface"
+    - description: "the three query layers (kernel · corpus · surface) plus the assay instrumentation floor beneath them"
       glob: pkg/kernels/irregex/src/*
       unit: dirs
-      equals: 3
+      equals: 4
     - description: "kernel/ keeps its six kernels: match · rank · kinship · batch · compose · primitives"
       glob: pkg/kernels/irregex/src/kernel/*
       unit: dirs
@@ -42,6 +42,7 @@ reasons inside). None gets a private corpus walk, scope layer, or index.
 | [`kernel/`](kernel)   | Pure compute — no argv, walk, or emit: `match` · `rank` · `kinship` · `batch` · `compose` · `primitives`                          | [`kernel/README.md`](kernel/README.md)   |
 | [`corpus/`](corpus)   | The body of text and its persisted forms: `tree/` walk · `scope/` `-g`/`-t` · `index/` accelerators                               | [`corpus/README.md`](corpus/README.md)   |
 | [`surface/`](surface) | Transports + faces: `exec/` (cold + session) · `ffi/` · `face/` (gist · relate · irregex) · `cli/` (shared flags/emit vocabulary) | [`surface/README.md`](surface/README.md) |
+| [`assay/`](assay)     | The instrumentation floor (imports only `std`, beneath all three tiers): typed `Span`/`Duration`/`Anchor` clocks · `Tally(Schema)` counters · the `GIST_TRACE` lens + sink diagnostic channel | [`assay/README.md`](assay/README.md)     |
 
 ## The anatomy of a query
 

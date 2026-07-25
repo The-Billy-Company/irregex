@@ -5,6 +5,7 @@ const gist = @import("irregex");
 const crest = gist.crest;
 const corpus_mod = gist.corpus;
 const Regex = gist.regex.Regex;
+const Span = gist.assay.Span; // package instrumentation floor: monotonic Span
 
 pub const out_dir = ".local/crest-evidence";
 pub const ascii_seed: u64 = 0xC0FFEE;
@@ -94,10 +95,6 @@ pub const RunReport = struct {
     violations: usize,
     passed: bool,
 };
-
-pub fn nowNs(io: std.Io) u64 {
-    return @intCast(std.Io.Clock.now(.awake, io).nanoseconds);
-}
 
 fn die(comptime fmt: []const u8, args: anytype) noreturn {
     std.debug.print("crest: " ++ fmt, args);
@@ -191,16 +188,16 @@ pub fn differential(re: *const Regex, sim: *Regex.Sim, docs: []const []const u8,
 pub const Timed = struct { ns: u64, hits: usize, survivors: usize = 0 };
 
 pub fn timeFull(io: std.Io, re: *const Regex, sim: *Regex.Sim, docs: []const []const u8) Timed {
-    const started = nowNs(io);
+    const sp = Span.open(io);
     var hits: usize = 0;
     for (docs) |doc| if (re.docMatch(sim, doc)) {
         hits += 1;
     };
-    return .{ .ns = nowNs(io) - started, .hits = hits };
+    return .{ .ns = @intCast(sp.read(io).ns()), .hits = hits };
 }
 
 pub fn timeSieve(io: std.Io, re: *const Regex, sim: *Regex.Sim, docs: []const []const u8, crests: []const crest.Vector, gv: crest.Vector) Timed {
-    const started = nowNs(io);
+    const sp = Span.open(io);
     var hits: usize = 0;
     var survivors: usize = 0;
     for (docs, crests) |doc, document_crest| {
@@ -208,7 +205,7 @@ pub fn timeSieve(io: std.Io, re: *const Regex, sim: *Regex.Sim, docs: []const []
         survivors += 1;
         if (re.docMatch(sim, doc)) hits += 1;
     }
-    return .{ .ns = nowNs(io) - started, .hits = hits, .survivors = survivors };
+    return .{ .ns = @intCast(sp.read(io).ns()), .hits = hits, .survivors = survivors };
 }
 
 pub fn upperMedian(gpa: std.mem.Allocator, samples: []const u64) !u64 {
