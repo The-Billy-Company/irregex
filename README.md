@@ -429,7 +429,7 @@ One changelog covers the whole package (one version, one release unit):
 
 ## Project
 
-- **License:** [MIT](LICENSE)
+- **License:** [Apache-2.0](LICENSE) — third-party attributions in [`NOTICE`](NOTICE)
 - **Changes:** [`CHANGELOG.md`](CHANGELOG.md)
 - **Contributing:** [repository guide](../../../CONTRIBUTING.md)
 - **Security:** [reporting policy](../../../SECURITY.md)

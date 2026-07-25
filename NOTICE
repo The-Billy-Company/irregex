@@ -1,0 +1,20 @@
+irregex — the irregular-expression engine (gist · relate · irregex)
+Copyright 2026 The Billy Company
+
+This product includes software developed at The Billy Company
+(https://billylives.com/).
+
+This product bundles the following third-party components, which carry their
+own licenses and copyright notices. Those notices are reproduced with the
+component and are not superseded by the Apache License, Version 2.0 above.
+
+  * PCRE2 — Perl-Compatible Regular Expressions (vendor/pcre2/)
+    BSD-3-Clause WITH PCRE2-exception
+    Copyright (c) 1997-2024 University of Cambridge
+    Copyright (c) 2009-2024 Zoltan Herczeg
+    See vendor/pcre2/LICENCE.md for the full text.
+
+  * WHATWG Encoding Standard index tables (tools/whatwg/index-*.txt)
+    CC0-1.0 (public-domain dedication)
+    Sourced from https://encoding.spec.whatwg.org/ — used to generate the
+    legacy-encoding decode tables.
