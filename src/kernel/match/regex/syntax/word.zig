@@ -2,7 +2,7 @@
 //!
 //! `\b` / `\B` / `\<` / `\>` (and `-w`) all reduce to one question: is the
 //! codepoint on a given side of a gap position a word character? The boolean
-//! Pike VM (`core.zig`) and the slot-carrying capture VM (`captures.zig`) both
+//! Pike VM (`../linear/pike/`) and the slot-carrying capture VM (`captures.zig`) both
 //! resolve that per position — and the two engines MUST agree byte-for-byte,
 //! or a `-r`/`--json` capture run could disagree with the boolean match that
 //! selected the line (a twin-engine parity bug). One definition per helper

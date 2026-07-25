@@ -28,12 +28,11 @@ const args = @import("../../cold/argv/args.zig");
 const output = @import("../../cold/emit/output.zig");
 const grepfile = @import("../../cold/read/grepfile.zig");
 const parallel = @import("../../../../kernel/primitives/parallel.zig");
-const query_mod = @import("../../../../kernel/match/query.zig");
+const query_mod = @import("../../../../kernel/match/query/query.zig");
 const request = @import("../answer/request.zig");
 const shm = @import("../conduit/shm.zig");
-const Regex = @import("../../../../kernel/match/regex/linear/core.zig").Regex;
-const matcher_mod = @import("../../../../kernel/match/regex/linear/matcher.zig");
-const fault = @import("../../../../fault.zig");
+const Regex = @import("../../../../kernel/match/regex/linear/program/core.zig").Regex;
+const matcher_mod = @import("../../../../kernel/match/regex/linear/ladder/matcher.zig");
 const Matcher = matcher_mod.Matcher;
 const Pcre = matcher_mod.Pcre;
 

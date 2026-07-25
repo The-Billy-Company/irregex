@@ -61,7 +61,12 @@ pub fn envFlag(key: [*:0]const u8) bool {
 /// one former env var: `amend`←`GIST_AMEND_TRACE`, `journal`←`GIST_JOURNAL_TRACE`,
 /// `reconcile`←`GIST_RECONCILE_TRACE`, `warm`←`GIST_DEBUG_WARM`. `rank`/`index`/
 /// `query`/`session` are new lenses those phases can opt into.
-pub const Lens = enum(u5) { amend, journal, reconcile, warm, rank, index, query, session };
+///
+/// `fault` is the odd one out: not a phase but a disposition — every failure
+/// the kernel deliberately spared because it could not change the answer
+/// (`fault.spare`, ADR-373 law 8). Off by default, so best-effort work stays
+/// quiet; lit, it is the only way to see a spared failure at all.
+pub const Lens = enum(u5) { amend, journal, reconcile, warm, rank, index, query, session, fault };
 
 var lens_mask: std.atomic.Value(u32) = .init(0);
 var format_json: bool = false;
@@ -115,11 +120,15 @@ fn current() Sink {
 /// from `GIST_TRACE`, and picks the trace/summary render format (`GIST_TRACE_
 /// FORMAT=text|json`, defaulting to `json_default` — i.e. a `--json` run traces
 /// as NDJSON so its stderr is machine-parseable too).
-pub const Policy = struct { sink: Sink = .stderr, json_default: bool = false };
+///
+/// `lenses` states the mask outright instead of reading `GIST_TRACE`, for the
+/// callers that have no environment to read: an embedder of the C ABI that wants
+/// spared failures collected, and a test that must light a lens deterministically.
+pub const Policy = struct { sink: Sink = .stderr, json_default: bool = false, lenses: ?u32 = null };
 
 pub fn install(p: Policy) void {
     default_sink = p.sink;
-    lens_mask.store(if (envSpan("GIST_TRACE")) |s| parseLenses(s) else 0, .monotonic);
+    lens_mask.store(p.lenses orelse if (envSpan("GIST_TRACE")) |s| parseLenses(s) else 0, .monotonic);
     format_json = if (envSpan("GIST_TRACE_FORMAT")) |f|
         std.ascii.eqlIgnoreCase(f, "json")
     else
@@ -153,7 +162,14 @@ fn write(comptime fmt: []const u8, args: anytype) void {
     switch (current()) {
         .stderr => std.debug.print(fmt, args),
         .dark => {},
-        .buffer => |b| b.list.print(b.gpa, fmt, args) catch {},
+        // The one failure in the kernel with nowhere to go: this *is* the
+        // diagnostic channel, so reporting its own OOM would re-enter here.
+        // Dropping the line is the terminating choice, and it costs only a
+        // captured diagnostic — never an answer. Deliberately not
+        // `fault.spare`, which would recurse through this same write.
+        .buffer => |b| b.list.print(b.gpa, fmt, args) catch |e| switch (e) {
+            error.OutOfMemory => {},
+        },
     }
 }
 

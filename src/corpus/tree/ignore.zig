@@ -782,14 +782,6 @@ fn globalExcludesFrom(io: std.Io, a: std.mem.Allocator, home: ?[]const u8, xdg: 
     return try join(a, c, "git/ignore");
 }
 
-/// Remove `count` leading path components, counting a leading `/` as the empty
-/// component exactly as `rootDepth` does for absolute positional roots.
-fn stripComponents(path: []const u8, count: usize) []const u8 {
-    var rest = path;
-    for (0..count) |_| rest = rest[(std.mem.indexOfScalar(u8, rest, '/') orelse return "") + 1 ..];
-    return rest;
-}
-
 /// The relative path `k` directories above CWD: 1→`..`, 2→`../..`, … .
 fn ascend(a: std.mem.Allocator, k: usize) Oom![]const u8 {
     var buf: std.ArrayList(u8) = .empty;

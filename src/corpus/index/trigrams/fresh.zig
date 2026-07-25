@@ -32,6 +32,7 @@ const journal = @import("../../tree/journal.zig");
 const frame = @import("../frame/frame.zig");
 const persist = @import("persist.zig");
 const sweep = @import("sweep.zig");
+const fault = @import("../../../fault.zig");
 const Dir = std.Io.Dir;
 
 const anchor_path = corpus_mod.ArtifactPath("built.ns");
@@ -60,7 +61,7 @@ pub fn writeAnchor(io: std.Io, built: assay.Anchor) !void {
 /// stat walk. Written AFTER the pair publishes, same as the anchor.
 pub fn writeJournalToken(io: std.Io, tok: journal.Token) void {
     const bytes = journal.encode(tok);
-    persist.writeAtomic(io, journal_tok_path.get(), &bytes) catch {};
+    fault.spare("write the journal since-token", persist.writeAtomic(io, journal_tok_path.get(), &bytes));
 }
 
 /// The persisted journal since-token, or null when absent/undecodable. `pub`
@@ -228,13 +229,13 @@ pub fn widen(gpa: std.mem.Allocator, paths: *std.ArrayList([]const u8), ids: *st
     }
 }
 
-fn retainAdmitted(io: std.Io, roots: []const []const u8, a: std.mem.Allocator, out: *std.ArrayList([]const u8), start: usize) void {
-    var ig = ignore.Ignore.init(a, io, .{}, roots);
+fn retainAdmitted(io: std.Io, roots: []const []const u8, a: std.mem.Allocator, out: *std.ArrayList([]const u8), start: usize) error{OutOfMemory}!void {
+    var ig = try ignore.Ignore.init(a, io, .{}, roots);
     var write = start;
     for (out.items[start..]) |path| {
         for (roots) |root| {
             if (!scope.underRoot(path, path_utils.stripDot(root))) continue;
-            if (ig.admitsPath(root, path)) {
+            if (try ig.admitsPath(root, path)) {
                 out.items[write] = path;
                 write += 1;
                 break;
@@ -291,7 +292,10 @@ fn journalFresh(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, b
         // Remember the loss for THIS token: on a busy tree the event window
         // only grows, so re-probing every query is a pure tax. A new build/
         // amend mints a new token and re-arms the attempt.
-        persist.writeAtomic(io, journal_skip_path.get(), &journal.encode(tok)) catch {};
+        fault.spare(
+            "record the journal-replay loss for this token",
+            persist.writeAtomic(io, journal_skip_path.get(), &journal.encode(tok)),
+        );
         return false;
     }
     if (trace) assay.diag("journal: replay {d:.1} ms ({d} entries)\n", .{ span.lap(io).ms(), entries.items.len });
@@ -303,7 +307,10 @@ fn journalFresh(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, b
         return false;
     };
     if (trace) assay.diag("journal: confirm {d:.1} ms ({d} kept)\n", .{ span.lap(io).ms(), out.items.len - start });
-    retainAdmitted(io, roots, a, out, start);
+    retainAdmitted(io, roots, a, out, start) catch {
+        out.items.len = start; // admission ran out of memory → no journal answer
+        return false;
+    };
     if (trace) assay.diag("journal: admit {d:.1} ms ({d} admitted)\n", .{ span.read(io).ms(), out.items.len - start });
     return true;
 }
@@ -333,7 +340,10 @@ pub fn confirmChanged(gpa: std.mem.Allocator, io: std.Io, roots: []const []const
         out.items.len = start; // a partial answer is no answer
         return false;
     };
-    retainAdmitted(io, roots, a, out, start);
+    retainAdmitted(io, roots, a, out, start) catch {
+        out.items.len = start;
+        return false;
+    };
     return true;
 }
 
@@ -365,5 +375,5 @@ fn walkFresh(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, buil
     if (journalFresh(gpa, io, roots, built_ns, a, out)) return;
     const start = out.items.len;
     try sweep.run(gpa, io, roots, built_ns, a, out);
-    retainAdmitted(io, roots, a, out, start);
+    try retainAdmitted(io, roots, a, out, start);
 }

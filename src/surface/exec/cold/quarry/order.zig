@@ -176,4 +176,3 @@ test "pathLess: separator ranks below every byte (ripgrep Path::cmp parity)" {
     try t.expectEqualStrings("svc/warroom.go", desc2[0].path);
     try t.expectEqualStrings("svc/warroom/service.go", desc2[1].path);
 }
-

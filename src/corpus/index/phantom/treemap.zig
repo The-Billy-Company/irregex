@@ -186,7 +186,7 @@ pub fn build(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !voi
     // Mirror the rootless query walk exactly: `parallel.run` inits its Ignore
     // with the (empty) positional roots and never scopes — parity by identical
     // construction, not by equivalence argument.
-    var ig = ignore.Ignore.init(a, io, .{}, &.{});
+    var ig = try ignore.Ignore.init(a, io, .{}, &.{});
 
     var b = Builder{ .a = a, .io = io, .ig = &ig };
     try b.dirs.append(a, .{ .first = 0, .count = 0 }); // dir 0 = root, filled by walk
@@ -233,7 +233,7 @@ const Builder = struct {
     /// recurse into the ones the default walk admits. `ix` is this directory's
     /// pre-assigned record slot.
     fn walk(b: *Builder, disk: []const u8, rel: []const u8, ix: u32) !void {
-        b.ig.loadDir(disk, rel);
+        try b.ig.loadDir(disk, rel);
         const fd = std.posix.openat(std.posix.AT.FDCWD, disk, .{ .ACCMODE = .RDONLY, .DIRECTORY = true }, 0) catch return;
         const listed = blk: {
             defer _ = std.posix.system.close(fd);

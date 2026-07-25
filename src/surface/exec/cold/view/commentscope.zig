@@ -25,10 +25,11 @@ const lexspan = @import("../../../../kernel/compose/lexspan.zig");
 const corpus_mod = @import("../../../../corpus/tree/corpus.zig");
 const emit = @import("../../../cli/emit.zig");
 const args = @import("../argv/args.zig");
+const writ = @import("../writ/writ.zig");
 
 const Opts = args.Opts;
 const oom = args.oom;
-const Matcher = @import("../../../../kernel/match/regex/linear/matcher.zig").Matcher;
+const Matcher = @import("../../../../kernel/match/regex/linear/ladder/matcher.zig").Matcher;
 
 /// A searchable file: its display path and (BOM-stripped) body. The caller
 /// (`serial.zig`) projects its `InFile` set into this so this module needs no
@@ -49,7 +50,7 @@ pub fn run(a: std.mem.Allocator, re: *const Matcher, o: Opts, files: []const Fil
     var ss = Matcher.SpanSim.init(a, re) catch return 0;
     defer ss.deinit();
     const scope: []const u8 = if (o.in_comments) "comment" else "code";
-    const binary_detect = !o.text and !o.binary and !o.null_data;
+    const binary_detect = writ.binaryDetect(o);
     var kept: usize = 0;
 
     for (files) |f| {

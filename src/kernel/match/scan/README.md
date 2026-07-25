@@ -23,7 +23,7 @@ doc_radar:
 The hot per-file kernels that decide whether a candidate matches. This is
 the half of the head-to-head that has to out-throughput ripgrep's multi-core
 scan. The fused work-stealing walk that _feeds_ these kernels lives in
-`surface/exec/cold/engine/parallel.zig`; the resident session drives `verify`
+`surface/exec/cold/engine/swarm/`; the resident session drives `verify`
 directly.
 
 ## Files

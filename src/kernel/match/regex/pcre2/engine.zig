@@ -10,7 +10,7 @@
 //! story and `../matcher.zig` for the union that dispatches to us.
 
 const std = @import("std");
-const core = @import("../linear/core.zig");
+const core = @import("../linear/program/core.zig");
 const ffi = @import("ffi.zig");
 const literal = @import("literal.zig");
 const shadow_mod = @import("shadow.zig");
@@ -356,7 +356,11 @@ pub fn compileMode(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
 /// is provable / useful. Every failure short of OOM is a silent decline —
 /// PCRE2 then runs raw, exactly the pre-shadow behavior (fail-open by design).
 fn buildShadow(allocator: std.mem.Allocator, pattern: []const u8, opts: Options) error{OutOfMemory}!?core.Regex {
-    const text = (try shadow_mod.overapprox(allocator, pattern)) orelse return null;
+    const text = switch (try shadow_mod.overapprox(allocator, pattern)) {
+        .got => |t| t,
+        // The rewriter found no containment proof; PCRE2 runs raw.
+        .declined => return null,
+    };
     defer allocator.free(text);
     // Mirror the PCRE2 compile knobs so the two languages align (fold, `.`-vs-
     // `\n`, Unicode classes). `line_anchors` is irrelevant: the shadow is

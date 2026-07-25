@@ -39,7 +39,7 @@ fn inSet(set: []const []const u8, s: []const u8) bool {
 /// triple (each component 0-255) — `termcolor::Color::from_str`.
 fn validColorValue(v: []const u8) bool {
     if (inSet(&named_colors, v)) return true;
-    if (std.fmt.parseInt(u8, v, 10)) |_| return true else |_| {}
+    if (std.fmt.parseInt(u8, v, 10) catch null) |_| return true;
     var n: usize = 0;
     var it = std.mem.splitScalar(u8, v, ',');
     while (it.next()) |p| : (n += 1) _ = std.fmt.parseInt(u8, p, 10) catch return false;

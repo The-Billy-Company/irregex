@@ -17,21 +17,31 @@ searched roots.
 One matcher, three orchestration modes under [`engine/`](engine):
 
 - **serial** — the certified control plane (fallbacks, stdin, JSON, quiet, exit)
-- **parallel** — fused work-stealing walk+read+match when the flag set allows
+- **swarm** — fused work-stealing walk+read+match when the flag set allows
 - **ranked** — `--rank` definition-first view (gist's one native shape)
 
 The warm daemon and the FFI session do **not** reimplement matching: they call
-the shared `kernel/match/query.zig` core and, for line frames, reuse this
+the shared `kernel/match/query/query.zig` core and, for line frames, reuse this
 face's own `Emitter` / `grepfile` so warm bytes cannot drift from cold.
 
 ## Concern packages
 
-| Package             | Owns                                                        |
-| ------------------- | ----------------------------------------------------------- |
-| [`argv/`](argv)     | flag grammar → `Opts`; the `flag_catalog` `--schema` rides  |
-| [`read/`](read)     | per-file ingest (encoding, decompress/preprocess, grepfile) |
-| [`emit/`](emit)     | presentation — framing, color, `--json`, multiline          |
-| [`engine/`](engine) | orchestration that drives the packages above                |
+| Package             | Owns                                                                 |
+| ------------------- | -------------------------------------------------------------------- |
+| [`argv/`](argv)     | flag grammar → `Opts`; the `flag_catalog` `--schema` rides           |
+| [`writ/`](writ)     | what the patterns decide — matcher, gates, filters, and their guards |
+| [`quarry/`](quarry) | what is in the tree, what must be read, in what order, from where    |
+| [`read/`](read)     | per-file ingest (encoding, decompress/preprocess, grepfile)          |
+| [`emit/`](emit)     | presentation — framing, color, `--json`, multiline, per-file render  |
+| [`engine/`](engine) | scheduling that drives the packages above                            |
+| [`view/`](view)     | gist's own ways of looking at a match, which rg has no flag for      |
+
+The first six are the pipeline in order: **argv → writ → quarry → read → emit**,
+with `engine/` choosing which scheduler walks it
+([ADR-376](../../../../../../../docs/architecture/3-decisions/376-cold-engine-deep-modules.md)).
+`view/` sits beside that pipeline rather than in it — a lens branches before the
+certified rg path and finishes the run itself, which is exactly what keeps the
+parity certificate meaningful as gist grows native shapes.
 
 Corpus admission and path vocabulary are shared below the CLI in
 [`corpus/tree/`](../../../corpus/tree) and [`corpus/scope/`](../../../corpus/scope).

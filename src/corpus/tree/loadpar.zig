@@ -41,13 +41,26 @@ const bulkstat = @import("bulkstat.zig");
 const corpus = @import("corpus.zig");
 const paths = @import("../scope/paths.zig");
 const assay = @import("../../assay/assay.zig");
+const fault = @import("../../fault.zig");
 
 const Dir = std.Io.Dir;
-const oom = paths.allocFailure;
 const joinPath = paths.join;
 const stripDot = paths.stripDot;
 const rootDepth = paths.rootDepth;
 const AT = std.posix.AT;
+
+/// Allocation failure RETURNS here rather than exiting the process: this loader
+/// is what `corpus.load` fuses on, and `corpus.load` stands up the corpus behind
+/// every FFI entry, where an `exit(2)` would take the embedding host down with
+/// it instead of yielding `IRREGEX_OOM` (ADR-373 law 1).
+///
+/// An error cannot cross a thread boundary, so a worker that runs out of memory
+/// records it in `Worker.oom` and then keeps RETIRING tasks without doing their
+/// work: `Queue.pop` parks peers until `live` drains, so a worker that simply
+/// stopped would deadlock the fan-out instead of failing it. `load` reads the
+/// flags after the join and returns `error.OutOfMemory` for the whole walk — a
+/// partial corpus is never handed back as if it were complete.
+const Oom = std.mem.Allocator.Error;
 
 /// A directory the walk has discovered but not yet processed. `disk` is
 /// openable from CWD; `rel` is its root-joined display/ignore path (the
@@ -92,19 +105,22 @@ const Queue = struct {
         if (n != 0) _ = q.live.fetchAdd(n, .acq_rel);
     }
 
-    fn donate(q: *Queue, tasks: []const DirTask) void {
+    /// On OOM the tasks stay with the caller (still counted in `live`), so the
+    /// donor must keep draining them itself rather than assume the handoff.
+    fn donate(q: *Queue, tasks: []const DirTask) Oom!void {
         if (tasks.len == 0) return;
         q.mu.lockUncancelable(q.io);
-        q.items.appendSlice(q.gpa, tasks) catch oom();
+        const appended = q.items.appendSlice(q.gpa, tasks);
         q.avail.store(q.items.items.len - q.head, .release);
         const wake = @min(tasks.len, q.waiting);
         q.mu.unlock(q.io);
         if (wake == 1) q.cv.signal(q.io) else if (wake > 1) q.cv.broadcast(q.io);
+        return appended;
     }
 
-    fn push(q: *Queue, tasks: []const DirTask) void {
+    fn push(q: *Queue, tasks: []const DirTask) Oom!void {
         q.noteDiscovered(tasks.len);
-        q.donate(tasks);
+        return q.donate(tasks);
     }
 
     fn pop(q: *Queue) ?DirTask {
@@ -157,6 +173,8 @@ const Worker = struct {
     docs: std.ArrayList([]const u8) = .empty,
     paths: std.ArrayList([]const u8) = .empty,
     bytes: u64 = 0,
+    /// This worker hit an allocation failure; `load` fails the whole walk.
+    oom: bool = false,
 };
 
 fn workerMain(w: *Worker) void {
@@ -164,21 +182,27 @@ fn workerMain(w: *Worker) void {
     var local: std.ArrayList(DirTask) = .empty;
     while (true) {
         const task = local.pop() orelse w.q.pop() orelse break;
-        processDir(w, a, task, &local);
+        // Once out of memory this loop retires the remaining backlog WITHOUT
+        // doing its work: the corpus is already doomed, but `live` must still
+        // drain to zero or the parked peers never wake (see `Oom` above).
+        if (!w.oom) processDir(w, a, task, &local) catch {
+            w.oom = true;
+        };
         w.q.done();
         // Hand the widest half of the backlog (the deepest, most recently
         // discovered subtrees) to a hunting peer — same load-balancing the
         // search walk uses.
         if (local.items.len > 1 and w.q.starving.load(.monotonic) > 0) {
             const give = local.items.len / 2;
-            w.q.donate(local.items[0..give]);
-            std.mem.copyForwards(DirTask, local.items[0 .. local.items.len - give], local.items[give..]);
-            local.items.len -= give;
+            if (w.q.donate(local.items[0..give])) {
+                std.mem.copyForwards(DirTask, local.items[0 .. local.items.len - give], local.items[give..]);
+                local.items.len -= give;
+            } else |_| w.oom = true; // handoff failed → keep and drain them here
         }
     }
 }
 
-fn processDir(w: *Worker, a: std.mem.Allocator, task: DirTask, local: *std.ArrayList(DirTask)) void {
+fn processDir(w: *Worker, a: std.mem.Allocator, task: DirTask, local: *std.ArrayList(DirTask)) Oom!void {
     const ig = w.ig;
     // Raw `openat` (worker-thread safe) — an unreadable/EACCES directory is
     // skipped (best-effort walk-on); the serial build surfaces it, but a
@@ -198,13 +222,16 @@ fn processDir(w: *Worker, a: std.mem.Allocator, task: DirTask, local: *std.Array
     var present = ignore.IgPresent{};
     var bulk_ok = false;
     if (bulkstat.supported) {
-        if (bulkstat.listNamesOnly(a, dir.handle)) |listed| {
+        // The bulk-stat→readdir seam: a listing failure is this accelerator
+        // declining, not a fault — `bulk_ok` stays false and the portable
+        // fallback below does the same work, slower.
+        if (bulkstat.listNamesOnly(a, dir.handle) catch null) |listed| {
             for (listed) |e| {
                 ignore.noteIgnoreFile(&present, e.name, e.is_file);
-                entries.append(a, .{ .name = e.name, .is_dir = e.is_dir, .is_file = e.is_file }) catch oom();
+                try entries.append(a, .{ .name = e.name, .is_dir = e.is_dir, .is_file = e.is_file });
             }
             bulk_ok = true;
-        } else |_| {}
+        }
     }
     if (!bulk_ok) {
         if (bulkstat.supported) {
@@ -220,9 +247,9 @@ fn processDir(w: *Worker, a: std.mem.Allocator, task: DirTask, local: *std.Array
         while (true) {
             const e = (it.next(w.io) catch break) orelse break;
             if (e.kind != .file and e.kind != .directory) continue;
-            const name = a.dupe(u8, e.name) catch oom();
+            const name = try a.dupe(u8, e.name);
             ignore.noteIgnoreFile(&present, name, e.kind == .file);
-            entries.append(a, .{ .name = name, .is_dir = e.kind == .directory, .is_file = e.kind == .file }) catch oom();
+            try entries.append(a, .{ .name = name, .is_dir = e.kind == .directory, .is_file = e.kind == .file });
         }
     }
 
@@ -231,34 +258,36 @@ fn processDir(w: *Worker, a: std.mem.Allocator, task: DirTask, local: *std.Array
     var chain = task.chain;
     if (!ig.o.no_ignore and (present.gitignore or present.dotignore or present.rgignore) and
         !ig.loaded.contains(task.rel) and !ig.loaded.contains(stripDot(task.rel)))
-        chain = ignore.loadNode(ig, a, task.chain, task.disk, task.rel, present);
+        chain = try ignore.loadNode(ig, a, task.chain, task.disk, task.rel, present);
 
     // Children accrue on the worker's own stack; only the COUNT touches the
-    // shared queue, and it must be accounted before this task's `done`.
+    // shared queue, and it must be accounted before this task's `done` — on an
+    // OOM mid-loop too, or the tasks already stacked would be retired against
+    // a `live` that never counted them.
     const before = local.items.len;
-    for (entries.items) |e| handleEntry(w, a, dir.handle, task, chain, local, e);
-    w.q.noteDiscovered(local.items.len - before);
+    defer w.q.noteDiscovered(local.items.len - before);
+    for (entries.items) |e| try handleEntry(w, a, dir.handle, task, chain, local, e);
 }
 
-fn handleEntry(w: *Worker, a: std.mem.Allocator, dirfd: std.posix.fd_t, task: DirTask, chain: ?*const ignore.IgNode, children: *std.ArrayList(DirTask), e: Entry) void {
+fn handleEntry(w: *Worker, a: std.mem.Allocator, dirfd: std.posix.fd_t, task: DirTask, chain: ?*const ignore.IgNode, children: *std.ArrayList(DirTask), e: Entry) Oom!void {
     if (!e.is_dir and !e.is_file) return; // symlinks & specials — never followed
-    const rel = joinRel(a, task.rel, e.name);
+    const rel = try joinRel(a, task.rel, e.name);
     if (e.is_dir) {
         // Dir pruning: the corpus-only build/VCS skip list THEN the ignore
         // verdict — `haystack.Walker.next`'s exact order.
         if (haystack.isSkipDir(e.name) or shouldSkip(w.ig, chain, a, task.root_depth, rel, true, e.name)) return;
-        children.append(a, .{
-            .disk = joinPath(a, task.disk, e.name),
+        try children.append(a, .{
+            .disk = try joinPath(a, task.disk, e.name),
             .rel = rel,
             .root_depth = task.root_depth,
             .chain = chain,
-        }) catch oom();
+        });
         return;
     }
     if (shouldSkip(w.ig, chain, a, task.root_depth, rel, false, e.name)) return;
-    const buf = readMemberRaw(a, dirfd, e.name) orelse return;
-    w.docs.append(a, buf) catch oom();
-    w.paths.append(a, rel) catch oom();
+    const buf = try readMemberRaw(a, dirfd, e.name) orelse return;
+    try w.docs.append(a, buf);
+    try w.paths.append(a, rel);
     w.bytes += buf.len;
 }
 
@@ -277,7 +306,7 @@ fn shouldSkip(ig: *const ignore.Ignore, chain: ?*const ignore.IgNode, a: std.mem
 /// null when unreadable, empty, reaches/exceeds `corpus.per_file_cap`
 /// (`readFileAlloc(.limited)`'s `error.StreamTooLong` boundary — "reached or
 /// exceeded"), or binary (`corpus.isBinary`).
-fn readMemberRaw(a: std.mem.Allocator, dirfd: std.posix.fd_t, name: []const u8) ?[]const u8 {
+fn readMemberRaw(a: std.mem.Allocator, dirfd: std.posix.fd_t, name: []const u8) Oom!?[]const u8 {
     const fd = std.posix.openat(dirfd, name, .{ .ACCMODE = .RDONLY }, 0) catch return null;
     defer _ = std.posix.system.close(fd);
     var buf: std.ArrayList(u8) = .empty;
@@ -285,7 +314,7 @@ fn readMemberRaw(a: std.mem.Allocator, dirfd: std.posix.fd_t, name: []const u8) 
     while (true) {
         const r = std.posix.read(fd, &tmp) catch return null;
         if (r == 0) break;
-        buf.appendSlice(a, tmp[0..r]) catch oom();
+        try buf.appendSlice(a, tmp[0..r]);
         if (buf.items.len >= corpus.per_file_cap) return null; // StreamTooLong parity
     }
     if (buf.items.len == 0 or corpus.isBinary(buf.items)) return null;
@@ -294,7 +323,7 @@ fn readMemberRaw(a: std.mem.Allocator, dirfd: std.posix.fd_t, name: []const u8) 
 
 /// Root-joined path, `haystack.joinRoot` shape: a `.` root (prefix "") yields
 /// bare CWD-relative paths, an explicit root keeps its `root/...` prefix.
-fn joinRel(a: std.mem.Allocator, prefix: []const u8, name: []const u8) []const u8 {
+fn joinRel(a: std.mem.Allocator, prefix: []const u8, name: []const u8) Oom![]const u8 {
     if (prefix.len == 0) return name;
     return joinPath(a, prefix, name);
 }
@@ -316,10 +345,10 @@ test "fused parallel load has byte-identical membership to the serial walk" {
     const a = arena.allocator();
 
     const root = "/tmp/gist_loadpar_parity_fixture";
-    Dir.cwd().deleteTree(io, root) catch {};
-    defer Dir.cwd().deleteTree(io, root) catch {};
-    try Dir.cwd().createDirPath(io, joinPath(a, root, "sub/nested"));
-    try Dir.cwd().createDirPath(io, joinPath(a, root, "node_modules"));
+    fault.spare("clear leftover parity fixture", Dir.cwd().deleteTree(io, root));
+    defer fault.spare("remove parity fixture", Dir.cwd().deleteTree(io, root));
+    try Dir.cwd().createDirPath(io, try joinPath(a, root, "sub/nested"));
+    try Dir.cwd().createDirPath(io, try joinPath(a, root, "node_modules"));
 
     const W = struct {
         fn f(io_: std.Io, a_: std.mem.Allocator, p: []const u8, data: []const u8) !void {
@@ -327,18 +356,18 @@ test "fused parallel load has byte-identical membership to the serial walk" {
             _ = a_;
         }
     };
-    try W.f(io, a, joinPath(a, root, "a.txt"), "alpha\n");
-    try W.f(io, a, joinPath(a, root, "sub/b.zig"), "const b = 1;\n");
-    try W.f(io, a, joinPath(a, root, "sub/nested/c.py"), "c = 2\n");
+    try W.f(io, a, try joinPath(a, root, "a.txt"), "alpha\n");
+    try W.f(io, a, try joinPath(a, root, "sub/b.zig"), "const b = 1;\n");
+    try W.f(io, a, try joinPath(a, root, "sub/nested/c.py"), "c = 2\n");
     // per-dir gitignore: anchored dir rule + negation
-    try W.f(io, a, joinPath(a, root, ".gitignore"), "*.log\n!keep.log\nignored.txt\n");
-    try W.f(io, a, joinPath(a, root, "foo.log"), "excluded by *.log\n");
-    try W.f(io, a, joinPath(a, root, "keep.log"), "re-included\n");
-    try W.f(io, a, joinPath(a, root, "sub/ignored.txt"), "excluded by slash-less rule at any depth\n");
-    try W.f(io, a, joinPath(a, root, ".hidden.txt"), "excluded: hidden dotfile\n");
-    try W.f(io, a, joinPath(a, root, "node_modules/dep.js"), "excluded: isSkipDir\n");
-    try W.f(io, a, joinPath(a, root, "empty.txt"), "");
-    try W.f(io, a, joinPath(a, root, "bin.dat"), "text\x00with-nul-byte\n");
+    try W.f(io, a, try joinPath(a, root, ".gitignore"), "*.log\n!keep.log\nignored.txt\n");
+    try W.f(io, a, try joinPath(a, root, "foo.log"), "excluded by *.log\n");
+    try W.f(io, a, try joinPath(a, root, "keep.log"), "re-included\n");
+    try W.f(io, a, try joinPath(a, root, "sub/ignored.txt"), "excluded by slash-less rule at any depth\n");
+    try W.f(io, a, try joinPath(a, root, ".hidden.txt"), "excluded: hidden dotfile\n");
+    try W.f(io, a, try joinPath(a, root, "node_modules/dep.js"), "excluded: isSkipDir\n");
+    try W.f(io, a, try joinPath(a, root, "empty.txt"), "");
+    try W.f(io, a, try joinPath(a, root, "bin.dat"), "text\x00with-nul-byte\n");
 
     const roots: []const []const u8 = &.{root};
     var ser = try corpus.loadSerial(testing.allocator, io, roots);
@@ -359,15 +388,15 @@ test "fused parallel load has byte-identical membership to the serial walk" {
         try testing.expectEqualStrings(want, d);
     }
     // The members that must be present, and the ones that must be pruned.
-    try testing.expect(expect.get(joinPath(a, root, "a.txt")) != null);
-    try testing.expect(expect.get(joinPath(a, root, "keep.log")) != null);
-    try testing.expect(expect.get(joinPath(a, root, "sub/nested/c.py")) != null);
-    try testing.expect(expect.get(joinPath(a, root, "foo.log")) == null);
-    try testing.expect(expect.get(joinPath(a, root, "sub/ignored.txt")) == null);
-    try testing.expect(expect.get(joinPath(a, root, ".hidden.txt")) == null);
-    try testing.expect(expect.get(joinPath(a, root, "node_modules/dep.js")) == null);
-    try testing.expect(expect.get(joinPath(a, root, "empty.txt")) == null);
-    try testing.expect(expect.get(joinPath(a, root, "bin.dat")) == null);
+    try testing.expect(expect.get(try joinPath(a, root, "a.txt")) != null);
+    try testing.expect(expect.get(try joinPath(a, root, "keep.log")) != null);
+    try testing.expect(expect.get(try joinPath(a, root, "sub/nested/c.py")) != null);
+    try testing.expect(expect.get(try joinPath(a, root, "foo.log")) == null);
+    try testing.expect(expect.get(try joinPath(a, root, "sub/ignored.txt")) == null);
+    try testing.expect(expect.get(try joinPath(a, root, ".hidden.txt")) == null);
+    try testing.expect(expect.get(try joinPath(a, root, "node_modules/dep.js")) == null);
+    try testing.expect(expect.get(try joinPath(a, root, "empty.txt")) == null);
+    try testing.expect(expect.get(try joinPath(a, root, "bin.dat")) == null);
 }
 
 /// Worker count for the walk: `GIST_WORKERS` override, else one per core capped
@@ -393,7 +422,7 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !corp
     // One frozen base `Ignore` for the whole invocation — the same construction
     // `haystack.Walker.initWithRoots` does per root (root/ancestor tiers loaded
     // once). Per-directory sub-ignores are folded in via the worker chains.
-    var ig = ignore.Ignore.init(a, io, .{}, roots);
+    var ig = try ignore.Ignore.init(a, io, .{}, roots);
 
     var q = Queue{ .gpa = gpa, .io = io };
     defer q.items.deinit(gpa);
@@ -405,20 +434,23 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !corp
     var seeds: std.ArrayList(DirTask) = .empty;
     for (roots) |r| {
         const prefix = if (std.mem.eql(u8, r, ".")) "" else std.mem.trimEnd(u8, r, "/");
-        seeds.append(a, .{
+        try seeds.append(a, .{
             .disk = if (r.len == 0) "." else r,
             .rel = prefix,
             .root_depth = rootDepth(prefix),
             .chain = null,
-        }) catch oom();
+        });
     }
 
     const n = workerCount();
     const workers = try gpa.alloc(Worker, n);
     defer gpa.free(workers);
     for (workers) |*w| w.* = .{ .q = &q, .io = io, .ig = &ig, .arena = std.heap.ArenaAllocator.init(gpa) };
+    // The worker arenas travel into the `Corpus` on success; on any failure from
+    // here on they are this function's to release.
+    errdefer for (workers) |*w| w.arena.deinit();
 
-    q.push(seeds.items);
+    try q.push(seeds.items);
 
     const threads = try a.alloc(std.Thread, n);
     var spawned: usize = 0;
@@ -430,6 +462,10 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !corp
     workerMain(&workers[0]);
     for (workers[1 + spawned ..]) |*w| workerMain(w);
     for (threads[0..spawned]) |t| t.join();
+
+    // A worker that ran out of memory walked a strict subset of the tree. Fail
+    // the load rather than hand back a corpus that silently omits files.
+    for (workers) |*w| if (w.oom) return error.OutOfMemory;
 
     // Stitch: slice HEADERS land in the main arena; the doc/path bytes stay in
     // the worker arenas (kept alive in `Corpus.shards`). Doc ids are assigned by

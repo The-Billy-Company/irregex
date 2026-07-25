@@ -141,7 +141,7 @@ pub fn build(b: *std.Build) void {
     const cli_exe = b.addExecutable(.{ .name = "gist", .root_module = cli_mod });
     b.installArtifact(cli_exe);
 
-    // ── the `relate` binary — compression-as-search (similar/dups/patterns) ──
+    // ── the `relate` binary — compression-as-search (similar/echoes/pack) ──
     // Same engine module, same ReleaseFast product posture; a second thin face
     // over the shared kernel, not a second engine.
     const relate_mod = b.createModule(.{
@@ -183,7 +183,7 @@ pub fn build(b: *std.Build) void {
 
     // ── cross-target drift gate (`zig build check-linux`, folded into `test`) ──
     // The Linux legs — the statx raw-stat shim (grepfile.zig), the inotify
-    // watcher (session/watch.zig), and every `std.os.linux` call they make —
+    // watcher (session/watch/watch.zig), and every `std.os.linux` call they make —
     // are comptime-pruned on the macOS dev boxes, so only a cross compile can
     // see them break (exactly how a `std.posix.close`/`std.c.fstatat` removal
     // in Zig 0.16 rotted unnoticed). Compile the full CLI module for
@@ -223,7 +223,7 @@ pub fn build(b: *std.Build) void {
     // Reject NaN, infinities, and out-of-range values before any corpus work;
     // otherwise IEEE comparisons silently turn a malformed query into no rows.
     const bad_distance_test = b.addRunArtifact(relate_exe);
-    bad_distance_test.addArgs(&.{ "dups", "--max-distance", "nan" });
+    bad_distance_test.addArgs(&.{ "echoes", "--as", "copies", "--max-distance", "nan" });
     bad_distance_test.expectExitCode(2);
     bad_distance_test.expectStdErrMatch("finite number in [0,1]");
     k.test_step.dependOn(&bad_distance_test.step);
@@ -232,6 +232,16 @@ pub fn build(b: *std.Build) void {
     bad_echo_test.expectExitCode(2);
     bad_echo_test.expectStdErrMatch("finite number in [0,1]");
     k.test_step.dependOn(&bad_echo_test.step);
+
+    // A folded verb name is a coached exit, not an unknown-command dead end:
+    // four names became flags on `similar`/`echoes`, and muscle memory (plus
+    // every doc written before the fold) still types them. The unit tests pin
+    // the rendering; this pins that a real `relate dups` invocation reaches it.
+    const folded_test = b.addRunArtifact(relate_exe);
+    folded_test.addArgs(&.{"dups"});
+    folded_test.expectExitCode(2);
+    folded_test.expectStdErrMatch("relate echoes --as copies");
+    k.test_step.dependOn(&folded_test.step);
 
     // Black-box CLI regression guard (wired into `zig build test`): an explicit
     // PATH arg that can't be opened must be reported to stderr and force exit 2
@@ -319,6 +329,10 @@ pub fn build(b: *std.Build) void {
     // report IRREGEX_MATCH (the abort return, ABI v2); the additive options
     // entry must enforce smart-case/Unicode/invert/quiet/max-count and reject malformed
     // options; and a no-match query must return IRREGEX_OK without firing.
+    // It closes on ADR-373 law 7's pull: an allocation the seam refuses reports
+    // the `resource` fault BY NAME through `irregex_last_fault` instead of taking
+    // the process with it, a declinature and an argument rejection report no fault
+    // at all, and the next successful call must not hand back the stale one.
     // The needle lives ONLY in the fixture (a separate dir from this C source),
     // so it can never self-match.
     const ffi_fixture = b.addWriteFiles();
@@ -327,6 +341,7 @@ pub fn build(b: *std.Build) void {
         \\#include "irregex.h"
         \\#include <stddef.h>
         \\#include <stdint.h>
+        \\#include <string.h>
         \\
         \\static int g_hits;
         \\static uint64_t g_first_line;
@@ -498,6 +513,35 @@ pub fn build(b: *std.Build) void {
         \\    req.struct_size = 0u;
         \\    if (irregex_search_cursor(e, &req, &cur) != IRREGEX_INVALID) return 62;
         \\    if (irregex_status_message(IRREGEX_STALE) == NULL) return 63;
+        \\
+        \\    /* ── the last-fault pull (ADR-373 law 7) ── */
+        \\    irregex_fault f;
+        \\    f.struct_size = 0u; /* size-checked like every other entry */
+        \\    if (irregex_last_fault(&f) != IRREGEX_INVALID) return 64;
+        \\    if (irregex_last_fault(NULL) != IRREGEX_INVALID) return 65;
+        \\    f.struct_size = sizeof f;
+        \\    /* The declinature and the INVALID above were not faults: nothing to say. */
+        \\    if (irregex_last_fault(&f) != IRREGEX_OK) return 66;
+        \\
+        \\    /* Force a REAL taxonomy fault through the FFI: a root count whose byte
+        \\     * size overflows is refused by the allocator, so the seam reports the
+        \\     * `resource` domain rather than the host losing the process. */
+        \\    irregex_session *doomed = NULL;
+        \\    if (irregex_open(roots, (size_t)-1 / 4u, &doomed) != IRREGEX_OOM) return 67;
+        \\    if (doomed != NULL) return 68;
+        \\    if (irregex_last_fault(&f) != IRREGEX_MATCH) return 69;
+        \\    if (f.status != IRREGEX_OOM) return 70;
+        \\    if (f.name == NULL || strcmp(f.name, "OutOfMemory") != 0) return 71;
+        \\    if (f.path != NULL || f.path_len != 0u || f.has_at != 0) return 72;
+        \\    if (irregex_last_fault(&f) != IRREGEX_MATCH) return 73; /* not consumed */
+        \\
+        \\    /* The assertion this design exists for: a SUCCESSFUL call must not hand
+        \\     * back the stale fault. */
+        \\    irregex_cancel *fresh = NULL;
+        \\    if (irregex_cancel_new(&fresh) != IRREGEX_OK) return 74;
+        \\    if (irregex_last_fault(&f) != IRREGEX_OK) return 75;
+        \\    irregex_cancel_free(fresh);
+        \\
         \\    irregex_engine_close(e);
         \\    return 0;
         \\}
@@ -592,6 +636,19 @@ pub fn build(b: *std.Build) void {
     const flagbench_step = b.step("flagbench", "Per-function micro-profiles for -i / -n / -v (byte-identity self-checked)");
     flagbench_step.dependOn(&run_flagbench.step);
     flagbench_step.dependOn(bench_install);
+
+    // `zig build sessionprof` — per-function micro-profiles for the WARM SESSION
+    // seams (fold / invert / lines / shm / record stream / render lanes), timed
+    // in-process so a refactor's effect isn't drowned by the socket + reconcile
+    // walk that `bench -- session` measures. `--baseline <report.json>` turns the
+    // run into a before/after comparison with a Mann-Whitney verdict per seam.
+    const run_sessionprof = b.addRunArtifact(bench_exe);
+    run_sessionprof.setCwd(b.path("../../.."));
+    run_sessionprof.addArg("sessionprof");
+    if (b.args) |args| run_sessionprof.addArgs(args);
+    const sessionprof_step = b.step("sessionprof", "Per-function micro-profiles for the warm session seams (answer-digest self-checked)");
+    sessionprof_step.dependOn(&run_sessionprof.step);
+    sessionprof_step.dependOn(bench_install);
 
     // Bench-side tests too — the harness-local `stats.zig` bootstrap-CI +
     // Mann-Whitney unit tests. (`bench/harness/bench.zig` imports `gist`; reuse the

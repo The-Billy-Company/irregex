@@ -19,17 +19,17 @@ prove that some of them cannot match (or answer count/find/restore /
 kinship without a full scan). `--no-index`, a missing anchor, or a corrupt
 artifact always degrades to slower-but-identical answers.
 
-| Package                 | Job                                                                              |
-| ----------------------- | -------------------------------------------------------------------------------- |
-| [`trigrams/`](trigrams) | **T0** positional trigram candidate index + **T3** mtime/ctime freshness         |
-| [`postings/`](postings) | LEB128 + CSR blob codecs the trigram bodies ride                                 |
-| [`crest/`](crest)       | Per-doc forced-class-run vectors (`crest.bin`) for literal-free class runs       |
-| [`codex/`](codex)       | FM-index self-index: `count` / `find` / `restore` at entropy space               |
-| [`atlas/`](atlas)       | Persisted LZJD sketches for warm `relate similar` / `dups` / `clusters`          |
-| [`frag/`](frag)         | Persisted per-function silhouettes (`concepts.frag`) for warm `relate concepts`  |
-| [`frame/`](frame)       | Shared wire discipline: LE ints, fail-closed cursor, NUL catalogs, `onDisk` gate |
-| [`phantom/`](phantom)   | Directory-membership snapshot (`tree.map`): one lstat proves a dir, walk elided  |
-| [`content/`](content)   | Corpus-content blob (`content.shard`): one mmap serves unchanged bytes, no open  |
+| Package                 | Job                                                                               |
+| ----------------------- | --------------------------------------------------------------------------------- |
+| [`trigrams/`](trigrams) | **T0** positional trigram candidate index + **T3** mtime/ctime freshness          |
+| [`postings/`](postings) | LEB128 + CSR blob codecs the trigram bodies ride                                  |
+| [`crest/`](crest)       | Per-doc forced-class-run vectors (`crest.bin`) for literal-free class runs        |
+| [`codex/`](codex)       | FM-index self-index: `count` / `find` / `restore` at entropy space                |
+| [`atlas/`](atlas)       | Persisted LZJD sketches for warm `relate similar` / `dups` / `clusters`           |
+| [`frag/`](frag)         | Persisted per-function silhouettes (`concepts.frag`) for a warm `--unit function` |
+| [`frame/`](frame)       | Shared wire discipline: LE ints, fail-closed cursor, NUL catalogs, `onDisk` gate  |
+| [`phantom/`](phantom)   | Directory-membership snapshot (`tree.map`): one lstat proves a dir, walk elided   |
+| [`content/`](content)   | Corpus-content blob (`content.shard`): one mmap serves unchanged bytes, no open   |
 
 ## The one law
 

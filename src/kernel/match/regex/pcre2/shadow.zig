@@ -31,11 +31,18 @@
 //! holds gated ≡ ungated across both engines' surfaces.
 
 const std = @import("std");
+const fault = @import("../../../../fault.zig");
 const literal_mod = @import("literal.zig");
 
-/// Rewriter failure modes: `Bail` = construct outside the provable subset (the
-/// caller runs PCRE2 raw — never an error the user sees); OOM propagates.
+/// Rewriter failure modes, PRIVATE to the recursive descent below: `Bail` =
+/// construct outside the provable subset; OOM propagates. `Bail` never leaves
+/// this module — `overapprox` converts it into the declinature at the seam,
+/// which is what keeps `try` from ever mistaking a bail for a failure.
 const Err = error{ Bail, OutOfMemory };
+
+/// The rewriter's only declinature (ADR-373 law 1): no containment proof, so
+/// PCRE2 answers the pattern unrewritten. Both bail paths return this one value.
+const no_shadow: fault.Answer([]u8) = .{ .declined = .unsupported_syntax };
 
 /// Hard ceilings — beyond any of them the shadow bails rather than growing
 /// pathological itself (a spliced backref chain can expand geometrically).
@@ -48,22 +55,26 @@ const max_out_bytes = 8 * 1024;
 const Group = struct { open: usize, start: usize, end: usize };
 const Named = struct { name: []const u8, idx: u32 };
 
-/// The longest provable linear over-approximation of `pattern`, or null when
-/// any construct denies the containment proof. Caller owns the returned slice.
-/// The result is assertion-free by construction, so it always admits the
-/// byte-class DFA — including under `-U` multiline.
-pub fn overapprox(a: std.mem.Allocator, pattern: []const u8) std.mem.Allocator.Error!?[]u8 {
+/// The longest provable linear over-approximation of `pattern`, or a
+/// declinature when any construct denies the containment proof. Caller owns the
+/// returned slice. The result is assertion-free by construction, so it always
+/// admits the byte-class DFA — including under `-U` multiline.
+///
+/// This is the shadow-rewriter→none seam. Only OOM is a fault: a bail is a
+/// routing fact, and it sits in the success position so the caller has to say
+/// what it does with it rather than reaching for `try`.
+pub fn overapprox(a: std.mem.Allocator, pattern: []const u8) std.mem.Allocator.Error!fault.Answer([]u8) {
     var groups_buf: [max_groups]Group = undefined;
     var names_buf: [max_groups]Named = undefined;
-    const tbl = collectGroups(pattern, &groups_buf, &names_buf) orelse return null;
+    const tbl = collectGroups(pattern, &groups_buf, &names_buf) orelse return no_shadow;
 
     var ctx = Ctx{ .a = a, .src = pattern, .groups = tbl.groups, .names = tbl.names };
     defer ctx.out.deinit(a);
     rewrite(&ctx, pattern, 0) catch |e| switch (e) {
-        error.Bail => return null,
+        error.Bail => return no_shadow,
         error.OutOfMemory => return error.OutOfMemory,
     };
-    return try ctx.out.toOwnedSlice(a);
+    return .{ .got = try ctx.out.toOwnedSlice(a) };
 }
 
 const Table = struct { groups: []const Group, names: []const Named };
@@ -483,13 +494,18 @@ fn copyClass(ctx: *Ctx, class: []const u8) Err!void {
 
 const t = std.testing;
 
+/// `want == null` asserts the rewriter DECLINED — the prong `try` cannot reach.
 fn expectShadow(pattern: []const u8, want: ?[]const u8) !void {
-    const got = try overapprox(t.allocator, pattern);
-    defer if (got) |g| t.allocator.free(g);
-    if (want) |w| {
-        try t.expect(got != null);
-        try t.expectEqualStrings(w, got.?);
-    } else try t.expect(got == null);
+    switch (try overapprox(t.allocator, pattern)) {
+        .got => |g| {
+            defer t.allocator.free(g);
+            try t.expectEqualStrings(want orelse return error.TestUnexpectedResult, g);
+        },
+        .declined => |d| {
+            try t.expect(want == null);
+            try t.expectEqual(fault.Decline.unsupported_syntax, d);
+        },
+    }
 }
 
 test "backref splices a copy of its group source" {

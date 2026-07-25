@@ -44,7 +44,7 @@ Consumers: the codex + shelf blobs (`../codex/`), the kinship atlas
 
 Every persisted accelerator names files by a path **relative to its build
 directory** and proves a name still current by dating that file against a build
-anchor. Both halves lie in *silence* when the artifacts belong to another tree:
+anchor. Both halves lie in _silence_ when the artifacts belong to another tree:
 the relative paths land on unrelated files here, and the foreign anchor — minted
 after this tree's files were last touched — "proves" every one of them
 unchanged. A `$GIST_DIR` left pointing at a second checkout was enough to serve

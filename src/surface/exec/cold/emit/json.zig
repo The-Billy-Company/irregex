@@ -30,14 +30,14 @@ const simd = @import("../../../../kernel/match/scan/simd.zig");
 const Opts = args.Opts;
 const die = args.die;
 const oom = args.oom;
-const Matcher = @import("../../../../kernel/match/regex/linear/matcher.zig").Matcher;
+const Matcher = @import("../../../../kernel/match/regex/linear/ladder/matcher.zig").Matcher;
 const Caps = @import("../../../../kernel/match/regex/compile/captures.zig").Caps;
 
 pub const File = struct { path: []const u8, body: []const u8, explicit: bool = false };
 
 /// Running `--json` tallies — the SAME unified counter set the `--stats` block
 /// uses (`grepfile.Stats`, an `assay.Tally`). `pub` because the parallel walk
-/// engine (`engine/parallel.zig`) accumulates one per worker over its streamed
+/// engine (`engine/swarm/`) accumulates one per worker over its streamed
 /// per-file records, then folds them for the single trailing `summary`. The JSON
 /// summary reads `files_searched`/`files_with_match` under rg's `searches`/
 /// `searches_with_match` names and never touches `bytes_printed`.

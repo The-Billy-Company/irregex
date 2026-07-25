@@ -199,10 +199,10 @@ pub const Walker = struct {
         var root = try Dir.cwd().openDir(io, root_path, .{ .iterate = true });
         errdefer root.close(io);
         const inner = try root.walkSelectively(a);
-        var ig = ignore.Ignore.init(a, io, .{}, roots);
+        var ig = try ignore.Ignore.init(a, io, .{}, roots);
         const rel = paths.stripDot(root_path);
         ig.scopeToRoot(rel);
-        ig.loadDir(root_path, rel);
+        try ig.loadDir(root_path, rel);
         return .{ .root = root, .inner = inner, .root_path = root_path, .a = a, .ig = ig };
     }
 
@@ -217,7 +217,7 @@ pub const Walker = struct {
             const path = try joinRoot(self.a, self.root_path, entry.path);
             if (entry.kind == .directory) {
                 if (isSkipDir(entry.basename) or self.ig.shouldSkip(path, true, entry.basename, false, false)) continue;
-                self.ig.loadDir(path, path);
+                try self.ig.loadDir(path, path);
                 try self.inner.enter(io, entry);
                 continue;
             }

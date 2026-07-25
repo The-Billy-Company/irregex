@@ -4,7 +4,7 @@
 //! held warm across many queries so an eligible request (`request.zig`) answers
 //! without re-paying the process + index-mmap + candidate-read startup the cold
 //! subprocess pays every call. It lowers each request through the shared search
-//! core (`kernel/match/query.zig`) — the SAME compile → trigram-prefilter → match
+//! core (`kernel/match/query/query.zig`) — the SAME compile → trigram-prefilter → match
 //! kernels the cold CLI is built on — driven directly over the warm corpus, so
 //! the warm and cold answers cannot drift. Because that core **returns errors**
 //! (`error.Unsupported`) instead of calling `die()`, a bad request declines with

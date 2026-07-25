@@ -12,6 +12,7 @@
 
 const std = @import("std");
 const api = @import("api.zig");
+const fault = @import("fault.zig");
 const Dir = std.Io.Dir;
 
 /// A throwaway on-disk tree with an absolute root — no test touches the cwd.
@@ -22,13 +23,13 @@ const Tree = struct {
 
     fn init(a: std.mem.Allocator, io: std.Io, seed: usize) !Tree {
         const root = try std.fmt.allocPrint(a, "/tmp/gist_api_{x}", .{seed});
-        Dir.cwd().deleteTree(io, root) catch {};
+        fault.spare("clear leftover fixture", Dir.cwd().deleteTree(io, root));
         try Dir.cwd().createDirPath(io, root);
         return .{ .root = root, .io = io, .a = a };
     }
 
     fn deinit(self: *Tree) void {
-        Dir.cwd().deleteTree(self.io, self.root) catch {};
+        fault.spare("remove fixture", Dir.cwd().deleteTree(self.io, self.root));
     }
 
     fn write(self: *Tree, rel: []const u8, data: []const u8) !void {

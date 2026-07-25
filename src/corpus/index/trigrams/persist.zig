@@ -7,7 +7,7 @@
 //! groups are checked when queried, avoiding a full body decode on every fresh
 //! process. That cold-load path is shared by every shape the unified engine
 //! serves — the index-accelerated read-elision walk (`surface/exec/cold/engine/serial.zig`)
-//! and the `--rank` ranked view (`surface/exec/cold/engine/ranked.zig`) — so it lives
+//! and the `--rank` ranked view (`surface/exec/cold/view/ranked.zig`) — so it lives
 //! here, in the index layer, rather than in a command (a command importing
 //! another command's internals is the coupling this split exists to kill).
 //!
@@ -18,6 +18,7 @@
 
 const std = @import("std");
 const trigram = @import("trigram.zig");
+const fault = @import("../../../fault.zig");
 const Index = trigram.Index;
 const corpus_mod = @import("../../tree/corpus.zig");
 const crest = @import("../../../kernel/primitives/crest.zig");
@@ -490,9 +491,9 @@ fn writePairBlobs(io: std.Io, dir: []const u8, blob: []const u8, pl: []const u8,
 fn linkAtomic(io: std.Io, src: []const u8, dest: []const u8, tag: []const u8) !void {
     var tmp_buf: [512]u8 = undefined;
     const tmp = try std.fmt.bufPrint(&tmp_buf, "{s}.{s}.lnk", .{ dest, tag });
-    Dir.cwd().deleteFile(io, tmp) catch {};
+    fault.spare("clear a stale link temp", Dir.cwd().deleteFile(io, tmp));
     try Dir.cwd().hardLink(src, Dir.cwd(), tmp, io, .{});
-    errdefer Dir.cwd().deleteFile(io, tmp) catch {};
+    errdefer fault.spare("unlink the link temp", Dir.cwd().deleteFile(io, tmp));
     try Dir.cwd().rename(tmp, Dir.cwd(), dest, io);
 }
 
@@ -592,7 +593,7 @@ pub fn publishCodicil(io: std.Io, out_dir: []const u8, base_gen: []const u8, gen
     try linkOrCopy(io, src.paths, dst.paths);
     try linkOrCopy(io, src.roots, dst.roots);
     try linkOrCopy(io, src.basens, dst.basens);
-    linkOrCopy(io, src.crest, dst.crest) catch {}; // sidecar is optional
+    fault.spare("link the crest sidecar (optional)", linkOrCopy(io, src.crest, dst.crest));
 
     try writeAtomic(io, dst.codicil, blob);
 

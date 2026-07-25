@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const haystack = @import("haystack.zig");
+const fault = @import("../../fault.zig");
 
 /// The pre-`StaticStringMap` reference: a plain linear scan over the exact
 /// same 35-name list. The comptime-baseline lookup's speedup must never change
@@ -79,8 +80,8 @@ test "Walker applies nested gitignore precedence to every corpus consumer" {
     const a = arena.allocator();
     const root = "/tmp/irregex_haystack_ignore_fixture";
 
-    std.Io.Dir.cwd().deleteTree(io, root) catch {};
-    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    fault.spare("clear leftover fixture", std.Io.Dir.cwd().deleteTree(io, root));
+    defer fault.spare("remove fixture", std.Io.Dir.cwd().deleteTree(io, root));
     try std.Io.Dir.cwd().createDirPath(io, root ++ "/.git");
     try std.Io.Dir.cwd().createDirPath(io, root ++ "/nested");
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = root ++ "/.gitignore", .data = "ignored.txt\nnested/*.log\n!nested/keep.log\n" });

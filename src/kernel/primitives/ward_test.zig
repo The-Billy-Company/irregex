@@ -7,6 +7,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const testing = std.testing;
 const Ward = @import("ward.zig").Ward;
+const fault = @import("../../fault.zig");
 
 test "guards: shared leases overlap, exclusive excludes both" {
     const io = testing.io;
@@ -190,7 +191,7 @@ test "concurrent readers and writers keep the guarded pair consistent" {
                 const ap: *volatile usize = &run.a;
                 const bp: *volatile usize = &run.b;
                 ap.* = v;
-                std.Thread.yield() catch {};
+                fault.spare("yield under lock contention", std.Thread.yield());
                 bp.* = v;
                 _ = run.writes.fetchAdd(1, .monotonic);
                 w.release();
@@ -204,7 +205,7 @@ test "concurrent readers and writers keep the guarded pair consistent" {
                 const ap: *const volatile usize = &run.a;
                 const bp: *const volatile usize = &run.b;
                 const old_a = ap.*;
-                std.Thread.yield() catch {};
+                fault.spare("yield under lock contention", std.Thread.yield());
                 // Under the shared lock no writer can be mid-update, so the pair
                 // a reader observes is always internally consistent.
                 try testing.expectEqual(old_a, bp.*);

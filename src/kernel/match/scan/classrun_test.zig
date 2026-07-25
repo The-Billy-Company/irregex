@@ -272,16 +272,16 @@ fn oracleCp(bits: [4]u64, ranges: []const [2]u21, min: u32, hay: []const u8) boo
         const b = hay[i];
         if (b < 0x80) {
             member = B64.get(&bits, b);
-        } else if (std.unicode.utf8ByteSequenceLength(b)) |n| {
+        } else if (std.unicode.utf8ByteSequenceLength(b) catch null) |n| {
             if (i + n <= hay.len) {
-                if (std.unicode.utf8Decode(hay[i..][0..n])) |c| {
+                if (std.unicode.utf8Decode(hay[i..][0..n]) catch null) |c| {
                     step = n;
                     for (ranges) |r| {
                         if (c >= r[0] and c <= r[1]) member = true;
                     }
-                } else |_| {}
+                }
             }
-        } else |_| {}
+        }
         run = if (member) run + 1 else 0;
         if (run >= min) return true;
         i += step;
@@ -568,16 +568,16 @@ fn oracleSpansCp(a: std.mem.Allocator, bits: [4]u64, ranges: []const [2]u21, min
             var step: usize = 1;
             if (b < 0x80) {
                 member = B64.get(&bits, b);
-            } else if (std.unicode.utf8ByteSequenceLength(b)) |sl| {
+            } else if (std.unicode.utf8ByteSequenceLength(b) catch null) |sl| {
                 if (e + sl <= hay.len) {
-                    if (std.unicode.utf8Decode(hay[e..][0..sl])) |c| {
+                    if (std.unicode.utf8Decode(hay[e..][0..sl]) catch null) |c| {
                         step = sl;
                         for (ranges) |r| {
                             if (c >= r[0] and c <= r[1]) member = true;
                         }
-                    } else |_| {}
+                    }
                 }
-            } else |_| {}
+            }
             if (!member) break;
             e += step;
             n += 1;

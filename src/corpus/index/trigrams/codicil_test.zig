@@ -10,9 +10,9 @@
 const std = @import("std");
 const codicil = @import("codicil.zig");
 const persist = @import("persist.zig");
-const crest = @import("../../../kernel/primitives/crest.zig");
 const crest_sidecar = @import("../crest/sidecar.zig");
 const Index = @import("trigram.zig").Index;
+const fault = @import("../../../fault.zig");
 const Dir = std.Io.Dir;
 
 /// Decode requires the 8-aligned base a real mmap provides; heap blobs from
@@ -36,7 +36,7 @@ const Fixture = struct {
     fn init(gpa: std.mem.Allocator, io: std.Io, comptime tag: []const u8, salt: usize) !Fixture {
         const root = try std.fmt.allocPrint(gpa, "/tmp/gist_codicil_" ++ tag ++ "_{x}", .{salt});
         errdefer gpa.free(root);
-        Dir.cwd().deleteTree(io, root) catch {};
+        fault.spare("clear leftover fixture", Dir.cwd().deleteTree(io, root));
         try Dir.cwd().createDirPath(io, root);
         var self: Fixture = .{ .gpa = gpa, .io = io, .root = root, .f = undefined };
         inline for (0..4) |i| self.f[i] = try std.fmt.allocPrint(gpa, "{s}/f{d}.txt", .{ root, i });
@@ -48,7 +48,7 @@ const Fixture = struct {
     }
 
     fn deinit(self: *Fixture) void {
-        Dir.cwd().deleteTree(self.io, self.root) catch {};
+        fault.spare("remove fixture", Dir.cwd().deleteTree(self.io, self.root));
         for (self.f) |p| self.gpa.free(p);
         self.gpa.free(self.root);
     }

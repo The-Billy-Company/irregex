@@ -34,4 +34,4 @@ identical call sites. This is the shape `rg` cannot express — `gist --rank`.
 
 New intrinsic signals, class labels, or RRF weights. Do not put walk or
 emit logic here — rank consumes an already-verified hit set from
-`kernel/match/` + `surface/exec/cold/engine/ranked.zig`.
+`kernel/match/` + `surface/exec/cold/view/ranked.zig`.

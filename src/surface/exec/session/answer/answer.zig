@@ -18,7 +18,7 @@ const std = @import("std");
 const fault = @import("../../../../fault.zig");
 const request = @import("request.zig");
 const render = @import("../facet/render.zig");
-const query_mod = @import("../../../../kernel/match/query.zig");
+const query_mod = @import("../../../../kernel/match/query/query.zig");
 // The cold path's own path comparator — the warm canonical file order.
 const run = @import("../../cold/engine/serial.zig");
 const Span = query_mod.Span;

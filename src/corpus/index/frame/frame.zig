@@ -16,6 +16,7 @@
 
 const std = @import("std");
 const corpus_mod = @import("../../tree/corpus.zig");
+const fault = @import("../../../fault.zig");
 
 const tree_root_alias = corpus_mod.ArtifactPath("tree.root");
 
@@ -98,12 +99,16 @@ pub fn treeBinding(gpa: std.mem.Allocator) ?[]u8 {
 /// one, never a torn path. Best effort: a binding that can't be written simply
 /// reads as unbound, which costs acceleration and never correctness.
 pub fn publishBinding(io: std.Io, path: []const u8) void {
+    fault.spare("publish the tree binding", publishBindingFallible(io, path));
+}
+
+fn publishBindingFallible(io: std.Io, path: []const u8) !void {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const tree = thisTree(&buf) orelse return;
-    var af = std.Io.Dir.cwd().createFileAtomic(io, path, .{ .make_path = true, .replace = true }) catch return;
+    var af = try std.Io.Dir.cwd().createFileAtomic(io, path, .{ .make_path = true, .replace = true });
     defer af.deinit(io);
-    af.file.writeStreamingAll(io, tree) catch return;
-    af.replace(io) catch {};
+    try af.file.writeStreamingAll(io, tree);
+    try af.replace(io);
 }
 
 /// `.<socket>.tree` in `buf` — where a resident daemon records the tree it went

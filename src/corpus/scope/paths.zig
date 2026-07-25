@@ -1,7 +1,7 @@
 //! irregex — the path-string vocabulary shared by corpus traversal, gist's
 //! serial/parallel engines, and the gitignore protocol.
 //!
-//! These four helpers used to live as per-file copies; any drift between the
+//! These helpers used to live as per-file copies; any drift between the
 //! copies was a parity bug by construction (the serial and parallel engines
 //! must render, strip, and depth-count paths identically for byte-identical
 //! output and ignore verdicts). One definition each makes drift impossible.
@@ -9,9 +9,10 @@
 const std = @import("std");
 const assay = @import("../../assay/assay.zig");
 
-/// The OOM diagnostic both `allocFailure` and `args.oom` emit — one spelling so
-/// the corpus layer and the CLI helper cannot drift. Routed through assay so a
-/// `dark`/`buffer` sink honors the never-write contract (ADR-373 law 6).
+/// The one OOM diagnostic. `allocFailure` below is the single emitter — the CLI
+/// reaches it as `outcome.oom`, so the corpus layer and the CLI have nothing
+/// left to drift between. Routed through assay so a `dark`/`buffer` sink honors
+/// the never-write contract (ADR-373 law 6).
 pub const oom_notice =
     \\oom: allocation failed
     \\gist: note: scope the query (PATH / -t / -g) or raise the process memory limit
@@ -54,9 +55,18 @@ pub fn cwdRelative(a: std.mem.Allocator, io: std.Io, path: []const u8) []const u
 
 /// On-disk (openable) join: a `""`/`.` dir contributes no prefix, so the name
 /// stays CWD-relative exactly as the walker discovered it.
-pub fn join(a: std.mem.Allocator, dir: []const u8, name: []const u8) []const u8 {
+///
+/// Returns `error.OutOfMemory` rather than calling `allocFailure` because this
+/// is the one path helper the **library** reaches: every ignore-tier load under
+/// `corpus/tree/ignore.zig` joins through here, and those run inside
+/// `irregex_open` / `irregex_search`, where exiting the process is not a
+/// failure mode a host can survive (ADR-373 law 1). Its two siblings below
+/// still exit: `lowerDup` is only reached under case-insensitive ignore
+/// matching and `replaceSep` only under `--path-separator`, neither of which
+/// the C seam can select, so both remain command-plane-only.
+pub fn join(a: std.mem.Allocator, dir: []const u8, name: []const u8) error{OutOfMemory}![]const u8 {
     if (dir.len == 0 or std.mem.eql(u8, dir, ".")) return name;
-    return std.fmt.allocPrint(a, "{s}/{s}", .{ dir, name }) catch allocFailure();
+    return std.fmt.allocPrint(a, "{s}/{s}", .{ dir, name });
 }
 
 /// ASCII-lowered copy of `s` — the one case fold shared by the `--iglob`
@@ -67,6 +77,17 @@ pub fn lowerDup(a: std.mem.Allocator, s: []const u8) []u8 {
     const o = a.alloc(u8, s.len) catch allocFailure();
     for (s, 0..) |c, i| o[i] = std.ascii.toLower(c);
     return o;
+}
+
+/// POSIX `realpath(3)` into an `a`-owned copy; null when unresolvable
+/// (dangling symlink, permission, name too long). On macOS this also
+/// canonicalizes ASCII case and `/tmp`-style firmlinks — the aliasing
+/// oracle both the `-L` cycle walk and the warm session's delta resolver use.
+pub fn realpathAlloc(a: std.mem.Allocator, path: []const u8) ?[]const u8 {
+    const cpath = std.posix.toPosixPath(path) catch return null;
+    var buf: [std.posix.PATH_MAX]u8 = undefined;
+    const resolved = std.c.realpath(&cpath, &buf) orelse return null;
+    return a.dupe(u8, std.mem.sliceTo(resolved, 0)) catch null;
 }
 
 /// Replace every `/` in `path` with the (arbitrary-length) `sep` string for
@@ -99,9 +120,9 @@ test "join elides an empty or dot dir" {
     var arena = std.heap.ArenaAllocator.init(t.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    try t.expectEqualStrings("x", join(a, "", "x"));
-    try t.expectEqualStrings("x", join(a, ".", "x"));
-    try t.expectEqualStrings("d/x", join(a, "d", "x"));
+    try t.expectEqualStrings("x", try join(a, "", "x"));
+    try t.expectEqualStrings("x", try join(a, ".", "x"));
+    try t.expectEqualStrings("d/x", try join(a, "d", "x"));
 }
 
 test "replaceSep rewrites every slash, multi-byte seps included" {

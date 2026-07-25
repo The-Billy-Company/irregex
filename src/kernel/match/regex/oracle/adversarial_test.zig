@@ -35,9 +35,10 @@
 //! boundary-doc cases below lock the regression.
 
 const std = @import("std");
-const regex = @import("../linear/core.zig");
+const regex = @import("../linear/program/core.zig");
 const syn = @import("../syntax/syntax.zig");
 const prefilter = @import("../analysis/prefilter.zig");
+const fault = @import("../../../../fault.zig");
 const udec = @import("../unicode/decode.zig");
 const Regex = regex.Regex;
 const Node = syn.Node;
@@ -138,7 +139,7 @@ const Oracle = struct {
             .plus => |r| o.closure(r.node, o.matchAt(r.node, pos)),
             .capture => |g| o.matchAt(g.child, pos), // transparent to matching
         };
-        o.memo.put(key, res) catch {};
+        fault.spare("cache oracle memo", o.memo.put(key, res));
         return res;
     }
 
@@ -267,7 +268,7 @@ const Collector = struct {
         c.fails += 1;
         if (c.seen.contains(pattern)) return;
         const owned = c.arena.allocator().dupe(u8, pattern) catch return;
-        c.seen.put(owned, {}) catch {};
+        fault.spare("record seen pattern", c.seen.put(owned, {}));
         if (c.printed >= max_print) return;
         c.printed += 1;
         std.debug.print("{s} pat=/{s}/ line=\"{s}\" {s}\n", .{ kind, pattern, line, extra });
@@ -943,7 +944,7 @@ test "adversarial: rg second-oracle differential (parser-level)" {
     var tmp_buf: [64]u8 = undefined;
     const tmp = try std.fmt.bufPrint(&tmp_buf, "/tmp/gist_rgcheck_{x}.txt", .{@intFromPtr(&threaded)});
     const ctx = RgCtx{ .io = io, .gpa = a, .tmp = tmp, .rg = rg };
-    defer std.Io.Dir.cwd().deleteFile(io, tmp) catch {};
+    defer fault.spare("remove temp file", std.Io.Dir.cwd().deleteFile(io, tmp));
 
     var col = Collector.init(a);
     defer col.deinit();
@@ -1024,7 +1025,7 @@ test "adversarial: rg -U multiline differential (whole-buffer)" {
     var tmp_buf: [64]u8 = undefined;
     const tmp = try std.fmt.bufPrint(&tmp_buf, "/tmp/gist_rgU_{x}.txt", .{@intFromPtr(&threaded)});
     const ctx = RgCtx{ .io = io, .gpa = a, .tmp = tmp, .rg = rg };
-    defer std.Io.Dir.cwd().deleteFile(io, tmp) catch {};
+    defer fault.spare("remove temp file", std.Io.Dir.cwd().deleteFile(io, tmp));
 
     var col = Collector.init(a);
     defer col.deinit();
@@ -1167,7 +1168,7 @@ test "adversarial: rg -o span differential (lazy vs greedy leftmost-first)" {
     var tmp_buf: [64]u8 = undefined;
     const tmp = try std.fmt.bufPrint(&tmp_buf, "/tmp/gist_rgo_{x}.txt", .{@intFromPtr(&threaded)});
     const ctx = RgCtx{ .io = io, .gpa = a, .tmp = tmp, .rg = rg };
-    defer std.Io.Dir.cwd().deleteFile(io, tmp) catch {};
+    defer fault.spare("remove temp file", std.Io.Dir.cwd().deleteFile(io, tmp));
 
     var col = Collector.init(a);
     defer col.deinit();
@@ -1247,7 +1248,7 @@ test "adversarial: Unicode differential vs rg default (fold/classes/boundaries)"
     var tmp_buf: [64]u8 = undefined;
     const tmp = try std.fmt.bufPrint(&tmp_buf, "/tmp/gist_rgU_uni_{x}.txt", .{@intFromPtr(&threaded)});
     const ctx = RgCtx{ .io = io, .gpa = a, .tmp = tmp, .rg = rg };
-    defer std.Io.Dir.cwd().deleteFile(io, tmp) catch {};
+    defer fault.spare("remove temp file", std.Io.Dir.cwd().deleteFile(io, tmp));
 
     var col = Collector.init(a);
     defer col.deinit();
@@ -1425,7 +1426,7 @@ test "adversarial: grep -oP (PCRE) span differential — faithful, anchors on" {
     const tmp = try std.fmt.bufPrint(&tmp_buf, "/tmp/gist_pcre_{x}.txt", .{@intFromPtr(&threaded)});
     const grep = findGrepP(a, io, tmp) orelse return error.SkipZigTest; // hermetic without GNU grep+PCRE
     const ctx = RgCtx{ .io = io, .gpa = a, .tmp = tmp, .rg = grep };
-    defer std.Io.Dir.cwd().deleteFile(io, tmp) catch {};
+    defer fault.spare("remove temp file", std.Io.Dir.cwd().deleteFile(io, tmp));
 
     var col = Collector.init(a);
     defer col.deinit();

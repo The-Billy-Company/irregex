@@ -24,5 +24,5 @@ comment-only, format-only, or pure-internal refactors with zero observable
 delta — when unsure, write the fragment.
 
 Scaffolding (`towncrier.toml`) is generated from chronicle — never hand-edit
-it. See [`pkg/tools/support/`](../../../../tools/changelog/) and the
+it. See [`pkg/tools/support/`](../../../tools/changelog/) and the
 `libs-oss-standards` rule.

@@ -13,7 +13,6 @@ const std = @import("std");
 const builtin = @import("builtin");
 const resident = @import("../warm/resident.zig");
 const watch = @import("watch.zig");
-const request = @import("../answer/request.zig");
 const fault = @import("../../../../fault.zig");
 const Dir = std.Io.Dir;
 

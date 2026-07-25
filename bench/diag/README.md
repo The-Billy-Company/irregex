@@ -19,9 +19,9 @@ words, punctuation, and units.
 Because the volatile parts are erased, the normalized template is **deterministic
 even over the live, concurrently-edited repo**, so it is committed under
 `golden/` and diffed in CI. A format typo introduced while moving a line onto
-`assay` (`sketches` → `sketch`, a dropped ` · `, a changed unit) breaks the
+`assay` (`sketches` → `sketch`, a dropped `·`, a changed unit) breaks the
 diff; a changed count or timing does not — which is exactly the invariant the
-migration preserves: the *shape* of every diagnostic is unchanged, only the
+migration preserves: the _shape_ of every diagnostic is unchanged, only the
 plumbing beneath it moved.
 
 ```bash
@@ -33,5 +33,5 @@ python3 bench/diag/golden.py show <name>  # print one verb's normalized template
 
 Read-only verbs only — nothing here mutates the shared machine-local index or
 atlas. The sibling [`bench/gates/streams.sh`](../gates/streams.sh) proves the
-*stream* contract (results→stdout, stderr silent except the sanctioned
-channels); this proves the *content* templates of that stderr channel.
+_stream_ contract (results→stdout, stderr silent except the sanctioned
+channels); this proves the _content_ templates of that stderr channel.

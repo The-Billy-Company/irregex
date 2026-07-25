@@ -12,6 +12,7 @@
 const std = @import("std");
 const bulkstat = @import("bulkstat.zig");
 const haystack = @import("haystack.zig");
+const fault = @import("../../fault.zig");
 const Dir = std.Io.Dir;
 
 fn cmpStrings(_: void, a: []const u8, b: []const u8) bool {
@@ -56,9 +57,9 @@ test "bulkstat.visitFresh ≡ the stat-based walk over a real tree (old/new meta
     const a = arena_state.allocator();
 
     const root = try std.fmt.allocPrint(a, "/tmp/gist_bulkstat_test_{x}", .{@intFromPtr(&threaded)});
-    Dir.cwd().deleteTree(io, root) catch {}; // best-effort clean slate from a prior crashed run
+    fault.spare("clear leftover fixture", Dir.cwd().deleteTree(io, root)); // best-effort clean slate from a prior crashed run
     try Dir.cwd().createDirPath(io, root);
-    defer Dir.cwd().deleteTree(io, root) catch {};
+    defer fault.spare("remove fixture", Dir.cwd().deleteTree(io, root));
 
     try Dir.cwd().createDirPath(io, try std.fmt.allocPrint(a, "{s}/sub", .{root}));
     try Dir.cwd().createDirPath(io, try std.fmt.allocPrint(a, "{s}/node_modules", .{root}));
@@ -129,9 +130,9 @@ test "bulkstat.BulkDir reads name/type/mtime/ctime directly off a small director
 
     var buf: [64]u8 = undefined;
     const root = try std.fmt.bufPrint(&buf, "/tmp/gist_bulkdir_test_{x}", .{@intFromPtr(&threaded)});
-    Dir.cwd().deleteTree(io, root) catch {};
+    fault.spare("clear leftover fixture", Dir.cwd().deleteTree(io, root));
     try Dir.cwd().createDirPath(io, root);
-    defer Dir.cwd().deleteTree(io, root) catch {};
+    defer fault.spare("remove fixture", Dir.cwd().deleteTree(io, root));
 
     var path_buf: [96]u8 = undefined;
     try Dir.cwd().writeFile(io, .{ .sub_path = try std.fmt.bufPrint(&path_buf, "{s}/hello.txt", .{root}), .data = "hi" });

@@ -105,7 +105,7 @@ fn checkOne(a: std.mem.Allocator, bytes: []const u8) !void {
             var idx = idx0;
             defer idx.deinit();
             if (!safeCanonical(&idx)) return error.LoaderAcceptedNoncanonical;
-            if (idx.queryLiteral(a, "abc")) |got| a.free(got) else |_| {} // crash surface only
+            if (idx.queryLiteral(a, "abc") catch null) |got| a.free(got); // crash surface only
             break :blk true;
         } else |_| break :blk false;
     };

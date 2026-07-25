@@ -20,7 +20,7 @@ const std = @import("std");
 const corpus = @import("../warm/corpus.zig");
 const render = @import("render.zig");
 const parallel = @import("../../../../kernel/primitives/parallel.zig");
-const query_mod = @import("../../../../kernel/match/query.zig");
+const query_mod = @import("../../../../kernel/match/query/query.zig");
 const answer = @import("../answer/answer.zig");
 const gather = @import("../answer/gather.zig");
 const reconcile = @import("../freshness/reconcile.zig");
@@ -62,7 +62,7 @@ pub fn query(self: *ResidentSession, arena: std.mem.Allocator, req: Request) Que
         return try queryInvert(self, arena, req, ceil);
     }
 
-    // Lower the request through the shared search core (`kernel/match/query.zig`):
+    // Lower the request through the shared search core (`kernel/match/query/query.zig`):
     // the SAME compile → prefilter → match kernels the cold CLI is built on,
     // but returning errors instead of `die()`ing. A pattern outside the
     // linear-time syntax declines with `freshness_unprovable` → certified cold
@@ -244,7 +244,7 @@ fn queryInvert(self: *ResidentSession, arena: std.mem.Allocator, req: Request, c
 
 /// Folds matched docs into either the file-path set (`-l`) or the matching-line
 /// total (`-c`), so both fold modes share one candidate walk. The match
-/// decision itself is the shared `CompiledQuery` kernel (`kernel/match/query.zig`);
+/// decision itself is the shared `CompiledQuery` kernel (`kernel/match/query/query.zig`);
 /// the binary rule per mode is cold's own (see the `resident.zig` header).
 const Accumulator = struct {
     mode: Mode,

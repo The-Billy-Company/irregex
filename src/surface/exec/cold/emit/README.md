@@ -29,7 +29,7 @@ disagree with each other.
 | `multiline.zig` | `-U` whole-buffer match model (`Emitter.buffer` + `--json` spans)                                                                                                                                                                     |
 | `hints.zig`     | the no-match **stderr** guidance channel — `gist: no matches …` + up to three ranked `gist: try` / `gist: note:` lines derived from the query's own shape (`-i`/`-U`/`-F`/`-uu`/scope); muted by `GIST_HINTS=0`, never touches stdout |
 
-The warm session's line renderer ([`exec/session/facet/render.zig`](../../session/render.zig))
+The warm session's line renderer ([`exec/session/facet/render.zig`](../../session/facet/render.zig))
 deliberately drives **this** `Emitter` rather than a re-derived formatter —
 warm `path:line:text` frames are cold frames by construction.
 

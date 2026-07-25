@@ -41,13 +41,13 @@ Four concerns behind one interface. Thirty-odd importers across the tree —
 every engine, emitter, face verb, and the FFI session — see only `args.zig`,
 so the inside can be re-cut without a call-site edit.
 
-| Module | Owns |
-|---|---|
-| `args.zig` | The **facade**: the names the rest of the tree may use, and nothing else. |
+| Module        | Owns                                                                                                  |
+| ------------- | ----------------------------------------------------------------------------------------------------- |
+| `args.zig`    | The **facade**: the names the rest of the tree may use, and nothing else.                             |
 | `verdict.zig` | Turning one raw token into a typed value, or dying loud — numbers, enums, escapes, `{a,b}` expansion. |
-| `intent.zig` | The request record (`Opts`, `Filter`, `Parsed`) **and** the `Builder` that accumulates into it. |
-| `catalog.zig` | The declarative `flag_catalog` — one row per flag, comptime-proved against `Opts`. |
-| `grammar.zig` | The walk: short bundles, long flags, values, precedence, and the parse tests. |
+| `intent.zig`  | The request record (`Opts`, `Filter`, `Parsed`) **and** the `Builder` that accumulates into it.       |
+| `catalog.zig` | The declarative `flag_catalog` — one row per flag, comptime-proved against `Opts`.                    |
+| `grammar.zig` | The walk: short bundles, long flags, values, precedence, and the parse tests.                         |
 
 `args.zig` carries an explicit `test { _ = catalog; … }` block. Zig analyzes a
 `pub const` re-export lazily, so without it the package's parse tests silently
@@ -73,7 +73,7 @@ form or precedence rule). Deep request options that bindings must share also
 update [`../../../../../contract/search_api.toml`](../../../../../contract/search_api.toml).
 
 Any flag the warm resident session also honors must stay in step with
-[`../../session/request.zig`](../../session/request.zig), which re-classifies argv
+[`../../session/answer/request.zig`](../../session/answer/request.zig), which re-classifies argv
 on the fast path: a shape it cannot model **identically** has to decline to cold
 rather than answer differently. Do not put walk / match / emit logic here —
 parsing only.
