@@ -26,7 +26,7 @@ Hermetic sources: [`../../../../../vendor/pcre2/`](../../../../../vendor/pcre2/)
 | `engine.zig`   | `Pcre` handle: compile (JIT + interpreter fallback), immutable shared program, per-thread `Sim` scratch, `lineMatch` / `docMatch` / `bufMatch` |
 | `literal.zig`  | Sound required-literal extraction for the trigram prefilter — longest ASCII run every match must contain, or `""`. Never over-claims.          |
 | `captures.zig` | Capture-group bridge unified with the linear capture shape                                                                                     |
-| `backend.zig`  | Wiring into the engine-neutral `Matcher` seam in `../linear/matcher.zig`                                                                       |
+| `backend.zig`  | Wiring into the engine-neutral `Matcher` seam in `../linear/ladder/matcher.zig`                                                                |
 
 ## Invariants
 

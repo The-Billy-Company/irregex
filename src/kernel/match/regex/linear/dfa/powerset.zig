@@ -24,10 +24,10 @@
 //! alternations.
 
 const std = @import("std");
-const syn = @import("../syntax/syntax.zig");
-const prefilter = @import("../analysis/prefilter.zig");
-const bits = @import("../../../primitives/bits.zig");
-const word = @import("../syntax/word.zig");
+const syn = @import("../../syntax/syntax.zig");
+const prefilter = @import("../../analysis/prefilter.zig");
+const bits = @import("../../../../primitives/bits.zig");
+const word = @import("../../syntax/word.zig");
 const State = syn.State;
 const Dfa = @import("dfa.zig").Dfa;
 const B64 = bits.Field(u64);

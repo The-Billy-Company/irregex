@@ -22,8 +22,8 @@
 //! consumes the finished tables.
 
 const std = @import("std");
-const prefilter = @import("../analysis/prefilter.zig");
-const word = @import("../syntax/word.zig");
+const prefilter = @import("../../analysis/prefilter.zig");
+const word = @import("../../syntax/word.zig");
 
 /// An immutable byte-class DFA. `class[b]` maps a byte to its equivalence-class
 /// column; `trans_in`/`trans_fin` are row-major `[state][class]` next-state

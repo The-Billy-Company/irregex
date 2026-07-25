@@ -12,8 +12,8 @@
 //! through it, so the non-word match faces never pay for any of it.
 
 const std = @import("std");
-const word_mod = @import("regex/syntax/word.zig");
-const Matcher = @import("regex/linear/matcher.zig").Matcher;
+const word_mod = @import("../regex/syntax/word.zig");
+const Matcher = @import("../regex/linear/ladder/matcher.zig").Matcher;
 
 /// The `-w` regex scratch pair. The boolean DFA cannot decide `-w` (it has no
 /// span), so a word query carries BOTH VMs: the boolean `sim` stays the cheap

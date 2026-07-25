@@ -7,7 +7,7 @@ doc_radar:
       equals: 6
   sentinels:
     - description: "the shared query core keeps fail-closed + immutable-after-compile"
-      file: pkg/kernels/irregex/src/kernel/match/query.zig
+      file: pkg/kernels/irregex/src/kernel/match/query/query.zig
       contains: ["error.Unsupported", "immutable after"]
 ---
 
@@ -39,7 +39,7 @@ Unicode is default-on at rg parity. See
 
 ## Relate's kernels
 
-- `kinship/recall/lexicon` nominates; `kinship/recall/zipper` decides (`relate search`).
+- `kinship/recall/lexicon` nominates; `kinship/recall/zipper` decides (a `relate similar <text>` probe).
 - `kinship/metric/sketch` is the symmetric metric behind `similar` / `dups`.
 - `batch/patterns` attributes N intents exactly; its fused gate is
   **skip-only** (answers ≡ N independent searches).

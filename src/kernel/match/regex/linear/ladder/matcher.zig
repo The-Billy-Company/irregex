@@ -1,7 +1,8 @@
 //! gist — the engine-neutral match seam.
 //!
-//! gist ships two match engines: the linear-time RE2/Pike default (`core.zig`,
-//! `Regex`) and the opt-in PCRE2 backend (`pcre2.zig`, `Pcre`) for `-P`. The
+//! gist ships two match engines: the linear-time RE2/Pike default
+//! (`program/core.zig`, `Regex`) and the opt-in PCRE2 backend (`pcre2/`, `Pcre`)
+//! for `-P`. The
 //! entire `surface/exec/cold` output layer — the `Emitter`, the `--json` stream,
 //! the per-file binary/stats machinery — needs exactly four match primitives
 //! (`lineMatch`, `matchSpan`, `docMatch`, `bufMatch`) plus a required-literal for
@@ -17,8 +18,8 @@
 //! (whose tag always matches the matcher's) into the primitives.
 
 const std = @import("std");
-const core = @import("core.zig");
-const pcre2 = @import("../pcre2/backend.zig");
+const core = @import("../program/core.zig");
+const pcre2 = @import("../../pcre2/backend.zig");
 
 pub const Regex = core.Regex;
 pub const Pcre = pcre2.Pcre;

@@ -36,10 +36,10 @@
 //! the `max_states` cap-bail to null, and a randomized fuzz running BOTH layers.
 
 const std = @import("std");
-const core = @import("core.zig");
-const syn = @import("../syntax/syntax.zig");
+const core = @import("../program/core.zig");
+const syn = @import("../../syntax/syntax.zig");
 const powerset = @import("powerset.zig");
-const word = @import("../syntax/word.zig");
+const word = @import("../../syntax/word.zig");
 const Regex = core.Regex;
 const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
@@ -185,7 +185,7 @@ fn assertInvariants(re: *const Regex) !void {
             // must follow both or falsely flag them as orphans.
             const edges = [_]u32{ ti, if (d.word_ctx) d.trans_in_w[s + k] else ti };
             if (d.word_ctx) try expect(edges[1] != unfilled and edges[1] < ns * ncls and edges[1] % ncls == 0);
-            for (edges[0 .. if (d.word_ctx) 2 else 1]) |e| {
+            for (edges[0..if (d.word_ctx) 2 else 1]) |e| {
                 const tid = e / ncls;
                 if (!reached[tid]) {
                     reached[tid] = true;
@@ -518,7 +518,10 @@ fn exhaustiveWordEquiv(pat: []const u8, re: *const Regex, alphabet: []const u8, 
         while (true) {
             for (0..len) |i| buf[i] = alphabet[idx[i]];
             const sline = buf[0..len];
-            const got = d.matchWord(sline) orelse unreachable; // ASCII alphabet ⇒ never quits
+            // ASCII alphabet ⇒ never quits. Asserted as a test failure rather than
+            // `unreachable`: if that ever stops holding, this reports it instead of
+            // becoming undefined behavior in a ReleaseFast test run.
+            const got = d.matchWord(sline) orelse return error.MatcherQuitOnAscii;
             if (spec.lineMatch(sline) != got) {
                 std.debug.print("WORD MISMATCH pat=/{s}/ s=\"{s}\" spec={} dfa={}\n", .{ pat, sline, spec.lineMatch(sline), got });
                 return error.WordLangMismatch;
@@ -542,11 +545,11 @@ test "powerset: EXHAUSTIVE word-boundary equivalence vs the NFA spec (every stri
     // The NFA spec resolves the same word predicates as `powerset.close`, so this
     // is a SECOND independent oracle beyond the Pike differential in `dfa_test`.
     const pats = [_][]const u8{
-        "\\bcat\\b", "\\bcat",     "cat\\b",     "\\b\\w+\\b",   "\\b\\d+\\b",
-        "\\b",       "\\B",        "a\\Bb",      "\\Ba",         "\\ba\\b",
-        "\\<cat",    "cat\\>",     "\\<\\w+\\>", "\\b[a-c]+\\b", "\\b.\\b",
-        "z\\Bz",     "\\b_\\b",    "\\B\\w+",    "\\w+\\B",      "^\\bfoo",
-        "bar\\b$",   "\\b(a|z)\\b", "\\w\\b\\w", "\\b\\w\\w?\\b",
+        "\\bcat\\b", "\\bcat",      "cat\\b",     "\\b\\w+\\b",    "\\b\\d+\\b",
+        "\\b",       "\\B",         "a\\Bb",      "\\Ba",          "\\ba\\b",
+        "\\<cat",    "cat\\>",      "\\<\\w+\\>", "\\b[a-c]+\\b",  "\\b.\\b",
+        "z\\Bz",     "\\b_\\b",     "\\B\\w+",    "\\w+\\B",       "^\\bfoo",
+        "bar\\b$",   "\\b(a|z)\\b", "\\w\\b\\w",  "\\b\\w\\w?\\b",
     };
     for (pats) |p| {
         var re = compileDfa(p) catch |e| {

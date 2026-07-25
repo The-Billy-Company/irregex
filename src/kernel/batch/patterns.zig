@@ -1,6 +1,6 @@
 //! irregex — the MATCH half: a compiled pattern SET with attribution.
 //!
-//! One search intent compiles through `kernel/match/query.zig`; this module compiles
+//! One search intent compiles through `kernel/match/query/query.zig`; this module compiles
 //! MANY — the Hyperscan-shaped workload (Wang et al., NSDI 2019) that agent
 //! tools actually run: relocator classifies dozens of literals per pass, the
 //! trust lints scan forbidden-pattern lists, doc-radar replays a whole query
@@ -27,7 +27,7 @@
 //! thread), mirroring `CompiledQuery`'s own discipline.
 
 const std = @import("std");
-const query = @import("../match/query.zig");
+const query = @import("../match/query/query.zig");
 const bits = @import("../primitives/bits.zig");
 
 const B64 = bits.Field(u64);
@@ -51,7 +51,7 @@ pub const PatternSet = struct {
 
     /// Compile one query per spec, plus the fused gate when the set is
     /// homogeneous enough to express one. Specs' `pattern` slices are aliased
-    /// per `kernel/match/query.zig`'s contract — the caller keeps them alive.
+    /// per `kernel/match/query/query.zig`'s contract — the caller keeps them alive.
     pub fn compile(gpa: std.mem.Allocator, specs: []const Spec) CompileError!PatternSet {
         const queries = try gpa.alloc(CompiledQuery, specs.len);
         var built: usize = 0;

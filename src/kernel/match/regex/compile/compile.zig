@@ -1,8 +1,8 @@
 //! gist — Thompson NFA construction: lowers the `syntax.zig` AST into the flat
-//! `State` program that both the Pike VM (`core.zig`) and the lazy DFA
-//! (`powerset.zig`) execute. The structural counterpart to `powerset.zig` (the
-//! *other* lowering, NFA→DFA), kept out of `core.zig` so that file is purely the
-//! `Regex` handle + Pike runtime.
+//! `State` program that both the Pike VM (`../linear/pike/`) and the eager DFA
+//! (`../linear/dfa/powerset.zig`) execute. The structural counterpart to
+//! powerset construction (the *other* lowering, NFA→DFA), kept out of the engine
+//! so that tier is purely the `Regex` handle + its runtimes.
 
 const std = @import("std");
 const syn = @import("../syntax/syntax.zig");

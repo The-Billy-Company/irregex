@@ -3,7 +3,7 @@
 //! and a recursive-descent parser for the supported subset. The sound AST
 //! analyses that feed the prefilter (required-literal extraction, anchored-start
 //! detection) live in `analysis.zig`; the execution half (Thompson NFA compile +
-//! Pike simulation) lives in `core.zig`. Both import this module.
+//! Pike simulation) lives in `../linear/`. Both import this module.
 //!
 //! Supported (ASCII / byte-oriented, matching ripgrep's `(?-u)` mode):
 //!   literals · `.` (any byte but '\n') · `[...]` / `[^...]` with `a-z` ranges
@@ -165,10 +165,10 @@ pub const Node = union(enum) {
 /// hot main-engine parse allocates nothing extra.
 pub const NamedCap = struct { name: []const u8, idx: u32 };
 
-/// A compiled Thompson-NFA instruction (the flat program `core.zig`'s compiler
+/// A compiled Thompson-NFA instruction (the flat program `../linear/program/lower.zig`
 /// emits and both the Pike VM and the lazy DFA execute). Lives here, beside the
-/// AST it lowers from, so `dfa.zig` can determinize over it without an
-/// import cycle through `core.zig`.
+/// AST it lowers from, so `../linear/dfa/` can determinize over it without an
+/// import cycle through the engine.
 pub const State = union(enum) {
     consume: struct { set: ByteSet, out: u32 },
     split: struct { a: u32, b: u32 },

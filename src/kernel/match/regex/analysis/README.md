@@ -22,7 +22,8 @@ risking a false negative (the one unforgivable bug).
 | `analysis_test.zig` | Required-literal, cover-set, and anchored-start extraction cases.                                                                                                                                                                                                          |
 
 Imports `../syntax/syntax.zig` for the AST/`State` types; consumed by
-`../linear/core.zig` (skip path) and the `../compile/` lowering's callers.
+`../linear/program/lower.zig` (which runs every analysis at compile time) and the
+`../compile/` lowering's callers.
 
 ## When to edit
 

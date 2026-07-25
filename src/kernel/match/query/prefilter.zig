@@ -27,8 +27,8 @@
 //! prune by. This is `query.zig`'s private sub-module; it re-exports the surface.
 
 const std = @import("std");
-const Regex = @import("regex/linear/core.zig").Regex;
-const Matcher = @import("regex/linear/matcher.zig").Matcher;
+const Regex = @import("../regex/linear/program/core.zig").Regex;
+const Matcher = @import("../regex/linear/ladder/matcher.zig").Matcher;
 
 /// The sound trigram prefilter for a compiled regex, independent of the
 /// caseless/mode guards a specific face layers on top: the engine's guaranteed

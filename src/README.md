@@ -21,7 +21,7 @@ doc_radar:
       file: pkg/kernels/irregex/src/surface/exec/cold/engine/README.md
       contains: "Index is an accelerator, not an authority."
     - description: "the shared query core keeps its two binding invariants"
-      file: pkg/kernels/irregex/src/kernel/match/query.zig
+      file: pkg/kernels/irregex/src/kernel/match/query/query.zig
       contains: ["error.Unsupported", "immutable after"]
 ---
 
@@ -53,7 +53,7 @@ an agent types `gist 'pgxpool\.\w+' services/`:
    the parser and the `--schema` manifest; a flag gist doesn't support fails
    loud with exit 2 and the `rg` fallback. A misunderstood flag must never look
    like a convincing empty result.
-2. **Compile once** (`kernel/match/query.zig`). The pattern lowers into an
+2. **Compile once** (`kernel/match/query/query.zig`). The pattern lowers into an
    immutable `CompiledQuery`: the match decision _and_ the sound trigram
    prefilter come from the same compilation, so the cold CLI, the warm
    session, and the FFI face cannot drift on what matches or what is safe to

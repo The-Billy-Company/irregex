@@ -22,12 +22,12 @@ const std = @import("std");
 const corpus_mod = @import("../../../../corpus/tree/corpus.zig");
 const fresh = @import("../../../../corpus/index/trigrams/fresh.zig");
 const persist = @import("../../../../corpus/index/trigrams/persist.zig");
-const Regex = @import("../../../../kernel/match/regex/linear/core.zig").Regex;
+const Regex = @import("../../../../kernel/match/regex/linear/program/core.zig").Regex;
 const mirror = @import("../../../../kernel/rank/mirror.zig");
 const signals = @import("../../../../kernel/rank/signals.zig");
 const rank_mod = @import("../../../../kernel/rank/rank.zig");
 const gl = @import("../../../../corpus/scope/glob.zig");
-const query_mod = @import("../../../../kernel/match/query.zig");
+const query_mod = @import("../../../../kernel/match/query/query.zig");
 const assay = @import("../../../../assay/assay.zig");
 const Dir = std.Io.Dir;
 
@@ -65,7 +65,7 @@ fn underAnyRoot(path: []const u8, roots: []const []const u8) bool {
 }
 
 /// Sound trigram prefilter for the compiled regex — the engine-shared rule
-/// (`kernel/match/query.zig::regexPrefilter`), minus any prefilter when the fold is
+/// (`kernel/match/query/query.zig::regexPrefilter`), minus any prefilter when the fold is
 /// caseless (the trigram index is case-exact, so pruning would be unsound).
 fn rankFilters(re: *const Regex, caseless: bool, one: *[1][]const u8) []const []const u8 {
     if (caseless) return &.{};

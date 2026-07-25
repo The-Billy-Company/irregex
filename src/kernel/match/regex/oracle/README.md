@@ -8,7 +8,7 @@ doc_radar:
 
 # kernel/match/regex/oracle — independent differential oracle
 
-The correctness backstop the in-family fuzz can't provide. `../linear/dfa_test.zig`
+The correctness backstop the in-family fuzz can't provide. `../linear/dfa/dfa_test.zig`
 checks the DFA against the Pike VM — but the Pike VM is its own reference, so a
 bug **shared** by both survives. This tier cross-checks gist's engine against an
 _independent_ oracle (and, for Unicode, against `rg`'s default semantics), so a
@@ -18,7 +18,7 @@ mistake would have to be replicated in two unrelated implementations to escape.
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `adversarial_test.zig` | Adversarial differential tests against an independent oracle: pattern/haystack generators tuned for anchors, alternation covers, Unicode folding, and prefilter edge cases — plus brute-force prefilter soundness. |
 
-Imports the engine under test folder-relative (`../linear/core.zig`,
+Imports the engine under test folder-relative (`../linear/program/core.zig`,
 `../syntax/syntax.zig`, `../analysis/prefilter.zig`, `../unicode/decode.zig`).
 
 ## When to edit

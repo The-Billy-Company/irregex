@@ -11,7 +11,7 @@
 //!      newlines included. Any divergence is a real bug (no rg needed).
 
 const std = @import("std");
-const regex = @import("core.zig");
+const regex = @import("../program/core.zig");
 const Regex = regex.Regex;
 
 /// Compile, assert a DFA was actually built (not a powerset-cap fallback), and

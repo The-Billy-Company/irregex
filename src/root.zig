@@ -17,7 +17,7 @@
 //! socket, `stdout`, or `exit`. Every entry returns a status code instead of
 //! `die()`ing, so a bad query can never terminate an embedding host — the
 //! property ADR-352 gated the search ABI on. It rides the
-//! error-returning shared core (`kernel/match/query.zig`) + resident engine, so an
+//! error-returning shared core (`kernel/match/query/query.zig`) + resident engine, so an
 //! in-process answer is byte-identical to the cold `gist --json` stream. Index
 //! BUILD lifecycle stays a Zig/CLI surface (a session searches the live tree).
 //!
@@ -84,11 +84,11 @@ pub const parallel = @import("kernel/primitives/parallel.zig");
 // ── regex engine ──
 // Submodules are imported by their consumers directly; only the core + DFA
 // surfaces are re-exported at the root for the C-ABI / library consumers.
-pub const regex = @import("kernel/match/regex/linear/core.zig");
+pub const regex = @import("kernel/match/regex/linear/program/core.zig");
 pub const regex_dfa = @import("kernel/match/regex/linear/dfa/dfa.zig");
 /// The engine-neutral match seam (`Matcher`) the presentation layer programs
 /// to — re-exported for the bench lab's isolated output-path profiles.
-pub const matcher = @import("kernel/match/regex/linear/matcher.zig");
+pub const matcher = @import("kernel/match/regex/linear/ladder/matcher.zig");
 
 // ── ranking ──
 pub const rank = @import("kernel/rank/rank.zig");
@@ -193,7 +193,7 @@ pub const relate = struct {
 // cold CLI (`surface/exec/cold`) and the warm resident session (`surface/exec/session`)
 // execute through, so the two engines cannot drift on what matches.
 pub const engine = struct {
-    pub const query = @import("kernel/match/query.zig");
+    pub const query = @import("kernel/match/query/query.zig");
 };
 
 // ── resident search session (ADR-352 rung 2.5): the warm in-memory engine +
@@ -521,7 +521,7 @@ test {
     _ = @import("kernel/match/scan/simd_test.zig"); // SIMD `contains` differential fuzz vs std
     _ = @import("kernel/match/scan/classrun_test.zig"); // SIMD class-run kernel vs scalar oracle (both backends)
     _ = @import("corpus/index/trigrams/fresh_test.zig"); // T3 freshness `widen` set-algebra
-    _ = @import("kernel/match/query_test.zig"); // shared compiled-query: compile/prefilter/match vs oracle
+    _ = @import("kernel/match/query/query_test.zig"); // shared compiled-query: compile/prefilter/match vs oracle
     _ = @import("kernel/primitives/bits_test.zig"); // shared two's-complement bit identities vs bool-slice oracle
     _ = @import("kernel/primitives/crest_test.zig"); // crest sieve: forced-run calculus vs hand-computed ĝ + sieve decision
     _ = @import("kernel/primitives/parallel.zig"); // shared byte-balanced sharding + partial-spawn-safe fan-out
@@ -571,8 +571,8 @@ test {
     _ = @import("corpus/tree/loadpar.zig"); // fused parallel walk+read: byte-identical membership vs serial oracle
     _ = @import("kernel/match/regex/syntax/syntax_test.zig"); // T2 syntax: ByteSet + recursive-descent parser
     _ = @import("kernel/match/regex/analysis/analysis_test.zig"); // T2 analysis: required-literal + cover + anchored
-    _ = @import("kernel/match/regex/linear/core_test.zig"); // T2 engine: parser + Pike VM + prefilters
-    _ = @import("kernel/match/regex/linear/matcher.zig"); // engine-neutral match seam: linear-arm forwarding
+    _ = @import("kernel/match/regex/linear/program/core_test.zig"); // T2 engine: parser + Pike VM + prefilters
+    _ = @import("kernel/match/regex/linear/ladder/matcher.zig"); // engine-neutral match seam: linear-arm forwarding
     _ = @import("kernel/match/regex/pcre2/backend.zig"); // PCRE2 `-P` backend: engine + literal co-located tests
     _ = @import("kernel/match/regex/pcre2/backend_test.zig"); // PCRE2 adversarial: lookaround/backref/limit/JIT parity
     _ = @import("kernel/match/regex/oracle/adversarial_test.zig"); // independent-oracle differential + prefilter brute force

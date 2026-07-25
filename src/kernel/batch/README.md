@@ -17,10 +17,10 @@ what backs `relate patterns` and any future multipattern weave.
 
 ## Files
 
-| File           | Job                                                                                                                                 |
-| -------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `patterns.zig` | `PatternSet` — compile N patterns once through `kernel/match/query.zig` with exact per-pattern attribution (`docMask` / `lineHits`) |
-| `loom.zig`     | `loom.Plan` — closed filter → group → sort → limit over attributed rows; total-ordered and deterministic                            |
+| File           | Job                                                                                                                                       |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `patterns.zig` | `PatternSet` — compile N patterns once through `kernel/match/query/query.zig` with exact per-pattern attribution (`docMask` / `lineHits`) |
+| `loom.zig`     | `loom.Plan` — closed filter → group → sort → limit over attributed rows; total-ordered and deterministic                                  |
 
 ## Invariants
 

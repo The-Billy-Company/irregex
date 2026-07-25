@@ -10,7 +10,7 @@
 
 const std = @import("std");
 const patterns = @import("patterns.zig");
-const query = @import("../match/query.zig");
+const query = @import("../match/query/query.zig");
 
 const gpa = std.testing.allocator;
 const PatternSet = patterns.PatternSet;

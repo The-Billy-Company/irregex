@@ -2,7 +2,7 @@
 //!
 //! Under `-U`/`--multiline` the linear engine already matches over a WHOLE
 //! buffer (`^`/`$` anchor at `\n` boundaries, `.` crosses `\n` only under
-//! dotall — see `kernel/match/regex/linear/matcher.zig`). What the output layer still needs is a
+//! dotall — see `kernel/match/regex/linear/ladder/matcher.zig`). What the output layer still needs is a
 //! faithful, byte-index model of THAT: the leftmost run of matches under
 //! ripgrep's progress rule, the physical-line grid they land on, the way rg
 //! coalesces contiguous matches into one block, and the three multiline count
@@ -20,7 +20,7 @@ const output = @import("output.zig");
 const Opts = args.Opts;
 const die = args.die;
 const oom = args.oom;
-const Matcher = @import("../../../../kernel/match/regex/linear/matcher.zig").Matcher;
+const Matcher = @import("../../../../kernel/match/regex/linear/ladder/matcher.zig").Matcher;
 
 pub const Span = Matcher.Span;
 
@@ -202,7 +202,7 @@ pub fn blockBases(a: std.mem.Allocator, lines: []const Line, spans: []const Span
 // ─────────────────────────────── tests ───────────────────────────────
 
 const t = std.testing;
-const Regex = @import("../../../../kernel/match/regex/linear/core.zig").Regex;
+const Regex = @import("../../../../kernel/match/regex/linear/program/core.zig").Regex;
 
 /// Test scaffold: an arena for the model's `[]…` allocations (mirrors the
 /// per-run arena the CLI hands the emitter, so nothing leaks) plus a compiled
