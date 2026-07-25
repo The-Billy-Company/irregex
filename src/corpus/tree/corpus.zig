@@ -178,7 +178,7 @@ pub fn exemptSoftCap() void {
 /// Write RESULTS (the match list / ranked rows) to **stdout** — the Unix
 /// convention `rg` follows: data on stdout, any diagnostic (`[pipeline]`, "no
 /// index"/"bad pattern" guidance, `--rank`'s timing line) stays on stderr via
-/// `std.debug.print`. This is what makes irregex agent-friendly in a shell: `gist
+/// `assay.diag`. This is what makes irregex agent-friendly in a shell: `gist
 /// foo -l > files` captures the paths and `gist foo | head` shows only
 /// results. A raw `posix.write` loop (handling partial writes) mirrors the
 /// blocking-syscall idiom the read path already uses, and sidesteps the std
@@ -310,14 +310,14 @@ pub fn finishOutput() void {
     if (output_budget.announced.swap(true, .monotonic)) return;
     const cap = output_budget.ceiling;
     if (output_budget.soft_disabled) {
-        std.debug.print("gist: output truncated at the hard {d}-byte OOM ceiling\n", .{cap});
+        assay.diag("gist: output truncated at the hard {d}-byte OOM ceiling\n", .{cap});
         if (hintsEnabled())
-            std.debug.print("gist: try PATH args / -t / -g to scope the query, or raise GIST_MAX_OUTPUT_BYTES\n", .{});
+            assay.diag("gist: try PATH args / -t / -g to scope the query, or raise GIST_MAX_OUTPUT_BYTES\n", .{});
     } else {
-        std.debug.print("gist: output truncated at ~{d} tokens ({d} bytes)\n", .{ cap / bytes_per_token, cap });
+        assay.diag("gist: output truncated at ~{d} tokens ({d} bytes)\n", .{ cap / bytes_per_token, cap });
         if (hintsEnabled()) {
-            std.debug.print("gist: try -l / -c — file list or per-file counts instead of every line\n", .{});
-            std.debug.print("gist: try --uncap — stream the full result (or scope with PATH args / -t / -g)\n", .{});
+            assay.diag("gist: try -l / -c — file list or per-file counts instead of every line\n", .{});
+            assay.diag("gist: try --uncap — stream the full result (or scope with PATH args / -t / -g)\n", .{});
         }
     }
 }
@@ -471,7 +471,7 @@ pub fn loadSerial(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8)
 
     for (roots) |root_path| {
         var w = haystack.Walker.initWithRoots(io, a, root_path, roots) catch |e| {
-            std.debug.print("  skip {s}: {s}\n", .{ root_path, @errorName(e) });
+            assay.diag("  skip {s}: {s}\n", .{ root_path, @errorName(e) });
             continue;
         };
         defer w.deinit(io);

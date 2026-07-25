@@ -20,6 +20,7 @@
 const std = @import("std");
 const args = @import("../argv/args.zig");
 const corpus_mod = @import("../../../../corpus/tree/corpus.zig");
+const guide = @import("../../../cli/guide.zig");
 
 /// What was searched — drives the summary tail and the widen/unhide hints.
 pub const Scope = union(enum) {
@@ -145,18 +146,12 @@ pub fn render(a: std.mem.Allocator, out: *std.ArrayList(u8), s: Shape, files_sca
         try line(a, out, &left, .act, "a wider scope — drop the PATH args to search the whole tree");
 }
 
-/// The two hint voices, rustc's help/note split: `.act` lines name a concrete
-/// retry (`gist: try <flag or move> — <why>`); `.note` lines state a fact the
-/// caller should know but can't flag away (`gist: note: <fact>`).
-const Voice = enum { act, note };
+/// The hint voices are the shared CLI guidance grammar (`surface/cli/guide.zig`),
+/// bound to this face's name — relate's weak-result verdict speaks the same one.
+const Voice = guide.Voice;
 
 fn line(a: std.mem.Allocator, out: *std.ArrayList(u8), left: *usize, voice: Voice, text: []const u8) !void {
-    if (left.* == 0) return;
-    left.* -= 1;
-    try out.print(a, "gist: {s} {s}\n", .{ switch (voice) {
-        .act => "try",
-        .note => "note:",
-    }, text });
+    try guide.line(a, out, left, "gist", voice, text);
 }
 
 /// The engines' one-call exit hook: render to stderr, honoring `GIST_HINTS`.

@@ -154,6 +154,42 @@ fn bodyAfterCall(s: []const u8) bool {
     return false;
 }
 
+/// A bracketed type-parameter list on a declaration head, where the other
+/// syntax families write `<T>`: PEP 695 `def f[T](…)` and `class C[T]:`. An
+/// indexed call — `handlers[name](req)` — closes its parens and carries no
+/// body, so it stays a use.
+fn genericHead(rest: []const u8) bool {
+    const tail = afterBrackets(rest) orelse return false;
+    return bodyAfterCall(tail) or openCall(tail);
+}
+
+/// A parameter list that opens here and never closes on this line — the shape
+/// of a signature head whose parameters continue onto the lines below.
+fn openCall(s: []const u8) bool {
+    if (s.len == 0 or s[0] != '(') return false;
+    var depth: usize = 0;
+    for (s) |c| switch (c) {
+        '(' => depth += 1,
+        ')' => depth -|= 1,
+        else => {},
+    };
+    return depth > 0;
+}
+
+/// What follows a leading balanced `[…]` group, or null when it never closes.
+fn afterBrackets(s: []const u8) ?[]const u8 {
+    var depth: usize = 0;
+    for (s, 0..) |c, i| switch (c) {
+        '[' => depth += 1,
+        ']' => {
+            depth -= 1;
+            if (depth == 0) return std.mem.trimStart(u8, s[i + 1 ..], " \t");
+        },
+        else => {},
+    };
+    return null;
+}
+
 fn singleIdentifier(s: []const u8) bool {
     const t = std.mem.trim(u8, s, " \t\r;");
     return t.len > 0 and wordEnd(t, 0) == t.len;
@@ -229,6 +265,9 @@ pub fn declarationConfidence(line: []const u8, needle: []const u8) u8 {
         const g = prefixGeometry(before);
         const rest = std.mem.trimStart(u8, t[pos + needle.len ..], " \t");
         if (rest.len == 0) continue;
+        // A dotted continuation names a member of the needle, not the needle:
+        // `React.KeyboardEvent` uses React, it never declares it.
+        if (rest[0] == '.') continue;
         const prefix_form = prefixForm(g, before, rest);
         if (prefix_form > 0) {
             best = @max(best, prefix_form);
@@ -241,6 +280,10 @@ pub fn declarationConfidence(line: []const u8, needle: []const u8) u8 {
                 continue;
             }
             if (c == '.' or c == ':' or c == '<' or c == '>' or c == '@') continue;
+            // A return type sits between the parameter list and the body, so
+            // `) usize {` names a type the signature uses. Go's balanced
+            // receiver keeps its `) Charge(` shape — that rest opens a list.
+            if (c == ')' and rest[0] == '{') continue;
         }
 
         if (rest[0] == '=') {
@@ -255,6 +298,8 @@ pub fn declarationConfidence(line: []const u8, needle: []const u8) u8 {
             best = @max(best, confidence);
         } else if (rest[0] == '(' or rest[0] == '<') {
             if (bodyAfterCall(rest)) best = @max(best, 3);
+        } else if (g.identifiers > 0 and rest[0] == '[' and genericHead(rest)) {
+            best = @max(best, 3);
         } else if (topLevelAssignment(rest)) {
             best = @max(best, 3);
         } else if (singleIdentifier(rest)) {

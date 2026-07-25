@@ -7,9 +7,19 @@
 //! output and ignore verdicts). One definition each makes drift impossible.
 
 const std = @import("std");
+const assay = @import("../../assay/assay.zig");
+
+/// The OOM diagnostic both `allocFailure` and `args.oom` emit — one spelling so
+/// the corpus layer and the CLI helper cannot drift. Routed through assay so a
+/// `dark`/`buffer` sink honors the never-write contract (ADR-373 law 6).
+pub const oom_notice =
+    \\oom: allocation failed
+    \\gist: note: scope the query (PATH / -t / -g) or raise the process memory limit
+    \\
+;
 
 pub fn allocFailure() noreturn {
-    std.debug.print("oom\n", .{});
+    assay.diag(oom_notice, .{});
     std.process.exit(2);
 }
 

@@ -4,7 +4,7 @@
 //! `trigram_test.zig` round-trips WELL-FORMED indexes; this file does the
 //! opposite — it hand-builds malformed CSR + delta-varint blobs and requires
 //! `Index.fromBytes` / `Index.fromMappedBytes` to fail closed with
-//! `LoadError.BadFormat`, never a panic, a silent accept, or a later
+//! `LoadError.Corrupt`, never a panic, a silent accept, or a later
 //! out-of-bounds read. The on-disk format is a native-endian, local rebuildable
 //! cache (not a portable/untrusted artifact), but even a corrupt one must be
 //! rejected rather than walked. Every case is a named hardening acceptance test:
@@ -53,16 +53,16 @@ fn makeBlob(
     return buf;
 }
 
-/// Require BOTH loaders to reject `bytes` with `BadFormat` — keeps the copying
+/// Require BOTH loaders to reject `bytes` with `Corrupt` — keeps the copying
 /// and zero-copy paths equivalent. `fromMappedBytes` gets a 4-aligned copy so
 /// the rejection is about content, not alignment (alignment has its own test).
-fn expectBadFormatBoth(bytes: []const u8) !void {
+fn expectCorruptBoth(bytes: []const u8) !void {
     const a = std.testing.allocator;
     if (tri.Index.fromBytes(a, bytes)) |idx0| {
         var idx = idx0;
         idx.deinit();
-        return error.AcceptedCorruptIndex;
-    } else |err| try std.testing.expectEqual(tri.LoadError.BadFormat, err);
+        return error.AcceptedCorrupt;
+    } else |err| try std.testing.expectEqual(tri.LoadError.Corrupt, err);
 
     const aligned = try a.alignedAlloc(u8, .fromByteUnits(@alignOf(u32)), bytes.len);
     defer a.free(aligned);
@@ -70,16 +70,16 @@ fn expectBadFormatBoth(bytes: []const u8) !void {
     if (tri.Index.fromMappedBytes(aligned)) |idx0| {
         var idx = idx0;
         idx.deinit();
-        return error.AcceptedCorruptIndex;
-    } else |err| try std.testing.expectEqual(tri.LoadError.BadFormat, err);
+        return error.AcceptedCorrupt;
+    } else |err| try std.testing.expectEqual(tri.LoadError.Corrupt, err);
 }
 
-fn expectBadFormatTrusted(bytes: []const u8) !void {
+fn expectCorruptTrusted(bytes: []const u8) !void {
     const a = std.testing.allocator;
     const aligned = try a.alignedAlloc(u8, .fromByteUnits(@alignOf(u32)), bytes.len);
     defer a.free(aligned);
     @memcpy(aligned, bytes);
-    try std.testing.expectError(tri.LoadError.BadFormat, tri.Index.fromTrustedMappedBytes(aligned));
+    try std.testing.expectError(tri.LoadError.Corrupt, tri.Index.fromTrustedMappedBytes(aligned));
 }
 
 /// Load a (presumed well-formed) blob through BOTH paths and require they agree
@@ -145,32 +145,32 @@ test "load accepts a normal multi-trigram index" {
 
 test "load rejects a bad magic / short header" {
     const a = std.testing.allocator;
-    try expectBadFormatBoth(&[_]u8{0} ** 8); // shorter than header_len
+    try expectCorruptBoth(&[_]u8{0} ** 8); // shorter than header_len
     const blob = try makeBlob(a, 1, 1, &.{7}, &.{0}, &.{1}, &[_]u8{0x00});
     defer a.free(blob);
     blob[0] = 'X'; // corrupt magic
-    try expectBadFormatBoth(blob);
+    try expectCorruptBoth(blob);
 }
 
 test "load rejects a truncated directory" {
     const a = std.testing.allocator;
     const blob = try makeBlob(a, 1, 1, &.{7}, &.{0}, &.{1}, &[_]u8{0x00});
     defer a.free(blob);
-    try expectBadFormatBoth(blob[0 .. blob.len - 6]); // chop into the directory
+    try expectCorruptBoth(blob[0 .. blob.len - 6]); // chop into the directory
 }
 
 test "load rejects posting_count greater than u32 max" {
     const a = std.testing.allocator;
     const blob = try makeBlob(a, 0, @as(u64, 1) << 32, &.{}, &.{}, &.{}, &.{});
     defer a.free(blob);
-    try expectBadFormatBoth(blob);
+    try expectCorruptBoth(blob);
 }
 
 test "load rejects a nonempty body when n_tri == 0" {
     const a = std.testing.allocator;
     const blob = try makeBlob(a, 1, 0, &.{}, &.{}, &.{}, &[_]u8{ 0x00, 0x00 });
     defer a.free(blob);
-    try expectBadFormatBoth(blob);
+    try expectCorruptBoth(blob);
 }
 
 test "load rejects dir_tri not strictly ascending (and duplicates)" {
@@ -178,43 +178,43 @@ test "load rejects dir_tri not strictly ascending (and duplicates)" {
     const body = [_]u8{ 0x00, 0x00 }; // two 1-posting groups, doc id 0 each
     const desc = try makeBlob(a, 1, 2, &.{ 5, 3 }, &.{ 0, 1 }, &.{ 1, 1 }, &body);
     defer a.free(desc);
-    try expectBadFormatBoth(desc);
+    try expectCorruptBoth(desc);
     const dup = try makeBlob(a, 1, 2, &.{ 5, 5 }, &.{ 0, 1 }, &.{ 1, 1 }, &body);
     defer a.free(dup);
-    try expectBadFormatBoth(dup);
+    try expectCorruptBoth(dup);
 }
 
 test "load rejects a zero-count directory entry" {
     const a = std.testing.allocator;
     const blob = try makeBlob(a, 1, 0, &.{7}, &.{0}, &.{0}, &.{});
     defer a.free(blob);
-    try expectBadFormatBoth(blob);
+    try expectCorruptBoth(blob);
 }
 
 test "load rejects sum(dir_count) != posting_count" {
     const a = std.testing.allocator;
     const blob = try makeBlob(a, 1, 5, &.{7}, &.{0}, &.{1}, &[_]u8{0x00});
     defer a.free(blob);
-    try expectBadFormatBoth(blob);
+    try expectCorruptBoth(blob);
 }
 
 test "load rejects dir_off[0] != 0" {
     const a = std.testing.allocator;
     const blob = try makeBlob(a, 1, 1, &.{7}, &.{1}, &.{1}, &[_]u8{0x00});
     defer a.free(blob);
-    try expectBadFormatBoth(blob);
+    try expectCorruptBoth(blob);
 }
 
 test "load rejects dir_off past body length / nonmonotonic" {
     const a = std.testing.allocator;
     const past = try makeBlob(a, 1, 1, &.{7}, &.{9}, &.{1}, &[_]u8{0x00});
     defer a.free(past);
-    try expectBadFormatBoth(past);
+    try expectCorruptBoth(past);
     // two groups whose offsets go backwards
     const body = [_]u8{ 0x00, 0x00 };
     const nonmono = try makeBlob(a, 1, 2, &.{ 3, 7 }, &.{ 1, 0 }, &.{ 1, 1 }, &body);
     defer a.free(nonmono);
-    try expectBadFormatBoth(nonmono);
+    try expectCorruptBoth(nonmono);
 }
 
 test "load rejects a gap between a decoded group end and the next dir_off" {
@@ -224,7 +224,7 @@ test "load rejects a gap between a decoded group end and the next dir_off" {
     const body = [_]u8{ 0x00, 0x00, 0x00 };
     const blob = try makeBlob(a, 1, 2, &.{ 3, 7 }, &.{ 0, 2 }, &.{ 1, 1 }, &body);
     defer a.free(blob);
-    try expectBadFormatBoth(blob);
+    try expectCorruptBoth(blob);
 }
 
 test "load rejects trailing garbage after the last group" {
@@ -232,7 +232,7 @@ test "load rejects trailing garbage after the last group" {
     const body = [_]u8{ 0x00, 0x77 }; // group consumes 1 byte, 1 trailing byte remains
     const blob = try makeBlob(a, 1, 1, &.{7}, &.{0}, &.{1}, &body);
     defer a.free(blob);
-    try expectBadFormatBoth(blob);
+    try expectCorruptBoth(blob);
 }
 
 test "trusted mapped load defers body validation but a touched corrupt group fails safely" {
@@ -246,30 +246,30 @@ test "trusted mapped load defers body validation but a touched corrupt group fai
     defer a.free(aligned);
     @memcpy(aligned, blob);
 
-    try std.testing.expectError(tri.LoadError.BadFormat, tri.Index.fromMappedBytes(aligned));
+    try std.testing.expectError(tri.LoadError.Corrupt, tri.Index.fromMappedBytes(aligned));
     var trusted = try tri.Index.fromTrustedMappedBytes(aligned);
     defer trusted.deinit();
 
     const valid = try trusted.queryLiteral(a, "abc");
     defer a.free(valid);
     try std.testing.expectEqualSlices(u32, &.{0}, valid);
-    try std.testing.expectError(tri.QueryError.CorruptIndex, trusted.queryLiteral(a, "xyz"));
+    try std.testing.expectError(tri.QueryError.Corrupt, trusted.queryLiteral(a, "xyz"));
 }
 
 test "trusted mapped load rejects malformed directory and region bounds eagerly" {
     const a = std.testing.allocator;
     const bad_order = try makeBlob(a, 1, 2, &.{ 7, 3 }, &.{ 0, 1 }, &.{ 1, 1 }, &.{ 0, 0 });
     defer a.free(bad_order);
-    try expectBadFormatTrusted(bad_order);
+    try expectCorruptTrusted(bad_order);
 
     const bad_sum = try makeBlob(a, 1, 3, &.{7}, &.{0}, &.{1}, &.{0});
     defer a.free(bad_sum);
-    try expectBadFormatTrusted(bad_sum);
+    try expectCorruptTrusted(bad_sum);
 
     // Two postings need at least two one-byte varints; this region has one.
     const short_region = try makeBlob(a, 2, 2, &.{7}, &.{0}, &.{2}, &.{0});
     defer a.free(short_region);
-    try expectBadFormatTrusted(short_region);
+    try expectCorruptTrusted(short_region);
 }
 
 // ── varint-body rejects ──────────────────────────────────────────────────────
@@ -278,7 +278,7 @@ test "load rejects a truncated varint" {
     const a = std.testing.allocator;
     const blob = try makeBlob(a, 4, 1, &.{7}, &.{0}, &.{1}, &[_]u8{0x80}); // continuation, no terminator
     defer a.free(blob);
-    try expectBadFormatBoth(blob);
+    try expectCorruptBoth(blob);
 }
 
 test "load rejects a varint longer than five bytes" {
@@ -286,17 +286,17 @@ test "load rejects a varint longer than five bytes" {
     const body = [_]u8{ 0x80, 0x80, 0x80, 0x80, 0x80, 0x00 };
     const blob = try makeBlob(a, 4, 1, &.{7}, &.{0}, &.{1}, &body);
     defer a.free(blob);
-    try expectBadFormatBoth(blob);
+    try expectCorruptBoth(blob);
 }
 
 test "load rejects overlong encodings of zero and one" {
     const a = std.testing.allocator;
     const z = try makeBlob(a, 4, 1, &.{7}, &.{0}, &.{1}, &[_]u8{ 0x80, 0x00 });
     defer a.free(z);
-    try expectBadFormatBoth(z);
+    try expectCorruptBoth(z);
     const o = try makeBlob(a, 4, 1, &.{7}, &.{0}, &.{1}, &[_]u8{ 0x81, 0x00 });
     defer a.free(o);
-    try expectBadFormatBoth(o);
+    try expectCorruptBoth(o);
 }
 
 test "load rejects a group varint crossing into the next group" {
@@ -306,7 +306,7 @@ test "load rejects a group varint crossing into the next group" {
     const body = [_]u8{ 0x80, 0x01 };
     const blob = try makeBlob(a, 4, 2, &.{ 3, 7 }, &.{ 0, 1 }, &.{ 1, 1 }, &body);
     defer a.free(blob);
-    try expectBadFormatBoth(blob);
+    try expectCorruptBoth(blob);
 }
 
 // ── doc-id rejects ───────────────────────────────────────────────────────────
@@ -315,21 +315,21 @@ test "load rejects a first doc id >= doc_count" {
     const a = std.testing.allocator;
     const blob = try makeBlob(a, 1, 1, &.{7}, &.{0}, &.{1}, &[_]u8{0x01}); // doc 1, doc_count 1
     defer a.free(blob);
-    try expectBadFormatBoth(blob);
+    try expectCorruptBoth(blob);
 }
 
 test "load rejects a second delta of zero (non-ascending doc ids)" {
     const a = std.testing.allocator;
     const blob = try makeBlob(a, 3, 2, &.{7}, &.{0}, &.{2}, &[_]u8{ 0x00, 0x00 }); // doc 0, then delta 0
     defer a.free(blob);
-    try expectBadFormatBoth(blob);
+    try expectCorruptBoth(blob);
 }
 
 test "load rejects a cumulative doc id >= doc_count" {
     const a = std.testing.allocator;
     const blob = try makeBlob(a, 10, 2, &.{7}, &.{0}, &.{2}, &[_]u8{ 0x09, 0x02 }); // 9 then 9+2=11 >= 10
     defer a.free(blob);
-    try expectBadFormatBoth(blob);
+    try expectCorruptBoth(blob);
 }
 
 test "load rejects a cumulative doc id overflow" {
@@ -339,7 +339,7 @@ test "load rejects a cumulative doc id overflow" {
     const n1 = vi.encode(bodybuf[n0..], 10); // (maxu32 - 1) + 10 wraps u32
     const blob = try makeBlob(a, std.math.maxInt(u32), 2, &.{7}, &.{0}, &.{2}, bodybuf[0 .. n0 + n1]);
     defer a.free(blob);
-    try expectBadFormatBoth(blob);
+    try expectCorruptBoth(blob);
 }
 
 // ── mmap-path alignment ──────────────────────────────────────────────────────
@@ -355,8 +355,8 @@ test "fromMappedBytes rejects a misaligned directory start instead of trapping" 
     const raw = try a.alignedAlloc(u8, .fromByteUnits(4), blob.len + 1);
     defer a.free(raw);
     @memcpy(raw[1..][0..blob.len], blob);
-    try std.testing.expectError(tri.LoadError.BadFormat, tri.Index.fromMappedBytes(raw[1..][0..blob.len]));
-    try std.testing.expectError(tri.LoadError.BadFormat, tri.Index.fromTrustedMappedBytes(raw[1..][0..blob.len]));
+    try std.testing.expectError(tri.LoadError.Corrupt, tri.Index.fromMappedBytes(raw[1..][0..blob.len]));
+    try std.testing.expectError(tri.LoadError.Corrupt, tri.Index.fromTrustedMappedBytes(raw[1..][0..blob.len]));
 }
 
 // ── mutation fuzz-lite (CI-safe) ─────────────────────────────────────────────
@@ -384,7 +384,7 @@ test "fuzz-lite: mutated serialized indexes are rejected or safely accepted, bot
             defer a.free(m);
             const pos = rng.uintLessThan(usize, m.len);
             m[pos] ^= @as(u8, 1) << @intCast(rng.uintLessThan(u32, 8));
-            // Either both loaders reject with BadFormat, or both accept a blob the
+            // Either both loaders reject with Corrupt, or both accept a blob the
             // validator proved safe — never a panic, OOB, or silent disagreement.
             _ = try bothAccept(m);
         }

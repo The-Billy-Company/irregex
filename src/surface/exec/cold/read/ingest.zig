@@ -33,6 +33,7 @@ const args = @import("../argv/args.zig");
 const encoding = @import("encoding.zig");
 const glob = @import("../../../../corpus/scope/glob.zig");
 const grepfile = @import("grepfile.zig");
+const assay = @import("../../../../assay/assay.zig");
 const flate = std.compress.flate;
 const zstd = std.compress.zstd;
 const xz = std.compress.xz;
@@ -206,9 +207,9 @@ fn preSelects(cfg: *const Config, rel: []const u8) bool {
 fn preFail(cfg: *const Config, disk: []const u8, tool_stderr: []const u8) ?[]const u8 {
     if (cfg.pre_error) |e| e.store(true, .seq_cst);
     if (tool_stderr.len > 0) {
-        std.debug.print("gist: {s}: preprocessor command failed: {s}\n", .{ disk, std.mem.trimEnd(u8, tool_stderr, "\n") });
+        assay.diag("gist: {s}: preprocessor command failed: {s}\n", .{ disk, std.mem.trimEnd(u8, tool_stderr, "\n") });
     } else {
-        std.debug.print("gist: {s}: preprocessor command failed\n", .{disk});
+        assay.diag("gist: {s}: preprocessor command failed\n", .{disk});
     }
     return null;
 }

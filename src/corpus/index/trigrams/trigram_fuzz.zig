@@ -6,7 +6,7 @@
 //! (`simd_test.zig`, `regex/adversarial_test.zig`) rather than `std.testing.fuzz`:
 //!
 //!   1. no panic / OOB / silent accept  — `fromBytes` either rejects with
-//!      `BadFormat` or returns an index that queryLiteral can walk without
+//!      `Corrupt` or returns an index that queryLiteral can walk without
 //!      tripping ReleaseSafe/Debug memory safety;
 //!   2. accepted ⇒ canonical            — an INDEPENDENT re-walk (`safeCanonical`,
 //!      not the loader's own `validateStructure`) must also accept it, so a bug

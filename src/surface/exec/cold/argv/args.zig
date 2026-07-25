@@ -21,6 +21,7 @@ const uni = @import("../../../../kernel/match/regex/unicode/tables.zig");
 const udec = @import("../../../../kernel/match/regex/unicode/decode.zig");
 const encoding = @import("../read/encoding.zig");
 const color = @import("../emit/color.zig");
+const assay = @import("../../../../assay/assay.zig");
 
 pub const Filename = enum { auto, always, never };
 
@@ -306,15 +307,19 @@ pub const Parsed = struct { patterns: [][]const u8, opts: Opts, roots: [][]const
 const CustomType = struct { name: []const u8, globs: []const []const u8 };
 
 /// Fatal exit with ripgrep's error code (2). Shared by the parser and the shell.
+/// Routed through `assay.diag` so a `dark` sink stays silent and a `buffer`
+/// sink captures the message for the client (ADR-373 law 6) — same reason
+/// `outcome.fatal` takes this path.
 pub fn die(comptime msg: []const u8, args: anytype) noreturn {
-    std.debug.print(msg, args);
+    assay.diag(msg, args);
     std.process.exit(2);
 }
 
 /// The one OOM exit — sugar for the ubiquitous `… catch oom()`,
 /// which is this CLI's contract for allocation failure (fail loud, exit 2).
+/// Message is shared with `paths.allocFailure` (`paths.oom_notice`).
 pub fn oom() noreturn {
-    die("oom\n", .{});
+    die(paths.oom_notice, .{});
 }
 
 /// Does the pattern carry an uppercase letter? Codepoint-aware for smart-case
@@ -818,7 +823,7 @@ fn noteGrepStyleReplace(v: []const u8) void {
     // stderr from a passing test binary makes the build runner print a spurious
     // "failed command:" banner. The note is user-guidance, not behavior.
     if (builtin.is_test) return;
-    std.debug.print(
+    assay.diag(
         "gist: note: '-r{s}' parses as --replace={s} (ripgrep semantics: -r takes a value; recursion is already the default). Spell flags separately (e.g. -n), or use --replace to silence this note.\n",
         .{ v, v },
     );

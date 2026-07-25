@@ -33,6 +33,7 @@
 //! (ADR-pending) drops in there without touching build/query.
 
 const std = @import("std");
+const fault = @import("../../../fault.zig");
 const blob = @import("../postings/persisted_blob.zig");
 const ngram = @import("ngram.zig");
 const varint = @import("../postings/varint.zig");
@@ -75,8 +76,8 @@ fn emitPostings(docs: []const []const u8, base_doc: u32, bitmap: []u64, scratch:
     return w;
 }
 
-pub const QueryError = error{ NeedleTooShort, CorruptIndex, OutOfMemory };
-pub const LoadError = error{ BadFormat, OutOfMemory };
+pub const QueryError = error{ NeedleTooShort, OutOfMemory } || fault.Persist;
+pub const LoadError = error{OutOfMemory} || fault.Persist;
 
 pub const format_version = blob.format_version;
 pub const header_len = blob.header_len;
@@ -329,7 +330,7 @@ pub const Index = struct {
     }
 
     /// Borrow Gist's atomically-written LOCAL cache after directory validation.
-    /// Touched groups validate lazily and return `CorruptIndex` for full-walk.
+    /// Touched groups validate lazily and return `Corrupt` for full-walk.
     pub fn fromTrustedMappedBytes(bytes: []const u8) LoadError!Index {
         const m = try blob.parseMapped(bytes);
         try blob.validateDirectory(m.structure());
@@ -348,7 +349,7 @@ pub const Index = struct {
     }
 
     fn decodeGroup(self: *const Index, gi: usize, out: []u32) QueryError!usize {
-        return blob.decodeGroup(self.blobView(), gi, out) catch QueryError.CorruptIndex;
+        return blob.decodeGroup(self.blobView(), gi, out) catch QueryError.Corrupt;
     }
 
     fn dirCountLess(self: *const Index, a: usize, b: usize) bool {
@@ -445,13 +446,13 @@ pub const Index = struct {
         var w: usize = 0;
         for (self.dir_tri, 0..) |t, gi| {
             const cnt = try self.decodeGroup(gi, scratch);
-            if (w > out.len or cnt > out.len - w) return QueryError.CorruptIndex;
+            if (w > out.len or cnt > out.len - w) return QueryError.Corrupt;
             for (scratch[0..cnt]) |d| {
                 out[w] = .{ .tri = t, .doc = d };
                 w += 1;
             }
         }
-        if (w != out.len) return QueryError.CorruptIndex;
+        if (w != out.len) return QueryError.Corrupt;
         return out;
     }
 

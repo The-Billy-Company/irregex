@@ -151,6 +151,20 @@ pub const PatternSet = struct {
     }
 };
 
+/// A word-bounded set over literal `names`: each becomes `\bNAME\b`, so a scan
+/// never matches `run` inside `runner`. Names are regex-escaped, so a token
+/// carrying regex punctuation stays literal. The specs and their patterns are
+/// allocated from `gpa` and must outlive the set — callers building one set per
+/// query pass an arena.
+pub fn wordSet(gpa: std.mem.Allocator, names: []const []const u8) !PatternSet {
+    const specs = try gpa.alloc(Spec, names.len);
+    for (names, specs) |name, *s| {
+        const escaped = try query.escapeLiteral(gpa, name);
+        s.* = .{ .pattern = try std.fmt.allocPrint(gpa, "\\b{s}\\b", .{escaped}), .fixed = false };
+    }
+    return PatternSet.compile(gpa, specs);
+}
+
 /// Words needed for a `docMask` bitmask over `n` patterns.
 pub const maskWords = B64.words;
 

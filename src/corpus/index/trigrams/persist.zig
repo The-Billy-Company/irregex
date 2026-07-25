@@ -24,6 +24,7 @@ const crest = @import("../../../kernel/primitives/crest.zig");
 const crest_sidecar = @import("../crest/sidecar.zig");
 const codicil_mod = @import("codicil.zig");
 const frame = @import("../frame/frame.zig");
+const assay = @import("../../../assay/assay.zig");
 const Dir = std.Io.Dir;
 
 /// Stable aliases (status / bench size accounting). The query loader prefers the
@@ -273,7 +274,7 @@ fn readGenerationFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !?[]
 
 fn loadMappedPair(gpa: std.mem.Allocator, io: std.Io, pf: *const PairFiles, gen: ?[]const u8, comptime verbose: bool) !?Persisted {
     const imap = mmapFile(io, pf.index) catch {
-        if (verbose) std.debug.print("no index at {s} — run `gist index` first\n", .{pf.index});
+        if (verbose) assay.diag("no index at {s} — run `gist index` first\n", .{pf.index});
         return null;
     };
     errdefer std.posix.munmap(imap);
@@ -281,7 +282,7 @@ fn loadMappedPair(gpa: std.mem.Allocator, io: std.Io, pf: *const PairFiles, gen:
     errdefer idx.deinit();
 
     const pmap = mmapFile(io, pf.paths) catch {
-        if (verbose) std.debug.print("incomplete index — {s} missing; run `gist index` to rebuild\n", .{pf.paths});
+        if (verbose) assay.diag("incomplete index — {s} missing; run `gist index` to rebuild\n", .{pf.paths});
         std.posix.munmap(imap);
         return null;
     };
@@ -289,7 +290,7 @@ fn loadMappedPair(gpa: std.mem.Allocator, io: std.Io, pf: *const PairFiles, gen:
     var paths = try frame.parsePathTable(gpa, pmap);
     errdefer paths.deinit(gpa);
     validatePersistedPair(idx.doc_count, paths.items) catch {
-        if (verbose) std.debug.print("index/paths mismatch ({d} paths != {d} docs) — run `gist index` to rebuild\n", .{ paths.items.len, idx.doc_count });
+        if (verbose) assay.diag("index/paths mismatch ({d} paths != {d} docs) — run `gist index` to rebuild\n", .{ paths.items.len, idx.doc_count });
         paths.deinit(gpa);
         std.posix.munmap(pmap);
         std.posix.munmap(imap);
@@ -383,7 +384,7 @@ pub fn loadAt(gpa: std.mem.Allocator, io: std.Io, out_dir: []const u8, comptime 
             var tmp = loaded;
             tmp.deinit();
             const what: []const u8 = if (gen_after == null) "retracted" else "changed";
-            if (verbose) std.debug.print("index generation {s} mid-load — run `gist index` to rebuild\n", .{what});
+            if (verbose) assay.diag("index generation {s} mid-load — run `gist index` to rebuild\n", .{what});
             return null;
         }
         return loaded;

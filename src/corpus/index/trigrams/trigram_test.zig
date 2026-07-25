@@ -82,9 +82,9 @@ test "serialize: round-trip preserves postings and query results" {
 
 test "serialize: garbage / truncated blob is rejected, not misread" {
     const a = std.testing.allocator;
-    try std.testing.expectError(LoadError.BadFormat, Index.fromBytes(a, "not a gist index"));
-    try std.testing.expectError(LoadError.BadFormat, Index.fromBytes(a, "GISTIDX\x01")); // valid magic, header truncated
-    try std.testing.expectError(LoadError.BadFormat, Index.fromMappedBytes("not a gist index"));
+    try std.testing.expectError(LoadError.Corrupt, Index.fromBytes(a, "not a gist index"));
+    try std.testing.expectError(LoadError.Corrupt, Index.fromBytes(a, "GISTIDX\x01")); // valid magic, header truncated
+    try std.testing.expectError(LoadError.Corrupt, Index.fromMappedBytes("not a gist index"));
 }
 
 test "serialize: zero-copy fromMappedBytes aliases the directory, no copy" {

@@ -22,6 +22,13 @@ test "declaration confidence follows geometry across syntax families" {
     try expect(confidence("func (s *Service) Charge(amount int64) error {", "Charge") == 3); // balanced receiver
     try expect(confidence("let normalizeExecHost: typeof import('./x').normalizeExecHost;", "normalizeExecHost") == 1);
     try expect(confidence("normalizeExecHost = execApprovals.normalizeExecHost;", "normalizeExecHost") == 1);
+    // Type parameters in brackets, where the families above write `<T>`.
+    try expect(confidence("async def connect_call[Resp: Message](", "connect_call") == 3);
+    try expect(confidence("class Cache[K, V]:", "Cache") == 3);
+    try expect(confidence("var buf [256]byte = make([]byte, 256)", "buf") == 3); // sized type, not a head
+    try expect(!signals.definesNeedle("    return handlers[name](req)", "handlers")); // indexed call
+    try expect(!signals.definesNeedle("    (e: React.KeyboardEvent) => {", "React")); // namespace of an annotation
+    try expect(!signals.definesNeedle("pub fn staleCount(gpa: Allocator) usize {", "usize")); // return type
 }
 
 test "declaration geometry is Unicode and notation agnostic" {

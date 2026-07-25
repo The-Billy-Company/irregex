@@ -25,6 +25,7 @@
 
 const std = @import("std");
 const gen = @import("encoding_tables.gen.zig");
+const paths = @import("../../../../corpus/scope/paths.zig");
 
 // ibm866…x_mac_cyrillic below are the
 // single-byte (§9) — windows-1252 subsumes ISO-8859-1/ASCII, windows-1254
@@ -37,10 +38,8 @@ const gen = @import("encoding_tables.gen.zig");
 /// encodings this module decodes. Label→variant resolution is `fromLabel`.
 pub const Encoding = enum { auto, none, utf8, utf16, utf16le, utf16be, ibm866, iso_8859_2, iso_8859_3, iso_8859_4, iso_8859_5, iso_8859_6, iso_8859_7, iso_8859_8, iso_8859_10, iso_8859_13, iso_8859_14, iso_8859_15, iso_8859_16, koi8_r, koi8_u, macintosh, windows_874, windows_1250, windows_1251, windows_1252, windows_1253, windows_1254, windows_1255, windows_1256, windows_1257, windows_1258, x_mac_cyrillic, gb18030, big5, euc_jp, iso_2022_jp, shift_jis, euc_kr, replacement, x_user_defined };
 
-fn oom() noreturn {
-    std.debug.print("oom\n", .{});
-    std.process.exit(2);
-}
+/// Local alias — cannot import `args.oom` (args imports this module).
+const oom = paths.allocFailure;
 
 // ─────────────────────────── label resolution ───────────────────────────
 

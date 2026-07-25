@@ -40,6 +40,7 @@ const haystack = @import("haystack.zig");
 const bulkstat = @import("bulkstat.zig");
 const corpus = @import("corpus.zig");
 const paths = @import("../scope/paths.zig");
+const assay = @import("../../assay/assay.zig");
 
 const Dir = std.Io.Dir;
 const oom = paths.allocFailure;
@@ -352,7 +353,7 @@ test "fused parallel load has byte-identical membership to the serial walk" {
     try testing.expectEqual(ser.paths.len, par.paths.len);
     for (par.paths, par.docs) |p, d| {
         const want = expect.get(p) orelse {
-            std.debug.print("parallel admitted a path serial did not: {s}\n", .{p});
+            assay.diag("parallel admitted a path serial did not: {s}\n", .{p});
             return error.MembershipMismatch;
         };
         try testing.expectEqualStrings(want, d);

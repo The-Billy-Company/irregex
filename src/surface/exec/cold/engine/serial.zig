@@ -37,6 +37,7 @@ const builtin = @import("builtin");
 const corpus_mod = @import("../../../../corpus/tree/corpus.zig");
 const args = @import("../argv/args.zig");
 const assay = @import("../../../../assay/assay.zig");
+const Outcome = @import("../../../cli/outcome.zig").Outcome;
 const output = @import("../emit/output.zig");
 const ignore = @import("../../../../corpus/tree/ignore.zig");
 const json = @import("../emit/json.zig");
@@ -408,7 +409,7 @@ fn gather(a: std.mem.Allocator, io: std.Io, roots: []const []const u8, o: Opts, 
                 _ = std.posix.system.close(fd);
                 out.append(a, .{ .rel = r, .scope = paths_mod.cwdRelative(a, io, r), .disk = r, .explicit = true }) catch oom();
             } else |ferr| {
-                std.debug.print("gist: {s}: {s}\n", .{ r, grepfile.pathErrNote(ferr) });
+                grepfile.printWalkError(r, ferr);
                 path_error = true;
             }
         }
@@ -1244,7 +1245,7 @@ const tty_long_line_cols: usize = 16 * 1024;
 fn buildMatcher(gpa: std.mem.Allocator, eff: []const u8, o: Opts) Matcher {
     switch (o.engine) {
         .pcre2 => return .{ .pcre = Pcre.compileOpts(gpa, eff, .{ .caseless = o.caseless, .multiline = o.re_line_anchors, .dotall = o.multiline_dotall, .unicode = o.pcre_unicode }) catch |e| switch (e) {
-            error.OutOfMemory => die("oom\n", .{}),
+            error.OutOfMemory => oom(),
             else => die("gist: error: bad PCRE2 pattern '{s}': {s}\n", .{ eff, pcre2.lastError() }),
         } },
         // The multi-line diagnostic shares the `gist: try` / `gist: note:`
@@ -1270,7 +1271,7 @@ fn buildMatcher(gpa: std.mem.Allocator, eff: []const u8, o: Opts) Matcher {
                 return .{ .linear = r }
             else |_| {}
             return .{ .pcre = Pcre.compileOpts(gpa, eff, .{ .caseless = o.caseless, .multiline = o.re_line_anchors, .dotall = o.multiline_dotall, .unicode = o.pcre_unicode }) catch |e| switch (e) {
-                error.OutOfMemory => die("oom\n", .{}),
+                error.OutOfMemory => oom(),
                 else => die(
                     \\gist: error: regex '{s}' compiles under neither engine
                     \\gist: note: the linear engine declined it (lookaround / backreferences / an unknown escape)
@@ -1340,11 +1341,13 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         // --files lists every file (no pattern) — nothing to prefilter, so no read
         // elision applies; pass an empty trigram filter and an inactive sieve.
         const c = collectFiles(a, gpa, io, parsed, &.{}, crest.zero_vector, null, &icfg);
-        if (o.quiet) std.process.exit(if (c.path_error) 2 else if (c.files.len > 0) 0 else 1);
+        // `--files` gathered every path up front, so a path error is already known
+        // and outranks the listing — quiet here is not the match short-circuit.
+        if (o.quiet) (Outcome{ .matched = c.files.len > 0, .faulted = c.path_error }).exit();
         var out: std.ArrayList(u8) = .empty;
         for (c.files) |f| out.print(a, "{s}{c}", .{ f.path, if (o.null_sep) @as(u8, 0) else '\n' }) catch oom();
         corpus_mod.emitStdout(out.items);
-        std.process.exit(if (c.path_error) 2 else if (c.files.len > 0) 0 else 1);
+        (Outcome{ .matched = c.files.len > 0, .faulted = c.path_error }).exit();
     }
 
     // Zero patterns (an empty `-f` file): ripgrep matches nothing — so without
@@ -1440,7 +1443,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         const kept = commentscope.run(a, &re, o, scoped, show, &out0);
         if (!o.quiet) corpus_mod.emitStdout(out0.items);
         pcreFaultExit(&re);
-        std.process.exit(if (c.path_error or pre_error.load(.seq_cst)) 2 else if (kept > 0) 0 else 1);
+        (Outcome{ .matched = kept > 0, .faulted = c.path_error or pre_error.load(.seq_cst) }).exit();
     }
 
     const line_needle = requiredLiteralGate(a, o, eff, &re);
@@ -1475,10 +1478,12 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
             break :blk em0.file("<stdin>", lines.items);
         };
         pcreFaultExit(&re);
-        if (o.quiet) std.process.exit(if (hits > 0) 0 else 1);
+        // stdin has no walk, so no path can fault; `pcreFaultExit` already took
+        // the engine-fault exit above.
+        if (o.quiet) (Outcome{ .matched = hits > 0 }).exit();
         corpus_mod.emitStdout(out0.items);
         if (hits == 0) hints.noMatches(hints.shapeStream(parsed.patterns, o), null);
-        std.process.exit(if (hits > 0) 0 else 1);
+        (Outcome{ .matched = hits > 0 }).exit();
     }
 
     // The persisted index (when present) accelerates the walk by eliding reads of
@@ -1531,7 +1536,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         corpus_mod.emitStdout(out.items);
         grepfile.diagSearch(gpa, o.json, jst, search_span.read(io));
         pcreFaultExit(&re);
-        std.process.exit(if (err_exit) 2 else if (jst.get(.files_with_match) > 0) 0 else 1);
+        (Outcome{ .matched = jst.get(.files_with_match) > 0, .faulted = err_exit }).exit();
     }
 
     // `--vimgrep` forces the filename on even for a single explicit file —
@@ -1561,7 +1566,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     if (o.quiet and !o.stats and !o.files_without) {
         const hit = anyMatch(a, &re, o, line_needle, files);
         pcreFaultExit(&re);
-        std.process.exit(if (hit) 0 else if (err_exit) 2 else 1);
+        (Outcome{ .matched = hit, .faulted = err_exit, .precedence = .quiet_short_circuit }).exit();
     }
 
     if (o.files_without) {
@@ -1586,7 +1591,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         // `--files-without-match` success).
         if (!o.quiet) corpus_mod.emitStdout(out.items);
         pcreFaultExit(&re);
-        std.process.exit(if (err_exit) 2 else if (out.items.len > 0) 0 else 1);
+        (Outcome{ .matched = out.items.len > 0, .faulted = err_exit }).exit();
     }
 
     // rg prints a heading only when it would print the path at all: a single
@@ -1650,7 +1655,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // by contract; error exits already carry their own diagnostic.
     if (matched_files == 0 and !err_exit)
         hints.noMatches(hints.shape(parsed.patterns, o, parsed.roots, parsed.roots.len > 0), files.len);
-    std.process.exit(if (err_exit) 2 else if (matched_files > 0) 0 else 1);
+    (Outcome{ .matched = matched_files > 0, .faulted = err_exit }).exit();
 }
 
 /// Compile the `-r/--replace` capture matcher (linear Pike VM or PCRE2) for the
@@ -1660,7 +1665,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
 fn compileCaps(gpa: std.mem.Allocator, o: Opts, eff: []const u8, is_pcre: bool) Caps {
     return if (is_pcre)
         Caps{ .pcre = captures_mod.PcreCaptures.compile(gpa, eff, .{ .caseless = o.caseless, .multiline = o.re_line_anchors, .dotall = o.multiline_dotall, .unicode = o.pcre_unicode }) catch |e| switch (e) {
-            error.OutOfMemory => die("oom\n", .{}),
+            error.OutOfMemory => oom(),
             else => die("bad PCRE2 pattern '{s}': {s}\n", .{ eff, pcre2.lastError() }),
         } }
     else
@@ -2015,7 +2020,7 @@ fn filesWithoutSharded(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.A
 pub fn pcreFaultExit(re: *const Matcher) void {
     if (re.matchError() == 0) return;
     var buf: [256]u8 = undefined;
-    std.debug.print("gist: PCRE2: error matching: {s}\n", .{pcre2.matchErrorMessage(&buf)});
+    assay.diag("gist: PCRE2: error matching: {s}\n", .{pcre2.matchErrorMessage(&buf)});
     std.process.exit(2);
 }
 

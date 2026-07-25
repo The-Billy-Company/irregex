@@ -6,9 +6,10 @@
 //! bounded group decoder until query time.
 
 const std = @import("std");
+const fault = @import("../../../fault.zig");
 const varint = @import("varint.zig");
 
-pub const Error = error{BadFormat};
+pub const Error = fault.Persist;
 
 /// Local-machine cache format; v2 introduced CSR delta-varint posting bodies.
 pub const format_version: u32 = 2;
@@ -64,15 +65,15 @@ pub fn writeInto(s: Structure, buf: []u8) usize {
 }
 
 pub fn parseHeader(bytes: []const u8) Error!Header {
-    if (bytes.len < header_len or !std.mem.eql(u8, bytes[0..magic.len], magic)) return Error.BadFormat;
-    if (std.mem.readInt(u32, bytes[magic.len..][0..4], .little) != format_version) return Error.BadFormat;
+    if (bytes.len < header_len or !std.mem.eql(u8, bytes[0..magic.len], magic)) return Error.Corrupt;
+    if (std.mem.readInt(u32, bytes[magic.len..][0..4], .little) != format_version) return Error.Corrupt;
     const n64 = std.mem.readInt(u64, bytes[magic.len + 8 ..][0..8], .little);
     const pc64 = std.mem.readInt(u64, bytes[magic.len + 16 ..][0..8], .little);
-    if (n64 > std.math.maxInt(usize) or pc64 > std.math.maxInt(u32)) return Error.BadFormat;
+    if (n64 > std.math.maxInt(usize) or pc64 > std.math.maxInt(u32)) return Error.Corrupt;
     const n_tri: usize = @intCast(n64);
-    const dir_bytes = std.math.mul(usize, n_tri, @sizeOf(u32) * 3) catch return Error.BadFormat;
-    const need = std.math.add(usize, header_len, dir_bytes) catch return Error.BadFormat;
-    if (bytes.len < need) return Error.BadFormat;
+    const dir_bytes = std.math.mul(usize, n_tri, @sizeOf(u32) * 3) catch return Error.Corrupt;
+    const need = std.math.add(usize, header_len, dir_bytes) catch return Error.Corrupt;
+    if (bytes.len < need) return Error.Corrupt;
     return .{
         .doc_count = std.mem.readInt(u32, bytes[magic.len + 4 ..][0..4], .little),
         .n_tri = n_tri,
@@ -83,7 +84,7 @@ pub fn parseHeader(bytes: []const u8) Error!Header {
 /// Parse aligned zero-copy directory/body regions; the caller owns `bytes`.
 pub fn parseMapped(bytes: []const u8) Error!MappedRegions {
     const header = try parseHeader(bytes);
-    if (@intFromPtr(bytes.ptr) % @alignOf(u32) != 0) return Error.BadFormat;
+    if (@intFromPtr(bytes.ptr) % @alignOf(u32) != 0) return Error.Corrupt;
     var off: usize = header_len;
     const dir_bytes = header.n_tri * @sizeOf(u32);
     var dirs: [3][]const u32 = undefined;
@@ -97,45 +98,45 @@ pub fn parseMapped(bytes: []const u8) Error!MappedRegions {
 /// O(distinct trigrams): validate layout/count invariants without reading body.
 pub fn validateDirectory(s: Structure) Error!void {
     const n = s.dir_tri.len;
-    if (s.dir_off.len != n or s.dir_count.len != n) return Error.BadFormat;
+    if (s.dir_off.len != n or s.dir_count.len != n) return Error.Corrupt;
     if (n == 0) {
-        if (s.body.len != 0 or s.posting_count != 0) return Error.BadFormat;
+        if (s.body.len != 0 or s.posting_count != 0) return Error.Corrupt;
         return;
     }
-    if (s.dir_off[0] != 0) return Error.BadFormat;
+    if (s.dir_off[0] != 0) return Error.Corrupt;
     var sum: u64 = 0;
     for (0..n) |i| {
-        if (i > 0 and s.dir_tri[i] <= s.dir_tri[i - 1]) return Error.BadFormat;
+        if (i > 0 and s.dir_tri[i] <= s.dir_tri[i - 1]) return Error.Corrupt;
         const count: usize = s.dir_count[i];
-        if (count == 0 or count > s.doc_count) return Error.BadFormat;
+        if (count == 0 or count > s.doc_count) return Error.Corrupt;
         const start: usize = s.dir_off[i];
         const end: usize = if (i + 1 < n) s.dir_off[i + 1] else s.body.len;
-        if (start > end or end > s.body.len) return Error.BadFormat;
-        const max_len = std.math.mul(usize, count, varint.max_len) catch return Error.BadFormat;
-        if (end - start < count or end - start > max_len) return Error.BadFormat;
+        if (start > end or end > s.body.len) return Error.Corrupt;
+        const max_len = std.math.mul(usize, count, varint.max_len) catch return Error.Corrupt;
+        if (end - start < count or end - start > max_len) return Error.Corrupt;
         sum += s.dir_count[i];
     }
-    if (sum != s.posting_count) return Error.BadFormat;
+    if (sum != s.posting_count) return Error.Corrupt;
 }
 
 fn decodeBodyGroup(bytes: []const u8, count: u32, doc_count: u32, out: ?[]u32) Error!usize {
     const n: usize = count;
-    if (n == 0 or n > doc_count) return Error.BadFormat;
-    if (out) |dest| if (n > dest.len) return Error.BadFormat;
+    if (n == 0 or n > doc_count) return Error.Corrupt;
+    if (out) |dest| if (n > dest.len) return Error.Corrupt;
     var pos: usize = 0;
     var prev: u32 = 0;
     for (0..n) |i| {
-        const decoded = varint.decodeBoundedCanonical(bytes[pos..], varint.max_len) catch return Error.BadFormat;
+        const decoded = varint.decodeBoundedCanonical(bytes[pos..], varint.max_len) catch return Error.Corrupt;
         pos += decoded.len;
         const doc = if (i == 0) decoded.value else blk: {
-            if (decoded.value == 0) return Error.BadFormat;
-            break :blk std.math.add(u32, prev, decoded.value) catch return Error.BadFormat;
+            if (decoded.value == 0) return Error.Corrupt;
+            break :blk std.math.add(u32, prev, decoded.value) catch return Error.Corrupt;
         };
-        if (doc >= doc_count) return Error.BadFormat;
+        if (doc >= doc_count) return Error.Corrupt;
         if (out) |dest| dest[i] = doc;
         prev = doc;
     }
-    if (pos != bytes.len) return Error.BadFormat;
+    if (pos != bytes.len) return Error.Corrupt;
     return n;
 }
 
@@ -152,9 +153,9 @@ pub fn validateStructure(s: Structure) Error!void {
 /// Validate and decode one touched group without escaping its directory region.
 pub fn decodeGroup(s: Structure, gi: usize, out: []u32) Error!usize {
     if (s.dir_off.len != s.dir_tri.len or s.dir_count.len != s.dir_tri.len or gi >= s.dir_tri.len)
-        return Error.BadFormat;
+        return Error.Corrupt;
     const start: usize = s.dir_off[gi];
     const end: usize = if (gi + 1 < s.dir_off.len) s.dir_off[gi + 1] else s.body.len;
-    if (start > end or end > s.body.len) return Error.BadFormat;
+    if (start > end or end > s.body.len) return Error.Corrupt;
     return decodeBodyGroup(s.body[start..end], s.dir_count[gi], s.doc_count, out);
 }

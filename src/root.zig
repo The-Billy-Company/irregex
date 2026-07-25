@@ -41,6 +41,19 @@ const std = @import("std");
 // and warm-query timing are properties of one seam). See src/assay/README.md.
 pub const assay = @import("assay/assay.zig");
 
+// How a face terminates: the rg `0`/`1`/`2` exit contract (both precedences)
+// and the `fatal` catch that keeps an escaped error off Zig's default handler,
+// which would exit 1 — "found nothing" — on a hard fault. See ADR-373.
+pub const Outcome = @import("surface/cli/outcome.zig").Outcome;
+pub const fatal = @import("surface/cli/outcome.zig").fatal;
+
+// The vocabulary those exits speak: five fault domains declared once (Zig
+// merges error names globally, so the merge must be deliberate), the
+// declinature enum that keeps a routine tier fallback out of the error channel
+// entirely, and the thread-local detail slot the C ABI's last-fault pull reads.
+// Vocabulary and payload only — transport stays assay's. See ADR-373 laws 1-3.
+pub const fault = @import("fault.zig");
+
 // ── candidate index ──
 pub const ngram = @import("corpus/index/trigrams/ngram.zig");
 pub const trigram = @import("corpus/index/trigrams/trigram.zig");
@@ -227,8 +240,10 @@ pub const commands = struct {
     /// `gist serve` — the resident daemon that keeps a `session` warm behind a
     /// Unix socket (ADR-352 rung 2.5).
     pub const serve = @import("surface/face/gist/daemon/serve/serve.zig");
-    /// The relate verbs — `similar`/`dups`/`patterns` over `src/kernel/`.
+    /// The relate verbs — `dups`/`patterns` over `src/kernel/`.
     pub const irregex = @import("surface/face/relate/verbs.zig");
+    /// `relate similar` — the probe query (nearest kin to one file), graded.
+    pub const relate_similar = @import("surface/face/relate/similar.zig");
     /// `relate search` — two-stage compression retrieval (lexicon → zipper).
     pub const relate_search = @import("surface/face/relate/search.zig");
     pub const relate_quote = @import("surface/face/relate/quote.zig");
@@ -244,11 +259,14 @@ pub const commands = struct {
     pub const relate_lifecycle = @import("surface/face/relate/lifecycle.zig");
     /// The shared kinship plumbing: view resolver (atlas ∪ live) + pair machinery.
     pub const relate_kinship = @import("surface/face/relate/kinship.zig");
-    /// `relate --schema` JSON capability manifest (the relate binary's).
-    pub const relate_schema = @import("surface/face/relate/schema.zig");
-    /// The composed face (ADR-367): the `irregex` binary's three verb drivers +
-    /// its `--schema` manifest, orchestrating the `compose` kernels over a
-    /// loaded corpus / codex shelf.
+    /// The shared verb-table renderer: one `Face` declaration becomes the help,
+    /// the `--schema` manifest, the dispatch, and the unknown-verb line.
+    pub const manifest = @import("surface/cli/manifest.zig");
+    /// relate's verb table — the single source those four renderings read.
+    pub const relate_repertoire = @import("surface/face/relate/repertoire.zig");
+    /// The composed face (ADR-367): the `irregex` binary's four verb drivers +
+    /// its verb table, orchestrating the `compose` kernels over a loaded
+    /// corpus / codex shelf.
     pub const compose_context = @import("surface/face/irregex/context.zig");
     pub const compose_family = @import("surface/face/irregex/family.zig");
     pub const compose_provenance = @import("surface/face/irregex/provenance.zig");
@@ -256,7 +274,8 @@ pub const commands = struct {
     /// (seed → dependents/dependencies → twins/ripple → comments), computed from
     /// current bytes with no precomputed graph.
     pub const compose_blast = @import("surface/face/irregex/blast.zig");
-    pub const compose_schema = @import("surface/face/irregex/schema.zig");
+    /// The composed face's verb table.
+    pub const compose_repertoire = @import("surface/face/irregex/repertoire.zig");
     /// The CLI's warm fast path — dial the daemon for an eligible query, emit
     /// byte-identically to cold, else fall back (`attempt`).
     pub const client = @import("surface/face/gist/daemon/client/client.zig");
@@ -481,8 +500,9 @@ test {
     _ = @import("corpus/scope/glob_test.zig"); // glob matcher + type/glob/root path scope
     _ = @import("surface/face/gist/status/status.zig"); // read-only index introspection
     _ = @import("surface/face/gist/schema/schema.zig"); // `--schema` manifest
-    _ = @import("surface/face/relate/schema.zig"); // relate's `--schema` manifest
+    _ = @import("surface/face/relate/repertoire.zig"); // relate's verb table (schema validity + both registers)
     _ = @import("surface/face/relate/kinship.zig"); // relate shared plumbing: view resolver + verified-pair machinery
+    _ = @import("surface/face/relate/similar.zig"); // `relate similar` driver body (probe ranking order, both polarities)
     _ = @import("surface/face/relate/pack.zig"); // `relate pack` driver body (greedy coverage semantics tested here)
     _ = @import("surface/face/relate/family.zig"); // `relate clusters` driver body (union-find fork families)
     _ = @import("surface/face/relate/concepts.zig"); // `relate concepts` driver body (fragment view + discover/retrieve)
@@ -491,7 +511,7 @@ test {
     _ = @import("surface/face/irregex/family.zig"); // composed `family` driver body
     _ = @import("surface/face/irregex/provenance.zig"); // composed `provenance` driver body
     _ = @import("surface/face/irregex/blast.zig"); // composed `blast` driver body (budget accountant + render)
-    _ = @import("surface/face/irregex/schema.zig"); // `irregex --schema` manifest (JSON-validity test)
+    _ = @import("surface/face/irregex/repertoire.zig"); // the composed face's verb table (scope-required invariant)
     _ = @import("surface/face/irregex/shared.zig"); // composed CLI shared plumbing
     _ = @import("surface/exec/cold/engine/serial.zig"); // the unified engine (rgsuite parity drop-in)
     _ = @import("surface/exec/cold/engine/parallel.zig"); // the fused work-stealing parallel walk/read/emit pass
@@ -499,6 +519,12 @@ test {
     _ = @import("surface/exec/cold/read/encoding.zig"); // -E WHATWG legacy-code-page decoders (single-byte + CJK multi-byte)
     _ = @import("surface/exec/cold/emit/multiline.zig"); // -U whole-buffer match model (Emitter.buffer + --json)
     _ = @import("surface/exec/cold/emit/hints.zig"); // no-match stderr guidance: shape analysis + exact render bytes
+    _ = @import("surface/cli/manifest.zig"); // the verb-table renderer (help, schema, dispatch, verb list)
+    _ = @import("surface/cli/guide.zig"); // the stderr guidance grammar both faces speak
+    _ = @import("surface/cli/grade.zig"); // kinship channels, calibrated grades, the weak-result verdict
+    _ = Outcome; // the rg exit-code contract, incl. the -q short-circuit precedence
+    _ = @import("surface/cli/outcome.zig");
+    _ = @import("fault.zig"); // the fault/declinature vocabulary + the detail slot
     _ = @import("surface/exec/cold/emit/jsonstr.zig"); // the one JSON string escaper every JSON/NDJSON face shares
     _ = @import("surface/exec/cold/engine/ranked.zig"); // `--rank` definition-first ranked view
     _ = @import("surface/face/gist/lifecycle/index.zig"); // the `index` verb: build + persist
