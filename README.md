@@ -388,7 +388,7 @@ place only when the tool feels obvious in the hand.
 | `src/surface/` | transports + faces: `exec/{cold,session}` · `ffi/` · `face/{gist,relate,irregex}` · `cli/` shared vocabulary |
 | `src/assay/`   | the instrumentation floor (imports only `std`): typed `Span`/`Duration`/`Anchor` clocks, `Tally(Schema)` counters, and the `GIST_TRACE` lens + sink diagnostic channel |
 | `include/`     | `irregex.h`: the flat C ABI (`irregex_*` symbols)                                                            |
-| `bindings/`    | Python (`billy-irregex`, subprocess + optional cffi over `libirregex`) and Rust (subprocess) faces           |
+| `bindings/`    | Python (`billy-irregex` — all three faces, subprocess + optional cffi) and Rust (subprocess) faces           |
 | `contract/`    | `search_api.toml`: the unified SearchRequest/irregex contract (ADR-352)                                      |
 | `bench/`       | certification + competitive benchmark harness (rgsuite, races, certify, roofline)                            |
 
@@ -396,6 +396,11 @@ See [`src/README.md`](src/README.md) for the tier-by-tier map and
 [`src/surface/face/gist/README.md`](src/surface/face/gist/README.md) for the gist architecture
 narrative, competitive benchmarks, and the full flag table (supported +
 improvements, where gist is strictly better than rg — never a regression).
+[`bindings/python/README.md`](bindings/python/README.md) covers the importable
+face, which deliberately diverges from the CLI where a program's needs do:
+calibration grades and scored populations become fields instead of stderr
+commentary, `Region.read()` hands back source rather than coordinates, and the
+composed reports expose their conclusion (`Blast.paths`) next to their evidence.
 
 ## Build & test
 
