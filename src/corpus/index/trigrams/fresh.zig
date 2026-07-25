@@ -29,6 +29,7 @@ const scope = @import("../../scope/glob.zig");
 const path_utils = @import("../../scope/paths.zig");
 const bulkstat = @import("../../tree/bulkstat.zig");
 const journal = @import("../../tree/journal.zig");
+const frame = @import("../frame/frame.zig");
 const persist = @import("persist.zig");
 const sweep = @import("sweep.zig");
 const Dir = std.Io.Dir;
@@ -71,10 +72,22 @@ pub fn readJournalToken(gpa: std.mem.Allocator, io: std.Io) ?journal.Token {
     return journal.decode(b);
 }
 
-/// The anchor, or null when it is missing, truncated, or in the future. Query
-/// callers fail closed to reading every walked file when this proof is absent.
-/// `pub` so the `status` verb can report the build instant without a query.
+/// The TRUSTWORTHY anchor — what every freshness proof may be dated against.
+/// Null when none was recorded (`anchorOnDisk`) or when the artifacts were
+/// built over a DIFFERENT tree (`frame.boundHere`): an anchor dates the files
+/// of the directory it was minted in, so a foreign one — younger than every
+/// file here — would "prove" the whole tree unchanged. Query callers fail
+/// closed to reading every walked file when this proof is absent.
 pub fn readAnchor(gpa: std.mem.Allocator, io: std.Io) ?assay.Anchor {
+    if (!frame.boundHere()) return null;
+    return anchorOnDisk(gpa, io);
+}
+
+/// The anchor as RECORDED, without asking whose tree it dates — null only when
+/// it is missing, truncated, or in the future. `gist status` reports through
+/// this so a foreign artifact reads as what it is (built then, over there)
+/// rather than as an index that never had an anchor at all.
+pub fn anchorOnDisk(gpa: std.mem.Allocator, io: std.Io) ?assay.Anchor {
     const b = Dir.cwd().readFileAlloc(io, anchor_path.get(), gpa, .limited(64)) catch return null;
     defer gpa.free(b);
     if (b.len < 8) return null;

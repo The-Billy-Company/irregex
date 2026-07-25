@@ -7,13 +7,133 @@
 //! NUL-joined string tables every artifact uses for its path/roots catalogs
 //! (`nulLen`/`joinNul` to write; `splitNulExact`/`parsePathTable`/
 //! `ownedNulTable` to read), the shared `onDisk` deletion gate every folded
-//! view checks at emit, and the shared `loadQuiet` fail-open artifact loader.
+//! view checks at emit, the shared `loadQuiet` fail-open artifact loader, and
+//! the `tree.root` binding that says which tree the whole directory describes.
 //! Consumers: the codex + shelf blobs (`../codex/`), the kinship atlas
 //! (`../atlas/`), and the trigram pair loader (`../trigrams/persist.zig`).
 //! Framing only — magic bytes, versions, and checksums stay with each format,
 //! where the corruption story lives.
 
 const std = @import("std");
+const corpus_mod = @import("../../tree/corpus.zig");
+
+const tree_root_alias = corpus_mod.ArtifactPath("tree.root");
+
+/// `<artifact dir>/tree.root` — the binding `bindingHolds` proves and the
+/// index build publishes (`surface/face/gist/lifecycle/index.zig`).
+pub fn treeRootFile() []const u8 {
+    return tree_root_alias.get();
+}
+
+/// Memoized `bindingHolds(treeRootFile())`: 0 unknown · 1 bound · 2 unbound.
+/// The binding cannot change under a running query, so a racing pair of
+/// readers just computes the same answer twice.
+var bound_state: std.atomic.Value(u8) = .init(0);
+
+/// Do the artifacts beside `treeRootFile()` describe the tree we are about to
+/// search? Every persisted accelerator names files by path RELATIVE to its
+/// build directory and proves a name still current by comparing that file's
+/// clocks against a build anchor. Both halves lie in SILENCE when the
+/// artifacts belong to a different tree: the relative paths land on unrelated
+/// files here, and the foreign anchor — minted after this tree's files were
+/// last touched — "proves" every one of them unchanged. A `GIST_DIR` left
+/// pointing at another checkout was enough to serve that tree's `README.md`
+/// bytes as this one's, and to hand the phantom walk a root listing naming
+/// directories that don't exist. So the binding is what makes an anchor
+/// trustworthy at all: the anchor reader (`../trigrams/fresh.zig`), the
+/// phantom snapshot (`../phantom/treemap.zig`), and the content shard
+/// (`../content/shard.zig`) each decline unless it holds, degrading to the
+/// live walk that never needed it.
+///
+/// An ABSENT binding reads as unbound, not as consent — a pre-binding artifact
+/// carries no proof of which tree it came from, and the next `gist index`
+/// republishes it.
+pub fn boundHere() bool {
+    switch (bound_state.load(.monotonic)) {
+        1 => return true,
+        2 => return false,
+        else => {},
+    }
+    const ok = bindingHolds(treeRootFile());
+    bound_state.store(if (ok) 1 else 2, .monotonic);
+    return ok;
+}
+
+/// `boundHere` against an explicit binding file — the injected seam the unit
+/// suite drives (production rides the memoized whole-directory answer).
+pub fn bindingHolds(path: []const u8) bool {
+    var recorded_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var live_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const recorded = readSmall(path, &recorded_buf) orelse return false;
+    const live = thisTree(&live_buf) orelse return false;
+    return std.mem.eql(u8, std.mem.trimEnd(u8, recorded, "\n"), live);
+}
+
+/// The absolute directory this process resolves relative paths against — the
+/// identity a build records and a query re-proves. Symlinks are resolved, so
+/// the two sides agree however the tree was entered; this is the same proof
+/// the amend path already requires of the daemon's watch prefix. Identity is
+/// the PATH rather than an inode because a path is what the artifacts encode
+/// relative to, and it is the one identity `gist status` can print back. A
+/// moved or renamed tree therefore reads as unbound — right answers, no
+/// acceleration — until the next `gist index`.
+pub fn thisTree(buf: *[std.fs.max_path_bytes]u8) ?[]const u8 {
+    return std.mem.span(std.c.realpath(".", buf) orelse return null);
+}
+
+/// The tree a published binding names, or null when there is none. Copied out
+/// (owned by `gpa`) so `gist status` can report a FOREIGN artifact by name
+/// instead of leaving a caller to wonder why nothing is ever warm.
+pub fn treeBinding(gpa: std.mem.Allocator) ?[]u8 {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const recorded = readSmall(treeRootFile(), &buf) orelse return null;
+    const trimmed = std.mem.trimEnd(u8, recorded, "\n");
+    if (trimmed.len == 0) return null;
+    return gpa.dupe(u8, trimmed) catch null;
+}
+
+/// Record `thisTree()` at `path` — the write side of `bindingHolds`, used by
+/// `gist index` for the artifact directory and by `gist serve` for its socket.
+/// Atomic (temp + rename) so a concurrent reader sees the old tree or the new
+/// one, never a torn path. Best effort: a binding that can't be written simply
+/// reads as unbound, which costs acceleration and never correctness.
+pub fn publishBinding(io: std.Io, path: []const u8) void {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tree = thisTree(&buf) orelse return;
+    var af = std.Io.Dir.cwd().createFileAtomic(io, path, .{ .make_path = true, .replace = true }) catch return;
+    defer af.deinit(io);
+    af.file.writeStreamingAll(io, tree) catch return;
+    af.replace(io) catch {};
+}
+
+/// `.<socket>.tree` in `buf` — where a resident daemon records the tree it went
+/// resident over, beside the socket it binds.
+///
+/// The socket lives in the artifact directory, so `GIST_DIR` pointing two trees
+/// at one directory aims them at one RENDEZVOUS: without this, a daemon warm
+/// over the other tree answers the dial and its resident bytes are served,
+/// silently, as if they were this tree's. The default artifact directory is
+/// CWD-relative and can't collide; an absolute one can.
+///
+/// DOTTED deliberately: a socket may be placed anywhere, including inside the
+/// corpus itself (embedders and the daemon suite do exactly that), and the
+/// daemon's own bookkeeping must never surface as a search result. Hidden is
+/// the walk's existing word for "infrastructure, not content". Null when the
+/// name won't fit, which the caller treats as unbound.
+pub fn socketBindingPath(buf: []u8, socket_path: []const u8) ?[]const u8 {
+    const base = std.fs.path.basenamePosix(socket_path);
+    const dir = socket_path[0 .. socket_path.len - base.len]; // keeps the separator, empty when bare
+    return std.fmt.bufPrint(buf, "{s}.{s}.tree", .{ dir, base }) catch null;
+}
+
+/// One tiny artifact file into `buf`, allocator-free — the binding is read on
+/// the query's critical path, before any arena exists. Null when unreadable.
+fn readSmall(path: []const u8, buf: []u8) ?[]const u8 {
+    const fd = std.posix.openat(std.posix.AT.FDCWD, path, .{ .ACCMODE = .RDONLY }, 0) catch return null;
+    defer _ = std.posix.system.close(fd);
+    const n = std.posix.read(fd, buf) catch return null;
+    return buf[0..n];
+}
 
 pub fn putInt(gpa: std.mem.Allocator, out: *std.ArrayList(u8), comptime T: type, v: T) !void {
     var buf: [@sizeOf(T)]u8 = undefined;
@@ -126,6 +246,64 @@ pub fn loadQuiet(
         std.debug.print("relate: corrupt " ++ what ++ " at {s} — answering live; `relate index` rebuilds\n", .{path});
         return null;
     };
+}
+
+test "the tree binding admits only the tree it names" {
+    const t = std.testing;
+    var threaded = std.Io.Threaded.init(t.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const Dir = std.Io.Dir;
+
+    const root = try std.fmt.allocPrint(t.allocator, "/tmp/gist_binding_{x}", .{@intFromPtr(&threaded)});
+    defer t.allocator.free(root);
+    Dir.cwd().deleteTree(io, root) catch {};
+    try Dir.cwd().createDirPath(io, root);
+    defer Dir.cwd().deleteTree(io, root) catch {};
+    const binding = try std.fmt.allocPrint(t.allocator, "{s}/tree.root", .{root});
+    defer t.allocator.free(binding);
+
+    // Absent: a pre-binding artifact directory carries no proof of origin, so
+    // it reads as foreign rather than as consent.
+    try t.expect(!bindingHolds(binding));
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const here = thisTree(&buf).?;
+    try Dir.cwd().writeFile(io, .{ .sub_path = binding, .data = here });
+    try t.expect(bindingHolds(binding));
+
+    // A trailing newline is the shape a human `echo` leaves behind; the tree
+    // is still this one.
+    const with_nl = try std.fmt.allocPrint(t.allocator, "{s}\n", .{here});
+    defer t.allocator.free(with_nl);
+    try Dir.cwd().writeFile(io, .{ .sub_path = binding, .data = with_nl });
+    try t.expect(bindingHolds(binding));
+
+    // The regression this exists for: artifacts built somewhere else. A
+    // sibling path is enough — the recorded tree simply isn't the live one.
+    try Dir.cwd().writeFile(io, .{ .sub_path = binding, .data = root });
+    try t.expect(!bindingHolds(binding));
+
+    // A PREFIX of the live tree must not pass either: `/Users/x/billy-old`
+    // and `/Users/x/billy` are different checkouts, and every artifact in one
+    // names files by a path that resolves inside the other.
+    try Dir.cwd().writeFile(io, .{ .sub_path = binding, .data = here[0 .. here.len - 1] });
+    try t.expect(!bindingHolds(binding));
+
+    // The daemon's rendezvous binding round-trips through the same proof, and
+    // stays HIDDEN: a socket may sit inside the corpus, and the daemon's own
+    // bookkeeping must not turn up as somebody's search result.
+    var sock_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const sock = try std.fmt.allocPrint(t.allocator, "{s}/gistd.sock", .{root});
+    defer t.allocator.free(sock);
+    const sock_binding = socketBindingPath(&sock_buf, sock).?;
+    try t.expectEqualStrings(".gistd.sock.tree", std.fs.path.basenamePosix(sock_binding));
+    try t.expect(!bindingHolds(sock_binding));
+    publishBinding(io, sock_binding);
+    try t.expect(bindingHolds(sock_binding));
+
+    // A bare socket name (no directory) still hides, and never loses the name.
+    try t.expectEqualStrings(".s.sock.tree", socketBindingPath(&sock_buf, "s.sock").?);
 }
 
 /// Split a NUL-terminated path blob into exactly `n` borrowed slices.

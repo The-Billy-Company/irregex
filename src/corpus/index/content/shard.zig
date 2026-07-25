@@ -121,9 +121,16 @@ pub const View = struct {
 
 /// mmap + validate `content.shard`, resolving its doc→path table, or null
 /// (missing, corrupt, foreign layout, big-endian reader, or a future-dated
-/// anchor — the same rejections `treemap.load`/`fresh.readAnchor` make). The
-/// caller loses only the shard read tier, never correctness.
+/// anchor — the same rejections `treemap.load`/`fresh.readAnchor` make).
+///
+/// A shard built over a DIFFERENT tree rejects first (`frame.boundHere`), and
+/// this is the sharpest reason the binding exists: `slice` answers by relative
+/// path plus a clock proof, so any path the two trees share — `README.md` — is
+/// served the OTHER tree's bytes, as a match reported at a real path in this
+/// one. Fabricated output, not a missed one. The caller loses only the shard
+/// read tier, never correctness.
 pub fn load(gpa: std.mem.Allocator, io: std.Io) ?View {
+    if (!frame.boundHere()) return null;
     return loadFrom(gpa, io, shardFile());
 }
 

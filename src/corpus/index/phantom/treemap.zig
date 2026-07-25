@@ -25,14 +25,17 @@
 //! The blob is self-anchored (its own build instant rides in the header), so
 //! it never depends on pairing with a particular trigram generation: a stale
 //! tree.map next to a fresh index just re-lists more directories live; a fresh
-//! tree.map next to a stale index changes nothing about elision. Fail-open
-//! everywhere — a missing/corrupt/foreign blob loads as null and the walk
-//! runs exactly as before.
+//! tree.map next to a stale index changes nothing about elision. It is NOT
+//! self-identifying, though: the anchor dates the build, it doesn't say which
+//! tree was built, so `load` proves that separately against the artifact
+//! directory's `tree.root` binding. Fail-open everywhere — a missing, corrupt,
+//! or foreign blob loads as null and the walk runs exactly as before.
 
 const std = @import("std");
 const corpus_mod = @import("../../tree/corpus.zig");
 const ignore = @import("../../tree/ignore.zig");
 const bulkstat = @import("../../tree/bulkstat.zig");
+const frame = @import("../frame/frame.zig");
 const persist = @import("../trigrams/persist.zig");
 const Dir = std.Io.Dir;
 
@@ -97,8 +100,17 @@ pub const View = struct {
 /// big-endian reader — the records are little-endian `extern struct`s viewed
 /// in place). A future-dated anchor also rejects (same rule as
 /// `fresh.readAnchor`): freshness proofs against it would trust everything.
+///
+/// A snapshot built over a DIFFERENT tree rejects first (`frame.boundHere`).
+/// Membership is recorded by relative path and proved current by comparing a
+/// directory's clocks against the snapshot's own anchor, and neither half
+/// survives the move: a foreign anchor is younger than every directory here,
+/// so the root's clock test passes and the walk is handed that tree's child
+/// list — `sub`, `t`, names this tree has never had. The observable was a
+/// walk error blaming a filter, and behind it zero files searched.
 /// The caller loses only the phantom walk, never correctness.
 pub fn load(io: std.Io) ?View {
+    if (!frame.boundHere()) return null;
     const map = persist.mmapFile(io, treemapFile()) catch return null;
     const view = decode(map) orelse {
         std.posix.munmap(map);
