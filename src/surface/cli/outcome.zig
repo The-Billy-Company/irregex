@@ -1,4 +1,4 @@
-//! Shared CLI vocabulary — the process exit code.
+//! Shared CLI vocabulary — how a face ends.
 //!
 //! ripgrep's contract is three codes (`contract/search_api.toml [exit_codes]`):
 //! `0` a match, `1` a clean miss, `2` an error — "never a silent empty result".
@@ -6,6 +6,16 @@
 //! fourteen exit sites re-derived it inline as a nested ternary. That is how the
 //! two rules below came to sit two hundred lines apart in the same engine, joined
 //! only by a comment.
+//!
+//! One module owns every way the process stops, so no face can invent a fourth:
+//! `die` (the caller's input was unusable), `oom` (allocation failed), `fatal`
+//! (an error escaped a face's `run`), and `Outcome.exit` (the search itself
+//! concluded). The first three are all exit `2` and differ only in what they
+//! say; keeping them adjacent is what stops one of them drifting onto a
+//! different code, which is exactly the silent-wrong-exit failure the contract
+//! forbids. `die`/`oom` used to live in the ripgrep flag parser
+//! (`exec/cold/argv/`), which meant a module needed the argv grammar in scope
+//! just to report an allocation failure.
 //!
 //! There are genuinely **two** precedences, and the difference is ripgrep's
 //! rather than ours:
@@ -25,6 +35,25 @@
 
 const std = @import("std");
 const assay = @import("../../assay/assay.zig");
+const paths = @import("../../corpus/scope/paths.zig");
+
+/// Fatal exit with ripgrep's error code (2) and a formatted reason — the way a
+/// face rejects input it cannot honor (an unknown flag, a bad number, a glob
+/// that will not compile). Routed through `assay.diag` so a `dark` sink stays
+/// silent and a `buffer` sink captures the message for the client (ADR-373
+/// law 6) — the same reason `fatal` below takes this path.
+pub fn die(comptime msg: []const u8, args: anytype) noreturn {
+    assay.diag(msg, args);
+    std.process.exit(2);
+}
+
+/// The one OOM exit — sugar for the ubiquitous `… catch oom()`, which is this
+/// CLI's contract for allocation failure (fail loud, exit 2). It *is*
+/// `paths.allocFailure`: the corpus layer and the CLI reported OOM with two
+/// separately-written functions that already had to emit one shared message
+/// (`paths.oom_notice`) to stay in step, so this is now the same function under
+/// the name call sites read best.
+pub const oom = paths.allocFailure;
 
 /// The last resort: an error escaped a face's `run`. Render it on the fault
 /// channel and exit `2`.
@@ -40,8 +69,7 @@ const assay = @import("../../assay/assay.zig");
 /// installed sink — the FFI's `dark` sink stays silent (a library must never
 /// write to the host's stderr) and a `buffer` sink captures it for a test.
 pub fn fatal(face: []const u8, e: anyerror) noreturn {
-    assay.diag("{s}: {t}\n", .{ face, e });
-    std.process.exit(2);
+    die("{s}: {t}\n", .{ face, e });
 }
 
 /// What a face is about to exit with: whether it matched, whether anything

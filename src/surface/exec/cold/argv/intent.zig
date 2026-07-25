@@ -1,0 +1,443 @@
+//! The request a gist run is about to serve — resolved, and under construction.
+//!
+//! `Opts` (plus the type/glob `Filter`) is the single precedence-sensitive state
+//! the whole cold path reads: ten modules take it, nobody parses argv twice, and
+//! the derived predicates (`term`, `outTerm`, `enumeration`, …) live on the
+//! record so a walker, a matcher, and a printer cannot disagree about what was
+//! asked for.
+//!
+//! `Builder` is the same request mid-flight: the multi-valued flags (`-e`, `-t`,
+//! `-g`, `--type-add`, `--pre-glob`, `--ignore-file`) arrive one token at a time
+//! and have nowhere to land until argv ends, so each gets a growable list here
+//! and `grammar.zig` freezes the lot into the slices above. The two halves are
+//! deliberately one module: every `Filter` set is exactly one `Builder` list,
+//! and if they sat in separate files, adding a scope flag to one and forgetting
+//! the other would be a silent dropped-filter bug rather than a compile error
+//! you trip over three lines away.
+
+const std = @import("std");
+const glob = @import("../../../../corpus/scope/glob.zig");
+const types = @import("../../../../corpus/scope/types.zig");
+const encoding = @import("../read/encoding.zig");
+const verdict = @import("verdict.zig");
+
+const die = verdict.die;
+const oom = verdict.oom;
+const lowerDup = verdict.lowerDup;
+const stripAnchor = verdict.stripAnchor;
+
+pub const Filename = enum { auto, always, never };
+
+/// `--color`: `auto` (the default) colorizes iff stdout is a real terminal and
+/// the environment doesn't opt out (`NO_COLOR`, `TERM=dumb`); `always`/`ansi`
+/// force it on regardless of destination or environment; `never` forces it
+/// off. Resolved against stdout + the environment in `color.zig`.
+pub const ColorChoice = enum { auto, always, never, ansi };
+
+/// `-E`/`--encoding`: the source encoding to transcode to UTF-8 before matching.
+/// `auto` (the default) is BOM sniffing (UTF-8 BOM stripped, UTF-16 BOM
+/// transcoded); `none` disables even that; the explicit labels force a transcode
+/// regardless of any BOM. The enum and its full WHATWG label resolver live in
+/// `encoding.zig` (which also owns the legacy-code-page decoders); `ingest.zig`
+/// keeps the `auto`/`none`/UTF fast paths and delegates the rest there. Re-exported
+/// here so the flag surface stays the one place argv semantics are read.
+pub const Encoding = encoding.Encoding;
+
+/// Resolve an `--encoding` label to the enum, or null for an unrecognized one
+/// (the caller fails loud). The full WHATWG label table (`encoding_rs::for_label`,
+/// which rg rides) plus gist's `auto`/`none` spellings — see `encoding.fromLabel`.
+pub const encodingFromLabel = encoding.fromLabel;
+
+fn globAppliesCI(a: std.mem.Allocator, pat: []const u8, path: []const u8) bool {
+    return glob.globApplies(lowerDup(a, pat), lowerDup(a, path));
+}
+
+/// Resolved type/glob scope (`-t/-T/-g/--glob/--iglob`), AND-combined; each set
+/// is a no-op when empty. Borrows caller-owned slices (a parse-time arena).
+pub const Filter = struct {
+    exts: []const []const u8 = &.{}, // -t (union of type globs, see scope/types.zig)
+    neg_exts: []const []const u8 = &.{}, // -T
+    includes: []const []const u8 = &.{}, // -g/--glob (case-sensitive)
+    iglobs: []const []const u8 = &.{}, // --iglob (case-insensitive)
+    excludes: []const []const u8 = &.{}, // -g '!…' / --glob '!…'
+    type_all: bool = false, // -t all
+    ntype_all: bool = false, // -T all
+
+    pub fn hasInclude(self: Filter) bool {
+        return self.exts.len > 0 or self.includes.len > 0 or self.iglobs.len > 0 or self.type_all;
+    }
+    pub fn admits(self: Filter, a: std.mem.Allocator, path: []const u8) bool {
+        for (self.excludes) |g| if (glob.globApplies(g, path)) return false;
+        for (self.neg_exts) |e| if (glob.globApplies(e, path)) return false;
+        if (self.ntype_all and types.isKnownType(path)) return false;
+        if (!self.hasInclude()) return true;
+        for (self.exts) |e| if (glob.globApplies(e, path)) return true;
+        if (self.type_all and types.isKnownType(path)) return true;
+        for (self.includes) |g| if (glob.globApplies(g, path)) return true;
+        for (self.iglobs) |g| if (globAppliesCI(a, g, path)) return true;
+        return false;
+    }
+    /// ripgrep `Override` whitelist: does an explicit `-g`/`--glob`/`--iglob` glob
+    /// force this path IN, OVERRIDING the hidden/ignore filters (`Match::Whitelist`
+    /// short-circuit)? ONLY `-g`/`--iglob` form the override — `-t`/`-T` type
+    /// filters do NOT bypass ignore, they layer on top of it. A `-g '!…'` exclude
+    /// vetoes; empty include sets ⇒ no override (normal hidden/ignore stands).
+    pub fn whitelists(self: Filter, a: std.mem.Allocator, path: []const u8) bool {
+        if (self.includes.len == 0 and self.iglobs.len == 0) return false;
+        for (self.excludes) |g| if (glob.globApplies(g, path)) return false;
+        for (self.includes) |g| if (glob.globApplies(g, path)) return true;
+        for (self.iglobs) |g| if (globAppliesCI(a, g, path)) return true;
+        return false;
+    }
+    /// Does any include whitelist UN-HIDE this path (bypass the dotfile skip)? A
+    /// `-g`/`--iglob` override does (via `whitelists`), and so does a `-t`/`-t all`
+    /// TYPE match — ripgrep un-hides a dotfile that a type filter selects, even
+    /// though a type filter never bypasses gitignore (that stays `whitelists`).
+    pub fn whitelistsHidden(self: Filter, a: std.mem.Allocator, path: []const u8) bool {
+        if (self.whitelists(a, path)) return true;
+        for (self.exts) |e| if (glob.globApplies(e, path)) return true;
+        return self.type_all and types.isKnownType(path);
+    }
+    /// True when any set constrains the file list (lets the caller skip the walk
+    /// filter entirely on an unscoped query).
+    pub fn active(self: Filter) bool {
+        return self.hasInclude() or self.neg_exts.len > 0 or self.excludes.len > 0 or self.ntype_all;
+    }
+};
+
+/// Which match backend realizes the pattern (`-P`/`--pcre2`, `--engine=<name>`).
+/// `default` is gist's linear-time RE2/Pike engine — no backtracking, no
+/// lookaround/backreferences, safe over an adversarial tree. `pcre2` is the
+/// opt-in vendored PCRE2 JIT backend (`kernel/match/regex/pcre2/backend.zig`) for the constructs
+/// the linear engine can't express. `auto` is ripgrep's hybrid: `run.zig` compiles
+/// the linear engine first (its speed + trigram AST) and only escalates to PCRE2
+/// for a pattern the linear engine declines (lookaround / backreferences). Both
+/// backends are live and trigram-prefiltered; the choice is resolved and executed
+/// in `run.zig`.
+pub const Engine = enum { default, pcre2, auto };
+
+/// `--sort`/`--sortr`/`--sort-files` ordering key. `none` (the default) leaves
+/// gist free to stream in the fastest work-stealing discovery order; any other
+/// key forces a globally ordered result. `path` sorts by the display path;
+/// `modified`/`accessed`/`created` sort by the file's mtime/atime/birth time.
+/// ripgrep abandons parallelism entirely when a sort is requested — gist keeps
+/// its parallel *reads* and only orders the final emit, so an ordered gist run
+/// still beats rg's single-threaded sort walk.
+pub const SortKey = enum { none, path, modified, accessed, created };
+
+pub const Opts = struct {
+    caseless: bool = false,
+    smart_case: bool = false,
+    // --unicode / --no-unicode (rg default ON). Governs the LINEAR engine's
+    // Unicode mode: case folding over full case-fold orbits, `\w`/`\d`/`\s`/`.`
+    // and `\p{…}` over codepoints, and Unicode `\b`/`\B`/`\<`/`\>`/`-w`. Cleared
+    // (`(?-u)`/`--no-unicode`), the engine is a pure byte/ASCII matcher. `(?u)`/
+    // `(?-u)` leading directives flip it per run. PCRE2 has its own `pcre_unicode`.
+    unicode: bool = true,
+    word: bool = false,
+    fixed: bool = false,
+    invert: bool = false,
+    only_matching: bool = false,
+    line_num: bool = false,
+    filename: Filename = .auto,
+    before: usize = 0,
+    after: usize = 0,
+    max_per_file: usize = 0,
+    // Was --max-count/-m given? Distinguishes an explicit `-m0` (ripgrep's
+    // "match nothing" — search short-circuits before emitting/counting a single
+    // hit, exit 1, no output, in EVERY mode) from the unset default where 0 is
+    // the "unlimited" sentinel the per-file emit guards read. Mirrors
+    // `max_cols_set` below.
+    max_per_file_set: bool = false,
+    count_only: bool = false,
+    count_matches: bool = false,
+    // --include-zero / --no-include-zero (rg default OFF, last-wins): in a count
+    // mode, emit a `path:0` line for every searched file with no match instead of
+    // suppressing it. The exit code is unchanged (0 matches ⇒ exit 1) — only the
+    // per-file zero line is added. Forces the serial engine and disables the
+    // whole-file literal gate + index elision so every searched file is counted.
+    include_zero: bool = false,
+    files_only: bool = false,
+    files_without: bool = false,
+    hidden: bool = false,
+    text: bool = false, // -a/--text: disable binary detection, search as text
+    // --binary / -uuu: search binary files in full (never quit at the first NUL).
+    // gist's flavor searches the whole file and prints every matching line — a
+    // superset that never drops a match — rather than rg's binary-summary
+    // suppression (documented divergence; both stop treating a NUL as a wall).
+    binary: bool = false,
+    // -z/--search-zip: transparently decompress by extension before searching
+    // (gzip/zlib/zstd/xz in-process, the rest via the standard external tool).
+    search_zip: bool = false,
+    // --pre <cmd> (+ --pre-glob): run a preprocessor over each selected file and
+    // search its stdout; overrides --search-zip. See `ingest.zig`.
+    pre: ?[]const u8 = null,
+    pre_globs: []const []const u8 = &.{}, // --pre-glob includes (empty ⇒ all)
+    pre_excludes: []const []const u8 = &.{}, // --pre-glob '!…'
+    encoding: Encoding = .auto, // -E/--encoding source encoding (transcode → UTF-8)
+    max_cols: usize = 0,
+    // Was --max-columns/-M given on the argv? Distinguishes an explicit `-M0`
+    // (opt out of any cap) from the unset default, so the TTY-only long-line
+    // guard (`run.zig`) applies only when the user expressed no preference.
+    max_cols_set: bool = false,
+    max_cols_preview: bool = false, // --max-columns-preview
+    passthru: bool = false, // --passthru (print every line)
+    field_match_sep: []const u8 = ":", // --field-match-separator
+    field_ctx_sep: []const u8 = "-", // --field-context-separator
+    path_sep: ?[]const u8 = null,
+    // presentation / locator flags
+    column: bool = false, // --column
+    byte_offset: bool = false, // -b/--byte-offset
+    vimgrep: bool = false, // --vimgrep
+    heading: bool = false, // --heading
+    trim: bool = false, // --trim
+    null_sep: bool = false, // --null/-0 (NUL after path)
+    line_regexp: bool = false, // -x/--line-regexp
+    quiet: bool = false, // -q/--quiet
+    stats: bool = false, // --stats
+    stop_on_nonmatch: bool = false, // --stop-on-nonmatch
+    crlf: bool = false, // --crlf
+    null_data: bool = false, // --null-data (NUL line terminator)
+    multiline: bool = false, // -U/--multiline
+    multiline_dotall: bool = false, // --multiline-dotall
+    // The regex `m` flag, resolved after leading `(?m)`/`(?-m)` directives. Base
+    // = `multiline` (rg's `-U` default is `m` ON); `(?-m)` clears it so `^`/`$`
+    // anchor only at the buffer ends while the whole-buffer search stays live.
+    // Threaded into the matcher compile (`line_anchors`); inert in per-line mode.
+    re_line_anchors: bool = false,
+    // Match-backend selection (-P/--pcre2, --engine, --auto-hybrid-regex).
+    // `default` = the linear RE2/Pike engine; `pcre2` routes to the vendored
+    // PCRE2 JIT backend; `auto` compiles linear and escalates to PCRE2 only for a
+    // pattern the linear engine declines (run.zig resolves + executes the choice).
+    engine: Engine = .default,
+    pcre_unicode: bool = true, // --pcre2-unicode / --no-pcre2-unicode (PCRE2 Unicode mode)
+    json: bool = false, // --json
+    replace: ?[]const u8 = null, // -r/--replace
+    // walk-scope flags
+    files_list: bool = false, // --files (list, no pattern)
+    type_list: bool = false, // --type-list (dump types, no pattern)
+    follow: bool = false, // -L/--follow symlinks
+    sorted: bool = false, // any explicit ordering active (forces the deterministic sorted walk)
+    sort_key: SortKey = .none, // --sort/--sortr key; .none = fastest discovery order
+    sort_reverse: bool = false, // --sortr: descending instead of ascending
+    threads: usize = 0, // -j/--threads: 0 = gist picks its topology; N caps the worker pool
+    one_file_system: bool = false, // --one-file-system: never descend into another device
+    max_depth: usize = 0, // --max-depth/--maxdepth (0 = unlimited)
+    max_filesize: usize = 0, // --max-filesize (bytes, 0 = unlimited)
+    // ignore-rule flags (.gitignore/.ignore/.rgignore + --ignore-file); see rgignore.zig
+    no_ignore: bool = false, // --no-ignore / -u (disable every ignore source)
+    no_ignore_vcs: bool = false, // --no-ignore-vcs (.gitignore + exclude off)
+    no_ignore_dot: bool = false, // --no-ignore-dot (.ignore/.rgignore off)
+    no_ignore_parent: bool = false, // --no-ignore-parent (ancestors above CWD off)
+    no_ignore_exclude: bool = false, // --no-ignore-exclude (.git/info/exclude off)
+    no_ignore_global: bool = false, // --no-ignore-global (git core.excludesFile off)
+    no_ignore_files: bool = false, // --no-ignore-files (--ignore-file sources off)
+    no_require_git: bool = false, // --no-require-git (honor .gitignore w/o a repo)
+    ignore_case_insensitive: bool = false, // --ignore-file-case-insensitive
+    ignore_files: []const []const u8 = &.{}, // --ignore-file <path> (ordered)
+    // ctx_sep: null = suppressed line (--no-context-separator); else the string.
+    ctx_sep: ?[]const u8 = "--",
+    color: ColorChoice = .auto, // --color auto|always|never|ansi
+    // --no-index: never consult the persisted trigram index — always live-read
+    // every walked file. Default (false) auto-detects an index and uses it purely
+    // to SKIP reading files it proves can't match (unchanged since the build and
+    // not a trigram candidate); the walk + output stay byte-identical either way.
+    // `--index` is the explicit opt-in spelling of that default (undo a prior
+    // `--no-index`); neither ever changes results, only how many files are opened.
+    no_index: bool = false,
+    // --rank[=N]: gist-native ranked view (no rg equivalent) — definition-first
+    // RRF over indexed candidates when available, else the live walk. `rank_k`
+    // = 0 means the default 20; --no-index explicitly selects live ranking.
+    rank: bool = false,
+    rank_k: usize = 0,
+    // --uncap: lift the soft output budget (the ~25k-token agent-context guard,
+    // corpus.zig) for THIS query — the agent deliberately wants the full result.
+    // The hard OOM ceiling still applies. `GIST_UNCAP=1` is the env equivalent
+    // (what the bench harness sets to keep rg byte-parity exact).
+    uncap: bool = false,
+    // --in-comments / --in-code: gist-native match SCOPING built on the shared
+    // comment/code span lexer (kernel/compose/lexspan.zig). `--in-comments`
+    // keeps only matches whose span begins inside a `//`/`#`/`/* */` comment
+    // (doc mentions, TODOs, stale-invariant surface); `--in-code` keeps only
+    // matches OUTSIDE any comment. Mutually exclusive. They select an early
+    // native view (like `--rank`) rather than threading through the certified
+    // rg-parity per-line engine, so ripgrep parity is untouched.
+    in_comments: bool = false,
+    in_code: bool = false,
+    filter: Filter = .{},
+    pub fn wantsContext(self: Opts) bool {
+        return self.before > 0 or self.after > 0;
+    }
+    /// The line terminator byte: NUL under `--null-data`, else newline. Governs
+    /// both how the input is split into lines and how each emitted line ends.
+    pub fn term(self: Opts) u8 {
+        return if (self.null_data) 0 else '\n';
+    }
+    /// The terminator the PRINTER appends to every line it emits (match/context
+    /// bodies, `-l` paths, `-c` counts, headings, `--` separators). Under
+    /// `--crlf` ripgrep's printer writes `\r\n` — its own output adopts the
+    /// CRLF convention, not just the input split — while the INPUT terminator
+    /// (`term()`, above) stays `\n` with the `\r` folded into the match view.
+    /// A line body's own trailing `\r` is stripped before this is appended
+    /// (`Emitter.emitBody`), mirroring rg's `trim_line_terminator`.
+    pub fn outTerm(self: Opts) []const u8 {
+        return if (self.null_data) "\x00" else if (self.crlf) "\r\n" else "\n";
+    }
+    /// The single-byte reconstruction terminator for a body line that WAS
+    /// terminated in the file: the emitter's line slices keep any `\r` but
+    /// drop the split byte, so appending this re-materializes the original
+    /// bytes exactly (dos `…\r`+`\n`, unix `…`+`\n`) — rg writes such lines
+    /// verbatim and only falls back to `outTerm()` when one is missing.
+    pub fn termStr(self: Opts) []const u8 {
+        return if (self.null_data) "\x00" else "\n";
+    }
+    /// True for the two "no pattern needed" modes.
+    pub fn noPattern(self: Opts) bool {
+        return self.files_list or self.type_list;
+    }
+    /// The compact per-file ENUMERATION modes: one short line per file — a path
+    /// (`-l`, `--files-without-match`, `--files`) or a count (`-c`,
+    /// `--count-matches`). A partial answer here is misleading, and on the
+    /// unordered parallel engine a soft-cap cut yields a nondeterministic SUBSET
+    /// run-to-run; these are exempted from the soft context cap
+    /// (`corpus.exemptSoftCap`) so the SET is complete and reproducible. The
+    /// full-content modes (default, `-o`, context, `--json`) keep the cap — their
+    /// volume is the reason it exists, and their truncation is already ordered.
+    pub fn enumeration(self: Opts) bool {
+        return self.files_only or self.files_without or self.count_only or self.count_matches or self.files_list;
+    }
+};
+
+pub const Parsed = struct { patterns: [][]const u8, opts: Opts, roots: [][]const u8, pattern_files: [][]const u8 = &.{} };
+
+/// A `--type-add name:...` definition, resolved to the globs `-t name` scopes by.
+const CustomType = struct { name: []const u8, globs: []const []const u8 };
+
+/// Mutable parse state: resolves flags into Opts, collects type/glob sets, and
+/// records -A/-B/-C values so -A/-B can take precedence over -C regardless of
+/// argv order (ripgrep's rule), plus the `-u` repetition level.
+pub const Builder = struct {
+    a: std.mem.Allocator,
+    o: Opts = .{},
+    pat: ?[]const u8 = null,
+    roots: std.ArrayList([]const u8) = .empty,
+    exts: std.ArrayList([]const u8) = .empty,
+    neg_exts: std.ArrayList([]const u8) = .empty,
+    includes: std.ArrayList([]const u8) = .empty,
+    iglobs: std.ArrayList([]const u8) = .empty,
+    excludes: std.ArrayList([]const u8) = .empty,
+    pat_files: std.ArrayList([]const u8) = .empty, // -f/--file
+    pre_globs: std.ArrayList([]const u8) = .empty, // --pre-glob includes
+    pre_excludes: std.ArrayList([]const u8) = .empty, // --pre-glob '!…'
+    extra_pats: std.ArrayList([]const u8) = .empty, // 2nd+ -e/--regexp
+    ignore_files: std.ArrayList([]const u8) = .empty, // --ignore-file
+    custom_types: std.ArrayList(CustomType) = .empty, // --type-add
+    type_all: bool = false,
+    ntype_all: bool = false,
+    glob_ci: bool = false, // --glob-case-insensitive
+    a_val: ?usize = null,
+    b_val: ?usize = null,
+    c_val: ?usize = null,
+    urestrict: u8 = 0,
+
+    /// Accumulate a pattern from `-e/--regexp` (or a bare pattern arg). The first
+    /// becomes `pat`; each subsequent one is OR-combined at finalize (ripgrep ORs
+    /// multiple `-e`). A literal (`-F`) alternation is handled downstream.
+    pub fn addPat(self: *Builder, p: []const u8) void {
+        if (self.pat == null) self.pat = p else self.extra_pats.append(self.a, p) catch oom();
+    }
+    pub fn addType(self: *Builder, name: []const u8, negate: bool) void {
+        if (std.mem.eql(u8, name, "all")) {
+            (if (negate) &self.ntype_all else &self.type_all).* = true;
+            // A user-defined `--type-add` type resolves to include/exclude globs; a
+            // built-in resolves to its own glob set (scope/types.zig).
+        } else if (self.customGlobs(name)) |globs| {
+            (if (negate) &self.excludes else &self.includes).appendSlice(self.a, globs) catch oom();
+        } else {
+            const e = types.extsForType(name) orelse die("unrecognized type: {s}\n", .{name});
+            (if (negate) &self.neg_exts else &self.exts).appendSlice(self.a, e) catch oom();
+        }
+    }
+    /// Register a `--type-add` spec: `name:glob` appends a glob to `name`; the
+    /// `name:include:t1,t2` form aliases `name` to the union of other types.
+    pub fn addTypeDef(self: *Builder, spec: []const u8) void {
+        const colon = std.mem.indexOfScalar(u8, spec, ':') orelse die("invalid --type-add: {s}\n", .{spec});
+        const name = spec[0..colon];
+        const rest = spec[colon + 1 ..];
+        var globs: std.ArrayList([]const u8) = .empty;
+        if (std.mem.startsWith(u8, rest, "include:")) {
+            var it = std.mem.splitScalar(u8, rest["include:".len..], ',');
+            while (it.next()) |ty| {
+                if (self.customGlobs(ty)) |g| {
+                    globs.appendSlice(self.a, g) catch oom();
+                } else if (types.extsForType(ty)) |exts| {
+                    // A built-in type's rows are already valid globs (scope/types.zig),
+                    // so they slot straight into the `include:` union with no conversion.
+                    globs.appendSlice(self.a, exts) catch oom();
+                } else die("unrecognized type: {s}\n", .{ty});
+            }
+        } else {
+            globs.append(self.a, rest) catch oom();
+        }
+        self.custom_types.append(self.a, .{ .name = name, .globs = globs.toOwnedSlice(self.a) catch oom() }) catch oom();
+    }
+    /// The accumulated globs for a user-defined type, or null if `name` is not one.
+    fn customGlobs(self: *Builder, name: []const u8) ?[]const []const u8 {
+        var out: std.ArrayList([]const u8) = .empty;
+        var found = false;
+        for (self.custom_types.items) |ct| if (std.mem.eql(u8, ct.name, name)) {
+            out.appendSlice(self.a, ct.globs) catch oom();
+            found = true;
+        };
+        return if (found) out.items else null;
+    }
+    pub fn addGlob(self: *Builder, g: []const u8, insensitive: bool) void {
+        // `{a,b,c}` alternation (ripgrep/git glob): expand into the cartesian
+        // product of every brace group up front, then register each variant.
+        var variants: std.ArrayList([]const u8) = .empty;
+        verdict.braceExpand(self.a, g, &variants);
+        for (variants.items) |v| self.addGlobOne(v, insensitive);
+    }
+    /// `--pre-glob <g>`: which files `--pre` is fed. A leading `!` marks an
+    /// exclude (vetoes), else an include; the leading `/` anchor is stripped the
+    /// same way `-g` globs are, so both match against the full display path.
+    pub fn addPreGlob(self: *Builder, g: []const u8) void {
+        if (g.len > 0 and g[0] == '!') {
+            self.pre_excludes.append(self.a, stripAnchor(g[1..])) catch oom();
+        } else self.pre_globs.append(self.a, stripAnchor(g)) catch oom();
+    }
+    fn addGlobOne(self: *Builder, g: []const u8, insensitive: bool) void {
+        const neg = g.len > 0 and g[0] == '!';
+        const core = stripAnchor(if (neg) g[1..] else g);
+        // An explicit `-g`/`--glob` compiles strictly (rg's `Glob::new`): an
+        // unclosed `[` character class is an error, not the literal `[` a lenient
+        // gitignore line would treat it as. Fail loud (exit 2) here, at the seam.
+        if (glob.unterminatedClass(core))
+            die("gist: error parsing glob '{s}': unclosed character class; missing ']'\n", .{g});
+        const list = if (neg) &self.excludes else if (insensitive) &self.iglobs else &self.includes;
+        list.append(self.a, core) catch oom();
+    }
+
+    /// Freeze the accumulated sets onto `Opts` and hand back the finished
+    /// request. Every growable list above lands in exactly one field here, which
+    /// is why the two live in one module: a new scope flag that forgets this step
+    /// would parse cleanly and then filter nothing.
+    pub fn seal(self: *Builder, pats: [][]const u8) Parsed {
+        // --glob-case-insensitive: fold case-sensitive includes into the iglob set.
+        if (self.glob_ci) {
+            self.iglobs.appendSlice(self.a, self.includes.items) catch oom();
+            self.includes.clearRetainingCapacity();
+        }
+        inline for (.{ "exts", "neg_exts", "includes", "iglobs", "excludes" }) |f|
+            @field(self.o.filter, f) = @field(self, f).toOwnedSlice(self.a) catch oom();
+        self.o.filter.type_all, self.o.filter.ntype_all = .{ self.type_all, self.ntype_all };
+        inline for (.{ "ignore_files", "pre_globs", "pre_excludes" }) |f|
+            @field(self.o, f) = @field(self, f).toOwnedSlice(self.a) catch oom();
+        return .{
+            .patterns = pats,
+            .opts = self.o,
+            .roots = self.roots.toOwnedSlice(self.a) catch oom(),
+            .pattern_files = self.pat_files.toOwnedSlice(self.a) catch oom(),
+        };
+    }
+};
