@@ -30,8 +30,15 @@
 //! and owns no transport. Where a diagnostic goes, whether it renders as prose
 //! or as one NDJSON record, and which `GIST_*` knob gates it are `assay`'s
 //! decisions and stay there. `Detail` is an inert value, never a sink.
+//!
+//! `spare` (law 8) is the single outbound call, and it does not weaken that
+//! line: deciding a failure is spared rather than propagated is disposition,
+//! and it hands assay a lens name and a format string — assay still decides
+//! whether that reaches a stream, and in which shape.
 
 const std = @import("std");
+const builtin = @import("builtin");
+const assay = @import("assay/assay.zig");
 
 // ── law 2: one flat taxonomy, five domains, declared once ──
 //
@@ -182,11 +189,24 @@ pub fn last() ?Detail {
     return null;
 }
 
+/// Drop this thread's fault without keeping anything to restore — the open half
+/// of `scope`, for a caller that never wants the old value back.
+///
+/// A C entry point is exactly that caller: it opens a window so a host asking
+/// after a *successful* call is never handed a stale fault, and it has no
+/// "afterwards" in which to restore one. `scope()` would hand it a `Scope`
+/// carrying a whole `Slot` by value — a 512-byte path buffer — to immediately
+/// discard, which is a real cost on a per-record entry like `cursorNext`. This
+/// writes the optional's tag and nothing else.
+pub fn clear() void {
+    slot = null;
+}
+
 /// A scoped isolation of the slot, restored by `end()` — pair it with `defer`,
-/// exactly like `assay.scope`. Two callers need it: a C entry point, so a host
-/// asking after a *successful* call is never handed a stale fault from an
-/// earlier one, and a best-effort cleanup path, whose own faults must not
-/// displace the fault its caller is about to be told about.
+/// exactly like `assay.scope`. The caller that needs the restore is a
+/// best-effort cleanup path, whose own faults must not displace the fault its
+/// caller is about to be told about. A caller that wants no restore wants
+/// `clear`.
 pub const Scope = struct {
     prev: ?Slot,
 
@@ -199,6 +219,41 @@ pub fn scope() Scope {
     const prev = slot;
     slot = null;
     return .{ .prev = prev };
+}
+
+// ── law 8: a discarded failure is a named operation, not an empty block ──
+//
+// About one call in twenty here is best-effort: unlinking the temp file an
+// atomic rename already superseded, an optional sidecar, a socket nicety, a
+// journal note the next run would rebuild anyway. Those have nowhere to return
+// to — the answer is already computed, or already failing for another reason —
+// and discarding the failure is the correct local decision.
+//
+// `catch {}` is also the exact shape of *forgetting*, and no reviewer can tell
+// the two apart. That ambiguity is the whole cost: it is why 70 empty blocks
+// accumulated behind a gate that believed the kernel was clean. So the empty
+// block is banned outright and the deliberate ones come through here, where
+// intent is stated and the failure is observable rather than gone.
+
+/// Discard a failure that cannot change the answer — on the record.
+///
+/// `what` names the intent at the site, which is what an empty block cannot do.
+/// The failure then lands on the `fault` lens instead of vanishing, so
+/// `GIST_TRACE=fault` shows every spared failure in a run while the default run
+/// stays silent. Cost when the lens is dark is one relaxed atomic load, and only
+/// on the failing branch.
+///
+/// Takes the *result*, so a call site reads as one expression:
+///
+///     fault.spare("unlink superseded temp", Dir.cwd().deleteFile(io, tmp));
+///
+/// Which means the spared call has already run by the time we are here — if it
+/// installed a `Detail`, it has already displaced the caller's. That is only
+/// possible for a Billy function (std never installs), and the fix is the
+/// explicit `scope()` the caller already has; `spare` does not pretend to do it,
+/// because a scope opened after the fact would restore the wrong thing.
+pub fn spare(what: []const u8, result: anytype) void {
+    if (result) |_| {} else |e| assay.trace(.fault, "spared {s}: {t}\n", .{ what, e });
 }
 
 // ── what law 2 buys: an exhaustive renderer ──
@@ -216,12 +271,22 @@ pub fn scope() Scope {
 /// these strings are contract, not prose.
 pub fn pathNote(e: Corpus) []const u8 {
     return switch (e) {
+        // ENOENT/EACCES/ENOTDIR carry the same number on every target we build.
         error.FileNotFound => "No such file or directory (os error 2)",
         error.AccessDenied => "Permission denied (os error 13)",
         error.NotDir => "Not a directory (os error 20)",
-        error.SymLinkLoop => "Too many levels of symbolic links (os error 62)",
-        error.NameTooLong => "File name too long (os error 63)",
+        // These two do NOT: ELOOP and ENAMETOOLONG are 62/63 on Darwin but
+        // 40/36 on Linux. ripgrep prints whatever number the OS gave it, so a
+        // literal here is right on the machine it was written on and wrong on
+        // the other — silently, and only in the differential harness's output.
+        error.SymLinkLoop => errnoNote("Too many levels of symbolic links", .LOOP),
+        error.NameTooLong => errnoNote("File name too long", .NAMETOOLONG),
     };
+}
+
+/// `<phrase> (os error <n>)` with `n` read from the TARGET's errno table.
+fn errnoNote(comptime phrase: []const u8, comptime e: std.posix.E) []const u8 {
+    return std.fmt.comptimePrint("{s} (os error {d})", .{ phrase, @intFromEnum(e) });
 }
 
 test "the five domains merge without collapsing a member" {
@@ -236,8 +301,16 @@ test "pathNote answers each corpus member with ripgrep's own phrasing" {
     try std.testing.expectEqualStrings("No such file or directory (os error 2)", pathNote(error.FileNotFound));
     try std.testing.expectEqualStrings("Permission denied (os error 13)", pathNote(error.AccessDenied));
     try std.testing.expectEqualStrings("Not a directory (os error 20)", pathNote(error.NotDir));
-    try std.testing.expectEqualStrings("Too many levels of symbolic links (os error 62)", pathNote(error.SymLinkLoop));
-    try std.testing.expectEqualStrings("File name too long (os error 63)", pathNote(error.NameTooLong));
+    // The two platform-varying rows, asserted against the numbers this target's
+    // libc actually reports rather than against `pathNote`'s own lookup — the
+    // point is to catch a literal that only holds on the author's machine, and a
+    // test that re-derived it the same way could not.
+    const loop, const long = switch (builtin.os.tag) {
+        .linux => .{ "os error 40", "os error 36" },
+        else => .{ "os error 62", "os error 63" },
+    };
+    try std.testing.expectEqualStrings("Too many levels of symbolic links (" ++ loop ++ ")", pathNote(error.SymLinkLoop));
+    try std.testing.expectEqualStrings("File name too long (" ++ long ++ ")", pathNote(error.NameTooLong));
 }
 
 test "Answer keeps a declinature in the success position" {
@@ -289,6 +362,35 @@ test "a nested scope cannot displace the caller's last fault" {
         install(.{ .code = error.ConnClosed });
     }
     try std.testing.expectEqual(@as(Fault, error.AccessDenied), last().?.code);
+}
+
+test "a spared failure is silent by default and visible under its lens" {
+    // The whole difference from `catch {}`: the failure still exists. Capture
+    // assay's stream so the assertion is on the bytes a user would see.
+    const gpa = std.testing.allocator;
+    var cap: std.ArrayList(u8) = .empty;
+    defer cap.deinit(gpa);
+
+    const sink = assay.scope(.{ .buffer = .{ .gpa = gpa, .list = &cap } });
+    defer sink.end();
+    defer assay.install(.{}); // this test writes process-wide policy; put it back
+
+    const failed: error{Corrupt}!void = error.Corrupt;
+    const fine: error{Corrupt}!void = {};
+
+    assay.install(.{ .lenses = 0 }); // default run: no lens lit
+    spare("unlink superseded temp", failed);
+    try std.testing.expectEqualStrings("", cap.items);
+
+    assay.install(.{ .lenses = @as(u32, 1) << @intFromEnum(assay.Lens.fault) });
+    spare("unlink superseded temp", failed);
+    try std.testing.expect(std.mem.indexOf(u8, cap.items, "unlink superseded temp") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cap.items, "Corrupt") != null);
+
+    // A success spares nothing — the lens stays quiet on the happy path.
+    cap.clearRetainingCapacity();
+    spare("unlink superseded temp", fine);
+    try std.testing.expectEqualStrings("", cap.items);
 }
 
 test "an oversized path truncates rather than failing the diagnostic" {

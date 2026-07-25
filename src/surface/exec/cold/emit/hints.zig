@@ -19,6 +19,8 @@
 //! parity harnesses; stdout is untouched either way.
 const std = @import("std");
 const args = @import("../argv/args.zig");
+const assay = @import("../../../../assay/assay.zig");
+const fault = @import("../../../../fault.zig");
 const corpus_mod = @import("../../../../corpus/tree/corpus.zig");
 const guide = @import("../../../cli/guide.zig");
 
@@ -154,15 +156,24 @@ fn line(a: std.mem.Allocator, out: *std.ArrayList(u8), left: *usize, voice: Voic
     try guide.line(a, out, left, "gist", voice, text);
 }
 
-/// The engines' one-call exit hook: render to stderr, honoring `GIST_HINTS`.
-/// Never fails — a hint is a courtesy, not a result.
+/// The engines' one-call exit hook: render the hint, honoring `GIST_HINTS`.
+/// Never fails — a hint is a courtesy, not a result — and a hint that only
+/// half-rendered is not emitted at all, so a truncated courtesy never reaches a
+/// terminal.
 pub fn noMatches(s: Shape, files_scanned: ?usize) void {
+    fault.spare("render the no-match hint", emitNoMatches(s, files_scanned));
+}
+
+fn emitNoMatches(s: Shape, files_scanned: ?usize) !void {
     if (!corpus_mod.hintsEnabled()) return;
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     var out: std.ArrayList(u8) = .empty;
-    render(arena.allocator(), &out, s, files_scanned) catch return;
-    std.debug.print("{s}", .{out.items});
+    try render(arena.allocator(), &out, s, files_scanned);
+    // Through assay, not `std.debug.print` (law 6): the FFI scopes its sink
+    // `.dark`, and a courtesy hint must not be the one thing that still writes
+    // to an embedding host's stderr.
+    assay.diag("{s}", .{out.items});
 }
 
 // ── tests ────────────────────────────────────────────────────────────────
