@@ -166,13 +166,20 @@ const Collector = struct {
 /// Route one `-g <glob>` token: a leading `!` is an exclude, else an include.
 /// Declines (→ cold) the forms the warm `PathFilter` does not model identically
 /// to the cold engine — an empty glob, an unterminated `[…]` class (rg errors on
-/// it; cold owns that exit 2), and a leading-`/` anchored glob (cold strips the
-/// anchor against the search root, a rule the flat prune does not reproduce).
+/// it; cold owns that exit 2), a leading-`/` anchored glob (cold strips the
+/// anchor against the search root, a rule the flat prune does not reproduce),
+/// and a `{a,b}` alternation, which cold expands into one glob per branch
+/// (`argv.braceExpand`) before matching. The flat filter has no expansion step,
+/// so a braced glob pushed raw here matches nothing rather than the branches the
+/// user asked for — a wrong answer, not a slow one. Any `{` declines: an
+/// unbalanced one is a literal to cold, and conserving warm eligibility for a
+/// rare glob shape is never worth diverging from cold's result.
 fn addGlob(inc: *Collector, exc: *Collector, raw: []const u8) ClassifyError!void {
     if (raw.len == 0) return ClassifyError.Unsupported;
     const neg = raw[0] == '!';
     const g = if (neg) raw[1..] else raw;
     if (g.len == 0 or g[0] == '/' or scope.unterminatedClass(g)) return ClassifyError.Unsupported;
+    if (std.mem.indexOfScalar(u8, g, '{') != null) return ClassifyError.Unsupported;
     try (if (neg) exc else inc).push(g);
 }
 

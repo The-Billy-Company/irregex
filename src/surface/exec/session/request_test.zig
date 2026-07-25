@@ -237,6 +237,18 @@ test "classify: -g forms outside the warm PathFilter model decline to cold" {
     try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "needle", "-g" }));
     // `--iglob` (case-insensitive) is not the includes model → cold.
     try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "--iglob", "*.go", "needle" }));
+    // A `{a,b}` alternation: cold expands it into one glob per branch, the flat
+    // filter cannot, and pushing it raw matched NOTHING instead of both branches
+    // — the wrong answer a warm path must never produce. Every carrier form of
+    // the glob (spaced, glued, `--glob=`, `!`-exclude) declines, and so does an
+    // unbalanced `{`, which cold treats as a literal.
+    for ([_][]const []const u8{
+        &.{ "-l", "-g", "*{intent,grammar}.zig", "needle" },
+        &.{ "-l", "-g*{a,b}.go", "needle" },
+        &.{ "--glob={src,lib}/**", "needle" },
+        &.{ "-l", "-g", "!{vendor,third_party}/**", "needle" },
+        &.{ "-l", "-g", "*{unbalanced.zig", "needle" },
+    }) |argv| try std.testing.expectError(request.ClassifyError.Unsupported, ok(argv));
 }
 
 test "classify: -t / --type resolves to its extension globs" {
