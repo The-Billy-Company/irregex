@@ -206,7 +206,7 @@ pub const session = struct {
     pub const corpus = @import("surface/exec/session/warm/corpus.zig");
     pub const render = @import("surface/exec/session/facet/render.zig");
     pub const request = @import("surface/exec/session/answer/request.zig");
-    pub const protocol = @import("surface/exec/session/conduit/protocol.zig");
+    pub const protocol = @import("surface/exec/session/conduit/protocol/protocol.zig");
     pub const watch = @import("surface/exec/session/watch/watch.zig");
 };
 
@@ -561,13 +561,15 @@ test {
     _ = @import("surface/exec/session/warm/corpus.zig"); // faithful corpus ingest: BOM/UTF-16 decode, whole-body NUL, no cap
     _ = @import("surface/exec/session/facet/render.zig"); // warm lines renderer: cold-Emitter byte parity
     _ = @import("surface/exec/session/warm/resident_test.zig"); // resident session: parity vs cold, overlay, RYW, deletion
-    _ = @import("surface/exec/session/conduit/protocol_test.zig"); // UDS frame codec round-trip + adversarial
+    _ = @import("surface/exec/session/conduit/protocol/protocol_test.zig"); // UDS frame codec round-trip + adversarial
     _ = @import("surface/exec/session/conduit/shm.zig"); // portable anonymous shm buffer: fd round-trip, zero-len unsupported
     _ = @import("surface/exec/session/watch/watch_test.zig"); // freshness watcher: dirty/clean seqlock barrier
     _ = @import("surface/exec/session/watch/kqueue_test.zig"); // macOS kqueue barrier: real mutations → scoped reconcile (ADR-372)
     _ = @import("surface/exec/session/freshness/freshness_test.zig"); // barrier hardening: differential vs on-disk oracle, concurrency, overflow/bound
     _ = @import("surface/exec/session/freshness/dirty.zig"); // exact dirty-path log: dedupe, bound→doubt, exact promise
     _ = @import("surface/exec/session/freshness/delta.zig"); // O(changed) resolver: path classes, fold aliasing helpers
+    _ = @import("surface/exec/session/freshness/annals.zig"); // delivery ledger: which changed (since) + whether any did (epoch)
+    _ = @import("surface/exec/session/answer/keep.zig"); // answer keep: epoch match, exit-code fidelity, LRU + oversize refusal
     _ = @import("surface/exec/session/warm/scoped_test.zig"); // scoped reconcile adversarial: vs full-walk ground truth
     _ = @import("corpus/tree/haystack_test.zig"); // shared walk: isSkipDir + joinPath hot-path decisions
     _ = @import("corpus/tree/bulkstat_test.zig"); // getattrlistbulk ≡ stat-walk differential

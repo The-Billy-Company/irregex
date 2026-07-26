@@ -554,7 +554,7 @@ wire = { members = [
 #   hazard because the resident query kernels RETURN errors instead of calling
 #   die(). The stack is landed and verified end to end: the eligibility
 #   classifier (src/surface/exec/session/answer/request.zig), the wire codec
-#   (…/session/conduit/protocol.zig), the warm error-returning engine
+#   (…/session/conduit/protocol/protocol.zig), the warm error-returning engine
 #   (…/session/warm/resident.zig), the fail-closed freshness watcher
 #   (…/session/watch/watch.zig), the daemon accept loop
 #   (src/surface/face/gist/daemon/serve/serve.zig), and the fail-open connecting
@@ -597,7 +597,7 @@ ffi = { status = "operational-accelerator", detail = "one coherent open/search/c
 # and its clients speak, so there is no per-language drift risk, but it is
 # pinned here as the authoritative shape.
 #
-# The wire · src/surface/exec/session/conduit/protocol.zig
+# The wire · src/surface/exec/session/conduit/protocol/protocol.zig
 #   A length-prefixed frame protocol whose query-flags byte is now fully
 #   assigned: fixed 0, ignore_case 1, line_num 2, word 3, invert 4, smart_case
 #   5, quiet 6, max_count 7 (bit 7 also writes a u64 LE cap immediately after
