@@ -104,6 +104,15 @@ tree's own roots — `_compete.sh` resolves them once, mirroring
   gitignore, so they get the heavy dir-exclude set (`$XDIRS`) — they still scan a
   slightly _larger_ file set (gitignored individual files `rg` skips), which only
   makes them do **more** work, so gist's win over them is conservative.
+- **gist / rg** additionally run under `--no-ignore-vcs` plus the root
+  `.gitignore`, so a multi-root race can't hit ripgrep's nondeterministic
+  parent-ignore re-anchoring. That also discards every _nested_ `.gitignore`,
+  which is why `_compete.sh` re-applies the build-output exclusions as globs
+  (`$SCOPE`): without them these two alone walk build artifacts the root ignore
+  never names — Elixir `_build`/`deps`/`cover`, Electron `out/` — that
+  `gist index` prunes and csearch therefore never indexes. Not the whole of
+  `$XDIRS`, because `vendor` holds tracked Billy source; mix output is anchored
+  per `mix.exs` root for the same reason rule-of-five anchors it.
 - **csearch** indexes gist's **exact corpus file list** (the persisted
   `paths.list` doc→path table) → byte-for-byte the same files → result sets ≈
   `rg`'s. It is the faithful indexed twin (the small delta is the few files
