@@ -19,6 +19,7 @@ const compile_mod = @import("../../compile/compile.zig");
 const prefilter = @import("../../analysis/prefilter.zig");
 const dfa_mod = @import("../dfa/dfa.zig");
 const powerset = @import("../dfa/powerset.zig");
+const lazy_mod = @import("../dfa/lazy.zig");
 const classrun_mod = @import("../../../scan/classrun.zig");
 const crest = @import("../../../../primitives/crest.zig");
 const core = @import("core.zig");
@@ -166,13 +167,31 @@ pub fn compileOpts(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
     // WITHOUT carried ranges keeps the DFA: its `.unproven` verdicts on
     // high-byte haystacks land there.
     const kernel_final = if (cr) |run| run.exact or run.cp != null else false;
-    const dfa: ?*dfa_mod.Dfa = if (opts.multiline and !assert_free)
-        null
-    else if (kernel_final and !opts.force_dfa)
-        null
+    const wants_dfa = !(opts.multiline and !assert_free) and !(kernel_final and !opts.force_dfa);
+    const outcome: powerset.Outcome = if (wants_dfa)
+        try powerset.build(allocator, states, start, anchored, opts.unicode)
     else
-        try powerset.build(allocator, states, start, anchored, opts.unicode);
+        .{ .declined = .unsupported };
+    const dfa: ?*dfa_mod.Dfa = switch (outcome) {
+        .built => |d| d,
+        .declined => null,
+    };
     errdefer if (dfa) |d| d.deinit();
+
+    // A declined eager build is a budget verdict, and WHICH budget decides the
+    // replacement engine. `too_costly` — a small automaton behind an expensive
+    // Unicode class — is still best served by that automaton, just discovered on
+    // demand. `too_large` is not: the alternations that blow the state cap carry
+    // the literal structure the Pike VM's prefilter feeds on, and a dense DFA walk
+    // measured 2.2x slower than keeping it. So only one decline routes here.
+    const lazy: ?*lazy_mod.Lazy = switch (outcome) {
+        .declined => |why| if (why == .too_costly)
+            try lazy_mod.Lazy.build(allocator, states, start, anchored, opts.unicode)
+        else
+            null,
+        .built => null,
+    };
+    errdefer if (lazy) |l| l.deinit();
 
     return .{
         .states = states,
@@ -185,6 +204,7 @@ pub fn compileOpts(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
         .nullable = nullable,
         .first = prefilter.Prefilter.init(first_set),
         .dfa = dfa,
+        .lazy = lazy,
         .classrun = cr,
         .assert_free = assert_free,
         .multiline = opts.multiline,

@@ -19,35 +19,71 @@
 //!   * **Start-state acceleration** — derived from the finished start row.
 //!   * **Premultiplication** — every state value rewritten to its row offset.
 //!
-//! Blow-up is bounded by `max_states`: past it the eager build bails to null and
-//! the caller keeps the Pike VM, which stays the correctness reference (the
-//! differential-fuzz oracle). Counted repetition (`a{1000}`) yields a linear, not
-//! exponential, DFA, so the cap only ever trips on genuinely pathological
-//! alternations.
+//! Blow-up is bounded on ONE axis: `max_visits`, the NFA-state visits the walk is
+//! allowed to charge. Size alone is the wrong bound — `\w+X` determinizes to just
+//! 332 states, yet every one of its closures runs over the ~10³-state UTF-8 trie
+//! that Unicode `\w` (137,936 codepoints in 748 ranges) lowers to, so an
+//! unbudgeted eager walk spends ~15 ms discovering a small automaton. Counting
+//! visits prices that directly, and bounds size as a consequence.
 //!
-//! A state cap alone does NOT bound compile time, which is why the lazy driver
-//! exists: `\w+X` determinizes to only 332 states, yet each closure runs over the
-//! ~10³-state UTF-8 trie that Unicode `\w` (137,936 codepoints in 748 ranges)
-//! lowers to, so this eager walk spends ~15 ms discovering a small automaton.
+//! Declining is a cost decision with no semantic content: `../program/lower.zig`
+//! hands the pattern to `lazy.zig`, which determinizes the same automaton one
+//! visited state at a time, and the Pike VM stands behind both as the oracle.
 
 const std = @import("std");
 const syn = @import("../../syntax/syntax.zig");
-const prefilter = @import("../../analysis/prefilter.zig");
 const subset = @import("subset.zig");
 const State = syn.State;
 const Dfa = @import("dfa.zig").Dfa;
 const unknown = subset.unknown;
 
-/// Start-state acceleration eligibility (mirrors rust-regex `accel.rs`): only
-/// accelerate when the start state's escape set is ≤ this many bytes, past which
-/// the SIMD skip stops being selective (e.g. `\w`'s 63 bytes) and a plain dense
-/// scan wins. memchr/range-skip earns its keep at 1–3 exit bytes.
-const max_accel_bytes: usize = 3;
+/// Effort cap for the eager build, in NFA-state visits (`Subset.visits`) — the
+/// unit that actually costs time, since one closure's price is the size of the
+/// subset it walks, not the fact that it happened. Anything hungrier belongs to
+/// `lazy.zig`, which pays only for the states a haystack visits.
+///
+/// This is deliberately the ONLY bound. A state cap paired with an effort cap is
+/// redundant by arithmetic — visits grow at least as fast as states × classes, so
+/// the effort ceiling is always crossed first and the state ceiling is unreachable
+/// dead code. Memory follows for free: the table cannot outgrow what the visits
+/// that filled it were allowed to pay for.
+///
+/// Calibrated, not chosen: a visit costs ~2-3 ns, holding an eager build near two
+/// milliseconds. Both arms of the trade were measured. Raising the cap hands more
+/// patterns to this driver, which beat the on-demand one by 1.36-1.56x on scans no
+/// prefilter can skip (`[A-Z][a-z]+ [A-Z][a-z]+`, `a.*b.*c`, `\d+\.\d+\.\d+\.\d+`)
+/// and merely tied everywhere a skip carries the search. Raising it also taxes
+/// every pattern that ends up declining, whose eager attempt is speculative work
+/// thrown away at the cap. So the cap is set to the smallest round value admitting
+/// every pattern measured to *benefit* (the largest was 549,396 visits); past that
+/// it buys nothing and still charges. Re-derive by sweeping it against a scan-bound
+/// and a compile-bound pattern set — the optimum is a broad, flat minimum.
+pub const max_visits: u64 = 750_000;
 
-/// Powerset state cap. Beyond this the eager build bails to null (Pike fallback).
-/// Sized so a linear `{n}`-expanded program (DFA ≈ n states) always fits while a
-/// pathological exponential alternation can't blow compile time or memory.
-pub const max_states: u32 = 4096;
+/// Why the eager driver produced no automaton.
+pub const Decline = enum {
+    /// Not determinizable this way at all: a buffer anchor (`\A`/`\z`) means
+    /// multiline, where position flags are content-dependent.
+    unsupported,
+    /// Over `max_visits`. A cost verdict with no semantic content — `lazy.zig`
+    /// builds the same automaton on demand, and the Pike VM stands behind both.
+    ///
+    /// There is deliberately no second budget arm here. Splitting the decline into
+    /// "too large ⇒ Pike VM" and "too costly ⇒ lazy" was tried and measured wrong
+    /// on both counts: the arms were not reachable independently, and the
+    /// alternations the split existed to keep on the Pike VM were losing to it for
+    /// an unrelated reason — the on-demand driver had no start-state acceleration.
+    /// Giving it one (`Lazy.accel`) beat the Pike VM outright, so nothing needs
+    /// routing away from the DFA.
+    too_costly,
+};
+
+/// An eager build either produced the automaton or declined for a reason the
+/// caller must see.
+pub const Outcome = union(enum) {
+    built: *Dfa,
+    declined: Decline,
+};
 
 /// The eager driver's expansion frontier. State ids are dense and handed out in
 /// order, so `queued` grows one slot per interned state and needs no map.
@@ -75,14 +111,13 @@ const Worklist = struct {
 };
 
 /// Determinize the Thompson NFA (`states`, entry `start`) into an immutable
-/// byte-class DFA, or null when it isn't worth it — the automaton exceeds
-/// `max_states`, the effort exceeds `max_work`, or the program carries a buffer
-/// anchor (multiline, where no DFA is built). `anchored` mirrors
+/// byte-class DFA, or decline — the walk exceeds `max_visits`, or the program
+/// carries a buffer anchor (multiline, where no DFA is built). `anchored` mirrors
 /// `analysis.startsAnchored`: every match begins at line start, so we never re-seed.
-pub fn build(gpa: std.mem.Allocator, states: []const State, start: u32, anchored: bool, unicode: bool) std.mem.Allocator.Error!?*Dfa {
+pub fn build(gpa: std.mem.Allocator, states: []const State, start: u32, anchored: bool, unicode: bool) std.mem.Allocator.Error!Outcome {
     // Buffer anchors (`\A`/`\z`) exist only under multiline, where no DFA is built
     // at all — decline before interning so `close` never meets one.
-    if (subset.hasBufferAnchor(states)) return null;
+    if (subset.hasBufferAnchor(states)) return .{ .declined = .unsupported };
     // Word-boundary assertions (`\b`/`\B`, one-sided `\<`/`\>`) gate on the
     // word-ness of the bytes straddling a gap — a second determinization axis.
     // We resolve it as a look-AHEAD-selected transition (see `Dfa`): classes are
@@ -126,7 +161,7 @@ pub fn build(gpa: std.mem.Allocator, states: []const State, start: u32, anchored
             if (word_ctx) try wl.push(&sub, try sub.expand(id, k, .interior_word));
             // Last byte (at_end=true, word_after=false) resolves `$`/`\b`-at-EOL. Targets are terminal — the line ends right after — so interned for `is_match` but not enqueued.
             _ = try sub.expand(id, k, .final);
-            if (sub.nstates > max_states) return null; // powerset blow-up ⇒ keep the Pike VM
+            if (sub.visits > max_visits) return .{ .declined = .too_costly };
         }
     }
 
@@ -139,7 +174,7 @@ pub fn build(gpa: std.mem.Allocator, states: []const State, start: u32, anchored
     // interior table; the word-context start split + doubled table don't fit that
     // shape, so word patterns forgo it (an optimization, never a correctness lever
     // — the trigram prefilter still selects on their bounded literal).
-    const accel = if (word_ctx) null else computeAccel(anchored, empty_match, sub.trans_in.items, sub.trans_fin.items, sub.is_match.items, &cls.class, ncls, start_id);
+    const accel = if (word_ctx) null else subset.startAccel(anchored, empty_match, sub.trans_in.items, sub.trans_fin.items, sub.is_match.items, &cls.class, ncls, start_id);
 
     // Premultiply (rust-regex / RE2 dense-DFA trick): rewrite every state value to
     // its row offset `id*ncls`, so the hot loop's per-byte index collapses from a
@@ -186,45 +221,5 @@ pub fn build(gpa: std.mem.Allocator, states: []const State, start: u32, anchored
         .start_w = start_w_id * nc,
         .allocator = gpa,
     };
-    return dfa;
-}
-
-/// Derive start-state acceleration from the finished transition tables. A byte is
-/// "relevant" — must stop the SIMD skip — when, from the unanchored start state,
-/// it either (a) moves to a *different* interior state (`trans_in` ≠ start, the
-/// match-beginning case) or (b) produces a match at end-of-line (`trans_fin` is a
-/// match state, the `$`-anchored-literal case like `;$`, where the byte keeps
-/// `trans_in` in start yet matches as the line's last byte). Every other byte both
-/// keeps start in itself AND can't match under `$`, so it is provably skippable.
-/// Returns a `Prefilter` over the relevant set iff it is non-empty and
-/// ≤ `max_accel_bytes`; else null (dense scan).
-///
-/// `\n` is added to the needle **only when the skip can't safely cross a line** —
-/// i.e. when an empty line can match (`empty_match`) or `\n` is itself relevant.
-/// Otherwise crossing `\n` in the start state is a pure no-op, so we omit it: the
-/// scanner then `memchr`s straight across newlines (rg's exact `;$` strategy) and,
-/// for a single relevant byte, the prefilter collapses to a one-byte `memchr`
-/// instead of a two-range scan. The byte-at-a-time inner loop still stops at `\n`,
-/// so `$`/line-end resolution stays correct.
-fn computeAccel(anchored: bool, empty_match: bool, trans_in: []const u32, trans_fin: []const u32, is_match: []const bool, class: *const [256]u8, ncls: u16, start_id: u32) ?prefilter.Prefilter {
-    if (anchored) return null;
-    const base = @as(usize, start_id) * ncls;
-    var relevant: syn.ByteSet = .{};
-    var n: usize = 0;
-    for (0..256) |bi| {
-        const b: u8 = @intCast(bi);
-        if (b == '\n') continue; // line-boundary stop, decided separately below
-        const off = base + class[b];
-        if (trans_in[off] != start_id or is_match[trans_fin[off]]) {
-            relevant.set(b);
-            n += 1;
-        }
-    }
-    if (n == 0 or n > max_accel_bytes) return null;
-    // Keep the skip inside one line only when it must: an empty line can match, or
-    // `\n` itself is relevant. Otherwise let the skip `memchr` across newlines.
-    const nl = base + class['\n'];
-    const nl_relevant = trans_in[nl] != start_id or is_match[trans_fin[nl]];
-    if (empty_match or nl_relevant) relevant.set('\n');
-    return prefilter.Prefilter.init(relevant);
+    return .{ .built = dfa };
 }

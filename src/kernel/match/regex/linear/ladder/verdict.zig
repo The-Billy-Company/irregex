@@ -48,6 +48,15 @@ pub fn lineMatch(re: *const Regex, sim: *Sim, line: []const u8) bool {
         if (d.word_ctx) return d.matchWord(line) orelse search.lineMatchPike(re, sim, line);
         return d.match(line);
     }
+    // The eager build declined this pattern's budget, so the same automaton is
+    // determinized on demand against this thread's memo. It quits (null) on an
+    // undecidable Unicode word gap — retried per line, like the eager walk — or
+    // once the memo outgrows its cap, which sticks so later lines don't re-pay a
+    // lost cause. Either way the Pike VM answers.
+    if (sim.lazy) |*c| if (!c.quit) {
+        const v = if (c.lazy.word_ctx) c.matchWord(line) else c.match(line);
+        if (v) |hit| return hit;
+    };
     return search.lineMatchPike(re, sim, line);
 }
 
@@ -73,6 +82,13 @@ pub fn docMatch(re: *const Regex, sim: *Sim, doc: []const u8) bool {
     // A word-boundary DFA has no fused doc scan this rung (`word_ctx`); it runs
     // per line through `lineMatch` (the DFA floor, Pike on a Unicode quit).
     if (re.dfa) |d| if (!d.word_ctx) return d.docMatch(doc);
+    // Same fused whole-buffer shape from the on-demand driver. A quit falls
+    // through to the per-line loop below, which is correct but re-walks what the
+    // doc scan already covered — bounded, because the cap that caused the quit is
+    // sticky, so subsequent lines go straight to the Pike VM.
+    if (sim.lazy) |*c| if (!c.lazy.word_ctx and !c.quit) {
+        if (c.docMatch(doc)) |hit| return hit;
+    };
     var i: usize = 0;
     while (i < doc.len) {
         const end = std.mem.indexOfScalarPos(u8, doc, i, '\n') orelse doc.len;
@@ -92,6 +108,11 @@ pub fn docMatchFused(re: *const Regex) bool {
     // A word-boundary DFA runs per line (no fused doc scan this rung), so it
     // is not a whole-buffer machine — callers keep their per-line loop.
     if (re.dfa) |d| return !d.word_ctx;
+    // The on-demand driver has the same fused doc scan, so it is a whole-buffer
+    // machine too. It may quit mid-document, but this predicate only expresses a
+    // preference — `docMatch` handles the quit — and preferring it is right: the
+    // alternative for these patterns is the Pike VM, per line.
+    if (re.lazy) |l| return !l.word_ctx;
     return false;
 }
 

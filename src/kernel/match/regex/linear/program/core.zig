@@ -32,6 +32,7 @@ const std = @import("std");
 const syn = @import("../../syntax/syntax.zig");
 const prefilter = @import("../../analysis/prefilter.zig");
 const dfa_mod = @import("../dfa/dfa.zig");
+const lazy_mod = @import("../dfa/lazy.zig");
 const classrun_mod = @import("../../../scan/classrun.zig");
 const lower = @import("lower.zig");
 const verdict = @import("../ladder/verdict.zig");
@@ -88,6 +89,14 @@ pub const Regex = struct {
     // pass. Non-null unless the powerset blew past the cap, when the Pike VM serves
     // (the `first` prefilter accelerates that fallback's skip search).
     dfa: ?*dfa_mod.Dfa,
+    // On-demand determinization (`dfa/lazy.zig`), non-null exactly when a DFA was
+    // wanted but the eager build declined the budget (too many states, or too many
+    // subset closures to keep finding out — a large Unicode class costs ~15 ms
+    // eagerly to discover a small automaton). Same automaton, same `subset.zig`
+    // core, materialized one visited state at a time; it carries no tables itself,
+    // so the per-thread memo lives in the caller's `Sim`. Both engines are never
+    // set at once, and either may quit to the Pike VM, which stays the oracle.
+    lazy: ?*lazy_mod.Lazy,
     // SIMD class-run kernel (`scan/classrun.zig`): non-null iff the pattern
     // provably reduces to "≥ min consecutive members of one byte set"
     // (`analysis.classRunShape` — the dense-class family: `\w+`, `[a-z]{3,}`,
@@ -176,6 +185,7 @@ pub const Regex = struct {
         lower.freeAlts(self.allocator, self.alts);
         lower.freeAlts(self.allocator, self.lits);
         if (self.dfa) |d| d.deinit();
+        if (self.lazy) |l| l.deinit();
         if (self.classrun) |cr| if (cr.cp) |r| self.allocator.free(r);
         self.* = undefined;
     }

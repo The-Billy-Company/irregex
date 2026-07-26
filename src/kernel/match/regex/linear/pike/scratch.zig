@@ -8,6 +8,7 @@
 const std = @import("std");
 const syn = @import("../../syntax/syntax.zig");
 const core = @import("../program/core.zig");
+const lazy_mod = @import("../dfa/lazy.zig");
 
 const ParseError = syn.ParseError;
 const Regex = core.Regex;
@@ -45,6 +46,14 @@ fn PikeScratch(comptime spans: bool) type {
         scur: []usize = &.{},
         snxt: []usize = &.{},
         gen: u32 = 0,
+        /// The on-demand DFA's per-thread memo (`dfa/lazy.zig`), present exactly
+        /// when the compiled program carries a `lazy` engine. It lives here for
+        /// the same reason the thread lists do: the automaton it discovers is
+        /// mutable, so it cannot hang off the shared immutable `Regex`, and this
+        /// is already the caller-owned per-thread scratch for that program.
+        /// Boolean paths only — `matchSpan` never consults a DFA, so the span
+        /// grain never allocates one.
+        lazy: ?lazy_mod.Cache = null,
         allocator: std.mem.Allocator,
 
         pub fn init(allocator: std.mem.Allocator, re: *const Regex) ParseError!@This() {
@@ -57,6 +66,7 @@ fn PikeScratch(comptime spans: bool) type {
                 .seen = seen,
                 .scur = if (spans) try allocator.alloc(usize, n) else &.{},
                 .snxt = if (spans) try allocator.alloc(usize, n) else &.{},
+                .lazy = if (spans) null else if (re.lazy) |lz| try lazy_mod.Cache.init(allocator, lz) else null,
                 .allocator = allocator,
             };
         }
@@ -66,6 +76,7 @@ fn PikeScratch(comptime spans: bool) type {
             self.allocator.free(self.seen);
             self.allocator.free(self.scur); // frees nothing when `spans` is off
             self.allocator.free(self.snxt);
+            if (self.lazy) |*c| c.deinit();
             self.* = undefined;
         }
     };

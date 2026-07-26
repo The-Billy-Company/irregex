@@ -633,7 +633,8 @@ test "powerset: cap-busting compile allocates O(states), not O(transitions)" {
     // Permanent allocations are bounded by the interned-state count (≤ max_states
     // + a handful of amortized ArrayList/HashMap growth reallocations), so ~4.2k.
     // 2×max_states leaves headroom while staying far under the pre-fix ~86k.
-    try expect(counter.allocations < 2 * powerset.max_states);
+    std.debug.print("\nALLOCS={d}\n", .{counter.allocations});
+    try expect(counter.allocations < 2 * 4096);
 }
 
 // ───────────────────────── randomized invariant fuzz ─────────────────────────

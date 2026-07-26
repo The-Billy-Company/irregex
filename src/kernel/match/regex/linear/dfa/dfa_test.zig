@@ -309,6 +309,7 @@ test "dfa: word-boundary Unicode quit path is sound (commit ⇒ Pike; quit ⇒ P
             checked += 1;
         }
     }
+    std.debug.print("\nUNIWORD checked={d} quits={d}\n", .{ checked, quits });
     try std.testing.expect(checked > 20_000);
     try std.testing.expect(quits > 0); // the quit path was actually taken
 }
