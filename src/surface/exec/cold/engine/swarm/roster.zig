@@ -16,6 +16,7 @@ const descent = @import("descent.zig");
 const ignore = @import("../../../../../corpus/tree/ignore.zig");
 const paths_mod = @import("../../../../../corpus/scope/paths.zig");
 const queue = @import("queue.zig");
+const serial = @import("../../quarry/walk.zig");
 const sink_mod = @import("sink.zig");
 const treemap = @import("../../../../../corpus/index/phantom/treemap.zig");
 
@@ -45,6 +46,16 @@ pub const FileEntry = struct { path: []const u8, mtime_ns: ?i128, ctime_ns: ?i12
 /// the scoped reconcile path already uses.
 pub const FileSet = struct { entries: []const FileEntry, walk_error: bool };
 
+fn hasNonDirectoryRoot(io: std.Io, roots: []const []const u8) bool {
+    for (roots) |root| {
+        if (std.Io.Dir.cwd().openDir(io, root, .{})) |dir_const| {
+            var dir = dir_const;
+            dir.close(io);
+        } else |_| return true;
+    }
+    return false;
+}
+
 /// The fused work-stealing walk as a CALLABLE — everything `run` does up to the
 /// fan-out/join, WITHOUT the per-file search, the streaming sink, or the
 /// `noreturn` exit tail. It runs the identical ignore-certified directory walk
@@ -66,6 +77,17 @@ pub const FileSet = struct { entries: []const FileEntry, walk_error: bool };
 /// cannot cross the fan-out and its `catch oom()` sites sit in the per-entry
 /// inner loop.
 pub fn collectFileSet(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, a: std.mem.Allocator) std.mem.Allocator.Error!FileSet {
+    // The fused queue carries directory tasks. Explicit file roots use the
+    // authoritative serial selector so reconciliation does not mistake the
+    // file for an unreadable directory and decline every warm query.
+    if (roots.len != 0 and hasNonDirectoryRoot(io, roots)) {
+        const files = try serial.defaultFileSetExtras(a, io, roots, null);
+        const entries = try a.alloc(FileEntry, files.paths.len);
+        for (files.paths, entries) |path, *entry|
+            entry.* = .{ .path = path, .mtime_ns = null, .ctime_ns = null };
+        return .{ .entries = entries, .walk_error = files.path_error };
+    }
+
     // `files_list` gates only `files_mode`/worker topology; `ignore.Options.from`
     // reads none of it, so the admission layer is byte-identical to serial
     // `defaultFileSet`'s default `Opts{}`.
