@@ -32,6 +32,9 @@ doc_radar:
         - "corpus: 20660 files · 204.6 MiB"
         - "8.93x"
         - "5.78x"
+    - description: "canary for the crest speedup distribution this README quotes in prose — a re-mint moves these rows, and breaking here is the signal to recompute the geometric mean and restate the floor/ceiling"
+      file: pkg/kernels/irregex/bench/certify/artifact/crest.csv
+      contains: ["27.758", "13.120", "3.234", "1.375", "96.42"]
     - description: "the honest optimality disclaimer survives every re-mint — the certificate never claims hardware optimality"
       file: pkg/kernels/irregex/bench/certify/artifact/CERTIFICATE.md
       absent:
@@ -343,14 +346,26 @@ crests that high. It is not a substring test; the soundness theorem, the
 min-of-max calculus over the AST, and an adversarially refereed priority
 review live in [`research/crest/`](research/crest/PROOF.md).
 
-`zig build crest` proves it fail-closed against the real matcher on the live
-corpus: matched ⇒ never pruned, over every file × query plus 96k randomized
-pattern/file pairs spanning case-sensitive and caseless in both engine modes.
+The sieve reads the **engine's own AST** — the same parse, options, and case
+fold the matcher compiles — because the one structural way to get a false
+negative here is a second grammar that reads a construct differently. Deriving
+ĝ from a private mini-parser did exactly that: it took `\<` for an escaped
+literal `<` rather than a word-boundary assertion, so `\<foo\>` demanded a punct
+run that a matching file need not contain. `zig build test` now checks the Sieve
+Theorem itself — 1 500 generated patterns over every node kind × both engine
+modes × caseless, asserting matched ⇒ never pruned — and `zig build crest`
+repeats it fail-closed on the live corpus (20 661 files, 204.6 MiB), over every
+file × query plus 96k randomized pattern/file pairs.
+
 Measured through the shipped CLI — same binary, same index, only the sidecar
-toggled — the narrow-class slate
-runs **3.2–4.3× faster end-to-end** with diff-identical match sets, and the
-wide-class rows cost nothing. The count-population cousin at the same
-thresholds prunes ≤1% where the run prunes 91%: the run is the condition.
+toggled — the eight narrow-class queries run **7.5× faster end-to-end at the
+geometric mean**, with diff-identical match sets: 27.8× on `[0-9a-f]{12}`
+(96.4% of files pruned), 13.1× on caseless hex-8, 3.2× on `[0-9]{4}`, down to
+1.4× on `[A-Z]{4}`, where four-byte uppercase runs are common enough in code
+that only 20% of files prune. The three wide-class controls (`\w{3,8}`,
+`[A-Za-z]{5}`, caseless `[A-Z]{6}`) prune under 1% and pay 2–4% for asking —
+the sieve's whole downside. The count-population cousin at the same thresholds
+prunes ≤1% where the run prunes 93%: the run is the condition, not the count.
 
 ### 6. Performance claims can be certificates, not benchmark anecdotes
 

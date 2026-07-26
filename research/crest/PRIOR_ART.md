@@ -60,13 +60,23 @@ which is why the integration _intersects_ survivor sets.
 ## 2. Character-class-run text indexing (the closest published neighbor)
 
 [Bannai et al., _Text Indexing for Simple Regular Expressions_ (CPM 2025)](#r-cpm25) is the strongest neighboring work. It does **not** reduce
-character classes to n-gram presence. For one text `T`, it indexes
-right-maximal substrings whose symbols belong to a queried class `D`, with
-positional range-reporting structures that can locate matches of restricted
-anchored forms `P₁D*P₂` and the interval variants `P₁D^{≥l}P₂`,
-`P₁D^{≤r}P₂`, and `P₁D^{[l,r]}P₂`. It therefore establishes genuine prior art
-for indexing character-class runs and their lengths; Crest does not claim to
-originate that broad idea.
+character classes to n-gram presence: for one text `T` it builds positional
+range-reporting structures that locate matches of the restricted anchored forms
+`P₁D*P₂` and the interval variants `P₁D^{≥l}P₂`, `P₁D^{≤r}P₂`, and
+`P₁D^{[l,r]}P₂`. That is genuine prior art for **indexing text by class-run
+structure**, and Crest does not claim to originate the broad idea.
+
+Read closely, though, the indexed object is not a class run. Their Definition 5
+is a **k-run**: "the maximal range `[i..j]` such that `T[i..j]` contains exactly
+`k` _distinct symbols_" — a window keyed by symbol-set **cardinality**, one per
+starting position, whose alphabet `D_{i,k}` is _discovered from the text_ and
+matched against the query's `D` through a trie plus one grid per subset (the
+`2^k − 1` grids of §3.2). Their other "run" (Definition 8, for `P₁P*P₂`) is the
+classical maximal repetition with a Lyndon root. Neither is "the longest stretch
+of bytes drawn from a fixed class family," which is the only quantity Crest
+stores. So the shared vocabulary is broader than the shared object: CPM answers
+class queries _over_ distinct-symbol windows; Crest answers no queries at all
+and stores no positions.
 
 The overlap ends there:
 
@@ -81,10 +91,16 @@ The overlap ends there:
   text runs and class subsets in near-linear/polylogarithmic space. Crest stores
   the maximum run for each member of one fixed class family: `O(k)` small
   integers per document, independent of positions and query classes.
-- **No conflict with CPM's lower bound.** Its conditional lower bound concerns
-  efficient exact occurrence or existential queries for unanchored
-  `P₁D*P₂`. Crest allows false-positive documents and subsequently scans
-  survivors, so it does not solve that indexed-reporting problem.
+- **Their hardness result is about our central case.** CPM's Theorem 1 is
+  _conditioned on an anchor_ — a character of `P₁P₂` outside `D` — and they
+  prove that without one, no efficient index can exist unless the Set
+  Disjointness Conjecture fails. Crest's motivating query, `[0-9a-f]{12}`, is
+  exactly the anchorless case: no literal anywhere, which is why every index in
+  the trigram family concedes it too. So the two works are not competing for one
+  design point; CPM proves the exact-index door is closed where Crest enters,
+  and a one-sided sieve that admits false positives and rescans survivors is not
+  bound by a lower bound on indexed exact reporting. The unoccupied territory is
+  unoccupied for a published reason.
 
 **Difference.** CPM is prior art for _class-run text indexing_; it is not prior
 art for Crest's composite of a fixed per-document max-run vector, an
@@ -160,7 +176,24 @@ the two inversions that make it a different object:
 The regex-analysis cousin is required-literal / minimum-length extraction
 ([RE2](#r-re2)'s `MinMatchLength`, gist's own `analysis/` pass): also an AST
 lower-bound functional, but over _length_ and _literals_ — never over
-per-class run structure, and never paired with a per-document run index.
+per-class run structure, and never paired with a per-document run index. Note
+that this concedes `min_len` outright: the scalar minimum-match-length component
+of the profile is standard equipment, in RE2, in `regex-automata`'s
+`Properties::minimum_len`, and as the length abstraction string solvers have
+used for years. It is the `F`/`P`/`S` run components that have no counterpart.
+
+**Where ĝ properly belongs, and the negative result there.** Stated formally, ĝ
+is a sound _abstract semantics_ of a regex — an abstraction of `L(R)` into a
+domain ordered by `≤`, with soundness `ĝ(R) ≤ inf_{w∈L(R)} ρ(w)` — which places
+it in the string abstract-domain literature
+([Costantini, Ferrara & Cortesi](#r-string-domains)). That is the strongest
+checkable evidence we have, because the standard suite is enumerable and ĝ's
+carrier is not in it: Character Inclusion, Prefix, Suffix, Prefix/Suffix, String
+Set, String Length, Bricks, M-Strings. Character Inclusion tracks must/may
+_membership_; String Length tracks a scalar interval. **No domain in the suite
+expresses "must contain ℓ consecutive class-C bytes."** A referee looking for
+ĝ's published analogue has a short, closed list to check, and it does not
+contain one.
 
 ## 6. Sketches and signatures (Bloom, minhash, class histograms)
 
@@ -174,8 +207,32 @@ per-class run structure, and never paired with a per-document run index.
 
 The sieve _shape_ — a per-document vector signature, a query-derived required
 vector, componentwise dominance, fail-to-candidate, zero false negatives — is
-**not** original to Crest; only the _quantity_ in the vector is. The honest
-structural neighbor is the **character/class-population histogram prefilter**
+**not** original to Crest; only the _quantity_ in the vector is. We concede the
+shape without hedging, and to the right ancestors:
+
+- **[Jokinen & Ukkonen 1991](#r-jokinen-ukkonen)** is the canonical form, and it
+  predates every system here: a per-window q-gram count vector, a threshold
+  _derived_ from the pattern (`m + 1 − (k+1)q` surviving q-grams), and a
+  one-sided guarantee. Count-vector-with-derived-threshold filtering is
+  1991-vintage; nothing about that skeleton is ours.
+- **[REI](#r-rei) (SIGMOD 2025)** is the nearest living relative, and closer to
+  Crest's sieve than anything in §1's presence table: a constant-size bit-vector
+  stored per log line, a mask derived from the query regex, a componentwise
+  test, and a proven no-false-negative property, sitting in front of RE2. Every
+  structural element of Crest's sieve is already there. **The delta is the
+  carrier and only the carrier** — REI's vector holds boolean presence of
+  selected literal bigrams, so it inherits §1's literal-free hole exactly;
+  Crest's holds order-sensitive integer class-run maxima, which is what survives
+  when no literal exists.
+- **[ugrep-indexer](#r-ugrep-indexer)** is the deployed-system twin, and it
+  lives in Crest's own context — a grep. Per-file n-gram Bloom signature,
+  file-skipping on non-match, soundness argued by monotone bit-halving. Same
+  shape, literal carrier again, and its documentation names the gap precisely:
+  index search weakens exactly where unbounded repeats and Unicode classes take
+  over.
+
+The weaker structural neighbor, and the one Crest measures against directly, is
+the **character/class-population histogram prefilter**
 ([per-doc byte-frequency histogram compared against required counts](#r-charhist)):
 identical shape, but over **counts**, so it can demand "≥ 12 digits" and a
 single 12-run satisfies it — it cannot demand a _contiguous_ run, still less
@@ -186,8 +243,20 @@ Its theoretical ceiling is the **Parikh / semilinear image** of a regular
 language ([Parikh's theorem](#r-parikh); [Stjerna & Rümmer, OOPSLA
 2024](#r-parikh-solve)): the tightest count necessary condition derivable from
 a regex is its commutative image, and being order-free it _provably_ cannot
-encode any run/contiguity predicate. Crest and Ridge live strictly outside the
-Parikh ceiling — that gap is the reason a run sieve exists at all.
+encode any run/contiguity predicate.
+
+The separation takes one line. Ψ is a homomorphism into a _commutative_ monoid,
+so Ψ(`aabb`) = Ψ(`abab`) = (2,2); but over the class `{a}` their crests are 2
+and 1. Hence ρ is **not a function of** Ψ — no Parikh-derived filter, however
+tight, can express `ρ ≥ ĝ`, because the two strings it must separate are the
+same point in its domain. Crest is not a sharpening of the count condition; it
+is a different, non-commutative statistic that the count condition cannot see.
+
+That is measured, not just proved. The count cousin is carried at identical
+thresholds in every evidence package: on `[0-9a-f]{8}` over 20 661 files it
+prunes **0.91%** where the run prunes **93.37%**. Being "Parikh-adjacent" in
+shape costs 99% of the yield — the dominance-sieve _shape_ is indeed old, and
+the shape is not where the pruning comes from.
 
 ## 8. The run _spectrum_ (Ridge) — referee re-scope, 2026-07-20
 
@@ -288,8 +357,13 @@ class as Cox/Zoekt.
 (Proc. ACM Manag. Data / SIGMOD) ·
 [PDF](https://db.cs.cmu.edu/papers/2025/zhang-sigmod2025.pdf) ·
 [code](https://github.com/mush-zhang/REI-Regular-Expression-Indexing).
-_Annotation:_ REI — n-gram indexing for log regex workloads; still a
-presence test; still concedes literal-free class repetitions.
+_Annotation:_ **The nearest published relative of Crest's sieve, and the one to
+argue against.** Not merely n-gram selection: REI stores a constant-size
+bit-vector per log line, derives a mask from the query regex, tests by
+componentwise dominance, and proves no false negatives (Appendix A) in front of
+RE2 — the entire sieve skeleton, already published. The delta is the carrier:
+boolean presence of selected literal bigrams, so it inherits the literal-free
+hole that class repetitions open, where Crest's integer run maxima do not.
 
 <span id="r-zhang"></span> 8. **Zhang, Deep, Patel & Sankaralingam (2025).**
 [_An Evaluation of N-Gram Selection Strategies for Regular Expression Indexing_](https://www.vldb.org/pvldb/vol18/p5703-zhang.pdf)
@@ -407,3 +481,30 @@ along an automaton run; the oracle's run-length monitor is an instance.
 (JCSS).
 _Annotation:_ The "i-th largest" ranking in the oracle is the N-best-paths
 problem over a monitor automaton — standard, cited as a family.
+<span id="r-jokinen-ukkonen"></span> 27. **Jokinen & Ukkonen (1991).**
+[_Two algorithms for approximate string matching in static texts_](https://www.cs.helsinki.fi/u/ukkonen/MFCS91.pdf)
+(MFCS).
+_Annotation:_ The canonical count-vector filter, and the honest ancestor of the
+dominance _shape_ (§7) — a per-window q-gram count vector with a threshold
+derived from the pattern and a one-sided guarantee (Lemma 7). Cite this, not
+Parikh, when conceding that the sieve skeleton is old: it is order-blind in the
+same way the count cousin is, and 34 years earlier.
+
+<span id="r-ugrep-indexer"></span> 28. **Genivia — `ugrep-indexer`.**
+[Repository](https://github.com/Genivia/ugrep-indexer) · [ugrep](https://ugrep.com/).
+_Annotation:_ The deployed-system twin of Crest's sieve, inside a grep: a
+per-file n-gram Bloom signature (490–4256 B/file by accuracy), used to skip
+files whose index cannot match, with soundness argued by monotone bit-halving.
+Same shape, literal carrier — and its own documentation names Crest's target as
+its weak point: index search degrades exactly where unbounded repeats and
+Unicode classes dominate the pattern.
+
+<span id="r-string-domains"></span> 29. **Costantini, Ferrara & Cortesi (2015).**
+[_A Suite of Abstract Domains for Static Analysis of String Values_](https://pmpub.inf.ethz.ch/publications/CostantiniFerraraCortesi14.pdf)
+(Softw. Pract. Exper.).
+_Annotation:_ The literature ĝ formally belongs to — a sound abstraction of a
+string language into an ordered domain — and the strongest _negative_ evidence
+for its novelty (§5). The standard suite is enumerable (Character Inclusion,
+Prefix, Suffix, Prefix/Suffix, String Set, String Length, Bricks, M-Strings) and
+contains no run-length domain: membership and scalar length are tracked, "must
+contain ℓ consecutive class-C bytes" is not.
