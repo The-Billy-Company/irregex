@@ -13,8 +13,8 @@
 
 const std = @import("std");
 const paths = @import("../../../../corpus/scope/paths.zig");
-const uni = @import("../../../../kernel/match/regex/unicode/tables.zig");
-const udec = @import("../../../../kernel/match/regex/unicode/decode.zig");
+const uni = @import("../../../../kernel/match/regex/regex.zig").unicode;
+const udec = @import("../../../../kernel/match/regex/regex.zig").decode;
 const outcome = @import("../../../cli/outcome.zig");
 
 /// Fatal exit with ripgrep's error code (2), and the OOM exit for the ubiquitous

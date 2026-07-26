@@ -12,8 +12,8 @@
 
 const std = @import("std");
 const args = @import("../../argv/args.zig");
-const Matcher = @import("../../../../../kernel/match/regex/linear/ladder/matcher.zig").Matcher;
-const Regex = @import("../../../../../kernel/match/regex/linear/program/core.zig").Regex;
+const Matcher = @import("../../../../../kernel/match/regex/regex.zig").Matcher;
+const Regex = @import("../../../../../kernel/match/regex/regex.zig").Regex;
 const output = @import("../output.zig");
 const Emitter = output.Emitter;
 const oom = args.oom;

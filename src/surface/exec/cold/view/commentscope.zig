@@ -29,7 +29,7 @@ const writ = @import("../writ/writ.zig");
 
 const Opts = args.Opts;
 const oom = args.oom;
-const Matcher = @import("../../../../kernel/match/regex/linear/ladder/matcher.zig").Matcher;
+const Matcher = @import("../../../../kernel/match/regex/regex.zig").Matcher;
 
 /// A searchable file: its display path and (BOM-stripped) body. The caller
 /// (`serial.zig`) projects its `InFile` set into this so this module needs no

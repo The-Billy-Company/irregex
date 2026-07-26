@@ -59,9 +59,9 @@ const Emitter = output.Emitter;
 const die = args.die;
 const oom = args.oom;
 
-const Matcher = @import("../../../../kernel/match/regex/linear/ladder/matcher.zig").Matcher;
-const pcre2 = @import("../../../../kernel/match/regex/pcre2/backend.zig");
-const Caps = @import("../../../../kernel/match/regex/compile/captures.zig").Caps;
+const Matcher = @import("../../../../kernel/match/regex/regex.zig").Matcher;
+const pcre2 = @import("../../../../kernel/match/regex/regex.zig").pcre2;
+const Caps = @import("../../../../kernel/match/regex/regex.zig").Caps;
 /// `pub`: the CLI shell (`main.zig`) reuses the same hint module on the warm
 /// daemon path, where no engine ran in-process but a no-match still deserves
 /// the identical stderr guidance.

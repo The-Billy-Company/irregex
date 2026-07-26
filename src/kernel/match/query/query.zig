@@ -30,12 +30,12 @@
 
 const std = @import("std");
 const simd = @import("../scan/simd.zig");
-const Regex = @import("../regex/linear/program/core.zig").Regex;
+const Regex = @import("../regex/regex.zig").Regex;
 // The engine-neutral match seam (`linear` | `pcre`). The regex body compiles
 // into one `Matcher`, so the shared core dispatches ONCE per line/span to
 // whichever engine backs the query — the linear-time default, or (for `-P`)
 // the PCRE2 backend, whose `Pcre` mirrors `Regex`'s primitives behind the seam.
-const matcher_mod = @import("../regex/linear/ladder/matcher.zig");
+const matcher_mod = @import("../regex/regex.zig");
 const Matcher = matcher_mod.Matcher;
 const Pcre = matcher_mod.Pcre;
 // Two private sub-modules of the compiled query (same folder, imported only

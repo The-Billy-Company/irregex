@@ -23,10 +23,10 @@ const crest = @import("../../../../kernel/primitives/crest.zig");
 const query_mod = @import("../../../../kernel/match/query/query.zig");
 const simd = @import("../../../../kernel/match/scan/simd.zig");
 
-const Matcher = @import("../../../../kernel/match/regex/linear/ladder/matcher.zig").Matcher;
+const Matcher = @import("../../../../kernel/match/regex/regex.zig").Matcher;
 const Opts = args.Opts;
 const oom = args.oom;
-const Regex = @import("../../../../kernel/match/regex/linear/program/core.zig").Regex;
+const Regex = @import("../../../../kernel/match/regex/regex.zig").Regex;
 
 // ─────────────────────── who may skip, and when ───────────────────────
 //

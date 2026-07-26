@@ -30,10 +30,10 @@ const oom = args.oom;
 const palette = @import("color.zig");
 const simd = @import("../../../../kernel/match/scan/simd.zig");
 const ml = @import("multiline.zig");
-const Regex = @import("../../../../kernel/match/regex/linear/program/core.zig").Regex;
-const Matcher = @import("../../../../kernel/match/regex/linear/ladder/matcher.zig").Matcher;
-const Caps = @import("../../../../kernel/match/regex/compile/captures.zig").Caps;
-const word = @import("../../../../kernel/match/regex/syntax/word.zig");
+const Regex = @import("../../../../kernel/match/regex/regex.zig").Regex;
+const Matcher = @import("../../../../kernel/match/regex/regex.zig").Matcher;
+const Caps = @import("../../../../kernel/match/regex/regex.zig").Caps;
+const word = @import("../../../../kernel/match/regex/regex.zig").word;
 
 const display = @import("output/display.zig");
 const replace = @import("output/replace.zig");

@@ -20,7 +20,7 @@ const simd = @import("../../../../../kernel/match/scan/simd.zig");
 const verify = @import("../../../../../kernel/match/scan/verify.zig");
 
 const Emitter = output.Emitter;
-const Matcher = @import("../../../../../kernel/match/regex/linear/ladder/matcher.zig").Matcher;
+const Matcher = @import("../../../../../kernel/match/regex/regex.zig").Matcher;
 const Worker = crew.Worker;
 const oom = args.oom;
 

@@ -82,13 +82,15 @@ pub const ward = @import("kernel/primitives/ward.zig");
 pub const parallel = @import("kernel/primitives/parallel.zig");
 
 // ── regex engine ──
-// Submodules are imported by their consumers directly; only the core + DFA
-// surfaces are re-exported at the root for the C-ABI / library consumers.
-pub const regex = @import("kernel/match/regex/linear/program/core.zig");
-pub const regex_dfa = @import("kernel/match/regex/linear/dfa/dfa.zig");
+// The engine is a sealed deep module: every consumer enters through its one
+// entry file, so a second grammar cannot grow beside it. These names re-export
+// the stages the C-ABI / library consumers bind, through that same door.
+const regex_engine = @import("kernel/match/regex/regex.zig");
+pub const regex = regex_engine.program;
+pub const regex_dfa = regex_engine.dfa;
 /// The engine-neutral match seam (`Matcher`) the presentation layer programs
 /// to — re-exported for the bench lab's isolated output-path profiles.
-pub const matcher = @import("kernel/match/regex/linear/ladder/matcher.zig");
+pub const matcher = regex_engine.ladder;
 
 // ── ranking ──
 pub const rank = @import("kernel/rank/rank.zig");
@@ -114,7 +116,7 @@ pub const argv = @import("surface/exec/cold/argv/args.zig");
 /// bench lab can profile the replacement template expander (`emit.expandInto`)
 /// against a naive reference in isolation, the same way it profiles the
 /// line-number itoa and the invert loop.
-pub const captures = @import("kernel/match/regex/compile/captures.zig");
+pub const captures = regex_engine.captures;
 
 // ── corpus + freshness ──
 pub const corpus = @import("corpus/tree/corpus.zig");

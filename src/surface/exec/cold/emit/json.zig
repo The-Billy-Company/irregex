@@ -30,8 +30,8 @@ const simd = @import("../../../../kernel/match/scan/simd.zig");
 const Opts = args.Opts;
 const die = args.die;
 const oom = args.oom;
-const Matcher = @import("../../../../kernel/match/regex/linear/ladder/matcher.zig").Matcher;
-const Caps = @import("../../../../kernel/match/regex/compile/captures.zig").Caps;
+const Matcher = @import("../../../../kernel/match/regex/regex.zig").Matcher;
+const Caps = @import("../../../../kernel/match/regex/regex.zig").Caps;
 
 pub const File = struct { path: []const u8, body: []const u8, explicit: bool = false };
 

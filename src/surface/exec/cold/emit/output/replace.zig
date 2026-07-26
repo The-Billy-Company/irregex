@@ -9,7 +9,7 @@
 const std = @import("std");
 const args = @import("../../argv/args.zig");
 const oom = args.oom;
-const Caps = @import("../../../../../kernel/match/regex/compile/captures.zig").Caps;
+const Caps = @import("../../../../../kernel/match/regex/regex.zig").Caps;
 const output = @import("../output.zig");
 const Emitter = output.Emitter;
 

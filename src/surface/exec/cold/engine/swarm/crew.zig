@@ -23,7 +23,7 @@ const sink_mod = @import("sink.zig");
 const treemap = @import("../../../../../corpus/index/phantom/treemap.zig");
 
 const FragKind = sink_mod.FragKind;
-const Matcher = @import("../../../../../kernel/match/regex/linear/ladder/matcher.zig").Matcher;
+const Matcher = @import("../../../../../kernel/match/regex/regex.zig").Matcher;
 const Opts = args.Opts;
 const Queue = queue.Queue;
 const Sink = sink_mod.Sink;

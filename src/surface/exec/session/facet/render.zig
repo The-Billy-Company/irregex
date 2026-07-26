@@ -31,8 +31,8 @@ const parallel = @import("../../../../kernel/primitives/parallel.zig");
 const query_mod = @import("../../../../kernel/match/query/query.zig");
 const request = @import("../answer/request.zig");
 const shm = @import("../conduit/shm.zig");
-const Regex = @import("../../../../kernel/match/regex/linear/program/core.zig").Regex;
-const matcher_mod = @import("../../../../kernel/match/regex/linear/ladder/matcher.zig");
+const Regex = @import("../../../../kernel/match/regex/regex.zig").Regex;
+const matcher_mod = @import("../../../../kernel/match/regex/regex.zig");
 const Matcher = matcher_mod.Matcher;
 const Pcre = matcher_mod.Pcre;
 

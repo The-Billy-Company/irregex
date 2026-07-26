@@ -28,7 +28,7 @@ const crest = @import("../../../../kernel/primitives/crest.zig");
 const gate = @import("gate.zig");
 const simd = @import("../../../../kernel/match/scan/simd.zig");
 
-const Matcher = @import("../../../../kernel/match/regex/linear/ladder/matcher.zig").Matcher;
+const Matcher = @import("../../../../kernel/match/regex/regex.zig").Matcher;
 const Opts = args.Opts;
 const oom = args.oom;
 

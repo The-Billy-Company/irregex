@@ -16,16 +16,16 @@
 
 const std = @import("std");
 const args = @import("../argv/args.zig");
-const captures_mod = @import("../../../../kernel/match/regex/compile/captures.zig");
+const captures_mod = @import("../../../../kernel/match/regex/regex.zig");
 const fault = @import("../../../../fault.zig");
-const pcre2 = @import("../../../../kernel/match/regex/pcre2/backend.zig");
+const pcre2 = @import("../../../../kernel/match/regex/regex.zig").pcre2;
 
 const Caps = captures_mod.Caps;
 const Captures = captures_mod.Captures;
-const Matcher = @import("../../../../kernel/match/regex/linear/ladder/matcher.zig").Matcher;
+const Matcher = @import("../../../../kernel/match/regex/regex.zig").Matcher;
 const Opts = args.Opts;
 const Pcre = pcre2.Pcre;
-const Regex = @import("../../../../kernel/match/regex/linear/program/core.zig").Regex;
+const Regex = @import("../../../../kernel/match/regex/regex.zig").Regex;
 const die = args.die;
 const oom = args.oom;
 
