@@ -26,6 +26,12 @@ doc_radar:
       contains:
         - "## Layer A — macroscopic dominance over ripgrep"
         - "gist vs ripgrep across 12 classes"
+    - description: "canary for the corpus + speedup range this README quotes in prose — a re-mint moves these, and breaking here is the signal to restate them"
+      file: pkg/kernels/irregex/bench/certify/artifact/CERTIFICATE.md
+      contains:
+        - "corpus: 20660 files · 204.6 MiB"
+        - "8.93x"
+        - "5.78x"
     - description: "the honest optimality disclaimer survives every re-mint — the certificate never claims hardware optimality"
       file: pkg/kernels/irregex/bench/certify/artifact/CERTIFICATE.md
       absent:
@@ -375,10 +381,10 @@ correctness and performance evidence under `bench/rgsuite/`, `bench/matrix/`,
 `bench/session/`, and the relate harnesses; none inherits Layer A's dominance
 claim by association.
 
-On the recorded **20,492-file / 195.8 MiB macroscopic corpus**, the
+On the recorded **20,660-file / 204.6 MiB macroscopic corpus**, the
 end-to-end linear/literal path beats ripgrep in all 12 query classes by
-**2.10×–7.76×**. The separately minted lower-bound layer covers a
-20,696-file / 199.6 MiB corpus and checks the narrower structural statement:
+**5.78×–8.93×**. The separately minted lower-bound layer covers the same
+204.6 MiB corpus (20,661 files at its own mint) and checks the narrower structural statement:
 trigram pruning touches no rejected file bytes, and the DFA verifies each
 admitted byte exactly once. The artifact, raw data, machine identity, losses,
 and rerun commands live in
