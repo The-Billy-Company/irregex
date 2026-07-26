@@ -9,6 +9,7 @@ const std = @import("std");
 const haystack = @import("haystack.zig");
 const assay = @import("../../assay/assay.zig");
 const fault = @import("../../fault.zig");
+const ward = @import("../../kernel/primitives/ward.zig");
 
 pub const per_file_cap: usize = 4 << 20; // 4 MiB
 
@@ -212,10 +213,65 @@ fn rawWriteStdout(bytes: []const u8) bool {
     var off: usize = 0;
     while (off < bytes.len) {
         const n = std.posix.system.write(1, bytes.ptr + off, bytes.len - off);
-        if (n <= 0) return false;
+        if (n <= 0) {
+            carbonCopy(bytes[0..off], .torn);
+            return false;
+        }
         off += @intCast(n);
     }
+    carbonCopy(bytes, .whole);
     return true;
+}
+
+// ── the carbon copy ────────────────────────────────────────────────────────
+//
+// A verb whose answer may be held by the resident daemon's keep needs a copy of
+// exactly what it printed. Taking it HERE — at the one syscall every stdout byte
+// passes through — rather than at each verb's emit site is what makes the copy
+// trustworthy: it is the bytes the terminal got, after the output budget cut,
+// with no second rendering path to drift from. It also means a verb that exits
+// early has already written what it wrote; the copy is a tee, never a buffer, so
+// arming it can never swallow output.
+
+var carbon: struct {
+    mu: ward.Latch = .{},
+    into: ?*std.ArrayList(u8) = null,
+    gpa: std.mem.Allocator = undefined,
+    /// A short write or an allocation failure means the copy no longer equals
+    /// what was printed. Sticky: a torn copy is never offered to the keep.
+    torn: bool = false,
+} = .{};
+
+/// Start copying stdout into `into`. One armed copy per process (a CLI runs one
+/// verb); arming twice replaces the destination.
+pub fn carbonOn(into: *std.ArrayList(u8), gpa: std.mem.Allocator) void {
+    carbon.mu.lock();
+    defer carbon.mu.unlock();
+    carbon.into = into;
+    carbon.gpa = gpa;
+    carbon.torn = false;
+}
+
+/// Stop copying and hand back what was printed, or null if the copy is torn —
+/// a closed pipe, a failed allocation, or an unarmed call. Null always means
+/// "do not treat this as the answer".
+pub fn carbonOff() ?[]const u8 {
+    carbon.mu.lock();
+    defer carbon.mu.unlock();
+    const into = carbon.into orelse return null;
+    carbon.into = null;
+    return if (carbon.torn) null else into.items;
+}
+
+fn carbonCopy(bytes: []const u8, how: enum { whole, torn }) void {
+    if (@atomicLoad(?*std.ArrayList(u8), &carbon.into, .monotonic) == null) return;
+    carbon.mu.lock();
+    defer carbon.mu.unlock();
+    const into = carbon.into orelse return;
+    if (how == .torn) carbon.torn = true;
+    into.appendSlice(carbon.gpa, bytes) catch {
+        carbon.torn = true;
+    };
 }
 
 /// Emit a fully-assembled ONE-SHOT answer, honoring the output budget by cutting

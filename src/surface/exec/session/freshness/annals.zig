@@ -21,6 +21,9 @@
 //!      an inexact event (rescan hint, kernel/user drop, id wrap, mount
 //!      churn), an unmappable delivery, or an OOM while noting poisons the
 //!      whole ledger — there is no full walk here to re-derive lost truth.
+//!      It poisons the WHICH, though, not the WHETHER: every doubt is still an
+//!      observed change, so it advances the epoch stamp too rather than
+//!      silencing it (see `epoch`).
 //!   3. The ledger is BOUNDED (`cap` distinct paths). Overflow evicts the
 //!      oldest half by delivery instant and advances `floor_ns` past them,
 //!      so old queries decline instead of reading an amputated answer.
@@ -82,6 +85,12 @@ pub const Annals = struct {
     prefix: ?[]u8 = null,
     doubt: bool = false,
     cap: usize = default_cap,
+    /// Monotone count of observed corpus changes — the ledger's other reading.
+    /// `since` answers WHICH files moved; this answers WHETHER anything did,
+    /// as one comparable number. That is all a cached whole-corpus answer needs
+    /// to know it is still the answer, and it survives the eviction that makes
+    /// the path map itself lossy.
+    stamp: u64 = 0,
 
     pub fn init(gpa: std.mem.Allocator) Annals {
         return .{ .gpa = gpa };
@@ -134,6 +143,7 @@ pub const Annals = struct {
         if (rel.len == 0 or haystack.underSkippedDir(rel)) return true;
         self.mu.lock();
         defer self.mu.unlock();
+        self.stamp += 1;
         if (self.map.getPtr(rel)) |ts| {
             ts.* = @max(ts.*, ts_ns); // a live delivery already outran the seed
             return true;
@@ -157,25 +167,24 @@ pub const Annals = struct {
     pub fn note(self: *Annals, abs: []const u8, now_ns: i128) void {
         self.mu.lock();
         defer self.mu.unlock();
-        if (self.doubt) return;
         const pfx = self.prefix orelse return; // unarmed: unanswerable anyway
-        const rel = relativize(pfx, abs) orelse {
-            self.doubt = true;
-            return;
-        };
+        const rel = relativize(pfx, abs) orelse return self.poison();
         if (rel.len == 0 or haystack.underSkippedDir(rel)) return; // the root itself / never-walked subtree
+        self.stamp += 1;
+        // Past this line the ledger records WHICH file moved, and a poisoned
+        // ledger has stopped doing that. The stamp above is the WHETHER, and it
+        // must keep advancing after a poison or a held answer would look fresh
+        // forever while the tree moved under it.
+        if (self.doubt) return;
         if (self.map.getPtr(rel)) |ts| {
             ts.* = now_ns;
             return;
         }
         if (self.map.count() >= self.cap) self.evictOldest();
-        const owned = self.gpa.dupe(u8, rel) catch {
-            self.doubt = true;
-            return;
-        };
+        const owned = self.gpa.dupe(u8, rel) catch return self.poison();
         self.map.put(self.gpa, owned, now_ns) catch {
             self.gpa.free(owned);
-            self.doubt = true;
+            self.poison();
         };
     }
 
@@ -184,7 +193,18 @@ pub const Annals = struct {
     pub fn noteDoubt(self: *Annals) void {
         self.mu.lock();
         defer self.mu.unlock();
+        self.poison();
+    }
+
+    /// Lose the WHICH, keep the WHETHER. Every poisoning is itself an observed
+    /// change the ledger could not place, so it advances the epoch as well —
+    /// the conservative reading, since a bumped stamp retires every held
+    /// answer. Skipping the bump would be the unsound direction: an
+    /// unattributable event that left the epoch alone would let a stale answer
+    /// look fresh. Called under `mu`.
+    fn poison(self: *Annals) void {
         self.doubt = true;
+        self.stamp += 1;
     }
 
     /// Evict the oldest half of the ledger by delivery instant and advance
@@ -192,10 +212,7 @@ pub const Annals = struct {
     /// them declines instead of silently missing paths. Called under `lock`.
     fn evictOldest(self: *Annals) void {
         const n = self.map.count();
-        const stamps = self.gpa.alloc(i128, n) catch {
-            self.doubt = true;
-            return;
-        };
+        const stamps = self.gpa.alloc(i128, n) catch return self.poison();
         defer self.gpa.free(stamps);
         var it = self.map.valueIterator();
         var i: usize = 0;
@@ -208,10 +225,7 @@ pub const Annals = struct {
         var kit = self.map.iterator();
         while (kit.next()) |e| {
             if (e.value_ptr.* > cut) continue;
-            doomed.append(self.gpa, e.key_ptr.*) catch {
-                self.doubt = true;
-                return;
-            };
+            doomed.append(self.gpa, e.key_ptr.*) catch return self.poison();
         }
         for (doomed.items) |k| {
             _ = self.map.remove(k);
@@ -219,6 +233,29 @@ pub const Annals = struct {
         }
         // Every remaining entry is > cut; queries at/before cut lost coverage.
         self.floor_ns = @max(self.floor_ns, cut + 1);
+    }
+
+    /// The corpus's current change epoch, or null when the ledger cannot vouch
+    /// for it (unarmed, or poisoned by an unattributable event).
+    ///
+    /// Two runs that read the same epoch saw the same corpus, so an answer
+    /// computed under one is still exact under the other.
+    ///
+    /// Neither `doubt` nor the coverage floor gates this, and both omissions
+    /// are the point: they mark the ledger's inability to say WHICH files
+    /// moved, while this reading only claims WHETHER any did. Every eviction
+    /// rides a `note` that already advanced the stamp, and every poisoning
+    /// advances it directly — so the two failures that make `since` decline
+    /// leave this answer conservative rather than wrong. Only an UNARMED
+    /// ledger returns null: it has observed nothing, so it cannot claim a
+    /// corpus stood still. Under ten concurrent editors that distinction is
+    /// the whole difference between a keep that works and one poisoned within
+    /// minutes of daemon start.
+    pub fn epoch(self: *Annals) ?u64 {
+        self.mu.lock();
+        defer self.mu.unlock();
+        if (self.prefix == null) return null;
+        return self.stamp;
     }
 
     /// Answer "which paths changed since `since_ns`?" — or null when the
@@ -392,4 +429,38 @@ test "doubt is sticky forever" {
     an.note("/r/a", 10);
     try t.expect(an.since(t.allocator, 0) == null);
     try t.expect(an.since(t.allocator, 10_000) == null);
+}
+
+test "an unarmed ledger has no epoch; an armed still one is a stable epoch" {
+    const t = std.testing;
+    var an = Annals.init(t.allocator);
+    defer an.deinit();
+    try t.expect(an.epoch() == null); // never observed anything
+    armFor(&an, "/r", 0);
+    const at_rest = an.epoch() orelse return error.TestUnexpectedResult;
+    try t.expectEqual(at_rest, an.epoch().?); // reading it does not move it
+    an.note("/r/a.zig", 10);
+    try t.expectEqual(at_rest + 1, an.epoch().?);
+    an.note("/r/.git/HEAD", 11); // skip-dir subtree is not corpus change
+    try t.expectEqual(at_rest + 1, an.epoch().?);
+}
+
+test "doubt keeps the epoch answerable and advances it" {
+    const t = std.testing;
+    var an = Annals.init(t.allocator);
+    defer an.deinit();
+    armFor(&an, "/r", 0);
+    const before = an.epoch() orelse return error.TestUnexpectedResult;
+
+    an.note("/elsewhere/x.zig", 10); // unmappable delivery → poison
+    try t.expect(an.since(t.allocator, 0) == null); // WHICH is gone …
+    const after = an.epoch() orelse return error.TestUnexpectedResult; // … WHETHER is not
+    try t.expect(after > before); // and it counted the change it could not place
+
+    // The load-bearing half: a poisoned ledger records no more PATHS, but it
+    // must keep counting CHANGES, or a held answer would look epoch-fresh
+    // forever while the tree moved under it.
+    an.note("/r/b.zig", 20);
+    try t.expect(an.epoch().? > after);
+    try t.expect(an.since(t.allocator, 0) == null); // still no WHICH, as before
 }

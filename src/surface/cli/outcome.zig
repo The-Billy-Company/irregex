@@ -36,6 +36,7 @@
 const std = @import("std");
 const assay = @import("../../assay/assay.zig");
 const paths = @import("../../corpus/scope/paths.zig");
+const reprise = @import("reprise.zig");
 
 /// Fatal exit with ripgrep's error code (2) and a formatted reason — the way a
 /// face rejects input it cannot honor (an unknown flag, a bad number, a glob
@@ -54,6 +55,30 @@ pub fn die(comptime msg: []const u8, args: anytype) noreturn {
 /// (`paths.oom_notice`) to stay in step, so this is now the same function under
 /// the name call sites read best.
 pub const oom = paths.allocFailure;
+
+/// A verb needs a persisted artifact and there isn't a usable one: say which
+/// state it is in, where it should live, and the command that produces it.
+///
+/// Fail-closed by contract. The artifacts that *can* degrade (the kinship atlas,
+/// the fragment atlas) answer live instead and never reach here; the ones that
+/// cannot — the codex shelf, whose whole claim is an exact count — must refuse
+/// rather than serve a lesser answer under the same name. Three faces read that
+/// one shelf, and a per-face copy of this sentence is how two of them end up
+/// naming a command the third renamed.
+///
+/// Takes the loader's error rather than a bool so a third state (a foreign
+/// tree, a version behind) becomes one more arm here instead of a second
+/// argument at every call site.
+pub fn needArtifact(e: anyerror, what: []const u8, path: []const u8, rebuild: []const u8) noreturn {
+    const gone = e == error.FileNotFound;
+    die("{s} {s} at {s} — run {s} to {s} it\n", .{
+        if (gone) "no" else "corrupt",
+        what,
+        path,
+        rebuild,
+        if (gone) "build" else "rebuild",
+    });
+}
 
 /// The last resort: an error escaped a face's `run`. Render it on the fault
 /// channel and exit `2`.
@@ -100,9 +125,11 @@ pub const Outcome = struct {
     }
 
     /// Exit the process on this outcome — the one place a face terminates on a
-    /// search result.
+    /// search result, which is why it is also where an answer becomes reusable.
+    /// A `die`/`fatal` exit deliberately does NOT pass here: an error is not an
+    /// answer, and nothing about it should be held.
     pub fn exit(o: Outcome) noreturn {
-        std.process.exit(o.code());
+        reprise.depart(o.code());
     }
 };
 
