@@ -147,8 +147,8 @@ fn fileDoc(buf_in: []const u8, path: []const u8, re: *const Regex, sim: *Regex.S
     return .{ .id = id, .matches = @max(match_lines, 1), .is_def = definition > 0, .definition = definition, .shape_hash = shape_hash, .best_line = if (defline != 0) defline else @max(first, 1), .depth = pathDepth(path), .is_generated = signals.isGenerated(path, buf), .is_mirror = mirror.isPath(path), .content_hash = mirror.fingerprint(buf), .content_len = buf.len };
 }
 
-const readFileInto = @import("../read/grepfile.zig").readFileInto;
-const committedPrefix = @import("../read/grepfile.zig").committedPrefix;
+const readFileInto = @import("../read/slurp.zig").readFileInto;
+const committedPrefix = @import("../read/binary.zig").committedPrefix;
 
 /// Below this candidate count the thread-spawn overhead isn't worth it and the
 /// read runs inline (mirrors `run.zig`'s `par_threshold`).
@@ -333,12 +333,22 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, roots: []const 
     var p = (persist.loadQuiet(gpa, io) catch null) orelse return null;
     defer p.deinit();
     const load = load_span.read(io);
+    assay.trace(.rank, "rank phase: cold-load {d:.1} ms · {d} docs\n", .{ load.ms(), p.paths.items.len });
 
     const query_span = assay.Span.open(io);
+    // `GIST_TRACE=rank` splits what the summary below can only report as one
+    // `rank_ms`. The four phases have very different failure modes — a slow
+    // resolve means the trigram prefilter admitted too much, a slow read means
+    // the candidates were large, a slow scope means the root filter is doing the
+    // pruning the index should have — and the summary cannot tell them apart.
+    var phase = assay.Span.open(io);
     var one: [1][]const u8 = undefined;
     const filters = rankFilters(re, caseless, &one);
     var cand = try fresh.candidates(gpa, io, &p, &p.paths, filters, p.roots.items);
     defer cand.deinit();
+    assay.trace(.rank, "rank phase: resolve {d:.1} ms · {d} candidates of {d} docs\n", .{
+        phase.lap(io).ms(), cand.ids.len, p.paths.items.len,
+    });
 
     // PATH roots gate before the read — without this, `gist pat dir/ --rank`
     // ranks the whole indexed corpus (the bug that flooded agents with
@@ -349,16 +359,26 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, roots: []const 
         try scoped.ensureTotalCapacity(gpa, cand.ids.len);
         for (cand.ids) |d| if (d < p.paths.items.len and underAnyRoot(p.paths.items[d], roots)) scoped.appendAssumeCapacity(d);
     }
+    assay.trace(.rank, "rank phase: scope {d:.1} ms · {d} in-root of {d} candidates\n", .{
+        phase.lap(io).ms(), scoped.items.len, cand.ids.len,
+    });
 
     var docs: std.ArrayList(Doc) = .empty;
     defer docs.deinit(gpa);
     var read_files: usize = 0;
     try parallelRank(gpa, p.paths.items, scoped.items, re, &docs, &read_files, binary_detect);
+    assay.trace(.rank, "rank phase: read+feature {d:.1} ms · {d} read · {d} matched\n", .{
+        phase.lap(io).ms(), read_files, docs.items.len,
+    });
 
     // The fusion: lexical density + symbol(def) boost + shallow-path + authored
     // (codegen demotion), RRF-fused. null is the external graph-centrality hook.
     const query = query_span.read(io);
     const top = try emitRanked(gpa, io, re, docs.items, .{ .disk = p.paths.items }, k);
+    // Fuse + snippet render lands AFTER the summary's `rank_ms` mark, so this
+    // segment is invisible to every number below it — the one phase only the
+    // lens can report.
+    assay.trace(.rank, "rank phase: fuse+render {d:.1} ms · top {d}\n", .{ phase.lap(io).ms(), top });
     assay.summary(gpa, false, "gist: {d} ranked matches (top {d}) · read {d}/{d} candidates · cold-load {d:.1} ms · rank {d:.1} ms · total {d:.1} ms\n", .{ docs.items.len, top, read_files, p.paths.items.len, load.ms(), query.ms(), load.add(query).ms() }, .{
         .{ "verb", "s", "rank" },
         .{ "ranked_matches", "d", docs.items.len },
@@ -376,12 +396,17 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, roots: []const 
 /// ranked-match count (0 ⇒ the caller may hint).
 pub fn runLive(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, files: []const LiveFile, k: usize, binary_detect: bool) !usize {
     const query_span = assay.Span.open(io);
+    var phase = assay.Span.open(io);
     var docs: std.ArrayList(Doc) = .empty;
     defer docs.deinit(gpa);
     var sim = try Regex.Sim.init(gpa, re);
     defer sim.deinit();
     for (files, 0..) |file, id| if (fileDoc(file.bytes, file.path, re, &sim, @intCast(id), binary_detect)) |doc| try docs.append(gpa, doc);
+    assay.trace(.rank, "rank phase: feature {d:.1} ms · {d} scanned · {d} matched (live)\n", .{
+        phase.lap(io).ms(), files.len, docs.items.len,
+    });
     const top = try emitRanked(gpa, io, re, docs.items, .{ .memory = files }, k);
+    assay.trace(.rank, "rank phase: fuse+render {d:.1} ms · top {d} (live)\n", .{ phase.lap(io).ms(), top });
     const query = query_span.read(io);
     assay.summary(gpa, false, "gist: {d} ranked matches (top {d}) · live-scanned {d} files · rank {d:.1} ms\n", .{ docs.items.len, top, files.len, query.ms() }, .{
         .{ "verb", "s", "rank" },
@@ -404,12 +429,17 @@ pub fn runLive(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, files: []co
 /// warm-path measurability the buffer sink exists for).
 pub fn renderLive(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, files: []const LiveFile, k: usize, out: *std.ArrayList(u8), binary_detect: bool) !usize {
     const query_span = assay.Span.open(io);
+    var phase = assay.Span.open(io);
     var docs: std.ArrayList(Doc) = .empty;
     defer docs.deinit(gpa);
     var sim = try Regex.Sim.init(gpa, re);
     defer sim.deinit();
     for (files, 0..) |file, id| if (fileDoc(file.bytes, file.path, re, &sim, @intCast(id), binary_detect)) |doc| try docs.append(gpa, doc);
+    assay.trace(.rank, "rank phase: feature {d:.1} ms · {d} scanned · {d} matched (warm)\n", .{
+        phase.lap(io).ms(), files.len, docs.items.len,
+    });
     const top = try renderRanked(gpa, io, re, docs.items, .{ .memory = files }, k, out);
+    assay.trace(.rank, "rank phase: fuse+render {d:.1} ms · top {d} (warm)\n", .{ phase.lap(io).ms(), top });
     const query = query_span.read(io);
     assay.summary(gpa, false, "gist: {d} ranked matches (top {d}) · warm-scanned {d} files · rank {d:.1} ms\n", .{ docs.items.len, top, files.len, query.ms() }, .{
         .{ "verb", "s", "rank" },

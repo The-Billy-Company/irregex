@@ -23,12 +23,14 @@ const crest = @import("../../../../kernel/primitives/crest.zig");
 const elide = @import("elide.zig");
 const fault = @import("../../../../fault.zig");
 const fresh = @import("../../../../corpus/index/trigrams/fresh.zig");
-const grepfile = @import("../read/grepfile.zig");
+const inode = @import("../read/inode.zig");
 const ignore = @import("../../../../corpus/tree/ignore.zig");
 const ingest = @import("../read/ingest.zig");
+const legible = @import("../read/legible.zig");
 const order = @import("order.zig");
 const paths_mod = @import("../../../../corpus/scope/paths.zig");
 const persist = @import("../../../../corpus/index/trigrams/persist.zig");
+const slurp = @import("../read/slurp.zig");
 const simd = @import("../../../../kernel/match/scan/simd.zig");
 const verify = @import("../../../../kernel/match/scan/verify.zig");
 const walk = @import("walk.zig");
@@ -38,12 +40,21 @@ const Dir = std.Io.Dir;
 const Opts = args.Opts;
 const SortCtx = order.SortCtx;
 const cmpFiles = order.cmpFiles;
-const decodeBom = grepfile.decodeBom;
+const decodeBom = legible.decodeBom;
 const replaceSep = paths_mod.replaceSep;
 const die = args.die;
 const gather = walk.gather;
 const oom = args.oom;
 const sortTimeOf = order.sortTimeOf;
+
+/// `assembleIndexSkip`'s private control flow — the serial twin of `elide.Err`
+/// (ADR-373 law 2). Both non-OOM members are declinatures the instant they cross
+/// into `buildIndexSkip`: "no index on disk" and "the table would not pay for
+/// itself" each name the live read as the tier that answers *correctly*, not
+/// worse. Inside this file they are only how an early exit reaches `errdefer`.
+/// Named and non-`pub` so an inferred error set cannot carry a spelling of
+/// "declined" out into the tier's fault vocabulary.
+const Err = error{ NoIndex, NotWorthwhile, OutOfMemory };
 
 pub const InFile = struct { path: []const u8, scope: []const u8, bytes: []const u8, explicit: bool = false, sort_time: i96 = 0, root: u32 = 0 };
 
@@ -94,12 +105,12 @@ const mmap_min_bytes: usize = 4 << 20;
 fn readOneCandidate(a: std.mem.Allocator, scratch: []u8, c: Candidate, needle: ?simd.Gate, cfg: *const ingest.Config) ?InFile {
     // Untransformed large file: map it (no read loop, no dupe). A transforming
     // run (-z/--pre/-E) must read + rewrite the raw bytes, so it can't map.
-    if (!cfg.active()) if (grepfile.mapFile(c.disk, mmap_min_bytes)) |mapped| {
+    if (!cfg.active()) if (slurp.mapFile(c.disk, mmap_min_bytes)) |mapped| {
         const body = decodeBom(a, mapped);
         if (needle) |gate| if (!verify.gateWide(a, body, gate)) return null;
         return .{ .path = c.rel, .scope = c.scope, .bytes = body, .explicit = c.explicit, .root = c.root };
     };
-    const raw = grepfile.readFileRaw(a, scratch, c.disk) orelse return null;
+    const raw = slurp.readFileRaw(a, scratch, c.disk) orelse return null;
     // -z/--pre/-E rewrite a file's bytes before matching (decompress, preprocess,
     // transcode); `ingest.apply` owns that whole pipeline (and folds in BOM/
     // encoding). Null means the file is DROPPED — an errored `--pre` whose latch
@@ -270,11 +281,10 @@ fn buildIndexSkip(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, filte
     if (assembleIndexSkip(gpa, io, parsed, filters, sieve)) |s| return .{ .got = s } else |e| return switch (e) {
         error.NoIndex => .{ .declined = .index_absent },
         error.NotWorthwhile => .{ .declined = .not_worthwhile },
-        // A genuine fault in BUILDING the oracle — an allocation failure, an
-        // unreadable postings blob. Every persisted artifact fails CLOSED to
-        // the live path (`fault.Persist`), so from this query's side the index
-        // is simply not there: it loses the elision and nothing else.
-        else => .{ .declined = .index_absent },
+        // A genuine fault in BUILDING the oracle. Every persisted artifact fails
+        // CLOSED to the live path (`fault.Persist`), so from this query's side
+        // the index is simply not there: it loses the elision and nothing else.
+        error.OutOfMemory => .{ .declined = .index_absent },
     };
 }
 
@@ -289,7 +299,7 @@ fn computeIndexSkip(out: *fault.Answer(IndexSkip), gpa: std.mem.Allocator, io: s
 /// down each return path. Those errors are this file's private control flow,
 /// like the shadow rewriter's `Bail`; `buildIndexSkip` is where they become the
 /// seam's typed declinature.
-fn assembleIndexSkip(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, filters: []const []const u8, sieve: crest.Vector) !IndexSkip {
+fn assembleIndexSkip(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, filters: []const []const u8, sieve: crest.Vector) Err!IndexSkip {
     var p = (persist.loadQuiet(gpa, io) catch return error.NoIndex) orelse return error.NoIndex;
     errdefer p.deinit();
     // Snapshot the indexed path set BEFORE freshness widens `p.paths` with new
@@ -299,6 +309,9 @@ fn assembleIndexSkip(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, fi
     // Freshness folds over the roots the index was BUILT with (persisted
     // beside it), unless the query's own explicit roots narrow the walk.
     const fresh_roots = if (parsed.roots.len > 0) parsed.roots else p.roots.items;
+    // `fresh.candidates` fails only on OOM: every unreadable sidecar and
+    // untakeable stat it meets already folds CLOSED into "assume changed",
+    // which is why the fold has no declinature of its own to convert here.
     var cand = try fresh.candidates(gpa, io, &p, &p.paths, filters, fresh_roots);
     errdefer cand.deinit();
     var candidates = try std.DynamicBitSet.initEmpty(gpa, p.paths.items.len);
@@ -336,7 +349,7 @@ fn assembleIndexSkip(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, fi
 /// `walked` counts every candidate the walk ADMITTED (post ignore/type/glob/
 /// hidden filters, pre body-read) — including index-elided files, which rg
 /// would still have opened. It feeds the implicit-path "No files were
-/// searched" heuristic (`grepfile.printNothingSearched`), which must fire on
+/// searched" heuristic (`notice.printNothingSearched`), which must fire on
 /// "the filters excluded everything", never on "the index proved everything
 /// out" or "the pattern missed".
 pub const Collected = struct { files: []InFile, recursive: bool, path_error: bool, walked: usize };
@@ -405,7 +418,7 @@ pub fn collectFiles(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, pa
         all.ensureTotalCapacity(a, candidates.items.len) catch oom();
         for (candidates.items) |c| {
             if (o.max_filesize != 0) {
-                const st = grepfile.statPath(c.disk) orelse continue;
+                const st = inode.statPath(c.disk) orelse continue;
                 if (st.size > o.max_filesize) continue;
             }
             all.appendAssumeCapacity(.{ .path = c.rel, .scope = c.scope, .bytes = "", .explicit = c.explicit, .root = c.root });

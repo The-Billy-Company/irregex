@@ -12,7 +12,7 @@
 
 const std = @import("std");
 const args = @import("../argv/args.zig");
-const grepfile = @import("../read/grepfile.zig");
+const inode = @import("../read/inode.zig");
 const intake = @import("intake.zig");
 
 const Dir = std.Io.Dir;
@@ -96,7 +96,7 @@ pub fn sortTimeOf(io: std.Io, key: args.SortKey, path: []const u8) i96 {
 /// stat`, Linux in `statx` BTIME; gist declines to invent one elsewhere rather
 /// than silently mislabel ctime as creation.
 fn createdTimeNs(path: []const u8) ?i96 {
-    return (grepfile.statPath(path) orelse return null).birthtime_ns;
+    return (inode.statPath(path) orelse return null).birthtime_ns;
 }
 test "sort comparator: path + time keys, ascending and reversed, path-tiebroken" {
     const t = std.testing;

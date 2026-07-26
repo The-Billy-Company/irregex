@@ -202,9 +202,14 @@ pub fn loadQuiet(gpa: std.mem.Allocator, io: std.Io) !?Persisted {
 /// Doc→path table integrity: the index guarantees every candidate id < doc_count,
 /// but that only prevents an out-of-bounds path lookup if the table holds EXACTLY
 /// doc_count entries. Called by the loader; exposed for tests.
-pub const PairError = error{ PathTableMismatch, GenerationMismatch };
+///
+/// Both members come from the declared `persist` domain (ADR-373 law 2). A path
+/// table of the wrong length IS corruption — the two blobs were written by
+/// different builds — and saying so in the shared vocabulary is what lets the
+/// loader handle every untrustworthy-bytes fact with one prong.
+pub const PairError = error{ Corrupt, GenerationMismatch };
 pub fn validatePersistedPair(doc_count: u32, paths: []const []const u8) PairError!void {
-    if (paths.len != doc_count) return PairError.PathTableMismatch;
+    if (paths.len != doc_count) return PairError.Corrupt;
 }
 
 pub fn validateGeneration(observed: []const u8, published: []const u8) PairError!void {

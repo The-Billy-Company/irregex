@@ -16,7 +16,7 @@
 const std = @import("std");
 const render = @import("render.zig");
 const request = @import("../answer/request.zig");
-const grepfile = @import("../../cold/read/grepfile.zig");
+const slurp = @import("../../cold/read/slurp.zig");
 
 const Doc = render.Doc;
 const RenderError = render.RenderError;
@@ -140,7 +140,7 @@ test "renderLines: implicit binary emits pre-NUL-buffer matches + WARNING, or no
 
     // A match in a complete buffer BEFORE the one holding the first NUL emits,
     // then the implicit-file WARNING (cold `handleBinary` verbatim).
-    const pad = try a.alloc(u8, grepfile.BUFCAP);
+    const pad = try a.alloc(u8, slurp.BUFCAP);
     @memset(pad, 'x');
     var body: std.ArrayList(u8) = .empty;
     try body.appendSlice(a, "needle early\n");

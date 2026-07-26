@@ -38,9 +38,10 @@
 //! drain that saw it).
 
 const std = @import("std");
+const fault = @import("../../../../fault.zig");
 const ignore = @import("../../../../corpus/tree/ignore.zig");
 const paths = @import("../../../../corpus/scope/paths.zig");
-const grepfile = @import("../../cold/read/grepfile.zig");
+const inode = @import("../../cold/read/inode.zig");
 const Dir = std.Io.Dir;
 const realpathAlloc = paths.realpathAlloc;
 
@@ -50,6 +51,18 @@ const realpathAlloc = paths.realpathAlloc;
 /// declining to the full walk would only hit the same wall with the fault
 /// laundered into a slower path.
 const Oom = std.mem.Allocator.Error;
+
+/// `enumerate`'s private control-flow signal: this subtree cannot be enumerated
+/// soundly, so nothing short of the full walk may be trusted. It **never leaves
+/// the module** — `walkSubtree` converts it at the boundary into
+/// `Decline.freshness_unprovable`, which is the same fact `Verdict.needs_full`
+/// already carries for `resolve` (ADR-373 law 1: one fact, one channel, and the
+/// success position so `try` cannot turn a fallback into an abort).
+///
+/// Named and non-`pub` on purpose. Spelled inline as `error{NeedFull}!void` in
+/// each signature it would be inferred out of the file and owe the global fault
+/// taxonomy a member for what is purely this resolver's business.
+const Unscoped = error{NeedFull};
 
 /// One resolved watcher path, in KEY SPACE (the exact path-string dialect the
 /// session's corpus keys use: `prefix-joined-from-root`, CWD-relative when the
@@ -126,8 +139,8 @@ pub const Delta = struct {
     fn statVerdict(self: *Delta, rel: []const u8) Oom!Verdict {
         // `lstat` mode bits (never following a symlink — the walk treats a
         // symlink as absent), null when the path is gone/unreachable. Rides the
-        // shared portable raw-stat shim (`grepfile.lstatPath`).
-        const st = grepfile.lstatPath(rel) orelse return .{ .gone = rel };
+        // shared portable raw-stat shim (`inode.lstatPath`).
+        const st = inode.lstatPath(rel) orelse return .{ .gone = rel };
         if (std.posix.S.ISDIR(st.mode)) return .{ .subtree = rel };
         if (!std.posix.S.ISREG(st.mode)) return .{ .gone = rel };
         return if (try self.fileAdmitted(rel)) .{ .file = rel } else .{ .gone = rel };
@@ -149,17 +162,26 @@ pub const Delta = struct {
     /// Enumerate every file the certified walk would admit under directory
     /// `rel` right now, into `sink` (arena-owned keys). An inadmissible or
     /// vanished `rel` yields an empty sink (the caller tombstones the scope).
-    /// An unreadable directory is `error.NeedFull` — cold reports walk errors
-    /// and exits 2, so a silently gapped subtree may never look clean.
-    pub fn walkSubtree(self: *Delta, rel: []const u8, sink: *std.StringHashMapUnmanaged(void)) error{ NeedFull, OutOfMemory }!void {
-        const root = self.rootOf(rel) orelse return error.NeedFull;
-        if (!try self.chainAdmitted(root, rel)) return;
+    ///
+    /// An unreadable directory **declines** rather than faulting: cold reports
+    /// walk errors and exits 2, so a silently gapped subtree may never look
+    /// clean, and the sound answer is the full walk. The declinature rides the
+    /// success position (ADR-373 law 1) precisely because the tempting `try`
+    /// here would abort a reconcile that has a correct slower answer.
+    pub fn walkSubtree(self: *Delta, rel: []const u8, sink: *std.StringHashMapUnmanaged(void)) Oom!fault.Answer(void) {
+        const scoped: fault.Answer(void) = .{ .got = {} };
+        const root = self.rootOf(rel) orelse return .{ .declined = .freshness_unprovable };
+        if (!try self.chainAdmitted(root, rel)) return scoped;
         var d = Dir.cwd().openDir(self.io, rel, .{ .iterate = true }) catch |e| switch (e) {
-            error.FileNotFound, error.NotDir => return, // vanished since resolve — scope is empty
-            else => return error.NeedFull,
+            error.FileNotFound, error.NotDir => return scoped, // vanished since resolve — scope is empty
+            else => return .{ .declined = .freshness_unprovable },
         };
         d.close(self.io);
-        try self.enumerate(rel, sink);
+        self.enumerate(rel, sink) catch |e| switch (e) {
+            error.NeedFull => return .{ .declined = .freshness_unprovable },
+            error.OutOfMemory => |oom| return oom,
+        };
+        return scoped;
     }
 
     // ── internals ──
@@ -210,7 +232,7 @@ pub const Delta = struct {
     /// The recursive descent of `walkSubtree`: same admission decisions as
     /// `walkDirLinked`'s `.directory`/`.file` arms under default `Opts`
     /// (symlinks and specials are dropped — the default walk never follows).
-    fn enumerate(self: *Delta, dir_rel: []const u8, sink: *std.StringHashMapUnmanaged(void)) error{ NeedFull, OutOfMemory }!void {
+    fn enumerate(self: *Delta, dir_rel: []const u8, sink: *std.StringHashMapUnmanaged(void)) (Unscoped || Oom)!void {
         var d = Dir.cwd().openDir(self.io, dir_rel, .{ .iterate = true }) catch return error.NeedFull;
         defer d.close(self.io);
         var it = d.iterate();

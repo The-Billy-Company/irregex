@@ -36,7 +36,7 @@ pub fn spanLast(sp: Span) usize {
 }
 
 /// Split `body` into physical lines on `term`, keeping each line's byte ranges.
-/// Mirrors `grepfile.collectLines`' rg line semantics (a trailing terminator
+/// Mirrors `legible.collectLines`' rg line semantics (a trailing terminator
 /// yields no phantom empty line) but retains offsets the multiline locators need.
 /// Pre-sized from one terminator count so the split is a single allocation.
 pub fn splitLines(a: std.mem.Allocator, body: []const u8, term: u8) []Line {

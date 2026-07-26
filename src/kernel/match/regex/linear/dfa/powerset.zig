@@ -1,36 +1,42 @@
-//! gist — powerset (subset) construction: determinizes the Thompson NFA in
-//! `syntax.zig` into the immutable byte-class `Dfa` (`dfa.zig`). Built **eagerly**
-//! at compile (these patterns are tiny); the result is scratch-free and freely
-//! shared across threads, exactly like the bit engine it supersedes.
+//! gist — the EAGER driver of the subset construction: determinizes the Thompson
+//! NFA in `syntax.zig` to fixpoint at compile time and freezes the result into the
+//! immutable byte-class `Dfa` (`dfa.zig`), which is scratch-free and freely shared
+//! across threads.
 //!
-//! Determinization (powerset) over the Thompson NFA:
-//!   * **Byte classes** — bytes that no consuming state distinguishes collapse to
-//!     one equivalence class, shrinking the alphabet (and the transition table)
-//!     from 256 to a handful of columns. (RE2/rust-`regex` `ByteClasses`.)
-//!   * **Line anchors** — `lineMatch` runs on a single line, so the only
-//!     boundaries are BOL (before byte 0) and EOL (after the last byte). `^` is
-//!     resolved once in the start state (`at_start=true`); `$` is resolved by a
-//!     separate **final** transition table closed with `at_end=true` — the
-//!     single-line analogue of RE2's one-byte match delay / EOI sentinel. So we
-//!     keep two tables: `trans_in` (interior bytes) and `trans_fin` (last byte).
-//!   * **Unanchored search** re-seeds the NFA start into every transition (the
-//!     standard `.*`-prefix trick); `^`-anchored programs (`startsAnchored`) do
-//!     not, and dead-state to `false` the instant their thread set drains.
+//! The construction itself — byte classes, the assertion-resolving epsilon-closure,
+//! the transition step, subset interning — lives in `subset.zig` and is shared with
+//! the on-demand driver in `lazy.zig`, so the two can never disagree about what a
+//! pattern means. What this file owns is the *policy*: walk a worklist until no new
+//! state appears, then apply the layout tricks that only a finished automaton
+//! admits.
 //!
-//! Powerset blow-up is bounded: past `max_states` the build bails to null and the
-//! caller keeps the Pike VM, which stays the correctness reference (the
+//! Eager-only optimizations applied here:
+//!   * **Line anchors** — `lineMatch` runs on a single line, so the only boundaries
+//!     are BOL (before byte 0) and EOL (after the last byte). `^` is resolved once
+//!     in the start state (`at_start=true`); `$` is resolved by a separate **final**
+//!     transition table closed with `at_end=true` — the single-line analogue of
+//!     RE2's one-byte match delay / EOI sentinel.
+//!   * **Start-state acceleration** — derived from the finished start row.
+//!   * **Premultiplication** — every state value rewritten to its row offset.
+//!
+//! Blow-up is bounded by `max_states`: past it the eager build bails to null and
+//! the caller keeps the Pike VM, which stays the correctness reference (the
 //! differential-fuzz oracle). Counted repetition (`a{1000}`) yields a linear, not
 //! exponential, DFA, so the cap only ever trips on genuinely pathological
 //! alternations.
+//!
+//! A state cap alone does NOT bound compile time, which is why the lazy driver
+//! exists: `\w+X` determinizes to only 332 states, yet each closure runs over the
+//! ~10³-state UTF-8 trie that Unicode `\w` (137,936 codepoints in 748 ranges)
+//! lowers to, so this eager walk spends ~15 ms discovering a small automaton.
 
 const std = @import("std");
 const syn = @import("../../syntax/syntax.zig");
 const prefilter = @import("../../analysis/prefilter.zig");
-const bits = @import("../../../../primitives/bits.zig");
-const word = @import("../../syntax/word.zig");
+const subset = @import("subset.zig");
 const State = syn.State;
 const Dfa = @import("dfa.zig").Dfa;
-const B64 = bits.Field(u64);
+const unknown = subset.unknown;
 
 /// Start-state acceleration eligibility (mirrors rust-regex `accel.rs`): only
 /// accelerate when the start state's escape set is ≤ this many bytes, past which
@@ -43,292 +49,84 @@ const max_accel_bytes: usize = 3;
 /// pathological exponential alternation can't blow compile time or memory.
 pub const max_states: u32 = 4096;
 
-const unknown: u32 = std.math.maxInt(u32); // unfilled transition slot sentinel
-
-const SetCtx = struct {
-    pub fn hash(_: SetCtx, k: []const u64) u64 {
-        return std.hash.Wyhash.hash(0, std.mem.sliceAsBytes(k));
-    }
-    pub fn eql(_: SetCtx, a: []const u64, b: []const u64) bool {
-        return std.mem.eql(u64, a, b);
-    }
-};
-const SetMap = std.HashMap([]const u64, u32, SetCtx, std.hash_map.default_max_load_percentage);
-
-/// Builder scratch — the powerset machinery (subset map, NFA-closure stack,
-/// reusable bitsets) that produces the immutable `Dfa`. Discarded after `build`.
-/// Each DFA state's key is one heap `[]u64` of length `words+1`: the consume-set
-/// bits followed by the match flag (which joins the identity). `map` and `sets`
-/// share that buffer; `sets` owns it (freed once on teardown).
-const Builder = struct {
+/// The eager driver's expansion frontier. State ids are dense and handed out in
+/// order, so `queued` grows one slot per interned state and needs no map.
+const Worklist = struct {
     gpa: std.mem.Allocator,
-    states: []const State, // the Thompson NFA program
-    start_nfa: u32,
-    anchored: bool,
-    word_ctx: bool, // program carries `\b`/`\B`/`\<`/`\>` ⇒ resolve word context
-    words: usize, // u64s per NFA-state bitset = ceil(states.len / 64)
-    ncls: u16,
-    rep: *const [256]u8, // representative byte per class (for `set.has`)
-
-    map: SetMap,
-    sets: std.ArrayList([]u64) = .empty, // sets[id] = consume bits ++ [match flag]
-    is_match: std.ArrayList(bool) = .empty,
-    trans_in: std.ArrayList(u32) = .empty, // interior, NEXT byte non-word (or the sole interior table when !word_ctx)
-    trans_in_w: std.ArrayList(u32) = .empty, // interior, NEXT byte a word byte (word_ctx only)
-    trans_fin: std.ArrayList(u32) = .empty,
     queued: std.ArrayList(bool) = .empty,
-    worklist: std.ArrayList(u32) = .empty,
-    nstates: u32 = 0,
-    dead: u32 = unknown,
+    items: std.ArrayList(u32) = .empty,
 
-    visited: []u64, // closure dedup (one pass)
-    out: []u64, // consume-set accumulated by one closure
-    stack: []u32, // closure worklist
-    key_scratch: []u64, // reusable interning-probe key (`out` ++ match flag)
-    sp: usize = 0,
-
-    fn pushIf(b: *Builder, s: u32) void {
-        if (B64.get(b.visited, s)) return;
-        B64.set(b.visited, s);
-        b.stack[b.sp] = s;
-        b.sp += 1;
+    fn deinit(w: *Worklist) void {
+        w.queued.deinit(w.gpa);
+        w.items.deinit(w.gpa);
     }
 
-    /// Clear the closure scratch (dedup bitset, accumulator, stack) for a fresh pass.
-    fn reset(b: *Builder) void {
-        @memset(b.visited, 0);
-        @memset(b.out, 0);
-        b.sp = 0;
-    }
-
-    /// Epsilon-close everything currently on the stack into `b.out`, resolving
-    /// zero-width assertions against the position flags: `^`/`$` against
-    /// `at_start`/`at_end`, and `\b`/`\B`/`\<`/`\>` against the word-ness of the
-    /// bytes straddling the gap (`word_before`/`word_after`) — the same predicates
-    /// the Pike VM's `Closure.add` uses (`core.zig`), so the two engines agree.
-    /// Returns whether `match` was reached. Iterative so a `{1000}`-deep program
-    /// can't overflow the call stack.
-    fn close(b: *Builder, at_start: bool, at_end: bool, word_before: bool, word_after: bool) bool {
-        var matched = false;
-        while (b.sp > 0) {
-            b.sp -= 1;
-            const s = b.stack[b.sp];
-            switch (b.states[s]) {
-                .consume => B64.set(b.out, s),
-                .split => |sp| {
-                    b.pushIf(sp.a);
-                    b.pushIf(sp.b);
-                },
-                .assert_start => |o| if (at_start) b.pushIf(o),
-                .assert_end => |o| if (at_end) b.pushIf(o),
-                .assert_word_b => |o| if (word_before != word_after) b.pushIf(o),
-                .assert_not_word_b => |o| if (word_before == word_after) b.pushIf(o),
-                .assert_word_start => |o| if (!word_before and word_after) b.pushIf(o),
-                .assert_word_end => |o| if (word_before and !word_after) b.pushIf(o),
-                // Buffer anchors (`\A`/`\z`) exist only under multiline, where no
-                // DFA is built at all — `build` bails to null before interning.
-                .assert_buf_start, .assert_buf_end => unreachable,
-                .match => matched = true,
-            }
-        }
-        return matched;
-    }
-
-    /// Seed the start NFA state and epsilon-close it at the given position flags;
-    /// result in `b.out`. Used for the start state(s) (BOL) and the empty-line
-    /// verdict. `word_before` is always false at BOL (no byte precedes it).
-    fn closeStart(b: *Builder, at_start: bool, at_end: bool, word_after: bool) bool {
-        b.reset();
-        b.pushIf(b.start_nfa);
-        return b.close(at_start, at_end, false, word_after);
-    }
-
-    /// The transition out of consume-set `from` on a byte of class `k`: gather the
-    /// `out` of every member accepting the class's representative byte, re-seed the
-    /// NFA start when unanchored, then epsilon-close at the resulting gap. `at_start`
-    /// is always false (only the start state sits at BOL); `word_before` is the
-    /// word-ness of the byte just consumed — well-defined because `word_ctx` classes
-    /// are refined by word-ness, so a class is uniformly word or non-word — and
-    /// `word_after` (the next byte's word-ness, 0/1, or false at EOL) is supplied by
-    /// the caller, which is why the interior table splits into `trans_in`/`trans_in_w`.
-    /// Result lands in `b.out`; returns matched.
-    fn step(b: *Builder, from: []const u64, k: u16, word_after: bool, at_end: bool) bool {
-        b.reset();
-        const rep = b.rep[k];
-        var it = B64.ones(from[0..b.words]);
-        while (it.next()) |s| {
-            if (b.states[s].consume.set.has(rep)) b.pushIf(b.states[s].consume.out);
-        }
-        if (!b.anchored) b.pushIf(b.start_nfa);
-        return b.close(false, at_end, if (b.word_ctx) word.isWordByte(rep) else false, word_after);
-    }
-
-    /// Intern `b.out` + `matched` as a DFA state: id + whether freshly created (so
-    /// the caller enqueues interior targets for expansion). The match flag joins
-    /// the identity — an empty consume-set that reached `match` (e.g. via `$`) is a
-    /// distinct state from a dead one.
-    fn intern(b: *Builder, matched: bool) std.mem.Allocator.Error!struct { id: u32, is_new: bool } {
-        // Probe with the reusable scratch key first — in any real determinization
-        // most transitions land on an already-interned state, so allocating a
-        // fresh key per call (only to free it on the dup path) is pure churn. Copy
-        // into a permanent key only once the state proves genuinely new.
-        @memcpy(b.key_scratch[0..b.words], b.out);
-        b.key_scratch[b.words] = @intFromBool(matched);
-        if (b.map.get(b.key_scratch)) |id| return .{ .id = id, .is_new = false };
-        const key = try b.gpa.dupe(u64, b.key_scratch);
-        errdefer b.gpa.free(key);
-        const id = b.nstates;
-        b.nstates += 1;
-        try b.map.put(key, id);
-        try b.sets.append(b.gpa, key);
-        try b.is_match.append(b.gpa, matched);
-        try b.queued.append(b.gpa, false);
-        try b.trans_in.appendNTimes(b.gpa, unknown, b.ncls);
-        try b.trans_fin.appendNTimes(b.gpa, unknown, b.ncls);
-        if (b.word_ctx) try b.trans_in_w.appendNTimes(b.gpa, unknown, b.ncls);
-        if (!matched and B64.none(b.out)) b.dead = id;
-        return .{ .id = id, .is_new = true };
-    }
-
-    fn enqueue(b: *Builder, id: u32) std.mem.Allocator.Error!void {
-        if (b.queued.items[id]) return;
-        b.queued.items[id] = true;
-        try b.worklist.append(b.gpa, id);
+    /// Enqueue `id` for expansion unless it is already spoken for. Takes the
+    /// determinizer rather than a state count so the frontier is sized against
+    /// `nstates` as it stands *after* the caller's `expand` — reading that count
+    /// into an argument alongside the `expand` that grows it would evaluate it one
+    /// state too early.
+    fn push(w: *Worklist, sub: *const subset.Subset, id: u32) std.mem.Allocator.Error!void {
+        while (w.queued.items.len < sub.nstates) try w.queued.append(w.gpa, false);
+        if (w.queued.items[id]) return;
+        w.queued.items[id] = true;
+        try w.items.append(w.gpa, id);
     }
 };
-
-/// Split the current partition by one membership predicate: two bytes stay in a
-/// class only if they already shared one AND agree on `set`. Returns the new
-/// class count. The textbook `ByteClassSet` refinement (RE2/rust-`regex`).
-fn refineBySet(class: *[256]u8, set: *const syn.ByteSet) u16 {
-    var seen = [_]i16{-1} ** 512; // key = old_class*2 + member ∈ [0,511]
-    var newn: u16 = 0;
-    for (0..256) |bi| {
-        const b: u8 = @intCast(bi);
-        const member: usize = @intFromBool(set.has(b));
-        const k = @as(usize, class[b]) * 2 + member;
-        if (seen[k] < 0) {
-            seen[k] = @intCast(newn);
-            newn += 1;
-        }
-        class[b] = @intCast(seen[k]);
-    }
-    return newn;
-}
-
-/// Partition 0..255 into equivalence classes — two bytes share a class iff no
-/// consuming state's set distinguishes them — and record a representative byte
-/// per class. Returns the class count (≤ 256). Refines once per consuming `set`;
-/// under `word_ctx` a final refinement by ASCII word-ness ensures every class is
-/// uniformly word or non-word, so a consumed byte's class fixes its `word_before`.
-fn buildClasses(states: []const State, class: *[256]u8, rep: *[256]u8, word_ctx: bool) u16 {
-    @memset(class, 0);
-    var ncls: u16 = 1;
-    for (states) |st| switch (st) {
-        .consume => |cn| {
-            ncls = refineBySet(class, &cn.set);
-            if (ncls == 256) break; // maximally refined — no set can split further
-        },
-        else => {},
-    };
-    if (word_ctx and ncls < 256) {
-        var wset: syn.ByteSet = .{};
-        for (0..256) |bi| if (word.isWordByte(@intCast(bi))) wset.set(@intCast(bi));
-        ncls = refineBySet(class, &wset);
-    }
-    // Any byte in a class is a valid representative (all members behave identically under every set), so last-write-wins needs no "seen" tracking.
-    for (0..256) |bi| rep[class[bi]] = @intCast(bi);
-    return ncls;
-}
 
 /// Determinize the Thompson NFA (`states`, entry `start`) into an immutable
-/// byte-class DFA, or null when it isn't worth it (powerset exceeds `max_states`)
-/// — in which case the caller keeps the Pike VM. `anchored` mirrors
+/// byte-class DFA, or null when it isn't worth it — the automaton exceeds
+/// `max_states`, the effort exceeds `max_work`, or the program carries a buffer
+/// anchor (multiline, where no DFA is built). `anchored` mirrors
 /// `analysis.startsAnchored`: every match begins at line start, so we never re-seed.
 pub fn build(gpa: std.mem.Allocator, states: []const State, start: u32, anchored: bool, unicode: bool) std.mem.Allocator.Error!?*Dfa {
+    // Buffer anchors (`\A`/`\z`) exist only under multiline, where no DFA is built
+    // at all — decline before interning so `close` never meets one.
+    if (subset.hasBufferAnchor(states)) return null;
     // Word-boundary assertions (`\b`/`\B`, one-sided `\<`/`\>`) gate on the
     // word-ness of the bytes straddling a gap — a second determinization axis.
     // We resolve it as a look-AHEAD-selected transition (see `Dfa`): classes are
     // refined by word-ness so the just-consumed byte fixes `word_before`, and the
-    // interior table is doubled on the next byte's word-ness. Buffer anchors
-    // (`\A`/`\z`) exist only under multiline, where no DFA is built at all — bail.
-    var word_ctx = false;
-    for (states) |st| switch (st) {
-        .assert_word_b, .assert_not_word_b, .assert_word_start, .assert_word_end => word_ctx = true,
-        .assert_buf_start, .assert_buf_end => return null,
-        else => {},
-    };
+    // interior table is doubled on the next byte's word-ness.
+    const word_ctx = subset.hasWordContext(states);
+    const cls = subset.Classes.build(states, word_ctx);
+    const ncls = cls.ncls;
 
-    var class: [256]u8 = undefined;
-    var rep: [256]u8 = undefined;
-    const ncls = buildClasses(states, &class, &rep, word_ctx);
-    const words = B64.words(states.len);
+    var sub = try subset.Subset.init(gpa, states, start, anchored, word_ctx, cls);
+    // The determinizer's scratch + subset map are discarded once the immutable
+    // tables are sliced out (or on a bail). On success `toOwnedSlice` empties the
+    // table lists, so their deinit is then a no-op; on a bail or an error the
+    // deinits reclaim them. Either way one teardown serves every path.
+    defer sub.deinit();
 
-    var b = Builder{
-        .gpa = gpa,
-        .states = states,
-        .start_nfa = start,
-        .anchored = anchored,
-        .word_ctx = word_ctx,
-        .words = words,
-        .ncls = ncls,
-        .rep = &rep,
-        .map = SetMap.init(gpa),
-        .visited = try gpa.alloc(u64, words),
-        .out = try gpa.alloc(u64, words),
-        .stack = try gpa.alloc(u32, states.len),
-        .key_scratch = try gpa.alloc(u64, words + 1),
-    };
-    // Builder scratch + the subset map/sets are discarded once the immutable tables are sliced out (or on a bail). `sets` owns every state key. The table lists ride the same defer on every path: on success `toOwnedSlice` empties `trans_in`/`trans_fin` (deinit is then a no-op) and `is_match` was replaced by the offset-indexed `im_pm`; on a blow-up bail or an error the deinits reclaim them.
-    defer {
-        b.map.deinit();
-        for (b.sets.items) |s| gpa.free(s);
-        b.sets.deinit(gpa);
-        b.queued.deinit(gpa);
-        b.worklist.deinit(gpa);
-        gpa.free(b.visited);
-        gpa.free(b.out);
-        gpa.free(b.stack);
-        gpa.free(b.key_scratch);
-        b.is_match.deinit(gpa);
-        b.trans_in.deinit(gpa);
-        b.trans_in_w.deinit(gpa);
-        b.trans_fin.deinit(gpa);
-    }
+    var wl = Worklist{ .gpa = gpa };
+    defer wl.deinit();
 
-    const empty_match = b.closeStart(true, true, false); // empty line: BOL ∧ EOL, no first byte ⇒ word_after=false
+    const empty_match = sub.closeStart(true, true, false); // empty line: BOL ∧ EOL, no first byte ⇒ word_after=false
     // The unanchored start splits on the FIRST byte's word-ness (word_ctx): `start`
     // when it is a non-word byte (also the sole start when !word_ctx, where the
     // word_after arg is inert), `start_w` when it is a word byte. `word_before` is
     // false at BOL. Both resolve `$` at EOL via the final table like any state.
-    const start_id = (try b.intern(b.closeStart(true, false, false))).id;
-    try b.enqueue(start_id);
+    const start_id = (try sub.intern(sub.closeStart(true, false, false))).id;
+    try wl.push(&sub, start_id);
     const start_w_id = if (word_ctx) blk: {
-        const id = (try b.intern(b.closeStart(true, false, true))).id;
-        try b.enqueue(id);
+        const id = (try sub.intern(sub.closeStart(true, false, true))).id;
+        try wl.push(&sub, id);
         break :blk id;
     } else start_id;
 
     var wcur: usize = 0;
-    while (wcur < b.worklist.items.len) : (wcur += 1) {
-        const id = b.worklist.items[wcur];
-        // The state key buffer is stable (independently heap-allocated); only the `sets` pointer array can move under interning, so re-read it per class.
+    while (wcur < wl.items.items.len) : (wcur += 1) {
+        const id = wl.items.items[wcur];
         var k: u16 = 0;
         while (k < ncls) : (k += 1) {
             // Interior, next byte a non-word byte (or the sole interior transition when !word_ctx).
-            const r_in = try b.intern(b.step(b.sets.items[id][0..b.words], k, false, false));
-            b.trans_in.items[@as(usize, id) * ncls + k] = r_in.id;
-            try b.enqueue(r_in.id);
+            try wl.push(&sub, try sub.expand(id, k, .interior));
             // Interior, next byte a word byte — the second determinization axis (word_ctx only).
-            if (word_ctx) {
-                const r_in_w = try b.intern(b.step(b.sets.items[id][0..b.words], k, true, false));
-                b.trans_in_w.items[@as(usize, id) * ncls + k] = r_in_w.id;
-                try b.enqueue(r_in_w.id);
-            }
+            if (word_ctx) try wl.push(&sub, try sub.expand(id, k, .interior_word));
             // Last byte (at_end=true, word_after=false) resolves `$`/`\b`-at-EOL. Targets are terminal — the line ends right after — so interned for `is_match` but not enqueued.
-            const r_fin = try b.intern(b.step(b.sets.items[id][0..b.words], k, false, true));
-            b.trans_fin.items[@as(usize, id) * ncls + k] = r_fin.id;
-            if (b.nstates > max_states) return null; // powerset blow-up ⇒ keep the Pike VM
+            _ = try sub.expand(id, k, .final);
+            if (sub.nstates > max_states) return null; // powerset blow-up ⇒ keep the Pike VM
         }
     }
 
@@ -341,7 +139,7 @@ pub fn build(gpa: std.mem.Allocator, states: []const State, start: u32, anchored
     // interior table; the word-context start split + doubled table don't fit that
     // shape, so word patterns forgo it (an optimization, never a correctness lever
     // — the trigram prefilter still selects on their bounded literal).
-    const accel = if (word_ctx) null else computeAccel(anchored, empty_match, b.trans_in.items, b.trans_fin.items, b.is_match.items, &class, ncls, start_id);
+    const accel = if (word_ctx) null else computeAccel(anchored, empty_match, sub.trans_in.items, sub.trans_fin.items, sub.is_match.items, &cls.class, ncls, start_id);
 
     // Premultiply (rust-regex / RE2 dense-DFA trick): rewrite every state value to
     // its row offset `id*ncls`, so the hot loop's per-byte index collapses from a
@@ -350,32 +148,32 @@ pub fn build(gpa: std.mem.Allocator, states: []const State, start: u32, anchored
     // never reached by an interior byte keep their `unknown` sentinel (their row is
     // never indexed), so skip those to avoid overflowing the multiply.
     const nc: u32 = ncls;
-    for (b.trans_in.items) |*t| if (t.* != unknown) {
+    for (sub.trans_in.items) |*t| if (t.* != unknown) {
         t.* *= nc;
     };
-    for (b.trans_in_w.items) |*t| if (t.* != unknown) {
+    for (sub.trans_in_w.items) |*t| if (t.* != unknown) {
         t.* *= nc;
     };
-    for (b.trans_fin.items) |*t| if (t.* != unknown) {
+    for (sub.trans_fin.items) |*t| if (t.* != unknown) {
         t.* *= nc;
     };
     // `is_match` re-laid-out by offset: `is_match_pm[id*ncls] = is_match[id]`, so the
     // hot loop reads `is_match[s]` with the premultiplied `s` and never divides. The
     // inter-row slots are never indexed (every live `s` is a multiple of `ncls`).
-    const im_pm = try gpa.alloc(bool, @as(usize, b.nstates) * ncls);
+    const im_pm = try gpa.alloc(bool, @as(usize, sub.nstates) * ncls);
     errdefer gpa.free(im_pm);
     @memset(im_pm, false);
-    for (b.is_match.items, 0..) |m, id| im_pm[id * ncls] = m;
-    const dead_pm = if (b.dead == unknown) unknown else b.dead * nc;
+    for (sub.is_match.items, 0..) |m, id| im_pm[id * ncls] = m;
+    const dead_pm = if (sub.dead == unknown) unknown else sub.dead * nc;
 
     const dfa = try gpa.create(Dfa);
     errdefer gpa.destroy(dfa);
     dfa.* = .{
-        .class = class,
+        .class = cls.class,
         .ncls = ncls,
-        .nstates = b.nstates,
-        .trans_in = try b.trans_in.toOwnedSlice(gpa),
-        .trans_fin = try b.trans_fin.toOwnedSlice(gpa),
+        .nstates = sub.nstates,
+        .trans_in = try sub.trans_in.toOwnedSlice(gpa),
+        .trans_fin = try sub.trans_fin.toOwnedSlice(gpa),
         .is_match = im_pm,
         .start = start_id * nc,
         .empty_match = empty_match,
@@ -384,7 +182,7 @@ pub fn build(gpa: std.mem.Allocator, states: []const State, start: u32, anchored
         .accel = accel,
         .word_ctx = word_ctx,
         .unicode_word = word_ctx and unicode,
-        .trans_in_w = if (word_ctx) try b.trans_in_w.toOwnedSlice(gpa) else &.{},
+        .trans_in_w = if (word_ctx) try sub.trans_in_w.toOwnedSlice(gpa) else &.{},
         .start_w = start_w_id * nc,
         .allocator = gpa,
     };

@@ -3,8 +3,8 @@
 # contract in search_api.toml).
 #
 # SCOPE — WHAT THIS OWNS, AND WHAT IT DELIBERATELY DOES NOT
-#   The Certificate of Optimality (bench/certify/ + session/ + rgsuite/) is the
-#   single home for how good Gist is AT FULL SPEED and why it is optimal:
+#   The Dominance-and-Fit Certificate (bench/certify/ + session/ + rgsuite/) is the
+#   single home for how good Gist is AT FULL SPEED and what bounds it fits:
 #     • cold fresh-process dominance vs ripgrep  → Layer A macroscopic (certify.sh)
 #     • single-thread cycles/byte                → Layer A microscopic (harness/)
 #     • warm resident-daemon latency             → Layer A warm tier (certify_warm.sh + session/)

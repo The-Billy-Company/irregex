@@ -19,7 +19,8 @@
 
 const std = @import("std");
 const corpus_mod = @import("../../../../corpus/tree/corpus.zig");
-const grepfile = @import("../read/grepfile.zig");
+const binary = @import("../read/binary.zig");
+const stats = @import("../read/stats.zig");
 const args = @import("../argv/args.zig");
 const assay = @import("../../../../assay/assay.zig");
 const output = @import("output.zig");
@@ -36,12 +37,12 @@ const Caps = @import("../../../../kernel/match/regex/regex.zig").Caps;
 pub const File = struct { path: []const u8, body: []const u8, explicit: bool = false };
 
 /// Running `--json` tallies — the SAME unified counter set the `--stats` block
-/// uses (`grepfile.Stats`, an `assay.Tally`). `pub` because the parallel walk
+/// uses (`stats.Stats`, an `assay.Tally`). `pub` because the parallel walk
 /// engine (`engine/swarm/`) accumulates one per worker over its streamed
 /// per-file records, then folds them for the single trailing `summary`. The JSON
 /// summary reads `files_searched`/`files_with_match` under rg's `searches`/
 /// `searches_with_match` names and never touches `bytes_printed`.
-pub const Stats = grepfile.Stats;
+pub const Stats = stats.Stats;
 
 /// Emit the full `--json` stream for `files` into `out`. Returns the final tally
 /// (the caller derives the exit code from `files_with_match` and emits the
@@ -84,9 +85,9 @@ pub fn emitOne(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher
         st.bump(.files_searched);
         return;
     }
-    // Binary model (rg parity, mirrors `grepfile.handleBinary`):
+    // Binary model (rg parity, mirrors `binary.handleBinary`):
     //   • implicit (walked) line-mode file — rg's "quit" strategy searches
-    //     only the committed prefix (`grepfile.committedPrefix`): the lines
+    //     only the committed prefix (`binary.committedPrefix`): the lines
     //     its buffer had consumed before the fill that read the first NUL.
     //     An empty prefix ⇒ one search, zero bytes, zero records.
     //   • implicit slice-model file (`-U` whose pattern can match `\n`) —
@@ -102,13 +103,13 @@ pub fn emitOne(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher
     var searched = f.body.len;
     if (bin) |q| {
         if (re.multiline() and re.canMatchNewline()) {
-            if (!f.explicit and grepfile.multilineBinary(f.body.len, q)) {
+            if (!f.explicit and binary.multilineBinary(f.body.len, q)) {
                 st.bump(.files_searched);
                 return; // sniff quit: nothing searched, no records
             }
             if (!f.explicit) bin = null else searched = q;
         } else if (!f.explicit) {
-            const cut = grepfile.committedPrefix(f.body, q);
+            const cut = binary.committedPrefix(f.body, q);
             if (cut == 0) {
                 st.bump(.files_searched);
                 return;

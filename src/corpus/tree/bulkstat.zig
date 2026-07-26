@@ -46,9 +46,28 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const fault = @import("../../fault.zig");
 const haystack = @import("haystack.zig");
 const Dir = std.Io.Dir;
 const Allocator = std.mem.Allocator;
+
+/// This module's private control-flow vocabulary (ADR-373 law 1). `Declined`
+/// means the accelerator stepped aside — the syscall is absent on this
+/// filesystem, or the buffer it packed did not hold up — and it **never leaves
+/// the module**: the two public listings convert it into a
+/// `fault.Answer(…).declined = .capability_missing`, exactly as the PCRE2
+/// shadow rewriter converts its `error.Bail`.
+///
+/// It must be a non-`pub` **named** set, not an inline `error{Declined}` in each
+/// signature: an inline set is inferred outward, so the name would escape the
+/// file and owe the global fault taxonomy a member. Named and private, it stays
+/// this module's business.
+///
+/// The split from `OutOfMemory` is the point. The previous single
+/// `error.BulkStatUnsupported` merged both facts, so every caller's `catch`
+/// treated an allocation failure as "this platform lacks the syscall" and
+/// silently walked the slower path with a dying allocator.
+const Declines = error{Declined};
 
 /// Only attempted on Darwin; every other target statically falls back to the
 /// caller's stat-based walk (checked once, not per-directory).
@@ -126,19 +145,20 @@ pub const BulkDir = struct {
         return .{ .dirfd = dirfd };
     }
 
-    fn refill(self: *BulkDir) !void {
+    fn refill(self: *BulkDir) Declines!void {
         var al = AttrList{ .bitmapcount = ATTR_BIT_MAP_COUNT, .commonattr = requested_commonattr };
         const n = getattrlistbulk(self.dirfd, &al, &self.buf, self.buf.len, FSOPT_PACK_INVAL_ATTRS);
-        if (n < 0) return error.BulkStatUnsupported;
+        if (n < 0) return error.Declined;
         self.off = 0;
         self.count = n;
         if (n == 0) self.exhausted = true;
     }
 
-    /// Next entry, or null at end-of-directory. `error.BulkStatUnsupported`
-    /// means the syscall itself failed (wrong fs, permissions, …) — the
-    /// caller must fall back to a stat-based walk, never treat this as "done".
-    pub fn next(self: *BulkDir) !?Entry {
+    /// Next entry, or null at end-of-directory. `error.Declined` means the
+    /// syscall itself failed (wrong fs, permissions, …) — the caller must fall
+    /// back to a stat-based walk, never treat this as "done". Distinct from the
+    /// `null` that means "done", which is why the two cannot be confused here.
+    pub fn next(self: *BulkDir) Declines!?Entry {
         if (self.count == 0) {
             if (self.exhausted) return null;
             try self.refill();
@@ -156,15 +176,15 @@ const Parsed = struct { value: Entry, advance: usize };
 /// Bounds-checked little-endian field read — `std.mem.readInt` on a byte
 /// slice (never a direct pointer cast): the kernel's packing isn't guaranteed
 /// to leave every field naturally aligned for a typed load.
-inline fn readAt(comptime T: type, buf: []const u8, pos: usize) !T {
-    if (pos + @sizeOf(T) > buf.len) return error.BulkStatUnsupported;
+inline fn readAt(comptime T: type, buf: []const u8, pos: usize) Declines!T {
+    if (pos + @sizeOf(T) > buf.len) return error.Declined;
     return std.mem.readInt(T, buf[pos..][0..@sizeOf(T)], .little);
 }
 
 /// One packed `timespec` (i64 sec + i64 nsec) → nanoseconds, or null when
 /// `returned_common` says the kernel didn't have the value (the field still
 /// occupies its 16 bytes under `FSOPT_PACK_INVAL_ATTRS`).
-inline fn readTimespec(buf: []const u8, pos: usize, valid: bool) !?i128 {
+inline fn readTimespec(buf: []const u8, pos: usize, valid: bool) Declines!?i128 {
     const sec = try readAt(i64, buf, pos);
     const nsec = try readAt(i64, buf, pos + 8);
     return if (valid) @as(i128, sec) * std.time.ns_per_s + @as(i128, nsec) else null;
@@ -181,24 +201,24 @@ inline fn readTimespec(buf: []const u8, pos: usize, valid: bool) !?i128 {
 /// field naturally aligned for a typed load. `FSOPT_PACK_INVAL_ATTRS` physically
 /// packs every requested field; `returned_common` says whether each value is
 /// valid, so invalid timestamps still advance `pos` but become null metadata.
-fn parseEntry(buf: []const u8, start: usize) !Parsed {
+fn parseEntry(buf: []const u8, start: usize) Declines!Parsed {
     const length = try readAt(u32, buf, start);
-    if (length == 0 or start + length > buf.len) return error.BulkStatUnsupported;
+    if (length == 0 or start + length > buf.len) return error.Declined;
 
     var pos = start + 4;
     const returned_common = try readAt(u32, buf, pos);
     pos += 20; // attribute_set_t: commonattr, volattr, dirattr, fileattr, forkattr
 
     if (returned_common & ATTR_CMN_NAME == 0 or returned_common & ATTR_CMN_OBJTYPE == 0)
-        return error.BulkStatUnsupported;
+        return error.Declined;
 
     const data_offset = try readAt(i32, buf, pos);
     const data_len = try readAt(u32, buf, pos + 4);
     const name_start = @as(i64, @intCast(pos)) + data_offset;
-    if (name_start < 0) return error.BulkStatUnsupported;
+    if (name_start < 0) return error.Declined;
     const ns: usize = @intCast(name_start);
     const ne = ns + data_len;
-    if (ne > buf.len or ns > ne) return error.BulkStatUnsupported;
+    if (ne > buf.len or ns > ne) return error.Declined;
     var name = buf[ns..ne];
     if (std.mem.indexOfScalar(u8, name, 0)) |nul| name = name[0..nul]; // NUL-terminated
     pos += 8;
@@ -264,18 +284,22 @@ pub const OwnedEntry = struct {
 
 /// Fully drains ONE level of `dirfd` via `getattrlistbulk`, duping every name
 /// into `gpa` up front. All-or-nothing: any parse/syscall failure partway
-/// discards what's been collected and returns the error rather than handing
-/// back a truncated listing — the caller re-opens a fresh handle and retries
-/// with the portable `Dir.Iterator`, never mixes a partial bulk result with a
-/// partial iterate one (which could double- or under-count an entry).
-pub fn listOneLevel(gpa: Allocator, dirfd: std.posix.fd_t) ![]OwnedEntry {
+/// discards what's been collected and declines rather than handing back a
+/// truncated listing — the caller re-opens a fresh handle and retries with the
+/// portable `Dir.Iterator`, never mixes a partial bulk result with a partial
+/// iterate one (which could double- or under-count an entry).
+///
+/// The module boundary (ADR-373 law 1): a declinature crosses in the SUCCESS
+/// position, so a caller cannot `try` its way past the fallback, while
+/// `OutOfMemory` stays in the error channel where it belongs.
+pub fn listOneLevel(gpa: Allocator, dirfd: std.posix.fd_t) error{OutOfMemory}!fault.Answer([]OwnedEntry) {
     var list: std.ArrayList(OwnedEntry) = .empty;
     errdefer {
         for (list.items) |e| gpa.free(e.name);
         list.deinit(gpa);
     }
     var bd = BulkDir.init(dirfd);
-    while (try bd.next()) |e| {
+    while (bd.next() catch return declineList(gpa, &list)) |e| {
         try list.append(gpa, .{
             .name = try gpa.dupe(u8, e.name),
             .is_dir = e.is_dir,
@@ -284,7 +308,17 @@ pub fn listOneLevel(gpa: Allocator, dirfd: std.posix.fd_t) ![]OwnedEntry {
             .ctime_ns = e.ctime_ns,
         });
     }
-    return list.toOwnedSlice(gpa);
+    return .{ .got = try list.toOwnedSlice(gpa) };
+}
+
+/// Release a partially-built listing and declare the accelerator stepped aside.
+/// Shared by both drains so the all-or-nothing promise has one implementation
+/// rather than a `errdefer` that no longer fires once the failure became a
+/// success-position value.
+fn declineList(gpa: Allocator, list: *std.ArrayList(OwnedEntry)) fault.Answer([]OwnedEntry) {
+    for (list.items) |e| gpa.free(e.name);
+    list.deinit(gpa);
+    return .{ .declined = .capability_missing };
 }
 
 /// Fully drains ONE level of `dirfd` via raw `getdirentries(2)` — names +
@@ -293,7 +327,9 @@ pub fn listOneLevel(gpa: Allocator, dirfd: std.posix.fd_t) ![]OwnedEntry {
 /// this is strictly cheaper than `listOneLevel`: `getattrlistbulk` makes the
 /// kernel resolve and pack attributes per entry, while `getdirentries` is the
 /// same thin readdir path ripgrep rides. Darwin-only (same `supported` gate).
-pub fn listNamesOnly(gpa: Allocator, dirfd: std.posix.fd_t) ![]OwnedEntry {
+///
+/// Same boundary contract as `listOneLevel`: declining is a value, OOM is an error.
+pub fn listNamesOnly(gpa: Allocator, dirfd: std.posix.fd_t) error{OutOfMemory}!fault.Answer([]OwnedEntry) {
     var list: std.ArrayList(OwnedEntry) = .empty;
     errdefer {
         for (list.items) |e| gpa.free(e.name);
@@ -303,9 +339,9 @@ pub fn listNamesOnly(gpa: Allocator, dirfd: std.posix.fd_t) ![]OwnedEntry {
     var seek: i64 = 0;
     while (true) {
         const rc = std.posix.system.getdirentries(dirfd, &buf, buf.len, &seek);
-        if (std.posix.errno(rc) != .SUCCESS) return error.BulkStatUnsupported;
+        if (std.posix.errno(rc) != .SUCCESS) return declineList(gpa, &list);
         const n: usize = @intCast(rc);
-        if (n == 0) return list.toOwnedSlice(gpa);
+        if (n == 0) return .{ .got = try list.toOwnedSlice(gpa) };
         var i: usize = 0;
         while (i < n) {
             // Darwin 64-bit `struct dirent`, decoded by explicit field offset

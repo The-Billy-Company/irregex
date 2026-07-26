@@ -182,7 +182,7 @@ pub fn build(b: *std.Build) void {
         .dependOn(&run_cli.step);
 
     // ── cross-target drift gate (`zig build check-linux`, folded into `test`) ──
-    // The Linux legs — the statx raw-stat shim (grepfile.zig), the inotify
+    // The Linux legs — the statx raw-stat shim (read/inode.zig), the inotify
     // watcher (session/watch/watch.zig), and every `std.os.linux` call they make —
     // are comptime-pruned on the macOS dev boxes, so only a cross compile can
     // see them break (exactly how a `std.posix.close`/`std.c.fstatat` removal
@@ -615,7 +615,7 @@ pub fn build(b: *std.Build) void {
     verify_step.dependOn(&run_verify.step);
     verify_step.dependOn(bench_install);
 
-    // `zig build certify` — Layer A of the optimality certificate: per-class
+    // `zig build certify` — Layer A of the dominance-and-fit certificate: per-class
     // single-thread cycles/byte + bootstrap-CI (PMU via kperf; run under `sudo`
     // for cycles, else wall-clock). Emits .local/gist-verify/CERTIFICATE.md.
     const run_certify = b.addRunArtifact(bench_exe);

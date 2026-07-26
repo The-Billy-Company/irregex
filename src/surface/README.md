@@ -30,7 +30,7 @@ value, a root rule, or the JSON escaper.
 
 ## Shared contracts across engines
 
-- **One match opinion.** Warm and FFI reuse cold's `Emitter` / `grepfile` /
+- **One match opinion.** Warm and FFI reuse cold's `Emitter` / read-plane /
   file-set machinery and the shared `kernel/match/query/query.zig` core so output
   cannot become a second opinion.
 - **Fail open to cold.** Any warm decline, timeout, TTY, wedged daemon, or

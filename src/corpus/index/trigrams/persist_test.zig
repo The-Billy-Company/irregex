@@ -37,13 +37,13 @@ test "validatePersistedPair: accepts exactly doc_count paths" {
 
 test "validatePersistedPair: rejects a shorter or longer path table (the doc-id OOB guard)" {
     const paths = [_][]const u8{ "a", "b", "c" };
-    try std.testing.expectError(persist.PairError.PathTableMismatch, persist.validatePersistedPair(4, &paths));
-    try std.testing.expectError(persist.PairError.PathTableMismatch, persist.validatePersistedPair(2, &paths));
+    try std.testing.expectError(persist.PairError.Corrupt, persist.validatePersistedPair(4, &paths));
+    try std.testing.expectError(persist.PairError.Corrupt, persist.validatePersistedPair(2, &paths));
 }
 
 test "validatePersistedPair: an empty table matches only doc_count 0" {
     try persist.validatePersistedPair(0, &.{});
-    try std.testing.expectError(persist.PairError.PathTableMismatch, persist.validatePersistedPair(1, &.{}));
+    try std.testing.expectError(persist.PairError.Corrupt, persist.validatePersistedPair(1, &.{}));
 }
 
 test "validateGeneration: accepts identical ids and rejects drift" {

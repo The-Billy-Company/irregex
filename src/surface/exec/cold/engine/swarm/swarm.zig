@@ -43,7 +43,8 @@ const crest = @import("../../../../../kernel/primitives/crest.zig");
 const crew = @import("crew.zig");
 const descent = @import("descent.zig");
 const elide = @import("../../quarry/elide.zig");
-const grepfile = @import("../../read/grepfile.zig");
+const notice = @import("../../quarry/notice.zig");
+const stats = @import("../../read/stats.zig");
 const hints = @import("../../emit/hints.zig");
 const ignore = @import("../../../../../corpus/tree/ignore.zig");
 const ingest = @import("../../read/ingest.zig");
@@ -370,7 +371,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     // GUESSED root whose walk admitted zero files means a filter excluded
     // everything — stderr note + exit 2, never a silent exit-1 "no matches".
     const nothing_searched = re != null and parsed.roots.len == 0 and !q.files_seen.load(.acquire);
-    if (nothing_searched) grepfile.printNothingSearched();
+    if (nothing_searched) notice.printNothingSearched();
     // `--json`: every worker streamed its per-file `begin`/records/`end` blocks;
     // sum their per-worker tallies and write the single trailing `summary` record
     // (rg's stream always ends with it, even on no match) as the last stdout line.
@@ -384,7 +385,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
         var sbuf: std.ArrayList(u8) = .empty;
         json.summary(gpa, &sbuf, st, search_span.read(io));
         _ = corpus_mod.writeStdout(sbuf.items);
-        grepfile.diagSearch(gpa, o.json, st, search_span.read(io));
+        stats.diagSearch(gpa, o.json, st, search_span.read(io));
         (Outcome{ .matched = st.get(.files_with_match) > 0, .faulted = q.walk_error.load(.acquire) or nothing_searched }).exit();
     }
     // `--stats`: every worker streamed its match fragments; fold their per-
@@ -393,14 +394,14 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     // stats block. Quiet is declined by `eligible`, so the match stream always
     // ran and `bytes_printed` is the live write count.
     if (o.stats) {
-        var st: grepfile.Stats = .{};
+        var st: stats.Stats = .{};
         for (workers) |*wk| st.foldExcept(wk.stats, &.{.bytes_printed});
         st.set(.files_with_match, sink.matched_files);
         st.set(.bytes_printed, sink.bytes_printed);
         var sbuf: std.ArrayList(u8) = .empty;
-        grepfile.emitStats(gpa, &sbuf, st, search_span.read(io));
+        stats.emitStats(gpa, &sbuf, st, search_span.read(io));
         _ = corpus_mod.writeStdout(sbuf.items);
-        grepfile.diagSearch(gpa, o.json, st, search_span.read(io));
+        stats.diagSearch(gpa, o.json, st, search_span.read(io));
         (Outcome{ .matched = sink.matched_files > 0, .faulted = q.walk_error.load(.acquire) or nothing_searched }).exit();
     }
     // `--files-without-match`: `matched_files` counts files that LACKED the

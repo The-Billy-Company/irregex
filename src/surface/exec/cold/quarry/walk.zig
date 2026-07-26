@@ -17,8 +17,9 @@
 
 const std = @import("std");
 const args = @import("../argv/args.zig");
-const grepfile = @import("../read/grepfile.zig");
 const ignore = @import("../../../../corpus/tree/ignore.zig");
+const inode = @import("../read/inode.zig");
+const notice = @import("notice.zig");
 const paths_mod = @import("../../../../corpus/scope/paths.zig");
 
 const Dir = std.Io.Dir;
@@ -98,15 +99,16 @@ fn collectExtra(a: std.mem.Allocator, list: *std.ArrayList(Extra), ig: *const ig
 /// subdirectory, and iterating one already open (which carries the walker's own
 /// allocation failure). Naming the set instead of taking `anyerror` (ADR-373
 /// law 2) means a widened std set is a build failure here, where the walk can
-/// decide what it means, rather than a mystery string on a user's stderr.
+/// decide what it means, rather than a mystery string on a user's stderr. It is
+/// a subset of `notice.WalkFault`, so it coerces into the shared renderer.
 const WalkFault = Dir.OpenError || Dir.SelectiveWalker.Error;
 
 /// ripgrep prints a walk error to stderr and lets the run exit 2: a directory
 /// it could not descend is a POTENTIAL false negative that MUST be signaled,
-/// never skipped in silence. Rendering is the shared `grepfile.printWalkError`;
+/// never skipped in silence. Rendering is the shared `notice.printWalkError`;
 /// this sets the serial engine's error flag so `collectFiles` surfaces exit 2.
 fn reportWalkError(rel: []const u8, e: WalkFault, walk_error: *bool) void {
-    grepfile.printWalkError(rel, e);
+    notice.printWalkError(rel, e);
     walk_error.* = true;
 }
 
@@ -188,11 +190,11 @@ fn loopAncestor(a: std.mem.Allocator, chain: []const VisitedDir, rp: []const u8,
 /// stat'd. Powers `--one-file-system`: a directory whose device differs from
 /// the walk's starting device is a mount point we refuse to descend. `i128`
 /// holds every platform's `dev_t` (darwin `i32`, linux `u64`) without loss.
-/// Raw stat via the shared portable shim (`grepfile.statPath`) — the one call
+/// Raw stat via the shared portable shim (`inode.statPath`) — the one call
 /// behind both `--one-file-system` (device id) and `--sort created` (birth
 /// time), neither of which the portable `std.Io` `Stat` exposes.
 fn deviceOf(path: []const u8) ?i128 {
-    return (grepfile.statPath(path) orelse return null).dev;
+    return (inode.statPath(path) orelse return null).dev;
 }
 
 /// True iff `--one-file-system` is active AND `path` sits on a different device
@@ -259,7 +261,7 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
                         // with both DISPLAY paths, refused, and errors the run;
                         // the walk itself continues (exit 2 at the end).
                         if (loopAncestor(a, visited.items, rp, full, rel)) |anc| {
-                            grepfile.printLoopError(rel, anc);
+                            notice.printLoopError(rel, anc);
                             walk_error.* = true;
                             continue;
                         }
@@ -358,7 +360,7 @@ pub fn gather(a: std.mem.Allocator, io: std.Io, roots: []const []const u8, o: Op
                 _ = std.posix.system.close(fd);
                 try out.append(a, .{ .rel = r, .scope = paths_mod.cwdRelative(a, io, r), .disk = r, .explicit = true });
             } else |ferr| {
-                grepfile.printWalkError(r, ferr);
+                notice.printWalkError(r, ferr);
                 path_error = true;
             }
         }

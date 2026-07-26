@@ -11,7 +11,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const args = @import("../../argv/args.zig");
 const elide = @import("../../quarry/elide.zig");
-const grepfile = @import("../../read/grepfile.zig");
+const Stats = @import("../../read/stats.zig").Stats;
 const ignore = @import("../../../../../corpus/tree/ignore.zig");
 const ingest = @import("../../read/ingest.zig");
 const json = @import("../../emit/json.zig");
@@ -145,7 +145,7 @@ pub const Worker = struct {
     // `--stats` per-worker tally (`files_with_match` is filled once in `run`
     // from `sink.matched_files`; `bytes_printed` from `sink.bytes_printed`).
     // Summed across workers into the trailing stats block after the walk.
-    stats: grepfile.Stats = .{},
+    stats: Stats = .{},
     /// Flush a worker's coalesced path-list buffer once it reaches this size — big
     /// enough that the lock+`write(2)` amortizes over hundreds of paths, small
     /// enough to stream (and to keep the soft output budget's cut at a whole-line

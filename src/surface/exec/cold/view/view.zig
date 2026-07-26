@@ -19,9 +19,9 @@ const std = @import("std");
 const args = @import("../argv/args.zig");
 const corpus_mod = @import("../../../../corpus/tree/corpus.zig");
 const crest = @import("../../../../kernel/primitives/crest.zig");
-const grepfile = @import("../read/grepfile.zig");
 const hints = @import("../emit/hints.zig");
 const ingest = @import("../read/ingest.zig");
+const legible = @import("../read/legible.zig");
 const intake = @import("../quarry/intake.zig");
 const render = @import("../emit/render.zig");
 const writ_mod = @import("../writ/writ.zig");
@@ -32,7 +32,7 @@ const ranked = @import("ranked.zig");
 const Opts = args.Opts;
 const die = args.die;
 const oom = args.oom;
-const stripBom = grepfile.stripBom;
+const stripBom = legible.stripBom;
 
 /// Whether a lens claimed the run. A lens that owns an rg-shaped exit code never
 /// returns at all (`Outcome.exit`); `.done` is for the one path that finishes

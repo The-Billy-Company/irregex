@@ -52,16 +52,19 @@ pub fn decode(buf: []const u8) Decoded {
     return .{ .value = result, .len = i };
 }
 
+/// Every member is a declared `persist` fault (ADR-373 law 2), because that is
+/// what the sole production caller does with all of them — reject the blob and
+/// fail closed to the live path.
 pub const DecodeError = error{
     /// Ran out of bytes (or `max_bytes`) with the continuation bit still set.
     Truncated,
-    /// Encoding needs more than `max_len` (5) bytes — cannot be a canonical u32.
-    TooLong,
-    /// A multi-byte encoding terminating in `0x00` (high group all-zero); its
-    /// value fits in fewer bytes, so the encoding is non-minimal.
+    /// The encoding is not the minimal one for its value: a multi-byte form
+    /// terminating in `0x00` (high group all-zero), or one running past
+    /// `max_len` (5) bytes, which no canonical u32 ever needs.
     NonCanonical,
-    /// The decoded value exceeds `maxInt(u32)` (a doc id / posting must fit u32).
-    Overflow,
+    /// The decoded value exceeds `maxInt(u32)` — whatever these bytes are, a
+    /// doc id / posting is not among them.
+    Corrupt,
 };
 
 pub const DecodedBounded = struct { value: u32, len: usize };
@@ -88,9 +91,9 @@ pub fn decodeBoundedCanonical(buf: []const u8, max_bytes: usize) DecodeError!Dec
             if (i > 1 and b == 0) return DecodeError.NonCanonical;
             break;
         }
-        if (i >= max_len) return DecodeError.TooLong;
+        if (i >= max_len) return DecodeError.NonCanonical;
         shift += 7;
     }
-    if (result > std.math.maxInt(u32)) return DecodeError.Overflow;
+    if (result > std.math.maxInt(u32)) return DecodeError.Corrupt;
     return .{ .value = @intCast(result), .len = i };
 }

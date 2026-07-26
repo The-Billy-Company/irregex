@@ -146,5 +146,5 @@ pub fn docLess(_: void, a: DocRef, b: DocRef) bool {
 
 /// Which docs a gather admits: the FFI record stream skips what cold `--json`
 /// skips (its 8 KiB `isBinary` window); the `lines` renderer admits every doc
-/// and lets `grepfile.handleBinary` apply cold's NUL-cut policy per file.
+/// and lets `binary.handleBinary` apply cold's NUL-cut policy per file.
 pub const Admit = enum { json_stream, lines };

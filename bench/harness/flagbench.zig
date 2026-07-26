@@ -74,7 +74,7 @@ const Sample = struct {
 var sink: u64 = 0;
 
 fn splitLines(a: std.mem.Allocator, buf: []const u8) ![]const []const u8 {
-    // rg line model (mirrors grepfile.collectLines): '\n' terminates, a trailing
+    // rg line model (mirrors legible.collectLines): '\n' terminates, a trailing
     // terminator yields no phantom empty line, content after the last '\n' is a line.
     var out: std.ArrayList([]const u8) = .empty;
     var it = std.mem.splitScalar(u8, buf, '\n');

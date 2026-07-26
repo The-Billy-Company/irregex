@@ -519,17 +519,20 @@ persist = { members = [
   "NonCanonical",
   "VersionMismatch",
   "GenerationMismatch",
-], detail = "persisted bytes are untrustworthy — trigram index, kinship atlas, codex shelf, fragment table. Every artifact fails CLOSED to the live path, so a persist fault costs speed, never answers" }
+  "Oversized",
+], detail = "persisted bytes are untrustworthy — trigram index, kinship atlas, codex shelf, fragment table. Every artifact fails CLOSED to the live path, so a persist fault costs speed, never answers. `Oversized` is the writer's mirror: the artifact this corpus would need exceeds what can represent or hold it (record count, length arithmetic, destination buffer) — one fact, not one member per bounds check" }
 pattern = { members = [
+  "BadPattern",
   "Unsupported",
   "TooManyPatterns",
   "PowersetCapHit",
   "NeedleTooShort",
-], detail = "the query itself has no answer under the selected engine. `Unsupported` deliberately also appears in [decline_reasons] as `unsupported_syntax`: one fact, two channels — a declinature while PCRE2 can still answer it, a fault once `--engine linear` has refused PCRE2. `fault.Decline.refused` is the single conversion point" }
+], detail = "the query itself has no answer under the selected engine. `Unsupported` deliberately also appears in [decline_reasons] as `unsupported_syntax`: one fact, two channels — a declinature while PCRE2 can still answer it, a fault once `--engine linear` has refused PCRE2. `fault.Decline.refused` is the single conversion point. `BadPattern` is the opposite case and never a declinature: the grammar itself rejects the pattern, so no slower engine could answer it either" }
 resource = { members = [
   "OutOfMemory",
   "TimedOut",
-], detail = "the machine or the budget ran out; `OutOfMemory` is the one held to a single canonical exit in the command plane" }
+  "Exhausted",
+], detail = "the machine or the budget ran out; `OutOfMemory` is the one held to a single canonical exit in the command plane, and `Exhausted` is its non-heap sibling for an OS handle the kernel refused (a fork, a pipe) — one fact per condition, not one per call site" }
 wire = { members = [
   "ConnClosed",
   "UnexpectedFrame",

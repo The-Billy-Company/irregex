@@ -1,9 +1,9 @@
 ---
 doc_radar:
   counts:
-    - description: "five modules — the walk, what it must read, in what order, from where, and what may be skipped"
+    - description: "six modules — the walk, what it must read, in what order, from where, what may be skipped, and how a failed descent reads"
       glob: pkg/kernels/irregex/src/surface/exec/cold/quarry/*.zig
-      equals: 5
+      equals: 6
   sentinels:
     - description: "the oracle answers in the success position — a declinature is a routing fact, never a fault (ADR-373 law 1)"
       file: pkg/kernels/irregex/src/surface/exec/cold/quarry/elide.zig
@@ -31,6 +31,7 @@ answered twice, differently, in two schedulers
 | `intake.zig` | turning walked candidates into readable bytes — reading only what the question needs                                                             |
 | `order.zig`  | canonical file order: ripgrep's `--sort`/`--sortr`, exactly                                                                                      |
 | `stream.zig` | stdin as a haystack: admitting and draining fd 0                                                                                                 |
+| `notice.zig` | how a failed descent reads on stderr: the unopenable path, the `-L` loop, the walk that admitted nothing                                        |
 
 Each of these has consumers in more than one package — and a shared concept
 living inside one of its consumers is how the duplicate oracle was born the

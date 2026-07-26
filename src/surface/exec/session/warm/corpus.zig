@@ -13,13 +13,13 @@
 //!     from every warm answer. The memory bound is unchanged in kind: cold's
 //!     own `collectFiles` reads the whole candidate corpus into RAM on EVERY
 //!     query; the mirror just keeps that one corpus resident.
-//!   • **BOM ingest (`grepfile.decodeBom`).** A UTF-8 BOM is stripped; a
+//!   • **BOM ingest (`legible.decodeBom`).** A UTF-8 BOM is stripped; a
 //!     UTF-16 LE/BE BOM transcodes the whole file to UTF-8 — so a UTF-16 doc
 //!     matches a UTF-8 pattern warm exactly as it does cold, instead of being
 //!     mis-sniffed as binary (its NULs) and dropped.
 //!   • **Binary docs are ADMITTED, with their first-NUL offset recorded.** Cold
 //!     does not skip a walked binary file — it searches up to the buffer that
-//!     revealed the first NUL (`grepfile.handleBinary`), which can emit for
+//!     revealed the first NUL (`binary.handleBinary`), which can emit for
 //!     `-l`/lines. The old 8 KiB-window `isBinary` skip made warm diverge on
 //!     any file whose first NUL sits past 8 KiB. The mirror scans the WHOLE
 //!     decoded body once at ingest (`nul`, the same `indexOfScalar` the cold
@@ -46,7 +46,8 @@
 //! `nul`/`lines` invariant is computed the same way over either tier.
 
 const std = @import("std");
-const grepfile = @import("../../cold/read/grepfile.zig");
+const legible = @import("../../cold/read/legible.zig");
+const slurp = @import("../../cold/read/slurp.zig");
 const shard = @import("../../../../corpus/index/content/shard.zig");
 const path_utils = @import("../../../../corpus/scope/paths.zig");
 const Dir = std.Io.Dir;
@@ -61,7 +62,7 @@ pub const Doc = struct { bytes: []const u8, nul: ?usize };
 /// returned bytes are owned by `a`.
 pub fn readDoc(a: std.mem.Allocator, io: std.Io, path: []const u8) ?Doc {
     const raw = Dir.cwd().readFileAlloc(io, path, a, .unlimited) catch return null;
-    const body = grepfile.decodeBom(a, raw);
+    const body = legible.decodeBom(a, raw);
     if (body.len == 0) return null;
     return .{ .bytes = body, .nul = std.mem.indexOfScalar(u8, body, 0) };
 }
@@ -75,7 +76,7 @@ pub const OwnedDoc = struct { bytes: []u8, nul: ?usize };
 
 pub fn readDocOwned(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ?OwnedDoc {
     const raw = Dir.cwd().readFileAlloc(io, path, gpa, .unlimited) catch return null;
-    const body = grepfile.decodeBom(gpa, raw);
+    const body = legible.decodeBom(gpa, raw);
     const owned: []u8 = if (body.ptr == raw.ptr and body.len == raw.len)
         raw // untouched
     else blk: {
@@ -98,7 +99,7 @@ pub fn readDocOwned(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ?Owned
 
 /// The region cold actually searches in one doc: the whole body of a text doc,
 /// or — for a binary doc (`nul` set) — only the COMPLETE buffers before the one
-/// that first revealed the first NUL, the same cut `grepfile.handleBinary`
+/// that first revealed the first NUL, the same cut `binary.handleBinary`
 /// applies. Empty ⇒ cold saw zero searchable lines and suppresses the file.
 ///
 /// Every warm face that must agree with cold's binary policy cuts through HERE:
@@ -106,7 +107,7 @@ pub fn readDocOwned(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ?Owned
 /// term of the `-v` complement — so `matches ≤ lines` holds by construction
 /// rather than by three call sites spelling the same arithmetic.
 pub inline fn gatedBody(bytes: []const u8, nul: ?usize) []const u8 {
-    return if (nul) |n| bytes[0 .. (n / grepfile.BUFCAP) * grepfile.BUFCAP] else bytes;
+    return if (nul) |n| bytes[0 .. (n / slurp.BUFCAP) * slurp.BUFCAP] else bytes;
 }
 
 /// Count lines over `gatedBody`, by rg's line model (`\n` terminates; a body not
@@ -149,7 +150,7 @@ pub const Mirror = struct {
     }
 };
 
-/// The three BOM prefixes `grepfile.decodeBom` acts on. A shard slice holds RAW
+/// The three BOM prefixes `legible.decodeBom` acts on. A shard slice holds RAW
 /// bytes; when a file opens with a BOM the mirror's decoded bytes differ from
 /// the slice, so that file must take the heap tier (where `readDoc` decodes). A
 /// UTF-16 BOM file is never a shard member anyway — its encoding NULs trip

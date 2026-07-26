@@ -55,15 +55,29 @@ pub const Corpus = error{ FileNotFound, AccessDenied, NotDir, SymLinkLoop, NameT
 /// the codex shelf, the fragment table. `BadFormat` and `CorruptIndex`
 /// collapse into `Corrupt`: one fact, one spelling. Every artifact fails
 /// **closed** to the live path, so a persist fault costs speed, never answers.
-pub const Persist = error{ Corrupt, Truncated, NonCanonical, VersionMismatch, GenerationMismatch };
+///
+/// `Oversized` is the writer's mirror of the same closure: the artifact this
+/// corpus *would* need does not fit what can hold or address it — more docs
+/// than the record count admits, a length that overflows, a destination too
+/// short. Three spellings of that (`TooManyDocuments`, `SizeOverflow`,
+/// `BufferTooSmall`) named the check rather than the fact, and no caller ever
+/// told them apart.
+pub const Persist = error{ Corrupt, Truncated, NonCanonical, VersionMismatch, GenerationMismatch, Oversized };
 
 /// The query itself has no answer under the selected engine. `Unsupported` is
-/// the member that also lives in the declinature vocabulary (`Decline.refused`).
-pub const Pattern = error{ Unsupported, TooManyPatterns, PowersetCapHit, NeedleTooShort };
+/// the member that also lives in the declinature vocabulary (`Decline.refused`);
+/// `BadPattern` is deliberately NOT that — a pattern the grammar rejects
+/// (`(unterminated`) has no answer under ANY engine, so escalating to PCRE2
+/// would only reproduce the same rejection.
+pub const Pattern = error{ BadPattern, Unsupported, TooManyPatterns, PowersetCapHit, NeedleTooShort };
 
 /// The machine or the budget ran out. `OutOfMemory` is the one the `zig-oom`
-/// ratchet already keeps to a single canonical exit in the command plane.
-pub const Resource = error{ OutOfMemory, TimedOut };
+/// ratchet already keeps to a single canonical exit in the command plane;
+/// `Exhausted` is its non-heap sibling — the OS refused a *handle* (a fork, a
+/// pipe), which is the same fact about the same machine and wants the same
+/// prong, not a `ForkFailed`/`WakePipeFailed` pair naming the call site instead
+/// of the condition.
+pub const Resource = error{ OutOfMemory, TimedOut, Exhausted };
 
 /// The resident-session UDS protocol failed mid-frame. It does not cross the C
 /// seam — the FFI is in-process and has no daemon transport — and the daemon
@@ -292,9 +306,9 @@ fn errnoNote(comptime phrase: []const u8, comptime e: std.posix.E) []const u8 {
 test "the five domains merge without collapsing a member" {
     // The load-bearing row: Zig unifies error names globally, so two domains
     // that reached for the same spelling would merge SILENTLY and become
-    // indistinguishable at every handler. 5 + 5 + 4 + 2 + 3 = 19 is the proof
+    // indistinguishable at every handler. 5 + 6 + 5 + 3 + 3 = 22 is the proof
     // that no two did.
-    try std.testing.expectEqual(@as(usize, 19), @typeInfo(Fault).error_set.?.len);
+    try std.testing.expectEqual(@as(usize, 22), @typeInfo(Fault).error_set.?.len);
 }
 
 test "pathNote answers each corpus member with ripgrep's own phrasing" {

@@ -76,7 +76,7 @@ cases = [ "matching_files_inconsistent_with_count" ]
 # ─────────────────────────── irreplayable upstream ───────────────────────────
 
 [[irreplayable]]
-reason = "the case creates a file named with invalid UTF-8 (`foo\\xffbar`); the mined spec encodes every path as a UTF-8 JSON string and cannot represent it. gist is byte-oriented and searches such paths (read/grepfile), but no replay is expressible in this format."
+reason = "the case creates a file named with invalid UTF-8 (`foo\\xffbar`); the mined spec encodes every path as a UTF-8 JSON string and cannot represent it. gist is byte-oriented and searches such paths (read/slurp), but no replay is expressible in this format."
 cases = [ "r210" ]
 
 [[irreplayable]]

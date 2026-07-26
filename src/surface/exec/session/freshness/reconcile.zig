@@ -281,10 +281,10 @@ fn sweepNonAscii(self: *ResidentSession, dl: *delta_mod.Delta) QueryError!void {
 /// out of the same predicate.
 fn applySubtree(self: *ResidentSession, dl: *delta_mod.Delta, a: std.mem.Allocator, rel: []const u8) QueryError!bool {
     var sink: std.StringHashMapUnmanaged(void) = .empty;
-    dl.walkSubtree(rel, &sink) catch |e| switch (e) {
-        error.NeedFull => return false,
-        error.OutOfMemory => return QueryError.OutOfMemory,
-    };
+    switch (try dl.walkSubtree(rel, &sink)) {
+        .declined => return false, // unenumerable subtree — only the full walk is sound
+        .got => {},
+    }
     var it = sink.keyIterator();
     while (it.next()) |k| try one(self, k.*, null, null);
 

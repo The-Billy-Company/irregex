@@ -2,7 +2,7 @@
 //!
 //! Renders the default `gist <pattern>` presentation (`path:text`, `-n` for
 //! `path:line:text`) for a pre-gated, path-sorted document list — through the
-//! cold engine's OWN `Emitter` and `grepfile.handleBinary`, not a re-derived
+//! cold engine's OWN `Emitter` and `binary.handleBinary`, not a re-derived
 //! formatter. Byte-parity is therefore by construction: the same line split
 //! (`collectLines`), the same binary policy (emit up to the buffer that
 //! revealed the first NUL, then the implicit-file WARNING), the same
@@ -26,7 +26,8 @@
 const std = @import("std");
 const args = @import("../../cold/argv/args.zig");
 const output = @import("../../cold/emit/output.zig");
-const grepfile = @import("../../cold/read/grepfile.zig");
+const binary = @import("../../cold/read/binary.zig");
+const legible = @import("../../cold/read/legible.zig");
 const parallel = @import("../../../../kernel/primitives/parallel.zig");
 const query_mod = @import("../../../../kernel/match/query/query.zig");
 const request = @import("../answer/request.zig");
@@ -153,11 +154,11 @@ pub fn renderLines(a: std.mem.Allocator, req: request.Request, docs: []const Doc
             // complete buffers before the NUL, then the WARNING note. Cold's
             // `renderFile` returns on this path before the join-groups insert, so
             // a binary answer neither draws nor consumes the `--` separator.
-            if (grepfile.handleBinary(a, &re, o, out, &em, d.path, explicitRoot(req, d.path), d.bytes, nul, show_name)) matched = true;
+            if (binary.handleBinary(a, &re, o, out, &em, d.path, explicitRoot(req, d.path), d.bytes, nul, show_name)) matched = true;
             continue;
         }
         var lines: std.ArrayList([]const u8) = .empty;
-        grepfile.collectLines(a, d.bytes, o.term(), &lines);
+        legible.collectLines(a, d.bytes, o.term(), &lines);
         const before = out.items.len;
         if (em.file(d.path, lines.items) > 0) {
             if (join_groups and !first and out.items.len > before)
@@ -332,9 +333,10 @@ pub fn renderLinesShm(
 fn emit(a: std.mem.Allocator, pieces: []const []const u8, matched: bool, floor: usize) RenderError!LinesEmit {
     var total: usize = 0;
     for (pieces) |p| total += p.len;
-    if (total >= floor) {
-        // shm unavailable → fall open to chunk frames below
-        if (shm.Buffer.create(total) catch null) |created| {
+    // A declined shm buffer falls open to the chunk frames below — same bytes.
+    if (total >= floor) switch (shm.Buffer.create(total)) {
+        .declined => {},
+        .got => |created| {
             var buffer = created;
             var off: usize = 0;
             for (pieces) |p| {
@@ -342,8 +344,8 @@ fn emit(a: std.mem.Allocator, pieces: []const []const u8, matched: bool, floor: 
                 off += p.len;
             }
             return .{ .fd = .{ .buffer = buffer, .len = total, .matched = matched } };
-        }
-    }
+        },
+    };
     if (pieces.len == 1) return .{ .chunk = .{ .bytes = pieces[0], .matched = matched } };
     var out: std.ArrayList(u8) = .empty;
     for (pieces) |p| try out.appendSlice(a, p);

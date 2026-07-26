@@ -23,7 +23,7 @@ One concern per folder:
 | [`corpora/`](corpora/)                | Multi-corpus fetcher (`fetch.sh` + `torture.py`) — pinned external trees (linux/cpython/typescript/subtitles/torture) under `.local/gist-corpora/` so differential sweeps aren't Billy-home-corpus-only.                                                 |
 | [`races/`](races/README.md)           | The competitor registry (`_compete.sh`) + the three multi-tool field races (warm, cold literal, cold regex).                                                                                                                                             |
 | [`gates/`](gates/README.md)           | Permanent correctness/contract gates: the `gist ≡ rg` equality oracle, the scan-path regression, the stdout/stderr stream-contract check.                                                                                                                |
-| [`certify/`](certify/README.md)       | The macroscopic half of the Layer-A optimality certificate — races the whole field per pattern class with a fail-closed statistical verdict.                                                                                                             |
+| [`certify/`](certify/README.md)       | The macroscopic half of the Layer-A dominance certificate — races the whole field per pattern class with a fail-closed statistical verdict.                                                                                                             |
 | [`session/`](session/README.md)       | The **resident-session** certificate — the honest warm-product path (persistent client → `gist serve` daemon over a Unix socket), the only sound basis for a warm-speedup claim (ADR-352 rung 2.5).                                                      |
 | [`rgsuite/`](rgsuite/README.md)       | The `gist rg` ⇄ real-ripgrep drop-in proof — mined `rgtest!` correctness replay plus the performance scoreboard.                                                                                                                                         |
 | [`matrix/`](matrix/README.md)         | The **CLI-shape admission matrix** — one machine-readable row per supported shape (mode × flags × walk-scope × emit × selectivity), driven as real argv three ways (gist-idx / gist-noidx / rg) with a parity-first gate + per-shape statistical floors. |
@@ -129,12 +129,15 @@ tree's own roots — `_compete.sh` resolves them once, mirroring
   number — robust to this shared dev box's load because each query's tools run
   back-to-back under the same conditions.
 
-## Certificate of Optimality (Layers A–G)
+## Dominance-and-Fit Certificate (Layers A–G)
 
 The race scripts above report _means and ratios_. The **certificate** turns that
-into a claim that is beyond reproach — every number carries a 95% bootstrap
+into a checkable claim — every number carries a 95% bootstrap
 confidence interval and (vs ripgrep) a Mann-Whitney significance test, so a
-"win" is **statistically real**, not box noise. It is built in seven layers,
+"win" is **statistically real**, not box noise. What it certifies is named in
+its title: measured **dominance** over a stated baseline, and each layer's
+**fit** against a stated bound. It is not a proof of universal or hardware
+optimality, and no layer claims one. It is built in seven layers,
 cheapest evidence first, and **all seven are now implemented**:
 
 Its headline (Layer A macroscopic) is the fresh-process, cold `gist` exact-search

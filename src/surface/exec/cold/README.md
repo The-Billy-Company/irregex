@@ -22,7 +22,7 @@ One matcher, three orchestration modes under [`engine/`](engine):
 
 The warm daemon and the FFI session do **not** reimplement matching: they call
 the shared `kernel/match/query/query.zig` core and, for line frames, reuse this
-face's own `Emitter` / `grepfile` so warm bytes cannot drift from cold.
+face's own `Emitter` / `read/binary.zig` so warm bytes cannot drift from cold.
 
 ## Concern packages
 
@@ -31,7 +31,7 @@ face's own `Emitter` / `grepfile` so warm bytes cannot drift from cold.
 | [`argv/`](argv)     | flag grammar → `Opts`; the `flag_catalog` `--schema` rides           |
 | [`writ/`](writ)     | what the patterns decide — matcher, gates, filters, and their guards |
 | [`quarry/`](quarry) | what is in the tree, what must be read, in what order, from where    |
-| [`read/`](read)     | per-file ingest (encoding, decompress/preprocess, grepfile)          |
+| [`read/`](read)     | per-file ingest — bytes off disk, made legible, binary policy, stats |
 | [`emit/`](emit)     | presentation — framing, color, `--json`, multiline, per-file render  |
 | [`engine/`](engine) | scheduling that drives the packages above                            |
 | [`view/`](view)     | gist's own ways of looking at a match, which rg has no flag for      |

@@ -224,13 +224,18 @@ fn processDir(w: *Worker, a: std.mem.Allocator, task: DirTask, local: *std.Array
     if (bulkstat.supported) {
         // The bulk-stat→readdir seam: a listing failure is this accelerator
         // declining, not a fault — `bulk_ok` stays false and the portable
-        // fallback below does the same work, slower.
-        if (bulkstat.listNamesOnly(a, dir.handle) catch null) |listed| {
-            for (listed) |e| {
-                ignore.noteIgnoreFile(&present, e.name, e.is_file);
-                try entries.append(a, .{ .name = e.name, .is_dir = e.is_dir, .is_file = e.is_file });
-            }
-            bulk_ok = true;
+        // fallback below does the same work, slower. Typed since ADR-373 law 1,
+        // so an OutOfMemory here propagates instead of masquerading as "this
+        // platform has no getdirentries" and quietly retrying the slow path.
+        switch (try bulkstat.listNamesOnly(a, dir.handle)) {
+            .declined => {},
+            .got => |listed| {
+                for (listed) |e| {
+                    ignore.noteIgnoreFile(&present, e.name, e.is_file);
+                    try entries.append(a, .{ .name = e.name, .is_dir = e.is_dir, .is_file = e.is_file });
+                }
+                bulk_ok = true;
+            },
         }
     }
     if (!bulk_ok) {

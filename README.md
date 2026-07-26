@@ -256,6 +256,10 @@ exist and where they stop.
 - `relate` provides deterministic byte-level kinship, attribution, and packing;
   it serves a retrieval-shaped purpose without pretending compression distance
   is learned semantic meaning.
+- A resident daemon may **hold** an answer a client already computed, keyed to a
+  corpus change epoch, but never computes one itself; if the tree moved, the
+  held bytes are dropped rather than served. Repetition is an acceleration tier,
+  never a source of truth.
 - The C ABI is versioned and flat; the header and
   [`ffi` documentation](src/surface/ffi/README.md) are its public contract.
 
@@ -370,7 +374,7 @@ prunes ≤1% where the run prunes 93%: the run is the condition, not the count.
 ### 6. Performance claims can be certificates, not benchmark anecdotes
 
 The idea got me moving. It did not prove the system. So I built the checked-in
-**Certificate of Optimality**. Correctness gates run first; only then do five
+**Dominance-and-Fit Certificate**. Correctness gates run first; only then do five
 independent layers measure empirical
 dominance (A), static and native port pressure (B/B′), the hardware roofline
 (C), the algorithmic read lower bound (D), and the crest sieve's fail-closed
@@ -378,15 +382,18 @@ pruning of the trigram blind spot (E). A Layer-A win requires both a
 lower median and Mann–Whitney p < 0.05; missing counters or tools are printed
 as missing, never inferred.
 
-"Optimality" names the aspiration, and each layer is deliberately honest about
-how far it actually reaches: Layer C measures the scan's _distance_ from the
+The name states the reach, because each layer is narrower than "optimal" would
+imply: Layer C measures the scan's _distance_ from the
 DRAM roofline and reports that headroom rather than claiming the roof (the mint
 run sits well below it); Layer A's cycles/byte are cross-checked against Layer
 B's static microarchitectural bound, not measured on the mint machine; and
 Layer D certifies the minimum candidate set the filter can _prove_, not a global
-algorithmic minimum. It is a dominance-and-fit certificate — every line a
-measured number with a provenance — not a proof of universal or hardware
-optimality; the certificate itself carries the same per-layer disclaimers.
+algorithmic minimum. So it certifies two things and says so on the cover:
+measured **dominance** over a named baseline, and each layer's **fit** against a
+stated bound — every line a measured number with a provenance, never a proof of
+universal or hardware optimality. The certificate carries the same per-layer
+disclaimers. It was called a "Certificate of Optimality" until that title
+outran what Layers A–D actually establish.
 
 The claim is deliberately narrow: it certifies `gist`'s fresh-process,
 cold exact-search path over 12 literal/regex classes. It does **not** certify

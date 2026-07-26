@@ -58,14 +58,22 @@ pub fn compileFor(self: *ResidentSession, req: Request, mode: Mode) QueryError!a
         .max_count = req.max_count orelse 0,
         // `-P`: compile the regex body through the PCRE2 backend behind the
         // shared `Matcher` seam (lookaround/backreferences the linear engine
-        // declines). A pattern PCRE2 rejects returns
-        // `freshness_unprovable` → certified cold fallback, exactly like a
-        // linear-syntax decline.
+        // declines). A pattern PCRE2 rejects declines exactly like a
+        // linear-syntax decline → certified cold fallback.
         .pcre = req.pcre,
-    }) catch |e| return if (e == error.OutOfMemory)
-        QueryError.OutOfMemory
-    else
-        .{ .declined = .freshness_unprovable };
+        // `CompileError` has exactly two members, so the switch is exhaustive
+        // and names each fact once (ADR-373 law 1). `Unsupported` is
+        // `unsupported_syntax` and NOT `freshness_unprovable`: both route to the
+        // same cold fallback, so the mislabel was invisible in routing — but
+        // `unsupported_syntax` is the ONLY refusable declinature
+        // (`fault.Decline.refused`), the one `--engine linear` converts into a
+        // fault because forbidding PCRE2 leaves the fact with no answer
+        // anywhere. Spelling it "freshness" told the caller the resident bytes
+        // were unproven, which is a different fact with a different remedy.
+    }) catch |e| return switch (e) {
+        error.OutOfMemory => QueryError.OutOfMemory,
+        error.Unsupported => .{ .declined = .unsupported_syntax },
+    };
     return .{ .got = compiled };
 }
 

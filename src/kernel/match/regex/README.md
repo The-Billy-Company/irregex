@@ -6,11 +6,16 @@ doc_radar:
       equals: 7
       unit: dirs
   sentinels:
-    - description: "only core + DFA are re-exported at the package root; submodules are imported directly"
+    - description: "the package root re-exports the engine's stages through its entry file, never around it"
       file: pkg/kernels/irregex/src/root.zig
       contains:
-        - 'pub const regex = @import("kernel/match/regex/linear/program/core.zig");'
-        - 'pub const regex_dfa = @import("kernel/match/regex/linear/dfa/dfa.zig");'
+        - 'const regex_engine = @import("kernel/match/regex/regex.zig");'
+        - 'pub const regex = regex_engine.program;'
+        - 'pub const regex_dfa = regex_engine.dfa;'
+    - description: "the engine is a sealed deep module — an outside import that skips the entry file fails lint-zig-arch"
+      file: pkg/kernels/irregex/contract/irregex.ward
+      contains:
+        - 'seal kernel/match/regex through regex.zig'
 ---
 
 # gist — T2 regex
@@ -20,9 +25,21 @@ ripgrep philosophy — no backtracking, no catastrophic blowup) with a byte-clas
 DFA as the primary O(1)/byte engine and a Pike VM fallback. Organized by real
 pipeline stage — the AST flows front-to-back, `syntax → analysis → compile →
 linear`, with `unicode` data feeding the class lowering, `pcre2` the opt-in
-escape hatch, and `oracle` the independent correctness backstop. Only the core
-handle (`regex`) and DFA (`regex_dfa`) are re-exported through `src/root.zig`;
-every other stage is imported directly by its consumer.
+escape hatch, and `oracle` the independent correctness backstop.
+
+**One door in.** These seven stages are internals: every caller outside this
+folder enters through [`regex.zig`](regex.zig), which re-exports the compiled
+handle, the engine-neutral `Matcher` seam, captures, and the leaf data
+namespaces the surface shares. The seal in
+[`contract/irregex.ward`](../../../../contract/irregex.ward) makes
+that a build-time law — `make lint-zig-arch` fails any import that reaches past
+it. The reason is soundness, not tidiness: the crest sieve once carried a
+second, smaller parser, the two grammars disagreed on the zero-width `\<` /
+`\>` boundaries, and it silently pruned two thirds of the matching corpus. A
+single entry point is how "there is exactly one grammar" becomes a property
+instead of a promise — a fork cannot reach the internals it would need.
+Competition for this engine is other *engines* (Rust `regex`, RE2, PCRE2,
+Hyperscan), measured in `bench/`; never a second parser inside this tree.
 
 | Stage    | Folder                  | Role                                                                                                                                                                |
 | -------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

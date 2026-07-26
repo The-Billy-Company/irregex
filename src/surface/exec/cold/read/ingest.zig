@@ -32,7 +32,7 @@ const std = @import("std");
 const args = @import("../argv/args.zig");
 const encoding = @import("encoding.zig");
 const glob = @import("../../../../corpus/scope/glob.zig");
-const grepfile = @import("grepfile.zig");
+const legible = @import("legible.zig");
 const assay = @import("../../../../assay/assay.zig");
 const flate = std.compress.flate;
 const zstd = std.compress.zstd;
@@ -90,7 +90,7 @@ pub fn apply(a: std.mem.Allocator, cfg: *const Config, disk: []const u8, rel: []
 
 /// Transcode `buf` from the requested source encoding to UTF-8. The `auto`/`none`/
 /// UTF families are handled inline here: `auto` is the default BOM-sniff (shared
-/// verbatim with the untransformed read path via `grepfile.decodeBom`); `none`
+/// verbatim with the untransformed read path via `legible.decodeBom`); `none`
 /// passes bytes through untouched; `utf8` strips a UTF-8 BOM; the UTF-16 variants
 /// transcode (a bare `utf16` without an explicit endianness picks it from a
 /// leading BOM, else little-endian — encoding_rs's default). Every other WHATWG
@@ -98,14 +98,14 @@ pub fn apply(a: std.mem.Allocator, cfg: *const Config, disk: []const u8, rel: []
 /// `encoding.decode`.
 pub fn applyEncoding(a: std.mem.Allocator, enc: args.Encoding, buf: []const u8) []const u8 {
     return switch (enc) {
-        .auto => grepfile.decodeBom(a, buf),
+        .auto => legible.decodeBom(a, buf),
         .none => buf,
-        .utf8 => grepfile.stripBom(buf),
-        .utf16le => grepfile.utf16ToUtf8(a, dropUtf16Bom(buf, .little), .little),
-        .utf16be => grepfile.utf16ToUtf8(a, dropUtf16Bom(buf, .big), .big),
+        .utf8 => legible.stripBom(buf),
+        .utf16le => legible.utf16ToUtf8(a, dropUtf16Bom(buf, .little), .little),
+        .utf16be => legible.utf16ToUtf8(a, dropUtf16Bom(buf, .big), .big),
         .utf16 => blk: {
             const e: std.builtin.Endian = if (buf.len >= 2 and buf[0] == 0xFE and buf[1] == 0xFF) .big else .little;
-            break :blk grepfile.utf16ToUtf8(a, dropUtf16Bom(buf, e), e);
+            break :blk legible.utf16ToUtf8(a, dropUtf16Bom(buf, e), e);
         },
         else => encoding.decode(a, enc, buf),
     };

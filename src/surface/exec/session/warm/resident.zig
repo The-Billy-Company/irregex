@@ -25,7 +25,7 @@
 //! mode applies cold's own binary rule at answer time:
 //!
 //!   - `files` (`-l`): match only within complete buffers before the NUL one
-//!     (`grepfile.handleBinary`'s files_only policy).
+//!     (`binary.handleBinary`'s files_only policy).
 //!   - `count` (`-c`): an implicit binary file is suppressed entirely.
 //!   - `lines` (bare `gist <pattern>`): emit pre-NUL-buffer matches + WARNING,
 //!     rendered by `render.zig` through the cold Emitter itself.

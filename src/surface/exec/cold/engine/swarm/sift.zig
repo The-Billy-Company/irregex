@@ -1,7 +1,7 @@
 //! gist — sifting ONE file: read, decode, gate, triage, match, render.
 //!
 //! The parallel twin of the serial engine's per-file loop body, built from the
-//! same `grepfile` primitives so the two cannot drift. The staging is what earns
+//! same `read/` primitives so the two cannot drift. The staging is what earns
 //! the speed: decide from the first BUFCAP bytes whatever they already settle
 //! (a NUL cutoff, an `-l` match proof) before paying for the tail, since 86% of
 //! this corpus's bytes live in the tails of >64 KiB files. Then one whole-file
@@ -11,12 +11,15 @@
 
 const std = @import("std");
 const args = @import("../../argv/args.zig");
+const binary = @import("../../read/binary.zig");
 const crew = @import("crew.zig");
-const grepfile = @import("../../read/grepfile.zig");
 const ingest = @import("../../read/ingest.zig");
 const json = @import("../../emit/json.zig");
+const legible = @import("../../read/legible.zig");
 const output = @import("../../emit/output.zig");
 const simd = @import("../../../../../kernel/match/scan/simd.zig");
+const slurp = @import("../../read/slurp.zig");
+const stats = @import("../../read/stats.zig");
 const verify = @import("../../../../../kernel/match/scan/verify.zig");
 
 const Emitter = output.Emitter;
@@ -31,7 +34,7 @@ const oom = args.oom;
 /// was pre-scanned, so `emitBody` runs the gate + match over the whole body
 /// (covered = gate_from = 0) — byte-identical to the staged read path's result.
 pub fn searchShardBody(w: *Worker, a: std.mem.Allocator, dpath: []const u8, bytes: []const u8) void {
-    const body = grepfile.decodeBom(a, bytes);
+    const body = legible.decodeBom(a, bytes);
     if (w.cfg.o.json) return emitJson(w, a, dpath, body);
     if (body.len == 0) return noteEmpty(w, dpath);
     emitBody(w, a, dpath, body, 0, 0);
@@ -60,7 +63,7 @@ fn noteEmpty(w: *Worker, dpath: []const u8) void {
 /// serial collect path gates `--json` on the single `file_needle` only.
 fn emitJson(w: *Worker, a: std.mem.Allocator, dpath: []const u8, decoded: []const u8) void {
     const cfg = w.cfg;
-    const body = grepfile.stripBom(decoded);
+    const body = legible.stripBom(decoded);
     if (cfg.file_needle) |gate| if (!verify.gateWide(a, body, gate)) return;
     const ss = w.spanSim() orelse return;
     var buf: std.ArrayList(u8) = .empty;
@@ -70,7 +73,7 @@ fn emitJson(w: *Worker, a: std.mem.Allocator, dpath: []const u8, decoded: []cons
 
 /// Read + match + render ONE file straight into the sink — the parallel
 /// twin of the serial engine's per-file loop body (`serial.zig`), built from the
-/// same `grepfile` primitives so the two cannot drift. `disk` is resolved
+/// same `read/` primitives so the two cannot drift. `disk` is resolved
 /// relative to `dirfd` (the walk passes the still-open parent directory so the
 /// kernel resolves one component; deferred/elision reads pass `AT.FDCWD` with
 /// the full path).
@@ -85,10 +88,10 @@ pub fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.po
     // transform is owed here. Every admitted file reaches `emitJson` exactly
     // once, so its `searches` tally stays byte-identical to the serial path.
     if (o.json) {
-        const sf = grepfile.StagedFile.open(scratch, dirfd, disk) orelse return;
+        const sf = slurp.StagedFile.open(scratch, dirfd, disk) orelse return;
         defer sf.close();
         const raw = if (sf.more) (sf.readRest(a, scratch) orelse return) else sf.prefix;
-        return emitJson(w, a, dpath, grepfile.decodeBom(a, raw));
+        return emitJson(w, a, dpath, legible.decodeBom(a, raw));
     }
 
     // Transform run (`-z`/`-E`): the on-disk bytes are compressed/encoded, so the
@@ -100,7 +103,7 @@ pub fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.po
     // return is a dropped file (never reached here: `--pre`, the only dropping
     // transform, stays on the serial engine).
     if (cfg.ingest) |icfg| {
-        const sf = grepfile.StagedFile.open(scratch, dirfd, disk) orelse return;
+        const sf = slurp.StagedFile.open(scratch, dirfd, disk) orelse return;
         defer sf.close();
         const raw = sf.readRest(a, scratch) orelse return;
         const body = ingest.apply(a, icfg, openable, dpath, raw) orelse return;
@@ -108,7 +111,7 @@ pub fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.po
         return emitBody(w, a, dpath, body, 0, 0);
     }
 
-    const sf = grepfile.StagedFile.open(scratch, dirfd, disk) orelse return;
+    const sf = slurp.StagedFile.open(scratch, dirfd, disk) orelse return;
     defer sf.close();
 
     // Stage 1 — decide what the first BUFCAP bytes (rg's buffer 0) already
@@ -129,13 +132,13 @@ pub fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.po
         // inside the NUL-free prefix settles the file — `-l` emits and skips
         // the tail; `--files-without-match` skips WITHOUT emitting (the file
         // HAS a match). Absence proves nothing; fall through to the full read.
-        if (cfg.fast_l and sf.more and prefixProvesMatch(w, re, grepfile.stripBom(sf.prefix))) {
+        if (cfg.fast_l and sf.more and prefixProvesMatch(w, re, legible.stripBom(sf.prefix))) {
             if (!o.files_without) w.bufferPath(dpath, if (o.null_sep) "\x00" else o.outTerm());
             return;
         }
     }
     const raw = if (sf.more) (sf.readRest(a, scratch) orelse return) else sf.prefix;
-    const body = grepfile.decodeBom(a, raw);
+    const body = legible.decodeBom(a, raw);
     if (body.len == 0) return noteEmpty(w, dpath);
     // Bytes of `body` already covered by the stage-1 prefix scans, in body
     // space: `body` aliases `raw` at offset 0 or 3 (UTF-8 BOM strip), so the
@@ -202,23 +205,23 @@ fn emitBody(w: *Worker, a: std.mem.Allocator, dpath: []const u8, body: []const u
         // rg's -U slice model runs only when the pattern can actually match
         // `\n`; slice model + NUL beyond the 64K sniff means the searcher never
         // notices it — ordinary text, fall through to the normal path.
-        if (!(o.multiline and re.canMatchNewline() and !grepfile.multilineBinary(body.len, nul))) {
+        if (!(o.multiline and re.canMatchNewline() and !binary.multilineBinary(body.len, nul))) {
             // `--files-without-match` skips binary files entirely (serial
             // `fileWithoutMatch` returns before any emit) — no path, no tally.
             if (o.files_without) return;
             if (o.stats) {
                 // Walked (implicit) file: only the committed prefix was
                 // searched — mirror serial `renderFile`'s binary stats arm.
-                const searched = body[0..grepfile.committedPrefix(body, nul)];
+                const searched = body[0..binary.committedPrefix(body, nul)];
                 var blines: std.ArrayList([]const u8) = .empty;
-                if (!o.multiline) grepfile.collectLines(a, searched, o.term(), &blines);
-                const fs = grepfile.fileMatchStats(re, a, o, searched, blines.items, cfg.line_needle);
+                if (!o.multiline) legible.collectLines(a, searched, o.term(), &blines);
+                const fs = stats.fileMatchStats(re, a, o, searched, blines.items, cfg.line_needle);
                 w.stats.bump(.files_searched);
                 w.stats.add(.matches, fs.matches);
                 w.stats.add(.matched_lines, fs.lines);
                 w.stats.add(.bytes_searched, fs.bytes);
             }
-            const matched = grepfile.handleBinary(a, re, o, &buf, &em, dpath, false, body, nul, cfg.show_name);
+            const matched = binary.handleBinary(a, re, o, &buf, &em, dpath, false, body, nul, cfg.show_name);
             if (matched or buf.items.len > 0)
                 w.deliver(if (matched) .bin_hit else .text_plain, dpath, buf.items);
             return;
@@ -261,9 +264,9 @@ fn emitBody(w: *Worker, a: std.mem.Allocator, dpath: []const u8, body: []const u
     const fast = !o.multiline and em.litFastEligible();
     const fused = !o.multiline and !fast and !o.stats and em.fusedFileEligible();
     var lines: std.ArrayList([]const u8) = .empty;
-    if (!o.multiline and !fast and !fused) grepfile.collectLines(a, body, o.term(), &lines);
+    if (!o.multiline and !fast and !fused) legible.collectLines(a, body, o.term(), &lines);
     if (o.stats) {
-        const fs = grepfile.fileMatchStats(re, a, o, body, lines.items, cfg.line_needle);
+        const fs = stats.fileMatchStats(re, a, o, body, lines.items, cfg.line_needle);
         w.stats.bump(.files_searched);
         w.stats.add(.matches, fs.matches);
         w.stats.add(.matched_lines, fs.lines);
@@ -288,7 +291,7 @@ fn gateMiss(w: *Worker, dpath: []const u8, body: []const u8) void {
     } else if (o.stats) {
         var bytes = body.len;
         if (w.cfg.binary_detect) if (std.mem.indexOfScalar(u8, body, 0)) |nul| {
-            bytes = grepfile.committedPrefix(body, nul);
+            bytes = binary.committedPrefix(body, nul);
         };
         w.stats.bump(.files_searched);
         w.stats.add(.bytes_searched, bytes);

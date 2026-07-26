@@ -27,7 +27,11 @@ const reserved_off = schema_hash_off + std.crypto.hash.sha2.Sha256.digest_length
 /// reserved-zero padding(16). Body begins at 64 for page-map alignment.
 pub const header_len = 64;
 const record_len = crest.K * @sizeOf(u16);
-pub const EncodeError = error{ TooManyDocuments, SizeOverflow, BufferTooSmall };
+/// One fact: this sidecar cannot be written as asked. A doc count past the
+/// u32 id space, a length that overflows `usize`, and a destination shorter
+/// than the record table are three checks for it, not three failures — the
+/// caller loses the crest sieve either way (ADR-373 law 2).
+pub const EncodeError = error{Oversized};
 
 /// Checked form used by the decoder so a hostile count can never wrap into a
 /// plausible short body. The encoder adds the u32 document-ID-space bound.
@@ -37,15 +41,15 @@ pub fn checkedEncodedSize(doc_count: usize) ?usize {
 }
 
 pub fn encodedSize(doc_count: usize) EncodeError!usize {
-    if (doc_count > std.math.maxInt(u32)) return error.TooManyDocuments;
-    return checkedEncodedSize(doc_count) orelse error.SizeOverflow;
+    if (doc_count > std.math.maxInt(u32)) return error.Oversized;
+    return checkedEncodedSize(doc_count) orelse error.Oversized;
 }
 
 /// Serialize `vectors` into `buf` (caller sizes via `encodedSize`). Explicit
 /// little-endian writes so the blob is machine-portable like its siblings.
 pub fn writeInto(vectors: []const crest.Vector, buf: []u8) EncodeError!usize {
     const need = try encodedSize(vectors.len);
-    if (buf.len < need) return error.BufferTooSmall;
+    if (buf.len < need) return error.Oversized;
 
     @memcpy(buf[0..magic.len], magic);
     std.mem.writeInt(u16, buf[version_off..][0..2], crest.SidecarSchema.format_version, .little);

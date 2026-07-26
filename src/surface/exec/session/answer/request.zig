@@ -122,12 +122,12 @@ pub const Request = struct {
     }
 };
 
-pub const ClassifyError = error{
-    /// Outside the resident fast path — answer cold.
-    Unsupported,
-    /// No pattern (a bare `-l`) — also cold.
-    NoPattern,
-};
+/// One fact, one spelling (ADR-373 law 2): this argv is outside the resident
+/// fast path, so answer cold. A bare `-l` with no pattern used to have its own
+/// `NoPattern` member, but every caller here does the same `catch → .cold` —
+/// the missing pattern is one more shape the warm classifier does not support,
+/// not a second outcome anyone routes on.
+pub const ClassifyError = error{Unsupported};
 
 /// A positional PATH the warm path can serve byte-identically to cold: a clean
 /// repo-root-relative subtree or file. Returns the trailing-slash-stripped root
@@ -366,7 +366,7 @@ pub fn classify(argv: []const []const u8, sa: *ScopeArgs) ClassifyError!Request 
     }
 
     const m = mode orelse Mode.lines; // no -l/-c ⇒ the default line search
-    const p = pattern orelse return ClassifyError.NoPattern;
+    const p = pattern orelse return ClassifyError.Unsupported; // a bare `-l`/`-c`: the walk lists files, cold does
     if (p.len == 0) return ClassifyError.Unsupported;
     // A pattern carrying a newline or NUL steps outside rg's per-line model
     // (warm whole-doc gates would match ACROSS lines where cold cannot; a NUL

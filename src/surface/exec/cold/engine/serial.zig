@@ -39,7 +39,9 @@ const Outcome = @import("../../../cli/outcome.zig").Outcome;
 const output = @import("../emit/output.zig");
 const json = @import("../emit/json.zig");
 const color = @import("../emit/color.zig");
-const grepfile = @import("../read/grepfile.zig");
+const legible = @import("../read/legible.zig");
+const stats = @import("../read/stats.zig");
+const notice = @import("../quarry/notice.zig");
 const ingest = @import("../read/ingest.zig");
 const walk = @import("../quarry/walk.zig");
 const intake = @import("../quarry/intake.zig");
@@ -67,13 +69,14 @@ const Caps = @import("../../../../kernel/match/regex/regex.zig").Caps;
 /// the identical stderr guidance.
 pub const hints = @import("../emit/hints.zig");
 
-// Per-file semantics (BOM/UTF-16 ingest, rg line split, binary handling, the
-// --stats tally) live in `grepfile.zig`, shared verbatim with the parallel
-// pipeline so the two engines cannot drift.
-const stripBom = grepfile.stripBom;
-const collectLines = grepfile.collectLines;
-const Stats = grepfile.Stats;
-const emitStats = grepfile.emitStats;
+// Per-file semantics live in `read/` — BOM/UTF-16 ingest and the rg line split
+// in `legible.zig`, binary handling in `binary.zig`, the --stats tally in
+// `stats.zig` — shared verbatim with the parallel pipeline so the two engines
+// cannot drift. Walk-failure wording is `quarry/notice.zig`, likewise shared.
+const stripBom = legible.stripBom;
+const collectLines = legible.collectLines;
+const Stats = stats.Stats;
+const emitStats = stats.emitStats;
 
 // ─────────────────────────── the published face ───────────────────────────
 
@@ -327,7 +330,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // intended that there is nothing to search"). Search modes only — the
     // --files listing above never fires it (rg parity).
     const nothing_searched = parsed.roots.len == 0 and c.walked == 0;
-    if (nothing_searched) grepfile.printNothingSearched();
+    if (nothing_searched) notice.printNothingSearched();
     // A `--pre` invocation that failed during the reads above is an error (exit 2),
     // exactly like an unopenable explicit path — fold it into every exit below.
     const err_exit = c.path_error or pre_error.load(.seq_cst) or nothing_searched;
@@ -339,7 +342,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         var out: std.ArrayList(u8) = .empty;
         const jst = json.runParallel(gpa, a, &out, re, caps, o, jf.items, line_needle, search_span.read(io));
         corpus_mod.emitStdout(out.items);
-        grepfile.diagSearch(gpa, o.json, jst, search_span.read(io));
+        stats.diagSearch(gpa, o.json, jst, search_span.read(io));
         pcreFaultExit(re);
         (Outcome{ .matched = jst.get(.files_with_match) > 0, .faulted = err_exit }).exit();
     }
@@ -452,7 +455,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         stat.set(.bytes_printed, if (o.quiet) 0 else out.items.len);
         if (o.quiet) out.clearRetainingCapacity();
         emitStats(a, &out, stat, search_span.read(io));
-        grepfile.diagSearch(gpa, o.json, stat, search_span.read(io));
+        stats.diagSearch(gpa, o.json, stat, search_span.read(io));
     }
     corpus_mod.emitStdout(out.items);
     pcreFaultExit(re);

@@ -37,6 +37,7 @@
 const std = @import("std");
 const corpus_mod = @import("../../tree/corpus.zig");
 const crest = @import("../../../kernel/primitives/crest.zig");
+const fault = @import("../../../fault.zig");
 const crest_sidecar = @import("../crest/sidecar.zig");
 const trigram = @import("trigram.zig");
 const Index = trigram.Index;
@@ -180,7 +181,7 @@ pub fn build(
     fresh_paths: []const []const u8,
     stats: *BuildStats,
 ) !?[]u8 {
-    if (publish_gen.len == 0 or publish_gen.len > max_gen_len) return error.BadGeneration;
+    if (publish_gen.len == 0 or publish_gen.len > max_gen_len) return fault.Persist.GenerationMismatch;
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     const a = arena.allocator();

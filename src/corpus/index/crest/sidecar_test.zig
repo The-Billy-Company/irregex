@@ -110,11 +110,11 @@ test "checked size arithmetic rejects the first overflowing document count" {
     try testing.expectEqual(sidecar.header_len + max_docs * record_len, largest);
     try testing.expect(sidecar.checkedEncodedSize(max_docs + 1) == null);
     if (@bitSizeOf(usize) > @bitSizeOf(u32))
-        try testing.expectError(error.TooManyDocuments, sidecar.encodedSize(@as(usize, std.math.maxInt(u32)) + 1));
+        try testing.expectError(error.Oversized, sidecar.encodedSize(@as(usize, std.math.maxInt(u32)) + 1));
 }
 
 test "encoder rejects a short destination" {
     const vectors = [_]crest.Vector{crest.crest("0123")};
     var buf: [sidecar.header_len]u8 = undefined;
-    try testing.expectError(error.BufferTooSmall, sidecar.writeInto(&vectors, &buf));
+    try testing.expectError(error.Oversized, sidecar.writeInto(&vectors, &buf));
 }

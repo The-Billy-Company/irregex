@@ -104,9 +104,9 @@ test "classify: pattern via a bare token, -e VALUE, or --regexp=VALUE" {
     try std.testing.expectEqualStrings("needle", inline_e.pattern);
 }
 
-test "classify: a bare -l/-c with no pattern is NoPattern (the walk lists files)" {
-    try std.testing.expectError(request.ClassifyError.NoPattern, ok(&.{"-l"}));
-    try std.testing.expectError(request.ClassifyError.NoPattern, ok(&.{"-c"}));
+test "classify: a bare -l/-c with no pattern declines to cold (the walk lists files)" {
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{"-l"}));
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{"-c"}));
 }
 
 test "classify: a bare pattern with no mode flag is the default lines search" {
@@ -345,7 +345,7 @@ test "classify: -m N/--max-count parses the cap; non-numeric and dangling fall t
     // decline so cold parses (and diagnoses) it, never crash.
     try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-m", "abc", "needle" }));
     try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "--max-count=x", "needle" }));
-    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-m", "needle" })); // value consumes the pattern → NoPattern-ish, but parse of "needle" fails first
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-m", "needle" })); // the value consumes the pattern, but parsing "needle" as a count fails first
 }
 
 test "classify: -v/--invert-match is eligible and carried onto the request" {

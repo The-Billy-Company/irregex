@@ -260,7 +260,7 @@ const Accumulator = struct {
         switch (self.mode) {
             .files => {
                 // Binary `-l` observes only complete buffers before the one that
-                // revealed the first NUL (`grepfile.handleBinary` files_only) —
+                // revealed the first NUL (`binary.handleBinary` files_only) —
                 // a match past the cut must not turn the file into a false path.
                 const gated = corpus.gatedBody(bytes, nul);
                 if (gated.len == 0) return; // NUL in the first buffer ⇒ cold sees zero lines

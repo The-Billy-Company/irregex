@@ -7,7 +7,7 @@
 //! demand — into the vendored PCRE2 JIT. The seven stages behind this file
 //! (`syntax → analysis → compile → linear`, with `unicode`, `pcre2`, `oracle`
 //! alongside) are INTERNALS. Callers get this file and nothing else; the seal
-//! in `contract/architecture.toml` makes that a build-time law rather than a
+//! in `contract/irregex.ward` makes that a build-time law rather than a
 //! convention, and `make lint-zig-arch` judges it.
 //!
 //! Why a seal and not just a README: the engine's correctness rests on every

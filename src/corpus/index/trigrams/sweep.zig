@@ -102,7 +102,12 @@ fn expandOneLevel(gpa: std.mem.Allocator, io: std.Io, prefix: []const u8, built_
     if (bulkstat.supported) blk: {
         var dir = Dir.cwd().openDir(io, prefix, .{ .iterate = true }) catch return false;
         defer dir.close(io);
-        const entries = bulkstat.listOneLevel(gpa, dir.handle) catch break :blk;
+        // Declining leaves the block for the portable iterator below; OOM
+        // propagates, since a fallback that allocates just as hard cannot help.
+        const entries = switch (try bulkstat.listOneLevel(gpa, dir.handle)) {
+            .declined => break :blk,
+            .got => |v| v,
+        };
         defer {
             for (entries) |e| gpa.free(e.name);
             gpa.free(entries);

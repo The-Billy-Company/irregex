@@ -17,7 +17,8 @@ const args = @import("../../argv/args.zig");
 const bulkstat = @import("../../../../../corpus/tree/bulkstat.zig");
 const corpus_mod = @import("../../../../../corpus/tree/corpus.zig");
 const crew = @import("crew.zig");
-const grepfile = @import("../../read/grepfile.zig");
+const inode = @import("../../read/inode.zig");
+const notice = @import("../../quarry/notice.zig");
 const ignore = @import("../../../../../corpus/tree/ignore.zig");
 const paths_mod = @import("../../../../../corpus/scope/paths.zig");
 const queue = @import("queue.zig");
@@ -178,16 +179,17 @@ fn dirChain(cfg: *const Cfg, a: std.mem.Allocator, task: DirTask, present: IgPre
 /// uses instead of `std.Io` on a worker thread, and iterating a directory it
 /// already opened. Naming the set instead of taking `anyerror` (ADR-373 law 2)
 /// makes a widened std set a build failure here, where the walk can decide what
-/// it means, rather than a mystery string on a user's stderr.
+/// it means, rather than a mystery string on a user's stderr. It is a subset of
+/// `notice.WalkFault`, so it coerces into the shared renderer.
 const WalkFault = std.posix.OpenError || Dir.Iterator.Error;
 
 /// The same walk-error contract `serial.zig`'s `reportWalkError` enforces
-/// (rendering shared via `grepfile.printWalkError`), for the parallel engine:
+/// (rendering shared via `notice.printWalkError`), for the parallel engine:
 /// a directory this walk discovered but could not open/descend is a POTENTIAL
 /// false negative that MUST be signaled, never dropped in silence just because
 /// a peer worker is mid-flight. Thread-safe (any worker may call concurrently).
 fn reportWalkError(q: *Queue, rel: []const u8, e: WalkFault) void {
-    grepfile.printWalkError(rel, e);
+    notice.printWalkError(rel, e);
     q.walk_error.store(true, .release);
 }
 
@@ -201,7 +203,7 @@ fn processDir(w: *Worker, a: std.mem.Allocator, scratch: []u8, task: DirTask, lo
     // openat+getattrlistbulk+close. A stale, unstat-able, or unrecorded
     // directory falls through to the live listing below unchanged.
     if (cfg.snap) |v| if (task.snap_ix != treemap.not_walked) {
-        if (grepfile.lstatPath(task.disk)) |st| if (!bulkstat.needsLiveRead(v.anchor_ns, st.mtime_ns, st.ctime_ns)) {
+        if (inode.lstatPath(task.disk)) |st| if (!bulkstat.needsLiveRead(v.anchor_ns, st.mtime_ns, st.ctime_ns)) {
             servePhantomDir(w, a, scratch, task, local, v);
             return;
         };
@@ -229,7 +231,12 @@ fn processDir(w: *Worker, a: std.mem.Allocator, scratch: []u8, task: DirTask, lo
         // With index elision live, each entry's mtime+ctime ride the bulk
         // listing for free; without it, names+types via getdirentries is cheaper.
         const listing = if (freshnessWanted(cfg)) bulkstat.listOneLevel(a, dir.handle) else bulkstat.listNamesOnly(a, dir.handle);
-        const listed = listing catch break :blk false;
+        // Declining routes to the portable fallback below; OOM is a fault and
+        // takes this walk's one canonical exit rather than being mistaken for it.
+        const listed = switch (listing catch oom()) {
+            .declined => break :blk false,
+            .got => |v| v,
+        };
         for (listed) |e| {
             noteIgnoreFile(&present, e.name, e.is_file);
             entries.append(a, .{ .name = e.name, .is_dir = e.is_dir, .is_file = e.is_file, .mtime_ns = e.mtime_ns, .ctime_ns = e.ctime_ns }) catch oom();
@@ -374,7 +381,7 @@ fn handleEntry(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.posix
     // (a glob-rejected file never pays it; the bulk path pays for all).
     var mtime = e.mtime_ns;
     var ctime = e.ctime_ns;
-    if (e.from_snap and freshnessWanted(cfg)) if (grepfile.lstatPath(joinPath(a, task.disk, e.name) catch oom())) |st| {
+    if (e.from_snap and freshnessWanted(cfg)) if (inode.lstatPath(joinPath(a, task.disk, e.name) catch oom())) |st| {
         mtime = st.mtime_ns;
         ctime = st.ctime_ns;
     };

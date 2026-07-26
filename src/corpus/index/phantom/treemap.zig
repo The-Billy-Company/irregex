@@ -225,9 +225,15 @@ const Builder = struct {
     fn walk(b: *Builder, disk: []const u8, rel: []const u8, ix: u32) !void {
         try b.ig.loadDir(disk, rel);
         const fd = std.posix.openat(std.posix.AT.FDCWD, disk, .{ .ACCMODE = .RDONLY, .DIRECTORY = true }, 0) catch return;
-        const listed = blk: {
+        // A declined listing means this map cannot be built on this filesystem;
+        // the phantom treemap is itself an accelerator, so the directory is
+        // simply left unmapped. OOM propagates — the caller aborts the build.
+        const listed = switch (blk: {
             defer _ = std.posix.system.close(fd);
-            break :blk bulkstat.listNamesOnly(b.a, fd) catch return;
+            break :blk try bulkstat.listNamesOnly(b.a, fd);
+        }) {
+            .declined => return,
+            .got => |v| v,
         };
 
         const first: u32 = @intCast(b.ents.items.len);

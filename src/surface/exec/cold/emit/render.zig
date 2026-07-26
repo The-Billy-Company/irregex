@@ -18,12 +18,14 @@ const args = @import("../argv/args.zig");
 const assay = @import("../../../../assay/assay.zig");
 const corpus_mod = @import("../../../../corpus/tree/corpus.zig");
 const captures_mod = @import("../../../../kernel/match/regex/regex.zig");
-const grepfile = @import("../read/grepfile.zig");
+const binary = @import("../read/binary.zig");
 const intake = @import("../quarry/intake.zig");
+const legible = @import("../read/legible.zig");
 const output = @import("output.zig");
 const par = @import("../../../../kernel/primitives/parallel.zig");
 const pcre2 = @import("../../../../kernel/match/regex/regex.zig").pcre2;
 const simd = @import("../../../../kernel/match/scan/simd.zig");
+const stats = @import("../read/stats.zig");
 const verify = @import("../../../../kernel/match/scan/verify.zig");
 const writ = @import("../writ/arm.zig");
 
@@ -32,13 +34,13 @@ const Emitter = output.Emitter;
 const InFile = intake.InFile;
 const Matcher = @import("../../../../kernel/match/regex/regex.zig").Matcher;
 const Opts = args.Opts;
-const Stats = grepfile.Stats;
-const collectLines = grepfile.collectLines;
+const Stats = stats.Stats;
+const collectLines = legible.collectLines;
 const die = args.die;
-const stripBom = grepfile.stripBom;
+const stripBom = legible.stripBom;
 const compileCaps = writ.compileCaps;
-const emitStats = grepfile.emitStats;
-const fileMatchStats = grepfile.fileMatchStats;
+const emitStats = stats.emitStats;
+const fileMatchStats = stats.fileMatchStats;
 const oom = args.oom;
 
 /// Render one file's search result into `em.out` exactly as the serial bottom
@@ -58,7 +60,7 @@ pub fn renderFile(em: *Emitter, f: InFile, stat: *Stats, matched_files: *usize, 
     if (body.len == 0 and !count_zero) return;
     if (binary_detect) if (verify.firstNulWide(a, body)) |nul| {
         const slice_model = o.multiline and re.canMatchNewline();
-        if (!(slice_model and !grepfile.multilineBinary(body.len, nul))) {
+        if (!(slice_model and !binary.multilineBinary(body.len, nul))) {
             em.base = @intFromPtr(body.ptr);
             em.body_end = em.base + body.len;
             if (o.stats) {
@@ -67,7 +69,7 @@ pub fn renderFile(em: *Emitter, f: InFile, stat: *Stats, matched_files: *usize, 
                 else if (slice_model)
                     body[0..0]
                 else
-                    body[0..grepfile.committedPrefix(body, nul)];
+                    body[0..binary.committedPrefix(body, nul)];
                 var blines: std.ArrayList([]const u8) = .empty;
                 defer blines.deinit(a);
                 if (!o.multiline) collectLines(a, searched, o.term(), &blines);
@@ -77,7 +79,7 @@ pub fn renderFile(em: *Emitter, f: InFile, stat: *Stats, matched_files: *usize, 
                 stat.add(.matched_lines, fs.lines);
                 stat.add(.bytes_searched, if (f.explicit and slice_model) nul else fs.bytes);
             }
-            if (grepfile.handleBinary(a, re, o, out, em, f.path, f.explicit, body, nul, show_name)) matched_files.* += 1;
+            if (binary.handleBinary(a, re, o, out, em, f.path, f.explicit, body, nul, show_name)) matched_files.* += 1;
             return;
         }
     };

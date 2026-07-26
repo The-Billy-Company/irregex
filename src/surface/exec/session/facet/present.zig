@@ -3,7 +3,7 @@
 //!
 //! What unites them is that none of them formats anything: each gathers warm
 //! docs and then hands them to a renderer the COLD path owns — `render.zig`
-//! (which drives the cold engine's own `Emitter` + `grepfile.handleBinary`) for
+//! (which drives the cold engine's own `Emitter` + `binary.handleBinary`) for
 //! the default `path:text` / `-n` presentation, and `ranked.renderLive` for
 //! `--rank`. Byte-parity with a piped cold run is therefore by construction, not
 //! by a re-derived formatter that could drift.

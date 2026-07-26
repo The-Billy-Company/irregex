@@ -14,7 +14,7 @@
 
 const std = @import("std");
 const args = @import("../argv/args.zig");
-const grepfile = @import("../read/grepfile.zig");
+const inode = @import("../read/inode.zig");
 
 const oom = args.oom;
 
@@ -53,7 +53,7 @@ const StdinKind = enum { none, blocking, socket };
 /// socket). A regular file or FIFO is `.blocking` — safe to block-read to EOF;
 /// a socket is `.socket` — admitted only through the bounded poll guard.
 fn stdinKind() StdinKind {
-    const st = grepfile.statFd(0) orelse return .none;
+    const st = inode.statFd(0) orelse return .none;
     return switch (st.mode & std.posix.S.IFMT) {
         std.posix.S.IFREG, std.posix.S.IFIFO => .blocking,
         std.posix.S.IFSOCK => .socket,
@@ -105,4 +105,3 @@ pub fn readStdin(a: std.mem.Allocator) []const u8 {
     }
     return buf.toOwnedSlice(a) catch oom();
 }
-

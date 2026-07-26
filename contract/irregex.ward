@@ -1,0 +1,319 @@
+// irregex — import topology.
+//
+// The prose version of this file is src/README.md and the per-tier READMEs.
+// This is the machine-checkable half: Zig has no visibility rules between
+// files inside a package, so every boundary those READMEs describe is
+// convention until it is written here. Judged by `make lint-zig-arch`.
+
+package irregex {
+    // root.zig is the module's public face: it re-exports every tier through
+    // the flat C ABI and aggregates the test step, so it alone may reach
+    // anywhere.
+    root   src
+    facade root.zig
+
+    // Throwaway build probes: a bare `test { _ = @import(…); }` shim someone
+    // points at a few files to compile-check them in isolation. They are
+    // scaffolding for a build, not part of the module — no tier claims them and
+    // they reach straight into `_test.zig` files on purpose. Excluded rather
+    // than tiered, and a pattern that stops matching is reported stale, so
+    // these entries disappear with the probes instead of licensing more.
+    exclude serve_check_tmp.zig zz_*.zig
+}
+
+// Tiers, low to high. Reading down this block is reading up the architecture;
+// an import may only point back up the page.
+//
+// The stack is declared at the granularity the architecture actually has, not
+// at the granularity of the top-level folders. `kernel/` is six tiers, not one:
+// collapsing them would have let `primitives` grow a dependency on `compose`
+// and called it legal. A tier is the unit of "may not point up" — so wherever
+// direction is meant, there is a tier.
+tiers {
+    // Instrumentation floor — std only, so every tier above can consume it
+    // without inversion.
+    assay       assay/**
+
+    // The error taxonomy (ADR-373). Above assay only because it reports
+    // through it.
+    fault       fault.zig
+
+    // ── Pure compute. No argv, no walk, no emit. ────────────────────────────
+
+    // Bit tricks, parallel fan-out, the crest sieve: the arithmetic every
+    // other kernel tier is written in.
+    primitives  kernel/primitives/**
+
+    // The regex engine, the SIMD scanners, the shared compiled query.
+    match       kernel/match/**
+
+    // Result fusion + per-language definition signals over matches.
+    rank        kernel/rank/**
+
+    // Compression-as-similarity: sketches, silhouettes, recall, clustering.
+    kinship     kernel/kinship/**
+
+    // Many patterns in one walk, and the woven plan over them.
+    batch       kernel/batch/**
+
+    // Set algebra over candidate sets — the composition tier, so it is the
+    // only kernel tier allowed to know all the others.
+    compose     kernel/compose/**
+
+    // ── Which bytes are eligible, and the artifacts built over them. ────────
+
+    // Path eligibility: globs, ignore precedence, type filters.
+    scope       corpus/scope/**
+
+    // The walk itself, and the corpus it materializes.
+    tree        corpus/tree/**
+
+    // Every persisted artifact over that corpus — trigrams, atlas, frag,
+    // codex shelf, phantom map. Uses kernel math to build them.
+    index       corpus/index/**
+
+    // ── Surface: vocabulary, then transports, then faces. ───────────────────
+
+    // Shared flag, emit, manifest and outcome vocabulary — the floor both the
+    // engines and the faces stand on.
+    cli         surface/cli/**
+
+    // The cold transport: argv in, bytes out, one process per query.
+    cold        surface/exec/cold/**
+
+    // The warm resident session over the cold engine's per-file path — the
+    // one place a query outlives a process.
+    session     surface/exec/session/**
+
+    // The analytic plane's Zig-side API, driving the session from above.
+    api         api.zig api_test.zig
+
+    // C-ABI session + analytic plane over the api tier.
+    ffi         surface/ffi/**
+
+    // The three thin product faces (gist · relate · irregex). A face imports
+    // the engines; an engine never imports a face.
+    face        surface/face/**
+}
+
+// Guest lists: regions only the named importers may reach at all.
+//
+// Tiers order the stack; they say nothing about peers, because peers at one
+// height are unordered by construction. `keep` is where that silence ends —
+// the sibling independence the tier block structurally cannot express. Two
+// importers are always implicit and need no naming: the region's own insiders,
+// and a file's directory sibling (Zig's `render.zig` → `render_test.zig` test
+// aggregation is not an architectural crossing).
+
+// The three product faces are peers, not a stack. Each is one product with its
+// own CLI contract, and the whole point of three faces over one kernel is that
+// a change to gist's verbs cannot reach relate's. When two faces need the same
+// thing, it belongs under them, not in whichever one wrote it first.
+keep surface/face/gist/**    to root.zig
+keep surface/face/relate/**  to root.zig
+keep surface/face/irregex/** to root.zig
+
+// The C-ABI plane is the module's other public face — for callers outside Zig.
+// Nothing inside the module consumes its own FFI shims; a Zig caller that
+// wants the session takes `api.zig`, which is what ffi itself does.
+keep surface/ffi/** to root.zig
+
+// The hosted analytic API is entered by the FFI plane and by root's test
+// aggregator. An engine reaching back up to it would invert the stack the
+// tier block already forbids; naming it here says who the surface is *for*.
+keep api.zig to surface/ffi/** root.zig
+
+// Tests are consumers of the architecture, never load-bearing in it. root.zig
+// is the aggregator `zig build test` enters through; a production file
+// elsewhere in the tree importing a `_test.zig` or a fuzz harness would make a
+// fixture part of the build graph. (A file's own directory sibling is implicit
+// — `render.zig` beside `render_test.zig` is Zig's aggregation idiom, not an
+// architectural crossing.)
+keep **/*_test.zig to root.zig
+keep **/*_fuzz.zig to root.zig
+
+// Seals: directories that are deep modules — enter by the entry file.
+//
+// Only directories that hold this today are listed. `ward status` prints the
+// two other lists: what is sealable for free right now, and the entry-file
+// bypass count for everything still open. Both are burndown queues, not
+// failures.
+
+// The instrumentation floor's whole point is one import for every call site;
+// span/tally/channel are its internals.
+seal assay through assay.zig
+
+// The kinship atlas is a persisted format — callers get the reader, never the
+// on-disk layout.
+seal corpus/index/atlas through atlas.zig
+
+// The fragment atlas, same contract as its sibling atlas.
+seal corpus/index/frag through frag.zig
+
+// Frame encoding is a wire format; nothing outside should know its internal
+// chunking.
+seal corpus/index/frame through frame.zig
+
+// Output shaping — the display grid, the skim window, the multi-buffer writer,
+// the replacement pass. `render.zig` asks for shaped bytes; which of the five
+// files shapes them is not its business.
+seal surface/exec/cold/emit/output through output.zig
+
+// The regex engine is one deep module, and its correctness rests on every
+// consumer sharing ONE notion of what a pattern means. The crest sieve proved
+// the cost of the alternative: it carried a second, smaller parser whose
+// grammar disagreed with this one on the zero-width `\<` / `\>` boundaries,
+// and silently pruned two thirds of the matching corpus. This seal is how
+// "there is exactly one grammar" stops being a claim — a fork cannot reach the
+// internals it would need, and anything wanting the AST must ask the entry
+// file. Competition for this engine is other engines (Rust `regex`, RE2,
+// PCRE2), measured in bench/; never a second parser inside this tree.
+seal kernel/match/regex through regex.zig
+
+// The shared search core. Every transport compiles through this one name so
+// they cannot drift on what a hit is.
+seal kernel/match/query through query.zig
+
+// Filesystem watching is per-platform (kqueue today); the platform pick must
+// not leak into callers.
+seal surface/exec/session/watch through watch.zig
+
+// The resident session's wire grammar is a cross-language contract — the Zig
+// CLI, the Rust binding and the Python binding all speak it — and every frame
+// it defines is gated on one negotiated `protocol_version`. Split into the
+// opcode spine plus a codec chapter per opcode family (query · result · keep ·
+// annals), it is entered as one so a caller binds to the whole versioned
+// contract rather than to half of it.
+seal surface/exec/session/conduit/protocol through protocol.zig
+
+// Daemon dial + spawn is one decision; a caller that reaches spawn directly
+// bypasses the fail-open deadline.
+seal surface/face/gist/daemon/client through client.zig
+
+// The resident session's serve loop — split into route/answer/crew/loop,
+// entered as one.
+seal surface/face/gist/daemon/serve through serve.zig
+
+// The agent-facing capability manifest is a published contract; its builders
+// are not.
+seal surface/face/gist/schema through schema.zig
+
+// Index/atlas readiness reporting, entered as one verb.
+seal surface/face/gist/status through status.zig
+
+// Structural laws.
+limit  reach to 5 hops
+forbid cycles across directories
+
+// Ratified exceptions.
+//
+// Every one carries the fix that would retire it. An exception that stops
+// matching is a hard failure, so paying the debt forces deleting the entry —
+// they shrink instead of accreting as folklore.
+
+allow tier kernel/batch/loom.zig -> corpus/scope/glob.zig
+    because
+        \\Loom's `Plan.filter_glob` is defined as "scope/glob.zig semantics", so
+        \\it borrows the matcher rather than forking a second one. `glob.zig` is
+        \\two things in one file: a pure rg-shaped glob matcher (no corpus
+        \\knowledge, belongs in kernel/primitives) and the resolved `PathFilter`
+        \\over a loaded corpus (which belongs where it is). Retire by splitting
+        \\the pure matcher down into the kernel; loom then imports downward and
+        \\this edge disappears.
+
+allow tier surface/cli/emit.zig -> surface/exec/cold/argv/args.zig
+    because "Borrows `oom` only. Retire with the shared `die`/`oom` move below."
+
+allow tier surface/cli/flags.zig -> surface/exec/cold/argv/args.zig
+    because "Borrows `die` only. Retire with the shared `die`/`oom` move below."
+
+allow tier surface/cli/manifest.zig -> surface/exec/cold/argv/args.zig
+    because
+        \\Borrows `oom` only. All three cli→argv edges exist solely to reach the
+        \\process-exit helpers `die`/`oom`, which live in the argv interface for
+        \\historical reasons and have nothing to do with flag parsing. Retire by
+        \\moving those two helpers into a tier both `cli` and `exec` sit above —
+        \\the same consolidation the `zig-oom` ratchet tracks — after which
+        \\`cli` depends on nothing above itself.
+
+allow tier surface/cli/emit.zig -> surface/exec/cold/emit/jsonstr.zig
+    because
+        \\`jsonStr` is re-exported so every face escapes JSON identically (the
+        \\three near-copies it replaced had quietly diverged). The escaper itself
+        \\is pure — it knows nothing about the cold engine — so it belongs beside
+        \\the other shared emit vocabulary in `cli/`, with cold's `emit/json.zig`
+        \\importing it downward. Retire by moving `jsonstr.zig` into
+        \\`surface/cli/`.
+
+// ── The resident answer keep's five edges. One fact stated five ways: the
+// daemon transport lives under the gist face, and `cli/reprise.zig` needs it.
+
+allow tier surface/cli/reprise.zig -> surface/face/gist/daemon/client/keep.zig
+    because
+        \\The answer keep is a passenger on gist's daemon: it never starts one,
+        \\it only dials an existing socket to ask whether this exact question
+        \\was already answered against these exact bytes. The transport it needs
+        \\(dial, deadline, frame) is not gist's product surface — it is the
+        \\resident session's, parked under the face that first grew a daemon.
+        \\Retire by moving `daemon/client` and `daemon/serve` down into
+        \\`surface/exec/session/`, where the transport tier already lives; all
+        \\five of these entries then disappear together, and the gist face keeps
+        \\only its lifecycle verbs. Same shape as the codex shelf move.
+
+allow tier surface/cli/reprise.zig -> surface/face/gist/daemon/serve/serve.zig
+    because "Reads the serve loop's frame vocabulary. Retire with the daemon move above."
+
+allow keep surface/cli/reprise.zig -> surface/face/gist/daemon/client/keep.zig
+    because "The gist face is kept to root.zig; this is the daemon transport, not gist's product surface. Retire with the daemon move above."
+
+allow keep surface/cli/reprise.zig -> surface/face/gist/daemon/serve/serve.zig
+    because "Same crossing as the line above, through the serve entry file. Retire with the daemon move above."
+
+allow seal surface/cli/reprise.zig -> surface/face/gist/daemon/client/keep.zig
+    because
+        \\`client/` is sealed through `client.zig` so no caller can skip the
+        \\fail-open dial deadline. This reaches `keep.zig` beside it for the
+        \\keep's own frame types, not to dial — the deadline is untouched.
+        \\Retire either by re-exporting those types from `client.zig`, or with
+        \\the daemon move above, whichever lands first.
+
+allow cycle {
+    kernel/match/regex/linear/ladder/verdict.zig
+    kernel/match/regex/linear/pike/scratch.zig
+    kernel/match/regex/linear/pike/search.zig
+    kernel/match/regex/linear/pike/span.zig
+    kernel/match/regex/linear/program/core.zig
+} because
+        \\`program/core.zig` is the linear engine's interface: it owns the
+        \\compiled program every executor reads and re-exports its neighbors'
+        \\entry points (`verdict.lineMatch`, `verdict.docMatch`) so callers face
+        \\one name. The pike executors and the ladder in turn read the program
+        \\they run. The cycle is that facade, not a tangle. Retire by lifting the
+        \\shared program representation into a leaf both sides import, leaving
+        \\`core.zig` a pure re-exporter.
+
+allow cycle {
+    surface/exec/cold/engine/serial.zig
+    surface/exec/cold/engine/swarm/swarm.zig
+} because
+        \\Work distribution recursion: `serial` hands a multi-file query to
+        \\`swarm`, and each swarm worker runs the identical per-file path back in
+        \\`serial`, which is what keeps the parallel and sequential answers
+        \\byte-identical. Retire by extracting that per-file path into a leaf both
+        \\import.
+
+allow cycle {
+    surface/exec/session/answer/gather.zig
+    surface/exec/session/facet/fold.zig
+    surface/exec/session/facet/present.zig
+    surface/exec/session/facet/stream.zig
+    surface/exec/session/freshness/reconcile.zig
+    surface/exec/session/warm/resident.zig
+} because
+        \\The warm session's real tangle, and the largest one here:
+        \\`resident.zig` drives fold/present/stream and reconcile, and all four
+        \\read resident state back. Four directories are therefore one indivisible
+        \\unit — the session cannot be re-cut without moving all of them. Unlike
+        \\the two cycles above this is debt, not a facade. Retire by giving the
+        \\resident state a leaf module the facets read instead of importing the
+        \\driver.

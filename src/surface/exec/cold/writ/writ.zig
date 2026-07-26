@@ -84,7 +84,7 @@ pub const Writ = struct {
             .line_needle = line_needle,
             .file_needle = gate.wholeFileLiteralGate(o, line_needle),
             .filters = gate.trigramFilter(a, o, eff, &re, one, transforming),
-            .sieve = gate.crestSieve(o, eff, &re, transforming),
+            .sieve = gate.crestSieve(a, o, eff, &re, transforming),
             .binary_detect = binaryDetect(o),
         };
     }

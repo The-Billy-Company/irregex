@@ -83,8 +83,8 @@ test "decodeBoundedCanonical: rejects unterminated continuation" {
     try std.testing.expectError(varint.DecodeError.Truncated, varint.decodeBoundedCanonical(&[_]u8{ 0xFF, 0xFF }, varint.max_len));
 }
 
-test "decodeBoundedCanonical: rejects > 5-byte u32 encodings (TooLong)" {
-    try std.testing.expectError(varint.DecodeError.TooLong, varint.decodeBoundedCanonical(&[_]u8{ 0x80, 0x80, 0x80, 0x80, 0x80, 0x00 }, 16));
+test "decodeBoundedCanonical: rejects > 5-byte u32 encodings as non-canonical" {
+    try std.testing.expectError(varint.DecodeError.NonCanonical, varint.decodeBoundedCanonical(&[_]u8{ 0x80, 0x80, 0x80, 0x80, 0x80, 0x00 }, 16));
 }
 
 test "decodeBoundedCanonical: rejects overlong encodings of zero and one" {
@@ -92,9 +92,9 @@ test "decodeBoundedCanonical: rejects overlong encodings of zero and one" {
     try std.testing.expectError(varint.DecodeError.NonCanonical, varint.decodeBoundedCanonical(&[_]u8{ 0x81, 0x00 }, varint.max_len));
 }
 
-test "decodeBoundedCanonical: rejects a 5-byte value exceeding maxInt(u32) (Overflow)" {
+test "decodeBoundedCanonical: rejects a 5-byte value exceeding maxInt(u32) as corrupt" {
     // 0x1F in the 5th group sets bit 32 → 0x1FFFFFFFF > u32.
-    try std.testing.expectError(varint.DecodeError.Overflow, varint.decodeBoundedCanonical(&[_]u8{ 0xFF, 0xFF, 0xFF, 0xFF, 0x1F }, varint.max_len));
+    try std.testing.expectError(varint.DecodeError.Corrupt, varint.decodeBoundedCanonical(&[_]u8{ 0xFF, 0xFF, 0xFF, 0xFF, 0x1F }, varint.max_len));
 }
 
 test "decodeBoundedCanonical: never reads beyond max_bytes even if buf is longer" {

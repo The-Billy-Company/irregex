@@ -7,8 +7,9 @@
 //! cold's deterministic path order and `next`/`nextBatch` are two views of one
 //! buffer, (2) the `max_results` budget stops at a record boundary while still
 //! reporting `anyMatched`, (3) a cooperative cancel yields a clean empty result
-//! (never a crash), and (4) an unsupported pattern surfaces
-//! `error.UnsupportedPattern` — never a fatal `die()`.
+//! (never a crash), and (4) an unsupported pattern comes back as a NAMED
+//! declinature on the success channel — never a fatal `die()`, and never an
+//! error a caller could `try` past.
 
 const std = @import("std");
 const api = @import("api.zig");
@@ -61,7 +62,7 @@ test "api: search yields owned records in path order; next and nextBatch agree" 
     defer engine.close();
     defer tree.deinit();
 
-    const cur = try engine.search(.{ .pattern = "needle", .fixed = true }, .{});
+    const cur = (try engine.search(.{ .pattern = "needle", .fixed = true }, .{})).got;
     defer cur.deinit();
 
     try std.testing.expectEqual(@as(usize, 3), cur.count());
@@ -106,7 +107,7 @@ test "api: a max_results budget stops at a record boundary but still reports mat
     defer engine.close();
     defer tree.deinit();
 
-    const cur = try engine.search(.{ .pattern = "needle", .fixed = true }, .{ .max_results = 1 });
+    const cur = (try engine.search(.{ .pattern = "needle", .fixed = true }, .{ .max_results = 1 })).got;
     defer cur.deinit();
 
     try std.testing.expectEqual(@as(usize, 1), cur.count());
@@ -128,7 +129,7 @@ test "api: a pre-cancelled token yields a clean empty result, not a crash" {
 
     var token = api.CancelToken{};
     token.cancel();
-    const cur = try engine.search(.{ .pattern = "needle", .fixed = true }, .{ .cancel = &token });
+    const cur = (try engine.search(.{ .pattern = "needle", .fixed = true }, .{ .cancel = &token })).got;
     defer cur.deinit();
 
     try std.testing.expectEqual(@as(usize, 0), cur.count());
@@ -143,7 +144,7 @@ test "api: compose namespace is wired for embedders" {
     _ = api.compose.provenance;
 }
 
-test "api: an unsupported pattern surfaces UnsupportedPattern, never fatal" {
+test "api: an unsupported pattern declines with a named reason, never fatal" {
     const gpa = std.testing.allocator;
     var threaded = std.Io.Threaded.init(gpa, .{});
     defer threaded.deinit();
@@ -155,7 +156,9 @@ test "api: an unsupported pattern surfaces UnsupportedPattern, never fatal" {
     defer engine.close();
     defer tree.deinit();
 
-    // A lookahead is outside the linear-time syntax → the engine declines with
-    // Stale, which the hosted API spells `UnsupportedPattern` (answer cold).
-    try std.testing.expectError(error.UnsupportedPattern, engine.search(.{ .pattern = "needle(?=X)" }, .{}));
+    // A lookahead is outside the linear-time syntax. The fact reaches the
+    // embedder on the DECLINATURE channel, naming the tier that can answer —
+    // not as an error, so no `try` can mistake "run this cold" for a failure.
+    const answered = try engine.search(.{ .pattern = "needle(?=X)" }, .{});
+    try std.testing.expectEqual(fault.Decline.unsupported_syntax, answered.declined);
 }
