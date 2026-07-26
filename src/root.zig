@@ -605,6 +605,7 @@ test {
     _ = @import("surface/exec/cold/read/ingest.zig"); // -z/--pre/-E content transforms (decompress/preprocess/transcode)
     _ = @import("surface/exec/cold/read/encoding.zig"); // -E WHATWG legacy-code-page decoders (single-byte + CJK multi-byte)
     _ = @import("surface/exec/cold/emit/multiline.zig"); // -U whole-buffer match model (Emitter.buffer + --json)
+    _ = @import("surface/exec/cold/emit/output/multibuf_test.zig"); // -U whole-buffer emit: the ripgrep-captured parity table
     _ = @import("surface/exec/cold/emit/hints.zig"); // no-match stderr guidance: shape analysis + exact render bytes
     _ = @import("surface/cli/manifest.zig"); // the verb-table renderer (help, schema, dispatch, verb list)
     _ = @import("surface/cli/guide.zig"); // the stderr guidance grammar both faces speak

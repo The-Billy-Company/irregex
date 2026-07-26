@@ -1,0 +1,292 @@
+//! gist `rg` — the physical-line-grid emit modes.
+//!
+//! Split from `output.zig`: everything that answers a file by walking its
+//! already-split lines. `file` is the dispatcher and the default `path:line:text`
+//! frame (with `-A/-B/-C` windows); the rest are its mode siblings — `-v`
+//! without a window, `--passthru`, `--vimgrep`, `-o`, and the count modes.
+//!
+//! Two other drivers answer a file without this grid: `skim.zig` never builds
+//! the line array at all for a pure-literal pattern, and `multibuf.zig` works
+//! off whole-buffer `-U` spans. All three emit through the same `Emitter`
+//! vocabulary and `display.zig` frame, which is what keeps their bytes identical.
+
+const std = @import("std");
+const args = @import("../../argv/args.zig");
+const Matcher = @import("../../../../../kernel/match/regex/linear/ladder/matcher.zig").Matcher;
+const Regex = @import("../../../../../kernel/match/regex/linear/program/core.zig").Regex;
+const output = @import("../output.zig");
+const Emitter = output.Emitter;
+const oom = args.oom;
+const display = @import("display.zig");
+const replace = @import("replace.zig");
+
+/// Will `file()` answer its mode from the whole buffer without reading
+/// `lines`? The render drivers consult this to skip `collectLines`
+/// entirely — the fused `-c`/`-l` paths below never touch the line grid.
+/// Callers must have `base`/`body_end` set (they do: both drivers set the
+/// pair right before dispatch). Mirrors `file()`'s own gating exactly.
+pub fn fusedFileEligible(self: *const Emitter) bool {
+    const o = self.o;
+    if (o.invert or o.word or o.crlf or o.null_data or o.stop_on_nonmatch or
+        o.passthru or o.vimgrep or o.only_matching or o.count_matches) return false;
+    if (o.files_only) return self.re.docMatchFused();
+    if (o.count_only) return self.re.countRunFused();
+    return false;
+}
+
+pub fn file(self: *Emitter, path: []const u8, lines: []const []const u8) usize {
+    const o = self.o;
+    if (o.passthru and !o.invert and !o.count_only and !o.count_matches and !o.files_only) return passthru(self, path, lines);
+    if (o.vimgrep and !o.invert) return vimgrep(self, path, lines);
+    // Span modes (`-o`, `--count-matches`): a fused whole-buffer MISS (one
+    // class-run/DFA doc pass) proves zero spans, sparing the per-line span
+    // walk entirely — the miss-heavy regime rg's lazy-DFA doc scan used to
+    // win. A hit still takes the per-line loop (spans need positions).
+    // `--crlf`/`--null-data` change the line view an anchored DFA pattern
+    // judges against, so they keep the plain path (same fence as the
+    // fused `-c`/`-l` gates below).
+    if ((o.only_matching or o.count_matches) and !o.invert and !o.crlf and
+        !o.null_data and !o.stop_on_nonmatch and self.body_end > self.base and
+        self.re.docMatchFused())
+    {
+        const body = @as([*]const u8, @ptrFromInt(self.base))[0 .. self.body_end - self.base];
+        var s: ?Matcher.Sim = Matcher.Sim.init(self.a, self.re) catch null;
+        defer if (s) |*ss| ss.deinit();
+        if (s != null and !self.re.docMatch(&s.?, body))
+            return if (o.count_matches or o.count_only) self.bufTally(path, 0) else 0;
+    }
+    // `--count --only-matching` counts every match span (like --count-matches),
+    // not matching lines — ripgrep's documented override.
+    if ((o.count_matches or (o.count_only and o.only_matching)) and !o.invert) return countMatches(self, path, lines);
+    if (o.only_matching and !o.invert) return onlyMatching(self, path, lines);
+
+    // The plain-flag whole-buffer regime: the per-line loop below computes
+    // exactly "which lines match" under rg's `\n` line model, so when no
+    // flag changes the line view (`--crlf` trims `\r`, `--null-data`
+    // re-terminates) or the predicate (`-v`/`-w`/--stop-on-nonmatch) and
+    // the file body is addressable, a fused whole-buffer machine may
+    // answer the mode outright. The gates (needle/lits) are skipped —
+    // they only ever accelerate the same verdicts.
+    const whole_buf = !o.invert and !o.word and !o.crlf and !o.null_data and
+        !o.stop_on_nonmatch and self.body_end > self.base;
+
+    // `-c` fused fast path: the class-run kernel counts matching lines in
+    // one hit-jumping pass over the body — no line split consumed, no
+    // per-line dispatch (the overhead rg's fused count never paid).
+    // `countRunLines` is non-null only when that pass is exact.
+    if (whole_buf and o.count_only and !o.files_only) {
+        const body = @as([*]const u8, @ptrFromInt(self.base))[0 .. self.body_end - self.base];
+        if (self.re.countRunLines(body)) |n| {
+            const capped = if (o.max_per_file != 0) @min(n, o.max_per_file) else n;
+            return self.bufTally(path, @intCast(capped));
+        }
+    }
+
+    // Borrow the caller-threaded scratch when present; else pay a file-local.
+    var local_sim: ?Matcher.Sim = if (self.sim == null) (Matcher.Sim.init(self.a, self.re) catch return 0) else null;
+    defer if (local_sim) |*s| s.deinit();
+    const sim = self.sim orelse &local_sim.?;
+
+    // `-l` fused fast path: one whole-buffer boolean (`docMatch` — the
+    // class-run scan or the DFA's fused doc pass) answers "any line
+    // matches", replacing the per-line loop the serial single-file `-l`
+    // otherwise pays. Only when `docMatch` really is that machine
+    // (`docMatchFused`) — the Pike fallback would forfeit the gates.
+    if (whole_buf and o.files_only and self.re.docMatchFused()) {
+        const body = @as([*]const u8, @ptrFromInt(self.base))[0 .. self.body_end - self.base];
+        return if (self.re.docMatch(sim, body)) self.emitPathOnly(path) else 0;
+    }
+    // `-w` decides a line via the span predicate; the plain path uses the
+    // boolean DFA. Only `-w` pays for the SpanSim scratch.
+    var wss: ?Matcher.SpanSim = if (o.word) (Matcher.SpanSim.init(self.a, self.re) catch null) else null;
+    defer if (wss) |*s| s.deinit();
+    // `-v` with no context/count/files-only degenerates to "emit every line
+    // the gate+engine rejects, in order, col 0" — the whole two-pass machinery
+    // below (idx list, a lines.len bool grid + memset, the windowStart re-walk,
+    // the always-0 firstCol) collapses to one streamed pass. Byte-identical
+    // (self-checked in flagbench + the rg parity suite); the excluded flags keep
+    // their existing branches untouched.
+    if (o.invert and o.before == 0 and o.after == 0 and
+        !o.count_only and !o.count_matches and !o.files_only and
+        !o.stop_on_nonmatch and !o.passthru)
+        return invertPlain(self, path, lines, sim, &wss);
+    // Whole-buffer literal prefilter (see `litCandidates`): a non-candidate
+    // line provably cannot match, so skip it before `mview`/the engine.
+    // `--stop-on-nonmatch` disables the mask, so a non-candidate here is a
+    // plain non-match (never mid-stream stop bookkeeping).
+    const cand = self.litCandidates(lines);
+    var idx: std.ArrayList(usize) = .empty;
+    for (lines, 0..) |line, k| {
+        if (cand) |c| if (!c[k]) continue;
+        const mv = self.mview(line);
+        // A required-literal gate (when the caller derived one): a line
+        // without the literal bytes cannot match, and a SIMD memmem is an
+        // order of magnitude cheaper than an engine run per line.
+        const hit = self.lineCanMatch(mv) and
+            (if (wss) |*s| self.lineHitWord(s, mv) else self.re.lineMatch(sim, mv));
+        if (hit == o.invert) {
+            // --stop-on-nonmatch: once matching has begun, the first non-match
+            // ends the file (ripgrep stops reading further lines).
+            if (o.stop_on_nonmatch and idx.items.len > 0) break;
+            continue;
+        }
+        // `-l` asks only whether this file has any matching line. Emit on
+        // the first proof instead of scanning the rest of the file and
+        // accumulating line indexes that no output mode will consume.
+        if (o.files_only) return self.emitPathOnly(path);
+        idx.append(self.a, k) catch oom();
+        if (o.max_per_file != 0 and idx.items.len >= o.max_per_file) break;
+    }
+    if (o.count_only or o.count_matches) return self.bufTally(path, idx.items.len);
+    if (idx.items.len == 0) return 0;
+    const is_match = self.a.alloc(bool, lines.len) catch oom();
+    @memset(is_match, false);
+    for (idx.items) |m| is_match[m] = true;
+    // Column locators need a span scan per match line; only pay for it under
+    // --column (or --column implied by --vimgrep, handled separately).
+    var css: ?Matcher.SpanSim = if (o.column) (Matcher.SpanSim.init(self.a, self.re) catch null) else null;
+    defer if (css) |*s| s.deinit();
+    var prev_end: ?usize = null;
+    for (idx.items) |m| {
+        const hi = @min(m + o.after, lines.len - 1);
+        var k = self.windowStart(m -| o.before, hi, &prev_end) orelse continue;
+        while (k <= hi) : (k += 1) {
+            const is_m = is_match[k];
+            const col: usize = if (is_m and css != null) self.firstCol(&css.?, self.mview(lines[k])) else 0;
+            self.row(path, k + 1, col, self.offOf(lines[k]), lines[k], is_m);
+        }
+    }
+    return idx.items.len;
+}
+
+/// `-v` with no context window (`-A/-B/-C`), count, or `-l`: the one-pass
+/// invert emit. A line the required-literal gate or the engine REJECTS is a
+/// non-match, so under invert it prints — framed as a match (`:`) with its
+/// own line number and column 0 (a non-matching line has no span, so the
+/// two-pass path's `firstCol` is always 0 here). `-m` caps printed lines.
+/// Returns that count. Byte-identical to the general `file` invert branch,
+/// without its per-file `idx` list and `lines.len` bool grid.
+fn invertPlain(self: *Emitter, path: []const u8, lines: []const []const u8, sim: *Matcher.Sim, wss: *?Matcher.SpanSim) usize {
+    const o = self.o;
+    var printed: usize = 0;
+    for (lines, 0..) |line, k| {
+        const mv = self.mview(line);
+        const hit = self.lineCanMatch(mv) and
+            (if (wss.*) |*s| self.lineHitWord(s, mv) else self.re.lineMatch(sim, mv));
+        if (hit) continue; // invert: a matching line is excluded
+        self.row(path, k + 1, 0, self.offOf(line), line, true);
+        printed += 1;
+        if (o.max_per_file != 0 and printed >= o.max_per_file) break;
+    }
+    return printed;
+}
+
+/// `--passthru`: emit EVERY line of the file (matching lines framed as matches,
+/// the rest as context) — ripgrep's "context of infinity". Returns the count of
+/// matching lines (for the exit code); output is written regardless of matches.
+fn passthru(self: *Emitter, path: []const u8, lines: []const []const u8) usize {
+    const o = self.o;
+    // Same lease as `file`: borrowed caller scratch, or a file-local build.
+    var local_sim: ?Matcher.Sim = if (self.sim == null) (Matcher.Sim.init(self.a, self.re) catch return 0) else null;
+    defer if (local_sim) |*s| s.deinit();
+    const sim = self.sim orelse &local_sim.?;
+    var wss: ?Matcher.SpanSim = if (o.word) (Matcher.SpanSim.init(self.a, self.re) catch null) else null;
+    defer if (wss) |*s| s.deinit();
+    var css: ?Matcher.SpanSim = if (o.column) (Matcher.SpanSim.init(self.a, self.re) catch null) else null;
+    defer if (css) |*s| s.deinit();
+    var mss: ?Matcher.SpanSim = if (o.only_matching) (Matcher.SpanSim.init(self.a, self.re) catch null) else null;
+    defer if (mss) |*s| s.deinit();
+    // `--passthru` prints every line, so the prefilter can't skip lines — but
+    // a non-candidate is a proven non-match, so it still spares the engine.
+    const cand = self.litCandidates(lines);
+    var matched: usize = 0;
+    for (lines, 0..) |line, k| {
+        const mv = self.mview(line);
+        const is_m = (if (cand) |c| c[k] else self.lineCanMatch(mv)) and
+            (if (wss) |*s| self.lineHitWord(s, mv) else self.re.lineMatch(sim, mv));
+        if (is_m) matched += 1;
+        // --passthru -o: a matching line contributes each match span (only-
+        // matching frame), a non-matching line still prints in full (context).
+        if (is_m and mss != null) {
+            if (self.o.replace != null) _ = replace.emitLineRepl(self, path, k + 1, line, 0) else _ = display.emitMatches(self, &mss.?, path, k + 1, line, mv);
+            continue;
+        }
+        const col: usize = if (is_m and css != null) self.firstCol(&css.?, mv) else 0;
+        self.row(path, k + 1, col, self.offOf(line), line, is_m);
+    }
+    return matched;
+}
+
+/// `--vimgrep`: one `path:line:col:text` row per match (all matches on a line),
+/// line numbers and columns always on. Never groups.
+fn vimgrep(self: *Emitter, path: []const u8, lines: []const []const u8) usize {
+    var ssim = Matcher.SpanSim.init(self.a, self.re) catch return 0;
+    defer ssim.deinit();
+    var emitted: usize = 0;
+    for (lines, 0..) |line, k| {
+        const mv = self.mview(line);
+        if (!self.lineCanMatch(mv)) continue;
+        var from: usize = 0;
+        while (output.nextSpan(self.re, &ssim, self.o, mv, &from)) |sp| {
+            self.row(path, k + 1, sp.start + 1, self.offOf(line) + sp.start, line, true);
+            emitted += 1;
+            if (self.o.max_per_file != 0 and emitted >= self.o.max_per_file) return emitted;
+        }
+    }
+    return emitted;
+}
+
+/// `-o` frame across `lines`: each match span as its raw bytes, or — with
+/// `-r` — the expanded template (not the raw match) per span. Returns the
+/// number emitted (respecting `--max-count`).
+fn onlyMatching(self: *Emitter, path: []const u8, lines: []const []const u8) usize {
+    var ssim: ?Matcher.SpanSim = if (self.o.replace == null) Matcher.SpanSim.init(self.a, self.re) catch return 0 else null;
+    defer if (ssim) |*s| s.deinit();
+    const cand = self.litCandidates(lines);
+    var emitted: usize = 0;
+    for (lines, 0..) |line, k| {
+        if (cand) |c| if (!c[k]) continue;
+        const mv = self.mview(line);
+        if (!self.lineCanMatch(mv)) continue;
+        emitted += if (ssim) |*s| display.emitMatches(self, s, path, k + 1, line, mv) else replace.emitLineRepl(self, path, k + 1, line, emitted);
+        if (self.o.max_per_file != 0 and emitted >= self.o.max_per_file) break;
+    }
+    return emitted;
+}
+
+fn countMatches(self: *Emitter, path: []const u8, lines: []const []const u8) usize {
+    var ssim = Matcher.SpanSim.init(self.a, self.re) catch return 0;
+    defer ssim.deinit();
+    const cand = self.litCandidates(lines);
+    var total: usize = 0;
+    for (lines, 0..) |line, k| {
+        if (cand) |c| if (!c[k]) continue;
+        const mv = self.mview(line);
+        if (!self.lineCanMatch(mv)) continue;
+        var from: usize = 0;
+        while (output.nextSpan(self.re, &ssim, self.o, mv, &from)) |_| {
+            total += 1;
+            if (self.o.max_per_file != 0 and total >= self.o.max_per_file) break;
+        }
+    }
+    return self.bufTally(path, total);
+}
+
+test "files-only emits once and stops after the first matching line" {
+    const t = std.testing;
+    var m = Matcher{ .linear = try Regex.compile(t.allocator, "needle") };
+    defer m.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(t.allocator);
+    var em = Emitter{
+        .a = t.allocator,
+        .re = &m,
+        .o = .{ .files_only = true },
+        .show_name = true,
+        .out = &out,
+        .needle = .{ .bytes = m.required() },
+    };
+
+    try t.expectEqual(@as(usize, 1), em.file("fixture.txt", &.{ "needle first", "needle second" }));
+    try t.expectEqualStrings("fixture.txt\n", out.items);
+}
