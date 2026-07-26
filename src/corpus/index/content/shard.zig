@@ -32,8 +32,6 @@ const std = @import("std");
 const corpus_mod = @import("../../tree/corpus.zig");
 const bulkstat = @import("../../tree/bulkstat.zig");
 const frame = @import("../frame/frame.zig");
-const persist = @import("../trigrams/persist.zig");
-const Dir = std.Io.Dir;
 
 /// Open-addressing path→doc table (Wyhash, linear probe, one `slots` alloc).
 /// The shard's own copy of the engine's `IndexedPaths` shape — kept here so the
@@ -93,7 +91,7 @@ const header_len = 32;
 /// the mapping; `paths` aliases the mapping's names region; `indexed` is the
 /// one heap structure (path→doc), built once at load like the elide oracle's.
 pub const View = struct {
-    map: persist.Mapping,
+    map: frame.Mapping,
     anchor_ns: i128,
     /// `content[offsets[d]..offsets[d+1]]` is doc `d`'s body; len is `ndocs+1`.
     offsets: []const u64,
@@ -119,40 +117,33 @@ pub const View = struct {
     }
 };
 
-/// mmap + validate `content.shard`, resolving its doc→path table, or null
-/// (missing, corrupt, foreign layout, big-endian reader, or a future-dated
-/// anchor — the same rejections `treemap.load`/`fresh.readAnchor` make).
+/// The shard, through the shared artifact-load protocol
+/// (`frame.mapArtifact`): the tree binding is proved, the blob is mapped and
+/// layout-validated by `decode`, and a future-dated anchor is refused.
 ///
-/// A shard built over a DIFFERENT tree rejects first (`frame.boundHere`), and
-/// this is the sharpest reason the binding exists: `slice` answers by relative
-/// path plus a clock proof, so any path the two trees share — `README.md` — is
-/// served the OTHER tree's bytes, as a match reported at a real path in this
-/// one. Fabricated output, not a missed one. The caller loses only the shard
-/// read tier, never correctness.
+/// This artifact is the sharpest reason the binding step exists. `slice`
+/// answers by relative path plus a clock proof, so under a `$GIST_DIR` aimed at
+/// another checkout, any path the two trees share — `README.md` — is served the
+/// OTHER tree's bytes and reported at a real path in this one. Fabricated
+/// output, not a missed hit. Every refusal costs the shard read tier and never
+/// correctness.
 pub fn load(gpa: std.mem.Allocator, io: std.Io) ?View {
-    if (!frame.boundHere()) return null;
-    return loadFrom(gpa, io, shardFile());
+    return frame.mapArtifact(View, file_alias, io, gpa, decode);
 }
 
-/// `load` from an explicit shard path — the dependency-injected seam so a
-/// caller (or a test) can bind a shard outside the fixed artifact directory.
+/// `load` from an explicit shard path — the write-side twin of `buildAt`, so a
+/// caller minting its own shard (a test, a bench harness) can bind it outside
+/// the fixed artifact directory. Carries its own provenance, so the tree
+/// binding does not apply; anything reading the shared artifact directory wants
+/// `load`, which is the only form that can name it.
 pub fn loadFrom(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ?View {
-    const map = persist.mmapFile(io, path) catch return null;
-    var v = decode(gpa, map) catch {
-        std.posix.munmap(map);
-        return null;
-    };
-    if (v.anchor_ns > std.Io.Clock.now(.real, io).nanoseconds) {
-        v.deinit();
-        return null;
-    }
-    return v;
+    return frame.mapAt(View, io, path, gpa, decode);
 }
 
 /// The layout + doc-table half of `load` (fallible; allocates the path table +
 /// lookup) — unit-testable on an in-memory blob. Every dangling reference fails
 /// closed so `slice` can index `offsets`/`content` freely.
-fn decode(gpa: std.mem.Allocator, map: persist.Mapping) !View {
+fn decode(gpa: std.mem.Allocator, map: frame.Mapping) !View {
     if (comptime @import("builtin").cpu.arch.endian() != .little) return error.Corrupt;
     if (map.len < header_len or !std.mem.eql(u8, map[0..magic.len], magic)) return error.Corrupt;
     const anchor_ns: i128 = std.mem.readInt(i64, map[8..16], .little);
@@ -234,7 +225,7 @@ pub fn buildAt(gpa: std.mem.Allocator, io: std.Io, path: []const u8, docs: []con
     }
     for (docs) |d| blob.appendSliceAssumeCapacity(d);
 
-    try persist.writeAtomic(io, path, blob.items);
+    try frame.writeAtomic(io, path, blob.items);
 }
 
 // ─────────────────────────── tests ───────────────────────────
@@ -275,7 +266,7 @@ fn encodeForTest(gpa: std.mem.Allocator, docs: []const []const u8, paths: []cons
     return blob.toOwnedSlice(gpa);
 }
 
-/// `decode` wants a page-aligned `persist.Mapping`; tests copy the framed bytes
+/// `decode` wants a page-aligned `frame.Mapping`; tests copy the framed bytes
 /// into an aligned buffer to mimic mmap (same helper shape as treemap_test).
 fn aligned(a: std.mem.Allocator, blob: []const u8) ![]align(std.heap.page_size_min) u8 {
     const buf = try a.alignedAlloc(u8, .fromByteUnits(std.heap.page_size_min), blob.len);

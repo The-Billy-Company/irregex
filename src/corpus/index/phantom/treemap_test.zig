@@ -1,7 +1,9 @@
 //! Adversarial unit suite for the phantom `tree.map` layout (`treemap.zig`):
 //! a hand-framed blob round-trips through `decode`, `resolve` places explicit
-//! roots by name, and every torn/dangling variant fails CLOSED to null so the
-//! walk falls back live rather than serving corrupt membership.
+//! roots by name, and every torn/dangling variant fails CLOSED so the walk
+//! falls back live rather than serving corrupt membership. `decode` is the
+//! layout half of `frame.mapArtifact`, so its refusals surface as
+//! `error.Corrupt` and the protocol turns them into the null the walk sees.
 
 const std = @import("std");
 const treemap = @import("treemap.zig");
@@ -36,7 +38,7 @@ fn frameBlob(a: std.mem.Allocator, anchor: i64) ![]u8 {
     return out.toOwnedSlice(a);
 }
 
-/// `decode` wants a page-aligned `persist.Mapping`-shaped slice; tests copy
+/// `decode` wants a page-aligned `frame.Mapping`-shaped slice; tests copy
 /// the framed bytes into an aligned buffer to mimic mmap.
 fn aligned(a: std.mem.Allocator, blob: []const u8) ![]align(std.heap.page_size_min) u8 {
     const buf = try a.alignedAlloc(u8, .fromByteUnits(std.heap.page_size_min), blob.len);
@@ -51,7 +53,7 @@ test "treemap: a framed blob decodes and serves membership" {
     const map = try aligned(a, blob);
     defer a.free(map);
 
-    const v = treemap.decode(map) orelse return error.TestUnexpectedResult;
+    const v = try treemap.decode({}, map);
     try std.testing.expectEqual(@as(i128, 12345), v.anchor_ns);
     const root_kids = v.children(0);
     try std.testing.expectEqual(@as(usize, 2), root_kids.len);
@@ -72,7 +74,7 @@ test "treemap: resolve places roots by name and declines the unplaceable" {
     defer a.free(blob);
     const map = try aligned(a, blob);
     defer a.free(map);
-    const v = treemap.decode(map).?;
+    const v = try treemap.decode({}, map);
 
     try std.testing.expectEqual(@as(?u32, 0), treemap.resolve(&v, ""));
     try std.testing.expectEqual(@as(?u32, 0), treemap.resolve(&v, "."));
@@ -85,50 +87,55 @@ test "treemap: resolve places roots by name and declines the unplaceable" {
     try std.testing.expectEqual(@as(?u32, null), treemap.resolve(&v, "../up"));
 }
 
-test "treemap: every torn variant fails closed to null" {
+test "treemap: every torn variant fails closed" {
     const a = std.testing.allocator;
     const blob = try frameBlob(a, 1);
     defer a.free(blob);
+    const expectCorrupt = struct {
+        fn f(map: []align(std.heap.page_size_min) const u8) !void {
+            try std.testing.expectError(error.Corrupt, treemap.decode({}, map));
+        }
+    }.f;
 
     // Wrong magic.
     {
         const map = try aligned(a, blob);
         defer a.free(map);
         map[0] = 'X';
-        try std.testing.expectEqual(@as(?treemap.View, null), treemap.decode(map));
+        try expectCorrupt(map);
     }
     // Truncated body.
     {
         const map = try aligned(a, blob);
         defer a.free(map);
-        try std.testing.expect(treemap.decode(map[0 .. map.len - 1]) == null);
+        try expectCorrupt(map[0 .. map.len - 1]);
     }
     // Dangling ent span: dirs[1].count runs past ents.
     {
         const map = try aligned(a, blob);
         defer a.free(map);
         std.mem.writeInt(u32, map[32 + 8 + 4 ..][0..4], 99, .little);
-        try std.testing.expect(treemap.decode(map) == null);
+        try expectCorrupt(map);
     }
     // Dangling name_off in ent 0 (ents start after 2 dir recs).
     {
         const map = try aligned(a, blob);
         defer a.free(map);
         std.mem.writeInt(u32, map[32 + 16 ..][0..4], 60000, .little);
-        try std.testing.expect(treemap.decode(map) == null);
+        try expectCorrupt(map);
     }
     // Dangling dir_ix in ent 0 (dir_ix field sits at offset 8 in Ent).
     {
         const map = try aligned(a, blob);
         defer a.free(map);
         std.mem.writeInt(u32, map[32 + 16 + 8 ..][0..4], 7, .little);
-        try std.testing.expect(treemap.decode(map) == null);
+        try expectCorrupt(map);
     }
     // Zero dirs.
     {
         const map = try aligned(a, blob);
         defer a.free(map);
         std.mem.writeInt(u32, map[16..20], 0, .little);
-        try std.testing.expect(treemap.decode(map) == null);
+        try expectCorrupt(map);
     }
 }

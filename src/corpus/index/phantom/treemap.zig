@@ -36,7 +36,6 @@ const corpus_mod = @import("../../tree/corpus.zig");
 const ignore = @import("../../tree/ignore.zig");
 const bulkstat = @import("../../tree/bulkstat.zig");
 const frame = @import("../frame/frame.zig");
-const persist = @import("../trigrams/persist.zig");
 const Dir = std.Io.Dir;
 
 const file_alias = corpus_mod.ArtifactPath("tree.map");
@@ -76,7 +75,7 @@ pub const Rec = extern struct { first: u32, count: u32 };
 
 /// Zero-copy read view over a mapped `tree.map`. All slices alias the mapping.
 pub const View = struct {
-    map: persist.Mapping,
+    map: frame.Mapping,
     anchor_ns: i128,
     dirs: []const Rec,
     ents: []const Ent,
@@ -96,52 +95,43 @@ pub const View = struct {
     }
 };
 
-/// mmap + validate `tree.map`, or null (missing, corrupt, foreign layout, or a
-/// big-endian reader — the records are little-endian `extern struct`s viewed
-/// in place). A future-dated anchor also rejects (same rule as
-/// `fresh.readAnchor`): freshness proofs against it would trust everything.
+/// The snapshot, through the shared artifact-load protocol
+/// (`frame.mapArtifact`): the tree binding is proved, the blob is mapped and
+/// layout-validated by `decode`, and a future-dated anchor is refused — a
+/// snapshot minted ahead of the clock would "prove" every directory unchanged.
 ///
-/// A snapshot built over a DIFFERENT tree rejects first (`frame.boundHere`).
-/// Membership is recorded by relative path and proved current by comparing a
-/// directory's clocks against the snapshot's own anchor, and neither half
-/// survives the move: a foreign anchor is younger than every directory here,
-/// so the root's clock test passes and the walk is handed that tree's child
-/// list — `sub`, `t`, names this tree has never had. The observable was a
-/// walk error blaming a filter, and behind it zero files searched.
-/// The caller loses only the phantom walk, never correctness.
+/// The binding is why this cannot be a bare mmap. Membership is recorded by
+/// relative path and proved current against the snapshot's own anchor, and
+/// neither half survives a move between checkouts: a foreign anchor is younger
+/// than every directory here, so the root's clock test passes and the walk is
+/// handed the OTHER tree's child list — `sub`, `t`, names this tree has never
+/// had. The observable was a walk error blaming a filter, and behind it zero
+/// files searched. Every refusal costs the phantom walk and never correctness.
 pub fn load(io: std.Io) ?View {
-    if (!frame.boundHere()) return null;
-    const map = persist.mmapFile(io, treemapFile()) catch return null;
-    const view = decode(map) orelse {
-        std.posix.munmap(map);
-        return null;
-    };
-    if (view.anchor_ns > std.Io.Clock.now(.real, io).nanoseconds) {
-        std.posix.munmap(map);
-        return null;
-    }
-    return view;
+    return frame.mapArtifact(View, file_alias, io, {}, decode);
 }
 
-/// The pure layout half of `load`, unit-testable on an in-memory blob.
-pub fn decode(map: persist.Mapping) ?View {
-    if (comptime @import("builtin").cpu.arch.endian() != .little) return null;
-    if (map.len < header_len or !std.mem.eql(u8, map[0..magic.len], magic)) return null;
+/// The pure layout half of `load`, unit-testable on an in-memory blob. Takes
+/// the protocol's context slot, which this format has no use for — the view
+/// aliases the mapping and allocates nothing.
+pub fn decode(_: void, map: frame.Mapping) !View {
+    if (comptime @import("builtin").cpu.arch.endian() != .little) return error.Corrupt;
+    if (map.len < header_len or !std.mem.eql(u8, map[0..magic.len], magic)) return error.Corrupt;
     const anchor_ns: i128 = std.mem.readInt(i64, map[8..16], .little);
     const ndirs = std.mem.readInt(u32, map[16..20], .little);
     const nents = std.mem.readInt(u32, map[20..24], .little);
     const names_len = std.mem.readInt(u32, map[24..28], .little);
     const dirs_bytes = @as(usize, ndirs) * @sizeOf(Rec);
     const ents_bytes = @as(usize, nents) * @sizeOf(Ent);
-    if (ndirs == 0 or map.len != header_len + dirs_bytes + ents_bytes + names_len) return null;
+    if (ndirs == 0 or map.len != header_len + dirs_bytes + ents_bytes + names_len) return error.Corrupt;
     const dirs = std.mem.bytesAsSlice(Rec, map[header_len..][0..dirs_bytes]);
     const ents = std.mem.bytesAsSlice(Ent, map[header_len + dirs_bytes ..][0..ents_bytes]);
     const names = map[header_len + dirs_bytes + ents_bytes ..][0..names_len];
     // Fail closed on any dangling reference so consumers can index freely.
-    for (dirs) |d| if (@as(usize, d.first) + d.count > ents.len) return null;
+    for (dirs) |d| if (@as(usize, d.first) + d.count > ents.len) return error.Corrupt;
     for (ents) |e| {
-        if (@as(usize, e.name_off) + e.name_len > names.len) return null;
-        if (e.dir_ix != not_walked and e.dir_ix >= ndirs) return null;
+        if (@as(usize, e.name_off) + e.name_len > names.len) return error.Corrupt;
+        if (e.dir_ix != not_walked and e.dir_ix >= ndirs) return error.Corrupt;
     }
     return .{ .map = map, .anchor_ns = anchor_ns, .dirs = @alignCast(dirs), .ents = @alignCast(ents), .names = names };
 }
@@ -209,7 +199,7 @@ pub fn build(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !voi
     blob.appendSliceAssumeCapacity(std.mem.sliceAsBytes(b.dirs.items));
     blob.appendSliceAssumeCapacity(std.mem.sliceAsBytes(b.ents.items));
     blob.appendSliceAssumeCapacity(b.names.items);
-    try persist.writeAtomic(io, treemapFile(), blob.items);
+    try frame.writeAtomic(io, treemapFile(), blob.items);
 }
 
 /// The recording walk. Depth-first so a parent's gitignore rules are loaded

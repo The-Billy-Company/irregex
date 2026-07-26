@@ -45,14 +45,14 @@ const journal_tok_path = corpus_mod.ArtifactPath(journal.file_name);
 const journal_skip_path = corpus_mod.ArtifactPath("journal.skip");
 
 /// Persist the build instant (wall-clock ns) as the freshness anchor. Atomic
-/// (temp-then-rename, see `persist.writeAtomic`) so a concurrent reader never
+/// (temp-then-rename, see `frame.writeAtomic`) so a concurrent reader never
 /// observes a momentarily-truncated anchor file (which would silently disable
 /// the freshness overlay for that one query — a soft correctness gap, not a
 /// crash, but still avoidable at the same cost as the index/paths writes).
 pub fn writeAnchor(io: std.Io, built: assay.Anchor) !void {
     var buf: [8]u8 = undefined;
     std.mem.writeInt(i64, &buf, @intCast(built.ns()), .little); // epoch-ns fits i64 until 2262
-    try persist.writeAtomic(io, anchor_path.get(), &buf);
+    try frame.writeAtomic(io, anchor_path.get(), &buf);
 }
 
 /// Persist the filesystem-journal since-token (macOS FSEvents id + device +
@@ -61,7 +61,7 @@ pub fn writeAnchor(io: std.Io, built: assay.Anchor) !void {
 /// stat walk. Written AFTER the pair publishes, same as the anchor.
 pub fn writeJournalToken(io: std.Io, tok: journal.Token) void {
     const bytes = journal.encode(tok);
-    fault.spare("write the journal since-token", persist.writeAtomic(io, journal_tok_path.get(), &bytes));
+    fault.spare("write the journal since-token", frame.writeAtomic(io, journal_tok_path.get(), &bytes));
 }
 
 /// The persisted journal since-token, or null when absent/undecodable. `pub`
@@ -294,7 +294,7 @@ fn journalFresh(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, b
         // amend mints a new token and re-arms the attempt.
         fault.spare(
             "record the journal-replay loss for this token",
-            persist.writeAtomic(io, journal_skip_path.get(), &journal.encode(tok)),
+            frame.writeAtomic(io, journal_skip_path.get(), &journal.encode(tok)),
         );
         return false;
     }

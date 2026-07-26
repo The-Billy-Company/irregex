@@ -27,6 +27,11 @@ const codicil_mod = @import("codicil.zig");
 const frame = @import("../frame/frame.zig");
 const assay = @import("../../../assay/assay.zig");
 const Dir = std.Io.Dir;
+// The mapping + atomic-publish primitives are shared wire discipline and live
+// in `../frame/`; these are import aliases, not a second implementation.
+const Mapping = frame.Mapping;
+const mmapFile = frame.mmapFile;
+const writeAtomic = frame.writeAtomic;
 
 /// Stable aliases (status / bench size accounting). The query loader prefers the
 /// generation published by `pair.gen` when present.
@@ -55,38 +60,6 @@ pub fn readPublishedGeneration(gpa: std.mem.Allocator, io: std.Io) ![]u8 {
 }
 
 pub const gens_subdir = "gens";
-
-/// A read-only, page-aligned file mapping (zero-copy view of the bytes on disk).
-pub const Mapping = []align(std.heap.page_size_min) const u8;
-
-/// mmap a whole file read-only. The mapping survives the fd close (POSIX), and
-/// the OS faults in only the pages actually touched. The trusted local loader
-/// scans the directory but not the much larger posting body; later queries
-/// fault in and validate only their groups. A genuinely empty file is rejected
-/// (`mmap` can't map zero length, and a 0-byte index is corruption anyway).
-/// `pub`: the phantom tree.map loader (`../phantom/treemap.zig`) maps its
-/// artifact through the same primitive.
-pub fn mmapFile(io: std.Io, path: []const u8) !Mapping {
-    const file = try Dir.cwd().openFile(io, path, .{}); // .read_only default
-    defer file.close(io);
-    const len: usize = @intCast((try file.stat(io)).size);
-    if (len == 0) return error.EmptyFile;
-    return std.posix.mmap(null, len, .{ .READ = true }, .{ .TYPE = .PRIVATE }, file.handle, 0);
-}
-
-/// Materialize `sub_path` with `data` via the temp-then-rename pattern (POSIX
-/// `rename` is atomic on the same filesystem) instead of a plain truncate+write.
-/// Up to ~10 agents cowork this repo and any of them can run `gist index` while
-/// another is mid-`mmapFile` on the very same `index.gist`/`paths.list` — a
-/// plain overwrite lets that reader observe a torn (truncated/zero-length or
-/// half-written) file and silently return zero candidates. Atomic replace means
-/// a concurrent reader always sees either the fully-old or fully-new bytes.
-pub fn writeAtomic(io: std.Io, sub_path: []const u8, data: []const u8) !void {
-    var af = try Dir.cwd().createFileAtomic(io, sub_path, .{ .make_path = true, .replace = true });
-    defer af.deinit(io);
-    try af.file.writeStreamingAll(io, data);
-    try af.replace(io);
-}
 
 /// The cold-loaded index + the doc→path table that maps candidate ids back to
 /// files. Both are mmap'd: `idx`'s directory + body slices alias into `imap`

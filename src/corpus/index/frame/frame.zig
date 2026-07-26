@@ -140,6 +140,99 @@ fn readSmall(path: []const u8, buf: []u8) ?[]const u8 {
     return buf[0..n];
 }
 
+// ── mapped artifacts: the load protocol, in one place that cannot be partly run ──
+
+/// A read-only, page-aligned file mapping (zero-copy view of the bytes on disk).
+pub const Mapping = []align(std.heap.page_size_min) const u8;
+
+/// mmap a whole file read-only. The mapping survives the fd close (POSIX), and
+/// the OS faults in only the pages actually touched — so a loader validates a
+/// compact directory up front and pays for a posting group, a child list, or a
+/// document body only when a query reaches it. A genuinely empty file is
+/// rejected (`mmap` cannot map zero length, and a 0-byte artifact is corruption
+/// anyway).
+pub fn mmapFile(io: std.Io, path: []const u8) !Mapping {
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{}); // .read_only default
+    defer file.close(io);
+    const len: usize = @intCast((try file.stat(io)).size);
+    if (len == 0) return error.EmptyFile;
+    return std.posix.mmap(null, len, .{ .READ = true }, .{ .TYPE = .PRIVATE }, file.handle, 0);
+}
+
+/// Materialize `sub_path` with `data` via the temp-then-rename pattern (POSIX
+/// `rename` is atomic on the same filesystem) instead of a plain truncate+write.
+/// Up to ~10 agents cowork this repo and any of them can run `gist index` while
+/// another is mid-`mmapFile` on the very same blob — a plain overwrite lets that
+/// reader observe a torn (truncated / zero-length / half-written) file and
+/// silently answer from it. Atomic replace means a concurrent reader always sees
+/// either the fully-old or the fully-new bytes.
+pub fn writeAtomic(io: std.Io, sub_path: []const u8, data: []const u8) !void {
+    var af = try std.Io.Dir.cwd().createFileAtomic(io, sub_path, .{ .make_path = true, .replace = true });
+    defer af.deinit(io);
+    try af.file.writeStreamingAll(io, data);
+    try af.replace(io);
+}
+
+/// Load a SELF-ANCHORED artifact from the artifact directory. Four steps, in
+/// this order, none of them skippable by a caller:
+///
+///   1. prove the artifact directory describes THIS tree (`boundHere`);
+///   2. map it;
+///   3. decode + validate the layout (`decode` owns the format's own magic,
+///      version, and bounds story — it must fail closed on every dangling
+///      reference so the returned view can be indexed freely);
+///   4. refuse a FUTURE-dated anchor, the same rejection `fresh.readAnchor`
+///      makes — a clock proof against an anchor newer than now "proves" every
+///      file unchanged, so it would trust the whole corpus.
+///
+/// Steps 1 and 4 are the ones that used to be per-artifact prose. Both fail
+/// SILENTLY to null: an artifact that cannot prove itself costs its
+/// acceleration tier and never correctness, because the live path it degrades
+/// to never needed it. `V` supplies the two things the protocol reads back —
+/// an `anchor_ns` field and a `deinit` that releases the mapping — so a new
+/// artifact gets the whole discipline by naming its decoder.
+///
+/// `Artifact` is a `corpus.ArtifactPath` type rather than a path string: the
+/// binding answers a question about the artifact DIRECTORY, so the form that
+/// proves it is the form that cannot be aimed anywhere else.
+pub fn mapArtifact(
+    comptime V: type,
+    comptime Artifact: type,
+    io: std.Io,
+    ctx: anytype,
+    comptime decode: fn (@TypeOf(ctx), Mapping) anyerror!V,
+) ?V {
+    if (!boundHere()) return null;
+    return mapAt(V, io, Artifact.get(), ctx, decode);
+}
+
+/// `mapArtifact` steps 2–4 for a caller that names its own path.
+///
+/// The tree binding is deliberately absent, not bypassed: it is a property of
+/// the artifact directory, and a caller supplying an explicit path has already
+/// taken responsibility for that blob's provenance (a test minting a fixture, a
+/// bench harness pointing at a scratch build). Anything reading the shared
+/// artifact directory wants `mapArtifact`, which is the only form that can name
+/// it.
+pub fn mapAt(
+    comptime V: type,
+    io: std.Io,
+    path: []const u8,
+    ctx: anytype,
+    comptime decode: fn (@TypeOf(ctx), Mapping) anyerror!V,
+) ?V {
+    const map = mmapFile(io, path) catch return null;
+    var v = decode(ctx, map) catch {
+        std.posix.munmap(map);
+        return null;
+    };
+    if (v.anchor_ns > std.Io.Clock.now(.real, io).nanoseconds) {
+        v.deinit(); // releases the mapping along with anything decode allocated
+        return null;
+    }
+    return v;
+}
+
 pub fn putInt(gpa: std.mem.Allocator, out: *std.ArrayList(u8), comptime T: type, v: T) !void {
     var buf: [@sizeOf(T)]u8 = undefined;
     std.mem.writeInt(T, &buf, v, .little);

@@ -102,13 +102,13 @@ test "persistIndexAndPathsAt: generation publish keeps readers off a torn pair" 
     defer gpa.free(staged_index);
     const staged_paths = try std.fmt.allocPrint(gpa, "{s}/paths.list", .{staged});
     defer gpa.free(staged_paths);
-    try persist.writeAtomic(io, staged_index, blob_b);
-    try persist.writeAtomic(io, staged_paths, pl_b.items);
+    try frame.writeAtomic(io, staged_index, blob_b);
+    try frame.writeAtomic(io, staged_paths, pl_b.items);
     // Poison the stable aliases the way a non-atomic publisher would mid-flight:
     // new index blob, still-old path table on the stable names.
     const stable_index = try std.fmt.allocPrint(gpa, "{s}/index.gist", .{root});
     defer gpa.free(stable_index);
-    try persist.writeAtomic(io, stable_index, blob_b);
+    try frame.writeAtomic(io, stable_index, blob_b);
 
     // pair.gen still names generation A → load must keep A's consistent pair,
     // not the poisoned stable index.gist + old paths.list mix.
