@@ -8,7 +8,7 @@ doc_radar:
   sentinels:
     - description: "crest primitives own the document side (ρ, dominance, the class family) and derive no ĝ — the forced-crest calculus reads the engine's AST from match/regex/analysis/swell.zig, so no second grammar can diverge from the matcher"
       file: pkg/kernels/irregex/src/kernel/primitives/crest.zig
-      contains: ["pub const Class", "pub fn crest", "pub fn pruned", "pub fn weaker"]
+      contains: ["pub const Class", "pub fn crest", "pub fn pruned", "pub const Swell"]
       absent: ["pub fn ghat", "const Parser"]
 ---
 
@@ -25,7 +25,7 @@ each call site.
 | File           | Job                                                                                                                                                                                                                                                                                                                                          |
 | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `bits.zig`     | Two's-complement bit identities over plain `u64` limb slices: set-bit walks, word-packed sets, popcount/rank, width-edge-safe masks                                                                                                                                                                                                          |
-| `crest.zig`    | Forced-class-run sieve calculus: `Class` / `K` / `Vector` / `Profile`, `ghat`, prune helpers — a sound _necessary_ condition for literal-free class repetitions                                                                                                                                                                              |
+| `crest.zig`    | Forced-class-run sieve: the `Class` family, the document vector ρ, the dominance test, and the `Swell` disjunction a query sieves by (one ĝ per top-level alternative) — a sound _necessary_ condition for literal-free class repetitions                                                                                                    |
 | `parallel.zig` | Shared data-parallel floor: byte-balanced shard `greedyBounds`, the `sliceLen` weight, and the partial-spawn-safe `fanOut` both engines ride                                                                                                                                                                                                 |
 | `ward.zig`     | Shared reader/writer discipline over `std.Io.RwLock`: `Read`/`Write` lease guards + the double-checked reconcile dance (fast shared read, upgrade + refresh on a miss, downgrade) — `readReconciled` (acquires shared, holds nothing on error) and `reconcileHeld` (from a held lease, keeps a lease on every path) — the warm session rides |
 
@@ -43,7 +43,8 @@ theory dossier at [`../../../research/crest/`](../../../research/crest/).
   negative). Caseless preserves case-closed certificates and declines unsafe
   folds; Unicode certifies only byte-safe classes.
 - `bits_test.zig` checks the packed representation against a `bool`-slice
-  oracle; `crest_test.zig` pins class-family / `ghat` edges; `ward_test.zig` proves
+  oracle; `crest_test.zig` pins the class family and the swell's disjunctive
+  decision; `ward_test.zig` proves
   the lease guards exclude and both reconcile faces' (`readReconciled` /
   `reconcileHeld`) fast/miss/race/error paths against a call-counting oracle plus
   a threaded reader/writer invariant.

@@ -6,7 +6,7 @@ doc_radar:
       contains: ["GISTCRS2", "pub fn decode"]
     - description: "sieve calculus lives in the regex analysis layer, not the sidecar — ĝ is derived from the engine's own AST"
       file: pkg/kernels/irregex/src/kernel/match/regex/analysis/swell.zig
-      contains: "pub fn forcedCrest"
+      contains: "pub fn forcedSwell"
 ---
 
 # `src/corpus/index/crest/` — persisted crest-vector sidecar

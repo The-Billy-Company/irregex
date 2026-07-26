@@ -21,6 +21,8 @@ pub const FixedResult = struct {
     matched: bool,
     expected_pruned: bool,
     pruned: bool,
+    expected_branches: u8,
+    branches: u8,
     expected_digit_threshold: u16,
     digit_threshold: u16,
     passed: bool,
@@ -50,9 +52,14 @@ pub const Row = struct {
     pattern: []const u8,
     caseless: bool,
     unicode: bool,
-    ghat: crest.Vector,
+    /// One ĝ per top-level alternative — the disjunction the sieve tests, not a
+    /// collapsed min. Owned by the caller, alongside the sample slices.
+    ghat: []const crest.Vector,
     files: usize,
     run_survivors: usize,
+    /// Survivors under the retired single-vector sieve (componentwise min over
+    /// the alternatives) — the ablation this change is measured against.
+    fold_survivors: usize,
     cnt_survivors: usize,
     hits: usize,
     full_ns: u64,
@@ -63,7 +70,9 @@ pub const Row = struct {
 };
 
 pub const RunReport = struct {
-    schema_version: u8 = 2,
+    /// v3: `queries[].ghat` became an ARRAY of per-alternative forced crests
+    /// (the disjunctive sieve); v2 emitted one collapsed vector.
+    schema_version: u8 = 3,
     artifact_kind: []const u8 = "crest-production-proof",
     config: struct {
         runs: usize,
@@ -120,15 +129,20 @@ pub fn parseArgs(init: std.process.Init) Config {
     return config;
 }
 
-pub fn fixedRegression(gpa: std.mem.Allocator, violations: *usize) ![2]FixedResult {
+pub fn fixedRegression(gpa: std.mem.Allocator, violations: *usize) ![3]FixedResult {
     const cases = [_]struct {
         pattern: []const u8,
         expected_match: bool,
         expected_pruned: bool,
+        expected_branches: u8,
         expected_digit_threshold: u16,
     }{
-        .{ .pattern = "[0-9][a-z]?[0-9]", .expected_match = true, .expected_pruned = false, .expected_digit_threshold = 1 },
-        .{ .pattern = "[0-9][0-9]?[0-9]", .expected_match = false, .expected_pruned = true, .expected_digit_threshold = 2 },
+        .{ .pattern = "[0-9][a-z]?[0-9]", .expected_match = true, .expected_pruned = false, .expected_branches = 1, .expected_digit_threshold = 1 },
+        .{ .pattern = "[0-9][0-9]?[0-9]", .expected_match = false, .expected_pruned = true, .expected_branches = 1, .expected_digit_threshold = 2 },
+        // The disjunctive case, pinned in the same fail-closed regression: two
+        // alternatives forcing disjoint classes. A collapsed ĝ is 0⃗ here and
+        // prunes nothing; the swell still prunes a document short of both.
+        .{ .pattern = "[0-9]{3}|~{3}", .expected_match = false, .expected_pruned = true, .expected_branches = 2, .expected_digit_threshold = 3 },
     };
     const document = "1a2";
     const document_crest = crest.crest(document);
@@ -136,16 +150,18 @@ pub fn fixedRegression(gpa: std.mem.Allocator, violations: *usize) ![2]FixedResu
     var results: [cases.len]FixedResult = undefined;
     for (cases, 0..) |case, i| {
         const opts: Regex.Options = .{ .caseless = false, .unicode = true };
-        const gv = Regex.forcedCrest(gpa, case.pattern, opts);
+        const swell = Regex.forcedSwell(gpa, case.pattern, opts);
         var re = try Regex.compileOpts(gpa, case.pattern, opts);
         defer re.deinit();
         var sim = try Regex.Sim.init(gpa, &re);
         defer sim.deinit();
         const matched = re.docMatch(&sim, document);
-        const pruned = crest.pruned(document_crest, gv);
+        const pruned = swell.prunes(document_crest);
+        const threshold = if (swell.len == 0) 0 else swell.crests[0][digit];
         const passed = matched == case.expected_match and
             pruned == case.expected_pruned and
-            gv[digit] == case.expected_digit_threshold and
+            swell.len == case.expected_branches and
+            threshold == case.expected_digit_threshold and
             (!matched or !pruned);
         results[i] = .{
             .pattern = case.pattern,
@@ -154,25 +170,27 @@ pub fn fixedRegression(gpa: std.mem.Allocator, violations: *usize) ![2]FixedResu
             .matched = matched,
             .expected_pruned = case.expected_pruned,
             .pruned = pruned,
+            .expected_branches = case.expected_branches,
+            .branches = swell.len,
             .expected_digit_threshold = case.expected_digit_threshold,
-            .digit_threshold = gv[digit],
+            .digit_threshold = threshold,
             .passed = passed,
         };
         if (!passed) {
             violations.* += 1;
             std.debug.print(
-                "  !! FIXED PRODUCTION REGRESSION FAILED: pattern={s} doc={s} match={} expected={} prune={} expected={} digit-threshold={d} expected={d}\n",
-                .{ case.pattern, document, matched, case.expected_match, pruned, case.expected_pruned, gv[digit], case.expected_digit_threshold },
+                "  !! FIXED PRODUCTION REGRESSION FAILED: pattern={s} doc={s} match={} expected={} prune={} expected={} branches={d} expected={d} digit-threshold={d} expected={d}\n",
+                .{ case.pattern, document, matched, case.expected_match, pruned, case.expected_pruned, swell.len, case.expected_branches, threshold, case.expected_digit_threshold },
             );
         }
     }
     return results;
 }
 
-pub fn differential(re: *const Regex, sim: *Regex.Sim, docs: []const []const u8, crests: []const crest.Vector, gv: crest.Vector) Differential {
+pub fn differential(re: *const Regex, sim: *Regex.Sim, docs: []const []const u8, crests: []const crest.Vector, swell: crest.Swell) Differential {
     var result: Differential = .{ .matched = 0, .sieve_hits = 0, .survivors = 0, .pruned_files = 0, .matched_and_pruned = 0 };
     for (docs, crests) |doc, document_crest| {
-        const pruned = crest.pruned(document_crest, gv);
+        const pruned = swell.prunes(document_crest);
         const matched = re.docMatch(sim, doc);
         if (matched) result.matched += 1;
         if (pruned) {
@@ -197,12 +215,12 @@ pub fn timeFull(io: std.Io, re: *const Regex, sim: *Regex.Sim, docs: []const []c
     return .{ .ns = @intCast(sp.read(io).ns()), .hits = hits };
 }
 
-pub fn timeSieve(io: std.Io, re: *const Regex, sim: *Regex.Sim, docs: []const []const u8, crests: []const crest.Vector, gv: crest.Vector) Timed {
+pub fn timeSieve(io: std.Io, re: *const Regex, sim: *Regex.Sim, docs: []const []const u8, crests: []const crest.Vector, swell: crest.Swell) Timed {
     const sp = Span.open(io);
     var hits: usize = 0;
     var survivors: usize = 0;
     for (docs, crests) |doc, document_crest| {
-        if (crest.pruned(document_crest, gv)) continue;
+        if (swell.prunes(document_crest)) continue;
         survivors += 1;
         if (re.docMatch(sim, doc)) hits += 1;
     }

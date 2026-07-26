@@ -181,7 +181,7 @@ test "transform routing: -z/-E ride the pipeline; --pre/--binary decline" {
 /// Fan out, walk, search, stream, exit. `filters` powers inline index elision;
 /// `file_needle` may reject a whole body, while `line_needle` only avoids regex
 /// execution and remains valid for passthru. Never returns.
-pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re: ?*const Matcher, use_color: bool, filters: []const []const u8, sieve: crest.Vector, file_needle: ?simd.Gate, line_needle: ?simd.Gate, icfg: *const ingest.Config) noreturn {
+pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re: ?*const Matcher, use_color: bool, filters: []const []const u8, sieve: crest.Swell, file_needle: ?simd.Gate, line_needle: ?simd.Gate, icfg: *const ingest.Config) noreturn {
     // Run-scoped monotonic stopwatch for the fused walk — feeds the real
     // `elapsed`/`elapsed_total` in the `--stats`/`--json` summary (was hardcoded
     // `0.000000`) and the `.query`-lens stderr diagnostic, the serial engine's twin.

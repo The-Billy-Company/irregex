@@ -153,14 +153,17 @@ pub fn caselessFilter(a: std.mem.Allocator, o: Opts, eff: []const u8, re: *const
     return vars orelse &.{};
 }
 
-/// The crest sieve's forced-crest vector ĝ for this invocation, or 0⃗ (⇒ the
-/// sieve never elides) under the same whole-file-scan / no-index guards as
-/// `trigramFilter` — the sieve only ever EXTENDS the pruning criterion where
-/// index elision is already admissible, it never widens where elision runs.
+/// The crest sieve's forced swell for this invocation — ĝ per top-level
+/// alternative — or the empty swell (⇒ the sieve never elides) under the same
+/// whole-file-scan / no-index guards as `trigramFilter`. The sieve only ever
+/// EXTENDS the pruning criterion where index elision is already admissible; it
+/// never widens where elision runs.
 /// `pattern` is the EFFECTIVE combined pattern the engine actually compiled
-/// (post `-f` fold, `-F` escaping, and leading-flag strip — multi `-e` arrives
-/// as `(?:a)|(?:b)`, whose alternation the calculus min-folds natively), so ĝ
-/// can never be derived from fewer branches than the engine matches.
+/// (post `-f` fold, `-F` escaping, and leading-flag strip), so the swell can
+/// never be derived from fewer branches than the engine matches. Multi `-e`
+/// arrives here as `(?:a)|(?:b)` and is exactly what the disjunction is for: a
+/// componentwise min across branches with disjoint forced classes is 0⃗, so
+/// every multi-pattern search used to stand the sieve down by construction.
 /// Unlike `trigramFilter`, caseless does NOT stand the sieve down: `-i` folds
 /// the AST before the calculus reads it, so the case-closed classes still force
 /// their runs while `upper`/`lower` (and any Unicode orbit escaping ASCII) fold
@@ -171,13 +174,13 @@ pub fn caselessFilter(a: std.mem.Allocator, o: Opts, eff: []const u8, re: *const
 /// be the dual-parser hazard one level up, worst exactly where `--engine auto`
 /// escalated *because* gist's grammar could not express the pattern. `-P` runs
 /// keep the trigram filter; they lose only this extra pruning.
-pub fn crestSieve(a: std.mem.Allocator, o: Opts, pattern: []const u8, re: *const Matcher, transforming: bool) crest.Vector {
-    if (!mayElideByIndex(o, transforming)) return crest.zero_vector;
+pub fn crestSieve(a: std.mem.Allocator, o: Opts, pattern: []const u8, re: *const Matcher, transforming: bool) crest.Swell {
+    if (!mayElideByIndex(o, transforming)) return crest.no_sieve;
     switch (re.*) {
         .linear => {},
-        .pcre => return crest.zero_vector,
+        .pcre => return crest.no_sieve,
     }
-    return Regex.forcedCrest(a, pattern, arm.linearOptions(o));
+    return Regex.forcedSwell(a, pattern, arm.linearOptions(o));
 }
 test "required literal gate reuses sound regex analysis" {
     const t = std.testing;

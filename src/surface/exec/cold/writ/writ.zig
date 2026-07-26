@@ -61,9 +61,9 @@ pub const Writ = struct {
     /// Trigram prefilters for index elision; empty when elision is
     /// inadmissible (`gate.mayElideByIndex`).
     filters: []const []const u8,
-    /// The crest sieve's forced-crest ĝ; `crest.zero_vector` when it must not
-    /// elide.
-    sieve: crest.Vector,
+    /// The crest sieve's forced swell — ĝ per top-level alternative; the empty
+    /// swell when it must not elide.
+    sieve: crest.Swell,
     /// Whether the binary detector runs on each file.
     binary_detect: bool,
 

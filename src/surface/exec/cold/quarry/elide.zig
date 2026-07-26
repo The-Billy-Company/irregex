@@ -138,14 +138,14 @@ pub const Lazy = struct {
     /// declinature this seam can carry names the live read, so the walk only
     /// ever needs to know whether `val` is there — which is what the three
     /// callers each used to spell out for themselves.
-    pub fn admit(le: *Lazy, gpa: std.mem.Allocator, io: std.Io, o: Opts, filters: []const []const u8, sieve: crest.Vector) void {
+    pub fn admit(le: *Lazy, gpa: std.mem.Allocator, io: std.Io, o: Opts, filters: []const []const u8, sieve: crest.Swell) void {
         le.val = switch (build(gpa, io, o, filters, sieve)) {
             .got => |el| el,
             .declined => null,
         };
     }
 
-    pub fn loaderMain(le: *Lazy, gpa: std.mem.Allocator, io: std.Io, o: Opts, filters: []const []const u8, sieve: crest.Vector) void {
+    pub fn loaderMain(le: *Lazy, gpa: std.mem.Allocator, io: std.Io, o: Opts, filters: []const []const u8, sieve: crest.Swell) void {
         le.admit(gpa, io, o, filters, sieve);
         le.ready.store(true, .release);
     }
@@ -179,7 +179,7 @@ pub fn broadIndexedRoots(roots: []const []const u8) bool {
 /// (`flushPending` `final=true`), so a scoped walk that outruns the load pays
 /// only the per-worker deferral append — while a read-heavy subtree the loader
 /// DOES beat gets its candidate reads elided like any broad scan.
-pub fn indexElisionWanted(io: std.Io, parsed: args.Parsed, filters: []const []const u8, sieve: crest.Vector) bool {
+pub fn indexElisionWanted(io: std.Io, parsed: args.Parsed, filters: []const []const u8, sieve: crest.Swell) bool {
     const o = parsed.opts;
     if (o.files_list or o.no_index) return false;
     // Explicit-file roots elide NOTHING: the index answers "which of the walked
@@ -189,7 +189,7 @@ pub fn indexElisionWanted(io: std.Io, parsed: args.Parsed, filters: []const []co
     // corpus) that only the tree walk ever amortizes. Skip it when every root is
     // a regular file; the mixed / directory / implicit-CWD cases keep it.
     if (rootsAllRegularFiles(io, parsed)) return false;
-    return usableFilters(filters) or crest.active(sieve);
+    return usableFilters(filters) or sieve.active();
 }
 
 /// True iff ≥1 root was given and every one stats as a regular file (a lone
@@ -228,9 +228,9 @@ pub fn indexSavingsWorthTable(total: usize, candidates: usize) bool {
 /// this run reads live. `--no-index` is the caller making the index absent, and
 /// declining is never a fault here — the live walk answers identically, which is
 /// what makes the index an acceleration structure and not a semantic one.
-fn build(gpa: std.mem.Allocator, io: std.Io, o: Opts, filters: []const []const u8, sieve: crest.Vector) fault.Answer(Oracle) {
+fn build(gpa: std.mem.Allocator, io: std.Io, o: Opts, filters: []const []const u8, sieve: crest.Swell) fault.Answer(Oracle) {
     if (o.no_index) return .{ .declined = .index_absent };
-    if (!usableFilters(filters) and !crest.active(sieve)) return .{ .declined = .not_worthwhile };
+    if (!usableFilters(filters) and !sieve.active()) return .{ .declined = .not_worthwhile };
     if (assemble(gpa, io, filters, sieve)) |el| return .{ .got = el } else |e| return switch (e) {
         error.NoAnchor, error.NoIndex => .{ .declined = .index_absent },
         error.NotWorthwhile => .{ .declined = .not_worthwhile },
@@ -247,7 +247,7 @@ fn build(gpa: std.mem.Allocator, io: std.Io, o: Opts, filters: []const []const u
 /// half-built state instead of hand-threading `deinit` down each return path.
 /// Those errors are this file's private control flow (`Err`), like the shadow
 /// rewriter's `Bail`; `build` is where they become the typed declinature.
-fn assemble(gpa: std.mem.Allocator, io: std.Io, filters: []const []const u8, sieve: crest.Vector) Err!Oracle {
+fn assemble(gpa: std.mem.Allocator, io: std.Io, filters: []const []const u8, sieve: crest.Swell) Err!Oracle {
     const anchor = fresh.readAnchor(gpa, io) orelse return error.NoAnchor;
     var p = (persist.loadQuiet(gpa, io) catch return error.NoIndex) orelse return error.NoIndex;
     errdefer p.deinit();
@@ -269,12 +269,13 @@ fn assemble(gpa: std.mem.Allocator, io: std.Io, filters: []const []const u8, sie
         candidates.setRangeValue(.{ .start = 0, .end = p.paths.items.len }, true);
     }
     // Crest sieve: clear docs whose persisted crest vector provably falls short
-    // of ĝ. Valid because `Oracle.skip` refuses any file whose timestamps can't
-    // prove it predates the anchor — exactly when the vector describes live bytes.
-    if (crest.active(sieve)) {
+    // of EVERY alternative's ĝ. Valid because `Oracle.skip` refuses any file whose
+    // timestamps can't prove it predates the anchor — exactly when the vector
+    // describes live bytes.
+    if (sieve.active()) {
         if (p.crest) |table| {
             for (table, 0..) |v, d| {
-                if (crest.pruned(v, sieve)) candidates.unset(d);
+                if (sieve.prunes(v)) candidates.unset(d);
             }
         } else if (!usableFilters(filters)) {
             // No table to sieve with and no trigram filter either — nothing

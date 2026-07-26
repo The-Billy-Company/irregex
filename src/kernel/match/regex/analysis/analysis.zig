@@ -221,7 +221,7 @@ pub const classSpanShape = runs.classSpanShape;
 
 const swell = @import("swell.zig");
 pub const ForcedProfile = swell.Profile;
-pub const forcedCrest = swell.forcedCrest;
+pub const forcedSwell = swell.forcedSwell;
 
 const reach = @import("reach.zig");
 pub const analyzeFirst = reach.analyzeFirst;

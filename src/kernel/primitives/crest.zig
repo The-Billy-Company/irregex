@@ -11,10 +11,12 @@
 //!     O(|d|) pass, k small ints;
 //!   • per query R, the FORCED CREST ĝ(R) ≤ min_{w∈L(R)} ρ(w) — a sound lower
 //!     bound folded out of the pattern AST by a min-of-max prefix/suffix/best
-//!     run algebra (`../match/regex/analysis/swell.zig`);
-//!   • THE SIEVE: R can match inside d only if ρ(d) ≥ ĝ(R) componentwise, so
-//!     `∃C: ρ(d,C) < ĝ(R,C)` prunes d — k integer compares, no byte scan,
-//!     provably no false negatives (Sieve Theorem, PROOF.md §2).
+//!     run algebra (`../match/regex/analysis/swell.zig`) — one per top-level
+//!     ALTERNATIVE, since `R₁|R₂` obliges a match to satisfy only one of them;
+//!   • THE SIEVE: R can match inside d only if some alternative's ĝ is
+//!     componentwise met, so a `Swell` all of whose alternatives fall short
+//!     prunes d — k integer compares per alternative, no byte scan, provably
+//!     no false negatives (Sieve Theorem, PROOF.md §2 and §3.9).
 //!
 //! This module is the DOCUMENT half and the sieve itself — the pure kernel, no
 //! I/O, no allocation, no engine dep. The query half (ĝ, the forced-crest
@@ -54,10 +56,51 @@ pub const Vector = [K]u16;
 
 pub const zero_vector: Vector = @splat(0);
 
-/// Does the sieve have anything to prune by? (0⃗ prunes nothing.)
-pub fn active(v: Vector) bool {
-    return !std.mem.eql(u16, &v, &zero_vector);
-}
+/// The query's forced crest, as the DISJUNCTION the grammar actually hands us:
+/// one ĝ per top-level alternative of the pattern. `R₁|R₂` obliges a match to
+/// satisfy exactly one branch, so the sieve may prune only a document that
+/// clears NONE of them.
+///
+/// Collapsing the branches into a single componentwise min — the old shape —
+/// keeps soundness but throws that structure away, and two branches with
+/// disjoint forced classes min to 0⃗: a sieve that prunes nothing at all. Since
+/// multi-`-e` reaches the engine as `(?:a)|(?:b)`, every multi-pattern search
+/// used to run with the sieve silently stood down.
+///
+/// Bounded and inline, so the query half stays allocation-free and the whole
+/// object copies into a loader thread's frame. Beyond `capacity` alternatives
+/// the surplus stays folded by `Profile.alt` into one slot, degrading toward
+/// the single-vector sieve rather than failing.
+pub const Swell = struct {
+    pub const capacity = 8;
+
+    crests: [capacity]Vector = @splat(zero_vector),
+    len: u8 = 0,
+
+    /// Prune ⟺ the document falls short of EVERY alternative. A match takes
+    /// some branch, and that branch's ĝ would have admitted d — which is the
+    /// whole proof. An empty swell analyzed nothing, so it proves nothing and
+    /// prunes nothing.
+    pub fn prunes(s: *const Swell, doc: Vector) bool {
+        if (s.len == 0) return false;
+        for (s.crests[0..s.len]) |ghat| if (!pruned(doc, ghat)) return false;
+        return true;
+    }
+
+    /// Is there anything to prune by? A single alternative demanding 0⃗ makes
+    /// the whole disjunction inert however strong its siblings are — it admits
+    /// every document on its own.
+    pub fn active(s: *const Swell) bool {
+        if (s.len == 0) return false;
+        for (s.crests[0..s.len]) |ghat| if (std.mem.eql(u16, &ghat, &zero_vector)) return false;
+        return true;
+    }
+};
+
+/// The one spelling of "this run proves nothing about any document": a pattern
+/// the engine declined, a PCRE2 arm, or an output mode that must read every
+/// byte. Every stand-down names it rather than open-coding an empty swell.
+pub const no_sieve: Swell = .{};
 
 fn isDigit(b: u8) bool {
     return b >= '0' and b <= '9';
@@ -169,21 +212,15 @@ pub fn crest(doc: []const u8) Vector {
     return best;
 }
 
-/// Prune ⟺ some class crest falls short of its forced crest: k integer
-/// compares, no byte scan. Sound because a match implies ρ(d,C) ≥ g ≥ ĝ.
+/// One alternative's dominance test: it falls short ⟺ some class crest is
+/// below the run that alternative forces — k integer compares, no byte scan.
+/// Sound because a match of that alternative implies ρ(d,C) ≥ g ≥ ĝ. `Swell`
+/// is what a query sieves by; this is the inequality it is built from.
 pub fn pruned(doc_crest: Vector, ghat_vec: Vector) bool {
     inline for (0..K) |i| {
         if (doc_crest[i] < ghat_vec[i]) return true;
     }
     return false;
-}
-
-/// Componentwise min of two forced crests — the algebra alternation folds over,
-/// so multi-`-e` can never sieve by more than its weakest branch forces.
-pub fn weaker(a: Vector, b: Vector) Vector {
-    var out: Vector = undefined;
-    inline for (0..K) |i| out[i] = @min(a[i], b[i]);
-    return out;
 }
 
 /// Human label for a class index (reporting only).

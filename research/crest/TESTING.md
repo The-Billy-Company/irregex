@@ -23,7 +23,8 @@ Hand-computed oracles against the calculus, one test per load-bearing rule:
 | class repetition      | `[0-9a-f]{8}` forces hex and word runs of 8                                                     |
 | concatenation         | saturated seam addition and exact epsilon identity                                              |
 | optional certificates | digit and non-digit optionals cannot be confused across `?`, `*`, `{0,m}`, or `{0,0}`           |
-| alternation           | componentwise minima and conjunctive `only_c_cert`                                              |
+| alternation           | componentwise minima and conjunctive `only_c_cert` inside an expression; a `Swell` disjunction at the root |
+| disjunction           | a swell prunes only what clears no alternative, dominates the retired fold on 8,192 random vectors, and goes inert when one branch demands `0⃗` |
 | degradation           | unsupported syntax and unsafe case folds yield `0⃗`; case-closed caseless classes remain active |
 | escapes and Unicode   | real escaped bytes plus the byte/codepoint alphabet contract                                    |
 | counted repetition    | malformed bounds degrade; 70,000 copies saturate without a 4,096 clamp                          |
@@ -48,12 +49,13 @@ years later, so it gets the adversarial treatment the trigram loader gets:
 ## 3. Production proof harness — `bench/crest/bench.zig` (`zig build crest`)
 
 Links the **real** engine (`Regex.docMatch`) and walks the **real** Billy
-corpus via the same `corpus.load` the optimality certificate uses. Five gates
+corpus via the same `corpus.load` the optimality certificate uses. Six gates
 per run:
 
 1. **Fixed production regression.** The real matcher accepts `1a2` for
    `[0-9][a-z]?[0-9]` and Crest retains it. The positive precision control
-   `[0-9][0-9]?[0-9]` derives a digit threshold of 2.
+   `[0-9][0-9]?[0-9]` derives a digit threshold of 2. The disjunctive control
+   `[0-9]{3}|~{3}` derives two alternatives and prunes `1a2` on both.
 2. **Corpus-wide soundness, fail-closed.** For every file × every slate
    query: if the production matcher matches, the sieve must not have pruned.
    One violation → exit 1. This is Theorem 1 checked against the shipped
@@ -63,9 +65,13 @@ per run:
    files × byte/ASCII and rg-default Unicode × case-sensitive and caseless,
    each paired with its own ĝ exactly as production `crestSieve` does
    (Alphabet Contract). 96,000 (pattern, file) checks per run.
-4. **Ablation.** The count-population cousin at identical thresholds, kept
-   permanently so the "why the run, not the count" claim stays measured.
-5. **Speed.** Full-scan wall time vs sieve+survivors wall time, same matcher
+4. **Ablations.** The count-population cousin at identical thresholds, kept
+   permanently so the "why the run, not the count" claim stays measured; and
+   the retired single-vector fold (componentwise min over the alternatives), so
+   the disjunction's gain is a measured column rather than a story.
+5. **Dominance, fail-closed.** A row where the disjunction left more survivors
+   than the fold exits non-zero — Corollary 4 checked on the live corpus.
+6. **Speed.** Full-scan wall time vs sieve+survivors wall time, same matcher
    both sides. Ordered raw samples, seeds, differentials, and medians are
    preserved in `crest-run.json`; aggregates remain in `crest.csv`.
 

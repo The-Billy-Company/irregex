@@ -19,12 +19,20 @@ doc_radar:
     - description: "the Grammar Contract (PROOF §3.7a) is structural: ĝ is derived from the engine's own syntax.Node AST, so the private mini-parser that misread \\< as a literal cannot come back"
       file: pkg/kernels/irregex/src/kernel/match/regex/analysis/swell.zig
       contains:
-        - "pub fn forcedCrest"
+        - "pub fn forcedSwell"
         - 'syntax.zig'
-    - description: "the Sieve Theorem is checked against the real matcher, not just sampled by the corpus bench"
+    - description: "the sieve is a disjunction (PROOF §3.9): one ĝ per top-level alternative, pruning only what clears none of them"
+      file: pkg/kernels/irregex/src/kernel/primitives/crest.zig
+      contains:
+        - "pub const Swell"
+        - "pub fn prunes"
+      absent:
+        - "pub fn weaker"
+    - description: "the Sieve Theorem is checked against the real matcher, not just sampled by the corpus bench — including the multi-branch disjunction"
       file: pkg/kernels/irregex/src/kernel/match/regex/analysis/swell_test.zig
       contains:
         - "sieve theorem: a matching document is never pruned"
+        - "top-level alternation is a disjunction, not a componentwise min"
     - file: pkg/kernels/irregex/src/surface/exec/cold/writ/gate.zig
       contains:
         - "crestSieve"
@@ -44,9 +52,10 @@ large OR-union of class trigrams; Crest avoids that expansion.
 Per document, index the **crest vector** — the longest consecutive run per
 byte-class (8 classes, 16 bytes/doc). Per query, extract the **forced crest**
 `ĝ(R)` — the run every accepted string must contain — by a min-of-max
-prefix/suffix/best algebra over the AST. Prune when the document's crest falls
-below the forced crest: `k` integer compares, no byte scan, provably no false
-negatives.
+prefix/suffix/best algebra over the AST, **one per top-level alternative**,
+since `R₁|R₂` obliges a match to satisfy only one of them. Prune a document
+whose crest falls below every alternative's forced crest: `k` integer compares
+per branch, no byte scan, provably no false negatives.
 
 ## This folder (research: writing + proofs only)
 
@@ -60,9 +69,10 @@ negatives.
 
 | where                                    | what                                                                                                                     |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `src/kernel/primitives/crest.zig`        | pure kernel: fixed class family, crest vector, profile calculus, parser, `ghat`, and `pruned`                            |
+| `src/kernel/primitives/crest.zig`        | pure kernel: fixed class family, crest vector, the `Swell` disjunction, and the dominance test                           |
+| `src/kernel/match/regex/analysis/swell.zig` | the query half: `forcedSwell` folds ĝ out of the engine's own AST, one per top-level alternative                      |
 | `src/corpus/index/crest/sidecar.zig`     | persisted per-document crest table (`crest.bin`), generation-atomic with the trigram pair                                |
-| `src/surface/exec/cold/writ/gate.zig`    | `crestSieve` — the query's crest vector, derived once and stood down wherever pruning would be unsound                   |
+| `src/surface/exec/cold/writ/gate.zig`    | `crestSieve` — the query's swell, derived once and stood down wherever pruning would be unsound                          |
 | `src/surface/exec/cold/quarry/elide.zig` | the read-elision oracle both cold schedulers admit: crest sieve composed with trigram candidates and the freshness proof |
 | `bench/crest/bench.zig`                  | production proof harness (`zig build crest`) — fail-closed soundness, pruning, speed, and ablation over the live corpus  |
 
@@ -90,7 +100,7 @@ See `PROOF.md` §5 and `bench/crest/evidence/README.md`.
 
 ## Status
 
-**Integrated (single-run sieve).** A dated adversarial search found no prior
+**Integrated (single-run sieve, disjunctive over alternatives).** A dated adversarial search found no prior
 instance of the full composite as of 2026-07-20 (`PRIOR_ART.md`); that is not
 proof of global novelty. `gist index` persists the Crest
 sidecar; both the serial and parallel engines prune candidates with it

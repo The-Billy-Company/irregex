@@ -64,7 +64,7 @@ pub const Run = struct {
     /// line?" — do not apply. Only the line needle, a property of the pattern
     /// itself, carries over.
     fn collect(r: Run) intake.Collected {
-        return intake.collectFiles(r.a, r.gpa, r.io, r.parsed, &.{}, crest.zero_vector, r.w.line_needle, r.icfg);
+        return intake.collectFiles(r.a, r.gpa, r.io, r.parsed, &.{}, crest.no_sieve, r.w.line_needle, r.icfg);
     }
 
     /// rg's filename-visibility rule: `auto` shows paths as soon as more than

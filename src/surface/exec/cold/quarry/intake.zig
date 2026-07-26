@@ -237,13 +237,13 @@ const IndexSkip = struct {
     /// The persisted crest table — null disables the sieve (legacy cache,
     /// rejected blob, inactive ĝ, or no trustworthy anchor).
     table: ?[]const crest.Vector,
-    sieve: crest.Vector,
+    sieve: crest.Swell,
 
     fn skip(self: *const IndexSkip, rel: []const u8) bool {
         const doc = self.indexed.get(self.p.paths.items[0..self.indexed_count], rel) orelse return false;
         if (!self.candidates.isSet(doc)) return true;
         if (self.table) |t| {
-            if (doc < t.len and !self.fresh_set.isSet(doc) and crest.pruned(t[doc], self.sieve)) return true;
+            if (doc < t.len and !self.fresh_set.isSet(doc) and self.sieve.prunes(t[doc])) return true;
         }
         return false;
     }
@@ -276,7 +276,7 @@ const IndexSkip = struct {
 /// normal case, not a miss to nag about). `fresh_roots` scopes the freshness
 /// stat-walk to the query's own roots (else the indexed corpus) so a scoped
 /// query doesn't pay a whole-corpus stat pass.
-fn buildIndexSkip(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, filters: []const []const u8, sieve: crest.Vector) fault.Answer(IndexSkip) {
+fn buildIndexSkip(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, filters: []const []const u8, sieve: crest.Swell) fault.Answer(IndexSkip) {
     if (!elide.indexElisionWanted(io, parsed, filters, sieve)) return .{ .declined = .not_worthwhile };
     if (assembleIndexSkip(gpa, io, parsed, filters, sieve)) |s| return .{ .got = s } else |e| return switch (e) {
         error.NoIndex => .{ .declined = .index_absent },
@@ -289,7 +289,7 @@ fn buildIndexSkip(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, filte
 }
 
 /// `collectFiles`'s overlap thread body: run the seam into the caller's box.
-fn computeIndexSkip(out: *fault.Answer(IndexSkip), gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, filters: []const []const u8, sieve: crest.Vector) void {
+fn computeIndexSkip(out: *fault.Answer(IndexSkip), gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, filters: []const []const u8, sieve: crest.Swell) void {
     out.* = buildIndexSkip(gpa, io, parsed, filters, sieve);
 }
 
@@ -299,7 +299,7 @@ fn computeIndexSkip(out: *fault.Answer(IndexSkip), gpa: std.mem.Allocator, io: s
 /// down each return path. Those errors are this file's private control flow,
 /// like the shadow rewriter's `Bail`; `buildIndexSkip` is where they become the
 /// seam's typed declinature.
-fn assembleIndexSkip(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, filters: []const []const u8, sieve: crest.Vector) Err!IndexSkip {
+fn assembleIndexSkip(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, filters: []const []const u8, sieve: crest.Swell) Err!IndexSkip {
     var p = (persist.loadQuiet(gpa, io) catch return error.NoIndex) orelse return error.NoIndex;
     errdefer p.deinit();
     // Snapshot the indexed path set BEFORE freshness widens `p.paths` with new
@@ -322,14 +322,14 @@ fn assembleIndexSkip(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, fi
     // The sieve engages only when there is a ĝ to enforce, a persisted table
     // bound to this doc space, AND a trustworthy anchor (without one, no doc's
     // persisted vector provably describes its live bytes).
-    const table: ?[]const crest.Vector = if (crest.active(sieve) and cand.anchored) p.crest else null;
+    const table: ?[]const crest.Vector = if (sieve.active() and cand.anchored) p.crest else null;
     var indexed_candidates: usize = 0;
     for (cand.ids) |d| {
         candidates.set(d);
         if (d >= n_indexed) continue;
         // Count only docs that will actually be read — the crest sieve's
         // provable prunes are savings, so they inform the worth heuristic too.
-        if (table) |t| if (d < t.len and !fresh_set.isSet(d) and crest.pruned(t[d], sieve)) continue;
+        if (table) |t| if (d < t.len and !fresh_set.isSet(d) and sieve.prunes(t[d])) continue;
         indexed_candidates += 1;
     }
     if (!elide.indexSavingsWorthTable(n_indexed, indexed_candidates)) return error.NotWorthwhile;
@@ -353,7 +353,7 @@ fn assembleIndexSkip(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, fi
 /// "the filters excluded everything", never on "the index proved everything
 /// out" or "the pattern missed".
 pub const Collected = struct { files: []InFile, recursive: bool, path_error: bool, walked: usize };
-pub fn collectFiles(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, filters: []const []const u8, sieve: crest.Vector, file_needle: ?simd.Gate, cfg: *const ingest.Config) Collected {
+pub fn collectFiles(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, filters: []const []const u8, sieve: crest.Swell, file_needle: ?simd.Gate, cfg: *const ingest.Config) Collected {
     const o = parsed.opts;
     var candidates: std.ArrayList(Candidate) = .empty;
     // The command plane's terminal decision: the shared walk returns OOM, gist

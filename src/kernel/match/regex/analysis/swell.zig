@@ -2,11 +2,13 @@
 //! (`../../../primitives/crest.zig`; research/crest/PROOF.md §3).
 //!
 //! A document carries a *crest* — the longest run of consecutive bytes in each
-//! of k byte classes, ρ(d). A pattern forces a *swell*: the smallest crest any
-//! string it accepts can have, ĝ(R) ≤ min_{w∈L(R)} ρ(w). `forcedCrest` folds
-//! that lower bound out of the AST with a min-of-max prefix/suffix/best algebra
-//! (`Profile`), and the sieve prunes d whenever ρ(d) ≱ ĝ(R) — k integer
-//! compares, no byte scan, provably no false negatives (Sieve Theorem §2).
+//! of k byte classes, ρ(d). A pattern forces a *swell*: the crests it will
+//! accept nothing below, ĝ(R) ≤ min_{w∈L(R)} ρ(w). `Profile` folds that lower
+//! bound out of the AST with a min-of-max prefix/suffix/best algebra, and
+//! `forcedSwell` emits ONE per top-level alternative — a disjunction, because a
+//! match satisfies one branch, not all of them. The sieve prunes d only when
+//! every alternative falls short: k integer compares each, no byte scan,
+//! provably no false negatives (Sieve Theorem §2, disjunctive form §3.9).
 //!
 //! IT READS THE ENGINE'S OWN AST (`../syntax/syntax.zig`) — the same tree
 //! `linear/program/lower.zig` compiles to the Thompson program, produced by the
@@ -43,9 +45,44 @@ const ByteSet = syn.ByteSet;
 const K = crest.K;
 const Vector = crest.Vector;
 
-/// ĝ(R) for one already-parsed (and, under `-i`, already-folded) AST.
-pub fn forcedCrest(ast: *const Node) Vector {
-    return profile(ast).F;
+/// The swell of one already-parsed (and, under `-i`, already-folded) AST: ĝ per
+/// TOP-LEVEL ALTERNATIVE, because `R₁|R₂` obliges a match to satisfy only one
+/// of them. Folding the branches together instead (`Profile.alt`, the rule for
+/// every alternation *inside* a branch) is sound but blunt — two branches with
+/// disjoint forced classes min to 0⃗, so `[0-9a-f]{12}|[~]{60}` used to sieve by
+/// nothing where its first half alone sieves by hex ≥ 12.
+///
+/// A WORKLIST, never recursion: `parseAlt` left-folds, so `-f patterns.txt`
+/// builds an `alt` spine as deep as the file has lines, and the split budget —
+/// not the pattern's shape — must bound this walk. Whatever the budget cannot
+/// separate stays one subtree and is profiled whole, which min-folds it exactly
+/// as before, so overflow degrades toward the old single-vector sieve.
+pub fn forcedSwell(ast: *const Node) crest.Swell {
+    var branches: [crest.Swell.capacity]*const Node = undefined;
+    branches[0] = bare(ast);
+    var n: usize = 1;
+    var i: usize = 0;
+    while (n < branches.len and i < n) {
+        switch (branches[i].*) {
+            .alt => |kids| {
+                branches[i] = bare(kids[0]);
+                branches[n] = bare(kids[1]);
+                n += 1;
+            },
+            else => i += 1,
+        }
+    }
+    var swell: crest.Swell = .{ .len = @intCast(n) };
+    for (branches[0..n], swell.crests[0..n]) |branch, *ghat| ghat.* = profile(branch).F;
+    return swell;
+}
+
+/// A capture group accepts exactly its child's language, so it is transparent
+/// to the split as well as to the calculus: `(a|b)` is two alternatives.
+fn bare(n: *const Node) *const Node {
+    var cur = n;
+    while (cur.* == .capture) cur = cur.capture.child;
+    return cur;
 }
 
 /// The fold. Exhaustive by construction — see the header.

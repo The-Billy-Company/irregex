@@ -6,7 +6,7 @@ doc_radar:
       contains: ["pub fn analyzeFirst", "pub fn reachesMatchEol"]
     - description: "the forced-crest calculus reads the engine's own AST (the PROOF §3.7a Grammar Contract) — a wrong answer here skips a file that matches, so unlike its siblings it is the one analysis whose failure mode is a missed match"
       file: pkg/kernels/irregex/src/kernel/match/regex/analysis/swell.zig
-      contains: ["pub fn forcedCrest", "syntax.zig"]
+      contains: ["pub fn forcedSwell", "syntax.zig"]
 ---
 
 # kernel/match/regex/analysis — sound accelerator analyses
@@ -31,9 +31,9 @@ PROOF.md §3.7a), and a module boundary is the only durable fix.
 | `runs.zig`          | AST class-run / class-span reductions: `classRunShape` (boolean "≥ min consecutive class members") and the strictly stronger `classSpanShape` window rule, feeding the SIMD class-run kernel (`../../scan/classrun.zig`).                                                  |
 | `reach.zig`         | Compiled-NFA reachability visitors over the `State` program: `analyzeFirst` (first-byte set), `reachesMatchEol` (zero-width EOL), and `reachesMatchZeroWidth` (nullable) that feed the scan loop.                                                                          |
 | `prefilter.zig`     | The `Prefilter`: given the first-byte set from `analysis.analyzeFirst`, picks a skip strategy (singleton `memchr` · SIMD byte-range · scalar probe) so the Pike scanner jumps over dead spans instead of re-seeding a closure per byte.                                    |
-| `swell.zig`         | The **forced-crest calculus**: the smallest per-class run every string matching the AST must contain (`ĝ`), by a `Profile` algebra (forced longest / leading / trailing run, `min_len`, and a per-class "only this class" certificate) folded over concat, alternation, and repetition. Feeds the crest sieve's document elision.  |
+| `swell.zig`         | The **forced-crest calculus**: the smallest per-class run every string matching the AST must contain (`ĝ`), by a `Profile` algebra (forced longest / leading / trailing run, `min_len`, and a per-class "only this class" certificate) folded over concat, alternation, and repetition. `forcedSwell` emits one ĝ per top-level alternative — a disjunction, since a match takes one branch — and feeds the crest sieve's document elision.  |
 | `analysis_test.zig` | Required-literal, cover-set, and anchored-start extraction cases.                                                                                                                                                                                                          |
-| `swell_test.zig`    | Hand-computed `ĝ` per construct, plus the Sieve Theorem itself checked against the real matcher over 1 500 generated patterns × both engine modes × caseless (`matched ⇒ ¬pruned`).                                                                                        |
+| `swell_test.zig`    | Hand-computed `ĝ` per construct, the disjunction's branch structure and its capacity budget, plus the Sieve Theorem itself checked against the real matcher over 1 500 generated patterns × both engine modes × caseless (`matched ⇒ ¬pruned`).                            |
 
 Imports `../syntax/syntax.zig` for the AST/`State` types; consumed by
 `../linear/program/lower.zig` (which runs every analysis at compile time) and the

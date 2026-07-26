@@ -96,25 +96,83 @@ test "semantic hash binds cap, interpretation, and full membership table" {
     try testing.expect(!std.mem.eql(u8, &original, &sha256(&altered)));
 }
 
+fn demand(pairs: []const struct { crest.Class, u16 }) crest.Vector {
+    var v = crest.zero_vector;
+    for (pairs) |p| v[@intFromEnum(p[0])] = p[1];
+    return v;
+}
+
 test "sieve decision: dominance, componentwise, over the class family" {
     // An 8-byte hex run is the family's motivating query (`[0-9a-f]{8}`).
-    var gv = crest.zero_vector;
-    gv[@intFromEnum(crest.Class.hex)] = 8;
-    gv[@intFromEnum(crest.Class.word)] = 8;
-    try testing.expect(crest.active(gv));
-    try testing.expect(!crest.active(crest.zero_vector));
+    const gv = demand(&.{ .{ .hex, 8 }, .{ .word, 8 } });
     try testing.expect(crest.pruned(crest.crest("no hex run here: zz zz"), gv));
     try testing.expect(!crest.pruned(crest.crest("id=0123abcdef more"), gv));
     // Falling short in ANY single class is enough to prune: a 9-byte word run
     // that is only 7 hex bytes long fails the hex component alone.
     try testing.expect(crest.pruned(crest.crest("id=0123abcx more"), gv));
-    // `weaker` is the alternation fold — it can only ever relax the sieve.
-    var half = crest.zero_vector;
-    half[@intFromEnum(crest.Class.hex)] = 3;
-    const w = crest.weaker(gv, half);
-    try testing.expectEqual(@as(u16, 3), w[@intFromEnum(crest.Class.hex)]);
-    try testing.expectEqual(@as(u16, 0), w[@intFromEnum(crest.Class.word)]);
-    try testing.expect(!crest.pruned(crest.crest("id=0123abcx more"), w));
+}
+
+test "a swell prunes only what clears none of its alternatives" {
+    // `[0-9a-f]{8}|[~]{12}` — the two branches force classes with no common
+    // superclass, the case the disjunction exists to survive.
+    const hex8 = demand(&.{ .{ .hex, 8 }, .{ .word, 8 } });
+    const tilde12 = demand(&.{.{ .punct, 12 }});
+    const swell: crest.Swell = .{ .crests = .{ hex8, tilde12 } ++ @as([6]crest.Vector, @splat(crest.zero_vector)), .len = 2 };
+
+    try testing.expect(swell.active());
+    // Either alternative on its own is enough to survive…
+    try testing.expect(!swell.prunes(crest.crest("id=0123abcdef more")));
+    try testing.expect(!swell.prunes(crest.crest("rule: " ++ "~" ** 12)));
+    // …and only a document short of BOTH is pruned.
+    try testing.expect(swell.prunes(crest.crest("no run of either: zz ~~ Zz")));
+
+    // THE REGRESSION THIS TYPE EXISTS FOR. Componentwise-min folding — what a
+    // single-vector ĝ had to do — bottoms out at 0⃗ the moment two alternatives
+    // force disjoint classes, and a 0⃗ sieve prunes nothing at all. Multi-`-e`
+    // reaches the engine as exactly this shape.
+    var folded = crest.zero_vector;
+    inline for (0..crest.K) |i| folded[i] = @min(hex8[i], tilde12[i]);
+    try testing.expectEqualSlices(u16, &crest.zero_vector, &folded);
+    try testing.expect(!crest.pruned(crest.crest("no run of either: zz ~~ Zz"), folded));
+
+    // Fold vs disjunction is a one-way street: min ĝᵢ ≤ ĝⱼ for every branch, so
+    // a document short of the fold is short of all of them. The disjunction is
+    // therefore weakly more selective on EVERY document, never less sound —
+    // checked here over random crest vectors rather than argued.
+    var prng = std.Random.DefaultPrng.init(0xC4E5_0F0D);
+    const rng = prng.random();
+    var strictly_better: usize = 0;
+    var fold_pruned: usize = 0;
+    for (0..8192) |_| {
+        var pair: crest.Swell = .{ .len = 2 };
+        var min_of_pair = crest.zero_vector;
+        for (&pair.crests[0], &pair.crests[1], &min_of_pair) |*a, *b, *m| {
+            a.* = rng.uintLessThan(u16, 6);
+            b.* = rng.uintLessThan(u16, 6);
+            m.* = @min(a.*, b.*);
+        }
+        var rho = crest.zero_vector;
+        for (&rho) |*v| v.* = rng.uintLessThan(u16, 6);
+        if (crest.pruned(rho, min_of_pair)) {
+            fold_pruned += 1;
+            try testing.expect(pair.prunes(rho));
+        } else if (pair.prunes(rho)) strictly_better += 1;
+    }
+    // Both sides of the implication have to fire, or it proved nothing.
+    try testing.expect(fold_pruned > 100);
+    try testing.expect(strictly_better > 100);
+}
+
+test "an inert alternative disarms the whole swell" {
+    // A branch forcing nothing admits every document, so its siblings' demands
+    // are unreachable — the honest report is that there is nothing to sieve by.
+    const hex8 = demand(&.{ .{ .hex, 8 }, .{ .word, 8 } });
+    const with_free_branch: crest.Swell = .{ .crests = .{hex8} ++ @as([7]crest.Vector, @splat(crest.zero_vector)), .len = 2 };
+    try testing.expect(!with_free_branch.active());
+    try testing.expect(!with_free_branch.prunes(crest.crest("nothing at all")));
+    // An empty swell analyzed nothing, so it proves nothing.
+    try testing.expect(!crest.no_sieve.active());
+    try testing.expect(!crest.no_sieve.prunes(crest.crest("")));
 }
 
 test "saturation is monotone on both sides of the compare" {
@@ -123,8 +181,7 @@ test "saturation is monotone on both sides of the compare" {
     var long_doc: [70_000]u8 = @splat('0');
     const long_crest = crest.crest(&long_doc);
     try testing.expectEqual(std.math.maxInt(u16), long_crest[@intFromEnum(crest.Class.digit)]);
-    var saturated = crest.zero_vector;
-    saturated[@intFromEnum(crest.Class.digit)] = std.math.maxInt(u16);
+    const saturated = demand(&.{.{ .digit, std.math.maxInt(u16) }});
     try testing.expect(!crest.pruned(long_crest, saturated));
     // A run that merely ends the document still counts (no off-by-one at EOF).
     try testing.expectEqual(@as(u16, 3), crest.crest("xy 123")[@intFromEnum(crest.Class.digit)]);

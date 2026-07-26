@@ -15,8 +15,10 @@ unit tests ride `zig build test`. Prior art: `PRIOR_ART.md`; test inventory:
 **One sentence.** Index each document by the _vector of its longest
 consecutive runs per byte-class_ (its **crest vector**), derive from any regex
 the _vector of runs it is forced to contain_ (its **forced crest**) via a
-min-of-max run calculus over the pattern AST, and prune a document when its
-crest falls below the forced crest — a sound necessary condition that fires
+min-of-max run calculus over the pattern AST — one such vector per top-level
+alternative, since a match satisfies one branch rather than all of them — and
+prune a document whose crest falls below **every** alternative's forced crest:
+a sound necessary condition that fires
 precisely on the literal-free class-repetition patterns where Gist's
 required-literal extractor currently yields no trigram candidates to
 intersect. An n-gram engine could instead union every class n-gram; that is a
@@ -153,6 +155,11 @@ Boundary sanity: `ĝ ≡ 0` prunes nothing (always sound); over-estimating `ĝ`
 (`ĝ > g`) is the **only** path to a false negative, so §3 is engineered to
 round exclusively down.
 
+A single vector `ĝ(R)` is, however, a **weaker query language than the grammar
+supplies**: `R₁|R₂` obliges a match to satisfy one branch, and folding the
+branches into one componentwise min discards which. §3.9 replaces Corollary 1
+with its disjunctive form, which is what the implementation ships.
+
 ### 2.1 Read elision requires three separate theorems
 
 The calculus alone cannot justify skipping a filesystem read. The production
@@ -272,6 +279,11 @@ falls back to the child's own bound.
 The adversary picks the branch minimizing each field; a min of lower bounds
 over a union is a lower bound. The certificate survives only if both branch
 certificates prove the implication.
+
+This is the rule for alternation appearing **inside** a larger expression,
+where the profile must be a single value to compose. At the **root** the
+branches are kept apart instead — §3.9 — because a componentwise min over
+disjoint forced classes is `0⃗`, and `0⃗` sieves nothing.
 
 ### 3.4 Repetition `E{n,m}` (`0 ≤ n ≤ m ≤ ∞`)
 
@@ -412,7 +424,37 @@ private parser used to decline, now certify correctly; and PCRE2 patterns —
 whose grammar genuinely differs — disable the sieve outright rather than being
 approximated. `swell_test.zig` closes the loop by asserting the Sieve Theorem
 itself over 1 500 generated patterns spanning every node kind × both engine
-modes × caseless, so the property is checked rather than sampled.
+modes × caseless — a third of them bare top-level alternations of 2–9 branches,
+so Theorem 4's disjunction is exercised on both sides of the `capacity` budget —
+and the property is checked rather than sampled.
+
+### 3.7b Class monotonicity, and the superadditivity that is NOT available
+
+For the **count** functional `|w|_C`, disjoint classes add: `|w|_{C₁⊎C₂} =
+|w|_{C₁} + |w|_{C₂}`, so the forced count is superadditive in `C` and a finer
+partition is strictly more informative before you compute anything. **Crest's
+run functional has no such law**, and assuming it would be a false-negative
+factory. The counterexample is one line: for `R = [0-9]{4}x[a-f]{4}`,
+
+    g(R, digit) = 4,  g(R, {a-f}) = 4,  but  g(R, hex) = 4  <  4 + 4
+
+because `x ∉ hex` severs the two runs. A run is a **max over positions**, not a
+sum over them; two forced runs in disjoint classes need not be adjacent, so
+their union forces only the longer of them, never their sum.
+
+What the run functional does obey is **monotonicity in the class**:
+
+> **Lemma 2 (class monotonicity).** `C ⊆ C′ ⇒ ρ(w,C) ≤ ρ(w,C′)` for every `w`,
+> hence `g(R,C) ≤ g(R,C′)`.
+
+_Proof._ A C-run is an all-C′ contiguous stretch, so it lies inside some
+maximal C′-run. ∎
+
+That lemma is why the shipped family is deliberately **not** a partition: it
+carries the superclass chain `digit ⊂ hex ⊂ word` and `upper,lower ⊂ alpha ⊂
+word`, so `[0-9]{6}` forces `digit:6 hex:6 word:6` and a document is tested on
+all three at once. Under a partition each pattern would fire on one coordinate
+and the other seven would be dead weight.
 
 ### 3.8 Why the _run_, not the _count_ (the weaker cousin, ruled out)
 
@@ -425,6 +467,84 @@ rarely a _consecutive_ run of 8 hex bytes. The production harness retains this
 ablation at identical thresholds; every revision-bound evidence package
 records both survivor counts rather than inheriting a number from an older
 calculus revision (§5).
+
+**Why the count cousin's machinery does not transfer.** The count functional is
+a shortest path: weight each NFA edge labeled `a` by `[a ∈ C]` and the forced
+count is the `(min,+)` tropical distance from start to accept, with `R*`'s
+zero-weight cycles handled for free. Swapping the semiring then re-derives a
+whole family of filters from one algorithm — weight-1 edges give the minimum
+match length, `(max,+)` the maximum, a powerset semiring over k-grams gives
+Cox's required-trigram query, Booleans give required-literal extraction. **The
+run functional is not in that family.** A run is a `max` over a `min` — the
+adversary minimizes the maximum stretch — so it is not additive along a path
+and no edge-weight assignment makes Dijkstra compute it. The right machine is
+a different one, and §3.6 already ships it as the referee: intersect the NFA
+with the monitor DFA `M_{C,r}` that forbids any C-run of length `≥ r`, and
+binary-search `r` — the min-max automaton value. That is also why the two
+filters are **incommensurable rather than ranked** at the family level: the
+count/Parikh ceiling is order-free and structurally cannot see contiguity,
+while a run vector cannot see totals (§7.5). At equal thresholds on `C{n}` the
+run bound dominates, which is the claim the ablation actually measures.
+
+### 3.9 The disjunctive sieve (one ĝ per top-level alternative)
+
+Corollary 1's `∃C` threshold has a blind spot with a crisp diagnosis: it fails
+exactly when `g(R,C) = 0` for every class, and the smallest pattern that does
+that is `a|b`, since `b` witnesses `g(R,{a}) = 0` and `a` witnesses
+`g(R,{b}) = 0`. Alternation is most of what makes a regex interesting, and in
+gist it is not even opt-in — **multi-`-e` reaches the engine as one alternation**,
+so every multi-pattern search collapsed to `0⃗` and ran with the sieve silently
+disarmed. §3.3's componentwise min is sound, and that is the whole problem: it
+is _too_ sound, throwing away the branch structure the grammar handed us.
+
+The fix is forced by the diagnosis. Keep the branches:
+
+**Definition 3 (swell).** For `R = R₁|⋯|R_m` at the top level, the **swell** is
+the list `Ĝ(R) = ⟨ĝ(R₁),…,ĝ(R_m)⟩` — one forced crest per alternative, each
+computed by the §3.1–§3.4 calculus on that branch's subtree.
+
+> **Theorem 4 (disjunctive sieve).** If `R = R₁|⋯|R_m` matches a substring of
+> `d`, then `ρ(d) ≥ ĝ(R_j)` componentwise for **at least one** `j`. Hence
+>
+>     prune d  ⟺  ∀ j ≤ m : ∃ C ∈ 𝒞 : ρ(d,C) < ĝ(R_j, C)
+>
+> never prunes a document `R` matches.
+
+_Proof._ `L(R) = ⋃_j L(R_j)`, so a matching occurrence `w` lies in some
+`L(R_j)`; Theorem 1 applied to `R_j` gives `ρ(d) ≥ g(R_j) ≥ ĝ(R_j)`. The prune
+rule is the negation of "some branch admits `d`". ∎
+
+> **Corollary 4 (dominance).** The disjunction is never less selective than the
+> fold: if `min_j ĝ(R_j)` prunes `d`, then every branch prunes `d`, so the
+> swell prunes `d` too. The converse fails, which is the entire point.
+
+_Proof._ `min_j ĝ(R_j) ≤ ĝ(R_i)` componentwise for each `i`, so a document
+short of the fold in class `C` is short of every branch in `C`. ∎
+
+Three properties make this cheap rather than a query planner:
+
+- **Bounded.** The implementation keeps at most `Swell.capacity = 8`
+  alternatives inline (`crest.Swell`), so the query half stays allocation-free
+  and the object copies into a loader thread's frame. A ninth alternative is
+  not dropped — the surplus subtree stays folded by §3.3 into one slot, so the
+  sieve **degrades toward Corollary 1** and, by Corollary 4, never past it.
+- **Iterative.** The branch spine is walked with an explicit worklist, not
+  recursion, so a pathological `a|b|c|…` chain cannot exhaust the stack.
+  Capture nodes are transparent: `(A|B)` splits exactly like `A|B`.
+- **Fail-closed on inertness.** One alternative demanding `0⃗` admits every
+  document, so it disarms the whole swell however strong its siblings are —
+  `[0-9a-f]{12}|\w+` prunes nothing, and says so.
+
+Cost: `k` compares per alternative, still no byte scan, and the common
+single-alternative case is bit-for-bit the old path (`m = 1`).
+
+**Note on the query-language ceiling.** A swell is an OR-of-ANDs over forced
+thresholds — the same Boolean shape Cox's trigram query tree uses, reached here
+from Crest's own failure mode rather than by citation. It is not the full
+ceiling: alternation _nested inside_ a concatenation (`x(a|b)y`) is still
+min-folded by §3.3, and distributing it to the root would be exponential. The
+top level is where the payoff is concentrated, because that is where multi-`-e`
+lands.
 
 ### Lemma 1 (profile invariant)
 
@@ -518,8 +638,12 @@ corpus:
   any violation exits non-zero;
 - **fixed production regression** — the real matcher accepts `1a2` for
   `[0-9][a-z]?[0-9]` while Crest retains it; the positive precision control
-  `[0-9][0-9]?[0-9]` derives digit threshold 2;
-- **ablation** — the §3.8 count cousin at identical thresholds;
+  `[0-9][0-9]?[0-9]` derives digit threshold 2; and the disjunctive control
+  `[0-9]{3}|~{3}` derives two alternatives and prunes `1a2` on both;
+- **ablations** — the §3.8 count cousin, and the retired single-vector fold of
+  §3.9 (componentwise min over the alternatives), both at identical thresholds.
+  Corollary 4's dominance is a **fail-closed gate**, not a hope: a row where
+  the disjunction left more survivors than the fold exits non-zero;
 - **speed** — multiple ordered raw samples of full scan versus
   sieve+survivors, same matcher both sides; `crest.csv` reports the upper
   median and the run JSON preserves every sample.
@@ -551,6 +675,7 @@ evidence only and must not be presented as measurements of this revision.
 | operation          | cost                                                                               |
 | ------------------ | ---------------------------------------------------------------------------------- |
 | index corpus       | `O(total input bytes · k)`; one streaming pass, with `k=8` comptime-unrolled       |
+| sieve one document | `O(k·m)` compares, `m ≤ 8` top-level alternatives — early-exit on the first branch that admits |
 | index space        | `N·k·sizeof(u16)` — 16 bytes per indexed document, plus the fixed sidecar header   |
 | query-time `ĝ`     | `O(                                                                                | R   | ·k)`plus`O(k log n)` for counted repetition, once per query, allocation-free |
 | sieve whole corpus | `O(N·k)` and `N·k·sizeof(u16)` mapped bytes potentially touched, not merely `O(k)` |

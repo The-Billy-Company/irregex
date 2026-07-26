@@ -66,15 +66,24 @@ const queries = [_]Query{
     .{ .label = "ci-upper-6 -iu A-Z", .pattern = "[A-Z]{6}", .caseless = true },
     .{ .label = "word-3 (wide)", .pattern = "\\w{3,8}" },
     .{ .label = "alpha-5 (wide)", .pattern = "[A-Za-z]{5}" },
+    // The disjunctive rows: two alternatives forcing classes with no common
+    // superclass. A collapsed single-vector ĝ is 0⃗ for both, so the whole sieve
+    // used to stand down — which is what `gist -e A -e B` compiles to.
+    .{ .label = "alt hex-12|rule-60", .pattern = "[0-9a-f]{12}|~{60}" },
+    .{ .label = "alt digit-6|CONST-6", .pattern = "[0-9]{6}|[A-Z]{6}" },
 };
 
-fn forcedStr(buf: []u8, gv: crest.Vector) []const u8 {
+/// One alternative, as `class:run` pairs; alternatives joined by `|`.
+fn forcedStr(buf: []u8, branches: []const crest.Vector) []const u8 {
     var end: usize = 0;
-    for (0..K) |i| {
-        if (gv[i] == 0) continue;
-        const sep: []const u8 = if (end > 0) " " else "";
-        const part = std.fmt.bufPrint(buf[end..], "{s}{s}:{d}", .{ sep, crest.className(i), gv[i] }) catch break;
-        end += part.len;
+    for (branches) |gv| {
+        if (end > 0) end += (std.fmt.bufPrint(buf[end..], "|", .{}) catch break).len;
+        for (0..K) |i| {
+            if (gv[i] == 0) continue;
+            const sep: []const u8 = if (end > 0 and buf[end - 1] != '|') " " else "";
+            const part = std.fmt.bufPrint(buf[end..], "{s}{s}:{d}", .{ sep, crest.className(i), gv[i] }) catch break;
+            end += part.len;
+        }
     }
     return if (end == 0) "—" else buf[0..end];
 }
@@ -118,12 +127,13 @@ pub fn main(init: std.process.Init) !void {
         @as(f64, @floatFromInt(idx_bytes)) / 1024.0, @as(f64, @floatFromInt(idx_bytes)) / @as(f64, @floatFromInt(@max(corpus.bytes, 1))) * 100.0,
     });
 
-    std.debug.print("{s:<20} {s:>16} {s:>10} {s:>10} {s:>10} {s:>10} {s:>9}\n", .{ "query", "forced ĝ", "RUN prune%", "CNT prune%", "full ms", "sieve ms", "speedup" });
-    std.debug.print("{s:-<20} {s:->16} {s:->10} {s:->10} {s:->10} {s:->10} {s:->9}\n", .{ "", "", "", "", "", "", "" });
+    std.debug.print("{s:<20} {s:>30} {s:>10} {s:>11} {s:>10} {s:>10} {s:>10} {s:>9}\n", .{ "query", "forced ĝ (per alternative)", "RUN prune%", "FOLD prune%", "CNT prune%", "full ms", "sieve ms", "speedup" });
+    std.debug.print("{s:-<20} {s:->30} {s:->10} {s:->11} {s:->10} {s:->10} {s:->10} {s:->9}\n", .{ "", "", "", "", "", "", "", "" });
 
     var rows: std.ArrayList(Row) = .empty;
     defer {
         for (rows.items) |row| {
+            gpa.free(row.ghat);
             gpa.free(row.full_samples_ns);
             gpa.free(row.sieve_samples_ns);
         }
@@ -134,7 +144,7 @@ pub fn main(init: std.process.Init) !void {
         // Matcher and ĝ share the SAME parse, options, and fold — one AST, so
         // the Alphabet Contract holds by construction rather than by pairing.
         const opts: Regex.Options = .{ .caseless = q.caseless, .unicode = q.unicode };
-        const gv = Regex.forcedCrest(gpa, q.pattern, opts);
+        const swell = Regex.forcedSwell(gpa, q.pattern, opts);
 
         var re = try Regex.compileOpts(gpa, q.pattern, opts);
         defer re.deinit();
@@ -145,7 +155,7 @@ pub fn main(init: std.process.Init) !void {
         // authority, and every matched document is checked directly against
         // the production Crest decision. Aggregate equality alone is not the
         // proof: matched_and_pruned must itself remain zero.
-        const diff = evidence.differential(&re, &sim, corpus.docs, crests, gv);
+        const diff = evidence.differential(&re, &sim, corpus.docs, crests, swell);
         if (diff.matched_and_pruned != 0 or diff.sieve_hits != diff.matched) {
             violations += 1;
             std.debug.print(
@@ -157,7 +167,7 @@ pub fn main(init: std.process.Init) !void {
         // (2) Warm the exact paths that will be timed, validating every pass.
         for (0..config.warmup) |_| {
             const full = evidence.timeFull(io, &re, &sim, corpus.docs);
-            const sieve = evidence.timeSieve(io, &re, &sim, corpus.docs, crests, gv);
+            const sieve = evidence.timeSieve(io, &re, &sim, corpus.docs, crests, swell);
             if (full.hits != diff.matched or sieve.hits != diff.matched or sieve.survivors != diff.survivors) {
                 violations += 1;
                 std.debug.print("  !! WARMUP DIFFERENTIAL DRIFT on {s}: full={d} sieve={d} survivors={d}\n", .{
@@ -174,7 +184,7 @@ pub fn main(init: std.process.Init) !void {
         errdefer gpa.free(sieve_samples);
         for (0..config.runs) |run| {
             const full = evidence.timeFull(io, &re, &sim, corpus.docs);
-            const sieve = evidence.timeSieve(io, &re, &sim, corpus.docs, crests, gv);
+            const sieve = evidence.timeSieve(io, &re, &sim, corpus.docs, crests, swell);
             full_samples[run] = full.ns;
             sieve_samples[run] = sieve.ns;
             if (full.hits != diff.matched or sieve.hits != diff.matched or sieve.survivors != diff.survivors) {
@@ -187,20 +197,41 @@ pub fn main(init: std.process.Init) !void {
         const full_ns = try evidence.upperMedian(gpa, full_samples);
         const sieve_ns = try evidence.upperMedian(gpa, sieve_samples);
 
-        // (4) ablation: the weaker count cousin at the same ĝ (sound: pop ≥ run).
+        // (4) two ablations at the same ĝ, both sound, both dominated:
+        //     CNT — the count cousin (total class population ≥ longest run);
+        //     FOLD — the retired single-vector sieve (componentwise min over
+        //     the alternatives), which is what this change replaced.
         var cnt_survivors: usize = 0;
         for (counts) |c| {
-            if (!countPruned(c, gv)) cnt_survivors += 1;
+            if (!countPruned(c, swell)) cnt_survivors += 1;
+        }
+        const folded = foldSwell(swell);
+        var fold_survivors: usize = 0;
+        for (crests) |rho| {
+            if (!crest.pruned(rho, folded)) fold_survivors += 1;
+        }
+        // Dominance, checked rather than argued: min ĝᵢ ≤ ĝⱼ for every branch,
+        // so anything the fold pruned the disjunction prunes too. A row where
+        // the disjunction survived MORE files would mean the new sieve lost
+        // selectivity somewhere, and that is a defect, not a tradeoff.
+        if (diff.survivors > fold_survivors) {
+            violations += 1;
+            std.debug.print("  !! DOMINANCE VIOLATION on {s}: disjunction left {d} survivors, the retired fold left {d}\n", .{
+                q.pattern, diff.survivors, fold_survivors,
+            });
         }
 
+        const branches = try gpa.dupe(crest.Vector, swell.crests[0..swell.len]);
+        errdefer gpa.free(branches);
         try rows.append(gpa, .{
             .label = q.label,
             .pattern = q.pattern,
             .caseless = q.caseless,
             .unicode = q.unicode,
-            .ghat = gv,
+            .ghat = branches,
             .files = n,
             .run_survivors = diff.survivors,
+            .fold_survivors = fold_survivors,
             .cnt_survivors = cnt_survivors,
             .hits = diff.matched,
             .full_ns = full_ns,
@@ -210,18 +241,19 @@ pub fn main(init: std.process.Init) !void {
             .sieve_samples_ns = sieve_samples,
         });
 
-        var fbuf: [128]u8 = undefined;
+        var fbuf: [256]u8 = undefined;
         const run_pct = (1.0 - @as(f64, @floatFromInt(diff.survivors)) / @as(f64, @floatFromInt(@max(n, 1)))) * 100.0;
+        const fold_pct = (1.0 - @as(f64, @floatFromInt(fold_survivors)) / @as(f64, @floatFromInt(@max(n, 1)))) * 100.0;
         const cnt_pct = (1.0 - @as(f64, @floatFromInt(cnt_survivors)) / @as(f64, @floatFromInt(@max(n, 1)))) * 100.0;
         const full_ms = @as(f64, @floatFromInt(full_ns)) / 1e6;
         const sieve_ms = @as(f64, @floatFromInt(sieve_ns)) / 1e6;
         const speed = if (sieve_ns > 0) @as(f64, @floatFromInt(full_ns)) / @as(f64, @floatFromInt(sieve_ns)) else 0;
-        std.debug.print("{s:<20} {s:>16} {d:>9.1}% {d:>9.1}% {d:>9.2} {d:>9.2} {d:>8.2}x\n", .{
-            q.label, forcedStr(&fbuf, gv), run_pct, cnt_pct, full_ms, sieve_ms, speed,
+        std.debug.print("{s:<20} {s:>30} {d:>9.1}% {d:>10.1}% {d:>9.1}% {d:>9.2} {d:>9.2} {d:>8.2}x\n", .{
+            q.label, forcedStr(&fbuf, branches), run_pct, fold_pct, cnt_pct, full_ms, sieve_ms, speed,
         });
     }
 
-    std.debug.print("\nRUN = Crest sieve (max consecutive class-run) · CNT = weaker cousin (total class population, same ĝ)\n", .{});
+    std.debug.print("\nRUN = Crest sieve (disjunction of per-alternative forced runs) · FOLD = retired single-vector sieve (componentwise min over the alternatives) · CNT = weaker cousin (total class population, same ĝ)\n", .{});
 
     // (5) randomized adversarial soundness sweep — both engine modes × both
     //     case sensitivities, each paired with its own ĝ.
@@ -282,12 +314,31 @@ fn classCounts(doc: []const u8) [K]u32 {
     return cnt;
 }
 
-/// The cousin's sieve decision at the same ĝ (population < forced run ⇒ prune).
-fn countPruned(cnt: [K]u32, gv: crest.Vector) bool {
-    inline for (0..K) |i| {
-        if (cnt[i] < gv[i]) return true;
+/// The retired single-vector ĝ: componentwise min over the alternatives. Sound,
+/// and exactly as strong as the disjunction when there is only one branch —
+/// which is why the regression it caused stayed invisible until multi-`-e`.
+fn foldSwell(swell: crest.Swell) crest.Vector {
+    if (swell.len == 0) return crest.zero_vector;
+    var folded = swell.crests[0];
+    for (swell.crests[1..swell.len]) |gv| {
+        inline for (0..K) |i| folded[i] = @min(folded[i], gv[i]);
     }
-    return false;
+    return folded;
+}
+
+/// The cousin's sieve decision at the same ĝ (population < forced run ⇒ prune),
+/// read over the same disjunction so the ablation compares functionals rather
+/// than query languages.
+fn countPruned(cnt: [K]u32, swell: crest.Swell) bool {
+    if (swell.len == 0) return false;
+    for (swell.crests[0..swell.len]) |gv| {
+        var short = false;
+        inline for (0..K) |i| {
+            if (cnt[i] < gv[i]) short = true;
+        }
+        if (!short) return false;
+    }
+    return true;
 }
 
 /// Randomized adversarial soundness: build class-repetition patterns with random
@@ -336,7 +387,7 @@ fn randomSoundness(gpa: std.mem.Allocator, corpus: *const corpus_mod.Corpus, uni
         defer re.deinit();
         var sim = Regex.Sim.init(gpa, &re) catch continue;
         defer sim.deinit();
-        const gv = Regex.forcedCrest(gpa, pat, opts);
+        const swell = Regex.forcedSwell(gpa, pat, opts);
         result.patterns += 1;
 
         // sample up to 60 files per pattern
@@ -345,7 +396,7 @@ fn randomSoundness(gpa: std.mem.Allocator, corpus: *const corpus_mod.Corpus, uni
             const d = corpus.docs[rnd.uintLessThan(usize, corpus.docs.len)];
             result.checks += 1;
             const matched = re.docMatch(&sim, d);
-            const pruned = crest.pruned(crest.crest(d), gv);
+            const pruned = swell.prunes(crest.crest(d));
             if (matched) result.matches += 1;
             if (pruned) result.pruned += 1;
             if (matched and pruned) {
@@ -364,14 +415,17 @@ fn writeCsv(gpa: std.mem.Allocator, io: std.Io, n: usize, mib: f64, rows: []cons
     try csv.appendSlice(gpa, "# corpus_files\tcorpus_mib\n");
     var line: [256]u8 = undefined;
     try csv.appendSlice(gpa, try std.fmt.bufPrint(&line, "# {d}\t{d:.1}\n", .{ n, mib }));
-    try csv.appendSlice(gpa, "query\tpattern\tcaseless\tunicode\tfiles\trun_survivors\tcnt_survivors\trun_prune_pct\tcnt_prune_pct\thits\tfull_ms\tsieve_ms\tspeedup\n");
+    try csv.appendSlice(gpa, "query\tpattern\tcaseless\tunicode\talternatives\tfiles\trun_survivors\tfold_survivors\tcnt_survivors\trun_prune_pct\tfold_prune_pct\tcnt_prune_pct\thits\tfull_ms\tsieve_ms\tspeedup\n");
     for (rows) |r| {
-        const run_pct = (1.0 - @as(f64, @floatFromInt(r.run_survivors)) / @as(f64, @floatFromInt(@max(n, 1)))) * 100.0;
-        const cnt_pct = (1.0 - @as(f64, @floatFromInt(r.cnt_survivors)) / @as(f64, @floatFromInt(@max(n, 1)))) * 100.0;
+        const pct = struct {
+            fn of(survivors: usize, files: usize) f64 {
+                return (1.0 - @as(f64, @floatFromInt(survivors)) / @as(f64, @floatFromInt(@max(files, 1)))) * 100.0;
+            }
+        }.of;
         const speed = if (r.sieve_ns > 0) @as(f64, @floatFromInt(r.full_ns)) / @as(f64, @floatFromInt(r.sieve_ns)) else 0;
-        try csv.appendSlice(gpa, try std.fmt.bufPrint(&line, "{s}\t{s}\t{}\t{}\t{d}\t{d}\t{d}\t{d:.2}\t{d:.2}\t{d}\t{d:.3}\t{d:.3}\t{d:.3}\n", .{
-            r.label,                                  r.pattern,                                 r.caseless, r.unicode, r.files, r.run_survivors, r.cnt_survivors, run_pct, cnt_pct, r.hits,
-            @as(f64, @floatFromInt(r.full_ns)) / 1e6, @as(f64, @floatFromInt(r.sieve_ns)) / 1e6, speed,
+        try csv.appendSlice(gpa, try std.fmt.bufPrint(&line, "{s}\t{s}\t{}\t{}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d:.2}\t{d:.2}\t{d:.2}\t{d}\t{d:.3}\t{d:.3}\t{d:.3}\n", .{
+            r.label,                 r.pattern,                r.caseless,              r.unicode, r.ghat.len,                               r.files,                                   r.run_survivors, r.fold_survivors, r.cnt_survivors,
+            pct(r.run_survivors, n), pct(r.fold_survivors, n), pct(r.cnt_survivors, n), r.hits,    @as(f64, @floatFromInt(r.full_ns)) / 1e6, @as(f64, @floatFromInt(r.sieve_ns)) / 1e6, speed,
         }));
     }
     try std.Io.Dir.cwd().createDirPath(io, out_dir);

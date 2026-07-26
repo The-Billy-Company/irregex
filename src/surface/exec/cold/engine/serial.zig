@@ -180,10 +180,10 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     if (o.files_list) {
         // The parallel engine never opens a file in --files mode (a listing needs
         // paths, not bytes) — the serial path below reads every body it lists.
-        if (swarm.eligible(io, parsed, o)) swarm.run(gpa, io, parsed, o, null, use_color, &.{}, crest.zero_vector, null, null, &icfg);
+        if (swarm.eligible(io, parsed, o)) swarm.run(gpa, io, parsed, o, null, use_color, &.{}, crest.no_sieve, null, null, &icfg);
         // --files lists every file (no pattern) — nothing to prefilter, so no read
         // elision applies; pass an empty trigram filter and an inactive sieve.
-        const c = collectFiles(a, gpa, io, parsed, &.{}, crest.zero_vector, null, &icfg);
+        const c = collectFiles(a, gpa, io, parsed, &.{}, crest.no_sieve, null, &icfg);
         // `--files` gathered every path up front, so a path error is already known
         // and outranks the listing — quiet here is not the match short-circuit.
         if (o.quiet) (Outcome{ .matched = c.files.len > 0, .faulted = c.path_error }).exit();
