@@ -77,17 +77,17 @@ const workerMain = descent.workerMain;
 /// here must ALSO hold in `serial.zig`'s dispatch (it calls this) — the serial
 /// engine remains the semantic reference for whatever this declines.
 ///
-/// `GIST_NO_PARALLEL` (internal, undocumented — the `GIST_WORKERS` idiom)
-/// forces every eligible query onto the serial engine anyway. It exists SOLELY
-/// so the parity gates (`bench/gates/line_parity.sh`, `bench/rgsuite/run.py`)
-/// can run their whole case list against BOTH engines and catch exactly the
-/// class of bug this function's own history proves possible: the parallel
-/// engine landed a day after a serial-engine-only ignore-parity fix and
-/// silently missed it (see `ignore.zig`'s `skipFromVerdict` — it now takes the
-/// same whitelist-override pair `shouldSkip` does). No production caller sets
-/// this; it is never exposed as a CLI flag.
+/// The `GIST_NO_PARALLEL` parity-gate knob (which forces the serial reference so
+/// both engines can run one case list) is the FIRST thing checked, via the
+/// single `assay.serialForced` joint the emit shards and `json.runParallel`
+/// share — see its doc comment for why plane selection routes through one
+/// predicate. That knob exists SOLELY to catch the class of bug this function's
+/// own history proves possible: the parallel engine landed a day after a
+/// serial-engine-only ignore-parity fix and silently missed it (see
+/// `ignore.zig`'s `skipFromVerdict` — it now takes the same whitelist-override
+/// pair `shouldSkip` does).
 pub fn eligible(io: std.Io, parsed: args.Parsed, o: Opts) bool {
-    if (assay.envSpan("GIST_NO_PARALLEL") != null) return false;
+    if (assay.serialForced()) return false;
     // `-U`/--multiline rides the pipeline: each worker's per-file render goes
     // through the same `Emitter.buffer` whole-buffer model the serial engine
     // uses (multiline.zig owns the span/line semantics), so the walk + literal

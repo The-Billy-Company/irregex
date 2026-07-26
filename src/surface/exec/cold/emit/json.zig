@@ -141,11 +141,11 @@ fn fileWeight(_: void, f: File) usize {
 /// the serial `run`. `a` is a per-query arena; `gpa` backs each shard's own arena
 /// (arenas aren't safe for concurrent allocation).
 pub fn runParallel(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, caps: ?*Caps, o: Opts, files: []const File, needle: ?simd.Gate, elapsed: assay.Duration) Stats {
-    // `GIST_NO_PARALLEL` (the parity-gate idiom) forces the serial emit so
-    // `rgsuite/run.py`'s serial engine pass actually exercises the serial `--json`
-    // path — not just the walk — closing the same both-engines gap `eligible`
-    // documents. No production caller sets it.
-    if (assay.envSpan("GIST_NO_PARALLEL") != null) return run(a, out, re, caps, o, files, needle, elapsed);
+    // `GIST_NO_PARALLEL` (the parity-gate idiom, via the shared `assay.serialForced`
+    // joint) forces the serial emit so `rgsuite/run.py`'s serial engine pass
+    // actually exercises the serial `--json` path — not just the walk — closing
+    // the same both-engines gap `swarm.eligible` documents. No production caller sets it.
+    if (assay.serialForced()) return run(a, out, re, caps, o, files, needle, elapsed);
     // A single large file: fan the record stream across cores over ITS OWN body
     // (line-aligned shards), the parallelism rg can't apply to one file — the
     // `--json` twin of `serial.emitFileSharded`. Restricted to the plain,

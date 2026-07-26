@@ -383,9 +383,10 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         // Per-file independent with no output budget — fan out across cores like
         // the parallel READ that preceded it, falling back to the serial loop
         // below the corpus floor, on one core, or under the `GIST_NO_PARALLEL`
-        // parity-gate idiom. `-U`'s "match" is a whole-buffer hit; the per-line
-        // path reuses the same `-w`/`-v`/zero-width classify as the emit loop.
-        const bounds = if (assay.envSpan("GIST_NO_PARALLEL") != null) null else par.shardBounds(InFile, files, {}, inFileWeight, par.min_bytes, par.max_shards, a);
+        // parity-gate idiom (`assay.serialForced`). `-U`'s "match" is a
+        // whole-buffer hit; the per-line path reuses the same `-w`/`-v`/
+        // zero-width classify as the emit loop.
+        const bounds = if (assay.serialForced()) null else par.shardBounds(InFile, files, {}, inFileWeight, par.min_bytes, par.max_shards, a);
         if (bounds) |b| {
             filesWithoutSharded(gpa, a, &out, re, o, line_needle, files, b);
         } else for (files) |f| {
@@ -422,10 +423,11 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // fans out across cores (`emitSharded`) exactly like the parallel READ that
     // preceded it. `shardBounds` returns null below the corpus floor / on one
     // core, keeping the small-corpus answer on this proven serial loop.
-    // `GIST_NO_PARALLEL` (the parity-gate idiom, mirrored from `json.runParallel`)
-    // forces the serial emit so `rgsuite/run.py`'s serial pass exercises this path
-    // too. No production caller sets it.
-    const no_par = assay.envSpan("GIST_NO_PARALLEL") != null;
+    // `GIST_NO_PARALLEL` (the parity-gate idiom, shared with `json.runParallel`
+    // and `swarm.eligible` via the one `assay.serialForced` joint) forces the
+    // serial emit so `rgsuite/run.py`'s serial pass exercises this path too.
+    // No production caller sets it.
+    const no_par = assay.serialForced();
     const bounds = if (heading or join_groups or no_par) null else par.shardBounds(InFile, files, {}, inFileWeight, par.min_bytes, par.max_shards, a);
     // A single large file the multi-file shard gate leaves serial (`bounds` is
     // null for one file): fan the line-free literal fast path across cores over

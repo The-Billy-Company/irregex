@@ -54,6 +54,27 @@ pub fn envFlag(key: [*:0]const u8) bool {
     return v.len != 0 and !envFalsy(v);
 }
 
+/// The parity-gate "force the serial reference" knob — the SINGLE joint that
+/// decides which cold plane runs. `GIST_NO_PARALLEL` (internal, undocumented,
+/// never a CLI flag) routes every eligible query and every emit-phase shard onto
+/// the single-threaded reference engine, so the differential gates
+/// (`bench/gates/line_parity.sh`, `bench/rgsuite/run.py`,
+/// `bench/evaluate/regimes.py`) can push one case list through BOTH the parallel
+/// swarm and the serial oracle and prove them byte-identical.
+///
+/// It lives here, read by exactly one function, precisely because plane
+/// selection is this kernel's highest systemic risk: `swarm.eligible`, both
+/// `serial.zig` emit shards, and `json.runParallel` all defer to this, so a new
+/// parallel entry point cannot silently mis-spell or skip the knob and blind the
+/// gate's serial column — the exact drift this engine's history proves possible
+/// (the parallel walk once lagged a serial-only ignore fix). Presence, not
+/// truthiness (`=0` still forces serial), matching every gate's `=1`. The
+/// sibling loader knob `GIST_NO_PARALLEL_LOAD` (corpus.zig) is deliberately
+/// separate — a different plane (index load), gated by `envFlag`.
+pub fn serialForced() bool {
+    return envSpan("GIST_NO_PARALLEL") != null;
+}
+
 // ── the diagnostic lenses (was: four separate `*_TRACE` env vars) ──
 
 /// A named class of trace diagnostic. Enabled per-run via

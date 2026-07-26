@@ -47,6 +47,7 @@ pub const envSpan = channel.envSpan;
 pub const envFalsy = channel.envFalsy;
 pub const envUsize = channel.envUsize;
 pub const envFlag = channel.envFlag;
+pub const serialForced = channel.serialForced;
 
 /// One diagnostic summary line, bound to a `Span` (opened at construction) and
 /// the verb's `--json` flag. `emit` renders it as text (byte-identical to the
