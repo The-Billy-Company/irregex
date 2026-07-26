@@ -131,11 +131,12 @@ pub fn main(init: std.process.Init) !void {
     }
 
     for (queries) |q| {
-        // Matcher and ĝ share the SAME alphabet + fold (the Alphabet Contract;
-        // the production `crestSieve` pairs them identically per query).
-        const gv = crest.ghat(q.pattern, .{ .unicode = q.unicode, .caseless = q.caseless });
+        // Matcher and ĝ share the SAME parse, options, and fold — one AST, so
+        // the Alphabet Contract holds by construction rather than by pairing.
+        const opts: Regex.Options = .{ .caseless = q.caseless, .unicode = q.unicode };
+        const gv = Regex.forcedCrest(gpa, q.pattern, opts);
 
-        var re = try Regex.compileOpts(gpa, q.pattern, .{ .caseless = q.caseless, .unicode = q.unicode });
+        var re = try Regex.compileOpts(gpa, q.pattern, opts);
         defer re.deinit();
         var sim = try Regex.Sim.init(gpa, &re);
         defer sim.deinit();
@@ -330,11 +331,12 @@ fn randomSoundness(gpa: std.mem.Allocator, corpus: *const corpus_mod.Corpus, uni
             end += part.len;
         }
         const pat = buf[0..end];
-        var re = Regex.compileOpts(gpa, pat, .{ .caseless = caseless, .unicode = unicode }) catch continue;
+        const opts: Regex.Options = .{ .caseless = caseless, .unicode = unicode };
+        var re = Regex.compileOpts(gpa, pat, opts) catch continue;
         defer re.deinit();
         var sim = Regex.Sim.init(gpa, &re) catch continue;
         defer sim.deinit();
-        const gv = crest.ghat(pat, .{ .unicode = unicode, .caseless = caseless });
+        const gv = Regex.forcedCrest(gpa, pat, opts);
         result.patterns += 1;
 
         // sample up to 60 files per pattern

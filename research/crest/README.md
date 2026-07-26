@@ -3,17 +3,28 @@ doc_radar:
   paths_exist:
     - pkg/kernels/irregex/src/kernel/primitives/crest.zig
     - pkg/kernels/irregex/src/kernel/primitives/crest_test.zig
+    - pkg/kernels/irregex/src/kernel/match/regex/analysis/swell.zig
+    - pkg/kernels/irregex/src/kernel/match/regex/analysis/swell_test.zig
     - pkg/kernels/irregex/src/corpus/index/crest/sidecar.zig
     - pkg/kernels/irregex/bench/crest/bench.zig
   sentinels:
     - file: pkg/kernels/irregex/build.zig
       contains:
         - 'b.step("crest"'
-    - file: pkg/kernels/irregex/src/kernel/primitives/crest.zig
+    - description: "the document half — ρ(d) and the dominance test"
+      file: pkg/kernels/irregex/src/kernel/primitives/crest.zig
       contains:
-        - "pub fn ghat"
         - "pub fn crest"
         - "pub fn pruned"
+    - description: "the Grammar Contract (PROOF §3.7a) is structural: ĝ is derived from the engine's own syntax.Node AST, so the private mini-parser that misread \\< as a literal cannot come back"
+      file: pkg/kernels/irregex/src/kernel/match/regex/analysis/swell.zig
+      contains:
+        - "pub fn forcedCrest"
+        - 'syntax.zig'
+    - description: "the Sieve Theorem is checked against the real matcher, not just sampled by the corpus bench"
+      file: pkg/kernels/irregex/src/kernel/match/regex/analysis/swell_test.zig
+      contains:
+        - "sieve theorem: a matching document is never pruned"
     - file: pkg/kernels/irregex/src/surface/exec/cold/writ/gate.zig
       contains:
         - "crestSieve"

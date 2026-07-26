@@ -52,14 +52,19 @@ means an unfiltered scan:
   n-grams for literal-free repetitions.
 
 The closest published neighbor is Bannai et al., _Text Indexing for Simple
-Regular Expressions_ (CPM 2025). It genuinely indexes character-class runs
-and interval lengths, so class-run indexing itself is prior art. Its result is
-different: a positional, near-linear-space index over one text for exact
-occurrence reporting on restricted **anchored** forms `P₁D*P₂` and
-`P₁D^{[l,r]}P₂`. It neither stores a fixed `O(k)` max-run vector per document
-nor derives forced runs compositionally from a general regex AST; its
-unanchored lower bound does not apply to a coarse sieve that admits false
-positives and scans survivors. `PRIOR_ART.md` §2 gives the full comparison.
+Regular Expressions_ (CPM 2025) — a positional, near-linear-space index over
+one text for exact occurrence reporting on the restricted **anchored** forms
+`P₁D*P₂` and `P₁D^{[l,r]}P₂`. Indexing text by class-run structure is therefore
+prior art and this work does not claim it. Two things still separate them, and
+the second is the sharper one. Their indexed object is a **k-run** — a window
+containing exactly `k` _distinct symbols_, alphabet discovered from the text —
+not the longest stretch of a fixed class, and they store no per-document
+signature nor derive forced runs from a general regex AST. And their Theorem 1
+_requires_ an anchor: a literal outside `D`. They prove the anchorless case
+admits no efficient index unless Set Disjointness fails — and the anchorless
+case, `[0-9a-f]{12}`, is precisely Crest's motivating query. A lower bound on
+indexed exact reporting does not bind a sieve that admits false positives and
+rescans survivors. `PRIOR_ART.md` §2 gives the full comparison.
 
 Scan-time counting automata are a different layer entirely: MIN-MAX counter
 automata (TPDS 2012) and synchronizing counting-set automata (CAV 2023) make
@@ -373,6 +378,41 @@ containing k/K/s/S also declines because those folds reach non-ASCII Kelvin/long
 codepoints. `\d`/`\w`/`\s` and any class reaching ≥ 0x80 contribute `ĝ=0`.
 `bench/crest/bench.zig` exercises all four alphabet × case pairings against the
 real matcher; option (b) — indexing codepoint-runs — remains open future work.
+
+### 3.7a Grammar contract (the second footgun, found by referee, now closed)
+
+The Alphabet Contract pairs the two sides on the alphabet. A 2026-07-25 review
+observed that the same argument applies one level up — to the **grammar** — and
+that the implementation did not honor it: `ĝ` was derived by a private
+mini-parser inside the kernel, separate from the engine's own. Any construct the
+two grammars accept with _different meanings_ is a silent false negative, and
+the differential harness could only witness the constructs it happened to
+generate. The referee was right, and the divergence was real: `\<` and `\>` are
+word-boundary assertions to the matcher but were read as escaped literal `<`/`>`
+by the private parser, so `ĝ(\<foo\>)` demanded `punct ≥ 1`. On the reproduction
+corpus, `\<foo\>` returned 700 files where the unsieved scan returned 2 200 —
+1 500 real matches silently elided. It is the exact failure the theorem cannot
+see, because the theorem is stated about `L(R)`, and a second parser means the
+sieve is reasoning about a different `L(R)` than the matcher accepts.
+
+> **Theorem 2a (Grammar Contract).** Let the matcher accept `L(R)` by compiling
+> AST `A = parse(R)`. Theorem 1's instantiation is sound only if `ĝ` is computed
+> from **the same `A`** — same parser, same options, same case fold. Any second
+> derivation of `R` re-opens the false-negative channel for every construct on
+> which the two disagree.
+
+The fix is structural rather than diligent: the calculus was moved out of the
+kernel into the engine's own analysis layer (`analysis/swell.zig`), where it
+consumes the `syntax.Node` AST the matcher compiles, reached through one shared
+`parse()`. There is now no second grammar to diverge from — a construct the
+engine rejects yields `ĝ = 0` (sound by degradation) rather than a guess, and
+one that it accepts is read from the same tree the NFA is built from. Two
+consequences fall out for free: `\x41` and malformed-bound patterns, which the
+private parser used to decline, now certify correctly; and PCRE2 patterns —
+whose grammar genuinely differs — disable the sieve outright rather than being
+approximated. `swell_test.zig` closes the loop by asserting the Sieve Theorem
+itself over 1 500 generated patterns spanning every node kind × both engine
+modes × caseless, so the property is checked rather than sampled.
 
 ### 3.8 Why the _run_, not the _count_ (the weaker cousin, ruled out)
 

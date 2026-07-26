@@ -20,6 +20,7 @@ const prefilter = @import("../../analysis/prefilter.zig");
 const dfa_mod = @import("../dfa/dfa.zig");
 const powerset = @import("../dfa/powerset.zig");
 const classrun_mod = @import("../../../scan/classrun.zig");
+const crest = @import("../../../../primitives/crest.zig");
 const core = @import("core.zig");
 
 const ByteSet = syn.ByteSet;
@@ -54,17 +55,37 @@ pub fn compile(allocator: std.mem.Allocator, pattern: []const u8) ParseError!Reg
     return compileOpts(allocator, pattern, .{});
 }
 
+/// Pattern text ⇒ the AST every downstream consumer reads, arena-allocated and
+/// already case-folded. THE only parse: `compileOpts` lowers what this returns
+/// and `forcedCrest` sieves by it, so no analysis can disagree with the matcher
+/// about what a construct means (see `../../analysis/swell.zig`).
+pub fn parse(arena: std.mem.Allocator, pattern: []const u8, opts: Options) ParseError!*Node {
+    var parser = syn.Parser{ .src = pattern, .arena = arena, .dotall = opts.dotall, .multiline = opts.multiline, .unicode = opts.unicode };
+    const ast = try parser.parseAlt();
+    if (parser.pos != pattern.len) return ParseError.BadPattern;
+    // Fold BEFORE every downstream analysis (required-literal, cover, first-set,
+    // DFA, forced crest) so prefilter and match engines agree on the same classes.
+    if (opts.caseless) try syn.foldCaseAst(arena, ast, opts.unicode);
+    return ast;
+}
+
+/// The crest sieve's forced crest ĝ for `pattern` under the options the matcher
+/// itself was compiled with (`primitives/crest.zig`, `analysis/swell.zig`). 0⃗ —
+/// which prunes nothing — whenever the pattern does not parse, so an unsupported
+/// construct can only cost pruning, never a match.
+pub fn forcedCrest(allocator: std.mem.Allocator, pattern: []const u8, opts: Options) crest.Vector {
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const ast = parse(arena_state.allocator(), pattern, opts) catch return crest.zero_vector;
+    return analysis.forcedCrest(ast);
+}
+
 pub fn compileOpts(allocator: std.mem.Allocator, pattern: []const u8, opts: Options) ParseError!Regex {
     var arena_state = std.heap.ArenaAllocator.init(allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    var parser = syn.Parser{ .src = pattern, .arena = arena, .dotall = opts.dotall, .multiline = opts.multiline, .unicode = opts.unicode };
-    const ast = try parser.parseAlt();
-    if (parser.pos != pattern.len) return ParseError.BadPattern;
-    // Fold BEFORE every downstream analysis (required-literal, cover, first-set,
-    // DFA) so prefilter and match engines agree on the case-insensitive class.
-    if (opts.caseless) try syn.foldCaseAst(arena, ast, opts.unicode);
+    const ast = try parse(arena, pattern, opts);
 
     var c = compile_mod.Compiler{ .gpa = allocator };
     errdefer c.states.deinit(allocator);

@@ -135,8 +135,9 @@ pub fn fixedRegression(gpa: std.mem.Allocator, violations: *usize) ![2]FixedResu
     const digit = @intFromEnum(crest.Class.digit);
     var results: [cases.len]FixedResult = undefined;
     for (cases, 0..) |case, i| {
-        const gv = crest.ghat(case.pattern, .{ .unicode = true });
-        var re = try Regex.compileOpts(gpa, case.pattern, .{ .caseless = false, .unicode = true });
+        const opts: Regex.Options = .{ .caseless = false, .unicode = true };
+        const gv = Regex.forcedCrest(gpa, case.pattern, opts);
+        var re = try Regex.compileOpts(gpa, case.pattern, opts);
         defer re.deinit();
         var sim = try Regex.Sim.init(gpa, &re);
         defer sim.deinit();

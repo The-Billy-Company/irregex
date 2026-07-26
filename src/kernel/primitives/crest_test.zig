@@ -1,18 +1,12 @@
-//! Crest kernel unit tests — deterministic calculus checks with hand-computed
-//! expected ĝ, plus the sieve decision and the soundness-by-degradation edges.
-//! The randomized corpus-scale soundness proof against the REAL matcher lives
-//! in `bench/crest/bench.zig` (fail-closed, `zig build crest`).
+//! Crest kernel unit tests — the DOCUMENT half: the ρ(d) scan, the sieve
+//! decision, and the persisted sidecar's semantic schema. The query half (ĝ)
+//! is tested against the engine's own AST in
+//! `../match/regex/analysis/swell_test.zig`, which also carries the Sieve
+//! Theorem differential; the corpus-scale version is `zig build crest`.
 
 const std = @import("std");
 const testing = std.testing;
 const crest = @import("crest.zig");
-
-const ascii: crest.Opts = .{ .unicode = false };
-const uni: crest.Opts = .{ .unicode = true };
-
-fn g(pattern: []const u8, opts: crest.Opts, c: crest.Class) u16 {
-    return crest.ghat(pattern, opts)[@intFromEnum(c)];
-}
 
 fn sha256(bytes: []const u8) [std.crypto.hash.sha2.Sha256.digest_length]u8 {
     var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
@@ -102,129 +96,36 @@ test "semantic hash binds cap, interpretation, and full membership table" {
     try testing.expect(!std.mem.eql(u8, &original, &sha256(&altered)));
 }
 
-test "forced-crest: class repetition is the whole point" {
-    try testing.expectEqual(@as(u16, 8), g("[0-9a-f]{8}", uni, .hex));
-    try testing.expectEqual(@as(u16, 8), g("[0-9a-f]{8}", uni, .word)); // hex ⊂ word
-    try testing.expectEqual(@as(u16, 6), g("[0-9]{6}", uni, .digit));
-    try testing.expectEqual(@as(u16, 4), g("[A-Z]{4}", uni, .upper));
-    // \d certifies in ASCII mode only (Alphabet Contract).
-    try testing.expectEqual(@as(u16, 3), g("\\d{3}", ascii, .digit));
-    try testing.expectEqual(@as(u16, 0), g("\\d{3}", uni, .digit));
-}
-
-test "forced-crest: straddle across concatenation" {
-    try testing.expectEqual(@as(u16, 3), g("[0-9][0-9][0-9]", uni, .digit));
-    try testing.expectEqual(@as(u16, 1), g("[0-9]+", uni, .digit)); // one forced copy
-    // anchors are zero-width identity: runs cross them freely.
-    try testing.expectEqual(@as(u16, 4), g("^[0-9]{4}$", uni, .digit));
-    try testing.expectEqual(@as(u16, 2), g("[0-9](?:)[0-9]", uni, .digit));
-}
-
-test "optional profiles preserve only-class certificates without joining separators" {
-    try testing.expectEqual(@as(u16, 1), g("[0-9][a-z]?[0-9]", uni, .digit));
-    try testing.expectEqual(@as(u16, 2), g("[0-9][0-9]?[0-9]", uni, .digit));
-    try testing.expectEqual(@as(u16, 1), g("[0-9][a-z]*[0-9]", uni, .digit));
-    try testing.expectEqual(@as(u16, 2), g("[0-9][0-9]*[0-9]", uni, .digit));
-    try testing.expectEqual(@as(u16, 2), g("[0-9][a-z]{0,0}[0-9]", uni, .digit));
-    try testing.expectEqual(@as(u16, 1), g("[0-9][a-z]{0,1}[0-9]", uni, .digit));
-    try testing.expect(!crest.pruned(crest.crest("1a2"), crest.ghat("[0-9][a-z]?[0-9]", uni)));
-    try testing.expect(crest.pruned(crest.crest("1a2"), crest.ghat("[0-9][0-9]?[0-9]", uni)));
-}
-
-test "epsilon and unknown profiles cannot be confused" {
-    const epsilon = crest.Profile.epsilon();
-    const unknown = crest.Profile.unknown();
-    inline for (0..crest.K) |i| {
-        try testing.expect(epsilon.only_c_cert[i]);
-        try testing.expect(!unknown.only_c_cert[i]);
-    }
-}
-
-test "forced-crest: alternation takes the adversary's cheaper branch" {
-    try testing.expectEqual(@as(u16, 2), g("[0-9]{4}|[0-9]{2}", uni, .digit));
-    try testing.expectEqual(@as(u16, 0), g("[0-9]{4}|abcd", uni, .digit));
-    // ghatMany ≡ multi -e alternation semantics.
-    const many = crest.ghatMany(&.{ "[0-9]{4}", "[0-9]{2}" }, uni);
-    try testing.expectEqual(@as(u16, 2), many[@intFromEnum(crest.Class.digit)]);
-}
-
-test "soundness by degradation: unsupported or caseless ⇒ zero ⇒ no prune" {
-    try testing.expectEqual(@as(u16, 0), g("(?=foo)[0-9]{8}", uni, .digit)); // lookahead
-    try testing.expectEqual(@as(u16, 0), g("(\\d)\\1{7}", ascii, .digit)); // backreference
-    try testing.expectEqual(@as(u16, 0), g("[0-9]*", uni, .digit)); // star forces nothing
-    try testing.expectEqual(@as(u16, 0), g("[0-9]{0,8}", uni, .digit));
-    try testing.expectEqual(@as(u16, 0), g("\\p{L}{4}", uni, .alpha)); // \p unsupported
-    try testing.expectEqual(@as(u16, 0), g("\\x41{4}", uni, .upper)); // \x unsupported
-    try testing.expectEqual(@as(u16, 0), g("[0-9]{3,x}", uni, .digit));
-    try testing.expectEqual(@as(u16, 0), g("[0-9]{3,2}", uni, .digit));
-    try testing.expectEqual(@as(u16, 0), g("[0-9]{,3}", uni, .digit));
-}
-
-test "caseless: case-closed classes still sieve; upper/lower self-decline" {
-    const ci: crest.Opts = .{ .unicode = true, .caseless = true };
-    const ci_ascii: crest.Opts = .{ .unicode = false, .caseless = true };
-    // hex letters a–f never fold outside ASCII, so `(?i)[0-9a-f]{8}` still
-    // forces an 8-byte hex (and word) run in BOTH engine modes — the UUID case.
-    try testing.expectEqual(@as(u16, 8), g("[0-9a-f]{8}", ci, .hex));
-    try testing.expectEqual(@as(u16, 8), g("[0-9a-f]{8}", ci, .word));
-    try testing.expectEqual(@as(u16, 8), g("[0-9a-f]{8}", ci_ascii, .hex));
-    // digits are case-invariant: `(?i)[0-9]{6}` unchanged from case-sensitive.
-    try testing.expectEqual(@as(u16, 6), g("[0-9]{6}", ci, .digit));
-    // `upper`/`lower` are the only non-case-closed classes: the fold moves bytes
-    // across them, so they always self-decline (`[A-F]` avoids k/K/s/S, so it
-    // still certifies its case-closed classes under Unicode `-i`).
-    try testing.expectEqual(@as(u16, 0), g("[A-F]{4}", ci, .upper));
-    try testing.expectEqual(@as(u16, 4), g("[A-F]{4}", ci, .hex)); // A–F ⊂ hex, no escape
-    try testing.expectEqual(@as(u16, 4), g("[A-F]{4}", ci, .alpha));
-    // Unicode escape guard: k/K→KELVIN, s/S→LONG S leave ASCII, so an atom that
-    // can match them certifies nothing under Unicode `-i` — but is sound in the
-    // pure-byte ASCII mode where the fold stays within ASCII. `[A-Z]` contains
-    // S and K, so it declines under Unicode yet forces alpha/word in ASCII mode.
-    try testing.expectEqual(@as(u16, 0), g("[A-Z]{4}", ci, .alpha));
-    try testing.expectEqual(@as(u16, 4), g("[A-Z]{4}", ci_ascii, .alpha));
-    try testing.expectEqual(@as(u16, 4), g("[A-Z]{4}", ci_ascii, .word));
-    try testing.expectEqual(@as(u16, 0), g("[A-Z]{4}", ci_ascii, .upper)); // fold ⊄ upper
-    try testing.expectEqual(@as(u16, 0), g("[a-z]{5}", ci, .word)); // contains k,s
-    try testing.expectEqual(@as(u16, 5), g("[a-z]{5}", ci_ascii, .word));
-    try testing.expectEqual(@as(u16, 0), g("[s-z]{5}", ci, .word)); // contains s
-    try testing.expectEqual(@as(u16, 4), g("[g-j]{4}", ci, .word)); // no k/s: safe
-    // The sieve engages and prunes a doc lacking the run — proven not to drop a
-    // real caseless hit (the fail-closed corpus sweep is `zig build crest`).
-    try testing.expect(crest.pruned(crest.crest("no hex zz"), crest.ghat("[0-9a-f]{8}", ci)));
-    try testing.expect(!crest.pruned(crest.crest("v=DEADBEEF n"), crest.ghat("[0-9a-f]{8}", ci)));
-}
-
-test "escapes carry their real bytes (\\n is newline, not 'n')" {
-    // \n{5}: five newlines — a SPACE run of 5, and no word run at all. Getting
-    // this wrong (treating \n as the byte 'n') would manufacture false negatives.
-    try testing.expectEqual(@as(u16, 5), g("\\n{5}", uni, .space));
-    try testing.expectEqual(@as(u16, 0), g("\\n{5}", uni, .word));
-    try testing.expectEqual(@as(u16, 2), g("\\t\\t", uni, .space));
-    // escaped metachar is itself: \. is the punct byte '.'.
-    try testing.expectEqual(@as(u16, 3), g("\\.{3}", uni, .punct));
-}
-
-test "unicode mode certifies explicit ASCII classes only" {
-    // Explicit ASCII class: codepoint ≡ byte, certifies in both modes.
-    try testing.expectEqual(@as(u16, 8), g("[0-9a-f]{8}", uni, .hex));
-    // Perl class inside [...] under unicode: population uncertifiable.
-    try testing.expectEqual(@as(u16, 0), g("[\\d]{6}", uni, .digit));
-    try testing.expectEqual(@as(u16, 6), g("[\\d]{6}", ascii, .digit));
-    // Negated class accepts multi-byte codepoints — never certifies ASCII.
-    try testing.expectEqual(@as(u16, 0), g("[^x]{9}", uni, .word));
-}
-
-test "sieve decision + saturation monotonicity" {
-    const gv = crest.ghat("[0-9a-f]{8}", uni);
+test "sieve decision: dominance, componentwise, over the class family" {
+    // An 8-byte hex run is the family's motivating query (`[0-9a-f]{8}`).
+    var gv = crest.zero_vector;
+    gv[@intFromEnum(crest.Class.hex)] = 8;
+    gv[@intFromEnum(crest.Class.word)] = 8;
     try testing.expect(crest.active(gv));
+    try testing.expect(!crest.active(crest.zero_vector));
     try testing.expect(crest.pruned(crest.crest("no hex run here: zz zz"), gv));
     try testing.expect(!crest.pruned(crest.crest("id=0123abcdef more"), gv));
-    try testing.expect(!crest.active(crest.ghat("\\w+", uni)));
-    // Both query and document values share the saturated u16 domain.
-    const big = crest.ghat("[0-9]{70000}", uni);
-    try testing.expectEqual(std.math.maxInt(u16), big[@intFromEnum(crest.Class.digit)]);
+    // Falling short in ANY single class is enough to prune: a 9-byte word run
+    // that is only 7 hex bytes long fails the hex component alone.
+    try testing.expect(crest.pruned(crest.crest("id=0123abcx more"), gv));
+    // `weaker` is the alternation fold — it can only ever relax the sieve.
+    var half = crest.zero_vector;
+    half[@intFromEnum(crest.Class.hex)] = 3;
+    const w = crest.weaker(gv, half);
+    try testing.expectEqual(@as(u16, 3), w[@intFromEnum(crest.Class.hex)]);
+    try testing.expectEqual(@as(u16, 0), w[@intFromEnum(crest.Class.word)]);
+    try testing.expect(!crest.pruned(crest.crest("id=0123abcx more"), w));
+}
+
+test "saturation is monotone on both sides of the compare" {
+    // A document past the u16 cap saturates, and a saturated ĝ still admits it —
+    // saturation may cost pruning, never a match.
     var long_doc: [70_000]u8 = @splat('0');
     const long_crest = crest.crest(&long_doc);
     try testing.expectEqual(std.math.maxInt(u16), long_crest[@intFromEnum(crest.Class.digit)]);
-    try testing.expect(!crest.pruned(long_crest, big));
+    var saturated = crest.zero_vector;
+    saturated[@intFromEnum(crest.Class.digit)] = std.math.maxInt(u16);
+    try testing.expect(!crest.pruned(long_crest, saturated));
+    // A run that merely ends the document still counts (no off-by-one at EOF).
+    try testing.expectEqual(@as(u16, 3), crest.crest("xy 123")[@intFromEnum(crest.Class.digit)]);
 }

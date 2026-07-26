@@ -18,6 +18,7 @@
 
 const std = @import("std");
 const args = @import("../argv/args.zig");
+const arm = @import("arm.zig");
 const crest = @import("../../../../kernel/primitives/crest.zig");
 const query_mod = @import("../../../../kernel/match/query/query.zig");
 const simd = @import("../../../../kernel/match/scan/simd.zig");
@@ -160,22 +161,23 @@ pub fn caselessFilter(a: std.mem.Allocator, o: Opts, eff: []const u8, re: *const
 /// (post `-f` fold, `-F` escaping, and leading-flag strip — multi `-e` arrives
 /// as `(?:a)|(?:b)`, whose alternation the calculus min-folds natively), so ĝ
 /// can never be derived from fewer branches than the engine matches.
-/// Unlike `trigramFilter`, caseless does NOT stand the sieve down: the calculus
-/// case-closes each atom so the case-closed classes still force runs (only the
-/// linear engine, whose fold it is validated against — PCRE2 keeps declining).
-/// The Unicode flag is the ACTIVE engine's (linear `-u` vs PCRE2's own), since
-/// that is what decides `\d`/`\w` byte semantics (the Alphabet Contract).
-pub fn crestSieve(o: Opts, pattern: []const u8, re: *const Matcher, transforming: bool) crest.Vector {
+/// Unlike `trigramFilter`, caseless does NOT stand the sieve down: `-i` folds
+/// the AST before the calculus reads it, so the case-closed classes still force
+/// their runs while `upper`/`lower` (and any Unicode orbit escaping ASCII) fold
+/// themselves out of certification.
+///
+/// PCRE2 gets NO sieve. ĝ is only a bound on the language the pattern denotes,
+/// and PCRE2 denotes it under its own grammar — reading ĝ off gist's AST would
+/// be the dual-parser hazard one level up, worst exactly where `--engine auto`
+/// escalated *because* gist's grammar could not express the pattern. `-P` runs
+/// keep the trigram filter; they lose only this extra pruning.
+pub fn crestSieve(a: std.mem.Allocator, o: Opts, pattern: []const u8, re: *const Matcher, transforming: bool) crest.Vector {
     if (!mayElideByIndex(o, transforming)) return crest.zero_vector;
-    // Caseless still sieves the case-closed classes, but only for the linear
-    // engine whose fold the calculus is validated against (ASCII a⇄A plus the
-    // Unicode k/K/s/S escape guard); PCRE2's own fold keeps declining `-i`.
-    if (o.caseless and re.* == .pcre) return crest.zero_vector;
-    const uni = switch (re.*) {
-        .linear => o.unicode,
-        .pcre => o.pcre_unicode,
-    };
-    return crest.ghat(pattern, .{ .unicode = uni, .caseless = o.caseless });
+    switch (re.*) {
+        .linear => {},
+        .pcre => return crest.zero_vector,
+    }
+    return Regex.forcedCrest(a, pattern, arm.linearOptions(o));
 }
 test "required literal gate reuses sound regex analysis" {
     const t = std.testing;

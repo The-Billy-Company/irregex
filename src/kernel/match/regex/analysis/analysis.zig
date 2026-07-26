@@ -208,16 +208,20 @@ pub fn pureLiterals(arena: std.mem.Allocator, node: *Node) ParseError!?[]const [
     }
 }
 
-// The class-run/span reductions and the compiled-NFA reachability visitors are
-// the analysis layer's other two soundness contracts; they live in private
-// same-folder siblings and are re-exported here so `analysis.<name>` stays the
-// single public face for every caller.
+// The class-run/span reductions, the forced-crest calculus, and the
+// compiled-NFA reachability visitors are the analysis layer's other soundness
+// contracts; they live in same-folder siblings and are re-exported here so
+// `analysis.<name>` stays the single public face for every caller.
 const runs = @import("runs.zig");
 pub const ClassRunShape = runs.ClassRunShape;
 pub const classRunShape = runs.classRunShape;
 pub const ClassSpanShape = runs.ClassSpanShape;
 pub const no_max = runs.no_max;
 pub const classSpanShape = runs.classSpanShape;
+
+const swell = @import("swell.zig");
+pub const ForcedProfile = swell.Profile;
+pub const forcedCrest = swell.forcedCrest;
 
 const reach = @import("reach.zig");
 pub const analyzeFirst = reach.analyzeFirst;

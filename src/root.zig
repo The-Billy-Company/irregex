@@ -523,7 +523,7 @@ test {
     _ = @import("corpus/index/trigrams/fresh_test.zig"); // T3 freshness `widen` set-algebra
     _ = @import("kernel/match/query/query_test.zig"); // shared compiled-query: compile/prefilter/match vs oracle
     _ = @import("kernel/primitives/bits_test.zig"); // shared two's-complement bit identities vs bool-slice oracle
-    _ = @import("kernel/primitives/crest_test.zig"); // crest sieve: forced-run calculus vs hand-computed ĝ + sieve decision
+    _ = @import("kernel/primitives/crest_test.zig"); // crest sieve, document half: ρ(d) scan + dominance decision + sidecar schema
     _ = @import("kernel/primitives/parallel.zig"); // shared byte-balanced sharding + partial-spawn-safe fan-out
     _ = @import("kernel/primitives/ward_test.zig"); // reader/writer lease guards + double-checked readReconciled dance
     _ = @import("corpus/index/crest/sidecar_test.zig"); // crest sidecar codec: round-trip + fail-closed adversarial
@@ -571,6 +571,7 @@ test {
     _ = @import("corpus/tree/loadpar.zig"); // fused parallel walk+read: byte-identical membership vs serial oracle
     _ = @import("kernel/match/regex/syntax/syntax_test.zig"); // T2 syntax: ByteSet + recursive-descent parser
     _ = @import("kernel/match/regex/analysis/analysis_test.zig"); // T2 analysis: required-literal + cover + anchored
+    _ = @import("kernel/match/regex/analysis/swell_test.zig"); // crest sieve, query half: forced-crest ĝ vs hand-computed + Sieve Theorem vs the matcher
     _ = @import("kernel/match/regex/linear/program/core_test.zig"); // T2 engine: parser + Pike VM + prefilters
     _ = @import("kernel/match/regex/linear/ladder/matcher.zig"); // engine-neutral match seam: linear-arm forwarding
     _ = @import("kernel/match/regex/pcre2/backend.zig"); // PCRE2 `-P` backend: engine + literal co-located tests

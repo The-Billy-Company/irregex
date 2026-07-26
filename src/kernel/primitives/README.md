@@ -6,9 +6,10 @@ doc_radar:
       unit: files
       equals: 7
   sentinels:
-    - description: "crest calculus stays a pure math export"
+    - description: "crest primitives own the document side (ρ, dominance, the class family) and derive no ĝ — the forced-crest calculus reads the engine's AST from match/regex/analysis/swell.zig, so no second grammar can diverge from the matcher"
       file: pkg/kernels/irregex/src/kernel/primitives/crest.zig
-      contains: ["pub const Class", "pub fn ghat"]
+      contains: ["pub const Class", "pub fn crest", "pub fn pruned", "pub fn weaker"]
+      absent: ["pub fn ghat", "const Parser"]
 ---
 
 # `src/kernel/primitives/` — shared identity floor

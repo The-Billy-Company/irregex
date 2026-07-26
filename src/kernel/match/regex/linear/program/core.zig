@@ -143,6 +143,11 @@ pub const Regex = struct {
     pub const compile = lower.compile;
     pub const compileOpts = lower.compileOpts;
 
+    /// The Crest sieve's forced crest ĝ for a pattern under these same options —
+    /// derived from the AST `compileOpts` lowers, by the same parse, so the sieve
+    /// cannot disagree with this engine about what a construct means.
+    pub const forcedCrest = lower.forcedCrest;
+
     /// Reusable Pike-simulation scratch (`pike/scratch.zig`), sized to the
     /// program once; `SpanSim` adds the per-state start-offset maps `-o` needs.
     pub const Sim = scratch.Sim;

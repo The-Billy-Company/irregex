@@ -35,10 +35,19 @@ const oom = args.oom;
 /// routine outcome for every lookaround query, and a `try` here would have
 /// turned that into an abort.
 pub fn linearArm(gpa: std.mem.Allocator, eff: []const u8, o: Opts) fault.Answer(Regex) {
-    if (Regex.compileOpts(gpa, eff, .{ .caseless = o.caseless, .multiline = o.multiline, .dotall = o.multiline_dotall, .unicode = o.unicode, .line_anchors = o.re_line_anchors })) |r|
+    if (Regex.compileOpts(gpa, eff, linearOptions(o))) |r|
         return .{ .got = r }
     else |_|
         return .{ .declined = .unsupported_syntax };
+}
+
+/// This invocation's CLI flags as the linear engine's compile options. ONE
+/// owner, because every derived analysis has to parse under exactly the options
+/// the matcher was built with — `gate.crestSieve` reads its forced crest off
+/// this AST, and a flag that disagreed there would prune real matches rather
+/// than merely slow the query down.
+pub fn linearOptions(o: Opts) Regex.Options {
+    return .{ .caseless = o.caseless, .multiline = o.multiline, .dotall = o.multiline_dotall, .unicode = o.unicode, .line_anchors = o.re_line_anchors };
 }
 
 /// Whether PCRE2 was chosen outright (`-P`) or reached by escalation — the two
