@@ -229,6 +229,15 @@ pub const ResidentSession = struct {
     /// restarted daemon and re-handshake. Assigned by the server.
     daemon_gen: u64 = 0,
 
+    /// Which BUILD is answering — `conduit/image.zig`'s stamp of the executable
+    /// this daemon was exec'd from, latched by the server at boot so it names
+    /// the binary that is running rather than whatever now sits at that path.
+    /// A client on a different build declines warm (a correctness fix moves no
+    /// frame, so `protocol_version` alone cannot retire a pre-fix daemon).
+    /// Boot-constant like `daemon_gen`; 0 means "could not identify", which
+    /// clients read as "cannot judge" and serve exactly as before.
+    image: u64 = 0,
+
     /// Per-query wall-clock ceiling in nanoseconds (0 ⇒ disabled — the default
     /// for every embedder/FFI/test session, so their behavior is unchanged).
     /// The resident daemon sets it (see `serve.zig`) so one runaway — or a query
