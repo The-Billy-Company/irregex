@@ -16,6 +16,12 @@
 //!
 //! The alphabet is `u16` symbols in [0, sigma) — the codex feeds bytes shifted
 //! +1 with sentinel 0, so σ = 257; nothing here assumes that beyond σ ≤ 4096.
+//!
+//! Construction reads each level exactly once. A node knows how its sequence
+//! will split before it looks at a symbol — it holds every occurrence of its
+//! alphabet, so the frequency histogram already says so — which lets the bit
+//! coding and the partition for the two children share one walk. See
+//! `Tree.buildNode`.
 
 const std = @import("std");
 const rrr = @import("rrr.zig");
@@ -173,6 +179,18 @@ pub const Encoding = enum {
     plain_only,
 };
 
+/// Build-time scratch threaded down the recursion, so descending a level costs
+/// no allocation of its own. `route` is rebuilt by each node and read only
+/// inside that node's own pass, which is why one copy serves the whole tree.
+const Loom = struct {
+    huff: *const Huff,
+    freq: []const u64,
+    encoding: Encoding,
+    /// symbol → its code bit at the current node's depth. Only the node's live
+    /// alphabet is written, and only those symbols are ever looked up.
+    route: [max_sigma]u8 = undefined,
+};
+
 /// The tree. Internal nodes only; `child < 0` encodes leaf symbol −(child+1).
 pub const Tree = struct {
     const unreachable_child: i32 = std.math.minInt(i32);
@@ -183,6 +201,10 @@ pub const Tree = struct {
 
     pub const Node = struct { bits: rrr.Bits, child: [2]i32 };
 
+    /// `freq` must be the histogram OF `seq` — it shapes the Huffman code, and
+    /// each node also reads it to size its own two halves before touching a
+    /// single symbol (see `buildNode`). A histogram that disagrees with `seq`
+    /// trips an assert rather than yielding a quietly wrong tree.
     pub fn build(gpa: std.mem.Allocator, seq: []const u16, freq: []const u64, encoding: Encoding) !Tree {
         var self = Tree{ .nodes = &.{}, .huff = try Huff.build(gpa, freq), .n = seq.len };
         errdefer self.huff.deinit(gpa);
@@ -194,59 +216,104 @@ pub const Tree = struct {
         const scratch = try gpa.alloc(u16, seq.len);
         defer gpa.free(scratch);
         @memcpy(scratch, seq);
-        _ = try buildNode(gpa, &list, &self.huff, scratch, 0, encoding);
+
+        // The root's alphabet, partitioned in place on the way down so every
+        // node's live symbol set is a sub-slice of its parent's.
+        const alphabet = try gpa.alloc(u16, freq.len);
+        defer gpa.free(alphabet);
+        var live: usize = 0;
+        for (freq, 0..) |f, c| if (f > 0) {
+            alphabet[live] = @intCast(c);
+            live += 1;
+        };
+
+        var loom = Loom{ .huff = &self.huff, .freq = freq, .encoding = encoding };
+        _ = try buildNode(gpa, &list, &loom, scratch, alphabet[0..live], 0);
         self.nodes = try list.toOwnedSlice(gpa);
         return self;
     }
 
-    /// Builds node `id` from `seq` (all symbols sharing a code prefix of
-    /// length `depth`), partitioning IN PLACE: after the bitvector is coded,
-    /// `seq` is stably rearranged to [left | right] and the halves recursed.
-    /// Peak transient memory is the single n-symbol scratch, not one buffer
-    /// per level.
-    fn buildNode(gpa: std.mem.Allocator, list: *std.ArrayList(Node), huff: *const Huff, seq: []u16, depth: u8, encoding: Encoding) !i32 {
+    /// Builds node `id` over `seq` — every occurrence of every symbol in
+    /// `alphabet`, the symbols sharing a code prefix of length `depth`.
+    ///
+    /// One pass does both jobs the level needs: it codes the bitvector a word
+    /// at a time and stably rearranges `seq` to [left | right] in place. They
+    /// can collapse into one because the split point is known BEFORE any
+    /// symbol is read — a node holds every occurrence of its alphabet, so
+    /// `freq` summed over the left-routed symbols already gives it. That also
+    /// pays for the `route` table: an O(σ) sweep the node was doing anyway
+    /// turns the hot loop's Huffman bit extraction into one byte load.
+    ///
+    /// Peak transient memory is unchanged — the single n-symbol scratch plus
+    /// the right half of one level at a time.
+    fn buildNode(gpa: std.mem.Allocator, list: *std.ArrayList(Node), loom: *Loom, seq: []u16, alphabet: []u16, depth: u8) !i32 {
+        var nzero: usize = 0;
+        for (alphabet) |c| {
+            const bit = loom.huff.bitAt(c, depth);
+            loom.route[c] = bit;
+            if (bit == 0) nzero += @intCast(loom.freq[c]);
+        }
+        std.debug.assert(nzero <= seq.len);
+
         const id: i32 = @intCast(list.items.len);
         try list.append(gpa, .{ .bits = .{ .plain = try rrr.Plain.initEmpty(gpa, seq.len) }, .child = .{ unreachable_child, unreachable_child } });
-        var nzero: usize = 0;
-        {
-            var plain = &list.items[@intCast(id)].bits.plain;
-            for (seq, 0..) |c, i| {
-                if (huff.bitAt(c, depth) == 1) plain.set(i) else nzero += 1;
-            }
-            try plain.finalize(gpa);
-        }
-        if (encoding == .adopt_min)
-            list.items[@intCast(id)].bits = try rrr.Bits.adopt(gpa, list.items[@intCast(id)].bits.plain);
-        // stable in-place partition via cycle-free two-pointer copy through a stack slice
         {
             var buf: [512]u16 = undefined;
             const nright = seq.len - nzero;
-            const heap_tmp: ?[]u16 = if (nright > buf.len) try gpa.alloc(u16, nright) else null;
-            defer if (heap_tmp) |t| gpa.free(t);
-            const right_tmp = heap_tmp orelse buf[0..nright];
+            const spill: ?[]u16 = if (nright > buf.len) try gpa.alloc(u16, nright) else null;
+            defer if (spill) |s| gpa.free(s);
+            const right = spill orelse buf[0..nright];
+
+            // One word of the level per outer step: the bits accumulate in a
+            // register and land with a single store, instead of a
+            // read-modify-write per symbol. Writing `seq[li]` can only touch a
+            // slot at or before the one just read (li ≤ base+k), so the
+            // compaction never clobbers a symbol it still owes.
+            const words = list.items[@intCast(id)].bits.plain.words;
             var li: usize = 0;
             var ri: usize = 0;
-            for (seq) |c| {
-                if (huff.bitAt(c, depth) == 1) {
-                    right_tmp[ri] = c;
-                    ri += 1;
-                } else {
-                    seq[li] = c;
-                    li += 1;
+            var base: usize = 0;
+            while (base < seq.len) : (base += 64) {
+                var word: u64 = 0;
+                for (seq[base..@min(base + 64, seq.len)], 0..) |c, k| {
+                    if (loom.route[c] == 1) {
+                        word |= @as(u64, 1) << @intCast(k);
+                        right[ri] = c;
+                        ri += 1;
+                    } else {
+                        seq[li] = c;
+                        li += 1;
+                    }
                 }
+                words[base >> 6] = word;
             }
-            @memcpy(seq[nzero..], right_tmp);
+            std.debug.assert(li == nzero and ri == nright); // `freq` really was seq's histogram
+            @memcpy(seq[nzero..], right);
+            try list.items[@intCast(id)].bits.plain.finalize(gpa);
+        }
+        if (loom.encoding == .adopt_min)
+            list.items[@intCast(id)].bits = try rrr.Bits.adopt(gpa, list.items[@intCast(id)].bits.plain);
+
+        // The alphabet splits the same way, but unordered: a node reads its
+        // alphabet only as a set, and a one-symbol child IS the leaf.
+        var lo: usize = 0;
+        var hi: usize = alphabet.len;
+        while (lo < hi) {
+            if (loom.route[alphabet[lo]] == 0) lo += 1 else {
+                hi -= 1;
+                std.mem.swap(u16, &alphabet[lo], &alphabet[hi]);
+            }
         }
         for (0..2) |b| {
-            const part = if (b == 0) seq[0..nzero] else seq[nzero..];
+            const part = if (b == 0) alphabet[0..lo] else alphabet[lo..];
             if (part.len == 0) continue; // σ=1 degenerate branch: no code routes here
-            const sym = part[0];
+            const rows = if (b == 0) seq[0..nzero] else seq[nzero..];
             // materialize the child BEFORE indexing items: the recursion appends
             // and may reallocate, so the destination pointer must be computed last
-            const child: i32 = if (huff.len[sym] == depth + 1)
-                -(@as(i32, sym) + 1)
-            else
-                try buildNode(gpa, list, huff, part, depth + 1, encoding);
+            const child: i32 = if (part.len == 1) blk: {
+                std.debug.assert(loom.huff.len[part[0]] == depth + 1);
+                break :blk -(@as(i32, part[0]) + 1);
+            } else try buildNode(gpa, list, loom, rows, part, depth + 1);
             list.items[@intCast(id)].child[b] = child;
         }
         return id;
