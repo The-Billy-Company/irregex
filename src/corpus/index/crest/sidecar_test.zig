@@ -5,6 +5,7 @@
 const std = @import("std");
 const testing = std.testing;
 const crest = @import("../../../kernel/primitives/crest.zig");
+const signet = @import("../../../kernel/primitives/signet.zig");
 const sidecar = @import("sidecar.zig");
 
 const version_off = 8;
@@ -25,8 +26,7 @@ test "round-trip: build → writeInto → decode is identity" {
     defer gpa.free(buf);
     try testing.expectEqual(buf.len, try sidecar.writeInto(vectors, buf));
 
-    const expected_hash = crest.SidecarSchema.hash();
-    try testing.expectEqualSlices(u8, &expected_hash, buf[schema_hash_off..reserved_off]);
+    try testing.expectEqualSlices(u8, &crest.SidecarSchema.hash().bytes, buf[schema_hash_off..reserved_off]);
     var off: usize = sidecar.header_len;
     for (vectors) |vector| {
         for (vector) |value| {
@@ -103,11 +103,29 @@ test "fail-closed: truncation, padding, and misalignment are rejected" {
     try testing.expect(sidecar.decode(shifted[1..], 1) == null);
 }
 
+test "the seal catches the record rot that every layout check passes" {
+    const gpa = testing.allocator;
+    const vectors = [_]crest.Vector{ crest.crest("0123abcd"), crest.crest("wwwwww") };
+    const buf = try gpa.alignedAlloc(u8, .of(crest.Vector), try sidecar.encodedSize(vectors.len));
+    defer gpa.free(buf);
+    _ = try sidecar.writeInto(&vectors, buf);
+    try sidecar.verify(buf);
+
+    // A rotted ρ(d) is a structurally perfect table: right magic, right
+    // schema, right length, right alignment — and a sieve that silently
+    // prunes a matching document. The seal is the only reader that sees it.
+    buf[sidecar.header_len] ^= 0x40;
+    const view = sidecar.decode(buf, vectors.len) orelse return error.TestUnexpectedResult;
+    try testing.expect(!std.mem.eql(u16, &vectors[0], &view[0]));
+    try testing.expectError(signet.Error.Corrupt, sidecar.verify(buf));
+}
+
 test "checked size arithmetic rejects the first overflowing document count" {
     const record_len = crest.K * @sizeOf(u16);
-    const max_docs = (std.math.maxInt(usize) - sidecar.header_len) / record_len;
+    const framed = sidecar.header_len + signet.len;
+    const max_docs = (std.math.maxInt(usize) - framed) / record_len;
     const largest = sidecar.checkedEncodedSize(max_docs) orelse return error.TestUnexpectedResult;
-    try testing.expectEqual(sidecar.header_len + max_docs * record_len, largest);
+    try testing.expectEqual(framed + max_docs * record_len, largest);
     try testing.expect(sidecar.checkedEncodedSize(max_docs + 1) == null);
     if (@bitSizeOf(usize) > @bitSizeOf(u32))
         try testing.expectError(error.Oversized, sidecar.encodedSize(@as(usize, std.math.maxInt(u32)) + 1));

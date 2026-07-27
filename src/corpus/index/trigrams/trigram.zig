@@ -297,6 +297,10 @@ pub const Index = struct {
     /// Copy a blob into naturally aligned owned directory/body allocations;
     /// unlike `fromMappedBytes`, this never reinterprets raw bytes as `u32`.
     pub fn fromBytes(allocator: std.mem.Allocator, bytes: []const u8) LoadError!Index {
+        // The untrusted tier copies and fully validates every byte, so the seal
+        // costs it nothing extra and buys the one class of damage the posting
+        // decoder cannot see: a flipped bit that still decodes canonically.
+        try blob.verify(bytes);
         const h = try blob.parseHeader(bytes);
         var off: usize = header_len;
         var dirs: [3][]u32 = undefined;
@@ -309,9 +313,11 @@ pub const Index = struct {
             off += h.n_tri * 4;
         }
         // Exact length (including zero) keeps `deinit`'s free shape identical.
-        const body = try allocator.alloc(u8, bytes.len - off);
+        // The seal is a trailer, not the last posting group.
+        const sealed = bytes[0 .. bytes.len - blob.seal_len];
+        const body = try allocator.alloc(u8, sealed.len - off);
         errdefer allocator.free(body);
-        @memcpy(body, bytes[off..]);
+        @memcpy(body, sealed[off..]);
         // Reject corrupt copied bodies; errdefers release every region.
         try blob.validateStructure(.{ .dir_tri = dirs[0], .dir_off = dirs[1], .dir_count = dirs[2], .body = body, .doc_count = h.doc_count, .posting_count = h.posting_count });
         return .{ .dir_tri = dirs[0], .dir_off = dirs[1], .dir_count = dirs[2], .body = body, .doc_count = h.doc_count, .posting_count = h.posting_count, .allocator = allocator };
@@ -323,7 +329,11 @@ pub const Index = struct {
     }
 
     /// Borrow after FULL eager posting validation: the untrusted/test contract.
+    /// The seal is checked here for the same reason `fromBytes` checks it — an
+    /// eager loader has already committed to reading every byte, and the two
+    /// eager loaders must never disagree about whether a blob is acceptable.
     pub fn fromMappedBytes(bytes: []const u8) LoadError!Index {
+        try blob.verify(bytes);
         const m = try blob.parseMapped(bytes);
         try blob.validateStructure(m.structure());
         return borrowMapped(m);

@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const treemap = @import("treemap.zig");
+const signet = @import("../../../kernel/primitives/signet.zig");
 
 /// Frame a valid two-level blob: root{ "src"(dir→1), "a.txt"(file) },
 /// src{ "b.go"(file), "hid"(dir, never descended) }.
@@ -21,7 +22,7 @@ fn frameBlob(a: std.mem.Allocator, anchor: i64) ![]u8 {
     };
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(a);
-    try out.appendSlice(a, "GISTTRE1");
+    try out.appendSlice(a, "GISTTRE2");
     var b8: [8]u8 = undefined;
     std.mem.writeInt(i64, &b8, anchor, .little);
     try out.appendSlice(a, &b8);
@@ -35,6 +36,9 @@ fn frameBlob(a: std.mem.Allocator, anchor: i64) ![]u8 {
     try out.appendSlice(a, std.mem.sliceAsBytes(dirs[0..]));
     try out.appendSlice(a, std.mem.sliceAsBytes(ents[0..]));
     try out.appendSlice(a, names);
+    // Sealed like `build` writes it, so the torn/dangling cases below stay
+    // tests of the LAYOUT refusals they name rather than of a missing trailer.
+    try signet.sealInto(a, &out);
     return out.toOwnedSlice(a);
 }
 

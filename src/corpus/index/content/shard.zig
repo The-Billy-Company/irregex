@@ -27,11 +27,19 @@
 //! every file is read live exactly as before. The freshness gate binds to the
 //! shard's OWN anchor, so a stale shard beside a fresh index (or the reverse)
 //! only serves fewer slices — never a wrong one.
+//!
+//! Sealed, and verified only on request (`View.verify`). Layout validation
+//! cannot see bit rot inside a body — flip a byte of file content and every
+//! offset, length, and name still checks out, yet the served slice is no longer
+//! the file's bytes. The seal is the only thing that can say so, and digesting
+//! a quarter-gigabyte at load would spend the exact saving this artifact
+//! exists to make, so it waits for someone to ask.
 
 const std = @import("std");
 const corpus_mod = @import("../../tree/corpus.zig");
 const bulkstat = @import("../../tree/bulkstat.zig");
 const frame = @import("../frame/frame.zig");
+const signet = @import("../../../kernel/primitives/signet.zig");
 
 /// Open-addressing path→doc table (Wyhash, linear probe, one `slots` alloc).
 /// The shard's own copy of the engine's `IndexedPaths` shape — kept here so the
@@ -81,7 +89,7 @@ pub fn shardFile() []const u8 {
     return file_alias.get();
 }
 
-const magic = "GISTSHD1";
+const magic = "GISTSHD2";
 /// magic(8) · anchor i64 · ndocs u32 · names_len u32 · content_len u64 — 32
 /// bytes, so the u64 offset array that follows starts 8-aligned inside any
 /// page-aligned mapping.
@@ -108,6 +116,19 @@ pub const View = struct {
         if (bulkstat.needsLiveRead(v.anchor_ns, mtime_ns, ctime_ns)) return null;
         const doc = v.indexed.get(v.paths.items, rel) orelse return null;
         return v.content[v.offsets[doc]..v.offsets[doc + 1]];
+    }
+
+    /// Prove the mapped bytes are the bytes `build` wrote.
+    ///
+    /// DEFERRED on purpose. This artifact exists to stop a full-scan query
+    /// opening 20k files; digesting all ~215 MB at load would hand that saving
+    /// straight back and fault in every page the query was never going to
+    /// touch. Correctness does not rest on it either — the tree binding, the
+    /// layout validation in `decode`, and the per-file clock proof already fail
+    /// closed. So the seal is here for the moment someone ASKS: `gist status`,
+    /// a corruption hunt, an integrity sweep after a bad disk.
+    pub fn verify(v: *const View) signet.Error!void {
+        return signet.verify(v.map);
     }
 
     pub fn deinit(v: *View) void {
@@ -153,7 +174,7 @@ fn decode(gpa: std.mem.Allocator, map: frame.Mapping) !View {
     if (ndocs == 0) return error.Corrupt;
 
     const offsets_bytes = (@as(usize, ndocs) + 1) * @sizeOf(u64);
-    if (map.len != header_len + offsets_bytes + names_len + content_len) return error.Corrupt;
+    if (map.len != header_len + offsets_bytes + names_len + content_len + signet.len) return error.Corrupt;
     const offsets: []const u64 = @alignCast(std.mem.bytesAsSlice(u64, map[header_len..][0..offsets_bytes]));
     const names = map[header_len + offsets_bytes ..][0..names_len];
     const content = map[header_len + offsets_bytes + names_len ..][0..content_len];
@@ -191,7 +212,7 @@ pub fn buildAt(gpa: std.mem.Allocator, io: std.Io, path: []const u8, docs: []con
     for (docs) |d| content_len += d.len;
     const names_len = frame.nulLen(paths);
     const offsets_bytes = (docs.len + 1) * @sizeOf(u64);
-    const total = header_len + offsets_bytes + names_len + content_len;
+    const total = header_len + offsets_bytes + names_len + content_len + signet.len;
 
     var blob: std.ArrayList(u8) = .empty;
     defer blob.deinit(gpa);
@@ -224,6 +245,7 @@ pub fn buildAt(gpa: std.mem.Allocator, io: std.Io, path: []const u8, docs: []con
         blob.appendSliceAssumeCapacity(&[_]u8{0});
     }
     for (docs) |d| blob.appendSliceAssumeCapacity(d);
+    try signet.sealInto(gpa, &blob);
 
     try frame.writeAtomic(io, path, blob.items);
 }
@@ -236,7 +258,7 @@ fn encodeForTest(gpa: std.mem.Allocator, docs: []const []const u8, paths: []cons
     var content_len: u64 = 0;
     for (docs) |d| content_len += d.len;
     const names_len = frame.nulLen(paths);
-    const total = header_len + (docs.len + 1) * @sizeOf(u64) + names_len + content_len;
+    const total = header_len + (docs.len + 1) * @sizeOf(u64) + names_len + content_len + signet.len;
     var blob: std.ArrayList(u8) = .empty;
     errdefer blob.deinit(gpa);
     try blob.ensureTotalCapacity(gpa, @intCast(total));
@@ -263,6 +285,7 @@ fn encodeForTest(gpa: std.mem.Allocator, docs: []const []const u8, paths: []cons
         blob.appendSliceAssumeCapacity(&[_]u8{0});
     }
     for (docs) |d| blob.appendSliceAssumeCapacity(d);
+    try signet.sealInto(gpa, &blob);
     return blob.toOwnedSlice(gpa);
 }
 
@@ -320,4 +343,36 @@ test "shard decode fails closed on a torn blob" {
     const stub = try aligned(t.allocator, blob[0..16]);
     defer t.allocator.free(stub);
     try t.expectError(error.Corrupt, decode(t.allocator, stub)); // shorter than the declared arrays
+}
+
+test "the shard seal is deferred, and it catches bit rot decode cannot" {
+    const t = std.testing;
+    // Two bodies of equal length: every offset, name, and length stays valid
+    // under a flipped content byte, so the layout validation in `decode` sees
+    // nothing wrong. Only the seal can tell this apart from the real shard —
+    // which is the whole reason a served slice needed one.
+    const docs = [_][]const u8{ "alpha\n", "bravo\n" };
+    const paths = [_][]const u8{ "a.txt", "b.txt" };
+    const blob = try encodeForTest(t.allocator, &docs, &paths, 42);
+    defer t.allocator.free(blob);
+
+    const map = try aligned(t.allocator, blob);
+    defer t.allocator.free(map);
+    var v = try decode(t.allocator, map);
+    defer {
+        v.indexed.deinit();
+        v.paths.deinit(t.allocator);
+    }
+    try v.verify();
+    try t.expectEqualStrings("alpha\n", v.slice("a.txt", 0, 0).?);
+
+    const rotted = try aligned(t.allocator, blob);
+    defer t.allocator.free(rotted);
+    rotted[rotted.len - signet.len - 1] ^= 0x20; // last content byte
+    var bad = try decode(t.allocator, rotted); // layout still parses clean…
+    defer {
+        bad.indexed.deinit();
+        bad.paths.deinit(t.allocator);
+    }
+    try t.expectError(error.Corrupt, bad.verify()); // …and the seal still refuses it
 }

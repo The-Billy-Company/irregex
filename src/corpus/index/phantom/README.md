@@ -5,7 +5,8 @@ doc_radar:
       file: pkg/kernels/irregex/src/corpus/index/phantom/treemap.zig
       contains:
         - "needsLiveRead"
-        - "GISTTRE1"
+        - "GISTTRE2"
+        - "pub fn verify"
 ---
 
 # `corpus/index/phantom/` — the phantom walk snapshot

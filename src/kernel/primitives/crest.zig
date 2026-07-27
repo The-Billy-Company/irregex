@@ -34,6 +34,8 @@
 
 const std = @import("std");
 
+const signet = @import("signet.zig");
+
 /// The fixed class family. Order is load-bearing: a crest vector is a k-tuple
 /// in exactly this order, and the persisted sidecar stores it verbatim. Chosen
 /// for code corpora — narrow classes (digit, hex, upper) are where forced runs
@@ -154,9 +156,9 @@ pub const membership: [256]u8 = blk: {
     break :blk m;
 };
 
-/// Semantic contract carried by every persisted Crest sidecar. The SHA-256
-/// digest of `canonical_bytes` invalidates a cache whenever the class family or
-/// meaning of one stored u16 changes, even if its physical width stays fixed.
+/// Semantic contract carried by every persisted Crest sidecar. The schema
+/// signet over `canonical_bytes` invalidates a cache whenever the class family
+/// or meaning of one stored u16 changes, even if its physical width stays fixed.
 pub const SidecarSchema = struct {
     pub const format_version: u16 = 2;
     pub const saturation_cap: u16 = std.math.maxInt(u16);
@@ -180,10 +182,11 @@ pub const SidecarSchema = struct {
         "element-interpretation/utf8\x00" ++ le16(element_interpretation.len) ++ element_interpretation ++
         "membership-table/u8x256\x00" ++ membership_len_le ++ membership).*;
 
-    pub fn hash() [std.crypto.hash.sha2.Sha256.digest_length]u8 {
-        var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
-        std.crypto.hash.sha2.Sha256.hash(&canonical_bytes, &digest, .{});
-        return digest;
+    /// The schema's identity. `domain` above names WHICH schema; signet's
+    /// `.schema` label names what KIND of statement this is, so the sidecar's
+    /// mark can never be confused with the artifact seal on a sibling blob.
+    pub fn hash() signet.Signet {
+        return signet.of(.schema, &canonical_bytes);
     }
 
     fn le16(comptime value: u16) [2]u8 {

@@ -3,7 +3,7 @@ doc_radar:
   sentinels:
     - description: "crest sidecar stays generation-atomic with the trigram pair"
       file: pkg/kernels/irregex/src/corpus/index/crest/sidecar.zig
-      contains: ["GISTCRS2", "pub fn decode"]
+      contains: ["GISTCRS3", "pub fn decode", "pub fn verify"]
     - description: "sieve calculus lives in the regex analysis layer, not the sidecar — ĝ is derived from the engine's own AST"
       file: pkg/kernels/irregex/src/kernel/match/regex/analysis/swell.zig
       contains: "pub fn forcedSwell"
@@ -30,31 +30,38 @@ concede. Together they elide more `open(2)`s without changing answers.
 
 | File               | Job                                                                 |
 | ------------------ | ------------------------------------------------------------------- |
-| `sidecar.zig`      | Codec (`writeInto` / `decode`, fail-closed) + parallel `build` pass |
+| `sidecar.zig`      | Codec (`writeInto` / `decode` / `verify`, fail-closed) + parallel `build` pass |
 | `sidecar_test.zig` | Round-trip identity + adversarial malformed-blob suite              |
 
-## Format v2
+## Format v3
 
-`GISTCRS2` carries a 64-byte header: explicit format version, class count,
-element width, index-bound document count, SHA-256 semantic-schema hash, and
-zero-only reserved padding. The body remains `[doc][8]u16` little-endian.
+`GISTCRS3` carries a 64-byte header: explicit format version, class count,
+element width, index-bound document count, the semantic-schema **signet**, and
+zero-only reserved padding. The body remains `[doc][8]u16` little-endian, and an
+artifact signet trails it.
 
-The hash preimage is canonical and architecture-independent. It includes the
+The schema preimage is canonical and architecture-independent. It includes the
 ordered class names, all 256 byte-membership masks, the `u16` saturation cap,
 the per-element interpretation, and the format version. A cache built under
 different semantics therefore fails closed even when its dimensions happen to
-match. `GISTCRS1` is deliberately not upgraded in place; it decodes as null and
-the existing generation lifecycle rebuilds it.
+match. Older magics are deliberately not upgraded in place; they decode as null
+and the existing generation lifecycle rebuilds them.
+
+The trailing seal exists because this is the one table whose corruption story is
+a **missed** match: a ρ(d) that rots downward prunes a document that would have
+matched, and every layout check still passes. `verify` is separate from `decode`
+for the same reason the shard's is — the table is mapped, and a query should pay
+for the pages it reads, not for a whole-file digest it did not ask for.
 
 ## Invariants
 
 - `decode` is zero-copy over the caller's mapping and returns **null** on any
   disagreement (magic, format version, semantic hash, doc count, class-family
   arity, element width, reserved padding, checked length, alignment) → the
-  query simply runs without the sieve.
+  query simply runs without the sieve. `verify` proves the seal on demand.
 - Soundness rounds down only (under-prune); see the kernel + `research/crest`.
 - Consumers: read-elision oracles in
-  `surface/exec/cold/engine/{serial,parallel}.zig`.
+  `surface/exec/cold/quarry/elide.zig` and the serial/swarm engines.
 
 ## When to edit
 

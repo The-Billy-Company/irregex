@@ -11,8 +11,11 @@
 //! the `tree.root` binding that says which tree the whole directory describes.
 //! Consumers: the codex + shelf blobs (`../codex/`), the kinship atlas
 //! (`../atlas/`), and the trigram pair loader (`../trigrams/persist.zig`).
-//! Framing only — magic bytes, versions, and checksums stay with each format,
-//! where the corruption story lives.
+//! Framing only — magic bytes and versions stay with each format, where its own
+//! shape is described. Integrity does NOT: every artifact here seals with the
+//! one digest in `kernel/primitives/signet.zig`, so there is a single answer to
+//! "are these the bytes we wrote" instead of a per-format checksum each loader
+//! had to remember to re-check.
 
 const std = @import("std");
 const corpus_mod = @import("../../tree/corpus.zig");
@@ -240,14 +243,6 @@ pub fn putInt(gpa: std.mem.Allocator, out: *std.ArrayList(u8), comptime T: type,
     var buf: [@sizeOf(T)]u8 = undefined;
     std.mem.writeInt(T, &buf, v, .little);
     try out.appendSlice(gpa, &buf);
-}
-
-/// FNV-1a 64-bit over `bytes` — the integrity checksum every persisted
-/// artifact (atlas, frag, …) appends and re-checks on load.
-pub fn fnv64(bytes: []const u8) u64 {
-    var h: u64 = 0xcbf29ce484222325;
-    for (bytes) |b| h = (h ^ b) *% 0x100000001b3;
-    return h;
 }
 
 pub fn putWords(gpa: std.mem.Allocator, out: *std.ArrayList(u8), words: []const u64) !void {

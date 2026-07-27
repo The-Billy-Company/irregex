@@ -8,13 +8,19 @@
 const std = @import("std");
 const fault = @import("../../../fault.zig");
 const varint = @import("varint.zig");
+const signet = @import("../../../kernel/primitives/signet.zig");
 
 pub const Error = fault.Persist;
 
-/// Local-machine cache format; v2 introduced CSR delta-varint posting bodies.
-pub const format_version: u32 = 2;
+/// Local-machine cache format; v2 introduced CSR delta-varint posting bodies,
+/// v3 sealed the blob.
+pub const format_version: u32 = 3;
 const magic = "GISTIDX\x01";
 pub const header_len = magic.len + 4 + 4 + 8 + 8;
+/// Trailer width. A loader that slices the body by hand — rather than through
+/// `parseMapped` — has to stop this far short of the end, or it hands the
+/// digest to the posting decoder as if it were the last group.
+pub const seal_len = signet.len;
 
 pub const Header = struct {
     doc_count: u32,
@@ -45,7 +51,7 @@ pub const MappedRegions = struct {
 };
 
 pub fn serializedSize(s: Structure) usize {
-    return header_len + (s.dir_tri.len + s.dir_off.len + s.dir_count.len) * @sizeOf(u32) + s.body.len;
+    return header_len + (s.dir_tri.len + s.dir_off.len + s.dir_count.len) * @sizeOf(u32) + s.body.len + signet.len;
 }
 
 pub fn writeInto(s: Structure, buf: []u8) usize {
@@ -61,7 +67,20 @@ pub fn writeInto(s: Structure, buf: []u8) usize {
         off += bytes.len;
     }
     @memcpy(buf[off..][0..s.body.len], s.body);
-    return off + s.body.len;
+    signet.sealAt(buf, off + s.body.len);
+    return off + s.body.len + signet.len;
+}
+
+/// Prove a mapped blob is the blob `writeInto` wrote.
+///
+/// DEFERRED, like the content shard's, and for the same reason: this loader's
+/// contract is that it validates the directory in O(distinct trigrams) and
+/// leaves the posting bodies untouched until a query reaches one, so the OS
+/// faults in a few pages instead of ~42 MB. Digesting at load would undo that
+/// on every single invocation to catch a fault that `validateStructure` mostly
+/// catches for free. Callers that want the proof ask for it.
+pub fn verify(bytes: []const u8) Error!void {
+    signet.verify(bytes) catch return Error.Corrupt;
 }
 
 pub fn parseHeader(bytes: []const u8) Error!Header {
@@ -72,7 +91,10 @@ pub fn parseHeader(bytes: []const u8) Error!Header {
     if (n64 > std.math.maxInt(usize) or pc64 > std.math.maxInt(u32)) return Error.Corrupt;
     const n_tri: usize = @intCast(n64);
     const dir_bytes = std.math.mul(usize, n_tri, @sizeOf(u32) * 3) catch return Error.Corrupt;
-    const need = std.math.add(usize, header_len, dir_bytes) catch return Error.Corrupt;
+    // The seal is part of the floor: without it in the minimum, a blob whose
+    // directory ends exactly at EOF would let `parseMapped` slice a negative
+    // body length out from under the trailer.
+    const need = std.math.add(usize, header_len + signet.len, dir_bytes) catch return Error.Corrupt;
     if (bytes.len < need) return Error.Corrupt;
     return .{
         .doc_count = std.mem.readInt(u32, bytes[magic.len + 4 ..][0..4], .little),
@@ -92,7 +114,9 @@ pub fn parseMapped(bytes: []const u8) Error!MappedRegions {
         d.* = std.mem.bytesAsSlice(u32, @as([]align(@alignOf(u32)) const u8, @alignCast(bytes[off..][0..dir_bytes])));
         off += dir_bytes;
     }
-    return .{ .header = header, .dir_tri = dirs[0], .dir_off = dirs[1], .dir_count = dirs[2], .body = bytes[off..] };
+    // The seal is a trailer, not payload: `body` must stop short of it or every
+    // last-group bound check would measure the digest as postings.
+    return .{ .header = header, .dir_tri = dirs[0], .dir_off = dirs[1], .dir_count = dirs[2], .body = bytes[off .. bytes.len - signet.len] };
 }
 
 /// O(distinct trigrams): validate layout/count invariants without reading body.

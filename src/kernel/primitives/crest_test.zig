@@ -7,11 +7,13 @@
 const std = @import("std");
 const testing = std.testing;
 const crest = @import("crest.zig");
+const signet = @import("signet.zig");
 
-fn sha256(bytes: []const u8) [std.crypto.hash.sha2.Sha256.digest_length]u8 {
-    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
-    return digest;
+/// The same statement the sidecar makes about itself, recomputed here over an
+/// ALTERED preimage: each case below proves the field it edits is inside the
+/// digest, so `SidecarSchema.hash` cannot lose one and stay equal.
+fn schemaMark(bytes: []const u8) signet.Signet {
+    return signet.of(.schema, bytes);
 }
 
 test "crest vector: longest per-class run" {
@@ -60,40 +62,42 @@ test "semantic hash binds cap, interpretation, and full membership table" {
     try testing.expectEqual(std.math.maxInt(u16), crest.SidecarSchema.saturation_cap);
     try testing.expectEqual(@as(u16, 2), crest.SidecarSchema.format_version);
 
+    // A captured golden, and only that: it trips the moment this schema's
+    // identity moves, which is exactly when every persisted sidecar must be
+    // regenerated. That the primitive underneath really is BLAKE3 is proven
+    // independently in `signet_test.zig` against the published empty-input
+    // vector — this pin is not the place to relitigate the hash function.
     const original = crest.SidecarSchema.hash();
-    const pinned = [_]u8{
-        0x8a, 0x37, 0xaa, 0xc5, 0xf8, 0xcc, 0x50, 0x11,
-        0x8b, 0xd3, 0xd9, 0x29, 0x53, 0xfb, 0x0a, 0x52,
-        0xad, 0xb7, 0xa0, 0x4c, 0x8f, 0x9c, 0xf3, 0xad,
-        0x42, 0x8d, 0xf9, 0x5b, 0x34, 0x52, 0xe4, 0xbe,
-    };
-    try testing.expectEqualSlices(u8, &pinned, &original);
+    try testing.expectEqualStrings(
+        "4d292c119108c904f65e5f47827e9366a321605a7ab2cfcd496e7d5fe7f2bd36",
+        &original.hex(),
+    );
 
     var altered = crest.SidecarSchema.canonical_bytes;
     const version_marker = "format-version/u16le\x00";
     const version_at = (std.mem.indexOf(u8, &altered, version_marker) orelse return error.TestUnexpectedResult) + version_marker.len;
     altered[version_at] ^= 1;
-    try testing.expect(!std.mem.eql(u8, &original, &sha256(&altered)));
+    try testing.expect(!original.eql(schemaMark(&altered)));
 
     altered = crest.SidecarSchema.canonical_bytes;
     const order_at = std.mem.indexOf(u8, &altered, crest.SidecarSchema.class_order) orelse return error.TestUnexpectedResult;
     altered[order_at] ^= 1;
-    try testing.expect(!std.mem.eql(u8, &original, &sha256(&altered)));
+    try testing.expect(!original.eql(schemaMark(&altered)));
 
     altered = crest.SidecarSchema.canonical_bytes;
     const cap_marker = "saturation-cap/u16le\x00";
     const cap_at = (std.mem.indexOf(u8, &altered, cap_marker) orelse return error.TestUnexpectedResult) + cap_marker.len;
     altered[cap_at] ^= 1;
-    try testing.expect(!std.mem.eql(u8, &original, &sha256(&altered)));
+    try testing.expect(!original.eql(schemaMark(&altered)));
 
     altered = crest.SidecarSchema.canonical_bytes;
     const interpretation_at = std.mem.indexOf(u8, &altered, crest.SidecarSchema.element_interpretation) orelse return error.TestUnexpectedResult;
     altered[interpretation_at] ^= 1;
-    try testing.expect(!std.mem.eql(u8, &original, &sha256(&altered)));
+    try testing.expect(!original.eql(schemaMark(&altered)));
 
     altered = crest.SidecarSchema.canonical_bytes;
     altered[altered.len - 1] ^= 1;
-    try testing.expect(!std.mem.eql(u8, &original, &sha256(&altered)));
+    try testing.expect(!original.eql(schemaMark(&altered)));
 }
 
 fn demand(pairs: []const struct { crest.Class, u16 }) crest.Vector {

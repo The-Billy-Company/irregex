@@ -13,6 +13,7 @@
 const std = @import("std");
 const tri = @import("trigram.zig");
 const vi = @import("../postings/varint.zig");
+const signet = @import("../../../kernel/primitives/signet.zig");
 
 // ── blob builders ──────────────────────────────────────────────────────────
 
@@ -30,7 +31,7 @@ fn makeBlob(
 ) ![]u8 {
     std.debug.assert(dir_tri.len == dir_off.len and dir_tri.len == dir_count.len);
     const n = dir_tri.len;
-    const buf = try a.alloc(u8, tri.header_len + n * 12 + body.len);
+    const buf = try a.alloc(u8, tri.header_len + n * 12 + body.len + signet.len);
     @memcpy(buf[0..8], "GISTIDX\x01");
     std.mem.writeInt(u32, buf[8..][0..4], tri.format_version, .little);
     std.mem.writeInt(u32, buf[12..][0..4], doc_count, .little);
@@ -50,6 +51,10 @@ fn makeBlob(
         off += 4;
     }
     @memcpy(buf[off..][0..body.len], body);
+    // Sealed like the real writer, so every case below stays a test of the
+    // STRUCTURAL invariant it names: the blob is malformed on purpose, not
+    // merely unsealed, and the loader has to reject it on its own merits.
+    signet.sealAt(buf, off + body.len);
     return buf;
 }
 

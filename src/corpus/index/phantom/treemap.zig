@@ -36,6 +36,7 @@ const corpus_mod = @import("../../tree/corpus.zig");
 const ignore = @import("../../tree/ignore.zig");
 const bulkstat = @import("../../tree/bulkstat.zig");
 const frame = @import("../frame/frame.zig");
+const signet = @import("../../../kernel/primitives/signet.zig");
 const Dir = std.Io.Dir;
 
 const file_alias = corpus_mod.ArtifactPath("tree.map");
@@ -43,7 +44,7 @@ pub fn treemapFile() []const u8 {
     return file_alias.get();
 }
 
-const magic = "GISTTRE1";
+const magic = "GISTTRE2";
 /// magic(8) · anchor i64 · ndirs u32 · nents u32 · names_len u32 · pad u32 —
 /// 32 bytes, keeping the u32-aligned record arrays aligned inside any
 /// page-aligned mapping.
@@ -90,6 +91,15 @@ pub const View = struct {
         return v.names[e.name_off..][0..e.name_len];
     }
 
+    /// Prove the mapped snapshot is the one `build` wrote. Deferred like the
+    /// content shard's: `decode` already refuses every dangling reference, so
+    /// what the seal adds is the case bounds checking cannot see — a flipped
+    /// byte inside a NAME, which yields a valid snapshot listing a directory
+    /// child that was never there.
+    pub fn verify(v: *const View) signet.Error!void {
+        return signet.verify(v.map);
+    }
+
     pub fn deinit(v: *View) void {
         std.posix.munmap(v.map);
     }
@@ -123,7 +133,7 @@ pub fn decode(_: void, map: frame.Mapping) !View {
     const names_len = std.mem.readInt(u32, map[24..28], .little);
     const dirs_bytes = @as(usize, ndirs) * @sizeOf(Rec);
     const ents_bytes = @as(usize, nents) * @sizeOf(Ent);
-    if (ndirs == 0 or map.len != header_len + dirs_bytes + ents_bytes + names_len) return error.Corrupt;
+    if (ndirs == 0 or map.len != header_len + dirs_bytes + ents_bytes + names_len + signet.len) return error.Corrupt;
     const dirs = std.mem.bytesAsSlice(Rec, map[header_len..][0..dirs_bytes]);
     const ents = std.mem.bytesAsSlice(Ent, map[header_len + dirs_bytes ..][0..ents_bytes]);
     const names = map[header_len + dirs_bytes + ents_bytes ..][0..names_len];
@@ -184,7 +194,7 @@ pub fn build(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !voi
 
     var blob: std.ArrayList(u8) = .empty;
     defer blob.deinit(gpa);
-    try blob.ensureTotalCapacity(gpa, header_len + b.dirs.items.len * @sizeOf(Rec) + b.ents.items.len * @sizeOf(Ent) + b.names.items.len);
+    try blob.ensureTotalCapacity(gpa, header_len + b.dirs.items.len * @sizeOf(Rec) + b.ents.items.len * @sizeOf(Ent) + b.names.items.len + signet.len);
     blob.appendSliceAssumeCapacity(magic);
     var scratch: [8]u8 = undefined;
     std.mem.writeInt(i64, &scratch, @intCast(anchor_ns), .little);
@@ -199,6 +209,7 @@ pub fn build(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !voi
     blob.appendSliceAssumeCapacity(std.mem.sliceAsBytes(b.dirs.items));
     blob.appendSliceAssumeCapacity(std.mem.sliceAsBytes(b.ents.items));
     blob.appendSliceAssumeCapacity(b.names.items);
+    try signet.sealInto(gpa, &blob);
     try frame.writeAtomic(io, treemapFile(), blob.items);
 }
 

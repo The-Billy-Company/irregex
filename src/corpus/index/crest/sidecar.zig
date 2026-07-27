@@ -9,22 +9,27 @@
 //! Fail-closed like every other loader tier: a missing, truncated, foreign, or
 //! doc-count-mismatched blob decodes to null and the query simply loses the
 //! crest sieve for that invocation — elision correctness never depends on this
-//! file existing (a legacy cache without it still answers exactly).
+//! file existing (a legacy cache without it still answers exactly). The table
+//! carries an artifact signet for the damage no layout check can reach; see
+//! `verify` for why the mapped read path does not spend it.
 
 const std = @import("std");
 const crest = @import("../../../kernel/primitives/crest.zig");
+const signet = @import("../../../kernel/primitives/signet.zig");
 
 pub const file_name = "crest.bin";
 
-const magic = "GISTCRS2";
+const magic = "GISTCRS3";
 const version_off = magic.len;
 const class_count_off = version_off + @sizeOf(u16);
 const element_width_off = class_count_off + 1;
 const doc_count_off = element_width_off + 1;
 const schema_hash_off = doc_count_off + @sizeOf(u32);
-const reserved_off = schema_hash_off + std.crypto.hash.sha2.Sha256.digest_length;
-/// v2: magic(8), version(2), K(1), width(1), doc_count(4), schema SHA-256(32),
-/// reserved-zero padding(16). Body begins at 64 for page-map alignment.
+const reserved_off = schema_hash_off + signet.len;
+/// v3: magic(8), version(2), K(1), width(1), doc_count(4), schema signet(32),
+/// reserved-zero padding(16). Body begins at 64 for page-map alignment, and an
+/// artifact signet trails it — `header_len` and the seal are both multiples of
+/// the record width, so the body stays `Vector`-aligned and exactly sized.
 pub const header_len = 64;
 const record_len = crest.K * @sizeOf(u16);
 /// One fact: this sidecar cannot be written as asked. A doc count past the
@@ -37,7 +42,8 @@ pub const EncodeError = error{Oversized};
 /// plausible short body. The encoder adds the u32 document-ID-space bound.
 pub fn checkedEncodedSize(doc_count: usize) ?usize {
     const body_len = std.math.mul(usize, doc_count, record_len) catch return null;
-    return std.math.add(usize, header_len, body_len) catch null;
+    const framed = std.math.add(usize, header_len, body_len) catch return null;
+    return std.math.add(usize, framed, signet.len) catch null;
 }
 
 pub fn encodedSize(doc_count: usize) EncodeError!usize {
@@ -56,8 +62,7 @@ pub fn writeInto(vectors: []const crest.Vector, buf: []u8) EncodeError!usize {
     buf[class_count_off] = @intCast(crest.K);
     buf[element_width_off] = @sizeOf(u16);
     std.mem.writeInt(u32, buf[doc_count_off..][0..4], @intCast(vectors.len), .little);
-    const schema_hash = crest.SidecarSchema.hash();
-    @memcpy(buf[schema_hash_off..reserved_off], &schema_hash);
+    @memcpy(buf[schema_hash_off..reserved_off], &crest.SidecarSchema.hash().bytes);
     @memset(buf[reserved_off..header_len], 0);
 
     var off: usize = header_len;
@@ -67,7 +72,8 @@ pub fn writeInto(vectors: []const crest.Vector, buf: []u8) EncodeError!usize {
             off += 2;
         }
     }
-    return off;
+    signet.sealAt(buf, off);
+    return off + signet.len;
 }
 
 /// Borrowed zero-copy view over a mapped/loaded blob, or null when anything —
@@ -78,19 +84,29 @@ pub fn decode(bytes: []const u8, expected_docs: u32) ?[]const crest.Vector {
     if (bytes.len < header_len or !std.mem.eql(u8, bytes[0..magic.len], magic)) return null;
     if (std.mem.readInt(u16, bytes[version_off..][0..2], .little) != crest.SidecarSchema.format_version) return null;
     if (bytes[class_count_off] != crest.K or bytes[element_width_off] != @sizeOf(u16)) return null;
-    const expected_hash = crest.SidecarSchema.hash();
-    if (!std.mem.eql(u8, bytes[schema_hash_off..reserved_off], &expected_hash)) return null;
+    if (!std.mem.eql(u8, bytes[schema_hash_off..reserved_off], &crest.SidecarSchema.hash().bytes)) return null;
     for (bytes[reserved_off..header_len]) |padding| if (padding != 0) return null;
 
     const doc_count = std.mem.readInt(u32, bytes[doc_count_off..][0..4], .little);
     if (doc_count != expected_docs) return null;
     const need = checkedEncodedSize(doc_count) orelse return null;
     if (bytes.len != need) return null;
-    const data = bytes[header_len..];
+    const data = bytes[header_len .. bytes.len - signet.len];
     if (@intFromPtr(data.ptr) % @alignOf(crest.Vector) != 0) return null;
     const aligned: []align(@alignOf(crest.Vector)) const u8 = @alignCast(data);
     if (comptime @import("builtin").cpu.arch.endian() != .little) return null; // LE readers only; others fall back live
     return std.mem.bytesAsSlice(crest.Vector, aligned);
+}
+
+/// Prove a mapped sidecar intact — the half `decode` deliberately skips.
+///
+/// The sieve is the one reader in this kernel whose corruption story is a
+/// MISSED match rather than a wrong one: a ρ(d) that rots downward prunes a
+/// document that would have matched, and no layout check can see it. Sealing
+/// makes that detectable; leaving the check out of `decode` keeps the mapped
+/// table's cost proportional to the pages a query actually reads.
+pub fn verify(bytes: []const u8) signet.Error!void {
+    return signet.verify(bytes);
 }
 
 /// Compute the crest table for `docs`, fanned across cores (the pass is

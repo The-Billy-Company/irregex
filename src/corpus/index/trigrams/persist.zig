@@ -14,7 +14,9 @@
 //! Publish is generation-atomic: both blobs land under `gens/<id>/` first, then
 //! a single `pair.gen` rename publishes the pair. Readers bind to that id and
 //! re-check it after mapping, so they never observe new `index.gist` with old
-//! `paths.list` (or the reverse).
+//! `paths.list` (or the reverse). Publishing also retires the generations it
+//! supersedes — `lapse.zig` owns that policy, and `publishGeneration` is the
+//! one place the two halves meet.
 
 const std = @import("std");
 const trigram = @import("trigram.zig");
@@ -24,6 +26,7 @@ const corpus_mod = @import("../../tree/corpus.zig");
 const crest = @import("../../../kernel/primitives/crest.zig");
 const crest_sidecar = @import("../crest/sidecar.zig");
 const codicil_mod = @import("codicil.zig");
+const lapse = @import("lapse.zig");
 const frame = @import("../frame/frame.zig");
 const assay = @import("../../../assay/assay.zig");
 const Dir = std.Io.Dir;
@@ -429,9 +432,7 @@ pub fn persistIndexAndPathsAt(
     try writeAtomic(io, pf_gen.basens, &ns_buf);
 
     // Single atomic publish of the pair.
-    var gen_path_buf: [512]u8 = undefined;
-    const gen_path = try joinPath(&gen_path_buf, .{ out_dir, "pair.gen" });
-    try writeAtomic(io, gen_path, gen);
+    try publishGeneration(io, out_dir, gen);
 
     // Stable aliases for status / bench tooling (after publish; load prefers
     // gens/). Hardlinked from the staged generation — the blobs are already on
@@ -442,6 +443,32 @@ pub fn persistIndexAndPathsAt(
         try writePairBlobs(io, out_dir, blob, pl.items, rl.items, cblob);
 
     return blob.len;
+}
+
+/// Flip `pair.gen` to `gen` — the single atomic act that publishes a staged
+/// generation — then retire the ones it superseded (`lapse.zig`). Both build
+/// paths end here, so a generation becoming live and the history that becoming
+/// live obsoletes have ONE definition and cannot drift apart. Retention is
+/// best-effort by contract: it reports rather than fails, so a directory it
+/// could not remove costs disk, never the publish.
+fn publishGeneration(io: std.Io, out_dir: []const u8, gen: []const u8) !void {
+    var gen_path_buf: [512]u8 = undefined;
+    try writeAtomic(io, try joinPath(&gen_path_buf, .{ out_dir, "pair.gen" }), gen);
+    reclaimSuperseded(io, out_dir, gen);
+}
+
+/// Retire what the generation `gen` superseded, publishing nothing. Every
+/// publish ends in this (via `publishGeneration`), but the no-change amend
+/// path never publishes at all — it advances the freshness anchor and stops —
+/// so without a second call site `gist index` would tidy the artifact
+/// directory only on the runs that happened to find work, leaving a backlog to
+/// drain behind future edits. Calling it here too makes the lifecycle verb
+/// idempotent in the way its name implies, for the cost of one directory
+/// listing.
+pub fn reclaimSuperseded(io: std.Io, out_dir: []const u8, gen: []const u8) void {
+    var gens_buf: [512]u8 = undefined;
+    const gens_dir = joinPath(&gens_buf, .{ out_dir, gens_subdir }) catch return;
+    _ = lapse.reclaim(io, gens_dir, gen);
 }
 
 /// A fresh generation id: hex wall-clock ns, unique per publish on one box.
@@ -575,9 +602,7 @@ pub fn publishCodicil(io: std.Io, out_dir: []const u8, base_gen: []const u8, gen
 
     try writeAtomic(io, dst.codicil, blob);
 
-    var gen_path_buf: [512]u8 = undefined;
-    const gen_path = try joinPath(&gen_path_buf, .{ out_dir, "pair.gen" });
-    try writeAtomic(io, gen_path, gen);
+    try publishGeneration(io, out_dir, gen);
 }
 
 fn linkOrCopy(io: std.Io, src: []const u8, dest: []const u8) !void {

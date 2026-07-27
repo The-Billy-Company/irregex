@@ -89,7 +89,7 @@ refuse a rendezvous that belongs to another tree (`../../../surface/face/gist/da
 
 The binding is only half the proof, and for a while both halves were prose. Each
 mapped artifact hand-copied the same four steps, and two of them are the kind
-that fail *quietly*: prove the binding, map, decode, and refuse a **future-dated
+that fail _quietly_: prove the binding, map, decode, and refuse a **future-dated
 anchor** (an anchor newer than now dates every file in the tree as unchanged, so
 one bad clock trusts the whole corpus at once). Omitting either gate does not
 lose an optimization — it fabricates output, at real paths, that no live walk
@@ -113,8 +113,12 @@ The freshness anchor (`../trigrams/fresh.zig`) is not a mapped artifact — it i
 eight bytes read directly — so it proves the binding itself and appears in these
 assertions separately.
 
-Framing only — magic bytes, versions, and checksums stay with each format, where
-the corruption story lives. `frame_test.zig` covers the protocol's own refusals
+Framing only — magic bytes and versions stay with each format, where its own
+shape is described. Integrity does not: every artifact seals with the one digest
+in [`../../../kernel/primitives/signet.zig`](../../../kernel/primitives/signet.zig),
+so "are these the bytes we wrote" has a single answer instead of a per-format
+checksum each loader had to remember to re-check (and three of them, including
+the two biggest blobs, never did). `frame_test.zig` covers the protocol's own refusals
 (foreign binding, future anchor, torn blob, and no leak when a decode is thrown
 away); per-format round-trip and corruption tests ride the consumers' suites
 (`persist_test.zig`, `codex_test.zig`, `atlas_test.zig`).

@@ -68,6 +68,12 @@ pub const codicil = @import("corpus/index/trigrams/codicil.zig");
 pub const crest = @import("kernel/primitives/crest.zig");
 pub const crest_sidecar = @import("corpus/index/crest/sidecar.zig");
 
+// ── the signet (one durable identity for bytes that outlive the process) ──
+// The seal every persisted artifact carries and the digest an embedder needs to
+// speak the same integrity language as the index it maps. Hash-table keys and
+// the kinship sketch hashes are deliberately NOT this — see the module header.
+pub const signet = @import("kernel/primitives/signet.zig");
+
 // ── the ward (shared reader/writer discipline) ──
 // The concurrency-axis peer of `parallel.zig`: lease guards + the double-checked
 // read-mostly `readReconciled` dance the warm session rides instead of

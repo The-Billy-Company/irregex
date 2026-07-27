@@ -22,16 +22,24 @@
 //! prefix-free and no payload can impersonate another domain's framing — a
 //! schema digest can never be accepted as an artifact seal, whatever the bytes.
 //!
-//! WHAT DOES NOT BELONG HERE. Two other kinds of hashing live in this tree, and
-//! moving them here would be a bug, not a cleanup:
+//! WHAT DOES NOT BELONG HERE. Three other kinds of hashing live in this tree,
+//! and moving them here would be a bug, not a cleanup:
 //!
-//!   * hash-TABLE keys — `std.hash.Wyhash` in the path→doc lookups and the DFA
-//!     state-set maps. A slot index wants speed, is never persisted, and
-//!     survives a collision by construction: it re-probes and compares the key.
+//!   * hash-TABLE keys and the ranking view's mirror fingerprint —
+//!     `std.hash.Wyhash` in the path→doc lookups, the DFA state-set maps, and
+//!     `kernel/rank/mirror.zig`. Each wants speed, is never persisted, and
+//!     survives a collision by construction: a slot re-probes and compares the
+//!     key, and a mirror claim is guarded by an exact length compare and only
+//!     ever reorders an answer it cannot change.
 //!   * the LZ78 phrase and winnowing hashes in `kernel/kinship/`. FNV there is
 //!     not a checksum, it IS the sketch — phrase identity feeds bottom-k
 //!     selection, so swapping the function moves every distance in the corpus
 //!     and silently re-grades every answer relate has ever given.
+//!   * the C-ABI schema digest in `surface/ffi/`. Four languages must mint the
+//!     same constant from the same table, and it is `tools/build_schema_tables.py`
+//!     that mints it: SHA-256 is in every one of those standard libraries and
+//!     BLAKE3 is in none of them. That digest is a version handshake, not a
+//!     seal against corruption, and it is already cryptographic.
 //!
 //! A signet is for bytes that OUTLIVE the process and get compared later.
 

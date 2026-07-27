@@ -129,6 +129,54 @@ test "persistIndexAndPathsAt: generation publish keeps readers off a torn pair" 
     try std.testing.expectEqual(@as(?[]const crest.Vector, null), loaded_b.crest);
 }
 
+test "persistIndexAndPathsAt: publishing retires the generations it supersedes" {
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = try std.fmt.allocPrint(gpa, "/tmp/gist_persist_lapse_{x}", .{@intFromPtr(&threaded)});
+    defer gpa.free(root);
+    Dir.cwd().deleteTree(io, root) catch {};
+    defer Dir.cwd().deleteTree(io, root) catch {};
+
+    // Four ancient generations (a tiny id is a nanosecond stamp from 1970, so
+    // each is far outside any grace window), plus a directory whose name no
+    // publish could have minted. Publishing under the DEFAULT policy should
+    // collect the oldest two, hold the newest two as reader grace, and never
+    // touch the alien — proving `publishGeneration` really runs retention, and
+    // runs it under the policy production gets, which testing `lapse` directly
+    // cannot show.
+    var stale: [4][]const u8 = undefined;
+    for (&stale, [_][]const u8{ "10", "20", "30", "40" }) |*slot, id| {
+        slot.* = try std.fmt.allocPrint(gpa, "{s}/gens/{s}", .{ root, id });
+        try Dir.cwd().createDirPath(io, slot.*);
+    }
+    defer for (stale) |s| gpa.free(s);
+    const alien = try std.fmt.allocPrint(gpa, "{s}/gens/scratch", .{root});
+    defer gpa.free(alien);
+    try Dir.cwd().createDirPath(io, alien);
+
+    const docs = [_][]const u8{"alpha cat"};
+    const paths = [_][]const u8{"a.txt"};
+    var idx = try Index.build(gpa, &docs);
+    defer idx.deinit();
+    _ = try persist.persistIndexAndPathsAt(gpa, io, root, &idx, &paths, &.{"."}, null, std.Io.Clock.now(.real, io).nanoseconds);
+
+    try std.testing.expectError(error.FileNotFound, Dir.cwd().statFile(io, stale[0], .{}));
+    try std.testing.expectError(error.FileNotFound, Dir.cwd().statFile(io, stale[1], .{}));
+    _ = try Dir.cwd().statFile(io, stale[2], .{}); // reader grace (keep = 2)
+    _ = try Dir.cwd().statFile(io, stale[3], .{});
+    _ = try Dir.cwd().statFile(io, alien, .{});
+
+    // The pair this publish made live is of course still readable — retention
+    // must never cost the generation it was triggered by.
+    var loaded = (try persist.loadAt(gpa, io, root, false)).?;
+    defer loaded.deinit();
+    try std.testing.expectEqual(@as(u32, 1), loaded.idx.doc_count);
+    try std.testing.expectEqualStrings("a.txt", loaded.paths.items[0]);
+}
+
 test "persistIndexAndPathsAt: concurrent loaders never observe a mixed generation" {
     const gpa = std.testing.allocator;
     var threaded = std.Io.Threaded.init(gpa, .{});

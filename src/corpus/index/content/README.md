@@ -5,7 +5,8 @@ doc_radar:
       file: pkg/kernels/irregex/src/corpus/index/content/shard.zig
       contains:
         - "needsLiveRead"
-        - "GISTSHD1"
+        - "GISTSHD2"
+        - "pub fn verify"
 ---
 
 # `corpus/index/content/` — the content shard
@@ -37,8 +38,16 @@ whether or not a shard is loaded. This is proven continuously by the
 which diff the shard-served run against `--no-index` (pure live walk).
 
 Build: `gist index` (whole-CWD indexed corpora only), self-anchored — its own
-build instant rides in the `GISTSHD1` header, so the freshness gate binds to the
+build instant rides in the `GISTSHD2` header, so the freshness gate binds to the
 shard's _own_ anchor and a stale shard beside a fresh index (or the reverse)
 only serves _fewer_ slices, never a wrong one. Fail-open everywhere: a missing,
 corrupt, foreign, or future-dated blob loads as null and every file is read live
 exactly as before. `GIST_NO_SHARD=1` and `--no-index` both disable it.
+
+The blob is sealed with a
+[`signet`](../../../kernel/primitives/signet.zig), checked only when someone
+calls `View.verify`. Layout validation cannot see bit rot inside a body — flip a
+content byte and every offset, length, and name still agrees — so the seal is
+what stands between a served slice and bytes that are no longer the file's.
+Checking it at load would digest ~215 MB to save 20k `open` calls, which is the
+saving this artifact exists to make, so it waits to be asked.
