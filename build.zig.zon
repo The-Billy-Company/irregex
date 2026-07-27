@@ -18,6 +18,15 @@
             .hash = "N-V-__8AACsQywAxzz2irB4p1ssU5F43ChN0ztDcy_GRz_Hz",
             .lazy = true,
         },
+        // libsais 2.10.2 — the suffix sort under the codex FM-index. Same
+        // posture as pcre2 above: the bytes that build live under
+        // vendor/libsais/, and this `.lazy` entry only pins the upstream
+        // release by URL + content hash (ledger row zig/libsais).
+        .libsais = .{
+            .url = "https://github.com/IlyaGrebnov/libsais/archive/refs/tags/v2.10.2.tar.gz",
+            .hash = "N-V-__8AAPB0GQBIBogUbM-MgZJ-IjjoKFw9PBg0zJ5IHbVV",
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",

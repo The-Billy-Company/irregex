@@ -34,14 +34,48 @@ const deep_tests = [_][]const u8{
     "symbolic: document differential vs the Pike VM", // 88 s
 };
 
-// ── vendored PCRE2 10.47 (the opt-in `-P` backend) ──
-// Hermetic: the exact upstream release is pinned under vendor/pcre2/ and
-// compiled from source here — no system/global libpcre2 is ever consulted, so
-// the build is byte-reproducible on any machine. Provenance (release URL +
-// sha256) lives in vendor/pcre2/README.md. The 8-bit library sources are the
-// canonical set from PCRE2's own NON-AUTOTOOLS-BUILD guide (step 4);
-// pcre2_jit_compile.c #includes the sljit backend from ../deps/sljit relative
-// to the src dir, so the vendored src↔deps layout must be preserved.
+// ── the vendored C floor ──
+// Third-party C compiled from pinned sources under `vendor/`, never from the
+// host: no system libpcre2, no system libsais, so the build is byte-
+// reproducible on any machine. One row per static archive; provenance (release
+// URL, sha256, which subset is kept and why) lives in that library's
+// `vendor/<name>/README.md`. Feature selection is `-D` flags here — visible and
+// reviewable — so the vendored sources stay byte-identical to upstream and an
+// update is a clean re-vendor rather than a patch to reconcile. Both libraries
+// are bound with explicit `extern` declarations rather than `@cImport`, so no
+// module outside this file needs their include paths.
+const Vendored = struct {
+    /// Static-archive name (must not collide with a system library's).
+    name: []const u8,
+    /// Header search path for the archive's own sources, repo-relative.
+    include: []const u8,
+    /// C source root, repo-relative; `files` are relative to it.
+    src: []const u8,
+    files: []const []const u8,
+    flags: []const []const u8,
+};
+
+const floor_libs = [_]Vendored{
+    .{
+        .name = "pcre2irregex", // the opt-in `-P` backend
+        .include = "vendor/pcre2/src",
+        .src = "vendor/pcre2/src",
+        .files = &pcre2_sources,
+        .flags = &pcre2_cflags,
+    },
+    .{
+        .name = "libsais", // the codex FM-index's suffix-array constructor
+        .include = "vendor/libsais/include",
+        .src = "vendor/libsais/src",
+        .files = &.{"libsais.c"},
+        .flags = &libsais_cflags,
+    },
+};
+
+// The 8-bit PCRE2 library sources: the canonical set from PCRE2's own
+// NON-AUTOTOOLS-BUILD guide (step 4). pcre2_jit_compile.c #includes the sljit
+// backend from ../deps/sljit relative to the src dir, so the vendored src↔deps
+// layout must be preserved.
 const pcre2_sources = [_][]const u8{
     "pcre2_auto_possess.c", "pcre2_chartables.c",     "pcre2_chkdint.c",
     "pcre2_compile.c",      "pcre2_compile_cgroup.c", "pcre2_compile_class.c",
@@ -60,10 +94,13 @@ const pcre2_sources = [_][]const u8{
 // the vendored config.h, which stays byte-identical to upstream's
 // config.h.generic. HAVE_CONFIG_H pulls in that header for the value-macro
 // defaults (MATCH_LIMIT, LINK_SIZE, NEWLINE_DEFAULT, …); the -D flags turn on
-// the 8-bit library, Unicode/UTF, JIT, and static linkage. `-fno-sanitize=
-// undefined` keeps Zig's C UBSan from trapping on PCRE2's intentional, well-
-// defined-in-practice pointer/shift idioms — a `-P` query must degrade to a
-// clean error, never a sanitizer abort.
+// the 8-bit library, Unicode/UTF, JIT, and static linkage. SUPPORT_JIT is
+// always compiled in; on an sljit-unsupported target the backend self-disables
+// and `pcre2_jit_compile` reports an error, which the Zig wrapper treats as
+// "no JIT" and falls back to the interpreter. `-fno-sanitize=undefined` keeps
+// Zig's C UBSan from trapping on PCRE2's intentional, well-defined-in-practice
+// pointer/shift idioms — a `-P` query must degrade to a clean error, never a
+// sanitizer abort.
 const pcre2_cflags = [_][]const u8{
     "-DHAVE_CONFIG_H",
     "-DPCRE2_CODE_UNIT_WIDTH=8",
@@ -75,31 +112,62 @@ const pcre2_cflags = [_][]const u8{
     "-std=c11",
 };
 
-/// Build the vendored PCRE2 8-bit library (JIT included) as one static archive
-/// at `optimize`. SUPPORT_JIT is always compiled in; on an sljit-unsupported
-/// target the backend self-disables and `pcre2_jit_compile` reports an error,
-/// which the Zig wrapper treats as "no JIT" and falls back to the interpreter.
-fn pcre2Library(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
-    const mod = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
-    mod.addIncludePath(b.path("vendor/pcre2/src"));
-    mod.addCSourceFiles(.{
-        .root = b.path("vendor/pcre2/src"),
-        .files = &pcre2_sources,
-        .flags = &pcre2_cflags,
-    });
-    return b.addLibrary(.{ .name = "pcre2irregex", .linkage = .static, .root_module = mod });
-}
+// libsais compiles with no feature flags at all: LIBSAIS_OPENMP stays OFF, so
+// the parallel entry points are preprocessed away and the archive needs no
+// `libomp` (a dependency neither the toolchain nor the ledger carries).
+// `-fno-sanitize=undefined` matches the PCRE2 rationale — the induced sort
+// walks its suffix array with deliberately negative sentinel indices and
+// one-past-the-end cursors, and a codex build must fail as a Zig error, never
+// as a sanitizer abort inside C.
+const libsais_cflags = [_][]const u8{
+    "-fno-sanitize=undefined",
+    "-std=c99",
+};
 
-/// Every module that compiles the engine links libc: the vendored PCRE2 static
-/// archive is C, and the macOS FSEvents historical journal (`src/corpus/tree/journal.zig`,
-/// the one-shot index-amend replay) reaches CoreServices/CoreFoundation through
-/// libc's `dlopen`/`dlsym` at runtime rather than link-time framework bindings —
-/// so the cold search binary never loads (or pays the launch-time initializers
-/// of) frameworks only an amend arms. `link_libc` also wires the SDK sysroot;
-/// macOS links libSystem regardless.
-fn linkEngineLibc(m: *std.Build.Module) void {
-    m.link_libc = true;
-}
+/// The vendored C floor every module that compiles the engine stands on.
+///
+/// `under(m)` is the entire surface: it wires libc and links every archive in
+/// `floor_libs`, each built at **that module's own** optimize — an adversarial
+/// ReleaseSafe test must not run a Debug C library, and the ReleaseFast CLI
+/// must not link a ReleaseSafe one. Archives are memoized per optimize mode, so
+/// the modules standing on the floor share one build of it per mode instead of
+/// recompiling PCRE2 once each. Admitting a third vendored library is a row in
+/// `floor_libs`; no call site changes.
+const Floor = struct {
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    built: Memo = Memo.initFill(null),
+
+    const Archives = [floor_libs.len]*std.Build.Step.Compile;
+    const Memo = std.EnumArray(std.builtin.OptimizeMode, ?Archives);
+
+    /// Links libc + the whole floor onto `m`.
+    ///
+    /// libc is not incidental: the archives are C, and the macOS FSEvents
+    /// historical journal (`src/corpus/tree/journal.zig`, the one-shot
+    /// index-amend replay) reaches CoreServices/CoreFoundation through libc's
+    /// `dlopen`/`dlsym` at runtime rather than link-time framework bindings —
+    /// so the cold search binary never loads (or pays the launch-time
+    /// initializers of) frameworks only an amend arms. `link_libc` also wires
+    /// the SDK sysroot; macOS links libSystem regardless.
+    fn under(self: *Floor, m: *std.Build.Module) void {
+        m.link_libc = true;
+        for (self.at(m.optimize.?)) |archive| m.linkLibrary(archive);
+    }
+
+    fn at(self: *Floor, optimize: std.builtin.OptimizeMode) Archives {
+        if (self.built.get(optimize)) |ready| return ready;
+        var made: Archives = undefined;
+        for (floor_libs, &made) |lib, *slot| {
+            const mod = self.b.createModule(.{ .target = self.target, .optimize = optimize, .link_libc = true });
+            mod.addIncludePath(self.b.path(lib.include));
+            mod.addCSourceFiles(.{ .root = self.b.path(lib.src), .files = lib.files, .flags = lib.flags });
+            slot.* = self.b.addLibrary(.{ .name = lib.name, .linkage = .static, .root_module = mod });
+        }
+        self.built.set(optimize, made);
+        return made;
+    }
+};
 
 pub fn build(b: *std.Build) void {
     // The unit-test binary is pinned to ReleaseSafe: gist's suite is dominated
@@ -115,16 +183,12 @@ pub fn build(b: *std.Build) void {
         .deep_tests = &deep_tests,
     });
 
-    // Decorate every engine module that compiles the kernel (root + the
-    // ReleaseSafe test twin when `test_optimize` diverges): libc (the macOS
-    // journal's runtime `dlopen` of CoreServices/CoreFoundation + PCRE2's C ABI)
-    // and a PCRE2 built at THAT module's optimize (the adversarial tests
-    // shouldn't run a Debug C library).
+    // Stand every engine module that compiles the kernel (root + the
+    // ReleaseSafe test twin when `test_optimize` diverges) on the vendored C
+    // floor, each at its own optimize.
+    var floor = Floor{ .b = b, .target = k.target };
     var engine_buf: [2]*std.Build.Module = undefined;
-    for (kernelkit.engineModules(k, &engine_buf)) |m| {
-        linkEngineLibc(m);
-        m.linkLibrary(pcre2Library(b, k.target, m.optimize.?));
-    }
+    for (kernelkit.engineModules(k, &engine_buf)) |m| floor.under(m);
 
     // ── the `gist` CLI executable (the product surface) ──
     // `zig build cli -- index` (build + persist once) / `-- status` /
@@ -150,8 +214,7 @@ pub fn build(b: *std.Build) void {
     ) orelse .ReleaseFast;
     // Twin of the root at the CLI optimize — decorations aren't copied.
     const cli_engine = kernelkit.twin(k, cli_optimize);
-    cli_engine.linkLibrary(pcre2Library(b, k.target, cli_optimize));
-    linkEngineLibc(cli_engine);
+    floor.under(cli_engine);
     const cli_mod = b.createModule(.{
         .root_source_file = b.path("src/surface/face/gist/main.zig"),
         .target = k.target,
@@ -208,8 +271,8 @@ pub fn build(b: *std.Build) void {
     // see them break (exactly how a `std.posix.close`/`std.c.fstatat` removal
     // in Zig 0.16 rotted unnoticed). Compile the full CLI module for
     // x86_64-linux-gnu as an OBJECT: full Sema + codegen over every
-    // Linux-reachable line, no PCRE2 C cross-build and no link (the extern
-    // declarations suffice), so the gate stays cheap and cache-friendly.
+    // Linux-reachable line, no cross-build of the C floor and no link (the
+    // extern declarations suffice), so the gate stays cheap and cache-friendly.
     const linux_target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu });
     const check_engine = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
@@ -570,7 +633,6 @@ pub fn build(b: *std.Build) void {
     const c_smoke_mod = b.createModule(.{
         .target = k.target,
         .optimize = k.optimize,
-        .link_libc = true,
     });
     // No framework wiring: the engine object reaches CoreServices/CoreFoundation
     // via runtime `dlopen` (journal.zig), so it exports no FSEvents/CF externs.
@@ -583,10 +645,11 @@ pub fn build(b: *std.Build) void {
         .name = "gist-c-abi-smoke-kernel",
         .root_module = k.root_module,
     }));
-    // The kernel object carries the engine's PCRE2 extern references; the smoke
-    // exe links a matching PCRE2 so those symbols resolve (the C ABI itself does
-    // not touch PCRE2, but the whole engine module is compiled into the object).
-    c_smoke_mod.linkLibrary(pcre2Library(b, k.target, k.optimize));
+    // The kernel object carries the engine's extern references into the C floor
+    // (PCRE2, libsais); the smoke exe stands on a matching floor so those
+    // symbols resolve. The C ABI itself touches neither, but the whole engine
+    // module is compiled into the object.
+    floor.under(c_smoke_mod);
     const c_smoke = b.addExecutable(.{
         .name = "gist-c-abi-smoke",
         .root_module = c_smoke_mod,
