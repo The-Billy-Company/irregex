@@ -18,6 +18,22 @@
 const std = @import("std");
 const kernelkit = @import("kernelkit");
 
+// ── the suite's long poles (`zig build test-quick` stands these aside) ──
+// 991 unit tests cost 1059 s end to end; these four cost 669 s of it, so they
+// set the makespan of ANY sharded run — a shard is a process, and a process
+// cannot split one test. Each is a compile-bound differential (hundreds of
+// powerset DFA builds under the leak-tracking test allocator) carrying an
+// explicit coverage floor, so the cost is real proof and the sweep must not be
+// trimmed to make the clock look better. They stay in `zig build test`; the
+// quick tier just doesn't pretend to have run them.
+// Costs measured with `BRIGADE_TIMES=1` on a 16-core M-series box.
+const deep_tests = [_][]const u8{
+    "word-boundary Unicode quit path", // 320 s
+    "word-boundary differential vs Pike", // 160 s
+    "symbolic: line differential vs the Pike VM", // 101 s
+    "symbolic: document differential vs the Pike VM", // 88 s
+};
+
 // ── vendored PCRE2 10.47 (the opt-in `-P` backend) ──
 // Hermetic: the exact upstream release is pinned under vendor/pcre2/ and
 // compiled from source here — no system/global libpcre2 is ever consulted, so
@@ -93,7 +109,11 @@ pub fn build(b: *std.Build) void {
     // the same suite ~4× slower (5.5 min vs ~80 s) for no extra checking.
     // `-Dtest-optimize=Debug` still yields a Debug test binary when stepping
     // through a failure; the kcov `coverage` binary stays build-wide Debug.
-    const k = kernelkit.addKernel(b, .{ .name = "irregex", .test_optimize = .ReleaseSafe });
+    const k = kernelkit.addKernel(b, .{
+        .name = "irregex",
+        .test_optimize = .ReleaseSafe,
+        .deep_tests = &deep_tests,
+    });
 
     // Decorate every engine module that compiles the kernel (root + the
     // ReleaseSafe test twin when `test_optimize` diverges): libc (the macOS
