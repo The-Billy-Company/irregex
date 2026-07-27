@@ -248,14 +248,6 @@ fn noteAnnals(self: anytype, abs: []const u8) void {
     if (wallNowNs()) |ns| self.session.annals.note(abs, ns) else self.session.annals.noteDoubt();
 }
 
-/// An event that resolves to no path at all: the reconcile takes the full
-/// walk, and the ledger loses the WHICH. It keeps counting the WHETHER, so a
-/// held answer still retires on this event rather than surviving it.
-fn noteUnattributable(self: anytype) void {
-    self.session.dirty_log.noteDoubt();
-    if (comptime @TypeOf(self.*).has_annals) self.session.annals.noteDoubt();
-}
-
 /// Note the exact path an inotify record attributes to, into the session's
 /// `DirtyLog` — and, for a FILE, the annals ledger a one-shot `gist index`
 /// amend and the resident keep's epoch both read. A record with a name
@@ -263,12 +255,13 @@ fn noteUnattributable(self: anytype) void {
 /// nameless record (`ev.len == 0`) is the watched directory itself. Either
 /// resolves to an absolute path (the wds were realpath'd at arm time). An
 /// unmapped wd (evicted/racing) or a malformed name field can't be attributed
-/// → doubt (that drain takes the full walk).
+/// → `noteUnattributable` (that drain takes the full walk, and the ledger keeps
+/// counting a change it cannot place).
 fn noteEvent(self: anytype, ev: *const linux.inotify_event, buf: []const u8, rec_end: usize) void {
-    const parent = self.wd_paths.get(ev.wd) orelse return noteUnattributable(self);
+    const parent = self.wd_paths.get(ev.wd) orelse return self.noteUnattributable();
     if (ev.len == 0) return self.session.dirty_log.note(parent); // the watched dir itself
-    const name = nameOf(ev, buf, rec_end) orelse return noteUnattributable(self);
-    const child = haystack.joinPath(self.gpa, parent, name) catch return noteUnattributable(self);
+    const name = nameOf(ev, buf, rec_end) orelse return self.noteUnattributable();
+    const child = haystack.joinPath(self.gpa, parent, name) catch return self.noteUnattributable();
     defer self.gpa.free(child);
     self.session.dirty_log.note(child);
     if (ev.mask & linux.IN.ISDIR == 0) noteAnnals(self, child);

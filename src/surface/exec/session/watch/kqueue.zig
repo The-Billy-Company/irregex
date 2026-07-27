@@ -108,8 +108,8 @@ fn kqueueLoop(self: anytype) void {
 /// Consume queued vnode events until the queue is empty. Caller MUST hold
 /// `read_lock`. Every `note` precedes the single trailing `markDirty` — the
 /// dirty-log/seqlock ordering contract a scoped reconcile relies on. A
-/// failed consume leaves events we cannot account for, so it raises doubt
-/// (that reconcile walks fully) instead of reporting a clean drain.
+/// failed consume leaves events we cannot account for, so it degrades both
+/// readers (`noteUnattributable`) instead of reporting a clean drain.
 pub fn drainKqueueLocked(self: anytype) void {
     if (comptime !is_macos) return;
     var evs: [256]std.c.Kevent = undefined;
@@ -119,7 +119,7 @@ pub fn drainKqueueLocked(self: anytype) void {
         const n = std.c.kevent(self.kq_fd, &evs, 0, &evs, evs.len, &immediately);
         if (n == 0) break;
         if (n < 0) {
-            self.session.dirty_log.noteDoubt();
+            self.noteUnattributable();
             noted = true;
             break;
         }
@@ -142,11 +142,13 @@ pub fn drainKqueueLocked(self: anytype) void {
 
 /// Apply one vnode event: note the exact path that changed, extend coverage
 /// when a directory's membership moved, and retire a watch whose vnode left.
+/// An event that names no watch of ours — an `EV_ERROR`, or a `udata` that
+/// indexes nothing — is a change we cannot place, and degrades both readers.
 fn applyEvent(self: anytype, ev: std.c.Kevent) void {
     if (comptime !is_macos) return;
-    if (ev.flags & std.c.EV.ERROR != 0) return self.session.dirty_log.noteDoubt();
-    const idx = std.math.cast(u32, ev.udata) orelse return self.session.dirty_log.noteDoubt();
-    if (idx >= self.watches.items.len) return self.session.dirty_log.noteDoubt();
+    if (ev.flags & std.c.EV.ERROR != 0) return self.noteUnattributable();
+    const idx = std.math.cast(u32, ev.udata) orelse return self.noteUnattributable();
+    if (idx >= self.watches.items.len) return self.noteUnattributable();
     if (self.watches.items[idx].fd < 0) return; // retired earlier in this drain
     note(self, self.watches.items[idx].path, self.watches.items[idx].is_dir);
     if (self.watches.items[idx].is_dir) rescanDir(self, idx);

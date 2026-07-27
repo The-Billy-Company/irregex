@@ -21,10 +21,20 @@
 //!
 //! Both backends `note` every changed path into the session's `DirtyLog`, so
 //! reconcile verifies only changed paths — O(changed) instead of O(tree). An
-//! unattributable event becomes `noteDoubt`, forcing one full walk; coverage
-//! that cannot be re-established calls `markDoubtForever`, retiring the fast
-//! path for the session's life (fail-closed). Notes are keyed to absolute
+//! unattributable event becomes `noteUnattributable`, forcing one full walk;
+//! coverage that cannot be re-established calls `markDoubtForever`, retiring the
+//! fast path for the session's life (fail-closed). Notes are keyed to absolute
 //! realpaths, the canonical shape `delta.resolve` expects.
+//!
+//! Each of those degradations has to reach TWO readers, because the session
+//! protects them differently. A QUERY re-derives its answer from the tree, so
+//! forcing the full walk is enough for it. A HELD answer is never re-derived at
+//! all — it is trusted purely on the annals' change epoch standing still, which
+//! a forced walk does nothing for. So an event a backend cannot place must also
+//! reach the ledger, and coverage a backend cannot keep must stop the epoch
+//! being vouched at all. Both translations therefore live on this facade
+//! (`noteUnattributable`, and `resident.zig`'s doubt/disarm hooks) rather than
+//! once per backend, where the two could drift apart.
 //!
 //! The two differ in what they must refuse, because their event KEY SPACES
 //! differ. inotify reports a parent watch descriptor plus a kernel-supplied
@@ -150,6 +160,29 @@ pub fn Watcher(comptime Session: type) type {
 
         pub fn init(gpa: std.mem.Allocator, io: std.Io, session: *Session) @This() {
             return .{ .session = session, .io = io, .gpa = gpa };
+        }
+
+        /// An event arrived that resolves to no path at all — a kqueue
+        /// `EV_ERROR` or a `udata` that indexes nothing, an inotify record whose
+        /// watch descriptor is already gone, a join that would not allocate.
+        /// Coverage is intact, so this is DOUBT, not blindness; both of the
+        /// session's readers must degrade for it, and they degrade differently:
+        ///
+        ///   - the dirty log loses its exactness for one drain, so that
+        ///     reconcile takes the full walk and the QUERY stays correct;
+        ///   - the annals lose the WHICH for good (no walk exists there to
+        ///     re-derive a lost path) and keep counting the WHETHER, so an
+        ///     answer already HELD retires on this event instead of surviving
+        ///     it. Reconciling never protected a held answer — that one is
+        ///     trusted purely on the epoch standing still, and an unplaceable
+        ///     delivery is still an observed change.
+        ///
+        /// It lives on the facade because it is a cross-backend invariant, not a
+        /// backend detail: if the two spell an unplaceable delivery differently
+        /// they stop describing one corpus surface.
+        pub fn noteUnattributable(self: *@This()) void {
+            self.session.dirty_log.noteDoubt();
+            if (comptime has_annals) self.session.annals.noteDoubt();
         }
 
         /// Establish the backend's causal freshness barrier: drain every event the

@@ -10,14 +10,17 @@
 //! anything real drives it. The premise lives in the gap between: a backend
 //! that must arm the ledger, deliver into it, and surrender it correctly.
 //!
-//! Two bugs lived in that gap, and both were invisible to every existing test.
+//! Three bugs lived in that gap, and all were invisible to every existing test.
 //! `inotify` armed the seqlock and the dirty log and never armed the annals, so
 //! `epoch()` answered null and the keep was silently dead on every Linux daemon
 //! — unreachable by a suite that arms the ledger by hand, and unreachable by
 //! `kqueue_test.zig`, which boots a real watcher but is macOS-only by
 //! construction. And losing coverage poisoned only the seqlock: reconciling
 //! kept protecting the QUERY while the stamp stood still under a moving tree,
-//! so an answer already HELD read fresh indefinitely.
+//! so an answer already HELD read fresh indefinitely. The same shape hid once
+//! more on the macOS side, where an event that named no watch of ours raised
+//! doubt in the dirty log alone and left the ledger vouching an epoch it had
+//! never counted that change into.
 //!
 //! So this file grades the premise itself, against a real watcher over a real
 //! tree, on macOS and Linux alike:
@@ -32,6 +35,10 @@
 //!      epoch decline outright; a deliberate shed must move it past anything
 //!      held under the retiring stream. Both are graded THROUGH the keep,
 //!      because a bit on a struct is not the hazard — a served stale answer is.
+//!   4. DOUBT — coverage survives, but one delivery could not be placed. The
+//!      ledger must lose the WHICH and still count the WHETHER, because this is
+//!      the one shape where neither protection holds alone: the reconcile's full
+//!      walk saves the QUERY and does nothing for an answer already held.
 //!
 //! The oracle never runs the engine: it is a re-read of the fixture's own live
 //! ledger, so a backend bug cannot grade its own homework (sins.mdc Sin #2).
@@ -305,6 +312,45 @@ test "vouch: lost coverage stops the epoch being vouched at all" {
             _ = rig.watcher.flushSync();
             try std.testing.expect(keep.recall("q", held) == .hit);
             try std.testing.expect(rig.session.annals.epoch() == null);
+        }
+    }.run);
+}
+
+test "vouch: a delivery nobody could place retires answers held before it" {
+    try withRig("doubt", struct {
+        fn run(rig: *Rig, gpa: std.mem.Allocator) !void {
+            var keep = keepmod.Keep.init(gpa);
+            defer keep.deinit();
+
+            _ = rig.watcher.flushSync(); // settle, so the doubt is what moves the stamp
+            const held = rig.session.annals.epoch() orelse return error.ExpectedVouch;
+            keep.retain("q", held, 0, "answer as of the held epoch\n");
+            // The ledger can still say WHICH files moved, which is the half the
+            // doubt below takes away.
+            const floor = rig.session.annals.floor_ns;
+            var before = rig.session.annals.since(gpa, floor) orelse return error.ExpectedPathAnswer;
+            before.deinit(gpa);
+
+            // An event arrives that names no watch of ours: a kqueue `EV_ERROR`
+            // or a stale `udata`, an inotify record whose wd is already gone.
+            // Coverage is intact — this is doubt, not blindness — but a change
+            // WAS observed, and this is the one shape where neither of the
+            // session's two protections applies on its own.
+            rig.watcher.noteUnattributable();
+
+            // Coverage is intact, so the epoch is still vouchable …
+            const after = rig.session.annals.epoch() orelse return error.DoubtMustNotBlind;
+            // … and it must have counted the change it could not place. Without
+            // that, the stamp stands still across a file the session never
+            // re-examined, and the keep hands back a stale answer — reconciling
+            // protects the QUERY, never an answer already held.
+            try std.testing.expect(after > held);
+            try std.testing.expect(keep.recall("q", after) == .stale);
+
+            // The other half, in the other direction: WHICH is gone for good, so
+            // a one-shot amend declines to the stat walk rather than trusting a
+            // path set missing the delivery nobody could place.
+            try std.testing.expect(rig.session.annals.since(gpa, floor) == null);
         }
     }.run);
 }
