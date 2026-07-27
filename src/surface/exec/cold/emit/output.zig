@@ -36,6 +36,7 @@ const Regex = @import("../../../../kernel/match/regex/regex.zig").Regex;
 const Matcher = @import("../../../../kernel/match/regex/regex.zig").Matcher;
 const Caps = @import("../../../../kernel/match/regex/regex.zig").Caps;
 const word = @import("../../../../kernel/match/regex/regex.zig").word;
+const corpus_mod = @import("../../../../corpus/tree/corpus.zig");
 
 const display = @import("output/display.zig");
 const replace = @import("output/replace.zig");
@@ -76,7 +77,9 @@ pub fn writeDecimal(buf: []u8, v: u64) []u8 {
     var n = v;
     var i: usize = buf.len;
     while (n >= 100) : (n /= 100) {
-        const r = (n % 100) * 2;
+        // `% 100 * 2` is < 200, so narrowing to the index type is exact on every
+        // address width (the `else` arm below already casts for the same reason).
+        const r: usize = @intCast((n % 100) * 2);
         i -= 2;
         buf[i] = dec2[r];
         buf[i + 1] = dec2[r + 1];
@@ -102,9 +105,17 @@ pub const wordOk = word.wordOk;
 
 /// Next non-empty (and, under `-w`, word-valid) match span at/after `from.*`,
 /// advancing `from` past it: a zero-width span skips one byte (the progress
-/// rule), a word-rejected span advances to its end. THE span-iteration loop —
-/// the text emitter and the `--json` stream both step through it, so the two
-/// can never drift on which spans count as "a match".
+/// rule), a word-rejected span RETRIES one byte past its start. THE
+/// span-iteration loop — the text emitter and the `--json` stream both step
+/// through it, so the two can never drift on which spans count as "a match".
+///
+/// Retrying at `start + 1` rather than resuming at `end` is what makes `-w` a
+/// constraint on the search instead of a veto on one candidate. rg compiles the
+/// word rule INTO the pattern (`(?:^|\W)(pat)(?:$|\W)`, reporting the capture),
+/// so a rejected candidate does not consume the region it covered: `rg -w -o
+/// '\s?ς'` over "final ς here" prints `ς`, having shifted the match past the
+/// space its greedy `\s?` would have taken. Skipping to `end` made gist answer
+/// "no match" for that line (found by the differential fuzzer).
 pub fn nextSpan(re: *const Matcher, ss: *Matcher.SpanSim, o: Opts, s: []const u8, from: *usize) ?Matcher.Span {
     while (from.* <= s.len) {
         const sp = re.matchSpan(ss, s, from.*) orelse return null;
@@ -112,8 +123,11 @@ pub fn nextSpan(re: *const Matcher, ss: *Matcher.SpanSim, o: Opts, s: []const u8
             from.* = sp.start + 1;
             continue;
         }
+        if (o.word and !wordOk(o.unicode, s, sp.start, sp.end)) {
+            from.* = sp.start + 1;
+            continue;
+        }
         from.* = sp.end;
-        if (o.word and !wordOk(o.unicode, s, sp.start, sp.end)) continue;
         return sp;
     }
     return null;
@@ -137,6 +151,13 @@ pub const Rows = struct {
     o: Opts,
     /// The match view of one line (`--crlf`-trimmed where that applies).
     mv: []const u8,
+    /// Did this line carry a terminator in the file? rg searches each line WITH
+    /// its terminator, so the zero-width match at the end of the content is real
+    /// for a terminated line (it sits before the `\n`) and does NOT exist on a
+    /// file's unterminated tail — measured: `--count-matches 'x*'` reports 3 over
+    /// "ab\n" and 2 over "ab". Callers that know their line's provenance pass
+    /// `Emitter.lineTerminated`; the default is the common case.
+    terminated: bool = true,
     from: usize = 0,
     last_end: ?usize = null,
 
@@ -144,10 +165,14 @@ pub const Rows = struct {
         while (self.from <= self.mv.len) {
             const sp = self.re.matchSpan(self.ss, self.mv, self.from) orelse return null;
             const empty = sp.end == sp.start;
-            self.from = if (empty) sp.start + 1 else sp.end;
+            // A word-rejected candidate retries one byte on, never consuming the
+            // region it covered — see `nextSpan` for why rg's compiled-in `-w`
+            // makes that the faithful advance.
+            const word_bad = self.o.word and !wordOk(self.o.unicode, self.mv, sp.start, sp.end);
+            self.from = if (empty or word_bad) sp.start + 1 else sp.end;
             const adjacent = empty and self.last_end != null and sp.start == self.last_end.?;
             if ((empty and !self.re.nullable()) or adjacent or
-                (self.o.word and !wordOk(self.o.unicode, self.mv, sp.start, sp.end))) continue;
+                (empty and !self.terminated and sp.start == self.mv.len) or word_bad) continue;
             self.last_end = sp.end;
             return sp;
         }
@@ -265,13 +290,29 @@ pub const Emitter = struct {
     /// zero lines).
     pub fn bufTally(self: *Emitter, path: []const u8, n: usize) usize {
         if (n == 0 and !self.o.include_zero) return 0;
-        if (self.show_name) _ = self.writePath(path, true);
+        if (self.show_name) _ = self.writePath(path, summary_sep);
         // The `-c`/`--count-matches` count emit (one per counted file): the
         // specialized itoa + a raw append, not a `"{d}{s}"` format parse.
         var buf: [20]u8 = undefined;
         self.add(writeDecimal(&buf, n));
         self.add(self.o.outTerm());
         return n;
+    }
+
+    /// Has this run's output ceiling already been spent, counting what this
+    /// Emitter still holds unwritten?
+    ///
+    /// Polled at ROW boundaries by the drivers whose row count is bounded by the
+    /// input's SIZE rather than by its line count. `--vimgrep` prints one row per
+    /// match and every row carries the whole line, so a 5 MiB single line with
+    /// 5 M matches is 12.5 TB of intended output — ripgrep streams exactly that
+    /// at ~92 MiB of RSS, while a renderer that buffers a file has to stop
+    /// somewhere or it stops being a tool (measured before this poll existed:
+    /// 52 GiB of RSS and still climbing when the robustness lane killed it).
+    /// The cut lands BETWEEN rows, never inside one, and trips the same
+    /// truncation notice a file-boundary cut does.
+    pub fn full(self: *const Emitter) bool {
+        return corpus_mod.outputFull(self.out.items.len -| self.chrome);
     }
 
     /// Does any word-bounded match span exist on this line? (`-w` boolean path
@@ -350,6 +391,14 @@ pub const Emitter = struct {
     pub fn offOf(self: *Emitter, slice: []const u8) usize {
         return @intFromPtr(slice.ptr) - self.base;
     }
+
+    /// `path:count` in `-c` / `--count-matches` output. Fixed, and deliberately
+    /// NOT `--field-match-separator`: rg documents that flag as "only used when
+    /// printing matching lines", and a count is a summary, not a matching line —
+    /// its own printer carries a separator no flag reaches. Differentially
+    /// confirmed against live rg (`bench/rgsuite/fuzz.py`, which is how the leak
+    /// was found: gist was rendering `path|1` under `--field-match-separator '|'`).
+    const summary_sep = ":";
 
     /// The inter-field separator: `--field-match-separator` (default `:`) on a
     /// match line, `--field-context-separator` (default `-`) on a context line.
@@ -431,13 +480,13 @@ pub const Emitter = struct {
     /// the whole anchor, the caller's wider one when `prefix` opened it first.
     /// Returns the offset just past the path — where a wider anchor would end
     /// if the path turns out to be the last field.
-    fn writePath(self: *Emitter, path: []const u8, is_match: bool) usize {
+    fn writePath(self: *Emitter, path: []const u8, sep: []const u8) usize {
         const mine = !self.linked;
         if (mine) self.linkOpen(path, 0, 0, true);
         self.paint(self.o.palette.path, path);
         if (mine) self.linkClose();
         const end = self.out.items.len;
-        if (self.o.null_sep) self.out.append(self.a, 0) catch oom() else self.paint(self.o.palette.sep, self.fieldSep(is_match));
+        if (self.o.null_sep) self.out.append(self.a, 0) catch oom() else self.paint(self.o.palette.sep, sep);
         return end;
     }
 
@@ -457,14 +506,19 @@ pub const Emitter = struct {
         // Where the anchor ends: after the last field's VALUE, before its
         // separator. Re-read after each field so the last one wins.
         var anchor = self.out.items.len;
-        if (self.show_name) anchor = self.writePath(path, is_match);
+        if (self.show_name) anchor = self.writePath(path, sep);
         var buf: [20]u8 = undefined;
         if (self.o.line_num) {
             self.paint(self.o.palette.line, writeDecimal(&buf, lineno));
             anchor = self.out.items.len;
             self.paint(self.o.palette.sep, sep);
         }
-        if (self.o.column and is_match and col != 0) {
+        // The column prints whenever the caller HAS one, match or context: rg's
+        // vimgrep printer gives a context line a column too, which is visible
+        // under `-v` where the context line is the one the pattern hit
+        // (`rg --vimgrep -C1 -v -e aa` ⇒ `t.txt-1-1-aa x`). Every ordinary
+        // context row passes 0 and so still prints none.
+        if (self.o.column and col != 0) {
             self.paint(self.o.palette.column, writeDecimal(&buf, col));
             anchor = self.out.items.len;
             self.add(sep);
@@ -479,9 +533,14 @@ pub const Emitter = struct {
 
     /// The `--heading` group title: the path on its own line, and — when links
     /// are on — the click target for the whole group beneath it.
+    ///
+    /// Painted with the same `path` element `writePath` uses for the row
+    /// prefix, because it is the same path in a different position: rg colors a
+    /// heading and an `-l` row exactly as it colors the `path:` a row carries.
+    /// Leaving it bare made the one line a reader scans for stand out least.
     pub fn heading(self: *Emitter, path: []const u8) void {
         self.linkOpen(path, 0, 0, true);
-        self.add(path);
+        self.paint(self.o.palette.path, path);
         self.linkClose();
         self.add(if (self.o.null_sep) "\x00" else self.o.outTerm());
     }
@@ -498,7 +557,7 @@ pub const Emitter = struct {
     /// For a non-nullable pattern the two walks agree, which is why this went
     /// unseen: every ordinary pattern makes no empty spans to disagree about.
     pub fn firstCol(self: *Emitter, ssim: *Matcher.SpanSim, line: []const u8) usize {
-        var rows = Rows{ .re = self.re, .ss = ssim, .o = self.o, .mv = line };
+        var rows = Rows{ .re = self.re, .ss = ssim, .o = self.o, .mv = line, .terminated = self.lineTerminated(line) };
         const sp = rows.next() orelse return 0;
         return sp.start + 1;
     }

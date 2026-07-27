@@ -158,12 +158,30 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // truncated (and, on the unordered parallel engine, nondeterministic) subset.
     // The hard OOM ceiling still bounds a genuine blowup. See `Opts.enumeration`.
     if (o.enumeration()) corpus_mod.exemptSoftCap();
-    // Is a human watching? Three behaviors key on this one answer — the long-line
-    // guard below, `--color auto` (inside `color.enabled`), and the delivery
-    // cadence — and `--plain` is the single spelling that stands all three down,
-    // so nothing the DESTINATION decides differs between a terminal run and a
-    // redirected one. (Walk order is not one of the three; `--sort` owns it.)
+    // Is a human watching? Four behaviors key on this one answer — the layout
+    // below, the long-line guard, `--color auto` (inside `color.enabled`), and
+    // the delivery cadence — and `--plain` is the single spelling that stands
+    // all four down, so nothing the DESTINATION decides differs between a
+    // terminal run and a redirected one. (Walk order is not one of them;
+    // `--sort` owns it.)
     const interactive = !o.plain and (std.Io.File.stdout().isTty(io) catch false);
+    // rg's terminal layout, and the one destination-conditional behavior that
+    // changes the SHAPE of a row rather than its chrome: a human reading a wall
+    // of `path:line:` prefixes is doing the grouping in their head, so a
+    // terminal gets the path lifted onto a title line and the rows numbered
+    // beneath it. Only silence is filled — `--no-heading` and `-N` still mean
+    // what they say here — and a pipe answers `false`, so the byte contract
+    // with ripgrep is untouched. See `answer.Locus`.
+    //
+    // The one terminal run rg leaves alone is the stdin-only search (the same
+    // `roots.len == 0 and readableStdin()` the branch below takes): `printf … |
+    // rg pat` prints bare lines, where `rg pat - file` numbers both. There is
+    // one unnamed source and no walk, so a locator names nothing the reader did
+    // not already have. Probed last, so only a rootless terminal run pays the
+    // fd-0 stat — the piped agent runs that dominate never reach it.
+    const layout = interactive and !(parsed.roots.len == 0 and readableStdin());
+    o.heading = parsed.locus.headings(layout);
+    o.line_num = parsed.locus.lines(o.vimgrep, layout);
     // Install the stdout buffering policy before the first result byte can be
     // written. `auto` reads the destination the way rg does: a terminal wants
     // each line as it is found, a pipe wants them coalesced. Neither changes a
@@ -213,9 +231,12 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // each row's globs sorted lexicographically (`../scope/types.zig`
     // `writeTypeList`). gist's registry is a strict SUPERSET of ripgrep's, so the
     // listing is rg-shaped and rg-sorted while covering more types + globs.
+    //
+    // The run's own overlay goes with it: a `--type-add` shows up in the listing
+    // and a `--type-clear` disappears from it, so the menu and the kitchen agree.
     if (o.mode == .types) {
         var out: std.ArrayList(u8) = .empty;
-        types.writeTypeList(a, &out) catch oom();
+        types.writeTypeList(a, &out, parsed.types) catch oom();
         corpus_mod.emitStdout(out.items);
         std.process.exit(0);
     }
@@ -225,7 +246,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     if (o.mode == .files) {
         // The parallel engine never opens a file in --files mode (a listing needs
         // paths, not bytes) — the serial path below reads every body it lists.
-        if (swarm.eligible(io, parsed, o)) swarm.run(gpa, io, parsed, o, null, use_color, &.{}, crest.no_sieve, null, null, &icfg);
+        if (swarm.eligible(io, parsed, o, null)) swarm.run(gpa, io, parsed, o, null, use_color, &.{}, null, crest.no_sieve, null, null, &icfg);
         // --files lists every file (no pattern) — nothing to prefilter, so no read
         // elision applies; pass an empty trigram filter and an inactive sieve.
         const c = collectFiles(a, gpa, io, parsed, &.{}, crest.no_sieve, null, &icfg);
@@ -354,6 +375,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // `--no-index`, `--include-zero`, or an every-byte output mode. That verdict
     // is `gate.mayElideByIndex`'s alone; this line used to re-spell half of it.
     const filters = w.filters;
+    const plan = w.plan;
     const sieve = w.sieve;
 
     // Run-scoped monotonic stopwatch for the search proper — feeds the real
@@ -367,9 +389,11 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // index/freshness elision, per-file render on every core — byte-identical
     // output, produced in parallel. Anything it declines (see `eligible`) falls
     // through to this proven serial engine.
-    if (swarm.eligible(io, parsed, o))
-        swarm.run(gpa, io, parsed, o, re, use_color, filters, sieve, file_needle, line_needle, &icfg);
+    if (swarm.eligible(io, parsed, o, re))
+        swarm.run(gpa, io, parsed, o, re, use_color, filters, plan, sieve, file_needle, line_needle, &icfg);
 
+    // The serial collect path still asks the index with the flat OR of
+    // `filters` (`fresh.candidates`); the cover rides the fused walk only.
     const c = collectFiles(a, gpa, io, parsed, filters, sieve, file_needle, &icfg);
     const files = c.files;
     // rg's implicit-path heuristic: a GUESSED search root (no PATH args) whose
@@ -387,7 +411,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // --json: ripgrep's JSON Lines record stream (own printer, shared engine).
     if (o.mode == .json) {
         var jf: std.ArrayList(json.File) = .empty;
-        for (files) |f| jf.append(a, .{ .path = f.path, .body = stripBom(f.bytes), .explicit = f.explicit }) catch oom();
+        for (files) |f| jf.append(a, .{ .path = f.path, .body = ingest.visibleBody(o.encoding, f.bytes), .explicit = f.explicit }) catch oom();
         var out: std.ArrayList(u8) = .empty;
         const jst = json.runParallel(gpa, a, &out, re, caps, o, jf.items, line_needle, search_span.read(io));
         corpus_mod.emitStdout(out.items);
@@ -438,11 +462,28 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         // parity-gate idiom (`assay.serialForced`). `-U`'s "match" is a
         // whole-buffer hit; the per-line path reuses the same `-w`/`-v`/
         // zero-width classify as the emit loop.
-        const bounds = if (assay.serialForced()) null else par.shardBounds(InFile, files, {}, inFileWeight, par.min_bytes, par.max_shards, a);
+        // `--stats` owns a single `Stats` and must tally every file, so it keeps
+        // the serial loop (no cross-shard fold to reconcile) and reports rg's
+        // trailing block — the search it ran to decide the listing, which is the
+        // same search the standard mode reports.
+        var lstat = Stats{};
+        const bounds = if (o.stats or assay.serialForced()) null else par.shardBounds(InFile, files, {}, inFileWeight, par.min_bytes, par.max_shards, a);
         if (bounds) |b| {
             filesWithoutSharded(gpa, a, &out, re, o, line_needle, files, b);
         } else for (files) |f| {
-            fileWithoutMatch(a, re, o, &em, &lsim, wssp, line_needle, f, &out);
+            if (o.stats)
+                render.withoutMatchTallied(a, re, o, &em, &lsim, wssp, line_needle, f, &out, &lstat, w.binary_detect)
+            else
+                fileWithoutMatch(a, re, o, &em, &lsim, wssp, line_needle, f, &out);
+        }
+        if (o.stats) {
+            const listed = out.items.len > 0;
+            lstat.set(.bytes_printed, stats.bytesPrinted(o, out.items.len));
+            emitStats(a, &out, lstat, search_span.read(io));
+            stats.diagSearch(gpa, false, lstat, search_span.read(io));
+            if (!o.quiet) corpus_mod.emitStdout(out.items);
+            pcreFaultExit(re);
+            (Outcome{ .matched = listed, .faulted = err_exit }).exit();
         }
         // Under -q the stream is suppressed; the found-a-without-match file still
         // decides the exit (0 = at least one file lacked the pattern, ripgrep's
@@ -512,8 +553,9 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     }
     if (o.stats) {
         stat.set(.files_with_match, matched_files);
-        // --quiet --stats: suppress the match stream, report 0 bytes printed.
-        stat.set(.bytes_printed, if (o.quiet) 0 else out.items.len);
+        // --quiet --stats: suppress the match stream, report 0 bytes printed —
+        // as does every summary mode (`stats.bytesPrinted` owns rg's rule).
+        stat.set(.bytes_printed, stats.bytesPrinted(o, out.items.len));
         if (o.quiet) out.clearRetainingCapacity();
         emitStats(a, &out, stat, search_span.read(io));
         stats.diagSearch(gpa, o.mode == .json, stat, search_span.read(io));

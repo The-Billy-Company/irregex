@@ -87,8 +87,12 @@ const workerMain = descent.workerMain;
 /// serial-engine-only ignore-parity fix and silently missed it (see
 /// `ignore.zig`'s `skipFromVerdict` — it now takes the same whitelist-override
 /// pair `shouldSkip` does).
-pub fn eligible(io: std.Io, parsed: args.Parsed, o: Opts) bool {
+pub fn eligible(io: std.Io, parsed: args.Parsed, o: Opts, re: ?*const Matcher) bool {
     if (assay.serialForced()) return false;
+    // `-l` / `--files-without-match` ride the walk only while the fused boolean
+    // IS their answer (`pathVerdictFused`); any flag that redefines the verdict
+    // sends the mode to the serial engine, which applies it correctly.
+    if (o.mode.pathPerFile() and !pathVerdictFused(o, re)) return false;
     // `-U`/--multiline rides the pipeline: each worker's per-file render goes
     // through the same `Emitter.buffer` whole-buffer model the serial engine
     // uses (multiline.zig owns the span/line semantics), so the walk + literal
@@ -147,6 +151,53 @@ pub fn eligible(io: std.Io, parsed: args.Parsed, o: Opts) bool {
     return true;
 }
 
+/// Can the fused walk answer a per-file YES/NO verdict (`-l`,
+/// `--files-without-match`) by itself? Its ONLY rendering of those two modes is
+/// the early-exit whole-buffer boolean in `sift.emitBody` (`Cfg.fast_l`), so
+/// this predicate is simultaneously the fast path's guard and the mode's
+/// admission ticket — `eligible` declines the whole run when it is false, rather
+/// than letting the per-file render fall through to standard match lines.
+///
+/// Each excluded flag either changes what "this file matches" MEANS (`-v`
+/// inverts it, `-w` bounds it, `--crlf`/`--null-data` redefine the line, `-m`
+/// caps it, `--stop-on-nonmatch` truncates the file) or asks for something the
+/// boolean does not produce (`-o`, `--passthru`, `--vimgrep`, `-r`, a `--stats`
+/// tally); under `-U` the boolean must be PROVEN equal to the whole-buffer emit
+/// model's verdict (`bufBoolExact`).
+///
+/// The decline is a real bug fix, not caution: `bench/rgsuite/fuzz.py` caught
+/// `--files-without-match` paired with any of these streaming ordinary match
+/// lines, and — under `--sort path`, where the sink rewrites each delivered
+/// record as its path — listing the file set rg EXCLUDES. The serial engine's
+/// `render.fileWithoutMatch` has always applied the modifiers correctly, so
+/// routing there is both the fix and the oracle.
+pub fn pathVerdictFused(o: Opts, re: ?*const Matcher) bool {
+    return !o.invert and !o.word and !o.crlf and !o.null_data and o.max_per_file == 0 and !o.only_matching and
+        !o.passthru and !o.vimgrep and !o.stop_on_nonmatch and o.replace == null and !o.stats and
+        (!o.multiline or (re != null and re.?.bufBoolExact()));
+}
+
+test "a per-file verdict rides the fused walk only when no flag redefines it" {
+    const t = std.testing;
+    try t.expect(pathVerdictFused(.{}, null));
+    // Every one of these changes the verdict or the row — each was a live
+    // divergence against rg before the decline landed.
+    try t.expect(!pathVerdictFused(.{ .invert = true }, null));
+    try t.expect(!pathVerdictFused(.{ .word = true }, null));
+    try t.expect(!pathVerdictFused(.{ .crlf = true }, null));
+    try t.expect(!pathVerdictFused(.{ .null_data = true }, null));
+    try t.expect(!pathVerdictFused(.{ .max_per_file = 1 }, null));
+    try t.expect(!pathVerdictFused(.{ .only_matching = true }, null));
+    try t.expect(!pathVerdictFused(.{ .passthru = true }, null));
+    try t.expect(!pathVerdictFused(.{ .vimgrep = true }, null));
+    try t.expect(!pathVerdictFused(.{ .stop_on_nonmatch = true }, null));
+    try t.expect(!pathVerdictFused(.{ .replace = "X" }, null));
+    try t.expect(!pathVerdictFused(.{ .stats = true }, null));
+    // `-U` needs a matcher whose whole-buffer boolean is proven exact; without
+    // one there is nothing to consult, so it declines rather than guessing.
+    try t.expect(!pathVerdictFused(.{ .multiline = true }, null));
+}
+
 /// The content-transform half of the pipeline-eligibility contract, factored out
 /// pure so the routing decision is unit-testable without a filesystem walk.
 ///
@@ -181,7 +232,7 @@ test "transform routing: -z/-E ride the pipeline; --pre/--binary decline" {
 /// Fan out, walk, search, stream, exit. `filters` powers inline index elision;
 /// `file_needle` may reject a whole body, while `line_needle` only avoids regex
 /// execution and remains valid for passthru. Never returns.
-pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re: ?*const Matcher, use_color: bool, filters: []const []const u8, sieve: crest.Swell, file_needle: ?simd.Gate, line_needle: ?simd.Gate, icfg: *const ingest.Config) noreturn {
+pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re: ?*const Matcher, use_color: bool, filters: []const []const u8, plan: ?elide.Plan, sieve: crest.Swell, file_needle: ?simd.Gate, line_needle: ?simd.Gate, icfg: *const ingest.Config) noreturn {
     // Run-scoped monotonic stopwatch for the fused walk — feeds the real
     // `elapsed`/`elapsed_total` in the `--stats`/`--json` summary (was hardcoded
     // `0.000000`) and the `.query`-lens stderr diagnostic, the serial engine's twin.
@@ -193,7 +244,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     // `bytes searched`, so the index oracle (which drops proven non-matches)
     // stays off — the fused walk still beats serial's collect-then-shard.
     // `--files-without-match` KEEPS elision: a proven non-match IS the emit.
-    const want_elision = !o.stats and elide.indexElisionWanted(io, parsed, filters, sieve);
+    const want_elision = !o.stats and elide.indexElisionWanted(io, parsed, filters, plan, sieve);
     // Internal gate-only contract: load synchronously and fail closed unless
     // the real elision oracle is admitted. This makes freshness_fs.sh prove the
     // accelerated path instead of accidentally passing via an async/full-read
@@ -206,7 +257,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     var lazy: elide.Lazy = .{};
     if (want_elision) {
         if (require_elision) {
-            lazy.admit(gpa, io, o, filters, sieve);
+            lazy.admit(gpa, io, o, filters, plan, sieve);
             if (lazy.val == null) die("gist: test-required index elision was declined\n", .{});
             if (!elide.testHasElidableFile(io, &lazy.val.?)) die("gist: test-required index elision found no elidable live file\n", .{});
             lazy.ready.store(true, .release);
@@ -215,8 +266,8 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
             // elision, nobody waits on this thread — `run` exits the process and
             // the OS reclaims it. (`lazy`/`o`/`filters` outlive it either way:
             // this frame never returns.)
-            if (std.Thread.spawn(.{}, elide.Lazy.loaderMain, .{ &lazy, gpa, io, o, filters, sieve })) |t| t.detach() else |_| {
-                lazy.admit(gpa, io, o, filters, sieve);
+            if (std.Thread.spawn(.{}, elide.Lazy.loaderMain, .{ &lazy, gpa, io, o, filters, plan, sieve })) |t| t.detach() else |_| {
+                lazy.admit(gpa, io, o, filters, plan, sieve);
                 lazy.ready.store(true, .release);
             }
         }
@@ -265,9 +316,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     // boolean provably equals the whole-buffer emit model's `-l` /
     // `--files-without-match` verdict (`bufBoolExact` — a nullable `\z`-style
     // pattern falls to `Emitter.buffer`).
-    const fast_l = o.mode.pathPerFile() and !o.invert and !o.word and !o.crlf and !o.null_data and o.max_per_file == 0 and !o.only_matching and
-        !o.passthru and !o.vimgrep and !o.stop_on_nonmatch and o.replace == null and !o.stats and
-        (!o.multiline or (re != null and re.?.bufBoolExact()));
+    const fast_l = o.mode.pathPerFile() and pathVerdictFused(o, re);
     var gate_len: usize = if (file_needle) |n| n.bytes.len else 0;
     for (file_alts) |n| gate_len = @max(gate_len, n.len);
     const cfg: Cfg = .{
@@ -347,7 +396,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     // `Sink` — a single global sort over a parallel walk+read+match, so separators
     // and the matched-files exit code stay byte-identical to the serial oracle,
     // just sorted. Falls through to the shared exit tail below.
-    if (cfg.collect_sorted) emitSorted(gpa, &sink, workers, o);
+    if (cfg.collect_sorted) emitSorted(gpa, &sink, workers, o, use_color);
 
     // Every byte is already on stdout — each worker streamed its fragments
     // through `sink.emit` the instant it rendered them (see `Sink`). Nothing
@@ -392,12 +441,13 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     // worker tallies, stamp `files_with_match` / `bytes_printed` from the sink
     // (the serial engine does the same post-pass), and append ripgrep's trailing
     // stats block. Quiet is declined by `eligible`, so the match stream always
-    // ran and `bytes_printed` is the live write count.
+    // ran and the sink's write count is what rg's standard printer would have
+    // tallied — `stats.bytesPrinted` decides whether this mode tallies at all.
     if (o.stats) {
         var st: stats.Stats = .{};
         for (workers) |*wk| st.foldExcept(wk.stats, &.{.bytes_printed});
         st.set(.files_with_match, sink.matched_files);
-        st.set(.bytes_printed, sink.bytes_printed);
+        st.set(.bytes_printed, stats.bytesPrinted(o, sink.bytes_printed));
         var sbuf: std.ArrayList(u8) = .empty;
         stats.emitStats(gpa, &sbuf, st, search_span.read(io));
         _ = corpus_mod.writeStdout(sbuf.items);

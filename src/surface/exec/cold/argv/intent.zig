@@ -419,10 +419,29 @@ pub const Opts = struct {
     }
 };
 
-pub const Parsed = struct { patterns: [][]const u8, opts: Opts, roots: [][]const u8, pattern_files: [][]const u8 = &.{} };
+/// `types` is what this run's `--type-add`/`--type-clear` did to the registry.
+/// It survives `seal` because `--type-list` has to render the registry the
+/// SEARCH would have used, and the resolved include/exclude globs in `opts`
+/// cannot be read back into the names they came from.
+///
+/// `locus` survives for the same reason, one question later: `opts` already
+/// carries the answer a PIPE gets, and argv is the wrong place to learn that
+/// stdout is a terminal (parsing stays free of I/O, which is what lets every
+/// grammar test run without one). Handing the unspent explicit answers to the
+/// destination pass lets it re-resolve them against the real fd without ever
+/// being able to overrule a flag. See `answer.Locus`.
+pub const Parsed = struct {
+    patterns: [][]const u8,
+    opts: Opts,
+    roots: [][]const u8,
+    pattern_files: [][]const u8 = &.{},
+    types: types.Overlay = .{},
+    locus: answer.Locus = .{},
+};
 
 /// A `--type-add name:...` definition, resolved to the globs `-t name` scopes by.
-const CustomType = struct { name: []const u8, globs: []const []const u8 };
+/// The listing row shape, so a definition needs no conversion to be rendered.
+const CustomType = types.NameGlobs;
 
 /// Mutable parse state: resolves flags into Opts, collects type/glob sets, and
 /// records -A/-B/-C values so -A/-B can take precedence over -C regardless of
@@ -447,6 +466,7 @@ pub const Builder = struct {
     extra_pats: std.ArrayList([]const u8) = .empty, // 2nd+ -e/--regexp
     ignore_files: std.ArrayList([]const u8) = .empty, // --ignore-file
     custom_types: std.ArrayList(CustomType) = .empty, // --type-add
+    cleared_types: std.ArrayList([]const u8) = .empty, // --type-clear
     // --colors, in argv order: specs merge, so the last one naming an attribute
     // wins and `seal` renders them into `o.palette` exactly once.
     color_specs: std.ArrayList([]const u8) = .empty,
@@ -464,7 +484,27 @@ pub const Builder = struct {
     pub fn addPat(self: *Builder, p: []const u8) void {
         if (self.pat == null) self.pat = p else self.extra_pats.append(self.a, p) catch oom();
     }
+    /// `--type-clear NAME`: the name stops being a file type at all. rg's
+    /// reading is total — a cleared name is not an empty type, it is *no* type,
+    /// so a later `-t`/`-T` naming it fails loud exactly as a typo would. The
+    /// cleared list therefore has to be consulted BEFORE both the custom-type
+    /// table and the built-in registry, and clearing also drops any custom defs
+    /// the name already carried (otherwise the clear would be partial).
+    pub fn clearTypeDef(self: *Builder, name: []const u8) void {
+        if (self.isTypeCleared(name)) return;
+        var kept: std.ArrayList(CustomType) = .empty;
+        for (self.custom_types.items) |ct| {
+            if (!std.mem.eql(u8, ct.name, name)) kept.append(self.a, ct) catch oom();
+        }
+        self.custom_types = kept;
+        self.cleared_types.append(self.a, name) catch oom();
+    }
+    pub fn isTypeCleared(self: *const Builder, name: []const u8) bool {
+        for (self.cleared_types.items) |c| if (std.mem.eql(u8, c, name)) return true;
+        return false;
+    }
     pub fn addType(self: *Builder, name: []const u8, negate: bool) void {
+        if (self.isTypeCleared(name)) die("unrecognized type: {s}\n", .{name});
         if (std.mem.eql(u8, name, "all")) {
             (if (negate) &self.ntype_all else &self.type_all).* = true;
             // A user-defined `--type-add` type resolves to include/exclude globs; a
@@ -482,6 +522,16 @@ pub const Builder = struct {
         const colon = std.mem.indexOfScalar(u8, spec, ':') orelse die("invalid --type-add: {s}\n", .{spec});
         const name = spec[0..colon];
         const rest = spec[colon + 1 ..];
+        // Defining a name un-clears it: `--type-clear rust --type-add rust:*.rs`
+        // is rg's documented way to REPLACE a built-in type rather than extend
+        // it, and it only works if the clear does not outlive the redefinition.
+        if (self.isTypeCleared(name)) {
+            var kept: std.ArrayList([]const u8) = .empty;
+            for (self.cleared_types.items) |c| {
+                if (!std.mem.eql(u8, c, name)) kept.append(self.a, c) catch oom();
+            }
+            self.cleared_types = kept;
+        }
         var globs: std.ArrayList([]const u8) = .empty;
         if (std.mem.startsWith(u8, rest, "include:")) {
             var it = std.mem.splitScalar(u8, rest["include:".len..], ',');
@@ -545,9 +595,14 @@ pub const Builder = struct {
         // means — so the correction can only run once the whole argv is in.
         self.o.mode = self.o.mode.settle(self.o.invert, self.o.only_matching);
         // Now that every explicit answer is in, let `--vimgrep`/`--column` imply
-        // what is still unanswered — never the other way around.
+        // what is still unanswered — never the other way around. Resolved here
+        // against `terminal = false`, the posture with a byte contract to keep:
+        // every caller that never asks about its destination (the schema, the
+        // primer, `--type-list`, every test) gets ripgrep's piped shape, and the
+        // one caller that does re-resolves from `Parsed.locus` below.
         self.o.column = self.locus.columns(self.o.vimgrep);
-        self.o.line_num = self.locus.lines(self.o.vimgrep);
+        self.o.line_num = self.locus.lines(self.o.vimgrep, false);
+        self.o.heading = self.locus.headings(false);
         // --glob-case-insensitive: fold case-sensitive includes into the iglob set.
         if (self.glob_ci) {
             self.iglobs.appendSlice(self.a, self.includes.items) catch oom();
@@ -567,6 +622,11 @@ pub const Builder = struct {
             .opts = self.o,
             .roots = self.roots.toOwnedSlice(self.a) catch oom(),
             .pattern_files = self.pat_files.toOwnedSlice(self.a) catch oom(),
+            .types = .{
+                .added = self.custom_types.toOwnedSlice(self.a) catch oom(),
+                .cleared = self.cleared_types.toOwnedSlice(self.a) catch oom(),
+            },
+            .locus = self.locus,
         };
     }
 };

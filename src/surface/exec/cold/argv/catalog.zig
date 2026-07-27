@@ -37,21 +37,27 @@ pub const Act = union(enum) {
     set_many: []const OptField, // set several Opts bools at once
     filename: Filename, // -H/--with-filename, -I/--no-filename
     case: enum { icase, scase, smart }, // -i / -s / -S
-    // `-n`/`-N`/`--column`/`--no-column` record an EXPLICIT answer; the
-    // `--vimgrep`/`--column` implications are applied once at seal, so an
-    // implication can never overwrite one. See `answer.Locus`.
-    locate: enum { line_on, line_off, column_on, column_off },
+    // `-n`/`-N`/`--column`/`--no-column`/`--heading`/`--no-heading` record an
+    // EXPLICIT answer; the `--vimgrep`/`--column` implications and the terminal
+    // default are applied afterwards, so neither can overwrite one. See
+    // `answer.Locus`.
+    locate: enum { line_on, line_off, column_on, column_off, heading_on, heading_off },
     boundary: answer.Boundary, // -w / -x — one choice, last spelling wins
     // Every flag that competes for the one answer shape (`answer.Mode`): the
     // enumeration modes, `--json`, and the two non-search walk modes. They
     // resolve through `Mode.update`, so precedence is the enum's law rather
     // than the order these rows happen to appear in.
     mode: answer.Mode,
+    // `--no-json` and friends: return to `.standard`, but ONLY if the named
+    // mode is the one currently in force. Undoing `--json` must not also undo
+    // an `-l` that came after it, and a mode enum cannot express "json off"
+    // any other way.
+    mode_off: answer.Mode,
     unrestrict,
     passthru,
-    sort_files,
+    sort_files: bool, // --sort-files (true) / --no-sort-files (false = fastest order)
     sort: bool, // --sort (false) / --sortr (true = descending)
-    glob_ci, // value-taking below
+    glob_ci: bool, // --glob-case-insensitive (true) / --no- (false)
     ctx_at: enum { after, before, ctx },
     regexp,
     typ: bool, // -t/--type (false) / -T/--type-not (true = negate)
@@ -72,7 +78,12 @@ pub const Act = union(enum) {
     // `--no-hyperlink`, and rg's value-taking `--hyperlink-format <spec>`.
     hyperlink: enum { flag, off, format },
     encoding,
+    // `--no-encoding`: the fixed-choice spelling of the value-taking axis above,
+    // exactly as `.engine_is` is to `.engine`.
+    encoding_is: intent.Encoding,
     pre_glob,
+    pre_off, // --no-pre: forget the preprocessor AND its glob scope
+    type_clear, // --type-clear NAME: the name stops being a type at all
     rank,
     // -P/--pcre2: select the PCRE2 backend
     // --auto-hybrid-regex: rg's deprecated spelling of --engine auto
@@ -223,9 +234,9 @@ pub fn reachOf(spec: FlagSpec) ?Reach {
         .set, .unset, .set_num, .set_str, .sep => |f| fieldReach(f),
         .set_many => |fs| fieldReach(fs[0]),
         .num_set => |p| fieldReach(p[0]),
-        .glob_ci, .typ, .glob, .maxfsize, .ignore_file, .type_add, .encoding, .pre_glob, .unrestrict => .corpus,
+        .glob_ci, .typ, .glob, .maxfsize, .ignore_file, .type_add, .type_clear, .encoding, .encoding_is, .pre_glob, .pre_off, .unrestrict => .corpus,
         .case, .boundary, .regexp, .file, .engine, .engine_is => .semantics,
-        .filename, .locate, .mode, .passthru, .sort_files, .sort, .ctx_at, .no_ctxsep, .replace, .color, .colors, .rank, .hyperlink, .pretty, .plain => .presentation,
+        .filename, .locate, .mode, .mode_off, .passthru, .sort_files, .sort, .ctx_at, .no_ctxsep, .replace, .color, .colors, .rank, .hyperlink, .pretty, .plain => .presentation,
         .noop, .noop_val, .buffered, .bufsize => .execution,
         // `.unsupported` dies before applying; `.no_config` has already been
         // applied by the pre-argv scan. Null is not "harmless" — it is what
@@ -261,8 +272,8 @@ pub const flag_catalog = [_]FlagSpec{
     .{ .longs = &.{"no-column"}, .action = .{ .locate = .column_off }, .doc = "omit columns", .compatibility = .supported },
     .{ .short = 'b', .longs = &.{"byte-offset"}, .action = .{ .set = .byte_offset }, .doc = "print the byte offset of each matching line", .compatibility = .supported },
     .{ .longs = &.{"vimgrep"}, .action = .{ .set = .vimgrep }, .doc = "one line per match, in vim's quickfix shape", .compatibility = .supported },
-    .{ .longs = &.{"heading"}, .action = .{ .set = .heading }, .doc = "group matches under their filename", .compatibility = .supported },
-    .{ .longs = &.{"no-heading"}, .action = .{ .unset = .heading }, .doc = "prefix every line with its path instead of grouping", .compatibility = .supported },
+    .{ .longs = &.{"heading"}, .action = .{ .locate = .heading_on }, .doc = "group matches under their filename", .compatibility = .supported, .note = "on by default when stdout is a terminal, like ripgrep; piped output stays prefixed" },
+    .{ .longs = &.{"no-heading"}, .action = .{ .locate = .heading_off }, .doc = "prefix every line with its path instead of grouping", .compatibility = .supported },
     .{ .longs = &.{"trim"}, .action = .{ .set = .trim }, .doc = "strip leading whitespace from every printed line", .compatibility = .supported },
     .{ .short = '0', .longs = &.{"null"}, .action = .{ .set = .null_sep }, .doc = "terminate each printed path with NUL", .compatibility = .supported },
     .{ .longs = &.{"null-data"}, .action = .{ .set = .null_data }, .doc = "treat NUL, not newline, as the line terminator", .compatibility = .supported },
@@ -282,10 +293,10 @@ pub const flag_catalog = [_]FlagSpec{
     .{ .longs = &.{"type-list"}, .action = .{ .mode = .types }, .doc = "list every file type and the globs it covers", .compatibility = .improvement, .note = "improvement: rg-sorted, rg-framed output over a strict SUPERSET of rg's type registry (rg's rows byte-identical; the rest richer, plus gist-only types)" },
     .{ .short = 'L', .longs = &.{"follow"}, .action = .{ .set = .follow }, .doc = "follow symbolic links", .compatibility = .supported },
     .{ .longs = &.{"no-follow"}, .action = .{ .unset = .follow }, .doc = "do not follow symbolic links", .compatibility = .supported },
-    .{ .longs = &.{"sort-files"}, .action = .sort_files, .doc = "sort by path (rg's deprecated spelling of --sort=path)", .compatibility = .supported, .note = "deprecated rg spelling of --sort=path" },
+    .{ .longs = &.{"sort-files"}, .action = .{ .sort_files = true }, .doc = "sort by path (rg's deprecated spelling of --sort=path)", .compatibility = .supported, .note = "deprecated rg spelling of --sort=path" },
     .{ .longs = &.{"sort"}, .action = .{ .sort = false }, .doc = "sort the results ascending by this key", .compatibility = .improvement, .note = "improvement: path/modified/accessed/created, ascending; final ordering is rg-identical but produced over a parallel read (rg single-threads sort), and created falls back to ctime where the platform lacks birth time (rg cannot sort at all)" },
     .{ .longs = &.{"sortr"}, .action = .{ .sort = true }, .doc = "sort the results descending by this key", .compatibility = .improvement, .note = "improvement: as --sort but descending; same rg-identical ordering over a parallel read and the same created→ctime robustness fallback" },
-    .{ .longs = &.{"glob-case-insensitive"}, .action = .glob_ci, .doc = "match every --glob case-insensitively", .compatibility = .supported },
+    .{ .longs = &.{"glob-case-insensitive"}, .action = .{ .glob_ci = true }, .doc = "match every --glob case-insensitively", .compatibility = .supported },
     .{ .short = 'A', .longs = &.{"after-context"}, .action = .{ .ctx_at = .after }, .doc = "print this many lines after each match", .compatibility = .supported },
     .{ .short = 'B', .longs = &.{"before-context"}, .action = .{ .ctx_at = .before }, .doc = "print this many lines before each match", .compatibility = .supported },
     .{ .short = 'C', .longs = &.{"context"}, .action = .{ .ctx_at = .ctx }, .doc = "print this many lines on both sides of each match", .compatibility = .supported },
@@ -355,6 +366,64 @@ pub const flag_catalog = [_]FlagSpec{
     .{ .longs = &.{"no-unicode"}, .action = .{ .unset = .unicode }, .doc = "byte mode: single-byte classes and ASCII word boundaries", .compatibility = .supported, .note = "byte/ASCII mode: single-byte classes and ASCII \\w/\\b (equivalent to a leading (?-u))" },
     .{ .longs = &.{"no-stats"}, .action = .{ .unset = .stats }, .doc = "print no search statistics", .compatibility = .supported },
     .{ .longs = &.{"no-trim"}, .action = .{ .unset = .trim }, .doc = "keep leading whitespace", .compatibility = .supported },
+    // ------------------------------------------------------------------
+    // The undo half of the surface.
+    //
+    // Every ripgrep toggle ships an inverse, and the inverse is not a
+    // convenience — it is the ONLY way to countermand a flag that arrived from
+    // somewhere the caller did not type: an alias, a `RIPGREP_CONFIG_PATH`
+    // file, or (here) `.irregex.toml` and the personal preferences file. A
+    // surface that can turn a behavior on and not off is a surface whose
+    // persisted layer is a one-way door, so these rows are load-bearing for
+    // gist's own config layers and not merely for rg parity.
+    //
+    // They were missing until a conformance sweep over `rg --generate
+    // complete-bash` counted them (bench/rgsuite/surface.py): 35 flags that
+    // ripgrep documents and gist rejected. The mined suite could not see the
+    // hole, because ripgrep's own integration tests do not exercise most of
+    // its negations either — which is exactly why the denominator has to come
+    // from the flag table rather than from the tests.
+    //
+    // Each row below is the inverse of a row above it, and last-spelling-wins
+    // falls out of the parser's single pass with no precedence rule needed.
+    .{ .longs = &.{"no-hidden"}, .action = .{ .unset = .hidden }, .doc = "skip hidden files and directories, the default", .compatibility = .supported },
+    .{ .longs = &.{"no-text"}, .action = .{ .unset = .text }, .doc = "apply binary detection again, the default", .compatibility = .supported },
+    .{ .longs = &.{"no-binary"}, .action = .{ .unset = .binary }, .doc = "stop at a binary file's first NUL, the default", .compatibility = .supported },
+    .{ .longs = &.{"no-crlf"}, .action = .{ .unset = .crlf }, .doc = "treat only LF as the line terminator, the default", .compatibility = .supported },
+    .{ .longs = &.{"no-byte-offset"}, .action = .{ .unset = .byte_offset }, .doc = "print no byte offsets, the default", .compatibility = .supported },
+    .{ .longs = &.{"no-invert-match"}, .action = .{ .unset = .invert }, .doc = "print the matching lines, the default", .compatibility = .supported },
+    .{ .longs = &.{"no-fixed-strings"}, .action = .{ .unset = .fixed }, .doc = "read the pattern as a regex, the default", .compatibility = .supported },
+    .{ .longs = &.{"no-multiline"}, .action = .{ .unset = .multiline }, .doc = "confine each match to one line, the default", .compatibility = .supported },
+    .{ .longs = &.{"no-multiline-dotall"}, .action = .{ .unset = .multiline_dotall }, .doc = "keep . from matching a newline, the default", .compatibility = .supported },
+    .{ .longs = &.{"no-one-file-system"}, .action = .{ .unset = .one_file_system }, .doc = "descend across filesystem boundaries, the default", .compatibility = .supported },
+    .{ .longs = &.{"no-search-zip"}, .action = .{ .unset = .search_zip }, .doc = "do not decompress before searching, the default", .compatibility = .supported },
+    .{ .longs = &.{"no-max-columns-preview"}, .action = .{ .unset = .max_cols_preview }, .doc = "elide a long line without a preview, the default", .compatibility = .supported },
+    .{ .longs = &.{"no-ignore-file-case-insensitive"}, .action = .{ .unset = .ignore_case_insensitive }, .doc = "match ignore-file globs case-sensitively, the default", .compatibility = .supported },
+    // The six positive partners of the --no-ignore-* family: each CLEARS the
+    // suppression its --no- sibling sets, restoring that one ignore tier.
+    .{ .longs = &.{"ignore"}, .action = .{ .unset = .no_ignore }, .doc = "obey ignore files again", .compatibility = .supported },
+    .{ .longs = &.{"ignore-vcs"}, .action = .{ .unset = .no_ignore_vcs }, .doc = "obey .gitignore rules again", .compatibility = .supported },
+    .{ .longs = &.{"ignore-dot"}, .action = .{ .unset = .no_ignore_dot }, .doc = "obey .ignore rules again", .compatibility = .supported },
+    .{ .longs = &.{"ignore-parent"}, .action = .{ .unset = .no_ignore_parent }, .doc = "obey parent-directory ignore rules again", .compatibility = .supported },
+    .{ .longs = &.{"ignore-exclude"}, .action = .{ .unset = .no_ignore_exclude }, .doc = "obey .git/info/exclude rules again", .compatibility = .supported },
+    .{ .longs = &.{"ignore-global"}, .action = .{ .unset = .no_ignore_global }, .doc = "obey the global git excludesFile again", .compatibility = .supported },
+    // Inverses that land on an existing axis rather than a bool: each of these
+    // reuses the very action its positive spelling uses, aimed at the default.
+    .{ .longs = &.{"no-pcre2"}, .action = .{ .engine_is = .default }, .doc = "use the linear engine again, the default", .compatibility = .supported },
+    .{ .longs = &.{"no-auto-hybrid-regex"}, .action = .{ .engine_is = .default }, .doc = "do not escalate to PCRE2, the default", .compatibility = .supported },
+    .{ .longs = &.{"no-line-buffered"}, .action = .{ .buffered = .auto }, .doc = "let the destination pick the cadence, the default", .compatibility = .supported },
+    .{ .longs = &.{"no-block-buffered"}, .action = .{ .buffered = .auto }, .doc = "let the destination pick the cadence, the default", .compatibility = .supported },
+    .{ .longs = &.{"no-encoding"}, .action = .{ .encoding_is = .auto }, .doc = "auto-detect the encoding again, the default", .compatibility = .supported },
+    .{ .longs = &.{"no-glob-case-insensitive"}, .action = .{ .glob_ci = false }, .doc = "match every --glob case-sensitively, the default", .compatibility = .supported },
+    .{ .longs = &.{"no-sort-files"}, .action = .{ .sort_files = false }, .doc = "return to the fastest discovery order, the default", .compatibility = .supported },
+    .{ .longs = &.{"no-json"}, .action = .{ .mode_off = .json }, .doc = "emit text again, the default", .compatibility = .supported },
+    .{ .longs = &.{"no-pre"}, .action = .pre_off, .doc = "run no preprocessor, the default", .compatibility = .supported, .note = "clears --pre AND every --pre-glob, as in rg — a preprocessor scope with no preprocessor is not a state a caller can act on" },
+    .{ .longs = &.{"type-clear"}, .action = .type_clear, .doc = "forget a file type's definition entirely", .compatibility = .supported, .note = "as in rg, a cleared name is no longer a type at all: a later -t/-T naming it fails loud with 'unrecognized type', and --type-add may define it afresh" },
+    // rg's own diagnostic channel. rg writes these to STDERR and leaves stdout
+    // and the exit code untouched, so accepting them changes nothing a caller
+    // reads — gist's equivalent lane is GIST_TRACE=<lens>, whose vocabulary is
+    // its own and deliberately not pretended to be rg's.
+    .{ .longs = &.{ "debug", "trace" }, .action = .noop, .doc = "accepted for rg parity; gist's own lane is GIST_TRACE", .compatibility = .accepted_but_ignored, .note = "rg emits its debug/trace prose on stderr and leaves stdout and the exit code alone, so this is accepted and ignored rather than mapped: GIST_TRACE=amend,warm,query,… selects gist's own phase lenses, which are not rg's vocabulary" },
     .{ .longs = &.{"colors"}, .action = .colors, .doc = "restyle one element: {type}:none or {type}:{fg|bg|style}:{value}", .compatibility = .supported, .note = "rg's spec grammar exactly (path/line/column/match × fg/bg/style, named colors, 0-255, r,g,b), merged into gist's palette the way rg's merge into its own — so naming a hue keeps the default's bold. gist renders one SGR sequence per element where rg emits a separate escape per attribute, and paints column numbers only when a spec asks for them" },
     .{ .short = 'j', .longs = &.{"threads"}, .action = .{ .set_num = .threads }, .doc = "cap the worker pool at this many, or 0 for gist's own topology", .compatibility = .supported, .note = "caps the work-stealing worker pool at N (0 = gist's own topology), the same bound rg's -j sets; results are identical" },
     // Match-backend selection. `--engine default` is the linear engine; `--engine

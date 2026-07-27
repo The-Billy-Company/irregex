@@ -16,6 +16,7 @@ const ignore = @import("../../../../../corpus/tree/ignore.zig");
 const ingest = @import("../../read/ingest.zig");
 const json = @import("../../emit/json.zig");
 const beacon = @import("../../../../cli/beacon.zig");
+const palette = @import("../../emit/color.zig");
 const queue = @import("queue.zig");
 const serial = @import("../serial.zig");
 const shard_mod = @import("../../../../../corpus/index/content/shard.zig");
@@ -164,13 +165,7 @@ pub const Worker = struct {
             w.recs.append(w.gpa, .{ .path = path, .kind = .text_hit, .buf = "" }) catch oom();
             return;
         }
-        // A path-list row IS the click target — this is the mode a human uses to
-        // pick a file — so it gets the same frame the serial heading writes.
-        // `anchor` borrows the path unchanged when the run resolved no beacon.
-        const shown = beacon.anchor(w.gpa, path);
-        w.out.appendSlice(w.gpa, shown) catch oom();
-        w.out.appendSlice(w.gpa, term) catch oom();
-        w.out_chrome += shown.len - path.len;
+        w.out_chrome += pathRow(w.gpa, &w.out, w.cfg.o, w.cfg.use_color, path, term);
         w.out_files += 1;
         if (w.out.items.len >= files_flush_cap) w.flushFiles();
     }
@@ -278,7 +273,7 @@ fn recLess(reverse: bool, x: SortedRec, y: SortedRec) bool {
 /// order) and the `matched_files` exit-code tally stay byte-identical to the
 /// serial sort oracle. `-l`/`--files` records carry only a path: rewrite the
 /// terminator here and emit them as one coalesced chunk.
-pub fn emitSorted(gpa: std.mem.Allocator, sink: *Sink, workers: []Worker, o: Opts) void {
+pub fn emitSorted(gpa: std.mem.Allocator, sink: *Sink, workers: []Worker, o: Opts, use_color: bool) void {
     var total: usize = 0;
     for (workers) |*w| total += w.recs.items.len;
     if (total == 0) return;
@@ -300,14 +295,31 @@ pub fn emitSorted(gpa: std.mem.Allocator, sink: *Sink, workers: []Worker, o: Opt
         var out: std.ArrayList(u8) = .empty;
         defer out.deinit(gpa);
         var chrome: usize = 0;
-        for (recs) |r| {
-            const shown = beacon.anchor(gpa, r.path);
-            out.appendSlice(gpa, shown) catch oom();
-            out.appendSlice(gpa, term) catch oom();
-            chrome += shown.len - r.path.len;
-        }
+        for (recs) |r| chrome += pathRow(gpa, &out, o, use_color, r.path, term);
         sink.emitFilesChunk(out.items, recs.len, chrome);
     } else for (recs) |r| sink.emit(r.kind, r.buf, r.chrome);
+}
+
+/// One path-list row: the path framed as a click target, painted with the
+/// `path` element, then terminated. Returns the chrome (link + escape) bytes
+/// the output budget discounts, so a colored listing is not charged for its
+/// own escapes.
+///
+/// A free function because the parallel workers write their `-l` lists into an
+/// arena buffer with no `Emitter` in hand, and this has to render what
+/// `Emitter.heading` renders — a listing that changed color depending on
+/// whether the run happened to shard is a worse answer than an uncolored one.
+/// `beacon.anchor` borrows the path unchanged when the run resolved no beacon,
+/// and `paint` is a plain append when color is off, so a piped run still pays
+/// nothing and writes ripgrep's bytes.
+fn pathRow(gpa: std.mem.Allocator, out: *std.ArrayList(u8), o: Opts, use_color: bool, path: []const u8, term: []const u8) usize {
+    const shown = beacon.anchor(gpa, path);
+    const tint = use_color and o.palette.path.len > 0;
+    if (tint) out.appendSlice(gpa, o.palette.path) catch oom();
+    out.appendSlice(gpa, shown) catch oom();
+    if (tint) out.appendSlice(gpa, palette.reset) catch oom();
+    out.appendSlice(gpa, term) catch oom();
+    return shown.len - path.len + if (tint) o.palette.path.len + palette.reset.len else 0;
 }
 test "sorted-emit order matches the serial --sort path oracle" {
     const t = std.testing;

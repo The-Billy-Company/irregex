@@ -125,13 +125,16 @@ fn apply(b: *Builder, action: Act, v: *ValSrc) void {
         .case => |c| {
             o.caseless, o.smart_case = .{ c == .icase, c == .smart };
         },
-        // Recorded, not applied: `seal` folds in what `--vimgrep`/`--column`
-        // imply only after every explicit answer is in (`answer.Locus`).
+        // Recorded, not applied: what `--vimgrep`/`--column` imply, and what a
+        // terminal destination asks for, fold in only after every explicit
+        // answer is in (`answer.Locus`).
         .locate => |l| switch (l) {
             .line_on => b.locus.line = true,
             .line_off => b.locus.line = false,
             .column_on => b.locus.column = true,
             .column_off => b.locus.column = false,
+            .heading_on => b.locus.heading = true,
+            .heading_off => b.locus.heading = false,
         },
         // One choice across -w/-x, last spelling wins, so `-x -w` is a word
         // match and `-w -x` a whole-line one.
@@ -146,7 +149,22 @@ fn apply(b: *Builder, action: Act, v: *ValSrc) void {
         // is a pattern or a path is decided mid-parse from `noPattern()`, so a
         // `--files` that only took effect later would swallow its own path.
         .mode => |m| o.mode = o.mode.update(m),
-        .unrestrict => b.urestrict += 1,
+        // The undo direction of that one choice. Guarded on the current mode so
+        // `--json -l --no-json` still lists: an inverse countermands its own
+        // flag, never whichever flag happened to win afterwards.
+        .mode_off => |m| if (o.mode == m) {
+            o.mode = .standard;
+        },
+        // The ladder lands HERE rather than at finalize, so a later negation can
+        // countermand it: `-uu --no-hidden` searches ignored-but-not-hidden
+        // files, exactly as it does in rg, where -u is an alias expanded in
+        // place. Cumulative either way — the count is what picks the rungs.
+        .unrestrict => {
+            b.urestrict += 1;
+            if (b.urestrict >= 1) o.no_ignore = true;
+            if (b.urestrict >= 2) o.hidden = true;
+            if (b.urestrict >= 3) o.binary = true;
+        },
         // --passthru and -A/-B/-C are mutually overriding — the last one on the
         // argv wins (ripgrep writes the same context setting). Reset any pending
         // context here; the context actions reset passthru symmetrically.
@@ -156,14 +174,14 @@ fn apply(b: *Builder, action: Act, v: *ValSrc) void {
         // --sort-files is rg's deprecated alias for --sort=path. --sort/--sortr
         // take a key; `none` clears the ordering (back to the fast discovery
         // order). `sorted` mirrors "any explicit order" for the deterministic walk.
-        .sort_files => {
-            o.sort_key, o.sort_reverse, o.sorted = .{ .path, false, true };
+        .sort_files => |on| {
+            o.sort_key, o.sort_reverse, o.sorted = if (on) .{ .path, false, true } else .{ .none, false, false };
         },
         .sort => |desc| {
             o.sort_key = enumOrDie(SortKey, "bad --sort value: {s} (expected none, path, modified, accessed, or created)\n", v.take());
             o.sort_reverse, o.sorted = .{ desc and o.sort_key != .none, o.sort_key != .none };
         },
-        .glob_ci => b.glob_ci = true,
+        .glob_ci => |on| b.glob_ci = on,
         // -A/-B/-C record into a_val/b_val/c_val so -A/-B outrank -C at
         // finalize regardless of argv order; each resets a pending --passthru.
         .ctx_at => |which| {
@@ -237,7 +255,16 @@ fn apply(b: *Builder, action: Act, v: *ValSrc) void {
                 .long => die("bad --encoding value: {s}\n", .{label}),
             };
         },
+        .encoding_is => |e| o.encoding = e,
         .pre_glob => b.addPreGlob(v.take()),
+        // A preprocessor scope with no preprocessor is not a state a caller can
+        // act on, so --no-pre drops both halves (rg's own reading of the flag).
+        .pre_off => {
+            o.pre = null;
+            b.pre_globs.clearRetainingCapacity();
+            b.pre_excludes.clearRetainingCapacity();
+        },
+        .type_clear => b.clearTypeDef(v.take()),
         // --rank takes an OPTIONAL inline count only (`--rank=N`); a bare `--rank`
         // must not swallow the following token — that's the pattern (`gist --rank foo`).
         .rank => {
@@ -258,11 +285,11 @@ fn apply(b: *Builder, action: Act, v: *ValSrc) void {
             if (o.buffer_size == 0) o.buffering = .off else if (o.buffering == .auto) o.buffering = .block;
         },
         // -p/--pretty is rg's alias for --color always --heading --line-number.
-        // The line number goes through `b.locus`, not `o.line_num`, so a later
-        // -N still wins — an alias sets a default, it does not outrank a flag
-        // the user spelled out afterwards.
+        // Both of the latter go through `b.locus`, not the resolved `Opts`
+        // bools, so a later -N/--no-heading still wins — an alias sets a
+        // default, it does not outrank a flag the user spelled out afterwards.
         .pretty => {
-            o.color, o.heading, b.locus.line = .{ .always, true, true };
+            o.color, b.locus.heading, b.locus.line = .{ .always, true, true };
         },
         // --plain is the inverse pole, and the only one of gist's three
         // destination-conditional behaviors that is not already spellable:
@@ -356,9 +383,6 @@ pub fn parseArgv(a: std.mem.Allocator, args: []const []const u8) Parsed {
     // -u = --no-ignore, -uu = +hidden, -uuu = +--binary (rg's tiers). gist's
     // --binary searches binary files in full (see Opts.binary), so -uuu brings the
     // whole tree — ignored, hidden, and binary — online.
-    if (b.urestrict >= 1) b.o.no_ignore = true;
-    if (b.urestrict >= 2) b.o.hidden = true;
-    if (b.urestrict >= 3) b.o.binary = true;
     if (b.o.smart_case and !b.o.caseless) b.o.caseless = for (pats.items) |pp| {
         if (verdict.hasUpper(pp)) break false;
     } else true;

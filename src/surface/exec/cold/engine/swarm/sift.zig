@@ -18,16 +18,30 @@ const ingest = @import("../../read/ingest.zig");
 const json = @import("../../emit/json.zig");
 const legible = @import("../../read/legible.zig");
 const multiline = @import("../../emit/multiline.zig");
+const notice = @import("../../quarry/notice.zig");
 const output = @import("../../emit/output.zig");
 const simd = @import("../../../../../kernel/match/scan/simd.zig");
 const slurp = @import("../../read/slurp.zig");
 const stats = @import("../../read/stats.zig");
 const verify = @import("../../../../../kernel/match/scan/verify.zig");
+const portal = @import("../../../../../portal.zig");
 
 const Emitter = output.Emitter;
 const Matcher = @import("../../../../../kernel/match/regex/regex.zig").Matcher;
 const Worker = crew.Worker;
 const oom = args.oom;
+
+/// A candidate this worker could not OPEN. ripgrep prints the errno line and
+/// exits 2 even when other files matched: an unsearched file is a gap in the
+/// answer, not an absence of matches. The rendering is the shared
+/// `notice.printWalkError` (the line an unreadable DIRECTORY already produced)
+/// and the flag is the queue's existing `walk_error` atomic, so the two halves
+/// of "could not look" reach the exit code through one path. Discovered by
+/// `bench/rgsuite/fuzz.py` differentially against live rg.
+fn reportUnopenable(w: *Worker, rel: []const u8, e: slurp.OpenFault) void {
+    notice.printWalkError(rel, e);
+    w.q.walk_error.store(true, .release);
+}
 
 /// Match+render a file whose bytes came from the content-shard mapping rather
 /// than a live read. The mmap'd slice is the file's raw bytes (shard membership
@@ -43,12 +57,15 @@ pub fn searchShardBody(w: *Worker, a: std.mem.Allocator, dpath: []const u8, byte
 }
 
 /// Empty-body bookkeeping shared by the live and shard read paths. An empty
-/// file has no match: `--files-without-match` emits its path; `--stats` skips
-/// it unless `--include-zero` (mirrors serial `renderFile`'s `count_zero` gate,
-/// which parallel never arms for `--stats` alone).
+/// file has no match, so `--files-without-match` emits its path — and `--stats`
+/// counts it as a searched file contributing zero bytes, which is what rg
+/// reports (mirrors serial `renderFile`'s empty arm).
 fn noteEmpty(w: *Worker, dpath: []const u8) void {
     const o = w.cfg.o;
     if (o.mode.negated()) w.bufferPath(dpath, if (o.null_sep) "\x00" else o.outTerm());
+    // rg searched it — zero bytes, but a counted file (serial `renderFile`'s
+    // empty arm bumps the same counter).
+    if (o.stats) w.stats.bump(.files_searched);
 }
 
 /// The `--json` per-file render on the parallel walk: emit ripgrep's
@@ -65,7 +82,7 @@ fn noteEmpty(w: *Worker, dpath: []const u8) void {
 /// serial collect path gates `--json` on the single `file_needle` only.
 fn emitJson(w: *Worker, a: std.mem.Allocator, dpath: []const u8, decoded: []const u8) void {
     const cfg = w.cfg;
-    const body = legible.stripBom(decoded);
+    const body = ingest.visibleBody(cfg.o.encoding, decoded);
     if (cfg.file_needle) |gate| if (!verify.gateWide(a, body, gate)) return;
     const ss = w.spanSim() orelse return;
     var buf: std.ArrayList(u8) = .empty;
@@ -77,7 +94,7 @@ fn emitJson(w: *Worker, a: std.mem.Allocator, dpath: []const u8, decoded: []cons
 /// twin of the serial engine's per-file loop body (`serial.zig`), built from the
 /// same `read/` primitives so the two cannot drift. `disk` is resolved
 /// relative to `dirfd` (the walk passes the still-open parent directory so the
-/// kernel resolves one component; deferred/elision reads pass `AT.FDCWD` with
+/// kernel resolves one component; deferred/elision reads pass `portal.cwd()` with
 /// the full path).
 pub fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.posix.fd_t, disk: []const u8, dpath: []const u8, openable: []const u8) void {
     const cfg = w.cfg;
@@ -90,7 +107,7 @@ pub fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.po
     // transform is owed here. Every admitted file reaches `emitJson` exactly
     // once, so its `searches` tally stays byte-identical to the serial path.
     if (o.mode == .json) {
-        const sf = slurp.StagedFile.open(scratch, dirfd, disk) orelse return;
+        const sf = slurp.StagedFile.open(scratch, dirfd, disk) catch |e| return reportUnopenable(w, dpath, e);
         defer sf.close();
         const raw = if (sf.more) (sf.readRest(a, scratch) orelse return) else sf.prefix;
         return emitJson(w, a, dpath, legible.decodeBom(a, raw));
@@ -105,7 +122,7 @@ pub fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.po
     // return is a dropped file (never reached here: `--pre`, the only dropping
     // transform, stays on the serial engine).
     if (cfg.ingest) |icfg| {
-        const sf = slurp.StagedFile.open(scratch, dirfd, disk) orelse return;
+        const sf = slurp.StagedFile.open(scratch, dirfd, disk) catch |e| return reportUnopenable(w, dpath, e);
         defer sf.close();
         const raw = sf.readRest(a, scratch) orelse return;
         const body = ingest.apply(a, icfg, openable, dpath, raw) orelse return;
@@ -113,7 +130,7 @@ pub fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.po
         return emitBody(w, a, dpath, body, 0, 0);
     }
 
-    const sf = slurp.StagedFile.open(scratch, dirfd, disk) orelse return;
+    const sf = slurp.StagedFile.open(scratch, dirfd, disk) catch |e| return reportUnopenable(w, dpath, e);
     defer sf.close();
 
     // Stage 1 — decide what the first BUFCAP bytes (rg's buffer 0) already
@@ -121,6 +138,12 @@ pub fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.po
     // the tails of >64 KiB files). A UTF-16 BOM opts out: the transcode needs
     // the whole file and dissolves its NULs, so no prefix triage is sound.
     const utf16 = std.mem.startsWith(u8, sf.prefix, "\xFF\xFE") or std.mem.startsWith(u8, sf.prefix, "\xFE\xFF");
+    // A NUL inside buffer 0 that only `--stats` kept us reading for: the binary
+    // arm below hunts the first NUL from `covered` on the premise that stage 1
+    // proved the prefix clean, which this fall-through breaks. Remembering it
+    // re-arms that arm (via `covered = 0`), where forgetting it published the
+    // file as ordinary text — the `--stats`-only binary leak the fuzzer found.
+    var prefix_nul = false;
     if (!utf16) {
         // NUL in buffer 0: rg's emission cutoff is the start of the buffer that
         // holds the first NUL — the very first — so an implicit walked file
@@ -129,12 +152,15 @@ pub fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.po
         // prefix tally (serial `renderFile`'s binary arm), so it falls through
         // to the full read + `emitBody` binary path. `--binary`-style explicit
         // files never reach this engine.
-        if (cfg.binary_detect and std.mem.indexOfScalar(u8, sf.prefix, 0) != null and !o.stats) return;
+        if (cfg.binary_detect and std.mem.indexOfScalar(u8, sf.prefix, 0) != null) {
+            if (!o.stats) return;
+            prefix_nul = true;
+        }
         // `-l` / `--files-without-match` + a >64 KiB file: a match PROVEN
         // inside the NUL-free prefix settles the file — `-l` emits and skips
         // the tail; `--files-without-match` skips WITHOUT emitting (the file
         // HAS a match). Absence proves nothing; fall through to the full read.
-        if (cfg.fast_l and sf.more and prefixProvesMatch(w, re, legible.stripBom(sf.prefix))) {
+        if (cfg.fast_l and sf.more and prefixProvesMatch(w, re, ingest.visibleBody(o.encoding, sf.prefix))) {
             if (!o.mode.negated()) w.bufferPath(dpath, if (o.null_sep) "\x00" else o.outTerm());
             return;
         }
@@ -146,7 +172,7 @@ pub fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.po
     // space: `body` aliases `raw` at offset 0 or 3 (UTF-8 BOM strip), so the
     // scanned raw prefix maps to `body[0..covered]`. A UTF-16 transcode built a
     // fresh buffer with different bytes — nothing carries over (covered = 0).
-    const covered: usize = if (utf16) 0 else sf.prefix.len -| (@intFromPtr(body.ptr) - @intFromPtr(raw.ptr));
+    const covered: usize = if (utf16 or prefix_nul) 0 else sf.prefix.len -| (@intFromPtr(body.ptr) - @intFromPtr(raw.ptr));
     // Literal gate. When stage 1 already proved the equivalence gate absent
     // from the prefix (fast_l + tail present + no early emit above), rescan
     // only the unseen tail plus a `gate_len-1` straddle window for a literal
@@ -279,15 +305,11 @@ fn emitBody(w: *Worker, a: std.mem.Allocator, dpath: []const u8, body: []const u
     }
     // Under `--heading` the filename is printed once, here, and the rows below
     // carry only line numbers — so this heading is the only thing a human can
-    // click to open the file. The serial emitter frames its own heading; this
-    // one is written straight into the buffer, so it frames it here and hands
-    // the escape bytes to `em.chrome`, which is what the output budget
-    // discounts. `anchor` returns the path unchanged when nothing is linking.
-    if (cfg.heading and cfg.show_name) {
-        const shown = beacon.anchor(a, dpath);
-        buf.print(a, "{s}{s}", .{ shown, if (o.null_sep) "\x00" else o.outTerm() }) catch oom();
-        em.chrome += shown.len - dpath.len;
-    }
+    // click to open the file. `em.out` IS this buffer, so the shared emitter
+    // writes the title exactly as the serial engine does and keeps its own
+    // chrome tally, which is what the output budget discounts. Hand-rolling the
+    // line here instead is how the two engines came to paint it differently.
+    if (cfg.heading and cfg.show_name) em.heading(dpath);
     const before_body = buf.items.len;
     const hits = if (slice_model) em.buffer(dpath, body) else if (fast) em.fileLit(dpath, body, 0, body.len, 0, true) else em.file(dpath, lines.items);
     if (hits > 0) return w.deliver(.text_hit, dpath, buf.items, em.chrome);

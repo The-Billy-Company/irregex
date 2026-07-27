@@ -45,13 +45,27 @@ const std = @import("std");
 /// Holding the explicit answers as null-until-asked and resolving once makes
 /// the order-dependence disappear, because an implication can no longer
 /// overwrite an answer the user actually gave.
+///
+/// The `terminal` argument below is the last party to be asked, and only ever
+/// about a question still unanswered: rg reads a human-facing stdout as a
+/// standing request for the grouped, numbered layout, the same way it reads it
+/// as a request for color. Keeping that inside this type means a destination
+/// can never outrank a flag — `--no-heading` and `-N` mean what they say on a
+/// terminal — and a pipe, which answers `terminal = false`, keeps the exact
+/// bytes ripgrep would have written.
 pub const Locus = struct {
     /// `-n` / `-N` if either was passed, else null.
     line: ?bool = null,
     /// `--column` / `--no-column` if either was passed, else null.
     column: ?bool = null,
+    /// `--heading` / `--no-heading` if either was passed, else null. A heading
+    /// is a location answer like the other two — it decides whether a row names
+    /// its file in the prefix or inherits it from the title above the group.
+    heading: ?bool = null,
 
-    /// Does each row carry a column? Only `--vimgrep` implies one.
+    /// Does each row carry a column? Only `--vimgrep` implies one. No terminal
+    /// argument: a column is a parseable coordinate, not a reading aid, and rg
+    /// does not offer one just because a human is watching.
     pub fn columns(self: Locus, vimgrep: bool) bool {
         return self.column orelse vimgrep;
     }
@@ -60,8 +74,15 @@ pub const Locus = struct {
     /// `--no-column --vimgrep` still numbers its lines, since a vimgrep row
     /// without one would name no location at all. `--column` implies one only
     /// while the column survives, so `--column --no-column` implies nothing.
-    pub fn lines(self: Locus, vimgrep: bool) bool {
-        return self.line orelse (vimgrep or (self.column orelse false));
+    pub fn lines(self: Locus, vimgrep: bool, terminal: bool) bool {
+        return self.line orelse (vimgrep or terminal or (self.column orelse false));
+    }
+
+    /// Are matches grouped under a filename title? Nothing implies this but the
+    /// destination: piped output keeps the `path:line:` prefix every downstream
+    /// parser expects, and a terminal gets the grouping a human can skim.
+    pub fn headings(self: Locus, terminal: bool) bool {
+        return self.heading orelse terminal;
     }
 };
 
@@ -184,19 +205,37 @@ pub const Mode = enum {
 test "an explicit -N or --no-column outranks an implication, from either side" {
     const t = std.testing;
     const off: Locus = .{ .line = false };
-    try t.expect(!off.lines(true)); // -N --vimgrep and --vimgrep -N alike
-    try t.expect(!(Locus{ .line = false, .column = true }).lines(false)); // -N --column
+    try t.expect(!off.lines(true, false)); // -N --vimgrep and --vimgrep -N alike
+    try t.expect(!(Locus{ .line = false, .column = true }).lines(false, false)); // -N --column
     // --column --no-column: the column is gone, so it implies no line number.
-    try t.expect(!(Locus{ .column = false }).lines(false));
+    try t.expect(!(Locus{ .column = false }).lines(false, false));
     try t.expect(!(Locus{ .column = false }).columns(false));
     // …but --vimgrep numbers its lines even with the column explicitly off.
-    try t.expect((Locus{ .column = false }).lines(true));
+    try t.expect((Locus{ .column = false }).lines(true, false));
     try t.expect(!(Locus{ .column = false }).columns(true));
     // Bare implications still fire.
-    try t.expect((Locus{ .column = true }).lines(false));
-    try t.expect((Locus{}).lines(true) and (Locus{}).columns(true));
+    try t.expect((Locus{ .column = true }).lines(false, false));
+    try t.expect((Locus{}).lines(true, false) and (Locus{}).columns(true));
     // Nothing asked, nothing implied.
-    try t.expect(!(Locus{}).lines(false) and !(Locus{}).columns(false));
+    try t.expect(!(Locus{}).lines(false, false) and !(Locus{}).columns(false));
+}
+
+test "a terminal answers only what argv left unanswered" {
+    const t = std.testing;
+    // Silence + a human watching: rg's grouped, numbered layout.
+    try t.expect((Locus{}).lines(false, true) and (Locus{}).headings(true));
+    // The same silence into a pipe is ripgrep's byte contract — neither.
+    try t.expect(!(Locus{}).lines(false, false) and !(Locus{}).headings(false));
+    // A destination is the LAST party asked, never the loudest: `-N` and
+    // `--no-heading` mean what they say on a terminal, in either order (the
+    // answer is recorded, so there is no order for it to depend on).
+    try t.expect(!(Locus{ .line = false }).lines(false, true));
+    try t.expect(!(Locus{ .heading = false }).headings(true));
+    // …and spelling them ON still works where nothing would have implied them.
+    try t.expect((Locus{ .line = true }).lines(false, false));
+    try t.expect((Locus{ .heading = true }).headings(false));
+    // A column is a coordinate, not a reading aid: no terminal implies one.
+    try t.expect(!(Locus{}).columns(false));
 }
 
 test "the last mode flag on the argv wins" {
