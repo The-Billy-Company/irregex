@@ -112,7 +112,7 @@ pub fn buildReplaced(self: *Emitter, tmpl: []const u8, line: []const u8) Replace
 /// Emit each match on one line as its expanded `-r` template (the `-o` frame),
 /// `so_far` matches already counted toward `--max-count`. Returns the count on
 /// this line.
-pub fn emitLineRepl(self: *Emitter, path: []const u8, lineno: usize, line: []const u8, so_far: usize) usize {
+pub fn emitLineRepl(self: *Emitter, path: []const u8, lineno: usize, line: []const u8) usize {
     const caps = self.caps.?;
     const tmpl = self.o.replace.?;
     const slots = self.a.alloc(isize, caps.nslots()) catch oom();
@@ -129,7 +129,8 @@ pub fn emitLineRepl(self: *Emitter, path: []const u8, lineno: usize, line: []con
         expand(self, self.out, tmpl, line, slots);
         self.add(self.o.outTerm()); // expanded text carries no terminator — rg appends the full one
         n += 1;
-        if (self.o.max_per_file != 0 and so_far + n >= self.o.max_per_file) break;
+        // No span cap: `-m` counts matched LINES, so this line emits all of
+        // its replacements and the caller stops between lines.
         from = e;
     }
     return n;

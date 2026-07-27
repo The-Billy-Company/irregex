@@ -747,7 +747,7 @@ fn runJson(h: *output.MlHarness, o: Opts, body: []const u8) ![]const u8 {
     out.* = .empty;
     var opts = o;
     opts.multiline = true;
-    opts.json = true;
+    opts.mode = .json;
     _ = run(a, out, &h.m, if (h.caps) |*c| c else null, opts, &.{.{ .path = "f.txt", .body = body }}, null, @enumFromInt(0));
     return out.items;
 }

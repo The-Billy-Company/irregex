@@ -502,7 +502,7 @@ fn profileJson(gpa: std.mem.Allocator, io: std.Io, meter: *Meter, corpus: *const
     defer gpa.free(files);
     for (corpus.docs, 0..) |d, i| files[i] = .{ .path = "f", .body = d };
 
-    const o = Opts{ .json = true };
+    const o = Opts{ .mode = .json };
     var slowest: f64 = std.math.floatMax(f64);
     for (emit_needles) |ndl| {
         var m = Matcher{ .linear = Regex.compile(gpa, ndl) catch continue };
@@ -601,8 +601,8 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, gate: 
     const tax = try profileCaseless(io, &meter, &corpus);
     const decimal = try profileLineNum(gpa, io, &meter, &corpus);
     const invert = try profileInvert(gpa, io, &meter, &corpus);
-    const files_l = try profileEmitMode(gpa, io, &meter, &corpus, "-l  files-with-matches emit (Emitter.file → emitPathOnly)", .{ .files_only = true }, .files);
-    const count_c = try profileEmitMode(gpa, io, &meter, &corpus, "-c  count emit (Emitter.file → bufTally→writeDecimal)", .{ .count_only = true }, .count);
+    const files_l = try profileEmitMode(gpa, io, &meter, &corpus, "-l  files-with-matches emit (Emitter.file → emitPathOnly)", .{ .mode = .files_with_matches }, .files);
+    const count_c = try profileEmitMode(gpa, io, &meter, &corpus, "-c  count emit (Emitter.file → bufTally→writeDecimal)", .{ .mode = .count }, .count);
     const only_o = try profileEmitMode(gpa, io, &meter, &corpus, "-o  only-matching emit (Emitter.onlyMatching)", .{ .only_matching = true }, .none);
     const word_w = try profileEmitMode(gpa, io, &meter, &corpus, "-w  word-regexp gate (Emitter.file + wordOk)", .{ .word = true, .line_num = true }, .none);
     const replace_r = try profileReplace(gpa, io, &meter, &corpus);

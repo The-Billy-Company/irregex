@@ -44,7 +44,7 @@ const Regex = @import("../../../../kernel/match/regex/regex.zig").Regex;
 /// This is the load-bearing predicate of the tier: a new output mode that
 /// observes non-matching content needs to be added HERE and nowhere else.
 pub fn observesEveryByte(o: Opts) bool {
-    return o.stats or o.json or o.passthru;
+    return o.stats or o.mode == .json or o.passthru;
 }
 
 /// May a whole file be dropped UNREAD because a literal gate proves no line in
@@ -53,7 +53,7 @@ pub fn observesEveryByte(o: Opts) bool {
 /// dropped file IS the answer, not a saving), and `--include-zero` must reach
 /// the emitter to print its `path:0` row.
 pub fn mayDropFileUnread(o: Opts) bool {
-    return !observesEveryByte(o) and !o.files_without and !o.include_zero;
+    return !observesEveryByte(o) and !o.mode.negated() and !o.include_zero;
 }
 
 /// May the persisted index prefilter and elide reads? The every-byte modes,
@@ -242,6 +242,6 @@ test "whole-file gate preserves all-byte modes" {
     try t.expectEqualStrings("func", wholeFileLiteralGate(.{}, needle).?.bytes);
     try t.expect(wholeFileLiteralGate(.{ .passthru = true }, needle) == null);
     try t.expect(wholeFileLiteralGate(.{ .stats = true }, needle) == null);
-    try t.expect(wholeFileLiteralGate(.{ .json = true }, needle) == null);
-    try t.expect(wholeFileLiteralGate(.{ .files_without = true }, needle) == null);
+    try t.expect(wholeFileLiteralGate(.{ .mode = .json }, needle) == null);
+    try t.expect(wholeFileLiteralGate(.{ .mode = .files_without_match }, needle) == null);
 }

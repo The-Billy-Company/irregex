@@ -92,9 +92,9 @@ pub fn handleBinary(a: std.mem.Allocator, re: *const Matcher, o: Opts, out: *std
         // Implicit (walk/glob): only the committed prefix was ever searched —
         // every mode (-l included) answers from it, and `-c`/`--count-matches`
         // are suppressed entirely (rg's Summary printer drops binary files).
-        if (o.count_only or o.count_matches) return false;
+        if (o.mode.counting()) return false;
         const hits = emitRegion(a, em, o, path, prefix);
-        if (o.files_only) return hits > 0;
+        if (o.mode == .files_with_matches) return hits > 0;
         // A WARNING only when we actually printed a match in the prefix;
         // otherwise rg quits silently (no output, no match).
         if (hits == 0) return false;
@@ -105,7 +105,7 @@ pub fn handleBinary(a: std.mem.Allocator, re: *const Matcher, o: Opts, out: *std
     // -l/--files-with-matches scans an explicit file as text and emits no binary
     // warning; -c counts every match across the whole body (rg's convert strategy
     // treats an explicit binary as text).
-    if (o.files_only or o.count_only or o.count_matches)
+    if (o.mode == .files_with_matches or o.mode.counting())
         return emitRegion(a, em, o, path, body) > 0;
 
     const before = out.items.len;
@@ -163,7 +163,7 @@ fn regionMatches(a: std.mem.Allocator, re: *const Matcher, o: Opts, em: *Emitter
 fn handleBinaryMulti(a: std.mem.Allocator, re: *const Matcher, o: Opts, out: *std.ArrayList(u8), em: *Emitter, path: []const u8, explicit: bool, body: []const u8, nul: usize, show_name: bool) bool {
     if (!explicit) return false;
     // -l / -c treat the explicit file as text over the FULL body (convert).
-    if (o.files_only or o.count_only or o.count_matches) return em.buffer(path, body) > 0;
+    if (o.mode == .files_with_matches or o.mode.counting()) return em.buffer(path, body) > 0;
     if (bufAnyMatch(a, re, body)) {
         binNote(a, out, o, path, nul, show_name, "binary file matches");
         return true;
@@ -230,7 +230,7 @@ test "walked -l stops at the NUL buffer without scanning its tail" {
     defer m.deinit();
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(t.allocator);
-    const o = Opts{ .files_only = true };
+    const o = Opts{ .mode = .files_with_matches };
     var em = Emitter{ .a = t.allocator, .re = &m, .o = o, .show_name = true, .out = &out };
     // Both walk engines point the emitter's whole-body window at the file
     // BEFORE binary handling (serial `renderFile`, parallel `emitBody`), and the

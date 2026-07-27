@@ -103,8 +103,10 @@ pub fn fileLit(self: *Emitter, path: []const u8, body: []const u8, lo: usize, hi
     const o = self.o;
     const lits = self.re.lits();
     const term = o.term();
-    const count_spans = o.count_matches or (o.count_only and o.only_matching);
-    const counting = o.count_only or o.count_matches;
+    // `-c -o` resolved to `.count_matches` back in argv (`answer.Mode.settle`),
+    // so counting spans is exactly the one mode — no second reading of `-o`.
+    const count_spans = o.mode == .count_matches;
+    const counting = o.mode.counting();
     const emit_spans = o.only_matching and !counting;
     // Prefix-free literals resolve spans without the Pike VM (`litNextSpan`),
     // so a span-emitting mode over such a set never allocates a `SpanSim`.
@@ -128,7 +130,7 @@ pub fn fileLit(self: *Emitter, path: []const u8, body: []const u8, lo: usize, hi
     const need_start = !(counting and !count_spans);
     while (simd.indexOfAnyPos(body, pos, lits)) |p| {
         if (p >= hi) break; // this shard owns only lines whose hit falls in [lo,hi)
-        if (o.files_only) return self.emitPathOnly(path);
+        if (o.mode == .files_with_matches) return self.emitPathOnly(path);
         const le = simd.memchr(body, p, term) orelse body.len;
         lines_hit += 1;
         if (need_start) {
@@ -136,19 +138,19 @@ pub fn fileLit(self: *Emitter, path: []const u8, body: []const u8, lo: usize, hi
             const line = body[ls..le];
             if (count_spans) {
                 const mv = self.mview(line);
+                // No `-m` break inside either loop: `-m` limits matched
+                // LINES, so the last admitted line contributes every span it
+                // holds (`rg --count-matches -m1` over a two-match line is 2).
+                // The outer loop stops on the line count instead.
                 if (lit_span) {
                     var from: usize = 0;
                     while (litNextSpan(lits, mv, from)) |sp| {
                         from = sp.end;
                         spans += 1;
-                        if (max != 0 and spans >= max) break;
                     }
                 } else {
                     var from: usize = 0;
-                    while (output.nextSpan(self.re, &ssim.?, o, mv, &from)) |_| {
-                        spans += 1;
-                        if (max != 0 and spans >= max) break;
-                    }
+                    while (output.nextSpan(self.re, &ssim.?, o, mv, &from)) |_| spans += 1;
                 }
             } else {
                 if (o.line_num) {
@@ -169,7 +171,11 @@ pub fn fileLit(self: *Emitter, path: []const u8, body: []const u8, lo: usize, hi
         }
         if (le >= body.len) break;
         pos = le + 1;
-        const done = if (count_spans or emit_spans) spans else lines_hit;
+        // `-m` counts matched LINES in every mode — the span modes included, so
+        // a line's spans are never split across the limit (`grid.zig` caps its
+        // line index the same way). Capping on spans here made `-o -m2` stop
+        // two matches in rather than two lines in.
+        const done = lines_hit;
         if (max != 0 and done >= max) break;
     }
     const n = if (count_spans) spans else lines_hit;

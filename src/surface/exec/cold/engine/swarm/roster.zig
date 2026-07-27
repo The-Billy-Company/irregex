@@ -91,7 +91,7 @@ pub fn collectFileSet(gpa: std.mem.Allocator, io: std.Io, roots: []const []const
     // `files_list` gates only `files_mode`/worker topology; `ignore.Options.from`
     // reads none of it, so the admission layer is byte-identical to serial
     // `defaultFileSet`'s default `Opts{}`.
-    const o: Opts = .{ .files_list = true };
+    const o: Opts = .{ .mode = .files };
     var scratch = std.heap.ArenaAllocator.init(gpa);
     defer scratch.deinit();
     const sa = scratch.allocator();

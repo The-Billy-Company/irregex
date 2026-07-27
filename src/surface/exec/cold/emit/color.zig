@@ -81,7 +81,7 @@ pub fn enabled(o: args.Opts, io: std.Io, env: *const std.process.Environ.Map) bo
     return switch (o.color) {
         .never => false,
         .always, .ansi => true,
-        .auto => !o.json and !o.vimgrep and
+        .auto => o.mode != .json and !o.vimgrep and
             (std.Io.File.stdout().isTty(io) catch false) and !envSuppresses(env),
     };
 }

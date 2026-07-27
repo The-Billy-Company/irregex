@@ -12,11 +12,12 @@
 //!
 //!   - `output/display.zig`  what a chosen line looks like: `--trim`,
 //!                           `-M/--max-columns`, `--color`, the terminator
-//!                           model, and the `-o` only-matching frame
+//!                           model, and the two shared row shapes (`-o`
+//!                           only-matching, `--vimgrep` per-match)
 //!   - `output/replace.zig`  `-r` template expansion (`expandInto` is shared
 //!                           verbatim with the `--json` stream)
 //!   - `output/grid.zig`     the physical-line-grid modes: the default frame,
-//!                           `-v`, `--passthru`, `-o`, `-c`, `--vimgrep`
+//!                           `-v`, `--passthru`, `-o`, `-c`
 //!   - `output/skim.zig`     the line-free literal searcher loop (`fileLit`)
 //!   - `output/multibuf.zig` the whole-buffer `-U` emit
 //!

@@ -7,15 +7,17 @@
 //! terminator model picks between reconstructing a line's original bytes and
 //! appending the full output terminator.
 //!
-//! It also owns the `-o` only-matching frame, because `grid` (per-line) and
-//! `skim` (line-free literal) both emit it — one implementation is what keeps
-//! their fragment bytes from drifting.
+//! It also owns the two row SHAPES more than one driver emits — the `-o`
+//! only-matching frame (`grid` per-line, `skim` line-free literal) and the
+//! `--vimgrep` per-match row (`grid` and `multibuf`) — because one
+//! implementation is what keeps their bytes from drifting.
 
 const std = @import("std");
 const args = @import("../../argv/args.zig");
 const oom = args.oom;
 const palette = @import("../color.zig");
 const Matcher = @import("../../../../../kernel/match/regex/regex.zig").Matcher;
+const Regex = @import("../../../../../kernel/match/regex/regex.zig").Regex;
 const output = @import("../output.zig");
 const Emitter = output.Emitter;
 const replace = @import("replace.zig");
@@ -174,6 +176,51 @@ pub fn exceeded(self: *Emitter, s: []const u8, is_match: bool, starts: []const u
     } else self.add("[Omitted long matching line]");
 }
 
+/// One line's worth of `--vimgrep` rows, as its driver resolved them. The
+/// fields are the span PROVENANCE a caller owns; `vimgrepLine` owns the shape.
+pub const Vimgrep = struct {
+    path: []const u8,
+    lineno: usize,
+    /// The row body — the whole line, already the `-r` rewrite when there is one.
+    text: []const u8,
+    /// Byte offset of `text`'s line within the file.
+    off: usize,
+    /// Each match's start within `text`, in order. Drives the columns, and the
+    /// `-M` match granularity.
+    starts: []const usize,
+    /// Did the line carry a terminator in the file (`emitBody`'s bytes model)?
+    terminated: bool,
+    /// Whose offset `--byte-offset` prints. rg's two sinks answer differently:
+    /// a line-oriented sink reports the MATCH's offset, a `-U` block sink the
+    /// printed LINE's — `rg -U --vimgrep -b 'one[\s\S]*?two|B'` over
+    /// `one\nmid\ntwo B` prints the second row at line 3's start, neither the
+    /// match's offset nor the block's.
+    off_of: enum { match, line } = .match,
+};
+
+/// `--vimgrep`: the rows ONE selected line contributes — a `path:line:col:text`
+/// row per match opening on it, each carrying the whole line.
+///
+/// A row SHAPE, not an output mode, which is why it lives here and not in a
+/// mode driver: `grid` (physical lines) and `multibuf` (`-U` spans) swap it in
+/// for their `row()` call and keep their own context windows, `--` separators,
+/// and `-m` accounting — how `--vimgrep` composes with `-A/-B/-C` and
+/// `--passthru` exactly as rg's does (`-m` therefore caps matching LINES, so
+/// `-m1` still prints every match on the first one). The modes that replace the
+/// rows outright — `-l`, `-c`, `--count-matches`, `-o` — return before any frame.
+///
+/// Holding it in one place is what keeps the two drivers' bytes together: the
+/// column, the `--byte-offset`, and the `-M/--max-columns` granularity (rg's
+/// per-match printer counts the line's matches — `[Omitted long line with N
+/// matches]` — where the plain frame says `[Omitted long matching line]`) are
+/// decided once here instead of twice, which is how they drifted before.
+pub fn vimgrepLine(self: *Emitter, v: Vimgrep) void {
+    for (v.starts) |st| {
+        self.prefix(v.path, v.lineno, st + 1, v.off + if (v.off_of == .match) st else 0, true);
+        emitBody(self, v.text, true, v.starts, v.terminated);
+    }
+}
+
 /// Emit each match span on one line in the only-matching frame (shared by
 /// `-o` and `--passthru -o`). `mv` is the `--crlf` match view of `line`.
 /// Returns the number of spans emitted.
@@ -203,4 +250,72 @@ pub fn emitMatches(self: *Emitter, ssim: *Matcher.SpanSim, path: []const u8, lin
         last_end = span.end;
     }
     return n;
+}
+
+/// The `--vimgrep` row shape's own harness: no engine is consulted (the caller
+/// resolved the spans), so a bare `Matcher` suffices to hold the `Emitter`.
+fn vimgrepBytes(a: std.mem.Allocator, out: *std.ArrayList(u8), o: args.Opts, v: Vimgrep) !void {
+    var m = Matcher{ .linear = try @import("../../../../../kernel/match/regex/regex.zig").Regex.compile(a, "x") };
+    defer m.deinit();
+    var em = Emitter{ .a = a, .re = &m, .o = o, .show_name = true, .out = out };
+    vimgrepLine(&em, v);
+}
+
+test "one row per match, each with its own column" {
+    const t = std.testing;
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(t.allocator);
+    try vimgrepBytes(t.allocator, &out, .{ .line_num = true, .column = true }, .{
+        .path = "a.txt",
+        .lineno = 1,
+        .text = "alpha beta alpha",
+        .off = 0,
+        .starts = &.{ 0, 11 },
+        .terminated = true,
+    });
+    try t.expectEqualStrings(
+        \\a.txt:1:1:alpha beta alpha
+        \\a.txt:1:12:alpha beta alpha
+        \\
+    , out.items);
+}
+
+test "--byte-offset follows the sink: the match's, or the printed line's" {
+    const t = std.testing;
+    const o: args.Opts = .{ .line_num = true, .column = true, .byte_offset = true };
+    const v: Vimgrep = .{ .path = "a.txt", .lineno = 3, .text = "zzz alpha zzz", .off = 23, .starts = &.{ 4, 10 }, .terminated = true };
+
+    var line_sink: std.ArrayList(u8) = .empty;
+    defer line_sink.deinit(t.allocator);
+    var v_line = v;
+    v_line.off_of = .line;
+    try vimgrepBytes(t.allocator, &line_sink, o, v_line);
+    // `-U` block sink: every row reports the LINE's offset (rg 14.x).
+    try t.expectEqualStrings("a.txt:3:5:23:zzz alpha zzz\na.txt:3:11:23:zzz alpha zzz\n", line_sink.items);
+
+    var match_sink: std.ArrayList(u8) = .empty;
+    defer match_sink.deinit(t.allocator);
+    try vimgrepBytes(t.allocator, &match_sink, o, v); // default `.match`
+    try t.expectEqualStrings("a.txt:3:5:27:zzz alpha zzz\na.txt:3:11:33:zzz alpha zzz\n", match_sink.items);
+}
+
+test "-M reports the line's match count, not the plain placeholder" {
+    const t = std.testing;
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(t.allocator);
+    // rg's per-match printer has match granularity, so an over-wide vimgrep
+    // line says "with N matches" where the plain frame says "long matching line".
+    try vimgrepBytes(t.allocator, &out, .{ .line_num = true, .column = true, .max_cols = 4 }, .{
+        .path = "w.txt",
+        .lineno = 1,
+        .text = "aaXbbXcc",
+        .off = 0,
+        .starts = &.{ 2, 5 },
+        .terminated = true,
+    });
+    try t.expectEqualStrings(
+        \\w.txt:1:3:[Omitted long line with 2 matches]
+        \\w.txt:1:6:[Omitted long line with 2 matches]
+        \\
+    , out.items);
 }

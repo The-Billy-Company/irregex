@@ -101,16 +101,31 @@ pub fn renderFile(em: *Emitter, f: InFile, stat: *Stats, matched_files: *usize, 
         stat.add(.bytes_searched, fs.bytes);
     }
     const before = out.items.len;
-    if (heading) out.print(a, "{s}{s}{s}", .{ if (first.*) "" else "\n", f.path, o.outTerm() }) catch oom();
+    // Two separable halves, because rg separates them: heading GROUPS the run
+    // (a blank line between file groups) and, if the path is being shown at
+    // all, titles each group with it. `-I`/`--no-filename` removes the title
+    // and keeps the grouping — `rg --heading -I` over two files still emits the
+    // blank line. `--null` terminates the title path like every other place a
+    // bare path is printed.
+    if (heading) {
+        if (!first.*) out.append(a, '\n') catch oom();
+        if (show_name) out.print(a, "{s}{s}", .{ f.path, if (o.null_sep) "\x00" else o.outTerm() }) catch oom();
+    }
+    const titled = out.items.len;
     em.base = @intFromPtr(body.ptr);
     em.body_end = em.base + body.len;
     const hits = if (o.multiline) em.buffer(f.path, body) else if (fast) em.fileLit(f.path, body, 0, body.len, 0, true) else em.file(f.path, lines.items);
-    if (hits > 0) {
+    // Whether this file OPENS A GROUP is whether it wrote anything, which is
+    // not the same question as whether it matched: `--passthru` prints a
+    // non-matching file in full, and that group is titled and separated like
+    // any other (only the exit code still turns on `hits`). Keying the retract
+    // on `hits` instead discarded the passthru body along with its title.
+    if (out.items.len > titled) {
         if (join_groups and !first.* and out.items.len > before)
             out.insertSlice(a, before, "--\n") catch oom();
         first.* = false;
-        matched_files.* += 1;
     } else if (heading) out.shrinkRetainingCapacity(before);
+    if (hits > 0) matched_files.* += 1;
 }
 
 pub fn inFileWeight(_: void, f: InFile) usize {
@@ -154,7 +169,7 @@ pub fn emitSharded(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.Array
             const sa = sh.arena.allocator();
             var sim: ?Matcher.Sim = Matcher.Sim.init(sa, sh.re) catch null;
             var caps_store: ?Caps = if (sh.o.replace != null) compileCaps(sa, sh.o, sh.eff, sh.is_pcre) else null;
-            var em = Emitter{ .a = sa, .re = sh.re, .o = sh.o, .show_name = if (sh.o.heading) false else sh.show_name, .out = &sh.buf, .caps = if (caps_store) |*cp| cp else null, .use_color = sh.use_color, .needle = sh.needle, .sim = if (sim) |*s| s else null };
+            var em = Emitter{ .a = sa, .re = sh.re, .o = sh.o, .show_name = if (sh.o.groups()) false else sh.show_name, .out = &sh.buf, .caps = if (caps_store) |*cp| cp else null, .use_color = sh.use_color, .needle = sh.needle, .sim = if (sim) |*s| s else null };
             var first = true;
             for (sh.files) |f| {
                 renderFile(&em, f, &sh.stat, &sh.matched, &first, sh.binary_detect, sh.count_zero, false, false, sh.show_name);
@@ -256,7 +271,7 @@ pub fn emitFileSharded(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.A
         }
     } else @memset(base_ln, 0);
 
-    const counting = o.count_only or o.count_matches;
+    const counting = o.mode.counting();
     const Shard = struct {
         re: *const Matcher,
         o: Opts,
@@ -329,7 +344,11 @@ pub fn fileWithoutMatch(a: std.mem.Allocator, re: *const Matcher, o: Opts, em: *
     const any = if (o.multiline) bufferAnyHit(a, re, o, null, needle, f.path, body) else blk: {
         var lines: std.ArrayList([]const u8) = .empty;
         collectLines(a, body, o.term(), &lines);
-        for (lines.items) |line| if (lineHit(em, lsim, wssp, needle, line)) break :blk true;
+        // `-v` inverts what counts as a match here too, so a file whose every
+        // line FAILS the pattern is a file full of inverted matches — not a
+        // file "without match". rg prints nothing and exits 1 for
+        // `-v --files-without-match` over a pattern nothing matches.
+        for (lines.items) |line| if (lineHit(em, lsim, wssp, needle, line) != o.invert) break :blk true;
         break :blk false;
     };
     if (!any) out.print(a, "{s}{s}", .{ f.path, if (o.null_sep) "\x00" else o.outTerm() }) catch oom();

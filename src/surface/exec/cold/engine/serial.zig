@@ -168,7 +168,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // each row's globs sorted lexicographically (`../scope/types.zig`
     // `writeTypeList`). gist's registry is a strict SUPERSET of ripgrep's, so the
     // listing is rg-shaped and rg-sorted while covering more types + globs.
-    if (o.type_list) {
+    if (o.mode == .types) {
         var out: std.ArrayList(u8) = .empty;
         types.writeTypeList(a, &out) catch oom();
         corpus_mod.emitStdout(out.items);
@@ -177,7 +177,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
 
     // --files: list the files that would be searched (no pattern), path-sorted,
     // NUL-terminated under --null. Uses the same gather+filter as the search path.
-    if (o.files_list) {
+    if (o.mode == .files) {
         // The parallel engine never opens a file in --files mode (a listing needs
         // paths, not bytes) — the serial path below reads every body it lists.
         if (swarm.eligible(io, parsed, o)) swarm.run(gpa, io, parsed, o, null, use_color, &.{}, crest.no_sieve, null, null, &icfg);
@@ -336,13 +336,13 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     const err_exit = c.path_error or pre_error.load(.seq_cst) or nothing_searched;
 
     // --json: ripgrep's JSON Lines record stream (own printer, shared engine).
-    if (o.json) {
+    if (o.mode == .json) {
         var jf: std.ArrayList(json.File) = .empty;
         for (files) |f| jf.append(a, .{ .path = f.path, .body = stripBom(f.bytes), .explicit = f.explicit }) catch oom();
         var out: std.ArrayList(u8) = .empty;
         const jst = json.runParallel(gpa, a, &out, re, caps, o, jf.items, line_needle, search_span.read(io));
         corpus_mod.emitStdout(out.items);
-        stats.diagSearch(gpa, o.json, jst, search_span.read(io));
+        stats.diagSearch(gpa, o.mode == .json, jst, search_span.read(io));
         pcreFaultExit(re);
         (Outcome{ .matched = jst.get(.files_with_match) > 0, .faulted = err_exit }).exit();
     }
@@ -362,7 +362,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // the Emitter degrades to its file-local build.
     var run_sim: ?Matcher.Sim = Matcher.Sim.init(a, re) catch null;
     defer if (run_sim) |*s| s.deinit();
-    var em = Emitter{ .a = a, .re = re, .o = o, .show_name = if (o.heading) false else show_name, .out = &out, .caps = caps, .use_color = use_color, .needle = line_needle, .sim = if (run_sim) |*s| s else null };
+    var em = Emitter{ .a = a, .re = re, .o = o, .show_name = if (o.groups()) false else show_name, .out = &out, .caps = caps, .use_color = use_color, .needle = line_needle, .sim = if (run_sim) |*s| s else null };
 
     // --quiet short-circuits on first match — unless --stats is also asked for,
     // which must run the full search to tally (then print only the stats block).
@@ -371,13 +371,13 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // exit below rather than this match-presence one. Under quiet a found match
     // beats a path error (ripgrep's QuietMatched short-circuits the exit to 0
     // even when a later PATH failed to open — e.g. `-q p found missing` → 0).
-    if (o.quiet and !o.stats and !o.files_without) {
+    if (o.quiet and !o.stats and !o.mode.negated()) {
         const hit = anyMatch(a, re, o, line_needle, files);
         pcreFaultExit(re);
         (Outcome{ .matched = hit, .faulted = err_exit, .precedence = .quiet_short_circuit }).exit();
     }
 
-    if (o.files_without) {
+    if (o.mode.negated()) {
         var lsim = Matcher.Sim.init(a, re) catch die("engine init failed\n", .{});
         defer lsim.deinit();
         var wss: ?Matcher.SpanSim = if (o.word) (Matcher.SpanSim.init(a, re) catch null) else null;
@@ -403,11 +403,8 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         (Outcome{ .matched = out.items.len > 0, .faulted = err_exit }).exit();
     }
 
-    // rg prints a heading only when it would print the path at all: a single
-    // explicit file (or --no-filename) suppresses the header, not just the
-    // per-line prefix — the sink's path is None so write_path_line is a no-op.
-    const heading = o.heading and show_name and !o.count_only and !o.count_matches and !o.files_only and !o.vimgrep;
-    const join_groups = o.wantsContext() and !o.files_only and !o.count_only and !o.count_matches and !heading;
+    const heading = o.groups();
+    const join_groups = o.wantsContext() and o.mode.frames() and !heading;
     var matched_files: usize = 0;
     var first = true;
     // Binary detection remains active for -l: a match after the buffer that
@@ -419,7 +416,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     var stat = Stats{};
     // `--include-zero` count: an empty file is still a searched file and rg
     // prints its `path:0`, so don't skip it (the emitter tallies 0 below).
-    const count_zero = o.include_zero and (o.count_only or o.count_matches);
+    const count_zero = o.include_zero and o.mode.counting();
     // `--heading`/context `join_groups` carry cross-file separator state (the
     // leading blank line, the `--\n` between context groups) that an order-free
     // split can't reproduce; everything else here is per-file independent and
@@ -436,7 +433,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // null for one file): fan the line-free literal fast path across cores over
     // its own body — the parallelism ripgrep can't apply to one file. `-l`
     // (files_only) is excluded (a lone first hit, nothing to parallelize).
-    const solo_fast = files.len == 1 and !heading and !join_groups and !no_par and !o.stats and !o.files_only and em.litFastEligible();
+    const solo_fast = files.len == 1 and !heading and !join_groups and !no_par and !o.stats and o.mode != .files_with_matches and em.litFastEligible();
     if (solo_fast and emitFileSharded(gpa, a, &out, &em, re, o, use_color, line_needle, files[0], &matched_files, binary_detect, show_name)) {
         // handled by the single-file shard driver
     } else if (bounds) |b| {
@@ -455,7 +452,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         stat.set(.bytes_printed, if (o.quiet) 0 else out.items.len);
         if (o.quiet) out.clearRetainingCapacity();
         emitStats(a, &out, stat, search_span.read(io));
-        stats.diagSearch(gpa, o.json, stat, search_span.read(io));
+        stats.diagSearch(gpa, o.mode == .json, stat, search_span.read(io));
     }
     corpus_mod.emitStdout(out.items);
     pcreFaultExit(re);

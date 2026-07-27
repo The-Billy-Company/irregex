@@ -142,7 +142,7 @@ fn flushPending(w: *Worker, a: std.mem.Allocator, scratch: []u8, final: bool) vo
         if (ready) if (lz.val) |*el| if (el.skip(stripDot(d.rel), d.mtime_ns, d.ctime_ns)) {
             // Index proves no match: `--files-without-match` emits the path
             // without reading (the invert of `-l`'s elide-and-skip).
-            if (o.files_without) {
+            if (o.mode.negated()) {
                 const dpath = if (o.path_sep) |sep| replaceSep(a, d.rel, sep) else d.rel;
                 w.bufferPath(dpath, if (o.null_sep) "\x00" else o.outTerm());
             }
@@ -391,7 +391,7 @@ fn handleEntry(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.posix
                 // Index proves no match: `--files-without-match` emits without
                 // reading (invert of `-l`'s elide-and-skip). `--stats` never
                 // arms the oracle (see `want_elision`), so it can't land here.
-                if (o.files_without) {
+                if (o.mode.negated()) {
                     const dpath = if (o.path_sep) |sep| replaceSep(a, rel, sep) else rel;
                     w.bufferPath(dpath, if (o.null_sep) "\x00" else o.outTerm());
                 }

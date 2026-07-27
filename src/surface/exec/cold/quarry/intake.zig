@@ -396,7 +396,7 @@ pub fn collectFiles(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, pa
         to_read.ensureTotalCapacity(a, candidates.items.len) catch oom();
         for (candidates.items) |c| {
             if (s.skip(c.rel)) {
-                if (o.files_without) all.append(a, .{ .path = c.rel, .scope = c.scope, .bytes = "", .explicit = c.explicit, .root = c.root }) catch oom();
+                if (o.mode.negated()) all.append(a, .{ .path = c.rel, .scope = c.scope, .bytes = "", .explicit = c.explicit, .root = c.root }) catch oom();
             } else to_read.appendAssumeCapacity(c);
         }
         break :blk to_read.items;
@@ -410,7 +410,7 @@ pub fn collectFiles(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, pa
     // exactly defeating rg's fault-to-first-hit locality. Drop it for the single
     // explicit file (output-neutral: absence yields no match either way); the
     // recursive/multi-file walk keeps it, where it skips whole non-matching files.
-    if (o.files_list) {
+    if (o.mode == .files) {
         // --files lists paths, not contents: never fault a body. rg's --files
         // and the parallel --files path both walk-only, so a `--sort`/`-L`-forced
         // serial run must be too — else a listing pays a full-corpus read. The

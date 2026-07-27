@@ -96,9 +96,6 @@ fn apply(b: *Builder, action: Act, v: *ValSrc) void {
     switch (action) {
         .set => |f| setVal(o, f, true),
         .unset => |f| setVal(o, f, false),
-        // --column implies line numbers; --vimgrep implies both. Setting them here
-        // (not at finalize) lets a later -N / --no-column override, matching rg's
-        // left-to-right resolution.
         .set_many => |fs| for (fs) |f| setVal(o, f, true),
         .set_num => |f| setVal(o, f, toU(v.take())),
         .set_str => |f| setVal(o, f, v.take()),
@@ -110,6 +107,27 @@ fn apply(b: *Builder, action: Act, v: *ValSrc) void {
         .case => |c| {
             o.caseless, o.smart_case = .{ c == .icase, c == .smart };
         },
+        // Recorded, not applied: `seal` folds in what `--vimgrep`/`--column`
+        // imply only after every explicit answer is in (`answer.Locus`).
+        .locate => |l| switch (l) {
+            .line_on => b.locus.line = true,
+            .line_off => b.locus.line = false,
+            .column_on => b.locus.column = true,
+            .column_off => b.locus.column = false,
+        },
+        // One choice across -w/-x, last spelling wins, so `-x -w` is a word
+        // match and `-w -x` a whole-line one.
+        .boundary => |bd| {
+            o.word, o.line_regexp = .{ bd == .word, bd == .line };
+        },
+        // The four output modes are one mutually exclusive choice, resolved
+        // last-wins the way ripgrep resolves it — not four independent bools
+        // ranked by whichever the emitter happens to test first. So `-l -c`
+        // counts, `-c -l` lists, and `--files-without-match -l` lists.
+        // Resolved in place rather than at seal: whether the next bare argument
+        // is a pattern or a path is decided mid-parse from `noPattern()`, so a
+        // `--files` that only took effect later would swallow its own path.
+        .mode => |m| o.mode = o.mode.update(m),
         .unrestrict => b.urestrict += 1,
         // --passthru and -A/-B/-C are mutually overriding — the last one on the
         // argv wins (ripgrep writes the same context setting). Reset any pending

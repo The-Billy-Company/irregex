@@ -1,9 +1,9 @@
 ---
 doc_radar:
   counts:
-    - description: "the argv package is the facade plus its four concern modules"
+    - description: "the argv package is the facade plus its five concern modules"
       glob: pkg/kernels/irregex/src/surface/exec/cold/argv/*.zig
-      equals: 5
+      equals: 6
       unit: modules
   sentinels:
     - description: "args.zig stays a facade whose test block keeps sibling tests discoverable"
@@ -35,19 +35,20 @@ tiers, `-t`/`-T`/`-g`/`--glob`/`--iglob` scoping with `!`-exclude,
 `{a,b}` alternation, and leading-`/` anchoring. Unicode is default-on
 (rg-parity); `--no-unicode` / `(?-u)` opt out.
 
-## The five modules
+## The six modules
 
-Four concerns behind one interface. Thirty-odd importers across the tree —
+Five concerns behind one interface. Thirty-odd importers across the tree —
 every engine, emitter, face verb, and the FFI session — see only `args.zig`,
 so the inside can be re-cut without a call-site edit.
 
-| Module        | Owns                                                                                                  |
-| ------------- | ----------------------------------------------------------------------------------------------------- |
-| `args.zig`    | The **facade**: the names the rest of the tree may use, and nothing else.                             |
-| `verdict.zig` | Turning one raw token into a typed value, or dying loud — numbers, enums, escapes, `{a,b}` expansion. |
-| `intent.zig`  | The request record (`Opts`, `Filter`, `Parsed`) **and** the `Builder` that accumulates into it.       |
-| `catalog.zig` | The declarative `flag_catalog` — one row per flag, comptime-proved against `Opts`.                    |
-| `grammar.zig` | The walk: short bundles, long flags, values, precedence, and the parse tests.                         |
+| Module        | Owns                                                                                                                                                               |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `args.zig`    | The **facade**: the names the rest of the tree may use, and nothing else.                                                                                          |
+| `verdict.zig` | Turning one raw token into a typed value, or dying loud — numbers, enums, escapes, `{a,b}` expansion.                                                              |
+| `intent.zig`  | The request record (`Opts`, `Filter`, `Parsed`) **and** the `Builder` that accumulates into it.                                                                    |
+| `catalog.zig` | The declarative `flag_catalog` — one row per flag, comptime-proved against `Opts`.                                                                                 |
+| `grammar.zig` | The walk: short bundles, long flags, values, precedence, and the parse tests.                                                                                      |
+| `answer.zig`  | The `Mode` a run resolves to (standard/count/json/files/…) and its last-wins precedence over the other presentation flags — decided once, before any printer runs. |
 
 `args.zig` carries an explicit `test { _ = catalog; … }` block. Zig analyzes a
 `pub const` re-export lazily, so without it the package's parse tests silently

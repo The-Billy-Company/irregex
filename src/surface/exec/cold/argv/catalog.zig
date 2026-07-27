@@ -16,6 +16,7 @@
 //! inline values) carry a named action for `grammar.apply` to interpret.
 
 const std = @import("std");
+const answer = @import("answer.zig");
 const intent = @import("intent.zig");
 
 const Opts = intent.Opts;
@@ -35,6 +36,16 @@ pub const Act = union(enum) {
     set_many: []const OptField, // set several Opts bools at once
     filename: Filename, // -H/--with-filename, -I/--no-filename
     case: enum { icase, scase, smart }, // -i / -s / -S
+    // `-n`/`-N`/`--column`/`--no-column` record an EXPLICIT answer; the
+    // `--vimgrep`/`--column` implications are applied once at seal, so an
+    // implication can never overwrite one. See `answer.Locus`.
+    locate: enum { line_on, line_off, column_on, column_off },
+    boundary: answer.Boundary, // -w / -x — one choice, last spelling wins
+    // Every flag that competes for the one answer shape (`answer.Mode`): the
+    // enumeration modes, `--json`, and the two non-search walk modes. They
+    // resolve through `Mode.update`, so precedence is the enum's law rather
+    // than the order these rows happen to appear in.
+    mode: answer.Mode,
     unrestrict,
     passthru,
     sort_files,
@@ -126,34 +137,34 @@ pub const flag_catalog = [_]FlagSpec{
     .{ .short = 'i', .longs = &.{"ignore-case"}, .action = .{ .case = .icase }, .compatibility = .supported, .note = "Unicode case folding by default (full simple case-fold orbits); (?-u)/--no-unicode selects ASCII folding" },
     .{ .short = 's', .longs = &.{"case-sensitive"}, .action = .{ .case = .scase }, .compatibility = .supported },
     .{ .short = 'S', .longs = &.{"smart-case"}, .action = .{ .case = .smart }, .compatibility = .supported, .note = "codepoint-aware uppercase detection and Unicode folding by default; (?-u)/--no-unicode selects ASCII" },
-    .{ .short = 'w', .longs = &.{"word-regexp"}, .action = .{ .set = .word }, .compatibility = .supported, .note = "-w and regex \\b/\\w use Unicode word characters by default (rg parity); (?-u)/--no-unicode selects ASCII byte word chars" },
+    .{ .short = 'w', .longs = &.{"word-regexp"}, .action = .{ .boundary = .word }, .compatibility = .supported, .note = "-w and regex \\b/\\w use Unicode word characters by default (rg parity); (?-u)/--no-unicode selects ASCII byte word chars" },
     .{ .short = 'F', .longs = &.{"fixed-strings"}, .action = .{ .set = .fixed }, .compatibility = .supported },
     .{ .short = 'v', .longs = &.{"invert-match"}, .action = .{ .set = .invert }, .compatibility = .supported },
     .{ .short = 'o', .longs = &.{"only-matching"}, .action = .{ .set = .only_matching }, .compatibility = .supported },
-    .{ .short = 'n', .longs = &.{"line-number"}, .action = .{ .set = .line_num }, .compatibility = .supported },
-    .{ .short = 'N', .longs = &.{"no-line-number"}, .action = .{ .unset = .line_num }, .compatibility = .supported },
+    .{ .short = 'n', .longs = &.{"line-number"}, .action = .{ .locate = .line_on }, .compatibility = .supported },
+    .{ .short = 'N', .longs = &.{"no-line-number"}, .action = .{ .locate = .line_off }, .compatibility = .supported },
     .{ .short = 'H', .longs = &.{"with-filename"}, .action = .{ .filename = .always }, .compatibility = .supported },
     .{ .short = 'I', .longs = &.{"no-filename"}, .action = .{ .filename = .never }, .compatibility = .supported },
-    .{ .short = 'l', .longs = &.{"files-with-matches"}, .action = .{ .set = .files_only }, .compatibility = .supported },
-    .{ .longs = &.{"files-without-match"}, .action = .{ .set = .files_without }, .compatibility = .supported },
-    .{ .short = 'c', .longs = &.{"count"}, .action = .{ .set = .count_only }, .compatibility = .supported },
-    .{ .longs = &.{"count-matches"}, .action = .{ .set = .count_matches }, .compatibility = .supported },
+    .{ .short = 'l', .longs = &.{"files-with-matches"}, .action = .{ .mode = .files_with_matches }, .compatibility = .supported },
+    .{ .longs = &.{"files-without-match"}, .action = .{ .mode = .files_without_match }, .compatibility = .supported },
+    .{ .short = 'c', .longs = &.{"count"}, .action = .{ .mode = .count }, .compatibility = .supported },
+    .{ .longs = &.{"count-matches"}, .action = .{ .mode = .count_matches }, .compatibility = .supported },
     .{ .longs = &.{"include-zero"}, .action = .{ .set = .include_zero }, .compatibility = .supported, .note = "in a count mode, print a path:0 line for every searched file with no match (exit code unchanged)" },
     .{ .longs = &.{"no-include-zero"}, .action = .{ .unset = .include_zero }, .compatibility = .supported },
     .{ .longs = &.{"hidden"}, .action = .{ .set = .hidden }, .compatibility = .supported },
     .{ .short = 'a', .longs = &.{"text"}, .action = .{ .set = .text }, .compatibility = .supported },
     .{ .longs = &.{"binary"}, .action = .{ .set = .binary }, .compatibility = .improvement, .note = "improvement: a code locator searches a NUL-bearing file in full and prints every matching line, rather than rg's opaque 'binary file matches' summary that suppresses the lines and stops" },
     .{ .short = 'u', .longs = &.{"unrestricted"}, .action = .unrestrict, .compatibility = .supported, .note = "-u=--no-ignore, -uu adds hidden, -uuu adds --binary; the ignore/hidden ladder is rg-identical, -uuu inherits the --binary improvement" },
-    .{ .longs = &.{"column"}, .action = .{ .set_many = &.{ .column, .line_num } }, .compatibility = .supported },
-    .{ .longs = &.{"no-column"}, .action = .{ .unset = .column }, .compatibility = .supported },
+    .{ .longs = &.{"column"}, .action = .{ .locate = .column_on }, .compatibility = .supported },
+    .{ .longs = &.{"no-column"}, .action = .{ .locate = .column_off }, .compatibility = .supported },
     .{ .short = 'b', .longs = &.{"byte-offset"}, .action = .{ .set = .byte_offset }, .compatibility = .supported },
-    .{ .longs = &.{"vimgrep"}, .action = .{ .set_many = &.{ .vimgrep, .column, .line_num } }, .compatibility = .supported },
+    .{ .longs = &.{"vimgrep"}, .action = .{ .set = .vimgrep }, .compatibility = .supported },
     .{ .longs = &.{"heading"}, .action = .{ .set = .heading }, .compatibility = .supported },
     .{ .longs = &.{"no-heading"}, .action = .{ .unset = .heading }, .compatibility = .supported },
     .{ .longs = &.{"trim"}, .action = .{ .set = .trim }, .compatibility = .supported },
     .{ .short = '0', .longs = &.{"null"}, .action = .{ .set = .null_sep }, .compatibility = .supported },
     .{ .longs = &.{"null-data"}, .action = .{ .set = .null_data }, .compatibility = .supported },
-    .{ .short = 'x', .longs = &.{"line-regexp"}, .action = .{ .set = .line_regexp }, .compatibility = .supported },
+    .{ .short = 'x', .longs = &.{"line-regexp"}, .action = .{ .boundary = .line }, .compatibility = .supported },
     .{ .short = 'q', .longs = &.{"quiet"}, .action = .{ .set = .quiet }, .compatibility = .supported },
     .{ .longs = &.{"stats"}, .action = .{ .set = .stats }, .compatibility = .supported },
     .{ .longs = &.{"stop-on-nonmatch"}, .action = .{ .set = .stop_on_nonmatch }, .compatibility = .supported },
@@ -164,9 +175,9 @@ pub const flag_catalog = [_]FlagSpec{
     .{ .longs = &.{"crlf"}, .action = .{ .set = .crlf }, .compatibility = .supported },
     .{ .short = 'U', .longs = &.{"multiline"}, .action = .{ .set = .multiline }, .compatibility = .supported },
     .{ .longs = &.{"multiline-dotall"}, .action = .{ .set_many = &.{ .multiline, .multiline_dotall } }, .compatibility = .supported },
-    .{ .longs = &.{"json"}, .action = .{ .set = .json }, .compatibility = .supported },
-    .{ .longs = &.{"files"}, .action = .{ .set = .files_list }, .compatibility = .supported },
-    .{ .longs = &.{"type-list"}, .action = .{ .set = .type_list }, .compatibility = .improvement, .note = "improvement: rg-sorted, rg-framed output over a strict SUPERSET of rg's type registry (rg's rows byte-identical; the rest richer, plus gist-only types)" },
+    .{ .longs = &.{"json"}, .action = .{ .mode = .json }, .compatibility = .supported },
+    .{ .longs = &.{"files"}, .action = .{ .mode = .files }, .compatibility = .supported },
+    .{ .longs = &.{"type-list"}, .action = .{ .mode = .types }, .compatibility = .improvement, .note = "improvement: rg-sorted, rg-framed output over a strict SUPERSET of rg's type registry (rg's rows byte-identical; the rest richer, plus gist-only types)" },
     .{ .short = 'L', .longs = &.{"follow"}, .action = .{ .set = .follow }, .compatibility = .supported },
     .{ .longs = &.{"no-follow"}, .action = .{ .unset = .follow }, .compatibility = .supported },
     .{ .longs = &.{"sort-files"}, .action = .sort_files, .compatibility = .supported, .note = "deprecated rg spelling of --sort=path" },

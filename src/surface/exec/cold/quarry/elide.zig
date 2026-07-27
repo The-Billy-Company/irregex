@@ -181,7 +181,7 @@ pub fn broadIndexedRoots(roots: []const []const u8) bool {
 /// DOES beat gets its candidate reads elided like any broad scan.
 pub fn indexElisionWanted(io: std.Io, parsed: args.Parsed, filters: []const []const u8, sieve: crest.Swell) bool {
     const o = parsed.opts;
-    if (o.files_list or o.no_index) return false;
+    if (o.mode == .files or o.no_index) return false;
     // Explicit-file roots elide NOTHING: the index answers "which of the walked
     // files can't match" — but a named file is read no matter what the trigrams
     // say, so loading + decompressing the persisted index and reading the

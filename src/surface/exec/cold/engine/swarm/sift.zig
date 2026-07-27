@@ -35,7 +35,7 @@ const oom = args.oom;
 /// (covered = gate_from = 0) — byte-identical to the staged read path's result.
 pub fn searchShardBody(w: *Worker, a: std.mem.Allocator, dpath: []const u8, bytes: []const u8) void {
     const body = legible.decodeBom(a, bytes);
-    if (w.cfg.o.json) return emitJson(w, a, dpath, body);
+    if (w.cfg.o.mode == .json) return emitJson(w, a, dpath, body);
     if (body.len == 0) return noteEmpty(w, dpath);
     emitBody(w, a, dpath, body, 0, 0);
 }
@@ -46,7 +46,7 @@ pub fn searchShardBody(w: *Worker, a: std.mem.Allocator, dpath: []const u8, byte
 /// which parallel never arms for `--stats` alone).
 fn noteEmpty(w: *Worker, dpath: []const u8) void {
     const o = w.cfg.o;
-    if (o.files_without) w.bufferPath(dpath, if (o.null_sep) "\x00" else o.outTerm());
+    if (o.mode.negated()) w.bufferPath(dpath, if (o.null_sep) "\x00" else o.outTerm());
 }
 
 /// The `--json` per-file render on the parallel walk: emit ripgrep's
@@ -87,7 +87,7 @@ pub fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.po
     // fast paths below — `--json` declines `-z`/`-E` (see `eligible`), so no
     // transform is owed here. Every admitted file reaches `emitJson` exactly
     // once, so its `searches` tally stays byte-identical to the serial path.
-    if (o.json) {
+    if (o.mode == .json) {
         const sf = slurp.StagedFile.open(scratch, dirfd, disk) orelse return;
         defer sf.close();
         const raw = if (sf.more) (sf.readRest(a, scratch) orelse return) else sf.prefix;
@@ -133,7 +133,7 @@ pub fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.po
         // the tail; `--files-without-match` skips WITHOUT emitting (the file
         // HAS a match). Absence proves nothing; fall through to the full read.
         if (cfg.fast_l and sf.more and prefixProvesMatch(w, re, legible.stripBom(sf.prefix))) {
-            if (!o.files_without) w.bufferPath(dpath, if (o.null_sep) "\x00" else o.outTerm());
+            if (!o.mode.negated()) w.bufferPath(dpath, if (o.null_sep) "\x00" else o.outTerm());
             return;
         }
     }
@@ -187,7 +187,7 @@ fn emitBody(w: *Worker, a: std.mem.Allocator, dpath: []const u8, body: []const u
         .o = o,
         // The serial engine keys this off the RAW --heading flag (not the
         // count/files-only-adjusted `cfg.heading`) — match it exactly.
-        .show_name = if (o.heading) false else cfg.show_name,
+        .show_name = if (o.groups()) false else cfg.show_name,
         .out = &buf,
         .base = @intFromPtr(body.ptr),
         .body_end = @intFromPtr(body.ptr) + body.len,
@@ -208,7 +208,7 @@ fn emitBody(w: *Worker, a: std.mem.Allocator, dpath: []const u8, body: []const u
         if (!(o.multiline and re.canMatchNewline() and !binary.multilineBinary(body.len, nul))) {
             // `--files-without-match` skips binary files entirely (serial
             // `fileWithoutMatch` returns before any emit) — no path, no tally.
-            if (o.files_without) return;
+            if (o.mode.negated()) return;
             if (o.stats) {
                 // Walked (implicit) file: only the committed prefix was
                 // searched — mirror serial `renderFile`'s binary stats arm.
@@ -248,7 +248,7 @@ fn emitBody(w: *Worker, a: std.mem.Allocator, dpath: []const u8, body: []const u
             if (cfg.file_needle) |n| if (n.ci) break :blk gatedDocMatch(re, sim, n, body);
             break :blk re.docMatch(sim, body);
         };
-        if (hit != o.files_without) w.bufferPath(dpath, if (o.null_sep) "\x00" else o.outTerm());
+        if (hit != o.mode.negated()) w.bufferPath(dpath, if (o.null_sep) "\x00" else o.outTerm());
         return;
     }
 
@@ -272,7 +272,7 @@ fn emitBody(w: *Worker, a: std.mem.Allocator, dpath: []const u8, body: []const u
         w.stats.add(.matched_lines, fs.lines);
         w.stats.add(.bytes_searched, fs.bytes);
     }
-    if (cfg.heading) buf.print(a, "{s}{s}", .{ dpath, o.outTerm() }) catch oom();
+    if (cfg.heading and cfg.show_name) buf.print(a, "{s}{s}", .{ dpath, if (o.null_sep) "\x00" else o.outTerm() }) catch oom();
     const before_body = buf.items.len;
     const hits = if (o.multiline) em.buffer(dpath, body) else if (fast) em.fileLit(dpath, body, 0, body.len, 0, true) else em.file(dpath, lines.items);
     if (hits > 0) return w.deliver(.text_hit, dpath, buf.items);
@@ -286,7 +286,7 @@ fn emitBody(w: *Worker, a: std.mem.Allocator, dpath: []const u8, body: []const u
 /// contributes its committed prefix (serial `renderFile`'s binary arm).
 fn gateMiss(w: *Worker, dpath: []const u8, body: []const u8) void {
     const o = w.cfg.o;
-    if (o.files_without) {
+    if (o.mode.negated()) {
         w.bufferPath(dpath, if (o.null_sep) "\x00" else o.outTerm());
     } else if (o.stats) {
         var bytes = body.len;

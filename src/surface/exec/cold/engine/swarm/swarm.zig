@@ -104,8 +104,8 @@ pub fn eligible(io: std.Io, parsed: args.Parsed, o: Opts) bool {
     // the single trailing `summary`. It declines only when it would need
     // per-thread capture scratch (`-r`, gated above) or a content transform
     // (`-z`/`-E`) whose decoded bytes the walk's JSON path doesn't rewrite — those
-    // keep the serial collect-then-shard path (`serial.run`'s `o.json` block).
-    if (o.json and (o.search_zip or o.encoding != .auto)) return false;
+    // keep the serial collect-then-shard path (`serial.run`'s `o.mode == .json` block).
+    if (o.mode == .json and (o.search_zip or o.encoding != .auto)) return false;
     // `--include-zero` must emit a `path:0` line for EVERY searched file, so it
     // needs the serial engine's whole-file loop with the literal gate + index
     // elision disabled — the streaming sink here culls non-matching files.
@@ -127,7 +127,7 @@ pub fn eligible(io: std.Io, parsed: args.Parsed, o: Opts) bool {
     // rides regardless of root count.
     switch (o.sort_key) {
         .none => {},
-        .path => if (o.json or o.files_list or (parsed.roots.len > 1 and !o.sort_reverse)) return false,
+        .path => if (o.mode == .json or o.mode == .files or (parsed.roots.len > 1 and !o.sort_reverse)) return false,
         .modified, .accessed, .created => return false,
     }
     // `-z`/`-E` ride the parallel engine; `--pre`/`--binary` do not (see
@@ -188,7 +188,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     const search_span = assay.Span.open(io);
     // Heading needs a printable path: `--no-filename` suppresses the header
     // like rg (the walk is recursive, so `.auto` filenames are always on here).
-    const heading = o.heading and o.filename != .never and !o.count_only and !o.count_matches and !o.files_only and !o.files_without and !o.vimgrep;
+    const heading = o.groups();
     // `--stats` must visit every admitted file for `files searched` /
     // `bytes searched`, so the index oracle (which drops proven non-matches)
     // stays off — the fused walk still beats serial's collect-then-shard.
@@ -241,14 +241,14 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     // and the shard never holds compressed inputs anyway). `GIST_NO_SHARD`
     // (internal, undocumented — the `GIST_NO_PHANTOM` idiom) forces live reads
     // for the parity gate. Membership + freshness only, so it is fail-open.
-    const want_shard = assay.envSpan("GIST_NO_SHARD") == null and !o.no_index and !o.files_list and !icfg.active() and elide.broadIndexedRoots(parsed.roots);
+    const want_shard = assay.envSpan("GIST_NO_SHARD") == null and !o.no_index and o.mode != .files and !icfg.active() and elide.broadIndexedRoots(parsed.roots);
     var shard_view: ?shard_mod.View = if (want_shard) shard_mod.load(gpa, io) else null;
 
     var ig = ignore.Ignore.init(gpa, io, ignore.Options.from(o), parsed.roots) catch oom();
     const compiled = ignore.Compiled.build(gpa, &ig) catch oom();
     var q: Queue = .{ .gpa = gpa, .io = io };
     defer q.items.deinit(gpa);
-    var sink: Sink = .{ .q = &q, .io = io, .heading = heading, .join_groups = o.wantsContext() and !o.files_only and !o.files_without and !o.count_only and !o.count_matches and !heading };
+    var sink: Sink = .{ .q = &q, .io = io, .heading = heading, .join_groups = o.wantsContext() and o.mode.frames() and !heading };
     // Pure-literal alternation gate/equivalence (see `Cfg.file_alts`): only when
     // no single required literal already gates, and never for modes that must
     // read every body (`-v` needs zero-hit files; passthru emits them).
@@ -265,8 +265,8 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     // boolean provably equals the whole-buffer emit model's `-l` /
     // `--files-without-match` verdict (`bufBoolExact` — a nullable `\z`-style
     // pattern falls to `Emitter.buffer`).
-    const fast_l = (o.files_only or o.files_without) and !o.invert and !o.word and !o.crlf and !o.null_data and o.max_per_file == 0 and !o.only_matching and
-        !o.count_only and !o.count_matches and !o.passthru and !o.vimgrep and !o.stop_on_nonmatch and o.replace == null and !o.stats and
+    const fast_l = o.mode.pathPerFile() and !o.invert and !o.word and !o.crlf and !o.null_data and o.max_per_file == 0 and !o.only_matching and
+        !o.passthru and !o.vimgrep and !o.stop_on_nonmatch and o.replace == null and !o.stats and
         (!o.multiline or (re != null and re.?.bufBoolExact()));
     var gate_len: usize = if (file_needle) |n| n.bytes.len else 0;
     for (file_alts) |n| gate_len = @max(gate_len, n.len);
@@ -288,7 +288,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
         .heading = heading,
         .join_groups = sink.join_groups,
         .binary_detect = writ.binaryDetect(o),
-        .files_mode = o.files_list,
+        .files_mode = o.mode == .files,
         .ingest = if (icfg.active()) icfg else null,
         .snap = if (snap_view) |*v| v else null,
         .shard = if (shard_view) |*v| v else null,
@@ -323,7 +323,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     // syscall/namei-bound plaintext walk, where more threads only add fd + namei
     // contention; it throttles decode-heavy codecs (xz/zstd) below the serial
     // path, so a transforming pipeline lifts the cap to all logical CPUs.
-    var nworkers = if (icfg.active()) @max(1, ncpu) else defaultWorkerCount(ncpu, o.files_list or want_elision or narrow_scope);
+    var nworkers = if (icfg.active()) @max(1, ncpu) else defaultWorkerCount(ncpu, o.mode == .files or want_elision or narrow_scope);
     // -j/--threads caps the pool explicitly (rg's `--threads`); 0 keeps gist's
     // adaptive topology. `GIST_WORKERS` still overrides everything (parity gates).
     if (o.threads != 0) nworkers = @max(1, o.threads);
@@ -379,13 +379,13 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     // same contract as the plain walk's fragments and the parity harness's
     // `sort -u` set compare. No `noMatches` stderr hint (rg's serial `--json`
     // path emits none either — it would only pollute a machine-consumed stream).
-    if (o.json) {
+    if (o.mode == .json) {
         var st: json.Stats = .{};
         for (workers) |*wk| st.fold(wk.jstats);
         var sbuf: std.ArrayList(u8) = .empty;
         json.summary(gpa, &sbuf, st, search_span.read(io));
         _ = corpus_mod.writeStdout(sbuf.items);
-        stats.diagSearch(gpa, o.json, st, search_span.read(io));
+        stats.diagSearch(gpa, o.mode == .json, st, search_span.read(io));
         (Outcome{ .matched = st.get(.files_with_match) > 0, .faulted = q.walk_error.load(.acquire) or nothing_searched }).exit();
     }
     // `--stats`: every worker streamed its match fragments; fold their per-
@@ -401,13 +401,13 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
         var sbuf: std.ArrayList(u8) = .empty;
         stats.emitStats(gpa, &sbuf, st, search_span.read(io));
         _ = corpus_mod.writeStdout(sbuf.items);
-        stats.diagSearch(gpa, o.json, st, search_span.read(io));
+        stats.diagSearch(gpa, o.mode == .json, st, search_span.read(io));
         (Outcome{ .matched = sink.matched_files > 0, .faulted = q.walk_error.load(.acquire) or nothing_searched }).exit();
     }
     // `--files-without-match`: `matched_files` counts files that LACKED the
     // pattern (each `bufferPath` → `emitFilesChunk`), so exit 0 iff at least
     // one such file was found — ripgrep's success predicate for this mode.
-    if (re != null and !o.quiet and !o.files_list and !o.files_without and sink.matched_files == 0 and !nothing_searched and !q.walk_error.load(.acquire))
+    if (re != null and !o.quiet and o.mode != .files and !o.mode.negated() and sink.matched_files == 0 and !nothing_searched and !q.walk_error.load(.acquire))
         hints.noMatches(hints.shape(parsed.patterns, o, parsed.roots, parsed.roots.len > 0), null);
     (Outcome{ .matched = sink.matched_files > 0, .faulted = q.walk_error.load(.acquire) or nothing_searched }).exit();
 }

@@ -35,11 +35,11 @@ test "-U whole-buffer emit parity table (captured from ripgrep)" {
         // -U -A1 separates non-adjacent blocks with --
         .{ .pat = "a\\nb|e\\nf", .o = .{ .multiline = true, .line_num = true, .after = 1 }, .body = "a\nb\nc\nd\ne\nf\ng\n", .want = "1:a\n2:b\n3-c\n--\n5:e\n6:f\n7-g\n" },
         // -U -c counts distinct match-start lines; --count-matches counts spans
-        .{ .pat = "a\\nb", .o = .{ .multiline = true, .count_only = true }, .body = "a\nb\nx\na\nb\n", .want = "2\n" },
-        .{ .pat = "a\\nb", .o = .{ .multiline = true, .count_matches = true }, .body = "a\nb\nx\na\nb\n", .want = "2\n" },
+        .{ .pat = "a\\nb", .o = .{ .multiline = true, .mode = .count }, .body = "a\nb\nx\na\nb\n", .want = "2\n" },
+        .{ .pat = "a\\nb", .o = .{ .multiline = true, .mode = .count_matches }, .body = "a\nb\nx\na\nb\n", .want = "2\n" },
         // -U -c with a nullable pattern counts start-lines, not all empties
-        .{ .pat = "a*", .o = .{ .multiline = true, .count_only = true }, .body = "aa\nbb\n", .want = "2\n" },
-        .{ .pat = "a*", .o = .{ .multiline = true, .count_matches = true }, .body = "aa\nbb\n", .want = "4\n" },
+        .{ .pat = "a*", .o = .{ .multiline = true, .mode = .count }, .body = "aa\nbb\n", .want = "2\n" },
+        .{ .pat = "a*", .o = .{ .multiline = true, .mode = .count_matches }, .body = "aa\nbb\n", .want = "4\n" },
         // -U -v prints lines outside every match's span
         .{ .pat = "a\\nb", .o = .{ .multiline = true, .line_num = true, .invert = true }, .body = "a\nb\nx\na\nb\n", .want = "3:x\n" },
         // -U -m caps the number of matches

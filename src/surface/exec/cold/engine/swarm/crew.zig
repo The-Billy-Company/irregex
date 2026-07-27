@@ -282,7 +282,7 @@ pub fn emitSorted(gpa: std.mem.Allocator, sink: *Sink, workers: []Worker, o: Opt
         k += 1;
     };
     std.mem.sort(SortedRec, recs, o.sort_reverse, recLess);
-    if (o.files_list or o.files_only) {
+    if (o.mode == .files or o.mode == .files_with_matches) {
         const term: []const u8 = if (o.null_sep) "\x00" else o.outTerm();
         var out: std.ArrayList(u8) = .empty;
         defer out.deinit(gpa);

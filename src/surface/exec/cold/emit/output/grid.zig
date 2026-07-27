@@ -1,9 +1,11 @@
 //! gist `rg` — the physical-line-grid emit modes.
 //!
-//! Split from `output.zig`: everything that answers a file by walking its
-//! already-split lines. `file` is the dispatcher and the default `path:line:text`
-//! frame (with `-A/-B/-C` windows); the rest are its mode siblings — `-v`
-//! without a window, `--passthru`, `--vimgrep`, `-o`, and the count modes.
+//! Everything that answers a file by walking its already-split lines.
+//! `file` is the dispatcher and the default `path:line:text`
+//! shape (with `-A/-B/-C` windows); the rest are its mode siblings — `-v`
+//! without a window, `--passthru`, `-o`, and the count modes. `--vimgrep` is
+//! deliberately NOT among them: it is a row shape the frames apply, not a mode,
+//! so it lives in `display.zig` and only its span provenance is local here.
 //!
 //! Two other drivers answer a file without this grid: `skim.zig` never builds
 //! the line array at all for a pure-literal pattern, and `multibuf.zig` works
@@ -27,17 +29,21 @@ const replace = @import("replace.zig");
 /// pair right before dispatch). Mirrors `file()`'s own gating exactly.
 pub fn fusedFileEligible(self: *const Emitter) bool {
     const o = self.o;
+    // `--vimgrep` is absent from this list on purpose: the only two modes below
+    // that qualify are `-l` and `-c`, and both now override it in `file()`, so a
+    // vimgrep row is never the thing the fused pass would have had to emit.
     if (o.invert or o.word or o.crlf or o.null_data or o.stop_on_nonmatch or
-        o.passthru or o.vimgrep or o.only_matching or o.count_matches) return false;
-    if (o.files_only) return self.re.docMatchFused();
-    if (o.count_only) return self.re.countRunFused();
-    return false;
+        o.passthru or o.only_matching) return false;
+    return switch (o.mode) {
+        .files_with_matches => self.re.docMatchFused(),
+        .count => self.re.countRunFused(),
+        else => false,
+    };
 }
 
 pub fn file(self: *Emitter, path: []const u8, lines: []const []const u8) usize {
     const o = self.o;
-    if (o.passthru and !o.invert and !o.count_only and !o.count_matches and !o.files_only) return passthru(self, path, lines);
-    if (o.vimgrep and !o.invert) return vimgrep(self, path, lines);
+    if (o.passthru and o.mode.frames()) return passthru(self, path, lines);
     // Span modes (`-o`, `--count-matches`): a fused whole-buffer MISS (one
     // class-run/DFA doc pass) proves zero spans, sparing the per-line span
     // walk entirely — the miss-heavy regime rg's lazy-DFA doc scan used to
@@ -45,7 +51,7 @@ pub fn file(self: *Emitter, path: []const u8, lines: []const []const u8) usize {
     // `--crlf`/`--null-data` change the line view an anchored DFA pattern
     // judges against, so they keep the plain path (same fence as the
     // fused `-c`/`-l` gates below).
-    if ((o.only_matching or o.count_matches) and !o.invert and !o.crlf and
+    if ((o.only_matching or o.mode == .count_matches) and !o.invert and !o.crlf and
         !o.null_data and !o.stop_on_nonmatch and self.body_end > self.base and
         self.re.docMatchFused())
     {
@@ -53,12 +59,18 @@ pub fn file(self: *Emitter, path: []const u8, lines: []const []const u8) usize {
         var s: ?Matcher.Sim = Matcher.Sim.init(self.a, self.re) catch null;
         defer if (s) |*ss| ss.deinit();
         if (s != null and !self.re.docMatch(&s.?, body))
-            return if (o.count_matches or o.count_only) self.bufTally(path, 0) else 0;
+            return if (o.mode.counting()) self.bufTally(path, 0) else 0;
     }
-    // `--count --only-matching` counts every match span (like --count-matches),
-    // not matching lines — ripgrep's documented override.
-    if ((o.count_matches or (o.count_only and o.only_matching)) and !o.invert) return countMatches(self, path, lines);
-    if (o.only_matching and !o.invert) return onlyMatching(self, path, lines);
+    // `-c -o` already resolved to `.count_matches` in argv (`answer.Mode.settle`
+    // — ripgrep's documented override that a count of *matches* beats a count
+    // of lines), so this asks about the mode and not about `-o` a second time.
+    if (o.mode == .count_matches and !o.invert) return countMatches(self, path, lines);
+    // `-o` is a row SHAPE, not an output mode — the same distinction
+    // `--vimgrep` draws below. With a context window asked for, its rows
+    // belong inside the general frame so `-A/-B/-C` and the `--` separators
+    // still apply (rg prints the context around an `-o` match in full); only
+    // the far more common windowless case can take the flat loop.
+    if (o.only_matching and !o.invert and !o.wantsContext()) return onlyMatching(self, path, lines);
 
     // The plain-flag whole-buffer regime: the per-line loop below computes
     // exactly "which lines match" under rg's `\n` line model, so when no
@@ -74,7 +86,7 @@ pub fn file(self: *Emitter, path: []const u8, lines: []const []const u8) usize {
     // one hit-jumping pass over the body — no line split consumed, no
     // per-line dispatch (the overhead rg's fused count never paid).
     // `countRunLines` is non-null only when that pass is exact.
-    if (whole_buf and o.count_only and !o.files_only) {
+    if (whole_buf and o.mode == .count) {
         const body = @as([*]const u8, @ptrFromInt(self.base))[0 .. self.body_end - self.base];
         if (self.re.countRunLines(body)) |n| {
             const capped = if (o.max_per_file != 0) @min(n, o.max_per_file) else n;
@@ -92,7 +104,7 @@ pub fn file(self: *Emitter, path: []const u8, lines: []const []const u8) usize {
     // matches", replacing the per-line loop the serial single-file `-l`
     // otherwise pays. Only when `docMatch` really is that machine
     // (`docMatchFused`) — the Pike fallback would forfeit the gates.
-    if (whole_buf and o.files_only and self.re.docMatchFused()) {
+    if (whole_buf and o.mode == .files_with_matches and self.re.docMatchFused()) {
         const body = @as([*]const u8, @ptrFromInt(self.base))[0 .. self.body_end - self.base];
         return if (self.re.docMatch(sim, body)) self.emitPathOnly(path) else 0;
     }
@@ -106,8 +118,7 @@ pub fn file(self: *Emitter, path: []const u8, lines: []const []const u8) usize {
     // the always-0 firstCol) collapses to one streamed pass. Byte-identical
     // (self-checked in flagbench + the rg parity suite); the excluded flags keep
     // their existing branches untouched.
-    if (o.invert and o.before == 0 and o.after == 0 and
-        !o.count_only and !o.count_matches and !o.files_only and
+    if (o.invert and o.before == 0 and o.after == 0 and o.mode.frames() and
         !o.stop_on_nonmatch and !o.passthru)
         return invertPlain(self, path, lines, sim, &wss);
     // Whole-buffer literal prefilter (see `litCandidates`): a non-candidate
@@ -133,25 +144,39 @@ pub fn file(self: *Emitter, path: []const u8, lines: []const []const u8) usize {
         // `-l` asks only whether this file has any matching line. Emit on
         // the first proof instead of scanning the rest of the file and
         // accumulating line indexes that no output mode will consume.
-        if (o.files_only) return self.emitPathOnly(path);
+        if (o.mode == .files_with_matches) return self.emitPathOnly(path);
         idx.append(self.a, k) catch oom();
         if (o.max_per_file != 0 and idx.items.len >= o.max_per_file) break;
     }
-    if (o.count_only or o.count_matches) return self.bufTally(path, idx.items.len);
+    if (o.mode.counting()) return self.bufTally(path, idx.items.len);
     if (idx.items.len == 0) return 0;
     const is_match = self.a.alloc(bool, lines.len) catch oom();
     @memset(is_match, false);
     for (idx.items) |m| is_match[m] = true;
-    // Column locators need a span scan per match line; only pay for it under
-    // --column (or --column implied by --vimgrep, handled separately).
-    var css: ?Matcher.SpanSim = if (o.column) (Matcher.SpanSim.init(self.a, self.re) catch null) else null;
+    // Column locators need a span scan per match line: `--column` wants the
+    // first span, `--vimgrep` wants every one of them — and still needs the
+    // scan when a later `--no-column` suppressed the column it would print.
+    var css: ?Matcher.SpanSim = if (o.column or o.vimgrep) (Matcher.SpanSim.init(self.a, self.re) catch null) else null;
     defer if (css) |*s| s.deinit();
+    // Only reachable with a context window (the windowless `-o` took the flat
+    // loop above), where a matching line contributes its spans and the lines
+    // around it print in full as context.
+    var mss: ?Matcher.SpanSim = if (o.only_matching) (Matcher.SpanSim.init(self.a, self.re) catch null) else null;
+    defer if (mss) |*s| s.deinit();
     var prev_end: ?usize = null;
     for (idx.items) |m| {
         const hi = @min(m + o.after, lines.len - 1);
         var k = self.windowStart(m -| o.before, hi, &prev_end) orelse continue;
         while (k <= hi) : (k += 1) {
             const is_m = is_match[k];
+            if (is_m and mss != null) {
+                if (o.replace != null) _ = replace.emitLineRepl(self, path, k + 1, lines[k]) else _ = display.emitMatches(self, &mss.?, path, k + 1, lines[k], self.mview(lines[k]));
+                continue;
+            }
+            if (is_m and o.vimgrep) if (css) |*s| {
+                vimgrepRows(self, s, path, k + 1, lines[k]);
+                continue;
+            };
             const col: usize = if (is_m and css != null) self.firstCol(&css.?, self.mview(lines[k])) else 0;
             self.row(path, k + 1, col, self.offOf(lines[k]), lines[k], is_m);
         }
@@ -192,7 +217,7 @@ fn passthru(self: *Emitter, path: []const u8, lines: []const []const u8) usize {
     const sim = self.sim orelse &local_sim.?;
     var wss: ?Matcher.SpanSim = if (o.word) (Matcher.SpanSim.init(self.a, self.re) catch null) else null;
     defer if (wss) |*s| s.deinit();
-    var css: ?Matcher.SpanSim = if (o.column) (Matcher.SpanSim.init(self.a, self.re) catch null) else null;
+    var css: ?Matcher.SpanSim = if (o.column or o.vimgrep) (Matcher.SpanSim.init(self.a, self.re) catch null) else null;
     defer if (css) |*s| s.deinit();
     var mss: ?Matcher.SpanSim = if (o.only_matching) (Matcher.SpanSim.init(self.a, self.re) catch null) else null;
     defer if (mss) |*s| s.deinit();
@@ -202,38 +227,63 @@ fn passthru(self: *Emitter, path: []const u8, lines: []const []const u8) usize {
     var matched: usize = 0;
     for (lines, 0..) |line, k| {
         const mv = self.mview(line);
-        const is_m = (if (cand) |c| c[k] else self.lineCanMatch(mv)) and
+        const raw = (if (cand) |c| c[k] else self.lineCanMatch(mv)) and
             (if (wss) |*s| self.lineHitWord(s, mv) else self.re.lineMatch(sim, mv));
+        // Under passthru, `-v` and `-m` decide how a line is MARKED, never
+        // whether it prints — every line prints, that being the whole point of
+        // the flag. `-v` flips which lines count as matches; `-m` stops
+        // marking once the per-file limit is reached and the rest fall through
+        // as context. Filtering on either instead dropped lines rg keeps.
+        const capped = o.max_per_file != 0 and matched >= o.max_per_file;
+        const is_m = (raw != o.invert) and !capped;
         if (is_m) matched += 1;
+        // The span frames below describe where the PATTERN hit, which an
+        // inverted line has nothing to say about.
+        const spans_apply = is_m and !o.invert;
         // --passthru -o: a matching line contributes each match span (only-
         // matching frame), a non-matching line still prints in full (context).
-        if (is_m and mss != null) {
-            if (self.o.replace != null) _ = replace.emitLineRepl(self, path, k + 1, line, 0) else _ = display.emitMatches(self, &mss.?, path, k + 1, line, mv);
+        if (spans_apply and mss != null) {
+            if (self.o.replace != null) _ = replace.emitLineRepl(self, path, k + 1, line) else _ = display.emitMatches(self, &mss.?, path, k + 1, line, mv);
             continue;
         }
-        const col: usize = if (is_m and css != null) self.firstCol(&css.?, mv) else 0;
+        // --passthru --vimgrep: a matching line still contributes one row per
+        // match; the non-matching lines around it stay context, as ever.
+        if (spans_apply and o.vimgrep) if (css) |*s| {
+            vimgrepRows(self, s, path, k + 1, line);
+            continue;
+        };
+        const col: usize = if (spans_apply and css != null) self.firstCol(&css.?, mv) else 0;
         self.row(path, k + 1, col, self.offOf(line), line, is_m);
     }
     return matched;
 }
 
-/// `--vimgrep`: one `path:line:col:text` row per match (all matches on a line),
-/// line numbers and columns always on. Never groups.
-fn vimgrep(self: *Emitter, path: []const u8, lines: []const []const u8) usize {
-    var ssim = Matcher.SpanSim.init(self.a, self.re) catch return 0;
-    defer ssim.deinit();
-    var emitted: usize = 0;
-    for (lines, 0..) |line, k| {
-        const mv = self.mview(line);
-        if (!self.lineCanMatch(mv)) continue;
-        var from: usize = 0;
-        while (output.nextSpan(self.re, &ssim, self.o, mv, &from)) |sp| {
-            self.row(path, k + 1, sp.start + 1, self.offOf(line) + sp.start, line, true);
-            emitted += 1;
-            if (self.o.max_per_file != 0 and emitted >= self.o.max_per_file) return emitted;
-        }
+/// Where a matching line's `--vimgrep` spans come from on the physical grid:
+/// the reused span simulator, walked over the `--crlf` match view. `-r` is the
+/// exception — rg recomputes vimgrep columns against the REPLACED text, so the
+/// rewrite's replacement offsets ARE the row starts. `display.vimgrepLine` owns
+/// the row shape itself (shared with `multibuf`'s `-U` provenance).
+fn vimgrepRows(self: *Emitter, ss: *Matcher.SpanSim, path: []const u8, lineno: usize, line: []const u8) void {
+    var v: display.Vimgrep = .{
+        .path = path,
+        .lineno = lineno,
+        .text = line,
+        .off = self.offOf(line),
+        .starts = &.{},
+        .terminated = self.lineTerminated(line),
+    };
+    if (self.o.replace) |tmpl| {
+        const r = replace.buildReplaced(self, tmpl, line);
+        v.text = r.text;
+        v.starts = r.starts;
+        return display.vimgrepLine(self, v);
     }
-    return emitted;
+    const mv = self.mview(line);
+    var starts: std.ArrayList(usize) = .empty;
+    var from: usize = 0;
+    while (output.nextSpan(self.re, ss, self.o, mv, &from)) |sp| starts.append(self.a, sp.start) catch oom();
+    v.starts = starts.items;
+    display.vimgrepLine(self, v);
 }
 
 /// `-o` frame across `lines`: each match span as its raw bytes, or — with
@@ -244,12 +294,19 @@ fn onlyMatching(self: *Emitter, path: []const u8, lines: []const []const u8) usi
     defer if (ssim) |*s| s.deinit();
     const cand = self.litCandidates(lines);
     var emitted: usize = 0;
+    var hit_lines: usize = 0;
     for (lines, 0..) |line, k| {
         if (cand) |c| if (!c[k]) continue;
         const mv = self.mview(line);
         if (!self.lineCanMatch(mv)) continue;
-        emitted += if (ssim) |*s| display.emitMatches(self, s, path, k + 1, line, mv) else replace.emitLineRepl(self, path, k + 1, line, emitted);
-        if (self.o.max_per_file != 0 and emitted >= self.o.max_per_file) break;
+        const n = if (ssim) |*s| display.emitMatches(self, s, path, k + 1, line, mv) else replace.emitLineRepl(self, path, k + 1, line);
+        emitted += n;
+        if (n == 0) continue;
+        // `-m` limits matched LINES, so a line emits all of its spans and the
+        // limit is tested between lines — `-o -m2` is two lines' worth of
+        // matches, not the first two matches.
+        hit_lines += 1;
+        if (self.o.max_per_file != 0 and hit_lines >= self.o.max_per_file) break;
     }
     return emitted;
 }
@@ -259,15 +316,22 @@ fn countMatches(self: *Emitter, path: []const u8, lines: []const []const u8) usi
     defer ssim.deinit();
     const cand = self.litCandidates(lines);
     var total: usize = 0;
+    var hit_lines: usize = 0;
     for (lines, 0..) |line, k| {
         if (cand) |c| if (!c[k]) continue;
         const mv = self.mview(line);
         if (!self.lineCanMatch(mv)) continue;
         var from: usize = 0;
-        while (output.nextSpan(self.re, &ssim, self.o, mv, &from)) |_| {
-            total += 1;
-            if (self.o.max_per_file != 0 and total >= self.o.max_per_file) break;
-        }
+        var on_line: usize = 0;
+        while (output.nextSpan(self.re, &ssim, self.o, mv, &from)) |_| on_line += 1;
+        if (on_line == 0) continue;
+        total += on_line;
+        // `-m` limits matched LINES, not spans — the same unit it limits
+        // everywhere else — so the last admitted line contributes every span
+        // it holds. `rg --count-matches -m1` over a line with two matches
+        // reports 2; capping the span loop reported 1.
+        hit_lines += 1;
+        if (self.o.max_per_file != 0 and hit_lines >= self.o.max_per_file) break;
     }
     return self.bufTally(path, total);
 }
@@ -281,7 +345,7 @@ test "files-only emits once and stops after the first matching line" {
     var em = Emitter{
         .a = t.allocator,
         .re = &m,
-        .o = .{ .files_only = true },
+        .o = .{ .mode = .files_with_matches },
         .show_name = true,
         .out = &out,
         .needle = .{ .bytes = m.required() },

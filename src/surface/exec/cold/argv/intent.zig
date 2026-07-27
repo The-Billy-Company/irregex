@@ -18,8 +18,13 @@
 const std = @import("std");
 const glob = @import("../../../../corpus/scope/glob.zig");
 const types = @import("../../../../corpus/scope/types.zig");
+const answer = @import("answer.zig");
 const encoding = @import("../read/encoding.zig");
 const verdict = @import("verdict.zig");
+
+/// The resolved answer shape — see `answer.zig`. Re-exported so `Opts.mode`
+/// and the flag surface stay readable from one import.
+pub const Mode = answer.Mode;
 
 const die = verdict.die;
 const oom = verdict.oom;
@@ -149,16 +154,19 @@ pub const Opts = struct {
     // the "unlimited" sentinel the per-file emit guards read. Mirrors
     // `max_cols_set` below.
     max_per_file_set: bool = false,
-    count_only: bool = false,
-    count_matches: bool = false,
+    // Which of the mutually exclusive answer shapes the flags resolved to
+    // (`-l`, `--files-without-match`, `-c`, `--count-matches`, `--json`,
+    // `--files`, `--type-list`, or the default). Every mode flag resolves
+    // through `answer.Mode.update`, so precedence is that enum's law and this
+    // is the whole representation — there is no state in which two modes are
+    // both chosen, because there is one field. See `answer.zig`.
+    mode: Mode = .standard,
     // --include-zero / --no-include-zero (rg default OFF, last-wins): in a count
     // mode, emit a `path:0` line for every searched file with no match instead of
     // suppressing it. The exit code is unchanged (0 matches ⇒ exit 1) — only the
     // per-file zero line is added. Forces the serial engine and disables the
     // whole-file literal gate + index elision so every searched file is counted.
     include_zero: bool = false,
-    files_only: bool = false,
-    files_without: bool = false,
     hidden: bool = false,
     text: bool = false, // -a/--text: disable binary detection, search as text
     // --binary / -uuu: search binary files in full (never quit at the first NUL).
@@ -211,11 +219,8 @@ pub const Opts = struct {
     // pattern the linear engine declines (run.zig resolves + executes the choice).
     engine: Engine = .default,
     pcre_unicode: bool = true, // --pcre2-unicode / --no-pcre2-unicode (PCRE2 Unicode mode)
-    json: bool = false, // --json
     replace: ?[]const u8 = null, // -r/--replace
     // walk-scope flags
-    files_list: bool = false, // --files (list, no pattern)
-    type_list: bool = false, // --type-list (dump types, no pattern)
     follow: bool = false, // -L/--follow symlinks
     sorted: bool = false, // any explicit ordering active (forces the deterministic sorted walk)
     sort_key: SortKey = .none, // --sort/--sortr key; .none = fastest discovery order
@@ -291,9 +296,10 @@ pub const Opts = struct {
     pub fn termStr(self: Opts) []const u8 {
         return if (self.null_data) "\x00" else "\n";
     }
-    /// True for the two "no pattern needed" modes.
+    /// True for the two "no pattern needed" modes (`--files`, `--type-list`):
+    /// they answer from the walk, so a bare argument after them is a path.
     pub fn noPattern(self: Opts) bool {
-        return self.files_list or self.type_list;
+        return !self.mode.searching();
     }
     /// The compact per-file ENUMERATION modes: one short line per file — a path
     /// (`-l`, `--files-without-match`, `--files`) or a count (`-c`,
@@ -304,7 +310,24 @@ pub const Opts = struct {
     /// full-content modes (default, `-o`, context, `--json`) keep the cap — their
     /// volume is the reason it exists, and their truncation is already ordered.
     pub fn enumeration(self: Opts) bool {
-        return self.files_only or self.files_without or self.count_only or self.count_matches or self.files_list;
+        return self.mode.enumerates();
+    }
+
+    /// Does `--heading` GROUP this run — a blank line between file groups, the
+    /// path lifted out of the row prefix and onto a title line above it?
+    ///
+    /// Only the content shape has rows to lift a path out of, so a mode that
+    /// already prints one short line per file (`-c`, `-l`, …) keeps its own
+    /// `path:N` prefix and is not grouped; `--vimgrep` pins one location per
+    /// row by definition and so opts out too.
+    ///
+    /// Deliberately independent of whether the path is SHOWN: `-I` removes the
+    /// title line but not the grouping (`rg --heading -I` over two files still
+    /// separates them with a blank line). Both engines used to fold the
+    /// filename decision into this one and each folded a different set of
+    /// modes into it, which is how `--heading` came to mean four things.
+    pub fn groups(self: Opts) bool {
+        return self.heading and self.mode.frames() and !self.vimgrep;
     }
 };
 
@@ -319,6 +342,10 @@ const CustomType = struct { name: []const u8, globs: []const []const u8 };
 pub const Builder = struct {
     a: std.mem.Allocator,
     o: Opts = .{},
+    /// The explicit `-n`/`-N`/`--column`/`--no-column` answers, null until
+    /// asked. Lives on the Builder rather than `Opts` because it is spent at
+    /// `seal`, which resolves it into `o.line_num` / `o.column`.
+    locus: answer.Locus = .{},
     pat: ?[]const u8 = null,
     roots: std.ArrayList([]const u8) = .empty,
     exts: std.ArrayList([]const u8) = .empty,
@@ -423,6 +450,13 @@ pub const Builder = struct {
     /// is why the two live in one module: a new scope flag that forgets this step
     /// would parse cleanly and then filter nothing.
     pub fn seal(self: *Builder, pats: [][]const u8) Parsed {
+        // `-v`/`-o` are not modes, but they rewrite which count a count mode
+        // means — so the correction can only run once the whole argv is in.
+        self.o.mode = self.o.mode.settle(self.o.invert, self.o.only_matching);
+        // Now that every explicit answer is in, let `--vimgrep`/`--column` imply
+        // what is still unanswered — never the other way around.
+        self.o.column = self.locus.columns(self.o.vimgrep);
+        self.o.line_num = self.locus.lines(self.o.vimgrep);
         // --glob-case-insensitive: fold case-sensitive includes into the iglob set.
         if (self.glob_ci) {
             self.iglobs.appendSlice(self.a, self.includes.items) catch oom();

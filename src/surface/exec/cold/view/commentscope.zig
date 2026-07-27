@@ -77,14 +77,14 @@ pub fn run(a: std.mem.Allocator, re: *const Matcher, o: Opts, files: []const Fil
             if (ok) {
                 kept += 1;
                 file_hit = true;
-                if (o.files_only) break; // one path per file; count the file once
+                if (o.mode == .files_with_matches) break; // one path per file; count the file once
                 if (!o.quiet) emitRow(out, a, o, show_name, scope, f.path, lineno, col, view);
             }
             if (nl >= body.len) break;
             off = nl + 1;
             lineno += 1;
         }
-        if (o.files_only and file_hit and !o.quiet)
+        if (o.mode == .files_with_matches and file_hit and !o.quiet)
             out.print(a, "{s}{s}", .{ f.path, if (o.null_sep) "\x00" else o.outTerm() }) catch oom();
     }
     return kept;
@@ -93,7 +93,7 @@ pub fn run(a: std.mem.Allocator, re: *const Matcher, o: Opts, files: []const Fil
 /// One result row: `--json` frames an object, text prints `path:line[:col]:text`
 /// (path only when the caller resolved filenames on).
 fn emitRow(out: *std.ArrayList(u8), a: std.mem.Allocator, o: Opts, show_name: bool, scope: []const u8, path: []const u8, line: usize, col: usize, text: []const u8) void {
-    if (o.json) {
+    if (o.mode == .json) {
         out.appendSlice(a, "{\"path\":") catch oom();
         emit.jsonStr(out, a, path);
         out.print(a, ",\"line\":{d},\"col\":{d},\"scope\":\"{s}\",\"text\":", .{ line, col, scope }) catch oom();
