@@ -34,7 +34,7 @@ const replace = @import("replace.zig");
 /// text and `--json` cannot drift.
 ///
 /// Returns the exit-driving count: printed lines for frames/`-v`, matches for
-/// `-o`, and `ml.countAll` for both count modes. Passthru may print with zero.
+/// `-o`, and `ml.count` for both count modes. Passthru may print with zero.
 pub fn buffer(self: *Emitter, path: []const u8, body: []const u8) usize {
     const o = self.o;
     // `-l` needs one kept span. When `bufBoolExact` proves boolean/emit parity,
@@ -60,12 +60,16 @@ pub fn buffer(self: *Emitter, path: []const u8, body: []const u8) usize {
     // (`rg -U -m1 -c` reports every match), so consumers bound a complete list.
     var uncapped = o;
     uncapped.max_per_file = 0;
+    // Both count modes want a NUMBER, so they walk the cursor and never build the
+    // list: `-U -c 'a[\s\S]*?a'` over a 64 MiB line yields 33.5 M matches, and
+    // materializing them cost ~800 MiB of spans nobody read. `--count-matches`
+    // includes empty spans (argv settles `-c -o` into it), and counting happens
+    // before any empty-span return so `--include-zero` can still emit `path:0`.
+    if (o.mode == .count or o.mode == .count_matches) {
+        const v = View.of(self, body);
+        return self.bufTally(path, ml.count(self.a, self.re, uncapped, v.text));
+    }
     const spans = collectSpans(self, uncapped, body);
-    // `--count-matches` includes empty spans; argv settles `-c -o` into it.
-    if (o.mode == .count_matches) return self.bufTally(path, ml.countAll(spans));
-    // Count before the empty-span return so `--include-zero` can emit `path:0`;
-    // slice-model `--count` counts matches, identically to `--count-matches`.
-    if (o.mode == .count) return self.bufTally(path, ml.countAll(spans));
     // No span means no block for passthru's infinite context to widen.
     if (spans.len == 0) return if (o.passthru and o.mode.frames()) bufPassthru(self, path, body) else 0;
     const lines = ml.splitLines(self.a, body, o.term());

@@ -8,6 +8,7 @@
 
 const std = @import("std");
 const assay = @import("../../assay/assay.zig");
+const portal = @import("../../portal.zig");
 
 /// The one OOM diagnostic. `allocFailure` below is the single emitter — the CLI
 /// reaches it as `outcome.oom`, so the corpus layer and the CLI have nothing
@@ -56,6 +57,19 @@ pub fn cwdRelative(a: std.mem.Allocator, io: std.Io, path: []const u8) []const u
 /// On-disk (openable) join: a `""`/`.` dir contributes no prefix, so the name
 /// stays CWD-relative exactly as the walker discovered it.
 ///
+/// The result is ALWAYS owned by `a`, on both arms. The no-prefix arm used to
+/// return `name` itself, which is only safe when the caller's `name` outlives
+/// `a` — and in the parallel walk it does the opposite: `descent.handleEntry`
+/// joins an entry name that points into the per-directory listing scratch
+/// `workerMain` recycles after every directory, so a borrowed `disk` on a queued
+/// `DirTask` dangled by the time a worker opened it. That read garbage for the
+/// direct children of a `.` root: a lost subtree in a small tree, a SIGSEGV
+/// inside `openat`'s path copy in a large one — i.e. `gist --files .` and every
+/// bare `gist PATTERN` in a tree deep enough to recycle the scratch. Copying is
+/// one basename per root child, and it makes the lifetime unconditional so no
+/// future caller has to know which arm it took (descent's sibling `joinRel`
+/// already carries this note for the same reason).
+///
 /// Returns `error.OutOfMemory` rather than calling `allocFailure` because this
 /// is the one path helper the **library** reaches: every ignore-tier load under
 /// `corpus/tree/ignore.zig` joins through here, and those run inside
@@ -65,7 +79,7 @@ pub fn cwdRelative(a: std.mem.Allocator, io: std.Io, path: []const u8) []const u
 /// matching and `replaceSep` only under `--path-separator`, neither of which
 /// the C seam can select, so both remain command-plane-only.
 pub fn join(a: std.mem.Allocator, dir: []const u8, name: []const u8) error{OutOfMemory}![]const u8 {
-    if (dir.len == 0 or std.mem.eql(u8, dir, ".")) return name;
+    if (dir.len == 0 or std.mem.eql(u8, dir, ".")) return a.dupe(u8, name);
     return std.fmt.allocPrint(a, "{s}/{s}", .{ dir, name });
 }
 
@@ -85,9 +99,9 @@ pub fn lowerDup(a: std.mem.Allocator, s: []const u8) []u8 {
 /// oracle both the `-L` cycle walk and the warm session's delta resolver use.
 pub fn realpathAlloc(a: std.mem.Allocator, path: []const u8) ?[]const u8 {
     const cpath = std.posix.toPosixPath(path) catch return null;
-    var buf: [std.posix.PATH_MAX]u8 = undefined;
-    const resolved = std.c.realpath(&cpath, &buf) orelse return null;
-    return a.dupe(u8, std.mem.sliceTo(resolved, 0)) catch null;
+    var buf: [portal.max_path]u8 = undefined;
+    const resolved = portal.realpath(&cpath, &buf) orelse return null;
+    return a.dupe(u8, resolved) catch null;
 }
 
 /// Replace every `/` in `path` with the (arbitrary-length) `sep` string for
@@ -123,6 +137,14 @@ test "join elides an empty or dot dir" {
     try t.expectEqualStrings("x", try join(a, "", "x"));
     try t.expectEqualStrings("x", try join(a, ".", "x"));
     try t.expectEqualStrings("d/x", try join(a, "d", "x"));
+    // …and the elided arm still COPIES. The parallel walk joins names that live
+    // in a per-directory scratch it recycles, so a borrowed result outlives its
+    // bytes: a `.` root lost its children's subtrees, or segfaulted in `openat`.
+    // A caller must not have to know which arm it took, so assert no aliasing.
+    var name: [1]u8 = .{'x'};
+    const joined = try join(a, ".", &name);
+    name[0] = 'y';
+    try t.expectEqualStrings("x", joined);
 }
 
 test "replaceSep rewrites every slash, multi-byte seps included" {

@@ -150,52 +150,71 @@ fn highlightSpans(self: *Emitter, s: []const u8) void {
 fn matchSpans(self: *Emitter, s: []const u8) []const Matcher.Span {
     var out: std.ArrayList(Matcher.Span) = .empty;
     const ss = self.spanSim() orelse return &.{};
-    const mv = self.mview(s);
-    var from: usize = 0;
-    while (output.nextSpan(self.re, ss, self.o, mv, &from)) |sp| out.append(self.a, sp) catch oom();
+    // `Rows`, not a bare `nextSpan` walk: the `-M` tally is one of the counts rg
+    // derives from its per-match printer, so it has to include the zero-width
+    // matches that walk owns the rules for (`rg -M3 --column -e 'x*'` reports 6
+    // over "aaaa xx", not 1).
+    var rows = output.Rows{ .re = self.re, .ss = ss, .o = self.o, .mv = self.mview(s), .terminated = self.lineTerminated(s) };
+    while (rows.next()) |sp| out.append(self.a, sp) catch oom();
     return out.toOwnedSlice(self.a) catch &.{};
 }
 
 /// ripgrep's `--max-columns` over-long-line rendering. Without match granularity
 /// it's the plain `[Omitted long …]` / ` [... omitted end of long line]`; WITH
-/// it (`-r` replacement offsets OR `--color`, which highlights so it counts) it
-/// reports match counts: `[Omitted long line with N matches]` / ` [... N more
-/// match(es)]`. `starts` are `-r` replacement offsets within `s` (empty ⇒ none).
-/// `tally` overrides the reported count (0 ⇒ `starts.len`) for a sink whose
-/// event holds more matches than the row does; the preview's "N more" always
-/// counts `starts`, since rg asks it of the row's own matches.
+/// it, match counts: `[Omitted long line with N matches]` / ` [... N more
+/// match(es)]`. Granularity is rg's `needs_match_granularity` — every printer
+/// option that forces it to identify or count individual matches: `--column`,
+/// `--stats`, `--vimgrep`'s per-match sink, `-r`, and a match-painting
+/// `--color` (measured one flag at a time against rg 14). It is a property of
+/// the FLAGS, never of the sink; the LINE'S OWN match count then picks the
+/// wording, and a line with none falls back to the plain sink phrasing. That
+/// is one rule with two visible faces under `-v`, where the roles invert — the
+/// context line is the one the pattern hit and the match line is the one it
+/// missed (measured: `rg -M3 --column -C1 -v -e aa` ⇒
+/// `1-1-[Omitted long line with 2 matches]` for the context line and
+/// `4:[Omitted long matching line]` for the match line).
+///
+/// `starts` are the row's known match offsets within `s` (`-r` replacement
+/// offsets, or the vimgrep row's span); empty means the count has to be
+/// re-derived here, which is the `--column`/`--stats`/`--color` case. `tally`
+/// overrides the reported count for a sink whose event holds more matches than
+/// the row does (0 ⇒ derive).
 pub fn exceeded(self: *Emitter, s: []const u8, is_match: bool, starts: []const usize, tally: usize) void {
-    const gran = starts.len != 0 or (self.o.replace != null and is_match);
-    if (self.o.max_cols_preview) {
-        const cut = previewEnd(s, self.o.max_cols);
+    const o = self.o;
+    const gran = starts.len != 0 or o.replace != null or o.column or o.stats or o.vimgrep or self.use_color;
+    const spans = if (gran and starts.len == 0) matchSpans(self, s) else &[0]Matcher.Span{};
+    const hits = if (starts.len != 0) starts.len else spans.len;
+    if (o.max_cols_preview) {
+        const cut = previewEnd(s, o.max_cols);
         var remaining: usize = 0;
         // `--color` (no `-r`): paint matches inside the shown preview and count
         // the ones that begin past the cut — rg's colored-preview behavior.
-        if (self.use_color and is_match and self.o.replace == null) {
+        if (self.use_color and o.replace == null and starts.len == 0) {
             var last: usize = 0;
-            for (matchSpans(self, s)) |sp| {
+            for (spans) |sp| {
                 if (sp.start >= cut) {
                     remaining += 1;
                     continue;
                 }
                 self.add(s[last..sp.start]);
                 const e = @min(sp.end, cut);
-                self.paint(self.o.palette.match, s[sp.start..e]);
+                self.paint(o.palette.match, s[sp.start..e]);
                 last = e;
             }
             self.add(s[last..cut]);
         } else {
             self.add(s[0..cut]);
-            if (!gran) return self.add(" [... omitted end of long line]");
-            for (starts) |st| remaining += @intFromBool(st >= cut);
+            if (starts.len != 0) {
+                for (starts) |st| remaining += @intFromBool(st >= cut);
+            } else for (spans) |sp| remaining += @intFromBool(sp.start >= cut);
         }
+        if (hits == 0) return self.add(" [... omitted end of long line]");
         return self.out.print(self.a, " [... {d} more {s}]", .{ remaining, if (remaining == 1) "match" else "matches" }) catch oom();
     }
-    if (!is_match) {
-        self.add("[Omitted long context line]");
-    } else if (gran and !self.o.only_matching) {
-        self.out.print(self.a, "[Omitted long line with {d} matches]", .{if (tally != 0) tally else starts.len}) catch oom();
-    } else self.add("[Omitted long matching line]");
+    const n = if (tally != 0) tally else hits;
+    if (n != 0 and !o.only_matching) {
+        self.out.print(self.a, "[Omitted long line with {d} matches]", .{n}) catch oom();
+    } else self.add(if (is_match) "[Omitted long matching line]" else "[Omitted long context line]");
 }
 
 /// One line's worth of `--vimgrep` rows, as its driver resolved them. The
@@ -226,6 +245,10 @@ pub const Vimgrep = struct {
     /// A `block` row carries exactly ONE match: rg's multiline printer walks
     /// per match, not per line.
     sink: enum { line, block } = .line,
+    /// Is the line these rows describe a MATCH or a context line? Only the field
+    /// separator differs (`:` vs `-`), but under `-v` a context line is the one
+    /// carrying spans, so the two can't be assumed equal.
+    is_match: bool = true,
     /// The event's match count, for a `block` row's `-M` placeholder.
     tally: usize = 0,
 };
@@ -249,8 +272,12 @@ pub const Vimgrep = struct {
 pub fn vimgrepLine(self: *Emitter, v: Vimgrep) void {
     const block = v.sink == .block;
     for (v.starts) |st| {
-        self.prefix(v.path, v.lineno, st + 1, v.off + if (block) 0 else st, true);
-        emitBody(self, v.text, true, v.starts, v.terminated, .{ .bare_width = block, .tally = v.tally });
+        // One row per match, each row the WHOLE line: the only per-line frame
+        // whose output is quadratic in the line's length. `Emitter.full` is the
+        // between-rows stop.
+        if (self.full()) break;
+        self.prefix(v.path, v.lineno, st + 1, v.off + if (block) 0 else st, v.is_match);
+        emitBody(self, v.text, v.is_match, v.starts, v.terminated, .{ .bare_width = block, .tally = v.tally });
     }
 }
 
@@ -261,14 +288,20 @@ pub fn emitMatches(self: *Emitter, ssim: *Matcher.SpanSim, path: []const u8, lin
     var n: usize = 0;
     // The admission rule (zero-width matches, the progress rule, `-w`) lives in
     // `output.Rows` so `--count-matches` counts exactly the rows printed here.
-    var rows = output.Rows{ .re = self.re, .ss = ssim, .o = self.o, .mv = mv };
+    var rows = output.Rows{ .re = self.re, .ss = ssim, .o = self.o, .mv = mv, .terminated = self.lineTerminated(line) };
     while (rows.next()) |span| {
+        if (self.full()) break;
         const empty = span.end == span.start;
         self.prefix(path, lineno, span.start + 1, self.offOf(line) + span.start, true);
         // `-o` emits bare match bytes + the full output terminator (rg's
         // printer): under `--crlf` every fragment ends `\r\n`, so a match
-        // reaching the logical line end needs no `\r`-reattachment.
-        if (!empty) self.paint(self.o.palette.match, line[span.start..span.end]);
+        // reaching the logical line end needs no `\r`-reattachment. `-M`
+        // measures the FRAGMENT here, not its line (the fragment is what this
+        // printer prints), exactly as the `-U` per-match frame does.
+        const frag = line[span.start..span.end];
+        if (self.o.max_cols != 0 and frag.len > self.o.max_cols) {
+            exceeded(self, frag, true, &.{0}, 0);
+        } else if (!empty) self.paint(self.o.palette.match, frag);
         self.linkClose(); // scope `row`: the fragment is part of the click target
         self.add(self.o.outTerm());
         n += 1;

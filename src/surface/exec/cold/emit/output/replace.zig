@@ -87,12 +87,18 @@ pub fn buildReplaced(self: *Emitter, tmpl: []const u8, line: []const u8) Replace
     var starts: std.ArrayList(usize) = .empty;
     var from: usize = 0;
     var last_end: ?usize = null;
+    // rg searches each line WITH its terminator, so the zero-width match at the
+    // end of the content is real for a terminated line and absent on a file's
+    // unterminated tail — the same rule `output.Rows` applies (measured:
+    // `-r X -e 'x*'` over a file whose only byte is `f` prints `Xf`, not `XfX`).
+    const terminated = self.lineTerminated(line);
     while (from <= line.len and caps.find(line, from, slots)) {
         const s: usize = @intCast(slots[0]);
         const e: usize = @intCast(slots[1]);
         buf.appendSlice(self.a, line[from..s]) catch oom();
         const empty_adjacent = e == s and last_end != null and s == last_end.?;
-        const rejected = empty_adjacent or (self.o.word and !output.wordOk(self.o.unicode, line, s, e));
+        const rejected = empty_adjacent or (e == s and !terminated and s == line.len) or
+            (self.o.word and !output.wordOk(self.o.unicode, line, s, e));
         if (!rejected) {
             starts.append(self.a, buf.items.len) catch oom();
             expand(self, &buf, tmpl, line, slots);
@@ -118,20 +124,34 @@ pub fn emitLineRepl(self: *Emitter, path: []const u8, lineno: usize, line: []con
     const slots = self.a.alloc(isize, caps.nslots()) catch oom();
     var n: usize = 0;
     var from: usize = 0;
+    var last_end: ?usize = null;
+    const terminated = self.lineTerminated(line);
     while (from <= line.len and caps.find(line, from, slots)) {
         const s: usize = @intCast(slots[0]);
         const e: usize = @intCast(slots[1]);
-        if (e == s or (self.o.word and !output.wordOk(self.o.unicode, line, s, e))) {
-            from = if (e == s) s + 1 else e;
+        const empty = e == s;
+        // `-o -r` prints ONE row per `output.Rows` span, empties included — rg's
+        // `-o -r X -e 'x*'` over "ab\n" prints three `X` rows, and over the
+        // unterminated "f" exactly one. Dropping every empty span printed nothing
+        // at all for a nullable pattern (found by the differential fuzzer), so
+        // this walk applies Rows' rules rather than a rule of its own.
+        const word_bad = self.o.word and !output.wordOk(self.o.unicode, line, s, e);
+        const skip = word_bad or (empty and self.re.nullable() == false) or
+            (empty and last_end != null and s == last_end.?) or
+            (empty and !terminated and s == line.len);
+        if (skip) {
+            from = if (empty or word_bad) s + 1 else e;
             continue;
         }
+        last_end = e;
         self.prefix(path, lineno, s + 1, self.offOf(line) + s, true);
         expand(self, self.out, tmpl, line, slots);
         self.add(self.o.outTerm()); // expanded text carries no terminator — rg appends the full one
         n += 1;
         // No span cap: `-m` counts matched LINES, so this line emits all of
-        // its replacements and the caller stops between lines.
-        from = e;
+        // its replacements and the caller stops between lines. An accepted empty
+        // still advances one byte — the Rows progress rule.
+        from = if (empty) s + 1 else e;
     }
     return n;
 }

@@ -49,6 +49,7 @@ pub const type_table = [_]TypeRow{
     .{ .names = &.{"h"}, .globs = &.{ "*.h", "*.hh", "*.hpp" } },
     .{ .names = &.{"hare"}, .globs = &.{"*.ha"} },
     .{ .names = &.{"llvm"}, .globs = &.{"*.ll"} },
+    .{ .names = &.{"mojo"}, .globs = &.{"*.mojo"} },
     .{ .names = &.{"nim"}, .globs = &.{ "*.nim", "*.nimf", "*.nimble", "*.nims" } },
     .{ .names = &.{"objc"}, .globs = &.{ "*.h", "*.m" } },
     .{ .names = &.{"objcpp"}, .globs = &.{ "*.h", "*.mm" } },
@@ -69,7 +70,9 @@ pub const type_table = [_]TypeRow{
     .{ .names = &.{"zig"}, .globs = &.{ "*.zig", "*.zon" } },
     // ── Proof & formal methods ──
     .{ .names = &.{"agda"}, .globs = &.{ "*.agda", "*.lagda" } },
-    .{ .names = &.{"coq"}, .globs = &.{"*.v"} },
+    // `rocq` is the project's own post-rename spelling; both names index the
+    // same globs, exactly as ripgrep's registry carries both.
+    .{ .names = &.{ "coq", "rocq" }, .globs = &.{"*.v"} },
     .{ .names = &.{"idris"}, .globs = &.{ "*.idr", "*.lidr" } },
     .{ .names = &.{"lean"}, .globs = &.{"*.lean"} },
     .{ .names = &.{"purs"}, .globs = &.{"*.purs"} },
@@ -184,6 +187,8 @@ pub const type_table = [_]TypeRow{
     .{ .names = &.{"mk"}, .globs = &.{"mkfile"} },
     .{ .names = &.{"nix"}, .globs = &.{"*.nix"} },
     .{ .names = &.{"pants"}, .globs = &.{"BUILD"} },
+    // Arch Linux's package recipe. A bare-basename type, like `pants`/`mk`.
+    .{ .names = &.{"pkgbuild"}, .globs = &.{"PKGBUILD"} },
     .{ .names = &.{ "ps", "powershell", "ps1" }, .globs = &.{
         "*.cdxml", "*.ps1", "*.ps1xml", "*.psd1", "*.psm1",
     } },
@@ -337,7 +342,10 @@ pub fn isKnownType(path: []const u8) bool {
     return false;
 }
 
-const NameGlobs = struct { name: []const u8, globs: []const []const u8 };
+/// One listing row: a single `-t` name and the globs it recognizes. Public so a
+/// caller can hand `writeTypeList` the run's own `--type-add` definitions in the
+/// same shape the built-in table's rows arrive in.
+pub const NameGlobs = struct { name: []const u8, globs: []const []const u8 };
 
 fn lessStr(_: void, a: []const u8, b: []const u8) bool {
     return std.mem.lessThan(u8, a, b);
@@ -360,23 +368,55 @@ fn lessByName(_: void, a: NameGlobs, b: NameGlobs) bool {
 /// Allocates into `a` (arena at the call site); O(n log n) over the ~240
 /// expanded rows, run once at the `--type-list` dump path only — never on a
 /// search hot path, so the source table stays immutable and shared.
-pub fn writeTypeList(a: std.mem.Allocator, out: *std.ArrayList(u8)) std.mem.Allocator.Error!void {
-    var n: usize = 0;
-    for (type_table) |row| n += row.names.len;
-    var rows = try a.alloc(NameGlobs, n);
-    var i: usize = 0;
+/// What a run's `--type-add` / `--type-clear` flags did to the registry. Empty
+/// is the built-in table verbatim, which is what the tests and any non-search
+/// caller want; `--type-list` passes the run's own overlay so the listing shows
+/// the registry the SEARCH would have used. ripgrep reflects both flags in its
+/// listing, and a listing that disagreed with `-t` would be worse than no
+/// listing — it would be a menu naming dishes the kitchen refuses to cook.
+pub const Overlay = struct {
+    added: []const NameGlobs = &.{},
+    cleared: []const []const u8 = &.{},
+
+    fn clears(self: Overlay, name: []const u8) bool {
+        for (self.cleared) |c| if (std.mem.eql(u8, c, name)) return true;
+        return false;
+    }
+};
+
+pub fn writeTypeList(a: std.mem.Allocator, out: *std.ArrayList(u8), overlay: Overlay) std.mem.Allocator.Error!void {
+    var rows: std.ArrayList(NameGlobs) = .empty;
     for (type_table) |row| for (row.names) |name| {
-        rows[i] = .{ .name = name, .globs = row.globs };
-        i += 1;
+        if (!overlay.clears(name)) try rows.append(a, .{ .name = name, .globs = row.globs });
     };
-    std.mem.sort(NameGlobs, rows, {}, lessByName);
-    for (rows) |row| {
+    // A `--type-add` either extends a name already in the table or introduces
+    // one. Extension unions rather than replaces (rg's reading: `rust:*.rs2`
+    // leaves `*.rs` in place), and the union is deduped below with the sort.
+    for (overlay.added) |add| {
+        if (overlay.clears(add.name)) continue;
+        const existing = for (rows.items) |*row| {
+            if (std.mem.eql(u8, row.name, add.name)) break row;
+        } else null;
+        if (existing) |row| {
+            var merged = try std.ArrayList([]const u8).initCapacity(a, row.globs.len + add.globs.len);
+            merged.appendSliceAssumeCapacity(row.globs);
+            merged.appendSliceAssumeCapacity(add.globs);
+            row.globs = merged.items;
+        } else try rows.append(a, add);
+    }
+    std.mem.sort(NameGlobs, rows.items, {}, lessByName);
+    for (rows.items) |row| {
         // Sort a private copy — the comptime table's glob slices are immutable
         // and shared across aliases, so we must never sort them in place.
         const globs = try a.dupe([]const u8, row.globs);
         std.mem.sort([]const u8, globs, {}, lessStr);
         try out.print(a, "{s}:", .{row.name});
-        for (globs, 0..) |g, k| try out.print(a, "{s} {s}", .{ if (k > 0) "," else "", g });
+        var written: usize = 0;
+        for (globs, 0..) |g, k| {
+            if (k > 0 and std.mem.eql(u8, g, globs[k - 1])) continue; // sorted ⇒ dupes adjacent
+            try out.print(a, "{s} {s}", .{ if (written > 0) "," else "", g });
+            written += 1;
+        }
         try out.append(a, '\n');
     }
 }

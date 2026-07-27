@@ -24,6 +24,7 @@ const charter = @import("../scope/charter.zig");
 const corpus_mod = @import("corpus.zig"); // mutual import; only `outDir()` is touched
 const ignore = @import("ignore.zig");
 const paths = @import("../scope/paths.zig");
+const portal = @import("../../portal.zig");
 
 /// A file discovered by the walk: a resolved, root-joined path plus the
 /// directory handle + basename needed to read or stat it right now.
@@ -101,9 +102,9 @@ const extra_skips = struct {
         if (charter.governing()) |c| for (c.skip) |name| add(name);
         var path_buf: [1024]u8 = undefined;
         const path = std.fmt.bufPrint(&path_buf, "{s}/skips.list", .{corpus_mod.outDir()}) catch return;
-        const fd = std.posix.openat(std.posix.AT.FDCWD, path, .{ .ACCMODE = .RDONLY }, 0) catch return;
-        defer _ = std.posix.system.close(fd);
-        const n = std.posix.read(fd, &file_buf) catch return;
+        const fd = portal.openFile(portal.cwd(), path) catch return;
+        defer portal.close(fd);
+        const n = portal.read(fd, &file_buf) catch return;
         var lines = std.mem.tokenizeAny(u8, file_buf[0..n], "\r\n");
         while (lines.next()) |line| {
             const t = std.mem.trim(u8, line, " \t");

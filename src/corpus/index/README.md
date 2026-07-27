@@ -28,15 +28,15 @@ directory as nine peers is the fastest way to conclude there are too many.
 
 ## The seven indexes, by what they eliminate
 
-| Package                 | Eliminates                               | Job                                                                                                  |
-| ----------------------- | ---------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| [`trigrams/`](trigrams) | files that cannot match                  | **T0** positional trigram candidate index + **T3** mtime/ctime freshness + codicil incremental amend |
-| [`crest/`](crest)       | files a literal-free pattern can't match | Per-doc forced-class-run vectors (`crest.bin`) for literal-free class runs                           |
-| [`phantom/`](phantom)   | `openat`+`getattrlistbulk` syscalls      | Directory-membership snapshot (`tree.map`): one lstat proves a dir, walk elided                      |
-| [`content/`](content)   | `openat`+`read`+`close` syscalls         | Corpus-content blob (`content.shard`): one mmap serves unchanged bytes, no open                      |
-| [`codex/`](codex)       | the corpus itself                        | FM-index self-index: `count` / `find` / `restore` at entropy space                                   |
-| [`atlas/`](atlas)       | re-sketching every file                  | Persisted LZJD sketches + silhouettes for warm `relate similar` / `echoes`                           |
-| [`frag/`](frag)         | re-sketching every function              | Persisted per-function silhouettes (`concepts.frag`) for a warm `--unit function`                    |
+| Package                 | Eliminates                               | Job                                                                                                                                           |
+| ----------------------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`trigrams/`](trigrams) | files that cannot match                  | **T0** document-level trigram candidate index (+ sliver tier for 1–2 byte needles) + **T3** mtime/ctime freshness + codicil incremental amend |
+| [`crest/`](crest)       | files a literal-free pattern can't match | Per-doc forced-class-run vectors (`crest.bin`) for literal-free class runs                                                                    |
+| [`phantom/`](phantom)   | `openat`+`getattrlistbulk` syscalls      | Directory-membership snapshot (`tree.map`): one lstat proves a dir, walk elided                                                               |
+| [`content/`](content)   | `openat`+`read`+`close` syscalls         | Corpus-content blob (`content.shard`): one mmap serves unchanged bytes, no open                                                               |
+| [`codex/`](codex)       | the corpus itself                        | FM-index self-index: `count` / `find` / `restore` at entropy space                                                                            |
+| [`atlas/`](atlas)       | re-sketching every file                  | Persisted LZJD sketches + silhouettes for warm `relate similar` / `echoes`                                                                    |
+| [`frag/`](frag)         | re-sketching every function              | Persisted per-function silhouettes (`concepts.frag`) for a warm `--unit function`                                                             |
 
 Four different eliminations, and no two indexes make the same one. `trigrams`
 and `crest` rule candidates out by pattern; `phantom` and `content` remove

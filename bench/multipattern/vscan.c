@@ -40,7 +40,10 @@
 #include <string.h>
 #include <time.h>
 
-#define MAX_PATTERNS 512
+/* The sweep runs to N=1024 to show where each strategy belongs (the dragnet's
+   cliff, the trawl's flat curve, and Vectorscan's own decay), so the ceiling has
+   to clear it rather than fail the top row. */
+#define MAX_PATTERNS 2048
 
 struct doc {
     size_t off, len;

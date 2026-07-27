@@ -23,7 +23,10 @@
 //!      whole ledger — there is no full walk here to re-derive lost truth.
 //!      It poisons the WHICH, though, not the WHETHER: every doubt is still an
 //!      observed change, so it advances the epoch stamp too rather than
-//!      silencing it (see `epoch`).
+//!      silencing it (see `epoch`). Losing COVERAGE is the stronger failure
+//!      and gets its own state (`goBlind`): once events stop arriving the
+//!      stamp stops counting, so the epoch must decline instead of standing
+//!      still under a moving tree.
 //!   3. The ledger is BOUNDED (`cap` distinct paths). Overflow evicts the
 //!      oldest half by delivery instant and advances `floor_ns` past them,
 //!      so old queries decline instead of reading an amputated answer.
@@ -84,6 +87,16 @@ pub const Annals = struct {
     /// (nothing before the floor is answerable anyway).
     prefix: ?[]u8 = null,
     doubt: bool = false,
+    /// Coverage is GONE, not merely unattributable — the backend has stopped
+    /// delivering (an inotify queue overflow, a subtree that could not be
+    /// re-watched). The distinction from `doubt` is the whole reason `epoch`
+    /// can answer at all: doubt means "a change arrived that I could not
+    /// place", so the WHETHER is still counted and every held answer still
+    /// retires on the next event. Blindness means changes will stop arriving,
+    /// so the stamp would stand still while the tree moved and a held answer
+    /// would read fresh forever. This is the one state that makes `epoch`
+    /// decline outright.
+    blind: bool = false,
     cap: usize = default_cap,
     /// Monotone count of observed corpus changes — the ledger's other reading.
     /// `since` answers WHICH files moved; this answers WHETHER anything did,
@@ -196,6 +209,32 @@ pub const Annals = struct {
         self.poison();
     }
 
+    /// The backend lost coverage it cannot win back. Retire every held answer
+    /// (the stamp moves once more) and then stop vouching for the corpus
+    /// entirely: unlike `noteDoubt`, this says future changes will go UNSEEN,
+    /// so no later reading of the stamp can be trusted either. Permanent, in
+    /// the posture of the seqlock poison it rides beside — the session keeps
+    /// reconciling, and the keep simply stops being offered.
+    pub fn goBlind(self: *Annals) void {
+        self.mu.lock();
+        defer self.mu.unlock();
+        self.blind = true;
+        self.poison();
+    }
+
+    /// Coverage handed back ON PURPOSE — an idle daemon shedding its watches.
+    /// Recoverable, unlike `goBlind`: a re-arm reopens coverage and raises the
+    /// floor past the unwatched window, so `since` declines across it. What
+    /// re-arming cannot repair is an answer held under the retiring stream —
+    /// the shed window observes nothing, so that answer would match an epoch
+    /// which never counted the edits made while nobody was watching. Moving
+    /// the stamp here retires it at shed time instead.
+    pub fn lapse(self: *Annals) void {
+        self.mu.lock();
+        defer self.mu.unlock();
+        self.stamp += 1;
+    }
+
     /// Lose the WHICH, keep the WHETHER. Every poisoning is itself an observed
     /// change the ledger could not place, so it advances the epoch as well —
     /// the conservative reading, since a bumped stamp retires every held
@@ -246,15 +285,18 @@ pub const Annals = struct {
     /// moved, while this reading only claims WHETHER any did. Every eviction
     /// rides a `note` that already advanced the stamp, and every poisoning
     /// advances it directly — so the two failures that make `since` decline
-    /// leave this answer conservative rather than wrong. Only an UNARMED
-    /// ledger returns null: it has observed nothing, so it cannot claim a
-    /// corpus stood still. Under ten concurrent editors that distinction is
-    /// the whole difference between a keep that works and one poisoned within
-    /// minutes of daemon start.
+    /// leave this answer conservative rather than wrong. Under ten concurrent
+    /// editors that distinction is the whole difference between a keep that
+    /// works and one poisoned within minutes of daemon start.
+    ///
+    /// Two states DO return null, and both are the same claim — nobody is
+    /// counting: an UNARMED ledger has observed nothing, and a BLIND one has
+    /// stopped observing. Those are exactly the cases where a standing stamp
+    /// would mean "the corpus held still" when it means "no one was looking".
     pub fn epoch(self: *Annals) ?u64 {
         self.mu.lock();
         defer self.mu.unlock();
-        if (self.prefix == null) return null;
+        if (self.prefix == null or self.blind) return null;
         return self.stamp;
     }
 
@@ -443,6 +485,48 @@ test "an unarmed ledger has no epoch; an armed still one is a stable epoch" {
     try t.expectEqual(at_rest + 1, an.epoch().?);
     an.note("/r/.git/HEAD", 11); // skip-dir subtree is not corpus change
     try t.expectEqual(at_rest + 1, an.epoch().?);
+}
+
+test "blindness retires held answers and then declines the epoch forever" {
+    const t = std.testing;
+    var an = Annals.init(t.allocator);
+    defer an.deinit();
+    armFor(&an, "/r", 0);
+    const before = an.epoch() orelse return error.TestUnexpectedResult;
+
+    an.goBlind(); // coverage lost: the backend has stopped delivering
+    // The bump is not decoration — it is what retires an answer already held
+    // at `before`, in the same drain that discovered the loss.
+    try t.expect(an.stamp > before);
+    // And from here nothing may be vouched: a standing stamp would now mean
+    // "nobody is looking", not "the corpus held still".
+    try t.expect(an.epoch() == null);
+    an.note("/r/a.zig", 10);
+    try t.expect(an.epoch() == null); // permanent, unlike a lapse
+    try t.expect(an.since(t.allocator, 0) == null);
+}
+
+test "a lapse retires held answers without blinding or poisoning the ledger" {
+    const t = std.testing;
+    var an = Annals.init(t.allocator);
+    defer an.deinit();
+    armFor(&an, "/r", 0);
+    an.note("/r/a.zig", 10);
+    const held_at = an.epoch() orelse return error.TestUnexpectedResult;
+
+    an.lapse(); // the idle daemon hands its watches back
+    const after = an.epoch() orelse return error.TestUnexpectedResult;
+    try t.expect(after > held_at); // an answer held at `held_at` no longer matches
+
+    // A shed is reversible: the ledger still answers, and a re-arm raises the
+    // floor past the unwatched window so `since` declines across it while the
+    // epoch keeps counting.
+    an.note("/r/b.zig", 20);
+    try t.expectEqual(after + 1, an.epoch().?);
+    an.openCoverage(30);
+    try t.expect(an.since(t.allocator, 20) == null); // pre-re-arm window: unanswerable
+    var s = an.since(t.allocator, 30) orelse return error.TestUnexpectedResult;
+    defer s.deinit(t.allocator);
 }
 
 test "doubt keeps the epoch answerable and advances it" {

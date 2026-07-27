@@ -20,6 +20,7 @@ const beacon = @import("../../../cli/beacon.zig");
 const corpus_mod = @import("../../../../corpus/tree/corpus.zig");
 const captures_mod = @import("../../../../kernel/match/regex/regex.zig");
 const binary = @import("../read/binary.zig");
+const ingest = @import("../read/ingest.zig");
 const intake = @import("../quarry/intake.zig");
 const legible = @import("../read/legible.zig");
 const ml = @import("multiline.zig");
@@ -39,7 +40,7 @@ const Opts = args.Opts;
 const Stats = stats.Stats;
 const collectLines = legible.collectLines;
 const die = args.die;
-const stripBom = legible.stripBom;
+const visibleBody = ingest.visibleBody;
 const compileCaps = writ.compileCaps;
 const emitStats = stats.emitStats;
 const fileMatchStats = stats.fileMatchStats;
@@ -58,8 +59,14 @@ pub fn renderFile(em: *Emitter, f: InFile, stat: *Stats, matched_files: *usize, 
     const o = em.o;
     const re = em.re;
     const out = em.out;
-    const body = stripBom(f.bytes);
-    if (body.len == 0 and !count_zero) return;
+    const body = visibleBody(o.encoding, f.bytes);
+    // An empty file has nothing to print, but rg still SEARCHED it: its `--stats`
+    // block counts the file and zero bytes (measured — rg says `3 files searched`
+    // over two files and an empty one, where gist used to say 2).
+    if (body.len == 0 and !count_zero) {
+        if (o.stats) stat.bump(.files_searched);
+        return;
+    }
     // Whole-buffer or per-line? `-U` asks for the block model but only a
     // pattern that can eat a `\n` gets it (`ml.sliceModel`) — everything below
     // that reads "am I multiline?" means this, never the bare flag.
@@ -69,22 +76,7 @@ pub fn renderFile(em: *Emitter, f: InFile, stat: *Stats, matched_files: *usize, 
             em.base = @intFromPtr(body.ptr);
             em.body_end = em.base + body.len;
             em.way = null;
-            if (o.stats) {
-                const searched: []const u8 = if (f.explicit)
-                    body
-                else if (slice_model)
-                    body[0..0]
-                else
-                    body[0..binary.committedPrefix(body, nul)];
-                var blines: std.ArrayList([]const u8) = .empty;
-                defer blines.deinit(a);
-                if (!slice_model) collectLines(a, searched, o.term(), &blines);
-                const fs = fileMatchStats(re, a, o, searched, blines.items, em.needle);
-                stat.bump(.files_searched);
-                stat.add(.matches, fs.matches);
-                stat.add(.matched_lines, fs.lines);
-                stat.add(.bytes_searched, if (f.explicit and slice_model) nul else fs.bytes);
-            }
+            if (o.stats) _ = tallyFile(em, f, stat, body, &.{}, nul);
             if (binary.handleBinary(a, re, o, out, em, f.path, f.explicit, body, nul, show_name)) matched_files.* += 1;
             return;
         }
@@ -99,13 +91,7 @@ pub fn renderFile(em: *Emitter, f: InFile, stat: *Stats, matched_files: *usize, 
     const fused = !slice_model and !fast and !o.stats and em.fusedFileEligible();
     var lines: std.ArrayList([]const u8) = .empty;
     if (!slice_model and !fast and !fused) collectLines(a, body, o.term(), &lines);
-    if (o.stats) {
-        const fs = fileMatchStats(re, a, o, body, lines.items, em.needle);
-        stat.bump(.files_searched);
-        stat.add(.matches, fs.matches);
-        stat.add(.matched_lines, fs.lines);
-        stat.add(.bytes_searched, fs.bytes);
-    }
+    if (o.stats) _ = tallyFile(em, f, stat, body, lines.items, null);
     const before = out.items.len;
     // Two separable halves, because rg separates them: heading GROUPS the run
     // (a blank line between file groups) and, if the path is being shown at
@@ -268,7 +254,7 @@ pub fn lineShardBounds(body: []const u8, term: u8, a: std.mem.Allocator) ?[]cons
 /// otherwise ineligible. Byte-identical to the serial fast path — same
 /// `fileLit`, just cut at line boundaries and folded back in order.
 pub fn emitFileSharded(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.ArrayList(u8), em: *Emitter, re: *const Matcher, o: Opts, use_color: bool, needle: ?simd.Gate, f: InFile, matched_files: *usize, binary_detect: bool, show_name: bool) bool {
-    const body = stripBom(f.bytes);
+    const body = visibleBody(o.encoding, f.bytes);
     if (body.len == 0) return false;
     // A NUL flips this file onto the binary path (summary/quit-at-NUL) — leave
     // that to the serial `renderFile`, which owns the binary decision.
@@ -354,8 +340,14 @@ pub fn emitFileSharded(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.A
 /// across shards. Shared by the serial loop and every parallel shard so the two
 /// can't drift.
 pub fn fileWithoutMatch(a: std.mem.Allocator, re: *const Matcher, o: Opts, em: *Emitter, lsim: *Matcher.Sim, wssp: ?*Matcher.SpanSim, needle: ?simd.Gate, f: InFile, out: *std.ArrayList(u8)) void {
-    const body = stripBom(f.bytes);
-    if (body.len > 0 and corpus_mod.isBinary(body) and !o.text and !o.binary) return;
+    const body = visibleBody(o.encoding, f.bytes);
+    // A WALKED NUL-bearing file is dropped: rg's Summary printer never lists it
+    // (measured — `rg --files-without-match -e zzz .` over a tree holding a
+    // NUL file omits it). An EXPLICIT path arg is rg's "binary explicit"
+    // posture, searched whole as text, so it IS listable — the same asymmetry
+    // `binary.handleBinary` applies to `-l`. gist used to drop both, losing a
+    // file rg reports (found by the differential fuzzer).
+    if (body.len > 0 and !f.explicit and corpus_mod.isBinary(body) and !o.text and !o.binary) return;
     const any = if (ml.sliceModel(re, o)) bufferAnyHit(a, re, o, null, needle, f.path, body) else blk: {
         var lines: std.ArrayList([]const u8) = .empty;
         collectLines(a, body, o.term(), &lines);
@@ -370,6 +362,65 @@ pub fn fileWithoutMatch(a: std.mem.Allocator, re: *const Matcher, o: Opts, em: *
     // this mode's whole output is a list of files to go open. No budget applies
     // to `--files-without-match` (see below), so no chrome to account for.
     if (!any) out.print(a, "{s}{s}", .{ beacon.anchor(a, f.path), if (o.null_sep) "\x00" else o.outTerm() }) catch oom();
+}
+
+/// One file's `--stats` contribution: rg's `matches` / `matched lines` /
+/// `files searched` / `bytes searched`. `nul` is the binary cutoff when detection
+/// fired — a WALKED NUL-bearing file only contributes its committed prefix (an
+/// explicit path arg contributes the whole body, and under the `-U` slice model
+/// nothing at all, which is what rg searches in each case), and the binary caller
+/// therefore passes no line array: the bounded prefix is re-split here.
+///
+/// Extracted so `--files-without-match` can report the same tally it always
+/// should have. rg searches a file identically in that mode and prints the same
+/// stats block — only the emit differs — but gist's negated path exited before
+/// any tally, printing paths and then NO stats block at all.
+/// Returns whether the file contained a match, so a caller that cannot infer it
+/// from its own emission (`--files-without-match`, which prints the opposite set)
+/// can still keep rg's `N files contained matches` honest.
+fn tallyFile(em: *Emitter, f: InFile, stat: *Stats, body: []const u8, lines: []const []const u8, nul: ?usize) bool {
+    const a = em.a;
+    const o = em.o;
+    const slice_model = ml.sliceModel(em.re, o);
+    stat.bump(.files_searched);
+    var fs: stats.FileStat = undefined;
+    var bytes: usize = undefined;
+    if (nul) |cut| {
+        const searched: []const u8 = if (f.explicit) body else if (slice_model) body[0..0] else body[0..binary.committedPrefix(body, cut)];
+        var blines: std.ArrayList([]const u8) = .empty;
+        defer blines.deinit(a);
+        if (!slice_model) collectLines(a, searched, o.term(), &blines);
+        fs = fileMatchStats(em.re, a, o, searched, blines.items, em.needle);
+        bytes = if (f.explicit and slice_model) cut else fs.bytes;
+    } else {
+        fs = fileMatchStats(em.re, a, o, body, lines, em.needle);
+        bytes = fs.bytes;
+    }
+    stat.add(.matches, fs.matches);
+    stat.add(.matched_lines, fs.lines);
+    stat.add(.bytes_searched, bytes);
+    return fs.lines != 0;
+}
+
+/// `--files-without-match --stats`: the path emit and the tally, which are
+/// independent — the paths rg lists are the files that LACKED the pattern, while
+/// the stats block reports the search it ran to find that out. Kept next to
+/// `fileWithoutMatch` (and off the sharded fan-out, which owns no `Stats`) so the
+/// mode has exactly one tallying caller.
+pub fn withoutMatchTallied(a: std.mem.Allocator, re: *const Matcher, o: Opts, em: *Emitter, lsim: *Matcher.Sim, wssp: ?*Matcher.SpanSim, needle: ?simd.Gate, f: InFile, out: *std.ArrayList(u8), stat: *Stats, binary_detect: bool) void {
+    fileWithoutMatch(a, re, o, em, lsim, wssp, needle, f, out);
+    const body = visibleBody(o.encoding, f.bytes);
+    // An empty file is still a searched file with zero bytes — `renderFile`'s
+    // empty arm counts it the same way.
+    if (body.len == 0) return stat.bump(.files_searched);
+    const nul = if (binary_detect) verify.firstNulWide(a, body) else null;
+    const matched = if (nul != null) tallyFile(em, f, stat, body, &.{}, nul) else blk: {
+        var lines: std.ArrayList([]const u8) = .empty;
+        defer lines.deinit(a);
+        if (!ml.sliceModel(re, o)) collectLines(a, body, o.term(), &lines);
+        break :blk tallyFile(em, f, stat, body, lines.items, null);
+    };
+    if (matched) stat.bump(.files_with_match);
 }
 
 /// `--files-without-match`, data-parallel over `files`. Each file is independent
@@ -467,7 +518,7 @@ pub fn anyMatch(a: std.mem.Allocator, re: *const Matcher, o: Opts, needle: ?simd
     const lit_fast = !slice_model and em.litFastEligible();
     const lits = re.lits();
     for (files) |f| {
-        const body = stripBom(f.bytes);
+        const body = visibleBody(o.encoding, f.bytes);
         if (body.len == 0 or (corpus_mod.isBinary(body) and !o.text and !o.binary)) continue;
         if (lit_fast) {
             if (simd.indexOfAnyPos(body, 0, lits) != null) return true;

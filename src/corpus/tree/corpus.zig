@@ -12,6 +12,7 @@ const charter = @import("../scope/charter.zig");
 const drain = @import("drain.zig");
 const fault = @import("../../fault.zig");
 const ward = @import("../../kernel/primitives/ward.zig");
+const portal = @import("../../portal.zig");
 
 /// When result bytes leave this process, and in how many syscalls — see
 /// `drain.zig`. Re-exported here because `writeStdout` is the seam every
@@ -285,14 +286,15 @@ pub fn flushStdout() void {
 /// The partial-write retry loop — the drain's sink, and the one place a result
 /// byte becomes a syscall. The budget accounting is `writeStdout`'s and the
 /// buffering policy is `drain.zig`'s; this only lands the bytes. `false` ⇒ the
-/// pipe is gone (EPIPE) or a signal cut the call (EINTR). `std.posix.system.write`
-/// is the raw C-ABI extern (returns isize; <=0 ⇒ error/closed-pipe), the same
-/// `std.posix.system.*` layer the read path's `close` already rides on —
-/// `std.posix.write` is absent this Zig cut.
+/// pipe is gone (EPIPE) or a signal cut the call (EINTR). `portal.writeOnce` is
+/// the raw one-attempt write (returns isize; <=0 ⇒ error/closed-pipe), the same
+/// seam layer the read path's `close` already rides on — `std.posix.write` is
+/// absent this Zig cut, and stdout is a handle rather than fd 1 on Windows.
 fn rawWriteStdout(bytes: []const u8) bool {
     var off: usize = 0;
+    const out = portal.stdout();
     while (off < bytes.len) {
-        const n = std.posix.system.write(1, bytes.ptr + off, bytes.len - off);
+        const n = portal.writeOnce(out, bytes[off..]);
         if (n <= 0) {
             carbonCopy(bytes[0..off], .torn);
             return false;
@@ -630,7 +632,10 @@ fn compactFallible(gpa: std.mem.Allocator, c: *Corpus) !void {
 
     // Bodies first, so the blob sits at the arena base as one uninterrupted run
     // (the slice headers + copied paths trail it and never split the stream).
-    const blob = try ba.alloc(u8, c.bytes);
+    // `c.bytes` is the u64 corpus tally; here it sizes one heap run, so a total
+    // past this address space is `OutOfMemory` — and `compact` is fail-open, so
+    // that simply leaves the corpus in its existing scattered layout.
+    const blob = try ba.alloc(u8, std.math.cast(usize, c.bytes) orelse return error.OutOfMemory);
     const new_docs = try ba.alloc([]const u8, c.docs.len);
     const new_paths = try ba.alloc([]const u8, c.paths.len);
     var off: usize = 0;

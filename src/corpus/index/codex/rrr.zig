@@ -346,13 +346,15 @@ pub const Rrr = struct {
         var classes = bitsmod.Stream.init(self.classes, sb * SUPER * 6);
         var n = b - sb * SUPER;
         while (n >= 2) : (n -= 2) {
-            const p = classes.take(12);
+            // A 12-bit take is ≤ 4095 — the `pair_*` tables' exact extent — so
+            // narrowing the bit-stream's u64 to the index type is exact anywhere.
+            const p: usize = @intCast(classes.take(12));
             rank += pair_rank[p];
             opos += pair_width[p];
         }
         if (n == 1) {
-            const c = classes.take(6);
-            rank += @intCast(c);
+            const c: usize = @intCast(classes.take(6)); // a 6-bit take is ≤ 63
+            rank += c;
             opos += offset_width[c];
         }
         const class: u32 = @intCast(classes.take(6));
@@ -368,7 +370,7 @@ pub const Rrr = struct {
             var rank: usize = self.super_rank[sb];
             var classes = bitsmod.Stream.init(self.classes, sb * SUPER * 6);
             var n = b - sb * SUPER;
-            while (n >= 2) : (n -= 2) rank += pair_rank[classes.take(12)];
+            while (n >= 2) : (n -= 2) rank += pair_rank[@intCast(classes.take(12))];
             if (n == 1) rank += @intCast(classes.take(6));
             return rank;
         }

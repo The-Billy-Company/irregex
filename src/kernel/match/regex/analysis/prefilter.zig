@@ -11,6 +11,7 @@
 const std = @import("std");
 const syn = @import("../syntax/syntax.zig");
 const rarity = @import("../../scan/rarity.zig");
+const bitsmod = @import("../../../primitives/bits.zig");
 const ByteSet = syn.ByteSet;
 
 const vlen: usize = std.simd.suggestVectorLength(u8) orelse 16;
@@ -107,7 +108,7 @@ pub const Prefilter = struct {
                 const hi: Vec = @splat(rg.hi);
                 hit |= (blk >= lo) & (blk <= hi);
             }
-            const bits: Mask = @bitCast(hit);
+            const bits: Mask = bitsmod.laneMask(Mask, hit);
             if (bits != 0) return i + @ctz(bits);
         }
         return self.scalarFirst(line, i);

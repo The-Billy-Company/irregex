@@ -1,0 +1,23 @@
+# completeness at scale — files-with-matches counts over the multi-GB scale corpus
+# ripgrep is the correctness oracle (it scans; it cannot be stale or index-limited).
+# Per bench/races/_compete.sh, zoekt is a TIMING reference and not a correctness
+# oracle; this table is why that caveat matters, and why a latency ratio against zoekt
+# must never be read without its hit count.
+#
+# gist's residual shortfall against rg is NOT index unsoundness: indexed and
+# --no-index answers are byte-identical (md5 of the sorted file list) for both
+# sub-trigram needles below, so the index only ever elided reads. The gap is the tree
+# walk's ignore handling — with -uu (hidden + ignored included) gist reaches 28148
+# against rg's 28156 for `})`, closing 197 files to 8. Reported to Lane S, who owns
+# src/corpus/tree/**.
+needle	rg_truth	gist	csearch	zoekt	note
+0x	78709	-	-	49989	zoekt misses 36% of files; its 2-byte hits include filename-only matches
+0x	78709	76792	-	-	gist via the sliver tier; indexed == --no-index (md5 identical)
+})	28124	27927	28077	0	zoekt returns ZERO files for a 2-byte punctuation needle
+#
+# Freshness — a file created AFTER all three indices were built, then queried:
+#   rg 1 file (truth) · gist 1 file · csearch 0 files · zoekt 0 files
+# gist pays a live tree walk (~1.2 s over 337949 files) precisely so a stale index can
+# accelerate without owning truth. csearch and zoekt answer from the index and are
+# simply wrong until re-indexed. Every "gist is slower" cell on a cheap literal class
+# in scale_race.tsv is bounded below by that walk, and buys this row.

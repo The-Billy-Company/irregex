@@ -170,7 +170,7 @@ test "writeTypeList renders rg-identical sort order: names and globs lexicograph
     defer arena.deinit();
     const a = arena.allocator();
     var out: std.ArrayList(u8) = .empty;
-    try types.writeTypeList(a, &out);
+    try types.writeTypeList(a, &out, .{});
 
     // Every non-empty line is `name: g1, g2, …`. Names must ascend lexically
     // across lines (rg's presentation), and each row's globs must ascend too.
@@ -201,7 +201,7 @@ test "writeTypeList is byte-identical to rg for representative shared rows" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var out: std.ArrayList(u8) = .empty;
-    try types.writeTypeList(arena.allocator(), &out);
+    try types.writeTypeList(arena.allocator(), &out, .{});
     // Frozen against `rg --type-list` (ripgrep 15.2.0): these rows are pure
     // parity — irregex adds nothing, so they must match ripgrep verbatim, proving
     // the sort/framing is rg-faithful, not merely "close".
@@ -213,6 +213,42 @@ test "writeTypeList is byte-identical to rg for representative shared rows" {
         "\ncython: *.pxd, *.pxi, *.pyx\n",
         "\nelixir: *.eex, *.ex, *.exs, *.heex, *.leex, *.livemd\n",
     }) |row| try expect(std.mem.indexOf(u8, out.items, row) != null);
+}
+
+test "writeTypeList reflects the run's --type-add / --type-clear overlay" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // A new name appears EXACTLY once. Pinned because the first cut of the merge
+    // leaned on a `for … |row| if (…) {…} else …`, where Zig binds the `else` to
+    // the `if` rather than the loop — so the row was appended once per
+    // non-matching row and the listing carried ~230 copies of it. A count, not a
+    // presence check, is the only assertion that catches that.
+    var out: std.ArrayList(u8) = .empty;
+    try types.writeTypeList(a, &out, .{ .added = &.{.{ .name = "widget", .globs = &.{"*.wid"} }} });
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, out.items, "\nwidget: *.wid\n"));
+
+    // Extending an existing name UNIONS with the built-in globs (rg's reading)
+    // and leaves one row, deduped.
+    out = .empty;
+    try types.writeTypeList(a, &out, .{ .added = &.{.{ .name = "zig", .globs = &.{ "*.zg", "*.zig" } }} });
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, out.items, "\nzig: *.zg, *.zig, *.zon\n"));
+
+    // A cleared name is not an empty type, it is no type: gone from the listing.
+    out = .empty;
+    try types.writeTypeList(a, &out, .{ .cleared = &.{"zig"} });
+    try expect(std.mem.indexOf(u8, out.items, "\nzig:") == null);
+    try expect(std.mem.indexOf(u8, out.items, "\nzsh:") != null); // a neighbor survives
+
+    // Clear-then-add REPLACES rather than extends — the clear drops the built-in
+    // globs and the add supplies the whole definition.
+    out = .empty;
+    try types.writeTypeList(a, &out, .{
+        .added = &.{.{ .name = "zig", .globs = &.{"*.zig"} }},
+        .cleared = &.{},
+    });
+    try expect(std.mem.indexOf(u8, out.items, "\nzig: *.zig, *.zon\n") != null);
 }
 
 test "bare-filename type rows match by suffix (Makefile, Dockerfile, go.mod)" {

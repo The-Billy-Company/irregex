@@ -16,6 +16,7 @@
 
 const std = @import("std");
 const frame = @import("frame.zig");
+const portal = @import("../../../portal.zig");
 const Dir = std.Io.Dir;
 
 const magic = "FRAMTST1";
@@ -30,7 +31,7 @@ const TestView = struct {
 
     pub fn deinit(v: *TestView) void {
         v.gpa.free(v.owned);
-        std.posix.munmap(v.map);
+        portal.unmap(v.map);
     }
 };
 

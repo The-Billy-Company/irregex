@@ -9,7 +9,7 @@ doc_radar:
       contains: ["pub fn noMatches", "hintsEnabled()"]
     - description: "multiline holds the two -U model decisions rg makes differently from the line model: the sequential invert claim scan, and one count over spans rather than start-lines"
       file: pkg/kernels/irregex/src/surface/exec/cold/emit/multiline.zig
-      contains: ["pub fn claimed", "pub fn countAll"]
+      contains: ["pub fn claimed", "pub fn count", "pub const Walk"]
       absent: ["pub fn countStartLines"]
     - description: "one file's worth of rendering is a shared function, not a per-scheduler copy"
       file: pkg/kernels/irregex/src/surface/exec/cold/emit/render.zig

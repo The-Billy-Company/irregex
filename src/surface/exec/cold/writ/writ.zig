@@ -26,6 +26,7 @@ const args = @import("../argv/args.zig");
 const arm = @import("arm.zig");
 const crest = @import("../../../../kernel/primitives/crest.zig");
 const gate = @import("gate.zig");
+const query_mod = @import("../../../../kernel/match/query/query.zig");
 const simd = @import("../../../../kernel/match/scan/simd.zig");
 
 const Matcher = @import("../../../../kernel/match/regex/regex.zig").Matcher;
@@ -61,6 +62,11 @@ pub const Writ = struct {
     /// Trigram prefilters for index elision; empty when elision is
     /// inadmissible (`gate.mayElideByIndex`).
     filters: []const []const u8,
+    /// The conjunctive cover — the CNF plan the index evaluates in place of the
+    /// flat OR of `filters`, or null to use those filters unchanged. Strictly
+    /// stronger where present and always declinable, so `filters` stays the
+    /// fallback rather than being superseded (`gate.coverPlan`).
+    plan: ?[]const query_mod.CoverPlan,
     /// The crest sieve's forced swell — ĝ per top-level alternative; the empty
     /// swell when it must not elide.
     sieve: crest.Swell,
@@ -84,6 +90,7 @@ pub const Writ = struct {
             .line_needle = line_needle,
             .file_needle = gate.wholeFileLiteralGate(o, line_needle),
             .filters = gate.trigramFilter(a, o, eff, &re, one, transforming),
+            .plan = gate.coverPlan(a, o, eff, &re, transforming),
             .sieve = gate.crestSieve(a, o, eff, &re, transforming),
             .binary_detect = binaryDetect(o),
         };

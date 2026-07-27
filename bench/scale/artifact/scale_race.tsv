@@ -1,0 +1,37 @@
+class	tool	median_ms	ci_lo	ci_hi	hits	vs_gist	p	verdict
+literal-rare	gist	1361.4	1135.2	1486.6	0
+literal-rare	zoekt	78.9	75.6	97.9	0	0.06	0.01219	loss
+literal-rare	csearch	3.8	3.5	4.1	0	0.00	0.01219	loss
+literal-dotted	gist	1646.8	1402.4	1740.6	260
+literal-dotted	zoekt	122.2	119.2	135.0	262	0.07	0.01219	loss
+literal-dotted	csearch	59.2	57.8	64.7	260	0.04	0.01219	loss
+literal-common	gist	3315.6	3083.4	3495.5	89389
+literal-common	zoekt	617.3	612.7	705.3	102839	0.19	0.01219	loss
+literal-common	csearch	2431.9	2368.4	10526.5	90339	0.73	0.1437	parity
+literal-punct2	gist	2059.6	1772.0	2291.6	27927
+literal-punct2	zoekt	92.5	88.5	93.8	0	0.04	0.01219	loss
+literal-punct2	csearch	34025.0	33954.1	34620.2	28077	16.52	0.01219	win
+regex-decl	gist	2181.9	2149.2	2533.3	9990
+regex-decl	zoekt	286.9	275.9	491.6	10090	0.13	0.01219	loss
+regex-decl	csearch	1479.8	1433.3	1539.7	10047	0.68	0.01219	loss
+regex-dotted	gist	1160.1	1102.5	1301.8	0
+regex-dotted	zoekt	82.3	80.1	84.9	0	0.07	0.01219	loss
+regex-dotted	csearch	5.0	4.9	5.4	0	0.00	0.01219	loss
+regex-anchored	gist	2073.0	1637.1	2226.6	10285
+regex-anchored	zoekt	1787.4	1729.1	1818.2	10390	0.86	0.1437	parity
+regex-anchored	csearch	1431.5	1404.2	1934.3	10346	0.69	0.03671	loss
+regex-classcount	gist	1998.1	1487.1	2183.9	870
+regex-classcount	zoekt	7286.3	6515.3	8016.7	1154	3.65	0.01219	win
+regex-classcount	csearch	7312.7	6889.5	10501.6	869	3.66	0.01219	win
+regex-alternation	gist	4152.8	3865.2	4174.8	130541
+regex-alternation	zoekt	667.2	642.5	741.3	94936	0.16	0.01219	loss
+regex-alternation	csearch	4039.3	3674.6	6686.9	131380	0.97	0.2963	parity
+regex-dense-scan	gist	7792.8	7684.9	8405.3	338799
+regex-dense-scan	zoekt	1666.1	1601.8	1933.0	21684	0.21	0.01219	loss
+regex-dense-scan	csearch	30212.0	28397.2	31423.1	344663	3.88	0.01219	win
+regex-eol	gist	7985.1	7147.4	8849.9	215344
+regex-eol	zoekt	560.8	531.7	597.4	62360	0.07	0.01219	loss
+regex-eol	csearch	31672.7	31399.1	32226.3	216841	3.97	0.01219	win
+regex-litalt	gist	3377.2	3133.2	3408.1	83328
+regex-litalt	zoekt	6570.4	6507.4	7277.5	57181	1.95	0.01219	win
+regex-litalt	csearch	31855.5	31258.5	32433.2	85121	9.43	0.01219	win

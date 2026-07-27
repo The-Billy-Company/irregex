@@ -132,7 +132,7 @@ fn commentScoped(r: Run) noreturn {
     if (r.o.in_comments and r.o.in_code) die("--in-comments and --in-code are mutually exclusive\n", .{});
     const c = r.collect();
     const scoped = r.a.alloc(commentscope.File, c.files.len) catch oom();
-    for (c.files, scoped) |file, *dst| dst.* = .{ .path = file.path, .bytes = stripBom(file.bytes) };
+    for (c.files, scoped) |file, *dst| dst.* = .{ .path = file.path, .bytes = ingest.visibleBody(r.o.encoding, file.bytes) };
     var out: std.ArrayList(u8) = .empty;
     const kept = commentscope.run(r.a, &r.w.re, r.o, scoped, r.showNames(c), &out);
     if (!r.o.quiet) corpus_mod.emitStdout(out.items);

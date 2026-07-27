@@ -141,8 +141,8 @@ pub const Delta = struct {
         // symlink as absent), null when the path is gone/unreachable. Rides the
         // shared portable raw-stat shim (`inode.lstatPath`).
         const st = inode.lstatPath(rel) orelse return .{ .gone = rel };
-        if (std.posix.S.ISDIR(st.mode)) return .{ .subtree = rel };
-        if (!std.posix.S.ISREG(st.mode)) return .{ .gone = rel };
+        if (st.kind == .directory) return .{ .subtree = rel };
+        if (st.kind != .file) return .{ .gone = rel };
         return if (try self.fileAdmitted(rel)) .{ .file = rel } else .{ .gone = rel };
     }
 

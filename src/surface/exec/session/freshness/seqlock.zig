@@ -41,7 +41,20 @@ pub const Seqlock = struct {
     /// write-once-before-any-reader flag; read it through `armed`.
     active: std.atomic.Value(bool) = .init(false),
     /// Event counter, bumped on every filesystem event — the seqlock sequence.
-    seq: std.atomic.Value(u64) = .init(0),
+    ///
+    /// Pointer-width, not `u64`, because that is what an atomic sequence counter
+    /// is: `std.atomic.Value(T)` is only instantiable for `@sizeOf(T) <=` the
+    /// target's largest atomic, which is 4 bytes on every 32-bit target Zig
+    /// supports (i686 `cmpxchg8b` and ARMv7 `ldrexd` give CAS but not the full
+    /// RMW set, so the compiler caps the width). On all 64-bit targets `usize`
+    /// *is* `u64`, so this is bit-identical to what shipped before.
+    ///
+    /// The width bounds one hazard: `commit` republishes clean only if `seq` is
+    /// unchanged since `enter`, so it can be fooled only by exactly 2^bits events
+    /// landing inside a single reconcile window. That is the same envelope the
+    /// Linux kernel accepts for every `seqcount_t`, which is a 32-bit `unsigned`
+    /// on 32-bit and 64-bit hosts alike.
+    seq: std.atomic.Value(usize) = .init(0),
     /// True only when a watcher has proven no event since the last reconcile.
     clean: std.atomic.Value(bool) = .init(false),
     /// Latched by a watcher that lost coverage it cannot recover (queue
@@ -103,13 +116,13 @@ pub const Seqlock = struct {
     }
 
     /// Snapshot the event counter before recomputing; hand it back to `commit`.
-    pub fn enter(self: *const Seqlock) u64 {
+    pub fn enter(self: *const Seqlock) usize {
         return self.seq.load(.acquire);
     }
 
     /// Republish "clean" iff a watcher is live, unpoisoned, and no event raced
     /// the recompute since `enter` returned `seq0`. Otherwise stay dirty.
-    pub fn commit(self: *Seqlock, seq0: u64) void {
+    pub fn commit(self: *Seqlock, seq0: usize) void {
         if (self.eligible() and self.seq.load(.acquire) == seq0)
             self.clean.store(true, .release);
     }

@@ -86,7 +86,9 @@ pub fn file(self: *Emitter, path: []const u8, lines: []const []const u8) usize {
     // one hit-jumping pass over the body — no line split consumed, no
     // per-line dispatch (the overhead rg's fused count never paid).
     // `countRunLines` is non-null only when that pass is exact.
-    if (whole_buf and o.mode == .count) {
+    // A cap with an after-context window can count PAST the cap (`capWindow`),
+    // which the whole-buffer tally can't see, so that pair takes the line loop.
+    if (whole_buf and o.mode == .count and !(o.max_per_file != 0 and o.after > 0)) {
         const body = @as([*]const u8, @ptrFromInt(self.base))[0 .. self.body_end - self.base];
         if (self.re.countRunLines(body)) |n| {
             const capped = if (o.max_per_file != 0) @min(n, o.max_per_file) else n;
@@ -127,15 +129,10 @@ pub fn file(self: *Emitter, path: []const u8, lines: []const []const u8) usize {
     // plain non-match (never mid-stream stop bookkeeping).
     const cand = self.litCandidates(lines);
     var idx: std.ArrayList(usize) = .empty;
+    var capped_at: ?usize = null;
     for (lines, 0..) |line, k| {
         if (cand) |c| if (!c[k]) continue;
-        const mv = self.mview(line);
-        // A required-literal gate (when the caller derived one): a line
-        // without the literal bytes cannot match, and a SIMD memmem is an
-        // order of magnitude cheaper than an engine run per line.
-        const hit = self.lineCanMatch(mv) and
-            (if (wss) |*s| self.lineHitWord(s, mv) else self.re.lineMatch(sim, mv));
-        if (hit == o.invert) {
+        if (!lineHit(self, sim, &wss, line)) {
             // --stop-on-nonmatch: once matching has begun, the first non-match
             // ends the file (ripgrep stops reading further lines).
             if (o.stop_on_nonmatch and idx.items.len > 0) break;
@@ -146,13 +143,20 @@ pub fn file(self: *Emitter, path: []const u8, lines: []const []const u8) usize {
         // accumulating line indexes that no output mode will consume.
         if (o.mode == .files_with_matches) return self.emitPathOnly(path);
         idx.append(self.a, k) catch oom();
-        if (o.max_per_file != 0 and idx.items.len >= o.max_per_file) break;
+        if (o.max_per_file != 0 and idx.items.len >= o.max_per_file) {
+            capped_at = k;
+            break;
+        }
     }
-    if (o.mode.counting()) return self.bufTally(path, idx.items.len);
+    if (o.mode.counting()) {
+        const extra = if (capped_at) |last| capWindow(self, lines, cand, sim, &wss, last, null) else 0;
+        return self.bufTally(path, idx.items.len + extra);
+    }
     if (idx.items.len == 0) return 0;
     const is_match = self.a.alloc(bool, lines.len) catch oom();
     @memset(is_match, false);
     for (idx.items) |m| is_match[m] = true;
+    if (capped_at) |last| _ = capWindow(self, lines, cand, sim, &wss, last, is_match);
     // Column locators need a span scan per match line: `--column` wants the
     // first span, `--vimgrep` wants every one of them — and still needs the
     // scan when a later `--no-column` suppressed the column it would print.
@@ -173,15 +177,59 @@ pub fn file(self: *Emitter, path: []const u8, lines: []const []const u8) usize {
                 if (o.replace != null) _ = replace.emitLineRepl(self, path, k + 1, lines[k]) else _ = display.emitMatches(self, &mss.?, path, k + 1, lines[k], self.mview(lines[k]));
                 continue;
             }
-            if (is_m and o.vimgrep) if (css) |*s| {
-                vimgrepRows(self, s, path, k + 1, lines[k]);
-                continue;
+            // rg's vimgrep printer emits one row per match found in the line it
+            // is printing — match or context, and framed accordingly. Under `-v`
+            // that inverts which side has spans: a printed (inverted) match line
+            // has none and prints ONE column-less row, while a CONTEXT line is
+            // one the pattern hit and carries a row per span. Measured:
+            // `rg --vimgrep -C1 -v -e aa` over "aa x aa\nno" prints
+            // `-1-1-`, `-1-6-`, then `:2:`. Gating on `is_m` alone printed
+            // nothing at all under `-v` (found by the differential fuzzer).
+            if (o.vimgrep) if (css) |*s| {
+                if (vimgrepRows(self, s, path, k + 1, lines[k], is_m) != 0) continue;
             };
-            const col: usize = if (is_m and css != null) self.firstCol(&css.?, self.mview(lines[k])) else 0;
+            // Same rule as the vimgrep rows above: the column describes where the
+            // PATTERN hit the line being printed, which under `-v` is the context
+            // line (`rg --column -C1 -v -e aa` ⇒ `1-1-aa x`). An ordinary context
+            // line has no match, so `firstCol` answers 0 and nothing prints.
+            const col: usize = if (css != null) self.firstCol(&css.?, self.mview(lines[k])) else 0;
             self.row(path, k + 1, col, self.offOf(lines[k]), lines[k], is_m);
         }
     }
     return idx.items.len;
+}
+
+/// The post-cap after-context window. `-m` caps how many matches ANCHOR a
+/// window; it neither demotes nor hides the lines inside the last one. rg still
+/// searches those `--after-context` lines, prints a matching one as a match
+/// (`:`, not `-`) and counts it: `-m 1 -A 2` over `fn a / xxx / fn c` prints two
+/// `:` rows and `-c -m 2 -A 2` over four matching lines reports 4. The window
+/// does not chain — a match inside it opens no window of its own. Marks each
+/// matching line into `marks` when given; returns how many matched.
+/// (`--passthru`, whose post-cap lines rg *does* demote to context, has its own
+/// path and must not come through here.)
+fn capWindow(self: *Emitter, lines: []const []const u8, cand: ?[]const bool, sim: *Matcher.Sim, wss: *?Matcher.SpanSim, last: usize, marks: ?[]bool) usize {
+    if (self.o.after == 0 or last + 1 >= lines.len) return 0;
+    const hi = @min(last + self.o.after, lines.len - 1);
+    var n: usize = 0;
+    for (lines[last + 1 .. hi + 1], last + 1..) |line, k| {
+        if (cand) |c| if (!c[k]) continue;
+        if (!lineHit(self, sim, wss, line)) continue;
+        n += 1;
+        if (marks) |mk| mk[k] = true;
+    }
+    return n;
+}
+
+/// Does this line count as a match? The required-literal gate first (a line
+/// without the literal bytes provably cannot match, and a SIMD memmem is an
+/// order of magnitude cheaper than an engine run per line), then the engine —
+/// `-w` through the span predicate — with `-v` flipping the verdict.
+fn lineHit(self: *Emitter, sim: *Matcher.Sim, wss: *?Matcher.SpanSim, line: []const u8) bool {
+    const mv = self.mview(line);
+    const hit = self.lineCanMatch(mv) and
+        (if (wss.*) |*s| self.lineHitWord(s, mv) else self.re.lineMatch(sim, mv));
+    return hit != self.o.invert;
 }
 
 /// `-v` with no context window (`-A/-B/-C`), count, or `-l`: the one-pass
@@ -195,10 +243,7 @@ fn invertPlain(self: *Emitter, path: []const u8, lines: []const []const u8, sim:
     const o = self.o;
     var printed: usize = 0;
     for (lines, 0..) |line, k| {
-        const mv = self.mview(line);
-        const hit = self.lineCanMatch(mv) and
-            (if (wss.*) |*s| self.lineHitWord(s, mv) else self.re.lineMatch(sim, mv));
-        if (hit) continue; // invert: a matching line is excluded
+        if (!lineHit(self, sim, wss, line)) continue; // invert: a matching line is excluded
         self.row(path, k + 1, 0, self.offOf(line), line, true);
         printed += 1;
         if (o.max_per_file != 0 and printed >= o.max_per_file) break;
@@ -248,11 +293,10 @@ fn passthru(self: *Emitter, path: []const u8, lines: []const []const u8) usize {
         }
         // --passthru --vimgrep: a matching line still contributes one row per
         // match; the non-matching lines around it stay context, as ever.
-        if (spans_apply and o.vimgrep) if (css) |*s| {
-            vimgrepRows(self, s, path, k + 1, line);
-            continue;
+        if (o.vimgrep) if (css) |*s| {
+            if (vimgrepRows(self, s, path, k + 1, line, is_m) != 0) continue;
         };
-        const col: usize = if (spans_apply and css != null) self.firstCol(&css.?, mv) else 0;
+        const col: usize = if (css != null) self.firstCol(&css.?, mv) else 0;
         self.row(path, k + 1, col, self.offOf(line), line, is_m);
     }
     return matched;
@@ -263,7 +307,7 @@ fn passthru(self: *Emitter, path: []const u8, lines: []const []const u8) usize {
 /// exception — rg recomputes vimgrep columns against the REPLACED text, so the
 /// rewrite's replacement offsets ARE the row starts. `display.vimgrepLine` owns
 /// the row shape itself (shared with `multibuf`'s `-U` provenance).
-fn vimgrepRows(self: *Emitter, ss: *Matcher.SpanSim, path: []const u8, lineno: usize, line: []const u8) void {
+fn vimgrepRows(self: *Emitter, ss: *Matcher.SpanSim, path: []const u8, lineno: usize, line: []const u8, is_match: bool) usize {
     var v: display.Vimgrep = .{
         .path = path,
         .lineno = lineno,
@@ -271,19 +315,27 @@ fn vimgrepRows(self: *Emitter, ss: *Matcher.SpanSim, path: []const u8, lineno: u
         .off = self.offOf(line),
         .starts = &.{},
         .terminated = self.lineTerminated(line),
+        .is_match = is_match,
     };
     if (self.o.replace) |tmpl| {
         const r = replace.buildReplaced(self, tmpl, line);
         v.text = r.text;
         v.starts = r.starts;
-        return display.vimgrepLine(self, v);
+        display.vimgrepLine(self, v);
+        return r.starts.len;
     }
     const mv = self.mview(line);
     var starts: std.ArrayList(usize) = .empty;
-    var from: usize = 0;
-    while (output.nextSpan(self.re, ss, self.o, mv, &from)) |sp| starts.append(self.a, sp.start) catch oom();
+    // `--vimgrep` is one row per match rg's printer YIELDS, which for a nullable
+    // pattern includes the zero-width ones (measured: `--vimgrep -e 'x*'` prints
+    // a row at every column of every line). So it walks `output.Rows` — the same
+    // iteration `-o`/`--count-matches` use — not the non-empty-only `nextSpan`,
+    // which dropped every row of an all-empty line (the fuzzer's `\b*` case).
+    var rows = output.Rows{ .re = self.re, .ss = ss, .o = self.o, .mv = mv, .terminated = self.lineTerminated(line) };
+    while (rows.next()) |sp| starts.append(self.a, sp.start) catch oom();
     v.starts = starts.items;
     display.vimgrepLine(self, v);
+    return starts.items.len;
 }
 
 /// `-o` frame across `lines`: each match span as its raw bytes, or — with
@@ -317,7 +369,12 @@ fn countMatches(self: *Emitter, path: []const u8, lines: []const []const u8) usi
     const cand = self.litCandidates(lines);
     var total: usize = 0;
     var hit_lines: usize = 0;
+    // The post-cap after-context window (see `capWindow`): rg keeps counting the
+    // spans of a matching line inside it, so the walk runs to the window's last
+    // line instead of stopping on the cap.
+    var window_end: ?usize = null;
     for (lines, 0..) |line, k| {
+        if (window_end) |w| if (k > w) break;
         if (cand) |c| if (!c[k]) continue;
         const mv = self.mview(line);
         if (!self.lineCanMatch(mv)) continue;
@@ -325,7 +382,7 @@ fn countMatches(self: *Emitter, path: []const u8, lines: []const []const u8) usi
         // literally "how many `-o` rows" — rg's own identity. Counting
         // non-empty spans instead lost every zero-width match a nullable
         // pattern makes (`--count-matches 'a*'` over "aa\nbb" reported 1, rg 4).
-        var rows = output.Rows{ .re = self.re, .ss = &ssim, .o = self.o, .mv = mv };
+        var rows = output.Rows{ .re = self.re, .ss = &ssim, .o = self.o, .mv = mv, .terminated = self.lineTerminated(line) };
         const on_line = rows.tally();
         if (on_line == 0) continue;
         total += on_line;
@@ -334,7 +391,10 @@ fn countMatches(self: *Emitter, path: []const u8, lines: []const []const u8) usi
         // it holds. `rg --count-matches -m1` over a line with two matches
         // reports 2; capping the span loop reported 1.
         hit_lines += 1;
-        if (self.o.max_per_file != 0 and hit_lines >= self.o.max_per_file) break;
+        if (window_end == null and self.o.max_per_file != 0 and hit_lines >= self.o.max_per_file) {
+            if (self.o.after == 0) break;
+            window_end = k + self.o.after;
+        }
     }
     return self.bufTally(path, total);
 }

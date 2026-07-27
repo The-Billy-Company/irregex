@@ -45,16 +45,20 @@ pub fn startInotify(self: anytype) void {
     // when every root is case-sensitive (`rootsCaseSensitive`).
     var exact = true;
     var buf: [std.fs.max_path_bytes]u8 = undefined;
-    for (self.watchRoots()) |root| {
+    var lone_root: ?[]const u8 = null;
+    const roots = self.watchRoots();
+    for (roots) |root| {
         const rootz = std.posix.toPosixPath(root) catch return closeUnarmed(self, fd);
         const resolved = std.c.realpath(&rootz, &buf) orelse return closeUnarmed(self, fd);
         const abs = std.mem.span(resolved);
         if (casefolded(self, abs)) exact = false;
+        if (roots.len == 1) lone_root = abs;
         if (!addWatchesRecursive(self, fd, abs)) return closeUnarmed(self, fd);
     }
 
     self.inotify_fd = fd;
     self.running.store(true, .release);
+    armAnnals(self, lone_root, exact);
     // Promise exactness BEFORE arming the watcher, so the very first
     // event the loop notes is already covered by the exact contract.
     if (exact) self.session.dirty_log.armExact();
@@ -203,20 +207,71 @@ fn coverNewDir(self: anytype, ev: *const linux.inotify_event, buf: []const u8, r
         self.session.markDoubtForever();
 }
 
+/// The wall instant a delivery is stamped with, or null when the clock is
+/// unreadable — the caller poisons the ledger rather than guessing one. Each
+/// backend reads the clock beside its own event loop (`kqueue.zig` keeps the
+/// twin of this) because the instant must be taken at DELIVERY, not at drain;
+/// the ledger itself stays free of any platform clock.
+fn wallNowNs() ?i128 {
+    var ts: std.c.timespec = undefined;
+    if (std.c.clock_gettime(.REALTIME, &ts) != 0) return null;
+    return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
+}
+
+/// Arm the annals ledger the resident keep reads its epoch from, and open its
+/// coverage now that every watch is registered — an event that predated its
+/// own watch was never observable, so the ledger must not claim the window
+/// registration spanned (conservative by construction: uncovered, never
+/// wrong). Deliveries are keyed absolute and byte-exact, so the ledger arms
+/// only for a SINGLE root (one unambiguous strip prefix) whose spelling that
+/// key model can represent; a multi-root or casefolded session leaves it
+/// unarmed and every reader — `since` and the keep's `epoch` alike — declines.
+/// This mirrors `coverage.coverRoots` on the macOS side, which is where the
+/// kqueue backend arms the same ledger.
+fn armAnnals(self: anytype, lone_root: ?[]const u8, exact: bool) void {
+    if (comptime !@TypeOf(self.*).has_annals) return;
+    if (!exact) return;
+    const abs = lone_root orelse return;
+    self.session.annals.arm(abs);
+    if (wallNowNs()) |ns| self.session.annals.openCoverage(ns);
+}
+
+/// Record one exact FILE delivery into the annals ledger. A directory reaches
+/// only the dirty log: its event means "membership here moved", which the
+/// reconcile answers by diffing the subtree, while the ledger's reader amends
+/// per file and would stat a directory away — and its capacity is bounded, so
+/// an entry spent on shape is an entry evicted from content. A dead clock
+/// poisons the ledger rather than guessing an instant. The same split
+/// `kqueue.note` applies, so both backends describe one corpus surface.
+fn noteAnnals(self: anytype, abs: []const u8) void {
+    if (comptime !@TypeOf(self.*).has_annals) return;
+    if (wallNowNs()) |ns| self.session.annals.note(abs, ns) else self.session.annals.noteDoubt();
+}
+
+/// An event that resolves to no path at all: the reconcile takes the full
+/// walk, and the ledger loses the WHICH. It keeps counting the WHETHER, so a
+/// held answer still retires on this event rather than surviving it.
+fn noteUnattributable(self: anytype) void {
+    self.session.dirty_log.noteDoubt();
+    if (comptime @TypeOf(self.*).has_annals) self.session.annals.noteDoubt();
+}
+
 /// Note the exact path an inotify record attributes to, into the session's
-/// `DirtyLog`. A record with a name (`ev.len > 0`) is an entry inside the
-/// wd's directory (`parent/name`); a nameless record (`ev.len == 0`) is the
-/// watched directory itself. Either resolves to an absolute path (the wds
-/// were realpath'd at arm time). An unmapped wd (evicted/racing) or a
-/// malformed name field can't be attributed → `noteDoubt` (that drain
-/// takes the full walk).
+/// `DirtyLog` — and, for a FILE, the annals ledger a one-shot `gist index`
+/// amend and the resident keep's epoch both read. A record with a name
+/// (`ev.len > 0`) is an entry inside the wd's directory (`parent/name`); a
+/// nameless record (`ev.len == 0`) is the watched directory itself. Either
+/// resolves to an absolute path (the wds were realpath'd at arm time). An
+/// unmapped wd (evicted/racing) or a malformed name field can't be attributed
+/// → doubt (that drain takes the full walk).
 fn noteEvent(self: anytype, ev: *const linux.inotify_event, buf: []const u8, rec_end: usize) void {
-    const parent = self.wd_paths.get(ev.wd) orelse return self.session.dirty_log.noteDoubt();
-    if (ev.len == 0) return self.session.dirty_log.note(parent);
-    const name = nameOf(ev, buf, rec_end) orelse return self.session.dirty_log.noteDoubt();
-    const child = haystack.joinPath(self.gpa, parent, name) catch return self.session.dirty_log.noteDoubt();
+    const parent = self.wd_paths.get(ev.wd) orelse return noteUnattributable(self);
+    if (ev.len == 0) return self.session.dirty_log.note(parent); // the watched dir itself
+    const name = nameOf(ev, buf, rec_end) orelse return noteUnattributable(self);
+    const child = haystack.joinPath(self.gpa, parent, name) catch return noteUnattributable(self);
     defer self.gpa.free(child);
     self.session.dirty_log.note(child);
+    if (ev.mask & linux.IN.ISDIR == 0) noteAnnals(self, child);
 }
 
 /// The NUL-terminated name trailing a variable-length inotify record, or

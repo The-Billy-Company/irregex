@@ -399,8 +399,13 @@ test "regex: required-literal extraction for the trigram prefilter" {
     {
         var re = try Regex.compile(a, "panic|0x");
         defer re.deinit();
-        // A <3-byte branch (`0x`) can't be trigram-filtered ⇒ no cover, full scan.
-        try std.testing.expectEqual(@as(usize, 0), re.alts.len);
+        // The `0x` branch extracts no trigram, but the sliver tier answers it from
+        // the same directory, so the cover keeps BOTH branches instead of standing
+        // down to a full scan. (Asserted 0 while `0x` was unqueryable — that sent
+        // the certificate's `regex-litalt` class to cand% = 100%.)
+        try std.testing.expectEqual(@as(usize, 2), re.alts.len);
+        try std.testing.expectEqualStrings("panic", re.alts[0]);
+        try std.testing.expectEqualStrings("0x", re.alts[1]);
     }
     {
         var re = try Regex.compile(a, "func\\s+\\w+\\(");

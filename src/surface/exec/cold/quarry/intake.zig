@@ -27,6 +27,7 @@ const inode = @import("../read/inode.zig");
 const ignore = @import("../../../../corpus/tree/ignore.zig");
 const ingest = @import("../read/ingest.zig");
 const legible = @import("../read/legible.zig");
+const notice = @import("notice.zig");
 const order = @import("order.zig");
 const paths_mod = @import("../../../../corpus/scope/paths.zig");
 const persist = @import("../../../../corpus/index/trigrams/persist.zig");
@@ -76,7 +77,22 @@ const ReadShard = struct {
     needle: ?simd.Gate,
     cfg: *const ingest.Config,
     out: std.ArrayList(InFile) = .empty,
+    /// A candidate this shard could not OPEN. Shard-local (no atomic, no shared
+    /// cache line on the hot read path) and folded into the run's `path_error`
+    /// by `readCandidates` once every shard has joined.
+    open_error: bool = false,
 };
+
+/// A candidate the walk admitted but the read could not open: ripgrep prints the
+/// errno line and exits 2 even when other files matched, because an unsearched
+/// file is a gap in the answer rather than an absence of matches. The rendering
+/// is the shared `notice.printWalkError` — the same line an unreadable DIRECTORY
+/// already produced — so the two halves of "could not look" cannot drift apart.
+fn reportUnopenable(rel: []const u8, e: slurp.OpenFault, open_error: *bool) ?InFile {
+    notice.printWalkError(rel, e);
+    open_error.* = true;
+    return null;
+}
 
 /// One candidate's read-and-filter: raw POSIX open/read/close into a reused
 /// per-shard scratch buffer — the same proven-fast cold-read idiom
@@ -102,7 +118,7 @@ const ReadShard = struct {
 /// (one read syscall beats mmap+fault setup below this size).
 const mmap_min_bytes: usize = 4 << 20;
 
-fn readOneCandidate(a: std.mem.Allocator, scratch: []u8, c: Candidate, needle: ?simd.Gate, cfg: *const ingest.Config) ?InFile {
+fn readOneCandidate(a: std.mem.Allocator, scratch: []u8, c: Candidate, needle: ?simd.Gate, cfg: *const ingest.Config, open_error: *bool) ?InFile {
     // Untransformed large file: map it (no read loop, no dupe). A transforming
     // run (-z/--pre/-E) must read + rewrite the raw bytes, so it can't map.
     if (!cfg.active()) if (slurp.mapFile(c.disk, mmap_min_bytes)) |mapped| {
@@ -110,7 +126,9 @@ fn readOneCandidate(a: std.mem.Allocator, scratch: []u8, c: Candidate, needle: ?
         if (needle) |gate| if (!verify.gateWide(a, body, gate)) return null;
         return .{ .path = c.rel, .scope = c.scope, .bytes = body, .explicit = c.explicit, .root = c.root };
     };
-    const raw = slurp.readFileRaw(a, scratch, c.disk) orelse return null;
+    const opened = slurp.readFileRaw(a, scratch, c.disk) catch |e|
+        return reportUnopenable(c.rel, e, open_error);
+    const raw = opened orelse return null;
     // -z/--pre/-E rewrite a file's bytes before matching (decompress, preprocess,
     // transcode); `ingest.apply` owns that whole pipeline (and folds in BOM/
     // encoding). Null means the file is DROPPED — an errored `--pre` whose latch
@@ -141,7 +159,7 @@ fn readShard(sh: *ReadShard) void {
     const scratch = sh.gpa.alloc(u8, corpus_mod.per_file_cap) catch oom();
     defer sh.gpa.free(scratch);
     sh.out.ensureTotalCapacity(sh.gpa, sh.candidates.len) catch oom();
-    for (sh.candidates) |c| if (readOneCandidate(a, scratch, c, sh.needle, sh.cfg)) |f| sh.out.appendAssumeCapacity(f);
+    for (sh.candidates) |c| if (readOneCandidate(a, scratch, c, sh.needle, sh.cfg, &sh.open_error)) |f| sh.out.appendAssumeCapacity(f);
 }
 
 /// Read every discovered candidate — in parallel across the machine's cores
@@ -156,7 +174,9 @@ fn readShard(sh: *ReadShard) void {
 /// match/emit pass that reads their bytes, and the OS reclaims them at exit. This
 /// deletes what was a serial ~½-GB `dest.dupe` of the whole kept corpus (the
 /// bandwidth floor sitting UNDER the already-parallel read), for zero copies.
-fn readCandidates(dest: std.mem.Allocator, gpa: std.mem.Allocator, candidates: []const Candidate, needle: ?simd.Gate, out: *std.ArrayList(InFile), cfg: *const ingest.Config) void {
+/// Returns whether any shard met a candidate it could not open (rg's exit-2
+/// class — see `reportUnopenable`).
+fn readCandidates(dest: std.mem.Allocator, gpa: std.mem.Allocator, candidates: []const Candidate, needle: ?simd.Gate, out: *std.ArrayList(InFile), cfg: *const ingest.Config) bool {
     const ncpu = std.Thread.getCpuCount() catch 8;
     // A transforming run (-z/--pre/-E) reads in parallel like any other: each
     // shard decompresses/transcodes on its OWN arena + scratch, and `ingest`'s
@@ -181,10 +201,13 @@ fn readCandidates(dest: std.mem.Allocator, gpa: std.mem.Allocator, candidates: [
     // doc comment): copy only the small `InFile` structs, never the bytes. The
     // shard's own `out` list (its struct storage) is freed; the arena that backs
     // the bytes is not.
+    var open_error = false;
     for (shards) |*sh| {
         out.appendSliceAssumeCapacity(sh.out.items);
+        open_error = open_error or sh.open_error;
         sh.out.deinit(gpa);
     }
+    return open_error;
 }
 
 /// The compiled analyzer's longest literal present in every match, as a SIMD
@@ -277,7 +300,10 @@ const IndexSkip = struct {
 /// stat-walk to the query's own roots (else the indexed corpus) so a scoped
 /// query doesn't pay a whole-corpus stat pass.
 fn buildIndexSkip(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, filters: []const []const u8, sieve: crest.Swell) fault.Answer(IndexSkip) {
-    if (!elide.indexElisionWanted(io, parsed, filters, sieve)) return .{ .declined = .not_worthwhile };
+    // `null` plan: the serial path asks the index through `fresh.candidates`,
+    // which takes the flat OR of `filters` — the conjunctive cover rides the
+    // fused walk (`elide.assemble`) only, so serial's eligibility is unchanged.
+    if (!elide.indexElisionWanted(io, parsed, filters, null, sieve)) return .{ .declined = .not_worthwhile };
     if (assembleIndexSkip(gpa, io, parsed, filters, sieve)) |s| return .{ .got = s } else |e| return switch (e) {
         error.NoIndex => .{ .declined = .index_absent },
         error.NotWorthwhile => .{ .declined = .not_worthwhile },
@@ -368,14 +394,29 @@ pub fn collectFiles(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, pa
     // walk phase. Spawn failure (or elision not wanted) degrades to the
     // old sequential compute — never a lost oracle.
     var box: fault.Answer(IndexSkip) = .{ .declined = .not_worthwhile };
-    const skip_thread: ?std.Thread = if (elide.indexElisionWanted(io, parsed, filters, sieve))
+    const skip_thread: ?std.Thread = if (elide.indexElisionWanted(io, parsed, filters, null, sieve))
         std.Thread.spawn(.{}, computeIndexSkip, .{ &box, gpa, io, parsed, filters, sieve }) catch null
     else
         null;
 
     const g = gather(a, io, parsed.roots, o, &ig, &candidates, null) catch oom();
+    // A path-only `-t/-T/-g` filter is a WALK verdict, not a read verdict: rg
+    // never opens a file its type set excluded. Deciding it here (rather than
+    // only on the post-read set, as this did) keeps an excluded file's bytes
+    // unread — and keeps an excluded *unreadable* file from raising a permission
+    // fault rg never sees, the `-t py --binary` exit-1-vs-2 the fuzzer found.
+    if (o.filter.active()) {
+        var kept: std.ArrayList(Candidate) = .empty;
+        kept.ensureTotalCapacity(a, candidates.items.len) catch oom();
+        for (candidates.items) |c| if (o.filter.admits(a, c.scope)) kept.appendAssumeCapacity(c);
+        candidates = kept;
+    }
 
     var all: std.ArrayList(InFile) = .empty;
+    // A candidate the walk admitted but the read could not open. Folded into the
+    // run's `path_error` beside the walk's own gaps: both mean "something in
+    // scope was never looked at", which is rg's exit-2 class rather than exit 1.
+    var open_error = false;
     const admitted: fault.Answer(IndexSkip) = if (skip_thread) |t| blk: {
         t.join();
         break :blk box;
@@ -425,13 +466,12 @@ pub fn collectFiles(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, pa
         }
     } else {
         const read_needle = if (read_list.len == 1 and read_list[0].explicit) null else file_needle;
-        readCandidates(a, gpa, read_list, read_needle, &all, cfg);
+        open_error = readCandidates(a, gpa, read_list, read_needle, &all, cfg);
     }
 
     var files: std.ArrayList(InFile) = .empty;
     files.ensureTotalCapacity(a, all.items.len) catch oom();
     for (all.items) |f| {
-        if (o.filter.active() and !o.filter.admits(a, f.scope)) continue;
         if (o.max_filesize != 0 and f.bytes.len > o.max_filesize) continue;
         files.appendAssumeCapacity(f);
     }
@@ -444,9 +484,8 @@ pub fn collectFiles(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, pa
     if (o.path_sep) |sepstr| for (files.items) |*f| {
         f.path = replaceSep(a, f.path, sepstr);
     };
-    // Path-only filters decide `walked` (rg's `searched` flips as the walk
-    // yields a haystack, before any body read); size caps apply post-read.
-    var walked: usize = 0;
-    for (candidates.items) |c| walked += @intFromBool(!o.filter.active() or o.filter.admits(a, c.scope));
-    return .{ .files = files.items, .recursive = g.recursive, .path_error = g.path_error, .walked = walked };
+    // Path-only filters already decided `candidates` above (rg's `searched` flips
+    // as the walk yields a haystack, before any body read); size caps apply
+    // post-read and so never lower `walked`.
+    return .{ .files = files.items, .recursive = g.recursive, .path_error = g.path_error or open_error, .walked = candidates.items.len };
 }

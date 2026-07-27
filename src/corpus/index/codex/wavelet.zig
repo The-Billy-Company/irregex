@@ -17,14 +17,18 @@
 //! The alphabet is `u16` symbols in [0, sigma) — the codex feeds bytes shifted
 //! +1 with sentinel 0, so σ = 257; nothing here assumes that beyond σ ≤ 4096.
 //!
-//! Construction reads each level exactly once. A node knows how its sequence
-//! will split before it looks at a symbol — it holds every occurrence of its
-//! alphabet, so the frequency histogram already says so — which lets the bit
-//! coding and the partition for the two children share one walk. See
-//! `Tree.buildNode`.
+//! A node knows how its sequence will split before it looks at a symbol — it
+//! holds every occurrence of its alphabet, so the frequency histogram already
+//! says so. That single fact is what makes construction cheap twice over: a
+//! level's bit coding and its partition can share one walk, and a level too big
+//! to walk alone can be handed to several threads that already know where their
+//! output belongs. Symbols shuttle between two n-symbol halves as the tree
+//! descends rather than compacting in place, which is what leaves the shards
+//! nothing to collide over. See `weave` and `Tree.buildNode`.
 
 const std = @import("std");
 const rrr = @import("rrr.zig");
+const parallel = @import("../../../kernel/primitives/parallel.zig");
 
 pub const max_sigma = 4096;
 
@@ -181,7 +185,9 @@ pub const Encoding = enum {
 
 /// Build-time scratch threaded down the recursion, so descending a level costs
 /// no allocation of its own. `route` is rebuilt by each node and read only
-/// inside that node's own pass, which is why one copy serves the whole tree.
+/// inside that node's own pass — including by every shard of that pass, which
+/// is safe because the pass never writes it — so one copy serves the whole
+/// tree even when the levels are woven in parallel.
 const Loom = struct {
     huff: *const Huff,
     freq: []const u64,
@@ -190,6 +196,106 @@ const Loom = struct {
     /// alphabet is written, and only those symbols are ever looked up.
     route: [max_sigma]u8 = undefined,
 };
+
+/// One 64-aligned slice of a level. It codes only whole words, so no two wefts
+/// ever carry a read-modify-write on the same one, and it places its symbols
+/// only once the prefix sum has told it where its two runs begin.
+const Weft = struct {
+    route: *const [max_sigma]u8,
+    src: []const u16,
+    dst: []u16,
+    words: []u64,
+    lo: usize,
+    hi: usize,
+    ones: usize = 0,
+    lbase: usize = 0,
+    rbase: usize = 0,
+
+    fn code(self: *Weft) void {
+        var ones: usize = 0;
+        var base = self.lo;
+        while (base < self.hi) : (base += 64) {
+            var word: u64 = 0;
+            for (self.src[base..@min(base + 64, self.hi)], 0..) |c, k| {
+                if (self.route[c] == 1) word |= @as(u64, 1) << @intCast(k);
+            }
+            self.words[base >> 6] = word;
+            ones += @popCount(word);
+        }
+        self.ones = ones;
+    }
+
+    fn place(self: *Weft) void {
+        var li = self.lbase;
+        var ri = self.rbase;
+        for (self.src[self.lo..self.hi]) |c| {
+            if (self.route[c] == 1) {
+                self.dst[ri] = c;
+                ri += 1;
+            } else {
+                self.dst[li] = c;
+                li += 1;
+            }
+        }
+    }
+};
+
+/// Code one level's bitvector and route its symbols into `dst`, in the fewest
+/// sweeps the available parallelism allows.
+///
+/// The two shapes below differ for a real reason, not an incidental one. A lone
+/// worker knows where a symbol lands the moment it reads it, so it codes and
+/// routes in ONE sweep. Shards cannot: a shard's destination offsets depend on
+/// how many symbols the shards before it sent left, and nobody knows that until
+/// they have looked. So they read the range twice — once to code and count,
+/// once to place — and still win, because there are a dozen of them. Below
+/// `parallel.build_min_bytes` that second read would be pure loss, which is
+/// exactly where the fork sits.
+fn weave(gpa: std.mem.Allocator, route: *const [max_sigma]u8, src: []const u16, dst: []u16, words: []u64, nzero: usize) !void {
+    const bounds = try parallel.evenBounds(src.len, @sizeOf(u16), 64, parallel.build_min_bytes, parallel.max_shards, gpa);
+    defer gpa.free(bounds);
+    if (bounds.len == 2) {
+        var li: usize = 0;
+        var ri: usize = nzero;
+        var base: usize = 0;
+        while (base < src.len) : (base += 64) {
+            var word: u64 = 0;
+            for (src[base..@min(base + 64, src.len)], 0..) |c, k| {
+                if (route[c] == 1) {
+                    word |= @as(u64, 1) << @intCast(k);
+                    dst[ri] = c;
+                    ri += 1;
+                } else {
+                    dst[li] = c;
+                    li += 1;
+                }
+            }
+            words[base >> 6] = word;
+        }
+        std.debug.assert(li == nzero and ri == src.len);
+        return;
+    }
+
+    const shards = try gpa.alloc(Weft, bounds.len - 1);
+    defer gpa.free(shards);
+    const threads = try gpa.alloc(std.Thread, shards.len);
+    defer gpa.free(threads);
+    for (shards, bounds[0 .. bounds.len - 1], bounds[1..]) |*sh, lo, hi|
+        sh.* = .{ .route = route, .src = src, .dst = dst, .words = words, .lo = lo, .hi = hi };
+    parallel.fanOut(Weft, shards, threads, Weft.code);
+    var l: usize = 0;
+    var r: usize = nzero;
+    for (shards) |*sh| {
+        sh.lbase = l;
+        sh.rbase = r;
+        l += (sh.hi - sh.lo) - sh.ones;
+        r += sh.ones;
+    }
+    // The two runs met exactly where the histogram said they would — i.e.
+    // `freq` really was this node's own, and every weft counted its share.
+    std.debug.assert(l == nzero and r == src.len);
+    parallel.fanOut(Weft, shards, threads, Weft.place);
+}
 
 /// The tree. Internal nodes only; `child < 0` encodes leaf symbol −(child+1).
 pub const Tree = struct {
@@ -213,9 +319,18 @@ pub const Tree = struct {
             for (list.items) |*nd| nd.bits.deinit(gpa);
             list.deinit(gpa);
         }
-        const scratch = try gpa.alloc(u16, seq.len);
-        defer gpa.free(scratch);
-        @memcpy(scratch, seq);
+        // Two n-symbol halves, ping-ponged by depth: a node reads one over its
+        // row range and writes the other over the SAME range. Ranges therefore
+        // never move as the tree descends, so siblings can never reach each
+        // other's symbols and no node needs a private temp for the half it is
+        // displacing. It is also what lets a level be woven by several threads
+        // at once — an in-place compaction cannot be sharded, because a shard
+        // would overwrite symbols its neighbors have not read yet.
+        const front = try gpa.alloc(u16, seq.len);
+        defer gpa.free(front);
+        const back = try gpa.alloc(u16, seq.len);
+        defer gpa.free(back);
+        @memcpy(front, seq);
 
         // The root's alphabet, partitioned in place on the way down so every
         // node's live symbol set is a sub-slice of its parent's.
@@ -228,69 +343,38 @@ pub const Tree = struct {
         };
 
         var loom = Loom{ .huff = &self.huff, .freq = freq, .encoding = encoding };
-        _ = try buildNode(gpa, &list, &loom, scratch, alphabet[0..live], 0);
+        _ = try buildNode(gpa, &list, &loom, front, back, alphabet[0..live], 0);
         self.nodes = try list.toOwnedSlice(gpa);
         return self;
     }
 
-    /// Builds node `id` over `seq` — every occurrence of every symbol in
-    /// `alphabet`, the symbols sharing a code prefix of length `depth`.
+    /// Builds node `id` over `src` — every occurrence of every symbol in
+    /// `alphabet`, the symbols sharing a code prefix of length `depth` — and
+    /// leaves the level's symbols in `dst` as [left | right]. `src` and `dst`
+    /// are the same row range of the two ping-pong halves, so the children
+    /// simply read what this node wrote and write back over what it read.
     ///
-    /// One pass does both jobs the level needs: it codes the bitvector a word
-    /// at a time and stably rearranges `seq` to [left | right] in place. They
-    /// can collapse into one because the split point is known BEFORE any
-    /// symbol is read — a node holds every occurrence of its alphabet, so
-    /// `freq` summed over the left-routed symbols already gives it. That also
-    /// pays for the `route` table: an O(σ) sweep the node was doing anyway
-    /// turns the hot loop's Huffman bit extraction into one byte load.
-    ///
-    /// Peak transient memory is unchanged — the single n-symbol scratch plus
-    /// the right half of one level at a time.
-    fn buildNode(gpa: std.mem.Allocator, list: *std.ArrayList(Node), loom: *Loom, seq: []u16, alphabet: []u16, depth: u8) !i32 {
+    /// The level's split point is known BEFORE a single symbol is read: a node
+    /// holds every occurrence of its alphabet, so `freq` summed over the
+    /// left-routed symbols already gives it. That is what lets `weave` code the
+    /// bitvector and route the symbols in one sweep when it is alone, and what
+    /// lets it hand shards their destinations after one counting sweep when it
+    /// is not. It also pays for the `route` table: an O(σ) sweep the node was
+    /// doing anyway turns the hot loop's Huffman bit extraction into a byte
+    /// load.
+    fn buildNode(gpa: std.mem.Allocator, list: *std.ArrayList(Node), loom: *Loom, src: []u16, dst: []u16, alphabet: []u16, depth: u8) !i32 {
         var nzero: usize = 0;
         for (alphabet) |c| {
             const bit = loom.huff.bitAt(c, depth);
             loom.route[c] = bit;
             if (bit == 0) nzero += @intCast(loom.freq[c]);
         }
-        std.debug.assert(nzero <= seq.len);
+        std.debug.assert(nzero <= src.len);
 
         const id: i32 = @intCast(list.items.len);
-        try list.append(gpa, .{ .bits = .{ .plain = try rrr.Plain.initEmpty(gpa, seq.len) }, .child = .{ unreachable_child, unreachable_child } });
-        {
-            var buf: [512]u16 = undefined;
-            const nright = seq.len - nzero;
-            const spill: ?[]u16 = if (nright > buf.len) try gpa.alloc(u16, nright) else null;
-            defer if (spill) |s| gpa.free(s);
-            const right = spill orelse buf[0..nright];
-
-            // One word of the level per outer step: the bits accumulate in a
-            // register and land with a single store, instead of a
-            // read-modify-write per symbol. Writing `seq[li]` can only touch a
-            // slot at or before the one just read (li ≤ base+k), so the
-            // compaction never clobbers a symbol it still owes.
-            const words = list.items[@intCast(id)].bits.plain.words;
-            var li: usize = 0;
-            var ri: usize = 0;
-            var base: usize = 0;
-            while (base < seq.len) : (base += 64) {
-                var word: u64 = 0;
-                for (seq[base..@min(base + 64, seq.len)], 0..) |c, k| {
-                    if (loom.route[c] == 1) {
-                        word |= @as(u64, 1) << @intCast(k);
-                        right[ri] = c;
-                        ri += 1;
-                    } else {
-                        seq[li] = c;
-                        li += 1;
-                    }
-                }
-                words[base >> 6] = word;
-            }
-            std.debug.assert(li == nzero and ri == nright); // `freq` really was seq's histogram
-            @memcpy(seq[nzero..], right);
-            try list.items[@intCast(id)].bits.plain.finalize(gpa);
-        }
+        try list.append(gpa, .{ .bits = .{ .plain = try rrr.Plain.initEmpty(gpa, src.len) }, .child = .{ unreachable_child, unreachable_child } });
+        try weave(gpa, &loom.route, src, dst, list.items[@intCast(id)].bits.plain.words, nzero);
+        try list.items[@intCast(id)].bits.plain.finalize(gpa);
         if (loom.encoding == .adopt_min)
             list.items[@intCast(id)].bits = try rrr.Bits.adopt(gpa, list.items[@intCast(id)].bits.plain);
 
@@ -307,13 +391,14 @@ pub const Tree = struct {
         for (0..2) |b| {
             const part = if (b == 0) alphabet[0..lo] else alphabet[lo..];
             if (part.len == 0) continue; // σ=1 degenerate branch: no code routes here
-            const rows = if (b == 0) seq[0..nzero] else seq[nzero..];
+            const from = if (b == 0) @as(usize, 0) else nzero;
+            const upto = if (b == 0) nzero else src.len;
             // materialize the child BEFORE indexing items: the recursion appends
             // and may reallocate, so the destination pointer must be computed last
             const child: i32 = if (part.len == 1) blk: {
                 std.debug.assert(loom.huff.len[part[0]] == depth + 1);
                 break :blk -(@as(i32, part[0]) + 1);
-            } else try buildNode(gpa, list, loom, rows, part, depth + 1);
+            } else try buildNode(gpa, list, loom, dst[from..upto], src[from..upto], part, depth + 1);
             list.items[@intCast(id)].child[b] = child;
         }
         return id;

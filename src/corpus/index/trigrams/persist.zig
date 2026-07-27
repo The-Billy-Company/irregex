@@ -26,9 +26,12 @@ const corpus_mod = @import("../../tree/corpus.zig");
 const crest = @import("../../../kernel/primitives/crest.zig");
 const crest_sidecar = @import("../crest/sidecar.zig");
 const codicil_mod = @import("codicil.zig");
+const ngram = @import("ngram.zig");
+const sliver = @import("sliver.zig");
 const lapse = @import("lapse.zig");
 const frame = @import("../frame/frame.zig");
 const assay = @import("../../../assay/assay.zig");
+const portal = @import("../../../portal.zig");
 const Dir = std.Io.Dir;
 // The mapping + atomic-publish primitives are shared wire discipline and live
 // in `../frame/`; these are import aliases, not a second implementation.
@@ -89,6 +92,15 @@ pub const Persisted = struct {
     crest: ?[]const crest.Vector = null,
     /// Mutable owner retained separately when `crest` views a merged allocation.
     crest_allocation: ?[]crest.Vector = null,
+    /// Base-index documents this loader could NOT prove are ≥ 3 bytes long, and
+    /// which therefore own no trigram and appear in no posting list. The sliver
+    /// tier (`sliver.zig`) unions them in unconditionally, which is the whole
+    /// reason a sub-trigram needle can be answered from the trigram directory
+    /// at all. Derived once at load from the BASE crest table — before any
+    /// codicil merge rewrites rows — so it describes exactly the corpus the
+    /// base postings were built over. Null when no crest sidecar loaded, which
+    /// fail-closes the tier back to a full scan.
+    short_docs: ?[]u32 = null,
     /// The codicil mapping + decoded view (slices alias `codmap`); null when
     /// this generation has none (a fresh full build, or a rejected blob).
     codmap: ?Mapping = null,
@@ -112,10 +124,11 @@ pub const Persisted = struct {
         self.paths.deinit(self.gpa);
         self.idx.deinit(); // borrowed ⇒ frees nothing
         if (self.crest_allocation) |table| self.gpa.free(table);
-        if (self.codmap) |m| std.posix.munmap(m);
-        if (self.cmap) |m| std.posix.munmap(m);
-        std.posix.munmap(self.pmap);
-        std.posix.munmap(self.imap);
+        if (self.short_docs) |s| self.gpa.free(s);
+        if (self.codmap) |m| portal.unmap(m);
+        if (self.cmap) |m| portal.unmap(m);
+        portal.unmap(self.pmap);
+        portal.unmap(self.imap);
     }
 
     /// Candidate docs that may contain `needle` across BOTH layers: base-index
@@ -123,6 +136,7 @@ pub const Persisted = struct {
     /// base postings are stale, so they are always read, never elided).
     /// Same contract as `Index.queryLiteral`: sorted ascending, caller-owned.
     pub fn queryLiteral(self: *const Persisted, gpa: std.mem.Allocator, needle: []const u8) trigram.QueryError![]u32 {
+        if (needle.len <= sliver.max_len) return self.querySliver(gpa, needle);
         const base = try self.idx.queryLiteral(gpa, needle);
         const c = self.cod orelse return base;
         const local = c.idx.queryLiteral(gpa, needle) catch |e| {
@@ -133,11 +147,97 @@ pub const Persisted = struct {
         return mergeLayers(gpa, base, local, c.ids, c.tombs);
     }
 
-    /// `Index.queryAny` across both layers (see `queryLiteral`).
+    /// An alternation whose branches straddle the trigram floor. Each branch is
+    /// bounded by whichever tier can bound it — the directory for ≥3 bytes, the
+    /// sliver for less — and the union of sound per-branch supersets is a sound
+    /// superset of the alternation. One branch nothing can bound leaves the
+    /// whole union unbounded, so a decline propagates and the caller full-scans.
+    fn queryMixed(self: *const Persisted, gpa: std.mem.Allocator, needles: []const []const u8) trigram.QueryError![]u32 {
+        const short = self.short_docs orelse return trigram.QueryError.NeedleTooShort;
+        const lists = try gpa.alloc([]u32, needles.len);
+        var got: usize = 0;
+        defer {
+            for (lists[0..got]) |l| gpa.free(l);
+            gpa.free(lists);
+        }
+        var total: usize = 0;
+        for (needles, lists) |n, *slot| {
+            slot.* = if (n.len <= sliver.max_len)
+                try sliver.candidates(&self.idx, gpa, n, short)
+            else
+                try self.idx.queryLiteral(gpa, n);
+            got += 1;
+            total += slot.len;
+        }
+        const buf = try gpa.alloc(u32, total);
+        var w: usize = 0;
+        for (lists[0..got]) |l| {
+            @memcpy(buf[w..][0..l.len], l);
+            w += l.len;
+        }
+        std.mem.sort(u32, buf[0..w], {}, comptime std.sort.asc(u32));
+        const n = ngram.dedupSorted(u32, buf, w);
+        const base = gpa.realloc(buf, n) catch buf[0..n];
+
+        const c = self.cod orelse return base;
+        const all = gpa.alloc(u32, c.ids.len) catch |e| {
+            gpa.free(base);
+            return e;
+        };
+        defer gpa.free(all);
+        for (all, 0..) |*slot, i| slot.* = @intCast(i);
+        return mergeLayers(gpa, base, all, c.ids, c.tombs);
+    }
+
+    /// A sub-trigram needle answered from the trigram directory (`sliver.zig`),
+    /// with the two admissions that module cannot make for itself: the documents
+    /// too short to own a trigram, and every codicil document — amended or
+    /// tombstoned — whose base postings no longer speak for its bytes.
+    ///
+    /// Declines with `NeedleTooShort` when no crest sidecar loaded (nothing
+    /// proves which documents are short) or when the union outprices its budget.
+    /// Either way the caller keeps the full scan it has always had.
+    fn querySliver(self: *const Persisted, gpa: std.mem.Allocator, needle: []const u8) trigram.QueryError![]u32 {
+        const short = self.short_docs orelse return trigram.QueryError.NeedleTooShort;
+        const base = try sliver.candidates(&self.idx, gpa, needle, short);
+        const c = self.cod orelse return base;
+        // `mergeLayers` maps a codicil-local list through `c.ids`; admitting the
+        // whole layer is that map applied to every local id in order.
+        const all = gpa.alloc(u32, c.ids.len) catch |e| {
+            gpa.free(base);
+            return e;
+        };
+        defer gpa.free(all);
+        for (all, 0..) |*slot, i| slot.* = @intCast(i);
+        return mergeLayers(gpa, base, all, c.ids, c.tombs);
+    }
+
+    /// `Index.queryAny` across both layers (see `queryLiteral`). An alternation
+    /// mixing sub-trigram branches with ordinary ones (`panic|0x`) is unioned
+    /// per branch by `queryMixed` rather than declined.
     pub fn queryAny(self: *const Persisted, gpa: std.mem.Allocator, needles: []const []const u8) trigram.QueryError![]u32 {
+        if (needles.len == 1) return self.queryLiteral(gpa, needles[0]);
+        for (needles) |n| {
+            if (n.len <= sliver.max_len) return self.queryMixed(gpa, needles);
+        }
         const base = try self.idx.queryAny(gpa, needles);
         const c = self.cod orelse return base;
         const local = c.idx.queryAny(gpa, needles) catch |e| {
+            gpa.free(base);
+            return e;
+        };
+        defer gpa.free(local);
+        return mergeLayers(gpa, base, local, c.ids, c.tombs);
+    }
+
+    /// `Index.queryPlan` across both layers (see `queryLiteral`). The codicil is
+    /// its own index, so it re-runs the same plan and picks its own cheapest
+    /// clause order over its own cardinalities — both answers are supersets of
+    /// their layer's true matches, so the union stays sound.
+    pub fn queryPlan(self: *const Persisted, gpa: std.mem.Allocator, plan: []const trigram.Index.Clause) trigram.QueryError![]u32 {
+        const base = try self.idx.queryPlan(gpa, plan);
+        const c = self.cod orelse return base;
+        const local = c.idx.queryPlan(gpa, plan) catch |e| {
             gpa.free(base);
             return e;
         };
@@ -259,23 +359,23 @@ fn loadMappedPair(gpa: std.mem.Allocator, io: std.Io, pf: *const PairFiles, gen:
         if (verbose) assay.diag("no index at {s} — run `gist index` first\n", .{pf.index});
         return null;
     };
-    errdefer std.posix.munmap(imap);
+    errdefer portal.unmap(imap);
     var idx = try Index.fromTrustedMappedBytes(imap);
     errdefer idx.deinit();
 
     const pmap = mmapFile(io, pf.paths) catch {
         if (verbose) assay.diag("incomplete index — {s} missing; run `gist index` to rebuild\n", .{pf.paths});
-        std.posix.munmap(imap);
+        portal.unmap(imap);
         return null;
     };
-    errdefer std.posix.munmap(pmap);
+    errdefer portal.unmap(pmap);
     var paths = try frame.parsePathTable(gpa, pmap);
     errdefer paths.deinit(gpa);
     validatePersistedPair(idx.doc_count, paths.items) catch {
         if (verbose) assay.diag("index/paths mismatch ({d} paths != {d} docs) — run `gist index` to rebuild\n", .{ paths.items.len, idx.doc_count });
         paths.deinit(gpa);
-        std.posix.munmap(pmap);
-        std.posix.munmap(imap);
+        portal.unmap(pmap);
+        portal.unmap(imap);
         return null;
     };
 
@@ -300,9 +400,14 @@ fn loadMappedPair(gpa: std.mem.Allocator, io: std.Io, pf: *const PairFiles, gen:
     var cmap: ?Mapping = mmapFile(io, pf.crest) catch null;
     var crest_view: ?[]const crest.Vector = if (cmap) |m| crest_sidecar.decode(m, idx.doc_count) else null;
     if (cmap != null and crest_view == null) {
-        std.posix.munmap(cmap.?);
+        portal.unmap(cmap.?);
         cmap = null;
     }
+
+    // The sliver tier's soundness premise, resolved once against the BASE table
+    // (a codicil merge below rewrites rows, so this must read it first).
+    const short_docs: ?[]u32 = if (crest_view) |base_table| try shortDocs(gpa, base_table) else null;
+    errdefer if (short_docs) |s| gpa.free(s);
 
     // Codicil: optional, fail-closed, and bound to the EXACT generation id (a
     // legacy stable-alias load has no gen, so it never sees one). On admit the
@@ -315,15 +420,15 @@ fn loadMappedPair(gpa: std.mem.Allocator, io: std.Io, pf: *const PairFiles, gen:
     var codmap: ?Mapping = null;
     var cod: ?codicil_mod.Decoded = null;
     var crest_allocation: ?[]crest.Vector = null;
-    errdefer if (codmap) |m| std.posix.munmap(m);
+    errdefer if (codmap) |m| portal.unmap(m);
     if (gen) |g| blk: {
         const m = mmapFile(io, pf.codicil) catch break :blk;
         const d = codicil_mod.decode(m, idx.doc_count, g) orelse {
-            std.posix.munmap(m);
+            portal.unmap(m);
             break :blk;
         };
         const new_paths = frame.splitNulExact(gpa, d.new_paths_blob, d.n_new, true) catch {
-            std.posix.munmap(m);
+            portal.unmap(m);
             break :blk;
         };
         defer gpa.free(new_paths);
@@ -336,14 +441,38 @@ fn loadMappedPair(gpa: std.mem.Allocator, io: std.Io, pf: *const PairFiles, gen:
             for (merged[base_table.len..]) |*v| v.* = codicil_mod.never_prune;
             for (d.ids, d.rows) |gid, row| merged[gid] = row;
             for (d.tombs) |gid| merged[gid] = codicil_mod.never_prune;
-            std.posix.munmap(cmap.?);
+            portal.unmap(cmap.?);
             cmap = null;
             crest_view = merged;
             crest_allocation = merged;
         }
     }
 
-    return .{ .imap = imap, .pmap = pmap, .idx = idx, .cmap = cmap, .crest = crest_view, .crest_allocation = crest_allocation, .codmap = codmap, .cod = cod, .paths = paths, .roots_blob = roots_blob, .roots = roots, .gen = gen_owned, .gpa = gpa };
+    return .{ .imap = imap, .pmap = pmap, .idx = idx, .cmap = cmap, .crest = crest_view, .crest_allocation = crest_allocation, .short_docs = short_docs, .codmap = codmap, .cod = cod, .paths = paths, .roots_blob = roots_blob, .roots = roots, .gen = gen_owned, .gpa = gpa };
+}
+
+/// Documents a crest table cannot prove are ≥ 3 bytes long, ascending.
+///
+/// `max ρ(d) ≥ 3` means some character class runs three consecutive bytes in
+/// `d`, which witnesses `len(d) ≥ 3` and therefore that `d` owns a trigram and
+/// appears in the postings. The converse does not hold — `"a1 "` is three bytes
+/// with no 3-run — so a document that fails the test is merely *unproven*, not
+/// known short, and is admitted. That asymmetry is the sound direction: this
+/// list may be a superset of the truly-short documents, never a subset.
+fn shortDocs(gpa: std.mem.Allocator, table: []const crest.Vector) ![]u32 {
+    var n: usize = 0;
+    for (table) |v| {
+        if (@reduce(.Max, @as(@Vector(crest.K, u16), v)) < 3) n += 1;
+    }
+    const out = try gpa.alloc(u32, n);
+    var w: usize = 0;
+    for (table, 0..) |v, d| {
+        if (@reduce(.Max, @as(@Vector(crest.K, u16), v)) < 3) {
+            out[w] = @intCast(d);
+            w += 1;
+        }
+    }
+    return out;
 }
 
 /// Load from an arbitrary cache root (production uses `corpus.outDir()`; tests

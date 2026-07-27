@@ -57,7 +57,7 @@ const ScanMask = std.meta.Int(.unsigned, scan_vlen);
 /// scan 20.8 → 30.2 GB/s with the tail + probe work; see bench/roofline).
 inline fn anyLane(eq: @Vector(scan_vlen, bool)) bool {
     if (comptime @import("builtin").cpu.arch.isX86())
-        return @as(ScanMask, @bitCast(eq)) != 0; // vpmovmskb + test — already cheap
+        return bitsmod.laneMask(ScanMask, eq) != 0; // vpmovmskb + test — already cheap
     // NEON path: materialize the compare as its native 0xFF/0x00 byte mask
     // (LLVM folds the select into the compare result), then OR-reduce u64
     // lanes — a short word-wide tree. Both `@reduce(.Or, bool-vector)` and
@@ -126,7 +126,7 @@ pub fn containsAny(hay: []const u8, needles: []const []const u8) bool {
         var per: [max_any]ScanMask = undefined;
         var mask: ScanMask = 0;
         for (needles, 0..) |_, k| {
-            per[k] = @bitCast(eqs[k]);
+            per[k] = bitsmod.laneMask(ScanMask, eqs[k]);
             mask |= per[k];
         }
         var survivors = bitsmod.ones(mask);
@@ -191,7 +191,7 @@ pub fn indexOfAnyPos(hay: []const u8, from: usize, needles: []const []const u8) 
         var per: [max_any]ScanMask = undefined;
         var mask: ScanMask = 0;
         for (needles, 0..) |_, k| {
-            per[k] = @bitCast(eqs[k]);
+            per[k] = bitsmod.laneMask(ScanMask, eqs[k]);
             mask |= per[k];
         }
         var survivors = bitsmod.ones(mask);
@@ -221,7 +221,7 @@ fn leftmostOf(hay: []const u8, from: usize, needles: []const []const u8) ?usize 
 /// `anyLane` proved hot), then eql-verify each candidate — the first match is
 /// the block's leftmost.
 inline fn verifyBlock(hay: []const u8, needle: []const u8, i: usize, eq: @Vector(scan_vlen, bool)) ?usize {
-    var survivors = bitsmod.ones(@as(ScanMask, @bitCast(eq)));
+    var survivors = bitsmod.ones(bitsmod.laneMask(ScanMask, eq));
     while (survivors.next()) |j| {
         const pos = i + j;
         if (std.mem.eql(u8, hay[pos .. pos + needle.len], needle)) return pos;
@@ -317,7 +317,7 @@ pub fn indexOfPos(hay: []const u8, from: usize, needle: []const u8) ?usize {
     while (i + last_off + vlen <= hay.len) : (i += vlen) {
         const bf: Vec = hay[i..][0..vlen].*;
         const bl: Vec = hay[i + last_off ..][0..vlen].*;
-        const bits: Mask = @bitCast((bf == first) & (bl == last));
+        const bits: Mask = bitsmod.laneMask(Mask, (bf == first) & (bl == last));
         var survivors = bitsmod.ones(bits);
         while (survivors.next()) |j| {
             const pos = i + j;
@@ -335,7 +335,7 @@ pub fn indexOfPos(hay: []const u8, from: usize, needle: []const u8) ?usize {
         const back = hay.len - last_off - vlen;
         const bf: Vec = hay[back..][0..vlen].*;
         const bl: Vec = hay[back + last_off ..][0..vlen].*;
-        const bits: Mask = @bitCast((bf == first) & (bl == last));
+        const bits: Mask = bitsmod.laneMask(Mask, (bf == first) & (bl == last));
         var survivors = bitsmod.ones(bits);
         while (survivors.next()) |j| {
             const pos = back + j;
@@ -363,13 +363,13 @@ pub fn lastIndexOfScalar(hay: []const u8, upto: usize, c: u8) ?usize {
     const wide: ScanVec = @splat(c);
     while (i >= scan_vlen) {
         i -= scan_vlen;
-        const bits: ScanMask = @bitCast(@as(ScanVec, hay[i..][0..scan_vlen].*) == wide);
+        const bits: ScanMask = bitsmod.laneMask(ScanMask, @as(ScanVec, hay[i..][0..scan_vlen].*) == wide);
         if (bits != 0) return i + (scan_vlen - 1 - @clz(bits));
     }
     const narrow: Vec = @splat(c);
     while (i >= vlen) {
         i -= vlen;
-        const bits: Mask = @bitCast(@as(Vec, hay[i..][0..vlen].*) == narrow);
+        const bits: Mask = bitsmod.laneMask(Mask, @as(Vec, hay[i..][0..vlen].*) == narrow);
         if (bits != 0) return i + (vlen - 1 - @clz(bits));
     }
     while (i > 0) {
@@ -387,10 +387,10 @@ pub fn countByte(hay: []const u8, c: u8) usize {
     var n: usize = 0;
     const wide: ScanVec = @splat(c);
     while (i + scan_vlen <= hay.len) : (i += scan_vlen)
-        n += @popCount(@as(ScanMask, @bitCast(@as(ScanVec, hay[i..][0..scan_vlen].*) == wide)));
+        n += @popCount(bitsmod.laneMask(ScanMask, @as(ScanVec, hay[i..][0..scan_vlen].*) == wide));
     const narrow: Vec = @splat(c);
     while (i + vlen <= hay.len) : (i += vlen)
-        n += @popCount(@as(Mask, @bitCast(@as(Vec, hay[i..][0..vlen].*) == narrow)));
+        n += @popCount(bitsmod.laneMask(Mask, @as(Vec, hay[i..][0..vlen].*) == narrow));
     while (i < hay.len) : (i += 1) n += @intFromBool(hay[i] == c);
     return n;
 }
@@ -409,15 +409,15 @@ pub fn countByteWithFlag(hay: []const u8, c: u8, other: u8) struct { count: usiz
     const ow: ScanVec = @splat(other);
     while (i + scan_vlen <= hay.len) : (i += scan_vlen) {
         const blk: ScanVec = hay[i..][0..scan_vlen].*;
-        n += @popCount(@as(ScanMask, @bitCast(blk == cw)));
-        seen = seen or @as(ScanMask, @bitCast(blk == ow)) != 0;
+        n += @popCount(bitsmod.laneMask(ScanMask, blk == cw));
+        seen = seen or bitsmod.laneMask(ScanMask, blk == ow) != 0;
     }
     const cv: Vec = @splat(c);
     const ov: Vec = @splat(other);
     while (i + vlen <= hay.len) : (i += vlen) {
         const blk: Vec = hay[i..][0..vlen].*;
-        n += @popCount(@as(Mask, @bitCast(blk == cv)));
-        seen = seen or @as(Mask, @bitCast(blk == ov)) != 0;
+        n += @popCount(bitsmod.laneMask(Mask, blk == cv));
+        seen = seen or bitsmod.laneMask(Mask, blk == ov) != 0;
     }
     while (i < hay.len) : (i += 1) {
         n += @intFromBool(hay[i] == c);
@@ -431,11 +431,11 @@ fn memchrPos(hay: []const u8, from: usize, c: u8) ?usize {
     const wide: ScanVec = @splat(c);
     while (i + scan_vlen <= hay.len) : (i += scan_vlen) {
         const eq = @as(ScanVec, hay[i..][0..scan_vlen].*) == wide;
-        if (anyLane(eq)) return i + @ctz(@as(ScanMask, @bitCast(eq)));
+        if (anyLane(eq)) return i + @ctz(bitsmod.laneMask(ScanMask, eq));
     }
     const narrow: Vec = @splat(c);
     while (i + vlen <= hay.len) : (i += vlen) {
-        const bits: Mask = @bitCast(@as(Vec, hay[i..][0..vlen].*) == narrow);
+        const bits: Mask = bitsmod.laneMask(Mask, @as(Vec, hay[i..][0..vlen].*) == narrow);
         if (bits != 0) return i + @ctz(bits);
     }
     while (i < hay.len) : (i += 1) if (hay[i] == c) return i;
@@ -488,7 +488,7 @@ pub fn indexOfCaselessPos(hay: []const u8, from: usize, needle: []const u8) ?usi
         const bl: ScanVec = hay[i + last_off ..][0..scan_vlen].*;
         const eq = ((bf | wfm0) == wfirst) & ((bl | wfmL) == wlast);
         if (!anyLane(eq)) continue;
-        var survivors = bitsmod.ones(@as(ScanMask, @bitCast(eq)));
+        var survivors = bitsmod.ones(bitsmod.laneMask(ScanMask, eq));
         while (survivors.next()) |j| {
             const pos = i + j;
             if (eqlCaseless(hay[pos .. pos + n], needle)) return pos;
@@ -503,7 +503,7 @@ pub fn indexOfCaselessPos(hay: []const u8, from: usize, needle: []const u8) ?usi
     while (i + last_off + vlen <= hay.len) : (i += vlen) {
         const bf: Vec = hay[i..][0..vlen].*;
         const bl: Vec = hay[i + last_off ..][0..vlen].*;
-        const bits: Mask = @bitCast(((bf | fm0) == first) & ((bl | fmL) == last));
+        const bits: Mask = bitsmod.laneMask(Mask, ((bf | fm0) == first) & ((bl | fmL) == last));
         var survivors = bitsmod.ones(bits);
         while (survivors.next()) |j| {
             const pos = i + j;
@@ -537,13 +537,13 @@ fn memchrFoldPos(hay: []const u8, from: usize, mask: u8, lo: u8) ?usize {
     const mw: ScanVec = @splat(mask);
     const lw: ScanVec = @splat(lo);
     while (i + scan_vlen <= hay.len) : (i += scan_vlen) {
-        const bits: ScanMask = @bitCast((@as(ScanVec, hay[i..][0..scan_vlen].*) | mw) == lw);
+        const bits: ScanMask = bitsmod.laneMask(ScanMask, (@as(ScanVec, hay[i..][0..scan_vlen].*) | mw) == lw);
         if (bits != 0) return i + @ctz(bits);
     }
     const mv: Vec = @splat(mask);
     const lv: Vec = @splat(lo);
     while (i + vlen <= hay.len) : (i += vlen) {
-        const bits: Mask = @bitCast((@as(Vec, hay[i..][0..vlen].*) | mv) == lv);
+        const bits: Mask = bitsmod.laneMask(Mask, (@as(Vec, hay[i..][0..vlen].*) | mv) == lv);
         if (bits != 0) return i + @ctz(bits);
     }
     while (i < hay.len) : (i += 1) if (hay[i] | mask == lo) return i;

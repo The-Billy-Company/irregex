@@ -25,6 +25,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const fault = @import("../../../../fault.zig");
+const portal = @import("../../../../portal.zig");
 
 /// Only the two targets whose fd-passing + anonymous-shm story we implement and
 /// measure. Everywhere else the caller stays on `chunk` frames.
@@ -51,7 +52,10 @@ extern "c" fn shm_open(name: [*:0]const u8, flag: c_int, mode: std.c.mode_t) c_i
 
 /// macOS shm names must be unique per object (O_EXCL) and short (PSHMNAMLEN=31);
 /// pid + a monotonic counter keeps them unique across a daemon's lifetime.
-var darwin_seq: std.atomic.Value(u64) = .init(0);
+/// Pointer-width like the other atomic counters here: an atomic may not exceed
+/// the target's largest atomic (4 bytes on 32-bit), and `usize` is `u64` on every
+/// 64-bit target. Only the low bits reach the name anyway.
+var darwin_seq: std.atomic.Value(usize) = .init(0);
 
 /// A writable shared buffer the daemon fills once, then freezes. After `freeze`
 /// the bytes are immutable and `fd` is ready to hand to the client; `close`
@@ -108,6 +112,11 @@ pub const Buffer = struct {
 /// The daemon has already frozen it, so the view is a stable immutable snapshot.
 /// Declines on the same terms as `create`; the client re-asks cold.
 pub fn mapReadonly(fd: std.posix.fd_t, len: usize) fault.Answer([]align(page) const u8) {
+    if (comptime !portal.resident_sessions) return .{ .declined = .capability_missing };
+    return mapReadonlyPosix(fd, len);
+}
+
+fn mapReadonlyPosix(fd: std.posix.fd_t, len: usize) fault.Answer([]align(page) const u8) {
     if (len == 0) return .{ .declined = .capability_missing };
     const m = std.posix.mmap(null, len, .{ .READ = true }, .{ .TYPE = .SHARED }, fd, 0) catch
         return .{ .declined = .capability_missing };
@@ -115,7 +124,7 @@ pub fn mapReadonly(fd: std.posix.fd_t, len: usize) fault.Answer([]align(page) co
 }
 
 pub fn unmap(m: []align(page) const u8) void {
-    std.posix.munmap(m);
+    if (comptime portal.resident_sessions) std.posix.munmap(m);
 }
 
 /// An anonymous, `len`-sized fd, or `null` when this platform won't give one.

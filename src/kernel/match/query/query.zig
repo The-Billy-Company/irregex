@@ -42,6 +42,7 @@ const Pcre = matcher_mod.Pcre;
 // here): the index-pruning SOUNDNESS derivation (`prefilter.zig`) and the rg
 // `-w` word-boundary rule (`word.zig`), re-exported below to keep `query.<name>`.
 const pf = @import("prefilter.zig");
+const cover = @import("cover.zig");
 const word = @import("word.zig");
 
 /// The three mode shapes the shared core answers: `files` (any line matches),
@@ -476,6 +477,13 @@ pub const CompiledQuery = struct {
 pub const wordOk = word.wordOk;
 pub const regexPrefilter = pf.regexPrefilter;
 pub const matcherPrefilter = pf.matcherPrefilter;
+// The conjunctive cover (`cover.zig`) — the multi-clause counterpart to the
+// single-literal `regexPrefilter`, for callers holding a trigram index that can
+// evaluate a boolean plan (`trigram.Index.queryPlan`).
+pub const CoverPlan = cover.Clause;
+pub const CoverLimits = cover.Limits;
+pub const coverPlan = cover.plan;
+pub const coverPlanSource = cover.planSource;
 pub const foldClosedWindow = pf.foldClosedWindow;
 pub const caselessVariants = pf.caselessVariants;
 pub const escapeLiteral = pf.escapeLiteral;
@@ -486,4 +494,6 @@ test {
     // explicit-wiring convention, without editing root.zig.
     _ = @import("prefilter.zig");
     _ = @import("word.zig");
+    _ = @import("cover.zig");
+    _ = @import("cover_test.zig");
 }

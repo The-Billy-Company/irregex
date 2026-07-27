@@ -131,8 +131,11 @@ pub fn renderLines(a: std.mem.Allocator, req: request.Request, docs: []const Doc
         // wiring them here IS the parity (the classifier admits only the default
         // separator/terminator, which `Opts`'s defaults already carry). The
         // inter-file `--` is drawn below, exactly as cold's serial `renderFile`.
-        .before = req.before,
-        .after = req.after,
+        // Clamped like `max_per_file` below: the wire carries these counts at the
+        // protocol's u64 width, and a context window wider than this address space
+        // is indistinguishable from "the whole file" anyway.
+        .before = std.math.cast(usize, req.before) orelse std.math.maxInt(usize),
+        .after = std.math.cast(usize, req.after) orelse std.math.maxInt(usize),
         .max_per_file = if (req.max_count) |m| std.math.cast(usize, m) orelse std.math.maxInt(usize) else 0,
         .max_per_file_set = req.max_count != null,
     };

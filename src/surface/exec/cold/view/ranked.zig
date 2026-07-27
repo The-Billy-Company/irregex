@@ -575,7 +575,7 @@ test "windowAround keeps a late match token inside the budget" {
     const win = windowAround(line, sp, snippet_budget);
     try t.expect(win.len <= snippet_budget);
     try t.expect(std.mem.indexOf(u8, win, "UniqueMangleTokenXYZ") != null);
-    // No span ⇒ prefix fallback (legacy behaviour for non-matching lines).
+    // No span ⇒ prefix fallback (legacy behavior for non-matching lines).
     try t.expectEqualStrings(line[0..snippet_budget], windowAround(line, null, snippet_budget));
     // Short lines pass through untouched.
     try t.expectEqualStrings("short", windowAround("short", sp, snippet_budget));

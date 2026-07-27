@@ -91,7 +91,9 @@ pub fn apply(a: std.mem.Allocator, cfg: *const Config, disk: []const u8, rel: []
 /// Transcode `buf` from the requested source encoding to UTF-8. The `auto`/`none`/
 /// UTF families are handled inline here: `auto` is the default BOM-sniff (shared
 /// verbatim with the untransformed read path via `legible.decodeBom`); `none`
-/// passes bytes through untouched; `utf8` strips a UTF-8 BOM; the UTF-16 variants
+/// passes bytes through untouched; `utf8` strips a UTF-8 BOM and replaces any
+/// ill-formed subpart with U+FFFD (an explicit label is a decode, not a
+/// passthrough — `legible.utf8Lossy`); the UTF-16 variants
 /// transcode (a bare `utf16` without an explicit endianness picks it from a
 /// leading BOM, else little-endian — encoding_rs's default). Every other WHATWG
 /// legacy encoding (the single-byte pages + the CJK multi-byte pages) routes to
@@ -100,7 +102,7 @@ pub fn applyEncoding(a: std.mem.Allocator, enc: args.Encoding, buf: []const u8) 
     return switch (enc) {
         .auto => legible.decodeBom(a, buf),
         .none => buf,
-        .utf8 => legible.stripBom(buf),
+        .utf8 => legible.utf8Lossy(a, legible.stripBom(buf)),
         .utf16le => legible.utf16ToUtf8(a, dropUtf16Bom(buf, .little), .little),
         .utf16be => legible.utf16ToUtf8(a, dropUtf16Bom(buf, .big), .big),
         .utf16 => blk: {
@@ -109,6 +111,16 @@ pub fn applyEncoding(a: std.mem.Allocator, enc: args.Encoding, buf: []const u8) 
         },
         else => encoding.decode(a, enc, buf),
     };
+}
+
+/// The body a *printer* sees. `--encoding none` is a byte passthrough end to
+/// end — rg sniffs no BOM under it, so a leading BOM belongs to the line it
+/// prints (measured: `rg -E none fn bom.txt` emits the three BOM bytes, the
+/// default sniff does not). Under every other encoding `applyEncoding` already
+/// consumed the BOM and a second strip is a no-op, so every emitter can route
+/// its bytes through this instead of stripping unconditionally.
+pub fn visibleBody(enc: args.Encoding, buf: []const u8) []const u8 {
+    return if (enc == .none) buf else legible.stripBom(buf);
 }
 
 /// Drop a UTF-16 BOM matching `endian` so the transcoder never emits a leading
@@ -338,4 +350,31 @@ test "applyEncoding: auto BOM-sniffs, none is identity, utf16le transcodes" {
     try t.expectEqualStrings("Hi", applyEncoding(a, .utf16le, "\xFF\xFEH\x00i\x00"));
     // bare utf16 defaults to LE when there's no BOM.
     try t.expectEqualStrings("Hi", applyEncoding(a, .utf16, "H\x00i\x00"));
+}
+
+test "applyEncoding utf8: one U+FFFD per ill-formed maximal subpart" {
+    const t = std.testing;
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const FFFD = "\u{FFFD}";
+    // Every expectation below was captured from live `rg -E utf8` on the same
+    // bytes (see the `-E utf-8` lane of bench/rgsuite/fuzz.py) — not derived
+    // from this implementation. An explicit label decodes; it never passes
+    // invalid bytes through.
+    try t.expectEqualStrings("hi", applyEncoding(a, .utf8, "\xEF\xBB\xBFhi")); // BOM still stripped
+    try t.expectEqualStrings("h\u{E9}llo", applyEncoding(a, .utf8, "h\u{E9}llo")); // valid: borrowed
+    // Bare continuations stand alone; each is its own subpart.
+    try t.expectEqualStrings(FFFD ++ FFFD ++ " x", applyEncoding(a, .utf8, "\x80\x81 x"));
+    // Truncated multi-byte leads: the whole valid prefix is ONE subpart.
+    try t.expectEqualStrings(FFFD ++ " x", applyEncoding(a, .utf8, "\xE6\x97 x"));
+    try t.expectEqualStrings(FFFD ++ " x", applyEncoding(a, .utf8, "\xF0\x9F\x98 x"));
+    // An out-of-range second byte ends the subpart at the lead, so the tail
+    // bytes are re-examined rather than swallowed: overlong and surrogate
+    // encodings each yield one U+FFFD per byte.
+    try t.expectEqualStrings(FFFD ++ FFFD ++ FFFD ++ " x", applyEncoding(a, .utf8, "\xE0\x80\x80 x"));
+    try t.expectEqualStrings(FFFD ++ FFFD ++ FFFD ++ " x", applyEncoding(a, .utf8, "\xED\xA0\x80 x"));
+    try t.expectEqualStrings(FFFD ++ FFFD ++ " x", applyEncoding(a, .utf8, "\xC0\xAF x"));
+    // 0xF5.. is past U+10FFFF and cannot lead at all.
+    try t.expectEqualStrings(FFFD ++ FFFD, applyEncoding(a, .utf8, "\xFE\xFF"));
 }

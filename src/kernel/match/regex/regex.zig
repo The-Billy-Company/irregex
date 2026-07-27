@@ -32,6 +32,17 @@
 pub const program = @import("linear/program/core.zig");
 pub const Regex = program.Regex;
 
+// ── The parsed shape + its lowering — what an INDEX PLANNER reasons over ──────
+// A prefilter planner (`kernel/match/query/cover.zig`) chooses which trigrams an
+// index may require by reading the pattern's parsed structure, and it must do so
+// under the SAME parse options the engine will lower with: a cover derived under
+// different fold / dotall / multiline settings than the matcher uses is unsound,
+// because it can require a trigram a real match never contains. Both halves of
+// that agreement are therefore part of this interface rather than something a
+// planner reaches past the seal to reconstruct.
+pub const syntax = @import("syntax/syntax.zig");
+pub const lower = @import("linear/program/lower.zig");
+
 // ── The engine-neutral match seam: linear arm or PCRE2 arm, one vocabulary ───
 pub const ladder = @import("linear/ladder/matcher.zig");
 pub const Matcher = ladder.Matcher;

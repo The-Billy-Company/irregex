@@ -56,6 +56,67 @@ pub fn utf16ToUtf8(a: std.mem.Allocator, bytes: []const u8, endian: std.builtin.
     return out.toOwnedSlice(a) catch oom();
 }
 
+/// The legal range of the SECOND byte for a UTF-8 lead byte, plus the sequence's
+/// total length — or null when the byte cannot lead one at all (`0xC0`/`0xC1`,
+/// the overlong two-byte leads; `0xF5`+, past U+10FFFF; a bare continuation).
+///
+/// This is Unicode 16 §3.9's well-formed-byte-sequence table (the one Rust's
+/// `run_utf8_validation` encodes), and the per-lead second-byte range is exactly
+/// what makes a maximal subpart computable: `0xE0 0x80` is not "a three-byte
+/// sequence with a bad tail" but a subpart that ENDS at the lead, so the `0x80`
+/// is re-examined on its own instead of being swallowed.
+fn leadRange(b: u8) ?struct { len: usize, lo: u8, hi: u8 } {
+    return switch (b) {
+        0x00...0x7F => .{ .len = 1, .lo = 0, .hi = 0 },
+        0xC2...0xDF => .{ .len = 2, .lo = 0x80, .hi = 0xBF },
+        0xE0 => .{ .len = 3, .lo = 0xA0, .hi = 0xBF }, // no overlong three-byte
+        0xE1...0xEC, 0xEE, 0xEF => .{ .len = 3, .lo = 0x80, .hi = 0xBF },
+        0xED => .{ .len = 3, .lo = 0x80, .hi = 0x9F }, // no UTF-16 surrogate
+        0xF0 => .{ .len = 4, .lo = 0x90, .hi = 0xBF }, // no overlong four-byte
+        0xF1...0xF3 => .{ .len = 4, .lo = 0x80, .hi = 0xBF },
+        0xF4 => .{ .len = 4, .lo = 0x80, .hi = 0x8F }, // no codepoint past U+10FFFF
+        else => null,
+    };
+}
+
+/// The next sequence's length and whether it is well-formed. When it is not,
+/// `len` is the MAXIMAL SUBPART — the longest prefix that could still have grown
+/// into a valid sequence — so exactly one U+FFFD stands in for the whole subpart
+/// (Unicode 16 §3.9, "U+FFFD Substitution of Maximal Subparts").
+fn nextSequence(b: []const u8) struct { len: usize, ok: bool } {
+    const r = leadRange(b[0]) orelse return .{ .len = 1, .ok = false };
+    if (r.len == 1) return .{ .len = 1, .ok = true };
+    if (b.len < 2 or b[1] < r.lo or b[1] > r.hi) return .{ .len = 1, .ok = false };
+    var k: usize = 2;
+    while (k < r.len) : (k += 1)
+        if (b.len <= k or b[k] < 0x80 or b[k] > 0xBF) return .{ .len = k, .ok = false };
+    return .{ .len = r.len, .ok = true };
+}
+
+/// Sanitize `buf` to well-formed UTF-8, each ill-formed maximal subpart replaced
+/// by U+FFFD — the "replacement" error mode encoding_rs decodes in, and
+/// therefore what ripgrep's `-E utf-8` prints where the file's bytes are not
+/// actually UTF-8. Without this an explicit UTF-8 label was a pure passthrough
+/// and gist emitted the raw invalid bytes where rg emitted `�`; the divergence
+/// was found differentially by `bench/rgsuite/fuzz.py` on a corpus of lone
+/// continuation bytes.
+///
+/// Borrows when the bytes are already valid — which is the overwhelming case for
+/// an explicit `-E utf-8`, so the common path costs one validation pass and no
+/// allocation. Only a file that is genuinely ill-formed pays a copy.
+pub fn utf8Lossy(a: std.mem.Allocator, buf: []const u8) []const u8 {
+    if (std.unicode.utf8ValidateSlice(buf)) return buf;
+    var out: std.ArrayList(u8) = .empty;
+    out.ensureTotalCapacity(a, buf.len) catch oom();
+    var i: usize = 0;
+    while (i < buf.len) {
+        const seq = nextSequence(buf[i..]);
+        if (seq.ok) out.appendSlice(a, buf[i..][0..seq.len]) catch oom() else out.appendSlice(a, "\u{FFFD}") catch oom();
+        i += seq.len;
+    }
+    return out.toOwnedSlice(a) catch oom();
+}
+
 /// rg line semantics: `\n` terminates; trailing `\n` yields no phantom empty
 /// line; content after the last `\n` is still a line. `\r` is KEPT (ripgrep's
 /// default without `--crlf`). Pre-sized from one `\n` count pass (same idiom

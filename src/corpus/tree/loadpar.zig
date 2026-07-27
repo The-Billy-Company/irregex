@@ -42,6 +42,7 @@ const corpus = @import("corpus.zig");
 const paths = @import("../scope/paths.zig");
 const assay = @import("../../assay/assay.zig");
 const fault = @import("../../fault.zig");
+const portal = @import("../../portal.zig");
 
 const Dir = std.Io.Dir;
 const joinPath = paths.join;
@@ -208,11 +209,11 @@ fn processDir(w: *Worker, a: std.mem.Allocator, task: DirTask, local: *std.Array
     // skipped (best-effort walk-on); the serial build surfaces it, but a
     // mid-build unreadable directory is pathological and a silent prune keeps
     // the parallel result a subset never a crash.
-    const fd = std.posix.openat(AT.FDCWD, task.disk, .{ .ACCMODE = .RDONLY, .DIRECTORY = true }, 0) catch return;
+    const fd = portal.openDir(portal.cwd(), task.disk) catch return;
     var dir = Dir{ .handle = fd };
     var closed = false;
     defer if (!closed) {
-        _ = std.posix.system.close(dir.handle);
+        portal.close(dir.handle);
     };
 
     // List once — the names tell us which ignore files exist here, so the chain
@@ -242,9 +243,9 @@ fn processDir(w: *Worker, a: std.mem.Allocator, task: DirTask, local: *std.Array
         if (bulkstat.supported) {
             // Bulk listing shares the fd offset with readdir — reopen a fresh
             // handle before the portable fallback (same as the search walk).
-            _ = std.posix.system.close(dir.handle);
+            portal.close(dir.handle);
             closed = true;
-            const fd2 = std.posix.openat(AT.FDCWD, task.disk, .{ .ACCMODE = .RDONLY, .DIRECTORY = true }, 0) catch return;
+            const fd2 = portal.openDir(portal.cwd(), task.disk) catch return;
             dir = Dir{ .handle = fd2 };
             closed = false;
         }
@@ -261,7 +262,7 @@ fn processDir(w: *Worker, a: std.mem.Allocator, task: DirTask, local: *std.Array
     // This directory's own ignore rules — unless the frozen base already holds
     // them (the CWD/root tier `Ignore.init` loaded, keyed by stripped rel).
     var chain = task.chain;
-    if (!ig.o.no_ignore and (present.gitignore or present.dotignore or present.rgignore) and
+    if (!ig.o.no_ignore and (present.gitignore or present.dotignore or present.rgignore or present.dotgit) and
         !ig.loaded.contains(task.rel) and !ig.loaded.contains(stripDot(task.rel)))
         chain = try ignore.loadNode(ig, a, task.chain, task.disk, task.rel, present);
 
@@ -296,14 +297,16 @@ fn handleEntry(w: *Worker, a: std.mem.Allocator, dirfd: std.posix.fd_t, task: Di
     w.bytes += buf.len;
 }
 
-/// The build's skip decision for one entry: the frozen base verdict
-/// (`decideAt`), overridden by the per-directory chain, then the shared
-/// `.git`/hidden folding — the corpus walk uses default `Options`, so there is
-/// no `-g`/`-t` whitelist to thread (both false, as `haystack.Walker` passes).
+/// The build's skip decision for one entry: the frozen base verdict, overridden
+/// by the per-directory chain — both scoped to the repository that encloses this
+/// entry (`ignore.boundary`) — then the shared `.git`/hidden folding. The corpus
+/// walk uses default `Options`, so there is no `-g`/`-t` whitelist to thread
+/// (both false, as `haystack.Walker` passes).
 fn shouldSkip(ig: *const ignore.Ignore, chain: ?*const ignore.IgNode, a: std.mem.Allocator, root_depth: usize, rel: []const u8, is_dir: bool, basename: []const u8) bool {
-    var v = ig.decideAt(rel, is_dir, root_depth);
-    ignore.applyChain(chain, a, ig.o.ignore_case_insensitive, root_depth, rel, is_dir, &v);
-    return ig.skipFromVerdict(v, is_dir, basename, false, false);
+    const bound = ignore.boundary(ig, chain, rel);
+    var v = ignore.baseVerdict(ig, null, rel, is_dir, root_depth, bound);
+    ignore.applyChain(chain, a, ig.o.ignore_case_insensitive, root_depth, rel, is_dir, bound, &v);
+    return ig.skipFromVerdict(v, basename, false, false);
 }
 
 /// Read `name` (under the open `dirfd`) as a corpus member — the raw
@@ -312,12 +315,12 @@ fn shouldSkip(ig: *const ignore.Ignore, chain: ?*const ignore.IgNode, a: std.mem
 /// (`readFileAlloc(.limited)`'s `error.StreamTooLong` boundary — "reached or
 /// exceeded"), or binary (`corpus.isBinary`).
 fn readMemberRaw(a: std.mem.Allocator, dirfd: std.posix.fd_t, name: []const u8) Oom!?[]const u8 {
-    const fd = std.posix.openat(dirfd, name, .{ .ACCMODE = .RDONLY }, 0) catch return null;
-    defer _ = std.posix.system.close(fd);
+    const fd = portal.openFile(dirfd, name) catch return null;
+    defer portal.close(fd);
     var buf: std.ArrayList(u8) = .empty;
     var tmp: [64 * 1024]u8 = undefined;
     while (true) {
-        const r = std.posix.read(fd, &tmp) catch return null;
+        const r = portal.read(fd, &tmp) catch return null;
         if (r == 0) break;
         try buf.appendSlice(a, tmp[0..r]);
         if (buf.items.len >= corpus.per_file_cap) return null; // StreamTooLong parity

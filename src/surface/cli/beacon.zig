@@ -43,6 +43,7 @@
 
 const std = @import("std");
 const assay = @import("../../assay/assay.zig");
+const portal = @import("../../portal.zig");
 
 const Allocator = std.mem.Allocator;
 const Environ = std.process.Environ.Map;
@@ -372,12 +373,12 @@ fn fork(env: *const Environ) ?[]const u8 {
 /// link instead of killing the search that produced it.
 fn hostname(a: Allocator, io: std.Io, bin: ?[]const u8) []const u8 {
     const cmd = bin orelse {
-        var buf: [std.posix.HOST_NAME_MAX]u8 = undefined;
-        return a.dupe(u8, std.posix.gethostname(&buf) catch return "") catch oom();
+        var buf: [portal.host_name_max]u8 = undefined;
+        return a.dupe(u8, portal.hostName(&buf) orelse return "") catch oom();
     };
     var child = std.process.spawn(io, .{ .argv = &.{cmd}, .stdout = .pipe, .stderr = .ignore }) catch return "";
     defer child.kill(io);
-    var buf: [std.posix.HOST_NAME_MAX]u8 = undefined;
+    var buf: [portal.host_name_max]u8 = undefined;
     var out = child.stdout.?.readerStreaming(io, &buf);
     const said = out.interface.allocRemaining(a, .limited(buf.len)) catch return "";
     return std.mem.trim(u8, said, " \t\r\n");
@@ -508,7 +509,11 @@ pub fn resolve(a: Allocator, r: Request, io: std.Io, env: *const Environ) ?Beaco
         if (w.when) |x| when = x;
         if (w.format) |f| spec = f;
     };
-    if (when == .never or r.reader == .records) return null;
+    // Answered before anything is probed, but still answered: a lit lens that
+    // says nothing reads as "nothing to report", which is the one thing it must
+    // never mean. Every run that lights it gets exactly one line.
+    if (r.reader == .records) return trace("output is a byte protocol", null);
+    if (when == .never) return trace("turned off", null);
     if (when == .auto) {
         if (r.reader == .parser) return trace("machine-shaped output", null);
         if (!(std.Io.File.stdout().isTty(io) catch false)) return trace("stdout is not a terminal", null);
@@ -536,7 +541,14 @@ pub fn resolve(a: Allocator, r: Request, io: std.Io, env: *const Environ) ?Beaco
 /// A malformed value counts: it earns a note from `resolve`, and only the cold
 /// path has one to give. Staying silent about a misspelled alias *and* printing
 /// no links is the exact confusion this layer exists to remove.
+///
+/// So does a lit `link` lens, for the same reason one step further out. Asking
+/// `GIST_TRACE=link` why a run didn't link is a debugging act, and the answer
+/// lives in `resolve` — which a warm answer never calls. Without this the lens
+/// is silent in its single most common case (no flag, no env, output piped),
+/// which is worse than having no lens: it reads as "nothing to report."
 pub fn forcesLinks(a: Allocator) bool {
+    if (assay.lit(.link)) return true;
     const raw = assay.envSpan("GIST_HYPERLINK") orelse return false;
     const w = wish(a, raw);
     return w.bad != null or w.when == .always;

@@ -34,6 +34,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const haystack = @import("haystack.zig");
 const assay = @import("../../assay/assay.zig");
+const portal = @import("../../portal.zig");
 
 pub const supported = builtin.os.tag == .macos;
 
@@ -246,7 +247,7 @@ fn tracePhase(io: std.Io, name: []const u8, span: *assay.Span) void {
 
 fn cwdDev() ?u64 {
     var st: std.posix.Stat = undefined;
-    if (std.c.fstatat(std.posix.AT.FDCWD, ".", &st, 0) != 0) return null;
+    if (std.c.fstatat(portal.cwd(), ".", &st, 0) != 0) return null;
     return @bitCast(@as(i64, st.dev));
 }
 
@@ -362,8 +363,8 @@ pub fn replay(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, tok
     var pathbuf: [std.fs.max_path_bytes]u8 = undefined;
     for (roots, prefixes) |root, *rp| {
         const rootz = aa.dupeZ(u8, root) catch return false;
-        const resolved = std.c.realpath(rootz, &pathbuf) orelse return false;
-        rp.* = .{ .rel = root, .abs = aa.dupe(u8, std.mem.span(resolved)) catch return false };
+        const resolved = portal.realpath(rootz, &pathbuf) orelse return false;
+        rp.* = .{ .rel = root, .abs = aa.dupe(u8, resolved) catch return false };
     }
 
     // The watched-paths CFArray (the array retains; drop our refs after).

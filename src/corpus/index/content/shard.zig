@@ -40,6 +40,7 @@ const corpus_mod = @import("../../tree/corpus.zig");
 const bulkstat = @import("../../tree/bulkstat.zig");
 const frame = @import("../frame/frame.zig");
 const signet = @import("../../../kernel/primitives/signet.zig");
+const portal = @import("../../../portal.zig");
 
 /// Open-addressing path→doc table (Wyhash, linear probe, one `slots` alloc).
 /// The shard's own copy of the engine's `IndexedPaths` shape — kept here so the
@@ -115,7 +116,9 @@ pub const View = struct {
     pub fn slice(v: *const View, rel: []const u8, mtime_ns: ?i128, ctime_ns: ?i128) ?[]const u8 {
         if (bulkstat.needsLiveRead(v.anchor_ns, mtime_ns, ctime_ns)) return null;
         const doc = v.indexed.get(v.paths.items, rel) orelse return null;
-        return v.content[v.offsets[doc]..v.offsets[doc + 1]];
+        // `decode` proved every offset ≤ `content.len`, itself a `usize`, so
+        // narrowing here cannot be out of range on any address width.
+        return v.content[@intCast(v.offsets[doc])..@intCast(v.offsets[doc + 1])];
     }
 
     /// Prove the mapped bytes are the bytes `build` wrote.
@@ -134,7 +137,7 @@ pub const View = struct {
     pub fn deinit(v: *View) void {
         v.indexed.deinit();
         v.paths.deinit(v.gpa);
-        std.posix.munmap(v.map);
+        portal.unmap(v.map);
     }
 };
 
@@ -170,7 +173,12 @@ fn decode(gpa: std.mem.Allocator, map: frame.Mapping) !View {
     const anchor_ns: i128 = std.mem.readInt(i64, map[8..16], .little);
     const ndocs = std.mem.readInt(u32, map[16..20], .little);
     const names_len = std.mem.readInt(u32, map[20..24], .little);
-    const content_len = std.mem.readInt(u64, map[24..32], .little);
+    // The header records the content span as u64 (the format is width-neutral),
+    // but the shard is consumed as a mapping — so on a 32-bit target a value
+    // past `usize` is not a truncation to paper over, it is a shard this address
+    // space cannot map. Refuse it here like any other layout the loader can't
+    // honor, and every later span arithmetic is addressable by construction.
+    const content_len = std.math.cast(usize, std.mem.readInt(u64, map[24..32], .little)) orelse return error.Corrupt;
     if (ndocs == 0) return error.Corrupt;
 
     const offsets_bytes = (@as(usize, ndocs) + 1) * @sizeOf(u64);
@@ -181,8 +189,9 @@ fn decode(gpa: std.mem.Allocator, map: frame.Mapping) !View {
 
     // Offsets partition `content` exactly: monotone non-decreasing, bracketed
     // by 0 and content_len — so every `slice` sub-range is provably in bounds.
-    if (offsets[0] != 0 or offsets[ndocs] != content_len) return error.Corrupt;
-    for (1..offsets.len) |i| if (offsets[i] < offsets[i - 1] or offsets[i] > content_len) return error.Corrupt;
+    const content_span: u64 = content_len; // offsets are u64 by format; widen once
+    if (offsets[0] != 0 or offsets[ndocs] != content_span) return error.Corrupt;
+    for (1..offsets.len) |i| if (offsets[i] < offsets[i - 1] or offsets[i] > content_span) return error.Corrupt;
 
     var paths = try frame.parsePathTable(gpa, names);
     errdefer paths.deinit(gpa);

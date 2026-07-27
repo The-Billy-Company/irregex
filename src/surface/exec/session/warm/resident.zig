@@ -190,8 +190,12 @@ pub const ResidentSession = struct {
     /// because the daemon's poll thread samples them (for its operator `note`
     /// line) while a worker mutates them under the write lock (the increments
     /// themselves are serialized by that lock; the atomicity is for the reader).
-    scoped_reconciles: std.atomic.Value(u64) = .init(0),
-    full_reconciles: std.atomic.Value(u64) = .init(0),
+    /// Pointer-width for the same reason as `Seqlock.seq` — an atomic must fit
+    /// the target's largest atomic, 4 bytes on 32-bit — and identical to `u64`
+    /// on every 64-bit target. A per-process reconcile tally, so 32 bits is not
+    /// a range anyone reaches.
+    scoped_reconciles: std.atomic.Value(usize) = .init(0),
+    full_reconciles: std.atomic.Value(usize) = .init(0),
 
     /// macOS only: the live corpus keys carrying a byte ≥ 0x80 (owned dupes,
     /// independent of base/overlay key lifetimes). A scoped reconcile on a
@@ -234,8 +238,10 @@ pub const ResidentSession = struct {
     /// it declines the query (→ certified cold path), never a wrong answer.
     query_budget_ns: i128 = 0,
     /// Observability: how many queries the budget declined. Atomic because the
-    /// abort can fire inside a parallel fold/stream shard.
-    budget_aborts: std.atomic.Value(u64) = .init(0),
+    /// abort can fire inside a parallel fold/stream shard. Pointer-width for the
+    /// same reason as the reconcile tallies above — an atomic may not exceed the
+    /// target's largest atomic — and identical to `u64` on every 64-bit target.
+    budget_aborts: std.atomic.Value(usize) = .init(0),
 
     pub fn init(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !ResidentSession {
         var roots_arena = std.heap.ArenaAllocator.init(gpa);
@@ -347,7 +353,13 @@ pub const ResidentSession = struct {
     /// The watcher lost event coverage it cannot win back (inotify queue
     /// overflow, an unwatchable new directory): permanently disable the clean
     /// fast path. Every later query reconciles — slower, never stale.
+    ///
+    /// The ledger goes blind with it. Reconciling protects the QUERY, which
+    /// re-derives its answer from the tree; it does nothing for a HELD answer,
+    /// which is trusted purely on the epoch standing still — and a stamp fed
+    /// by events that stopped arriving stands still for the wrong reason.
     pub fn markDoubtForever(self: *ResidentSession) void {
+        self.annals.goBlind();
         self.seqlock.markDoubtForever();
     }
 
@@ -368,6 +380,12 @@ pub const ResidentSession = struct {
     pub fn disarmWatcher(self: *ResidentSession) void {
         self.seqlock.disarm();
         self.dirty_log.disarmExact();
+        // The shed window itself is already fail-closed — no descriptor means
+        // no `flushSync`, so no epoch is vouched while nobody watches. What
+        // outlives the window is an answer held BEFORE it, which a re-arm
+        // would hand back against a stamp that never counted the unwatched
+        // edits. Lapsing the ledger retires those answers here.
+        self.annals.lapse();
         self.full_pass_done = false;
     }
 

@@ -9,13 +9,15 @@
 //! regex engine (`matchSpan` for spans, capture VM for `-r`) and `output`'s
 //! shared template expander, so there is no second matcher or replacer.
 //!
-//! The `stats` timing fields (`elapsed`, `elapsed_total`) now carry the run's
-//! real monotonic time (threaded in as an `assay.Duration`); `bytes_printed`
-//! stays a fixed placeholder (ripgrep-printer-internal). Both remain
-//! inherently non-reproducible, so the differential harness normalizes them on
-//! both sides exactly as it already does for `--stats` seconds. Every
-//! correctness field (`matches`, `matched_lines`, `searches`, `bytes_searched`,
-//! and the whole match/submatch structure) is emitted for real.
+//! The `stats` timing fields (`elapsed`, `elapsed_total`) carry the run's real
+//! monotonic time (threaded in as an `assay.Duration`); inherently
+//! non-reproducible, so the differential harness normalizes them on both sides
+//! exactly as it already does for `--stats` seconds. `bytes_printed` is real
+//! too now — measured from the `begin` mark to just before the `end` record,
+//! which is exactly the write count rg's printer has tallied at that point (the
+//! fuzzer caught the former fixed-0 placeholder). Every correctness field
+//! (`matches`, `matched_lines`, `searches`, `bytes_searched`, and the whole
+//! match/submatch structure) is emitted for real.
 
 const std = @import("std");
 const corpus_mod = @import("../../../../corpus/tree/corpus.zig");
@@ -41,7 +43,8 @@ pub const File = struct { path: []const u8, body: []const u8, explicit: bool = f
 /// engine (`engine/swarm/`) accumulates one per worker over its streamed
 /// per-file records, then folds them for the single trailing `summary`. The JSON
 /// summary reads `files_searched`/`files_with_match` under rg's `searches`/
-/// `searches_with_match` names and never touches `bytes_printed`.
+/// `searches_with_match` names, and sums `bytes_printed` from the per-file `end`
+/// records (so the worker fold is a plain `fold`, not `foldExcept`).
 pub const Stats = stats.Stats;
 
 /// Emit the full `--json` stream for `files` into `out`. Returns the final tally
@@ -119,8 +122,7 @@ pub fn emitOne(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher
         }
     }
     st.bump(.files_searched);
-    st.add(.bytes_searched, searched);
-    emitFile(a, out, re, ss, caps, o, eff, st, bin, searched, needle);
+    st.add(.bytes_searched, emitFile(a, out, re, ss, caps, o, eff, st, bin, searched, needle));
 }
 
 fn fileWeight(_: void, f: File) usize {
@@ -338,9 +340,9 @@ fn soloShard(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.ArrayList(u
     st.set(.matches, fm);
     if (o.quiet) return st; // --quiet: tally only, suppress the record stream
     const pj = pathData(a, f.path);
-    begin(a, out, pj);
+    const mark = begin(a, out, pj);
     for (shards) |*sh| out.appendSlice(a, sh.buf.items) catch oom();
-    endRecord(a, out, pj, f.body.len, fml, fm, null);
+    endRecord(a, out, pj, &st, mark, f.body.len, fml, fm, null);
     return st;
 }
 
@@ -382,7 +384,7 @@ fn soloShardRecords(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Ma
         const le = simd.memchr(body, ls, '\n') orelse body.len;
         const content = body[ls..le];
         const view = if (o.crlf) std.mem.trimEnd(u8, content, "\r") else content;
-        const spans = matchSpans(a, re, ss, o, view);
+        const spans = matchSpans(a, re, ss, o, view, le < body.len);
         if (spans.len != 0) { // solo path is non-inverted
             if (!o.quiet) {
                 lineno += simd.countByte(body[counted..ls], '\n');
@@ -402,13 +404,26 @@ fn soloShardRecords(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Ma
     fm.* = m_ct;
 }
 
-// `spans` are a match line's non-overlapping spans, enumerated ONCE at
-// classification and reused for both the `matches` tally and `submatches`
-// emission (no second/third engine pass per matched line). Empty for context
-// (`kind` 1) and inverted match lines, which carry no submatch structure.
+// `spans` are the line's non-overlapping spans, enumerated ONCE at classification
+// and reused for both the `matches` tally and `submatches` emission (no second/
+// third engine pass per line). An inverted match line has none by construction; a
+// `-v` CONTEXT line does carry them, because rg's JSON paints submatches on every
+// record it prints, context included.
 const Line = struct { off: usize, view: []const u8, text: []const u8, kind: u8 = 0, spans: []const Matcher.Span = &.{} }; // kind: 0 none,1 ctx,2 match
 
-fn emitFile(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, ss: *Matcher.SpanSim, caps: ?*Caps, o: Opts, f: File, st: *Stats, bin: ?usize, searched: usize, needle: ?simd.Gate) void {
+/// Did this line carry a terminator in the file? `text` is the line AS rg reports
+/// it (terminator included), so its last byte answers — and `output.Rows` needs
+/// the answer to decide whether the zero-width match at the end of the content
+/// exists (it sits before the `\n`, so the file's unterminated tail has none).
+fn terminatedLine(o: Opts, ln: Line) bool {
+    return ln.text.len != 0 and ln.text[ln.text.len - 1] == o.term();
+}
+
+/// Returns the bytes this file actually contributed to `bytes_searched` — the
+/// whole body, or, when `-m` stopped the walk, only what rg's searcher read
+/// before it quit (the same rule `read/stats.zig`'s `fileMatchStats` applies to
+/// the text `--stats` block).
+fn emitFile(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, ss: *Matcher.SpanSim, caps: ?*Caps, o: Opts, f: File, st: *Stats, bin: ?usize, searched: usize, needle: ?simd.Gate) usize {
     if (ml.sliceModel(re, o)) return emitFileMulti(a, out, re, caps, o, f, st, bin, searched);
     // Split into lines, keeping each line's file offset and its raw text (with the
     // trailing terminator, as ripgrep reports it in `lines.text`). In a binary
@@ -448,15 +463,33 @@ fn emitFile(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, s
     // `submatches` emission below — no redundant re-run of the engine.
     const cand = litCandidates(a, re, needle, o, f.body, lines.items);
     var file_matches: usize = 0;
+    // Index of the line that reached `-m`, once one has: rg stops there but still
+    // searches that match's after-context window, and a line inside the window
+    // that matches is printed as a MATCH (never a context line) — the record-stream
+    // twin of `output/grid.zig`'s `capWindow`. The window does not chain.
+    var cap_at: ?usize = null;
+    // End offset (terminator included) of the last line printed AS a match — the
+    // boundary rg reports as `bytes_searched` when the cap stopped the walk.
+    var last_hit_end: usize = 0;
     for (lines.items, 0..) |*ln, i| {
         const gate_ok = if (needle) |g| g.in(ln.view) else if (cand) |c| c[i] else true;
-        const spans = if (gate_ok) matchSpans(a, re, ss, o, ln.view) else &.{};
+        const spans = if (gate_ok) matchSpans(a, re, ss, o, ln.view, terminatedLine(o, ln.*)) else &.{};
+        // Kept on EVERY line, not just a match: rg's JSON paints `submatches` on
+        // whatever line it prints, so a `-v` context record (which is by
+        // definition a line the pattern matched) carries the pattern's spans.
+        ln.spans = spans;
         const has = spans.len > 0;
         if (has == o.invert) continue;
-        if (o.max_per_file != 0 and file_matches >= o.max_per_file) break;
+        if (cap_at) |last| {
+            if (o.after == 0 or i > last + o.after) break;
+        }
         file_matches += 1;
         ln.kind = 2;
-        ln.spans = spans;
+        last_hit_end = ln.off + ln.text.len;
+        if (o.max_per_file != 0 and file_matches >= o.max_per_file and cap_at == null) cap_at = i;
+        // A match found INSIDE the cap's window opens no window of its own, so it
+        // paints no context (rg's stream ends at the capping match's window).
+        if (cap_at) |last| if (last != i) continue;
         var b: usize = 0;
         while (b < o.before and i >= b + 1) : (b += 1) if (lines.items[i - b - 1].kind == 0) {
             lines.items[i - b - 1].kind = 1;
@@ -466,27 +499,35 @@ fn emitFile(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, s
             lines.items[i + af].kind = 1;
         };
     }
-    if (file_matches == 0) return;
+    if (file_matches == 0) return searched;
+    // `-m` quits at the Nth match, so only the bytes through the last printed
+    // match were read — unless its after-context window ran off EOF, where the
+    // searcher reached the end anyway and rg reports the whole body.
+    const eff = if (cap_at) |last| blk: {
+        if (o.after != 0 and last + o.after >= lines.items.len) break :blk searched;
+        break :blk @min(searched, last_hit_end);
+    } else searched;
 
     const fml = countMatched(o, lines.items);
     const fm = countMatches(lines.items);
     st.bump(.files_with_match);
     st.add(.matched_lines, fml);
     st.add(.matches, fm);
-    if (o.quiet) return; // --quiet: tally stats, suppress the record stream
+    if (o.quiet) return eff; // --quiet: tally stats, suppress the record stream
 
     const pj = pathData(a, f.path);
-    begin(a, out, pj);
+    const mark = begin(a, out, pj);
 
     for (lines.items, 1..) |ln, lineno| {
         if (ln.kind == 0) continue;
         const is_match = ln.kind == 2;
         recordOpen(a, out, if (is_match) "match" else "context", pj, ln.text, lineno, ln.off);
-        if (is_match and !o.invert) emitSubmatches(a, out, caps, o, ln.view, ln.spans);
+        emitSubmatches(a, out, caps, o, ln.view, ln.spans);
         add(a, out, "]}}\n");
     }
 
-    endRecord(a, out, pj, searched, fml, fm, bin);
+    endRecord(a, out, pj, st, mark, eff, fml, fm, bin);
+    return eff;
 }
 
 /// The `--json` record stream under `-U`/`--multiline`: one `match` record per
@@ -496,15 +537,21 @@ fn emitFile(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, s
 /// records for `-A/-B/-C` windows, and an `end` with the file's tallies. Empty
 /// matches never form a submatch (rg's JSON only reports real spans). Mirrors
 /// `output.Emitter.buffer`'s model via `multiline.zig`, so text and JSON agree.
-fn emitFileMulti(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, caps: ?*Caps, o: Opts, f: File, st: *Stats, bin: ?usize, searched: usize) void {
+/// Returns the file's `bytes_searched` — the whole body unless `-m` was actually
+/// reached, where rg stops at the Nth match's last line (its after-context window
+/// does NOT extend the read here, unlike the line model).
+fn emitFileMulti(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, caps: ?*Caps, o: Opts, f: File, st: *Stats, bin: ?usize, searched: usize) usize {
     const body = f.body;
     const lines = ml.splitLines(a, body, o.term());
     // Non-empty spans only — a submatch is a real, painted span in rg's JSON.
     var spans: std.ArrayList(ml.Span) = .empty;
     for (ml.collect(a, re, o, body)) |sp| if (sp.end > sp.start) spans.append(a, sp) catch oom();
 
-    if (o.invert) return emitFileMultiInvert(a, out, o, f, lines, spans.items, st, bin, searched);
-    if (spans.items.len == 0) return;
+    if (o.invert) {
+        emitFileMultiInvert(a, out, o, f, lines, spans.items, st, bin, searched);
+        return searched;
+    }
+    if (spans.items.len == 0) return searched;
 
     // Coalesce spans into line-contiguous blocks (rg's `--`-free grouping) —
     // the shared `ml.blocks` sink-block model.
@@ -512,10 +559,14 @@ fn emitFileMulti(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Match
 
     const fml = ml.countMatchedLines(lines, spans.items);
     const fm = spans.items.len;
+    const eff = if (o.max_per_file != 0 and fml >= o.max_per_file)
+        @min(searched, lines[blocks[blocks.len - 1].last].term_end)
+    else
+        searched;
     st.bump(.files_with_match);
     st.add(.matched_lines, fml);
     st.add(.matches, fm);
-    if (o.quiet) return;
+    if (o.quiet) return eff;
 
     // Per-line record plan: which block starts here, and which lines are `-A/-B/-C`
     // context (never a covered line).
@@ -541,7 +592,7 @@ fn emitFileMulti(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Match
     }
 
     const pj = pathData(a, f.path);
-    begin(a, out, pj);
+    const mark = begin(a, out, pj);
     var k: usize = 0;
     while (k < lines.len) {
         if (starts[k]) |bi| {
@@ -553,7 +604,8 @@ fn emitFileMulti(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Match
         if (ctx[k]) emitLineRecord(a, out, "context", pj, k + 1, lines[k].start, body[lines[k].start..lines[k].term_end]);
         k += 1;
     }
-    endRecord(a, out, pj, searched, fml, fm, bin);
+    endRecord(a, out, pj, st, mark, eff, fml, fm, bin);
+    return eff;
 }
 
 /// `-v` under `-U --json`: a `match` record (empty submatches) for each physical
@@ -572,12 +624,12 @@ fn emitFileMultiInvert(a: std.mem.Allocator, out: *std.ArrayList(u8), o: Opts, f
     st.add(.matched_lines, printed);
     if (o.quiet) return;
     const pj = pathData(a, f.path);
-    begin(a, out, pj);
+    const mark = begin(a, out, pj);
     for (lines, 0..) |ln, k| {
         if (covered[k]) continue;
         emitLineRecord(a, out, "match", pj, k + 1, ln.start, f.body[ln.start..ln.term_end]);
     }
-    endRecord(a, out, pj, searched, printed, 0, bin);
+    endRecord(a, out, pj, st, mark, searched, printed, 0, bin);
 }
 
 /// The `{"type":"<kind>","data":{"path":<path_json>` opener every record shares.
@@ -603,9 +655,15 @@ fn recordOpen(a: std.mem.Allocator, out: *std.ArrayList(u8), kind: []const u8, p
     add(a, out, ",\"submatches\":[");
 }
 
-fn begin(a: std.mem.Allocator, out: *std.ArrayList(u8), path_json: []const u8) void {
+/// Opens a file's record run and returns the buffer mark it started at, so the
+/// `end` record can report rg's `bytes_printed`: the bytes this file's `begin` +
+/// line records occupy, NOT counting the `end` record itself (rg's printer tallies
+/// its write count before encoding the summary object that carries it).
+fn begin(a: std.mem.Allocator, out: *std.ArrayList(u8), path_json: []const u8) usize {
+    const at = out.items.len;
     openData(a, out, "begin", path_json);
     add(a, out, "}}\n");
+    return at;
 }
 
 /// A whole-BLOCK `match` record: `lines.text` spans every physical line of the
@@ -624,13 +682,19 @@ fn emitLineRecord(a: std.mem.Allocator, out: *std.ArrayList(u8), kind: []const u
     add(a, out, "]}}\n");
 }
 
-fn endRecord(a: std.mem.Allocator, out: *std.ArrayList(u8), path_json: []const u8, bytes: usize, matched_lines: usize, matches: usize, bin: ?usize) void {
+/// `mark` is the `begin`-time buffer offset; the printed byte count is measured
+/// from it and folded into `st` so the trailing `summary` sums the same field.
+fn endRecord(a: std.mem.Allocator, out: *std.ArrayList(u8), path_json: []const u8, st: *Stats, mark: usize, bytes: usize, matched_lines: usize, matches: usize, bin: ?usize) void {
+    const printed = out.items.len - mark;
+    st.add(.bytes_printed, printed);
     openData(a, out, "end", path_json);
     add(a, out, ",\"binary_offset\":");
     if (bin) |q| writeUint(a, out, q) else add(a, out, "null");
     add(a, out, ",\"stats\":{\"elapsed\":{\"secs\":0,\"nanos\":0,\"human\":\"0.000000s\"},\"searches\":1,\"searches_with_match\":1,\"bytes_searched\":");
     writeUint(a, out, bytes);
-    add(a, out, ",\"bytes_printed\":0,\"matched_lines\":");
+    add(a, out, ",\"bytes_printed\":");
+    writeUint(a, out, printed);
+    add(a, out, ",\"matched_lines\":");
     writeUint(a, out, matched_lines);
     add(a, out, ",\"matches\":");
     writeUint(a, out, matches);
@@ -675,7 +739,7 @@ pub fn summary(a: std.mem.Allocator, out: *std.ArrayList(u8), st: Stats, elapsed
     const secs: u64 = @intCast(@divFloor(total, std.time.ns_per_s));
     const sub: u64 = @intCast(@mod(total, std.time.ns_per_s));
     const human = @as(f64, @floatFromInt(total)) / 1e9;
-    out.print(a, "{{\"data\":{{\"elapsed_total\":{{\"human\":\"{d:.6}s\",\"nanos\":{d},\"secs\":{d}}},\"stats\":{{\"bytes_printed\":0,\"bytes_searched\":{d},\"elapsed\":{{\"human\":\"{d:.6}s\",\"nanos\":{d},\"secs\":{d}}},\"matched_lines\":{d},\"matches\":{d},\"searches\":{d},\"searches_with_match\":{d}}}}},\"type\":\"summary\"}}\n", .{ human, sub, secs, st.get(.bytes_searched), human, sub, secs, st.get(.matched_lines), st.get(.matches), st.get(.files_searched), st.get(.files_with_match) }) catch oom();
+    out.print(a, "{{\"data\":{{\"elapsed_total\":{{\"human\":\"{d:.6}s\",\"nanos\":{d},\"secs\":{d}}},\"stats\":{{\"bytes_printed\":{d},\"bytes_searched\":{d},\"elapsed\":{{\"human\":\"{d:.6}s\",\"nanos\":{d},\"secs\":{d}}},\"matched_lines\":{d},\"matches\":{d},\"searches\":{d},\"searches_with_match\":{d}}}}},\"type\":\"summary\"}}\n", .{ human, sub, secs, st.get(.bytes_printed), st.get(.bytes_searched), human, sub, secs, st.get(.matched_lines), st.get(.matches), st.get(.files_searched), st.get(.files_with_match) }) catch oom();
 }
 
 // ─────────────────────────── helpers ───────────────────────────
@@ -708,32 +772,41 @@ fn litCandidates(a: std.mem.Allocator, re: *const Matcher, needle: ?simd.Gate, o
     return cand;
 }
 
-fn matchSpans(a: std.mem.Allocator, re: *const Matcher, ss: *Matcher.SpanSim, o: Opts, view: []const u8) []const Matcher.Span {
-    var from: usize = 0;
-    const first = output.nextSpan(re, ss, o, view, &from) orelse return &.{};
+/// One line's match spans for the record stream — `output.Rows`, the same walk
+/// `-o` and `--count-matches` print, so a nullable pattern's zero-width matches
+/// become `{"match":{"text":""},…}` submatches and make their line a `match`
+/// record, exactly as rg's JSON printer does (measured: `--json -e 'x*'` emits a
+/// record per line with one empty submatch per column). The old non-empty-only
+/// `nextSpan` walk silently dropped both.
+fn matchSpans(a: std.mem.Allocator, re: *const Matcher, ss: *Matcher.SpanSim, o: Opts, view: []const u8, terminated: bool) []const Matcher.Span {
+    var rows = output.Rows{ .re = re, .ss = ss, .o = o, .mv = view, .terminated = terminated };
+    const first = rows.next() orelse return &.{};
     var list: std.ArrayList(Matcher.Span) = .empty;
     list.append(a, first) catch oom();
-    while (output.nextSpan(re, ss, o, view, &from)) |sp| list.append(a, sp) catch oom();
+    while (rows.next()) |sp| list.append(a, sp) catch oom();
     return list.items;
 }
 
 /// A `kind == 2` line is exactly a `matchSpans` hit (classification already ran
-/// under the same options), so the matched-lines stat is a plain tally — and 0
-/// under `-v`, rg's stat shape for the inverted single-line stream.
-fn countMatched(o: Opts, lines: []const Line) usize {
-    if (o.invert) return 0;
+/// under the same options), so the matched-lines stat is a plain tally — under
+/// `-v` too, where rg counts the inverted lines it emitted as `matched_lines`
+/// while `matches` stays 0 (measured: `--json -v -e abc` over a 4-line file with
+/// one `abc` reports `matched_lines: 3`, `matches: 0`).
+fn countMatched(_: Opts, lines: []const Line) usize {
     var n: usize = 0;
     for (lines) |ln| n += @intFromBool(ln.kind == 2);
     return n;
 }
 
-/// Sum of cached per-line spans — no engine re-run. Only `kind == 2` lines carry
-/// spans (context/inverted lines keep the empty default), and an inverted stream
-/// reports 0 matches (rg parity), which holds because inverted match lines are
-/// classified without span collection.
+/// Sum of cached per-line spans — no engine re-run. Only a `kind == 2` line's
+/// spans are `matches`: every line now caches its spans (a `-v` context record
+/// prints them), but rg's `matches` counts only what it printed AS a match, which
+/// is 0 for an inverted stream because an inverted match line has no span.
 fn countMatches(lines: []const Line) usize {
     var n: usize = 0;
-    for (lines) |ln| n += ln.spans.len;
+    for (lines) |ln| if (ln.kind == 2) {
+        n += ln.spans.len;
+    };
     return n;
 }
 

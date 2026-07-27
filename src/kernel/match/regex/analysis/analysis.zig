@@ -126,35 +126,62 @@ pub fn startsAnchored(node: *Node) bool {
 /// trigram query per branch; past this a full scan is cheaper, so we bail to it.
 pub const max_cover: usize = 64;
 
-/// A set of ≥3-byte literals such that EVERY match contains at least one of them
-/// — so the UNION of their trigram-candidate sets is a sound superset (no false
-/// negative). Returns null when none is provable (caller full-scans). This is the
+/// A set of literals such that EVERY match contains at least one of them — so
+/// the UNION of their candidate sets is a sound superset (no false negative).
+/// Returns null when none is provable (caller full-scans). This is the
 /// multi-literal counterpart to `literalInfo.best`: where `best` needs ONE literal
 /// mandatory across the whole pattern, this admits alternations — `foo|bar` ⇒
-/// {foo, bar} — but only when EVERY branch yields a ≥3 literal (else that branch's
-/// matches could carry none of the set, and filtering would wrongly drop them).
+/// {foo, bar}. EVERY branch must still yield one, or that branch's matches could
+/// carry none of the set and filtering would wrongly drop them.
+///
+/// A branch literal may be 1–2 bytes. It used to have to reach 3, because a
+/// shorter one produces no trigram and the directory could not answer it — an
+/// index-capability limit, never a soundness one, since `best` is mandatory in
+/// every match at any length. The sliver tier
+/// (`corpus/index/trigrams/sliver.zig`) answers those from the same directory,
+/// so `panic|0x` now yields {panic, 0x} instead of nothing at all. Where a
+/// branch is genuinely unfilterable the cover is still withheld whole.
 pub fn requiredAny(arena: std.mem.Allocator, node: *Node) ParseError!?[]const []const u8 {
     // A single mandatory ≥3 literal is the most selective filter — prefer it.
     const li = try literalInfo(arena, node);
     if (li.best.len >= 3) return try arena.dupe([]const u8, &.{li.best});
-    switch (node.*) {
-        .alt => |ab| {
-            const sa = try requiredAny(arena, ab[0]) orelse return null;
-            const sb = try requiredAny(arena, ab[1]) orelse return null;
-            if (sa.len + sb.len > max_cover) return null;
-            return try std.mem.concat(arena, []const u8, &.{ sa, sb });
+    const nested: ?[]const []const u8 = switch (node.*) {
+        .alt => |ab| blk: {
+            const sa = try requiredAny(arena, ab[0]) orelse break :blk null;
+            const sb = try requiredAny(arena, ab[1]) orelse break :blk null;
+            if (sa.len + sb.len > max_cover) break :blk null;
+            break :blk try std.mem.concat(arena, []const u8, &.{ sa, sb });
         },
-        // In a concat both sides are mandatory, so either side's cover set is
-        // sound for the whole match — take the first side that yields one.
-        .concat => |ab| {
-            if (try requiredAny(arena, ab[0])) |sa| return sa;
-            return try requiredAny(arena, ab[1]);
-        },
-        .plus => |r| return try requiredAny(arena, r.node),
-        .capture => |g| return try requiredAny(arena, g.child), // transparent
+        // In a concat both sides are mandatory, so EITHER side's cover is sound
+        // for the whole match — so take the more selective of the two.
+        .concat => |ab| thinner(try requiredAny(arena, ab[0]), try requiredAny(arena, ab[1])),
+        .plus => |r| try requiredAny(arena, r.node),
+        .capture => |g| try requiredAny(arena, g.child), // transparent
         // multi-byte class, star, quest (match empty), empty, anchors ⇒ no cover.
-        else => return null,
-    }
+        else => null,
+    };
+    // A cover is only as selective as its weakest branch, so a descent is worth
+    // taking only when even that branch out-reads this node's own literal —
+    // otherwise `0x` would decay into the `0` its left child witnesses.
+    if (nested) |s| if (weakest(s) > li.best.len) return s;
+    // The sub-trigram floor: a 1–2 byte literal mandatory in every match of this
+    // node is a sound one-element cover, and now a queryable one.
+    if (li.best.len > 0) return try arena.dupe([]const u8, &.{li.best});
+    return nested;
+}
+
+/// Length of a cover's shortest literal — what its selectivity is bounded by.
+fn weakest(cover: []const []const u8) usize {
+    var min: usize = std.math.maxInt(usize);
+    for (cover) |lit| min = @min(min, lit.len);
+    return if (cover.len == 0) 0 else min;
+}
+
+/// The more selective of two sound covers, either of which may be absent.
+fn thinner(a: ?[]const []const u8, b: ?[]const []const u8) ?[]const []const u8 {
+    const sa = a orelse return b;
+    const sb = b orelse return sa;
+    return if (weakest(sb) > weakest(sa)) sb else sa;
 }
 
 /// Cap on a pure-literal alternation set — each literal costs one SIMD

@@ -20,6 +20,7 @@
 const std = @import("std");
 const corpus_mod = @import("../../tree/corpus.zig");
 const fault = @import("../../../fault.zig");
+const portal = @import("../../../portal.zig");
 
 const tree_root_alias = corpus_mod.ArtifactPath("tree.root");
 
@@ -82,7 +83,7 @@ pub fn bindingHolds(path: []const u8) bool {
 /// moved or renamed tree therefore reads as unbound — right answers, no
 /// acceleration — until the next `gist index`.
 pub fn thisTree(buf: *[std.fs.max_path_bytes]u8) ?[]const u8 {
-    return std.mem.span(std.c.realpath(".", buf) orelse return null);
+    return portal.realpath(".", buf);
 }
 
 /// The tree a published binding names, or null when there is none. Copied out
@@ -137,9 +138,9 @@ pub fn socketBindingPath(buf: []u8, socket_path: []const u8) ?[]const u8 {
 /// One tiny artifact file into `buf`, allocator-free — the binding is read on
 /// the query's critical path, before any arena exists. Null when unreadable.
 fn readSmall(path: []const u8, buf: []u8) ?[]const u8 {
-    const fd = std.posix.openat(std.posix.AT.FDCWD, path, .{ .ACCMODE = .RDONLY }, 0) catch return null;
-    defer _ = std.posix.system.close(fd);
-    const n = std.posix.read(fd, buf) catch return null;
+    const fd = portal.openFile(portal.cwd(), path) catch return null;
+    defer portal.close(fd);
+    const n = portal.read(fd, buf) catch return null;
     return buf[0..n];
 }
 
@@ -162,7 +163,7 @@ pub fn mmapFile(io: std.Io, path: []const u8) !Mapping {
     // above already says a 0-byte artifact IS corruption, and the persist domain
     // is where an untrustworthy artifact fails closed to the live path.
     if (len == 0) return fault.Persist.Corrupt;
-    return std.posix.mmap(null, len, .{ .READ = true }, .{ .TYPE = .PRIVATE }, file.handle, 0);
+    return portal.map(file.handle, len);
 }
 
 /// Materialize `sub_path` with `data` via the temp-then-rename pattern (POSIX
@@ -229,7 +230,7 @@ pub fn mapAt(
 ) ?V {
     const map = mmapFile(io, path) catch return null;
     var v = decode(ctx, map) catch {
-        std.posix.munmap(map);
+        portal.unmap(map);
         return null;
     };
     if (v.anchor_ns > std.Io.Clock.now(.real, io).nanoseconds) {
@@ -298,7 +299,12 @@ pub fn joinNul(gpa: std.mem.Allocator, out: *std.ArrayList(u8), parts: []const [
 /// parsed artifact frees for its path/roots catalog: one heap blob (`nulLen`
 /// bytes) plus a slice array that aliases into it. Free `.slices` then `.blob`.
 pub fn ownedNulTable(gpa: std.mem.Allocator, entries: []const []const u8) !struct { blob: []u8, slices: []const []const u8 } {
-    const blob = try gpa.alloc(u8, nulLen(entries));
+    // `nulLen` is u64 because it also sizes on-disk framing, where the width is
+    // the format's rather than the host's. Here it sizes a heap block, so a total
+    // past this address space is precisely `OutOfMemory` — the same answer `alloc`
+    // itself would give, just reached before the truncation could hide it.
+    const span = std.math.cast(usize, nulLen(entries)) orelse return error.OutOfMemory;
+    const blob = try gpa.alloc(u8, span);
     errdefer gpa.free(blob);
     const slices = try gpa.alloc([]const u8, entries.len);
     errdefer gpa.free(slices);

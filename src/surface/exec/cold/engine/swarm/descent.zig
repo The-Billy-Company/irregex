@@ -24,6 +24,7 @@ const paths_mod = @import("../../../../../corpus/scope/paths.zig");
 const queue = @import("queue.zig");
 const sift = @import("sift.zig");
 const treemap = @import("../../../../../corpus/index/phantom/treemap.zig");
+const portal = @import("../../../../../portal.zig");
 
 const Cfg = crew.Cfg;
 const Dir = std.Io.Dir;
@@ -61,14 +62,15 @@ const noteIgnoreFile = ignore.noteIgnoreFile;
 /// type match only un-hides) this engine must reproduce byte-for-byte.
 fn shouldSkip(cfg: *const Cfg, chain: ?*const IgNode, a: std.mem.Allocator, task: DirTask, rel: []const u8, scope_rel: []const u8, is_dir: bool, basename: []const u8) bool {
     const ig = cfg.ig;
-    var v: ?bool = null;
-    if (cfg.compiled) |c| {
-        if (c.matchRank(stripDot(rel), is_dir)) |r| v = !c.rules[r].negated;
-    } else v = ig.decideAt(rel, is_dir, task.root_depth);
-    applyChain(chain, a, ig.o.ignore_case_insensitive, task.root_depth, rel, is_dir, &v);
+    // Both tiers are scoped to the repository that encloses this entry: a
+    // `.gitignore` above a nested checkout's `.git` is not this entry's repo's
+    // business (`ignore.boundary`).
+    const bound = ignore.boundary(ig, chain, rel);
+    var v = ignore.baseVerdict(ig, cfg.compiled, rel, is_dir, task.root_depth, bound);
+    applyChain(chain, a, ig.o.ignore_case_insensitive, task.root_depth, rel, is_dir, bound, &v);
     const wl_ig = cfg.o.filter.whitelists(a, scope_rel);
     const wl_hid = cfg.o.filter.whitelistsHidden(a, scope_rel);
-    return ig.skipFromVerdict(v, is_dir, basename, wl_ig, wl_hid);
+    return ig.skipFromVerdict(v, basename, wl_ig, wl_hid);
 }
 /// A listed directory entry, normalized across the two listing backends and
 /// the phantom snapshot. Snapshot entries (`from_snap`) carry no fd to resolve
@@ -94,10 +96,20 @@ pub fn workerMain(w: *Worker) void {
     // inside `processDir`, `done` here), to donate when a peer is parked, and
     // to blocking-pop when the local stack runs dry.
     var local: std.ArrayList(DirTask) = .empty;
+    // Per-DIRECTORY scratch. A directory's bulk listing and entry array are dead
+    // the instant `processDir` returns — every path that outlives it is COPIED
+    // into the worker arena by `joinRel`/`joinPath` — so they recycle here rather
+    // than accumulating O(entries in the tree) in the never-reset worker arena
+    // for the whole walk. Residency becomes the widest single directory, not the
+    // tree's size; the retain limit releases a pathological outlier's chunk
+    // instead of pinning it for every directory that follows.
+    var dirs: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    defer dirs.deinit();
     while (true) {
         if (w.q.aborted.load(.monotonic)) break; // downstream pipe closed — unwind now, not at tree's end
         const task = local.pop() orelse w.q.pop() orelse break;
-        processDir(w, a, scratch, task, &local);
+        processDir(w, a, dirs.allocator(), scratch, task, &local);
+        _ = dirs.reset(.{ .retain_with_limit = dir_scratch_retain });
         w.q.done();
         if (local.items.len > 1 and w.q.starving.load(.monotonic) > 0) {
             // Give away the SHALLOWEST half — the oldest entries fan out the
@@ -153,7 +165,7 @@ fn flushPending(w: *Worker, a: std.mem.Allocator, scratch: []u8, final: bool) vo
             searchShardBody(w, a, dpath, bytes);
             continue;
         };
-        searchFile(w, a, scratch, std.posix.AT.FDCWD, d.disk, dpath, d.disk);
+        searchFile(w, a, scratch, portal.cwd(), d.disk, dpath, d.disk);
     }
     w.pending.clearRetainingCapacity();
 }
@@ -162,14 +174,25 @@ fn flushPending(w: *Worker, a: std.mem.Allocator, scratch: []u8, final: bool) vo
 /// emitted path (serial `relPath` / rg parity); only the implicit whole-CWD
 /// walk ("" prefix) emits bare paths.
 fn joinRel(a: std.mem.Allocator, prefix: []const u8, name: []const u8) []const u8 {
-    return if (prefix.len == 0) name else std.fmt.allocPrint(a, "{s}/{s}", .{ prefix, name }) catch oom();
+    // The result must be OWNED by `a` on both arms: `name` points into the
+    // per-directory listing scratch `workerMain` recycles, while a path built
+    // here can outlive its directory (a queued/donated `DirTask`, a deferred
+    // `pending` row, a `--sort` record). The empty-prefix arm is the walk root's
+    // own children only, so the copy is one directory's worth, not the tree's.
+    return if (prefix.len == 0) (a.dupe(u8, name) catch oom()) else std.fmt.allocPrint(a, "{s}/{s}", .{ prefix, name }) catch oom();
 }
+
+/// Ceiling on the recycled per-directory scratch a worker keeps warm between
+/// directories. Big enough that an ordinary directory never re-enters the page
+/// allocator, small enough that one 100k-entry directory does not pin its peak
+/// for the rest of the walk.
+const dir_scratch_retain: usize = 256 * 1024;
 
 /// This directory's own ignore rules chained onto the parent's — unless the
 /// frozen base already holds them (the CWD root, loaded by `Ignore.init`;
 /// keyed by stripped rel). Shared by the live and phantom listings.
 fn dirChain(cfg: *const Cfg, a: std.mem.Allocator, task: DirTask, present: IgPresent) ?*const IgNode {
-    if (!cfg.o.no_ignore and (present.gitignore or present.dotignore or present.rgignore) and
+    if (!cfg.o.no_ignore and (present.gitignore or present.dotignore or present.rgignore or present.dotgit) and
         !cfg.ig.loaded.contains(task.rel) and !cfg.ig.loaded.contains(stripDot(task.rel)))
         return loadNode(cfg.ig, a, task.chain, task.disk, task.rel, present) catch oom();
     return task.chain;
@@ -193,7 +216,11 @@ fn reportWalkError(q: *Queue, rel: []const u8, e: WalkFault) void {
     q.walk_error.store(true, .release);
 }
 
-fn processDir(w: *Worker, a: std.mem.Allocator, scratch: []u8, task: DirTask, local: *std.ArrayList(DirTask)) void {
+/// `a` is the worker arena — everything that outlives this directory. `sa` is the
+/// per-directory scratch `workerMain` recycles after this call returns, and holds
+/// exactly the two structures that die with the directory: the bulk listing and
+/// the entry array built over it.
+fn processDir(w: *Worker, a: std.mem.Allocator, sa: std.mem.Allocator, scratch: []u8, task: DirTask, local: *std.ArrayList(DirTask)) void {
     const cfg = w.cfg;
 
     // Phantom walk: a recorded directory whose lstat proves BOTH clocks
@@ -213,14 +240,14 @@ fn processDir(w: *Worker, a: std.mem.Allocator, scratch: []u8, task: DirTask, lo
     // `getattrlistbulk` directly and is wrapped in a `Dir` only for the
     // portable fallback. An unreadable/EACCES directory is a walk error, not a
     // silent prune (rg parity — see `reportWalkError`).
-    const fd = std.posix.openat(std.posix.AT.FDCWD, task.disk, .{ .ACCMODE = .RDONLY, .DIRECTORY = true }, 0) catch |e| {
+    const fd = portal.openDir(portal.cwd(), task.disk) catch |e| {
         reportWalkError(w.q, task.rel, e);
         return;
     };
     var dir: Dir = .{ .handle = fd };
     var closed = false;
     defer if (!closed) {
-        _ = std.posix.system.close(dir.handle);
+        portal.close(dir.handle);
     };
 
     // List the whole directory FIRST — the names tell us which ignore files
@@ -230,16 +257,20 @@ fn processDir(w: *Worker, a: std.mem.Allocator, scratch: []u8, task: DirTask, lo
     const bulk_ok = bulkstat.supported and blk: {
         // With index elision live, each entry's mtime+ctime ride the bulk
         // listing for free; without it, names+types via getdirentries is cheaper.
-        const listing = if (freshnessWanted(cfg)) bulkstat.listOneLevel(a, dir.handle) else bulkstat.listNamesOnly(a, dir.handle);
+        const listing = if (freshnessWanted(cfg)) bulkstat.listOneLevel(sa, dir.handle) else bulkstat.listNamesOnly(sa, dir.handle);
         // Declining routes to the portable fallback below; OOM is a fault and
         // takes this walk's one canonical exit rather than being mistaken for it.
         const listed = switch (listing catch oom()) {
             .declined => break :blk false,
             .got => |v| v,
         };
+        // The listing already knows the count, so the entry array is sized once
+        // instead of geometrically regrown (in an arena every regrowth abandons
+        // the previous buffer, so growth churn is retained, not reused).
+        entries.ensureTotalCapacityPrecise(sa, listed.len) catch oom();
         for (listed) |e| {
             noteIgnoreFile(&present, e.name, e.is_file);
-            entries.append(a, .{ .name = e.name, .is_dir = e.is_dir, .is_file = e.is_file, .mtime_ns = e.mtime_ns, .ctime_ns = e.ctime_ns }) catch oom();
+            entries.appendAssumeCapacity(.{ .name = e.name, .is_dir = e.is_dir, .is_file = e.is_file, .mtime_ns = e.mtime_ns, .ctime_ns = e.ctime_ns });
         }
         break :blk true;
     };
@@ -247,9 +278,9 @@ fn processDir(w: *Worker, a: std.mem.Allocator, scratch: []u8, task: DirTask, lo
         if (bulkstat.supported) {
             // Bulk listing is all-or-nothing but shares the fd offset with
             // readdir — reopen a fresh handle before the portable fallback.
-            _ = std.posix.system.close(dir.handle);
+            portal.close(dir.handle);
             closed = true;
-            const fd2 = std.posix.openat(std.posix.AT.FDCWD, task.disk, .{ .ACCMODE = .RDONLY, .DIRECTORY = true }, 0) catch |e| {
+            const fd2 = portal.openDir(portal.cwd(), task.disk) catch |e| {
                 reportWalkError(w.q, task.rel, e);
                 return;
             };
@@ -281,11 +312,12 @@ fn processDir(w: *Worker, a: std.mem.Allocator, scratch: []u8, task: DirTask, lo
                 mtime = st.mtime.nanoseconds;
                 ctime = st.ctime.nanoseconds;
             };
-            // The iterator's name buffer is reused on the next `next()` —
-            // fragments/tasks hold rel paths built from it, so own a copy.
-            const name = a.dupe(u8, e.name) catch oom();
+            // The iterator's name buffer is reused on the next `next()` — this
+            // directory's entry array holds the copy, and every path built from
+            // it is itself copied into the worker arena by `joinRel`/`joinPath`.
+            const name = sa.dupe(u8, e.name) catch oom();
             noteIgnoreFile(&present, name, e.kind == .file);
-            entries.append(a, .{ .name = name, .is_dir = e.kind == .directory, .is_file = e.kind == .file, .mtime_ns = mtime, .ctime_ns = ctime }) catch oom();
+            entries.append(sa, .{ .name = name, .is_dir = e.kind == .directory, .is_file = e.kind == .file, .mtime_ns = mtime, .ctime_ns = ctime }) catch oom();
         }
     }
 
@@ -326,7 +358,7 @@ fn servePhantomDir(w: *Worker, a: std.mem.Allocator, scratch: []u8, task: DirTas
     for (kids) |ent| noteIgnoreFile(&present, v.name(ent), !ent.isDir());
     const chain = dirChain(cfg, a, task, present);
     const before = local.items.len;
-    for (kids) |ent| handleEntry(w, a, scratch, std.posix.AT.FDCWD, task, chain, local, .{
+    for (kids) |ent| handleEntry(w, a, scratch, portal.cwd(), task, chain, local, .{
         .name = v.name(ent),
         .is_dir = ent.isDir(),
         .is_file = !ent.isDir(),
@@ -432,7 +464,7 @@ fn handleEntry(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.posix
     // deferred read. `rel` is the CWD-openable path a `-z` external-codec
     // subprocess re-opens.
     if (e.from_snap)
-        searchFile(w, a, scratch, std.posix.AT.FDCWD, joinPath(a, task.disk, e.name) catch oom(), dpath, rel)
+        searchFile(w, a, scratch, portal.cwd(), joinPath(a, task.disk, e.name) catch oom(), dpath, rel)
     else
         searchFile(w, a, scratch, dirfd, e.name, dpath, rel);
 }

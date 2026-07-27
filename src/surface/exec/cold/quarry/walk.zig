@@ -21,6 +21,7 @@ const ignore = @import("../../../../corpus/tree/ignore.zig");
 const inode = @import("../read/inode.zig");
 const notice = @import("notice.zig");
 const paths_mod = @import("../../../../corpus/scope/paths.zig");
+const portal = @import("../../../../portal.zig");
 
 const Dir = std.Io.Dir;
 const Opts = args.Opts;
@@ -356,8 +357,8 @@ pub fn gather(a: std.mem.Allocator, io: std.Io, roots: []const []const u8, o: Op
             // named file verbatim (never ignore-filtered), but a path it can't
             // open at all (missing / unreadable / non-dir component) is reported
             // to stderr and forces the error exit — never dropped silently.
-            if (std.posix.openat(std.posix.AT.FDCWD, r, .{ .ACCMODE = .RDONLY }, 0)) |fd| {
-                _ = std.posix.system.close(fd);
+            if (portal.openFile(portal.cwd(), r)) |fd| {
+                portal.close(fd);
                 try out.append(a, .{ .rel = r, .scope = paths_mod.cwdRelative(a, io, r), .disk = r, .explicit = true });
             } else |ferr| {
                 notice.printWalkError(r, ferr);

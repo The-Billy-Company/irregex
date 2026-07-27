@@ -159,7 +159,18 @@ const Floor = struct {
         if (self.built.get(optimize)) |ready| return ready;
         var made: Archives = undefined;
         for (floor_libs, &made) |lib, *slot| {
-            const mod = self.b.createModule(.{ .target = self.target, .optimize = optimize, .link_libc = true });
+            // `.pic = true` is what lets ONE archive serve both consumers of the
+            // floor. The kernel ships a dual static+dynamic C-ABI artifact, and
+            // an ELF shared object may only absorb position-independent objects:
+            // without this, every cross target with ELF+non-PIC-by-default (all
+            // the Linux/BSD ones) fails the `libirregex.so` link with thousands
+            // of "relocation R_… cannot be used against symbol; recompile with
+            // -fPIC" errors, while macOS — PIC by default — builds clean and
+            // hides it. The alternative, a second non-PIC archive per optimize
+            // for the executables, doubles the floor's build cost to buy a GOT
+            // indirection the hot loops never touch (the match engine is Zig;
+            // PCRE2 is the opt-in `-P` backend and libsais runs once per index).
+            const mod = self.b.createModule(.{ .target = self.target, .optimize = optimize, .link_libc = true, .pic = true });
             mod.addIncludePath(self.b.path(lib.include));
             mod.addCSourceFiles(.{ .root = self.b.path(lib.src), .files = lib.files, .flags = lib.flags });
             slot.* = self.b.addLibrary(.{ .name = lib.name, .linkage = .static, .root_module = mod });
@@ -223,6 +234,13 @@ pub fn build(b: *std.Build) void {
     cli_mod.addImport("irregex", cli_engine);
     const cli_exe = b.addExecutable(.{ .name = "gist", .root_module = cli_mod });
     b.installArtifact(cli_exe);
+    // `gist` alone, for callers that want the CLI under test and not its two
+    // siblings. The portability sweep (`bench/portable/`) cross-compiles 22
+    // targets and only ever executes `gist`, so building `relate` and `irregex`
+    // for each of them triples a sweep for nothing. `install` is unchanged — this
+    // is an additional entry point into the same artifact, not a narrowing.
+    b.step("gist", "Build + install just the `gist` CLI (the portability sweep's unit)")
+        .dependOn(&b.addInstallArtifact(cli_exe, .{}).step);
 
     // ── the `relate` binary — compression-as-search (similar/echoes/pack) ──
     // Same engine module, same ReleaseFast product posture; a second thin face
@@ -834,6 +852,45 @@ pub fn build(b: *std.Build) void {
     lowerbound_step.dependOn(&run_lowerbound.step);
     lowerbound_step.dependOn(lowerbound_install);
 
+    // ── `gist-scale` — Layer J: the sub-trigram tier's candidate-byte payoff ──
+    const scale_mod = b.createModule(.{
+        .root_source_file = b.path("bench/scale/scale.zig"),
+        .target = k.target,
+        .optimize = k.optimize,
+    });
+    scale_mod.addImport("irregex", k.root_module);
+    scale_mod.addImport("probes", probes_mod);
+    const scale_exe = b.addExecutable(.{ .name = "gist-scale", .root_module = scale_mod });
+    const scale_install = &b.addInstallArtifact(scale_exe, .{}).step;
+    lab_step.dependOn(scale_install);
+    const run_scale = b.addRunArtifact(scale_exe);
+    run_scale.setCwd(b.path("../../.."));
+    if (b.args) |args| run_scale.addArgs(args);
+    const scale_step = b.step("scale", "Layer-J: fail-closed sub-trigram candidate-byte audit (directory vs sliver tier)");
+    scale_step.dependOn(&run_scale.step);
+    scale_step.dependOn(scale_install);
+
+    // ── `gist-indexq` — Layer L: index quality head-to-head against csearch ──
+    // One corpus, one built index, one evaluator, one verifier — only the
+    // trigram FORMULA differs between arms (gist-base / gist / csearch, the
+    // last lifted verbatim by `bench/sieve/csearch_plan.py`).
+    const indexq_mod = b.createModule(.{
+        .root_source_file = b.path("bench/sieve/indexq.zig"),
+        .target = k.target,
+        .optimize = k.optimize,
+    });
+    indexq_mod.addImport("irregex", k.root_module);
+    indexq_mod.addImport("probes", probes_mod);
+    const indexq_exe = b.addExecutable(.{ .name = "gist-indexq", .root_module = indexq_mod });
+    const indexq_install = &b.addInstallArtifact(indexq_exe, .{}).step;
+    lab_step.dependOn(indexq_install);
+    const run_indexq = b.addRunArtifact(indexq_exe);
+    run_indexq.setCwd(b.path("../../.."));
+    if (b.args) |args| run_indexq.addArgs(args);
+    const indexq_step = b.step("indexq", "Layer-L optimality cert: candidate-byte selectivity head-to-head vs csearch's own formula");
+    indexq_step.dependOn(&run_indexq.step);
+    indexq_step.dependOn(indexq_install);
+
     // ── `crest` — production proof: the forced-class-run necessary condition ──
     // Links the REAL engine (the crest kernel now lives INSIDE it, at
     // src/kernel/primitives/crest.zig, wired into the index sidecar + both read-elision
@@ -929,6 +986,29 @@ pub fn build(b: *std.Build) void {
     const pbx_step = b.step("parabix-rung", "Parabix-rung production proof: corpus-scale agreement with the shipped ladder, negative-case throughput vs both baselines, and the refusal rows");
     pbx_step.dependOn(&run_pbx.step);
     pbx_step.dependOn(pbx_install);
+
+    // ── `multipattern` — Layer K: the Hyperscan/Vectorscan race, gist's arm ──
+    // Links the REAL kernel (PatternSet ships inside it at
+    // src/kernel/batch/patterns.zig) and answers the same per-document
+    // attribution question `bench/multipattern/vscan.c` puts to Vectorscan over
+    // byte-identical inputs. `--verify` re-derives the whole attribution vector
+    // with N INDEPENDENT single-pattern searches and exits non-zero on the
+    // first disagreement, so no timing is ever published without the contract.
+    const multipattern_mod = b.createModule(.{
+        .root_source_file = b.path("bench/multipattern/bench.zig"),
+        .target = k.target,
+        .optimize = cli_optimize, // product-speed posture — this is a timing tool
+    });
+    multipattern_mod.addImport("irregex", cli_engine);
+    const multipattern_exe = b.addExecutable(.{ .name = "multipattern", .root_module = multipattern_mod });
+    const multipattern_install = &b.addInstallArtifact(multipattern_exe, .{}).step;
+    lab_step.dependOn(multipattern_install);
+    const run_multipattern = b.addRunArtifact(multipattern_exe);
+    run_multipattern.setCwd(b.path("../../.."));
+    if (b.args) |args| run_multipattern.addArgs(args);
+    const multipattern_step = b.step("multipattern", "Multi-pattern race arm: per-document attribution throughput, fail-closed against N independent searches");
+    multipattern_step.dependOn(&run_multipattern.step);
+    multipattern_step.dependOn(multipattern_install);
 
     // ── `gist-portbound` — Layer B′: the port bound MEASURED on this machine ──
     // Runs the same drift-guarded probes as portcert.sh's static llvm-mca bound,

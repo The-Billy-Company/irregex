@@ -19,6 +19,9 @@ doc_radar:
     - description: "sweep work-steals the freshness metadata walk"
       file: pkg/kernels/irregex/src/corpus/index/trigrams/sweep.zig
       contains: "buildWorkItems"
+    - description: "the sliver tier answers sub-trigram needles under a decode budget"
+      file: pkg/kernels/irregex/src/corpus/index/trigrams/sliver.zig
+      contains: ["pub fn candidates", "budget_ratio", "max_len"]
 ---
 
 # `src/corpus/index/trigrams/` — T0 candidate index + T3 freshness
@@ -28,12 +31,21 @@ must contain every trigram of that literal, so the AND of per-trigram
 posting lists is a **sound candidate set**: false positives expected and
 verified away; false negatives impossible for literals ≥ 3 bytes.
 
+A **shorter** needle is served by the same directory rather than by a full scan.
+A 1–2 byte sliver must sit inside one of its document's trigrams, so the UNION of
+the trigram families that could contain it is also a sound candidate set — see
+[`sliver.zig`](sliver.zig) for the argument, the short-document rescue set the
+soundness rests on, and the decode budget that declines a filter which would not
+filter.
+
 ## Files
 
 | File                    | Job                                                                                                                                                   |
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ngram.zig`             | Extract distinct ascending trigrams from a byte slice                                                                                                 |
 | `trigram.zig`           | In-memory `Index`: build, rarest-first intersect, query                                                                                               |
+| `sliver.zig`            | Sub-trigram tier: answers a 1–2 byte needle from the SAME directory (0 new index bytes), priced against a decode budget before it commits             |
+| `sliver_test.zig`       | The Sliver Theorem (matched ⇒ never pruned) vs a byte-for-byte oracle, and its short-document premise attacked on its own                             |
 | `persist.zig`           | Zero-copy `mmap` load / publish of the CSR posting blob; codicil-layered query (`queryLiteral` / `queryAny` = base ∪ codicil ∪ tombstones)            |
 | `fresh.zig`             | Wall-clock mtime/ctime freshness overlay vs build anchor                                                                                              |
 | `sweep.zig`             | Self-balancing, work-stealing metadata walk for the freshness overlay — BFS breadth-expansion feeding a thread pool                                   |

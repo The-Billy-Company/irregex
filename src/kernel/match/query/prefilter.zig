@@ -41,6 +41,17 @@ pub fn regexPrefilter(re: *const Regex, one: *[1][]const u8) []const []const u8 
         one[0] = re.required;
         return one[0..1];
     }
+    if (re.alts.len > 0) return re.alts;
+    // Strictly additive last resort: a 1–2 byte required literal is present in
+    // every match just as a longer one is, so pruning by it is equally sound —
+    // it was withheld only because the trigram directory could not read it. The
+    // sliver tier now can (`corpus/index/trigrams/sliver.zig`), and declines to
+    // this same empty answer when it cannot pay. An alternation cover, when
+    // there is one, still wins: it is the more selective filter.
+    if (re.required.len > 0) {
+        one[0] = re.required;
+        return one[0..1];
+    }
     return re.alts;
 }
 
@@ -56,7 +67,13 @@ pub fn matcherPrefilter(m: *const Matcher, one: *[1][]const u8) []const []const 
         one[0] = req;
         return one[0..1];
     }
-    return m.alts();
+    const alts = m.alts();
+    if (alts.len > 0) return alts;
+    if (req.len > 0) { // sub-trigram required literal — see `regexPrefilter`
+        one[0] = req;
+        return one[0..1];
+    }
+    return alts;
 }
 
 /// The longest ASCII-fold-CLOSED window of a literal, or null when none

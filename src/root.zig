@@ -54,10 +54,18 @@ pub const fatal = @import("surface/cli/outcome.zig").fatal;
 // Vocabulary and payload only — transport stays assay's. See ADR-373 laws 1-3.
 pub const fault = @import("fault.zig");
 
+// The platform seam: the POSIX-shaped primitives the engine actually calls —
+// handle-relative open, read, whole-file map, write, argv, stdin readiness —
+// with the Windows fork stated once behind a comptime branch rather than
+// sprinkled through the descent. Exported so the CLI's own module root (which
+// sits outside this module's path) reaches it through the same door.
+pub const portal = @import("portal.zig");
+
 // ── candidate index ──
 pub const ngram = @import("corpus/index/trigrams/ngram.zig");
 pub const trigram = @import("corpus/index/trigrams/trigram.zig");
 pub const persist = @import("corpus/index/trigrams/persist.zig");
+pub const sliver = @import("corpus/index/trigrams/sliver.zig");
 pub const codicil = @import("corpus/index/trigrams/codicil.zig");
 
 // ── the crest sieve (math floor + persisted sidecar) ──
@@ -339,6 +347,12 @@ pub const api = @import("api.zig");
 
 pub const version_string: [:0]const u8 = "0.2.0"; // x-release-please-version
 
+/// The vendored PCRE2 the `-P` backend links (`kernel/match/regex/pcre2/ffi.zig`),
+/// reported by `gist rg --pcre2-version` in ripgrep's own phrasing. Declared
+/// beside the engine semver rather than inside the FFI shim so the answer a
+/// caller reads and the library actually linked have one name between them.
+pub const pcre2_version_string = "10.47";
+
 /// The C-ABI compatibility integer. Started at 1 (introspection + the
 /// allocation-free trigram primitive); the rung-3 warm session's match callback
 /// (`irregex_match_fn`) gaining an `i32` abort return was a breaking signature
@@ -541,6 +555,7 @@ test {
     _ = @import("corpus/index/trigrams/trigram_test.zig"); // T0 candidate index: query + serialize + build
     _ = @import("corpus/index/trigrams/trigram_load_test.zig"); // T0 loader adversarial suite: malformed blobs fail closed
     _ = @import("corpus/index/trigrams/persist_test.zig"); // T0 persisted corpus/index/path-table integrity (doc-id OOB guard)
+    _ = @import("corpus/index/trigrams/sliver_test.zig"); // sub-trigram tier: the Sliver Theorem + the rescue-set premise
     _ = @import("corpus/index/trigrams/codicil_test.zig"); // incremental codicil: round-trip, fail-closed decode, layered-query parity
     _ = @import("corpus/index/trigrams/lapse_test.zig"); // generation retention: each publish fence asserted alone
     _ = @import("corpus/index/trigrams/trigram_fuzz.zig"); // T0 loader long fuzz (seeds + mutations; GIST_FUZZ_ITERS)
@@ -586,6 +601,7 @@ test {
     _ = @import("corpus/index/frag/frag_test.zig"); // frag round-trip, fail-closed parse, freshness-fold + deletion gate
     _ = @import("corpus/index/codex/codex_test.zig"); // codex: SA-IS/RRR/wavelet/index differential vs naive oracles
     _ = @import("kernel/batch/patterns_test.zig"); // match half: set ≡ N single-pattern oracles (gate off/on)
+    _ = @import("kernel/batch/trawl_test.zig"); // wide-slate tier: Aho–Corasick vs substring oracle; striped ≡ serial
     _ = @import("kernel/batch/loom_test.zig"); // weave: closed op set — total, deterministic, hand-tallied
     _ = @import("surface/exec/session/answer/request_test.zig"); // resident request eligibility classifier
     _ = @import("surface/exec/session/warm/corpus.zig"); // faithful corpus ingest: BOM/UTF-16 decode, whole-body NUL, no cap
@@ -596,6 +612,7 @@ test {
     _ = @import("surface/exec/session/watch/watch_test.zig"); // freshness watcher: dirty/clean seqlock barrier
     _ = @import("surface/exec/session/watch/kqueue_test.zig"); // macOS kqueue barrier: real mutations → scoped reconcile (ADR-372)
     _ = @import("surface/exec/session/freshness/freshness_test.zig"); // barrier hardening: differential vs on-disk oracle, concurrency, overflow/bound
+    _ = @import("surface/exec/session/freshness/vouch_test.zig"); // epoch vouch on the real backend (macOS+Linux): liveness, same-epoch⇒same-bytes, surrender
     _ = @import("surface/exec/session/freshness/dirty.zig"); // exact dirty-path log: dedupe, bound→doubt, exact promise
     _ = @import("surface/exec/session/freshness/delta.zig"); // O(changed) resolver: path classes, fold aliasing helpers
     _ = @import("surface/exec/session/freshness/annals.zig"); // delivery ledger: which changed (since) + whether any did (epoch)

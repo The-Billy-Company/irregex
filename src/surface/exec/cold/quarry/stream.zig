@@ -15,6 +15,7 @@
 const std = @import("std");
 const args = @import("../argv/args.zig");
 const inode = @import("../read/inode.zig");
+const portal = @import("../../../../portal.zig");
 
 const oom = args.oom;
 
@@ -53,10 +54,10 @@ const StdinKind = enum { none, blocking, socket };
 /// socket). A regular file or FIFO is `.blocking` — safe to block-read to EOF;
 /// a socket is `.socket` — admitted only through the bounded poll guard.
 fn stdinKind() StdinKind {
-    const st = inode.statFd(0) orelse return .none;
-    return switch (st.mode & std.posix.S.IFMT) {
-        std.posix.S.IFREG, std.posix.S.IFIFO => .blocking,
-        std.posix.S.IFSOCK => .socket,
+    const st = inode.statFd(portal.stdin()) orelse return .none;
+    return switch (st.kind) {
+        .file, .fifo => .blocking,
+        .socket => .socket,
         else => .none, // tty, /dev/null char device, … ⇒ fall through to the walk
     };
 }
@@ -72,11 +73,7 @@ pub fn readableStdin() bool {
     return switch (stdinKind()) {
         .none => false,
         .blocking => true, // a regular file or a (possibly slow) pipe
-        .socket => blk: {
-            var fds = [_]std.posix.pollfd{.{ .fd = 0, .events = std.posix.POLL.IN, .revents = 0 }};
-            const n = std.posix.poll(&fds, stdin_poll_timeout_ms) catch break :blk false;
-            break :blk n > 0;
-        },
+        .socket => portal.readable(portal.stdin(), stdin_poll_timeout_ms),
     };
 }
 
@@ -94,12 +91,9 @@ pub fn readStdin(a: std.mem.Allocator) []const u8 {
     var buf: std.ArrayList(u8) = .empty;
     var tmp: [64 * 1024]u8 = undefined;
     while (true) {
-        if (guard) {
-            var fds = [_]std.posix.pollfd{.{ .fd = 0, .events = std.posix.POLL.IN, .revents = 0 }};
-            const ready = std.posix.poll(&fds, stdin_poll_timeout_ms) catch break;
-            if (ready == 0) break; // socket silent for too long — stop waiting, not hanging
-        }
-        const n = std.posix.read(0, &tmp) catch break;
+        // socket silent for too long — stop waiting, not hanging
+        if (guard and !portal.readable(portal.stdin(), stdin_poll_timeout_ms)) break;
+        const n = portal.read(portal.stdin(), &tmp) catch break;
         if (n == 0) break;
         buf.appendSlice(a, tmp[0..n]) catch oom();
     }

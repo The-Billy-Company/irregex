@@ -37,6 +37,7 @@
 const std = @import("std");
 const assay = @import("../../assay/assay.zig");
 const misread = @import("misread.zig");
+const portal = @import("../../portal.zig");
 
 /// The charter's filename, searched for from the working directory upward.
 pub const filename = ".irregex.toml";
@@ -196,8 +197,12 @@ pub fn suppressedNow() bool {
 /// job is to suppress a file cannot be learned from that file, and the charter
 /// is consulted by root resolution long before flags are parsed. A `--`
 /// separator ends the scan: past it, the token is a pattern.
-pub fn honorNoConfig(argv: @FieldType(@FieldType(std.process.Init, "minimal"), "args")) void {
-    var scan = std.process.Args.Iterator.init(argv);
+/// `gpa` is needed only because Windows argv arrives as one unsplit command line
+/// (see `portal.argsIterator`); on POSIX it is untouched. A platform that cannot
+/// even enumerate its own arguments has nothing to suppress, so a failure here
+/// leaves the charter honored rather than silently disabling it.
+pub fn honorNoConfig(gpa: std.mem.Allocator, argv: std.process.Args) void {
+    var scan = portal.argsIterator(argv, gpa) catch return;
     while (scan.next()) |a| {
         if (std.mem.eql(u8, a, "--")) return;
         if (consumed(a)) return suppress();
@@ -290,8 +295,8 @@ fn prefix(buf: []u8, up: usize) []const u8 {
 /// like a `.git` directory does — both are the edge of a checkout.
 fn exists(buf: []u8, dir: []const u8, name: []const u8) bool {
     const path = std.fmt.bufPrint(buf, "{s}{s}", .{ dir, name }) catch return false;
-    const fd = std.posix.openat(std.posix.AT.FDCWD, path, .{ .ACCMODE = .RDONLY }, 0) catch return false;
-    _ = std.posix.system.close(fd);
+    const fd = portal.openFile(portal.cwd(), path) catch return false;
+    portal.close(fd);
     return true;
 }
 
@@ -300,8 +305,8 @@ fn exists(buf: []u8, dir: []const u8, name: []const u8) bool {
 /// exists (root resolution and argv assembly both precede it), and both would
 /// rather report `Oversized` than allocate against a pointed-at video file.
 pub fn slurp(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
-    const fd = try std.posix.openat(std.posix.AT.FDCWD, path, .{ .ACCMODE = .RDONLY }, 0);
-    defer _ = std.posix.system.close(fd);
+    const fd = try portal.openFile(portal.cwd(), path);
+    defer portal.close(fd);
     // Grown rather than stat-sized: one fewer syscall, and the cap is enforced
     // against bytes actually read, so a file that grows under us cannot slip a
     // larger buffer past the ceiling.
@@ -313,7 +318,7 @@ pub fn slurp(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
             if (buf.len >= max_bytes) return Fault.Oversized;
             buf = try gpa.realloc(buf, @min(buf.len * 2, max_bytes));
         }
-        const n = try std.posix.read(fd, buf[read..]);
+        const n = try portal.read(fd, buf[read..]);
         if (n == 0) break;
         read += n;
     }

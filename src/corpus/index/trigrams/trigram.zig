@@ -444,6 +444,192 @@ pub const Index = struct {
         return allocator.realloc(cand, n) catch cand[0..n];
     }
 
+    /// One conjunct of a prefilter plan: the AND of the trigrams of EVERY
+    /// literal in it. `{"func"}` spells the conjunct as the literal it came
+    /// from; `{"etu","ret","tur","urn"}` spells the same conjunct as bare
+    /// trigrams. Both forms mean "a candidate holds all of these trigrams".
+    pub const Atom = []const []const u8;
+
+    /// A disjunction of atoms — a document survives the clause when ANY atom's
+    /// trigrams are all present. One clause is exactly what `queryAny` answers.
+    pub const Clause = []const Atom;
+
+    /// Estimated posting work for one clause: Σ over its atoms of Σ over their
+    /// trigrams of the group cardinality. An absent trigram makes its atom
+    /// vacuous (cost 0) — the atom, and possibly the whole clause, is empty.
+    fn clauseWork(self: *const Index, clause: Clause) u64 {
+        var work: u64 = 0;
+        for (clause) |atom| for (atom) |lit| {
+            if (lit.len < 3) continue;
+            for (0..lit.len - 2) |i| {
+                if (self.dirIndexOf(ngram.pack(lit[i..][0..3].*))) |gi| work += self.dir_count[gi];
+            }
+        };
+        return work;
+    }
+
+    /// How far past the cheapest clause's posting work a further clause may
+    /// cost before it is dropped. Dropping a conjunct only WIDENS the candidate
+    /// set (see `queryPlan`), so this ceiling can never cost a match — it is a
+    /// pure work/pruning trade, and 64x is where a clause stops paying for its
+    /// own decode on the measured slate (`bench/sieve/indexq.zig`).
+    const plan_work_ratio: u64 = 64;
+    /// Directory groups one atom may resolve; past this the atom is declined
+    /// (sound — it only widens). 4096 covers every literal a plan can carry.
+    const plan_group_cap: usize = 4096;
+    /// Posting entries whose decode costs about what *scanning one average
+    /// candidate document* costs — the exchange rate between the two things a
+    /// prefilter trades. A source file averages ~10 KB and the scan kernel runs
+    /// at ~2 GB/s (Layer A), so a document is ~5 µs of scanning; a posting entry
+    /// is ~1 ns to decode and intersect. 4096 is that ratio, rounded toward
+    /// evaluating.
+    ///
+    /// This is the denominator `plan_work_ratio` cannot supply. Once a clause
+    /// has already cut the candidate set to `n` documents, the *marginal*
+    /// question is no longer "how does this clause compare to the cheapest one"
+    /// but "does decoding it cost less than just reading the n documents it
+    /// could filter". Without it, `pgxpool\.\w+` spent 6.1 ms of posting decode
+    /// to remove 86 KB of scanning — measured, and the reason this exists.
+    const plan_scan_equivalent: u64 = 4096;
+
+    /// Candidate docs for a CNF prefilter plan: **AND over clauses, OR over the
+    /// atoms of a clause, AND over the trigrams of an atom.** This is the
+    /// general shape a regex→trigram planner produces (Cox 2012 builds the same
+    /// boolean formula), and it strictly generalizes the two narrower entry
+    /// points beside it: `queryLiteral` is a one-clause one-atom plan, and
+    /// `queryAny` is a one-clause plan whose atoms are single literals.
+    ///
+    /// **Dropping a clause only widens the answer**, because the plan is a
+    /// conjunction — so this evaluates clauses CHEAPEST-FIRST by measured
+    /// posting cardinality and declines any clause costing more than
+    /// `plan_work_ratio`x the cheapest, with no soundness argument needed per
+    /// rule. That measured choice is the thing a purely syntactic planner
+    /// cannot make: posting counts exist only here, in the built index.
+    ///
+    /// Sorted ascending, caller-owned, same allocator. An empty plan (or a
+    /// clause no atom can filter) yields `NeedleTooShort` so the caller keeps
+    /// its full-scan fallback rather than silently dropping matches.
+    pub fn queryPlan(self: *const Index, allocator: std.mem.Allocator, plan: []const Clause) QueryError![]u32 {
+        if (plan.len == 0) return QueryError.NeedleTooShort;
+        if (plan.len == 1 and plan[0].len == 1 and plan[0][0].len == 1) return self.queryLiteral(allocator, plan[0][0][0]);
+
+        // Cost-order the clauses without decoding anything: `dir_count` is the
+        // exact cardinality, already in the directory.
+        const order = try allocator.alloc(usize, plan.len);
+        defer allocator.free(order);
+        const work = try allocator.alloc(u64, plan.len);
+        defer allocator.free(work);
+        for (plan, order, work, 0..) |clause, *o, *w, i| {
+            o.* = i;
+            w.* = self.clauseWork(clause);
+        }
+        std.mem.sort(usize, order, work, struct {
+            fn less(w: []const u64, a: usize, b: usize) bool {
+                return w[a] < w[b];
+            }
+        }.less);
+
+        var scratch: ?[]u32 = null;
+        defer if (scratch) |s| allocator.free(s);
+        var cand: ?[]u32 = null;
+        errdefer if (cand) |c| allocator.free(c);
+        var n: usize = 0;
+        const budget = work[order[0]] *| plan_work_ratio;
+        for (order) |ci| {
+            // Two independent ceilings, both pure work/pruning trades (dropping
+            // a conjunct only widens, so neither can cost a match): the clause
+            // must be affordable against the cheapest clause, AND against the
+            // candidate set it would actually be filtering.
+            if (cand != null and (n == 0 or work[ci] > budget or work[ci] > @as(u64, n) *| plan_scan_equivalent)) break;
+            const next = self.queryClause(allocator, plan[ci], &scratch) catch |e| switch (e) {
+                // A clause that cannot filter is simply not a constraint.
+                QueryError.NeedleTooShort => if (cand == null) return e else continue,
+                else => return e,
+            };
+            if (cand) |c| {
+                defer allocator.free(next);
+                n = intersectAscending(c[0..n], next);
+            } else {
+                cand = next;
+                n = next.len;
+            }
+        }
+        const c = cand orelse return QueryError.NeedleTooShort;
+        return allocator.realloc(c, n) catch c[0..n];
+    }
+
+    /// The candidate set of ONE clause: the union over its atoms of the AND of
+    /// each atom's trigrams. `queryAny`'s answer when every atom is a single
+    /// literal, generalized to atoms spelled as several literals.
+    fn queryClause(self: *const Index, allocator: std.mem.Allocator, clause: Clause, scratch: *?[]u32) QueryError![]u32 {
+        if (clause.len == 0) return QueryError.NeedleTooShort;
+        var total: usize = 0;
+        const lists = try allocator.alloc([]u32, clause.len);
+        var got: usize = 0;
+        defer {
+            for (lists[0..got]) |l| allocator.free(l);
+            allocator.free(lists);
+        }
+        for (clause, lists) |atom, *slot| {
+            slot.* = try self.queryAtom(allocator, atom, scratch);
+            got += 1;
+            total += slot.len;
+        }
+        if (got == 1) {
+            got = 0; // ownership of the one list moves to the caller; `lists` still frees
+            return lists[0];
+        }
+        const buf = try allocator.alloc(u32, total);
+        errdefer allocator.free(buf);
+        var n: usize = 0;
+        for (lists[0..got]) |l| {
+            @memcpy(buf[n..][0..l.len], l);
+            n += l.len;
+        }
+        std.mem.sort(u32, buf[0..n], {}, comptime std.sort.asc(u32));
+        const w = ngram.dedupSorted(u32, buf, n);
+        return allocator.realloc(buf, w) catch buf[0..w];
+    }
+
+    /// The candidate set of ONE atom: the AND of the trigrams of every literal
+    /// it names, rarest group first (`queryLiteral`'s T1 order, over a multi-
+    /// literal trigram set). Every literal must be ≥3 bytes or the atom cannot
+    /// be filtered at all.
+    fn queryAtom(self: *const Index, allocator: std.mem.Allocator, atom: Atom, lazy: *?[]u32) QueryError![]u32 {
+        if (atom.len == 0) return QueryError.NeedleTooShort;
+        if (atom.len == 1) return self.queryLiteralWith(allocator, atom[0], lazy);
+        var span: usize = 0;
+        for (atom) |lit| {
+            if (lit.len < 3) return QueryError.NeedleTooShort;
+            span += lit.len - 2;
+        }
+        if (span > plan_group_cap) return QueryError.NeedleTooShort;
+        const groups = try allocator.alloc(usize, span);
+        defer allocator.free(groups);
+        var m: usize = 0;
+        for (atom) |lit| for (0..lit.len - 2) |i| {
+            const gi = self.dirIndexOf(ngram.pack(lit[i..][0..3].*)) orelse return allocator.alloc(u32, 0);
+            groups[m] = gi;
+            m += 1;
+        };
+        std.mem.sort(usize, groups[0..m], self, dirCountLess);
+        const seed = groups[0];
+        var cand = try allocator.alloc(u32, self.dir_count[seed]);
+        errdefer allocator.free(cand);
+        var n = try self.decodeGroup(seed, cand);
+        if (m > 1) {
+            if (lazy.* == null) lazy.* = try allocator.alloc(u32, self.doc_count);
+            const buf = lazy.*.?;
+            for (groups[1..m]) |gi| {
+                if (gi == seed) continue; // a repeated trigram adds nothing
+                const cnt = try self.decodeGroup(gi, buf);
+                n = intersectAscending(cand[0..n], buf[0..cnt]);
+                if (n == 0) break;
+            }
+        }
+        return allocator.realloc(cand, n) catch cand[0..n];
+    }
+
     /// TEST/DEBUG ONLY: fully decode the index back into a sorted `(tri, doc)`
     /// list — O(postings), never on the query hot path. Lets round-trip/parity
     /// tests assert byte-for-byte equivalence without exposing the compact

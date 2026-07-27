@@ -39,6 +39,28 @@ pub const Stats = assay.Tally(StatField);
 
 pub const FileStat = struct { matches: usize, lines: usize, bytes: usize };
 
+/// `N bytes printed` for a finished run, given what the run actually wrote.
+///
+/// ripgrep tallies that counter inside its STANDARD printer alone, so every
+/// summary shape — `-l`, `--files-without-match`, `-c`, `--count-matches` —
+/// reports `0 bytes printed` however many path or tally bytes it emitted, and so
+/// does `-q`, which emits nothing. gist used to report its own output buffer's
+/// length in those modes (`14 bytes printed` where rg said `0`); the divergence
+/// was caught differentially by `bench/rgsuite/fuzz.py`. Both walk engines route
+/// through here so the two cannot answer it differently.
+pub fn bytesPrinted(o: Opts, written: usize) usize {
+    return if (o.quiet or o.mode.enumerates()) 0 else written;
+}
+
+test "bytes printed is the standard printer's counter only" {
+    const t = std.testing;
+    try t.expectEqual(@as(usize, 26), bytesPrinted(.{}, 26));
+    try t.expectEqual(@as(usize, 26), bytesPrinted(.{ .mode = .json }, 26));
+    try t.expectEqual(@as(usize, 0), bytesPrinted(.{ .quiet = true }, 26));
+    inline for (.{ .files_with_matches, .files_without_match, .count, .count_matches, .files }) |m|
+        try t.expectEqual(@as(usize, 0), bytesPrinted(.{ .mode = m }, 26));
+}
+
 /// Count total match spans and matching lines in one file (for `--stats`),
 /// honoring `-w` word bounds and the `--crlf` match view. Empty spans don't
 /// count (ripgrep counts non-empty matches). Under `-m/--max-count`, ripgrep
@@ -52,7 +74,10 @@ pub fn fileMatchStats(re: *const Matcher, a: std.mem.Allocator, o: Opts, body: [
     // `bytes_searched`. This replaces a full NFA sweep of every line with one
     // SIMD `contains` — the same scan `--stats` used to skip. `bytes` still
     // reports the whole body (rg counts non-matching bytes as searched).
-    if (needle) |g| if (!g.in(body)) return .{ .matches = 0, .lines = 0, .bytes = body.len };
+    // Under `-v` the gate proves the OPPOSITE: a body without the required
+    // literal has no matching line, so EVERY line is an inverted match — the
+    // shortcut would report zero where rg reports the whole file.
+    if (!o.invert) if (needle) |g| if (!g.in(body)) return .{ .matches = 0, .lines = 0, .bytes = body.len };
     // `-U`: the tally is over whole-buffer spans, not split lines. `matches`
     // counts non-empty spans; `lines` the union of lines they cover (rg's
     // `matched lines`). `-m` already capped the span list, and rg reports the
@@ -67,29 +92,82 @@ pub fn fileMatchStats(re: *const Matcher, a: std.mem.Allocator, o: Opts, body: [
     defer ss.deinit();
     var m: usize = 0;
     var l: usize = 0;
-    for (lines) |line| {
+    // `-m` stops rg after the Nth matching line — but not before it searches
+    // that match's after-context window, and a matching line inside the window
+    // still counts (measured: `-m 1 -A 2` over `fn a / xxx / fn c` reports 2
+    // matches, 14 bytes searched). The window does not chain: a match inside it
+    // opens no window of its own. `bytes` then reports through the last
+    // MATCHING line, never the last line the window reached.
+    var last_hit_end: usize = 0;
+    var window_end: ?usize = null;
+    for (lines, 0..) |line, i| {
         const mv = if (o.crlf) std.mem.trimEnd(u8, line, "\r") else line;
-        if (needle) |g| if (!g.in(mv)) continue;
-        var from: usize = 0;
-        var line_hit = false;
-        while (from <= mv.len) {
-            const sp = re.matchSpan(&ss, mv, from) orelse break;
-            from = if (sp.end == sp.start) sp.start + 1 else sp.end;
-            if (sp.end == sp.start) continue;
-            if (o.word and !output.wordOk(o.unicode, mv, sp.start, sp.end)) continue;
-            m += 1;
-            line_hit = true;
+        // `-v` counts the lines the pattern does NOT match, so it only needs to
+        // know whether ONE span exists (cap 1) and inverts the answer; the plain
+        // case counts every span on the line.
+        const term = lineTerminated(body, line);
+        const hits = if (o.invert) @intFromBool(countSpans(re, &ss, o, needle, mv, term, 1) == 0) else countSpans(re, &ss, o, needle, mv, term, 0);
+        if (hits != 0) {
+            l += 1;
+            // rg's `matches` counter under `-v` depends on which printer runs:
+            // the standard printer reports `0 matches` (an inverted line carries
+            // no span to count) while every summary printer — `-c`,
+            // `--count-matches`, `-l`, `--files-without-match` — reports one per
+            // inverted line. Both measured against live rg;
+            // `bench/rgsuite/fuzz.py` is the oracle.
+            m += if (o.invert) @intFromBool(o.mode.enumerates()) else hits;
+            last_hit_end = lineEnd(body, line);
         }
-        if (line_hit) l += 1;
-        if (o.max_per_file != 0 and l >= o.max_per_file) {
-            // rg stops after the Nth matching line; bytes searched = end of that
-            // line (its terminator included when one follows).
-            var end = (@intFromPtr(line.ptr) - @intFromPtr(body.ptr)) + line.len;
-            if (end < body.len) end += 1;
-            return .{ .matches = m, .lines = l, .bytes = end };
+        if (window_end) |w| {
+            if (i >= w) break;
+            continue;
+        }
+        if (hits != 0 and o.max_per_file != 0 and l >= o.max_per_file) {
+            if (o.after == 0) return .{ .matches = m, .lines = l, .bytes = last_hit_end };
+            window_end = i + o.after;
         }
     }
-    return .{ .matches = m, .lines = l, .bytes = body.len };
+    // A window that ran off the end of the file means the searcher reached EOF
+    // rather than stopping at the cap, and rg then reports the whole body as
+    // searched (measured: `-m 1 -A 3` over a 3-line file reports all 13 bytes,
+    // where `-A 2` — the window ending exactly on the last line — reports 5).
+    const stopped_short = if (window_end) |w| w < lines.len else false;
+    return .{ .matches = m, .lines = l, .bytes = if (stopped_short) last_hit_end else body.len };
+}
+
+/// One line's end offset within its body, rg's terminator included when one
+/// follows — the boundary `bytes searched` reports when a cap stops the walk.
+fn lineEnd(body: []const u8, line: []const u8) usize {
+    const end = (@intFromPtr(line.ptr) - @intFromPtr(body.ptr)) + line.len;
+    return if (end < body.len) end + 1 else end;
+}
+
+/// Did this line carry a terminator in the body — `lineEnd`'s own predicate,
+/// named, because `output.Rows` needs it to decide whether the zero-width match
+/// at the end of the content exists (it sits before the `\n`, so an unterminated
+/// tail has no such position).
+fn lineTerminated(body: []const u8, line: []const u8) bool {
+    return (@intFromPtr(line.ptr) - @intFromPtr(body.ptr)) + line.len < body.len;
+}
+
+/// Countable spans on one line — rg's `--stats` `matches` is the count of spans
+/// its printer would yield, zero-width ones included (measured: `--stats -e 'a|'`
+/// over a 4-line file reports 11 matches / 4 matched lines, the same 11 rows `-o`
+/// prints). So this walks `output.Rows`, the one span iteration `-o` and
+/// `--count-matches` already share, rather than a second non-empty-only loop that
+/// silently undercounted every nullable pattern (the fuzzer's `\b*` / `[a-z]*`
+/// / `pat|` divergences).
+/// `cap` cuts the walk short — `-v` only needs to know whether ONE exists, so it
+/// asks for 1 rather than paying for the whole line.
+fn countSpans(re: *const Matcher, ss: *Matcher.SpanSim, o: Opts, needle: ?simd.Gate, mv: []const u8, terminated: bool, cap: usize) usize {
+    if (needle) |g| if (!g.in(mv)) return 0;
+    var rows = output.Rows{ .re = re, .ss = ss, .o = o, .mv = mv, .terminated = terminated };
+    var n: usize = 0;
+    while (rows.next() != null) {
+        n += 1;
+        if (n == cap) break;
+    }
+    return n;
 }
 
 /// Emit ripgrep's `--stats` block (leading blank line, one field per line). The

@@ -162,12 +162,17 @@ test "analysis/requiredAny: every branch yields a ≥3 literal ⇒ the union cov
     }
 }
 
-test "analysis/requiredAny: a sub-3 branch defeats the whole cover (soundness)" {
-    // `0x` can't be trigram-filtered; a match through that branch carries none of
-    // the set, so admitting {panic} alone would drop it. Must bail to null.
+test "analysis/requiredAny: a sub-3 branch joins the cover, it does not defeat it" {
+    // `0x` produces no trigram, so admitting {panic} ALONE would drop a match
+    // arriving through that branch — the unsoundness this has always guarded. The
+    // fix is to carry `0x` too, not to abandon the cover: the sliver tier answers
+    // it from the same directory. (This asserted `== null` while `0x` was
+    // unqueryable; that was the sound answer then, and the weak one now — it sent
+    // the certificate's `regex-litalt` class to a 100% full scan.)
     var pr = try parse("panic|0x");
     defer pr.deinit();
-    try std.testing.expect((try ana.requiredAny(pr.alloc(), pr.node)) == null);
+    const cover = (try ana.requiredAny(pr.alloc(), pr.node)) orelse return error.CoverWithheld;
+    try std.testing.expect(coverHas(cover, "panic") and coverHas(cover, "0x"));
 }
 
 test "analysis/requiredAny: a huge alternation bails past the cover cap" {
@@ -210,13 +215,22 @@ test "analysis/literal: an OPTIONAL neighbor is never folded into best (over-cla
     try expectBest("x*y*z", "z"); // only z is mandatory through the stars
 }
 
-test "analysis/requiredAny: an asymmetric short branch defeats the cover" {
-    // `a|abc`: a match via the 1-byte `a` branch contains no "abc", so returning
-    // {"abc"} would be unsound — order must not matter, so check both sides.
+test "analysis/requiredAny: an asymmetric short branch is covered, never dropped" {
+    // `a|abc`: a match via the 1-byte `a` branch contains no "abc", so a cover of
+    // {"abc"} alone would be UNSOUND. The short branch must therefore contribute
+    // its own literal — {"a", "abc"} — which the sliver tier can now query. (This
+    // asserted `== null` while a 1–2 byte branch was unqueryable; withholding the
+    // whole cover was the sound answer then, and is merely the weaker one now.)
+    // Order must not matter, so check both sides.
     inline for (.{ "a|abc", "abc|a" }) |pat| {
         var pr = try parse(pat);
         defer pr.deinit();
-        try std.testing.expect((try ana.requiredAny(pr.alloc(), pr.node)) == null);
+        // The soundness claim itself: EVERY branch contributes, so no match of
+        // either branch can be filtered away.
+        const cover = (try ana.requiredAny(pr.alloc(), pr.node)) orelse return error.CoverWithheld;
+        try std.testing.expectEqual(@as(usize, 2), cover.len);
+        try std.testing.expect(coverHas(cover, "a"));
+        try std.testing.expect(coverHas(cover, "abc"));
     }
 }
 
@@ -423,11 +437,19 @@ test "analysis/requiredAny: a single best ≥3 wins even across a wildcard gap" 
     try std.testing.expect(cover[0].len >= 3 and coverHas(cover, "foo"));
 }
 
-test "analysis/requiredAny: no branch reaches 3 bytes ⇒ no cover at all" {
-    inline for (.{ "ab|cd", "(ab|cd)ef", "a|ab" }) |pat| {
-        var pr = try parse(pat);
+test "analysis/requiredAny: no branch reaching 3 bytes still yields a sound cover" {
+    // Each expectation is derived from the contract — every match must contain a
+    // member — not from what the implementation happens to return.
+    inline for (.{
+        .{ "ab|cd", "ab", "cd" }, // both branches contribute
+        .{ "(ab|cd)ef", "ef", "ef" }, // `ef` is mandatory through EITHER branch,
+        //                               so the one-literal cover beats two queries
+        .{ "a|ab", "a", "ab" }, // the 1-byte branch must carry its own byte
+    }) |case| {
+        var pr = try parse(case[0]);
         defer pr.deinit();
-        try std.testing.expect((try ana.requiredAny(pr.alloc(), pr.node)) == null);
+        const cover = (try ana.requiredAny(pr.alloc(), pr.node)) orelse return error.CoverWithheld;
+        try std.testing.expect(coverHas(cover, case[1]) and coverHas(cover, case[2]));
     }
 }
 
@@ -464,11 +486,15 @@ test "analysis/requiredAny: a concat takes the cover from whichever side proves 
         try std.testing.expect(coverHas(cover, "foo") and coverHas(cover, "bar"));
     }
     {
-        // Both sides carry a <3 branch ("x", "y") that no trigram can filter, so a
-        // match like "xy" carries no set member — the whole thing must bail.
+        // Both sides carry a <3 branch ("x", "y"). Either side's cover is sound for
+        // the whole concat, and a match like "xy" is now caught by the sliver
+        // literal its side contributes rather than forcing a full scan.
         var pr = try parse("(foo|x)(bar|y)");
         defer pr.deinit();
-        try std.testing.expect((try ana.requiredAny(pr.alloc(), pr.node)) == null);
+        const cover = (try ana.requiredAny(pr.alloc(), pr.node)) orelse return error.CoverWithheld;
+        const left = coverHas(cover, "foo") and coverHas(cover, "x");
+        const right = coverHas(cover, "bar") and coverHas(cover, "y");
+        try std.testing.expect(left or right);
     }
 }
 

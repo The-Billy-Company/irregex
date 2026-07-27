@@ -74,6 +74,19 @@ const Declines = error{Declined};
 pub const supported = builtin.os.tag == .macos or builtin.os.tag == .ios or
     builtin.os.tag == .tvos or builtin.os.tag == .watchos or builtin.os.tag == .visionos;
 
+/// Whether `listNamesOnly` — the cheaper names+kinds drain, no metadata — has a
+/// raw batched implementation on this target. Broader than `supported`, because
+/// the names-only listing needs no `getattrlistbulk`: Darwin reaches it through
+/// `getdirentries(2)` and Linux through `getdents64(2)`. Every other target
+/// declines, and its callers take the portable `Dir.Iterator` path.
+///
+/// The two facts are separate constants because they fail differently. A target
+/// outside `supported` still has correct freshness (it stats); a target outside
+/// this one cannot enumerate a directory here at all, which is why
+/// `phantom/treemap.zig` refuses to publish a snapshot there rather than
+/// recording every directory as childless.
+pub const names_supported = supported or builtin.os.tag == .linux;
+
 // ─────────────────────── hand-declared Darwin ABI (<sys/attr.h>) ───────────────────────
 
 const ATTR_BIT_MAP_COUNT: u16 = 5;
@@ -321,12 +334,18 @@ fn declineList(gpa: Allocator, list: *std.ArrayList(OwnedEntry)) fault.Answer([]
     return .{ .declined = .capability_missing };
 }
 
-/// Fully drains ONE level of `dirfd` via raw `getdirentries(2)` — names +
-/// `d_type` only, no timestamps (`mtime_ns = ctime_ns = null`). When the caller
-/// doesn't need per-entry metadata (the parallel walk without index elision),
-/// this is strictly cheaper than `listOneLevel`: `getattrlistbulk` makes the
-/// kernel resolve and pack attributes per entry, while `getdirentries` is the
-/// same thin readdir path ripgrep rides. Darwin-only (same `supported` gate).
+/// One decoded directory record: what the entry says, and how many bytes to
+/// step to reach the next one. `ino == 0` marks a deleted slot the kernel left
+/// in the buffer — a skip, not an error.
+const Record = struct { name: []const u8, ino: u64, dtype: u8, advance: usize };
+
+/// Fully drains ONE level of `dirfd` via the platform's raw batched readdir —
+/// names + `d_type` only, no timestamps (`mtime_ns = ctime_ns = null`). When
+/// the caller doesn't need per-entry metadata (the parallel walk without index
+/// elision), this is strictly cheaper than `listOneLevel`: `getattrlistbulk`
+/// makes the kernel resolve and pack attributes per entry, while this is the
+/// same thin readdir path ripgrep rides. Gated on `names_supported`, NOT on
+/// `supported`: Darwin rides `getdirentries(2)` and Linux `getdents64(2)`.
 ///
 /// Same boundary contract as `listOneLevel`: declining is a value, OOM is an error.
 pub fn listNamesOnly(gpa: Allocator, dirfd: std.posix.fd_t) error{OutOfMemory}!fault.Answer([]OwnedEntry) {
@@ -335,32 +354,23 @@ pub fn listNamesOnly(gpa: Allocator, dirfd: std.posix.fd_t) error{OutOfMemory}!f
         for (list.items) |e| gpa.free(e.name);
         list.deinit(gpa);
     }
+    if (comptime !names_supported) return declineList(gpa, &list);
     var buf: [64 * 1024]u8 align(@alignOf(u64)) = undefined;
-    var seek: i64 = 0;
+    var cursor: i64 = 0; // Darwin's `basep`; Linux keeps its cursor in the fd
     while (true) {
-        const rc = std.posix.system.getdirentries(dirfd, &buf, buf.len, &seek);
-        if (std.posix.errno(rc) != .SUCCESS) return declineList(gpa, &list);
-        const n: usize = @intCast(rc);
+        const n = refillNames(dirfd, &buf, &cursor) catch return declineList(gpa, &list);
         if (n == 0) return .{ .got = try list.toOwnedSlice(gpa) };
         var i: usize = 0;
         while (i < n) {
-            // Darwin 64-bit `struct dirent`, decoded by explicit field offset
-            // (no pointer casts): d_ino u64 @0 · d_seekoff u64 @8 ·
-            // d_reclen u16 @16 · d_namlen u16 @18 · d_type u8 @20 · name @21.
-            const rec = buf[i..n];
-            const ino = std.mem.readInt(u64, rec[0..8], .little);
-            const reclen = std.mem.readInt(u16, rec[16..18], .little);
-            const namlen = std.mem.readInt(u16, rec[18..20], .little);
-            const dtype = rec[20];
-            i += reclen;
-            if (ino == 0) continue;
-            const name = rec[21 .. 21 + @as(usize, namlen)];
-            if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) continue;
-            const is_dir = dtype == std.posix.DT.DIR;
-            const is_file = dtype == std.posix.DT.REG;
+            const rec = parseRecord(buf[i..n]) catch return declineList(gpa, &list);
+            i += rec.advance;
+            if (rec.ino == 0) continue;
+            if (std.mem.eql(u8, rec.name, ".") or std.mem.eql(u8, rec.name, "..")) continue;
+            const is_dir = rec.dtype == std.posix.DT.DIR;
+            const is_file = rec.dtype == std.posix.DT.REG;
             if (!is_dir and !is_file) continue; // symlinks/specials — the walk never follows them
             try list.append(gpa, .{
-                .name = try gpa.dupe(u8, name),
+                .name = try gpa.dupe(u8, rec.name),
                 .is_dir = is_dir,
                 .is_file = is_file,
                 .mtime_ns = null,
@@ -368,6 +378,56 @@ pub fn listNamesOnly(gpa: Allocator, dirfd: std.posix.fd_t) error{OutOfMemory}!f
             });
         }
     }
+}
+
+/// One batch of directory records into `buf`; 0 means the directory is drained.
+/// The two syscalls differ in where the read cursor lives — Darwin threads it
+/// through the caller-held `basep`, Linux keeps it in the open file description
+/// — so `basep` is simply unread on Linux rather than being two functions.
+fn refillNames(dirfd: std.posix.fd_t, buf: []u8, basep: *i64) Declines!usize {
+    if (comptime builtin.os.tag == .linux) {
+        // The raw syscall, not a libc symbol: musl ships no `getdirentries`, so
+        // going through `std.c` here is what broke every static-musl cross build.
+        const rc = std.os.linux.getdents64(dirfd, buf.ptr, buf.len);
+        if (std.os.linux.errno(rc) != .SUCCESS) return error.Declined;
+        return rc;
+    }
+    const rc = std.posix.system.getdirentries(dirfd, buf.ptr, buf.len, basep);
+    if (std.posix.errno(rc) != .SUCCESS) return error.Declined;
+    return @intCast(rc);
+}
+
+/// Decode the leading record of `rec` by explicit field offset (no pointer
+/// casts, so the two layouts cannot silently alias each other):
+///
+/// - Darwin 64-bit `struct dirent`: d_ino u64 @0 · d_seekoff u64 @8 ·
+///   d_reclen u16 @16 · d_namlen u16 @18 · d_type u8 @20 · name @21.
+/// - Linux `struct linux_dirent64`: d_ino u64 @0 · d_off i64 @8 ·
+///   d_reclen u16 @16 · d_type u8 @18 · NUL-terminated name @19 (no length
+///   field — the name is scanned to its terminator inside the record).
+///
+/// Reading a Linux buffer with the Darwin layout is not a crash but a silent
+/// wrong answer: `d_type` lands where `d_namlen`'s low byte is, so every entry
+/// decodes to a bogus name and kind. That is what made a freshly indexed tree
+/// report zero files on Linux, so the record is bounds-checked here and a
+/// truncated one declines rather than reading past the batch.
+fn parseRecord(rec: []const u8) Declines!Record {
+    const darwin = comptime builtin.os.tag != .linux;
+    const name_off: usize = if (darwin) 21 else 19;
+    if (rec.len < name_off) return error.Declined;
+    const reclen: usize = std.mem.readInt(u16, rec[16..18], .little);
+    if (reclen < name_off or reclen > rec.len) return error.Declined;
+    const body = rec[name_off..reclen];
+    const name = if (darwin)
+        body[0..@min(@as(usize, std.mem.readInt(u16, rec[18..20], .little)), body.len)]
+    else
+        std.mem.sliceTo(body, 0);
+    return .{
+        .name = name,
+        .ino = std.mem.readInt(u64, rec[0..8], .little),
+        .dtype = if (darwin) rec[20] else rec[18],
+        .advance = reclen,
+    };
 }
 
 /// The pre-bulkstat walk (readdir + `statFile` per entry), scoped to one

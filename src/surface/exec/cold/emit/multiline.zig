@@ -109,31 +109,83 @@ pub fn collect(a: std.mem.Allocator, re: *const Matcher, o: Opts, body: []const 
     var ss = Matcher.SpanSim.init(a, re) catch return &.{};
     defer ss.deinit();
     var out: std.ArrayList(Span) = .empty;
-    var from: usize = 0;
-    var last_end: ?usize = null;
-    // rg's multiline loop is `while !slice[pos..].is_empty()` — it never opens a
-    // search AT the end, so `body.len` is a place a match may LAND (found from
-    // an earlier resume, as `\z` is) but never a place one is looked for. An
-    // empty body is therefore searched zero times, not once.
-    while (from < body.len) {
-        const sp = re.matchSpan(&ss, body, from) orelse break;
-        if (o.word and !output.wordOk(o.unicode, body, sp.start, sp.end)) {
-            from = if (sp.end > sp.start) sp.end else sp.start + 1;
-            continue;
-        }
-        if (sp.end == sp.start) {
-            const adjacent = last_end != null and sp.start == last_end.?;
-            if (phantomEnd(body, o.term(), sp.start) or adjacent) {
-                from = sp.start + 1;
-                continue;
-            }
-        }
+    var w: Walk = .{ .re = re, .ss = &ss, .o = o, .body = body };
+    while (w.next()) |sp| {
         out.append(a, sp) catch oom();
-        last_end = sp.end;
-        from = if (sp.end > sp.start) sp.end else sp.start + 1;
         if (o.max_per_file != 0 and out.items.len >= o.max_per_file) break;
     }
     return out.toOwnedSlice(a) catch oom();
+}
+
+/// The same walk as a cursor, so a consumer that needs HOW MANY never pays for a
+/// list of WHICH. The rules live here once and `collect` reads them through this
+/// too — a second implementation of the progress rule would be a second thing to
+/// keep true.
+pub const Walk = struct {
+    re: *const Matcher,
+    ss: *Matcher.SpanSim,
+    o: Opts,
+    body: []const u8,
+    from: usize = 0,
+    last_end: ?usize = null,
+
+    pub fn next(self: *Walk) ?Span {
+        // rg's multiline loop is `while !slice[pos..].is_empty()` — it never opens
+        // a search AT the end, so `body.len` is a place a match may LAND (found
+        // from an earlier resume, as `\z` is) but never a place one is looked
+        // for. An empty body is therefore searched zero times, not once.
+        while (self.from < self.body.len) {
+            const sp = self.re.matchSpan(self.ss, self.body, self.from) orelse return null;
+            if (self.o.word and !output.wordOk(self.o.unicode, self.body, sp.start, sp.end)) {
+                // One byte on, not past the candidate's end — rg's `-w` is
+                // compiled into the pattern, so a rejected candidate never
+                // consumes the region it covered (see `output.nextSpan`).
+                self.from = sp.start + 1;
+                continue;
+            }
+            if (sp.end == sp.start) {
+                const adjacent = self.last_end != null and sp.start == self.last_end.?;
+                if (phantomEnd(self.body, self.o.term(), sp.start) or adjacent) {
+                    self.from = sp.start + 1;
+                    continue;
+                }
+            }
+            self.last_end = sp.end;
+            self.from = if (sp.end > sp.start) sp.end else sp.start + 1;
+            return sp;
+        }
+        return null;
+    }
+};
+
+/// How many matches the walk yields — which is `--count-matches` AND `-c/--count`
+/// under the slice model: total emitted matches, empty ones included, rg's
+/// whole-buffer `matches` tally. The two count modes are one question here, which
+/// is rg's documented contract: "when multiline mode is enabled and the
+/// pattern(s) given can match over multiple lines, -c/--count is equivalent to
+/// --count-matches" (`rg --help count`). There is no line tally to give: a match
+/// owns a line RANGE, not a line.
+///
+/// Do not re-derive this from a probe like `rg -U -c 'a*'`: a pattern that cannot
+/// read `\n` never enters the slice model at all (`sliceModel`), so such a probe
+/// measures rg's LINE counter and reports lines. Force the same shape across the
+/// boundary (`a*|q\nq`) and `-c` answers with the match tally.
+///
+/// `-U -c` used to route through `collect`, then read `.len` off a list it threw
+/// away: 33.5 M lazy matches on one 64 MiB line cost ~800 MiB of spans nobody
+/// looked at (measured by the robustness lane, which is also how the ceiling
+/// came to be near). Counting through the cursor is O(1) in memory, and the
+/// answer is the same walk's answer by construction.
+pub fn count(a: std.mem.Allocator, re: *const Matcher, o: Opts, body: []const u8) usize {
+    var ss = Matcher.SpanSim.init(a, re) catch return 0;
+    defer ss.deinit();
+    var w: Walk = .{ .re = re, .ss = &ss, .o = o, .body = body };
+    var n: usize = 0;
+    while (w.next()) |_| {
+        n += 1;
+        if (o.max_per_file != 0 and n >= o.max_per_file) break;
+    }
+    return n;
 }
 
 /// `-v` under the slice model: which physical lines a match CLAIMED, as a mask
@@ -167,7 +219,7 @@ pub fn claimed(a: std.mem.Allocator, re: *const Matcher, o: Opts, body: []const 
         const sp = re.matchSpan(&ss, body, pos) orelse break;
         if (phantomEnd(body, o.term(), sp.start)) break; // claims no line
         if (o.word and !output.wordOk(o.unicode, body, sp.start, sp.end)) {
-            pos = @max(sp.end, sp.start + 1);
+            pos = sp.start + 1; // see `output.nextSpan`: `-w` narrows, never consumes
             continue;
         }
         found += 1;
@@ -176,21 +228,6 @@ pub fn claimed(a: std.mem.Allocator, re: *const Matcher, o: Opts, body: []const 
         pos = @max(lines[last].term_end, pos + 1);
     }
     return out;
-}
-
-/// `--count-matches` AND `-c/--count`: total emitted matches, empty ones
-/// included — rg's whole-buffer `matches` tally. Under the slice model the two
-/// count modes are one question, which is rg's documented contract: "when
-/// multiline mode is enabled and the pattern(s) given can match over multiple
-/// lines, -c/--count is equivalent to --count-matches" (`rg --help count`).
-/// There is no line tally to give: a match owns a line RANGE, not a line.
-///
-/// Do not re-derive this from a probe like `rg -U -c 'a*'`: a pattern that
-/// cannot read `\n` never enters the slice model at all (`sliceModel`), so such
-/// a probe measures rg's LINE counter and reports lines. Force the same shape
-/// across the boundary (`a*|q\nq`) and `-c` answers with the match tally.
-pub fn countAll(spans: []const Span) usize {
-    return spans.len;
 }
 
 /// `-m N` under the slice model: the spans that still RENDER, clipped to the
@@ -443,7 +480,10 @@ test "count semantics: both count modes tally spans; --stats tallies lines" {
     // `--count-matches` are one number — `rg -U -c 'a*|q\nq'` over this body
     // answers 4, the same as `--count-matches`, not the 2 lines `rg -c 'a*'`
     // reports from the line model. One "aa" plus three empties on line 2.
-    try t.expectEqual(@as(usize, 4), countAll(spans));
+    // Cursor and list are the same walk: `count` answers without materializing
+    // the spans, and must agree with the list `collect` builds from it.
+    try t.expectEqual(@as(usize, 4), count(fx.a(), &fx.m, .{}, body));
+    try t.expectEqual(@as(usize, 4), spans.len);
     try t.expectEqual(@as(usize, 2), countMatchedLines(lines, spans)); // --stats: covered lines
 }
 

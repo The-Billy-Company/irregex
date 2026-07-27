@@ -19,6 +19,7 @@
 const std = @import("std");
 const args = @import("../argv/args.zig");
 const arm = @import("arm.zig");
+const assay = @import("../../../../assay/assay.zig");
 const crest = @import("../../../../kernel/primitives/crest.zig");
 const query_mod = @import("../../../../kernel/match/query/query.zig");
 const simd = @import("../../../../kernel/match/scan/simd.zig");
@@ -118,18 +119,11 @@ pub fn trigramFilter(a: std.mem.Allocator, o: Opts, eff: []const u8, re: *const 
     if (o.caseless) return caselessFilter(a, o, eff, re);
     // The regex→sound-literals mapping is the shared search core's, so the cold
     // elision and the warm resident session prune by identical literals. The
-    // PCRE2 arm has no gist AST, so it prunes by its required literal alone
-    // (≥3 bytes to be trigram-usable) — the same soundness rule, conservatively.
+    // PCRE2 arm has no gist AST, so it prunes through the engine-neutral seam —
+    // the same function warm uses, rather than a second copy of the rule.
     return switch (re.*) {
         .linear => |*r| query_mod.regexPrefilter(r, one),
-        .pcre => blk: {
-            const req = re.required();
-            if (req.len >= 3) {
-                one[0] = req;
-                break :blk one[0..1];
-            }
-            break :blk re.alts();
-        },
+        .pcre => query_mod.matcherPrefilter(re, one),
     };
 }
 
@@ -182,6 +176,50 @@ pub fn crestSieve(a: std.mem.Allocator, o: Opts, pattern: []const u8, re: *const
     }
     return Regex.forcedSwell(a, pattern, arm.linearOptions(o));
 }
+
+/// The **conjunctive cover** for this invocation — the CNF plan
+/// (`query.coverPlanSource`) the index evaluates instead of the flat OR of
+/// `trigramFilter`'s literals, or null to keep exactly that flat OR.
+///
+/// This is `trigramFilter`'s strictly stronger sibling, not its replacement:
+/// a plan states everything the pattern forces (`if\s+err\s*!=\s*nil` proves
+/// `if` AND `err` AND `nil`) where a filter set can only state one disjunction.
+/// Null is always safe — `elide.assemble` falls back to the filters — so every
+/// decline below costs pruning and never a match.
+///
+/// Same guards as its two siblings, plus two of its own:
+///
+///   * **PCRE2 gets NO plan**, for `crestSieve`'s reason one level up. The plan
+///     is read off gist's AST while PCRE2 denotes the pattern under its own
+///     grammar, and the hazard is worst exactly where `--engine auto` escalated
+///     *because* gist's grammar could not express the pattern. `-P` keeps the
+///     engine-neutral `matcherPrefilter` literals.
+///   * **Caseless keeps `caselessFilter`.** A folded AST would in principle
+///     cross-product into the case-variant set for free, but `caselessVariants`
+///     is the one place the Unicode-fold bounds (ASCII-only, Kelvin/long-s
+///     orbits excluded) are stated, and a second spelling of that reasoning is
+///     how a fold bug gets in. Measured as a follow-up, not asserted here.
+///
+/// `pattern` is the EFFECTIVE combined pattern the engine compiled, so multi
+/// `-e` arrives as `(?:a)|(?:b)` and the union semantics are the planner's own:
+/// `cover.branch` emits a clause only where BOTH sides force one, so a single
+/// unplannable pattern yields no plan for the whole run rather than a set that
+/// under-admits the others.
+/// `GIST_NO_COVER` (internal, undocumented — the `GIST_NO_PARALLEL_LOAD` idiom)
+/// stands the cover down and leaves the run on `trigramFilter`'s flat OR. It is
+/// how the wired path is measured against itself on ONE binary, so an A/B of the
+/// planner cannot be confounded by a build difference; it is also the operational
+/// escape hatch if a plan ever costs more posting decode than it saves.
+pub fn coverPlan(a: std.mem.Allocator, o: Opts, pattern: []const u8, re: *const Matcher, transforming: bool) ?[]const query_mod.CoverPlan {
+    if (!mayElideByIndex(o, transforming) or o.caseless) return null;
+    if (assay.envFlag("GIST_NO_COVER")) return null;
+    switch (re.*) {
+        .linear => {},
+        .pcre => return null,
+    }
+    return query_mod.coverPlanSource(a, pattern, arm.linearOptions(o), .{});
+}
+
 test "required literal gate reuses sound regex analysis" {
     const t = std.testing;
     var decl = Matcher{ .linear = try Regex.compile(t.allocator, "func\\s+\\w+\\(") };

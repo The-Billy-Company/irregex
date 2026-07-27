@@ -10,22 +10,35 @@
 const std = @import("std");
 const fault = @import("../../../../fault.zig");
 const inode = @import("inode.zig");
+const portal = @import("../../../../portal.zig");
 
 /// ripgrep's default read-buffer capacity. Binary detection scans each fill's
 /// newly-read bytes for a NUL; the searched region is what
 /// `binary.committedPrefix` computes from that fill geometry.
 pub const BUFCAP: usize = 65536;
 
+/// Why a candidate the walk already admitted could not be opened — named rather
+/// than folded into a null (ADR-373 law 2), because the two outcomes have
+/// DIFFERENT exit classes and rg distinguishes them. A file that opens and holds
+/// no match is exit 1; a file that will not open at all is a gap in what was
+/// searched, and ripgrep reports it on stderr and exits 2 even when other files
+/// matched. Returning `?` for both made an unreadable file present as a silent
+/// "found nothing here" — measured against live rg by `bench/rgsuite/fuzz.py`,
+/// which is where this seam came from. `notice.WalkFault` already covers this
+/// set, so the shared renderer takes these errors unchanged.
+pub const OpenFault = std.posix.OpenError;
+
 /// One candidate's raw bytes: POSIX open/read/close into the caller's reused
 /// `scratch` (sized `corpus.per_file_cap`); a file that fills `scratch`
 /// completely is ambiguous (exactly cap-sized, or bigger), so `readTail` keeps
 /// reading past it into a growable `a`-owned buffer instead of silently
-/// truncating (ripgrep has no default max file size). Returns null when the
-/// file can't be opened — the walk's truth degrades to "found nothing here",
-/// never an invented match. The returned slice may alias `scratch`: consume it
-/// before the next call.
-pub fn readFileRaw(a: std.mem.Allocator, scratch: []u8, disk: []const u8) ?[]const u8 {
-    const sf = StagedFile.open(scratch, std.posix.AT.FDCWD, disk) orelse return null;
+/// truncating (ripgrep has no default max file size). Errors when the file
+/// cannot be OPENED (the caller owes stderr + exit 2); null when it opened but
+/// its bytes could not be assembled (an allocation failure downstream of a file
+/// that is genuinely there) — never an invented match either way. The returned
+/// slice may alias `scratch`: consume it before the next call.
+pub fn readFileRaw(a: std.mem.Allocator, scratch: []u8, disk: []const u8) OpenFault!?[]const u8 {
+    const sf = try StagedFile.open(scratch, portal.cwd(), disk);
     defer sf.close();
     return sf.readRest(a, scratch);
 }
@@ -34,8 +47,8 @@ pub fn readFileRaw(a: std.mem.Allocator, scratch: []u8, disk: []const u8) ?[]con
 /// read or null when the file can't be opened. The allocation-free sibling of
 /// `readFileRaw` for callers that own a fixed per-worker buffer.
 pub fn readFileInto(path: []const u8, scratch: []u8) ?usize {
-    const fd = std.posix.openat(std.posix.AT.FDCWD, path, .{ .ACCMODE = .RDONLY }, 0) catch return null;
-    defer _ = std.posix.system.close(fd);
+    const fd = portal.openFile(portal.cwd(), path) catch return null;
+    defer portal.close(fd);
     return drain(fd, scratch);
 }
 
@@ -47,7 +60,7 @@ fn drain(fd: std.posix.fd_t, buf: []u8) usize {
     var n: usize = 0;
     while (n < buf.len) {
         const want = buf.len - n;
-        const r = std.posix.read(fd, buf[n..]) catch break;
+        const r = portal.read(fd, buf[n..]) catch break;
         n += r;
         if (r < want) break;
     }
@@ -70,8 +83,8 @@ pub const StagedFile = struct {
     prefix: []const u8, // first ≤BUFCAP bytes, in the caller's scratch
     more: bool, // the prefix filled BUFCAP exactly ⇒ a tail may exist
 
-    pub fn open(scratch: []u8, dirfd: std.posix.fd_t, name: []const u8) ?StagedFile {
-        const fd = std.posix.openat(dirfd, name, .{ .ACCMODE = .RDONLY }, 0) catch return null;
+    pub fn open(scratch: []u8, dirfd: std.posix.fd_t, name: []const u8) OpenFault!StagedFile {
+        const fd = try portal.openFile(dirfd, name);
         const cap = @min(scratch.len, BUFCAP);
         const n = drain(fd, scratch[0..cap]);
         return .{ .fd = fd, .prefix = scratch[0..n], .more = n == cap };
@@ -87,7 +100,7 @@ pub const StagedFile = struct {
     }
 
     pub fn close(self: *const StagedFile) void {
-        _ = std.posix.system.close(self.fd);
+        portal.close(self.fd);
     }
 };
 
@@ -111,8 +124,8 @@ pub fn readTail(a: std.mem.Allocator, fd: std.posix.fd_t, scratch: []const u8) ?
     var out: std.ArrayList(u8) = .empty;
     out.appendSlice(a, scratch) catch return null;
     var tmp: [64 * 1024]u8 = undefined;
-    var r = std.posix.read(fd, &tmp) catch 0;
-    while (r > 0) : (r = std.posix.read(fd, &tmp) catch 0)
+    var r = portal.read(fd, &tmp) catch 0;
+    while (r > 0) : (r = portal.read(fd, &tmp) catch 0)
         out.appendSlice(a, tmp[0..r]) catch return null;
     return out.toOwnedSlice(a) catch null;
 }
@@ -126,8 +139,8 @@ pub fn readTail(a: std.mem.Allocator, fd: std.posix.fd_t, scratch: []const u8) ?
 /// map is never unmapped (the cold engine is a one-shot process; the OS reclaims
 /// it at exit), matching the `readTail` large-file mapping's lifetime.
 pub fn mapFile(disk: []const u8, min: usize) ?[]const u8 {
-    const fd = std.posix.openat(std.posix.AT.FDCWD, disk, .{ .ACCMODE = .RDONLY }, 0) catch return null;
-    defer _ = std.posix.system.close(fd);
+    const fd = portal.openFile(portal.cwd(), disk) catch return null;
+    defer portal.close(fd);
     return mapWhole(fd, min);
 }
 
@@ -139,17 +152,17 @@ pub fn mapFile(disk: []const u8, min: usize) ?[]const u8 {
 /// the caller then takes the copying path, never a silent drop.
 fn mapWhole(fd: std.posix.fd_t, min_len: usize) ?[]const u8 {
     const st = inode.statFd(fd) orelse return null;
-    if (st.mode & std.posix.S.IFMT != std.posix.S.IFREG) return null;
+    if (st.kind != .file) return null;
     const size = std.math.cast(usize, st.size) orelse return null;
     if (size < min_len) return null;
-    const mapped = std.posix.mmap(null, size, .{ .READ = true }, .{ .TYPE = .PRIVATE }, fd, 0) catch return null;
+    const mapped = portal.map(fd, size) catch return null;
     // The scan is one strictly-forward SIMD pass, so tell the pager: SEQUENTIAL
     // widens readahead + drops pages behind the cursor, WILLNEED starts the
     // fault-in immediately instead of one page-cluster per fault. Measured on
     // the 2.1 GiB page-cached blob this mapping exists for: 13.7 → ~40 GiB/s
     // (~160 ms → ~54 ms), the difference between fault-per-cluster and
     // batched fault-ahead. Advice is best-effort; failure changes nothing.
-    fault.spare("advise sequential access", std.posix.madvise(mapped.ptr, size, std.posix.MADV.SEQUENTIAL));
-    fault.spare("advise fault-ahead", std.posix.madvise(mapped.ptr, size, std.posix.MADV.WILLNEED));
+    fault.spare("advise sequential access", portal.advise(mapped, .sequential));
+    fault.spare("advise fault-ahead", portal.advise(mapped, .will_need));
     return mapped[0..size];
 }

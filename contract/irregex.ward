@@ -22,6 +22,14 @@ package irregex {
 // and called it legal. A tier is the unit of "may not point up" — so wherever
 // direction is meant, there is a tier.
 tiers {
+    // Platform floor — std only, and below even the instrumentation because it
+    // is what the instrumentation writes *through*. One file holding every
+    // primitive whose spelling differs across an OS (handle-relative open, the
+    // whole-file map, stat, realpath, argv, stdin readiness), so the Windows
+    // fork is stated once at the bottom of the stack instead of appearing as a
+    // `builtin.os` branch in whichever tier happened to need it.
+    portal      portal.zig
+
     // Instrumentation floor — std only, so every tier above can consume it
     // without inversion.
     assay       assay/**

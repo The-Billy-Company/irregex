@@ -83,7 +83,10 @@ Most of the math here I did not invent. I put the pieces together, then made
 each claim prove itself. The kernel builds on:
 
 - Google Code Search's trigram index (Russ Cox), with a conservative live-tree
-  freshness overlay rather than snapshot authority;
+  freshness overlay rather than snapshot authority, plus a **sliver tier** that
+  answers 1–2 byte needles from that same directory for zero extra bytes on disk
+  (`src/corpus/index/trigrams/sliver.zig`) — a needle thinner than a trigram used
+  to mean a full scan;
 - Thompson/Pike/RE2-family linear matching plus opt-in, resource-capped PCRE2;
 - for the scan tier above that DFA, four separately-invented ideas we adopted on
   merit rather than authorship: Parabix bit-parallel transposition (Cameron et
@@ -103,10 +106,37 @@ calculus, and its own prior-art survey live in
 [`research/crest/`](research/crest/PROOF.md).
 
 I deliberately keep model-free byte kinship rather than dress it up as
-semantic retrieval. `PatternSet` uses a fused gate only to skip all-miss files,
-then confirms each pattern through Gist's own matcher; Hyperscan already owns
-high-throughput expression-ID attribution, while this kernel claims equality
-with N independent Gist searches. Research dossiers:
+semantic retrieval. `PatternSet` fronts its N compiled queries with **two
+prefilter tiers**, dispatched on how wide the slate is, and confirms whatever
+neither tier can settle through Gist's own matcher — always returning exactly
+what N independent Gist searches would. Narrow slates take the **dragnet
+sieve**: bucketed SIMD nibble tables over each literal's leading three bytes,
+which is the fastest thing here when there are few enough literals to keep the
+buckets unsaturated. Wide slates take the **trawl**: one Aho–Corasick automaton
+carrying every literal, swept as six interleaved streams so the per-byte cost is
+flat in the number of patterns rather than growing with it. The handover sits at
+18 literals, where the two curves measurably cross: at 16 the sieve is still 14%
+ahead, at 18 the trawl takes it by 2%.
+
+Against Vectorscan 5.4.12 (the maintained portable Hyperscan fork), that second
+tier is what moved the boundary. **Per byte gist is faster at seven of the nine
+swept widths** — roughly 1.4–1.6× at small N on the dragnet, and 1.3–2.1× from
+N=32 up on the trawl, whose throughput is essentially unchanged from 32 literals
+to 512. **Vectorscan keeps two bands, and both are printed beside the wins
+rather than dropped:** N=64 (0.88×) and N=1024 (0.92×). The wide one is a cache
+boundary — a transition table that has outgrown L2 — but N=64 is mid-sweep,
+where that explanation does not apply, and the mint refuses to assign it a
+mechanism: measured against each tool's own pace at adjacent widths both sides
+moved, so the honest reading is that the cause is unattributed. **End to
+end over a corpus gist wins by ~2×** on ten symbol patterns (and ~13× over N
+sequential `rg` runs that answer the same question) — not by matching faster but
+because the index decides which documents can contain each pattern before the
+rest is read, which is a filter a stream scanner structurally cannot have. That
+advantage is bounded, and the bound is published next to it: on a slate
+containing a near-ubiquitous literal there is nothing to skip, and the margin
+falls to ~1.1×. Every row, the tier that produced it, and the exact figures from
+the last mint are published in Layer K of the
+[certificate](bench/certify/artifact/CERTIFICATE.md). Research dossiers:
 
 - [`research/gist/CLAIM.md`](research/gist/CLAIM.md) ·
   [`PRIOR_ART.md`](research/gist/PRIOR_ART.md) ·
@@ -426,6 +456,20 @@ exist and where they stop.
   never a source of truth.
 - The C ABI is versioned and flat; the header and
   [`ffi` documentation](src/surface/ffi/README.md) are its public contract.
+- Portability is measured rather than claimed, and every platform difference is
+  stated once. [`bench/portable`](bench/portable/README.md) cross-compiles 22
+  targets from one machine with no cross toolchains installed; 15 POSIX targets
+  execute and return byte-identical answers on all twelve probe classes —
+  including big-endian s390x, three 32-bit ARM ABIs, riscv64, and ppc64le —
+  against an oracle pinned byte-for-byte to ripgrep 15.2.0. **Windows builds too**,
+  all four of ripgrep's declared triples, through one `comptime` seam
+  ([`src/portal.zig`](src/portal.zig)) whose Win32 arm speaks `NtCreateFile` with a
+  root handle where POSIX says `openat`; the resident daemon has no unix socket
+  there and declines, which the cold path never depends on. No Windows kernel is
+  reachable from the measuring host, so the executed Windows rows are labeled
+  `conforms-wine` — their own rung, strictly below `conforms`, enforced by a
+  per-lane ceiling rather than by prose. Layer H fails closed if a sweep drops the
+  Windows rows or scores one at the native rung it did not earn.
 
 ## Evidence: six runnable claims
 
@@ -450,6 +494,18 @@ atomic/possessive forms, Unicode switches, and resource-limit failures
 (**30/30**). `bench/races/pcre_headtohead.sh` then times a row only after its
 file set equals ripgrep's, and records csearch/zoekt as inexpressive rather than
 pretending they lost a race they cannot enter.
+
+csearch remains the acknowledged trigram ancestor, and on the axis that defines
+an index — candidate **bytes** admitted, not wall time — the two are no longer
+the same filter. Layer L (`zig build indexq`, `bench/sieve/README.md`) replays
+**csearch's own formula**, lifted verbatim from `csearch -verbose`, against
+gist's postings, so one corpus, one index and one evaluator differ only in the
+plan. gist's conjunctive cover admits **10.5% fewer candidate bytes** over the
+twenty measured classes — winning six, losing none — from a **3% smaller index
+built 6.4× faster**. The two decisive rows are the ones a syntactic planner
+cannot reach: `0x[0-9a-fA-F]{6}`, where csearch proves nothing at all (`query: +`,
+100%) and gist admits 16.9%, and `\d{4}-\d{2}-\d{2}`, where csearch takes one
+dash-straddling window and gist conjoins all three.
 
 ### 2. A stale index can accelerate a live tree without owning truth
 
@@ -487,12 +543,30 @@ maximal quotation attributed to a source file; a measured ~90× separation.
 ### 4. Set-shaped search can be exact, attributed, and anti-redundant
 
 `PatternSet` compiles N intents once and walks once without erasing which
-pattern hit which file. Its fused prefilter is skip-only: every emitted answer
-must equal N independent single-pattern searches. The fused alternation alone
-cannot satisfy that per-pattern Gist-equivalence contract; confirmation
-restores exact attribution. Unit tests gate equality with the prefilter both
-on and off; `bench/races/multipattern.sh` remains an ad hoc throughput race,
-not a committed performance certificate.
+pattern hit which file. Both prefilter tiers — the dragnet sieve and the trawl
+automaton — are skip-only: every emitted answer must equal N independent
+single-pattern searches. The fused alternation alone cannot satisfy that
+per-pattern Gist-equivalence contract; confirmation restores exact attribution.
+Unit tests gate equality with the prefilter both armed and stripped, so the
+accelerator is proven invisible to the answer rather than assumed to be.
+
+`bench/races/multipattern.sh` is now a committed two-arm race against
+**Vectorscan**, the maintained portable Hyperscan fork, swept from N=4 to
+N=1024. It publishes the boundary in both directions: gist is faster **per byte
+at seven of the nine swept widths**, with Vectorscan keeping **N=64 (0.88×) and
+N=1024 (0.92×)**, and
+**end to end over the corpus it wins by ~2×** because the index never reads most
+of the bytes a stream scanner must — with the adverse slate that erases most of
+that margin timed in the same mint. Neither arm prints a timing
+until the answer is proven — arm 1 re-derives the whole attribution vector at
+every N, in **both tiers** (the one dispatch selected and the one it did not,
+forced via `GIST_MUSTER_TIER`, so tuning the threshold cannot move which code has
+been proven), and cross-checks per-pattern document counts against Vectorscan
+over one shared blob; arm 2 demands that the fused walk be byte-identical to N
+independent single-pattern runs. Layer K of the
+[certificate](bench/certify/artifact/CERTIFICATE.md) refuses to splice if either
+fails, if a row names a tier it cannot account for, or if a claimed win is not
+significant at α=0.05.
 
 Instead of collapsing shared information into a compressed blob, I use the
 same accounting to return a **set**. In `relate pack`, corpus-priced
@@ -506,8 +580,12 @@ cannot quietly consume an agent's context budget as independent value.
 Every index in the trigram family — csearch, pg_trgm, RE2's prefilter, zoekt,
 Blackbird, gist's own — reduces a regex to required substrings, so a
 literal-free class repetition like `[0-9a-f]{12}` extracts nothing and forces
-a full scan. Gist's certificate records that hole honestly (cand% = 100% on
-`regex-classcount`). The **crest sieve** is the formula I wrote to close it:
+a full scan (cand% = 100%, for every one of them). A _separator_ is the one
+thing that can rescue such a pattern — Layer L's conjunctive cover proves the
+dash-straddling windows in `[0-9a-f]{8}-[0-9a-f]{4}` and takes the
+certificate's `regex-classcount` from 100% to 68.75% — but that is a narrower
+hole, and it closes nothing when the run is unpunctuated. The **crest sieve**
+is the formula I wrote to close the real one:
 index each file's longest run per byte-class (16 bytes/doc), derive from the
 regex the run every accepted string must contain, and skip any file that never
 crests that high. It is not a substring test; the soundness theorem, the
@@ -578,6 +656,22 @@ and rerun commands live in
 `make bench-gist-certify` refreshes B–E on an existing Layer A, while
 `CERT_FULL=1 CERT_PUBLISH=1 CERT_SUDO=1 make bench-gist-certify` remints and
 publishes the full A–E bundle.
+
+The obvious objection to that layer is that it measures an index against a
+scanner. **Layer I answers it by switching the index off.** With `--no-index`
+and no resident daemon — a fresh process doing a live walk, read, and scan —
+`gist` holds parity-or-better against ripgrep on **every one of the 24 certified
+cells** (the 12 classes' `-l` argv plus a `-c` lane where nothing can
+short-circuit), under the same fail-closed statistic Layer A uses: lower median
+**and** Mann-Whitney p < 0.05. So the advantage is not the index; it is the walk,
+the read, and the scan, and the index is additive on top of a scanner that
+already stands alone. The companion maturity evidence is a number with
+ripgrep's own denominator rather than a feeling: **100% of rg's 186 documented
+flags** reproduce byte-identically or differ only at a declared, residual-checked
+boundary, **411/411** of its mined integration cases pass, and a differential
+fuzzer generates invocations nobody curated over deliberately hostile corpora.
+Both live in Layer I of the certificate; `bench/rgsuite/README.md` is the
+harness's own map.
 
 I carried the same discipline into the agent surface: `--rank` puts definitions
 above call sites and demotes codegen; misses coach on stderr while stdout stays

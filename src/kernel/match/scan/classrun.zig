@@ -205,7 +205,7 @@ pub const ClassRun = struct {
         var k: usize = 0;
         while (k + 16 <= rest.len) : (k += 16) {
             const b: V16 = rest[k..][0..16].*;
-            if (!exact) high = high or @as(u16, @bitCast(b >= high16)) != 0;
+            if (!exact) high = high or bitsmod.laneMask(u16, b >= high16) != 0;
             if (feed16(&run, rangeMask(r, b), self.min)) return .hit;
         }
         return self.finish(exact, rest[k..], run, high);
@@ -245,7 +245,7 @@ pub const ClassRun = struct {
         var k: usize = 0;
         while (k + 16 <= rest.len) : (k += 16) {
             const b: V16 = rest[k..][0..16].*;
-            if (!exact) high = high or @as(u16, @bitCast(b >= high16)) != 0;
+            if (!exact) high = high or bitsmod.laneMask(u16, b >= high16) != 0;
             if (feed16(&run, nibbleMask(t, b), self.min)) return .hit;
         }
         return self.finish(exact, rest[k..], run, high);
@@ -585,7 +585,7 @@ inline fn nlMask(rest: []const u8) u64 {
     var k: usize = 0;
     while (k + 16 <= rest.len) : (k += 16) {
         const b: V16 = rest[k..][0..16].*;
-        nl |= @as(u64, @as(u16, @bitCast(b == nl16))) << @intCast(k);
+        nl |= @as(u64, bitsmod.laneMask(u16, b == nl16)) << @intCast(k);
     }
     for (rest[k..], k..) |b, j| {
         if (b == '\n') nl |= @as(u64, 1) << @intCast(j);
@@ -671,7 +671,7 @@ inline fn joinMask(hits: [W / 16]@Vector(16, bool)) u64 {
         },
         else => {
             var m: u64 = 0;
-            inline for (hits, 0..) |h, k| m |= @as(u64, @as(u16, @bitCast(h))) << (k * 16);
+            inline for (hits, 0..) |h, k| m |= @as(u64, bitsmod.laneMask(u16, h)) << (k * 16);
             return m;
         },
     }

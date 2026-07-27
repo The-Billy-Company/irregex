@@ -37,6 +37,7 @@ const ignore = @import("../../tree/ignore.zig");
 const bulkstat = @import("../../tree/bulkstat.zig");
 const frame = @import("../frame/frame.zig");
 const signet = @import("../../../kernel/primitives/signet.zig");
+const portal = @import("../../../portal.zig");
 const Dir = std.Io.Dir;
 
 const file_alias = corpus_mod.ArtifactPath("tree.map");
@@ -101,7 +102,7 @@ pub const View = struct {
     }
 
     pub fn deinit(v: *View) void {
-        std.posix.munmap(v.map);
+        portal.unmap(v.map);
     }
 };
 
@@ -173,6 +174,13 @@ pub fn resolve(v: *const View, root: []const u8) ?u32 {
 /// Only single-root `.` corpora are snapshotted (the phantom walk engages only
 /// for rootless/whole-tree queries); anything else is a silent no-op.
 pub fn build(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !void {
+    // A target with no batched directory listing (`bulkstat.names_supported`)
+    // would decline on every `walk` and leave each record at its initialized
+    // `{first:0, count:0}` — a snapshot that does not say "unknown" but
+    // "childless", which the query then trusts. Publishing nothing instead is
+    // exactly the documented fail-open: `load` returns null and the walk runs
+    // as before, minus the accelerator this platform cannot feed.
+    if (comptime !bulkstat.names_supported) return;
     if (roots.len != 1 or !std.mem.eql(u8, roots[0], ".")) return;
     // The anchor is captured BEFORE the walk (same discipline as T3): a
     // directory touched mid-build reads as `>= anchor` next query and is
@@ -235,12 +243,12 @@ const Builder = struct {
     /// pre-assigned record slot.
     fn walk(b: *Builder, disk: []const u8, rel: []const u8, ix: u32) !void {
         try b.ig.loadDir(disk, rel);
-        const fd = std.posix.openat(std.posix.AT.FDCWD, disk, .{ .ACCMODE = .RDONLY, .DIRECTORY = true }, 0) catch return;
+        const fd = portal.openDir(portal.cwd(), disk) catch return;
         // A declined listing means this map cannot be built on this filesystem;
         // the phantom treemap is itself an accelerator, so the directory is
         // simply left unmapped. OOM propagates — the caller aborts the build.
         const listed = switch (blk: {
-            defer _ = std.posix.system.close(fd);
+            defer portal.close(fd);
             break :blk try bulkstat.listNamesOnly(b.a, fd);
         }) {
             .declined => return,

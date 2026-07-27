@@ -44,6 +44,29 @@ pub fn ones(x: anytype) Ones(@TypeOf(x)) {
     return .{ .rest = x };
 }
 
+/// Movemask: a `@Vector(n, bool)` compare result as an integer whose bit `i` is
+/// lane `i` — on every target, including big-endian ones.
+///
+/// `@bitCast`ing `<n x i1>` to `un` is the standard movemask lowering (one
+/// `vpmovmskb` on x86; the emulated reduction on NEON), but its lane→bit order
+/// follows **target endianness**, and every `@ctz`-based "index of the first
+/// hit" in the scan path silently assumes lane 0 lands in bit 0. Measured on one
+/// source, one compiler, two targets — a 16-lane compare true only in lane 0:
+///
+///   aarch64-linux-musl   mask = 0x0001   @ctz = 0    ← lane 0 is bit 0
+///   s390x-linux-gnu      mask = 0x8000   @ctz = 15   ← lane 0 is the HIGH bit
+///
+/// So on s390x the raw bitcast reports the first match 15 bytes from where it
+/// is, and a literal present in every file of a corpus matches nowhere. The
+/// `@bitReverse` restores ascending lane order; it is inside a `comptime` branch
+/// on the target's endianness, so little-endian builds lower to exactly the bare
+/// `@bitCast` they did before this seam existed — no instruction added where the
+/// bug cannot occur.
+pub inline fn laneMask(comptime Mask: type, hits: anytype) Mask {
+    const raw: Mask = @bitCast(hits);
+    return if (@import("builtin").cpu.arch.endian() == .big) @bitReverse(raw) else raw;
+}
+
 /// Mask of the low `k` bits of `Word`, correct at BOTH edges (k = 0 and
 /// k = width). The naive `(1 << k) - 1` is UB at k = width (the shift
 /// overflows before the two's-complement borrow can wrap it); shifting

@@ -14,6 +14,13 @@ inline fn key(a: u8, b: u8, c: u8) Trigram {
     return (@as(Trigram, a) << 16) | (@as(Trigram, b) << 8) | @as(Trigram, c);
 }
 
+/// The trigram of three adjacent bytes — the packing every extractor here
+/// shares, exposed so a query planner can name ONE trigram (to look up its
+/// posting cardinality) without walking a scratch buffer.
+pub inline fn pack(g: [3]u8) Trigram {
+    return key(g[0], g[1], g[2]);
+}
+
 /// In-place dedup of the already-sorted prefix `buf[0..n]`; returns distinct count.
 pub inline fn dedupSorted(comptime T: type, buf: []T, n: usize) usize {
     var w: usize = 0;

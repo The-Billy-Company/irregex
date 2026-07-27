@@ -27,14 +27,23 @@
 
 const std = @import("std");
 const args = @import("../argv/args.zig");
+const assay = @import("../../../../assay/assay.zig");
 const bulkstat = @import("../../../../corpus/tree/bulkstat.zig");
 const crest = @import("../../../../kernel/primitives/crest.zig");
 const fault = @import("../../../../fault.zig");
 const fresh = @import("../../../../corpus/index/trigrams/fresh.zig");
 const persist = @import("../../../../corpus/index/trigrams/persist.zig");
+const trigram = @import("../../../../corpus/index/trigrams/trigram.zig");
 
 const Dir = std.Io.Dir;
 const Opts = args.Opts;
+
+/// The conjunctive cover this run offers the index (`writ.Writ.plan`), or null
+/// to prune by the flat OR of `filters` exactly as before. The plan is a
+/// STRENGTHENING of the same question, never a different one: `assemble` reads
+/// a declined plan as "ask with the filters instead", and a declined filter set
+/// as "no candidate set" — neither is ever "no matches".
+pub const Plan = []const trigram.Index.Clause;
 
 /// `assemble`'s private control flow (ADR-373 law 2). Three of these are
 /// declinatures the moment they cross into `build` — "no anchor", "no index",
@@ -138,15 +147,15 @@ pub const Lazy = struct {
     /// declinature this seam can carry names the live read, so the walk only
     /// ever needs to know whether `val` is there — which is what the three
     /// callers each used to spell out for themselves.
-    pub fn admit(le: *Lazy, gpa: std.mem.Allocator, io: std.Io, o: Opts, filters: []const []const u8, sieve: crest.Swell) void {
-        le.val = switch (build(gpa, io, o, filters, sieve)) {
+    pub fn admit(le: *Lazy, gpa: std.mem.Allocator, io: std.Io, o: Opts, filters: []const []const u8, plan: ?Plan, sieve: crest.Swell) void {
+        le.val = switch (build(gpa, io, o, filters, plan, sieve)) {
             .got => |el| el,
             .declined => null,
         };
     }
 
-    pub fn loaderMain(le: *Lazy, gpa: std.mem.Allocator, io: std.Io, o: Opts, filters: []const []const u8, sieve: crest.Swell) void {
-        le.admit(gpa, io, o, filters, sieve);
+    pub fn loaderMain(le: *Lazy, gpa: std.mem.Allocator, io: std.Io, o: Opts, filters: []const []const u8, plan: ?Plan, sieve: crest.Swell) void {
+        le.admit(gpa, io, o, filters, plan, sieve);
         le.ready.store(true, .release);
     }
 };
@@ -179,7 +188,7 @@ pub fn broadIndexedRoots(roots: []const []const u8) bool {
 /// (`flushPending` `final=true`), so a scoped walk that outruns the load pays
 /// only the per-worker deferral append — while a read-heavy subtree the loader
 /// DOES beat gets its candidate reads elided like any broad scan.
-pub fn indexElisionWanted(io: std.Io, parsed: args.Parsed, filters: []const []const u8, sieve: crest.Swell) bool {
+pub fn indexElisionWanted(io: std.Io, parsed: args.Parsed, filters: []const []const u8, plan: ?Plan, sieve: crest.Swell) bool {
     const o = parsed.opts;
     if (o.mode == .files or o.no_index) return false;
     // Explicit-file roots elide NOTHING: the index answers "which of the walked
@@ -189,7 +198,7 @@ pub fn indexElisionWanted(io: std.Io, parsed: args.Parsed, filters: []const []co
     // corpus) that only the tree walk ever amortizes. Skip it when every root is
     // a regular file; the mixed / directory / implicit-CWD cases keep it.
     if (rootsAllRegularFiles(io, parsed)) return false;
-    return usableFilters(filters) or sieve.active();
+    return usableFilters(filters) or usablePlan(plan) or sieve.active();
 }
 
 /// True iff ≥1 root was given and every one stats as a regular file (a lone
@@ -207,11 +216,25 @@ fn rootsAllRegularFiles(io: std.Io, parsed: args.Parsed) bool {
     return true;
 }
 
-/// Every filter can actually query the trigram index (non-empty, all ≥3 B).
+/// Every filter can actually be offered to the index (non-empty, no empty
+/// filter). A 1- or 2-byte filter reaches the sub-trigram sliver tier
+/// (`corpus/index/trigrams/sliver.zig`) rather than the trigram directory
+/// directly; that tier declines with `NeedleTooShort` when it cannot pay, and
+/// `assemble` reads a decline as "no candidate set", never as "no matches".
 fn usableFilters(filters: []const []const u8) bool {
     if (filters.len == 0) return false;
-    for (filters) |f| if (f.len < 3) return false;
+    for (filters) |f| if (f.len == 0) return false;
     return true;
+}
+
+/// A plan worth loading the index for. Non-empty is the whole test: the planner
+/// already refused every clause it could not witness, and `queryPlan` costs and
+/// drops clauses individually. This is deliberately independent of
+/// `usableFilters` — the patterns the cover wins hardest on (`\d{4}-\d{2}-\d{2}`,
+/// `0x[0-9a-fA-F]{6}`) are exactly the ones whose single-literal extraction is
+/// EMPTY, so gating a plan behind a usable filter set would discard the win.
+fn usablePlan(plan: ?Plan) bool {
+    return if (plan) |p| p.len > 0 else false;
 }
 
 /// Once the index has answered, only build the path table when the corpus and
@@ -228,10 +251,10 @@ pub fn indexSavingsWorthTable(total: usize, candidates: usize) bool {
 /// this run reads live. `--no-index` is the caller making the index absent, and
 /// declining is never a fault here — the live walk answers identically, which is
 /// what makes the index an acceleration structure and not a semantic one.
-fn build(gpa: std.mem.Allocator, io: std.Io, o: Opts, filters: []const []const u8, sieve: crest.Swell) fault.Answer(Oracle) {
+fn build(gpa: std.mem.Allocator, io: std.Io, o: Opts, filters: []const []const u8, plan: ?Plan, sieve: crest.Swell) fault.Answer(Oracle) {
     if (o.no_index) return .{ .declined = .index_absent };
-    if (!usableFilters(filters) and !sieve.active()) return .{ .declined = .not_worthwhile };
-    if (assemble(gpa, io, filters, sieve)) |el| return .{ .got = el } else |e| return switch (e) {
+    if (!usableFilters(filters) and !usablePlan(plan) and !sieve.active()) return .{ .declined = .not_worthwhile };
+    if (assemble(gpa, io, filters, plan, sieve)) |el| return .{ .got = el } else |e| return switch (e) {
         error.NoAnchor, error.NoIndex => .{ .declined = .index_absent },
         error.NotWorthwhile => .{ .declined = .not_worthwhile },
         // A genuine fault in BUILDING the oracle — an allocation failure, an
@@ -242,27 +265,69 @@ fn build(gpa: std.mem.Allocator, io: std.Io, o: Opts, filters: []const []const u
     };
 }
 
+/// Put this run's question to the index and get the candidate docs, or null for
+/// "no candidate set" (never "no matches" — the caller then prunes by the sieve
+/// alone, or reads live).
+///
+/// TWO spellings of one question, strongest first. The conjunctive cover states
+/// everything the pattern forces and is asked first; the flat OR of `filters` is
+/// what a single extracted literal can state, and is both the fallback and the
+/// only tier that reaches the sub-trigram sliver (`filters` may hold a 1–2 byte
+/// needle; a plan's literals are ≥ `min_literal`). A plan that cannot be
+/// witnessed declines with `NeedleTooShort` and we simply ask the weaker
+/// question — dropping to a WIDER candidate set can cost reads, never a match.
+fn askIndex(gpa: std.mem.Allocator, p: *const persist.Persisted, filters: []const []const u8, plan: ?Plan) Err!?[]u32 {
+    if (usablePlan(plan)) {
+        if (p.queryPlan(gpa, plan.?)) |c| return answered(p, "cover", c) else |e| try indexAsked(e);
+    }
+    if (usableFilters(filters)) {
+        if (p.queryAny(gpa, filters)) |c| return answered(p, "filters", c) else |e| try indexAsked(e);
+    }
+    assay.trace(.index, "gist: elide tier=none candidates={d}/{d}\n", .{ p.paths.items.len, p.paths.items.len });
+    return null;
+}
+
+/// Name the tier that answered and how much it admitted. Behind the `.index`
+/// lens, so a production run pays one relaxed atomic load — this is the number
+/// the certificate's production column is read from, taken from the wired path
+/// itself rather than re-derived by a harness.
+fn answered(p: *const persist.Persisted, tier: []const u8, cand: []u32) []u32 {
+    assay.trace(.index, "gist: elide tier={s} candidates={d}/{d}\n", .{ tier, cand.len, p.paths.items.len });
+    return cand;
+}
+
+/// The one mapping from "the index declined / failed" to this file's control
+/// flow. Returning normally means the decline was benign and the caller may ask
+/// a weaker question or keep its full scan.
+fn indexAsked(e: trigram.QueryError) Err!void {
+    return switch (e) {
+        error.OutOfMemory => error.OutOfMemory,
+        // A needle below the trigram floor whose sliver tier could not pay, or
+        // an extraction/plan that yielded nothing witnessable. Not a fault and
+        // not an empty answer.
+        error.NeedleTooShort => {},
+        // A corrupt / version-mismatched / truncated postings blob fails CLOSED
+        // to the live read, so from this query's side it is simply an index that
+        // isn't there — one declinature, not seven faults.
+        else => error.NoIndex,
+    };
+}
+
 /// Fallible half of `build`: every early exit (a missing anchor, an
 /// unloadable/unworthwhile index, an OOM) is an error, so `errdefer` sheds the
 /// half-built state instead of hand-threading `deinit` down each return path.
 /// Those errors are this file's private control flow (`Err`), like the shadow
 /// rewriter's `Bail`; `build` is where they become the typed declinature.
-fn assemble(gpa: std.mem.Allocator, io: std.Io, filters: []const []const u8, sieve: crest.Swell) Err!Oracle {
+fn assemble(gpa: std.mem.Allocator, io: std.Io, filters: []const []const u8, plan: ?Plan, sieve: crest.Swell) Err!Oracle {
     const anchor = fresh.readAnchor(gpa, io) orelse return error.NoAnchor;
     var p = (persist.loadQuiet(gpa, io) catch return error.NoIndex) orelse return error.NoIndex;
     errdefer p.deinit();
     var candidates = try std.DynamicBitSet.initEmpty(gpa, p.paths.items.len);
     errdefer candidates.deinit();
-    if (usableFilters(filters)) {
-        const cand = p.queryAny(gpa, filters) catch |e| switch (e) {
-            error.OutOfMemory => return error.OutOfMemory,
-            // A corrupt / version-mismatched / truncated postings blob fails
-            // CLOSED to the live read, so from this query's side it is simply
-            // an index that isn't there — one declinature, not seven faults.
-            else => return error.NoIndex,
-        };
-        defer gpa.free(cand);
-        for (cand) |d| candidates.set(d);
+    const cand: ?[]u32 = try askIndex(gpa, &p, filters, plan);
+    if (cand) |c| {
+        defer gpa.free(c);
+        for (c) |d| candidates.set(d);
     } else {
         // Sieve-only elision: every doc starts as a candidate; the crest
         // subtraction below is the sole pruning criterion.
@@ -277,15 +342,42 @@ fn assemble(gpa: std.mem.Allocator, io: std.Io, filters: []const []const u8, sie
             for (table, 0..) |v, d| {
                 if (sieve.prunes(v)) candidates.unset(d);
             }
-        } else if (!usableFilters(filters)) {
+        } else if (cand == null) {
             // No table to sieve with and no trigram filter either — nothing
             // can be elided; decline rather than build a can't-prune oracle.
             return error.NotWorthwhile;
         }
     }
-    if (!indexSavingsWorthTable(p.paths.items.len, candidates.count())) return error.NotWorthwhile;
+    const worth = indexSavingsWorthTable(p.paths.items.len, candidates.count());
+    reportCandidateBytes(io, &p, &candidates, worth);
+    if (!worth) return error.NotWorthwhile;
     const indexed = try IndexedPaths.init(gpa, p.paths.items);
     return .{ .p = p, .indexed = indexed, .candidates = candidates, .anchor = anchor.ns() };
+}
+
+/// Gate-only: the SIZE of the admitted candidate set, in the bytes a reader
+/// would actually have to scan. The persisted index stores no per-document
+/// length, so this is a stat per candidate — far too costly to put on a query,
+/// and the reason it hides behind `GIST_CANDIDATE_BYTES` (internal, undocumented
+/// — the `GIST_TEST_REQUIRE_ELISION` idiom) instead of riding the `.index` lens.
+///
+/// It exists so the certificate's production column is read off the WIRED path
+/// rather than re-derived by a harness that might ask a subtly different
+/// question. Measured after the crest subtraction, so it is the oracle's real
+/// final candidate set and not just the trigram answer — and reported even when
+/// the saving does not clear `indexSavingsWorthTable`, because `worth=0` means
+/// the run went on to read the WHOLE corpus and a report that stayed silent
+/// there would quietly omit the planner's worst cases from its own average.
+fn reportCandidateBytes(io: std.Io, p: *const persist.Persisted, candidates: *const std.DynamicBitSet, worth: bool) void {
+    if (!assay.envFlag("GIST_CANDIDATE_BYTES")) return;
+    var bytes: u64 = 0;
+    var total: u64 = 0;
+    for (p.paths.items, 0..) |path, doc| {
+        const st = Dir.cwd().statFile(io, path, .{}) catch continue;
+        total += st.size;
+        if (candidates.isSet(doc)) bytes += st.size;
+    }
+    assay.diag("gist: elide candidate_bytes={d} corpus_bytes={d} candidate_docs={d}/{d} worth={d}\n", .{ bytes, total, candidates.count(), p.paths.items.len, @intFromBool(worth) });
 }
 
 /// Gate-only proof that the admitted oracle can actually elide a real indexed

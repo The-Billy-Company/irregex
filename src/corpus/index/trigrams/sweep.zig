@@ -24,6 +24,8 @@
 const std = @import("std");
 const haystack = @import("../../tree/haystack.zig");
 const bulkstat = @import("../../tree/bulkstat.zig");
+const ignore = @import("../../tree/ignore.zig");
+const path_utils = @import("../../scope/paths.zig");
 const Dir = std.Io.Dir;
 
 /// Stat-walk every `root` for paths changed at/after `built_ns`, appending each
@@ -61,8 +63,32 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, built_
     for (workers) |*w| for (w.out.items) |p| try out.append(a, try a.dupe(u8, p));
 }
 
-/// A directory subtree still awaiting a full `visitItem` walk.
-const WorkItem = struct { prefix: []const u8 };
+/// A directory subtree still awaiting a full `visitItem` walk, tagged with the
+/// positional root it descends from — `Ignore` scopes its ancestor tier per
+/// root (`scopeToRoot`), so a shared engine needs to know which one it is
+/// deciding under.
+const WorkItem = struct { prefix: []const u8, root: []const u8 };
+
+/// Would the ignore engine reject every path beneath `rel`? Mirrors the
+/// ancestor discipline of `Ignore.admitsPath` — the post-filter this walk's
+/// result is passed through (`fresh.zig::retainAdmitted`) — which rejects a
+/// path as soon as ANY ancestor directory is skipped. Pruning that same
+/// directory here can therefore only drop paths the post-filter was going to
+/// drop anyway: the walk gets cheaper, the answer does not change.
+///
+/// Why it is worth the call: without it the sweep's corpus is the basename
+/// skip-list only, so it pays metadata for every hidden and gitignored tree
+/// and discards the result. On this repo that is 241.8k files walked to serve
+/// a 21.1k-file corpus — `upstream/` alone (vendored upstream checkouts, hidden
+/// and gitignored) is 206.3k of them.
+///
+/// A directory's OWN ignore file cannot un-ignore the directory, so the
+/// verdict uses only rules already loaded from its ancestors — the same reason
+/// `admitsPath` decides each component before `loadDir`-ing it.
+fn prunedDir(ig: *ignore.Ignore, root: []const u8, rel: []const u8, basename: []const u8) bool {
+    ig.scopeToRoot(root);
+    return ig.shouldSkip(path_utils.stripDot(rel), true, basename, false, false);
+}
 
 /// One subtree's metadata-only walk (no reads), over the same skip-rules as the
 /// indexed corpus, collecting paths that require a live read into `a`.
@@ -98,7 +124,16 @@ fn visitItem(io: std.Io, prefix: []const u8, built_ns: i128, a: std.mem.Allocato
 /// or a permissions edge) — the caller then keeps it as its own leaf
 /// `WorkItem`; the primary query walk remains responsible for reporting an
 /// inaccessible subtree rather than presenting a complete result.
-fn expandOneLevel(gpa: std.mem.Allocator, io: std.Io, prefix: []const u8, built_ns: i128, a: std.mem.Allocator, out: *std.ArrayList([]const u8), children: *std.ArrayList(WorkItem)) !bool {
+fn expandOneLevel(gpa: std.mem.Allocator, io: std.Io, item: WorkItem, built_ns: i128, a: std.mem.Allocator, out: *std.ArrayList([]const u8), children: *std.ArrayList(WorkItem), ig: ?*ignore.Ignore) !bool {
+    const prefix = item.prefix;
+    // This directory's own ignore file governs its CHILDREN, so it is loaded
+    // before any child verdict — the ordering `admitsPath` uses as it descends.
+    // BFS guarantees every ancestor was expanded (and so loaded) first.
+    if (ig) |g| {
+        g.scopeToRoot(item.root);
+        const rel = path_utils.stripDot(prefix);
+        g.loadDir(rel, rel) catch {};
+    }
     if (bulkstat.supported) blk: {
         var dir = Dir.cwd().openDir(io, prefix, .{ .iterate = true }) catch return false;
         defer dir.close(io);
@@ -115,7 +150,9 @@ fn expandOneLevel(gpa: std.mem.Allocator, io: std.Io, prefix: []const u8, built_
         for (entries) |e| {
             if (e.is_dir) {
                 if (haystack.isSkipDir(e.name)) continue;
-                try children.append(gpa, .{ .prefix = try haystack.joinRoot(a, prefix, e.name) });
+                const sub = try haystack.joinRoot(a, prefix, e.name);
+                if (ig) |g| if (prunedDir(g, item.root, sub, e.name)) continue;
+                try children.append(gpa, .{ .prefix = sub, .root = item.root });
             } else if (e.is_file and bulkstat.needsLiveRead(built_ns, e.mtime_ns, e.ctime_ns)) {
                 try out.append(a, try haystack.joinRoot(a, prefix, e.name));
             }
@@ -128,7 +165,9 @@ fn expandOneLevel(gpa: std.mem.Allocator, io: std.Io, prefix: []const u8, built_
     while (it.next(io) catch null) |e| {
         if (e.kind == .directory) {
             if (haystack.isSkipDir(e.name)) continue;
-            try children.append(gpa, .{ .prefix = try haystack.joinRoot(a, prefix, e.name) });
+            const sub = try haystack.joinRoot(a, prefix, e.name);
+            if (ig) |g| if (prunedDir(g, item.root, sub, e.name)) continue;
+            try children.append(gpa, .{ .prefix = sub, .root = item.root });
         } else if (e.kind == .file) {
             const path = try haystack.joinRoot(a, prefix, e.name);
             const st = dir.statFile(io, e.name, .{}) catch {
@@ -158,10 +197,17 @@ fn expandOneLevel(gpa: std.mem.Allocator, io: std.Io, prefix: []const u8, built_
 fn buildWorkItems(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, built_ns: i128, a: std.mem.Allocator, out: *std.ArrayList([]const u8), target: usize) ![]WorkItem {
     var q: std.ArrayList(WorkItem) = .empty;
     defer q.deinit(gpa);
-    for (roots) |r| try q.append(gpa, .{ .prefix = r });
+    for (roots) |r| try q.append(gpa, .{ .prefix = r, .root = r });
 
     var final: std.ArrayList(WorkItem) = .empty;
     errdefer final.deinit(gpa);
+
+    // The same engine, options, and roots `retainAdmitted` certifies the result
+    // with, so a directory pruned during the walk is one the post-filter would
+    // have rejected path-by-path. Arena-owned (never deinit'd), matching that
+    // post-filter's own lifetime discipline. A failure to build the matcher
+    // leaves `ig` null and the walk simply stays unpruned — slower, never wrong.
+    var ig: ?ignore.Ignore = ignore.Ignore.init(a, io, .{}, roots) catch null;
 
     var i: usize = 0;
     while (i < q.items.len) : (i += 1) {
@@ -173,7 +219,7 @@ fn buildWorkItems(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8,
         }
         var children: std.ArrayList(WorkItem) = .empty;
         defer children.deinit(gpa);
-        const expanded = expandOneLevel(gpa, io, item.prefix, built_ns, a, out, &children) catch false;
+        const expanded = expandOneLevel(gpa, io, item, built_ns, a, out, &children, if (ig) |*g| g else null) catch false;
         if (!expanded) {
             try final.append(gpa, item); // unopenable: leave the whole subtree to visitItem
         } else {

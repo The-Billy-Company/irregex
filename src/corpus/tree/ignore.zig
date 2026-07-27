@@ -17,13 +17,16 @@
 //!   • a trailing `/` restricts a rule to directories;
 //!   • a `!`-whitelisted hidden file is un-hidden (overrides the dotfile skip);
 //!   • VCS rules (`.gitignore`, `.git/info/exclude`) apply only inside a git repo
-//!     unless `--no-require-git`; `--no-ignore*` / `-u` disable the relevant tier.
+//!     unless `--no-require-git`; `--no-ignore*` / `-u` disable the relevant tier;
+//!   • a VCS rule governs only its OWN repository: rules from directories above
+//!     the nearest enclosing `.git` stop at that boundary (ripgrep's `saw_git`).
 
 const std = @import("std");
 const gl = @import("../scope/glob.zig");
 const paths = @import("../scope/paths.zig");
 const assay = @import("../../assay/assay.zig");
 const fault = @import("../../fault.zig");
+const portal = @import("../../portal.zig");
 const stripDot = paths.stripDot;
 const join = paths.join;
 const Dir = std.Io.Dir;
@@ -82,13 +85,21 @@ pub const Options = struct {
 /// is already ascending, so `decide` just takes the last matching rule's verdict.
 /// `pub` (with `parseRuleLine`/`ruleMatch` below) so the parallel pipeline can
 /// build immutable per-directory rule chains out of the same parse + match core.
-pub const Rule = struct { glob: []const u8, base: []const u8, negated: bool, anchored: bool, dir_only: bool };
+/// `vcs` marks a rule as belonging to ONE repository — a `.gitignore` or a
+/// `.git/info/exclude`. Only those stop at a nested repository boundary (see
+/// `boundary`); `.ignore`/`.rgignore`, `--ignore-file`, and git's *global*
+/// excludes span every repo they are above, exactly as ripgrep's per-level
+/// `saw_git` gate scopes `git_ignore`/`git_exclude` but never the custom
+/// matchers or the one global matcher it keeps at the walk root.
+pub const Rule = struct { glob: []const u8, base: []const u8, negated: bool, anchored: bool, dir_only: bool, vcs: bool = false };
 
 /// Parse one gitignore-dialect line into a `Rule` (comments/blank lines → null).
 /// The standalone core of `Ignore.addLine`: `base` anchors the rule to the
 /// contributing directory; `strip` (non-empty only for an ancestor-directory
 /// file) re-anchors an ancestor's anchored rules onto the search subtree.
-/// `line` slices alias `raw` — the caller owns the backing bytes' lifetime.
+/// `line` slices alias `raw` — the caller owns the backing bytes' lifetime,
+/// and owning it is also where a glob's asterisk runs are normalized (see
+/// `ownGlob`), since that is the step that can allocate.
 pub fn parseRuleLine(raw: []const u8, base: []const u8, strip: []const u8) ?Rule {
     var line = raw;
     if (line.len == 0 or line[0] == '#') return null;
@@ -173,6 +184,44 @@ pub fn ruleMatch(a: std.mem.Allocator, ci: bool, root_depth: usize, r: Rule, rel
     return comp_idx >= floor and ruleGlob(a, ci, r.glob, sub[base_idx..]) and (!r.dir_only or is_dir);
 }
 
+/// Take ownership of a parsed rule's glob, normalizing asterisk runs the way
+/// git reads them: `**` is the "any number of path components" wildcard ONLY as
+/// a whole component (`**/x`, `x/**`, `x/**/y`, or a bare `**`) — anywhere else
+/// "consecutive asterisks are considered regular asterisks and will match
+/// according to the previous rules" (gitignore(5)), i.e. one `*` that does not
+/// cross a `/`. rust's `tests/rustdoc-gui/src/**.lock` is the live case: it
+/// ignores `src/x.lock` and NOT `src/lib2/Cargo.lock`, which a component-blind
+/// `**` swallowed — 13 files short of ripgrep on a rust checkout.
+fn ownGlob(a: std.mem.Allocator, glob: []const u8) Oom![]const u8 {
+    var i: usize = 0;
+    var out: ?std.ArrayList(u8) = null;
+    while (std.mem.indexOfScalarPos(u8, glob, i, '*')) |start| {
+        var end = start;
+        while (end < glob.len and glob[end] == '*') end += 1;
+        const whole = end - start >= 2 and
+            (start == 0 or glob[start - 1] == '/') and
+            (end == glob.len or glob[end] == '/');
+        if (end - start >= 2 and !whole) {
+            // First offender in this glob — copy what precedes it, then keep
+            // appending. Untouched globs (the overwhelming majority) never
+            // build a list and take the plain `dupe` below.
+            if (out == null) {
+                var l: std.ArrayList(u8) = .empty;
+                try l.appendSlice(a, glob[0..start]);
+                out = l;
+            }
+            try out.?.append(a, '*');
+        } else if (out) |*l| try l.appendSlice(a, glob[start..end]);
+        if (out) |*l| {
+            const stop = std.mem.indexOfScalarPos(u8, glob, end, '*') orelse glob.len;
+            try l.appendSlice(a, glob[end..stop]);
+        }
+        i = end;
+    }
+    if (out) |*l| return l.toOwnedSlice(a);
+    return a.dupe(u8, glob);
+}
+
 fn ruleGlob(a: std.mem.Allocator, ci: bool, pat: []const u8, str: []const u8) bool {
     return if (ci) gl.globMatch(lower(a, pat), lower(a, str)) else gl.globMatch(pat, str);
 }
@@ -204,7 +253,7 @@ pub const Compiled = struct {
         var keys = ig.groups.keyIterator();
         while (keys.next()) |k| if (k.len != 0) return null;
         const bucket = ig.groups.getPtr("") orelse return empty(a);
-        return try compileBase(a, bucket.items);
+        return try compileBase(a, bucket.items, false);
     }
 
     /// The fast tier over a single CWD/ancestor ("" base) rule slice — the reusable
@@ -214,12 +263,21 @@ pub const Compiled = struct {
     /// parity on the single-threaded walk). Caller guarantees case-sensitive
     /// matching (the tier can't fold case) and base == "" rules (entity-only,
     /// see `matchRank`). `rules` must outlive the returned matcher.
-    pub fn compileBase(a: std.mem.Allocator, rules: []const Rule) Oom!Compiled {
+    ///
+    /// `skip_vcs` builds the same tier with every repository-scoped rule left
+    /// out — the form a path BELOW a nested repository root is judged by (see
+    /// `boundary`). It has to be its own matcher rather than a probe-time
+    /// filter: a hash slot keeps one rank per key, so dropping a `.gitignore`
+    /// rule at probe time would lose the lower-ranked `.ignore` rule it
+    /// shadowed instead of falling back to it. Ranks stay indices into the
+    /// FULL `rules` slice, so `matchRank`'s `rules[rank]` is unchanged.
+    pub fn compileBase(a: std.mem.Allocator, rules: []const Rule, skip_vcs: bool) Oom!Compiled {
         var self = empty(a);
         self.rules = rules;
         var cx: std.ArrayList(u32) = .empty;
         for (rules, 0..) |r, i| {
             const rank: u32 = @intCast(i);
+            if (skip_vcs and r.vcs) continue;
             if (!r.anchored and !hasMeta(r.glob)) {
                 try slotPut(&self.lit, r.glob, rank, r.dir_only);
             } else if (if (r.anchored) null else extKey(r.glob)) |k| {
@@ -311,6 +369,15 @@ pub const Ignore = struct {
     // could never match anyway).
     groups: std.StringHashMap(std.ArrayList(Rule)),
     loaded: std.StringHashMap(void), // dirs whose ignore files were read (dedupe)
+    // Directories (relative to the walk root; "" = CWD) that hold a `.git` —
+    // i.e. repository roots this walk has SEEN. A `.gitignore` governs its own
+    // repository only, so a path below a nested repo root is judged without the
+    // VCS rules of anything above that root (`boundary`). Populated by `loadDir`
+    // as the serial walk descends, one stat per directory — the same probe
+    // ripgrep pays per level (`dir.join(".git").exists()`). The parallel walkers
+    // read `.git` out of the directory listing they already have and carry it on
+    // their `IgNode` chain instead, so they add no syscall at all.
+    repos: std.StringHashMap(void),
     use_git: bool = false,
     use_dot: bool = false,
     // Component-depth of the positional root currently being walked (0 for the
@@ -331,6 +398,10 @@ pub const Ignore = struct {
     // it from many threads against a frozen `Ignore`). `applyGroup` folds the ""
     // tier through this instead of a glob call per rule per path.
     base_compiled: ?Compiled = null,
+    // The same tier with the repository-scoped rules dropped — what a path below
+    // a nested repo root is judged by. Built beside `base_compiled` so crossing
+    // a repository boundary costs a different matcher, not a slow path.
+    base_novcs: ?Compiled = null,
 
     /// Build the matcher and load the root-level ignore sources (repo `.gitignore`
     /// + `.git/info/exclude`, `.ignore`/`.rgignore`, and every `--ignore-file`).
@@ -338,7 +409,7 @@ pub const Ignore = struct {
     /// probed for its own `.git` so a git repo (or worktree) named as a path arg is
     /// honored, not just CWD.
     pub fn init(a: std.mem.Allocator, io: std.Io, o: Options, roots: []const []const u8) Oom!Ignore {
-        var self = Ignore{ .a = a, .io = io, .o = o, .groups = std.StringHashMap(std.ArrayList(Rule)).init(a), .loaded = std.StringHashMap(void).init(a) };
+        var self = Ignore{ .a = a, .io = io, .o = o, .groups = std.StringHashMap(std.ArrayList(Rule)).init(a), .loaded = std.StringHashMap(void).init(a), .repos = std.StringHashMap(void).init(a) };
         // `--ignore-file` is EXPLICIT user intent: lowest precedence (added first,
         // so an in-tree `.ignore`/`.gitignore` overrides it — rg's f45 rule) and
         // honored even under `-u`/`--no-ignore` (only `--no-ignore-files` drops it).
@@ -385,7 +456,10 @@ pub const Ignore = struct {
         // it once for `applyGroup`'s O(1) fold. `loadRootAncestors` only touched
         // per-directory keys, so this slice is stable for the run.
         if (!o.ignore_case_insensitive) {
-            if (self.groups.getPtr("")) |b| self.base_compiled = try Compiled.compileBase(a, b.items);
+            if (self.groups.getPtr("")) |b| {
+                self.base_compiled = try Compiled.compileBase(a, b.items, false);
+                self.base_novcs = try Compiled.compileBase(a, b.items, true);
+            }
         }
         return self;
     }
@@ -428,10 +502,10 @@ pub const Ignore = struct {
             // anchored ancestor rule is re-anchored by stripping this prefix.
             const subpath = try std.mem.join(self.a, "/", comps.items[comps.items.len - k ..]);
             if (self.use_git and git_depth != null and k <= git_depth.?)
-                try self.readFile(try join(self.a, anc, ".gitignore"), "", subpath);
+                try self.readFile(try join(self.a, anc, ".gitignore"), "", subpath, true);
             if (self.use_dot) {
-                try self.readFile(try join(self.a, anc, ".ignore"), "", subpath);
-                try self.readFile(try join(self.a, anc, ".rgignore"), "", subpath);
+                try self.readFile(try join(self.a, anc, ".ignore"), "", subpath, false);
+                try self.readFile(try join(self.a, anc, ".rgignore"), "", subpath, false);
             }
         }
     }
@@ -442,7 +516,7 @@ pub const Ignore = struct {
     /// `resolve_git_commondir`) so a linked worktree honors the shared exclude.
     fn loadGitExclude(self: *Ignore, root: []const u8, base: []const u8) Oom!void {
         const git_dir = try self.resolveGitDir(root) orelse return;
-        try self.readFile(try join(self.a, git_dir, "info/exclude"), base, "");
+        try self.readFile(try join(self.a, git_dir, "info/exclude"), base, "", true);
     }
 
     /// Read git's global excludes file into the CWD tier ("" bucket). The path is
@@ -456,7 +530,11 @@ pub const Ignore = struct {
     fn loadGlobalExclude(self: *Ignore) Oom!void {
         const xdg = assay.envSpan("XDG_CONFIG_HOME");
         const path = try globalExcludesFrom(self.io, self.a, assay.envSpan("HOME"), if (xdg != null and xdg.?.len != 0) xdg else null) orelse return;
-        try self.readFile(path, "", "");
+        // NOT stamped `vcs`: ripgrep keeps one global matcher at the walk root
+        // and consults it for every path with a repo anywhere in its chain,
+        // outside the per-level `saw_git` gate — a global exclude is the user's
+        // machine-wide rule, not one repository's (see `Rule.vcs`).
+        try self.readFile(path, "", "", false);
     }
 
     /// The git common-dir for the repo at `root` (a path openable from CWD), or
@@ -498,11 +576,38 @@ pub const Ignore = struct {
             errdefer _ = self.loaded.remove(rel);
             gop.key_ptr.* = try self.a.dupe(u8, rel);
         }
-        if (self.use_git) try self.readFile(try join(self.a, disk, ".gitignore"), rel, "");
-        if (self.use_dot) {
-            try self.readFile(try join(self.a, disk, ".ignore"), rel, "");
-            try self.readFile(try join(self.a, disk, ".rgignore"), rel, "");
+        if (self.use_git) {
+            try self.readFile(try join(self.a, disk, ".gitignore"), rel, "", true);
+            // This directory may be a repository root, which BOUNDS how far the
+            // VCS rules above it reach (`boundary`) — and it is a fact about the
+            // directory, not about it having a `.gitignore`, so it is learned
+            // here rather than as a side effect of reading one.
+            if (dotGitPresent(self.io, self.a, disk)) try self.repos.put(gop.key_ptr.*, {});
         }
+        if (self.use_dot) {
+            try self.readFile(try join(self.a, disk, ".ignore"), rel, "", false);
+            try self.readFile(try join(self.a, disk, ".rgignore"), rel, "", false);
+        }
+    }
+
+    /// The deepest repository root at or above `rel`, as the LENGTH of its
+    /// walk-root-relative path (0 = the walk root itself), or null when this
+    /// walk has seen no enclosing repository. Rules bucketed under a shorter
+    /// path than this are outside `rel`'s repository, so their VCS half does
+    /// not apply — git's own scoping, and the shape ripgrep gets from setting
+    /// `saw_git` as it climbs. Only STRICT ancestors count: ripgrep judges a
+    /// directory entry with the state of the level above it, so a repo root's
+    /// own name is still filtered by the outer repo's rules (a checkout in a
+    /// `dist/` directory stays ignored).
+    fn repoFloor(self: *const Ignore, stripped: []const u8) ?usize {
+        if (self.repos.count() == 0) return null;
+        var best: ?usize = if (self.repos.contains("")) 0 else null;
+        var i: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, stripped, i, '/')) |slash| {
+            if (self.repos.contains(stripped[0..slash])) best = slash;
+            i = slash + 1;
+        }
+        return best;
     }
 
     /// The ignore verdict for a candidate path (relative to the walk root): null =
@@ -518,15 +623,27 @@ pub const Ignore = struct {
     /// after the walk fans out): every task carries its own root depth, so
     /// interleaved tasks from different positional roots can't race the field.
     pub fn decideAt(self: *const Ignore, rel: []const u8, is_dir: bool, root_depth: usize) ?bool {
+        return self.decideWithin(rel, is_dir, root_depth, self.repoFloor(stripDot(rel)));
+    }
+
+    /// `decideAt` with the repository boundary supplied instead of derived —
+    /// what a parallel walker calls, because it learns the boundary from its
+    /// own `IgNode` chain (`boundary`) rather than from `repos`, which only the
+    /// serial `loadDir` fills. `bound` is `repoFloor`'s answer: the deepest
+    /// enclosing repo root's path length, null when there is none.
+    pub fn decideWithin(self: *const Ignore, rel: []const u8, is_dir: bool, root_depth: usize, bound: ?usize) ?bool {
         var verdict: ?bool = null;
         // The CWD/ancestor tier (root `.gitignore`, parents, `.git/info/exclude`,
         // `--ignore-file`) governs every path; then each ANCESTOR directory of
         // `rel`, shallow→deep, so the deepest matching rule wins (git precedence).
-        self.applyGroup("", rel, is_dir, root_depth, &verdict);
+        // A tier SHALLOWER than the enclosing repository root contributes only
+        // its non-VCS rules — that repo's `.gitignore` is not the outer repo's
+        // business, and vice versa.
+        self.applyGroup("", rel, is_dir, root_depth, &verdict, outside(bound, 0));
         const stripped = stripDot(rel);
         var i: usize = 0;
         while (std.mem.indexOfScalarPos(u8, stripped, i, '/')) |slash| {
-            self.applyGroup(stripped[0..slash], rel, is_dir, root_depth, &verdict);
+            self.applyGroup(stripped[0..slash], rel, is_dir, root_depth, &verdict, outside(bound, slash));
             i = slash + 1;
         }
         return verdict;
@@ -536,20 +653,20 @@ pub const Ignore = struct {
     /// bucket key is a directory path relative to the walk root ("" = CWD tier);
     /// `match` still does its own base/anchor/dir-only work, so feeding it only
     /// ancestor-sourced rules changes which rules are *tried*, never the verdict.
-    fn applyGroup(self: *const Ignore, base_key: []const u8, rel: []const u8, is_dir: bool, root_depth: usize, verdict: *?bool) void {
+    fn applyGroup(self: *const Ignore, base_key: []const u8, rel: []const u8, is_dir: bool, root_depth: usize, verdict: *?bool, skip_vcs: bool) void {
         // The universal "" tier folds through the compiled globset (one basename
         // probe + a short complex scan) when available — byte-identical to the
         // linear fold below (max-rank == last-match-wins), but O(1) per path where
         // the root `.gitignore`'s many `*.o`/anchored rules would otherwise cost a
         // glob call each, per path. Per-directory buckets stay linear: each is
         // small and scoped to its own subtree.
-        if (base_key.len == 0) if (self.base_compiled) |*c| {
+        if (base_key.len == 0) if (if (skip_vcs) self.base_novcs else self.base_compiled) |*c| {
             if (c.matchRank(stripDot(rel), is_dir)) |rank|
                 verdict.* = !c.rules[rank].negated;
             return;
         };
         const g = self.groups.getPtr(base_key) orelse return;
-        for (g.items) |r| if (ruleMatch(self.a, self.o.ignore_case_insensitive, root_depth, r, rel, is_dir)) {
+        for (g.items) |r| if (!(skip_vcs and r.vcs) and ruleMatch(self.a, self.o.ignore_case_insensitive, root_depth, r, rel, is_dir)) {
             verdict.* = !r.negated;
         };
     }
@@ -561,7 +678,7 @@ pub const Ignore = struct {
     /// bypasses only the hidden-dotfile skip. A type filter un-hides but never
     /// un-ignores; an override does both. `wl_hidden ⊇ wl_ignore` by construction.
     pub fn shouldSkip(self: *const Ignore, rel: []const u8, is_dir: bool, basename: []const u8, wl_ignore: bool, wl_hidden: bool) bool {
-        return self.skipFromVerdict(self.decide(rel, is_dir), is_dir, basename, wl_ignore, wl_hidden);
+        return self.skipFromVerdict(self.decide(rel, is_dir), basename, wl_ignore, wl_hidden);
     }
 
     /// Certify one already-discovered file against the same ancestor-pruning
@@ -592,8 +709,19 @@ pub const Ignore = struct {
     /// comment) so a `-g`/`--iglob`/`-t` whitelist force-searches identically on
     /// both engines — the parallel pipeline must never regress this asymmetry
     /// just because it derives the verdict differently.
-    pub fn skipFromVerdict(self: *const Ignore, v: ?bool, is_dir: bool, basename: []const u8, wl_ignore: bool, wl_hidden: bool) bool {
-        if (is_dir and std.mem.eql(u8, basename, ".git")) return !wl_ignore;
+    ///
+    /// `.git` gets NO special case, because ripgrep has none: the git database
+    /// is excluded for being a dotfile, which is why rg users reach for
+    /// `--glob '!.git/*'` (rg #927/#2646, pinned in `preference_test.zig`) —
+    /// so `--hidden`/`-uu` searches it there, and an unconditional prune here
+    /// was the whole of gist's remaining `-uu` file-selection gap against rg
+    /// (188 of ~356k files on this tree, every one of them under `.git/`).
+    /// The corpus and index walks are unaffected: they prune `.git` structurally
+    /// through `haystack.isSkipDir`, before any verdict is asked for.
+    /// Nothing here is per-kind any more, so it no longer takes `is_dir`: the
+    /// verdict already accounted for `dir_only` rules, and the hidden rule reads
+    /// a dotfile the same whether it is a file or a directory.
+    pub fn skipFromVerdict(self: *const Ignore, v: ?bool, basename: []const u8, wl_ignore: bool, wl_hidden: bool) bool {
         if (v == true) return !wl_ignore;
         const hidden = basename.len > 0 and basename[0] == '.';
         if (hidden and !self.o.hidden and v != false) return !wl_hidden;
@@ -605,9 +733,9 @@ pub const Ignore = struct {
     /// Read `path`'s ignore lines, anchoring each to `base`. `strip` (non-empty
     /// only for a parent-directory file) is CWD's path relative to that ancestor;
     /// it re-anchors the ancestor's anchored rules onto the search subtree.
-    fn readFile(self: *Ignore, path: []const u8, base: []const u8, strip: []const u8) Oom!void {
+    fn readFile(self: *Ignore, path: []const u8, base: []const u8, strip: []const u8, vcs: bool) Oom!void {
         const buf = readOpt(self.io, self.a, path) orelse return;
-        try self.addLines(buf, base, strip);
+        try self.addLines(buf, base, strip, vcs);
     }
 
     /// Read an ignore file the user NAMED (`--ignore-file <path>`), reporting on
@@ -625,20 +753,20 @@ pub const Ignore = struct {
                 return;
             },
         };
-        try self.addLines(buf, "", "");
+        try self.addLines(buf, "", "", false);
     }
 
     /// Fold one ignore file's bytes into the rule set — the shared tail of both
     /// readers above, so a named source and an in-tree one cannot come to parse
     /// the same dialect differently.
-    fn addLines(self: *Ignore, buf: []const u8, base: []const u8, strip: []const u8) Oom!void {
+    fn addLines(self: *Ignore, buf: []const u8, base: []const u8, strip: []const u8, vcs: bool) Oom!void {
         var it = std.mem.splitScalar(u8, buf, '\n');
-        while (it.next()) |raw| try self.addLine(std.mem.trimEnd(u8, raw, "\r"), base, strip);
+        while (it.next()) |raw| try self.addLine(std.mem.trimEnd(u8, raw, "\r"), base, strip, vcs);
     }
 
     /// Parse one gitignore-dialect line into a `Rule` (comments/blank lines drop)
     /// and bucket it by source directory — the container half of `parseRuleLine`.
-    fn addLine(self: *Ignore, raw: []const u8, base: []const u8, strip: []const u8) Oom!void {
+    fn addLine(self: *Ignore, raw: []const u8, base: []const u8, strip: []const u8, vcs: bool) Oom!void {
         const parsed = parseRuleLine(raw, base, strip) orelse return;
         // Bucket by the source directory (normalized like `ruleMatch` does, so a
         // "." / "./x" base and its rel-side counterpart collapse to the same key).
@@ -654,7 +782,8 @@ pub const Ignore = struct {
             gop.value_ptr.* = .empty;
         }
         var owned = parsed;
-        owned.glob = try self.a.dupe(u8, parsed.glob);
+        owned.vcs = vcs;
+        owned.glob = try ownGlob(self.a, parsed.glob);
         try gop.value_ptr.append(self.a, owned);
     }
 };
@@ -675,39 +804,90 @@ pub const Ignore = struct {
 pub const IgNode = struct {
     parent: ?*const IgNode,
     rules: []const Rule,
+    /// This directory's path relative to the walk root ("" = the root), so the
+    /// fold can tell a node above a repository boundary from one below it.
+    rel: []const u8 = "",
+    /// This directory holds a `.git` — a repository root, which bounds how far
+    /// the VCS rules above it reach. True even for a node with no rules of its
+    /// own: the boundary is the `.git`, not the `.gitignore`.
+    repo: bool = false,
 };
 
 /// Fold the chain's rules into `verdict`, parent-first (shallow→deep, so the
-/// deepest matching rule wins — git precedence, same as `decideAt`).
-pub fn applyChain(node: ?*const IgNode, a: std.mem.Allocator, ci: bool, root_depth: usize, rel: []const u8, is_dir: bool, verdict: *?bool) void {
+/// deepest matching rule wins — git precedence, same as `decideWithin`). Nodes
+/// shallower than `bound` (see `boundary`) contribute only their non-VCS rules.
+pub fn applyChain(node: ?*const IgNode, a: std.mem.Allocator, ci: bool, root_depth: usize, rel: []const u8, is_dir: bool, bound: ?usize, verdict: *?bool) void {
     const n = node orelse return;
-    applyChain(n.parent, a, ci, root_depth, rel, is_dir, verdict);
-    for (n.rules) |r| if (ruleMatch(a, ci, root_depth, r, rel, is_dir)) {
+    applyChain(n.parent, a, ci, root_depth, rel, is_dir, bound, verdict);
+    const skip_vcs = outside(bound, stripDot(n.rel).len);
+    for (n.rules) |r| if (!(skip_vcs and r.vcs) and ruleMatch(a, ci, root_depth, r, rel, is_dir)) {
         verdict.* = !r.negated;
     };
+}
+
+/// Is a rule tier sourced at path-length `at` OUTSIDE the repository that
+/// encloses the candidate — i.e. strictly above the boundary `bound`?
+fn outside(bound: ?usize, at: usize) bool {
+    return at < (bound orelse return false);
+}
+
+/// git's repository boundary for `rel` on this walk: the deepest enclosing
+/// repository root's path length (null = none seen), taking the deeper of what
+/// the serial `repos` map knows and what this directory's chain carries. One
+/// call answers it for either walker, so the two cannot come to disagree about
+/// where a repository ends.
+pub fn boundary(ig: *const Ignore, chain: ?*const IgNode, rel: []const u8) ?usize {
+    const from_map = ig.repoFloor(stripDot(rel));
+    var n = chain;
+    while (n) |node| : (n = node.parent) if (node.repo) {
+        const len = stripDot(node.rel).len;
+        return if (from_map) |m| @max(m, len) else len;
+    };
+    return from_map;
+}
+
+/// The frozen base tier's verdict for one entry, honoring the boundary: the
+/// hash-probing fast tier when this walk has one (its VCS-free twin below a
+/// nested repository root), else the linear fold. The parallel walkers' shared
+/// first half — `applyChain` is the second.
+pub fn baseVerdict(ig: *const Ignore, compiled: ?*const Compiled, rel: []const u8, is_dir: bool, root_depth: usize, bound: ?usize) ?bool {
+    // The VCS-free twin substitutes for `compiled` only where `compiled` itself
+    // was admissible: the fast tier exists exactly when every rule this walk
+    // holds is in the "" bucket (`Compiled.build`), and stepping around that
+    // check would silently drop the per-directory buckets `decideWithin` folds.
+    if (compiled) |c| if (if (outside(bound, 0)) (if (ig.base_novcs) |*n| n else null) else c) |tier| {
+        if (tier.matchRank(stripDot(rel), is_dir)) |r| return !tier.rules[r].negated;
+        return null;
+    };
+    return ig.decideWithin(rel, is_dir, root_depth, bound);
 }
 
 /// Read one ignore file (raw POSIX, worker-thread safe) into `a`. Null when
 /// absent/unreadable — the same silent degrade as `readFile`.
 pub fn readIgnoreFile(a: std.mem.Allocator, path: []const u8) ?[]const u8 {
-    const fd = std.posix.openat(std.posix.AT.FDCWD, path, .{ .ACCMODE = .RDONLY }, 0) catch return null;
-    defer _ = std.posix.system.close(fd);
+    const fd = portal.openFile(portal.cwd(), path) catch return null;
+    defer portal.close(fd);
     var buf: std.ArrayList(u8) = .empty;
     var tmp: [16 * 1024]u8 = undefined;
     while (buf.items.len < (1 << 20)) {
-        const r = std.posix.read(fd, &tmp) catch break;
+        const r = portal.read(fd, &tmp) catch break;
         if (r == 0) break;
         buf.appendSlice(a, tmp[0..r]) catch return null;
     }
     return buf.toOwnedSlice(a) catch null;
 }
 
-pub fn appendRules(a: std.mem.Allocator, list: *std.ArrayList(Rule), path: []const u8, base: []const u8) Oom!void {
+pub fn appendRules(a: std.mem.Allocator, list: *std.ArrayList(Rule), path: []const u8, base: []const u8, vcs: bool) Oom!void {
     const buf = readIgnoreFile(a, path) orelse return;
     var it = std.mem.splitScalar(u8, buf, '\n');
     while (it.next()) |raw| {
         const line = std.mem.trimEnd(u8, raw, "\r");
-        if (parseRuleLine(line, base, "")) |r| try list.append(a, r);
+        if (parseRuleLine(line, base, "")) |r| {
+            var owned = r;
+            owned.vcs = vcs;
+            owned.glob = try ownGlob(a, r.glob);
+            try list.append(a, owned);
+        }
     }
 }
 
@@ -715,11 +895,24 @@ pub fn appendRules(a: std.mem.Allocator, list: *std.ArrayList(Rule), path: []con
 /// read every sibling name, so `loadNode` only `openat`s files that exist
 /// instead of blind-probing all three in every directory (the biggest syscall
 /// sink in the whole walk: ~3 failed opens × every dir).
-pub const IgPresent = struct { gitignore: bool = false, dotignore: bool = false, rgignore: bool = false };
+/// It also carries `dotgit`, which is not an ignore file at all but the same
+/// kind of free fact: the listing already names `.git`, so a parallel walker
+/// learns this directory is a repository root (the `boundary` its VCS rules
+/// reach to) without the per-directory stat the serial walker pays.
+pub const IgPresent = struct { gitignore: bool = false, dotignore: bool = false, rgignore: bool = false, dotgit: bool = false };
 
-/// Note whether `name` is one of the three ignore files, from a listing entry.
+/// Note whether `name` is one of the three ignore files — or the `.git` that
+/// makes this directory a repository root — from a listing entry.
 pub fn noteIgnoreFile(present: *IgPresent, name: []const u8, is_file: bool) void {
-    if (!is_file or name.len < 7 or name[0] != '.') return;
+    if (name.len < 4 or name[0] != '.') return;
+    // `.git` is a DIRECTORY in a plain checkout and a FILE in a linked
+    // worktree; either one is a repository root, so this arm precedes the
+    // is_file gate the three ignore files need.
+    if (std.mem.eql(u8, name, ".git")) {
+        present.dotgit = true;
+        return;
+    }
+    if (!is_file or name.len < 7) return;
     if (std.mem.eql(u8, name, ".gitignore"))
         present.gitignore = true
     else if (std.mem.eql(u8, name, ".ignore"))
@@ -731,17 +924,20 @@ pub fn noteIgnoreFile(present: *IgPresent, name: []const u8, is_file: bool) void
 /// Build the `IgNode` for a directory the walk just entered (its `.gitignore`
 /// then `.ignore`/`.rgignore`, mirroring `loadDir`'s order so last-match-wins
 /// precedence is identical). Returns `parent` unchanged when the directory
-/// contributes no rules — the chain link is skipped, not empty.
+/// neither contributes rules nor roots a repository — the chain link is
+/// skipped, not empty. A repository root DOES link even with no rules of its
+/// own: it is where the VCS rules above it stop (`boundary`).
 pub fn loadNode(ig: *const Ignore, a: std.mem.Allocator, parent: ?*const IgNode, disk: []const u8, rel: []const u8, present: IgPresent) Oom!?*const IgNode {
     var rules: std.ArrayList(Rule) = .empty;
-    if (ig.use_git and present.gitignore) try appendRules(a, &rules, try join(a, disk, ".gitignore"), rel);
+    if (ig.use_git and present.gitignore) try appendRules(a, &rules, try join(a, disk, ".gitignore"), rel, true);
     if (ig.use_dot) {
-        if (present.dotignore) try appendRules(a, &rules, try join(a, disk, ".ignore"), rel);
-        if (present.rgignore) try appendRules(a, &rules, try join(a, disk, ".rgignore"), rel);
+        if (present.dotignore) try appendRules(a, &rules, try join(a, disk, ".ignore"), rel, false);
+        if (present.rgignore) try appendRules(a, &rules, try join(a, disk, ".rgignore"), rel, false);
     }
-    if (rules.items.len == 0) return parent;
+    const repo = ig.use_git and present.dotgit;
+    if (rules.items.len == 0 and !repo) return parent;
     const node = try a.create(IgNode);
-    node.* = .{ .parent = parent, .rules = try rules.toOwnedSlice(a) };
+    node.* = .{ .parent = parent, .rules = try rules.toOwnedSlice(a), .rel = rel, .repo = repo };
     return node;
 }
 
@@ -842,6 +1038,16 @@ fn firstLine(buf: []const u8) []const u8 {
     return buf[0..nl];
 }
 
+/// True if `dir` holds a `.git` of either shape — ripgrep's per-level
+/// repository probe (`dir.join(".git").exists()`), one stat rather than
+/// `hasDotGit`'s open-then-read pair, because a repository boundary does not
+/// care whether the `.git` is a directory or a worktree file.
+fn dotGitPresent(io: std.Io, a: std.mem.Allocator, dir: []const u8) bool {
+    const path = join(a, dir, ".git") catch return false;
+    _ = Dir.cwd().statFile(io, path, .{}) catch return false;
+    return true;
+}
+
 /// True if `path` opens as a directory — the shared `.git` dir probe.
 fn dirExists(io: std.Io, path: []const u8) bool {
     var d = Dir.cwd().openDir(io, path, .{}) catch return false;
@@ -891,6 +1097,60 @@ test "parseRuleLine: a leading **/ ancestor rule floats through re-anchoring (rg
     try t.expectEqual(@as(?Rule, null), parseRuleLine("sib/bar", "", "foo"));
 }
 
+test "ownGlob keeps ** only as a whole component (gitignore's regular-asterisk rule)" {
+    const t = std.testing;
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // The rust checkout's real rule: glued to a suffix, `**` is just `*`, so it
+    // stays inside one component and `src/lib2/Cargo.lock` is NOT ignored.
+    try t.expectEqualStrings("tests/rustdoc-gui/src/*.lock", try ownGlob(a, "tests/rustdoc-gui/src/**.lock"));
+    try t.expectEqualStrings("*x*", try ownGlob(a, "**x***"));
+    // …while every component-shaped form survives untouched.
+    for ([_][]const u8{ "**/bar/*", "foo/**", "a/**/b", "**", "*.o", "a*b" }) |p|
+        try t.expectEqualStrings(p, try ownGlob(a, p));
+    // A collapsed run and a preserved one in the same glob, plus the tail after
+    // the last run — the two-arm copy has to carry both.
+    try t.expectEqualStrings("**/a*b/*.c", try ownGlob(a, "**/a**b/*.c"));
+}
+
+test "a VCS rule stops at a nested repository root (rg's saw_git boundary)" {
+    const t = std.testing;
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ig = Ignore{ .a = a, .io = undefined, .o = .{}, .groups = std.StringHashMap(std.ArrayList(Rule)).init(a), .loaded = std.StringHashMap(void).init(a), .repos = std.StringHashMap(void).init(a), .use_git = true };
+    var bucket: std.ArrayList(Rule) = .empty;
+    // An OUTER repo's `dist/` (VCS) and an outer `.ignore`'s `keep.log` (not).
+    try bucket.append(a, .{ .glob = "dist", .base = "", .negated = false, .anchored = false, .dir_only = true, .vcs = true });
+    try bucket.append(a, .{ .glob = "keep.log", .base = "", .negated = false, .anchored = false, .dir_only = false, .vcs = false });
+    try ig.groups.put("", bucket);
+
+    // No repository below the walk root: both tiers govern, as they always have.
+    try t.expectEqual(@as(?bool, true), ig.decide("repo/src/dist", true));
+    try t.expectEqual(@as(?bool, true), ig.decide("repo/src/keep.log", false));
+
+    // `repo/` holds a `.git` ⇒ it is a repository of its own. The outer repo's
+    // `.gitignore` no longer reaches inside it; the outer `.ignore` still does.
+    try ig.repos.put("repo", {});
+    try t.expectEqual(@as(?bool, null), ig.decide("repo/src/dist", true));
+    try t.expectEqual(@as(?bool, true), ig.decide("repo/src/keep.log", false));
+    // The boundary is only for what is INSIDE: the repository directory's own
+    // name is still judged by the outer repo (a checkout in `dist/` stays gone),
+    // and a sibling outside it is untouched.
+    try t.expectEqual(@as(?bool, true), ig.decide("dist", true));
+    try t.expectEqual(@as(?bool, true), ig.decide("plain/src/dist", true));
+
+    // The parallel walkers learn the same boundary from their chain instead of
+    // from `repos`, and must reach the identical verdict.
+    var ig2 = Ignore{ .a = a, .io = undefined, .o = .{}, .groups = ig.groups, .loaded = std.StringHashMap(void).init(a), .repos = std.StringHashMap(void).init(a), .use_git = true };
+    const node = IgNode{ .parent = null, .rules = &.{}, .rel = "repo", .repo = true };
+    const bound = boundary(&ig2, &node, "repo/src/dist");
+    try t.expectEqual(@as(?usize, 4), bound);
+    try t.expectEqual(@as(?bool, null), baseVerdict(&ig2, null, "repo/src/dist", true, 0, bound));
+    try t.expectEqual(@as(?bool, true), baseVerdict(&ig2, null, "repo/src/keep.log", false, 0, bound));
+}
+
 test "an explicit nested root loads its intermediate ancestors' ignores (rg add_parents)" {
     const t = std.testing;
     var threaded = std.Io.Threaded.init(t.allocator, .{});
@@ -908,7 +1168,7 @@ test "an explicit nested root loads its intermediate ancestors' ignores (rg add_
     // `a/b`; rg loads it as a parent of the named path, so `a/b/.foo` is pruned.
     try Dir.cwd().writeFile(io, .{ .sub_path = try join(a, dir, "a/.ignore"), .data = ".foo\n" });
 
-    var ig = Ignore{ .a = a, .io = io, .o = .{ .hidden = true }, .groups = std.StringHashMap(std.ArrayList(Rule)).init(a), .loaded = std.StringHashMap(void).init(a), .use_dot = true };
+    var ig = Ignore{ .a = a, .io = io, .o = .{ .hidden = true }, .groups = std.StringHashMap(std.ArrayList(Rule)).init(a), .loaded = std.StringHashMap(void).init(a), .repos = std.StringHashMap(void).init(a), .use_dot = true };
     const abs_dir = try Dir.cwd().realPathFileAlloc(io, dir, a);
     const root = try join(a, abs_dir, "a/b");
     try ig.loadRootAncestors(root); // absolute-safe: starts at CWD, never ~/.cursor
@@ -1028,10 +1288,10 @@ test "a global-sourced ignore file drives the CWD-tier verdict (loadGlobalExclud
     const gi = try std.fmt.allocPrint(a, "{s}/globalignore", .{dir});
     try Dir.cwd().writeFile(io, .{ .sub_path = gi, .data = "*.log\n!keep.log\n" });
 
-    var ig = Ignore{ .a = a, .io = io, .o = .{}, .groups = std.StringHashMap(std.ArrayList(Rule)).init(a), .loaded = std.StringHashMap(void).init(a) };
+    var ig = Ignore{ .a = a, .io = io, .o = .{}, .groups = std.StringHashMap(std.ArrayList(Rule)).init(a), .loaded = std.StringHashMap(void).init(a), .repos = std.StringHashMap(void).init(a) };
     // Exactly what `loadGlobalExclude` does with the resolved path: fold the
     // global file into the "" (CWD/ancestor) tier, lowest precedence.
-    try ig.readFile(gi, "", "");
+    try ig.readFile(gi, "", "", false);
     try t.expectEqual(@as(?bool, true), ig.decide("app.log", false)); // *.log ignored
     try t.expectEqual(@as(?bool, false), ig.decide("keep.log", false)); // later !keep.log re-includes
     try t.expectEqual(@as(?bool, null), ig.decide("app.txt", false)); // untouched

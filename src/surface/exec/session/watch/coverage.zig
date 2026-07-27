@@ -18,6 +18,7 @@ const builtin = @import("builtin");
 const ignore = @import("../../../../corpus/tree/ignore.zig");
 const haystack = @import("../../../../corpus/tree/haystack.zig");
 const kqueue = @import("kqueue.zig");
+const portal = @import("../../../../portal.zig");
 
 const is_macos = builtin.os.tag == .macos;
 const Dir = std.Io.Dir;
@@ -100,8 +101,8 @@ pub fn coverRoots(self: anytype, comptime mode: Cover) bool {
     const roots = self.watchRoots();
     for (roots) |root| {
         const rootz = std.posix.toPosixPath(root) catch return false;
-        const resolved = std.c.realpath(&rootz, &buf) orelse return false;
-        const abs = std.mem.span(resolved);
+        const resolved = portal.realpath(&rootz, &buf) orelse return false;
+        const abs = resolved;
         // Annals deliveries are keyed absolute; arm the strip prefix before
         // any event can be noted. Only a single-root watch is
         // annals-addressable (one unambiguous prefix); a multi-root session
