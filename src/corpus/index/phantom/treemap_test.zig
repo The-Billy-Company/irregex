@@ -143,3 +143,29 @@ test "treemap: every torn variant fails closed" {
         try expectCorrupt(map);
     }
 }
+
+test "treemap: the seal catches the name rot every layout check passes" {
+    const a = std.testing.allocator;
+    const blob = try frameBlob(a, 1);
+    defer a.free(blob);
+
+    const map = try aligned(a, blob);
+    defer a.free(map);
+    const v = try treemap.decode({}, map);
+    try v.verify();
+
+    // Names are the one region `decode` reads without judging: every offset
+    // and length above stays in bounds under a flipped content byte, so the
+    // snapshot parses clean and serves a child this tree has never had. That
+    // is a membership answer no bounds check can refuse and the walk would
+    // trust — the case the seal exists for, and the only reader that sees it.
+    const names_off = 32 + @sizeOf(treemap.Rec) * 2 + @sizeOf(treemap.Ent) * 4;
+    const rotted = try aligned(a, blob);
+    defer a.free(rotted);
+    rotted[names_off] ^= 0x20; // "src" → "Src"
+
+    const bad = try treemap.decode({}, rotted); // layout still parses clean…
+    try std.testing.expectEqualStrings("Src", bad.name(bad.children(0)[0]));
+    try std.testing.expectEqual(@as(?u32, null), treemap.resolve(&bad, "src"));
+    try std.testing.expectError(error.Corrupt, bad.verify()); // …and the seal still refuses it
+}

@@ -26,17 +26,17 @@ Nine packages, but not nine indexes. **Seven** publish an artifact and answer a
 question from it; **two** are the substrate they are all built on. Reading the
 directory as nine peers is the fastest way to conclude there are too many.
 
-### The seven indexes, by what they eliminate
+## The seven indexes, by what they eliminate
 
-| Package                 | Eliminates                       | Job                                                                               |
-| ----------------------- | -------------------------------- | --------------------------------------------------------------------------------- |
-| [`trigrams/`](trigrams) | files that cannot match          | **T0** positional trigram candidate index + **T3** mtime/ctime freshness          |
-| [`crest/`](crest)       | files a literal-free pattern can't match | Per-doc forced-class-run vectors (`crest.bin`) for literal-free class runs |
-| [`phantom/`](phantom)   | `openat`+`getattrlistbulk` syscalls | Directory-membership snapshot (`tree.map`): one lstat proves a dir, walk elided |
-| [`content/`](content)   | `openat`+`read`+`close` syscalls | Corpus-content blob (`content.shard`): one mmap serves unchanged bytes, no open   |
-| [`codex/`](codex)       | the corpus itself                | FM-index self-index: `count` / `find` / `restore` at entropy space                |
-| [`atlas/`](atlas)       | re-sketching every file          | Persisted LZJD sketches + silhouettes for warm `relate similar` / `echoes`        |
-| [`frag/`](frag)         | re-sketching every function      | Persisted per-function silhouettes (`concepts.frag`) for a warm `--unit function` |
+| Package                 | Eliminates                               | Job                                                                               |
+| ----------------------- | ---------------------------------------- | --------------------------------------------------------------------------------- |
+| [`trigrams/`](trigrams) | files that cannot match                  | **T0** positional trigram candidate index + **T3** mtime/ctime freshness + codicil incremental amend |
+| [`crest/`](crest)       | files a literal-free pattern can't match | Per-doc forced-class-run vectors (`crest.bin`) for literal-free class runs        |
+| [`phantom/`](phantom)   | `openat`+`getattrlistbulk` syscalls      | Directory-membership snapshot (`tree.map`): one lstat proves a dir, walk elided   |
+| [`content/`](content)   | `openat`+`read`+`close` syscalls         | Corpus-content blob (`content.shard`): one mmap serves unchanged bytes, no open   |
+| [`codex/`](codex)       | the corpus itself                        | FM-index self-index: `count` / `find` / `restore` at entropy space                |
+| [`atlas/`](atlas)       | re-sketching every file                  | Persisted LZJD sketches + silhouettes for warm `relate similar` / `echoes`        |
+| [`frag/`](frag)         | re-sketching every function              | Persisted per-function silhouettes (`concepts.frag`) for a warm `--unit function` |
 
 Four different eliminations, and no two indexes make the same one. `trigrams`
 and `crest` rule candidates out by pattern; `phantom` and `content` remove
@@ -44,12 +44,12 @@ syscalls the walk would otherwise repeat; `codex` answers without consulting the
 corpus at all; `atlas` and `frag` answer resemblance, which no exact structure
 can. An index that duplicated another's elimination would be the one to delete.
 
-### The two substrate packages
+## The two substrate packages
 
-| Package                 | Job                                                                               |
-| ----------------------- | --------------------------------------------------------------------------------- |
+| Package                 | Job                                                                                                                                                                                                    |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | [`frame/`](frame)       | Wire discipline: LE ints, fail-closed cursor, NUL catalogs, `onDisk` gate, the mmap/atomic-write primitives, the `tree.root` binding, and `mapArtifact` — the load protocol every mapped artifact runs |
-| [`postings/`](postings) | LEB128 + CSR blob codecs the trigram bodies ride                                  |
+| [`postings/`](postings) | LEB128 + CSR blob codecs the trigram bodies ride                                                                                                                                                       |
 
 Neither answers a query. They exist so the seven can't drift on how bytes are
 framed, mapped, and proved — see [`frame/README.md`](frame) for why the load
@@ -68,6 +68,8 @@ the parallel walk's incidental cross-file scheduling order. Soundness rules:
 - Freshness stamps the wall-clock anchor **before** reading the corpus;
   missing timestamps or a missing anchor fail closed (live-read).
 - Crest `decode` nulls on framing mismatch → query runs without the sieve.
+- Codicil (incremental amend) postings are false-positive only (union, never
+  subtract); false-negative holes are closed by construction.
 - Atlas / corrupt / `--no-index` → live rebuild, byte-identical answers.
 - An artifact that cannot prove which tree it describes, or that carries an
   anchor from the future, does not load at all (`frame.mapArtifact`). Both are

@@ -542,6 +542,7 @@ test {
     _ = @import("corpus/index/trigrams/trigram_load_test.zig"); // T0 loader adversarial suite: malformed blobs fail closed
     _ = @import("corpus/index/trigrams/persist_test.zig"); // T0 persisted corpus/index/path-table integrity (doc-id OOB guard)
     _ = @import("corpus/index/trigrams/codicil_test.zig"); // incremental codicil: round-trip, fail-closed decode, layered-query parity
+    _ = @import("corpus/index/trigrams/lapse_test.zig"); // generation retention: each publish fence asserted alone
     _ = @import("corpus/index/trigrams/trigram_fuzz.zig"); // T0 loader long fuzz (seeds + mutations; GIST_FUZZ_ITERS)
     _ = @import("corpus/index/frame/frame_test.zig"); // shared artifact-load protocol: tree binding + future-anchor refusal, no leak on reject
     _ = @import("corpus/index/phantom/treemap_test.zig"); // phantom tree.map layout: round-trip, root resolve, torn blobs fail closed
