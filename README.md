@@ -159,6 +159,20 @@ the three non-kinship shapes. See the
 [`relate` README](src/surface/face/relate/README.md) for the complete verb guide,
 score directions, corpus policy, warm-tier behavior, and evidence.
 
+## In your editor
+
+`make install-gist` also links [`editor/vim`](editor/vim/README.md) into the
+package directory of every editor it finds, so a machine that already had Vim
+or Neovim gets the integration with no configuration: `:grep` becomes gist,
+`<Leader>gg` searches the word under the cursor, and results stream into the
+quickfix list while the search is still running. `:help gist` is the full
+guide; `:GistHealth` (`:checkhealth gist`) says what is wired.
+
+The three faces stay themselves there: `:GistRank` is the definition-first
+view, `:GistSimilar` is `relate similar` on the current buffer, and
+`:GistBlast` puts a symbol's live blast radius in the quickfix list so `:cnext`
+walks a change's consequences. `GIST_VIM_INSTALL=0` declines the whole thing.
+
 ## Use Gist and Relate in tandem
 
 The tools are strongest as a loop: Relate finds the neighborhood; Gist proves
@@ -230,13 +244,13 @@ workflows and the `CandidateSet` model.
 
 ## Choose a face
 
-| Face        | What it is                                                                                                                                                                                                | Docs                                                                       |
-| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| **gist**    | the rg-parity code locator CLI: trigram + crest read-elision, ranked search, and a resident session; the agents' everyday search reflex                                                                   | [`src/surface/face/gist/README.md`](src/surface/face/gist/README.md)       |
-| **relate**  | compression-as-search: retrieval/packing, quotation, kinship/families/echoes, and exact pattern sets; `index` / `status` own the warm lifecycle                                                           | [`src/surface/face/relate/README.md`](src/surface/face/relate/README.md)   |
-| **irregex** | the composed face needing live bytes: `provenance` (quote, re-verified) and `blast` (live symbol radius). Reading-set / fork narrowing is `relate pack|echoes --matching` | [`src/surface/face/irregex/README.md`](src/surface/face/irregex/README.md) |
-| **codex**   | the compressed self-index: a corpus stored at entropy-bound size with exact O(m) `count`/`find` and byte-exact restoration; powers `gist codex` + `relate quote`                                          | [`src/corpus/index/codex/README.md`](src/corpus/index/codex/README.md)     |
-| **ffi**     | the in-process C-ABI warm session (`irregex_open` / `irregex_search` / `irregex_close` over `libirregex`)                                                                                                 | [`src/surface/ffi/README.md`](src/surface/ffi/README.md)                   |
+| Face        | What it is                                                                                                                                                                 | Docs                                                                       |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| **gist**    | the rg-parity code locator CLI: trigram + crest read-elision, ranked search, and a resident session; the agents' everyday search reflex                                    | [`src/surface/face/gist/README.md`](src/surface/face/gist/README.md)       |
+| **relate**  | compression-as-search: retrieval/packing, quotation, kinship/families/echoes, and exact pattern sets; `index` / `status` own the warm lifecycle                            | [`src/surface/face/relate/README.md`](src/surface/face/relate/README.md)   |
+| **irregex** | the composed face needing live bytes: `provenance` (quote, re-verified) and `blast` (live symbol radius). Reading-set / fork narrowing is `relate pack\|echoes --matching` | [`src/surface/face/irregex/README.md`](src/surface/face/irregex/README.md) |
+| **codex**   | the compressed self-index: a corpus stored at entropy-bound size with exact O(m) `count`/`find` and byte-exact restoration; powers `gist codex` + `relate quote`           | [`src/corpus/index/codex/README.md`](src/corpus/index/codex/README.md)     |
+| **ffi**     | the in-process C-ABI warm session (`irregex_open` / `irregex_search` / `irregex_close` over `libirregex`)                                                                  | [`src/surface/ffi/README.md`](src/surface/ffi/README.md)                   |
 
 The three CLIs are separate faces over one shared floor (`src/kernel/`,
 `src/corpus/`, `src/surface/`); none owns a
@@ -432,6 +446,7 @@ place only when the tool feels obvious in the hand.
 | `bindings/`    | Python (`billy-irregex` — all three faces, subprocess + optional cffi) and Rust (subprocess) faces                                                                     |
 | `contract/`    | `search_api.toml`: the unified SearchRequest/irregex contract (ADR-352)                                                                                                |
 | `bench/`       | certification + competitive benchmark harness (rgsuite, races, certify, roofline)                                                                                      |
+| `editor/`      | the Vim/Neovim plugin (`vim/`) and the installer that links it into an editor that already exists                                                                      |
 
 See [`src/README.md`](src/README.md) for the tier-by-tier map and
 [`src/surface/face/gist/README.md`](src/surface/face/gist/README.md) for the gist architecture
@@ -446,9 +461,10 @@ composed reports expose their conclusion (`Blast.paths`) next to their evidence.
 ## Build & test
 
 ```bash
-make install-gist   # build (ReleaseFast) + symlink ~/.local/bin/{gist,relate,irregex} + index
+make install-gist   # build (ReleaseFast) + symlink ~/.local/bin/{gist,relate,irregex} + index + link the editor plugin
 make build-gist     # staticlib + dynlib (libirregex) + irregex.h → zig-out/
 make test-gist      # zig build test: unit + differential-fuzz suites
+make test-gist-vim  # the editor plugin's headless suite, run in both Vim and Neovim
 ```
 
 One changelog covers the whole package (one version, one release unit):
