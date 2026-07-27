@@ -85,6 +85,12 @@ each claim prove itself. The kernel builds on:
 - Google Code Search's trigram index (Russ Cox), with a conservative live-tree
   freshness overlay rather than snapshot authority;
 - Thompson/Pike/RE2-family linear matching plus opt-in, resource-capped PCRE2;
+- for the scan tier above that DFA, four separately-invented ideas we adopted on
+  merit rather than authorship: Parabix bit-parallel transposition (Cameron et
+  al.), symbolic derivatives over a minterm alphabet (Veanes et al.), one-pass
+  capture determinism (RE2 / rust `regex`), and over-approximating prefilter
+  quotients (CODFA, Hyperscan). Each was refereed for priority, found
+  anticipated, and built anyway — being second is a citation, not a reason;
 - the Ferragina–Manzini FM-index, SA-IS, Huffman wavelet trees, and RRR
   bitvectors for the restorable compressed codex;
 - LZJD, winnowing, Ziv–Merhav cross-parsing, and FM-index matching statistics

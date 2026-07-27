@@ -4,7 +4,7 @@ doc_radar:
     - description: "bench concern folders, one per row of the table below"
       glob: pkg/kernels/irregex/bench/*/
       unit: dirs
-      min: 13
+      min: 16
   sentinels:
     - description: "the Layer B′ measured rung exists as a build step"
       file: pkg/kernels/irregex/build.zig
@@ -23,7 +23,7 @@ One concern per folder:
 | [`corpora/`](corpora/)                | Multi-corpus fetcher (`fetch.sh` + `torture.py`) — pinned external trees (linux/cpython/typescript/subtitles/torture) under `.local/gist-corpora/` so differential sweeps aren't Billy-home-corpus-only.                                                 |
 | [`races/`](races/README.md)           | The competitor registry (`_compete.sh`) + the three multi-tool field races (warm, cold literal, cold regex).                                                                                                                                             |
 | [`gates/`](gates/README.md)           | Permanent correctness/contract gates: the `gist ≡ rg` equality oracle, the scan-path regression, the stdout/stderr stream-contract check.                                                                                                                |
-| [`certify/`](certify/README.md)       | The macroscopic half of the Layer-A dominance certificate — races the whole field per pattern class with a fail-closed statistical verdict.                                                                                                             |
+| [`certify/`](certify/README.md)       | The macroscopic half of the Layer-A dominance certificate — races the whole field per pattern class with a fail-closed statistical verdict.                                                                                                              |
 | [`session/`](session/README.md)       | The **resident-session** certificate — the honest warm-product path (persistent client → `gist serve` daemon over a Unix socket), the only sound basis for a warm-speedup claim (ADR-352 rung 2.5).                                                      |
 | [`rgsuite/`](rgsuite/README.md)       | The `gist rg` ⇄ real-ripgrep drop-in proof — mined `rgtest!` correctness replay plus the performance scoreboard.                                                                                                                                         |
 | [`matrix/`](matrix/README.md)         | The **CLI-shape admission matrix** — one machine-readable row per supported shape (mode × flags × walk-scope × emit × selectivity), driven as real argv three ways (gist-idx / gist-noidx / rg) with a parity-first gate + per-shape statistical floors. |
@@ -32,6 +32,9 @@ One concern per folder:
 | [`lowerbound/`](lowerbound/README.md) | Layer D â algorithmic lower bound: a fail-closed structural audit proving gist's verify touches the information-theoretic floor of candidate bytes.                                                                                                      |
 | [`relate/`](relate/README.md)         | The **relate** proof (`relate-knn`) — the real cross-parse / LZJD / pivot engine run as a k-NN classifier; the measured basis for the compression-vs-embeddings verdict (`spikes/compression-vs-embeddings/`).                                    |
 | [`codex/`](codex/README.md)           | The **self-index** at-scale proof (`codex-scale`) — the real `src/corpus/index/codex/` FM-index over ~187MB of repo source: entropy-bound space vs gzip/bzip2/zstd/xz, flat-in-n count latency, byte-exact restore from the index alone.                 |
+| [`compose/`](compose/README.md)       | Rung proof (`compose-rung`) — the transformation-composition scan against the shipped `Dfa.docMatch`, interleaved in one process, failing closed on disagreement _and_ on the dispatch gate arming where a literal skip already wins.                    |
+| [`parabix/`](parabix/README.md)       | Rung proof (`parabix-rung`) — the bit-parallel scan against both baselines it must beat (the whole `Regex.docMatch` ladder and the raw DFA under it), with its refusals published beside its wins.                                                       |
+| [`sieve/`](sieve/README.md)           | Rung proof (`sieve`) — the only rung that cannot say yes, so the harness proves a rejection is never a lie: per-position and per-document soundness over the real corpus, plus selectivity against the estimate that gates it.                           |
 
 ```bash
 cd pkg/kernels/irregex
