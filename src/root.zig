@@ -259,9 +259,15 @@ pub const commands = struct {
         pub const types = @import("corpus/scope/types.zig");
         /// The committed tree declaration (`.irregex.toml`) every face honors.
         pub const charter = @import("corpus/scope/charter.zig");
+        /// How either persisted configuration file reports being misread.
+        pub const misread = @import("corpus/scope/misread.zig");
     };
     /// Read-only index introspection (the `status` verb).
     pub const status = @import("surface/face/gist/status/status.zig");
+    /// `gist config` — the resolved persisted-configuration stack, its
+    /// validator, and the charter writer that lifts stranded machine-local
+    /// state into the committed file.
+    pub const config = @import("surface/face/gist/config/config.zig");
     /// `gist --schema` JSON capability manifest.
     pub const schema = @import("surface/face/gist/schema/schema.zig");
     /// `gist --generate` — gist's surface in the primer's vocabulary, rendered
@@ -620,6 +626,7 @@ test {
     // command surfaces (tests + driver bodies, so `zig build test` type-checks all)
     _ = @import("corpus/scope/glob_test.zig"); // glob matcher + type/glob/root path scope
     _ = @import("corpus/scope/charter_test.zig"); // the committed tree declaration's grammar
+    _ = @import("corpus/scope/misread.zig"); // located faults + did-you-mean, shared by both persisted layers
     _ = @import("surface/exec/cold/argv/preference_test.zig"); // personal preferences: tokenizing + reach admission
     _ = @import("surface/face/gist/status/status.zig"); // read-only index introspection
     _ = @import("surface/face/gist/schema/schema.zig"); // `--schema` manifest

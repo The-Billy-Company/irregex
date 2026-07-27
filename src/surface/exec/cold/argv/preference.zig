@@ -32,6 +32,7 @@ const std = @import("std");
 const assay = @import("../../../../assay/assay.zig");
 const catalog = @import("catalog.zig");
 const charter = @import("../../../../corpus/scope/charter.zig");
+const misread = @import("../../../../corpus/scope/misread.zig");
 
 const Reach = catalog.Reach;
 
@@ -72,11 +73,68 @@ pub const Fault = error{
 /// interactive terminal. Prepended, not appended, so anything typed explicitly
 /// still wins: last spelling of a flag takes effect, which is ripgrep's rule and
 /// the reason overriding a preference needs no special syntax.
+///
+/// The gate is checked BEFORE the file is opened, which is a correctness
+/// property and not an optimization. A malformed personal file is a loud exit
+/// for the person who wrote it — and must be *nothing at all* for a pipe, a
+/// script, or an agent, none of which would have honored the file anyway. Read
+/// first and fault second would mean one human's typo failing every agent in
+/// the tree with an exit 2 naming a path they cannot see: precisely the
+/// action-at-a-distance this layer exists to rule out. (It also means the
+/// overwhelmingly common non-interactive run costs zero syscalls here.)
 pub fn forThisRun(io: std.Io) []const []const u8 {
-    const p = loaded() orelse return &.{};
     if (!(std.Io.File.stdout().isTty(io) catch false)) return &.{};
+    if (charter.suppressedNow()) return &.{};
+    const p = loaded() orelse {
+        // Now it matters: this run WOULD have used the file.
+        if (state.fault) |e| {
+            report(e);
+            std.process.exit(2);
+        }
+        return &.{};
+    };
     if (p.changes_answer and p.tokens.len > 0) steered = p.path;
     return p.tokens;
+}
+
+/// Say why the preferences file could not be used. Split from the exit so a
+/// provenance report can print the same sentence without ending the process.
+pub fn report(e: anyerror) void {
+    var loc: [24]u8 = undefined;
+    assay.diag("gist: {s}{s}: {s}\n", .{
+        state.path orelse "preferences",
+        misread.at(&loc, state.diag),
+        faultNote(e),
+    });
+    if (didYouMean(e, state.diag.token)) |better| {
+        assay.diag("gist: try --{s} — `{s}` is not a flag gist knows\n", .{ better, state.diag.token });
+    }
+    assay.diag("gist: note: --no-config ignores it for this run\n", .{});
+}
+
+/// The flag worth suggesting for a fault, or null when there is none — the
+/// charter's `didYouMean` in this layer's vocabulary. Only `UnknownFlag` is a
+/// fault about a name; an unterminated quote is not improved by guessing at
+/// the last flag it saw.
+pub fn didYouMean(e: anyerror, token: []const u8) ?[]const u8 {
+    if (e != Fault.UnknownFlag) return null;
+    return nearestFlag(token);
+}
+
+/// The catalog's long spelling nearest a typo. Only long flags are guessed: a
+/// mistyped short flag is one character, where every candidate is equidistant
+/// and a suggestion would be a coin flip dressed up as help.
+pub fn nearestFlag(token: []const u8) ?[]const u8 {
+    if (!std.mem.startsWith(u8, token, "--")) return null;
+    const body = token[2..];
+    const typo = body[0 .. std.mem.indexOfScalar(u8, body, '=') orelse body.len];
+    var names: [catalog.flag_catalog.len * 2][]const u8 = undefined;
+    var n: usize = 0;
+    for (catalog.flag_catalog) |spec| for (spec.longs) |long| {
+        names[n] = long;
+        n += 1;
+    };
+    return misread.nearest(typo, names[0..n]);
 }
 
 /// The preferences file that steered THIS run's answer, if one did — recorded
@@ -88,31 +146,61 @@ pub fn steering() ?[]const u8 {
 
 var steered: ?[]const u8 = null;
 
-/// The parsed file regardless of the TTY gate — what a provenance report shows,
-/// so `gist config` can explain a file even from inside a pipe.
+/// What the file SAYS — regardless of the TTY gate or `--no-config`, both of
+/// which are facts about this run rather than about the file. That is what lets
+/// `gist config` explain a preferences file from inside a pipe, and explain it
+/// even in a shell that exports `GIST_NO_CONFIG`.
+///
+/// Never exits. A malformed file is recorded (`faulted`) rather than fatal,
+/// because whether it *should* be fatal depends on the caller: the run that
+/// would have used it says so and dies, while a run merely reporting on the
+/// configuration must be able to say "present, but malformed" — which is the
+/// single most useful thing it could say to whoever has to fix it.
 pub fn loaded() ?*const Preferences {
     if (state.done) return state.prefs;
     state.done = true;
-    if (charter.suppressedNow()) return null;
 
     const gpa = std.heap.page_allocator; // process-lifetime; never freed
     const path = locate() orelse return null;
-    const src = charter.slurp(gpa, path) catch return null;
+    state.path = path;
+    const src = charter.slurp(gpa, path) catch |e| {
+        // Absent is the common case and not a fault; unreadable or oversized is.
+        if (e != error.FileNotFound) state.fault = e;
+        return null;
+    };
     defer gpa.free(src);
 
     const owned = gpa.create(Preferences) catch return null;
-    owned.* = parse(gpa, path, src) catch |e| {
-        assay.diag("gist: {s}: {s}\n", .{ path, note(e) });
-        assay.diag("gist: note: --no-config ignores it for this run\n", .{});
-        std.process.exit(2);
+    owned.* = parse(gpa, path, src, &state.diag) catch |e| {
+        // The token slices `src`, which this scope is about to free — and the
+        // diagnostic outlives the read (`gist config check` prints it, and the
+        // suggestion is computed from it).
+        state.diag.token = misread.keepToken(&state.token_bytes, state.diag.token);
+        state.fault = e;
+        return null;
     };
     state.prefs = owned;
     return owned;
 }
 
-var state: struct { done: bool = false, prefs: ?*const Preferences = null } = .{};
+/// The fault that kept this file from loading, if there was one, with the path
+/// it applies to. `null` for the ordinary case of no preferences file at all.
+pub fn faulted() ?struct { path: []const u8, err: anyerror, at: misread.Diagnostic } {
+    _ = loaded();
+    const e = state.fault orelse return null;
+    return .{ .path = state.path orelse "preferences", .err = e, .at = state.diag };
+}
 
-fn note(e: anyerror) []const u8 {
+var state: struct {
+    done: bool = false,
+    prefs: ?*const Preferences = null,
+    fault: ?anyerror = null,
+    path: ?[]const u8 = null,
+    diag: misread.Diagnostic = .{},
+    token_bytes: [128]u8 = undefined,
+} = .{};
+
+pub fn faultNote(e: anyerror) []const u8 {
     return switch (e) {
         Fault.UnknownFlag => "unknown flag (see `gist --help`)",
         Fault.NotPersistable => "that flag only means something typed on the command line",
@@ -150,7 +238,7 @@ fn locate() ?[]const u8 {
 /// be REFUSED without this module having to know which flags take values — a
 /// question only `grammar.apply` can answer, and a second copy of that answer
 /// here would be a drift hazard for no gain.
-pub fn parse(gpa: std.mem.Allocator, path: []const u8, src: []const u8) !Preferences {
+pub fn parse(gpa: std.mem.Allocator, path: []const u8, src: []const u8, diag: ?*misread.Diagnostic) !Preferences {
     var out: std.ArrayList([]const u8) = .empty;
     var changes = false;
     errdefer {
@@ -159,9 +247,17 @@ pub fn parse(gpa: std.mem.Allocator, path: []const u8, src: []const u8) !Prefere
     }
 
     var lines = std.mem.splitScalar(u8, src, '\n');
+    var lineno: usize = 0;
     while (lines.next()) |raw| {
+        lineno += 1;
         var line: Line = .{ .src = std.mem.trim(u8, raw, " \t\r") };
         var first = true;
+        // The token is owned by `out` once appended, so the diagnostic borrows
+        // from the raw source line instead — it outlives the failed parse's
+        // cleanup, which frees everything this loop built.
+        errdefer if (diag) |d| {
+            d.* = .{ .line = lineno, .token = firstWord(line.src) };
+        };
         while (try line.next(gpa)) |tok| {
             errdefer gpa.free(tok);
             if (out.items.len >= max_tokens) return Fault.TooManyTokens;
@@ -181,6 +277,13 @@ pub fn parse(gpa: std.mem.Allocator, path: []const u8, src: []const u8) !Prefere
 
 fn isFlag(tok: []const u8) bool {
     return tok.len > 1 and tok[0] == '-';
+}
+
+/// The line's leading word, unquoted and untokenized — what to quote back in a
+/// fault. Deliberately not the parsed token: the parse is what failed.
+fn firstWord(line: []const u8) []const u8 {
+    const end = std.mem.indexOfAny(u8, line, " \t") orelse line.len;
+    return line[0..end];
 }
 
 /// Check one flag against the catalog and report whether it changes the answer.

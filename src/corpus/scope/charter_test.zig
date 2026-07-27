@@ -9,19 +9,35 @@
 
 const std = @import("std");
 const charter = @import("charter.zig");
+const misread = @import("misread.zig");
 
 const t = std.testing;
 
 fn parsed(src: []const u8, dir: []const u8) !charter.Charter {
-    return charter.parse(t.allocator, ".irregex.toml", dir, src);
+    return charter.parse(t.allocator, ".irregex.toml", dir, src, null);
 }
 
 /// Assert that `src` is refused with exactly `want`. A charter that parsed when
 /// it should not have is the failure this whole file exists to catch, so the
 /// success path here is itself an error.
 fn refuses(src: []const u8, want: anyerror) !void {
-    const c = charter.parse(t.allocator, ".irregex.toml", "", src) catch |e| {
+    var diag: misread.Diagnostic = .{};
+    const c = charter.parse(t.allocator, ".irregex.toml", "", src, &diag) catch |e| {
         return t.expectEqual(want, e);
+    };
+    c.deinit(t.allocator);
+    return error.CharterAcceptedMalformedInput;
+}
+
+/// Assert that `src` is refused AND that the reader is told where. A fault a
+/// person cannot locate is only marginally better than a silent one.
+fn refusesAt(src: []const u8, want: anyerror, line: usize, token: []const u8) !void {
+    var diag: misread.Diagnostic = .{};
+    const c = charter.parse(t.allocator, ".irregex.toml", "", src, &diag) catch |e| {
+        try t.expectEqual(want, e);
+        try t.expectEqual(line, diag.line);
+        try t.expectEqualStrings(token, diag.token);
+        return;
     };
     c.deinit(t.allocator);
     return error.CharterAcceptedMalformedInput;
@@ -130,6 +146,28 @@ test "an unquoted value is refused rather than guessed at" {
 test "trailing garbage after a complete declaration is a fault" {
     try refuses("roots = [\"a\"]\nnonsense", charter.Fault.ExpectedEquals);
     try refuses("roots = [\"a\"]\n]", charter.Fault.ExpectedValue);
+}
+
+test "a fault says which line, so a long charter is not a hunt" {
+    try refusesAt("roots = [\"a\"]\ngenerated = [\"x\"]", charter.Fault.UnknownKey, 2, "generated");
+    try refusesAt("# a comment\n\nskip = [\"a\"]\nskip = [\"b\"]", charter.Fault.DuplicateKey, 4, "skip");
+    try refusesAt("roots = [\"a\"]\nskip  = [\"b\n]", charter.Fault.UnterminatedString, 2, "skip");
+}
+
+test "only a fault about a NAME is answered with a name" {
+    // `skip = ["a` faults on the string while its last token is `skip`, a
+    // perfectly legal key. Pairing "nearest" with the caller's own idea of
+    // which faults are name faults produced `try `skip` — `skip` is not a
+    // charter key`, so the gate lives with the fault, not at the call site.
+    try t.expectEqualStrings("roots", charter.didYouMean(charter.Fault.UnknownKey, "rotos").?);
+    for ([_]anyerror{
+        charter.Fault.UnterminatedString,
+        charter.Fault.DuplicateKey,
+        charter.Fault.ExpectedEquals,
+        charter.Fault.ExpectedValue,
+        charter.Fault.EmptyValue,
+        charter.Fault.Oversized,
+    }) |e| try t.expectEqual(@as(?[]const u8, null), charter.didYouMean(e, "skip"));
 }
 
 test "an empty or comment-only charter is valid and declares nothing" {

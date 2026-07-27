@@ -36,6 +36,7 @@
 
 const std = @import("std");
 const assay = @import("../../assay/assay.zig");
+const misread = @import("misread.zig");
 
 /// The charter's filename, searched for from the working directory upward.
 pub const filename = ".irregex.toml";
@@ -77,6 +78,10 @@ pub const Charter = struct {
     }
 };
 
+/// The keys a charter may declare — the suggestion set, and the sentence the
+/// fault note quotes, kept as one list so they cannot disagree.
+pub const keys = [_][]const u8{ "roots", "skip", "types" };
+
 /// Why a charter was rejected. Every one of these is a loud exit rather than a
 /// shrug: a corpus declaration that half-parsed would mean searching a corpus
 /// nobody described, which is worse than not having the file.
@@ -102,17 +107,70 @@ pub const Fault = error{
 /// question in the middle of setting up a search, and "your committed corpus
 /// declaration is malformed" is not a condition any of them can act on.
 pub fn governing() ?*const Charter {
+    if (suppressedNow()) return null;
+    const c = inspect();
+    if (state.fault) |e| {
+        report(e);
+        std.process.exit(2);
+    }
+    return c;
+}
+
+/// What the file SAYS — for a caller whose job is to report on the
+/// configuration rather than to search under it. Two ways this differs from
+/// `governing`, both for the same reason:
+///
+///   * a parse fault is recorded rather than fatal, so `gist config check` can
+///     say "the charter is malformed *and* here is the state of your
+///     preferences" instead of dying on the first of the two;
+///   * suppression is not consulted, because `--no-config` is a fact about
+///     *this run's search*, not about the file. A reader whose shell exports
+///     `GIST_NO_CONFIG` still needs `gist config` and `gist status` to describe
+///     what is on disk — a configuration you cannot interrogate is the actual
+///     defect in ripgrep's version of this feature, and refusing to answer
+///     precisely when something is overriding you reproduces it.
+pub fn inspect() ?*const Charter {
     if (state.done) return state.charter;
     state.done = true;
-    if (suppressedNow()) return null;
 
     const gpa = std.heap.page_allocator; // process-lifetime; never freed
     state.charter = discover(gpa) catch |e| {
-        assay.diag("gist: {s}: {s}\n", .{ state.faulted_path, faultNote(e) });
-        assay.diag("gist: note: --no-config ignores it for this run\n", .{});
-        std.process.exit(2);
+        state.fault = e;
+        return null;
     };
     return state.charter;
+}
+
+/// Say why the charter could not be used, located and with a guess where one is
+/// worth making. Split from the exit so `gist config check` can print the same
+/// sentence for a file it is only inspecting.
+pub fn report(e: anyerror) void {
+    var loc: [24]u8 = undefined;
+    assay.diag("gist: {s}{s}: {s}\n", .{ state.faulted_path, misread.at(&loc, state.diag), faultNote(e) });
+    if (didYouMean(e, state.diag.token)) |k| {
+        assay.diag("gist: try `{s} = [...]` — `{s}` is not a charter key\n", .{ k, state.diag.token });
+    }
+    assay.diag("gist: note: --no-config ignores it for this run\n", .{});
+}
+
+/// The key worth suggesting for a fault, or null when there is none.
+///
+/// Which faults are ABOUT a name is part of this answer, not the caller's to
+/// remember: only `UnknownKey` is, and an unterminated string that happens to
+/// have a legal key as its most recent token would otherwise be answered with
+/// "try `skip` — `skip` is not a charter key". One function, so the run's exit
+/// path and `gist config check` cannot come apart on it.
+pub fn didYouMean(e: anyerror, token: []const u8) ?[]const u8 {
+    if (e != Fault.UnknownKey) return null;
+    return misread.nearest(token, &keys);
+}
+
+/// The fault that kept the charter from loading, if any — the inspect-path twin
+/// of `governing`, which exits on one.
+pub fn faulted() ?struct { path: []const u8, err: anyerror, at: misread.Diagnostic } {
+    _ = inspect();
+    const e = state.fault orelse return null;
+    return .{ .path = state.faulted_path, .err = e, .at = state.diag };
 }
 
 /// Ignore both persisted layers for this run. `--no-config` calls this from a
@@ -156,9 +214,24 @@ var state: struct {
     done: bool = false,
     charter: ?*const Charter = null,
     faulted_path: []const u8 = filename,
+    fault: ?anyerror = null,
+    diag: misread.Diagnostic = .{},
+    /// `discover` builds candidate paths in a stack buffer, so the one we keep
+    /// to name in a fault has to be copied out of it — `faulted()` may be read
+    /// long after that frame is gone.
+    path_bytes: [max_climb * 3 + 32]u8 = undefined,
+    /// Likewise for the faulting token, which the parser slices out of the
+    /// file's bytes — freed before anyone reads the diagnostic.
+    token_bytes: [128]u8 = undefined,
 } = .{};
 
-fn faultNote(e: anyerror) []const u8 {
+fn rememberPath(path: []const u8) void {
+    const n = @min(path.len, state.path_bytes.len);
+    @memcpy(state.path_bytes[0..n], path[0..n]);
+    state.faulted_path = state.path_bytes[0..n];
+}
+
+pub fn faultNote(e: anyerror) []const u8 {
     return switch (e) {
         Fault.UnknownKey => "unknown key (the charter declares roots, skip, types)",
         Fault.DuplicateKey => "the same key is declared twice",
@@ -181,7 +254,7 @@ fn faultNote(e: anyerror) []const u8 {
 /// usable as walk arguments.
 fn discover(gpa: std.mem.Allocator) !?*const Charter {
     if (assay.envSpan("GIST_CHARTER")) |explicit| {
-        state.faulted_path = explicit;
+        rememberPath(explicit);
         const src = slurp(gpa, explicit) catch return null;
         defer gpa.free(src);
         return try place(gpa, explicit, "", src);
@@ -194,8 +267,8 @@ fn discover(gpa: std.mem.Allocator) !?*const Charter {
         const path = std.fmt.bufPrint(buf[max_climb * 3 ..], "{s}{s}", .{ dir, filename }) catch return null;
         if (slurp(gpa, path)) |src| {
             defer gpa.free(src);
-            state.faulted_path = path;
-            return try place(gpa, path, dir, src);
+            rememberPath(path);
+            return try place(gpa, state.faulted_path, dir, src);
         } else |_| {}
         // A repo boundary with no charter in it is an answer: stop, rather than
         // adopt whatever a parent directory outside the tree happens to say.
@@ -248,7 +321,10 @@ pub fn slurp(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
 fn place(gpa: std.mem.Allocator, path: []const u8, dir: []const u8, src: []const u8) !*const Charter {
     const owned = try gpa.create(Charter);
     errdefer gpa.destroy(owned);
-    owned.* = try parse(gpa, path, dir, src);
+    owned.* = parse(gpa, path, dir, src, &state.diag) catch |e| {
+        state.diag.token = misread.keepToken(&state.token_bytes, state.diag.token);
+        return e;
+    };
     return owned;
 }
 
@@ -256,7 +332,7 @@ fn place(gpa: std.mem.Allocator, path: []const u8, dir: []const u8, src: []const
 
 /// Parse a charter's bytes. Returns errors rather than exiting so the format is
 /// testable; `governing` is the single place that turns a fault into an exit.
-pub fn parse(gpa: std.mem.Allocator, path: []const u8, dir: []const u8, src: []const u8) !Charter {
+pub fn parse(gpa: std.mem.Allocator, path: []const u8, dir: []const u8, src: []const u8, diag: ?*misread.Diagnostic) !Charter {
     var roots: ?[][]const u8 = null;
     var skip: ?[][]const u8 = null;
     var types: ?[][]const u8 = null;
@@ -266,6 +342,12 @@ pub fn parse(gpa: std.mem.Allocator, path: []const u8, dir: []const u8, src: []c
     };
 
     var p: Cursor = .{ .src = src };
+    // Every early return below is a fault, so the diagnostic is published on
+    // the way out rather than at each of the seven `return`s.
+    errdefer if (diag) |d| {
+        d.* = .{ .line = p.lineNow(), .token = p.token };
+    };
+
     while (p.key()) |name| {
         try p.equals();
         const slot: *?[][]const u8 =
@@ -304,9 +386,21 @@ const Cursor = struct {
     src: []const u8,
     i: usize = 0,
     err: ?anyerror = null,
+    /// The last thing read that a fault could be *about* — quoted back to the
+    /// reader and fed to `nearest`. Tracked rather than reconstructed because
+    /// by the time a value fails, `i` has moved past the key that names it.
+    token: []const u8 = "",
 
     fn fault(self: *Cursor) !void {
         if (self.err) |e| return e;
+    }
+
+    /// 1-based line of the cursor, counted on demand. A charter is a handful of
+    /// lines read once per process, and paying for the count only when
+    /// something is already going wrong keeps the happy path a pure scan.
+    fn lineNow(self: *const Cursor) usize {
+        const upto = @min(self.i, self.src.len);
+        return 1 + std.mem.count(u8, self.src[0..upto], "\n");
     }
 
     fn skipDead(self: *Cursor) void {
@@ -330,7 +424,8 @@ const Cursor = struct {
             if (self.i < self.src.len) self.err = Fault.ExpectedValue;
             return null;
         }
-        return self.src[start..self.i];
+        self.token = self.src[start..self.i];
+        return self.token;
     }
 
     fn equals(self: *Cursor) !void {
