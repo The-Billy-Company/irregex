@@ -11,6 +11,7 @@
 
 const std = @import("std");
 const args = @import("../../argv/args.zig");
+const beacon = @import("../../../../cli/beacon.zig");
 const binary = @import("../../read/binary.zig");
 const crew = @import("crew.zig");
 const ingest = @import("../../read/ingest.zig");
@@ -276,7 +277,17 @@ fn emitBody(w: *Worker, a: std.mem.Allocator, dpath: []const u8, body: []const u
         w.stats.add(.matched_lines, fs.lines);
         w.stats.add(.bytes_searched, fs.bytes);
     }
-    if (cfg.heading and cfg.show_name) buf.print(a, "{s}{s}", .{ dpath, if (o.null_sep) "\x00" else o.outTerm() }) catch oom();
+    // Under `--heading` the filename is printed once, here, and the rows below
+    // carry only line numbers — so this heading is the only thing a human can
+    // click to open the file. The serial emitter frames its own heading; this
+    // one is written straight into the buffer, so it frames it here and hands
+    // the escape bytes to `em.chrome`, which is what the output budget
+    // discounts. `anchor` returns the path unchanged when nothing is linking.
+    if (cfg.heading and cfg.show_name) {
+        const shown = beacon.anchor(a, dpath);
+        buf.print(a, "{s}{s}", .{ shown, if (o.null_sep) "\x00" else o.outTerm() }) catch oom();
+        em.chrome += shown.len - dpath.len;
+    }
     const before_body = buf.items.len;
     const hits = if (slice_model) em.buffer(dpath, body) else if (fast) em.fileLit(dpath, body, 0, body.len, 0, true) else em.file(dpath, lines.items);
     if (hits > 0) return w.deliver(.text_hit, dpath, buf.items, em.chrome);

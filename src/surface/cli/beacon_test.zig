@@ -318,3 +318,39 @@ test "link declines an anchor that would span two terminal lines" {
     try t.expectEqualStrings(torn, beacon.anchor(a, torn));
     try t.expectEqual(torn.ptr, beacon.anchor(a, torn).ptr);
 }
+
+// ──────────────────────── who the bytes are actually for ────────────────────────
+
+test "a byte protocol refuses every posture, including always" {
+    // The one refusal with no override. `--json` and `-0` hand a filename to a
+    // program as data; a frame around it is not decoration there, it is a
+    // corrupt field. So `records` outranks the flag AND the environment, while
+    // `parser` (--vimgrep) only makes `auto` stand down — a person still reads
+    // those rows, so an explicit `always` remains their call.
+    var ar = arena();
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    var threaded = std.Io.Threaded.init(t.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var speaking = try env(&.{.{ "TERM", "xterm-kitty" }});
+    defer speaking.deinit();
+
+    for ([_]beacon.When{ .always, .auto, .never }) |when| {
+        const r: beacon.Request = .{ .when = when, .format = "file://{path}", .reader = .records };
+        try t.expectEqual(@as(?beacon.Beacon, null), beacon.resolve(a, r, io, &speaking));
+    }
+
+    // Same terminal, same explicit posture, a reader who can see: linked.
+    try t.expect(beacon.resolve(a, .{
+        .when = .always,
+        .format = "file://{path}",
+        .reader = .human,
+    }, io, &speaking) != null);
+
+    // …and the middle case, which is the whole reason `parser` is not `records`.
+    try t.expect(beacon.resolve(a, .{ .when = .auto, .format = "file://{path}", .reader = .parser }, io, &speaking) == null);
+    try t.expect(beacon.resolve(a, .{ .when = .always, .format = "file://{path}", .reader = .parser }, io, &speaking) != null);
+}

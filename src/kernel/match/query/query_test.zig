@@ -261,16 +261,30 @@ test "word: punctuation-only matches are word-valid; regex spans use nextSpan's 
     try testing.expectEqual(@as(u64, 1), cq.countLines("a . b\n.dot\n", &sc));
 }
 
-test "word: zero-width matches never count under -w" {
+test "word: a zero-width match carries a line only where non-word bytes bound it" {
     var cq = try compile(.{ .pattern = "x*", .word = true, .mode = .count });
     defer cq.deinit(testing.allocator);
     var sc = try cq.scratch(testing.allocator);
     defer sc.deinit();
-    // Without -w the boolean path counts every line (`x*` matches empty);
-    // under -w only a NON-EMPTY word-valid x-run counts (cold lineHitWord).
+    // Without -w the boolean path counts every line (`x*` matches empty); under
+    // -w the empty match must still be bounded by non-word bytes on both sides.
+    // `rg -c -w 'x*'` ⇒ 1 over "x x\nyy\n": line 1 on its real x-runs, and "yy"
+    // not at all — every gap in it touches a `y`.
     try testing.expectEqual(@as(u64, 1), cq.countLines("x x\nyy\n", &sc));
     try testing.expect(!cq.docMatches("yy\n", &sc));
     try testing.expect(cq.docMatches("x x\n", &sc));
+    // The discriminating case the line above cannot see, because there a
+    // non-empty match carries the line anyway. Here NO line holds an `x` at
+    // all, so a line can only be selected by a word-valid EMPTY match — and rg
+    // selects two of the three. Captured from ripgrep 15.2.0:
+    //   rg -n -w 'x*' over "a  b\nzz\n. .\n" ⇒ 1:a  b / 3:. .
+    // Line 1 qualifies on the gap between its two spaces, line 3 at the line
+    // start before `.`; "zz" has no gap that isn't touching a word byte.
+    // Requiring a non-empty span here answered zero lines.
+    try testing.expectEqual(@as(u64, 2), cq.countLines("a  b\nzz\n. .\n", &sc));
+    try testing.expect(cq.docMatches("a  b\n", &sc));
+    try testing.expect(cq.docMatches(". .\n", &sc));
+    try testing.expect(!cq.docMatches("zz\n", &sc));
 }
 
 test "word: composes with the case fold; the word check reads original bytes" {

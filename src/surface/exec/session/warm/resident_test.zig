@@ -601,7 +601,8 @@ test "resident: -w applies cold's exact word rule on every answer face" {
     //   - Unicode neighbors kill a span (`érun`, `中run`);
     //   - a punctuation-only match is still a word match (`a . b`);
     //   - `-F` adjacent repeats scan leftmost non-overlapping (`aa` in `aaa`);
-    //   - zero-width matches never count under -w (`x*` on a letters-only line).
+    //   - a zero-width match counts where non-word bytes bound it, and only
+    //     there — so a letters-only line stays out (`x*` on `yy`).
     const gpa = std.testing.allocator;
     var threaded = std.Io.Threaded.init(gpa, .{});
     defer threaded.deinit();
@@ -643,7 +644,11 @@ test "resident: -w applies cold's exact word rule on every answer face" {
         const rep = (try session.query(q.allocator(), .{ .pattern = "aa", .mode = .count, .fixed = true, .word = true })).got;
         try std.testing.expectEqual(@as(u64, 1), rep.count); // ` aa aaa` yes, `aaaa` no
         const star = (try session.query(q.allocator(), .{ .pattern = "x*", .mode = .count, .word = true })).got;
-        try std.testing.expectEqual(@as(u64, 1), star.count); // `x x` yes; every zero-width-only line no
+        // Only g.txt holds an `x`, so the other three lines are carried by a
+        // word-valid EMPTY match — `rg -n -w 'x*'` over this fixture tree:
+        //   e.txt:1 `a . b` · e.txt:2 `.dot` · f.txt:1 ` aa aaa` · g.txt:1 `x x`
+        // Every other line's gaps all touch a word byte (`yy`, `run runner`, …).
+        try std.testing.expectEqual(@as(u64, 4), star.count);
     }
     // ── case composition: -w with -i / smart-case; word runs on original bytes ──
     {

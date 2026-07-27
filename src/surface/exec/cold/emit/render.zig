@@ -16,6 +16,7 @@
 const std = @import("std");
 const args = @import("../argv/args.zig");
 const assay = @import("../../../../assay/assay.zig");
+const beacon = @import("../../../cli/beacon.zig");
 const corpus_mod = @import("../../../../corpus/tree/corpus.zig");
 const captures_mod = @import("../../../../kernel/match/regex/regex.zig");
 const binary = @import("../read/binary.zig");
@@ -365,7 +366,10 @@ pub fn fileWithoutMatch(a: std.mem.Allocator, re: *const Matcher, o: Opts, em: *
         for (lines.items) |line| if (lineHit(em, lsim, wssp, needle, line) != o.invert) break :blk true;
         break :blk false;
     };
-    if (!any) out.print(a, "{s}{s}", .{ f.path, if (o.null_sep) "\x00" else o.outTerm() }) catch oom();
+    // The path IS the row here, exactly as in `-l`, so it is the click target —
+    // this mode's whole output is a list of files to go open. No budget applies
+    // to `--files-without-match` (see below), so no chrome to account for.
+    if (!any) out.print(a, "{s}{s}", .{ beacon.anchor(a, f.path), if (o.null_sep) "\x00" else o.outTerm() }) catch oom();
 }
 
 /// `--files-without-match`, data-parallel over `files`. Each file is independent

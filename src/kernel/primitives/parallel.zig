@@ -1,10 +1,16 @@
-//! gist — the shared data-parallel sharding floor: byte-balanced work division
-//! and the partial-spawn-safe fan-out both engines ride. Pure `std.Thread`
-//! plumbing with no search, index, or corpus knowledge — the candidate verify
+//! gist — the shared data-parallel sharding floor: work division and the
+//! partial-spawn-safe fan-out every engine rides. Pure `std.Thread` plumbing
+//! with no search, index, or corpus knowledge — the candidate verify
 //! (`kernel/match/scan/verify.zig`), the trigram index build
-//! (`corpus/index/trigrams/trigram.zig`), the relate sketch build, and the relate
-//! attribution pass all divide their work through these three primitives
-//! instead of five hand-rolled copies.
+//! (`corpus/index/trigrams/trigram.zig`), the codex shelf build
+//! (`corpus/index/codex/codex.zig`), the relate sketch build, and the relate
+//! attribution pass all divide their work here instead of in hand-rolled
+//! copies.
+//!
+//! Division comes in two shapes because work does. `greedyBounds` /
+//! `shardBounds` weigh items that differ in size, so a few large files can't
+//! stall one thread; `evenBounds` splits arithmetically where every item costs
+//! the same and weighing would cost more than it saves. `fanOut` runs either.
 
 const std = @import("std");
 
@@ -18,6 +24,14 @@ pub const min_bytes: usize = 256 << 10;
 /// Hard cap on shards — the realistic core ceiling, so a giant corpus doesn't
 /// spawn hundreds of scheduler-thrashing threads.
 pub const max_shards: usize = 16;
+
+/// Index CONSTRUCTION crosses into parallelism later than search does, so it
+/// gets its own floor beside the search one rather than borrowing it. A build
+/// pass touches every item exactly once, with no early exit and no per-shard
+/// engine to warm, so the only cost to amortize is the spawn — but the passes
+/// are also so cheap per item that a `min_bytes` shard would be nearly all
+/// spawn. Four megabytes is where a sweep outruns forking to do it.
+pub const build_min_bytes: usize = 4 << 20;
 
 /// Byte-greedy shard boundaries over `items` (`bounds.len − 1` shards): each
 /// shard takes ~equal total `weight`, not equal item count, so a few large
@@ -79,6 +93,30 @@ pub fn shardBounds(
     return bounds;
 }
 
+/// The uniform-cost sibling of `shardBounds`: `bounds.len − 1` contiguous,
+/// near-equal ranges over `n` items that each cost the same. `greedyBounds`
+/// earns its O(n) weighing sweep only where items differ in size — one
+/// suffix-array row costs exactly what its neighbour costs, so the split is
+/// arithmetic, and weighing 200M of them to discover that would cost about as
+/// much as running one of the shards.
+///
+/// Every interior boundary is a multiple of `grain`. Pass 64 when the shards
+/// write into one shared bit-packed word array, so no two of them can carry a
+/// read-modify-write on the same word; 1 when any split is safe.
+///
+/// Always yields at least one shard, so the caller keeps ONE code path:
+/// staying serial is the one-shard case, not a second branch maintained beside
+/// the parallel one and free to drift from it. Caller frees.
+pub fn evenBounds(n: usize, item_bytes: usize, grain: usize, floor: usize, cap: usize, a: std.mem.Allocator) ![]usize {
+    const blocks = (n + grain - 1) / grain;
+    const cores = std.Thread.getCpuCount() catch 1;
+    const nthr = if (n *| item_bytes < floor) 1 else @max(1, @min(@min(cores, blocks), cap));
+    const bounds = try a.alloc(usize, nthr + 1);
+    for (bounds, 0..) |*b, k| b.* = @min(n, (blocks * k / nthr) * grain);
+    bounds[nthr] = n;
+    return bounds;
+}
+
 /// Spawn one thread per shard and join them — with the partial-spawn fallback
 /// every fan-out here shares: a mid-fan-out spawn failure must not return with
 /// live threads still scanning buffers the caller's defers would free. The
@@ -125,6 +163,30 @@ test "shardBounds: gates on the byte floor and returns balanced ranges" {
         const bounds = shardBounds([]const u8, &docs, {}, sliceLen, 512, 2, a).?;
         try testing.expectEqualSlices(usize, &.{ 0, 1, 3 }, bounds);
     }
+}
+
+test "evenBounds: covers n exactly, monotonically, at the requested grain" {
+    const a = testing.allocator;
+    // Above the floor: real shards, and the ranges tile [0, n) with no gap or
+    // overlap — the property every sharded build pass depends on for exactness.
+    const bounds = try evenBounds(1_000_003, 4, 64, 1 << 10, 8, a);
+    defer a.free(bounds);
+    try testing.expectEqual(@as(usize, 0), bounds[0]);
+    try testing.expectEqual(@as(usize, 1_000_003), bounds[bounds.len - 1]);
+    for (bounds[1 .. bounds.len - 1]) |b| try testing.expectEqual(@as(usize, 0), b % 64);
+    for (bounds[0 .. bounds.len - 1], bounds[1..]) |lo, hi| try testing.expect(lo <= hi);
+}
+
+test "evenBounds: below the floor is the one-shard case, not a null" {
+    const a = testing.allocator;
+    // The whole point of never returning null: the caller has no second path.
+    const bounds = try evenBounds(100, 4, 1, 1 << 20, 16, a);
+    defer a.free(bounds);
+    try testing.expectEqualSlices(usize, &.{ 0, 100 }, bounds);
+    // n = 0 is still a well-formed single empty shard rather than a crash.
+    const empty = try evenBounds(0, 4, 64, 1 << 20, 16, a);
+    defer a.free(empty);
+    try testing.expectEqualSlices(usize, &.{ 0, 0 }, empty);
 }
 
 test "fanOut: every shard runs even when no thread can spawn" {

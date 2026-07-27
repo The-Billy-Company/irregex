@@ -93,17 +93,12 @@ pub fn writeDecimal(buf: []u8, v: u64) []u8 {
     return buf[i..];
 }
 
-/// ripgrep `-w`: a match span `[s,e)` is a word match iff bounded by a non-word
-/// CODEPOINT (or the line edge) on BOTH sides. Unlike `\b(pat)\b` this does not
-/// require the match to contain word chars, so a punctuation match (e.g. `.`
-/// matching `.`) is still a valid word match — rg's actual semantics. The word
-/// test is the engines' shared `\b` oracle (`syntax/word.zig`): Unicode-aware
-/// by default (`中`/`é`/Cyrillic beside a match kill it, exactly as rg), the
-/// ASCII byte class under `--no-unicode` — caught by the multi-corpus sweep
-/// (linux/subtitles/typescript `-w` counts all diverged on non-ASCII text).
-pub fn wordOk(unicode: bool, line: []const u8, s: usize, e: usize) bool {
-    return !word.wordBefore(unicode, line, s) and !word.wordAt(unicode, line, e);
-}
+/// ripgrep `-w` — the engines' own rule (`syntax/word.zig`), re-exported so the
+/// emit path names it where the span filters read. Defined there because the
+/// `\W`-consumes-a-codepoint distinction it turns on is Unicode-decode
+/// knowledge, and the warm query path (`match/query/word.zig`) needs the
+/// identical verdict; one definition is why they cannot drift.
+pub const wordOk = word.wordOk;
 
 /// Next non-empty (and, under `-w`, word-valid) match span at/after `from.*`,
 /// advancing `from` past it: a zero-width span skips one byte (the progress
@@ -491,11 +486,20 @@ pub const Emitter = struct {
         self.add(if (self.o.null_sep) "\x00" else self.o.outTerm());
     }
 
-    /// 1-based byte column of the first (word-valid, non-empty) match on the line,
-    /// or 0 if none — the value ripgrep prints under `--column`.
+    /// 1-based byte column of the first match ripgrep reports on the line, or 0
+    /// if it reports none — the value printed under `--column`, and (via
+    /// `lineHitWord`) the `-w` verdict for the whole line.
+    ///
+    /// Walked with `Rows`, so a zero-width match counts: rg prints column 1 for
+    /// `--column 'x?'` on any line, and selects a line under `-w` whose only
+    /// word-valid match is empty (`-w 'x?'` matches ". ." and skips "zz").
+    /// Reading the first NON-EMPTY span instead silently answered 0 for both —
+    /// dropping the column from the row, and the line from `-c -w` entirely.
+    /// For a non-nullable pattern the two walks agree, which is why this went
+    /// unseen: every ordinary pattern makes no empty spans to disagree about.
     pub fn firstCol(self: *Emitter, ssim: *Matcher.SpanSim, line: []const u8) usize {
-        var from: usize = 0;
-        const sp = nextSpan(self.re, ssim, self.o, line, &from) orelse return 0;
+        var rows = Rows{ .re = self.re, .ss = ssim, .o = self.o, .mv = line };
+        const sp = rows.next() orelse return 0;
         return sp.start + 1;
     }
 

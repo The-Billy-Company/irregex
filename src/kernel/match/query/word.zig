@@ -1,12 +1,10 @@
 //! The ripgrep `-w` word-boundary rule for the compiled query (ADR-352).
 //!
 //! `-w` is a POST-match rule, NOT `\b(pat)\b`: a match span `[s,e)` counts iff a
-//! non-word codepoint (or the line edge) bounds it on BOTH sides. The shared
-//! search core (`query.zig`) cannot import the cold runtime (dependency
-//! direction), so the identical decision cold's
-//! `surface/exec/cold/emit/output.zig::wordOk` applies is restated here over the
-//! engines' one shared `\b` oracle (`regex/syntax/word.zig`) — both reduce to
-//! that oracle, so they cannot drift.
+//! non-word codepoint (or the line edge) bounds it on BOTH sides. The verdict
+//! itself lives with the engines (`regex/syntax/word.zig::wordOk`) — the shared
+//! search core cannot import the cold runtime (dependency direction), and both
+//! planes re-export that one function rather than restating it.
 //!
 //! This is `query.zig`'s private `-w` sub-module: only word queries route
 //! through it, so the non-word match faces never pay for any of it.
@@ -23,15 +21,10 @@ const Matcher = @import("../regex/regex.zig").Matcher;
 /// over either engine (linear or `-P` PCRE2).
 pub const WordScratch = struct { sim: Matcher.Sim, span: Matcher.SpanSim };
 
-/// ripgrep `-w`: a match span `[s,e)` is a word match iff bounded by a non-word
-/// CODEPOINT (or the line edge) on BOTH sides. The same 2-term composition of
-/// the engines' shared `\b` oracle (`regex/syntax/word.zig`) that cold's
-/// `surface/exec/cold/emit/output.zig::wordOk` applies — restated here because the
-/// search core cannot import the cold runtime (dependency direction), and both
-/// reduce to the one oracle, so they cannot drift.
-pub fn wordOk(unicode: bool, hay: []const u8, s: usize, e: usize) bool {
-    return !word_mod.wordBefore(unicode, hay, s) and !word_mod.wordAt(unicode, hay, e);
-}
+/// ripgrep `-w`, from the engines' own module (`regex/syntax/word.zig`) rather
+/// than restated here: cold's emit path re-exports the same symbol, so the warm
+/// and cold `-w` verdicts are one function and cannot drift.
+pub const wordOk = word_mod.wordOk;
 
 /// Leftmost word-valid occurrence of `needle` in `hay`, over rg's
 /// non-overlapping leftmost scan — the literal twin of `nextSpan`'s progress
@@ -50,19 +43,30 @@ pub fn firstWordHit(unicode: bool, hay: []const u8, needle: []const u8) ?usize {
 }
 
 /// One line's `-w` verdict for a regex body: the cheap boolean pre-gate first
-/// (a line the plain engine rejects can never hold a word-valid span), then
-/// cold `nextSpan`'s exact loop until the first word-valid non-empty span.
+/// (a line the plain engine rejects can never hold a word-valid span), then the
+/// span walk until the first word-valid match.
+///
+/// A zero-width match counts, exactly as it does in the cold printer: rg selects
+/// ". ." under `-w 'x?'` on the strength of an empty match bounded by non-word
+/// bytes. Requiring a NON-EMPTY span here made a nullable pattern report almost
+/// no lines at all (`-c -w 'a*'` over one source file: 72 lines against rg's
+/// 565). Zero-width matches only arise for a nullable pattern, so an ordinary
+/// pattern walks this loop exactly as before.
 pub fn lineHasWordMatch(unicode: bool, m: *const Matcher, line: []const u8, w: *WordScratch) bool {
     if (!m.lineMatch(&w.sim, line)) return false;
+    const nullable = m.nullable();
     var from: usize = 0;
+    var last_end: ?usize = null;
     while (from <= line.len) {
         const sp = m.matchSpan(&w.span, line, from) orelse return false;
-        if (sp.end == sp.start) {
-            from = sp.start + 1;
-            continue;
-        }
-        from = sp.end;
+        const empty = sp.end == sp.start;
+        from = if (empty) sp.start + 1 else sp.end;
+        // rg's progress rule: an empty match adjacent to the previous match's
+        // end is not a separate match, so it cannot carry the line either.
+        const adjacent = empty and last_end != null and sp.start == last_end.?;
+        if (empty and (!nullable or adjacent)) continue;
         if (wordOk(unicode, line, sp.start, sp.end)) return true;
+        last_end = sp.end;
     }
     return false;
 }
