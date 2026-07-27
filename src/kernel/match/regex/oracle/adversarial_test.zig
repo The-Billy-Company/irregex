@@ -775,7 +775,7 @@ test "adversarial: multiline (-U) randomized differential vs independent oracle"
 
 test "adversarial: Pike docMatch fallback (DFA-null) vs independent oracle" {
     const a = std.testing.allocator;
-    // `[ab]*a[ab]{13}` forces a powerset blow-up past `max_states` (a DFA must
+    // `[ab]*a[ab]{13}` forces a powerset blow-up past the eager bounds (a DFA must
     // remember which of the last 14 bytes was `a` ⇒ 2^14 states), so `dfa==null`
     // and `docMatch` takes the never-otherwise-fuzzed Pike per-line fallback.
     const ab13 = "[ab][ab][ab][ab][ab][ab][ab][ab][ab][ab][ab][ab][ab]";

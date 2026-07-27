@@ -1,9 +1,12 @@
 ---
 doc_radar:
   sentinels:
-    - description: "the eager-DFA state cap past which the build declines and the Pike VM serves"
+    - description: "the eager driver's two bounds — the hard size ceiling and the calibrated cost policy"
       file: pkg/kernels/irregex/src/kernel/match/regex/linear/dfa/powerset.zig
-      contains: "pub const max_states: u32 = 4096;"
+      contains: ["pub const max_states: u32 = 4096;", "pub const max_visits: u64 = 750_000;"]
+    - description: "the shared determinizer core both drivers run, and the on-demand driver's own skip"
+      file: pkg/kernels/irregex/src/kernel/match/regex/linear/dfa/subset.zig
+      contains: ["pub fn startAccel", "pub fn forceStartRow", "visits: u64 = 0,"]
     - description: "the immutable automaton keeps its interior / last-byte tables and the word-context walk"
       file: pkg/kernels/irregex/src/kernel/match/regex/linear/dfa/dfa.zig
       contains: ["trans_fin", "pub fn matchWord", "pub fn docMatch"]
@@ -18,18 +21,31 @@ DFA spends the same `state = trans[state * ncls + class[byte]]` per byte either
 way, and scans a whole document in one fused pass. Lineage: Thompson/Cox
 ([_Regular Expression Matching Can Be Simple And Fast_](https://swtch.com/~rsc/regexp/regexp1.html), 2007) → RE2 / rust-`regex` byte classes and hybrid DFA.
 
-Determinization happens **eagerly at compile time** — these patterns are tiny —
-and the result is immutable and scratch-free, so one `Dfa` is shared freely
-across threads. Where the powerset would blow up it declines instead of
-degrading: past `max_states` the build returns null and `../program/lower.zig` leaves the
-Pike VM as the engine, which is also the fuzz oracle both are checked against.
+**Two drivers, one construction.** The subset construction itself lives in
+`subset.zig`; `powerset.zig` and `lazy.zig` are policies over it, so they cannot
+disagree about what a pattern means. The eager driver runs first and freezes an
+immutable, scratch-free `Dfa` that every thread shares. When it declines, the
+on-demand driver determinizes the same automaton one visited state at a time,
+into a per-thread cache. The Pike VM stands behind both as the fuzz oracle.
 
-| File                | Role                                                                                                                                                                        |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `dfa.zig`           | The immutable automaton: byte-class table, interior vs last-byte transitions (`trans_fin` resolves `$`), start acceleration, whole-document `docMatch`, word-context walk.  |
-| `powerset.zig`      | Subset construction: collapses the byte alphabet into equivalence classes, resolves `^`/`$` into the start / final tables, refines classes by word-ness for `\b`, or bails. |
-| `dfa_test.zig`      | DFA unit cases + differential fuzz against the Pike VM.                                                                                                                     |
-| `powerset_test.zig` | Determinizer structural invariants + exhaustive language equivalence vs a from-scratch NFA spec.                                                                            |
+Declining is a cost judgment with two bounds of different kinds. `max_states` is
+a hard safety ceiling on memory and termination that nothing may lift.
+`max_visits` is the calibrated cost policy, metered in NFA-state visits — the
+unit that actually costs time, since one closure's price is the size of the
+subset it walks. Size alone is the wrong meter: `\w+X` determinizes to just 332
+states, yet every closure runs over the ~10³-state UTF-8 trie Unicode `\w` lowers
+to, costing ~15 ms to find a small automaton. `force_dfa` waives the policy (so
+the differential oracles reach the DFA on every pattern they generate); nothing
+waives the ceiling.
+
+| File                | Role                                                                                                                                                                                                                                             |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `dfa.zig`           | The immutable automaton: byte-class table, interior vs last-byte transitions (`trans_fin` resolves `$`), start acceleration, whole-document `docMatch`, word-context walk.                                                                       |
+| `subset.zig`        | The construction both drivers share: byte-class refinement (by word-ness for `\b`), the assertion-resolving epsilon-closure, the transition step, subset interning, the visit meter, and the start-row skip derivation.                          |
+| `powerset.zig`      | The **eager** policy: walk to fixpoint under the bounds, then apply what only a finished automaton admits — start acceleration, premultiplied rows, the `$`-resolving final table.                                                               |
+| `lazy.zig`          | The **on-demand** policy: an immutable `Lazy` (classes, anchoring, its own start acceleration) plus a per-thread mutable `Cache` that determinizes a state the first time a haystack walks into it, and quits to the Pike VM rather than thrash. |
+| `dfa_test.zig`      | DFA unit cases + differential fuzz against the Pike VM.                                                                                                                                                                                          |
+| `powerset_test.zig` | Determinizer structural invariants + exhaustive language equivalence vs a from-scratch NFA spec.                                                                                                                                                 |
 
 `dfa.zig` is the one submodule besides the `Regex` handle that `src/root.zig`
 re-exports (`regex_dfa`), for C-ABI and library consumers.

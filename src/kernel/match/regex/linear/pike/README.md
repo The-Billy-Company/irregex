@@ -22,8 +22,9 @@ It is **not** the fast path. The byte-class DFA in `../dfa/` answers at
 O(1)/byte and serves almost everything. The Pike VM exists for the three jobs
 determinization cannot do:
 
-- **Fallback** — when the powerset blows past `max_states`, no DFA is built and
-  this VM is the engine.
+- **Fallback** — the last rung under both determinization drivers: multiline
+  programs get no DFA at all, and an on-demand cache that outgrows its cap or
+  meets an undecidable Unicode word gap quits to this VM.
 - **Oracle** — it is the proven reference the DFA's differential fuzz compares
   against, so `lineMatchPike` stays public for tests that must force it.
 - **Positional truth** — `-U` multiline `^`/`$` (resolved per position against

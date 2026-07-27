@@ -19,12 +19,13 @@
 //!   * **Start-state acceleration** — derived from the finished start row.
 //!   * **Premultiplication** — every state value rewritten to its row offset.
 //!
-//! Blow-up is bounded on ONE axis: `max_visits`, the NFA-state visits the walk is
-//! allowed to charge. Size alone is the wrong bound — `\w+X` determinizes to just
-//! 332 states, yet every one of its closures runs over the ~10³-state UTF-8 trie
-//! that Unicode `\w` (137,936 codepoints in 748 ranges) lowers to, so an
-//! unbudgeted eager walk spends ~15 ms discovering a small automaton. Counting
-//! visits prices that directly, and bounds size as a consequence.
+//! Two bounds, and they are different KINDS of thing. `max_visits` is the cost
+//! policy: size alone is the wrong meter, since `\w+X` determinizes to just 332
+//! states yet runs every closure over the ~10³-state UTF-8 trie that Unicode `\w`
+//! (137,936 codepoints in 748 ranges) lowers to, spending ~15 ms to discover a
+//! small automaton. Counting NFA-state visits prices that directly. `max_states`
+//! is the safety bound: it caps memory and guarantees termination, and no caller
+//! may lift it. Only the policy is negotiable (`Budget`, via `force_dfa`).
 //!
 //! Declining is a cost decision with no semantic content: `../program/lower.zig`
 //! hands the pattern to `lazy.zig`, which determinizes the same automaton one
@@ -37,16 +38,19 @@ const State = syn.State;
 const Dfa = @import("dfa.zig").Dfa;
 const unknown = subset.unknown;
 
+/// Hard ceiling on the automaton's SIZE: it caps table memory and guarantees
+/// termination on an exponential powerset, so nothing overrides it. Under the
+/// visit budget it is normally unreachable — visits grow at least as fast as
+/// states × classes, so the cost ceiling is crossed first — and it becomes
+/// load-bearing exactly when a caller waives that budget (`force_dfa`), which is
+/// what lets the differential tests determinize every pattern they generate
+/// without risking a blow-up.
+pub const max_states: u32 = 4096;
+
 /// Effort cap for the eager build, in NFA-state visits (`Subset.visits`) — the
 /// unit that actually costs time, since one closure's price is the size of the
 /// subset it walks, not the fact that it happened. Anything hungrier belongs to
 /// `lazy.zig`, which pays only for the states a haystack visits.
-///
-/// This is deliberately the ONLY bound. A state cap paired with an effort cap is
-/// redundant by arithmetic — visits grow at least as fast as states × classes, so
-/// the effort ceiling is always crossed first and the state ceiling is unreachable
-/// dead code. Memory follows for free: the table cannot outgrow what the visits
-/// that filled it were allowed to pay for.
 ///
 /// Calibrated, not chosen: a visit costs ~2-3 ns, holding an eager build near two
 /// milliseconds. Both arms of the trade were measured. Raising the cap hands more
@@ -60,21 +64,20 @@ const unknown = subset.unknown;
 /// and a compile-bound pattern set — the optimum is a broad, flat minimum.
 pub const max_visits: u64 = 750_000;
 
+/// Whether to enforce `max_visits`. `.unbudgeted` (from `force_dfa`) says the
+/// caller wants the automaton whatever it costs — the differential oracles, which
+/// need every generated pattern to actually reach the DFA rather than only the
+/// cheap ones. `max_states` still applies either way.
+pub const Budget = enum { budgeted, unbudgeted };
+
 /// Why the eager driver produced no automaton.
 pub const Decline = enum {
     /// Not determinizable this way at all: a buffer anchor (`\A`/`\z`) means
     /// multiline, where position flags are content-dependent.
     unsupported,
-    /// Over `max_visits`. A cost verdict with no semantic content — `lazy.zig`
-    /// builds the same automaton on demand, and the Pike VM stands behind both.
-    ///
-    /// There is deliberately no second budget arm here. Splitting the decline into
-    /// "too large ⇒ Pike VM" and "too costly ⇒ lazy" was tried and measured wrong
-    /// on both counts: the arms were not reachable independently, and the
-    /// alternations the split existed to keep on the Pike VM were losing to it for
-    /// an unrelated reason — the on-demand driver had no start-state acceleration.
-    /// Giving it one (`Lazy.accel`) beat the Pike VM outright, so nothing needs
-    /// routing away from the DFA.
+    /// Past `max_states` — the automaton itself is too big to hold.
+    too_large,
+    /// Past `max_visits` — small enough to hold, too expensive to discover.
     too_costly,
 };
 
@@ -111,10 +114,11 @@ const Worklist = struct {
 };
 
 /// Determinize the Thompson NFA (`states`, entry `start`) into an immutable
-/// byte-class DFA, or decline — the walk exceeds `max_visits`, or the program
-/// carries a buffer anchor (multiline, where no DFA is built). `anchored` mirrors
+/// byte-class DFA, or decline — the automaton exceeds `max_states`, the walk
+/// exceeds `max_visits` (unless `budget` waives it), or the program carries a
+/// buffer anchor (multiline, where no DFA is built). `anchored` mirrors
 /// `analysis.startsAnchored`: every match begins at line start, so we never re-seed.
-pub fn build(gpa: std.mem.Allocator, states: []const State, start: u32, anchored: bool, unicode: bool) std.mem.Allocator.Error!Outcome {
+pub fn build(gpa: std.mem.Allocator, states: []const State, start: u32, anchored: bool, unicode: bool, budget: Budget) std.mem.Allocator.Error!Outcome {
     // Buffer anchors (`\A`/`\z`) exist only under multiline, where no DFA is built
     // at all — decline before interning so `close` never meets one.
     if (subset.hasBufferAnchor(states)) return .{ .declined = .unsupported };
@@ -161,7 +165,8 @@ pub fn build(gpa: std.mem.Allocator, states: []const State, start: u32, anchored
             if (word_ctx) try wl.push(&sub, try sub.expand(id, k, .interior_word));
             // Last byte (at_end=true, word_after=false) resolves `$`/`\b`-at-EOL. Targets are terminal — the line ends right after — so interned for `is_match` but not enqueued.
             _ = try sub.expand(id, k, .final);
-            if (sub.visits > max_visits) return .{ .declined = .too_costly };
+            if (sub.nstates > max_states) return .{ .declined = .too_large };
+            if (budget == .budgeted and sub.visits > max_visits) return .{ .declined = .too_costly };
         }
     }
 

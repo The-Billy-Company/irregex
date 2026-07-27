@@ -40,10 +40,38 @@ pub const Pcre = ladder.Pcre;
 // ── The byte-class DFA — the O(1)/byte primary executor ──────────────────────
 pub const dfa = @import("linear/dfa/dfa.zig");
 
+// ── The quotient sieve — the two-valued reject rung that fronts the DFA ──────
+// Named here because it is built FROM a `Dfa` and answers about one, so a
+// consumer holding the DFA is exactly the consumer that can hold its sieve.
+// (The bench that proves its soundness against this engine enters here too;
+// reaching past the seal for it would be the second-grammar mistake in
+// miniature.)
+pub const sieve = @import("linear/sieve/sieve.zig");
+
+// ── The composition rung — a DFA re-expressed as NEON transformations ────────
+// Named for the same reason as the sieve: it is lowered FROM a `Dfa` and
+// answers the same boolean about one, so the consumer holding the DFA is the
+// consumer that can hold its composition tables. Its `lanes` submodule is the
+// shared 16-wide `TBL`/`pshufb` primitive and depends on nothing in this
+// engine, so a sibling may import that file directly without coming through
+// here — but anything wanting the RUNG comes through this door.
+pub const compose = @import("linear/compose/compose.zig");
+
+// ── The Parabix rung — bit-parallel marker propagation over transposed bytes ──
+// Unlike the sieve and the composition rung this one is lowered from the AST,
+// not from a `Dfa`: star-height and class-chain shape are properties of the
+// pattern, and a determinized automaton has already forgotten both. It is named
+// here for the same reason they are — its corpus-scale bench and its
+// differential harness must arm the REAL rung, and reaching past the seal for
+// it would be the second-grammar mistake this file exists to prevent. Its
+// `Parabix.compileOffer` is that entrance: the one parser, invoked from outside.
+pub const parabix = @import("linear/parabix/parabix.zig");
+
 // ── Capture extraction: a separate Pike VM, so the primary engine stays free ─
 pub const captures = @import("compile/captures.zig");
 pub const Caps = captures.Caps;
 pub const Captures = captures.Captures;
+pub const OnePass = captures.OnePass;
 pub const PcreCaptures = captures.PcreCaptures;
 
 // ── Leaf data the surface shares with the engine so both agree on a "word" ───

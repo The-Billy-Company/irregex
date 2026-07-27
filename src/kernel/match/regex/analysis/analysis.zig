@@ -124,7 +124,7 @@ pub fn startsAnchored(node: *Node) bool {
 
 /// Cap on an alternation cover-set — a huge `a|b|c|…` union would issue one
 /// trigram query per branch; past this a full scan is cheaper, so we bail to it.
-const max_cover: usize = 32;
+pub const max_cover: usize = 64;
 
 /// A set of ≥3-byte literals such that EVERY match contains at least one of them
 /// — so the UNION of their trigram-candidate sets is a sound superset (no false
@@ -159,7 +159,9 @@ pub fn requiredAny(arena: std.mem.Allocator, node: *Node) ParseError!?[]const []
 
 /// Cap on a pure-literal alternation set — each literal costs one SIMD
 /// `contains` pass over the whole body, so past a handful the DFA scan wins.
-const max_lits: usize = 8;
+/// Exact literal alternations bypass automata entirely. The dispatcher owns the
+/// 1 / 2–64 / >64 engine split, so analysis retains the full bounded set.
+pub const max_lits: usize = 5000;
 
 /// The EXACT literal this node matches — and nothing else — or null. Stricter
 /// than `LitInfo.exact`: zero-width nodes (anchors, `\b`, `.empty`) are REJECTED
@@ -192,20 +194,62 @@ fn pureLit(arena: std.mem.Allocator, node: *Node) ParseError!?[]const u8 {
 /// NUL (binary semantics) are rejected; so is an empty literal (matches
 /// everywhere — the `eol_empty` machinery owns that case).
 pub fn pureLiterals(arena: std.mem.Allocator, node: *Node) ParseError!?[]const []const u8 {
-    switch (node.*) {
-        .alt => |ab| {
-            const sa = (try pureLiterals(arena, ab[0])) orelse return null;
-            const sb = (try pureLiterals(arena, ab[1])) orelse return null;
-            if (sa.len + sb.len > max_lits) return null;
-            return try std.mem.concat(arena, []const u8, &.{ sa, sb });
-        },
-        .capture => |g| return pureLiterals(arena, g.child), // transparent
-        else => {
-            const lit = (try pureLit(arena, node)) orelse return null;
-            if (lit.len == 0 or std.mem.indexOfAny(u8, lit, "\n\x00") != null) return null;
-            return try arena.dupe([]const u8, &.{lit});
-        },
+    // Iterative traversal avoids a 5000-branch left-folded alternation blowing
+    // the call stack or repeatedly concatenating pointer slices.
+    const stack = try arena.alloc(*Node, max_lits * 2);
+    const lits = try arena.alloc([]const u8, max_lits);
+    var top: usize = 1;
+    var count: usize = 0;
+    stack[0] = node;
+    while (top > 0) {
+        top -= 1;
+        const n = stack[top];
+        switch (n.*) {
+            .alt => |ab| {
+                if (top + 2 > stack.len) return null;
+                stack[top] = ab[1];
+                stack[top + 1] = ab[0];
+                top += 2;
+            },
+            .capture => |g| {
+                if (top == stack.len) return null;
+                stack[top] = g.child;
+                top += 1;
+            },
+            else => {
+                if (count == max_lits) return null;
+                const lit = (try pureLit(arena, n)) orelse return null;
+                if (lit.len == 0 or std.mem.indexOfAny(u8, lit, "\n\x00") != null) return null;
+                lits[count] = lit;
+                count += 1;
+            },
+        }
     }
+    return lits[0..count];
+}
+
+/// Preference-ranked literal facts retained for the verify dispatcher. `exact`
+/// decides the regex outright. Otherwise `cover` is only a sound candidate
+/// nomination set; `prefix`/`suffix` permit directional verification and
+/// `inner` is the strongest position-agnostic mandatory run.
+pub const LiteralPlan = struct {
+    exact: []const []const u8 = &.{},
+    cover: []const []const u8 = &.{},
+    prefix: []const u8 = "",
+    suffix: []const u8 = "",
+    inner: []const u8 = "",
+};
+
+pub fn literalPlan(arena: std.mem.Allocator, node: *Node) ParseError!LiteralPlan {
+    if (try pureLiterals(arena, node)) |exact| return .{ .exact = exact };
+    const info = try literalInfo(arena, node);
+    const cover = (try requiredAny(arena, node)) orelse &.{};
+    return .{
+        .cover = cover,
+        .prefix = info.prefix,
+        .suffix = info.suffix,
+        .inner = info.best,
+    };
 }
 
 // The class-run/span reductions, the forced-crest calculus, and the

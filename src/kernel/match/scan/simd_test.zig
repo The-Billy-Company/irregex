@@ -231,7 +231,15 @@ test "teddy ≡ leftmost of std.mem.indexOfPos (2-load nibble-bucket prefilter)"
     // Edge shapes: eligibility floor, tail hit, no hit, resume `from` past a hit.
     try std.testing.expect(teddy.Teddy.init(&.{"x"}) == null); // <2 needles
     try std.testing.expect(teddy.Teddy.init(&.{ "ab", "c" }) == null); // a 1-byte needle
-    try std.testing.expect(teddy.Teddy.init(&.{ "ab", "cd", "ef", "gh", "ij", "kl", "mn", "op", "qr" }) == null); // >8
+    // >max_buckets (64): the slim Teddy tops out at eight 8-bucket groups.
+    const pairs = comptime blk: {
+        var p: [65][2]u8 = undefined;
+        for (&p, 0..) |*n, i| n.* = .{ 'a' + @as(u8, @intCast(i / 16)), 'a' + @as(u8, @intCast(i % 16)) };
+        break :blk p;
+    };
+    var too_many: [65][]const u8 = undefined;
+    for (&too_many, 0..) |*n, i| n.* = &pairs[i];
+    try std.testing.expect(teddy.Teddy.init(&too_many) == null);
     {
         const td = teddy.Teddy.init(&.{ "panic", "0x" }).?;
         try std.testing.expectEqual(@as(?usize, 3), td.find("aa 0x1234", 0));

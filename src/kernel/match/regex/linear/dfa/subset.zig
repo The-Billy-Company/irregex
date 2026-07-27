@@ -353,11 +353,10 @@ pub const Subset = struct {
     }
 };
 
-/// Start-state acceleration eligibility (mirrors rust-regex `accel.rs`): only
-/// accelerate when the start state's escape set is ≤ this many bytes, past which
-/// the SIMD skip stops being selective (e.g. `\w`'s 63 bytes) and a plain dense
-/// scan wins. memchr/range-skip earns its keep at 1–3 exit bytes.
-const max_accel_bytes: usize = 3;
+/// Largest start escape set the vector range kernel can price without dropping
+/// to a scalar byte-set probe. Cardinality alone no longer decides admission:
+/// four rare bytes can skip farther than one common byte.
+const max_accel_bytes: usize = 8;
 
 /// Derive start-state acceleration from the start state's transition row. A byte
 /// is "relevant" — must stop the SIMD skip — when, from the unanchored start
@@ -366,8 +365,9 @@ const max_accel_bytes: usize = 3;
 /// is a match state, the `$`-anchored-literal case like `;$`, where the byte keeps
 /// `trans_in` in start yet matches as the line's last byte). Every other byte both
 /// keeps start in itself AND can't match under `$`, so it is provably skippable.
-/// Returns a `Prefilter` over the relevant set iff it is non-empty and
-/// ≤ `max_accel_bytes`; else null (dense scan).
+/// Returns a `Prefilter` only when the shared corpus prior predicts an average
+/// stride of at least eight bytes. This rejects common-byte "accelerators" while
+/// admitting selective 4–8 byte sets that the old cardinality gate discarded.
 ///
 /// `\n` is added to the needle **only when the skip can't safely cross a line** —
 /// i.e. when an empty line can match (`empty_match`) or `\n` is itself relevant.
@@ -413,5 +413,6 @@ pub fn startAccel(
     const nl = base + class['\n'];
     const nl_relevant = trans_in[nl] != start_id or is_match[trans_fin[nl]];
     if (empty_match or nl_relevant) relevant.set('\n');
-    return prefilter.Prefilter.init(relevant);
+    const pf = prefilter.Prefilter.init(relevant);
+    return if (pf.economics.beatsDense(32)) pf else null;
 }

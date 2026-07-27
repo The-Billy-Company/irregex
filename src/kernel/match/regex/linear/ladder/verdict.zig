@@ -1,9 +1,15 @@
 //! gist — the engine ladder: every boolean "does this match?" entry point, and
 //! the dispatch that picks the cheapest sound machine to answer it. Rungs, in
 //! order of cost: a zero-width end-of-line certainty (no scan at all), the SIMD
-//! class-run kernel (load bandwidth), the byte-class DFA (one table lookup per
-//! byte, whole document in one fused pass), and the Pike VM (`pike/search.zig`)
-//! as the capped fallback and proven oracle.
+//! class-run kernel (load bandwidth), the accelerator tier (`rungs.zig` — the
+//! optional machines that beat the DFA on the patterns they accept), the
+//! byte-class DFA (one table lookup per byte, whole document in one fused pass),
+//! and the Pike VM (`pike/search.zig`) as the capped fallback and proven oracle.
+//!
+//! The tier is consulted through ONE call per entry point, not one per rung:
+//! `rungs.zig` owns the order, the admission policy, and the protocol that makes
+//! a decider and a sieve answerable by the same switch. Adding a rung never
+//! touches this file.
 //!
 //! Dispatch only — never semantics. Every rung answers identically to the Pike
 //! VM; the equality is held by the rg oracle and the differential fuzz, so a
@@ -33,6 +39,14 @@ pub fn lineMatch(re: *const Regex, sim: *Sim, line: []const u8) bool {
     // Equivalence held by the rg oracle + the DFA-vs-Pike differential fuzz —
     // this is purely dispatch.
     if (re.eol_empty) return true; // matches every line's zero-width end (`\d*$`)
+    // The literal engine, cheapest of all: an `.exact` set (the pattern IS an
+    // alternation of these literals) decides with one SIMD/Teddy/Aho scan and no
+    // automaton; a `.candidate` (cover union or required literal) is a necessary
+    // condition, so a miss rejects the line and a hit falls through unchanged.
+    if (re.literal_scan) |*set| switch (set.presence(line)) {
+        .exact => |matched| return matched,
+        .candidate => |nominated| if (!nominated) return false,
+    };
     // Class-run patterns skip the automaton entirely: SIMD membership +
     // word-trick run detection at load bandwidth. `.unproven` (codepoint
     // projection met a high byte) falls through to the engines below.
@@ -41,6 +55,15 @@ pub fn lineMatch(re: *const Regex, sim: *Sim, line: []const u8) bool {
         .miss => return false,
         .unproven => {},
     };
+    // The accelerator tier (`rungs.zig`): the SP-quotient sieve prunes, then
+    // whichever decider admitted this pattern answers it outright. All of them
+    // decline at compile time by being absent, and `.unproven` falls through to
+    // the DFA family below exactly as the class-run kernel's does.
+    switch (re.rungs.line(line)) {
+        .hit => return true,
+        .miss => return false,
+        .unproven => {},
+    }
     if (re.dfa) |d| {
         // Word-boundary DFA (`\b`/`\B`/`\<`/`\>`): resolves word context at the
         // DFA floor, but under Unicode QUITS (null) on a non-ASCII gap — the
@@ -67,6 +90,14 @@ pub fn docMatch(re: *const Regex, sim: *Sim, doc: []const u8) bool {
     // one empty line) is false. rg agrees: an empty input never matches, even
     // `a*`. Conflating "every" with "some" here over-matched empty files.
     if (re.eol_empty) return doc.len > 0;
+    // Literals never span `\n` (per-line only), so "some line holds one" ≡ "the
+    // buffer holds one": one whole-buffer scan settles an `.exact` set, and a
+    // `.candidate` miss rejects every line at once. A candidate hit falls through
+    // to the per-line/DFA machines below.
+    if (re.literal_scan) |*set| switch (set.presence(doc)) {
+        .exact => |matched| return matched,
+        .candidate => |nominated| if (!nominated) return false,
+    };
     // One SIMD pass over the raw buffer: per-line compiles removed `\n`
     // from the set (`nl_free`), so a run can never cross a line boundary —
     // "some line holds a run" ≡ "the buffer holds a run", newlines and the
@@ -76,6 +107,15 @@ pub fn docMatch(re: *const Regex, sim: *Sim, doc: []const u8) bool {
         .miss => return false,
         .unproven => {},
     };
+    // Same tier, whole-buffer grain. Every rung that answers here has proven no
+    // match of its pattern can cross a `\n` — the class-run kernel's `nl_free`
+    // argument, discharged per rung at admission — so "some line matches" and
+    // "the buffer matches" are the same question and need no line split.
+    switch (re.rungs.doc(doc)) {
+        .hit => return true,
+        .miss => return false,
+        .unproven => {},
+    }
     // The DFA scans the whole buffer in one fused pass (one byte-touch); only a
     // powerset blow-up past the cap leaves it null, and then the Pike VM (proven
     // oracle) serves per line. Equivalence held by the doc-level differential fuzz.
@@ -104,7 +144,16 @@ pub fn docMatch(re: *const Regex, sim: *Sim, doc: []const u8) bool {
 /// whole-buffer boolean only when it is actually the faster machine.
 pub fn docMatchFused(re: *const Regex) bool {
     if (re.eol_empty) return true;
+    // An `.exact` literal engine decides the whole buffer in one scan — a fused
+    // whole-buffer machine. A `.candidate` only prunes, so like the sieve it does
+    // not count: the machine that decides is still the DFA below.
+    if (re.literal_scan) |*set| if (set.authority == .exact) return true;
     if (re.classrun) |*cr| if (cr.nl_free and (cr.exact or cr.cp != null)) return true;
+    // An armed DECIDER is a whole-buffer machine. The sieve deliberately does
+    // not count: it narrows the question without answering it, so the machine
+    // that actually decides is still the DFA below and the caller's preference
+    // should be decided by that.
+    if (re.rungs.fused()) return true;
     // A word-boundary DFA runs per line (no fused doc scan this rung), so it
     // is not a whole-buffer machine — callers keep their per-line loop.
     if (re.dfa) |d| return !d.word_ctx;

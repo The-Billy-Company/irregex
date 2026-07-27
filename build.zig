@@ -795,6 +795,78 @@ pub fn build(b: *std.Build) void {
     crest_step.dependOn(&run_crest.step);
     crest_step.dependOn(crest_install);
 
+    // ── `sieve` — production proof: the SP-quotient necessary condition ──────
+    // Links the REAL engine (the sieve lives inside it at
+    // src/kernel/match/regex/linear/sieve/, entered through regex.zig's seal)
+    // and walks the REAL corpus to prove the over-approximation is sound at
+    // every byte position (matched ⇒ survived, fail-closed), to publish the
+    // measured selectivity beside the compile-time estimate that gates it, and
+    // to time the register-resident kernel against the shipped DFA in the same
+    // run. Unit + differential tests ride `zig build test` via root.zig.
+    const sieve_bench_mod = b.createModule(.{
+        .root_source_file = b.path("bench/sieve/bench.zig"),
+        .target = k.target,
+        .optimize = cli_optimize, // product-speed posture — this is a timing tool
+    });
+    sieve_bench_mod.addImport("irregex", cli_engine);
+    const sieve_exe = b.addExecutable(.{ .name = "sieve", .root_module = sieve_bench_mod });
+    const sieve_install = &b.addInstallArtifact(sieve_exe, .{}).step;
+    lab_step.dependOn(sieve_install);
+    const run_sieve = b.addRunArtifact(sieve_exe);
+    run_sieve.setCwd(b.path("../../.."));
+    if (b.args) |args| run_sieve.addArgs(args);
+    const sieve_step = b.step("sieve", "Quotient-sieve production proof: per-position soundness, measured selectivity, kernel speed vs the shipped DFA");
+    sieve_step.dependOn(&run_sieve.step);
+    sieve_step.dependOn(sieve_install);
+
+    // ── `compose-rung` — production proof: composition vs the shipped DFA ────
+    // Links the REAL engine (the rung lives inside it at
+    // src/kernel/match/regex/linear/compose/, entered through regex.zig's seal)
+    // so the baseline arm IS `Dfa.docMatch` rather than a reimplementation of
+    // it. Both arms are timed over one contiguous buffer, interleaved round by
+    // round in this process, and the armed-skip boundary row is published
+    // rather than buried. Unit + differential tests ride `zig build test`.
+    const rung_bench_mod = b.createModule(.{
+        .root_source_file = b.path("bench/compose/bench.zig"),
+        .target = k.target,
+        .optimize = cli_optimize, // product-speed posture — this is a timing tool
+    });
+    rung_bench_mod.addImport("irregex", cli_engine);
+    const rung_exe = b.addExecutable(.{ .name = "compose-rung", .root_module = rung_bench_mod });
+    const rung_install = &b.addInstallArtifact(rung_exe, .{}).step;
+    lab_step.dependOn(rung_install);
+    const run_rung = b.addRunArtifact(rung_exe);
+    run_rung.setCwd(b.path("../../.."));
+    if (b.args) |args| run_rung.addArgs(args);
+    const rung_step = b.step("compose-rung", "Composition-rung production proof: whole-buffer agreement with the shipped DFA, interleaved throughput, and the armed-skip boundary row");
+    rung_step.dependOn(&run_rung.step);
+    rung_step.dependOn(rung_install);
+
+    // ── `parabix-rung` — production proof: bit-parallel scan vs the ladder ────
+    // Links the REAL engine and arms the REAL rung through regex.zig's seal
+    // (src/kernel/match/regex/linear/parabix/), so both baseline arms are
+    // production code: the whole shipped verdict ladder AND the bare table-walk
+    // DFA whose load-latency floor the rung was designed against. Throughput is
+    // measured on a per-row adversarial near-miss buffer (a boolean scan returns
+    // at the first hit, so a matching haystack times the match position, not the
+    // engine); agreement is measured over the real corpus. Unit + Pike
+    // differential tests ride `zig build test` via root.zig.
+    const pbx_bench_mod = b.createModule(.{
+        .root_source_file = b.path("bench/parabix/bench.zig"),
+        .target = k.target,
+        .optimize = cli_optimize, // product-speed posture — this is a timing tool
+    });
+    pbx_bench_mod.addImport("irregex", cli_engine);
+    const pbx_exe = b.addExecutable(.{ .name = "parabix-rung", .root_module = pbx_bench_mod });
+    const pbx_install = &b.addInstallArtifact(pbx_exe, .{}).step;
+    lab_step.dependOn(pbx_install);
+    const run_pbx = b.addRunArtifact(pbx_exe);
+    run_pbx.setCwd(b.path("../../.."));
+    if (b.args) |args| run_pbx.addArgs(args);
+    const pbx_step = b.step("parabix-rung", "Parabix-rung production proof: corpus-scale agreement with the shipped ladder, negative-case throughput vs both baselines, and the refusal rows");
+    pbx_step.dependOn(&run_pbx.step);
+    pbx_step.dependOn(pbx_install);
+
     // ── `gist-portbound` — Layer B′: the port bound MEASURED on this machine ──
     // Runs the same drift-guarded probes as portcert.sh's static llvm-mca bound,
     // natively under the PMU (cycles/byte + cycles/step). Fail-closed without

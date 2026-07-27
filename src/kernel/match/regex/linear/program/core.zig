@@ -34,8 +34,10 @@ const prefilter = @import("../../analysis/prefilter.zig");
 const dfa_mod = @import("../dfa/dfa.zig");
 const lazy_mod = @import("../dfa/lazy.zig");
 const classrun_mod = @import("../../../scan/classrun.zig");
+const literal_set = @import("../../../scan/literal_set.zig");
 const lower = @import("lower.zig");
 const verdict = @import("../ladder/verdict.zig");
+const rungs_mod = @import("../ladder/rungs.zig");
 const scratch = @import("../pike/scratch.zig");
 const search = @import("../pike/search.zig");
 const span = @import("../pike/span.zig");
@@ -108,6 +110,24 @@ pub const Regex = struct {
     // (a line never contains one), which licenses the whole-buffer `docMatch`
     // scan: runs then provably break at every line boundary.
     classrun: ?classrun_mod.ClassRun,
+    // Compiled literal-set engine (`scan/literal_set.zig`): the strongest
+    // literal fact this pattern yields, ranked by authority. `.exact` — the
+    // whole pattern IS an alternation of these literals — decides `lineMatch`/
+    // `docMatch` outright with a SIMD memmem / grouped-Teddy / sparse
+    // Aho–Corasick scan and no automaton at all. `.candidate` — a cover union
+    // or a single required literal — is a necessary condition only: a whole-
+    // haystack miss rejects, a hit falls through to the engines below. Null when
+    // no literal fact is provable (and always under `-U`, where a match may
+    // cross `\n` so the per-line equivalence does not hold). Borrows `lits`/
+    // `alts`/`required`, so it is torn down first in `deinit`.
+    literal_scan: ?literal_set.LiteralSet,
+    // The accelerator tier (`ladder/rungs.zig`): every optional machine that
+    // beats the byte-class DFA on the patterns it accepts — transformation
+    // composition, class bitstreams, the SP-quotient sieve — behind ONE
+    // interface, so this handle carries one field however many rungs exist.
+    // Each declines at compile time by being absent, so an empty tier is the
+    // engine as it was and correctness never depends on one being armed.
+    rungs: rungs_mod.Rungs,
     // Multiline (`-U`): the pattern matches the WHOLE buffer as one haystack — a
     // match may span `\n`, and `^`/`$` anchor at every line boundary (rg's `-U`
     // default), resolved per-position against `\n` adjacency (content-dependent,
@@ -165,6 +185,11 @@ pub const Regex = struct {
 
     /// Boolean questions and their engine ladder (`ladder/verdict.zig`): classrun →
     /// DFA → Pike, plus the `*Fused` predicates naming which machine answers.
+    /// The accelerator tier itself (`ladder/rungs.zig`) — its protocol and the
+    /// ladder order — for benches and differential harnesses that drive one
+    /// rung directly against the engine it fronts.
+    pub const Rungs = rungs_mod.Rungs;
+
     pub const lineMatch = verdict.lineMatch;
     pub const docMatch = verdict.docMatch;
     pub const docMatchFused = verdict.docMatchFused;
@@ -181,12 +206,15 @@ pub const Regex = struct {
     pub const matchSpan = span.matchSpan;
 
     pub fn deinit(self: *Regex) void {
+        // Before the storage it borrows (`required`/`alts`/`lits`).
+        if (self.literal_scan) |*set| set.deinit();
         self.allocator.free(self.states);
         self.allocator.free(self.required);
         lower.freeAlts(self.allocator, self.alts);
         lower.freeAlts(self.allocator, self.lits);
         if (self.dfa) |d| d.deinit();
         if (self.lazy) |l| l.deinit();
+        self.rungs.deinit(self.allocator);
         if (self.classrun) |cr| if (cr.cp) |r| self.allocator.free(r);
         self.* = undefined;
     }

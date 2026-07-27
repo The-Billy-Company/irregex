@@ -88,6 +88,13 @@ pub const parallel = @import("kernel/primitives/parallel.zig");
 const regex_engine = @import("kernel/match/regex/regex.zig");
 pub const regex = regex_engine.program;
 pub const regex_dfa = regex_engine.dfa;
+/// The SP-quotient sieve harvested from a `Dfa` — re-exported for its
+/// corpus-scale soundness + speed bench (`bench/sieve/`).
+pub const regex_sieve = regex_engine.sieve;
+pub const regex_compose = regex_engine.compose;
+/// The Parabix bit-parallel rung, lowered from the AST — re-exported for its
+/// corpus-scale throughput + agreement bench (`bench/parabix/`).
+pub const regex_parabix = regex_engine.parabix;
 /// The engine-neutral match seam (`Matcher`) the presentation layer programs
 /// to — re-exported for the bench lab's isolated output-path profiles.
 pub const matcher = regex_engine.ladder;
@@ -582,8 +589,13 @@ test {
     _ = @import("kernel/match/regex/pcre2/backend.zig"); // PCRE2 `-P` backend: engine + literal co-located tests
     _ = @import("kernel/match/regex/pcre2/backend_test.zig"); // PCRE2 adversarial: lookaround/backref/limit/JIT parity
     _ = @import("kernel/match/regex/oracle/adversarial_test.zig"); // independent-oracle differential + prefilter brute force
+    _ = @import("kernel/match/regex/compile/onepass_test.zig"); // one-pass capture arm: slot-exact vs the Pike VM + fail-closed refusal
     _ = @import("kernel/match/regex/linear/dfa/dfa_test.zig"); // byte-class DFA unit + differential fuzz
     _ = @import("kernel/match/regex/linear/dfa/powerset_test.zig"); // determinizer structural invariants
+    _ = @import("kernel/match/regex/linear/symbolic/symbolic_test.zig"); // predicate alphabet: ≡ Pike AND ≡ byte powerset, malformed UTF-8 included
+    _ = @import("kernel/match/regex/linear/sieve/sieve_test.zig"); // SP-quotient sieve: superset soundness vs Pike, kernel ≡ oracle, worthless abort
+    _ = @import("kernel/match/regex/linear/compose/compose_test.zig"); // transformation composition: kernel ≡ scalar fold, fail-closed gates, line + doc differential vs Pike
+    _ = @import("kernel/match/regex/linear/parabix/parabix_test.zig"); // Parabix bit-parallel rung: transpose + class circuits vs their definitions, fail-closed gate, line + doc differential vs Pike
     _ = @import("kernel/match/regex/unicode/utf8seq.zig"); // scalar-range → UTF-8 byte-range decomposition
     _ = @import("kernel/match/regex/unicode/decode.zig"); // UTF-8 codepoint decode (fwd/last) for \b
     _ = @import("kernel/match/regex/unicode/tables.zig"); // Unicode data API: Perl/\p classes, fold orbits

@@ -10,16 +10,34 @@
 
 const std = @import("std");
 const syn = @import("../syntax/syntax.zig");
+const rarity = @import("../../scan/rarity.zig");
 const ByteSet = syn.ByteSet;
 
 const vlen: usize = std.simd.suggestVectorLength(u8) orelse 16;
+const probability_scale: u32 = 32768;
 
 /// A contiguous byte range `[lo, hi]`. The first-byte set decomposes into a
 /// handful of these (`[0-9]`, `[a-f0-9]`, `\w`, the `{p,0}` of `panic|0x`), tested
 /// by the scanner's skip loop with one SIMD compare per range, not a scalar
 /// byteset probe per byte.
 const Range = struct { lo: u8, hi: u8 };
-const max_ranges = 6; // beyond this (e.g. a negated class) the scalar probe wins
+const max_ranges = 8; // rare 4–8 byte sets still earn a vector equality/range scan
+
+/// Shared, corpus-priced economics for every machine considering a byte-set
+/// prefilter. `mass` is a fixed-point probability over `probability_scale`;
+/// `stride` is the expected distance between candidates. The density source is
+/// the same checked-in Billy-corpus prior used by the substring kernel.
+pub const Economics = struct {
+    mass: u16,
+    stride: u16,
+
+    /// A full-byte machine should stand down only when the prefilter is expected
+    /// to skip at least `minimum_stride` bytes per candidate. This is deliberately
+    /// one fact shared by DFA acceleration, Compose, Parabix, and Sieve.
+    pub fn beatsDense(self: Economics, minimum_stride: u16) bool {
+        return self.stride >= minimum_stride;
+    }
+};
 
 /// The set of bytes that can begin a match, plus the precomputed accelerators
 /// that pick the cheapest sound skip strategy for its shape. Built once per
@@ -29,6 +47,7 @@ pub const Prefilter = struct {
     byte: ?u8, // sole member when singleton ⇒ SIMD `indexOfScalar`
     ranges: [max_ranges]Range,
     nranges: u8, // 0 ⇒ singleton (memchr) or too-many-ranges (scalar probe)
+    economics: Economics,
 
     /// Derive the accelerators from the first-byte `set`. The SIMD range scan
     /// earns its keep only without a singleton memchr; null (`>max_ranges`) falls
@@ -37,7 +56,13 @@ pub const Prefilter = struct {
         const single = set.only();
         var ranges: [max_ranges]Range = undefined;
         const nranges: u8 = if (single != null) 0 else firstRanges(set, &ranges) orelse 0;
-        return .{ .set = set, .byte = single, .ranges = ranges, .nranges = nranges };
+        return .{
+            .set = set,
+            .byte = single,
+            .ranges = ranges,
+            .nranges = nranges,
+            .economics = estimate(set),
+        };
     }
 
     pub fn count(self: *const Prefilter) usize {
@@ -107,3 +132,31 @@ pub const Prefilter = struct {
         return n;
     }
 };
+
+/// Price a candidate-byte set against the checked-in corpus prior. Saturated
+/// `density` cells are intentionally expanded: 255 means "at least this common",
+/// not 255/32768 exactly, and treating it as the latter is what made two common
+/// letters look selective. Zero cells retain one unit so unseen bytes have a
+/// finite, conservative stride rather than infinity.
+pub fn estimate(set: ByteSet) Economics {
+    var mass: u32 = 0;
+    for (0..256) |i| if (set.has(@intCast(i))) {
+        const d = rarity.density[i];
+        mass += if (d == 255) 2048 else @max(@as(u32, d), 1);
+    };
+    mass = @min(mass, probability_scale);
+    const stride: u32 = if (mass == 0) probability_scale else @max(1, probability_scale / mass);
+    return .{ .mass = @intCast(mass), .stride = @intCast(@min(stride, std.math.maxInt(u16))) };
+}
+
+test "economics distinguishes a common byte from a rare set" {
+    var common: ByteSet = .{};
+    common.set(' '); // saturated in the corpus prior ⇒ dense, no skip earned
+    var rare: ByteSet = .{};
+    // Genuinely rare in the checked-in density table (J=9, Q=12, Z=7). NOT `_`,
+    // which is saturated-common in code identifiers — a rare set of common bytes
+    // is exactly the trap `estimate` exists to price out.
+    for ("JQZ") |b| rare.set(b);
+    try std.testing.expect(!estimate(common).beatsDense(32));
+    try std.testing.expect(estimate(rare).beatsDense(32));
+}

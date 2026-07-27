@@ -20,7 +20,10 @@ const prefilter = @import("../../analysis/prefilter.zig");
 const dfa_mod = @import("../dfa/dfa.zig");
 const powerset = @import("../dfa/powerset.zig");
 const lazy_mod = @import("../dfa/lazy.zig");
+const rungs_mod = @import("../ladder/rungs.zig");
+const symbolic = @import("../symbolic/symbolic.zig");
 const classrun_mod = @import("../../../scan/classrun.zig");
+const literal_set = @import("../../../scan/literal_set.zig");
 const crest = @import("../../../../primitives/crest.zig");
 const core = @import("core.zig");
 
@@ -50,7 +53,23 @@ const Regex = core.Regex;
 /// kernel makes it dead weight for every production path — the hook the
 /// determinizer's own proof harness (powerset/dfa tests) uses to keep
 /// exercising subset construction on class-shaped patterns.
-pub const Options = struct { caseless: bool = false, multiline: bool = false, dotall: bool = false, unicode: bool = false, line_anchors: ?bool = null, force_dfa: bool = false };
+/// `symbolic` picks which determinization discovers that DFA. `.auto` offers a
+/// codepoint-class pattern to `../symbolic/` first (predicate alphabet, then a
+/// product with a UTF-8 decoder — same table, discovered for a fraction of the
+/// visits); `.off` pins the byte-trie powerset. Both produce the same language,
+/// so this is a cost knob — and the hook the symbolic path's own differential
+/// uses to hold itself against the construction it replaces.
+pub const Options = struct {
+    caseless: bool = false,
+    multiline: bool = false,
+    dotall: bool = false,
+    unicode: bool = false,
+    line_anchors: ?bool = null,
+    force_dfa: bool = false,
+    symbolic: Symbolic = .auto,
+
+    pub const Symbolic = enum { auto, off };
+};
 
 pub fn compile(allocator: std.mem.Allocator, pattern: []const u8) ParseError!Regex {
     return compileOpts(allocator, pattern, .{});
@@ -101,6 +120,18 @@ pub fn compileOpts(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
     errdefer freeAlts(allocator, alts);
     const lits = try dupeLits(allocator, arena, ast, opts.multiline);
     errdefer freeAlts(allocator, lits);
+    // One authority-ranked literal engine over the strongest fact available:
+    // a pure-literal EQUIVALENCE set decides presence outright (`.exact`); a
+    // cover union or a single required literal can only NOMINATE, pruning a line
+    // on a miss and deferring a hit to the engines below (`.candidate`). Built
+    // from the owned copies, so it borrows storage that outlives it — and freed
+    // first in `deinit`, before that storage. A set too large to compile simply
+    // is not built (the DFA/Pike still serve); only a true OOM propagates.
+    var literal_scan: ?literal_set.LiteralSet = literalEngine(allocator, lits, alts, required) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => null,
+    };
+    errdefer if (literal_scan) |*set| set.deinit();
 
     const states = try c.states.toOwnedSlice(allocator);
     errdefer allocator.free(states);
@@ -169,8 +200,27 @@ pub fn compileOpts(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
     // high-byte haystacks land there.
     const kernel_final = if (cr) |run| run.exact or run.cp != null else false;
     const wants_dfa = !(opts.multiline and !assert_free) and !(kernel_final and !opts.force_dfa);
-    const outcome: powerset.Outcome = if (wants_dfa)
-        try powerset.build(allocator, states, start, anchored, opts.unicode)
+    // Codepoint-class patterns are offered to the symbolic determinizer first:
+    // it discovers the SAME automaton without re-walking a UTF-8 trie per
+    // closure, which is the entire reason the byte driver's cost budget was
+    // declining `\w`/`\p{…}` to the on-demand tier. Anything it cannot express
+    // exactly declines, and the byte powerset below decides the pattern as it
+    // always has — so this is a discovery-cost choice, never a semantic one.
+    var sym_stats: symbolic.Stats = .{};
+    const symbolic_dfa: ?*dfa_mod.Dfa = if (wants_dfa and opts.symbolic == .auto and opts.unicode and symbolic.eligible(ast))
+        switch (try symbolic.build(allocator, ast, anchored, &sym_stats)) {
+            .built => |d| d,
+            .declined => null,
+        }
+    else
+        null;
+    // No cleanup hook here: the only fallible step between this point and the
+    // `dfa` errdefer below is the powerset call, which is unreachable when the
+    // symbolic path already built. One owner, one teardown.
+    const outcome: powerset.Outcome = if (symbolic_dfa) |d|
+        .{ .built = d }
+    else if (wants_dfa)
+        try powerset.build(allocator, states, start, anchored, opts.unicode, if (opts.force_dfa) .unbudgeted else .budgeted)
     else
         .{ .declined = .unsupported };
     const dfa: ?*dfa_mod.Dfa = switch (outcome) {
@@ -179,20 +229,49 @@ pub fn compileOpts(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
     };
     errdefer if (dfa) |d| d.deinit();
 
-    // A declined eager build is a budget verdict, and WHICH budget decides the
-    // replacement engine. `too_costly` — a small automaton behind an expensive
-    // Unicode class — is still best served by that automaton, just discovered on
-    // demand. `too_large` is not: the alternations that blow the state cap carry
-    // the literal structure the Pike VM's prefilter feeds on, and a dense DFA walk
-    // measured 2.2x slower than keeping it. So only one decline routes here.
+    // Both budget declines route here: the same automaton is still the right
+    // machine, just discovered on demand rather than up front, so a declined
+    // pattern goes to the DFA family instead of dropping to the Pike VM. Only
+    // `.unsupported` (a buffer anchor, i.e. multiline) has no DFA of any kind.
     const lazy: ?*lazy_mod.Lazy = switch (outcome) {
-        .declined => |why| if (why == .too_costly)
-            try lazy_mod.Lazy.build(allocator, states, start, anchored, opts.unicode)
-        else
-            null,
+        .declined => |why| switch (why) {
+            .too_large, .too_costly => try lazy_mod.Lazy.build(allocator, states, start, anchored, opts.unicode),
+            .unsupported => null,
+        },
         .built => null,
     };
     errdefer if (lazy) |l| l.deinit();
+
+    // The accelerator tier. This is the one site that holds everything a rung
+    // needs to admit itself — the determinized program, the AST, and the census
+    // of accelerators it would be competing with — so asking costs nothing that
+    // was not already computed. Each rung declines by being absent; `rungs.zig`
+    // owns the order and the at-most-one-decider policy.
+    // ASSERTION-BEARING `-U` is withheld, on the same line as the DFA above and
+    // for the same reason: multiline `^`/`$` are content-dependent line anchors
+    // that eager determinization cannot encode, so the program `bufMatch` runs
+    // is the Pike whole-buffer scan and there is no automaton for a rung to
+    // lower. Assertion-FREE multiline keeps the tier, because there the DFA is
+    // exact over the buffer as one haystack (`search.bufMatch`) — the rung's
+    // question and `-U`'s coincide, and `Rungs.line` is where that is enforced:
+    // the per-line rung must prove `sliceSafe` before it may answer.
+    const bare_multiline = opts.multiline and !assert_free;
+    const start_economics = if (dfa) |d|
+        if (d.accel) |pf| pf.economics else null
+    else if (lazy) |l|
+        if (l.accel) |pf| pf.economics else null
+    else
+        null;
+    var tier = if (bare_multiline) rungs_mod.Rungs.none else try rungs_mod.Rungs.build(allocator, .{
+        .dfa = dfa,
+        .ast = ast,
+        .prefilter = start_economics,
+        .parabix_model = .{
+            .grain = if (opts.multiline) .buffer else .lines,
+            .unicode_words = opts.unicode,
+        },
+    });
+    errdefer tier.deinit(allocator);
 
     return .{
         .states = states,
@@ -207,6 +286,8 @@ pub fn compileOpts(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
         .dfa = dfa,
         .lazy = lazy,
         .classrun = cr,
+        .literal_scan = literal_scan,
+        .rungs = tier,
         .assert_free = assert_free,
         .multiline = opts.multiline,
         .line_anchors = opts.line_anchors orelse opts.multiline,
@@ -232,6 +313,17 @@ fn dupeCover(gpa: std.mem.Allocator, arena: std.mem.Allocator, ast: *Node, best:
     if (best.len >= 3) return &.{}; // single-literal prefilter wins
     const cover = (try analysis.requiredAny(arena, ast)) orelse return &.{};
     return dupeAll(gpa, cover);
+}
+
+/// Compile the strongest literal fact into one authority-ranked engine, or
+/// null when none is provable. `&.{required}` is a stack slice, but the
+/// one-needle strategy copies the inner `required` header (which the handle
+/// owns), not the temporary outer slice.
+fn literalEngine(gpa: std.mem.Allocator, lits: []const []const u8, alts: []const []const u8, required: []const u8) literal_set.BuildError!?literal_set.LiteralSet {
+    if (lits.len != 0) return try literal_set.LiteralSet.build(gpa, lits, .exact);
+    if (alts.len != 0) return try literal_set.LiteralSet.build(gpa, alts, .candidate);
+    if (required.len != 0) return try literal_set.LiteralSet.build(gpa, &.{required}, .candidate);
+    return null;
 }
 
 /// Own a copy of the pure-literal equivalence set (`analysis.pureLiterals`),

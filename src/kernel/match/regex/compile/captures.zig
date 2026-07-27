@@ -23,14 +23,25 @@ pub const ParseError = syn.ParseError;
 /// PCRE2's capture twin — the `-P -r` arm of the `Caps` union below.
 pub const PcreCaptures = @import("../pcre2/captures.zig").PcreCaptures;
 
+/// The determinized twin of THIS VM — the arm that runs when the pattern is
+/// provably one-pass, built from (and falling back to) a `Captures` instance.
+pub const OnePass = @import("onepass.zig").OnePass;
+
 /// The engine-neutral capture seam for `-r`/`--replace` and `--json` submatches,
-/// mirroring `matcher.zig`'s `Matcher`: the linear Pike VM (`Captures`) or the
-/// PCRE2 capture engine (`PcreCaptures`), behind the three primitives the
-/// replacement expander needs — `nslots` (slot-vector width), `find` (fill a
-/// match's group offsets), `groupByName` (`${name}` → number). The output layer
-/// names `Caps` without knowing which engine produced the groups; the `-r`
-/// template expansion (`expandInto`) is byte-identical to ripgrep either way.
+/// mirroring `matcher.zig`'s `Matcher`: the one-pass table (`OnePass`), the
+/// general linear Pike VM (`Captures`), or the PCRE2 capture engine
+/// (`PcreCaptures`), behind the three primitives the replacement expander needs
+/// — `nslots` (slot-vector width), `find` (fill a match's group offsets),
+/// `groupByName` (`${name}` → number). The output layer names `Caps` without
+/// knowing which engine produced the groups; the `-r` template expansion
+/// (`expandInto`) is byte-identical to ripgrep either way.
+///
+/// The first two arms answer IDENTICALLY by construction — `OnePass` is only
+/// chosen for patterns whose ε-closures determinize, and it keeps the `Captures`
+/// it was built from as its own fallback — so which one runs is a pure speed
+/// decision (`onepass_test.zig` holds it to slot-exact parity).
 pub const Caps = union(enum) {
+    onepass: OnePass,
     linear: Captures,
     pcre: PcreCaptures,
 
@@ -58,7 +69,11 @@ pub const Caps = union(enum) {
 
 /// A capture-VM instruction. `save{slot}` records the current input position into
 /// a thread's slot (group `g` uses slots `2g`/`2g+1`; group 0 = whole match).
-const Inst = union(enum) {
+///
+/// Public only for `onepass.zig`, which determinizes this exact program rather
+/// than lowering a second one — a fork of the lowering is how the two arms would
+/// start disagreeing about what a pattern means.
+pub const Inst = union(enum) {
     char: struct { set: ByteSet, out: u32 },
     split: struct { a: u32, b: u32 },
     save: struct { slot: u32, out: u32 },

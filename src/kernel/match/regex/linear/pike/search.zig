@@ -132,7 +132,22 @@ pub fn bufMatch(re: *const Regex, sim: *Sim, buf: []const u8) bool {
     // assert_end exists, so the last-byte table is inert) — one table lookup
     // per byte instead of a Pike closure per byte. Equivalence held by the
     // multiline differential fuzz in `../dfa/dfa_test.zig`.
-    if (re.assert_free) if (re.dfa) |d| return d.match(buf);
+    if (re.assert_free) {
+        // Whatever answers that DFA faster answers `-U` too, and this is the
+        // only place in the engine where "the whole buffer is the haystack" and
+        // "these bytes are the haystack" are literally the same call — so the
+        // tier is consulted at the LINE grain (the slice question), not the
+        // document one. A per-line rung must have proven `sliceSafe` to be here
+        // at all, which is exactly the "no match crosses a `\n`" premise `-U`
+        // otherwise discards; `lower.zig` withholds the tier entirely from the
+        // assertion-bearing multiline programs where it would not hold.
+        switch (re.rungs.line(buf)) {
+            .hit => return true,
+            .miss => return false,
+            .unproven => {},
+        }
+        if (re.dfa) |d| return d.match(buf);
+    }
     sim.gen += 1;
     sim.cur.len = 0;
     // Position 0 (buffer start ⇒ a line start; also a line end iff empty).

@@ -25,6 +25,10 @@ const std = @import("std");
 const prefilter = @import("../../analysis/prefilter.zig");
 const word = @import("../../syntax/word.zig");
 
+/// The unfilled-slot sentinel a transition row keeps when nothing can step from
+/// its state — see the note on `Dfa` below, which is the reason this is public.
+pub const unfilled: u32 = std.math.maxInt(u32);
+
 /// An immutable byte-class DFA. `class[b]` maps a byte to its equivalence-class
 /// column; `trans_in`/`trans_fin` are row-major `[state][class]` next-state
 /// tables (interior vs last-byte, the latter resolving `$`); `is_match[s]` marks
@@ -36,6 +40,17 @@ const word = @import("../../syntax/word.zig");
 /// row offset, the hot loop indexes `trans[s + class[b]]` (no per-byte multiply on
 /// the loop-carried critical path), and `is_match` is laid out by offset (length
 /// `nstates*ncls`; only the `ncls`-aligned slots are ever read).
+///
+/// **The transition tables are NOT total, and every exhaustive reader must know
+/// it.** A state reached only as a `trans_fin` target is terminal — the line ends
+/// the instant it is entered — so the determinizer interns it for its match flag
+/// and never enqueues it, leaving its whole row on `subset.unknown`
+/// (`maxInt(u32)`). `is_match[off]` is valid for such a state; `trans_in[off + c]`
+/// and `trans_fin[off + c]` are not, and using one as an index faults. The
+/// byte-at-a-time walks below never notice, because they only ever index a row
+/// they stepped into. A consumer that sweeps the table instead — a rung lowering
+/// it, a quotient harvesting it — must skip a state whose row is `unfilled`,
+/// which cell zero witnesses for the whole row (rows are filled all-or-nothing).
 pub const Dfa = struct {
     class: [256]u8,
     ncls: u16,

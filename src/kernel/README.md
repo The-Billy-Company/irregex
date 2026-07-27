@@ -29,8 +29,8 @@ through here so they cannot drift on what a hit is.
 ## The match ladder (cheapest sound rung first)
 
 1. **Fixed string** (`-F`, caseful) → `match/scan/` SIMD presence.
-2. **Linear regex** → Thompson NFA + eager byte-class DFA; Pike VM for
-   `\b` / multiline / powerset past `max_states = 4096`.
+2. **Linear regex** → Thompson NFA + byte-class DFA, determinized eagerly when
+   affordable and on demand when not; Pike VM for multiline and as the oracle.
 3. **PCRE2** (`-P` or `--engine auto`) for lookaround / backreferences the
    linear tier cannot express — resource-capped, hermetic vendor.
 

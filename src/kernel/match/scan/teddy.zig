@@ -11,85 +11,77 @@
 //! N** by pre-baking every needle's leading bytes into nibble→bucket lookup
 //! tables and resolving all N with one `tbl`/`pshufb` shuffle each.
 //!
-//! The scheme (slim Teddy, one bucket per needle, ≤ 8 needles): assign needle
-//! `b` the bucket bit `1 << b`. For byte position `p ∈ {0,1}` build two 16-entry
-//! tables keyed by a byte's low / high nibble, each cell the OR of the buckets
-//! whose needle has that nibble at position `p`. Per 16-byte block: shuffle the
-//! block's low- and high-nibble vectors through the position-0 tables and AND —
-//! each lane now holds the buckets whose needle's *first* byte equals that lane.
-//! Repeat for the block shifted by one byte against the position-1 tables and
-//! AND in — surviving lanes have needles whose first TWO bytes match. Nonzero
-//! lanes are candidates; each pays one `eql` verify. Two leading bytes give the
-//! same selectivity class as the fused first+last gate, so the verify rate is
-//! comparable while the load count stops growing with N.
+//! The scheme (slim Teddy, eight buckets per group, ≤ 64 needles): within each
+//! group assign needle `b` the bucket bit `1 << b`. For byte position
+//! `p ∈ {0,1}` build two 16-entry tables keyed by a byte's low / high nibble,
+//! each cell the OR of matching buckets. Per 16-byte block, every group reuses
+//! the same two haystack loads; nibble shuffles recover the needles whose first
+//! two bytes match, then only survivors pay `eql`. Additional groups therefore
+//! add register-table work, never another pass or another haystack load.
 //!
 //! Fixed 16-wide (NEON `tbl` / SSSE3 `pshufb` are 16-byte; the win is the
 //! load-count collapse, not vector width). Byte-exact leftmost with
 //! `std.mem.indexOf` — proven by the differential fuzz in `simd_test.zig`.
 
 const std = @import("std");
-const builtin = @import("builtin");
 const bitsmod = @import("../../primitives/bits.zig");
+const lanes = @import("../regex/linear/compose/lanes.zig");
 
-const V16 = @Vector(16, u8);
+const V16 = lanes.Vec;
 const Lane = u16; // one bit per 16-byte-block lane
 
-/// Max needles: one bucket bit per needle in a `u8` bucket mask.
-pub const max_buckets: usize = 8;
+/// Eight bucket bits per nibble table, with up to eight independent groups.
+pub const buckets_per_group: usize = 8;
+pub const max_buckets: usize = 64;
+const max_groups = max_buckets / buckets_per_group;
 
-/// 16-wide runtime byte shuffle: `out[i] = table[idx[i]]` for `idx[i] ∈ 0..15`
-/// (all callers mask/shift indices into range, so the arch high-bit lane-zeroing
-/// never fires). One NEON `tbl` / SSSE3 `pshufb`; a scalar gather elsewhere.
-inline fn shuffle(table: V16, idx: V16) V16 {
-    return switch (builtin.cpu.arch) {
-        .aarch64, .aarch64_be => asm ("tbl %[o].16b, {%[t].16b}, %[i].16b"
-            : [o] "=w" (-> V16),
-            : [t] "w" (table),
-              [i] "w" (idx),
-        ),
-        .x86_64 => asm ("pshufb %[i], %[o]"
-            : [o] "=x" (-> V16),
-            : [t] "0" (table),
-              [i] "x" (idx),
-        ),
-        else => blk: {
-            var out: [16]u8 = undefined;
-            const t: [16]u8 = table;
-            const ix: [16]u8 = idx;
-            for (0..16) |k| out[k] = t[ix[k] & 0x0F];
-            break :blk out;
-        },
-    };
-}
-
-/// A prepared multi-literal prefilter over the first two bytes of ≤ 8 needles.
-/// Borrows `needles` for the survivor verify; valid for the scan call's extent.
-pub const Teddy = struct {
+const Group = struct {
     lo0: V16,
     hi0: V16,
     lo1: V16,
     hi1: V16,
+
+    inline fn candidates(self: Group, b0: V16, b1: V16, low: V16, four: V16) V16 {
+        return lanes.shuffle(self.lo0, b0 & low) & lanes.shuffle(self.hi0, b0 >> four) &
+            lanes.shuffle(self.lo1, b1 & low) & lanes.shuffle(self.hi1, b1 >> four);
+    }
+};
+
+/// A prepared multi-literal prefilter over the first two bytes of 2–64 needles.
+/// Borrows `needles` for the survivor verify; valid for the scan call's extent.
+pub const Teddy = struct {
+    groups: [max_groups]Group,
+    group_count: u8,
     needles: []const []const u8,
 
     /// Prepare Teddy for `needles`, or `null` if the set is ineligible
     /// (fewer than 2, more than `max_buckets`, or any needle under 2 bytes) —
-    /// exactly the fused gate's eligibility, so the caller keeps its path.
+    /// short sets stay on the caller's byte-exact fallback.
     pub fn init(needles: []const []const u8) ?Teddy {
         if (needles.len < 2 or needles.len > max_buckets) return null;
         for (needles) |n| if (n.len < 2) return null;
 
-        var lo0 = [_]u8{0} ** 16;
-        var hi0 = [_]u8{0} ** 16;
-        var lo1 = [_]u8{0} ** 16;
-        var hi1 = [_]u8{0} ** 16;
-        for (needles, 0..) |n, b| {
-            const bit = @as(u8, 1) << @intCast(b);
-            lo0[n[0] & 0x0F] |= bit;
-            hi0[n[0] >> 4] |= bit;
-            lo1[n[1] & 0x0F] |= bit;
-            hi1[n[1] >> 4] |= bit;
+        var groups: [max_groups]Group = undefined;
+        // `buckets_per_group` (8) is a fixed nonzero comptime divisor and
+        // `needles.len` is already bounded to `[2, max_buckets]` above, so this
+        // is plain ceiling division — no fallible `std.math.divCeil` needed.
+        const group_count = (needles.len - 1) / buckets_per_group + 1;
+        for (0..group_count) |g| {
+            var lo0 = [_]u8{0} ** 16;
+            var hi0 = [_]u8{0} ** 16;
+            var lo1 = [_]u8{0} ** 16;
+            var hi1 = [_]u8{0} ** 16;
+            const base = g * buckets_per_group;
+            for (needles[base..@min(base + buckets_per_group, needles.len)], 0..) |n, b| {
+                const bit = @as(u8, 1) << @intCast(b);
+                lo0[n[0] & 0x0F] |= bit;
+                hi0[n[0] >> 4] |= bit;
+                lo1[n[1] & 0x0F] |= bit;
+                hi1[n[1] >> 4] |= bit;
+            }
+            groups[g] = .{ .lo0 = lo0, .hi0 = hi0, .lo1 = lo1, .hi1 = hi1 };
         }
-        return .{ .lo0 = lo0, .hi0 = hi0, .lo1 = lo1, .hi1 = hi1, .needles = needles };
+        return .{ .groups = groups, .group_count = @intCast(group_count), .needles = needles };
     }
 
     /// Leftmost occurrence of any needle at or after `from`, byte-exact with the
@@ -103,16 +95,22 @@ pub const Teddy = struct {
         while (i + 17 <= hay.len) : (i += 16) {
             const b0: V16 = hay[i..][0..16].*;
             const b1: V16 = hay[i + 1 ..][0..16].*;
-            const c = shuffle(self.lo0, b0 & low) & shuffle(self.hi0, b0 >> four) &
-                shuffle(self.lo1, b1 & low) & shuffle(self.hi1, b1 >> four);
-            const cb: [16]u8 = c;
-            var lanes = bitsmod.ones(@as(Lane, @bitCast(c != zero)));
-            while (lanes.next()) |j| {
+            var candidates: [max_groups][16]u8 = undefined;
+            var occupied: @Vector(16, bool) = @splat(false);
+            for (self.groups[0..self.group_count], 0..) |group, g| {
+                const group_candidates = group.candidates(b0, b1, low, four);
+                candidates[g] = group_candidates;
+                occupied |= group_candidates != zero;
+            }
+            var hit_lanes = bitsmod.ones(@as(Lane, @bitCast(occupied)));
+            while (hit_lanes.next()) |j| {
                 const pos = i + j;
-                var buckets = bitsmod.ones(cb[j]);
-                while (buckets.next()) |b| {
-                    const n = self.needles[b];
-                    if (pos + n.len <= hay.len and std.mem.eql(u8, hay[pos..][0..n.len], n)) return pos;
+                for (candidates[0..self.group_count], 0..) |group_candidates, g| {
+                    var buckets = bitsmod.ones(group_candidates[j]);
+                    while (buckets.next()) |b| {
+                        const n = self.needles[g * buckets_per_group + b];
+                        if (pos + n.len <= hay.len and std.mem.eql(u8, hay[pos..][0..n.len], n)) return pos;
+                    }
                 }
             }
         }
@@ -129,3 +127,52 @@ pub const Teddy = struct {
         return self.find(hay, 0) != null;
     }
 };
+
+test "grouped Teddy holds block seams and 8/64 boundaries" {
+    const needles8 = [_][]const u8{ "aa0", "aa1", "aa2", "aa3", "aa4", "aa5", "aa6", "target" };
+    const needles64 = comptime blk: {
+        @setEvalBranchQuota(100_000);
+        var out: [64][]const u8 = undefined;
+        for (&out, 0..) |*n, i| n.* = std.fmt.comptimePrint("needle-{d:0>2}", .{i});
+        break :blk out;
+    };
+    var hay = [_]u8{'x'} ** 96;
+    @memcpy(hay[15..21], "target");
+    try std.testing.expectEqual(@as(?usize, 15), Teddy.init(&needles8).?.find(&hay, 0));
+    @memcpy(hay[47..56], "needle-63");
+    try std.testing.expectEqual(@as(?usize, 47), Teddy.init(&needles64).?.find(&hay, 16));
+}
+
+test "grouped Teddy rejects short and over-cap sets" {
+    const short = [_][]const u8{ "ab", "x" };
+    const over = [_][]const u8{"ab"} ** 65;
+    try std.testing.expect(Teddy.init(&short) == null);
+    try std.testing.expect(Teddy.init(&over) == null);
+}
+
+test "grouped Teddy differential survives dense candidates" {
+    const needles = comptime blk: {
+        @setEvalBranchQuota(100_000);
+        var out: [64][]const u8 = undefined;
+        for (&out, 0..) |*n, i| n.* = std.fmt.comptimePrint("aa{d:0>4}", .{i});
+        break :blk out;
+    };
+    const teddy = Teddy.init(&needles).?;
+    var prng = std.Random.DefaultPrng.init(0x7eddd1ff);
+    const random = prng.random();
+    var hay: [257]u8 = undefined;
+    for (0..128) |_| {
+        @memset(&hay, 'a');
+        const chosen = random.uintLessThan(usize, needles.len);
+        if (random.boolean()) {
+            const at = random.uintLessThan(usize, hay.len - needles[chosen].len + 1);
+            @memcpy(hay[at..][0..needles[chosen].len], needles[chosen]);
+        }
+        const from = random.uintLessThan(usize, hay.len + 1);
+        var expected: ?usize = null;
+        for (needles) |needle| if (std.mem.indexOfPos(u8, &hay, from, needle)) |position| {
+            if (expected == null or position < expected.?) expected = position;
+        };
+        try std.testing.expectEqual(expected, teddy.find(&hay, from));
+    }
+}

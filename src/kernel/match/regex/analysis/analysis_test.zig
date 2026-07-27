@@ -171,13 +171,13 @@ test "analysis/requiredAny: a sub-3 branch defeats the whole cover (soundness)" 
 }
 
 test "analysis/requiredAny: a huge alternation bails past the cover cap" {
-    // Beyond max_cover (32) branches the union is no cheaper than a full scan, so
+    // Beyond max_cover (64) branches the union is no cheaper than a full scan, so
     // the analysis returns null rather than a giant per-branch query set.
     var small = try parse("abc|def|ghi");
     defer small.deinit();
     try std.testing.expect((try ana.requiredAny(small.alloc(), small.node)) != null);
 
-    var big = try parse("abc" ++ ("|abc" ** 40)); // 41 ≥3 branches > max_cover
+    var big = try parse("abc" ++ ("|abc" ** 80)); // 81 ≥3 branches > max_cover
     defer big.deinit();
     try std.testing.expect((try ana.requiredAny(big.alloc(), big.node)) == null);
 }
@@ -440,12 +440,12 @@ test "analysis/anchored: ^ before a group / nullable still anchors the whole" {
 }
 
 test "analysis/requiredAny: the cover cap is an inclusive boundary at max_cover" {
-    // Exactly 32 (= max_cover) ≥3 branches still covers; 33 tips it to a full scan.
-    var at = try parse("abc" ++ ("|abc" ** 31)); // 32 branches
+    // Exactly 64 (= max_cover) ≥3 branches still covers; 65 tips it to a full scan.
+    var at = try parse("abc" ++ ("|abc" ** 63)); // 64 branches
     defer at.deinit();
     try std.testing.expect((try ana.requiredAny(at.alloc(), at.node)) != null);
 
-    var over = try parse("abc" ++ ("|abc" ** 32)); // 33 branches
+    var over = try parse("abc" ++ ("|abc" ** 64)); // 65 branches
     defer over.deinit();
     try std.testing.expect((try ana.requiredAny(over.alloc(), over.node)) == null);
 }

@@ -115,10 +115,26 @@ detected inline in a single fused pass. Word-boundary asserts
 and the interior table doubles on the _next_ byte's word-ness, so the DFA
 resolves word context at the floor — quitting to the Pike VM only under Unicode,
 and only when a gap abuts a non-ASCII scalar an ASCII-classed DFA can't judge.
-Two shapes step down to the **Pike VM** wholesale instead: multiline mode (and
-its `\A`/`\z` buffer anchors), and patterns whose powerset build exceeds the
-`max_states = 4096` cap (an eager build must bound itself; rust-regex pays that
-cost lazily per haystack instead, a real trade taken knowingly). Lookaround and
+A pattern whose Unicode classes would make that determinization re-walk a
+thousand-state UTF-8 trie on every closure takes a **symbolic** route instead —
+determinized over the pattern's own predicates, then crossed with a decoder back
+into the same byte table, so the scan loop is unchanged and only the discovery
+cost collapses.
+
+That one-lookup-per-byte floor is itself the ceiling for a table walker, because
+the lookup is loop-carried: the next state cannot be fetched until this one
+arrives. Above the DFA sits an **accelerator tier** of optional machines that
+escape that dependence rather than shorten it — composing whole transformations
+in a shuffle register, propagating markers across a thousand positions of
+transposed bitstreams, or refuting a region outright with an over-approximating
+quotient. Each admits itself per pattern, prices itself against the alternatives,
+and is simply absent when it cannot win; all answer identically to the Pike VM,
+which remains the oracle. Multiline mode (and its `\A`/`\z` buffer anchors) steps down to the **Pike VM**
+wholesale. A pattern the eager build declines — past the `max_states = 4096`
+safety ceiling, or past the calibrated cost policy that meters determinization in
+NFA-state visits — does not: it keeps the same automaton, determinized on demand
+into a per-thread cache (RE2 / rust-`regex`'s hybrid DFA), and reaches the Pike VM
+only if that cache outgrows its own cap. Lookaround and
 backreferences escalate to the vendored, hermetic
 **PCRE2 10.47** JIT (`-P`, or `--engine auto` to try linear first) with match
 and depth limits so `-P` cannot ReDoS the host. Unicode is default-on at rg

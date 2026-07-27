@@ -587,10 +587,11 @@ test "powerset: build is deterministic (byte-identical tables across two compile
     }
 }
 
-test "powerset: pathological alternation blows past max_states ⇒ bails to null (Pike serves)" {
+test "powerset: pathological alternation blows past max_states ⇒ eager declines (the ladder below still answers)" {
     // The classic `(a|b)*a(a|b)^n` "n-th byte from the end" DFA needs ~2^n
-    // states; with n large the powerset exceeds `max_states` and `build` returns
-    // null. Verify the bail fires AND the Pike fallback still matches correctly.
+    // states; with n large the powerset exceeds `max_states` and the eager build
+    // declines. Verify the bail fires AND the rungs beneath it — the on-demand
+    // driver, and the Pike VM behind it — still answer correctly.
     const a = std.testing.allocator;
     var pat: std.ArrayList(u8) = .empty;
     defer pat.deinit(a);
@@ -599,7 +600,7 @@ test "powerset: pathological alternation blows past max_states ⇒ bails to null
 
     var re = try Regex.compile(a, pat.items);
     defer re.deinit();
-    try expect(re.dfa == null); // cap tripped — exactly the fallback contract
+    try expect(re.dfa == null); // cap tripped — exactly the decline contract
 
     var sim = try Regex.Sim.init(a, &re);
     defer sim.deinit();
@@ -611,8 +612,9 @@ test "powerset: pathological alternation blows past max_states ⇒ bails to null
 // ─────────── compile-cost regression guard: allocations scale w/ states ───────
 
 test "powerset: cap-busting compile allocates O(states), not O(transitions)" {
-    // Determinizing it explodes past `max_states` (~4k DFA states over 12 byte-classes) so `build` bails to the
-    // Pike VM. The determinizer probes the subset map ~states×ncls×2 (≈86k) times;
+    // Determinizing it explodes past the eager bounds (~4k DFA states over 12
+    // byte-classes) so `build` declines. The determinizer probes the subset map
+    // ~states×ncls×2 (≈86k) times;
     // `intern` must reuse a scratch key for the probe and heap-allocate only on a
     // genuinely NEW state — one alloc per interned state, not one per probe. If a
     // future edit reintroduces alloc-per-probe, allocations jump ~20× (≈86k) and
@@ -631,10 +633,10 @@ test "powerset: cap-busting compile allocates O(states), not O(transitions)" {
     try expect(re.dfa == null); // confirms the pathological cap-bail path is taken
 
     // Permanent allocations are bounded by the interned-state count (≤ max_states
-    // + a handful of amortized ArrayList/HashMap growth reallocations), so ~4.2k.
-    // 2×max_states leaves headroom while staying far under the pre-fix ~86k.
-    std.debug.print("\nALLOCS={d}\n", .{counter.allocations});
-    try expect(counter.allocations < 2 * 4096);
+    // + a handful of amortized ArrayList/HashMap growth reallocations); measured
+    // at ~1.4k. 2×max_states leaves headroom while staying far under the
+    // pre-fix ~86k, so the bound still fails loudly if alloc-per-probe returns.
+    try expect(counter.allocations < 2 * powerset.max_states);
 }
 
 // ───────────────────────── randomized invariant fuzz ─────────────────────────
