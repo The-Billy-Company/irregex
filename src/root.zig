@@ -609,6 +609,7 @@ test {
     _ = @import("kernel/match/regex/compile/onepass_test.zig"); // one-pass capture arm: slot-exact vs the Pike VM + fail-closed refusal
     _ = @import("kernel/match/regex/linear/dfa/dfa_test.zig"); // byte-class DFA unit + differential fuzz
     _ = @import("kernel/match/regex/linear/dfa/powerset_test.zig"); // determinizer structural invariants
+    _ = @import("kernel/match/regex/linear/caliper/caliper_test.zig"); // two-jaw span measurement: differential fuzz vs the Pike span oracle
     _ = @import("kernel/match/regex/linear/symbolic/symbolic_test.zig"); // predicate alphabet: ≡ Pike AND ≡ byte powerset, malformed UTF-8 included
     _ = @import("kernel/match/regex/linear/sieve/sieve_test.zig"); // SP-quotient sieve: superset soundness vs Pike, kernel ≡ oracle, worthless abort
     _ = @import("kernel/match/regex/linear/compose/compose_test.zig"); // transformation composition: kernel ≡ scalar fold, fail-closed gates, line + doc differential vs Pike

@@ -8,9 +8,14 @@
 //! highest-priority thread wins the end — earlier alternation branches and
 //! greedy quantifiers extend maximally (verified: `a|ab`→`a`, `a+`→greedy).
 //!
-//! Two reductions pre-empt the VM when they are provably exact: a pure-literal
-//! alternation resolves by SIMD substring scan (`litSpan`), and a span-exact
-//! class run by the SIMD window kernel — neither pays a thread closure.
+//! Three reductions pre-empt the VM when they are provably exact: a pure-literal
+//! alternation resolves by SIMD substring scan (`litSpan`), a span-exact class
+//! run by the SIMD window kernel — neither pays a thread closure — and
+//! everything left is offered to the caliper (`../caliper/`), which measures the
+//! extent with two determinized table walks instead of a per-byte thread
+//! closure. This file remains the definition of the semantics all three must
+//! reproduce, the differential oracle they are fuzzed against, and the engine
+//! that answers whenever one of them declines.
 
 const std = @import("std");
 const core = @import("../program/core.zig");
@@ -18,6 +23,7 @@ const word = @import("../../syntax/word.zig");
 const simd = @import("../../../scan/simd.zig");
 const scratch = @import("scratch.zig");
 const eps = @import("closure.zig");
+const caliper = @import("../caliper/caliper.zig");
 
 const Regex = core.Regex;
 const SpanSim = scratch.SpanSim;
@@ -27,7 +33,7 @@ const wordBefore = word.wordBefore;
 
 /// A byte span `[start, end)` of one match within a line. `end == start` is a
 /// zero-width match (the `-o` caller advances past it to avoid looping).
-pub const Span = struct { start: usize, end: usize };
+pub const Span = caliper.Span;
 
 /// The highest-priority match in a priority-ordered thread `list`: the first
 /// `.match` state and where its thread began (`starts`), paired with `end`.
@@ -83,6 +89,16 @@ pub fn matchSpan(re: *const Regex, sim: *SpanSim, line: []const u8, from: usize)
     if (re.classrun) |*cr| if (cr.span and (cr.exact or cr.cp != null)) {
         const sp = cr.nextSpan(line, from) orelse return null;
         return .{ .start = sp.start, .end = sp.end };
+    };
+    // The caliper: a forward leftmost-first table walk for the end, a backward
+    // one for the start (`../caliper/`). It carries the patterns no reduction
+    // above covers — the multi-segment shapes that are the whole reason `-o` is
+    // slower than the boolean pass. A decline is a budget verdict, never a
+    // semantic one, and falls straight through to the VM below.
+    if (re.caliper) |_| if (sim.jaws) |*j| switch (caliper.measure(j, line, from)) {
+        .found => |sp| return sp,
+        .none => return null,
+        .decline => {},
     };
     sim.gen += 1;
     sim.cur.len = 0;

@@ -28,6 +28,34 @@ const B64 = bits.Field(u64);
 /// cache-miss sentinel the search loop tests against.
 pub const unknown: u32 = std.math.maxInt(u32);
 
+/// What is true of the position BETWEEN two bytes — everything a zero-width
+/// assertion is allowed to ask. `word_before`/`word_after` are the word-ness of
+/// the bytes straddling the gap; at a haystack edge the absent side is false.
+pub const Gap = struct { at_start: bool, at_end: bool, word_before: bool, word_after: bool };
+
+/// The state a zero-width assertion passes control to at this gap, or null when
+/// it blocks. THE one transcription of `^ $ \b \B \< \>` in the determinized
+/// tier: `subset.close` resolves its worklist through it, and so does the
+/// caliper's priority worklist (`../caliper/`). Two traversal policies, one
+/// predicate — which is the only part of determinization where a second
+/// transcription could silently disagree about what a pattern means.
+///
+/// `\A`/`\z` are absent by construction: buffer anchors exist only under
+/// multiline, where no determinized engine is built at all — every driver
+/// declines before it can reach one.
+pub fn passes(st: State, g: Gap) ?u32 {
+    return switch (st) {
+        .assert_start => |o| if (g.at_start) o else null,
+        .assert_end => |o| if (g.at_end) o else null,
+        .assert_word_b => |o| if (g.word_before != g.word_after) o else null,
+        .assert_not_word_b => |o| if (g.word_before == g.word_after) o else null,
+        .assert_word_start => |o| if (!g.word_before and g.word_after) o else null,
+        .assert_word_end => |o| if (g.word_before and !g.word_after) o else null,
+        .assert_buf_start, .assert_buf_end => unreachable,
+        .consume, .split, .match => null,
+    };
+}
+
 /// The byte alphabet collapsed to equivalence classes: two bytes share a class iff
 /// no consuming state distinguishes them, which shrinks the transition table from
 /// 256 columns to a handful. (RE2 / rust-`regex` `ByteClasses`.)
@@ -217,13 +245,11 @@ pub const Subset = struct {
     }
 
     /// Epsilon-close everything currently on the stack into `s.out`, resolving
-    /// zero-width assertions against the position flags: `^`/`$` against
-    /// `at_start`/`at_end`, and `\b`/`\B`/`\<`/`\>` against the word-ness of the
-    /// bytes straddling the gap (`word_before`/`word_after`) — the same predicates
-    /// the Pike VM's `Closure.add` uses (`core.zig`), so the two engines agree.
-    /// Returns whether `match` was reached. Iterative so a `{1000}`-deep program
-    /// can't overflow the call stack.
+    /// zero-width assertions through the shared `passes` predicate. Returns
+    /// whether `match` was reached. Iterative so a `{1000}`-deep program can't
+    /// overflow the call stack.
     fn close(s: *Subset, at_start: bool, at_end: bool, word_before: bool, word_after: bool) bool {
+        const g: Gap = .{ .at_start = at_start, .at_end = at_end, .word_before = word_before, .word_after = word_after };
         var matched = false;
         while (s.sp > 0) {
             s.sp -= 1;
@@ -234,16 +260,8 @@ pub const Subset = struct {
                     s.pushIf(sp.a);
                     s.pushIf(sp.b);
                 },
-                .assert_start => |o| if (at_start) s.pushIf(o),
-                .assert_end => |o| if (at_end) s.pushIf(o),
-                .assert_word_b => |o| if (word_before != word_after) s.pushIf(o),
-                .assert_not_word_b => |o| if (word_before == word_after) s.pushIf(o),
-                .assert_word_start => |o| if (!word_before and word_after) s.pushIf(o),
-                .assert_word_end => |o| if (word_before and !word_after) s.pushIf(o),
-                // Buffer anchors (`\A`/`\z`) exist only under multiline, where no
-                // DFA is built at all — both drivers decline before interning.
-                .assert_buf_start, .assert_buf_end => unreachable,
                 .match => matched = true,
+                else => if (passes(s.states[st], g)) |o| s.pushIf(o),
             }
         }
         return matched;

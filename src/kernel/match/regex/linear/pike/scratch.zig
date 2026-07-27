@@ -9,6 +9,7 @@ const std = @import("std");
 const syn = @import("../../syntax/syntax.zig");
 const core = @import("../program/core.zig");
 const lazy_mod = @import("../dfa/lazy.zig");
+const caliper_mod = @import("../caliper/caliper.zig");
 
 const ParseError = syn.ParseError;
 const Regex = core.Regex;
@@ -54,6 +55,14 @@ fn PikeScratch(comptime spans: bool) type {
         /// Boolean paths only — `matchSpan` never consults a DFA, so the span
         /// grain never allocates one.
         lazy: ?lazy_mod.Cache = null,
+        /// The caliper's per-thread determinization caches (`../caliper/`),
+        /// present exactly when the compiled program carries a caliper — the
+        /// span mirror of `lazy` above, and here for the same reason: the
+        /// automaton both jaws discover is mutable, so it cannot hang off the
+        /// shared immutable `Regex`. Constructing this allocates nothing; each
+        /// jaw's cache is built the first time a span is actually measured,
+        /// because some callers build a `SpanSim` per line.
+        jaws: ?caliper_mod.Jaws = null,
         allocator: std.mem.Allocator,
 
         pub fn init(allocator: std.mem.Allocator, re: *const Regex) ParseError!@This() {
@@ -67,6 +76,7 @@ fn PikeScratch(comptime spans: bool) type {
                 .scur = if (spans) try allocator.alloc(usize, n) else &.{},
                 .snxt = if (spans) try allocator.alloc(usize, n) else &.{},
                 .lazy = if (spans) null else if (re.lazy) |lz| try lazy_mod.Cache.init(allocator, lz) else null,
+                .jaws = if (spans) if (re.caliper) |cal| caliper_mod.Jaws.init(allocator, cal) else null else null,
                 .allocator = allocator,
             };
         }
@@ -77,6 +87,7 @@ fn PikeScratch(comptime spans: bool) type {
             self.allocator.free(self.scur); // frees nothing when `spans` is off
             self.allocator.free(self.snxt);
             if (self.lazy) |*c| c.deinit();
+            if (self.jaws) |*j| j.deinit();
             self.* = undefined;
         }
     };

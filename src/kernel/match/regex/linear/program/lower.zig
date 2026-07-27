@@ -18,6 +18,7 @@ const analysis = @import("../../analysis/analysis.zig");
 const compile_mod = @import("../../compile/compile.zig");
 const prefilter = @import("../../analysis/prefilter.zig");
 const dfa_mod = @import("../dfa/dfa.zig");
+const caliper_mod = @import("../caliper/caliper.zig");
 const powerset = @import("../dfa/powerset.zig");
 const lazy_mod = @import("../dfa/lazy.zig");
 const rungs_mod = @import("../ladder/rungs.zig");
@@ -273,6 +274,21 @@ pub fn compileOpts(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
     });
     errdefer tier.deinit(allocator);
 
+    // The span engine, built only where a span would otherwise reach the Pike
+    // VM. A pure-literal alternation (`lits`) and a span-exact class run are
+    // both strictly cheaper than any automaton and already pre-empt the VM in
+    // `pike/span.zig`, so giving those patterns a caliper would buy nothing and
+    // cost a reversal. Everything else — the multi-segment shapes that are the
+    // entire reason `-o` costs more than the boolean pass — gets one. This is
+    // O(program): the reversal is a graph walk and neither jaw determinizes
+    // anything until a haystack asks.
+    const span_reduced = lits.len > 0 or if (cr) |run| run.span and (run.exact or run.cp != null) else false;
+    const cal: ?*caliper_mod.Caliper = if (!span_reduced and caliper_mod.eligible(states, opts.multiline))
+        try caliper_mod.build(allocator, states, start, opts.unicode)
+    else
+        null;
+    errdefer if (cal) |built| built.deinit();
+
     return .{
         .states = states,
         .start = start,
@@ -285,6 +301,7 @@ pub fn compileOpts(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
         .first = prefilter.Prefilter.init(first_set),
         .dfa = dfa,
         .lazy = lazy,
+        .caliper = cal,
         .classrun = cr,
         .literal_scan = literal_scan,
         .rungs = tier,

@@ -26,6 +26,11 @@ machines that can — with **`symbolic/`** an alternative route to the same DFA
 table, taken when a pattern's Unicode classes would make the byte determinizer
 pay for them.
 
+Both machines answer _whether_ a line matches. **`caliper/`** answers _where_ it
+does, which `-o` and everything built on it needs, and which the VM alone used
+to serve; it determinizes that question the same way `dfa/` determinized the
+boolean one.
+
 Three more machines sit between the ladder and the DFA, and they exist for one
 reason: the DFA's cost is a loop-carried dependent load, so it runs at load-use
 latency and no amount of work on the table touches that. Each **rung** escapes
@@ -40,7 +45,8 @@ answers identically to the Pike VM.
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [`program/`](program)   | The compiled artifact and its constructor: the public `Regex` handle (immutable state, `deinit`, program-walk predicates) and the compile pipeline that fills it.                                                                                                                   |
 | [`ladder/`](ladder)     | Engine selection at every grain: which backend (`Matcher` — linear or PCRE2), which rung answers a boolean question (`verdict` — classrun → accelerator tier → DFA → Pike), and which optional accelerator serves inside that (`rungs` — one interface over compose/parabix/sieve). |
-| [`pike/`](pike)         | The Pike VM: reusable scratch, the epsilon-closure that resolves every zero-width assertion, the comptime-specialized boolean walks, and the `-o` leftmost-first span walk.                                                                                                         |
+| [`pike/`](pike)         | The Pike VM: reusable scratch, the epsilon-closure that resolves every zero-width assertion, the comptime-specialized boolean walks, and the `-o` span walk it still owns as oracle and fallback.                                                                                   |
+| [`caliper/`](caliper)   | The determinized answer to **where**, not whether: a forward leftmost-first jaw for a match's end and a backward anchored jaw over the reversed program for its start. Spans at a table lookup per byte, declining to the Pike span it is fuzzed against.                           |
 | [`dfa/`](dfa)           | The determinized primary: the immutable, scratch-free byte-class DFA, the subset construction behind it, and the two policies that drive it — eager to fixpoint, or on demand per visited state.                                                                                    |
 | [`symbolic/`](symbolic) | The same determinization, over the pattern's own predicates instead of UTF-8 bytes, then crossed back with a decoder into an ordinary byte DFA — so a Unicode class costs what its ASCII twin costs. Declines to `dfa/` for anything it cannot say exactly.                         |
 | [`compose/`](compose)   | Rung. Matching as a reduction: each byte's transition becomes a transformation of the whole state set, folded by a SIMD shuffle, so the loop carries a register rather than a load. Small automata only — the shuffle table is the width bound.                                     |

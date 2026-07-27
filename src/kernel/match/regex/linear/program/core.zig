@@ -33,6 +33,7 @@ const syn = @import("../../syntax/syntax.zig");
 const prefilter = @import("../../analysis/prefilter.zig");
 const dfa_mod = @import("../dfa/dfa.zig");
 const lazy_mod = @import("../dfa/lazy.zig");
+const caliper_mod = @import("../caliper/caliper.zig");
 const classrun_mod = @import("../../../scan/classrun.zig");
 const literal_set = @import("../../../scan/literal_set.zig");
 const lower = @import("lower.zig");
@@ -99,6 +100,17 @@ pub const Regex = struct {
     // so the per-thread memo lives in the caller's `Sim`. Both engines are never
     // set at once, and either may quit to the Pike VM, which stays the oracle.
     lazy: ?*lazy_mod.Lazy,
+    // The span engine (`caliper/caliper.zig`): a reversed program plus the two
+    // machine configurations that measure a match's extent — a forward
+    // leftmost-first walk for the end, a backward anchored one for the start —
+    // where the Pike VM re-closes every live thread per byte. Boolean paths
+    // never consult it. Non-null whenever a span could actually reach the VM:
+    // not under multiline, and not when a pure-literal or span-exact class-run
+    // reduction already answers more cheaply than any automaton could. It
+    // carries no transition tables itself (both jaws determinize on demand into
+    // the caller's `SpanSim`), so building one is O(program) at compile time
+    // and either jaw may quit to the Pike VM, which stays the oracle.
+    caliper: ?*caliper_mod.Caliper,
     // SIMD class-run kernel (`scan/classrun.zig`): non-null iff the pattern
     // provably reduces to "≥ min consecutive members of one byte set"
     // (`analysis.classRunShape` — the dense-class family: `\w+`, `[a-z]{3,}`,
@@ -214,6 +226,7 @@ pub const Regex = struct {
         lower.freeAlts(self.allocator, self.lits);
         if (self.dfa) |d| d.deinit();
         if (self.lazy) |l| l.deinit();
+        if (self.caliper) |cal| cal.deinit();
         self.rungs.deinit(self.allocator);
         if (self.classrun) |cr| if (cr.cp) |r| self.allocator.free(r);
         self.* = undefined;
