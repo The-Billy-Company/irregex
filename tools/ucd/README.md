@@ -11,6 +11,10 @@ in [`../build_unicode_tables.py`](../build_unicode_tables.py) → emits
 - **Version:** Unicode 16.0.0 (matches the toolchain `unicodedata.unidata_version`)
 - **Source:** `https://www.unicode.org/Public/16.0.0/ucd/<file>.txt`
   (`DerivedGeneralCategory.txt` is under `.../ucd/extracted/`)
+- **License:** Unicode License v3 — [`LICENSE.txt`](LICENSE.txt) carries the
+  copyright and permission notice these Data Files must be distributed with;
+  the package [`NOTICE`](../../NOTICE) lists them alongside the other bundled
+  third-party components. Keep both in step when upgrading the pin.
 
 | File                         | Used for                                           | sha256                                                             |
 | ---------------------------- | -------------------------------------------------- | ------------------------------------------------------------------ |

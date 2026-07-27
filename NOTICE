@@ -14,7 +14,32 @@ component and are not superseded by the Apache License, Version 2.0 above.
     Copyright (c) 2009-2024 Zoltan Herczeg
     See vendor/pcre2/LICENCE.md for the full text.
 
-  * WHATWG Encoding Standard index tables (tools/whatwg/index-*.txt)
+  * WHATWG Encoding Standard index tables (tools/whatwg/index-*.txt,
+    tools/whatwg/encodings.json)
     CC0-1.0 (public-domain dedication)
     Sourced from https://encoding.spec.whatwg.org/ — used to generate the
     legacy-encoding decode tables.
+
+  * Unicode Character Database, version 16.0.0 (tools/ucd/*.txt)
+    Unicode License v3
+    Copyright (c) 2024 Unicode, Inc. Unicode and the Unicode Logo are
+    registered trademarks of Unicode, Inc. in the U.S. and other countries.
+    Pinned upstream data files from https://www.unicode.org/Public/16.0.0/ucd/
+    — used to generate the Unicode property, case-folding, and script tables.
+    See tools/ucd/LICENSE.txt for the full copyright and permission notice.
+
+  * ripgrep integration-test corpus, mined (bench/rgsuite/spec.json)
+    Unlicense OR MIT
+    Copyright (c) 2015 Andrew Gallant
+    Test names, arguments, and haystack bytes mechanically extracted from
+    ripgrep's own `rgtest!` suite (https://github.com/BurntSushi/ripgrep) so
+    that ripgrep — not a hardcoded expectation — is the correctness oracle for
+    gist's `rg` drop-in parity. Some haystacks are Project Gutenberg public-
+    domain texts carried through from that suite. The gist implementation is
+    an independent reimplementation; only this test corpus is derived.
+
+Algorithms and interface conventions that gist implements from published
+descriptions rather than from borrowed source — among them Aho–Corasick (1975),
+Hyperscan's Teddy prefilter, Cox's trigram-index construction, and ripgrep's
+CLI and ignore-file conventions — carry no obligation here. They are credited
+where they are used, in the module headers and in research/*/PRIOR_ART.md.
