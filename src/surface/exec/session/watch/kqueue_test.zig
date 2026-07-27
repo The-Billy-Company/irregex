@@ -422,6 +422,71 @@ test "kqueue: a shed watch set answers from the baseline, and re-arming re-cover
     }.run);
 }
 
+test "kqueue: a delivery that cannot be placed leaves the session unarmed" {
+    if (comptime !is_macos) return;
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var fixture = std.heap.ArenaAllocator.init(gpa);
+    defer fixture.deinit();
+
+    var tree = try Tree.init(fixture.allocator(), io, "unplaceable", @intFromPtr(&threaded));
+    defer tree.deinit();
+    try tree.write("a.txt", "needle here\n");
+    // On disk, hidden by no rule, searched by the walk — and impossible to
+    // open. It stands in for a spent descriptor table, which refuses at the
+    // same call and cannot be provoked on demand. Kept out of the oracle's
+    // ledger because nothing can read it, engine or oracle.
+    try tree.writeIgnored("locked.txt", "nothing to find\n");
+    const lockedz = try std.posix.toPosixPath(try tree.abs("locked.txt"));
+    if (std.c.chmod(&lockedz, 0) != 0) return; // cannot stage the hazard here
+    defer _ = std.c.chmod(&lockedz, 0o644);
+    const probe = std.c.open(&lockedz, .{ .ACCMODE = .RDONLY });
+    if (probe >= 0) { // running as root — the hazard does not exist
+        _ = std.c.close(probe);
+        return;
+    }
+
+    // Control first: the same shape WITHOUT the hazard has to arm on this
+    // machine, or the assertion below is vacuous — a box whose descriptor
+    // budget refuses coverage never arms for reasons of its own.
+    {
+        var clean = try Tree.init(fixture.allocator(), io, "unplaceable_ctl", @intFromPtr(&fixture));
+        defer clean.deinit();
+        try clean.write("a.txt", "needle here\n");
+        var cs = try ResidentSession.init(gpa, io, &.{clean.root});
+        defer cs.deinit();
+        var cw = watch.Watcher(ResidentSession).init(gpa, io, &cs);
+        defer cw.stop();
+        cw.start();
+        if (!cs.seqlock.armed()) return;
+    }
+
+    var session = try ResidentSession.init(gpa, io, &.{tree.root});
+    defer session.deinit();
+    var watcher = watch.Watcher(ResidentSession).init(gpa, io, &session);
+    defer watcher.stop();
+    watcher.start();
+
+    // One admitted file it could not place a delivery on is enough: claiming
+    // quiescence for the REST is how an edit to a watched file goes
+    // undelivered behind an epoch that never moves, and a held answer outlives
+    // the bytes it describes.
+    try std.testing.expect(!session.seqlock.armed());
+    try std.testing.expect(!session.dirty_log.exact);
+    try std.testing.expectEqual(@as(usize, 0), watcher.held());
+    try std.testing.expect(!watcher.flushSync());
+
+    // The cost of failing closed is speed, never truth: the reconcile-always
+    // baseline still answers the disk, including an in-place edit that no
+    // watcher is there to report.
+    try truth.expectFiles(&session, &tree, gpa, "needle");
+    try advanceClock(io);
+    try tree.write("a.txt", "needle rewritten\n");
+    try truth.expectFiles(&session, &tree, gpa, "needle");
+}
+
 test "kqueue: stop() releases the watch set and the session survives it" {
     if (comptime !is_macos) return;
     const gpa = std.testing.allocator;

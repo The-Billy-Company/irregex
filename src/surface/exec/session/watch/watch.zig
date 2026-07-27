@@ -62,6 +62,10 @@
 //! enforces (`kern.maxfilesperproc`, which `getrlimit` never reports) and
 //! against a bounded share of the live system file table, so declining is
 //! predictive rather than an `EMFILE` discovered halfway through registration.
+//! A prediction over a commons is not a promise, though — a sibling arming in
+//! between spends the room it counted — so the registration itself also refuses
+//! to call an unopenable path covered: only a path that VANISHED may be skipped,
+//! and every other errno leaves the session unarmed (`coverage.vanished`).
 //! And because a watch set only earns its keep while somebody is querying, it
 //! is RELEASABLE: `shed` hands every descriptor back and returns the session to
 //! the reconcile-always baseline, `start` re-registers it. That is what lets an

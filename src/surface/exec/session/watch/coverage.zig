@@ -190,21 +190,42 @@ fn admits(self: anytype, name: []const u8, key: []const u8) bool {
     return !ig.shouldSkip(key, false, name, false, false);
 }
 
+/// Which `open(2)` failure leaves nothing to watch, and which leaves a live
+/// file with no delivery on it?
+///
+/// Only the first may be skipped. A path that vanished between listing and
+/// open has no vnode to watch at all, and its parent's membership event names
+/// it again if it returns. Every other errno — above all a spent descriptor
+/// table (`MFILE`/`NFILE`), which `budget.zig` predicts but cannot promise
+/// against a machine that moved underneath it — is a path the walk still
+/// admits and still searches, now silently uncovered.
+///
+/// That posture is the one this module may never take. An uncovered file's
+/// edits are never delivered, so the annals go on vouching an epoch that never
+/// counted them, and a HELD answer — never re-derived, trusted purely on that
+/// epoch standing still — outlives the bytes it describes. `noteUnattributable`
+/// closes that gap for a delivery that arrived unplaceable; this closes it for
+/// one that was never placed.
+fn vanished(e: std.posix.E) bool {
+    return e == .NOENT or e == .NOTDIR;
+}
+
 /// Open an `O_EVTONLY` descriptor on `path` and register its vnode filter,
 /// recording the slot its events will address. Idempotent per path (a
 /// directory re-scan re-offers entries already watched). A path that
 /// vanished between listing and open is skipped rather than failed — there
-/// is nothing left to watch, and its parent reports any return. False only
-/// when the budget is spent or a registration genuinely fails. Every mode
-/// but `.initial` notes a genuinely-new watch as a changed path (see
-/// `coverTree`).
+/// is nothing left to watch, and its parent reports any return; any OTHER
+/// open failure is a delivery this session could not place and fails closed
+/// (`vanished`). False when the budget is spent or a registration genuinely
+/// fails. Every mode but `.initial` notes a genuinely-new watch as a changed
+/// path (see `coverTree`).
 fn addWatch(self: anytype, path: []const u8, key: []const u8, is_dir: bool, comptime mode: Cover) bool {
     if (comptime !is_macos) return false;
     if (self.watch_index.contains(path)) return true;
     if (self.watches.items.len - self.free_slots.items.len >= self.budget) return false;
     const pathz = std.posix.toPosixPath(path) catch return false;
     const fd = std.c.open(&pathz, .{ .ACCMODE = .RDONLY, .EVTONLY = true, .CLOEXEC = true });
-    if (fd < 0) return true;
+    if (fd < 0) return vanished(std.posix.errno(fd));
     const owned = self.gpa.dupe(u8, path) catch {
         _ = std.c.close(fd);
         return false;
@@ -249,6 +270,29 @@ fn addWatch(self: anytype, path: []const u8, key: []const u8, is_dir: bool, comp
     // as changed while still uncovered for its next change.
     if (comptime mode != .initial) kqueue.note(self, owned, is_dir);
     return true;
+}
+
+test "coverage: only a vanished path may be skipped — everything else fails closed" {
+    const t = std.testing;
+    // The two that mean "this path, as spelled, is not there": nothing to
+    // watch, and the parent names it again if it comes back.
+    try t.expect(vanished(.NOENT));
+    try t.expect(vanished(.NOTDIR));
+    // The one this predicate exists for. `budget.zig` clamps against the
+    // ceiling Darwin enforces so registration DECLINES up front rather than
+    // meeting EMFILE partway through — but the clamp is a prediction over a
+    // commons several daemons share, and a sibling arming in between spends
+    // the room it counted. Treating that as "covered" is how a live file goes
+    // unwatched while the session vouches for it.
+    try t.expect(!vanished(.MFILE));
+    try t.expect(!vanished(.NFILE));
+    // Present, admitted, searched by the walk — and unreadable to us. Its
+    // mode can change back without a single delivery, so a held answer that
+    // omitted it would never learn otherwise.
+    try t.expect(!vanished(.ACCES));
+    try t.expect(!vanished(.PERM));
+    try t.expect(!vanished(.NOMEM));
+    try t.expect(!vanished(.INTR));
 }
 
 /// The key-space root governing `key` — "" for the implicit CWD walk, and
