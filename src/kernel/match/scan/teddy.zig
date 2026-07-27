@@ -25,7 +25,7 @@
 
 const std = @import("std");
 const bitsmod = @import("../../primitives/bits.zig");
-const lanes = @import("../regex/linear/compose/lanes.zig");
+const lanes = @import("../regex/regex.zig").compose.lanes;
 
 const V16 = lanes.Vec;
 const Lane = u16; // one bit per 16-byte-block lane

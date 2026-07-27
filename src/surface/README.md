@@ -20,12 +20,12 @@ the engines below it — the engines never import a face. `cli/` is the vocabula
 the faces are built from — argv/root/emit plumbing shared so no face forks a flag
 value, a root rule, or the JSON escaper.
 
-| Transport                       | Rung             | Job                                                                                                           |
-| ------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------- |
-| [`exec/cold/`](exec/cold)       | 1 (subprocess)   | rg-DEFAULT argv → walk → read → match → emit; serial / parallel / ranked, plus relate's cold retrieval engine |
-| [`exec/session/`](exec/session) | 2.5 (UDS daemon) | Resident corpus + index behind `gist serve`; errors, never `die()`                                            |
-| [`ffi/`](ffi)                   | 3 (in-process)   | Same session as C ABI: `irregex_open` / `irregex_search` / `irregex_close`                                    |
-| [`face/`](face)                 | product          | The three faces — `gist` · `relate` · `irregex` — verb tables, `--help`, `--schema`, NDJSON shapes            |
+| Transport                       | Rung             | Job                                                                                                                                                                                                                                                                                             |
+| ------------------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`exec/cold/`](exec/cold)       | 1 (subprocess)   | rg-DEFAULT argv → walk → read → match → emit; serial / parallel / ranked, plus relate's cold retrieval engine                                                                                                                                                                                   |
+| [`exec/session/`](exec/session) | 2.5 (UDS daemon) | Resident corpus + index behind `gist serve`; errors, never `die()`                                                                                                                                                                                                                              |
+| [`ffi/`](ffi)                   | 3 (in-process)   | Same session as C ABI: `irregex_open` / `irregex_search` / `irregex_close`                                                                                                                                                                                                                      |
+| [`face/`](face)                 | product          | The three faces — `gist` · `relate` · `irregex` — verb tables, `--help`, `--schema`, NDJSON shapes                                                                                                                                                                                              |
 | [`cli/`](cli)                   | shared           | The face vocabulary all three speak: flags, emit, manifest (verb-table declaration + dispatch + `--help` + `--schema`), grade (kinship scoring + sift), guide (stderr hints), outcome (exit codes), reprise (answer-keep caller), and primer (man page + shell completions from the same table) |
 
 ## Shared contracts across engines

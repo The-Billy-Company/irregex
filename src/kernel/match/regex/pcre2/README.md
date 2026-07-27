@@ -23,15 +23,15 @@ Hermetic sources: [`../../../../../vendor/pcre2/`](../../../../../vendor/pcre2/)
 
 ## Files
 
-| File               | Job                                                                                                                                                                                                                     |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ffi.zig`          | Minimal explicit-`extern` C-ABI surface of the vendored 8-bit library (`_8` symbols). No `@cImport`; `build.zig` links `pcre2Library`.                                                                                  |
-| `engine.zig`       | `Pcre` handle: compile (JIT + interpreter fallback), immutable shared program, per-thread `Sim` scratch, `lineMatch` / `docMatch` / `bufMatch`.                                                                          |
-| `literal.zig`      | Sound required-literal extraction for the trigram prefilter — longest ASCII run every match must contain, or `""`. Never over-claims.                                                                                    |
+| File               | Job                                                                                                                                                                                                                    |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ffi.zig`          | Minimal explicit-`extern` C-ABI surface of the vendored 8-bit library (`_8` symbols). No `@cImport`; `build.zig` links `pcre2Library`.                                                                                 |
+| `engine.zig`       | `Pcre` handle: compile (JIT + interpreter fallback), immutable shared program, per-thread `Sim` scratch, `lineMatch` / `docMatch` / `bufMatch`.                                                                        |
+| `literal.zig`      | Sound required-literal extraction for the trigram prefilter — longest ASCII run every match must contain, or `""`. Never over-claims.                                                                                  |
 | `shadow.zig`       | A linear-time **over-approximation** of a PCRE pattern, so the byte-class DFA pre-filters and PCRE2 only confirms survivors. Rewrites by erasure (assertions), splice (backrefs), and relaxation (atomics/possessive). |
-| `captures.zig`     | Capture-group bridge unified with the linear capture shape.                                                                                                                                                              |
-| `backend.zig`      | Stable module entry wiring `Pcre`/`Options`/`Span` into the engine-neutral `Matcher` seam (`../linear/ladder/matcher.zig`).                                                                                             |
-| `backend_test.zig` | Adversarial tests: lookaround, backrefs, resource ceilings, invalid UTF-8, JIT↔interpreter parity, and the shadow's gated-≡-ungated differential.                                                                       |
+| `captures.zig`     | Capture-group bridge unified with the linear capture shape.                                                                                                                                                            |
+| `backend.zig`      | Stable module entry wiring `Pcre`/`Options`/`Span` into the engine-neutral `Matcher` seam (`../linear/ladder/matcher.zig`).                                                                                            |
+| `backend_test.zig` | Adversarial tests: lookaround, backrefs, resource ceilings, invalid UTF-8, JIT↔interpreter parity, and the shadow's gated-≡-ungated differential.                                                                      |
 
 ## The shadow — linear pre-filter for backtracking patterns
 
@@ -52,8 +52,8 @@ The rewrite rules (each provably language-growing or -preserving):
 
 Anything whose containment is not trivially provable (recursion, subroutine
 calls, conditionals) **bails**: no shadow, PCRE2 runs raw exactly as before.
-Under-approximating the *rewriter* costs only speed; over-approximating the
-*language* would be a soundness bug.
+Under-approximating the _rewriter_ costs only speed; over-approximating the
+_language_ would be a soundness bug.
 
 ## Invariants
 

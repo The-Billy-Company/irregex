@@ -96,7 +96,7 @@ pub fn shardBounds(
 /// The uniform-cost sibling of `shardBounds`: `bounds.len − 1` contiguous,
 /// near-equal ranges over `n` items that each cost the same. `greedyBounds`
 /// earns its O(n) weighing sweep only where items differ in size — one
-/// suffix-array row costs exactly what its neighbour costs, so the split is
+/// suffix-array row costs exactly what its neighbor costs, so the split is
 /// arithmetic, and weighing 200M of them to discover that would cost about as
 /// much as running one of the shards.
 ///

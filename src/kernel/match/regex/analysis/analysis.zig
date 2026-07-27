@@ -228,30 +228,6 @@ pub fn pureLiterals(arena: std.mem.Allocator, node: *Node) ParseError!?[]const [
     return lits[0..count];
 }
 
-/// Preference-ranked literal facts retained for the verify dispatcher. `exact`
-/// decides the regex outright. Otherwise `cover` is only a sound candidate
-/// nomination set; `prefix`/`suffix` permit directional verification and
-/// `inner` is the strongest position-agnostic mandatory run.
-pub const LiteralPlan = struct {
-    exact: []const []const u8 = &.{},
-    cover: []const []const u8 = &.{},
-    prefix: []const u8 = "",
-    suffix: []const u8 = "",
-    inner: []const u8 = "",
-};
-
-pub fn literalPlan(arena: std.mem.Allocator, node: *Node) ParseError!LiteralPlan {
-    if (try pureLiterals(arena, node)) |exact| return .{ .exact = exact };
-    const info = try literalInfo(arena, node);
-    const cover = (try requiredAny(arena, node)) orelse &.{};
-    return .{
-        .cover = cover,
-        .prefix = info.prefix,
-        .suffix = info.suffix,
-        .inner = info.best,
-    };
-}
-
 // The class-run/span reductions, the forced-crest calculus, and the
 // compiled-NFA reachability visitors are the analysis layer's other soundness
 // contracts; they live in same-folder siblings and are re-exported here so

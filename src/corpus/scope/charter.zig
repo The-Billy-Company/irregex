@@ -85,7 +85,9 @@ pub const keys = [_][]const u8{ "roots", "skip", "types" };
 /// Why a charter was rejected. Every one of these is a loud exit rather than a
 /// shrug: a corpus declaration that half-parsed would mean searching a corpus
 /// nobody described, which is worse than not having the file.
-pub const Fault = error{
+// File-private parse vocabulary (ADR-373): these names never leave this module
+// as a public error set — `governing` exits, tests assert via global `error.X`.
+const Fault = error{
     UnknownKey,
     DuplicateKey,
     ExpectedEquals,

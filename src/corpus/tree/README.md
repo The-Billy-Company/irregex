@@ -20,16 +20,16 @@ Haystack walk, the rg-compatible ignore protocol, the stdout drain, the
 filesystem change journal, and Darwin bulk-stat metadata. Path selection lives
 beside it in `../scope/`.
 
-| File           | Role                                                                                                                                        |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| File           | Role                                                                                                                                                                 |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `corpus.zig`   | Loads non-binary files under the corpus roots, owns the process output budget, resolves the charter-aware corpus roots, and the carbon-copy tee for the answer keep. |
-| `haystack.zig` | The shared recursive `Walker`, applying `ignore.zig` plus corpus-only skip-directory policy. Wires in the committed charter's skip list.     |
-| `ignore.zig`   | Compiles gitignore / `.ignore` / `.rgignore` precedence once for gist, indexes, relate, and composed irregex.                               |
-| `drain.zig`    | The stdout drain — `line` / `block` / `relay` buffering policies that beat rg's syscall count on both ends (terminal ↔ pipe).                |
-| `bulkstat.zig` | Darwin `getattrlistbulk` batched metadata, with a portable stat fallback and one shared freshness rule (`needsLiveRead`).                   |
-| `loadpar.zig`  | Fused parallel walk+read corpus loader — work-stealing pipeline, ~3× faster than the serial fallback. Membership-parity with `haystack.Walker` by construction. |
-| `journal.zig`  | macOS FSEvents historical replay: captures a since-token at build time, replays only changed paths at amend time. Pure accelerator, never a correctness dependency. |
-| `*_test.zig`   | Pins path policy, metadata boundaries, drain syscall counts, parallel-vs-serial parity, and Darwin bulk-stat accuracy.                       |
+| `haystack.zig` | The shared recursive `Walker`, applying `ignore.zig` plus corpus-only skip-directory policy. Wires in the committed charter's skip list.                             |
+| `ignore.zig`   | Compiles gitignore / `.ignore` / `.rgignore` precedence once for gist, indexes, relate, and composed irregex.                                                        |
+| `drain.zig`    | The stdout drain — `line` / `block` / `relay` buffering policies that beat rg's syscall count on both ends (terminal ↔ pipe).                                        |
+| `bulkstat.zig` | Darwin `getattrlistbulk` batched metadata, with a portable stat fallback and one shared freshness rule (`needsLiveRead`).                                            |
+| `loadpar.zig`  | Fused parallel walk+read corpus loader — work-stealing pipeline, ~3× faster than the serial fallback. Membership-parity with `haystack.Walker` by construction.      |
+| `journal.zig`  | macOS FSEvents historical replay: captures a since-token at build time, replays only changed paths at amend time. Pure accelerator, never a correctness dependency.  |
+| `*_test.zig`   | Pins path policy, metadata boundaries, drain syscall counts, parallel-vs-serial parity, and Darwin bulk-stat accuracy.                                               |
 
 ## Local-filesystem freshness model
 

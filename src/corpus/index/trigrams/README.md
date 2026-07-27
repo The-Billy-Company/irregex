@@ -30,23 +30,23 @@ verified away; false negatives impossible for literals ≥ 3 bytes.
 
 ## Files
 
-| File                    | Job                                                                                          |
-| ----------------------- | -------------------------------------------------------------------------------------------- |
-| `ngram.zig`             | Extract distinct ascending trigrams from a byte slice                                        |
-| `trigram.zig`           | In-memory `Index`: build, rarest-first intersect, query                                      |
-| `persist.zig`           | Zero-copy `mmap` load / publish of the CSR posting blob; codicil-layered query (`queryLiteral` / `queryAny` = base ∪ codicil ∪ tombstones) |
-| `fresh.zig`             | Wall-clock mtime/ctime freshness overlay vs build anchor                                     |
-| `sweep.zig`             | Self-balancing, work-stealing metadata walk for the freshness overlay — BFS breadth-expansion feeding a thread pool |
-| `codicil.zig`           | Incremental amendment to a published generation — re-indexes only changed files (LSM-style delta segment), fused with the T3 freshness walk |
+| File                    | Job                                                                                                                                                   |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ngram.zig`             | Extract distinct ascending trigrams from a byte slice                                                                                                 |
+| `trigram.zig`           | In-memory `Index`: build, rarest-first intersect, query                                                                                               |
+| `persist.zig`           | Zero-copy `mmap` load / publish of the CSR posting blob; codicil-layered query (`queryLiteral` / `queryAny` = base ∪ codicil ∪ tombstones)            |
+| `fresh.zig`             | Wall-clock mtime/ctime freshness overlay vs build anchor                                                                                              |
+| `sweep.zig`             | Self-balancing, work-stealing metadata walk for the freshness overlay — BFS breadth-expansion feeding a thread pool                                   |
+| `codicil.zig`           | Incremental amendment to a published generation — re-indexes only changed files (LSM-style delta segment), fused with the T3 freshness walk           |
 | `lapse.zig`             | Retention: retires the generations a publish superseded, fenced against builds in flight (published id, newer ids, a grace window, a survivor window) |
-| `codicil_test.zig`      | Adversarial codicil round-trip + layered query suite                                         |
-| `lapse_test.zig`        | Retention fences, each asserted alone, plus batch bounding                                   |
-| `ngram_test.zig`        | Trigram extraction parity + edge cases                                                       |
-| `trigram_test.zig`      | Index candidate-set correctness vs naive scan oracle                                         |
-| `persist_test.zig`      | Blob round-trip, corruption refusal, generation-atomic publish parity                        |
-| `fresh_test.zig`        | Freshness overlay: anchor boundary, missing timestamps, fail-closed cases                    |
-| `trigram_fuzz.zig`      | Fuzz harness for trigram extraction                                                          |
-| `trigram_load_test.zig` | End-to-end load-time validation of persisted blobs                                           |
+| `codicil_test.zig`      | Adversarial codicil round-trip + layered query suite                                                                                                  |
+| `lapse_test.zig`        | Retention fences, each asserted alone, plus batch bounding                                                                                            |
+| `ngram_test.zig`        | Trigram extraction parity + edge cases                                                                                                                |
+| `trigram_test.zig`      | Index candidate-set correctness vs naive scan oracle                                                                                                  |
+| `persist_test.zig`      | Blob round-trip, corruption refusal, generation-atomic publish parity                                                                                 |
+| `fresh_test.zig`        | Freshness overlay: anchor boundary, missing timestamps, fail-closed cases                                                                             |
+| `trigram_fuzz.zig`      | Fuzz harness for trigram extraction                                                                                                                   |
+| `trigram_load_test.zig` | End-to-end load-time validation of persisted blobs                                                                                                    |
 
 Codecs live in [`../postings/`](../postings). Crest sidecar (literal-free
 class runs) lives in [`../crest/`](../crest).
@@ -66,7 +66,7 @@ class runs) lives in [`../crest/`](../crest).
   blobs forward rather than referencing them, so no generation is reachable
   from another and retiring a superseded one cannot make the live pair
   incomplete. Retention is a disk-space tier, never correctness — every fence
-  it applies is about not disturbing a *concurrent* build, and a failed removal
+  it applies is about not disturbing a _concurrent_ build, and a failed removal
   is spared, never propagated into a publish.
 
 ## When to edit

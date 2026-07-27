@@ -38,14 +38,14 @@ filters while walking the whole tree).
 
 ## Files
 
-| File               | Job                                                                                                      |
-| ------------------ | -------------------------------------------------------------------------------------------------------- |
-| `glob.zig`         | Gitignore-shaped glob matching (`*` per-segment, `**` across `/`, `!`-exclude) + `PathFilter`            |
-| `paths.zig`        | Shared path normalization, joining, depth, ASCII-fold helpers, and the single OOM diagnostic              |
-| `types.zig`        | Language → extension/filename table (`-t go` / `py` / `rust` / …) with `extsForType` / `isKnownType`    |
+| File               | Job                                                                                                                                                                                                                              |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `glob.zig`         | Gitignore-shaped glob matching (`*` per-segment, `**` across `/`, `!`-exclude) + `PathFilter`                                                                                                                                    |
+| `paths.zig`        | Shared path normalization, joining, depth, ASCII-fold helpers, and the single OOM diagnostic                                                                                                                                     |
+| `types.zig`        | Language → extension/filename table (`-t go` / `py` / `rust` / …) with `extsForType` / `isKnownType`                                                                                                                             |
 | `charter.zig`      | `.irregex.toml` — the committed corpus declaration (roots, skip, types). Discovered from the working directory upward, resolved once per process, ceilinged at `Reach.corpus` facts. Strict TOML subset parser with loud faults. |
-| `misread.zig`      | How either persisted configuration file reports being misread: the located `Diagnostic`, the shy Damerau–Levenshtein "did you mean", and the token copy that outlives the source buffer |
-| `charter_test.zig` | Adverse tests: every malformed declaration must be refused, never half-applied                            |
+| `misread.zig`      | How either persisted configuration file reports being misread: the located `Diagnostic`, the shy Damerau–Levenshtein "did you mean", and the token copy that outlives the source buffer                                          |
+| `charter_test.zig` | Adverse tests: every malformed declaration must be refused, never half-applied                                                                                                                                                   |
 
 ## The charter
 

@@ -17,7 +17,6 @@ const ward = @import("../../kernel/primitives/ward.zig");
 /// `drain.zig`. Re-exported here because `writeStdout` is the seam every
 /// caller already knows, and the policy is a property of that seam.
 pub const StdoutPolicy = drain.Policy;
-pub const default_stdout_buffer: usize = drain.default_capacity;
 
 pub const per_file_cap: usize = 4 << 20; // 4 MiB
 

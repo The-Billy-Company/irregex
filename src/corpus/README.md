@@ -14,10 +14,10 @@ pre-chewed forms. This tier knows **nothing** about matching, ranking,
 transports, or CLI presentation — both engines and every surface transport
 share it so walk policy cannot fork.
 
-| Package           | Owns                                                                                                                                    |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| [`tree/`](tree)   | Corpus loading (serial + fused parallel), the Haystack walk, the gitignore boundary, the stdout drain, Darwin bulk-stat, and the FSEvents change journal |
-| [`scope/`](scope) | `-g` glob + `-t` language-type tables + the committed charter (`.irregex.toml`) shared by cold and resident execution                   |
+| Package           | Owns                                                                                                                                                        |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`tree/`](tree)   | Corpus loading (serial + fused parallel), the Haystack walk, the gitignore boundary, the stdout drain, Darwin bulk-stat, and the FSEvents change journal    |
+| [`scope/`](scope) | `-g` glob + `-t` language-type tables + the committed charter (`.irregex.toml`) shared by cold and resident execution                                       |
 | [`index/`](index) | Persisted artifacts — trigram postings, codicil amendments, the warm atlas, fragment index, codex/crest sidecars — that accelerate but never change answers |
 
 ## Why it exists

@@ -28,10 +28,10 @@ concede. Together they elide more `open(2)`s without changing answers.
 
 ## Files
 
-| File               | Job                                                                 |
-| ------------------ | ------------------------------------------------------------------- |
+| File               | Job                                                                            |
+| ------------------ | ------------------------------------------------------------------------------ |
 | `sidecar.zig`      | Codec (`writeInto` / `decode` / `verify`, fail-closed) + parallel `build` pass |
-| `sidecar_test.zig` | Round-trip identity + adversarial malformed-blob suite              |
+| `sidecar_test.zig` | Round-trip identity + adversarial malformed-blob suite                         |
 
 ## Format v3
 

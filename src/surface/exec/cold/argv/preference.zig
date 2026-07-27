@@ -58,7 +58,9 @@ pub const Preferences = struct {
     }
 };
 
-pub const Fault = error{
+// File-private parse vocabulary (ADR-373): these names never leave this module
+// as a public error set — the run exits, tests assert via global `error.X`.
+const Fault = error{
     UnknownFlag,
     NotPersistable,
     ExpectedFlag,

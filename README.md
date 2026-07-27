@@ -238,14 +238,14 @@ per-shell `GIST_ROOTS` nobody else on the team has, and extra skip directories
 were `<GIST_DIR>/skips.list` inside a gitignored artifact directory that every
 cache clear deletes. Both are everyone's, and both now
 travel with the clone. The file is ceilinged at **corpus** reach (below): a
-shared file may say what the repository *is*, and may never quietly change what
+shared file may say what the repository _is_, and may never quietly change what
 matches for the people who clone it.
 
 **`$XDG_CONFIG_HOME/gist/preferences` — machine-local, never committed.**
 (`$GIST_PREFERENCES` overrides the location; `~/.config` is the fallback.) Flag
 lines, one flag per line, prepended to argv so anything typed still wins:
 
-```
+```text
 --heading
 -n
 --glob '!vendor/*'      # quotes are quotes, not glob characters
@@ -268,8 +268,8 @@ one preference that has to work in every face, since `relate` and `irregex`
 share no flag struct with `gist`. Its value names a posture (`auto` · `always` ·
 `never`), a destination (`vscode`, `zed`, `kitty`, … or a literal
 `app://…{path}:{line}` format), or both as a `WHEN,WHERE` pair — so
-`GIST_HYPERLINK=vscode` in a profile says *where* and leaves the terminal probe
-to say *whether*, and `always,vscode` overrides the probe too. Default `auto`
+`GIST_HYPERLINK=vscode` in a profile says _where_ and leaves the terminal probe
+to say _whether_, and `always,vscode` overrides the probe too. Default `auto`
 links only what a person is reading in an emulator known to render OSC-8; a
 pipe, a redirect, `--json`, and NUL-framed `-0` output stay plain bytes, the
 last two no matter what any posture says. `GIST_TRACE=link` prints the one-line
@@ -289,13 +289,13 @@ standing advice for a surprising result is "try `--no-config`" — bisection
 standing in for introspection. Persisted state earns introspection or it should
 not be persisted:
 
-| Command | Answers |
-|---|---|
-| `gist config` | The resolved stack — each layer's path, what it declares, whether it is in force, and any `GIST_ROOTS`/`GIST_SKIP` in your shell that outranks the committed file. `--json` for the machine. |
-| `gist config check` | Is what I wrote valid, **without** running a search. Reports both layers before exiting (2 if either is malformed), so fixing a file takes one pass rather than one run per mistake. |
-| `gist config init` | Writes `.irregex.toml` prefilled from what this machine already carries — `GIST_ROOTS`, `skips.list` — so the migration is not "learn the format". `--write` creates it. It lifts only facts you asserted and **never infers a skip from the shape of the tree**: a guessed skip silently hides files, which is the failure the whole layer exists to prevent. |
+| Command             | Answers                                                                                                                                                                                                                                                                                                                                                        |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `gist config`       | The resolved stack — each layer's path, what it declares, whether it is in force, and any `GIST_ROOTS`/`GIST_SKIP` in your shell that outranks the committed file. `--json` for the machine.                                                                                                                                                                   |
+| `gist config check` | Is what I wrote valid, **without** running a search. Reports both layers before exiting (2 if either is malformed), so fixing a file takes one pass rather than one run per mistake.                                                                                                                                                                           |
+| `gist config init`  | Writes `.irregex.toml` prefilled from what this machine already carries — `GIST_ROOTS`, `skips.list` — so the migration is not "learn the format". `--write` creates it. It lifts only facts you asserted and **never infers a skip from the shape of the tree**: a guessed skip silently hides files, which is the failure the whole layer exists to prevent. |
 
-```
+```text
 $ gist config
 corpus — what this tree is (committed, applies to everyone)
   ../../.irregex.toml                     # found by climbing; roots are relative to IT
@@ -317,8 +317,7 @@ see what is on disk, and the one command whose job is introspection declining to
 introspect would reproduce the defect this verb exists to repair.
 
 Faults in either file are **located and quoted**, with a nearest-name guess when
-one is worth making (`gist: .irregex.toml:3: unknown key` / `gist: try
-`roots = [...]` — `rootz` is not a charter key`). A malformed **charter** is
+one is worth making (`gist: .irregex.toml:3: unknown key` / "gist: try `roots = [...]` — `rootz` is not a charter key"). A malformed **charter** is
 fatal to any search, because a corpus nobody described is worse than no file at
 all. A malformed **preferences** file is fatal only to a run that would actually
 have used it: a pipe, a script, and an agent never open it, so one person's typo

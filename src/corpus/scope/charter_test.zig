@@ -120,38 +120,38 @@ test "the two recognized escapes survive, and no others are invented" {
     defer c.deinit(t.allocator);
     try t.expectEqualStrings("say \"hi\"", c.skip[0]);
     try t.expectEqualStrings("back\\slash", c.skip[1]);
-    try refuses("skip = [\"tab\\there\"]", charter.Fault.BadEscape);
+    try refuses("skip = [\"tab\\there\"]", error.BadEscape);
 }
 
 test "malformed declarations are refused, never half-applied" {
-    try refuses("generated = [\"*.gen.ts\"]", charter.Fault.UnknownKey);
-    try refuses("root = [\"a\"]", charter.Fault.UnknownKey);
-    try refuses("skip = [\"a\"]\nskip = [\"b\"]", charter.Fault.DuplicateKey);
-    try refuses("roots [\"a\"]", charter.Fault.ExpectedEquals);
-    try refuses("roots =", charter.Fault.ExpectedValue);
-    try refuses("roots = [\"a\"", charter.Fault.ExpectedValue);
-    try refuses("roots = [\"a\n]", charter.Fault.UnterminatedString);
-    try refuses("skip = [\"\"]", charter.Fault.EmptyValue);
+    try refuses("generated = [\"*.gen.ts\"]", error.UnknownKey);
+    try refuses("root = [\"a\"]", error.UnknownKey);
+    try refuses("skip = [\"a\"]\nskip = [\"b\"]", error.DuplicateKey);
+    try refuses("roots [\"a\"]", error.ExpectedEquals);
+    try refuses("roots =", error.ExpectedValue);
+    try refuses("roots = [\"a\"", error.ExpectedValue);
+    try refuses("roots = [\"a\n]", error.UnterminatedString);
+    try refuses("skip = [\"\"]", error.EmptyValue);
 }
 
 test "an unquoted value is refused rather than guessed at" {
     // The single most common way a TOML-shaped file gets written by hand. Left
     // lenient it would silently accept `roots = services` as something; the
     // charter would rather be unreadable than creatively interpreted.
-    try refuses("roots = services", charter.Fault.ExpectedValue);
-    try refuses("roots = [services]", charter.Fault.ExpectedValue);
-    try refuses("skip = true", charter.Fault.ExpectedValue);
+    try refuses("roots = services", error.ExpectedValue);
+    try refuses("roots = [services]", error.ExpectedValue);
+    try refuses("skip = true", error.ExpectedValue);
 }
 
 test "trailing garbage after a complete declaration is a fault" {
-    try refuses("roots = [\"a\"]\nnonsense", charter.Fault.ExpectedEquals);
-    try refuses("roots = [\"a\"]\n]", charter.Fault.ExpectedValue);
+    try refuses("roots = [\"a\"]\nnonsense", error.ExpectedEquals);
+    try refuses("roots = [\"a\"]\n]", error.ExpectedValue);
 }
 
 test "a fault says which line, so a long charter is not a hunt" {
-    try refusesAt("roots = [\"a\"]\ngenerated = [\"x\"]", charter.Fault.UnknownKey, 2, "generated");
-    try refusesAt("# a comment\n\nskip = [\"a\"]\nskip = [\"b\"]", charter.Fault.DuplicateKey, 4, "skip");
-    try refusesAt("roots = [\"a\"]\nskip  = [\"b\n]", charter.Fault.UnterminatedString, 2, "skip");
+    try refusesAt("roots = [\"a\"]\ngenerated = [\"x\"]", error.UnknownKey, 2, "generated");
+    try refusesAt("# a comment\n\nskip = [\"a\"]\nskip = [\"b\"]", error.DuplicateKey, 4, "skip");
+    try refusesAt("roots = [\"a\"]\nskip  = [\"b\n]", error.UnterminatedString, 2, "skip");
 }
 
 test "only a fault about a NAME is answered with a name" {
@@ -159,14 +159,14 @@ test "only a fault about a NAME is answered with a name" {
     // perfectly legal key. Pairing "nearest" with the caller's own idea of
     // which faults are name faults produced `try `skip` — `skip` is not a
     // charter key`, so the gate lives with the fault, not at the call site.
-    try t.expectEqualStrings("roots", charter.didYouMean(charter.Fault.UnknownKey, "rotos").?);
+    try t.expectEqualStrings("roots", charter.didYouMean(error.UnknownKey, "rotos").?);
     for ([_]anyerror{
-        charter.Fault.UnterminatedString,
-        charter.Fault.DuplicateKey,
-        charter.Fault.ExpectedEquals,
-        charter.Fault.ExpectedValue,
-        charter.Fault.EmptyValue,
-        charter.Fault.Oversized,
+        error.UnterminatedString,
+        error.DuplicateKey,
+        error.ExpectedEquals,
+        error.ExpectedValue,
+        error.EmptyValue,
+        error.Oversized,
     }) |e| try t.expectEqual(@as(?[]const u8, null), charter.didYouMean(e, "skip"));
 }
 

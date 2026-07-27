@@ -4,4 +4,4 @@ The codex FM-index now builds its suffix array with **libsais 2.10.2**, pinned a
 
 `build.zig` grew a **vendored C floor** to hold both libraries without a second copy of the wiring: one declarative row per archive (name, include path, sources, feature flags) and a single `Floor.under(module)` that links libc plus every archive at that module's own optimize, memoized per mode so the modules sharing a mode share one build of it. Admitting a third vendored library is now a row, not a call-site sweep.
 
-What this did *not* buy is worth recording too. The sort fell from 74% of the codex build to 46%, so even a free suffix sort would leave 3.8 s at 200 MB before the shelf's ~2 s of concatenation and serialization — `relate index --shelf` stays opt-in, and the next pole is the wavelet/RRR construction, not suffix sorting.
+What this did _not_ buy is worth recording too. The sort fell from 74% of the codex build to 46%, so even a free suffix sort would leave 3.8 s at 200 MB before the shelf's ~2 s of concatenation and serialization — `relate index --shelf` stays opt-in, and the next pole is the wavelet/RRR construction, not suffix sorting.

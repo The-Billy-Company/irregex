@@ -24,10 +24,13 @@ const Edge = struct {
     sibling: u32,
 };
 
-pub const BuildError = std.mem.Allocator.Error || error{
+// Cap refusals stay file-private (ADR-373); `BuildError` unions them so callers
+// see one set without minting a second public spelling of the same facts.
+const Cap = error{
     TooManyLiterals,
     LiteralBytesExceeded,
 };
+pub const BuildError = std.mem.Allocator.Error || Cap;
 
 /// Immutable sparse automaton. It borrows no input literals after `build`.
 pub const Aho = struct {
@@ -38,11 +41,11 @@ pub const Aho = struct {
     max_len: usize,
 
     pub fn build(allocator: std.mem.Allocator, needles: []const []const u8) BuildError!Aho {
-        if (needles.len > max_literals) return error.TooManyLiterals;
+        if (needles.len > max_literals) return Cap.TooManyLiterals;
         var bytes: usize = 0;
         for (needles) |needle|
-            bytes = std.math.add(usize, bytes, needle.len) catch return error.LiteralBytesExceeded;
-        if (bytes > max_literal_bytes) return error.LiteralBytesExceeded;
+            bytes = std.math.add(usize, bytes, needle.len) catch return Cap.LiteralBytesExceeded;
+        if (bytes > max_literal_bytes) return Cap.LiteralBytesExceeded;
 
         var nodes: std.ArrayList(Node) = .empty;
         defer nodes.deinit(allocator);

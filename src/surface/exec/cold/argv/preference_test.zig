@@ -89,24 +89,24 @@ test "attached and bundled spellings pass the catalog" {
 }
 
 test "a typo is refused at read time, not diagnosed as bad results" {
-    try refuses("--headding", preference.Fault.UnknownFlag);
-    try refuses("--max-colums=200", preference.Fault.UnknownFlag);
-    try refuses("-Z", preference.Fault.UnknownFlag);
-    try refuses("-iZ", preference.Fault.UnknownFlag);
+    try refuses("--headding", error.UnknownFlag);
+    try refuses("--max-colums=200", error.UnknownFlag);
+    try refuses("-Z", error.UnknownFlag);
+    try refuses("-iZ", error.UnknownFlag);
 }
 
 test "a bare word cannot become every run's search pattern" {
     // The worst failure mode of a persisted argv file: a stray word silently
     // becomes the pattern (or an extra path) for every invocation forever.
-    try refuses("smart-case", preference.Fault.ExpectedFlag);
-    try refuses("foo --heading", preference.Fault.ExpectedFlag);
-    try refuses("--", preference.Fault.ExpectedFlag);
+    try refuses("smart-case", error.ExpectedFlag);
+    try refuses("foo --heading", error.ExpectedFlag);
+    try refuses("--", error.ExpectedFlag);
 }
 
 test "an unterminated quote is an error, not a swallowed line" {
-    try refuses("--glob 'unclosed", preference.Fault.UnterminatedQuote);
-    try refuses("--glob \"unclosed", preference.Fault.UnterminatedQuote);
-    try refuses("--glob trailing\\", preference.Fault.UnterminatedQuote);
+    try refuses("--glob 'unclosed", error.UnterminatedQuote);
+    try refuses("--glob \"unclosed", error.UnterminatedQuote);
+    try refuses("--glob trailing\\", error.UnterminatedQuote);
 }
 
 test "reach decides whether the file can change the answer" {
@@ -128,7 +128,7 @@ test "reach decides whether the file can change the answer" {
 test "a flag that fails loud when typed cannot be persisted quietly" {
     // `--no-config`'s whole job is to disable this file; persisting it is
     // either a no-op or a lie, so the catalog's null reach refuses it.
-    try refuses("--no-config", preference.Fault.NotPersistable);
+    try refuses("--no-config", error.NotPersistable);
 }
 
 test "an empty file is a valid file with nothing in it" {
@@ -140,10 +140,10 @@ test "a fault names the line and the word, not just the file" {
     // ripgrep's equivalent failure is no message at all — the flag is passed
     // through and the search simply behaves oddly. Naming the file was the
     // first repair; naming the LINE is what makes a 20-line file fixable.
-    try refusesAt("--heading\n-n\n--headnig\n", preference.Fault.UnknownFlag, 3, "--headnig");
-    try refusesAt("--heading\nsmart-case\n", preference.Fault.ExpectedFlag, 2, "smart-case");
-    try refusesAt("--glob 'unclosed\n", preference.Fault.UnterminatedQuote, 1, "--glob");
-    try refusesAt("--heading\n--no-config\n", preference.Fault.NotPersistable, 2, "--no-config");
+    try refusesAt("--heading\n-n\n--headnig\n", error.UnknownFlag, 3, "--headnig");
+    try refusesAt("--heading\nsmart-case\n", error.ExpectedFlag, 2, "smart-case");
+    try refusesAt("--glob 'unclosed\n", error.UnterminatedQuote, 1, "--glob");
+    try refusesAt("--heading\n--no-config\n", error.NotPersistable, 2, "--no-config");
 }
 
 test "a typo'd flag is guessed at from the live catalog" {
@@ -167,12 +167,12 @@ test "only a fault about a NAME is answered with a name" {
     // a perfectly legal flag. Pairing "nearest" with the caller's own idea of
     // which faults are name faults produced `try --glob — '--glob' is not a
     // flag gist knows`, so the gate lives with the fault, not at the call site.
-    try t.expectEqualStrings("heading", preference.didYouMean(preference.Fault.UnknownFlag, "--headnig").?);
+    try t.expectEqualStrings("heading", preference.didYouMean(error.UnknownFlag, "--headnig").?);
     for ([_]anyerror{
-        preference.Fault.UnterminatedQuote,
-        preference.Fault.ExpectedFlag,
-        preference.Fault.NotPersistable,
-        preference.Fault.TooManyTokens,
-        preference.Fault.Oversized,
+        error.UnterminatedQuote,
+        error.ExpectedFlag,
+        error.NotPersistable,
+        error.TooManyTokens,
+        error.Oversized,
     }) |e| try t.expectEqual(@as(?[]const u8, null), preference.didYouMean(e, "--heading"));
 }

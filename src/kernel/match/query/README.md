@@ -9,7 +9,7 @@ doc_radar:
       contains: ["pub fn regexPrefilter", "pub fn foldClosedWindow", "pub fn caselessVariants"]
     - description: "the -w rule is a post-match predicate over the shared word oracle"
       file: pkg/kernels/irregex/src/kernel/match/query/word.zig
-      contains: ["pub fn wordOk"]
+      contains: ["pub const wordOk"]
 ---
 
 # match/query — a search intent, compiled

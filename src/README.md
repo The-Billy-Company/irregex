@@ -223,8 +223,8 @@ three speak (`flags` + `emit`) so no face forks a flag value or the JSON escaper
 | Folder                  | Concern                                                                                                                                                                                          |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `surface/face/gist/`    | the `gist` binary: entrypoint, `--schema`, `index`/`status`/`serve`/`codex` lifecycle, and the unified search engine (rg-DEFAULT drop-in) over `kernel/`, plus the daemon client/serve transport |
-| `surface/face/relate/`  | the `relate` binary: thin dispatch (`main.zig`) over the `similar`/`echoes`/`pack`/`quote`/`patterns` query verbs + `index`/`status` lifecycle, with its own `--schema` manifest                   |
-| `surface/face/irregex/` | the `irregex` binary: composed verbs (`provenance` · `blast`) driving `kernel/compose/`, needing CURRENT bytes rather than a narrowing                                                            |
+| `surface/face/relate/`  | the `relate` binary: thin dispatch (`main.zig`) over the `similar`/`echoes`/`pack`/`quote`/`patterns` query verbs + `index`/`status` lifecycle, with its own `--schema` manifest                 |
+| `surface/face/irregex/` | the `irregex` binary: composed verbs (`provenance` · `blast`) driving `kernel/compose/`, needing CURRENT bytes rather than a narrowing                                                           |
 
 Faces stay thin on purpose: argv classification and output shaping live here;
 every match decision, prefilter, and index consultation happens in the layers

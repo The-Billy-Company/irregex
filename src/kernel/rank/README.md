@@ -14,11 +14,11 @@ identical call sites. This is the shape `rg` cannot express — `gist --rank`.
 
 ## Files
 
-| File          | Job                                                                                                                                   |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `rank.zig`    | Weighted **Reciprocal Rank Fusion** (Cormack et al. 2009) over the signals below; emits `path:line [def\|use\|gen\|mirror] ×n <line>` |
+| File          | Job                                                                                                                                                                                    |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `rank.zig`    | Weighted **Reciprocal Rank Fusion** (Cormack et al. 2009) over the signals below; emits `path:line [def\|use\|gen\|mirror] ×n <line>`                                                  |
 | `signals.zig` | Language-agnostic byte features: `declarationConfidence` (structural decl detection), `isGenerated` (codegen demotion), `shapeFingerprint` (normalized match-line geometry for rarity) |
-| `mirror.zig`  | Cache/VCS snapshot classification, byte fingerprints, exact canonical-duplicate resolution                                            |
+| `mirror.zig`  | Cache/VCS snapshot classification, byte fingerprints, exact canonical-duplicate resolution                                                                                             |
 
 ## Signals
 

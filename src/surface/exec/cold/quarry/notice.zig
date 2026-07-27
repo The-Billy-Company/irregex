@@ -64,8 +64,7 @@ pub fn printLoopError(link: []const u8, ancestor: []const u8) void {
 /// "it can otherwise be noisy when it is intended that there is nothing to
 /// search"). Both engines print through here so the wording cannot drift.
 pub fn printNothingSearched() void {
-    assay.note(
-        .corpus,
+    assay.note(.corpus,
         \\gist: No files were searched, which means gist probably applied a filter you didn't expect.
         \\gist: try -uu (fold hidden + gitignored files in), or `gist --files` to see what the walk admits.
         \\
