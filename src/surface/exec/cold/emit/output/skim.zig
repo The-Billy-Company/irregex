@@ -52,7 +52,7 @@ fn emitMatchesLit(self: *Emitter, lits: []const []const u8, path: []const u8, li
     while (litNextSpan(lits, mv, from)) |span| {
         from = span.end;
         self.prefix(path, lineno, span.start + 1, self.offOf(line) + span.start, true);
-        self.paint(palette.match_on, line[span.start..span.end]);
+        self.paint(self.o.palette.match, line[span.start..span.end]);
         self.add(self.o.outTerm());
         n += 1;
     }

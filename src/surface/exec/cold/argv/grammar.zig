@@ -67,6 +67,22 @@ fn noteGrepStyleReplace(v: []const u8) void {
     );
 }
 
+/// The `--hyperlink vscode` footgun, the same shape as `-rn` above: rg spells
+/// this flag `--hyperlink-format vscode`, so that spacing arrives as muscle
+/// memory — but gist's `--hyperlink` reads its value inline (a bare one must
+/// leave the next token to be the pattern), and the destination silently
+/// becomes the search. Behavior is untouched; this only says what happened,
+/// because a hyperlink layer that links somewhere unasked and stays quiet is
+/// the exact failure it was built to remove.
+fn noteMisspacedHyperlink(pat: []const u8) void {
+    if (!beacon.misspaced(pat)) return;
+    if (builtin.is_test) return;
+    assay.diag(
+        "gist: note: --hyperlink takes its value inline, so '{s}' was read as the PATTERN. Write --hyperlink={s} (or ripgrep's --hyperlink-format {s}).\n",
+        .{ pat, pat, pat },
+    );
+}
+
 /// Where a flag's value comes from: a short bundle's tail / next argv token,
 /// or a long flag's inline `=value` / next argv token. `take` consumes it;
 /// `consumed` tells the short-bundle loop the value ate the rest of the token.
@@ -198,12 +214,20 @@ fn apply(b: *Builder, action: Act, v: *ValSrc) void {
         .hyperlink => |how| switch (how) {
             .off => o.hyperlink = .never,
             .flag, .format => {
-                const w = beacon.wish(b.a, if (how == .format) v.take() else v.inl orelse "always");
+                o.hyperlink_bare = how == .flag and v.inl == null;
+                const value = if (how == .format) v.take() else v.inl orelse "always";
+                // An empty value WRITTEN OUT is the empty destination — the same
+                // thing the `none` alias resolves to. Only a standing preference
+                // (`GIST_HYPERLINK=`) may read empty as "no opinion"; a flag is
+                // an act, and rg spells this very act `--hyperlink-format=''`.
+                const w = if (value.len == 0) beacon.Wish{ .format = "" } else beacon.wish(b.a, value);
                 if (w.bad) |msg| die("gist: error parsing flag --{s}: {s}\n", .{ v.name, msg });
                 if (w.format) |f| o.hyperlink_format = f;
                 // A destination named alone is a request to link; the pair form
                 // (`auto,vscode`) is how you name one and still ask the probe.
-                o.hyperlink = w.when orelse .always;
+                // Nowhere to point is the one destination that cannot be a link.
+                const nowhere = if (w.format) |f| f.len == 0 else false;
+                o.hyperlink = if (nowhere) .never else w.when orelse .always;
             },
         },
         .encoding => {
@@ -224,9 +248,14 @@ fn apply(b: *Builder, action: Act, v: *ValSrc) void {
         // block is enough to ask for one: naming a ceiling and then not getting
         // block buffering would be a silently ignored flag.
         .buffered => |mode| o.buffering = mode,
+        // A size composes with whichever cadence is in force — the line policy
+        // holds an unterminated tail, and this is that tail's ceiling too. The
+        // exception is zero: a buffer that can hold nothing is not a small
+        // buffer, it is no buffer, so it names the cadence outright (and a
+        // later --line-buffered still overrides it, like every other pair).
         .bufsize => {
             o.buffer_size = verdict.toBytes(v.take());
-            if (o.buffering == .auto) o.buffering = .block;
+            if (o.buffer_size == 0) o.buffering = .off else if (o.buffering == .auto) o.buffering = .block;
         },
         // -p/--pretty is rg's alias for --color always --heading --line-number.
         // The line number goes through `b.locus`, not `o.line_num`, so a later
@@ -247,8 +276,12 @@ fn apply(b: *Builder, action: Act, v: *ValSrc) void {
         .engine => o.engine = enumOrDie(Engine, "bad --engine value: {s} (expected default, pcre2, or auto)\n", v.take()),
         .noop, .no_config => {},
         .noop_val => _ = v.take(),
-        .colors => if (color.validateColorSpec(v.take())) |msg|
-            die("gist: error parsing flag --colors: {s}\n", .{msg}),
+        .colors => {
+            const spec = v.take();
+            if (color.validateColorSpec(spec)) |msg|
+                die("gist: error parsing flag --colors: {s}\n", .{msg});
+            b.color_specs.append(b.a, spec) catch oom();
+        },
         .unsupported => switch (v.mode) {
             .short => die("-{c} unsupported by design — use ripgrep for this\n", .{v.arg[v.j]}),
             .long => die("--{s} unsupported by design — use ripgrep for this\n", .{v.name}),
@@ -311,6 +344,7 @@ pub fn parseArgv(a: std.mem.Allocator, args: []const []const u8) Parsed {
     } else if (b.pat == null and b.pat_files.items.len == 0) {
         die("usage: rg [flags] <pattern> [PATH...]\n", .{});
     }
+    if (b.o.hyperlink_bare) if (b.pat) |p0| noteMisspacedHyperlink(p0);
     // Assemble the in-argv patterns (bare / -e / --regexp); pattern FILES are read
     // later by the caller (needs IO) and appended there.
     var pats: std.ArrayList([]const u8) = .empty;
@@ -453,6 +487,13 @@ test "buffering is one last-wins choice, and a named size asks for a block" {
     try t.expectEqual(Buffering.block, sized.opts.buffering);
     // …but it never overrides a cadence the user spelled out.
     try t.expectEqual(Buffering.line, parseArgv(ta, &.{ "--line-buffered", "--buffer-size", "8192", "x" }).opts.buffering);
+
+    // Zero is the exception, because it is not a size: a buffer that can hold
+    // nothing is no buffer, so it names the cadence — over a cadence already
+    // spelled, and under one spelled after it (last-wins, like every pair).
+    try t.expectEqual(Buffering.off, parseArgv(ta, &.{ "--buffer-size=0", "x" }).opts.buffering);
+    try t.expectEqual(Buffering.off, parseArgv(ta, &.{ "--line-buffered", "--buffer-size=0", "x" }).opts.buffering);
+    try t.expectEqual(Buffering.line, parseArgv(ta, &.{ "--buffer-size=0", "--line-buffered", "x" }).opts.buffering);
 }
 
 test "-p/--pretty sets three defaults that a later flag still outranks" {
@@ -474,6 +515,19 @@ test "--plain is the pipe pole: no color, no tty guard, coalesced" {
     // It picks a cadence only when none was asked for.
     try t.expectEqual(intent.Buffering.line, parseArgv(ta, &.{ "--line-buffered", "--plain", "x" }).opts.buffering);
     try t.expect(!parseArgv(ta, &.{"x"}).opts.plain);
+}
+
+test "an empty hyperlink value is the none alias, not a request to link" {
+    // rg's `--hyperlink-format=''` disables hyperlinks. gist read empty as "no
+    // preference" — the right reading for GIST_HYPERLINK= in a profile, the
+    // wrong one for a flag, which promoted it to `always` with the DEFAULT
+    // destination and linked every path the caller had just asked to unlink.
+    try t.expectEqual(intent.Hyperlink.never, parseArgv(ta, &.{ "--hyperlink-format=", "x" }).opts.hyperlink);
+    try t.expectEqual(intent.Hyperlink.never, parseArgv(ta, &.{ "--hyperlink=", "x" }).opts.hyperlink);
+    try t.expectEqual(intent.Hyperlink.never, parseArgv(ta, &.{ "--hyperlink=none", "x" }).opts.hyperlink);
+    // A named destination still turns links on, and a bare flag still forces them.
+    try t.expectEqual(intent.Hyperlink.always, parseArgv(ta, &.{ "--hyperlink=vscode", "x" }).opts.hyperlink);
+    try t.expectEqual(intent.Hyperlink.always, parseArgv(ta, &.{ "--hyperlink", "x" }).opts.hyperlink);
 }
 
 test "recordTerm names the byte a finished output record ends with" {

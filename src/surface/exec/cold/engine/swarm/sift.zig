@@ -69,7 +69,7 @@ fn emitJson(w: *Worker, a: std.mem.Allocator, dpath: []const u8, decoded: []cons
     const ss = w.spanSim() orelse return;
     var buf: std.ArrayList(u8) = .empty;
     json.emitOne(a, &buf, cfg.re.?, ss, null, cfg.o, .{ .path = dpath, .body = body }, &w.jstats, cfg.line_needle);
-    if (buf.items.len > 0) cfg.sink.emit(.json, buf.items);
+    if (buf.items.len > 0) cfg.sink.emit(.json, buf.items, 0);
 }
 
 /// Read + match + render ONE file straight into the sink — the parallel
@@ -227,7 +227,7 @@ fn emitBody(w: *Worker, a: std.mem.Allocator, dpath: []const u8, body: []const u
             }
             const matched = binary.handleBinary(a, re, o, &buf, &em, dpath, false, body, nul, cfg.show_name);
             if (matched or buf.items.len > 0)
-                w.deliver(if (matched) .bin_hit else .text_plain, dpath, buf.items);
+                w.deliver(if (matched) .bin_hit else .text_plain, dpath, buf.items, em.chrome);
             return;
         }
     };
@@ -279,9 +279,9 @@ fn emitBody(w: *Worker, a: std.mem.Allocator, dpath: []const u8, body: []const u
     if (cfg.heading and cfg.show_name) buf.print(a, "{s}{s}", .{ dpath, if (o.null_sep) "\x00" else o.outTerm() }) catch oom();
     const before_body = buf.items.len;
     const hits = if (slice_model) em.buffer(dpath, body) else if (fast) em.fileLit(dpath, body, 0, body.len, 0, true) else em.file(dpath, lines.items);
-    if (hits > 0) return w.deliver(.text_hit, dpath, buf.items);
+    if (hits > 0) return w.deliver(.text_hit, dpath, buf.items, em.chrome);
     // No heading header to keep, and (except --passthru) no body either.
-    if (!cfg.heading and buf.items.len > before_body) w.deliver(.text_plain, dpath, buf.items);
+    if (!cfg.heading and buf.items.len > before_body) w.deliver(.text_plain, dpath, buf.items, em.chrome);
 }
 
 /// Whole-file gate / alts miss: settle `--files-without-match` (emit) and

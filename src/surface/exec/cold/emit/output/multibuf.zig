@@ -222,7 +222,7 @@ fn bufOnly(self: *Emitter, path: []const u8, lines: []const ml.Line, spans: []co
             if (o.max_cols != 0 and frag.len > o.max_cols) {
                 display.exceeded(self, frag, true, &.{0}, 0);
             } else {
-                self.paint(palette.match_on, frag);
+                self.paint(self.o.palette.match, frag);
             }
             self.add(o.outTerm());
         }

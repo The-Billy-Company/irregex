@@ -161,8 +161,12 @@ pub fn renderLines(a: std.mem.Allocator, req: request.Request, docs: []const Doc
         legible.collectLines(a, d.bytes, o.term(), &lines);
         const before = out.items.len;
         if (em.file(d.path, lines.items) > 0) {
-            if (join_groups and !first and out.items.len > before)
-                out.insertSlice(a, before, "--\n") catch return RenderError.OutOfMemory;
+            if (join_groups and !first and out.items.len > before) {
+                if (o.groupSep()) |s| {
+                    out.insertSlice(a, before, s[1]) catch return RenderError.OutOfMemory;
+                    out.insertSlice(a, before, s[0]) catch return RenderError.OutOfMemory;
+                }
+            }
             first = false;
             matched = true;
         }

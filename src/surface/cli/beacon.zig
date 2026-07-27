@@ -22,9 +22,14 @@
 //!     family (`destination`) and links when both answer. An emulator we can't
 //!     name gets plain bytes, so the failure mode is "no link", never "escape
 //!     soup in your pager".
-//!   * **Off the color axis.** rg routes links through the color path, so
-//!     `NO_COLOR` silently kills them. A link is navigation, not decoration —
-//!     here the two resolve independently.
+//!   * **Off the color axis, and not parasitic on the path field.** rg's help
+//!     states the coupling outright: it writes a link only "when a path is
+//!     also in the output and colors are enabled". So `NO_COLOR` silently
+//!     kills rg's links, a link into a pipe costs `--color=always` (which
+//!     forces color into that pipe as well), and a single explicit file
+//!     argument — which prints no filename — has nothing to click at all.
+//!     Here a link is navigation, not decoration: it resolves independently of
+//!     color, and when no path is printed the locator digits are the anchor.
 //!   * **It knows about the far side of an SSH hop.** In a Remote-SSH terminal
 //!     a `file://` link is not merely useless, it names a path on the wrong
 //!     machine; `destination` answers `vscode://vscode-remote/ssh-remote+…`
@@ -89,6 +94,23 @@ pub const aliases = [_]Alias{
 pub fn alias(name: []const u8) ?[]const u8 {
     for (aliases) |x| if (std.mem.eql(u8, x.name, name)) return x.format;
     return null;
+}
+
+/// Did a bare `--hyperlink` eat the destination as its pattern?
+///
+/// `--hyperlink` takes its value inline, because a bare one must not swallow
+/// the next token — that token is the pattern. But rg spells this flag
+/// `--hyperlink-format vscode`, with a space, so anyone arriving with that
+/// muscle memory writes `gist --hyperlink vscode needle .` and searches their
+/// tree for the word "vscode" while linking somewhere else entirely. Every
+/// other way of getting this wrong already says so; this one used to succeed
+/// quietly, which is the exact failure the whole layer exists to prevent.
+///
+/// Only consulted when the flag was written bare, and only true when the
+/// pattern spells a destination — so `gist vscode .`, a perfectly ordinary
+/// search, never sees it.
+pub fn misspaced(pattern: []const u8) bool {
+    return alias(pattern) != null or std.mem.indexOfScalar(u8, pattern, '{') != null;
 }
 
 // ──────────────────────────── the format grammar ────────────────────────────
@@ -200,11 +222,11 @@ fn lower(a: Allocator, spec: []const u8, parts: *std.ArrayList(Part)) ?[]const u
             .in_var => if (c == '}') {
                 const v = spec[name..i];
                 const part: Part = if (std.mem.eql(u8, v, "path")) .path //
-                else if (std.mem.eql(u8, v, "line")) .line //
-                else if (std.mem.eql(u8, v, "column")) .column //
-                else if (std.mem.eql(u8, v, "host")) .host //
-                else if (std.mem.eql(u8, v, "wslprefix")) .wsl //
-                else return std.fmt.allocPrint(a, "unknown variable '{{{s}}}' (known: path, line, column, host, wslprefix)", .{v}) catch oom();
+                    else if (std.mem.eql(u8, v, "line")) .line //
+                    else if (std.mem.eql(u8, v, "column")) .column //
+                    else if (std.mem.eql(u8, v, "host")) .host //
+                    else if (std.mem.eql(u8, v, "wslprefix")) .wsl //
+                    else return std.fmt.allocPrint(a, "unknown variable '{{{s}}}' (known: path, line, column, host, wslprefix)", .{v}) catch oom();
                 parts.append(a, part) catch oom();
                 from = i + 1;
                 state = .text;
@@ -430,7 +452,7 @@ pub const Beacon = struct {
         };
         cur.appendSlice(a, st) catch oom();
         chunks.append(a, cur.items) catch oom();
-        return .{ .path = path, .chunks = chunks.items, .slots = slots.items };
+        return .{ .path = path, .chunks = chunks.items, .slots = slots.items, .torn = tears(path) };
     }
 
     /// The path as `{path}`: absolute and lexically folded, never canonicalized.
@@ -500,7 +522,7 @@ pub fn resolve(a: Allocator, r: Request, io: std.Io, env: *const Environ) ?Beaco
         .host = if (std.mem.indexOf(u8, format, "{host}") != null) hostname(a, io, r.hostname_bin) else "",
         .wsl = if (std.mem.indexOf(u8, format, "{wslprefix}") != null) wslPrefix(a, env) else "",
         .scope = scopeOf(),
-    }) catch return trace("unusable format", null);
+    }) orelse return trace("no usable destination", null);
     return trace(format, b);
 }
 
@@ -532,10 +554,13 @@ pub const Roots = struct {
     scope: Scope = .prefix,
 };
 
-pub fn forFormat(a: Allocator, format: []const u8, r: Roots) error{Unusable}!Beacon {
-    if (format.len == 0) return error.Unusable;
+/// Null when the format cannot be a URL — the empty one (`none`, which means
+/// "off") or one the grammar rejects. Deliberately NOT an error: nothing failed
+/// here, a destination was declined, and the run simply prints plain text.
+pub fn forFormat(a: Allocator, format: []const u8, r: Roots) ?Beacon {
+    if (format.len == 0) return null;
     var parts: std.ArrayList(Part) = .empty;
-    if (lower(a, format, &parts) != null) return error.Unusable;
+    if (lower(a, format, &parts) != null) return null;
     return .{
         .parts = parts.items,
         .scope = r.scope,
@@ -589,7 +614,26 @@ pub const Waypoint = struct {
     path: []const u8,
     chunks: []const []const u8,
     slots: []const Slot,
+    /// Would printing this name inside the frame tear it? Decided here, once per
+    /// file, so the per-row question is a bool. See `tears`.
+    torn: bool,
 };
+
+/// Would framing this text split one hyperlink across two terminal lines?
+///
+/// OSC-8 wraps *rendered text*, and the only way a control byte reaches an
+/// anchor is a filename containing one — a literal newline or tab in a name.
+/// The URL survives it (percent-encoding is exact), but the anchor does not:
+/// the emulator is left guessing where the click target ended, which is the
+/// same escape-soup failure the `auto` roster exists to refuse. ripgrep frames
+/// it anyway and emits a two-line link. Declining costs one scan of a path we
+/// were already about to encode, happens once per file, and forfeits nothing
+/// real — no editor opens a file by a name it cannot put on one line. The row
+/// still prints; it just isn't clickable.
+pub fn tears(shown: []const u8) bool {
+    for (shown) |c| if (c < 0x20 or c == 0x7f) return true;
+    return false;
+}
 
 // ─────────────────────── the row-shaped faces' one call ───────────────────────
 //
@@ -603,6 +647,7 @@ pub const Waypoint = struct {
 /// and the text it wants underlined as two separate things.
 pub fn link(a: Allocator, path: []const u8, line: u64, anchored: []const u8) []const u8 {
     const b = current() orelse return anchored;
+    if (tears(anchored)) return anchored;
     const w = b.waypoint(a, path);
     var out: std.ArrayList(u8) = .empty;
     for (w.slots, 0..) |slot, i| {
@@ -629,15 +674,31 @@ pub fn anchor(a: Allocator, label: []const u8) []const u8 {
     return link(a, path, line, label);
 }
 
-/// `path:line` rendered as one clickable locator — the row shape `irregex
-/// blast`, `provenance`, and `relate patterns` all print. Under
-/// `GIST_HYPERLINK_SCOPE=path` the click target narrows to the filename and the
-/// `:line` trails outside the frame, so selecting a row still yields text a
-/// shell can take.
+/// `path:line` rendered as one clickable locator, into a buffer the caller
+/// already owns — the row shape `irregex blast`, `provenance`, `relate
+/// patterns`, and the `--rank` view all print. Under `GIST_HYPERLINK_SCOPE=path`
+/// the click target narrows to the filename and the `:line` trails outside the
+/// frame, so selecting a row still yields text a shell can take.
+///
+/// This is the primitive rather than `locator` because one caller renders
+/// inside the resident daemon, where a per-row allocation would accumulate for
+/// the life of the process. A run with no beacon costs exactly the `print` the
+/// row was doing anyway.
+pub fn writeLocator(a: Allocator, out: *std.ArrayList(u8), path: []const u8, line: u64) void {
+    const b = current() orelse return out.print(a, "{s}:{d}", .{ path, line }) catch oom();
+    if (b.scope == .path) {
+        out.appendSlice(a, link(a, path, line, path)) catch oom();
+        out.print(a, ":{d}", .{line}) catch oom();
+        return;
+    }
+    out.appendSlice(a, link(a, path, line, std.fmt.allocPrint(a, "{s}:{d}", .{ path, line }) catch oom())) catch oom();
+}
+
+/// `writeLocator` as a value, for a row assembled inside one `print` call.
 pub fn locator(a: Allocator, path: []const u8, line: u64) []const u8 {
-    const b = current() orelse return std.fmt.allocPrint(a, "{s}:{d}", .{ path, line }) catch oom();
-    if (b.scope == .path) return std.fmt.allocPrint(a, "{s}:{d}", .{ link(a, path, line, path), line }) catch oom();
-    return link(a, path, line, std.fmt.allocPrint(a, "{s}:{d}", .{ path, line }) catch oom());
+    var out: std.ArrayList(u8) = .empty;
+    writeLocator(a, &out, path, line);
+    return out.items;
 }
 
 /// Does the path carry a `.`/`..` segment (or an empty one) needing the fold?

@@ -142,6 +142,7 @@ const OutputBudget = struct {
     // OOM ceiling remains, which shapes the truncation notice's wording.
     soft_disabled: bool = false,
     written: std.atomic.Value(usize) = .init(0), // bytes streamed so far (Sink-serialized under its lock)
+    chrome: std.atomic.Value(usize) = .init(0), // of those, escapes nobody reads — see `noteChrome`
     truncated: std.atomic.Value(bool) = .init(false), // any path hit the ceiling
     announced: std.atomic.Value(bool) = .init(false), // one-time notice guard
 };
@@ -175,9 +176,47 @@ pub fn initOutputBudget(flag_uncap: bool) void {
     output_budget.soft_disabled = disabled;
     output_budget.ceiling = if (disabled) hard else if (hard == 0) soft else @min(soft, hard);
     output_budget.written.store(0, .monotonic);
+    output_budget.chrome.store(0, .monotonic);
     output_budget.truncated.store(false, .monotonic);
     output_budget.announced.store(false, .monotonic);
 }
+
+/// Report the run's cumulative **chrome** — the color escapes and OSC-8 link
+/// frames included in the byte totals below. The ceiling exists to bound what a
+/// reader reads; an escape is swallowed by the emulator and shown to nobody, so
+/// charging it trades results for bytes that were never on screen, and the same
+/// query silently answers less the moment it becomes colored or clickable. (rg
+/// has no cap, so it never faced the question; measured here, color alone cost
+/// a third of the rows.) A SET, not an add: the writer keeps the running total
+/// and hands it over — the serial loop from its emitter, the sharded merge from
+/// the file marks it is folding in, since its shards render out of order and a
+/// counter they all raced would discount work not yet merged.
+pub fn noteChrome(total: usize) void {
+    output_budget.chrome.store(total, .monotonic);
+}
+
+/// Bytes of the ceiling consumed by `pending` unflushed bytes plus everything
+/// already written, less the chrome inside them. Saturating, and the subtraction
+/// is over the SUM: the buffered engines flush once at the end, so their chrome
+/// is entirely in `pending` while `written` is still zero — discounting from
+/// `written` alone would floor at zero and quietly charge them for every escape.
+fn spent(pending: usize) usize {
+    return (pending +| output_budget.written.load(.monotonic)) -| output_budget.chrome.load(.monotonic);
+}
+
+/// One rendered file's end in a shard buffer: `end` slices the bytes, `content`
+/// is what the budget counts (`end` minus the chrome written through here). The
+/// two differ only under `--color`/`--hyperlink`, where they must, or the cut
+/// lands earlier for a prettier run than a plain one.
+pub const Mark = struct {
+    end: usize,
+    content: usize,
+
+    /// The mark a run with no chrome records — every byte is content.
+    pub fn plain(end: usize) Mark {
+        return .{ .end = end, .content = end };
+    }
+};
 
 /// Lift the SOFT context cap for this run, leaving only the hard OOM ceiling —
 /// the enumeration modes (`Opts.enumeration`: `-l`/`-c`/`--count-matches`/
@@ -210,7 +249,7 @@ pub fn exemptSoftCap() void {
 /// subsequent one is refused.
 pub fn writeStdout(bytes: []const u8) bool {
     const ceiling = output_budget.ceiling;
-    if (ceiling != 0 and output_budget.written.load(.monotonic) >= ceiling) {
+    if (ceiling != 0 and spent(0) >= ceiling) {
         output_budget.truncated.store(true, .monotonic);
         return false;
     }
@@ -368,7 +407,7 @@ pub fn emitStdout(bytes: []const u8) void {
 /// Uncapped (ceiling 0) ⇒ always false. Marks the run truncated for `finishOutput`.
 pub fn outputFull(pending: usize) bool {
     const ceiling = output_budget.ceiling;
-    if (ceiling == 0 or pending +| output_budget.written.load(.monotonic) < ceiling) return false;
+    if (ceiling == 0 or spent(pending) < ceiling) return false;
     output_budget.truncated.store(true, .monotonic);
     return true;
 }
@@ -387,13 +426,20 @@ pub fn outputFull(pending: usize) bool {
 /// Returns null when the whole buffer fit. When `budgeted` is false (`--stats`
 /// searches every file regardless; `--quiet --json` suppresses the stream) the
 /// whole buffer is appended. `a` owns `out`.
-pub fn appendBudgeted(a: std.mem.Allocator, out: *std.ArrayList(u8), buf: []const u8, marks: []const usize, budgeted: bool) std.mem.Allocator.Error!?usize {
+///
+/// The chrome counter doubles as this merge's running total: at entry it holds
+/// what the already-merged shards spent on escapes, so folding each mark's own
+/// share in keeps `outputFull` measuring content across shard boundaries.
+pub fn appendBudgeted(a: std.mem.Allocator, out: *std.ArrayList(u8), buf: []const u8, marks: []const Mark, budgeted: bool) std.mem.Allocator.Error!?usize {
+    const merged = output_budget.chrome.load(.monotonic);
     if (budgeted) for (marks, 0..) |m, i| {
-        if (outputFull(out.items.len + m)) {
-            try out.appendSlice(a, buf[0..m]);
+        noteChrome(merged +| (m.end - m.content));
+        if (outputFull(out.items.len + m.end)) {
+            try out.appendSlice(a, buf[0..m.end]);
             return i;
         }
     };
+    if (marks.len != 0) noteChrome(merged +| (marks[marks.len - 1].end - marks[marks.len - 1].content));
     try out.appendSlice(a, buf);
     return null;
 }
@@ -423,6 +469,59 @@ pub fn finishOutput() void {
             assay.diag("gist: try --uncap — stream the full result (or scope with PATH args / -t / -g)\n", .{});
         }
     }
+}
+
+test "the ceiling counts what is read, not the escapes around it" {
+    // The regression this pins: the budget once measured emitted bytes, so a
+    // colored or clickable run answered roughly half as many rows as the same
+    // query in plain text — you paid for results in bytes nobody ever saw.
+    defer initOutputBudget(false);
+    initOutputBudget(false);
+    const ceiling = default_soft_output_bytes;
+
+    noteChrome(0);
+    try std.testing.expect(!outputFull(ceiling - 1));
+    try std.testing.expect(outputFull(ceiling));
+
+    // Half of it chrome ⇒ the same content reaches exactly as far, and the
+    // pending total may run over the ceiling by precisely the chrome in it.
+    noteChrome(ceiling / 2);
+    try std.testing.expect(!outputFull(ceiling + ceiling / 2 - 1));
+    try std.testing.expect(outputFull(ceiling + ceiling / 2));
+}
+
+test "a sharded merge cuts on content, so a decorated run keeps every file" {
+    // Four files of 40 KiB each, three quarters of it escapes: 160 KiB of bytes
+    // but only 40 KiB to read. Charged as bytes it would cut at the third file;
+    // charged as content the whole thing fits under the 100 KiB ceiling.
+    defer initOutputBudget(false);
+    initOutputBudget(false);
+    noteChrome(0);
+
+    const a = std.testing.allocator;
+    const per_file = 40 << 10;
+    const buf = try a.alloc(u8, 4 * per_file);
+    defer a.free(buf);
+    @memset(buf, 'x');
+
+    var dressed: [4]Mark = undefined;
+    var plain: [4]Mark = undefined;
+    for (0..4) |i| {
+        const end = (i + 1) * per_file;
+        dressed[i] = .{ .end = end, .content = end / 4 };
+        plain[i] = .plain(end);
+    }
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(a);
+    try std.testing.expectEqual(@as(?usize, null), try appendBudgeted(a, &out, buf, &dressed, true));
+    try std.testing.expectEqual(buf.len, out.items.len);
+
+    // The same bytes with nothing to discount are what the ceiling is for.
+    initOutputBudget(false);
+    noteChrome(0);
+    out.clearRetainingCapacity();
+    try std.testing.expectEqual(@as(?usize, 2), try appendBudgeted(a, &out, buf, &plain, true));
 }
 
 /// Directory basenames rg skips by default (gitignore + VCS + build output) —

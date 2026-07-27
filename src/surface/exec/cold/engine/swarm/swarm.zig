@@ -248,7 +248,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     const compiled = ignore.Compiled.build(gpa, &ig) catch oom();
     var q: Queue = .{ .gpa = gpa, .io = io };
     defer q.items.deinit(gpa);
-    var sink: Sink = .{ .q = &q, .io = io, .heading = heading, .join_groups = o.wantsContext() and o.mode.frames() and !heading };
+    var sink: Sink = .{ .q = &q, .io = io, .heading = heading, .join_groups = o.wantsContext() and o.mode.frames() and !heading, .group_sep = o.groupSep() };
     // Pure-literal alternation gate/equivalence (see `Cfg.file_alts`): only when
     // no single required literal already gates, and never for modes that must
     // read every body (`-v` needs zero-hit files; passthru emits them).

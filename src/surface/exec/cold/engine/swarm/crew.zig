@@ -101,7 +101,7 @@ pub const Cfg = struct {
 /// path IS the output) and `kind` is immaterial — `emitSorted` writes path+term.
 // `mtime_ns`/`ctime_ns` are populated only on the `collectFileSet` freshness
 // path (`Cfg.freshness_meta`); every other producer leaves them null.
-const SortedRec = struct { path: []const u8, kind: FragKind, buf: []const u8, mtime_ns: ?i128 = null, ctime_ns: ?i128 = null };
+const SortedRec = struct { path: []const u8, kind: FragKind, buf: []const u8, chrome: usize = 0, mtime_ns: ?i128 = null, ctime_ns: ?i128 = null };
 
 /// A file discovered before the elide oracle finished loading — held back so
 /// it can still be elided (or searched) once `elide.Lazy.ready` flips.
@@ -127,6 +127,7 @@ pub const Worker = struct {
     // per-chunk cost. `out` is gpa-owned so it outlives per-file arena churn.
     out: std.ArrayList(u8) = .empty,
     out_files: usize = 0, // paths buffered in `out` since the last flush
+    out_chrome: usize = 0, // of `out`'s bytes, the OSC-8 frames around those paths
     // `--sort`/`--sortr path` only (`Cfg.collect_sorted`): the worker's rendered
     // fragments held for the ordered final emit, keyed by path. Each `buf`/`path`
     // already lives in this worker's arena (no copy) — this list just references
@@ -166,8 +167,10 @@ pub const Worker = struct {
         // A path-list row IS the click target — this is the mode a human uses to
         // pick a file — so it gets the same frame the serial heading writes.
         // `anchor` borrows the path unchanged when the run resolved no beacon.
-        w.out.appendSlice(w.gpa, beacon.anchor(w.gpa, path)) catch oom();
+        const shown = beacon.anchor(w.gpa, path);
+        w.out.appendSlice(w.gpa, shown) catch oom();
         w.out.appendSlice(w.gpa, term) catch oom();
+        w.out_chrome += shown.len - path.len;
         w.out_files += 1;
         if (w.out.items.len >= files_flush_cap) w.flushFiles();
     }
@@ -176,20 +179,21 @@ pub const Worker = struct {
     /// hold it in this worker's arena keyed by `dpath` for the ordered final emit.
     /// The rendered bytes already live in the worker arena (which outlives the
     /// walk), so holding a reference costs one record, never a copy.
-    pub fn deliver(w: *Worker, kind: FragKind, dpath: []const u8, buf: []const u8) void {
+    pub fn deliver(w: *Worker, kind: FragKind, dpath: []const u8, buf: []const u8, chrome: usize) void {
         if (w.cfg.collect_sorted) {
-            w.recs.append(w.gpa, .{ .path = dpath, .kind = kind, .buf = buf }) catch oom();
+            w.recs.append(w.gpa, .{ .path = dpath, .kind = kind, .buf = buf, .chrome = chrome }) catch oom();
             return;
         }
-        w.cfg.sink.emit(kind, buf);
+        w.cfg.sink.emit(kind, buf, chrome);
     }
 
     /// Drain the worker's buffered path list into the sink as one chunk.
     pub fn flushFiles(w: *Worker) void {
         if (w.out_files == 0) return;
-        w.cfg.sink.emitFilesChunk(w.out.items, w.out_files);
+        w.cfg.sink.emitFilesChunk(w.out.items, w.out_files, w.out_chrome);
         w.out.clearRetainingCapacity();
         w.out_files = 0;
+        w.out_chrome = 0;
     }
 
     /// The worker's lazily-built reusable match scratch (null only on OOM, where
@@ -286,16 +290,24 @@ pub fn emitSorted(gpa: std.mem.Allocator, sink: *Sink, workers: []Worker, o: Opt
         k += 1;
     };
     std.mem.sort(SortedRec, recs, o.sort_reverse, recLess);
-    if (o.mode == .files or o.mode == .files_with_matches) {
+    // Every mode whose record IS a bare path — `Mode.pathPerFile` (the two
+    // yes/no verdict modes) plus `--files`, which prints paths without asking
+    // the pattern anything. Spelling the membership by hand is what dropped
+    // `--files-without-match` into the fragment branch, where its empty `buf`
+    // rendered as nothing at all.
+    if (o.mode == .files or o.mode.pathPerFile()) {
         const term: []const u8 = if (o.null_sep) "\x00" else o.outTerm();
         var out: std.ArrayList(u8) = .empty;
         defer out.deinit(gpa);
+        var chrome: usize = 0;
         for (recs) |r| {
-            out.appendSlice(gpa, beacon.anchor(gpa, r.path)) catch oom();
+            const shown = beacon.anchor(gpa, r.path);
+            out.appendSlice(gpa, shown) catch oom();
             out.appendSlice(gpa, term) catch oom();
+            chrome += shown.len - r.path.len;
         }
-        sink.emitFilesChunk(out.items, recs.len);
-    } else for (recs) |r| sink.emit(r.kind, r.buf);
+        sink.emitFilesChunk(out.items, recs.len, chrome);
+    } else for (recs) |r| sink.emit(r.kind, r.buf, r.chrome);
 }
 test "sorted-emit order matches the serial --sort path oracle" {
     const t = std.testing;

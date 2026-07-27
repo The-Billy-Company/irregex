@@ -177,7 +177,7 @@ pub fn runParallel(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.Array
         // running tally through file j. A soft-cap cut at file j takes `buf[0..
         // marks[j]]` and `stat_marks[j]`, so the merged stream AND summary are
         // byte-identical to the serial loop's break-before-next-file.
-        marks: std.ArrayList(usize) = .empty,
+        marks: std.ArrayList(corpus_mod.Mark) = .empty,
         stat_marks: std.ArrayList(Stats) = .empty,
         st: Stats = .{},
 
@@ -186,7 +186,10 @@ pub fn runParallel(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.Array
             var ss = Matcher.SpanSim.init(sa, sh.re) catch die("engine init failed\n", .{});
             for (sh.files) |f| {
                 emitOne(sa, &sh.buf, sh.re, &ss, null, sh.o, f, &sh.st, sh.needle);
-                sh.marks.append(sa, sh.buf.items.len) catch oom();
+                // A record is content to its last byte: `--json` takes no color
+                // and refuses every hyperlink posture, so there is no chrome to
+                // discount here the way the rg-shaped merge must.
+                sh.marks.append(sa, .plain(sh.buf.items.len)) catch oom();
                 sh.stat_marks.append(sa, sh.st) catch oom();
             }
         }

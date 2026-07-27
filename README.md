@@ -179,6 +179,39 @@ view, `:GistSimilar` is `relate similar` on the current buffer, and
 `:GistBlast` puts a symbol's live blast radius in the quickfix list so `:cnext`
 walks a change's consequences. `GIST_VIM_INSTALL=0` declines the whole thing.
 
+## In your shell
+
+`gist --generate {man,complete-bash,complete-zsh,complete-fish,complete-powershell}`
+mints the manual and the completions from the same flag table argv is parsed
+with, and `make install-gist` places each one where that shell already looks —
+so `man gist` answers and `gist -<TAB>` completes with no configuration.
+[`shell/`](shell/README.md) has the install sites; `GIST_SHELL_INSTALL=0` declines.
+
+ripgrep's completions are the best hand-written ones in the field, and its zsh
+function carries a comment asking you to re-run a CI script "to ensure that the
+options supported by this function stay in synch with the `rg` binary". A drift
+gate is an admission that there is drift to gate. Generating from the parse
+table removes the category, and spends the difference on three things:
+
+- **A tab costs no process.** `_rg_types` answers `-t<TAB>` by forking
+  `rg --type-list` and re-parsing it, per keystroke. gist's menu is an array
+  written into the file at generation: **~0.065 ms against ~5 ms, about 77×**,
+  and its 239 candidates each carry that type's globs, where rg discards them
+  and offers 224 bare names.
+- **The menu is captioned.** `gist -<TAB>` arrives grouped by what a flag
+  _changes_ — corpus, semantics, presentation, execution — rather than one
+  alphabetical wall, and the man page is organized the same way, off the same
+  `Reach` the parser already records.
+- **Exclusions are derived.** `-i`/`-s`/`-S` rule each other out because they
+  resolve to one case mode in the parser, not because a list was maintained.
+- **The menu matches the grammar.** A verb is offered at `argv[1]` and nowhere
+  else, because `gist -w index` searches for "index"; a glued short value is
+  split, so `-t<TAB>` menus the registry where rg's generated bash dead-ends.
+
+`make test-gist-shell` has each shell parse its own artifact, proves every flag
+is filed in exactly one group, and fails if any generated file would run a
+program at tab time.
+
 ## Configuration that outlives one invocation
 
 Two files, split along a line ripgrep's `.ripgreprc` does not draw: **what the
@@ -248,6 +281,48 @@ Underneath both is a **reach** axis on every flag, also emitted by
 it is computed). It is what lets a persisted layer be judged rather than
 trusted, and what lets a zero-match run name a preferences file as the possible
 cause — the one thing a reader cannot see in the line they typed.
+
+### Asking what is in force
+
+ripgrep has a configuration file and no way to interrogate it, which is why the
+standing advice for a surprising result is "try `--no-config`" — bisection
+standing in for introspection. Persisted state earns introspection or it should
+not be persisted:
+
+| Command | Answers |
+|---|---|
+| `gist config` | The resolved stack — each layer's path, what it declares, whether it is in force, and any `GIST_ROOTS`/`GIST_SKIP` in your shell that outranks the committed file. `--json` for the machine. |
+| `gist config check` | Is what I wrote valid, **without** running a search. Reports both layers before exiting (2 if either is malformed), so fixing a file takes one pass rather than one run per mistake. |
+| `gist config init` | Writes `.irregex.toml` prefilled from what this machine already carries — `GIST_ROOTS`, `skips.list` — so the migration is not "learn the format". `--write` creates it. It lifts only facts you asserted and **never infers a skip from the shape of the tree**: a guessed skip silently hides files, which is the failure the whole layer exists to prevent. |
+
+```
+$ gist config
+corpus — what this tree is (committed, applies to everyone)
+  ../../.irregex.toml                     # found by climbing; roots are relative to IT
+    roots ../../services, ../../libs
+    skip  graphify-out
+  GIST_ROOTS=services:libs in this shell — overrides the charter's `roots`
+
+taste — what you like to look at (machine-local, terminal only)
+  ~/.config/gist/preferences
+    --heading -n --smart-case
+    NOT in force — stdout is not a terminal, so this file is invisible to this run
+    contains flags that change WHICH LINES MATCH, not just how they render
+```
+
+`gist config` and `gist status` keep describing both files under `--no-config`
+and `GIST_NO_CONFIG`, reporting suppression as a state of the run rather than
+refusing to answer. A shell that exports it is precisely when a reader needs to
+see what is on disk, and the one command whose job is introspection declining to
+introspect would reproduce the defect this verb exists to repair.
+
+Faults in either file are **located and quoted**, with a nearest-name guess when
+one is worth making (`gist: .irregex.toml:3: unknown key` / `gist: try
+`roots = [...]` — `rootz` is not a charter key`). A malformed **charter** is
+fatal to any search, because a corpus nobody described is worse than no file at
+all. A malformed **preferences** file is fatal only to a run that would actually
+have used it: a pipe, a script, and an agent never open it, so one person's typo
+cannot fail everybody else's tooling with an error naming a path they cannot see.
 
 ## Use Gist and Relate in tandem
 
@@ -523,6 +598,7 @@ place only when the tool feels obvious in the hand.
 | `contract/`    | `search_api.toml`: the unified SearchRequest/irregex contract (ADR-352)                                                                                                |
 | `bench/`       | certification + competitive benchmark harness (rgsuite, races, certify, roofline)                                                                                      |
 | `editor/`      | the Vim/Neovim plugin (`vim/`) and the installer that links it into an editor that already exists                                                                      |
+| `shell/`       | the generated `gist(1)` + bash/zsh/fish/pwsh completions: the installer that places them, and the suite that has each shell parse its own                              |
 
 See [`src/README.md`](src/README.md) for the tier-by-tier map and
 [`src/surface/face/gist/README.md`](src/surface/face/gist/README.md) for the gist architecture
@@ -537,10 +613,12 @@ composed reports expose their conclusion (`Blast.paths`) next to their evidence.
 ## Build & test
 
 ```bash
-make install-gist   # build (ReleaseFast) + symlink ~/.local/bin/{gist,relate,irregex} + index + link the editor plugin
-make build-gist     # staticlib + dynlib (libirregex) + irregex.h → zig-out/
-make test-gist      # zig build test: unit + differential-fuzz suites
-make test-gist-vim  # the editor plugin's headless suite, run in both Vim and Neovim
+make install-gist    # build (ReleaseFast) + symlink ~/.local/bin/{gist,relate,irregex} + index
+                     # + link the editor plugin + place the manual and completions
+make build-gist      # staticlib + dynlib (libirregex) + irregex.h → zig-out/
+make test-gist       # zig build test: unit + differential-fuzz suites
+make test-gist-vim   # the editor plugin's headless suite, run in both Vim and Neovim
+make test-gist-shell # each shell parses its own generated completion; mandoc lints the page
 ```
 
 One changelog covers the whole package (one version, one release unit):

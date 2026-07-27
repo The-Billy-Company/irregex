@@ -17,6 +17,7 @@ const args = @import("../argv/args.zig");
 const Opts = args.Opts;
 const oom = args.oom;
 const multiline = @import("../emit/multiline.zig");
+const beacon = @import("../../../cli/beacon.zig");
 const Emitter = @import("../emit/output.zig").Emitter;
 const Matcher = @import("../../../../kernel/match/regex/regex.zig").Matcher;
 const collectLines = @import("legible.zig").collectLines;
@@ -183,7 +184,10 @@ fn bufAnyMatch(a: std.mem.Allocator, re: *const Matcher, body: []const u8) bool 
 /// Append ripgrep's binary note: `[<path>: ]<msg> (found "\0" byte around offset
 /// N)`. The path prefix (with `: ` separator) is shown only when filenames are on.
 pub fn binNote(a: std.mem.Allocator, out: *std.ArrayList(u8), o: Opts, path: []const u8, nul: usize, show_name: bool, msg: []const u8) void {
-    if (show_name) out.print(a, "{s}: ", .{path}) catch oom();
+    // Clickable like every other printed filename: "every path opens" is a
+    // simpler promise than one with an exception for the notice that names a
+    // file you cannot read as text — which is exactly when you want to look.
+    if (show_name) out.print(a, "{s}: ", .{beacon.anchor(a, path)}) catch oom();
     out.print(a, "{s} (found \"\\0\" byte around offset {d}){c}", .{ msg, nul, o.term() }) catch oom();
 }
 

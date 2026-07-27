@@ -137,7 +137,7 @@ fn highlightSpans(self: *Emitter, s: []const u8) void {
     var last: usize = 0;
     for (matchSpans(self, s)) |sp| {
         self.add(s[last..sp.start]);
-        self.paint(palette.match_on, s[sp.start..sp.end]);
+        self.paint(self.o.palette.match, s[sp.start..sp.end]);
         last = sp.end;
     }
     self.add(s[last..]);
@@ -149,11 +149,10 @@ fn highlightSpans(self: *Emitter, s: []const u8) void {
 /// empty when the span simulator can't be built.
 fn matchSpans(self: *Emitter, s: []const u8) []const Matcher.Span {
     var out: std.ArrayList(Matcher.Span) = .empty;
-    var ss = Matcher.SpanSim.init(self.a, self.re) catch return &.{};
-    defer ss.deinit();
+    const ss = self.spanSim() orelse return &.{};
     const mv = self.mview(s);
     var from: usize = 0;
-    while (output.nextSpan(self.re, &ss, self.o, mv, &from)) |sp| out.append(self.a, sp) catch oom();
+    while (output.nextSpan(self.re, ss, self.o, mv, &from)) |sp| out.append(self.a, sp) catch oom();
     return out.toOwnedSlice(self.a) catch &.{};
 }
 
@@ -181,7 +180,7 @@ pub fn exceeded(self: *Emitter, s: []const u8, is_match: bool, starts: []const u
                 }
                 self.add(s[last..sp.start]);
                 const e = @min(sp.end, cut);
-                self.paint(palette.match_on, s[sp.start..e]);
+                self.paint(self.o.palette.match, s[sp.start..e]);
                 last = e;
             }
             self.add(s[last..cut]);
@@ -259,30 +258,20 @@ pub fn vimgrepLine(self: *Emitter, v: Vimgrep) void {
 /// `-o` and `--passthru -o`). `mv` is the `--crlf` match view of `line`.
 /// Returns the number of spans emitted.
 pub fn emitMatches(self: *Emitter, ssim: *Matcher.SpanSim, path: []const u8, lineno: usize, line: []const u8, mv: []const u8) usize {
-    var from: usize = 0;
     var n: usize = 0;
-    var last_end: ?usize = null;
-    while (from <= mv.len) {
-        const span = self.re.matchSpan(ssim, mv, from) orelse break;
+    // The admission rule (zero-width matches, the progress rule, `-w`) lives in
+    // `output.Rows` so `--count-matches` counts exactly the rows printed here.
+    var rows = output.Rows{ .re = self.re, .ss = ssim, .o = self.o, .mv = mv };
+    while (rows.next()) |span| {
         const empty = span.end == span.start;
-        from = if (empty) span.start + 1 else span.end;
-        // rg `find_iter` yields zero-width matches too, but only for a
-        // nullable regex (`-o ''`, `a*`) and never one adjacent to the
-        // previous match's end (the progress rule) — so a non-nullable
-        // pattern's output is byte-identical to before. An empty match
-        // prints an empty `-o` line (word-checked under `-w`).
-        const adjacent = empty and last_end != null and span.start == last_end.?;
-        if ((empty and !self.re.nullable()) or adjacent or
-            (self.o.word and !output.wordOk(self.o.unicode, mv, span.start, span.end))) continue;
         self.prefix(path, lineno, span.start + 1, self.offOf(line) + span.start, true);
         // `-o` emits bare match bytes + the full output terminator (rg's
         // printer): under `--crlf` every fragment ends `\r\n`, so a match
         // reaching the logical line end needs no `\r`-reattachment.
-        if (!empty) self.paint(palette.match_on, line[span.start..span.end]);
+        if (!empty) self.paint(self.o.palette.match, line[span.start..span.end]);
         self.linkClose(); // scope `row`: the fragment is part of the click target
         self.add(self.o.outTerm());
         n += 1;
-        last_end = span.end;
     }
     return n;
 }

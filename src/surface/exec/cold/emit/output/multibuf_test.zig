@@ -34,12 +34,21 @@ test "-U whole-buffer emit parity table (captured from ripgrep)" {
         .{ .pat = "c\\nd", .o = .{ .multiline = true, .line_num = true, .before = 1, .after = 1 }, .body = "a\nb\nc\nd\ne\nf\ng\n", .want = "2-b\n3:c\n4:d\n5-e\n" },
         // -U -A1 separates non-adjacent blocks with --
         .{ .pat = "a\\nb|e\\nf", .o = .{ .multiline = true, .line_num = true, .after = 1 }, .body = "a\nb\nc\nd\ne\nf\ng\n", .want = "1:a\n2:b\n3-c\n--\n5:e\n6:f\n7-g\n" },
-        // -U -c counts distinct match-start lines; --count-matches counts spans
+        // -U -c and --count-matches are ONE question under the slice model:
+        // "when multiline mode is enabled and the pattern(s) given can match
+        // over multiple lines, -c/--count is equivalent to --count-matches"
+        // (`rg --help count`). Both rows below are that equivalence.
         .{ .pat = "a\\nb", .o = .{ .multiline = true, .mode = .count }, .body = "a\nb\nx\na\nb\n", .want = "2\n" },
         .{ .pat = "a\\nb", .o = .{ .multiline = true, .mode = .count_matches }, .body = "a\nb\nx\na\nb\n", .want = "2\n" },
-        // -U -c with a nullable pattern counts start-lines, not all empties
-        .{ .pat = "a*", .o = .{ .multiline = true, .mode = .count }, .body = "aa\nbb\n", .want = "2\n" },
-        .{ .pat = "a*", .o = .{ .multiline = true, .mode = .count_matches }, .body = "aa\nbb\n", .want = "4\n" },
+        // A nullable pattern is where the two modes would diverge if `-c` were
+        // still a line tally — so the pattern has to reach this emitter the way
+        // rg reaches it. `a*` alone cannot: it never claims `\n`, so rg keeps it
+        // on the LINE counter (`rg -U -c 'a*'` says 2 — a probe of the wrong path)
+        // and `sliceModel` routes it to `grid.zig` here for the same reason.
+        // `a*|q\nq` carries the same empties across the boundary, and rg then
+        // answers 4 for BOTH modes — counting every zero-width match.
+        .{ .pat = "a*|q\\nq", .o = .{ .multiline = true, .mode = .count }, .body = "aa\nbb\n", .want = "4\n" },
+        .{ .pat = "a*|q\\nq", .o = .{ .multiline = true, .mode = .count_matches }, .body = "aa\nbb\n", .want = "4\n" },
         // -U -v prints lines outside every match's span
         .{ .pat = "a\\nb", .o = .{ .multiline = true, .line_num = true, .invert = true }, .body = "a\nb\nx\na\nb\n", .want = "3:x\n" },
         // -U -m caps the number of matches

@@ -110,9 +110,9 @@ test "format validation rejects exactly what ripgrep rejects" {
 
 const Env = std.process.Environ.Map;
 
-fn env(pairs: []const [2][]const u8) Env {
+fn env(pairs: []const [2][]const u8) !Env {
     var m = Env.init(t.allocator);
-    for (pairs) |p| m.put(p[0], p[1]) catch unreachable;
+    for (pairs) |p| try m.put(p[0], p[1]);
     return m;
 }
 
@@ -122,14 +122,14 @@ test "speaks answers yes only for emulators we can name" {
         &.{ .{ "TERM", "xterm-256color" }, .{ "TERM_PROGRAM", "WezTerm" } },
         &.{ .{ "TERM", "xterm-256color" }, .{ "TERM_PROGRAM", "vscode" } },
         &.{ .{ "TERM", "xterm-ghostty" }, .{ "TERM_PROGRAM", "ghostty" } },
-        &.{ .{ "TERM", "xterm-kitty" }},
+        &.{.{ "TERM", "xterm-kitty" }},
         &.{ .{ "TERM", "xterm-256color" }, .{ "KITTY_WINDOW_ID", "1" } },
         &.{ .{ "TERM", "xterm-256color" }, .{ "ALACRITTY_WINDOW_ID", "9" } },
         &.{ .{ "TERM", "xterm-256color" }, .{ "VTE_VERSION", "6003" } },
         &.{ .{ "TERM", "xterm-256color" }, .{ "KONSOLE_VERSION", "220401" } },
     };
     for (yes) |pairs| {
-        var m = env(pairs);
+        var m = try env(pairs);
         defer m.deinit();
         try t.expect(beacon.speaks(&m));
     }
@@ -143,7 +143,7 @@ test "speaks answers yes only for emulators we can name" {
         &.{ .{ "TERM", "xterm-256color" }, .{ "KONSOLE_VERSION", "180801" } }, // Konsole too old
     };
     for (no) |pairs| {
-        var m = env(pairs);
+        var m = try env(pairs);
         defer m.deinit();
         try t.expect(!beacon.speaks(&m));
     }
@@ -152,16 +152,16 @@ test "speaks answers yes only for emulators we can name" {
 test "tmux gates on its own version, not on the emulator underneath it" {
     // tmux < 3.4 swallows OSC 8, so a capable emulator behind it still gets
     // plain bytes — the case a naive TERM_PROGRAM probe gets wrong.
-    var old = env(&.{ .{ "TERM", "tmux-256color" }, .{ "TMUX", "/tmp/s,1,0" }, .{ "TERM_PROGRAM", "tmux" }, .{ "TERM_PROGRAM_VERSION", "3.2a" } });
+    var old = try env(&.{ .{ "TERM", "tmux-256color" }, .{ "TMUX", "/tmp/s,1,0" }, .{ "TERM_PROGRAM", "tmux" }, .{ "TERM_PROGRAM_VERSION", "3.2a" } });
     defer old.deinit();
     try t.expect(!beacon.speaks(&old));
 
-    var new = env(&.{ .{ "TERM", "tmux-256color" }, .{ "TMUX", "/tmp/s,1,0" }, .{ "TERM_PROGRAM", "tmux" }, .{ "TERM_PROGRAM_VERSION", "3.5" } });
+    var new = try env(&.{ .{ "TERM", "tmux-256color" }, .{ "TMUX", "/tmp/s,1,0" }, .{ "TERM_PROGRAM", "tmux" }, .{ "TERM_PROGRAM_VERSION", "3.5" } });
     defer new.deinit();
     try t.expect(beacon.speaks(&new));
 
     // Inside tmux with no version to read: unidentifiable, so no.
-    var mute = env(&.{ .{ "TERM", "screen-256color" }, .{ "TMUX", "/tmp/s,1,0" }, .{ "TERM_PROGRAM", "iTerm.app" } });
+    var mute = try env(&.{ .{ "TERM", "screen-256color" }, .{ "TMUX", "/tmp/s,1,0" }, .{ "TERM_PROGRAM", "iTerm.app" } });
     defer mute.deinit();
     try t.expect(!beacon.speaks(&mute));
 }
@@ -181,7 +181,7 @@ test "destination identifies the editor fork and the remote hop" {
         .{ .pairs = &.{.{ "TERM", "xterm-kitty" }}, .want = "file://{host}{path}#{line}" },
     };
     for (cases) |c| {
-        var m = env(c.pairs);
+        var m = try env(c.pairs);
         defer m.deinit();
         try t.expectEqualStrings(c.want, beacon.destination(&m));
     }
@@ -191,18 +191,18 @@ test "destination identifies the editor fork and the remote hop" {
 
 /// A beacon built straight from a format, bypassing the terminal probe — the
 /// unit under test here is the URL, not the decision to print one.
-fn at(a: std.mem.Allocator, spec: []const u8, cwd: []const u8) beacon.Beacon {
-    return beacon.forFormat(a, spec, .{ .cwd = cwd, .host = "box" }) catch unreachable;
+fn at(a: std.mem.Allocator, spec: []const u8, cwd: []const u8) !beacon.Beacon {
+    return beacon.forFormat(a, spec, .{ .cwd = cwd, .host = "box" }) orelse error.NoDestination;
 }
 
 /// Render a waypoint the way `Emitter.linkOpen` does, for byte comparison.
-fn frame(a: std.mem.Allocator, w: beacon.Waypoint, line: usize, col: usize) []const u8 {
+fn frame(a: std.mem.Allocator, w: beacon.Waypoint, line: usize, col: usize) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     for (w.slots, 0..) |slot, i| {
-        out.appendSlice(a, w.chunks[i]) catch unreachable;
-        out.print(a, "{d}", .{if (slot == .line) line else col}) catch unreachable;
+        try out.appendSlice(a, w.chunks[i]);
+        try out.print(a, "{d}", .{if (slot == .line) line else col});
     }
-    out.appendSlice(a, w.chunks[w.slots.len]) catch unreachable;
+    try out.appendSlice(a, w.chunks[w.slots.len]);
     return out.items;
 }
 
@@ -211,11 +211,11 @@ test "a waypoint frames the OSC-8 open sequence with the row's locator spliced i
     defer ar.deinit();
     const a = ar.allocator();
 
-    const b = at(a, "vscode://file{path}:{line}:{column}", "/home/g/proj");
+    const b = try at(a, "vscode://file{path}:{line}:{column}", "/home/g/proj");
     const w = b.waypoint(a, "src/main.zig");
     try t.expectEqualStrings(
         "\x1b]8;;vscode://file/home/g/proj/src/main.zig:42:7\x1b\\",
-        frame(a, w, 42, 7),
+        try frame(a, w, 42, 7),
     );
     // Two slots ⇒ three chunks, so the per-line cost is three copies and two
     // integers — the path is interpolated once, when the file was entered.
@@ -228,17 +228,17 @@ test "a line-blind format collapses to a single chunk" {
     defer ar.deinit();
     const a = ar.allocator();
 
-    const w = at(a, "file://{host}{path}", "/home/g").waypoint(a, "x.txt");
+    const w = (try at(a, "file://{host}{path}", "/home/g")).waypoint(a, "x.txt");
     try t.expectEqual(@as(usize, 0), w.slots.len);
     try t.expectEqual(@as(usize, 1), w.chunks.len);
-    try t.expectEqualStrings("\x1b]8;;file://box/home/g/x.txt\x1b\\", frame(a, w, 1, 1));
+    try t.expectEqualStrings("\x1b]8;;file://box/home/g/x.txt\x1b\\", try frame(a, w, 1, 1));
 }
 
 test "the path is absolute, dot-folded, and percent-encoded like ripgrep" {
     var ar = arena();
     defer ar.deinit();
     const a = ar.allocator();
-    const b = at(a, "file://{path}", "/home/g/proj");
+    const b = try at(a, "file://{path}", "/home/g/proj");
 
     const cases = [_]struct { in: []const u8, want: []const u8 }{
         // Relative paths join the cwd; absolute ones are left where they are.
@@ -257,7 +257,7 @@ test "the path is absolute, dot-folded, and percent-encoded like ripgrep" {
     };
     for (cases) |c| try t.expectEqualStrings(
         try std.fmt.allocPrint(a, "\x1b]8;;{s}\x1b\\", .{c.want}),
-        frame(a, b.waypoint(a, c.in), 1, 1),
+        try frame(a, b.waypoint(a, c.in), 1, 1),
     );
 }
 
@@ -265,7 +265,56 @@ test "waypoint substitutes the run-constant host once, not per row" {
     var ar = arena();
     defer ar.deinit();
     const a = ar.allocator();
-    const w = at(a, "file://{host}{path}#{line}", "/w").waypoint(a, "f");
+    const w = (try at(a, "file://{host}{path}#{line}", "/w")).waypoint(a, "f");
     try t.expectEqualStrings("\x1b]8;;file://box/w/f#", w.chunks[0]);
     try t.expectEqualStrings("\x1b\\", w.chunks[1]);
+}
+
+// ─────────────────── the anchor a control byte would tear ───────────────────
+
+test "a name with a control byte declines the frame but keeps its URL exact" {
+    var ar = arena();
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    // Only what an emulator would render as a break counts: C0, DEL. Everything
+    // a filename normally contains — spaces, quotes, UTF-8 — frames fine.
+    try t.expect(beacon.tears("a\nb.txt"));
+    try t.expect(beacon.tears("a\tb.txt"));
+    try t.expect(beacon.tears("a\x1b]8;;evil\x1b\\b.txt"));
+    try t.expect(beacon.tears("a\x7fb.txt"));
+    try t.expect(!beacon.tears("with space.txt"));
+    try t.expect(!beacon.tears("café/über.zig"));
+    try t.expect(!beacon.tears("quo'te\"d;&.txt"));
+
+    // The refusal is carried on the waypoint, decided once per file…
+    const b = try at(a, "file://{path}", "/w");
+    try t.expect(b.waypoint(a, "two\nlines.txt").torn);
+    try t.expect(!b.waypoint(a, "one line.txt").torn);
+
+    // …and the URL is still exact, because a digits-only anchor (no path in the
+    // frame) is untearable and remains clickable. Declining is about the text
+    // between the escapes, never about the address.
+    try t.expectEqualStrings(
+        "\x1b]8;;file:///w/two%0Alines.txt\x1b\\",
+        try frame(a, b.waypoint(a, "two\nlines.txt"), 1, 1),
+    );
+}
+
+test "link declines an anchor that would span two terminal lines" {
+    var ar = arena();
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    beacon.install(try at(a, "file://{path}#{line}", "/w"));
+    defer beacon.install(null);
+
+    // A clean label frames; a torn one comes back as the caller's own bytes,
+    // borrowed, so the row prints exactly as it would with links off.
+    const ok = beacon.anchor(a, "src/root.zig#L12");
+    try t.expectEqualStrings("\x1b]8;;file:///w/src/root.zig#12\x1b\\src/root.zig#L12\x1b]8;;\x1b\\", ok);
+
+    const torn = "src/two\nlines.zig";
+    try t.expectEqualStrings(torn, beacon.anchor(a, torn));
+    try t.expectEqual(torn.ptr, beacon.anchor(a, torn).ptr);
 }

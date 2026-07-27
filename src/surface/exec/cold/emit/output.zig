@@ -124,6 +124,49 @@ pub fn nextSpan(re: *const Matcher, ss: *Matcher.SpanSim, o: Opts, s: []const u8
     return null;
 }
 
+/// The spans rg's `-o` printer yields over one line: `find_iter` widened to
+/// zero-width matches, which `nextSpan` above drops because its consumers
+/// (`-w`, `--column`, highlighting) all need bytes to point at.
+///
+/// A zero-width match is yielded only for a nullable pattern, and never one
+/// sitting exactly at the previous match's end — rg's progress rule, which is
+/// why `a*` over "aa" is one row and not two. A non-nullable pattern therefore
+/// walks identically to `nextSpan`.
+///
+/// `--count-matches` is defined as how many of these rg would print, so it and
+/// `-o` step through this one walk instead of each deriving the rule; that is
+/// the whole reason it is a type and not a loop inside the printer.
+pub const Rows = struct {
+    re: *const Matcher,
+    ss: *Matcher.SpanSim,
+    o: Opts,
+    /// The match view of one line (`--crlf`-trimmed where that applies).
+    mv: []const u8,
+    from: usize = 0,
+    last_end: ?usize = null,
+
+    pub fn next(self: *Rows) ?Matcher.Span {
+        while (self.from <= self.mv.len) {
+            const sp = self.re.matchSpan(self.ss, self.mv, self.from) orelse return null;
+            const empty = sp.end == sp.start;
+            self.from = if (empty) sp.start + 1 else sp.end;
+            const adjacent = empty and self.last_end != null and sp.start == self.last_end.?;
+            if ((empty and !self.re.nullable()) or adjacent or
+                (self.o.word and !wordOk(self.o.unicode, self.mv, sp.start, sp.end))) continue;
+            self.last_end = sp.end;
+            return sp;
+        }
+        return null;
+    }
+
+    /// How many rows the line holds, for the count modes that print none.
+    pub fn tally(self: *Rows) usize {
+        var n: usize = 0;
+        while (self.next()) |_| n += 1;
+        return n;
+    }
+};
+
 pub const Emitter = struct {
     a: std.mem.Allocator,
     re: *const Matcher,
@@ -151,6 +194,14 @@ pub const Emitter = struct {
     /// n_states allocations amortize across every file this Emitter emits.
     /// Null ⇒ the per-file paths build (and free) a local one, as before.
     sim: ?*Matcher.Sim = null,
+    /// Span scratch, built on first use and then reused for this Emitter's
+    /// lifetime. Span walks are per LINE (`--color` highlighting, the
+    /// `--max-columns` preview), and the engines behind them are memoizing —
+    /// the caliper determinizes on demand and only gets cheap once its cache is
+    /// warm — so a simulator built per line would throw away the very memo that
+    /// makes spans affordable, and pay a fresh allocation for the privilege.
+    /// Owned by this Emitter's allocator for its lifetime, like `way` below.
+    spans: ?Matcher.SpanSim = null,
     /// This file's OSC-8 destination, built on first use and memoized by the
     /// path slice's identity — one build per file, never per line. Null until
     /// the first locator of a file, and always null when the run has no beacon.
@@ -158,6 +209,12 @@ pub const Emitter = struct {
     /// Is a hyperlink frame currently open? Only `--hyperlink` scope `row`
     /// leaves one open past the locator, so the body writers close it.
     linked: bool = false,
+    /// Bytes appended so far that the reader never sees — color escapes and
+    /// OSC-8 frames. The output budget bounds what someone reads, so it counts
+    /// `out.items.len - chrome`: a colored or clickable run must return the
+    /// same rows as a plain one, not fewer. Cumulative over this Emitter's
+    /// whole life (the serial loop's run; one shard's file range).
+    chrome: usize = 0,
     /// Absolute address one past the current file's last byte (set with `base`).
     /// A raw line slice ending exactly here is the file's UNTERMINATED tail —
     /// a terminated final line's slice stops before its terminator byte — and
@@ -170,6 +227,13 @@ pub const Emitter = struct {
     // in the mode the flags selected. Each delegates to the driver that owns
     // that match model; the eligibility predicates let a scheduler pick the
     // cheapest one before committing to a line split.
+
+    /// This Emitter's span scratch, built on demand. Null only when it cannot be
+    /// allocated at all, which every caller degrades to "no spans" on.
+    pub fn spanSim(self: *Emitter) ?*Matcher.SpanSim {
+        if (self.spans == null) self.spans = Matcher.SpanSim.init(self.a, self.re) catch return null;
+        return &self.spans.?;
+    }
 
     /// Answer one file from its already-split lines — the default frame plus
     /// every per-line mode. Returns the mode's tally (see `grid.zig`).
@@ -305,10 +369,14 @@ pub const Emitter = struct {
 
     /// Wrap `s` in `on` .. `reset` when color is active, else emit it plain.
     pub fn paint(self: *Emitter, on: []const u8, s: []const u8) void {
-        if (!self.use_color) return self.add(s);
+        // An empty prefix is an element with nothing set — `--colors match:none`,
+        // or a column number, which gist has never painted. Emitting the reset
+        // anyway would spend chrome to change nothing.
+        if (!self.use_color or on.len == 0) return self.add(s);
         self.add(on);
         self.add(s);
         self.add(palette.reset);
+        self.chrome += on.len + palette.reset.len;
     }
 
     // ───────────────────────── OSC-8 click targets ─────────────────────────
@@ -320,17 +388,25 @@ pub const Emitter = struct {
     /// Open a frame pointing at `path` (at `lineno`:`col` when the destination
     /// asks for them). Idempotent-safe: a frame already open is left alone, so
     /// `writePath` nests harmlessly inside the wider anchor `prefix` opens.
-    fn linkOpen(self: *Emitter, path: []const u8, lineno: usize, col: usize) void {
+    ///
+    /// `anchors_path` says whether the filename itself will be printed inside
+    /// this frame; when it is and the name carries a control byte, no frame
+    /// opens at all (`beacon.tears`). A locator made only of digits is immune,
+    /// which is why the caller answers rather than this function guessing.
+    fn linkOpen(self: *Emitter, path: []const u8, lineno: usize, col: usize, anchors_path: bool) void {
         if (self.linked) return;
         const b = beacon.current() orelse return;
         const w = if (self.way) |w| (if (w.path.ptr == path.ptr and w.path.len == path.len) w else b.waypoint(self.a, path)) else b.waypoint(self.a, path);
         self.way = w;
+        if (anchors_path and w.torn) return;
+        const before = self.out.items.len;
         var buf: [20]u8 = undefined;
         for (w.slots, 0..) |slot, i| {
             self.add(w.chunks[i]);
             self.add(writeDecimal(&buf, @max(1, if (slot == .line) lineno else col)));
         }
         self.add(w.chunks[w.slots.len]);
+        self.chrome += self.out.items.len - before;
         self.linked = true;
     }
 
@@ -340,6 +416,7 @@ pub const Emitter = struct {
         if (!self.linked) return;
         self.linked = false;
         self.add(beacon.close);
+        self.chrome += beacon.close.len;
     }
 
     /// Close a frame that ended earlier in the buffer — used to keep the
@@ -350,6 +427,7 @@ pub const Emitter = struct {
         if (!self.linked) return;
         self.linked = false;
         self.out.insertSlice(self.a, pos, beacon.close) catch oom();
+        self.chrome += beacon.close.len;
     }
 
     /// Write `path` followed by its terminator — NUL under `--null` (ripgrep's
@@ -360,11 +438,11 @@ pub const Emitter = struct {
     /// if the path turns out to be the last field.
     fn writePath(self: *Emitter, path: []const u8, is_match: bool) usize {
         const mine = !self.linked;
-        if (mine) self.linkOpen(path, 0, 0);
-        self.paint(palette.path_on, path);
+        if (mine) self.linkOpen(path, 0, 0, true);
+        self.paint(self.o.palette.path, path);
         if (mine) self.linkClose();
         const end = self.out.items.len;
-        if (self.o.null_sep) self.out.append(self.a, 0) catch oom() else self.paint(palette.sep_on, self.fieldSep(is_match));
+        if (self.o.null_sep) self.out.append(self.a, 0) catch oom() else self.paint(self.o.palette.sep, self.fieldSep(is_match));
         return end;
     }
 
@@ -380,19 +458,19 @@ pub const Emitter = struct {
         const sep = self.fieldSep(is_match);
         const b = beacon.current();
         const wide = if (b) |bb| bb.scope != .path and (self.show_name or self.o.line_num or self.o.byte_offset) else false;
-        if (wide) self.linkOpen(path, lineno, col);
+        if (wide) self.linkOpen(path, lineno, col, self.show_name);
         // Where the anchor ends: after the last field's VALUE, before its
         // separator. Re-read after each field so the last one wins.
         var anchor = self.out.items.len;
         if (self.show_name) anchor = self.writePath(path, is_match);
         var buf: [20]u8 = undefined;
         if (self.o.line_num) {
-            self.paint(palette.line_on, writeDecimal(&buf, lineno));
+            self.paint(self.o.palette.line, writeDecimal(&buf, lineno));
             anchor = self.out.items.len;
-            self.paint(palette.sep_on, sep);
+            self.paint(self.o.palette.sep, sep);
         }
         if (self.o.column and is_match and col != 0) {
-            self.add(writeDecimal(&buf, col));
+            self.paint(self.o.palette.column, writeDecimal(&buf, col));
             anchor = self.out.items.len;
             self.add(sep);
         }
@@ -407,7 +485,7 @@ pub const Emitter = struct {
     /// The `--heading` group title: the path on its own line, and — when links
     /// are on — the click target for the whole group beneath it.
     pub fn heading(self: *Emitter, path: []const u8) void {
-        self.linkOpen(path, 0, 0);
+        self.linkOpen(path, 0, 0, true);
         self.add(path);
         self.linkClose();
         self.add(if (self.o.null_sep) "\x00" else self.o.outTerm());
@@ -435,7 +513,7 @@ pub const Emitter = struct {
     /// The `--`-style separator between non-adjacent context groups, honoring
     /// `--context-separator` (custom string) and `--no-context-separator` (none).
     pub fn groupSep(self: *Emitter) void {
-        if (self.o.ctx_sep) |sep| self.out.print(self.a, "{s}{s}", .{ sep, self.o.outTerm() }) catch oom();
+        if (self.o.groupSep()) |s| self.out.print(self.a, "{s}{s}", .{ s[0], s[1] }) catch oom();
     }
 
     /// Resolve one `-A/-B` window `[lo,hi]` against the previous group: prints

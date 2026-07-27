@@ -44,17 +44,32 @@ pub const Sink = struct {
     mu: std.Io.Mutex = .init,
     heading: bool,
     join_groups: bool,
+    // `Opts.groupSep()`, resolved once by the driver: the sink writes bytes and
+    // never re-derives a rule the printer already owns.
+    group_sep: ?[2][]const u8 = .{ "--", "\n" },
     first: bool = true, // guarded by `mu`
     matched_files: usize = 0, // guarded by `mu`
     // Bytes actually written to stdout (match stream + separators). `--stats`
     // reads this after the walk for `bytes printed` (quiet ⇒ forced to 0).
     bytes_printed: usize = 0, // guarded by `mu`
+    // Of those, color escapes and OSC-8 frames. Workers render concurrently, so
+    // each fragment carries its own share and it is banked here, under the same
+    // lock as the write — the ceiling must discount a fragment exactly when that
+    // fragment lands, never when some other worker happened to render one.
+    chrome: usize = 0, // guarded by `mu`
 
     fn noteWrite(self: *Sink, n: usize) void {
         self.bytes_printed += n;
     }
 
-    pub fn emit(self: *Sink, kind: FragKind, buf: []const u8) void {
+    /// Bank a landed fragment's chrome and republish the run's total.
+    fn noteChrome(self: *Sink, n: usize) void {
+        if (n == 0) return;
+        self.chrome += n;
+        corpus_mod.noteChrome(self.chrome);
+    }
+
+    pub fn emit(self: *Sink, kind: FragKind, buf: []const u8, chrome: usize) void {
         self.mu.lockUncancelable(self.io);
         defer self.mu.unlock(self.io);
         if (self.q.aborted.load(.monotonic)) return; // pipe already gone — nothing left to do
@@ -76,8 +91,10 @@ pub const Sink = struct {
                     if (ok) self.noteWrite(1);
                 }
                 if (ok and self.join_groups and !self.first and buf.len > 0) {
-                    ok = corpus_mod.writeStdout("--\n");
-                    if (ok) self.noteWrite(3);
+                    if (self.group_sep) |s| for (s) |piece| {
+                        ok = ok and corpus_mod.writeStdout(piece);
+                        if (ok) self.noteWrite(piece.len);
+                    };
                 }
                 self.first = false;
                 self.matched_files += 1;
@@ -88,7 +105,10 @@ pub const Sink = struct {
         }
         if (ok) {
             ok = corpus_mod.writeStdout(buf);
-            if (ok) self.noteWrite(buf.len);
+            if (ok) {
+                self.noteWrite(buf.len);
+                self.noteChrome(chrome);
+            }
         }
         if (!ok) self.q.abort();
     }
@@ -99,11 +119,14 @@ pub const Sink = struct {
     /// mutex + syscall is a per-chunk cost, not per file, so a high-hit scan
     /// stops serializing every worker behind the sink lock. Order-free (each
     /// chunk is a contiguous slice of one worker's matches).
-    pub fn emitFilesChunk(self: *Sink, buf: []const u8, files: usize) void {
+    pub fn emitFilesChunk(self: *Sink, buf: []const u8, files: usize, chrome: usize) void {
         self.mu.lockUncancelable(self.io);
         defer self.mu.unlock(self.io);
         if (self.q.aborted.load(.monotonic)) return;
         self.matched_files += files;
-        if (!corpus_mod.writeStdout(buf)) self.q.abort() else self.noteWrite(buf.len);
+        if (!corpus_mod.writeStdout(buf)) self.q.abort() else {
+            self.noteWrite(buf.len);
+            self.noteChrome(chrome);
+        }
     }
 };

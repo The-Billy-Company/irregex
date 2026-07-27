@@ -202,7 +202,12 @@ fn fieldReach(f: OptField) Reach {
         // What counts as a match in it.
         .caseless, .smart_case, .unicode, .word, .fixed, .invert, .line_regexp, .crlf, .null_data, .multiline, .multiline_dotall, .re_line_anchors, .engine, .pcre_unicode, .max_per_file, .max_per_file_set, .stop_on_nonmatch, .in_comments, .in_code => .semantics,
         // How the matches are written out.
-        .only_matching, .line_num, .filename, .before, .after, .mode, .include_zero, .max_cols, .max_cols_set, .max_cols_preview, .passthru, .field_match_sep, .field_ctx_sep, .path_sep, .column, .byte_offset, .vimgrep, .heading, .trim, .null_sep, .quiet, .stats, .replace, .sorted, .sort_key, .sort_reverse, .ctx_sep, .color, .hyperlink, .hyperlink_format, .hostname_bin, .rank, .rank_k, .uncap, .messages, .ignore_messages, .plain => .presentation,
+        // `.hyperlink_bare` is derived parse state, not a settable option: no
+        // catalog row targets it, so `reachOf` can never ask about it. It is
+        // classified with the flag it observes rather than excluded, because
+        // this switch is exhaustive over the STRUCT, and a field with nowhere
+        // to go would be an invitation to make the switch non-exhaustive.
+        .only_matching, .line_num, .filename, .before, .after, .mode, .include_zero, .max_cols, .max_cols_set, .max_cols_preview, .passthru, .field_match_sep, .field_ctx_sep, .path_sep, .column, .byte_offset, .vimgrep, .heading, .trim, .null_sep, .quiet, .stats, .replace, .sorted, .sort_key, .sort_reverse, .ctx_sep, .color, .hyperlink, .hyperlink_bare, .hyperlink_format, .hostname_bin, .palette, .rank, .rank_k, .uncap, .messages, .ignore_messages, .plain => .presentation,
         // Tier and topology: the answer is identical either way. Buffering is
         // the purest member of the class — it changes only how many syscalls
         // the same bytes take to reach the same reader.
@@ -350,7 +355,7 @@ pub const flag_catalog = [_]FlagSpec{
     .{ .longs = &.{"no-unicode"}, .action = .{ .unset = .unicode }, .doc = "byte mode: single-byte classes and ASCII word boundaries", .compatibility = .supported, .note = "byte/ASCII mode: single-byte classes and ASCII \\w/\\b (equivalent to a leading (?-u))" },
     .{ .longs = &.{"no-stats"}, .action = .{ .unset = .stats }, .doc = "print no search statistics", .compatibility = .supported },
     .{ .longs = &.{"no-trim"}, .action = .{ .unset = .trim }, .doc = "keep leading whitespace", .compatibility = .supported },
-    .{ .longs = &.{"colors"}, .action = .colors, .doc = "accepted for rg parity; the spec is validated, then discarded", .compatibility = .accepted_but_ignored },
+    .{ .longs = &.{"colors"}, .action = .colors, .doc = "restyle one element: {type}:none or {type}:{fg|bg|style}:{value}", .compatibility = .supported, .note = "rg's spec grammar exactly (path/line/column/match × fg/bg/style, named colors, 0-255, r,g,b), merged into gist's palette the way rg's merge into its own — so naming a hue keeps the default's bold. gist renders one SGR sequence per element where rg emits a separate escape per attribute, and paints column numbers only when a spec asks for them" },
     .{ .short = 'j', .longs = &.{"threads"}, .action = .{ .set_num = .threads }, .doc = "cap the worker pool at this many, or 0 for gist's own topology", .compatibility = .supported, .note = "caps the work-stealing worker pool at N (0 = gist's own topology), the same bound rg's -j sets; results are identical" },
     // Match-backend selection. `--engine default` is the linear engine; `--engine
     // auto` compiles linear and escalates to the PCRE2 backend only for a pattern
@@ -373,10 +378,10 @@ pub const flag_catalog = [_]FlagSpec{
     // Delivery cadence — the same bytes, in a different number of syscalls.
     .{ .longs = &.{"line-buffered"}, .action = .{ .buffered = .line }, .compatibility = .improvement, .doc = "flush every finished line as it is found", .note = "improvement: no finished line is ever held, but every finished line already in hand leaves in ONE write — rg's LineWriter pays one syscall per line for the same interactivity. The boundary is the run's real terminator, so --null-data records flush on NUL (rg's line writer only knows \\n)" },
     .{ .longs = &.{"block-buffered"}, .action = .{ .buffered = .block }, .compatibility = .improvement, .doc = "coalesce output into ramped blocks", .note = "improvement: a RAMPED block — the first fragment is never held and the threshold then doubles to the ceiling, so `| head -1` answers immediately and a closed pipe is discovered within a kilobyte; rg's BufWriter holds the first byte as long as the last. Size it with --buffer-size (rg's 8 KiB is a constant)" },
-    .{ .longs = &.{"buffer-size"}, .action = .bufsize, .compatibility = .native, .doc = "size the block buffer (default 64K)", .note = "ceiling for --block-buffered, in bytes with an optional K/M suffix (default 64K, a Linux pipe's capacity); 0 restores the default. Implies --block-buffered when no cadence was named" },
+    .{ .longs = &.{"buffer-size"}, .action = .bufsize, .compatibility = .native, .doc = "size the coalescing buffer (default 64K; 0 = unbuffered)", .note = "ceiling for the held bytes, in bytes with an optional K/M suffix (default 64K, a Linux pipe's capacity). Implies --block-buffered when no cadence was named; 0 holds nothing at all, so every fragment becomes its own write" },
     // The two presentation poles.
     .{ .short = 'p', .longs = &.{"pretty"}, .action = .pretty, .compatibility = .supported, .doc = "color, heading, and line numbers at once", .note = "rg's alias for --color always --heading --line-number; a later -N/--no-heading/--color still wins" },
-    .{ .longs = &.{"plain"}, .action = .plain, .compatibility = .native, .doc = "print what a pipe would receive, on a terminal", .note = "the inverse pole: pin the answer to what a PIPE would receive even on a terminal — --color never, no long-line elision, block-buffered — so an interactive run reproduces a captured one byte-for-byte" },
+    .{ .longs = &.{"plain"}, .action = .plain, .compatibility = .native, .doc = "print what a pipe would receive, on a terminal", .note = "the inverse pole: pin the answer to what a PIPE would receive even on a terminal — --color never, no long-line elision, block-buffered — so a terminal run and a redirected one differ in nothing the destination decides. Walk ORDER is not a destination decision: pin it with --sort path, exactly as a piped run must" },
 };
 
 pub const long_map = std.StaticStringMap(usize).initComptime(blk: {

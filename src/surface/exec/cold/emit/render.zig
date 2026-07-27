@@ -127,8 +127,15 @@ pub fn renderFile(em: *Emitter, f: InFile, stat: *Stats, matched_files: *usize, 
     // any other (only the exit code still turns on `hits`). Keying the retract
     // on `hits` instead discarded the passthru body along with its title.
     if (out.items.len > titled) {
-        if (join_groups and !first.* and out.items.len > before)
-            out.insertSlice(a, before, "--\n") catch oom();
+        // The gap between two files is a context gap like any other, so it is
+        // the same `Opts.groupSep` — inserted back-to-front, both pieces
+        // landing at the group's start.
+        if (join_groups and !first.* and out.items.len > before) {
+            if (o.groupSep()) |s| {
+                out.insertSlice(a, before, s[1]) catch oom();
+                out.insertSlice(a, before, s[0]) catch oom();
+            }
+        }
         first.* = false;
     } else if (heading) out.shrinkRetainingCapacity(before);
     if (hits > 0) matched_files.* += 1;
@@ -164,10 +171,11 @@ pub fn emitSharded(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.Array
         show_name: bool,
         arena: std.heap.ArenaAllocator,
         buf: std.ArrayList(u8) = .empty,
-        // One entry per file, in order: buffer length after that file — the
-        // boundary the ordered merge (`appendBudgeted`) truncates on so the
-        // parallel soft-cap cut lands byte-identical to the serial loop's break.
-        marks: std.ArrayList(usize) = .empty,
+        // One entry per file, in order: where that file ends and how much of it
+        // was content — the boundary the ordered merge (`appendBudgeted`)
+        // truncates on so the parallel soft-cap cut lands byte-identical to the
+        // serial loop's break, under color and hyperlinks as well as plain.
+        marks: std.ArrayList(corpus_mod.Mark) = .empty,
         stat: Stats = .{},
         matched: usize = 0,
 
@@ -179,7 +187,7 @@ pub fn emitSharded(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.Array
             var first = true;
             for (sh.files) |f| {
                 renderFile(&em, f, &sh.stat, &sh.matched, &first, sh.binary_detect, sh.count_zero, false, false, sh.show_name);
-                sh.marks.append(sa, sh.buf.items.len) catch oom();
+                sh.marks.append(sa, .{ .end = sh.buf.items.len, .content = sh.buf.items.len - em.chrome }) catch oom();
             }
         }
     };

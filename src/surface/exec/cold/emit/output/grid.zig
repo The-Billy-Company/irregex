@@ -321,9 +321,12 @@ fn countMatches(self: *Emitter, path: []const u8, lines: []const []const u8) usi
         if (cand) |c| if (!c[k]) continue;
         const mv = self.mview(line);
         if (!self.lineCanMatch(mv)) continue;
-        var from: usize = 0;
-        var on_line: usize = 0;
-        while (output.nextSpan(self.re, &ssim, self.o, mv, &from)) |_| on_line += 1;
+        // Counted through the walk `-o` prints from, so `--count-matches` is
+        // literally "how many `-o` rows" — rg's own identity. Counting
+        // non-empty spans instead lost every zero-width match a nullable
+        // pattern makes (`--count-matches 'a*'` over "aa\nbb" reported 1, rg 4).
+        var rows = output.Rows{ .re = self.re, .ss = &ssim, .o = self.o, .mv = mv };
+        const on_line = rows.tally();
         if (on_line == 0) continue;
         total += on_line;
         // `-m` limits matched LINES, not spans — the same unit it limits
@@ -353,4 +356,39 @@ test "files-only emits once and stops after the first matching line" {
 
     try t.expectEqual(@as(usize, 1), em.file("fixture.txt", &.{ "needle first", "needle second" }));
     try t.expectEqualStrings("fixture.txt\n", out.items);
+}
+
+// `--count-matches` is defined as the number of rows `-o` prints, so the two
+// modes are asked the same question over the same lines and must agree. A
+// nullable pattern is the only place they can disagree — it is the one shape
+// whose matches are mostly zero-width — and counting non-empty spans used to
+// report 1 where rg (and this file's own `-o`) say 4.
+test "--count-matches counts exactly the rows -o prints, empty matches included" {
+    const t = std.testing;
+    // Captured from ripgrep 15.2.0 over "aa\nbb\n":
+    //   rg -o 'a*' ⇒ aa / <empty> ×3     rg --count-matches 'a*' ⇒ 4
+    //   rg -o 'x?' ⇒ <empty> ×6          rg --count-matches 'x?' ⇒ 6
+    //   rg -o 'a'  ⇒ a ×2                rg --count-matches 'a'  ⇒ 2
+    const cases = [_]struct { pat: []const u8, want: usize }{
+        .{ .pat = "a*", .want = 4 },
+        .{ .pat = "x?", .want = 6 },
+        .{ .pat = "a", .want = 2 },
+    };
+    const lines: []const []const u8 = &.{ "aa", "bb" };
+    for (&cases) |c| {
+        var m = Matcher{ .linear = try Regex.compile(t.allocator, c.pat) };
+        defer m.deinit();
+
+        var counted: std.ArrayList(u8) = .empty;
+        defer counted.deinit(t.allocator);
+        var ce = Emitter{ .a = t.allocator, .re = &m, .o = .{ .mode = .count_matches }, .show_name = false, .out = &counted };
+        try t.expectEqual(c.want, ce.file("fixture.txt", lines));
+
+        // The same question through the printer: one row per match.
+        var printed: std.ArrayList(u8) = .empty;
+        defer printed.deinit(t.allocator);
+        var pe = Emitter{ .a = t.allocator, .re = &m, .o = .{ .only_matching = true }, .show_name = false, .out = &printed };
+        try t.expectEqual(c.want, pe.file("fixture.txt", lines));
+        try t.expectEqual(c.want, std.mem.count(u8, printed.items, "\n"));
+    }
 }

@@ -20,6 +20,7 @@ const glob = @import("../../../../corpus/scope/glob.zig");
 const types = @import("../../../../corpus/scope/types.zig");
 const answer = @import("answer.zig");
 const encoding = @import("../read/encoding.zig");
+const emit_color = @import("../emit/color.zig");
 const verdict = @import("verdict.zig");
 
 /// The resolved answer shape — see `answer.zig`. Re-exported so `Opts.mode`
@@ -141,9 +142,13 @@ pub const SortKey = enum { none, path, modified, accessed, created };
 /// `--line-buffered` / `--block-buffered`: when result bytes leave the process.
 /// `auto` (the default) reads the destination the way ripgrep does — a terminal
 /// wants each line as it is found, a pipe or a file wants them coalesced.
-/// Neither ever changes which bytes are written, only how many trips through
-/// the kernel it takes; see `corpus/tree/drain.zig` for what each one costs.
-pub const Buffering = enum { auto, line, block };
+/// `off` is what `--buffer-size=0` asks for: a buffer that can hold nothing is
+/// no buffer, so every fragment the printer produces becomes its own write —
+/// the cadence to reach for when something downstream is measuring the shape of
+/// the stream rather than reading it.
+/// None of them ever changes which bytes are written, only how many trips
+/// through the kernel it takes; see `corpus/tree/drain.zig` for what each costs.
+pub const Buffering = enum { auto, line, block, off };
 
 pub const Opts = struct {
     caseless: bool = false,
@@ -277,9 +282,21 @@ pub const Opts = struct {
     // The destination template, alias-resolved and syntax-checked at parse
     // time. Null = let the beacon probe the terminal for the right editor URL.
     hyperlink_format: ?[]const u8 = null,
+    // Was `--hyperlink` written bare, with no `=value`? Then the token after it
+    // is the PATTERN, and someone carrying rg's `--hyperlink-format vscode`
+    // spacing just searched for their editor's name. Remembered so the run can
+    // say so (`beacon.misspacedNote`) instead of silently linking somewhere else.
+    hyperlink_bare: bool = false,
     // --hostname-bin: a command whose stdout supplies `{host}` (rg parity —
     // a WSL or container shell needs the outer host, not the kernel's).
     hostname_bin: ?[]const u8 = null,
+    // --colors, resolved once at `seal` into the four SGR prefixes this run
+    // paints with. It rides Opts rather than an emitter parameter because Opts
+    // already reaches every render path — serial, swarm, and the daemon's
+    // facet — so honoring a spec cost no signature a new argument. The default
+    // is gist's own palette, byte-for-byte what a run with no spec has always
+    // printed.
+    palette: emit_color.Palette = .{},
     // --no-index: never consult the persisted trigram index — always live-read
     // every walked file. Default (false) auto-detects an index and uses it purely
     // to SKIP reading files it proves can't match (unchanged since the build and
@@ -315,8 +332,8 @@ pub const Opts = struct {
     // --plain: pin the answer to the shape a PIPE would receive, even when
     // stdout is a terminal. gist has three destination-conditional behaviors
     // (`--color auto`, the TTY long-line `-M` guard, `--line-buffered`'s auto
-    // resolution), and an interactive run that must reproduce a captured one
-    // byte-for-byte should not have to remember and re-spell each of them.
+    // resolution), and a run that must not differ from a redirected one should
+    // not have to remember and re-spell each of them.
     // The inverse pole of `-p`/`--pretty`.
     plain: bool = false,
     filter: Filter = .{},
@@ -347,6 +364,17 @@ pub const Opts = struct {
         if (self.null_sep and self.enumeration()) return 0;
         const out = self.outTerm();
         return out[out.len - 1];
+    }
+    /// The separator between two adjacent groups, in the two pieces a caller
+    /// writes in order — `null` once `--no-context-separator` suppressed it.
+    /// A context gap and a FILE boundary are the same event to ripgrep, and
+    /// three engines emit it (serial render, parallel sink, resident session);
+    /// spelling the rule once is what keeps `--context-separator`, its
+    /// suppression, and the `--null-data` terminator from being honored in
+    /// some of them and not others. Split rather than joined so the hot
+    /// emitter path stays allocation-free.
+    pub fn groupSep(self: Opts) ?[2][]const u8 {
+        return if (self.ctx_sep) |sep| .{ sep, self.outTerm() } else null;
     }
     /// The single-byte reconstruction terminator for a body line that WAS
     /// terminated in the file: the emitter's line slices keep any `\r` but
@@ -419,6 +447,9 @@ pub const Builder = struct {
     extra_pats: std.ArrayList([]const u8) = .empty, // 2nd+ -e/--regexp
     ignore_files: std.ArrayList([]const u8) = .empty, // --ignore-file
     custom_types: std.ArrayList(CustomType) = .empty, // --type-add
+    // --colors, in argv order: specs merge, so the last one naming an attribute
+    // wins and `seal` renders them into `o.palette` exactly once.
+    color_specs: std.ArrayList([]const u8) = .empty,
     type_all: bool = false,
     ntype_all: bool = false,
     glob_ci: bool = false, // --glob-case-insensitive
@@ -527,6 +558,10 @@ pub const Builder = struct {
         self.o.filter.type_all, self.o.filter.ntype_all = .{ self.type_all, self.ntype_all };
         inline for (.{ "ignore_files", "pre_globs", "pre_excludes" }) |f|
             @field(self.o, f) = @field(self, f).toOwnedSlice(self.a) catch oom();
+        // Specs merge in argv order, so the palette can only be rendered once
+        // the last one is in. No spec leaves the default constants in place.
+        if (self.color_specs.items.len > 0)
+            self.o.palette = emit_color.resolve(self.a, self.color_specs.items);
         return .{
             .patterns = pats,
             .opts = self.o,

@@ -29,6 +29,7 @@ const rank_mod = @import("../../../../kernel/rank/rank.zig");
 const gl = @import("../../../../corpus/scope/glob.zig");
 const query_mod = @import("../../../../kernel/match/query/query.zig");
 const assay = @import("../../../../assay/assay.zig");
+const beacon = @import("../../../cli/beacon.zig");
 const Dir = std.Io.Dir;
 
 const Doc = rank_mod.Doc;
@@ -304,8 +305,13 @@ fn renderRanked(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, docs: []co
         const snip = try snippetOf(gpa, io, source, doc.id, doc.best_line, re);
         defer gpa.free(snip);
         const kind = if (doc.is_mirror) "mirror" else if (doc.is_generated) "gen" else if (doc.is_def) "def" else "use";
-        try out.print(gpa, "{d:>2}. {s}:{d}  [{s}]  ×{d}  {s}", .{ i + 1, path, doc.best_line, kind, doc.matches, snip });
-        if (doc.is_mirror) if (mirror.canonical(Doc, docs, doc)) |canonical| try out.print(gpa, "  (mirror of {s})", .{source.path(canonical)});
+        // The ranked row's whole point is that its top line is the one to open,
+        // so the locator is the click target — the same `path:line` the other
+        // faces frame, written in place.
+        try out.print(gpa, "{d:>2}. ", .{i + 1});
+        beacon.writeLocator(gpa, out, path, doc.best_line);
+        try out.print(gpa, "  [{s}]  ×{d}  {s}", .{ kind, doc.matches, snip });
+        if (doc.is_mirror) if (mirror.canonical(Doc, docs, doc)) |canonical| try out.print(gpa, "  (mirror of {s})", .{beacon.anchor(gpa, source.path(canonical))});
         try out.append(gpa, '\n');
     }
     return top;

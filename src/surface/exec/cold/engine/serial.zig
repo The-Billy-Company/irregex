@@ -161,7 +161,8 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // Is a human watching? Three behaviors key on this one answer — the long-line
     // guard below, `--color auto` (inside `color.enabled`), and the delivery
     // cadence — and `--plain` is the single spelling that stands all three down,
-    // so an interactive run can reproduce a captured one byte-for-byte.
+    // so nothing the DESTINATION decides differs between a terminal run and a
+    // redirected one. (Walk order is not one of the three; `--sort` owns it.)
     const interactive = !o.plain and (std.Io.File.stdout().isTty(io) catch false);
     // Install the stdout buffering policy before the first result byte can be
     // written. `auto` reads the destination the way rg does: a terminal wants
@@ -170,6 +171,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     corpus_mod.armStdout(switch (o.buffering) {
         .line => .line,
         .block => .block,
+        .off => .relay,
         .auto => if (interactive) .line else .block,
     }, o.buffer_size, o.recordTerm());
     // Resolved ONCE per run (not per file/emitter): stdout tty + `--color` +
@@ -231,7 +233,11 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         // and outranks the listing — quiet here is not the match short-circuit.
         if (o.quiet) (Outcome{ .matched = c.files.len > 0, .faulted = c.path_error }).exit();
         var out: std.ArrayList(u8) = .empty;
-        for (c.files) |f| out.print(a, "{s}{c}", .{ f.path, if (o.null_sep) @as(u8, 0) else '\n' }) catch oom();
+        // Every row here is a filename and nothing else, so the whole row is the
+        // click target. `anchor` borrows the path back unchanged when the run
+        // emits no links — which `--null` always is, since that list is bound
+        // for `xargs -0` and an escape inside a record is corruption.
+        for (c.files) |f| out.print(a, "{s}{c}", .{ beacon.anchor(a, f.path), if (o.null_sep) @as(u8, 0) else '\n' }) catch oom();
         corpus_mod.emitStdout(out.items);
         (Outcome{ .matched = c.files.len > 0, .faulted = c.path_error }).exit();
     }
@@ -500,6 +506,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
             // the output budget is spent, bounding peak memory (the OOM guard) at the
             // exact point the flush below would truncate anyway. `--stats` runs the
             // full search regardless (it tallies over every file), so never short it.
+            corpus_mod.noteChrome(em.chrome);
             if (!o.stats and corpus_mod.outputFull(out.items.len)) break;
         }
     }
