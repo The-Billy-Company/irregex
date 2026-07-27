@@ -15,6 +15,7 @@ const Stats = @import("../../read/stats.zig").Stats;
 const ignore = @import("../../../../../corpus/tree/ignore.zig");
 const ingest = @import("../../read/ingest.zig");
 const json = @import("../../emit/json.zig");
+const beacon = @import("../../../../cli/beacon.zig");
 const queue = @import("queue.zig");
 const serial = @import("../serial.zig");
 const shard_mod = @import("../../../../../corpus/index/content/shard.zig");
@@ -162,7 +163,10 @@ pub const Worker = struct {
             w.recs.append(w.gpa, .{ .path = path, .kind = .text_hit, .buf = "" }) catch oom();
             return;
         }
-        w.out.appendSlice(w.gpa, path) catch oom();
+        // A path-list row IS the click target — this is the mode a human uses to
+        // pick a file — so it gets the same frame the serial heading writes.
+        // `anchor` borrows the path unchanged when the run resolved no beacon.
+        w.out.appendSlice(w.gpa, beacon.anchor(w.gpa, path)) catch oom();
         w.out.appendSlice(w.gpa, term) catch oom();
         w.out_files += 1;
         if (w.out.items.len >= files_flush_cap) w.flushFiles();
@@ -287,7 +291,7 @@ pub fn emitSorted(gpa: std.mem.Allocator, sink: *Sink, workers: []Worker, o: Opt
         var out: std.ArrayList(u8) = .empty;
         defer out.deinit(gpa);
         for (recs) |r| {
-            out.appendSlice(gpa, r.path) catch oom();
+            out.appendSlice(gpa, beacon.anchor(gpa, r.path)) catch oom();
             out.appendSlice(gpa, term) catch oom();
         }
         sink.emitFilesChunk(out.items, recs.len);

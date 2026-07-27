@@ -17,19 +17,19 @@ unable to hide.
 
 Hand-computed oracles against the calculus, one test per load-bearing rule:
 
-| test                  | pins                                                                                            |
-| --------------------- | ----------------------------------------------------------------------------------------------- |
-| document crest        | hand-counted runs for all eight classes                                                         |
-| class repetition      | `[0-9a-f]{8}` forces hex and word runs of 8                                                     |
-| concatenation         | saturated seam addition and exact epsilon identity                                              |
-| optional certificates | digit and non-digit optionals cannot be confused across `?`, `*`, `{0,m}`, or `{0,0}`           |
-| alternation           | componentwise minima and conjunctive `only_c_cert` inside an expression; a `Swell` disjunction at the root |
+| test                  | pins                                                                                                                                            |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| document crest        | hand-counted runs for all eight classes                                                                                                         |
+| class repetition      | `[0-9a-f]{8}` forces hex and word runs of 8                                                                                                     |
+| concatenation         | saturated seam addition and exact epsilon identity                                                                                              |
+| optional certificates | digit and non-digit optionals cannot be confused across `?`, `*`, `{0,m}`, or `{0,0}`                                                           |
+| alternation           | componentwise minima and conjunctive `only_c_cert` inside an expression; a `Swell` disjunction at the root                                      |
 | disjunction           | a swell prunes only what clears no alternative, dominates the retired fold on 8,192 random vectors, and goes inert when one branch demands `0⃗` |
-| degradation           | unsupported syntax and unsafe case folds yield `0⃗`; case-closed caseless classes remain active |
-| escapes and Unicode   | real escaped bytes plus the byte/codepoint alphabet contract                                    |
-| counted repetition    | malformed bounds degrade; 70,000 copies saturate without a 4,096 clamp                          |
-| profile constructors  | epsilon certifies every class; unknown certifies none                                           |
-| common saturation     | 70,000-byte query and document values both compare as 65,535                                    |
+| degradation           | unsupported syntax and unsafe case folds yield `0⃗`; case-closed caseless classes remain active                                                 |
+| escapes and Unicode   | real escaped bytes plus the byte/codepoint alphabet contract                                                                                    |
+| counted repetition    | malformed bounds degrade; 70,000 copies saturate without a 4,096 clamp                                                                          |
+| profile constructors  | epsilon certifies every class; unknown certifies none                                                                                           |
+| common saturation     | 70,000-byte query and document values both compare as 65,535                                                                                    |
 
 ## 2. Sidecar codec tests — `src/corpus/index/crest/sidecar_test.zig`
 

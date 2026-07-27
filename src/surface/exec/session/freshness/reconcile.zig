@@ -30,6 +30,9 @@ const answer = @import("../answer/answer.zig");
 const overlay = @import("../warm/overlay.zig");
 const request = @import("../answer/request.zig");
 const resident = @import("../warm/resident.zig");
+// `underRoot` only — the same root-containment rule `PathFilter` scopes an
+// answer with, so the coverage guard and the pruning it protects agree.
+const scope = @import("../../../../corpus/scope/glob.zig");
 // The resident file set is the certified rg-default walk the cold path uses, NOT
 // `haystack`'s coarse superset — this is what makes `resident == --no-index ==
 // rg` true for hidden files, `.gitignore` precedence, and root scope.
@@ -395,19 +398,44 @@ fn refreshExtras(self: *ResidentSession) QueryError!bool {
     return true;
 }
 
-/// Fail-closed guard for the `Extra` gap (`serial.zig`): a `-t`/`-g` query
-/// un-hides/un-ignores files the mirror — built from the same
-/// hidden/ignore-excluding walk — cannot hold. If any reachable extra would
-/// be surfaced by this request's filter, decline so the client answers on the
-/// certified cold path (which walks them): the flagship "index changes speed,
-/// never results" claim, restored for filtered queries. A request with no
-/// type/glob filter can't surface an extra and returns at once (the common
-/// path pays only two length checks). When a prior scoped reconcile left the
-/// list stale, upgrade the held lease to exclusive, refresh with one walk, and
-/// downgrade back — the double-checked dance `Ward.reconcileHeld` runs — so
-/// `*held` always ends holding a valid read lease and the caller's `defer`
-/// release stays balanced on every path, error included.
+/// Does the mirror hold at least one path under every requested root? Naming a
+/// root is naming intent: cold exempts an explicitly given PATH from the ignore
+/// and hidden rules (`walk.zig::gather` → `Ignore.scopeToRoot`), matching rg, so
+/// `gist pat ign/` searches a gitignored subtree that the whole-tree default
+/// walk behind the mirror pruned entirely. Such a root leaves no `Extra` either
+/// — the walk stops descending AT the pruned directory — so the extras guard
+/// below cannot see it, and scoping the mirror to it would render a clean "no
+/// match" where cold and rg both answer.
+///
+/// Coverage is the uniform test for that, needing no ignore machinery: a root
+/// the mirror can serve has files in it. Zero coverage means either a pruned
+/// root (cold answers, warm must not) or a genuinely empty one (cold answers
+/// nothing, and so would warm) — declining both is fail-open, costing a covered
+/// root only the scan up to its first hit and an uncovered one one pass.
+fn rootsCovered(self: *const ResidentSession, roots: []const []const u8) bool {
+    outer: for (roots) |r| {
+        for (self.mir.paths) |p| if (scope.underRoot(p, r)) continue :outer;
+        return false;
+    }
+    return true;
+}
+
+/// Fail-closed guard for the two ways a request can reach past the mirror: a
+/// positional root the default walk pruned (`rootsCovered`), and the `Extra`
+/// gap (`serial.zig`) — a `-t`/`-g` query un-hides/un-ignores files the mirror,
+/// built from that same hidden/ignore-excluding walk, cannot hold. If either
+/// holds, decline so the client answers on the certified cold path (which walks
+/// them): the flagship "index changes speed, never results" claim, restored for
+/// scoped and filtered queries. An unrooted request with no type/glob filter can
+/// reach neither and returns at once (the common path pays only three length
+/// checks). When a prior scoped reconcile left the extras list stale, upgrade
+/// the held lease to exclusive, refresh with one walk, and downgrade back — the
+/// double-checked dance `Ward.reconcileHeld` runs — so `*held` always ends
+/// holding a valid read lease and the caller's `defer` release stays balanced on
+/// every path, error included.
 pub fn guardExtras(self: *ResidentSession, held: *ResidentSession.Held, req: request.Request) QueryError!answer.Answer(void) {
+    if (req.filter.roots.len != 0 and !rootsCovered(self, req.filter.roots))
+        return .{ .declined = .freshness_unprovable };
     if (req.filter.exts.len == 0 and req.filter.includes.len == 0) return .{ .got = {} };
     var declined = false;
     const Ctx = struct { session: *ResidentSession, declined: *bool };

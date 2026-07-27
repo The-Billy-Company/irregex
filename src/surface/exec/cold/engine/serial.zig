@@ -38,8 +38,10 @@ const assay = @import("../../../../assay/assay.zig");
 const Outcome = @import("../../../cli/outcome.zig").Outcome;
 const output = @import("../emit/output.zig");
 const json = @import("../emit/json.zig");
+const beacon = @import("../../../cli/beacon.zig");
 const color = @import("../emit/color.zig");
 const legible = @import("../read/legible.zig");
+const multiline = @import("../emit/multiline.zig");
 const stats = @import("../read/stats.zig");
 const notice = @import("../quarry/notice.zig");
 const ingest = @import("../read/ingest.zig");
@@ -133,6 +135,18 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
 
     const parsed = args.parseArgv(a, argv);
     var o = parsed.opts;
+    // Lower `--no-messages`/`--no-ignore-messages` onto the diagnostic policy
+    // before anything can walk, open, or read an ignore source. Argv errors
+    // above this line are usage faults, not the message lane, and stay audible
+    // on purpose — you cannot silence the reason your flags were wrong.
+    //
+    // The muffle is process-wide (unlike the sink, which is thread-local), and
+    // safely so: this function has exactly ONE caller (`face/gist/main.zig`, the
+    // cold CLI entry), so it runs once per process and before any worker spawns.
+    // A daemon never reaches here — the warm nier is a fail-closed allowlist
+    // that does not admit these flags — so one client's silence can never become
+    // another's. Should a second caller ever appear, this becomes a `scope`.
+    assay.muffle(o.messages, o.ignore_messages);
     // Resolve the output budget for this run: the ~25k-token soft agent-context
     // guard + the hard OOM ceiling (corpus.zig), honoring `--uncap`/`GIST_UNCAP`
     // and the `GIST_MAX_OUTPUT_*` knobs. Applied at the single stdout seam
@@ -144,9 +158,39 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // truncated (and, on the unordered parallel engine, nondeterministic) subset.
     // The hard OOM ceiling still bounds a genuine blowup. See `Opts.enumeration`.
     if (o.enumeration()) corpus_mod.exemptSoftCap();
+    // Is a human watching? Three behaviors key on this one answer — the long-line
+    // guard below, `--color auto` (inside `color.enabled`), and the delivery
+    // cadence — and `--plain` is the single spelling that stands all three down,
+    // so an interactive run can reproduce a captured one byte-for-byte.
+    const interactive = !o.plain and (std.Io.File.stdout().isTty(io) catch false);
+    // Install the stdout buffering policy before the first result byte can be
+    // written. `auto` reads the destination the way rg does: a terminal wants
+    // each line as it is found, a pipe wants them coalesced. Neither changes a
+    // byte of the answer — only how many trips through the kernel it takes.
+    corpus_mod.armStdout(switch (o.buffering) {
+        .line => .line,
+        .block => .block,
+        .auto => if (interactive) .line else .block,
+    }, o.buffer_size, o.recordTerm());
     // Resolved ONCE per run (not per file/emitter): stdout tty + `--color` +
     // env. Every emitter below shares this single yes/no.
     const use_color = color.enabled(o, io, env);
+    // The OSC-8 click target, likewise resolved once and then read-only —
+    // installed process-wide (before any worker spawns) rather than threaded
+    // through six emit constructors, exactly like the diagnostic policy above.
+    // Deliberately NOT keyed on `use_color`: a link is navigation, not paint.
+    beacon.install(beacon.resolve(a, .{
+        .when = o.hyperlink,
+        .format = o.hyperlink_format,
+        .hostname_bin = o.hostname_bin,
+        // Who is on the other end, which decides how hard a no-link is.
+        // `--json` and `-0` are byte protocols — a record's payload IS the
+        // filename, so an escape inside it is corruption and nothing overrides
+        // that, not even `always`. `--vimgrep` only *tends* to be parsed: it is
+        // a plain text row a human also reads, so the probe declines by default
+        // and an explicit `always` is still allowed to have its way.
+        .reader = if (o.mode == .json or o.null_sep) .records else if (o.vimgrep) .parser else .human,
+    }, io, env));
 
     // The content-transform pipeline (-z decompress / --pre preprocess / -E
     // transcode). `pre_error` latches a failed `--pre` invocation (exit 2, rg
@@ -160,8 +204,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // Cap absurdly long lines when writing to a terminal (see `tty_long_line_cols`):
     // a purely interactive convenience that leaves piped/file output byte-identical
     // to ripgrep. Keyed on the real stdout destination, independent of `--color`.
-    if (!o.max_cols_set and (std.Io.File.stdout().isTty(io) catch false))
-        o.max_cols = tty_long_line_cols;
+    if (!o.max_cols_set and interactive) o.max_cols = tty_long_line_cols;
 
     // --type-list: dump every `-t` name and the globs it recognizes, one name
     // per line, in ripgrep's exact presentation — names sorted lexicographically,
@@ -282,9 +325,9 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         const body = if (o.encoding == .auto) stripBom(raw) else ingest.applyEncoding(a, o.encoding, raw);
         var out0: std.ArrayList(u8) = .empty;
         var em0 = Emitter{ .a = a, .re = re, .o = o, .show_name = false, .out = &out0, .base = @intFromPtr(body.ptr), .body_end = @intFromPtr(body.ptr) + body.len, .caps = caps, .use_color = use_color, .needle = line_needle };
-        // `-U`: match the whole stream as one buffer (a match may cross `\n`);
-        // otherwise the per-line path over rg's line split.
-        const hits = if (o.multiline) em0.buffer("<stdin>", body) else blk: {
+        // `-U` with a pattern that can cross `\n`: match the whole stream as
+        // one buffer; otherwise the per-line path over rg's line split.
+        const hits = if (multiline.sliceModel(re, o)) em0.buffer("<stdin>", body) else blk: {
             var lines: std.ArrayList([]const u8) = .empty;
             collectLines(a, body, o.term(), &lines);
             break :blk em0.file("<stdin>", lines.items);
@@ -438,13 +481,27 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         // handled by the single-file shard driver
     } else if (bounds) |b| {
         emitSharded(gpa, a, &out, re, o, eff, is_pcre, use_color, line_needle, files, b, &stat, &matched_files, binary_detect, count_zero, show_name);
-    } else for (files) |f| {
-        renderFile(&em, f, &stat, &matched_files, &first, binary_detect, count_zero, heading, join_groups, show_name);
-        // Serial engine renders into `out` before one flush — stop growing it once
-        // the output budget is spent, bounding peak memory (the OOM guard) at the
-        // exact point the flush below would truncate anyway. `--stats` runs the
-        // full search regardless (it tallies over every file), so never short it.
-        if (!o.stats and corpus_mod.outputFull(out.items.len)) break;
+    } else {
+        // `--line-buffered` promises a finished line is never held; rendering the
+        // whole run into `out` and flushing once would hold every line until the
+        // last file. So under a streaming policy this loop hands each file's bytes
+        // over as it finishes it — the drain decides what leaves and what waits.
+        // Not under `--stats` (it reports `out.items.len` as bytes printed) or
+        // `-q` (which suppresses the stream), and `block` never needs it: one
+        // whole-run buffer is exactly what a block policy would have produced.
+        const push_per_file = corpus_mod.stdoutStreams() and !o.stats and !o.quiet;
+        for (files) |f| {
+            renderFile(&em, f, &stat, &matched_files, &first, binary_detect, count_zero, heading, join_groups, show_name);
+            if (push_per_file and out.items.len != 0) {
+                if (!corpus_mod.writeStdout(out.items)) break;
+                out.clearRetainingCapacity();
+            }
+            // Serial engine renders into `out` before one flush — stop growing it once
+            // the output budget is spent, bounding peak memory (the OOM guard) at the
+            // exact point the flush below would truncate anyway. `--stats` runs the
+            // full search regardless (it tallies over every file), so never short it.
+            if (!o.stats and corpus_mod.outputFull(out.items.len)) break;
+        }
     }
     if (o.stats) {
         stat.set(.files_with_match, matched_files);

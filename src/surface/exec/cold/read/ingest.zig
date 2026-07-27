@@ -204,12 +204,17 @@ fn preSelects(cfg: *const Config, rel: []const u8) bool {
 
 /// Latch the exit-2 preprocessor error and name the offending file on stderr,
 /// echoing the tool's own stderr when it produced any. Returns null (drop file).
+///
+/// The latch is unconditional and the message is not: failing to read a file
+/// through `--pre` is one of ripgrep's file messages, so `--no-messages` quiets
+/// the line while the run still exits 2 — the same split every walk-error site
+/// makes (`quarry/notice.zig`).
 fn preFail(cfg: *const Config, disk: []const u8, tool_stderr: []const u8) ?[]const u8 {
     if (cfg.pre_error) |e| e.store(true, .seq_cst);
     if (tool_stderr.len > 0) {
-        assay.diag("gist: {s}: preprocessor command failed: {s}\n", .{ disk, std.mem.trimEnd(u8, tool_stderr, "\n") });
+        assay.note(.corpus, "gist: {s}: preprocessor command failed: {s}\n", .{ disk, std.mem.trimEnd(u8, tool_stderr, "\n") });
     } else {
-        assay.diag("gist: {s}: preprocessor command failed\n", .{disk});
+        assay.note(.corpus, "gist: {s}: preprocessor command failed\n", .{disk});
     }
     return null;
 }

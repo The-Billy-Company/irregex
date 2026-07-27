@@ -23,6 +23,7 @@ const assay = @import("../../../../assay/assay.zig");
 const fault = @import("../../../../fault.zig");
 const corpus_mod = @import("../../../../corpus/tree/corpus.zig");
 const guide = @import("../../../cli/guide.zig");
+const preference = @import("../argv/preference.zig");
 
 /// What was searched — drives the summary tail and the widen/unhide hints.
 pub const Scope = union(enum) {
@@ -55,6 +56,10 @@ pub const Shape = struct {
     /// Both ignore rules and hidden-file filtering already lifted (-uu)?
     searches_ignored: bool = false,
     scope: Scope = .tree,
+    /// A preferences file that put answer-changing flags into this argv. The
+    /// one hint the reader cannot derive from what they typed, because the
+    /// cause is not on the line they typed.
+    steered_by: ?[]const u8 = null,
 };
 
 /// Regex metacharacters that also appear routinely in code being searched
@@ -81,6 +86,7 @@ pub fn shape(patterns: []const []const u8, o: args.Opts, roots: []const []const 
         .invert = o.invert,
         .searches_ignored = o.no_ignore and o.hidden,
         .scope = if (roots_are_args) .{ .paths = roots } else .tree,
+        .steered_by = preference.steering(),
     };
     for (patterns) |p| {
         if (args.hasUpper(p)) s.has_upper = true;
@@ -126,6 +132,15 @@ pub fn render(a: std.mem.Allocator, out: *std.ArrayList(u8), s: Shape, files_sca
 
     // ── the hints, ranked by how often each is the actual fix, capped at 3 ─
     var left: usize = 3;
+    // First, because it is the only cause NOT visible in what the reader typed:
+    // flags arrived from a file. Every other hint is derived from the command
+    // line, so the reader can already see its premise.
+    if (s.steered_by) |path|
+        try line(a, out, &left, .note, try std.fmt.allocPrint(
+            a,
+            "flags from {s} are in force and change what matches — --no-config ignores them",
+            .{path},
+        ));
     // -v flips the meaning of "no matches"; pattern-tuning hints would mislead.
     if (s.invert) {
         try line(a, out, &left, .note, "-v is in force — exit 1 means every scanned line matched; nothing survived the inversion");
@@ -209,6 +224,22 @@ test "metacharacters suggest -F; explicit paths get scope tail + widen" {
         \\gist: try a wider scope — drop the PATH args to search the whole tree
         \\
     , got);
+}
+
+test "a preferences file that steered the answer is named first" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    // Every other hint's premise is visible in the command line. This one's is
+    // in a file the reader is not looking at, which is why it outranks them and
+    // why the run stays silent about a preferences file that changed nothing.
+    var s = shape(&.{"Wallet"}, .{ .no_ignore = true, .hidden = true }, &.{}, false);
+    s.steered_by = "/home/x/.config/gist/preferences";
+    try t.expectEqualStrings(
+        \\gist: no matches for 'Wallet'
+        \\gist: note: flags from /home/x/.config/gist/preferences are in force and change what matches — --no-config ignores them
+        \\gist: try -i — the pattern has uppercase; retry case-insensitive
+        \\
+    , try rendered(arena.allocator(), s, null));
 }
 
 test "already -i -F -uu: nothing pattern-shaped left to say" {

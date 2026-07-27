@@ -209,4 +209,3 @@ test "stripLeadingFlags declines non-directive groups (parser decides)" {
     try t.expectEqual(@as(?LeadingFlags, null), stripLeadingFlags("foo(?i)")); // not leading
     try t.expectEqual(@as(?LeadingFlags, null), stripLeadingFlags("(?i")); // unclosed
 }
-

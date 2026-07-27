@@ -342,7 +342,12 @@ pub const Ignore = struct {
         // `--ignore-file` is EXPLICIT user intent: lowest precedence (added first,
         // so an in-tree `.ignore`/`.gitignore` overrides it — rg's f45 rule) and
         // honored even under `-u`/`--no-ignore` (only `--no-ignore-files` drops it).
-        if (!o.no_ignore_files) for (o.ignore_files) |p| try self.readFile(p, "", "");
+        // Explicit is also why this is the one source whose absence is REPORTED:
+        // a missing `.gitignore` is the normal state of most directories, but a
+        // named `--ignore-file` that will not open means the rules the user asked
+        // for are not in force, and silence there is a wrong answer wearing a
+        // clean exit. See `readNamedFile`.
+        if (!o.no_ignore_files) for (o.ignore_files) |p| try self.readNamedFile(p);
         if (o.no_ignore) return self; // -u / --no-ignore: honor nothing else on disk
         // Detect the repo by ASCENDING from CWD — ripgrep finds `.git` at any
         // ancestor, not just CWD; the depth bounds how far VCS ignores climb.
@@ -602,6 +607,31 @@ pub const Ignore = struct {
     /// it re-anchors the ancestor's anchored rules onto the search subtree.
     fn readFile(self: *Ignore, path: []const u8, base: []const u8, strip: []const u8) Oom!void {
         const buf = readOpt(self.io, self.a, path) orelse return;
+        try self.addLines(buf, base, strip);
+    }
+
+    /// Read an ignore file the user NAMED (`--ignore-file <path>`), reporting on
+    /// stderr when it cannot be opened. ripgrep's `ignore_message!` lane, in
+    /// wording and in disposition: the run is not errored by it (a missing
+    /// `--ignore-file` alone still exits 0/1), and `--no-ignore-messages` — or
+    /// `--no-messages`, which subsumes it — quiets the line.
+    fn readNamedFile(self: *Ignore, path: []const u8) Oom!void {
+        const buf = Dir.cwd().readFileAlloc(self.io, path, self.a, .limited(1 << 20)) catch |e| switch (e) {
+            // Running out of memory is this process failing, not this file being
+            // unreadable — it belongs to the caller's `Oom`, never to a message.
+            error.OutOfMemory => return error.OutOfMemory,
+            else => {
+                assay.note(.ignore, "gist: {s}: {s}\n", .{ path, fault.pathNoteOf(e) });
+                return;
+            },
+        };
+        try self.addLines(buf, "", "");
+    }
+
+    /// Fold one ignore file's bytes into the rule set — the shared tail of both
+    /// readers above, so a named source and an in-tree one cannot come to parse
+    /// the same dialect differently.
+    fn addLines(self: *Ignore, buf: []const u8, base: []const u8, strip: []const u8) Oom!void {
         var it = std.mem.splitScalar(u8, buf, '\n');
         while (it.next()) |raw| try self.addLine(std.mem.trimEnd(u8, raw, "\r"), base, strip);
     }
@@ -886,6 +916,44 @@ test "an explicit nested root loads its intermediate ancestors' ignores (rg add_
     // never the root's own components (only what is found beneath it).
     ig.scopeToRoot(root);
     try t.expectEqual(@as(?bool, true), ig.decide(try join(a, root, ".foo"), false));
+}
+
+test "a named --ignore-file that will not open is reported, and muffled on demand" {
+    const t = std.testing;
+    var threaded = std.Io.Threaded.init(t.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Capture the ignore lane instead of the test runner's stderr.
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(t.allocator);
+    const sc = assay.scope(.{ .buffer = .{ .list = &buf, .gpa = t.allocator } });
+    defer sc.end();
+    defer assay.muffle(true, true);
+
+    const missing = "gist_absent_ignore_file_fixture.ignore";
+    const o = Options{ .ignore_files = &.{missing}, .no_ignore = true };
+
+    // Default run: the user named a source that is not in force, and says so
+    // with ripgrep's errno phrasing rather than a clean silent exit.
+    assay.muffle(true, true);
+    var ig = try Ignore.init(a, io, o, &.{});
+    try t.expectEqualStrings("gist: " ++ missing ++ ": No such file or directory (os error 2)\n", buf.items);
+
+    // --no-ignore-messages quiets this class alone; --no-messages subsumes it.
+    for ([_][2]bool{ .{ true, false }, .{ false, true }, .{ false, false } }) |m| {
+        buf.clearRetainingCapacity();
+        assay.muffle(m[0], m[1]);
+        ig = try Ignore.init(a, io, o, &.{});
+        try t.expectEqualStrings("", buf.items);
+    }
+
+    // Quiet or loud, an unopenable ignore source never errors the RUN — rg's
+    // ignore lane is advisory, unlike the walk errors that force exit 2.
+    try t.expectEqual(@as(?bool, null), ig.decide("anything.txt", false));
 }
 
 test "parseExcludesFile mirrors ripgrep's core.excludesfile extraction" {

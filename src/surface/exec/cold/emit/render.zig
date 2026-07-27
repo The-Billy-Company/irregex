@@ -21,6 +21,7 @@ const captures_mod = @import("../../../../kernel/match/regex/regex.zig");
 const binary = @import("../read/binary.zig");
 const intake = @import("../quarry/intake.zig");
 const legible = @import("../read/legible.zig");
+const ml = @import("multiline.zig");
 const output = @import("output.zig");
 const par = @import("../../../../kernel/primitives/parallel.zig");
 const pcre2 = @import("../../../../kernel/match/regex/regex.zig").pcre2;
@@ -58,11 +59,15 @@ pub fn renderFile(em: *Emitter, f: InFile, stat: *Stats, matched_files: *usize, 
     const out = em.out;
     const body = stripBom(f.bytes);
     if (body.len == 0 and !count_zero) return;
+    // Whole-buffer or per-line? `-U` asks for the block model but only a
+    // pattern that can eat a `\n` gets it (`ml.sliceModel`) — everything below
+    // that reads "am I multiline?" means this, never the bare flag.
+    const slice_model = ml.sliceModel(re, o);
     if (binary_detect) if (verify.firstNulWide(a, body)) |nul| {
-        const slice_model = o.multiline and re.canMatchNewline();
         if (!(slice_model and !binary.multilineBinary(body.len, nul))) {
             em.base = @intFromPtr(body.ptr);
             em.body_end = em.base + body.len;
+            em.way = null;
             if (o.stats) {
                 const searched: []const u8 = if (f.explicit)
                     body
@@ -72,7 +77,7 @@ pub fn renderFile(em: *Emitter, f: InFile, stat: *Stats, matched_files: *usize, 
                     body[0..binary.committedPrefix(body, nul)];
                 var blines: std.ArrayList([]const u8) = .empty;
                 defer blines.deinit(a);
-                if (!o.multiline) collectLines(a, searched, o.term(), &blines);
+                if (!slice_model) collectLines(a, searched, o.term(), &blines);
                 const fs = fileMatchStats(re, a, o, searched, blines.items, em.needle);
                 stat.bump(.files_searched);
                 stat.add(.matches, fs.matches);
@@ -87,12 +92,12 @@ pub fn renderFile(em: *Emitter, f: InFile, stat: *Stats, matched_files: *usize, 
     // a candidate-jump scanner that never materializes the line array — so skip
     // `collectLines` entirely when it's eligible (its guards exclude `--stats`,
     // so the stats block below still collects lines when it needs them).
-    const fast = !o.multiline and em.litFastEligible();
+    const fast = !slice_model and em.litFastEligible();
     // The fused `-c`/`-l` class-run paths answer from the whole buffer —
     // skip the line split they'd never read (`--stats` still needs it).
-    const fused = !o.multiline and !fast and !o.stats and em.fusedFileEligible();
+    const fused = !slice_model and !fast and !o.stats and em.fusedFileEligible();
     var lines: std.ArrayList([]const u8) = .empty;
-    if (!o.multiline and !fast and !fused) collectLines(a, body, o.term(), &lines);
+    if (!slice_model and !fast and !fused) collectLines(a, body, o.term(), &lines);
     if (o.stats) {
         const fs = fileMatchStats(re, a, o, body, lines.items, em.needle);
         stat.bump(.files_searched);
@@ -109,12 +114,13 @@ pub fn renderFile(em: *Emitter, f: InFile, stat: *Stats, matched_files: *usize, 
     // bare path is printed.
     if (heading) {
         if (!first.*) out.append(a, '\n') catch oom();
-        if (show_name) out.print(a, "{s}{s}", .{ f.path, if (o.null_sep) "\x00" else o.outTerm() }) catch oom();
+        if (show_name) em.heading(f.path);
     }
     const titled = out.items.len;
     em.base = @intFromPtr(body.ptr);
     em.body_end = em.base + body.len;
-    const hits = if (o.multiline) em.buffer(f.path, body) else if (fast) em.fileLit(f.path, body, 0, body.len, 0, true) else em.file(f.path, lines.items);
+    em.way = null; // the OSC-8 destination is per-file; rebuilt on first locator
+    const hits = if (slice_model) em.buffer(f.path, body) else if (fast) em.fileLit(f.path, body, 0, body.len, 0, true) else em.file(f.path, lines.items);
     // Whether this file OPENS A GROUP is whether it wrote anything, which is
     // not the same question as whether it matched: `--passthru` prints a
     // non-matching file in full, and that group is titled and separated like
@@ -341,7 +347,7 @@ pub fn emitFileSharded(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.A
 pub fn fileWithoutMatch(a: std.mem.Allocator, re: *const Matcher, o: Opts, em: *Emitter, lsim: *Matcher.Sim, wssp: ?*Matcher.SpanSim, needle: ?simd.Gate, f: InFile, out: *std.ArrayList(u8)) void {
     const body = stripBom(f.bytes);
     if (body.len > 0 and corpus_mod.isBinary(body) and !o.text and !o.binary) return;
-    const any = if (o.multiline) bufferAnyHit(a, re, o, null, needle, f.path, body) else blk: {
+    const any = if (ml.sliceModel(re, o)) bufferAnyHit(a, re, o, null, needle, f.path, body) else blk: {
         var lines: std.ArrayList([]const u8) = .empty;
         collectLines(a, body, o.term(), &lines);
         // `-v` inverts what counts as a match here too, so a file whose every
@@ -445,7 +451,8 @@ pub fn anyMatch(a: std.mem.Allocator, re: *const Matcher, o: Opts, needle: ?simd
     // any literal occurs. One `indexOfAnyPos` sweep stops at the first hit
     // instead of materializing every line of a huge body (the `collectLines`
     // tail that made `-q` scan the whole file). `-v` is excluded by eligibility.
-    const lit_fast = !o.multiline and em.litFastEligible();
+    const slice_model = ml.sliceModel(re, o);
+    const lit_fast = !slice_model and em.litFastEligible();
     const lits = re.lits();
     for (files) |f| {
         const body = stripBom(f.bytes);
@@ -454,7 +461,7 @@ pub fn anyMatch(a: std.mem.Allocator, re: *const Matcher, o: Opts, needle: ?simd
             if (simd.indexOfAnyPos(body, 0, lits) != null) return true;
             continue;
         }
-        if (o.multiline) {
+        if (slice_model) {
             if (bufferAnyHit(a, re, o, null, needle, f.path, body)) return true;
             continue;
         }

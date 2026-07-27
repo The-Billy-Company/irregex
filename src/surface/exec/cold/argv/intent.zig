@@ -39,6 +39,14 @@ pub const Filename = enum { auto, always, never };
 /// off. Resolved against stdout + the environment in `color.zig`.
 pub const ColorChoice = enum { auto, always, never, ansi };
 
+/// `--hyperlink`: whether a printed locator carries an OSC-8 click target.
+/// `auto` (the default) is "on iff this terminal will render it and this
+/// output is for a human"; `always` overrides the probe; `never` is off.
+/// Defined by, and resolved against stdout + the environment in,
+/// `cli/beacon.zig` — the hyperlink layer is shared with relate and irregex,
+/// so gist's argv borrows its vocabulary rather than declaring a parallel one.
+pub const Hyperlink = @import("../../../cli/beacon.zig").When;
+
 /// `-E`/`--encoding`: the source encoding to transcode to UTF-8 before matching.
 /// `auto` (the default) is BOM sniffing (UTF-8 BOM stripped, UTF-16 BOM
 /// transcoded); `none` disables even that; the explicit labels force a transcode
@@ -129,6 +137,13 @@ pub const Engine = enum { default, pcre2, auto };
 /// its parallel *reads* and only orders the final emit, so an ordered gist run
 /// still beats rg's single-threaded sort walk.
 pub const SortKey = enum { none, path, modified, accessed, created };
+
+/// `--line-buffered` / `--block-buffered`: when result bytes leave the process.
+/// `auto` (the default) reads the destination the way ripgrep does — a terminal
+/// wants each line as it is found, a pipe or a file wants them coalesced.
+/// Neither ever changes which bytes are written, only how many trips through
+/// the kernel it takes; see `corpus/tree/drain.zig` for what each one costs.
+pub const Buffering = enum { auto, line, block };
 
 pub const Opts = struct {
     caseless: bool = false,
@@ -240,9 +255,31 @@ pub const Opts = struct {
     no_require_git: bool = false, // --no-require-git (honor .gitignore w/o a repo)
     ignore_case_insensitive: bool = false, // --ignore-file-case-insensitive
     ignore_files: []const []const u8 = &.{}, // --ignore-file <path> (ordered)
+    // --messages / --no-messages (rg default ON): the per-file stderr lane — a
+    // path that would not open, descend, or preprocess, plus the "no files were
+    // searched" verdict. Cleared, those lines are not printed; the run's EXIT
+    // CLASS is untouched, so an unreadable directory still exits 2 silently
+    // (rg's own rule). Lowered onto `assay.Chatter` once at `serial.run`.
+    messages: bool = true,
+    // --ignore-messages / --no-ignore-messages (rg default ON): the narrower
+    // lane for an ignore SOURCE that could not be honored (an `--ignore-file`
+    // that will not open). `--no-messages` subsumes this one; the nesting is
+    // resolved in `assay.muffle`, not here.
+    ignore_messages: bool = true,
     // ctx_sep: null = suppressed line (--no-context-separator); else the string.
     ctx_sep: ?[]const u8 = "--",
     color: ColorChoice = .auto, // --color auto|always|never|ansi
+    // --hyperlink / --no-hyperlink: whether a result's locator is a click.
+    // `auto` (the default) links iff the terminal is known to render OSC-8 and
+    // the output shape is meant for a human — resolved in `cli/beacon.zig`,
+    // deliberately independent of `color` (a link is navigation, not paint).
+    hyperlink: Hyperlink = .auto,
+    // The destination template, alias-resolved and syntax-checked at parse
+    // time. Null = let the beacon probe the terminal for the right editor URL.
+    hyperlink_format: ?[]const u8 = null,
+    // --hostname-bin: a command whose stdout supplies `{host}` (rg parity —
+    // a WSL or container shell needs the outer host, not the kernel's).
+    hostname_bin: ?[]const u8 = null,
     // --no-index: never consult the persisted trigram index — always live-read
     // every walked file. Default (false) auto-detects an index and uses it purely
     // to SKIP reading files it proves can't match (unchanged since the build and
@@ -269,6 +306,19 @@ pub const Opts = struct {
     // rg-parity per-line engine, so ripgrep parity is untouched.
     in_comments: bool = false,
     in_code: bool = false,
+    // --line-buffered / --block-buffered / --buffer-size: the stdout drain's
+    // policy and its ceiling in bytes (0 ⇒ gist's 64 KiB default). Delivery
+    // cadence only — the emitted bytes are identical under every setting, which
+    // is why both carry `Reach.execution`.
+    buffering: Buffering = .auto,
+    buffer_size: usize = 0,
+    // --plain: pin the answer to the shape a PIPE would receive, even when
+    // stdout is a terminal. gist has three destination-conditional behaviors
+    // (`--color auto`, the TTY long-line `-M` guard, `--line-buffered`'s auto
+    // resolution), and an interactive run that must reproduce a captured one
+    // byte-for-byte should not have to remember and re-spell each of them.
+    // The inverse pole of `-p`/`--pretty`.
+    plain: bool = false,
     filter: Filter = .{},
     pub fn wantsContext(self: Opts) bool {
         return self.before > 0 or self.after > 0;
@@ -287,6 +337,16 @@ pub const Opts = struct {
     /// (`Emitter.emitBody`), mirroring rg's `trim_line_terminator`.
     pub fn outTerm(self: Opts) []const u8 {
         return if (self.null_data) "\x00" else if (self.crlf) "\r\n" else "\n";
+    }
+    /// The byte a finished OUTPUT record ends with — the boundary
+    /// `--line-buffered` is allowed to hold nothing past. Normally the last
+    /// byte the printer appends (`\n`, CRLF's `\n`, NUL under `--null-data`);
+    /// `--null` makes the enumeration modes NUL-terminate their paths instead,
+    /// and a stream with no `\n` in it at all must not be held to one.
+    pub fn recordTerm(self: Opts) u8 {
+        if (self.null_sep and self.enumeration()) return 0;
+        const out = self.outTerm();
+        return out[out.len - 1];
     }
     /// The single-byte reconstruction terminator for a body line that WAS
     /// terminated in the file: the emitter's line slices keep any `\r` but

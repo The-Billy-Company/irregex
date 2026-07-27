@@ -12,6 +12,12 @@
 //! beside the walk rather than with the per-file read machinery: a directory
 //! neither engine could enter must be reported byte-identically. Each engine
 //! layers its own exit-2 flagging on top (a plain bool vs a queue atomic).
+//!
+//! Every line here writes through `assay.note(.corpus, …)` rather than
+//! `assay.diag`: these ARE the messages ripgrep's `--no-messages` governs. That
+//! silences the prose only. Flagging the run and reporting it are separate
+//! statements at every call site above, so a quieted walk still exits 2 — which
+//! is why the flagging lives with the engines and only the wording lives here.
 
 const std = @import("std");
 const fault = @import("../../../../fault.zig");
@@ -27,41 +33,27 @@ const Dir = std.Io.Dir;
 /// mystery string on a user's stderr.
 pub const WalkFault = Dir.OpenError || Dir.Iterator.Error || Dir.SelectiveWalker.Error || std.posix.OpenError;
 
-/// ripgrep's `<bin>: <path>: <errno phrase>` note for a path that can't be
-/// opened/descended — an explicit PATH arg or an unreadable directory hit
-/// mid-walk. The differential harness keys only on the errno phrase and the
-/// exit class (never the `rg:`/`gist:` prefix or the exact number — see
-/// `bench/rgsuite/run.py`), so the phrases are contract.
+/// ripgrep's `<bin>: <path>: <errno phrase>` line for a path that can't be
+/// opened or descended — an explicit PATH arg, or an unreadable directory hit
+/// mid-walk. THE one rendering, shared by both engines' `reportWalkError`, so a
+/// directory neither could enter reads byte-identically. The differential
+/// harness keys on the errno phrase and the exit class (never the `rg:`/`gist:`
+/// prefix or the number — `bench/rgsuite/run.py`), so the phrases are contract.
 ///
-/// The phrases themselves live in `fault.pathNote`, whose switch is exhaustive
-/// over `fault.Corpus` (ADR-373 law 2). All this decides is whether a walk
-/// error IS one of that domain's members, and it asks the domain instead of
-/// re-listing it: a sixth corpus member picks up rg's phrasing here the moment
-/// `fault.pathNote` names it, and cannot reach the arm below by omission.
-///
-/// A real descent produces a much wider set than the corpus domain (EMFILE,
-/// ENODEV, a bad UTF-8 name), and ripgrep prints the OS string for those too,
-/// so the widening is the walk's truth rather than an erased domain.
-fn pathErrNote(err: WalkFault) []const u8 {
-    inline for (@typeInfo(fault.Corpus).error_set.?) |m| {
-        const member = @field(fault.Corpus, m.name);
-        if (err == member) return fault.pathNote(member);
-    }
-    return @errorName(err);
-}
-
-/// ripgrep's walk-error stderr line (`rg: <path>: <errno>` → `gist: …`) — THE
-/// one rendering, shared by the serial and parallel engines' `reportWalkError`
-/// so a directory neither could descend is reported byte-identically.
+/// Those phrases live in `fault.pathNoteOf`, whose `pathNote` switch is
+/// exhaustive over `fault.Corpus` (ADR-373 law 2) and which falls through to the
+/// error's own name for the wider set a real descent produces. Naming
+/// `WalkFault` here is what keeps that discipline local: the domain decides the
+/// phrasing, this decides what the walk is allowed to fail with.
 pub fn printWalkError(rel: []const u8, e: WalkFault) void {
-    assay.diag("gist: {s}: {s}\n", .{ rel, pathErrNote(e) });
+    assay.note(.corpus, "gist: {s}: {s}\n", .{ rel, fault.pathNoteOf(e) });
 }
 
 /// ripgrep's `-L` cycle report (walk_entry_err in its ignore crate): a symlink
 /// directory pointing at an ancestor of the walk is announced with both
 /// DISPLAY paths and refused — the walk continues past it, exit 2 (errored).
 pub fn printLoopError(link: []const u8, ancestor: []const u8) void {
-    assay.diag("gist: File system loop found: {s} points to an ancestor {s}\n", .{ link, ancestor });
+    assay.note(.corpus, "gist: File system loop found: {s} points to an ancestor {s}\n", .{ link, ancestor });
 }
 
 /// ripgrep's implicit-path heuristic (`eprint_nothing_searched`, main.rs): the
@@ -72,7 +64,8 @@ pub fn printLoopError(link: []const u8, ancestor: []const u8) void {
 /// "it can otherwise be noisy when it is intended that there is nothing to
 /// search"). Both engines print through here so the wording cannot drift.
 pub fn printNothingSearched() void {
-    assay.diag(
+    assay.note(
+        .corpus,
         \\gist: No files were searched, which means gist probably applied a filter you didn't expect.
         \\gist: try -uu (fold hidden + gitignored files in), or `gist --files` to see what the walk admits.
         \\

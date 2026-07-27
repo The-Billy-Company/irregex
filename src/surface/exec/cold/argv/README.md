@@ -1,9 +1,9 @@
 ---
 doc_radar:
   counts:
-    - description: "the argv package is the facade plus its five concern modules"
+    - description: "the argv package is the facade plus its six concern modules and one test"
       glob: pkg/kernels/irregex/src/surface/exec/cold/argv/*.zig
-      equals: 6
+      equals: 8
       unit: modules
   sentinels:
     - description: "args.zig stays a facade whose test block keeps sibling tests discoverable"
@@ -22,6 +22,12 @@ doc_radar:
       contains:
         - "pub const Opts"
         - "unicode: bool = true,"
+    - description: "preferences are TTY-gated and catalog-validated"
+      file: pkg/kernels/irregex/src/surface/exec/cold/argv/preference.zig
+      contains:
+        - "pub const Preferences"
+        - "pub fn forThisRun"
+        - "pub fn steering"
 ---
 
 # surface/exec/cold/argv — flag grammar
@@ -35,20 +41,23 @@ tiers, `-t`/`-T`/`-g`/`--glob`/`--iglob` scoping with `!`-exclude,
 `{a,b}` alternation, and leading-`/` anchoring. Unicode is default-on
 (rg-parity); `--no-unicode` / `(?-u)` opt out.
 
-## The six modules
+## The eight modules
 
-Five concerns behind one interface. Thirty-odd importers across the tree —
-every engine, emitter, face verb, and the FFI session — see only `args.zig`,
-so the inside can be re-cut without a call-site edit.
+Six concerns behind one interface, plus a personal-preferences layer and its
+tests. Thirty-odd importers across the tree — every engine, emitter, face
+verb, and the FFI session — see only `args.zig`, so the inside can be re-cut
+without a call-site edit.
 
-| Module        | Owns                                                                                                                                                               |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `args.zig`    | The **facade**: the names the rest of the tree may use, and nothing else.                                                                                          |
-| `verdict.zig` | Turning one raw token into a typed value, or dying loud — numbers, enums, escapes, `{a,b}` expansion.                                                              |
-| `intent.zig`  | The request record (`Opts`, `Filter`, `Parsed`) **and** the `Builder` that accumulates into it.                                                                    |
-| `catalog.zig` | The declarative `flag_catalog` — one row per flag, comptime-proved against `Opts`.                                                                                 |
-| `grammar.zig` | The walk: short bundles, long flags, values, precedence, and the parse tests.                                                                                      |
-| `answer.zig`  | The `Mode` a run resolves to (standard/count/json/files/…) and its last-wins precedence over the other presentation flags — decided once, before any printer runs. |
+| Module              | Owns                                                                                                                                                                                                                                                                                                                           |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `args.zig`          | The **facade**: the names the rest of the tree may use, and nothing else.                                                                                                                                                                                                                                                      |
+| `verdict.zig`       | Turning one raw token into a typed value, or dying loud — numbers, enums, escapes, `{a,b}` expansion.                                                                                                                                                                                                                          |
+| `intent.zig`        | The request record (`Opts`, `Filter`, `Parsed`) **and** the `Builder` that accumulates into it.                                                                                                                                                                                                                                |
+| `catalog.zig`       | The declarative `flag_catalog` — one row per flag, comptime-proved against `Opts`. Also the `Reach` axis that classifies how far each flag's effect travels (corpus / semantics / presentation / execution).                                                                                                                   |
+| `grammar.zig`       | The walk: short bundles, long flags, values, precedence, and the parse tests.                                                                                                                                                                                                                                                  |
+| `answer.zig`        | The `Mode` a run resolves to (standard/count/json/files/…) and its last-wins precedence over the other presentation flags — decided once, before any printer runs.                                                                                                                                                             |
+| `preference.zig`    | Personal preferences — a machine-local `~/.config/gist/preferences` (or `$GIST_PREFERENCES` / `$XDG_CONFIG_HOME/gist/preferences`) that prepends flags to argv **only when stdout is an interactive terminal**. Shell-quoted tokenization (fixing rg's `#927`/`#2646`), catalog-validated lines, `Reach`-classified answer impact. |
+| `preference_test.zig` | Adversarial test suite for the preferences grammar: quoting, catalog validation, reach classification, and every rg confusion report the file format repairs.                                                                                                                                                                |
 
 `args.zig` carries an explicit `test { _ = catalog; … }` block. Zig analyzes a
 `pub const` re-export lazily, so without it the package's parse tests silently
@@ -64,6 +73,22 @@ one catalog, two consumers, no prose drift.
 Process exit itself is **not** owned here: `die` / `oom` live in
 [`cli/outcome.zig`](../../../cli/outcome.zig) beside the other ways a face ends,
 and `args.zig` re-exports them for call sites that read better saying `args.die`.
+
+## The preferences layer
+
+`preference.zig` is gist's answer to `.ripgreprc` — with three deliberate
+repairs. First, preferences apply **only when stdout is an interactive
+terminal**, so a pipe, redirect, `--json`, CI, daemon, or agent never sees
+them (no `--no-config` needed). Second, lines are **tokenized with shell
+quoting**, so `--glob '!.git/*'` works as written instead of injecting literal
+quotes into the glob (rg issues #927, #932, #2646, #3428). Third, every flag
+is **validated against the catalog** as the file is read, naming file and line
+on a typo — a loud error at startup rather than a mystery mid-run.
+
+The `Reach` axis (corpus / semantics / presentation / execution) lets a
+zero-match hint tell the reader whether their own preferences could be the
+reason, by distinguishing a rendering-only file from one that changes the
+answer.
 
 ## When to edit
 

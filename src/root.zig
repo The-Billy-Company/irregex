@@ -119,6 +119,9 @@ pub const emit = @import("surface/exec/cold/emit/output.zig");
 /// Emitter's line-number itoa and invert loop.
 pub const emit_json = @import("surface/exec/cold/emit/json.zig");
 pub const argv = @import("surface/exec/cold/argv/args.zig");
+/// The personal, TTY-gated half of the persisted pair: flag defaults a reader
+/// keeps for their own terminal. Its committed sibling is `commands.scope.charter`.
+pub const preference = @import("surface/exec/cold/argv/preference.zig");
 /// The `-r`/`--replace` capture seam (`Caps`/`Captures`) — re-exported so the
 /// bench lab can profile the replacement template expander (`emit.expandInto`)
 /// against a naive reference in isolation, the same way it profiles the
@@ -248,11 +251,17 @@ pub const commands = struct {
     pub const scope = struct {
         pub const glob = @import("corpus/scope/glob.zig");
         pub const types = @import("corpus/scope/types.zig");
+        /// The committed tree declaration (`.irregex.toml`) every face honors.
+        pub const charter = @import("corpus/scope/charter.zig");
     };
     /// Read-only index introspection (the `status` verb).
     pub const status = @import("surface/face/gist/status/status.zig");
     /// `gist --schema` JSON capability manifest.
     pub const schema = @import("surface/face/gist/schema/schema.zig");
+    /// `gist --generate` — gist's surface in the primer's vocabulary, rendered
+    /// as the man page and the bash/zsh/fish/PowerShell completions. Same flag
+    /// table `schema` reads, one reader further out.
+    pub const primer = @import("surface/face/gist/primer.zig");
     /// The unified search engine — the certified ripgrep-parity walk-and-emit
     /// control plane (`engine/serial.zig`), its index-backed read-elision +
     /// `--no-index`/`--rank` candidate sources, and the ranked view
@@ -535,6 +544,7 @@ test {
     _ = @import("kernel/primitives/bits_test.zig"); // shared two's-complement bit identities vs bool-slice oracle
     _ = @import("kernel/primitives/crest_test.zig"); // crest sieve, document half: ρ(d) scan + dominance decision + sidecar schema
     _ = @import("kernel/primitives/parallel.zig"); // shared byte-balanced sharding + partial-spawn-safe fan-out
+    _ = @import("kernel/primitives/signet_test.zig"); // BLAKE3 identity: domain separation, seal round-trip, torn-write detection
     _ = @import("kernel/primitives/ward_test.zig"); // reader/writer lease guards + double-checked readReconciled dance
     _ = @import("corpus/index/crest/sidecar_test.zig"); // crest sidecar codec: round-trip + fail-closed adversarial
     _ = @import("kernel/kinship/metric/sketch_test.zig"); // relate half: kinship metric semantics + clustering gate
@@ -581,6 +591,7 @@ test {
     _ = @import("corpus/tree/haystack_test.zig"); // shared walk: isSkipDir + joinPath hot-path decisions
     _ = @import("corpus/tree/bulkstat_test.zig"); // getattrlistbulk ≡ stat-walk differential
     _ = @import("corpus/tree/loadpar.zig"); // fused parallel walk+read: byte-identical membership vs serial oracle
+    _ = @import("corpus/tree/drain.zig"); // stdout cadence: line boundaries, block ramp, order under a refused sink
     _ = @import("kernel/match/regex/syntax/syntax_test.zig"); // T2 syntax: ByteSet + recursive-descent parser
     _ = @import("kernel/match/regex/analysis/analysis_test.zig"); // T2 analysis: required-literal + cover + anchored
     _ = @import("kernel/match/regex/analysis/swell_test.zig"); // crest sieve, query half: forced-crest ĝ vs hand-computed + Sieve Theorem vs the matcher
@@ -601,6 +612,8 @@ test {
     _ = @import("kernel/match/regex/unicode/tables.zig"); // Unicode data API: Perl/\p classes, fold orbits
     // command surfaces (tests + driver bodies, so `zig build test` type-checks all)
     _ = @import("corpus/scope/glob_test.zig"); // glob matcher + type/glob/root path scope
+    _ = @import("corpus/scope/charter_test.zig"); // the committed tree declaration's grammar
+    _ = @import("surface/exec/cold/argv/preference_test.zig"); // personal preferences: tokenizing + reach admission
     _ = @import("surface/face/gist/status/status.zig"); // read-only index introspection
     _ = @import("surface/face/gist/schema/schema.zig"); // `--schema` manifest
     _ = @import("surface/face/relate/repertoire.zig"); // relate's verb table (schema validity + both registers)
@@ -625,9 +638,15 @@ test {
     _ = @import("surface/exec/cold/emit/multiline.zig"); // -U whole-buffer match model (Emitter.buffer + --json)
     _ = @import("surface/exec/cold/emit/output/multibuf_test.zig"); // -U whole-buffer emit: the ripgrep-captured parity table
     _ = @import("surface/exec/cold/emit/hints.zig"); // no-match stderr guidance: shape analysis + exact render bytes
+    _ = @import("surface/cli/beacon_test.zig"); // OSC-8 hyperlinks: rg's format grammar, the terminal probe, the framed bytes
     _ = @import("surface/cli/manifest.zig"); // the verb-table renderer (help, schema, dispatch, verb list)
     _ = @import("surface/cli/guide.zig"); // the stderr guidance grammar both faces speak
     _ = @import("surface/cli/grade.zig"); // kinship channels, calibrated grades, the weak-result verdict
+    _ = @import("surface/cli/primer/primer.zig"); // `--generate`: the Surface vocabulary + target dispatch
+    _ = @import("surface/cli/primer/page.zig"); // `--generate man`: reach-grouped roff
+    _ = @import("surface/cli/primer/shell.zig"); // `--generate complete-{bash,fish,powershell}`
+    _ = @import("surface/cli/primer/zsh.zig"); // `--generate complete-zsh`: captioned groups, baked sets
+    _ = @import("surface/face/gist/primer.zig"); // gist's own surface: value/rivalry/section derived from the parse table
     _ = Outcome; // the rg exit-code contract, incl. the -q short-circuit precedence
     _ = @import("surface/cli/outcome.zig");
     _ = @import("fault.zig"); // the fault/declinature vocabulary + the detail slot

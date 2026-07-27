@@ -24,6 +24,22 @@ const Matcher = @import("../../../../kernel/match/regex/regex.zig").Matcher;
 
 pub const Span = Matcher.Span;
 
+/// Does this run search with rg's whole-buffer searcher, or its line searcher?
+/// `-U` alone is not the answer. rg engages the multi-line searcher only when
+/// the line terminator belongs to the pattern
+/// (`Searcher::multi_line_with_matcher` asks whether `\n` is outside the
+/// matcher's non-matching bytes — `Matcher.claimsNewline`), because a pattern
+/// that cannot touch a `\n` cannot cross one — and because a pattern anchored
+/// to the HAYSTACK would have that anchor re-offered at every line. So
+/// `rg -U alpha` is byte-for-byte `rg alpha` — same columns, same `-b` offsets
+/// (the MATCH's, not the printed line's), same `-c` line counting, same `-m`
+/// cap — while `rg -U 'a\nb'`, `rg -U 'alpha$'`, and `rg -U '\Aa'` get the
+/// block model. Every place that picks a model asks this, so no two can answer
+/// differently for one run.
+pub fn sliceModel(re: *const Matcher, o: Opts) bool {
+    return o.multiline and re.claimsNewline();
+}
+
 /// A physical line's byte ranges within the buffer. `content` (`[start,
 /// content_end)`) excludes the terminator; `term_end` includes it (== body.len
 /// for a final unterminated line — rg still frames that line).
@@ -66,11 +82,27 @@ pub fn lineIndexAt(lines: []const Line, off: usize) usize {
     return lo - 1; // lines[0].start == 0 ≤ off, so lo ≥ 1
 }
 
+/// The phantom position past the end of `body`: a match landing exactly there
+/// claims no line, so rg refuses to report it and stops the search
+/// (glue.rs `sink_matched`: "the only way we can produce an empty line for a
+/// match is if we match the position immediately following the last byte that
+/// we search, and where that last byte is also the line terminator"). Both
+/// halves of that sentence matter. An UNTERMINATED tail has a real last line
+/// flush against `body.len`, and rg frames it — `rg -U '\z'` prints `aaa` over
+/// `aaa` and nothing over `aaa\n`. An empty body has no line at all.
+fn phantomEnd(body: []const u8, term: u8, at: usize) bool {
+    return at == body.len and (body.len == 0 or body[body.len - 1] == term);
+}
+
 /// The leftmost whole-buffer matches under ripgrep's progress rule, honoring
-/// `-w` and `-m`. A non-empty match advances past its end; a zero-width match
+/// `-w`, and stopping after `o.max_per_file` spans. That stop is a CEILING for
+/// a caller that needs no more (the `-l` boolean asks for one), NOT `-m`'s
+/// meaning — under the slice model `-m` bounds a line region, which is
+/// `capRegion`'s job over the complete list. A non-empty match advances past
+/// its end; a zero-width match
 /// advances ONE byte and is dropped when it sits adjacent to the previous
-/// match's end (rust-regex `find_iter`) or at `body.len` (the terminated
-/// phantom — there is no line there). Empty matches are KEPT otherwise, so a
+/// match's end (rust-regex `find_iter`) or on the phantom past a terminated
+/// body (`phantomEnd`). Empty matches are KEPT otherwise, so a
 /// nullable pattern (`a*`, `x*`) reproduces rg's per-position empties; every
 /// downstream count and frame derives from this one list. Arena-owned.
 pub fn collect(a: std.mem.Allocator, re: *const Matcher, o: Opts, body: []const u8) []Span {
@@ -79,7 +111,11 @@ pub fn collect(a: std.mem.Allocator, re: *const Matcher, o: Opts, body: []const 
     var out: std.ArrayList(Span) = .empty;
     var from: usize = 0;
     var last_end: ?usize = null;
-    while (from <= body.len) {
+    // rg's multiline loop is `while !slice[pos..].is_empty()` — it never opens a
+    // search AT the end, so `body.len` is a place a match may LAND (found from
+    // an earlier resume, as `\z` is) but never a place one is looked for. An
+    // empty body is therefore searched zero times, not once.
+    while (from < body.len) {
         const sp = re.matchSpan(&ss, body, from) orelse break;
         if (o.word and !output.wordOk(o.unicode, body, sp.start, sp.end)) {
             from = if (sp.end > sp.start) sp.end else sp.start + 1;
@@ -87,7 +123,7 @@ pub fn collect(a: std.mem.Allocator, re: *const Matcher, o: Opts, body: []const 
         }
         if (sp.end == sp.start) {
             const adjacent = last_end != null and sp.start == last_end.?;
-            if (sp.start == body.len or adjacent) {
+            if (phantomEnd(body, o.term(), sp.start) or adjacent) {
                 from = sp.start + 1;
                 continue;
             }
@@ -100,27 +136,84 @@ pub fn collect(a: std.mem.Allocator, re: *const Matcher, o: Opts, body: []const 
     return out.toOwnedSlice(a) catch oom();
 }
 
-/// `--count-matches` (and `-c --only-matching`): total emitted matches, empty
-/// ones included — rg's whole-buffer `matches` tally.
+/// `-v` under the slice model: which physical lines a match CLAIMED, as a mask
+/// over `lines` (`true` ⇒ suppressed, so `-v` prints the rest).
+///
+/// rg does not invert the union of every match's line span. Its inverted
+/// searcher (glue.rs `sink_matched_inverted`) walks the buffer once and resumes
+/// each search from the END of the line span it just claimed — not from the
+/// match's end, which is what `collect` does. A second match beginning on an
+/// already-claimed line is therefore never found, and the lines only IT would
+/// have claimed still print. Over `AA one / middle / end two BB one / middle2 /
+/// end two CC`, `one[\s\S]*?two` claims lines 1-3, resumes at line 4, finds
+/// nothing there, and the last two lines print — where a union of the two
+/// matches would have swallowed the file whole.
+///
+/// `-w` word bounds are honored as in `collect`. `-m N` caps the matches this
+/// walk may CONSUME, not the lines the caller prints: rg's `core.find` simply
+/// stops answering once N matches were found, so everything past the Nth
+/// claim is one unclaimed region and prints in full. `rg -U -v -m1` over a
+/// two-match file therefore prints MORE than `-m2` would, not fewer lines.
+pub fn claimed(a: std.mem.Allocator, re: *const Matcher, o: Opts, body: []const u8, lines: []const Line) []const bool {
+    const out = a.alloc(bool, lines.len) catch oom();
+    @memset(out, false);
+    if (lines.len == 0) return out;
+    var ss = Matcher.SpanSim.init(a, re) catch return out;
+    defer ss.deinit();
+    var pos: usize = 0;
+    var found: usize = 0;
+    while (pos < body.len) {
+        if (o.max_per_file != 0 and found >= o.max_per_file) break;
+        const sp = re.matchSpan(&ss, body, pos) orelse break;
+        if (phantomEnd(body, o.term(), sp.start)) break; // claims no line
+        if (o.word and !output.wordOk(o.unicode, body, sp.start, sp.end)) {
+            pos = @max(sp.end, sp.start + 1);
+            continue;
+        }
+        found += 1;
+        const last = lineIndexAt(lines, spanLast(sp));
+        for (lineIndexAt(lines, sp.start)..last + 1) |li| out[li] = true;
+        pos = @max(lines[last].term_end, pos + 1);
+    }
+    return out;
+}
+
+/// `--count-matches` AND `-c/--count`: total emitted matches, empty ones
+/// included — rg's whole-buffer `matches` tally. Under the slice model the two
+/// count modes are one question, which is rg's documented contract: "when
+/// multiline mode is enabled and the pattern(s) given can match over multiple
+/// lines, -c/--count is equivalent to --count-matches" (`rg --help count`).
+/// There is no line tally to give: a match owns a line RANGE, not a line.
+///
+/// Do not re-derive this from a probe like `rg -U -c 'a*'`: a pattern that
+/// cannot read `\n` never enters the slice model at all (`sliceModel`), so such
+/// a probe measures rg's LINE counter and reports lines. Force the same shape
+/// across the boundary (`a*|q\nq`) and `-c` answers with the match tally.
 pub fn countAll(spans: []const Span) usize {
     return spans.len;
 }
 
-/// `-c/--count` under `-U`: the number of DISTINCT physical lines a match
-/// STARTS on — rg's multiline "matching lines" (`a\nb` twice ⇒ 2; `a*` over two
-/// lines ⇒ 2 even though it yields four matches). Spans are ascending, so a
-/// single forward pass counts start-line transitions.
-pub fn countStartLines(lines: []const Line, spans: []const Span) usize {
-    var n: usize = 0;
-    var prev: ?usize = null;
+/// `-m N` under the slice model: the spans that still RENDER, clipped to the
+/// region rg admits. `--max-count` bounds the SINK EVENTS rg's multiline
+/// searcher reports, and each event hands the printer one match's whole line
+/// range — so `-m` draws a line boundary, not a match cap. Every match that
+/// STARTS at or before that boundary still prints, truncated to it: `-m1` where
+/// the first match covers lines 1-3 prints all four matches those lines hold,
+/// and a later match reaching line 5 shows only its line-3 head. Clipping the
+/// span list (rather than teaching each frame a limit) is what lets the block,
+/// `-o`, and `--vimgrep` frames stay unaware of `-m` entirely. Counts ignore
+/// `-m`, so callers tally BEFORE clipping. `max == 0` ⇒ unbounded.
+pub fn capRegion(a: std.mem.Allocator, lines: []const Line, spans: []const Span, max: usize) []const Span {
+    if (max == 0 or spans.len <= max) return spans;
+    var last: usize = 0;
+    for (spans[0..max]) |sp| last = @max(last, lineIndexAt(lines, spanLast(sp)));
+    const edge = lines[last].content_end;
+    var out: std.ArrayList(Span) = .empty;
     for (spans) |sp| {
-        const li = lineIndexAt(lines, sp.start);
-        if (prev == null or prev.? != li) {
-            n += 1;
-            prev = li;
-        }
+        if (lineIndexAt(lines, sp.start) > last) break;
+        out.append(a, .{ .start = sp.start, .end = @min(sp.end, edge) }) catch oom();
     }
-    return n;
+    return out.toOwnedSlice(a) catch oom();
 }
 
 /// The number of physical lines covered by the union of every match's line span
@@ -225,6 +318,40 @@ const Fixture = struct {
     }
 };
 
+test "a haystack anchor picks the slice model even though it eats no newline" {
+    // `\Aa` never touches a `\n`, but the line searcher would hand it a fresh
+    // haystack per line — every line start a buffer start, `\A` decayed into
+    // `^`. rg claims the terminator for it rather than allow that; so does this.
+    var anchored = try Fixture.init("\\Aa");
+    defer anchored.deinit();
+    try t.expect(anchored.m.claimsNewline());
+    try t.expect(sliceModel(&anchored.m, .{ .multiline = true }));
+    // …and only under `-U`. Per-line, `\A` IS `^` (the line is the haystack).
+    try t.expect(!sliceModel(&anchored.m, .{}));
+
+    // The complement: `\b` claims nothing, so it stays on rg's line searcher.
+    var plain = try Fixture.init("\\ba");
+    defer plain.deinit();
+    try t.expect(!plain.m.claimsNewline());
+    try t.expect(!sliceModel(&plain.m, .{ .multiline = true }));
+}
+
+test "the slice model reads \\A/\\z against the buffer, not each line" {
+    var fx = try Fixture.init("\\Aa");
+    defer fx.deinit();
+    // "a\nabc\n": the line model would claim both lines; only offset 0 is BOF.
+    const spans = collect(fx.a(), &fx.m, .{}, "a\nabc\n");
+    try t.expectEqual(@as(usize, 1), spans.len);
+    try t.expectEqual(Span{ .start = 0, .end = 1 }, spans[0]);
+
+    // `\z` is the byte after the final terminator, so a `\n`-terminated file
+    // has no line ending flush against it — `rg -U 'abc\z'` finds nothing.
+    var tail = try Fixture.init("abc\\z");
+    defer tail.deinit();
+    try t.expectEqual(@as(usize, 0), collect(tail.a(), &tail.m, .{}, "a\nabc\n").len);
+    try t.expectEqual(@as(usize, 1), collect(tail.a(), &tail.m, .{}, "a\nabc").len);
+}
+
 test "splitLines keeps offsets and drops the trailing phantom line" {
     var fx = try Fixture.init("x");
     defer fx.deinit();
@@ -273,27 +400,81 @@ test "collect drops the empty match at an unterminated buffer end" {
     var fx = try Fixture.init("a*");
     defer fx.deinit();
     const spans = collect(fx.a(), &fx.m, .{}, "aa\nbb"); // no trailing \n
-    // "aa", empty@3, empty@4 — empty@5 (== len) is dropped.
+    // "aa", empty@3, empty@4 — the walk never resumes at 5 (== len) to look
+    // for a sixth, so the nullable pattern stops with the last real byte.
     try t.expectEqual(@as(usize, 3), spans.len);
     try t.expectEqual(Span{ .start = 4, .end = 4 }, spans[2]);
 }
 
-test "collect honors -m/--max-count as a match cap" {
+test "the end-of-buffer phantom exists only behind a terminator" {
+    var fx = try Fixture.init("\\z");
+    defer fx.deinit();
+    // Terminated: `\z` sits past the final `\n`, on a line that does not exist.
+    // rg refuses to frame it — `rg -U '\z'` over "aaa\n" reports nothing.
+    try t.expectEqual(@as(usize, 0), collect(fx.a(), &fx.m, .{}, "aaa\n").len);
+    try t.expectEqual(@as(usize, 0), collect(fx.a(), &fx.m, .{}, "").len);
+
+    // Unterminated: the last line runs flush to `\z`, so the match claims it
+    // and rg prints `aaa`. The span is empty but its LINE range is not.
+    const kept = collect(fx.a(), &fx.m, .{}, "aaa");
+    try t.expectEqual(@as(usize, 1), kept.len);
+    try t.expectEqual(Span{ .start = 3, .end = 3 }, kept[0]);
+    try t.expectEqual(@as(usize, 0), lineIndexAt(splitLines(fx.a(), "aaa", '\n'), spanLast(kept[0])));
+
+    // `--null-data` moves the terminator, and the phantom moves with it.
+    try t.expectEqual(@as(usize, 1), collect(fx.a(), &fx.m, .{ .null_data = true }, "aaa\n").len);
+    try t.expectEqual(@as(usize, 0), collect(fx.a(), &fx.m, .{ .null_data = true }, "aaa\x00").len);
+}
+
+test "collect stops at the caller's span ceiling" {
     var fx = try Fixture.init("a\nb");
     defer fx.deinit();
     const spans = collect(fx.a(), &fx.m, .{ .max_per_file = 1 }, "a\nb\na\nb\n");
     try t.expectEqual(@as(usize, 1), spans.len);
 }
 
-test "count semantics: start-lines vs all matches vs matched-lines" {
-    var fx = try Fixture.init("a*");
+test "count semantics: both count modes tally spans; --stats tallies lines" {
+    var fx = try Fixture.init("a*|q\nq");
     defer fx.deinit();
     const body = "aa\nbb\n";
     const lines = splitLines(fx.a(), body, '\n');
     const spans = collect(fx.a(), &fx.m, .{}, body);
-    try t.expectEqual(@as(usize, 4), countAll(spans)); // --count-matches
-    try t.expectEqual(@as(usize, 2), countStartLines(lines, spans)); // -c
-    try t.expectEqual(@as(usize, 2), countMatchedLines(lines, spans)); // stat
+    // The alternation is what puts this in the slice model, where `-c` and
+    // `--count-matches` are one number — `rg -U -c 'a*|q\nq'` over this body
+    // answers 4, the same as `--count-matches`, not the 2 lines `rg -c 'a*'`
+    // reports from the line model. One "aa" plus three empties on line 2.
+    try t.expectEqual(@as(usize, 4), countAll(spans));
+    try t.expectEqual(@as(usize, 2), countMatchedLines(lines, spans)); // --stats: covered lines
+}
+
+test "capRegion bounds the printed LINES, not the match count" {
+    var fx = try Fixture.init("one[\\s\\S]*?two|B");
+    defer fx.deinit();
+    //             L1........L2.......L3................L4.........L5
+    const body = "AA one\nmiddle\nend two BB one\nmiddle2\nend two CC\n";
+    const lines = splitLines(fx.a(), body, '\n');
+    const spans = collect(fx.a(), &fx.m, .{}, body);
+    try t.expectEqual(@as(usize, 4), spans.len); // L1-3, B, B, L3-5
+
+    // `-m1` admits the first match's whole range (lines 1-3), so all FOUR
+    // matches still render — the last one clipped to its line-3 head.
+    const one = capRegion(fx.a(), lines, spans, 1);
+    try t.expectEqual(@as(usize, 4), one.len);
+    try t.expectEqual(lines[2].content_end, one[3].end);
+    try t.expectEqual(spans[3].start, one[3].start);
+
+    // `-m4` admits every match, so nothing is clipped at all.
+    try t.expectEqual(spans[3].end, capRegion(fx.a(), lines, spans, 4)[3].end);
+}
+
+test "capRegion drops a match that opens past the region" {
+    var fx = try Fixture.init("x");
+    defer fx.deinit();
+    const body = "x\n\nx\n"; // two matches, a blank line apart
+    const lines = splitLines(fx.a(), body, '\n');
+    const spans = collect(fx.a(), &fx.m, .{}, body);
+    try t.expectEqual(@as(usize, 2), spans.len);
+    try t.expectEqual(@as(usize, 1), capRegion(fx.a(), lines, spans, 1).len);
 }
 
 test "blockBases coalesces contiguous matches to one base" {

@@ -53,6 +53,15 @@ const oom = paths.allocFailure;
 /// with no comptime map (a ~230-key `StaticStringMap` blows the comptime sort's
 /// branch budget and dwarfs the build time). Label resolution runs once per
 /// invocation, so O(log n) string compares are free.
+/// One WHATWG label and the `Encoding` tag it resolves to. Re-exported so a
+/// caller that has to *enumerate* the accepted labels (the manual, the shell
+/// completions) reads the same table `fromLabel` resolves against, rather than
+/// reaching into the generated file beside it.
+pub const LabelEntry = gen.LabelEntry;
+
+/// Every label `fromLabel` accepts, sorted, minus gist's own `auto`/`none`.
+pub const labels: []const LabelEntry = &gen.labels;
+
 pub fn fromLabel(s: []const u8) ?Encoding {
     const trimmed = std.mem.trim(u8, s, "\t\n\x0c\r ");
     if (trimmed.len == 0 or trimmed.len > 64) return null;

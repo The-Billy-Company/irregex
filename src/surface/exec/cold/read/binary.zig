@@ -16,6 +16,7 @@ const std = @import("std");
 const args = @import("../argv/args.zig");
 const Opts = args.Opts;
 const oom = args.oom;
+const multiline = @import("../emit/multiline.zig");
 const Emitter = @import("../emit/output.zig").Emitter;
 const Matcher = @import("../../../../kernel/match/regex/regex.zig").Matcher;
 const collectLines = @import("legible.zig").collectLines;
@@ -84,7 +85,7 @@ pub fn multilineBinary(body_len: usize, nul: usize) bool {
 /// the prefix's lines print, plus the `binary file matches` summary.
 /// Returns whether the file counts as a match (drives the exit code).
 pub fn handleBinary(a: std.mem.Allocator, re: *const Matcher, o: Opts, out: *std.ArrayList(u8), em: *Emitter, path: []const u8, explicit: bool, body: []const u8, nul: usize, show_name: bool) bool {
-    if (em.re.multiline() and em.re.canMatchNewline())
+    if (multiline.sliceModel(em.re, o))
         return handleBinaryMulti(a, re, o, out, em, path, explicit, body, nul, show_name);
 
     const prefix = body[0..committedPrefix(body, nul)];

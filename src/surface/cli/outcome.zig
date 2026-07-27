@@ -35,6 +35,7 @@
 
 const std = @import("std");
 const assay = @import("../../assay/assay.zig");
+const corpus = @import("../../corpus/tree/corpus.zig");
 const paths = @import("../../corpus/scope/paths.zig");
 const reprise = @import("reprise.zig");
 
@@ -44,6 +45,10 @@ const reprise = @import("reprise.zig");
 /// silent and a `buffer` sink captures the message for the client (ADR-373
 /// law 6) — the same reason `fatal` below takes this path.
 pub fn die(comptime msg: []const u8, args: anytype) noreturn {
+    // A fatal exit never routes through `reprise.seal` (an error is not an
+    // answer), so it settles the stdout buffering policy itself: results already
+    // printed before the fault are still owed to the reader.
+    corpus.flushStdout();
     assay.diag(msg, args);
     std.process.exit(2);
 }

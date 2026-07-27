@@ -4,7 +4,7 @@
 //! adapted to irregex's general program: the shared gitignore engine plus one
 //! corpus-only skip-dir policy (`isSkipDir`) govern every consumer.
 //! Before this, `corpus.zig`'s index build, `surface/exec/cold/engine/serial.zig`'s tree-walk
-//! enumeration, `corpus/fresh.zig`'s mtime+ctime freshness stat-walk, and the
+//! enumeration, `index/trigrams/fresh.zig`'s mtime+ctime freshness stat-walk, and the
 //! no-prefilter live scan each re-derived the identical
 //! walk skeleton (open root → skip/enter dirs → join a file's path) around a
 //! DIFFERENT per-file action (read bytes, keep the path, stat metadata, queue for
@@ -20,6 +20,7 @@
 
 const std = @import("std");
 const Dir = std.Io.Dir;
+const charter = @import("../scope/charter.zig");
 const corpus_mod = @import("corpus.zig"); // mutual import; only `outDir()` is touched
 const ignore = @import("ignore.zig");
 const paths = @import("../scope/paths.zig");
@@ -41,7 +42,7 @@ pub const Haystack = struct {
 ///
 /// `std.StaticStringMap` — the same technique Zig's own tokenizer keyword
 /// lookup uses (`std.zig.primitives.names`, `std.zig.Token.getKeyword`) —
-/// buckets these 34 names by length at comptime, so a lookup is one length
+/// buckets these 35 names by length at comptime, so a lookup is one length
 /// check + a compare against only the few same-length candidates, instead of
 /// testing all 35 in the worst (most common) case of "not a skip dir".
 /// Measured (standalone ReleaseFast micro-bench, 1786 real repo directory
@@ -63,13 +64,19 @@ const skip_dirs = std.StaticStringMap(void).initComptime(.{
     .{".cursor"},       .{".idea"},       .{".vscode"},       .{".parcel-cache"}, .{".pnpm-store"},
 });
 
-/// Extra skip basenames, parsed once per process from two optional sources:
-/// the `GIST_SKIP` env (`:`/`,`/space separated — one-shot override) and the
-/// per-tree config `<outDir()>/skips.list` (one name per line, `#` comments —
-/// the durable policy a project seeds once, e.g. `graphify-out`). The comptime
-/// baseline above stays generic; anything project-specific rides these. Env
-/// tokens borrow the env string (it outlives the process); file tokens borrow
-/// a static buffer filled under the same lock. The spinlock idiom matches
+/// Extra skip basenames, parsed once per process from three optional sources:
+/// the `GIST_SKIP` env (`:`/`,`/space separated — one-shot override), the
+/// tree's committed charter (`.irregex.toml skip` — the durable, SHARED policy,
+/// and the one a fresh clone gets for free), and the machine-local
+/// `<outDir()>/skips.list` (one name per line, `#` comments). The charter is
+/// why the last of those is no longer the only durable rung: `outDir()`
+/// defaults inside gitignored `.local/`, so a skips.list policy was per-machine
+/// folklore that a fresh clone silently lacked — two clones of one tree walking
+/// two different corpora. It stays honored for the machine-specific case.
+/// The comptime baseline above stays generic; anything project-specific rides
+/// these. Env and charter tokens borrow strings that outlive the process; file
+/// tokens borrow a static buffer filled under the same lock. The spinlock idiom
+/// matches
 /// `corpus.ArtifactPath` (per-directory lookups against a near-always-empty
 /// list, never a hot loop once `done` publishes).
 const extra_skips = struct {
@@ -91,6 +98,7 @@ const extra_skips = struct {
             var it = std.mem.tokenizeAny(u8, std.mem.span(v), ": ,");
             while (it.next()) |tok| add(tok);
         }
+        if (charter.governing()) |c| for (c.skip) |name| add(name);
         var path_buf: [1024]u8 = undefined;
         const path = std.fmt.bufPrint(&path_buf, "{s}/skips.list", .{corpus_mod.outDir()}) catch return;
         const fd = std.posix.openat(std.posix.AT.FDCWD, path, .{ .ACCMODE = .RDONLY }, 0) catch return;

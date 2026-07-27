@@ -16,10 +16,11 @@ The other three dossiers each defend something we built. This one defends a
 why it is the limit, and which routes past it have been tried and closed. It
 exists so that the same three dead ends are not rediscovered annually.
 
-Unlike `crest/`, `gist/`, and `relate/`, nothing here has shipped yet. Treat
-every measurement as a spike result from the machine-local regex-engine
-workbench, reproducible only there, and every road below as **research
-posture** — not as a description of the engine as built.
+Unlike `crest/`, `gist/`, and `relate/`, no road here defends a shipped
+**novel technique** — the shipped accelerator tier (compose, parabix, sieve)
+applies known ideas to escape the bound this document measures. Treat each
+road below as the investigation record that led to those rungs, not as a
+description of the engine in its current form.
 
 ## The limit, measured
 

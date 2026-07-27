@@ -56,8 +56,23 @@ pub fn text(self: *Emitter, line: []const u8, is_match: bool) void {
         s = r.text;
         starts = r.starts;
     };
-    emitBody(self, s, is_match, starts, terminated);
+    emitBody(self, s, is_match, starts, terminated, .{});
 }
+
+/// The two knobs rg's `-U` per-match sink answers differently from every other
+/// "print this line body" path. Defaults are the line sink's answers.
+pub const Body = struct {
+    /// Measure the `-M/--max-columns` width WITHOUT the line terminator.
+    /// rg's per-match multiline printer strips it before the width test
+    /// (`standard.rs` `sink_slow_multi_per_match`), so `rg -U --vimgrep -M9`
+    /// still prints a nine-byte line where the line sink omits it.
+    bare_width: bool = false,
+    /// How many matches the `-M` placeholder reports; 0 ⇒ `starts.len`. rg
+    /// counts the SINK EVENT's matches, and a `-U` event is a whole block, so
+    /// one row of a four-match block says "with 4 matches" even though the row
+    /// carries one.
+    tally: usize = 0,
+};
 
 /// The presentation tail shared by every "print this line body" path:
 /// `--trim`, then `-M/--max-columns` placeholders (with `starts` as the
@@ -65,7 +80,7 @@ pub fn text(self: *Emitter, line: []const u8, is_match: bool) void {
 /// replacement offsets within `s_in`; trimming rebases them (an offset
 /// inside the trimmed whitespace clamps to 0 — before any cut, like rg's
 /// block-coordinate comparison).
-pub fn emitBody(self: *Emitter, s_in: []const u8, is_match: bool, starts_in: []const usize, terminated: bool) void {
+pub fn emitBody(self: *Emitter, s_in: []const u8, is_match: bool, starts_in: []const usize, terminated: bool, b: Body) void {
     var s = s_in;
     var starts = starts_in;
     if (self.o.trim) {
@@ -88,20 +103,25 @@ pub fn emitBody(self: *Emitter, s_in: []const u8, is_match: bool, starts_in: []c
     // terminator-inclusive, and appends the terminator to a `-r` rewrite
     // before the width check) — an unterminated tail measures bare, and
     // `-o` fragments (bufOnly) measure bare too.
-    const width = s.len + @intFromBool(terminated);
-    if (self.o.max_cols != 0 and width > self.o.max_cols) {
-        exceeded(self, s, is_match, starts);
-        self.add(self.o.outTerm());
-    } else if (is_match and self.use_color and self.o.replace == null) {
+    const width = s.len + @intFromBool(terminated and !b.bare_width);
+    const term = if (self.o.max_cols != 0 and width > self.o.max_cols) blk: {
+        exceeded(self, s, is_match, starts, b.tally);
+        break :blk self.o.outTerm();
+    } else if (is_match and self.use_color and self.o.replace == null) blk: {
         // rg's colored writer trims the terminator (incl. `\r`) and
         // re-appends it, normalizing even a unix line to `\r\n` under
         // `--crlf` — mirror that exactly.
         highlightSpans(self, self.mview(s));
-        self.add(self.o.outTerm());
-    } else {
+        break :blk self.o.outTerm();
+    } else blk: {
         self.add(s);
-        self.add(if (terminated) self.o.termStr() else self.o.outTerm());
-    }
+        break :blk if (terminated) self.o.termStr() else self.o.outTerm();
+    };
+    // `--hyperlink` scope `row` holds the anchor open across the body, so the
+    // click target is the whole result line; the terminator stays outside it.
+    // A no-op in every other scope (the locator already closed its own).
+    self.linkClose();
+    self.add(term);
 }
 
 /// Paint every match span within `s` (a matching line, post-trim), leaving
@@ -142,7 +162,10 @@ fn matchSpans(self: *Emitter, s: []const u8) []const Matcher.Span {
 /// it (`-r` replacement offsets OR `--color`, which highlights so it counts) it
 /// reports match counts: `[Omitted long line with N matches]` / ` [... N more
 /// match(es)]`. `starts` are `-r` replacement offsets within `s` (empty ⇒ none).
-pub fn exceeded(self: *Emitter, s: []const u8, is_match: bool, starts: []const usize) void {
+/// `tally` overrides the reported count (0 ⇒ `starts.len`) for a sink whose
+/// event holds more matches than the row does; the preview's "N more" always
+/// counts `starts`, since rg asks it of the row's own matches.
+pub fn exceeded(self: *Emitter, s: []const u8, is_match: bool, starts: []const usize, tally: usize) void {
     const gran = starts.len != 0 or (self.o.replace != null and is_match);
     if (self.o.max_cols_preview) {
         const cut = previewEnd(s, self.o.max_cols);
@@ -172,7 +195,7 @@ pub fn exceeded(self: *Emitter, s: []const u8, is_match: bool, starts: []const u
     if (!is_match) {
         self.add("[Omitted long context line]");
     } else if (gran and !self.o.only_matching) {
-        self.out.print(self.a, "[Omitted long line with {d} matches]", .{starts.len}) catch oom();
+        self.out.print(self.a, "[Omitted long line with {d} matches]", .{if (tally != 0) tally else starts.len}) catch oom();
     } else self.add("[Omitted long matching line]");
 }
 
@@ -190,12 +213,22 @@ pub const Vimgrep = struct {
     starts: []const usize,
     /// Did the line carry a terminator in the file (`emitBody`'s bytes model)?
     terminated: bool,
-    /// Whose offset `--byte-offset` prints. rg's two sinks answer differently:
-    /// a line-oriented sink reports the MATCH's offset, a `-U` block sink the
-    /// printed LINE's — `rg -U --vimgrep -b 'one[\s\S]*?two|B'` over
-    /// `one\nmid\ntwo B` prints the second row at line 3's start, neither the
-    /// match's offset nor the block's.
-    off_of: enum { match, line } = .match,
+    /// Which of ripgrep's two sinks produced this row. They are two printer
+    /// functions with three separately-drifting answers, so naming the sink
+    /// once settles all three:
+    ///
+    /// - **`--byte-offset`** — `line` reports the MATCH's offset, `block` the
+    ///   printed LINE's. `rg -U --vimgrep -b 'one[\s\S]*?two|B'` over
+    ///   `one\nmid\ntwo B` prints the second row at line 3's start, neither
+    ///   the match's offset nor the block's.
+    /// - **`-M` width** — `block` measures the line bare (see `Body`).
+    /// - **`-M` tally** — `block` reports `tally`, the whole event's matches.
+    ///
+    /// A `block` row carries exactly ONE match: rg's multiline printer walks
+    /// per match, not per line.
+    sink: enum { line, block } = .line,
+    /// The event's match count, for a `block` row's `-M` placeholder.
+    tally: usize = 0,
 };
 
 /// `--vimgrep`: the rows ONE selected line contributes — a `path:line:col:text`
@@ -215,9 +248,10 @@ pub const Vimgrep = struct {
 /// matches]` — where the plain frame says `[Omitted long matching line]`) are
 /// decided once here instead of twice, which is how they drifted before.
 pub fn vimgrepLine(self: *Emitter, v: Vimgrep) void {
+    const block = v.sink == .block;
     for (v.starts) |st| {
-        self.prefix(v.path, v.lineno, st + 1, v.off + if (v.off_of == .match) st else 0, true);
-        emitBody(self, v.text, true, v.starts, v.terminated);
+        self.prefix(v.path, v.lineno, st + 1, v.off + if (block) 0 else st, true);
+        emitBody(self, v.text, true, v.starts, v.terminated, .{ .bare_width = block, .tally = v.tally });
     }
 }
 
@@ -245,6 +279,7 @@ pub fn emitMatches(self: *Emitter, ssim: *Matcher.SpanSim, path: []const u8, lin
         // printer): under `--crlf` every fragment ends `\r\n`, so a match
         // reaching the logical line end needs no `\r`-reattachment.
         if (!empty) self.paint(palette.match_on, line[span.start..span.end]);
+        self.linkClose(); // scope `row`: the fragment is part of the click target
         self.add(self.o.outTerm());
         n += 1;
         last_end = span.end;
@@ -255,7 +290,7 @@ pub fn emitMatches(self: *Emitter, ssim: *Matcher.SpanSim, path: []const u8, lin
 /// The `--vimgrep` row shape's own harness: no engine is consulted (the caller
 /// resolved the spans), so a bare `Matcher` suffices to hold the `Emitter`.
 fn vimgrepBytes(a: std.mem.Allocator, out: *std.ArrayList(u8), o: args.Opts, v: Vimgrep) !void {
-    var m = Matcher{ .linear = try @import("../../../../../kernel/match/regex/regex.zig").Regex.compile(a, "x") };
+    var m = Matcher{ .linear = try Regex.compile(a, "x") };
     defer m.deinit();
     var em = Emitter{ .a = a, .re = &m, .o = o, .show_name = true, .out = out };
     vimgrepLine(&em, v);
@@ -285,18 +320,39 @@ test "--byte-offset follows the sink: the match's, or the printed line's" {
     const o: args.Opts = .{ .line_num = true, .column = true, .byte_offset = true };
     const v: Vimgrep = .{ .path = "a.txt", .lineno = 3, .text = "zzz alpha zzz", .off = 23, .starts = &.{ 4, 10 }, .terminated = true };
 
+    var block_sink: std.ArrayList(u8) = .empty;
+    defer block_sink.deinit(t.allocator);
+    var v_block = v;
+    v_block.sink = .block;
+    try vimgrepBytes(t.allocator, &block_sink, o, v_block);
+    // `-U` block sink: every row reports the LINE's offset (rg 14.x).
+    try t.expectEqualStrings("a.txt:3:5:23:zzz alpha zzz\na.txt:3:11:23:zzz alpha zzz\n", block_sink.items);
+
     var line_sink: std.ArrayList(u8) = .empty;
     defer line_sink.deinit(t.allocator);
-    var v_line = v;
-    v_line.off_of = .line;
-    try vimgrepBytes(t.allocator, &line_sink, o, v_line);
-    // `-U` block sink: every row reports the LINE's offset (rg 14.x).
-    try t.expectEqualStrings("a.txt:3:5:23:zzz alpha zzz\na.txt:3:11:23:zzz alpha zzz\n", line_sink.items);
+    try vimgrepBytes(t.allocator, &line_sink, o, v); // default `.line`
+    try t.expectEqualStrings("a.txt:3:5:27:zzz alpha zzz\na.txt:3:11:33:zzz alpha zzz\n", line_sink.items);
+}
 
-    var match_sink: std.ArrayList(u8) = .empty;
-    defer match_sink.deinit(t.allocator);
-    try vimgrepBytes(t.allocator, &match_sink, o, v); // default `.match`
-    try t.expectEqualStrings("a.txt:3:5:27:zzz alpha zzz\na.txt:3:11:33:zzz alpha zzz\n", match_sink.items);
+test "-M: the block sink measures bare and reports its whole event's tally" {
+    const t = std.testing;
+    const o: args.Opts = .{ .line_num = true, .column = true, .max_cols = 8 };
+    const v: Vimgrep = .{ .path = "w.txt", .lineno = 1, .text = "start one", .off = 0, .starts = &.{6}, .terminated = true, .sink = .block, .tally = 4 };
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(t.allocator);
+    try vimgrepBytes(t.allocator, &out, o, v);
+    // Nine bare bytes over a limit of eight: omitted, counting the event.
+    try t.expectEqualStrings("w.txt:1:7:[Omitted long line with 4 matches]\n", out.items);
+
+    var fits: std.ArrayList(u8) = .empty;
+    defer fits.deinit(t.allocator);
+    var wide = o;
+    wide.max_cols = 9;
+    try vimgrepBytes(t.allocator, &fits, wide, v);
+    // The terminator is not part of the width here, so nine bytes still fit —
+    // the line sink would have measured ten and omitted this row.
+    try t.expectEqualStrings("w.txt:1:7:start one\n", fits.items);
 }
 
 test "-M reports the line's match count, not the plain placeholder" {

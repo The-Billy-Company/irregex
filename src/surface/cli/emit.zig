@@ -15,6 +15,17 @@ const oom = cli_args.oom;
 /// face shares (arg order matches these `(buf, gpa, s)` callers).
 pub const jsonStr = @import("../exec/cold/emit/jsonstr.zig").write;
 
+/// Make a printed row clickable: `anchor` for a bare unit label (which may
+/// carry its own `#Lnnn`), `locator` for the `path:line` shape. Both hand the
+/// bytes back unchanged when this run emits no links — see `beacon.zig`.
+///
+/// Re-exported here because every face that prints a row already imports
+/// `emit`, and they belong on the TEXT side of `emitRow` only: a record carries
+/// its path as data, and a JSON consumer wants the path, not an escape sequence
+/// wrapped around one.
+pub const anchor = @import("beacon.zig").anchor;
+pub const locator = @import("beacon.zig").locator;
+
 /// One NDJSON result row from a comptime field spec — the shared emitter
 /// behind every verb's `--json` arm. Each entry is `.{ "key", kind, value }`
 /// with kind `"s"` (escaped string), `"s?"` (escaped string or `null`), or a

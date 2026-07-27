@@ -179,6 +179,76 @@ view, `:GistSimilar` is `relate similar` on the current buffer, and
 `:GistBlast` puts a symbol's live blast radius in the quickfix list so `:cnext`
 walks a change's consequences. `GIST_VIM_INSTALL=0` declines the whole thing.
 
+## Configuration that outlives one invocation
+
+Two files, split along a line ripgrep's `.ripgreprc` does not draw: **what the
+tree is** versus **what one reader likes to look at**. Neither is required, and
+`--no-config` (or `GIST_NO_CONFIG=1`) ignores both.
+
+**`.irregex.toml` — committed, at the tree root.** Facts about the repository
+that every clone and every agent should agree on. It holds no argv, only typed
+keys, and all three faces honor it:
+
+```toml
+roots = ["services", "libs", "clients"]   # what "the corpus" means here
+skip  = ["graphify-out", "vendor"]        # directories the corpus walk never enters
+types = ["billy:*.billy"]                 # extra --type names
+```
+
+Discovery climbs from the working directory and **stops at the repository
+boundary**, so a tree without its own declaration never inherits a parent
+directory's. `roots` and `skip` size **the corpus** — what `gist index` and
+`relate` enumerate — exactly as `GIST_ROOTS` and `GIST_SKIP` always did; an
+ad-hoc `gist PAT some/dir` still searches what you point it at. This is the
+first home for two facts that had nowhere good to live: search roots were a
+per-shell `GIST_ROOTS` nobody else on the team has, and extra skip directories
+were `<GIST_DIR>/skips.list` inside a gitignored artifact directory that every
+cache clear deletes. Both are everyone's, and both now
+travel with the clone. The file is ceilinged at **corpus** reach (below): a
+shared file may say what the repository *is*, and may never quietly change what
+matches for the people who clone it.
+
+**`$XDG_CONFIG_HOME/gist/preferences` — machine-local, never committed.**
+(`$GIST_PREFERENCES` overrides the location; `~/.config` is the fallback.) Flag
+lines, one flag per line, prepended to argv so anything typed still wins:
+
+```
+--heading
+-n
+--glob '!vendor/*'      # quotes are quotes, not glob characters
+```
+
+These apply **only when stdout is an interactive terminal**. That is not a rule
+invented for this file — it is the envelope gist already draws for the answer
+keep, the resident daemon, and color resolution. Riding the same line puts a
+pipe, a redirect, `--json`, a script, CI, the daemon, and every agent
+structurally outside its reach, so none of them ever needs `--no-config` to be
+sure what it will get. Lines are tokenized with shell quoting (ripgrep's are
+verbatim argv elements, which is why a quoted glob there arrives with its
+quotes and silently matches nothing), every flag is checked against the catalog
+as the file is read, and a line that does not start with a flag is refused —
+a stray bare word in a persisted argv file is the search pattern for every
+invocation forever.
+
+**`GIST_HYPERLINK` — where a result should take you when you click it.** The
+one preference that has to work in every face, since `relate` and `irregex`
+share no flag struct with `gist`. Its value names a posture (`auto` · `always` ·
+`never`), a destination (`vscode`, `zed`, `kitty`, … or a literal
+`app://…{path}:{line}` format), or both as a `WHEN,WHERE` pair — so
+`GIST_HYPERLINK=vscode` in a profile says *where* and leaves the terminal probe
+to say *whether*, and `always,vscode` overrides the probe too. Default `auto`
+links only what a person is reading in an emulator known to render OSC-8; a
+pipe, a redirect, `--json`, and NUL-framed `-0` output stay plain bytes, the
+last two no matter what any posture says. `GIST_TRACE=link` prints the one-line
+reason a run linked or didn't.
+
+Underneath both is a **reach** axis on every flag, also emitted by
+`gist --schema`: `corpus` (which files and bytes the engine sees), `semantics`
+(which lines match), `presentation` (how it is rendered), `execution` (only how
+it is computed). It is what lets a persisted layer be judged rather than
+trusted, and what lets a zero-match run name a preferences file as the possible
+cause — the one thing a reader cannot see in the line they typed.
+
 ## Use Gist and Relate in tandem
 
 The tools are strongest as a loop: Relate finds the neighborhood; Gist proves

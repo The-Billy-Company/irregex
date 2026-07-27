@@ -7,7 +7,7 @@
 //! measured somewhere else is not a baseline, and on a box carrying ten
 //! coworker agents an un-interleaved A/B measures the load, not the kernel.
 //!
-//! Three things it establishes, each fail-closed:
+//! Four things it establishes, each fail-closed:
 //!
 //!   1. **Agreement on the whole buffer.** Every row prints whether the two
 //!      arms returned the same verdict; a single disagreement exits non-zero.
@@ -18,7 +18,11 @@
 //!      IN-RUN calibrated clock is printed beside it so the normalization is
 //!      visible rather than assumed. The real clock on a loaded machine is
 //!      always lower, which makes every speedup here conservative.
-//!   3. **The honest boundary.** The `dot-star-chain` row lowers the rung past
+//!   3. **Full-buffer scans, proven per row.** The kernel returns the moment a
+//!      chunk lands on MATCH, so one hit turns a throughput number into a
+//!      measurement of the prefix before it. The `hit` column reports the
+//!      verdict and a row that hit says so in the clear.
+//!   4. **The honest boundary.** The `dot-star-chain` row lowers the rung past
 //!      its own dispatch gate (`Compose.lower`, not `Compose.build`) purely to
 //!      publish how badly it loses to an armed literal skip — and prints, on
 //!      the row below, that `build` refuses that exact pattern. A rung with no

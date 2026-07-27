@@ -3,15 +3,13 @@
 //!
 //! Links gist's REAL engine (`@import("irregex")`) and arms the REAL rung
 //! through the engine's own seal (`gist.regex_parabix`), so both arms of every
-//! race are production code. Two claims, measured separately because they need
-//! opposite haystacks:
+//! race are production code. Four things it establishes, each fail-closed:
 //!
 //!   1. **Agreement, over the real Billy corpus.** Every pattern is run over
 //!      every corpus document by both the shipped ladder and this rung; a single
 //!      disagreement exits non-zero. (The exhaustive proof is the randomized
 //!      differential against the Pike VM in `parabix_test.zig`; this is the same
 //!      claim at corpus scale against the engine a user actually gets.)
-//!
 //!   2. **Throughput, on a haystack that provably cannot match.** A boolean
 //!      scan returns at the first hit, so timing a matching buffer measures
 //!      where the match happens to sit, not the engine. The number both arms
@@ -21,6 +19,13 @@
 //!      (so the marker chain does maximum work and the DFA leaves its start
 //!      state constantly) that never complete the chain. The `hit` column
 //!      re-proves the miss per row rather than trusting the construction.
+//!   3. **The phase ladder.** Each row prints transposition alone, transposition
+//!      plus class streams, then the whole scan, so the claim that transposition
+//!      is the cheap half is measured here rather than quoted from PACT 2014.
+//!   4. **The refusals, from the bench as well as from the tests.** Rows marked
+//!      refused must produce a named Decline; a row that arms where the gate
+//!      must refuse fails the run. Boundary rows are lowered past the gate
+//!      purely to publish where the rung loses.
 //!
 //! Two baselines, both measured here in this process, because they answer
 //! different questions. `ladder` is `Regex.docMatch` — the whole shipped
@@ -29,10 +34,6 @@
 //! whose ~4-cycle load-latency floor is the pre-registered 0.277 B/cycle this
 //! rung was designed against. A rung that only beat the narrower baseline would
 //! be hiding behind it.
-//!
-//! Rows marked `boundary` are lowered PAST the admission gate on purpose, to
-//! publish where the rung loses; the line below each one re-asserts that the
-//! real gate refuses it. A rung with no ≈1× row is hiding something.
 //!
 //! Prior art: Cameron et al., "Bitwise Data Parallelism in Regular Expression
 //! Matching" (PACT 2014) / icGrep. No novelty is claimed for the technique.

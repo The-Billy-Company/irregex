@@ -12,8 +12,9 @@
 //!   * time  → `span.zig`     — `Span`/`Duration` (monotonic) vs `Anchor` (wall),
 //!                              made non-interchangeable at the type level.
 //!   * count → `tally.zig`    — `Tally(Schema)`, one comptime-checked counter set.
-//!   * debug → `channel.zig`  — the env vocabulary, the lens gate, and the
-//!                              thread-local sink every diagnostic routes through.
+//!   * debug → `channel.zig`  — the env vocabulary, the lens gate, the chatter
+//!                              gate, and the thread-local sink every
+//!                              diagnostic routes through.
 //!
 //! `Run` (below) is the ergonomic layer over the channel for the ~15 verb
 //! summary lines: it opens a `Span` and emits one line that is byte-identical to
@@ -36,12 +37,16 @@ pub const Tally = @import("tally.zig").Tally;
 // ── debug ──
 const channel = @import("channel.zig");
 pub const Lens = channel.Lens;
+pub const Chatter = channel.Chatter;
 pub const Sink = channel.Sink;
 pub const Policy = channel.Policy;
 pub const install = channel.install;
 pub const scope = channel.scope;
 pub const lit = channel.lit;
+pub const audible = channel.audible;
+pub const muffle = channel.muffle;
 pub const diag = channel.diag;
+pub const note = channel.note;
 pub const trace = channel.trace;
 pub const envSpan = channel.envSpan;
 pub const envFalsy = channel.envFalsy;

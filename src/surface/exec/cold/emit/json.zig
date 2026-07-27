@@ -102,7 +102,7 @@ pub fn emitOne(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher
     var bin: ?usize = if (o.text) null else std.mem.indexOfScalar(u8, f.body, 0);
     var searched = f.body.len;
     if (bin) |q| {
-        if (re.multiline() and re.canMatchNewline()) {
+        if (ml.sliceModel(re, o)) {
             if (!f.explicit and binary.multilineBinary(f.body.len, q)) {
                 st.bump(.files_searched);
                 return; // sniff quit: nothing searched, no records
@@ -153,7 +153,7 @@ pub fn runParallel(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.Array
     // line-mode case (no `-r`/context/`-v`/`--max-count`/`-U`); a binary body
     // (a NUL, detected in `soloShard`'s parallel base pass) and every other
     // shape fall through to the file-sharded (or serial) path below.
-    if (files.len == 1 and caps == null and !re.multiline() and !o.invert and
+    if (files.len == 1 and caps == null and !ml.sliceModel(re, o) and !o.invert and
         o.before == 0 and o.after == 0 and o.max_per_file == 0 and files[0].body.len >= parallel.min_bytes)
     {
         if (soloShard(gpa, a, out, re, o, files[0], needle)) |st| {
@@ -406,7 +406,7 @@ fn soloShardRecords(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Ma
 const Line = struct { off: usize, view: []const u8, text: []const u8, kind: u8 = 0, spans: []const Matcher.Span = &.{} }; // kind: 0 none,1 ctx,2 match
 
 fn emitFile(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, ss: *Matcher.SpanSim, caps: ?*Caps, o: Opts, f: File, st: *Stats, bin: ?usize, searched: usize, needle: ?simd.Gate) void {
-    if (re.multiline()) return emitFileMulti(a, out, re, caps, o, f, st, bin, searched);
+    if (ml.sliceModel(re, o)) return emitFileMulti(a, out, re, caps, o, f, st, bin, searched);
     // Split into lines, keeping each line's file offset and its raw text (with the
     // trailing terminator, as ripgrep reports it in `lines.text`). In a binary
     // EXPLICIT file rg's converter treats each NUL as a line terminator too —

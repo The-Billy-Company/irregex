@@ -8,8 +8,16 @@
 const std = @import("std");
 const haystack = @import("haystack.zig");
 const assay = @import("../../assay/assay.zig");
+const charter = @import("../scope/charter.zig");
+const drain = @import("drain.zig");
 const fault = @import("../../fault.zig");
 const ward = @import("../../kernel/primitives/ward.zig");
+
+/// When result bytes leave this process, and in how many syscalls — see
+/// `drain.zig`. Re-exported here because `writeStdout` is the seam every
+/// caller already knows, and the policy is a property of that seam.
+pub const StdoutPolicy = drain.Policy;
+pub const default_stdout_buffer: usize = drain.default_capacity;
 
 pub const per_file_cap: usize = 4 << 20; // 4 MiB
 
@@ -62,11 +70,14 @@ pub fn ArtifactPath(comptime name: []const u8) type {
 /// persisted artifact prefer the roots persisted BESIDE it (`roots.list`,
 /// atlas roots blob) so a query always folds freshness over the corpus the
 /// artifact was actually built from; this resolver is the build-time (and
-/// no-artifact) answer. Two rungs:
+/// no-artifact) answer. Three rungs:
 ///   1. `GIST_ROOTS` — explicit override, `:`/space/comma-separated paths;
-///   2. `.` — the whole tree (the skip-dir policy still prunes VCS/build
+///   2. the tree's committed charter (`.irregex.toml roots`), already resolved
+///      against the charter's own directory, so the answer does not depend on
+///      which subdirectory the command happened to run from;
+///   3. `.` — the whole tree (the skip-dir policy still prunes VCS/build
 ///      output). No tree layout is ever assumed; a corpus that wants a
-///      narrower scope passes roots positionally or via the env.
+///      narrower scope declares it, passes roots positionally, or sets the env.
 /// Every returned string is owned by `gpa`; release with `freeRoots`.
 pub fn resolveRoots(gpa: std.mem.Allocator) ![]const []const u8 {
     var roots: std.ArrayList([]const u8) = .empty;
@@ -80,6 +91,11 @@ pub fn resolveRoots(gpa: std.mem.Allocator) ![]const []const u8 {
         while (it.next()) |tok| try roots.append(gpa, try gpa.dupe(u8, tok));
         if (roots.items.len > 0) return roots.toOwnedSlice(gpa);
     }
+
+    if (charter.governing()) |c| if (c.roots.len > 0) {
+        for (c.roots) |r| try roots.append(gpa, try gpa.dupe(u8, r));
+        return roots.toOwnedSlice(gpa);
+    };
 
     try roots.append(gpa, try gpa.dupe(u8, "."));
     return roots.toOwnedSlice(gpa);
@@ -198,13 +214,39 @@ pub fn writeStdout(bytes: []const u8) bool {
         output_budget.truncated.store(true, .monotonic);
         return false;
     }
-    if (!rawWriteStdout(bytes)) return false;
+    if (!drain.write(rawWriteStdout, bytes)) return false;
     if (ceiling != 0) _ = output_budget.written.fetchAdd(bytes.len, .monotonic);
     return true;
 }
 
-/// The partial-write retry loop `writeStdout`/`writeStdoutCapped` share — the
-/// budget accounting is the caller's, this only lands the bytes. `false` ⇒ the
+/// Install the stdout buffering policy for the rest of this process
+/// (`--line-buffered` / `--block-buffered` / `--buffer-size`, resolved against
+/// the destination by the engine). `term` is the run's line terminator, so a
+/// `--null-data` record stream flushes on `\0` rather than a `\n` it will never
+/// contain. Fail-open: an arming failure leaves the pre-policy pass-through.
+pub fn armStdout(policy: StdoutPolicy, capacity: usize, term: u8) void {
+    drain.arm(policy, capacity, term);
+}
+
+/// Does the armed policy owe the reader output *during* the run? Only
+/// `--line-buffered` does; the serial engine reads this to decide whether to
+/// hand each file's rendered bytes over as it finishes it, instead of holding
+/// the whole run for one terminal flush.
+pub fn stdoutStreams() bool {
+    return drain.streams();
+}
+
+/// Emit whatever the drain is holding. Idempotent and safe before the drain is
+/// ever armed, which is why the process's exit seams (`Outcome.exit` → `depart`,
+/// `die`) can call it unconditionally — buffered output that never reached the
+/// fd is the one failure mode a buffering policy must not have.
+pub fn flushStdout() void {
+    _ = drain.flush();
+}
+
+/// The partial-write retry loop — the drain's sink, and the one place a result
+/// byte becomes a syscall. The budget accounting is `writeStdout`'s and the
+/// buffering policy is `drain.zig`'s; this only lands the bytes. `false` ⇒ the
 /// pipe is gone (EPIPE) or a signal cut the call (EINTR). `std.posix.system.write`
 /// is the raw C-ABI extern (returns isize; <=0 ⇒ error/closed-pipe), the same
 /// `std.posix.system.*` layer the read path's `close` already rides on —
@@ -290,7 +332,7 @@ fn carbonCopy(bytes: []const u8, how: enum { whole, torn }) void {
 /// `false` ⇒ stdout is spent/closed (nothing more to send), like `writeStdout`.
 pub fn writeStdoutCapped(bytes: []const u8) bool {
     const ceiling = output_budget.ceiling;
-    if (ceiling == 0) return rawWriteStdout(bytes); // GIST_MAX_OUTPUT_BYTES=0 ⇒ truly unbounded
+    if (ceiling == 0) return drain.write(rawWriteStdout, bytes); // GIST_MAX_OUTPUT_BYTES=0 ⇒ truly unbounded
     const already = output_budget.written.load(.monotonic);
     if (already >= ceiling) {
         if (bytes.len != 0) output_budget.truncated.store(true, .monotonic);
@@ -302,7 +344,7 @@ pub fn writeStdoutCapped(bytes: []const u8) bool {
     // buffer end for a newline-free tail) — whole lines, no mid-line cut.
     var cut = room;
     while (cut < bytes.len and bytes[cut - 1] != '\n') cut += 1;
-    if (!rawWriteStdout(bytes[0..cut])) return false;
+    if (!drain.write(rawWriteStdout, bytes[0..cut])) return false;
     _ = output_budget.written.fetchAdd(cut, .monotonic);
     if (cut < bytes.len) output_budget.truncated.store(true, .monotonic);
     return true;
@@ -363,6 +405,10 @@ pub fn appendBudgeted(a: std.mem.Allocator, out: *std.ArrayList(u8), buf: []cons
 /// was clipped. The outcome line always prints; the follow-up `gist: try`
 /// lines respect the `GIST_HINTS` gate (shared grammar with `hints.zig`).
 pub fn finishOutput() void {
+    // Every terminal emit path lands here, so this is where a buffering policy
+    // settles its debt — before any notice, and unconditionally, since a clean
+    // untruncated run is exactly the one that must not lose its held tail.
+    flushStdout();
     if (!output_budget.truncated.load(.monotonic)) return;
     if (output_budget.announced.swap(true, .monotonic)) return;
     const cap = output_budget.ceiling;

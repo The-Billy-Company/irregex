@@ -121,20 +121,29 @@ pub fn buildMatcher(gpa: std.mem.Allocator, eff: []const u8, o: Opts) Matcher {
         },
     }
 }
-/// Compile the `-r/--replace` capture matcher (linear Pike VM or PCRE2) for the
-/// effective pattern `eff`. One definition shared by the top-level run and every
-/// parallel emit shard — `Caps` carries mutable Pike-VM scratch, so a shard can
-/// never share the run's instance and must compile its own.
+/// Compile the `-r/--replace` capture matcher (one-pass table, linear Pike VM,
+/// or PCRE2) for the effective pattern `eff`. One definition shared by the
+/// top-level run and every parallel emit shard — `Caps` carries mutable
+/// per-find state, so a shard can never share the run's instance and must
+/// compile its own.
+///
+/// The linear side is a two-step: compile the Pike VM, then TRY to determinize
+/// it. A declinature is the routine outcome for the ~half of capture patterns
+/// that genuinely need a search, and it leaves the Pike VM untouched for us to
+/// use directly — so the choice costs one failed build, never a second parse,
+/// and never a different answer.
 pub fn compileCaps(gpa: std.mem.Allocator, o: Opts, eff: []const u8, is_pcre: bool) Caps {
-    return if (is_pcre)
-        Caps{ .pcre = captures_mod.PcreCaptures.compile(gpa, eff, .{ .caseless = o.caseless, .multiline = o.re_line_anchors, .dotall = o.multiline_dotall, .unicode = o.pcre_unicode }) catch |e| switch (e) {
-            error.OutOfMemory => oom(),
-            else => die("bad PCRE2 pattern '{s}': {s}\n", .{ eff, pcre2.lastError() }),
-        } }
-    else
-        Caps{ .linear = Captures.compile(gpa, eff, o.caseless, o.unicode) catch die(
-            \\gist: error: bad pattern '{s}' — outside gist's linear-time syntax
-            \\gist: try -P / --pcre2 — run this pattern on the PCRE2 backend (lookaround, backreferences)
-            \\
-        , .{eff}) };
+    if (is_pcre) return Caps{ .pcre = captures_mod.PcreCaptures.compile(gpa, eff, .{ .caseless = o.caseless, .multiline = o.re_line_anchors, .dotall = o.multiline_dotall, .unicode = o.pcre_unicode }) catch |e| switch (e) {
+        error.OutOfMemory => oom(),
+        else => die("bad PCRE2 pattern '{s}': {s}\n", .{ eff, pcre2.lastError() }),
+    } };
+    const linear = Captures.compile(gpa, eff, o.caseless, o.unicode) catch die(
+        \\gist: error: bad pattern '{s}' — outside gist's linear-time syntax
+        \\gist: try -P / --pcre2 — run this pattern on the PCRE2 backend (lookaround, backreferences)
+        \\
+    , .{eff});
+    return switch (captures_mod.OnePass.attach(gpa, linear) catch oom()) {
+        .got => |op| Caps{ .onepass = op },
+        .declined => Caps{ .linear = linear },
+    };
 }

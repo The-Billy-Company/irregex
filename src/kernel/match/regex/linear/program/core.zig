@@ -219,21 +219,34 @@ pub const Regex = struct {
         self.* = undefined;
     }
 
-    /// Can any match consume a `\n`? Mirrors rg's `multi_line_with_matcher`
-    /// gate: under `-U` a pattern that can never match the line terminator is
-    /// searched line-by-line (roll buffer, line-mode binary semantics), not as
-    /// one slice — every consuming instruction is a `.consume` byte set, so a
-    /// program-walk is a complete answer.
-    pub fn canMatchNewline(self: *const Regex) bool {
-        return self.canMatchByte('\n');
-    }
-
-    /// Can any match consume byte `b`? Walks the consuming instructions — a
-    /// program-complete answer, since every byte a match eats is some `.consume`
-    /// set.
-    pub fn canMatchByte(self: *const Regex, b: u8) bool {
+    /// Does the line terminator BELONG to this pattern — is `\n` outside rg's
+    /// `non_matching_bytes`? That one question is the gate
+    /// `multi_line_with_matcher` consults: under `-U` a pattern that does not
+    /// claim the terminator is searched line-by-line (roll buffer, line-mode
+    /// binary semantics), not as one slice. Three ways to claim it, and
+    /// `crates/regex/src/non_matching.rs` counts all three:
+    ///
+    ///   - a class that CONSUMES one (`.consume` holding `\n`);
+    ///   - a `^`/`$` line anchor POSITIONED by one (`Look::StartLF`/`EndLF`
+    ///     remove `\n` from the set even though the match never eats it);
+    ///   - a `\A`/`\z` HAYSTACK anchor (`Look::Start`/`End`) — which touches no
+    ///     terminator at all. rg removes `\n` for these anyway, under a standing
+    ///     `FIXME: This is wrong, but not doing this leads to incorrect results
+    ///     because of how anchored searches are implemented`. It is not really a
+    ///     claim on the byte; it is the only lever rg has to refuse the line
+    ///     searcher, which would hand `\A` a fresh haystack per line and quietly
+    ///     demote it to `^`. Observable: `rg -U -c '\Aa|b'` over `ab\nbb\ncb\n`
+    ///     answers 5 whole-buffer spans, not 3 lines.
+    ///
+    /// `\b` claims nothing, so `-U '\balpha\b'` stays on the line searcher. Every
+    /// consuming instruction is a `.consume` byte set and every anchor its own
+    /// state, so a program walk is a complete answer. The `assert_buf_*` states
+    /// exist only under `-U` (per-line, the parser lowers `\A`/`\z` to `^`/`$`,
+    /// whose haystack IS the line), so that arm is inert off the multiline path.
+    pub fn claimsNewline(self: *const Regex) bool {
         for (self.states) |st| switch (st) {
-            .consume => |c| if (c.set.has(b)) return true,
+            .consume => |c| if (c.set.has('\n')) return true,
+            .assert_start, .assert_end, .assert_buf_start, .assert_buf_end => return true,
             else => {},
         };
         return false;

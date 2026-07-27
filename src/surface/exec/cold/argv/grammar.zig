@@ -17,8 +17,10 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const assay = @import("../../../../assay/assay.zig");
+const beacon = @import("../../../cli/beacon.zig");
 const color = @import("../emit/color.zig");
 const catalog = @import("catalog.zig");
+const charter = @import("../../../../corpus/scope/charter.zig");
 const intent = @import("intent.zig");
 const verdict = @import("verdict.zig");
 
@@ -179,6 +181,31 @@ fn apply(b: *Builder, action: Act, v: *ValSrc) void {
         // --color WHEN: resolved to an actual go/no-go (stdout tty + env) by
         // `color.zig` at emit time — this just records the requested mode.
         .color => o.color = enumOrDie(ColorChoice, "bad --color value: {s}\n", v.take()),
+        // One value grammar behind three spellings. Like `--rank`, a bare
+        // `--hyperlink` must NOT swallow the next token — that is the pattern
+        // (`gist --hyperlink foo`) — so it reads the inline `=value` only.
+        // rg's `--hyperlink-format` is value-required and keeps rg's spacing.
+        //
+        // Naming a destination on the command line TURNS LINKS ON, in either
+        // spelling. Typing `--hyperlink=vscode` and getting silence because the
+        // probe disagreed is precisely the mystery this whole layer exists to
+        // remove — and it is rg's behavior besides. The standing-preference
+        // case has its own spelling: `GIST_HYPERLINK=vscode` in a profile says
+        // only WHERE, and leaves the probe to decide WHETHER, so piping to a
+        // file still cannot smear escapes through it. A flag is an act; an
+        // environment variable is a preference. `--hyperlink=auto` remains the
+        // way to say both at once, last flag winning as everywhere else.
+        .hyperlink => |how| switch (how) {
+            .off => o.hyperlink = .never,
+            .flag, .format => {
+                const w = beacon.wish(b.a, if (how == .format) v.take() else v.inl orelse "always");
+                if (w.bad) |msg| die("gist: error parsing flag --{s}: {s}\n", .{ v.name, msg });
+                if (w.format) |f| o.hyperlink_format = f;
+                // A destination named alone is a request to link; the pair form
+                // (`auto,vscode`) is how you name one and still ask the probe.
+                o.hyperlink = w.when orelse .always;
+            },
+        },
         .encoding => {
             const label = v.take();
             o.encoding = intent.encodingFromLabel(label) orelse switch (v.mode) {
@@ -192,9 +219,33 @@ fn apply(b: *Builder, action: Act, v: *ValSrc) void {
         .rank => {
             o.rank, o.rank_k = .{ true, if (v.inl) |x| toU(x) else o.rank_k };
         },
+        // Delivery cadence. One choice, last spelling wins (rg documents each of
+        // --line-buffered/--block-buffered as overriding the other). Sizing the
+        // block is enough to ask for one: naming a ceiling and then not getting
+        // block buffering would be a silently ignored flag.
+        .buffered => |mode| o.buffering = mode,
+        .bufsize => {
+            o.buffer_size = verdict.toBytes(v.take());
+            if (o.buffering == .auto) o.buffering = .block;
+        },
+        // -p/--pretty is rg's alias for --color always --heading --line-number.
+        // The line number goes through `b.locus`, not `o.line_num`, so a later
+        // -N still wins — an alias sets a default, it does not outrank a flag
+        // the user spelled out afterwards.
+        .pretty => {
+            o.color, o.heading, b.locus.line = .{ .always, true, true };
+        },
+        // --plain is the inverse pole, and the only one of gist's three
+        // destination-conditional behaviors that is not already spellable:
+        // `--color never` and a cadence have flags, but the terminal long-line
+        // guard is keyed on the real fd. `o.plain` is what stands that down.
+        .plain => {
+            o.color, o.plain = .{ .never, true };
+            if (o.buffering == .auto) o.buffering = .block;
+        },
         .engine_is => |e| o.engine = e,
         .engine => o.engine = enumOrDie(Engine, "bad --engine value: {s} (expected default, pcre2, or auto)\n", v.take()),
-        .noop => {},
+        .noop, .no_config => {},
         .noop_val => _ = v.take(),
         .colors => if (color.validateColorSpec(v.take())) |msg|
             die("gist: error parsing flag --colors: {s}\n", .{msg}),
@@ -228,6 +279,11 @@ fn parseLong(b: *Builder, arg: []const u8, i: *usize, all: []const []const u8) v
 /// (exit 2) on a missing pattern, a bad numeric value, or an unsupported flag.
 pub fn parseArgv(a: std.mem.Allocator, args: []const []const u8) Parsed {
     var b = Builder{ .a = a };
+    // The tree's own type names, before argv, so `-t billy` resolves and an
+    // explicit `--type-add` on the line can still redefine what the charter
+    // declared. Same grammar as the flag — the charter carries `--type-add`
+    // specs, not a second dialect nobody would learn twice.
+    if (charter.governing()) |c| for (c.types) |spec| b.addTypeDef(spec);
     var flags_done = false;
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
@@ -380,6 +436,56 @@ test "content-transform flags parse into Opts" {
     // -uuu now brings the whole tree online: --no-ignore + hidden + --binary.
     const uuu = parseArgv(ta, &.{ "-uuu", "needle", "d" });
     try t.expect(uuu.opts.no_ignore and uuu.opts.hidden and uuu.opts.binary);
+}
+
+test "buffering is one last-wins choice, and a named size asks for a block" {
+    const Buffering = intent.Buffering;
+    try t.expectEqual(Buffering.auto, parseArgv(ta, &.{"x"}).opts.buffering);
+    try t.expectEqual(Buffering.line, parseArgv(ta, &.{ "--line-buffered", "x" }).opts.buffering);
+    // rg documents each spelling as overriding the other, in argv order.
+    try t.expectEqual(Buffering.block, parseArgv(ta, &.{ "--line-buffered", "--block-buffered", "x" }).opts.buffering);
+    try t.expectEqual(Buffering.line, parseArgv(ta, &.{ "--block-buffered", "--line-buffered", "x" }).opts.buffering);
+
+    // Naming a ceiling is enough to ask for the policy it sizes — otherwise
+    // --buffer-size on a terminal would be a silently ignored flag.
+    const sized = parseArgv(ta, &.{ "--buffer-size=128K", "x" });
+    try t.expectEqual(@as(usize, 128 << 10), sized.opts.buffer_size);
+    try t.expectEqual(Buffering.block, sized.opts.buffering);
+    // …but it never overrides a cadence the user spelled out.
+    try t.expectEqual(Buffering.line, parseArgv(ta, &.{ "--line-buffered", "--buffer-size", "8192", "x" }).opts.buffering);
+}
+
+test "-p/--pretty sets three defaults that a later flag still outranks" {
+    const p = parseArgv(ta, &.{ "-p", "x" });
+    try t.expectEqual(ColorChoice.always, p.opts.color);
+    try t.expect(p.opts.heading and p.opts.line_num);
+    // The alias goes through `b.locus`, so -N after it wins (the same rule that
+    // lets -N override --vimgrep's implied line numbers).
+    try t.expect(!parseArgv(ta, &.{ "-p", "-N", "x" }).opts.line_num);
+    try t.expect(!parseArgv(ta, &.{ "--pretty", "--no-heading", "x" }).opts.heading);
+    try t.expectEqual(ColorChoice.never, parseArgv(ta, &.{ "-p", "--color", "never", "x" }).opts.color);
+}
+
+test "--plain is the pipe pole: no color, no tty guard, coalesced" {
+    const p = parseArgv(ta, &.{ "--plain", "x" });
+    try t.expect(p.opts.plain);
+    try t.expectEqual(ColorChoice.never, p.opts.color);
+    try t.expectEqual(intent.Buffering.block, p.opts.buffering);
+    // It picks a cadence only when none was asked for.
+    try t.expectEqual(intent.Buffering.line, parseArgv(ta, &.{ "--line-buffered", "--plain", "x" }).opts.buffering);
+    try t.expect(!parseArgv(ta, &.{"x"}).opts.plain);
+}
+
+test "recordTerm names the byte a finished output record ends with" {
+    // Line buffering must split on the terminator the PRINTER used, not on a
+    // hardcoded '\n' — a --null-data stream contains none.
+    try t.expectEqual(@as(u8, '\n'), parseArgv(ta, &.{"x"}).opts.recordTerm());
+    try t.expectEqual(@as(u8, 0), parseArgv(ta, &.{ "--null-data", "x" }).opts.recordTerm());
+    try t.expectEqual(@as(u8, '\n'), parseArgv(ta, &.{ "--crlf", "x" }).opts.recordTerm()); // "\r\n"
+    // --null NUL-terminates the paths the enumeration modes print…
+    try t.expectEqual(@as(u8, 0), parseArgv(ta, &.{ "-l", "--null", "x" }).opts.recordTerm());
+    // …and nothing else: a content search still ends each line with '\n'.
+    try t.expectEqual(@as(u8, '\n'), parseArgv(ta, &.{ "--null", "x" }).opts.recordTerm());
 }
 
 test "enumeration() marks every compact per-file mode, and no content mode" {

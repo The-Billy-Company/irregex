@@ -672,14 +672,14 @@ evidence only and must not be presented as measurements of this revision.
 
 ## 6. Complexity summary
 
-| operation          | cost                                                                               |
-| ------------------ | ---------------------------------------------------------------------------------- |
-| index corpus       | `O(total input bytes · k)`; one streaming pass, with `k=8` comptime-unrolled       |
+| operation          | cost                                                                                           |
+| ------------------ | ---------------------------------------------------------------------------------------------- |
+| index corpus       | `O(total input bytes · k)`; one streaming pass, with `k=8` comptime-unrolled                   |
 | sieve one document | `O(k·m)` compares, `m ≤ 8` top-level alternatives — early-exit on the first branch that admits |
-| index space        | `N·k·sizeof(u16)` — 16 bytes per indexed document, plus the fixed sidecar header   |
-| query-time `ĝ`     | `O(                                                                                | R   | ·k)`plus`O(k log n)` for counted repetition, once per query, allocation-free |
-| sieve whole corpus | `O(N·k)` and `N·k·sizeof(u16)` mapped bytes potentially touched, not merely `O(k)` |
-| incremental update | recompute one document's crest on change; publication remains generation-atomic    |
+| index space        | `N·k·sizeof(u16)` — 16 bytes per indexed document, plus the fixed sidecar header               |
+| query-time `ĝ`     | `O(                                                                                            | R   | ·k)`plus`O(k log n)` for counted repetition, once per query, allocation-free |
+| sieve whole corpus | `O(N·k)` and `N·k·sizeof(u16)` mapped bytes potentially touched, not merely `O(k)`             |
+| incremental update | recompute one document's crest on change; publication remains generation-atomic                |
 
 The sieve is embarrassingly composable with the trigram index: intersect
 survivor sets (both are necessary conditions, so the intersection is still

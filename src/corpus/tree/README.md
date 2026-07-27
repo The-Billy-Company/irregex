@@ -4,21 +4,32 @@ doc_radar:
     - description: "all corpus walkers retain the shared gitignore boundary"
       file: pkg/kernels/irregex/src/corpus/tree/haystack.zig
       contains: ["ignore.Ignore", "shouldSkip"]
+    - description: "the stdout drain is armed through corpus.zig"
+      file: pkg/kernels/irregex/src/corpus/tree/corpus.zig
+      contains: ["pub const StdoutPolicy = drain.Policy"]
+    - description: "the charter discovery is wired into haystack + corpus root resolution"
+      file: pkg/kernels/irregex/src/corpus/tree/haystack.zig
+      contains: "charter"
 ---
 
-# `src/corpus/tree/` — corpus loading and traversal
+# `src/corpus/tree/` — corpus loading, traversal, and output
 
 The source-tree substrate shared by indexing, cold search, resident search, and
-the verification harness. It owns corpus loading, the Haystack walk, and the
-rg-compatible ignore protocol; path selection lives beside it in `../scope/`.
+the verification harness. Owns corpus loading (serial + fused parallel), the
+Haystack walk, the rg-compatible ignore protocol, the stdout drain, the
+filesystem change journal, and Darwin bulk-stat metadata. Path selection lives
+beside it in `../scope/`.
 
-| File           | Role                                                                                                          |
-| -------------- | ------------------------------------------------------------------------------------------------------------- |
-| `corpus.zig`   | Loads non-binary files under the corpus roots and owns the process output budget.                             |
-| `haystack.zig` | Defines the shared recursive walk, applying `ignore.zig` plus corpus-only skip-directory policy.              |
-| `ignore.zig`   | Compiles gitignore / `.ignore` / `.rgignore` precedence once for gist, indexes, relate, and composed irregex. |
-| `bulkstat.zig` | Reads Darwin name/type/mtime/ctime in bulk, with a portable stat fallback and one shared freshness rule.      |
-| `*_test.zig`   | Pins path policy, metadata boundaries, and Darwin bulk-stat parity against the portable reference walk.       |
+| File           | Role                                                                                                                                        |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `corpus.zig`   | Loads non-binary files under the corpus roots, owns the process output budget, resolves the charter-aware corpus roots, and the carbon-copy tee for the answer keep. |
+| `haystack.zig` | The shared recursive `Walker`, applying `ignore.zig` plus corpus-only skip-directory policy. Wires in the committed charter's skip list.     |
+| `ignore.zig`   | Compiles gitignore / `.ignore` / `.rgignore` precedence once for gist, indexes, relate, and composed irregex.                               |
+| `drain.zig`    | The stdout drain — `line` / `block` / `relay` buffering policies that beat rg's syscall count on both ends (terminal ↔ pipe).                |
+| `bulkstat.zig` | Darwin `getattrlistbulk` batched metadata, with a portable stat fallback and one shared freshness rule (`needsLiveRead`).                   |
+| `loadpar.zig`  | Fused parallel walk+read corpus loader — work-stealing pipeline, ~3× faster than the serial fallback. Membership-parity with `haystack.Walker` by construction. |
+| `journal.zig`  | macOS FSEvents historical replay: captures a since-token at build time, replays only changed paths at amend time. Pure accelerator, never a correctness dependency. |
+| `*_test.zig`   | Pins path policy, metadata boundaries, drain syscall counts, parallel-vs-serial parity, and Darwin bulk-stat accuracy.                       |
 
 ## Local-filesystem freshness model
 

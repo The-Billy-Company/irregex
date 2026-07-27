@@ -1269,3 +1269,76 @@ test "resident: -g un-ignores (declines) but -t never un-ignores (stays warm)" {
         try expectFileSet(&tree, files, &.{"keep.zig"});
     }
 }
+
+// ── the pruned-root gap: an explicitly named PATH the default walk dropped ──
+//
+// Naming a root is naming intent: cold exempts an explicitly given PATH from the
+// ignore and hidden rules (`walk.zig::gather` → `Ignore.scopeToRoot`), exactly as
+// rg does, so `gist needle ign/` searches a gitignored subtree. The mirror's
+// whole-tree walk pruned that directory, and — unlike a file-level skip — it
+// leaves no `Extra` behind, because the walk stops descending AT the directory.
+// `rootsCovered` is the guard: a root the mirror holds no file under declines.
+// A hidden root never reaches here (the classifier refuses it syntactically —
+// see request_test); a gitignored one is only knowable from the corpus.
+
+test "resident: a query rooted in a gitignored subtree declines (no Extra can reveal it)" {
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var fixture = std.heap.ArenaAllocator.init(gpa);
+    defer fixture.deinit();
+
+    var tree = try Tree.init(fixture.allocator(), io, "pruned_root", @intFromPtr(&threaded));
+    defer tree.deinit();
+    try tree.write("keep.zig", "const needle = 1;\n"); // walked normally
+    try tree.write("ign/sub/deep.zig", "ignored needle\n"); // whole dir pruned
+    try tree.write(".ignore", "ign/\n"); // gitignore-dialect, honored without git
+
+    var session = try ResidentSession.init(gpa, io, &.{tree.root});
+    defer session.deinit();
+
+    // Both the pruned root itself and a path INTO it: cold walks each (rg does
+    // too), the mirror holds neither, so the warm path must refuse.
+    for ([_][]const u8{ "ign", "ign/sub" }) |rel| {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        try std.testing.expectEqual(fault.Decline.freshness_unprovable, (try session.query(q.allocator(), .{
+            .pattern = "needle",
+            .mode = .files,
+            .fixed = true,
+            .filter = .{ .roots = &.{try tree.abs(rel)} },
+        })).declined);
+    }
+}
+
+test "resident: a covered root stays warm (the pruned-root guard never over-declines)" {
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var fixture = std.heap.ArenaAllocator.init(gpa);
+    defer fixture.deinit();
+
+    var tree = try Tree.init(fixture.allocator(), io, "covered_root", @intFromPtr(&threaded));
+    defer tree.deinit();
+    try tree.write("src/keep.zig", "const needle = 1;\n");
+    try tree.write("other/skip.zig", "needle elsewhere\n");
+    try tree.write("ign/sub/deep.zig", "ignored needle\n");
+    try tree.write(".ignore", "ign/\n");
+
+    var session = try ResidentSession.init(gpa, io, &.{tree.root});
+    defer session.deinit();
+
+    // An ordinary root the mirror covers answers warm with the real subset —
+    // the decline is exact, never a blanket cold-fallback for every rooted query.
+    var q = std.heap.ArenaAllocator.init(gpa);
+    defer q.deinit();
+    const files = try queryFiles(&session, q.allocator(), .{
+        .pattern = "needle",
+        .mode = .files,
+        .fixed = true,
+        .filter = .{ .roots = &.{try tree.abs("src")} },
+    });
+    try expectFileSet(&tree, files, &.{"src/keep.zig"});
+}

@@ -103,14 +103,17 @@ pub const Matcher = union(Backend) {
         return self.* == .linear and self.linear.assert_free;
     }
 
-    /// Can any match consume a `\n`? rg's `-U` searcher silently keeps the
-    /// LINE-oriented model (roll buffer, line-mode binary semantics) when the
-    /// pattern provably can't match its line terminator — the slice model, with
-    /// its 64K binary sniff, runs only when this is true. The linear arm walks
-    /// the compiled program; rg's PCRE2 matcher never claims a non-matching
-    /// line terminator, so `-P -U` is always the slice model (return true).
-    pub fn canMatchNewline(self: *const Matcher) bool {
-        return self.* == .pcre or self.linear.canMatchNewline();
+    /// Does the line terminator belong to this pattern — consumed by a class,
+    /// asserted against by a line anchor, or claimed by a `\A`/`\z` haystack
+    /// anchor? This is rg's "is the line terminator outside
+    /// `non_matching_bytes`", the gate `Searcher::multi_line_with_matcher` gives
+    /// `-U`: false keeps the LINE-oriented model (roll buffer, line-mode binary
+    /// semantics, per-line columns) even under `-U`. The linear arm walks the
+    /// compiled program (see `Regex.claimsNewline` for what counts as a claim);
+    /// rg's PCRE2 matcher never claims a non-matching line terminator, so
+    /// `-P -U` is always the slice model (return true).
+    pub fn claimsNewline(self: *const Matcher) bool {
+        return self.* == .pcre or self.linear.claimsNewline();
     }
 
     /// Does the pattern *require* byte `b` (literal or single-byte class)? Backs

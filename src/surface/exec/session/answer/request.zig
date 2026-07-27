@@ -134,7 +134,8 @@ pub const ClassifyError = error{Unsupported};
 /// to store, or null to decline (→ cold). Declines an absolute path, a `./`- or
 /// `../`-prefixed one (cold renders that exact prefix, which the CWD-relative
 /// mirror lacks), any `..` segment, `.`/empty (the rootless path already serves
-/// the whole CWD), and a glob (that is `-g`, resolved separately).
+/// the whole CWD), a HIDDEN segment (see below), and a glob (that is `-g`,
+/// resolved separately).
 fn cleanRoot(arg: []const u8) ?[]const u8 {
     if (arg.len == 0 or arg[0] == '/') return null;
     if (std.mem.startsWith(u8, arg, "./") or std.mem.startsWith(u8, arg, "../")) return null;
@@ -142,8 +143,15 @@ fn cleanRoot(arg: []const u8) ?[]const u8 {
     var r = arg;
     while (r.len > 1 and r[r.len - 1] == '/') r = r[0 .. r.len - 1]; // rg parity: `libs/` == `libs`
     if (r.len == 0 or std.mem.eql(u8, r, ".") or std.mem.eql(u8, r, "..")) return null;
+    // A dot-prefixed segment (`.circleci`, `a/.hid`, `.dotfile.txt`) declines.
+    // Naming a root is naming intent: cold exempts an explicitly given root from
+    // the hidden-dotfile rule (`walk.zig::gather` → `Ignore.scopeToRoot`), as rg
+    // does. The resident mirror is the whole-tree default walk, which PRUNED
+    // that directory outright — not even as an `Extra`, since the walk stops
+    // descending at a hidden dir — so scoping to it would render a clean "no
+    // match" where cold and rg both answer. `..` falls out of the same test.
     var it = std.mem.splitScalar(u8, r, '/');
-    while (it.next()) |seg| if (seg.len == 0 or std.mem.eql(u8, seg, "..")) return null;
+    while (it.next()) |seg| if (seg.len == 0 or seg[0] == '.') return null;
     return r;
 }
 

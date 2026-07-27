@@ -67,14 +67,14 @@ per branch, no byte scan, provably no false negatives.
 
 ## The code (lives with the system, not here)
 
-| where                                    | what                                                                                                                     |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `src/kernel/primitives/crest.zig`        | pure kernel: fixed class family, crest vector, the `Swell` disjunction, and the dominance test                           |
-| `src/kernel/match/regex/analysis/swell.zig` | the query half: `forcedSwell` folds ĝ out of the engine's own AST, one per top-level alternative                      |
-| `src/corpus/index/crest/sidecar.zig`     | persisted per-document crest table (`crest.bin`), generation-atomic with the trigram pair                                |
-| `src/surface/exec/cold/writ/gate.zig`    | `crestSieve` — the query's swell, derived once and stood down wherever pruning would be unsound                          |
-| `src/surface/exec/cold/quarry/elide.zig` | the read-elision oracle both cold schedulers admit: crest sieve composed with trigram candidates and the freshness proof |
-| `bench/crest/bench.zig`                  | production proof harness (`zig build crest`) — fail-closed soundness, pruning, speed, and ablation over the live corpus  |
+| where                                       | what                                                                                                                     |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `src/kernel/primitives/crest.zig`           | pure kernel: fixed class family, crest vector, the `Swell` disjunction, and the dominance test                           |
+| `src/kernel/match/regex/analysis/swell.zig` | the query half: `forcedSwell` folds ĝ out of the engine's own AST, one per top-level alternative                         |
+| `src/corpus/index/crest/sidecar.zig`        | persisted per-document crest table (`crest.bin`), generation-atomic with the trigram pair                                |
+| `src/surface/exec/cold/writ/gate.zig`       | `crestSieve` — the query's swell, derived once and stood down wherever pruning would be unsound                          |
+| `src/surface/exec/cold/quarry/elide.zig`    | the read-elision oracle both cold schedulers admit: crest sieve composed with trigram candidates and the freshness proof |
+| `bench/crest/bench.zig`                     | production proof harness (`zig build crest`) — fail-closed soundness, pruning, speed, and ablation over the live corpus  |
 
 ## Run
 

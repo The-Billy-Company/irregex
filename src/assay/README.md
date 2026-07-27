@@ -6,7 +6,7 @@ paths_exist:
   - pkg/kernels/irregex/src/assay/assay.zig
 sentinels:
   - file: pkg/kernels/irregex/src/assay/channel.zig
-    contains: ["GIST_TRACE", "pub const Lens", "pub const Sink"]
+    contains: ["GIST_TRACE", "pub const Lens", "pub const Sink", "pub const Chatter"]
 -->
 
 # `src/assay/` — the instrumentation floor (time · count · debug)
@@ -27,7 +27,7 @@ one file each.
 | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `span.zig`    | **Time**, with the two clocks made non-interchangeable: `Span`/`Duration` ride the monotonic-awake clock (the only thing that renders as `ms`), `Anchor` rides the wall clock (the only freshness stamp `writeAnchor` accepts). A monotonic reading can no longer masquerade as a build anchor, and a duration can no longer be computed across the wall clock. |
 | `tally.zig`   | **Counters**: `Tally(Schema)`, one comptime-checked counter set indexed by an enum of field names, with an allocation-free vector `fold` for the parallel engine's per-worker → run merge. One mechanism, reused per distinct output schema.                                                                                                                    |
-| `channel.zig` | **Diagnostics**: the `GIST_*` env vocabulary (`envSpan`/`envFalsy`/`envUsize`/`envFlag`), the `GIST_TRACE` **lens** gate (one list replacing four bare-presence `*_TRACE` vars), and the thread-local **sink** every diagnostic routes through.                                                                                                                 |
+| `channel.zig` | **Diagnostics**: the `GIST_*` env vocabulary (`envSpan`/`envFalsy`/`envUsize`/`envFlag`), the `GIST_TRACE` **lens** gate (one list replacing four bare-presence `*_TRACE` vars), the `Chatter` **muffle** gate behind `--no-messages`, and the thread-local **sink** every diagnostic routes through.                                                            |
 | `assay.zig`   | The facade + `Run`: opens a `Span` and emits one summary line that is byte-identical to the former `debug.print` in text mode, or a single NDJSON record in `--json` mode.                                                                                                                                                                                      |
 
 ## Why the sink is thread-local
@@ -44,6 +44,32 @@ than by auditing every call site:
 
 The cold CLI leaves the default `.stderr` sink in place.
 
+## Three emits: `diag`, `trace`, `note`
+
+The sink decides _where_ a diagnostic goes; these three decide _whether_ it is
+written at all. They are not interchangeable, and picking the wrong one is how a
+flag comes to silence more or less than it promises.
+
+| Emit                      | Speaks when                            | For                                                                                    |
+| ------------------------- | -------------------------------------- | -------------------------------------------------------------------------------------- |
+| `diag(…)`                 | always                                 | a summary, a truncation notice, a usage error — nothing silences these                 |
+| `trace(.<lens>, …)`       | its lens is lit                        | phase timings, routing verdicts: dark until someone names the lens                     |
+| `note(.<chatter>, …)`     | its class is not muffled               | ripgrep's per-file messages, and only those                                            |
+
+`Chatter` is the exact inverse of `Lens`: **a lens is dark until it is named, a
+chatter class speaks until it is muffled.** It has two members, `corpus` (a path
+that would not open, descend, or preprocess, plus the "no files were searched"
+verdict) and `ignore` (an ignore SOURCE that would not open). `--no-messages`
+muffles both; `--no-ignore-messages` muffles only the second — the nesting is
+resolved once in `muffle`, never re-derived per call site.
+
+Muffling changes what is **reported**, never what happened. Flagging the run and
+reporting it are separate statements at every producer, so a silenced walk error
+still exits 2 — ripgrep's own rule, and the half of the feature a careless
+implementation breaks. The two switches are flags, not env vars, so `serial.run`
+lands them via `assay.muffle` right after argv parses and before anything can
+walk a tree; argv errors above that line stay audible on purpose.
+
 ## Env knobs
 
 | Knob                                                                                | Effect                                                                                                                                                                                                                                                                               |
@@ -55,9 +81,14 @@ The cold CLI leaves the default `.stderr` sink in place.
 ## When to edit
 
 Add a timing site → open a `Span`, read a `Duration`. Add a counted quantity →
-give it a `Tally` schema. Add a diagnostic → `assay.diag` (always-on) or
-`assay.trace(.<lens>, …)` (gated). Never reintroduce a raw `std.debug.print` for
-a diagnostic: it bypasses the sink and breaks the never-write contract.
+give it a `Tally` schema. Add a diagnostic → pick from the three emits above.
+Never reintroduce a raw `std.debug.print` for a diagnostic: it bypasses the sink
+and breaks the never-write contract.
+
+Reach for `note` only for a message ripgrep's two switches actually govern — one
+line per offending path. A timing summary, a truncation notice, and the
+`GIST_HINTS` guidance channel each answer to their own switch, and folding them
+into a chatter class would silence more than `--no-messages` promises.
 
 Discarding a failure is not a diagnostic decision and does not belong here —
 reach for `fault.spare`, which routes to the `fault` lens. A bare `catch {}` is

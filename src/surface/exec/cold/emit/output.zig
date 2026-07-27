@@ -28,6 +28,7 @@ const std = @import("std");
 const args = @import("../argv/args.zig");
 const Opts = args.Opts;
 const oom = args.oom;
+const beacon = @import("../../../cli/beacon.zig");
 const palette = @import("color.zig");
 const simd = @import("../../../../kernel/match/scan/simd.zig");
 const ml = @import("multiline.zig");
@@ -150,6 +151,13 @@ pub const Emitter = struct {
     /// n_states allocations amortize across every file this Emitter emits.
     /// Null ⇒ the per-file paths build (and free) a local one, as before.
     sim: ?*Matcher.Sim = null,
+    /// This file's OSC-8 destination, built on first use and memoized by the
+    /// path slice's identity — one build per file, never per line. Null until
+    /// the first locator of a file, and always null when the run has no beacon.
+    way: ?beacon.Waypoint = null,
+    /// Is a hyperlink frame currently open? Only `--hyperlink` scope `row`
+    /// leaves one open past the locator, so the body writers close it.
+    linked: bool = false,
     /// Absolute address one past the current file's last byte (set with `base`).
     /// A raw line slice ending exactly here is the file's UNTERMINATED tail —
     /// a terminated final line's slice stops before its terminator byte — and
@@ -198,7 +206,7 @@ pub const Emitter = struct {
     /// zero lines).
     pub fn bufTally(self: *Emitter, path: []const u8, n: usize) usize {
         if (n == 0 and !self.o.include_zero) return 0;
-        if (self.show_name) self.writePath(path, true);
+        if (self.show_name) _ = self.writePath(path, true);
         // The `-c`/`--count-matches` count emit (one per counted file): the
         // specialized itoa + a raw append, not a `"{d}{s}"` format parse.
         var buf: [20]u8 = undefined;
@@ -303,33 +311,106 @@ pub const Emitter = struct {
         self.add(palette.reset);
     }
 
+    // ───────────────────────── OSC-8 click targets ─────────────────────────
+    // A hyperlink is framing, not content: `linkOpen`/`linkClose` bracket text
+    // the row was going to print anyway, and every one of them is a no-op when
+    // the run resolved no beacon — so the non-linking path pays one null check
+    // per locator and the output stays byte-identical. See `beacon.zig`.
+
+    /// Open a frame pointing at `path` (at `lineno`:`col` when the destination
+    /// asks for them). Idempotent-safe: a frame already open is left alone, so
+    /// `writePath` nests harmlessly inside the wider anchor `prefix` opens.
+    fn linkOpen(self: *Emitter, path: []const u8, lineno: usize, col: usize) void {
+        if (self.linked) return;
+        const b = beacon.current() orelse return;
+        const w = if (self.way) |w| (if (w.path.ptr == path.ptr and w.path.len == path.len) w else b.waypoint(self.a, path)) else b.waypoint(self.a, path);
+        self.way = w;
+        var buf: [20]u8 = undefined;
+        for (w.slots, 0..) |slot, i| {
+            self.add(w.chunks[i]);
+            self.add(writeDecimal(&buf, @max(1, if (slot == .line) lineno else col)));
+        }
+        self.add(w.chunks[w.slots.len]);
+        self.linked = true;
+    }
+
+    /// Close the open frame, if any. Idempotent — the body writers call it
+    /// unconditionally so scope `row` needs no branch of its own out there.
+    pub fn linkClose(self: *Emitter) void {
+        if (!self.linked) return;
+        self.linked = false;
+        self.add(beacon.close);
+    }
+
+    /// Close a frame that ended earlier in the buffer — used to keep the
+    /// trailing field separator OUTSIDE the anchor (ripgrep's exact placement)
+    /// without making the eagerly-written separators lazy. The tail being
+    /// stepped over is one separator, so the memmove is a few bytes.
+    fn linkCloseAt(self: *Emitter, pos: usize) void {
+        if (!self.linked) return;
+        self.linked = false;
+        self.out.insertSlice(self.a, pos, beacon.close) catch oom();
+    }
+
     /// Write `path` followed by its terminator — NUL under `--null` (ripgrep's
     /// path-terminator), else the field separator. Used by the count/prefix paths.
-    fn writePath(self: *Emitter, path: []const u8, is_match: bool) void {
+    /// The path is always inside a link when one is active: its own when it is
+    /// the whole anchor, the caller's wider one when `prefix` opened it first.
+    /// Returns the offset just past the path — where a wider anchor would end
+    /// if the path turns out to be the last field.
+    fn writePath(self: *Emitter, path: []const u8, is_match: bool) usize {
+        const mine = !self.linked;
+        if (mine) self.linkOpen(path, 0, 0);
         self.paint(palette.path_on, path);
+        if (mine) self.linkClose();
+        const end = self.out.items.len;
         if (self.o.null_sep) self.out.append(self.a, 0) catch oom() else self.paint(palette.sep_on, self.fieldSep(is_match));
+        return end;
     }
 
     /// Emit the `path:line:col:byteoff:` locator prefix (fields present per flags,
     /// separators per match/context). `--null` terminates the PATH with NUL; every
     /// other field uses the field separator. `col`/`byteoff` are 1-based / 0-based
     /// like ripgrep; `col` prints only under `--column` on a match line.
+    ///
+    /// The locator is also the click target: under the default `prefix` scope the
+    /// anchor spans every field written here and stops before the trailing
+    /// separator, so selecting a result still yields clean text.
     pub fn prefix(self: *Emitter, path: []const u8, lineno: usize, col: usize, byteoff: usize, is_match: bool) void {
         const sep = self.fieldSep(is_match);
-        if (self.show_name) self.writePath(path, is_match);
+        const b = beacon.current();
+        const wide = if (b) |bb| bb.scope != .path and (self.show_name or self.o.line_num or self.o.byte_offset) else false;
+        if (wide) self.linkOpen(path, lineno, col);
+        // Where the anchor ends: after the last field's VALUE, before its
+        // separator. Re-read after each field so the last one wins.
+        var anchor = self.out.items.len;
+        if (self.show_name) anchor = self.writePath(path, is_match);
         var buf: [20]u8 = undefined;
         if (self.o.line_num) {
             self.paint(palette.line_on, writeDecimal(&buf, lineno));
+            anchor = self.out.items.len;
             self.paint(palette.sep_on, sep);
         }
         if (self.o.column and is_match and col != 0) {
             self.add(writeDecimal(&buf, col));
+            anchor = self.out.items.len;
             self.add(sep);
         }
         if (self.o.byte_offset) {
             self.add(writeDecimal(&buf, byteoff));
+            anchor = self.out.items.len;
             self.add(sep);
         }
+        if (wide and b.?.scope == .prefix) self.linkCloseAt(anchor);
+    }
+
+    /// The `--heading` group title: the path on its own line, and — when links
+    /// are on — the click target for the whole group beneath it.
+    pub fn heading(self: *Emitter, path: []const u8) void {
+        self.linkOpen(path, 0, 0);
+        self.add(path);
+        self.linkClose();
+        self.add(if (self.o.null_sep) "\x00" else self.o.outTerm());
     }
 
     /// 1-based byte column of the first (word-valid, non-empty) match on the line,
@@ -377,10 +458,11 @@ pub const Emitter = struct {
     /// `-l`: emit the path once, NUL-terminated under `--null` (rg's
     /// path-terminator), else the output terminator. Returns 1 for the tally.
     /// The one emit per matching file — two raw appends beat routing a bare
-    /// `"{s}{s}"` through the format machinery (byte-identical to it).
+    /// `"{s}{s}"` through the format machinery (byte-identical to it), and the
+    /// link frame around them is exactly the heading's (under `--null` there is
+    /// none: that list is bound for `xargs -0`, so no posture can link it).
     pub fn emitPathOnly(self: *Emitter, path: []const u8) usize {
-        self.add(path);
-        self.add(if (self.o.null_sep) "\x00" else self.o.outTerm());
+        self.heading(path);
         return 1;
     }
 };

@@ -87,7 +87,11 @@ pub fn serialForced() bool {
 /// the kernel deliberately spared because it could not change the answer
 /// (`fault.spare`, ADR-373 law 8). Off by default, so best-effort work stays
 /// quiet; lit, it is the only way to see a spared failure at all.
-pub const Lens = enum(u5) { amend, journal, reconcile, warm, rank, index, query, session, fault };
+///
+/// `link` is the OSC-8 hyperlink decision (`cli/beacon.zig`): whether this run
+/// links, and which destination it resolved. A feature that is on by default
+/// and invisible when it declines needs a way to ask why it declined.
+pub const Lens = enum(u5) { amend, journal, reconcile, warm, rank, index, query, session, fault, link };
 
 var lens_mask: std.atomic.Value(u32) = .init(0);
 var format_json: bool = false;
@@ -111,6 +115,57 @@ pub fn parseLenses(spec: []const u8) u32 {
         }
     }
     return mask;
+}
+
+// ── the chatter classes (was: a lane of stderr with no switch at all) ──
+
+/// A class of ALWAYS-ON message a caller may silence — the inverse of `Lens`.
+/// A lens is dark until it is named; a chatter class speaks until it is muffled.
+///
+/// Both members are FILE chatter: the lane that reports, one line per offending
+/// path, what the walk could not read or honor. On a tree with an unreadable
+/// directory it is the noisiest thing gist writes, and it is exactly the lane
+/// ripgrep's `--no-messages` / `--no-ignore-messages` exist to quiet. Nothing
+/// else on stderr belongs here — a timing summary, an output-truncation notice,
+/// and the `GIST_HINTS` guidance channel each answer to their own switch, and
+/// folding them in would silence more than the flag promises.
+///
+/// Muffling changes what is REPORTED, never what happened: a path the walk
+/// could not descend still flags the run's exit 2 (the flagging and the message
+/// are separate statements at every call site), so a quiet run and a loud one
+/// exit identically. That is ripgrep's rule too — its `err_message!` sets the
+/// errored bit before consulting the switch.
+pub const Chatter = enum(u5) {
+    /// A path that could not be opened, descended, or read, plus the "no files
+    /// were searched" verdict the walk's own filters produce. `--no-messages`.
+    corpus,
+    /// An ignore SOURCE that could not be honored — an `--ignore-file` that
+    /// will not open. `--no-ignore-messages` silences this class alone;
+    /// `--no-messages` silences it as well, since quieting every file message
+    /// quiets this one (ripgrep's `ignore_message!` requires both gates).
+    ignore,
+};
+
+var muffled: std.atomic.Value(u32) = .init(0);
+
+fn bit(c: Chatter) u32 {
+    return @as(u32, 1) << @intFromEnum(c);
+}
+
+/// Is this class still speaking? One relaxed atomic load, like `lit`.
+pub fn audible(c: Chatter) bool {
+    return muffled.load(.monotonic) & bit(c) == 0;
+}
+
+/// Apply ripgrep's two message switches, both given as "still on?" booleans.
+/// The nesting — `--no-messages` outranks and subsumes `--no-ignore-messages` —
+/// is resolved once here rather than re-derived at each `note` call site, which
+/// is what keeps a new message class from picking up half the rule.
+pub fn muffle(messages: bool, ignore_messages: bool) void {
+    var m: u32 = 0;
+    if (!messages) m |= bit(.corpus) | bit(.ignore);
+    if (!ignore_messages) m |= bit(.ignore);
+    muffled.store(m, .monotonic);
 }
 
 // ── the sink (thread-local): where diagnostics actually go ──
@@ -150,6 +205,10 @@ pub const Policy = struct { sink: Sink = .stderr, json_default: bool = false, le
 pub fn install(p: Policy) void {
     default_sink = p.sink;
     lens_mask.store(p.lenses orelse if (envSpan("GIST_TRACE")) |s| parseLenses(s) else 0, .monotonic);
+    // A freshly installed policy speaks. The message switches are FLAGS, not
+    // environment, so they cannot be read here — `muffle` lands them once the
+    // argv is parsed, which is still before anything can walk a tree.
+    muffled.store(0, .monotonic);
     format_json = if (envSpan("GIST_TRACE_FORMAT")) |f|
         std.ascii.eqlIgnoreCase(f, "json")
     else
@@ -208,6 +267,15 @@ pub fn trace(l: Lens, comptime fmt: []const u8, args: anytype) void {
     write(fmt, args);
 }
 
+/// Emit an always-on FILE message unless its class was muffled — the third
+/// emit, sitting between `diag` (which no flag silences) and `trace` (silent
+/// until a lens is lit). Every message ripgrep's `--no-messages` /
+/// `--no-ignore-messages` govern comes through here and nothing else does.
+pub fn note(c: Chatter, comptime fmt: []const u8, args: anytype) void {
+    if (!audible(c)) return;
+    write(fmt, args);
+}
+
 test "envFalsy recognizes the off spellings" {
     try std.testing.expect(envFalsy("0"));
     try std.testing.expect(envFalsy("false"));
@@ -243,6 +311,56 @@ test "buffer sink captures, dark sink discards, restore works" {
         diag("swallowed\n", .{});
     }
     try std.testing.expectEqualStrings("hello 7\n", buf.items); // unchanged
+}
+
+test "muffle applies ripgrep's nesting: --no-messages subsumes the ignore class" {
+    defer muffle(true, true);
+
+    muffle(true, true); // the default run: both classes speak
+    try std.testing.expect(audible(.corpus) and audible(.ignore));
+
+    muffle(true, false); // --no-ignore-messages: only the ignore class quiets
+    try std.testing.expect(audible(.corpus) and !audible(.ignore));
+
+    // --no-messages is the OUTER gate: it takes the ignore class with it, even
+    // though `--ignore-messages` is still nominally on.
+    muffle(false, true);
+    try std.testing.expect(!audible(.corpus) and !audible(.ignore));
+
+    muffle(false, false);
+    try std.testing.expect(!audible(.corpus) and !audible(.ignore));
+}
+
+test "note is gated by its chatter class; diag is not" {
+    const gpa = std.testing.allocator;
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(gpa);
+    const sc = scope(.{ .buffer = .{ .list = &buf, .gpa = gpa } });
+    defer sc.end();
+    defer muffle(true, true);
+
+    muffle(false, true);
+    note(.corpus, "locked: Permission denied\n", .{});
+    note(.ignore, "missing.ignore: No such file\n", .{});
+    try std.testing.expectEqualStrings("", buf.items);
+
+    // A muffled run still gets everything the switch does not govern — a
+    // summary or truncation notice is not a file message.
+    diag("gist: output truncated\n", .{});
+    try std.testing.expectEqualStrings("gist: output truncated\n", buf.items);
+
+    buf.clearRetainingCapacity();
+    muffle(true, false);
+    note(.corpus, "locked: Permission denied\n", .{});
+    note(.ignore, "missing.ignore: No such file\n", .{});
+    try std.testing.expectEqualStrings("locked: Permission denied\n", buf.items);
+}
+
+test "install restores a speaking policy" {
+    defer muffle(true, true);
+    muffle(false, false);
+    install(.{ .lenses = 0 });
+    try std.testing.expect(audible(.corpus) and audible(.ignore));
 }
 
 test "trace is gated by the lens mask" {

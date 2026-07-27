@@ -16,6 +16,7 @@ const crew = @import("crew.zig");
 const ingest = @import("../../read/ingest.zig");
 const json = @import("../../emit/json.zig");
 const legible = @import("../../read/legible.zig");
+const multiline = @import("../../emit/multiline.zig");
 const output = @import("../../emit/output.zig");
 const simd = @import("../../../../../kernel/match/scan/simd.zig");
 const slurp = @import("../../read/slurp.zig");
@@ -197,6 +198,9 @@ fn emitBody(w: *Worker, a: std.mem.Allocator, dpath: []const u8, body: []const u
         // local) — one Sim per worker instead of three allocs per file.
         .sim = w.matchSim(),
     };
+    // Whole-buffer or per-line — the same question serial `renderFile` asks,
+    // and `-U` alone does not answer it (`multiline.sliceModel`).
+    const slice_model = multiline.sliceModel(re, o);
 
     // Stage 1 already proved `body[0..covered]` NUL-free (or we'd have
     // returned there), so the first NUL — the binary cutoff — can only sit in
@@ -205,7 +209,7 @@ fn emitBody(w: *Worker, a: std.mem.Allocator, dpath: []const u8, body: []const u
         // rg's -U slice model runs only when the pattern can actually match
         // `\n`; slice model + NUL beyond the 64K sniff means the searcher never
         // notices it — ordinary text, fall through to the normal path.
-        if (!(o.multiline and re.canMatchNewline() and !binary.multilineBinary(body.len, nul))) {
+        if (!(slice_model and !binary.multilineBinary(body.len, nul))) {
             // `--files-without-match` skips binary files entirely (serial
             // `fileWithoutMatch` returns before any emit) — no path, no tally.
             if (o.mode.negated()) return;
@@ -261,10 +265,10 @@ fn emitBody(w: *Worker, a: std.mem.Allocator, dpath: []const u8, body: []const u
     // dispatch on a ubiquitous literal the index can't prune. Mirrors the serial
     // engine's per-file dispatch exactly. `--stats` disables the fused class-run
     // shortcut (it needs the line array for `fileMatchStats`, like serial).
-    const fast = !o.multiline and em.litFastEligible();
-    const fused = !o.multiline and !fast and !o.stats and em.fusedFileEligible();
+    const fast = !slice_model and em.litFastEligible();
+    const fused = !slice_model and !fast and !o.stats and em.fusedFileEligible();
     var lines: std.ArrayList([]const u8) = .empty;
-    if (!o.multiline and !fast and !fused) legible.collectLines(a, body, o.term(), &lines);
+    if (!slice_model and !fast and !fused) legible.collectLines(a, body, o.term(), &lines);
     if (o.stats) {
         const fs = stats.fileMatchStats(re, a, o, body, lines.items, cfg.line_needle);
         w.stats.bump(.files_searched);
@@ -274,7 +278,7 @@ fn emitBody(w: *Worker, a: std.mem.Allocator, dpath: []const u8, body: []const u
     }
     if (cfg.heading and cfg.show_name) buf.print(a, "{s}{s}", .{ dpath, if (o.null_sep) "\x00" else o.outTerm() }) catch oom();
     const before_body = buf.items.len;
-    const hits = if (o.multiline) em.buffer(dpath, body) else if (fast) em.fileLit(dpath, body, 0, body.len, 0, true) else em.file(dpath, lines.items);
+    const hits = if (slice_model) em.buffer(dpath, body) else if (fast) em.fileLit(dpath, body, 0, body.len, 0, true) else em.file(dpath, lines.items);
     if (hits > 0) return w.deliver(.text_hit, dpath, buf.items);
     // No heading header to keep, and (except --passthru) no body either.
     if (!cfg.heading and buf.items.len > before_body) w.deliver(.text_plain, dpath, buf.items);

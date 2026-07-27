@@ -57,7 +57,7 @@ pub fn fileMatchStats(re: *const Matcher, a: std.mem.Allocator, o: Opts, body: [
     // counts non-empty spans; `lines` the union of lines they cover (rg's
     // `matched lines`). `-m` already capped the span list, and rg reports the
     // whole body as searched here (no line-wise early stop).
-    if (re.multiline()) {
+    if (multiline.sliceModel(re, o)) {
         const grid = multiline.splitLines(a, body, o.term());
         var real: std.ArrayList(multiline.Span) = .empty;
         for (multiline.collect(a, re, o, body)) |sp| if (sp.end > sp.start) real.append(a, sp) catch return .{ .matches = 0, .lines = 0, .bytes = body.len };

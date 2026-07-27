@@ -7,10 +7,10 @@ doc_radar:
     - description: "skim stays the line-free literal loop behind its own eligibility gate"
       file: pkg/kernels/irregex/src/surface/exec/cold/emit/output/skim.zig
       contains: ["pub fn fileLit", "pub fn litFastEligible"]
-    - description: "multibuf owns the -U whole-buffer emit and the harness its parity table drives, and holds no second vimgrep row emitter"
+    - description: "multibuf owns the -U whole-buffer emit and the harness its parity table drives; its frames borrow display's one vimgrep row shape rather than printing a second one"
       file: pkg/kernels/irregex/src/surface/exec/cold/emit/output/multibuf.zig
-      contains: ["pub fn buffer", "pub const MlHarness"]
-      absent: ["fn emitVimgrepRow", "fn bufVimgrep"]
+      contains: ["pub fn buffer", "pub const MlHarness", "fn bufVimgrep", "display.vimgrepLine"]
+      absent: ["fn emitVimgrepRow", "fn vimgrepRows"]
     - description: "display is the one place a chosen line becomes bytes, and the only vimgrep row shape"
       file: pkg/kernels/irregex/src/surface/exec/cold/emit/output/display.zig
       contains: ["pub fn emitBody", "pub fn exceeded", "pub fn emitMatches", "pub fn vimgrepLine"]

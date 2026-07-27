@@ -298,6 +298,24 @@ pub fn pathNote(e: Corpus) []const u8 {
     };
 }
 
+/// `pathNote`'s phrase when `e` is a corpus member, else the raw error name —
+/// for the producers whose own error set is WIDER than the domain. A real
+/// descent yields EMFILE, ENODEV, a bad UTF-8 name; a file read yields its own
+/// set. ripgrep prints the OS string for those too, so the widening is the
+/// filesystem's truth rather than an erased domain.
+///
+/// It does not weaken law 2. Each caller still names its set (`notice.WalkFault`
+/// and friends) and `pathNote` above stays exhaustive, so a sixth corpus member
+/// is still a compile error there — and picks up rg's phrasing here for every
+/// producer at once, rather than in whichever one happened to be updated.
+pub fn pathNoteOf(e: anytype) []const u8 {
+    inline for (@typeInfo(Corpus).error_set.?) |m| {
+        const member = @field(Corpus, m.name);
+        if (e == member) return pathNote(member);
+    }
+    return @errorName(e);
+}
+
 /// `<phrase> (os error <n>)` with `n` read from the TARGET's errno table.
 fn errnoNote(comptime phrase: []const u8, comptime e: std.posix.E) []const u8 {
     return std.fmt.comptimePrint("{s} (os error {d})", .{ phrase, @intFromEnum(e) });
@@ -325,6 +343,14 @@ test "pathNote answers each corpus member with ripgrep's own phrasing" {
     };
     try std.testing.expectEqualStrings("Too many levels of symbolic links (" ++ loop ++ ")", pathNote(error.SymLinkLoop));
     try std.testing.expectEqualStrings("File name too long (" ++ long ++ ")", pathNote(error.NameTooLong));
+}
+
+test "pathNoteOf answers a wider producer's set without erasing the domain" {
+    const Wider = Corpus || error{ SystemFdQuotaExceeded, InvalidUtf8 };
+    const denied: Wider = error.AccessDenied;
+    const alien: Wider = error.SystemFdQuotaExceeded;
+    try std.testing.expectEqualStrings("Permission denied (os error 13)", pathNoteOf(denied));
+    try std.testing.expectEqualStrings("SystemFdQuotaExceeded", pathNoteOf(alien));
 }
 
 test "Answer keeps a declinature in the success position" {

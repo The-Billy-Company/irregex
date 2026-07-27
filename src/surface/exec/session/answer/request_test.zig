@@ -194,6 +194,24 @@ test "classify: a clean relative PATH scope is eligible; unrenderable roots decl
     try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "needle", "src/*.zig" }));
 }
 
+test "classify: an explicitly named hidden root declines (cold un-hides it, the mirror cannot)" {
+    // rg searches a root you NAME even when the default walk would have pruned
+    // it as hidden (`rg needle .circleci` → hits), and cold matches that via
+    // `Ignore.scopeToRoot`. The resident mirror is the whole-tree default walk,
+    // which pruned the directory outright — so serving these warm would answer
+    // a clean "no match" where cold and rg both answer. Decline instead.
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "needle", ".circleci" }));
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "needle", ".circleci/" }));
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "needle", ".git" }));
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "needle", ".dotfile.txt" }));
+    // A hidden segment anywhere along the root, not just in front.
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "needle", "libs/.hidden" }));
+    try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "needle", "libs/.hidden/deep" }));
+    // No over-decline: a dot INSIDE a segment is an ordinary name, not hidden.
+    try std.testing.expectEqualStrings("libs.old", (try ok(&.{ "-l", "needle", "libs.old" })).filter.roots[0]);
+    try std.testing.expectEqualStrings("libs/a.b/c", (try ok(&.{ "-l", "needle", "libs/a.b/c" })).filter.roots[0]);
+}
+
 test "classify: -g / --glob is eligible and routed to includes/excludes" {
     {
         // `-g <glob>` (value in the next token) and `--glob=<glob>` are includes.
