@@ -11,14 +11,6 @@ package irregex {
     // anywhere.
     root   src
     facade root.zig
-
-    // Throwaway build probes: a bare `test { _ = @import(…); }` shim someone
-    // points at a few files to compile-check them in isolation. They are
-    // scaffolding for a build, not part of the module — no tier claims them and
-    // they reach straight into `_test.zig` files on purpose. Excluded rather
-    // than tiered, and a pattern that stops matching is reported stale, so
-    // these entries disappear with the probes instead of licensing more.
-    exclude serve_check_tmp.zig zz_*.zig
 }
 
 // Tiers, low to high. Reading down this block is reading up the architecture;
