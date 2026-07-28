@@ -53,6 +53,16 @@ pub const Latch = struct {
         while (self.held.swap(true, .acquire)) std.atomic.spinLoopHint();
     }
 
+    /// Take the latch if it is free, or report that it is not. The escape hatch
+    /// for the one caller shape `lock` cannot serve: code reached from INSIDE a
+    /// critical section — a memory-pressure hand called from a failing
+    /// allocation, which may be an allocation this very latch is already held
+    /// across. Since the latch is not recursive, such a caller must be able to
+    /// decline instead of deadlocking on itself.
+    pub fn tryLock(self: *Latch) bool {
+        return !self.held.swap(true, .acquire);
+    }
+
     pub fn unlock(self: *Latch) void {
         self.held.store(false, .release);
     }

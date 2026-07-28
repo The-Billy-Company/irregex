@@ -199,6 +199,20 @@ pub const Index = struct {
 
     /// Counting-sort doc-major shards into one `(trigram, doc)` slice. O(n+radix).
     fn countingAssemble(allocator: std.mem.Allocator, shards: []ExtractShard, used: usize) std.mem.Allocator.Error![]Posting {
+        // Give back each shard's unused tail BEFORE claiming the output buffer.
+        //
+        // A shard's buffer is sized by its BYTE budget, because that is the only
+        // bound available before extraction; per-document dedup then fills a
+        // fraction of it. Since this sort is out-of-place, the slack would
+        // otherwise be held across the one moment the build needs its most
+        // memory — every shard at byte size PLUS an output buffer — which is the
+        // peak a resident daemon's whole memory ration has to accommodate
+        // (`exec/session/warden/ration.zig`). Capacity only: the postings each
+        // shard actually produced, and their order, are untouched.
+        for (shards[0..used]) |*sh| {
+            if (allocator.remap(sh.buf, @max(sh.n, 1))) |snug| sh.buf = snug;
+        }
+
         var total: usize = 0;
         for (shards[0..used]) |sh| total += sh.n;
 

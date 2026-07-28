@@ -1,10 +1,10 @@
 ---
 doc_radar:
   counts:
-    - description: "session planes: answer · warm · facet · reconcile · watch · conduit · daemon"
+    - description: "session planes: answer · warm · facet · reconcile · watch · conduit · daemon · warden"
       glob: pkg/kernels/irregex/src/exec/session/*/
       unit: dirs
-      equals: 7
+      equals: 8
   sentinels:
     - file: pkg/kernels/irregex/contract/search_api.toml
       contains: ["[session]", "eligible_modes", "fail-closed-reconcile", '"lines"']
@@ -35,6 +35,7 @@ same socket; it was never gist’s product surface.
 | [`watch/`](watch) | Can that barrier skip the walk — and how narrowly? |
 | [`conduit/`](conduit) | How a request reaches the daemon and an answer gets back |
 | [`daemon/`](daemon) | Dial + serve loop — the transport both faces share |
+| [`warden/`](warden) | How much memory a resident session may hold, enforced where it allocates |
 
 ## The invariant
 

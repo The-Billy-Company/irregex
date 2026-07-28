@@ -915,6 +915,35 @@ pub fn build(b: *std.Build) void {
     crest_step.dependOn(&run_crest.step);
     crest_step.dependOn(crest_install);
 
+    // ── `warden` — what the resident memory ceiling costs on the alloc path ───
+    // A safety feature that shows up in a throughput benchmark is not worth
+    // having, so this decomposes the wrapper's cost (bare / passthru / warden)
+    // against the allocator the daemon really gets, and FAILS on regression
+    // rather than merely reporting. Correctness of the bound itself rides
+    // `zig build test` via root.zig (exec/session/warden/*.zig tests).
+    const warden_bench_mod = b.createModule(.{
+        .root_source_file = b.path("bench/rungs/warden/bench.zig"),
+        .target = k.target,
+        .optimize = cli_optimize, // product-speed posture — this is a timing tool
+    });
+    // Imports the metered allocator ALONE rather than the whole engine: it
+    // depends on nothing but `std`, so the thing being timed is the thing being
+    // measured, with no unrelated compile in the way.
+    warden_bench_mod.addImport("warden", b.createModule(.{
+        .root_source_file = b.path("src/exec/session/warden/warden.zig"),
+        .target = k.target,
+        .optimize = cli_optimize,
+    }));
+    const warden_exe = b.addExecutable(.{ .name = "warden", .root_module = warden_bench_mod });
+    const warden_install = &b.addInstallArtifact(warden_exe, .{}).step;
+    lab_step.dependOn(warden_install);
+    const run_warden = b.addRunArtifact(warden_exe);
+    run_warden.setCwd(b.path("../../.."));
+    if (b.args) |args| run_warden.addArgs(args);
+    const warden_step = b.step("warden", "Resident memory ceiling: what the bound costs per allocation, decomposed vs a no-op wrapper");
+    warden_step.dependOn(&run_warden.step);
+    warden_step.dependOn(warden_install);
+
     // ── `sieve` — production proof: the SP-quotient necessary condition ──────
     // Links the REAL engine (the sieve lives inside it at
     // src/kernel/match/regex/linear/sieve/, entered through regex.zig's seal)

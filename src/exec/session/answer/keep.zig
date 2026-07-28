@@ -159,6 +159,31 @@ pub const Keep = struct {
     pub fn clear(self: *Keep) void {
         self.mu.lock();
         defer self.mu.unlock();
+        _ = self.drop();
+    }
+
+    /// Give every held byte back to the memory ration, or nothing at all.
+    ///
+    /// This is what the keep is FOR, seen from the other side: every entry is
+    /// rendered output the daemon can recompute, which is exactly what made it
+    /// cacheable, so it is the first thing a session under memory pressure
+    /// should surrender (`warden/warden.zig`).
+    ///
+    /// The lock is TRIED, never taken. The warden calls this from inside a
+    /// failing allocation, on whichever thread met the ceiling — and that may be
+    /// a thread already inside `retain`, which allocates while holding `mu`.
+    /// Taking the lock there would deadlock the daemon on itself; trying it
+    /// reports zero reclaimable bytes instead, and the allocation is refused.
+    /// The cost of that pessimism is one query answered cold.
+    pub fn surrender(self: *Keep) usize {
+        if (!self.mu.tryLock()) return 0;
+        defer self.mu.unlock();
+        return self.drop();
+    }
+
+    /// Free every entry and report the bytes released. Caller holds `mu`.
+    fn drop(self: *Keep) usize {
+        const freed = self.held_bytes;
         var it = self.map.iterator();
         while (it.next()) |e| {
             self.gpa.free(e.key_ptr.*);
@@ -166,6 +191,7 @@ pub const Keep = struct {
         }
         self.map.clearRetainingCapacity();
         self.held_bytes = 0;
+        return freed;
     }
 
     /// Held entries and bytes, for the daemon's operator note.
