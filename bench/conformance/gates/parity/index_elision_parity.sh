@@ -41,9 +41,12 @@ echo "building gist (ReleaseFast)…"
   echo "  build failed (engine may be mid-refactor by a coworker) — aborting"
   exit 1
 }
-GIST="${KERNEL}/zig-out/bin/gist"
+# Windows suffixes the artifact; every other target leaves the name bare. The
+# `${GIST:-…}` override matches the three sibling gates that already honor it.
+GIST="${GIST:-${KERNEL}/zig-out/bin/gist}"
+[[ -x "${GIST}" ]] || GIST+=".exe"
 [[ -x "${GIST}" ]] || {
-  echo "  no gist binary at ${GIST}"
+  echo "  no gist binary at ${GIST%.exe}[.exe]"
   exit 1
 }
 

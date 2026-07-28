@@ -142,8 +142,7 @@ fn openAnon(len: usize) ?std.posix.fd_t {
     } else if (comptime builtin.os.tag.isDarwin()) {
         var namebuf: [32]u8 = undefined;
         const seq = darwin_seq.fetchAdd(1, .monotonic);
-        const pid: u32 = @bitCast(std.c.getpid());
-        const name = std.fmt.bufPrintZ(&namebuf, "/gist.{x}.{x}", .{ pid, seq }) catch return null;
+        const name = std.fmt.bufPrintZ(&namebuf, "/gist.{x}.{x}", .{ portal.processId(), seq }) catch return null;
         const oflag: c_int = @bitCast(std.c.O{ .ACCMODE = .RDWR, .CREAT = true, .EXCL = true });
         const fd = shm_open(name.ptr, oflag, 0o600);
         if (fd < 0) return null;
@@ -172,5 +171,5 @@ test "round-trip: daemon writes, reader maps identical bytes" {
 
 test "zero length declines (stays on chunk frames)" {
     try std.testing.expectEqual(fault.Decline.capability_missing, Buffer.create(0).declined);
-    try std.testing.expectEqual(fault.Decline.capability_missing, mapReadonly(-1, 0).declined);
+    try std.testing.expectEqual(fault.Decline.capability_missing, mapReadonly(portal.invalid_handle, 0).declined);
 }

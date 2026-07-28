@@ -27,6 +27,7 @@ const builtin = @import("builtin");
 const resident = @import("resident.zig");
 const truth = @import("truth.zig");
 const fault = @import("../../../fault.zig");
+const portal = @import("../../../portal.zig");
 const Dir = std.Io.Dir;
 
 const ResidentSession = resident.ResidentSession;
@@ -48,9 +49,9 @@ const Corpus = struct {
         fault.spare("clear leftover fixture", Dir.cwd().deleteTree(io, root));
         try Dir.cwd().createDirPath(io, root);
         const rootz = try a.dupeZ(u8, root);
-        var buf: [std.posix.PATH_MAX]u8 = undefined;
-        const resolved = std.c.realpath(rootz, &buf) orelse return error.Unexpected;
-        return .{ .root = root, .canon = try a.dupe(u8, std.mem.sliceTo(resolved, 0)), .io = io, .a = a };
+        var buf: [portal.max_path]u8 = undefined;
+        const resolved = portal.realpath(rootz, &buf) orelse return error.Unexpected;
+        return .{ .root = root, .canon = try a.dupe(u8, resolved), .io = io, .a = a };
     }
 
     fn deinit(self: *Corpus) void {

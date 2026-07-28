@@ -38,6 +38,14 @@ const w = std.os.windows;
 /// Windows and `i32` elsewhere, so the descent's plumbing needs no rewrite.
 pub const Handle = std.posix.fd_t;
 
+/// The handle value that names nothing. POSIX spells it `-1` because a
+/// descriptor is a small integer; Windows spells it a sentinel *pointer*,
+/// because a handle is one. That difference is invisible until something wants
+/// to say "no handle" as a literal — a test asserting the refusal path, a
+/// zero-initialized slot — at which point `-1` stops compiling on one platform
+/// and this constant is what it should have said instead.
+pub const invalid_handle: Handle = if (windows) w.INVALID_HANDLE_VALUE else -1;
+
 /// Whether this platform can host the resident session (`gist serve`).
 ///
 /// The warm tier hands a *file descriptor* to another process through an
@@ -235,6 +243,41 @@ pub fn hostName(buf: *[host_name_max]u8) ?[]const u8 {
     return buf[0..len];
 }
 
+/// This process's own id — the token a fixture path or a shm name mixes in so two
+/// concurrent runs of the same binary cannot collide on it.
+///
+/// `getpid(2)` is POSIX's spelling and `GetCurrentProcessId` is Win32's. They
+/// agree on the *fact* and disagree on the type — Windows has no `pid_t`, and
+/// std's Windows `getpid` shim is typed as a handle rather than a number, so a
+/// caller that formats the POSIX one with `{d}` stops compiling there. Widened to
+/// `u32` once here so every caller formats the same type.
+pub fn processId() u32 {
+    if (comptime windows) return GetCurrentProcessId();
+    return @bitCast(std.c.getpid());
+}
+
+/// The directory this platform hands out for scratch files, without its trailing
+/// separator, written into `buf` (which must outlive the result).
+///
+/// Both platforms answer from the environment, and both already have a settled
+/// cascade for it — so this defers to each rather than inventing a third.
+/// POSIX reads `TMPDIR` and falls back to `/tmp`. Windows has no `/tmp` at all
+/// and its cascade is four deep (`TMP` → `TEMP` → `USERPROFILE` → the Windows
+/// directory), which `GetTempPath` already *is*; reimplementing it here would be
+/// a second, worse copy of a convention the OS ships.
+///
+/// The trailing separator is stripped because only one platform adds one, and a
+/// caller joining `"{s}/{s}"` should not have to know which.
+pub fn scratchDir(buf: *[max_path]u8) []const u8 {
+    if (comptime !windows) {
+        const dir = std.posix.getenv("TMPDIR") orelse "/tmp";
+        return std.mem.trimRight(u8, if (dir.len == 0) "/tmp" else dir, "/");
+    }
+    const n = GetTempPathA(@intCast(buf.len), buf);
+    if (n == 0 or n >= buf.len) return "C:\\Windows\\Temp";
+    return std.mem.trimRight(u8, buf[0..n], "\\/");
+}
+
 /// What sort of device a handle names, which is the question POSIX answers with
 /// `S_IFMT` and Windows with `GetFileType`. Only meaningful on Windows; the POSIX
 /// legs read the mode bits they already have.
@@ -388,6 +431,8 @@ extern "kernel32" fn VirtualFree(
     u32,
 ) callconv(.winapi) c_int;
 extern "kernel32" fn GetFileType(w.HANDLE) callconv(.winapi) u32;
+extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) u32;
+extern "kernel32" fn GetTempPathA(u32, [*]u8) callconv(.winapi) u32;
 extern "kernel32" fn GetSystemTimeAsFileTime(*w.FILETIME) callconv(.winapi) void;
 extern "kernel32" fn GetComputerNameA([*]u8, *u32) callconv(.winapi) c_int;
 extern "kernel32" fn GetFinalPathNameByHandleA(w.HANDLE, [*]u8, u32, u32) callconv(.winapi) u32;
