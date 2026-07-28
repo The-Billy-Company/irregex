@@ -600,8 +600,12 @@ def main() -> int:
                         "bench/certificate/report/scanner.py --fuzz-baseline. The total may not "
                         "grow, no single class may grow, and a class absent from this file fails "
                         "the mint even when the total fell — a new root cause is news even when "
-                        "the arithmetic improved. Refresh ONLY in the same PR as the fix that "
-                        "lowered it: python3 bench/conformance/rgsuite/fuzz.py --iterations "
+                        "the arithmetic improved. The `*-rg` classes are the exception on both "
+                        "sides of the comparison: they record the ORACLE timing out or dying "
+                        "where gist answered, so they are reported but never ratcheted (they "
+                        "measure the host's load, not gist's conformance). Refresh ONLY in the "
+                        "same PR as the fix that lowered it: python3 "
+                        "bench/conformance/rgsuite/fuzz.py --iterations "
                         f"{total} --seed {args.seed} --publish-baseline <this file>"
                     ),
                     "iterations": total,

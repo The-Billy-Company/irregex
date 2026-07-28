@@ -19,24 +19,44 @@ doc_radar:
       file: pkg/kernels/irregex/src/root.zig
       contains: "pub const irregex = struct"
     - description: "correctness remains ahead of performance in the proof pipeline"
-      file: pkg/kernels/irregex/bench/gates/ci_order.sh
+      file: pkg/kernels/irregex/bench/conformance/gates/contract/ci_order.sh
       contains: ["pcre parity -P", "index-elision parity", "macro certificate"]
     - description: "the certificate still carries the live ripgrep macro comparison (a re-mint may move every number, but never drop the section)"
-      file: pkg/kernels/irregex/bench/certify/artifact/CERTIFICATE.md
+      file: pkg/kernels/irregex/bench/certificate/artifact/CERTIFICATE.md
       contains:
         - "## Layer A — macroscopic dominance over ripgrep"
         - "gist vs ripgrep across 12 classes"
-    - description: "canary for the corpus + speedup range this README quotes in prose — a re-mint moves these, and breaking here is the signal to restate them"
-      file: pkg/kernels/irregex/bench/certify/artifact/CERTIFICATE.md
+    - description: "canary for the Layer A (index-on) corpus + speedup range this README quotes in prose — a re-mint moves these, and breaking here is the signal to restate them"
+      file: pkg/kernels/irregex/bench/certificate/artifact/CERTIFICATE.md
       contains:
         - "corpus: 20660 files · 204.6 MiB"
+        - "machine: **Apple M4 Max**"
         - "8.93x"
         - "5.78x"
+    - description: "canary for the Layer I (scanner-only, index off, daemon off) numbers this README leads with — the sweep, the geomean, and what the index adds on top"
+      file: pkg/kernels/irregex/bench/certificate/artifact/CERTIFICATE.md
+      contains:
+        - "24 win · 0 parity · 0 loss"
+        - "the scanner alone is **1.93× faster than ripgrep**"
+        - "a further **3.1×**"
+    - description: "canary for the Layer J scale caveat this README states rather than rounds away — the neutral corpus, csearch's cheap-literal wins, and the memory ceiling"
+      file: pkg/kernels/irregex/bench/certificate/artifact/CERTIFICATE.md
+      contains:
+        - "352,316 files / 5.5 GiB on disk"
+        - "wins 5, ties 2, loses 5"
+        - "14.50 GiB peak RSS while indexing, 5.1x csearch"
+        - "**6.0x rg on owned memory**"
     - description: "canary for the crest speedup distribution this README quotes in prose — a re-mint moves these rows, and breaking here is the signal to recompute the geometric mean and restate the floor/ceiling"
-      file: pkg/kernels/irregex/bench/certify/artifact/crest.csv
+      file: pkg/kernels/irregex/bench/certificate/artifact/crest.csv
       contains: ["27.758", "13.120", "3.234", "1.375", "96.42"]
+    - description: "the two optimize modes the fail-hard limit above turns on: the shipped CLI compiles its checks out, the suite that tries to break them keeps them"
+      file: pkg/kernels/irregex/build.zig
+      contains: "The unit-test binary is pinned to ReleaseSafe"
+    - description: "the shipped CLI is built ReleaseFast (checks compiled out) — the other half of that limit"
+      file: scripts/act/workspace/taskrunner/taskrun/rows/builds/_gist.py
+      contains: "-Doptimize=ReleaseFast"
     - description: "the honest optimality disclaimer survives every re-mint — the certificate never claims hardware optimality"
-      file: pkg/kernels/irregex/bench/certify/artifact/CERTIFICATE.md
+      file: pkg/kernels/irregex/bench/certificate/artifact/CERTIFICATE.md
       absent:
         - "cycles/byte sits on the hardware ceiling"
         - "no implementation on this chip can go faster"
@@ -447,6 +467,23 @@ exist and where they stop.
   about ripgrep, defines supported flags.
 - PCRE2 is opt-in (`-P` or `--engine auto`) and resource-capped. If required
   literals cannot be proven, gist scans instead of risking a false negative.
+- Case-insensitive matching is **simple fold only** — Unicode's `C+S` mappings,
+  which is ripgrep's own posture, not a shortfall against it. `café` ⇄ `CAFÉ`
+  matches on both tools and `ß` ⇄ `SS` matches on neither, because full (`F`)
+  folding is one-to-many and neither engine does it. `--no-unicode` or a leading
+  `(?-u)` reverts to ASCII bytes.
+- The shipped binary is **ReleaseFast**, so its `unreachable`s — 48 across
+  `src/`, 20 of them switch prongs — and its 47 `std.debug.assert`s are
+  **compiled out** rather than trapped (count them yourself:
+  `gist -c 'unreachable' src/ --glob '!**/*_test.zig'`). They declare an
+  invariant to the optimizer; they are not runtime guards, and violating one in
+  a release build is undefined behavior rather than a clean abort. That is
+  idiomatic Zig and it is a real edge. The defense is that the checks are live
+  exactly where something is trying to break them: the test binary is pinned
+  **ReleaseSafe** (`build.zig`) because the suite is dominated by
+  differential-fuzz loops — DFA vs Pike, powerset language equivalence,
+  adversarial oracles, index-loader mutation soak — whose whole job is to trip
+  these.
 - `relate` provides deterministic byte-level kinship, attribution, and packing;
   it serves a retrieval-shaped purpose without pretending compression distance
   is learned semantic meaning.
@@ -641,13 +678,17 @@ The claim is deliberately narrow: it certifies `gist`'s fresh-process,
 cold exact-search path over 12 literal/regex classes. It does **not** certify
 every CLI shape (`--include-zero` is a serial count mode), the warm daemon,
 `relate`, or the composed `irregex` face. Those surfaces keep separate
-correctness and performance evidence under `bench/rgsuite/`, `bench/matrix/`,
-`bench/session/`, and the relate harnesses; none inherits Layer A's dominance
+correctness and performance evidence under `bench/conformance/`,
+`bench/dominance/`, and `bench/bounds/`; none inherits Layer A's dominance
 claim by association.
 
-On the recorded **20,660-file / 204.6 MiB macroscopic corpus**, the
-end-to-end linear/literal path beats ripgrep in all 12 query classes by
-**5.78×–8.93×**. The separately minted lower-bound layer covers the same
+Two speedups get quoted from this certificate and they are **not the same
+claim**, so each names its layer. **Layer A is index-on**: on the recorded
+**20,660-file / 204.6 MiB macroscopic corpus**, the end-to-end linear/literal
+path beats a cold ripgrep in all 12 query classes by **5.78×–8.93×**. That is
+an indexed engine against a scanner — an honest description of the regime an
+agent runs in, and a poor description of a fair fight. The separately minted
+lower-bound layer covers the same
 204.6 MiB corpus (20,661 files at its own mint) and checks the narrower structural statement:
 trigram pruning touches no rejected file bytes, and the DFA verifies each
 admitted byte exactly once. The artifact, raw data, machine identity, losses,
@@ -657,21 +698,41 @@ and rerun commands live in
 `CERT_FULL=1 CERT_PUBLISH=1 CERT_SUDO=1 make bench-gist-certify` remints and
 publishes the full A–E bundle.
 
-The obvious objection to that layer is that it measures an index against a
-scanner. **Layer I answers it by switching the index off.** With `--no-index`
-and no resident daemon — a fresh process doing a live walk, read, and scan —
-`gist` holds parity-or-better against ripgrep on **every one of the 24 certified
-cells** (the 12 classes' `-l` argv plus a `-c` lane where nothing can
-short-circuit), under the same fail-closed statistic Layer A uses: lower median
-**and** Mann-Whitney p < 0.05. So the advantage is not the index; it is the walk,
-the read, and the scan, and the index is additive on top of a scanner that
-already stands alone. The companion maturity evidence is a number with
+**That corpus is the Billy monorepo, on an Apple M4 Max**, and the choice cuts
+both ways. It is the right corpus for the claim the tool exists to make — this
+is the tree the agents' search loop actually runs over — and it is not a
+neutral proof: one language mix, one ignore shape, one machine. Layer J puts
+the same engine on somebody else's corpus (shallow clones of the Linux kernel,
+LLVM, Go and Rust — **352,316 files / 5.5 GiB**) and the result does not
+transfer whole. There **csearch still takes the cheap-literal classes** — gist
+wins 5, ties 2, loses 5 of 12 — and **memory is the real ceiling**: 14.50 GiB
+peak RSS to build the index, 5.1× csearch, and 6.0× rg on owned working set for
+an identical unindexed walk. Those rows sit in the certificate for the same
+reason the wins do.
+
+The obvious objection to Layer A is that it measures an index against a
+scanner. **Layer I answers it by switching the index off, and it is the number
+to lead with in a fight.** With `--no-index` and no resident daemon — a fresh
+process doing a live walk, read, and scan — `gist` beats ripgrep outright on
+**all 24 certified cells** (the 12 classes' `-l` argv plus a `-c` lane where
+nothing can short-circuit): **24 win · 0 parity · 0 loss**, every cell at
+p<0.001, for a **1.93× geomean**, under the same fail-closed statistic Layer A
+uses — lower median **and** Mann-Whitney p < 0.05. The index then adds a
+further **3.1×** on top, which is where Layer A's wider range comes from. So
+the advantage is not the index; it is the walk, the read, and the scan, and the
+index is additive on top of a scanner that already stands alone. The companion
+maturity evidence is a number with
 ripgrep's own denominator rather than a feeling: **100% of rg's 186 documented
 flags** reproduce byte-identically or differ only at a declared, residual-checked
-boundary, **411/411** of its mined integration cases pass, and a differential
-fuzzer generates invocations nobody curated over deliberately hostile corpora.
-Both live in Layer I of the certificate; `bench/rgsuite/README.md` is the
-harness's own map.
+boundary, and **411/411** of its mined integration cases pass. Both denominators
+are ones ripgrep owns — the flags it documents, the tests it wrote — which is
+also their ceiling, so a third lane fuzzes invocations nobody curated over
+deliberately hostile corpora. That lane still finds a small tail, and the
+certificate carries it per root-cause class rather than rounding it off: the
+mint is refused unless the fuzz record is present, and the tail is ratcheted
+shrink-only. All three live in Layer I of the certificate;
+[`bench/conformance/rgsuite/README.md`](bench/conformance/rgsuite/README.md) is
+the harness's own map.
 
 I carried the same discipline into the agent surface: `--rank` puts definitions
 above call sites and demotes codegen; misses coach on stderr while stdout stays
