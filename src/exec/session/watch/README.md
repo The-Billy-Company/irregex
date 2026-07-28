@@ -10,10 +10,11 @@ doc_radar:
     - file: pkg/kernels/irregex/src/exec/session/watch/inotify.zig
       contains: ["pub fn startInotify", "pub fn drainInotifyLocked", "FS_CASEFOLD_FL"]
     - file: pkg/kernels/irregex/src/exec/session/watch/kqueue.zig
-      contains: ["pub fn startKqueue", "EVFILT.VNODE", "vnode_notes"]
+      contains: ["pub fn startKqueue", "pub fn drainKqueueLocked", "vnode_notes"]
       absent: ["FSEventStreamCreate"]
     - file: pkg/kernels/irregex/src/exec/session/watch/coverage.zig
-      contains: ["pub fn coverRoots", "isIgnoreSource", "EVTONLY", "fn vanished"]
+      description: the admission walk both selects the watch set and registers each admitted vnode, so the kevent filter is minted here
+      contains: ["pub fn coverRoots", "isIgnoreSource", "EVTONLY", "EVFILT.VNODE", "fn vanished"]
     - file: pkg/kernels/irregex/src/exec/session/watch/budget.zig
       contains: ["pub fn watchBudget", "kern.maxfilesperproc", "kern.maxfiles"]
 -->
@@ -36,14 +37,15 @@ dispatches to, each a set of free functions over that generic `Watcher`.
 | ------------------------------ | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [`watch.zig`](watch.zig)       | facade          | The generic `Watcher(Session)`, the shared state, comptime backend selection, and the lifecycle — including `shed`, which hands every descriptor back and returns the session to the reconcile-always baseline so an idle daemon stops taxing the commons its siblings share. |
 | [`inotify.zig`](inotify.zig)   | Linux           | Recursive directory watches, the event loop, coverage extension into directories created after arming, queue-overflow doubt, and casefold detection (a `+F` root stays coarse).                                                                                               |
-| [`kqueue.zig`](kqueue.zig)     | macOS events    | `EVFILT_VNODE` registration, draining a batch under the shared consumption lock, per-directory rescan on a membership move, and retiring a descriptor whose vnode left. Owns the `EVFILT_VNODE` note vocabulary (`vnode_notes`).                                              |
-| [`coverage.zig`](coverage.zig) | macOS admission | Selects the macOS watch set from the walk's own `Ignore` policy so the descriptor cost stays proportional to the corpus, owns the policy arena and the key-space arithmetic, classifies the hidden ignore SOURCES that decide admission, and judges which `open(2)` failure may be skipped — only a path that vanished, never one the walk still searches (`vanished`). |
+| [`kqueue.zig`](kqueue.zig)     | macOS events    | The kqueue descriptor itself and the arming (`startKqueue`), draining a batch under the shared consumption lock, per-directory rescan on a membership move, and retiring a descriptor whose vnode left. Owns the `EVFILT_VNODE` note vocabulary (`vnode_notes`) every watch requests. |
+| [`coverage.zig`](coverage.zig) | macOS admission | Selects the macOS watch set from the walk's own `Ignore` policy so the descriptor cost stays proportional to the corpus, registers each admitted vnode (`EVFILT_VNODE` + `EV_CLEAR`, `vnode_notes`), owns the policy arena and the key-space arithmetic, classifies the hidden ignore SOURCES that decide admission, and judges which `open(2)` failure may be skipped — only a path that vanished, never one the walk still searches (`vanished`). |
 | [`budget.zig`](budget.zig)     | macOS ceiling   | How many vnode watches may be held — clamped against the three ceilings the kernel enforces (`kern.maxfilesperproc`, a bounded share of `kern.maxfiles`, and the raised `RLIMIT_NOFILE`), returning zero (unarmed) rather than a set it cannot register.                      |
 
 `kqueue.zig` and `coverage.zig` are two halves of one macOS backend — the event
 engine and the admission walk — split so each reads as a single concern; they
-reference each other directly (`coverage` registers via `kqueue.note` /
-`kqueue.retire`, `kqueue` rescans via `coverage.coverTree`). The Linux and macOS
+reference each other directly (`coverage` announces and unwinds each watch it
+registers via `kqueue.note` / `kqueue.retire`, `kqueue` rescans via
+`coverage.coverTree`). The Linux and macOS
 sides never intersect: every macOS function is gated behind
 `if (comptime !is_macos) return …`, so the whole folder compiles on both targets
 and the unused backend lowers to nothing.

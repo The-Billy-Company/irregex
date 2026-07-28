@@ -1,9 +1,9 @@
 ---
 doc_radar:
   sentinels:
-    "bench/sliver/artifact/positional_pareto.tsv":
+    "artifact/positional_pareto.tsv":
       contains: ["carried_trigrams", "pct_corpus", "cand_pgxpool"]
-    "bench/sliver/artifact/scale_elision.tsv":
+    "artifact/scale_elision.tsv":
       contains: ["indexed_eq_noindex"]
       absent_matches: ["\\tNO$"]
 ---

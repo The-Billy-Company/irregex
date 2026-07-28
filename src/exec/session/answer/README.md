@@ -9,7 +9,8 @@ doc_radar:
     - file: pkg/kernels/irregex/src/exec/session/answer/request.zig
       contains: ["effectiveIgnoreCase", "smart_case"]
     - file: pkg/kernels/irregex/src/surface/face/gist/main.zig
-      contains: ["[eligible]", "[ineligible]"]
+      description: the warm-lens verdict line the Python parity test parses — composed from one format string, so pin the frame and both branch words rather than the assembled bytes
+      matches: ['"gist: \[\{s\}\]', '"eligible" else "ineligible"']
     - file: pkg/kernels/irregex/src/exec/session/answer/keep.zig
       description: the keep holds answers against an epoch and never computes one
       contains: ["pub fn recall", "pub fn retain", "max_total_bytes"]
