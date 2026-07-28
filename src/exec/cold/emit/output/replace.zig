@@ -9,6 +9,7 @@
 const std = @import("std");
 const oom = @import("../../../../surface/cli/outcome.zig").oom;
 const Caps = @import("../../../../kernel/regex/regex.zig").Caps;
+const display = @import("display.zig");
 const output = @import("../output.zig");
 const Emitter = output.Emitter;
 
@@ -114,10 +115,23 @@ pub fn buildReplaced(self: *Emitter, tmpl: []const u8, line: []const u8) Replace
     return .{ .text = buf.toOwnedSlice(self.a) catch oom(), .starts = starts.toOwnedSlice(self.a) catch oom() };
 }
 
+/// Write one `-o -r` row's expanded template, honoring `--trim`. rg trims the
+/// RENDERED row, not the template, so a `$0` starting mid-line keeps its blanks
+/// (`-r '[$0]'` prints `[   bar]`) while a template of its own leading blanks
+/// loses them. Trimming therefore needs the whole expansion in hand; without
+/// `--trim` it still streams straight to the output buffer. Arena-owned.
+fn emitExpanded(self: *Emitter, tmpl: []const u8, line: []const u8, slots: []const isize) void {
+    if (!self.o.trim) return expand(self, self.out, tmpl, line, slots);
+    var buf: std.ArrayList(u8) = .empty;
+    expand(self, &buf, tmpl, line, slots);
+    self.add(display.trimRow(self, buf.items));
+}
+
 /// Emit each match on one line as its expanded `-r` template (the `-o` frame),
-/// `so_far` matches already counted toward `--max-count`. Returns the count on
-/// this line.
-pub fn emitLineRepl(self: *Emitter, path: []const u8, lineno: usize, line: []const u8) usize {
+/// `so_far` matches already counted toward `--max-count`. `is_match` frames the
+/// rows — under `-v` the spans live on the context line (see `emitMatches`).
+/// Returns the count on this line.
+pub fn emitLineRepl(self: *Emitter, path: []const u8, lineno: usize, line: []const u8, is_match: bool) usize {
     const caps = self.caps.?;
     const tmpl = self.o.replace.?;
     const slots = self.a.alloc(isize, caps.nslots()) catch oom();
@@ -143,8 +157,8 @@ pub fn emitLineRepl(self: *Emitter, path: []const u8, lineno: usize, line: []con
             continue;
         }
         last_end = e;
-        self.prefix(path, lineno, s + 1, self.offOf(line) + s, true);
-        expand(self, self.out, tmpl, line, slots);
+        self.prefix(path, lineno, s + 1, self.offOf(line) + s, is_match);
+        emitExpanded(self, tmpl, line, slots);
         self.add(self.o.outTerm()); // expanded text carries no terminator — rg appends the full one
         n += 1;
         // No span cap: `-m` counts matched LINES, so this line emits all of

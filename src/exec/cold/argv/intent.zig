@@ -66,6 +66,18 @@ fn globAppliesCI(a: std.mem.Allocator, pat: []const u8, path: []const u8) bool {
     return glob.globApplies(lowerDup(a, pat), lowerDup(a, path));
 }
 
+/// The path spelling a `-g`/`-t` glob is matched against: the walked path with
+/// any leading `./` peeled. ripgrep's walker matches relative to the search
+/// root, so `rg -g 'sub/**' .` — whose rows PRINT as `./sub/c.py` — still sees
+/// `sub/c.py`, and conversely `-g './sub/**'` matches nothing there. Matching
+/// the display spelling instead silently dropped every rooted glob (one with a
+/// `/` in it) whenever a positional `.` was present, which is the common shape.
+fn globView(path: []const u8) []const u8 {
+    var s = path;
+    while (std.mem.startsWith(u8, s, "./")) s = s[2..];
+    return s;
+}
+
 /// Resolved type/glob scope (`-t/-T/-g/--glob/--iglob`), AND-combined; each set
 /// is a no-op when empty. Borrows caller-owned slices (a parse-time arena).
 pub const Filter = struct {
@@ -80,16 +92,26 @@ pub const Filter = struct {
     pub fn hasInclude(self: Filter) bool {
         return self.exts.len > 0 or self.includes.len > 0 or self.iglobs.len > 0 or self.type_all;
     }
+    /// Does this path survive the type/glob scope? A `-g '!…'` exclude always
+    /// vetoes. Then a positive `-g`/`--iglob` is ripgrep's Override WHITELIST
+    /// and DECIDES on its own: a match forces the path in over any `-t`/`-T`,
+    /// and — once one positive glob exists — a non-match forces it out. Type
+    /// filters only rule on the paths no override spoke for. Measured against
+    /// rg 15.2: `-t py -g '*.rs'` lists the .rs files (not the .py ones), and
+    /// `-T md -g '*.md'` lists the .md file the negation would have dropped.
     pub fn admits(self: Filter, a: std.mem.Allocator, path: []const u8) bool {
-        for (self.excludes) |g| if (glob.globApplies(g, path)) return false;
-        for (self.neg_exts) |e| if (glob.globApplies(e, path)) return false;
-        if (self.ntype_all and types.isKnownType(path)) return false;
-        if (!self.hasInclude()) return true;
-        for (self.exts) |e| if (glob.globApplies(e, path)) return true;
-        if (self.type_all and types.isKnownType(path)) return true;
-        for (self.includes) |g| if (glob.globApplies(g, path)) return true;
-        for (self.iglobs) |g| if (globAppliesCI(a, g, path)) return true;
-        return false;
+        const p = globView(path);
+        for (self.excludes) |g| if (glob.globApplies(g, p)) return false;
+        if (self.includes.len > 0 or self.iglobs.len > 0) {
+            for (self.includes) |g| if (glob.globApplies(g, p)) return true;
+            for (self.iglobs) |g| if (globAppliesCI(a, g, p)) return true;
+            return false;
+        }
+        for (self.neg_exts) |e| if (glob.globApplies(e, p)) return false;
+        if (self.ntype_all and types.isKnownType(p)) return false;
+        if (self.exts.len == 0 and !self.type_all) return true;
+        for (self.exts) |e| if (glob.globApplies(e, p)) return true;
+        return self.type_all and types.isKnownType(p);
     }
     /// ripgrep `Override` whitelist: does an explicit `-g`/`--glob`/`--iglob` glob
     /// force this path IN, OVERRIDING the hidden/ignore filters (`Match::Whitelist`
@@ -98,9 +120,10 @@ pub const Filter = struct {
     /// vetoes; empty include sets ⇒ no override (normal hidden/ignore stands).
     pub fn whitelists(self: Filter, a: std.mem.Allocator, path: []const u8) bool {
         if (self.includes.len == 0 and self.iglobs.len == 0) return false;
-        for (self.excludes) |g| if (glob.globApplies(g, path)) return false;
-        for (self.includes) |g| if (glob.globApplies(g, path)) return true;
-        for (self.iglobs) |g| if (globAppliesCI(a, g, path)) return true;
+        const p = globView(path);
+        for (self.excludes) |g| if (glob.globApplies(g, p)) return false;
+        for (self.includes) |g| if (glob.globApplies(g, p)) return true;
+        for (self.iglobs) |g| if (globAppliesCI(a, g, p)) return true;
         return false;
     }
     /// Does any include whitelist UN-HIDE this path (bypass the dotfile skip)? A
@@ -109,8 +132,9 @@ pub const Filter = struct {
     /// though a type filter never bypasses gitignore (that stays `whitelists`).
     pub fn whitelistsHidden(self: Filter, a: std.mem.Allocator, path: []const u8) bool {
         if (self.whitelists(a, path)) return true;
-        for (self.exts) |e| if (glob.globApplies(e, path)) return true;
-        return self.type_all and types.isKnownType(path);
+        const p = globView(path);
+        for (self.exts) |e| if (glob.globApplies(e, p)) return true;
+        return self.type_all and types.isKnownType(p);
     }
     /// True when any set constrains the file list (lets the caller skip the walk
     /// filter entirely on an unscoped query).

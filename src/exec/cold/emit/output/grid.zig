@@ -172,8 +172,21 @@ pub fn file(self: *Emitter, path: []const u8, lines: []const []const u8) usize {
         var k = self.windowStart(m -| o.before, hi, &prev_end) orelse continue;
         while (k <= hi) : (k += 1) {
             const is_m = is_match[k];
-            if (is_m and mss != null) {
-                if (o.replace != null) _ = replace.emitLineRepl(self, path, k + 1, lines[k]) else _ = display.emitMatches(self, &mss.?, path, k + 1, lines[k], self.mview(lines[k]));
+            // Spans belong to the line the PATTERN hit, which `is_match` only
+            // names when `-v` is off — inverted, the printed match line is the
+            // one the pattern MISSED and has no spans at all, while the context
+            // line is the hit and carries a row per span (framed `-`, with its
+            // column). Gating on `is_m` alone printed the context line and
+            // dropped every inverted match line: `rg -o -v -C1 -e bbb` over
+            // "aaa\nxbbbx\nccc" is `1:aaa`, `2-2-bbb`, `3:ccc` — gist emitted
+            // only `2-2-xbbbx`. The `--vimgrep` rows below already invert this
+            // way; `-o` did not. (Found by the differential fuzzer.)
+            const pattern_hit = is_m != o.invert;
+            if (pattern_hit and mss != null) {
+                if (o.replace != null)
+                    _ = replace.emitLineRepl(self, path, k + 1, lines[k], is_m)
+                else
+                    _ = display.emitMatches(self, &mss.?, path, k + 1, lines[k], self.mview(lines[k]), is_m);
                 continue;
             }
             // rg's vimgrep printer emits one row per match found in the line it
@@ -287,7 +300,7 @@ fn passthru(self: *Emitter, path: []const u8, lines: []const []const u8) usize {
         // --passthru -o: a matching line contributes each match span (only-
         // matching frame), a non-matching line still prints in full (context).
         if (spans_apply and mss != null) {
-            if (self.o.replace != null) _ = replace.emitLineRepl(self, path, k + 1, line) else _ = display.emitMatches(self, &mss.?, path, k + 1, line, mv);
+            if (self.o.replace != null) _ = replace.emitLineRepl(self, path, k + 1, line, is_m) else _ = display.emitMatches(self, &mss.?, path, k + 1, line, mv, is_m);
             continue;
         }
         // --passthru --vimgrep: a matching line still contributes one row per
@@ -350,7 +363,9 @@ fn onlyMatching(self: *Emitter, path: []const u8, lines: []const []const u8) usi
         if (cand) |c| if (!c[k]) continue;
         const mv = self.mview(line);
         if (!self.lineCanMatch(mv)) continue;
-        const n = if (ssim) |*s| display.emitMatches(self, s, path, k + 1, line, mv) else replace.emitLineRepl(self, path, k + 1, line);
+        // The windowless `-o` frame is only reached with `-v` off (see the
+        // dispatch above), so every row it prints frames as a match.
+        const n = if (ssim) |*s| display.emitMatches(self, s, path, k + 1, line, mv, true) else replace.emitLineRepl(self, path, k + 1, line, true);
         emitted += n;
         if (n == 0) continue;
         // `-m` limits matched LINES, so a line emits all of its spans and the

@@ -28,6 +28,19 @@ pub fn blankPrefix(s: []const u8) usize {
     return s.len - std.mem.trimStart(u8, s, " \t").len;
 }
 
+/// `--trim` for an only-matching row: rg trims the leading blanks of the bytes
+/// the row actually PRINTS — the `-o` fragment, or its `-r` expansion — not of
+/// the line the fragment came from. The column and `--byte-offset` keep naming
+/// the untrimmed span, and `-M` measures what is left, so `-M4 --trim -o` over
+/// `   bar` prints a three-byte `bar` where the untrimmed six would be omitted.
+/// The line sinks trim their whole line in `emitBody`; rg's `-U` per-match sink
+/// trims against its line instead, which is why `multibuf` keeps its own rule.
+/// `pub`: the literal `-o` fast path (`skim`) and `-o -r` (`replace`) print the
+/// same row shape, and one implementation is what stops their bytes drifting.
+pub fn trimRow(self: *const Emitter, s: []const u8) []const u8 {
+    return if (self.o.trim) std.mem.trimStart(u8, s, " \t") else s;
+}
+
 /// `--max-columns-preview` cut point: the largest byte index ≤ `cols` that lands
 /// on a UTF-8 char boundary (ripgrep counts graphemes; byte-accurate for ASCII,
 /// and never splits a multi-byte scalar for the rest).
@@ -283,25 +296,28 @@ pub fn vimgrepLine(self: *Emitter, v: Vimgrep) void {
 
 /// Emit each match span on one line in the only-matching frame (shared by
 /// `-o` and `--passthru -o`). `mv` is the `--crlf` match view of `line`.
+/// `is_match` frames the rows: it is the printed line's own sense, which under
+/// `-v` belongs to the CONTEXT line — the one the pattern actually hit, and so
+/// the only one that has spans to emit at all.
 /// Returns the number of spans emitted.
-pub fn emitMatches(self: *Emitter, ssim: *Matcher.SpanSim, path: []const u8, lineno: usize, line: []const u8, mv: []const u8) usize {
+pub fn emitMatches(self: *Emitter, ssim: *Matcher.SpanSim, path: []const u8, lineno: usize, line: []const u8, mv: []const u8, is_match: bool) usize {
     var n: usize = 0;
     // The admission rule (zero-width matches, the progress rule, `-w`) lives in
     // `output.Rows` so `--count-matches` counts exactly the rows printed here.
     var rows = output.Rows{ .re = self.re, .ss = ssim, .o = self.o, .mv = mv, .terminated = self.lineTerminated(line) };
     while (rows.next()) |span| {
         if (self.full()) break;
-        const empty = span.end == span.start;
-        self.prefix(path, lineno, span.start + 1, self.offOf(line) + span.start, true);
+        self.prefix(path, lineno, span.start + 1, self.offOf(line) + span.start, is_match);
         // `-o` emits bare match bytes + the full output terminator (rg's
         // printer): under `--crlf` every fragment ends `\r\n`, so a match
         // reaching the logical line end needs no `\r`-reattachment. `-M`
         // measures the FRAGMENT here, not its line (the fragment is what this
-        // printer prints), exactly as the `-U` per-match frame does.
-        const frag = line[span.start..span.end];
+        // printer prints), exactly as the `-U` per-match frame does — and it
+        // measures it AFTER `--trim`, which is why the trim comes first.
+        const frag = trimRow(self, line[span.start..span.end]);
         if (self.o.max_cols != 0 and frag.len > self.o.max_cols) {
-            exceeded(self, frag, true, &.{0}, 0);
-        } else if (!empty) self.paint(self.o.palette.match, frag);
+            exceeded(self, frag, is_match, &.{0}, 0);
+        } else if (frag.len != 0) self.paint(self.o.palette.match, frag);
         self.linkClose(); // scope `row`: the fragment is part of the click target
         self.add(self.o.outTerm());
         n += 1;

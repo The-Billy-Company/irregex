@@ -52,7 +52,7 @@ fn emitMatchesLit(self: *Emitter, lits: []const []const u8, path: []const u8, li
     while (litNextSpan(lits, mv, from)) |span| {
         from = span.end;
         self.prefix(path, lineno, span.start + 1, self.offOf(line) + span.start, true);
-        self.paint(self.o.palette.match, line[span.start..span.end]);
+        self.paint(self.o.palette.match, display.trimRow(self, line[span.start..span.end]));
         self.add(self.o.outTerm());
         n += 1;
     }
@@ -159,7 +159,7 @@ pub fn fileLit(self: *Emitter, path: []const u8, body: []const u8, lo: usize, hi
                 }
                 const mv = self.mview(line);
                 if (emit_spans) {
-                    spans += if (lit_span) emitMatchesLit(self, lits, path, lineno + 1, line, mv) else display.emitMatches(self, &ssim.?, path, lineno + 1, line, mv);
+                    spans += if (lit_span) emitMatchesLit(self, lits, path, lineno + 1, line, mv) else display.emitMatches(self, &ssim.?, path, lineno + 1, line, mv, true);
                 } else {
                     const col: usize = if (!o.column) 0 else if (lit_span) blk: {
                         const sp = litNextSpan(lits, mv, 0) orelse break :blk 0;
