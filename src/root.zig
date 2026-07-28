@@ -347,7 +347,7 @@ pub const commands = struct {
 /// + bindings above it) programs to, distinct from the internal tiers above.
 pub const api = @import("surface/api.zig");
 
-pub const version_string: [:0]const u8 = "0.2.0"; // x-release-please-version
+pub const version_string: [:0]const u8 = "0.3.0"; // x-release-please-version
 
 /// The vendored PCRE2 the `-P` backend links (`kernel/regex/pcre2/ffi.zig`),
 /// reported by `gist rg --pcre2-version` in ripgrep's own phrasing. Declared
