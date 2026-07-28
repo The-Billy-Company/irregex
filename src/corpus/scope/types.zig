@@ -20,7 +20,7 @@
 //! silent empty result is the worst agent failure).
 
 const std = @import("std");
-const glob = @import("glob.zig");
+const glob = @import("../../kernel/math/glob.zig");
 
 /// One registry row: every alias name that resolves to one shared glob slice
 /// (comptime-deduplicated so aliases can never drift — see module header).

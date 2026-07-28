@@ -45,7 +45,7 @@ corrupt, foreign, or future-dated blob loads as null and every file is read live
 exactly as before. `GIST_NO_SHARD=1` and `--no-index` both disable it.
 
 The blob is sealed with a
-[`signet`](../../../kernel/primitives/signet.zig), checked only when someone
+[`signet`](../../../corpus/index/frame/signet.zig), checked only when someone
 calls `View.verify`. Layout validation cannot see bit rot inside a body — flip a
 content byte and every offset, length, and name still agrees — so the seal is
 what stands between a served slice and bytes that are no longer the file's.

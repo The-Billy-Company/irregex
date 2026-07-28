@@ -5,14 +5,14 @@ doc_radar:
       file: pkg/kernels/irregex/src/corpus/index/crest/sidecar.zig
       contains: ["GISTCRS3", "pub fn decode", "pub fn verify"]
     - description: "sieve calculus lives in the regex analysis layer, not the sidecar — ĝ is derived from the engine's own AST"
-      file: pkg/kernels/irregex/src/kernel/match/regex/analysis/swell.zig
+      file: pkg/kernels/irregex/src/kernel/regex/analysis/swell.zig
       contains: "pub fn forcedSwell"
 ---
 
 # `src/corpus/index/crest/` — persisted crest-vector sidecar
 
 The disk half of the **crest sieve**. Kernel math:
-[`../../../kernel/primitives/crest.zig`](../../../kernel/primitives/crest.zig).
+[`../../../kernel/math/crest.zig`](../../../kernel/math/crest.zig).
 Theory: [`../../../../research/crest/PROOF.md`](../../../../research/crest/PROOF.md).
 
 One `u16^K` crest vector per indexed doc (16 B), doc-id order, staged under
@@ -61,10 +61,10 @@ for the pages it reads, not for a whole-file digest it did not ask for.
   query simply runs without the sieve. `verify` proves the seal on demand.
 - Soundness rounds down only (under-prune); see the kernel + `research/crest`.
 - Consumers: read-elision oracles in
-  `surface/exec/cold/quarry/elide.zig` and the serial/swarm engines.
+  `exec/cold/quarry/elide.zig` and the serial/swarm engines.
 
 ## When to edit
 
 On-disk framing, publish atomicity with the trigram pair, or build
 parallelism. Changing the class family / `ghat` math is
-`src/kernel/primitives/crest.zig` + the research proof, not this codec alone.
+`src/kernel/math/crest.zig` + the research proof, not this codec alone.

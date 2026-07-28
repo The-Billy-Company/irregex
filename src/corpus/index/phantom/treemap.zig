@@ -32,15 +32,15 @@
 //! or foreign blob loads as null and the walk runs exactly as before.
 
 const std = @import("std");
-const corpus_mod = @import("../../tree/corpus.zig");
 const ignore = @import("../../tree/ignore.zig");
 const bulkstat = @import("../../tree/bulkstat.zig");
 const frame = @import("../frame/frame.zig");
-const signet = @import("../../../kernel/primitives/signet.zig");
+const signet = @import("../frame/signet.zig");
 const portal = @import("../../../portal.zig");
+const home = @import("../frame/home.zig");
 const Dir = std.Io.Dir;
 
-const file_alias = corpus_mod.ArtifactPath("tree.map");
+const file_alias = home.ArtifactPath("tree.map");
 pub fn treemapFile() []const u8 {
     return file_alias.get();
 }

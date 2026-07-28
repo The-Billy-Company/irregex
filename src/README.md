@@ -1,258 +1,143 @@
 ---
 doc_radar:
   counts:
-    - description: "the three query layers (kernel · corpus · surface) plus the assay instrumentation floor beneath them"
+    - description: "five top-level source layers (assay · corpus · exec · kernel · surface); portal/fault/root sit as files beside them"
       glob: pkg/kernels/irregex/src/*
       unit: dirs
-      equals: 4
-    - description: "kernel/ keeps its six kernels: match · rank · kinship · batch · compose · primitives"
+      equals: 5
+    - description: "kernel/ holds the ten ward tier packages (math…compose); a transitional empty match/ shell may still be present after the restructure"
       glob: pkg/kernels/irregex/src/kernel/*
       unit: dirs
-      equals: 6
-    - description: "corpus/index/ keeps its nine packages: trigrams · postings · codex · atlas · crest · frame · frag · phantom · content"
-      glob: pkg/kernels/irregex/src/corpus/index/*
+      min: 10
+      max: 11
+    - description: "corpus/ holds scope · read · tree · fresh · index"
+      glob: pkg/kernels/irregex/src/corpus/*
       unit: dirs
-      equals: 9
+      equals: 5
   sentinels:
     - description: "the linear engine's eager-DFA cap the prose quotes (past it, Pike verifies)"
-      file: pkg/kernels/irregex/src/kernel/match/regex/linear/dfa/powerset.zig
+      file: pkg/kernels/irregex/src/kernel/regex/linear/dfa/powerset.zig
       contains: "pub const max_states: u32 = 4096;"
     - description: "the elision contract the whole index tier is built on"
-      file: pkg/kernels/irregex/src/surface/exec/cold/engine/README.md
+      file: pkg/kernels/irregex/src/exec/cold/engine/README.md
       contains: "Index is an accelerator, not an authority."
     - description: "the shared query core keeps its two binding invariants"
-      file: pkg/kernels/irregex/src/kernel/match/query/query.zig
+      file: pkg/kernels/irregex/src/kernel/query/query.zig
       contains: ["error.Unsupported", "immutable after"]
+    - description: "the ward contract names the five-layer stack this README narrates"
+      file: pkg/kernels/irregex/contract/irregex.ward
+      contains: ["tiers {", "math        kernel/math/**", "seal kernel/regex through regex.zig"]
 ---
 
 # irregex/src
 
-This is the source map. The Zig tree holds three faces (`gist` · `relate` ·
-`irregex`) over one shared floor, organized into **three layers**. `root.zig`
-re-exports every module through the flat C ABI in `../include/irregex.h`;
+This is the prose half of [`../contract/irregex.ward`](../contract/irregex.ward).
+The Zig tree holds three product faces (`gist` · `relate` · `irregex`) over one
+shared stack organized into **five layers**, read bottom-up. `root.zig`
+re-exports every tier through the flat C ABI in `../include/irregex.h`;
 `../bench/` holds the proof harness, never engine code.
 
-I organized the tree **by concern, not by product**. Every binary is a thin
-face over the same kernels: `gist` finds exact patterns; `relate` finds
-compression kinship; `irregex` composes both (exact narrows, compression
-reasons inside). None gets a private corpus walk, scope layer, or index.
+**The teachable sentence:** the kernel answers, the corpus supplies, exec
+executes, the surface speaks, the floor instruments.
 
-| Layer                 | What lives there                                                                                                                                                                              | README                                   |
-| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
-| [`kernel/`](kernel)   | Pure compute — no argv, walk, or emit: `match` · `rank` · `kinship` · `batch` · `compose` · `primitives`                                                                                      | [`kernel/README.md`](kernel/README.md)   |
-| [`corpus/`](corpus)   | The body of text and its persisted forms: `tree/` walk · `scope/` `-g`/`-t` · `index/` accelerators                                                                                           | [`corpus/README.md`](corpus/README.md)   |
-| [`surface/`](surface) | Transports + faces: `exec/` (cold + session) · `ffi/` · `face/` (gist · relate · irregex) · `cli/` (shared flags/emit vocabulary)                                                             | [`surface/README.md`](surface/README.md) |
-| [`assay/`](assay)     | The instrumentation floor (imports only `std`, beneath all three tiers): typed `Span`/`Duration`/`Anchor` clocks · `Tally(Schema)` counters · the `GIST_TRACE` lens + sink diagnostic channel | [`assay/README.md`](assay/README.md)     |
+| Layer | What lives there | README |
+| ----- | ---------------- | ------ |
+| floor | `portal.zig` (OS seam) · `assay/` (instrumentation) · `fault.zig` (error taxonomy) · wire floor `corpus/index/frame/` (frame · signet · home) | below + [`corpus/index/frame/`](corpus/index/frame/README.md) |
+| [`kernel/`](kernel) | Pure compute — no argv, walk, or emit. Ten tier packages low→high: `math` · `scan` · `regex` · `query` · `rank` · `slate` · `anatomy` · `kinship` · `codex` · `compose` | [`kernel/README.md`](kernel/README.md) |
+| [`corpus/`](corpus) | Which bytes are eligible + persisted shadows: `scope/` · `read/` · `tree/` · `fresh/` · `index/` | [`corpus/README.md`](corpus/README.md) |
+| [`exec/`](exec) | Runtimes promoted out of surface: `cold/` · `retrieval/` · `session/` (incl. daemon) | [`exec/README.md`](exec/README.md) |
+| [`surface/`](surface) | Vocabulary + transports + faces: `cli/` · `api.zig` · `ffi/` · `face/{gist,relate,irregex}` | [`surface/README.md`](surface/README.md) |
+
+`assay/` is the instrumentation floor beneath every tier (imports only `std`).
+See [`assay/README.md`](assay/README.md).
 
 ## The anatomy of a query
 
-The layout makes sense once you follow a real query. Here is what happens when
-an agent types `gist 'pgxpool\.\w+' services/`:
+What happens when an agent types `gist 'pgxpool\.\w+' services/`:
 
-1. **argv → intent** (`surface/exec/cold/argv/`). One flag catalog drives both
-   the parser and the `--schema` manifest; a flag gist doesn't support fails
-   loud with exit 2 and the `rg` fallback. A misunderstood flag must never look
-   like a convincing empty result.
-2. **Compile once** (`kernel/match/query/query.zig`). The pattern lowers into an
+1. **argv → intent** (`exec/cold/argv/`). One flag catalog drives both the
+   parser and the `--schema` manifest; a flag gist doesn't support fails loud
+   with exit 2 and the `rg` fallback.
+2. **Compile once** (`kernel/query/query.zig`). The pattern lowers into an
    immutable `CompiledQuery`: the match decision _and_ the sound trigram
-   prefilter come from the same compilation, so the cold CLI, the warm
-   session, and the FFI face cannot drift on what matches or what is safe to
-   prune. Two invariants bind the core: **fail-closed, never fatal** (typed
-   `error.Unsupported` / `error.OutOfMemory`; a bad pattern can never exit an
-   embedding host) and **immutable after compile** (N walk workers share one
-   query with per-worker `Scratch`).
-3. **Walk the live tree** (`corpus/tree/haystack.zig` + `surface/exec/cold/`).
-   One walk skeleton, adapted from ripgrep's haystack split, feeds every
-   consumer: the parallel work-stealing search, the index build, and the
-   freshness stat-walk all drive the same `Walker` with different per-file
-   actions. The ignore dialect (`.gitignore`/`.ignore`/`.rgignore` precedence,
-   `!` re-includes, anchoring) is a deliberate rg-parity reimplementation,
-   certified by the mined rgsuite corpus rather than trusted.
-4. **Elide reads, never results** (`corpus/index/trigrams/` + `corpus/index/crest/`).
-   If a fresh persisted index covers the searched roots, files whose trigrams —
-   or whose crest vectors, for the literal-free class repetitions trigrams
-   can't see — prove they can't match are skipped **before open(2)**. That is the
-   entire authority the index has: _"Index is an accelerator, not an authority."_
-   The walk decides the file set, `--no-index` forces the pure scan, and
-   `bench/gates/index_elision_parity.sh` mechanically asserts indexed ≡
-   unindexed byte-exact line multisets and exit codes. A stale index degrades to
-   slower, never to different results; cross-file order remains the parallel
-   walk's intentionally unsorted worker-discovery order.
-5. **Match** (`kernel/match/`). Take the cheapest sound rung first; see below.
-6. **Emit** (`surface/exec/cold/emit/`). rg-shaped `path:line:text` on stdout;
-   diagnostics, timing, and the coaching channel (`gist: try -i …`) on stderr
-   only; a soft output budget protects the agent's context window
-   (`GIST_UNCAP` lifts it for harnesses).
+   prefilter come from the same compilation. Two invariants bind the core:
+   **fail-closed, never fatal** (`error.Unsupported` / `error.OutOfMemory`) and
+   **immutable after compile**.
+3. **Walk the live tree** (`corpus/tree/haystack.zig` + `exec/cold/`). One walk
+   skeleton feeds every consumer; ignore dialect is deliberate rg-parity.
+4. **Elide reads, never results** (`corpus/index/trigrams/` + `crest/`). Fresh
+   persisted indexes skip files that cannot match **before open(2)**. Entire
+   authority: _"Index is an accelerator, not an authority."_
+5. **Match** (`kernel/regex/` + `kernel/scan/`). Cheapest sound rung first.
+6. **Emit** (`exec/cold/emit/`). rg-shaped stdout; diagnostics on stderr.
 
 The **warm path** short-circuits steps 3–4. `gist serve` holds the corpus and
-index resident behind a Unix socket (`surface/exec/session/`, a length-prefixed
-versioned protocol), the client classifies argv for eligibility, and _any_
-failure (decline, timeout, TTY, wedged daemon) falls back to the certified
-cold subprocess, byte for byte. The resident session reuses the cold walk's
-file-set machinery and the cold `Emitter`, so warm output cannot be a second
-opinion. The C ABI (`surface/ffi/`) is the same session in-process: typed
-statuses, per-call arenas, never `exit()`.
+index resident (`exec/session/`, daemon under `session/daemon/`). Any failure
+falls back to the certified cold subprocess. The C ABI (`surface/ffi/`) is the
+same session in-process.
 
-## `kernel/`: the two engines' kernels
+## Floor — portal, assay, fault, wire
 
-| Folder               | Concern                                                                                                                                                                                                                                         |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `kernel/match/`      | the exact-match engine: the transport-neutral compiled query (`query.zig`) every face executes through, over `regex/` (linear-time NFA + byte-class DFA + Pike + PCRE2 `-P`) and `scan/` (SIMD substring presence + fused parallel verify)      |
-| `kernel/rank/`       | **T4** ranked output: weighted Reciprocal Rank Fusion over intrinsic, language-agnostic signals (`gist --rank`)                                                                                                                                 |
-| `kernel/kinship/`    | the compression-relatedness math, split by question: `metric/` (how far apart — LZJD sketch + winnowed silhouette), `cluster/` (which are the same — pairs · families · concepts), `recall/` (query → best files — lexicon · zipper · coverage) |
-| `kernel/batch/`      | the closed set ops (ADR-363): `patterns` (N intents compiled once, exact per-pattern attribution) and `loom` (a filter → group → sort → limit plan executed engine-side)                                                                        |
-| `kernel/compose/`    | exact-before-statistical (ADR-367): a `PatternSet` narrows a typed `CandidateSet`, then coverage/kinship run inside it — the `irregex` face's kernels                                                                                           |
-| `kernel/primitives/` | the numeric + sharding floor: `bits` two's-complement bit sets, `crest` sieve calculus, `parallel` byte-balanced fan-out — shared instead of hand-rolled per consumer                                                                           |
+| Piece | Job |
+| ----- | --- |
+| `portal.zig` | Every OS-spelling difference (handle-relative open, whole-file map, stat, realpath, argv, stdin readiness) — one Windows fork at the bottom |
+| `assay/` | Typed clocks, counters, `GIST_TRACE` — std-only so every tier can consume it |
+| `fault.zig` | Error taxonomy (ADR-373); reports through assay |
+| `corpus/index/frame/` | Wire floor: `frame.zig` framing, `signet.zig` the one artifact digest, `home.zig` artifact directory. Lives under index on disk (what it frames) but sits just above fault on the ward page |
 
-**The match ladder.** A fixed string (`-F`, caseful) never builds an automaton;
-`scan/` answers presence with a memchr-style first+last-byte SIMD gate. A regex
-compiles to a Thompson NFA from the RE2/rust-regex lineage. It is linear by
-construction, so catastrophic backtracking is impossible. The NFA then
-eagerly determinizes into a **byte-class DFA** with premultiplied transition
-rows and start-state acceleration: one table lookup per byte, newlines
-detected inline in a single fused pass. Word-boundary asserts
-(`\b`/`\B`/`\<`/`\>`) determinize too: byte classes refine by ASCII word-ness
-and the interior table doubles on the _next_ byte's word-ness, so the DFA
-resolves word context at the floor — quitting to the Pike VM only under Unicode,
-and only when a gap abuts a non-ASCII scalar an ASCII-classed DFA can't judge.
-A pattern whose Unicode classes would make that determinization re-walk a
-thousand-state UTF-8 trie on every closure takes a **symbolic** route instead —
-determinized over the pattern's own predicates, then crossed with a decoder back
-into the same byte table, so the scan loop is unchanged and only the discovery
-cost collapses.
+## `kernel/` — ten pure-compute tiers
 
-That one-lookup-per-byte floor is itself the ceiling for a table walker, because
-the lookup is loop-carried: the next state cannot be fetched until this one
-arrives. Above the DFA sits an **accelerator tier** of optional machines that
-escape that dependence rather than shorten it — composing whole transformations
-in a shuffle register, propagating markers across a thousand positions of
-transposed bitstreams, or refuting a region outright with an over-approximating
-quotient. Each admits itself per pattern, prices itself against the alternatives,
-and is simply absent when it cannot win; all answer identically to the Pike VM,
-which remains the oracle. Multiline mode (and its `\A`/`\z` buffer anchors) steps down to the **Pike VM**
-wholesale. A pattern the eager build declines — past the `max_states = 4096`
-safety ceiling, or past the calibrated cost policy that meters determinization in
-NFA-state visits — does not: it keeps the same automaton, determinized on demand
-into a per-thread cache (RE2 / rust-`regex`'s hybrid DFA), and reaches the Pike VM
-only if that cache outgrows its own cap. Lookaround and
-backreferences escalate to the vendored, hermetic
-**PCRE2 10.47** JIT (`-P`, or `--engine auto` to try linear first) with match
-and depth limits so `-P` cannot ReDoS the host. Unicode is default-on at rg
-parity: case folding, `\b`, `\w`/`\d`/`\s`, `\p{…}` over codepoints, via
-Thompson/Cox UTF-8 range decomposition into the same byte NFA the DFA
-determinizes; `(?-u)` or `--no-unicode` reverts to bytes.
+No argv, no walk, no emit. Import arrows only point down the ward page;
+`compose/` is the only kernel tier allowed to know all the others.
 
-**Ranking** (`kernel/rank/`). `--rank` is the one native shape rg cannot express:
-weighted RRF (Cormack et al. 2009) over intrinsic signals: lexical density, a
-definition boost (a decl line outranks its 200 call sites), path centrality,
-and an authored boost that sinks codegen (`*_pb2.py`, `*.sql.go`, …) below
-hand-written code, class-split tie-aware so it stays neutral within a class.
+| Package | Job |
+| ------- | --- |
+| [`math/`](kernel/math) | Math floor: bits, mix, glob matcher, crest sieve, misread, forest, lease, parallel, succinct |
+| [`scan/`](kernel/scan) | SIMD scanners + `lanes.zig` literal-lane vocabulary |
+| [`regex/`](kernel/regex) | THE regex package — parser, linear engines, matcher meta dispatcher; sealed through `regex.zig`; ambition is to beat rust-regex |
+| [`query/`](kernel/query) | Shared compiled query every transport compiles through |
+| [`rank/`](kernel/rank) | Result fusion + definition signals (`gist --rank`) |
+| [`slate/`](kernel/slate) | Many patterns, one walk (was `batch/`) |
+| [`anatomy/`](kernel/anatomy) | Source anatomy: comments, token vocabulary, leans |
+| [`kinship/`](kernel/kinship) | Compression-as-similarity |
+| [`codex/`](kernel/codex) | FM-index / wavelet / RRR / SA-IS codebook math (was under `corpus/index/codex`) |
+| [`compose/`](kernel/compose) | Set algebra over candidate sets |
 
-**Kinship + batch** are relate's kernels: `recall/lexicon` nominates candidates by
-corpus-priced winnowed fingerprints, `recall/zipper` decides with an exact
-Ziv–Merhav cross-parse, `metric/sketch` gives the symmetric LZJD metric behind
-`similar`/`dups`, `cluster/` closes verified pairs into fork families; `patterns`
-compiles N intents through the same `query.zig` core with exact per-pattern
-attribution behind a fused gate that can only _skip_ work, never change an
-answer, and `loom` shapes the rows engine-side. Design rules and measurements:
-[ADR-363](../../../../docs/architecture/3-decisions/363-irregex-primitives.md).
+## `corpus/` — eligibility + persisted shadows
 
-## `corpus/index/`: the candidate, self, and kinship indexes
+| Package | Job |
+| ------- | --- |
+| [`scope/`](corpus/scope) | Charter, paths, `filter.zig` (PathFilter half of the old glob) |
+| [`read/`](corpus/read) | Byte legibility: encodings, inode |
+| [`tree/`](corpus/tree) | The walk, `corpus.zig`, `drain.zig` stdout cadence |
+| [`fresh/`](corpus/fresh) | Freshness anchor + journal + sweep (promoted out of trigrams) |
+| [`index/`](corpus/index) | Persisted artifacts: trigrams · postings · crest · atlas · frag · content · phantom · shelf · frame |
 
-| Folder                   | Concern                                                                                                                                                                                                                                                                                       |
-| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `corpus/index/trigrams/` | **T0** trigram candidate index: n-gram extraction, posting-list build/query, zero-copy `mmap` persistence, + the T3 mtime freshness overlay                                                                                                                                                   |
-| `corpus/index/postings/` | the compact posting-body codecs: LEB128 varint (`varint.zig`) + the persisted-blob layout (`persisted_blob.zig`) the trigram index rides                                                                                                                                                      |
-| `corpus/index/codex/`    | the compressed self-index: SA-IS → BWT → RRR wavelet tree; `count`/`find`/`restore` at entropy space, O(m) flat in corpus size (the Shannon rung under both engines)                                                                                                                          |
-| `corpus/index/atlas/`    | relate's persisted kinship index: one LZJD sketch per corpus file behind `relate index`/`status`, folded fresh at query time through the same T3 stat walk ([`corpus/index/atlas/README.md`](corpus/index/atlas/README.md))                                                                   |
-| `corpus/index/crest/`    | the crest sidecar (`crest.bin`): one forced-class-run vector per doc (16 B), generation-atomic with the trigram pair; prunes the literal-free class-repetition patterns trigrams concede (theory: [`../research/crest/PROOF.md`](../research/crest/PROOF.md))                                 |
-| `corpus/index/frame/`    | the shared wire discipline the persisted artifacts are framed with: little-endian ints behind a fail-closed cursor, length-prefixed u64 payloads, the NUL-joined path/roots catalogs, and the `onDisk` deletion gate every folded view checks                                                 |
-| `corpus/index/frag/`     | relate's persisted **fragment** atlas (`concepts.frag`): one structural silhouette per authored function behind `--unit function`, folded fresh at query time through the same T3 stat walk ([`corpus/index/frag/README.md`](corpus/index/frag/README.md))                                    |
-| `corpus/index/phantom/`  | the phantom walk snapshot (`tree.map`): directory membership recorded at `gist index`, each dir proven current at query time by ONE lstat against the snapshot anchor — the whole live listing elided ([`corpus/index/phantom/README.md`](corpus/index/phantom/README.md))                    |
-| `corpus/index/content/`  | the content shard (`content.shard`): every corpus body concatenated into one mmap at `gist index`, each unchanged file's bytes served from the map at query time under the same T3 clock gate — the per-file open elided ([`corpus/index/content/README.md`](corpus/index/content/README.md)) |
+## `exec/` — the two runtimes (+ shared retrieval)
 
-**Trigrams** (`trigrams/trigram.zig`). A file containing a literal must
-contain every trigram of that literal, so the AND of per-trigram posting
-lists is a _sound candidate set_: false positives expected and verified away,
-false negatives impossible for literals ≥ 3 bytes. The persisted shape is
-csearch's own (google/codesearch `index/write.go`): a CSR directory over
-delta-varint posting bodies. On this repo, **195.0 MiB flat → 30.1 MiB
-(6.5×)**. It loads through zero-copy `mmap`, so a cold query faults in only the
-posting groups it touches. Queries seed from the **rarest** trigram and
-intersect outward, which collapses dense tails.
+| Package | Job |
+| ------- | --- |
+| [`cold/`](exec/cold) | One process per query: argv → writ → quarry → read → engine → emit |
+| [`retrieval/`](exec/retrieval) | Fingerprint-lexicon retrieval shared by `similar` / `pack` |
+| [`session/`](exec/session) | Warm resident session: answer · facet · reconcile · warm · watch · conduit · **daemon/** |
 
-**Freshness** (`trigrams/fresh.zig`). The overlay that lets a persisted index
-stay sound under ~10 coworker agents committing mid-session, without git and
-without rebuilding: the build stamps a wall-clock anchor _before_ reading the
-corpus. A file is conservatively fresh, and forced through live verification,
-when its mtime **or** ctime reaches the anchor or either is unreadable;
-a missing anchor fails closed by seeding _every_ doc fresh. The guarantee is
-explicitly scoped to the documented model (a local filesystem whose ctime
-advances on ordinary writes); deliberately backdated clocks and network-FS
-incoherence are outside it, and the module header says so rather than
-rounding up.
+## `surface/` — vocabulary, API, FFI, faces
 
-**Codex** (`codex/`). The corpus stored at entropy-bound size, 1.95 bits/char
-at 128MB, answering exact `count`/`find` in O(m) rank steps, flat in corpus
-size, and restoring the original bytes from itself alone. The full
-mathematics, layer table, differential-oracle test suite, and at-scale tables
-live in [`corpus/index/codex/README.md`](corpus/index/codex/README.md); the two
-product tiers riding it are `gist codex` (proof-of-absence: `count == 0` under a
-clean freshness walk, zero corpus I/O) and `relate quote` (corpus-global
-attribution priced in bits).
-
-## `corpus/tree` + `kernel/primitives`: the shared floor
-
-`corpus/tree/` owns loading and the one walk skeleton (`haystack.zig`) every
-consumer drives; on macOS the freshness stat-walk rides `getattrlistbulk` so
-directory enumeration and metadata come from the same syscalls.
-`corpus/scope/` is the `-g`/`-t` glob and type machinery shared by both
-binaries. `kernel/primitives/bits.zig` is the two's-complement bit-set floor
-(set-bit walks, word-packed sets, width-edge-safe masks) that SA-IS, RRR, and
-the DFA share instead of five hand-rolled copies, beside `crest` and the
-`parallel` byte-balanced fan-out.
-
-## `surface/`: cold, resident, embedded execution, and the faces
-
-`exec/cold/` owns the rg-compatible argv → walk → read → emit execution path;
-`exec/session/` keeps the same corpus and kernels warm behind the daemon
-protocol; `ffi/` exposes that resident session in-process. `face/` holds the
-three thin product binaries, and `cli/` is the argv/root/emit vocabulary all
-three speak (`flags` + `emit`) so no face forks a flag value or the JSON escaper.
-
-| Folder                  | Concern                                                                                                                                                                                          |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `surface/face/gist/`    | the `gist` binary: entrypoint, `--schema`, `index`/`status`/`serve`/`codex` lifecycle, and the unified search engine (rg-DEFAULT drop-in) over `kernel/`, plus the daemon client/serve transport |
-| `surface/face/relate/`  | the `relate` binary: thin dispatch (`main.zig`) over the `similar`/`echoes`/`pack`/`quote`/`patterns` query verbs + `index`/`status` lifecycle, with its own `--schema` manifest                 |
-| `surface/face/irregex/` | the `irregex` binary: composed verbs (`provenance` · `blast`) driving `kernel/compose/`, needing CURRENT bytes rather than a narrowing                                                           |
-
-Faces stay thin on purpose: argv classification and output shaping live here;
-every match decision, prefilter, and index consultation happens in the layers
-above, where both binaries and the warm/FFI faces share it.
+| Piece | Job |
+| ----- | --- |
+| [`cli/`](surface/cli) | Shared vocabulary: outcome (die/oom), jsonstr, flags, manifest, reprise |
+| `api.zig` | Hosted analytic Zig API |
+| [`ffi/`](surface/ffi) | C-ABI session + analytic plane |
+| [`face/`](surface/face) | Thin product faces; gist verbs live flat in `face/gist/verbs/` |
 
 ## The correctness spine
 
-I do not let the implementation grade itself:
+- Regex checked by an independent AST backtracking oracle (`kernel/regex/oracle/`)
+  plus DFA↔Pike differentials and live `rg` differentials.
+- Codex differentials every layer against a naive oracle.
+- Product surface held to ripgrep by rgsuite, equality, elision-parity, and
+  stream-contract gates in [`../bench/`](../bench/README.md).
 
-- The regex engine is checked by an **independent AST backtracking oracle**
-  (`kernel/match/regex/oracle/`; shares only the parser, never the
-  compiler/DFA/Pike) plus differential fuzzing between the DFA and Pike rungs,
-  plus live differentials against installed `rg` at its Unicode defaults. The
-  oracle has caught real shipped bugs; the file header documents one.
-- The codex differentials every layer against a naive oracle: SA vs
-  comparison sort, RRR rank vs prefix popcount, wavelet vs literal scan,
-  count/find/restore vs `std.mem`, all under a seeded property-fuzz loop.
-- The product surface is held to ripgrep by construction: the mined rgsuite
-  replay, the byte-exact equality gate, the elision-parity gate, and the
-  stream-contract gate all live in [`../bench/`](../bench/README.md) and run
-  against the real installed `rg`.
-
-`root.zig` is the package/C-ABI root: it re-exports each layer, pins
-`irregex_abi_version`, exposes `irregex_trigram_count` (the cross-language
-parity oracle), and aggregates every `*_test.zig` so `zig build test`
-type-checks the whole tree.
-
-See [`../README.md`](../README.md) for what the products are, why they exist,
-and the prior-art map; [`surface/face/gist/README.md`](surface/face/gist/README.md)
-for the gist face; [`kernel/match/regex/README.md`](kernel/match/regex/README.md)
-for the regex engine internals.
+See [`../README.md`](../README.md) for products and prior art;
+[`kernel/regex/README.md`](kernel/regex/README.md) for the regex engine;
+[`surface/face/gist/README.md`](surface/face/gist/README.md) for the gist face.

@@ -79,7 +79,7 @@ package_import = "gist"
 # and stdin stay CLI-only and are deliberately NOT contract options.
 #
 # Every row names the ripgrep-parity flag the engine already honors (the
-# `flag_catalog` in src/surface/exec/cold/argv/args.zig), and a face lowers a
+# `flag_catalog` in src/exec/cold/argv/args.zig), and a face lowers a
 # request into exactly that argv — so no face reimplements search.
 [request_options]
 # what to look for, and where
@@ -556,11 +556,11 @@ wire = { members = [
 #   Unix-domain-socket protocol (see [session]). It sidesteps the die()->exit
 #   hazard because the resident query kernels RETURN errors instead of calling
 #   die(). The stack is landed and verified end to end: the eligibility
-#   classifier (src/surface/exec/session/answer/request.zig), the wire codec
+#   classifier (src/exec/session/answer/request.zig), the wire codec
 #   (…/session/conduit/protocol/protocol.zig), the warm error-returning engine
 #   (…/session/warm/resident.zig), the fail-closed freshness watcher
 #   (…/session/watch/watch.zig), the daemon accept loop
-#   (src/surface/face/gist/daemon/serve/serve.zig), and the fail-open connecting
+#   (src/exec/session/daemon/serve/serve.zig), and the fail-open connecting
 #   client (…/daemon/client/client.zig, wired into the bare-`gist` front door in
 #   src/surface/face/gist/main.zig) — under an end-to-end lifecycle test
 #   (…/daemon/serve/serve_test.zig). The warm path routes only what it can
@@ -600,7 +600,7 @@ ffi = { status = "operational-accelerator", detail = "one coherent open/search/c
 # and its clients speak, so there is no per-language drift risk, but it is
 # pinned here as the authoritative shape.
 #
-# The wire · src/surface/exec/session/conduit/protocol/protocol.zig
+# The wire · src/exec/session/conduit/protocol/protocol.zig
 #   A length-prefixed frame protocol whose query-flags byte is now fully
 #   assigned: fixed 0, ignore_case 1, line_num 2, word 3, invert 4, smart_case
 #   5, quiet 6, max_count 7 (bit 7 also writes a u64 LE cap immediately after
@@ -645,7 +645,7 @@ ffi = { status = "operational-accelerator", detail = "one coherent open/search/c
 # Parallelism
 #   EVERY warm face — the positive and invert `-c`/`-l` folds, the bare/`-n`
 #   emit, and the FFI record stream — shards its scan over cores above a byte
-#   floor through ONE shared primitive (src/kernel/primitives/parallel.zig),
+#   floor through ONE shared primitive (src/kernel/math/parallel.zig),
 #   byte-identical to the serial core below it, so a large positive result no
 #   longer loses to cold's fused 16-core scan on core count. FFI additionally
 #   opens explicit paths as C root arrays and carries explicit Unicode/ASCII

@@ -36,11 +36,11 @@
 //! exists to make, so it waits for someone to ask.
 
 const std = @import("std");
-const corpus_mod = @import("../../tree/corpus.zig");
 const bulkstat = @import("../../tree/bulkstat.zig");
 const frame = @import("../frame/frame.zig");
-const signet = @import("../../../kernel/primitives/signet.zig");
+const signet = @import("../frame/signet.zig");
 const portal = @import("../../../portal.zig");
+const home = @import("../frame/home.zig");
 
 /// Open-addressing path→doc table (Wyhash, linear probe, one `slots` alloc).
 /// The shard's own copy of the engine's `IndexedPaths` shape — kept here so the
@@ -85,7 +85,7 @@ const PathLookup = struct {
     }
 };
 
-const file_alias = corpus_mod.ArtifactPath("content.shard");
+const file_alias = home.ArtifactPath("content.shard");
 pub fn shardFile() []const u8 {
     return file_alias.get();
 }

@@ -5,7 +5,7 @@ doc_radar:
       file: pkg/kernels/irregex/research/ceiling/CLOSED.md
       contains: ["Chandra", "Maler"]
     - description: "the eager driver's two bounds are what the ceiling argument is about"
-      file: pkg/kernels/irregex/src/kernel/match/regex/linear/dfa/powerset.zig
+      file: pkg/kernels/irregex/src/kernel/regex/linear/dfa/powerset.zig
       contains: ["pub const max_states: u32 = 4096;", "pub const max_visits: u64 = 750_000;"]
 ---
 
@@ -126,15 +126,15 @@ research phase nor the build phase could see that — only integration could.
 | [`LOWERING.md`](LOWERING.md)   | The three places the compiler cost more than the algorithm did — each a spelling of identical semantics that LLVM lowers 1.6–2× apart. |
 
 Production context for the numbers above:
-[`../../src/kernel/match/regex/linear/ladder/`](../../src/kernel/match/regex/linear/ladder/)
+[`../../src/kernel/regex/linear/ladder/`](../../src/kernel/regex/linear/ladder/)
 (the tier that admits a rung and the order it consults them in),
-[`../../src/kernel/match/regex/linear/compose/`](../../src/kernel/match/regex/linear/compose/),
-[`../../src/kernel/match/regex/linear/parabix/`](../../src/kernel/match/regex/linear/parabix/),
-and [`../../src/kernel/match/regex/linear/sieve/`](../../src/kernel/match/regex/linear/sieve/)
+[`../../src/kernel/regex/linear/shuffle/`](../../src/kernel/regex/linear/shuffle/),
+[`../../src/kernel/regex/linear/parabix/`](../../src/kernel/regex/linear/parabix/),
+and [`../../src/kernel/regex/linear/sieve/`](../../src/kernel/regex/linear/sieve/)
 (the three escapes, each with its own measured limit),
-[`../../src/kernel/match/regex/linear/dfa/`](../../src/kernel/match/regex/linear/dfa/)
+[`../../src/kernel/regex/linear/dfa/`](../../src/kernel/regex/linear/dfa/)
 (the two determinization drivers and their bounds),
-[`../../src/kernel/primitives/crest.zig`](../../src/kernel/primitives/crest.zig)
+[`../../src/kernel/math/crest.zig`](../../src/kernel/math/crest.zig)
 (the document-stage sieve), and
 [`../../bench/certify/`](../../bench/certify/) (the certificate whose
 `regex-classcount` row is the 100%-candidate hole named above).

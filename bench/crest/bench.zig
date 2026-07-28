@@ -1,7 +1,7 @@
 //! Crest — production proof harness (Layer: does it actually work + how fast).
 //!
 //! Links gist's REAL engine (`@import("irregex")` — the crest kernel ships
-//! inside it at `src/kernel/primitives/crest.zig`) and walks the REAL Billy corpus via the
+//! inside it at `src/kernel/math/crest.zig`) and walks the REAL Billy corpus via the
 //! same `corpus.load` the certificate layers use, so this is not a toy: the
 //! baseline is gist's production `Regex.docMatch`, and every claim is a
 //! measured number over live source bytes.

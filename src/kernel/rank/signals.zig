@@ -23,8 +23,8 @@
 //! unavailable. Every signal only reorders results; none can hide a match.
 
 const std = @import("std");
-const decode = @import("../match/regex/regex.zig").decode;
-const unicode = @import("../match/regex/regex.zig").unicode;
+const decode = @import("../regex/regex.zig").decode;
+const unicode = @import("../regex/regex.zig").unicode;
 
 fn wordLen(bytes: []const u8) usize {
     if (bytes.len == 0) return 0;

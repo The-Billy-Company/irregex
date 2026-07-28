@@ -4,7 +4,7 @@ doc_radar:
     - description: "bench concern folders, one per row of the table below"
       glob: pkg/kernels/irregex/bench/*/
       unit: dirs
-      min: 19
+      equals: 22
   sentinels:
     - description: "the Layer B′ measured rung exists as a build step"
       file: pkg/kernels/irregex/build.zig
@@ -31,13 +31,16 @@ One concern per folder:
 | [`roofline/`](roofline/README.md)     | Layer C — roofline headroom: STREAM roof plus matched dual-window, contiguous-production, and corpus-production stages.                                                                                                                                  |
 | [`lowerbound/`](lowerbound/README.md) | Layer D — algorithmic lower bound: a fail-closed structural audit proving gist's verify touches the information-theoretic floor of candidate bytes.                                                                                                      |
 | [`crest/`](crest/README.md)           | Layer E — the **crest sieve** production proof (`zig build crest`): soundness, pruning, speed, ablation, and randomized sweeps over the literal-free class-repetition blind spot every trigram index concedes.                                           |
-| [`relate/`](relate/README.md)         | The **relate** proof (`relate-knn`) — the real cross-parse / LZJD / pivot engine run as a k-NN classifier; the measured basis for the compression-vs-embeddings verdict (`spikes/compression-vs-embeddings/`).                                    |
-| [`codex/`](codex/README.md)           | The **self-index** at-scale proof (`codex-scale`) — the real `src/corpus/index/codex/` FM-index over ~187MB of repo source: entropy-bound space vs gzip/bzip2/zstd/xz, flat-in-n count latency, byte-exact restore from the index alone.                 |
-| [`evaluate/`](evaluate/README.md)     | The operational-envelope matrix — index lifecycle cost, resource footprint, scaling shape, and concurrency; the complement to the certificate's speed/correctness proof.                                                                                 |
-| [`diag/`](diag/README.md)             | The diagnostic-template golden net — normalizes volatile stderr values away and diffs the template words against committed goldens, so a format typo breaks CI but a changed timing does not.                                                            |
-| [`compose/`](compose/README.md)       | Rung proof (`compose-rung`) — the transformation-composition scan against the shipped `Dfa.docMatch`, interleaved in one process, failing closed on disagreement _and_ on the dispatch gate arming where a literal skip already wins.                    |
-| [`parabix/`](parabix/README.md)       | Rung proof (`parabix-rung`) — the bit-parallel scan against both baselines it must beat (the whole `Regex.docMatch` ladder and the raw DFA under it), with its refusals published beside its wins.                                                       |
-| [`sieve/`](sieve/README.md)           | Rung proof (`sieve`) — the only rung that cannot say yes, so the harness proves a rejection is never a lie: per-position and per-document soundness over the real corpus, plus selectivity against the estimate that gates it.                           |
+| [`knn/`](knn/README.md)               | The **relate** proof (`relate-knn`) — cross-parse / LZJD / pivot engine as a k-NN classifier; the measured basis for the compression-vs-embeddings verdict.                                                                                                |
+| [`codex/`](codex/README.md)           | The **self-index** at-scale proof (`codex-scale`) — the real `src/kernel/codex/` FM-index over ~187MB of repo source: entropy-bound space vs gzip/bzip2/zstd/xz, flat-in-n count latency, byte-exact restore.                                              |
+| [`evaluate/`](evaluate/README.md)     | The operational-envelope matrix — index lifecycle cost, resource footprint, scaling shape, and concurrency.                                                                                                                                               |
+| [`diag/`](diag/README.md)             | The diagnostic-template golden net — volatile stderr normalized away; format typos break CI, changed timings do not.                                                                                                                                      |
+| [`shuffle/`](shuffle/README.md)       | Rung proof (`compose-rung`) — transformation-composition scan against `Dfa.docMatch`, fail-closed on disagreement and on dispatch arming where a literal skip already wins.                                                                              |
+| [`parabix/`](parabix/README.md)       | Rung proof (`parabix-rung`) — bit-parallel scan against the whole `Regex.docMatch` ladder and the raw DFA under it.                                                                                                                                      |
+| [`sieve/`](sieve/README.md)           | Rung proof (`sieve`) — the only rung that cannot say yes; proves a rejection is never a lie, plus selectivity against the estimate that gates it.                                                                                                         |
+| [`multipattern/`](multipattern/README.md) | Dragnet / trawl multipattern proof — N patterns, one walk, against Vectorscan and N×rg.                                                                                                                                                              |
+| [`sliver/`](sliver/README.md)         | Scale / positional / resident proof for the sliver tier (1–2 byte needles from the trigram directory).                                                                                                                                                    |
+| [`targets/`](targets/README.md)       | Cross-compile portability matrix — 22 targets, executed POSIX rows, Windows build rows.                                                                                                                                                                   |
 
 ```bash
 cd pkg/kernels/irregex

@@ -9,23 +9,23 @@
 //! `ownedNulTable` to read), the shared `onDisk` deletion gate every folded
 //! view checks at emit, the shared `loadQuiet` fail-open artifact loader, and
 //! the `tree.root` binding that says which tree the whole directory describes.
-//! Consumers: the codex + shelf blobs (`../codex/`), the kinship atlas
-//! (`../atlas/`), and the trigram pair loader (`../trigrams/persist.zig`).
-//! Framing only — magic bytes and versions stay with each format, where its own
-//! shape is described. Integrity does NOT: every artifact here seals with the
-//! one digest in `kernel/primitives/signet.zig`, so there is a single answer to
-//! "are these the bytes we wrote" instead of a per-format checksum each loader
-//! had to remember to re-check.
+//! Consumers: the codex shelf (`../shelf/`), the kinship atlas (`../atlas/`),
+//! and the trigram pair loader (`../trigrams/persist.zig`). Framing only —
+//! magic bytes and versions stay with each format, where its own shape is
+//! described. Integrity does NOT: every artifact here seals with the one
+//! digest in sibling `signet.zig`, so there is a single answer to "are these
+//! the bytes we wrote" instead of a per-format checksum each loader had to
+//! remember to re-check.
 
 const std = @import("std");
-const corpus_mod = @import("../../tree/corpus.zig");
 const fault = @import("../../../fault.zig");
 const portal = @import("../../../portal.zig");
+const home = @import("home.zig");
 
-const tree_root_alias = corpus_mod.ArtifactPath("tree.root");
+const tree_root_alias = home.ArtifactPath("tree.root");
 
 /// `<artifact dir>/tree.root` — the binding `bindingHolds` proves and the
-/// index build publishes (`surface/face/gist/lifecycle/index.zig`).
+/// index build publishes (`surface/face/gist/verbs/index.zig`).
 pub fn treeRootFile() []const u8 {
     return tree_root_alias.get();
 }
@@ -45,7 +45,7 @@ var bound_state: std.atomic.Value(u8) = .init(0);
 /// pointing at another checkout was enough to serve that tree's `README.md`
 /// bytes as this one's, and to hand the phantom walk a root listing naming
 /// directories that don't exist. So the binding is what makes an anchor
-/// trustworthy at all: the anchor reader (`../trigrams/fresh.zig`), the
+/// trustworthy at all: the anchor reader (`../../fresh/fresh.zig`), the
 /// phantom snapshot (`../phantom/treemap.zig`), and the content shard
 /// (`../content/shard.zig`) each decline unless it holds, degrading to the
 /// live walk that never needed it.
@@ -199,7 +199,7 @@ pub fn writeAtomic(io: std.Io, sub_path: []const u8, data: []const u8) !void {
 /// an `anchor_ns` field and a `deinit` that releases the mapping — so a new
 /// artifact gets the whole discipline by naming its decoder.
 ///
-/// `Artifact` is a `corpus.ArtifactPath` type rather than a path string: the
+/// `Artifact` is a `home.ArtifactPath` type rather than a path string: the
 /// binding answers a question about the artifact DIRECTORY, so the form that
 /// proves it is the form that cannot be aimed anywhere else.
 pub fn mapArtifact(

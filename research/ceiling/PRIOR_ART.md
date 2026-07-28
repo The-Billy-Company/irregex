@@ -116,7 +116,7 @@ determinizing. Derivative engines sidestep it differently, operating on
 symbolic predicates so a large class is never materialized as a byte trie.
 
 Our own instance of the problem is recorded in
-[`../../src/kernel/match/regex/linear/dfa/README.md`](../../src/kernel/match/regex/linear/dfa/README.md):
+[`../../src/kernel/regex/linear/dfa/README.md`](../../src/kernel/regex/linear/dfa/README.md):
 Unicode `\w` lowers to a roughly 10³-state UTF-8 trie, so a 332-state
 automaton still costs ~15 ms to find, which is why the eager driver meters
 cost in NFA-state visits rather than in states.

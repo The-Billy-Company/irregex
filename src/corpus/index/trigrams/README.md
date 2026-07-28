@@ -5,7 +5,7 @@ doc_radar:
       file: pkg/kernels/irregex/src/corpus/index/trigrams/trigram.zig
       contains: "pub const Index"
     - description: "freshness fails closed when the anchor is missing"
-      file: pkg/kernels/irregex/src/corpus/index/trigrams/fresh.zig
+      file: pkg/kernels/irregex/src/corpus/fresh/fresh.zig
       contains: "anchor"
     - description: "codicil builds and decodes the incremental amendment segment"
       file: pkg/kernels/irregex/src/corpus/index/trigrams/codicil.zig
@@ -17,7 +17,7 @@ doc_radar:
       file: pkg/kernels/irregex/src/corpus/index/trigrams/lapse.zig
       contains: ["pub fn reclaim", "grace_ns", "fn parseGen"]
     - description: "sweep work-steals the freshness metadata walk"
-      file: pkg/kernels/irregex/src/corpus/index/trigrams/sweep.zig
+      file: pkg/kernels/irregex/src/corpus/fresh/sweep.zig
       contains: "buildWorkItems"
     - description: "the sliver tier answers sub-trigram needles under a decode budget"
       file: pkg/kernels/irregex/src/corpus/index/trigrams/sliver.zig

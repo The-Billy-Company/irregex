@@ -1,7 +1,7 @@
 //! multipattern — the gist arm of the Hyperscan race, and its own oracle.
 //!
 //! Links gist's REAL kernel (`@import("irregex")` — `PatternSet` ships inside it
-//! at `src/kernel/batch/patterns.zig`) and answers the same question `vscan.c`
+//! at `src/kernel/slate/patterns.zig`) and answers the same question `vscan.c`
 //! puts to Vectorscan over byte-identical inputs: **which pattern ids matched
 //! which documents**, and how fast.
 //!

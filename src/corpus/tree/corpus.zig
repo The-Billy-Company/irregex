@@ -1,5 +1,5 @@
 //! irregex — corpus loading, shared by the CLI drivers (`surface/face/gist/`), the
-//! unified search engine (`surface/exec/cold/`) and the bench/verify harness
+//! unified search engine (`exec/cold/`) and the bench/verify harness
 //! (`bench/harness/bench.zig`). The corpus is every non-binary, non-gitignored
 //! file under the roots (rg-style: a NUL byte ⇒ binary ⇒ skipped), minus the
 //! corpus-only build/VCS skip list. Also owns the stdout results contract
@@ -11,7 +11,7 @@ const assay = @import("../../assay/assay.zig");
 const charter = @import("../scope/charter.zig");
 const drain = @import("drain.zig");
 const fault = @import("../../fault.zig");
-const ward = @import("../../kernel/primitives/ward.zig");
+const ward = @import("../../kernel/math/lease.zig");
 const portal = @import("../../portal.zig");
 
 /// When result bytes leave this process, and in how many syscalls — see
@@ -20,49 +20,6 @@ const portal = @import("../../portal.zig");
 pub const StdoutPolicy = drain.Policy;
 
 pub const per_file_cap: usize = 4 << 20; // 4 MiB
-
-/// Default artifact home, relative to the working directory — where the
-/// trigram index, kinship atlas, codex shelf, freshness anchor, and daemon
-/// socket live. `GIST_DIR` overrides it per invocation (`outDir`).
-pub const default_out_dir = ".local/gist-verify";
-
-/// The artifact directory for THIS process: `GIST_DIR` when set (trailing
-/// slashes trimmed), else `default_out_dir`. The env string outlives the
-/// process, so the returned slice is borrow-safe everywhere.
-pub fn outDir() []const u8 {
-    const v = assay.envSpan("GIST_DIR") orelse return default_out_dir;
-    const s = std.mem.trimEnd(u8, v, "/");
-    return if (s.len == 0) default_out_dir else s;
-}
-
-/// A named artifact's full path (`<outDir()>/<name>`), formatted once per
-/// process into a static buffer. Env-stable, so the first fill is final; a
-/// spinlock + release-published length make the fill race-free without an
-/// `std.Io` handle (same idiom as `surface/exec/session/freshness/dirty.zig` — these are
-/// per-command lookups, never a hot loop). Instantiate per artifact:
-/// `const atlas_path = corpus.ArtifactPath("kinship.atlas");` → `.get()`.
-pub fn ArtifactPath(comptime name: []const u8) type {
-    return struct {
-        var locked: std.atomic.Value(bool) = .init(false);
-        var len: std.atomic.Value(usize) = .init(0);
-        var buf: [1024]u8 = undefined;
-        pub fn get() []const u8 {
-            if (len.load(.acquire) == 0) {
-                while (locked.swap(true, .acquire)) std.atomic.spinLoopHint();
-                defer locked.store(false, .release);
-                if (len.load(.acquire) == 0) {
-                    const d = outDir();
-                    std.debug.assert(d.len + 1 + name.len <= buf.len);
-                    @memcpy(buf[0..d.len], d);
-                    buf[d.len] = '/';
-                    @memcpy(buf[d.len + 1 ..][0..name.len], name);
-                    len.store(d.len + 1 + name.len, .release);
-                }
-            }
-            return buf[0..len.load(.acquire)];
-        }
-    };
-}
 
 /// The corpus roots for THIS working directory — the shared resolution every
 /// build verb (`gist index`, `gist codex build`, `relate index`, live relate
@@ -157,7 +114,7 @@ fn envUncap() bool {
 /// `GIST_HINTS` — the kill switch for the stderr guidance channel (`gist:
 /// try` / `gist: note:` lines). Unset or any value except `0`/`false`/`no` keeps hints on;
 /// a byte-counting capture or parity harness exports `GIST_HINTS=0`. Shared
-/// by the CLI hint module (`surface/exec/cold/emit/hints.zig`) and the
+/// by the CLI hint module (`exec/cold/emit/hints.zig`) and the
 /// truncation notice below — one env read, one policy. Results on stdout are
 /// untouched either way; this only governs stderr guidance.
 pub fn hintsEnabled() bool {

@@ -7,7 +7,7 @@
 //! (socket, frames, dispatch); `certify` measures the cold fresh-process race.
 //! Neither can tell you whether a change to ONE warm function moved the needle —
 //! the transport and the reconcile walk drown it. This isolates each seam of
-//! `surface/exec/session/` over a real corpus, in-process, and times it directly:
+//! `exec/session/` over a real corpus, in-process, and times it directly:
 //!
 //!   * `gatedLineCount`     — the binary NUL-cut body rule, over every mirror doc.
 //!   * `query -l` / `-c`    — the fold faces (candidate walk + Accumulator).

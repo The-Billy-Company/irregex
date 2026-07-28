@@ -6,8 +6,8 @@ doc_radar:
     - pkg/kernels/irregex/bench/sieve/stress.zig
     - pkg/kernels/irregex/bench/sieve/csearch_plan.py
     - pkg/kernels/irregex/bench/sieve/indexcost.sh
-    - pkg/kernels/irregex/src/kernel/match/query/cover.zig
-    - pkg/kernels/irregex/src/kernel/match/regex/linear/sieve/sieve.zig
+    - pkg/kernels/irregex/src/kernel/query/cover.zig
+    - pkg/kernels/irregex/src/kernel/regex/linear/sieve/sieve.zig
   sentinels:
     - description: "the harness fails closed on a missed match, on a retired matching document, and on a ladder that disagrees with the full scan"
       file: pkg/kernels/irregex/bench/sieve/bench.zig
@@ -107,7 +107,7 @@ boolean formula over trigrams:
 | arm         | formula                                                                                                                      |
 | ----------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | `gist-base` | the pre-Layer-L prefilter — one required literal, else the per-branch alternation cover (one clause)                         |
-| `gist`      | the conjunctive cover (`src/kernel/match/query/cover.zig`), read off the pattern source with the matcher's own parse options |
+| `gist`      | the conjunctive cover (`src/kernel/query/cover.zig`), read off the pattern source with the matcher's own parse options |
 | `csearch`   | **csearch's own formula**, lifted verbatim from `csearch -verbose` by `csearch_plan.py` and replayed against gist's postings |
 
 csearch's arm is not a reimplementation and not a proxy. `csearch -verbose`
@@ -125,7 +125,7 @@ launder an unsound run.
 
 Soundness of the planner itself is proved separately and structurally:
 `matched ⇒ never pruned`, brute-forced against the production matcher over an
-exhaustively enumerated document space (`src/kernel/match/query/cover_test.zig`),
+exhaustively enumerated document space (`src/kernel/query/cover_test.zig`),
 in the discipline of the crest Sieve Theorem (`research/crest/PROOF.md`).
 
 ## Two slates, reported separately

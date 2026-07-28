@@ -7,7 +7,7 @@
 
 const std = @import("std");
 const treemap = @import("treemap.zig");
-const signet = @import("../../../kernel/primitives/signet.zig");
+const signet = @import("../frame/signet.zig");
 
 /// Frame a valid two-level blob: root{ "src"(dir→1), "a.txt"(file) },
 /// src{ "b.go"(file), "hid"(dir, never descended) }.

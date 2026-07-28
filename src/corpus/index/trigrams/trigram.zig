@@ -37,7 +37,7 @@ const fault = @import("../../../fault.zig");
 const blob = @import("../postings/persisted_blob.zig");
 const ngram = @import("ngram.zig");
 const varint = @import("../postings/varint.zig");
-const parallel = @import("../../../kernel/primitives/parallel.zig");
+const parallel = @import("../../../kernel/math/parallel.zig");
 
 /// A trigram packed big-endian into the low 24 bits of a u32 (re-exported from
 /// `ngram` so the index's public surface stays self-contained).

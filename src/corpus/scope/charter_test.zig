@@ -9,7 +9,7 @@
 
 const std = @import("std");
 const charter = @import("charter.zig");
-const misread = @import("misread.zig");
+const misread = @import("../../kernel/math/misread.zig");
 
 const t = std.testing;
 
@@ -178,4 +178,32 @@ test "an empty or comment-only charter is valid and declares nothing" {
         try t.expectEqual(@as(usize, 0), c.skip.len);
         try t.expectEqual(@as(usize, 0), c.types.len);
     }
+}
+
+/// The charter's real keys, not a copy of them — three short names a few
+/// letters apart are the hardest suggestion case here, and a fixture that
+/// drifted from the live list would stop testing that case. They live
+/// here in the scope tier, so `misread.zig` stays a leaf both layers use.
+const charter_keys = @import("charter.zig").keys;
+
+test "a near-miss is guessed at, a genuinely foreign name is not" {
+    try t.expectEqualStrings("roots", misread.nearest("root", &charter_keys).?);
+    try t.expectEqualStrings("roots", misread.nearest("rootz", &charter_keys).?);
+    try t.expectEqualStrings("types", misread.nearest("type", &charter_keys).?);
+    try t.expectEqualStrings("skip", misread.nearest("skips", &charter_keys).?);
+
+    // Real keys someone might reasonably try that mean nothing here. A
+    // confident wrong answer would send them to edit the wrong line.
+    for ([_][]const u8{ "generated", "exclude", "include", "ignore", "" }) |foreign| {
+        try t.expectEqual(@as(?[]const u8, null), misread.nearest(foreign, &charter_keys));
+    }
+}
+
+test "a transposition is one edit, not two" {
+    // The most common typing error there is, and the reason the metric is
+    // Damerau rather than plain Levenshtein — plain scores these 2, which
+    // falls outside a budget tight enough to reject the foreign names above.
+    try t.expectEqualStrings("roots", misread.nearest("rotos", &charter_keys).?);
+    try t.expectEqualStrings("types", misread.nearest("tpyes", &charter_keys).?);
+    try t.expectEqualStrings("heading", misread.nearest("headnig", &.{ "heading", "hidden" }).?);
 }

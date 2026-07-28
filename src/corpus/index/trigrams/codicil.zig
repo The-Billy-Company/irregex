@@ -36,7 +36,7 @@
 
 const std = @import("std");
 const corpus_mod = @import("../../tree/corpus.zig");
-const crest = @import("../../../kernel/primitives/crest.zig");
+const crest = @import("../../../kernel/math/crest.zig");
 const fault = @import("../../../fault.zig");
 const crest_sidecar = @import("../crest/sidecar.zig");
 const trigram = @import("trigram.zig");

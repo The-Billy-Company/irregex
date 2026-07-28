@@ -1,54 +1,46 @@
 ---
 doc_radar:
   counts:
-    - description: "surface keeps cli · exec · ffi · face"
+    - description: "surface keeps cli · face · ffi (plus a transitional empty exec/ shell that may still be present)"
       glob: pkg/kernels/irregex/src/surface/*
       unit: dirs
-      equals: 4
+      min: 3
+      max: 4
   sentinels:
-    - description: "cold serial engine remains the root search re-export"
+    - description: "cold serial engine remains the root search re-export (exec promoted out of surface)"
       file: pkg/kernels/irregex/src/root.zig
-      contains: 'pub const search = @import("surface/exec/cold/engine/serial.zig");'
+      contains: 'pub const search = @import("exec/cold/engine/serial.zig");'
 ---
 
-# `src/surface/` — transports + faces
+# `src/surface/` — vocabulary, API, FFI, faces
 
-How a compiled query meets a corpus, and how a human drives it. `exec/` + `ffi/`
-drive `corpus/` + `kernel/` without owning product UX (no verb tables, no
-`--help` copy, no relate NDJSON shapes); `face/` owns exactly that UX and imports
-the engines below it — the engines never import a face. `cli/` is the vocabulary
-the faces are built from — argv/root/emit plumbing shared so no face forks a flag
-value, a root rule, or the JSON escaper.
+Everything a user or host touches. Execution moved to [`../exec/`](../exec/);
+what remains is the shared CLI vocabulary, the hosted analytic API, the C-ABI
+plane, and the three thin product faces. Engines never import a face.
 
-| Transport                       | Rung             | Job                                                                                                                                                                                                                                                                                             |
-| ------------------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`exec/cold/`](exec/cold)       | 1 (subprocess)   | rg-DEFAULT argv → walk → read → match → emit; serial / parallel / ranked, plus relate's cold retrieval engine                                                                                                                                                                                   |
-| [`exec/session/`](exec/session) | 2.5 (UDS daemon) | Resident corpus + index behind `gist serve`; errors, never `die()`                                                                                                                                                                                                                              |
-| [`ffi/`](ffi)                   | 3 (in-process)   | Same session as C ABI: `irregex_open` / `irregex_search` / `irregex_close`                                                                                                                                                                                                                      |
-| [`face/`](face)                 | product          | The three faces — `gist` · `relate` · `irregex` — verb tables, `--help`, `--schema`, NDJSON shapes                                                                                                                                                                                              |
-| [`cli/`](cli)                   | shared           | The face vocabulary all three speak: flags, emit, manifest (verb-table declaration + dispatch + `--help` + `--schema`), grade (kinship scoring + sift), guide (stderr hints), outcome (exit codes), reprise (answer-keep caller), and primer (man page + shell completions from the same table) |
+| Piece | Job |
+| ----- | --- |
+| [`cli/`](cli) | Shared vocabulary: flags, emit, manifest, grade, guide, outcome (`die`/`oom`), reprise (answer keep), jsonstr, primer (man + completions) |
+| `api.zig` | Hosted analytic Zig API — drives the session from above |
+| [`ffi/`](ffi) | C-ABI session + analytic plane over `api.zig` |
+| [`face/`](face) | The three faces — `gist` · `relate` · `irregex` — verb tables, `--help`, `--schema`, NDJSON shapes |
 
-## Shared contracts across engines
+## Shared contracts
 
-- **One match opinion.** Warm and FFI reuse cold's `Emitter` / read-plane /
-  file-set machinery and the shared `kernel/match/query/query.zig` core so output
-  cannot become a second opinion.
-- **Fail open to cold.** Any warm decline, timeout, TTY, wedged daemon, or
-  reconcile doubt falls back to the certified cold subprocess.
-- **Index accelerates only.** Missing / stale / `--no-index` → live scan,
-  never different bytes.
-- **Never abort the host.** Session and FFI return typed errors / status
-  codes; a bad pattern kills the _child_ on the subprocess path, not an
-  embedding process.
+- **One match opinion.** Warm and FFI reuse cold's machinery and
+  `kernel/query/query.zig`.
+- **Fail open to cold.** Any warm decline falls back to the certified subprocess.
+- **Index accelerates only.** Never changes answers.
+- **Never abort the host.** Session and FFI return typed errors / status codes.
 
 ## When to edit here
 
-- Flag catalog / `--schema` (`exec/cold/argv`); the shared flag-value / root / emit vocabulary (`cli/`).
-- Ignore walk, encoding ingest, or emit framing (`exec/cold/{read,emit}`).
-- Warm eligibility, UDS protocol, watcher / dirty / delta reconcile (`exec/session/`).
-- FFI status codes or callback lifetime rules (`include/irregex.h` in lockstep).
-- Verb dispatch, help copy, or NDJSON shapes for a face (`face/{gist,relate,irregex}`).
+- Shared flag / emit / outcome vocabulary (`cli/`).
+- Verb dispatch, help copy, or NDJSON shapes (`face/{gist,relate,irregex}`).
+- FFI status codes or callback lifetime (`include/irregex.h` in lockstep).
+- Analytic API surface (`api.zig`).
 
-Deep dives: [`cli/README.md`](cli/README.md), [`exec/cold/README.md`](exec/cold/README.md),
-[`exec/session/README.md`](exec/session/README.md), [`ffi/README.md`](ffi/README.md),
-[`face/README.md`](face/README.md).
+Cold argv / walk / emit / warm reconcile live under [`../exec/`](../exec/).
+
+Deep dives: [`cli/`](cli/README.md) · [`ffi/`](ffi/README.md) ·
+[`face/`](face/README.md).

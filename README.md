@@ -1,10 +1,10 @@
 ---
 doc_radar:
   counts:
-    - description: "irregex src/ layers (kernel · corpus · surface) + the assay instrumentation floor"
+    - description: "irregex src/ layers (assay · corpus · exec · kernel · surface); portal/fault/root sit as files beside them"
       glob: pkg/kernels/irregex/src/*
       unit: dirs
-      equals: 4
+      equals: 5
   sentinels:
     - description: "the Zig package identity is irregex"
       file: pkg/kernels/irregex/build.zig.zon
@@ -379,9 +379,9 @@ the exact claim inside it. A practical sequence is:
 
 ```bash
 gist 'ResidentSession' --rank
-relate similar src/surface/exec/session/warm/resident.zig --as shapes --top 5
+relate similar src/exec/session/warm/resident.zig --as shapes --top 5
 relate pack "fail-closed resident freshness and cold fallback" --top 6
-gist 'decline|fallback' src/surface/exec/session -n
+gist 'decline|fallback' src/exec/session -n
 ```
 
 That is the intended division of labor, not a rigid pipeline. Keep exact
@@ -429,11 +429,11 @@ workflows and the `CandidateSet` model.
 | **gist**    | the rg-parity code locator CLI: trigram + crest read-elision, ranked search, and a resident session; the agents' everyday search reflex                                    | [`src/surface/face/gist/README.md`](src/surface/face/gist/README.md)       |
 | **relate**  | compression-as-search: retrieval/packing, quotation, kinship/families/echoes, and exact pattern sets; `index` / `status` own the warm lifecycle                            | [`src/surface/face/relate/README.md`](src/surface/face/relate/README.md)   |
 | **irregex** | the composed face needing live bytes: `provenance` (quote, re-verified) and `blast` (live symbol radius). Reading-set / fork narrowing is `relate pack\|echoes --matching` | [`src/surface/face/irregex/README.md`](src/surface/face/irregex/README.md) |
-| **codex**   | the compressed self-index: a corpus stored at entropy-bound size with exact O(m) `count`/`find` and byte-exact restoration; powers `gist codex` + `relate quote`           | [`src/corpus/index/codex/README.md`](src/corpus/index/codex/README.md)     |
+| **codex**   | the compressed self-index: FM-index math in the kernel, persisted shelf under corpus; powers `gist codex` + `relate quote`                                                  | [`src/kernel/codex/README.md`](src/kernel/codex/README.md) · [`shelf/`](src/corpus/index/shelf/README.md) |
 | **ffi**     | the in-process C-ABI warm session (`irregex_open` / `irregex_search` / `irregex_close` over `libirregex`)                                                                  | [`src/surface/ffi/README.md`](src/surface/ffi/README.md)                   |
 
-The three CLIs are separate faces over one shared floor (`src/kernel/`,
-`src/corpus/`, `src/surface/`); none owns a
+The three CLIs are separate faces over one shared five-layer stack (`floor` ·
+`kernel/` · `corpus/` · `exec/` · `surface/`); none owns a
 private copy of the corpus walk, scope machinery, indexes, or execution hosts.
 Operational READMEs explain how to use each face; the
 [`research dossiers`](research/README.md) explain why the claims deserve to
@@ -457,7 +457,7 @@ exist and where they stop.
 - The C ABI is versioned and flat; the header and
   [`ffi` documentation](src/surface/ffi/README.md) are its public contract.
 - Portability is measured rather than claimed, and every platform difference is
-  stated once. [`bench/portable`](bench/portable/README.md) cross-compiles 22
+  stated once. [`bench/targets`](bench/targets/README.md) cross-compiles 22
   targets from one machine with no cross toolchains installed; 15 POSIX targets
   execute and return byte-identical answers on all twelve probe classes —
   including big-endian s390x, three 32-bit ARM ABIs, riscv64, and ppc64le —
@@ -680,18 +680,22 @@ place only when the tool feels obvious in the hand.
 
 ## Package layout
 
-| Dir            | What                                                                                                                                                                   |
-| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/kernel/`  | pure compute: `match/` · `rank/` · `kinship/` · `batch/` · `compose/` · `primitives/` (incl. bits + crest)                                                             |
-| `src/corpus/`  | tree walk · scope · persisted indexes (`trigrams/` · `postings/` · `codex/` · `atlas/` · `crest/`)                                                                     |
-| `src/surface/` | transports + faces: `exec/{cold,session}` · `ffi/` · `face/{gist,relate,irregex}` · `cli/` shared vocabulary                                                           |
-| `src/assay/`   | the instrumentation floor (imports only `std`): typed `Span`/`Duration`/`Anchor` clocks, `Tally(Schema)` counters, and the `GIST_TRACE` lens + sink diagnostic channel |
-| `include/`     | `irregex.h`: the flat C ABI (`irregex_*` symbols)                                                                                                                      |
-| `bindings/`    | Python (`billy-irregex` — all three faces, subprocess + optional cffi) and Rust (subprocess) faces                                                                     |
-| `contract/`    | `search_api.toml`: the unified SearchRequest/irregex contract (ADR-352)                                                                                                |
-| `bench/`       | certification + competitive benchmark harness (rgsuite, races, certify, roofline)                                                                                      |
-| `editor/`      | the Vim/Neovim plugin (`vim/`) and the installer that links it into an editor that already exists                                                                      |
-| `shell/`       | the generated `gist(1)` + bash/zsh/fish/pwsh completions: the installer that places them, and the suite that has each shell parse its own                              |
+Five layers, read bottom-up (prose: [`src/README.md`](src/README.md); machine:
+[`contract/irregex.ward`](contract/irregex.ward)):
+
+| Dir | What |
+| --- | ---- |
+| `src/` floor | `portal.zig` · `assay/` · `fault.zig` · wire floor `corpus/index/frame/` (frame · signet · home) |
+| `src/kernel/` | pure compute, ten tiers: `math/` · `scan/` · `regex/` · `query/` · `rank/` · `slate/` · `anatomy/` · `kinship/` · `codex/` · `compose/` |
+| `src/corpus/` | eligibility + shadows: `scope/` · `read/` · `tree/` · `fresh/` · `index/` (trigrams · postings · crest · atlas · frag · content · phantom · shelf · frame) |
+| `src/exec/` | runtimes: `cold/` · `retrieval/` · `session/` (incl. `daemon/`) |
+| `src/surface/` | `cli/` · `api.zig` · `ffi/` · `face/{gist,relate,irregex}` |
+| `include/` | `irregex.h`: the flat C ABI (`irregex_*` symbols) |
+| `bindings/` | Python (`billy-irregex`) and Rust faces |
+| `contract/` | `search_api.toml` + `irregex.ward` |
+| `bench/` | certification + competitive harness |
+| `editor/` | Vim/Neovim plugin |
+| `shell/` | generated `gist(1)` + bash/zsh/fish/pwsh completions |
 
 See [`src/README.md`](src/README.md) for the tier-by-tier map and
 [`src/surface/face/gist/README.md`](src/surface/face/gist/README.md) for the gist architecture

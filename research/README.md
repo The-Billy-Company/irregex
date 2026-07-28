@@ -43,7 +43,7 @@ that dead ends cost a citation to rediscover instead of a month.
 If behavior changes, edit source first; then update the dossier only where the
 claim or evidence truly moved.
 
-Crest production code: [`../src/kernel/primitives/crest.zig`](../src/kernel/primitives/crest.zig) +
+Crest production code: [`../src/kernel/math/crest.zig`](../src/kernel/math/crest.zig) +
 [`../src/corpus/index/crest/`](../src/corpus/index/crest/). Production harness:
 `zig build crest` / [`../bench/crest/`](../bench/crest/).
 
@@ -53,4 +53,4 @@ Gist production face: [`../src/surface/face/gist/`](../src/surface/face/gist/). 
 
 Relate production face: [`../src/surface/face/relate/`](../src/surface/face/relate/). Engines:
 [`../src/kernel/kinship/`](../src/kernel/kinship/). Evidence:
-[`../bench/relate/`](../bench/relate/).
+[`../bench/knn/`](../bench/knn/).

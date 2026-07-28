@@ -4,8 +4,8 @@
 
 const std = @import("std");
 const testing = std.testing;
-const crest = @import("../../../kernel/primitives/crest.zig");
-const signet = @import("../../../kernel/primitives/signet.zig");
+const crest = @import("../../../kernel/math/crest.zig");
+const signet = @import("../frame/signet.zig");
 const sidecar = @import("sidecar.zig");
 
 const version_off = 8;

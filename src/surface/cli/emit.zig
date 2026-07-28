@@ -7,13 +7,12 @@
 //! text vs JSON off one `json` bool.
 
 const std = @import("std");
-const cli_args = @import("../exec/cold/argv/args.zig");
 
-const oom = cli_args.oom;
+const oom = @import("outcome.zig").oom;
 
 /// Append `s` JSON-string-escaped (quotes included) — the one escaper every
 /// face shares (arg order matches these `(buf, gpa, s)` callers).
-pub const jsonStr = @import("../exec/cold/emit/jsonstr.zig").write;
+pub const jsonStr = @import("jsonstr.zig").write;
 
 /// Make a printed row clickable: `anchor` for a bare unit label (which may
 /// carry its own `#Lnnn`), `locator` for the `path:line` shape. Both hand the

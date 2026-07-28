@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # gist conjunctive-cover parity — the adverse guard for wiring the CNF planner
-# (`src/kernel/match/query/cover.zig`) onto the PRODUCTION query path.
+# (`src/kernel/query/cover.zig`) onto the PRODUCTION query path.
 #
 # The cover is a strictly stronger necessary condition than the flat OR of
 # extracted literals it replaces: where `trigramFilter` can state one

@@ -8,7 +8,7 @@
 const std = @import("std");
 const fault = @import("../../../fault.zig");
 const varint = @import("varint.zig");
-const signet = @import("../../../kernel/primitives/signet.zig");
+const signet = @import("../frame/signet.zig");
 
 pub const Error = fault.Persist;
 

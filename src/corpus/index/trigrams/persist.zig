@@ -1,13 +1,13 @@
 // MONOLITHIC: persisted trigram-index loader/serializer — magic and versioning, the CSR directory, the generation-atomic pair, and mmap load form one on-disk format contract shared by every cold path
 //! gist — the persisted-index loader, shared by every cold-query path.
 //!
-//! `surface/face/gist/lifecycle/index.zig`'s `run` (the `gist index` verb) serializes the trigram
+//! `surface/face/gist/verbs/index.zig`'s `run` (the `gist index` verb) serializes the trigram
 //! `Index` + the doc→path table to disk; each later fresh process maps them back
 //! **zero-copy** and validates only the compact directory up front. Posting
 //! groups are checked when queried, avoiding a full body decode on every fresh
 //! process. That cold-load path is shared by every shape the unified engine
-//! serves — the index-accelerated read-elision walk (`surface/exec/cold/engine/serial.zig`)
-//! and the `--rank` ranked view (`surface/exec/cold/view/ranked.zig`) — so it lives
+//! serves — the index-accelerated read-elision walk (`exec/cold/engine/serial.zig`)
+//! and the `--rank` ranked view (`exec/cold/view/ranked.zig`) — so it lives
 //! here, in the index layer, rather than in a command (a command importing
 //! another command's internals is the coupling this split exists to kill).
 //!
@@ -22,8 +22,7 @@ const std = @import("std");
 const trigram = @import("trigram.zig");
 const fault = @import("../../../fault.zig");
 const Index = trigram.Index;
-const corpus_mod = @import("../../tree/corpus.zig");
-const crest = @import("../../../kernel/primitives/crest.zig");
+const crest = @import("../../../kernel/math/crest.zig");
 const crest_sidecar = @import("../crest/sidecar.zig");
 const codicil_mod = @import("codicil.zig");
 const ngram = @import("ngram.zig");
@@ -32,6 +31,7 @@ const lapse = @import("lapse.zig");
 const frame = @import("../frame/frame.zig");
 const assay = @import("../../../assay/assay.zig");
 const portal = @import("../../../portal.zig");
+const home = @import("../frame/home.zig");
 const Dir = std.Io.Dir;
 // The mapping + atomic-publish primitives are shared wire discipline and live
 // in `../frame/`; these are import aliases, not a second implementation.
@@ -41,9 +41,9 @@ const writeAtomic = frame.writeAtomic;
 
 /// Stable aliases (status / bench size accounting). The query loader prefers the
 /// generation published by `pair.gen` when present.
-const index_alias = corpus_mod.ArtifactPath("index.gist");
-const paths_alias = corpus_mod.ArtifactPath("paths.list");
-const generation_alias = corpus_mod.ArtifactPath("pair.gen");
+const index_alias = home.ArtifactPath("index.gist");
+const paths_alias = home.ArtifactPath("paths.list");
+const generation_alias = home.ArtifactPath("pair.gen");
 pub fn indexFile() []const u8 {
     return index_alias.get();
 }
@@ -289,17 +289,17 @@ fn mergeLayers(gpa: std.mem.Allocator, base: []u32, local: []const u32, map: []c
 /// expected miss. Paths are NUL-separated in doc-id order; the list is pre-sized
 /// from the NUL count so the split is one allocation.
 pub fn load(gpa: std.mem.Allocator, io: std.Io) !?Persisted {
-    return loadAt(gpa, io, corpus_mod.outDir(), true);
+    return loadAt(gpa, io, home.outDir(), true);
 }
 
 /// `load`, but SILENT on a miss (no "run `gist index`" guidance). The bare
 /// `gist <pattern>` front door probes for an index on every invocation to
 /// accelerate its live walk (skip reading provable-non-candidate files —
-/// `surface/exec/cold/engine/serial.zig`), and outside an indexed corpus that probe MUST
+/// `exec/cold/engine/serial.zig`), and outside an indexed corpus that probe MUST
 /// stay quiet: a missing index there is the normal case, not something to nag
 /// about, and the walk falls back to reading every file exactly as before.
 pub fn loadQuiet(gpa: std.mem.Allocator, io: std.Io) !?Persisted {
-    return loadAt(gpa, io, corpus_mod.outDir(), false);
+    return loadAt(gpa, io, home.outDir(), false);
 }
 
 /// Doc→path table integrity: the index guarantees every candidate id < doc_count,
@@ -475,7 +475,7 @@ fn shortDocs(gpa: std.mem.Allocator, table: []const crest.Vector) ![]u32 {
     return out;
 }
 
-/// Load from an arbitrary cache root (production uses `corpus.outDir()`; tests
+/// Load from an arbitrary cache root (production uses `home.outDir()`; tests
 /// inject a tempdir). When `pair.gen` is present, both blobs must come from
 /// `gens/<id>/` and the generation must still match after the maps succeed.
 pub fn loadAt(gpa: std.mem.Allocator, io: std.Io, out_dir: []const u8, comptime verbose: bool) !?Persisted {
@@ -652,7 +652,7 @@ pub fn persistIndexAndPaths(
     crest_vectors: ?[]const crest.Vector,
     built_ns: i128,
 ) !usize {
-    return persistIndexAndPathsAt(gpa, io, corpus_mod.outDir(), idx, paths, roots, crest_vectors, built_ns);
+    return persistIndexAndPathsAt(gpa, io, home.outDir(), idx, paths, roots, crest_vectors, built_ns);
 }
 
 /// The base build instant of generation `gen` (`gens/<gen>/base.ns`), or null

@@ -4,7 +4,7 @@ r"""gist INDEXED-PCRE2 correctness — differential vs an INDEPENDENT engine (Py
 gist is (as far as we know) the only tool that runs PCRE2 *behind a trigram/shadow
 index*: the persisted index elides *reading* files a required-literal (or shadow-
 spliced) analysis proves can't match, and vendored PCRE2-JIT runs only on the
-survivors (`src/kernel/match/regex/pcre2/`, `serial.zig` `trigramFilter`/`IndexSkip`).
+survivors (`src/kernel/regex/pcre2/`, `serial.zig` `trigramFilter`/`IndexSkip`).
 That is the whole win — and its whole risk: a prefilter that drops a file which
 really matches is a silent FALSE NEGATIVE. Fast-but-wrong is a lie.
 

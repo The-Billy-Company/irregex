@@ -1,11 +1,11 @@
 # Crest — a forced-class-run necessary condition for regex indexing
 
 **Status:** theory + soundness proof + Zig implementation + production
-integration. Kernel: `src/kernel/primitives/crest.zig` (pure, engine-free;
-tests `src/kernel/primitives/crest_test.zig`). Persisted sidecar:
+integration. Kernel: `src/kernel/math/crest.zig` (pure, engine-free;
+tests `src/kernel/math/crest_test.zig`). Persisted sidecar:
 `src/corpus/index/crest/sidecar.zig`
 (`crest.bin`, generation-atomic with the trigram pair). Wiring: both
-read-elision oracles (`src/surface/exec/cold/engine/serial.zig` +
+read-elision oracles (`src/exec/cold/engine/serial.zig` +
 `parallel.zig`).
 Proof harness: `bench/crest/bench.zig` (links the real gist engine, walks the
 real corpus, fail-closed). Run: `zig build crest` from `pkg/kernels/irregex/`;
@@ -42,7 +42,7 @@ means an unfiltered scan:
 - Cox, _Regular Expression Matching with a Trigram Index_ (2012) — required
   trigrams, AND/OR query; a pattern with no extractable trigrams degenerates
   to a full scan. gist's own prefilter is this family
-  (`src/kernel/match/query.zig`), and gist's Certificate records the hole
+  (`src/kernel/query/query.zig`), and gist's Certificate records the hole
   honestly: `cand% = 100%` on `regex-classcount`.
 - PostgreSQL `pg_trgm` (`trgm_regexp.c`) — color-trigram graph; same
   degeneration.
@@ -100,7 +100,7 @@ matcher; and the calculus is sound, not tight (§3.6).
 Fix the byte alphabet `Σ = {0,…,255}`. A **class** `C ⊆ Σ` is a set of bytes.
 Fix a small **class family** `𝒞 = {C₁,…,C_k}`; the implementation ships
 `k = 8`: digit, hexdigit, upper, lower, alpha, word, space, punct
-(`src/kernel/primitives/crest.zig` `Class`). `k` is a small constant, chosen once,
+(`src/kernel/math/crest.zig` `Class`). `k` is a small constant, chosen once,
 query-independent. This family is not claimed to contain every pairwise meet
 and join, so "lattice" would be mathematically inaccurate.
 
@@ -218,7 +218,7 @@ string whose longest run is as short as the pattern allows — so each numeric
 field is a per-class **lower bound**.
 
 For a fixed class `C`, each AST node `E` carries the summary
-(`src/kernel/primitives/crest.zig` `Profile`):
+(`src/kernel/math/crest.zig` `Profile`):
 
 | field            | one-sided invariant for every `w ∈ L(E)` |
 | ---------------- | ---------------------------------------- |

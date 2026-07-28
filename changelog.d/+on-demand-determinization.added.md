@@ -1,5 +1,5 @@
 On-demand determinization (RE2 / rust-`regex`'s hybrid DFA) beneath the eager
-one. The subset construction moved into `match/regex/linear/dfa/subset.zig`, and
+one. The subset construction moved into `kernel/regex/linear/dfa/subset.zig`, and
 `powerset.zig` and `lazy.zig` are now two policies over that one core, so they
 cannot disagree about what a pattern means; the Pike VM stands behind both as the
 oracle. The eager driver runs first and freezes an immutable shared automaton,

@@ -10,7 +10,7 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
 ### Added
 
 - A SIMD class-run kernel for dense character classes
-  (`src/kernel/match/scan/classrun.zig`) — the family the byte-class DFA was
+  (`src/kernel/scan/classrun.zig`) — the family the byte-class DFA was
   slowest on. A pattern that _is_ a class repetition (`\w+`, `[a-z]{3,}`,
   `[0-9a-f]{8}` — decided algebraically by `analysis.classRunShape`) is no
   longer an automaton problem: boolean match reduces to "≥ min consecutive
@@ -413,7 +413,7 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
   stderr, unknown verbs exit 2. The pure composition kernels live under
   `src/search/compose/`; `gist` and `relate` stay the direct faces and forward
   none of their verbs. Installed alongside them by `make install-gist`.
-- New `ward` primitive (`kernel/primitives/ward.zig`): a shared reader/writer
+- New `ward` primitive (`kernel/math/lease.zig`): a shared reader/writer
   discipline over `std.Io.RwLock` with `Read`/`Write` lease guards and the
   double-checked `readReconciled` fast-read / upgrade-refresh / downgrade
   dance. The warm resident session now rides it instead of hand-rolling
@@ -1438,7 +1438,7 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
   B/B′/C/D). `check_artifacts.py` fail-closes if any layer section or side-car
   is missing; `CERT_SUDO=1` prompts once for measured kperf cycles.
 - Cut the `--json` record stream's serial-engine cost with two byte-identical
-  emit-path changes (`src/surface/exec/cold/emit/json.zig`). The classification
+  emit-path changes (`src/exec/cold/emit/json.zig`). The classification
   loop now threads the engine's required-literal `simd.Gate`
   (`serial.zig::requiredLiteralGate`, the same gate the line path uses) from
   `run`
@@ -1544,7 +1544,7 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
   operation (`-o`, `--json`, `--column`, `--vimgrep`, `-w`, `-r`, colored
   highlighting) stops paying the Pike VM on literal and literal-alternation
   queries — the code-search common case. `Regex.matchSpan`
-  (`src/kernel/match/regex/linear/core.zig`) now short-circuits through
+  (`src/kernel/regex/linear/pike/span.zig`) now short-circuits through
   `litSpan`
   whenever `re.lits` is non-empty (the `analysis.pureLiterals`
   match-equivalence
@@ -1866,7 +1866,7 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
   the parallel work-stealing engine leaves on the serial path — `--json`,
   `--stats`, `--sort`/`--sortr`, `-r` replace, and `--files-without-match`.
   Each shards its per-file work over byte-balanced `shardBounds`/`fanOut` (the
-  shared `kernel/primitives/parallel.zig` primitive the warm engine's
+  shared `kernel/math/parallel.zig` primitive the warm engine's
   `streamParallel` already proved), renders into a per-shard buffer, and merges
   in file order, so the bytes stay identical to the serial loop. The soft/hard
   output budget is unified into one `corpus.appendBudgeted` helper that cuts
@@ -2387,7 +2387,7 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
   anchored
     ancestor rule floats depth-independently instead of being stripped.
   - **`--schema` authority** advertises the real flag catalog at
-    `src/surface/exec/cold/argv/args.zig:flag_catalog` (was a stale
+    `src/exec/cold/argv/args.zig:flag_catalog` (was a stale
   `runtime/cold`
     path), proven by a compile-time `@embedFile` assertion so it cannot drift
   again.
@@ -4160,7 +4160,7 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
   _is_.
   - `build.zig` builds two artifacts on the shared kernel — the production
   `gist`
-    CLI (`src/commands/cli/main.zig`) and a separate `gist-bench` harness
+    CLI (`src/surface/face/gist/main.zig`) and a separate `gist-bench` harness
     (`bench/bench.zig`); they no longer share a binary.
 
   Pure structural move — every `*_test.zig` rides `src/root.zig` and the full

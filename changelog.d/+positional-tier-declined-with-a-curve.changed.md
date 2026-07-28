@@ -1,6 +1,6 @@
 Priced a **positional index tier** across the full size/benefit surface and
 declined it, with the curve committed rather than the conclusion asserted
-(`bench/scale/artifact/positional_pareto.tsv`). Sweeping block-position coverage
+(`bench/sliver/artifact/positional_pareto.tsv`). Sweeping block-position coverage
 by trigram document frequency × per-document cap shows the cheap end buys nothing
 — a threshold only carries a literal's positions once it reaches that literal's
 _rarest_ trigram, and those floor out high (`pgxpool` 560 documents, `panic`
@@ -14,7 +14,7 @@ document-level **by choice at a measured price**. Layer J gates the refusal
 itself: any threshold costing ≤10% of corpus that delivers ≥2× on a probe fails
 the layer closed instead of letting the "declined" narrative stand.
 
-Also added `bench/scale/scale_race.py`, racing gist against zoekt and csearch over
+Also added `bench/sliver/scale_race.py`, racing gist against zoekt and csearch over
 a multi-GB corpus (352,316 files / 5.5 GiB) across the canonical 12 classes,
 reusing `_compete.sh`'s fairness contract and `certify_stats.py`'s statistics.
 gist indexes 3.32 GiB of text in 21.4 s — 11.0× faster than zoekt, 2.6× faster

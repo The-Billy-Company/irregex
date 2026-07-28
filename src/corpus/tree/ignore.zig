@@ -22,7 +22,7 @@
 //!     the nearest enclosing `.git` stop at that boundary (ripgrep's `saw_git`).
 
 const std = @import("std");
-const gl = @import("../scope/glob.zig");
+const gl = @import("../../kernel/math/glob.zig");
 const paths = @import("../scope/paths.zig");
 const assay = @import("../../assay/assay.zig");
 const fault = @import("../../fault.zig");

@@ -37,7 +37,7 @@
 //! count syscalls against a capture sink instead of a terminal.
 
 const std = @import("std");
-const ward = @import("../../kernel/primitives/ward.zig");
+const ward = @import("../../kernel/math/lease.zig");
 
 /// What the drain owes the reader.
 ///

@@ -2,7 +2,7 @@
 doc_radar:
   paths_exist:
     - pkg/kernels/irregex/bench/parabix/bench.zig
-    - pkg/kernels/irregex/src/kernel/match/regex/linear/parabix/parabix.zig
+    - pkg/kernels/irregex/src/kernel/regex/linear/parabix/parabix.zig
   sentinels:
     - description: "the harness fails closed on disagreement and on the gate arming where it must not"
       file: pkg/kernels/irregex/bench/parabix/bench.zig
@@ -48,4 +48,4 @@ streaming sizes measure identically, so this is a runtime knob, not a result),
 
 The reference run, the honest-boundary rows, and what did not reproduce from the
 research lane are in
-[`src/kernel/match/regex/linear/parabix/README.md`](../../src/kernel/match/regex/linear/parabix/README.md).
+[`src/kernel/regex/linear/parabix/README.md`](../../src/kernel/regex/linear/parabix/README.md).

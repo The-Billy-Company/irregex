@@ -13,7 +13,7 @@ unable to hide.
 
 ---
 
-## 1. Kernel unit tests — `src/kernel/primitives/crest_test.zig`
+## 1. Kernel unit tests — `src/kernel/math/crest_test.zig`
 
 Hand-computed oracles against the calculus, one test per load-bearing rule:
 

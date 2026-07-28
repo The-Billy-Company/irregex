@@ -13,7 +13,7 @@
 const std = @import("std");
 const tri = @import("trigram.zig");
 const vi = @import("../postings/varint.zig");
-const signet = @import("../../../kernel/primitives/signet.zig");
+const signet = @import("../frame/signet.zig");
 
 // ── blob builders ──────────────────────────────────────────────────────────
 

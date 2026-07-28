@@ -1,4 +1,4 @@
-Layer H — the executed portability matrix. `bench/portable/` cross-compiles gist
+Layer H — the executed portability matrix. `bench/targets/` cross-compiles gist
 for every triple ripgrep declares in its own release workflow, plus targets it
 publishes nothing for, **from one machine with no cross toolchains installed**,
 and grades each by what was actually proven rather than by what links:
@@ -18,7 +18,7 @@ and grades each by what was actually proven rather than by what links:
 The indexed pass on a big-endian target is what caught the bug this harness was
 worth building for: `@bitCast`ing a `@Vector(16, bool)` compare to a movemask
 follows target endianness, so on s390x lane 0 landed in the high bit and `@ctz`
-reported every match fifteen bytes from where it was. `primitives/bits.zig`'s
+reported every match fifteen bytes from where it was. `kernel/math/bits.zig`'s
 `laneMask` now owns that conversion behind a `comptime` endian branch — 25 call
 sites across the scanner, class-run scanner, and regex prefilter — and
 little-endian builds lower to exactly the bare `@bitCast` they did before.

@@ -36,8 +36,8 @@ own optimize. Adding a library is a row there plus a tree here — never a
 call-site sweep.
 
 Both are bound with explicit `extern` declarations rather than `@cImport`
-(`src/kernel/match/regex/pcre2/ffi.zig`,
-`src/corpus/index/codex/sais.zig`), so no module outside `build.zig` needs
+(`src/kernel/regex/pcre2/ffi.zig`,
+`src/kernel/math/succinct/sais.zig`), so no module outside `build.zig` needs
 their include paths. Version bumps: re-pin the tarball sha in that library's
 README, refresh its `contracts/trust/supply-chain/ledger.toml` row and the
 `.lazy` provenance entry in `build.zig.zon`, then re-run the gates the library

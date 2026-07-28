@@ -36,7 +36,7 @@
 
 const std = @import("std");
 const assay = @import("../../assay/assay.zig");
-const misread = @import("misread.zig");
+const misread = @import("../../kernel/math/misread.zig");
 const portal = @import("../../portal.zig");
 
 /// The charter's filename, searched for from the working directory upward.

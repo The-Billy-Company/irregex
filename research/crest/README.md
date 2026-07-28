@@ -1,10 +1,10 @@
 ---
 doc_radar:
   paths_exist:
-    - pkg/kernels/irregex/src/kernel/primitives/crest.zig
-    - pkg/kernels/irregex/src/kernel/primitives/crest_test.zig
-    - pkg/kernels/irregex/src/kernel/match/regex/analysis/swell.zig
-    - pkg/kernels/irregex/src/kernel/match/regex/analysis/swell_test.zig
+    - pkg/kernels/irregex/src/kernel/math/crest.zig
+    - pkg/kernels/irregex/src/kernel/math/crest_test.zig
+    - pkg/kernels/irregex/src/kernel/regex/analysis/swell.zig
+    - pkg/kernels/irregex/src/kernel/regex/analysis/swell_test.zig
     - pkg/kernels/irregex/src/corpus/index/crest/sidecar.zig
     - pkg/kernels/irregex/bench/crest/bench.zig
   sentinels:
@@ -12,31 +12,31 @@ doc_radar:
       contains:
         - 'b.step("crest"'
     - description: "the document half — ρ(d) and the dominance test"
-      file: pkg/kernels/irregex/src/kernel/primitives/crest.zig
+      file: pkg/kernels/irregex/src/kernel/math/crest.zig
       contains:
         - "pub fn crest"
         - "pub fn pruned"
     - description: "the Grammar Contract (PROOF §3.7a) is structural: ĝ is derived from the engine's own syntax.Node AST, so the private mini-parser that misread \\< as a literal cannot come back"
-      file: pkg/kernels/irregex/src/kernel/match/regex/analysis/swell.zig
+      file: pkg/kernels/irregex/src/kernel/regex/analysis/swell.zig
       contains:
         - "pub fn forcedSwell"
         - 'syntax.zig'
     - description: "the sieve is a disjunction (PROOF §3.9): one ĝ per top-level alternative, pruning only what clears none of them"
-      file: pkg/kernels/irregex/src/kernel/primitives/crest.zig
+      file: pkg/kernels/irregex/src/kernel/math/crest.zig
       contains:
         - "pub const Swell"
         - "pub fn prunes"
       absent:
         - "pub fn weaker"
     - description: "the Sieve Theorem is checked against the real matcher, not just sampled by the corpus bench — including the multi-branch disjunction"
-      file: pkg/kernels/irregex/src/kernel/match/regex/analysis/swell_test.zig
+      file: pkg/kernels/irregex/src/kernel/regex/analysis/swell_test.zig
       contains:
         - "sieve theorem: a matching document is never pruned"
         - "top-level alternation is a disjunction, not a componentwise min"
-    - file: pkg/kernels/irregex/src/surface/exec/cold/writ/gate.zig
+    - file: pkg/kernels/irregex/src/exec/cold/writ/gate.zig
       contains:
         - "crestSieve"
-    - file: pkg/kernels/irregex/src/surface/exec/cold/quarry/elide.zig
+    - file: pkg/kernels/irregex/src/exec/cold/quarry/elide.zig
       contains:
         - "crest"
 ---
@@ -69,11 +69,11 @@ per branch, no byte scan, provably no false negatives.
 
 | where                                       | what                                                                                                                     |
 | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `src/kernel/primitives/crest.zig`           | pure kernel: fixed class family, crest vector, the `Swell` disjunction, and the dominance test                           |
-| `src/kernel/match/regex/analysis/swell.zig` | the query half: `forcedSwell` folds ĝ out of the engine's own AST, one per top-level alternative                         |
+| `src/kernel/math/crest.zig`           | pure kernel: fixed class family, crest vector, the `Swell` disjunction, and the dominance test                           |
+| `src/kernel/regex/analysis/swell.zig` | the query half: `forcedSwell` folds ĝ out of the engine's own AST, one per top-level alternative                         |
 | `src/corpus/index/crest/sidecar.zig`        | persisted per-document crest table (`crest.bin`), generation-atomic with the trigram pair                                |
-| `src/surface/exec/cold/writ/gate.zig`       | `crestSieve` — the query's swell, derived once and stood down wherever pruning would be unsound                          |
-| `src/surface/exec/cold/quarry/elide.zig`    | the read-elision oracle both cold schedulers admit: crest sieve composed with trigram candidates and the freshness proof |
+| `src/exec/cold/writ/gate.zig`       | `crestSieve` — the query's swell, derived once and stood down wherever pruning would be unsound                          |
+| `src/exec/cold/quarry/elide.zig`    | the read-elision oracle both cold schedulers admit: crest sieve composed with trigram candidates and the freshness proof |
 | `bench/crest/bench.zig`                     | production proof harness (`zig build crest`) — fail-closed soundness, pruning, speed, and ablation over the live corpus  |
 
 ## Run

@@ -17,7 +17,7 @@
 //! under-sized, and no fewer, which would mean it is superstition.
 
 const std = @import("std");
-const crest = @import("../../../kernel/primitives/crest.zig");
+const crest = @import("../../../kernel/math/crest.zig");
 const sliver = @import("sliver.zig");
 const trigram = @import("trigram.zig");
 

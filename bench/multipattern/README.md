@@ -6,7 +6,7 @@ doc_radar:
     - pkg/kernels/irregex/bench/multipattern/pack.py
     - pkg/kernels/irregex/bench/races/multipattern.sh
     - pkg/kernels/irregex/bench/certify/certify_multipattern_report.py
-    - pkg/kernels/irregex/src/kernel/batch/muster.zig
+    - pkg/kernels/irregex/src/kernel/slate/muster.zig
   sentinels:
     "pkg/kernels/irregex/bench/multipattern/vscan.c":
       contains:
@@ -24,7 +24,7 @@ Three files, one question: **when N patterns must be found with per-pattern
 attribution, who is faster and why?** The named champion is Hyperscan (Intel;
 portable fork [Vectorscan](https://github.com/VectorCamp/vectorscan)), which owns
 this problem in the literature. gist's answer is `PatternSet`
-(`src/kernel/batch/`), the fused literal sieve in `muster.zig`, and the index.
+(`src/kernel/slate/`), the fused literal sieve in `muster.zig`, and the index.
 
 The honest framing is that there are **two** questions, and only one of them is
 the user's:
@@ -89,7 +89,7 @@ is honored by the harness, so the whole layer stays inside `${OUT}`):
 # not proven); the report re-asserts K1-K4 and refuses to splice on any violation.
 note "Layer K — multi-pattern vs Hyperscan/Vectorscan (fail-closed)…"
 MULTIPATTERN_OUT="${OUT}/multipattern" bash "${HERE}/../races/multipattern.sh" \
-  || die "multipattern race failed (attribution violation) — fix src/kernel/batch, never weaken the sieve"
+  || die "multipattern race failed (attribution violation) — fix src/kernel/slate, never weaken the sieve"
 python3 "${HERE}/certify_multipattern_report.py" \
   --certificate "${CERT}" \
   --perbyte "${OUT}/multipattern/perbyte.tsv" \
@@ -122,7 +122,7 @@ A `PatternSet` answer **is** N independent single-pattern gist answers, per
 pattern, bit for bit. That is the contract `relate patterns` sells, and it is
 gated in three places, deliberately overlapping:
 
-- `src/kernel/batch/patterns_test.zig` proves it on hand-written documents with
+- `src/kernel/slate/patterns_test.zig` proves it on hand-written documents with
   the sieve both armed and stripped, against a live single-query oracle.
 - `bench.zig --verify` proves it at corpus scale against N real
   `CompiledQuery` runs.

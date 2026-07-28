@@ -3,7 +3,7 @@
 //! between classifying a walk entry as searchable and actually opening it, but
 //! adapted to irregex's general program: the shared gitignore engine plus one
 //! corpus-only skip-dir policy (`isSkipDir`) govern every consumer.
-//! Before this, `corpus.zig`'s index build, `surface/exec/cold/engine/serial.zig`'s tree-walk
+//! Before this, `corpus.zig`'s index build, `exec/cold/engine/serial.zig`'s tree-walk
 //! enumeration, `index/trigrams/fresh.zig`'s mtime+ctime freshness stat-walk, and the
 //! no-prefilter live scan each re-derived the identical
 //! walk skeleton (open root → skip/enter dirs → join a file's path) around a
@@ -25,6 +25,7 @@ const corpus_mod = @import("corpus.zig"); // mutual import; only `outDir()` is t
 const ignore = @import("ignore.zig");
 const paths = @import("../scope/paths.zig");
 const portal = @import("../../portal.zig");
+const home = @import("../index/frame/home.zig");
 
 /// A file discovered by the walk: a resolved, root-joined path plus the
 /// directory handle + basename needed to read or stat it right now.
@@ -78,7 +79,7 @@ const skip_dirs = std.StaticStringMap(void).initComptime(.{
 /// these. Env and charter tokens borrow strings that outlive the process; file
 /// tokens borrow a static buffer filled under the same lock. The spinlock idiom
 /// matches
-/// `corpus.ArtifactPath` (per-directory lookups against a near-always-empty
+/// `home.ArtifactPath` (per-directory lookups against a near-always-empty
 /// list, never a hot loop once `done` publishes).
 const extra_skips = struct {
     var locked: std.atomic.Value(bool) = .init(false);
@@ -101,7 +102,7 @@ const extra_skips = struct {
         }
         if (charter.governing()) |c| for (c.skip) |name| add(name);
         var path_buf: [1024]u8 = undefined;
-        const path = std.fmt.bufPrint(&path_buf, "{s}/skips.list", .{corpus_mod.outDir()}) catch return;
+        const path = std.fmt.bufPrint(&path_buf, "{s}/skips.list", .{home.outDir()}) catch return;
         const fd = portal.openFile(portal.cwd(), path) catch return;
         defer portal.close(fd);
         const n = portal.read(fd, &file_buf) catch return;

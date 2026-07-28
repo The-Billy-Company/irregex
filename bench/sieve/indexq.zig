@@ -45,7 +45,7 @@ const Span = gist.assay.Span; // the package monotonic stopwatch (never the wall
 const Index = gist.trigram.Index;
 const Regex = gist.regex.Regex;
 const Dir = std.Io.Dir;
-const out_dir = corpus_mod.default_out_dir;
+const out_dir = gist.home.default_out_dir;
 
 const probes_mod = @import("probes");
 const Kind = probes_mod.Kind;
@@ -338,7 +338,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, limits: query.CoverLimits) !void 
             .regex => try baseClauses(arena, &re.?),
         };
         // The Layer-L planner: the conjunctive cover
-        // (`src/kernel/match/query/cover.zig`), read off the pattern SOURCE with
+        // (`src/kernel/query/cover.zig`), read off the pattern SOURCE with
         // the matcher's own parse options, so the harness measures the formula
         // production would use and cannot flatter it.
         const prod: []const Index.Clause = switch (p.kind) {

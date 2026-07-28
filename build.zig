@@ -144,7 +144,7 @@ const Floor = struct {
     /// Links libc + the whole floor onto `m`.
     ///
     /// libc is not incidental: the archives are C, and the macOS FSEvents
-    /// historical journal (`src/corpus/tree/journal.zig`, the one-shot
+    /// historical journal (`src/corpus/fresh/journal.zig`, the one-shot
     /// index-amend replay) reaches CoreServices/CoreFoundation through libc's
     /// `dlopen`/`dlsym` at runtime rather than link-time framework bindings —
     /// so the cold search binary never loads (or pays the launch-time
@@ -235,7 +235,7 @@ pub fn build(b: *std.Build) void {
     const cli_exe = b.addExecutable(.{ .name = "gist", .root_module = cli_mod });
     b.installArtifact(cli_exe);
     // `gist` alone, for callers that want the CLI under test and not its two
-    // siblings. The portability sweep (`bench/portable/`) cross-compiles 22
+    // siblings. The portability sweep (`bench/targets/`) cross-compiles 22
     // targets and only ever executes `gist`, so building `relate` and `irregex`
     // for each of them triples a sweep for nothing. `install` is unchanged — this
     // is an additional entry point into the same artifact, not a narrowing.
@@ -759,10 +759,10 @@ pub fn build(b: *std.Build) void {
     // ── `relate-knn` — the compression-as-embedding proof harness ──
     // Runs the REAL relate engine (zipper cross-parse / LZJD sketch) as a
     // k-NN text classifier over a labeled manifest, emitting accuracy + build/
-    // query cost as JSON. The sibling driver (bench/relate/) races it against
+    // query cost as JSON. The sibling driver (bench/knn/) races it against
     // gzip-kNN (ACL 2023) and a static-embedding model. Run from the repo root.
     const relate_knn_mod = b.createModule(.{
-        .root_source_file = b.path("bench/relate/knn.zig"),
+        .root_source_file = b.path("bench/knn/knn.zig"),
         .target = k.target,
         .optimize = cli_optimize, // the product-speed posture — this is a timing tool
     });
@@ -854,7 +854,7 @@ pub fn build(b: *std.Build) void {
 
     // ── `gist-scale` — Layer J: the sub-trigram tier's candidate-byte payoff ──
     const scale_mod = b.createModule(.{
-        .root_source_file = b.path("bench/scale/scale.zig"),
+        .root_source_file = b.path("bench/sliver/scale.zig"),
         .target = k.target,
         .optimize = k.optimize,
     });
@@ -947,7 +947,7 @@ pub fn build(b: *std.Build) void {
     // round in this process, and the armed-skip boundary row is published
     // rather than buried. Unit + differential tests ride `zig build test`.
     const rung_bench_mod = b.createModule(.{
-        .root_source_file = b.path("bench/compose/bench.zig"),
+        .root_source_file = b.path("bench/shuffle/bench.zig"),
         .target = k.target,
         .optimize = cli_optimize, // product-speed posture — this is a timing tool
     });
