@@ -30,7 +30,7 @@
 # Usage: bench/gates/patterns_corpus_parity.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-KERNEL="$(cd "${HERE}/../.." && pwd)" # pkg/kernels/irregex
+KERNEL="$(cd "${HERE}/../../../.." && pwd)" # pkg/kernels/irregex
 REPO="$(cd "${KERNEL}/../../.." && pwd)"
 
 echo "building gist + relate (ReleaseFast)…"

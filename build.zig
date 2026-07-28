@@ -5,7 +5,7 @@
 //! built on it: the production `gist` CLI (`src/surface/face/gist/main.zig`, the
 //! `index`/`status` lifecycle verbs plus the bare `<pattern>`/`rg` search
 //! front door) and the separate `gist-bench` harness
-//! (`bench/harness/bench.zig`, the `bench`/`verify`/`certify` tooling). Production CLI
+//! (`bench/apparatus/harness/bench.zig`, the `bench`/`verify`/`certify` tooling). Production CLI
 //! and benchmark tooling no longer share a binary.
 //!
 //! Build-speed contract: a bare `zig build` installs ONLY the product surface
@@ -235,7 +235,7 @@ pub fn build(b: *std.Build) void {
     const cli_exe = b.addExecutable(.{ .name = "gist", .root_module = cli_mod });
     b.installArtifact(cli_exe);
     // `gist` alone, for callers that want the CLI under test and not its two
-    // siblings. The portability sweep (`bench/targets/`) cross-compiles 22
+    // siblings. The portability sweep (`bench/conformance/targets/`) cross-compiles 22
     // targets and only ever executes `gist`, so building `relate` and `irregex`
     // for each of them triples a sweep for nothing. `install` is unchanged — this
     // is an additional entry point into the same artifact, not a narrowing.
@@ -682,7 +682,7 @@ pub fn build(b: *std.Build) void {
     // ── the `gist-bench` harness executable (bench/verify/certify tooling) ──
     // Run from the repo root so relative dirs + output paths resolve there.
     const bench_mod = b.createModule(.{
-        .root_source_file = b.path("bench/harness/bench.zig"),
+        .root_source_file = b.path("bench/apparatus/harness/bench.zig"),
         .target = k.target,
         .optimize = k.optimize,
     });
@@ -729,7 +729,7 @@ pub fn build(b: *std.Build) void {
 
     // `zig build flagbench` — per-function micro-profiles for the three flags
     // agents reach for most (-i / -n / -v): the ONE hot function each adds,
-    // timed in isolation and self-checked byte-identical (bench/harness/flagbench.zig).
+    // timed in isolation and self-checked byte-identical (bench/apparatus/harness/flagbench.zig).
     const run_flagbench = b.addRunArtifact(bench_exe);
     run_flagbench.setCwd(b.path("../../.."));
     run_flagbench.addArg("flagbench");
@@ -752,17 +752,17 @@ pub fn build(b: *std.Build) void {
     sessionprof_step.dependOn(bench_install);
 
     // Bench-side tests too — the harness-local `stats.zig` bootstrap-CI +
-    // Mann-Whitney unit tests. (`bench/harness/bench.zig` imports `gist`; reuse the
+    // Mann-Whitney unit tests. (`bench/apparatus/harness/bench.zig` imports `gist`; reuse the
     // bench module; the engine tests ride `k.test_step` via `src/root.zig`.)
     k.test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = bench_mod })).step);
 
     // ── `relate-knn` — the compression-as-embedding proof harness ──
     // Runs the REAL relate engine (zipper cross-parse / LZJD sketch) as a
     // k-NN text classifier over a labeled manifest, emitting accuracy + build/
-    // query cost as JSON. The sibling driver (bench/knn/) races it against
+    // query cost as JSON. The sibling driver (bench/conformance/relate/) races it against
     // gzip-kNN (ACL 2023) and a static-embedding model. Run from the repo root.
     const relate_knn_mod = b.createModule(.{
-        .root_source_file = b.path("bench/knn/knn.zig"),
+        .root_source_file = b.path("bench/conformance/relate/knn.zig"),
         .target = k.target,
         .optimize = cli_optimize, // the product-speed posture — this is a timing tool
     });
@@ -781,10 +781,10 @@ pub fn build(b: *std.Build) void {
     // Runs the REAL codex (src/corpus/index/codex/) over slices of an on-disk corpus:
     // index bits/char vs measured H0/H2, count/find latency across sizes
     // (flat in n), byte-exact restore from the index alone, every timed count
-    // verified against a naive scan. bench/codex/race.sh adds compressor
+    // verified against a naive scan. bench/bounds/codex/race.sh adds compressor
     // baselines on identical slices. Run from the repo root.
     const codex_scale_mod = b.createModule(.{
-        .root_source_file = b.path("bench/codex/scale.zig"),
+        .root_source_file = b.path("bench/bounds/codex/scale.zig"),
         .target = k.target,
         .optimize = cli_optimize, // the product-speed posture — this is a timing tool
     });
@@ -800,23 +800,23 @@ pub fn build(b: *std.Build) void {
     codex_scale_step.dependOn(codex_scale_install);
 
     // Shared modules for the Layer B/C/D executables below, each living outside
-    // `bench/harness/`'s module root (Zig forbids importing a source file
+    // `bench/apparatus/harness/`'s module root (Zig forbids importing a source file
     // outside a module's own root directory) so they're wired as independent,
     // named modules instead — mirroring how `bench_mod` already wires `gist`.
     const probes_mod = b.createModule(.{
-        .root_source_file = b.path("bench/harness/probes.zig"),
+        .root_source_file = b.path("bench/apparatus/harness/probes.zig"),
         .target = k.target,
         .optimize = k.optimize,
     });
     const pmu_mod = b.createModule(.{
-        .root_source_file = b.path("bench/harness/pmu.zig"),
+        .root_source_file = b.path("bench/apparatus/harness/pmu.zig"),
         .target = k.target,
         .optimize = k.optimize,
     });
 
     // ── `gist-roofline` — Layer C: single-thread STREAM read-bandwidth ceiling ──
     const roofline_mod = b.createModule(.{
-        .root_source_file = b.path("bench/roofline/bandwidth.zig"),
+        .root_source_file = b.path("bench/bounds/roofline/bandwidth.zig"),
         .target = k.target,
         .optimize = k.optimize,
     });
@@ -836,7 +836,7 @@ pub fn build(b: *std.Build) void {
 
     // ── `gist-lowerbound` — Layer D: algorithmic-floor byte-touch audit ──
     const lowerbound_mod = b.createModule(.{
-        .root_source_file = b.path("bench/lowerbound/lowerbound.zig"),
+        .root_source_file = b.path("bench/bounds/lowerbound/audit.zig"),
         .target = k.target,
         .optimize = k.optimize,
     });
@@ -854,7 +854,7 @@ pub fn build(b: *std.Build) void {
 
     // ── `gist-scale` — Layer J: the sub-trigram tier's candidate-byte payoff ──
     const scale_mod = b.createModule(.{
-        .root_source_file = b.path("bench/sliver/scale.zig"),
+        .root_source_file = b.path("bench/rungs/sliver/scale.zig"),
         .target = k.target,
         .optimize = k.optimize,
     });
@@ -873,9 +873,9 @@ pub fn build(b: *std.Build) void {
     // ── `gist-indexq` — Layer L: index quality head-to-head against csearch ──
     // One corpus, one built index, one evaluator, one verifier — only the
     // trigram FORMULA differs between arms (gist-base / gist / csearch, the
-    // last lifted verbatim by `bench/sieve/csearch_plan.py`).
+    // last lifted verbatim by `bench/rungs/sieve/csearch_plan.py`).
     const indexq_mod = b.createModule(.{
-        .root_source_file = b.path("bench/sieve/indexq.zig"),
+        .root_source_file = b.path("bench/rungs/sieve/indexq.zig"),
         .target = k.target,
         .optimize = k.optimize,
     });
@@ -900,7 +900,7 @@ pub fn build(b: *std.Build) void {
     // proofs: research/crest/. Kernel unit tests ride `zig build test` via
     // root.zig's test block (kernel/primitives/crest.zig tests, corpus/index/crest/sidecar_test.zig).
     const crest_bench_mod = b.createModule(.{
-        .root_source_file = b.path("bench/crest/bench.zig"),
+        .root_source_file = b.path("bench/rungs/crest/bench.zig"),
         .target = k.target,
         .optimize = cli_optimize, // product-speed posture — this is a timing tool
     });
@@ -924,7 +924,7 @@ pub fn build(b: *std.Build) void {
     // to time the register-resident kernel against the shipped DFA in the same
     // run. Unit + differential tests ride `zig build test` via root.zig.
     const sieve_bench_mod = b.createModule(.{
-        .root_source_file = b.path("bench/sieve/bench.zig"),
+        .root_source_file = b.path("bench/rungs/sieve/bench.zig"),
         .target = k.target,
         .optimize = cli_optimize, // product-speed posture — this is a timing tool
     });
@@ -947,7 +947,7 @@ pub fn build(b: *std.Build) void {
     // round in this process, and the armed-skip boundary row is published
     // rather than buried. Unit + differential tests ride `zig build test`.
     const rung_bench_mod = b.createModule(.{
-        .root_source_file = b.path("bench/shuffle/bench.zig"),
+        .root_source_file = b.path("bench/rungs/shuffle/bench.zig"),
         .target = k.target,
         .optimize = cli_optimize, // product-speed posture — this is a timing tool
     });
@@ -972,7 +972,7 @@ pub fn build(b: *std.Build) void {
     // engine); agreement is measured over the real corpus. Unit + Pike
     // differential tests ride `zig build test` via root.zig.
     const pbx_bench_mod = b.createModule(.{
-        .root_source_file = b.path("bench/parabix/bench.zig"),
+        .root_source_file = b.path("bench/rungs/parabix/bench.zig"),
         .target = k.target,
         .optimize = cli_optimize, // product-speed posture — this is a timing tool
     });
@@ -990,12 +990,12 @@ pub fn build(b: *std.Build) void {
     // ── `multipattern` — Layer K: the Hyperscan/Vectorscan race, gist's arm ──
     // Links the REAL kernel (PatternSet ships inside it at
     // src/kernel/batch/patterns.zig) and answers the same per-document
-    // attribution question `bench/multipattern/vscan.c` puts to Vectorscan over
+    // attribution question `bench/rungs/multipattern/vscan.c` puts to Vectorscan over
     // byte-identical inputs. `--verify` re-derives the whole attribution vector
     // with N INDEPENDENT single-pattern searches and exits non-zero on the
     // first disagreement, so no timing is ever published without the contract.
     const multipattern_mod = b.createModule(.{
-        .root_source_file = b.path("bench/multipattern/bench.zig"),
+        .root_source_file = b.path("bench/rungs/multipattern/bench.zig"),
         .target = k.target,
         .optimize = cli_optimize, // product-speed posture — this is a timing tool
     });
@@ -1016,7 +1016,7 @@ pub fn build(b: *std.Build) void {
     // root: reports wall-clock and labels cycles NOT-measured; the sudo rung is
     // `sudo zig-out/bin/gist-portbound` after `zig build -Doptimize=ReleaseFast`.
     const portbound_mod = b.createModule(.{
-        .root_source_file = b.path("bench/portcert/portbound.zig"),
+        .root_source_file = b.path("bench/bounds/port/measure.zig"),
         .target = k.target,
         .optimize = k.optimize,
     });
@@ -1038,7 +1038,7 @@ pub fn build(b: *std.Build) void {
     // wired into `zig build test` so a silent copy/production divergence fails
     // CI loudly instead of shipping a stale certificate.
     const portcert_test_mod = b.createModule(.{
-        .root_source_file = b.path("bench/portcert/probes_test.zig"),
+        .root_source_file = b.path("bench/bounds/port/probes_test.zig"),
         .target = k.target,
         .optimize = k.optimize,
     });

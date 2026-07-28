@@ -29,7 +29,7 @@ import sys
 
 
 HERE = Path(__file__).resolve().parent
-_DEFAULT = HERE.parents[4] / ".etc" / "ripgrep" / "tests"  # …/upstream/ripgrep/tests
+_DEFAULT = HERE.parents[5] / ".etc" / "ripgrep" / "tests"  # …/upstream/ripgrep/tests
 TESTS = Path(sys.argv[1]) if len(sys.argv) > 1 else _DEFAULT
 FILES = ["binary.rs", "feature.rs", "json.rs", "misc.rs", "multiline.rs", "regression.rs"]
 

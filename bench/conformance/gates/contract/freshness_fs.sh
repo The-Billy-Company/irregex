@@ -17,7 +17,7 @@ set -uo pipefail
 export GIST_UNCAP=1
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-KERNEL="$(cd "${HERE}/../.." && pwd)"
+KERNEL="$(cd "${HERE}/../../../.." && pwd)"
 command -v rg > /dev/null || {
   echo "ripgrep (rg) not found on PATH"
   exit 1

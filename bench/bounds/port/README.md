@@ -5,10 +5,10 @@ doc_radar:
       file: pkg/kernels/irregex/build.zig
       contains: ['b.step("portbound"', '.name = "gist-portbound"']
     - description: "portcert.sh splices the measured subsection and names the sudo rung"
-      file: pkg/kernels/irregex/bench/portcert/portcert.sh
+      file: pkg/kernels/irregex/bench/bounds/port/mca.sh
       contains: ["portbound.json", "sudo pkg/kernels/irregex/zig-out/bin/gist-portbound"]
     - description: "the splicer fail-closed labels cycles when not measured here"
-      file: pkg/kernels/irregex/bench/portcert/portcert_report.py
+      file: pkg/kernels/irregex/bench/bounds/port/report.py
       contains: "NOT measured on this "
 ---
 
@@ -30,8 +30,8 @@ cross-machine cross-check.
 | `portcert.sh`              | cross-compiles the two probes to two reference microarchitectures, runs `llvm-mca`, writes `portcert.csv`/`portcert.json`, splices the certificate                                                       |
 | `portcert_report.py`       | renders the `## Layer B` markdown section (static + the Layer B′ measured subsection) from `portcert.json` + `portbound.json` and splices it into `.local/gist-verify/CERTIFICATE.md`                    |
 | `portbound.zig`            | **Layer B′** — `gist-portbound`: times the same drift-guarded probes natively under the PMU (`bench/harness/pmu.zig`), writing `portbound.json` (measured cyc/byte + cyc/step; fail-closed without root) |
-| `probes/simd_contains.zig` | byte-faithful copy of the hot loop in [`../../src/kernel/scan/simd.zig`](../../src/kernel/scan/simd.zig)'s `contains` — throughput-bound                                                     |
-| `probes/dfa_step.zig`      | byte-faithful copy of the hot loop in [`../../src/kernel/regex/linear/dfa/dfa.zig`](../../src/kernel/regex/linear/dfa/dfa.zig)'s `docMatch` — latency-bound                                  |
+| `probes/simd_contains.zig` | byte-faithful copy of the hot loop in [`../../src/kernel/scan/simd.zig`](../../src/kernel/scan/simd.zig)'s `contains` — throughput-bound                                                                 |
+| `probes/dfa_step.zig`      | byte-faithful copy of the hot loop in [`../../src/kernel/regex/linear/dfa/dfa.zig`](../../src/kernel/regex/linear/dfa/dfa.zig)'s `docMatch` — latency-bound                                              |
 | `probes_test.zig`          | the drift guard — asserts each probe is bit-identical to the real production function it copies, over adversarial random inputs (`zig build test`)                                                       |
 
 **Why cross-compiled reference cores, not this machine.** This dev box is
@@ -102,7 +102,7 @@ ITERS=200 bench/portcert/portcert.sh    # more llvm-mca simulation iterations
 zig build -Doptimize=ReleaseFast portbound         # wall-clock only (labels cycles NOT measured)
 cd ../../..                                        # the binary resolves .local/ at the CWD — run from repo root
 sudo pkg/kernels/irregex/zig-out/bin/gist-portbound  # measured cycles (kpc is root-gated)
-pkg/kernels/irregex/bench/portcert/portcert.sh       # re-splice: the measured subsection lands in the cert
+pkg/kernels/irregex/bench/bounds/port/mca.sh       # re-splice: the measured subsection lands in the cert
 ```
 
 `CERT_OUT=/path/to/bundle` targets an isolated certificate directory; otherwise

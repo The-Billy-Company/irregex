@@ -25,7 +25,7 @@ import sys
 
 
 HERE = Path(__file__).resolve().parent
-REPO_ROOT = HERE.parents[4]  # gates -> bench -> gist -> kernels -> libs -> repo
+REPO_ROOT = HERE.parents[6]  # oracle -> gates -> conformance -> bench -> gist -> kernels -> libs -> repo
 POSTING_BLOB = "index.gist"
 PATH_TABLE = "paths.list"
 FRESHNESS = "built.ns"

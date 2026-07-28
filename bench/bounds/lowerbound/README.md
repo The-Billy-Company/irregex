@@ -2,10 +2,10 @@
 doc_radar:
   sentinels:
     - description: "Layer D consumes the shared first and last certificate classes"
-      file: pkg/kernels/irregex/bench/harness/probes.zig
+      file: pkg/kernels/irregex/bench/apparatus/harness/probes.zig
       contains: ['.class = "literal-rare"', '.class = "regex-litalt"']
     - description: "the generated certificate cites the current production kernels"
-      file: pkg/kernels/irregex/bench/lowerbound/lowerbound_report.py
+      file: pkg/kernels/irregex/bench/bounds/lowerbound/report.py
       contains: ["src/kernel/scan/simd.zig", "src/kernel/regex/linear/dfa/dfa.zig"]
 ---
 
@@ -87,7 +87,7 @@ zig build certify                       # or: gist-bench certify
 zig build lowerbound                    # → .local/gist-verify/lowerbound.csv
 
 # 3. splice the Layer D section into the certificate:
-python3 pkg/kernels/irregex/bench/lowerbound/lowerbound_report.py \
+python3 pkg/kernels/irregex/bench/bounds/lowerbound/report.py \
     --csv .local/gist-verify/lowerbound.csv \
     --certificate .local/gist-verify/CERTIFICATE.md
 ```

@@ -2,10 +2,10 @@
 doc_radar:
   sentinels:
     - description: "PMU state is a first-class, fail-closed certificate fact with host provenance"
-      file: pkg/kernels/irregex/bench/harness/certify.zig
+      file: pkg/kernels/irregex/bench/apparatus/harness/certify.zig
       contains: ["NOT measured on this machine", "cpuBrand", "requestPerformanceQos"]
     - description: "pmu.zig carries the provenance primitives the layers stamp"
-      file: pkg/kernels/irregex/bench/harness/pmu.zig
+      file: pkg/kernels/irregex/bench/apparatus/harness/pmu.zig
       contains: ["pub fn cpuBrand", "pub fn requestPerformanceQos"]
 ---
 

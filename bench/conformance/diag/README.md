@@ -1,8 +1,8 @@
 <!-- doc_radar:
 paths_exist:
-  - pkg/kernels/irregex/bench/diag/golden.py
+  - pkg/kernels/irregex/bench/conformance/diag/golden.py
 sentinels:
-  - file: pkg/kernels/irregex/bench/diag/golden.py
+  - file: pkg/kernels/irregex/bench/conformance/diag/golden.py
     contains: ["def normalize", "def cmd_check"]
 -->
 

@@ -47,7 +47,7 @@ set -uo pipefail
 export GIST_UNCAP=1
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-KERNEL="$(cd "${HERE}/../.." && pwd)"
+KERNEL="$(cd "${HERE}/../../.." && pwd)"
 REPO="$(cd "${KERNEL}/../../.." && pwd)"
 GIST="${KERNEL}/zig-out/bin/gist"
 

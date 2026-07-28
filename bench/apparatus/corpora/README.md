@@ -2,23 +2,23 @@
 doc_radar:
   counts:
     - description: "two Python tools in this folder: the adversarial generator and the differential sweep"
-      glob: pkg/kernels/irregex/bench/corpora/*.py
+      glob: pkg/kernels/irregex/bench/apparatus/corpora/*.py
       unit: files
       equals: 2
     - description: "one shell tool in this folder: the pinned corpus fetcher"
-      glob: pkg/kernels/irregex/bench/corpora/*.sh
+      glob: pkg/kernels/irregex/bench/apparatus/corpora/*.sh
       unit: files
       equals: 1
   sentinels:
     - description: "the corpus pins this README documents are the ones the fetcher enforces"
-      file: pkg/kernels/irregex/bench/corpora/fetch.sh
+      file: pkg/kernels/irregex/bench/apparatus/corpora/fetch.sh
       contains:
         - 'LINUX_TAG="v6.10"'
         - 'CPYTHON_TAG="v3.13.0"'
         - 'TS_TAG="v5.8.3"'
         - 'SUB_BYTES=$((256 * 1024 * 1024))'
     - description: "the sweep runs both engines and treats ripgrep as the oracle"
-      file: pkg/kernels/irregex/bench/corpora/sweep.py
+      file: pkg/kernels/irregex/bench/apparatus/corpora/sweep.py
       contains:
         - 'GIST_NO_PARALLEL'
         - 'ripgrep is the oracle'

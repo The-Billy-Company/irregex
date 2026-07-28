@@ -2,22 +2,22 @@
 doc_radar:
   sentinels:
     - description: "Layer H's markers and title are this harness's alone"
-      file: pkg/kernels/irregex/bench/certify/certify_portable_report.py
+      file: pkg/kernels/irregex/bench/certificate/report/portable.py
       contains: ["<!-- PORTABLE-LAYER-START -->", "<!-- PORTABLE-LAYER-END -->", "## Layer H — portability (target matrix, executed)"]
     - description: "the conformance slate defeats gist's output cap, proves the vendored PCRE2 per target, and caps the translation-layer lane at its own rung"
-      file: pkg/kernels/irregex/bench/targets/matrix.py
+      file: pkg/kernels/irregex/bench/conformance/targets/matrix.py
       contains: ["--uncap", "PCRE2_PROBE", "TIERS", "conforms-wine", "LANE_CEILING", "WINE_DOCKERFILE"]
     - description: "the Wine ceiling is read by the scorer, not just declared"
-      file: pkg/kernels/irregex/bench/targets/portable.py
+      file: pkg/kernels/irregex/bench/conformance/targets/portable.py
       contains: ["lane_ceiling(t[\"lane\"])"]
     - description: "one comptime seam carries every Windows fork the descent needed"
       file: pkg/kernels/irregex/src/portal.zig
       contains: ["fn ntOpen", "resident_sessions", "GetFinalPathNameByHandleA", "fn argsIterator"]
     - description: "a sweep is hermetic against the ~10 coworker agents editing this tree"
-      file: pkg/kernels/irregex/bench/targets/crossbuild.py
+      file: pkg/kernels/irregex/bench/conformance/targets/crossbuild.py
       contains: ["def snapshot", "def frozen", "def control"]
     - description: "the probe slate this harness mirrors class-for-class"
-      file: pkg/kernels/irregex/bench/harness/probes.zig
+      file: pkg/kernels/irregex/bench/apparatus/harness/probes.zig
       contains: ["literal-punct2", "regex-classcount", "regex-litalt"]
 ---
 

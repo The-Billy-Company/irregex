@@ -3,16 +3,17 @@
 # contract in search_api.toml).
 #
 # SCOPE — WHAT THIS OWNS, AND WHAT IT DELIBERATELY DOES NOT
-#   The Dominance-and-Fit Certificate (bench/certify/ + session/ + rgsuite/) is the
-#   single home for how good Gist is AT FULL SPEED and what bounds it fits:
-#     • cold fresh-process dominance vs ripgrep  → Layer A macroscopic (certify.sh)
-#     • single-thread cycles/byte                → Layer A microscopic (harness/)
-#     • warm resident-daemon latency             → Layer A warm tier (certify_warm.sh + session/)
-#     • --rank definition-first shape rg can't   → Layer A --rank lane (certify_rank.sh)
-#     • rg drop-in correctness                   → rgsuite/
-#     • port / roofline / lower-bound / crest    → Layers B–E
-#     • codex self-index space + decodability    → Layer F (certify_codex_report.py + codex/)
-#     • relate retrieval quality + boundary      → Layer G (certify_relate.sh)
+#   The Dominance-and-Fit Certificate (bench/certificate/ + dominance/session/
+#   + conformance/rgsuite/) is the single home for how good Gist is AT FULL SPEED
+#   and what bounds it fits:
+#     • cold fresh-process dominance vs ripgrep  → Layer A macroscopic (certificate/mint/mint.sh)
+#     • single-thread cycles/byte                → Layer A microscopic (apparatus/harness/)
+#     • warm resident-daemon latency             → Layer A warm tier (certificate/mint/warm.sh + dominance/session/)
+#     • --rank definition-first shape rg can't   → Layer A --rank lane (certificate/mint/rank.sh)
+#     • rg drop-in correctness                   → conformance/rgsuite/
+#     • port / roofline / lower-bound / crest    → Layers B–E (bounds/ + rungs/crest/)
+#     • codex self-index space + decodability    → Layer F (certificate/report/codex.py + bounds/codex/)
+#     • relate retrieval quality + boundary      → Layer G (certificate/mint/relate.sh)
 #   Those are NOT re-measured here. This contract owns only the operational
 #   envelope the certificate does not: index LIFECYCLE cost (build + incremental
 #   refresh), footprint RESOURCE ratios (index bytes / corpus bytes, peak RSS,
@@ -50,7 +51,7 @@ schema_version = 1
 adr = 352
 # The certificate OWNS cold/warm dominance + correctness + optimality; this
 # contract's regimes are the operational envelope beside it, never a re-measure.
-certificate_bundle = "pkg/kernels/irregex/bench/certify/artifact"
+certificate_bundle = "pkg/kernels/irregex/bench/certificate/artifact"
 
 # ── precondition (not a regime) ───────────────────────────────────────────────
 # Before ANY cell below is timed, gist must prove a byte-exact (order-insensitive)
@@ -111,7 +112,7 @@ gated_cross_machine = false
 
 # ── corpora ─────────────────────────────────────────────────────────────────
 # The matrix runs over the Billy home tree PLUS the pinned foreign battery
-# (bench/corpora/fetch.sh), so no claim is home-corpus-only. Each corpus is a
+# (bench/apparatus/corpora/fetch.sh), so no claim is home-corpus-only. Each corpus is a
 # distinct SHAPE; a bundle records which corpora it actually measured.
 
 [[corpus]]
@@ -152,7 +153,7 @@ shape = "adversarial: cap edges, CRLF, UTF-16, invalid UTF-8, symlink cycles"
 pin = "torture.py deterministic build"
 
 # ── competitors ───────────────────────────────────────────────────────────────
-# The registry + fairness scoping live in bench/races/_compete.sh (single source
+# The registry + fairness scoping live in bench/dominance/races/field.sh (single source
 # of truth for how each tool is invoked). This lists which are REQUIRED as a
 # paired ratio and which are optional field context.
 
@@ -219,7 +220,7 @@ raw_dir = ".local/gist-evaluation"
 # Committed, verified bundles + the aggregate report live here, one dir per
 # machine so Apple-arm64 and Anvil-linux-x86_64 stay SEPARATE, machine-labeled
 # evidence (never averaged into one blended number).
-artifact_dir = "pkg/kernels/irregex/bench/evaluate/artifact"
+artifact_dir = "pkg/kernels/irregex/bench/dominance/evaluate/artifact"
 # A PUBLISHED bundle must come from a clean git tree (git_dirty = false); a dirty
 # tree may be measured for exploration but is refused at publish and marked
 # exploratory in the bundle so it can never masquerade as evidence.
@@ -236,7 +237,7 @@ require_clean_tree_to_publish = true
 # in its own docs from its own artifacts — this contract must not restate them.
 [[claim]]
 id = "resource.index_over_corpus"
-source = "pkg/kernels/irregex/bench/certify/artifact/index-sizes.json"
+source = "pkg/kernels/irregex/bench/certificate/artifact/index-sizes.json"
 kind = "json_ratio"
 regime = "resource"
 scope = "required index bytes (posting + path + freshness) / corpus bytes — the footprint ratio, hardware-invariant and comparable across machines"

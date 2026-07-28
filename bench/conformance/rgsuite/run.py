@@ -253,7 +253,7 @@ def _run_engine(engine_env):
 def main():
     """CLI entry point."""
     if not GIST.exists():
-        sys.exit(f"gist CLI not built at {GIST} — run `zig build` in {HERE.parents[1]}")
+        sys.exit(f"gist CLI not built at {GIST} — run `zig build` in {HERE.parents[2]}")
     list_na = "--list-na" in sys.argv[1:]
     any_fails = False
     all_results = {}

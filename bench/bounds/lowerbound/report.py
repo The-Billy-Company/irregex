@@ -223,7 +223,7 @@ def main() -> int:
     # from this file: bench/lowerbound/lowerbound_report.py → repo root parents[5])
     # so the report works from any CWD, like the zig steps and portcert.sh.
     """CLI entry point."""
-    out_dir = Path(__file__).resolve().parents[5] / ".local/gist-verify"
+    out_dir = Path(__file__).resolve().parents[6] / ".local/gist-verify"
     ap = argparse.ArgumentParser(description="gist Layer D lower-bound certificate splicer")
     ap.add_argument(
         "--csv",

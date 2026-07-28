@@ -23,7 +23,7 @@ import verify
 
 
 HERE = Path(__file__).resolve().parent
-REPO = HERE.parents[5]
+REPO = HERE.parents[6]
 KERNEL = REPO / "pkg/kernels/irregex"
 CONTRACT = KERNEL / "contract/crest_evidence.toml"
 UTC = timezone.utc

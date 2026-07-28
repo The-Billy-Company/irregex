@@ -32,7 +32,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-KERNEL="$(cd "${HERE}/../.." && pwd)" # portcert/ → bench/ → gist root
+KERNEL="$(cd "${HERE}/../../.." && pwd)" # port/ → bounds/ → bench/ → gist root
 REPO="$(cd "${KERNEL}/../../.." && pwd)"
 OUT="${CERT_OUT:-${REPO}/.local/gist-verify}" # shared with Layer A
 WORK="${OUT}/portcert"                        # our emitted .s + llvm-mca logs
@@ -129,7 +129,7 @@ for pspec in "${PROBES[@]}"; do
     asm="${WORK}/${probe}.${disp}.s"
     log="${WORK}/${probe}.${disp}.mca.txt"
 
-    (cd "${KERNEL}" && zig build-obj "bench/portcert/probes/${probe}.zig" \
+    (cd "${KERNEL}" && zig build-obj "bench/bounds/port/probes/${probe}.zig" \
       -target "${triple}" -mcpu="${zig_cpu}" -O ReleaseFast \
       -femit-asm="${asm}" -fno-emit-bin) 2> "${WORK}/${probe}.${disp}.build.txt" || {
       echo "  ${probe}/${disp}: cross-compile FAILED (see build log) — skipping." >&2
@@ -170,7 +170,7 @@ cat > "${JSON}" << EOF
 {
   "layer": "B",
   "claim": "port-optimality (static microarchitectural bound via llvm-mca)",
-  "generated_by": "bench/portcert/portcert.sh",
+  "generated_by": "bench/bounds/port/mca.sh",
   "llvm_mca_version": "${MCA_VERSION:-unknown}",
   "sim_iterations": ${ITERS},
   "apple_silicon_note": "No real llvm-mca scheduling model exists for any Apple CPU (A7..M4 all map to the 2013 Cyclone model; LLVM issue #63698). Layer B is therefore a static bound over two REAL modeled reference cores, not this host.",
@@ -191,7 +191,7 @@ echo "wrote ${JSON}"
 # portbound.json (Layer B′ — the port bound MEASURED on this machine, from
 # `gist-portbound`) and renders it fail-closed: absent or PMU-less, the
 # certificate says cycles are cross-checked-only, never a fabricated number.
-if python3 "${HERE}/portcert_report.py" --json "${JSON}" --certificate "${CERT}"; then
+if python3 "${HERE}/report.py" --json "${JSON}" --certificate "${CERT}"; then
   echo "spliced Layer B section into ${CERT}"
 fi
 if [[ -f "${OUT}/portbound.json" ]]; then

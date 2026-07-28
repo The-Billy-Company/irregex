@@ -17,9 +17,9 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-KERNEL="$(cd "${HERE}/../.." && pwd)" # gates/ -> bench/ -> gist root
-# shellcheck source=../races/_compete.sh
-source "${HERE}/../races/_compete.sh"
+KERNEL="$(cd "${HERE}/../../../.." && pwd)" # contract/ -> gates/ -> conformance/ -> bench/ -> gist root
+# shellcheck source=../../../dominance/races/field.sh
+source "${HERE}/../../../dominance/races/field.sh"
 
 # Drain output (force full work + swallow the exit-1 no-match) while PRESERVING a
 # hard-error exit (>= 2), so the caller can fail closed. Deliberately `bash -c`

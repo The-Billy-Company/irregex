@@ -1,24 +1,23 @@
-# bench/gates
+# bench/conformance/gates
 
 Permanent, fail-closed correctness and contract gates — each exits non-zero on
-any violation, so a regression can't ship silently. `scan_regress.sh` and
-`streams.sh` source the shared field registry at
-[`../races/_compete.sh`](../races/_compete.sh); `equality.sh`,
+any violation, so a regression can't ship silently. They are split by **what
+they oracle against**:
+
+| Folder                            | Oracles against                          | Files                                                                                                              |
+| --------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| [`parity/`](parity/README.md)     | `rg` (or gist itself)                    | `equality` · `index_elision_parity` · `line_parity` · `unicode_parity` · `patterns_corpus_parity` · `scan_regress` |
+| [`contract/`](contract/README.md) | gist's own behavioral promises           | `streams` · `enum_determinism` · `fail_closed` · `freshness_fs` · `ci_order`                                       |
+| [`oracle/`](oracle/README.md)     | an independent engine / accounting model | `indexed_pcre_oracle.py` · `index_size_accounting.py`                                                              |
+
+`parity/scan_regress.sh` and `contract/streams.sh` source the shared field
+registry at
+[`../../dominance/races/field.sh`](../../dominance/races/field.sh); `equality.sh`,
 `index_elision_parity.sh`, and `enum_determinism.sh` are pure gist-side oracles
 and need no field registry (`enum_determinism.sh` diffs gist against itself and
 needs no `rg`).
 
-| File                      | Gate                                                                                                                                                                                                                                   |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `equality.sh`             | **correctness (index vs `rg`)**: gist ≡ `rg` over a byte-exact corpus snapshot — the soundness oracle                                                                                                                                  |
-| `index_elision_parity.sh` | **correctness (index vs itself)**: the index-accelerated run ≡ the same query with `--no-index` — proves the index only elides reads, never changes results                                                                            |
-| `enum_determinism.sh`     | **correctness (enumeration completeness)**: with the soft cap live, `-l`/`-c`/`--count-matches`/`--files-without-match`/`--files` return the complete, run-to-run-stable set — never a truncated, work-stealing-order-dependent subset |
-| `unicode_parity.sh`       | **correctness (Unicode drop-in)**: `gist <pat>` ≡ `rg <pat>` at rg's default (Unicode) semantics over a multi-script fixture — fold, classes, `\b`/`-w`, and the `(?-u)`/`--no-unicode` opt-out, byte-identical on both engines        |
-| `scan_regress.sh`         | **correctness (no-prefilter fallback) + race**: the live-tree full-read fallback ≡ `rg` (exits 1 on FN/FP) + min-of-N speed floor                                                                                                      |
-| `streams.sh`              | **output contract**: results→stdout, diagnostics (`--rank`'s timing line / guidance)→stderr — the `rg`-conventional split that makes gist composable                                                                                   |
-| `ci_order.sh`             | **orchestration**: correctness gates first, then performance (certificate + ratio floors)                                                                                                                                              |
-
-## `index_elision_parity.sh` — the index is acceleration-only
+## `parity/index_elision_parity.sh` — the index is acceleration-only
 
 Builds a throwaway, hermetic corpus (signal + noise + a `.gitignore`d file +
 a hidden file), indexes it, then for a battery of query shapes (literal,
@@ -33,13 +32,13 @@ skipping reads, which breaks gist's core safety claim.
 
 ```bash
 cd pkg/kernels/irregex
-bench/gates/index_elision_parity.sh
+bench/conformance/gates/parity/index_elision_parity.sh
 ```
 
-## `enum_determinism.sh` — enumeration is complete under the cap
+## `contract/enum_determinism.sh` — enumeration is complete under the cap
 
-`equality.sh` proves gist ≡ `rg` on the **full (uncapped)** matching-file set.
-This gate proves the sibling invariant it can't see: with the **default**
+`parity/equality.sh` proves gist ≡ `rg` on the **full (uncapped)** matching-file
+set. This gate proves the sibling invariant it can't see: with the **default**
 ~25k-token soft context cap ON, the compact per-file modes —
 `-l`/`--files-with-matches`, `-c`/`--count`, `--count-matches`,
 `--files-without-match`, and `--files` — return the **complete, run-to-run-stable**
@@ -60,10 +59,10 @@ exemption in `tryWarm`, so the engines can't disagree on which files `-l` return
 
 ```bash
 cd pkg/kernels/irregex
-bench/gates/enum_determinism.sh
+bench/conformance/gates/contract/enum_determinism.sh
 ```
 
-## `equality.sh` — the INDEX-path soundness oracle
+## `parity/equality.sh` — the INDEX-path soundness oracle
 
 Builds the gist index, has it emit (per needle) its verified matching-file set
 **plus a byte-exact snapshot of the files it indexed** (the corpus is
@@ -79,10 +78,10 @@ Both must be zero.
 
 ```bash
 cd pkg/kernels/irregex
-bench/gates/equality.sh 150 1      # gist ≡ rg over a byte-exact corpus snapshot, per needle
+bench/conformance/gates/parity/equality.sh 150 1   # gist ≡ rg over a byte-exact corpus snapshot, per needle
 ```
 
-## `unicode_parity.sh` — the Unicode drop-in oracle
+## `parity/unicode_parity.sh` — the Unicode drop-in oracle
 
 gist is a pure byte automaton; it now folds case, tests word boundaries, and
 matches character/property classes over **Unicode codepoints by default**, the
@@ -97,15 +96,15 @@ Runs once per engine (parallel `pipeline.zig` + serial `run.zig`).
 
 ```bash
 cd pkg/kernels/irregex
-bench/gates/unicode_parity.sh
+bench/conformance/gates/parity/unicode_parity.sh
 ```
 
-## `scan_regress.sh` — the no-prefilter fallback oracle
+## `parity/scan_regress.sh` — the no-prefilter fallback oracle
 
 `equality.sh` proves the path where the trigram index elides reads. A regex
 the index can't prefilter at all (`\w{3,8}`, `[a-f0-9]{2,}`, `panic|0x`, …)
 gets no elision — the unified `ripgrep/` engine reads and regex-scans every
-candidate itself over the live tree ([`src/exec/cold/engine/swarm/`](../../src/exec/cold/engine/swarm)
+candidate itself over the live tree ([`src/exec/cold/engine/swarm/`](../../../src/exec/cold/engine/swarm)
 drives the fused work-stealing walk+read+scan fan-out), so `equality.sh`'s frozen-snapshot proof
 doesn't cover it — this script is the companion oracle:
 
@@ -120,11 +119,11 @@ Built ReleaseFast (release-vs-release with `rg`).
 
 ```bash
 cd pkg/kernels/irregex
-bench/gates/scan_regress.sh         # gate + race, default runs=12
-bench/gates/scan_regress.sh 20      # tighter timing
+bench/conformance/gates/parity/scan_regress.sh         # gate + race, default runs=12
+bench/conformance/gates/parity/scan_regress.sh 20      # tighter timing
 ```
 
-## `streams.sh` — the stdout/stderr output contract
+## `contract/streams.sh` — the stdout/stderr output contract
 
 gist brands itself an _agent-friendly_ code locator: an agent in a shell does
 `gist foo -l > files` and `gist foo | head`. This script reproduces the
@@ -135,5 +134,5 @@ stdout, with a distinct stderr budget for `--rank`'s timing line.
 
 ```bash
 cd pkg/kernels/irregex
-bench/gates/streams.sh
+bench/conformance/gates/contract/streams.sh
 ```

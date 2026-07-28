@@ -2,14 +2,14 @@
 doc_radar:
   occurrences:
     - description: "every declared CLI shape is one [[shape]] row in matrix.toml"
-      file: pkg/kernels/irregex/bench/matrix/matrix.toml
+      file: pkg/kernels/irregex/bench/conformance/shapes/shapes.toml
       pattern: '\[\[shape\]\]'
       equals: 19
   sentinels:
     - description: "the driver reuses the certificate's stats (never a second impl)"
-      file: pkg/kernels/irregex/bench/matrix/matrix.py
+      file: pkg/kernels/irregex/bench/conformance/shapes/shapes.py
       contains:
-        - "import certify_stats as S"
+        - "import stats as S"
         - 'sub.add_parser("parity")'
         - 'sub.add_parser("gate")'
 ---

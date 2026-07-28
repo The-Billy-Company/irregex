@@ -35,7 +35,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-KERNEL = Path(__file__).resolve().parents[2]  # bench/diag → bench → kernel
+KERNEL = Path(__file__).resolve().parents[3]  # bench/conformance/diag → conformance → bench → kernel
 REPO = KERNEL.parents[2]  # pkg/kernels/irregex → repo root
 BIN = KERNEL / "zig-out" / "bin"
 GOLDEN_DIR = Path(__file__).resolve().parent / "golden"

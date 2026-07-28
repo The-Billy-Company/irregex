@@ -19,7 +19,7 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-KERNEL="$(cd "${HERE}/../.." && pwd)"
+KERNEL="$(cd "${HERE}/../../../.." && pwd)"
 cd "${KERNEL}" || exit 1
 
 gates_only=0

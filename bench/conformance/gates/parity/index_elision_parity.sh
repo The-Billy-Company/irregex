@@ -34,7 +34,7 @@ set -uo pipefail
 # identical full output (the hard OOM ceiling stays on).
 export GIST_UNCAP=1
 HERE="$(cd "$(dirname "$0")" && pwd)"
-KERNEL="$(cd "${HERE}/../.." && pwd)" # pkg/kernels/irregex
+KERNEL="$(cd "${HERE}/../../../.." && pwd)" # pkg/kernels/irregex
 
 echo "building gist (ReleaseFast)…"
 (cd "${KERNEL}" && zig build -Doptimize=ReleaseFast > /dev/null 2>&1) || {

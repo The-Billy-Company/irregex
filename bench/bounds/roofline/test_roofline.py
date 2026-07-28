@@ -1,8 +1,16 @@
+import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
 
-import roofline_report
+# Load the sibling report.py under a unique module name: three report.py modules
+# now live under bounds/, and a bare `import report` would collide in sys.modules
+# with dominance/evaluate/report.py under pytest's prepend import mode.
+_spec = importlib.util.spec_from_file_location(
+    "roofline_report", Path(__file__).resolve().parent / "report.py"
+)
+roofline_report = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(roofline_report)
 
 
 def fixture(scan_gbps: float, *, ladder: bool = True) -> dict:

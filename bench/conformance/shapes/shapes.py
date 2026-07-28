@@ -17,9 +17,9 @@ Three subcommands, one discipline (correctness before speed):
            unexpected divergence is a hard error. This is a CI gate.
 
   bench    time gist-idx vs rg with the certificate's own bootstrap-CI +
-           Mann-Whitney verdict (`certify/certify_stats.py`, imported — the
-           stats are defined once). `--publish` refreshes matrix_baseline.json
-           (per-shape floors) + matrix.csv (measured rows) + CERTIFICATE_MATRIX.md.
+           Mann-Whitney verdict (`certificate/report/stats.py`, imported — the
+           stats are defined once). `--publish` refreshes baseline.json
+           (per-shape floors) + shapes.csv (measured rows) + CERTIFICATE_MATRIX.md.
 
   gate     assert the committed per-shape floors hermetically (no re-timing),
            mirroring `session/gate_session.py`. One honest asymmetry: a row
@@ -49,15 +49,15 @@ import sys
 import tomllib
 
 HERE = Path(__file__).resolve().parent
-KERNEL = HERE.parents[1]
+KERNEL = HERE.parents[2]
 REPO = KERNEL.parents[2]
-MATRIX = HERE / "matrix.toml"
-BASELINE = HERE / "matrix_baseline.json"
-CSV = HERE / "matrix.csv"
+MATRIX = HERE / "shapes.toml"
+BASELINE = HERE / "baseline.json"
+CSV = HERE / "shapes.csv"
 CERT = HERE / "CERTIFICATE_MATRIX.md"
 
-sys.path.insert(0, str(KERNEL / "bench" / "certify"))
-import certify_stats as S  # noqa: E402 — bootstrap-CI + Mann-Whitney, defined once
+sys.path.insert(0, str(KERNEL / "bench" / "certificate" / "report"))
+import stats as S  # noqa: E402 — bootstrap-CI + Mann-Whitney, defined once
 
 # A shape's measured verdict is "off-expect" only when it is WORSE than declared
 # (a regression, or a loss hiding under a parity/win label) — never when it beats

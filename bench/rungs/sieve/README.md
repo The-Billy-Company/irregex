@@ -1,22 +1,22 @@
 ---
 doc_radar:
   paths_exist:
-    - pkg/kernels/irregex/bench/sieve/bench.zig
-    - pkg/kernels/irregex/bench/sieve/indexq.zig
-    - pkg/kernels/irregex/bench/sieve/stress.zig
-    - pkg/kernels/irregex/bench/sieve/csearch_plan.py
-    - pkg/kernels/irregex/bench/sieve/indexcost.sh
+    - pkg/kernels/irregex/bench/rungs/sieve/bench.zig
+    - pkg/kernels/irregex/bench/rungs/sieve/indexq.zig
+    - pkg/kernels/irregex/bench/rungs/sieve/stress.zig
+    - pkg/kernels/irregex/bench/rungs/sieve/csearch_plan.py
+    - pkg/kernels/irregex/bench/rungs/sieve/indexcost.sh
     - pkg/kernels/irregex/src/kernel/query/cover.zig
     - pkg/kernels/irregex/src/kernel/regex/linear/sieve/sieve.zig
   sentinels:
     - description: "the harness fails closed on a missed match, on a retired matching document, and on a ladder that disagrees with the full scan"
-      file: pkg/kernels/irregex/bench/sieve/bench.zig
+      file: pkg/kernels/irregex/bench/rungs/sieve/bench.zig
       contains:
         - "SOUNDNESS VIOLATION"
         - "DOCUMENT VIOLATION"
         - "LADDER DIVERGENCE"
     - description: "Layer L fails closed on a cross-arm hit disagreement — a formula that pruned a real match"
-      file: pkg/kernels/irregex/bench/sieve/indexq.zig
+      file: pkg/kernels/irregex/bench/rungs/sieve/indexq.zig
       contains:
         - "a filter elided a real match"
         - "one of the three formulas is UNSOUND"
@@ -107,7 +107,7 @@ boolean formula over trigrams:
 | arm         | formula                                                                                                                      |
 | ----------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | `gist-base` | the pre-Layer-L prefilter — one required literal, else the per-branch alternation cover (one clause)                         |
-| `gist`      | the conjunctive cover (`src/kernel/query/cover.zig`), read off the pattern source with the matcher's own parse options |
+| `gist`      | the conjunctive cover (`src/kernel/query/cover.zig`), read off the pattern source with the matcher's own parse options       |
 | `csearch`   | **csearch's own formula**, lifted verbatim from `csearch -verbose` by `csearch_plan.py` and replayed against gist's postings |
 
 csearch's arm is not a reimplementation and not a proxy. `csearch -verbose`

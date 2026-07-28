@@ -29,7 +29,7 @@ import subprocess
 import time
 from pathlib import Path
 
-PKG = Path(__file__).resolve().parent.parent.parent  # pkg/kernels/irregex
+PKG = Path(__file__).resolve().parent.parent.parent.parent  # pkg/kernels/irregex
 
 # Reusing the live `.zig-cache` would reintroduce exactly the coupling the
 # snapshot exists to remove; the *global* Zig cache is still shared, which is

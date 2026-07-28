@@ -5,6 +5,14 @@ a **drop-in ripgrep** on the surface it claims to support (currently **100%
 supported-surface parity** — every replayed supported-surface case matches
 ripgrep, with zero deferred divergences — see the scoreboard), benchmarked against real ripgrep as both
 the **correctness oracle** and the **performance baseline**.
+
+That parity figure is scoped to a denominator **ripgrep owns**: the tests it
+wrote and the flags it documents. The [fuzz companion](#fuzz-companion-fuzzpy--invocations-nobody-wrote-down)
+exists because that is also the ceiling of a curated denominator — it can only
+hold cases someone already thought of — and it generates invocations nobody
+wrote down. It still finds a small residual; that tail is carried, per root-cause
+class, in `fuzz_baseline.json` and in Layer I of the certificate, and it is
+ratcheted shrink-only rather than rounded off.
 `run.py` replays the whole suite once per **engine** — the parallel
 work-stealing walk (`pipeline.zig`, gist's default recursive-walk dispatch)
 and the serial fallback (`run.zig`, forced via the internal `GIST_NO_PARALLEL`
@@ -30,7 +38,7 @@ mines one case per command), replayed against **both** engines:
 | **PASS**  |                       411 |                411 | `gist rg` stdout == `rg` stdout **at the mined test's own bar** (see below)     |
 | **ORDER** |                         0 |                  0 | a byte-exact (`eqnice!`) case differing only in line order — a real hole        |
 | **FAIL**  |                         0 |                  0 | a supported-surface divergence, each phase-tracked in `coverage_manifest.toml`  |
-| NA        |                        16 |                 16 | unsupported **by design** (see boundaries below)                                |
+| NA        |                        14 |                 14 | unsupported **by design** (see boundaries below)                                |
 | SKIP      |                        21 |                 21 | not replayable as one argv — each mapped to a companion proof / upstream reason |
 
 **Supported-surface parity = (PASS+ORDER) / (PASS+ORDER+FAIL) = 411/411 = 100.0%
@@ -119,8 +127,11 @@ current boundaries:
    gb18030/GBK, Big5, EUC-JP, Shift_JIS, EUC-KR, ISO-2022-JP), a **UTF-8/UTF-16 BOM
    is auto-detected**, and an unrecognized label still **fails loud (exit 2)**.
    Byte-exact vs rg — see `transforms.py`. (No longer an NA bucket.)
-4. **ASCII case-folding** — `-i` folds ASCII only; no Unicode case folding, and
-   no per-branch `(?i)` across multiple `-e` patterns.
+4. **one compiled engine per run** — `-i` now folds Unicode at rg's own posture
+   (**simple** fold, Unicode's `C+S` mappings, so `café`⇄`CAFÉ` matches on both
+   tools and `ß`⇄`SS` matches on neither); `--no-unicode` reverts to ASCII
+   bytes. What remains a boundary is per-branch `(?i)` across multiple `-e`
+   patterns, since gist compiles one engine for the whole invocation.
 5. **RE2-style engine** — `-P`/pcre2, lookaround, backreferences (mostly SKIP).
 6. **ignore scope** — the in-repo hierarchy **and** the _global_ gitignore
    (`core.excludesFile`, resolved from `$HOME/.gitconfig` / `$XDG_CONFIG_HOME/git/config`
@@ -185,8 +196,9 @@ gist is built for, geomean speedup, gist wins:
 | GNU grep |     ~5460× | 20/20 |
 | ugrep    |     ~6600× | 20/20 |
 
-The honest headline: gist is a **drop-in rg (100% supported-surface parity
-on both engines, with zero remaining divergences)**
+The honest headline: gist is a **drop-in rg (100% supported-surface parity on
+both engines, with zero remaining divergences on the mined suite and a small
+shrink-only residual on the generated-invocation lane)**
 that is **~3.3× faster cold** and **~1770× faster warm-resident** than ripgrep —
 the "40×" claim sits comfortably between the one-shot and resident models and is
 conservative for gist's intended long-lived agent-session use.
@@ -422,6 +434,37 @@ agreeing on a rejection is agreement). **Robustness is measured in the same
 pass**, because that is what a maturity claim actually rests on: every child gets
 a hard timeout, and crash / hang / peak-RSS are recorded per iteration rather
 than hoped for.
+
+### The residual, and why it is published rather than resolved to zero
+
+Every unresolved failure is classed by the **shape** of the disagreement —
+derived from the two byte streams, not from the argv that produced them, so the
+same defect lands in the same bucket across seeds. The run prints that table and
+writes it to the JSON record as `residual` / `residual_total`:
+
+| class                         | the disagreement                                         |
+| ----------------------------- | -------------------------------------------------------- |
+| `line-count`                  | one output holds lines the other does not                |
+| `line-content`                | same number of lines, one line's bytes differ            |
+| `trailing-bytes`              | lines agree; the trailing terminator does not            |
+| `exit-code`                   | byte-identical output, different exit code               |
+| `timeout-rg` / `timeout-gist` | one binary hit the per-child wall; the suffix says which |
+| `crash-rg` / `crash-gist`     | one binary died on a signal                              |
+
+A shape may compose with `+exit` when the exit codes disagree too.
+
+`fuzz_baseline.json` is the committed floor, and the certificate's Layer I
+reporter (`bench/certificate/report/scanner.py`) gates on it **shrink-only**:
+the total may not grow, no single class may grow, and a class the baseline does
+not name fails the mint even when the total went down — a new root cause is news
+even when the arithmetic improved. Refresh the baseline only in the same PR as
+the fix that lowered it; lifting it to go green is the ratchet equivalent of
+bandaging a test.
+
+Publishing the tail is the point. A generated-invocation lane whose residual is
+zero has stopped being adversarial, and the earlier arrangement — an optional
+`--fuzz` flag feeding a gate that refused on any divergence — meant the only way
+a real run could mint the certificate was to leave this lane out of it.
 
 ## Files
 

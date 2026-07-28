@@ -1,11 +1,11 @@
 ---
 doc_radar:
   paths_exist:
-    - pkg/kernels/irregex/bench/shuffle/bench.zig
+    - pkg/kernels/irregex/bench/rungs/shuffle/bench.zig
     - pkg/kernels/irregex/src/kernel/regex/linear/shuffle/shuffle.zig
   sentinels:
     - description: "the harness fails closed on disagreement and on the gate arming where it must not"
-      file: pkg/kernels/irregex/bench/shuffle/bench.zig
+      file: pkg/kernels/irregex/bench/rungs/shuffle/bench.zig
       contains:
         - "error.ComposeProofFailed"
         - "the dispatch gate ARMED on an accelerated pattern"

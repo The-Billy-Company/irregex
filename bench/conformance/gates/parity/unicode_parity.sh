@@ -21,7 +21,7 @@ set -uo pipefail
 export GIST_UNCAP=1
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-KERNEL="$(cd "${HERE}/../.." && pwd)"
+KERNEL="$(cd "${HERE}/../../../.." && pwd)"
 GIST="${GIST:-${KERNEL}/zig-out/bin/gist}"
 command -v rg > /dev/null || {
   echo "ripgrep (rg) not found on PATH"

@@ -1,11 +1,11 @@
 ---
 doc_radar:
   paths_exist:
-    - pkg/kernels/irregex/bench/parabix/bench.zig
+    - pkg/kernels/irregex/bench/rungs/parabix/bench.zig
     - pkg/kernels/irregex/src/kernel/regex/linear/parabix/parabix.zig
   sentinels:
     - description: "the harness fails closed on disagreement and on the gate arming where it must not"
-      file: pkg/kernels/irregex/bench/parabix/bench.zig
+      file: pkg/kernels/irregex/bench/rungs/parabix/bench.zig
       contains:
         - "error.ParabixProofFailed"
         - "ARMED on a pattern the gate must refuse"

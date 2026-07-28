@@ -40,7 +40,7 @@ import time
 
 
 HERE = Path(__file__).resolve().parent
-KERNEL = HERE.parents[1]
+KERNEL = HERE.parents[2]
 REPO = KERNEL.parents[2]
 GIST = KERNEL / "zig-out" / "bin" / "gist"
 CORPORA = Path(os.environ.get("GIST_CORPORA_DIR", REPO / ".local" / "gist-corpora"))

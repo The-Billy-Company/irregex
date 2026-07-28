@@ -56,6 +56,7 @@ import resource
 import shlex
 import shutil
 import string
+import subprocess
 import sys
 import tempfile
 
@@ -379,22 +380,59 @@ def compare(argv: list[str], cwd: str, watermark: dict[str, float]) -> dict:
     if rc_rg == rc_g and a == b:
         return {"verdict": "agree"}
     if 124 in (rc_rg, rc_g):
-        return {"verdict": "timeout", "rc": [rc_rg, rc_g]}
+        # Attribute the wall to the binary that hit it. rg timing out where gist
+        # finished is not a gist robustness failure, and folding the two into one
+        # "timeout" hides which tool was slow.
+        return {"verdict": "timeout", "klass": "timeout-rg" if rc_rg == 124 else "timeout-gist", "rc": [rc_rg, rc_g]}
     if rc_g == 2 and _oracle.is_design_decline(err_g):
         return {"verdict": "declined", "why": err_g.decode(errors="replace").strip()[:120]}
     if rc_rg == 2 and rc_g == 2:
         return {"verdict": "both_reject"}
     if rc_g < 0 or rc_rg < 0:  # killed by a signal
-        return {"verdict": "crash", "rc": [rc_rg, rc_g]}
+        return {"verdict": "crash", "klass": "crash-rg" if rc_rg < 0 else "crash-gist", "rc": [rc_rg, rc_g]}
     if (declared := _declared_boundary(argv, rc_rg, rc_g, a, b)) is not None:
         return declared
     return {
         "verdict": "divergent",
+        "klass": _klass(rc_rg, rc_g, a, b),
         "rc": [rc_rg, rc_g],
         "bytes": [len(a), len(b)],
         "why": _first_diff(a, b) if a != b else f"exit {rc_rg} vs {rc_g}",
         "stderr": err_g.decode(errors="replace").strip()[:200],
     }
+
+
+def _rg_version() -> str:
+    """The oracle's own version string, or `?` when rg will not answer."""
+    try:
+        out = subprocess.run([RG, "--version"], capture_output=True, text=True).stdout
+        return out.split("\n", 1)[0].replace("ripgrep ", "").strip() or "?"
+    except OSError:
+        return "?"
+
+
+def _klass(rc_rg: int, rc_g: int, a: bytes, b: bytes) -> str:
+    """A stable, observable class for one divergence, derived from the outputs alone.
+
+    A total is the wrong thing to ratchet on its own: it lets a newly-introduced
+    defect hide inside a count that another fix happened to lower by the same
+    amount. Classing every divergence by the SHAPE of the disagreement — and
+    deriving that shape from the two byte streams rather than from the argv that
+    produced them — gives the certificate a per-class floor that a new root cause
+    cannot slip under, while staying stable across seeds and iteration counts.
+    """
+    if a == b:
+        return "exit-code"  # byte-identical output, different verdict
+    la, lb = a.splitlines(), b.splitlines()
+    shape = (
+        "line-count"
+        if len(la) != len(lb)
+        else "line-content"
+        if la != lb
+        # `splitlines` agrees but the raw bytes do not: a terminator difference.
+        else "trailing-bytes"
+    )
+    return f"{shape}+exit" if rc_rg != rc_g else shape
 
 
 def _declared_boundary(argv: list[str], rc_rg: int, rc_g: int, a: bytes, b: bytes) -> dict | None:
@@ -431,6 +469,12 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=0x6E15, help="same seed family as the certificate")
     ap.add_argument("--corpus", choices=sorted(CORPORA), help="restrict to one corpus")
     ap.add_argument("--json", type=Path, help="write the machine record here")
+    ap.add_argument(
+        "--publish-baseline",
+        type=Path,
+        help="write this run's residual as the committed shrink-only floor "
+        "(the MEASUREMENT publishes; the certificate gate only ever reads)",
+    )
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--max-report", type=int, default=12, help="divergences to print in full")
     ap.add_argument(
@@ -510,6 +554,12 @@ def main() -> int:
         "  (attributed only where a child raised the watermark)"
     )
 
+    residual = Counter(f.get("klass", "unclassified") for f in bad)
+    if residual:
+        print("residual by class (what the certificate ratchets):")
+        for klass, n in sorted(residual.items()):
+            print(f"  {n:4d}  {klass}")
+
     if args.json:
         args.json.parent.mkdir(parents=True, exist_ok=True)
         args.json.write_text(
@@ -526,6 +576,11 @@ def main() -> int:
                     "divergences": tally["divergent"],
                     "timeouts": tally["timeout"],
                     "crashes": tally["crash"],
+                    # The residual counts EVERY unresolved failure (divergence,
+                    # timeout, crash) by class — it is the thing the certificate
+                    # ratchets, so it must not be narrower than the tail it names.
+                    "residual": dict(sorted(residual.items())),
+                    "residual_total": len(bad),
                     "peak_rss_mb": {k: round(v, 1) for k, v in watermark.items()},
                     "failures": bad,
                 },
@@ -534,6 +589,34 @@ def main() -> int:
             + "\n"
         )
         print(f"record → {args.json}")
+
+    if args.publish_baseline:
+        args.publish_baseline.parent.mkdir(parents=True, exist_ok=True)
+        args.publish_baseline.write_text(
+            json.dumps(
+                {
+                    "_contract": (
+                        "Shrink-only floor for the differential-fuzz residual, read by "
+                        "bench/certificate/report/scanner.py --fuzz-baseline. The total may not "
+                        "grow, no single class may grow, and a class absent from this file fails "
+                        "the mint even when the total fell — a new root cause is news even when "
+                        "the arithmetic improved. Refresh ONLY in the same PR as the fix that "
+                        "lowered it: python3 bench/conformance/rgsuite/fuzz.py --iterations "
+                        f"{total} --seed {args.seed} --publish-baseline <this file>"
+                    ),
+                    "iterations": total,
+                    "seed": args.seed,
+                    # The oracle defines the residual, so a floor that does not
+                    # name its rg is a floor nobody can reproduce.
+                    "rg_version": _rg_version(),
+                    "residual": dict(sorted(residual.items())),
+                    "residual_total": len(bad),
+                },
+                indent=1,
+            )
+            + "\n"
+        )
+        print(f"residual baseline → {args.publish_baseline}")
     return 1 if bad else 0
 
 

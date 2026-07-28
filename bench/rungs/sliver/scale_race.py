@@ -45,9 +45,9 @@ import time
 
 
 HERE = Path(__file__).resolve().parent
-KERNEL = HERE.parent.parent
-sys.path.insert(0, str(KERNEL / "bench" / "certify"))
-from certify_stats import dominance, median_ci  # noqa: E402
+KERNEL = HERE.parent.parent.parent
+sys.path.insert(0, str(KERNEL / "bench" / "certificate" / "report"))
+from stats import dominance, median_ci  # noqa: E402
 
 
 GIST = KERNEL / "zig-out" / "bin" / "gist"

@@ -32,8 +32,8 @@ import time
 
 
 HERE = Path(__file__).resolve().parent
-KERNEL = HERE.parents[1]  # bench/rgsuite -> pkg/kernels/irregex
-REPO = HERE.parents[4]  # -> repo root
+KERNEL = HERE.parents[2]  # bench/conformance/rgsuite -> pkg/kernels/irregex
+REPO = HERE.parents[5]  # -> repo root
 FIX = Path()  # temp fixture root, set in main()
 
 RG = os.environ.get("RG_BIN", "rg")

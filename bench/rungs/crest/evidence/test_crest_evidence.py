@@ -18,7 +18,7 @@ import verify
 
 
 HERE = Path(__file__).resolve().parent
-CONTRACT = HERE.parents[2] / "contract/crest_evidence.toml"
+CONTRACT = HERE.parents[3] / "contract/crest_evidence.toml"
 
 
 def _write_json(path: Path, value: object) -> None:

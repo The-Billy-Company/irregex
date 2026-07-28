@@ -23,8 +23,8 @@
 # Usage: bench/gates/streams.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-# shellcheck source=../races/_compete.sh
-source "${HERE}/../races/_compete.sh"
+# shellcheck source=../../../dominance/races/field.sh
+source "${HERE}/../../../dominance/races/field.sh"
 
 command -v rg > /dev/null || {
   echo "ripgrep (rg) not found on PATH"

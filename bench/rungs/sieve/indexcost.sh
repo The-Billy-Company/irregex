@@ -21,8 +21,8 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=../races/_compete.sh
-source "${HERE}/../races/_compete.sh"
+# shellcheck source=../../dominance/races/field.sh
+source "${HERE}/../../dominance/races/field.sh"
 
 OUT_TSV="${OUT}/indexcost.tsv"
 mkdir -p "${COMPETE_DIR}" "${OUT}"

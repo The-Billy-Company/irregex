@@ -171,7 +171,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
 
     for (probes) |p| {
         // The filters this class offers the index, by the same rule the CLI uses
-        // (`kernel/match/query/prefilter.zig`): a literal is its own filter; a
+        // (`kernel/query/prefilter.zig`): a literal is its own filter; a
         // regex offers its required literal, else its alternation cover.
         var one: [1][]const u8 = undefined;
         var re: ?Regex = null;

@@ -31,8 +31,8 @@
 # Usage: bench/gates/enum_determinism.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-KERNEL="$(cd "${HERE}/../.." && pwd)" # gates/ → bench/ → pkg/kernels/irregex
-export GIST_NO_AUTOSERVE=1            # force the cold engine (the path under test)
+KERNEL="$(cd "${HERE}/../../../.." && pwd)" # contract/ → gates/ → conformance/ → bench/ → pkg/kernels/irregex
+export GIST_NO_AUTOSERVE=1                  # force the cold engine (the path under test)
 
 echo "building gist (ReleaseFast)…"
 (cd "${KERNEL}" && zig build -Doptimize=ReleaseFast > /dev/null 2>&1) || {

@@ -31,7 +31,7 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-REPO="$(cd "${HERE}/../../../../.." && pwd)"
+REPO="$(cd "${HERE}/../../../../../.." && pwd)"
 DEST="${GIST_CORPORA_DIR:-${REPO}/.local/gist-corpora}"
 mkdir -p "${DEST}"
 

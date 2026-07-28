@@ -1,18 +1,18 @@
 ---
 doc_radar:
   paths_exist:
-    - pkg/kernels/irregex/bench/multipattern/bench.zig
-    - pkg/kernels/irregex/bench/multipattern/vscan.c
-    - pkg/kernels/irregex/bench/multipattern/pack.py
-    - pkg/kernels/irregex/bench/races/multipattern.sh
-    - pkg/kernels/irregex/bench/certify/certify_multipattern_report.py
+    - pkg/kernels/irregex/bench/rungs/multipattern/bench.zig
+    - pkg/kernels/irregex/bench/rungs/multipattern/vscan.c
+    - pkg/kernels/irregex/bench/rungs/multipattern/pack.py
+    - pkg/kernels/irregex/bench/dominance/races/multipattern.sh
+    - pkg/kernels/irregex/bench/certificate/report/multipattern.py
     - pkg/kernels/irregex/src/kernel/slate/muster.zig
   sentinels:
-    "pkg/kernels/irregex/bench/multipattern/vscan.c":
+    "pkg/kernels/irregex/bench/rungs/multipattern/vscan.c":
       contains:
         - hs_compile_lit_multi
         - hs_scan
-    "pkg/kernels/irregex/bench/multipattern/bench.zig":
+    "pkg/kernels/irregex/bench/rungs/multipattern/bench.zig":
       contains:
         - "fn oracle"
         - PatternSet

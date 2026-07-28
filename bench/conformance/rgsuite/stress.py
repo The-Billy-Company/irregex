@@ -62,11 +62,11 @@ import sys
 import tempfile
 import time
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "corpora"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "apparatus" / "corpora"))
 import torture  # noqa: E402  (sibling corpus generator, imported for its build())
 
 HERE = Path(__file__).resolve().parent
-GIST = str(HERE.parents[1] / "zig-out" / "bin" / "gist")
+GIST = str(HERE.parents[2] / "zig-out" / "bin" / "gist")
 RG = "rg"
 
 # rg's exit contract, which gist adopts: 0 match, 1 no match, 2 error. Anything

@@ -2,12 +2,12 @@
 doc_radar:
   sentinels:
     - description: "the roofline reporter owns the generated Layer C section"
-      file: pkg/kernels/irregex/bench/roofline/roofline_report.py
+      file: pkg/kernels/irregex/bench/bounds/roofline/report.py
       contains:
         - 'LAYER_C_HEADER = "## Layer C — roofline (measured headroom)"'
         - "if frac >= 80.0:"
     - description: "adverse tests forbid sub-roof saturation claims"
-      file: pkg/kernels/irregex/bench/roofline/test_roofline_report.py
+      file: pkg/kernels/irregex/bench/bounds/roofline/test_roofline.py
       contains: ["test_sub_threshold_result_cannot_claim_saturation"]
 ---
 

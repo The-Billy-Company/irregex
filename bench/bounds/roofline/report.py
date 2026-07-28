@@ -55,7 +55,7 @@ SUMMARY = (
 # bench/roofline/roofline_report.py → repo root is parents[5]) so the report works
 # from any CWD — the zig steps and portcert.sh already resolve the repo root, and
 # `.local/gist-verify` always lives there. A `--out-dir` override still wins.
-OUT_DIR = Path(__file__).resolve().parents[5] / ".local/gist-verify"
+OUT_DIR = Path(__file__).resolve().parents[6] / ".local/gist-verify"
 
 # Apple M-series shared P-cluster L2 — a candidate set larger than this spills to
 # DRAM, so an apparent rate above the DRAM ceiling on a >L2 working set is a

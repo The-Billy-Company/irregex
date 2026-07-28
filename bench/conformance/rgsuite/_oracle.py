@@ -29,7 +29,7 @@ import subprocess
 
 
 HERE = Path(__file__).resolve().parent
-GIST = HERE.parents[1] / "zig-out" / "bin" / "gist"  # the CLI (`rg` verb), not gist-bench
+GIST = HERE.parents[2] / "zig-out" / "bin" / "gist"  # the CLI (`rg` verb), not gist-bench
 RG = "rg"
 
 # gist's default soft output cap (the agent-context guard, corpus.zig) would clip
