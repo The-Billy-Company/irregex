@@ -118,19 +118,60 @@ rung with no losing row is hiding one.
 
 **Phase ladder** (`chain3`): transposition alone 14.06 GB/s (3.12 B/cyc), plus
 class streams 7.55 GB/s (1.67 B/cyc), whole scan 5.08 GB/s. Transposition is the
-cheap half; the class-circuit interpreter, whose operand refs are dynamic and so
-must go through memory, is where the throughput actually goes.
+cheap half; the class phase is where the throughput actually goes — and the
+section below is about what that phase does *not* spend it on, because the first
+answer written here was wrong.
 
 ## What did not survive contact
 
 The research lane measured **3.3–4.5 B/cycle**; in-tree, on the same shapes,
 this is **0.73–1.29 B/cycle** — about 3× short. The gap is not the haystack
 (1 MiB in-L2 and 64 MiB streaming measure identically, so it is not memory
-bound) and not the transposition (which reproduces at 3.1 B/cyc). It is the
-generic class-circuit interpreter: a gate whose two operand references are
-runtime values cannot keep its basis in registers, so each gate pays ~16 vector
-loads and 8 stores around 8 ALU ops. Closing it needs a specialized emitter
-rather than an interpreter, which is a different lane.
+bound) and not the transposition (which reproduces at 3.1 B/cyc). It is the class
+phase. Two things about that phase are counter-intuitive enough that both have
+now been got wrong once, so they are recorded here rather than rediscovered.
+
+**It is not the gate interpreter.** The first diagnosis written here blamed one:
+"a gate whose two operand references are runtime values cannot keep its basis in
+registers, so each gate pays ~16 vector loads and 8 stores around 8 ALU ops."
+That is true of `.fallback` circuits and irrelevant to every row of the table
+above. Each class in the measured family is a single byte or a couple of
+contiguous ranges — `one`, `ranges1`, `ranges2` — and **every catalogue shape
+returns from `Circuit.eval` before the gate loop**, so `Scratch` and the per-gate
+dispatch are dead code for these patterns. An emitter aimed at them would
+specialize something the benchmark never executes.
+
+**It is the grain, not the operand refs.** The class phase does spill, heavily,
+and specializing the constants does not stop it. Compile a comptime-specialized
+`between` with every bound baked in — no dynamic refs left at all — and at stripe
+grain it still spills, per block of haystack:
+
+| class | shape | vector ops | spills, stripe grain | spills, block grain |
+|---|---|---|---|---|
+| `[0-9]` | `ranges1` | 6 | 0.5 | 0 |
+| `[a-z]` | `ranges1` | 13 | 6 | 0 |
+| `[A-Za-z]` | `ranges2` | 20 | 8 | 0 |
+| `[0-9A-Z_a-z]` | `ranges4` | 34 | 25 | 0 |
+
+The cause is register capacity: `plane.Wide` is eight q-registers, so a `[8]Wide`
+basis is 64 of a 32-register file before a single class output is held live beside
+it, where `[8]Basis` at block grain is eight. Vector work per block is identical
+across grains (1.00–1.02×) — the grain moves spill traffic and nothing else. On
+the real build the striped path carries **3,224 spill instructions against 6,446
+vector ops**, where `Parabix.block` carries 22 against 1,099. (Method:
+`zig build-obj -O ReleaseFast -femit-asm` over `src/root.zig`, then count
+instructions per `.cfi` proc with stack-relative accesses split out. No
+benchmark, so these are static counts, not cycles.)
+
+**So the lane is harder than "write a specialized emitter".** Specializing the
+constants is necessary and not sufficient: the table above is already fully
+specialized and still spills. The other half is the grain, and that half is
+**closed** — `plane.zig` records the register-file argument being derived,
+benched and lost, because gate dispatch is scalar work that a spilled vector load
+is cheaper than. Whoever opens this lane should budget against both halves and
+should not expect 3× from specialization alone. The coefficient this all feeds,
+and the number a reopening has to beat, is recorded in
+`research/ceiling/CLOSED.md` entry 1.
 
 What the rung _does_ deliver against the engine users actually get is
 **2.1–3.4× the shipped ladder** across the admitted family, byte-identical on

@@ -9,6 +9,12 @@ doc_radar:
       contains:
         - "**Novelty:"
         - "**Adoption:"
+    # Entry 1's third look conditions its verdict on this exact coefficient. If
+    # a mint moves it, that verdict is stale and the cascade front-end is owed a
+    # re-ask — so the gate should fail here rather than let the record rot.
+    - file: pkg/kernels/irregex/src/kernel/regex/linear/ladder/price.zig
+      contains:
+        - ".parabix_op = 0.555"
 ---
 
 # Closed roads
@@ -195,6 +201,66 @@ back-end, gated on star height ≥ 2 with a small minimized DFA.
 > merge with itself), so the exact-_k_ and exact-`log₁₆` results above stand;
 > multi-class corpus aggregates do not. The follow-up lane's numbers come from
 > a corrected pipeline validated at 61,215 byte-positions against Python `re`.
+
+### Third look: the front-end priced, and the bar restated as a coefficient
+
+The residue above shipped as a recommendation, never a measurement. Both prior
+closures were about cascade-as-an-**engine**; neither priced the **front-end**,
+so "reopening requires clearing the corpus bar" was a bar for a different
+machine. It has now been priced in the currency the ladder actually bids in.
+
+**The realizable population is 6 patterns.** Of 1,076 regexes harvested from the
+tree (1,047 parseable), 179 are refused by `admit.zig` on AST shape and 13 for
+star height specifically. Of 186 shape-refused patterns put through the depth
+lane's synthesizer, 24 got a verified cover, 14 had a real scan level, and 6
+carried no residual `newline_class`/`unicode` refusal of their own. Two of the
+six are the same language spelled two ways, so it is 5 distinct problems.
+
+**The bar.** The eager DFA sits at `dfa_step = 1.373` cyc/B — 2,533 stripe ops at
+`parabix_op = 0.555` over `stripe_width = 1024`. The transposition alone is 832
+of those (0.451 cyc/B) and is the floor for anything in the Parabix family.
+Lowering each synthesized cascade into `stripeOps`' own currency puts 4 of the 6
+over that budget and the other 2 at 1.11× and 1.01×, against a static model whose
+worst error against the rung's published table is 13.4%. Neither is a win worth a
+rung.
+
+**The re-entry condition.** Every pattern in the slice clears the DFA at
+`parabix_op ≤ 0.241`. One of the six is separately hard-refused — its derived
+levels need 44, 65 and 66 gates against `stencil.max_gates = 40`, which no op
+price touches — and the remaining five clear at **`parabix_op ≤ 0.444`**, a 1.25×
+cheaper op. That is the number a fourth look should test, and testing it needs no
+re-derivation: re-price the slice against a freshly minted coefficient.
+
+**Where the cost is.** Not the levels — the **class streams**. A cascade is built
+over the DFA's byte-class partition, which is finer than the two or three literal
+class terms a regex writes, and each cell costs 34–139 ops per block. Three to
+seven of them plus the 832-op transposition exhausts the DFA's whole budget
+before a single level runs. That is also why the shipped gate looks as it does:
+`max_classes = 6` and the star-height refusal keep Parabix on patterns needing
+two or three class streams.
+
+**Is 1.25× available? Not on the obvious route.** `parabix_op = 0.555` against
+~0.25 cyc for a 128-bit NEON op on four vector pipes leaves ~2.2× on paper, and
+`parabix/README.md` books ~3× against the research lane. That gap was originally
+diagnosed as the generic class-circuit interpreter; the diagnosis is wrong, and
+`parabix/README.md` now records why — every class in the measured family is a
+catalogue shape that returns from `Circuit.eval` before the gate loop, so the
+interpreter is dead code for exactly the patterns the ~3× was measured on.
+Static instruction counts locate the real cost: the striped path
+(`Parabix.match`, with `stripe` and `transposeStripe` inlined) carries 3,224
+spill instructions against 6,446 vector ops, where the per-block path carries 22
+against 1,099 — a `[8]plane.Wide` basis is 64 q-registers against a file of 32,
+where `[8]plane.Basis` is 8. The inference that the class phase should therefore
+run at block grain **is already refuted**: `plane.zig` records that exact
+argument being made, benched and lost, because gate dispatch is scalar work that
+a spilled vector load is cheaper than. Per-block vector op counts are identical
+across grains (1.00–1.02×), so the grain trades spill traffic for dispatch and
+the bench says the stripe wins that trade.
+
+**So the front-end is downstream of the emitter, and the emitter has no cheap
+rung left.** This stays closed, but the condition is now a coefficient rather
+than a corpus verdict: `parabix_op ≤ 0.444`, earned by beating the interpreter
+*without* changing the grain.
 
 ---
 

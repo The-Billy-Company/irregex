@@ -157,8 +157,8 @@ pub const Parabix = struct {
     pub fn match(self: *const Parabix, hay: []const u8) bool {
         var carry: Carries = @splat(0);
         var pos: usize = 0;
-        // The striped bulk: four blocks transposed together so one decoded
-        // circuit gate drives 512 positions.
+        // The striped bulk: `plane.stripe` blocks transposed together so one
+        // decoded circuit gate drives `plane.stripe_width` positions.
         if (hay.len >= plane.stripe_width) {
             var vals: stencil.Scratch(plane.Wide) = undefined;
             while (pos + plane.stripe_width <= hay.len) : (pos += plane.stripe_width) {

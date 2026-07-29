@@ -69,6 +69,30 @@ pub inline fn bits(l: Lane) Block {
 /// went 3.44 → 5.11 → 6.42 → 7.62 GB/s across stripes of 1, 2, 4, 8, then flat
 /// at 16 while the transposition itself got *worse* (14.0 → 12.3 GB/s) as the
 /// working set left L1. The knee is here.
+///
+/// **Do not re-derive this from the register file — that has now been tried
+/// twice.** The arithmetic is right and beside the point. A `[8]WideBasis` is 64
+/// q-registers against a file of 32, and the spilling is as bad as that implies:
+/// statically, 3,224 spill instructions against 6,446 vector ops in the inlined
+/// striped path, where `Parabix.block` carries 22 against 1,099, and even a
+/// comptime-specialized `[a-z]` with its bounds baked in pays ~6 spills per block
+/// at this grain against 0 at block grain. None of that is news to the number
+/// above; it is already inside it.
+///
+/// The second attempt refined the premise and still did not survive review. Its
+/// argument was that only `.fallback` pays per-gate dispatch, so a catalogue-only
+/// program (`one`, `ranges1..4`, which return from `Circuit.eval` before the gate
+/// loop) has nothing to amortize and should prefer block grain. The flaw is that
+/// the ladder above was measured *with* the shape catalogue already present, so
+/// whatever the stripe buys those shapes is already in the 7.62 — plausibly the
+/// per-block `Parabix.block`, `markers` and `transpose` calls and the loop
+/// bookkeeping, none of which the stripe pays. Per-block vector work is identical
+/// across grains (1.00–1.02×), so the trade is spill traffic against call and
+/// dispatch overhead, and the bench has already priced it once.
+///
+/// That attempt was implemented and reverted *without* being benched, so it is
+/// not evidence either way. The rule it leaves behind: this constant moves on a
+/// phase-ladder measurement, never on a register count.
 pub const stripe: usize = 8;
 
 /// Haystack bytes consumed per stripe.
