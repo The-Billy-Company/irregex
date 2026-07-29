@@ -3,50 +3,44 @@
 //!
 //! `gist <pattern>` (and `gist rg`) answer WHERE a pattern appears, ripgrep-
 //! identically (`run.zig`). `--rank` answers WHICH of those hits matters most:
-//! it cold-loads the persisted trigram index, resolves the candidate set (the
-//! same `fresh.candidates` widening the read-elision path uses — driven by the
-//! compiled regex's required literal / alternation cover, not the raw argv
-//! bytes), extracts a few per-file ranking features in a parallel read pass,
-//! fuses them with the weighted RRF kernel in `rank/rank.zig`, and prints the
-//! top-K as `path:line [kind] ×count line` — a symbol's DEFINITION outranking
-//! its call sites, codegen demoted. When persistence is unavailable, the caller
-//! feeds the same ranker from the live walk instead.
+//! over the bytes the caller's walk already gathered it extracts a few per-file
+//! ranking features, fuses them with the weighted RRF kernel in `rank/rank.zig`,
+//! and prints the top-K as `path:line [kind] ×count line` — a symbol's
+//! DEFINITION outranking its call sites, codegen demoted.
+//!
+//! This file therefore ranks a file SET; it never decides one. That is the whole
+//! seam: an earlier version enumerated candidates straight out of the persisted
+//! index's path table, which made the index answer "what is in the corpus"
+//! instead of merely "which of these files can possibly match" (ADR-373 law 1),
+//! and quietly cost the view every file the index's own corpus policy excludes —
+//! all of `vendor/`, plus any walk-widening flag (`-uu`) the table knows nothing
+//! about. The caller (`view.zig`) now hands over the walk's own file set, still
+//! index-ACCELERATED through read elision, so the ranked set is the same query's
+//! `gist -l` set by construction rather than by coincidence.
 //!
 //! Pattern semantics match the line engine: the caller compiles via
 //! `combinePatterns` + `Regex.compileOpts`, so alternations (`foo|bar`),
 //! wildcards (`claim.*job`), `-F`/`-i`/`-x`, and multi-`-e` OR all rank the
-//! same hits the unranked search would emit. Positional PATH roots gate the
-//! candidate set the same way a scoped walk would.
+//! same hits the unranked search would emit. Path semantics match it because
+//! they ARE the walk's: roots, `-t`/`-T`/`-g`, and the genus flags are settled
+//! before a byte reaches this file.
 
 const std = @import("std");
-const portal = @import("../../../portal.zig");
 const corpus_mod = @import("../../../corpus/tree/corpus.zig");
-const fresh = @import("../../../corpus/fresh/fresh.zig");
-const persist = @import("../../../corpus/index/trigrams/persist.zig");
 const Regex = @import("../../../kernel/regex/regex.zig").Regex;
 const mirror = @import("../../../kernel/rank/replica.zig");
 const signals = @import("../../../kernel/rank/signals.zig");
 const rank_mod = @import("../../../kernel/rank/rank.zig");
-const gl = @import("../../../corpus/scope/filter.zig");
-const query_mod = @import("../../../kernel/query/query.zig");
 const assay = @import("../../../assay/assay.zig");
 const beacon = @import("../../../surface/cli/beacon.zig");
-const Dir = std.Io.Dir;
 
 const Doc = rank_mod.Doc;
 pub const LiveFile = struct { path: []const u8, bytes: []const u8 };
 
-const Source = union(enum) {
-    disk: []const []const u8,
-    memory: []const LiveFile,
-
-    fn path(self: Source, id: u32) []const u8 {
-        return switch (self) {
-            .disk => |paths| paths[id],
-            .memory => |files| files[id].path,
-        };
-    }
-};
+/// The ranked rows' backing store: `Doc.id` indexes it, so a row can recover its
+/// path and re-read its own best line for the snippet. It is always the caller's
+/// gathered set — a `Doc` cannot exist for a file this slice does not hold.
+const Source = []const LiveFile;
 
 /// Slash COUNT (not walker depth — `run.zig`'s `pathDepth` is slashes+1):
 /// a shallow-path prior for the ranked view, u16 to pack the score row.
@@ -54,24 +48,6 @@ fn pathDepth(path: []const u8) u16 {
     var d: u16 = 0;
     for (path) |c| d +%= @intFromBool(c == '/');
     return d;
-}
-
-fn underAnyRoot(path: []const u8, roots: []const []const u8) bool {
-    if (roots.len == 0) return true;
-    // Shared boundary rule (`scope/glob.zig::underRoot` after `normalizeRoot`):
-    // exact file hit, or a directory prefix ending at `/` (so `services` never
-    // admits `services_old`). The extra trim folds a lone `/` root to
-    // match-all, as this call site always has.
-    for (roots) |r| if (gl.underRoot(path, std.mem.trimEnd(u8, gl.normalizeRoot(r), "/"))) return true;
-    return false;
-}
-
-/// Sound trigram prefilter for the compiled regex — the engine-shared rule
-/// (`kernel/query/query.zig::regexPrefilter`), minus any prefilter when the fold is
-/// caseless (the trigram index is case-exact, so pruning would be unsound).
-fn rankFilters(re: *const Regex, caseless: bool, one: *[1][]const u8) []const []const u8 {
-    if (caseless) return &.{};
-    return query_mod.regexPrefilter(re, one);
 }
 
 const LineSignals = struct { definition: u8 = 0, shape_hash: u64 = 0 };
@@ -149,59 +125,7 @@ fn fileDoc(buf_in: []const u8, path: []const u8, re: *const Regex, sim: *Regex.S
     return .{ .id = id, .matches = @max(match_lines, 1), .is_def = definition > 0, .definition = definition, .shape_hash = shape_hash, .best_line = if (defline != 0) defline else @max(first, 1), .depth = pathDepth(path), .is_generated = signals.isGenerated(path, buf), .is_mirror = mirror.isPath(path), .content_hash = mirror.fingerprint(buf), .content_len = buf.len };
 }
 
-const readFileInto = @import("../../../corpus/read/slurp.zig").readFileInto;
 const committedPrefix = @import("../read/binary.zig").committedPrefix;
-
-/// Below this candidate count the thread-spawn overhead isn't worth it and the
-/// read runs inline (mirrors `run.zig`'s `par_threshold`).
-const read_par_threshold = 64;
-
-const RankShard = struct { paths: []const []const u8, ids: []const u32, re: *const Regex, gpa: std.mem.Allocator, out: []Doc, binary_detect: bool, n: usize = 0, reads: usize = 0 };
-fn rankShard(sh: *RankShard) void {
-    const scratch = sh.gpa.alloc(u8, corpus_mod.per_file_cap) catch return;
-    defer sh.gpa.free(scratch);
-    // Per-shard Pike scratch — the DFA path ignores it, but lineMatch's Pike
-    // fallback needs exclusive Sim state (not thread-safe to share).
-    var sim = Regex.Sim.init(sh.gpa, sh.re) catch return;
-    defer sim.deinit();
-    var w: usize = 0;
-    for (sh.ids) |d| {
-        const n = readFileInto(sh.paths[d], scratch) orelse continue;
-        sh.reads += 1;
-        if (fileDoc(scratch[0..n], sh.paths[d], sh.re, &sim, d, sh.binary_detect)) |doc| {
-            sh.out[w] = doc;
-            w += 1;
-        }
-    }
-    sh.n = w;
-}
-
-/// Parallel feature extraction over candidate `ids` — one std.Thread per core,
-/// blocking posix reads (the same proven pattern as `run.zig`'s `readCandidates`).
-fn parallelRank(gpa: std.mem.Allocator, paths: []const []const u8, ids: []const u32, re: *const Regex, docs: *std.ArrayList(Doc), read_files: *usize, binary_detect: bool) !void {
-    const ncpu = portal.cpuCount() catch 8;
-    const nshards = if (ids.len < read_par_threshold) 1 else @min(ids.len, ncpu);
-    const shards = try gpa.alloc(RankShard, nshards);
-    defer gpa.free(shards);
-    const outbuf = try gpa.alloc(Doc, ids.len);
-    defer gpa.free(outbuf);
-    const per = (ids.len + nshards - 1) / nshards;
-    for (shards, 0..) |*sh, k| {
-        const lo = @min(k * per, ids.len);
-        const hi = @min(lo + per, ids.len);
-        sh.* = .{ .paths = paths, .ids = ids[lo..hi], .re = re, .gpa = gpa, .out = outbuf[lo..hi], .binary_detect = binary_detect };
-    }
-    if (nshards == 1) rankShard(&shards[0]) else {
-        const threads = try gpa.alloc(std.Thread, nshards);
-        defer gpa.free(threads);
-        for (shards, 0..) |*sh, k| threads[k] = try std.Thread.spawn(.{}, rankShard, .{sh});
-        for (threads) |t| t.join();
-    }
-    for (shards) |*sh| {
-        try docs.appendSlice(gpa, sh.out[0..sh.n]);
-        read_files.* += sh.reads;
-    }
-}
 
 /// Ranked-row snippet budget — enough for a decl + a little neighborhood, small
 /// enough that 20 ranked rows stay cheap in an agent's context window.
@@ -281,29 +205,18 @@ fn snippetFrom(gpa: std.mem.Allocator, data: []const u8, line: u32, re: *const R
     return gpa.dupe(u8, "");
 }
 
-fn snippetOf(gpa: std.mem.Allocator, io: std.Io, source: Source, id: u32, line: u32, re: *const Regex) ![]u8 {
-    return switch (source) {
-        .memory => |files| snippetFrom(gpa, files[id].bytes, line, re),
-        .disk => |paths| blk: {
-            const data = Dir.cwd().readFileAlloc(io, paths[id], gpa, .limited(corpus_mod.per_file_cap)) catch return gpa.dupe(u8, "");
-            defer gpa.free(data);
-            break :blk snippetFrom(gpa, data, line, re);
-        },
-    };
-}
-
 /// Render the ranked top-K rows INTO `out` (no stdout, no diagnostics) — the
 /// pure kernel `emitRanked` and the warm daemon both build on. Returns the
 /// surfaced-row count (`k`, default 20, clamped to the ranked set). `out` and
 /// every transient (order permutation, per-row snippet) draw from `gpa`.
-fn renderRanked(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, docs: []const Doc, source: Source, k: usize, out: *std.ArrayList(u8)) !usize {
+fn renderRanked(gpa: std.mem.Allocator, re: *const Regex, docs: []const Doc, source: Source, k: usize, out: *std.ArrayList(u8)) !usize {
     const order = try rank_mod.rank(gpa, docs, .{}, null);
     defer gpa.free(order);
     const top = @min(order.len, if (k == 0) 20 else k);
     for (order[0..top], 0..) |di, i| {
         const doc = docs[di];
-        const path = source.path(doc.id);
-        const snip = try snippetOf(gpa, io, source, doc.id, doc.best_line, re);
+        const path = source[doc.id].path;
+        const snip = try snippetFrom(gpa, source[doc.id].bytes, doc.best_line, re);
         defer gpa.free(snip);
         const kind = if (doc.is_mirror) "mirror" else if (doc.is_generated) "gen" else if (doc.is_def) "def" else "use";
         // The ranked row's whole point is that its top line is the one to open,
@@ -312,96 +225,26 @@ fn renderRanked(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, docs: []co
         try out.print(gpa, "{d:>2}. ", .{i + 1});
         beacon.writeLocator(gpa, out, path, doc.best_line);
         try out.print(gpa, "  [{s}]  ×{d}  {s}", .{ kind, doc.matches, snip });
-        if (doc.is_mirror) if (mirror.canonical(Doc, docs, doc)) |canonical| try out.print(gpa, "  (mirror of {s})", .{beacon.anchor(gpa, source.path(canonical))});
+        if (doc.is_mirror) if (mirror.canonical(Doc, docs, doc)) |canonical| try out.print(gpa, "  (mirror of {s})", .{beacon.anchor(gpa, source[canonical].path)});
         try out.append(gpa, '\n');
     }
     return top;
 }
 
-fn emitRanked(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, docs: []const Doc, source: Source, k: usize) !usize {
+fn emitRanked(gpa: std.mem.Allocator, re: *const Regex, docs: []const Doc, source: Source, k: usize) !usize {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(gpa);
-    const top = try renderRanked(gpa, io, re, docs, source, k, &buf);
+    const top = try renderRanked(gpa, re, docs, source, k, &buf);
     corpus_mod.emitStdout(buf.items);
     return top;
 }
 
-/// Fresh-process ranked query: cold-load the index, resolve + read candidates
-/// for the compiled regex (optionally scoped to PATH roots), extract per-file
-/// features, fuse via the RRF kernel, print the top-K as token-compressed
-/// `path:line` + surfaced line. `k` caps the surfaced rows (`--rank[=N]`,
-/// default 20). Returns null when no complete index is available so the caller
-/// can live-rank; otherwise the ranked-match count (0 ⇒ the caller may hint).
-/// `caseless` disables the trigram prefilter. `binary_detect` (the locate path's
-/// `!-a` default) skips NUL-bearing walked files past their committed prefix, so
-/// the ranked set matches `gist -l`.
-pub fn run(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, roots: []const []const u8, k: usize, caseless: bool, binary_detect: bool) !?usize {
-    const load_span = assay.Span.open(io);
-    var p = (persist.loadQuiet(gpa, io) catch null) orelse return null;
-    defer p.deinit();
-    const load = load_span.read(io);
-    assay.trace(.rank, "rank phase: cold-load {d:.1} ms · {d} docs\n", .{ load.ms(), p.paths.items.len });
-
-    const query_span = assay.Span.open(io);
-    // `GIST_TRACE=rank` splits what the summary below can only report as one
-    // `rank_ms`. The four phases have very different failure modes — a slow
-    // resolve means the trigram prefilter admitted too much, a slow read means
-    // the candidates were large, a slow scope means the root filter is doing the
-    // pruning the index should have — and the summary cannot tell them apart.
-    var phase = assay.Span.open(io);
-    var one: [1][]const u8 = undefined;
-    const filters = rankFilters(re, caseless, &one);
-    var cand = try fresh.candidates(gpa, io, &p, &p.paths, filters, p.roots.items);
-    defer cand.deinit();
-    assay.trace(.rank, "rank phase: resolve {d:.1} ms · {d} candidates of {d} docs\n", .{
-        phase.lap(io).ms(), cand.ids.len, p.paths.items.len,
-    });
-
-    // PATH roots gate before the read — without this, `gist pat dir/ --rank`
-    // ranks the whole indexed corpus (the bug that flooded agents with
-    // out-of-scope hits, or hid in-scope ones behind an empty top-K).
-    var scoped: std.ArrayList(u32) = .empty;
-    defer scoped.deinit(gpa);
-    if (roots.len == 0) try scoped.appendSlice(gpa, cand.ids) else {
-        try scoped.ensureTotalCapacity(gpa, cand.ids.len);
-        for (cand.ids) |d| if (d < p.paths.items.len and underAnyRoot(p.paths.items[d], roots)) scoped.appendAssumeCapacity(d);
-    }
-    assay.trace(.rank, "rank phase: scope {d:.1} ms · {d} in-root of {d} candidates\n", .{
-        phase.lap(io).ms(), scoped.items.len, cand.ids.len,
-    });
-
-    var docs: std.ArrayList(Doc) = .empty;
-    defer docs.deinit(gpa);
-    var read_files: usize = 0;
-    try parallelRank(gpa, p.paths.items, scoped.items, re, &docs, &read_files, binary_detect);
-    assay.trace(.rank, "rank phase: read+feature {d:.1} ms · {d} read · {d} matched\n", .{
-        phase.lap(io).ms(), read_files, docs.items.len,
-    });
-
-    // The fusion: lexical density + symbol(def) boost + shallow-path + authored
-    // (codegen demotion), RRF-fused. null is the external graph-centrality hook.
-    const query = query_span.read(io);
-    const top = try emitRanked(gpa, io, re, docs.items, .{ .disk = p.paths.items }, k);
-    // Fuse + snippet render lands AFTER the summary's `rank_ms` mark, so this
-    // segment is invisible to every number below it — the one phase only the
-    // lens can report.
-    assay.trace(.rank, "rank phase: fuse+render {d:.1} ms · top {d}\n", .{ phase.lap(io).ms(), top });
-    assay.summary(gpa, false, "gist: {d} ranked matches (top {d}) · read {d}/{d} candidates · cold-load {d:.1} ms · rank {d:.1} ms · total {d:.1} ms\n", .{ docs.items.len, top, read_files, p.paths.items.len, load.ms(), query.ms(), load.add(query).ms() }, .{
-        .{ "verb", "s", "rank" },
-        .{ "ranked_matches", "d", docs.items.len },
-        .{ "top", "d", top },
-        .{ "read_candidates", "d", read_files },
-        .{ "total_candidates", "d", p.paths.items.len },
-        .{ "cold_load_ms", "d:.1", load.ms() },
-        .{ "rank_ms", "d:.1", query.ms() },
-        .{ "total_ms", "d:.1", load.add(query).ms() },
-    });
-    return docs.items.len;
-}
-
-/// Rank bytes already gathered by the rg-compatible live walk. Returns the
+/// Rank bytes already gathered by the rg-compatible walk — the one cold entry
+/// point. `binary_detect` (the locate path's `!-a` default) scans a NUL-bearing
+/// file only to its committed prefix, the same bound the locate path uses, so a
+/// binary's symbol table is never surfaced as ranked noise. Returns the
 /// ranked-match count (0 ⇒ the caller may hint).
-pub fn runLive(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, files: []const LiveFile, k: usize, binary_detect: bool) !usize {
+pub fn run(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, files: []const LiveFile, k: usize, binary_detect: bool) !usize {
     const query_span = assay.Span.open(io);
     var phase = assay.Span.open(io);
     var docs: std.ArrayList(Doc) = .empty;
@@ -412,7 +255,7 @@ pub fn runLive(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, files: []co
     assay.trace(.rank, "rank phase: feature {d:.1} ms · {d} scanned · {d} matched (live)\n", .{
         phase.lap(io).ms(), files.len, docs.items.len,
     });
-    const top = try emitRanked(gpa, io, re, docs.items, .{ .memory = files }, k);
+    const top = try emitRanked(gpa, re, docs.items, files, k);
     assay.trace(.rank, "rank phase: fuse+render {d:.1} ms · top {d} (live)\n", .{ phase.lap(io).ms(), top });
     const query = query_span.read(io);
     assay.summary(gpa, false, "gist: {d} ranked matches (top {d}) · live-scanned {d} files · rank {d:.1} ms\n", .{ docs.items.len, top, files.len, query.ms() }, .{
@@ -426,7 +269,7 @@ pub fn runLive(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, files: []co
 }
 
 /// Warm-daemon rank: extract features over in-memory `files`, fuse, and render
-/// the top-K INTO `out` — the byte-identical twin of `runLive`'s emission, but
+/// the top-K INTO `out` — the byte-identical twin of `run`'s emission, but
 /// returned to the caller (to stream over the session wire) instead of written
 /// to stdout. `out` and every transient draw from `gpa`. Returns the ranked-
 /// match count (0 ⇒ the daemon streams an empty answer; cold's hint is stderr-
@@ -445,7 +288,7 @@ pub fn renderLive(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, files: [
     assay.trace(.rank, "rank phase: feature {d:.1} ms · {d} scanned · {d} matched (warm)\n", .{
         phase.lap(io).ms(), files.len, docs.items.len,
     });
-    const top = try renderRanked(gpa, io, re, docs.items, .{ .memory = files }, k, out);
+    const top = try renderRanked(gpa, re, docs.items, files, k, out);
     assay.trace(.rank, "rank phase: fuse+render {d:.1} ms · top {d} (warm)\n", .{ phase.lap(io).ms(), top });
     const query = query_span.read(io);
     assay.summary(gpa, false, "gist: {d} ranked matches (top {d}) · warm-scanned {d} files · rank {d:.1} ms\n", .{ docs.items.len, top, files.len, query.ms() }, .{
@@ -458,16 +301,41 @@ pub fn renderLive(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, files: [
     return docs.items.len;
 }
 
-test "underAnyRoot gates directory prefixes and exact files" {
+test "a ranked row names and quotes the caller's own file set" {
     const t = std.testing;
-    try t.expect(underAnyRoot("services/ai/x.py", &.{"services/ai"}));
-    try t.expect(underAnyRoot("services/ai", &.{"services/ai"}));
-    try t.expect(underAnyRoot("services/ai/x.py", &.{"./services/ai/"}));
-    try t.expect(!underAnyRoot("services/ai_old/x.py", &.{"services/ai"}));
-    try t.expect(!underAnyRoot("services/backend/x.go", &.{"services/ai"}));
-    try t.expect(underAnyRoot("services/ai/x.py", &.{ "services/backend", "services/ai" }));
-    try t.expect(!underAnyRoot("pkg/kernels/irregex/x.zig", &.{ "services/ai", "services/backend" }));
-    try t.expect(underAnyRoot("anywhere.go", &.{}));
+    const a = t.allocator;
+
+    // Path scope used to be re-derived here against the persisted index's path
+    // table, so a row could name a file the walk never admitted. `Source` is now
+    // the caller's gathered set and `Doc.id` indexes it, which is what makes the
+    // ranked set the walk's set: there is no other slice a row could come from.
+    var re = try Regex.compile(a, "WalletService");
+    defer re.deinit();
+    var sim = try Regex.Sim.init(a, &re);
+    defer sim.deinit();
+
+    const files = [_]LiveFile{
+        .{ .path = "services/backend/api/wallet.go", .bytes = "type WalletService struct {\n\tdb *pgxpool.Pool\n}\n" },
+        .{ .path = "scripts/vendor/graphify/uses.py", .bytes = "import wallet\nwallet.WalletService.grant(user)\n" },
+    };
+    var docs: std.ArrayList(Doc) = .empty;
+    defer docs.deinit(a);
+    for (files, 0..) |f, id| if (fileDoc(f.bytes, f.path, &re, &sim, @intCast(id), true)) |d| try docs.append(a, d);
+    try t.expectEqual(@as(usize, 2), docs.items.len);
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(a);
+    try t.expectEqual(@as(usize, 2), try renderRanked(a, &re, docs.items, &files, 0, &out));
+
+    // Both paths surface, the declaration outranks the call site, and each row's
+    // snippet is quoted from the bytes the caller passed — not re-read from disk
+    // (neither path exists), which is why a vendored file can be ranked at all.
+    try t.expect(std.mem.indexOf(u8, out.items, "services/backend/api/wallet.go:1") != null);
+    try t.expect(std.mem.indexOf(u8, out.items, "scripts/vendor/graphify/uses.py:2") != null);
+    try t.expect(std.mem.indexOf(u8, out.items, "[def]") != null);
+    try t.expect(std.mem.indexOf(u8, out.items, "type WalletService struct {") != null);
+    try t.expect(std.mem.indexOf(u8, out.items, "wallet.WalletService.grant(user)") != null);
+    try t.expect(std.mem.indexOf(u8, out.items, "wallet.go").? < std.mem.indexOf(u8, out.items, "uses.py").?);
 }
 
 test "fileDoc matches alternation and wildcard regexes, not raw pattern bytes" {
@@ -545,25 +413,6 @@ test "fileDoc honors rg's default binary policy: a match past a NUL is excluded 
         return;
     };
     try t.expectEqual(@as(u32, 1), doc.matches);
-}
-
-test "rankFilters prefers required literal then alternation cover" {
-    const t = std.testing;
-    const a = t.allocator;
-    var one: [1][]const u8 = undefined;
-
-    var re_lit = try Regex.compile(a, "JOBS_PG_CLAIM");
-    defer re_lit.deinit();
-    const f_lit = rankFilters(&re_lit, false, &one);
-    try t.expectEqual(@as(usize, 1), f_lit.len);
-    try t.expectEqualStrings("JOBS_PG_CLAIM", f_lit[0]);
-
-    var re_alt = try Regex.compile(a, "jobs_pg_claim|JOBS_PG_CLAIM");
-    defer re_alt.deinit();
-    const f_alt = rankFilters(&re_alt, false, &one);
-    // No single required ≥3 spanning both branches ⇒ cover set.
-    try t.expect(f_alt.len >= 1);
-    try t.expectEqual(@as(usize, 0), rankFilters(&re_alt, true, &one).len); // caseless ⇒ no prefilter
 }
 
 test "windowAround keeps a late match token inside the budget" {

@@ -26,6 +26,7 @@ const verify = @import("../../../../kernel/scan/verify.zig");
 const portal = @import("../../../../portal.zig");
 
 const Emitter = output.Emitter;
+const Opts = @import("../../argv/args.zig").Opts;
 const Matcher = @import("../../../../kernel/regex/regex.zig").Matcher;
 const Worker = crew.Worker;
 const oom = @import("../../../../surface/cli/outcome.zig").oom;
@@ -374,28 +375,82 @@ fn gatedDocMatch(re: *const Matcher, sim: *Matcher.Sim, gate: simd.Gate, body: [
     return false;
 }
 
+/// The prefix region a stage-1 proof may draw on — null ⇒ nothing is provable.
+///
+/// A NUL-free prefix is NOT the same thing as a SEARCHED prefix, which is what
+/// an early emit needs. rg's line-mode reader commits only up to the LAST `\n`
+/// it has read, and the fill that reads the first NUL is discarded whole
+/// (`committedPrefix`), so a match sitting past the prefix's final terminator
+/// may never be searched at all: a 155 KB blob whose first `\n` lands AFTER its
+/// first NUL commits zero bytes and matches nothing, however clean its first
+/// 64 KiB looked. Bounding every proof to that terminator makes the emit sound
+/// whatever the unseen tail turns out to hold.
+///
+/// The `-U` slice model has no such roll — it sniffs `min(len, 64K)` once, and a
+/// NUL inside the sniff already dropped the file before stage 1 — so its raw
+/// prefix serves.
+fn provableRegion(re: *const Matcher, o: Opts, prefix: []const u8) ?[]const u8 {
+    if (multiline.sliceModel(re, o)) return prefix;
+    const nl = std.mem.lastIndexOfScalar(u8, prefix, '\n') orelse return null;
+    return prefix[0 .. nl + 1];
+}
+
 /// Positive-only match proof over a buffer prefix: true ⇒ the file matches
 /// (emit and skip its tail); false ⇒ undecided (the caller reads the rest).
-/// The pure-literal equivalence answers from SIMD `contains` alone — sound even
-/// inside the truncated final line, since a literal carries no `\n` and so sits
-/// inside the real (longer) line too. The regex path instead sees only COMPLETE
-/// lines: a truncated line's cut IS an end-of-line to `docMatch`, so `$`/`^$`
-/// could fire where the real line continues — a false positive the trim removes.
+/// The pure-literal equivalence answers from SIMD `contains` alone — no engine
+/// run at all. The regex path sees only COMPLETE lines: a truncated line's cut
+/// IS an end-of-line to `docMatch`, so `$`/`^$` could fire where the real line
+/// continues — a false positive `provableRegion`'s terminator bound removes.
 fn prefixProvesMatch(w: *Worker, re: *const Matcher, prefix: []const u8) bool {
     const cfg = w.cfg;
+    const region = provableRegion(re, cfg.o, prefix) orelse return false;
     if (cfg.lits_equiv) {
-        if (cfg.file_needle) |n| return n.in(prefix);
-        return simd.containsAny(prefix, cfg.file_alts);
+        if (cfg.file_needle) |n| return n.in(region);
+        return simd.containsAny(region, cfg.file_alts);
     }
     if (cfg.o.multiline) {
         // `-U`: sound only for an assertion-free pattern (substring-closed —
-        // nothing zero-width can assert against the cut), and then the RAW
-        // prefix serves: any match inside it is a match of the file.
+        // nothing zero-width can assert against the cut).
         if (!re.bufPrefixClosed()) return false;
         const sim = w.matchSim() orelse return false;
-        return re.bufMatch(sim, prefix);
+        return re.bufMatch(sim, region);
     }
-    const nl = std.mem.lastIndexOfScalar(u8, prefix, '\n') orelse return false;
     const sim = w.matchSim() orelse return false;
-    return re.docMatch(sim, prefix[0 .. nl + 1]);
+    return re.docMatch(sim, region);
+}
+
+const Regex = @import("../../../../kernel/regex/regex.zig").Regex;
+
+test "a stage-1 proof never reaches past the last terminator rg committed" {
+    const t = std.testing;
+    // The parity bug: `dog` sits at offset 14223 of a 155 KB ruff-cache blob
+    // whose first NUL is at 94015 and whose first `\n` is at 94788 — AFTER the
+    // NUL. rg's reader finds no terminator to commit, the NUL-bearing fill is
+    // discarded, `--stats` says `0 bytes searched`, and `rg -uu -l dog` exits 1.
+    // gist's `lits_equiv` arm scanned the raw 64 KiB prefix, proved the literal,
+    // and published the file — two files `--rank` (which honors the cut) omitted.
+    var m = Matcher{ .linear = try Regex.compile(t.allocator, "dog") };
+    defer m.deinit();
+    const o = Opts{ .mode = .files_with_matches };
+
+    var blob: [1024]u8 = undefined;
+    @memset(&blob, 'x');
+    @memcpy(blob[100..103], "dog");
+    // No terminator anywhere ⇒ nothing is provable, whatever the prefix holds.
+    try t.expect(provableRegion(&m, o, &blob) == null);
+
+    // A terminator AFTER the match commits its line: the proof may run, and the
+    // region stops at that terminator rather than running to the prefix's end.
+    blob[200] = '\n';
+    const region = provableRegion(&m, o, &blob) orelse return t.expect(false);
+    try t.expectEqual(@as(usize, 201), region.len);
+    try t.expect(std.mem.indexOf(u8, region, "dog") != null);
+
+    // A terminator BEFORE the match leaves the match outside the committed
+    // region — the file falls through to the full read instead of early-emitting.
+    @memset(blob[100..103], 'x');
+    @memcpy(blob[300..303], "dog");
+    const short = provableRegion(&m, o, &blob) orelse return t.expect(false);
+    try t.expectEqual(@as(usize, 201), short.len);
+    try t.expect(std.mem.indexOf(u8, short, "dog") == null);
 }

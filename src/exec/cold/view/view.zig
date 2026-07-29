@@ -18,7 +18,6 @@
 const std = @import("std");
 const args = @import("../argv/args.zig");
 const corpus_mod = @import("../../../corpus/tree/corpus.zig");
-const crest = @import("../../../kernel/math/crest.zig");
 const hints = @import("../emit/hints.zig");
 const ingest = @import("../read/ingest.zig");
 const legible = @import("../../../corpus/read/legible.zig");
@@ -52,19 +51,26 @@ pub const Run = struct {
     o: Opts,
     w: *const writ_mod.Writ,
     icfg: *const ingest.Config,
-    /// The ingest pipeline rewrites bytes (`-z`/`--pre`/`-E`), so on-disk index
-    /// artifacts cannot speak about what a match will be found in.
-    transforming: bool,
     /// Latched `--pre` failure — folded into a lens exit like any path error.
     pre_error: *std.atomic.Value(bool),
 
-    /// The lens file set: every walked file, read whole. A lens presents matches
-    /// in its own shape rather than rg's line stream, so the whole-file gate and
-    /// the index prefilter — both proven against "would this file emit an rg
-    /// line?" — do not apply. Only the line needle, a property of the pattern
-    /// itself, carries over.
+    /// The lens file set: every file the WALK admits, read whole. A lens presents
+    /// matches in its own shape rather than rg's line stream, so the whole-file
+    /// gate — proven against "would this file emit an rg line?" — does not apply;
+    /// only the line needle, a property of the pattern itself, carries over.
+    ///
+    /// The index prefilter DOES apply, and passing it is what lets a lens present
+    /// the walk's file set at the walk's cost instead of reading the whole corpus.
+    /// `filters`/`sieve` are necessary conditions on the pattern's own literals,
+    /// so a file they prune cannot hold a match in any shape a lens could
+    /// present — and the `Writ` already emptied both for every mode that observes
+    /// non-matching bytes (`-v`, `--include-zero`, a transforming `-z`/`--pre`
+    /// read that the index cannot speak about), so a lens inherits those guards
+    /// instead of re-deriving them. Elision only skips a READ; the walk stays the
+    /// sole authority on WHAT to search (ADR-373 law 1), which is what keeps a
+    /// lens's file set equal to the same query's `-l` set.
     fn collect(r: Run) intake.Collected {
-        return intake.collectFiles(r.a, r.gpa, r.io, r.parsed, &.{}, crest.no_sieve, r.w.line_needle, r.icfg);
+        return intake.collectFiles(r.a, r.gpa, r.io, r.parsed, r.w.filters, r.w.sieve, r.w.line_needle, r.icfg);
     }
 
     /// rg's filename-visibility rule: `auto` shows paths as soon as more than
@@ -97,30 +103,32 @@ pub fn dispatch(r: Run) !Claim {
     return .unclaimed;
 }
 
-/// `--rank[=N]`: definition-first ranked view over the SAME compiled pattern and
-/// PATH scope. Prefers the persisted candidate set; an absent or incomplete
-/// index (or `--no-index`) degrades to the live walk feeding the same RRF
-/// kernel. It is the one lens built on the linear engine's AST analysis
-/// (definition-shape ranking), so it declines LOUD under `-P` rather than
-/// silently ignoring the backend the user asked for.
+/// `--rank[=N]`: definition-first ranked view over the SAME compiled pattern,
+/// PATH scope, and walk the unranked search would use — the RRF kernel only
+/// reorders that set. It is the one lens built on the linear engine's AST
+/// analysis (definition-shape ranking), so it declines LOUD under `-P` rather
+/// than silently ignoring the backend the user asked for.
+///
+/// The ranked set is `gist -l`'s set by CONSTRUCTION, because it is produced by
+/// the same walk. It used to be enumerated from the persisted index's path table
+/// instead, which made the index a semantic structure rather than an
+/// acceleration one (ADR-373 law 1) and cost the view every file the index's
+/// corpus policy excludes but a search walk enters: `corpus/tree/haystack.zig`'s
+/// generic skip-dir baseline prunes `vendor/` (right for the kinship corpus,
+/// wrong for a search), so a ranked `graphify` silently dropped 470 real hits,
+/// and no walk-widening flag reached the view at all — `-uu`, whose walk admits
+/// 15× the files, ranked the default corpus and called it an answer.
 fn rank(r: Run) !Claim {
     if (r.w.is_pcre) die("--rank uses gist's linear engine and is unavailable with a PCRE2 pattern (-P/--pcre2, or an --engine auto escalation) — drop one\n", .{});
-    const rex = &r.w.re.linear;
-    // An indexed rank reads raw indexed bytes, so it is only taken when not
-    // transforming; -z/--pre/-E fall to the live walk (which reads through
-    // `ingest`), keeping the ranked view correct over the rewritten stream.
-    if (!r.o.no_index and !r.transforming) {
-        if (try ranked.run(r.gpa, r.io, rex, r.parsed.roots, r.o.rank_k, r.o.caseless, r.w.binary_detect)) |n| {
-            if (n == 0) r.noMatches(null);
-            return .done;
-        }
-    }
     const c = r.collect();
     const live = r.a.alloc(ranked.LiveFile, c.files.len) catch oom();
     for (c.files, live) |file, *dst| dst.* = .{ .path = file.path, .bytes = file.bytes };
-    const n = try ranked.runLive(r.gpa, r.io, rex, live, r.o.rank_k, r.w.binary_detect);
+    const n = try ranked.run(r.gpa, r.io, &r.w.re.linear, live, r.o.rank_k, r.w.binary_detect);
     if (c.path_error or r.faulted()) std.process.exit(2);
-    if (n == 0) r.noMatches(c.files.len);
+    // `walked`, not the read set: index elision leaves a proven non-matcher
+    // unread, and a hint that reported only the files it opened would tell an
+    // agent its scope was narrower than the walk it actually ran.
+    if (n == 0) r.noMatches(c.walked);
     return .done;
 }
 

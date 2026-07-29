@@ -324,7 +324,6 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         .o = o,
         .w = &w,
         .icfg = &icfg,
-        .transforming = transforming,
         .pre_error = &pre_error,
     }) == .done) return;
 
