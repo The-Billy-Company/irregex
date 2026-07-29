@@ -99,7 +99,7 @@ pub fn writeDecimal(buf: []u8, v: u64) []u8 {
 /// ripgrep `-w` — the engines' own rule (`syntax/word.zig`), re-exported so the
 /// emit path names it where the span filters read. Defined there because the
 /// `\W`-consumes-a-codepoint distinction it turns on is Unicode-decode
-/// knowledge, and the warm query path (`match/query/word.zig`) needs the
+/// knowledge, and the warm query path (`kernel/query/word.zig`) needs the
 /// identical verdict; one definition is why they cannot drift.
 pub const wordOk = word.wordOk;
 
@@ -349,25 +349,48 @@ pub const Emitter = struct {
         return needle.in(line);
     }
 
-    /// Per-line candidate mask for a pure-literal pattern — rg's Teddy prefilter
-    /// at line grain. ONE fused whole-buffer `indexOfAnyPos` sweep marks only the
-    /// lines around literal hits, jumping non-matching regions at SIMD speed, so
-    /// the per-line classify below skips ~every non-candidate without an engine
-    /// run — the win a needle-less alternation (`function|const|…`) otherwise
-    /// can't get (no single required literal to gate on). `re.lits` is a match
-    /// EQUIVALENCE (a line matches ⟺ it holds one literal — `analysis.pureLiterals`,
-    /// empty under `-i`/`-w`/`-U`), so the mask is a SUPERSET of the true match set
+    /// The literal set a whole-buffer candidate sweep may mark lines with, ranked
+    /// exactly as the engine's own literal tier ranks it (`lower.zig::literalEngine`):
+    /// the pure-literal EQUIVALENCE set (`analysis.pureLiterals`, empty under
+    /// `-i`/`-w`/`-U`) when the pattern has one, else the per-branch alternation
+    /// COVER (`foo|bar` ⇒ {foo,bar}).
+    ///
+    /// The cover is only a NECESSARY condition, which is all a candidate mask needs
+    /// — every caller ANDs the mark with a real engine run, so a superset costs
+    /// nothing but a confirmed line. Taking it here is what gives a class-led
+    /// alternation (`[A-Z]+_TYPE|[a-z]+_kind`, no literal common to every match) the
+    /// same ONE fused buffer sweep a pure-literal alternation gets; without it the
+    /// mask declines, and `verdict.zig::lineMatch` re-scans for those same literals
+    /// once PER LINE — the identical filter at millions of times the setup.
+    ///
+    /// Withheld where a match need not contain the cover bytes verbatim, since the
+    /// sweep compares raw bytes: `-i` (a match may hold a case variant the cover
+    /// does not spell) and `-U` (a match may cross `\n`, so marking the line that
+    /// holds a literal proves nothing about where a match starts).
+    pub fn maskLiterals(o: Opts, re: *const Matcher) []const []const u8 {
+        const lits = re.lits();
+        if (lits.len > 0) return lits;
+        return if (o.caseless or o.multiline) &.{} else re.alts();
+    }
+
+    /// Per-line candidate mask for a literal-bearing pattern — rg's Teddy
+    /// prefilter at line grain. ONE fused whole-buffer `indexOfAnyPos` sweep marks
+    /// only the lines around literal hits, jumping non-matching regions at SIMD
+    /// speed, so the per-line classify below skips ~every non-candidate without an
+    /// engine run — the win a needle-less alternation (`function|const|…`)
+    /// otherwise can't get (no single required literal to gate on). The mask is a
+    /// SUPERSET of the true match set for either literal set `maskLiterals` ranks
     /// (a hit landing in a line's trailing `\r`/terminator maps to that line —
     /// harmless: the caller still confirms each candidate with the engine) and
     /// never a subset, keeping output byte-identical. Returns null (caller keeps
-    /// its per-line path) unless the shortcut is sound & profitable: pure literals,
-    /// no single needle already gating, not inverted (a `-v` match LACKS the
-    /// literals), not `--stop-on-nonmatch` (which acts on non-matches mid-stream),
-    /// and a materialized body.
+    /// its per-line path) unless the shortcut is sound & profitable: a usable
+    /// literal set, no single needle already gating, not inverted (a `-v` match
+    /// LACKS the literals), not `--stop-on-nonmatch` (which acts on non-matches
+    /// mid-stream), and a materialized body.
     pub fn litCandidates(self: *Emitter, lines: []const []const u8) ?[]const bool {
         if (self.needle != null or self.o.invert or self.o.stop_on_nonmatch) return null;
         if (lines.len == 0 or self.body_end <= self.base) return null;
-        const lits = self.re.lits();
+        const lits = maskLiterals(self.o, self.re);
         if (lits.len == 0) return null;
         const body = @as([*]const u8, @ptrFromInt(self.base))[0 .. self.body_end - self.base];
         const cand = self.a.alloc(bool, lines.len) catch return null;

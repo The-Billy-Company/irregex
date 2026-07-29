@@ -354,17 +354,19 @@ fn soloShard(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.ArrayList(u
 /// driver wraps the merged stream once.
 ///
 /// Line-free, like `output.Emitter.fileLit`: it NEVER materializes the shard's
-/// lines. When a required literal (or a caller `needle`) gates the pattern, one
-/// candidate-jump sweep (`indexOfAnyPos`/`Gate.find`) lands only on lines that
-/// hold a literal — the sole lines that can match — and each hit's bounds come
-/// from a reverse/forward `memchr`; `line_number` is counted incrementally over
-/// the inter-hit gap (`countByte`). A literal-free pattern falls back to a
-/// streaming per-line walk (still no line array). Either way the record head,
+/// lines. When a caller `needle` or any literal set `maskLiterals` ranks gates
+/// the pattern, one candidate-jump sweep (`indexOfAnyPos`/`Gate.find`) lands
+/// only on lines that hold a literal — the sole lines that can match — and each
+/// hit's bounds come from a reverse/forward `memchr`; `line_number` is counted
+/// incrementally over the inter-hit gap (`countByte`). A literal-free pattern
+/// falls back to a streaming per-line walk (still no line array). A cover hit is
+/// only a candidate, which costs nothing here: the walk already runs the matcher
+/// on the landed line and emits only on a real span. Either way the record head,
 /// `view` (CRLF-trimmed), terminator-inclusive `lines.text`, and submatch
 /// offsets are byte-identical to the serial `emitFile`'s plain branch.
 fn soloShardRecords(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, ss: *Matcher.SpanSim, o: Opts, f: File, lo: usize, hi: usize, base: usize, needle: ?simd.Gate, fml: *usize, fm: *usize) void {
     const body = f.body;
-    const lits = re.lits();
+    const lits = output.Emitter.maskLiterals(o, re);
     const jump = needle != null or lits.len != 0; // a hit-to-hit prefilter exists
     const pj = pathData(a, f.path); // path object, encoded once per shard
     var lineno: usize = base; // 0-based line index at `counted`; +1 on emit
@@ -767,16 +769,17 @@ pub fn summary(a: std.mem.Allocator, out: *std.ArrayList(u8), st: Stats, elapsed
 /// Returns `&.{}` without allocating on a non-match, so the classification scan
 /// over context/non-matching lines stays as cheap as a first-span probe — the
 /// engine walks each line exactly once and its spans are cached on the `Line`.
-/// Per-line candidate mask for a pure-literal pattern — the `--json` twin of
-/// `output.Emitter.litCandidates` (see it for the equivalence/superset proof).
+/// Per-line candidate mask for a literal-bearing pattern — the `--json` twin of
+/// `output.Emitter.litCandidates` (see it for the superset proof, and
+/// `output.Emitter.maskLiterals` for which literal set is sound to sweep with).
 /// ONE fused whole-buffer `indexOfAnyPos` sweep over `body` marks only the lines
 /// around literal hits (mapped via each `Line.off`, a forward-only two-pointer),
 /// so classification skips ~every non-candidate without an NFA run. Null unless
-/// sound & profitable: pure literals, no single needle already gating, and not
-/// inverted (a `-v` match LACKS the literals).
+/// sound & profitable: a usable literal set, no single needle already gating, and
+/// not inverted (a `-v` match LACKS the literals).
 fn litCandidates(a: std.mem.Allocator, re: *const Matcher, needle: ?simd.Gate, o: Opts, body: []const u8, lines: []const Line) ?[]const bool {
     if (needle != null or o.invert or lines.len == 0) return null;
-    const lits = re.lits();
+    const lits = output.Emitter.maskLiterals(o, re);
     if (lits.len == 0) return null;
     const cand = a.alloc(bool, lines.len) catch return null;
     @memset(cand, false);
