@@ -64,8 +64,23 @@ pub const Dfa = struct {
     /// One past the last matching row offset: `isMatch(s) == s < match_hi`. Zero
     /// when no state matches, `nstates*ncls` when every state does.
     match_hi: u32,
+    /// The match partition subdivided by WHICH patterns a state accepts — empty
+    /// for the single-pattern automata that are every ordinary compile, where
+    /// `match_hi` already answers the only question there is.
+    ///
+    /// `freeze.zig` sorts match states by accepted-pattern set, so equal sets are
+    /// contiguous and the whole attribution table collapses to a handful of
+    /// (bound, mask) pairs — 3 to 18 across the measured slates, against an
+    /// id-indexed `u64` per state. rust-`regex` reaches the same place with a
+    /// `(offset, len)` pair per match state plus a flat `pattern_ids` array, and
+    /// recovers the index with `(id - min_match) >> stride2`, which is why its
+    /// dense DFA pads every row to a power-of-two stride. Runs need no index at
+    /// all, so we keep the tight stride and the small table both.
+    pat_runs: []const PatRun = &.{},
     start: u32, // premultiplied start row offset (at_start=true, at_end=false)
     empty_match: bool, // does the pattern match an empty line? (^$, a*, …)
+    empty_pats: u64 = 0, // WHICH patterns an empty haystack accepts — the one verdict no interned state holds
+
     anchored: bool, // `^`-anchored ⇒ never re-seed; dead state ⇒ no match
     // ── Word-context axis (`\b \B \< \>`; the `matchWord` path only) ──
     // A word-boundary assertion gates on the word-ness of the bytes straddling a
@@ -96,12 +111,32 @@ pub const Dfa = struct {
     start_dwell: ?prefilter.Prefilter = null,
     allocator: std.mem.Allocator,
 
+    /// One contiguous block of match states accepting the same pattern set:
+    /// every premultiplied offset below `hi` (and at or above the previous run's)
+    /// accepts exactly `mask`.
+    pub const PatRun = struct { hi: u32, mask: u64 };
+
     pub fn deinit(self: *Dfa) void {
         const a = self.allocator;
         a.free(self.trans_in);
         a.free(self.trans_fin);
         if (self.trans_in_w.len != 0) a.free(self.trans_in_w);
+        if (self.pat_runs.len != 0) a.free(self.pat_runs);
         a.destroy(self);
+    }
+
+    /// Which patterns does the premultiplied state `s` accept — bit `i` for
+    /// pattern `i`, zero for a non-match state. The single-pattern answer is the
+    /// match flag itself, so an ordinary automaton pays one compare and no load.
+    ///
+    /// Off the byte-at-a-time path by construction: the scan loop still tests
+    /// `isMatch`, and this runs once per REPORTED end rather than once per byte.
+    /// A linear walk therefore beats a binary search at these lengths — the runs
+    /// are few, contiguous, and land in one cache line.
+    pub inline fn patternsAt(self: *const Dfa, s: u32) u64 {
+        if (self.pat_runs.len == 0) return @intFromBool(s < self.match_hi);
+        for (self.pat_runs) |r| if (s < r.hi) return r.mask;
+        return 0;
     }
 
     /// Does the premultiplied state `s` match? The match states were renumbered

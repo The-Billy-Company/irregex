@@ -89,7 +89,16 @@ const Det = struct {
     sp: usize = 0,
     visits: u64 = 0,
 
+    /// The unanchored re-seed, precomputed — `seeds[at_end]` is the start's
+    /// closure at that gap, `seed_match[at_end]` whether it accepts. Null when
+    /// anchored. The byte determinizer's `dfa/subset.zig::seeds` with one
+    /// dimension instead of three: this program has no word context, and
+    /// `at_start` is false in every step, so a step can present only two gaps.
+    seeds: ?[]u64 = null, // 2 x words
+    seed_match: [2]bool = @splat(false),
+
     fn deinit(d: *Det) void {
+        if (d.seeds) |sd| d.gpa.free(sd);
         d.map.deinit();
         for (d.sets.items) |k| d.gpa.free(k);
         d.sets.deinit(d.gpa);
@@ -143,6 +152,20 @@ const Det = struct {
         return d.close(at_start, at_end);
     }
 
+    /// Close the start once per step-reachable gap and keep it, so `step` folds
+    /// the re-seed in with a bitset OR instead of re-walking it `nstates x nmt`
+    /// times. Sound because epsilon-closure distributes over union: the walk
+    /// from `from` and the walk from the start reach each other only through
+    /// states both would visit anyway.
+    fn primeSeeds(d: *Det) Error!void {
+        const buf = try d.gpa.alloc(u64, 2 * d.words);
+        d.seeds = buf;
+        for ([_]bool{ false, true }, 0..) |at_end, g| {
+            d.seed_match[g] = d.closeSeed(false, at_end);
+            @memcpy(buf[g * d.words ..][0..d.words], d.out);
+        }
+    }
+
     /// Transition out of consume-set `from` on minterm `m`: a consume state
     /// fires iff its predicate accepts the minterm — one bitmask read where the
     /// byte engine walks a trie. Re-seeds when unanchored, then closes.
@@ -155,8 +178,14 @@ const Det = struct {
             const cn = d.prog.states[st].consume;
             if (alpha.accepts(cn.pred, m)) d.pushIf(cn.out);
         }
-        if (!d.anchored) d.pushIf(d.prog.start);
-        return d.close(false, at_end);
+        var matched = d.close(false, at_end);
+        if (d.seeds) |sd| {
+            const g = @intFromBool(at_end);
+            for (d.out, sd[g * d.words ..][0..d.words]) |*o, v| o.* |= v;
+            matched = matched or d.seed_match[g];
+            d.visits += d.words; // the fold is real work; the budget must see it
+        }
+        return matched;
     }
 
     fn intern(d: *Det, matched: bool) Error!struct { id: u32, is_new: bool } {
@@ -213,6 +242,10 @@ pub fn build(gpa: std.mem.Allocator, prog: *const program.Program, anchored: boo
     // them unconditionally: mid-line and at end-of-line, both without `^`.
     const reseed = if (anchored) try d.internDead() else (try d.intern(d.closeSeed(false, false))).id;
     const fin_reseed = if (anchored) try d.internDead() else (try d.intern(d.closeSeed(false, true))).id;
+
+    // After the two resync landings are interned (they read `d.out`, which this
+    // clobbers) and before any stepping, which is the only reader.
+    if (!anchored) try d.primeSeeds();
 
     var queued: std.ArrayList(bool) = .empty;
     defer queued.deinit(gpa);

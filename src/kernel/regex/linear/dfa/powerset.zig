@@ -143,7 +143,8 @@ pub fn build(gpa: std.mem.Allocator, states: []const State, start: u32, anchored
     var wl = Worklist{ .gpa = gpa };
     defer wl.deinit();
 
-    const empty_match = sub.closeStart(true, true, false); // empty line: BOL ∧ EOL, no first byte ⇒ word_after=false
+    const empty_pats = sub.closeStart(true, true, false); // empty line: BOL ∧ EOL, no first byte ⇒ word_after=false
+    const empty_match = empty_pats != 0;
     // The unanchored start splits on the FIRST byte's word-ness (word_ctx): `start`
     // when it is a non-word byte (also the sole start when !word_ctx, where the
     // word_after arg is inert), `start_w` when it is a word byte. `word_before` is
@@ -177,6 +178,10 @@ pub fn build(gpa: std.mem.Allocator, states: []const State, start: u32, anchored
         .interior_word = if (word_ctx) &sub.trans_in_w else null,
         .final = &sub.trans_fin,
         .is_match = sub.is_match.items,
+        // Empty for the single-terminal programs that are every ordinary
+        // compile, which keeps the frozen automaton's attribution table null and
+        // its match test the same lone `s < match_hi` compare it has always been.
+        .pats = if (sub.pats.items.len == 0) null else sub.pats.items,
     };
 
     // No quotient runs here, in EITHER dimension, and `../automata/reduce.zig` — the
@@ -234,6 +239,7 @@ pub fn build(gpa: std.mem.Allocator, states: []const State, start: u32, anchored
         .start_word = start_w_id,
         .dead = sub.dead,
         .empty_match = empty_match,
+        .empty_pats = empty_pats,
         .anchored = anchored,
         .word_ctx = word_ctx,
         .unicode_word = word_ctx and unicode,

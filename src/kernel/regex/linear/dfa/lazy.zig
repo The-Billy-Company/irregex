@@ -98,7 +98,7 @@ pub const Lazy = struct {
     ) std.mem.Allocator.Error!?prefilter.Prefilter {
         var sub = try subset.Subset.init(gpa, states, start, anchored, false, cls);
         defer sub.deinit();
-        const empty_match = sub.closeStart(true, true, false);
+        const empty_match = sub.closeStart(true, true, false) != 0;
         const start_id = (try sub.intern(sub.closeStart(true, false, false))).id;
         try sub.forceStartRow(start_id);
         return dwell.ofStart(anchored, empty_match, sub.trans_in.items, sub.trans_fin.items, sub.is_match.items, &cls.class, cls.ncls, start_id);
@@ -137,7 +137,7 @@ pub const Cache = struct {
     pub fn initWithPolicy(gpa: std.mem.Allocator, lz: *const Lazy, policy: Policy) std.mem.Allocator.Error!Cache {
         var sub = try subset.Subset.init(gpa, lz.states, lz.start_nfa, lz.anchored, lz.word_ctx, lz.cls);
         errdefer sub.deinit();
-        const empty_match = sub.closeStart(true, true, false);
+        const empty_match = sub.closeStart(true, true, false) != 0;
         const start_id = (try sub.intern(sub.closeStart(true, false, false))).id;
         const start_w_id = if (lz.word_ctx) (try sub.intern(sub.closeStart(true, false, true))).id else start_id;
         var c: Cache = .{

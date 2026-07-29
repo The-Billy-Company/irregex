@@ -239,15 +239,21 @@ test "lineHits is muster-invariant" {
         "",
         "alphabetagamma runs them together",
     };
+    try expectLineHitsParity(&specs, &lines);
+}
+
+/// Three answers per line, all required to agree: muster armed, muster stripped,
+/// and N independent single-pattern engines.
+fn expectLineHitsParity(specs: []const Spec, lines: []const []const u8) !void {
     for (lines) |line| {
         var armed: std.ArrayList(u32) = .empty;
         defer armed.deinit(gpa);
         var bare: std.ArrayList(u32) = .empty;
         defer bare.deinit(gpa);
-        try collectLineHits(&specs, line, true, &armed);
-        try collectLineHits(&specs, line, false, &bare);
+        try collectLineHits(specs, line, true, &armed);
+        try collectLineHits(specs, line, false, &bare);
         try std.testing.expectEqualSlices(u32, bare.items, armed.items);
-        // …and both agree with the independent per-pattern engine.
+
         var want: std.ArrayList(u32) = .empty;
         defer want.deinit(gpa);
         for (specs, 0..) |spec, i| {
@@ -267,6 +273,145 @@ fn collectLineHits(specs: []const Spec, line: []const u8, armed: bool, out: *std
     var sc = try set.scratch(gpa);
     defer sc.deinit(gpa);
     try set.lineHits(line, &sc, gpa, out);
+}
+
+// ── what the muster is allowed to SETTLE ────────────────────────────────────
+// A settled pattern skips the engine confirm entirely: the literal hit IS the
+// verdict. That is only sound for a match EQUIVALENCE, so these tests fix the
+// boundary from both sides — a pattern that may be settled, and the near-misses
+// that must not be, each chosen so that settling it would produce a WRONG answer
+// rather than merely a slower one.
+
+/// Is pattern `i` of `specs` settled by its literals alone?
+fn settles(specs: []const Spec, i: usize) !bool {
+    var set = try PatternSet.compile(gpa, specs);
+    defer set.deinit(gpa);
+    const m = set.muster orelse return false;
+    return m.isSettled(i);
+}
+
+test "muster settles a pure-literal alternation, and the answer still matches the oracle" {
+    // `TODO|FIXME|XXX` is an alternation of literals, so containment of any one
+    // of them IS a match — the equivalence `analysis.pureLiterals` proves and
+    // the single-pattern scanner has always spent. Before this, the slate
+    // treated it as a mere cover and re-confirmed every hit through the engine.
+    const specs = [_]Spec{
+        .{ .pattern = "TODO|FIXME|XXX", .fixed = false },
+        .{ .pattern = "WalletService", .fixed = true },
+    };
+    try std.testing.expect(try settles(&specs, 0));
+
+    // Each branch alone, both branches, and a line that misses every branch
+    // while still containing near-miss text.
+    try expectMaskParity(&specs, "a TODO here");
+    try expectMaskParity(&specs, "a FIXME here");
+    try expectMaskParity(&specs, "XXX and TODO and WalletService");
+    try expectMaskParity(&specs, "TOD0 FIXM3 XX — none of them, really");
+    try expectLineHitsParity(&specs, &.{ "TODO alone", "nothing at all", "XXX" });
+}
+
+test "an anchored alternation is NOT settled — containment is not the question" {
+    // `^foo|^bar` is covered by {foo,bar} but decided by neither: the literal
+    // may sit mid-line. Settling it would report a match for "xxfoo", which the
+    // oracle rejects — so the parity assertion below is a real trap, not a
+    // restatement. `pureLit` refuses an anchor node, which is what holds it.
+    const specs = [_]Spec{
+        .{ .pattern = "^foo|^bar", .fixed = false },
+        .{ .pattern = "zeta", .fixed = true },
+    };
+    try std.testing.expect(!try settles(&specs, 0));
+    try expectMaskParity(&specs, "xxfoo — the literal is present but not at line start");
+    try expectLineHitsParity(&specs, &.{ "xxfoo", "foo at the start", "  bar indented" });
+}
+
+test "a word query is nominated, never settled" {
+    // `-w` narrows the match set AFTER containment, so `cat` present does not
+    // mean `\bcat\b` matched. "concatenate" is the trap.
+    const specs = [_]Spec{
+        .{ .pattern = "cat", .fixed = true, .word = true },
+        .{ .pattern = "dog", .fixed = true },
+    };
+    try std.testing.expect(!try settles(&specs, 0));
+    try expectMaskParity(&specs, "concatenate is not a cat");
+    try expectLineHitsParity(&specs, &.{ "concatenate", "a cat sat", "dog only" });
+}
+
+test "a literal-prefixed regex is covered but not settled" {
+    // `pgxpool\.\w+` has required literal "pgxpool", which is a complete cover
+    // and an unsound verdict: "pgxpool" alone, with no `.`, must not match.
+    const specs = [_]Spec{
+        .{ .pattern = "pgxpool\\.\\w+", .fixed = false },
+        .{ .pattern = "JetStream", .fixed = true },
+    };
+    try std.testing.expect(!try settles(&specs, 0));
+    try expectMaskParity(&specs, "pgxpool on its own, no member access");
+    try expectMaskParity(&specs, "pgxpool.Acquire here");
+    try expectLineHitsParity(&specs, &.{ "pgxpool", "pgxpool.Acquire", "JetStream" });
+}
+
+test "differential fuzz: settled patterns agree with N oracles over random haystacks" {
+    // The general guard. The slate mixes settle-eligible alternations with the
+    // shapes that must not settle, over haystacks assembled from fragments that
+    // straddle every boundary above (near-misses, anchors, word edges).
+    const specs = [_]Spec{
+        .{ .pattern = "TODO|FIXME", .fixed = false }, // settles
+        .{ .pattern = "alpha", .fixed = true }, // settles
+        .{ .pattern = "^beta", .fixed = false }, // anchored: must not
+        .{ .pattern = "gamma", .fixed = true, .word = true }, // word: must not
+        .{ .pattern = "delta\\d+", .fixed = false }, // covered only
+    };
+    const frag = [_][]const u8{
+        "TODO",  "TOD",      "FIXME", "alpha",  "alphabet", "beta", "xbeta",
+        "gamma", "gammaray", "delta", "delta7", " ",        "\n",   "zz",
+    };
+    var prng = std.Random.DefaultPrng.init(0x5EED_5E77_1E00);
+    const rand = prng.random();
+    var buf: [512]u8 = undefined;
+    for (0..2000) |_| {
+        var n: usize = 0;
+        const parts = rand.intRangeAtMost(usize, 1, 10);
+        for (0..parts) |_| {
+            const f = frag[rand.intRangeLessThan(usize, 0, frag.len)];
+            if (n + f.len > buf.len) break;
+            @memcpy(buf[n..][0..f.len], f);
+            n += f.len;
+        }
+        // A random haystack is unreadable from the failure alone; name it, with
+        // each pattern's oracle verdict and whether the muster settled it.
+        expectMaskParity(&specs, buf[0..n]) catch |e| {
+            std.debug.print("disagreement on \"{f}\"\n", .{std.zig.fmtString(buf[0..n])});
+            for (specs, 0..) |spec, i| std.debug.print("  [{d}] {s:<12} oracle={} settled={}\n", .{
+                i, spec.pattern, try oracleMatches(spec, buf[0..n]), try settles(&specs, i),
+            });
+            return e;
+        };
+    }
+}
+
+test "the fused gate may reject, but a -w slate's gate may not decide" {
+    // The gate is fused from pattern TEXT, so `-w` does not survive into it: its
+    // `cat` branch matches "concatenate", which the word query does not. That is
+    // fine for rejection and wrong for a verdict, so `anyMatch` must confirm
+    // behind an inexact gate rather than return it. Found by the fuzz above.
+    const specs = [_]Spec{
+        .{ .pattern = "cat", .fixed = true, .word = true },
+        .{ .pattern = "unrelated", .fixed = true },
+    };
+    var set = try PatternSet.compile(gpa, &specs);
+    defer set.deinit(gpa);
+    try std.testing.expect(set.gate != null); // still built — it still rejects
+    try std.testing.expect(!set.gate_exact);
+
+    // Strip the muster so the gate is the only accelerator under test.
+    if (set.muster) |*m| {
+        m.deinit(gpa);
+        set.muster = null;
+    }
+    var sc = try set.scratch(gpa);
+    defer sc.deinit(gpa);
+    try std.testing.expect(!set.anyMatch("concatenate", &sc));
+    try std.testing.expect(set.anyMatch("a cat sat", &sc));
+    try std.testing.expect(!set.anyMatch("nothing here", &sc));
 }
 
 test "prefilter delegates per pattern" {

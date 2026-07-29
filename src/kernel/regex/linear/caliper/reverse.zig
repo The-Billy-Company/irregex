@@ -201,11 +201,24 @@ pub fn build(gpa: std.mem.Allocator, states: []const State, start: u32, match_id
 }
 
 /// The lone `match` in a lowered program, or null if it carries a buffer anchor
-/// (`\A`/`\z`, multiline only) the caliper declines to reverse.
+/// (`\A`/`\z`, multiline only) the caliper declines to reverse — or if there is
+/// more than one terminal.
+///
+/// "Lone" is a real precondition, not a description. An attributing union
+/// program (`../program/chorus.zig`) has one terminal PER PATTERN, and reversing
+/// from any single one of them yields spans for that pattern and silently wrong
+/// spans for every other. Recovering a start per pattern needs the reverse
+/// program anchored to a chosen terminal — rust-`regex` spells that
+/// `Anchored::Pattern` over a `starts_for_each_pattern` table — which this
+/// signature cannot express. So it declines, and the caliper falls back rather
+/// than answering confidently from the wrong end.
 pub fn matchIndex(states: []const State) ?u32 {
     var found: ?u32 = null;
     for (states, 0..) |st, i| switch (st) {
-        .match => found = @intCast(i),
+        .match => {
+            if (found != null) return null; // multi-terminal ⇒ no single reverse root
+            found = @intCast(i);
+        },
         .assert_buf_start, .assert_buf_end => return null,
         else => {},
     };

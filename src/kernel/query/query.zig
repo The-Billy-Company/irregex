@@ -297,6 +297,28 @@ pub const CompiledQuery = struct {
         }
     }
 
+    /// The literals whose presence is EQUIVALENT to this query matching — empty
+    /// unless the whole pattern is exactly an alternation of them (`panic|0x`).
+    ///
+    /// Strictly stronger than `prefilter`, and the difference is the whole point:
+    /// a prefilter literal only NOMINATES (a hit still has to be confirmed by an
+    /// engine), where one of these DECIDES. The single-pattern scanner has spent
+    /// this for a while — `lower.zig::literalEngine` builds its `LiteralSet` at
+    /// `.exact` authority from the same set — and this is the accessor that lets
+    /// a pattern SLATE spend it too, in `slate/muster.zig`.
+    ///
+    /// The equivalence is per LINE, which is the model every caller here shares:
+    /// `analysis.pureLiterals` refuses a literal containing `\n`, and `-U` (where
+    /// a match may cross one) yields empty. `-w` and `-i` yield empty too, since
+    /// containment is then not the question being asked.
+    pub fn equivalence(self: *const CompiledQuery) []const []const u8 {
+        if (self.caseless or self.word) return &.{};
+        return switch (self.body) {
+            .literal => &.{}, // the body IS the needle; `prefilter` already says so
+            .engine => |*m| m.lits(),
+        };
+    }
+
     /// Does any line of `bytes` match? (rg `-l` semantics.) Literal → substring
     /// presence; regex → whole-doc match over the caller's `scratch`. Under
     /// `-w` the decision routes through the word-valid span scan — one branch

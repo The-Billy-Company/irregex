@@ -40,6 +40,11 @@ pub const Tables = struct {
     interior_word: ?*std.ArrayList(u32) = null,
     final: *std.ArrayList(u32),
     is_match: []bool,
+    /// Which patterns each state accepts, id-indexed like `is_match`, or null
+    /// when the program has one `.match` terminal and the flag says it all.
+    /// Permuted alongside `is_match` and consumed here into the automaton's
+    /// signature runs.
+    pats: ?[]u64 = null,
 };
 
 /// Everything about the automaton that is not a transition: how many states, the
@@ -54,6 +59,12 @@ pub const Shape = struct {
     /// `unknown` when the non-matching sink was never reached.
     dead: u32,
     empty_match: bool,
+    /// Which patterns an EMPTY haystack accepts. The empty-line closure is the
+    /// one verdict no interned state carries (it is computed and discarded), so
+    /// attribution would otherwise have a hole exactly where `a*` lives. Zero is
+    /// the honest default for a road that does not compute it — the symbolic
+    /// product, which is single-pattern and never attributed.
+    empty_pats: u64 = 0,
     anchored: bool,
     word_ctx: bool = false,
     unicode_word: bool = false,
@@ -108,7 +119,25 @@ fn sortMatchFirst(gpa: std.mem.Allocator, ncls: u16, t: Tables, sh: *Shape) std.
         old_of[next] = @intCast(id);
         next += 1;
     };
-    if (nmatch == 0 or nmatch == n) return nmatch; // already partitioned; no rows to move
+
+    // Second key, for attributing programs only: order the match prefix by the
+    // pattern set each state accepts, so equal sets land in contiguous RUNS. The
+    // automaton then names patterns with a short search over runs instead of an
+    // id-indexed mask array — the same move as the match/non-match partition
+    // itself, applied one level down. Stable, so states accepting the same set
+    // keep their discovery order and the locality that came with it.
+    if (t.pats) |p| std.mem.sort(u32, old_of[0..nmatch], p, struct {
+        fn lt(pats: []const u64, a: u32, b: u32) bool {
+            return pats[a] < pats[b];
+        }
+    }.lt);
+
+    // Nothing to move when the ids already sit where they belong — the ordinary
+    // case for an all-match or all-non-match automaton, and checked rather than
+    // inferred now that the sort above can permute within the prefix.
+    for (old_of, 0..) |old, new| {
+        if (old != new) break;
+    } else return nmatch;
 
     const new_of = try gpa.alloc(u32, n);
     defer gpa.free(new_of);
@@ -159,10 +188,37 @@ fn sortMatchFirst(gpa: std.mem.Allocator, ncls: u16, t: Tables, sh: *Shape) std.
     @memset(t.is_match[0..nmatch], true);
     @memset(t.is_match[nmatch..n], false);
 
+    // The masks are not self-describing the way the flags are, so they get a real
+    // permutation. One scratch copy, at compile time, over an array the size of
+    // the state count — the cheap end of everything else this function does.
+    if (t.pats) |p| {
+        const src = try gpa.dupe(u64, p[0..n]);
+        defer gpa.free(src);
+        for (old_of, 0..) |old, new| p[new] = src[old];
+    }
+
     sh.start = new_of[sh.start];
     sh.start_word = new_of[sh.start_word];
     if (sh.dead != unknown) sh.dead = new_of[sh.dead];
     return nmatch;
+}
+
+/// Collapse the sorted match prefix into one entry per distinct pattern set.
+/// `pats` is the permuted mask array restricted to the match states, already
+/// grouped by `sortMatchFirst`; `nc` premultiplies each run bound the same way
+/// every other state value in the automaton is premultiplied, so the runs are
+/// comparable against a live `s` with no arithmetic at lookup time.
+fn buildRuns(gpa: std.mem.Allocator, pats: []const u64, nc: u32) std.mem.Allocator.Error![]Dfa.PatRun {
+    var runs: std.ArrayList(Dfa.PatRun) = .empty;
+    errdefer runs.deinit(gpa);
+    var i: usize = 0;
+    while (i < pats.len) {
+        var j = i + 1;
+        while (j < pats.len and pats[j] == pats[i]) j += 1;
+        try runs.append(gpa, .{ .hi = @as(u32, @intCast(j)) * nc, .mask = pats[i] });
+        i = j;
+    }
+    return runs.toOwnedSlice(gpa);
 }
 
 /// The tables that actually exist, so every layout pass writes one loop instead
@@ -214,6 +270,13 @@ pub fn freeze(
     // sentinel (their row is never indexed), so skip those rather than
     // overflowing the multiply.
     const nc: u32 = ncls;
+
+    // Attribution runs, read off the now-grouped match prefix. Built before the
+    // tables are premultiplied only because it needs `nmatch` as an id count; the
+    // bounds it stores are premultiplied on the way in, like everything else.
+    const pat_runs: []const Dfa.PatRun = if (t.pats) |p| try buildRuns(gpa, p[0..nmatch], nc) else &.{};
+    errdefer if (pat_runs.len != 0) gpa.free(pat_runs);
+
     for (tableList(t)) |items| {
         for (items) |*v| if (v.* != unknown) {
             v.* *= nc;
@@ -229,8 +292,10 @@ pub fn freeze(
         .trans_in = try t.interior.toOwnedSlice(gpa),
         .trans_fin = try t.final.toOwnedSlice(gpa),
         .match_hi = nmatch * nc,
+        .pat_runs = pat_runs,
         .start = sh.start * nc,
         .empty_match = sh.empty_match,
+        .empty_pats = sh.empty_pats,
         .anchored = sh.anchored,
         .dead = if (sh.dead == unknown) unknown else sh.dead * nc,
         .start_dwell = start_dwell,

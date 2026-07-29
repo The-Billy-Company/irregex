@@ -22,9 +22,12 @@
 //!     without the engine ever running — the confirm count drops from N to the
 //!     number of patterns actually in play, which on real code is nearly always
 //!     zero or one.
-//!   • A pattern that IS a plain literal (`-F`, no fold, no `-w`) is *decided*
-//!     by the roll: presence of the needle is match. Those patterns are marked
-//!     `settled` and never reach a confirm at all.
+//!   • A pattern whose literals are a match EQUIVALENCE — containing one of them
+//!     IS a match, not merely a precondition — is *decided* by the roll. A plain
+//!     `-F` needle is the obvious case; so is any pattern that is exactly an
+//!     alternation of literals (`TODO|FIXME|XXX`), or a regex typed without `-F`
+//!     that happens to be a plain literal. Those are marked `settled` and never
+//!     reach a confirm at all. `coverOf` is where the line is drawn.
 //!
 //! Soundness is the only thing that matters here, and it runs one way: the
 //! muster may only ever say "this pattern cannot match". A pattern with no
@@ -291,7 +294,8 @@ const Dragnet = struct {
 
 /// The compiled roll call. `lits[k]` belongs to pattern `owner[k]`; a pattern is
 /// in play when any of its literals is present, always in play when it has none
-/// (`unbounded`), and DECIDED by presence when it is a bare literal (`settled`).
+/// (`unbounded`), and DECIDED by presence when those literals are a match
+/// equivalence rather than a mere cover (`settled` — see `coverOf`).
 pub const Muster = struct {
     lits: [][]const u8,
     owner: []u32,
@@ -394,14 +398,14 @@ pub fn build(
     var covered: usize = 0;
     for (queries, specs, 0..) |*q, spec, i| {
         var one: [1][]const u8 = undefined;
-        const cover = coverOf(q, &one);
-        if (cover.len == 0) {
+        const cover = coverOf(q, spec, &one);
+        if (cover.lits.len == 0) {
             B64.set(unbounded, i);
             continue;
         }
         covered += 1;
-        if (decides(q, spec)) B64.set(settled, i);
-        for (cover) |lit| {
+        if (cover.exact) B64.set(settled, i);
+        for (cover.lits) |lit| {
             try lits.append(gpa, lit);
             try owner.append(gpa, @intCast(i));
             const k: u32 = @intCast(owner.items.len - 1);
@@ -459,27 +463,43 @@ pub fn build(
     };
 }
 
-/// The literals a match of `q` is FORCED to contain at least one of. This is
-/// `CompiledQuery.prefilter` — the index's own soundness derivation — widened
-/// by one case it declines for a reason that does not apply here: a bare
-/// literal body under three bytes is useless to a TRIGRAM index but is a
-/// perfectly sound needle for a byte scanner.
-fn coverOf(q: *const query.CompiledQuery, one: *[1][]const u8) []const []const u8 {
+/// The literals a match of `q` is FORCED to contain at least one of, and
+/// whether their presence DECIDES it.
+///
+/// The two answers are one function because they are one fact. A cover only
+/// licenses a verdict when it is COMPLETE — every match contains one of these —
+/// and only licenses skipping the confirm when it is also EXACT — containing one
+/// of these IS a match. Deriving them apart is how a nominating literal gets
+/// mistaken for a deciding one.
+///
+/// Three sources, strongest first:
+///   * a bare literal body — the whole pattern is the needle, so `contains` ⇔
+///     `docMatches`. This is `CompiledQuery.prefilter` widened by one case it
+///     declines for a reason that does not apply here: a needle under three
+///     bytes is useless to a TRIGRAM index but perfectly sound for a byte
+///     scanner.
+///   * the pure-literal EQUIVALENCE set (`CompiledQuery.equivalence`) — a regex
+///     that is exactly an alternation of literals (`TODO|FIXME|XXX`). The
+///     single-pattern engine has always spent this; the slate now does too.
+///   * the prefilter cover — a required literal or a per-branch union. Complete
+///     but NOT exact, so it nominates and the engine confirms.
+fn coverOf(q: *const query.CompiledQuery, spec: query.Spec, one: *[1][]const u8) Cover {
+    const decidable = !q.word and !spec.pcre;
     if (!q.caseless and q.body == .literal) {
         const needle = q.body.literal;
-        if (needle.len == 0) return &.{};
+        if (needle.len == 0) return .{ .lits = &.{}, .exact = false };
         one[0] = needle;
-        return one[0..1];
+        return .{ .lits = one[0..1], .exact = decidable };
     }
-    return q.prefilter(one);
+    const equiv = q.equivalence();
+    if (equiv.len != 0) return .{ .lits = equiv, .exact = decidable };
+    return .{ .lits = q.prefilter(one), .exact = false };
 }
 
-/// Does literal presence DECIDE `q`? Only for the bare-literal body: the whole
-/// pattern is the needle, so `contains ⇔ docMatches`. `-w` narrows the match
-/// set after the fact, so a word query is nominated, never decided.
-fn decides(q: *const query.CompiledQuery, spec: query.Spec) bool {
-    return !q.caseless and !q.word and !spec.pcre and q.body == .literal;
-}
+/// A pattern's literals plus the authority they carry — `exact` means a hit
+/// settles the pattern with no engine confirm, the distinction
+/// `literal_set.Authority` draws for a single query.
+const Cover = struct { lits: []const []const u8, exact: bool };
 
 // ── tests ──────────────────────────────────────────────────────────────────
 //
@@ -539,20 +559,29 @@ test "roll excludes only patterns the engine also rejects" {
     try expectSoundOver(&specs, "gamma rays only");
 }
 
-test "a literal body is settled; a caseless or regex body never is" {
+test "settling follows the match EQUIVALENCE, not the body kind" {
+    // What decides is whether containment of the literals IS the match, so a
+    // regex can settle (a pure-literal alternation, or a literal typed without
+    // `-F`) while a case-folded or word-narrowed literal cannot.
     const specs = [_]query.Spec{
-        .{ .pattern = "settled_literal", .fixed = true },
-        .{ .pattern = "CASELESS", .fixed = true, .ignore_case = true },
-        .{ .pattern = "re[gG]ex", .fixed = false },
-        .{ .pattern = "worded", .fixed = true, .word = true },
+        .{ .pattern = "settled_literal", .fixed = true }, // 0: the needle IS the pattern
+        .{ .pattern = "CASELESS", .fixed = true, .ignore_case = true }, // 1: fold ⇒ raw needle unsound
+        .{ .pattern = "re[gG]ex", .fixed = false }, // 2: a class is not a literal
+        .{ .pattern = "worded", .fixed = true, .word = true }, // 3: `-w` narrows after the fact
+        .{ .pattern = "TODO|FIXME|XXX", .fixed = false }, // 4: alternation of literals
+        .{ .pattern = "err != nil", .fixed = false }, // 5: regex that IS a literal
+        .{ .pattern = "^anchored", .fixed = false }, // 6: containment ≠ line start
+        .{ .pattern = "pgxpool\\.\\w+", .fixed = false }, // 7: literal PREFIX only covers
     };
     var built = try compileAll(&specs);
     defer built.deinit();
     const m = built.muster.?;
-    try testing.expect(m.isSettled(0));
-    try testing.expect(!m.isSettled(1));
-    try testing.expect(!m.isSettled(2));
-    try testing.expect(!m.isSettled(3));
+    for ([_]bool{ true, false, false, false, true, true, false, false }, 0..) |want, i| {
+        testing.expectEqual(want, m.isSettled(i)) catch |e| {
+            std.debug.print("pattern {d} \"{s}\"\n", .{ i, specs[i].pattern });
+            return e;
+        };
+    }
 }
 
 test "a pattern with no derivable literal stays permanently in play" {

@@ -25,11 +25,11 @@
 //!     from all N patterns, which both rejects a document AND names which
 //!     patterns are even in play. The gate answers "anything?" in one pass but
 //!     leaves attribution costing N confirms; the muster makes attribution
-//!     itself cost one pass, so a set's price stops tracking its size. Patterns
-//!     that are bare literals are DECIDED by that pass and never confirmed at
-//!     all. It only ever removes patterns that provably cannot match, so the
-//!     answer is unchanged — `patterns_test.zig` proves equality with it both
-//!     on and off.
+//!     itself cost one pass, so a set's price stops tracking its size. A pattern
+//!     whose literals DECIDE it (`muster.zig::coverOf`) is answered by that pass
+//!     and never confirmed at all. It only ever removes patterns that provably
+//!     cannot match, so the answer is unchanged — `patterns_test.zig` proves
+//!     equality with it both on and off.
 //!
 //! Kernel profile: no I/O, explicit allocator, immutable after `compile`;
 //! per-worker mutable state lives in a caller-owned `Scratch` (one per
@@ -39,6 +39,7 @@ const std = @import("std");
 const query = @import("../query/query.zig");
 const bits = @import("../math/bits.zig");
 const muster_mod = @import("muster.zig");
+const chorus_mod = @import("../regex/linear/program/chorus.zig");
 
 const B64 = bits.Field(u64);
 
@@ -51,9 +52,30 @@ pub const CompileError = query.CompileError;
 /// workers; all mutable match state lives in `Scratch`.
 pub const PatternSet = struct {
     queries: []CompiledQuery,
+    /// The attributing union automaton (see `chorus.zig`), when the slate can be
+    /// sung in one key — the surface behind `ends`/`overlapping`, which no other
+    /// path here can answer at any speed.
+    ///
+    /// It is deliberately NOT in `anyMatch`/`docMask`/`lineHits`. One union DFA
+    /// walk sounds like it should beat N engine confirms, and it does not: a
+    /// confirm for a literal pattern never reaches a DFA at all (it is a SIMD
+    /// memmem), and a regex confirm still carries a required-literal prefilter
+    /// and the fused multi-lane document walk. Measured on six slates in
+    /// `bench/rungs/patternid`, the union walk ran 0.06x-0.41x the speed of the
+    /// confirms it would have replaced, with identical answers. The muster is
+    /// the right accelerator for presence; this is the right engine for
+    /// attribution questions presence cannot express.
+    chorus: ?chorus_mod.Chorus,
     /// The fused any-of gate, when expressible (see module doc). Optional —
     /// purely an accelerator; `null` means confirm-only execution.
     gate: ?CompiledQuery,
+    /// Whether a gate hit DECIDES the set, or merely nominates it. The gate is
+    /// fused from pattern TEXT, so a per-spec flag that narrows the match set
+    /// after the fact — `-w`, or a PCRE body compiled here under the linear
+    /// engine — is not carried into it. Such a gate is a sound OVER-approximation:
+    /// still perfect for rejection, never sufficient for a verdict. Same
+    /// nominates-versus-decides split the muster draws with `settled`.
+    gate_exact: bool,
     /// The fused gate's alternation source — owned here because a compiled
     /// regex may alias its pattern bytes (the same reason `CompiledQuery`
     /// keeps `escaped` alive). Freed by `deinit`.
@@ -76,7 +98,8 @@ pub const PatternSet = struct {
             queries[i] = try CompiledQuery.compile(gpa, spec);
             built += 1;
         }
-        var set: PatternSet = .{ .queries = queries, .gate = null, .gate_pattern = null, .muster = null };
+        var set: PatternSet = .{ .queries = queries, .chorus = null, .gate = null, .gate_exact = true, .gate_pattern = null, .muster = null };
+        set.chorus = buildChorus(gpa, specs);
         buildGate(gpa, specs, &set);
         set.muster = muster_mod.build(gpa, queries, specs) catch null;
         return set;
@@ -85,6 +108,7 @@ pub const PatternSet = struct {
     pub fn deinit(self: *PatternSet, gpa: std.mem.Allocator) void {
         for (self.queries) |*q| q.deinit(gpa);
         gpa.free(self.queries);
+        if (self.chorus) |*c| c.deinit();
         if (self.gate) |*g| g.deinit(gpa);
         if (self.gate_pattern) |p| gpa.free(p);
         if (self.muster) |*m| m.deinit(gpa);
@@ -135,16 +159,24 @@ pub const PatternSet = struct {
 
     /// Does ANY pattern match anywhere in `bytes`? The muster's roll rejects an
     /// all-miss document in one SIMD pass and can even ANSWER YES outright when
-    /// a settled (bare-literal) pattern is present; past that it falls to the
-    /// fused gate, else first-hit-wins over the per-pattern queries. The cheap
-    /// rejection a batch workload spends most of its time in.
+    /// a settled pattern is present; past that it falls to the fused gate, else
+    /// first-hit-wins over the per-pattern queries. The cheap rejection a batch
+    /// workload spends most of its time in.
+    ///
+    /// Every yes here is either settled or confirmed. The gate alone is not
+    /// enough to say yes unless it is `gate_exact` — that distinction is the one
+    /// this function got wrong until a `-w` slate answered true for a document
+    /// no pattern matched.
     pub fn anyMatch(self: *const PatternSet, bytes: []const u8, sc: *Scratch) bool {
         if (self.muster) |*m| {
             if (!m.roll(bytes, sc.play)) return false;
             for (sc.play, m.settled) |w, done| if (w & done != 0) return true;
             return self.confirmAny(bytes, sc, sc.play);
         }
-        if (self.gate) |*g| return g.docMatches(bytes, &sc.gate);
+        if (self.gate) |*g| {
+            if (!g.docMatches(bytes, &sc.gate)) return false;
+            if (self.gate_exact) return true;
+        }
         return self.confirmAny(bytes, sc, null);
     }
 
@@ -186,7 +218,9 @@ pub const PatternSet = struct {
             }
             return any;
         }
-        if (self.gate != null and !self.anyMatch(bytes, sc)) return false;
+        // The gate is used AS a gate here, so its over-approximation costs
+        // nothing: every surviving pattern is confirmed below regardless.
+        if (self.gate) |*g| if (!g.docMatches(bytes, &sc.gate)) return false;
         var any = false;
         for (self.queries, sc.per, 0..) |*q, *s, i| {
             if (q.docMatches(bytes, s)) {
@@ -220,6 +254,20 @@ pub const PatternSet = struct {
         }
     }
 
+    /// Every position in `line` where some pattern ENDS, with the patterns that
+    /// ended there — including ends a leftmost scan would swallow, so
+    /// `foo|foofoo|foofoofoo` over `foofoofoo` reports 3, 6 and 9 rather than one
+    /// match. Each item is also a HalfMatch: an end and its patterns, with no
+    /// backward pass run to find where the match began.
+    ///
+    /// Null when the slate declined to fuse (see `buildChorus`). This is the one
+    /// question the confirm path cannot answer at any price — `docMatches` is a
+    /// yes/no about a whole document and has no positions in it at all.
+    pub fn ends(self: *const PatternSet, line: []const u8) ?chorus_mod.Ends {
+        if (self.chorus) |*ch| return ch.ends(line);
+        return null;
+    }
+
     /// The sound trigram prefilter literals for pattern `i` — delegate to the
     /// underlying query so index-backed callers prune candidates per pattern
     /// exactly as the single-pattern engine would.
@@ -248,6 +296,43 @@ pub const maskWords = B64.words;
 /// Is bit `i` set in a `docMask` bitmask?
 pub const maskHas = B64.get;
 
+/// Build the attributing union automaton when the slate can honestly share one.
+/// The conditions are the gate's, plus two the gate never had to think about
+/// because it only ever nominated a document and let the per-pattern queries
+/// decide:
+///
+///   * **`-w`** is rg's POST-match rule over a span, not `\b…\b` in the pattern.
+///     A recognizer has no span to test, so a word-bounded spec declines.
+///   * **`-P`** is a different engine entirely (`pcre`), and a chorus can only
+///     sing what the linear syntax can lower.
+///
+/// Anything else that declines — a body outside the syntax, a powerset past its
+/// budget, more than 64 patterns — returns null, and the set falls back to the
+/// gate-then-confirm path unchanged. Null is never an error and never an answer.
+fn buildChorus(gpa: std.mem.Allocator, specs: []const Spec) ?chorus_mod.Chorus {
+    if (specs.len < 2 or specs.len > chorus_mod.max_patterns) return null;
+    for (specs) |s| {
+        if (s.word or s.pcre) return null;
+        if (s.ignore_case != specs[0].ignore_case or s.unicode != specs[0].unicode) return null;
+    }
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const bodies = arena.alloc([]const u8, specs.len) catch return null;
+    for (specs, bodies) |s, *body| {
+        // A `-F` spec is a literal, so it enters the union escaped — exactly the
+        // escaping the gate and the CLI apply, for exactly the same reason.
+        body.* = if (s.fixed) query.escapeLiteral(arena, s.pattern) catch return null else s.pattern;
+    }
+
+    return chorus_mod.Chorus.compile(gpa, bodies, .{
+        .caseless = specs[0].ignore_case,
+        .unicode = specs[0].unicode,
+    }) catch null;
+}
+
 /// Build the fused `(?:p0)|(?:p1)|…` gate when the set can honestly share one
 /// engine: every spec on the same `ignore_case`/`unicode` setting (irregex
 /// compiles ONE engine — the same constraint `combinePatterns` enforces for
@@ -258,6 +343,13 @@ fn buildGate(gpa: std.mem.Allocator, specs: []const Spec, set: *PatternSet) void
     if (specs.len < 2) return;
     for (specs[1..]) |s| {
         if (s.ignore_case != specs[0].ignore_case or s.unicode != specs[0].unicode) return;
+    }
+    // `-w` narrows a spec's match set after the fact and `pcre` may mean
+    // something the linear engine spells differently, and neither survives the
+    // fusion into pattern text. The gate stays — it rejects perfectly well — but
+    // it no longer gets to decide. See `gate_exact`.
+    for (specs) |s| {
+        if (s.word or s.pcre) set.gate_exact = false;
     }
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(gpa);
