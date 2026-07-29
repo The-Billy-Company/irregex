@@ -16,8 +16,10 @@
 //!     in the start state (`at_start=true`); `$` is resolved by a separate **final**
 //!     transition table closed with `at_end=true` — the single-line analogue of
 //!     RE2's one-byte match delay / EOI sentinel.
-//!   * **Start-state acceleration** — derived from the finished start row.
-//!   * **Premultiplication** — every state value rewritten to its row offset.
+//!
+//! The layout that a *finished* automaton admits — match-first renumbering, start
+//! acceleration, premultiplication — is `freeze.zig`'s, shared with the symbolic
+//! path so neither road can establish one invariant and forget another.
 //!
 //! Two bounds, and they are different KINDS of thing. `max_visits` is the cost
 //! policy: size alone is the wrong meter, since `\w+X` determinizes to just 332
@@ -34,9 +36,9 @@
 const std = @import("std");
 const syn = @import("../../syntax/syntax.zig");
 const subset = @import("subset.zig");
+const freeze = @import("../automata/freeze.zig");
 const State = syn.State;
 const Dfa = @import("dfa.zig").Dfa;
-const unknown = subset.unknown;
 
 /// Hard ceiling on the automaton's SIZE: it caps table memory and guarantees
 /// termination on an exponential powerset, so nothing overrides it. Under the
@@ -170,61 +172,71 @@ pub fn build(gpa: std.mem.Allocator, states: []const State, start: u32, anchored
         }
     }
 
-    // Start-state acceleration: the "relevant" bytes from the unanchored start
-    // state are the only ones that can contribute to a match; when there are few,
-    // the scanner SIMD-skips to them. Anchored programs never re-seed (ineligible).
-    // Computed on the id-based tables BEFORE premultiplication below (it reasons
-    // about state identity, not the flattened offset).
-    // Start-state acceleration reasons about a single unanchored start row and one
-    // interior table; the word-context start split + doubled table don't fit that
-    // shape, so word patterns forgo it (an optimization, never a correctness lever
-    // — the trigram prefilter still selects on their bounded literal).
-    const accel = if (word_ctx) null else subset.startAccel(anchored, empty_match, sub.trans_in.items, sub.trans_fin.items, sub.is_match.items, &cls.class, ncls, start_id);
+    const tables: freeze.Tables = .{
+        .interior = &sub.trans_in,
+        .interior_word = if (word_ctx) &sub.trans_in_w else null,
+        .final = &sub.trans_fin,
+        .is_match = sub.is_match.items,
+    };
 
-    // Premultiply (rust-regex / RE2 dense-DFA trick): rewrite every state value to
-    // its row offset `id*ncls`, so the hot loop's per-byte index collapses from a
-    // loop-carried `madd(s, ncls, class)` to a fold-into-addressing `s + class[b]`
-    // — one fewer instruction on the latency-bound transition recurrence. Targets
-    // never reached by an interior byte keep their `unknown` sentinel (their row is
-    // never indexed), so skip those to avoid overflowing the multiply.
-    const nc: u32 = ncls;
-    for (sub.trans_in.items) |*t| if (t.* != unknown) {
-        t.* *= nc;
-    };
-    for (sub.trans_in_w.items) |*t| if (t.* != unknown) {
-        t.* *= nc;
-    };
-    for (sub.trans_fin.items) |*t| if (t.* != unknown) {
-        t.* *= nc;
-    };
-    // `is_match` re-laid-out by offset: `is_match_pm[id*ncls] = is_match[id]`, so the
-    // hot loop reads `is_match[s]` with the premultiplied `s` and never divides. The
-    // inter-row slots are never indexed (every live `s` is a multiple of `ncls`).
-    const im_pm = try gpa.alloc(bool, @as(usize, sub.nstates) * ncls);
-    errdefer gpa.free(im_pm);
-    @memset(im_pm, false);
-    for (sub.is_match.items, 0..) |m, id| im_pm[id * ncls] = m;
-    const dead_pm = if (sub.dead == unknown) unknown else sub.dead * nc;
+    // No quotient runs here, in EITHER dimension, and `../automata/reduce.zig` — the
+    // module that owns both — is deliberately not called. The pass is cheap and it
+    // does find things; it is declined because what it finds does not move the walk.
+    // `bench/rungs/automata -- reduce` re-measures all of it every run, over three
+    // slates, and times the SAME walker on the raw and the reduced table:
+    //
+    //   * ROWS, on an ASCII program. 1 automaton in 32 collapses, by one state, for
+    //     a geomean 19% of determinization. Interning on the NFA-state SET has
+    //     already landed this construction on the Myhill-Nerode quotient: two
+    //     reachable states differ here only when their sets differ, which is nearly
+    //     always a suffix difference too.
+    //   * COLUMNS, on an ASCII program. `Classes.build` refines once per consuming
+    //     set, before any class has a column to compare, so a finished table CAN
+    //     hold columns that coincide — over those same 32, exactly one does (an
+    //     eight-way single-byte alternation, 9 columns to 2, 792 bytes to 176).
+    //   * A UTF-8 TRIE, which is the shape that should have paid. Force a Unicode
+    //     pattern down this road and the decoder gives the pass real work: columns
+    //     collapse on 4 rows in 5 for 0.6% of determinization, and `\w{3,8}` sheds a
+    //     quarter of its states (1264 -> 949, a 1.0 MB table to 729 KB).
+    //
+    // And the walk does not notice, which is the finding. C2 had already measured
+    // table AREA free at constant touched breadth (85x growth, no cost); this says
+    // the same law still holds at a quarter-megabyte. Rows whose table did not change
+    // at all scan at 0.92x-1.05x, so the instrument's floor is about +-8%, and every
+    // row whose table DID shrink lands inside it (`\w+X` 267 KB -> 247 KB across four
+    // runs: 1.00x, 0.93x, 0.99x, 0.98x). The one material row collapse cannot even be
+    // timed honestly: `\w{3,8}` accepts any three word bytes, so NO alphabet holding a
+    // word byte can spell a document it misses, and a table touched for tens of bytes
+    // was never going to repay a 190 ms determinization by being smaller. Its row
+    // prints `matched` rather than a ratio earned on a prefix.
+    //
+    // Those trie rows are also not this road's traffic. In production they belong to
+    // `../symbolic/`, which reaches the same automaton in 144 NFA-state visits where
+    // this road spends 68 million — and which DOES call `reduce`, because its product
+    // carries a decoder phase the pattern cannot observe, so its rows are genuinely
+    // redundant and collapsing them is what makes its columns coincide. The byte road
+    // sees a trie only when the symbolic path declines a construct outright.
+    //
+    // The residual ASCII columns are a FRONT-END artifact rather than an automaton
+    // fact, and that is where the fix belongs: `compile.zig` lowers the parser's
+    // tree, where `(a|b|…|h)` is eight `consume` states, while `ast/algebra.zig`
+    // already knows an alternation of byte classes IS a byte class. Folding it there
+    // gives one consuming set instead of eight, a narrower NFA, and a determinization
+    // that is not this slate's third slowest at 59 µs for 11 states — none of which a
+    // post-hoc column merge can recover. See `research/automata/CLAIM.md` C5.
 
-    const dfa = try gpa.create(Dfa);
-    errdefer gpa.destroy(dfa);
-    dfa.* = .{
-        .class = cls.class,
-        .ncls = ncls,
+    // The automaton is complete; everything from here is layout, and it is the
+    // same layout the symbolic path's product needs — match-first renumbering,
+    // start acceleration, premultiplication — so it lives once in `freeze.zig`.
+    return .{ .built = try freeze.freeze(gpa, &cls, tables, .{
         .nstates = sub.nstates,
-        .trans_in = try sub.trans_in.toOwnedSlice(gpa),
-        .trans_fin = try sub.trans_fin.toOwnedSlice(gpa),
-        .is_match = im_pm,
-        .start = start_id * nc,
+        .start = start_id,
+        .start_word = start_w_id,
+        .dead = sub.dead,
         .empty_match = empty_match,
         .anchored = anchored,
-        .dead = dead_pm,
-        .accel = accel,
         .word_ctx = word_ctx,
         .unicode_word = word_ctx and unicode,
-        .trans_in_w = if (word_ctx) try sub.trans_in_w.toOwnedSlice(gpa) else &.{},
-        .start_w = start_w_id * nc,
-        .allocator = gpa,
-    };
-    return .{ .built = dfa };
+        .visits = sub.visits,
+    }) };
 }

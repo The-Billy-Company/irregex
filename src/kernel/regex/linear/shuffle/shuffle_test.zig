@@ -92,12 +92,12 @@ test "compose: the vector fold equals the scalar definition of the same fold" {
 
 test "compose: gate — an armed literal skip stands the rung down" {
     // `qzx.*jvw.*mkp` is the honest-boundary case: composition retires every
-    // byte where the DFA's start-state accelerator skips ~19 in 20, and was
-    // measured 6× SLOWER. The gate is what makes that measurement irrelevant.
+    // byte where the DFA skips ~19 in 20 out of its start dwell, and was measured
+    // 6× SLOWER. The gate is what makes that measurement irrelevant.
     var re = try Regex.compileOpts(a, "qzx.*jvw.*mkp", .{ .force_dfa = true });
     defer re.deinit();
     const dfa = re.dfa.?;
-    try std.testing.expect(dfa.accel != null); // the skip really is armed
+    try std.testing.expect(dfa.start_dwell != null); // the skip really is armed
     try std.testing.expectEqual(@as(?*Compose, null), try Compose.build(a, dfa));
 }
 
@@ -130,7 +130,7 @@ test "compose: gate — word context and an already-accepting start stand it dow
     var nullable = try Regex.compileOpts(a, "a*", .{ .force_dfa = true });
     defer nullable.deinit();
     if (nullable.dfa) |d| {
-        try std.testing.expect(d.is_match[d.start]);
+        try std.testing.expect(d.isMatch(d.start));
         try std.testing.expectEqual(@as(?*Compose, null), try Compose.build(a, d));
     }
 }
@@ -146,17 +146,17 @@ test "compose: gate — a non-AArch64 target leaves the field null" {
     if (built) |cx| {
         defer cx.deinit();
         try std.testing.expect(lanes.native);
-    } else try std.testing.expect(!lanes.native or re.dfa.?.accel != null);
+    } else try std.testing.expect(!lanes.native or re.dfa.?.start_dwell != null);
 }
 
 // ───────────────────────────── 3. targeted units ──────────────────────────────
 
 // Every pattern below is one this rung actually arms on, and `composeMatch`
 // fails rather than skipping when it does not — the population is anchored
-// patterns (never accelerated) plus unanchored ones whose start state escapes
-// on more than `subset.max_accel_bytes` = 3 distinct bytes. A literal like
-// `ab` or `;$` escapes on one byte, so the shared armed-skip gate takes it and
-// the accel gate test above is where it belongs.
+// patterns (whose start dwell is never skippable) plus unanchored ones whose
+// start state exits on more than `dwell.max_exit_bytes` = 3 distinct bytes. A
+// literal like `ab` or `;$` exits on one byte, so the shared armed-skip gate
+// takes it and the dwell gate test above is where it belongs.
 
 test "compose: line anchors — the end-of-line axis the table index carries" {
     try std.testing.expect(try composeMatch("^func", "func main"));

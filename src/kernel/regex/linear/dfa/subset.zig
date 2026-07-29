@@ -352,7 +352,7 @@ pub const Subset = struct {
     }
 
     /// Materialize the unanchored start state's whole row — every class, interior
-    /// and final — so `startAccel` can read it. The one part of determinization
+    /// and final — so `dwell.ofStart` can read it. The one part of determinization
     /// that is worth doing eagerly even in the on-demand driver: it costs `2×ncls`
     /// closures (≈200 for `\w`, ≈26 for an alternation) and is the difference
     /// between SIMD-skipping a haystack and walking every byte of it.
@@ -365,66 +365,7 @@ pub const Subset = struct {
     }
 };
 
-/// Largest start escape set the vector range kernel can price without dropping
-/// to a scalar byte-set probe. Cardinality alone no longer decides admission:
-/// four rare bytes can skip farther than one common byte.
-const max_accel_bytes: usize = 8;
-
-/// Derive start-state acceleration from the start state's transition row. A byte
-/// is "relevant" — must stop the SIMD skip — when, from the unanchored start
-/// state, it either (a) moves to a *different* interior state (`trans_in` ≠ start,
-/// the match-beginning case) or (b) produces a match at end-of-line (`trans_fin`
-/// is a match state, the `$`-anchored-literal case like `;$`, where the byte keeps
-/// `trans_in` in start yet matches as the line's last byte). Every other byte both
-/// keeps start in itself AND can't match under `$`, so it is provably skippable.
-/// Returns a `Prefilter` only when the shared corpus prior predicts an average
-/// stride of at least eight bytes. This rejects common-byte "accelerators" while
-/// admitting selective 4–8 byte sets that the old cardinality gate discarded.
-///
-/// `\n` is added to the needle **only when the skip can't safely cross a line** —
-/// i.e. when an empty line can match (`empty_match`) or `\n` is itself relevant.
-/// Otherwise crossing `\n` in the start state is a pure no-op, so we omit it: the
-/// scanner then `memchr`s straight across newlines (rg's exact `;$` strategy) and,
-/// for a single relevant byte, the prefilter collapses to a one-byte `memchr`
-/// instead of a two-range scan. The byte-at-a-time inner loop still stops at `\n`,
-/// so `$`/line-end resolution stays correct.
-///
-/// Shared by both drivers, on ROW-LOCAL data only: it reads one state's worth of
-/// transitions, which the eager driver has at fixpoint and the on-demand driver
-/// gets from `forceStartRow`. Hence the same skip on the same patterns either way.
-/// Callers pass id-based (never premultiplied) tables — this reasons about state
-/// identity, not row offsets — and word-context programs pass null (their start
-/// splits in two and their interior table is doubled, a shape this doesn't model;
-/// an optimization, never a correctness lever).
-pub fn startAccel(
-    anchored: bool,
-    empty_match: bool,
-    trans_in: []const u32,
-    trans_fin: []const u32,
-    is_match: []const bool,
-    class: *const [256]u8,
-    ncls: u16,
-    start_id: u32,
-) ?prefilter.Prefilter {
-    if (anchored) return null;
-    const base = @as(usize, start_id) * ncls;
-    var relevant: syn.ByteSet = .{};
-    var n: usize = 0;
-    for (0..256) |bi| {
-        const b: u8 = @intCast(bi);
-        if (b == '\n') continue; // line-boundary stop, decided separately below
-        const off = base + class[b];
-        if (trans_in[off] != start_id or is_match[trans_fin[off]]) {
-            relevant.set(b);
-            n += 1;
-        }
-    }
-    if (n == 0 or n > max_accel_bytes) return null;
-    // Keep the skip inside one line only when it must: an empty line can match, or
-    // `\n` itself is relevant. Otherwise let the skip `memchr` across newlines.
-    const nl = base + class['\n'];
-    const nl_relevant = trans_in[nl] != start_id or is_match[trans_fin[nl]];
-    if (empty_match or nl_relevant) relevant.set('\n');
-    const pf = prefilter.Prefilter.init(relevant);
-    return if (pf.economics.beatsDense(32)) pf else null;
-}
+// The start state's skippable dwell used to be derived here. It moved to
+// `../automata/dwell.zig`: the exit set is read off transition rows, so it cannot
+// tell which road built them, and both drivers plus the frozen automaton want the
+// same rule. This file stays the determinizer core.

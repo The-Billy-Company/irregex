@@ -10,9 +10,15 @@
 //!
 //! The tables are passed as raw pointers (not a `Dfa`) so the object links with
 //! zero Billy dependencies, yet `probes_test.zig` builds a REAL `Dfa` via
-//! `Regex.compile`, hands its `trans_in`/`trans_fin`/`class`/`is_match` tables
-//! to this probe, and asserts the probe's verdict is bit-identical to
-//! `Dfa.docMatch` over random docs — a true differential drift guard.
+//! `Regex.compile`, hands its `trans_in`/`trans_fin`/`class` tables and its
+//! `match_hi` bound to this probe, and asserts the probe's verdict is
+//! bit-identical to `Dfa.docMatch` over random docs — a true differential drift
+//! guard.
+//!
+//! The match test is a COMPARE, not a load: `freeze.zig` renumbers match states
+//! to the front of the id space, so the measured region's dependency chain is the
+//! transition load alone. It used to carry a second dependent load (`is_match[s]`)
+//! into an array that was `ncls`-sparse by construction.
 //!
 //! The inner transition body is bracketed for llvm-mca (markers INSIDE the loop
 //! body — outside, LLVM's loop cloning strands the END marker and llvm-mca
@@ -32,7 +38,7 @@ pub export fn portcert_dfa_step(
     trans_in_ptr: [*]const u32,
     trans_fin_ptr: [*]const u32,
     class_ptr: [*]const u8, // 256 entries: byte → class column
-    is_match_ptr: [*]const bool,
+    match_hi: u32, // matching row offsets are exactly `[0, match_hi)`
     start: u32,
     dead: u32,
     anchored: bool,
@@ -42,7 +48,6 @@ pub export fn portcert_dfa_step(
     const trans_in = trans_in_ptr;
     const trans_fin = trans_fin_ptr;
     const class = class_ptr;
-    const is_match = is_match_ptr;
 
     const n = doc.len;
     var i: usize = 0;
@@ -53,7 +58,7 @@ pub export fn portcert_dfa_step(
             continue;
         }
         var s = start;
-        if (is_match[s]) return true;
+        if (s < match_hi) return true;
         var prev = s;
         var hit_dead = false;
         while (i < n and doc[i] != '\n') {
@@ -61,7 +66,7 @@ pub export fn portcert_dfa_step(
             prev = s;
             s = trans_in[s + class[doc[i]]];
             i += 1;
-            const m = is_match[s];
+            const m = s < match_hi;
             // Read the loop-carried `s` + the match flag at the END marker so the
             // full transition chain materializes inside the measured region. No
             // `.memory` clobber (see simd_contains): the register operands anchor
@@ -79,7 +84,7 @@ pub export fn portcert_dfa_step(
         }
         if (!hit_dead) {
             s = trans_fin[prev + class[doc[i - 1]]];
-            if (is_match[s]) return true;
+            if (s < match_hi) return true;
             if (i < n) i += 1;
         } else {
             while (i < n and doc[i] != '\n') i += 1;

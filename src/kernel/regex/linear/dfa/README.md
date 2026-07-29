@@ -4,9 +4,10 @@ doc_radar:
     - description: "the eager driver's two bounds — the hard size ceiling and the calibrated cost policy"
       file: pkg/kernels/irregex/src/kernel/regex/linear/dfa/powerset.zig
       contains: ["pub const max_states: u32 = 4096;", "pub const max_visits: u64 = 750_000;"]
-    - description: "the shared determinizer core both drivers run, and the on-demand driver's own skip"
+    - description: "the shared determinizer core both drivers run — the start row the dwell reads, and the visit meter"
       file: pkg/kernels/irregex/src/kernel/regex/linear/dfa/subset.zig
-      contains: ["pub fn startAccel", "pub fn forceStartRow", "visits: u64 = 0,"]
+      contains: ["pub fn forceStartRow", "visits: u64 = 0,"]
+      absent: ["pub fn startAccel"] # the exit-set rule lives in ../automata/dwell.zig
     - description: "the immutable automaton keeps its interior / last-byte tables and the word-context walk"
       file: pkg/kernels/irregex/src/kernel/regex/linear/dfa/dfa.zig
       contains: ["trans_fin", "pub fn matchWord", "pub fn docMatch"]
@@ -28,6 +29,11 @@ immutable, scratch-free `Dfa` that every thread shares. When it declines, the
 on-demand driver determinizes the same automaton one visited state at a time,
 into a per-thread cache. The Pike VM stands behind both as the fuzz oracle.
 
+**And the freeze is not ours.** It lives in
+[`../automata/`](../automata) because `../symbolic/` reaches the same point by a
+different road and needs the same three layout passes; a copy on each road is how
+a layout invariant gets established twice and forgotten once.
+
 Declining is a cost judgment with two bounds of different kinds. `max_states` is
 a hard safety ceiling on memory and termination that nothing may lift.
 `max_visits` is the calibrated cost policy, metered in NFA-state visits — the
@@ -40,10 +46,10 @@ waives the ceiling.
 
 | File                | Role                                                                                                                                                                                                                                             |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `dfa.zig`           | The immutable automaton: byte-class table, interior vs last-byte transitions (`trans_fin` resolves `$`), start acceleration, whole-document `docMatch`, word-context walk.                                                                       |
-| `subset.zig`        | The construction both drivers share: byte-class refinement (by word-ness for `\b`), the assertion-resolving epsilon-closure, the transition step, subset interning, the visit meter, and the start-row skip derivation.                          |
-| `powerset.zig`      | The **eager** policy: walk to fixpoint under the bounds, then apply what only a finished automaton admits — start acceleration, premultiplied rows, the `$`-resolving final table.                                                               |
-| `lazy.zig`          | The **on-demand** policy: an immutable `Lazy` (classes, anchoring, its own start acceleration) plus a per-thread mutable `Cache` that determinizes a state the first time a haystack walks into it, and quits to the Pike VM rather than thrash. |
+| `dfa.zig`           | The immutable automaton: byte-class table, interior vs last-byte transitions (`trans_fin` resolves `$`), the start state's skippable dwell, whole-document `docMatch`, word-context walk.                                                        |
+| `subset.zig`        | The construction both drivers share: byte-class refinement (by word-ness for `\b`), the assertion-resolving epsilon-closure, the transition step, subset interning, the visit meter, and the start row a dwell is read off.                       |
+| `powerset.zig`      | The **eager** policy: walk to fixpoint under the bounds, then hand the finished tables to [`../automata/freeze.zig`](../automata), which applies the layout passes only a complete automaton admits. The symbolic road hands over the same thing, so neither transcribes them.        |
+| `lazy.zig`          | The **on-demand** policy: an immutable `Lazy` (classes, anchoring, its own start dwell) plus a per-thread mutable `Cache` that determinizes a state the first time a haystack walks into it, and quits to the Pike VM rather than thrash.         |
 | `dfa_test.zig`      | DFA unit cases + differential fuzz against the Pike VM.                                                                                                                                                                                          |
 | `powerset_test.zig` | Determinizer structural invariants + exhaustive language equivalence vs a from-scratch NFA spec.                                                                                                                                                 |
 

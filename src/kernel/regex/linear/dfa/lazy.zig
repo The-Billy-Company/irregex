@@ -16,6 +16,7 @@
 const std = @import("std");
 const syn = @import("../../syntax/syntax.zig");
 const subset = @import("subset.zig");
+const dwell = @import("../automata/dwell.zig");
 const prefilter = @import("../../analysis/prefilter.zig");
 const word = @import("../../syntax/word.zig");
 const State = syn.State;
@@ -58,7 +59,7 @@ pub const Lazy = struct {
     anchored: bool,
     word_ctx: bool,
     unicode_word: bool,
-    accel: ?prefilter.Prefilter,
+    start_dwell: ?prefilter.Prefilter,
     allocator: std.mem.Allocator,
 
     /// Prepare on-demand determinization; buffer anchors decline.
@@ -72,8 +73,8 @@ pub const Lazy = struct {
         if (subset.hasBufferAnchor(states)) return null;
         const word_ctx = subset.hasWordContext(states);
         const cls = subset.Classes.build(states, word_ctx);
-        // Word-context has split starts/tables, outside startAccel's row shape.
-        const accel = if (word_ctx) null else try probeAccel(gpa, states, start, anchored, cls);
+        // Word-context has split starts/tables, outside the dwell's row shape.
+        const start_dwell = if (word_ctx) null else try probeStartDwell(gpa, states, start, anchored, cls);
         const lz = try gpa.create(Lazy);
         lz.* = .{
             .states = states,
@@ -82,13 +83,13 @@ pub const Lazy = struct {
             .anchored = anchored,
             .word_ctx = word_ctx,
             .unicode_word = word_ctx and unicode,
-            .accel = accel,
+            .start_dwell = start_dwell,
             .allocator = gpa,
         };
         return lz;
     }
 
-    fn probeAccel(
+    fn probeStartDwell(
         gpa: std.mem.Allocator,
         states: []const State,
         start: u32,
@@ -100,7 +101,7 @@ pub const Lazy = struct {
         const empty_match = sub.closeStart(true, true, false);
         const start_id = (try sub.intern(sub.closeStart(true, false, false))).id;
         try sub.forceStartRow(start_id);
-        return subset.startAccel(anchored, empty_match, sub.trans_in.items, sub.trans_fin.items, sub.is_match.items, &cls.class, cls.ncls, start_id);
+        return dwell.ofStart(anchored, empty_match, sub.trans_in.items, sub.trans_fin.items, sub.is_match.items, &cls.class, cls.ncls, start_id);
     }
 
     pub fn deinit(self: *Lazy) void {
@@ -182,9 +183,26 @@ pub const Cache = struct {
             (s.trans_in.capacity + s.trans_in_w.capacity + s.trans_fin.capacity) * @sizeOf(u32);
     }
 
+    /// Bytes this generation has spent per state it added — the growth rate the
+    /// pressure check extrapolates one expansion forward, and the figure `stats`
+    /// reports. Null when the generation has added nothing yet, which is the one
+    /// case with no rate rather than a rate of zero; each caller has its own
+    /// answer for that.
+    ///
+    /// Typed `usize` because that is what it measures, and saying so is the point:
+    /// the state counter is `u64`, so the division widens on a 32-bit target and
+    /// will not narrow back on its own. A quotient of `bytes` by a count of at
+    /// least one cannot exceed `bytes`, so the narrowing is lossless by
+    /// construction — not by clamp, and not by widening the reported `Stats` on
+    /// every target to suit one.
+    fn churnPerState(c: *const Cache, bytes: usize) ?usize {
+        if (c.generation_new == 0) return null;
+        return @intCast((bytes -| c.generation_base_bytes) / c.generation_new);
+    }
+
     pub fn stats(c: *const Cache) Stats {
         const bytes = c.allocatedBytes();
-        const churn = if (c.generation_new == 0) 0 else (bytes -| c.generation_base_bytes) / c.generation_new;
+        const churn = c.churnPerState(bytes) orelse 0;
         return .{ .allocated_bytes = bytes, .peak_bytes = @max(bytes, c.peak_bytes), .bytes_per_new_state = churn, .states = c.sub.nstates, .lookups = c.lookups, .hits = c.hits, .new_states = c.new_states, .resets = c.resets, .pressure_events = c.pressure_events, .decline = c.decline, .sticky = c.quit };
     }
 
@@ -244,7 +262,7 @@ pub const Cache = struct {
         const ntables: usize = 2 + @as(usize, @intFromBool(c.lazy.word_ctx));
         const floor = (c.sub.words + 1) * @sizeOf(u64) +
             @as(usize, c.lazy.cls.ncls) * @sizeOf(u32) * ntables;
-        const churn = if (c.generation_new == 0) floor else @max(floor, (bytes -| c.generation_base_bytes) / c.generation_new);
+        const churn = @max(floor, c.churnPerState(bytes) orelse 0);
         if (bytes +| churn > c.policy.byte_budget) return c.pressure();
         const before = c.sub.nstates;
         const next_id = c.sub.expand(id, k, table) catch {
@@ -263,7 +281,7 @@ pub const Cache = struct {
         std.debug.assert(!c.lazy.word_ctx); // word-boundary programs go through `matchWord`
         if (!c.prepare()) return null;
         if (line.len == 0) return c.empty_match;
-        if (c.lazy.accel) |*pf| return c.matchAccel(line, pf);
+        if (c.lazy.start_dwell) |*exits| return c.matchDwell(line, exits);
         const cls = &c.lazy.cls.class;
         var s = c.start_id;
         if (c.isMatch(s)) return true;
@@ -278,7 +296,7 @@ pub const Cache = struct {
     }
 
     /// Start-state SIMD skip, preserving the final-byte `$` transition.
-    fn matchAccel(c: *Cache, line: []const u8, pf: *const prefilter.Prefilter) ?bool {
+    fn matchDwell(c: *Cache, line: []const u8, pf: *const prefilter.Prefilter) ?bool {
         const cls = &c.lazy.cls.class;
         const start = c.start_id;
         var s = start;
@@ -340,7 +358,7 @@ pub const Cache = struct {
     pub fn docMatch(c: *Cache, doc: []const u8) ?bool {
         std.debug.assert(!c.lazy.word_ctx); // word-boundary programs go per line
         if (!c.prepare()) return null;
-        if (c.lazy.accel) |*pf| return c.docMatchAccel(doc, pf);
+        if (c.lazy.start_dwell) |*exits| return c.docMatchDwell(doc, exits);
         const cls = &c.lazy.cls.class;
         const n = doc.len;
         var i: usize = 0;
@@ -377,8 +395,8 @@ pub const Cache = struct {
         return false;
     }
 
-    /// Fused walk with the same start-state skip as `Dfa.docMatchAccel`.
-    fn docMatchAccel(c: *Cache, doc: []const u8, pf: *const prefilter.Prefilter) ?bool {
+    /// Fused walk with the same start-state skip as `Dfa.docMatchDwell`.
+    fn docMatchDwell(c: *Cache, doc: []const u8, pf: *const prefilter.Prefilter) ?bool {
         const cls = &c.lazy.cls.class;
         const n = doc.len;
         const start = c.start_id;

@@ -101,13 +101,13 @@ pub const Core = struct {
 ///     this single-table run does not model;
 ///   * an `^`-anchored DFA never re-seeds, so a continuous run is not its run;
 ///   * a zero-width / BOL match makes every position accept anyway;
-///   * an armed start-state accelerator already skips most of the haystack, and
-///     LADDER's shared gate says a per-byte rung must stand down behind it;
+///   * a skippable start dwell already skips most of the haystack, and LADDER's
+///     shared gate says a per-byte rung must stand down behind it;
 ///   * an unfilled table slot means the caller handed us a lazily-built
 ///     automaton, whose rows this fixpoint reasoning does not hold for.
 pub fn project(gpa: std.mem.Allocator, d: *const Dfa) std.mem.Allocator.Error!?Core {
-    if (d.word_ctx or d.anchored or d.empty_match or d.accel != null) return null;
-    if (d.is_match[d.start]) return null;
+    if (d.word_ctx or d.anchored or d.empty_match or d.start_dwell != null) return null;
+    if (d.isMatch(d.start)) return null;
     const ncls: usize = d.ncls;
 
     const ids = try gpa.alloc(u16, d.nstates);
@@ -145,7 +145,7 @@ pub fn project(gpa: std.mem.Allocator, d: *const Dfa) std.mem.Allocator.Error!?C
         for (0..ncls) |k| {
             const fin = d.trans_fin[base + k];
             if (fin == unknown) return null;
-            if (d.is_match[fin] and !d.is_match[d.trans_in[base + k]]) return null;
+            if (d.isMatch(fin) and !d.isMatch(d.trans_in[base + k])) return null;
         }
     }
 
@@ -155,7 +155,7 @@ pub fn project(gpa: std.mem.Allocator, d: *const Dfa) std.mem.Allocator.Error!?C
     errdefer gpa.free(acc);
     for (order[0..n], 0..) |s, i| {
         const base = @as(usize, s) * ncls;
-        acc[i] = d.is_match[base];
+        acc[i] = d.isMatch(@intCast(base));
         for (0..ncls) |k| delta[i * ncls + k] = ids[d.trans_in[base + k] / d.ncls];
     }
     return .{

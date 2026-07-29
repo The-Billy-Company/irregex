@@ -8,7 +8,7 @@ doc_radar:
       file: pkg/kernels/irregex/bench/rungs/shuffle/bench.zig
       contains:
         - "error.ComposeProofFailed"
-        - "the dispatch gate ARMED on an accelerated pattern"
+        - "the dispatch gate ARMED on a skippable-start-dwell pattern"
         - "throughput above is over a prefix"
 ---
 

@@ -93,7 +93,7 @@ test "dfa_step probe ≡ Dfa.docMatch" {
                 d.trans_in.ptr,
                 d.trans_fin.ptr,
                 &d.class,
-                d.is_match.ptr,
+                d.match_hi,
                 d.start,
                 d.dead,
                 d.anchored,

@@ -97,7 +97,7 @@ const specs = [_]Spec{
     // Cross-lane overlap: this is COMPOSE's headline shape without its literal
     // sentinel. Both rungs can arm on it; the parent owns the ordering.
     .{ .id = "alnum-alt", .pattern = "[A-Za-z]+[0-9]+[A-Za-z]+", .filler = mixed, .note = "compose also arms — parent decides" },
-    .{ .id = "digit-run", .pattern = "[0-9]{4}-[0-9]{2}", .note = "10 escape bytes: past max_accel_bytes, the DFA walks it" },
+    .{ .id = "digit-run", .pattern = "[0-9]{4}-[0-9]{2}", .note = "10 escape bytes: past dwell.max_exit_bytes, the DFA walks it" },
     .{ .id = "word-gap", .pattern = "\\b[a-z]+_[0-9]+\\b", .ascii = true, .note = "assertion population COMPOSE cannot serve" },
     .{ .id = "line-gap", .pattern = "^[a-z]+[0-9]+$", .note = "line-marker catalogue" },
     // ── Honest boundary: the shipped engine already has a better machine ─────

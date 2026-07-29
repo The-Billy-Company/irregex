@@ -24,11 +24,12 @@
 
 const std = @import("std");
 const subset = @import("../dfa/subset.zig");
+const freeze = @import("../automata/freeze.zig");
 const Dfa = @import("../dfa/dfa.zig").Dfa;
 const alphabet = @import("alphabet.zig");
 const decoder_mod = @import("decoder.zig");
 const determinize = @import("determinize.zig");
-const minimize = @import("minimize.zig");
+const reduce = @import("../automata/reduce.zig");
 
 /// Ceiling on reachable product states. Deliberately equal to
 /// `dfa/powerset.zig`'s `max_states`, so this path can never hand back a table
@@ -146,51 +147,6 @@ const Frontier = struct {
     }
 };
 
-/// Merge byte classes whose table columns are identical — the over-refinement
-/// `buildClasses` accepts for soundness, paid back once the columns exist.
-/// Returns the new class count; rewrites `class`, `trans_in` and `trans_fin`.
-fn mergeClasses(gpa: std.mem.Allocator, cls: *subset.Classes, ns: u32, tin: []u32, tfin: []u32) std.mem.Allocator.Error!u16 {
-    const ncls = cls.ncls;
-    var col = try gpa.alloc(u64, ncls);
-    defer gpa.free(col);
-    for (0..ncls) |k| {
-        var h = std.hash.Wyhash.init(0);
-        for (0..ns) |s| {
-            h.update(std.mem.asBytes(&tin[s * ncls + k]));
-            h.update(std.mem.asBytes(&tfin[s * ncls + k]));
-        }
-        col[k] = h.final();
-    }
-    var remap = try gpa.alloc(u16, ncls);
-    defer gpa.free(remap);
-    var newn: u16 = 0;
-    for (0..ncls) |k| {
-        remap[k] = newn;
-        for (0..k) |j| if (col[j] == col[k] and sameColumn(ncls, ns, tin, tfin, @intCast(j), @intCast(k))) {
-            remap[k] = remap[j];
-            break;
-        };
-        if (remap[k] == newn) newn += 1;
-    }
-    if (newn == ncls) return ncls;
-    for (0..ns) |s| for (0..ncls) |k| {
-        tin[s * newn + remap[k]] = tin[s * ncls + k];
-        tfin[s * newn + remap[k]] = tfin[s * ncls + k];
-    };
-    for (0..256) |bi| cls.class[bi] = @intCast(remap[cls.class[bi]]);
-    for (0..256) |bi| cls.rep[cls.class[bi]] = @intCast(bi);
-    cls.ncls = newn;
-    return newn;
-}
-
-fn sameColumn(ncls: u16, ns: u32, tin: []const u32, tfin: []const u32, j: u16, k: u16) bool {
-    for (0..ns) |s| {
-        if (tin[s * ncls + j] != tin[s * ncls + k]) return false;
-        if (tfin[s * ncls + j] != tfin[s * ncls + k]) return false;
-    }
-    return true;
-}
-
 /// Statistics the measurement harnesses read: how much the two determinizations
 /// actually cost on the same pattern.
 pub const Stats = struct { visits: u64 = 0, minterms: u16 = 0, pruned: u16 = 0, nodes: u32 = 0, pat_states: u32 = 0, product_states: u32 = 0 };
@@ -246,60 +202,38 @@ pub fn transcribe(
         if (p.map.get((@as(u64, dec.root) << 32) | aut.dead)) |id| dead = id;
     }
 
-    // Quotient out the decoder phase the pattern can't observe, THEN drop the
-    // byte classes the quotient no longer separates. Rows first: merging states
-    // is what makes whole columns coincide, so the other order leaves both
-    // dimensions over-refined.
+    // Quotient out the decoder phase the pattern can't observe, in both
+    // dimensions — `reduce` owns the rows-then-columns order this needs, and
+    // owns it for the byte road too.
     const raw: u32 = @intCast(p.keys.items.len);
     stats.product_states = raw;
     const map = try gpa.alloc(u32, raw);
     defer gpa.free(map);
-    const ns = try minimize.run(gpa, raw, cls.ncls, p.trans_in.items, p.trans_fin.items, p.is_match.items, map);
+    // The product is never word-context — that road declines before it gets
+    // here — so the reduction cannot decline either.
+    const ext = (try reduce.run(gpa, &cls, .{
+        .interior = &p.trans_in,
+        .final = &p.trans_fin,
+        .is_match = p.is_match.items,
+    }, raw, map, .both)).?;
     const start = map[start_id];
     if (dead != unknown) dead = map[dead];
-    p.trans_in.shrinkRetainingCapacity(@as(usize, ns) * cls.ncls);
-    p.trans_fin.shrinkRetainingCapacity(@as(usize, ns) * cls.ncls);
-    p.is_match.shrinkRetainingCapacity(ns);
-
-    const ncls = try mergeClasses(gpa, &cls, ns, p.trans_in.items, p.trans_fin.items);
-    p.trans_in.shrinkRetainingCapacity(@as(usize, ns) * ncls);
-    p.trans_fin.shrinkRetainingCapacity(@as(usize, ns) * ncls);
+    p.is_match.shrinkRetainingCapacity(ext.nstates);
     stats.pat_states = aut.nstates;
     stats.minterms = alpha.count;
 
-    const accel = subset.startAccel(anchored, aut.empty_match, p.trans_in.items, p.trans_fin.items, p.is_match.items, &cls.class, ncls, start);
-
-    const nc: u32 = ncls;
-    for (p.trans_in.items) |*t| if (t.* != unknown) {
-        t.* *= nc;
-    };
-    for (p.trans_fin.items) |*t| if (t.* != unknown) {
-        t.* *= nc;
-    };
-    const im = try gpa.alloc(bool, @as(usize, ns) * ncls);
-    errdefer gpa.free(im);
-    @memset(im, false);
-    for (p.is_match.items, 0..) |m, id| im[id * ncls] = m;
-
-    const dfa = try gpa.create(Dfa);
-    errdefer gpa.destroy(dfa);
-    dfa.* = .{
-        .class = cls.class,
-        .ncls = ncls,
-        .nstates = ns,
-        .trans_in = try p.trans_in.toOwnedSlice(gpa),
-        .trans_fin = try p.trans_fin.toOwnedSlice(gpa),
-        .is_match = im,
-        .start = start * nc,
+    // Same freeze the byte path takes: match-first renumbering, start
+    // acceleration off the finished start row, then premultiplication.
+    return freeze.freeze(gpa, &cls, .{
+        .interior = &p.trans_in,
+        .final = &p.trans_fin,
+        .is_match = p.is_match.items,
+    }, .{
+        .nstates = ext.nstates,
+        .start = start,
+        .start_word = start,
+        .dead = dead,
         .empty_match = aut.empty_match,
         .anchored = anchored,
-        .dead = if (dead == unknown) unknown else dead * nc,
-        .accel = accel,
-        .word_ctx = false,
-        .unicode_word = false,
-        .trans_in_w = &.{},
-        .start_w = start * nc,
-        .allocator = gpa,
-    };
-    return dfa;
+    });
 }

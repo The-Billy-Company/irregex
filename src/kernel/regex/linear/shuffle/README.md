@@ -14,7 +14,7 @@ doc_radar:
       file: pkg/kernels/irregex/src/kernel/regex/linear/shuffle/shuffle.zig
       contains:
         - "pub const max_states: u8 = 31;"
-        - "if (dfa.accel != null) return null;"
+        - "if (dfa.start_dwell != null) return null;"
         - "pub fn match"
         - "pub fn docMatch"
 ---

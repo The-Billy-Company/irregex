@@ -19,12 +19,16 @@
 //! compiled program.
 
 const std = @import("std");
+/// brigade, the test runner, is this binary's root module. `note` is its stdout
+/// channel — where this census belongs, since Zig renders any step's stderr
+/// through its failure printer even when the step passed.
+const brigade = @import("root");
 const regex = @import("../program/core.zig");
 const lower = @import("../program/lower.zig");
 const subset = @import("../dfa/subset.zig");
 const powerset = @import("../dfa/powerset.zig");
 const symbolic = @import("symbolic.zig");
-const minimize = @import("minimize.zig");
+const reduce = @import("../automata/reduce.zig");
 const Regex = regex.Regex;
 const expect = std.testing.expect;
 
@@ -140,7 +144,7 @@ test "symbolic: line differential vs the Pike VM and the byte powerset, malforme
             checked += 1;
         }
     }
-    std.debug.print("\n  line decisions: {d} over {d} patterns, 0 divergences\n", .{ checked, symbolic_built });
+    brigade.note("\n  line decisions: {d} over {d} patterns, 0 divergences\n", .{ checked, symbolic_built });
     try expect(symbolic_built > 500);
     try expect(checked > 180_000);
 }
@@ -181,7 +185,7 @@ test "symbolic: document differential vs the Pike VM and the byte powerset" {
             checked += 1;
         }
     }
-    std.debug.print("\n  document decisions: {d}, 0 divergences\n", .{checked});
+    brigade.note("\n  document decisions: {d}, 0 divergences\n", .{checked});
     try expect(checked > 180_000);
 }
 
@@ -280,11 +284,20 @@ test "symbolic: declines the constructs it cannot express exactly" {
 /// cost. This is `powerset.build`'s own loop over `subset.Subset` — the public
 /// determinizer core both drivers share — so the visit count it bills is the
 /// one the eager driver's budget is spent against.
-const ByteCost = struct { visits: u64, nstates: u32, minimal: u32 = 0, ncls: u16, capped: bool };
+const ByteCost = struct {
+    visits: u64,
+    nstates: u32,
+    /// State and class counts after `reduce`. Zero when the reduction declined
+    /// (word context) or the determinization capped.
+    minimal: u32 = 0,
+    minimal_ncls: u16 = 0,
+    ncls: u16,
+    capped: bool,
+};
 
 fn byteCost(a: std.mem.Allocator, re: *const Regex) !ByteCost {
     const word_ctx = subset.hasWordContext(re.states);
-    const cls = subset.Classes.build(re.states, word_ctx);
+    var cls = subset.Classes.build(re.states, word_ctx);
     var sub = try subset.Subset.init(a, re.states, re.start, re.anchored, word_ctx, cls);
     defer sub.deinit();
     _ = sub.closeStart(true, true, false);
@@ -312,14 +325,27 @@ fn byteCost(a: std.mem.Allocator, re: *const Regex) !ByteCost {
             if (sub.nstates > powerset.max_states) return .{ .visits = sub.visits, .nstates = sub.nstates, .ncls = cls.ncls, .capped = true };
         }
     }
-    // Minimize the byte path's own table with the same pass the symbolic path
-    // uses. Two facts fall out of one number: how much slack the shipped
-    // construction leaves, and — since both tables recognize the same language
-    // — a floor the symbolic table must not sit far above.
+    // Reduce the byte path's own table with the same pass the symbolic path
+    // uses. Two facts fall out of one pair of numbers: how much slack the
+    // shipped construction leaves, and — since both tables recognize the same
+    // language — the floor the symbolic table must not sit above.
+    const raw_ncls = cls.ncls;
     const map = try a.alloc(u32, sub.nstates);
     defer a.free(map);
-    const min = try minimize.run(a, sub.nstates, cls.ncls, sub.trans_in.items, sub.trans_fin.items, sub.is_match.items, map);
-    return .{ .visits = sub.visits, .nstates = sub.nstates, .minimal = min, .ncls = cls.ncls, .capped = false };
+    const ext = try reduce.run(a, &cls, .{
+        .interior = &sub.trans_in,
+        .interior_word = if (word_ctx) &sub.trans_in_w else null,
+        .final = &sub.trans_fin,
+        .is_match = sub.is_match.items,
+    }, sub.nstates, map, .both);
+    return .{
+        .visits = sub.visits,
+        .nstates = sub.nstates,
+        .minimal = if (ext) |e| e.nstates else 0,
+        .minimal_ncls = if (ext) |e| e.ncls else 0,
+        .ncls = raw_ncls,
+        .capped = false,
+    };
 }
 
 test "symbolic: the NFA-state visit collapse, on the real engine" {
@@ -356,18 +382,22 @@ test "symbolic: the NFA-state visit collapse, on the real engine" {
         };
         defer dfa.deinit();
 
-        std.debug.print(
-            "\n  /{s}/  byte: {d} visits, {d}x{d} table (minimal {d}){s}  |  symbolic: {d} visits, {d} minterms ({d} pruned), {d} decoder nodes, {d} cp-states, {d} raw pairs -> {d}x{d} table",
-            .{ pat, byte.visits, byte.nstates, byte.ncls, byte.minimal, if (byte.capped) " (capped)" else "", stats.visits, stats.minterms, stats.pruned, stats.nodes, stats.pat_states, stats.product_states, dfa.nstates, dfa.ncls },
+        brigade.note(
+            "\n  /{s}/  byte: {d} visits, {d}x{d} table (reduced {d}x{d}){s}  |  symbolic: {d} visits, {d} minterms ({d} pruned), {d} decoder nodes, {d} cp-states, {d} raw pairs -> {d}x{d} table",
+            .{ pat, byte.visits, byte.nstates, byte.ncls, byte.minimal, byte.minimal_ncls, if (byte.capped) " (capped)" else "", stats.visits, stats.minterms, stats.pruned, stats.nodes, stats.pat_states, stats.product_states, dfa.nstates, dfa.ncls },
         );
         // The collapse is the whole lane — and the table it lands on is not a
         // trade for it: no more states than the byte construction's MINIMAL
         // automaton (so, never more than what ships today) and no more classes.
+        // Both floors are the REDUCED byte table's, not the raw one's, now that
+        // the same reduction is available to both roads: comparing against the
+        // raw class count would let this pass on the byte path's over-refinement
+        // rather than on the language's own requirement.
         try expect(stats.visits * case.factor <= byte.visits);
-        if (!byte.capped) {
+        if (!byte.capped and byte.minimal != 0) {
             try expect(dfa.nstates <= byte.minimal);
-            try expect(dfa.ncls <= byte.ncls);
+            try expect(dfa.ncls <= byte.minimal_ncls);
         }
     }
-    std.debug.print("\n", .{});
+    brigade.note("\n", .{});
 }

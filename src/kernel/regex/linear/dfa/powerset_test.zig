@@ -88,13 +88,22 @@ fn assertInvariants(re: *const Regex) !void {
     const ns: usize = d.nstates;
 
     // (1) shape / bounds. The DFA is **premultiplied**: a state is its row offset
-    // `id*ncls`, so table entries / `start` / `dead` are offsets and `is_match` is
-    // laid out by offset (length `ns*ncls`, only the `ncls`-aligned slots live).
+    // `id*ncls`, so table entries / `start` / `dead` are offsets.
     try expect(ncls >= 1 and ncls <= 256);
     try expect(ns >= 1);
-    try expectEqual(ns * ncls, d.is_match.len);
     try expectEqual(ns * ncls, d.trans_in.len);
     try expectEqual(ns * ncls, d.trans_fin.len);
+    // It is also **match-partitioned**: `freeze.zig` renumbers match states to the
+    // front, so `match_hi` is a ROW boundary inside the table and the matching
+    // offsets are exactly `[0, match_hi)`. An off-by-a-column bound here would
+    // make `isMatch` answer about a slot no state occupies.
+    try expect(d.match_hi % ncls == 0);
+    try expect(d.match_hi <= ns * ncls);
+    // The non-matching sink is never a match state — invariant (6) below proves
+    // that for anchored programs, where `dead` is load-bearing; assert it here for
+    // every program, since a renumbering that mis-mapped the id would be silent in
+    // the unanchored case (nothing consults `dead` there).
+    if (d.dead != unfilled) try expect(!d.isMatch(d.dead));
     try expect(d.start < ns * ncls and d.start % ncls == 0);
     try expect(d.start_w < ns * ncls and d.start_w % ncls == 0); // == start when !word_ctx
     try expect(d.dead == unfilled or (d.dead < ns * ncls and d.dead % ncls == 0));
@@ -109,6 +118,14 @@ fn assertInvariants(re: *const Regex) !void {
         class_present[c] = true;
     }
     for (0..ncls) |c| try expect(class_present[c]); // no gaps
+
+    // (2)+(3) hold of the frozen partition because it IS the partition the
+    // determinizer ran on: `powerset` freezes `Classes.build`'s output unchanged. It
+    // does not merge the columns a finished table turns out not to separate — that
+    // pass exists (`../automata/reduce.zig`) and the byte road declines it by
+    // measurement, so `d.class` stays exactly as refined as the NFA's sets make it.
+    // If that ever changes, these two become statements about the pre-merge partition
+    // and the frozen map owes a third: that it only ever JOINS these classes.
 
     // (2) byte-class soundness: no class straddles any consuming set — every
     // member of a class shares that set's membership bit.
@@ -211,11 +228,11 @@ fn assertInvariants(re: *const Regex) !void {
     // never consults `dead`). The empty/non-match sink must: never match; loop
     // to itself on every interior byte; never match even at EOL (`trans_fin`).
     if (re.anchored and d.dead != unfilled) {
-        try expect(!d.is_match[d.dead]); // `dead` is an offset; `is_match` is offset-indexed
+        try expect(!d.isMatch(d.dead)); // `dead` is an offset; the match partition is by offset
         if (reached[d.dead / ncls]) for (0..ncls) |k| {
             try expectEqual(d.dead, d.trans_in[d.dead + k]); // self-loop (offset → same offset)
             if (d.word_ctx) try expectEqual(d.dead, d.trans_in_w[d.dead + k]); // and in the word-byte table
-            try expect(!d.is_match[d.trans_fin[d.dead + k]]);
+            try expect(!d.isMatch(d.trans_fin[d.dead + k]));
         };
     }
 }
@@ -583,7 +600,7 @@ test "powerset: build is deterministic (byte-identical tables across two compile
         try expect(std.mem.eql(u8, &dx.class, &dy.class));
         try expect(std.mem.eql(u32, dx.trans_in, dy.trans_in));
         try expect(std.mem.eql(u32, dx.trans_fin, dy.trans_fin));
-        try expect(std.mem.eql(bool, dx.is_match, dy.is_match));
+        try expectEqual(dx.match_hi, dy.match_hi);
     }
 }
 

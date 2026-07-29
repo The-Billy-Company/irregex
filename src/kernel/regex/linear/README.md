@@ -24,7 +24,8 @@ Read as one sentence: **`program/`** is what a pattern becomes, **`ladder/`**
 decides who answers a question about it, and **`pike/`** / **`dfa/`** are the two
 machines that can — with **`symbolic/`** an alternative route to the same DFA
 table, taken when a pattern's Unicode classes would make the byte determinizer
-pay for them.
+pay for them. Where those two routes converge, **`automata/`** holds what neither
+of them owns alone.
 
 Both machines answer _whether_ a line matches. **`caliper/`** answers _where_ it
 does, which `-o` and everything built on it needs, and which the VM alone used
@@ -49,6 +50,7 @@ answers identically to the Pike VM.
 | [`caliper/`](caliper)   | The determinized answer to **where**, not whether: a forward leftmost-first jaw for a match's end and a backward anchored jaw over the reversed program for its start. Spans at a table lookup per byte, declining to the Pike span it is fuzzed against.                           |
 | [`dfa/`](dfa)           | The determinized primary: the immutable, scratch-free byte-class DFA, the subset construction behind it, and the two policies that drive it — eager to fixpoint, or on demand per visited state.                                                                                    |
 | [`symbolic/`](symbolic) | The same determinization, over the pattern's own predicates instead of UTF-8 bytes, then crossed back with a decoder into an ordinary byte DFA — so a Unicode class costs what its ASCII twin costs. Declines to `dfa/` for anything it cannot say exactly.                         |
+| [`automata/`](automata) | Operations on a finished automaton that cannot say which road built it. `freeze.zig` applies the three layout passes only a complete determinization admits — match-first renumbering, start acceleration, premultiplication — so both roads establish the invariants once instead of transcribing them twice. |
 | [`shuffle/`](shuffle)   | Rung. Matching as a reduction: each byte's transition becomes a transformation of the whole state set, folded by a SIMD shuffle, so the loop carries a register rather than a load. Small automata only — the shuffle table is the width bound.                                     |
 | [`parabix/`](parabix)   | Rung. Matching as bit-parallel arithmetic: one marker bit per haystack position, a pattern step as a shift and a mask over a whole block. Nothing gathered, nothing loaded per byte; flat languages only, since star height becomes runtime iteration.                              |
 | [`sieve/`](sieve)       | Rung, and the only one that cannot say yes. An over-approximating quotient of the DFA, so a survivor proves nothing and a rejection proves everything — it narrows the region the machine below has to walk.                                                                        |

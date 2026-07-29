@@ -100,13 +100,12 @@ pub const Compose = struct {
 
     /// Should the ladder ARM this rung for `dfa`? `lower` plus the one
     /// judgment that is about DISPATCH rather than representability: when a
-    /// start-state accelerator is armed, the accelerated DFA skips most of the
-    /// haystack and this rung would have to retire all of it. Measured 6.7×
-    /// SLOWER on a `.*`-chain with an armed skip. Faster per byte loses to
-    /// touching a twentieth of them, so the rung stands down and the ladder
-    /// falls through.
+    /// start state's dwell is skippable, that DFA skips most of the haystack and
+    /// this rung would have to retire all of it. Measured 6.7× SLOWER on a
+    /// `.*`-chain with an armed skip. Faster per byte loses to touching a
+    /// twentieth of them, so the rung stands down and the ladder falls through.
     ///
-    /// `dfa.accel != null` is a BOOLEAN reading of what the seam contract's
+    /// `dfa.start_dwell != null` is a BOOLEAN reading of what the seam contract's
     /// 2026-07-26 addendum shows is a 30× spread (an armed skip on two common
     /// letters runs slower than no skip at all). This line is the single place
     /// to retarget when the shared prefilter lands its stride estimate; the
@@ -115,7 +114,7 @@ pub const Compose = struct {
     /// Null means "not this rung's pattern" and is the only way it ever
     /// declines — at COMPILE time, never mid-scan.
     pub fn build(gpa: std.mem.Allocator, dfa: anytype) !?*Compose {
-        if (dfa.accel != null) return null;
+        if (dfa.start_dwell != null) return null;
         return lower(gpa, dfa);
     }
 
@@ -128,7 +127,7 @@ pub const Compose = struct {
     /// nothing from the engine around it: the bench and the quotient sieve can
     /// drive the same lowering from their own module instances. It must expose
     /// the eager `Dfa` shape — `class`, `ncls`, `nstates`, `trans_in`,
-    /// `trans_fin`, `is_match`, `start`, `empty_match`, `word_ctx`, `accel`.
+    /// `trans_fin`, `isMatch`, `start`, `empty_match`, `word_ctx`, `accel`.
     ///
     /// Each refusal is a real hole rather than a convenience:
     ///   * not AArch64 — the kernel is one instruction and there is no portable
@@ -141,7 +140,7 @@ pub const Compose = struct {
     pub fn lower(gpa: std.mem.Allocator, dfa: anytype) !?*Compose {
         if (comptime !lanes.native) return null;
         if (dfa.word_ctx) return null;
-        if (dfa.is_match[dfa.start]) return null;
+        if (dfa.isMatch(dfa.start)) return null;
 
         const ncls: usize = dfa.ncls;
         const nstates: usize = dfa.nstates;
@@ -159,7 +158,7 @@ pub const Compose = struct {
         var live: u8 = 0;
         for (0..nstates) |s| {
             const off = s * ncls; // states are premultiplied by their row width
-            if (dfa.is_match[off]) continue;
+            if (dfa.isMatch(@intCast(off))) continue;
             // A state reachable ONLY as a `trans_fin` target is interned for its
             // match flag and never enqueued, so the determinizer leaves its whole
             // row on the `unfilled` sentinel. Nothing can step from it — the line
@@ -174,7 +173,7 @@ pub const Compose = struct {
             live += 1;
         }
         const match_lane = live;
-        for (0..nstates) |s| if (dfa.is_match[s * ncls]) {
+        for (0..nstates) |s| if (dfa.isMatch(@intCast(s * ncls))) {
             lane_of[s] = match_lane;
         };
 
@@ -184,7 +183,7 @@ pub const Compose = struct {
         var index: lanes.Index = .byte;
         outer: for (offset_of[0..live]) |off| {
             for (0..ncls) |c| {
-                if (dfa.is_match[dfa.trans_fin[off + c]] and !dfa.is_match[dfa.trans_in[off + c]]) {
+                if (dfa.isMatch(dfa.trans_fin[off + c]) and !dfa.isMatch(dfa.trans_in[off + c])) {
                     index = .byte_eol;
                     break :outer;
                 }
@@ -222,7 +221,7 @@ pub const Compose = struct {
         var slice_safe = index == .byte and !dfa.anchored;
         if (slice_safe) for (offset_of[0..live]) |off| {
             const t = dfa.trans_in[off + nl_cls];
-            if (dfa.is_match[t] or lane_of[@as(usize, t) / ncls] != start_lane) {
+            if (dfa.isMatch(t) or lane_of[@as(usize, t) / ncls] != start_lane) {
                 slice_safe = false;
                 break;
             }
@@ -253,8 +252,8 @@ pub const Compose = struct {
                     // the line matched. Where a non-matching lane lands is
                     // immaterial — the `\n` row, or the end of the buffer,
                     // follows and only MATCH survives either.
-                    if (dfa.is_match[interior] or dfa.is_match[dfa.trans_fin[off + c]]) match_lane else start_lane
-                else if (dfa.is_match[interior])
+                    if (dfa.isMatch(interior) or dfa.isMatch(dfa.trans_fin[off + c])) match_lane else start_lane
+                else if (dfa.isMatch(interior))
                     match_lane
                 else
                     lane_of[@as(usize, interior) / ncls];

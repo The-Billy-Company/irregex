@@ -31,22 +31,26 @@ pub const unfilled: u32 = std.math.maxInt(u32);
 
 /// An immutable byte-class DFA. `class[b]` maps a byte to its equivalence-class
 /// column; `trans_in`/`trans_fin` are row-major `[state][class]` next-state
-/// tables (interior vs last-byte, the latter resolving `$`); `is_match[s]` marks
-/// states whose defining closure reached the NFA match. All fields are read-only
-/// after `build`, so one `Dfa` serves every thread with no scratch.
+/// tables (interior vs last-byte, the latter resolving `$`); `isMatch(s)` reports
+/// whether a state's defining closure reached the NFA match. All fields are
+/// read-only after `build`, so one `Dfa` serves every thread with no scratch.
 ///
 /// **Premultiplied** (rust-regex / RE2): a state is represented by its row offset
 /// `id*ncls`, not its id. So every table entry, `start`, and `dead` is already a
-/// row offset, the hot loop indexes `trans[s + class[b]]` (no per-byte multiply on
-/// the loop-carried critical path), and `is_match` is laid out by offset (length
-/// `nstates*ncls`; only the `ncls`-aligned slots are ever read).
+/// row offset, and the hot loop indexes `trans[s + class[b]]` — no per-byte
+/// multiply on the loop-carried critical path.
+///
+/// **Match-partitioned** (`freeze.zig`): match states are renumbered to the front,
+/// so "did we match?" is `s < match_hi` — a compare against a register, not a
+/// second dependent load. This is why there is no `is_match` array to index.
 ///
 /// **The transition tables are NOT total, and every exhaustive reader must know
 /// it.** A state reached only as a `trans_fin` target is terminal — the line ends
 /// the instant it is entered — so the determinizer interns it for its match flag
 /// and never enqueues it, leaving its whole row on `subset.unknown`
-/// (`maxInt(u32)`). `is_match[off]` is valid for such a state; `trans_in[off + c]`
-/// and `trans_fin[off + c]` are not, and using one as an index faults. The
+/// (`maxInt(u32)`). `isMatch(off)` is valid for such a state — it reads no table
+/// at all; `trans_in[off + c]` and `trans_fin[off + c]` are not, and using one as
+/// an index faults. The
 /// byte-at-a-time walks below never notice, because they only ever index a row
 /// they stepped into. A consumer that sweeps the table instead — a rung lowering
 /// it, a quotient harvesting it — must skip a state whose row is `unfilled`,
@@ -57,7 +61,9 @@ pub const Dfa = struct {
     nstates: u32,
     trans_in: []const u32, // entries are premultiplied targets (`id*ncls`)
     trans_fin: []const u32,
-    is_match: []const bool, // indexed by row offset: `is_match[id*ncls]`
+    /// One past the last matching row offset: `isMatch(s) == s < match_hi`. Zero
+    /// when no state matches, `nstates*ncls` when every state does.
+    match_hi: u32,
     start: u32, // premultiplied start row offset (at_start=true, at_end=false)
     empty_match: bool, // does the pattern match an empty line? (^$, a*, …)
     anchored: bool, // `^`-anchored ⇒ never re-seed; dead state ⇒ no match
@@ -76,25 +82,35 @@ pub const Dfa = struct {
     unicode_word: bool = false, // `word_ctx` under Unicode: a byte ≥0x80 straddling a gap needs its full scalar decoded, which this ASCII-classed DFA can't — `matchWord` QUITS (returns null) so the Pike VM (the oracle) resolves that haystack. `(?-u)` word patterns never quit (a byte ≥0x80 is non-word, byte-for-byte).
     trans_in_w: []const u32 = &.{}, // word-context interior table: NEXT byte is a word byte
     start_w: u32 = 0, // word-context start when the FIRST byte is a word byte
+    visits: u64 = 0, // NFA-state visits this determinization charged — what the automaton COST to find, not what it costs to run. `visits / (nstates*ncls)` is mean closure width. Zero from the symbolic road, which counts its work differently.
     dead: u32, // premultiplied offset of the empty/non-matching sink (maxInt if unreachable)
-    // Start-state acceleration (rust-regex / RE2 trick — see `accel.rs`): when the
-    // unanchored start state's only escape is a few "exit bytes" (e.g. `;` for
-    // `;$`), SIMD-skip the dead run to the next exit byte (or `\n`) instead of a
-    // table lookup per byte. Built by `powerset` only when the exit set is small
-    // enough to stay selective (≤ `max_accel_bytes`); null ⇒ plain dense scan. The
-    // needle set includes `\n` so the skip stops at line boundaries (fused, no
-    // second pass). Sound because a byte that keeps the start state in itself can
-    // neither begin a match nor match under `trans_fin` (`$`).
-    accel: ?prefilter.Prefilter = null,
+    // The start state's skippable dwell (rust-regex / RE2 call this start-state
+    // acceleration — see `accel.rs`): when the unanchored start state's exit set is
+    // a few bytes (e.g. `;` for `;$`), SIMD-skip to the next exit byte instead of
+    // paying a table lookup per byte. Derived by `../automata/dwell.zig` only when
+    // the set stays selective (≤ `dwell.max_exit_bytes`, and the corpus economics
+    // agree); null ⇒ plain dense scan. `\n` is in the set whenever the skip may not
+    // cross a line, so line boundaries stop it without a second pass. Sound because
+    // a byte that keeps the start state in itself can neither begin a match nor
+    // match under `trans_fin` (`$`).
+    start_dwell: ?prefilter.Prefilter = null,
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *Dfa) void {
         const a = self.allocator;
         a.free(self.trans_in);
         a.free(self.trans_fin);
-        a.free(self.is_match);
         if (self.trans_in_w.len != 0) a.free(self.trans_in_w);
         a.destroy(self);
+    }
+
+    /// Does the premultiplied state `s` match? The match states were renumbered
+    /// to the front of the id space (`freeze.zig`), and premultiplication is
+    /// monotone in the id, so the whole question is one unsigned compare — no
+    /// load, at any stride. Valid for every reachable `s`, including the
+    /// `trans_fin`-only terminal states whose transition rows are `unfilled`.
+    pub inline fn isMatch(self: *const Dfa, s: u32) bool {
+        return s < self.match_hi;
     }
 
     /// Does the pattern match any substring of `line`? Linear, one table lookup
@@ -102,29 +118,29 @@ pub const Dfa = struct {
     pub fn match(self: *const Dfa, line: []const u8) bool {
         std.debug.assert(!self.word_ctx); // word-boundary DFAs go through `matchWord`
         if (line.len == 0) return self.empty_match;
-        if (self.accel) |*pf| return self.matchAccel(line, pf);
+        if (self.start_dwell) |*exits| return self.matchDwell(line, exits);
         var s = self.start; // premultiplied: `s` IS the row offset `id*ncls`
-        if (self.is_match[s]) return true;
+        if (self.isMatch(s)) return true;
         const last = line.len - 1;
         for (line[0..last]) |c| {
             s = self.trans_in[s + self.class[c]];
-            if (self.is_match[s]) return true;
+            if (self.isMatch(s)) return true;
             if (self.anchored and s == self.dead) return false; // no re-seed ⇒ dead
         }
         s = self.trans_fin[s + self.class[line[last]]];
-        return self.is_match[s];
+        return self.isMatch(s);
     }
 
-    /// `match` with start-state acceleration: while parked in the unanchored start
-    /// state, SIMD-skip the dead run to the next exit byte. The subtlety: a skipped
-    /// byte keeps start in itself (no interior match), but the line's *last* byte
-    /// can still match under `trans_fin` via `$` even when it's a non-exit byte
+    /// `match` while the start state's dwell is skippable: parked in the unanchored
+    /// start state, SIMD-skip the dead run to the next exit byte. The subtlety: a
+    /// skipped byte keeps start in itself (no interior match), but the line's *last*
+    /// byte can still match under `trans_fin` via `$` even when it's a non-exit byte
     /// (e.g. `d` for `\w+$`). So when the skip reaches line end without an exit
     /// byte, we still resolve the final byte with `trans_fin[start]`. `!anchored`.
-    fn matchAccel(self: *const Dfa, line: []const u8, pf: *const prefilter.Prefilter) bool {
+    fn matchDwell(self: *const Dfa, line: []const u8, pf: *const prefilter.Prefilter) bool {
         const start = self.start; // premultiplied row offset
         var s = start;
-        if (self.is_match[s]) return true;
+        if (self.isMatch(s)) return true;
         const last = line.len - 1;
         var i: usize = 0;
         while (i < line.len) {
@@ -132,17 +148,17 @@ pub const Dfa = struct {
                 const j = pf.nextStart(line, i) orelse line.len;
                 if (j >= line.len) { // dead tail: only the last byte can match (`$`)
                     s = self.trans_fin[start + self.class[line[last]]];
-                    return self.is_match[s];
+                    return self.isMatch(s);
                 }
                 i = j; // skipped non-exit bytes [i, j); landed on an exit byte
             }
             if (i == last) { // resolve the final byte with `$` (trans_fin)
                 s = self.trans_fin[s + self.class[line[i]]];
-                return self.is_match[s];
+                return self.isMatch(s);
             }
             s = self.trans_in[s + self.class[line[i]]];
             i += 1;
-            if (self.is_match[s]) return true;
+            if (self.isMatch(s)) return true;
         }
         return false;
     }
@@ -162,7 +178,7 @@ pub const Dfa = struct {
         const uni = self.unicode_word;
         if (uni and line[0] >= 0x80) return null; // first scalar non-ASCII ⇒ can't fix `word_after` at BOL
         var s = if (word.isWordByte(line[0])) self.start_w else self.start;
-        if (self.is_match[s]) return true;
+        if (self.isMatch(s)) return true;
         const last = line.len - 1;
         var j: usize = 0;
         while (j < last) : (j += 1) {
@@ -170,12 +186,12 @@ pub const Dfa = struct {
             if (uni and nb >= 0x80) return null; // its scalar's word-ness is undecidable here
             const tbl = if (word.isWordByte(nb)) self.trans_in_w else self.trans_in;
             s = tbl[s + self.class[line[j]]];
-            if (self.is_match[s]) return true;
+            if (self.isMatch(s)) return true;
             if (self.anchored and s == self.dead) return false;
         }
         // Last content byte: EOL gap ⇒ `word_after=false`, resolved by `trans_fin`.
         s = self.trans_fin[s + self.class[line[last]]];
-        return self.is_match[s];
+        return self.isMatch(s);
     }
 
     /// Does the pattern match any line of `doc`? Fused whole-buffer pass — `\n`
@@ -184,7 +200,7 @@ pub const Dfa = struct {
     /// once, avoiding the memchr-then-rescan double byte-traffic of a per-line
     /// matcher. Three shapes, all held equivalent to the per-line path by the
     /// doc-level differential fuzz vs the Pike VM in `dfa_test.zig`:
-    ///   * `accel`     — SIMD-skip the dead start run (`docMatchAccel`);
+    ///   * `start_dwell` — SIMD-skip the dead start run (`docMatchDwell`);
     ///   * `!anchored` — the pure latency-bound table walk, run multi-lane so the
     ///     loop-carried load chain overlaps across independent lines
     ///     (`docMatchDense`);
@@ -192,7 +208,7 @@ pub const Dfa = struct {
     ///     (`docMatchScalar`).
     pub fn docMatch(self: *const Dfa, doc: []const u8) bool {
         std.debug.assert(!self.word_ctx); // word-boundary DFAs go per-line through `matchWord`
-        if (self.accel) |*pf| return self.docMatchAccel(doc, pf);
+        if (self.start_dwell) |*exits| return self.docMatchDwell(doc, exits);
         if (!self.anchored) return self.docMatchDense(doc);
         return self.docMatchScalar(doc);
     }
@@ -213,14 +229,14 @@ pub const Dfa = struct {
                 continue;
             }
             var s = self.start; // premultiplied: `s` IS the row offset `id*ncls`
-            if (self.is_match[s]) return true; // BOL / zero-width match
+            if (self.isMatch(s)) return true; // BOL / zero-width match
             var prev = s;
             var hit_dead = false;
             while (i < n and doc[i] != '\n') {
                 prev = s;
                 s = self.trans_in[s + self.class[doc[i]]];
                 i += 1;
-                if (self.is_match[s]) return true;
+                if (self.isMatch(s)) return true;
                 if (self.anchored and s == self.dead) { // `^`-anchored thread set drained
                     // …but only abandon if content remains: the LAST content byte still gets `trans_fin` below, whose `$`-resolving (at_end) closure can match where the interior (at_end=false) one died.
                     if (i < n and doc[i] != '\n') hit_dead = true;
@@ -229,7 +245,7 @@ pub const Dfa = struct {
             }
             if (!hit_dead) { // resolve the line's last content byte (`doc[i-1]`) with `$`
                 s = self.trans_fin[prev + self.class[doc[i - 1]]];
-                if (self.is_match[s]) return true;
+                if (self.isMatch(s)) return true;
                 if (i < n) i += 1; // skip the '\n'
             } else { // dead `^`-thread: SIMD-`memchr` past the rest of this dead line
                 i = std.mem.indexOfScalarPos(u8, doc, i, '\n') orelse n;
@@ -241,7 +257,7 @@ pub const Dfa = struct {
 
     /// Where the next content line at/after `from` begins/ends. `.match`
     /// short-circuits the whole doc (an empty line under `empty_match`, or a
-    /// content line whose BOL closure already matched — `is_match[start]`),
+    /// content line whose BOL closure already matched — `isMatch(start)`),
     /// exactly as `docMatchScalar`'s per-line seed does. `\n` is found by SIMD
     /// `memchr`, so seeding never re-walks the line byte-by-byte.
     const Seed = union(enum) {
@@ -253,7 +269,7 @@ pub const Dfa = struct {
         var p = from;
         while (p < doc.len) : (p += 1) {
             if (doc[p] != '\n') {
-                if (self.is_match[self.start]) return .match; // BOL / zero-width
+                if (self.isMatch(self.start)) return .match; // BOL / zero-width
                 const e = std.mem.indexOfScalarPos(u8, doc, p, '\n') orelse doc.len;
                 return .{ .line = .{ .start = p, .end = e, .next = if (e < doc.len) e + 1 else e } };
             }
@@ -280,7 +296,7 @@ pub const Dfa = struct {
         const trans = self.trans_in;
         const tfin = self.trans_fin;
         const cls = &self.class;
-        const im = self.is_match;
+        const mhi = self.match_hi;
         const start = self.start;
 
         var s = [_]u32{start} ** lanes;
@@ -321,11 +337,11 @@ pub const Dfa = struct {
                     s[i] = trans[s[i] + cls[doc[cur[i]]]];
                     cur[i] += 1;
                 }
-                inline for (0..lanes) |i| if (im[s[i]]) return true;
+                inline for (0..lanes) |i| if (s[i] < mhi) return true;
             }
             inline for (0..lanes) |i| {
                 if (cur[i] == end[i]) { // line consumed → resolve `$`, then refill
-                    if (im[tfin[prev[i] + cls[doc[end[i] - 1]]]]) return true;
+                    if (tfin[prev[i] + cls[doc[end[i] - 1]]] < mhi) return true;
                     switch (self.seedLine(doc, pos)) {
                         .match => return true,
                         .done => {
@@ -358,21 +374,21 @@ pub const Dfa = struct {
                     pv = si;
                     si = trans[si + cls[doc[ci]]];
                     ci += 1;
-                    if (im[si]) return true;
+                    if (si < mhi) return true;
                 }
-                if (im[tfin[pv + cls[doc[ei - 1]]]]) return true;
+                if (tfin[pv + cls[doc[ei - 1]]] < mhi) return true;
             }
         }
         return self.docMatchScalar(doc[pos..]);
     }
 
-    /// `docMatch` with start-state acceleration. Structurally identical to
-    /// `docMatch` (same per-line `^`/`$`/`\n` handling, same `trans_fin` last-byte
+    /// `docMatch` while the start state's dwell is skippable. Structurally identical
+    /// to `docMatch` (same per-line `^`/`$`/`\n` handling, same `trans_fin` last-byte
     /// resolution) plus one move: whenever the scan is parked in the unanchored
     /// start state, SIMD-skip the dead run to the next exit byte **or `\n`** (the
-    /// needle carries `\n` so the skip never crosses a line boundary). Built only
-    /// for `!anchored`, so the dense-state drain path is unreachable here.
-    fn docMatchAccel(self: *const Dfa, doc: []const u8, pf: *const prefilter.Prefilter) bool {
+    /// exit set carries `\n` here so the skip never crosses a line boundary). Built
+    /// only for `!anchored`, so the dense-state drain path is unreachable here.
+    fn docMatchDwell(self: *const Dfa, doc: []const u8, pf: *const prefilter.Prefilter) bool {
         const n = doc.len;
         const start = self.start; // premultiplied row offset
         var i: usize = 0;
@@ -383,7 +399,7 @@ pub const Dfa = struct {
                 continue;
             }
             var s = start;
-            if (self.is_match[s]) return true; // BOL / zero-width match
+            if (self.isMatch(s)) return true; // BOL / zero-width match
             var prev = s;
             var line_done = false; // dead-tail already resolved its `$` inside the loop
             while (i < n and doc[i] != '\n') {
@@ -395,7 +411,7 @@ pub const Dfa = struct {
                         // can still match `$` — resolve it from the *start* state
                         // (the live state across the skip), not the stale `prev`.
                         s = self.trans_fin[start + self.class[doc[j - 1]]];
-                        if (self.is_match[s]) return true;
+                        if (self.isMatch(s)) return true;
                         i = j;
                         line_done = true;
                         break;
@@ -405,14 +421,14 @@ pub const Dfa = struct {
                 prev = s;
                 s = self.trans_in[s + self.class[doc[i]]];
                 i += 1;
-                if (self.is_match[s]) return true;
+                if (self.isMatch(s)) return true;
             }
             // Contiguous-processing exit (hit `\n`/EOF): resolve the line's last
             // content byte with `$` from `prev` (the state right before it), exactly
             // as the dense `docMatch` does. Skipped tails handled `line_done` above.
             if (!line_done and i > 0 and doc[i - 1] != '\n') {
                 s = self.trans_fin[prev + self.class[doc[i - 1]]];
-                if (self.is_match[s]) return true;
+                if (self.isMatch(s)) return true;
             }
             if (i < n and doc[i] == '\n') i += 1;
         }

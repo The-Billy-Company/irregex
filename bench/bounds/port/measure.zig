@@ -67,7 +67,7 @@ const simd_sweeps = 1024; // ~32 MiB filtered per trial
 
 // dfa_step working set: match-free by construction for the probed pattern —
 // the alphabet is lowercase alnum with NO '-', and the pattern requires a '-'
-// after 8 hex digits, so `is_match` is unreachable while the hex-run states
+// after 8 hex digits, so no match state is reachable while the hex-run states
 // still wander (varied transitions, no trivially-predictable fixed point).
 // No '\n' either, so every byte takes exactly one recurrence step.
 const dfa_pattern = "[0-9a-f]{8}-[0-9a-f]{4}";
@@ -151,7 +151,7 @@ fn dfaBody(ctx: DfaCtx) void {
             d.trans_in.ptr,
             d.trans_fin.ptr,
             &d.class,
-            d.is_match.ptr,
+            d.match_hi,
             d.start,
             d.dead,
             d.anchored,
@@ -318,7 +318,7 @@ test "dfa document is match-free and newline-free (one step per byte premise)" {
         d.trans_in.ptr,
         d.trans_fin.ptr,
         &d.class,
-        d.is_match.ptr,
+        d.match_hi,
         d.start,
         d.dead,
         d.anchored,

@@ -171,7 +171,7 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("       and its own B/cyc columns are derived with THAT clock, not with {d:.3}.\n\n", .{norm_ghz});
 
     std.debug.print("{s:<16} {s:>4} {s:>6} {s:>3} {s:>6} {s:>5} {s:>9} {s:>9} {s:>10} {s:>10} {s:>8} {s:>6} {s:>5}\n", .{
-        "pattern", "|Q|", "lanes", "la", "accel", "GHz", "base GB/s", "comp GB/s", "base B/cyc", "comp B/cyc", "speedup", "agree", "hit",
+        "pattern", "|Q|", "lanes", "la", "dwell", "GHz", "base GB/s", "comp GB/s", "base B/cyc", "comp B/cyc", "speedup", "agree", "hit",
     });
     std.debug.print("{s:-<16} {s:->4} {s:->6} {s:->3} {s:->6} {s:->5} {s:->9} {s:->9} {s:->10} {s:->10} {s:->8} {s:->6} {s:->5}\n", .{ "", "", "", "", "", "", "", "", "", "", "", "", "" });
 
@@ -192,7 +192,7 @@ pub fn main(init: std.process.Init) !void {
         // other row goes through the gate the ladder would use.
         const cx = (if (sp.boundary) try Compose.lower(gpa, dfa) else try Compose.build(gpa, dfa)) orelse {
             std.debug.print("{s:<16} {d:>4} {s:>6} {s:>3} {any:>6}   declined — {s}\n", .{
-                sp.id, dfa.nstates, "-", "-", dfa.accel != null, reason(dfa),
+                sp.id, dfa.nstates, "-", "-", dfa.start_dwell != null, reason(dfa),
             });
             continue;
         };
@@ -207,12 +207,12 @@ pub fn main(init: std.process.Init) !void {
         const bgb = (n / (@as(f64, @floatFromInt(t.base_ns)) / 1e9)) / 1e9;
         const cgb = (n / (@as(f64, @floatFromInt(t.comp_ns)) / 1e9)) / 1e9;
         std.debug.print("{s:<16} {d:>4} {d:>6} {s:>3} {any:>6} {d:>5.2} {d:>9.2} {d:>9.2} {d:>10.3} {d:>10.3} {d:>7.2}x {any:>6} {any:>5}{s}\n", .{
-            sp.id,                  dfa.nstates,
-            @intFromEnum(cx.width), if (cx.index == .byte_eol) "yes" else "no",
-            dfa.accel != null,      ghz,
-            bgb,                    cgb,
-            bgb / ghz,              cgb / ghz,
-            cgb / bgb,              t.agree,
+            sp.id,                   dfa.nstates,
+            @intFromEnum(cx.width),  if (cx.index == .byte_eol) "yes" else "no",
+            dfa.start_dwell != null, ghz,
+            bgb,                     cgb,
+            bgb / ghz,               cgb / ghz,
+            cgb / bgb,               t.agree,
             t.hit,
             if (sp.boundary) "  ← boundary" else "",
         });
@@ -227,7 +227,7 @@ pub fn main(init: std.process.Init) !void {
             const gated = try Compose.build(gpa, dfa);
             if (gated) |g| {
                 g.deinit();
-                std.debug.print("  !! the dispatch gate ARMED on an accelerated pattern — that is the 6× regression\n", .{});
+                std.debug.print("  !! the dispatch gate ARMED on a skippable-start-dwell pattern — that is the 6× regression\n", .{});
                 disagreements += 1;
             } else std.debug.print("{s:<16} gate holds: `build` refuses it, the ladder keeps the accelerated DFA\n", .{""});
         }
@@ -246,7 +246,7 @@ pub fn main(init: std.process.Init) !void {
 /// informative rather than blank.
 fn reason(dfa: anytype) []const u8 {
     if (!compose.lanes.native) return "not AArch64";
-    if (dfa.accel != null) return "literal skip armed — skipping beats retiring";
+    if (dfa.start_dwell != null) return "literal skip armed — skipping beats retiring";
     if (dfa.word_ctx) return "word context (\\b) needs a second table axis";
     if (dfa.is_match[dfa.start]) return "start closure already accepts";
     return "more than 31 non-accepting states";
