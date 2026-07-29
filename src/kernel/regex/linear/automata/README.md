@@ -121,11 +121,14 @@ already right. C4 is retired; `survey` remains as the instrument that retired it
 
 **A bar is calibrated against a walker, not against a corpus, so the span engine
 needs its own.** `min_profitable_span_stride` restates the same question for the
-caliper's two-jaw walk (`../caliper/`), whose byte costs an order of magnitude
-more than a premultiplied boolean step. What a skip trades away — a `memchr`
-call plus a re-entry closure — is the same either way, so break-even scales with
-the walker's per-byte cost alone. Borrowing the boolean number withheld the skip
+caliper's two-jaw walk (`../caliper/`), whose byte costs several times what a
+premultiplied boolean step does. What a skip trades away — a `memchr` call plus
+a re-entry closure — is the same either way, so break-even scales with the
+walker's per-byte cost alone. Borrowing the boolean number withheld the skip
 from every pattern beginning with a merely-uncommon byte, which is most of them.
+The multiple is not fixed: the span walk went from ~13× a boolean byte to ~6× when
+its cells became offsets, which is why `dwell.zig` records the measurement the
+constant came from and says to re-derive rather than re-divide.
 
 **`reduce.zig`** — collapsing a finished determinization down to the automaton it
 *means*. A determinizer stops when it runs out of **reachable** states, and reachable

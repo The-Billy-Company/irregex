@@ -60,10 +60,22 @@ pub const min_profitable_stride: u16 = 32;
 /// walk this file's bar was calibrated against. A boolean step is a
 /// premultiplied table load; a span step reaches through a state's priority key
 /// to decide dead/matched, re-derives the gap's shape, and indexes a memo row
-/// keyed on both — a dependent-load chain, not one load. Measured at 3.2 ns per
-/// byte against the boolean walk's ~0.25 (`spikes/span-bound-eval/`), so
-/// the true figure is nearer 13; taken conservatively low, because underrating
-/// the walker can only make the bar *stricter* than break-even.
+/// keyed on both — a dependent-load chain, not one load. First measured at 3.2 ns
+/// per byte against the boolean walk's ~0.25 (`spikes/span-bound-eval/`),
+/// putting the true figure nearer 13; taken conservatively low, because
+/// underrating the walker can only make the bar *stricter* than break-even.
+///
+/// The span walk has since got cheaper per byte — offset-currency cells took it
+/// to 1.49 ns, so the honest ratio is now ~6 and this 8 sits a little *above* it
+/// rather than below. Left as it is deliberately: a bar of 4 against a
+/// break-even nearer 5 is a difference no measurement here can see (`bar=4` and
+/// `bar=5` are within noise of each other on both the saturated line and the
+/// real tree), and the failure it now risks is the cheap one. Skipping a hair
+/// too eagerly wastes one `memchr` per span; the bar being too *high* is what
+/// caused the original 31× — and it is the more expensive mistake in both
+/// directions of this drift, since a cheaper walker also makes an over-strict
+/// bar hurt less than it did. Re-derive from a fresh measurement before moving
+/// it, not from this arithmetic.
 const span_step_cost: u16 = 8;
 
 /// The same bar, restated for the span walk.
