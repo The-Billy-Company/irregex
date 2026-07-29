@@ -119,6 +119,8 @@ pub const Jaws = struct {
     fwd: ?automaton.Cache = null,
     bwd: ?automaton.Cache = null,
     gpa: std.mem.Allocator,
+    /// The last thing the prefilter was asked, and what it said (`hunt`).
+    recall: Recall = .{},
 
     pub fn init(gpa: std.mem.Allocator, cal: *const Caliper) Jaws {
         return .{ .cal = cal, .gpa = gpa };
@@ -130,12 +132,52 @@ pub const Jaws = struct {
         j.* = undefined;
     }
 
-    fn cache(j: *Jaws, which: *?automaton.Cache, m: *const automaton.Machine) ?*automaton.Cache {
-        if (which.* == null) {
-            which.* = automaton.Cache.init(j.gpa, m) catch return null;
-        }
-        const c = &which.*.?;
+    /// This jaw's determinization cache, or null if it has declined. Twice per
+    /// span, so the resident case is a load and a branch and the build is
+    /// somewhere else — inlined together they cost 9% of a saturated-line span
+    /// to arrive at a pointer that has been the same pointer since the first
+    /// line of the file.
+    inline fn cache(j: *Jaws, which: *?automaton.Cache, m: *const automaton.Machine) ?*automaton.Cache {
+        const c = if (which.*) |*resident| resident else j.open(which, m) orelse return null;
         return if (c.quit) null else c;
+    }
+
+    fn open(j: *Jaws, which: *?automaton.Cache, m: *const automaton.Machine) ?*automaton.Cache {
+        @branchHint(.cold);
+        which.* = automaton.Cache.init(j.gpa, m) catch return null;
+        return &which.*.?;
+    }
+
+    /// The prefilter, asked through one span's worth of memory.
+    ///
+    /// A span asks the first-byte set two questions — *where does the next
+    /// candidate begin* (to stand on one) and *where does the one after it
+    /// begin* (to bound the glide, so the seeding decision holds for the whole
+    /// run) — and on a match-dense line those are the same question one span
+    /// apart. The second scan of a span crosses exactly the bytes the next
+    /// span's first scan would cross again, because a match ends before the
+    /// candidate that bounded it. Remembering one answer collapses the pair, so
+    /// the walk reads the haystack once rather than twice.
+    ///
+    /// The memo is a claim about bytes, not about a call: *the first candidate
+    /// at index ≥ `from` is `at`*. It answers a later question only when that
+    /// question's floor lies in `[from, at]` — where the recorded scan already
+    /// proved there is nothing — over the same haystack, the same prefilter, and
+    /// a region still long enough to contain `at`.
+    const Recall = struct {
+        hay: ?[*]const u8 = null,
+        pre: ?*const prefilter.Prefilter = null,
+        from: usize = 0,
+        at: usize = 0,
+    };
+
+    fn hunt(j: *Jaws, p: *const prefilter.Prefilter, region: []const u8, from: usize) ?usize {
+        const r = &j.recall;
+        if (r.hay == region.ptr and r.pre == p and from >= r.from and from <= r.at and r.at < region.len)
+            return r.at;
+        const at = p.nextStart(region, from) orelse return null;
+        r.* = .{ .hay = region.ptr, .pre = p, .from = from, .at = at };
+        return at;
     }
 };
 
@@ -183,6 +225,7 @@ pub fn build(
         .cls = &cal.cls,
         .dominate = true,
         .word_ctx = cal.word_ctx,
+        .unicode = unicode,
     };
     cal.backward = .{
         .states = cal.rev.states,
@@ -190,6 +233,7 @@ pub fn build(
         .cls = &cal.cls,
         .dominate = false,
         .word_ctx = cal.word_ctx,
+        .unicode = unicode,
     };
     return cal;
 }
@@ -237,15 +281,37 @@ pub fn measure(j: *Jaws, win: Window, skip: ?*const prefilter.Prefilter) Verdict
     const end = forwardEnd(j, w, skip) orelse return .decline;
     return switch (end) {
         .none => .none,
-        .at => |e| if (backwardStart(j, w.hay, e, w.from)) |s|
-            .{ .found = .{ .start = s, .end = e } }
-        else
-            .decline,
+        .at => |r| blk: {
+            const s = r.start orelse
+                backwardStart(j, w.hay, r.end, w.from) orelse
+                break :blk .decline;
+            break :blk .{ .found = .{ .start = s, .end = r.end } };
+        },
         .quit => .decline,
     };
 }
 
-const End = union(enum) { none, at: usize, quit };
+/// Where the forward jaw stopped, and — when the walk can prove it — where the
+/// match must have begun.
+///
+/// **A jaw that never re-seeded already knows the start.** `program/core.zig`
+/// compiles an ANCHORED program; unanchoredness is this file's re-seed and
+/// nothing else. So every thread alive at `end` descends from the single start
+/// that `enter` seeded, and if no step in between re-seeded, they all began at
+/// that one gap — which is the leftmost start reaching `end`, which is the
+/// answer the backward jaw exists to compute. Under a first-byte prefilter a
+/// re-seed only fires where the prefilter admits a byte, so on the shape this
+/// engine is for — a match found by jumping to its own first byte — `start` is
+/// populated and the second jaw does not run at all.
+///
+/// Null means a re-seed did fire, so some survivor may have begun later than
+/// the entry, and only the reversed automaton can say which. That is the case
+/// with no usable prefilter (`seed` is then true at every gap until a match),
+/// so the fallback is the whole of the old behaviour and nothing declines that
+/// did not decline before.
+const Reach = struct { end: usize, start: ?usize };
+
+const End = union(enum) { none, at: Reach, quit };
 
 /// Jaw one: the last position a match completes, scanning right from `from`.
 /// "Last", not "first" — under match dominance the automaton stays alive only
@@ -273,14 +339,38 @@ fn forwardEnd(j: *Jaws, w: Window, pre: ?*const prefilter.Prefilter) ?End {
     const cal = j.cal;
     const line = w.hay;
     const c = j.cache(&j.fwd, &cal.forward) orelse return null;
-    const skip: ?*const prefilter.Prefilter = if (pre) |p| (if (c.zeroWidth()) null else p) else null;
+    // Two ways an offered prefilter is not one. A machine that can match
+    // nothing (`zeroWidth`) may not be skipped past at all. And an EMPTY
+    // first-byte set is `analyzeFirst` saying "I could not tell", not "no byte
+    // begins a match" — trusting it would read every haystack as matchless.
+    // That distinction only ever cost a wasted jump while the old walk consulted
+    // the prefilter after a death; now that the walk stands on a candidate
+    // before it seeds anything, it decides whether there is a match at all.
+    const skip: ?*const prefilter.Prefilter = if (pre) |p|
+        (if (c.zeroWidth() or p.count() == 0) null else p)
+    else
+        null;
     // Candidate starts are hunted inside the bound: a match must END by `w.to`,
     // so a start at or past it cannot consume anything.
     const region = w.region();
 
-    var st = c.enter(gapAt(cal, line, w.from) orelse return null) orelse return null;
-    var last: ?usize = if (st.matched()) w.from else null;
+    // Stand on a candidate BEFORE paying for a start closure. Nothing is live
+    // at `w.from` yet, so the licence is the loop's own: a prefilter is offered
+    // only when no match can be zero-width, hence every match consumes a first
+    // byte the prefilter admits, hence a gap it refuses cannot begin one.
+    // Entering anyway costs a closure, a bound scan, and a glide that dies on
+    // its first byte — three quarters of a span's fixed cost on a match-dense
+    // line, spent to rediscover what the prefilter was about to say.
     var i = w.from;
+    if (skip) |s| i = j.hunt(s, region, i) orelse return .none;
+    var st = c.enter(gapAt(cal, line, i) orelse return null) orelse return null;
+    var last: ?usize = if (st.matched()) i else null;
+    // The gap the live threads were seeded at, and whether anything has been
+    // seeded since — together, the backward jaw's answer whenever the second
+    // is false. A re-entry after death resets both: an empty set leaves nothing
+    // behind for a later start to be junior to. See `Reach`.
+    var origin = i;
+    var reseeded = false;
     while (i < w.to) {
         if (st.dead()) {
             // An empty set ends the scan once a match is committed: dominance
@@ -292,42 +382,45 @@ fn forwardEnd(j: *Jaws, w: Window, pre: ?*const prefilter.Prefilter) ?End {
             // it doesn't.
             if (last != null) break;
             if (skip) |s| {
-                i = s.nextStart(region, i) orelse return .none;
+                i = j.hunt(s, region, i) orelse return .none;
                 st = c.enter(gapAt(cal, line, i) orelse return null) orelse return null;
+                origin = i;
+                reseeded = false;
                 if (st.matched()) last = i;
             }
         }
         // A start at `i+1` needs a byte to consume inside the bound, and (under
         // the skip policy) a byte the prefilter admits.
         const seed = last == null and (if (skip) |s| i + 1 < w.to and s.has(line[i + 1]) else true);
-        // Hand the memo as long a run as the row survives (`Cache.glide`). The
-        // row holds while two things do: every landing is an interior gap —
-        // which needs the buffer's end out of reach and no `\b` context to read
-        // — and the seed decision stays one decision. With no prefilter
-        // choosing, it never changes. With one, it changes only where the
-        // prefilter admits a byte, and the same jump that hunts candidates finds
-        // where that is, so the run is simply the stretch before the next one.
-        if (!cal.word_ctx) {
-            const ceiling = @min(w.to, line.len -| 1);
-            const lim = if (skip != null and last == null)
-                @min(ceiling, (skip.?.nextStart(region, i + 1) orelse ceiling) -| 1)
-            else
-                ceiling;
-            if (i < lim) {
-                const run = c.glide(st, interior, seed, line[i..lim], .forward);
-                if (run.len > 0) {
-                    st = run.cell;
-                    i += run.len;
-                    if (st.matched()) last = i;
-                    continue;
-                }
+        // Hand the memo as long a run as it can keep (`Cache.glide`). Two things
+        // have to hold. Every landing must be an interior gap, which the
+        // `line.len -| 1` ceiling buys — a `\b` context no longer costs the run,
+        // since the memo now reads its row off the bytes. And the seed decision
+        // must stay one decision: with no prefilter choosing it never changes,
+        // and with one it changes only where the prefilter admits a byte, which
+        // the same jump that hunts candidates already located — so the run is
+        // simply the stretch before the next candidate.
+        const ceiling = @min(w.to, line.len -| 1);
+        const lim = if (skip != null and last == null)
+            @min(ceiling, (j.hunt(skip.?, region, i + 1) orelse ceiling) -| 1)
+        else
+            ceiling;
+        if (i < lim) {
+            const run = c.glide(st, interior, seed, line[i..lim], line[lim], .forward);
+            if (run.len > 0) {
+                reseeded = reseeded or seed;
+                st = run.cell;
+                i += run.len;
+                if (st.matched()) last = i;
+                continue;
             }
         }
+        reseeded = reseeded or seed;
         st = c.step(st, cal.cls.class[line[i]], gapAt(cal, line, i + 1) orelse return null, seed) orelse return null;
         if (st.matched()) last = i + 1;
         i += 1;
     }
-    return if (last) |e| .{ .at = e } else .none;
+    return if (last) |e| .{ .at = .{ .end = e, .start = if (reseeded) null else origin } } else .none;
 }
 
 /// Jaw two: the leftmost position from which a match still reaches `end`,
@@ -341,18 +434,16 @@ fn backwardStart(j: *Jaws, line: []const u8, end: usize, floor: usize) ?usize {
     var best: ?usize = if (st.matched()) end else null;
     var i = end;
     while (i > floor and !st.dead()) {
-        // This jaw is anchored, so it never seeds — its row is constant for the
+        // This jaw is anchored, so it never seeds — one seeding decision for the
         // whole run, and the only landing that leaves the interior is gap 0.
-        if (!cal.word_ctx) {
-            const lo = @max(floor, 1);
-            if (i > lo) {
-                const run = c.glide(st, interior, false, line[lo..i], .backward);
-                if (run.len > 0) {
-                    st = run.cell;
-                    i -= run.len;
-                    if (st.matched()) best = i;
-                    continue;
-                }
+        const lo = @max(floor, 1);
+        if (i > lo) {
+            const run = c.glide(st, interior, false, line[lo..i], line[lo - 1], .backward);
+            if (run.len > 0) {
+                st = run.cell;
+                i -= run.len;
+                if (st.matched()) best = i;
+                continue;
             }
         }
         st = c.step(st, cal.cls.class[line[i - 1]], gapAt(cal, line, i - 1) orelse return null, false) orelse return null;

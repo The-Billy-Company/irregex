@@ -4,9 +4,9 @@ doc_radar:
     - description: "the two jaws, the tri-state verdict, the window both take, and the eligibility gate that keeps multiline on the VM"
       file: pkg/kernels/irregex/src/kernel/regex/linear/caliper/caliper.zig
       contains: ["pub const Verdict", "pub const Window", "pub fn eligible", "pub fn measure", "!multiline"]
-    - description: "priority-ordered determinization: an ordered state list, dominance, quitting as an answer, and the two accelerators that keep a span step near one load — a per-state mark and the memo-only run"
+    - description: "priority-ordered determinization: an ordered state list, dominance, quitting as an answer, and the accelerators that keep a span step near one load — a per-state mark, the memo-only run, and the two row grains that let a word-bearing program into it"
       file: pkg/kernels/irregex/src/kernel/regex/linear/caliper/automaton.zig
-      contains: ["pub const Machine", "pub const Cache", "dominate", "quit", "const Mark", "pub fn glide"]
+      contains: ["pub const Machine", "pub const Cache", "dominate", "quit", "const Mark", "pub fn glide", "const Grain", "fn course"]
     - description: "the span walk's prefilter bar is priced against the span walk, not the boolean one"
       file: pkg/kernels/irregex/src/kernel/regex/linear/automata/dwell.zig
       contains: ["pub const min_profitable_stride", "pub const min_profitable_span_stride"]
@@ -52,16 +52,29 @@ A table lookup per byte is only worth having if the lookup is actually one
 lookup. Two things keep it there:
 
 - **`Cache.glide`** runs a stretch of bytes through the memo alone, once the
-  caller can prove the row survives it — every landing an interior gap, one
-  seeding decision throughout. `step` has to recompute the row and reload the
-  memo's base pointer on every byte, because it is a call that might
-  determinize and reallocate; `glide` does both once and reduces to a class
-  lookup and one dependent load per byte. A byte it cannot decide ends the run
-  before it, and a marked target ends it after, so misses and matches stay
-  outside the loop. The backward jaw is always eligible (anchored, so it never
-  seeds); the forward jaw is eligible whenever the seed decision holds, and
-  where a prefilter is choosing per byte the run is the stretch before the next
+  caller can prove every landing is an interior gap and the seeding decision
+  holds throughout. `step` has to recompute the row and reload the memo's base
+  pointer on every byte, because it is a call that might determinize and
+  reallocate; `glide` borrows the tables once and reduces to a class lookup and
+  one dependent load per byte. A byte it cannot decide ends the run before it,
+  and a marked target ends it after, so misses and matches stay outside the
+  loop. The backward jaw is always eligible (anchored, so it never seeds); the
+  forward jaw is eligible whenever the seed decision holds, and where a
+  prefilter is choosing per byte the run is the stretch before the next
   candidate — which the same jump already finds.
+
+  The run does **not** need one row. A `\b`-bearing program's landing shape
+  varies, but only with the two bytes straddling the landing, so `glide` reads
+  the row off the haystack per byte and the address is still ready before the
+  load that needs it — the row moves and is never late. Such a program used to
+  be excluded from the run entirely and paid a call per byte, which was the
+  whole of its deficit: `\bfoo\b` over a match-saturated line went from 0.86x
+  ripgrep to 1.78x on that change alone, while every word-free arm held still.
+  The two grains are separate comptime
+  loops on purpose. Folding them — handing a word-free program four copies of
+  its one row so the lookup is unconditional — reads better and costs 60% on a
+  long glide, because two extra byte loads per iteration are nothing against a
+  cache miss and everything against the L1 hit this loop is made of.
 - **A `Mark` per state**, interned alongside it: matched, dead. The search's two
   questions about a state used to be a walk into its priority key and then into
   that key's last word; they are one load of a dense array.

@@ -30,6 +30,7 @@ const std = @import("std");
 const mix = @import("../../../math/mix.zig");
 const syn = @import("../../syntax/syntax.zig");
 const subset = @import("../dfa/subset.zig");
+const word = @import("../../syntax/word.zig");
 const bits = @import("../../../math/bits.zig");
 
 const State = syn.State;
@@ -152,6 +153,10 @@ pub const Machine = struct {
     /// Program carries `\b`/`\B`/`\<`/`\>`, so a gap's word context selects the
     /// transition and the memo needs all sixteen gap shapes.
     word_ctx: bool,
+    /// `\w` is the Unicode word class, so a word test may have to decode. Only
+    /// `glide` reads this, to know when a neighbouring byte is beyond what a
+    /// byte-shaped row can answer for.
+    unicode: bool,
 
     /// Memo rows per state: one per gap shape, doubled because whether the
     /// transition re-seeds the start is part of the question being memoized.
@@ -359,15 +364,26 @@ pub const Cache = struct {
     pub const Run = struct { cell: Cell, len: usize };
 
     /// Consume bytes through the memo **and nothing else**, for a run the caller
-    /// has proven keeps one row: the same gap shape at every landing, and one
-    /// seeding decision throughout.
+    /// has proven keeps one seeding decision throughout and lands only at
+    /// interior gaps — `tail` being the byte just past the run in scan order,
+    /// the far side of the last landing.
     ///
     /// That premise is what makes this worth having. `step` must recompute the
     /// row and reload the memo's base pointer on every byte, because it is a
-    /// call that might determinize and reallocate. Here the row is computed once
-    /// and the tables are borrowed once, so the loop reduces to a class lookup
-    /// and one dependent load per byte — the same shape a premultiplied lazy DFA
-    /// walk has, which is the walk this engine has to keep up with.
+    /// call that might determinize and reallocate. Here the tables are borrowed
+    /// once and the row costs two byte reads at worst, so the loop reduces to a
+    /// class lookup and one dependent load per byte — the same shape a
+    /// premultiplied lazy DFA walk has, which is the walk this engine has to
+    /// keep up with.
+    ///
+    /// The caller does **not** have to promise one row. A `\b`-bearing program
+    /// gets the same loop with the row read off the haystack per byte —
+    /// and **that read never joins the dependency chain**. The recurrence is
+    /// `off = trans[off + base + class[b]]`, where `base` and `class[b]` come
+    /// from bytes alone, so an out-of-order machine has both in hand while the
+    /// previous load is still in flight. The row moves; it is never late. Before
+    /// this, a word-bearing program could not glide at all and paid a call per
+    /// byte, which is where its entire deficit lived.
     ///
     /// It stops before the first byte whose transition is not determinized yet,
     /// and after any byte whose target is marked. Both are decisions only the
@@ -381,15 +397,78 @@ pub const Cache = struct {
     /// row and no second load to ask whether this state is interesting. That is
     /// worth ~2.1x per byte on a saturated line, measured against a transcript
     /// of the loop it replaces — see `Cell`.
-    pub fn glide(c: *const Cache, from: Cell, g: subset.Gap, seed: bool, bytes: []const u8, comptime dir: Dir) Run {
-        const base = (@as(usize, kindOf(g)) * 2 + @intFromBool(seed)) * @as(usize, c.m.cls.ncls);
+    pub fn glide(c: *const Cache, from: Cell, g: subset.Gap, seed: bool, bytes: []const u8, tail: u8, comptime dir: Dir) Run {
+        // Asymmetric on purpose. The word arm is the newcomer and pays a call
+        // per run so that its body cannot bloat this function past the point
+        // where the caliper's loop will inline it — which is the only way the
+        // walk that was already fast stays exactly as fast.
+        return if (c.m.word_ctx)
+            @call(.never_inline, course, .{ c, from, g, seed, bytes, tail, dir, .word })
+        else
+            @call(.always_inline, course, .{ c, from, g, seed, bytes, tail, dir, .fixed });
+    }
+
+    /// Where a run's landing rows come from.
+    ///
+    /// `fixed` is the caller's promise that every landing wears the shape it
+    /// named. `word` is the weaker promise a `\b`-bearing program can still
+    /// keep: the shape *varies*, but only with the two bytes straddling the
+    /// landing, and those are haystack bytes.
+    ///
+    /// The distinction has to be comptime and the two loops have to stay apart.
+    /// Folding them — giving a word-free program four copies of its one row so
+    /// the row lookup is unconditional — reads better and costs 60% on a long
+    /// glide: two extra byte loads per iteration is nothing against a cache miss
+    /// and everything against an L1 hit, which is what this loop is made of.
+    const Grain = enum { fixed, word };
+
+    /// The run itself. Each grain is inlined or not by `glide`, not here.
+    fn course(
+        c: *const Cache,
+        from: Cell,
+        g: subset.Gap,
+        seed: bool,
+        bytes: []const u8,
+        tail: u8,
+        comptime dir: Dir,
+        comptime grain: Grain,
+    ) Run {
+        const ncls: usize = c.m.cls.ncls;
+        const seeded: usize = @intFromBool(seed);
+        // Ordered `word_before + 2*word_after`, so the loop selects with two
+        // boolean reads. A `fixed` run has one row and holds it in a register.
+        const rows: if (grain == .word) [4]usize else usize = if (grain == .word) .{
+            (0 * 2 + seeded) * ncls,
+            (4 * 2 + seeded) * ncls,
+            (8 * 2 + seeded) * ncls,
+            (12 * 2 + seeded) * ncls,
+        } else (@as(usize, kindOf(g)) * 2 + seeded) * ncls;
         const trans = c.trans.items;
         const class = &c.m.cls.class;
         var off = from.offset();
         var landed = from;
         var i: usize = 0;
-        while (i < bytes.len) {
+        run: while (i < bytes.len) {
             const b = if (dir == .backward) bytes[bytes.len - 1 - i] else bytes[i];
+            const base = if (grain == .word) blk: {
+                // The byte on the landing's far side — the next one this run
+                // would consume, or the one just past it.
+                const n = if (i + 1 < bytes.len)
+                    (if (dir == .backward) bytes[bytes.len - 2 - i] else bytes[i + 1])
+                else
+                    tail;
+                // A row is byte-shaped and Unicode `\w` is not: past 0x7F the
+                // answer depends on a scalar this loop cannot see the whole of.
+                // Stop before the byte rather than guess — `gapAt` decodes it
+                // properly, and refuses where it must.
+                if (c.m.unicode and (b | n) >= 0x80) break :run;
+                // Scan order decides which side of the landing each byte is on:
+                // the one just consumed lies behind it going forward, and ahead
+                // of it going back.
+                const behind = word.isWordByte(if (dir == .backward) n else b);
+                const ahead = word.isWordByte(if (dir == .backward) b else n);
+                break :blk rows[@intFromBool(behind) + 2 * @as(usize, @intFromBool(ahead))];
+            } else rows;
             const next = trans[@as(usize, off) + base + class[b]];
             const raw = @intFromEnum(next);
             if (raw >= Cell.plain) { // marked, or not determinized yet
