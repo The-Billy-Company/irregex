@@ -39,7 +39,7 @@ const std = @import("std");
 const query = @import("../query/query.zig");
 const bits = @import("../math/bits.zig");
 const muster_mod = @import("muster.zig");
-const chorus_mod = @import("../regex/linear/program/chorus.zig");
+const chorus_mod = @import("../regex/regex.zig").chorus;
 
 const B64 = bits.Field(u64);
 

@@ -154,13 +154,18 @@ pub fn collectFileSet(gpa: std.mem.Allocator, io: std.Io, roots: []const []const
     };
     const workers = try gpa.alloc(Worker, nworkers);
     defer gpa.free(workers);
+    // Fixed width, deliberately: this walk reads no file bytes (it collects the
+    // daemon's path set), so it is the namei-bound traversal `defaultWorkerCount`
+    // was tuned on — there is no I/O latency for extra hands to hide, and
+    // `Worker.crew` stays null so nothing even looks.
+    var pool: crew.Crew = .{ .workers = workers, .gpa = gpa, .io = io, .body = workerMain, .ceiling = nworkers };
     for (workers) |*w| w.* = .{ .q = &q, .io = io, .gpa = gpa, .cfg = &cfg, .arena = std.heap.ArenaAllocator.init(std.heap.page_allocator) };
     defer for (workers) |*w| {
         w.arena.deinit();
         w.out.deinit(gpa);
         w.recs.deinit(gpa);
     };
-    try crew.muster(gpa, workers, workerMain);
+    try pool.muster(nworkers);
 
     // Each worker held its admitted paths in its own arena (torn down by the
     // defer above); dupe them into the caller's allocator before that fires.

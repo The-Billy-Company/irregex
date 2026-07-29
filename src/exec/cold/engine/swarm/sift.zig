@@ -172,7 +172,18 @@ pub fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.po
     // drop the view on the way out — a walk over a tree of large files then
     // holds one map per worker at a time instead of every file it ever touched
     // (274 MiB → ~40 MiB of resident set on an 11 GiB tree).
-    const raw: slurp.Body = if (sf.more) (sf.readWhole(a, scratch) orelse return) else .{ .bytes = sf.prefix };
+    //
+    // A NUL already in buffer 0 makes the tail MOOT, so `--stats` reads the
+    // prefix and stops. Everything downstream of a buffer-0 NUL is bounded by
+    // it: `committedPrefix` returns at the fill that reads the NUL, so both the
+    // tally's searched region and `handleBinary`'s emitted region lie inside the
+    // prefix, and `multilineBinary` (`nul < min(len, BUFCAP)`) answers the same
+    // for the prefix as for the whole file — so even the `-U` arm's verdict is
+    // unchanged. Reading the rest bought nothing and charged the walk the whole
+    // file: `--stats` over `.git` was 100x its own no-stats time (2.26 s vs
+    // 0.02 s) because every pack file was faulted in to re-find a NUL that
+    // stage 1 had already found in its first 64 KiB.
+    const raw: slurp.Body = if (sf.more and !prefix_nul) (sf.readWhole(a, scratch) orelse return) else .{ .bytes = sf.prefix };
     defer if (raw.map) |m| slurp.release(m);
     const body = legible.decodeBom(a, raw.bytes);
     if (body.len == 0) return noteEmpty(w, dpath);

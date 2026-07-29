@@ -17,6 +17,7 @@
 
 const std = @import("std");
 const args = @import("../argv/args.zig");
+const haystack = @import("../../../corpus/tree/haystack.zig");
 const ignore = @import("../../../corpus/tree/ignore.zig");
 const inode = @import("../../../corpus/read/inode.zig");
 const notice = @import("notice.zig");
@@ -291,6 +292,11 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
             continue;
         }
         if (entry.kind == .directory) {
+            // Charter / `GIST_SKIP` / `skips.list` basenames are structural — they
+            // size the corpus, so `-uu`/`-g` cannot un-hide them. The generic
+            // baseline (`.git`, `node_modules`, …) stays off this path: ripgrep
+            // parity requires `-uu` to enter those (see `haystack.isPolicySkip`).
+            if (haystack.isPolicySkip(entry.basename)) continue;
             // rg's DEFAULT walk descends everything except hidden dirs, `.git`, and
             // ignored ones (.gitignore/.ignore — see ignore.zig). It does NOT
             // hardcode node_modules/target skips (that's gist's monorepo-corpus

@@ -10,13 +10,16 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const args = @import("../../argv/args.zig");
+const assay = @import("../../../../assay/assay.zig");
 const elide = @import("../../quarry/elide.zig");
+const fresh = @import("../../../../corpus/fresh/fresh.zig");
 const Stats = @import("../../read/stats.zig").Stats;
 const ignore = @import("../../../../corpus/tree/ignore.zig");
 const ingest = @import("../../read/ingest.zig");
 const json = @import("../../emit/json.zig");
 const beacon = @import("../../../../surface/cli/beacon.zig");
 const palette = @import("../../emit/color.zig");
+const portal = @import("../../../../portal.zig");
 const queue = @import("queue.zig");
 const serial = @import("../serial.zig");
 const shard_mod = @import("../../../../corpus/index/content/shard.zig");
@@ -82,6 +85,13 @@ pub const Cfg = struct {
     // or not worth loading (narrow scope, `--files`, a transform run). Membership
     // + freshness only — a miss or a changed file reads live, byte-identically.
     shard: ?*const shard_mod.View,
+    // The corpus-wide freshness anchor the filesystem journal proved before this
+    // walk started (`fresh.Certificate.settle`), or null when the run never asked
+    // or the proof was refused. A latched VALUE rather than a live handle: the
+    // whole walk lists directories one way or the other, never both. Under an
+    // anchor every corpus file is known to predate the build, so the walk drops
+    // per-file clocks entirely and the phantom snapshot serves membership outright.
+    cert: ?i128 = null,
     sink: *Sink,
     // `--sort`/`--sortr path`: hold each rendered fragment in the worker's arena
     // keyed by path (`Worker.recs`) rather than streaming it, so `run` can order
@@ -106,7 +116,7 @@ const SortedRec = struct { path: []const u8, kind: FragKind, buf: []const u8, ch
 
 /// A file discovered before the elide oracle finished loading — held back so
 /// it can still be elided (or searched) once `elide.Lazy.ready` flips.
-const Deferred = struct {
+pub const Deferred = struct {
     disk: []const u8,
     rel: []const u8,
     mtime_ns: ?i128,
@@ -118,6 +128,12 @@ pub const Worker = struct {
     io: std.Io,
     gpa: std.mem.Allocator,
     cfg: *const Cfg,
+    /// The pool this worker belongs to, so a worker that finishes a directory can
+    /// notice the crew is undersized for the walk it turned out to be and hire
+    /// (`Crew.consider`). Shared and mutable like `q` — and, like `q`, guarded:
+    /// every field a peer reads is an atomic or sits under `Crew.mu`. Null for a
+    /// pool that cannot grow (a fixed-width `Crew` never reads it).
+    crew: ?*Crew = null,
     arena: std.heap.ArenaAllocator,
     pending: std.ArrayList(Deferred) = .empty,
     // Coalesced path-list output (`-l`/`--files`): a per-file lock+`write(2)`
@@ -206,15 +222,22 @@ pub const Worker = struct {
     }
 };
 
-/// Worker pool size for a plaintext walk. macOS serializes the walk in the
-/// kernel — the `vm_map` fault lock on the mmap'd content shard and syspolicyd/
-/// vnode locks on open+namei — so past a small pool more threads only add
-/// contention (measured flat 6→16 on the shard path, and slower on the open
-/// path); the tuned six-worker ceiling stays, halved further for traversal-only
-/// / narrow / index-selective runs that do less work per file. Every other OS
-/// has a scalable fault + open path — ripgrep saturates all logical CPUs there —
-/// so the ceiling would just idle cores: scale to `ncpu`. `GIST_WORKERS` and
-/// `-j` still override.
+/// Worker pool size for a plaintext walk — the width a walk STARTS at. macOS
+/// serializes the walk in the kernel — the `vm_map` fault lock on the mmap'd
+/// content shard and syspolicyd/vnode locks on open+namei — so past a small pool
+/// more threads only add contention (measured flat 6→16 on the shard path, and
+/// slower on the open path); the tuned six-worker ceiling stays, halved further
+/// for traversal-only / narrow / index-selective runs that do less work per file.
+/// Every other OS has a scalable fault + open path — ripgrep saturates all
+/// logical CPUs there — so the ceiling would just idle cores: scale to `ncpu`.
+/// `GIST_WORKERS` and `-j` still override.
+///
+/// It is a STARTING width because the numbers above were all measured on walks
+/// that respect `.gitignore` and hit the index — the fast ones. A walk that turns
+/// out to be neither (`-uu` over gigabytes of ignored build artifacts, an
+/// unindexed external root) is I/O-bound rather than namei-bound, and there six
+/// workers idle the machine: see `Crew.consider`, which hires up to
+/// `maxWorkerCount` once a walk has proven it is that kind of walk.
 pub fn defaultWorkerCount(ncpu_raw: usize, selective: bool) usize {
     const ncpu = @max(1, ncpu_raw);
     if (builtin.os.tag != .macos) return ncpu;
@@ -223,36 +246,151 @@ pub fn defaultWorkerCount(ncpu_raw: usize, selective: bool) usize {
     return @min(full, @max(4, (ncpu + 1) / 2));
 }
 
-/// Run a built pool to completion: a thread per worker after the first, the
-/// caller's thread as worker 0, then join. Both walks (search and file-set) enter
-/// here, so the pool's shape is written once.
+/// The widest a walk may ever be reinforced to: every logical CPU, except on an
+/// asymmetric machine, where it is the count of the FAST ones. Beyond that a
+/// worker lands on an efficiency core and runs the same syscall-heavy loop
+/// several times slower while still taking the same kernel locks — on an M4 Max
+/// (12 P + 4 E) the full-16 pool bought 2 % wall time for 62 % more system time
+/// on a 54 GiB `-uu` sweep, which on a laptop shared with other work is a loss,
+/// not a win. A symmetric machine (`performanceCores` null) keeps ripgrep's
+/// model and scales to `ncpu`.
+pub fn maxWorkerCount(ncpu_raw: usize) usize {
+    const ncpu = @max(1, ncpu_raw);
+    return @min(ncpu, portal.performanceCores() orelse ncpu);
+}
+
+/// A walk must be at least this old before it may widen. The topology
+/// `defaultWorkerCount` picks is right for the walks it was tuned on, and those
+/// answer in 18–310 ms on this corpus; the walk that needs more hands runs for
+/// 80 s. So elapsed time — not queue depth, which is deep on ANY wide tree —
+/// is what separates them, and half a second is comfortably past every
+/// interactive walk while costing the long one 0.6 % of its runtime at the
+/// starting width.
+const patience_ns: i128 = 500 * std.time.ns_per_ms;
+
+/// Outstanding directories required per hired worker before hiring another. A
+/// walk whose remaining front is one enormous file cannot use a second thread on
+/// it, and the front is exactly what says so.
+const front_per_worker: usize = 2;
+
+/// The worker pool, and the one thing about it that is not decided up front: how
+/// wide it should be.
 ///
-/// A mid-spawn failure is not fatal and not retried — the walk simply proceeds at
-/// the width the OS granted, down to one worker on the caller's thread. Work is
-/// never lost by a thread that failed to start: the queue is work-stealing, so a
-/// missing worker's tasks are taken by the ones that did start, and its per-worker
-/// state stays empty and folds in as a no-op.
+/// A walk's shape is not knowable when its crew is mustered. Flags and roots hint
+/// at it — that is what `defaultWorkerCount`'s `selective` argument is — but they
+/// cannot distinguish the 20 ms indexed scan the small pool was tuned for from a
+/// sweep of tens of gigabytes of unindexed artifacts, where the same pool leaves
+/// most of the machine idle waiting on reads. So the crew starts at the tuned
+/// width and REINFORCES: any worker that finishes a directory checks whether the
+/// walk has run long enough, and left enough of a front, to be worth more hands
+/// (`consider`), and hires them itself.
 ///
-/// Deliberately not `kernel/math/parallel.zig::fanOut`: that combinator
-/// runs its un-spawned tail inline *after* spawning and joins around it, which is
-/// right for fixed shards. Here worker 0 must walk on the caller's thread
-/// concurrently with the others — the caller's thread is a first-class worker for
-/// the whole walk, not a fallback for a shard nobody took.
-///
-/// The thread array's allocation failure RETURNS: this sits on the calling
-/// thread, so the daemon-facing `roster.collectFileSet` can honor its own
-/// `Oom!` contract instead of taking the embedding host down with `exit(2)`
-/// (ADR-373 law 1). The `noreturn` CLI path converts it back at its call site.
-pub fn muster(gpa: std.mem.Allocator, workers: []Worker, comptime body: fn (*Worker) void) std.mem.Allocator.Error!void {
-    const threads = try gpa.alloc(std.Thread, workers.len);
-    defer gpa.free(threads);
-    var spawned: usize = 0;
-    for (workers[1..]) |*w| {
-        threads[spawned] = std.Thread.spawn(.{}, body, .{w}) catch break;
-        spawned += 1;
+/// One-way and bounded by construction: the roster only grows, never past
+/// `ceiling`, and closes for good the moment the walk's own thread returns —
+/// which is what makes joining safe without a second synchronization protocol.
+/// A worker mid-file when the crew widens is unaffected; new hands take work
+/// from the shared queue exactly as a starving peer would, because that is the
+/// same protocol (`Queue.pop` bumps `starving`, and its peers donate).
+pub const Crew = struct {
+    /// Every seat, `ceiling` of them; only `[0..roster)` ever run. Initialized by
+    /// the caller before `muster`, so a hire is a spawn and nothing else.
+    workers: []Worker,
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    /// What a late hire runs. A pointer rather than a comptime parameter because
+    /// the hiring worker is not the mustering frame; both walk bodies
+    /// (`descent.workerMain`, `roster.workerMain`) fit through it unchanged.
+    body: *const fn (*Worker) void,
+    ceiling: usize,
+    /// Opened by `muster`. The awake-monotonic house clock (`assay.Span`), so a
+    /// suspend or an NTP step can never make a walk look old enough to widen.
+    walk: assay.Span = .{ .start = 0 },
+    /// Seats filled, worker 0 included. Written under `mu`, read lock-free by
+    /// `consider` on the hot path.
+    hired: std.atomic.Value(usize) = .init(1),
+    threads: []std.Thread = &.{},
+    running: usize = 0, // live threads in `threads[0..running]` (under `mu`)
+    closed: bool = false, // the roster is final — the walk's own thread has returned
+    mu: std.Io.Mutex = .init,
+
+    /// Run the pool to completion: a thread per starting seat after the first, the
+    /// caller's thread as worker 0, then close the roster and join every thread —
+    /// the ones mustered here and any hired mid-walk.
+    ///
+    /// A mid-spawn failure is not fatal and not retried — the walk simply proceeds
+    /// at the width the OS granted, down to one worker on the caller's thread.
+    /// Work is never lost by a thread that failed to start: the queue is
+    /// work-stealing, so a missing worker's tasks are taken by the ones that did
+    /// start, and its per-worker state stays empty and folds in as a no-op.
+    ///
+    /// Deliberately not `kernel/math/parallel.zig::fanOut`: that combinator runs
+    /// its un-spawned tail inline *after* spawning and joins around it, which is
+    /// right for fixed shards. Here worker 0 must walk on the caller's thread
+    /// concurrently with the others — the caller's thread is a first-class worker
+    /// for the whole walk, not a fallback for a shard nobody took.
+    ///
+    /// The thread array's allocation failure RETURNS: this sits on the calling
+    /// thread, so the daemon-facing `roster.collectFileSet` can honor its own
+    /// `Oom!` contract instead of taking the embedding host down with `exit(2)`
+    /// (ADR-373 law 1). The `noreturn` CLI path converts it back at its call site.
+    pub fn muster(c: *Crew, start: usize) std.mem.Allocator.Error!void {
+        const seats = @max(1, @min(start, c.workers.len));
+        c.threads = try c.gpa.alloc(std.Thread, c.workers.len -| 1);
+        defer c.gpa.free(c.threads);
+        c.walk = .open(c.io);
+        for (c.workers[1..seats]) |*w| {
+            c.threads[c.running] = std.Thread.spawn(.{}, enlist, .{ c, w }) catch break;
+            c.running += 1;
+        }
+        c.hired.store(c.running + 1, .release);
+        c.body(&c.workers[0]); // the caller's thread is a worker too
+        // The walk is over, so nobody may join it: close the roster under the same
+        // lock `hire` takes, after which `running` is final and safe to read here.
+        c.mu.lockUncancelable(c.io);
+        c.closed = true;
+        const live = c.running;
+        c.mu.unlock(c.io);
+        for (c.threads[0..live]) |t| t.join();
     }
-    body(&workers[0]); // the caller's thread is a worker too
-    for (threads[0..spawned]) |t| t.join();
+
+    /// One worker's per-directory look at whether the crew is the bottleneck.
+    /// Ordered cheapest-first, and free once the crew is at its ceiling (a single
+    /// relaxed load): a walk that never widens pays one load per directory, and a
+    /// clock is read only by a walk that already has a front worth widening for.
+    pub fn consider(c: *Crew, q: *Queue) void {
+        const hired = c.hired.load(.monotonic);
+        if (hired >= c.ceiling) return;
+        const front = q.live.load(.monotonic);
+        if (front < hired * front_per_worker) return;
+        if (c.walk.read(c.io).ns() < patience_ns) return;
+        // The front says how many hands it can actually keep busy; the ceiling
+        // says how many the machine can. Hire the smaller in one step, so a walk
+        // that has been starving for half a second does not ramp a seat per
+        // directory.
+        c.hire(@min(c.ceiling, front / front_per_worker));
+    }
+
+    /// Fill seats up to `want`. Serialized on `mu`, which is also what makes the
+    /// race with `muster`'s close benign: a hire either lands before the roster
+    /// closes (and is joined) or sees it closed and does nothing.
+    fn hire(c: *Crew, want: usize) void {
+        c.mu.lockUncancelable(c.io);
+        defer c.mu.unlock(c.io);
+        if (c.closed) return;
+        while (c.running + 1 < @min(want, c.workers.len)) {
+            const w = &c.workers[c.running + 1];
+            c.threads[c.running] = std.Thread.spawn(.{}, enlist, .{ c, w }) catch break;
+            c.running += 1;
+            c.hired.store(c.running + 1, .release);
+        }
+    }
+};
+
+/// A spawned worker's entry point. The indirection exists because `Crew.body` is a
+/// runtime pointer (see the field) while `std.Thread.spawn` wants a comptime
+/// function; every seat — mustered or hired — enters through the same door.
+fn enlist(c: *Crew, w: *Worker) void {
+    c.body(w);
 }
 
 // ─────────────────────────── sorted emit ───────────────────────────
@@ -355,4 +493,41 @@ test "worker topology keeps scans wide and selective walks lean" {
         try t.expectEqual(8, defaultWorkerCount(8, false));
         try t.expectEqual(12, defaultWorkerCount(12, true));
     }
+}
+test "a walk may only ever be reinforced toward the machine's fast cores" {
+    const t = std.testing;
+    // The ceiling is a property of the machine, so it is asserted as a relation to
+    // what the machine says rather than as a number: never above `ncpu` (a pool
+    // wider than the CPU only adds contention), never below the starting width
+    // (reinforcement must not be able to shrink a pool), and on an asymmetric
+    // package never above the count of fast cores.
+    for ([_]usize{ 1, 2, 4, 8, 12, 16, 64 }) |ncpu| {
+        const ceiling = maxWorkerCount(ncpu);
+        try t.expect(ceiling >= 1);
+        try t.expect(ceiling <= ncpu);
+        if (portal.performanceCores()) |fast| try t.expect(ceiling <= @max(1, fast));
+    }
+    // A machine that reports nothing is symmetric by assumption — ripgrep's model.
+    if (portal.performanceCores() == null) try t.expectEqual(@as(usize, 8), maxWorkerCount(8));
+    // Zero CPUs is a refused query, not a zero-worker pool.
+    try t.expectEqual(@as(usize, 1), maxWorkerCount(0));
+}
+test "hiring is gated on a front the crew cannot already absorb" {
+    const t = std.testing;
+    // The front test alone, over the exact arithmetic `consider` runs, so the
+    // policy is pinned without spawning threads: a crew at its ceiling is done,
+    // and a walk whose remaining front is thinner than two directories per worker
+    // has nothing a new hand could take.
+    const wants = struct {
+        fn f(hired: usize, ceiling: usize, front: usize) bool {
+            return hired < ceiling and front >= hired * front_per_worker;
+        }
+    }.f;
+    try t.expect(!wants(12, 12, 10_000)); // at the ceiling: no clock is even read
+    try t.expect(!wants(6, 12, 11)); // one enormous file left — another thread cannot help
+    try t.expect(wants(6, 12, 12)); // two directories per worker: hire
+    try t.expect(wants(6, 12, 4_000));
+    // And the width a deep front asks for is bounded by the ceiling, never by it.
+    try t.expectEqual(@as(usize, 12), @min(@as(usize, 12), @as(usize, 4_000) / front_per_worker));
+    try t.expectEqual(@as(usize, 8), @min(@as(usize, 12), @as(usize, 16) / front_per_worker));
 }

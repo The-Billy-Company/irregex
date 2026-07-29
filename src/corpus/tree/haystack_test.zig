@@ -41,6 +41,25 @@ test "skip-dir baseline: near-misses (prefix/suffix/case/substring) are NOT skip
     for (near_misses) |name| try std.testing.expect(!haystack.inBaselineSkipSet(name));
 }
 
+test "policy skip is the charter/env overlay, not the generic baseline" {
+    // `.git` is baseline-only — cold `-uu` must still enter it (rg parity).
+    // `graphify-out` is charter-only — cold `-uu` must refuse it. The two sets
+    // are deliberately disjoint so a tree's committed skip cannot silently
+    // pull ripgrep's unrestricted surface into the corpus baseline.
+    try std.testing.expect(haystack.inBaselineSkipSet(".git"));
+    try std.testing.expect(!haystack.isPolicySkip(".git"));
+    try std.testing.expect(!haystack.inBaselineSkipSet("graphify-out"));
+    // Charter is discovered from the working tree; this test runs inside the
+    // Billy checkout whose `.irregex.toml` declares `graphify-out` (and
+    // `.local`). Absent a charter the name is not a policy skip — which is
+    // why `graphify-out` was lifted out of the baseline rather than left as a
+    // hardcoded Billy-ism every clone of an unrelated tree would inherit.
+    if (haystack.isPolicySkip("graphify-out")) {
+        try std.testing.expect(haystack.isSkipDir("graphify-out"));
+        try std.testing.expect(haystack.isPolicySkip(".local"));
+    }
+}
+
 test "skip-dir baseline: matches the naive linear scan across a mixed sample" {
     const sample = [_][]const u8{
         "services",     "libs",    "src",     ".git",     "node_modules",

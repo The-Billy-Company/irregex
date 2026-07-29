@@ -140,7 +140,18 @@ pub fn inBaselineSkipSet(name: []const u8) bool {
 /// baseline + `GIST_SKIP`/`skips.list` extension.)
 pub fn isSkipDir(name: []const u8) bool {
     if (inBaselineSkipSet(name)) return true;
-    for (extra_skips.list()) |n| if (std.mem.eql(u8, n, name)) return true;
+    return isPolicySkip(name);
+}
+
+/// Is `name` a directory basename this TREE declared out of the corpus —
+/// charter `skip`, `GIST_SKIP`, or `<outDir()>/skips.list` — and nothing else?
+/// Cold search (including `-uu`) consults this and not the generic baseline:
+/// ripgrep parity requires `-uu` to enter `.git`/`node_modules`, but a
+/// committed charter skip is a fact about the repository, not an ignore rule
+/// `--no-ignore` can undo. Pointing a root at the directory itself still
+/// searches it; only descending into it from a parent is refused.
+pub fn isPolicySkip(name: []const u8) bool {
+    for (extra_skips.list()) |n| if (std.mem.eql(u8, name, n)) return true;
     return false;
 }
 

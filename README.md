@@ -305,16 +305,17 @@ types = ["billy:*.billy"]                 # extra --type names
 
 Discovery climbs from the working directory and **stops at the repository
 boundary**, so a tree without its own declaration never inherits a parent
-directory's. `roots` and `skip` size **the corpus** — what `gist index` and
-`relate` enumerate — exactly as `GIST_ROOTS` and `GIST_SKIP` always did; an
-ad-hoc `gist PAT some/dir` still searches what you point it at. This is the
-first home for two facts that had nowhere good to live: search roots were a
-per-shell `GIST_ROOTS` nobody else on the team has, and extra skip directories
-were `<GIST_DIR>/skips.list` inside a gitignored artifact directory that every
-cache clear deletes. Both are everyone's, and both now
-travel with the clone. The file is ceilinged at **corpus** reach (below): a
-shared file may say what the repository _is_, and may never quietly change what
-matches for the people who clone it.
+directory's. `roots` and `skip` size **the corpus** — what `gist index`,
+`relate`, and cold search (including `-uu`) enumerate — exactly as `GIST_ROOTS`
+and `GIST_SKIP` always did; an ad-hoc `gist PAT some/dir` still searches what
+you point it at. Charter skips are structural, not ignore rules: `--no-ignore`
+/ `--hidden` cannot un-hide them. This is the first home for two facts that had
+nowhere good to live: search roots were a per-shell `GIST_ROOTS` nobody else on
+the team has, and extra skip directories were `<GIST_DIR>/skips.list` inside a
+gitignored artifact directory that every cache clear deletes. Both are
+everyone's, and both now travel with the clone. The file is ceilinged at
+**corpus** reach (below): a shared file may say what the repository _is_, and
+may never quietly change what matches for the people who clone it.
 
 **`$XDG_CONFIG_HOME/gist/preferences` — machine-local, never committed.**
 (`$GIST_PREFERENCES` overrides the location; `~/.config` is the fallback. On

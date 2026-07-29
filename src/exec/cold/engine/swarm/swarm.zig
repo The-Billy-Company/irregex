@@ -44,6 +44,7 @@ const crest = @import("../../../../kernel/math/crest.zig");
 const crew = @import("crew.zig");
 const descent = @import("descent.zig");
 const elide = @import("../../quarry/elide.zig");
+const fresh = @import("../../../../corpus/fresh/fresh.zig");
 const notice = @import("../../quarry/notice.zig");
 const stats = @import("../../read/stats.zig");
 const hints = @import("../../emit/hints.zig");
@@ -69,6 +70,7 @@ const Queue = queue.Queue;
 const Sink = sink_mod.Sink;
 const Worker = crew.Worker;
 const defaultWorkerCount = crew.defaultWorkerCount;
+const maxWorkerCount = crew.maxWorkerCount;
 const die = @import("../../../../surface/cli/outcome.zig").die;
 const emitSorted = crew.emitSorted;
 const oom = @import("../../../../surface/cli/outcome.zig").oom;
@@ -237,7 +239,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     // Run-scoped monotonic stopwatch for the fused walk — feeds the real
     // `elapsed`/`elapsed_total` in the `--stats`/`--json` summary (was hardcoded
     // `0.000000`) and the `.query`-lens stderr diagnostic, the serial engine's twin.
-    const search_span = assay.Span.open(io);
+    var search_span = assay.Span.open(io);
     // Heading needs a printable path: `--no-filename` suppresses the header
     // like rg (the walk is recursive, so `.auto` filenames are always on here).
     const heading = o.groups();
@@ -252,6 +254,55 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     // fallback. It is intentionally not a CLI flag.
     const require_elision = assay.envSpan("GIST_TEST_REQUIRE_ELISION") != null;
     if (require_elision and !want_elision) die("gist: test-required index elision was not eligible\n", .{});
+
+    const roots: []const []const u8 = if (parsed.roots.len > 0) parsed.roots else &.{"."};
+
+    // Corpus-wide freshness certificate. Per-file freshness is what makes a
+    // selective cold query expensive: the elide oracle and the content shard both
+    // need every walked file's clocks, which measured 32.7 ms of a 42 ms
+    // `gist -l <rare-literal>` over this 20k-file corpus — against a 7.5 ms
+    // names-only walk and 4 ms of candidate reads. The OS filesystem journal
+    // answers the same question for the WHOLE corpus in one round trip
+    // (`fresh.unmoved`), so a quiescent tree lets the walk stay on the names-only
+    // listing with the phantom snapshot serving membership outright.
+    //
+    // Started first because it is the longest pole (~10 ms of fseventsd IPC) and
+    // it needs nothing that follows: the index load, the phantom snapshot, the
+    // content shard, and the ignore chain all build underneath it, so the walk
+    // waits for the round trip minus everything else's cost rather than for the
+    // round trip itself.
+    //
+    // The walk WAITS for the verdict (`cert.settle` below) rather than racing it,
+    // and that is the whole design. Racing looks free and is not: the walk the
+    // proof unlocks is FASTER than the proof, so every file is walked before the
+    // verdict exists, every one defers into the oracle's backlog, and the run pays
+    // a second full pass to drain it (measured: a 22 ms walk phase against the
+    // 7.5 ms one it was trying to win). Waiting spends the round trip once and
+    // buys a walk that decides every file inline, first time. The wait needs no
+    // deadline of its own: the replay is already bounded, and a query that
+    // abandons it kills the prover before it can record the refusal that makes
+    // every LATER query free (see `Certificate.settle`).
+    // OPT-IN (`GIST_CERTIFY=1`), because the round trip above is a property of
+    // `fseventsd`, not of this corpus. Measured on a quiescent 21k-file tree: the
+    // FIRST probe after an index build replays a zero-width window and answers in
+    // 10.6 ms, which is the number the design was priced against — but every later
+    // probe replays a window that has been widening since the token was minted, and
+    // 20 back-to-back queries measured 152.8 ms ± 304.3 (spacing them made it
+    // WORSE: 855.4 ms ± 453.4, max 1.6 s) against a 39 ms clock-walk baseline.
+    // History replay is unbounded and the daemon serializes concurrent streams, so
+    // a wait for the verdict is a wait on something with no cost model. Until that
+    // wait is bounded AND the waiter itself records the refusal (so one slow probe
+    // cannot re-charge every later query), the certificate is a measurement tool
+    // rather than a default.
+    var cert: fresh.Certificate = .{};
+    if (want_elision and assay.envFlag("GIST_CERTIFY")) {
+        if (std.Thread.spawn(.{}, fresh.Certificate.proveMain, .{ &cert, gpa, io, roots })) |t| t.detach() else |_| {
+            // No thread: prove inline rather than forfeit. Same verdict, same
+            // position in the run — only the overlap with the loads is lost.
+            fresh.Certificate.proveMain(&cert, gpa, io, roots);
+        }
+    } else cert.ready.store(true, .release);
+
     // The elide oracle loads on its own thread while the walk runs, keeping
     // mmap validation, sparse posting decode, and path-table setup off the
     // serial query prefix.
@@ -295,6 +346,17 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     // for the parity gate. Membership + freshness only, so it is fail-open.
     const want_shard = assay.envSpan("GIST_NO_SHARD") == null and !o.no_index and o.mode != .files and !icfg.active() and elide.broadIndexedRoots(parsed.roots);
     var shard_view: ?shard_mod.View = if (want_shard) shard_mod.load(gpa, io) else null;
+
+    // Everything above overlapped the journal round trip; the verdict must be in
+    // before `Cfg` fixes how the walk lists a directory, so this is where the run
+    // stops overlapping and latches it.
+    const certifying = want_elision and assay.envFlag("GIST_CERTIFY");
+    const certified: ?i128 = if (certifying) cert.settle(io) else null;
+    // Only speak when a probe actually ran: labeling a run "refused" when the
+    // accelerator was never armed reads as a corpus verdict rather than a
+    // configuration, and that is the one thing this lens exists to disambiguate.
+    if (certifying and assay.lit(.query))
+        assay.diag("query: certificate {d:.1} ms ({s})\n", .{ search_span.lap(io).ms(), if (certified != null) "clean" else "refused" });
 
     var ig = ignore.Ignore.init(gpa, io, ignore.Options.from(o), parsed.roots) catch oom();
     const compiled = ignore.Compiled.build(gpa, &ig) catch oom();
@@ -342,10 +404,10 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
         .ingest = if (icfg.active()) icfg else null,
         .snap = if (snap_view) |*v| v else null,
         .shard = if (shard_view) |*v| v else null,
+        .cert = certified,
         .sink = &sink,
         .collect_sorted = o.sort_key != .none,
     };
-    const roots: []const []const u8 = if (parsed.roots.len > 0) parsed.roots else &.{"."};
     {
         var seed: std.ArrayList(DirTask) = .empty;
         defer seed.deinit(gpa);
@@ -380,9 +442,16 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     if (assay.envSpan("GIST_WORKERS")) |s| if (std.fmt.parseInt(usize, s, 10) catch null) |n| {
         nworkers = @max(1, n);
     };
-    const workers = gpa.alloc(Worker, nworkers) catch oom();
+    // A walk may earn more hands than its starting width once it proves it is the
+    // I/O-bound kind (`Crew.consider`). An EXPLICIT width — `-j`, `GIST_WORKERS`,
+    // a transform run's own `ncpu` fan-out — is the caller's answer, not a guess
+    // to be revised, so those pin the ceiling to what they asked for.
+    const pinned = o.threads != 0 or icfg.active() or assay.envSpan("GIST_WORKERS") != null;
+    const ceiling = if (pinned) nworkers else @max(nworkers, maxWorkerCount(ncpu));
+    const workers = gpa.alloc(Worker, ceiling) catch oom();
     defer gpa.free(workers);
-    for (workers) |*w| w.* = .{ .q = &q, .io = io, .gpa = gpa, .cfg = &cfg, .arena = std.heap.ArenaAllocator.init(std.heap.page_allocator) };
+    var pool: crew.Crew = .{ .workers = workers, .gpa = gpa, .io = io, .body = workerMain, .ceiling = ceiling };
+    for (workers) |*w| w.* = .{ .q = &q, .io = io, .gpa = gpa, .cfg = &cfg, .crew = &pool, .arena = std.heap.ArenaAllocator.init(std.heap.page_allocator) };
     defer for (workers) |*w| {
         w.arena.deinit();
         w.out.deinit(gpa);
@@ -399,7 +468,31 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
         .outstanding = &q.live,
     });
 
-    crew.muster(gpa, workers, workerMain) catch oom();
+    if (assay.lit(.query)) assay.diag("query: prefix {d:.1} ms\n", .{search_span.lap(io).ms()});
+    pool.muster(nworkers) catch oom();
+    const hired = pool.hired.load(.acquire);
+    // What the walk RETAINED, per worker and by cause. The certificate calls
+    // gist's scanner footprint "unattributed overhead in gist's walk path", and
+    // it stayed unattributed because nothing could say which of the four
+    // candidates it was: the arena that outlives a directory, the per-worker
+    // read scratch, the coalesced path-list buffer, or the deferred backlog.
+    if (assay.lit(.walk)) {
+        var arenas: usize = 0;
+        var lists: usize = 0;
+        for (workers) |*w| {
+            arenas += w.arena.queryCapacity();
+            lists += w.out.capacity + w.recs.capacity * @sizeOf(@TypeOf(w.recs.items[0])) + w.pending.capacity * @sizeOf(crew.Deferred);
+        }
+        assay.diag("walk: {d} workers (from {d}) · arenas {d:.1} MiB · lists {d:.1} MiB · read scratch {d:.1} MiB · peak {d:.0} MiB\n", .{
+            hired,
+            nworkers,
+            @as(f64, @floatFromInt(arenas)) / (1 << 20),
+            @as(f64, @floatFromInt(lists)) / (1 << 20),
+            @as(f64, @floatFromInt(hired * corpus_mod.per_file_cap)) / (1 << 20),
+            @as(f64, @floatFromInt(portal.peakResident())) / (1 << 20),
+        });
+    }
+    if (assay.lit(.query)) assay.diag("query: walk {d:.1} ms\n", .{search_span.lap(io).ms()});
     vigil.finish();
 
     // `--sort`/`--sortr path`: the fused walk held every worker's rendered output

@@ -421,6 +421,30 @@ pub fn cpuCount() std.Thread.CpuCountError!usize {
     return if (all > primary) all else primary;
 }
 
+/// How many of this machine's logical CPUs are its FASTEST ones, or null where
+/// the platform draws no such distinction. Callers read null as "the machine is
+/// symmetric — every core is worth a worker".
+///
+/// Only Darwin answers, and only on the hardware where it means something:
+/// `hw.perflevel0` is the fastest performance level of an asymmetric (big.LITTLE)
+/// Apple Silicon package, and the tree does not exist at all on an Intel Mac. The
+/// distinction matters to the walk because a pool sized to `cpuCount` puts
+/// workers on efficiency cores that then run the same syscall-heavy loop several
+/// times slower while still contending for the same kernel locks — measured on an
+/// M4 Max (12 P + 4 E) as 2 % less wall time for 62 % more system time.
+///
+/// Deliberately NOT a general sysctl accessor: the one integer this walk's
+/// topology depends on, asked once, so a caller cannot reach through here for a
+/// knob nobody has reasoned about.
+pub fn performanceCores() ?usize {
+    if (comptime builtin.os.tag != .macos) return null;
+    var v: c_int = 0;
+    var len: usize = @sizeOf(c_int);
+    if (std.c.sysctlbyname("hw.perflevel0.logicalcpu", &v, &len, null, 0) != 0) return null;
+    if (len != @sizeOf(c_int) or v <= 0) return null;
+    return @intCast(v);
+}
+
 /// What sort of device a handle names, which is the question POSIX answers with
 /// `S_IFMT` and Windows with `GetFileType`. Only meaningful on Windows; the POSIX
 /// legs read the mode bits they already have.
