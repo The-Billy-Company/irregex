@@ -275,8 +275,8 @@ fn report(gpa: std.mem.Allocator, io: std.Io, rows: []const Row, corpus_bytes: u
     try tsv.appendSlice(gpa, "class\tkind\tpattern\tbase_docs\tbase_bytes\ttier_docs\ttier_bytes\tbase_cand_frac\ttier_cand_frac\thits\tengaged\tsound\n");
     for (rows) |r| {
         try tsv.appendSlice(gpa, try std.fmt.bufPrint(&line, "{s}\t{s}\t{s}\t{d}\t{d}\t{d}\t{d}\t{d:.6}\t{d:.6}\t{d}\t{s}\t{s}\n", .{
-            r.class,      @tagName(r.kind),                     r.pattern,
-            r.base_docs,  r.base_bytes,                         r.tier_docs,
+            r.class,      @tagName(r.kind),                      r.pattern,
+            r.base_docs,  r.base_bytes,                          r.tier_docs,
             r.tier_bytes, pct(r.base_bytes, corpus_bytes) / 100, pct(r.tier_bytes, corpus_bytes) / 100,
             r.hits,       if (r.engaged) "yes" else "no",        if (r.sound) "yes" else "no",
         }));
