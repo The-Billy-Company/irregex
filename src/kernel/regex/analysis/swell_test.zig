@@ -25,9 +25,15 @@ fn swellOf(pattern: []const u8, opts: Options) crest.Swell {
 /// silently gained a second alternative would otherwise keep passing while
 /// measuring something else entirely.
 fn expectForced(want: u16, pattern: []const u8, opts: Options, c: crest.Class) !void {
+    return expectForcedIn(want, pattern, opts, c, .ascii);
+}
+
+/// The same, naming which alphabet's half of the family to read — the ASCII
+/// lane for a byte class, the scalar-closed lane for a codepoint class.
+fn expectForcedIn(want: u16, pattern: []const u8, opts: Options, c: crest.Class, a: crest.Alphabet) !void {
     const s = swellOf(pattern, opts);
     try testing.expectEqual(@as(u8, 1), s.len);
-    try testing.expectEqual(want, s.crests[0][@intFromEnum(c)]);
+    try testing.expectEqual(want, s.crests[0][crest.lane(c, a)]);
 }
 
 /// Assert a pattern yields NO alternative at all — the stand-down the calculus
@@ -60,10 +66,31 @@ test "forced-crest: class repetition is the whole point" {
     try expectForced(8, "[0-9a-f]{8}", uni, .word); // hex ⊂ word
     try expectForced(6, "[0-9]{6}", uni, .digit);
     try expectForced(4, "[A-Z]{4}", uni, .upper);
-    // \d certifies in ASCII mode only (Alphabet Contract): under Unicode the
-    // parser lowers it to a `uclass`, which spends bytes on non-ASCII scalars.
+    // \d in ASCII mode is a byte class and certifies the ASCII half outright.
     try expectForced(3, "\\d{3}", ascii, .digit);
+    // Under the engine's DEFAULT unicode mode the parser lowers it to a
+    // `uclass`, which still cannot certify the ASCII half — U+0660 is no ASCII
+    // digit — but does certify the scalar-closed half, which is what the
+    // document scan measures alongside it. This is the Alphabet Contract's
+    // open case (PROOF.md §3.6), and the reason `\d{6}` used to prune nothing
+    // while `[0-9]{6}` pruned 92.8% of the corpus.
     try expectForced(0, "\\d{3}", uni, .digit);
+    try expectForcedIn(3, "\\d{3}", uni, .digit, .scalar);
+    try expectForcedIn(3, "\\d{3}", uni, .hex, .scalar); // digit ⊂ hex
+    try expectForcedIn(3, "\\d{3}", uni, .word, .scalar); // …⊂ word
+    try expectForcedIn(0, "\\d{3}", uni, .space, .scalar);
+    try expectForcedIn(4, "\\w{4}", uni, .word, .scalar);
+    try expectForcedIn(0, "\\w{4}", uni, .alpha, .scalar); // '_' and digits are in neither
+    try expectForcedIn(5, "\\s{5}", uni, .space, .scalar);
+
+    // The bound is in BYTES, so a class whose cheapest member is multi-byte
+    // forces more of them than it has codepoints. \p{L} has no one-byte
+    // member under Unicode — every ASCII letter is folded out of it? no: it
+    // keeps them, so one byte is right — while a class confined above U+07FF
+    // must spend three.
+    try expectForcedIn(2, "\\p{L}{2}", uni, .word, .scalar);
+    try expectForcedIn(6, "[\u{4e00}-\u{9fff}]{2}", uni, .word, .scalar);
+    try expectForcedIn(8, "[\u{1f600}-\u{1f64f}]{2}", uni, .word, .scalar);
 }
 
 test "forced-crest: straddle across concatenation" {
@@ -110,7 +137,12 @@ test "epsilon and unknown profiles cannot be confused" {
         try testing.expect(!unknown.only_c_cert[i]);
     }
     try testing.expectEqual(@as(u16, 0), epsilon.min_len);
-    try testing.expectEqual(@as(u16, 1), analysis.ForcedProfile.unit().min_len);
+    // A mandatory atom spends bytes, so it can never be mistaken for ε — the
+    // distinction `concat`'s seam term leans on.
+    var one = @import("../syntax/syntax.zig").ByteSet{};
+    one.set('x');
+    try testing.expectEqual(@as(u16, 1), analysis.ForcedProfile.atom(one, 1).min_len);
+    try testing.expectEqual(@as(u16, 3), analysis.ForcedProfile.atom(one, 3).min_len);
 }
 
 test "top-level alternation is a disjunction, not a componentwise min" {
@@ -134,8 +166,9 @@ test "top-level alternation is a disjunction, not a componentwise min" {
     try testing.expect(!disjoint.prunes(crest.crest("~" ** 60)));
 
     // A branch that forces nothing disarms the whole swell — soundness on
-    // display: `\w+` matches almost anything, so nothing may be elided.
-    try testing.expect(!swellOf("[0-9a-f]{12}|\\w+", uni).active());
+    // display: `.` admits the NUL byte, which belongs to no member of the
+    // family, so that branch admits every document and nothing may be elided.
+    try testing.expect(!swellOf("[0-9a-f]{12}|.+", uni).active());
 }
 
 test "the split budget degrades toward the folded sieve, never past it" {
@@ -223,14 +256,19 @@ test "escapes carry their real bytes (\\n is newline, not 'n')" {
     try expectForced(4, "\\x41{4}", uni, .upper);
 }
 
-test "unicode mode certifies explicit ASCII classes only" {
+test "unicode mode certifies the ASCII half only for explicit ASCII classes" {
     // Explicit ASCII class: codepoint ≡ byte, certifies in both modes.
     try expectForced(8, "[0-9a-f]{8}", uni, .hex);
-    // Perl class inside [...] under unicode: population uncertifiable.
+    // A Perl class inside [...] is still a codepoint population under unicode,
+    // so the ASCII half declines and the scalar-closed half carries it.
     try expectForced(0, "[\\d]{6}", uni, .digit);
+    try expectForcedIn(6, "[\\d]{6}", uni, .digit, .scalar);
     try expectForced(6, "[\\d]{6}", ascii, .digit);
-    // Negated class accepts multi-byte codepoints — never certifies ASCII.
+    // A NEGATED class is the one shape neither half can certify: `[^x]` admits
+    // the NUL byte, which is in no member at all, so the intersection empties.
     try expectForced(0, "[^x]{9}", uni, .word);
+    try expectForcedIn(0, "[^x]{9}", uni, .word, .scalar);
+    try expectForcedIn(0, "[^x]{9}", uni, .punct, .scalar);
 }
 
 test "sieve decision + saturation monotonicity" {
@@ -238,7 +276,17 @@ test "sieve decision + saturation monotonicity" {
     try testing.expect(s.active());
     try testing.expect(s.prunes(crest.crest("no hex run here: zz zz")));
     try testing.expect(!s.prunes(crest.crest("id=0123abcdef more")));
-    try testing.expect(!swellOf("\\w+", uni).active());
+    try testing.expect(!swellOf(".+", uni).active());
+    // `\w+` is NOT inert any more: one word codepoint is at least one byte of
+    // `word+u`, whichever alphabet it came from. A weak demand, but a real and
+    // sound one — strictly better than the 0⃗ it used to fold to. It elides a
+    // document holding neither a word character nor any non-ASCII byte, and
+    // nothing else.
+    const w = swellOf("\\w+", uni);
+    try testing.expect(w.active());
+    try testing.expect(w.prunes(crest.crest("  ...  ")));
+    try testing.expect(!w.prunes(crest.crest("a")));
+    try testing.expect(!w.prunes(crest.crest("\u{4e2d}")));
     // Both query and document values share the saturated u16 domain: nested
     // repetition reaches 100 000 forced digits, past the u16 cap.
     const big = swellOf("(?:[0-9]{1000}){100}", uni);
@@ -310,6 +358,28 @@ test "sieve theorem: a matching document is never pruned" {
     try docs.append(a, "");
     try docs.append(a, "foo");
     try docs.append(a, "0123abcdef");
+
+    // NON-ASCII documents, now that a `uclass` certifies something. A wrong
+    // `encoded` view — a byte set that misses an encoding, or a `min_len` above
+    // the true minimum — is a false negative that can ONLY appear here, since
+    // every ASCII document leaves the scalar-closed half equal to its base.
+    // Deliberately invalid UTF-8 is in the pool too: the sieve reads bytes and
+    // must stay sound on input the matcher may decode differently.
+    const tokens = [_][]const u8{
+        "\u{0660}", "\u{00e9}", "\u{4e2d}", "\u{1f600}", "\u{00a0}",
+        "a",        "0",        "_",        " ",         "\xff",
+        "\x80\x80",
+    };
+    for (0..48) |_| {
+        var piece: std.ArrayList(u8) = .empty;
+        for (0..1 + rng.uintLessThan(usize, 6)) |_| {
+            try piece.appendSlice(a, tokens[rng.uintLessThan(usize, tokens.len)]);
+        }
+        try docs.append(a, piece.items);
+    }
+    try docs.append(a, "\u{0660}\u{0661}\u{0662}\u{0663}");
+    try docs.append(a, "caf\u{00e9} 123");
+    try docs.append(a, "\u{4e2d}\u{6587}\u{4e2d}\u{6587}");
 
     const crests = try a.alloc(crest.Vector, docs.items.len);
     for (docs.items, crests) |d, *v| v.* = crest.crest(d);

@@ -26,6 +26,10 @@ theory in `research/crest/PROOF.md`) fail-closed:
 5. **Randomized sweeps** — adversarial random patterns in BOTH engine modes
    (byte/ASCII and Unicode), each paired with its own ĝ per the Alphabet
    Contract.
+6. **Scan** — the shipped interleaved document scan against an independent
+   scalar per-byte reference: throughput both ways, and the answers compared
+   on every document. A single differing vector fails the run, so the scan can
+   be made faster but not by changing what it computes.
 
 Results land in a `crest.csv` beside the other bench artifacts. The shipped
 integration (index sidecar + read-elision oracles) is exercised end-to-end by

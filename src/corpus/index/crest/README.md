@@ -15,7 +15,7 @@ The disk half of the **crest sieve**. Kernel math:
 [`../../../kernel/math/crest.zig`](../../../kernel/math/crest.zig).
 Theory: [`../../../../research/crest/PROOF.md`](../../../../research/crest/PROOF.md).
 
-One `u16^K` crest vector per indexed doc (16 B), doc-id order, staged under
+One `u16^K` crest vector per indexed doc (`K = 16`, so 32 B), doc-id order, staged under
 the same `gens/<id>/` directory and published by the same `pair.gen` flip as
 `index.gist` / `paths.list` — so a reader can never pair the table with a
 foreign doc-id space.

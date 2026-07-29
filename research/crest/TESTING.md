@@ -17,19 +17,22 @@ unable to hide.
 
 Hand-computed oracles against the calculus, one test per load-bearing rule:
 
-| test                  | pins                                                                                                                                            |
-| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| document crest        | hand-counted runs for all eight classes                                                                                                         |
-| class repetition      | `[0-9a-f]{8}` forces hex and word runs of 8                                                                                                     |
-| concatenation         | saturated seam addition and exact epsilon identity                                                                                              |
-| optional certificates | digit and non-digit optionals cannot be confused across `?`, `*`, `{0,m}`, or `{0,0}`                                                           |
-| alternation           | componentwise minima and conjunctive `only_c_cert` inside an expression; a `Swell` disjunction at the root                                      |
-| disjunction           | a swell prunes only what clears no alternative, dominates the retired fold on 8,192 random vectors, and goes inert when one branch demands `0⃗` |
-| degradation           | unsupported syntax and unsafe case folds yield `0⃗`; case-closed caseless classes remain active                                                 |
-| escapes and Unicode   | real escaped bytes plus the byte/codepoint alphabet contract                                                                                    |
-| counted repetition    | malformed bounds degrade; 70,000 copies saturate without a 4,096 clamp                                                                          |
-| profile constructors  | epsilon certifies every class; unknown certifies none                                                                                           |
-| common saturation     | 70,000-byte query and document values both compare as 65,535                                                                                    |
+| test                  | pins                                                                                                                                                                                                                            |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| document crest        | hand-counted runs for all sixteen family members — the eight ASCII classes and their scalar-closed twins                                                                                                                        |
+| vectorized scan       | the SIMD pass equals the byte-at-a-time definition exactly, at every length, over ASCII / non-ASCII / mixed pools and uniform-random bytes                                                                                      |
+| interleaved pieces    | past the interleave floor the four-piece split rejoins to the single-piece answer: breaks walked onto and around every cut, whole pieces that must carry a run through, and a run past the u16 cap so saturation crosses a join |
+| scalar-closed twins   | non-ASCII runs the ASCII half cannot see are measured by the twins, and the ASCII lanes stay 0 while every twin runs                                                                                                            |
+| class repetition      | `[0-9a-f]{8}` forces hex and word runs of 8                                                                                                                                                                                     |
+| concatenation         | saturated seam addition and exact epsilon identity                                                                                                                                                                              |
+| optional certificates | digit and non-digit optionals cannot be confused across `?`, `*`, `{0,m}`, or `{0,0}`                                                                                                                                           |
+| alternation           | componentwise minima and conjunctive `only_c_cert` inside an expression; a `Swell` disjunction at the root                                                                                                                      |
+| disjunction           | a swell prunes only what clears no alternative, dominates the retired fold on 8,192 random vectors, and goes inert when one branch demands `0⃗`                                                                                 |
+| degradation           | unsupported syntax and unsafe case folds yield `0⃗`; case-closed caseless classes remain active                                                                                                                                 |
+| escapes and Unicode   | real escaped bytes plus the byte/codepoint alphabet contract                                                                                                                                                                    |
+| counted repetition    | malformed bounds degrade; 70,000 copies saturate without a 4,096 clamp                                                                                                                                                          |
+| profile constructors  | epsilon certifies every class; unknown certifies none                                                                                                                                                                           |
+| common saturation     | 70,000-byte query and document values both compare as 65,535                                                                                                                                                                    |
 
 ## 2. Sidecar codec tests — `src/corpus/index/crest/sidecar_test.zig`
 
@@ -83,9 +86,11 @@ The sieve rides both read-elision oracles (`serial.zig` `IndexSkip`,
 - **Caseless** (`-i`): explicit ASCII atoms are case-closed before
   certification. Case-closed classes remain active; upper/lower and unsafe
   Unicode k/K/s/S folds decline to 0.
-- **Unicode default**: ĝ computed under `.unicode = true`, which certifies
-  only constructs whose byte and codepoint semantics coincide (explicit
-  ASCII-only classes); everything else contributes 0.
+- **Unicode default**: a byte class certifies the ASCII lanes exactly; a
+  codepoint class (`\d`, `\w`, `\s`, any explicit non-ASCII range) certifies
+  the scalar-closed twins `C+u = C ∪ [0x80,0xFF]`, priced at the UTF-8 length
+  of its cheapest scalar (PROOF.md §3.7, Lemma 2b). A class whose ASCII members
+  escape `C` still contributes 0.
 - **Fresh files** (changed since the index was built): exempt from crest
   pruning — their persisted vectors are stale, so they are always read
   (`fresh_ids` from the freshness overlay).

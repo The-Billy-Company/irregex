@@ -21,6 +21,21 @@ doc_radar:
       contains:
         - "pub fn forcedSwell"
         - 'syntax.zig'
+    - description: "the family spans two alphabets (PROOF §3.7, Lemma 2b) — the scalar-closed twin is what lets a codepoint class certify over a byte sieve, so `\\d` prunes at the engine's Unicode default"
+      file: pkg/kernels/irregex/src/kernel/math/crest.zig
+      contains:
+        - "pub const Alphabet"
+        - "pub fn lane"
+    - description: "a uclass is priced by the same atom() as a byte class, off its encoding byte set and cheapest UTF-8 length — no unicode flag reaches the calculus"
+      file: pkg/kernels/irregex/src/kernel/regex/analysis/swell.zig
+      contains:
+        - "fn encoded"
+        - "pub fn atom"
+    - description: "the document scan is cut into pieces and rejoined by the same run algebra the calculus folds over the AST (PROOF §6)"
+      file: pkg/kernels/irregex/src/kernel/math/crest.zig
+      contains:
+        - "const Piece"
+        - "fn join"
     - description: "the sieve is a disjunction (PROOF §3.9): one ĝ per top-level alternative, pruning only what clears none of them"
       file: pkg/kernels/irregex/src/kernel/math/crest.zig
       contains:
@@ -54,7 +69,9 @@ Gist's required-literal trigram extractor on literal-free class repetitions
 large OR-union of class trigrams; Crest avoids that expansion.
 
 Per document, index the **crest vector** — the longest consecutive run per
-byte-class (8 classes, 16 bytes/doc). Per query, extract the **forced crest**
+family member (eight byte classes × two alphabets, 32 bytes/doc; the second
+alphabet is what lets `\d` prune under the engine's Unicode default). Per
+query, extract the **forced crest**
 `ĝ(R)` — the run every accepted string must contain — by a min-of-max
 prefix/suffix/best algebra over the AST, **one per top-level alternative**,
 since `R₁|R₂` obliges a match to satisfy only one of them. Prune a document

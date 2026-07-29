@@ -71,17 +71,40 @@ const queries = [_]Query{
     // used to stand down — which is what `gist -e A -e B` compiles to.
     .{ .label = "alt hex-12|rule-60", .pattern = "[0-9a-f]{12}|~{60}" },
     .{ .label = "alt digit-6|CONST-6", .pattern = "[0-9]{6}|[A-Z]{6}" },
+    // THE DEFAULT-FLAG SPELLINGS, which is how these queries are actually
+    // typed. `unicode` is the engine's own default and it lowers a Perl escape
+    // to a CODEPOINT class, so these rows measure a different sieve from their
+    // character-for-character ASCII twins above: `\d{6}` used to certify
+    // nothing at all and prune 0% where `[0-9]{6}` pruned 92.7%.
+    .{ .label = "\\d{6}  -u default", .pattern = "\\d{6}", .unicode = true },
+    .{ .label = "\\d{4}  -u default", .pattern = "\\d{4}", .unicode = true },
+    .{ .label = "\\w{8}  -u (wide)", .pattern = "\\w{8}", .unicode = true },
+    .{ .label = "\\s{4}  -u", .pattern = "\\s{4}", .unicode = true },
+    .{ .label = "[0-9]{6} -u (twin)", .pattern = "[0-9]{6}", .unicode = true },
 };
 
-/// One alternative, as `class:run` pairs; alternatives joined by `|`.
+/// One alternative, as `member:run` pairs; alternatives joined by `|`.
+///
+/// A class and its scalar twin agree on most queries — an ASCII byte class
+/// certifies both halves identically — so naming both would double the column
+/// to say one thing. Equal pairs collapse to the bare class name; the twin is
+/// named only where it carries a demand the ASCII half does not, which is
+/// exactly the codepoint-class case worth seeing.
 fn forcedStr(buf: []u8, branches: []const crest.Vector) []const u8 {
     var end: usize = 0;
     for (branches) |gv| {
         if (end > 0) end += (std.fmt.bufPrint(buf[end..], "|", .{}) catch break).len;
-        for (0..K) |i| {
-            if (gv[i] == 0) continue;
+        for (std.enums.values(crest.Class)) |c| {
+            const a = gv[crest.lane(c, .ascii)];
+            const s = gv[crest.lane(c, .scalar)];
+            if (a == 0 and s == 0) continue;
             const sep: []const u8 = if (end > 0 and buf[end - 1] != '|') " " else "";
-            const part = std.fmt.bufPrint(buf[end..], "{s}{s}:{d}", .{ sep, crest.className(i), gv[i] }) catch break;
+            const part = (if (a == s)
+                std.fmt.bufPrint(buf[end..], "{s}{s}:{d}", .{ sep, @tagName(c), a })
+            else if (a == 0)
+                std.fmt.bufPrint(buf[end..], "{s}{s}+u:{d}", .{ sep, @tagName(c), s })
+            else
+                std.fmt.bufPrint(buf[end..], "{s}{s}:{d}+u:{d}", .{ sep, @tagName(c), a, s })) catch break;
             end += part.len;
         }
     }
@@ -101,7 +124,7 @@ pub fn main(init: std.process.Init) !void {
 
     const roots = try corpus_mod.resolveRoots(gpa);
     defer corpus_mod.freeRoots(gpa, roots);
-    var corpus = try load(gpa, io, roots);
+    var corpus = try load(gpa, io, roots, .contiguous);
     defer corpus.deinit();
 
     const n = corpus.docs.len;
@@ -126,6 +149,11 @@ pub fn main(init: std.process.Init) !void {
         build.ms(),                                  K,
         @as(f64, @floatFromInt(idx_bytes)) / 1024.0, @as(f64, @floatFromInt(idx_bytes)) / @as(f64, @floatFromInt(@max(corpus.bytes, 1))) * 100.0,
     });
+    try scanProof(io, corpus.docs, corpus.bytes, config.runs, &violations);
+    if (violations != 0) {
+        std.debug.print("FAILED: the block scan disagrees with the per-byte definition the proof is stated over.\n", .{});
+        std.process.exit(1);
+    }
 
     std.debug.print("{s:<20} {s:>30} {s:>10} {s:>11} {s:>10} {s:>10} {s:>10} {s:>9}\n", .{ "query", "forced ĝ (per alternative)", "RUN prune%", "FOLD prune%", "CNT prune%", "full ms", "sieve ms", "speedup" });
     std.debug.print("{s:-<20} {s:->30} {s:->10} {s:->11} {s:->10} {s:->10} {s:->10} {s:->9}\n", .{ "", "", "", "", "", "", "", "" });
@@ -302,13 +330,79 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("\nPROVEN: 0 false negatives across the corpus and random sweeps; Crest prunes the configured literal-free slate where Gist's required-literal trigram extractor yields no requirement, and the count cousin is weaker.\n", .{});
 }
 
+/// The retired document half: one table load and k data-dependent lane updates
+/// PER BYTE. Kept as the reference for both things a rewrite has to prove —
+/// that the block scan answers identically, and that it is faster.
+fn referenceCrest(doc: []const u8) crest.Vector {
+    var best: crest.Vector = @splat(0);
+    var cur: [K]u32 = @splat(0);
+    for (doc) |b| {
+        const m = crest.membership[b];
+        inline for (0..K) |i| {
+            if ((m & (@as(crest.Mask, 1) << i)) != 0) {
+                cur[i] +|= 1;
+                best[i] = @max(best[i], @as(u16, @intCast(@min(cur[i], std.math.maxInt(u16)))));
+            } else cur[i] = 0;
+        }
+    }
+    return best;
+}
+
+/// The document half, measured against the algorithm it replaced on the very
+/// bytes the sieve runs over.
+///
+/// BYTE PARITY FIRST: every document is scanned both ways and the two vectors
+/// compared element for element. A faster scan that answers differently is not
+/// a faster scan, and the sieve's soundness proof is stated over the per-byte
+/// definition — so this is the link between the proof and the shipped code.
+/// Only then are the two timed, same corpus, same order, checksummed so
+/// neither side can be optimized away.
+fn scanProof(io: std.Io, docs: []const []const u8, bytes: usize, runs: usize, violations: *usize) !void {
+    for (docs) |d| {
+        const fast = crest.crest(d);
+        const slow = referenceCrest(d);
+        if (!std.mem.eql(u16, &fast, &slow)) {
+            violations.* += 1;
+            std.debug.print("  !! SCAN PARITY VIOLATION on a {d}-byte document: block scan {any} ≠ per-byte {any}\n", .{ d.len, fast, slow });
+            return;
+        }
+    }
+
+    // Interleaved, and scored on the MINIMUM. Ten agents share this machine, so
+    // a median samples the neighbours' compile jobs as much as the code under
+    // test; the fastest observed run is the one least contaminated by them, and
+    // alternating the two scans run-by-run keeps that contamination shared.
+    var sink: u64 = 0;
+    var fastest: [2]u64 = @splat(std.math.maxInt(u64));
+    for (0..runs + 1) |r| {
+        inline for (.{ crest.crest, referenceCrest }, 0..) |scan, which| {
+            const sp = Span.open(io);
+            for (docs) |d| sink +%= scan(d)[0];
+            const ns: u64 = @intCast(sp.read(io).ns());
+            if (r > 0) fastest[which] = @min(fastest[which], ns); // r == 0 warms
+        }
+    }
+    for (fastest, [2][]const u8{ "scan:    shipped ", " · per-byte reference " }) |ns, label| {
+        std.debug.print("{s}{d:.2} GiB/s ({d:.1} ms)", .{
+            label,
+            @as(f64, @floatFromInt(bytes)) / (@as(f64, @floatFromInt(ns)) / 1e9) / (1 << 30),
+            @as(f64, @floatFromInt(ns)) / 1e6,
+        });
+    }
+    std.debug.print(" · {d:.2}x · byte-identical on all {d} documents [checksum {x}]\n\n", .{
+        @as(f64, @floatFromInt(fastest[1])) / @as(f64, @floatFromInt(fastest[0])),
+        docs.len,
+        sink,
+    });
+}
+
 /// The weaker cousin: total per-class population (branch B). Sound but dominated.
 fn classCounts(doc: []const u8) [K]u32 {
     var cnt: [K]u32 = @splat(0);
     for (doc) |b| {
         const bits = crest.membership[b];
         inline for (0..K) |i| {
-            if ((bits & (@as(u8, 1) << i)) != 0) cnt[i] += 1;
+            if ((bits & (@as(crest.Mask, 1) << i)) != 0) cnt[i] += 1;
         }
     }
     return cnt;
@@ -345,7 +439,7 @@ fn countPruned(cnt: [K]u32, swell: crest.Swell) bool {
 /// classes / counts / concatenation / alternation, compile with the REAL engine
 /// in the requested mode, and assert matched ⇒ ¬pruned on a sample of real
 /// files — ĝ computed with the SAME mode flag the engine got, exactly as the
-/// production `crestSieve` pairs them. Returns exact differential counts and
+/// production `gate.winnow` pairs them. Returns exact differential counts and
 /// the seed, so the sweep is independently replayable from crest-run.json.
 fn randomSoundness(gpa: std.mem.Allocator, corpus: *const corpus_mod.Corpus, unicode: bool, caseless: bool, violations: *usize) !RandomResult {
     const seed = (if (unicode) unicode_seed else ascii_seed) ^ (if (caseless) caseless_seed_mask else 0);

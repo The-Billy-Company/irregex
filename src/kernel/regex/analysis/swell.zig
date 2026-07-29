@@ -24,9 +24,10 @@
 //! Two contracts fall out of the AST that the private parser had to hand-hold:
 //!   • THE ALPHABET CONTRACT (§3.6) is now structural. A `class` node consumes
 //!     exactly one byte from a byte set, so the ⊆-test against `crest.membership`
-//!     is exact in either engine mode; a `uclass` always carries a non-ASCII
-//!     scalar (syntax.zig's invariant), so it occupies ≥1 byte and certifies
-//!     nothing. No `unicode` flag reaches the calculus at all.
+//!     is exact in either engine mode; a `uclass` consumes one CODEPOINT, which
+//!     `encoded` below reduces to the bytes it can spend and the fewest it must,
+//!     certifying the scalar-closed half of the family. Either way the node is
+//!     priced by the same `atom`, and no `unicode` flag reaches the calculus.
 //!   • CASE FOLDING (§3.7) is the matcher's own. `-i` folds the AST *before*
 //!     this fold runs (`syn.foldCaseAst`), so the calculus sees the real folded
 //!     class — and a Unicode orbit escaping ASCII (`k`→U+212A KELVIN SIGN,
@@ -98,8 +99,11 @@ fn profile(n: *const Node) Profile {
         .anchor_buf_end,
         .word,
         => Profile.epsilon(),
-        .class => |set| Profile.atom(set),
-        .uclass => Profile.unit(),
+        .class => |set| Profile.atom(set, 1),
+        .uclass => |ranges| blk: {
+            const e = encoded(ranges);
+            break :blk Profile.atom(e.set, e.min_len);
+        },
         .concat => |kids| Profile.concat(profile(kids[0]), profile(kids[1])),
         .alt => |kids| Profile.alt(profile(kids[0]), profile(kids[1])),
         // `{n,m}` never reaches here: the parser already expanded it into a
@@ -112,6 +116,35 @@ fn profile(n: *const Node) Profile {
 
 fn satAdd(a: u16, b: u16) u16 {
     return @intCast(@min(@as(u32, a) + @as(u32, b), std.math.maxInt(u16)));
+}
+
+/// What a CODEPOINT class spends in the document's alphabet: the bytes its
+/// members can be encoded from, and the fewest of them any member costs.
+///
+/// This is the whole of the alphabet repair (§3.6). A `uclass` cannot certify
+/// an ASCII class — `\d` under `unicode=true` admits U+0660, which is no ASCII
+/// digit — but every non-ASCII scalar encodes to bytes that ALL have bit 7 set,
+/// so it can certify the scalar-closed twin, and one codepoint of it spends
+/// `min_len` ≥ 1 bytes rather than one. Both halves round down: the byte set is
+/// a superset of what the class can actually spend (surrogates encode to
+/// nothing, and 0x80..0xFF is taken whole), which can only shrink the shared
+/// mask, and `min_len` reads the lowest scalar of each range, which cannot
+/// exceed the true minimum because UTF-8 length is monotone in the codepoint.
+fn encoded(ranges: []const [2]u21) struct { set: ByteSet, min_len: u16 } {
+    var set = ByteSet{};
+    var min_len: u16 = 4; // no encoding is longer
+    for (ranges) |r| {
+        min_len = @min(min_len, utf8Len(r[0]));
+        if (r[0] <= 0x7F) set.setRange(@intCast(r[0]), @intCast(@min(r[1], 0x7F)));
+        if (r[1] > 0x7F) set.setRange(0x80, 0xFF);
+    }
+    return .{ .set = set, .min_len = min_len };
+}
+
+/// UTF-8 byte length, monotone and total — `std.unicode`'s errors on the
+/// surrogate gap, which a range may legally span (the lowering drops it).
+fn utf8Len(cp: u21) u16 {
+    return if (cp < 0x80) 1 else if (cp < 0x800) 2 else if (cp < 0x10000) 3 else 4;
 }
 
 /// A sub-expression's forced run summary (PROOF.md §3). Every numeric field is
@@ -136,33 +169,31 @@ pub const Profile = struct {
         return .{ .F = @splat(0), .P = @splat(0), .S = @splat(0), .min_len = 0, .only_c_cert = @splat(false) };
     }
 
-    /// One mandatory byte of unknown class — a `uclass`, which spends ≥1 byte
-    /// on a codepoint that is in no ASCII class by construction.
-    pub fn unit() Profile {
+    /// One mandatory atom spending `min_len` bytes, all drawn from `set`. It
+    /// certifies member C iff every byte the node can consume is in C — exact
+    /// for a `class` node, which spends one byte from its own set; sound for a
+    /// `uclass`, whose `encoded` view rounds the set up and the length down.
+    /// Intersecting the membership masks answers all K members in one pass. An
+    /// empty set (`[^\x00-\xff]`) matches nothing, so it claims nothing rather
+    /// than everything vacuously.
+    ///
+    /// A certified run is `min_len` long, not 1: `\d` forces four bytes of
+    /// `digit+u` if its cheapest member is a 4-byte codepoint, and pricing it
+    /// at 1 would throw away the very contiguity the sieve trades on.
+    pub fn atom(set: ByteSet, min_len: u16) Profile {
         var p = unknown();
-        p.min_len = 1;
-        return p;
-    }
-
-    /// One mandatory byte drawn from `set`. It certifies class C iff every byte
-    /// the node can consume is in C — exact, since a `class` node spends exactly
-    /// one byte. Intersecting the membership masks answers all k classes in one
-    /// pass. An empty set (`[^\x00-\xff]`) matches nothing, so it claims nothing
-    /// rather than everything vacuously.
-    pub fn atom(set: ByteSet) Profile {
-        var p = unit();
-        var shared: u8 = 0;
-        if (set.count() != 0) {
-            shared = 0xFF;
-            for (0..256) |b| {
-                if (set.has(@intCast(b))) shared &= crest.membership[b];
-            }
+        p.min_len = min_len;
+        if (set.count() == 0) return p;
+        var shared: crest.Mask = std.math.maxInt(crest.Mask);
+        for (0..256) |b| {
+            if (shared == 0) break; // a wide set shares nothing; stop reading
+            if (set.has(@intCast(b))) shared &= crest.membership[b];
         }
         inline for (0..K) |i| {
-            if ((shared & (@as(u8, 1) << @intCast(i))) != 0) {
-                p.F[i] = 1;
-                p.P[i] = 1;
-                p.S[i] = 1;
+            if ((shared & (@as(crest.Mask, 1) << @intCast(i))) != 0) {
+                p.F[i] = min_len;
+                p.P[i] = min_len;
+                p.S[i] = min_len;
                 p.only_c_cert[i] = true;
             }
         }

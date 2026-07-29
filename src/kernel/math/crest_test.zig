@@ -1,7 +1,7 @@
 //! Crest kernel unit tests — the DOCUMENT half: the ρ(d) scan, the sieve
 //! decision, and the persisted sidecar's semantic schema. The query half (ĝ)
 //! is tested against the engine's own AST in
-//! `../match/regex/analysis/swell_test.zig`, which also carries the Sieve
+//! `../regex/analysis/swell_test.zig`, which also carries the Sieve
 //! Theorem differential; the corpus-scale version is `zig build crest`.
 
 const std = @import("std");
@@ -25,42 +25,192 @@ test "crest vector: longest per-class run" {
     try testing.expectEqual(@as(u16, 2), v[@intFromEnum(crest.Class.space)]); // "  "
 }
 
+/// ρ(d) straight from the definition: walk the document one byte at a time,
+/// extend or reset each member's run. Derived from `crest.membership` — the
+/// contract — and from what "longest run" MEANS, so it is an oracle for the
+/// vectorized pass rather than a second copy of it.
+fn referenceCrest(doc: []const u8) crest.Vector {
+    var best: crest.Vector = @splat(0);
+    var cur: [crest.K]u32 = @splat(0);
+    for (doc) |b| {
+        const m = crest.membership[b];
+        for (0..crest.K) |i| {
+            if (m & (@as(crest.Mask, 1) << @intCast(i)) != 0) {
+                cur[i] += 1;
+                best[i] = @intCast(@min(@max(cur[i], best[i]), std.math.maxInt(u16)));
+            } else cur[i] = 0;
+        }
+    }
+    return best;
+}
+
+test "the scan is the byte-at-a-time definition, exactly" {
+    // Every length from empty upward, so the lead scan's 64-byte stride, the
+    // tail, and runs that end flush against either are all crossed many times
+    // over. These lengths stay under `interleave_floor`, which makes this the
+    // single-piece path; the interleaved one is pinned by the test below.
+    var prng = std.Random.DefaultPrng.init(0x0C_2E_57_00);
+    const rng = prng.random();
+    var doc: [200]u8 = undefined;
+
+    // Alphabets chosen to make runs long and boundaries frequent: pure ASCII
+    // (the twins must silently track their base classes), pure non-ASCII (the
+    // base classes must all stay 0 while every twin runs), and mixtures that
+    // force the twin-adoption seam at every offset.
+    const pools = [_][]const u8{
+        "0123456789abcdefABCDEF_ ",
+        "\xc3\xa9\xd8\xa0\xe2\x82\xac\xf0\x9f\x98\x80",
+        "a0\xc3\xa9 \t~_Z\xff\x80",
+        "\x00\x7f\x80\xff",
+    };
+    for (pools) |pool| {
+        for (0..doc.len) |len| {
+            for (doc[0..len]) |*b| b.* = pool[rng.uintLessThan(usize, pool.len)];
+            try testing.expectEqual(referenceCrest(doc[0..len]), crest.crest(doc[0..len]));
+        }
+    }
+
+    // Uniform random bytes too — no pool can be accused of dodging a case.
+    for (0..2000) |_| {
+        const len = rng.uintLessThan(usize, doc.len + 1);
+        rng.bytes(doc[0..len]);
+        try testing.expectEqual(referenceCrest(doc[0..len]), crest.crest(doc[0..len]));
+    }
+}
+
+test "cutting the document into pieces rejoins to the same answer" {
+    // Past `interleave_floor` the scan splits the document, measures the
+    // pieces independently, and rejoins them by the run algebra — so a run
+    // crossing a cut is the one thing that can be dropped or double-counted,
+    // and a piece that never breaks is the one that must carry its neighbour's
+    // run through. Both are aimed at directly, against the same oracle.
+    const gpa = testing.allocator;
+    var prng = std.Random.DefaultPrng.init(0x1E_7E_A7_ED);
+    const rng = prng.random();
+
+    const doc = try gpa.alloc(u8, 70_000);
+    defer gpa.free(doc);
+
+    // Straddling the floor, then lengths whose remainder past a piece boundary
+    // is 0, 1, and large in turn. 70_000 also drives a run past the u16 cap,
+    // so saturation is exercised through the joins and not only inside a piece.
+    for ([_]usize{ 4095, 4096, 4097, 4099, 8192, 8193, 12_345, 70_000 }) |len| {
+        const d = doc[0..len];
+
+        // Every piece unbroken: `whole` propagates end to end, and the answer
+        // is the whole document rather than any one piece.
+        @memset(d, 'a');
+        try testing.expectEqual(referenceCrest(d), crest.crest(d));
+
+        // One break, walked onto and around each cut — the joins' seam.
+        for ([_]usize{ 0, 1, len / 4 - 1, len / 4, len / 4 + 1, len / 2, 3 * len / 4, len - 1 }) |cut| {
+            @memset(d, 'a');
+            d[cut] = ' ';
+            try testing.expectEqual(referenceCrest(d), crest.crest(d));
+        }
+
+        for ([_][]const u8{
+            "0123456789abcdefABCDEF_ ",
+            "\xc3\xa9\xd8\xa0\xe2\x82\xac",
+            "a0\xc3\xa9 \t~_Z\xff\x80",
+            "aaaaaaaaaaaaaaaa ", // long runs, rare breaks: `whole` pieces appear
+        }) |pool| {
+            for (d) |*b| b.* = pool[rng.uintLessThan(usize, pool.len)];
+            try testing.expectEqual(referenceCrest(d), crest.crest(d));
+        }
+
+        rng.bytes(d);
+        try testing.expectEqual(referenceCrest(d), crest.crest(d));
+    }
+}
+
+test "scalar-closed members measure runs the ASCII half cannot see" {
+    // Six ARABIC-INDIC DIGITs (U+0660…) are twelve bytes, every one ≥ 0x80.
+    // No ASCII class may claim them; every twin must.
+    const arabic = "\u{0660}\u{0661}\u{0662}\u{0663}\u{0664}\u{0665}";
+    const v = crest.crest(arabic);
+    try testing.expectEqual(@as(u16, 0), v[crest.lane(.digit, .ascii)]);
+    try testing.expectEqual(@as(u16, 12), v[crest.lane(.digit, .scalar)]);
+    try testing.expectEqual(@as(u16, 12), v[crest.lane(.punct, .scalar)]);
+
+    // A twin is the UNION, so an ASCII digit continues an Arabic-Indic run
+    // while breaking, say, the space twin.
+    const mixed = crest.crest("7\u{0660}7");
+    try testing.expectEqual(@as(u16, 1), mixed[crest.lane(.digit, .ascii)]);
+    try testing.expectEqual(@as(u16, 4), mixed[crest.lane(.digit, .scalar)]);
+    try testing.expectEqual(@as(u16, 2), mixed[crest.lane(.space, .scalar)]);
+
+    // Over pure ASCII the two halves are the same set, so every twin must
+    // report its base class's answer — including across the block stride,
+    // where the twins are not tracked at all until a high byte appears.
+    const ascii_only = ("abc123 " ** 40) ++ "ZZZZ";
+    const a = crest.crest(ascii_only);
+    inline for (std.enums.values(crest.Class)) |c| {
+        try testing.expectEqual(a[crest.lane(c, .ascii)], a[crest.lane(c, .scalar)]);
+    }
+    // …and the moment one appears mid-document, the twins must already carry
+    // the run they had been shadowing rather than restarting from zero.
+    const late = crest.crest(("0" ** 100) ++ "\u{00e9}");
+    try testing.expectEqual(@as(u16, 100), late[crest.lane(.digit, .ascii)]);
+    try testing.expectEqual(@as(u16, 102), late[crest.lane(.digit, .scalar)]);
+}
+
 test "semantic schema pins class order and byte-boundary memberships" {
     const order = [_]crest.Class{ .digit, .hex, .upper, .lower, .alpha, .word, .space, .punct };
-    try testing.expectEqual(crest.K, order.len);
+    try testing.expectEqual(crest.base_k, order.len);
+    try testing.expectEqual(crest.K, 2 * order.len);
     for (order, 0..) |class, i| try testing.expectEqual(i, @intFromEnum(class));
-    try testing.expectEqualStrings("digit\x00hex\x00upper\x00lower\x00alpha\x00word\x00space\x00punct", crest.SidecarSchema.class_order);
+    // The ASCII half keeps its historical lane indices; the scalar half follows.
+    for (order) |class| {
+        try testing.expectEqual(@intFromEnum(class), crest.lane(class, .ascii));
+        try testing.expectEqual(@intFromEnum(class) + crest.base_k, crest.lane(class, .scalar));
+    }
+    try testing.expectEqualStrings(
+        "digit\x00hex\x00upper\x00lower\x00alpha\x00word\x00space\x00punct" ++
+            "\x00digit+u\x00hex+u\x00upper+u\x00lower+u\x00alpha+u\x00word+u\x00space+u\x00punct+u",
+        crest.SidecarSchema.class_order,
+    );
 
-    const cases = [_]struct { byte: u8, bits: u8 }{
-        .{ .byte = '/', .bits = 0x80 },
-        .{ .byte = '0', .bits = 0x23 },
-        .{ .byte = '9', .bits = 0x23 },
-        .{ .byte = ':', .bits = 0x80 },
-        .{ .byte = 'A', .bits = 0x36 },
-        .{ .byte = 'F', .bits = 0x36 },
-        .{ .byte = 'G', .bits = 0x34 },
-        .{ .byte = '_', .bits = 0x20 },
-        .{ .byte = '`', .bits = 0x80 },
-        .{ .byte = 'a', .bits = 0x3a },
-        .{ .byte = 'f', .bits = 0x3a },
-        .{ .byte = 'g', .bits = 0x38 },
-        .{ .byte = '\t', .bits = 0x40 },
-        .{ .byte = '\n', .bits = 0x40 },
-        .{ .byte = 0x0B, .bits = 0x40 },
-        .{ .byte = 0x0C, .bits = 0x40 },
-        .{ .byte = '\r', .bits = 0x40 },
-        .{ .byte = ' ', .bits = 0x40 },
+    // An ASCII byte is in a scalar twin exactly when it is in the base class,
+    // so its mask is the base byte doubled; a non-ASCII byte is in NO base
+    // class and in EVERY twin. Spelled out rather than derived — deriving it
+    // would only restate `crest.zig`'s own closure rule back at itself.
+    const cases = [_]struct { byte: u8, bits: u16 }{
+        .{ .byte = '/', .bits = 0x8080 },
+        .{ .byte = '0', .bits = 0x2323 },
+        .{ .byte = '9', .bits = 0x2323 },
+        .{ .byte = ':', .bits = 0x8080 },
+        .{ .byte = 'A', .bits = 0x3636 },
+        .{ .byte = 'F', .bits = 0x3636 },
+        .{ .byte = 'G', .bits = 0x3434 },
+        .{ .byte = '_', .bits = 0x2020 },
+        .{ .byte = '`', .bits = 0x8080 },
+        .{ .byte = 'a', .bits = 0x3a3a },
+        .{ .byte = 'f', .bits = 0x3a3a },
+        .{ .byte = 'g', .bits = 0x3838 },
+        .{ .byte = '\t', .bits = 0x4040 },
+        .{ .byte = '\n', .bits = 0x4040 },
+        .{ .byte = 0x0B, .bits = 0x4040 },
+        .{ .byte = 0x0C, .bits = 0x4040 },
+        .{ .byte = '\r', .bits = 0x4040 },
+        .{ .byte = ' ', .bits = 0x4040 },
         .{ .byte = 0x7F, .bits = 0 },
-        .{ .byte = 0x80, .bits = 0 },
+        // The alphabet boundary, from both sides: 0x80 is the first byte no
+        // ASCII class may claim and the first every twin must.
+        .{ .byte = 0x80, .bits = 0xFF00 },
+        .{ .byte = 0xC3, .bits = 0xFF00 }, // a 2-byte UTF-8 lead
+        .{ .byte = 0xA9, .bits = 0xFF00 }, // …and its continuation
+        .{ .byte = 0xFF, .bits = 0xFF00 },
     };
     for (cases) |case| try testing.expectEqual(case.bits, crest.membership[case.byte]);
 }
 
 test "semantic hash binds cap, interpretation, and full membership table" {
     const canonical = &crest.SidecarSchema.canonical_bytes;
-    try testing.expect(std.mem.endsWith(u8, canonical, &crest.membership));
+    try testing.expect(std.mem.endsWith(u8, canonical, &crest.SidecarSchema.membership_le));
+    try testing.expectEqual(2 * crest.membership.len, crest.SidecarSchema.membership_le.len);
     try testing.expectEqual(std.math.maxInt(u16), crest.SidecarSchema.saturation_cap);
-    try testing.expectEqual(@as(u16, 2), crest.SidecarSchema.format_version);
+    try testing.expectEqual(@as(u16, 3), crest.SidecarSchema.format_version);
 
     // A captured golden, and only that: it trips the moment this schema's
     // identity moves, which is exactly when every persisted sidecar must be
@@ -69,7 +219,7 @@ test "semantic hash binds cap, interpretation, and full membership table" {
     // vector — this pin is not the place to relitigate the hash function.
     const original = crest.SidecarSchema.hash();
     try testing.expectEqualStrings(
-        "4d292c119108c904f65e5f47827e9366a321605a7ab2cfcd496e7d5fe7f2bd36",
+        "0114cecff0909f0917c976f200ba1825f79a56743321ab75bdac425b4497522d",
         &original.hex(),
     );
 
@@ -143,6 +293,13 @@ test "a swell prunes only what clears none of its alternatives" {
     // a document short of the fold is short of all of them. The disjunction is
     // therefore weakly more selective on EVERY document, never less sound —
     // checked here over random crest vectors rather than argued.
+    //
+    // Demands are drawn shorter than documents on purpose. Both are dense over
+    // all K members, which is already far harsher than a real ĝ (a pattern
+    // forces one or two classes, not sixteen); drawing them from the SAME range
+    // on top of that makes the fold prune ~99% of samples, and the sweep stops
+    // reaching the region it exists to measure. The two counters below are the
+    // guard that this re-aiming stayed honest.
     var prng = std.Random.DefaultPrng.init(0xC4E5_0F0D);
     const rng = prng.random();
     var strictly_better: usize = 0;
@@ -151,8 +308,8 @@ test "a swell prunes only what clears none of its alternatives" {
         var pair: crest.Swell = .{ .len = 2 };
         var min_of_pair = crest.zero_vector;
         for (&pair.crests[0], &pair.crests[1], &min_of_pair) |*a, *b, *m| {
-            a.* = rng.uintLessThan(u16, 6);
-            b.* = rng.uintLessThan(u16, 6);
+            a.* = rng.uintLessThan(u16, 4);
+            b.* = rng.uintLessThan(u16, 4);
             m.* = @min(a.*, b.*);
         }
         var rho = crest.zero_vector;

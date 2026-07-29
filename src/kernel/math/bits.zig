@@ -67,6 +67,43 @@ pub inline fn laneMask(comptime Mask: type, hits: anytype) Mask {
     return if (@import("builtin").cpu.arch.endian() == .big) @bitReverse(raw) else raw;
 }
 
+/// Movemask over a 64-byte block, delivered as four 16-lane compares — the
+/// grain SIMD actually produces and the grain the hardware can fold cheapest.
+///
+/// NEON has no `pmovmskb`, so the per-chunk `@bitCast(bool16) → u16` lowering
+/// costs a shift-narrow ladder EACH. For a whole block the simdjson fold is far
+/// cheaper: weight every lane with its bit value, then three pairwise adds
+/// (`addp`) collapse 64 lanes into one u64. Other arches keep the portable
+/// bitcast+shift shape, x86's movemask being one instruction already.
+pub inline fn blockMask(hits: [4]@Vector(16, bool)) u64 {
+    const V16 = @Vector(16, u8);
+    switch (@import("builtin").cpu.arch) {
+        .aarch64, .aarch64_be => {
+            const weights: V16 = .{ 1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128 };
+            const zero: V16 = @splat(0);
+            var t: [4]V16 = undefined;
+            inline for (hits, 0..) |h, k| t[k] = @select(u8, h, weights, zero);
+            const s = addp(addp(t[0], t[1]), addp(t[2], t[3]));
+            return @as(@Vector(2, u64), @bitCast(addp(s, s)))[0];
+        },
+        else => {
+            var m: u64 = 0;
+            inline for (hits, 0..) |h, k| m |= @as(u64, laneMask(u16, h)) << (k * 16);
+            return m;
+        },
+    }
+}
+
+/// NEON pairwise byte add over the concatenation of `a ++ b` — the folding
+/// step of the movemask emulation above.
+inline fn addp(a: @Vector(16, u8), b: @Vector(16, u8)) @Vector(16, u8) {
+    return asm ("addp %[o].16b, %[a].16b, %[b].16b"
+        : [o] "=w" (-> @Vector(16, u8)),
+        : [a] "w" (a),
+          [b] "w" (b),
+    );
+}
+
 /// Mask of the low `k` bits of `Word`, correct at BOTH edges (k = 0 and
 /// k = width). The naive `(1 << k) - 1` is UB at k = width (the shift
 /// overflows before the two's-complement borrow can wrap it); shifting

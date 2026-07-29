@@ -99,10 +99,13 @@ matcher; and the calculus is sound, not tight (§3.6).
 
 Fix the byte alphabet `Σ = {0,…,255}`. A **class** `C ⊆ Σ` is a set of bytes.
 Fix a small **class family** `𝒞 = {C₁,…,C_k}`; the implementation ships
-`k = 8`: digit, hexdigit, upper, lower, alpha, word, space, punct
-(`src/kernel/math/crest.zig` `Class`). `k` is a small constant, chosen once,
-query-independent. This family is not claimed to contain every pairwise meet
-and join, so "lattice" would be mathematically inaccurate.
+`k = 16` — eight base classes (digit, hexdigit, upper, lower, alpha, word,
+space, punct) each measured over two alphabets (`src/kernel/math/crest.zig`
+`Class` × `Alphabet`). The second alphabet is the scalar-closed twin
+`C+u = C ∪ [0x80,0xFF]`, which is what lets a Unicode codepoint class certify
+anything at all over a byte sieve; §3.7 derives it. `k` is a small constant,
+chosen once, query-independent. This family is not claimed to contain every
+pairwise meet and join, so "lattice" would be mathematically inaccurate.
 
 For a string `w = w₁…w_L` and class `C`, a **C-run** is a maximal contiguous
 substring all of whose bytes lie in `C`. The **crest of `w` at `C`**
@@ -172,7 +175,7 @@ claim is the conjunction of three obligations with different assumptions:
 > the indexed bytes cannot be pruned by their crest vector. §3 proves this by
 > structural induction in the same saturated `u16` domain the code compares.
 
-> **Artifact theorem.** If the `GISTCRS2` sidecar decoder accepts generation
+> **Artifact theorem.** If the `GISTCRS3` sidecar decoder accepts generation
 > `g`, record `i` is the crest of the exact byte string assigned to document ID
 > `i` when generation `g` was built. The producer computes vectors from the
 > same ordered `corpus.docs` used for `paths.list`; `pair.gen` publishes the
@@ -377,20 +380,68 @@ a false negative of the _instantiation_, not of the theorem.
 > matcher semantics cannot be expressed over the sieve's alphabet, that class
 > must contribute `ĝ = 0` (no pruning) — sound by degradation.
 
-Deployment rule: **byte classes ⇔ byte matcher; Unicode classes ⇔
-codepoint-run crest; otherwise refuse (ĝ=0).** gist's linear engine folds
-`\d`/`\w` at the rg-parity Unicode default, so `ghat` takes the engine's mode
-as an argument (`crest.Opts{ .unicode, .caseless }`) and the production
-`winnow` passes exactly the flags the matcher compiled with — on both tiers, from
-one derivation each. The shipped
-wiring implements options (a)+(c): under the Unicode default only constructs
-whose byte and codepoint semantics provably coincide certify. Caseless matching
-widens explicit ASCII atoms to their case closure; case-closed classes retain
-their certificate, while upper/lower self-decline. In Unicode mode any closure
-containing k/K/s/S also declines because those folds reach non-ASCII Kelvin/long-s
-codepoints. `\d`/`\w`/`\s` and any class reaching ≥ 0x80 contribute `ĝ=0`.
+Refusal satisfies Theorem 2, and it was what shipped first — but it refused the
+common case. gist's linear engine folds `\d`/`\w`/`\s` over Unicode scalars at
+the rg-parity default, so the ordinary spelling of the query the whole sieve
+exists for sieved by nothing: `[0-9]{6}` pruned 92.7% of the corpus while
+`\d{6}` — the same intent, the spelling people actually type — pruned 0.0% and
+ran at 1.00x. The gap was not a rounding error in the calculus; it was the
+calculus declining to speak.
+
+**The repair is to give the byte alphabet a second half that a codepoint class
+CAN be read into.** Every family member `C` gains a twin `C+u = C ∪
+[0x80,0xFF]`, and the closure is what makes the twin certifiable:
+
+> **Lemma 2b (UTF-8 closure).** Let `C ⊆ Σ_ascii`, let `C+u = C ∪ [0x80,0xFF]`,
+> and let `U` be any set of Unicode scalars whose ASCII members all lie in `C`.
+> Then every byte of the UTF-8 encoding of every `u ∈ U` lies in `C+u`, and a
+> run of `n` consecutive scalars of `U` encodes to a run of at least `n`
+> consecutive bytes of `C+u`.
+>
+> _Proof._ A scalar `u ≤ 0x7F` encodes to the single byte `u`, which lies in
+> `C` by hypothesis. A scalar `u > 0x7F` encodes to two to four bytes, every
+> one of which has bit 7 set — lead bytes are `0xC2..0xF4`, continuations
+> `0x80..0xBF` — by UTF-8's self-synchronising design (Pike & Thompson), hence
+> every one lies in `[0x80,0xFF] ⊆ C+u`. Each scalar contributes at least one
+> byte and consecutive scalars encode to adjacent bytes, so the byte run is at
+> least as long as the scalar run. ∎
+
+So a `uclass` node is priced by exactly the same `atom(set, min_len)` the byte
+`class` node is: `encoded()` reduces its scalar ranges to the byte set they can
+spend (ASCII part verbatim, `0x80..0xFF` taken whole if any range leaves ASCII)
+and the fewest bytes any member costs (the UTF-8 length of the cheapest scalar,
+monotone in the codepoint). Both halves round the safe way — the byte set is a
+_superset_ of what the class can really spend, which can only shrink the
+intersected membership mask and so only withhold certificates, and `min_len` is
+a floor. `\d{6}` under the Unicode default now certifies `digit+u:6 hex+u:6
+word+u:6`.
+
+The bound is looser than the ASCII one, and it should be: `word+u` is nearly the
+whole byte alphabet, so `\w{8}` prunes 1.4% and `\s{4}` 5.5% — sound, honest,
+and nearly worthless, which is the correct price for a class that genuinely
+excludes almost nothing. The narrow classes are where it pays. Measured by
+ablation on the 21,854-file corpus (`.uclass ⇒ ĝ=0`, then the shipped rule,
+back to back):
+
+| query (engine default, `unicode=true`) | ĝ before               | pruned | speedup | ĝ after                      | pruned | speedup |
+| -------------------------------------- | ---------------------- | ------ | ------- | ---------------------------- | ------ | ------- |
+| `\d{6}`                                | —                      | 0.0%   | 1.00x   | `digit+u:6 hex+u:6 word+u:6` | 73.7%  | 2.12x   |
+| `\d{4}`                                | —                      | 0.0%   | 0.97x   | `digit+u:4 hex+u:4 word+u:4` | 52.8%  | 2.13x   |
+| `\s{4}`                                | —                      | 0.0%   | 1.01x   | `space+u:4`                  | 5.5%   | 1.04x   |
+| `\w{8}`                                | —                      | 0.0%   | 0.97x   | `word+u:8`                   | 1.4%   | 1.07x   |
+| `[0-9]{6}` (the ASCII twin)            | `digit:6 hex:6 word:6` | 92.7%  | 11.53x  | unchanged                    | 92.7%  | 10.77x  |
+
+The ASCII lanes keep their indices and their numbers, so nothing that certified
+before certifies differently now; the family simply grew a second half that only
+a `uclass` reaches. Caseless matching is unaffected in kind: `-i` folds the AST
+before the calculus runs, so a fold whose orbit escapes ASCII (`k`→U+212A
+KELVIN SIGN, `s`→U+017F LONG S) promotes the node to `uclass` and is then priced
+by the rule above rather than by a hand-maintained special case.
 `bench/crest/bench.zig` exercises all four alphabet × case pairings against the
-real matcher; option (b) — indexing codepoint-runs — remains open future work.
+real matcher. Option (b) as originally posed — indexing true codepoint runs —
+remains unimplemented and is now mostly uninteresting: it would tighten
+`\d`-style bounds on non-ASCII-heavy documents, which a code corpus does not
+have, at the cost of a second sidecar.
 
 ### 3.7a Grammar contract (the second footgun, found by referee, now closed)
 
@@ -675,12 +726,39 @@ evidence only and must not be presented as measurements of this revision.
 
 | operation          | cost                                                                                           |
 | ------------------ | ---------------------------------------------------------------------------------------------- |
-| index corpus       | `O(total input bytes · k)`; one streaming pass, with `k=8` comptime-unrolled                   |
+| index corpus       | `O(total input bytes)`; one streaming pass, all `k=16` lanes in one SIMD register              |
 | sieve one document | `O(k·m)` compares, `m ≤ 8` top-level alternatives — early-exit on the first branch that admits |
-| index space        | `N·k·sizeof(u16)` — 16 bytes per indexed document, plus the fixed sidecar header               |
+| index space        | `N·k·sizeof(u16)` — 32 bytes per indexed document, plus the fixed sidecar header               |
 | query-time `ĝ`     | `O(                                                                                            | R   | ·k)`plus`O(k log n)` for counted repetition, once per query, allocation-free |
 | sieve whole corpus | `O(N·k)` and `N·k·sizeof(u16)` mapped bytes potentially touched, not merely `O(k)`             |
 | incremental update | recompute one document's crest on change; publication remains generation-atomic                |
+
+The `k` in the first row is free of the input length but not of the machine:
+all 16 lanes are one 256-bit vector, so a byte costs one table load and three
+lane-parallel operations regardless of how wide the family is — which is why
+doubling the family to carry the scalar twins cost no scan time at all.
+
+What it did cost was **latency**. The per-byte update is a saturating add
+feeding an AND, a loop-carried chain about three cycles deep, and one scan
+cannot fill it: measured, a single scan ran at 4.4 cycles/byte with the machine
+mostly idle, and preshaping the reset mask into a table to cut the op count
+moved it by nothing — the signature of a latency bound rather than a throughput
+one. The document is therefore cut into four pieces scanned interleaved, four
+chains in flight, and the pieces rejoin **exactly** by the run algebra of §3.2:
+each piece reports the run it opens with, its best interior run, the run it
+ends with, and whether it never broke, and `Piece.join` is `concat` — the same
+`max(F₁, F₂, S₁+P₂)` the calculus folds over the pattern AST. The document side
+and the query side share one law, which is what makes the split exact rather
+than approximate. Ablated back to back on the 21,854-file corpus:
+
+|                                   | one piece  | four pieces interleaved |
+| --------------------------------- | ---------- | ----------------------- |
+| single-thread scan                | 0.73 GiB/s | **1.87 GiB/s** (2.56x)  |
+| vs. the scalar per-byte reference | 0.63x      | **1.62x**               |
+| sharded whole-corpus index build  | 45.4 ms    | **19.1 ms** (2.38x)     |
+
+Byte-identical on all 21,854 documents (same checksum), which is the only
+result that licenses the table.
 
 The sieve is embarrassingly composable with the trigram index: intersect
 survivor sets (both are necessary conditions, so the intersection is still

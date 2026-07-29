@@ -687,9 +687,11 @@ dash-straddling windows in `[0-9a-f]{8}-[0-9a-f]{4}` and takes the
 certificate's `regex-classcount` from 100% to 68.75% — but that is a narrower
 hole, and it closes nothing when the run is unpunctuated. The **crest sieve**
 is the formula I wrote to close the real one:
-index each file's longest run per byte-class (16 bytes/doc), derive from the
+index each file's longest run per byte-class (32 bytes/doc), derive from the
 regex the run every accepted string must contain, and skip any file that never
-crests that high. It is not a substring test; the soundness theorem, the
+crests that high. Each class is measured twice, once over ASCII and once over a
+variant closed under the non-ASCII bytes, which is what lets the Unicode
+spelling `\d{6}` prune (73.7% of the corpus) and not just `[0-9]{6}`. It is not a substring test; the soundness theorem, the
 min-of-max calculus over the AST, and an adversarially refereed priority
 review live in [`research/crest/`](research/crest/PROOF.md).
 

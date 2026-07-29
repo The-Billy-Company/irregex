@@ -229,3 +229,35 @@ test "Stream: mixed-width takes fuse adjacent fields (the pair-gulp shape)" {
     try std.testing.expectEqual(vals[2], cur2.take(6));
     try std.testing.expectEqual(vals[3] | (vals[4] << 6), cur2.take(12));
 }
+
+/// The inverse of `blockMask`: spread a 64-bit mask back over four 16-lane
+/// boolean vectors, so a case can state the mask it expects and the input that
+/// should produce it in one breath. Built through an array because a vector
+/// lane cannot be indexed with a runtime value.
+fn spreadLanes(m: u64) [4]@Vector(16, bool) {
+    var out: [4]@Vector(16, bool) = undefined;
+    for (&out, 0..) |*v, k| {
+        var lane: [16]bool = undefined;
+        for (&lane, 0..) |*b, i| b.* = m >> @intCast(k * 16 + i) & 1 != 0;
+        v.* = lane;
+    }
+    return out;
+}
+
+test "blockMask: lane i of the block is bit i, on every arch" {
+    // One lane at a time, so a per-chunk shift cannot be off by a chunk and a
+    // reversed lane order cannot hide behind a symmetric pattern.
+    for (0..64) |i| {
+        const want = @as(u64, 1) << @intCast(i);
+        try std.testing.expectEqual(want, bits.blockMask(spreadLanes(want)));
+    }
+    try std.testing.expectEqual(@as(u64, 0), bits.blockMask(spreadLanes(0)));
+    try std.testing.expectEqual(std.math.maxInt(u64), bits.blockMask(spreadLanes(std.math.maxInt(u64))));
+
+    var prng = std.Random.DefaultPrng.init(0xB10C_4A5C);
+    const rng = prng.random();
+    for (0..4096) |_| {
+        const want = rng.int(u64);
+        try std.testing.expectEqual(want, bits.blockMask(spreadLanes(want)));
+    }
+}

@@ -6,7 +6,7 @@
 //! class[b]]` serializes at ~4 cycles/byte — and the start-state SIMD
 //! acceleration bows out past 3 exit bytes. So every dense-class query
 //! (`\w+`, `[a-z]{3,}`, `[0-9]{4}`, `[0-9a-f]{8}` — exactly the crest sieve's
-//! literal-free class-repetition family, `primitives/crest.zig`) pays the full
+//! literal-free class-repetition family, `math/crest.zig`) pays the full
 //! chained table walk, the same ~1 GB/s floor ripgrep's lazy DFA sits on.
 //!
 //! The escape: for a pattern that IS a class repetition, boolean match is not
@@ -212,7 +212,7 @@ pub const ClassRun = struct {
                 hits[k] = rangeHits(r, b);
             }
             if (!exact) high = high or @reduce(.Max, top) >= 0x80;
-            if (feed(&run, joinMask(hits), self.min)) return .hit;
+            if (feed(&run, bitsmod.blockMask(hits), self.min)) return .hit;
         }
         // Sub-block tail at the same 16-wide lanes, fed (and early-exited)
         // PER CHUNK. The typical code line is < 64 bytes, so for the per-line
@@ -256,7 +256,7 @@ pub const ClassRun = struct {
                 hits[k] = nibbleHits(t, b);
             }
             if (!exact) high = high or @reduce(.Max, top) >= 0x80;
-            if (feed(&run, joinMask(hits), self.min)) return .hit;
+            if (feed(&run, bitsmod.blockMask(hits), self.min)) return .hit;
         }
         // Sub-block tail: truffle is already 16-wide (see scanRanges' note).
         const rest = hay[i..];
@@ -480,7 +480,7 @@ pub const ClassRun = struct {
                     hits[k] = nibbleHits(t, rest[k * 16 ..][0..16].*);
                 },
             }
-            return .{ .m = joinMask(hits), .len = W };
+            return .{ .m = bitsmod.blockMask(hits), .len = W };
         }
         var m: u64 = 0;
         var k: usize = 0;
@@ -669,40 +669,6 @@ inline fn nibbleHits(t: *const Nibbles, b: V16) @Vector(16, bool) {
 /// Membership mask for one 16-byte chunk (the sub-block tail's grain).
 inline fn nibbleMask(t: *const Nibbles, b: V16) u16 {
     return @bitCast(nibbleHits(t, b));
-}
-
-/// Fold four 16-lane hit vectors into the block's u64 mask (bit i ⇔ byte i).
-/// NEON has no `pmovmskb`, so the per-chunk `@bitCast(bool16) → u16` lowering
-/// costs a shift-narrow ladder EACH — on aarch64 the simdjson fold is far
-/// cheaper for a whole block: weight every lane with its bit value, then
-/// three pairwise adds (`addp`) collapse 64 lanes into one u64. Other arches
-/// keep the portable bitcast+shift shape (x86's movemask is already one op).
-inline fn joinMask(hits: [W / 16]@Vector(16, bool)) u64 {
-    switch (builtin.cpu.arch) {
-        .aarch64, .aarch64_be => {
-            const weights: V16 = .{ 1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128 };
-            const zero: V16 = @splat(0);
-            var t: [W / 16]V16 = undefined;
-            inline for (hits, 0..) |h, k| t[k] = @select(u8, h, weights, zero);
-            const s = addp(addp(t[0], t[1]), addp(t[2], t[3]));
-            return @as(@Vector(2, u64), @bitCast(addp(s, s)))[0];
-        },
-        else => {
-            var m: u64 = 0;
-            inline for (hits, 0..) |h, k| m |= @as(u64, bitsmod.laneMask(u16, h)) << (k * 16);
-            return m;
-        },
-    }
-}
-
-/// NEON pairwise byte add over the concatenation of `a ++ b` — the folding
-/// step of the movemask emulation above.
-inline fn addp(a: V16, b: V16) V16 {
-    return asm ("addp %[o].16b, %[a].16b, %[b].16b"
-        : [o] "=w" (-> V16),
-        : [a] "w" (a),
-          [b] "w" (b),
-    );
 }
 
 /// 16-wide byte shuffle with **pshufb semantics**: `out[i] = 0` when the
