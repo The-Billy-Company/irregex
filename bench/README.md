@@ -65,6 +65,34 @@ Install the optional ones: `brew install ugrep grep` ·
 `go install github.com/google/codesearch/cmd/{cindex,csearch}@latest` ·
 `go install github.com/sourcegraph/zoekt/cmd/{zoekt-index,zoekt}@latest`.
 
+### Which rival, exactly — the identity a mint records
+
+`@latest` names no version, so the roster above does not pin itself: the rival is
+whatever the machine happened to have. Every mint therefore writes each tool's
+identity to **`tool-versions.txt`** beside the receipts — the version the tool
+reports of itself **and** the sha256 of the executable that resolved. Both,
+because either alone degrades quietly:
+
+- A **digest alone** can name the wrong file. Under a version manager
+  `command -v csearch` resolves to the multiplexer, not the rival — a `mise` shim
+  is a symlink to `mise` — so shimmed tools hash to one launcher while still
+  reading as exact pins. Measured here: `csearch`, `zoekt`, and `zig` all
+  recorded the single digest `20d3bc06…`, which is `mise`. `guard/artifacts.py`
+  now fails closed when two tool ids share a digest, and identity resolution
+  walks `PATH` for a candidate whose name survives symlink resolution (a
+  multiplexer renames itself; a real install does not), so the digest names the
+  rival rather than the launcher.
+- A **version alone** cannot distinguish two local builds of one release. Both
+  csearch copies on this box are module `v1.2.0` compiled by different Go
+  toolchains, and only the digest separates them.
+
+csearch and zoekt carry **no version flag at all**, so their pin is the embedded
+Go module version, read from build metadata rather than by running them —
+`csearch version` treats `version` as the _regexp_ and prints a matching corpus
+line, which scraped a bogus `26.3.0` into an identity before the probe order was
+fixed. Expect `github.com/google/codesearch v1.2.0` and a
+`github.com/sourcegraph/zoekt` commit pseudo-version.
+
 | Script                                     | Race                                                                                                                                                                                                                                              |
 | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `dominance/races/warm.sh`                  | **warm**: gist resident-index p50 vs the unindexed scanners (the long-lived agent-session model)                                                                                                                                                  |
