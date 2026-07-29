@@ -29,6 +29,7 @@
 //!     than a mystery in the middle of it.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const assay = @import("../../../assay/assay.zig");
 const catalog = @import("catalog.zig");
 const charter = @import("../../../corpus/scope/charter.zig");
@@ -214,21 +215,42 @@ pub fn faultNote(e: anyerror) []const u8 {
     };
 }
 
-/// `$GIST_PREFERENCES`, else the XDG location, else `~/.config`. Unset and
-/// absent are the same answer — no preferences — because having none is the
+/// `$GIST_PREFERENCES`, else the platform's machine-local config home. Unset
+/// and absent are the same answer — no preferences — because having none is the
 /// overwhelmingly common case and must cost nothing.
+///
+/// `XDG_CONFIG_HOME` is consulted first on every platform (a Windows user who
+/// ports a dotfile setup means it), then each platform's own spelling of the
+/// same idea: `~/.config` on POSIX, `%LOCALAPPDATA%` on Windows. `LOCALAPPDATA`
+/// rather than `APPDATA` is the whole point of this file — `APPDATA` roams
+/// between machines, and a preferences file that follows you onto another
+/// machine is the `.ripgreprc` hazard this design exists to avoid.
 fn locate() ?[]const u8 {
     if (assay.envSpan("GIST_PREFERENCES")) |p| return if (p.len > 0) p else null;
     const Buf = struct {
         var bytes: [1024]u8 = undefined;
     };
+    const sep = std.fs.path.sep_str;
     if (assay.envSpan("XDG_CONFIG_HOME")) |base| {
-        return std.fmt.bufPrint(&Buf.bytes, "{s}/gist/preferences", .{base}) catch null;
+        return std.fmt.bufPrint(&Buf.bytes, "{s}" ++ sep ++ "gist" ++ sep ++ "preferences", .{base}) catch null;
     }
-    if (assay.envSpan("HOME")) |home| {
-        return std.fmt.bufPrint(&Buf.bytes, "{s}/.config/gist/preferences", .{home}) catch null;
+    if (comptime builtin.os.tag == .windows) {
+        if (assay.envSpan("LOCALAPPDATA")) |base| {
+            return std.fmt.bufPrint(&Buf.bytes, "{s}\\gist\\preferences", .{base}) catch null;
+        }
+    }
+    // `HOME` before `USERPROFILE`: a Windows shell that sets `HOME` (Git for
+    // Windows, MSYS2) is one where the user's dotfiles genuinely live there.
+    if (assay.envSpan("HOME") orelse home()) |h| {
+        return std.fmt.bufPrint(&Buf.bytes, "{s}" ++ sep ++ ".config" ++ sep ++ "gist" ++ sep ++ "preferences", .{h}) catch null;
     }
     return null;
+}
+
+/// The platform's home directory when it isn't spelled `HOME` — Windows only.
+fn home() ?[]const u8 {
+    if (comptime builtin.os.tag != .windows) return null;
+    return assay.envSpan("USERPROFILE");
 }
 
 // ── parsing ──────────────────────────────────────────────────────────────────

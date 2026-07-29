@@ -19,6 +19,7 @@
 //! candidate set the same way a scoped walk would.
 
 const std = @import("std");
+const portal = @import("../../../portal.zig");
 const corpus_mod = @import("../../../corpus/tree/corpus.zig");
 const fresh = @import("../../../corpus/fresh/fresh.zig");
 const persist = @import("../../../corpus/index/trigrams/persist.zig");
@@ -178,7 +179,7 @@ fn rankShard(sh: *RankShard) void {
 /// Parallel feature extraction over candidate `ids` — one std.Thread per core,
 /// blocking posix reads (the same proven pattern as `run.zig`'s `readCandidates`).
 fn parallelRank(gpa: std.mem.Allocator, paths: []const []const u8, ids: []const u32, re: *const Regex, docs: *std.ArrayList(Doc), read_files: *usize, binary_detect: bool) !void {
-    const ncpu = std.Thread.getCpuCount() catch 8;
+    const ncpu = portal.cpuCount() catch 8;
     const nshards = if (ids.len < read_par_threshold) 1 else @min(ids.len, ncpu);
     const shards = try gpa.alloc(RankShard, nshards);
     defer gpa.free(shards);

@@ -253,9 +253,14 @@ fn processDir(w: *Worker, a: std.mem.Allocator, sa: std.mem.Allocator, scratch: 
     // exist here, so the chain build below never blind-probes the disk.
     var entries: std.ArrayList(Entry) = .empty;
     var present: IgPresent = .{};
-    const bulk_ok = bulkstat.supported and blk: {
-        // With index elision live, each entry's mtime+ctime ride the bulk
-        // listing for free; without it, names+types via getdirentries is cheaper.
+    // Attempt the batched listing only where it beats the portable iterator. With
+    // index elision live it always does — the timestamps ride along, so no
+    // candidate file needs its own stat. Without it the question is per platform,
+    // and on Windows the answer is no: `Dir.Iterator` there is already the same
+    // `NtQueryDirectoryFile`, so the drain would buy an owned array and a copy for
+    // nothing (`bulkstat.names_undercut_iterator`).
+    const try_bulk = bulkstat.supported and (freshnessWanted(cfg) or bulkstat.names_undercut_iterator);
+    const bulk_ok = try_bulk and blk: {
         const listing = if (freshnessWanted(cfg)) bulkstat.listOneLevel(sa, dir.handle) else bulkstat.listNamesOnly(sa, dir.handle);
         // Declining routes to the portable fallback below; OOM is a fault and
         // takes this walk's one canonical exit rather than being mistaken for it.
@@ -274,9 +279,12 @@ fn processDir(w: *Worker, a: std.mem.Allocator, sa: std.mem.Allocator, scratch: 
         break :blk true;
     };
     if (!bulk_ok) {
-        if (bulkstat.supported) {
+        if (try_bulk) {
             // Bulk listing is all-or-nothing but shares the fd offset with
-            // readdir — reopen a fresh handle before the portable fallback.
+            // readdir — reopen a fresh handle before the portable fallback. Gated
+            // on the ATTEMPT, not on `supported`: a platform that skipped the
+            // drain never moved the cursor, and on Windows an open is the one
+            // operation every filesystem filter driver is interposed on.
             portal.close(dir.handle);
             closed = true;
             const fd2 = portal.openDir(portal.cwd(), task.disk) catch |e| {

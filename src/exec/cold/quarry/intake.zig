@@ -17,6 +17,7 @@
 //! Two strategies, one oracle: elision may change speed, never results.
 
 const std = @import("std");
+const portal = @import("../../../portal.zig");
 const args = @import("../argv/args.zig");
 const corpus_mod = @import("../../../corpus/tree/corpus.zig");
 const crest = @import("../../../kernel/math/crest.zig");
@@ -177,7 +178,7 @@ fn readShard(sh: *ReadShard) void {
 /// Returns whether any shard met a candidate it could not open (rg's exit-2
 /// class — see `reportUnopenable`).
 fn readCandidates(dest: std.mem.Allocator, gpa: std.mem.Allocator, candidates: []const Candidate, needle: ?simd.Gate, out: *std.ArrayList(InFile), cfg: *const ingest.Config) bool {
-    const ncpu = std.Thread.getCpuCount() catch 8;
+    const ncpu = portal.cpuCount() catch 8;
     // A transforming run (-z/--pre/-E) reads in parallel like any other: each
     // shard decompresses/transcodes on its OWN arena + scratch, and `ingest`'s
     // subprocess path (external decompressor / `--pre`) is concurrency-safe —

@@ -22,6 +22,7 @@
 //! to the portable stat walk with the identical conservative decision.
 
 const std = @import("std");
+const portal = @import("../../portal.zig");
 const haystack = @import("../tree/haystack.zig");
 const bulkstat = @import("../tree/bulkstat.zig");
 const ignore = @import("../tree/ignore.zig");
@@ -37,7 +38,7 @@ const Dir = std.Io.Dir;
 /// saturates every core (N-1 spawned + 1 inline) with the calling thread
 /// participating rather than idling on join.
 pub fn run(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, built_ns: i128, a: std.mem.Allocator, out: *std.ArrayList([]const u8)) !void {
-    const ncpu = std.Thread.getCpuCount() catch 8;
+    const ncpu = portal.cpuCount() catch 8;
     const items = try buildWorkItems(gpa, io, roots, built_ns, a, out, ncpu * 8);
     defer gpa.free(items);
     if (items.len == 0) return;

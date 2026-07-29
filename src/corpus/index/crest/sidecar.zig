@@ -14,6 +14,7 @@
 //! `verify` for why the mapped read path does not spend it.
 
 const std = @import("std");
+const portal = @import("../../../portal.zig");
 const crest = @import("../../../kernel/math/crest.zig");
 const signet = @import("../frame/signet.zig");
 
@@ -114,7 +115,7 @@ pub fn verify(bytes: []const u8) signet.Error!void {
 pub fn build(gpa: std.mem.Allocator, docs: []const []const u8) ![]crest.Vector {
     const out = try gpa.alloc(crest.Vector, docs.len);
     errdefer gpa.free(out);
-    const ncpu = std.Thread.getCpuCount() catch 1;
+    const ncpu = portal.cpuCount() catch 1;
     const nshards = @max(1, @min(ncpu, docs.len / 64)); // tiny corpora: inline
     if (nshards <= 1) {
         for (docs, out) |d, *v| v.* = crest.crest(d);

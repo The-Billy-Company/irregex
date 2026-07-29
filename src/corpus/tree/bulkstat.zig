@@ -1,135 +1,81 @@
-//! irregex — macOS `getattrlistbulk(2)` batched directory enumeration, the
-//! platform-correct answer to the freshness overlay's dominant cold-query cost
-//! (see `fresh.zig`'s doc comment and the README's "make the freshness walk
-//! incremental" next rung). That rung's own text pointed at `io_uring`
-//! batching — a Linux-only API that doesn't exist on this box (Darwin/Apple
-//! Silicon, confirmed via `uname`/`sysctl`). The macOS-native equivalent for
-//! "stop paying one syscall per file" is `getattrlistbulk`: unlike
-//! `readdir()` + `stat()` per entry (2 syscalls/file), one bulk call returns
-//! name + type + mtime + ctime for many siblings at once — Apple's own
-//! filesystem-dev
-//! list documents 4–50× fewer syscalls (readdir vs getdirentriesattr thread,
-//! Dec 2014; independently reproduced: ~1,600× fewer syscalls, ~4-5× faster
-//! on a warm NVMe SSD, quivent/getattrlistbulk-rs, 2025 benchmark on M1).
+//! irregex — batched directory metadata, the platform-correct answer to the
+//! freshness overlay's dominant cold-query cost (see `fresh.zig`'s doc comment and
+//! the README's "make the freshness walk incremental" next rung). That rung's own
+//! text pointed at `io_uring` batching — a Linux-only API that doesn't exist on
+//! this box (Darwin/Apple Silicon, confirmed via `uname`/`sysctl`). The portable
+//! form of "stop paying one syscall per file" is whatever batched-enumeration call
+//! the host actually has, and gathering one is [`sheaf.zig`](sheaf.zig)'s whole
+//! job: `getattrlistbulk(2)` on Darwin, `getdents64(2)` on Linux,
+//! `NtQueryDirectoryFile` on Windows. Unlike `readdir()` + `stat()` per entry
+//! (2 syscalls/file), one bulk call returns name + type + mtime + ctime for many
+//! siblings at once — Apple's own filesystem-dev list documents 4–50× fewer
+//! syscalls (readdir vs getdirentriesattr thread, Dec 2014; independently
+//! reproduced: ~1,600× fewer syscalls, ~4-5× faster on a warm NVMe SSD,
+//! quivent/getattrlistbulk-rs, 2025 benchmark on M1).
 //! `pkg/kernels/irregex/changelog.d/+bulkstat-freshness.changed.md` cites the
 //! measurement on THIS corpus.
 //!
-//! Why hand-rolled instead of `mmap`-ing files or another IO trick: the
-//! freshness walk never reads file *bytes* — it only needs each file's
-//! change timestamps, so the lever is metadata syscalls, not data IO.
-//! (Candidate file
-//! *reads* are a different, already-solved problem: ripgrep's own author
-//! documents why `mmap` is a net loss for "open many small files" —
-//! open+mmap+munmap has a *higher* fixed cost per file than open+read+close
-//! on typical source-sized files — which is exactly why `emit.zig`/`drivers.zig`
-//! already use blocking `read()`, not `mmap`; this module doesn't touch that
-//! path at all.)
+//! This file owns the *policy*: which entries a freshness walk cares about, how a
+//! declined batch degrades, and how a listing is handed to a caller that must
+//! outlive the batch buffer. The syscalls themselves live next door, so that the
+//! rule "uncertain metadata forces a live read" has one statement rather than one
+//! per platform.
 //!
-//! Zig's std has no binding for this syscall (macOS-only, added in Yosemite,
-//! `<sys/attr.h>` + `<sys/unistd.h>`), so the ABI below is hand-declared from
-//! the SDK headers — `struct attrlist`, the `ATTR_CMN_*`/`FSOPT_*` bit values,
-//! and the per-entry buffer layout (a `u32` length prefix, then the
-//! `attribute_set_t` of what was actually returned, then each requested
-//! attribute in Apple's fixed group order — RETURNED_ATTRS, NAME, OBJTYPE,
-//! MODTIME, CHGTIME for our exact request — with `NAME`'s bytes stored
-//! out-of-line via
-//! an `attrreference_t` offset+length pair). Cross-checked byte-for-byte
-//! against a maintained, benchmarked Rust binding
-//! (quivent/getattrlistbulk-rs `src/{ffi,parser}.rs`) before writing this.
+//! Why hand-rolled instead of `mmap`-ing files or another IO trick: the freshness
+//! walk never reads file *bytes* — it only needs each file's change timestamps, so
+//! the lever is metadata syscalls, not data IO. (Candidate file *reads* are a
+//! different, already-solved problem: ripgrep's own author documents why `mmap` is
+//! a net loss for "open many small files" — open+mmap+munmap has a *higher* fixed
+//! cost per file than open+read+close on typical source-sized files — which is
+//! exactly why `emit.zig`/`drivers.zig` already use blocking `read()`, not `mmap`;
+//! this module doesn't touch that path at all.)
 //!
-//! FAIL-SOFT, NEVER FAIL-OPEN: a bulk call failing on some directory (an
-//! unusual mount, a permissions edge, or simply a filesystem that doesn't
-//! implement it) falls back to the proven stat-based walk for *that*
-//! subtree only. Under `README.md`'s local-filesystem model, uncertain bulk
-//! metadata therefore loses speed rather than weakening the conservative
-//! live-read decision.
+//! FAIL-SOFT, NEVER FAIL-OPEN: a bulk call failing on some directory (an unusual
+//! mount, a permissions edge, or simply a filesystem that doesn't implement it)
+//! falls back to the proven stat-based walk for *that* subtree only. Under
+//! `README.md`'s local-filesystem model, uncertain bulk metadata therefore loses
+//! speed rather than weakening the conservative live-read decision.
 
 const std = @import("std");
-const builtin = @import("builtin");
 const fault = @import("../../fault.zig");
 const haystack = @import("haystack.zig");
+const sheaf = @import("sheaf.zig");
 const Dir = std.Io.Dir;
 const Allocator = std.mem.Allocator;
 
-/// This module's private control-flow vocabulary (ADR-373 law 1). `Declined`
-/// means the accelerator stepped aside — the syscall is absent on this
-/// filesystem, or the buffer it packed did not hold up — and it **never leaves
-/// the module**: the two public listings convert it into a
-/// `fault.Answer(…).declined = .capability_missing`, exactly as the PCRE2
-/// shadow rewriter converts its `error.Bail`.
-///
-/// It must be a non-`pub` **named** set, not an inline `error{Declined}` in each
-/// signature: an inline set is inferred outward, so the name would escape the
-/// file and owe the global fault taxonomy a member. Named and private, it stays
-/// this module's business.
-///
-/// The split from `OutOfMemory` is the point. The previous single
-/// `error.BulkStatUnsupported` merged both facts, so every caller's `catch`
-/// treated an allocation failure as "this platform lacks the syscall" and
-/// silently walked the slower path with a dying allocator.
-const Declines = error{Declined};
-
-/// Only attempted on Darwin; every other target statically falls back to the
-/// caller's stat-based walk (checked once, not per-directory).
-pub const supported = builtin.os.tag == .macos or builtin.os.tag == .ios or
-    builtin.os.tag == .tvos or builtin.os.tag == .watchos or builtin.os.tag == .visionos;
+/// Whether this target batches names + kinds + both change clocks in one call —
+/// the fact that lets a walk elide unchanged indexed files inline. Checked once,
+/// not per directory; every other target statically falls back to the caller's
+/// stat-based walk.
+pub const supported = sheaf.supported;
 
 /// Whether `listNamesOnly` — the cheaper names+kinds drain, no metadata — has a
 /// raw batched implementation on this target. Broader than `supported`, because
-/// the names-only listing needs no `getattrlistbulk`: Darwin reaches it through
-/// `getdirentries(2)` and Linux through `getdents64(2)`. Every other target
-/// declines, and its callers take the portable `Dir.Iterator` path.
+/// Linux's `getdents64(2)` enumerates without resolving attributes.
 ///
 /// The two facts are separate constants because they fail differently. A target
 /// outside `supported` still has correct freshness (it stats); a target outside
 /// this one cannot enumerate a directory here at all, which is why
-/// `phantom/treemap.zig` refuses to publish a snapshot there rather than
-/// recording every directory as childless.
-pub const names_supported = supported or builtin.os.tag == .linux;
+/// `phantom/treemap.zig` refuses to publish a snapshot there rather than recording
+/// every directory as childless.
+pub const names_supported = sheaf.names_supported;
 
-// ─────────────────────── hand-declared Darwin ABI (<sys/attr.h>) ───────────────────────
-
-const ATTR_BIT_MAP_COUNT: u16 = 5;
-const ATTR_CMN_NAME: u32 = 0x00000001;
-const ATTR_CMN_OBJTYPE: u32 = 0x00000008;
-const ATTR_CMN_MODTIME: u32 = 0x00000400;
-const ATTR_CMN_CHGTIME: u32 = 0x00000800;
-const ATTR_CMN_RETURNED_ATTRS: u32 = 0x80000000;
-const FSOPT_PACK_INVAL_ATTRS: u64 = 0x00000008;
-
-// <sys/vnode.h> enum vtype (VNON=0, VREG=1, VDIR=2, VBLK=3, VCHR=4, VLNK=5, …).
-const VREG: u32 = 1;
-const VDIR: u32 = 2;
-
-/// Mirror of C `struct attrlist` (<sys/attr.h>) — field order is the ABI.
-const AttrList = extern struct {
-    bitmapcount: u16,
-    reserved: u16 = 0,
-    commonattr: u32,
-    volattr: u32 = 0,
-    dirattr: u32 = 0,
-    fileattr: u32 = 0,
-    forkattr: u32 = 0,
-};
-
-/// `int getattrlistbulk(int dirfd, struct attrlist *alist, void *attrBuf, size_t attrBufSize, uint64_t options)`
-/// — returns the number of entries packed into `attrBuf` (0 ⇒ exhausted, -1 ⇒
-/// error/errno). Not in any Zig std binding; declared straight off
-/// `<sys/unistd.h>` (`SYS_getattrlistbulk` = 461 in `<sys/syscall.h>`).
-extern "c" fn getattrlistbulk(dirfd: c_int, alist: *anyopaque, attr_buf: [*]u8, attr_buf_size: usize, options: u64) c_int;
-
-const requested_commonattr: u32 = ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_NAME | ATTR_CMN_OBJTYPE | ATTR_CMN_MODTIME | ATTR_CMN_CHGTIME;
+/// Whether `listNamesOnly` actually *undercuts* this platform's `Dir.Iterator`,
+/// which is what a caller wanting names alone should ask instead of
+/// `names_supported`. See the sheaf's own declaration: on Windows the portable
+/// iterator is already the batched syscall, so only a caller that wants metadata
+/// (or an owned listing) gains anything there.
+pub const names_undercut_iterator = sheaf.names_undercut_iterator;
 
 /// One directory entry's freshness metadata, one bulk call away instead of one
-/// `stat()` syscall away. `name` aliases the iterator's internal buffer —
-/// valid only until the next `next()` call (mirrors `haystack.Haystack`).
-pub const Entry = struct {
-    name: []const u8,
-    is_dir: bool,
-    is_file: bool,
-    mtime_ns: ?i128,
-    ctime_ns: ?i128,
-};
+/// `stat()` syscall away. `name` aliases the iterator's internal buffer — valid
+/// only until the next `next()` call (mirrors `haystack.Haystack`).
+pub const Entry = sheaf.Entry;
+
+/// The batched metadata drain for this platform. Historically the Darwin
+/// `getattrlistbulk` iterator and still that on Darwin; on Windows the same shape
+/// over `NtQueryDirectoryFile`.
+pub const BulkDir = sheaf.Sheaf;
 
 /// Only metadata strictly older than the build anchor proves an indexed file
 /// unchanged. Either timestamp at/after the anchor, or either one unavailable,
@@ -141,127 +87,13 @@ pub fn needsLiveRead(anchor_ns: i128, mtime_ns: ?i128, ctime_ns: ?i128) bool {
     return mtime >= anchor_ns or ctime >= anchor_ns;
 }
 
-/// Bulk-enumerates ONE open directory. 8 KiB batches (not 64 KiB): this is a
-/// per-recursion-depth stack local (`visitFresh` below), and a monorepo path
-/// is at most ~15 components deep, so 8 KiB × depth stays a rounding error
-/// against any thread's stack — while still batching dozens of typical
-/// same-directory siblings per syscall (most directories in this repo hold
-/// well under 8 KiB / ~64 B-per-entry ≈ 128 entries, i.e. ONE syscall each).
-pub const BulkDir = struct {
-    dirfd: std.posix.fd_t,
-    buf: [8192]u8 align(@alignOf(u32)) = undefined,
-    count: c_int = 0, // entries left unparsed in `buf` from the last refill
-    off: usize = 0, // byte offset of the next unparsed entry
-    exhausted: bool = false, // last refill returned 0 (directory fully drained)
-
-    pub fn init(dirfd: std.posix.fd_t) BulkDir {
-        return .{ .dirfd = dirfd };
-    }
-
-    fn refill(self: *BulkDir) Declines!void {
-        var al = AttrList{ .bitmapcount = ATTR_BIT_MAP_COUNT, .commonattr = requested_commonattr };
-        const n = getattrlistbulk(self.dirfd, &al, &self.buf, self.buf.len, FSOPT_PACK_INVAL_ATTRS);
-        if (n < 0) return error.Declined;
-        self.off = 0;
-        self.count = n;
-        if (n == 0) self.exhausted = true;
-    }
-
-    /// Next entry, or null at end-of-directory. `error.Declined` means the
-    /// syscall itself failed (wrong fs, permissions, …) — the caller must fall
-    /// back to a stat-based walk, never treat this as "done". Distinct from the
-    /// `null` that means "done", which is why the two cannot be confused here.
-    pub fn next(self: *BulkDir) Declines!?Entry {
-        if (self.count == 0) {
-            if (self.exhausted) return null;
-            try self.refill();
-            if (self.count == 0) return null; // exhausted on the very first call
-        }
-        const entry = try parseEntry(self.buf[0..], self.off);
-        self.off += entry.advance;
-        self.count -= 1;
-        return entry.value;
-    }
-};
-
-const Parsed = struct { value: Entry, advance: usize };
-
-/// Bounds-checked little-endian field read — `std.mem.readInt` on a byte
-/// slice (never a direct pointer cast): the kernel's packing isn't guaranteed
-/// to leave every field naturally aligned for a typed load.
-inline fn readAt(comptime T: type, buf: []const u8, pos: usize) Declines!T {
-    if (pos + @sizeOf(T) > buf.len) return error.Declined;
-    return std.mem.readInt(T, buf[pos..][0..@sizeOf(T)], .little);
-}
-
-/// One packed `timespec` (i64 sec + i64 nsec) → nanoseconds, or null when
-/// `returned_common` says the kernel didn't have the value (the field still
-/// occupies its 16 bytes under `FSOPT_PACK_INVAL_ATTRS`).
-inline fn readTimespec(buf: []const u8, pos: usize, valid: bool) Declines!?i128 {
-    const sec = try readAt(i64, buf, pos);
-    const nsec = try readAt(i64, buf, pos + 8);
-    return if (valid) @as(i128, sec) * std.time.ns_per_s + @as(i128, nsec) else null;
-}
-
-/// Parse one entry at `start`. Layout (Apple's fixed group order for our
-/// exact request): `u32 length` │ `attribute_set_t returned` (5×u32=20 B) │
-/// `attrreference_t name` (i32 offset + u32 length, 8 B — the offset is
-/// relative to the FIELD's own address, and the bytes it points to live
-/// out-of-line, appended after every fixed attribute) │ `u32 objtype` │
-/// `timespec modtime` · `timespec chgtime` (each i64 sec + i64 nsec). Every
-/// multi-byte read goes through `std.mem.readInt` on a byte slice (never a
-/// direct pointer cast) — the kernel's packing isn't guaranteed to leave every
-/// field naturally aligned for a typed load. `FSOPT_PACK_INVAL_ATTRS` physically
-/// packs every requested field; `returned_common` says whether each value is
-/// valid, so invalid timestamps still advance `pos` but become null metadata.
-fn parseEntry(buf: []const u8, start: usize) Declines!Parsed {
-    const length = try readAt(u32, buf, start);
-    if (length == 0 or start + length > buf.len) return error.Declined;
-
-    var pos = start + 4;
-    const returned_common = try readAt(u32, buf, pos);
-    pos += 20; // attribute_set_t: commonattr, volattr, dirattr, fileattr, forkattr
-
-    if (returned_common & ATTR_CMN_NAME == 0 or returned_common & ATTR_CMN_OBJTYPE == 0)
-        return error.Declined;
-
-    const data_offset = try readAt(i32, buf, pos);
-    const data_len = try readAt(u32, buf, pos + 4);
-    const name_start = @as(i64, @intCast(pos)) + data_offset;
-    if (name_start < 0) return error.Declined;
-    const ns: usize = @intCast(name_start);
-    const ne = ns + data_len;
-    if (ne > buf.len or ns > ne) return error.Declined;
-    var name = buf[ns..ne];
-    if (std.mem.indexOfScalar(u8, name, 0)) |nul| name = name[0..nul]; // NUL-terminated
-    pos += 8;
-
-    const objtype = try readAt(u32, buf, pos);
-    pos += 4;
-
-    const mtime_ns = try readTimespec(buf, pos, returned_common & ATTR_CMN_MODTIME != 0);
-    pos += 16;
-    const ctime_ns = try readTimespec(buf, pos, returned_common & ATTR_CMN_CHGTIME != 0);
-
-    return .{
-        .value = .{
-            .name = name,
-            .is_dir = objtype == VDIR,
-            .is_file = objtype == VREG,
-            .mtime_ns = mtime_ns,
-            .ctime_ns = ctime_ns,
-        },
-        .advance = length,
-    };
-}
-
-/// Recursively collect every file under `dir` (relative path `prefix`) whose
-/// mtime or ctime is `>= built_ns` (or metadata is unavailable), applying the
-/// shared `haystack.isSkipDir` policy — the bulk-enumeration twin of
-/// `fresh.zig`'s portable per-file-`statFile` walk.
-/// Degrades directory-by-directory: a bulk failure on one directory falls
-/// back to `fallbackWalk` (the proven stat-based path) for that subtree only,
-/// preserving the same metadata rule.
+/// Recursively collect every file under `dir` (relative path `prefix`) whose mtime
+/// or ctime is `>= built_ns` (or metadata is unavailable), applying the shared
+/// `haystack.isSkipDir` policy — the bulk-enumeration twin of `fresh.zig`'s
+/// portable per-file-`statFile` walk.
+/// Degrades directory-by-directory: a bulk failure on one directory falls back to
+/// `fallbackWalk` (the proven stat-based path) for that subtree only, preserving
+/// the same metadata rule.
 pub fn visitFresh(a: Allocator, io: std.Io, dir: Dir, prefix: []const u8, built_ns: i128, out: *std.ArrayList([]const u8)) void {
     var bd = BulkDir.init(dir.handle);
     while (true) {
@@ -284,9 +116,9 @@ pub fn visitFresh(a: Allocator, io: std.Io, dir: Dir, prefix: []const u8, built_
     }
 }
 
-/// One directory entry, name durably owned (`gpa`-allocated) rather than
-/// aliasing `BulkDir`'s reused scratch buffer — for callers that must hold
-/// entries past the next `next()` call, i.e. `listOneLevel` below.
+/// One directory entry, name durably owned (`gpa`-allocated) rather than aliasing
+/// the drain's reused scratch buffer — for callers that must hold entries past the
+/// next `next()` call, i.e. the two `list*` drains below.
 pub const OwnedEntry = struct {
     name: []u8,
     is_dir: bool,
@@ -295,8 +127,8 @@ pub const OwnedEntry = struct {
     ctime_ns: ?i128,
 };
 
-/// Fully drains ONE level of `dirfd` via `getattrlistbulk`, duping every name
-/// into `gpa` up front. All-or-nothing: any parse/syscall failure partway
+/// Fully drains ONE level of `dirfd` **with** per-entry metadata, duping every
+/// name into `gpa` up front. All-or-nothing: any parse/syscall failure partway
 /// discards what's been collected and declines rather than handing back a
 /// truncated listing — the caller re-opens a fresh handle and retries with the
 /// portable `Dir.Iterator`, never mixes a partial bulk result with a partial
@@ -306,135 +138,60 @@ pub const OwnedEntry = struct {
 /// position, so a caller cannot `try` its way past the fallback, while
 /// `OutOfMemory` stays in the error channel where it belongs.
 pub fn listOneLevel(gpa: Allocator, dirfd: std.posix.fd_t) error{OutOfMemory}!fault.Answer([]OwnedEntry) {
+    var drain = BulkDir.init(dirfd);
+    return collect(gpa, &drain);
+}
+
+/// Fully drains ONE level of `dirfd` via the platform's raw batched readdir —
+/// names + kinds only, no timestamps on the platforms where those cost extra. When
+/// the caller doesn't need per-entry metadata (the parallel walk without index
+/// elision), this is strictly cheaper than `listOneLevel` on POSIX:
+/// `getattrlistbulk` makes the kernel resolve and pack attributes per entry, while
+/// this is the same thin readdir path ripgrep rides. Gated on `names_supported`,
+/// NOT on `supported`: Darwin rides `getdirentries(2)` and Linux `getdents64(2)`.
+///
+/// On Windows the two are one call, so the timestamps arrive here too rather than
+/// being suppressed to imitate a saving that platform does not have.
+///
+/// Same boundary contract as `listOneLevel`: declining is a value, OOM is an error.
+pub fn listNamesOnly(gpa: Allocator, dirfd: std.posix.fd_t) error{OutOfMemory}!fault.Answer([]OwnedEntry) {
+    if (comptime !names_supported) return .{ .declined = .capability_missing };
+    var drain = sheaf.Names.init(dirfd);
+    return collect(gpa, &drain);
+}
+
+/// Drain an iterator into an owned listing, or decline having freed everything it
+/// had already taken. Shared by both drains so the all-or-nothing promise has one
+/// implementation rather than an `errdefer` that no longer fires once the failure
+/// became a success-position value.
+fn collect(gpa: Allocator, drain: anytype) error{OutOfMemory}!fault.Answer([]OwnedEntry) {
     var list: std.ArrayList(OwnedEntry) = .empty;
     errdefer {
         for (list.items) |e| gpa.free(e.name);
         list.deinit(gpa);
     }
-    var bd = BulkDir.init(dirfd);
-    while (bd.next() catch return declineList(gpa, &list)) |e| {
+    while (true) {
+        const entry = drain.next() catch {
+            for (list.items) |e| gpa.free(e.name);
+            list.deinit(gpa);
+            return .{ .declined = .capability_missing };
+        } orelse break;
         try list.append(gpa, .{
-            .name = try gpa.dupe(u8, e.name),
-            .is_dir = e.is_dir,
-            .is_file = e.is_file,
-            .mtime_ns = e.mtime_ns,
-            .ctime_ns = e.ctime_ns,
+            .name = try gpa.dupe(u8, entry.name),
+            .is_dir = entry.is_dir,
+            .is_file = entry.is_file,
+            .mtime_ns = entry.mtime_ns,
+            .ctime_ns = entry.ctime_ns,
         });
     }
     return .{ .got = try list.toOwnedSlice(gpa) };
 }
 
-/// Release a partially-built listing and declare the accelerator stepped aside.
-/// Shared by both drains so the all-or-nothing promise has one implementation
-/// rather than a `errdefer` that no longer fires once the failure became a
-/// success-position value.
-fn declineList(gpa: Allocator, list: *std.ArrayList(OwnedEntry)) fault.Answer([]OwnedEntry) {
-    for (list.items) |e| gpa.free(e.name);
-    list.deinit(gpa);
-    return .{ .declined = .capability_missing };
-}
-
-/// One decoded directory record: what the entry says, and how many bytes to
-/// step to reach the next one. `ino == 0` marks a deleted slot the kernel left
-/// in the buffer — a skip, not an error.
-const Record = struct { name: []const u8, ino: u64, dtype: u8, advance: usize };
-
-/// Fully drains ONE level of `dirfd` via the platform's raw batched readdir —
-/// names + `d_type` only, no timestamps (`mtime_ns = ctime_ns = null`). When
-/// the caller doesn't need per-entry metadata (the parallel walk without index
-/// elision), this is strictly cheaper than `listOneLevel`: `getattrlistbulk`
-/// makes the kernel resolve and pack attributes per entry, while this is the
-/// same thin readdir path ripgrep rides. Gated on `names_supported`, NOT on
-/// `supported`: Darwin rides `getdirentries(2)` and Linux `getdents64(2)`.
-///
-/// Same boundary contract as `listOneLevel`: declining is a value, OOM is an error.
-pub fn listNamesOnly(gpa: Allocator, dirfd: std.posix.fd_t) error{OutOfMemory}!fault.Answer([]OwnedEntry) {
-    var list: std.ArrayList(OwnedEntry) = .empty;
-    errdefer {
-        for (list.items) |e| gpa.free(e.name);
-        list.deinit(gpa);
-    }
-    if (comptime !names_supported) return declineList(gpa, &list);
-    var buf: [64 * 1024]u8 align(@alignOf(u64)) = undefined;
-    var cursor: i64 = 0; // Darwin's `basep`; Linux keeps its cursor in the fd
-    while (true) {
-        const n = refillNames(dirfd, &buf, &cursor) catch return declineList(gpa, &list);
-        if (n == 0) return .{ .got = try list.toOwnedSlice(gpa) };
-        var i: usize = 0;
-        while (i < n) {
-            const rec = parseRecord(buf[i..n]) catch return declineList(gpa, &list);
-            i += rec.advance;
-            if (rec.ino == 0) continue;
-            if (std.mem.eql(u8, rec.name, ".") or std.mem.eql(u8, rec.name, "..")) continue;
-            const is_dir = rec.dtype == std.posix.DT.DIR;
-            const is_file = rec.dtype == std.posix.DT.REG;
-            if (!is_dir and !is_file) continue; // symlinks/specials — the walk never follows them
-            try list.append(gpa, .{
-                .name = try gpa.dupe(u8, rec.name),
-                .is_dir = is_dir,
-                .is_file = is_file,
-                .mtime_ns = null,
-                .ctime_ns = null,
-            });
-        }
-    }
-}
-
-/// One batch of directory records into `buf`; 0 means the directory is drained.
-/// The two syscalls differ in where the read cursor lives — Darwin threads it
-/// through the caller-held `basep`, Linux keeps it in the open file description
-/// — so `basep` is simply unread on Linux rather than being two functions.
-fn refillNames(dirfd: std.posix.fd_t, buf: []u8, basep: *i64) Declines!usize {
-    if (comptime builtin.os.tag == .linux) {
-        // The raw syscall, not a libc symbol: musl ships no `getdirentries`, so
-        // going through `std.c` here is what broke every static-musl cross build.
-        const rc = std.os.linux.getdents64(dirfd, buf.ptr, buf.len);
-        if (std.os.linux.errno(rc) != .SUCCESS) return error.Declined;
-        return rc;
-    }
-    const rc = std.posix.system.getdirentries(dirfd, buf.ptr, buf.len, basep);
-    if (std.posix.errno(rc) != .SUCCESS) return error.Declined;
-    return @intCast(rc);
-}
-
-/// Decode the leading record of `rec` by explicit field offset (no pointer
-/// casts, so the two layouts cannot silently alias each other):
-///
-/// - Darwin 64-bit `struct dirent`: d_ino u64 @0 · d_seekoff u64 @8 ·
-///   d_reclen u16 @16 · d_namlen u16 @18 · d_type u8 @20 · name @21.
-/// - Linux `struct linux_dirent64`: d_ino u64 @0 · d_off i64 @8 ·
-///   d_reclen u16 @16 · d_type u8 @18 · NUL-terminated name @19 (no length
-///   field — the name is scanned to its terminator inside the record).
-///
-/// Reading a Linux buffer with the Darwin layout is not a crash but a silent
-/// wrong answer: `d_type` lands where `d_namlen`'s low byte is, so every entry
-/// decodes to a bogus name and kind. That is what made a freshly indexed tree
-/// report zero files on Linux, so the record is bounds-checked here and a
-/// truncated one declines rather than reading past the batch.
-fn parseRecord(rec: []const u8) Declines!Record {
-    const darwin = comptime builtin.os.tag != .linux;
-    const name_off: usize = if (darwin) 21 else 19;
-    if (rec.len < name_off) return error.Declined;
-    const reclen: usize = std.mem.readInt(u16, rec[16..18], .little);
-    if (reclen < name_off or reclen > rec.len) return error.Declined;
-    const body = rec[name_off..reclen];
-    const name = if (darwin)
-        body[0..@min(@as(usize, std.mem.readInt(u16, rec[18..20], .little)), body.len)]
-    else
-        std.mem.sliceTo(body, 0);
-    return .{
-        .name = name,
-        .ino = std.mem.readInt(u64, rec[0..8], .little),
-        .dtype = if (darwin) rec[20] else rec[18],
-        .advance = reclen,
-    };
-}
-
-/// The pre-bulkstat walk (readdir + `statFile` per entry), scoped to one
-/// subtree — reused verbatim as `visitFresh`'s degrade path so a bulk-call
-/// failure can only fall back to previously-proven-correct behavior.
-/// `pub` because `fresh.zig::visitItem` is the same walk on a non-Darwin
-/// target — one definition, so the two paths cannot drift (§Boilerplate).
+/// The pre-bulkstat walk (readdir + `statFile` per entry), scoped to one subtree —
+/// reused verbatim as `visitFresh`'s degrade path so a bulk-call failure can only
+/// fall back to previously-proven-correct behavior.
+/// `pub` because `fresh.zig::visitItem` is the same walk on a target without a
+/// metadata batch — one definition, so the two paths cannot drift (§Boilerplate).
 pub fn fallbackWalk(a: Allocator, io: std.Io, root_path: []const u8, built_ns: i128, out: *std.ArrayList([]const u8)) void {
     var w = haystack.Walker.init(io, a, root_path) catch return;
     defer w.deinit(io);

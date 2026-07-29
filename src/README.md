@@ -27,6 +27,13 @@ doc_radar:
     - description: "the ward contract names the five-layer stack this README narrates"
       file: pkg/kernels/irregex/contract/irregex.ward
       contains: ["tiers {", "math        kernel/math/**", "seal kernel/regex through regex.zig"]
+    - description: "the machine-width seam still asks about this process before trusting the all-groups total"
+      file: pkg/kernels/irregex/src/portal.zig
+      contains: ["pub fn cpuCount()", "GetProcessGroupAffinity", "ALL_PROCESSOR_GROUPS"]
+    - description: "the shard-sizing floor asks portal, not std, for machine width"
+      file: pkg/kernels/irregex/src/kernel/math/parallel.zig
+      contains: "portal.cpuCount()"
+      absent: "std.Thread.getCpuCount()"
 ---
 
 # irregex/src
@@ -80,10 +87,20 @@ same session in-process.
 
 | Piece | Job |
 | ----- | --- |
-| `portal.zig` | Every OS-spelling difference (handle-relative open, whole-file map, stat, realpath, argv, stdin readiness) — one Windows fork at the bottom |
+| `portal.zig` | Every OS-spelling difference (handle-relative open, whole-file map, stat, realpath, argv, stdin readiness, **how wide the machine is**) — one Windows fork at the bottom |
 | `assay/` | Typed clocks, counters, `GIST_TRACE` — std-only so every tier can consume it |
 | `fault.zig` | Error taxonomy (ADR-373); reports through assay |
 | `corpus/index/frame/` | Wire floor: `frame.zig` framing, `signet.zig` the one artifact digest, `home.zig` artifact directory. Lives under index on disk (what it frames) but sits just above fault on the ward page |
+
+**Machine width is a portal question, not a std one.** Every parallel stage sizes
+its shards from `portal.cpuCount()` rather than `std.Thread.getCpuCount()`,
+because on Windows std answers with the *primary processor group* — 64 logical
+processors at most, no matter how many the box has. Nothing fails when that
+number is wrong; the work just runs narrow, which is precisely the kind of
+platform gap a benchmark on a small runner never surfaces. The seam asks whether
+*this process* spans multiple groups (`GetProcessGroupAffinity`) before trusting
+the all-groups total, so a pre-Windows-11 process — confined to one group, where
+the total would overcount — keeps the primary count that is correct for it.
 
 ## `kernel/` — ten pure-compute tiers
 

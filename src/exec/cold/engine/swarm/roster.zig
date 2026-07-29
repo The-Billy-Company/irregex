@@ -9,6 +9,7 @@
 //! daemon's freshness reconcile needs, and it is the only caller.
 
 const std = @import("std");
+const portal = @import("../../../../portal.zig");
 const args = @import("../../argv/args.zig");
 const assay = @import("../../../../assay/assay.zig");
 const crew = @import("crew.zig");
@@ -146,7 +147,7 @@ pub fn collectFileSet(gpa: std.mem.Allocator, io: std.Io, roots: []const []const
         }
         q.push(seed.items);
     }
-    const ncpu = std.Thread.getCpuCount() catch 6;
+    const ncpu = portal.cpuCount() catch 6;
     var nworkers = defaultWorkerCount(ncpu, true);
     if (assay.envSpan("GIST_WORKERS")) |s| if (std.fmt.parseInt(usize, s, 10) catch null) |n| {
         nworkers = @max(1, n);

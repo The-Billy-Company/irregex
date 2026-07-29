@@ -13,6 +13,7 @@
 //! for the eye.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const args = @import("../argv/args.zig");
 
 pub const reset = "\x1b[0m";
@@ -193,25 +194,48 @@ pub fn resolve(a: std.mem.Allocator, specs: []const []const u8) Palette {
 }
 
 /// ripgrep's env-override rules for `auto` mode: `NO_COLOR` (any value —
-/// https://no-color.org) or an absent/`dumb` `TERM` suppresses color. An
-/// explicit `--color=always`/`ansi` bypasses this entirely (see `enabled`).
+/// https://no-color.org) or a `dumb` `TERM` suppresses color. An explicit
+/// `--color=always`/`ansi` bypasses this entirely (see `enabled`).
+///
+/// An ABSENT `TERM` suppresses on POSIX and does not on Windows, which is
+/// `termcolor`'s own asymmetry (`ColorChoice::should_attempt_color` falls back
+/// to `cfg!(windows)`) and so ripgrep's: no Windows console sets `TERM`, so
+/// treating its absence as "not a terminal" would make color unreachable on the
+/// platform. The console-mode question is asked separately, by `ansiCapable`.
 fn envSuppresses(env: *const std.process.Environ.Map) bool {
     if (env.get("NO_COLOR")) |_| return true;
-    const term = env.get("TERM") orelse return true;
+    const term = env.get("TERM") orelse return builtin.os.tag != .windows;
     return std.mem.eql(u8, term, "dumb");
+}
+
+/// Whether stdout will actually render an escape sequence, asking the platform
+/// to start if it isn't already. On POSIX this is `isTty` under another name.
+/// On Windows it is the console-mode question: Windows Terminal arrives with VT
+/// processing enabled, legacy conhost has to be asked, and a console that
+/// refuses is one where emitting escapes would look worse than emitting none.
+/// `std.Io` also recognizes a Cygwin/MSYS pty here — not a console at all, and
+/// a case `isTty` alone answers wrong.
+fn ansiCapable(io: std.Io) bool {
+    std.Io.File.stdout().enableAnsiEscapeCodes(io) catch return false;
+    return true;
 }
 
 /// Resolve `--color` into a single yes/no for this run. `never` is always off;
 /// `always`/`ansi` are always on (env can't veto an explicit request — rg's
-/// rule). `auto` (the default) is on iff stdout is a real terminal, the
-/// environment doesn't opt out, and no flag that implies plain text (`--json`,
-/// `--vimgrep` — rg suppresses color under both) is active.
+/// rule), though the console is still asked to interpret escapes so an explicit
+/// request renders instead of printing its own bytes. `auto` (the default) is on
+/// iff stdout will render escapes, the environment doesn't opt out, and no flag
+/// implying plain text (`--json`, `--vimgrep` — rg suppresses color under both)
+/// is active.
 pub fn enabled(o: args.Opts, io: std.Io, env: *const std.process.Environ.Map) bool {
     return switch (o.color) {
         .never => false,
-        .always, .ansi => true,
+        .always, .ansi => blk: {
+            _ = ansiCapable(io); // asked, never vetoed — the request was explicit
+            break :blk true;
+        },
         .auto => o.mode != .json and !o.vimgrep and
-            (std.Io.File.stdout().isTty(io) catch false) and !envSuppresses(env),
+            !envSuppresses(env) and ansiCapable(io),
     };
 }
 

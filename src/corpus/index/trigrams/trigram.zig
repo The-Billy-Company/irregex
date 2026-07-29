@@ -33,6 +33,7 @@
 //! (ADR-pending) drops in there without touching build/query.
 
 const std = @import("std");
+const portal = @import("../../../portal.zig");
 const fault = @import("../../../fault.zig");
 const blob = @import("../postings/persisted_blob.zig");
 const ngram = @import("ngram.zig");
@@ -136,7 +137,7 @@ pub const Index = struct {
     const radix = 1 << radix_bits;
 
     fn buildFlatParallel(allocator: std.mem.Allocator, docs: []const []const u8, upper: usize) std.mem.Allocator.Error![]Posting {
-        const ncpu = std.Thread.getCpuCount() catch 1;
+        const ncpu = portal.cpuCount() catch 1;
         const nthr = @min(@max(ncpu, 1), docs.len);
 
         // Byte-balanced contiguous [lo, hi) shards keep concat doc-major.

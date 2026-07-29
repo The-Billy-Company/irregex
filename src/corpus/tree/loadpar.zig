@@ -221,8 +221,13 @@ fn processDir(w: *Worker, a: std.mem.Allocator, task: DirTask, local: *std.Array
     // build reads every member regardless of freshness.
     var entries: std.ArrayList(Entry) = .empty;
     var present = ignore.IgPresent{};
+    // Names alone, always — so this walk only wants the drain where the drain
+    // undercuts the platform's own iterator. It does not on Windows, where
+    // `Dir.Iterator` is already `NtQueryDirectoryFile` and the owned listing would
+    // be a second array for the same syscall.
+    const try_bulk = bulkstat.supported and bulkstat.names_undercut_iterator;
     var bulk_ok = false;
-    if (bulkstat.supported) {
+    if (try_bulk) {
         // The bulk-stat→readdir seam: a listing failure is this accelerator
         // declining, not a fault — `bulk_ok` stays false and the portable
         // fallback below does the same work, slower. Typed since ADR-373 law 1,
@@ -240,9 +245,11 @@ fn processDir(w: *Worker, a: std.mem.Allocator, task: DirTask, local: *std.Array
         }
     }
     if (!bulk_ok) {
-        if (bulkstat.supported) {
+        if (try_bulk) {
             // Bulk listing shares the fd offset with readdir — reopen a fresh
             // handle before the portable fallback (same as the search walk).
+            // Gated on the attempt: a platform that skipped the drain never moved
+            // the cursor and must not pay a second open for nothing.
             portal.close(dir.handle);
             closed = true;
             const fd2 = portal.openDir(portal.cwd(), task.disk) catch return;
@@ -414,7 +421,7 @@ fn workerCount() usize {
     if (std.c.getenv("GIST_WORKERS")) |v| {
         if (std.fmt.parseInt(usize, std.mem.span(v), 10) catch null) |n| if (n > 0) return n;
     }
-    const cpu = std.Thread.getCpuCount() catch 8;
+    const cpu = portal.cpuCount() catch 8;
     return @max(@as(usize, 1), @min(cpu, 8));
 }
 

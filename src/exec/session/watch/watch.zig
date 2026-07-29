@@ -12,14 +12,19 @@
 //! that reconcile (`resident.zig`), so a missing or degraded watcher only costs
 //! speed, never soundness (fail-closed).
 //!
-//! Backends: Linux `inotify` and macOS `kqueue` (`EVFILT_VNODE`). Both post
-//! their event inside the syscall that caused it, which is what makes
-//! drain-to-empty (`flushSync`) a genuine happens-before witness and lets each
-//! arm `DirtyLog.exact` — the promise that unlocks the O(changed) scoped
-//! reconcile. Every other target keeps the reconcile-always baseline. A rootless
-//! session watches `.` — the same CWD tree its corpus walks.
+//! Backends: Linux `inotify`, macOS `kqueue` (`EVFILT_VNODE`), and Windows
+//! `ReadDirectoryChangesW` over an I/O completion port. All three report their
+//! event inside the operation that caused it, which is what makes drain-to-empty
+//! (`flushSync`) a genuine happens-before witness and lets each arm
+//! `DirtyLog.exact` — the promise that unlocks the O(changed) scoped reconcile.
+//! Every other target keeps the reconcile-always baseline. A rootless session
+//! watches `.` — the same CWD tree its corpus walks.
 //!
-//! Both backends `note` every changed path into the session's `DirtyLog`, so
+//! On Windows that witness rests on the *completion port* specifically, and the
+//! event a delivery is keyed to is the directory entry rather than the write: both
+//! are load-bearing and both are argued in `notify.zig`'s module note.
+//!
+//! Every backend `note`s each changed path into the session's `DirtyLog`, so
 //! reconcile verifies only changed paths — O(changed) instead of O(tree). An
 //! unattributable event becomes `noteUnattributable`, forcing one full walk;
 //! coverage that cannot be re-established calls `markDoubtForever`, retiring the
@@ -36,17 +41,26 @@
 //! (`noteUnattributable`, and `resident.zig`'s doubt/disarm hooks) rather than
 //! once per backend, where the two could drift apart.
 //!
-//! The two differ in what they must refuse, because their event KEY SPACES
-//! differ. inotify reports a parent watch descriptor plus a kernel-supplied
-//! name, so a casefolded root (ext4/f2fs `+F`) would alias distinct
-//! byte-spellings the exact key model cannot represent — such a session stays
-//! coarse. kqueue reports a DESCRIPTOR this process opened itself, with the
-//! walk's own canonical spelling, so a writer's choice of spelling never enters
-//! the key space and exact arms even on a case-insensitive volume (ADR-372).
-//! inotify must also watch for a queue overflow and for directories created
-//! after arming, since its watches neither recurse nor coalesce; kqueue has no
-//! queue to overflow (events fold into a knote's `fflags`) but must still extend
-//! coverage into new entries, and must hold one descriptor per watched vnode.
+//! They differ in what they must refuse, because their event KEY SPACES differ.
+//! inotify reports a parent watch descriptor plus a kernel-supplied name, so a
+//! casefolded root (ext4/f2fs `+F`) would alias distinct byte-spellings the
+//! exact key model cannot represent — such a session stays coarse. kqueue
+//! reports a DESCRIPTOR this process opened itself, with the walk's own
+//! canonical spelling, so a writer's choice of spelling never enters the key
+//! space and exact arms even on a case-insensitive volume (ADR-372).
+//! `ReadDirectoryChangesW` reports the name as the DIRECTORY ENTRY stores it —
+//! one spelling per file whatever the writer typed — so it too arms exact,
+//! including on a case-insensitive volume.
+//!
+//! And they differ in what each must therefore guard. inotify must watch for a
+//! queue overflow and for directories created after arming, since its watches
+//! neither recurse nor coalesce; kqueue has no queue to overflow (events fold
+//! into a knote's `fflags`) but must still extend coverage into new entries, and
+//! must hold one descriptor per watched vnode. Windows is the Linux shape without
+//! the second half: a `WatchTree` subscription covers directories created after
+//! arming for free, so there is no coverage to extend and no per-vnode price to
+//! predict — but its per-root buffer can overflow exactly as inotify's queue can,
+//! and overflow there is `markDoubtForever` for the same reason.
 //!
 //! That descriptor-per-vnode price is why the macOS set is selected by the
 //! WALK'S OWN admission policy (`corpus/tree/ignore.zig`), not by the raw tree:
@@ -74,18 +88,21 @@
 //!
 //! The backends live beside this facade under `watch/`: `inotify.zig` (Linux),
 //! `kqueue.zig` (macOS events) + `coverage.zig` (the macOS admission walk) +
-//! `budget.zig` (the descriptor ceiling). Each is a set of free functions over
+//! `budget.zig` (the descriptor ceiling), `notify.zig` (Windows). Each is a set of free functions over
 //! the generic `Watcher(Session)` below; this file owns the shared state, the
 //! comptime backend selection, and the cross-backend invariants documented here.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const ignore = @import("../../../corpus/tree/ignore.zig");
+const portal = @import("../../../portal.zig");
 const Latch = @import("../../../kernel/math/lease.zig").Latch;
 const inotify = @import("inotify.zig");
 const kqueue = @import("kqueue.zig");
+const notify = @import("notify.zig");
 
 const is_macos = builtin.os.tag == .macos;
+const is_windows = builtin.os.tag == .windows;
 const linux = std.os.linux;
 
 /// One registered vnode watch. `path` is the absolute path to `note` when the
@@ -156,6 +173,22 @@ pub fn Watcher(comptime Session: type) type {
         /// of the drain rather than mid-iteration (the refresh grows the very
         /// set the drain is walking).
         ig_stale: bool = false,
+        /// Windows: the I/O completion port every root's notify request lands
+        /// on — this backend's `inotify_fd`, and the reason its `flushSync` is a
+        /// real barrier rather than a poll of somebody else's thread
+        /// (`notify.zig`'s module note).
+        notify_port: portal.Handle = portal.invalid_handle,
+        /// Windows: one recursive subscription per root. Allocated once at arm
+        /// time and never grown, because the kernel holds a pointer into each
+        /// entry's status block and buffer for as long as its request is live.
+        notify_roots: []notify.Root = &.{},
+        /// Windows: how the loop is retired without waiting out its idle
+        /// interval. Set by `stop`, never cleared while a loop is running.
+        notify_stop: portal.Handle = portal.invalid_handle,
+        /// Windows: false once a volume has refused the extended record class,
+        /// which is also what keeps the drain's parser in step with the layout
+        /// the kernel is actually writing.
+        notify_extended: bool = true,
 
         /// Does this session carry the annals ledger (the never-drained changed-path
         /// map a one-shot `gist index` queries)? Comptime-gated so the watcher stays
@@ -199,7 +232,21 @@ pub fn Watcher(comptime Session: type) type {
         pub fn flushSync(self: *@This()) bool {
             if (comptime is_macos) return self.flushKqueue();
             if (comptime builtin.os.tag == .linux) return self.flushInotify();
+            if (comptime is_windows) return self.flushNotify();
             return false;
+        }
+
+        /// Windows barrier: take every completion packet the port already holds,
+        /// under `read_lock` (serialized against the loop thread, which consumes
+        /// from the same port under the same lock — the single-consumer discipline
+        /// that makes this a witness rather than a guess).
+        fn flushNotify(self: *@This()) bool {
+            if (comptime !is_windows) return false;
+            if (self.notify_port == portal.invalid_handle) return false;
+            self.read_lock.lock();
+            defer self.read_lock.unlock();
+            notify.drainNotifyLocked(self);
+            return true;
         }
 
         /// macOS barrier: drain the kqueue to empty under `read_lock` (serialized
@@ -236,6 +283,8 @@ pub fn Watcher(comptime Session: type) type {
                 inotify.startInotify(self);
             } else if (comptime is_macos) {
                 kqueue.startKqueue(self);
+            } else if (comptime is_windows) {
+                notify.startNotify(self);
             }
             // Other targets: no watcher → reconcile-always baseline (already the
             // session's default; nothing to arm).
@@ -250,6 +299,15 @@ pub fn Watcher(comptime Session: type) type {
             if (comptime is_macos) {
                 if (self.kq_fd < 0) return 0;
                 return self.watches.items.len - self.free_slots.items.len + 1;
+            }
+            // Windows pays one handle per ROOT however deep the tree — a recursive
+            // subscription, not a per-vnode registration — plus the port and the
+            // stop event. So it reads like Linux's single fd rather than macOS's
+            // per-vnode set, and the idle policy's shed is about the port, not a
+            // commons anyone else is competing for.
+            if (comptime is_windows) {
+                if (self.notify_port == portal.invalid_handle) return 0;
+                return self.notify_roots.len + 2;
             }
             return if (self.inotify_fd >= 0) 1 else 0;
         }
@@ -278,12 +336,16 @@ pub fn Watcher(comptime Session: type) type {
             }
             // The macOS loop waits in a `poll` with a timeout, so clearing
             // `running` is enough to retire it — no cross-thread wake needed.
+            // Windows idles on an event it can be woken through, so it retires at
+            // once instead of after the interval.
+            if (comptime is_windows) notify.signalStop(self);
             if (self.thread) |t| {
                 t.join();
                 self.thread = null;
             }
             // The loop thread is joined — no consumer remains for the watch set.
             if (comptime is_macos) kqueue.closeWatches(self);
+            if (comptime is_windows) notify.closeNotify(self);
             inotify.freeWdPaths(self);
             self.wd_paths.deinit(self.gpa);
             self.wd_paths = .empty;

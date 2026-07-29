@@ -4,10 +4,12 @@
 //! declares no `fstat`/`fstatat` on Linux (the libc wrappers there are legacy
 //! shims), so the Linux leg rides `statx(2)` directly while every other libc
 //! target keeps the `fstatat`/`fstat` calls this replaced, byte-identically.
-//! Every consumer — `--one-file-system` device ids, `--sort created` birth
-//! times, fd classification for stdin, mmap sizing, and the T3 freshness
-//! overlay — asks here rather than reaching for a platform call, so a
-//! `std.posix.Stat` shape change breaks one file instead of six.
+//! Every consumer — `--sort created` birth times, fd classification for stdin,
+//! mmap sizing, and the T3 freshness overlay — asks here rather than reaching
+//! for a platform call, so a `std.posix.Stat` shape change breaks one file
+//! instead of six. Volume identity (`--one-file-system`) is the one fact with
+//! its own entry point (`devicePath`), because Windows answers it from a
+//! separate query and only that flag ever asks.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -57,10 +59,48 @@ fn kindOfMode(mode: u32) RawStat.Kind {
     };
 }
 
-/// `stat(2)` following symlinks — `--one-file-system` device ids and
-/// `--sort created` birth times. Null on any failure (caller falls back).
+/// `stat(2)` following symlinks — `--sort created` birth times and the
+/// freshness overlay's clocks. Null on any failure (caller falls back).
 pub fn statPath(path: []const u8) ?RawStat {
     return statAt(path, false);
+}
+
+/// The volume a path lives on, as an opaque id compared only for equality —
+/// the single fact `--one-file-system` asks of a directory before descending.
+///
+/// Its own call rather than a `RawStat` field because Windows answers it from a
+/// different query than everything else in the projection: folding it into
+/// `statPath` would tax every stat in the walk (and the freshness overlay) to
+/// serve a flag that is off by default and, when on, is consulted once per
+/// directory. POSIX keeps paying nothing — `st_dev` already rode along.
+pub fn devicePath(path: []const u8) ?i128 {
+    if (comptime builtin.os.tag != .windows) return (statPath(path) orelse return null).dev;
+    const h = portal.openPath(portal.cwd(), path, .{}) catch return null;
+    defer portal.close(h);
+    return volumeSerial(h);
+}
+
+/// The Windows leg of `devicePath`: the volume serial from
+/// `FILE_ID_INFORMATION`, which is the same number `walkdir` (and through it
+/// ripgrep) compares for `--one-file-system` on this platform — so a mount point
+/// prunes here exactly where it prunes there. Null when the volume declines to
+/// answer, which keeps the flag's failure mode "stops pruning" rather than
+/// "prunes wrongly": `crossesDevice` reads a missing id as same-volume.
+///
+/// This class rather than `FileFsVolumeInformation`, which reads like the
+/// obvious choice and is the one Wine answers `STATUS_NOT_IMPLEMENTED` — a
+/// silently inert flag on the only Windows runtime this repo can execute. It is
+/// also the better id on its merits: 64 bits where the volume-information
+/// struct carries 32, and one fixed-size query where that struct trails a
+/// variable-length label.
+fn volumeSerial(h: std.posix.fd_t) ?i128 {
+    const w = std.os.windows;
+    var iosb: w.IO_STATUS_BLOCK = undefined;
+    var info: extern struct { VolumeSerialNumber: u64, FileId: [16]u8 } = undefined;
+    return switch (w.ntdll.NtQueryInformationFile(h, &iosb, &info, @sizeOf(@TypeOf(info)), .Id)) {
+        .SUCCESS => info.VolumeSerialNumber,
+        else => null,
+    };
 }
 
 /// `lstat(2)` — never follows the final symlink (the walk treats a symlink
@@ -102,7 +142,8 @@ pub fn statFd(fd: std.posix.fd_t) ?RawStat {
 }
 
 /// The Windows leg: one `NtQueryInformationFile(.All)` carries every field
-/// `RawStat` projects except a device id.
+/// `RawStat` projects except volume identity, which `devicePath` asks for
+/// separately so this call stays a single query.
 fn fromFileInfo(h: std.posix.fd_t) ?RawStat {
     const w = std.os.windows;
     var iosb: w.IO_STATUS_BLOCK = undefined;
@@ -115,10 +156,9 @@ fn fromFileInfo(h: std.posix.fd_t) ?RawStat {
     }
     const attrs = info.BasicInformation.FileAttributes;
     return .{
-        // No device id: a volume serial needs a separate volume-information
-        // query, and `--one-file-system` compares dev ids only for equality. A
-        // constant makes every entry look same-device, so the flag stops pruning
-        // instead of pruning wrongly — it under-filters rather than losing files.
+        // Volume identity is not in this query's answer, and no consumer of
+        // `RawStat.dev` on this platform reads it — `--one-file-system` goes
+        // through `devicePath`, which asks the volume directly.
         .dev = 0,
         // Synthesized for the POSIX consumers that still read mode bits; `kind`
         // below is the field callers should be asking.
@@ -182,4 +222,23 @@ fn fromStat(st: std.posix.Stat) RawStat {
         .ctime_ns = @as(i128, st.ctime().sec) * std.time.ns_per_s + st.ctime().nsec,
         .kind = kindOfMode(st.mode),
     };
+}
+
+// ─────────────────────────────────── tests ───────────────────────────────────
+
+const t = std.testing;
+
+test "volume identity answers, and answers the same for two paths on one volume" {
+    // The property `--one-file-system` rests on, and the one a silently-failing
+    // platform query breaks invisibly: a null or a per-path-varying id turns the
+    // flag into a no-op (nothing prunes) or a shredder (siblings prune each
+    // other). Asserting BOTH is what makes the Windows volume-serial leg a
+    // tested claim rather than an inference from a passing walk.
+    const dir = devicePath(".") orelse return error.NoDeviceId;
+    const same = devicePath("." ++ std.fs.path.sep_str ++ ".") orelse return error.NoDeviceId;
+    try t.expectEqual(dir, same);
+}
+
+test "volume identity of a missing path is null, never a value that could match" {
+    try t.expectEqual(@as(?i128, null), devicePath("does-not-exist-cbb0f1e2"));
 }

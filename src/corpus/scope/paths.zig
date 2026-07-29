@@ -25,6 +25,46 @@ pub fn allocFailure() noreturn {
     std.process.exit(2);
 }
 
+/// A walker path in gist's separator.
+///
+/// On a platform that already spells `/` this is the identity — `p` comes back
+/// untouched, no allocation, so the seam costs POSIX nothing at all. Only where
+/// the separator actually differs does it copy, because the rewrite is in-place
+/// and `std.Io.Dir.Walker` reuses the buffer it lends out (the walker appends
+/// each child onto the parent path still sitting there). Either way the result
+/// is read-only and lives no longer than the walker's own `entry.path` does —
+/// until the next `next()` — which is all any consumer here needs.
+///
+/// The walker joins with the PLATFORM's separator, so on Windows it hands back
+/// `sub\a.txt` — and gist speaks `/` everywhere, deliberately: the portability
+/// slate hashes stdout and diffs it against the NATIVE oracle, so one spelling
+/// on every platform is a gated claim rather than a preference. It is also what
+/// every consumer in this file already assumes — `rootDepth` and gist's
+/// `pathDepth` count `/`, the gitignore protocol matches the `/` a rule is
+/// written in, and every join here spells `/` literally. Normalizing at the two
+/// seams a walker path enters (gist's serial walk, the corpus `Haystack`) is what
+/// keeps those consumers from each needing a platform branch — and on Windows
+/// the unnormalized spelling silently defeated `.gitignore` rules containing a
+/// separator, plus `--max-depth`, in the serial engine.
+///
+/// (This is where ripgrep and gist genuinely part: rg renders the native
+/// separator while normalizing internally for matching. Same matching, different
+/// render — and a `/` render is what lets a captured expectation, a script, and
+/// an agent read identically on every platform.)
+pub fn slashed(a: std.mem.Allocator, p: []const u8) error{OutOfMemory}![]const u8 {
+    if (comptime std.fs.path.sep == '/') return p;
+    const out = try a.dupe(u8, p);
+    slashInPlace(out);
+    return out;
+}
+
+/// `slashed` for a buffer the caller already owns — the form to reach for when a
+/// path was just built (a join, a print) and can be fixed up where it lies,
+/// rather than copied a second time to change one byte per component.
+pub fn slashInPlace(p: []u8) void {
+    if (comptime std.fs.path.sep != '/') std.mem.replaceScalar(u8, p, std.fs.path.sep, '/');
+}
+
 /// Drop a leading `./` (or a bare `.`) so a `./root` positional's paths compare
 /// against ignore rules / index keys the same as a bare `root` positional's do.
 pub fn stripDot(s: []const u8) []const u8 {
@@ -111,6 +151,38 @@ pub fn replaceSep(a: std.mem.Allocator, path: []const u8, sep: []const u8) []con
     var out: std.ArrayList(u8) = .empty;
     for (path) |c| (if (c == '/') out.appendSlice(a, sep) else out.append(a, c)) catch allocFailure();
     return out.toOwnedSlice(a) catch allocFailure();
+}
+
+test "slashed hands back gist's separator on every platform, copying only where it must" {
+    const t = std.testing;
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // The invariant the whole suite rests on: what a consumer receives is
+    // `/`-joined no matter which platform's walker produced it. Windows is the
+    // only place the input differs, so the assertion is written in the platform's
+    // own spelling rather than a hardcoded `\` a POSIX run would wrongly demand.
+    const native = "sub" ++ std.fs.path.sep_str ++ "a.txt";
+    try t.expectEqualStrings("sub/a.txt", try slashed(a, native));
+    try t.expectEqualStrings("a/b/c.zig", try slashed(a, "a" ++ std.fs.path.sep_str ++ "b" ++ std.fs.path.sep_str ++ "c.zig"));
+    // Already-`/` input is untouched — a POSIX path is not re-spelled.
+    try t.expectEqualStrings("a/b", try slashed(a, "a/b"));
+
+    // Who owns the result: a platform that has to rewrite gets its own buffer,
+    // because the rewrite is in-place and the walker reuses the bytes it lends.
+    // A platform already spelling `/` gets the input straight back — the seam is
+    // free there, which is the whole reason it can sit on the walk's hot path.
+    var buf: [3]u8 = .{ 'a', std.fs.path.sep, 'b' };
+    const out = try slashed(a, &buf);
+    const borrowed = out.ptr == @as([*]const u8, &buf);
+    try t.expectEqual(std.fs.path.sep == '/', borrowed);
+    try t.expectEqualStrings("a/b", out);
+
+    // The in-place form is the same rewrite for a buffer the caller owns.
+    var owned: [5]u8 = .{ 'x', std.fs.path.sep, 'y', std.fs.path.sep, 'z' };
+    slashInPlace(&owned);
+    try t.expectEqualStrings("x/y/z", &owned);
 }
 
 test "stripDot peels one ./ and collapses bare dot" {

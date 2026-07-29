@@ -612,8 +612,10 @@ test {
     _ = @import("exec/session/warm/resident_test.zig"); // resident session: parity vs cold, overlay, RYW, deletion
     _ = @import("exec/session/conduit/protocol/protocol_test.zig"); // UDS frame codec round-trip + adversarial
     _ = @import("exec/session/conduit/shm.zig"); // portable anonymous shm buffer: fd round-trip, zero-len unsupported
-    _ = @import("exec/session/watch/watch_test.zig"); // freshness watcher: dirty/clean seqlock barrier
-    _ = @import("exec/session/watch/kqueue_test.zig"); // macOS kqueue barrier: real mutations → scoped reconcile (ADR-372)
+    _ = @import("exec/session/conduit/vigil.zig"); // the daemon's readiness wait + the bell that cuts it short
+    _ = @import("exec/session/watch/watch_test.zig"); // freshness watcher: dirty/clean seqlock barrier + the promise EVERY exact backend makes, over real mutations (ADR-372)
+    _ = @import("exec/session/watch/kqueue_test.zig"); // macOS-only: the ignore-selected watch set, and a vnode it cannot open
+    _ = @import("exec/session/watch/notify_test.zig"); // Windows-only: recursive-subscription cost, buffer overflow, plain record class
     _ = @import("exec/session/reconcile/reconcile_test.zig"); // barrier hardening: differential vs on-disk oracle, concurrency, overflow/bound
     _ = @import("exec/session/reconcile/vouch_test.zig"); // epoch vouch on the real backend (macOS+Linux): liveness, same-epoch⇒same-bytes, surrender
     _ = @import("exec/session/reconcile/dirty.zig"); // exact dirty-path log: dedupe, bound→doubt, exact promise
@@ -694,6 +696,16 @@ test {
     _ = @import("exec/session/daemon/serve/serve.zig"); // the resident daemon driver body
     _ = @import("exec/session/daemon/client/client.zig"); // the warm CLI fast-path client body
     _ = @import("exec/session/daemon/client/spawn.zig"); // best-effort detached daemon auto-spawn
-    _ = @import("exec/session/daemon/client/client_test.zig"); // wedged-daemon → cold deadline (no hang)
-    _ = @import("exec/session/daemon/serve/serve_test.zig"); // end-to-end daemon lifecycle + client round-trip
+
+    // The daemon's two end-to-end suites stand or fall with its transport: both
+    // build a real `AF_UNIX` socketpair and poll it, which is the one thing a
+    // platform without `portal.resident_sessions` has no version of. Gated at the
+    // aggregator rather than skipped inside, because `socketpair`/`pollfd` are not
+    // merely absent on Windows — they are untyped, so *analyzing* the file is the
+    // error, and a runtime `SkipZigTest` never gets the chance to run. They return
+    // with the transport (rung 2) instead of needing a rewrite.
+    if (comptime portal.resident_sessions) {
+        _ = @import("exec/session/daemon/client/client_test.zig"); // wedged-daemon → cold deadline (no hang)
+        _ = @import("exec/session/daemon/serve/serve_test.zig"); // end-to-end daemon lifecycle + client round-trip
+    }
 }

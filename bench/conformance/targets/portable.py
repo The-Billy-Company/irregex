@@ -193,11 +193,17 @@ def summarize(rows: list[dict], rg: dict) -> dict:
             "covered_at_conforms_wine": at(windows, "conforms-wine"),
             "covered_at_conforms": at(windows, "conforms"),
             "uncovered": short(windows),
-            "why": "the openat/dirfd descent, whole-file map, stat, argv, realpath and stdin "
+            "why": "the openat/dirfd descent, file map, stat, argv, realpath and stdin "
                    "classification now go through one comptime seam (src/portal.zig) with a "
-                   "Win32 arm; the resident daemon has no unix socket there and declines, which "
-                   "the cold path never depends on. No Windows kernel is reachable from this "
-                   "host, so the executed rung is Wine's Win32, recorded as conforms-wine.",
+                   "Win32 arm: NtCreateFile against a root handle, a batched NtQueryDirectoryFile "
+                   "drain so the walk stands on the same batched-metadata floor getattrlistbulk "
+                   "and getdents64 give macOS and Linux, demand-paged NT sections instead of a "
+                   "whole-file read, NtQueryInformationFile(.Id) for the volume identity "
+                   "--one-file-system needs, and walker paths normalized to '/' before any ignore "
+                   "rule or depth count sees them. The resident daemon has no unix socket there "
+                   "and declines, which the cold path never depends on. No Windows kernel is "
+                   "reachable from this host, so the executed rung is Wine's Win32, recorded as "
+                   "conforms-wine.",
         },
         # Scored against rg's *declared* set rather than the 13 it actually
         # published, so the bar is the harder one. `dominates_posix` is the claim

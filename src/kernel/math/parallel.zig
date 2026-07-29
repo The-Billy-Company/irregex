@@ -13,6 +13,7 @@
 //! the same and weighing would cost more than it saves. `fanOut` runs either.
 
 const std = @import("std");
+const portal = @import("../../portal.zig");
 
 /// Below this many total bytes of candidate work a sharded face stays SERIAL:
 /// thread spawn + per-shard scratch (a recompiled engine, a span VM, an arena)
@@ -85,7 +86,7 @@ pub fn shardBounds(
     var total: usize = 0;
     for (items) |item| total += weight(ctx, item);
     if (total < floor) return null;
-    const cores = std.Thread.getCpuCount() catch 1;
+    const cores = portal.cpuCount() catch 1;
     const nthr = @min(@min(cores, items.len), cap);
     if (nthr < 2) return null;
     const bounds = a.alloc(usize, nthr + 1) catch return null;
@@ -109,7 +110,7 @@ pub fn shardBounds(
 /// the parallel one and free to drift from it. Caller frees.
 pub fn evenBounds(n: usize, item_bytes: usize, grain: usize, floor: usize, cap: usize, a: std.mem.Allocator) ![]usize {
     const blocks = (n + grain - 1) / grain;
-    const cores = std.Thread.getCpuCount() catch 1;
+    const cores = portal.cpuCount() catch 1;
     const nthr = if (n *| item_bytes < floor) 1 else @max(1, @min(@min(cores, blocks), cap));
     const bounds = try a.alloc(usize, nthr + 1);
     for (bounds, 0..) |*b, k| b.* = @min(n, (blocks * k / nthr) * grain);
@@ -158,7 +159,7 @@ test "shardBounds: gates on the byte floor and returns balanced ranges" {
     // Below the floor: serial (null), no allocation, no spawn.
     try testing.expect(shardBounds([]const u8, &docs, {}, sliceLen, 1 << 20, 16, a) == null);
     // Above the floor with ≥2 usable shards: balanced boundaries, heavy item alone.
-    const cores = std.Thread.getCpuCount() catch 1;
+    const cores = portal.cpuCount() catch 1;
     if (cores >= 2) {
         const bounds = shardBounds([]const u8, &docs, {}, sliceLen, 512, 2, a).?;
         try testing.expectEqualSlices(usize, &.{ 0, 1, 3 }, bounds);

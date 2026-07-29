@@ -55,6 +55,17 @@ doc_radar:
     - description: "the shipped CLI is built ReleaseFast (checks compiled out) — the other half of that limit"
       file: scripts/act/workspace/taskrunner/taskrun/rows/builds/_gist.py
       contains: "-Doptimize=ReleaseFast"
+    - description: "the Windows floor is win10_rs4 because that is where AF_UNIX shipped — lowering it silently declines the warm tier this README says is there"
+      file: pkg/kernels/irregex/build.zig
+      contains: ".os_version_min = .{ .windows = .win10_rs4 }"
+    - description: "the warm tier is enabled on Windows by the platform's own socket support, not declined outright; fd passing is the part that stays POSIX-only"
+      file: pkg/kernels/irregex/src/portal.zig
+      contains:
+        - "pub const resident_sessions = if (windows) std.Io.net.has_unix_sockets else true;"
+        - "pub const fd_passing = resident_sessions and !windows;"
+    - description: "readiness on Windows is AFD's poll IOCTL, and the daemon watches the tree with ReadDirectoryChangesW"
+      file: pkg/kernels/irregex/src/exec/session/watch/watch.zig
+      contains: "notify.zig"
     - description: "the honest optimality disclaimer survives every re-mint — the certificate never claims hardware optimality"
       file: pkg/kernels/irregex/bench/certificate/artifact/CERTIFICATE.md
       absent:
@@ -189,6 +200,15 @@ relate index --shelf                 # optional warm atlas + quotation shelf
 relate status
 ```
 
+On Windows the same ritual is [`install.ps1`](install.ps1), which does what the
+Make target does — build the three binaries, place them, put them on `PATH`,
+generate and source the PowerShell completion, link the editor plugin, index the
+tree — because the target itself shells POSIX tools rather than being portable:
+
+```powershell
+pwsh -File libs\kernels\irregex\install.ps1
+```
+
 Indexes are optional accelerators. Missing, stale, or uncertain state falls
 back to current files rather than changing the answer. See the face-specific
 docs for the complete CLI surfaces and standalone `zig build` commands.
@@ -198,7 +218,11 @@ docs for the complete CLI surfaces and standalone `zig build` commands.
 Use `gist` when the question contains an exact string, regex, symbol, path
 scope, or familiar grep-shaped output. Start with the ripgrep-shaped reflex —
 `gist PATTERN [PATH...] [FLAGS]` — then choose Gist-native `--rank`,
-`--no-index`, resident, or codex behavior only when the intent calls for it.
+`--docs`/`--code`, `--no-index`, resident, or codex behavior only when the
+intent calls for it. The corpus partition is the one worth knowing up front:
+`--docs` searches only the paper trail and `--no-docs` only the implementation
+and its payload, an axis `-t <language>` cannot express and no other
+grep-class tool ships.
 See the [`gist` README](src/surface/face/gist/README.md) for the full ergonomics guide,
 niche flag choices, compatibility boundaries, and evidence.
 
@@ -292,8 +316,13 @@ shared file may say what the repository _is_, and may never quietly change what
 matches for the people who clone it.
 
 **`$XDG_CONFIG_HOME/gist/preferences` — machine-local, never committed.**
-(`$GIST_PREFERENCES` overrides the location; `~/.config` is the fallback.) Flag
-lines, one flag per line, prepended to argv so anything typed still wins:
+(`$GIST_PREFERENCES` overrides the location; `~/.config` is the fallback. On
+Windows the fallback is `%LOCALAPPDATA%\gist\preferences`, then
+`%USERPROFILE%\.config\gist\preferences` — `LOCALAPPDATA` and not `APPDATA`
+precisely because `APPDATA` roams between machines, and a file whose entire
+premise is "machine-local" must not follow you onto another one. `XDG_CONFIG_HOME`
+is still read first everywhere, because a Windows user who exports it means it.)
+Flag lines, one flag per line, prepended to argv so anything typed still wins:
 
 ```text
 --heading
@@ -501,12 +530,37 @@ exist and where they stop.
   against an oracle pinned byte-for-byte to ripgrep 15.2.0. **Windows builds too**,
   all four of ripgrep's declared triples, through one `comptime` seam
   ([`src/portal.zig`](src/portal.zig)) whose Win32 arm speaks `NtCreateFile` with a
-  root handle where POSIX says `openat`; the resident daemon has no unix socket
-  there and declines, which the cold path never depends on. No Windows kernel is
-  reachable from the measuring host, so the executed Windows rows are labeled
-  `conforms-wine` — their own rung, strictly below `conforms`, enforced by a
-  per-lane ceiling rather than by prose. Layer H fails closed if a sweep drops the
-  Windows rows or scores one at the native rung it did not earn.
+  root handle where POSIX says `openat`, drains directories through
+  `NtQueryDirectoryFile` so the walk stands on the same batched-metadata floor
+  `getattrlistbulk` and `getdents64` give macOS and Linux, and maps files as
+  demand-paged NT sections rather than reading them whole. Walker paths are
+  normalized to `/` before an ignore rule or a depth count ever sees them, so one
+  `.gitignore` means the same thing on both engines and both platforms
+  (`--path-separator` still renders native `\` on request). **The warm tier is
+  there too**, not declined: the declared floor is `win10_rs4` (1803) precisely
+  because that is where Windows shipped `AF_UNIX`, so the daemon speaks the same
+  socket protocol as everywhere else, waits for readiness through AFD's
+  `IOCTL_AFD_POLL` instead of `poll(2)`, holds its singleton with a share-mode
+  exclusive open instead of `flock`, spawns detached through `CreateProcessW`, and
+  keeps itself honest with a recursive `ReadDirectoryChangesW` subscription
+  draining onto one I/O completion port. Windows is the third exact freshness
+  backend, judged by the same barrier cases macOS is
+  ([`watch/rig.zig`](src/exec/session/watch/rig.zig)) rather than by a suite of
+  its own. Two things it does that no POSIX arm can: a notify record names the
+  directory entry's own spelling, so `exact` keys arm even on a case-insensitive
+  volume without the refusal inotify needs, and the extended record class carries
+  the changed file's timestamps in-band, so the annals ledger is stamped with the
+  file's own `max(mtime, ctime)` rather than the drain clock's approximation of
+  it. What one machine cannot prove, it does not claim: no Windows kernel is
+  reachable from the measuring host, so the executed rows of the 22-target sweep
+  are labeled `conforms-wine` — their own rung, strictly below `conforms`,
+  enforced by a per-lane ceiling rather than by prose, and Layer H fails closed if
+  a sweep drops the Windows rows or scores one at the native rung it did not earn.
+  The native runtime answer comes from [a CI lane on real
+  hardware](../../../.github/workflows/gist-windows.yml) — windows-2025 and
+  windows-11-arm, both architectures because a weakly-ordered memory model is a
+  separate risk from a familiar one — which runs the whole suite plus the Win32
+  contract, the warm tier's read-your-writes, and the install ritual itself.
 
 ## Evidence: six runnable claims
 
@@ -735,9 +789,12 @@ shrink-only. All three live in Layer I of the certificate;
 the harness's own map.
 
 I carried the same discipline into the agent surface: `--rank` puts definitions
-above call sites and demotes codegen; misses coach on stderr while stdout stays
-pipe-clean; and output budgets protect the context window. The theory earns its
-place only when the tool feels obvious in the hand.
+above call sites and demotes codegen; `--docs` / `--code` partition the corpus
+by what a file *is for* rather than which language it is, so "what was written
+about this" and "where is this implemented" are one flag each instead of a dozen
+`-t` names; misses coach on stderr while stdout stays pipe-clean; and output
+budgets protect the context window. The theory earns its place only when the
+tool feels obvious in the hand.
 
 ## Package layout
 

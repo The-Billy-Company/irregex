@@ -14,6 +14,7 @@
 //! harness exists to prove.
 
 const std = @import("std");
+const portal = @import("../../../portal.zig");
 const args = @import("../argv/args.zig");
 const assay = @import("../../../assay/assay.zig");
 const beacon = @import("../../../surface/cli/beacon.zig");
@@ -220,7 +221,7 @@ pub fn emitSharded(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.Array
 /// body is below the parallel floor, one core, or collapses to a single range.
 pub fn lineShardBounds(body: []const u8, term: u8, a: std.mem.Allocator) ?[]const usize {
     if (body.len < par.min_bytes) return null;
-    const cores = std.Thread.getCpuCount() catch 1;
+    const cores = portal.cpuCount() catch 1;
     const nthr = @min(@min(cores, body.len / par.min_bytes), par.max_shards);
     if (nthr < 2) return null;
     const cuts = a.alloc(usize, nthr + 1) catch return null;

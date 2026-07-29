@@ -13,6 +13,12 @@ doc_radar:
     - description: "the charter discovery is wired into haystack + corpus root resolution"
       file: pkg/kernels/irregex/src/corpus/tree/haystack.zig
       contains: "charter"
+    - description: "the sheaf keeps a batched-enumeration arm for every platform family it claims"
+      file: pkg/kernels/irregex/src/corpus/tree/sheaf.zig
+      contains: ["getattrlistbulk", "NtQueryDirectoryFile", "getdents64", "getdirentries"]
+    - description: "bulkstat is policy only — the syscall ABIs live next door in the sheaf"
+      file: pkg/kernels/irregex/src/corpus/tree/bulkstat.zig
+      contains: ["const sheaf = @import(\"sheaf.zig\")", "pub const BulkDir = sheaf.Sheaf"]
 ---
 
 # `src/corpus/tree/` — the walk, the corpus, the drain
@@ -30,7 +36,8 @@ Haystack walk, the rg-compatible ignore protocol, and the stdout drain that
 | `haystack.zig` | Shared recursive `Walker` — ignore + corpus skip policy + charter skips |
 | `ignore.zig` | Compiles gitignore / `.ignore` / `.rgignore` precedence once for every face |
 | `drain.zig` | Stdout cadence — `line` / `block` / `relay` policies (its only consumer is `corpus.zig`) |
-| `bulkstat.zig` | Darwin `getattrlistbulk` batched metadata + portable fallback |
+| `bulkstat.zig` | Freshness policy over batched metadata — the elision law, the fresh-file overlay, the portable fallback |
+| `sheaf.zig` | The batched-enumeration ABIs themselves: Darwin `getattrlistbulk`, Windows `NtQueryDirectoryFile`, POSIX `getdirentries`/`getdents64` |
 | `loadpar.zig` | Fused parallel walk+read loader — membership-parity with `haystack.Walker` |
 
 ## Why `drain` sits here

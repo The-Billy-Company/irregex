@@ -20,13 +20,21 @@
 //! whole matcher. Call sites keep POSIX shape and read identically on both
 //! platforms.
 //!
-//! **What is genuinely different, and honestly so.** `map` is a demand-paged
-//! `mmap` on POSIX and an eager whole-file read into `VirtualAlloc` memory on
-//! Windows: the interface (a page-aligned read-only view whose lifetime is
-//! independent of the handle) is preserved, the mechanism is not. That costs
-//! Windows the "OS faults in only the pages you touch" property — a real
-//! performance difference, not a correctness one, and it is why a Windows row in
-//! `bench/portable/` is never presented as evidence about throughput.
+//! **`map` is the same property on both, not the same call.** POSIX gets
+//! `mmap(PROT_READ, MAP_PRIVATE)`; Windows gets an NT section over the file with
+//! one view of it, the section handle dropped immediately. Both are demand-paged
+//! and both outlive the handle they were made from, which is what the callers
+//! actually depend on: only the pages a scan touches are read, and a sharded scan
+//! faults its ranges in parallel. (This arm began as an eager whole-file read into
+//! `VirtualAlloc` memory — interface preserved, property lost. That is what the
+//! section mapping replaced, and it is why a Windows row in `bench/portable/` is
+//! now admissible as throughput evidence.)
+//!
+//! **What is still genuinely different, and honestly so.** `advise`'s
+//! `sequential` hint has no view-level spelling on NT — the streaming-read
+//! expectation is a flag on the *open* there, decided before this seam sees a
+//! handle — so it declines rather than being faked. `will_need`, which is where
+//! the measured win lives, ports exactly onto `PrefetchVirtualMemory`.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -48,18 +56,47 @@ pub const invalid_handle: Handle = if (windows) w.INVALID_HANDLE_VALUE else -1;
 
 /// Whether this platform can host the resident session (`gist serve`).
 ///
-/// The warm tier hands a *file descriptor* to another process through an
-/// `SCM_RIGHTS` control message on a unix socket, and arbitrates single-daemon
-/// ownership with `flock(2)`. Windows has neither primitive; the equivalent would
-/// be a named pipe plus handle duplication, which is a different protocol rather
-/// than a different spelling — so it is out of this seam's remit.
+/// Everywhere, now — including Windows, whose `AF_UNIX` arrived in Windows 10
+/// 1803 and which the kernels here therefore declare as their floor
+/// (`_buildkit/build.zig`'s `windowsFloor`, restated by irregex's own
+/// `check-windows` triples). That floor is load-bearing rather than tidy:
+/// `std.Io.net.has_unix_sockets` is a comptime test against the DECLARED
+/// minimum, so a target left at Zig's default `win10` compiles std's unix arm
+/// out and every local-socket call fails before reaching a kernel that would
+/// have answered it.
 ///
-/// Declining costs correctness nothing. The resident session is *defined* as an
-/// optimization over the cold path (`bench/portable/README.md`), every warm
-/// answer is required to be byte-identical to the cold one, and a client that
-/// cannot reach a daemon already falls back to cold within its dial deadline. On
-/// Windows that fallback is simply the only path.
-pub const resident_sessions = !windows;
+/// So the transport is the same protocol in a different spelling after all —
+/// same socket family, same `[len][op][payload]` frames, same one-shot
+/// request/response — and the four things that genuinely differ each got a seam
+/// rather than a second protocol: the readiness wait and its wakeup
+/// (`conduit/vigil.zig` — AFD's `IOCTL_AFD_POLL` where POSIX has `poll(2)`), the
+/// byte I/O (`conduit/wire.zig` rides `std.Io`'s socket vtable there and keeps
+/// its raw `sendto`/`read` here), single-daemon arbitration (an exclusive share
+/// mode where POSIX has `flock(2)`), and the detached spawn
+/// (`CreateProcessW`/`DETACHED_PROCESS` where POSIX forks).
+///
+/// The one capability that stayed POSIX-only is descriptor passing —
+/// `fd_passing` below — and it is an optimization *within* the optimization.
+pub const resident_sessions = if (windows) std.Io.net.has_unix_sockets else true;
+
+/// Whether one process can hand an open descriptor to another over the session
+/// socket, which is what lets a large answer arrive as shared memory rather than
+/// as streamed bytes (`conduit/shm.zig`, the `chunk_fd` response).
+///
+/// POSIX passes it as an `SCM_RIGHTS` control message on the socket itself — the
+/// descriptor rides *with* a byte of the frame, so the receiver needs no separate
+/// channel and no permission to reach into the sender. Windows has no such thing:
+/// `DuplicateHandle` writes a handle value into a named target *process*, so the
+/// sender must first learn the peer's PID, open it with `PROCESS_DUP_HANDLE`, and
+/// then ship the resulting integer through a frame the receiver trusts. That is a
+/// different protocol with a different trust story, not a different spelling, and
+/// it is the one place the port declines rather than translates.
+///
+/// Declining costs a Windows client only bytes on a socket it was already
+/// connected to: `shm.offer` reports `capability_missing`, `wire.sendWithFd`
+/// answers `false`, and the daemon falls back to the `chunk` frames every peer
+/// that never advertised fd transport already receives. The answer is identical.
+pub const fd_passing = resident_sessions and !windows;
 
 /// A page-aligned view of a whole file. Mutable-typed to match what
 /// `std.posix.mmap` hands back (so callers keep coercing it to their own `const`
@@ -149,12 +186,19 @@ pub fn read(h: Handle, buf: []u8) ReadError!usize {
 
 /// Is `h` readable within `timeout_ms`? Used only to bound the one pathological
 /// case a blocking read cannot escape: a socket peer that never writes and never
-/// closes.
+/// closes (`exec/cold/quarry/stream.zig`).
 ///
 /// Windows cannot reach that case — a unix-domain socket cannot be this process's
 /// stdin there, so `inode`'s Windows leg never classifies stdin as `.socket` and
 /// this is never consulted. It reports "ready" rather than growing a
 /// `WaitForSingleObject` path for a caller that does not exist.
+///
+/// Not the same question as the daemon's `conduit/vigil.zig`, which is why both
+/// exist: this one is asked of *stdin*, whatever the shell handed us, while
+/// vigil's is asked of local sockets it opened itself. On Windows those need
+/// different mechanisms outright — AFD can answer for a socket and knows nothing
+/// about a pipe — so a single primitive would have to be the union of the two,
+/// and neither caller wants the other's half.
 pub fn readable(h: Handle, timeout_ms: i32) bool {
     if (comptime !windows) return pollReadable(h, timeout_ms);
     return true;
@@ -181,6 +225,26 @@ fn pollReadable(h: Handle, timeout_ms: i32) bool {
 /// resolves no links. The walk's symlink-loop guard is layered against exactly
 /// that case: its depth cap is documented as covering "a platform where
 /// `realpath(3)` can't resolve a leg".
+///
+/// **The answer is in gist's separator, not the platform's**, for the same reason
+/// `corpus/scope/paths.zig::slashed` normalizes a walker path: every consumer of a
+/// canonical path here treats it as a KEY, and those keys are `/`-spelled by
+/// declared design. They are not merely more convenient that way — they are
+/// parsed that way. The warm session's delta resolver locates a path inside its
+/// root by testing `path[root.len] == '/'` and then splits the remainder on `'/'`
+/// (`reconcile/delta.zig::keyFor`, `classify`); the `-L` cycle guard counts `'/'`
+/// to name the offending ancestor (`exec/cold/quarry/walk.zig::loopAncestor`).
+/// Handed `C:\repo\src\x.zig`, every one of those silently answered "not under
+/// this root" — so on Windows the resident session's scoped reconcile degraded to
+/// a full walk on every query, and `-L` could not name a loop. Normalizing at
+/// this seam fixes both at the source rather than teaching each consumer a second
+/// spelling.
+///
+/// A UNC long form (`\\?\UNC\…`) is the one shape left alone. Its prefix must be
+/// backslashes verbatim or the object manager parses `//?/` as a host named `?`,
+/// so slashing it would produce a path that no longer opens. Such a root simply
+/// keeps the pre-existing behavior (no key match, every query reconciles fully),
+/// which is the fail-closed direction.
 pub fn realpath(path: [*:0]const u8, buf: []u8) ?[:0]const u8 {
     std.debug.assert(buf.len >= max_path);
     if (comptime !windows) return std.mem.span(std.c.realpath(path, buf.ptr) orelse return null);
@@ -191,19 +255,28 @@ pub fn realpath(path: [*:0]const u8, buf: []u8) ?[:0]const u8 {
             buf[n] = 0;
             const full = buf[0..n :0];
             // `\\?\C:\x` and `C:\x` name one file; hand back the spelling callers
-            // hold. A UNC final path (`\\?\UNC\…`) has no short form, so it stays.
-            if (std.mem.startsWith(u8, full, "\\\\?\\") and !std.mem.startsWith(u8, full, "\\\\?\\UNC\\")) {
+            // hold.
+            if (std.mem.startsWith(u8, full, "\\\\?\\")) {
+                if (std.mem.startsWith(u8, full, "\\\\?\\UNC\\")) return full;
                 std.mem.copyForwards(u8, buf[0 .. n - 4], full[4..]);
                 buf[n - 4] = 0;
-                return buf[0 .. n - 4 :0];
+                return slashed(buf[0 .. n - 4 :0]);
             }
-            return full;
+            return slashed(full);
         }
     }
     const n = GetFullPathNameA(path, @intCast(buf.len - 1), buf.ptr, null);
     if (n == 0 or n >= buf.len) return null;
     buf[n] = 0;
-    return buf[0..n :0];
+    return slashed(buf[0..n :0]);
+}
+
+/// `p` rewritten in place to gist's separator. Spelled here rather than borrowed
+/// from `corpus/scope/paths.zig::slashInPlace` because that module imports this
+/// one; one `replaceScalar` is a cheaper price than the import cycle.
+fn slashed(p: [:0]u8) [:0]const u8 {
+    if (comptime std.fs.path.sep != '/') std.mem.replaceScalar(u8, p, std.fs.path.sep, '/');
+    return p;
 }
 
 /// The smallest buffer `realpath` will write an answer into. POSIX names its own
@@ -270,12 +343,53 @@ pub fn processId() u32 {
 /// caller joining `"{s}/{s}"` should not have to know which.
 pub fn scratchDir(buf: *[max_path]u8) []const u8 {
     if (comptime !windows) {
-        const dir = std.posix.getenv("TMPDIR") orelse "/tmp";
-        return std.mem.trimRight(u8, if (dir.len == 0) "/tmp" else dir, "/");
+        const dir = if (std.c.getenv("TMPDIR")) |v| std.mem.span(v) else "/tmp";
+        return std.mem.trimEnd(u8, if (dir.len == 0) "/tmp" else dir, "/");
     }
     const n = GetTempPathA(@intCast(buf.len), buf);
     if (n == 0 or n >= buf.len) return "C:\\Windows\\Temp";
-    return std.mem.trimRight(u8, buf[0..n], "\\/");
+    return std.mem.trimEnd(u8, buf[0..n], "\\/");
+}
+
+/// How many logical CPUs this process may actually run threads on. Signature and
+/// error set are `std.Thread.getCpuCount`'s deliberately, so every call site keeps
+/// its own `catch <default>` and the only thing that changes is the answer.
+///
+/// POSIX defers to std outright. Windows cannot, because std reads
+/// `peb().NumberOfProcessors` — the count of the process's **primary processor
+/// group**, capped at 64. On a machine with more than 64 logical CPUs that is
+/// half the machine or less, and every pool sized from it (the parallel walk, the
+/// index build, `relate`'s sweeps, the render fan-out) runs at half width. It is
+/// the same defect `std::thread::hardware_concurrency` still has
+/// ([microsoft/STL#5453](https://github.com/microsoft/STL/issues/5453)) and that
+/// Rust only just repaired for `available_parallelism`
+/// ([rust-lang/rust#159511](https://github.com/rust-lang/rust/pull/159511)) — so
+/// leaving it would be a measurable loss to ripgrep on exactly the hardware where
+/// parallelism matters most.
+///
+/// The version question is answered by asking about *this process* rather than
+/// about the OS build, which is what keeps a `win10_rs4` floor honest. Before
+/// Windows 11 a process is confined to one group, so the primary-group count is
+/// the correct answer and `ALL_PROCESSOR_GROUPS` would **overcount**; from
+/// Windows 11 / Server 2022 a process's affinity spans every group by default, so
+/// the total is correct. `GetProcessGroupAffinity` distinguishes those without
+/// naming a version: it reports 1 group in the confined case and more than one
+/// once the process spans them. A one-element buffer is all that is needed —
+/// a multi-group process fails with `ERROR_INSUFFICIENT_BUFFER` and writes the
+/// real group count on the way out, every other case leaves the initial 1 — which
+/// is why the `BOOL` itself is ignored.
+///
+/// Fail-open in both directions: a refused query or a nonsense zero falls back to
+/// std's answer, so the worst case is the primary-group count this had before.
+pub fn cpuCount() std.Thread.CpuCountError!usize {
+    if (comptime !windows) return std.Thread.getCpuCount();
+    const primary = try std.Thread.getCpuCount();
+    var groups: u16 = 1;
+    var buf: [1]u16 = undefined;
+    _ = GetProcessGroupAffinity(GetCurrentProcess(), &groups, &buf);
+    if (groups <= 1) return primary;
+    const all = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+    return if (all > primary) all else primary;
 }
 
 /// What sort of device a handle names, which is the question POSIX answers with
@@ -343,46 +457,33 @@ pub fn writeOnce(h: Handle, bytes: []const u8) isize {
     };
 }
 
-/// A whole-file read-only view. The view outlives `h`, so callers may close the
-/// handle immediately — true of `mmap` by definition and arranged for on Windows
-/// by copying eagerly (see the module header for what that costs).
+/// A whole-file read-only view, demand-paged on both platforms. The view outlives
+/// `h`, so callers may close the handle immediately — true of `mmap` by
+/// definition, and true of an NT section because a mapped view holds its own
+/// reference to the section object and the section holds one to the file.
 pub fn map(h: Handle, len: usize) MapError!Mapping {
     if (!windows) return std.posix.mmap(null, len, .{ .READ = true }, .{ .TYPE = .PRIVATE }, h, 0);
-    const bytes = (VirtualAlloc(null, len, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE) orelse
-        return error.OutOfMemory)[0..len];
-    // A short read means the file shrank between the caller's `stat` and here.
-    // The view stays `len` bytes, with the lost tail reading as the NULs
-    // `MEM_COMMIT` already zeroed it to — which is what POSIX promises for the
-    // same race, minus the SIGBUS it delivers on touching the vanished pages.
-    // Failing instead would need a fault name for a condition every caller
-    // already handles by falling back, and would be stricter than the arm this
-    // one exists to imitate.
-    var filled: usize = 0;
-    while (filled < len) {
-        const n = read(h, bytes[filled..]) catch break;
-        if (n == 0) break;
-        filled += n;
-    }
-    return bytes;
+    return ntMap(h, len);
 }
 
 /// Release a `map` view.
 pub fn unmap(m: []align(std.heap.page_size_min) const u8) void {
     if (!windows) return std.posix.munmap(m);
-    // `MEM_RELEASE` frees the whole reservation and requires the size to be 0.
-    _ = VirtualFree(m.ptr, 0, MEM_RELEASE);
+    // The section handle was already closed in `ntMap`; dropping the last view
+    // is what releases the object, so there is nothing else to close here.
+    _ = w.ntdll.NtUnmapViewOfSection(w.current_process, @ptrCast(@constCast(m.ptr)));
 }
 
-/// How the caller intends to touch a mapping. Advice is best-effort everywhere,
-/// which is what lets the Windows arm decline without changing any outcome: the
-/// eager read there has already paid the fault cost these hints exist to batch.
+/// How the caller intends to touch a mapping. Best-effort everywhere: a platform
+/// that cannot express one of these declines, and the scan is correct either way
+/// — only its fault pattern changes.
 pub const Advice = enum { sequential, will_need };
 
 /// Best-effort pager advice over a `map` view. Returns the failure rather than
 /// swallowing it, so callers keep reporting it through their own spare-fault
 /// channel exactly as they did when they called `madvise` directly.
 pub fn advise(m: Mapping, hint: Advice) std.posix.MadviseError!void {
-    if (windows) return;
+    if (comptime windows) return ntAdvise(m, hint);
     return std.posix.madvise(m.ptr, m.len, switch (hint) {
         .sequential => std.posix.MADV.SEQUENTIAL,
         .will_need => std.posix.MADV.WILLNEED,
@@ -404,30 +505,110 @@ fn ntOpen(dir: Handle, path: []const u8, opts: std.Io.Dir.OpenFileOptions) OpenE
     return (try T.dirOpenFileWtf16(root, wide, opts)).handle;
 }
 
-const MEM_COMMIT: u32 = 0x1000;
-const MEM_RESERVE: u32 = 0x2000;
-const MEM_RELEASE: u32 = 0x8000;
-const PAGE_READWRITE: u32 = 0x04;
+/// `mmap(PROT_READ, MAP_PRIVATE)` spelled in NT: a section over the file, one
+/// view of it, then the section handle dropped — the view survives both it and
+/// the caller's file handle, which is the lifetime `map` promises.
+///
+/// Demand-paged, which is the property the callers are actually buying: a sharded
+/// scan faults its ranges in **parallel** off a real mapping
+/// (`corpus/read/slurp.zig`), and a query that stops at its first match a few
+/// pages in never pays for the rest of the file.
+fn ntMap(h: Handle, len: usize) MapError!Mapping {
+    // Naming the size instead of passing null ("however big the file is") is what
+    // makes a racing truncation *decline*: a read-only section may not exceed its
+    // file, so a file that shrank between the caller's `stat` and here fails to
+    // create and the caller takes its copying fallback. POSIX cannot express that
+    // — it maps what it can and delivers SIGBUS on the vanished pages — so this
+    // arm ends up the safer of the two rather than merely equivalent.
+    const size: w.LARGE_INTEGER = @intCast(len);
+    var section: w.HANDLE = w.INVALID_HANDLE_VALUE;
+    switch (w.ntdll.NtCreateSection(
+        &section,
+        .{ .SPECIFIC = .{ .SECTION = .{ .QUERY = true, .MAP_READ = true } }, .STANDARD = .{ .RIGHTS = .REQUIRED } },
+        null,
+        &size,
+        .{ .READONLY = true },
+        // Backed by the file, every page committed. Neither flag prefetches;
+        // `SEC_COMMIT` is what "the whole section is addressable" is called, and
+        // is the default for a file-backed section either way.
+        .{ .COMMIT = true },
+        h,
+    )) {
+        .SUCCESS => {},
+        // A device, a pipe, or a filesystem with no section support — the same
+        // conditions POSIX reports as ENODEV, and the caller reads it the same way.
+        .INVALID_FILE_FOR_SECTION => return error.MemoryMappingNotSupported,
+        .ACCESS_DENIED => return error.AccessDenied,
+        .FILE_LOCK_CONFLICT => return error.AccessDenied,
+        // The 32-bit lane: a file too large to have an address space, which is
+        // exactly what POSIX calls ENOMEM here.
+        .SECTION_TOO_BIG, .INSUFFICIENT_RESOURCES => return error.OutOfMemory,
+        else => |status| return w.unexpectedStatus(status),
+    }
+    // Safe to drop now, and deliberately dropped *here*: a mapped view keeps its
+    // own reference to the section, so `Mapping` stays a plain slice instead of
+    // growing a handle field that every caller would have to carry to `unmap`.
+    defer w.CloseHandle(section);
 
-// Declared here rather than taken from `std.os.windows`, which stopped
-// re-exporting the memory API in 0.16. Two externs in the seam that owns the
-// difference beats reaching into std's internals from the walk.
-//
-// Both are declared in the *byte* types the one caller actually wants rather
-// than Win32's `LPVOID`, because `VirtualAlloc` returns page-aligned memory by
-// definition and `VirtualFree` only reads the pointer's value. Stating that in
-// the signature is what lets `map`/`unmap` be cast-free: a `@ptrCast` there
-// would be re-asserting, unchecked and at every call, a fact the ABI already
-// guarantees once here.
-extern "kernel32" fn VirtualAlloc(
-    ?*anyopaque,
+    var base: ?[*]align(std.heap.page_size_min) u8 = null;
+    var view_len = len;
+    switch (w.ntdll.NtMapViewOfSection(
+        section,
+        w.current_process,
+        @ptrCast(&base),
+        null,
+        0, // commit nothing up front — the whole point is to fault lazily
+        null, // from offset 0: `map` is a whole-file view
+        &view_len,
+        .Unmap, // a child process does not inherit this view
+        .{},
+        .{ .READONLY = true },
+    )) {
+        .SUCCESS => {},
+        .CONFLICTING_ADDRESSES => return error.MappingAlreadyExists,
+        .SECTION_PROTECTION => return error.PermissionDenied,
+        .ACCESS_DENIED => return error.AccessDenied,
+        .INSUFFICIENT_RESOURCES, .NO_MEMORY => return error.OutOfMemory,
+        else => |status| return w.unexpectedStatus(status),
+    }
+    // `view_len` comes back rounded up to a page; the slice stays the caller's
+    // length so both platforms hand back exactly the file's bytes.
+    return base.?[0..len];
+}
+
+/// The Windows half of `advise`.
+///
+/// `will_need` is `PrefetchVirtualMemory`, which is the same instruction
+/// `MADV_WILLNEED` gives a POSIX pager: start the fault-in now, in bulk, instead
+/// of one page-cluster per access fault. That is where the measured win in
+/// `slurp.mapWhole` actually comes from, so the hint that matters is the one that
+/// ports.
+///
+/// `sequential` has no view-level equivalent and declines rather than being
+/// faked. NT expresses "expect a forward streaming read" as a flag on the *open*
+/// (`FILE_FLAG_SEQUENTIAL_SCAN`), which is a decision made before this seam sees
+/// a handle. Prefetching the whole range instead would quietly reintroduce the
+/// eager read this arm was written to delete.
+fn ntAdvise(m: Mapping, hint: Advice) std.posix.MadviseError!void {
+    if (hint == .sequential) return;
+    const range = MemoryRange{ .base = m.ptr, .len = m.len };
+    // Failure is "paging in did not happen", which is exactly the condition
+    // `MADV_WILLNEED` reports as ENOMEM — so callers' existing `catch` arms read
+    // correctly without learning a Windows-shaped error.
+    if (PrefetchVirtualMemory(w.current_process, 1, &.{range}, 0) == 0) return error.OutOfMemory;
+}
+
+/// `WIN32_MEMORY_RANGE_ENTRY` — one address range for `PrefetchVirtualMemory`.
+const MemoryRange = extern struct { base: [*]const u8, len: usize };
+
+// Declared here rather than taken from `std.os.windows`, which binds the NT
+// memory API but not this kernel32 wrapper. It has no public NT equivalent:
+// kernel32 implements it over `NtSetInformationVirtualMemory`, which std does
+// not declare and Microsoft does not document.
+extern "kernel32" fn PrefetchVirtualMemory(
+    w.HANDLE,
     usize,
-    u32,
-    u32,
-) callconv(.winapi) ?[*]align(std.heap.page_size_min) u8;
-extern "kernel32" fn VirtualFree(
-    [*]align(std.heap.page_size_min) const u8,
-    usize,
+    [*]const MemoryRange,
     u32,
 ) callconv(.winapi) c_int;
 extern "kernel32" fn GetFileType(w.HANDLE) callconv(.winapi) u32;
@@ -437,3 +618,26 @@ extern "kernel32" fn GetSystemTimeAsFileTime(*w.FILETIME) callconv(.winapi) void
 extern "kernel32" fn GetComputerNameA([*]u8, *u32) callconv(.winapi) c_int;
 extern "kernel32" fn GetFinalPathNameByHandleA(w.HANDLE, [*]u8, u32, u32) callconv(.winapi) u32;
 extern "kernel32" fn GetFullPathNameA([*:0]const u8, u32, [*]u8, ?*?[*:0]u8) callconv(.winapi) u32;
+
+/// `GetActiveProcessorCount`'s "every group, not just mine" sentinel.
+const ALL_PROCESSOR_GROUPS: u16 = 0xffff;
+
+// The processor-group trio, none of which `std.os.windows` binds — it declares no
+// group API at all, which is why `std.Thread` reads the PEB's primary-group count
+// and stops there. `GetCurrentProcess` is the pseudo-handle constant rather than a
+// call, but std exposes it as `w.self_process_handle` only on some versions, so it
+// is declared here beside its one caller.
+extern "kernel32" fn GetCurrentProcess() callconv(.winapi) w.HANDLE;
+extern "kernel32" fn GetActiveProcessorCount(u16) callconv(.winapi) u32;
+extern "kernel32" fn GetProcessGroupAffinity(w.HANDLE, *u16, [*]u16) callconv(.winapi) c_int;
+
+test "cpuCount: never narrower than std's answer, never zero" {
+    const ours = try cpuCount();
+    const stds = try std.Thread.getCpuCount();
+    try std.testing.expect(ours >= 1);
+    // Every fallback in the Windows arm lands back on std's count, and the group
+    // total only replaces it when strictly larger — so widening is the only legal
+    // direction. Off Windows the two are the same call.
+    try std.testing.expect(ours >= stds);
+    if (comptime !windows) try std.testing.expectEqual(stds, ours);
+}

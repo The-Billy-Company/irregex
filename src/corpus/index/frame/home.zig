@@ -9,6 +9,7 @@
 //! same home without either importing the other.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const assay = @import("../../../assay/assay.zig");
 
 /// Default artifact home, relative to the working directory — where the
@@ -21,7 +22,9 @@ pub const default_out_dir = ".local/gist-verify";
 /// process, so the returned slice is borrow-safe everywhere.
 pub fn outDir() []const u8 {
     const v = assay.envSpan("GIST_DIR") orelse return default_out_dir;
-    const s = std.mem.trimEnd(u8, v, "/");
+    // Both separators, not just `/`: on Windows a shell-completed directory
+    // arrives as `C:\tmp\gist\`, and the artifact names are appended raw.
+    const s = std.mem.trimEnd(u8, v, if (builtin.os.tag == .windows) "/\\" else "/");
     return if (s.len == 0) default_out_dir else s;
 }
 

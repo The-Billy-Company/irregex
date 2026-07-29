@@ -28,7 +28,12 @@ const fault = @import("../../../fault.zig");
 const portal = @import("../../../portal.zig");
 
 /// Only the two targets whose fd-passing + anonymous-shm story we implement and
-/// measure. Everywhere else the caller stays on `chunk` frames.
+/// measure. Everywhere else the caller stays on `chunk` frames — including
+/// Windows, which hosts a resident session but cannot pass a descriptor over the
+/// socket at all (`portal.fd_passing`), so a handle-based shm would be a second
+/// protocol rather than a second spelling. It also gates the mapping calls, since
+/// the whole module is POSIX shared memory: a target this is false on has neither
+/// end of the handoff, and `resident_sessions` is now true on one such target.
 pub const supported = builtin.os.tag == .linux or builtin.os.tag.isDarwin();
 
 const page = std.heap.page_size_min;
@@ -112,7 +117,7 @@ pub const Buffer = struct {
 /// The daemon has already frozen it, so the view is a stable immutable snapshot.
 /// Declines on the same terms as `create`; the client re-asks cold.
 pub fn mapReadonly(fd: std.posix.fd_t, len: usize) fault.Answer([]align(page) const u8) {
-    if (comptime !portal.resident_sessions) return .{ .declined = .capability_missing };
+    if (comptime !supported) return .{ .declined = .capability_missing };
     return mapReadonlyPosix(fd, len);
 }
 
@@ -124,7 +129,7 @@ fn mapReadonlyPosix(fd: std.posix.fd_t, len: usize) fault.Answer([]align(page) c
 }
 
 pub fn unmap(m: []align(page) const u8) void {
-    if (comptime portal.resident_sessions) std.posix.munmap(m);
+    if (comptime supported) std.posix.munmap(m);
 }
 
 /// An anonymous, `len`-sized fd, or `null` when this platform won't give one.

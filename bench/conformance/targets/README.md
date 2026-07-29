@@ -13,6 +13,26 @@ doc_radar:
     - description: "one comptime seam carries every Windows fork the descent needed"
       file: pkg/kernels/irregex/src/portal.zig
       contains: ["fn ntOpen", "resident_sessions", "GetFinalPathNameByHandleA", "fn argsIterator"]
+    - description: "the Windows whole-file view is a demand-paged section, and will_need really prefetches"
+      file: pkg/kernels/irregex/src/portal.zig
+      contains: ["fn ntMap", "NtCreateSection", "NtMapViewOfSection", "fn ntAdvise", "PrefetchVirtualMemory"]
+      absent: ["VirtualAlloc("]
+    - description: "volume identity is its own query on Windows, and not the class Wine leaves unimplemented"
+      file: pkg/kernels/irregex/src/corpus/read/inode.zig
+      contains: ["pub fn devicePath", "fn volumeSerial", "NtQueryInformationFile", ".Id)"]
+      absent: ["NtQueryVolumeInformationFile"]
+    - description: "a walker path is normalized to gist's one separator, at the seam rather than per consumer — and free on a platform already spelling it"
+      file: pkg/kernels/irregex/src/corpus/scope/paths.zig
+      contains: ["pub fn slashed", "pub fn slashInPlace", "replaceScalar", "std.fs.path.sep == '/'"]
+    - description: "the serial walk normalizes what the walker lends it (its own buffer, since the walker overwrites that one)"
+      file: pkg/kernels/irregex/src/exec/cold/quarry/walk.zig
+      contains: ["paths_mod.slashed(a, entry.path)"]
+    - description: "the corpus haystack normalizes the join it already owns, so the second seam adds no allocation"
+      file: pkg/kernels/irregex/src/corpus/tree/haystack.zig
+      contains: ["paths.slashInPlace(path)"]
+    - description: "the native Windows lane still asks what Wine cannot answer, on both architectures, and still asserts the Win32-only contract"
+      file: .github/workflows/gist-windows.yml
+      contains: ["windows-2025", "windows-11-arm", "zig build test", "Win32 contract"]
     - description: "a sweep is hermetic against the ~10 coworker agents editing this tree"
       file: pkg/kernels/irregex/bench/conformance/targets/crossbuild.py
       contains: ["def snapshot", "def frozen", "def control"]
@@ -187,8 +207,11 @@ the Windows difference in exactly one place:
 | What the engine asks for                      | POSIX arm          | Windows arm                                                                                                                                                                                                                                |
 | --------------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | open a name **relative to an open directory** | `openat(dirfd, …)` | `NtCreateFile` with `RootDirectory = dir` — the Win32 shape of the same idea                                                                                                                                                               |
-| a whole file as bytes                         | `mmap(PRIVATE)`    | `VirtualAlloc` + read the file eagerly, so the view still outlives the handle. A file that shrinks mid-copy leaves the tail as the NULs `MEM_COMMIT` already wrote — what POSIX promises for the same race, minus the `SIGBUS` it delivers |
+| a whole file as bytes                         | `mmap(PRIVATE)`    | `NtCreateSection` + `NtMapViewOfSection`, section handle dropped — demand-paged, and the view outlives both it and the file handle. Naming the size makes this the safer arm: a file that shrank mid-race fails to map instead of faulting on the vanished tail |
+| every entry in a directory, with its clocks   | `getattrlistbulk` / `getdents64` | `NtQueryDirectoryFile` — one record carries the name, the attributes, and both change clocks, so there is no cheaper names-only call to drop to                                                                                    |
 | what kind of thing is this handle             | `stat` mode bits   | `NtQueryInformationFile` attributes + `GetFileType` device class                                                                                                                                                                           |
+| which volume is this on (`--one-file-system`) | `st_dev`, already in the stat | `NtQueryInformationFile(.Id)` — its own entry point (`inode.devicePath`), because it is a *different* query here and folding it into the stat would tax every entry to serve a once-per-directory flag. Not `FileFsVolumeInformation`, which Wine answers `NOT_IMPLEMENTED` |
+| a path the walker just handed back            | already `/`-joined — `paths.slashed` is comptime the identity, so the seam costs nothing here | `\`-joined, so it is normalized once at each walker seam: the serial walk takes a copy (the walker overwrites the bytes it lends), the haystack rewrites the join it already owns. The ignore protocol, depth counting, and the render all speak `/`      |
 | the canonical path                            | `realpath(3)`      | `GetFinalPathNameByHandle` (symlinks already followed), `GetFullPathName` if the open is refused                                                                                                                                           |
 | the argument list                             | a pre-split `argv` | one command-line string that must be **parsed**, so the iterator needs an allocator                                                                                                                                                        |
 | is stdin readable yet                         | `poll(POLLIN)`     | unreachable — a unix socket cannot be this process's stdin, so the guard has nothing to guard                                                                                                                                              |
@@ -202,11 +225,35 @@ Two things degrade rather than block, which is why the port fits in one pass:
   optimization the cold path never depends on, so a Windows build answers cold and
   says so. Gating at the _entry_ also keeps the whole listener graph out of
   semantic analysis instead of half-porting it.
-- **Pager advice is a no-op.** `madvise(SEQUENTIAL|WILLNEED)` batches faults the
-  Windows arm has already paid by reading eagerly, so declining changes no outcome.
+- **One of the two pager hints declines.** `WILLNEED` ports exactly onto
+  `PrefetchVirtualMemory` — same instruction, batch the fault-in now — and that is
+  the hint the measured win lives in. `SEQUENTIAL` has no view-level spelling on
+  NT, which says "expect a forward streaming read" as a flag on the *open*, before
+  this seam ever sees a handle; it declines rather than being faked, because
+  prefetching the whole range to imitate it would reintroduce the eager read the
+  section mapping exists to delete.
 
 The little-endian POSIX rows are untouched by construction: every fork is a
 `comptime` branch and the POSIX arm _is_ the call it replaced.
+
+### Wine proves the port; only a kernel proves the platform
+
+Which is why the Windows rows here are capped at `conforms-wine` and the rest of
+the question is asked somewhere else: a native lane
+(`../../../../../.github/workflows/gist-windows.yml`) on hosted **x64 and arm64**
+runners, which runs the whole `zig build test` suite, a ReleaseFast build, the
+same index-elision parity gate the Linux leg runs, an end-to-end CLI smoke over a
+real NTFS checkout, and a Win32 contract step for the behaviors that exist only
+here — the `/` render, an ignore rule spelled through a separator, `--max-depth`'s
+component count, `--one-file-system` over one volume, `--color=always` with no
+`TERM`, and `%LOCALAPPDATA%\gist\preferences` found but held out of force in a
+pipe. arm64 is the half worth having: it is where a weakly ordered memory model
+stops forgiving an acquire/release pair that x86's total store order lets slide.
+
+The two lanes answer different questions and neither substitutes for the other —
+this harness asks _"does every target still agree, byte for byte, with a native
+oracle?"_ across 22 triples from one machine; the native lane asks _"does the
+Win32 arm hold on the kernel it was written for?"_ on the two that matter.
 
 ## Wiring Layer H into the certificate
 

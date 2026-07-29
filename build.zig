@@ -282,32 +282,86 @@ pub fn build(b: *std.Build) void {
     b.step("cli", "gist CLI: `-- index`, `-- status`, `-- <pattern> [flags]`")
         .dependOn(&run_cli.step);
 
-    // ── cross-target drift gate (`zig build check-linux`, folded into `test`) ──
-    // The Linux legs — the statx raw-stat shim (read/inode.zig), the inotify
-    // watcher (session/watch/watch.zig), and every `std.os.linux` call they make —
-    // are comptime-pruned on the macOS dev boxes, so only a cross compile can
-    // see them break (exactly how a `std.posix.close`/`std.c.fstatat` removal
-    // in Zig 0.16 rotted unnoticed). Compile the full CLI module for
-    // x86_64-linux-gnu as an OBJECT: full Sema + codegen over every
-    // Linux-reachable line, no cross-build of the C floor and no link (the
-    // extern declarations suffice), so the gate stays cheap and cache-friendly.
-    const linux_target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu });
-    const check_engine = b.createModule(.{
-        .root_source_file = b.path("src/root.zig"),
-        .target = linux_target,
-        .optimize = .Debug,
-        .link_libc = true,
-    });
-    const check_mod = b.createModule(.{
-        .root_source_file = b.path("src/surface/face/gist/main.zig"),
-        .target = linux_target,
-        .optimize = .Debug,
-    });
-    check_mod.addImport("irregex", check_engine);
-    const check_obj = b.addObject(.{ .name = "gist-check-linux", .root_module = check_mod });
-    const check_linux = b.step("check-linux", "Cross-compile the CLI for x86_64-linux (Sema+codegen, no link) — keeps the comptime-pruned Linux legs building");
-    check_linux.dependOn(&check_obj.step);
-    k.test_step.dependOn(&check_obj.step);
+    // ── cross-target drift gate (`check-linux` / `check-windows`, both folded into `test`) ──
+    // A dev box compiles one OS's legs and comptime-prunes every other's, so the
+    // pruned ones rot silently — exactly how a `std.posix.close`/`std.c.fstatat`
+    // removal in Zig 0.16 went unnoticed on the Linux side. Each foreign target
+    // here compiles the full CLI module as an OBJECT: complete Sema + codegen over
+    // every line that target can reach, but no cross-build of the C floor and no
+    // link (the extern declarations suffice), so the gate stays cheap enough to
+    // ride every `zig build test`.
+    //
+    // What each one is watching:
+    //
+    //   * linux — the statx raw-stat shim (`read/inode.zig`), the inotify watcher
+    //     (`session/watch/watch.zig`), and every `std.os.linux` call they make.
+    //   * windows — `portal.zig`'s whole Win32 arm (`NtCreateFile` descent,
+    //     demand-paged section map, `NtQueryDirectoryFile` directory drain,
+    //     `GetFileType` device classification, `GetFinalPathName` realpath) plus
+    //     the resident tier's Win32 arm: the AFD readiness wait and its socket
+    //     nudge pair (`conduit/vigil.zig`), the socket byte I/O behind the frame
+    //     grammar, the share-mode singleton, the detached `CreateProcessW`
+    //     spawn, and the `ReadDirectoryChangesW` freshness watcher over an I/O
+    //     completion port (`session/watch/notify.zig`). None of it is reachable
+    //     from a POSIX build, so nothing else can prove it compiles.
+    //
+    // Windows is three triples because word size and instruction set are separate
+    // risks, and both have already bitten: 32-bit is where a `u64` state counter
+    // dividing a `usize` stops narrowing back on its own, and aarch64 is the
+    // runner GitHub actually rents for the native lane. Cross-compiling only the
+    // triple you happen to deploy proves the least interesting one.
+    const cross_checks = [_]struct {
+        step: []const u8,
+        blurb: []const u8,
+        queries: []const std.Target.Query,
+    }{
+        .{
+            .step = "check-linux",
+            .blurb = "Cross-compile the CLI for x86_64-linux (Sema+codegen, no link) — keeps the comptime-pruned Linux legs building",
+            .queries = &.{.{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu }},
+        },
+        .{
+            .step = "check-windows",
+            .blurb = "Cross-compile the CLI for all three Windows triples (Sema+codegen, no link) — keeps portal's Win32 arm and the warm tier's Win32 arm building",
+            // `win10_rs4` on purpose, and it is load-bearing rather than
+            // decorative: `std.Io.net.has_unix_sockets` is comptime-false below
+            // that release, which would prune the ENTIRE resident tier out of
+            // this gate — the daemon's AFD readiness wait, its socket byte I/O,
+            // its singleton, its detached spawn — and leave the gate green over
+            // code it never looked at. The floor `_buildkit` applies to a normal
+            // build is restated here because these are explicit queries, and an
+            // explicit query is exactly what that floor steps aside for.
+            .queries = &.{
+                .{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu, .os_version_min = .{ .windows = .win10_rs4 } },
+                .{ .cpu_arch = .aarch64, .os_tag = .windows, .abi = .gnu, .os_version_min = .{ .windows = .win10_rs4 } },
+                .{ .cpu_arch = .x86, .os_tag = .windows, .abi = .gnu, .os_version_min = .{ .windows = .win10_rs4 } },
+            },
+        },
+    };
+    for (cross_checks) |check| {
+        const step = b.step(check.step, check.blurb);
+        for (check.queries) |query| {
+            const foreign = b.resolveTargetQuery(query);
+            const engine = b.createModule(.{
+                .root_source_file = b.path("src/root.zig"),
+                .target = foreign,
+                .optimize = .Debug,
+                .link_libc = true,
+            });
+            const face = b.createModule(.{
+                .root_source_file = b.path("src/surface/face/gist/main.zig"),
+                .target = foreign,
+                .optimize = .Debug,
+            });
+            face.addImport("irregex", engine);
+            const obj = b.addObject(.{
+                .name = b.fmt("gist-check-{t}-{t}", .{ query.cpu_arch.?, query.os_tag.? }),
+                .root_module = face,
+            });
+            step.dependOn(&obj.step);
+            k.test_step.dependOn(&obj.step);
+        }
+    }
 
     // Machine lifecycle contract: valid JSON is emitted whether the shared
     // machine-local index is ready or unavailable. Unit tests pin every field;
@@ -968,6 +1022,28 @@ pub fn build(b: *std.Build) void {
     sieve_step.dependOn(&run_sieve.step);
     sieve_step.dependOn(sieve_install);
 
+    // ── `census` — which machine actually answers each certificate class ─────
+    // The certificate reports what a class costs; it cannot report which rung
+    // produced that cost, and a rung declines by being ABSENT — so a silently
+    // unarmed accelerator reads as a merely-modest win. This prints the ladder's
+    // own compile-time `Admission` per probe, so that gap is observable.
+    const census_mod = b.createModule(.{
+        .root_source_file = b.path("bench/rungs/census/bench.zig"),
+        .target = k.target,
+        .optimize = cli_optimize, // product-speed posture — matches what shipped
+    });
+    census_mod.addImport("irregex", cli_engine);
+    census_mod.addImport("probes", probes_mod);
+    const census_exe = b.addExecutable(.{ .name = "engine-census", .root_module = census_mod });
+    const census_install = &b.addInstallArtifact(census_exe, .{}).step;
+    lab_step.dependOn(census_install);
+    const run_census = b.addRunArtifact(census_exe);
+    run_census.setCwd(b.path("../../.."));
+    if (b.args) |args| run_census.addArgs(args);
+    const census_step = b.step("engine-census", "Engine census: which ladder machine each certificate probe class actually compiles to");
+    census_step.dependOn(&run_census.step);
+    census_step.dependOn(census_install);
+
     // ── `compose-rung` — production proof: composition vs the shipped DFA ────
     // Links the REAL engine (the rung lives inside it at
     // src/kernel/match/regex/linear/compose/, entered through regex.zig's seal)
@@ -1039,6 +1115,28 @@ pub fn build(b: *std.Build) void {
     automata_step.dependOn(&run_automata.step);
     automata_step.dependOn(automata_install);
 
+    // ── `patternid-rung` — does attribution-in-the-key cost states? ─────────
+    // Gates the pattern-set attribution design: the same union NFA determinized
+    // twice, differing only in whether the state key's trailing word holds the
+    // pattern mask or just its non-emptiness. A measurement rig rather than the
+    // engine (all 256 bytes, fixed assertion gap) — both arms identical, so the
+    // ratio is the claim and the absolute counts are not.
+    const patternid_mod = b.createModule(.{
+        .root_source_file = b.path("bench/rungs/patternid/bench.zig"),
+        .target = k.target,
+        .optimize = cli_optimize,
+    });
+    patternid_mod.addImport("irregex", cli_engine);
+    const patternid_exe = b.addExecutable(.{ .name = "patternid-rung", .root_module = patternid_mod });
+    const patternid_install = &b.addInstallArtifact(patternid_exe, .{}).step;
+    lab_step.dependOn(patternid_install);
+    const run_patternid = b.addRunArtifact(patternid_exe);
+    run_patternid.setCwd(b.path("../../.."));
+    if (b.args) |args| run_patternid.addArgs(args);
+    const patternid_step = b.step("patternid-rung", "PatternID gate: state-count cost of carrying a pattern mask in the determinizer's state key");
+    patternid_step.dependOn(&run_patternid.step);
+    patternid_step.dependOn(patternid_install);
+
     // ── `multipattern` — Layer K: the Hyperscan/Vectorscan race, gist's arm ──
     // Links the REAL kernel (PatternSet ships inside it at
     // src/kernel/batch/patterns.zig) and answers the same per-document
@@ -1061,6 +1159,30 @@ pub fn build(b: *std.Build) void {
     const multipattern_step = b.step("multipattern", "Multi-pattern race arm: per-document attribution throughput, fail-closed against N independent searches");
     multipattern_step.dependOn(&run_multipattern.step);
     multipattern_step.dependOn(multipattern_install);
+
+    // ── `sweep-rung` — per-consumer proof for the interned-AST fabric ────────
+    // Races the REAL recursive walkers (analysis.zig, parabix/admit.zig) against
+    // the REAL fused sweep (regex/ast/), both reached through regex.zig's seal,
+    // one row per consumer. Two columns, because the claim decomposes: a
+    // consumer asking one question pays the whole build, while the compile path
+    // asking all of them pays it once. Answers are compared before any time is
+    // published, and a question whose arms disagree exits non-zero — so a
+    // faster wrong answer can never read as a win.
+    const sweep_mod = b.createModule(.{
+        .root_source_file = b.path("bench/rungs/sweep/bench.zig"),
+        .target = k.target,
+        .optimize = cli_optimize, // product-speed posture — this is a timing tool
+    });
+    sweep_mod.addImport("irregex", cli_engine);
+    const sweep_exe = b.addExecutable(.{ .name = "sweep-rung", .root_module = sweep_mod });
+    const sweep_install = &b.addInstallArtifact(sweep_exe, .{}).step;
+    lab_step.dependOn(sweep_install);
+    const run_sweep = b.addRunArtifact(sweep_exe);
+    run_sweep.setCwd(b.path("../../.."));
+    if (b.args) |args| run_sweep.addArgs(args);
+    const sweep_step = b.step("sweep-rung", "Sweep-rung consumer proof: each recursive analysis raced against the fused interned-AST sweep, alone and bundled, fail-closed on any disagreement");
+    sweep_step.dependOn(&run_sweep.step);
+    sweep_step.dependOn(sweep_install);
 
     // ── `gist-portbound` — Layer B′: the port bound MEASURED on this machine ──
     // Runs the same drift-guarded probes as portcert.sh's static llvm-mca bound,

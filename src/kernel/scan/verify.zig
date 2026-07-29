@@ -6,6 +6,7 @@
 //! bench harness); this module is the pure parallel verify kernel + SIMD scan.
 
 const std = @import("std");
+const portal = @import("../../portal.zig");
 const simd = @import("simd.zig");
 const parallel = @import("../math/parallel.zig");
 
@@ -80,7 +81,7 @@ fn wideAny(gpa: std.mem.Allocator, hay: []const u8, needles: []const []const u8,
         if (n.len == 0) return true;
         overlap = @max(overlap, n.len - 1);
     }
-    const ncpu = std.Thread.getCpuCount() catch 1;
+    const ncpu = portal.cpuCount() catch 1;
     const nthr = @min(hay.len / wide_threshold + 1, ncpu);
     if (nthr < 2) return oneShot(hay, needles, ci);
 
@@ -152,7 +153,7 @@ fn atomicMin(cell: *std.atomic.Value(usize), v: usize) void {
 /// `wide_threshold`, for one core, or on spawn failure it IS that call.
 pub fn firstNulWide(gpa: std.mem.Allocator, hay: []const u8) ?usize {
     if (hay.len < wide_threshold) return std.mem.indexOfScalar(u8, hay, 0);
-    const ncpu = std.Thread.getCpuCount() catch 1;
+    const ncpu = portal.cpuCount() catch 1;
     const nthr = @min(hay.len / wide_threshold + 1, ncpu);
     if (nthr < 2) return std.mem.indexOfScalar(u8, hay, 0);
 
@@ -204,7 +205,7 @@ pub fn parallelVerify(gpa: std.mem.Allocator, docs: []const []const u8, ids: []c
     var total: usize = 0;
     for (ids) |d| total += docs[d].len;
 
-    const ncpu = std.Thread.getCpuCount() catch 1;
+    const ncpu = portal.cpuCount() catch 1;
     var nthr = @max(@as(usize, 1), total / (512 * 1024));
     nthr = @min(nthr, ncpu);
     if (ids.len < par_threshold or nthr <= 1) {

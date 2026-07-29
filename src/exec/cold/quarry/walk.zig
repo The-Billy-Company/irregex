@@ -187,15 +187,14 @@ fn loopAncestor(a: std.mem.Allocator, chain: []const VisitedDir, rp: []const u8,
     return if (anc.len == 0) "." else anc;
 }
 
-/// The device id backing `path` (POSIX `st_dev`), or null if it can't be
-/// stat'd. Powers `--one-file-system`: a directory whose device differs from
-/// the walk's starting device is a mount point we refuse to descend. `i128`
-/// holds every platform's `dev_t` (darwin `i32`, linux `u64`) without loss.
-/// Raw stat via the shared portable shim (`inode.statPath`) — the one call
-/// behind both `--one-file-system` (device id) and `--sort created` (birth
-/// time), neither of which the portable `std.Io` `Stat` exposes.
+/// The device id backing `path` (POSIX `st_dev`, Windows volume serial), or
+/// null if it can't be reached. Powers `--one-file-system`: a directory whose
+/// device differs from the walk's starting device is a mount point we refuse to
+/// descend. `i128` holds every platform's id (darwin `i32`, linux `u64`,
+/// windows `u32`) without loss. Via the shared portable shim, which neither
+/// `std.Io`'s `Stat` nor a single Windows query exposes.
 fn deviceOf(path: []const u8) ?i128 {
-    return (inode.statPath(path) orelse return null).dev;
+    return inode.devicePath(path);
 }
 
 /// True iff `--one-file-system` is active AND `path` sits on a different device
@@ -232,9 +231,14 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
             continue;
         };
         const entry = maybe orelse break;
-        const depth = pathDepth(entry.path);
-        const rel = try relPath(a, prefix, entry.path);
-        const scope_rel = try relPath(a, scope_prefix, entry.path);
+        // Every use of the walker's path below — display, ignore matching, depth,
+        // reopening — wants gist's one separator, not the platform's. Normalized
+        // exactly once, here, because this is the only place a foreign spelling
+        // can enter: see `slashed`.
+        const entry_path = try paths_mod.slashed(a, entry.path);
+        const depth = pathDepth(entry_path);
+        const rel = try relPath(a, prefix, entry_path);
+        const scope_rel = try relPath(a, scope_prefix, entry_path);
         // ripgrep whitelist-override, with rg's asymmetry (see `Ignore.shouldSkip`
         // + `Filter.whitelists`/`whitelistsHidden`): a `-g`/`--iglob` match
         // (`wl_ig`) force-searches even a hidden/gitignored path and descends a
@@ -247,7 +251,7 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
         if (entry.kind == .sym_link and o.follow) {
             if (link_depth >= max_link_depth) continue;
             if (ig.shouldSkip(rel, false, entry.basename, wl_ig, wl_hid)) continue;
-            const full = if (std.mem.eql(u8, root_path, ".")) std.fmt.allocPrint(a, "./{s}", .{entry.path}) catch continue else std.fmt.allocPrint(a, "{s}/{s}", .{ root_path, entry.path }) catch continue;
+            const full = if (std.mem.eql(u8, root_path, ".")) std.fmt.allocPrint(a, "./{s}", .{entry_path}) catch continue else std.fmt.allocPrint(a, "{s}/{s}", .{ root_path, entry_path }) catch continue;
             if (Dir.cwd().openDir(io, full, .{ .iterate = true })) |sub_const| {
                 var sub = sub_const;
                 sub.close(io);
@@ -294,10 +298,10 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
             // whitelist (`wl_ig`) overrides all of it, `.git` included (rg parity).
             if (ig.shouldSkip(rel, true, entry.basename, wl_ig, wl_hid)) continue;
             // --one-file-system: never descend a mount point onto another device.
-            if (root_dev != null and crossesDevice(root_dev, try diskPath(a, root_path, entry.path))) continue;
+            if (root_dev != null and crossesDevice(root_dev, try diskPath(a, root_path, entry_path))) continue;
             const shallow = o.max_depth == 0 or depth < o.max_depth;
             if (shallow) {
-                try ig.loadDir(try diskPath(a, root_path, entry.path), rel);
+                try ig.loadDir(try diskPath(a, root_path, entry_path), rel);
                 // A dir we chose to descend but cannot open (unreadable / EACCES)
                 // is a walk error — report it and exit 2, never skip in silence.
                 walker.enter(io, entry) catch |e| reportWalkError(rel, e, walk_error);
@@ -315,7 +319,7 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
             continue;
         }
         if (o.max_depth != 0 and depth > o.max_depth) continue;
-        try out.append(a, .{ .rel = rel, .scope = scope_rel, .disk = try diskPath(a, root_path, entry.path) });
+        try out.append(a, .{ .rel = rel, .scope = scope_rel, .disk = try diskPath(a, root_path, entry_path) });
     }
 }
 

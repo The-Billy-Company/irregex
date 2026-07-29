@@ -166,7 +166,7 @@ pub fn underSkippedDir(path: []const u8) bool {
 /// short; two `@memcpy`s + one byte store is 9.9 ns/call, a 2.1× win, for a
 /// format string simple enough that neither version does any real
 /// "formatting" work; `haystack_test.zig` pins the byte-identical output.
-pub fn joinPath(a: std.mem.Allocator, root: []const u8, rel: []const u8) ![]const u8 {
+pub fn joinPath(a: std.mem.Allocator, root: []const u8, rel: []const u8) ![]u8 {
     const buf = try a.alloc(u8, root.len + 1 + rel.len);
     @memcpy(buf[0..root.len], root);
     buf[root.len] = '/';
@@ -178,7 +178,7 @@ pub fn joinPath(a: std.mem.Allocator, root: []const u8, rel: []const u8) ![]cons
 /// `.` yields plain CWD-relative paths (`Lib/os.py`, never `./Lib/os.py`),
 /// so indexed paths, walk output, and query root-scoping all compare
 /// byte-equal — the same shape a rootless `gist <pattern>` walk emits.
-pub fn joinRoot(a: std.mem.Allocator, root: []const u8, rel: []const u8) ![]const u8 {
+pub fn joinRoot(a: std.mem.Allocator, root: []const u8, rel: []const u8) ![]u8 {
     if (std.mem.eql(u8, root, ".")) return a.dupe(u8, rel);
     return joinPath(a, root, rel);
 }
@@ -224,7 +224,11 @@ pub const Walker = struct {
     pub fn next(self: *Walker, io: std.Io) !?Haystack {
         while (true) {
             const entry = try self.inner.next(io) orelse return null;
+            // gist's separator, not the platform's, before the path reaches the
+            // ignore protocol or a caller's output — rewritten in the join's own
+            // buffer, so a platform that needs it pays no second allocation.
             const path = try joinRoot(self.a, self.root_path, entry.path);
+            paths.slashInPlace(path);
             if (entry.kind == .directory) {
                 if (isSkipDir(entry.basename) or self.ig.shouldSkip(path, true, entry.basename, false, false)) continue;
                 try self.ig.loadDir(path, path);
