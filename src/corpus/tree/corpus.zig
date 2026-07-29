@@ -347,6 +347,30 @@ pub fn writeStdoutCapped(bytes: []const u8) bool {
     return true;
 }
 
+/// Did a ceiling cut this run's output? Read by the emitters whose format has a
+/// machine consumer, so the loss can be reported IN BAND — the stderr notice
+/// `finishOutput` prints is loud to a human and invisible to a pipe that captured
+/// only stdout.
+pub fn outputTruncated() bool {
+    return output_budget.truncated.load(.monotonic);
+}
+
+/// Write a **protocol terminator** — the one bounded metadata record that closes a
+/// machine-readable stream (`--json`'s trailing `summary`) — past the ceiling the
+/// result rows obey.
+///
+/// The budget exists to bound what a reader reads, which is why `noteChrome`
+/// already refuses to charge escapes nobody sees. A terminator is the same kind of
+/// byte: not a result, one per run, a few hundred bytes, and it cannot become a
+/// firehose. Charging it is worse than free — it is the difference between a
+/// well-formed truncated stream and a malformed one, because the terminator is
+/// written last and so is precisely the record a spent budget refuses. Bypassing
+/// the ceiling also leaves the cut point of the rows *exactly* where it was, where
+/// reserving headroom would move every capped run's boundary.
+pub fn writeStdoutTerminator(bytes: []const u8) void {
+    _ = drain.write(rawWriteStdout, bytes);
+}
+
 /// `writeStdout` for a fire-and-forget one-shot emit, followed by the one-time
 /// truncation notice: write errors are swallowed (a closed stdout must not crash
 /// the query) because these callers have nothing left to cancel — they're already

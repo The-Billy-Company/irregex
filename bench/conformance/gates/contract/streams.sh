@@ -120,8 +120,67 @@ else
 fi
 
 echo
+echo "### MACHINE PROTOCOL — a capped --json stream must say so IN BAND ###"
+# The same failure mode this gate exists for, one format over: an agent runs
+# `gist --json pat > out.json`, so the stderr truncation notice lands nowhere it
+# will ever read. The trailing `summary` record is the protocol's terminator, and
+# because it is written LAST it was the first record a spent budget refused —
+# leaving a short stream ending on `end`, exit 0, and no way to tell a truncated
+# answer from a crashed one. `GIST_MAX_OUTPUT_TOKENS` forces the cut in a few
+# hundred records so this stays deterministic and independent of tree size.
+#
+# Asserted on BOTH engines: the swarm writes the terminator itself, the serial
+# path carries it inside the accumulated buffer, and only one of those two seams
+# would be exercised by a single invocation.
+#
+# `field.sh` exports `GIST_UNCAP=1` for the timing lanes, and uncap outranks an
+# explicit token budget — so these three checks drop it. Without that they pass
+# vacuously on an uncapped run, which is exactly how this gate first went green
+# against a binary that had never emitted the field.
+json_capped() {
+  local label="$1"
+  shift
+  GIST_MAX_OUTPUT_TOKENS=1 env -u GIST_UNCAP "$@" "${GIST_BIN}" --json the "${KERNEL}" < /dev/null > "${O}" 2> /dev/null
+  local last nrec bad
+  last="$(tail -1 "${O}")"
+  nrec="$(grep -c . "${O}")"
+  # No mid-record cut: every emitted line must be a complete JSON object.
+  bad="$(python3 -c '
+import json,sys
+bad=0
+for l in open(sys.argv[1]):
+    l=l.strip()
+    if not l: continue
+    try: json.loads(l)
+    except Exception: bad+=1
+print(bad)' "${O}")"
+  local status="ok"
+  [[ "${last}" == *'"type":"summary"'* ]] || status="FAIL: stream does not end on a summary record"
+  [[ "${last}" == *'"truncated":true'* ]] || status="FAIL: capped stream never declared the cut in band"
+  [[ "${bad}" -eq 0 ]] || status="FAIL: ${bad} unparseable record(s) — cut landed mid-record"
+  [[ "${status}" == ok ]] || fails=$((fails + 1))
+  printf "  %-34s records=%-5s %s\n" "${label}" "${nrec}" "${status}"
+}
+json_capped "capped --json (parallel)"
+json_capped "capped --json (serial)" GIST_NO_PARALLEL=1
+
+# The converse, and the reason the field is safe to add at all: a run that was NOT
+# cut must stay byte-identical to ripgrep, which has no ceiling and so no such
+# field. A leak here means every parity consumer sees a phantom key. Run under the
+# real default budget (uncap dropped) with a selective pattern, so "uncut" is a
+# property of the answer's size rather than of a lifted ceiling.
+env -u GIST_UNCAP "${GIST_BIN}" --json writeStdoutTerminator "${KERNEL}" < /dev/null > "${O}" 2> /dev/null
+leak="$(grep -c 'truncated' "${O}")"
+if [[ "${leak}" -eq 0 ]] && grep -q '"type":"summary"' "${O}"; then
+  printf "  %-34s %s\n" "uncut --json carries no field" "ok"
+else
+  printf "  %-34s %s\n" "uncut --json carries no field" "FAIL: ${leak} 'truncated' occurrence(s) on an uncut run, or no summary"
+  fails=$((fails + 1))
+fi
+
+echo
 if [[ "${fails}" -eq 0 ]]; then
-  echo "PROVEN: gist keeps results on stdout; stderr carries only the gist:-prefixed guidance channel (--rank timing, no-match hints — muted by GIST_HINTS=0) across the index, rank, and scan paths."
+  echo "PROVEN: gist keeps results on stdout; stderr carries only the gist:-prefixed guidance channel (--rank timing, no-match hints — muted by GIST_HINTS=0) across the index, rank, and scan paths; and a capped --json stream still terminates on a summary that declares the cut, while an uncut one stays free of the field."
 else
   echo "FAILED: ${fails} contract violation(s) — see the table above."
   exit 1

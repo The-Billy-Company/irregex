@@ -36,6 +36,7 @@
 //! args, stdin) stays on the proven serial engine.
 
 const std = @import("std");
+const portal = @import("../../../../portal.zig");
 const args = @import("../../argv/args.zig");
 const assay = @import("../../../../assay/assay.zig");
 const corpus_mod = @import("../../../../corpus/tree/corpus.zig");
@@ -363,7 +364,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     // measured six-worker ceiling (kernel-serialized walk) and halves it for
     // traversal-only / narrow / selective runs; every other OS scales to all
     // logical CPUs like ripgrep. `GIST_WORKERS` remains absolute.
-    const ncpu = std.Thread.getCpuCount() catch 6;
+    const ncpu = portal.cpuCount() catch 6;
     const narrow_scope = parsed.roots.len > 0 and !elide.broadIndexedRoots(parsed.roots);
     // A transforming run (-z/--pre/-E) does CPU-bound per-file work — inflate
     // (gzip/xz/zstd) or transcode — that scales to every core, exactly like the
@@ -388,7 +389,18 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
         w.recs.deinit(gpa);
     };
 
+    // A walk long enough to look broken explains itself while it runs — the same
+    // courtesy channel the no-match hints use, armed by DURATION instead of
+    // outcome (`hints.Vigil`). The watcher is detached and holds this pointer,
+    // which is sound for the same reason `lazy`'s is: this frame never returns.
+    var vigil: hints.Vigil = .{};
+    vigil.arm(io, hints.shape(parsed.patterns, o, parsed.roots, parsed.roots.len > 0), .{
+        .walked = &q.walked,
+        .outstanding = &q.live,
+    });
+
     crew.muster(gpa, workers, workerMain) catch oom();
+    vigil.finish();
 
     // `--sort`/`--sortr path`: the fused walk held every worker's rendered output
     // in its arena keyed by path (`deliver`/`bufferPath`) instead of racing it to
@@ -432,8 +444,14 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
         var st: json.Stats = .{};
         for (workers) |*wk| st.fold(wk.jstats);
         var sbuf: std.ArrayList(u8) = .empty;
+        // The record is the protocol's terminator, so it is written past the
+        // ceiling rather than through it — see `writeStdoutTerminator`. Written
+        // through `writeStdout` it was the FIRST record a spent budget refused,
+        // which left a capped `--json` run ending on an `end` record with no
+        // in-band sign of the cut: a machine consumer that captured stdout and
+        // dropped stderr could not tell a truncated stream from a crashed one.
         json.summary(gpa, &sbuf, st, search_span.read(io));
-        _ = corpus_mod.writeStdout(sbuf.items);
+        corpus_mod.writeStdoutTerminator(sbuf.items);
         stats.diagSearch(gpa, o.mode == .json, st, search_span.read(io));
         (Outcome{ .matched = st.get(.files_with_match) > 0, .faulted = q.walk_error.load(.acquire) or nothing_searched }).exit();
     }

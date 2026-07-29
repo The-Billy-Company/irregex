@@ -20,6 +20,7 @@
 //! match/submatch structure) is emitted for real.
 
 const std = @import("std");
+const portal = @import("../../../portal.zig");
 const corpus_mod = @import("../../../corpus/tree/corpus.zig");
 const binary = @import("../read/binary.zig");
 const stats = @import("../read/stats.zig");
@@ -228,7 +229,7 @@ pub fn runParallel(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.Array
 /// the shard floor or when fewer than two real shards survive.
 fn lineCuts(body: []const u8, a: std.mem.Allocator) ?[]const usize {
     if (body.len < parallel.min_bytes) return null;
-    const cores = std.Thread.getCpuCount() catch 1;
+    const cores = portal.cpuCount() catch 1;
     const nthr = @min(@min(cores, body.len / parallel.min_bytes), parallel.max_shards);
     if (nthr < 2) return null;
     const cuts = a.alloc(usize, nthr + 1) catch return null;
@@ -734,12 +735,30 @@ fn submatch(a: std.mem.Allocator, out: *std.ArrayList(u8), caps: ?*Caps, o: Opts
 /// `elapsed`/`elapsed_total` Duration objects now carry the run's real monotonic
 /// time (ripgrep's `{secs, subsec_nanos, human}` decomposition); the parity
 /// harness still normalizes these two objects away, so this stays byte-safe.
+///
+/// A `"truncated":true` field appears when — and only when — the agent-output
+/// ceiling actually cut the row stream. rg has no ceiling, so that is a case it can
+/// never emit, which is exactly what makes the field safe: every run comparable to
+/// rg is byte-identical without it, and the only stream that grows a field is the
+/// one that would otherwise have lied about being complete. A consumer reading
+/// `matches` off this record has to know when the tally describes a prefix.
+///
+/// The flag is read here rather than threaded in from the four callers, because by
+/// the time any of them reaches this record the cut is already decided — the serial
+/// path polls `outputFull` while it accumulates, the sharded path through
+/// `appendBudgeted`, and the swarm's workers set it when a streamed write is
+/// refused — so a parameter could only ever disagree with the budget itself.
 pub fn summary(a: std.mem.Allocator, out: *std.ArrayList(u8), st: Stats, elapsed: assay.Duration) void {
+    const truncated = corpus_mod.outputTruncated();
     const total = elapsed.ns();
     const secs: u64 = @intCast(@divFloor(total, std.time.ns_per_s));
     const sub: u64 = @intCast(@mod(total, std.time.ns_per_s));
     const human = @as(f64, @floatFromInt(total)) / 1e9;
-    out.print(a, "{{\"data\":{{\"elapsed_total\":{{\"human\":\"{d:.6}s\",\"nanos\":{d},\"secs\":{d}}},\"stats\":{{\"bytes_printed\":{d},\"bytes_searched\":{d},\"elapsed\":{{\"human\":\"{d:.6}s\",\"nanos\":{d},\"secs\":{d}}},\"matched_lines\":{d},\"matches\":{d},\"searches\":{d},\"searches_with_match\":{d}}}}},\"type\":\"summary\"}}\n", .{ human, sub, secs, st.get(.bytes_printed), st.get(.bytes_searched), human, sub, secs, st.get(.matched_lines), st.get(.matches), st.get(.files_searched), st.get(.files_with_match) }) catch oom();
+    // Placed last inside `data` so the fields a parity run compares keep both
+    // their spelling and their order; an untruncated run renders the empty string
+    // and is byte-for-byte what it was before this field existed.
+    const cut: []const u8 = if (truncated) ",\"truncated\":true" else "";
+    out.print(a, "{{\"data\":{{\"elapsed_total\":{{\"human\":\"{d:.6}s\",\"nanos\":{d},\"secs\":{d}}},\"stats\":{{\"bytes_printed\":{d},\"bytes_searched\":{d},\"elapsed\":{{\"human\":\"{d:.6}s\",\"nanos\":{d},\"secs\":{d}}},\"matched_lines\":{d},\"matches\":{d},\"searches\":{d},\"searches_with_match\":{d}}}{s}}},\"type\":\"summary\"}}\n", .{ human, sub, secs, st.get(.bytes_printed), st.get(.bytes_searched), human, sub, secs, st.get(.matched_lines), st.get(.matches), st.get(.files_searched), st.get(.files_with_match), cut }) catch oom();
 }
 
 // ─────────────────────────── helpers ───────────────────────────
