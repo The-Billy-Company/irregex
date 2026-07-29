@@ -81,7 +81,7 @@ pub fn compile(allocator: std.mem.Allocator, pattern: []const u8) ParseError!Reg
 /// and `forcedSwell` sieves by it, so no analysis can disagree with the matcher
 /// about what a construct means (see `../../analysis/swell.zig`).
 pub fn parse(arena: std.mem.Allocator, pattern: []const u8, opts: Options) ParseError!*Node {
-    var parser = syn.Parser{ .src = pattern, .arena = arena, .dotall = opts.dotall, .multiline = opts.multiline, .unicode = opts.unicode };
+    var parser = syn.Parser{ .src = pattern, .arena = arena, .dotall = opts.dotall, .multiline = opts.multiline, .unicode = opts.unicode, .caseless = opts.caseless };
     const ast = try parser.parseAlt();
     if (parser.pos != pattern.len) return ParseError.BadPattern;
     // Fold BEFORE every downstream analysis (required-literal, cover, first-set,
