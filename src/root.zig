@@ -3,9 +3,14 @@
 //! The engine half of an agent-native grep: a candidate INDEX that turns a
 //! whole-tree scan into a scoped lookup, plus (later tiers) sparse-n-gram
 //! selection, ranked + token-compressed output, and fusion with an external
-//! code graph + contracts. ripgrep is near-optimal at *unindexed* scan; irregex's
-//! win is at scale (don't rescan) and at *intent* (don't already know the
-//! symbol) — see `research/dossiers/locator-sota.dossier.toml`.
+//! code graph + contracts. Two rivals bound this design, and naming only the
+//! first is how the interesting half goes missing. ripgrep is near-optimal at
+//! *unindexed* scan, so against it the win is at scale (don't rescan) and at
+//! *intent* (don't already know the symbol). csearch and zoekt don't rescan
+//! either — against THEM the win is that an index here may only elide reads and
+//! never overrule live bytes, so a stale index costs speed rather than
+//! correctness (`corpus/fresh/`, which measures where both of them answer a
+//! mutated tree wrongly). See `research/gist/PRIOR_ART.md`.
 //!
 //! Search, index lifecycle, and result handling are Zig-native and surfaced by
 //! the `gist` CLI. The C ABI in `include/irregex.h` exposes ABI/engine-version

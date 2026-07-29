@@ -21,6 +21,18 @@
 //! observes the advanced ctime. `git diff HEAD` remains unsound because a
 //! coworker's committed change can differ from the older index without
 //! appearing in the working-tree diff.
+//!
+//! Why pay a metadata walk the rest of the indexed field skips: ripgrep is not
+//! the comparator (no index, so nothing to elide), and the two engines that do
+//! carry one both answer a weaker question. Measured on a corpus mutated after
+//! indexing — one file gains the needle, one is added with it, one loses it —
+//! csearch returns nothing (it greps live bytes so it never reports absent
+//! content, but a file that GAINED the pattern was never a candidate: false
+//! negatives only) and zoekt returns the file that lost it (it matches shard-
+//! stored content: false positive plus the same misses). Both are correct on
+//! their own terms, being built for reindex-on-a-cadence; neither is what a
+//! query against a tree ~10 agents are editing needs. See `README.md` § What
+//! this package buys for the reproduction.
 
 const std = @import("std");
 const assay = @import("../../assay/assay.zig");
