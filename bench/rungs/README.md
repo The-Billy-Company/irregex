@@ -14,7 +14,7 @@ attributed by racing the loop as a whole.
 | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | [`automata/`](automata/README.md)         | the machine algebra itself — automaton shape, and one layout choice priced against its predecessor          |
 | [`crest/`](crest/README.md)               | Layer E — the crest-sieve prune/speedup proof, with its `evidence/` monograph                              |
-| [`sieve/`](sieve/README.md)               | the trigram sieve — `indexq.zig` + `cover_parity.sh` / `production.sh` / `indexcost.sh`, `csearch_plan.py` |
+| [`sieve/`](sieve/README.md)               | the trigram sieve — `indexq.zig` + `cover_parity.sh` / `warm_parity.sh` / `production.sh` / `indexcost.sh`, `csearch_plan.py` |
 | [`sliver/`](sliver/README.md)             | the sub-trigram sliver tier — `scale.zig` + `scale_race.py`                                                |
 | [`shuffle/`](shuffle/README.md)           | the SIMD shuffle path                                                                                      |
 | [`parabix/`](parabix/README.md)           | the parallel-bitstream path                                                                                |

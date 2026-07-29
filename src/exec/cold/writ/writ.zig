@@ -65,7 +65,7 @@ pub const Writ = struct {
     /// The conjunctive cover — the CNF plan the index evaluates in place of the
     /// flat OR of `filters`, or null to use those filters unchanged. Strictly
     /// stronger where present and always declinable, so `filters` stays the
-    /// fallback rather than being superseded (`gate.coverPlan`).
+    /// fallback rather than being superseded (`gate.winnow`).
     plan: ?[]const query_mod.CoverPlan,
     /// The crest sieve's forced swell — ĝ per top-level alternative; the empty
     /// swell when it must not elide.
@@ -84,14 +84,18 @@ pub const Writ = struct {
         // Arena-owned rather than caller-stack-owned: a one-element prefilter
         // slice points AT this cell, so it has to outlive `compile`'s frame.
         const one = a.create([1][]const u8) catch oom();
+        // One parse for both index-prunings — the plan and the swell are each a
+        // linear walk over the same AST, and cold used to pay `lower.parse`
+        // twice to read them.
+        const w = gate.winnow(a, o, eff, &re, transforming);
         return .{
             .re = re,
             .is_pcre = std.meta.activeTag(re) == .pcre,
             .line_needle = line_needle,
             .file_needle = gate.wholeFileLiteralGate(o, line_needle),
             .filters = gate.trigramFilter(a, o, eff, &re, one, transforming),
-            .plan = gate.coverPlan(a, o, eff, &re, transforming),
-            .sieve = gate.crestSieve(a, o, eff, &re, transforming),
+            .plan = w.plan,
+            .sieve = w.sieve,
             .binary_detect = binaryDetect(o),
         };
     }

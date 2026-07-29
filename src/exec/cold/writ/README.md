@@ -24,12 +24,12 @@ alone: the matcher _plus_ every value derived from it — both literal gates, th
 trigram prefilters, the crest sieve, whether binary detection is live — each
 already stood down wherever it would be unsound.
 
-| Module          | Role                                                                                                                                               |
-| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `writ.zig`      | the `Writ` itself: one `compile` call resolves every derived value, guards included; plus `binaryDetect`, the one owner of "is the detector live?" |
-| `directive.zig` | many argv patterns → one effective pattern: `-F`/`-f`/`-e` folding and leading `(?flags)` reconciliation across a single run-wide engine           |
-| `gate.zig`      | the prefilters and the three predicates that say when each may fire — the required-literal gate, the trigram filter, the crest sieve               |
-| `arm.zig`       | which engine compiles this pattern: linear, PCRE2 outright (`-P`), or an `--engine auto` escalation, and the `-r` capture matcher that follows it  |
+| Module          | Role                                                                                                                                                                                                                                           |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `writ.zig`      | the `Writ` itself: one `compile` call resolves every derived value, guards included; plus `binaryDetect`, the one owner of "is the detector live?"                                                                                             |
+| `directive.zig` | many argv patterns → one effective pattern: `-F`/`-f`/`-e` folding and leading `(?flags)` reconciliation across a single run-wide engine                                                                                                       |
+| `gate.zig`      | the prefilters and the three predicates that say when each may fire — the required-literal gate, the trigram filter, the crest sieve; its `winnow` draws the cover plan and the sieve off one shared derivation the resident session reads too |
+| `arm.zig`       | which engine compiles this pattern: linear, PCRE2 outright (`-P`), or an `--engine auto` escalation, and the `-r` capture matcher that follows it                                                                                              |
 
 ## Computes, does not carry
 

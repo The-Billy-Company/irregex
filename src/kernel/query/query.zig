@@ -190,6 +190,20 @@ pub const CompiledQuery = struct {
     /// so a caseless query prunes index candidates instead of scanning the
     /// whole corpus. Owned (each variant + the slice).
     variants: ?[]const []const u8 = null,
+    /// The EFFECTIVE regex source this query's engine compiled, for a caller
+    /// that wants a further analysis off the same AST (`winnow` — the cover plan
+    /// and the crest swell, which need the parse tree rather than the compiled
+    /// program). Aliased, never owned: it is either `Spec.pattern` or this
+    /// query's own `escaped` buffer.
+    ///
+    /// Null is the standing "do not re-parse" signal, and it is null in exactly
+    /// the two cases where re-parsing would be wrong rather than merely useless:
+    /// a `.literal` body, whose fixed string is not regex source at all
+    /// (`foo(bar)` would parse as a group), and a PCRE2 body, which denotes the
+    /// pattern under a grammar this parser does not implement. So a non-null
+    /// `source` also certifies "the linear arm compiled this" — the one
+    /// condition every AST-derived pruning needs.
+    source: ?[]const u8 = null,
 
     /// Lower a spec into a compiled query. `-F` without `-i` becomes a literal
     /// (the SIMD fast path); everything else compiles to the regex engine, with
@@ -217,8 +231,9 @@ pub const CompiledQuery = struct {
 
         const re = Regex.compileOpts(gpa, escaped orelse spec.pattern, .{ .caseless = spec.ignore_case, .unicode = spec.unicode }) catch
             return CompileError.Unsupported;
-        var q = CompiledQuery{ .mode = spec.mode, .caseless = spec.ignore_case, .word = spec.word, .unicode = spec.unicode, .max_count = spec.max_count, .body = .{ .engine = .{ .linear = re } }, .escaped = escaped };
-        if (spec.ignore_case) q.mineCaselessGate(gpa, escaped orelse spec.pattern);
+        const source = escaped orelse spec.pattern;
+        var q = CompiledQuery{ .mode = spec.mode, .caseless = spec.ignore_case, .word = spec.word, .unicode = spec.unicode, .max_count = spec.max_count, .body = .{ .engine = .{ .linear = re } }, .escaped = escaped, .source = source };
+        if (spec.ignore_case) q.mineCaselessGate(gpa, source);
         return q;
     }
 
@@ -506,6 +521,10 @@ pub const CoverPlan = cover.Clause;
 pub const CoverLimits = cover.Limits;
 pub const coverPlan = cover.plan;
 pub const coverPlanSource = cover.planSource;
+// Both index-prunings a pattern forces, off ONE parse — what cold's `Writ` and
+// warm's `ResidentSession` each compile once and then prune a corpus by.
+pub const Winnow = pf.Winnow;
+pub const winnow = pf.winnow;
 pub const foldClosedWindow = pf.foldClosedWindow;
 pub const caselessVariants = pf.caselessVariants;
 pub const escapeLiteral = pf.escapeLiteral;

@@ -151,7 +151,18 @@ pub fn renderLines(a: std.mem.Allocator, req: request.Request, docs: []const Doc
     var first = true;
     for (docs) |d| {
         if (d.bytes.len == 0) continue; // cold skips empty bodies in every mode
+        // The window, BOTH ends, exactly as cold's `render.zig` sets it per file.
+        // Every fused whole-buffer pass inside `Emitter.file` reconstructs its
+        // body as `base[0 .. body_end - base]`, and `lineTerminated` decides the
+        // unterminated-tail framing off `body_end` — so a stale end is not a lost
+        // optimization, it is a scan over another document's address range.
+        // `handleBinary` below re-points the pair at its committed prefix, so
+        // leaving `body_end` unassigned here let the NEXT text doc inherit a
+        // binary doc's end address: `panic|0x` (pure literals, no single needle ⇒
+        // `litCandidates` engages) then walked `litCandidates`'s SIMD sweep off
+        // the end of the mirror's shard mapping and killed the daemon.
         em.base = @intFromPtr(d.bytes.ptr);
+        em.body_end = em.base + d.bytes.len;
         if (d.nul) |nul| {
             // Walked (implicit) binary file: cold's exact policy — matches from
             // complete buffers before the NUL, then the WARNING note. Cold's

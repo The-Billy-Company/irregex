@@ -43,9 +43,9 @@ pub fn linearArm(gpa: std.mem.Allocator, eff: []const u8, o: Opts) fault.Answer(
 
 /// This invocation's CLI flags as the linear engine's compile options. ONE
 /// owner, because every derived analysis has to parse under exactly the options
-/// the matcher was built with — `gate.crestSieve` reads its forced crest off
-/// this AST, and a flag that disagreed there would prune real matches rather
-/// than merely slow the query down.
+/// the matcher was built with — `gate.winnow` reads both the forced crest and
+/// the cover plan off this AST, and a flag that disagreed there would prune real
+/// matches rather than merely slow the query down.
 pub fn linearOptions(o: Opts) Regex.Options {
     return .{ .caseless = o.caseless, .multiline = o.multiline, .dotall = o.multiline_dotall, .unicode = o.unicode, .line_anchors = o.re_line_anchors };
 }

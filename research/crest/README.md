@@ -6,7 +6,7 @@ doc_radar:
     - pkg/kernels/irregex/src/kernel/regex/analysis/swell.zig
     - pkg/kernels/irregex/src/kernel/regex/analysis/swell_test.zig
     - pkg/kernels/irregex/src/corpus/index/crest/sidecar.zig
-    - pkg/kernels/irregex/bench/crest/bench.zig
+    - pkg/kernels/irregex/bench/rungs/crest/bench.zig
   sentinels:
     - file: pkg/kernels/irregex/build.zig
       contains:
@@ -35,7 +35,11 @@ doc_radar:
         - "top-level alternation is a disjunction, not a componentwise min"
     - file: pkg/kernels/irregex/src/exec/cold/writ/gate.zig
       contains:
-        - "crestSieve"
+        - "pub fn winnow"
+    - description: "the resident session prunes by the same swell, off the same one-parse derivation"
+      file: pkg/kernels/irregex/src/exec/session/answer/gather.zig
+      contains:
+        - "sieve.prunes"
     - file: pkg/kernels/irregex/src/exec/cold/quarry/elide.zig
       contains:
         - "crest"
@@ -67,14 +71,15 @@ per branch, no byte scan, provably no false negatives.
 
 ## The code (lives with the system, not here)
 
-| where                                       | what                                                                                                                     |
-| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `src/kernel/math/crest.zig`           | pure kernel: fixed class family, crest vector, the `Swell` disjunction, and the dominance test                           |
-| `src/kernel/regex/analysis/swell.zig` | the query half: `forcedSwell` folds ĝ out of the engine's own AST, one per top-level alternative                         |
-| `src/corpus/index/crest/sidecar.zig`        | persisted per-document crest table (`crest.bin`), generation-atomic with the trigram pair                                |
-| `src/exec/cold/writ/gate.zig`       | `crestSieve` — the query's swell, derived once and stood down wherever pruning would be unsound                          |
-| `src/exec/cold/quarry/elide.zig`    | the read-elision oracle both cold schedulers admit: crest sieve composed with trigram candidates and the freshness proof |
-| `bench/crest/bench.zig`                     | production proof harness (`zig build crest`) — fail-closed soundness, pruning, speed, and ablation over the live corpus  |
+| where                                 | what                                                                                                                       |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `src/kernel/math/crest.zig`           | pure kernel: fixed class family, crest vector, the `Swell` disjunction, and the dominance test                             |
+| `src/kernel/regex/analysis/swell.zig` | the query half: `forcedSwell` folds ĝ out of the engine's own AST, one per top-level alternative                           |
+| `src/corpus/index/crest/sidecar.zig`  | persisted per-document crest table (`crest.bin`), generation-atomic with the trigram pair                                  |
+| `src/exec/cold/writ/gate.zig`         | `winnow` — the query's swell and its cover plan off ONE parse, each stood down wherever pruning would be unsound           |
+| `src/exec/cold/quarry/elide.zig`      | the read-elision oracle both cold schedulers admit: crest sieve composed with trigram candidates and the freshness proof   |
+| `src/exec/session/answer/gather.zig`  | the resident twin of that oracle — the daemon prunes by the same swell, from the mirror's own ρ(d) rather than the sidecar |
+| `bench/rungs/crest/bench.zig`         | production proof harness (`zig build crest`) — fail-closed soundness, pruning, speed, and ablation over the live corpus    |
 
 ## Run
 
@@ -85,7 +90,7 @@ zig build test        # kernel + sidecar unit tests ride the main suite
 gist index            # persists crest.bin beside index.gist
 gist '[0-9a-f]{12}'   # the sieve elides pruned reads in production
 cd ../../..
-python3 pkg/kernels/irregex/bench/crest/evidence/crest_evidence.py package
+python3 pkg/kernels/irregex/bench/rungs/crest/evidence/crest_evidence.py package
 # clean committed HEAD only: revision-bound source, tests, measurements, monograph
 ```
 

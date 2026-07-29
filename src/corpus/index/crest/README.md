@@ -75,6 +75,13 @@ a query touches a few pages of is the trade `signet.body` exists for.
 - Soundness rounds down only (under-prune); see the kernel + `research/crest`.
 - Consumers: read-elision oracles in
   `exec/cold/quarry/elide.zig` and the serial/swarm engines.
+- **`build` has a second caller that never touches this codec.** The resident
+  session computes its own ρ(d) array over the mirror's bytes by calling `build`
+  directly (`exec/session/warm/mirror.zig`) — no blob, no seal, no freshness
+  gate, because it holds the bytes it measured. That it reuses this pass rather
+  than re-looping is deliberate: a resident vector and the on-disk vector for the
+  same bytes are then the _same computation_ and cannot drift into disagreeing
+  about ρ(d), which is the only way the two tiers could prune differently.
 
 ## When to edit
 

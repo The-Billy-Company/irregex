@@ -147,77 +147,59 @@ pub fn caselessFilter(a: std.mem.Allocator, o: Opts, eff: []const u8, re: *const
     return vars orelse &.{};
 }
 
-/// The crest sieve's forced swell for this invocation — ĝ per top-level
-/// alternative — or the empty swell (⇒ the sieve never elides) under the same
-/// whole-file-scan / no-index guards as `trigramFilter`. The sieve only ever
-/// EXTENDS the pruning criterion where index elision is already admissible; it
-/// never widens where elision runs.
+/// Both index-prunings this invocation may claim — the conjunctive cover plan
+/// and the crest sieve's forced swell — off ONE parse of the pattern
+/// (`query.winnow`). Each is independently stood down here where it would be
+/// unsound or unwanted, and each is independently declinable downstream:
+/// `elide.assemble` falls back to `trigramFilter`'s flat OR when the plan is
+/// null, and the empty swell prunes nothing. So every decline below costs
+/// pruning and never a match.
+///
 /// `pattern` is the EFFECTIVE combined pattern the engine actually compiled
-/// (post `-f` fold, `-F` escaping, and leading-flag strip), so the swell can
-/// never be derived from fewer branches than the engine matches. Multi `-e`
-/// arrives here as `(?:a)|(?:b)` and is exactly what the disjunction is for: a
-/// componentwise min across branches with disjoint forced classes is 0⃗, so
-/// every multi-pattern search used to stand the sieve down by construction.
-/// Unlike `trigramFilter`, caseless does NOT stand the sieve down: `-i` folds
-/// the AST before the calculus reads it, so the case-closed classes still force
-/// their runs while `upper`/`lower` (and any Unicode orbit escaping ASCII) fold
-/// themselves out of certification.
+/// (post `-f` fold, `-F` escaping, and leading-flag strip), so neither can be
+/// derived from fewer branches than the engine matches. Multi `-e` arrives as
+/// `(?:a)|(?:b)`, which both halves are built to read: the swell keeps one ĝ per
+/// alternative (a componentwise min across disjoint forced classes would be 0⃗,
+/// which is how every multi-pattern search used to stand the sieve down by
+/// construction), and `cover.branch` emits a clause only where BOTH sides force
+/// one, so a single unplannable branch yields no plan for the whole run rather
+/// than a set that under-admits the others.
 ///
-/// PCRE2 gets NO sieve. ĝ is only a bound on the language the pattern denotes,
-/// and PCRE2 denotes it under its own grammar — reading ĝ off gist's AST would
-/// be the dual-parser hazard one level up, worst exactly where `--engine auto`
-/// escalated *because* gist's grammar could not express the pattern. `-P` runs
-/// keep the trigram filter; they lose only this extra pruning.
-pub fn crestSieve(a: std.mem.Allocator, o: Opts, pattern: []const u8, re: *const Matcher, transforming: bool) crest.Swell {
-    if (!mayElideByIndex(o, transforming)) return crest.no_sieve;
+/// The guards, and why each half has different ones:
+///
+///   * **`mayElideByIndex` bounds both.** Neither ever widens where index
+///     elision is inadmissible; they only EXTEND the criterion where it runs.
+///   * **PCRE2 gets neither.** Both are read off gist's AST while PCRE2 denotes
+///     the pattern under its own grammar — the dual-parser hazard one level up,
+///     worst exactly where `--engine auto` escalated *because* gist's grammar
+///     could not express the pattern. `-P` runs keep `trigramFilter`'s
+///     engine-neutral literals and lose only this extra pruning.
+///   * **Caseless stands the PLAN down, not the sieve.** A folded AST would in
+///     principle cross-product into the case-variant set for free, but
+///     `caselessVariants` is the one place the Unicode-fold bounds (ASCII-only,
+///     Kelvin/long-s orbits excluded) are stated, and a second spelling of that
+///     reasoning is how a fold bug gets in — so `-i` keeps `caselessFilter`.
+///     The sieve needs no such care: `-i` folds the AST before the calculus
+///     reads it, so case-closed classes still force their runs while
+///     `upper`/`lower` (and any Unicode orbit escaping ASCII) fold themselves
+///     out of certification.
+///
+/// `GIST_NO_COVER` / `GIST_NO_CREST` (internal, undocumented — the
+/// `GIST_NO_PARALLEL_LOAD` idiom) stand one half down each, leaving the run on
+/// `trigramFilter`'s flat OR and/or no sieve. They are how each wired path is
+/// measured against itself on ONE binary, so an A/B cannot be confounded by a
+/// build difference; they are also the operational escape hatch if a plan ever
+/// costs more posting decode than it saves.
+pub fn winnow(a: std.mem.Allocator, o: Opts, pattern: []const u8, re: *const Matcher, transforming: bool) query_mod.Winnow {
+    if (!mayElideByIndex(o, transforming)) return .{};
     switch (re.*) {
         .linear => {},
-        .pcre => return crest.no_sieve,
+        .pcre => return .{},
     }
-    return Regex.forcedSwell(a, pattern, arm.linearOptions(o));
-}
-
-/// The **conjunctive cover** for this invocation — the CNF plan
-/// (`query.coverPlanSource`) the index evaluates instead of the flat OR of
-/// `trigramFilter`'s literals, or null to keep exactly that flat OR.
-///
-/// This is `trigramFilter`'s strictly stronger sibling, not its replacement:
-/// a plan states everything the pattern forces (`if\s+err\s*!=\s*nil` proves
-/// `if` AND `err` AND `nil`) where a filter set can only state one disjunction.
-/// Null is always safe — `elide.assemble` falls back to the filters — so every
-/// decline below costs pruning and never a match.
-///
-/// Same guards as its two siblings, plus two of its own:
-///
-///   * **PCRE2 gets NO plan**, for `crestSieve`'s reason one level up. The plan
-///     is read off gist's AST while PCRE2 denotes the pattern under its own
-///     grammar, and the hazard is worst exactly where `--engine auto` escalated
-///     *because* gist's grammar could not express the pattern. `-P` keeps the
-///     engine-neutral `matcherPrefilter` literals.
-///   * **Caseless keeps `caselessFilter`.** A folded AST would in principle
-///     cross-product into the case-variant set for free, but `caselessVariants`
-///     is the one place the Unicode-fold bounds (ASCII-only, Kelvin/long-s
-///     orbits excluded) are stated, and a second spelling of that reasoning is
-///     how a fold bug gets in. Measured as a follow-up, not asserted here.
-///
-/// `pattern` is the EFFECTIVE combined pattern the engine compiled, so multi
-/// `-e` arrives as `(?:a)|(?:b)` and the union semantics are the planner's own:
-/// `cover.branch` emits a clause only where BOTH sides force one, so a single
-/// unplannable pattern yields no plan for the whole run rather than a set that
-/// under-admits the others.
-/// `GIST_NO_COVER` (internal, undocumented — the `GIST_NO_PARALLEL_LOAD` idiom)
-/// stands the cover down and leaves the run on `trigramFilter`'s flat OR. It is
-/// how the wired path is measured against itself on ONE binary, so an A/B of the
-/// planner cannot be confounded by a build difference; it is also the operational
-/// escape hatch if a plan ever costs more posting decode than it saves.
-pub fn coverPlan(a: std.mem.Allocator, o: Opts, pattern: []const u8, re: *const Matcher, transforming: bool) ?[]const query_mod.CoverPlan {
-    if (!mayElideByIndex(o, transforming) or o.caseless) return null;
-    if (assay.envFlag("GIST_NO_COVER")) return null;
-    switch (re.*) {
-        .linear => {},
-        .pcre => return null,
-    }
-    return query_mod.coverPlanSource(a, pattern, arm.linearOptions(o), .{});
+    const want_cover = !o.caseless and !assay.envFlag("GIST_NO_COVER");
+    var w = query_mod.winnow(a, pattern, arm.linearOptions(o), if (want_cover) .{} else null);
+    if (assay.envFlag("GIST_NO_CREST")) w.sieve = crest.no_sieve;
+    return w;
 }
 
 test "required literal gate reuses sound regex analysis" {

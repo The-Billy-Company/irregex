@@ -27,8 +27,17 @@
 //! prune by. This is `query.zig`'s private sub-module; it re-exports the surface.
 
 const std = @import("std");
-const Regex = @import("../regex/regex.zig").Regex;
-const Matcher = @import("../regex/regex.zig").Matcher;
+const cover = @import("cover.zig");
+const crest = @import("../math/crest.zig");
+const regex_mod = @import("../regex/regex.zig");
+const Regex = regex_mod.Regex;
+const Matcher = regex_mod.Matcher;
+// The forced-crest calculus and THE parse both live with the engine on purpose
+// (`../regex/analysis/swell.zig`, `../regex/linear/program/lower.zig`): an
+// analysis that read the pattern under its own grammar could prune a file that
+// matches. `winnow` below is the one place that reads both off a single AST.
+const analysis = regex_mod.analysis;
+const lower = regex_mod.lower;
 
 /// The sound trigram prefilter for a compiled regex, independent of the
 /// caseless/mode guards a specific face layers on top: the engine's guaranteed
@@ -179,6 +188,53 @@ pub fn escapeLiteral(a: std.mem.Allocator, pat: []const u8) ![]u8 {
         try out.append(a, c);
     }
     return out.toOwnedSlice(a);
+}
+
+/// Everything a pattern forces of a document, read off ONE parse: the
+/// conjunctive cover plan an index can be asked, and the crest swell a
+/// per-document density vector can be sieved against. Two independent
+/// necessary conditions on the same AST — the plan proves a byte substring
+/// must occur, the swell proves a character-class mass must occur — so a
+/// caller may apply either, both, or neither and still see identical matches.
+///
+/// Both are `null`/empty when unprovable, and both degrade that way on a parse
+/// failure: an unsupported construct may cost pruning, never a match.
+pub const Winnow = struct {
+    plan: ?[]const cover.Clause = null,
+    sieve: crest.Swell = crest.no_sieve,
+
+    /// Whether this winnow can prune anything at all — the caller's cue to skip
+    /// the whole apparatus rather than walk a corpus proving nothing. A swell
+    /// with one 0⃗ alternative admits every document, so `active` and not
+    /// `len` is what decides.
+    pub fn idle(self: *const Winnow) bool {
+        return self.plan == null and !self.sieve.active();
+    }
+};
+
+/// Derive both prefilters for `pattern` in a single `lower.parse`.
+///
+/// The parse is the expensive half (the plan and the swell are each a linear
+/// walk over the result), and both cold's `Writ.compile` and warm's
+/// `CompiledQuery.compile` need both — so deriving them together is what keeps
+/// a second AST off the compile path. `arena` owns the plan's storage and the
+/// literals it borrows; the swell is by-value and outlives it.
+///
+/// `plan_limits` is null when the caller does not want a cover plan (a caseless
+/// pattern, whose cover atoms would have to be case-expanded to stay sound).
+/// The swell is unconditional: it reads character-class density, which case
+/// folding does not change.
+pub fn winnow(
+    arena: std.mem.Allocator,
+    pattern: []const u8,
+    opts: lower.Options,
+    plan_limits: ?cover.Limits,
+) Winnow {
+    const ast = lower.parse(arena, pattern, opts) catch return .{};
+    return .{
+        .plan = if (plan_limits) |lim| (cover.plan(arena, ast, lim) catch null) else null,
+        .sieve = analysis.forcedSwell(ast),
+    };
 }
 
 const t = std.testing;

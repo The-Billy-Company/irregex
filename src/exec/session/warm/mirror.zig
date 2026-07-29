@@ -49,6 +49,11 @@ const std = @import("std");
 const legible = @import("../../../corpus/read/legible.zig");
 const slurp = @import("../../../corpus/read/slurp.zig");
 const shard = @import("../../../corpus/index/content/shard.zig");
+const crest = @import("../../../kernel/math/crest.zig");
+// The persisted crest table's own builder — reused rather than re-looped, so a
+// resident vector and the on-disk sidecar's vector for the same bytes are the
+// same computation and cannot drift into disagreeing about ρ(d).
+const crest_table = @import("../../../corpus/index/crest/sidecar.zig");
 const path_utils = @import("../../../corpus/scope/paths.zig");
 const Dir = std.Io.Dir;
 
@@ -134,6 +139,17 @@ pub const Mirror = struct {
     /// (`non_matching = lines(f) − matching(f)`), so a non-candidate file
     /// answers invert with ZERO scan. Parallel to `docs`/`paths`/`nuls`.
     lines: []u32,
+    /// Per-doc crest vector ρ(d) — the longest per-class run in each body —
+    /// which is what lets the crest sieve prune a resident candidate with k
+    /// integer compares and no byte scan (`kernel/math/crest.zig`). The warm
+    /// twin of the persisted `crest.bin` sidecar the cold path maps, computed
+    /// over the mirror's OWN bytes so it needs no freshness gate: a changed file
+    /// is re-read into the overlay, whose docs the sieve never sees.
+    ///
+    /// Parallel to `docs`/`paths`/`nuls`/`lines`, and empty only if the table
+    /// could not be built — the sieve then prunes nothing, exactly as a missing
+    /// sidecar leaves the cold path unpruned.
+    crests: []const crest.Vector,
     bytes: u64,
     /// Σ `lines` — the corpus-wide invariant `TOTAL_CORPUS_LINES`.
     total_lines: u64,
@@ -213,7 +229,12 @@ pub fn loadWithView(gpa: std.mem.Allocator, io: std.Io, in_paths: []const []cons
         total += doc.bytes.len;
         total_lines += nlines;
     }
-    return .{ .docs = docs.items, .paths = paths.items, .nuls = nuls.items, .lines = lines.items, .bytes = total, .total_lines = total_lines, .arena = arena, .view = view };
+    // ρ(d) for every resident doc, fanned across cores by the sidecar's own
+    // builder. It rides the ingest that already touched these bytes, so the
+    // marginal cost is one more pass over a corpus the loader just read; a
+    // failure costs the sieve, never the load (`crests` empty ⇒ no pruning).
+    const crests = crest_table.build(a, docs.items) catch &.{};
+    return .{ .docs = docs.items, .paths = paths.items, .nuls = nuls.items, .lines = lines.items, .crests = crests, .bytes = total, .total_lines = total_lines, .arena = arena, .view = view };
 }
 
 test "readDoc: BOM decode, whole-body NUL offset, empty/unreadable → null" {
@@ -361,11 +382,15 @@ fn expectMirrorParity(a: *Mirror, b: *Mirror) !void {
     try t.expectEqual(a.docs.len, b.docs.len);
     try t.expectEqual(a.bytes, b.bytes);
     try t.expectEqual(a.total_lines, b.total_lines);
+    try t.expectEqual(a.crests.len, b.crests.len);
     for (a.docs, a.paths, a.nuls, a.lines, 0..) |ad, ap, an, al, i| {
         try t.expectEqualStrings(ap, b.paths[i]);
         try t.expectEqualStrings(ad, b.docs[i]);
         try t.expectEqual(an, b.nuls[i]);
         try t.expectEqual(al, b.lines[i]);
+        // ρ(d) is what the sieve prunes by, so a tier that disagreed here would
+        // drop a matching file from exactly one of the two loads.
+        try t.expectEqualSlices(u16, &a.crests[i], &b.crests[i]);
     }
 }
 
@@ -418,7 +443,7 @@ test "loadWithView: current members bind the mmap; BOM/non-member/stale take the
     {
         try std.Io.sleep(io, std.Io.Duration.fromNanoseconds(40 * std.time.ns_per_ms), .awake);
         const anchor = std.Io.Clock.now(.real, io).nanoseconds;
-        try shard.buildAt(t.allocator, io, shard_path, &s_docs, &s_paths, anchor);
+        try shard.buildAt(io, shard_path, &s_docs, &s_paths, anchor);
         const view = shard.loadFrom(t.allocator, io, shard_path).?;
         var m = try loadWithView(t.allocator, io, &walk, view);
         defer m.deinit();
@@ -434,7 +459,7 @@ test "loadWithView: current members bind the mmap; BOM/non-member/stale take the
     //    doc binds the mapping — the mirror degrades to the full-heap shape and
     //    stays byte-identical. This is the "changed file" path (mtime ≥ anchor).
     {
-        try shard.buildAt(t.allocator, io, shard_path, &s_docs, &s_paths, 1);
+        try shard.buildAt(io, shard_path, &s_docs, &s_paths, 1);
         const view = shard.loadFrom(t.allocator, io, shard_path).?;
         var m = try loadWithView(t.allocator, io, &walk, view);
         defer m.deinit();

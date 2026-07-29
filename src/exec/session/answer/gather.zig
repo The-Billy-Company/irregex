@@ -16,7 +16,9 @@
 //! (`sinkBudget` resolves to an empty budget for the ones that don't).
 
 const std = @import("std");
+const assay = @import("../../../assay/assay.zig");
 const corpus_mod = @import("../../../corpus/tree/corpus.zig");
+const crest = @import("../../../kernel/math/crest.zig");
 const answer = @import("answer.zig");
 const resident = @import("../warm/resident.zig");
 const query_mod = @import("../../../kernel/query/query.zig");
@@ -176,32 +178,113 @@ pub fn eachOverlay(self: *ResidentSession, filter: PathFilter, v: anytype) Query
     };
 }
 
-/// The base-doc candidate ids for `cq`: the sound trigram prefilter's index
-/// hits (a single required literal → `queryLiteral`; an alternation cover →
-/// `queryAny`), or every doc id when nothing is prunable or the index query
-/// fails. `buf` owns any index-allocated slice (freed by the caller). Shared
-/// by the files/count `answer`, the `lines` renderer, and the FFI match
-/// stream (`matchingDocs`) so all faces prune candidates identically.
+/// The base-doc candidate ids for `cq` — the resident twin of cold's read-
+/// elision oracle (`exec/cold/quarry/elide.zig`), and the one place any warm
+/// face decides which documents deserve to be looked at.
+///
+/// Three prunings, in the order cheap-and-strong first. Each is independently
+/// declinable and each is a NECESSARY condition on matching, so dropping any of
+/// them can only widen the set — never drop a match:
+///
+///   1. **The index**, asked the strongest question it can answer: the
+///      conjunctive cover plan (`winnowFor`) if the pattern forces one, else the
+///      flat OR of the sound prefilter literals. Cold's `askIndex` precedence
+///      exactly, including the fall-through — a plan the postings cannot witness
+///      declines to the weaker question rather than to an empty answer.
+///   2. **The crest sieve** over the mirror's per-doc ρ(d), which prunes the
+///      class the trigram index concedes: a literal-free class repetition like
+///      `[0-9a-f]{8}` has no trigram to ask for, so before this the index
+///      admitted 100% of the corpus for those patterns.
+///   3. **The path filter**, last because it is the only one that touches
+///      strings — the two above are integer work over ids and 16-byte vectors.
+///
+/// `buf` owns the full allocation; every stage compacts in place, so the
+/// returned slice is a prefix view of it and the caller's single free covers it.
 pub fn candidateIds(self: *ResidentSession, cq: *const CompiledQuery, filter: PathFilter, buf: *?[]u32) QueryError![]const u32 {
-    var one: [1][]const u8 = undefined;
-    const pf = cq.prefilter(&one);
-    const hit: ?[]u32 = switch (pf.len) {
-        0 => null,
-        1 => self.idx.queryLiteral(self.gpa, pf[0]) catch null,
-        else => self.idx.queryAny(self.gpa, pf) catch null,
-    };
-    const c = hit orelse blk: {
-        const all = try self.gpa.alloc(u32, self.mir.docs.len);
-        for (all, 0..) |*x, i| x.* = @intCast(i);
-        break :blk all;
-    };
-    buf.* = c; // caller frees the full allocation; the pruned view is a prefix of it
+    var arena = std.heap.ArenaAllocator.init(self.gpa);
+    defer arena.deinit();
+    const win = winnowFor(arena.allocator(), cq);
+
+    const c = try asked(self, &win, cq);
+    buf.* = c; // caller frees the full allocation; each prune yields a prefix
     // Scope BEFORE matching: a `PathFilter` (positional roots today) drops
     // out-of-scope candidate ids in place, so the fold/gather never reads a
     // file outside the query's subtree — the "faster than rg" prune the
     // glob module documents, and the reason warm scoped work ≤ cold scoped
     // work. An empty filter returns `c` untouched (rootless pays nothing).
-    return filter.prune(self.mir.paths, c);
+    return filter.prune(self.mir.paths, sieved(self, &win.sieve, c));
+}
+
+/// Put this query to the resident index, strongest question first, and hand back
+/// an OWNED id slice — cold `askIndex`'s precedence over the warm index, plus
+/// the every-doc fallback cold expresses as a full bitset.
+///
+/// The cover plan states everything the pattern forces (`if\s+err\s*!=\s*nil`
+/// proves `if` AND `err` AND `nil`); the flat OR of `prefilter` literals is what
+/// one extracted literal can state, and is both the fallback and the only tier
+/// that reaches a sub-trigram sliver. A plan the postings cannot witness
+/// declines to the weaker question rather than to an empty answer.
+fn asked(self: *ResidentSession, win: *const query_mod.Winnow, cq: *const CompiledQuery) QueryError![]u32 {
+    if (win.plan) |plan| {
+        if (self.idx.queryPlan(self.gpa, plan) catch null) |c| return tiered("cover", c, self.mir.docs.len);
+    }
+    var one: [1][]const u8 = undefined;
+    const pf = cq.prefilter(&one);
+    const flat: ?[]u32 = switch (pf.len) {
+        0 => null,
+        1 => self.idx.queryLiteral(self.gpa, pf[0]) catch null,
+        else => self.idx.queryAny(self.gpa, pf) catch null,
+    };
+    if (flat) |c| return tiered("filters", c, self.mir.docs.len);
+    const all = try self.gpa.alloc(u32, self.mir.docs.len);
+    for (all, 0..) |*x, i| x.* = @intCast(i);
+    return tiered("none", all, all.len);
+}
+
+/// Name the index tier that answered and how much it admitted — the warm twin of
+/// cold `elide.answered`, so one `GIST_TRACE=index` run reports both tiers in the
+/// same grammar and the certificate reads warm's numbers off the wired path.
+fn tiered(tier: []const u8, cand: []u32, corpus: usize) []u32 {
+    assay.trace(.index, "gist: warm tier={s} candidates={d}/{d}\n", .{ tier, cand.len, corpus });
+    return cand;
+}
+
+/// Both AST-derived prunings for a compiled query, or none. Null `cq.source` is
+/// the standing certificate that re-parsing is safe: it is set only for a
+/// linear-engine body, so a literal (not regex source) and a PCRE2 body (a
+/// grammar this parser does not implement) both arrive here inert.
+///
+/// Caseless declines the cover for cold's reason (`gate.winnow`): the
+/// Unicode-fold bounds are stated once, in `caselessVariants`, and a folded-AST
+/// cover would be a second spelling of that argument. The sieve needs no such
+/// care — `-i` folds the AST before the calculus reads it. The two env knobs are
+/// cold's, so one binary A/Bs both tiers.
+fn winnowFor(arena: std.mem.Allocator, cq: *const CompiledQuery) query_mod.Winnow {
+    const source = cq.source orelse return .{};
+    const want_cover = !cq.caseless and !assay.envFlag("GIST_NO_COVER");
+    var win = query_mod.winnow(arena, source, .{ .caseless = cq.caseless, .unicode = cq.unicode }, if (want_cover) .{} else null);
+    if (assay.envFlag("GIST_NO_CREST")) win.sieve = crest.no_sieve;
+    return win;
+}
+
+/// Drop the candidate ids whose crest vector provably falls short of EVERY
+/// alternative's ĝ, compacting in place (ids stay ascending, so a sharded walk
+/// over the result is unchanged).
+///
+/// ρ is taken over each doc's WHOLE body while a binary doc is only matched over
+/// its pre-NUL region (`mirror.gatedBody`). That direction is the safe one:
+/// ρ(whole) ≥ ρ(prefix) componentwise, so a whole-body vector falling short of ĝ
+/// means the prefix falls short too. The sieve therefore prunes a subset of what
+/// a gated vector would — conservative, never a missed match.
+fn sieved(self: *ResidentSession, sieve: *const crest.Swell, ids: []u32) []u32 {
+    if (!sieve.active() or self.mir.crests.len != self.mir.docs.len) return ids;
+    var w: usize = 0;
+    for (ids) |d| if (!sieve.prunes(self.mir.crests[d])) {
+        ids[w] = d;
+        w += 1;
+    };
+    assay.trace(.index, "gist: warm sieve candidates={d}/{d}\n", .{ w, ids.len });
+    return ids[0..w];
 }
 
 /// Does `path` still exist right now? The fail-closed stat-per-hit every

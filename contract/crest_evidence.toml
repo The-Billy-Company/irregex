@@ -9,7 +9,7 @@ artifact_kind = "crest-production-proof"
 [paths]
 raw_dir = ".local/crest-evidence"
 kernel_root = "pkg/kernels/irregex"
-harness = "pkg/kernels/irregex/bench/crest/bench.zig"
+harness = "pkg/kernels/irregex/bench/rungs/crest/bench.zig"
 run_json = ".local/crest-evidence/crest-run.json"
 aggregate_csv = ".local/crest-evidence/crest.csv"
 corpus_manifest = ".local/crest-evidence/corpus-manifest.tsv"

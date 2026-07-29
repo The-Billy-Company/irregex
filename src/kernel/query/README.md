@@ -7,6 +7,9 @@ doc_radar:
     - description: "the prefilter derivation stays sound for both the fold window and the case-variant OR-set"
       file: pkg/kernels/irregex/src/kernel/query/prefilter.zig
       contains: ["pub fn regexPrefilter", "pub fn foldClosedWindow", "pub fn caselessVariants"]
+    - description: "both index prunings come off ONE parse, so warm and cold cannot derive different ones"
+      file: pkg/kernels/irregex/src/kernel/query/prefilter.zig
+      contains: ["pub const Winnow", "pub fn winnow", "lower.parse"]
     - description: "the conjunctive cover emits a CNF plan under cost ceilings, and declines rather than weakens"
       file: pkg/kernels/irregex/src/kernel/query/cover.zig
       contains: ["pub fn plan", "pub fn planSource", "pub const Limits"]
@@ -28,14 +31,22 @@ index candidates, and the per-document **match / line-count** decision. Neither
 caller learns which engine backs the query, so none of them can drift on what
 matches or on which literals are safe to skip.
 
-| File             | Job                                                                                                                                                                    |
-| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `query.zig`      | `CompiledQuery`: the lowering, the `Scratch` grain a walk worker owns, and the match/count primitives over the `-F` literal fast path or the engine-neutral `Matcher`. |
-| `prefilter.zig`  | The literal derivations warm and cold must share verbatim — required/alt cover, the caseless fold window, the case-variant OR-set, and the `-F -i` escape.             |
-| `cover.zig`      | The **conjunctive cover**: the whole boolean query a pattern forces, not just its best single literal. See below.                                                      |
-| `word.zig`       | The ripgrep `-w` word-boundary rule as a post-match predicate (`wordOk` plus the literal / regex word-span scans), over the same `\b` oracle the engine uses.          |
-| `query_test.zig` | Compile / prefilter / match cases checked against an independent oracle.                                                                                               |
-| `cover_test.zig` | `matched ⇒ never pruned`, brute-forced over an exhaustively enumerated document space, plus the reachability cases each lowering rule exists for.                      |
+The stronger prunings are drawn from here too, and by one call. `winnow` returns
+the conjunctive cover plan and the crest sieve's forced swell **off a single
+`lower.parse`**, because the parse is the expensive half and both faces need
+both. That it is one function rather than two is a soundness property, not a
+tidiness one: cold's `Writ.compile` and the resident session's `gather.winnowFor`
+must agree on what a pattern forces, and the way to guarantee that is to give
+them nothing to disagree from.
+
+| File             | Job                                                                                                                                                                                                                                              |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `query.zig`      | `CompiledQuery`: the lowering, the `Scratch` grain a walk worker owns, and the match/count primitives over the `-F` literal fast path or the engine-neutral `Matcher`.                                                                           |
+| `prefilter.zig`  | The literal derivations warm and cold must share verbatim — required/alt cover, the caseless fold window, the case-variant OR-set, the `-F -i` escape — plus `winnow`, which hands both faces the cover plan and the crest swell from one parse. |
+| `cover.zig`      | The **conjunctive cover**: the whole boolean query a pattern forces, not just its best single literal. See below.                                                                                                                                |
+| `word.zig`       | The ripgrep `-w` word-boundary rule as a post-match predicate (`wordOk` plus the literal / regex word-span scans), over the same `\b` oracle the engine uses.                                                                                    |
+| `query_test.zig` | Compile / prefilter / match cases checked against an independent oracle.                                                                                                                                                                         |
+| `cover_test.zig` | `matched ⇒ never pruned`, brute-forced over an exhaustively enumerated document space, plus the reachability cases each lowering rule exists for.                                                                                                |
 
 `prefilter.zig` and `word.zig` are private to this folder — imported only by
 `query.zig`, which re-exports what callers need so the surface stays
@@ -71,7 +82,7 @@ atom   ≔ literal ∧ literal ∧ …   all of these literals' trigrams present
 ```
 
 Three things make it more than csearch's tree, each measured in
-[Layer L](../../../../bench/sieve/README.md):
+[Layer L](../../../bench/rungs/sieve/README.md):
 
 1. **A small byte class is a choice point, not a wall.** A run of adjacent
    positions is carried across the whole concat spine and survives a partially

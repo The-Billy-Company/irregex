@@ -61,6 +61,13 @@ with a clean exit code**, the worst failure this engine has. Hence
 predates the index anchor — which is also the exact validity condition for
 reusing a persisted crest vector.
 
+That condition is this tier's, not the sieve's. The resident session runs the
+same two prunings (`exec/session/answer/gather.zig`) with **no** freshness proof
+at all, because it computed ρ(d) over the bytes it is holding: a file that
+changed is re-read into the session's overlay, whose documents the sieve never
+sees. The proof above buys back a vector measured by someone else, at another
+time; warm never has to ask.
+
 Gated by [`bench/gates/index_elision_parity.sh`](../../../../../bench/gates/index_elision_parity.sh)
 (indexed and non-indexed runs must produce identical bytes) and
 `indexed_pcre_oracle.py`.

@@ -22,7 +22,7 @@
 #
 # The case list is chosen for the axes that can actually break the wiring, not
 # for coverage theater — each one exercises a distinct branch of
-# `gate.coverPlan` / `elide.askIndex`:
+# `gate.winnow` / `elide.askIndex`:
 #
 #   -i          caseless stands the cover down (`caselessFilter` keeps the
 #               Unicode-fold bounds); proves the stand-down is not a silent drop
@@ -39,7 +39,8 @@
 # that two IDENTICAL runs already disagree — measured, not assumed. Freezing the
 # bytes is what lets a difference between arms mean something.
 #
-# Usage: bench/sieve/cover_parity.sh
+# Usage: bench/rungs/sieve/cover_parity.sh (or `make test-gist-prefilter`, which
+# builds the binary and runs this beside the warm gate)
 set -uo pipefail
 # gist's ~25k-token agent-context output budget clips a repo-wide result; a
 # clipped arm would read as lost lines rather than as a cap. Lift it (the hard

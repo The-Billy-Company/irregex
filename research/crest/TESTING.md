@@ -63,7 +63,7 @@ per run:
 3. **Randomized adversarial sweep, all four modes.** 400 random class-repetition
    patterns (random classes, counts, concatenation, alternation) × 60 random
    files × byte/ASCII and rg-default Unicode × case-sensitive and caseless,
-   each paired with its own ĝ exactly as production `crestSieve` does
+   each paired with its own ĝ exactly as production `winnow` does
    (Alphabet Contract). 96,000 (pattern, file) checks per run.
 4. **Ablations.** The count-population cousin at identical thresholds, kept
    permanently so the "why the run, not the count" claim stays measured; and
@@ -145,6 +145,6 @@ zig build crest       # §3 — exploratory raw evidence in .local/crest-evidenc
 gist index && gist status   # §4 — sidecar persisted alongside index.gist
 python3 spikes/ridge-spectrum/ridge.py --oracle --selftest  # §5 — oracle + property suite
 cd ../../..
-python3 pkg/kernels/irregex/bench/crest/evidence/crest_evidence.py package
+python3 pkg/kernels/irregex/bench/rungs/crest/evidence/crest_evidence.py package
 # clean committed HEAD only: source archive + manifests + samples + monograph
 ```

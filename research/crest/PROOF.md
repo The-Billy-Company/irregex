@@ -381,7 +381,8 @@ Deployment rule: **byte classes ⇔ byte matcher; Unicode classes ⇔
 codepoint-run crest; otherwise refuse (ĝ=0).** gist's linear engine folds
 `\d`/`\w` at the rg-parity Unicode default, so `ghat` takes the engine's mode
 as an argument (`crest.Opts{ .unicode, .caseless }`) and the production
-`crestSieve` passes exactly the flags the matcher compiled with. The shipped
+`winnow` passes exactly the flags the matcher compiled with — on both tiers, from
+one derivation each. The shipped
 wiring implements options (a)+(c): under the Unicode default only constructs
 whose byte and codepoint semantics provably coincide certify. Caseless matching
 widens explicit ASCII atoms to their case closure; case-closed classes retain
@@ -651,7 +652,7 @@ corpus:
 No numeric result in this source document is assigned to the repaired
 calculus. Measurements are minted only after the source revision is committed:
 
-    python3 pkg/kernels/irregex/bench/crest/evidence/crest_evidence.py package
+    python3 pkg/kernels/irregex/bench/rungs/crest/evidence/crest_evidence.py package
 
 The command refuses a dirty tree, runs the benchmark and test slate frozen in
 `contract/crest_evidence.toml`, archives the exact Git revision, and records:
