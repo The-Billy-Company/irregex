@@ -525,6 +525,50 @@ test "matchSpan: leftmost-first prefers the earlier alternation branch (a|ab ⇒
     try expectJoined("a|ab", "abab", "a|a"); // then re-anchors after each 'a'
 }
 
+// An alternation whose every branch consumes exactly one byte is lowered as a single
+// `consume` over the union rather than N consumes behind N-1 splits
+// (`compile.zig::oneByteUnion`). These pin the two halves of that: the *shape* it is
+// allowed to produce, and the order-sensitivity it must refuse to touch.
+test "compile: a single-byte alternation lowers to ONE consume, not a split tree" {
+    const gpa = std.testing.allocator;
+    for ([_][]const u8{ "a|b", "(a|b)", "a|b|c|d|e|f|g|h", "[ab]|[cd]", "(a|(b))" }) |pat| {
+        var re = try Regex.compile(gpa, pat);
+        defer re.deinit();
+        var consumes: usize = 0;
+        var splits: usize = 0;
+        for (re.states) |st| switch (st) {
+            .consume => consumes += 1,
+            .split => splits += 1,
+            else => {},
+        };
+        try std.testing.expectEqual(@as(usize, 1), consumes);
+        try std.testing.expectEqual(@as(usize, 0), splits);
+    }
+    // …and the union is the right set: `a|b|c` accepts exactly those three bytes.
+    try expectJoined("a|b|c", "xaybzcw", "a|b|c");
+    try expectJoined("a|b|c", "de", "");
+}
+
+// The fold must decline every branch shape that does NOT consume exactly one byte to
+// the same continuation, because those are the shapes where branch ORDER is
+// observable. `a|ab` is the canonical one (covered above for its span); here we assert
+// the *lowering* still keeps its split, so the guard cannot be lost silently.
+test "compile: multi-byte, zero-width, and Unicode branches keep their split" {
+    const gpa = std.testing.allocator;
+    for ([_][]const u8{ "a|ab", "ab|cd", "a|", "a|b*", "^a|b" }) |pat| {
+        var re = try Regex.compile(gpa, pat);
+        defer re.deinit();
+        var splits: usize = 0;
+        for (re.states) |st| if (st == .split) {
+            splits += 1;
+        };
+        try std.testing.expect(splits >= 1);
+    }
+    // A one-byte fold inside a larger alternation leaves the outer choice alone.
+    try expectJoined("a|ab", "ab", "a");
+    try expectJoined("ab|a", "ab", "ab"); // opposite order ⇒ opposite winner: order survives
+}
+
 test "matchSpan: greedy quantifiers extend the end maximally" {
     try expectJoined("a+", "aaa", "aaa");
     try expectJoined("a+", "baaab", "aaa");

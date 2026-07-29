@@ -59,6 +59,11 @@ pub const Compiler = struct {
                 return self.compileNode(ab[0], s2);
             },
             .alt => |ab| {
+                // An alternation whose every branch consumes exactly one byte is not a
+                // choice at all — it is a byte CLASS, and `(a|b|…|h)` should reach the
+                // determinizer as one consume over `[a-h]` rather than as 8 consumes
+                // behind 7 splits. See `oneByteUnion` for why this is span-safe.
+                if (oneByteUnion(node)) |set| return self.push(.{ .consume = .{ .set = set, .out = next } });
                 const sa = try self.compileNode(ab[0], next);
                 const sb = try self.compileNode(ab[1], next);
                 return self.push(.{ .split = .{ .a = sa, .b = sb } });
@@ -82,6 +87,36 @@ pub const Compiler = struct {
         }
     }
 };
+
+/// The union of an alternation's branches when **every** branch consumes exactly one
+/// byte, else null — the one shape where collapsing a choice into a class is free.
+///
+/// Why this is safe where re-associating an alternation is not (`../ast/intern.zig`):
+/// leftmost-first selection depends on branch order only when two branches can reach
+/// the same start with *different* ends. Here every branch consumes one byte and
+/// flows to the same `next`, so each branch's thread arrives at the identical
+/// (state, position) pair — which the Pike VM already dedupes — and the surviving
+/// thread is the same one whichever branch had priority. Spans, `-o`, and the
+/// `a|ab ⇒ a` rule are therefore unaffected: `ab` is a `.concat`, so it declines
+/// here and keeps its split.
+///
+/// Declines by construction on everything that could observe the order: `.concat`
+/// and `.uclass` (more than one byte), `.empty` and the assertions (zero bytes), and
+/// every quantifier (a variable count). `.capture` descends because this compiler
+/// already lowers a group transparently — and the *capture* VM has its own
+/// alternation lowering (`captures.zig`), so no slot boundary is reachable from here.
+fn oneByteUnion(node: *const Node) ?ByteSet {
+    switch (node.*) {
+        .class => |set| return set,
+        .capture => |g| return oneByteUnion(g.child),
+        .alt => |ab| {
+            var set = oneByteUnion(ab[0]) orelse return null;
+            set.unionWith(oneByteUnion(ab[1]) orelse return null);
+            return set;
+        },
+        else => return null,
+    }
+}
 
 // ─────────────────────── Unicode class → UTF-8 byte trie ───────────────────────
 //
