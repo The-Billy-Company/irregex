@@ -117,7 +117,7 @@ pub const Captures = struct {
         const arena = arena_state.allocator();
 
         var names: std.ArrayList(syn.NamedCap) = .empty;
-        var parser = syn.Parser{ .src = pattern, .arena = arena, .names = &names, .unicode = unicode };
+        var parser = syn.Parser{ .src = pattern, .arena = arena, .names = &names, .unicode = unicode, .caseless = caseless };
         const ast = try parser.parseAlt();
         if (parser.pos != pattern.len) return ParseError.BadPattern;
         if (caseless) try syn.foldCaseAst(arena, ast, unicode);

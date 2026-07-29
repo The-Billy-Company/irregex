@@ -43,6 +43,29 @@ fn parse(src: []const u8) ParseError!Parsed {
     return .{ .arena = arena, .node = n };
 }
 
+/// Parse under explicit engine modes — the `-i` fold and Unicode mode change what
+/// a *negated* class means, and only the parser can get that ordering right.
+fn parseMode(src: []const u8, caseless: bool, unicode: bool) ParseError!Parsed {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    errdefer arena.deinit();
+    var p = syn.Parser{ .src = src, .arena = arena.allocator(), .caseless = caseless, .unicode = unicode };
+    const n = try p.parseAlt();
+    if (p.pos != src.len) return ParseError.BadPattern;
+    return .{ .arena = arena, .node = n };
+}
+
+/// Is `cp` a member of a one-atom pattern's codepoint class? Accepts either
+/// lowering, since an all-ASCII set legitimately stays a byte `class`.
+fn holdsCp(pr: *Parsed, cp: u21) !bool {
+    return switch (pr.node.*) {
+        .uclass => |ranges| for (ranges) |r| {
+            if (cp >= r[0] and cp <= r[1]) break true;
+        } else false,
+        .class => |s| cp < 0x100 and s.has(@intCast(cp)),
+        else => error.TestExpectedClass,
+    };
+}
+
 /// The sole consuming `class` set of a one-atom pattern (e.g. `\d`, `.`, `[..]`).
 fn classOf(pr: *Parsed) !ByteSet {
     return switch (pr.node.*) {
@@ -365,6 +388,73 @@ test "syntax/class: a reversed range [z-a] is rejected (rust-regex parity)" {
     defer pr.deinit();
     const s = try classOf(&pr);
     try std.testing.expect(s.has('a') and s.count() == 1);
+}
+
+test "syntax/class: a shorthand cannot bound a range (rg parity)" {
+    // rg: "invalid range boundary, must be a literal" — on EITHER side, in both
+    // engine modes. `[a-\d]` silently meaning `a`,`-`,`\d` would be a lie.
+    inline for (.{ "[a-\\d]", "[A-\\d]", "[\\d-a]", "[a-\\w]", "[\\w-\\d]", "[a-\\p{L}]", "[\\p{L}-a]" }) |pat| {
+        try std.testing.expectError(ParseError.BadPattern, parseMode(pat, false, false));
+        try std.testing.expectError(ParseError.BadPattern, parseMode(pat, false, true));
+    }
+    // A TRAILING dash after a shorthand stays a literal member, as rg keeps it.
+    inline for (.{ false, true }) |uni| {
+        var pr = try parseMode("[\\d-]", false, uni);
+        defer pr.deinit();
+        try std.testing.expect(try holdsCp(&pr, '-') and try holdsCp(&pr, '7'));
+        try std.testing.expect(!try holdsCp(&pr, 'a'));
+    }
+}
+
+test "syntax/class: a literal escape DOES bound a range" {
+    // `\t`-`\r` is 0x09–0x0D, so the interior bytes 0x0B/0x0C are members — the
+    // set is a RANGE, not the three literals `\t`, `-`, `\r`.
+    inline for (.{ false, true }) |uni| {
+        var pr = try parseMode("[\\t-\\r]", false, uni);
+        defer pr.deinit();
+        for ([_]u21{ 0x09, 0x0A, 0x0B, 0x0C, 0x0D }) |cp| try std.testing.expect(try holdsCp(&pr, cp));
+        try std.testing.expect(!try holdsCp(&pr, '-')); // the dash was the operator
+        try std.testing.expect(!try holdsCp(&pr, 0x0E));
+    }
+}
+
+test "syntax/class: -i complements the FOLDED members (rg parity)" {
+    // Folding after the complement would re-admit the excluded letter's twin:
+    // `[^k]` keeps `K`, and folding that set hands `k` straight back. rg's
+    // `(?i)[^k]` rejects both cases, so the fold must precede the negation.
+    inline for (.{ "[^k]", "[^k-k]", "[^[:lower:]x]" }) |pat| {
+        var pr = try parseMode(pat, true, false);
+        defer pr.deinit();
+        const s = try classOf(&pr);
+        try std.testing.expect(!s.has('k') and !s.has('K'));
+    }
+    // Unicode mode excludes the whole fold orbit — `k`, `K`, and KELVIN SIGN.
+    var pr = try parseMode("[^k]", true, true);
+    defer pr.deinit();
+    for ([_]u21{ 'k', 'K', 0x212A }) |cp| try std.testing.expect(!try holdsCp(&pr, cp));
+    try std.testing.expect(try holdsCp(&pr, 'a') and try holdsCp(&pr, 'A'));
+    // The inner-negated POSIX spelling takes the same route.
+    var ip = try parseMode("[[:^lower:]]", true, false);
+    defer ip.deinit();
+    const is = try classOf(&ip);
+    try std.testing.expect(!is.has('a') and !is.has('A') and is.has('0'));
+}
+
+test "syntax/class: [[:^name:]] complements in the mode's own universe" {
+    // Unicode mode complements over the WHOLE scalar space, so a CJK codepoint is
+    // a non-lowercase character (rg emits 日 for `[[:^lower:]]`). Complementing
+    // the 256-byte set instead would silently stop at U+00FF.
+    var uni = try parseMode("[[:^lower:]]", false, true);
+    defer uni.deinit();
+    for ([_]u21{ 'A', '0', ' ', 0x65E5, 0x10FFFF }) |cp| try std.testing.expect(try holdsCp(&uni, cp));
+    try std.testing.expect(!try holdsCp(&uni, 'a') and !try holdsCp(&uni, 'z'));
+    try std.testing.expect(!try holdsCp(&uni, '\n')); // still never crosses a line
+
+    // `(?-u)` is the byte engine, where the byte universe IS the right one.
+    var byt = try parseMode("[[:^lower:]]", false, false);
+    defer byt.deinit();
+    const s = try classOf(&byt);
+    try std.testing.expect(s.has('A') and s.has(0xFF) and !s.has('a') and !s.has('\n'));
 }
 
 // ── counted repetition {n} {n,} {n,m} ───────────────────────────────────────

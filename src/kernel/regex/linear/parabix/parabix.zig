@@ -133,7 +133,7 @@ pub const Parabix = struct {
         var arena_state = std.heap.ArenaAllocator.init(gpa);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
-        var parser = syn.Parser{ .src = pattern, .arena = arena, .dotall = opts.dotall, .multiline = opts.multiline, .unicode = opts.unicode };
+        var parser = syn.Parser{ .src = pattern, .arena = arena, .dotall = opts.dotall, .multiline = opts.multiline, .unicode = opts.unicode, .caseless = opts.caseless };
         const ast = parser.parseAlt() catch return .{ .declined = .too_complex };
         if (parser.pos != pattern.len) return .{ .declined = .too_complex };
         if (opts.caseless) syn.foldCaseAst(arena, ast, opts.unicode) catch return .{ .declined = .too_complex };
