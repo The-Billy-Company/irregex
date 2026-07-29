@@ -843,13 +843,13 @@ test "regex/classrun: matchSpan (kernel window rule) ≡ Pike span iteration" {
 test "regex/span: a window equals a slice wherever the two must agree" {
     const gpa = std.testing.allocator;
     const slate = [_][]const u8{
-        "foo",                       "foo|zzzzq",
-        "foo|bar|zzzzq",             "[a-z]+",
-        "\\w{3,8}",                  "[0-9]{4}",
-        "f.o",                       "foo \\w+ x",
-        "[a-z]+_[a-z]+_[a-z]+",      "[A-Z][a-z]+[A-Z][A-Za-z]*",
-        "(foo|ba)+r",                "a{2,4}",
-        "\\w+@\\w+\\.[a-z]+",        "[a-z]+\\(",
+        "foo",                  "foo|zzzzq",
+        "foo|bar|zzzzq",        "[a-z]+",
+        "\\w{3,8}",             "[0-9]{4}",
+        "f.o",                  "foo \\w+ x",
+        "[a-z]+_[a-z]+_[a-z]+", "[A-Z][a-z]+[A-Z][A-Za-z]*",
+        "(foo|ba)+r",           "a{2,4}",
+        "\\w+@\\w+\\.[a-z]+",   "[a-z]+\\(",
     };
     const lines = [_][]const u8{
         "",
