@@ -6,9 +6,20 @@ doc_radar:
       contains:
         - 'LAYER_C_HEADER = "## Layer C — roofline (measured headroom)"'
         - "if frac >= 80.0:"
-    - description: "adverse tests forbid sub-roof saturation claims"
+    - description: "adverse tests forbid sub-roof saturation claims and pin the ladder's denominator"
       file: pkg/kernels/irregex/bench/bounds/roofline/test_roofline.py
-      contains: ["test_sub_threshold_result_cannot_claim_saturation"]
+      contains:
+        - "test_sub_threshold_result_cannot_claim_saturation"
+        - "test_corpus_sized_roof_is_the_divisor_when_present"
+        - "test_roof_rung_is_not_read_as_the_matched_control"
+    - description: "the matched control reads its geometry from production, never its own"
+      file: pkg/kernels/irregex/bench/bounds/roofline/bandwidth.zig
+      contains:
+        - "simd.block_bytes"
+        - "simd.anchorsOf"
+        - "simd.anyLane"
+        - "simd.singleProbeEligible"
+      absent: ["std.simd.suggestVectorLength"]
 ---
 
 # bench/roofline — Layer C (measured headroom)
@@ -25,9 +36,9 @@ a binding bottleneck.
 
 | File                      | Role                                                                                                                                                                                                           |
 | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `bandwidth.zig`           | a STREAM-style single-thread read-bandwidth microbenchmark at three working-set tiers (L1/L2/DRAM), a matched dual-window/contiguous-production ladder, and gist's real SIMD scan over the corpus              |
-| `roofline_report.py`      | reads `roofline.json` + Layer A's `certify.csv` (optionally Layer B's `portcert.json` for the compute ceiling), renders the `## Layer C` markdown section, splices it into `.local/gist-verify/CERTIFICATE.md` |
-| `test_roofline_report.py` | adverse tests that reject sub-roof saturation claims and keep legacy certificate refreshes honest                                                                                                              |
+| `bandwidth.zig`           | a STREAM-style single-thread read-bandwidth microbenchmark at three working-set tiers (L1/L2/DRAM), a matched gate/contiguous-production ladder over a corpus-sized buffer of corpus bytes, and gist's real SIMD scan over the corpus |
+| `report.py`               | reads `roofline.json` + Layer A's `certify.csv` (optionally Layer B's `portcert.json` for the compute ceiling), renders the `## Layer C` markdown section, splices it into `.local/gist-verify/CERTIFICATE.md` |
+| `test_roofline.py`        | adverse tests that reject sub-roof saturation claims and keep legacy certificate refreshes honest                                                                                                              |
 
 Low arithmetic intensity places a theoretical roof; it does not prove an
 implementation has reached it. `roofline_report.py` therefore reports the
@@ -48,17 +59,37 @@ corpus with an absent needle (a full scan, no early exit, no verification) —
 the clean corpus operating point — plus two present needles for context
 (early-exit + verify, not a clean bandwidth number).
 
-Between STREAM and the corpus point, the harness runs two controls over the
-same 512 MiB DRAM buffer:
+Between STREAM and the corpus point sits the **matched ladder**, and its whole
+value is that consecutive rungs differ by exactly one thing. All three run over
+one contiguous buffer sized to the corpus and filled with corpus bytes:
 
-1. a dual-window load/compare/mask loop matching the production hot-loop shape
-   without verification or document dispatch;
-2. production `simd.contains` over one contiguous buffer.
+1. **corpus-sized STREAM roof** — the same sum-reduction as the tier sweep, at
+   the corpus's own size over the corpus's own content. This, not the 512 MiB
+   uniform-random DRAM tier, is the denominator every scan rung is reported
+   against; the tier sweep above is a cache-hierarchy datum.
+2. **matched gate control** — production's streaming gate with verification and
+   document dispatch removed and nothing else changed. Its stride, anchors,
+   block gate, and single-probe promotion are read from `simd`'s published
+   surface (`block_bytes`, `anchorsOf`, `anyLane`, `singleProbeEligible`)
+   rather than restated here.
+3. **production contiguous** — real `simd.contains` over that same buffer.
 
-The first gap prices the search instruction/load shape; the second prices
-production control flow; the corpus gap prices document fragmentation and
-dispatch. This ladder makes Layer C diagnostic even when the scan is nowhere
-near the hardware roof.
+The first gap prices the gate's own instruction and load cost; the second
+prices verification and production control flow; the corpus gap that follows
+prices document fragmentation and dispatch alone. This ladder makes Layer C
+diagnostic even when the scan is nowhere near the hardware roof.
+
+### Why the control reads from production
+
+Through 2026-07 the ladder was **inverted** — the control measured 47.5 GB/s
+against production's 53.0 on aarch64, which is impossible for a real upper
+bound and meant the published headroom compared two unrelated kernels. Every
+cause was this benchmark describing production from memory: a 16-byte stride
+against production's 64, first+last anchors instead of the rarity-picked pair,
+a per-block movemask where production gates on `anyLane`, and an
+unconditionally dual-window loop for a needle production scans single-probe.
+The four false assertions are recorded in `bandwidth.zig`'s header; the fix is
+that the control no longer gets to have its own opinion about any of them.
 
 Frequency (only needed for the _derived_ cycles/byte ceiling) is measured via
 the same `kperf` PMU [`../harness/pmu.zig`](../harness/pmu.zig) uses when run

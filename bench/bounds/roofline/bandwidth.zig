@@ -14,6 +14,40 @@
 //! certify's verify kernel is single-threaded, so the honest ceiling is the
 //! per-core achievable bandwidth, not the chip's aggregate.
 //!
+//! ## Recorded defects — assertions this file made that were false (2026-07-29)
+//!
+//! For a year the ladder was INVERTED: the "matched dual-window control" that
+//! is supposed to upper-bound production measured 47.5 GB/s where production
+//! contiguous measured 53.0 (aarch64), and 16.8 vs 16.9 on x86_64. A control
+//! cannot be below the thing it bounds, so the ladder explained nothing, and
+//! the headroom it published was a comparison between two unrelated kernels.
+//! Four false assertions, all of them this file describing production from
+//! memory instead of reading it:
+//!
+//!   1. "The control's stride is production's stride." It was not.
+//!      `suggestVectorLength(u8) orelse 16` is 16 bytes on NEON; production
+//!      runs `@max(vlen, 64)`. The control paid 4× the loop overhead per byte.
+//!      Fixed: stride is `simd.block_bytes`.
+//!   2. "First+last bytes are the anchors." They are not, and have not been
+//!      since the rarity table landed. Production picks the two rarest bytes
+//!      by corpus density, so on the absent needle the control filtered on a
+//!      byte production never touches. Fixed: `simd.anchorsOf`.
+//!   3. "A movemask per block is what the gate costs." It is not. Production
+//!      gates on `anyLane`, whose whole reason to exist is that the movemask
+//!      emulation is multi-µop on NEON. Fixed: `simd.anyLane`.
+//!   4. "Production always runs two loads per block." It does not. A
+//!      rare-anchored needle — including this file's own absent needle — takes
+//!      the single-probe loop, which is 1.42× the dual shape (measured under
+//!      layout randomization). An unconditionally-dual control therefore
+//!      bounds a path production never runs. Fixed: `simd.singleProbeEligible`.
+//!
+//! The denominator was wrong too: every rung was divided by a 512 MiB
+//! uniform-random buffer, folding kernel, working-set size, and byte content
+//! into one "headroom" figure. The ladder now runs on a corpus-sized buffer of
+//! corpus bytes with its own STREAM roof at that size, so consecutive rungs
+//! differ by exactly one thing. The 512 MiB tier stays, as what it always
+//! actually was: a cache-hierarchy datum, not a scan denominator.
+//!
 //! Frequency (needed only for the derived cycles/byte ceiling) is **measured**
 //! via the same kperf PMU certify uses when run under `sudo`; without it we fall
 //! back to a clearly-labeled assumed clock and report the ceiling primarily in
@@ -37,9 +71,11 @@ const V = 8;
 const NACC = 8;
 const STEP = NACC * V; // u64 words consumed per inner iteration (512 B)
 const Vu = @Vector(V, u64);
-const scan_vlen: usize = std.simd.suggestVectorLength(u8) orelse 16;
+
+// Geometry is READ FROM PRODUCTION, never re-derived here. See the RECORDED
+// DEFECTS in the header: every one of them was this file declaring its own.
+const scan_vlen: usize = simd.block_bytes;
 const ScanVec = @Vector(scan_vlen, u8);
-const ScanMask = std.meta.Int(.unsigned, scan_vlen);
 
 // Best-of-N: interference from ~10 coworking agents on this shared box only ever
 // *slows* a trial, so the max GB/s across trials is the cleanest estimate of the
@@ -115,23 +151,35 @@ fn measureTier(io: std.Io, name: []const u8, buf: []u64) Tier {
     };
 }
 
-/// Production-shaped control: two offset vector loads, two compares, mask AND,
-/// and the same rare-survivor branch as `simd.indexOfPos`, but no candidate
-/// verification or per-document dispatch. Its gap from STREAM is instruction /
-/// load-port cost; later ladder gaps isolate production control and corpus shape.
-fn dualWindowCandidates(buf: []const u8, needle: []const u8) usize {
-    const first: ScanVec = @splat(needle[0]);
-    const last: ScanVec = @splat(needle[needle.len - 1]);
+/// The matched control: production's streaming gate with candidate
+/// verification and per-document dispatch removed, and NOTHING else changed.
+/// Stride, anchors, block gate, and single-probe promotion all come from
+/// `simd`'s published surface, so this cannot silently become a different
+/// kernel again. Its gap from STREAM is the gate's own instruction and
+/// load-port cost; the next rung adds verify, the last adds corpus shape.
+///
+/// The one thing it does NOT replicate is the mid-buffer demotion guard: the
+/// guard exists to protect `verifyBlock` from a mispredicting probe, and there
+/// is no verify here to protect. On a needle production demotes, this control
+/// therefore reads as an optimistic bound rather than a matched one — which is
+/// the honest direction for a control to err.
+fn gateOnly(buf: []const u8, needle: []const u8) usize {
+    const a = simd.anchorsOf(needle);
+    const p1: ScanVec = @splat(needle[a.probe]);
+    const p2: ScanVec = @splat(needle[a.confirm]);
     const last_off = needle.len - 1;
-    var candidates: usize = 0;
+    const single = simd.singleProbeEligible(needle);
+    var survivors: usize = 0;
     var i: usize = 0;
     while (i + last_off + scan_vlen <= buf.len) : (i += scan_vlen) {
-        const bf: ScanVec = buf[i..][0..scan_vlen].*;
-        const bl: ScanVec = buf[i + last_off ..][0..scan_vlen].*;
-        const bits: ScanMask = @bitCast((bf == first) & (bl == last));
-        if (bits != 0) candidates +%= @popCount(bits);
+        @prefetch(&buf[@min(i + 8 * scan_vlen, buf.len - 1)], .{ .rw = .read, .locality = 2 });
+        const eq1 = @as(ScanVec, buf[i + a.probe ..][0..scan_vlen].*) == p1;
+        if (single and !simd.anyLane(eq1)) continue;
+        const eq = eq1 & (@as(ScanVec, buf[i + a.confirm ..][0..scan_vlen].*) == p2);
+        if (!simd.anyLane(eq)) continue;
+        survivors +%= 1;
     }
-    return candidates;
+    return survivors;
 }
 
 fn measureContiguous(io: std.Io, name: []const u8, buf: []const u8, needle: []const u8, comptime matched: bool) Stage {
@@ -143,7 +191,7 @@ fn measureContiguous(io: std.Io, name: []const u8, buf: []const u8, needle: []co
         const sp = Span.open(io);
         for (0..sweeps) |_| {
             if (matched) {
-                result +%= dualWindowCandidates(buf, needle);
+                result +%= gateOnly(buf, needle);
             } else {
                 result +%= @intFromBool(simd.contains(buf, needle));
             }
@@ -243,7 +291,6 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
         });
         if (i == sizes.len - 1) dram_buf = buf else gpa.free(buf);
     }
-    defer gpa.free(dram_buf);
 
     const clk = measureGhz(io, &meter, dram_buf);
     const dram = tiers[sizes.len - 1];
@@ -258,33 +305,67 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
         dram.gbps_max, dram_cpb, l2.gbps_max, l2_cpb,
     });
 
-    const absent = scan_needles[0].needle;
-    const dram_bytes = std.mem.sliceAsBytes(dram_buf);
-    const stages = [_]Stage{
-        measureContiguous(io, "matched dual-window control", dram_bytes, absent, true),
-        measureContiguous(io, "production contiguous", dram_bytes, absent, false),
-    };
-    std.debug.print("\nmatched scan ladder over the DRAM buffer (logical input GB/s):\n", .{});
-    for (stages) |stage| {
-        std.debug.print("  {d:>6.1} GB/s · median {d:>6.1} · {s}\n", .{ stage.gbps_max, stage.gbps_median, stage.name });
-    }
+    gpa.free(dram_buf); // the hierarchy table and the clock are done with it
 
-    // Production over the real corpus completes the ladder. The same process and
-    // timing method make ratios useful; none of these sub-ceiling points is called
-    // a saturated hardware bound.
+    // The ladder's own denominator. RECORDED DEFECT (2026-07-29): every rung
+    // used to be divided by the 512 MiB uniform-random DRAM tier above, so the
+    // reported headroom folded THREE differences into one number — kernel,
+    // buffer size, and buffer content. A corpus-sized buffer of corpus bytes,
+    // with its own STREAM roof measured at that exact size, leaves only the
+    // kernel varying between the roof and the contiguous rungs, and only
+    // fragmentation between the contiguous rungs and the corpus rung.
     const roots = try corpus_mod.resolveRoots(gpa);
     defer corpus_mod.freeRoots(gpa, roots);
     var corpus = try corpus_mod.load(gpa, io, roots, .contiguous);
     defer corpus.deinit();
     const corpus_mib = @as(f64, @floatFromInt(corpus.bytes)) / (1 << 20);
+
+    const flat_words = (corpus.bytes / @sizeOf(u64) / STEP) * STEP;
+    const flat_buf = try gpa.alignedAlloc(u64, comptime .fromByteUnits(64), flat_words);
+    defer gpa.free(flat_buf);
+    const flat = std.mem.sliceAsBytes(flat_buf);
+    // Tile the corpus's own bytes across the buffer. Docs cycle rather than
+    // being truncated, so the byte statistics the scan sees here are the
+    // corpus's, not a uniform-random buffer's — the anchor bytes' real density
+    // is the whole reason production and the control diverge from STREAM.
+    if (corpus.bytes == 0) return error.EmptyCorpus; // else the tiling can't advance
+    {
+        var w: usize = 0;
+        while (w < flat.len) for (corpus.docs) |d| {
+            const take = @min(d.len, flat.len - w);
+            @memcpy(flat[w..][0..take], d[0..take]);
+            w += take;
+            if (w == flat.len) break;
+        };
+    }
+    const roof = measureTier(io, "corpus-sized STREAM", flat_buf);
+
+    const absent = scan_needles[0].needle;
+    const stages = [_]Stage{
+        .{ .name = "corpus-sized STREAM roof", .gbps_max = roof.gbps_max, .gbps_median = roof.gbps_median },
+        measureContiguous(io, "matched gate control", flat, absent, true),
+        measureContiguous(io, "production contiguous", flat, absent, false),
+    };
+    std.debug.print("\nmatched scan ladder · {d:.1} MiB of corpus bytes, contiguous (logical input GB/s):\n", .{corpus_mib});
+    for (stages) |stage| {
+        std.debug.print("  {d:>6.1} GB/s · median {d:>6.1} · {d:>4.0}% of roof · {s}\n", .{
+            stage.gbps_max, stage.gbps_median, stage.gbps_max / roof.gbps_max * 100.0, stage.name,
+        });
+    }
+
+    // Production over the real corpus completes the ladder: same bytes, same
+    // size, only the fragmentation into `corpus.docs.len` separate streams is
+    // new. None of these sub-roof points is called a saturated hardware bound.
     var scans = scan_needles;
     std.debug.print("\ngist SIMD scan over {d} files · {d:.1} MiB (single-thread `contains`):\n", .{ corpus.docs.len, corpus_mib });
     for (&scans) |*s| {
         s.gbps = measureGistScan(io, &corpus, s.needle);
-        std.debug.print("  {d:>6.1} GB/s = {d:>4.0}% of DRAM ceiling · {s}\n", .{ s.gbps, s.gbps / dram.gbps_max * 100.0, s.kind });
+        std.debug.print("  {d:>6.1} GB/s = {d:>4.0}% of roof ({d:>3.0}% of the 512 MiB DRAM tier) · {s}\n", .{
+            s.gbps, s.gbps / roof.gbps_max * 100.0, s.gbps / dram.gbps_max * 100.0, s.kind,
+        });
     }
 
-    try writeJson(gpa, io, tiers[0..], clk.ghz, clk.source, dram_cpb, l2_cpb, stages[0..], scans[0..], corpus_mib);
+    try writeJson(gpa, io, tiers[0..], clk.ghz, clk.source, dram_cpb, l2_cpb, roof.gbps_max, stages[0..], scans[0..], corpus_mib);
     std.debug.print("\nwrote {s}/roofline.json — run bench/roofline/roofline_report.py to splice Layer C\n", .{out_dir});
     if (!meter.has_pmu) std.debug.print("note: clock assumed (GB/s is frequency-free; cyc/byte derived). Re-run `sudo` for a measured clock.\n", .{});
 }
@@ -297,6 +378,7 @@ fn writeJson(
     ghz_source: []const u8,
     dram_cpb: f64,
     l2_cpb: f64,
+    roof_gbps: f64,
     stages: []const Stage,
     scans: []const ScanResult,
     corpus_mib: f64,
@@ -314,6 +396,10 @@ fn writeJson(
     try j.appendSlice(gpa, try std.fmt.bufPrint(&line, "  \"dram_cyc_per_byte_ceiling\": {d:.6},\n", .{dram_cpb}));
     try j.appendSlice(gpa, try std.fmt.bufPrint(&line, "  \"l2_cyc_per_byte_ceiling\": {d:.6},\n", .{l2_cpb}));
     try j.appendSlice(gpa, try std.fmt.bufPrint(&line, "  \"corpus_mib\": {d:.1},\n", .{corpus_mib}));
+    // The ladder's denominator: STREAM at the corpus's own size over the
+    // corpus's own bytes. `tiers[DRAM]` is the cache-hierarchy datum only —
+    // dividing a scan rung by it mixes size and content into the headroom.
+    try j.appendSlice(gpa, try std.fmt.bufPrint(&line, "  \"roof_gbps\": {d:.3},\n", .{roof_gbps}));
     try j.appendSlice(gpa, "  \"tiers\": [\n");
     for (tiers, 0..) |t, i| {
         try j.appendSlice(gpa, try std.fmt.bufPrint(&line, "    {{ \"name\": \"{s}\", \"bytes\": {d}, \"gbps\": {d:.3}, \"gbps_median\": {d:.3} }}{s}\n", .{

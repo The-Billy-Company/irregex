@@ -121,13 +121,6 @@ fn sieveCost(n: usize, grain: price.Grain) f64 {
     return price.sievePerByte(@intCast(n), grain) * price.unit;
 }
 
-fn grainLen(grain: price.Grain) f64 {
-    return switch (grain) {
-        .line => nominal_line,
-        .doc => nominal_doc,
-    };
-}
-
 /// Whether to enforce the worth test. `.ungated` (the differential oracles)
 /// says the caller wants the sieve whatever its selectivity — soundness is a
 /// property of the quotient construction and must hold on every pattern that

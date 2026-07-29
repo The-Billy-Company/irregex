@@ -111,20 +111,20 @@ fn dfaDenseScan(d: *const Dfa, doc: []const u8, touches: *u64) bool {
             continue;
         }
         var s = d.start; // premultiplied row offset (id*ncls)
-        if (d.is_match[s]) matched = true; // BOL / zero-width match
+        if (d.isMatch(s)) matched = true; // BOL / zero-width match
         var prev = s;
         while (i < n and doc[i] != '\n') {
             prev = s;
             s = d.trans_in[s + d.class[doc[i]]];
             i += 1;
             touches.* += 1;
-            if (d.is_match[s]) matched = true;
+            if (d.isMatch(s)) matched = true;
         }
         // Resolve the line's last content byte with `$` (trans_fin), from the
         // state right before it — exactly as the production docMatch does.
         if (i > 0 and doc[i - 1] != '\n') {
             const sf = d.trans_fin[prev + d.class[doc[i - 1]]];
-            if (d.is_match[sf]) matched = true;
+            if (d.isMatch(sf)) matched = true;
         }
         if (i < n and doc[i] == '\n') { // consume the newline
             i += 1;
@@ -301,7 +301,7 @@ pub fn main(init: std.process.Init) !void {
 pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
     const roots = try corpus_mod.resolveRoots(gpa);
     defer corpus_mod.freeRoots(gpa, roots);
-    var corpus = try load(gpa, io, roots);
+    var corpus = try load(gpa, io, roots, .contiguous);
     defer corpus.deinit();
     var idx = try Index.build(gpa, corpus.docs);
     defer idx.deinit();

@@ -21,6 +21,7 @@ const std = @import("std");
 const bitsmod = @import("../math/bits.zig");
 const teddy = @import("teddy.zig");
 const rarity = @import("rarity.zig");
+const anchor = @import("anchor.zig");
 
 /// Needle count at which the fused any-of gate hands off to Teddy. Below this
 /// the fused first+last gate's `1 + N` loads/block are cheap and its wide
@@ -46,6 +47,17 @@ const scan_vlen: usize = @max(vlen, 64);
 const ScanVec = @Vector(scan_vlen, u8);
 const ScanMask = std.meta.Int(.unsigned, scan_vlen);
 
+/// The streaming block stride, published so a matched control cannot invent
+/// its own. RECORDED DEFECT (2026-07-29): `bench/bounds/roofline` declared
+/// `suggestVectorLength(u8) orelse 16` locally — 16 bytes on NEON against this
+/// 64 — so its "matched dual-window control" ran four times the iterations and
+/// measured ~10% SLOWER than the production path it was built to upper-bound.
+/// Anything claiming to be matched reads this, `anchorsOf`, and `anyLane`.
+pub const block_bytes: usize = scan_vlen;
+
+/// A wide compare mask, in the geometry `anyLane` accepts.
+pub const BlockHits = @Vector(scan_vlen, bool);
+
 /// The cheap per-block gate of every streaming loop: "did ANY lane hit?".
 /// `@reduce(.Or)` over the compare mask lowers to a short cross-lane OR tree
 /// (NEON: 3 `orr` + a halving reduce; AVX2: `vpmovmskb`+test), where
@@ -55,7 +67,7 @@ const ScanMask = std.meta.Int(.unsigned, scan_vlen);
 /// (roofline 2026-07-23 on M4: gating the dual-window kernel on this lifted
 /// the contiguous streaming scan 44.8 → 53.6 GB/s and the per-file corpus
 /// scan 20.8 → 30.2 GB/s with the tail + probe work; see bench/roofline).
-inline fn anyLane(eq: @Vector(scan_vlen, bool)) bool {
+pub inline fn anyLane(eq: BlockHits) bool {
     if (comptime @import("builtin").cpu.arch.isX86())
         return bitsmod.laneMask(ScanMask, eq) != 0; // vpmovmskb + test — already cheap
     // NEON path: materialize the compare as its native 0xFF/0x00 byte mask
@@ -229,6 +241,37 @@ inline fn verifyBlock(hay: []const u8, needle: []const u8, i: usize, eq: @Vector
     return null;
 }
 
+/// The two offsets `indexOfPos` filters a block on: the needle's rarest and
+/// second-rarest bytes by corpus density (`rarity.zig`), at ANY offsets — the
+/// eql verify confirms the rest, so the filter is free to anchor on `Z…9`
+/// where first+last would anchor on `Z…_` (49% of blocks contain `_`).
+///
+/// Public for the same reason as `block_bytes`: a control that re-derives its
+/// own anchors is not measuring this kernel. RECORDED DEFECT (2026-07-29): the
+/// roofline control filtered on `needle[0]`/`needle[len-1]`, so on the needle
+/// `Zq9_…` it probed `Z…_` (density 7 and 255) where production probes `Z…q`
+/// (7 and 55) — a different, far less selective filter.
+///
+/// The policy itself lives in `anchor.zig` — including the RECORDED DEFECT that
+/// the marginal-rarity selection this function used to inline was, on a
+/// lowercase identifier, worse than the fixed first+last it replaced. Do not
+/// re-inline it here: one decision, one module, so a control cannot disagree
+/// with the kernel it bounds.
+pub fn anchorsOf(needle: []const u8) anchor.Pair {
+    return anchor.select(needle);
+}
+
+/// Whether `indexOfPos` will *enter* the single-probe loop for this needle —
+/// one load and one compare per block instead of two. Published for the same
+/// reason as `anchorsOf`. RECORDED DEFECT (2026-07-29): the roofline's control
+/// was unconditionally dual-window, so on a rare-anchored needle it measured a
+/// path production never takes and came in ~10% BELOW the production line it
+/// was supposed to bound. Entry is not the whole story — the demotion guard
+/// inside the loop can still fall through to the dual shape mid-buffer.
+pub inline fn singleProbeEligible(needle: []const u8) bool {
+    return needle.len > 1 and anchor.singleProbeWorthwhile(needle, anchorsOf(needle));
+}
+
 /// Substring presence, byte-exact with `std.mem.indexOf != null` (see the
 /// module doc for the first+last-byte SIMD scheme and why it beats std here).
 pub fn contains(hay: []const u8, needle: []const u8) bool {
@@ -247,29 +290,14 @@ pub fn indexOfPos(hay: []const u8, from: usize, needle: []const u8) ?usize {
     const last_off = n - 1;
     var i: usize = from;
 
-    // Anchor selection: the needle's two RAREST bytes by corpus density
-    // (`rarity.zig`), at ANY offsets — a candidate start is `i + j` for any
+    // Anchor selection at ANY offsets — a candidate start is `i + j` for any
     // start-relative window, and the eql verify confirms the rest, so the
     // filter is free to anchor on `Z…9` where first+last would anchor on
-    // `Z…_` (49% of blocks contain `_`). One L1-cheap pass over the needle.
-    var o1: usize = 0; // rarest byte's offset (the probe)
-    var o2: usize = last_off; // second-rarest (the confirm)
-    {
-        var best: u16 = 256;
-        var second: u16 = 256;
-        for (needle, 0..) |b, k| {
-            const d = rarity.density[b];
-            if (d < best) {
-                second = best;
-                o2 = o1;
-                best = d;
-                o1 = k;
-            } else if (d < second) {
-                second = d;
-                o2 = k;
-            }
-        }
-    }
+    // `Z…_` (49% of blocks contain `_`). Policy and its recorded defects live
+    // in `anchor.zig`; this loop only consumes the decision.
+    const picked = anchorsOf(needle);
+    const o1 = picked.probe;
+    const o2 = picked.confirm;
     const p1: ScanVec = @splat(needle[o1]);
     const p2: ScanVec = @splat(needle[o2]);
 
@@ -284,7 +312,30 @@ pub fn indexOfPos(hay: []const u8, from: usize, needle: []const u8) ?usize {
     // it honest on buffers the table doesn't describe (base64 blobs, minified
     // bundles, random-looking text): sustained probe-hit rate past ~12.5%
     // demotes THIS call to the dual shape for the rest of the buffer.
-    if (rarity.density[needle[o1]] <= rarity.single_probe_max) {
+    //
+    // The two shapes are 1.42× apart on M4 (measured under layout
+    // randomization, Mytkowicz et al. ASPLOS 2009 — see below), which makes
+    // eligibility for the single-probe loop the only lever anyone has found on
+    // this kernel. THREE attempts to speed up the dual loop itself were
+    // measured and all LOST; recorded so they are not re-tried:
+    //
+    //   · Instruction shaving — hoist the prefetch clamp out of the loop and
+    //     drop the `blocks` counter (derive it from `i`): −1%. The loop is not
+    //     issue-bound, so removing µops buys nothing.
+    //   · Shuffle-derived second window — one load, then `vext`/`palignr` the
+    //     confirm window out of it instead of a second load: −8.2%. Trading a
+    //     load for a shuffle loses; the load units are not the constraint.
+    //   · Single-load bitmask gate — one load compared against both anchors,
+    //     folded with `bits.blockMask`'s addp tree, masks aligned by integer
+    //     shift: −14.6%. The worst of the three. Even one extra wide fold per
+    //     block costs more than the load it replaced.
+    //
+    // The shape of all three results is the same: on this core the loads are
+    // nearly free and the vector compare/fold is the critical resource, so
+    // every trade of memory work for ALU work is a regression. Anything that
+    // reduces COMPARES per byte is worth measuring; anything that reduces
+    // LOADS per byte at the cost of ALU work has been measured, three ways.
+    if (anchor.singleProbeWorthwhile(needle, picked)) {
         var blocks: usize = 0;
         var hot: usize = 0;
         while (i + last_off + scan_vlen <= hay.len) : (i += scan_vlen) {

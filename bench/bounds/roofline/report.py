@@ -156,12 +156,15 @@ def localize(ladder: list[dict], pure_gbps: float) -> str:
     path, and citing them as the explanation would assert a descent the numbers
     do not show.
     """
-    if not ladder:
+    # The roof rung is the denominator, not a control — including it here would
+    # make the ladder read as binding for free, since no scan outruns STREAM.
+    stages = [s for s in ladder if "roof" not in s.get("name", "")]
+    if not stages:
         return (
             "This older artifact predates the matched ladder; remint Layer C to localize "
             "the gap before making a stronger claim."
         )
-    top = max(ladder, key=lambda s: float(s.get("gbps", 0.0)))
+    top = max(stages, key=lambda s: float(s.get("gbps", 0.0)))
     top_gbps = float(top.get("gbps", 0.0))
     if pure_gbps > top_gbps > 0:
         return (
@@ -183,6 +186,16 @@ def render(roof: dict, pts: list[ClassPoint], compute: ComputeBound | None) -> s
     ghz = float(roof.get("ghz", 0.0))
     ghz_src = roof.get("ghz_source", "?")
     dram = tiers.get("DRAM", 0.0)
+    # RECORDED DEFECT (2026-07-29): every scan rung used to be divided by
+    # `dram` — a 512 MiB uniform-random buffer — so the published headroom
+    # folded kernel, working-set size, and byte content into one number. The
+    # apparatus now measures STREAM at the corpus's own size over the corpus's
+    # own bytes and reports it as `roof_gbps`; that is the only denominator
+    # against which a scan rung differs by exactly one thing. `dram` stays as
+    # the cache-hierarchy datum it always actually was. Older artifacts have no
+    # `roof_gbps`, so they keep the old denominator and read as they did.
+    denom = float(roof.get("roof_gbps") or dram)
+    denom_label = "corpus-sized roof" if roof.get("roof_gbps") else "DRAM roof"
     ladder = roof.get("matched_ladder", [])
     scans = roof.get("gist_scan", [])
     # The clean streaming point: the absent-needle scan reads every byte (no
@@ -238,16 +251,21 @@ def render(roof: dict, pts: list[ClassPoint], compute: ComputeBound | None) -> s
     lines.append("")
 
     if ladder:
-        control = float(ladder[0].get("gbps", 0.0))
+        # By name, not by position: the ladder now leads with its STREAM roof,
+        # and normalizing the control column by the roof would silently
+        # relabel one rung as another.
+        control = float(
+            next((s for s in ladder if "control" in s.get("name", "")), ladder[0]).get("gbps", 0.0)
+        )
         lines.append("**Matched ceiling ladder** (same process; logical input GB/s):")
         lines.append("")
-        lines.append("| stage | GB/s | % of DRAM roof | % of matched control |")
+        lines.append(f"| stage | GB/s | % of {denom_label} | % of matched control |")
         lines.append("|---|--:|--:|--:|")
         for stage in ladder:
             g = float(stage.get("gbps", 0.0))
             lines.append(
                 f"| {stage.get('name', '?')} | {g:.1f} "
-                f"| {g / dram * 100.0 if dram else 0.0:.0f}% "
+                f"| {g / denom * 100.0 if denom else 0.0:.0f}% "
                 f"| {g / control * 100.0 if control else 0.0:.0f}% |"
             )
         lines.append("")
@@ -259,11 +277,11 @@ def render(roof: dict, pts: list[ClassPoint], compute: ComputeBound | None) -> s
             "(real `scan/simd.zig` `contains` over the corpus):"
         )
         lines.append("")
-        lines.append("| scan | GB/s | % of DRAM ceiling |")
+        lines.append(f"| scan | GB/s | % of {denom_label} |")
         lines.append("|---|--:|--:|")
         for s in scans:
             g = float(s.get("gbps", 0))
-            pct = g / dram * 100.0 if dram > 0 else 0.0
+            pct = g / denom * 100.0 if denom > 0 else 0.0
             label = f"{s.get('kind', '?')} (`{s.get('needle', '?')[:8]}…`)"
             lines.append(f"| {label} | {g:.1f} | {pct:.0f}% |")
         lines.append("")
@@ -271,11 +289,11 @@ def render(roof: dict, pts: list[ClassPoint], compute: ComputeBound | None) -> s
     # ── verdict from the clean full-scan point ──
     if pure:
         pg = float(pure["gbps"])
-        frac = pg / dram * 100.0 if dram > 0 else 0.0
+        frac = pg / denom * 100.0 if denom > 0 else 0.0
         if frac >= 80.0:
             verdict = (
                 f"**Verdict — near the measured roof.** The full scan reaches **{pg:.1f} GB/s = "
-                f"{frac:.0f}% of the {dram:.1f} GB/s single-core pure-read roof**. At the "
+                f"{frac:.0f}% of the {denom:.1f} GB/s single-core pure-read roof**. At the "
                 "pre-registered 80% threshold, little roofline headroom remains. Bottleneck "
                 "attribution still requires same-machine counters; this is not a universal "
                 "optimality proof."
@@ -284,7 +302,7 @@ def render(roof: dict, pts: list[ClassPoint], compute: ComputeBound | None) -> s
             next_step = localize(ladder, pg)
             verdict = (
                 f"**Verdict — material headroom remains.** The full scan reaches **{pg:.1f} GB/s = "
-                f"{frac:.0f}% of the {dram:.1f} GB/s single-core pure-read roof**. That is below "
+                f"{frac:.0f}% of the {denom:.1f} GB/s single-core pure-read roof**. That is below "
                 "the pre-registered 80% near-roof threshold, so Layer C does **not** certify "
                 f"DRAM saturation, a binding memory bottleneck, or hardware optimality. {next_step}"
             )
