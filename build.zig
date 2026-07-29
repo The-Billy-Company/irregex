@@ -1016,6 +1016,29 @@ pub fn build(b: *std.Build) void {
     pbx_step.dependOn(&run_pbx.step);
     pbx_step.dependOn(pbx_install);
 
+    // ── `automata-rung` — the machine algebra, priced per function ───────────
+    // The other rungs race a whole accelerator against the shipped DFA; this one
+    // races INSIDE it, because every claim in research/automata/CLAIM.md is a
+    // claim about one function and a binary race cannot attribute those. Both
+    // arms walk the SAME automaton in this process, interleaved, and the
+    // superseded match test is reconstructed from the shipped bound so the two
+    // arms are provably the same machine. Fail-closed on verdict agreement.
+    const automata_mod = b.createModule(.{
+        .root_source_file = b.path("bench/rungs/automata/bench.zig"),
+        .target = k.target,
+        .optimize = cli_optimize, // product-speed posture — this is a timing tool
+    });
+    automata_mod.addImport("irregex", cli_engine);
+    const automata_exe = b.addExecutable(.{ .name = "automata-rung", .root_module = automata_mod });
+    const automata_install = &b.addInstallArtifact(automata_exe, .{}).step;
+    lab_step.dependOn(automata_install);
+    const run_automata = b.addRunArtifact(automata_exe);
+    run_automata.setCwd(b.path("../../.."));
+    if (b.args) |args| run_automata.addArgs(args);
+    const automata_step = b.step("automata-rung", "Automata-layout proof: per-pattern automaton shape, and the match test priced both ways over one machine");
+    automata_step.dependOn(&run_automata.step);
+    automata_step.dependOn(automata_install);
+
     // ── `multipattern` — Layer K: the Hyperscan/Vectorscan race, gist's arm ──
     // Links the REAL kernel (PatternSet ships inside it at
     // src/kernel/batch/patterns.zig) and answers the same per-document
