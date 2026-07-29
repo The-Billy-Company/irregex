@@ -56,6 +56,31 @@ pub const max_exit_bytes: usize = 8;
 /// separates the automaton's shape from this threshold's opinion.
 pub const min_profitable_stride: u16 = 32;
 
+/// What a byte costs the **span** walk, in units of what it costs the boolean
+/// walk this file's bar was calibrated against. A boolean step is a
+/// premultiplied table load; a span step reaches through a state's priority key
+/// to decide dead/matched, re-derives the gap's shape, and indexes a memo row
+/// keyed on both — a dependent-load chain, not one load. Measured at 3.2 ns per
+/// byte against the boolean walk's ~0.25 (`spikes/span-bound-eval/`), so
+/// the true figure is nearer 13; taken conservatively low, because underrating
+/// the walker can only make the bar *stricter* than break-even.
+const span_step_cost: u16 = 8;
+
+/// The same bar, restated for the span walk.
+///
+/// A skip trades one fixed cost — a `memchr` call plus a re-entry closure — for
+/// not walking `stride` bytes. **The fixed cost does not change when the walker
+/// gets more expensive**, so break-even scales with the per-byte cost alone, and
+/// a bar calibrated on the boolean walk is roughly an order of magnitude too
+/// strict here. Concretely: it withheld the skip from every pattern beginning
+/// with a merely-uncommon byte (`f` prices at stride 16), which is most of them,
+/// and those patterns then walked every byte between matches — 31× the cost of
+/// the memchr that was available the whole time.
+///
+/// Floored at 2: a stride of 1 means every byte is a candidate, where a skip is
+/// pure overhead no matter what it stands down.
+pub const min_profitable_span_stride: u16 = @max(2, min_profitable_stride / span_step_cost);
+
 /// A state worth dwelling in, and the exit set that ends the dwell. `state` is in
 /// whatever coordinate the caller's tables use — a state id before freezing, a
 /// premultiplied row offset after.

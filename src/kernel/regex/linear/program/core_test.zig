@@ -827,6 +827,136 @@ test "regex/classrun: matchSpan (kernel window rule) ≡ Pike span iteration" {
     }
 }
 
+// ─────────────────────── the end-bounded window ───────────────────────
+//
+// `matchWindow` bounds where a match may lie without moving the haystack's
+// edges, and that claim needs an oracle no part of the implementation shares.
+// For an ASSERTION-FREE pattern the two coincide by construction — nothing reads
+// a byte it does not consume, so "search `[from, to]` of this haystack" and
+// "search this haystack truncated at `to`" are the same question — and the
+// truncated search is `matchSpan`, which predates the bound entirely. Any
+// disagreement is the bound leaking into either an assertion or a loop ceiling.
+//
+// The slate is chosen to land in all four span arms (pure-literal alternation,
+// span-exact class run, caliper, and the VM the caliper declines to), because
+// each applies the ceiling its own way.
+test "regex/span: a window equals a slice wherever the two must agree" {
+    const gpa = std.testing.allocator;
+    const slate = [_][]const u8{
+        "foo",                       "foo|zzzzq",
+        "foo|bar|zzzzq",             "[a-z]+",
+        "\\w{3,8}",                  "[0-9]{4}",
+        "f.o",                       "foo \\w+ x",
+        "[a-z]+_[a-z]+_[a-z]+",      "[A-Z][a-z]+[A-Z][A-Za-z]*",
+        "(foo|ba)+r",                "a{2,4}",
+        "\\w+@\\w+\\.[a-z]+",        "[a-z]+\\(",
+    };
+    const lines = [_][]const u8{
+        "",
+        "foo",
+        "xx foo yy foobar zz",
+        "  const WalletService = makeThing(user_id_key, HTTPServer);",
+        "mail bob@host.com and eve@x.io done",
+        "foo bar x foo baz x",
+        "aaaa bbbb 1234 5678 zzzz",
+        "a_b_c d_e_f gg_hh_ii",
+    };
+    var compared: usize = 0;
+    for (slate) |pat| {
+        var re = try Regex.compile(gpa, pat);
+        defer re.deinit();
+        var ss = try Regex.SpanSim.init(gpa, &re);
+        defer ss.deinit();
+        for (lines) |line| {
+            for (0..line.len + 1) |from| {
+                for (0..line.len + 1) |to| {
+                    if (from > to) continue;
+                    const got = re.matchWindow(&ss, .{ .hay = line, .from = from, .to = to });
+                    const want = re.matchSpan(&ss, line[0..to], from);
+                    std.testing.expectEqual(want, got) catch |e| {
+                        std.debug.print("\n`{s}` on `{s}` [{d},{d}]: window {any} vs slice {any}\n", .{ pat, line, from, to, got, want });
+                        return e;
+                    };
+                    if (got) |sp| try std.testing.expect(sp.start >= from and sp.end <= to);
+                    compared += 1;
+                }
+            }
+        }
+    }
+    try std.testing.expect(compared > 10_000);
+}
+
+// The bound's own contract on ASSERTION-BEARING patterns, where a window is
+// deliberately NOT a slice: `$` at the ceiling must still be false when real text
+// follows it, because the ceiling is where the search stops, not where the line
+// ends. This is the whole reason the bound exists rather than a slice.
+test "regex/span: a bound moves the search ceiling, never the haystack's edges" {
+    const gpa = std.testing.allocator;
+    const line = "abc def";
+    {
+        var re = try Regex.compile(gpa, "[a-z]+$");
+        defer re.deinit();
+        var ss = try Regex.SpanSim.init(gpa, &re);
+        defer ss.deinit();
+        // Slicing at 3 makes `$` hold there and reports `abc`; the window knows
+        // position 3 is mid-line and reports nothing.
+        try std.testing.expectEqual(@as(?Regex.Span, .{ .start = 0, .end = 3 }), re.matchSpan(&ss, line[0..3], 0));
+        try std.testing.expectEqual(@as(?Regex.Span, null), re.matchWindow(&ss, .{ .hay = line, .from = 0, .to = 3 }));
+        // Unbounded, the real `$` is at 7 and the last word wins.
+        try std.testing.expectEqual(@as(?Regex.Span, .{ .start = 4, .end = 7 }), re.matchSpan(&ss, line, 0));
+    }
+    {
+        // `\b` at the ceiling reads the byte after it, so a bound cannot forge one.
+        var re = try Regex.compile(gpa, "[a-z]+\\b");
+        defer re.deinit();
+        var ss = try Regex.SpanSim.init(gpa, &re);
+        defer ss.deinit();
+        try std.testing.expectEqual(@as(?Regex.Span, .{ .start = 0, .end = 2 }), re.matchSpan(&ss, line[0..2], 0));
+        try std.testing.expectEqual(@as(?Regex.Span, null), re.matchWindow(&ss, .{ .hay = line, .from = 0, .to = 2 }));
+    }
+    {
+        // A greedy run is clipped by the ceiling, not refused by it.
+        var re = try Regex.compile(gpa, "[a-z]+");
+        defer re.deinit();
+        var ss = try Regex.SpanSim.init(gpa, &re);
+        defer ss.deinit();
+        try std.testing.expectEqual(@as(?Regex.Span, .{ .start = 0, .end = 2 }), re.matchWindow(&ss, .{ .hay = line, .from = 0, .to = 2 }));
+        try std.testing.expectEqual(@as(?Regex.Span, .{ .start = 0, .end = 3 }), re.matchWindow(&ss, .{ .hay = line, .from = 0, .to = 5 }));
+    }
+}
+
+// The fused multi-literal jump must reproduce the per-literal minimum it
+// replaced, including the tie rule that decides which branch wins at a shared
+// start — the ordering the reduction's whole soundness argument rests on.
+test "regex/span: the fused literal jump keeps the pattern-order tie rule" {
+    const gpa = std.testing.allocator;
+    const cases = [_]struct { pat: []const u8, line: []const u8, start: usize, end: usize }{
+        .{ .pat = "a|ab", .line = "xxab", .start = 2, .end = 3 }, // earlier branch wins the tie
+        .{ .pat = "ab|a", .line = "xxab", .start = 2, .end = 4 }, // …and order is what decides it
+        .{ .pat = "zzz|ab", .line = "xxabzzz", .start = 2, .end = 4 }, // position beats order
+        .{ .pat = "foo|bar", .line = "bar foo", .start = 0, .end = 3 },
+        .{ .pat = "abcdef|bc", .line = "abcdef", .start = 0, .end = 6 },
+    };
+    for (cases) |c| {
+        var re = try Regex.compile(gpa, c.pat);
+        defer re.deinit();
+        try std.testing.expect(re.lits.len > 1); // the arm under test, not a fallback
+        var ss = try Regex.SpanSim.init(gpa, &re);
+        defer ss.deinit();
+        const sp = re.matchSpan(&ss, c.line, 0).?;
+        try std.testing.expectEqual(c.start, sp.start);
+        try std.testing.expectEqual(c.end, sp.end);
+    }
+    // A bound clips the set to the literals that FIT, which can hand the span to
+    // a different branch than the unbounded search picks.
+    var re = try Regex.compile(gpa, "abcdef|bc");
+    defer re.deinit();
+    var ss = try Regex.SpanSim.init(gpa, &re);
+    defer ss.deinit();
+    try std.testing.expectEqual(@as(?Regex.Span, .{ .start = 0, .end = 6 }), re.matchWindow(&ss, .{ .hay = "abcdef", .from = 0, .to = 6 }));
+    try std.testing.expectEqual(@as(?Regex.Span, .{ .start = 1, .end = 3 }), re.matchWindow(&ss, .{ .hay = "abcdef", .from = 0, .to = 4 }));
+}
+
 test "regex/classrun: multiline keeps \\n-crossing runs when the set admits them" {
     // Under -U the buffer IS the haystack: `[\s\S]` includes `\n`, so a run
     // may legitimately cross lines.

@@ -119,6 +119,14 @@ the stride at one line. Break-even is a ≈30-byte stride against a
 `min_profitable_stride` of 32, so the threshold calibrated on the start case was
 already right. C4 is retired; `survey` remains as the instrument that retired it.
 
+**A bar is calibrated against a walker, not against a corpus, so the span engine
+needs its own.** `min_profitable_span_stride` restates the same question for the
+caliper's two-jaw walk (`../caliper/`), whose byte costs an order of magnitude
+more than a premultiplied boolean step. What a skip trades away — a `memchr`
+call plus a re-entry closure — is the same either way, so break-even scales with
+the walker's per-byte cost alone. Borrowing the boolean number withheld the skip
+from every pattern beginning with a merely-uncommon byte, which is most of them.
+
 **`reduce.zig`** — collapsing a finished determinization down to the automaton it
 *means*. A determinizer stops when it runs out of **reachable** states, and reachable
 is not **distinguishable**; both roads overshoot, for different reasons. A finished

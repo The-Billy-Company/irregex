@@ -213,9 +213,13 @@ pub const Regex = struct {
     pub const lineMatchPike = search.lineMatchPike;
     pub const bufMatch = search.bufMatch;
 
-    /// `-o` leftmost-first spans (`pike/span.zig`).
+    /// `-o` leftmost-first spans (`pike/span.zig`). `matchSpan` is the whole
+    /// haystack; `matchWindow` bounds where the match may lie while the haystack
+    /// still supplies every assertion's context (`Window`).
     pub const Span = span.Span;
+    pub const Window = span.Window;
     pub const matchSpan = span.matchSpan;
+    pub const matchWindow = span.matchWindow;
 
     pub fn deinit(self: *Regex) void {
         // Before the storage it borrows (`required`/`alts`/`lits`).

@@ -34,7 +34,81 @@ const bits = @import("../../../math/bits.zig");
 
 const State = syn.State;
 const B64 = bits.Field(u64);
-const unknown = subset.unknown;
+
+/// **The currency of the search loop**, and the reason its inner loop has no
+/// multiply in it.
+///
+/// A cell names a state by its OFFSET INTO THE MEMO (`id * stride`) rather than
+/// by its id, and carries that state's `Mark` in bits above the offset rather
+/// than in a second array. Both choices exist to empty `glide`'s dependency
+/// chain, which used to hold two things it does not need: the `imul` that
+/// re-derives a row from an id every byte, and a dependent load into `marks` to
+/// ask whether to stop. Now the recurrence is a bare `off = cell` and the
+/// stopping question is answered by the value already in the register — the
+/// same chain a premultiplied lazy DFA walk has, which is the walk this engine
+/// has to keep up with.
+///
+/// ```text
+///   [0, 24)   the state's memo offset
+///   [24, 26)  its `Mark` — matched, dead, or neither
+///   all ones  `unknown`: this transition has not been determinized
+/// ```
+///
+/// The split is what makes one compare separate the fast path from BOTH exits:
+/// a plain live state is numerically below every marked one and below
+/// `unknown`, so `raw < plain` is the whole test. Twenty-four bits is ~32x the
+/// memo's own ceiling (`max_budget / 4` entries), and `settle` refuses to mint
+/// a state that would reach it, so the fields cannot collide.
+pub const Cell = enum(u32) {
+    unknown = subset.unknown,
+    _,
+
+    const off_bits = 24;
+    const off_mask: u32 = (1 << off_bits) - 1;
+    /// Everything at or above this is marked or undetermined — never a state
+    /// the walk may simply continue from.
+    const plain: u32 = 1 << off_bits;
+
+    fn make(off: u32, m: u8) Cell {
+        return @enumFromInt(off | (@as(u32, m) << off_bits));
+    }
+
+    /// Where this state's transitions begin. Undefined for `unknown`, which is
+    /// never a state one stands on.
+    pub fn offset(c: Cell) u32 {
+        return @intFromEnum(c) & off_mask;
+    }
+
+    fn mark(c: Cell) u8 {
+        return @truncate(@intFromEnum(c) >> off_bits);
+    }
+
+    pub fn matched(c: Cell) bool {
+        return c.mark() & Mark.matched != 0;
+    }
+
+    pub fn dead(c: Cell) bool {
+        return c.mark() & Mark.dead != 0;
+    }
+};
+
+/// What the search loop needs to know about a state it just landed on, in the
+/// two bits it takes to say it. Rides inside a `Cell`, so asking costs no load.
+const Mark = struct {
+    const matched: u8 = 1;
+    /// No surviving thread — the sink both search loops stop on. Emptiness is
+    /// the whole test, and it must not be conditioned on the match flag: match
+    /// dominance's ordinary outcome is a set truncated to nothing (`a+?` after
+    /// one `a`, or any pattern whose match outranks every thread still
+    /// running). Treating that as live would step from an empty set, which for
+    /// an unanchored machine re-seeds the start — silently restarting the
+    /// search and reporting some later match as if it were the leftmost.
+    const dead: u8 = 2;
+
+    fn of(hit: bool, norder: usize) u8 {
+        return (if (hit) Mark.matched else 0) | (if (norder == 0) Mark.dead else 0);
+    }
+};
 
 /// Program-proportional memo ceiling, bounded against tiny and Unicode NFAs —
 /// the same shape as the lazy boolean DFA's, and for the same reason: a large
@@ -51,6 +125,18 @@ fn kindOf(g: subset.Gap) u4 {
         (@as(u4, @intFromBool(g.at_end)) << 1) |
         (@as(u4, @intFromBool(g.word_before)) << 2) |
         (@as(u4, @intFromBool(g.word_after)) << 3);
+}
+
+/// `kindOf`'s inverse — the gap a memo row stands for. Only `zeroWidth` needs
+/// it: to ask a question about *every* gap shape you have to be able to name one
+/// without a haystack position to read it off.
+fn gapOf(kind: u4) subset.Gap {
+    return .{
+        .at_start = kind & 1 != 0,
+        .at_end = kind & 2 != 0,
+        .word_before = kind & 4 != 0,
+        .word_after = kind & 8 != 0,
+    };
 }
 
 /// One direction's immutable configuration. Shared across threads; every
@@ -89,14 +175,14 @@ pub const Cache = struct {
 
     map: KeyMap,
     keys: std.ArrayList([]u32) = .empty, // keys[id] = priority order ++ [match flag]
-    trans: std.ArrayList(u32) = .empty,
+    trans: std.ArrayList(Cell) = .empty,
     nstates: u32 = 0,
 
     /// The entry state per gap shape. `enter` is paid once per span — 1.5M
     /// times over a match-dense corpus — and its closure answer depends on
     /// nothing but the gap's four predicates, so it is memoized like any other
     /// transition rather than recomputed per match.
-    entry: [16]u32 = @splat(unknown),
+    entry: [16]Cell = @splat(.unknown),
 
     visited: []u64,
     stack: []u32,
@@ -109,6 +195,8 @@ pub const Cache = struct {
     /// Set once the memo outgrew its budget. Sticky — the caller falls back to
     /// the Pike VM for the rest of this pattern's life on this thread.
     quit: bool = false,
+    /// Memo for `zeroWidth` — one answer per machine, decided on first ask.
+    zero_width: ?bool = null,
 
     pub fn init(gpa: std.mem.Allocator, m: *const Machine) std.mem.Allocator.Error!Cache {
         const n = m.states.len;
@@ -139,22 +227,6 @@ pub const Cache = struct {
         c.gpa.free(c.order);
         c.gpa.free(c.key_scratch);
         c.* = undefined;
-    }
-
-    /// A state with no surviving thread — the sink both search loops stop on.
-    /// Emptiness is the whole test, and it must not be conditioned on the match
-    /// flag: match dominance's ordinary outcome is a set truncated to nothing
-    /// (`a+?` after one `a`, or any pattern whose match outranks every thread
-    /// still running). Treating that as live would step from an empty set,
-    /// which for an unanchored machine re-seeds the start — silently restarting
-    /// the search and reporting some later match as if it were the leftmost.
-    pub fn isDead(c: *const Cache, id: u32) bool {
-        return c.keys.items[id].len == 1; // the match flag, and nothing else
-    }
-
-    pub fn matched(c: *const Cache, id: u32) bool {
-        const k = c.keys.items[id];
-        return k[k.len - 1] != 0;
     }
 
     fn push(c: *Cache, st: u32) void {
@@ -199,40 +271,74 @@ pub const Cache = struct {
         return hit;
     }
 
-    /// Intern `c.order[0..norder] ++ [hit]` as a DFA state.
-    fn intern(c: *Cache, hit: bool) std.mem.Allocator.Error!u32 {
+    /// Intern `c.order[0..norder] ++ [hit]` as a DFA state, and hand back the
+    /// cell that names it. The `Mark` is a pure function of that key — `hit` is
+    /// part of it and `norder` is its length — so re-deriving it here for a
+    /// state already interned is exact, which is what lets the memo carry the
+    /// mark inline and keep no `marks` array at all.
+    fn intern(c: *Cache, hit: bool) std.mem.Allocator.Error!Cell {
         const n = c.norder;
         @memcpy(c.key_scratch[0..n], c.order[0..n]);
         c.key_scratch[n] = @intFromBool(hit);
         const probe = c.key_scratch[0 .. n + 1];
-        if (c.map.get(probe)) |id| return id;
+        const mark = Mark.of(hit, n);
+        if (c.map.get(probe)) |id| return Cell.make(@intCast(id * c.m.stride()), mark);
 
         const key = try c.gpa.dupe(u32, probe);
         errdefer c.gpa.free(key);
         const id = c.nstates;
+        const off: u32 = @intCast(c.trans.items.len); // == id * stride, by construction
         try c.map.put(key, id);
         try c.keys.append(c.gpa, key);
-        try c.trans.appendNTimes(c.gpa, unknown, c.m.stride());
+        try c.trans.appendNTimes(c.gpa, .unknown, c.m.stride());
         c.nstates += 1;
-        return id;
+        return Cell.make(off, mark);
     }
 
     /// Seed the start state and close it at this gap — the entry point of a
     /// search, and (unanchored) of nothing else.
-    pub fn enter(c: *Cache, g: subset.Gap) ?u32 {
+    pub fn enter(c: *Cache, g: subset.Gap) ?Cell {
         if (c.quit) return null;
         const kind = kindOf(g);
-        if (c.entry[kind] != unknown) return c.entry[kind];
+        if (c.entry[kind] != .unknown) return c.entry[kind];
         c.reset();
         c.push(c.m.start_nfa);
         const hit = c.close(g);
-        const id = c.settle(hit) orelse return null;
-        c.entry[kind] = id;
-        return id;
+        const cell = c.settle(hit) orelse return null;
+        c.entry[kind] = cell;
+        return cell;
     }
 
-    fn settle(c: *Cache, hit: bool) ?u32 {
-        if (c.trans.items.len * @sizeOf(u32) > c.budget) {
+    /// Can a match be **zero-width** — does the start closure reach `match` at
+    /// any gap shape at all? This is the licence for a caller to skip bytes: a
+    /// search that jumps to the next position a byte could be *consumed* from
+    /// can only lose a match that consumes nothing, so a machine that answers
+    /// `false` here can be driven by a first-byte prefilter, and one that
+    /// answers `true` must be walked gap by gap.
+    ///
+    /// Asked of the automaton rather than read off the pattern's flags on
+    /// purpose. `eol_empty` (`\d*$`) and `nullable` (`x|\b$`) are two separately
+    /// derived views of this same fact, and either could drift from what the
+    /// determinizer actually does; the start closure cannot. `enter` is memoized
+    /// per shape, so the survey costs at most sixteen closures once, and a
+    /// budget quit answers `true` — declining an optimization, never a match.
+    pub fn zeroWidth(c: *Cache) bool {
+        if (c.zero_width) |v| return v;
+        const shapes: u5 = if (c.m.word_ctx) 16 else 4; // word-free ⇒ bits 2,3 are never set
+        var kind: u5 = 0;
+        const answer = while (kind < shapes) : (kind += 1) {
+            const cell = c.enter(gapOf(@intCast(kind))) orelse break true;
+            if (cell.matched()) break true;
+        } else false;
+        c.zero_width = answer;
+        return answer;
+    }
+
+    fn settle(c: *Cache, hit: bool) ?Cell {
+        // The second ceiling is what keeps a `Cell`'s offset field from
+        // reaching its mark bits. The budget already forbids it ~32x over, so
+        // this only has to be true, not tight.
+        if (c.trans.items.len * @sizeOf(u32) > c.budget or c.trans.items.len > Cell.off_mask) {
             c.quit = true;
             return null;
         }
@@ -240,6 +346,63 @@ pub const Cache = struct {
             c.quit = true;
             return null;
         };
+    }
+
+    /// Which end of a run of bytes the search is walking from. Only the byte
+    /// order differs; the memo, the row, and the stopping rule are one
+    /// transcription for both jaws.
+    pub const Dir = enum { forward, backward };
+
+    /// How far a memo-only run got. `len` bytes were consumed and `cell` is the
+    /// state after them; the run stopped *before* the byte it could not decide,
+    /// so a caller resumes at exactly that byte.
+    pub const Run = struct { cell: Cell, len: usize };
+
+    /// Consume bytes through the memo **and nothing else**, for a run the caller
+    /// has proven keeps one row: the same gap shape at every landing, and one
+    /// seeding decision throughout.
+    ///
+    /// That premise is what makes this worth having. `step` must recompute the
+    /// row and reload the memo's base pointer on every byte, because it is a
+    /// call that might determinize and reallocate. Here the row is computed once
+    /// and the tables are borrowed once, so the loop reduces to a class lookup
+    /// and one dependent load per byte — the same shape a premultiplied lazy DFA
+    /// walk has, which is the walk this engine has to keep up with.
+    ///
+    /// It stops before the first byte whose transition is not determinized yet,
+    /// and after any byte whose target is marked. Both are decisions only the
+    /// caller can make — a miss needs the closure, a mark ends or extends a
+    /// match — and keeping them out of the loop is precisely what keeps the loop
+    /// free of anything that could leave it.
+    ///
+    /// Both stopping conditions are read off the loaded `Cell` and nothing
+    /// else, by the single `raw < plain` compare: a plain cell IS the next
+    /// offset, so the recurrence is `off = raw` with no multiply to re-derive a
+    /// row and no second load to ask whether this state is interesting. That is
+    /// worth ~2.1x per byte on a saturated line, measured against a transcript
+    /// of the loop it replaces — see `Cell`.
+    pub fn glide(c: *const Cache, from: Cell, g: subset.Gap, seed: bool, bytes: []const u8, comptime dir: Dir) Run {
+        const base = (@as(usize, kindOf(g)) * 2 + @intFromBool(seed)) * @as(usize, c.m.cls.ncls);
+        const trans = c.trans.items;
+        const class = &c.m.cls.class;
+        var off = from.offset();
+        var landed = from;
+        var i: usize = 0;
+        while (i < bytes.len) {
+            const b = if (dir == .backward) bytes[bytes.len - 1 - i] else bytes[i];
+            const next = trans[@as(usize, off) + base + class[b]];
+            const raw = @intFromEnum(next);
+            if (raw >= Cell.plain) { // marked, or not determinized yet
+                if (next == .unknown) break;
+                landed = next;
+                i += 1;
+                break;
+            }
+            off = raw;
+            landed = next;
+            i += 1;
+        }
+        return .{ .cell = landed, .len = i };
     }
 
     /// The state reached from `id` by consuming a byte of class `k` and landing
@@ -253,14 +416,19 @@ pub const Cache = struct {
     /// dominance's reach — so without the caller's switch an unanchored machine
     /// would keep opening new matches after one had already been found, and
     /// report whichever finished last as though it were the leftmost.
-    pub fn step(c: *Cache, id: u32, k: u16, g: subset.Gap, seed: bool) ?u32 {
+    pub fn step(c: *Cache, cell: Cell, k: u16, g: subset.Gap, seed: bool) ?Cell {
         if (c.quit) return null;
+        const off = cell.offset();
         const row = @as(usize, kindOf(g)) * 2 + @intFromBool(seed);
-        const slot = (@as(usize, id) * c.m.rows() + row) * c.m.cls.ncls + k;
+        // `off` already IS `id * rows * ncls`, so the row lands by addition —
+        // the two multiplies this address used to need are gone with the id.
+        const slot = @as(usize, off) + row * c.m.cls.ncls + k;
         const memo = c.trans.items[slot];
-        if (memo != unknown) return memo;
+        if (memo != .unknown) return memo;
 
-        const from = c.keys.items[id];
+        // Only a miss needs the state back by name, and a miss is about to run
+        // a whole closure, so the one division lands where nothing can feel it.
+        const from = c.keys.items[@divExact(off, @as(u32, @intCast(c.m.stride())))];
         const rep = c.m.cls.rep[k];
         c.reset();
         // Lowest priority goes on first: a re-seed sits beneath every thread
@@ -273,8 +441,8 @@ pub const Cache = struct {
             if (c.m.states[st].consume.set.has(rep)) c.push(c.m.states[st].consume.out);
         }
         const hit = c.close(g);
-        const id2 = c.settle(hit) orelse return null;
-        c.trans.items[slot] = id2;
-        return id2;
+        const to = c.settle(hit) orelse return null; // may have grown `trans`
+        c.trans.items[slot] = to;
+        return to;
     }
 };

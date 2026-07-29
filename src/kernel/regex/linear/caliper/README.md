@@ -1,12 +1,15 @@
 ---
 doc_radar:
   sentinels:
-    - description: "the two jaws, the tri-state verdict, and the eligibility gate that keeps multiline on the VM"
+    - description: "the two jaws, the tri-state verdict, the window both take, and the eligibility gate that keeps multiline on the VM"
       file: pkg/kernels/irregex/src/kernel/regex/linear/caliper/caliper.zig
-      contains: ["pub const Verdict", "pub fn eligible", "pub fn measure", "!multiline"]
-    - description: "priority-ordered determinization: an ordered state list, dominance, and quitting as an answer"
+      contains: ["pub const Verdict", "pub const Window", "pub fn eligible", "pub fn measure", "!multiline"]
+    - description: "priority-ordered determinization: an ordered state list, dominance, quitting as an answer, and the two accelerators that keep a span step near one load — a per-state mark and the memo-only run"
       file: pkg/kernels/irregex/src/kernel/regex/linear/caliper/automaton.zig
-      contains: ["pub const Machine", "pub const Cache", "dominate", "quit"]
+      contains: ["pub const Machine", "pub const Cache", "dominate", "quit", "const Mark", "pub fn glide"]
+    - description: "the span walk's prefilter bar is priced against the span walk, not the boolean one"
+      file: pkg/kernels/irregex/src/kernel/regex/linear/automata/dwell.zig
+      contains: ["pub const min_profitable_stride", "pub const min_profitable_span_stride"]
     - description: "the reversal reuses the forward lowering rather than re-parsing"
       file: pkg/kernels/irregex/src/kernel/regex/linear/caliper/reverse.zig
       contains: ["pub fn build", "pub fn matchIndex"]
@@ -35,6 +38,38 @@ the construction (RE2 / rust-`regex`):
    reaching that end.
 
 Two table walks over the match region. No thread list, no per-state offset map.
+
+Both jaws take a **`Window`** rather than a haystack and an origin: `[from, to]`
+is the region a match may occupy, while `hay` stays whole because every
+zero-width assertion resolves against it end to end. Slicing to bound a search
+would also move the text's edges, and then `$` and any look-around at the cut
+answer a question about the slice — so the bound moves the walk's ceiling and
+nothing else.
+
+## Keeping up with the walk it replaced
+
+A table lookup per byte is only worth having if the lookup is actually one
+lookup. Two things keep it there:
+
+- **`Cache.glide`** runs a stretch of bytes through the memo alone, once the
+  caller can prove the row survives it — every landing an interior gap, one
+  seeding decision throughout. `step` has to recompute the row and reload the
+  memo's base pointer on every byte, because it is a call that might
+  determinize and reallocate; `glide` does both once and reduces to a class
+  lookup and one dependent load per byte. A byte it cannot decide ends the run
+  before it, and a marked target ends it after, so misses and matches stay
+  outside the loop. The backward jaw is always eligible (anchored, so it never
+  seeds); the forward jaw is eligible whenever the seed decision holds, and
+  where a prefilter is choosing per byte the run is the stretch before the next
+  candidate — which the same jump already finds.
+- **A `Mark` per state**, interned alongside it: matched, dead. The search's two
+  questions about a state used to be a walk into its priority key and then into
+  that key's last word; they are one load of a dense array.
+
+The forward jaw also drives the caller's first-byte prefilter, priced against
+*this* walk (`dwell.min_profitable_span_stride`) and not the boolean one — the
+same corpus prior, an order of magnitude lower bar, because a `memchr` call does
+not get cheaper when the walker it stands down gets dearer.
 
 ## Why a bitset was not enough
 

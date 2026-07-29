@@ -38,12 +38,54 @@ const subset = @import("../dfa/subset.zig");
 const word = @import("../../syntax/word.zig");
 const automaton = @import("automaton.zig");
 const reverse = @import("reverse.zig");
+const prefilter = @import("../../analysis/prefilter.zig");
 
 const State = syn.State;
 
 /// A byte span `[start, end)` of one match. `end == start` is a zero-width
 /// match (the `-o` caller advances past it to avoid looping).
 pub const Span = struct { start: usize, end: usize };
+
+/// **What to search, and what to read while searching** — the span engines'
+/// input, and the reason the two are separable.
+///
+/// `hay` is the haystack: every zero-width assertion (`^ $ \b \B \< \> \A \z`)
+/// resolves against it end to end. `[from, to]` is the region a match may
+/// occupy — it must start at or after `from` and end at or before `to`. Within
+/// that region the answer is the ordinary leftmost-first one.
+///
+/// The distinction is the whole point. Slicing a haystack to bound a search
+/// *also* moves its edges, so `$`, `\b`, and any look-around at the cut answer a
+/// question about the slice instead of about the text — which makes a bounded
+/// confirm around a literal, an overlapping walk, or a half-match impossible to
+/// build out of slices without changing what the pattern means. A window keeps
+/// the context and moves only the search. (Same separation rust-`regex` draws
+/// with `Input { haystack, span }`; `to == hay.len` is the unbounded default,
+/// so nobody who doesn't ask for a bound pays for one.)
+pub const Window = struct {
+    hay: []const u8,
+    from: usize = 0,
+    to: usize,
+
+    /// The whole haystack from `from` — what `matchSpan` means.
+    pub fn whole(hay: []const u8, from: usize) Window {
+        return .{ .hay = hay, .from = from, .to = hay.len };
+    }
+
+    /// Is the end bound inert (no match this haystack holds could be excluded by
+    /// it)? Engines that cannot honor a real bound decline on this.
+    pub fn unbounded(w: Window) bool {
+        return w.to >= w.hay.len;
+    }
+
+    /// The prefix a bound turns the haystack into for the *assertion-free*
+    /// engines — a pure literal or class-run reads nothing but the bytes it
+    /// consumes, so for those the region and a slice of it are the same
+    /// question, and slicing is how the bound gets enforced for free.
+    pub fn region(w: Window) []const u8 {
+        return w.hay[0..@min(w.to, w.hay.len)];
+    }
+};
 
 /// What a measurement produced. `decline` is not a failure and not an answer —
 /// it means this pattern outgrew the caliper's budget on this thread and the
@@ -154,7 +196,7 @@ pub fn build(
 
 fn hasWordAssertion(states: []const State) bool {
     for (states) |st| switch (st) {
-        .assert_word_b, .assert_not_word_b, .assert_word_start, .assert_word_end => return true,
+        .assert_word => return true,
         else => {},
     };
     return false;
@@ -163,22 +205,39 @@ fn hasWordAssertion(states: []const State) bool {
 /// The position predicates in force at gap `i`. Read off real coordinates, not
 /// scan direction — which is the whole reason a reversed edge can carry its
 /// assertion verbatim. An assertion-free program pays two comparisons.
-fn gapAt(cal: *const Caliper, line: []const u8, i: usize) subset.Gap {
-    return .{
-        .at_start = i == 0,
-        .at_end = i == line.len,
-        .word_before = cal.word_ctx and word.wordBefore(cal.unicode, line, i),
-        .word_after = cal.word_ctx and word.wordAt(cal.unicode, line, i),
-    };
+///
+/// Null means quit — hand the line to the Pike VM. The memo keys a gap by two
+/// word bits, which cannot distinguish "silence" from "the middle of a
+/// character", and `\B` and the two halves need that distinction
+/// (`syntax.mask.holds`). Rather than widen every row of every state to carry a
+/// case that only arises beside a multi-byte character, decline the line — the
+/// byte-class DFA already quits on the same ground.
+/// The shape every gap in a line's interior has when no `\b` can read it: not
+/// the buffer's start, not its end, and word context nobody consults. It is the
+/// row a long run stays on, which is what `Cache.glide` needs named up front.
+const interior: subset.Gap = .{ .at_start = false, .at_end = false, .word_before = false, .word_after = false };
+
+fn gapAt(cal: *const Caliper, line: []const u8, i: usize) ?subset.Gap {
+    if (!cal.word_ctx) return .{ .at_start = i == 0, .at_end = i == line.len, .word_before = false, .word_after = false };
+    const s = word.sides(cal.unicode, line, i);
+    if (!s.left_ok or !s.right_ok) return null;
+    return .{ .at_start = i == 0, .at_end = i == line.len, .word_before = s.before, .word_after = s.after };
 }
 
-/// Leftmost-first span of the pattern within `line[from..]`, measured by both
+/// Leftmost-first span of the pattern within the window `w`, measured by both
 /// jaws. See the file header for why two passes beat one thread list.
-pub fn measure(j: *Jaws, line: []const u8, from: usize) Verdict {
-    const end = forwardEnd(j, line, from) orelse return .decline;
+///
+/// `skip` is the caller's first-byte prefilter, or null to walk every gap. It is
+/// an accelerator with no say in the answer: the forward jaw consults it only
+/// after asking its own machine whether a match could be zero-width, and the
+/// backward jaw never sees it (it is anchored — there is nothing to skip to).
+pub fn measure(j: *Jaws, win: Window, skip: ?*const prefilter.Prefilter) Verdict {
+    const w: Window = .{ .hay = win.hay, .from = win.from, .to = @min(win.to, win.hay.len) };
+    if (w.from > w.to) return .none;
+    const end = forwardEnd(j, w, skip) orelse return .decline;
     return switch (end) {
         .none => .none,
-        .at => |e| if (backwardStart(j, line, e, from)) |s|
+        .at => |e| if (backwardStart(j, w.hay, e, w.from)) |s|
             .{ .found = .{ .start = s, .end = e } }
         else
             .decline,
@@ -200,21 +259,73 @@ const End = union(enum) { none, at: usize, quit };
 /// far does the leftmost one reach", and a new start would be a strictly worse
 /// answer — dominance drops such threads inside the closure, and this drops the
 /// one the closure never sees.
-fn forwardEnd(j: *Jaws, line: []const u8, from: usize) ?End {
+///
+/// While still seeding, a `skip` prefilter turns that gap-by-gap re-seed into
+/// the boolean scanner's `.skip` policy (`pike/search.zig`): seed only where a
+/// byte could actually begin a match, which lets the state go empty over dead
+/// text, and jump straight to the next candidate when it does. Equivalent to
+/// seeding everywhere — a start whose first byte the prefilter rejects dies on
+/// its first step — minus the walk. The soundness condition is the one thing
+/// this policy cannot see for itself, so it asks the machine: skipping loses
+/// only a match that consumes nothing, and `Cache.zeroWidth` is exactly whether
+/// one exists.
+fn forwardEnd(j: *Jaws, w: Window, pre: ?*const prefilter.Prefilter) ?End {
     const cal = j.cal;
+    const line = w.hay;
     const c = j.cache(&j.fwd, &cal.forward) orelse return null;
-    var st = c.enter(gapAt(cal, line, from)) orelse return null;
-    var last: ?usize = if (c.matched(st)) from else null;
-    var i = from;
-    while (i < line.len) : (i += 1) {
-        // An empty set ends the scan only once a match is committed. While the
-        // search is still seeding, emptiness means nothing is live at THIS gap
-        // — an assertion just refused the seed (`\bfoo\b` mid-word) — and the
-        // next gap may well start one. Only a committed match makes emptiness
-        // final, because dominance has then discarded every rival on purpose.
-        if (last != null and c.isDead(st)) break;
-        st = c.step(st, cal.cls.class[line[i]], gapAt(cal, line, i + 1), last == null) orelse return null;
-        if (c.matched(st)) last = i + 1;
+    const skip: ?*const prefilter.Prefilter = if (pre) |p| (if (c.zeroWidth()) null else p) else null;
+    // Candidate starts are hunted inside the bound: a match must END by `w.to`,
+    // so a start at or past it cannot consume anything.
+    const region = w.region();
+
+    var st = c.enter(gapAt(cal, line, w.from) orelse return null) orelse return null;
+    var last: ?usize = if (st.matched()) w.from else null;
+    var i = w.from;
+    while (i < w.to) {
+        if (st.dead()) {
+            // An empty set ends the scan once a match is committed: dominance
+            // has then discarded every rival on purpose. While still seeding,
+            // emptiness means only that nothing is live at THIS gap — an
+            // assertion refused the seed (`\bfoo\b` mid-word), or the prefilter
+            // withheld it — so the search moves to the next gap that could
+            // start one, by jump when a prefilter says where and by step when
+            // it doesn't.
+            if (last != null) break;
+            if (skip) |s| {
+                i = s.nextStart(region, i) orelse return .none;
+                st = c.enter(gapAt(cal, line, i) orelse return null) orelse return null;
+                if (st.matched()) last = i;
+            }
+        }
+        // A start at `i+1` needs a byte to consume inside the bound, and (under
+        // the skip policy) a byte the prefilter admits.
+        const seed = last == null and (if (skip) |s| i + 1 < w.to and s.has(line[i + 1]) else true);
+        // Hand the memo as long a run as the row survives (`Cache.glide`). The
+        // row holds while two things do: every landing is an interior gap —
+        // which needs the buffer's end out of reach and no `\b` context to read
+        // — and the seed decision stays one decision. With no prefilter
+        // choosing, it never changes. With one, it changes only where the
+        // prefilter admits a byte, and the same jump that hunts candidates finds
+        // where that is, so the run is simply the stretch before the next one.
+        if (!cal.word_ctx) {
+            const ceiling = @min(w.to, line.len -| 1);
+            const lim = if (skip != null and last == null)
+                @min(ceiling, (skip.?.nextStart(region, i + 1) orelse ceiling) -| 1)
+            else
+                ceiling;
+            if (i < lim) {
+                const run = c.glide(st, interior, seed, line[i..lim], .forward);
+                if (run.len > 0) {
+                    st = run.cell;
+                    i += run.len;
+                    if (st.matched()) last = i;
+                    continue;
+                }
+            }
+        }
+        st = c.step(st, cal.cls.class[line[i]], gapAt(cal, line, i + 1) orelse return null, seed) orelse return null;
+        if (st.matched()) last = i + 1;
+        i += 1;
     }
     return if (last) |e| .{ .at = e } else .none;
 }
@@ -226,12 +337,27 @@ fn forwardEnd(j: *Jaws, line: []const u8, from: usize) ?End {
 fn backwardStart(j: *Jaws, line: []const u8, end: usize, floor: usize) ?usize {
     const cal = j.cal;
     const c = j.cache(&j.bwd, &cal.backward) orelse return null;
-    var st = c.enter(gapAt(cal, line, end)) orelse return null;
-    var best: ?usize = if (c.matched(st)) end else null;
+    var st = c.enter(gapAt(cal, line, end) orelse return null) orelse return null;
+    var best: ?usize = if (st.matched()) end else null;
     var i = end;
-    while (i > floor and !c.isDead(st)) : (i -= 1) {
-        st = c.step(st, cal.cls.class[line[i - 1]], gapAt(cal, line, i - 1), false) orelse return null;
-        if (c.matched(st)) best = i - 1;
+    while (i > floor and !st.dead()) {
+        // This jaw is anchored, so it never seeds — its row is constant for the
+        // whole run, and the only landing that leaves the interior is gap 0.
+        if (!cal.word_ctx) {
+            const lo = @max(floor, 1);
+            if (i > lo) {
+                const run = c.glide(st, interior, false, line[lo..i], .backward);
+                if (run.len > 0) {
+                    st = run.cell;
+                    i -= run.len;
+                    if (st.matched()) best = i;
+                    continue;
+                }
+            }
+        }
+        st = c.step(st, cal.cls.class[line[i - 1]], gapAt(cal, line, i - 1) orelse return null, false) orelse return null;
+        if (st.matched()) best = i - 1;
+        i -= 1;
     }
     return best;
 }

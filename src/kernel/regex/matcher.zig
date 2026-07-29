@@ -37,6 +37,14 @@ pub const Matcher = union(Backend) {
     /// without reaching into a concrete engine (both engines' `Span` are this).
     pub const Span = Regex.Span;
 
+    /// What to search and what to read while searching — `matchWindow`'s
+    /// argument. `Window.whole` is what `matchSpan` passes.
+    pub const Window = Regex.Window;
+
+    /// A bounded search's answer, with room for the one thing an optional can't
+    /// say: that this engine cannot express the bound (see `matchWindow`).
+    pub const Verdict = union(enum) { none, found: Span, decline };
+
     pub fn deinit(self: *Matcher) void {
         switch (self.*) {
             inline else => |*e| e.deinit(),
@@ -207,6 +215,33 @@ pub const Matcher = union(Backend) {
         return switch (self.*) {
             inline else => |*e, t| e.matchSpan(&@field(sim, @tagName(t)), hay, from),
         };
+    }
+
+    /// Can this engine honor a **bounded** window — search `[from, to]` while
+    /// still reading `hay` end to end for assertion context? The linear engine
+    /// can: the bound is a ceiling on its walk, and its closures never stopped
+    /// reading the real haystack. PCRE2 cannot, and the reason is structural
+    /// rather than an omission — its subject model has one length, so the only
+    /// way to stop a match at `to` is to tell the library the subject ends
+    /// there, which also moves `$`, `\z`, `\b`, and every lookahead. A shorter
+    /// subject is a different question, not a bounded form of this one.
+    pub fn windows(self: *const Matcher) bool {
+        return self.* == .linear;
+    }
+
+    /// Leftmost match of the pattern inside the window `w` (see `Regex.Window`):
+    /// it starts at or after `w.from`, ends at or before `w.to`, and every
+    /// assertion reads the whole `w.hay`. `.decline` means this engine cannot
+    /// express the bound (`windows()` is false and the bound is live) — never a
+    /// statement about the haystack, so a caller either asks `windows()` first or
+    /// falls back to `matchSpan` and its own filtering.
+    pub fn matchWindow(self: *const Matcher, sim: *SpanSim, w: Window) Verdict {
+        switch (self.*) {
+            .linear => |*re| return if (re.matchWindow(&sim.linear, w)) |sp| .{ .found = sp } else .none,
+            // An inert bound asks nothing of the engine, so the pcre arm answers
+            // it with the search it already has.
+            .pcre => |*p| return if (!w.unbounded()) .decline else if (p.matchSpan(&sim.pcre, w.hay, w.from)) |sp| .{ .found = sp } else .none,
+        }
     }
 };
 

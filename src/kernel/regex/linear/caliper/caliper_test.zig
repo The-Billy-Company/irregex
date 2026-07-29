@@ -10,11 +10,28 @@ const t = std.testing;
 const core = @import("../program/core.zig");
 const pike = @import("../pike/span.zig");
 const caliper = @import("caliper.zig");
+const prefilter = @import("../../analysis/prefilter.zig");
 
 const Regex = core.Regex;
 
-/// Walk `line` with both engines and assert they agree at every step. Returns
-/// the number of spans compared, so a case can prove it exercised something.
+/// The same compiled program with every span reduction and the caliper itself
+/// switched off, so `pike.matchWindow` on it really is the VM. A value copy: the
+/// original still owns every allocation, and nothing here frees any of it. This
+/// has to be explicit — a `SpanSim` carries jaws whenever the program has a
+/// caliper, so an oracle that forgot to clear the field would be comparing this
+/// engine against itself.
+fn oracleOf(re: Regex) Regex {
+    var o = re;
+    o.lits = &.{};
+    o.caliper = null;
+    if (o.classrun) |*cr| cr.span = false;
+    return o;
+}
+
+/// Walk `line` with both engines and assert they agree at every step, under both
+/// seeding policies — gap by gap, and with the first-byte prefilter driving the
+/// skip, which must be an accelerator and nothing else. Returns the number of
+/// spans compared, so a case can prove it exercised something.
 fn agree(gpa: std.mem.Allocator, pattern: []const u8, line: []const u8) !usize {
     var re = try Regex.compile(gpa, pattern);
     defer re.deinit();
@@ -22,37 +39,70 @@ fn agree(gpa: std.mem.Allocator, pattern: []const u8, line: []const u8) !usize {
 
     const cal = (try caliper.build(gpa, re.states, re.start, re.unicode)) orelse return 0;
     defer cal.deinit();
-    var jaws = caliper.Jaws.init(gpa, cal);
-    defer jaws.deinit();
 
+    var oracle = oracleOf(re);
     var sim = try Regex.SpanSim.init(gpa, &re);
     defer sim.deinit();
 
-    var from: usize = 0;
     var n: usize = 0;
-    while (from <= line.len) {
-        const want = pike.matchSpan(&re, &sim, line, from);
-        switch (caliper.measure(&jaws, line, from)) {
-            .decline => return n, // budget, not disagreement
-            .none => {
-                if (want) |w| {
-                    std.debug.print("\npattern `{s}` line `{s}` from {d}: caliper found nothing, Pike found [{d},{d})\n", .{ pattern, line, from, w.start, w.end });
-                    return error.CaliperMissedMatch;
-                }
-                return n;
-            },
-            .found => |got| {
-                const w = want orelse {
-                    std.debug.print("\npattern `{s}` line `{s}` from {d}: caliper found [{d},{d}), Pike found nothing\n", .{ pattern, line, from, got.start, got.end });
-                    return error.CaliperInventedMatch;
-                };
-                if (got.start != w.start or got.end != w.end) {
-                    std.debug.print("\npattern `{s}` line `{s}` from {d}: caliper [{d},{d}) vs Pike [{d},{d})\n", .{ pattern, line, from, got.start, got.end, w.start, w.end });
-                    return error.CaliperSpanDiverged;
-                }
-                n += 1;
-                from = if (w.end == w.start) w.start + 1 else w.end;
-            },
+    for ([2]?*const prefilter.Prefilter{ null, &re.first }) |skip| {
+        var jaws = caliper.Jaws.init(gpa, cal);
+        defer jaws.deinit();
+        n = 0;
+        var from: usize = 0;
+        while (from <= line.len) {
+            const win = caliper.Window.whole(line, from);
+            const want = pike.matchWindow(&oracle, &sim, win);
+            switch (caliper.measure(&jaws, win, skip)) {
+                .decline => break, // budget, not disagreement
+                .none => {
+                    if (want) |w| {
+                        std.debug.print("\npattern `{s}` line `{s}` from {d} skip={any}: caliper found nothing, Pike found [{d},{d})\n", .{ pattern, line, from, skip != null, w.start, w.end });
+                        return error.CaliperMissedMatch;
+                    }
+                    break;
+                },
+                .found => |got| {
+                    const w = want orelse {
+                        std.debug.print("\npattern `{s}` line `{s}` from {d} skip={any}: caliper found [{d},{d}), Pike found nothing\n", .{ pattern, line, from, skip != null, got.start, got.end });
+                        return error.CaliperInventedMatch;
+                    };
+                    if (got.start != w.start or got.end != w.end) {
+                        std.debug.print("\npattern `{s}` line `{s}` from {d} skip={any}: caliper [{d},{d}) vs Pike [{d},{d})\n", .{ pattern, line, from, skip != null, got.start, got.end, w.start, w.end });
+                        return error.CaliperSpanDiverged;
+                    }
+                    // The bound, at the ceilings that can change the answer: the
+                    // match's own end (tightest that still admits it), one byte
+                    // inside it (must yield something shorter or nothing), its
+                    // start, and the origin. The VM answers the bounded question
+                    // too, so the comparison stays span-for-span.
+                    const ceilings = [_]usize{ from, w.start, w.end -| 1, w.end, (w.end + line.len) / 2 };
+                    for (ceilings) |to| {
+                        const bw: caliper.Window = .{ .hay = line, .from = from, .to = to };
+                        const bwant = pike.matchWindow(&oracle, &sim, bw);
+                        switch (caliper.measure(&jaws, bw, skip)) {
+                            .decline => {},
+                            .none => if (bwant) |b| {
+                                std.debug.print("\npattern `{s}` line `{s}` [{d},{d}]: bounded caliper found nothing, Pike found [{d},{d})\n", .{ pattern, line, from, to, b.start, b.end });
+                                return error.BoundedCaliperMissedMatch;
+                            },
+                            .found => |bgot| {
+                                const b = bwant orelse {
+                                    std.debug.print("\npattern `{s}` line `{s}` [{d},{d}]: bounded caliper found [{d},{d}), Pike found nothing\n", .{ pattern, line, from, to, bgot.start, bgot.end });
+                                    return error.BoundedCaliperInventedMatch;
+                                };
+                                if (bgot.end > to) return error.BoundedSpanEscapedCeiling;
+                                if (bgot.start != b.start or bgot.end != b.end) {
+                                    std.debug.print("\npattern `{s}` line `{s}` [{d},{d}]: bounded caliper [{d},{d}) vs Pike [{d},{d})\n", .{ pattern, line, from, to, bgot.start, bgot.end, b.start, b.end });
+                                    return error.BoundedCaliperSpanDiverged;
+                                }
+                            },
+                        }
+                    }
+                    n += 1;
+                    from = if (w.end == w.start) w.start + 1 else w.end;
+                },
+            }
         }
     }
     return n;
