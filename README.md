@@ -606,6 +606,15 @@ walk still chooses the corpus; changed files widen the candidate set; current
 bytes verify every survivor; deletion and uncertainty make resident paths
 decline to the cold path. Staleness can therefore cost time, never matches.
 
+That is a proof under stated assumptions, not a promise about someone else's
+filesystem, and the assumptions are written down in
+[`src/corpus/fresh/README.md`](src/corpus/fresh/README.md) § The model: a read is
+elided only when **both** the mtime and the ctime predate the build anchor, which
+holds because a completed ordinary write advances ctime even when a tool rewinds
+mtime (`touch -r`). Rewinding *both* clocks below the anchor, or a filesystem
+that fabricates them, is outside the model — `--no-index` costs time and nothing
+else. Each assumption is a test that drives real syscalls, not a footnote.
+
 `bench/gates/index_elision_parity.sh` compares every indexed answer's byte-exact
 line multiset and exit code with `--no-index`, including a match written after
 the index anchor. Cross-file order is normalized because the parallel engine

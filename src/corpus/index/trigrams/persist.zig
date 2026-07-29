@@ -395,10 +395,11 @@ fn loadMappedPair(gpa: std.mem.Allocator, io: std.Io, pf: *const PairFiles, gen:
         try roots.append(gpa, ".");
     }
 
-    // Crest sidecar: optional, fail-closed. A miss or a rejected blob costs
-    // only the sieve (the query still answers exactly), so both read as null.
+    // Crest sidecar: optional, fail-closed. A miss, a rejected layout, or a
+    // broken seal costs only the sieve (the query still answers exactly), so
+    // all three read as null.
     var cmap: ?Mapping = mmapFile(io, pf.crest) catch null;
-    var crest_view: ?[]const crest.Vector = if (cmap) |m| crest_sidecar.decode(m, idx.doc_count) else null;
+    var crest_view: ?[]const crest.Vector = if (cmap) |m| sealedCrest(m, idx.doc_count) else null;
     if (cmap != null and crest_view == null) {
         portal.unmap(cmap.?);
         cmap = null;
@@ -449,6 +450,32 @@ fn loadMappedPair(gpa: std.mem.Allocator, io: std.Io, pf: *const PairFiles, gen:
     }
 
     return .{ .imap = imap, .pmap = pmap, .idx = idx, .cmap = cmap, .crest = crest_view, .crest_allocation = crest_allocation, .short_docs = short_docs, .codmap = codmap, .cod = cod, .paths = paths, .roots_blob = roots_blob, .roots = roots, .gen = gen_owned, .gpa = gpa };
+}
+
+/// The crest table this loader may hand on: layout-valid AND seal-intact, or
+/// null. Every other persisted tier defers its seal (`signet.body`) because a
+/// layout check plus the freshness gate already fail closed on the damage that
+/// could change an answer. This table is the exception — its corruption story
+/// is a MISSED match, not a wrong one. A ρ(d) that rots downward makes the
+/// sieve prune a document that would have matched; a row that rots upward hides
+/// a short document from `shortDocs`, and the sliver tier stops admitting it.
+/// Neither leaves a trace any structural validator can see, so the seal is the
+/// only reader that can tell, and admission is the one place to spend it: after
+/// this, `p.crest` and `p.short_docs` are trustworthy by construction rather
+/// than by each consumer remembering to ask.
+///
+/// Order is deliberate. `decode` is O(1) — magic, version, schema signet, doc
+/// space, length, alignment — so a foreign or truncated blob is refused without
+/// digesting it, and only a table claiming to describe THIS doc space pays the
+/// BLAKE3 pass (0.18 ms over the 345 KB / 21.6k-doc production sidecar, on the
+/// pages `shortDocs` walks immediately after).
+fn sealedCrest(bytes: []const u8, doc_count: u32) ?[]const crest.Vector {
+    const view = crest_sidecar.decode(bytes, doc_count) orelse return null;
+    crest_sidecar.verify(bytes) catch {
+        assay.trace(.index, "gist: crest sidecar seal broken — sieve stands down for this load\n", .{});
+        return null;
+    };
+    return view;
 }
 
 /// Documents a crest table cannot prove are ≥ 3 bytes long, ascending.

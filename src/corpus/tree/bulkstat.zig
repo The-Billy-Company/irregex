@@ -32,9 +32,10 @@
 //!
 //! FAIL-SOFT, NEVER FAIL-OPEN: a bulk call failing on some directory (an unusual
 //! mount, a permissions edge, or simply a filesystem that doesn't implement it)
-//! falls back to the proven stat-based walk for *that* subtree only. Under
-//! `README.md`'s local-filesystem model, uncertain bulk metadata therefore loses
-//! speed rather than weakening the conservative live-read decision.
+//! falls back to the proven stat-based walk for *that* subtree only. Under the
+//! local-filesystem model in `../fresh/README.md` — whose one predicate,
+//! `needsLiveRead`, lives here — uncertain bulk metadata therefore loses speed
+//! rather than weakening the conservative live-read decision.
 
 const std = @import("std");
 const fault = @import("../../fault.zig");

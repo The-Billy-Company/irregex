@@ -49,16 +49,29 @@ and the existing generation lifecycle rebuilds them.
 
 The trailing seal exists because this is the one table whose corruption story is
 a **missed** match: a ρ(d) that rots downward prunes a document that would have
-matched, and every layout check still passes. `verify` is separate from `decode`
-for the same reason the shard's is — the table is mapped, and a query should pay
-for the pages it reads, not for a whole-file digest it did not ask for.
+matched, and every layout check still passes. So the seal is **spent at
+admission** — `persist.sealedCrest` verifies it before the loader publishes
+`crest` / `short_docs`, and a broken seal reads as "no sidecar" like any other
+rejection. `verify` stays a separate call from `decode` only so the O(1) layout
+refusals run first and a foreign blob is never digested.
+
+That order is what keeps it cheap. The loader already walks every record
+straight after (`shortDocs`), and an active sieve walks them again, so the pages
+are resident either way and only the digest is new: **0.18 ms** over the
+production 345 KB / 21.6k-doc table (BLAKE3, 1.93 GB/s) beside 0.007 ms for the
+record pass. The mapped base pair keeps the deferred posture — 44 MB of postings
+a query touches a few pages of is the trade `signet.body` exists for.
 
 ## Invariants
 
 - `decode` is zero-copy over the caller's mapping and returns **null** on any
   disagreement (magic, format version, semantic hash, doc count, class-family
   arity, element width, reserved padding, checked length, alignment) → the
-  query simply runs without the sieve. `verify` proves the seal on demand.
+  query simply runs without the sieve.
+- No admitted table is unproven: the loader pairs `decode` with `verify`, so a
+  vector that reaches `Swell.prunes` came from a sealed blob. The amend segment
+  that overlays it (`../trigrams/codicil.zig`, `GISTCOD2`) is sealed whole for
+  the same reason — its recomputed rows prune too.
 - Soundness rounds down only (under-prune); see the kernel + `research/crest`.
 - Consumers: read-elision oracles in
   `exec/cold/quarry/elide.zig` and the serial/swarm engines.

@@ -10,8 +10,9 @@
 //! doc-count-mismatched blob decodes to null and the query simply loses the
 //! crest sieve for that invocation — elision correctness never depends on this
 //! file existing (a legacy cache without it still answers exactly). The table
-//! carries an artifact signet for the damage no layout check can reach; see
-//! `verify` for why the mapped read path does not spend it.
+//! carries an artifact signet for the damage no layout check can reach, and
+//! `persist.sealedCrest` spends it at admission, so no consumer of `p.crest`
+//! or `p.short_docs` can inherit an unproven table; see `verify`.
 
 const std = @import("std");
 const portal = @import("../../../portal.zig");
@@ -103,9 +104,18 @@ pub fn decode(bytes: []const u8, expected_docs: u32) ?[]const crest.Vector {
 ///
 /// The sieve is the one reader in this kernel whose corruption story is a
 /// MISSED match rather than a wrong one: a ρ(d) that rots downward prunes a
-/// document that would have matched, and no layout check can see it. Sealing
-/// makes that detectable; leaving the check out of `decode` keeps the mapped
-/// table's cost proportional to the pages a query actually reads.
+/// document that would have matched, and no layout check can see it. So the
+/// loader spends this on every admitted table (`persist.sealedCrest`) rather
+/// than offering it as an option a caller might skip — the two are separate
+/// calls only so the O(1) layout refusals come first and a foreign blob is
+/// never digested.
+///
+/// It stays affordable because the pages are already paid for: the loader walks
+/// every record immediately afterwards (`persist.shortDocs`), and an active
+/// sieve walks them again. Measured on the production sidecar — 345 KB /
+/// 21.6k docs — the digest is 0.18 ms at 1.93 GB/s, against 0.007 ms for the
+/// record pass it rides along with. The base pair keeps the deferred posture
+/// (`signet.body`) because 44 MB of mapped postings is a different trade.
 pub fn verify(bytes: []const u8) signet.Error!void {
     return signet.verify(bytes);
 }

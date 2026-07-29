@@ -39,11 +39,26 @@ fn statWalk(a: std.mem.Allocator, io: std.Io, root_path: []const u8, built_ns: i
 test "needsLiveRead elides only when both clocks strictly predate the anchor" {
     const anchor: i128 = 1_000;
 
+    // The whole predicate, exhaustively: four states per clock — behind the
+    // anchor, ON it, past it, unavailable — is the entire input space, so the
+    // model in `../fresh/README.md` is pinned rather than sampled. Elision is
+    // admitted at exactly one of the sixteen, which is the claim.
+    const states = [_]?i128{ 999, anchor, anchor + 1, null };
+    for (states) |mtime| {
+        for (states) |ctime| {
+            const both_behind = mtime != null and ctime != null and mtime.? < anchor and ctime.? < anchor;
+            try std.testing.expectEqual(!both_behind, bulkstat.needsLiveRead(anchor, mtime, ctime));
+        }
+    }
+
+    // And the two boundaries named in the doc, spelled out where a reader of
+    // this test can see them without re-deriving the loop: equality is on the
+    // live-read side (a coarse clock that collapses a post-anchor write onto the
+    // anchor tick stays conservative), and either clock alone is enough.
     try std.testing.expect(!bulkstat.needsLiveRead(anchor, 999, 999));
     try std.testing.expect(bulkstat.needsLiveRead(anchor, anchor, 999)); // mtime == anchor
     try std.testing.expect(bulkstat.needsLiveRead(anchor, 999, anchor)); // ctime boundary
-    try std.testing.expect(bulkstat.needsLiveRead(anchor, null, 999));
-    try std.testing.expect(bulkstat.needsLiveRead(anchor, 999, null));
+    try std.testing.expect(bulkstat.needsLiveRead(anchor, 999, anchor + 1)); // ctime alone: the `touch -r` case
 }
 
 test "bulkstat.visitFresh ≡ the stat-based walk over a real tree (old/new metadata, skip-dir, symlink)" {

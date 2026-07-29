@@ -106,6 +106,12 @@ pub const IndexedPaths = struct {
 /// candidate, AND both timestamps prove it predates the anchor.
 /// Equality or unavailable metadata forces a live read.
 ///
+/// `rel` is a PATH, and both clocks are the filesystem's own report, so this is
+/// exactly as strong as the model in `corpus/fresh/README.md` and no stronger:
+/// a replacement at an indexed path is caught because rename/create advance the
+/// new inode's ctime, and a file whose ctime was deliberately rewound below the
+/// anchor is the documented out-of-model case where `--no-index` is the answer.
+///
 /// "Candidate" folds BOTH necessary conditions at assembly time: the trigram
 /// prefilter hits AND the crest sieve's survivors (`assemble` clears the
 /// bit for a doc whose persisted crest vector falls short of ĝ — sound here
@@ -136,9 +142,9 @@ pub const Oracle = struct {
 /// decode + path-table construction can still lose to a narrow scoped walk.
 /// The loader flips `ready`; files walked before that are deferred per-worker
 /// (`swarm/crew.zig`'s `Worker.pending`) and elided/searched at the end.
-/// Under the local-filesystem model in `corpus/README.md`, elision stays sound
-/// either way: a deferred file still requires both timestamps to predate the
-/// anchor before it can be skipped.
+/// Under the local-filesystem model in `corpus/fresh/README.md`, elision stays
+/// sound either way: a deferred file still requires both timestamps to predate
+/// the anchor before it can be skipped.
 pub const Lazy = struct {
     val: ?Oracle = null,
     ready: std.atomic.Value(bool) = .init(false),
@@ -428,4 +434,47 @@ test "index loading stays off narrow explicit roots" {
     try t.expect(broadIndexedRoots(&.{"."}));
     try t.expect(!broadIndexedRoots(&.{"pkg/kernels/irregex"}));
     try t.expect(!broadIndexedRoots(&.{"/tmp/corpus"}));
+}
+
+test "skip: the three conditions are each necessary, over a real persisted pair" {
+    const t = std.testing;
+    var threaded = std.Io.Threaded.init(t.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const out_dir = try std.fmt.allocPrint(t.allocator, "/tmp/gist_elide_skip_{x}", .{@intFromPtr(&threaded)});
+    defer t.allocator.free(out_dir);
+    Dir.cwd().deleteTree(io, out_dir) catch {};
+    defer Dir.cwd().deleteTree(io, out_dir) catch {};
+
+    // A real published pair, so the oracle is asked over the same path table and
+    // doc space production hands it — not a hand-built stand-in.
+    const docs = [_][]const u8{ "alpha cat purrs", "beta dog barks" };
+    const paths = [_][]const u8{ "a.txt", "b.txt" };
+    var idx = try trigram.Index.build(t.allocator, &docs);
+    defer idx.deinit();
+    _ = try persist.persistIndexAndPathsAt(t.allocator, io, out_dir, &idx, &paths, &.{"."}, null, 0);
+
+    const anchor: i128 = 1_000;
+    var el: Oracle = .{
+        .p = (try persist.loadAt(t.allocator, io, out_dir, false)).?,
+        .indexed = try IndexedPaths.init(t.allocator, &paths),
+        .candidates = try std.DynamicBitSet.initEmpty(t.allocator, paths.len),
+        .anchor = anchor,
+    };
+    defer el.deinit();
+    el.candidates.set(0); // doc 0 is a candidate, doc 1 is not
+
+    // The only elidable combination: indexed ∧ not a candidate ∧ both clocks
+    // strictly behind the anchor. It is what makes elision byte-invisible — a
+    // file the prefilter proved cannot match, whose bytes the anchor covers.
+    try t.expect(el.skip("b.txt", anchor - 1, anchor - 1));
+
+    // Drop each conjunct in turn; each alone must restore the live read.
+    try t.expect(!el.skip("a.txt", anchor - 1, anchor - 1)); // a candidate: must be read
+    try t.expect(!el.skip("c.txt", anchor - 1, anchor - 1)); // never indexed: unknown bytes
+    try t.expect(!el.skip("b.txt", anchor, anchor - 1)); // mtime on the anchor tick
+    try t.expect(!el.skip("b.txt", anchor - 1, anchor)); // ctime on it — the `touch -r` half
+    try t.expect(!el.skip("b.txt", null, anchor - 1)); // metadata absent, not proven old
+    try t.expect(!el.skip("b.txt", anchor - 1, null));
 }

@@ -11,14 +11,16 @@
 //! post-anchor write onto the anchor tick remain conservative.
 //!
 //! This is freshness-aware with no false negatives under the model documented
-//! in `README.md`: a local filesystem whose reported ctime advances to the
-//! anchor tick or later for a completed ordinary write, and a primary live walk
-//! that reports traversal failures. Deliberately backdating both clocks,
-//! network/cache incoherence, and writes racing the metadata/read window are
-//! outside a snapshot guarantee. A racing query may resolve to the before- or
-//! after-write state; the next query observes the advanced ctime. `git diff
-//! HEAD` remains unsound because a coworker's committed change can differ from
-//! the older index without appearing in the working-tree diff.
+//! in `README.md` § The model — a local filesystem whose reported ctime advances
+//! to the anchor tick or later for a completed ordinary write, and a primary
+//! live walk that reports traversal failures. That conditional is the claim;
+//! anything stronger would be a promise about someone else's filesystem.
+//! Deliberately backdating both clocks, network/cache incoherence, and writes
+//! racing the metadata/read window are outside a snapshot guarantee. A racing
+//! query may resolve to the before- or after-write state; the next query
+//! observes the advanced ctime. `git diff HEAD` remains unsound because a
+//! coworker's committed change can differ from the older index without
+//! appearing in the working-tree diff.
 
 const std = @import("std");
 const assay = @import("../../assay/assay.zig");

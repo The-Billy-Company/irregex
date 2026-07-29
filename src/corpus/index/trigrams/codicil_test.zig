@@ -167,6 +167,34 @@ test "codicil decode: every malformed blob fails closed to null" {
         std.mem.writeInt(u32, mut[map_off..][0..4], 2, .little); // ids become [2,2,3]
         try std.testing.expectEqual(@as(?codicil.Decoded, null), codicil.decode(mut, 3, "genA"));
     }
+
+    // A crest row rotted DOWNWARD — the one corruption every structural check
+    // above is blind to (the value is in range, the section is intact, the
+    // lengths agree), and the only one whose symptom is a LOST match: the sieve
+    // would prune a document the query should have read. The seal is what sees
+    // it, so this case is the seal's reason for existing.
+    {
+        const mut = try alignBlob(gpa, blob);
+        defer gpa.free(mut);
+        const d = codicil.decode(mut, 3, "genA").?;
+        const rows_off = @intFromPtr(d.rows.ptr) - @intFromPtr(mut.ptr);
+        const live_row = 0; // row 1 is the tombstone's never-prune vector
+        const klass = for (d.rows[live_row], 0..) |run, k| {
+            if (run > 0) break k;
+        } else return error.FixtureHasNoRunToLose;
+        const at = rows_off + live_row * @sizeOf(@TypeOf(d.rows[0])) + klass * @sizeOf(u16);
+        std.mem.writeInt(u16, mut[at..][0..2], d.rows[live_row][klass] - 1, .little);
+        try std.testing.expectEqual(@as(?codicil.Decoded, null), codicil.decode(mut, 3, "genA"));
+    }
+
+    // And the tail the seal itself occupies: a blob whose digest was rewritten
+    // to match nothing is refused rather than trusted for its shape.
+    {
+        const mut = try alignBlob(gpa, blob);
+        defer gpa.free(mut);
+        mut[mut.len - 1] ^= 0xFF;
+        try std.testing.expectEqual(@as(?codicil.Decoded, null), codicil.decode(mut, 3, "genA"));
+    }
 }
 
 test "codicil end-to-end: publish + layered load answer soundly for dirty, new, and tombstoned docs" {

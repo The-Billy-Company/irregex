@@ -129,6 +129,73 @@ test "persistIndexAndPathsAt: generation publish keeps readers off a torn pair" 
     try std.testing.expectEqual(@as(?[]const crest.Vector, null), loaded_b.crest);
 }
 
+test "loadAt: a crest table whose records rotted is refused, so nothing it says can prune" {
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = try std.fmt.allocPrint(gpa, "/tmp/gist_persist_seal_{x}", .{@intFromPtr(&threaded)});
+    defer gpa.free(root);
+    Dir.cwd().deleteTree(io, root) catch {};
+    defer Dir.cwd().deleteTree(io, root) catch {};
+
+    const docs = [_][]const u8{ "deadbeef0123", "no runs here" };
+    const paths = [_][]const u8{ "a.txt", "b.txt" };
+    var idx = try Index.build(gpa, &docs);
+    defer idx.deinit();
+    const vectors = try crest_sidecar.build(gpa, &docs);
+    defer gpa.free(vectors);
+    _ = try persist.persistIndexAndPathsAt(gpa, io, root, &idx, &paths, &.{"."}, vectors, std.Io.Clock.now(.real, io).nanoseconds);
+
+    {
+        var pristine = (try persist.loadAt(gpa, io, root, false)).?;
+        defer pristine.deinit();
+        try std.testing.expectEqualSlices(crest.Vector, vectors, pristine.crest.?);
+    }
+
+    // Rot ONE class of ONE record downward, in the generation directory the
+    // loader actually reads. What is left is a structurally perfect table: right
+    // magic, right version, right schema signet, right doc count, right length,
+    // right alignment — every check `decode` performs still passes.
+    const gen_path = try std.fmt.allocPrint(gpa, "{s}/pair.gen", .{root});
+    defer gpa.free(gen_path);
+    const gen_blob = try Dir.cwd().readFileAlloc(io, gen_path, gpa, .limited(128));
+    defer gpa.free(gen_blob);
+    const gen = std.mem.trimEnd(u8, gen_blob, "\r\n");
+    const blob_path = try std.fmt.allocPrint(gpa, "{s}/gens/{s}/{s}", .{ root, gen, crest_sidecar.file_name });
+    defer gpa.free(blob_path);
+    const blob = try Dir.cwd().readFileAlloc(io, blob_path, gpa, .limited(1 << 20));
+    defer gpa.free(blob);
+    const rotted_doc = 0;
+    const klass = for (vectors[rotted_doc], 0..) |run, k| {
+        if (run > 0) break k;
+    } else return error.FixtureHasNoRunToLose;
+    const at = crest_sidecar.header_len + rotted_doc * @sizeOf(crest.Vector) + klass * @sizeOf(u16);
+    std.mem.writeInt(u16, blob[at..][0..2], vectors[rotted_doc][klass] - 1, .little);
+    try Dir.cwd().writeFile(io, .{ .sub_path = blob_path, .data = blob });
+
+    // Why that is a soundness bug and not a cosmetic one: a query whose forced
+    // crest is the document's own vector must NOT prune it, and one missing unit
+    // in one class is enough to flip that. So an unverified table's failure mode
+    // is a LOST match — which is what the seal is spent on.
+    var sieve: crest.Swell = .{ .len = 1 };
+    sieve.crests[0] = vectors[rotted_doc];
+    var rotted = vectors[rotted_doc];
+    rotted[klass] -= 1;
+    try std.testing.expect(!sieve.prunes(vectors[rotted_doc]));
+    try std.testing.expect(sieve.prunes(rotted));
+
+    var loaded = (try persist.loadAt(gpa, io, root, false)).?;
+    defer loaded.deinit();
+    // The pair still loads and still answers — only the sieve stands down.
+    try std.testing.expectEqual(@as(u32, 2), loaded.idx.doc_count);
+    try std.testing.expectEqual(@as(?[]const crest.Vector, null), loaded.crest);
+    // `short_docs` is derived from the same bytes, so it must fall with them:
+    // an upward rot there would hide a short document from the sliver tier.
+    try std.testing.expectEqual(@as(?[]u32, null), loaded.short_docs);
+}
+
 test "persistIndexAndPathsAt: publishing retires the generations it supersedes" {
     const gpa = std.testing.allocator;
     var threaded = std.Io.Threaded.init(gpa, .{});

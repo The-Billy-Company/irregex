@@ -31,14 +31,25 @@
 //! in the codicil's own postings (read at amend time), and anything newer than
 //! the amend is caught by the freshness anchor, which advances to the amend
 //! instant. Every decode failure — wrong magic, foreign generation, mismatched
-//! doc space, torn section, invalid embedded index — reads as "no codicil":
-//! the base answers exactly, degradation is always to the sound side.
+//! doc space, torn section, invalid embedded index, broken seal — reads as "no
+//! codicil": the base answers exactly, degradation is always to the sound side.
+//!
+//! SEALED IN FULL, unlike the base pair. `index.gist` and `content.shard` defer
+//! their seal because a query maps them and faults in a handful of pages; a
+//! codicil is kilobytes and is read whole by every layered query, so there is no
+//! saving to protect and the digest is the difference between "this delta is
+//! what the amend wrote" and "these bytes are shaped like a delta". That matters
+//! here more than anywhere else in the format family: this blob carries crest
+//! rows, and a row that rots DOWNWARD makes the sieve prune a document that
+//! would have matched — the one corruption story whose symptom is a missing
+//! answer rather than a slower one, and the one no structural validator can see.
 
 const std = @import("std");
 const corpus_mod = @import("../../tree/corpus.zig");
 const crest = @import("../../../kernel/math/crest.zig");
 const fault = @import("../../../fault.zig");
 const crest_sidecar = @import("../crest/sidecar.zig");
+const signet = @import("../frame/signet.zig");
 const trigram = @import("trigram.zig");
 const Index = trigram.Index;
 const Dir = std.Io.Dir;
@@ -50,7 +61,10 @@ pub const file_name = "codicil.bin";
 /// (no chains, no compounding id spaces).
 pub const base_ns_name = "base.ns";
 
-const magic = "GISTCOD1";
+/// v2 = v1's sections plus the trailing artifact seal. A v1 blob decodes as
+/// null and the generation lifecycle rebuilds it, exactly as the crest sidecar's
+/// retired magics do — an amend is cheap, so there is nothing to migrate.
+const magic = "GISTCOD2";
 /// magic(8) + base_ns i64 + base_doc_count u32 + n_docs u32 + n_new u32 +
 /// n_tomb u32 + gen_len u32 + pad u32 + new_paths_len u64 + idx_len u64.
 const header_len = 56;
@@ -115,7 +129,11 @@ pub fn decode(bytes: []const u8, expected_base_docs: u32, expected_gen: []const 
     const paths_off = rows_off + @as(usize, n_docs) * @sizeOf(crest.Vector);
     const idx_off = paths_off + pad8(@as(usize, @intCast(paths_len)));
     const total = idx_off + @as(usize, @intCast(idx_len));
-    if (bytes.len != total) return null;
+    if (bytes.len != total + signet.len) return null;
+    // Spent here, before any field is believed: a broken seal means the ids,
+    // the tombstones, the crest rows, and the embedded postings are all bytes
+    // of unknown provenance, and two of those can only fail by losing a match.
+    signet.verify(bytes) catch return null;
 
     if (!std.mem.eql(u8, bytes[gen_off..][0..gen_len], expected_gen)) return null;
 
@@ -271,7 +289,7 @@ fn encode(
     const paths_off = rows_off + rows.len * @sizeOf(crest.Vector);
     const idx_off = paths_off + pad8(paths_len);
 
-    const buf = try gpa.alloc(u8, idx_off + idx_len);
+    const buf = try gpa.alloc(u8, idx_off + idx_len + signet.len);
     errdefer gpa.free(buf);
     @memset(buf[0..idx_off], 0); // deterministic padding bytes
 
@@ -299,6 +317,7 @@ fn encode(
         buf[po + p.len] = 0;
         po += p.len + 1;
     }
-    _ = idx.writeInto(buf[idx_off..]);
+    _ = idx.writeInto(buf[idx_off..][0..idx_len]);
+    signet.sealAt(buf, idx_off + idx_len);
     return buf;
 }
