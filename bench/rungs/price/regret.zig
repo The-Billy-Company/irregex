@@ -28,7 +28,6 @@ const probe = @import("probe.zig");
 const price = gist.regex_price;
 const rungs = gist.regex_rungs;
 const Regex = gist.regex.Regex;
-const Dfa = gist.regex_dfa.Dfa;
 const Compose = gist.regex_compose.Compose;
 const Parabix = gist.regex_parabix.Parabix;
 
@@ -97,15 +96,8 @@ pub const slate = [_][]const u8{
 
 /// Measure every arm of one pattern and compare with what the shipped auction
 /// chose. `null` when the pattern compiles to nothing this lane can time.
-pub fn judge(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    clock: probe.Clock,
-    rounds: usize,
-    hay: []const u8,
-    pattern: []const u8,
-) !?Verdict {
-    var re = Regex.compileOpts(gpa, pattern, .{ .force_dfa = true }) catch return null;
+pub fn judge(rig: probe.Rig, hay: []const u8, pattern: []const u8) !?Verdict {
+    var re = Regex.compileOpts(rig.gpa, pattern, .{ .force_dfa = true }) catch return null;
     defer re.deinit();
 
     var arms: Field = @splat(null);
@@ -116,7 +108,7 @@ pub fn judge(
     // and calling it the incumbent measures a machine the haystack never meets.
     // That is exactly how the sieve lane came to arm in front of a kernel four
     // times cheaper than its quote, and it is why this arm exists.
-    if (probe.settledBy(io, clock, rounds, hay, &re)) |s| {
+    if (probe.settledBy(rig, hay, &re)) |s| {
         arms[@intFromEnum(rungs.Selection.settled)] = .{
             .kind = .settled,
             .measured = s.cyc,
@@ -126,32 +118,33 @@ pub fn judge(
 
     // The fallback arm is whichever walker this pattern actually got. It is
     // always in the field: it is what answers when everything else declines.
-    if (re.dfa) |d| {
-        arms[@intFromEnum(rungs.Selection.fallback)] = .{
-            .kind = .fallback,
-            .measured = clock.cycPerByte(probe.fastest(io, rounds, Doc{ .d = d, .hay = hay }), hay.len),
-            .bid = ad.fallback_cost.cycPerByte(),
-        };
-    } else return null; // no eager automaton ⇒ the walker is not timeable here
+    // No eager automaton ⇒ that walker is not timeable here, so there is no
+    // field to judge at all.
+    const d = re.dfa orelse return null;
+    arms[@intFromEnum(rungs.Selection.fallback)] = .{
+        .kind = .fallback,
+        .measured = rig.rate(probe.DfaPass{ .on = d, .hay = hay }, hay.len),
+        .bid = ad.fallback_cost.cycPerByte(),
+    };
 
-    if (re.dfa) |d| if (try Compose.lower(gpa, d)) |cx| {
+    if (try Compose.lower(rig.gpa, d)) |cx| {
         defer cx.deinit();
         arms[@intFromEnum(rungs.Selection.compose)] = .{
             .kind = .compose,
-            .measured = clock.cycPerByte(probe.fastest(io, rounds, Cx{ .cx = cx, .hay = hay }), hay.len),
+            .measured = rig.rate(probe.ComposePass{ .on = cx, .hay = hay }, hay.len),
             .bid = price.price(.{ .compose = .{
                 .width = cx.width,
                 .eol = cx.index == .byte_eol,
                 .table_bytes = cx.table.len,
             } }).cycPerByte(),
         };
-    };
+    }
 
-    switch (Parabix.compileOffer(gpa, pattern, .{})) {
+    switch (Parabix.compileOffer(rig.gpa, pattern, .{})) {
         .declined => {},
         .armed => |p| arms[@intFromEnum(rungs.Selection.parabix)] = .{
             .kind = .parabix,
-            .measured = clock.cycPerByte(probe.fastest(io, rounds, Pbx{ .p = &p, .hay = hay }), hay.len),
+            .measured = rig.rate(probe.ParabixPass{ .on = &p, .hay = hay }, hay.len),
             .bid = price.price(.{ .parabix = .{
                 .stripe_ops = p.economics.stripe_ops,
                 .instrs = p.prog.ninstrs,
@@ -176,27 +169,3 @@ pub fn judge(
         .regret = if (best_t > 0) chosen_t / best_t else 1,
     };
 }
-
-const Doc = struct {
-    d: *const Dfa,
-    hay: []const u8,
-    pub fn run(self: Doc) bool {
-        return self.d.docMatch(self.hay);
-    }
-};
-
-const Cx = struct {
-    cx: *const Compose,
-    hay: []const u8,
-    pub fn run(self: Cx) bool {
-        return self.cx.docMatch(self.hay);
-    }
-};
-
-const Pbx = struct {
-    p: *const Parabix,
-    hay: []const u8,
-    pub fn run(self: Pbx) bool {
-        return self.p.match(self.hay);
-    }
-};

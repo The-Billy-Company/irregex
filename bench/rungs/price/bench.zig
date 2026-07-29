@@ -30,8 +30,10 @@
 //! laundering rather than gating.
 //!
 //! Everything is fail-closed and everything is cheap: one 8 MiB synthetic
-//! haystack, a handful of small patterns, no corpus load, no multi-gigabyte
-//! table. The heaviest thing in here is a determinization of `\p{L}{12}`.
+//! haystack per probe, a handful of small patterns, no corpus load, no
+//! multi-gigabyte table. The heaviest thing in here is the footprint sweep's
+//! 1.4 MB determinization of `\p{L}{6}[0-9]{6}`, and the whole default gate is
+//! under two seconds of wall clock.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -86,8 +88,8 @@ pub fn main(init: std.process.Init) !void {
     // measured points (`skip_verify`, `anchor_line`) — and a difference carries
     // both points' error, so the estimator each point is a minimum over has to be
     // tighter than it would for a row that is read directly. Nine rounds cost
-    // about a second of wall clock in total; the whole slate still mints in under
-    // three.
+    // about a second of wall clock in total; the whole slate still mints in
+    // roughly 1.2 s, and the default gate adds regret for about 1.8 s.
     const rounds: usize = if (envSpan("PRICE_ROUNDS")) |r| std.fmt.parseInt(usize, r, 10) catch 9 else 9;
 
     const clock = probe.Clock.measure(io, 1_500_000) orelse {
@@ -103,9 +105,14 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("core clock measured in-process: {d:.3} GHz · min-of-{d}\n", .{ clock.ghz(), rounds });
     std.debug.print("committed calibration: {s} (minted {s})\n\n", .{ price.active.machine, price.active.minted });
 
+    // One instrument for the whole run: both verbs measure through the same
+    // clock and the same round count, which is the property that lets a regret
+    // row be compared with the coefficient it was minted from.
+    const rig = probe.Rig{ .gpa = gpa, .io = io, .clock = clock, .rounds = rounds };
+
     var failures: usize = 0;
-    if (verb != .regret) failures += try coefficients(gpa, io, clock, rounds, verb);
-    if (verb != .mint) failures += try auction(gpa, io, clock, rounds);
+    if (verb != .regret) failures += try coefficients(rig, verb);
+    if (verb != .mint) failures += try auction(rig);
 
     if (failures != 0) {
         std.debug.print("\nFAILED: {d} check(s).\n", .{failures});
@@ -116,15 +123,9 @@ pub fn main(init: std.process.Init) !void {
 
 // ── coefficients: mint / verify ──────────────────────────────────────────────
 
-fn coefficients(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    clock: probe.Clock,
-    rounds: usize,
-    verb: Verb,
-) !usize {
-    var report = try mint.measure(gpa, io, clock, rounds);
-    defer report.deinit(gpa);
+fn coefficients(rig: probe.Rig, verb: Verb) !usize {
+    var report = try mint.measure(rig);
+    defer report.deinit(rig.gpa);
 
     // This sweep was built to fit a residency curve and refuted one instead. It
     // stays because that refutation is a standing claim about this host, and the
@@ -163,7 +164,7 @@ fn coefficients(
     for (report.missing) |m| std.debug.print("  ~ unreachable on this host: {s}\n", .{m});
 
     if (verb == .mint) {
-        try emit(io, report.cal);
+        try emit(rig.io, report.cal);
         return 0;
     }
     if (drifted != 0) std.debug.print(
@@ -263,8 +264,8 @@ fn today(io: std.Io) []const u8 {
 
 // ── the auction: regret ──────────────────────────────────────────────────────
 
-fn auction(gpa: std.mem.Allocator, io: std.Io, clock: probe.Clock, rounds: usize) !usize {
-    var hay = try probe.Hay.init(gpa, 8 << 20, 96, 0x517cc1b7);
+fn auction(rig: probe.Rig) !usize {
+    var hay = try rig.hay(8 << 20, 96, 0x517cc1b7);
     defer hay.deinit();
 
     std.debug.print("\n── regret: did the auction pick the measured-fastest machine? ──\n", .{});
@@ -275,7 +276,7 @@ fn auction(gpa: std.mem.Allocator, io: std.Io, clock: probe.Clock, rounds: usize
     var bad: usize = 0;
     var worst: f64 = 1;
     for (regret_mod.slate) |pattern| {
-        const v = (try regret_mod.judge(gpa, io, clock, rounds, hay.bytes, pattern)) orelse {
+        const v = (try regret_mod.judge(rig, hay.bytes, pattern)) orelse {
             std.debug.print("{s:<24} {s:>9}  no timeable arm\n", .{ pattern, "-" });
             continue;
         };

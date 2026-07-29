@@ -1,7 +1,8 @@
-//! The price lane's INSTRUMENT: one clock, one haystack family, one timing
-//! rule — shared by `mint` and `regret` so a coefficient and the regret it is
-//! later judged by are measured the same way. Two harnesses that agree on a
-//! number by coincidence prove nothing; this file is why they cannot disagree.
+//! The price lane's INSTRUMENT: one clock, one haystack family, one timing rule,
+//! and one definition of each timed arm — shared by `mint` and `regret` so a
+//! coefficient and the regret it is later judged by are measured the same way.
+//! Two harnesses that agree on a number by coincidence prove nothing; this file
+//! is why they cannot disagree. `Rig` is how a probe gets all of it at once.
 //!
 //! Three deliberate choices, each of which is the difference between a number
 //! and an anecdote:
@@ -29,6 +30,9 @@ pub const Span = gist.assay.Span;
 
 const Regex = gist.regex.Regex;
 const Settle = gist.regex_price.Settle;
+const Dfa = gist.regex_dfa.Dfa;
+const Compose = gist.regex_compose.Compose;
+const Parabix = gist.regex_parabix.Parabix;
 
 /// The bytes a probe haystack is drawn from: lowercase `a`–`y` only. No digit,
 /// no uppercase, no `z`. Every probe pattern carries one of those three, which
@@ -80,17 +84,77 @@ pub const Clock = struct {
 /// Min-of-N over anything with a `run` method. Generic on the context rather
 /// than on a function pointer so the kernel under test inlines exactly as it
 /// does in production — a call through a pointer would measure the pointer.
-pub fn fastest(io: std.Io, rounds: usize, ctx: anytype) i128 {
+pub fn fastest(io: std.Io, rounds: usize, arm: anytype) i128 {
     var lo: i128 = std.math.maxInt(i64);
     for (0..rounds) |_| {
         const sp = Span.open(io);
-        const out = ctx.run();
+        const out = arm.run();
         const ns = sp.read(io).ns();
         std.mem.doNotOptimizeAway(out);
         if (ns > 0 and ns < lo) lo = ns;
     }
     return lo;
 }
+
+/// The instrument, bound once: an allocator, the `io` the clock reads through,
+/// the measured core rate, and how many rounds a minimum is taken over. None of
+/// the four varies within a run, so they travel as one — a probe then reads as
+/// the kernel it times instead of as five arguments in the right order, and no
+/// row can be handed a different clock than the row printed beside it.
+pub const Rig = struct {
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    clock: Clock,
+    rounds: usize,
+
+    /// The lane's unit: cycles per byte, min-of-N. `bytes` is the arm's own
+    /// scale — the whole buffer for a document pass, the buffer minus one
+    /// terminator per row for a per-line one — so it is stated by the caller
+    /// who knows the grain rather than guessed from the arm.
+    pub fn rate(self: Rig, arm: anytype, bytes: usize) f64 {
+        return self.clock.cycPerByte(fastest(self.io, self.rounds, arm), bytes);
+    }
+
+    /// Total cycles of the min-of-N — the grain the one-off BUILD rows are in,
+    /// since a build has no bytes to divide by, only a table or an instruction
+    /// count the caller then divides out.
+    pub fn cycles(self: Rig, arm: anytype) f64 {
+        return self.clock.cycles(fastest(self.io, self.rounds, arm));
+    }
+
+    /// A synthetic haystack, so the rig is the one door to the instrument and a
+    /// probe never names an allocator of its own.
+    pub fn hay(self: Rig, len: usize, cols: usize, seed: u64) !Hay {
+        return Hay.init(self.gpa, len, cols, seed);
+    }
+};
+
+/// One timed whole-buffer arm: a machine, the bytes, and the single call the
+/// harness makes on it.
+///
+/// Generic over the machine POINTER and the entry point's name, because that is
+/// the only axis these arms differ on — the eager DFA, the lowered composition,
+/// the bit-parallel program and the lazy cache were four copies of the same
+/// three lines, twice over (`mint` and `regret` each kept their own set), and a
+/// copy is where the two lanes get to drift into timing different calls. The
+/// pointer rather than the value, so a `*Cache` that must mutate its memo arms
+/// here beside a `*const Dfa` that must not.
+pub fn Pass(comptime Machine: type, comptime call: []const u8) type {
+    const entry = @field(@typeInfo(Machine).pointer.child, call);
+    return struct {
+        on: Machine,
+        hay: []const u8,
+        pub fn run(self: @This()) @typeInfo(@TypeOf(entry)).@"fn".return_type.? {
+            return entry(self.on, self.hay);
+        }
+    };
+}
+
+/// The three bidders, whole-buffer. Named here rather than at each use so both
+/// lanes reach the same arm by the same name.
+pub const DfaPass = Pass(*const Dfa, "docMatch");
+pub const ComposePass = Pass(*const Compose, "docMatch");
+pub const ParabixPass = Pass(*const Parabix, "match");
 
 /// An intercept and a slope, told apart by measuring the SAME kernel at two
 /// settings of the thing the slope multiplies.
@@ -132,6 +196,17 @@ pub const Hay = struct {
         }
         buf[len - 1] = '\n';
         return .{ .bytes = buf, .gpa = gpa };
+    }
+
+    /// A writable twin of an existing haystack — what the skip probe plants
+    /// into. Its two points subtract one timing from another over "the same
+    /// bytes, one of them planted", and a copy is what makes that identity hold;
+    /// re-drawing from a seed reproduces those bytes only for as long as two
+    /// seeds happen to agree. Each point takes its OWN twin: a fresh allocation
+    /// per point is what keeps page residency off the axis being separated, and
+    /// copying 8 MiB is cheaper than drawing it.
+    pub fn twin(gpa: std.mem.Allocator, src: []const u8) !Hay {
+        return .{ .bytes = try gpa.dupe(u8, src), .gpa = gpa };
     }
 
     /// The same haystack with `needle` written at a known spacing — a candidate
@@ -248,72 +323,30 @@ pub const Settled = union(enum) {
 /// The settler measured on one of its OWN probe patterns — `mint`'s shape, where
 /// the coefficient is the point and the pattern is chosen to produce it.
 pub fn settleProbe(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    clock: Clock,
-    rounds: usize,
+    rig: Rig,
     hay: []const u8,
     pattern: []const u8,
     comptime S: type,
 ) Settled {
-    var re = Regex.compileOpts(gpa, pattern, .{}) catch return .no_compile;
+    var re = Regex.compileOpts(rig.gpa, pattern, .{}) catch return .no_compile;
     defer re.deinit();
-    return settleCost(io, clock, rounds, hay, &re, S);
+    return settleCost(rig, hay, &re, S);
 }
 
-pub fn settleCost(
-    io: std.Io,
-    clock: Clock,
-    rounds: usize,
-    hay: []const u8,
-    re: *const Regex,
-    comptime S: type,
-) Settled {
+pub fn settleCost(rig: Rig, hay: []const u8, re: *const Regex, comptime S: type) Settled {
     if (@field(re, S.kernel)) |*k| {
         const kind = S.settles(k) orelse return .narrows_only;
-        return .{ .ok = .{
-            .kind = kind,
-            .cyc = clock.cycPerByte(fastest(io, rounds, S{ .k = k, .hay = hay }), hay.len),
-        } };
+        return .{ .ok = .{ .kind = kind, .cyc = rig.rate(S{ .k = k, .hay = hay }, hay.len) } };
     }
     return .no_kernel;
 }
 
 /// Whichever settler actually decides this pattern, timed — the shape `regret`
 /// needs, since it holds a compiled pattern and wants to know what answers it.
-pub fn settledBy(
-    io: std.Io,
-    clock: Clock,
-    rounds: usize,
-    hay: []const u8,
-    re: *const Regex,
-) ?@FieldType(Settled, "ok") {
-    inline for (settlers) |S| switch (settleCost(io, clock, rounds, hay, re, S)) {
+pub fn settledBy(rig: Rig, hay: []const u8, re: *const Regex) ?@FieldType(Settled, "ok") {
+    inline for (settlers) |S| switch (settleCost(rig, hay, re, S)) {
         .ok => |hit| return hit,
         else => {},
     };
     return null;
 }
-
-/// A measured coefficient beside the committed one. `want == 0` means the
-/// committed plane has nothing to compare against (an unported target), which
-/// `verify` reports rather than passing silently.
-pub const Row = struct {
-    name: []const u8,
-    got: f64,
-    want: f64,
-    /// What the row is a quantity OF, so a reader can tell a per-byte number
-    /// from a per-candidate one without consulting the plane.
-    unit: []const u8,
-    /// The measurement's own scale — bytes scanned, or candidates verified.
-    /// Printed so a suspiciously cheap row can be recognized as a short one.
-    scale: usize = 0,
-    note: []const u8 = "",
-
-    /// Relative disagreement with the committed number, or 0 when there is
-    /// nothing committed.
-    pub fn drift(self: Row) f64 {
-        if (self.want == 0) return 0;
-        return (self.got - self.want) / self.want;
-    }
-};
