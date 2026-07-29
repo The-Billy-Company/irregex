@@ -6,6 +6,10 @@ doc_radar:
     "artifact/scale_elision.tsv":
       contains: ["indexed_eq_noindex"]
       absent_matches: ["\\tNO$"]
+    "artifact/scale_walkcost.tsv":
+      contains: ["maxrss_mib", "owned_mib", "gist --no-index -uu", "rg -uu"]
+    "artifact/scale_build.tsv":
+      contains: ["peak_rss_gib", "post-kiln"]
 ---
 
 # `bench/sliver` — index tiers under load, in Layer D's own unit
@@ -137,14 +141,17 @@ python3 bench/sliver/scale_race.py --corpus <corpus> --gist-dir <gistdir> \
     --zoekt-dir <zoektdir> --csearch-idx <csearch.idx> --reps 5
 ```
 
-Headline: gist indexes 3.32 GiB of text in **21.4 s** (11.0× faster than zoekt,
-2.6× faster than csearch) into the smallest index (10.4% of its text, against
+Headline: gist indexes 3.35 GiB of text in **26.0 s** (9.1× faster than zoekt,
+2.2× faster than csearch) into the smallest index (10.4% of its text, against
 zoekt's 8.7 GiB of shards), and against csearch — the rival that agrees with
 ripgrep about what exists — wins 5 classes, ties 3, loses 4, with the wins at the
 hard end (`literal-punct2` 16.5×, `regex-litalt` 9.4×, `regex-eol` 4.0×).
 
 One loss is published unnormalised because it is real: **indexing peak RSS is
-14.50 GiB**, 5.1× csearch.
+4.56 GiB**, 1.6× csearch. It was 14.50 GiB — 5.1× — until the trigram build
+stopped materializing corpus-proportional intermediates and started firing in
+blocks, and that is the row to re-measure after any builder change, because the
+verdict sentence in Layer J is derived from it rather than typed beside it.
 
 Query-time memory needed two metrics, and an earlier draft of this file got its
 mechanism wrong. `maximum resident set size` is ~575 MiB whatever the query,
@@ -157,6 +164,28 @@ costs a 16 KiB page on ARM64), so it tracks file count, and those pages are
 clean and evictable. On owned memory — `peak memory footprint`, what the process
 cannot have reclaimed — gist is flat at **93–96 MiB**, ~10× csearch and **5.8×
 better than zoekt's 558 MiB**.
+
+## Walk cost: the matched pair against ripgrep
+
+`walkcost.py` is the instrument for the one comparison that decides whether a
+walk is expensive or gist's walk was: same needle, same `-uu` scope, same cwd,
+both counting, both a fresh process with no index and no daemon on either side,
+so the only difference left is the implementation of walking. It carries the
+same two metrics, and reports the owned ratio as the one that is a cost. Artifact:
+`scale_walkcost.tsv`; Layer J renders it rather than quoting numbers, and an
+absent measurement reads as absent instead of as the last one anybody took.
+
+```bash
+python3 bench/rungs/sliver/walkcost.py --root <tree> [--pattern pgxpool] [--reps 3]
+```
+
+This is where the walk's own retention was found: gist mapped every large file it
+read and held all of them to exit, so its resident set tracked the corpus rather
+than the query. Dropping each mapping in the frame that rendered it took the
+matched pair from **274 MiB to ~54 MiB of maxrss** on an 11 GiB tree, and it is
+also very slightly *faster* (6.32 s ± 0.33 against 6.75 s ± 0.39 over six runs
+each), because 274 MiB of live mappings is VM pressure the walk was paying for
+and nothing was reading.
 
 That walk is also the one cause of the cheap-literal latency losses (~1.2 s over
 337,949 files), and it is the freshness contract being paid for, not overhead: a
@@ -188,15 +217,16 @@ Re-run standalone (`zig build scale` first; it writes into `GIST_DIR`):
 
 ```bash
 cd pkg/kernels/irregex && zig build scale -Doptimize=ReleaseFast
-python3 bench/certify/certify_scale_report.py \
-  --certificate bench/certify/artifact/CERTIFICATE.md \
+python3 bench/certificate/report/scale.py \
+  --certificate bench/certificate/artifact/CERTIFICATE.md \
   --tsv ../../../.local/gist-verify/scale_tiers.tsv \
-  --race bench/sliver/artifact/scale_race.tsv \
-  --build bench/sliver/artifact/scale_build.tsv \
-  --resident bench/sliver/artifact/scale_resident.tsv \
-  --pareto bench/sliver/artifact/positional_pareto.tsv \
-  --elision bench/sliver/artifact/scale_elision.tsv \
-  --sidecar bench/certify/artifact/scale.csv \
+  --race bench/rungs/sliver/artifact/scale_race.tsv \
+  --build bench/rungs/sliver/artifact/scale_build.tsv \
+  --resident bench/rungs/sliver/artifact/scale_resident.tsv \
+  --pareto bench/rungs/sliver/artifact/positional_pareto.tsv \
+  --elision bench/rungs/sliver/artifact/scale_elision.tsv \
+  --walkcost bench/rungs/sliver/artifact/scale_walkcost.tsv \
+  --sidecar bench/certificate/artifact/scale.csv \
   --machine "$(sysctl -n machdep.cpu.brand_string)" --zig "$(zig version)"
 ```
 

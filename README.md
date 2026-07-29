@@ -44,8 +44,9 @@ doc_radar:
       contains:
         - "352,316 files / 5.5 GiB on disk"
         - "wins 5, ties 2, loses 5"
-        - "14.50 GiB peak RSS while indexing, 5.1x csearch"
-        - "**6.0x rg on owned memory**"
+        - "**Memory is still the lane it loses**"
+        - "| scanner over "
+        - "A worker now drops each mapping in the frame that rendered it."
     - description: "canary for the crest speedup distribution this README quotes in prose — a re-mint moves these rows, and breaking here is the signal to recompute the geometric mean and restate the floor/ceiling"
       file: pkg/kernels/irregex/bench/certificate/artifact/crest.csv
       contains: ["27.758", "13.120", "3.234", "1.375", "96.42"]
@@ -768,10 +769,14 @@ neutral proof: one language mix, one ignore shape, one machine. Layer J puts
 the same engine on somebody else's corpus (shallow clones of the Linux kernel,
 LLVM, Go and Rust — **352,316 files / 5.5 GiB**) and the result does not
 transfer whole. There **csearch still takes the cheap-literal classes** — gist
-wins 5, ties 2, loses 5 of 12 — and **memory is the real ceiling**: 14.50 GiB
-peak RSS to build the index, 5.1× csearch, and 6.0× rg on owned working set for
-an identical unindexed walk. Those rows sit in the certificate for the same
-reason the wins do.
+wins 5, ties 2, loses 5 of 12 — and **memory is still the lane it loses**: 4.56
+GiB of peak RSS to build the index, 1.6× csearch. That row sits in the
+certificate for the same reason the wins do, and it is the one this pass moved
+most: the builder used to hold corpus-proportional intermediates and peaked at
+14.50 GiB, 5.1× csearch, which is what firing the trigram build in blocks was
+for. The neighbouring loss is closed — an identical unindexed walk owned 6.0× rg
+because it kept every file it mapped until the process exited, and now owns
+1.18×.
 
 The obvious objection to Layer A is that it measures an index against a
 scanner. **Layer I answers it by switching the index off, and it is the number

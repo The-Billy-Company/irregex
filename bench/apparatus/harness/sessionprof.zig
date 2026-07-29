@@ -553,7 +553,7 @@ fn freeze(gpa: std.mem.Allocator, io: std.Io, sources: []const []const u8, refre
         } else |_| {}
     }
 
-    var src = try corpus_mod.load(gpa, io, sources);
+    var src = try corpus_mod.load(gpa, io, sources, .contiguous);
     defer src.deinit();
     try Dir.cwd().createDirPath(io, dir);
     var out = try Dir.cwd().openDir(io, dir, .{});

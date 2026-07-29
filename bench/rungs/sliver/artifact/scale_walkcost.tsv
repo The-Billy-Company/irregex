@@ -1,0 +1,14 @@
+# The matched pair behind Layer J's residency refutation: what a LIVE tree
+# walk costs in memory, with no index in play on either side. Same needle,
+# same -uu scope, same cwd, both counting, both a fresh process.
+#
+# maxrss charges clean evictable mmap page cache; owned (Darwin 'peak memory
+# footprint') is the dirty memory the process cannot have reclaimed. The
+# ratio that is a cost is the owned one.
+#
+# corpus=.etc files=239162
+# needle=pgxpool reps=3 platform=darwin
+tool	invocation	maxrss_mib	owned_mib	seconds	matches
+gist	gist --no-index -uu -F -c pgxpool .	54.1	37.5	5.5	0
+rg	rg -uu --no-messages -F -c pgxpool .	33.9	31.9	5.9	0
+# ratio gist/rg: maxrss 1.60x · owned 1.18x

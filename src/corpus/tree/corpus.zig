@@ -511,9 +511,16 @@ test "a sharded merge cuts on content, so a decorated run keeps every file" {
 /// definition (and the walk that applies it) now lives in `haystack.zig`.
 pub const isSkipDir = haystack.isSkipDir;
 
+/// How far into a file the binary verdict looks. Named because a caller that
+/// only wants the VERDICT — the index build's census, which classifies members
+/// without keeping their bytes — must read exactly this much to reach the same
+/// answer a whole-file read would: fewer bytes could miss a NUL the full read
+/// would have seen, and more is wasted IO the rule ignores.
+pub const binary_window: usize = 8192;
+
 /// rg-style binary detection: a NUL byte in the first 8 KiB ⇒ treat as binary.
 pub fn isBinary(bytes: []const u8) bool {
-    const window = bytes[0..@min(bytes.len, 8192)];
+    const window = bytes[0..@min(bytes.len, binary_window)];
     return std.mem.indexOfScalar(u8, window, 0) != null;
 }
 
@@ -532,22 +539,22 @@ pub fn readMember(io: std.Io, dir: std.Io.Dir, sub_path: []const u8, a: std.mem.
 /// Every loaded doc + its root-joined path, arena-owned; `deinit` frees all.
 /// The serial `load` owns every byte in `arena`; the fused parallel loader
 /// (`loadpar`) accumulates doc/path bytes in per-worker arenas that outlive the
-/// walk — it hands them off as `shards` (freed with `shards_gpa` in `deinit`),
-/// while the slice HEADERS still live in `arena`.
+/// walk — it hands them off as `shards` (freed with `owner` in `deinit`), while
+/// the slice HEADERS still live in `arena`.
 pub const Corpus = struct {
     docs: [][]const u8,
     paths: [][]const u8,
     bytes: u64,
     arena: std.heap.ArenaAllocator,
+    /// Releases `shards`. Null when `arena` owns every byte.
+    owner: ?std.mem.Allocator = null,
     shards: []std.heap.ArenaAllocator = &.{},
-    shards_gpa: ?std.mem.Allocator = null,
 
     pub fn deinit(self: *Corpus) void {
         self.arena.deinit();
-        if (self.shards_gpa) |g| {
-            for (self.shards) |*s| s.deinit();
-            g.free(self.shards);
-        }
+        const g = self.owner orelse return;
+        for (self.shards) |*s| s.deinit();
+        g.free(self.shards);
     }
 };
 
@@ -558,29 +565,43 @@ fn parallelLoadDisabled() bool {
     return assay.envFlag("GIST_NO_PARALLEL_LOAD");
 }
 
+/// How the caller intends to USE the corpus — the one fact that decides whether
+/// `compact`'s copy earns its transient 2×.
+pub const Layout = enum {
+    /// One contiguous scan-order blob. For a corpus that will be scanned an
+    /// unbounded number of times (the resident session): one copy up front buys
+    /// every later query the prefetcher's ramp across document boundaries
+    /// instead of restarting it 175k times (Layer C: 52.8 vs 28.7 GB/s).
+    contiguous,
+    /// Bodies left where the walk put them. For a corpus read a FIXED, small
+    /// number of times and then dropped — `gist index` extracts trigrams once
+    /// and writes the shard once, so the copy is pure cost. Measured on
+    /// llvm-project (1926 MiB, 175,110 docs): scattered loads ~1.0 s faster,
+    /// finishes the whole build ~1.2 s faster, and peaks 1027 MiB lower.
+    scattered,
+};
+
 /// Read every non-binary file under `roots` into memory (per-file cap applies;
 /// an unreadable root is reported to stderr and skipped, matching rg's walk-on
 /// behavior). Dispatches to the fused parallel walk+read (`loadpar`) by default
 /// — ~3× faster on a broad build — and to the serial walk below under
 /// `GIST_NO_PARALLEL_LOAD` (parity gate) or when the parallel path fails to
-/// start (fail-open: the result is never worse than the serial build). Then
-/// `compact`s the doc bodies into one contiguous scan-order buffer (unless
-/// `GIST_NO_COMPACT`) so a full-corpus scan streams across document boundaries.
-pub fn load(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !Corpus {
+/// start (fail-open: the result is never worse than the serial build).
+pub fn load(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, layout: Layout) !Corpus {
     var c = blk: {
         if (!parallelLoadDisabled()) {
             if (@import("loadpar.zig").load(gpa, io, roots) catch null) |c| break :blk c;
         }
         break :blk try loadSerial(gpa, io, roots);
     };
-    if (!compactDisabled()) compact(gpa, &c);
+    if (layout == .contiguous and !compactDisabled()) compact(gpa, &c);
     return c;
 }
 
 /// `GIST_NO_COMPACT` truthy (any value but `0`/`false`/`no`/empty) keeps the
 /// scattered per-worker-arena doc layout — the A/B toggle for the contiguity
 /// win and a parity escape hatch, mirroring `GIST_NO_PARALLEL_LOAD`.
-fn compactDisabled() bool {
+pub fn compactDisabled() bool {
     return assay.envFlag("GIST_NO_COMPACT");
 }
 
@@ -601,6 +622,14 @@ fn compactDisabled() bool {
 /// shards free, so steady-state retention is one tight blob (a transient 2×
 /// during the copy). Fail-open: any allocation failure leaves the corpus in its
 /// original scattered layout, never worse than before.
+///
+/// That transient IS the build's memory ceiling at this stage, and it is not
+/// removable by reordering the copy: the average corpus file is well under a
+/// page, so bodies from different worker arenas share destination pages, and any
+/// order that retires a source early still has to touch nearly every page of the
+/// destination first. Copying by source arena was measured — same peak, and
+/// markedly slower for scattering the writes. What removes it is not holding the
+/// second copy in anonymous memory at all (see `content/shard.zig`).
 fn compact(gpa: std.mem.Allocator, c: *Corpus) void {
     fault.spare("compact doc bodies (keeps the scattered layout)", compactFallible(gpa, c));
 }
@@ -628,22 +657,16 @@ fn compactFallible(gpa: std.mem.Allocator, c: *Corpus) !void {
     }
 
     // Infallible swap-and-free: retarget the corpus at the blob, then release
-    // the scattered source (old main arena + any worker shards). No `try` runs
-    // past this point, so the errdefer above can never double-free the moved
-    // arena, and `ba` is not touched after the move.
-    var old_arena = c.arena;
-    const old_shards = c.shards;
-    const old_shards_gpa = c.shards_gpa;
+    // the scattered source. No `try` runs past this point, so the errdefer above
+    // can never double-free the moved arena, and `ba` is not touched after the
+    // move.
+    var old = c.*;
     c.arena = blob_arena;
     c.docs = new_docs;
     c.paths = new_paths;
     c.shards = &.{};
-    c.shards_gpa = null;
-    old_arena.deinit();
-    if (old_shards_gpa) |g| {
-        for (old_shards) |*s| s.deinit();
-        g.free(old_shards);
-    }
+    c.owner = null;
+    old.deinit();
 }
 
 /// The single-cursor reference loader: walk one directory at a time, read each

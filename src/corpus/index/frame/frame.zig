@@ -21,6 +21,7 @@ const std = @import("std");
 const fault = @import("../../../fault.zig");
 const portal = @import("../../../portal.zig");
 const home = @import("home.zig");
+const signet = @import("signet.zig");
 
 const tree_root_alias = home.ArtifactPath("tree.root");
 
@@ -179,6 +180,11 @@ pub fn writeAtomic(io: std.Io, sub_path: []const u8, data: []const u8) !void {
     try af.file.writeStreamingAll(io, data);
     try af.replace(io);
 }
+
+/// A sealed artifact written in PIECES rather than assembled and handed over —
+/// see `quill.zig`. Re-exported here because it is the streaming twin of
+/// `writeAtomic` and belongs beside it in a caller's mental model.
+pub const Quill = @import("quill.zig").Quill;
 
 /// Load a SELF-ANCHORED artifact from the artifact directory. Four steps, in
 /// this order, none of them skippable by a caller:

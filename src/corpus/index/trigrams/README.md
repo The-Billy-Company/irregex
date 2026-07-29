@@ -22,6 +22,9 @@ doc_radar:
     - description: "the sliver tier answers sub-trigram needles under a decode budget"
       file: pkg/kernels/irregex/src/corpus/index/trigrams/sliver.zig
       contains: ["pub fn candidates", "budget_ratio", "max_len"]
+    - description: "the block builder fires bounded windows into compressed runs and sweeps them into the CSR body"
+      file: pkg/kernels/irregex/src/corpus/index/trigrams/kiln.zig
+      contains: ["pub fn fire", "fn sortByTrigram", "fn sweep", "block_budget"]
 ---
 
 # `src/corpus/index/trigrams/` — T0 candidate index + T3 freshness
@@ -44,6 +47,8 @@ filter.
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ngram.zig`             | Extract distinct ascending trigrams from a byte slice                                                                                                 |
 | `trigram.zig`           | In-memory `Index`: build, rarest-first intersect, query                                                                                               |
+| `kiln.zig`              | The build for a corpus worth streaming: bounded block window → sorted compressed runs → one lockstep sweep into the CSR body, no corpus-sized array   |
+| `kiln_test.zig`         | The block builder's four regions vs an oracle written from the on-disk format, on corpora sized to force multi-block merging                           |
 | `sliver.zig`            | Sub-trigram tier: answers a 1–2 byte needle from the SAME directory (0 new index bytes), priced against a decode budget before it commits             |
 | `sliver_test.zig`       | The Sliver Theorem (matched ⇒ never pruned) vs a byte-for-byte oracle, and its short-document premise attacked on its own                             |
 | `persist.zig`           | Zero-copy `mmap` load / publish of the CSR posting blob; codicil-layered query (`queryLiteral` / `queryAny` = base ∪ codicil ∪ tombstones)            |

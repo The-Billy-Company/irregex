@@ -120,7 +120,7 @@ fn haystack(gpa: std.mem.Allocator, io: std.Io) ![]const u8 {
         return std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(1 << 31));
     const roots = try corpus_mod.resolveRoots(gpa);
     defer corpus_mod.freeRoots(gpa, roots);
-    var corpus = try corpus_mod.load(gpa, io, roots);
+    var corpus = try corpus_mod.load(gpa, io, roots, .contiguous);
     defer corpus.deinit();
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(gpa);

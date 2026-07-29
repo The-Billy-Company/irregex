@@ -39,6 +39,7 @@ const ignore = @import("ignore.zig");
 const haystack = @import("haystack.zig");
 const bulkstat = @import("bulkstat.zig");
 const corpus = @import("corpus.zig");
+const inode = @import("../read/inode.zig");
 const paths = @import("../scope/paths.zig");
 const assay = @import("../../assay/assay.zig");
 const fault = @import("../../fault.zig");
@@ -321,19 +322,81 @@ fn shouldSkip(ig: *const ignore.Ignore, chain: ?*const ignore.IgNode, a: std.mem
 /// null when unreadable, empty, reaches/exceeds `corpus.per_file_cap`
 /// (`readFileAlloc(.limited)`'s `error.StreamTooLong` boundary — "reached or
 /// exceeded"), or binary (`corpus.isBinary`).
+///
+/// The body is sized from the OPEN HANDLE and allocated ONCE. It used to grow an
+/// `ArrayList` in 64 KiB steps, which is the single most expensive line the index
+/// build ever had: the list lives in a worker ARENA, and an arena cannot reclaim
+/// what a realloc abandons, so every doubling left its predecessor behind and the
+/// walk retained ≈2x the corpus it was loading — 3.4 GiB of pure waste on a 3.4
+/// GiB corpus, held for the whole build. Asking the handle its length also lets
+/// an oversize member be refused before a single byte moves.
+///
+/// A file that CHANGES between the size question and the read is the one place a
+/// sized read and a drained one differ, and both directions stay sound: a file
+/// that grew yields its `size`-byte prefix, one that shrank yields what it had.
+/// Either way its mtime now stands at/after the build anchor, so the freshness
+/// gate re-reads it live on the next query rather than trusting these bytes.
 fn readMemberRaw(a: std.mem.Allocator, dirfd: std.posix.fd_t, name: []const u8) Oom!?[]const u8 {
     const fd = portal.openFile(dirfd, name) catch return null;
     defer portal.close(fd);
+    const body = switch (memberSize(fd)) {
+        .rejected => return null,
+        .sized => |size| blk: {
+            const buf = try a.alloc(u8, size);
+            break :blk buf[0..readFully(fd, buf)];
+        },
+        // Stat says zero but the handle may still yield bytes — procfs-shaped
+        // files are the only things that answer this way, and the serial loader
+        // drains them. Parity costs a growing read for a case a source tree
+        // never contains, rather than a silently-dropped member if it does.
+        .unsized => try drain(a, fd) orelse return null,
+    };
+    if (body.len == 0 or corpus.isBinary(body)) return null;
+    return body;
+}
+
+/// What a handle's length says about membership before any content is read.
+/// `unsized` is the honest third answer: stat reported nothing, so size has no
+/// verdict to give and the bytes must be drained to find out.
+const Size = union(enum) { sized: u32, unsized: void, rejected: void };
+
+/// Judge a member by its length alone — at/past `corpus.per_file_cap` is out
+/// (`readFileAlloc(.limited)`'s `error.StreamTooLong` boundary: "reached or
+/// exceeded"), and so is anything that is not a regular file. Both harvests ask
+/// this first, so "how big is it" and "is that a member's size" have one answer.
+fn memberSize(fd: std.posix.fd_t) Size {
+    const st = inode.statFd(fd) orelse return .rejected;
+    if (st.kind != .file) return .rejected;
+    if (st.size == 0) return .unsized;
+    const size = std.math.cast(u32, st.size) orelse return .rejected;
+    if (size >= corpus.per_file_cap) return .rejected;
+    return .{ .sized = size };
+}
+
+/// Fill `buf` from `fd`, stopping at EOF or the first read error; returns how
+/// much arrived. A short answer is not an error here — it is a file that shrank,
+/// and the caller judges the bytes it got.
+fn readFully(fd: std.posix.fd_t, buf: []u8) usize {
+    var n: usize = 0;
+    while (n < buf.len) {
+        const r = portal.read(fd, buf[n..]) catch break;
+        if (r == 0) break;
+        n += r;
+    }
+    return n;
+}
+
+/// Drain a handle whose length nobody can state up front, enforcing the cap as
+/// the bytes arrive. Null on an unreadable handle or a cap breach.
+fn drain(a: std.mem.Allocator, fd: std.posix.fd_t) Oom!?[]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     var tmp: [64 * 1024]u8 = undefined;
     while (true) {
         const r = portal.read(fd, &tmp) catch return null;
-        if (r == 0) break;
+        if (r == 0) return buf.items;
         try buf.appendSlice(a, tmp[0..r]);
         if (buf.items.len >= corpus.per_file_cap) return null; // StreamTooLong parity
     }
-    if (buf.items.len == 0 or corpus.isBinary(buf.items)) return null;
-    return buf.items;
 }
 
 /// Root-joined path, `haystack.joinRoot` shape: a `.` root (prefix "") yields
@@ -523,6 +586,6 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !corp
         .bytes = total_bytes,
         .arena = arena,
         .shards = shards,
-        .shards_gpa = gpa,
+        .owner = gpa,
     };
 }

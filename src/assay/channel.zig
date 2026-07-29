@@ -91,7 +91,12 @@ pub fn serialForced() bool {
 /// `link` is the OSC-8 hyperlink decision (`cli/beacon.zig`): whether this run
 /// links, and which destination it resolved. A feature that is on by default
 /// and invisible when it declines needs a way to ask why it declined.
-pub const Lens = enum(u5) { amend, journal, reconcile, warm, rank, index, query, session, fault, link };
+///
+/// `walk` is what the corpus walk RETAINED, per worker and by cause — the arena
+/// that outlives a directory, the per-worker read scratch, the coalesced
+/// path-list buffer, the deferred backlog. A scanner's owned footprint is a
+/// competitive number; it cannot be defended without being attributable.
+pub const Lens = enum(u5) { amend, journal, reconcile, warm, rank, index, query, session, fault, link, walk };
 
 var lens_mask: std.atomic.Value(u32) = .init(0);
 var format_json: bool = false;

@@ -108,8 +108,9 @@ pub fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.po
     if (o.mode == .json) {
         const sf = slurp.StagedFile.open(scratch, dirfd, disk) catch |e| return reportUnopenable(w, dpath, e);
         defer sf.close();
-        const raw = if (sf.more) (sf.readRest(a, scratch) orelse return) else sf.prefix;
-        return emitJson(w, a, dpath, legible.decodeBom(a, raw));
+        const staged: slurp.Body = if (sf.more) (sf.readWhole(a, scratch) orelse return) else .{ .bytes = sf.prefix };
+        defer if (staged.map) |m| slurp.release(m);
+        return emitJson(w, a, dpath, legible.decodeBom(a, staged.bytes));
     }
 
     // Transform run (`-z`/`-E`): the on-disk bytes are compressed/encoded, so the
@@ -123,8 +124,9 @@ pub fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.po
     if (cfg.ingest) |icfg| {
         const sf = slurp.StagedFile.open(scratch, dirfd, disk) catch |e| return reportUnopenable(w, dpath, e);
         defer sf.close();
-        const raw = sf.readRest(a, scratch) orelse return;
-        const body = ingest.apply(a, icfg, openable, dpath, raw) orelse return;
+        const staged = sf.readWhole(a, scratch) orelse return;
+        defer if (staged.map) |m| slurp.release(m);
+        const body = ingest.apply(a, icfg, openable, dpath, staged.bytes) orelse return;
         if (body.len == 0) return noteEmpty(w, dpath);
         return emitBody(w, a, dpath, body, 0, 0);
     }
@@ -164,14 +166,21 @@ pub fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.po
             return;
         }
     }
-    const raw = if (sf.more) (sf.readRest(a, scratch) orelse return) else sf.prefix;
-    const body = legible.decodeBom(a, raw);
+    // A file past the scratch cap is read by MAPPING it (`slurp.readTail`), and
+    // this frame is where the last reference to those pages dies: `emitBody`
+    // renders into the worker arena and `deliver` holds only that rendering. So
+    // drop the view on the way out — a walk over a tree of large files then
+    // holds one map per worker at a time instead of every file it ever touched
+    // (274 MiB → ~40 MiB of resident set on an 11 GiB tree).
+    const raw: slurp.Body = if (sf.more) (sf.readWhole(a, scratch) orelse return) else .{ .bytes = sf.prefix };
+    defer if (raw.map) |m| slurp.release(m);
+    const body = legible.decodeBom(a, raw.bytes);
     if (body.len == 0) return noteEmpty(w, dpath);
     // Bytes of `body` already covered by the stage-1 prefix scans, in body
     // space: `body` aliases `raw` at offset 0 or 3 (UTF-8 BOM strip), so the
     // scanned raw prefix maps to `body[0..covered]`. A UTF-16 transcode built a
     // fresh buffer with different bytes — nothing carries over (covered = 0).
-    const covered: usize = if (utf16 or prefix_nul) 0 else sf.prefix.len -| (@intFromPtr(body.ptr) - @intFromPtr(raw.ptr));
+    const covered: usize = if (utf16 or prefix_nul) 0 else sf.prefix.len -| (@intFromPtr(body.ptr) - @intFromPtr(raw.bytes.ptr));
     // Literal gate. When stage 1 already proved the equivalence gate absent
     // from the prefix (fast_l + tail present + no early emit above), rescan
     // only the unseen tail plus a `gate_len-1` straddle window for a literal

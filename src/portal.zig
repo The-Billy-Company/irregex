@@ -329,6 +329,35 @@ pub fn processId() u32 {
     return @bitCast(std.c.getpid());
 }
 
+/// The high-water mark of this process's resident set, in bytes — or 0 when the
+/// platform declines to answer. This is the number a memory budget is actually
+/// judged by: a spike the allocator has since given back is still a spike the
+/// machine had to find pages for, and it is exactly what `/usr/bin/time -l`
+/// prints as `maximum resident set size`. Reading it in-process is what lets a
+/// build attribute its own peak to a phase instead of reporting one total and
+/// leaving the cause to be guessed at.
+///
+/// The unit is the one genuinely unportable thing about `getrusage(2)`: Darwin
+/// and the BSDs report `ru_maxrss` in BYTES, Linux in KIBIBYTES. POSIX declines
+/// to specify it, so neither is wrong — but a caller that formatted the raw
+/// field would be off by 1024x on one of the two platforms with nothing in the
+/// number to say which. Normalizing once, here, is the whole reason this is a
+/// seam rather than an inline call.
+///
+/// Windows keeps the fact and moves it: the peak working set is a field of
+/// `PROCESS_MEMORY_COUNTERS`, not of a resource-usage struct. `K32GetProcessMemoryInfo`
+/// is the kernel32-resident spelling (Windows 7+), so this needs no psapi link.
+pub fn peakResident() u64 {
+    if (comptime windows) {
+        var counters: ProcessMemoryCounters = undefined;
+        counters.cb = @sizeOf(ProcessMemoryCounters);
+        if (K32GetProcessMemoryInfo(GetCurrentProcess(), &counters, counters.cb) == 0) return 0;
+        return counters.peak_working_set_size;
+    }
+    const raw: u64 = @intCast(@max(std.posix.getrusage(std.posix.rusage.SELF).maxrss, 0));
+    return if (comptime builtin.os.tag == .linux) raw *| 1024 else raw;
+}
+
 /// The directory this platform hands out for scratch files, without its trailing
 /// separator, written into `buf` (which must outlive the result).
 ///
@@ -601,6 +630,21 @@ fn ntAdvise(m: Mapping, hint: Advice) std.posix.MadviseError!void {
 /// `WIN32_MEMORY_RANGE_ENTRY` — one address range for `PrefetchVirtualMemory`.
 const MemoryRange = extern struct { base: [*]const u8, len: usize };
 
+/// `PROCESS_MEMORY_COUNTERS` — only the leading `cb` and the peak working set
+/// are read, but the whole struct must be declared or the OS writes past it.
+const ProcessMemoryCounters = extern struct {
+    cb: u32,
+    page_fault_count: u32,
+    peak_working_set_size: usize,
+    working_set_size: usize,
+    quota_peak_paged_pool_usage: usize,
+    quota_paged_pool_usage: usize,
+    quota_peak_non_paged_pool_usage: usize,
+    quota_non_paged_pool_usage: usize,
+    pagefile_usage: usize,
+    peak_pagefile_usage: usize,
+};
+
 // Declared here rather than taken from `std.os.windows`, which binds the NT
 // memory API but not this kernel32 wrapper. It has no public NT equivalent:
 // kernel32 implements it over `NtSetInformationVirtualMemory`, which std does
@@ -618,6 +662,7 @@ extern "kernel32" fn GetSystemTimeAsFileTime(*w.FILETIME) callconv(.winapi) void
 extern "kernel32" fn GetComputerNameA([*]u8, *u32) callconv(.winapi) c_int;
 extern "kernel32" fn GetFinalPathNameByHandleA(w.HANDLE, [*]u8, u32, u32) callconv(.winapi) u32;
 extern "kernel32" fn GetFullPathNameA([*:0]const u8, u32, [*]u8, ?*?[*:0]u8) callconv(.winapi) u32;
+extern "kernel32" fn K32GetProcessMemoryInfo(w.HANDLE, *ProcessMemoryCounters, u32) callconv(.winapi) c_int;
 
 /// `GetActiveProcessorCount`'s "every group, not just mine" sentinel.
 const ALL_PROCESSOR_GROUPS: u16 = 0xffff;

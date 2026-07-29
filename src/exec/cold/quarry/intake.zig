@@ -124,7 +124,16 @@ fn readOneCandidate(a: std.mem.Allocator, scratch: []u8, c: Candidate, needle: ?
     // run (-z/--pre/-E) must read + rewrite the raw bytes, so it can't map.
     if (!cfg.active()) if (slurp.mapFile(c.disk, mmap_min_bytes)) |mapped| {
         const body = decodeBom(a, mapped);
-        if (needle) |gate| if (!verify.gateWide(a, body, gate)) return null;
+        if (needle) |gate| if (!verify.gateWide(a, body, gate)) {
+            // The gate just proved this file cannot match, so nothing will ever
+            // read these pages — dropping the view now is what keeps a
+            // zero-match sweep over a tree full of large files from carrying
+            // every one of them in the resident set to exit. A BOM decode that
+            // transcoded already owns its own copy in `a`, so the view is
+            // unreferenced either way.
+            slurp.release(mapped);
+            return null;
+        };
         return .{ .path = c.rel, .scope = c.scope, .bytes = body, .explicit = c.explicit, .root = c.root };
     };
     const opened = slurp.readFileRaw(a, scratch, c.disk) catch |e|

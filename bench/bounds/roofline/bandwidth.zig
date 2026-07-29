@@ -274,7 +274,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
     // a saturated hardware bound.
     const roots = try corpus_mod.resolveRoots(gpa);
     defer corpus_mod.freeRoots(gpa, roots);
-    var corpus = try corpus_mod.load(gpa, io, roots);
+    var corpus = try corpus_mod.load(gpa, io, roots, .contiguous);
     defer corpus.deinit();
     const corpus_mib = @as(f64, @floatFromInt(corpus.bytes)) / (1 << 20);
     var scans = scan_needles;

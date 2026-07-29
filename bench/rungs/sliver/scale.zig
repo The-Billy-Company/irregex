@@ -150,7 +150,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
     const roots = try corpus_mod.resolveRoots(gpa);
     defer corpus_mod.freeRoots(gpa, roots);
 
-    var corpus = try corpus_mod.load(gpa, io, roots);
+    var corpus = try corpus_mod.load(gpa, io, roots, .contiguous);
     defer corpus.deinit();
     std.debug.print("gist scale · Layer J (sub-trigram tier, candidate bytes)\n", .{});
     std.debug.print("corpus: {d} docs / {d:.1} MiB\n", .{

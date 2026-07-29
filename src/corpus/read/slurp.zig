@@ -93,16 +93,32 @@ pub const StagedFile = struct {
     /// The whole body: the prefix plus whatever remains on `fd`, contiguous in
     /// `scratch` (spilling to `readTail` past the scratch cap). Call at most once.
     pub fn readRest(self: *const StagedFile, a: std.mem.Allocator, scratch: []u8) ?[]const u8 {
-        if (!self.more) return self.prefix;
+        return (self.readWhole(a, scratch) orelse return null).bytes;
+    }
+
+    /// `readRest`, plus the mapping the read borrowed when the file was too big
+    /// for `scratch`. A caller that finishes with the bytes inside its own frame
+    /// hands `map` to `release` and keeps the resident set at one large file per
+    /// worker; `readRest` is the same read for the callers that pass the body
+    /// onward and let the one-shot process's exit reclaim it.
+    pub fn readWhole(self: *const StagedFile, a: std.mem.Allocator, scratch: []u8) ?Body {
+        if (!self.more) return .{ .bytes = self.prefix };
         const n = self.prefix.len + drain(self.fd, scratch[self.prefix.len..]);
         if (n == scratch.len) return readTail(a, self.fd, scratch);
-        return scratch[0..n];
+        return .{ .bytes = scratch[0..n] };
     }
 
     pub fn close(self: *const StagedFile) void {
         portal.close(self.fd);
     }
 };
+
+/// A body plus the mapping it borrowed, if any: `map` is non-null exactly when
+/// `bytes` is a view of a whole-file mapping rather than owned or scratch bytes.
+/// Naming it is what lets one caller drop the view the moment it is done while
+/// another keeps it — the two are a real policy difference (see `readTail`), not
+/// an accident, and a plain slice could express neither.
+pub const Body = struct { bytes: []const u8, map: ?portal.Mapping = null };
 
 /// `scratch` (already full) plus whatever remains on `fd`, as one contiguous
 /// buffer — the uncommon path for a file at/above `per_file_cap`, kept out of
@@ -114,20 +130,25 @@ pub const StagedFile = struct {
 /// text file rg mmaps in ~0.2 s), while the map costs one syscall, faults in
 /// only the pages the SIMD gate actually touches before its first hit, and
 /// rides the page cache across runs. ripgrep's own default does the same for
-/// large single files (grep-searcher's mmap strategy). The mapping is never
-/// munmapped — both walk engines are one-shot processes (the resident session
-/// reads through its own mirror, not this path) — and any fstat/mmap failure
+/// large single files (grep-searcher's mmap strategy). Any fstat/mmap failure
 /// (FIFO stdin, racing truncation below the already-read prefix) falls back to
 /// the proven read loop, so no input shape is lost.
-pub fn readTail(a: std.mem.Allocator, fd: std.posix.fd_t, scratch: []const u8) ?[]const u8 {
-    if (mapWhole(fd, scratch.len)) |mapped| return mapped;
+///
+/// Whether the view is dropped is the CALLER's to decide, which is why the
+/// mapping comes back beside the bytes. A worker that renders the file inside
+/// one frame drops it there (`Body.map` → `release`) and never holds two large
+/// files at once; a caller that hands the body onward keeps it to exit, which is
+/// sound because both walk engines are one-shot processes (the resident session
+/// reads through its own mirror, not this path).
+pub fn readTail(a: std.mem.Allocator, fd: std.posix.fd_t, scratch: []const u8) ?Body {
+    if (mapWhole(fd, scratch.len)) |mapped| return .{ .bytes = mapped, .map = mapped };
     var out: std.ArrayList(u8) = .empty;
     out.appendSlice(a, scratch) catch return null;
     var tmp: [64 * 1024]u8 = undefined;
     var r = portal.read(fd, &tmp) catch 0;
     while (r > 0) : (r = portal.read(fd, &tmp) catch 0)
         out.appendSlice(a, tmp[0..r]) catch return null;
-    return out.toOwnedSlice(a) catch null;
+    return .{ .bytes = out.toOwnedSlice(a) catch return null };
 }
 
 /// Map a regular file at `disk` read-only when it is at least `min` bytes — the
@@ -135,13 +156,28 @@ pub fn readTail(a: std.mem.Allocator, fd: std.posix.fd_t, scratch: []const u8) ?
 /// fault in lazily during the scan, and a SHARDED scan faults its ranges in
 /// PARALLEL (the copy this replaces was serial, the Amdahl tail under single-file
 /// sharding). Null — caller takes the copying read path — for a sub-`min` file, a
-/// non-regular fd, or any open/stat/mmap failure, so no input shape is lost. The
-/// map is never unmapped (the cold engine is a one-shot process; the OS reclaims
-/// it at exit), matching the `readTail` large-file mapping's lifetime.
-pub fn mapFile(disk: []const u8, min: usize) ?[]const u8 {
+/// non-regular fd, or any open/stat/mmap failure, so no input shape is lost.
+///
+/// Returns the ALIGNED view rather than a plain slice, so a caller that learns
+/// the file is irrelevant can hand it to `release`. Keeping every large map alive
+/// until exit is sound (the cold engine is one-shot) but it is not free: on an
+/// 11 GiB tree, a query matching nothing mapped every multi-megabyte file and
+/// held all of them, reporting 274 MiB of resident set against ripgrep's 41 MiB
+/// for the same zero-match answer. Those were clean page-cache pages the kernel
+/// could evict on demand — the process OWNED 37 MiB throughout — but "rg wins on
+/// a memory number" is not a thing we ship, and the required-literal gate already
+/// knows which files it just proved irrelevant.
+pub fn mapFile(disk: []const u8, min: usize) ?portal.Mapping {
     const fd = portal.openFile(portal.cwd(), disk) catch return null;
     defer portal.close(fd);
     return mapWhole(fd, min);
+}
+
+/// Drop a `mapFile` view. Only sound once nothing borrows its bytes — which is
+/// why the one caller does this on the path where a gate proved the file cannot
+/// match, never on the path that returns the body onward.
+pub fn release(m: portal.Mapping) void {
+    portal.unmap(m);
 }
 
 /// Map the whole regular file behind `fd` read-only, from offset 0 (the bytes
@@ -150,7 +186,7 @@ pub fn mapFile(disk: []const u8, min: usize) ?[]const u8 {
 /// not a regular file, the file shrank below what was already read (a racing
 /// truncation the read loop handles conservatively), or `mmap` itself fails —
 /// the caller then takes the copying path, never a silent drop.
-fn mapWhole(fd: std.posix.fd_t, min_len: usize) ?[]const u8 {
+fn mapWhole(fd: std.posix.fd_t, min_len: usize) ?portal.Mapping {
     const st = inode.statFd(fd) orelse return null;
     if (st.kind != .file) return null;
     const size = std.math.cast(usize, st.size) orelse return null;

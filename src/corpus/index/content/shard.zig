@@ -207,95 +207,100 @@ fn decode(gpa: std.mem.Allocator, map: frame.Mapping) !View {
 /// `>= anchor` next query and serves live). Best-effort: the caller ignores the
 /// error, losing only this tier. A `.` prefix on a path is NOT stripped here —
 /// the query keys with `stripDot(rel)`, matching the trigram pair's own table.
-pub fn build(gpa: std.mem.Allocator, io: std.Io, docs: []const []const u8, paths: []const []const u8, anchor_ns: i128) !void {
-    return buildAt(gpa, io, shardFile(), docs, paths, anchor_ns);
+/// Takes no allocator: the write streams, so publishing a quarter-gigabyte shard
+/// costs one 64 KiB buffer on the stack and no heap at all.
+pub fn build(io: std.Io, docs: []const []const u8, paths: []const []const u8, anchor_ns: i128) !void {
+    return buildAt(io, shardFile(), docs, paths, anchor_ns);
 }
 
 /// `build` to an explicit shard path — the write-side twin of `loadFrom`, so a
 /// test can mint a shard outside the fixed artifact directory.
-pub fn buildAt(gpa: std.mem.Allocator, io: std.Io, path: []const u8, docs: []const []const u8, paths: []const []const u8, anchor_ns: i128) !void {
+///
+/// STREAMED, and that is the point: the blob is a concatenation of the whole
+/// corpus, so assembling it in memory to seal it made `gist index` hold a second
+/// full copy of every file it had just read. `frame.Quill` reaches the identical
+/// bytes and the identical seal through a 64 KiB window, so this tier's cost is
+/// the file it writes and nothing more.
+pub fn buildAt(io: std.Io, path: []const u8, docs: []const []const u8, paths: []const []const u8, anchor_ns: i128) !void {
     std.debug.assert(docs.len == paths.len);
     if (docs.len == 0 or docs.len > std.math.maxInt(u32)) return;
 
+    var quill = try frame.Quill.init(io, path);
+    defer quill.deinit(io);
+    var sink = Streamed{ .quill = &quill, .io = io };
+    try emit(&sink, docs, paths, anchor_ns);
+    try quill.seal(io);
+}
+
+/// The layout, in order, written ONCE — `sink` is anything with `put`/`putInt`,
+/// so the streaming writer and the in-memory test encoder cannot drift on the
+/// format they agree about.
+fn emit(sink: anytype, docs: []const []const u8, paths: []const []const u8, anchor_ns: i128) !void {
     var content_len: u64 = 0;
     for (docs) |d| content_len += d.len;
-    const names_len = frame.nulLen(paths);
-    const offsets_bytes = (docs.len + 1) * @sizeOf(u64);
-    const total = header_len + offsets_bytes + names_len + content_len + signet.len;
 
-    var blob: std.ArrayList(u8) = .empty;
-    defer blob.deinit(gpa);
-    try blob.ensureTotalCapacity(gpa, @intCast(total));
-
-    blob.appendSliceAssumeCapacity(magic);
-    var scratch: [8]u8 = undefined;
-    std.mem.writeInt(i64, &scratch, @intCast(anchor_ns), .little);
-    blob.appendSliceAssumeCapacity(&scratch);
-    std.mem.writeInt(u32, scratch[0..4], @intCast(docs.len), .little);
-    blob.appendSliceAssumeCapacity(scratch[0..4]);
-    std.mem.writeInt(u32, scratch[0..4], @intCast(names_len), .little);
-    blob.appendSliceAssumeCapacity(scratch[0..4]);
-    std.mem.writeInt(u64, &scratch, content_len, .little);
-    blob.appendSliceAssumeCapacity(&scratch);
+    try sink.put(magic);
+    try sink.putInt(i64, @intCast(anchor_ns));
+    try sink.putInt(u32, @intCast(docs.len));
+    try sink.putInt(u32, @intCast(frame.nulLen(paths)));
+    try sink.putInt(u64, content_len);
 
     // Offset catalog: prefix sums of the body lengths (offsets[0]=0 …
     // offsets[ndocs]=content_len), so a query maps doc→slice with two reads.
     var acc: u64 = 0;
     for (docs) |d| {
-        std.mem.writeInt(u64, &scratch, acc, .little);
-        blob.appendSliceAssumeCapacity(&scratch);
+        try sink.putInt(u64, acc);
         acc += d.len;
     }
-    std.mem.writeInt(u64, &scratch, acc, .little);
-    blob.appendSliceAssumeCapacity(&scratch);
+    try sink.putInt(u64, acc);
 
     for (paths) |p| {
-        blob.appendSliceAssumeCapacity(p);
-        blob.appendSliceAssumeCapacity(&[_]u8{0});
+        try sink.put(p);
+        try sink.put(&[_]u8{0});
     }
-    for (docs) |d| blob.appendSliceAssumeCapacity(d);
-    try signet.sealInto(gpa, &blob);
-
-    try frame.writeAtomic(io, path, blob.items);
+    for (docs) |d| try sink.put(d);
 }
+
+/// `emit` → a `frame.Quill`. Binds the `io` the quill needs so `emit` stays a
+/// pure description of the layout.
+const Streamed = struct {
+    quill: *frame.Quill,
+    io: std.Io,
+
+    fn put(s: *Streamed, bytes: []const u8) !void {
+        return s.quill.put(s.io, bytes);
+    }
+
+    fn putInt(s: *Streamed, comptime T: type, v: T) !void {
+        return s.quill.putInt(s.io, T, v);
+    }
+};
 
 // ─────────────────────────── tests ───────────────────────────
 
 /// Encode a shard blob into `gpa` memory (the `build` body without the file
-/// write), so `decode`/`slice` are testable with no filesystem.
+/// write), so `decode`/`slice` are testable with no filesystem. Shares `emit`
+/// with the streaming writer, so a test blob is the production blob.
 fn encodeForTest(gpa: std.mem.Allocator, docs: []const []const u8, paths: []const []const u8, anchor_ns: i128) ![]u8 {
-    var content_len: u64 = 0;
-    for (docs) |d| content_len += d.len;
-    const names_len = frame.nulLen(paths);
-    const total = header_len + (docs.len + 1) * @sizeOf(u64) + names_len + content_len + signet.len;
-    var blob: std.ArrayList(u8) = .empty;
-    errdefer blob.deinit(gpa);
-    try blob.ensureTotalCapacity(gpa, @intCast(total));
-    blob.appendSliceAssumeCapacity(magic);
-    var s: [8]u8 = undefined;
-    std.mem.writeInt(i64, &s, @intCast(anchor_ns), .little);
-    blob.appendSliceAssumeCapacity(&s);
-    std.mem.writeInt(u32, s[0..4], @intCast(docs.len), .little);
-    blob.appendSliceAssumeCapacity(s[0..4]);
-    std.mem.writeInt(u32, s[0..4], @intCast(names_len), .little);
-    blob.appendSliceAssumeCapacity(s[0..4]);
-    std.mem.writeInt(u64, &s, content_len, .little);
-    blob.appendSliceAssumeCapacity(&s);
-    var acc: u64 = 0;
-    for (docs) |d| {
-        std.mem.writeInt(u64, &s, acc, .little);
-        blob.appendSliceAssumeCapacity(&s);
-        acc += d.len;
-    }
-    std.mem.writeInt(u64, &s, acc, .little);
-    blob.appendSliceAssumeCapacity(&s);
-    for (paths) |p| {
-        blob.appendSliceAssumeCapacity(p);
-        blob.appendSliceAssumeCapacity(&[_]u8{0});
-    }
-    for (docs) |d| blob.appendSliceAssumeCapacity(d);
-    try signet.sealInto(gpa, &blob);
-    return blob.toOwnedSlice(gpa);
+    const Collected = struct {
+        blob: std.ArrayList(u8) = .empty,
+        gpa: std.mem.Allocator,
+
+        fn put(s: *@This(), bytes: []const u8) !void {
+            return s.blob.appendSlice(s.gpa, bytes);
+        }
+
+        fn putInt(s: *@This(), comptime T: type, v: T) !void {
+            var scratch: [@divExact(@bitSizeOf(T), 8)]u8 = undefined;
+            std.mem.writeInt(T, &scratch, v, .little);
+            return s.put(&scratch);
+        }
+    };
+    var sink = Collected{ .gpa = gpa };
+    errdefer sink.blob.deinit(gpa);
+    try emit(&sink, docs, paths, anchor_ns);
+    try signet.sealInto(gpa, &sink.blob);
+    return sink.blob.toOwnedSlice(gpa);
 }
 
 /// `decode` wants a page-aligned `frame.Mapping`; tests copy the framed bytes

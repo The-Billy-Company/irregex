@@ -265,7 +265,7 @@ pub fn main(init: std.process.Init) !void {
 
     const roots = try corpus_mod.resolveRoots(gpa);
     defer corpus_mod.freeRoots(gpa, roots);
-    var corpus = try corpus_mod.load(gpa, io, roots);
+    var corpus = try corpus_mod.load(gpa, io, roots, .contiguous);
     defer corpus.deinit();
 
     // The same instrument `ladder-price` mints with, so a corpus cyc/B printed
