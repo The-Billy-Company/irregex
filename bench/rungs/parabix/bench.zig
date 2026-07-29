@@ -254,7 +254,15 @@ pub fn main(init: std.process.Init) !void {
 
     const ghz = calibrate(io, 3_000_000);
     std.debug.print("Parabix — bit-parallel within-document scan rung · abi v{d}\n", .{gist.abi()});
-    std.debug.print("machine: {s} · zig {s} · rung armable here: {}\n", .{ @tagName(builtin.target.cpu.arch), builtin.zig_version_string, parabix.native });
+    // Armable is BOTH conjuncts — the kernel compiles here and the ladder has a
+    // minted price for it. `parabix.native` alone would report a freshly-ported
+    // target as armable while the auction still refuses to let it bid.
+    std.debug.print("machine: {s} · zig {s} · kernel here: {} · rung armable (kernel + calibration): {}\n", .{
+        @tagName(builtin.target.cpu.arch),
+        builtin.zig_version_string,
+        parabix.native,
+        gist.regex_rungs.parabix_armable,
+    });
     std.debug.print("throughput haystack: {d} MiB adversarial near-miss per row · rounds {d} (min-of-N, interleaved)\n", .{ megs, rounds });
     std.debug.print("agreement corpus: {d} docs · {d:.1} MiB\n", .{ corpus.docs.len, @as(f64, @floatFromInt(corpus.bytes)) / (1 << 20) });
     std.debug.print("clock: {d:.3} GHz measured in-run · B/cyc normalized to {d:.3} GHz\n\n", .{ ghz, norm_ghz });

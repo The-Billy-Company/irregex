@@ -171,7 +171,7 @@ pub fn docMatchFused(re: *const Regex) bool {
     // whole-buffer machine. A `.candidate` only prunes, so like the sieve it does
     // not count: the machine that decides is still the DFA below.
     if (re.literal_scan) |*set| if (set.authority == .exact) return true;
-    if (re.classrun) |*cr| if (cr.nl_free and (cr.exact or cr.cp != null)) return true;
+    if (re.classrun) |*cr| if (cr.decides()) return true;
     // An armed DECIDER is a whole-buffer machine. The sieve deliberately does
     // not count: it narrows the question without answering it, so the machine
     // that actually decides is still the DFA below and the caller's preference

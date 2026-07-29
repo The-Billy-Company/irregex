@@ -33,6 +33,12 @@ const std = @import("std");
 const Dfa = @import("../dfa/dfa.zig").Dfa;
 const prefilter = @import("../../analysis/prefilter.zig");
 const ByteSet = @import("../../syntax/syntax.zig").ByteSet;
+/// The measured plane every cost below is quoted from. The sieve owns its
+/// SELECTIVITY (a structural property of its quotients) and none of its prices.
+/// The measured price plane. Re-exported because this rung's whole cost policy is
+/// a reading of it, and a bench that publishes the gate has to quote the same
+/// coefficients the gate consulted rather than a second copy of them.
+pub const price = @import("../ladder/price.zig");
 /// The lattice harvest and the kernel are re-exported through this entry file
 /// rather than reached around it: a caller that holds a `Sieve` sometimes needs
 /// the `Quotient` type (to walk one beside the DFA) or `sheng.resident` (to ask
@@ -48,12 +54,20 @@ pub const Class = ByteSet;
 /// A sieve's two answers. There is deliberately no `.hit`.
 pub const Verdict = enum { miss, unproven };
 
-/// Measured cost of the register-resident kernel relative to the shipped
-/// byte-class DFA on the same haystack in the same run (`bench/sieve/`): the
-/// sieve costs about this fraction of the DFA per byte. A pre-pass therefore
-/// pays only when it retires more than `1 - speed_ratio` of the haystacks it
-/// sees — anything less and the surviving haystacks pay for both machines.
-pub const speed_ratio: f64 = 0.40;
+/// The sieve's speed against the dense byte-class walk, at the grain and
+/// conjunct count actually in play — DERIVED from two measured per-byte costs in
+/// `ladder/price.zig` rather than declared here.
+///
+/// It used to be one constant, `0.40`, and that single number carried three
+/// assumptions it could not distinguish: that one conjunct costs what two do,
+/// that the four-lines-at-once document kernel costs what the per-line one does,
+/// and — worst — that whatever the sieve fronts costs what a dense DFA costs.
+/// The inequality below only ever needed the sieve's own absolute price, so that
+/// is what it asks for now; this function survives because the README argues in
+/// ratios and a ratio should be a quotient of measurements, not a rival to them.
+pub fn speedRatio(conjuncts: u8, grain: price.Grain) f64 {
+    return price.sieveSpeedRatio(conjuncts, grain);
+}
 
 /// The two haystack grains the rung can be consulted at: a line from
 /// `lineMatch`, and a whole buffer from `docMatch`.
@@ -72,8 +86,12 @@ pub const speed_ratio: f64 = 0.40;
 /// The row that made this concrete: `[0-9]{4}-[0-9]{2}-[0-9]{2}` rejects 99.03%
 /// of POSITIONS and still keeps 80.2% of documents — dates cluster — and armed
 /// at the line grain it measured 0.80×. At the buffer grain it declines.
-pub const nominal_line: f64 = 64;
-pub const nominal_doc: f64 = 4096;
+///
+/// Both lengths are defined once in the price plane — an anchored walk's
+/// per-line cost and this rung's survival arithmetic are the same assumption,
+/// and two copies of it could drift apart.
+pub const nominal_line = price.nominal_line;
+pub const nominal_doc = price.nominal_doc;
 
 /// Would a sieve with per-position fallthrough `f` pay for itself on haystacks
 /// of `len` bytes? Survival is `1 - (1-f)^len`; it has to stay under the margin
@@ -83,12 +101,31 @@ fn survival(f: f64, len: f64) f64 {
 }
 
 /// End-to-end inequality: sieve + survivors × selected decider < decider.
-/// `speed_ratio` was measured against the dense DFA, whose published cost in
-/// the shared ladder unit is 30_000 cycles/100 bytes.
-fn pays(f: f64, len: f64, decider_cost: u32) bool {
-    const sieve_cost = speed_ratio * 30_000.0;
-    const exact = @as(f64, @floatFromInt(decider_cost));
-    return sieve_cost + survival(f, len) * exact < exact;
+///
+/// Both sides are now in the same measured unit and neither is a ratio. The
+/// sieve's own cost comes from `price.zig` at the grain and conjunct count of
+/// THIS candidate; the decider's comes from whatever actually won the ladder's
+/// auction. That is what makes the arithmetic stand a sieve down in front of a
+/// cheap decider on its own — the outcome a boolean "only front the DFA"
+/// prohibition used to produce, without needing to know which machine it faced.
+///
+/// `decider_cost` arrives as the auction's document-grain number, so it is lifted
+/// to the grain being judged (`price.atGrain`) before the comparison. Both sides
+/// then describe the same kernel shape — which they did not while the sieve's
+/// single-chain line pre-pass was being weighed against the walk's four-line one.
+///
+/// The arithmetic itself lives on `CostFact`, which admission retains whether the
+/// candidate arms or declines. So the gate, the census row, and the bench's audit
+/// are one expression rather than three that agree by hand.
+fn sieveCost(n: usize, grain: price.Grain) f64 {
+    return price.sievePerByte(@intCast(n), grain) * price.unit;
+}
+
+fn grainLen(grain: price.Grain) f64 {
+    return switch (grain) {
+        .line => nominal_line,
+        .doc => nominal_doc,
+    };
 }
 
 /// Whether to enforce the worth test. `.ungated` (the differential oracles)
@@ -108,8 +145,9 @@ pub const Above = struct {
     /// Shared byte-density fact, retained for the admission census.
     prefilter: ?prefilter.Economics = null,
     /// Cost of the exact path this sieve would front, in ladder `Cost.scan`
-    /// units. Dense DFA by default for standalone benches.
-    decider_cost: u32 = 30_000,
+    /// units. The dense eager walk by default, which is the machine the kernel
+    /// was designed against and what a standalone bench is fronting.
+    decider_cost: u32 = price.dense_default.scan,
 };
 
 /// Why a compile-time attempt produced no sieve. These facts are intentionally
@@ -133,12 +171,32 @@ pub const CostFact = struct {
     fallthrough: f64,
     line_survival: f64,
     doc_survival: f64,
-    sieve_cost: f64,
+    /// The pre-pass's own price at each grain — two numbers because there are
+    /// two kernels (`survives1`/`survives2` per line, `survivesDoc` four lines at
+    /// a time), which one ratio against the DFA could not tell apart.
+    line_cost: f64,
+    doc_cost: f64,
     decider_cost: u32,
 
-    pub fn total(self: CostFact, grain: enum { line, doc }) f64 {
+    /// The gate's left side: pre-pass plus the verifications that survive it.
+    pub fn total(self: CostFact, grain: price.Grain) f64 {
         const survived = if (grain == .line) self.line_survival else self.doc_survival;
-        return self.sieve_cost + survived * @as(f64, @floatFromInt(self.decider_cost));
+        const cost = if (grain == .line) self.line_cost else self.doc_cost;
+        return cost + survived * self.exact(grain);
+    }
+
+    /// The gate's right side: deciding every position with no sieve in front,
+    /// at this grain. Not `decider_cost` itself — that number was measured by a
+    /// document-grain walk, and a line-grain comparison has to pay line-grain
+    /// dispatch on both sides or it flatters whichever side skips it.
+    pub fn exact(self: CostFact, grain: price.Grain) f64 {
+        return price.atGrain(@floatFromInt(self.decider_cost), grain);
+    }
+
+    /// Whether this candidate pays at `grain` — the arithmetic admission itself
+    /// applies, so a census, a bench, and the gate can never drift apart.
+    pub fn pays(self: CostFact, grain: price.Grain) bool {
+        return self.total(grain) < self.exact(grain);
     }
 };
 
@@ -166,12 +224,13 @@ pub const Window = struct {
 pub const max_windows = quotient.max_conjuncts;
 pub const max_window_width: usize = 15; // prefix bits 1..15 fit one u16
 
-fn costFact(f: f64, decider_cost: u32) CostFact {
+fn costFact(n: usize, f: f64, decider_cost: u32) CostFact {
     return .{
         .fallthrough = f,
         .line_survival = survival(f, nominal_line),
         .doc_survival = survival(f, nominal_doc),
-        .sieve_cost = speed_ratio * 30_000.0,
+        .line_cost = sieveCost(n, .line),
+        .doc_cost = sieveCost(n, .doc),
         .decider_cost = decider_cost,
     };
 }
@@ -189,8 +248,8 @@ fn finish(
     for (qs[0..n]) |*q| {
         f = @min(f, @max(quotient.fallthroughRate(q, .uniform), quotient.fallthroughRate(q, .text)));
     }
-    const fact = costFact(f, above.decider_cost);
-    if (gate == .worth and !pays(f, nominal_line, above.decider_cost))
+    const fact = costFact(n, f, above.decider_cost);
+    if (gate == .worth and !fact.pays(.line))
         return .{ .decline = .unprofitable, .cost = fact };
 
     const s = try gpa.create(Sieve);
@@ -199,7 +258,7 @@ fn finish(
         .n = @intCast(n),
         .q = qs,
         .fallthrough = f,
-        .doc_ok = nl_reset and (gate == .ungated or pays(f, nominal_doc, above.decider_cost)),
+        .doc_ok = nl_reset and (gate == .ungated or fact.pays(.doc)),
         .source = source,
         .cost = fact,
     };
@@ -360,6 +419,17 @@ pub const Sieve = struct {
     pub fn scanDoc(self: *const Sieve, doc: []const u8) Verdict {
         std.debug.assert(self.doc_ok);
         return if (sheng.survivesDoc(self.q[0..self.n], doc)) .unproven else .miss;
+    }
+
+    /// The ladder's name for the flag above, and the reason `scanDoc` may assert
+    /// rather than degrade: `rungs.walk` asks every rung it is about to consult at
+    /// the document grain whether it consents, and a rung that declares no such
+    /// method is simply unrestricted. Before this existed the assert was held up
+    /// only by an arming coincidence — the line-grain worth test happening to
+    /// refuse everything the doc-grain one refused — and a pre-pass that armed on
+    /// worth while lacking the `nl_reset` license walked straight into it.
+    pub fn docSafe(self: *const Sieve) bool {
+        return self.doc_ok;
     }
 
     /// The same verdict computed one position at a time by the scalar oracle.

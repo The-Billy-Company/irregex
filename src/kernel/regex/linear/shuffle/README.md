@@ -10,13 +10,18 @@ doc_radar:
         - "lanes16 = 16,"
         - "lanes32 = 32,"
       absent: ["lanes64"]
-    - description: "the rung declines at compile time by returning null; build owns the armed-skip judgment"
+    - description: "the rung declines at compile time by returning null for what it cannot REPRESENT; whether a skip beats it is the priced auction's judgment, not a gate here"
       file: pkg/kernels/irregex/src/kernel/regex/linear/shuffle/shuffle.zig
       contains:
         - "pub const max_states: u8 = 31;"
-        - "if (dfa.start_dwell != null) return null;"
+        - "pub fn lower("
         - "pub fn match"
         - "pub fn docMatch"
+      absent_matches:
+        # The boolean that stood in for an inequality it could not state. The
+        # stride-priced fallback outbids composition on strong-skip patterns now,
+        # and loses to it on weak ones — neither of which this could express.
+        - "^\\s*if \\(dfa\\.start_dwell != null\\)"
 ---
 
 # linear/shuffle — matching as a reduction
@@ -96,11 +101,11 @@ judgment, which is how the bench publishes the row it must not take.
 
 ## Files
 
-| File               | Role                                                                                                                                                                                                |
-| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`../../../scan/lanes.zig`](../../../scan/lanes.zig)        | The algebra: `Vec`, the two widths, `shuffle` / `shufflePair`, the group-amortized source load, the reduction, and `runPortable` as the scalar definition. Imports nothing but `std` and `builtin`. |
-| `shuffle.zig`      | The rung: lowering a `Dfa` into transformation tables, the gates, `match` / `docMatch`.                                                                                                             |
-| `shuffle_test.zig` | Kernel ≡ scalar fold, fail-closed gate cases, and the line + document differential against the Pike VM.                                                                                             |
+| File                                                 | Role                                                                                                                                                                                                |
+| ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`../../../scan/lanes.zig`](../../../scan/lanes.zig) | The algebra: `Vec`, the two widths, `shuffle` / `shufflePair`, the group-amortized source load, the reduction, and `runPortable` as the scalar definition. Imports nothing but `std` and `builtin`. |
+| `shuffle.zig`                                        | The rung: lowering a `Dfa` into transformation tables, the gates, `match` / `docMatch`.                                                                                                             |
+| `shuffle_test.zig`                                   | Kernel ≡ scalar fold, fail-closed gate cases, and the line + document differential against the Pike VM.                                                                                             |
 
 ### `scan/lanes.zig` is the shareable half
 

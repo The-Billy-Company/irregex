@@ -1,14 +1,20 @@
 ---
 doc_radar:
   sentinels:
-    - description: "the sieve has two answers and never a third; the cost policy and the horizons it is judged at"
+    - description: "the sieve has two answers and never a third, and its cost policy is one arithmetic that the gate, the census row, and the bench all read"
       file: pkg/kernels/irregex/src/kernel/regex/linear/sieve/sieve.zig
       contains:
         [
           "pub const Verdict = enum { miss, unproven };",
-          "pub const speed_ratio: f64 = 0.40;",
-          "pub const nominal_line: f64 = 64;",
+          "pub fn speedRatio(conjuncts: u8, grain: price.Grain) f64 {",
+          "pub fn pays(self: CostFact, grain: price.Grain) bool {",
+          "pub fn exact(self: CostFact, grain: price.Grain) f64 {",
+          "pub fn docSafe(self: *const Sieve) bool {",
         ]
+      absent_matches:
+        # The offline constant that stood for BOTH the sieve's price and the
+        # decider's. It is a quotient of two measurements now, never a rival to them.
+        - "speed_ratio: f64 = "
     - description: "the harvest's four hard bounds — register width, conjunction width, core size, closure work"
       file: pkg/kernels/irregex/src/kernel/regex/linear/sieve/quotient.zig
       contains:
@@ -21,6 +27,9 @@ doc_radar:
     - description: "the kernel takes the shared 16-wide shuffle from scan/lanes rather than carrying a fourth copy"
       file: pkg/kernels/irregex/src/kernel/regex/linear/sieve/sheng.zig
       contains: ['@import("../../../scan/lanes.zig")', "pub const resident"]
+    - description: "the production proof names an armed row that lost, and names the one input responsible instead of widening the gate around it"
+      file: pkg/kernels/irregex/bench/rungs/sieve/bench.zig
+      contains: ["ARMED INTO A LOSS", "MEMORYLESS byte prior", "persistence-aware prior"]
 ---
 
 # linear/sieve — the SP-quotient sieve
@@ -93,26 +102,94 @@ It is also decidable before the scan starts, and that is the mitigation.
 `fallthroughRate` computes each quotient's stationary distribution over its own
 transition table (Cesàro-averaged, so a periodic quotient converges) under two
 byte priors — uniform and English-ish text — and the pessimistic one decides.
-The sieve arms only if a whole nominal buffer is unlikely to hold any survivor:
+The sieve then arms only if fronting the decider is cheaper than the decider
+alone:
 
 ```text
-(1 - f)^nominal_doc  >  speed_ratio
+sieve  +  (1 - (1-f)^grain) · exact   <   exact
 ```
 
-The **buffer** grain, not the line grain, and deliberately: per-position
-rejection does not translate into buffer retirement, because pattern-shaped
-bytes cluster and one survivor drags a whole file into verification.
-`[0-9]{4}-[0-9]{2}-[0-9]{2}` rejects 99.03% of positions and still keeps 80.2%
-of documents. Judged per line it arms and measures 0.80×; judged per buffer it
-declines. The same margin covers the estimate's known optimism — it is a
-memoryless model of a very non-memoryless process, and it was low by five orders
-of magnitude on one row of the slate.
+Three terms, each a measured number rather than a stand-in. `sieve` is this
+candidate's own price from [`../ladder/price.zig`](../ladder/price.zig) at its
+conjunct count **and** its grain — two axes, because `survives1`/`survives2` per
+line and the four-lines-at-once `survivesDoc` are four different kernels that one
+ratio could not tell apart. `exact` is whatever actually won the ladder's
+auction, lifted to the grain being judged, so a sieve is weighed against the
+machine it would really front instead of against an assumed dense DFA. And
+because both sides are absolute cycles, the inequality stands the sieve down in
+front of a cheap decider **on its own** — the outcome the old
+`Above.skip_armed` boolean produced by prohibition, without needing to name the
+rival.
 
-Failing that leaves the field null. So do all four of: no register-resident
-shuffle on this target, no closed partition small enough, a `project`
-precondition the walk cannot honor, and an accelerator already skipping bytes
-above (`Above.skip_armed`) — because a rung that touches every byte loses to one
-that touches a twentieth of them, however cheap its byte is.
+This replaced `(1-f)^nominal_doc > speed_ratio`, which was the right _shape_ only
+while one constant stood for both sides. That constant claimed the sieve was
+2.5× the dense walk; measured, the buffer kernel is 0.742 cyc/B against the
+walk's 1.199 — **1.62×**, and one conjunct per line is 1.201, i.e. no advantage
+at all at that grain. Both numbers are minted by `zig build ladder-price`, and
+`speedRatio` is now a quotient of them rather than a rival to them.
+
+The arithmetic lives on `CostFact.pays`, which admission retains whether the
+candidate arms or declines — so the gate, the census row, and the bench's
+published banner are one expression instead of three that agree by hand.
+
+### The residual is `f`, not the arithmetic
+
+Six of the nine slate patterns now decline, and one still arms into a measured
+loss (`uuid`, 0.89× the shipped ladder). That row is worth keeping visible,
+because the bench publishing it is the only reason the defect is known — and
+because the arithmetic above is not what is wrong. Every term in the inequality
+is a minted cycle count; the input `f` is an estimate, and it is the estimate
+that misses:
+
+| pattern        | required run | est `f`  | measured `f` | optimism |
+| -------------- | ------------ | -------- | ------------ | -------- |
+| `alnum-alt`    | 1 class byte | 2.45e-2  | 2.62e-2      | 1.1×     |
+| `two-Capitals` | 2            | 8.04e-2  | 1.06e-1      | 1.3×     |
+| `iso-date`     | 8 digits     | 1.46e-3  | 9.45e-3      | 6.5×     |
+| `uuid`         | 8 hex        | 4.32e-7  | 1.55e-2      | 3.6e4×   |
+| `digit-40`     | 40 digits    | 7.32e-22 | 1.93e-4      | 2.6e17×  |
+
+The pattern in that column is the diagnosis. `fallthroughRate` walks each
+quotient's stationary distribution under a **memoryless** byte prior — every
+position drawn independently — so a `k`-byte requirement is priced as `p^k`.
+Real bytes are not independent: measured over this corpus's 3,564 text files
+(399 MB), the probability that a byte's class repeats is 4–13× its marginal
+share (digits 0.046 marginal → 0.364 persistent, 7.9×; spaces 13.1×). A
+memoryless prior therefore under-counts every long run by roughly that factor
+raised to the run length, which is precisely a residual of 1× at one byte and
+1e17 at forty. No scalar correction covers a slate spanning seventeen orders of
+magnitude; only a persistence-aware prior (a first-order chain over byte
+classes, harvested the same way the quotient is) closes it, and that is a
+separate piece of work rather than a knob on this one.
+
+The second half of the `uuid` loss is on the other side of the inequality: the
+fronted eager DFA bids 1.37 cyc/B — its minted full-scan cost — and walks the
+real corpus at 0.81, because a matching document exits early and a
+`start_dwell` skips bytes a full scan pays for. So the sieve is credited with
+retiring bytes that the machine it fronts was never going to walk. That gap was
+tested for the obvious cause and it is not byte skew: re-minting every
+coefficient against a haystack drawn from the corpus's own measured byte shape
+moved `dfa_step` 2% (1.373 → 1.397, inside the clock's noise) while
+destabilizing `dfa_line` and `anchor_line` by 2.7× and 2.3×. That experiment and
+its refutation are recorded in
+[`bench/rungs/price/probe.zig`](../../../../bench/rungs/price/probe.zig).
+
+Until both are closed the honest posture is the one the bench already takes:
+publish the row, name it a loss, and let the gate stay fail-closed on the six it
+gets right rather than widen it to hide the one it does not.
+
+Grain is load-bearing, and the **buffer** grain is what licenses a whole-buffer
+pass: per-position rejection does not translate into buffer retirement, because
+pattern-shaped bytes cluster and one survivor drags a whole file into
+verification. `[0-9]{4}-[0-9]{2}-[0-9]{2}` rejects 99.03% of positions and still
+keeps 80.2% of documents. So `doc_ok` is two independent halves — every state
+must reset on `\n` (correctness) and the buffer-grain inequality must hold
+(worth) — and the ladder consults it through `docSafe` before ever handing the
+rung a multi-line buffer.
+
+Failing the inequality leaves the field null. So do all three soundness refusals:
+no register-resident shuffle on this target, no closed partition small enough,
+and any `project` precondition the walk cannot honor.
 
 ## Files
 

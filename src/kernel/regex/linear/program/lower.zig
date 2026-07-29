@@ -267,6 +267,23 @@ pub fn compileOpts(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
         .dfa = dfa,
         .ast = ast,
         .prefilter = start_economics,
+        // WHICH walker a challenger is bidding against when `dfa` is null. Only
+        // this site knows: the eager determinizer declining its budget and a
+        // pattern having no automaton at all both arrive as `dfa == null`, and
+        // they are a ~7× difference in what the incumbent costs per byte.
+        .lazy = lazy != null,
+        // `^…`: the fallback verifies a few bytes per line and hunts the next
+        // terminator, so it is a per-line price rather than a per-byte one.
+        .anchored = anchored,
+        // Is anything left for the tier to answer? `verdict.zig` puts the literal
+        // engine and the class-run kernel above it, and each of those can be
+        // *authoritative* rather than merely a prefilter — an `.exact` literal set
+        // IS the pattern, and a byte-exact newline-free class run decides any
+        // buffer at classification bandwidth. Only this site holds both machines
+        // and the tier's admission in the same frame, so only it can say so.
+        // Order follows `verdict.zig`: the literal engine is consulted first, so
+        // where both settle, it is the one that answers.
+        .settled = settledBy(literal_scan, cr),
         .parabix_model = .{
             .grain = if (opts.multiline) .buffer else .lines,
             .unicode_words = opts.unicode,
@@ -311,6 +328,29 @@ pub fn compileOpts(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
         .unicode = opts.unicode,
         .allocator = allocator,
     };
+}
+
+/// Which kernel above the tier settles this pattern outright, if either does —
+/// and at the grain the ladder prices it on, since a two-compare class and a
+/// nibble-table class, or one needle and a bucket set, are different machines.
+/// Each kernel states its own obligations (`decides`) and its own shape
+/// (`backend`, `arity`); this only reads them.
+///
+/// Order follows `verdict.zig`: the literal engine is consulted first, so where
+/// both could settle, it is the one that answers.
+fn settledBy(
+    set: ?literal_set.LiteralSet,
+    cr: ?classrun_mod.ClassRun,
+) ?rungs_mod.price.Settle {
+    if (set) |s| if (s.authority == .exact) return switch (s.arity()) {
+        .one => .literal_one,
+        .many => .literal_many,
+    };
+    if (cr) |run| if (run.decides()) return switch (run.backend) {
+        .ranges => .class_ranges,
+        .nibbles => .class_nibbles,
+    };
+    return null;
 }
 
 /// No zero-width assertion instruction anywhere in the program — the

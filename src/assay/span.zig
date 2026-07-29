@@ -20,6 +20,7 @@
 //! (zero cost), but no implicit conversion to each other or to a bare integer.
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 /// A monotonic elapsed interval in nanoseconds — the result of `Span.read`.
 /// The one type that renders as milliseconds, so a wall-clock instant can never
@@ -70,6 +71,57 @@ pub const Span = struct {
         const d: Duration = @enumFromInt(now - self.start);
         self.start = now;
         return d;
+    }
+};
+
+/// The core's rate, measured in this process rather than read off a data sheet.
+///
+/// A `Duration` says how long something took; a `Cadence` is what converts that
+/// into what a CPU designer would call the cost — cycles, and cycles per byte.
+/// Every coefficient in the ladder's price plane is in those units, so anything
+/// that mints or audits one needs this, and two copies of it would mean a
+/// coefficient and the measurement disputing it were divided by different clocks.
+///
+/// The reading is a dependent `ADD` chain: one cycle per link by construction,
+/// so it reports the rate the core actually sustained under whatever else the
+/// machine was doing — never an advertised boost. `null` where no such chain is
+/// written for the target, and then a caller must decline to report cycles at
+/// all rather than assume a frequency.
+pub const Cadence = struct {
+    cyc_per_ns: f64,
+
+    /// `links` × 16 dependent adds. The caller sizes it; 1<<16 is ~1 ms.
+    pub fn measure(io: std.Io, links: u64) ?Cadence {
+        if (comptime builtin.cpu.arch != .aarch64 and builtin.cpu.arch != .aarch64_be) return null;
+        var x: u64 = 1;
+        const sp = Span.open(io);
+        for (0..links) |_| {
+            inline for (0..16) |_| {
+                x = asm ("add %[o], %[i], #1"
+                    : [o] "=r" (-> u64),
+                    : [i] "r" (x),
+                );
+            }
+        }
+        const elapsed = sp.read(io).ns();
+        std.mem.doNotOptimizeAway(x);
+        if (elapsed <= 0) return null;
+        return .{ .cyc_per_ns = @as(f64, @floatFromInt(links * 16)) / @as(f64, @floatFromInt(elapsed)) };
+    }
+
+    pub fn cycles(self: Cadence, d: Duration) f64 {
+        const ns = d.ns();
+        return if (ns <= 0) 0 else @as(f64, @floatFromInt(ns)) * self.cyc_per_ns;
+    }
+
+    /// The one conversion into the price plane's unit.
+    pub fn cycPerByte(self: Cadence, d: Duration, bytes: usize) f64 {
+        return if (bytes == 0) 0 else self.cycles(d) / @as(f64, @floatFromInt(bytes));
+    }
+
+    /// Gigahertz, for the one line a bench prints to say what it measured on.
+    pub fn ghz(self: Cadence) f64 {
+        return self.cyc_per_ns;
     }
 };
 

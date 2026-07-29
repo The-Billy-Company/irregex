@@ -4,11 +4,11 @@ doc_radar:
     - pkg/kernels/irregex/bench/rungs/shuffle/bench.zig
     - pkg/kernels/irregex/src/kernel/regex/linear/shuffle/shuffle.zig
   sentinels:
-    - description: "the harness fails closed on disagreement and on the gate arming where it must not"
+    - description: "the harness fails closed on disagreement, and a row kept only to show where the rung LOSES is marked as such instead of being counted as a win"
       file: pkg/kernels/irregex/bench/rungs/shuffle/bench.zig
       contains:
         - "error.ComposeProofFailed"
-        - "the dispatch gate ARMED on a skippable-start-dwell pattern"
+        - "boundary: bool = false,"
         - "throughput above is over a prefix"
 ---
 

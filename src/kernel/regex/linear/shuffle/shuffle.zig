@@ -98,30 +98,21 @@ pub const Compose = struct {
     slice_safe: bool,
     allocator: std.mem.Allocator,
 
-    /// Should the ladder ARM this rung for `dfa`? `lower` plus the one
-    /// judgment that is about DISPATCH rather than representability: when a
-    /// start state's dwell is skippable, that DFA skips most of the haystack and
-    /// this rung would have to retire all of it. Measured 6.7× SLOWER on a
-    /// `.*`-chain with an armed skip. Faster per byte loses to touching a
-    /// twentieth of them, so the rung stands down and the ladder falls through.
+    /// CAN this machine be represented as transformations? The rung's ONE
+    /// entry point, and the only way it ever declines — at COMPILE time, by
+    /// returning null, never mid-scan.
     ///
-    /// `dfa.start_dwell != null` is a BOOLEAN reading of what the seam contract's
-    /// 2026-07-26 addendum shows is a 30× spread (an armed skip on two common
-    /// letters runs slower than no skip at all). This line is the single place
-    /// to retarget when the shared prefilter lands its stride estimate; the
-    /// comparison it should make is against 2.26 B/cycle.
-    ///
-    /// Null means "not this rung's pattern" and is the only way it ever
-    /// declines — at COMPILE time, never mid-scan.
-    pub fn build(gpa: std.mem.Allocator, dfa: anytype) !?*Compose {
-        if (dfa.start_dwell != null) return null;
-        return lower(gpa, dfa);
-    }
-
-    /// CAN this machine be represented as transformations? The question the
-    /// bench asks to publish the armed-skip boundary row, and the one a sibling
-    /// rung asks when it wants the tables for their own sake. `build` is what
-    /// the ladder asks.
+    /// It used to have a sibling, `build`, carrying one line of DISPATCH policy:
+    /// `if (dfa.start_dwell != null) return null`, because a DFA that skips
+    /// nineteen bytes in twenty beats a rung that must retire all of them
+    /// (measured 6.7× slower on a `.*`-chain with an armed skip). That judgment
+    /// was right and its spelling was wrong — a boolean, on a quantity the seam
+    /// contract's 2026-07-26 addendum measures across a 30× spread. It now lives
+    /// where every other dispatch judgment does: the fallback bids its skip's
+    /// own expected stride and this rung bids its measured per-byte width, and
+    /// the cheaper one wins (`ladder/price.zig`). Same outcome on the boundary
+    /// pattern, a defensible one on the patterns the boolean got wrong, and no
+    /// rung deciding a contest it is a party to.
     ///
     /// `dfa` is taken structurally rather than by type so this module imports
     /// nothing from the engine around it: the bench and the quotient sieve can

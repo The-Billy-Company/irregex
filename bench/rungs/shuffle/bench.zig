@@ -22,11 +22,12 @@
 //!      chunk lands on MATCH, so one hit turns a throughput number into a
 //!      measurement of the prefix before it. The `hit` column reports the
 //!      verdict and a row that hit says so in the clear.
-//!   4. **The honest boundary.** The `dot-star-chain` row lowers the rung past
-//!      its own dispatch gate (`Compose.lower`, not `Compose.build`) purely to
-//!      publish how badly it loses to an armed literal skip — and prints, on
-//!      the row below, that `build` refuses that exact pattern. A rung with no
-//!      ≈1× row is hiding something; this one has a 0.16× row.
+//!   4. **The honest boundary.** The `dot-star-chain` row runs the rung on a
+//!      pattern the ladder's auction does not give it, purely to publish how
+//!      badly it loses to an armed literal skip — and prints, on the row below,
+//!      the two bids that produced that verdict plus the shipped auction's own
+//!      `selected`. A rung with no ≈1× row is hiding something; this one has a
+//!      0.16× row, and now names the price that kept it off the ladder.
 //!
 //! Haystack: `$COMPOSE_HAY` when set (the research lane's 64 MiB file, for
 //! reproducing its exact numbers), else the real Billy corpus concatenated
@@ -188,9 +189,10 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("{s:<16} {s:>4} no DFA — the powerset cap refused; Pike serves\n", .{ sp.id, "-" });
             continue;
         };
-        // A boundary row is lowered past the dispatch gate on purpose; every
-        // other row goes through the gate the ladder would use.
-        const cx = (if (sp.boundary) try Compose.lower(gpa, dfa) else try Compose.build(gpa, dfa)) orelse {
+        // One lowering for every row. A boundary row is one the ladder's auction
+        // outbids, not one the rung refuses — so the harness lowers it anyway to
+        // publish the loss, and checks the auction's verdict below.
+        const cx = (try Compose.lower(gpa, dfa)) orelse {
             std.debug.print("{s:<16} {d:>4} {s:>6} {s:>3} {any:>6}   declined — {s}\n", .{
                 sp.id, dfa.nstates, "-", "-", dfa.start_dwell != null, reason(dfa),
             });
@@ -224,12 +226,13 @@ pub fn main(init: std.process.Init) !void {
 
         // The boundary row's whole point: the ladder must NOT take this.
         if (sp.boundary) {
-            const gated = try Compose.build(gpa, dfa);
-            if (gated) |g| {
-                g.deinit();
-                std.debug.print("  !! the dispatch gate ARMED on a skippable-start-dwell pattern — that is the 6× regression\n", .{});
+            if (re.rungs.admission.selected == .compose) {
+                std.debug.print("  !! the AUCTION armed on a skippable-start-dwell pattern — that is the 6× regression\n", .{});
                 disagreements += 1;
-            } else std.debug.print("{s:<16} gate holds: `build` refuses it, the ladder keeps the accelerated DFA\n", .{""});
+            } else std.debug.print(
+                "{s:<16} price holds: the fallback bid {d:.2} cyc/B with its skip, compose {d:.2} — the ladder keeps the accelerated DFA\n",
+                .{ "", re.rungs.admission.fallback_cost.cycPerByte(), bid(cx).cycPerByte() },
+            );
         }
     }
 
@@ -242,12 +245,22 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("\nOK: every armed row agrees with the shipped DFA on the whole buffer.\n", .{});
 }
 
-/// Why `build`/`lower` said no, read back off the DFA so the declined rows are
+/// What this lowering would bid in the ladder's auction — asked of the SHIPPED
+/// price plane, so the number printed beside the fallback's is the number the
+/// auction actually compared and not this harness's opinion of it.
+fn bid(cx: *const Compose) gist.regex_price.Cost {
+    return gist.regex_price.price(.{ .compose = .{
+        .width = cx.width,
+        .eol = cx.index == .byte_eol,
+        .table_bytes = cx.table.len,
+    } });
+}
+
+/// Why `lower` said no, read back off the DFA so the declined rows are
 /// informative rather than blank.
 fn reason(dfa: anytype) []const u8 {
     if (!compose.lanes.native) return "not AArch64";
-    if (dfa.start_dwell != null) return "literal skip armed — skipping beats retiring";
     if (dfa.word_ctx) return "word context (\\b) needs a second table axis";
-    if (dfa.is_match[dfa.start]) return "start closure already accepts";
+    if (dfa.isMatch(dfa.start)) return "start closure already accepts";
     return "more than 31 non-accepting states";
 }

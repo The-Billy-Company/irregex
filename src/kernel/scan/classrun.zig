@@ -141,6 +141,24 @@ pub const ClassRun = struct {
         return true;
     }
 
+    /// Will this kernel SETTLE any whole buffer handed to it — never returning
+    /// `.unproven`, and never needing the caller to split lines first?
+    ///
+    /// Two independent obligations, which is why it is worth one name. `scan`
+    /// only reaches `.unproven` through the ASCII projection of a codepoint
+    /// class, so `exact` (bytes are the alphabet) or `cp` (the kernel can settle
+    /// high bytes itself) discharges the verdict half. `nl_free` discharges the
+    /// grain half: with `\n` outside S no run can cross a line, so "some line
+    /// holds a run" and "the buffer holds one" are the same question.
+    ///
+    /// Both callers are downstream of that: `verdict.docMatchFused` reports which
+    /// machine will answer, and the accelerator ladder declines to BUILD at all
+    /// when this holds — everything it could admit sits below a kernel that has
+    /// already decided, so a rung there is unreachable rather than merely slower.
+    pub fn decides(self: *const ClassRun) bool {
+        return self.nl_free and (self.exact or self.cp != null);
+    }
+
     /// Does `hay` hold ≥ `min` consecutive members of S? `.hit`/`.miss` are
     /// final; `.unproven` (codepoint-class projection + a ≥ 0x80 byte, no
     /// ASCII run sufficed) resolves in-kernel when the full codepoint class

@@ -33,6 +33,9 @@ const gist = @import("irregex");
 const corpus_mod = gist.corpus;
 const Regex = gist.regex.Regex;
 const sieve_mod = gist.regex_sieve;
+/// The measured price plane, so every cost this bench quotes or hands the gate is
+/// the same number the gate itself reads.
+const price = sieve_mod.price;
 const Sieve = sieve_mod.Sieve;
 const Class = sieve_mod.Class;
 const Quotient = gist.regex_sieve.quotient.Quotient;
@@ -74,7 +77,7 @@ fn walk(d: *const gist.regex_dfa.Dfa, qs: []const Quotient, doc: []const u8, w: 
             st[i] = q.rows[b][st[i]];
             all = all and st[i] >= q.th;
         }
-        const hit = d.is_match[s];
+        const hit = d.isMatch(s);
         w.positions += 1;
         w.truth += @intFromBool(hit);
         w.fallthrough += @intFromBool(all);
@@ -136,6 +139,30 @@ fn timeSheng1(io: std.Io, s: *const Sieve, docs: []const []const u8) i128 {
     for (docs) |doc| retired += @intFromBool(s.scan(doc) == .miss);
     std.mem.doNotOptimizeAway(retired);
     return sp.read(io).ns();
+}
+
+/// What the sieve actually SAVED: the exact matcher over only the documents it
+/// retired, plus how many of the corpus's bytes those documents held.
+///
+/// This is the row that explains a sieve which retires most DOCUMENTS and still
+/// measures a loss. Profit is decided in bytes, and survival grows with buffer
+/// length (`1-(1-f)^L`), so the documents that survive are systematically the
+/// long ones — a corpus can hand 98% of its documents to the sieve and keep 60%
+/// of its bytes on the other side of the gate. The compile-time arithmetic
+/// judges one nominal 4 KiB buffer and cannot see that.
+fn timeSaved(io: std.Io, s: *const Sieve, re: *Regex, sim: *Regex.Sim, docs: []const []const u8) struct { ns: i128, bytes: usize } {
+    var retired: std.ArrayList([]const u8) = .empty;
+    defer retired.deinit(std.heap.page_allocator);
+    var bytes: usize = 0;
+    for (docs) |doc| if (verdict(s, doc) == .miss) {
+        retired.append(std.heap.page_allocator, doc) catch continue;
+        bytes += doc.len;
+    };
+    const sp = Span.open(io);
+    var hits: usize = 0;
+    for (retired.items) |doc| hits += @intFromBool(re.docMatch(sim, doc));
+    std.mem.doNotOptimizeAway(hits);
+    return .{ .ns = sp.read(io).ns(), .bytes = bytes };
 }
 
 /// What the ladder actually pays: the sieve over every document, then the
@@ -207,11 +234,23 @@ fn windowEvidence(gpa: std.mem.Allocator, io: std.Io, docs: []const []const u8) 
         ms(timed.ns),
         violations,
     });
-    for ([_]u32{ 4_400, 12_000, 30_000 }) |decider_cost| {
-        const admission = try Sieve.buildWindows(gpa, &.{.{ .classes = &classes }}, .{ .decider_cost = decider_cost }, .worth);
+    // Sensitivity to the machine it fronts, swept over the three REAL deciders
+    // rather than three round numbers. The point of the sweep is that a sieve
+    // profitable in front of the Pike VM can be a loss in front of composition,
+    // and the prices have to be the ones those machines actually measured for
+    // that to mean anything.
+    const rivals = [_]struct { name: []const u8, m: price.Machine }{
+        .{ .name = "compose16", .m = .{ .compose = .{ .width = .lanes16, .eol = false, .table_bytes = 0 } } },
+        .{ .name = "eager-dfa", .m = .{ .walk = .{ .kind = .eager } } },
+        .{ .name = "pike-vm", .m = .{ .walk = .{ .kind = .pike } } },
+    };
+    for (rivals) |rival| {
+        const cost = price.price(rival.m).scan;
+        const admission = try Sieve.buildWindows(gpa, &.{.{ .classes = &classes }}, .{ .decider_cost = cost }, .worth);
         defer if (admission.sieve) |armed| armed.deinit();
-        std.debug.print("  census: decider={d} · {s} · line-total={d:.0} · doc-total={d:.0}\n", .{
-            decider_cost,
+        std.debug.print("  census: fronting {s:<9} ({d:.2} cyc/B) · {s} · line-total={d:.0} · doc-total={d:.0}\n", .{
+            rival.name,
+            price.price(rival.m).cycPerByte(),
             if (admission.sieve != null) "armed" else @tagName(admission.decline.?),
             if (admission.cost) |c| c.total(.line) else 0,
             if (admission.cost) |c| c.total(.doc) else 0,
@@ -229,11 +268,24 @@ pub fn main(init: std.process.Init) !void {
     var corpus = try corpus_mod.load(gpa, io, roots);
     defer corpus.deinit();
 
+    // The same instrument `ladder-price` mints with, so a corpus cyc/B printed
+    // below and the coefficient it disagrees with were divided by one clock.
+    const clock = gist.assay.Cadence.measure(io, 1 << 16);
     const mib = @as(f64, @floatFromInt(corpus.bytes)) / (1 << 20);
     std.debug.print("Quotient sieve — production proof · abi v{d}\n", .{gist.abi()});
     std.debug.print("machine: {s} · zig {s} · shuffle-resident: {}\n", .{ @tagName(builtin.target.cpu.arch), builtin.zig_version_string, sieve_mod.sheng.resident });
     std.debug.print("corpus:  {d} files · {d:.1} MiB\n", .{ corpus.docs.len, mib });
-    std.debug.print("gate:    arm when (1-f)^{d:.0} > {d:.2} (buffer grain) — see sieve.zig\n\n", .{ sieve_mod.nominal_doc, sieve_mod.speed_ratio });
+    // The gate, stated as the arithmetic it now is: two measured prices and a
+    // survival term, not one offline constant standing in for both sides. The
+    // ratio is printed because the README argues in ratios — but it is derived
+    // from the same two numbers rather than declared beside them.
+    std.debug.print("gate:    arm when sieve + (1-(1-f)^{d:.0})·exact < exact, at buffer grain\n", .{sieve_mod.nominal_doc});
+    std.debug.print("price:   sieve {d:.3} cyc/B (1 conjunct, buffer kernel) vs dense walk {d:.3} cyc/B = {d:.2}x advantage\n", .{
+        price.sievePerByte(1, .doc),
+        price.active.dfa_step,
+        1.0 / sieve_mod.speedRatio(1, .doc),
+    });
+    std.debug.print("         calibration: {s} · minted {s}\n\n", .{ price.active.machine, price.active.minted });
 
     std.debug.print("{s:<24} {s:>4} {s:>8} {s:>12} {s:>12} {s:>11} {s:>10} {s:>9}\n", .{
         "pattern", "|Q|", "blocks", "truth rate", "fallthrough", "reject%", "docs kept", "armed",
@@ -243,6 +295,11 @@ pub fn main(init: std.process.Init) !void {
     var violations: u64 = 0;
     var total_positions: u64 = 0;
     var declined: usize = 0;
+    // Rows the gate admitted that the corpus then measured as slower than no
+    // sieve at all. Not a soundness failure — every answer is still correct —
+    // but it is the decision quality this whole cost policy exists to deliver,
+    // so it is counted and named rather than left for a reader to spot.
+    var armed_losses: usize = 0;
 
     for (queries) |q| {
         var re = try Regex.compileOpts(gpa, q.pattern, .{ .force_dfa = true });
@@ -262,7 +319,16 @@ pub fn main(init: std.process.Init) !void {
             continue;
         };
         defer s.deinit();
-        const admitted = try Sieve.buildDfa(gpa, d, .{ .decider_cost = 30_000 }, .worth);
+        // The machine this sieve would really front is whatever the ladder just
+        // selected for this pattern — its accelerated DFA, its composition, its
+        // skip. A flat `30_000` here told every sieve it fronted a 3.0 cyc/B
+        // dense walk, and the `ladder:` rows below are what that bought: three
+        // patterns arming into a measured LOSS because they were quoted an
+        // incumbent 3x dearer than the one the bench then timed them against.
+        const admitted = try Sieve.buildDfa(gpa, d, .{
+            .decider_cost = re.rungs.admission.selected_cost.scan,
+            .prefilter = re.rungs.admission.prefilter,
+        }, .worth);
         const shipped = admitted.sieve;
         defer if (shipped) |sh| sh.deinit();
         if (shipped == null) declined += 1;
@@ -344,12 +410,21 @@ pub fn main(init: std.process.Init) !void {
             measured,
             if (shipped == null and measured > 0.4) "  ← correctly declined" else "",
         });
-        if (shipped == null) std.debug.print("  census: decline={s} · decider={d} · line-total={d:.0} · doc-total={d:.0}\n", .{
-            @tagName(admitted.decline.?),
-            if (admitted.cost) |c| c.decider_cost else 30_000,
-            if (admitted.cost) |c| c.total(.line) else 0,
-            if (admitted.cost) |c| c.total(.doc) else 0,
-        });
+        // Every row's arithmetic, armed or declined. A bench that explains only
+        // its refusals hides half its reasoning — and the half it hid was where
+        // three patterns armed into a measured loss.
+        if (admitted.cost) |c| std.debug.print(
+            "  census: {s:<13} · fronting {s} at {d:.2} cyc/B · line {d:.2} vs {d:.2} · doc {d:.2} vs {d:.2}\n",
+            .{
+                if (admitted.decline) |why| @tagName(why) else "armed",
+                @tagName(re.rungs.admission.selected),
+                (price.Cost{ .scan = c.decider_cost }).cycPerByte(),
+                c.total(.line) / price.unit,
+                c.exact(.line) / price.unit,
+                c.total(.doc) / price.unit,
+                c.exact(.doc) / price.unit,
+            },
+        );
         std.debug.print("  kernel: scalar-1 {d:.1} ms → sheng-1 {d:.1} ms ({d:.2}x residency) → sheng-{d} {d:.1} ms ({d:.2}x lanes, {d:.2}x total)\n", .{
             ms(scal),          ms(one),
             ratio(scal, one),  if (s.n == 1) @as(usize, 4) else 2,
@@ -357,11 +432,45 @@ pub fn main(init: std.process.Init) !void {
             ratio(scal, kern),
         });
         std.debug.print("  ladder: shipped {d:.1} ms · sieve+survivors {d:.1} ms ({d:.2}x)\n", .{ ms(full), ms(ladder), ratio(full, ladder) });
+        // Where the profit had to come from, in bytes rather than documents.
+        const saved = timeSaved(io, s, &re, &sim, corpus.docs);
+        std.debug.print("  bytes:  retired {d:.1}% of bytes · saved {d:.1} ms vs {d:.1} ms of pre-pass ({d:.2}x)\n", .{
+            docPct(saved.bytes, corpus.bytes),
+            ms(saved.ns),
+            ms(kern),
+            ratio(saved.ns, kern),
+        });
+        // What the incumbent's price was derived from, beside what it measured
+        // here. A rung mispriced against the corpus is the auction's defect, not
+        // this rung's, and the two have to be told apart before either is fixed.
+        std.debug.print("  walk:   {d} classes · dwell {s} · bid {d:.2} cyc/B · corpus {d:.2} cyc/B\n", .{
+            d.ncls,
+            if (d.start_dwell) |dw| brk: {
+                var buf: [48]u8 = undefined;
+                break :brk std.fmt.bufPrint(&buf, "armed (stride {d})", .{dw.economics.stride}) catch "armed";
+            } else "none",
+            re.rungs.admission.selected_cost.cycPerByte(),
+            if (clock) |c| c.cycPerByte(@enumFromInt(saved.ns), @max(saved.bytes, 1)) else 0,
+        });
+        if (shipped != null and ratio(full, ladder) < 1.0) {
+            armed_losses += 1;
+            std.debug.print("  ↑ ARMED INTO A LOSS: the compile-time arithmetic said this pays and the corpus says it does not.\n", .{});
+        }
     }
     violations += try windowEvidence(gpa, io, corpus.docs);
 
     std.debug.print("\nsoundness: {d} violations over {d} byte-positions\n", .{ violations, total_positions });
     std.debug.print("gate:      {d} of {d} patterns declined at compile time\n", .{ declined, queries.len });
+    std.debug.print("decision:  {d} armed row(s) measured slower than no sieve\n", .{armed_losses});
+    if (armed_losses != 0) std.debug.print(
+        \\           The residual is ONE input, not the cost arithmetic: `fallthroughRate`
+        \\           prices each position under a MEMORYLESS byte prior, and pattern-shaped
+        \\           bytes cluster. Its error is exponential in the run the pattern needs —
+        \\           ~6x at 10 required bytes, ~4e4 at 32, ~2e17 at 40 — so no single
+        \\           correction covers the slate and only a persistence-aware prior closes
+        \\           it. See `sieve/README.md`.
+        \\
+    , .{});
     if (violations != 0) {
         std.debug.print("FAILED: the sieve rejected somewhere the matcher accepted.\n", .{});
         std.process.exit(1);

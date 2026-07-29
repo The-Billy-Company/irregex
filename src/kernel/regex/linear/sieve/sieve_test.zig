@@ -340,11 +340,19 @@ test "sieve: the worthless pattern leaves the field null (compile-time abort)" {
         return error.WorthlessSieveArmed;
     }
     // …and it is not a blanket refusal: the selective rows survive the gate.
+    //
+    // The assertion is the inequality the gate itself applies, not a proxy for
+    // it. It used to read `fallthrough < 1 - speed_ratio`, which was the right
+    // shape only while one constant stood for both the sieve's price and the
+    // decider's; now that each side is its own measured number, an armed sieve
+    // must be a win at its own grain — pre-pass plus surviving verifications
+    // strictly under what the decider costs alone.
     var armed: usize = 0;
     for (slate) |pat| {
         var f = (try Fixture.init(pat, .worth)) orelse continue;
         defer f.deinit();
-        try std.testing.expect(f.s.fallthrough < 1.0 - sieve.speed_ratio);
+        try std.testing.expect(f.s.cost.total(.line) < f.s.cost.exact(.line));
+        try std.testing.expect(f.s.cost.pays(.line));
         armed += 1;
     }
     if (sheng.resident) try std.testing.expect(armed >= 2);

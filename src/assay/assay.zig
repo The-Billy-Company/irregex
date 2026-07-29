@@ -10,7 +10,9 @@
 //!
 //! Three axes, three sibling files, re-exported here:
 //!   * time  → `span.zig`     — `Span`/`Duration` (monotonic) vs `Anchor` (wall),
-//!                              made non-interchangeable at the type level.
+//!                              made non-interchangeable at the type level, plus
+//!                              `Cadence`, the measured core rate that turns a
+//!                              `Duration` into the price plane's cycles-per-byte.
 //!   * count → `tally.zig`    — `Tally(Schema)`, one comptime-checked counter set.
 //!   * debug → `channel.zig`  — the env vocabulary, the lens gate, the chatter
 //!                              gate, and the thread-local sink every
@@ -28,6 +30,7 @@ const std = @import("std");
 const span_mod = @import("span.zig");
 pub const Span = span_mod.Span;
 pub const Duration = span_mod.Duration;
+pub const Cadence = span_mod.Cadence;
 pub const Anchor = span_mod.Anchor;
 pub const anchor = span_mod.anchor;
 

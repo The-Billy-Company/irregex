@@ -61,6 +61,19 @@ pub const LiteralSet = struct {
         self.* = undefined;
     }
 
+    /// One needle, or several. Same authority either way and the same answer, but
+    /// a single scan for one byte-anchored needle and a Teddy bucket pass over a
+    /// set are different machines at materially different throughputs — so a
+    /// caller pricing this kernel has to be able to tell them apart. `.none`
+    /// answers with `one` because it is the degenerate single scan: nothing to
+    /// find, nothing to bucket.
+    pub fn arity(self: *const LiteralSet) enum { one, many } {
+        return switch (self.strategy) {
+            .none, .single => .one,
+            .teddy, .sparse, .fallback => .many,
+        };
+    }
+
     /// Presence with its proof authority attached. Callers must switch the tag:
     /// `.exact` may bypass the regex engine; `.candidate` never may.
     pub fn presence(self: *const LiteralSet, hay: []const u8) Presence {

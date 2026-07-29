@@ -1067,6 +1067,30 @@ pub fn build(b: *std.Build) void {
     rung_step.dependOn(&run_rung.step);
     rung_step.dependOn(rung_install);
 
+    // ── `ladder-price` — the auction's numbers, measured instead of quoted ───
+    // Every other rung lane races one accelerator against the DFA. This one
+    // audits the PRICES those races produced: it re-times each coefficient in
+    // `ladder/price.zig` in isolation (mint/verify) and then ignores the model
+    // entirely, running every machine a pattern admits to check that the
+    // auction's pick really was the measured-fastest one (regret). Cheap by
+    // construction — one 8 MiB synthetic haystack, no corpus, no giant table —
+    // because a gate that costs a minute gets switched off.
+    const price_mod = b.createModule(.{
+        .root_source_file = b.path("bench/rungs/price/bench.zig"),
+        .target = k.target,
+        .optimize = cli_optimize, // product-speed posture — this is a timing tool
+    });
+    price_mod.addImport("irregex", cli_engine);
+    const price_exe = b.addExecutable(.{ .name = "ladder-price", .root_module = price_mod });
+    const price_install = &b.addInstallArtifact(price_exe, .{}).step;
+    lab_step.dependOn(price_install);
+    const run_price = b.addRunArtifact(price_exe);
+    run_price.setCwd(b.path("../../.."));
+    if (b.args) |args| run_price.addArgs(args);
+    const price_step = b.step("ladder-price", "Ladder price plane: re-time every auction coefficient in isolation (verify), and gate the auction's per-pattern picks against the measured-fastest machine (regret)");
+    price_step.dependOn(&run_price.step);
+    price_step.dependOn(price_install);
+
     // ── `parabix-rung` — production proof: bit-parallel scan vs the ladder ────
     // Links the REAL engine and arms the REAL rung through regex.zig's seal
     // (src/kernel/match/regex/linear/parabix/), so both baseline arms are

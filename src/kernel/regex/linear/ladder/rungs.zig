@@ -48,18 +48,35 @@ const dfa_mod = @import("../dfa/dfa.zig");
 const compose_mod = @import("../shuffle/shuffle.zig");
 const parabix_mod = @import("../parabix/parabix.zig");
 const sieve_mod = @import("../sieve/sieve.zig");
+/// Every number this file bids with. Re-exported because a caller reading an
+/// `Admission` needs the unit those costs are in, and the unit belongs with the
+/// measurements rather than with the dispatch.
+pub const price = @import("price.zig");
 
-/// Fixed-point cycles per 100 bytes. These are dispatch facts, not benchmark
-/// prose: every candidate publishes the same unit, so admission compares total
-/// paths instead of asking whether some unrelated field happened to arm.
-pub const Cost = struct {
-    scan: u32,
-    compile: u32 = 0,
+/// Cycles per byte in `price.unit`s — one measured plane, one comparison. Lives
+/// there so a bid and the kernel timing behind it cannot drift apart.
+pub const Cost = price.Cost;
 
-    pub fn lessThan(a: Cost, b: Cost) bool {
-        return a.scan < b.scan or (a.scan == b.scan and a.compile < b.compile);
-    }
-};
+/// MAY this vector rung arm on this build? Two conjuncts, and keeping them
+/// distinct is the whole point:
+///
+///   * the kernel exists here — each rung's own arch predicate, which stays
+///     inside the rung because that is a fact about its instructions;
+///   * somebody TIMED it here — `price.calibrated`, which is not a fact about
+///     any rung but one fact about this machine, so it is asked once, in the
+///     file that does the bidding.
+///
+/// Porting a vector rung to a new target is therefore two steps that cannot be
+/// confused: make it compile, then mint its calibration. Before the second, the
+/// rung is not merely unarmed but unBUILT — an unmeasured target should not pay
+/// a lowering's allocation for a machine that has no price to bid.
+///
+/// Published so the benches and gate tests read the same predicate the ladder
+/// acts on. They used to read a bare `lanes.native` / `parabix.native`, which
+/// answered half the question and would have reported a rung as armable on a
+/// freshly-ported target where nothing had been measured yet.
+pub const compose_armable: bool = compose_mod.lanes.native and price.calibrated;
+pub const parabix_armable: bool = parabix_mod.native and price.calibrated;
 
 /// One independently representable candidate offered to the ladder.
 pub const Offer = struct {
@@ -67,14 +84,25 @@ pub const Offer = struct {
     cost: Cost,
 };
 
-pub const Selection = enum { fallback, compose, parabix };
+/// WHICH machine ends up answering. `settled` is not a bidder that won — it is
+/// the outcome where no auction was held at all, because a kernel above the tier
+/// decides the pattern (`Admit.settled`). Keeping it in the same enum is what
+/// makes `selected_cost` mean one thing everywhere: the per-byte price of the
+/// machine that actually answers.
+pub const Selection = enum { settled, fallback, compose, parabix };
 
 /// Compile-time admission evidence consumed by benches/census tools without
 /// putting counters or policy branches in the scan loop.
 pub const Admission = struct {
     selected: Selection = .fallback,
-    selected_cost: Cost = .{ .scan = 30_000 },
-    fallback_cost: Cost = .{ .scan = 30_000 },
+    selected_cost: Cost = price.dense_default,
+    fallback_cost: Cost = price.dense_default,
+    /// WHICH walker the fallback actually is, which is the fact the flat 30_000
+    /// hid: a pattern the powerset declined falls to the lazy DFA or the Pike
+    /// VM, and a challenger held to an eager DFA's price stands down against a
+    /// machine this pattern never got. Pair it with `prefilter` to know whether
+    /// that walker also had a skip in front of it.
+    fallback_machine: price.Walk = .eager,
     prefilter: ?prefilter.Economics = null,
     sieve: bool = false,
 };
@@ -182,7 +210,77 @@ pub const Rungs = struct {
         /// Intrinsic scan semantics Parabix admits against — the grain and
         /// whether word assertions must decode Unicode. No sibling-engine state.
         parabix_model: parabix_mod.Model = .{},
+        /// The determinizer declined its budget, so states are discovered on
+        /// demand. Only the caller knows this — `dfa == null` is also how a
+        /// pattern with no automaton at all arrives — and it is the difference
+        /// between a fallback at ~5 cyc/B and one at ~34.
+        lazy: bool = false,
+        /// Every match begins at a line start (`^…`). The fallback then never
+        /// walks densely: it verifies a few bytes per line and hunts the next
+        /// terminator with SIMD, which is a per-line cost. Priced, because the
+        /// regret gate caught this axis missing — an anchored walk bid as a dense
+        /// one at 2.98 cyc/B measures 0.31, and a challenger won an auction it
+        /// lost by 2.8× in fact.
+        anchored: bool = false,
+        /// A cheaper machine ABOVE this tier already decides the pattern, at both
+        /// grains, for every haystack.
+        ///
+        /// `verdict.zig` consults the literal engine, then the class-run kernel,
+        /// then this tier. The first two are SIMD scans at classification
+        /// bandwidth, and when either settles its verdict is final — so nothing
+        /// admitted here can ever be reached. It is not that a rung would lose
+        /// the auction; it is that the auction is never held.
+        ///
+        /// This is the axis whose absence let a sieve arm in front of
+        /// `[0-9]{40,}`. That pattern is a pure class run, decided by the SIMD
+        /// kernel at 0.37 cyc/B, and the ladder was pricing its incumbent as an
+        /// eager DFA walk at 1.32 — a machine the pattern never gets. Every rung
+        /// then bid against a phantom nearly four times dearer than the truth,
+        /// and the pre-pass the sieve won that auction with was pure cost: the
+        /// kernel above had already answered.
+        ///
+        /// Carries WHICH kernel rather than a boolean, so the admission can
+        /// publish what the machine that answers costs. A bench that reads
+        /// `selected_cost` to price a hypothetical pre-pass gets the truth, where
+        /// a bool would have left the dense walk's default in place — the same
+        /// phantom, one indirection further along.
+        settled: ?price.Settle = null,
     };
+
+    /// WHICH machine answers when no rung arms. It is the incumbent every offer
+    /// below is measured against, so naming it exactly is the whole reason the
+    /// fallback bids a price instead of a constant.
+    ///
+    /// Returns the walk itself rather than a `price.Machine`, because the walk is
+    /// what both consumers want: one prices it, the other publishes its identity,
+    /// and neither should have to re-narrow a union that can only ever hold this.
+    fn fallbackWalk(a: Admit) @FieldType(price.Machine, "walk") {
+        return .{
+            .kind = if (a.dfa != null) .eager else if (a.lazy) .lazy else .pike,
+            // A skip is priced from its own published expectation, so a weak one
+            // loses to the dense walk here rather than needing a threshold.
+            .stride = if (a.prefilter) |p| p.stride else 0,
+            .anchored = a.anchored,
+        };
+        // The DFA's table size is deliberately NOT here. It reads like the fact a
+        // walk's cost would turn on, and the residency sweep in `ladder-price`
+        // found it does not move the step at all — see `price.dfa_step`.
+    }
+
+    /// The incumbent, described. Both outcomes need all three facts: a settled
+    /// pattern's walker still EXISTS — it is merely never consulted — so an
+    /// admission that quoted the settler here would tell a bench comparing a
+    /// hypothetical pre-pass against the walk a price no walk ever had.
+    fn incumbent(a: Admit) Admission {
+        const w = fallbackWalk(a);
+        const cost = price.price(.{ .walk = w });
+        return .{
+            .selected_cost = cost,
+            .fallback_cost = cost,
+            .fallback_machine = w.kind,
+            .prefilter = a.prefilter,
+        };
+    }
 
     /// Admit the rungs this pattern earns, in ladder order.
     ///
@@ -192,55 +290,75 @@ pub const Rungs = struct {
     /// 1. **At most one decider.** They are alternatives, not a pipeline — the
     ///    ladder consults the first that armed, so a second would cost compile
     ///    time and memory to be unreachable.
-    /// 2. **The sieve only fronts the DFA.** It was measured pruning bytes for
-    ///    the byte-class walk (0.335 B/cycle) and earns 2.06× there. In front of
-    ///    a decider that already runs at 2.26 it is unmeasured, and an unmeasured
-    ///    filter on every byte is the exact failure mode the prior art maps. When
-    ///    that pairing is measured, delete the condition — not before.
+    /// 2. **The sieve is priced against whatever won.** It is not in the
+    ///    deciders' contest: it narrows without deciding, so it receives the
+    ///    winner's per-byte cost and applies its own survival inequality against
+    ///    it (`sieve.zig`). That inequality is what stands it down in front of a
+    ///    cheap decider — where a boolean "only front the DFA" prohibition used
+    ///    to, on a ratio measured against a machine it might not be fronting.
+    ///
+    /// 3. **A settled pattern gets no tier at all.** Before any of the above:
+    ///    an auction whose winner can never be consulted is not an auction, and
+    ///    the honest answer to "what should arm here" is nothing. See
+    ///    `Admit.settled`.
+    ///
+    /// Every bid here comes from `price.zig`, whose coefficients are re-timed and
+    /// gated by `zig build ladder-price`. Nothing in this function knows a
+    /// cycle count.
     pub fn build(gpa: std.mem.Allocator, a: Admit) std.mem.Allocator.Error!Rungs {
+        // Nothing to bid for: a kernel above this tier decides every haystack, so
+        // every rung below it is unreachable. Declining here rather than in the
+        // auction is what makes it free — no lowering, no Sheng tables, no
+        // allocation for a machine that will never be asked. The admission still
+        // names the machine and its price, because "nothing armed" and "nothing
+        // could" are different facts and a bench has to be able to tell them apart.
+        if (a.settled) |kernel| {
+            var ad = incumbent(a);
+            ad.selected = .settled;
+            ad.selected_cost = price.price(.{ .settle = kernel });
+            return .{ .admission = ad };
+        }
+
         var r: Rungs = .{};
         errdefer r.deinit(gpa);
 
         // Build representability independently; ordering never hides a candidate.
-        var compose = if (a.dfa) |d| try compose_mod.Compose.lower(gpa, d) else null;
+        // Each is gated on its own two-conjunct evidence flag above.
+        var compose: ?*compose_mod.Compose = if (comptime compose_armable)
+            if (a.dfa) |d| try compose_mod.Compose.lower(gpa, d) else null
+        else
+            null;
         errdefer if (compose) |c| c.deinit();
-        const parabix = if (a.ast) |root| switch (parabix_mod.Parabix.build(root, a.parabix_model)) {
-            .armed => |p| p,
-            .declined => null,
-        } else null;
+        const parabix: ?parabix_mod.Parabix = if (comptime parabix_armable)
+            if (a.ast) |root| switch (parabix_mod.Parabix.build(root, a.parabix_model)) {
+                .armed => |p| p,
+                .declined => null,
+            } else null
+        else
+            null;
 
-        const fallback = Offer{
-            .kind = .fallback,
-            // Dense eager DFA is ~3 cyc/B. A start skip pays a small fixed scan
-            // plus verification at one candidate per expected stride.
-            .cost = .{ .scan = if (a.prefilter) |p| 500 + 30_000 / @max(p.stride, 1) else 30_000 },
-        };
-        var selected = fallback;
+        var ad = incumbent(a);
+        var selected = Offer{ .kind = .fallback, .cost = ad.fallback_cost };
         if (compose) |c| {
-            const offer = Offer{
-                .kind = .compose,
-                .cost = .{
-                    .scan = switch (c.width) {
-                        .lanes16 => @as(u32, 4_400),
-                        .lanes32 => @as(u32, 8_000),
-                    } + if (c.index == .byte_eol) @as(u32, 800) else 0,
-                    .compile = @intCast(c.table.len),
-                },
-            };
+            const offer = Offer{ .kind = .compose, .cost = price.price(.{ .compose = .{
+                .width = c.width,
+                .eol = c.index == .byte_eol,
+                .table_bytes = c.table.len,
+            } }) };
             if (offer.cost.lessThan(selected.cost)) selected = offer;
         }
         if (parabix) |*p| {
-            const offer = Offer{
-                .kind = .parabix,
-                .cost = .{
-                    .scan = 9_000 + @as(u32, @intCast(p.economics.stripe_ops / 8)),
-                    .compile = p.prog.ninstrs,
-                },
-            };
+            const offer = Offer{ .kind = .parabix, .cost = price.price(.{ .parabix = .{
+                .stripe_ops = p.economics.stripe_ops,
+                .instrs = p.prog.ninstrs,
+            } }) };
             if (offer.cost.lessThan(selected.cost)) selected = offer;
         }
 
         switch (selected.kind) {
+            // Never bid: the settled case returned above, before any candidate
+            // was even built.
+            .settled => unreachable,
             .fallback => {},
             .compose => {
                 r.compose = compose;
@@ -262,13 +380,10 @@ pub const Rungs = struct {
             .{ .prefilter = a.prefilter, .decider_cost = selected.cost.scan },
             .worth,
         );
-        r.admission = .{
-            .selected = selected.kind,
-            .selected_cost = selected.cost,
-            .fallback_cost = fallback.cost,
-            .prefilter = a.prefilter,
-            .sieve = r.sieve != null,
-        };
+        ad.selected = selected.kind;
+        ad.selected_cost = selected.cost;
+        ad.sieve = r.sieve != null;
+        r.admission = ad;
         return r;
     }
 
@@ -330,6 +445,12 @@ pub const Rungs = struct {
                 // single predictable bool ahead of a whole scan.
                 const fits = comptime g == .doc or s.model == .byte;
                 if (!fits and !sliceSafe(rung)) break :eligible;
+                // …and the mirror image: a rung whose KIND serves the document
+                // grain may still have an instance that does not. `docSafe` is
+                // that veto, absent on rungs with nothing to withhold, so this
+                // costs one predictable bool for the sieve and nothing at all
+                // for the deciders.
+                if (comptime g == .doc) if (!docSafe(rung)) break :eligible;
                 const method = comptime if (g == .line) s.line else s.doc;
                 switch (normalize(@call(.auto, @field(@TypeOf(rung.*), method), .{ rung, hay }))) {
                     .hit => return .hit,
@@ -356,6 +477,15 @@ pub const Rungs = struct {
 inline fn sliceSafe(rung: anytype) bool {
     const T = @TypeOf(rung.*);
     return @hasDecl(T, "sliceSafe") and rung.sliceSafe();
+}
+/// …and does it consent to the DOCUMENT grain? The two default the opposite way,
+/// on purpose. `sliceSafe` WIDENS a rung past its kind's conservative model, so
+/// its absence means "no refinement offered" — false. `docSafe` NARROWS one
+/// below its kind's model, so its absence means "nothing withheld" — true. A
+/// rung that needs neither declares neither and pays for neither.
+inline fn docSafe(rung: anytype) bool {
+    const T = @TypeOf(rung.*);
+    return !@hasDecl(T, "docSafe") or rung.docSafe();
 }
 
 /// Fold a rung's own spelling of its answer into the shared protocol. A decider
@@ -386,6 +516,28 @@ test "build with nothing to offer admits nothing" {
     var r = try Rungs.build(std.testing.allocator, .{});
     defer r.deinit(std.testing.allocator);
     try std.testing.expect(r.sieve == null and r.compose == null and r.parabix == null);
+}
+
+test "a vector rung is not BUILT where its evidence is missing, only where it loses" {
+    // The evidence flag has to govern CONSTRUCTION rather than just the bid: the
+    // allocation and the lowering are the cost being avoided on a target that
+    // cannot price the rung, and a machine built-then-discarded would have paid
+    // it anyway. `[a-z]{4}[0-9]{4}` is Unicode-free with bounded star height, so
+    // parabix's OWN gate admits it wherever the kernel exists, and with no DFA in
+    // the admission the incumbent is the Pike VM at ~30 cyc/B — an auction this
+    // rung wins by an order of magnitude when it is allowed to enter.
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var parser = syn.Parser{ .src = "[a-z]{4}[0-9]{4}", .arena = arena_state.allocator() };
+    const ast = try parser.parseAlt();
+
+    var r = try Rungs.build(std.testing.allocator, .{ .ast = ast });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(parabix_armable, r.parabix != null);
+    // So a null field above is the ladder withholding evidence, never the pattern
+    // being unrepresentable — the two reasons the single arch predicate conflated.
+    if (comptime parabix_mod.native)
+        try std.testing.expect(parabix_mod.Parabix.build(ast, .{}) == .armed);
 }
 
 test "the byte-model annotation is a claim about a gate, and the gate keeps it" {

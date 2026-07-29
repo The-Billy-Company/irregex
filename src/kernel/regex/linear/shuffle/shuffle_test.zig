@@ -18,6 +18,9 @@ const std = @import("std");
 const regex = @import("../program/core.zig");
 const lanes = @import("../../../scan/lanes.zig");
 const compose = @import("shuffle.zig");
+/// The ladder, because this rung's dispatch judgment lives there now: the
+/// armed-skip gate that used to be a boolean inside `Compose` is a bid.
+const ladder = @import("../ladder/rungs.zig");
 const Compose = compose.Compose;
 const Regex = regex.Regex;
 
@@ -32,7 +35,7 @@ fn lower(pattern: []const u8) !?struct { re: Regex, cx: *Compose } {
         re.deinit();
         return null;
     };
-    const cx = (try Compose.build(a, dfa)) orelse {
+    const cx = (try Compose.lower(a, dfa)) orelse {
         re.deinit();
         return null;
     };
@@ -90,15 +93,35 @@ test "compose: the vector fold equals the scalar definition of the same fold" {
 
 // ─────────────────────────────── 2. the gates ─────────────────────────────────
 
-test "compose: gate — an armed literal skip stands the rung down" {
+test "compose: an armed literal skip outbids the rung, and the ladder is where that happens" {
     // `qzx.*jvw.*mkp` is the honest-boundary case: composition retires every
-    // byte where the DFA skips ~19 in 20 out of its start dwell, and was measured
-    // 6× SLOWER. The gate is what makes that measurement irrelevant.
+    // byte where the DFA skips ~19 in 20 out of its start dwell, and was
+    // measured 6× SLOWER. This used to be a boolean inside the rung
+    // (`if (dfa.start_dwell != null) return null`); it is now the auction, so
+    // the assertion moved with it. The rung must still be REPRESENTABLE here —
+    // that is what makes the outcome a priced judgment rather than a refusal —
+    // and the ladder must still decline to arm it.
+    if (comptime !lanes.native) return error.SkipZigTest;
     var re = try Regex.compileOpts(a, "qzx.*jvw.*mkp", .{ .force_dfa = true });
     defer re.deinit();
     const dfa = re.dfa.?;
     try std.testing.expect(dfa.start_dwell != null); // the skip really is armed
-    try std.testing.expectEqual(@as(?*Compose, null), try Compose.build(a, dfa));
+    const representable = (try Compose.lower(a, dfa)) orelse return error.RungDeclined;
+    representable.deinit();
+    try std.testing.expectEqual(ladder.Selection.fallback, re.rungs.admission.selected);
+    try std.testing.expectEqual(@as(?*Compose, null), re.rungs.compose);
+    // …and the skip is WHY: the fallback's bid carries a stride, and it came in
+    // under what this machine's own lowering would have cost per byte.
+    try std.testing.expect(re.rungs.admission.prefilter != null);
+
+    // The control. Same rung, and now nothing cheaper to lose to — no literal
+    // for a skip to ride and no `^` for the fallback to price as a per-line
+    // memchr — so it wins the same auction. That is the price discriminating,
+    // rather than the rung being unreachable here.
+    var bare = try Regex.compileOpts(a, "[a-z]{4}[0-9]{4}", .{ .force_dfa = true });
+    defer bare.deinit();
+    try std.testing.expect(bare.dfa.?.start_dwell == null);
+    try std.testing.expectEqual(ladder.Selection.compose, bare.rungs.admission.selected);
 }
 
 test "compose: gate — more than 31 non-accepting states stands the rung down" {
@@ -108,11 +131,11 @@ test "compose: gate — more than 31 non-accepting states stands the rung down" 
     defer wide.deinit();
     if (wide.dfa) |d| {
         try std.testing.expect(d.nstates > compose.max_states);
-        try std.testing.expectEqual(@as(?*Compose, null), try Compose.build(a, d));
+        try std.testing.expectEqual(@as(?*Compose, null), try Compose.lower(a, d));
     }
     var narrow = try Regex.compileOpts(a, "^[a-z]{8}$", .{ .force_dfa = true });
     defer narrow.deinit();
-    const cx = (try Compose.build(a, narrow.dfa.?)) orelse return error.RungDeclined;
+    const cx = (try Compose.lower(a, narrow.dfa.?)) orelse return error.RungDeclined;
     defer cx.deinit();
     try std.testing.expect(cx.match("abcdefgh"));
     try std.testing.expect(!cx.match("abcdefg"));
@@ -123,7 +146,7 @@ test "compose: gate — word context and an already-accepting start stand it dow
     defer wordy.deinit();
     if (wordy.dfa) |d| {
         try std.testing.expect(d.word_ctx);
-        try std.testing.expectEqual(@as(?*Compose, null), try Compose.build(a, d));
+        try std.testing.expectEqual(@as(?*Compose, null), try Compose.lower(a, d));
     }
     // `a*` matches the empty string at every position, so its start closure is
     // already accepting: START and MATCH would have to be the same lane.
@@ -131,22 +154,22 @@ test "compose: gate — word context and an already-accepting start stand it dow
     defer nullable.deinit();
     if (nullable.dfa) |d| {
         try std.testing.expect(d.isMatch(d.start));
-        try std.testing.expectEqual(@as(?*Compose, null), try Compose.build(a, d));
+        try std.testing.expectEqual(@as(?*Compose, null), try Compose.lower(a, d));
     }
 }
 
 test "compose: gate — a non-AArch64 target leaves the field null" {
     // `native` is the compile-time predicate the rung is gated on; on a target
-    // without it, `build` returns null before touching the DFA at all. Here we
+    // without it, `lower` returns null before touching the DFA at all. Here we
     // can only assert the two agree — the x86 build is proven by compiling the
     // package for `x86_64-linux` in CI, where this rung is unreachable code.
     var re = try Regex.compileOpts(a, "^[a-z]{8}$", .{ .force_dfa = true });
     defer re.deinit();
-    const built = try Compose.build(a, re.dfa.?);
+    const built = try Compose.lower(a, re.dfa.?);
     if (built) |cx| {
         defer cx.deinit();
         try std.testing.expect(lanes.native);
-    } else try std.testing.expect(!lanes.native or re.dfa.?.start_dwell != null);
+    } else try std.testing.expect(!lanes.native);
 }
 
 // ───────────────────────────── 3. targeted units ──────────────────────────────
@@ -303,7 +326,7 @@ test "compose: line-level differential vs the Pike VM (0 divergences), anchors i
         var re = Regex.compileOpts(a, pat.items, .{ .force_dfa = true }) catch continue;
         defer re.deinit();
         const dfa = re.dfa orelse continue;
-        const cx = (try Compose.build(a, dfa)) orelse continue; // declined ⇒ not this rung's line
+        const cx = (try Compose.lower(a, dfa)) orelse continue; // declined ⇒ not this rung's line
         defer cx.deinit();
         armed += 1;
         var sim = try Regex.Sim.init(a, &re);
@@ -345,7 +368,7 @@ test "compose: docMatch single-pass scan ≡ per-line Pike over multi-line buffe
         var re = Regex.compileOpts(a, pat.items, .{ .force_dfa = true }) catch continue;
         defer re.deinit();
         const dfa = re.dfa orelse continue;
-        const cx = (try Compose.build(a, dfa)) orelse continue;
+        const cx = (try Compose.lower(a, dfa)) orelse continue;
         defer cx.deinit();
         var sim = try Regex.Sim.init(a, &re);
         defer sim.deinit();
