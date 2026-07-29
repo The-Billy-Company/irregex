@@ -58,11 +58,22 @@ correction leaves it untouched. 1.25 GB/s is **2.6–3.1 cycles/byte**, which is
 one L1 load-to-use latency — and lands _closer_ to the hardware's actual L1
 figure than the original 3.61 did, so the correction strengthens the argument
 it was supporting. The loop
-`state = trans[state * ncls + class[byte]]` cannot issue the next load until
+`state = trans[state + class[byte]]` cannot issue the next load until
 the previous one lands, so the cost is the serial dependency chain and not the
 table. Shrinking the automaton therefore cannot help, and neither can a better
 table layout. Only a change of _bound type_ — from latency-bound to
 throughput-bound — moves this number.
+
+**That last clause has since been tested directly, and it held.** The engine
+later grew a byte-indexed mirror of the transition tables (`Dfa.Wide`), which
+folds the class column into the row and deletes one load per byte — precisely
+the "better table layout" this paragraph predicts cannot help. On the serial
+chain it does not: the `bench/bounds/port` probes measure 4.59 ns/step classed
+against 4.62 mirrored, a wash, because `class[byte]` depends on the document byte
+rather than on `state` and so was never on the critical path. The same mirror is
+worth ~1.28× to the shipped document walk — which bursts four lines in lockstep,
+i.e. is exactly the change of bound type this sentence names as the only thing
+that moves the number.
 
 For calibration, a reference table DFA measures 0.15 bytes/cycle on Skylake
 (Langdale), so the engine is already roughly 2.1–2.5× better than the naive

@@ -76,7 +76,7 @@ folder from becoming a junk drawer:
 ## What is here
 
 **`freeze.zig`** — the last operation on any determinization. It takes the dense
-id-indexed tables both roads produce and applies the three layout passes that only
+id-indexed tables both roads produce and applies the four layout passes that only
 a *finished* automaton admits, in the one order they can run in:
 
 1. **Match-first renumbering** — permute states so every accepting one precedes
@@ -87,8 +87,17 @@ a *finished* automaton admits, in the one order they can run in:
 2. **The start state's dwell** — read off the start row, which needs state
    *identity*, so it has to precede premultiplication. The rule itself is
    `dwell.zig`'s; `freeze` only decides when to ask.
-3. **Premultiplication** — rewrite every state value to its row offset, so the hot
-   loop's index folds into addressing.
+3. **Widening** — mirror both tables into the byte-indexed `Dfa.Wide` layout the
+   document walk steps, so a raw byte indexes a row and the class load in front of
+   the transition load disappears. Like the dwell it needs state *identity*, and
+   for the same reason it must precede premultiplication: widening a raw id is one
+   multiply by the mirror's stride, where widening a premultiplied offset would
+   mean dividing back out of `ncls` first. Skipped when the mirror would exceed
+   `Wide.budget`, and for the shapes that never walk it.
+4. **Premultiplication** — rewrite every state value to its row offset, so the hot
+   loop's index folds into addressing. The mirror is premultiplied by its own
+   stride rather than by `ncls`, which is the one place the two layouts' offsets
+   are not interchangeable.
 
 It also carries the determinization's `visits` count out onto the automaton, so
 mean closure width is observable after the fact rather than only from inside the

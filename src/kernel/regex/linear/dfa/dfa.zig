@@ -29,6 +29,21 @@ const word = @import("../../syntax/word.zig");
 /// its state — see the note on `Dfa` below, which is the reason this is public.
 pub const unfilled: u32 = std.math.maxInt(u32);
 
+/// Which table layout a walk steps through — see `Dfa.Wide`.
+const Shape = enum { classed, direct };
+
+/// One transition, over whichever layout the caller chose. The classed tables need
+/// the byte's equivalence class first — `trans[s + class[b]]`, a load whose result
+/// the next load depends on — where the byte-indexed mirror has already absorbed
+/// that column and reads `trans[s + b]`. It is the only line `Shape` changes, and
+/// deleting that one load is the whole of the doc walk's speedup (`Dfa.Wide`).
+inline fn step(comptime shape: Shape, t: []const u32, cls: *const [256]u8, s: u32, b: u8) u32 {
+    return switch (shape) {
+        .classed => t[s + cls[b]],
+        .direct => t[s + b],
+    };
+}
+
 /// An immutable byte-class DFA. `class[b]` maps a byte to its equivalence-class
 /// column; `trans_in`/`trans_fin` are row-major `[state][class]` next-state
 /// tables (interior vs last-byte, the latter resolving `$`); `isMatch(s)` reports
@@ -109,6 +124,9 @@ pub const Dfa = struct {
     // a byte that keeps the start state in itself can neither begin a match nor
     // match under `trans_fin` (`$`).
     start_dwell: ?prefilter.Prefilter = null,
+    /// The byte-indexed mirror of the two tables, when one is affordable
+    /// (`Wide.afford`). Only the multi-line doc walk consults it.
+    wide: ?Wide = null,
     allocator: std.mem.Allocator,
 
     /// One contiguous block of match states accepting the same pattern set:
@@ -116,12 +134,113 @@ pub const Dfa = struct {
     /// accepts exactly `mask`.
     pub const PatRun = struct { hi: u32, mask: u64 };
 
+    /// The same automaton with the byte-class column folded INTO the tables: one
+    /// row per state per raw byte, so a step is `trans[s + b]` and the class
+    /// translation — a load the transition load waits on — disappears. This is
+    /// RE2's dense layout, and rust-`regex`'s `dense::DFA` before its
+    /// `ByteClasses` alphabet, which exists to shrink exactly this table.
+    ///
+    /// It **mirrors** rather than replaces. `class`, `ncls`, `trans_in`, and
+    /// `trans_fin` stay byte-for-byte what the determinizer froze, so every other
+    /// reader of this automaton — the dwell derivation, the quotient sieve, the
+    /// shuffle lowering, the symbolic transcription — sees the numbers it always
+    /// did, and the mirror can be absent with no consumer caring. Offsets inside
+    /// it are premultiplied by `Wide.stride`, never by `ncls`.
+    ///
+    /// Two tests in `dfa_test.zig` hold that mirroring claim, and a single
+    /// corrupted cell reddens both: one checks every state × all 256 bytes against
+    /// the classed cell the byte's class names, the other fuzzes `docMatch` with
+    /// the mirror present and then withheld and demands the same verdict.
+    ///
+    /// **What it is worth.** `bench/rungs/automata … burst` races body × width ×
+    /// shape over an 8 MiB match-free document. Against the classed four-lane walk
+    /// (M4, ns/byte; `rows` counts the table rows that document's bytes actually
+    /// reached, which is the number that explains every anomaly here):
+    ///
+    ///   | mirror  | states | rows | classed | mirrored |  gain |
+    ///   | ------- | ------ | ---- | ------- | -------- | ----- |
+    ///   |   6 KiB |      3 |    2 |  0.3154 |   0.2312 | 1.36× |
+    ///   |  14 KiB |      7 |    1 |  0.3261 |   0.2418 | 1.35× |
+    ///   |  16 KiB |      8 |    1 |  0.3286 |   0.2396 | 1.37× |
+    ///   |  28 KiB |     14 |    9 |  0.3665 |   0.3502 | 1.05× |
+    ///   |  68 KiB |     34 |   33 |  0.3602 |   0.3534 | 1.02× |
+    ///   | 128 KiB |     64 |    1 |  0.3134 |   0.2296 | 1.37× |
+    ///   | 132 KiB |     66 |   65 |  0.3692 |   0.3569 | 1.03× |
+    ///
+    /// The gain tracks `rows`, not size: a walk whose touched rows are L1-resident
+    /// keeps the whole win, and one that wanders over 33 rows spends it back on
+    /// misses the class load was never the bottleneck for. Both directions are
+    /// wins, which is why the mirror is taken whenever it is affordable and no
+    /// second judgment is made about it.
+    ///
+    /// **Width was raced and rejected, deliberately.** Twelve lanes over the
+    /// mirror cost a flat ~0.31 at every width — enough dependent-load chains in
+    /// flight to cover the miss wherever it lives — which beats four lanes on the
+    /// wandering rows (0.3184 against 0.3502) and loses badly on the L1-resident
+    /// ones (0.3103 against 0.2296). Wider lanes shorten the burst, because a
+    /// burst runs to the SHORTEST lane's line end and the minimum over twelve
+    /// remainders is far shorter than over four, so the `$`-resolve-and-reseed
+    /// tail runs proportionally more often; sixteen lanes lose everywhere
+    /// (0.43–0.45) once that tail dominates and the frame spills too. Summed over
+    /// the slate the two widths tie inside run-to-run variance, and choosing
+    /// between them needs the DOCUMENT rather than the automaton — the same 14 KiB
+    /// automaton parks on prose and wanders over hex. So the engine carries one
+    /// width, and the ladder keeps racing twelve as the measured ceiling: over
+    /// repeat runs the shipped width geomeans 1.27×–1.29× against the classed
+    /// walk, and a per-row best-arm oracle ~1.29×, so the gap left on the table
+    /// is a couple of points for whoever makes the walk working-set-aware.
+    pub const Wide = struct {
+        trans_in: []const u32,
+        trans_fin: []const u32,
+        start: u32,
+        match_hi: u32,
+
+        /// Row stride: the whole byte alphabet, unclassed.
+        pub const stride = 256;
+
+        /// The most a mirror may cost before an automaton keeps only its classed
+        /// tables. `bench/rungs/automata … burst` measures the mirror paying from
+        /// 6 KiB out to 132 KiB, so the ceiling sits just past the widest width
+        /// measured rather than extrapolating past it.
+        pub const budget = 160 << 10;
+
+        /// Resident bytes the mirror costs — the price of the load it drops.
+        /// Deliberately NOT folded into `Dfa.tableBytes`: that number prices the
+        /// classed walk the ladder routes on, and a mirror only the doc walk
+        /// reads must not move a routing decision it has nothing to do with.
+        pub fn bytes(self: *const Wide) usize {
+            return (self.trans_in.len + self.trans_fin.len) * @sizeOf(u32);
+        }
+
+        /// Would a mirror of `nstates` rows fit the budget? Asked before building
+        /// one, so a wide automaton never pays the allocation to then discard it.
+        pub fn afford(nstates: u32) bool {
+            return @as(usize, nstates) * stride * 2 * @sizeOf(u32) <= budget;
+        }
+    };
+
+    /// The transition tables' resident footprint — every table a walk of this
+    /// automaton can index, and nothing else.
+    ///
+    /// This is the automaton's PRICE, not a diagnostic. The hot loop is one
+    /// loop-carried dependent load, so its cost is the latency of whichever
+    /// cache level answers that load; which level that is, is this number
+    /// against the host's. `ladder/price.zig` is the consumer, and the reason
+    /// this lives here rather than in three callers computing it three ways.
+    pub fn tableBytes(self: *const Dfa) usize {
+        return (self.trans_in.len + self.trans_fin.len + self.trans_in_w.len) * @sizeOf(u32);
+    }
+
     pub fn deinit(self: *Dfa) void {
         const a = self.allocator;
         a.free(self.trans_in);
         a.free(self.trans_fin);
         if (self.trans_in_w.len != 0) a.free(self.trans_in_w);
         if (self.pat_runs.len != 0) a.free(self.pat_runs);
+        if (self.wide) |w| {
+            a.free(w.trans_in);
+            a.free(w.trans_fin);
+        }
         a.destroy(self);
     }
 
@@ -244,8 +363,11 @@ pub const Dfa = struct {
     pub fn docMatch(self: *const Dfa, doc: []const u8) bool {
         std.debug.assert(!self.word_ctx); // word-boundary DFAs go per-line through `matchWord`
         if (self.start_dwell) |*exits| return self.docMatchDwell(doc, exits);
-        if (!self.anchored) return self.docMatchDense(doc);
-        return self.docMatchScalar(doc);
+        if (self.anchored) return self.docMatchScalar(doc);
+        // The mirror when this automaton has one, its classed tables otherwise —
+        // the same walk either way, and the shape is comptime for every byte of it.
+        if (self.wide) |*w| return self.docMatchDense(.direct, w, doc);
+        return self.docMatchDense(.classed, self, doc);
     }
 
     /// Per-line scalar scan: `\n` detected inline, the last content byte resolved
@@ -326,33 +448,43 @@ pub const Dfa = struct {
     /// `docMatchScalar`'s per-line logic byte-for-byte (interior `trans_in`, then
     /// the `$`-resolving `trans_fin` on the last content byte), so the doc-level
     /// DFA-vs-Pike differential fuzz proves equivalence.
-    fn docMatchDense(self: *const Dfa, doc: []const u8) bool {
+    ///
+    /// `tab` supplies the four numbers the walk steps through — `trans_in`,
+    /// `trans_fin`, `start`, `match_hi` — and is either this `Dfa` (classed rows,
+    /// `ncls`-strided) or its `Wide` mirror (raw-byte rows, 256-strided). Both
+    /// spell those fields identically, so one body serves both layouts with no
+    /// wrapper between them, and `shape` selects only how a byte indexes a row
+    /// (`step`). `Wide` carries what that choice is worth, and why the width stayed
+    /// at four after the ladder raced it to sixteen.
+    fn docMatchDense(self: *const Dfa, comptime shape: Shape, tab: anytype, doc: []const u8) bool {
         const lanes = 4;
-        const trans = self.trans_in;
-        const tfin = self.trans_fin;
+        const trans = tab.trans_in;
+        const tfin = tab.trans_fin;
         const cls = &self.class;
-        const mhi = self.match_hi;
-        const start = self.start;
+        const mhi = tab.match_hi;
+        const start = tab.start;
 
         var s = [_]u32{start} ** lanes;
         var prev = [_]u32{start} ** lanes;
         var cur = [_]usize{0} ** lanes;
         var end = [_]usize{0} ** lanes;
-        var live = [_]bool{false} ** lanes;
-        var nlive: usize = 0;
         var pos: usize = 0;
+        var seated = true; // does EVERY lane carry a line? — the bulk phase's precondition
 
-        // Initial fill: one content line per lane (order-preserving).
-        var l: usize = 0;
-        while (l < lanes) : (l += 1) switch (self.seedLine(doc, pos)) {
+        // Initial fill: one content line per lane (order-preserving). A lane the
+        // document ran out of lines for keeps `cur == end`, which is exactly how a
+        // lane retired below is spelled — so "never seated", "line consumed", and
+        // "retired" all read as one emptiness test and need no second array.
+        for (0..lanes) |i| switch (self.seedLine(doc, pos)) {
             .match => return true,
-            .done => break,
+            .done => {
+                seated = false;
+                break;
+            },
             .line => |ln| {
-                cur[l] = ln.start;
-                end[l] = ln.end;
-                live[l] = true;
+                cur[i] = ln.start;
+                end[i] = ln.end;
                 pos = ln.next;
-                nlive += 1;
             },
         };
 
@@ -360,29 +492,33 @@ pub const Dfa = struct {
         // each fast-loop iteration issues `lanes` INDEPENDENT transition loads
         // that overlap. Burst to the shortest lane's line end (branch-free),
         // then resolve `$`/`trans_fin` and refill every lane now at its end.
-        while (nlive == lanes) {
-            var burst: usize = std.math.maxInt(usize);
-            inline for (0..lanes) |i| {
-                const rem = end[i] - cur[i];
-                if (rem < burst) burst = rem; // ≥1: a live lane always has content left
-            }
-            while (burst > 0) : (burst -= 1) {
+        while (seated) {
+            var burst = end[0] - cur[0]; // ≥1: a seated lane always has content left
+            inline for (1..lanes) |i| burst = @min(burst, end[i] - cur[i]);
+
+            // The body carries a `prev` copy, a cursor bump, and a match test per
+            // lane per byte, and at four lanes every one of those is free: aarch64
+            // folds the bump into a post-indexed load, move elimination retires the
+            // copy, and the four compares fuse into the same branch cluster. The
+            // ladder confirms it — peeling all three out measures 0.2605 against
+            // this body's 0.2312. They only start costing at widths this walk does
+            // not use, which is the trade `Wide` records.
+            var n = burst;
+            while (n > 0) : (n -= 1) {
                 inline for (0..lanes) |i| {
                     prev[i] = s[i];
-                    s[i] = trans[s[i] + cls[doc[cur[i]]]];
+                    s[i] = step(shape, trans, cls, s[i], doc[cur[i]]);
                     cur[i] += 1;
                 }
                 inline for (0..lanes) |i| if (s[i] < mhi) return true;
             }
+
             inline for (0..lanes) |i| {
                 if (cur[i] == end[i]) { // line consumed → resolve `$`, then refill
-                    if (tfin[prev[i] + cls[doc[end[i] - 1]]] < mhi) return true;
+                    if (step(shape, tfin, cls, prev[i], doc[end[i] - 1]) < mhi) return true;
                     switch (self.seedLine(doc, pos)) {
                         .match => return true,
-                        .done => {
-                            live[i] = false;
-                            nlive -= 1;
-                        },
+                        .done => seated = false, // lane retires: `cur == end` already says so
                         .line => |ln| {
                             s[i] = start;
                             prev[i] = start;
@@ -395,23 +531,23 @@ pub const Dfa = struct {
             }
         }
 
-        // Drain: fewer than `lanes` lines remain. Finish each still-live lane's
-        // current line, then the unassigned tail (`doc[pos..]` is line-aligned)
+        // Drain: fewer than `lanes` lines remain. Finish every lane still holding
+        // unconsumed bytes, then the unassigned tail (`doc[pos..]` is line-aligned)
         // with the scalar walk — identical per-line logic, no double-processing
-        // (live lanes hold lines strictly before `pos`).
+        // (seated lanes hold lines strictly before `pos`).
         inline for (0..lanes) |i| {
-            if (live[i]) {
+            if (cur[i] < end[i]) {
                 var si = s[i];
                 var pv = prev[i];
                 var ci = cur[i];
                 const ei = end[i];
                 while (ci < ei) {
                     pv = si;
-                    si = trans[si + cls[doc[ci]]];
+                    si = step(shape, trans, cls, si, doc[ci]);
                     ci += 1;
                     if (si < mhi) return true;
                 }
-                if (tfin[pv + cls[doc[ei - 1]]] < mhi) return true;
+                if (step(shape, tfin, cls, pv, doc[ei - 1]) < mhi) return true;
             }
         }
         return self.docMatchScalar(doc[pos..]);

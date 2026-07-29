@@ -350,16 +350,23 @@ and a row whose mutations never produced a match fails instead of publishing a t
 
 | pattern | observed stride | `vs step` | **`vs ship`** |
 | --- | --- | --- | --- |
-| `a.*b` | 39.0 B | 2.60× | **1.18×** |
-| `a.*b.*c` | 25.7 B | 1.27× | **0.56×** |
+| `a.*b` | 39.0 B | 2.58× | **1.08×** |
+| `a.*b.*c` | 25.7 B | 1.25× | **0.52×** |
 | `foo.*bar` | 3.8 B | 0.23× | **0.10×** |
-| | | | geomean **0.41×** |
+| | | | geomean **0.38×** |
 
 Every figure here is the least-flattering of three fresh runs; they reproduce inside
-±4% (`a.*b` 1.18–1.23×, geomean 0.41–0.43×), and the strides are exact rather than
+±3% (`a.*b` 1.08–1.10×, geomean 0.376–0.380×), and the strides are exact rather than
 timed, so they do not move at all.
 
-**At the waived bar C4 is a 2.5× regression, and the observed stride says exactly
+**`vs ship` was re-measured after the doc walk gained its byte-indexed mirror**, which
+made the baseline this column divides by ~1.28× faster; `vs step` is unaffected, both
+arms there being scalar. The re-measure moves C4 further down (geomean 0.41× → 0.38×,
+`a.*b` 1.18× → 1.08×) — the retirement below was already correct and is now correct by
+more. That asymmetry is the point of quoting `vs ship` at all: a proposal that must
+beat the shipped walk gets harder to justify every time the shipped walk improves.
+
+**At the waived bar C4 is a 2.6× regression, and the observed stride says exactly
 why.** The skip is ~10× *slower* on `foo.*bar`, whose interior dwell exits on `b`
 — a byte the document actually contains, so the skip elides 3.8 bytes and pays full
 vector-kernel entry for each of them. `a.*b` wins only because its fill excludes
@@ -367,27 +374,40 @@ vector-kernel entry for each of them. `a.*b` wins only because its fill excludes
 same build-time prediction, opposite outcomes — and no build-time prior can tell
 them apart, because the difference is a property of the *document*.
 
-**The bar is measured-correct to within 6%.** A break-even sweep holds the
-automaton, alphabet, and instruction mix fixed and moves only the line length, which
-on an `a.*b`-shaped row is the sole thing that changes how far the skip runs:
+**The bar is measured-correct to within ~6%, and the mirror moved which side of it
+we are on.** A break-even sweep holds the automaton, alphabet, and instruction mix
+fixed and moves only the line length, which on an `a.*b`-shaped row is the sole thing
+that changes how far the skip runs:
 
 | stride | 4.3 | 7.8 | 11.5 | 15.2 | 23.1 | **31.0** | 47.0 | 79.0 | 159.0 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `vs ship` | 0.36× | 0.37× | 0.40× | 0.58× | 0.79× | **1.03×** | 1.35× | 1.94× | 2.86× |
+| `vs ship` | 0.31× | 0.27× | 0.33× | 0.48× | 0.69× | **0.92×** | 1.28× | 1.90× | 2.61× |
 
-`vs ship` crosses 1.000× between a 23.1-byte and a 31.0-byte stride — break-even at
-**≈30 bytes**, against a shipped `min_profitable_stride` of **32**. The crossing sits
-in the same interval on all three runs (23.1 reads 0.77–0.79×, 31.0 reads
-1.01–1.03×). A threshold calibrated on the start case turns out to be within ~6% of
-the independently measured interior break-even.
+`vs ship` now crosses 1.000× between a 31.0-byte and a 47.0-byte stride —
+log-interpolating puts break-even at **≈34 bytes**, against a shipped
+`min_profitable_stride` of **32**. The crossing sits in the same interval on all three
+runs (31.0 reads 0.89–0.94×, 47.0 reads 1.25–1.33×).
+
+**That is a sign flip worth stating plainly rather than smoothing over.** Before the
+doc walk gained its byte-indexed mirror this sweep put break-even at ≈30 bytes, just
+*below* the 32-byte bar, so the threshold erred toward refusing a skip that would
+have paid. A ~1.28× faster shipped walk raises the distance a skip must run to beat
+it, and break-even is now just *above* the bar — so 32 errs the other way, and a
+stride landing in the 32–34 band is armed while marginally losing. The magnitude is
+unchanged (~6% either way) and both ends of that band are inside the noise of the
+rows that actually arm, so nothing here is worth a code change on its own; it is
+recorded because the bar's *direction* of error is the kind of fact that goes stale
+silently, and because it is the first place a faster `docMatch` made a calibrated
+threshold slightly optimistic. Any future move on `min_profitable_stride` should
+re-run this sweep rather than trusting the ≈30 that used to be here.
 
 **Status. Retired by measurement — and this is the strongest of the three
 retirements.** C2 and C3 died because their premises were false. C4's premise is
 *true*: the interior dwell exists, the walk sits in it for ~97% of the document, and
 the skip is derivable and correct. It is retired because the mechanism was built,
-timed at its own ceiling, and the ceiling is 1.18× on a document constructed to
-flatter it and 0.41× on the honest set — while the threshold standing in its way is
-already right to within 6%. There is nothing left to build: the engine arms this
+timed at its own ceiling, and the ceiling is 1.08× on a document constructed to
+flatter it and 0.38× on the honest set — while the threshold standing in its way is
+already right to within ~6%. There is nothing left to build: the engine arms this
 skip in precisely the place it pays, which is the start state, where no `\n` caps
 the stride.
 
@@ -897,14 +917,15 @@ retired by measurement, not deferred:
       symbolic determinizer years ago.
  C4 ─ premise TRUE and still retired, which is the rarest of the three. The
       interior dwell holds ~97% of the document's bytes and the skip is correct;
-      built and timed at its own ceiling it is 0.41× geomean against the shipped
+      built and timed at its own ceiling it is 0.38× geomean against the shipped
       multi-lane walk, because `\n` caps the stride at one line. Break-even is a
-      ~30-byte stride and the bar already refusing it is 32 — calibrated on the
-      start case, and independently right to within 6%. Residual DISCHARGED, and
+      ~34-byte stride and the bar already refusing it is 32 — calibrated on the
+      start case, and independently right to within ~6%, though the mirror flipped
+      which side of the bar break-even sits on. Residual DISCHARGED, and
       it relocates the family's problem: the ADAPTIVE skip is learnable (strides
       separate BETWEEN dwell states, 8 vs 70 inside one pattern) and still reads
-      0.56× vs ship granted a free perfect measurement — because the skip lives
-      in the scalar walk, 2.2× behind the shipped lanes, and adaptivity can pick
+      0.53× vs ship granted a free perfect measurement — because the skip lives
+      in the scalar walk, 2.4× behind the shipped lanes, and adaptivity can pick
       better states but cannot relocate the walk. See "The residual C4 named".
  C5 ─ half retired, on the road it was aimed at. The core landed and the symbolic
       product needs it; the BYTE road declines both dimensions. Rows find 1
@@ -952,13 +973,16 @@ exist.
 the census found 97% occupancy and every refusal was the threshold rather than the
 shape, which is exactly the reading that says "build it". So it was built, in the
 harness, and timed against the walk the engine actually runs; and at its own
-ceiling, on a document constructed to flatter it, it returns 1.18×, while on the
-honest set it returns 0.41×. A claim can clear every premise test and still be
+ceiling, on a document constructed to flatter it, it returns 1.08×, while on the
+honest set it returns 0.38×. A claim can clear every premise test and still be
 wrong, and the only thing that catches that is building the cheap version and
 timing it against the real baseline rather than the convenient one. The three arms
-exist for that reason: `vs step` reads 2.60× on the same row where `vs ship` reads
-1.18×, and publishing the first would have been true, attributable, and
-misleading.
+exist for that reason: `vs step` reads 2.58× on the same row where `vs ship` reads
+1.08×, and publishing the first would have been true, attributable, and
+misleading. **Tying the verdict to the shipped walk also means it stays live**: when
+the doc walk gained its byte-indexed mirror, every `vs ship` number here moved
+against C4 without anyone re-arguing the claim, which is what a baseline-relative
+measurement is for.
 
 **C5 died a third way: on the wrong population, then on the walk.** Priced over the
 everyday slate it collapsed 1 automaton in 32 and read like a clear decline. That
@@ -1060,12 +1084,13 @@ answered here, and it never needed to be built — because a mechanism can be pr
 granting it its measurement for *free and without error* and timing the decision it
 would converge on. Anything real is bounded by that.
 
-**The free per-row oracle: 1.04–1.06×.** C4's own arm already times `ship` and `skip`
+**The free per-row oracle: 1.03×.** C4's own arm already times `ship` and `skip`
 per row, so the best a scheme that adapts per pattern could do is take whichever arm is
 faster, i.e. `max(1, vs ship)`. Over the three rows with no banked start skip that is
-`a.*b` at 1.11–1.18× and the other two at exactly 1.000× — geomean **1.036–1.055×**
-across three fresh runs. Two of the three contribute nothing at all, on a slate
-hand-built to be C4's best case.
+`a.*b` at 1.08–1.10× and the other two at exactly 1.000× — geomean **1.025–1.033×**
+across three fresh runs (1.036–1.055× before the mirror, the whole difference being
+`a.*b`'s single winning row shrinking against a faster baseline). Two of the three
+contribute nothing at all, on a slate hand-built to be C4's best case.
 
 **But per-row is the weak form, and the per-site numbers said so.** An adaptive skip
 decides at each site, not once per pattern. Splitting every armed skip by whether that
@@ -1077,7 +1102,7 @@ skip *alone* cleared the 32-byte bar shows real dispersion behind the mean:
 | `a.*b.*c` | 314 462 | 25.7 B | 34.0% | **77.8%** |
 | `foo.*bar` | 1 362 293 | 3.8 B | 0.1% | **0.3%** |
 
-`a.*b.*c` loses at 0.54–0.56× armed unconditionally, yet 78% of its bytes sit under
+`a.*b.*c` loses at ~0.52× armed unconditionally, yet 78% of its bytes sit under
 skips that individually pay. So the headroom C4 left behind is real, and `foo.*bar`'s 0.3%
 confirms the other half: there, a correct scheme declines essentially every skip.
 
@@ -1093,24 +1118,31 @@ perfect decisions, zero bookkeeping, no learning error:
 
 | pattern | per-state strides | kept | `vs step` | **`vs ship`** |
 | --- | --- | --- | --- | --- |
-| `a.*b` | 8, 70 | 1 of 2 | 1.76–1.89× | **0.81–0.84×** |
-| `a.*b.*c` | 8, 8, 61 | 1 of 3 | 1.39–1.49× | **0.61–0.62×** |
-| `foo.*bar` | 4, 4 | 0 of 2 | 0.78–0.81× | **0.33–0.35×** |
-| | | | | geomean **0.55–0.56×** |
+| `a.*b` | 8, 70 | 1 of 2 | 1.79–1.86× | **0.76–0.79×** |
+| `a.*b.*c` | 8, 8, 61 | 1 of 3 | 1.36–1.39× | **0.57–0.58×** |
+| `foo.*bar` | 4, 4 | 0 of 2 | 0.76–0.77× | **0.33×** |
+| | | | | geomean **0.53×** |
 
 The strides are exact rather than timed and do not move at all; the absolute ns/byte
-drifts a few percent with machine load, so every ratio is quoted as the band four fresh
-runs produced — the geomean read 0.547×, 0.555×, 0.558×, 0.561×.
+drifts a few percent with machine load, so every ratio is quoted as the band three fresh
+runs produced — the geomean read 0.532×, 0.529×, 0.526×. These are the post-mirror
+numbers; before the doc walk gained its byte-indexed mirror the same ceiling read
+0.547–0.561×, and only the `vs ship` column moved, since `vs step` divides one scalar
+walk by another.
 
 Adaptivity does help *relative to C4* — measured in the same runs, so the comparison
-does not inherit that drift: C4's unconditional geomean and R2's ceiling read 0.382 →
-0.547, 0.403 → 0.558, 0.405 → 0.561, a stable **1.36–1.43× improvement**, and
-`foo.*bar` recovers 3.3×. It is still a **~1.8× regression** against what the engine
-already runs — and `a.*b`, C4's one winner, gets *worse* (1.11–1.18× → 0.81–0.84×),
-because disarming its 8-byte state removed a skip that beat stepping even below the bar.
+does not inherit that drift: C4's unconditional geomean and R2's ceiling read 0.380 →
+0.532, 0.376 → 0.529, 0.376 → 0.526, a stable **1.40–1.41× improvement** (and the same
+1.36–1.43× band before the mirror, which is the point: the *ratio between the two
+proposals* is invariant to how fast the walk they both lose to is), and `foo.*bar`
+recovers 3.2×. It is still a **~1.9× regression** against what the engine already runs
+— and `a.*b`, C4's one winner, gets *worse* (1.08–1.10× → 0.76–0.79×), because
+disarming its 8-byte state removed a skip that beat stepping even below the bar.
 
 **The reason is structural, and it is the finding.** The skip lives in the scalar
-walk, which is ~2.2× slower than the multi-lane `docMatch` the engine ships. Every
+walk, which is ~2.4× slower than the multi-lane `docMatch` the engine ships — a
+handicap that *grew* when the doc walk stopped paying for a byte-class lookup, so
+every re-measure of this family will find the gap wider, not narrower. Every
 version of this claim must pay that handicap down before it can add anything, and
 **adaptivity can choose better states but cannot relocate the walk it runs in.**
 `foo.*bar` shows the floor of that argument from the other side: with *nothing* armed

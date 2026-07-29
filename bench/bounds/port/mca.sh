@@ -65,7 +65,7 @@ command -v zig > /dev/null || {
 
 mkdir -p "${WORK}"
 echo "portcert · Layer B (static µarch port bound) · llvm-mca ${MCA_VERSION:-?}"
-echo "probes:   simd_contains (throughput-bound) · dfa_step (latency-bound)"
+echo "probes:   simd_contains (throughput-bound) · dfa_step, dfa_mirror (latency-bound)"
 echo
 
 # Reference profiles: display | zig_cpu | mca_cpu | triple.  Zig names features
@@ -75,18 +75,24 @@ PROFILES=(
   "neoverse-v2|neoverse_v2|neoverse-v2|aarch64-linux-gnu"
 )
 # probe | production source file | bound-kind
+# The two DFA probes are the same recurrence over the two table layouts the
+# automaton carries: dfa_step indexes the classed tables (3 loads/byte, two of
+# them dependent), dfa_mirror indexes the byte-indexed `Dfa.Wide` mirror the
+# document walk steps (2 loads/byte). Bounding both is the point — the mirror's
+# payoff is a shorter loop-carried chain, which is a latency claim.
 PROBES=(
   "simd_contains|src/kernel/scan/simd.zig|throughput"
   "dfa_step|src/kernel/regex/linear/dfa/dfa.zig|latency"
+  "dfa_mirror|src/kernel/regex/linear/dfa/dfa.zig|latency"
 )
 
-# Bytes consumed per marked iteration. dfa_step steps one byte; simd_contains
-# strides one vector — read the actual width back from the emitted asm so a
-# retuned vector length is picked up automatically (zmm=64 ymm=32 xmm=16 on x86;
-# NEON `.16b`=16 on aarch64).
+# Bytes consumed per marked iteration. Both DFA probes step one byte;
+# simd_contains strides one vector — read the actual width back from the emitted
+# asm so a retuned vector length is picked up automatically (zmm=64 ymm=32
+# xmm=16 on x86; NEON `.16b`=16 on aarch64).
 bytes_per_iter() { # <probe> <asm_region_file>
   local probe="$1" region="$2"
-  if [[ "${probe}" == dfa_step ]]; then
+  if [[ "${probe}" == dfa_step || "${probe}" == dfa_mirror ]]; then
     echo 1
     return
   fi

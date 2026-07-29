@@ -231,6 +231,56 @@ fn tableList(t: Tables) [3][]u32 {
     };
 }
 
+/// Build the byte-indexed mirror of the interior and final tables:
+/// `Dfa.Wide.stride` cells per state, `mirror[id*stride + b]` holding what
+/// `classed[id*ncls + class[b]]` holds, with targets scaled to the mirror's own
+/// stride. Called BEFORE premultiplication, so the classed entries are still raw
+/// ids and widening a target is one multiply rather than a divide back out of
+/// `ncls`.
+///
+/// An `unfilled` row — a state reached only as a `trans_fin` target, whose closure
+/// the determinizer interned for its match flag and never expanded (see `Dfa`) —
+/// mirrors its `unknown` sentinel across the whole row, so a mirror row witnesses
+/// unfilledness in cell zero exactly where its classed original does.
+fn widen(
+    gpa: std.mem.Allocator,
+    cls: *const subset.Classes,
+    t: Tables,
+    sh: Shape,
+    nmatch: u32,
+) std.mem.Allocator.Error!Dfa.Wide {
+    const stride = Dfa.Wide.stride;
+    const ncls: usize = cls.ncls;
+    const rows: usize = sh.nstates;
+    std.debug.assert(t.interior.items.len == rows * ncls and t.final.items.len == rows * ncls);
+
+    const interior = try gpa.alloc(u32, rows * stride);
+    errdefer gpa.free(interior);
+    const final = try gpa.alloc(u32, rows * stride);
+    errdefer gpa.free(final);
+
+    for ([2][]const u32{ t.interior.items, t.final.items }, [2][]u32{ interior, final }) |src, dst| {
+        for (0..rows) |id| {
+            const from = src[id * ncls ..][0..ncls];
+            const into = dst[id * stride ..][0..stride];
+            if (from[0] == unknown) { // unfilled row: mirror the sentinel, not a target
+                @memset(into, unknown);
+                continue;
+            }
+            for (into, 0..) |*cell, b| {
+                const tgt = from[cls.class[b]];
+                cell.* = if (tgt == unknown) unknown else tgt * stride;
+            }
+        }
+    }
+    return .{
+        .trans_in = interior,
+        .trans_fin = final,
+        .start = sh.start * stride,
+        .match_hi = nmatch * stride,
+    };
+}
+
 /// Freeze the finished tables into the immutable, thread-shareable automaton,
 /// taking ownership of their memory. `cls` is the final byte-class partition —
 /// final in the strong sense: the symbolic path merges columns before it gets
@@ -277,6 +327,19 @@ pub fn freeze(
     const pat_runs: []const Dfa.PatRun = if (t.pats) |p| try buildRuns(gpa, p[0..nmatch], nc) else &.{};
     errdefer if (pat_runs.len != 0) gpa.free(pat_runs);
 
+    // The byte-indexed mirror (`Dfa.Wide`), for the automata that will actually
+    // walk it: only the unanchored, no-dwell, no-word-context doc scan reads it,
+    // and only while it fits the budget. Also built pre-premultiplication.
+    const wide: ?Dfa.Wide = if (!sh.word_ctx and !sh.anchored and
+        start_dwell == null and Dfa.Wide.afford(sh.nstates))
+        try widen(gpa, cls, t, sh, nmatch)
+    else
+        null;
+    errdefer if (wide) |w| {
+        gpa.free(w.trans_in);
+        gpa.free(w.trans_fin);
+    };
+
     for (tableList(t)) |items| {
         for (items) |*v| if (v.* != unknown) {
             v.* *= nc;
@@ -299,6 +362,7 @@ pub fn freeze(
         .anchored = sh.anchored,
         .dead = if (sh.dead == unknown) unknown else sh.dead * nc,
         .start_dwell = start_dwell,
+        .wide = wide,
         .word_ctx = sh.word_ctx,
         .unicode_word = sh.unicode_word,
         .trans_in_w = if (t.interior_word) |w| try w.toOwnedSlice(gpa) else &.{},

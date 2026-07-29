@@ -14,8 +14,36 @@ const gist = @import("irregex");
 
 const simd_probe = @import("probes/simd_contains.zig");
 const dfa_probe = @import("probes/dfa_step.zig");
+const mirror_probe = @import("probes/dfa_mirror.zig");
 
 const Regex = gist.regex.Regex;
+
+// Patterns exercising the shapes both DFA probes copy: multi-class alternations,
+// bounded repeats, anchors, and short literals. Shared so the classed and
+// mirrored guards are held to the same automata rather than drifting apart.
+const dfa_patterns = [_][]const u8{
+    "func\\s+\\w+\\(",
+    "pgxpool\\.\\w+",
+    "^func\\s",
+    "[0-9a-f]{8}-[0-9a-f]{4}",
+    "return|continue|break",
+    "\\w{3,8}",
+    ";$",
+    "context\\.Context",
+    "abc",
+    "a[bc]d",
+};
+
+/// Fill `doc` with printable ASCII salted with newlines, so both guards exercise
+/// the line reset and the `trans_fin` last-byte resolution their probes copy.
+fn scribble(rng: std.Random, doc: []u8) void {
+    for (doc) |*b| {
+        b.* = switch (rng.intRangeAtMost(u8, 0, 20)) {
+            0, 1 => '\n', // blank lines + line resets
+            else => rng.intRangeAtMost(u8, 0x20, 0x7e),
+        };
+    }
+}
 
 // The SIMD `contains` probe must agree with the real `gist.simd.contains` on
 // every needle length + every hay, including the boundary regimes the vector
@@ -55,38 +83,18 @@ test "simd_contains probe ≡ gist.simd.contains" {
 // to exercise the line-reset + `trans_fin` last-byte resolution the probe copies.
 test "dfa_step probe ≡ Dfa.docMatch" {
     const gpa = std.testing.allocator;
-    const patterns = [_][]const u8{
-        "func\\s+\\w+\\(",
-        "pgxpool\\.\\w+",
-        "^func\\s",
-        "[0-9a-f]{8}-[0-9a-f]{4}",
-        "return|continue|break",
-        "\\w{3,8}",
-        ";$",
-        "context\\.Context",
-        "abc",
-        "a[bc]d",
-    };
-
     var prng = std.Random.DefaultPrng.init(0x5EED);
     const rng = prng.random();
     var doc: [1024]u8 = undefined;
 
-    for (patterns) |pat| {
+    for (dfa_patterns) |pat| {
         var re = Regex.compile(gpa, pat) catch continue;
         defer re.deinit();
         const d = re.dfa orelse continue; // powerset blow-up ⇒ Pike VM, no DFA to probe
 
         for (0..2_000) |_| {
-            const dlen = rng.intRangeAtMost(usize, 0, doc.len);
-            for (doc[0..dlen]) |*b| {
-                const roll = rng.intRangeAtMost(u8, 0, 20);
-                b.* = switch (roll) {
-                    0, 1 => '\n', // blank lines + line resets
-                    else => rng.intRangeAtMost(u8, 0x20, 0x7e), // printable ASCII
-                };
-            }
-            const doc_slice = doc[0..dlen];
+            const doc_slice = doc[0..rng.intRangeAtMost(usize, 0, doc.len)];
+            scribble(rng, doc_slice);
             const got = dfa_probe.portcert_dfa_step(
                 doc_slice.ptr,
                 doc_slice.len,
@@ -103,4 +111,52 @@ test "dfa_step probe ≡ Dfa.docMatch" {
             try std.testing.expectEqual(want, got);
         }
     }
+}
+
+// The byte-indexed probe must agree with `Dfa.docMatch` on every automaton that
+// HAS a mirror — which is the set `docMatch` actually steps a mirror for, since
+// `freeze` widens only the unanchored, dwell-free, word-context-free shapes. A
+// pattern without one is skipped rather than compared against the classed
+// tables: the probe's `start`/`match_hi` are premultiplied by the mirror's
+// stride, so feeding it classed offsets would test nothing real.
+//
+// This guard is why the probe cannot silently outlive the layout. If `freeze`
+// stopped folding the class column in, or premultiplied the mirror by `ncls`
+// instead of by 256, every row here diverges.
+test "dfa_mirror probe ≡ Dfa.docMatch over the byte-indexed tables" {
+    const gpa = std.testing.allocator;
+    var prng = std.Random.DefaultPrng.init(0x5EED);
+    const rng = prng.random();
+    var doc: [1024]u8 = undefined;
+
+    var mirrored: usize = 0;
+    for (dfa_patterns) |pat| {
+        var re = Regex.compile(gpa, pat) catch continue;
+        defer re.deinit();
+        const d = re.dfa orelse continue;
+        const w = if (d.wide) |*w| w else continue; // not a shape `freeze` widens
+        mirrored += 1;
+
+        // The probe hardcodes the stride it indexes rows by; a change on either
+        // side has to be a change on both.
+        try std.testing.expectEqual(@as(u32, mirror_probe.stride), @as(u32, @TypeOf(w.*).stride));
+
+        for (0..2_000) |_| {
+            const doc_slice = doc[0..rng.intRangeAtMost(usize, 0, doc.len)];
+            scribble(rng, doc_slice);
+            const got = mirror_probe.portcert_dfa_mirror(
+                doc_slice.ptr,
+                doc_slice.len,
+                w.trans_in.ptr,
+                w.trans_fin.ptr,
+                w.match_hi,
+                w.start,
+                d.empty_match,
+            );
+            try std.testing.expectEqual(d.docMatch(doc_slice), got);
+        }
+    }
+    // Fail closed: if nothing on the slate carries a mirror, this test proved
+    // nothing and should say so rather than pass vacuously.
+    try std.testing.expect(mirrored > 0);
 }

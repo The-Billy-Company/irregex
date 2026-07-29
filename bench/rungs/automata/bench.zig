@@ -46,6 +46,7 @@ const builtin = @import("builtin");
 const gist = @import("irregex");
 
 const Regex = gist.regex.Regex;
+const Dfa = gist.regex_dfa.Dfa;
 const syntax = gist.regex_syntax;
 const analysis = gist.regex_analysis;
 const ast_mod = gist.regex_ast;
@@ -341,7 +342,7 @@ fn buildNs(gpa: std.mem.Allocator, io: anytype, re: *const Regex) !?i128 {
     return best;
 }
 
-const Section = enum { shape, build, search, area, width, dwell, reduce, inner, sift, all };
+const Section = enum { shape, build, search, burst, area, width, dwell, reduce, inner, sift, all };
 
 /// One row of the literal-dispatch audit. `unit` is tiled deterministically into
 /// the document, and it must not contain any of the pattern's literals — the
@@ -448,6 +449,9 @@ const mutation_doc_bytes = 64 << 10;
 /// spelled, and a row whose oracle therefore proves nothing fails rather than
 /// reporting a time — which is the check that caught `foo.*bar`.
 const max_mutation_run = 8;
+/// Longest needle the burst sweep will plant, bounded by the line: a needle that
+/// cannot fit one line cannot be planted without straddling a `\n`.
+const max_witness = line_len;
 
 /// The timing that settles C4. The census says an interior dwell holds ~97% of the
 /// document's bytes and that the only thing refusing to skip it is one threshold;
@@ -1494,6 +1498,510 @@ fn runSearch(gpa: std.mem.Allocator, io: anytype, failed: *bool) !?f64 {
             row.pat, d.ncls,  d.nstates, accepting(d),
             seen,    im.len,  nsb_load,  nsb_cmp,
             speedup, row.why,
+        });
+    }
+    if (priced == 0) return null;
+    return @exp(ratio_log / @as(f64, @floatFromInt(priced)));
+}
+
+// ──────────── burst: the lockstep body, both forms × every width ────────────
+
+/// Which burst body the lockstep walk runs.
+///
+///   * `bookkept` — a `prev` copy and a cursor increment per lane per byte, plus
+///     one compare-and-branch match test per lane: eight instructions per byte per
+///     lane, three of which carry no information the recurrence needs.
+///   * `slim` — `prev` peeled to the burst's final step (the only step on which a
+///     lane can reach its line end, so nothing earlier can read it), one shared
+///     induction variable every lane addresses off so N cursor increments become
+///     one, and the N match tests folded into a minimum plus one branch.
+///
+/// **The body alone is not the claim, and this section is why.** At the shipped
+/// four lanes the recurrence is already close to its load-latency floor, so
+/// deleting three instructions per byte per lane buys ~nothing — the honest
+/// measurement is a wash. What the slim body actually buys is *registers*: no
+/// `prev` and one induction variable instead of N is what lets the walk carry more
+/// independent dependent-load chains before the frame starts spilling, and width
+/// is the axis that moves a latency-bound loop. So both bodies are raced at every
+/// width, and the pair at each width is what separates "the body paid" from "the
+/// width paid".
+const Body = enum { bookkept, peeled };
+
+/// Which table shape a step indexes — the other half of the per-byte budget, and
+/// the half that turns out to matter.
+///
+///   * `classed` — the shipped shape: `trans[s + class[b]]`. THREE loads per byte
+///     (haystack byte, its class, the transition) and a table `ncls` columns wide.
+///   * `direct` — `trans[s + b]`, stride 256: the class column collapsed into the
+///     table, so TWO loads per byte. RE2's dense layout, and rust-`regex`'s
+///     `dense::DFA` before its byte-class alphabet. Costs `256/ncls`× the table,
+///     which is the whole reason a classed alphabet exists — so this arm prices
+///     the load it removes against the resident bytes it adds.
+///
+/// A `direct` arm reads the SHIPPED mirror (`Dfa.Wide`, built by `freeze.widen`
+/// whenever it fits `Wide.budget`) rather than a copy widened here — so the shape
+/// this section prices is the shape production walks, and `mirrorFaithful` proves
+/// that mirror cell-for-cell before any arm runs over it.
+const Shape = enum { classed, direct };
+
+/// One machine raced: a body, at a width, over a table shape. `4 × bookkept ×
+/// classed` is the form the engine shipped before this section existed, and every
+/// ratio is against it.
+const Arm = struct {
+    lanes: usize,
+    body: Body,
+    shape: Shape = .classed,
+
+    fn label(comptime self: Arm) []const u8 {
+        return std.fmt.comptimePrint("{d}{s}{s}", .{
+            self.lanes,
+            switch (self.body) {
+                .bookkept => "bk",
+                .peeled => "pl",
+            },
+            switch (self.shape) {
+                .classed => "",
+                .direct => "·d",
+            },
+        });
+    }
+};
+
+/// The ladder. It stops at 16 because 16 already regresses at every width — a
+/// burst runs to the SHORTEST lane's line end, so the minimum over sixteen
+/// remainders leaves the fast body often enough that the reseed tail dominates,
+/// and the frame spills on top of it. That the ladder turns over inside its own
+/// range is evidence, not a gap.
+const burst_arms = [_]Arm{
+    .{ .lanes = 4, .body = .bookkept }, // the baseline: what the engine shipped BEFORE the mirror
+    .{ .lanes = 4, .body = .peeled },
+    .{ .lanes = 4, .body = .bookkept, .shape = .direct }, // the shipped narrow plan
+    .{ .lanes = 4, .body = .peeled, .shape = .direct },
+    .{ .lanes = 8, .body = .bookkept, .shape = .direct },
+    .{ .lanes = 8, .body = .peeled, .shape = .direct }, // the shipped wide plan
+    .{ .lanes = 12, .body = .peeled, .shape = .direct },
+    .{ .lanes = 16, .body = .peeled, .shape = .direct },
+};
+
+/// Widths the shared slate doesn't reach, priced by `burst` alone so the sibling
+/// sections keep their own populations. The byte-indexed mirror costs `nstates·2
+/// KiB`, so this is what brackets the budget: the slate tops out at 34 states / 68
+/// KiB — inside a 128 KiB L1 — and this row is 66 states / 132 KiB, just outside
+/// it. A hex fill keeps every counted state on the path (the only combination that
+/// prices the recurrence at the automaton's real width), and 65 pattern bytes still
+/// fit `line_len`, so a planted `-` can actually complete a match and the parity
+/// sweep proves something.
+const burst_width = [_]Row{
+    .{ .pat = "[0-9a-f]{64}-", .fill = "0123456789abcdef", .why = "no '-'" },
+};
+
+/// The arm labels as data, so the row that names the winner reads it from the same
+/// list the columns were headed from and cannot drift out of order.
+const arm_labels = blk: {
+    var l: [burst_arms.len][]const u8 = undefined;
+    for (burst_arms, 0..) |arm, i| l[i] = arm.label();
+    break :blk l;
+};
+
+/// Where the walk `Dfa.docMatch` dispatches sits on the ladder. Resolved at compile
+/// time against `burst_arms`, so an engine that changed its walk without this
+/// section racing the new one is a build error rather than a silently mislabelled
+/// column — and `ship` is a claim about production rather than about the best arm.
+const shipped = blk: {
+    const want: Arm = .{ .lanes = 4, .body = .bookkept, .shape = .direct };
+    for (burst_arms, 0..) |arm, i| if (std.meta.eql(arm, want)) break :blk i;
+    @compileError("the shipped walk " ++ want.label() ++ " is not on the burst ladder");
+};
+
+/// `Dfa.seedLine`: where the next content line at/after `from` begins and ends,
+/// plus the two whole-document short-circuits it folds in (an empty line under
+/// `empty_match`; a BOL closure that already accepts). Reimplemented because the
+/// engine keeps it private, and shared by BOTH arms — so a seeding difference
+/// cannot masquerade as a body difference.
+const Seed = union(enum) {
+    match,
+    done,
+    line: struct { start: usize, end: usize, next: usize },
+};
+
+fn seedLine(d: anytype, doc: []const u8, from: usize) Seed {
+    var p = from;
+    while (p < doc.len) : (p += 1) {
+        if (doc[p] != '\n') {
+            if (d.start < d.match_hi) return .match;
+            const e = std.mem.indexOfScalarPos(u8, doc, p, '\n') orelse doc.len;
+            return .{ .line = .{ .start = p, .end = e, .next = if (e < doc.len) e + 1 else e } };
+        }
+        if (d.empty_match) return .match;
+    }
+    return .done;
+}
+
+/// `dfa.zig`'s `least`, mirrored: the lanes matched iff their minimum state did,
+/// because the match partition is monotone in the premultiplied offset.
+inline fn least(comptime n: usize, s: *const [n]u32) u32 {
+    var m = s[0];
+    inline for (1..n) |i| m = @min(m, s[i]);
+    return m;
+}
+
+/// Is the shipped mirror the same automaton its classed original is? Checked as
+/// the identity `freeze.widen` claims rather than through a walk, which would only
+/// visit the cells one document happened to reach: for EVERY state and every one
+/// of the 256 bytes, the mirror's cell must be exactly the classed cell that
+/// byte's class names, rescaled to the mirror's stride — and an `unfilled` row (a
+/// `trans_fin`-only terminal state the determinizer never enqueued) must stay
+/// unfilled, because widening a sentinel would forge a row.
+fn mirrorFaithful(d: *const Dfa, w: *const Dfa.Wide) bool {
+    const stride = Dfa.Wide.stride;
+    const ncls: usize = d.ncls;
+    const scale = struct {
+        fn f(off: u32, n: usize) u32 {
+            return if (off == gist.regex_dfa.unfilled) off else @intCast(off / n * stride);
+        }
+    }.f;
+    if (w.start != scale(d.start, ncls) or w.match_hi != scale(d.match_hi, ncls)) return false;
+    for ([2][]const u32{ d.trans_in, d.trans_fin }, [2][]const u32{ w.trans_in, w.trans_fin }) |src, dst| {
+        for (0..d.nstates) |id| {
+            const row = src[id * ncls ..][0..ncls];
+            for (dst[id * stride ..][0..stride], 0..) |cell, b| {
+                if (cell != scale(row[d.class[b]], ncls)) return false;
+            }
+        }
+    }
+    return true;
+}
+
+/// A byte-faithful copy of `Dfa.docMatchDense` with its burst body switched by
+/// `body` and its width by `lanes`. Everything AROUND the body — the seed, the
+/// `$`/`trans_fin` resolution at each line end, the refill, the drain, the scalar
+/// tail — is written once and shared by every arm, so a measured difference is the
+/// body and the width and can be nothing else. `walkCompared` finishes the
+/// unassigned tail exactly as `docMatchScalar` does.
+///
+/// `tab` supplies the tables, exactly as it does in production: the automaton
+/// itself for a `classed` arm, its `Dfa.Wide` mirror for a `direct` one. `d` still
+/// seeds every line either way, so a seeding difference cannot masquerade as a
+/// shape difference.
+///
+/// Faithfulness to production is not assumed: `burstAgrees` checks every round of
+/// its mutation sweep against the shipped `docMatch` as well as against the scalar
+/// oracle, so an arm that drifted from the engine fails the run.
+fn walkLanes(comptime arm: Arm, d: *const Dfa, tab: anytype, doc: []const u8) bool {
+    const lanes = arm.lanes;
+    const body = arm.body;
+    const trans = tab.trans_in;
+    const tfin = tab.trans_fin;
+    const cls = &d.class;
+    const mhi = tab.match_hi;
+    const start = tab.start;
+
+    // The step, and the only thing `Shape` changes: a `direct` table already holds
+    // the class column, so the byte indexes the row itself.
+    const at = struct {
+        inline fn f(t: []const u32, c: *const [256]u8, s: u32, b: u8) u32 {
+            return switch (arm.shape) {
+                .classed => t[s + c[b]],
+                .direct => t[s + b],
+            };
+        }
+    }.f;
+
+    var s = [_]u32{start} ** lanes;
+    var prev = [_]u32{start} ** lanes;
+    var cur = [_]usize{0} ** lanes;
+    var end = [_]usize{0} ** lanes;
+    var pos: usize = 0;
+    var seated = true;
+
+    for (0..lanes) |i| switch (seedLine(d, doc, pos)) {
+        .match => return true,
+        .done => {
+            seated = false;
+            break;
+        },
+        .line => |ln| {
+            cur[i] = ln.start;
+            end[i] = ln.end;
+            pos = ln.next;
+        },
+    };
+
+    while (seated) {
+        var burst = end[0] - cur[0];
+        inline for (1..lanes) |i| burst = @min(burst, end[i] - cur[i]);
+
+        switch (body) {
+            .bookkept => {
+                var n = burst;
+                while (n > 0) : (n -= 1) {
+                    inline for (0..lanes) |i| {
+                        prev[i] = s[i];
+                        s[i] = at(trans, cls, s[i], doc[cur[i]]);
+                        cur[i] += 1;
+                    }
+                    inline for (0..lanes) |i| if (s[i] < mhi) return true;
+                }
+            },
+            .peeled => {
+                var k: usize = 0;
+                while (k + 1 < burst) : (k += 1) {
+                    inline for (0..lanes) |i| s[i] = at(trans, cls, s[i], doc[cur[i] + k]);
+                    if (least(lanes, &s) < mhi) return true;
+                }
+                inline for (0..lanes) |i| {
+                    prev[i] = s[i];
+                    s[i] = at(trans, cls, s[i], doc[cur[i] + k]);
+                    cur[i] += burst;
+                }
+                if (least(lanes, &s) < mhi) return true;
+            },
+        }
+
+        inline for (0..lanes) |i| {
+            if (cur[i] == end[i]) {
+                if (at(tfin, cls, prev[i], doc[end[i] - 1]) < mhi) return true;
+                switch (seedLine(d, doc, pos)) {
+                    .match => return true,
+                    .done => seated = false,
+                    .line => |ln| {
+                        s[i] = start;
+                        prev[i] = start;
+                        cur[i] = ln.start;
+                        end[i] = ln.end;
+                        pos = ln.next;
+                    },
+                }
+            }
+        }
+    }
+
+    inline for (0..lanes) |i| {
+        if (cur[i] < end[i]) {
+            var si = s[i];
+            var pv = prev[i];
+            var ci = cur[i];
+            const ei = end[i];
+            while (ci < ei) {
+                pv = si;
+                si = at(trans, cls, si, doc[ci]);
+                ci += 1;
+                if (si < mhi) return true;
+            }
+            if (at(tfin, cls, pv, doc[ei - 1]) < mhi) return true;
+        }
+    }
+    // The unassigned tail goes through the scalar oracle over the CLASSED tables,
+    // exactly as production's `docMatchScalar` fallback does.
+    return walkCompared(d, doc[pos..]);
+}
+
+/// Byte parity, on documents that actually match. The timed documents are
+/// match-free by construction — a boolean scan returns at the first hit, so timing
+/// a matching haystack measures the hit position — and two arms that both answer
+/// `false` everywhere have proved nothing about the peeled `prev` or the folded
+/// match test. So each round plants one of three needles and requires every answer
+/// to agree — each arm, the scalar per-line oracle, and the SHIPPED `docMatch`:
+///
+///   * the automaton's own `witness` — a shortest string it accepts mid-line, read
+///     off the transition table rather than the pattern text, which is the only
+///     planter that reaches the match paths on a non-literal pattern;
+///   * a slice of the pattern source, which walks deep into the automaton and
+///     usually stops just short of accepting — the near-miss case;
+///   * uniform noise, which is how the non-matching paths stay exercised.
+///
+/// `matched` is the column to read first. A sweep that planted nothing would
+/// silently degrade to "false agrees with false", exactly the failure
+/// `agreeUnderMutation` was written to avoid one section above.
+fn burstAgrees(d: *const Dfa, wide: *const Dfa.Wide, doc: []u8, pat: []const u8, needle: ?[]const u8, rounds: usize) struct { matched: usize, diverged: usize } {
+    var prng = std.Random.DefaultPrng.init(0xB0_2_57);
+    const rng = prng.random();
+    var saved: [max_witness]u8 = undefined;
+    var plant: [max_witness]u8 = undefined;
+    var matched: usize = 0;
+    var diverged: usize = 0;
+    for (0..rounds) |_| {
+        const run = run: {
+            if (needle) |w| if (w.len != 0 and w.len <= max_witness and rng.boolean()) {
+                @memcpy(plant[0..w.len], w);
+                break :run w.len;
+            };
+            const n = 1 + rng.uintLessThan(usize, @min(max_mutation_run, pat.len));
+            if (rng.boolean()) {
+                const q = rng.uintLessThan(usize, pat.len - n + 1);
+                @memcpy(plant[0..n], pat[q..][0..n]);
+            } else {
+                for (plant[0..n]) |*b| b.* = rng.int(u8);
+            }
+            break :run n;
+        };
+        const p = rng.uintLessThan(usize, doc.len - run);
+        @memcpy(saved[0..run], doc[p..][0..run]);
+        @memcpy(doc[p..][0..run], plant[0..run]);
+        const oracle = walkCompared(d, doc);
+        var ok = oracle == d.docMatch(doc); // against PRODUCTION, not just against each other
+        inline for (burst_arms) |arm| {
+            const hit = switch (arm.shape) {
+                .classed => walkLanes(arm, d, d, doc),
+                .direct => walkLanes(arm, d, wide, doc),
+            };
+            if (hit != oracle) ok = false;
+        }
+        if (!ok) diverged += 1;
+        if (oracle) matched += 1;
+        @memcpy(doc[p..][0..run], saved[0..run]);
+    }
+    return .{ .matched = matched, .diverged = diverged };
+}
+
+/// The burst race: every `burst_arms` machine over the same document, interleaved
+/// round by round, ns/byte each and the ratio against `4bk` — the body the engine
+/// shipped. Same slate as `search`, same match-free premise, same min-of-N.
+///
+/// **`seen` is what predicts the width, and nothing available at freeze time
+/// predicts `seen`.** A row parked in one state pays an L1 hit whatever its table's
+/// size, so four lanes win there even at 128 KiB — while a row that wanders over 33
+/// rows wants twelve, and no property of the automaton says which a given document
+/// will do. That is why the engine ships one width and this ladder keeps racing the
+/// others: the `win`/`ship` gap is the standing measurement of what a working-set
+/// -aware walk would recover, and the reason this column is printed.
+///
+/// Read `seen` before any ratio, as in `search`: a row parked in a self-loop makes
+/// the transition load a perfectly-predicted L1 hit, so it prices the instruction
+/// mix and nothing about the automaton. Rows that wander (`[0-9a-f]{32}-` visits
+/// 33 states) are where the recurrence does real work, and they are the rows the
+/// width claim lives or dies on. Returns the geomean ratio of the arm the engine
+/// now ships against the baseline, or null when nothing was priced.
+fn runBurst(gpa: std.mem.Allocator, io: anytype, failed: *bool) !?f64 {
+    std.debug.print(
+        \\
+        \\── burst: the lockstep body × width × table shape ── {d} MiB match-free document × {d} sweeps, min of {d} ──
+        \\   `bk` copies `prev` and bumps a cursor per lane per byte and tests each lane
+        \\   separately; `pl` peels `prev` to the burst's last step, shares one induction
+        \\   variable, and folds the tests into a min. `·d` reads the SHIPPED byte-indexed
+        \\   mirror (`Dfa.Wide`) instead of the classed tables — two loads per byte where
+        \\   classed pays three, for `256/ncls`× the resident bytes (`clsKiB` vs `dirKiB`).
+        \\   Columns are ns/byte, all against `{s}` — the baseline the engine shipped
+        \\   before the mirror existed. `win` is the fastest arm on the ladder; `ship`
+        \\   is the arm `Dfa.docMatch` actually dispatches for that automaton, and the
+        \\   geomean is over `ship`. `agree` is the mutation sweep — rounds where EVERY
+        \\   arm and the shipped `docMatch` matched the scalar oracle / rounds that
+        \\   actually HIT, so a row proving parity only on match-free text shows it.
+        \\
+    , .{ doc_bytes >> 20, sweeps, trials, comptime burst_arms[0].label() });
+    // Every column name is comptime — the fixed fields and `arm_labels` alike — so the
+    // header is one string minted at compile time rather than a runtime buffer that
+    // could overflow. The arm columns come off the same list the winner row indexes.
+    std.debug.print(comptime blk: {
+        var h: []const u8 = std.fmt.comptimePrint("{s: <46}{s: >5}{s: >5}{s: >8}{s: >8}", .{ "pattern", "dfa", "seen", "clsKiB", "dirKiB" });
+        for (arm_labels) |lab| h = h ++ std.fmt.comptimePrint("{s: >8}", .{lab});
+        break :blk h ++ std.fmt.comptimePrint("{s: >13}{s: >14}  {s}\n", .{ "win", "ship", "agree" });
+    }, .{});
+
+    var ratio_log: f64 = 0;
+    var priced: usize = 0;
+
+    for (slate ++ burst_width) |row| {
+        const fill = row.fill orelse continue; // shape-only row: no match-free document
+        var re = Regex.compile(gpa, row.pat) catch |e| {
+            std.debug.print("{s: <46}  compile failed: {s}\n", .{ row.pat, @errorName(e) });
+            failed.* = true;
+            continue;
+        };
+        defer re.deinit();
+        const d = re.dfa orelse {
+            std.debug.print("{s: <46}  no eager dfa (powerset declined; a lower rung serves)\n", .{row.pat});
+            continue;
+        };
+        // The lane walk is the `!anchored`, dwell-free shape of `docMatch`. A row
+        // the engine would route elsewhere has no burst body to price, and saying
+        // so beats publishing a number about a machine that never runs.
+        if (d.word_ctx or d.anchored or d.start_dwell != null) {
+            std.debug.print("{s: <46}  routed off the lane walk (word/anchored/dwell)\n", .{row.pat});
+            continue;
+        }
+
+        const doc = try document(gpa, fill);
+        defer gpa.free(doc);
+        if (walkLanes(burst_arms[0], d, d, doc)) {
+            std.debug.print("{s: <46}  document MATCHES ({s}) — timing would measure the hit position\n", .{ row.pat, row.why });
+            failed.* = true;
+            continue;
+        }
+        // The mirror production built, not one widened here. Absent means `freeze`
+        // declined it — over `Wide.budget` — and half this section's arms have no
+        // table to run over, which is a fact about the row, not a failure.
+        const wide = if (d.wide) |*w| w else {
+            std.debug.print("{s: <46}  no byte-indexed mirror ({d} states over the budget)\n", .{ row.pat, d.nstates });
+            continue;
+        };
+        if (!mirrorFaithful(d, wide)) {
+            std.debug.print("{s: <46}  MIRROR DIVERGES from the classed tables\n", .{row.pat});
+            failed.* = true;
+            continue;
+        }
+
+        // Parity on a small document of the SAME shape, mutated thousands of times:
+        // the timed buffer is 8 MiB and this sweep walks every arm per round.
+        const small = try documentOf(gpa, fill, mutation_doc_bytes);
+        defer gpa.free(small);
+        const needle = try witness(gpa, d);
+        defer if (needle) |w| gpa.free(w);
+        const agree = burstAgrees(d, wide, small, row.pat, needle, mutation_rounds);
+        if (agree.diverged != 0) {
+            std.debug.print("{s: <46}  DIVERGED on {d} of {d} mutated documents\n", .{ row.pat, agree.diverged, mutation_rounds });
+            failed.* = true;
+            continue;
+        }
+        if (agree.matched == 0) {
+            // Not a pass with a caveat: an all-`false` sweep is the failure mode
+            // `agreeUnderMutation` was written to catch, and a slate row that can
+            // only prove parity on match-free text is a slate defect.
+            std.debug.print("{s: <46}  {d} mutations produced no match — parity proved nothing\n", .{ row.pat, mutation_rounds });
+            failed.* = true;
+            continue;
+        }
+        const seen = try statesVisited(gpa, d, doc);
+
+        var best = [_]i128{std.math.maxInt(i128)} ** burst_arms.len;
+        for (0..trials) |_| {
+            // Interleaved: a baseline measured in a different round is a
+            // measurement of that round's machine load, not of the baseline.
+            inline for (burst_arms, 0..) |arm, ai| {
+                var sp = Span.open(io);
+                for (0..sweeps) |_| std.mem.doNotOptimizeAway(switch (arm.shape) {
+                    .classed => walkLanes(arm, d, d, doc),
+                    .direct => walkLanes(arm, d, wide, doc),
+                });
+                best[ai] = @min(best[ai], sp.read(io).ns());
+            }
+        }
+        if (best[0] <= 0) {
+            std.debug.print("{s: <46}  timer resolution too coarse — raise `sweeps`\n", .{row.pat});
+            failed.* = true;
+            continue;
+        }
+
+        const scanned: f64 = @floatFromInt(doc.len * sweeps);
+        var line: [512]u8 = undefined;
+        var w: usize = (std.fmt.bufPrint(&line, "{s: <46}{d: >5}{d: >5}{d: >8}{d: >8}", .{
+            row.pat, d.nstates, seen, tableBytes(d) >> 10, wide.bytes() >> 10,
+        }) catch continue).len;
+        var champion: usize = 0;
+        for (best, 0..) |t, ai| {
+            w += (std.fmt.bufPrint(line[w..], "{d: >8.4}", .{@as(f64, @floatFromInt(t)) / scanned}) catch continue).len;
+            if (t < best[champion]) champion = ai;
+        }
+        // `ship` is the number that describes production; `win` is the ceiling it is
+        // measured against. They part exactly on the rows a wider walk would have
+        // won, and printing both is what keeps that gap from going quiet.
+        const base: f64 = @floatFromInt(best[0]);
+        const win = base / @as(f64, @floatFromInt(best[champion]));
+        const ship = base / @as(f64, @floatFromInt(best[shipped]));
+        ratio_log += @log(ship);
+        priced += 1;
+        std.debug.print("{s}{s: >6} {d: >6.3}x {s: >6} {d: >6.3}x  {d}/{d}\n", .{
+            line[0..w], arm_labels[champion], win, arm_labels[shipped], ship, agree.matched, mutation_rounds,
         });
     }
     if (priced == 0) return null;
@@ -2572,10 +3080,14 @@ fn runSift(gpa: std.mem.Allocator, io: anytype, failed: *bool) !void {
         \\{s: <52}{s: >8}{s: >7}{s: >6}{s: >9}{s: >9}{s: >9}
         \\
     , .{
-        dwell_mod.min_profitable_stride, "pattern · document",
-        "kernel",                        "strid",
-        "pays",                          "armed",
-        "stood",                         "armed/stood",
+        dwell_mod.min_profitable_stride,
+        "pattern · document",
+        "kernel",
+        "strid",
+        "pays",
+        "armed",
+        "stood",
+        "armed/stood",
     });
 
     var wins: usize = 0;
@@ -2697,7 +3209,7 @@ pub fn main(init: std.process.Init) !void {
     var it = std.process.Args.Iterator.init(init.minimal.args);
     _ = it.skip();
     if (it.next()) |a| section = std.meta.stringToEnum(Section, a) orelse {
-        std.debug.print("usage: automata-rung [shape|build|search|area|width|dwell|reduce|inner|sift|all]\n", .{});
+        std.debug.print("usage: automata-rung [shape|build|search|burst|area|width|dwell|reduce|inner|sift|all]\n", .{});
         std.process.exit(2);
     };
 
@@ -2725,6 +3237,11 @@ pub fn main(init: std.process.Init) !void {
     if (section == .search or section == .all) {
         if (try runSearch(gpa, io, &failed)) |geo| {
             std.debug.print("\ngeomean speedup: {d:.3}x  (ns/byte, scalar per-line walk)\n", .{geo});
+        }
+    }
+    if (section == .burst or section == .all) {
+        if (try runBurst(gpa, io, &failed)) |geo| {
+            std.debug.print("\ngeomean speedup: {d:.3}x  (ns/byte, the plan `docMatch` dispatches vs the classed four-lane walk)\n", .{geo});
         }
     }
     if (failed) {

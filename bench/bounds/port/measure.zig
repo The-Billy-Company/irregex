@@ -45,6 +45,7 @@ const pmu = @import("pmu"); // bench/harness/pmu.zig, wired as a module in build
 
 const simd_probe = @import("probes/simd_contains.zig");
 const dfa_probe = @import("probes/dfa_step.zig");
+const mirror_probe = @import("probes/dfa_mirror.zig");
 
 const Regex = gist.regex.Regex;
 const out_dir = gist.home.default_out_dir;
@@ -161,6 +162,27 @@ fn dfaBody(ctx: DfaCtx) void {
     }
 }
 
+/// Same document, same automaton, byte-indexed tables — so the delta against
+/// `dfaBody` is exactly the class load the mirror folds away, measured rather
+/// than argued.
+const MirrorCtx = struct { doc: []const u8, w: *const gist.regex_dfa.Dfa.Wide, empty_match: bool };
+
+fn mirrorBody(ctx: MirrorCtx) void {
+    const w = ctx.w;
+    for (0..dfa_sweeps) |_| {
+        const hit = mirror_probe.portcert_dfa_mirror(
+            ctx.doc.ptr,
+            ctx.doc.len,
+            w.trans_in.ptr,
+            w.trans_fin.ptr,
+            w.match_hi,
+            w.start,
+            ctx.empty_match,
+        );
+        sink +%= @intFromBool(hit);
+    }
+}
+
 /// Vector-loop iterations `portcert_simd_contains` runs over `hay` (mirrors its
 /// `while (i + last_off + vlen <= hay.len) : (i += vlen)` header), so measured
 /// cycles are attributed to exactly the bytes the marked region consumes. The
@@ -223,6 +245,10 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
     const prod_s = measure(io, &meter, simd_bytes_per_trial, SimdCtx{ .hay = hay, .use_production = true }, simdBody);
     const dfa_steps_per_trial: f64 = @floatFromInt(doc.len * dfa_sweeps);
     const dfa_s = measure(io, &meter, dfa_steps_per_trial, DfaCtx{ .doc = doc, .d = dfa }, dfaBody);
+    // The mirror is what `docMatch` steps for this pattern; if `freeze` ever
+    // declines to widen it, say so instead of quoting the classed number twice.
+    const wide = dfa.wide orelse return error.PatternHasNoMirror;
+    const mirror_s = measure(io, &meter, dfa_steps_per_trial, MirrorCtx{ .doc = doc, .w = &wide, .empty_match = dfa.empty_match }, mirrorBody);
 
     // ── report ──
     var b1: [24]u8 = undefined;
@@ -233,7 +259,8 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
     for ([_]struct { name: []const u8, bound: []const u8, ws: usize, s: Sample }{
         .{ .name = "simd_contains", .bound = "throughput", .ws = simd_hay_bytes, .s = probe_s },
         .{ .name = "simd_contains (prod)", .bound = "throughput", .ws = simd_hay_bytes, .s = prod_s },
-        .{ .name = "dfa_step", .bound = "latency", .ws = dfa_doc_bytes, .s = dfa_s },
+        .{ .name = "dfa_step (classed)", .bound = "latency", .ws = dfa_doc_bytes, .s = dfa_s },
+        .{ .name = "dfa_mirror (shipped)", .bound = "latency", .ws = dfa_doc_bytes, .s = mirror_s },
     }) |r| {
         std.debug.print("{s:<22} {s:<11} {d:>5} KiB {s:>12} {d:>9.4} ns {s:>8} {s:>8}\n", .{
             r.name,
@@ -246,7 +273,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
         });
     }
 
-    try writeJson(gpa, io, brand, qos, meter.note, probe_s, prod_s, dfa_s);
+    try writeJson(gpa, io, brand, qos, meter.note, probe_s, prod_s, dfa_s, mirror_s);
     std.debug.print("\nwrote {s}/portbound.json — re-run bench/portcert/portcert.sh to splice Layer B′ into CERTIFICATE.md\n", .{out_dir});
     if (!meter.has_pmu) {
         std.debug.print("note: cycles NOT measured on this machine (PMU needs root) — the artifact says so.\n", .{});
@@ -254,7 +281,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
     }
 }
 
-fn writeJson(gpa: std.mem.Allocator, io: std.Io, brand: []const u8, qos: []const u8, meter_note: []const u8, probe_s: Sample, prod_s: Sample, dfa_s: Sample) !void {
+fn writeJson(gpa: std.mem.Allocator, io: std.Io, brand: []const u8, qos: []const u8, meter_note: []const u8, probe_s: Sample, prod_s: Sample, dfa_s: Sample, mirror_s: Sample) !void {
     try std.Io.Dir.cwd().createDirPath(io, out_dir);
     var j: std.ArrayList(u8) = .empty;
     defer j.deinit(gpa);
@@ -271,13 +298,15 @@ fn writeJson(gpa: std.mem.Allocator, io: std.Io, brand: []const u8, qos: []const
     try j.appendSlice(gpa, try std.fmt.bufPrint(&line, "  \"meter\": \"{s}\",\n", .{meter_note}));
     try j.appendSlice(gpa, try std.fmt.bufPrint(&line, "  \"trials\": {d},\n", .{trials}));
     try j.appendSlice(gpa, "  \"results\": [\n");
-    for ([_]struct { name: []const u8, bound: []const u8, unit: []const u8, ws: usize, s: Sample }{
+    const rows = [_]struct { name: []const u8, bound: []const u8, unit: []const u8, ws: usize, s: Sample }{
         .{ .name = "simd_contains", .bound = "throughput", .unit = "byte", .ws = simd_hay_bytes, .s = probe_s },
         .{ .name = "simd_contains_production", .bound = "throughput", .unit = "byte", .ws = simd_hay_bytes, .s = prod_s },
         .{ .name = "dfa_step", .bound = "latency", .unit = "step", .ws = dfa_doc_bytes, .s = dfa_s },
-    }, 0..) |r, i| {
+        .{ .name = "dfa_mirror", .bound = "latency", .unit = "step", .ws = dfa_doc_bytes, .s = mirror_s },
+    };
+    for (rows, 0..) |r, i| {
         try j.appendSlice(gpa, try std.fmt.bufPrint(&line, "    {{ \"probe\": \"{s}\", \"bound\": \"{s}\", \"unit\": \"{s}\", \"working_set_bytes\": {d}, \"cyc_per_unit\": {d:.6}, \"ns_per_unit\": {d:.6}, \"ipc\": {d:.4}, \"eff_ghz\": {d:.4}, \"measured\": {} }}{s}\n", .{
-            r.name, r.bound, r.unit, r.ws, r.s.cyc_per_unit, r.s.ns_per_unit, r.s.ipc, r.s.ghz, r.s.has_pmu, if (i < 2) "," else "",
+            r.name, r.bound, r.unit, r.ws, r.s.cyc_per_unit, r.s.ns_per_unit, r.s.ipc, r.s.ghz, r.s.has_pmu, if (i + 1 < rows.len) "," else "",
         }));
     }
     try j.appendSlice(gpa, "  ]\n}\n");
@@ -322,6 +351,20 @@ test "dfa document is match-free and newline-free (one step per byte premise)" {
         d.start,
         d.dead,
         d.anchored,
+        d.empty_match,
+    ));
+
+    // The mirrored leg has one extra premise: this pattern must actually GET a
+    // mirror, or `run` would have nothing to time. Guarding it here means a
+    // change to `freeze`'s widening budget fails the test rather than the run.
+    const w = d.wide orelse return error.PatternHasNoMirror;
+    try std.testing.expect(!mirror_probe.portcert_dfa_mirror(
+        &doc,
+        doc.len,
+        w.trans_in.ptr,
+        w.trans_fin.ptr,
+        w.match_hi,
+        w.start,
         d.empty_match,
     ));
 }

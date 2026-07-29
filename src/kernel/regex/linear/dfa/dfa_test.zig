@@ -13,6 +13,8 @@
 const std = @import("std");
 const regex = @import("../program/core.zig");
 const Regex = regex.Regex;
+const dfa_mod = @import("dfa.zig");
+const Dfa = dfa_mod.Dfa;
 
 /// Compile, assert a DFA was actually built (not a powerset-cap fallback), and
 /// return its verdict for `line`. Fails the test if the pattern fell back to
@@ -417,4 +419,105 @@ test "dfa: docMatch single-pass scan ≡ per-line Pike over multi-line buffers" 
         }
     }
     try std.testing.expect(checked > 20_000);
+}
+
+/// Is `w` the byte-indexed mirror of `d`'s classed tables, cell for cell? Checks
+/// every state × all 256 bytes, not a sample: a mirror cell must hold exactly the
+/// target the byte's class names, rescaled from the classed premultiplier to the
+/// mirror's stride, and must witness unfilledness precisely where its original does.
+fn mirrors(d: *const Dfa, w: *const Dfa.Wide) !void {
+    const stride = Dfa.Wide.stride;
+    const ncls: usize = d.ncls;
+    // `trans_in` holds `id*ncls`; the mirror holds `id*stride`. An unfilled cell is
+    // a sentinel rather than a target, and rescales to itself.
+    const rescale = struct {
+        fn f(off: u32, n: usize) u32 {
+            return if (off == dfa_mod.unfilled) off else @intCast(off / n * stride);
+        }
+    }.f;
+    try std.testing.expectEqual(rescale(d.start, ncls), w.start);
+    try std.testing.expectEqual(rescale(d.match_hi, ncls), w.match_hi);
+    try std.testing.expectEqual(@as(usize, d.nstates) * stride, w.trans_in.len);
+    try std.testing.expectEqual(@as(usize, d.nstates) * stride, w.trans_fin.len);
+    for ([2][]const u32{ d.trans_in, d.trans_fin }, [2][]const u32{ w.trans_in, w.trans_fin }) |classed, wide| {
+        for (0..d.nstates) |id| {
+            const row = classed[id * ncls ..][0..ncls];
+            for (wide[id * stride ..][0..stride], 0..) |cell, b| {
+                try std.testing.expectEqual(rescale(row[d.class[b]], ncls), cell);
+            }
+        }
+    }
+}
+
+test "dfa: the byte-indexed mirror is cell-exact against the classed tables" {
+    const a = std.testing.allocator;
+    // Unanchored, dwell-free, word-free shapes — the only ones `freeze` mirrors.
+    // Spread over class counts and state counts so the rescale is exercised at
+    // several `ncls`, including the wide-class `\w`/`.` shapes.
+    const pats = [_][]const u8{
+        "panic|0x",    "[a-z]+_[a-z]+_[a-z]+", "\\w+X",             "a.*b.*c",
+        "\\d+\\.\\d+", "[0-9a-f]{8}-",         "[A-Z][a-z]+ [A-Z]", "(a|b)*a(a|b)(a|b)",
+        "[^x]y",       "\\s\\S\\w",            "foo(bar|baz)+qux",
+    };
+    var mirrored: usize = 0;
+    for (pats) |pat| {
+        var re = try Regex.compileOpts(a, pat, .{ .force_dfa = true });
+        defer re.deinit();
+        const d = re.dfa orelse continue; // powerset declined; nothing to mirror
+        const w = &(d.wide orelse continue); // over budget, or routed off the doc walk
+        try mirrors(d, w);
+        mirrored += 1;
+    }
+    // A vacuous pass would prove nothing, so demand the mirror actually got built.
+    try std.testing.expect(mirrored >= pats.len - 2);
+}
+
+test "dfa: docMatch is shape-invariant — mirrored walk ≡ classed walk, 0 divergences" {
+    const a = std.testing.allocator;
+    const alphabet = "abcd01_ xy\n";
+    var doc_buf: [64]u8 = undefined;
+
+    var seed: u64 = 0;
+    var checked: usize = 0;
+    var mirrored: usize = 0;
+    while (seed < 4000) : (seed += 1) {
+        var prng = std.Random.DefaultPrng.init(seed *% 2654435761);
+        const r = prng.random();
+
+        var pat: std.ArrayList(u8) = .empty;
+        defer pat.deinit(a);
+        var g = Gen{ .r = r, .buf = &pat, .a = a };
+        try g.pattern();
+
+        var re = Regex.compileOpts(a, pat.items, .{ .force_dfa = true }) catch continue;
+        defer re.deinit();
+        const d = re.dfa orelse continue;
+        if (d.wide == null) continue; // no mirror ⇒ one shape only; nothing to compare
+        mirrored += 1;
+        // Cell-exactness over RANDOM shapes, sampled. The test above already proves
+        // it exhaustively on a curated slate; walking every state × 256 bytes on
+        // every seed re-proves that at ~100× the cost of this whole differential.
+        if (mirrored % 32 == 0) try mirrors(d, &d.wide.?);
+
+        // The same automaton with its mirror withheld, so `docMatch` takes the
+        // classed walk. A value copy owns nothing and is never deinit'd — `re`
+        // still owns every table both views read.
+        var classed = d.*;
+        classed.wide = null;
+
+        for (0..8) |trial| {
+            const len = if (trial == 0) 0 else r.uintLessThan(usize, doc_buf.len + 1);
+            for (0..len) |i| doc_buf[i] = alphabet[r.uintLessThan(usize, alphabet.len)];
+            const doc = doc_buf[0..len];
+            const wide = d.docMatch(doc); // steps `trans[s + b]`
+            const narrow = classed.docMatch(doc); // steps `trans[s + class[b]]`
+            if (wide != narrow) {
+                std.debug.print("SHAPE DIVERGENCE pat=/{s}/ doc=\"{s}\" mirrored={} classed={}\n", .{ pat.items, doc, wide, narrow });
+                return error.DfaShapeDivergence;
+            }
+            checked += 1;
+        }
+    }
+    try std.testing.expect(mirrored > 500);
+    try std.testing.expect(checked > 4_000);
 }

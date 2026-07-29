@@ -8,13 +8,14 @@ doc_radar:
         - "document MATCHES"
         - "fn walkLoaded"
         - "fn walkCompared"
-    - description: "the eight sections, including the four premise-checking arms that retired C2 (area), C3 (width + closure cost), C4 and its adaptive residual (dwell + cost + break-even sweep + adaptive ceiling), and C5's byte road (reduce)"
+    - description: "the sections, including the four premise-checking arms that retired C2 (area), C3 (width + closure cost), C4 and its adaptive residual (dwell + cost + break-even sweep + adaptive ceiling), C5's byte road (reduce), and the body × width × table-shape race the doc walk's layout is chosen on (burst)"
       file: pkg/kernels/irregex/bench/rungs/automata/bench.zig
       contains:
         - "fn runArea"
         - "fn runWidth"
         - "fn runBuild"
         - "fn runShape"
+        - "fn runBurst"
         - "fn runDwell"
         - "fn runDwellCost"
         - "fn runStrideSweep"
@@ -22,7 +23,13 @@ doc_radar:
         - "fn runReduce"
         - "fn runInner"
         - "fn runSift"
-        - "shape, build, search, area, width, dwell, reduce, inner, sift, all"
+        - "shape, build, search, burst, area, width, dwell, reduce, inner, sift, all"
+    - description: "the burst race prices the SHIPPED mirror rather than a local prototype, and cannot pass without proving that mirror cell-exact against the classed table it stands in for"
+      file: pkg/kernels/irregex/bench/rungs/automata/bench.zig
+      contains:
+        - "fn mirrorFaithful"
+        - "fn burstAgrees"
+        - "Dfa.Wide.stride"
     - description: "C7's bounding half is priced with its own control and its own adverse arm, because a mechanism that costs nothing has to be shown costing nothing on the documents it cannot help"
       file: pkg/kernels/irregex/bench/rungs/automata/bench.zig
       contains:
@@ -100,6 +107,7 @@ round, min-of-N, and the only difference between them is the line under test.
 ```bash
 zig build automata-rung              # every section
 zig build automata-rung -- search    # the match test, both forms
+zig build automata-rung -- burst     # the doc walk's body × lane width × table shape
 zig build automata-rung -- build     # determinization alone, + closure width
 zig build automata-rung -- width     # how wide an NFA reaches the byte determinizer
 zig build automata-rung -- area      # does table SIZE cost throughput?
@@ -112,7 +120,7 @@ zig build automata-rung -- shape     # TSV, for the cross-engine join
 
 ## What it reports
 
-Nine sections, deliberately not mixed:
+Ten sections, deliberately not mixed:
 
 **`shape`** — NFA states, byte classes, DFA states, how many accept, table bytes,
 determinization time. No search timing. This is the section that crosses the engine
@@ -160,13 +168,16 @@ The *cost* arm then builds the skip and times it, because a positive premise is 
 a result. Three arms interleaved: `step` (the scalar walk, differing from the skip
 in exactly one respect, so `vs step` is attributable), `ship` (the multi-lane
 `docMatch` the engine actually runs, so `vs ship` is what decides), and the skip
-itself with the bar waived. On the same row those read 2.60× and 1.18×, which is
+itself with the bar waived. On the same row those read 2.58× and 1.08×, which is
 the whole reason both are printed.
 
 The *break-even* sweep closes it. `a.*b` over an alphabet with no `b` makes the
 realized stride exactly the distance to `\n`, so moving only the line length moves
-only the stride — and `vs ship` crosses 1.000× at ≈30 bytes, against a shipped
-`min_profitable_stride` of 32.
+only the stride — and `vs ship` crosses 1.000× at ≈34 bytes, against a shipped
+`min_profitable_stride` of 32. That crossing sat at ≈30 bytes until the doc walk
+gained its byte-indexed mirror; a faster `ship` raises the distance a skip must run
+to beat it, so the bar went from marginally conservative to marginally optimistic
+without a line of dwell code changing. Re-run this sweep before touching the bar.
 
 The *adaptive ceiling* prices C4's residual without building it. C4 died on a
 build-time prior that cannot see the document, so the named fix was a skip that
@@ -175,8 +186,8 @@ handing it its measurement **free and without error** and timing the decision it
 would converge on — anything real is bounded by that. Per-state mean strides show the
 variance is *between* dwell states (`8 70` inside `a.*b`), so a per-state counter is a
 sufficient statistic and the mechanism is sound; keeping exactly the states that pay
-still reads **0.56× geomean vs ship**, and C4's one winner gets *worse*. The skip
-lives in the scalar walk, 2.2× behind the shipped lanes, and adaptivity picks better
+still reads **0.53× geomean vs ship**, and C4's one winner gets *worse*. The skip
+lives in the scalar walk, ~2.4× behind the shipped lanes, and adaptivity picks better
 states without relocating the walk.
 
 **`reduce`** — how much redundancy a *finished* byte table still holds, in both
@@ -200,6 +211,40 @@ every row rejects and the mechanism can only cost.
 against the `is_match[s]` load it replaced. The load arm reconstructs the exact
 array the old automaton allocated, *from the shipped bound*, so the two arms are
 provably one machine rather than two that ought to agree.
+
+**`burst`** — the multi-line document walk, raced on the three axes it could have
+been built on: the lockstep **body** (`bk` copies `prev` and bumps a cursor per
+lane per byte and tests each lane; `pl` peels `prev` to the burst's last step,
+shares one induction variable, and folds the tests into a min), the **lane
+width** (4 · 8 · 12 · 16), and the **table shape** — `·d` steps the shipped
+byte-indexed mirror (`Dfa.Wide`), where a raw byte indexes a row, against the
+classed tables, where a class load sits in front of the transition load that
+consumes it. `4bk` is the baseline every column is quoted against, because it is
+what the engine shipped before the mirror existed.
+
+It settled two things in opposite directions. The mirror pays — 1.27×–1.29×
+geomean over repeat runs, no row slower — so it ships. The other two axes
+**cost** what they were supposed to save: `pl` is slower than `bk` at four lanes,
+because aarch64 already folds the cursor bump into a post-indexed load, move
+elimination retires the copy, and the four compares fuse into one branch
+cluster, so there was no bookkeeping there to delete. And width is a genuine
+tie that the automaton cannot break — twelve lanes hold a flat ~0.31 ns/byte at
+every table size, which beats four on the rows that wander and loses badly on
+the rows that park, and nothing available at freeze time predicts which a given
+*document* will do. So the engine carries one body at one width, and the
+`win`/`ship` gap stays printed as the standing measurement of what a
+working-set-aware walk would recover.
+
+Two things make the row trustworthy. `agree` is the mutation sweep: every arm
+*and* the shipped `docMatch` must match a scalar per-line oracle, counted only
+over the rounds that **actually matched**, so a row that proves parity purely on
+match-free text shows it in the column. Reaching those rounds means planting a
+string the automaton really accepts, which is why the planter walks the
+transition table breadth-first for a shortest accepted witness instead of
+splicing in slices of the pattern source — `\d+\.\d+` does not match the four
+characters `\d+`. And `mirrorFaithful` checks the mirror the engine will actually
+walk, cell by cell across every state × all 256 bytes, so an arm can never
+publish a time for a table that isn't the one it stands in for.
 
 ## Read `seen` before `speedup`
 
@@ -348,25 +393,30 @@ across newlines freely. So the census's 97% was always going to be spent in stri
 of one line, and whether that pays is a question about the fixed cost of entering
 the vector kernel — which only a timing can settle.
 
-With the bar waived, so every narrow-exit state is armed, the skip is **0.41×
+With the bar waived, so every narrow-exit state is armed, the skip is **0.38×
 geomean** against the multi-lane `docMatch`. The `stride` column says why in one
 number: `foo.*bar`'s interior dwell exits on `b`, its document *contains* `b`, so
 each skip elides 3.8 bytes and pays full kernel entry for them — ~10× slower. `a.*b`
-wins 1.18× only because its fill excludes `b` outright and the stride becomes the
+wins 1.08× only because its fill excludes `b` outright and the stride becomes the
 whole distance to `\n`. Same exit set, same build-time prediction, opposite outcomes,
 and the difference is a property of the document that no build-time prior can see.
 
-**And the threshold turns out to be right to within 6%.** The break-even sweep moves
-only the line length, so the x-axis is exactly the quantity the bar predicts:
-`vs ship` crosses 1.000× between a 23.1-byte stride (0.79×) and a 31.0-byte one
-(1.03×). Break-even ≈ **30 bytes**; `dwell.min_profitable_stride` is **32**,
-calibrated years earlier on the start case alone.
+**And the threshold is right to within ~6%, on the other side of the bar than it used
+to be.** The break-even sweep moves only the line length, so the x-axis is exactly
+the quantity the bar predicts: `vs ship` crosses 1.000× between a 31.0-byte stride
+(0.92×) and a 47.0-byte one (1.28×). Break-even ≈ **34 bytes**;
+`dwell.min_profitable_stride` is **32**, calibrated years earlier on the start case
+alone. That crossing was ≈30 bytes before the doc walk gained its byte-indexed
+mirror, so a ~1.28× faster `ship` turned a marginally conservative bar into a
+marginally optimistic one — same ~6% magnitude, opposite sign, no dwell code touched.
 
 So C4 is retired, and the shape of its retirement is the useful part. It is the one
 claim here whose premise survived every cheap test — which is precisely why it had to
 be built and timed against the walk the product actually runs rather than the
-convenient one. `vs step` reads 2.60× on the row where `vs ship` reads 1.18×; both
-are true, both are attributable, and only one of them is the answer.
+convenient one. `vs step` reads 2.58× on the row where `vs ship` reads 1.08×; both
+are true, both are attributable, and only one of them is the answer. And because the
+verdict is quoted against the shipped walk, it re-decides itself for free: the mirror
+moved every `vs ship` figure further against C4 without the claim being reopened.
 
 **The residual it named is retired here too, and it never had to be built.** C4's loss
 came from a prior that cannot see the document, so the fix on the table was a skip that
@@ -375,19 +425,19 @@ mechanism its measurement *free and without error* — then the timing is an upp
 on every real version, bookkeeping and learning error included, and a losing bound
 retires the claim without writing it.
 
-The per-site numbers say the headroom is real: `a.*b.*c` loses at 0.54–0.56× armed
+The per-site numbers say the headroom is real: `a.*b.*c` loses at ~0.52× armed
 unconditionally, yet **77.8%** of its bytes sit under skips that individually clear the
 32-byte bar. And the per-state strides say it is *learnable* — `8 70` inside `a.*b`,
 `8 8 61` inside `a.*b.*c`, so the dispersion separates which dwell rather than hiding
 inside one, which makes a per-state counter a sufficient statistic. The mechanism is
 sound in principle, and that is what makes the timing decisive instead of a proxy.
 
-Keeping exactly the states whose own realized stride pays reads **0.55–0.56× geomean
-vs ship** over four fresh runs. It beats C4 by a stable 1.36–1.43× measured in the
-same runs (0.382 → 0.547, 0.403 → 0.558, 0.405 → 0.561) and still loses by ~1.8× —
-and `a.*b`, C4's one winner, gets *worse* (1.11–1.18× → 0.81–0.84×), because disarming
+Keeping exactly the states whose own realized stride pays reads **0.53× geomean
+vs ship** over three fresh runs. It beats C4 by a stable 1.40–1.41× measured in the
+same runs (0.380 → 0.532, 0.376 → 0.529, 0.376 → 0.526) and still loses by ~1.9× —
+and `a.*b`, C4's one winner, gets *worse* (1.08–1.10× → 0.76–0.79×), because disarming
 its 8-byte state removed a skip that beat stepping even below the bar. The reason is
-structural: the skip lives in the scalar walk, ~2.2× behind the shipped lanes, so
+structural: the skip lives in the scalar walk, ~2.4× behind the shipped lanes, so
 **adaptivity can choose better states but cannot relocate the walk it runs in.**
 `foo.*bar` shows the floor from the other side — with nothing armed the arm is still
 0.78–0.81× of `step`, because merely asking "is this state armed" costs per byte. That

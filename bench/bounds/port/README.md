@@ -4,7 +4,7 @@ doc_radar:
     - description: "the Layer B′ measured runner is wired as a build step + installed exe"
       file: pkg/kernels/irregex/build.zig
       contains: ['b.step("portbound"', '.name = "gist-portbound"']
-    - description: "portcert.sh splices the measured subsection and names the sudo rung"
+    - description: "the static leg splices the measured subsection and names the sudo rung"
       file: pkg/kernels/irregex/bench/bounds/port/mca.sh
       contains: ["portbound.json", "sudo pkg/kernels/irregex/zig-out/bin/gist-portbound"]
     - description: "the splicer fail-closed labels cycles when not measured here"
@@ -18,7 +18,7 @@ Layer B of gist's [Dominance-and-Fit Certificate](../README.md#dominance-and-fit
 Where Layer A proves empirical dominance over ripgrep on the registered
 workloads, Layer B proves _why the hot loop can't be beaten on this instruction sequence_ — in
 two legs: a **static** `llvm-mca` microarchitectural bound (port pressure /
-reciprocal throughput) over reference cores, and **Layer B′**, the same two
+reciprocal throughput) over reference cores, and **Layer B′**, the same
 hot-loop probes run natively on _this_ machine under the PMU, so the
 certificate can carry a measured-here cycles/byte instead of only a
 cross-machine cross-check.
@@ -27,11 +27,12 @@ cross-machine cross-check.
 
 | File                       | Role                                                                                                                                                                                                     |
 | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `portcert.sh`              | cross-compiles the two probes to two reference microarchitectures, runs `llvm-mca`, writes `portcert.csv`/`portcert.json`, splices the certificate                                                       |
-| `portcert_report.py`       | renders the `## Layer B` markdown section (static + the Layer B′ measured subsection) from `portcert.json` + `portbound.json` and splices it into `.local/gist-verify/CERTIFICATE.md`                    |
-| `portbound.zig`            | **Layer B′** — `gist-portbound`: times the same drift-guarded probes natively under the PMU (`bench/harness/pmu.zig`), writing `portbound.json` (measured cyc/byte + cyc/step; fail-closed without root) |
+| `mca.sh`                   | cross-compiles every probe to two reference microarchitectures, runs `llvm-mca`, writes `portcert.csv`/`portcert.json`, splices the certificate                                                          |
+| `report.py`                | renders the `## Layer B` markdown section (static + the Layer B′ measured subsection) from `portcert.json` + `portbound.json` and splices it into `.local/gist-verify/CERTIFICATE.md`                    |
+| `measure.zig`              | **Layer B′** — `gist-portbound`: times the same drift-guarded probes natively under the PMU (`bench/harness/pmu.zig`), writing `portbound.json` (measured cyc/byte + cyc/step; fail-closed without root) |
 | `probes/simd_contains.zig` | byte-faithful copy of the hot loop in [`../../src/kernel/scan/simd.zig`](../../src/kernel/scan/simd.zig)'s `contains` — throughput-bound                                                                 |
-| `probes/dfa_step.zig`      | byte-faithful copy of the hot loop in [`../../src/kernel/regex/linear/dfa/dfa.zig`](../../src/kernel/regex/linear/dfa/dfa.zig)'s `docMatch` — latency-bound                                              |
+| `probes/dfa_step.zig`      | the **classed** DFA recurrence — `s = trans_in[s + class[b]]`, 3 loads/byte, the layout every non-document DFA consumer still walks — latency-bound                                                       |
+| `probes/dfa_mirror.zig`    | the **byte-indexed** recurrence — `s = trans_in[s + b]` over the `Dfa.Wide` mirror that [`../../src/kernel/regex/linear/dfa/dfa.zig`](../../src/kernel/regex/linear/dfa/dfa.zig)'s `docMatch` steps, 2 loads/byte — latency-bound |
 | `probes_test.zig`          | the drift guard — asserts each probe is bit-identical to the real production function it copies, over adversarial random inputs (`zig build test`)                                                       |
 
 **Why cross-compiled reference cores, not this machine.** This dev box is
@@ -46,12 +47,45 @@ core behind AWS Graviton4 / Google Axion).
 **Throughput-bound vs latency-bound.** `simd_contains`'s iterations are
 independent (only the loop counter carries), so its `Block RThroughput` **is**
 the real floor — no scheduling of those vector ops on that core runs faster.
-`dfa_step` is a **latency-bound pointer chase**: the transition
-`s = trans_in[s + class[b]]` is a loop-carried dependency, so its true floor is
-the recurrence latency (the dependent-load chain), which `llvm-mca` reports as
-higher than the port-pressure `Block RThroughput` shown in the table — the
-certificate names this explicitly rather than quoting the more flattering
-throughput number as if it were the DFA's real ceiling.
+Both DFA probes are **latency-bound pointer chases**: the transition is a
+loop-carried dependency, so their true floor is the recurrence latency (the
+dependent-load chain), which `llvm-mca` reports as higher than the port-pressure
+`Block RThroughput` shown in the table — the certificate names this explicitly
+rather than quoting the more flattering throughput number as if it were the DFA's
+real ceiling.
+
+**Why two DFA probes, and what the pair actually showed.** The automaton carries
+its transitions in two layouts, and `docMatch` steps the byte-indexed mirror
+while every other consumer steps the classed tables, so bounding one would leave
+the other undescribed. Running both was also the cheapest way to ask *what kind*
+of win the mirror is — and the answer was not the obvious one:
+
+- **Measured (Layer B′), the two are a wash**: 4.59 ns/step classed against
+  4.62 ns/step mirrored on an M4 Max. Deleting a load per byte bought nothing
+  here.
+- **Because the deleted load was never on the critical path.** `class[b]`
+  depends on the document byte, not on `s`, so it issues early and retires
+  under the transition load's latency. The loop-carried chain is
+  `s`→`add`→`trans_in[…]` in both layouts, and it is the same length in both.
+
+So the mirror's ~1.28× in `bench/rungs/automata -- burst` is a **port-pressure**
+win, not a latency win: it only cashes out when the walk has several independent
+chains in flight to saturate the load ports, which is exactly why `docMatch`
+bursts four lines in lockstep and why leaving the scalar and anchored walks on
+the classed tables costs nothing. A single-chain probe is the right instrument
+for saying so, and it is the reason the burst rung and this bound disagree
+without either being wrong.
+
+**A region-capture caveat, visible in the two `.region.s` files.** The `sim
+cyc/it` column is not comparable between these two probes. In the classed
+region the state register is *read but never written* inside the markers (the
+compiler keeps `s` live in a register assigned outside them), so `llvm-mca` sees
+no loop-carried edge and simulates the body as freely pipelineable — ~1.2
+cyc/it, which is a port-pressure number wearing a latency label. The mirrored
+region happens to keep `s` in a register both written and read inside the
+markers, so its ~5–6 cyc/it is the real dependent-load recurrence. Read
+`Block RThroughput` for the port bound and the measured Layer B′ column for the
+recurrence; treat `sim cyc/it` as per-probe, not cross-probe.
 
 ## Drift guard, not a duplicate
 
@@ -71,7 +105,7 @@ certificate.
 ## Layer B′ — port bound, measured on this machine (the sudo rung)
 
 The static leg is honest about its gap: it bounds _reference_ cores because
-LLVM models no Apple core (below). `portbound.zig` closes the gap empirically —
+LLVM models no Apple core (below). `measure.zig` closes the gap empirically —
 it runs the **same drift-guarded probe functions** as timed kernels on this
 machine, over cache-resident, guaranteed-miss inputs (the steady-state hot
 loop; ports bind, memory never does), and reports:
@@ -79,8 +113,11 @@ loop; ports bind, memory never does), and reports:
 - `simd_contains` — measured **cycles/byte** (throughput probe), with the
   unmarked production `simd.contains` timed alongside as a marker-overhead
   cross-check (the probe figure is a conservative upper bound);
-- `dfa_step` — measured **cycles/step** of the transition recurrence
-  `s = trans_in[s + class[b]]` (latency probe, 1 byte per step).
+- `dfa_step` — measured **cycles/step** of the classed transition recurrence
+  `s = trans_in[s + class[b]]` (latency probe, 1 byte per step);
+- `dfa_mirror` — the same recurrence over the byte-indexed mirror,
+  `s = trans_in[s + b]`, so the delta between the two rows prices the load the
+  mirror folds away rather than asserting it.
 
 Provenance is stamped in `portbound.json` and the spliced section: CPU brand
 (`machdep.cpu.brand_string`), the P-core note (USER_INTERACTIVE QoS request
@@ -95,8 +132,8 @@ frequency.
 
 ```bash
 cd pkg/kernels/irregex
-bench/portcert/portcert.sh              # static leg: portcert.csv/.json + splice Layer B (+B′ if present)
-ITERS=200 bench/portcert/portcert.sh    # more llvm-mca simulation iterations
+bench/bounds/port/mca.sh                # static leg: portcert.csv/.json + splice Layer B (+B′ if present)
+ITERS=200 bench/bounds/port/mca.sh      # more llvm-mca simulation iterations
 
 # Layer B′ — measured on this machine:
 zig build -Doptimize=ReleaseFast portbound         # wall-clock only (labels cycles NOT measured)
