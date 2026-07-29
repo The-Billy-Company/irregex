@@ -92,17 +92,33 @@ pub fn docMatch(re: *const Regex, sim: *Sim, doc: []const u8) bool {
     if (re.eol_empty) return doc.len > 0;
     // Literals never span `\n` (per-line only), so "some line holds one" ≡ "the
     // buffer holds one": one whole-buffer scan settles an `.exact` set, and a
-    // `.candidate` miss rejects every line at once. A candidate hit falls through
-    // to the per-line/DFA machines below.
-    if (re.literal_scan) |*set| switch (set.presence(doc)) {
-        .exact => |matched| return matched,
-        .candidate => |nominated| if (!nominated) return false,
+    // `.candidate` miss rejects every line at once.
+    //
+    // A `.candidate` hit also says WHERE, and that is worth as much as the miss.
+    // Every match contains the literal and no match crosses `\n`, so a line lying
+    // entirely before the literal's first occurrence cannot match — and the machines
+    // below may start at the line that holds it instead of at byte zero. Without
+    // this, a buffer is crossed twice: once by the substring kernel at SIMD
+    // bandwidth, then again from the beginning by the slowest machine in the ladder,
+    // to rediscover a position the first pass already had. `find` costs exactly what
+    // `presence` cost — it is the same scan with its result kept.
+    var body = doc;
+    if (re.literal_scan) |*set| switch (set.find(doc, 0)) {
+        .exact => |at| return at != null,
+        .candidate => |at| {
+            const p = at orelse return false;
+            // `-U` is the one model where the offset proves nothing about a start: a
+            // match may cross `\n`, so it can begin arbitrarily far left of `p`.
+            // Multiline searches enter through `bufMatch`, not here; the guard keeps
+            // that fact local to the function whose soundness rests on it.
+            if (!re.multiline) body = doc[lineStart(doc, p)..];
+        },
     };
     // One SIMD pass over the raw buffer: per-line compiles removed `\n`
     // from the set (`nl_free`), so a run can never cross a line boundary —
     // "some line holds a run" ≡ "the buffer holds a run", newlines and the
     // no-phantom-final-line rule included (min ≥ 1 needs real bytes).
-    if (re.classrun) |*cr| if (cr.nl_free) switch (cr.scan(doc)) {
+    if (re.classrun) |*cr| if (cr.nl_free) switch (cr.scan(body)) {
         .hit => return true,
         .miss => return false,
         .unproven => {},
@@ -111,7 +127,7 @@ pub fn docMatch(re: *const Regex, sim: *Sim, doc: []const u8) bool {
     // match of its pattern can cross a `\n` — the class-run kernel's `nl_free`
     // argument, discharged per rung at admission — so "some line matches" and
     // "the buffer matches" are the same question and need no line split.
-    switch (re.rungs.doc(doc)) {
+    switch (re.rungs.doc(body)) {
         .hit => return true,
         .miss => return false,
         .unproven => {},
@@ -121,21 +137,28 @@ pub fn docMatch(re: *const Regex, sim: *Sim, doc: []const u8) bool {
     // oracle) serves per line. Equivalence held by the doc-level differential fuzz.
     // A word-boundary DFA has no fused doc scan this rung (`word_ctx`); it runs
     // per line through `lineMatch` (the DFA floor, Pike on a Unicode quit).
-    if (re.dfa) |d| if (!d.word_ctx) return d.docMatch(doc);
+    if (re.dfa) |d| if (!d.word_ctx) return d.docMatch(body);
     // Same fused whole-buffer shape from the on-demand driver. A quit falls
     // through to the per-line loop below, which is correct but re-walks what the
     // doc scan already covered — bounded, because the cap that caused the quit is
     // sticky, so subsequent lines go straight to the Pike VM.
     if (sim.lazy) |*c| if (!c.lazy.word_ctx and !c.quit) {
-        if (c.docMatch(doc)) |hit| return hit;
+        if (c.docMatch(body)) |hit| return hit;
     };
     var i: usize = 0;
-    while (i < doc.len) {
-        const end = std.mem.indexOfScalarPos(u8, doc, i, '\n') orelse doc.len;
-        if (lineMatch(re, sim, doc[i..end])) return true;
+    while (i < body.len) {
+        const end = std.mem.indexOfScalarPos(u8, body, i, '\n') orelse body.len;
+        if (lineMatch(re, sim, body[i..end])) return true;
         i = end + 1;
     }
     return false;
+}
+
+/// Start of the line holding `p` — the one seam a whole-buffer per-line scan may
+/// begin at without changing what any line is. Bounded by the distance back to the
+/// previous `\n`, so it is a line's worth of work however large the buffer.
+fn lineStart(doc: []const u8, p: usize) usize {
+    return if (std.mem.lastIndexOfScalar(u8, doc[0..p], '\n')) |nl| nl + 1 else 0;
 }
 
 /// Is `docMatch` a single fused whole-buffer pass (class-run kernel or
