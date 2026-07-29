@@ -1,5 +1,5 @@
 //! gist — the FORCED-CREST calculus: the query half of the Crest sieve
-//! (`../../../primitives/crest.zig`; research/crest/PROOF.md §3).
+//! (`../../math/crest.zig`; research/crest/PROOF.md §3).
 //!
 //! A document carries a *crest* — the longest run of consecutive bytes in each
 //! of k byte classes, ρ(d). A pattern forces a *swell*: the crests it will
@@ -96,10 +96,7 @@ fn profile(n: *const Node) Profile {
         .anchor_end,
         .anchor_buf_start,
         .anchor_buf_end,
-        .word_boundary,
-        .not_word_boundary,
-        .word_start,
-        .word_end,
+        .word,
         => Profile.epsilon(),
         .class => |set| Profile.atom(set),
         .uclass => Profile.unit(),

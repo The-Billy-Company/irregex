@@ -95,10 +95,16 @@ pub const Op = enum(u8) {
     line_end,
     slice_start,
     slice_end,
+    // One opcode per word predicate rather than one carrying `syn.Word`'s mask:
+    // each is a two-gate circuit over the same pair of bit planes, where
+    // evaluating the mask generally would cost a sum of four products per block.
+    // The mask is the vocabulary; these are its circuits.
     word_boundary,
     not_word_boundary,
     word_start,
     word_end,
+    word_start_half,
+    word_end_half,
 };
 
 pub const Instr = struct {
@@ -283,10 +289,14 @@ const Builder = struct {
             .anchor_end => return b.assertion(.line_end),
             .anchor_buf_start => return b.assertion(.slice_start),
             .anchor_buf_end => return b.assertion(.slice_end),
-            .word_boundary => return b.assertion(.word_boundary),
-            .not_word_boundary => return b.assertion(.not_word_boundary),
-            .word_start => return b.assertion(.word_start),
-            .word_end => return b.assertion(.word_end),
+            .word => |mask| return b.assertion(switch (mask) {
+                .boundary => .word_boundary,
+                .not_boundary => .not_word_boundary,
+                .start => .word_start,
+                .end => .word_end,
+                .start_half => .word_start_half,
+                .end_half => .word_end_half,
+            }),
             .concat, .alt, .capture, .empty => unreachable, // `lowerSeq` owns these
         }
     }
@@ -299,7 +309,7 @@ const Builder = struct {
                 set.set('\n');
                 break :blk b.intern(&set) orelse return .too_complex;
             },
-            .word_boundary, .not_word_boundary, .word_start, .word_end => blk: {
+            .word_boundary, .not_word_boundary, .word_start, .word_end, .word_start_half, .word_end_half => blk: {
                 if (b.model.unicode_words) return .unicode_assertion;
                 set.setRange('0', '9');
                 set.setRange('A', 'Z');
@@ -360,7 +370,7 @@ const Builder = struct {
         const need: usize = switch (op) {
             .star => 1,
             .step, .opt => k,
-            .line_start, .word_boundary, .not_word_boundary, .word_start, .word_end => 1,
+            .line_start, .word_boundary, .not_word_boundary, .word_start, .word_end, .word_start_half, .word_end_half => 1,
             else => 0,
         };
         if (@as(usize, b.prog.ncarries) + need > max_carries) return .too_complex;

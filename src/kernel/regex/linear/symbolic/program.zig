@@ -94,7 +94,7 @@ const Compiler = struct {
             .anchor_start => return c.push(.{ .assert_start = next }),
             .anchor_end => return c.push(.{ .assert_end = next }),
             .anchor_buf_start, .anchor_buf_end => return Reject.BufferAnchor,
-            .word_boundary, .not_word_boundary, .word_start, .word_end => return Reject.WordContext,
+            .word => return Reject.WordContext,
             .class => |set| {
                 var b: u16 = 0x80;
                 while (b <= 0xFF) : (b += 1) if (set.has(@intCast(b))) return Reject.HighByteClass;

@@ -11,9 +11,10 @@
 //!   `(?-u)` twins rg accepts) · `*` `+` `?` · `{n}` `{n,}` `{n,m}` counted
 //!   repetition · `|` · `(...)` grouping · line anchors `^` `$` · haystack
 //!   anchors `\A` `\z` (start/end of haystack — the line in the per-line
-//!   default, the whole buffer under multiline) · word boundaries `\b` `\B`
-//!   and the one-sided `\<` `\>` (word start/end; ASCII, the `[0-9A-Za-z_]`
-//!   class — exactly rg `--no-unicode`) · escapes
+//!   default, the whole buffer under multiline) · the six word assertions `\b`
+//!   `\B` `\<` `\>` and rust-regex's braced spellings `\b{start}` `\b{end}`
+//!   `\b{start-half}` `\b{end-half}` (see `Word`; ASCII here is the
+//!   `[0-9A-Za-z_]` class — exactly rg `--no-unicode`) · escapes
 //!   `\t \n \r \f \v \a \xNN \x{H..H} \d \D \w \W \s \S` plus any escaped
 //!   ASCII punctuation (`\. \* \\ \/ \-` … → the literal byte).
 //! rg-parity rejections (BadPattern, never a silent literal): `\0`–`\9`
@@ -115,9 +116,106 @@ pub fn foldCaseAst(gpa: std.mem.Allocator, n: *Node, unicode: bool) ParseError!v
         },
         .star, .plus, .quest => |r| try foldCaseAst(gpa, r.node, unicode),
         .capture => |g| try foldCaseAst(gpa, g.child, unicode),
-        .empty, .anchor_start, .anchor_end, .anchor_buf_start, .anchor_buf_end, .word_boundary, .not_word_boundary, .word_start, .word_end => {},
+        .empty, .anchor_start, .anchor_end, .anchor_buf_start, .anchor_buf_end, .word => {},
     }
 }
+
+/// Which word assertion — as the truth table it actually is.
+///
+/// Every spelling in this family (`\b \B \< \>` and rust-regex's `\b{start}`,
+/// `\b{end}`, `\b{start-half}`, `\b{end-half}`) asks one question about two
+/// booleans: is the byte behind this position a word byte, and is the byte ahead
+/// one? Four inputs, so an assertion IS a 4-bit mask — bit `(before << 1) | after`
+/// set means that pair satisfies it. Nothing else distinguishes them.
+///
+/// Naming the family this way is what keeps a new spelling cheap. rust-regex
+/// carries twelve `Look` variants for these (six × ASCII/Unicode) and every
+/// engine that walks a program switches on all twelve; here a program carries one
+/// state, each engine evaluates one predicate, and adding a spelling is a line in
+/// the parser. `admits` is the whole contract.
+pub const Word = enum(u4) {
+    boundary = 0b0110, // `\b` — the two sides differ
+    not_boundary = 0b1001, // `\B` — the two sides agree
+    start = 0b0010, // `\<`, `\b{start}` — a word begins here
+    end = 0b0100, // `\>`, `\b{end}` — a word ends here
+    start_half = 0b0011, // `\b{start-half}` — nothing wordy behind, ahead unconstrained
+    end_half = 0b0101, // `\b{end-half}` — nothing wordy ahead, behind unconstrained
+
+    /// Does this assertion hold at a position whose neighbours are as given?
+    /// A haystack edge counts as a non-word side, which is what makes
+    /// `\b{start-half}` true at offset 0 and `\b{end-half}` true at the end —
+    /// callers pass `false` there, as they already do for `\b`.
+    pub fn admits(self: Word, before: bool, after: bool) bool {
+        return mask.admits(@intFromEnum(self), before, after);
+    }
+
+    /// Does this assertion hold at a position that looks like `s`? The engine
+    /// entry point — `admits` is only the truth table. See `mask.holds`.
+    pub fn holds(self: Word, s: Sides) bool {
+        return mask.holds(@intFromEnum(self), s);
+    }
+};
+
+/// What a gap position looks like to a word assertion: how wordy each side is,
+/// and whether each side is a whole character at all.
+///
+/// The second pair exists because the first cannot carry it. "Is the character
+/// before me a word character?" answers *false* both for a comma and for a gap
+/// standing between the two bytes of `é` — one is silence, the other is the
+/// middle of a word. Under `(?-u)` every byte is its own character and the
+/// question cannot arise, so both flags stay true.
+pub const Sides = struct {
+    before: bool,
+    after: bool,
+    left_ok: bool = true,
+    right_ok: bool = true,
+};
+
+/// The word-assertion algebra, over a raw mask.
+///
+/// `Word` names the six masks a pattern can write; an engine that *intersects*
+/// two of them lands elsewhere. The one-pass builder flattens a whole ε-path
+/// into a single guard, so `\b\<` becomes `0b0010` and `\B\<` becomes the empty
+/// mask — a contradiction it can see at build time, where a bit per spelling
+/// could only rediscover it once per byte. Those masks name no spelling, so the
+/// rules live here and `Word` delegates.
+pub const mask = struct {
+    /// The mask of a path with no word assertion on it: every pair still admitted.
+    pub const free: u4 = 0b1111;
+
+    /// The truth table. Bit `(before << 1) | after` is set when that pair passes.
+    pub fn admits(m: u4, before: bool, after: bool) bool {
+        const pair = (@as(u2, @intFromBool(before)) << 1) | @intFromBool(after);
+        return (m >> pair) & 1 != 0;
+    }
+
+    /// The truth table, plus the one thing two booleans cannot say.
+    ///
+    /// An assertion that can fire on silence must also insist the silence is
+    /// real, or it fires in the middle of a character and reports a match
+    /// boundary that splits it — `\B` matching between the two bytes of `é`.
+    /// Those are exactly the masks admitting the all-quiet pair, which is
+    /// exactly the masks with bit 0 set: `\B` and the two halves. The others
+    /// need no guard and pay for none, because firing requires a word character
+    /// on some side and a word character is a whole one. The guard applies only
+    /// to the sides the mask reads, so `\b{start-half}` looks left and does not
+    /// care that a character to its right is unfinished.
+    pub fn holds(m: u4, s: Sides) bool {
+        if (!admits(m, s.before, s.after)) return false;
+        if (m & 1 == 0) return true;
+        return (s.left_ok or !readsBefore(m)) and (s.right_ok or !readsAfter(m));
+    }
+
+    /// Does the answer depend on the side at all? Read off the mask rather than
+    /// listed per spelling: `before` matters exactly when the table's two halves
+    /// disagree, and `after` exactly when its two interleaved halves do.
+    pub fn readsBefore(m: u4) bool {
+        return (m & 0b0011) != (m >> 2);
+    }
+    pub fn readsAfter(m: u4) bool {
+        return (m & 0b0101) != ((m & 0b1010) >> 1);
+    }
+};
 
 /// The regex AST — what recursive descent (`Parser`) produces and every
 /// downstream compiler/analysis consumes (`compile.zig`, `captures.zig`,
@@ -135,10 +233,7 @@ pub const Node = union(enum) {
     anchor_end, // `$` — zero-width, asserts end of line
     anchor_buf_start, // `\A` under multiline — zero-width, asserts start of BUFFER
     anchor_buf_end, // `\z` under multiline — zero-width, asserts end of BUFFER
-    word_boundary, // `\b` — zero-width, asserts a word/non-word transition
-    not_word_boundary, // `\B` — zero-width, asserts NO such transition
-    word_start, // `\<` — zero-width, holds iff !word_before && word_after
-    word_end, // `\>` — zero-width, holds iff word_before && !word_after
+    word: Word, // `\b \B \< \>` and the `\b{…}` spellings — zero-width, see `Word`
     concat: [2]*Node,
     alt: [2]*Node,
     // Quantifiers carry a `lazy` flag: greedy (`a*`) prefers to consume, lazy
@@ -174,10 +269,10 @@ pub const State = union(enum) {
     split: struct { a: u32, b: u32 },
     assert_start: u32, // zero-width `^`: pass to `out` only at line start
     assert_end: u32, // zero-width `$`: pass to `out` only at line end
-    assert_word_b: u32, // zero-width `\b`: pass to `out` only at a word boundary
-    assert_not_word_b: u32, // zero-width `\B`: pass to `out` only off a boundary
-    assert_word_start: u32, // zero-width `\<`: only where a word BEGINS (¬word|word)
-    assert_word_end: u32, // zero-width `\>`: only where a word ENDS (word|¬word)
+    // Every word assertion, as one state: `mask` says which (word_before,
+    // word_after) pairs pass to `out`. One case for an engine to evaluate
+    // instead of one per spelling — see `Word`.
+    assert_word: struct { mask: Word, out: u32 },
     assert_buf_start: u32, // zero-width `\A` (multiline): pass only at buffer start
     assert_buf_end: u32, // zero-width `\z` (multiline): pass only at buffer end
     match,
@@ -498,6 +593,33 @@ pub const Parser = struct {
         return p.src[p.pos..end];
     }
 
+    /// The assertion a `\b{…}` names, with the parser sitting on the `{`.
+    ///
+    /// A brace after `\b` is ambiguous: `\b{start}` is an assertion, `\b{2}` is a
+    /// counted repetition of the plain boundary. rust-regex settles it on the first
+    /// character — a name can only be `[A-Za-z-]` — so we rewind to the brace and
+    /// answer `.boundary`, leaving the quantifier parser an untouched `{2}`. Once
+    /// that first character HAS committed to a name, an unclosed or unknown one is
+    /// an error rather than a silent reinterpretation: rg exits 2 there, and a
+    /// `\b{stort}` quietly meaning `\b` would be a lie.
+    fn specialWord(p: *Parser) ParseError!Word {
+        const brace = p.pos;
+        p.pos += 1;
+        const from = p.pos;
+        while (p.peek()) |c| : (p.pos += 1) if (!std.ascii.isAlphabetic(c) and c != '-') break;
+        const name = p.src[from..p.pos];
+        if (name.len == 0) {
+            p.pos = brace;
+            return .boundary;
+        }
+        if (!p.eat('}')) return ParseError.BadPattern;
+        inline for (.{
+            .{ "start", Word.start },           .{ "end", Word.end },
+            .{ "start-half", Word.start_half }, .{ "end-half", Word.end_half },
+        }) |known| if (std.mem.eql(u8, name, known[0])) return known[1];
+        return ParseError.BadPattern;
+    }
+
     // ─────────────────────────── Unicode-mode parsing ───────────────────────────
 
     /// Union `table`'s complement over the whole scalar space into `ss`, minus
@@ -745,11 +867,13 @@ pub const Parser = struct {
                     'b', 'B', '<', '>', 'A', 'z' => {
                         _ = p.take();
                         return p.node(switch (e) {
-                            'b' => .word_boundary,
-                            'B' => .not_word_boundary,
+                            // `\b` alone is the plain boundary; `\b{…}` names one of
+                            // the four rust-regex spellings (`specialWord`).
+                            'b' => .{ .word = if (p.peek() == '{') try p.specialWord() else .boundary },
+                            'B' => .{ .word = .not_boundary },
                             // rg's one-sided word boundaries (word start/end)
-                            '<' => .word_start,
-                            '>' => .word_end,
+                            '<' => .{ .word = .start },
+                            '>' => .{ .word = .end },
                             // `\A`/`\z` anchor the HAYSTACK. In the per-line default the
                             // haystack is the line, so they coincide with `^`/`$` and
                             // lower to the existing nodes (zero engine changes); under

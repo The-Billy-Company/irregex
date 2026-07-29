@@ -43,10 +43,7 @@ pub const Compiler = struct {
             .anchor_end => return self.push(.{ .assert_end = next }),
             .anchor_buf_start => return self.push(.{ .assert_buf_start = next }),
             .anchor_buf_end => return self.push(.{ .assert_buf_end = next }),
-            .word_boundary => return self.push(.{ .assert_word_b = next }),
-            .not_word_boundary => return self.push(.{ .assert_not_word_b = next }),
-            .word_start => return self.push(.{ .assert_word_start = next }),
-            .word_end => return self.push(.{ .assert_word_end = next }),
+            .word => |mask| return self.push(.{ .assert_word = .{ .mask = mask, .out = next } }),
             .class => |set| return self.push(.{ .consume = .{ .set = set, .out = next } }),
             // A Unicode codepoint class lowers to a compact UTF-8 byte
             // sub-automaton (shared with the capture compiler).

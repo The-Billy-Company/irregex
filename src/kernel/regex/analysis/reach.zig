@@ -73,7 +73,7 @@ pub fn analyzeFirst(gpa: std.mem.Allocator, states: []const State, start: u32, o
         // position, so the byte it gates is reachable as a first byte — traverse
         // it (sound superset; a seeded thread at a position where the boundary
         // fails just dies, never a false positive).
-        .assert_word_b, .assert_not_word_b, .assert_word_start, .assert_word_end => |o| wl.push(o),
+        .assert_word => |w| wl.push(w.out),
         .assert_end, .assert_buf_end, .match => {}, // `$`/`\z`: no byte follows; match: zero-width
     };
 }
@@ -96,7 +96,7 @@ pub fn reachesMatchEol(gpa: std.mem.Allocator, states: []const State, start: u32
         // prove a zero-width EOL match — don't traverse. Same for the buffer
         // anchors: an arbitrary line's EOL is not provably the buffer edge.
         // Conservative: only ever suppresses the `eol_empty` shortcut, never a match.
-        .assert_word_b, .assert_not_word_b, .assert_word_start, .assert_word_end, .assert_buf_start, .assert_buf_end => {},
+        .assert_word, .assert_buf_start, .assert_buf_end => {},
     };
     return false;
 }
@@ -122,7 +122,8 @@ pub fn reachesMatchZeroWidth(gpa: std.mem.Allocator, states: []const State, star
     while (wl.pop()) |s| switch (states[s]) {
         .match => return true,
         .split => |spl| wl.push2(spl.a, spl.b),
-        .assert_start, .assert_end, .assert_buf_start, .assert_buf_end, .assert_word_b, .assert_not_word_b, .assert_word_start, .assert_word_end => |o| wl.push(o),
+        .assert_start, .assert_end, .assert_buf_start, .assert_buf_end => |o| wl.push(o),
+        .assert_word => |w| wl.push(w.out),
         .consume => {}, // consumes a byte ⇒ this path is not zero-width
     };
     return false;

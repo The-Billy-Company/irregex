@@ -83,17 +83,20 @@ const Oracle = struct {
     }
     /// Independent `\b` predicate at gap `pos`: a boundary iff exactly one of the
     /// straddling bytes is a word byte (BOL/EOL count as non-word).
-    fn wordBoundary(o: Oracle, pos: usize) bool {
-        const left = pos > 0 and isWord(o.line[pos - 1]);
-        const right = pos < o.line.len and isWord(o.line[pos]);
-        return left != right;
-    }
-    /// Independent one-sided predicates for `\<` / `\>` (rg's word start/end).
-    fn wordStartAt(o: Oracle, pos: usize) bool {
-        return !(pos > 0 and isWord(o.line[pos - 1])) and (pos < o.line.len and isWord(o.line[pos]));
-    }
-    fn wordEndAt(o: Oracle, pos: usize) bool {
-        return (pos > 0 and isWord(o.line[pos - 1])) and !(pos < o.line.len and isWord(o.line[pos]));
+    /// Every word assertion, read as logic. Spelled out per spelling rather than
+    /// deferring to `syn.Word.admits`, so the oracle can still disagree with the
+    /// production bit test instead of inheriting its mistakes.
+    fn wordHolds(o: Oracle, mask: syn.Word, pos: usize) bool {
+        const before = pos > 0 and isWord(o.line[pos - 1]);
+        const after = pos < o.line.len and isWord(o.line[pos]);
+        return switch (mask) {
+            .boundary => before != after,
+            .not_boundary => before == after,
+            .start => !before and after,
+            .end => before and !after,
+            .start_half => !before,
+            .end_half => !after,
+        };
     }
 
     /// Memoized by `(node, pos)`. The `{n,m}` desugaring shares one atom pointer
@@ -107,10 +110,7 @@ const Oracle = struct {
             .empty => bit(pos),
             .anchor_start => if (if (o.multiline) o.atLineStart(pos) else pos == 0) bit(pos) else 0,
             .anchor_end => if (if (o.multiline) o.atLineEnd(pos) else pos == o.line.len) bit(pos) else 0,
-            .word_boundary => if (o.wordBoundary(pos)) bit(pos) else 0,
-            .not_word_boundary => if (o.wordBoundary(pos)) 0 else bit(pos),
-            .word_start => if (o.wordStartAt(pos)) bit(pos) else 0,
-            .word_end => if (o.wordEndAt(pos)) bit(pos) else 0,
+            .word => |mask| if (o.wordHolds(mask, pos)) bit(pos) else 0,
             // `\A`/`\z` under multiline: the true BUFFER edges, independent of
             // line boundaries (the per-line default lowers them to `^`/`$`, so
             // these nodes only reach the oracle from a multiline parse).

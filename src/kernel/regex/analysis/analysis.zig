@@ -58,7 +58,7 @@ pub fn literalInfo(arena: std.mem.Allocator, node: *Node) ParseError!LitInfo {
         // Zero-width: matches the empty string at a position. exact="" lets a
         // mandatory literal run span the anchor (e.g. `^func` ⇒ required "func",
         // `\bfunc\b` ⇒ "func" — the word boundaries are zero-width too).
-        .empty, .anchor_start, .anchor_end, .anchor_buf_start, .anchor_buf_end, .word_boundary, .not_word_boundary, .word_start, .word_end => return .zero_width,
+        .empty, .anchor_start, .anchor_end, .anchor_buf_start, .anchor_buf_end, .word => return .zero_width,
         .class => |set| {
             // A singleton class is an exact literal; anything wider proves nothing.
             const b = set.only() orelse return .unknown;

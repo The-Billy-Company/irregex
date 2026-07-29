@@ -246,13 +246,42 @@ test "syntax/escape: \\A \\z \\< \\> parse to zero-width assertion nodes" {
     {
         var pr = try parse("\\<");
         defer pr.deinit();
-        try std.testing.expect(pr.node.* == .word_start);
+        try std.testing.expectEqual(syn.Word.start, pr.node.word);
     }
     {
         var pr = try parse("\\>");
         defer pr.deinit();
-        try std.testing.expect(pr.node.* == .word_end);
+        try std.testing.expectEqual(syn.Word.end, pr.node.word);
     }
+}
+
+test "the braced word assertions, and the repetition they must not swallow" {
+    // `\b{start}`/`\b{end}` are rust-regex's spellings of `\<`/`\>` — the same
+    // mask, so nothing downstream can tell them apart. The halves are new: each
+    // constrains one side and says nothing about the other.
+    for ([_]struct { []const u8, syn.Word }{
+        .{ "\\b{start}", .start },
+        .{ "\\b{end}", .end },
+        .{ "\\b{start-half}", .start_half },
+        .{ "\\b{end-half}", .end_half },
+    }) |case| {
+        var pr = try parse(case[0]);
+        defer pr.deinit();
+        try std.testing.expectEqual(case[1], pr.node.word);
+    }
+    // `\b{2}` is `\b` repeated twice, not an assertion named "2". A brace whose
+    // contents aren't a name is handed back to the repetition parser untouched,
+    // which is the only reason the two syntaxes can share the character.
+    {
+        var pr = try parse("\\b{2}");
+        defer pr.deinit();
+        try std.testing.expect(pr.node.* == .concat);
+    }
+    // Every other shape is an error, exactly as rg reports it: an unknown name,
+    // a name that never closes, and a brace holding neither a name nor a count
+    // (the repetition parser rejects that last one, having been handed it back).
+    for ([_][]const u8{ "\\b{foo}", "\\b{-half}", "\\b{start", "\\b{" }) |bad|
+        try std.testing.expectError(ParseError.BadPattern, parse(bad));
     // Multiline: the haystack is the whole buffer, so `\A`/`\z` become the
     // distinct buffer anchors (a line boundary is not a buffer edge there).
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

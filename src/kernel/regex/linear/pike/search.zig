@@ -18,8 +18,6 @@ const eps = @import("closure.zig");
 const Regex = core.Regex;
 const Sim = scratch.Sim;
 const ThreadList = scratch.ThreadList;
-const wordAt = word.wordAt;
-const wordBefore = word.wordBefore;
 
 const Scan = enum { anchored, skip, plain };
 
@@ -54,7 +52,7 @@ fn search(re: *const Regex, sim: *Sim, line: []const u8, comptime mode: Scan) bo
     // Position 0: line start; also the end iff the line is empty. Answers any
     // empty/zero-width match (`a*`, `^$`) without scanning. `\b` here straddles
     // BOL (no byte before) and line[0].
-    if (eps.closure(re, sim, &sim.cur, true, line.len == 0, wordBefore(re.unicode, line, 0), wordAt(re.unicode, line, 0)).add(re.start)) return true;
+    if (eps.closure(re, sim, &sim.cur, true, line.len == 0, word.sides(re.unicode, line, 0)).add(re.start)) return true;
     if (mode == .skip) sim.cur.len = 0; // drive purely by first-byte jumps
     var i: usize = 0;
     while (i < line.len) {
@@ -64,7 +62,7 @@ fn search(re: *const Regex, sim: *Sim, line: []const u8, comptime mode: Scan) bo
                 i = re.first.nextStart(line, i) orelse return false;
                 sim.gen += 1;
                 sim.cur.len = 0;
-                if (eps.closure(re, sim, &sim.cur, i == 0, i + 1 == line.len, wordBefore(re.unicode, line, i), wordAt(re.unicode, line, i)).add(re.start)) return true;
+                if (eps.closure(re, sim, &sim.cur, i == 0, i + 1 == line.len, word.sides(re.unicode, line, i)).add(re.start)) return true;
             },
             .plain => {},
         };
@@ -73,7 +71,7 @@ fn search(re: *const Regex, sim: *Sim, line: []const u8, comptime mode: Scan) bo
         sim.gen += 1;
         // The next closure sits at the gap AFTER byte i (position i+1): the
         // word byte before it is line[i], the one after is line[i+1].
-        const cl = eps.closure(re, sim, &sim.nxt, false, i + 1 == line.len, wordBefore(re.unicode, line, i + 1), wordAt(re.unicode, line, i + 1));
+        const cl = eps.closure(re, sim, &sim.nxt, false, i + 1 == line.len, word.sides(re.unicode, line, i + 1));
         var matched = false;
         for (sim.cur.slice()) |s| switch (re.states[s]) {
             // `and` keeps `add` from firing on a non-matching byte; `or matched`

@@ -122,7 +122,7 @@ fn runPart(node: *Node) ?RunPart {
             };
         },
         // Positioned assertions gate on WHERE, which a run count can't see.
-        .anchor_start, .anchor_end, .anchor_buf_start, .anchor_buf_end, .word_boundary, .not_word_boundary, .word_start, .word_end => return null,
+        .anchor_start, .anchor_end, .anchor_buf_start, .anchor_buf_end, .word => return null,
     }
 }
 

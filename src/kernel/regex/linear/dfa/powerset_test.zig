@@ -361,10 +361,7 @@ const Spec = struct {
                 .split => |x| for ([_]u32{ x.a, x.b }) |o| push(&sp, s.stack, s.seen, s.gen, o),
                 .assert_start => |o| if (at_start) push(&sp, s.stack, s.seen, s.gen, o),
                 .assert_end => |o| if (at_end) push(&sp, s.stack, s.seen, s.gen, o),
-                .assert_word_b => |o| if (word_before != word_after) push(&sp, s.stack, s.seen, s.gen, o),
-                .assert_not_word_b => |o| if (word_before == word_after) push(&sp, s.stack, s.seen, s.gen, o),
-                .assert_word_start => |o| if (!word_before and word_after) push(&sp, s.stack, s.seen, s.gen, o),
-                .assert_word_end => |o| if (word_before and !word_after) push(&sp, s.stack, s.seen, s.gen, o),
+                .assert_word => |w| if (w.mask.admits(word_before, word_after)) push(&sp, s.stack, s.seen, s.gen, w.out),
                 // Buffer anchors (`\A`/`\z`) only exist under multiline, where no
                 // DFA is built — such patterns are never fed to this Spec.
                 .assert_buf_start, .assert_buf_end => {},

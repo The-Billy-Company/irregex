@@ -58,11 +58,6 @@ const max_trips = 16;
 const Assert = struct {
     const start: u8 = 1 << 0; // `^` / `\A`
     const end: u8 = 1 << 1; // `$` / `\z`
-    const wb: u8 = 1 << 2; // `\b`
-    const nwb: u8 = 1 << 3; // `\B`
-    const wstart: u8 = 1 << 4; // `\<`
-    const wend: u8 = 1 << 5; // `\>`
-    const any: u8 = wb | nwb | wstart | wend;
 };
 
 /// Everything an ε-path between two consuming instructions does, flattened:
@@ -73,12 +68,25 @@ const Assert = struct {
 const Eps = struct {
     slots: u64 = 0,
     asserts: u8 = 0,
+    /// Every word assertion on the path, intersected — see `syntax.mask`. The
+    /// empty mask is a contradiction (`\B\<`) the builder sees for free, where a
+    /// bit per spelling could only rediscover it once per byte at run time.
+    word: u4 = syn.mask.free,
 
     fn plus(self: Eps, a: u8) Eps {
-        return .{ .slots = self.slots, .asserts = self.asserts | a };
+        return .{ .slots = self.slots, .asserts = self.asserts | a, .word = self.word };
+    }
+    /// Word assertions compose by intersection, not union: a path guarded by two
+    /// of them admits only the pairs both admit.
+    fn narrow(self: Eps, mask: syn.Word) Eps {
+        return .{ .slots = self.slots, .asserts = self.asserts, .word = self.word & @intFromEnum(mask) };
+    }
+    /// Nothing to check at run time — the path is takeable wherever it is reached.
+    fn free(self: Eps) bool {
+        return self.asserts == 0 and self.word == syn.mask.free;
     }
     fn eql(a: Eps, b: Eps) bool {
-        return a.slots == b.slots and a.asserts == b.asserts;
+        return a.slots == b.slots and a.asserts == b.asserts and a.word == b.word;
     }
 };
 
@@ -235,7 +243,7 @@ pub const OnePass = struct {
         while (true) {
             const st = self.states[sid];
             if (st.accept) |acc| {
-                if (self.holds(acc.asserts, line, pos)) {
+                if (self.holds(acc, line, pos)) {
                     if (st.ntrans == 0) {
                         apply(out, acc.slots, pos);
                         return true;
@@ -249,7 +257,7 @@ pub const OnePass = struct {
             const ti = self.rows[@as(usize, sid) * 256 + line[pos]];
             if (ti == 0) break;
             const t = self.trans[ti];
-            if (t.eps.asserts != 0 and !self.holds(t.eps.asserts, line, pos)) break;
+            if (!t.eps.free() and !self.holds(t.eps, line, pos)) break;
             if (t.eps.slots != 0) {
                 if (pend != null and !snapped) {
                     @memcpy(self.saved, out);
@@ -270,18 +278,11 @@ pub const OnePass = struct {
     /// Do the assertions on an ε-path hold at gap position `pos`? Byte-identical
     /// to the Pike VM's per-instruction tests (`word.zig` is the shared oracle),
     /// which is what keeps the two arms from disagreeing on `\b` in Unicode mode.
-    fn holds(self: *const OnePass, mask: u8, line: []const u8, pos: usize) bool {
-        if (mask == 0) return true;
-        if (mask & Assert.start != 0 and pos != 0) return false;
-        if (mask & Assert.end != 0 and pos != line.len) return false;
-        if (mask & Assert.any == 0) return true;
-        const bef = word.wordBefore(self.unicode, line, pos);
-        const cur = word.wordAt(self.unicode, line, pos);
-        if (mask & Assert.wb != 0 and bef == cur) return false;
-        if (mask & Assert.nwb != 0 and bef != cur) return false;
-        if (mask & Assert.wstart != 0 and (bef or !cur)) return false;
-        if (mask & Assert.wend != 0 and (!bef or cur)) return false;
-        return true;
+    fn holds(self: *const OnePass, eps: Eps, line: []const u8, pos: usize) bool {
+        if (eps.asserts & Assert.start != 0 and pos != 0) return false;
+        if (eps.asserts & Assert.end != 0 and pos != line.len) return false;
+        if (eps.word == syn.mask.free) return true;
+        return syn.mask.holds(eps.word, word.sides(self.unicode, line, pos));
     }
 };
 
@@ -352,13 +353,11 @@ const Build = struct {
             .save => |sv| try self.closure(sv.out, .{
                 .slots = eps.slots | (@as(u64, 1) << @intCast(sv.slot)),
                 .asserts = eps.asserts,
+                .word = eps.word,
             }),
             .astart => |o| try self.closure(o, eps.plus(Assert.start)),
             .aend => |o| try self.closure(o, eps.plus(Assert.end)),
-            .awb => |o| try self.closure(o, eps.plus(Assert.wb)),
-            .anwb => |o| try self.closure(o, eps.plus(Assert.nwb)),
-            .awstart => |o| try self.closure(o, eps.plus(Assert.wstart)),
-            .awend => |o| try self.closure(o, eps.plus(Assert.wend)),
+            .aword => |w| try self.closure(w.out, eps.narrow(w.mask)),
             .match => {
                 if (self.acc != null) return error.Bail;
                 self.acc = eps;
@@ -370,7 +369,7 @@ const Build = struct {
                 // fail at run time and hand control here — a choice the table
                 // cannot express, so refuse.
                 if (self.acc) |m| {
-                    if (m.asserts != 0) return error.Bail;
+                    if (!m.free()) return error.Bail;
                     return;
                 }
                 try self.addTrans(cn.set, cn.out, eps);

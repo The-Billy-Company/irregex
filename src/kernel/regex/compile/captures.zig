@@ -79,10 +79,7 @@ pub const Inst = union(enum) {
     save: struct { slot: u32, out: u32 },
     astart: u32,
     aend: u32,
-    awb: u32,
-    anwb: u32,
-    awstart: u32, // `\<` — word start (¬word|word)
-    awend: u32, // `\>` — word end (word|¬word)
+    aword: struct { mask: syn.Word, out: u32 }, // `\b \B \< \>`, `\b{…}` — see `syntax.Word`
     match,
 };
 
@@ -273,10 +270,8 @@ pub const Captures = struct {
             },
             .astart => |o| if (pos == 0) self.addThread(list, len, slots, o, in_slots, pos, line),
             .aend => |o| if (pos == line.len) self.addThread(list, len, slots, o, in_slots, pos, line),
-            .awb => |o| if (wordBefore(self.unicode, line, pos) != wordAt(self.unicode, line, pos)) self.addThread(list, len, slots, o, in_slots, pos, line),
-            .anwb => |o| if (wordBefore(self.unicode, line, pos) == wordAt(self.unicode, line, pos)) self.addThread(list, len, slots, o, in_slots, pos, line),
-            .awstart => |o| if (!wordBefore(self.unicode, line, pos) and wordAt(self.unicode, line, pos)) self.addThread(list, len, slots, o, in_slots, pos, line),
-            .awend => |o| if (wordBefore(self.unicode, line, pos) and !wordAt(self.unicode, line, pos)) self.addThread(list, len, slots, o, in_slots, pos, line),
+            .aword => |w| if (w.mask.holds(word.sides(self.unicode, line, pos)))
+                self.addThread(list, len, slots, w.out, in_slots, pos, line),
             .char, .match => {
                 list.*[len.*] = pc;
                 @memcpy(slots[pc], in_slots);
@@ -317,10 +312,7 @@ const Comp = struct {
             // `--json` per line only), so `\A`/`\z` already lowered to the line
             // anchors above; the whole-buffer variants cannot occur here.
             .anchor_buf_start, .anchor_buf_end => unreachable,
-            .word_boundary => return self.push(.{ .awb = next }),
-            .not_word_boundary => return self.push(.{ .anwb = next }),
-            .word_start => return self.push(.{ .awstart = next }),
-            .word_end => return self.push(.{ .awend = next }),
+            .word => |mask| return self.push(.{ .aword = .{ .mask = mask, .out = next } }),
             .class => |set| return self.push(.{ .char = .{ .set = set, .out = next } }),
             .uclass => |ranges| return compile_mod.lowerUtf8(self.gpa, ranges, next, self),
             .capture => |g| {

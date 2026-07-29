@@ -257,7 +257,7 @@ const Accum = struct {
     /// down to bytes so a small class is a choice point rather than a wall.
     fn exacts(self: *Accum, node: *Node) ParseError!?[]const []const u8 {
         switch (node.*) {
-            .empty, .anchor_start, .anchor_end, .anchor_buf_start, .anchor_buf_end, .word_boundary, .not_word_boundary, .word_start, .word_end => return try self.arena.dupe([]const u8, &.{""}),
+            .empty, .anchor_start, .anchor_end, .anchor_buf_start, .anchor_buf_end, .word => return try self.arena.dupe([]const u8, &.{""}),
             .class => |set| {
                 const n = set.count();
                 if (n == 0 or n > self.lim.class) return null;

@@ -7,6 +7,7 @@
 
 const core = @import("../program/core.zig");
 const word = @import("../../syntax/word.zig");
+const syn = @import("../../syntax/syntax.zig");
 const scratch = @import("scratch.zig");
 
 const Regex = core.Regex;
@@ -14,8 +15,6 @@ const ThreadList = scratch.ThreadList;
 
 // The shared `\b`/`\B`/`\<`/`\>` word test (`word.zig`) — one definition for
 // this VM and the capture VM, so the two engines can never disagree.
-const wordAt = word.wordAt;
-const wordBefore = word.wordBefore;
 
 /// One epsilon-closure pass at a fixed input position; bundles the invariants (target `list`, per-pass `seen`/`gen` dedup, position flags) so the recursion carries only the varying state index.
 pub const Closure = struct {
@@ -31,16 +30,16 @@ pub const Closure = struct {
     // `at_end`, which multiline resolves at every LINE boundary.
     at_buf_start: bool,
     at_buf_end: bool,
-    // Word-ness of the bytes straddling this (fixed) position, for `\b`/`\B`.
-    word_before: bool,
-    word_after: bool,
+    // How the characters straddling this (fixed) position look, for `\b` and
+    // its five siblings — word-ness plus whether each side is a whole character.
+    sides: syn.Sides,
     // Optional start-offset side-channel for `-o` span extraction: when
     // `starts` is set, every state pushed to `list` records where the thread
     // reaching it BEGAN (`cur_start`). Null on the hot boolean path (no cost).
     starts: ?[]usize = null,
     cur_start: usize = 0,
 
-    /// Epsilon-closure of `s` into `list`; returns whether it reached the match state (so `lineMatch` answers without a second list scan). Zero-width assertions resolve against the position's flags — `^`/`$` against `at_start`/`at_end`, `\b`/`\B` against `word_before`/`word_after` (a boundary holds iff exactly one side is a word byte) — and a failed assertion just kills that branch (the position is fixed across one closure).
+    /// Epsilon-closure of `s` into `list`; returns whether it reached the match state (so `lineMatch` answers without a second list scan). Zero-width assertions resolve against the position's flags — `^`/`$` against `at_start`/`at_end`, every word assertion against `sides` (`syntax.mask.holds`) — and a failed assertion just kills that branch (the position is fixed across one closure).
     pub fn add(c: Closure, s: u32) bool {
         if (c.seen[s] == c.gen) return false;
         c.seen[s] = c.gen;
@@ -54,10 +53,7 @@ pub const Closure = struct {
             .assert_end => |out| c.at_end and c.add(out),
             .assert_buf_start => |out| c.at_buf_start and c.add(out),
             .assert_buf_end => |out| c.at_buf_end and c.add(out),
-            .assert_word_b => |out| (c.word_before != c.word_after) and c.add(out),
-            .assert_not_word_b => |out| (c.word_before == c.word_after) and c.add(out),
-            .assert_word_start => |out| (!c.word_before and c.word_after) and c.add(out),
-            .assert_word_end => |out| (c.word_before and !c.word_after) and c.add(out),
+            .assert_word => |w| w.mask.holds(c.sides) and c.add(w.out),
             else => blk: {
                 c.list.push(s);
                 if (c.starts) |st| st[s] = c.cur_start; // first (highest-priority) write wins
@@ -68,11 +64,11 @@ pub const Closure = struct {
 };
 
 // `sim` is either Pike scratch grain (`Sim`/`SpanSim` — only `seen`/`gen` are read).
-pub fn closure(re: *const Regex, sim: anytype, list: *ThreadList, at_start: bool, at_end: bool, word_before: bool, word_after: bool) Closure {
+pub fn closure(re: *const Regex, sim: anytype, list: *ThreadList, at_start: bool, at_end: bool, sides: syn.Sides) Closure {
     // Per-line callers: the line IS the haystack, so the buffer edges
     // coincide with `at_start`/`at_end` (and `\A`/`\z` were lowered to
     // `^`/`$` anyway). `closureBuf` overrides both for multiline.
-    return .{ .re = re, .list = list, .seen = sim.seen, .gen = sim.gen, .at_start = at_start, .at_end = at_end, .at_buf_start = at_start, .at_buf_end = at_end, .word_before = word_before, .word_after = word_after };
+    return .{ .re = re, .list = list, .seen = sim.seen, .gen = sim.gen, .at_start = at_start, .at_end = at_end, .at_buf_start = at_start, .at_buf_end = at_end, .sides = sides };
 }
 
 /// A gap position `p` (0..=buf.len) is a line start iff it is the buffer start
@@ -108,7 +104,7 @@ pub fn closureBuf(re: *const Regex, sim: *scratch.Sim, list: *ThreadList, buf: [
     // only the true buffer ends (`(?-m)` under `-U`).
     const at_start = if (re.line_anchors) lineStart(buf, p) else p == 0;
     const at_end = if (re.line_anchors) lineEnd(buf, p) else p == buf.len;
-    var c = closure(re, sim, list, at_start, at_end, wordBefore(re.unicode, buf, p), wordAt(re.unicode, buf, p));
+    var c = closure(re, sim, list, at_start, at_end, word.sides(re.unicode, buf, p));
     c.at_buf_start = p == 0;
     c.at_buf_end = p == buf.len;
     return c;

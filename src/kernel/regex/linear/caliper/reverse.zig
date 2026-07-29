@@ -58,29 +58,29 @@ fn epsOut(st: State) ?u32 {
     return switch (st) {
         .assert_start,
         .assert_end,
-        .assert_word_b,
-        .assert_not_word_b,
-        .assert_word_start,
-        .assert_word_end,
         .assert_buf_start,
         .assert_buf_end,
         => |o| o,
+        .assert_word => |w| w.out,
         else => null,
     };
 }
 
 /// The same assertion, pointing somewhere else — the mirrored edge.
+///
+/// A word mask survives the mirror unflipped, which is worth saying because the
+/// opposite looks right: reversing a program does turn `\<` into `\>` when the
+/// two sides are named by walk direction. They aren't here — the backward jaw
+/// reads `word_before`/`word_after` off the haystack (`caliper.zig`), so both
+/// jaws ask the same question of the same two bytes.
 fn retarget(st: State, o: u32) State {
     return switch (st) {
         inline .assert_start,
         .assert_end,
-        .assert_word_b,
-        .assert_not_word_b,
-        .assert_word_start,
-        .assert_word_end,
         .assert_buf_start,
         .assert_buf_end,
         => |_, tag| @unionInit(State, @tagName(tag), o),
+        .assert_word => |w| .{ .assert_word = .{ .mask = w.mask, .out = o } },
         else => unreachable,
     };
 }

@@ -267,13 +267,17 @@ inline fn assertionStream(
         .line_end => c | gapBit(hay_len, base),
         .slice_start => gapBit(0, base),
         .slice_end => gapBit(hay_len, base),
-        .word_boundary, .not_word_boundary, .word_start, .word_end => blk: {
+        .word_boundary, .not_word_boundary, .word_start, .word_end, .word_start_half, .word_end_half => blk: {
             const before = plane.shiftIn(c, 1, &carry[ins.carry]);
             break :blk switch (ins.op) {
                 .word_boundary => before ^ c,
                 .not_word_boundary => ~(before ^ c),
                 .word_start => ~before & c,
                 .word_end => before & ~c,
+                // The half predicates constrain one side and say nothing about
+                // the other, so each drops a gate rather than adding one.
+                .word_start_half => ~before,
+                .word_end_half => ~c,
                 else => unreachable,
             };
         },
@@ -332,6 +336,8 @@ fn reaches(prog: *const admit.Program, hay: []const u8, at: usize, instrs: []con
                 .not_word_boundary => before == after,
                 .word_start => !before and after,
                 .word_end => before and !after,
+                .word_start_half => !before,
+                .word_end_half => !after,
                 else => unreachable,
             };
             return yes and reaches(prog, hay, p, rest);

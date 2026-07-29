@@ -9,6 +9,7 @@
 //! (styleguide §Boilerplate): this module is the single source both import.
 
 const std = @import("std");
+const syn = @import("syntax.zig");
 const udec = @import("../unicode/decode.zig");
 const utables = @import("../unicode/tables.zig");
 
@@ -39,6 +40,32 @@ pub fn wordBefore(unicode: bool, line: []const u8, p: usize) bool {
     if (!unicode or line[p - 1] < 0x80) return isWordByte(line[p - 1]);
     const d = udec.decodeLast(line[0..p]) orelse return false;
     return utables.isWord(d.cp);
+}
+
+/// Everything a word assertion may ask about gap `p`, read in one pass.
+///
+/// `wordBefore`/`wordAt` above are the two answers on their own; this also
+/// reports whether each side is a whole character, which `\B` and the two
+/// halves need and cannot get from a boolean that says "false" for both a comma
+/// and half of `é` (see `syntax.mask.holds`). Under `(?-u)` no decode is
+/// attempted and both flags stay true, so the ASCII path costs what it always did.
+pub fn sides(unicode: bool, line: []const u8, p: usize) syn.Sides {
+    var s: syn.Sides = .{ .before = false, .after = false };
+    if (p > 0) {
+        if (!unicode or line[p - 1] < 0x80) {
+            s.before = isWordByte(line[p - 1]);
+        } else if (udec.decodeLast(line[0..p])) |d| {
+            s.before = utables.isWord(d.cp);
+        } else s.left_ok = false;
+    }
+    if (p < line.len) {
+        if (!unicode or line[p] < 0x80) {
+            s.after = isWordByte(line[p]);
+        } else if (udec.decode(line[p..])) |d| {
+            s.after = utables.isWord(d.cp);
+        } else s.right_ok = false;
+    }
+    return s;
 }
 
 /// ripgrep `-w`: a match span `[s,e)` is a word match iff a non-word CODEPOINT
@@ -109,6 +136,58 @@ test "-w rejects a gap inside a codepoint, where there is no \\W to consume" {
     // `\b` genuinely disagrees at those interior gaps: that is the distinction
     // this rule exists to draw, so pin it rather than let it look incidental.
     try t.expect(!wordBefore(true, dashed, 2) and !wordAt(true, dashed, 2));
+}
+
+test "an assertion that can fire on silence will not fire inside a character" {
+    const t = std.testing;
+    // "a—b" — the em dash is E2 80 94, so byte gaps 2 and 3 fall INSIDE it.
+    // Every helper here says "not a word character" on both sides, because
+    // half a dash is not a word character; the difference is that at gaps 2
+    // and 3 it is not a *character*. Captured from ripgrep 15.2.0:
+    // `rg -o -b '\B'` over this line prints nothing at all, while
+    // `\b{start-half}` prints 0 and 4 and `\b{end-half}` prints 1 and 5.
+    const dashed = "a\xE2\x80\x94b";
+    for ([_]usize{ 2, 3 }) |p| {
+        const s = sides(true, dashed, p);
+        try t.expect(!s.before and !s.after);
+        try t.expect(!s.left_ok and !s.right_ok);
+        for ([_]syn.Word{ .not_boundary, .start_half, .end_half }) |w| try t.expect(!w.holds(s));
+    }
+    // The four whole-character gaps are all real boundaries (the dash is not a
+    // word character, so each of them separates one from a non-word neighbour),
+    // which is why rg prints nothing for `\B` on this line at all.
+    for ([_]usize{ 0, 1, 4, 5 }) |p| {
+        const s = sides(true, dashed, p);
+        try t.expect(s.left_ok and s.right_ok);
+        try t.expect(!syn.Word.not_boundary.holds(s));
+    }
+    try t.expect(syn.Word.start_half.holds(sides(true, dashed, 0)));
+    try t.expect(syn.Word.start_half.holds(sides(true, dashed, 4)));
+    try t.expect(syn.Word.end_half.holds(sides(true, dashed, 1)));
+    try t.expect(syn.Word.end_half.holds(sides(true, dashed, 5)));
+    // The guard is Unicode-only: under `(?-u)` the dash is three non-word bytes
+    // and its interior gaps are ordinary silence.
+    for ([_]usize{ 2, 3 }) |p| {
+        const s = sides(false, dashed, p);
+        try t.expect(s.left_ok and s.right_ok);
+        try t.expect(syn.Word.not_boundary.holds(s));
+    }
+}
+
+test "invalid UTF-8 splits the sides independently" {
+    const t = std.testing;
+    // A lone 0xFF is not a character, but `a` after it is. rust-regex guards
+    // only the side a mask reads, so `\b{end-half}` (which reads right) is
+    // unaffected here while `\b{start-half}` (which reads left) is refused.
+    const junk = "\xFFa";
+    const s = sides(true, junk, 1);
+    try t.expect(!s.left_ok and s.right_ok);
+    try t.expect(!syn.Word.start_half.holds(s));
+    try t.expect(!syn.Word.end_half.holds(s)); // a word char is ahead, so it fails on the table
+    const s2 = sides(true, "\xFF ", 1);
+    try t.expect(!s2.left_ok and s2.right_ok);
+    try t.expect(syn.Word.end_half.holds(s2)); // reads only the right, which is whole
+    try t.expect(!syn.Word.start_half.holds(s2)); // reads the left, which is not
 }
 
 test "--no-unicode keeps byte semantics, where every byte is its own codepoint" {
