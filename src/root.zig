@@ -274,6 +274,56 @@ pub const commands = struct {
 /// + bindings above it) programs to, distinct from the internal tiers above.
 pub const api = @import("surface/api.zig");
 
+// ── the product seam ──
+// What the sibling product packages (`relate` · `gist` · `blast`) reach that
+// is not part of the curated vocabulary above. The ecosystem's own internals,
+// re-exported through one door because the products and the library are tuned
+// together and version together — an outside embedder should prefer the
+// curated tiers, and nothing here is semver-stable. Grouped by tier, named by
+// file, so a product import reads like the path it replaced.
+pub const inner = struct {
+    pub const corpus = struct {
+        pub const journal = @import("corpus/fresh/journal.zig");
+        pub const shard = @import("corpus/index/content/shard.zig");
+        pub const treemap = @import("corpus/index/phantom/treemap.zig");
+        pub const frame = @import("corpus/index/frame/frame.zig");
+        pub const encoding = @import("corpus/read/encoding.zig");
+        pub const inode = @import("corpus/read/inode.zig");
+        pub const slurp = @import("corpus/read/slurp.zig");
+        pub const paths = @import("corpus/scope/paths.zig");
+        pub const ignore = @import("corpus/tree/ignore.zig");
+        pub const loadpar = @import("corpus/tree/loadpar.zig");
+    };
+    pub const cold = struct {
+        pub const catalog = @import("exec/cold/argv/catalog.zig");
+        pub const intent = @import("exec/cold/argv/intent.zig");
+        pub const elide = @import("exec/cold/quarry/elide.zig");
+        pub const walk = @import("exec/cold/quarry/walk.zig");
+    };
+    pub const session = struct {
+        pub const keep = @import("exec/session/answer/keep.zig");
+        pub const shm = @import("exec/session/conduit/shm.zig");
+        pub const truth = @import("exec/session/warm/truth.zig");
+        pub const annals = @import("exec/session/reconcile/annals.zig");
+        pub const dirty = @import("exec/session/reconcile/dirty.zig");
+        pub const seqlock = @import("exec/session/reconcile/seqlock.zig");
+    };
+    pub const math = struct {
+        pub const forest = @import("kernel/math/forest.zig");
+        pub const mix = @import("kernel/math/mix.zig");
+    };
+    pub const cli = struct {
+        pub const outcome = @import("surface/cli/outcome.zig");
+        pub const beacon = @import("surface/cli/beacon.zig");
+        pub const emit = @import("surface/cli/emit.zig");
+        pub const guide = @import("surface/cli/guide.zig");
+        pub const jsonstr = @import("surface/cli/jsonstr.zig");
+    };
+    /// The shared comment/code/string span lexer (regions + comment-scope +
+    /// blast all read it; pure, std-only).
+    pub const lexspan = @import("kernel/anatomy/lexspan.zig");
+};
+
 pub const version_string: [:0]const u8 = "0.3.0"; // x-release-please-version
 
 /// The vendored PCRE2 the `-P` backend links (`kernel/regex/pcre2/ffi.zig`),
