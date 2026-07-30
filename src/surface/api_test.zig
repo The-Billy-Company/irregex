@@ -135,14 +135,8 @@ test "api: a pre-cancelled token yields a clean empty result, not a crash" {
     try std.testing.expectEqual(@as(usize, 0), cur.count());
 }
 
-test "api: compose namespace is wired for embedders" {
-    // Keep `api.compose.*` reachable (zig-dead); kernels are exercised by their
-    // own module tests and the `irregex` CLI face.
-    _ = api.compose.candidates;
-    _ = api.compose.context;
-    _ = api.compose.family;
-    _ = api.compose.provenance;
-}
+// The compose namespace (exact ∩ compression, ADR-367) moved to the `relate`
+// package with its kernels; that package's own wiring pins reachability now.
 
 test "api: an unsupported pattern declines with a named reason, never fatal" {
     const gpa = std.testing.allocator;

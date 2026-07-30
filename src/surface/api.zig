@@ -40,23 +40,9 @@ const fault = @import("../fault.zig");
 const resident = @import("../exec/session/warm/resident.zig");
 const request = @import("../exec/session/answer/request.zig");
 
-/// The relate (compression-kinship) and compose (exact ∩ compression) kernels
-/// are pure and I/O-free; a hosted embedder reaches them through these same
-/// paths `root.zig` re-exports. Named here so the product vocabulary
-/// (`api.relate.*`, `api.compose.*`) reads as one surface beside `Engine`.
-pub const relate = struct {
-    pub const sketch = @import("../kernel/kinship/metric/sketch.zig");
-    pub const silhouette = @import("../kernel/kinship/metric/silhouette.zig");
-    pub const lexicon = @import("../kernel/kinship/recall/lexicon.zig");
-    pub const zipper = @import("../kernel/kinship/recall/zipper.zig");
-};
-
-pub const compose = struct {
-    pub const candidates = @import("../kernel/compose/candidates.zig");
-    pub const context = @import("../kernel/compose/context.zig");
-    pub const family = @import("../kernel/compose/family.zig");
-    pub const provenance = @import("../kernel/compose/provenance.zig");
-};
+// The relate (compression-kinship) and compose (exact ∩ compression) kernels
+// live in the `relate` package now — an embedder reaches them through that
+// module (`@import("relate")`) beside this library's `Engine`.
 
 /// A cooperative, thread-safe cancellation flag. One token is shared by
 /// reference into `RunOptions.cancel`; any thread may `cancel()` while the
