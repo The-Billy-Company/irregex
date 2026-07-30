@@ -97,9 +97,11 @@ fn collectExtra(a: std.mem.Allocator, list: *std.ArrayList(Extra), ig: *const ig
     try list.append(a, .{ .rel = rel, .kind = kind });
 }
 
-/// Everything the serial descent can fail with: opening a root or a chosen
-/// subdirectory, and iterating one already open (which carries the walker's own
-/// allocation failure). Naming the set instead of taking `anyerror` (ADR-373
+/// Everything the serial descent can REPORT: opening a root or a chosen
+/// subdirectory, and iterating one already open. The walker's own allocation
+/// failure never lands here — it propagates as `error.OutOfMemory` (ADR-373
+/// law 1), because a swallowed OOM reads as an empty corpus to an embedding
+/// host. Naming the set instead of taking `anyerror` (ADR-373
 /// law 2) means a widened std set is a build failure here, where the walk can
 /// decide what it means, rather than a mystery string on a user's stderr. It is
 /// a subset of `notice.WalkFault`, so it coerces into the shared renderer.
@@ -216,20 +218,24 @@ fn crossesDevice(root_dev: ?i128, path: []const u8) bool {
 fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix: []const u8, scope_prefix: []const u8, o: Opts, ig: *ignore.Ignore, out: *std.ArrayList(Candidate), link_depth: usize, visited: *std.ArrayList(VisitedDir), walk_error: *bool, root_dev: ?i128, extras: ?*std.ArrayList(Extra)) Oom!void {
     var root = Dir.cwd().openDir(io, root_path, .{ .iterate = true }) catch |e| return reportWalkError(prefix, e, walk_error);
     defer root.close(io);
-    // Report, like the `openDir` above and the `next`/`enter` below: failing to
-    // build the walker discovers NOTHING under this root, so a bare `return`
-    // would leave `walk_error` unset and exit 1 — "no match" — for a root that
-    // was never actually searched.
-    var walker = root.walkSelectively(a) catch |e| return reportWalkError(prefix, e, walk_error);
+    // The walker's only construction failure is allocation, and allocation
+    // failure RETURNS (ADR-373 law 1): the warm session and the FFI call this
+    // walk from inside a host process, where folding an OOM into `walk_error`
+    // would serve a silently empty set instead of yielding `IRREGEX_OOM`.
+    var walker = try root.walkSelectively(a);
     defer walker.deinit();
     while (true) {
         // A `next` error is a dir whose iteration failed after it was opened
         // (deleted mid-walk, FS error): report it and CONTINUE — the walker has
         // already popped the failed dir, so the next call proceeds. ripgrep keeps
-        // walking past such errors rather than aborting the whole run.
-        const maybe = walker.next(io) catch |e| {
-            reportWalkError(prefix, e, walk_error);
-            continue;
+        // walking past such errors rather than aborting the whole run. Its own
+        // allocation failure is not a walk gap, though — that one propagates.
+        const maybe = walker.next(io) catch |e| switch (e) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => {
+                reportWalkError(prefix, e, walk_error);
+                continue;
+            },
         };
         const entry = maybe orelse break;
         // Every use of the walker's path below — display, ignore matching, depth,
@@ -252,7 +258,7 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
         if (entry.kind == .sym_link and o.follow) {
             if (link_depth >= max_link_depth) continue;
             if (ig.shouldSkip(rel, false, entry.basename, wl_ig, wl_hid)) continue;
-            const full = if (std.mem.eql(u8, root_path, ".")) std.fmt.allocPrint(a, "./{s}", .{entry_path}) catch continue else std.fmt.allocPrint(a, "{s}/{s}", .{ root_path, entry_path }) catch continue;
+            const full = if (std.mem.eql(u8, root_path, ".")) try std.fmt.allocPrint(a, "./{s}", .{entry_path}) else try std.fmt.allocPrint(a, "{s}/{s}", .{ root_path, entry_path });
             if (Dir.cwd().openDir(io, full, .{ .iterate = true })) |sub_const| {
                 var sub = sub_const;
                 sub.close(io);
@@ -310,7 +316,11 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
                 try ig.loadDir(try diskPath(a, root_path, entry_path), rel);
                 // A dir we chose to descend but cannot open (unreadable / EACCES)
                 // is a walk error — report it and exit 2, never skip in silence.
-                walker.enter(io, entry) catch |e| reportWalkError(rel, e, walk_error);
+                // The walker stack's own allocation failure propagates instead.
+                walker.enter(io, entry) catch |e| switch (e) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => reportWalkError(rel, e, walk_error),
+                };
             }
             continue;
         }
