@@ -95,6 +95,6 @@ Extracted from `irregex` (cut at the extraction commit).
 Architecture is machine-checked: `contract/irregex.ward` declares the
 tier ordering, seals, and reach ceiling, and the ward gate judges it
 over the real `@import` graph. Changelog is towncrier
-(`changelog.d/` fragments → `CHANGELOG.md`). MIT licensed; `NOTICE`
+(`changelog.d/` fragments → `CHANGELOG.md`). Apache-2.0; `NOTICE`
 attributes the vendored and borrowed work (PCRE2, the ripgrep lineage,
-UCD data).
+UCD and WHATWG data).

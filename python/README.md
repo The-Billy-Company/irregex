@@ -33,4 +33,4 @@ This initial package is the Python bridge; native binary wheels will follow.
 
 ## License
 
-MIT
+Apache-2.0
