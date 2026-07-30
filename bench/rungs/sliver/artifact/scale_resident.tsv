@@ -1,0 +1,76 @@
+# Query-time memory over the multi-GB scale corpus, measured with /usr/bin/time -l.
+# This settles "must the engine hold its index resident, or can it mmap and page?" —
+# usually where GitHub scale is decided.
+#
+# TWO metrics, because on macOS they answer different questions and only one is a cost:
+#   maxrss    = "maximum resident set size". Counts CLEAN, file-backed, instantly
+#               evictable mmap pages alongside owned memory. An mmap-scanning engine
+#               is charged for the page cache it walks through; a read()-based one
+#               is not, because read() never maps the file into the process.
+#   footprint = "peak memory footprint". Apple's dirty/anonymous accounting — the
+#               memory the process actually OWNS and the OS cannot reclaim.
+#
+# Each engine's on-disk index (du -sm): gist 389 MiB, csearch 402 MiB, zoekt 8882 MiB.
+#
+# MECHANISM, measured rather than inferred (see the two control rows below).
+# An earlier draft of this file claimed gist's flat ~575 MiB was "the signature of
+# loading the index rather than paging it". That was WRONG, and three measurements
+# retire it:
+#
+#   1. vmmap over a live query: index.gist is 354.9 MiB virtual but only 11.5 MiB
+#      RESIDENT — 3.2% of the postings blob. It is genuinely mmap'd and demand-paged,
+#      exactly as designed (`Index.fromTrustedMappedBytes` borrows the mapping and
+#      validates the directory only). The fully-resident index regions are the ones
+#      a query must read end to end: paths.list 17.2 MiB, tree.map 11.0 MiB,
+#      crest.bin 5.3 MiB.
+#   2. The zero-candidate control: `pgxpool` does not occur in this corpus, so the
+#      trigram filter elides EVERY read. It still costs 583 MiB. Residency therefore
+#      has nothing to do with verifying candidates or with decoding postings.
+#   3. The no-index control: the same query with --no-index, mapping no index at all,
+#      still costs 535 MiB. So the index accounts for only ~48 MiB of maxrss and
+#      ~14 MiB of footprint; the remaining ~535 MiB is present without it.
+#
+# Where the remaining ~535 MiB comes from is NOT yet explained, and a second wrong
+# answer has been retired here too. The draft that replaced "the index is resident"
+# said the cost was inherent to walking a live tree: every query re-walks all 336,780
+# files to honor "a stale index can accelerate a live tree without owning truth", one
+# touched byte costs a whole 16 KiB page on macOS ARM64, so residency would track FILE
+# COUNT rather than query or index size. That reasoning predicts any engine walking
+# this tree pays this bill. RIPGREP WALKS THIS TREE AND DOES NOT (matched pair below,
+# both -uu over the same corpus from the same cwd, both returning zero matches):
+#
+#   rg   -uu -F -c pgxpool .            35.7 MiB maxrss   36.5 MiB owned   9.02 s
+#   gist -uu --no-index -F -c pgxpool . 661.7 MiB maxrss  219.2 MiB owned   9.84 s
+#
+# So walking is not what costs it — gist's IMPLEMENTATION of walking is. The gap
+# survives on the fair metric: owned footprint, which excludes clean evictable page
+# cache, still puts gist at 6.0x rg for identical work with no index in play. And the
+# freshness defense does not hold either, because rg has PERFECT freshness (it reads
+# the tree every time and trusts nothing) for 36 MiB. csearch's 3-11 MiB does come
+# from not walking — it trusts its index and opens only the files its postings name,
+# which is why it also cannot see a file created after indexing (see scale_truth.tsv)
+# — but rg is the honest denominator for a walk-cost claim, and rg is cheap.
+#
+# HONEST SCORE. On owned memory gist is flat at 93-96 MiB whatever the query and
+# ~5.8x BETTER than zoekt, whose 558 MiB for one common term is the largest owned
+# working set in the table. Against rg as a pure scanner gist owns 6.0x, and against
+# csearch it loses maxrss outright. That gap is UNATTRIBUTED overhead in gist's walk
+# path, not a measured price of freshness: an open optimization target, and the
+# strongest surviving form of the original scale claim until it is profiled.
+#
+# Residual in-lane opportunity, bounded and not taken: crest.bin's 5.3 MiB is walked
+# eagerly at every load to derive the sliver tier's rescue set, though only a 1-2 byte
+# needle consumes it. Making it lazy is ~5 MiB of 578 and would entangle the rescue
+# set's base-table lifetime with the codicil merge whose soundness proof depends on
+# reading the BASE crest rows before that merge rewrites them. Not worth that risk for
+# 1% of a number the freshness walk dominates.
+pattern	kind	gist_rss_mib	gist_fp_mib	csearch_rss_mib	csearch_fp_mib	zoekt_rss_mib	zoekt_fp_mib
+kmem_cache_alloc	rare literal	580	93	11	5	374	—
+func	corpus-wide literal	566	96	55	10	2266	558
+})	sub-trigram literal	577	96	5	3	370	—
+# --- controls that isolate the mechanism (gist only) ---
+pgxpool	zero-candidate, index elides every read	583	96	—	—	—	—
+pgxpool	zero-candidate, --no-index (no index mapped)	535	82	—	—	—	—
+# The rg matched pair (gist -uu --no-index 662/219 vs rg -uu 36/37) is NOT a row here:
+# these columns are headed csearch/zoekt, and borrowing them to carry rg's numbers
+# would misattribute the refutation. It is rendered as its own table in the layer.

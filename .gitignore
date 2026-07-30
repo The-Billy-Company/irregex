@@ -2,3 +2,8 @@ __pycache__/
 *.py[cod]
 .venv/
 dist/
+zig-out/
+.zig-cache/
+zig-cache/
+zig-pkg/
+.DS_Store

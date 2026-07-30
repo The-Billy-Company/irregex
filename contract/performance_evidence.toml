@@ -1,0 +1,243 @@
+# GIST performance-evidence contract — the source of truth for Gist's
+# OPERATIONAL-ENVELOPE evidence (the evaluation counterpart to the correctness
+# contract in search_api.toml).
+#
+# SCOPE — WHAT THIS OWNS, AND WHAT IT DELIBERATELY DOES NOT
+#   The Dominance-and-Fit Certificate (bench/certificate/ + dominance/session/
+#   + conformance/rgsuite/) is the single home for how good Gist is AT FULL SPEED
+#   and what bounds it fits:
+#     • cold fresh-process dominance vs ripgrep  → Layer A macroscopic (certificate/mint/mint.sh)
+#     • single-thread cycles/byte                → Layer A microscopic (apparatus/harness/)
+#     • warm resident-daemon latency             → Layer A warm tier (certificate/mint/warm.sh + dominance/session/)
+#     • --rank definition-first shape rg can't   → Layer A --rank lane (certificate/mint/rank.sh)
+#     • rg drop-in correctness                   → conformance/rgsuite/
+#     • port / roofline / lower-bound / crest    → Layers B–E (bounds/ + rungs/crest/)
+#     • codex self-index space + decodability    → Layer F (certificate/report/codex.py + bounds/codex/)
+#     • relate retrieval quality + boundary      → Layer G (certificate/mint/relate.sh)
+#   Those are NOT re-measured here. This contract owns only the operational
+#   envelope the certificate does not: index LIFECYCLE cost (build + incremental
+#   refresh), footprint RESOURCE ratios (index bytes / corpus bytes, peak RSS,
+#   scan throughput), SCALING shape across corpus size/shape, and CONCURRENCY
+#   (aggregate qps + tail under many-agent load). A number that belongs to the
+#   certificate lives in the certificate; this file must never restate it.
+#
+#   This file freezes:
+#     • the measurement REGIMES (what path is being timed, and its honest scope),
+#     • the CORPORA identities the matrix runs over,
+#     • the COMPETITORS every regime must pair against,
+#     • the PROVENANCE fields a bundle must carry to be reproducible,
+#     • the PUBLICATION rules (fail-closed on a dirty tree), and
+#     • the CLAIMS — each a projection of one artifact row, so no README number
+#       can drift from the bytes that produced it.
+#
+#   It is a contract, not code. Widening a regime or lowering a provenance
+#   requirement is an evidence-integrity change, reviewed as such.
+#
+# CROSS-MACHINE POLICY (the core fix)
+#   Absolute latency is machine-specific and is NEVER gated across machines.
+#   A bundle records absolute numbers for its own machine only. Cross-machine
+#   gates compare SCALING SHAPE (build/query curve monotonicity) and RESOURCE
+#   RATIOS (index bytes / corpus bytes) — quantities that are hardware-invariant
+#   by construction. Absolute build ms, RSS, and qps stay machine-local. Byte-
+#   exact correctness vs the rg oracle is a per-run PRECONDITION (parity before
+#   timing), not a published cross-machine dominance claim — that is the
+#   certificate's rgsuite. There is no universal millisecond floor.
+
+[meta]
+name = "gist-performance-evidence"
+schema_version = 1
+# The evaluator writes bundle.json carrying this exact version; the verifier
+# refuses a bundle whose schema_version does not match.
+adr = 352
+# The certificate OWNS cold/warm dominance + correctness + optimality; this
+# contract's regimes are the operational envelope beside it, never a re-measure.
+certificate_bundle = "pkg/kernels/irregex/bench/certificate/artifact"
+
+# ── precondition (not a regime) ───────────────────────────────────────────────
+# Before ANY cell below is timed, gist must prove a byte-exact (order-insensitive)
+# file set equal to the ripgrep oracle over the 12-class registry, on BOTH the
+# parallel and serial engines. This is a build-sanity precondition for the timed
+# lanes — NOT a published correctness claim (the certificate's rgsuite is the rg
+# drop-in correctness proof). See [methodology].parity_before_timing.
+
+# ── regimes ───────────────────────────────────────────────────────────────────
+# Each regime is a distinct measured PATH the certificate does NOT cover, with an
+# honest scope. A performance sentence in any doc must name the regime it came
+# from; a number from one regime may not be presented as another's. Cold/warm
+# query dominance is intentionally absent — that is the certificate's Layer A.
+
+[[regime]]
+id = "lifecycle"
+label = "index build + incremental freshness"
+description = """
+The costs a query regime hides: full cold index build time, first-query/startup
+cost, and incremental refresh latency after add / edit / delete / rename. These
+are lifecycle facts a long-lived agent session pays, invisible to a
+steady-state query benchmark.
+"""
+gated_cross_machine = false
+
+[[regime]]
+id = "resource"
+label = "footprint + work done"
+description = """
+Peak RSS and CPU time (wall-clock decoupled), index size and write amplification
+(index bytes / corpus bytes), and scan throughput (corpus bytes / scan seconds).
+Resource RATIOS (index/corpus) are hardware-invariant and ARE comparable across
+machines; absolute RSS is machine-specific.
+"""
+gated_cross_machine = true # only the index/corpus RATIO, not absolute RSS
+ratio_metric = "index_bytes_over_corpus_bytes"
+
+[[regime]]
+id = "scale"
+label = "scaling curves"
+description = """
+Query latency and index build across corpus size (bytes and file count) and
+across shape — many-small-files vs few-large-files. The SHAPE of the curve
+(sub-linear query growth, near-linear build growth) is the hardware-invariant
+claim; the per-point absolute times are machine-specific.
+"""
+gated_cross_machine = true # curve monotonicity/shape, not absolute points
+
+[[regime]]
+id = "concurrency"
+label = "concurrent query throughput"
+description = """
+Aggregate queries/second and tail (p95/p99) latency against the resident daemon
+at bounded worker counts. Proves the warm path holds under the many-agent load
+Gist is actually built for, not just single-query latency.
+"""
+gated_cross_machine = false
+
+# ── corpora ─────────────────────────────────────────────────────────────────
+# The matrix runs over the Billy home tree PLUS the pinned foreign battery
+# (bench/apparatus/corpora/fetch.sh), so no claim is home-corpus-only. Each corpus is a
+# distinct SHAPE; a bundle records which corpora it actually measured.
+
+[[corpus]]
+id = "billy"
+kind = "home"
+roots = [ "services", "libs", "clients", "contracts", "scripts", "quality" ]
+shape = "mixed polyglot monorepo"
+pin = "git_commit"                                                           # pinned by the bundle's own git_commit + manifest hash
+
+[[corpus]]
+id = "linux"
+kind = "foreign"
+shape = "C at scale — ~90k small files, deep trees"
+pin = "v6.10"
+
+[[corpus]]
+id = "cpython"
+kind = "foreign"
+shape = "Python + C, broken-encoding fixtures, odd filenames"
+pin = "v3.13.0"
+
+[[corpus]]
+id = "typescript"
+kind = "foreign"
+shape = "few multi-MiB files + ~60k tiny baseline fixtures"
+pin = "v5.8.3"
+
+[[corpus]]
+id = "subtitles"
+kind = "foreign"
+shape = "one giant line-oriented text file per language (scan throughput)"
+pin = "v2016 en+ru 256MiB prefix"
+
+[[corpus]]
+id = "torture"
+kind = "foreign"
+shape = "adversarial: cap edges, CRLF, UTF-16, invalid UTF-8, symlink cycles"
+pin = "torture.py deterministic build"
+
+# ── competitors ───────────────────────────────────────────────────────────────
+# The registry + fairness scoping live in bench/dominance/races/field.sh (single source
+# of truth for how each tool is invoked). This lists which are REQUIRED as a
+# paired ratio and which are optional field context.
+
+[competitors]
+# Required: the two indexed rivals + the unindexed gold standard. A query/cold
+# bundle is incomplete without a paired ratio against each present required tool.
+required = [ "rg", "csearch", "zoekt" ]
+# Optional: reported when installed, never required (columns auto-skip).
+optional = [ "ugrep", "ag", "ggrep", "gitgrep" ]
+# rg + csearch are correctness ORACLES (byte-exact file sets); zoekt is a
+# production timing reference (documented corpus superset), not a correctness
+# oracle. The evaluator only requires paired ratios against installed tools.
+correctness_oracles = [ "rg", "csearch" ]
+timing_reference = [ "zoekt" ]
+
+# ── statistics / methodology ────────────────────────────────────────────────
+[methodology]
+runs = 20                        # hyperfine measured runs per cell
+warmup = 3                       # hyperfine warmup runs (fills page cache)
+bootstrap_resamples = 10000      # bootstrap CI on the median
+bootstrap_seed = 28181           # 0x6E15 — the certify_stats seed family
+alpha = 0.05                     # Mann-Whitney significance threshold
+quantiles = [ 0.50, 0.95, 0.99 ] # reported latency quantiles
+# A cell is timed ONLY after gist proves a byte-exact (order-insensitive) file
+# set equals the rg oracle, on BOTH the parallel and serial engines.
+parity_before_timing = true
+# A tool whose timed command masks producer status (`2>&1 | wc -l`) is invalid.
+mask_producer_status = false
+# An incomplete cell is recorded as "unsupported" or "failed" — NEVER fabricated
+# and never silently dropped from the denominator.
+fail_closed = true
+
+# ── provenance ─────────────────────────────────────────────────────────────
+# Every bundle carries these so a third party can regenerate it (superset of the
+# certify machine.json keys). The verifier fails a bundle missing any of them.
+[provenance]
+machine_keys = [
+  "machine_id",          # stable slug: <cpu-slug>-<os>-<arch>
+  "cpu_model",
+  "cpu_count",
+  "ram_bytes",
+  "os",
+  "kernel",
+  "arch",
+  "filesystem",
+  "git_commit",
+  "git_dirty",
+  "gist_engine_version",
+  "gist_abi_version",
+]
+# Per-corpus: a sha256-hashed manifest so a measured corpus is byte-pinned.
+corpus_keys = [ "corpus_id", "file_count", "total_bytes", "manifest_sha256" ]
+# Per-tool: exact identity (semver or executable sha256).
+tool_keys = [ "tool", "identity" ]
+# Honest capability degradation (recorded, never faked):
+#   PMU cycles/byte: macOS kperf only (Linux perf_event_open pending) → wall-clock.
+#   storage_cold: Linux drop_caches only → absent on macOS.
+degrade_loudly = true
+
+# ── publication ─────────────────────────────────────────────────────────────
+[publication]
+# Raw per-run output lives here (gitignored, machine-local).
+raw_dir = ".local/gist-evaluation"
+# Committed, verified bundles + the aggregate report live here, one dir per
+# machine so Apple-arm64 and Anvil-linux-x86_64 stay SEPARATE, machine-labeled
+# evidence (never averaged into one blended number).
+artifact_dir = "pkg/kernels/irregex/bench/dominance/evaluate/artifact"
+# A PUBLISHED bundle must come from a clean git tree (git_dirty = false); a dirty
+# tree may be measured for exploration but is refused at publish and marked
+# exploratory in the bundle so it can never masquerade as evidence.
+require_clean_tree_to_publish = true
+
+# ── claims ────────────────────────────────────────────────────────────────────
+# Each claim binds a prose number to ONE artifact source, so the doc-radar
+# verifier (and the evaluator's own `verify --claims`) can hold a README
+# sentence to the measured value. `regime` names which path the number is from.
+#
+# OWNERSHIP: only OPERATIONAL-ENVELOPE numbers live here. Cold/warm dominance
+# (`cold.vs_rg.speedup_band`, `resident.vs_rg.geomean_speedup`) and rg drop-in
+# correctness (`parity.rgsuite.pass`) are the CERTIFICATE's claims and are bound
+# in its own docs from its own artifacts — this contract must not restate them.
+[[claim]]
+id = "resource.index_over_corpus"
+source = "pkg/kernels/irregex/bench/certificate/artifact/index-sizes.json"
+kind = "json_ratio"
+regime = "resource"
+scope = "required index bytes (posting + path + freshness) / corpus bytes — the footprint ratio, hardware-invariant and comparable across machines"

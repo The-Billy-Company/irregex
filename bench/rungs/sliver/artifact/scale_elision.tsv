@@ -1,0 +1,23 @@
+# index elision parity at multi-GB scale — the invariant Layer J actually certifies.
+#
+# For each class, the sorted files-with-matches list was captured twice over the
+# multi-GB corpus, once with the persisted index and once with --no-index, and the two
+# md5 digests compared. Identical digests mean the index changed no answer: it only
+# ever elided reads. This is the package's central operational guarantee, and it is
+# asserted absolutely — any divergence fails Layer J closed, with no tolerance.
+#
+# These are the three classes whose file counts fall short of csearch's in
+# scale_race.tsv, chosen deliberately: if a shortfall were index unsoundness it would
+# show up here as DIVERGENT. It does not, which localizes the gap to corpus selection
+# (the tree walk's ignore/binary heuristics), not the index. See scale_truth.tsv for
+# the -uu measurement that confirms it: `})` recovers 27927 -> 28148 of ripgrep's 28156.
+class	pattern	indexed_eq_noindex
+literal-common	func	yes
+regex-litalt	panic|0x	yes
+regex-dense-scan	\w{3,8}	yes
+literal-punct2	})	yes
+literal-sliver-0x	0x	yes
+regex-decl	func\s+\w+\(	yes
+regex-anchored	^func\s	yes
+regex-alternation	return|continue|break	yes
+regex-eol	;$	yes
