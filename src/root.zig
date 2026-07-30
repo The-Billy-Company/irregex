@@ -448,6 +448,5 @@ test {
     // merely absent on Windows — they are untyped, so *analyzing* the file is the
     // error, and a runtime `SkipZigTest` never gets the chance to run. They return
     // with the transport (rung 2) instead of needing a rewrite.
-    if (comptime portal.resident_sessions) {
-    }
+    if (comptime portal.resident_sessions) {}
 }
