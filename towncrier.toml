@@ -1,16 +1,12 @@
-# Towncrier configuration for irregex — DO NOT hand-edit.
+# Towncrier configuration for irregex.
 #
-# Generated from the canonical template in the chronicle changelog driver
-# (pkg/tools/support/chronicle/config.py). The package roster lives in
-# pkg/tools/support/chronicle/packages.py.
+# Inherited from billy's chronicle changelog driver at extraction; standalone
+# now — the file is hand-maintained here.
 #
-#   make changelog-init             (re)materialize this file + changelog.d/
-#   make changelog-verify           drift gate (byte-parity vs this template)
-#   make changelog-create PKG=irregex TYPE=added SLUG=my-change
-#   make changelog-build  PKG=irregex VERSION=x.y.z
+# News fragments live in changelog.d/<slug>.<type>.md and are assembled into
+# CHANGELOG.md at the `<!-- towncrier release notes start -->` marker:
 #
-# News fragments live in changelog.d/<issue>.<type>.md and are assembled into
-# CHANGELOG.md at the `<!-- towncrier release notes start -->` marker on build.
+#   towncrier build --version x.y.z
 
 [tool.towncrier]
 name = "irregex"
