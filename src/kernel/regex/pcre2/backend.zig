@@ -46,6 +46,10 @@ pub const Pcre = engine.Pcre;
 /// message surface behind a `BadPattern`, sitting beside the frozen error set.
 pub const lastError = engine.lastError;
 
+/// Where in the pattern that diagnostic was detected — PCRE2's own
+/// `erroroffset`. Read only beside `lastError`; on its own it means nothing.
+pub const lastErrorOffset = engine.lastErrorOffset;
+
 /// Sticky match-time error surface: `matchError` returns the latched code (0 =
 /// none), `clearMatchError` resets it before a run, `matchErrorMessage` renders
 /// it. A resource-limit/fault during matching (catastrophic backtracking, JIT

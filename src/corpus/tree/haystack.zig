@@ -20,6 +20,7 @@
 
 const std = @import("std");
 const Dir = std.Io.Dir;
+const assay = @import("../../assay/assay.zig");
 const charter = @import("../scope/charter.zig");
 const corpus_mod = @import("corpus.zig"); // mutual import; only `outDir()` is touched
 const ignore = @import("ignore.zig");
@@ -96,8 +97,8 @@ const extra_skips = struct {
     }
 
     fn fill() void {
-        if (std.c.getenv("GIST_SKIP")) |v| {
-            var it = std.mem.tokenizeAny(u8, std.mem.span(v), ": ,");
+        if (assay.knob("SKIP")) |v| {
+            var it = std.mem.tokenizeAny(u8, v, ": ,");
             while (it.next()) |tok| add(tok);
         }
         if (charter.governing()) |c| for (c.skip) |name| add(name);

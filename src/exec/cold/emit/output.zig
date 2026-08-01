@@ -202,6 +202,16 @@ pub const Emitter = struct {
     /// run. Purely an accelerator; alternations only set it when the analyzer
     /// proves one literal common to every branch.
     needle: ?simd.Gate = null,
+    /// The anchor decision this file's literal sweeps share — set by `openOn` when
+    /// the body arrives, null when there is no single literal to plan for.
+    ///
+    /// It is a field and not a local because the sweeps that read it re-enter the
+    /// scanner once per HIT (`fileLit`, `litCandidates`), and because a single file
+    /// may be cut across cores (`emitFileSharded`): minting it inside the sweep
+    /// re-sampled the same document once per shard, which contradicts the "once per
+    /// document" contract the sampling budget is priced against. One mint per
+    /// document, copied into each shard's Emitter.
+    lit_plan: ?simd.Plan = null,
     /// `-r/--replace` capture matcher (linear Pike VM or PCRE2), non-null only
     /// when a replacement template is active. Built once per run by the caller.
     caps: ?*Caps = null,
@@ -373,6 +383,40 @@ pub const Emitter = struct {
         return if (o.caseless or o.multiline) &.{} else re.alts();
     }
 
+    /// The anchor decision one document's literal sweeps should use, priced on that
+    /// document's own bytes. Exposed as an associated function because the
+    /// single-file shard driver mints it BEFORE any shard's Emitter exists, and
+    /// every shard must be handed the same value rather than sampling again.
+    ///
+    /// Only a one-literal set has a pair to choose: an alternation's fused pass
+    /// anchors each needle on its own first+last byte (`simd.indexOfAnyPosWith`).
+    /// `planOn` declines below its own size gate, so an ordinary file costs two
+    /// comparisons here and keeps the shipped pair.
+    pub fn docLitPlan(o: Opts, re: *const Matcher, body: []const u8) ?simd.Plan {
+        const lits = maskLiterals(o, re);
+        return if (lits.len == 1) simd.planOn(body, lits[0]) else null;
+    }
+
+    /// Point this Emitter at ONE document's bytes: re-price both literal anchor
+    /// decisions — the required-literal gate and the sweep plan — on them.
+    ///
+    /// Every gate and plan upstream of here is minted once per RUN from the pattern
+    /// alone, so without this call each file in a run inherits a pair chosen from a
+    /// shipped byte-frequency table. That is right on the source text the table was
+    /// fitted to and an order of magnitude wrong on a body whose local alphabet
+    /// inverts it (measured: a 200 MB buffer of statically-rare bytes sweeps in
+    /// 70 ms on the table's pair and 3.9-4.0 ms re-priced, 17.6-17.9x).
+    ///
+    /// Call once per document, and only where a WHOLE document is in hand: the size
+    /// gate inside `planOn` is a claim about the scan the sampling amortizes
+    /// against, so pricing it on a fragment prices the wrong thing. Safe to call
+    /// for every file an Emitter walks — `Gate.on` re-decides from the static pair
+    /// rather than defending the previous file's choice.
+    pub fn openOn(self: *Emitter, body: []const u8) void {
+        if (self.needle) |g| self.needle = g.on(body);
+        self.lit_plan = docLitPlan(self.o, self.re, body);
+    }
+
     /// Per-line candidate mask for a literal-bearing pattern — rg's Teddy
     /// prefilter at line grain. ONE fused whole-buffer `indexOfAnyPos` sweep marks
     /// only the lines around literal hits, jumping non-matching regions at SIMD
@@ -401,7 +445,9 @@ pub const Emitter = struct {
         // advances — O(lines + hits) total. A literal carries no newline, so a
         // hit `p` lands within one line's span; map it, mark it, then resume at
         // the next line's start (skipping the rest of the hit's line).
-        while (simd.indexOfAnyPos(body, from, lits)) |p| {
+        // `lit_plan` is this document's decision, minted once by `openOn` — the
+        // loop below re-enters the scanner per hit, so it must not be a local.
+        while (simd.indexOfAnyPosWith(body, from, lits, self.lit_plan)) |p| {
             while (lc + 1 < lines.len and @intFromPtr(lines[lc + 1].ptr) - self.base <= p) lc += 1;
             cand[lc] = true;
             if (lc + 1 >= lines.len) break;

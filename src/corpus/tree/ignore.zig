@@ -34,7 +34,7 @@ const Dir = std.Io.Dir;
 /// Allocation failure is the only fault this module can raise, and it RETURNS
 /// rather than exiting: every entry below runs inside `irregex_open` /
 /// `irregex_search` as well as inside the CLI, and a `process.exit(2)` there
-/// kills the embedding host instead of handing it a status (ADR-373 law 1).
+/// kills the embedding host instead of handing it a status (fault-channel law 1).
 /// The command plane absorbs it at its own top level with `catch oom()`, so the
 /// CLI's exit code and OOM notice are unchanged.
 ///
@@ -566,8 +566,16 @@ pub const Ignore = struct {
 
     /// Load the per-directory ignore files for `rel` (relative to the walk root;
     /// on-disk path `disk`) exactly once, as the walk is about to descend into it.
-    pub fn loadDir(self: *Ignore, disk: []const u8, rel: []const u8) Oom!void {
+    ///
+    /// "Exactly once" is per DIRECTORY, not per spelling of it, so `rel` is
+    /// normalized the same way `addLine` normalizes a bucket key. The walk root
+    /// arrives as `""` from `init` and as `"."` from a walker that names its own
+    /// root (`reconcile/delta.zig`); those are one directory, and loading it
+    /// under both spellings appended its rules to the `""` bucket a second time
+    /// — which the compiled `""` tier borrows, and an append reallocates.
+    pub fn loadDir(self: *Ignore, disk: []const u8, rel_in: []const u8) Oom!void {
         if (self.o.no_ignore) return;
+        const rel = stripDot(rel_in);
         const gop = try self.loaded.getOrPut(rel);
         if (gop.found_existing) return;
         {
@@ -662,12 +670,20 @@ pub const Ignore = struct {
         // serial path, which decides one path at a time; the parallel walker,
         // which re-folds the same chain per entry, compiles them too
         // (`IgNode.tier`).
-        if (base_key.len == 0) if (if (skip_vcs) self.base_novcs else self.base_compiled) |*c| {
-            if (c.matchRank(stripDot(rel), is_dir)) |rank|
-                verdict.* = !c.rules[rank].negated;
-            return;
-        };
         const g = self.groups.getPtr(base_key) orelse return;
+        // …and only while it still describes the bucket it was compiled from. The
+        // tier BORROWS `g.items`, so a later `addLine` on this key both invalidates
+        // that slice (the append reallocates) and leaves the tier a rule short. A
+        // length disagreement is enough to see it: rules are only ever appended, so
+        // the tier is either exactly the bucket or a prefix of it, and the linear
+        // fold below is the same verdict either way.
+        if (base_key.len == 0) if (if (skip_vcs) self.base_novcs else self.base_compiled) |*c| {
+            if (c.rules.len == g.items.len) {
+                if (c.matchRank(stripDot(rel), is_dir)) |rank|
+                    verdict.* = !c.rules[rank].negated;
+                return;
+            }
+        };
         for (g.items) |r| if (!(skip_vcs and r.vcs) and ruleMatch(self.a, self.o.ignore_case_insensitive, root_depth, r, rel, is_dir)) {
             verdict.* = !r.negated;
         };
@@ -751,7 +767,7 @@ pub const Ignore = struct {
             // unreadable — it belongs to the caller's `Oom`, never to a message.
             error.OutOfMemory => return error.OutOfMemory,
             else => {
-                assay.note(.ignore, "gist: {s}: {s}\n", .{ path, fault.pathNoteOf(e) });
+                assay.note(.ignore, assay.tag ++ "{s}: {s}\n", .{ path, fault.pathNoteOf(e) });
                 return;
             },
         };
@@ -1245,6 +1261,33 @@ test "an explicit nested root loads its intermediate ancestors' ignores (rg add_
     try t.expectEqual(@as(?bool, true), ig.decide(try join(a, root, ".foo"), false));
 }
 
+test "one directory under two spellings loads once" {
+    const t = std.testing;
+    var threaded = std.Io.Threaded.init(t.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const dir = "gist_dir_spelling_fixture";
+    fault.spare("clear leftover dir-spelling fixture", Dir.cwd().deleteTree(io, dir));
+    try Dir.cwd().createDirPath(io, dir);
+    defer fault.spare("remove dir-spelling fixture", Dir.cwd().deleteTree(io, dir));
+    try Dir.cwd().writeFile(io, .{ .sub_path = try join(a, dir, ".ignore"), .data = "*.o\nbuild/\n" });
+
+    var ig = Ignore{ .a = a, .io = io, .o = .{}, .groups = std.StringHashMap(std.ArrayList(Rule)).init(a), .loaded = std.StringHashMap(void).init(a), .repos = std.StringHashMap(void).init(a), .use_dot = true };
+    // `init` names the walk root `""`; a walker that names its own root says
+    // `"."` (`reconcile/delta.zig`). One directory, so one load — the second
+    // spelling must not append its rules to the `""` bucket again. That append
+    // reallocates, and the compiled `""` tier borrows the slice it grew out of,
+    // so the duplicate was a use-after-free the moment a path was judged.
+    try ig.loadDir(dir, "");
+    const after_first = ig.groups.getPtr("").?.items.len;
+    try ig.loadDir(dir, ".");
+    try t.expectEqual(after_first, ig.groups.getPtr("").?.items.len);
+}
+
 test "a named --ignore-file that will not open is reported, and muffled on demand" {
     const t = std.testing;
     var threaded = std.Io.Threaded.init(t.allocator, .{});
@@ -1268,7 +1311,7 @@ test "a named --ignore-file that will not open is reported, and muffled on deman
     // with ripgrep's errno phrasing rather than a clean silent exit.
     assay.muffle(true, true);
     var ig = try Ignore.init(a, io, o, &.{});
-    try t.expectEqualStrings("gist: " ++ missing ++ ": No such file or directory (os error 2)\n", buf.items);
+    try t.expectEqualStrings(assay.tag ++ "" ++ missing ++ ": No such file or directory (os error 2)\n", buf.items);
 
     // --no-ignore-messages quiets this class alone; --no-messages subsumes it.
     for ([_][2]bool{ .{ true, false }, .{ false, true }, .{ false, false } }) |m| {

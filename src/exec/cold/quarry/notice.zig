@@ -28,7 +28,7 @@ const Dir = std.Io.Dir;
 /// engine's `std.Io` open + selective walk, the parallel engine's raw `openat`
 /// + iterate, and the explicit-PATH probe's `openat`. It is the UNION of the
 /// two engines' own `WalkFault` sets, each of which coerces into it — naming it
-/// (ADR-373 law 2) rather than taking `anyerror` means a widened std set is a
+/// (fault-channel law 2) rather than taking `anyerror` means a widened std set is a
 /// build failure at the one place that decides how a walk failure reads, not a
 /// mystery string on a user's stderr.
 pub const WalkFault = Dir.OpenError || Dir.Iterator.Error || Dir.SelectiveWalker.Error || std.posix.OpenError;
@@ -41,19 +41,19 @@ pub const WalkFault = Dir.OpenError || Dir.Iterator.Error || Dir.SelectiveWalker
 /// prefix or the number — `bench/rgsuite/run.py`), so the phrases are contract.
 ///
 /// Those phrases live in `fault.pathNoteOf`, whose `pathNote` switch is
-/// exhaustive over `fault.Corpus` (ADR-373 law 2) and which falls through to the
+/// exhaustive over `fault.Corpus` (fault-channel law 2) and which falls through to the
 /// error's own name for the wider set a real descent produces. Naming
 /// `WalkFault` here is what keeps that discipline local: the domain decides the
 /// phrasing, this decides what the walk is allowed to fail with.
 pub fn printWalkError(rel: []const u8, e: WalkFault) void {
-    assay.note(.corpus, "gist: {s}: {s}\n", .{ rel, fault.pathNoteOf(e) });
+    assay.note(.corpus, assay.tag ++ "{s}: {s}\n", .{ rel, fault.pathNoteOf(e) });
 }
 
 /// ripgrep's `-L` cycle report (walk_entry_err in its ignore crate): a symlink
 /// directory pointing at an ancestor of the walk is announced with both
 /// DISPLAY paths and refused — the walk continues past it, exit 2 (errored).
 pub fn printLoopError(link: []const u8, ancestor: []const u8) void {
-    assay.note(.corpus, "gist: File system loop found: {s} points to an ancestor {s}\n", .{ link, ancestor });
+    assay.note(.corpus, assay.tag ++ "File system loop found: {s} points to an ancestor {s}\n", .{ link, ancestor });
 }
 
 /// ripgrep's implicit-path heuristic (`eprint_nothing_searched`, main.rs): the

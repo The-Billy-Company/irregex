@@ -224,9 +224,9 @@ fn preSelects(cfg: *const Config, rel: []const u8) bool {
 fn preFail(cfg: *const Config, disk: []const u8, tool_stderr: []const u8) ?[]const u8 {
     if (cfg.pre_error) |e| e.store(true, .seq_cst);
     if (tool_stderr.len > 0) {
-        assay.note(.corpus, "gist: {s}: preprocessor command failed: {s}\n", .{ disk, std.mem.trimEnd(u8, tool_stderr, "\n") });
+        assay.note(.corpus, assay.tag ++ "{s}: preprocessor command failed: {s}\n", .{ disk, std.mem.trimEnd(u8, tool_stderr, "\n") });
     } else {
-        assay.note(.corpus, "gist: {s}: preprocessor command failed\n", .{disk});
+        assay.note(.corpus, assay.tag ++ "{s}: preprocessor command failed\n", .{disk});
     }
     return null;
 }

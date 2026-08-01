@@ -1,5 +1,4 @@
-//! gist resident session — the request-eligibility classifier suite (ADR-352
-//! rung 2.5). `classify` is the fail-closed gate that decides whether an
+//! gist resident session — the request-eligibility classifier suite. `classify` is the fail-closed gate that decides whether an
 //! rg-style argv can be answered warm; the one unforgivable failure is
 //! classifying an INELIGIBLE request as eligible (the resident path would then
 //! answer a query it can't serve correctly), so this pins both the accepted
@@ -169,9 +168,9 @@ test "classify: a clean relative PATH scope is eligible; unrenderable roots decl
     }
     {
         // A single-file root and a nested subtree are both clean.
-        const c = try ok(&.{ "needle", "pkg/kernels/irregex/README.md" });
+        const c = try ok(&.{ "needle", "libs/x/README.md" });
         try std.testing.expectEqual(request.Mode.lines, c.mode);
-        try std.testing.expectEqualStrings("pkg/kernels/irregex/README.md", c.filter.roots[0]);
+        try std.testing.expectEqualStrings("libs/x/README.md", c.filter.roots[0]);
     }
     {
         // A trailing slash is stripped (rg parity: `libs/` == `libs`).

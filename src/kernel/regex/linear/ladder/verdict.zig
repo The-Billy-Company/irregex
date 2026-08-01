@@ -103,7 +103,10 @@ pub fn docMatch(re: *const Regex, sim: *Sim, doc: []const u8) bool {
     // to rediscover a position the first pass already had. `find` costs exactly what
     // `presence` cost — it is the same scan with its result kept.
     var body = doc;
-    if (re.literal_scan) |*set| switch (set.find(doc, 0)) {
+    // `findOn` and not `find`: this is a WHOLE-document scan, so it is the one
+    // grain where re-pricing the anchor pair on the bytes in hand pays for itself
+    // (it declines below its own size gate, so an ordinary file is unaffected).
+    if (re.literal_scan) |*set| switch (set.findOn(doc, 0)) {
         .exact => |at| return at != null,
         .candidate => |at| {
             const p = at orelse return false;

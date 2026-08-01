@@ -39,7 +39,7 @@ const Captures = captures.Captures;
 /// pattern is not provably one-pass; OOM propagates. `Bail` never leaves the
 /// file — `attach` folds it into `fault.Answer`'s declined arm, because
 /// "this pattern needs a search" is a routine outcome with a correct answer one
-/// tier down, not a fault (ADR-373 law 1).
+/// tier down, not a fault (fault-channel law 1).
 const Err = error{ Bail, OutOfMemory };
 
 /// Caps chosen so a hostile pattern degrades to the Pike VM instead of eating
@@ -198,6 +198,10 @@ pub const OnePass = struct {
 
     pub fn groupByName(self: *const OnePass, name: []const u8) ?u32 {
         return self.caps.groupByName(name);
+    }
+
+    pub fn nameOfGroup(self: *const OnePass, index: u32) ?[]const u8 {
+        return self.caps.nameOfGroup(index);
     }
 
     /// Leftmost-first match within `line[from..]`, filling `out` exactly as

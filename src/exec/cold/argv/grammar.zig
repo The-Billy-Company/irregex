@@ -62,7 +62,7 @@ fn noteGrepStyleReplace(v: []const u8) void {
     // "failed command:" banner. The note is user-guidance, not behavior.
     if (builtin.is_test) return;
     assay.diag(
-        "gist: note: '-r{s}' parses as --replace={s} (ripgrep semantics: -r takes a value; recursion is already the default). Spell flags separately (e.g. -n), or use --replace to silence this note.\n",
+        assay.tag ++ "note: '-r{s}' parses as --replace={s} (ripgrep semantics: -r takes a value; recursion is already the default). Spell flags separately (e.g. -n), or use --replace to silence this note.\n",
         .{ v, v },
     );
 }
@@ -78,7 +78,7 @@ fn noteMisspacedHyperlink(pat: []const u8) void {
     if (!beacon.misspaced(pat)) return;
     if (builtin.is_test) return;
     assay.diag(
-        "gist: note: --hyperlink takes its value inline, so '{s}' was read as the PATTERN. Write --hyperlink={s} (or ripgrep's --hyperlink-format {s}).\n",
+        assay.tag ++ "note: --hyperlink takes its value inline, so '{s}' was read as the PATTERN. Write --hyperlink={s} (or ripgrep's --hyperlink-format {s}).\n",
         .{ pat, pat, pat },
     );
 }
@@ -240,7 +240,7 @@ fn apply(b: *Builder, action: Act, v: *ValSrc) void {
                 // (`GIST_HYPERLINK=`) may read empty as "no opinion"; a flag is
                 // an act, and rg spells this very act `--hyperlink-format=''`.
                 const w = if (value.len == 0) beacon.Wish{ .format = "" } else beacon.wish(b.a, value);
-                if (w.bad) |msg| die("gist: error parsing flag --{s}: {s}\n", .{ v.name, msg });
+                if (w.bad) |msg| die(assay.tag ++ "error parsing flag --{s}: {s}\n", .{ v.name, msg });
                 if (w.format) |f| o.hyperlink_format = f;
                 // A destination named alone is a request to link; the pair form
                 // (`auto,vscode`) is how you name one and still ask the probe.
@@ -307,7 +307,7 @@ fn apply(b: *Builder, action: Act, v: *ValSrc) void {
         .colors => {
             const spec = v.take();
             if (color.validateColorSpec(spec)) |msg|
-                die("gist: error parsing flag --colors: {s}\n", .{msg});
+                die(assay.tag ++ "error parsing flag --colors: {s}\n", .{msg});
             b.color_specs.append(b.a, spec) catch oom();
         },
         .unsupported => switch (v.mode) {

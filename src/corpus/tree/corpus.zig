@@ -43,7 +43,7 @@ pub fn resolveRoots(gpa: std.mem.Allocator) ![]const []const u8 {
         roots.deinit(gpa);
     }
 
-    if (assay.envSpan("GIST_ROOTS")) |v| {
+    if (assay.knob("ROOTS")) |v| {
         var it = std.mem.tokenizeAny(u8, v, ": ,");
         while (it.next()) |tok| try roots.append(gpa, try gpa.dupe(u8, tok));
         if (roots.items.len > 0) return roots.toOwnedSlice(gpa);
@@ -108,7 +108,7 @@ var output_budget: OutputBudget = .{};
 /// `GIST_UNCAP` truthiness — set to any value except `0`/`false`/`no`/empty
 /// lifts the soft guard (the bench harness sets `GIST_UNCAP=1`).
 fn envUncap() bool {
-    return assay.envFlag("GIST_UNCAP");
+    return assay.knobFlag("UNCAP");
 }
 
 /// `GIST_HINTS` — the kill switch for the stderr guidance channel (`gist:
@@ -118,7 +118,7 @@ fn envUncap() bool {
 /// truncation notice below — one env read, one policy. Results on stdout are
 /// untouched either way; this only governs stderr guidance.
 pub fn hintsEnabled() bool {
-    return if (assay.envSpan("GIST_HINTS")) |s| !assay.envFalsy(s) else true;
+    return if (assay.knob("HINTS")) |s| !assay.envFalsy(s) else true;
 }
 
 /// Resolve this process's output ceilings from the `--uncap` flag and the
@@ -128,8 +128,8 @@ pub fn hintsEnabled() bool {
 /// engine (so the `--uncap` flag — which always routes cold — takes effect).
 pub fn initOutputBudget(flag_uncap: bool) void {
     const disabled = flag_uncap or envUncap();
-    const soft = if (assay.envUsize("GIST_MAX_OUTPUT_TOKENS")) |t| t *| bytes_per_token else default_soft_output_bytes;
-    const hard = assay.envUsize("GIST_MAX_OUTPUT_BYTES") orelse default_hard_output_bytes;
+    const soft = if (assay.knobUsize("MAX_OUTPUT_TOKENS")) |t| t *| bytes_per_token else default_soft_output_bytes;
+    const hard = assay.knobUsize("MAX_OUTPUT_BYTES") orelse default_hard_output_bytes;
     output_budget.soft_disabled = disabled;
     output_budget.ceiling = if (disabled) hard else if (hard == 0) soft else @min(soft, hard);
     output_budget.written.store(0, .monotonic);
@@ -184,9 +184,9 @@ pub const Mark = struct {
 /// the caller asked to be bounded; only the DEFAULT ~25k-token guard is lifted.
 /// `--uncap` already leaves only the hard ceiling, so this is a no-op there.
 pub fn exemptSoftCap() void {
-    if (assay.envSpan("GIST_MAX_OUTPUT_TOKENS") != null) return;
+    if (assay.knobSet("MAX_OUTPUT_TOKENS")) return;
     output_budget.soft_disabled = true;
-    output_budget.ceiling = assay.envUsize("GIST_MAX_OUTPUT_BYTES") orelse default_hard_output_bytes;
+    output_budget.ceiling = assay.knobUsize("MAX_OUTPUT_BYTES") orelse default_hard_output_bytes;
 }
 
 /// Write RESULTS (the match list / ranked rows) to **stdout** — the Unix
@@ -441,14 +441,14 @@ pub fn finishOutput() void {
     if (output_budget.announced.swap(true, .monotonic)) return;
     const cap = output_budget.ceiling;
     if (output_budget.soft_disabled) {
-        assay.diag("gist: output truncated at the hard {d}-byte OOM ceiling\n", .{cap});
+        assay.diag(assay.tag ++ "output truncated at the hard {d}-byte OOM ceiling\n", .{cap});
         if (hintsEnabled())
-            assay.diag("gist: try PATH args / -t / -g to scope the query, or raise GIST_MAX_OUTPUT_BYTES\n", .{});
+            assay.diag(assay.tag ++ "try PATH args / -t / -g to scope the query, or raise GIST_MAX_OUTPUT_BYTES\n", .{});
     } else {
-        assay.diag("gist: output truncated at ~{d} tokens ({d} bytes)\n", .{ cap / bytes_per_token, cap });
+        assay.diag(assay.tag ++ "output truncated at ~{d} tokens ({d} bytes)\n", .{ cap / bytes_per_token, cap });
         if (hintsEnabled()) {
-            assay.diag("gist: try -l / -c — file list or per-file counts instead of every line\n", .{});
-            assay.diag("gist: try --uncap — stream the full result (or scope with PATH args / -t / -g)\n", .{});
+            assay.diag(assay.tag ++ "try -l / -c — file list or per-file counts instead of every line\n", .{});
+            assay.diag(assay.tag ++ "try --uncap — stream the full result (or scope with PATH args / -t / -g)\n", .{});
         }
     }
 }
@@ -562,7 +562,7 @@ pub const Corpus = struct {
 /// the serial loader — the parity gate + escape hatch, mirroring the search
 /// engine's `GIST_NO_PARALLEL`.
 fn parallelLoadDisabled() bool {
-    return assay.envFlag("GIST_NO_PARALLEL_LOAD");
+    return assay.knobFlag("NO_PARALLEL_LOAD");
 }
 
 /// How the caller intends to USE the corpus — the one fact that decides whether
@@ -602,7 +602,7 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, layou
 /// scattered per-worker-arena doc layout — the A/B toggle for the contiguity
 /// win and a parity escape hatch, mirroring `GIST_NO_PARALLEL_LOAD`.
 pub fn compactDisabled() bool {
-    return assay.envFlag("GIST_NO_COMPACT");
+    return assay.knobFlag("NO_COMPACT");
 }
 
 /// Relocate every doc body into ONE contiguous, scan-order buffer so a

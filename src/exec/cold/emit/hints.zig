@@ -124,7 +124,7 @@ pub fn render(a: std.mem.Allocator, out: *std.ArrayList(u8), s: Shape, files_sca
     // ── the outcome, one line ────────────────────────────────────────────
     const max_display = 64;
     const shown = s.display[0..@min(s.display.len, max_display)];
-    try out.print(a, "gist: no matches for '{s}{s}'", .{ shown, if (s.display.len > max_display) "…" else "" });
+    try out.print(a, assay.tag ++ "no matches for '{s}{s}'", .{ shown, if (s.display.len > max_display) "…" else "" });
     if (s.extra_patterns > 0) try out.print(a, " (+{d} more patterns)", .{s.extra_patterns});
     if (files_scanned) |n| try out.print(a, " · {d} files scanned", .{n});
     switch (s.scope) {
@@ -324,7 +324,7 @@ pub const Pace = struct {
 pub fn renderSlow(a: std.mem.Allocator, out: *std.ArrayList(u8), s: Shape, pace: Pace) !void {
     const max_display = 64;
     const shown = s.display[0..@min(s.display.len, max_display)];
-    try out.print(a, "gist: still searching for '{s}{s}' after {d}s · {d} directories walked, {d} outstanding\n", .{
+    try out.print(a, assay.tag ++ "still searching for '{s}{s}' after {d}s · {d} directories walked, {d} outstanding\n", .{
         shown,
         if (s.display.len > max_display) "…" else "",
         pace.secs,
@@ -399,7 +399,7 @@ test "already -i -F -uu: nothing pattern-shaped left to say" {
     defer arena.deinit();
     const o = args.Opts{ .caseless = true, .fixed = true, .no_ignore = true, .hidden = true };
     const got = try rendered(arena.allocator(), shape(&.{"Foo[0]"}, o, &.{}, false), 10);
-    try t.expectEqualStrings("gist: no matches for 'Foo[0]' · 10 files scanned\n", got);
+    try t.expectEqualStrings(assay.tag ++ "no matches for 'Foo[0]' · 10 files scanned\n", got);
 }
 
 test "inverted match explains itself and suppresses pattern hints" {
@@ -432,10 +432,10 @@ test "hint cap is three; long pattern display-truncates; extra patterns counted"
     const got = try rendered(arena.allocator(), shape(&.{ long, "second" }, .{}, &.{ "a", "b", "c", "d" }, true), 5);
     var lines = std.mem.splitScalar(u8, got, '\n');
     const head = lines.first();
-    try t.expect(std.mem.startsWith(u8, head, "gist: no matches for '" ++ "X" ** 64 ++ "…' (+1 more patterns) · 5 files scanned · scope: a b c (+1 more)"));
+    try t.expect(std.mem.startsWith(u8, head, assay.tag ++ "no matches for '" ++ "X" ** 64 ++ "…' (+1 more patterns) · 5 files scanned · scope: a b c (+1 more)"));
     var hints_n: usize = 0;
     while (lines.next()) |l| {
-        if (std.mem.startsWith(u8, l, "gist: try ") or std.mem.startsWith(u8, l, "gist: note: ")) hints_n += 1;
+        if (std.mem.startsWith(u8, l, assay.tag ++ "try ") or std.mem.startsWith(u8, l, assay.tag ++ "note: ")) hints_n += 1;
     }
     try t.expectEqual(@as(usize, 3), hints_n);
 }
@@ -473,7 +473,7 @@ test "later notices are pure progress — the advice cannot have changed" {
         .outstanding = 903,
         .first = false,
     });
-    try t.expectEqualStrings("gist: still searching for 'class Prism' after 16s · 71004 directories walked, 903 outstanding\n", got);
+    try t.expectEqualStrings(assay.tag ++ "still searching for 'class Prism' after 16s · 71004 directories walked, 903 outstanding\n", got);
 }
 
 test "an already-scoped walk with ignores in force has no advice to offer" {
@@ -484,7 +484,7 @@ test "an already-scoped walk with ignores in force has no advice to offer" {
         .walked = 812,
         .outstanding = 40,
     });
-    try t.expectEqualStrings("gist: still searching for 'Wallet' after 4s · 812 directories walked, 40 outstanding\n", got);
+    try t.expectEqualStrings(assay.tag ++ "still searching for 'Wallet' after 4s · 812 directories walked, 40 outstanding\n", got);
 }
 
 test "a vigil that never armed is silent rather than crashing on no progress" {

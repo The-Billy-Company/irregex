@@ -69,8 +69,8 @@ pub const Policy = struct {
     /// generation). An unparseable value leaves the default standing.
     pub fn tuned() Policy {
         var p: Policy = .{};
-        if (std.c.getenv("GIST_KEEP_GENS")) |v| {
-            if (std.fmt.parseInt(usize, std.mem.span(v), 10) catch null) |n| p.keep = @min(n, max_keep);
+        if (assay.knob("KEEP_GENS")) |v| {
+            if (std.fmt.parseInt(usize, v, 10) catch null) |n| p.keep = @min(n, max_keep);
         }
         return p;
     }

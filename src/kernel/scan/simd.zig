@@ -20,6 +20,7 @@
 const std = @import("std");
 const assay = @import("../../assay/assay.zig"); // instrumentation floor: the plan A/B switch
 const bitsmod = @import("../math/bits.zig");
+const calibrate = @import("calibrate.zig");
 const teddy = @import("teddy.zig");
 const rarity = @import("rarity.zig");
 const anchor = @import("anchor.zig");
@@ -167,6 +168,27 @@ pub fn containsAny(hay: []const u8, needles: []const []const u8) bool {
 /// hands off to `teddy` (constant 2 loads/block). Needles shorter than 2 bytes
 /// (or a set past `max_any`) fall back to the per-needle `indexOfPos` minimum;
 /// byte-exact with that reference either way. `null` when no needle occurs.
+/// `indexOfAnyPos` against a caller's pre-minted anchor decision.
+///
+/// `plan` applies to the ONE-needle set only — the same contract `verify.oneShot`
+/// carries, and for the same reason: a genuine alternation's fused pass anchors
+/// every needle on its own first+last byte, so there is no single pair to supply
+/// and a plan would have nowhere to go. Passing one for a multi-needle set is
+/// silently ignored rather than an error, because the natural caller is a loop
+/// that mints `if (needles.len == 1) planOn(...) else null` once and then does not
+/// want to re-test arity per iteration.
+///
+/// The reason this entry point exists: a hit-jumping doc loop calls the plain
+/// `indexOfAnyPos` once per HIT, and the one-needle delegation below lands in
+/// `core`'s lazy `planOf`. On a body with millions of filter survivors that is the
+/// static pair being re-derived per hit AND — the expensive half — the static pair
+/// being used at all. Hoisting the decision to the document lets it be a
+/// *calibrated* pair, which is where the order of magnitude is.
+pub fn indexOfAnyPosWith(hay: []const u8, from: usize, needles: []const []const u8, plan: ?Plan) ?usize {
+    if (needles.len == 1) if (plan) |p| return indexOfPosWith(hay, from, needles[0], p);
+    return indexOfAnyPos(hay, from, needles);
+}
+
 pub fn indexOfAnyPos(hay: []const u8, from: usize, needles: []const []const u8) ?usize {
     if (needles.len == 0) return null;
     if (needles.len == 1) return indexOfPos(hay, from, needles[0]);
@@ -324,6 +346,49 @@ pub fn planFor(needle: []const u8) ?Plan {
     if (needle.len <= 1) return null;
     if (assay.envFlag("GIST_NO_PLAN")) return null;
     return planOf(needle);
+}
+
+/// `planFor`, priced on the buffer actually about to be searched instead of on a
+/// shipped table — the seam `calibrate.zig`'s module doc has been waiting for
+/// ("calibrate once when a document is admitted, then thread the chosen pair
+/// through every line of that document"). Call it where a WHOLE document is in
+/// hand, never per line: the size gate is a statement about the scan the sampling
+/// has to amortize against, so evaluating it on a slice of the work prices the
+/// wrong thing.
+///
+/// `calibrate.refine` declines below its own gate (3.1 MB at a 3-byte needle
+/// rising to 16.8 MB at the offset cap) AND whenever the static pair is already
+/// as good as anything the sample found, so the static plan is what almost every
+/// document gets and the fallback is the common path, not the exception.
+///
+/// It is `refine` and not `best` on purpose. Adopting the sample's favourite
+/// unconditionally was a measured 0.5–1.1% CPU tax with no row it won — the table
+/// is already right most of the time, and swapping off it also forfeits the
+/// single-probe shape for nothing. `refine` makes the incumbent compete on the
+/// same sample; the defect is recorded in full at `calibrate.refine`.
+pub fn planOn(hay: []const u8, needle: []const u8) ?Plan {
+    const static = planFor(needle) orelse return null;
+    if (assay.envFlag("GIST_NO_CALIBRATE")) return static;
+    // `anchor.Pair`'s slots carry meaning and are NOT sorted, but a candidate
+    // offset SET is unordered, so the incumbent goes in low-first. Declining
+    // returns `static` untouched, so the slot assignment survives a decline.
+    const held = if (static.pair.probe < static.pair.confirm)
+        [2]usize{ static.pair.probe, static.pair.confirm }
+    else
+        [2]usize{ static.pair.confirm, static.pair.probe };
+    const off = calibrate.refine(hay, needle, block_bytes, held) orelse return static;
+    return .{
+        .pair = .{ .probe = off[0], .confirm = off[1] },
+        // RECORDED DEFECT (calibrate.zig doc, defect 3): `singleProbeWorthwhile`
+        // prices the probe byte against the STATIC rarity table, so it cannot
+        // judge a calibrated pair at all — and the input that makes it wrong is
+        // exactly the one calibration produces, a byte that is statically rare and
+        // locally common. That shape was measured at HALVED throughput on a
+        // uniform-random buffer; the in-loop demotion counter catches it only
+        // after paying for it. A calibrated plan therefore always takes the dual
+        // loop, which needs no rarity claim about either byte.
+        .single = false,
+    };
 }
 
 /// `contains` against a pre-computed plan. Byte-identical verdict to `contains`
@@ -712,6 +777,38 @@ pub const Gate = struct {
     /// which also proves the fold ASCII-closed; `equiv` records match equivalence.
     pub fn caseless(bytes: []const u8, equiv: bool) Gate {
         return .{ .bytes = bytes, .ci = true, .equiv = equiv, .plan = null };
+    }
+
+    /// This gate re-planned against the ONE document it is about to be run over —
+    /// the per-file grain `planOn` exists for. A gate is minted once per query from
+    /// the pattern alone, so without this every file in a run shares an anchor pair
+    /// chosen from a shipped corpus table; on a body whose local byte distribution
+    /// the table does not describe, that pair can be two locally-dense bytes and
+    /// the block filter degenerates to "verify almost every position". Measured on
+    /// a 200 MB buffer whose alphabet is the statically-RARE bytes: a full sweep
+    /// costs 70 ms on the static pair and 3.9–4.0 ms re-planned, 17.6–17.9× — and
+    /// the static pair takes the *single*-probe shape there, so the fast loop aimed
+    /// at the wrong byte loses to the two-probe loop aimed well by that much.
+    ///
+    /// Call it where a whole document is in hand, ONCE per document. Never per
+    /// line: `planOn`'s size gate is a claim about the scan the sampling amortizes
+    /// against, so pricing it on a slice of the work prices the wrong thing.
+    ///
+    /// **Idempotent, and that is load-bearing.** `planOn` derives its own incumbent
+    /// from `bytes` via `planFor`, never from `self.plan`, so re-planning an
+    /// already-re-planned gate re-decides from the static pair rather than
+    /// compounding. Without that property a long-lived gate (an `Emitter` walks
+    /// many files) would carry the previous document's pair into the next one as
+    /// the incumbent to beat — and `refine` only swaps on a MATERIAL improvement,
+    /// so a pair that was ideal for file N would be defended into file N+1 where it
+    /// is the pathological one. That is the whole failure this method is meant to
+    /// remove, so it must not be reintroduced by holding state here.
+    ///
+    /// A caseless gate returns unchanged: `containsCaseless` is a different kernel
+    /// that takes no pair, so there is nothing to re-plan.
+    pub fn on(self: Gate, hay: []const u8) Gate {
+        if (self.ci) return self;
+        return .{ .bytes = self.bytes, .ci = false, .equiv = self.equiv, .plan = planOn(hay, self.bytes) };
     }
 
     pub inline fn in(self: Gate, hay: []const u8) bool {

@@ -96,6 +96,32 @@ pub const PcreCaptures = struct {
         const n = ffi.pcre2_substring_number_from_name_8(self.code, buf[0..name.len :0].ptr);
         return if (n > 0) @intCast(n) else null;
     }
+
+    /// The inverse: group number → the name it was declared with, or null for a
+    /// plain `(…)`. PCRE2 offers no call for this direction, so it is a walk of
+    /// the pattern's name table — `count` entries of `width` bytes, each a
+    /// big-endian group number followed by a NUL-terminated name.
+    ///
+    /// The slice borrows the compiled code, so it lives exactly as long as this
+    /// `PcreCaptures` does. No copy, which is what lets the C seam hand a host a
+    /// pointer instead of asking it for a buffer.
+    pub fn nameOfGroup(self: *const PcreCaptures, index: u32) ?[]const u8 {
+        if (index == 0) return null; // group 0 is the whole match; never named
+        var count: u32 = 0;
+        var width: u32 = 0;
+        var table: [*]const u8 = undefined;
+        _ = ffi.pcre2_pattern_info_8(self.code, ffi.INFO_NAMECOUNT, &count);
+        _ = ffi.pcre2_pattern_info_8(self.code, ffi.INFO_NAMEENTRYSIZE, &width);
+        if (count == 0 or width < 3) return null;
+        _ = ffi.pcre2_pattern_info_8(self.code, ffi.INFO_NAMETABLE, @ptrCast(&table));
+
+        for (0..count) |i| {
+            const entry = table[i * width ..][0..width];
+            if (std.mem.readInt(u16, entry[0..2], .big) != index) continue;
+            return std.mem.sliceTo(entry[2..], 0);
+        }
+        return null;
+    }
 };
 
 test "pcre captures fill numbered slots and resolve names" {

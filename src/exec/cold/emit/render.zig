@@ -108,6 +108,7 @@ pub fn renderFile(em: *Emitter, f: InFile, stat: *Stats, matched_files: *usize, 
     em.base = @intFromPtr(body.ptr);
     em.body_end = em.base + body.len;
     em.way = null; // the OSC-8 destination is per-file; rebuilt on first locator
+    em.openOn(body); // re-price the gate + sweep anchors on THIS file's bytes
     const hits = if (slice_model) em.buffer(f.path, body) else if (fast) em.fileLit(f.path, body, 0, body.len, 0, true) else em.file(f.path, lines.items);
     // Whether this file OPENS A GROUP is whether it wrote anything, which is
     // not the same question as whether it matched: `--passthru` prints a
@@ -274,11 +275,18 @@ pub fn emitFileSharded(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.A
     } else @memset(base_ln, 0);
 
     const counting = o.mode.counting();
+    // ONE anchor decision for this document, minted before any shard exists and
+    // copied into every shard's Emitter. Minting it inside `fileLit` instead would
+    // re-sample the same body once per core, and the sampling budget is priced
+    // against a single sample per document.
+    const doc_needle = if (needle) |g| g.on(body) else null;
+    const doc_lit_plan = Emitter.docLitPlan(o, re, body);
     const Shard = struct {
         re: *const Matcher,
         o: Opts,
         use_color: bool,
         needle: ?simd.Gate,
+        lit_plan: ?simd.Plan,
         show_name: bool,
         path: []const u8,
         body: []const u8,
@@ -294,7 +302,7 @@ pub fn emitFileSharded(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.A
         fn run(sh: *@This()) void {
             const sa = sh.arena.allocator();
             var sim: ?Matcher.Sim = Matcher.Sim.init(sa, sh.re) catch null;
-            var e = Emitter{ .a = sa, .re = sh.re, .o = sh.o, .show_name = sh.show_name, .out = &sh.buf, .use_color = sh.use_color, .needle = sh.needle, .sim = if (sim) |*s| s else null, .base = sh.base_addr, .body_end = sh.end_addr };
+            var e = Emitter{ .a = sa, .re = sh.re, .o = sh.o, .show_name = sh.show_name, .out = &sh.buf, .use_color = sh.use_color, .needle = sh.needle, .lit_plan = sh.lit_plan, .sim = if (sim) |*s| s else null, .base = sh.base_addr, .body_end = sh.end_addr };
             sh.n = e.fileLit(sh.path, sh.body, sh.lo, sh.hi, sh.base_lineno, false);
         }
     };
@@ -305,7 +313,8 @@ pub fn emitFileSharded(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.A
         .re = re,
         .o = o,
         .use_color = use_color,
-        .needle = needle,
+        .needle = doc_needle,
+        .lit_plan = doc_lit_plan,
         .show_name = show_name,
         .path = f.path,
         .body = body,
@@ -522,7 +531,12 @@ pub fn anyMatch(a: std.mem.Allocator, re: *const Matcher, o: Opts, needle: ?simd
         const body = visibleBody(o.encoding, f.bytes);
         if (body.len == 0 or (corpus_mod.isBinary(body) and !o.text and !o.binary)) continue;
         if (lit_fast) {
-            if (simd.indexOfAnyPos(body, 0, lits) != null) return true;
+            // A whole-buffer sweep that stops at the first hit, so it is exactly the
+            // shape the anchor pair governs and it gets this file's own decision
+            // rather than the shipped table's — measured 4.5x on a 200 MB body whose
+            // local alphabet inverts the table. Once per file, which is the grain
+            // `docLitPlan`'s size gate is priced against.
+            if (simd.indexOfAnyPosWith(body, 0, lits, Emitter.docLitPlan(o, re, body)) != null) return true;
             continue;
         }
         if (slice_model) {

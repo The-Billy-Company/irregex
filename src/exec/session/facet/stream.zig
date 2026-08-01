@@ -1,4 +1,4 @@
-//! The per-line faces — the in-process FFI's record stream (ADR-352 rung 3) and
+//! The per-line faces — the in-process FFI's record stream (in-process FFI tier) and
 //! the `-q` existence probe, plus rg's line model that both walk.
 //!
 //! Everything above this file answers in whole documents; everything here
@@ -95,7 +95,7 @@ pub fn queryExists(self: *ResidentSession, req: Request) QueryError!answer.Answe
 }
 
 /// Stream one `MatchRecord` per matching LINE over the warm corpus to `sink`
-/// — the in-process FFI's search entry (ADR-352 rung 3). Same reconcile +
+/// — the in-process FFI's search entry (in-process FFI tier). Same reconcile +
 /// freshness barrier + trigram-prefilter + fail-closed existence check as
 /// `fold.query`, but instead of folding to a file set / line count it emits, per
 /// matching line, the path, 1-based line number, the line content, and the
@@ -312,7 +312,7 @@ const Exister = struct {
             var walk = LineWalk{ .bytes = bytes };
             const nonmatching = while (walk.next()) |line| {
                 self.spans.clearRetainingCapacity();
-                self.cq.collectSpans(self.gpa, bytes[line.start..line.end], self.msc, &self.spans) catch
+                self.cq.collectSpans(self.gpa, bytes[line.start..line.end], line.end < bytes.len, self.msc, &self.spans) catch
                     return QueryError.OutOfMemory;
                 if (self.spans.items.len == 0) break true;
             } else false;
@@ -346,7 +346,7 @@ fn emitDoc(gpa: std.mem.Allocator, cq: *const CompiledQuery, msc: *MatchScratch,
         lineno += 1;
         const view = d.bytes[line.start..line.end];
         spans.clearRetainingCapacity();
-        try cq.collectSpans(gpa, view, msc, spans);
+        try cq.collectSpans(gpa, view, line.end < d.bytes.len, msc, spans);
         if ((spans.items.len > 0) != invert) {
             any = true;
             emitted += 1;
@@ -375,13 +375,25 @@ fn emitDocContext(gpa: std.mem.Allocator, cq: *const CompiledQuery, msc: *MatchS
     const bcap = std.math.cast(usize, before) orelse std.math.maxInt(usize);
     const acap = std.math.cast(usize, after) orelse std.math.maxInt(usize);
     var selected: u64 = 0;
+    // The line that reached `-m`, once one has. rg stops SELECTING there but keeps
+    // searching that match's after-context window, and a line inside the window
+    // that matches prints as a match rather than a context line. The window does
+    // not chain — a match found inside it opens no window of its own — which is
+    // why the cap is a position to measure from and not a `break`.
+    var cap_at: ?usize = null;
     for (lines.items, 0..) |*line, i| {
         spans.clearRetainingCapacity();
-        try cq.collectSpans(gpa, d.bytes[line.span.start..line.span.end], msc, spans);
+        try cq.collectSpans(gpa, d.bytes[line.span.start..line.span.end], line.span.end < d.bytes.len, msc, spans);
         if ((spans.items.len > 0) == invert) continue;
-        if (max_count) |cap| if (selected >= cap) break;
+        if (cap_at) |last| {
+            if (acap == 0 or i > last + acap) break;
+        } else if (max_count) |cap| if (selected >= cap) break;
         selected += 1;
         line.kind = .match;
+        if (max_count) |cap| if (selected >= cap and cap_at == null) {
+            cap_at = i;
+        };
+        if (cap_at) |last| if (last != i) continue;
 
         var n: usize = 1;
         while (n <= bcap and n <= i) : (n += 1) {
@@ -398,9 +410,13 @@ fn emitDocContext(gpa: std.mem.Allocator, cq: *const CompiledQuery, msc: *MatchS
 
     for (lines.items, 1..) |line, lineno| {
         if (line.kind == .none) continue;
+        // Spans are painted on whatever line is PRINTED, not only on the ones
+        // classified as matches: under `-v` a context record is by definition a
+        // line the pattern matched, and a context line inside a `-m` window can
+        // match too. Collecting unconditionally lets the line's own content
+        // answer, which is what rg reports.
         spans.clearRetainingCapacity();
-        if (line.kind == .match and !invert)
-            try cq.collectSpans(gpa, d.bytes[line.span.start..line.span.end], msc, spans);
+        try cq.collectSpans(gpa, d.bytes[line.span.start..line.span.end], line.span.end < d.bytes.len, msc, spans);
         if (sink.emit(.{
             .path = d.path,
             .line_number = lineno,

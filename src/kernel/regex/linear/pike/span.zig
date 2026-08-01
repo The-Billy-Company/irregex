@@ -77,14 +77,20 @@ fn firstMatch(re: *const Regex, list: []const u32, starts: []const usize, end: u
 /// the winning position `p`, the first literal in pattern order that occurs
 /// there is the branch leftmost-first prefers, and no literal occurring at `p`
 /// can have an earlier leftmost occurrence than `p`.
-fn litSpan(re: *const Regex, region: []const u8, from: usize) ?Span {
+fn litSpan(re: *const Regex, sim: *SpanSim, region: []const u8, from: usize) ?Span {
     if (from > region.len) return null;
     // A single literal IS the span, so the position needs no attribution — and
     // this is the shape most code searches have (`gist WalletService`), so it
     // stays exactly the one scan and one add it was before the fused jump.
     if (re.lits.len == 1) {
         const lit = re.lits[0];
-        const p = simd.indexOfPos(region, from, lit) orelse return null;
+        // The anchor pair, priced on this region's own bytes rather than on the
+        // byte-frequency table shipped in the binary. `litPlan` memoizes on the
+        // slice, which is what makes it safe to ask here: this function is
+        // re-entered once per span (a `-U` walk of a 200 MB buffer re-enters it
+        // millions of times), and the sample must be paid once per haystack. The
+        // memo declines below its size gate, so a per-line walk is unaffected.
+        const p = simd.indexOfAnyPosWith(region, from, re.lits, sim.litPlan(re, region)) orelse return null;
         return .{ .start = p, .end = p + lit.len };
     }
     const p = simd.indexOfAnyPos(region, from, re.lits) orelse return null;
@@ -141,7 +147,7 @@ pub fn matchWindow(re: *const Regex, sim: *SpanSim, w: Window) ?Span {
     if (w.from > to) return null;
     const line = w.hay;
     // Pure-literal fast path: one fused SIMD jump, no Pike VM (see `litSpan`).
-    if (re.lits.len > 0) return litSpan(re, line[0..to], w.from);
+    if (re.lits.len > 0) return litSpan(re, sim, line[0..to], w.from);
     // Span-exact class run (`\w+`, `[a-z]{3,8}` — `analysis.classSpanShape`):
     // the SIMD window kernel chunks member runs directly, no thread
     // closures. Final only when the kernel settles high bytes itself

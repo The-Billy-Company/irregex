@@ -105,6 +105,36 @@ pub const LiteralSet = struct {
         };
     }
 
+    /// `find`, with the one-needle anchor decision priced on `hay` instead of on
+    /// the shipped rarity table. For a WHOLE document only, and once per document:
+    /// `build` runs per query, so the plan it carries describes the corpus the
+    /// table was fitted to, not this body. On a body whose local alphabet inverts
+    /// that table the chosen pair can be two locally-dense bytes, which turns the
+    /// block filter into "verify nearly every position" — measured at 70 ms vs
+    /// 4 ms over 200 MB on such a buffer.
+    ///
+    /// Deliberately a fused verb rather than an `on(hay)` that hands back a
+    /// re-planned copy: a copy is only trivially safe for `.single`, while `.sparse`
+    /// owns a compiled graph, so a returned value would be a struct nobody may
+    /// `deinit` and everybody may forget that about. Nothing escapes here.
+    ///
+    /// Only the one-needle strategy has a pair to choose; Teddy and Aho anchor each
+    /// needle on its own bytes, so they route to `find` unchanged.
+    pub fn findOn(self: *const LiteralSet, hay: []const u8, from: usize) Position {
+        const single = switch (self.strategy) {
+            .single => |one| one,
+            else => return self.find(hay, from),
+        };
+        const position = if (simd.planOn(hay, single.needle)) |p|
+            simd.indexOfPosWith(hay, from, single.needle, p)
+        else
+            simd.indexOfPos(hay, from, single.needle);
+        return switch (self.authority) {
+            .exact => .{ .exact = position },
+            .candidate => .{ .candidate = position },
+        };
+    }
+
     fn findRaw(self: *const LiteralSet, hay: []const u8, from: usize) ?usize {
         return switch (self.strategy) {
             .none => null,

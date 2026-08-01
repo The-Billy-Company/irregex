@@ -116,8 +116,8 @@ CASES: tuple[tuple[str, str, list[str]], ...] = (
     # 33.5 M lazy matches on one 64 MiB line. gist counts them in ~8.7 s; rg was
     # still running past 600 s when this case was written, which is why the lane
     # publishes BOTH verdicts instead of gating on gist's alone.
-    ("pattern", "lazy-multiline-count", ["-U", "-c", "-e", "a[\s\S]*?a", "stress/one_line_64m.txt"]),
-    ("pattern", "greedy-multiline-scan", ["-U", "-c", "-e", "a[\s\S]*a", "stress/one_line_64m.txt"]),
+    ("pattern", "lazy-multiline-count", ["-U", "-c", "-e", r"a[\s\S]*?a", "stress/one_line_64m.txt"]),
+    ("pattern", "greedy-multiline-scan", ["-U", "-c", "-e", r"a[\s\S]*a", "stress/one_line_64m.txt"]),
     # ── giant lines / giant files ───────────────────────────────────────────
     ("giant", "giant-line-match", ["-e", "NEEDLE_GIANT_LINE", "lines/giant_line.txt"]),
     ("giant", "giant-line-print", ["-e", "a+", "stress/one_line_64m.txt"]),

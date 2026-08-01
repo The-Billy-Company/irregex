@@ -97,7 +97,7 @@ pub const Entry = struct { path: []const u8, is_dir: bool };
 /// escape hatch, the `GIST_NO_PARALLEL` idiom. The env var is the journal's
 /// contract, so its predicate lives here rather than duplicated per caller.
 pub fn disabled() bool {
-    return assay.envFlag("GIST_NO_JOURNAL");
+    return assay.knobFlag("NO_JOURNAL");
 }
 
 /// Mint a token for THIS instant: the global FSEvents id + the device the
@@ -187,7 +187,7 @@ fn EventBindings(comptime Info: type) type {
     };
 }
 
-/// The dlopen'd CoreFoundation + CoreServices entry points. Since ADR-372 these
+/// The dlopen'd CoreFoundation + CoreServices entry points. Since the kqueue freshness barrier these
 /// are the only FSEvents bindings left in the tree: the resident watcher moved to
 /// kqueue, which needs no framework at all, and this journal survives only because
 /// an amend must read history no live watch can supply.

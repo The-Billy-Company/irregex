@@ -19,6 +19,15 @@ WHAT IS NOT A DIVERGENCE
                   guaranteed-linear syntax (lookaround, backreferences, `(?x)`)
                   and exits 2 pointing at `-P` — the same judgment `run.py`
                   scores NA, recognized by `_oracle.is_design_decline`.
+    malformed     the generated pattern is invalid in EVERY grammar gist has
+                  (it asked PCRE2 too) and gist exits 2, while rg answers — but
+                  rg answers only because it wraps each pattern in `(?:...)`,
+                  which pairs a stray paren of the generator's with one of its
+                  own: `)(` becomes `(?:)()`, matching empty everywhere. rg is
+                  not demonstrating a grammar gist lacks; it is searching for
+                  something nobody asked for. Recognized by
+                  `_oracle.is_malformed_refusal`, and kept apart from `declined`
+                  because that one means "another tier could answer this".
     both_reject   the generated pattern is invalid for both engines and both
                   exit 2. Agreement on a rejection is agreement.
     declared      the argv holds a flag the gist catalog marks
@@ -55,7 +64,6 @@ import random
 import resource
 import shlex
 import shutil
-import string
 import subprocess
 import sys
 import tempfile
@@ -386,6 +394,8 @@ def compare(argv: list[str], cwd: str, watermark: dict[str, float]) -> dict:
         return {"verdict": "timeout", "klass": "timeout-rg" if rc_rg == 124 else "timeout-gist", "rc": [rc_rg, rc_g]}
     if rc_g == 2 and _oracle.is_design_decline(err_g):
         return {"verdict": "declined", "why": err_g.decode(errors="replace").strip()[:120]}
+    if rc_g == 2 and _oracle.is_malformed_refusal(err_g):
+        return {"verdict": "malformed", "why": err_g.decode(errors="replace").strip()[:120]}
     if rc_rg == 2 and rc_g == 2:
         return {"verdict": "both_reject"}
     if rc_g < 0 or rc_rg < 0:  # killed by a signal
@@ -543,6 +553,7 @@ def main() -> int:
         f"\nfuzz: {total} iterations over {len(names)} corpora (seed {args.seed})"
         f"  ·  agree {tally['agree']}"
         f"  ·  declined {tally['declined']}"
+        f"  ·  malformed {tally['malformed']}"
         f"  ·  declared {tally['declared']}"
         f"  ·  both-reject {tally['both_reject']}"
         f"  ·  divergent {tally['divergent']}"
@@ -571,6 +582,7 @@ def main() -> int:
                     "corpus_names": names,
                     "agree": tally["agree"],
                     "declined": tally["declined"],
+                    "malformed": tally["malformed"],
                     "declared": tally["declared"],
                     "both_reject": tally["both_reject"],
                     "divergences": tally["divergent"],

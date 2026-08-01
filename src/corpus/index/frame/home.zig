@@ -15,13 +15,13 @@ const assay = @import("../../../assay/assay.zig");
 /// Default artifact home, relative to the working directory — where the
 /// trigram index, kinship atlas, codex shelf, freshness anchor, and daemon
 /// socket live. `GIST_DIR` overrides it per invocation (`outDir`).
-pub const default_out_dir = ".local/gist-verify";
+pub const default_out_dir = assay.identity.artifact_dir;
 
 /// The artifact directory for THIS process: `GIST_DIR` when set (trailing
 /// slashes trimmed), else `default_out_dir`. The env string outlives the
 /// process, so the returned slice is borrow-safe everywhere.
 pub fn outDir() []const u8 {
-    const v = assay.envSpan("GIST_DIR") orelse return default_out_dir;
+    const v = assay.knob("DIR") orelse return default_out_dir;
     // Both separators, not just `/`: on Windows a shell-completed directory
     // arrives as `C:\tmp\gist\`, and the artifact names are appended raw.
     const s = std.mem.trimEnd(u8, v, if (builtin.os.tag == .windows) "/\\" else "/");

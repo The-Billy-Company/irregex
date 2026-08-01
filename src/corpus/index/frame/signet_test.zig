@@ -77,7 +77,7 @@ test "a seal catches the corruption shapes a torn write actually makes" {
     // or half-flushed artifact really has.
     var blob: std.ArrayList(u8) = .empty;
     defer blob.deinit(gpa);
-    for (0..64) |_| try blob.appendSlice(gpa, "pkg/kernels/irregex/src\x00\x00\x00\x00");
+    for (0..64) |_| try blob.appendSlice(gpa, "src/corpus/index/frame/x\x00\x00\x00\x00");
     const body_len = blob.items.len;
     try signet.sealInto(gpa, &blob);
     try signet.verify(blob.items);

@@ -58,8 +58,8 @@ import time
 
 
 HERE = Path(__file__).resolve().parent
-KERNEL = HERE.parents[2]  # bench/conformance/rgsuite -> pkg/kernels/irregex
-REPO = HERE.parents[5]  # -> repo root
+KERNEL = HERE.parents[2]  # rgsuite → conformance → bench → repo
+REPO = KERNEL
 FIX = Path()  # temp fixture root, set in main()
 
 RG = os.environ.get("RG_BIN", "rg")
@@ -488,7 +488,7 @@ def do_bench(floor_rg: float, floor_parallel: float) -> int:
         large (~4-9x) and noise-immune. A conservative `--floor-rg` (default 2.0x)
         never false-trips on jitter yet catches a real regression — e.g. someone
         routing gzip through a per-file fork, or breaking the in-process decoder.
-        This is the "beat ripgrep" claim, pinned as a number (sins.mdc: truth).
+        This is the "beat ripgrep" claim, pinned as a number (prove with measurement).
       * parallel_gain = gist_serial / gist_pipeline — INFORMATIONAL. The pipeline
         fuses decode+match per file across workers, but its work-stealing is
         directory-granular, so the gain tracks the corpus's dir count — corpus-

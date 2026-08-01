@@ -39,7 +39,7 @@ test "PathFilter: a genus gate narrows, composes with roots, and never un-hides"
 
     const prose = PathFilter{ .genera = docs };
     try expect(prose.admits("docs/architecture/README.md"));
-    try expect(prose.admits("pkg/kernels/irregex/CHANGELOG.rst"));
+    try expect(prose.admits("libs/x/CHANGELOG.rst"));
     try expect(!prose.admits("services/api/main.go"));
     try expect(!prose.admits("contracts/wire/wire.schema.json")); // data is not prose
 
@@ -58,7 +58,7 @@ test "PathFilter: a genus gate narrows, composes with roots, and never un-hides"
 
     // Genus ANDs with the other families rather than widening past them.
     const scoped = PathFilter{ .genera = docs, .roots = &.{"libs"} };
-    try expect(scoped.admits("pkg/kernels/irregex/README.md"));
+    try expect(scoped.admits("libs/x/README.md"));
     try expect(!scoped.admits("docs/architecture/README.md")); // right genus, wrong root
     const vetoed = PathFilter{ .genera = docs, .excludes = &.{"**/CHANGELOG.md"} };
     try expect(!vetoed.admits("libs/x/CHANGELOG.md")); // an exclude still wins outright
@@ -154,7 +154,7 @@ test "type table spans the mainstream language ecosystem, not just the repo" {
     // The repo's seven + aliases…
     for ([_][]const u8{ "go", "py", "python", "rust", "rs", "ts", "typescript", "swift", "zig", "sql", "proto" }) |t|
         try expect(types.extsForType(t) != null);
-    // …and the wider world, so irregex scopes on ANY codebase, not only Billy's.
+    // …and the wider world, so irregex scopes on ANY codebase, not only one host's.
     for ([_][]const u8{
         "java",   "kotlin", "scala",   "clojure", "cs",        "csharp", "fsharp",
         "ruby",   "php",    "perl",    "lua",     "r",         "julia",  "dart",

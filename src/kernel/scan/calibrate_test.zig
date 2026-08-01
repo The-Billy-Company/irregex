@@ -237,3 +237,187 @@ test "stratified sampling survives a prefix that misdescribes the buffer" {
     const truth = cheapest(hay, needle);
     try std.testing.expect(cost_strat <= truth.cost * 2);
 }
+
+// ---------------------------------------------------------------------------
+// `refine` — calibration as an improvement test rather than an override.
+//
+// These are the tests the first wiring did not have, and the reason it shipped a
+// tax: a survivor-count sweep asks "is the calibrated pair good?", which is the
+// wrong question. The question is "is it enough BETTER than what the caller
+// already holds to be worth swapping to?", and the answer is usually no.
+// ---------------------------------------------------------------------------
+
+test "refine: the incumbent is kept when nothing beats it" {
+    const gpa = std.testing.allocator;
+    const needle = "abcd";
+    const hay = try gpa.alloc(u8, 16 * needle.len * small.budget_bytes);
+    defer gpa.free(hay);
+
+    // The planted oracle again: (2,3) has zero survivors by arithmetic.
+    for (hay, 0..) |*byte, i| byte.* = if (i % 16 == 0)
+        'c'
+    else if (i % 16 == 8)
+        'd'
+    else if (i % 5 == 1)
+        'b'
+    else
+        'a';
+
+    // Holding the unbeatable pair, there is nothing to swap to. `best` still
+    // names it, so this is a DECISION to decline and not a gate refusal — that
+    // distinction is the whole point, and without the `best` line below this
+    // assertion would pass just as happily on a buffer too small to sample.
+    try std.testing.expectEqual([2]usize{ 2, 3 }, calibrate.tuned(small, hay, needle, block_bytes).?);
+    try std.testing.expectEqual(
+        @as(?[2]usize, null),
+        calibrate.refineTuned(small, hay, needle, block_bytes, .{ 2, 3 }),
+    );
+
+    // Holding a bad pair, the swap is worth it — and the winner is the planted
+    // one, priced by the scalar oracle rather than taken on the module's word.
+    const got = calibrate.refineTuned(small, hay, needle, block_bytes, .{ 0, 1 }).?;
+    try std.testing.expectEqual(@as(usize, 0), survivors(hay, needle, got[0], got[1]));
+    try std.testing.expect(survivors(hay, needle, 0, 1) > 0);
+}
+
+test "refine: a buffer where no pair is better keeps the incumbent" {
+    const gpa = std.testing.allocator;
+    const needle = "abcd";
+    // THE PRODUCTION REGIME, and the one the first wiring lost 0.5-1.1% CPU on.
+    // Bytes drawn uniformly from exactly the needle's own alphabet, so every
+    // pair's true survivor density is identical (1/16) and the only differences
+    // in the sample are variance. A calibrator that swaps here is swapping on
+    // noise, paying the sampling and forfeiting the single-probe shape for a
+    // pair that is not better.
+    //
+    // Sized for the SHIPPED budget on purpose: at 65,536 sampled positions the
+    // per-pair standard deviation is ~62 against a mean of 4,096 (1.5%), so the
+    // spread across six pairs sits far inside the 12.5% margin. At the 4 KB test
+    // budget it would be ~6% and this test would be a coin flip — the margin is
+    // calibrated against the shipped sample size, so it must be tested there.
+    const hay = try gpa.alloc(u8, 16 * needle.len * calibrate.shipped.budget_bytes);
+    defer gpa.free(hay);
+    var prng = std.Random.DefaultPrng.init(0xF1A7);
+    for (hay) |*b| b.* = needle[prng.random().uintLessThan(usize, needle.len)];
+
+    // The premise: the gate admits this buffer, so every decline below is a
+    // judgement about the pairs and not a refusal to look at them.
+    try std.testing.expect(calibrate.best(hay, needle, block_bytes) != null);
+
+    // Every pair, as an incumbent, survives contact with the calibrator.
+    for (0..needle.len) |i| for (i + 1..needle.len) |j| {
+        try std.testing.expectEqual(
+            @as(?[2]usize, null),
+            calibrate.refine(hay, needle, block_bytes, .{ i, j }),
+        );
+    };
+}
+
+test "refine: an incumbent past the offset cap is priced, not ignored" {
+    const gpa = std.testing.allocator;
+    // 20 bytes, so `candidates` spreads 16 offsets over 20 and offsets 4, 9, 14
+    // and 18 are NOT candidates. An incumbent there has to be PINNED into the
+    // set or it cannot be priced at all — and a `refine` that silently declined
+    // instead would look identical to one that judged the incumbent good.
+    var needle: [20]u8 = @splat('a');
+    needle[0] = 'c';
+    needle[19] = 'd';
+    const hay = try gpa.alloc(u8, 16 * calibrate.shipped.max_offsets * small.budget_bytes);
+    defer gpa.free(hay);
+
+    // `c` only on multiples of 16, `d` only on 16k+8. `hay[p] == 'c'` forces
+    // `p % 16 == 0`, hence `(p + 19) % 16 == 3 != 8`, so the pair (0,19) has
+    // ZERO survivors by arithmetic. Both its offsets are also pin-proof: the
+    // nearest evictable neighbour of 4 is 3 and of 18 is 17.
+    for (hay, 0..) |*byte, i| byte.* = if (i % 16 == 0)
+        'c'
+    else if (i % 16 == 8)
+        'd'
+    else if (i % 5 == 1)
+        'b'
+    else
+        'a';
+
+    // The premise: the incumbent really is expensive, so declining would be wrong.
+    try std.testing.expect(survivors(hay, &needle, 4, 18) > 0);
+
+    const got = calibrate.refineTuned(small, hay, &needle, block_bytes, .{ 4, 18 }).?;
+    try std.testing.expectEqual(@as(usize, 0), survivors(hay, &needle, got[0], got[1]));
+    try std.testing.expect(got[0] < got[1] and got[1] < needle.len);
+
+    // And the same incumbent when it is the free pair: nothing beats zero.
+    try std.testing.expectEqual(
+        @as(?[2]usize, null),
+        calibrate.refineTuned(small, hay, &needle, block_bytes, .{ 0, 19 }),
+    );
+}
+
+test "refine: every swap is in-bounds, bounded in loss, and wins in aggregate" {
+    const gpa = std.testing.allocator;
+    var prng = std.Random.DefaultPrng.init(0x8E77E5);
+    const rng = prng.random();
+
+    // Sized for the largest candidate count at the small tuning, so needles both
+    // under and over the cap clear the gate from one buffer.
+    const hay = try gpa.alloc(u8, 16 * calibrate.shipped.max_offsets * small.budget_bytes);
+    defer gpa.free(hay);
+
+    // What a SAMPLED selector can and cannot promise, stated as the module head
+    // states it: not "never loses" — an estimator that read the whole buffer to
+    // guarantee that would cost more than the scan it is optimising — but
+    // "losses are immaterial and the aggregate improves". This suite is what
+    // holds the margin to that, and it is where the winner's-curse defect
+    // recorded at `noise_sigmas` was caught: with a purely relative margin the
+    // per-trial bound below failed on the second trial.
+    var total_before: usize = 0;
+    var total_after: usize = 0;
+    var swaps: usize = 0;
+
+    for (0..24) |trial| {
+        // A SKEWED alphabet, so pairs genuinely differ and there is a real win to
+        // find — the aggregate assertion is vacuous on a uniform buffer where
+        // every pair is equally good. Skew is also the realistic case: no text
+        // has a flat byte distribution, which is the whole premise of the module.
+        for (hay) |*b| b.* = 'a' + switch (rng.uintLessThan(u8, 16)) {
+            0...7 => @as(u8, 0), // half the buffer is one byte
+            8...11 => 1,
+            12...13 => 2,
+            14 => 3,
+            else => 4 + rng.uintLessThan(u8, 4),
+        };
+
+        var buf: [40]u8 = undefined;
+        const len = 3 + rng.uintLessThan(usize, buf.len - 2);
+        const n = buf[0..len];
+        for (n) |*b| b.* = 'a' + rng.uintLessThan(u8, 8);
+
+        // An arbitrary incumbent, including deliberately awkward ones: adjacent
+        // offsets, the extremes, and offsets the candidate spread omits.
+        const i = rng.uintLessThan(usize, len - 1);
+        const j = i + 1 + rng.uintLessThan(usize, len - i - 1);
+
+        const got = calibrate.refineTuned(small, hay, n, block_bytes, .{ i, j }) orelse continue;
+        try std.testing.expect(got[0] < got[1]);
+        try std.testing.expect(got[1] < len);
+
+        const before = survivors(hay, n, i, j);
+        const after = survivors(hay, n, got[0], got[1]);
+        swaps += 1;
+        total_before += before;
+        total_after += after;
+
+        // Per trial: a loss is allowed, an ARBITRARY loss is not. 5% bounds the
+        // sampling variance that survives the margin; a systematically inverted
+        // objective would blow straight through it.
+        std.testing.expect(after <= before + before / 20) catch |e| {
+            std.debug.print("trial {d}: needle {s} incumbent {d}:{d} ({d}) -> {d}:{d} ({d})\n", .{ trial, n, i, j, before, got[0], got[1], after });
+            return e;
+        };
+    }
+
+    // The premise: the margin did not simply refuse everything, which would make
+    // both assertions above free.
+    try std.testing.expect(swaps > 0);
+    // And the aggregate — the thing the scan actually pays — improves.
+    try std.testing.expect(total_after < total_before);
+}

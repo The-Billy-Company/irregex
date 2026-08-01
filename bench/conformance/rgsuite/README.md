@@ -207,7 +207,7 @@ conservative for gist's intended long-lived agent-session use.
 
 ```bash
 # build the binary the suite drives
-zig build            # in pkg/kernels/irregex  → zig-out/bin/gist (the CLI, `rg` verb)
+zig build            # in this repo  → zig-out/bin/gist (the CLI, `rg` verb)
 
 # Track A — correctness (needs `rg` on PATH as the oracle)
 python3 run.py                # scoreboard; exits non-zero if any FAIL

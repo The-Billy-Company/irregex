@@ -86,7 +86,7 @@ pub const keys = [_][]const u8{ "roots", "skip", "types" };
 /// Why a charter was rejected. Every one of these is a loud exit rather than a
 /// shrug: a corpus declaration that half-parsed would mean searching a corpus
 /// nobody described, which is worse than not having the file.
-// File-private parse vocabulary (ADR-373): these names never leave this module
+// File-private parse vocabulary (the fault-channel taxonomy): these names never leave this module
 // as a public error set — `governing` exits, tests assert via global `error.X`.
 const Fault = error{
     UnknownKey,
@@ -149,11 +149,11 @@ pub fn inspect() ?*const Charter {
 /// sentence for a file it is only inspecting.
 pub fn report(e: anyerror) void {
     var loc: [24]u8 = undefined;
-    assay.diag("gist: {s}{s}: {s}\n", .{ state.faulted_path, misread.at(&loc, state.diag), faultNote(e) });
+    assay.diag(assay.tag ++ "{s}{s}: {s}\n", .{ state.faulted_path, misread.at(&loc, state.diag), faultNote(e) });
     if (didYouMean(e, state.diag.token)) |k| {
-        assay.diag("gist: try `{s} = [...]` — `{s}` is not a charter key\n", .{ k, state.diag.token });
+        assay.diag(assay.tag ++ "try `{s} = [...]` — `{s}` is not a charter key\n", .{ k, state.diag.token });
     }
-    assay.diag("gist: note: --no-config ignores it for this run\n", .{});
+    assay.diag(assay.tag ++ "note: --no-config ignores it for this run\n", .{});
 }
 
 /// The key worth suggesting for a fault, or null when there is none.
@@ -189,7 +189,7 @@ pub fn suppress() void {
 /// preferences ask this, so the flag and its env twin are answered in one place
 /// and cannot come apart.
 pub fn suppressedNow() bool {
-    return suppressed or assay.envFlag("GIST_NO_CONFIG");
+    return suppressed or assay.knobFlag("NO_CONFIG");
 }
 
 /// Answer `--no-config` from RAW argv — every face's first act, before any verb
@@ -260,7 +260,7 @@ pub fn faultNote(e: anyerror) []const u8 {
 /// which keeps the walk free of `getcwd` and makes the roots it yields directly
 /// usable as walk arguments.
 fn discover(gpa: std.mem.Allocator) !?*const Charter {
-    if (assay.envSpan("GIST_CHARTER")) |explicit| {
+    if (assay.knob("CHARTER")) |explicit| {
         rememberPath(explicit);
         const src = slurp(gpa, explicit) catch return null;
         defer gpa.free(src);

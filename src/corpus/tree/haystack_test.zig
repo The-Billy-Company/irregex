@@ -36,7 +36,7 @@ test "skip-dir baseline: near-misses (prefix/suffix/case/substring) are NOT skip
         "git",           ".gitx",   "gitt",    ".GIT",  "targets",
         "ta",            "builds",  ".buildx", "outer", "node_module",
         "node_modules2", "vendors", "cache",   ".cach", "",
-        "graphify-out", // was a hardcoded Billy-ism; now GIST_SKIP territory
+        "graphify-out", // was a hardcoded host-tree-ism; now GIST_SKIP territory
     };
     for (near_misses) |name| try std.testing.expect(!haystack.inBaselineSkipSet(name));
 }
@@ -50,10 +50,10 @@ test "policy skip is the charter/env overlay, not the generic baseline" {
     try std.testing.expect(!haystack.isPolicySkip(".git"));
     try std.testing.expect(!haystack.inBaselineSkipSet("graphify-out"));
     // Charter is discovered from the working tree; this test runs inside the
-    // Billy checkout whose `.irregex.toml` declares `graphify-out` (and
+    // host checkout whose `.irregex.toml` declares `graphify-out` (and
     // `.local`). Absent a charter the name is not a policy skip — which is
     // why `graphify-out` was lifted out of the baseline rather than left as a
-    // hardcoded Billy-ism every clone of an unrelated tree would inherit.
+    // hardcoded host-tree-ism every clone of an unrelated tree would inherit.
     if (haystack.isPolicySkip("graphify-out")) {
         try std.testing.expect(haystack.isSkipDir("graphify-out"));
         try std.testing.expect(haystack.isPolicySkip(".local"));

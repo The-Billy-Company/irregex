@@ -103,7 +103,7 @@ test "-P: collectSpans yields the PCRE2 leftmost non-overlapping spans" {
     defer spans.deinit(a);
     // "abXab": `a` at 0 (b follows) and at 3 (b follows) match; the middle X
     // breaks the run. Each span is the zero-consumed-lookahead `a` only.
-    try cq.collectSpans(a, "abXab", &ms, &spans);
+    try cq.collectSpans(a, "abXab", true, &ms, &spans);
     try testing.expectEqual(@as(usize, 2), spans.items.len);
     try testing.expectEqual(@as(usize, 0), spans.items[0].start);
     try testing.expectEqual(@as(usize, 1), spans.items[0].end);
@@ -298,7 +298,7 @@ test "word: composes with the case fold; the word check reads original bytes" {
     try testing.expectEqual(@as(u64, 1), cq.countLines("RUN loud\nrerunning\n", &sc));
 }
 
-test "word: collectSpans emits only word-valid spans with nextSpan's progress" {
+test "word: collectSpans emits only word-valid spans with Rows' progress" {
     const a = testing.allocator;
     // Literal body: the rejected `rerun` occurrence is skipped, the later
     // ` run` on the same line survives.
@@ -309,7 +309,7 @@ test "word: collectSpans emits only word-valid spans with nextSpan's progress" {
         defer ms.deinit();
         var spans: std.ArrayList(q.Span) = .empty;
         defer spans.deinit(a);
-        try cq.collectSpans(a, "rerun run", &ms, &spans);
+        try cq.collectSpans(a, "rerun run", true, &ms, &spans);
         try testing.expectEqual(@as(usize, 1), spans.items.len);
         try testing.expectEqual(@as(usize, 6), spans.items[0].start);
         try testing.expectEqual(@as(usize, 9), spans.items[0].end);
@@ -322,7 +322,7 @@ test "word: collectSpans emits only word-valid spans with nextSpan's progress" {
         defer ms.deinit();
         var spans: std.ArrayList(q.Span) = .empty;
         defer spans.deinit(a);
-        try cq.collectSpans(a, "rerun run runt", &ms, &spans);
+        try cq.collectSpans(a, "rerun run runt", true, &ms, &spans);
         // `run` at [2,5) rejected (word char before); ` run` at [6,9) valid
         // (space after); `run` in `runt` at [10,13) matches `ru.`+`n`… the
         // span [10,13) is `run` inside `runt` → `t` after rejects it.

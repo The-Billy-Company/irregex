@@ -27,7 +27,7 @@ test "prose extensions are docs (Linguist type: prose)" {
         .{ .path = "notes.txt", .want = .docs, .why = "Text — Linguist prose" },
         .{ .path = "paper.tex", .want = .docs, .why = "TeX — authoring language" },
         .{ .path = "gist.1", .want = .docs, .why = "roff man page — irregular glob *.[0-9lnpx]" },
-        .{ .path = ".cursor/rules/irregex.mdc", .want = .docs, .why = "Cursor rule — prose instructions" },
+        .{ .path = "docs/rules/example.mdc", .want = .docs, .why = "Cursor-style rule file — prose instructions" },
         .{ .path = "LICENSE", .want = .docs, .why = "license type carries it" },
         .{ .path = "COPYING", .want = .docs, .why = "license type carries it" },
         .{ .path = "vendor/pcre2/COPYING.md", .want = .docs, .why = "license, at depth" },
@@ -124,7 +124,7 @@ test "a documentation stem promotes an extensionless paper trail" {
         .{ .path = "CONTRIBUTING", .want = .docs, .why = "Linguist documentation file" },
         .{ .path = "INSTALL", .want = .docs, .why = "Linguist documentation file" },
         .{ .path = "CITATION", .want = .docs, .why = "Linguist documentation file" },
-        .{ .path = "pkg/kernels/irregex/AUTHORS", .want = .docs, .why = "paper trail at depth" },
+        .{ .path = "vendor/pcre2/AUTHORS", .want = .docs, .why = "paper trail at depth" },
         .{ .path = "todo", .want = .docs, .why = "case-insensitive" },
         // A documentation NAME cannot outrank a code spelling either.
         .{ .path = "security.py", .want = .code, .why = "a Python module named security is code" },

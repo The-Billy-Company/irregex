@@ -1,5 +1,5 @@
 //! gist — the read-elision oracle: the indexed→live seam both cold engines
-//! admit before they read a byte (ADR-373 law 1).
+//! admit before they read a byte (fault-channel law 1).
 //!
 //! The persisted trigram index is an ACCELERATION structure, never a semantic
 //! one. It answers, for a path the walk already admitted, "can this file
@@ -45,7 +45,7 @@ const Opts = args.Opts;
 /// as "no candidate set" — neither is ever "no matches".
 pub const Plan = []const trigram.Index.Clause;
 
-/// `assemble`'s private control flow (ADR-373 law 2). Three of these are
+/// `assemble`'s private control flow (fault-channel law 2). Three of these are
 /// declinatures the moment they cross into `build` — "no anchor", "no index",
 /// "the table would not pay for itself" each name the live read as the tier that
 /// answers correctly — but inside this file they are how an early exit reaches
@@ -253,7 +253,7 @@ pub fn indexSavingsWorthTable(total: usize, candidates: usize) bool {
     return elidable >= 512 and elidable >= quarter;
 }
 
-/// The indexed→live seam (ADR-373 law 1): the read-elision oracle, or the reason
+/// The indexed→live seam (fault-channel law 1): the read-elision oracle, or the reason
 /// this run reads live. `--no-index` is the caller making the index absent, and
 /// declining is never a fault here — the live walk answers identically, which is
 /// what makes the index an acceleration structure and not a semantic one.
@@ -289,7 +289,7 @@ fn askIndex(gpa: std.mem.Allocator, p: *const persist.Persisted, filters: []cons
     if (usableFilters(filters)) {
         if (p.queryAny(gpa, filters)) |c| return answered(p, "filters", c) else |e| try indexAsked(e);
     }
-    assay.trace(.index, "gist: elide tier=none candidates={d}/{d}\n", .{ p.paths.items.len, p.paths.items.len });
+    assay.trace(.index, assay.tag ++ "elide tier=none candidates={d}/{d}\n", .{ p.paths.items.len, p.paths.items.len });
     return null;
 }
 
@@ -298,7 +298,7 @@ fn askIndex(gpa: std.mem.Allocator, p: *const persist.Persisted, filters: []cons
 /// the certificate's production column is read from, taken from the wired path
 /// itself rather than re-derived by a harness.
 fn answered(p: *const persist.Persisted, tier: []const u8, cand: []u32) []u32 {
-    assay.trace(.index, "gist: elide tier={s} candidates={d}/{d}\n", .{ tier, cand.len, p.paths.items.len });
+    assay.trace(.index, assay.tag ++ "elide tier={s} candidates={d}/{d}\n", .{ tier, cand.len, p.paths.items.len });
     return cand;
 }
 
@@ -375,7 +375,7 @@ fn assemble(gpa: std.mem.Allocator, io: std.Io, filters: []const []const u8, pla
 /// the run went on to read the WHOLE corpus and a report that stayed silent
 /// there would quietly omit the planner's worst cases from its own average.
 fn reportCandidateBytes(io: std.Io, p: *const persist.Persisted, candidates: *const std.DynamicBitSet, worth: bool) void {
-    if (!assay.envFlag("GIST_CANDIDATE_BYTES")) return;
+    if (!assay.knobFlag("CANDIDATE_BYTES")) return;
     var bytes: u64 = 0;
     var total: u64 = 0;
     for (p.paths.items, 0..) |path, doc| {
@@ -383,7 +383,7 @@ fn reportCandidateBytes(io: std.Io, p: *const persist.Persisted, candidates: *co
         total += st.size;
         if (candidates.isSet(doc)) bytes += st.size;
     }
-    assay.diag("gist: elide candidate_bytes={d} corpus_bytes={d} candidate_docs={d}/{d} worth={d}\n", .{ bytes, total, candidates.count(), p.paths.items.len, @intFromBool(worth) });
+    assay.diag(assay.tag ++ "elide candidate_bytes={d} corpus_bytes={d} candidate_docs={d}/{d} worth={d}\n", .{ bytes, total, candidates.count(), p.paths.items.len, @intFromBool(worth) });
 }
 
 /// Gate-only proof that the admitted oracle can actually elide a real indexed
@@ -432,7 +432,7 @@ test "index loading stays off narrow explicit roots" {
     const t = std.testing;
     try t.expect(broadIndexedRoots(&.{ "libs", "services" }));
     try t.expect(broadIndexedRoots(&.{"."}));
-    try t.expect(!broadIndexedRoots(&.{"pkg/kernels/irregex"}));
+    try t.expect(!broadIndexedRoots(&.{"src/kernel"}));
     try t.expect(!broadIndexedRoots(&.{"/tmp/corpus"}));
 }
 

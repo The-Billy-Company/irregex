@@ -32,9 +32,11 @@ pub const OnePass = @import("onepass.zig").OnePass;
 /// general linear Pike VM (`Captures`), or the PCRE2 capture engine
 /// (`PcreCaptures`), behind the three primitives the replacement expander needs
 /// — `nslots` (slot-vector width), `find` (fill a match's group offsets),
-/// `groupByName` (`${name}` → number). The output layer names `Caps` without
-/// knowing which engine produced the groups; the `-r` template expansion
-/// (`expandInto`) is byte-identical to ripgrep either way.
+/// `groupByName` (`${name}` → number) — plus that last one inverted,
+/// `nameOfGroup`, which no expansion needs but every FFI host walking a match
+/// into a keyed record does. The output layer names `Caps` without knowing which
+/// engine produced the groups; the `-r` template expansion (`expandInto`) is
+/// byte-identical to ripgrep either way.
 ///
 /// The first two arms answer IDENTICALLY by construction — `OnePass` is only
 /// chosen for patterns whose ε-closures determinize, and it keeps the `Captures`
@@ -60,10 +62,59 @@ pub const Caps = union(enum) {
             inline else => |*c| c.groupByName(name),
         };
     }
+    pub fn nameOfGroup(self: *const Caps, index: u32) ?[]const u8 {
+        return switch (self.*) {
+            inline else => |*c| c.nameOfGroup(index),
+        };
+    }
     pub fn deinit(self: *Caps) void {
         switch (self.*) {
             inline else => |*c| c.deinit(),
         }
+    }
+
+    /// Which grammar a pattern is written in, and under what semantics. The
+    /// `pcre` arm reads `multiline`/`dotall`; the linear arm ignores them
+    /// (`^`/`$`/`.` are line-scoped there by construction).
+    pub const Selection = struct {
+        caseless: bool = false,
+        unicode: bool = true,
+        pcre: bool = false,
+        multiline: bool = false,
+        dotall: bool = false,
+    };
+
+    /// Compile `pattern` into whichever arm it belongs to — the ecosystem's ONE
+    /// capture-arm policy: `-P` routes to PCRE2 outright, everything else
+    /// compiles the linear VM and then determinizes it when the ε-closures
+    /// permit (a pure speed choice; `onepass_test.zig` holds the two to
+    /// slot-exact parity).
+    ///
+    /// It lives on the union rather than in the CLI because both transports
+    /// choose here now: `exec/cold/writ/arm.zig` wraps it with `die`, and the C
+    /// ABI's `surface/ffi/pattern.zig` reports the same two errors as statuses.
+    /// A second copy of this decision is how an in-process capture would start
+    /// disagreeing with the same pattern's `--json` submatches.
+    pub fn compile(gpa: std.mem.Allocator, pattern: []const u8, sel: Selection) error{ BadPattern, OutOfMemory }!Caps {
+        if (sel.pcre) return .{
+            .pcre = PcreCaptures.compile(gpa, pattern, .{
+                .caseless = sel.caseless,
+                .multiline = sel.multiline,
+                .dotall = sel.dotall,
+                .unicode = sel.unicode,
+            }) catch |e| switch (e) {
+                error.OutOfMemory => |oom| return oom,
+                // `Unsupported` joins `BadPattern`: to a caller holding one
+                // pattern, "PCRE2 refused this" is one answer, and the reason is
+                // `pcre2.lastError()`'s to give.
+                else => return error.BadPattern,
+            },
+        };
+        const linear = try Captures.compile(gpa, pattern, sel.caseless, sel.unicode);
+        return switch (try OnePass.attach(gpa, linear)) {
+            .got => |op| .{ .onepass = op },
+            .declined => .{ .linear = linear },
+        };
     }
 };
 
@@ -193,6 +244,16 @@ pub const Captures = struct {
 
     pub fn groupByName(self: *const Captures, name: []const u8) ?u32 {
         for (self.names) |nc| if (std.mem.eql(u8, nc.name, name)) return nc.idx;
+        return null;
+    }
+
+    /// The name group `index` was declared with, or null when it is a plain
+    /// `(…)`. The inverse of `groupByName`, and it exists because a host walking
+    /// a match into a keyed record needs the arrow that way round; without it
+    /// the only route is to re-parse the pattern for `(?P<…>)` spellings, which
+    /// is the parser's job and already done here.
+    pub fn nameOfGroup(self: *const Captures, index: u32) ?[]const u8 {
+        for (self.names) |nc| if (nc.idx == index) return nc.name;
         return null;
     }
 

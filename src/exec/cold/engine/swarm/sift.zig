@@ -245,6 +245,11 @@ fn emitBody(w: *Worker, a: std.mem.Allocator, dpath: []const u8, body: []const u
         // local) — one Sim per worker instead of three allocs per file.
         .sim = w.matchSim(),
     };
+    // Re-price the gate + sweep anchors on this body, as serial `renderFile` does.
+    // A worker's gate came from the pattern alone and is shared by every file it
+    // walks, so a large body whose local alphabet the shipped rarity table
+    // mis-ranks would otherwise filter on two locally-dense bytes.
+    em.openOn(body);
     // Whole-buffer or per-line — the same question serial `renderFile` asks,
     // and `-U` alone does not answer it (`multiline.sliceModel`).
     const slice_model = multiline.sliceModel(re, o);

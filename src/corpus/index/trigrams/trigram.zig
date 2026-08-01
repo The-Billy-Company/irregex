@@ -159,7 +159,7 @@ pub const Index = struct {
     /// proof that the block builder emits the same index — and so a suspected
     /// builder fault has a one-variable bisect that needs no rebuild.
     fn kilnDeclined() bool {
-        return assay.envSpan("GIST_NO_KILN") != null;
+        return assay.knobSet("NO_KILN");
     }
 
     fn groupSerial(allocator: std.mem.Allocator, docs: []const []const u8, upper: usize) std.mem.Allocator.Error!Grouped {

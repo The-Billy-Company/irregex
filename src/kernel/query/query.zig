@@ -157,7 +157,7 @@ pub const CompiledQuery = struct {
     /// appear), so `prefilter` must decline for a caseless regex.
     caseless: bool,
     /// `-w` was requested: every match face routes through the word-valid span
-    /// decision (`docMatchesWord`/`countLinesWord`/`collectSpansWord`). The
+    /// decision (`docMatchesWord`/`countLinesWord`/`collectSpans`). The
     /// trigram prefilter stays FULLY sound under `-w` (word only narrows the
     /// match set; the required literal is still required — cold's
     /// `trigramFilter` likewise keeps the index on), so `prefilter` ignores it.
@@ -355,12 +355,27 @@ pub const CompiledQuery = struct {
     /// `simd.zig`'s own tail records having removed for exactly that reason. The
     /// span loops below call it once per match per line, so that table was being
     /// rebuilt per match on the emit path.
-    inline fn litContains(self: *const CompiledQuery, bytes: []const u8, needle: []const u8) bool {
-        return if (self.plan) |p| simd.containsWith(bytes, needle, p) else simd.contains(bytes, needle);
+    inline fn litContains(bytes: []const u8, needle: []const u8, plan: ?simd.Plan) bool {
+        return if (plan) |p| simd.containsWith(bytes, needle, p) else simd.contains(bytes, needle);
     }
 
-    inline fn litIndexOf(self: *const CompiledQuery, line: []const u8, from: usize, needle: []const u8) ?usize {
-        return if (self.plan) |p| simd.indexOfPosWith(line, from, needle, p) else simd.indexOfPos(line, from, needle);
+    inline fn litIndexOf(line: []const u8, from: usize, needle: []const u8, plan: ?simd.Plan) ?usize {
+        return if (plan) |p| simd.indexOfPosWith(line, from, needle, p) else simd.indexOfPos(line, from, needle);
+    }
+
+    /// The plan to use for ONE document: `self.plan`'s static choice, refined
+    /// against this document's own bytes when it is big enough to amortize the
+    /// sampling (`simd.planOn`). A document is the right grain because the size
+    /// gate is a claim about the scan the sampling amortizes against, and because
+    /// the pair must not change part-way through a document's lines.
+    ///
+    /// Only a literal body has a needle to plan for; a regex body's literals are
+    /// the engine's business.
+    fn docPlan(self: *const CompiledQuery, bytes: []const u8) ?simd.Plan {
+        return switch (self.body) {
+            .literal => |needle| simd.planOn(bytes, needle),
+            .engine => self.plan,
+        };
     }
 
     /// Does any line of `bytes` match? (rg `-l` semantics.) Literal → substring
@@ -376,7 +391,7 @@ pub const CompiledQuery = struct {
         if (self.gate) |g| if (!simd.containsCaseless(bytes, g)) return false;
         if (self.word) return self.docMatchesWord(bytes, sc);
         return switch (self.body) {
-            .literal => |needle| self.litContains(bytes, needle),
+            .literal => |needle| litContains(bytes, needle, self.docPlan(bytes)),
             .engine => |*m| m.docMatch(&sc.sim, bytes),
         };
     }
@@ -435,6 +450,8 @@ pub const CompiledQuery = struct {
     inline fn countGeneric(self: *const CompiledQuery, comptime word_mode: bool, comptime capped: bool, bytes: []const u8, sc: *Scratch) u64 {
         var n: u64 = 0;
         var rest = bytes;
+        // Once per DOCUMENT, outside the line loop — the whole point of the seam.
+        const plan = self.docPlan(bytes);
         while (rest.len > 0) {
             const nl = std.mem.indexOfScalar(u8, rest, '\n');
             const end = nl orelse rest.len;
@@ -449,7 +466,7 @@ pub const CompiledQuery = struct {
             } else switch (self.body) {
                 // `plan` is loop-invariant, so this test hoists; what it saves is
                 // the per-line anchor pricing described at the field.
-                .literal => |needle| self.litContains(line, needle),
+                .literal => |needle| litContains(line, needle, plan),
                 .engine => |*m| m.lineMatch(&sc.sim, line),
             };
             if (hit) {
@@ -472,71 +489,103 @@ pub const CompiledQuery = struct {
         };
     }
 
-    /// Append every non-empty match span in `line` (leftmost, non-overlapping)
-    /// to `out`. A literal body walks successive `indexOf` occurrences; a regex
-    /// body drives the leftmost-first span VM, skipping a zero-width match by one
-    /// byte exactly as the cold `--json` submatch iterator does
-    /// (`exec/cold/emit/json.zig::emitSubmatches`), so a match record emitted
-    /// here carries byte-identical submatch offsets to the subprocess `--json`
-    /// stream. Under `-w` the word-invalid spans are filtered with cold
-    /// `nextSpan`'s exact progress rule (branch once at the top — the plain
-    /// bodies below are untouched); `-r` replacement stays cold-only.
-    pub fn collectSpans(self: *const CompiledQuery, a: std.mem.Allocator, line: []const u8, sc: *MatchScratch, out: *std.ArrayList(Span)) error{OutOfMemory}!void {
-        if (self.word) return self.collectSpansWord(a, line, sc, out);
+    /// The one walk over `line`'s match spans — leftmost, non-overlapping,
+    /// zero-width spans included where rg reports them. `terminated` says
+    /// whether the line carried a newline in the file, which decides whether the
+    /// zero-width match at end-of-content exists.
+    ///
+    /// Two callers need this answer at different lengths: the whole span list,
+    /// and the bare "does this line match at all" a predicate wants. They share
+    /// a walk rather than each writing one, because the rules below are subtle
+    /// enough that a second hand-written version is how a predicate starts
+    /// disagreeing with the list it is supposed to summarize — which is exactly
+    /// what the C ABI's `is_match` did while it answered a document-shaped
+    /// question instead of this one.
+    ///
+    /// `out` carries that difference and nothing else: null asks only whether a
+    /// span exists and returns at the first one. It is a runtime-looking
+    /// parameter that is always comptime-known at the call site, and the
+    /// function is `inline`, so each caller compiles to a single tight loop with
+    /// the check folded away. That is load-bearing rather than fussy — an
+    /// iterator here, which splits this into an inner and an outer loop, cost a
+    /// measured 2.5% on short matches, and 3.8% on a nullable pattern when
+    /// inlined to get the first back.
+    inline fn walk(self: *const CompiledQuery, line: []const u8, terminated: bool, sc: *MatchScratch, a: std.mem.Allocator, out: ?*std.ArrayList(Span)) error{OutOfMemory}!bool {
+        var any = false;
         switch (self.body) {
             .literal => |needle| {
-                if (needle.len == 0) return;
+                if (needle.len == 0) return false;
                 var from: usize = 0;
-                while (self.litIndexOf(line, from, needle)) |i| {
-                    try out.append(a, .{ .start = i, .end = i + needle.len });
+                // A span scan is handed ONE line, so there is no document to
+                // calibrate against here; the static plan is the right choice and
+                // `docPlan`'s size gate would decline on a line anyway. A non-empty
+                // needle can never match empty, so the nullable rules below are
+                // vacuous on this body and the plain leftmost walk stands.
+                while (litIndexOf(line, from, needle, self.plan)) |i| {
                     from = i + needle.len; // non-overlapping, like rg's leftmost scan
+                    if (self.word and !word.wordOk(self.unicode, line, i, i + needle.len)) continue;
+                    const o = out orelse return true;
+                    try o.append(a, .{ .start = i, .end = i + needle.len });
+                    any = true;
                 }
             },
             .engine => |*m| {
+                // Cold's `output.zig::Rows`, which is the iterator `json.zig`'s
+                // `matchSpans` actually drives. Its sibling `nextSpan` drops every
+                // zero-width span because ITS consumers (`-o`, `--column`,
+                // highlighting) need bytes to point at — but the record stream is
+                // not one of them: rg reports zero-width submatches, so `rg -w
+                // 'x*'` paints `('', 10, 10)` on a line with no `x` in it, and a
+                // stream mirroring `nextSpan` reported that line as no match at all.
+                //
+                // Three rules make an empty span real: the pattern must be nullable,
+                // it must not sit exactly at the previous match's end (rg's progress
+                // rule — `a*` over "aa" is one row, not two), and at end-of-content
+                // it exists only on a TERMINATED line, where it sits before the
+                // newline. A word-rejected candidate retries one byte on rather than
+                // consuming the region it covered, because rg compiles `-w` into the
+                // pattern and a rejected candidate never consumed anything.
                 var from: usize = 0;
+                var last_end: ?usize = null;
                 while (from <= line.len) {
                     const sp = m.matchSpan(&sc.sim, line, from) orelse break;
-                    if (sp.end == sp.start) {
-                        from = sp.start + 1; // step past a zero-width match (json.zig parity)
-                        continue;
-                    }
-                    try out.append(a, sp);
-                    from = sp.end;
+                    const empty = sp.end == sp.start;
+                    const word_bad = self.word and !word.wordOk(self.unicode, line, sp.start, sp.end);
+                    from = if (empty or word_bad) sp.start + 1 else sp.end;
+                    const adjacent = empty and last_end != null and sp.start == last_end.?;
+                    if ((empty and !m.nullable()) or adjacent or
+                        (empty and !terminated and sp.start == line.len) or word_bad) continue;
+                    last_end = sp.end;
+                    const o = out orelse return true;
+                    try o.append(a, sp);
+                    any = true;
                 }
             },
         }
+        return any;
     }
 
-    /// The `-w` twin of `collectSpans` — cold `output.zig::nextSpan`'s exact
-    /// span-iteration progress rule: a zero-width span skips one byte, a
-    /// word-REJECTED span advances to its end and keeps scanning the same line
-    /// (a later occurrence may be word-valid). Only word-valid spans append,
-    /// so the FFI record stream stays byte-identical to cold `-w --json`.
-    fn collectSpansWord(self: *const CompiledQuery, a: std.mem.Allocator, line: []const u8, sc: *MatchScratch, out: *std.ArrayList(Span)) error{OutOfMemory}!void {
-        switch (self.body) {
-            .literal => |needle| {
-                if (needle.len == 0) return;
-                var from: usize = 0;
-                while (self.litIndexOf(line, from, needle)) |i| {
-                    from = i + needle.len; // non-overlapping, rejected or not (nextSpan's rule)
-                    if (!word.wordOk(self.unicode, line, i, i + needle.len)) continue;
-                    try out.append(a, .{ .start = i, .end = i + needle.len });
-                }
-            },
-            .engine => |*m| {
-                var from: usize = 0;
-                while (from <= line.len) {
-                    const sp = m.matchSpan(&sc.sim, line, from) orelse break;
-                    if (sp.end == sp.start) {
-                        from = sp.start + 1;
-                        continue;
-                    }
-                    from = sp.end;
-                    if (!word.wordOk(self.unicode, line, sp.start, sp.end)) continue;
-                    try out.append(a, sp);
-                }
-            },
-        }
+    /// Append every match span in `line` to `out`. A literal body walks
+    /// successive `indexOf` occurrences; a regex body reproduces the iterator the
+    /// cold `--json` stream is built on (`exec/cold/emit/output.zig::Rows`,
+    /// driven by `json.zig::matchSpans`), so a record emitted here carries
+    /// byte-identical submatch offsets to the subprocess stream. `-r`
+    /// replacement stays cold-only.
+    pub fn collectSpans(self: *const CompiledQuery, a: std.mem.Allocator, line: []const u8, terminated: bool, sc: *MatchScratch, out: *std.ArrayList(Span)) error{OutOfMemory}!void {
+        _ = try self.walk(line, terminated, sc, a, out);
+    }
+
+    /// Whether `line` holds at least one span `collectSpans` would report.
+    ///
+    /// The line-scoped counterpart to `docMatches`, which asks the same question
+    /// of a whole document and splits it into lines to do so. A caller holding
+    /// ONE unit — the C ABI's regex plane, where the buffer is the line and `^`
+    /// and `$` are its ends — has to ask this one, or its predicate and its span
+    /// list will disagree about every anchored pattern.
+    pub fn holds(self: *const CompiledQuery, line: []const u8, terminated: bool, sc: *MatchScratch) bool {
+        // Allocation is unreachable with no sink to append to, so the walk's
+        // `OutOfMemory` cannot arise on this path.
+        return self.walk(line, terminated, sc, undefined, null) catch false;
     }
 };
 

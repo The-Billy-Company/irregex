@@ -163,6 +163,14 @@ pub fn renderLines(a: std.mem.Allocator, req: request.Request, docs: []const Doc
         // the end of the mirror's shard mapping and killed the daemon.
         em.base = @intFromPtr(d.bytes.ptr);
         em.body_end = em.base + d.bytes.len;
+        // Same per-document admission cold's `renderFile` performs: re-price the
+        // literal anchor pair on THIS doc's bytes. One Emitter serves every doc in
+        // the answer, so without this the whole fold shares one pair chosen from the
+        // shipped byte-frequency table. It declines below its own size gate — which
+        // the resident corpus's 4 MiB per-file cap means is the common case here —
+        // for two comparisons, and `Gate.on` re-decides from the static pair, so
+        // calling it per iteration cannot carry doc N's choice into doc N+1.
+        em.openOn(d.bytes);
         if (d.nul) |nul| {
             // Walked (implicit) binary file: cold's exact policy — matches from
             // complete buffers before the NUL, then the WARNING note. Cold's

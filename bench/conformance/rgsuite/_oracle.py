@@ -29,7 +29,12 @@ import subprocess
 
 
 HERE = Path(__file__).resolve().parent
-GIST = HERE.parents[2] / "zig-out" / "bin" / "gist"  # the CLI (`rg` verb), not gist-bench
+# The CLI (`rg` verb), not gist-bench. `GIST_BIN` first — the same override
+# `flags.py` / `modes.py` / `transforms.py` already honor, and the only way to
+# point this suite at the `gist` binary once it ships from its own package rather
+# than from this one's `zig-out`. The in-tree path stays the default so a
+# single-package checkout needs no environment at all.
+GIST = Path(os.environ.get("GIST_BIN") or HERE.parents[2] / "zig-out" / "bin" / "gist")
 RG = "rg"
 
 # gist's default soft output cap (the agent-context guard, corpus.zig) would clip
@@ -192,3 +197,30 @@ DESIGN_DECLINE_SIGNATURES = (
 def is_design_decline(err: bytes) -> bool:
     """True when gist's stderr is one of its documented engine declines (→ NA)."""
     return any(sig in err for sig in DESIGN_DECLINE_SIGNATURES)
+
+
+# gist's OTHER exit-2 class, which makes the opposite claim: not "the linear
+# engine wants PCRE2" but "no grammar here accepts this at all". The CLI prints
+# this line only after asking PCRE2 and being refused too (`writ/arm.zig: blame`),
+# so the phrase is that probe's verdict rather than a guess about it — which is
+# also why the two classes must be read apart. gist used to print the decline
+# above for BOTH, so a malformed pattern was blamed on lookaround and sent to a
+# flag that cannot help.
+#
+# rg answers these anyway, and the reason is worth stating because it is not a
+# grammar gist lacks: rg wraps every pattern in `(?:...)`, which pairs a stray
+# paren of the user's with one of its own. `)(` becomes `(?:)()` — a VALID regex
+# matching the empty string at every position, which is what rg then reports
+# (`--json` shows an empty submatch per column). So rg's 0/1 here is not evidence
+# that the pattern is valid; rg silently searched for something the user did not
+# write. gist refuses it, and PCRE2 agrees there is nothing to compile.
+#
+# Scored NA — a documented divergence, not a PASS: gist cannot claim parity with
+# an answer it considers wrong, and not a FAIL: refusing a malformed pattern is
+# the fail-closed contract working.
+MALFORMED_SIGNATURES = (b"no engine here compiles it",)
+
+
+def is_malformed_refusal(err: bytes) -> bool:
+    """True when gist refused a pattern NO grammar it has accepts (→ NA)."""
+    return any(sig in err for sig in MALFORMED_SIGNATURES)

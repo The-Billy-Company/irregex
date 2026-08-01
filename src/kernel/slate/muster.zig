@@ -85,7 +85,7 @@ const trawl_from = 18;
 /// unrecognized value means "decide by size" — it can never select a third
 /// behavior, so a typo degrades to the default rather than to something silent.
 fn tierOverride() ?enum { dragnet, trawl } {
-    const v = assay.envSpan("GIST_MUSTER_TIER") orelse return null;
+    const v = assay.knob("MUSTER_TIER") orelse return null;
     if (std.mem.eql(u8, v, "dragnet")) return .dragnet;
     if (std.mem.eql(u8, v, "trawl")) return .trawl;
     return null;

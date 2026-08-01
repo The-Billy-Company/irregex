@@ -10,6 +10,7 @@ const syn = @import("../../syntax/syntax.zig");
 const core = @import("../program/core.zig");
 const lazy_mod = @import("../dfa/lazy.zig");
 const caliper_mod = @import("../caliper/caliper.zig");
+const simd = @import("../../../scan/simd.zig");
 
 const ParseError = syn.ParseError;
 const Regex = core.Regex;
@@ -63,7 +64,41 @@ fn PikeScratch(comptime spans: bool) type {
         /// jaw's cache is built the first time a span is actually measured,
         /// because some callers build a `SpanSim` per line.
         jaws: ?caliper_mod.Jaws = null,
+        /// The literal anchor decision for the haystack this scratch last walked,
+        /// and the `(address, length)` it was minted for. Here for the same reason
+        /// `lazy` and `jaws` are: it is derived per haystack, so it cannot hang off
+        /// the shared immutable `Regex`, and this is already the caller-owned
+        /// per-thread scratch for that program.
+        ///
+        /// A memo and not a caller-set field on purpose. `span.zig::litSpan` is the
+        /// hot inner call of every span walk — re-entered once per SPAN, of which a
+        /// `-U` scan of a large buffer has millions — while its ~20 callers each
+        /// build their own `SpanSim` at a different grain (per file, per worker, per
+        /// shard). Keying on the slice means the one mint per haystack happens
+        /// wherever the haystack first arrives, with no call site to remember, and a
+        /// per-line caller pays a pointer compare plus `planOn`'s two-comparison
+        /// decline rather than a sample it cannot amortize.
+        ///
+        /// Address reuse can make this answer a *stale* plan: a freed buffer,
+        /// re-allocated at the same address with the same length, hits the memo. That
+        /// is sound and deliberately so — a `Plan` is two offsets into the needle
+        /// plus a shape flag, so EVERY plan yields identical matches and only the
+        /// filter's selectivity differs. The worst case is one haystack scanned on
+        /// its predecessor's pair, which is exactly the state the whole tree was in
+        /// before any of this existed.
+        lit_hay: []const u8 = &.{},
+        lit_plan: ?simd.Plan = null,
         allocator: std.mem.Allocator,
+
+        /// The anchor plan for `hay`, minted on first sight and reused after.
+        /// Null when the program has no single literal to plan for, or when `hay`
+        /// is below `planOn`'s size gate — the common case, and cheap.
+        pub fn litPlan(self: *@This(), re: *const Regex, hay: []const u8) ?simd.Plan {
+            if (self.lit_hay.ptr == hay.ptr and self.lit_hay.len == hay.len) return self.lit_plan;
+            self.lit_hay = hay;
+            self.lit_plan = if (re.lits.len == 1) simd.planOn(hay, re.lits[0]) else null;
+            return self.lit_plan;
+        }
 
         pub fn init(allocator: std.mem.Allocator, re: *const Regex) ParseError!@This() {
             const n = re.states.len;

@@ -37,8 +37,16 @@ fn prefixFree(lits: []const []const u8) bool {
 /// literal at `p`. Byte-identical to `matchSpan` for such a set, with no
 /// Pike-VM run per line. Literals are non-empty, so there is no zero-width
 /// case; `-w`/`-i` are already excluded by `litFastEligible`.
-fn litNextSpan(lits: []const []const u8, mv: []const u8, from: usize) ?Matcher.Span {
-    const p = simd.indexOfAnyPos(mv, from, lits) orelse return null;
+fn litNextSpan(lits: []const []const u8, mv: []const u8, from: usize, plan: ?simd.Plan) ?Matcher.Span {
+    // `plan` is the document's decision (`Emitter.lit_plan`), and it matters here for
+    // the cheaper of its two reasons: `mv` is one LINE, far below any calibration
+    // gate, but this function is re-entered once per MATCH, and a one-literal set
+    // without a plan re-derives the static pair each time. `anchor.select` is ~21 ns
+    // on a typical needle since the joint correction landed, which a `-o` run over a
+    // match-dense line pays per match. A multi-literal set carries no single pair,
+    // ignores this, and pays nothing either way (each needle anchors on its own
+    // first+last).
+    const p = simd.indexOfAnyPosWith(mv, from, lits, plan) orelse return null;
     for (lits) |lit| if (p + lit.len <= mv.len and std.mem.eql(u8, mv[p..][0..lit.len], lit))
         return .{ .start = p, .end = p + lit.len };
     return null; // unreachable for a prefix-free set (the jump found a hit)
@@ -49,7 +57,7 @@ fn litNextSpan(lits: []const []const u8, mv: []const u8, from: usize) ?Matcher.S
 fn emitMatchesLit(self: *Emitter, lits: []const []const u8, path: []const u8, lineno: usize, line: []const u8, mv: []const u8) usize {
     var from: usize = 0;
     var n: usize = 0;
-    while (litNextSpan(lits, mv, from)) |span| {
+    while (litNextSpan(lits, mv, from, self.lit_plan)) |span| {
         from = span.end;
         self.prefix(path, lineno, span.start + 1, self.offOf(line) + span.start, true);
         self.paint(self.o.palette.match, display.trimRow(self, line[span.start..span.end]));
@@ -128,7 +136,12 @@ pub fn fileLit(self: *Emitter, path: []const u8, body: []const u8, lo: usize, hi
     // line END (to skip past a counted line) — its reverse-memchr line START
     // is dead work. Every other mode builds the line slice, so needs both.
     const need_start = !(counting and !count_spans);
-    while (simd.indexOfAnyPos(body, pos, lits)) |p| {
+    // `self.lit_plan` is THIS document's anchor decision, minted once by
+    // `Emitter.openOn` (or by the shard driver and copied in). It must not be
+    // minted here: this loop re-enters the scanner per HIT, and a single file can
+    // be cut across cores, so a local would re-sample the same document once per
+    // shard — the cost the sampling budget is explicitly priced not to pay.
+    while (simd.indexOfAnyPosWith(body, pos, lits, self.lit_plan)) |p| {
         if (p >= hi) break; // this shard owns only lines whose hit falls in [lo,hi)
         if (o.mode == .files_with_matches) return self.emitPathOnly(path);
         const le = simd.memchr(body, p, term) orelse body.len;
@@ -144,7 +157,7 @@ pub fn fileLit(self: *Emitter, path: []const u8, body: []const u8, lo: usize, hi
                 // The outer loop stops on the line count instead.
                 if (lit_span) {
                     var from: usize = 0;
-                    while (litNextSpan(lits, mv, from)) |sp| {
+                    while (litNextSpan(lits, mv, from, self.lit_plan)) |sp| {
                         from = sp.end;
                         spans += 1;
                     }
@@ -162,7 +175,7 @@ pub fn fileLit(self: *Emitter, path: []const u8, body: []const u8, lo: usize, hi
                     spans += if (lit_span) emitMatchesLit(self, lits, path, lineno + 1, line, mv) else display.emitMatches(self, &ssim.?, path, lineno + 1, line, mv, true);
                 } else {
                     const col: usize = if (!o.column) 0 else if (lit_span) blk: {
-                        const sp = litNextSpan(lits, mv, 0) orelse break :blk 0;
+                        const sp = litNextSpan(lits, mv, 0, self.lit_plan) orelse break :blk 0;
                         break :blk sp.start + 1;
                     } else self.firstCol(&ssim.?, mv);
                     self.row(path, lineno + 1, col, ls, line, true);

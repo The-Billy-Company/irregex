@@ -16,6 +16,7 @@
 //! you trip over three lines away.
 
 const std = @import("std");
+const assay = @import("../../../assay/assay.zig");
 const glob = @import("../../../kernel/math/glob.zig");
 const types = @import("../../../corpus/scope/types.zig");
 const genus = @import("../../../corpus/scope/genus.zig");
@@ -636,7 +637,7 @@ pub const Builder = struct {
         // unclosed `[` character class is an error, not the literal `[` a lenient
         // gitignore line would treat it as. Fail loud (exit 2) here, at the seam.
         if (glob.unterminatedClass(core))
-            die("gist: error parsing glob '{s}': unclosed character class; missing ']'\n", .{g});
+            die(assay.tag ++ "error parsing glob '{s}': unclosed character class; missing ']'\n", .{g});
         const list = if (neg) &self.excludes else if (insensitive) &self.iglobs else &self.includes;
         list.append(self.a, core) catch oom();
     }

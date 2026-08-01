@@ -503,9 +503,9 @@ pub fn current() ?*const Beacon {
 pub fn resolve(a: Allocator, r: Request, io: std.Io, env: *const Environ) ?Beacon {
     var when = r.when;
     var spec = r.format;
-    if (spec == null and when == .auto) if (assay.envSpan("GIST_HYPERLINK")) |raw| {
+    if (spec == null and when == .auto) if (assay.knob("HYPERLINK")) |raw| {
         const w = wish(a, raw);
-        if (w.bad) |msg| assay.diag("gist: note: ignoring GIST_HYPERLINK={s} — {s}\n", .{ raw, msg });
+        if (w.bad) |msg| assay.diag(assay.tag ++ "note: ignoring GIST_HYPERLINK={s} — {s}\n", .{ raw, msg });
         if (w.when) |x| when = x;
         if (w.format) |f| spec = f;
     };
@@ -549,7 +549,7 @@ pub fn resolve(a: Allocator, r: Request, io: std.Io, env: *const Environ) ?Beaco
 /// which is worse than having no lens: it reads as "nothing to report."
 pub fn forcesLinks(a: Allocator) bool {
     if (assay.lit(.link)) return true;
-    const raw = assay.envSpan("GIST_HYPERLINK") orelse return false;
+    const raw = assay.knob("HYPERLINK") orelse return false;
     const w = wish(a, raw);
     return w.bad != null or w.when == .always;
 }
@@ -607,7 +607,7 @@ fn trace(why: []const u8, b: ?Beacon) ?Beacon {
 }
 
 fn scopeOf() Scope {
-    const raw = assay.envSpan("GIST_HYPERLINK_SCOPE") orelse return .prefix;
+    const raw = assay.knob("HYPERLINK_SCOPE") orelse return .prefix;
     inline for (@typeInfo(Scope).@"enum".fields) |f|
         if (std.mem.eql(u8, raw, f.name)) return @enumFromInt(f.value);
     return .prefix;

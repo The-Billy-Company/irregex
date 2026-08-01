@@ -4561,7 +4561,7 @@
    ")(",
    "file"
   ],
-  "detail": "gist: error: bad pattern ')(' \u2014 outside gist's linear-time syntax\ngist: note: not owned by the linear engine: lookaround"
+  "detail": "gist: error: bad pattern \u2014 unmatched closing parenthesis\ngist: note: )(\ngist: note:  ^ here (byte 1)\ngist: note: no engi"
  },
  {
   "name": "r2480#3",

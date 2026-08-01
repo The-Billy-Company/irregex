@@ -59,7 +59,7 @@ pub const Preferences = struct {
     }
 };
 
-// File-private parse vocabulary (ADR-373): these names never leave this module
+// File-private parse vocabulary (the fault-channel taxonomy): these names never leave this module
 // as a public error set — the run exits, tests assert via global `error.X`.
 const Fault = error{
     UnknownFlag,
@@ -104,15 +104,15 @@ pub fn forThisRun(io: std.Io) []const []const u8 {
 /// provenance report can print the same sentence without ending the process.
 pub fn report(e: anyerror) void {
     var loc: [24]u8 = undefined;
-    assay.diag("gist: {s}{s}: {s}\n", .{
+    assay.diag(assay.tag ++ "{s}{s}: {s}\n", .{
         state.path orelse "preferences",
         misread.at(&loc, state.diag),
         faultNote(e),
     });
     if (didYouMean(e, state.diag.token)) |better| {
-        assay.diag("gist: try --{s} — `{s}` is not a flag gist knows\n", .{ better, state.diag.token });
+        assay.diag(assay.tag ++ "try --{s} — `{s}` is not a flag gist knows\n", .{ better, state.diag.token });
     }
-    assay.diag("gist: note: --no-config ignores it for this run\n", .{});
+    assay.diag(assay.tag ++ "note: --no-config ignores it for this run\n", .{});
 }
 
 /// The flag worth suggesting for a fault, or null when there is none — the
@@ -226,7 +226,7 @@ pub fn faultNote(e: anyerror) []const u8 {
 /// between machines, and a preferences file that follows you onto another
 /// machine is the `.ripgreprc` hazard this design exists to avoid.
 fn locate() ?[]const u8 {
-    if (assay.envSpan("GIST_PREFERENCES")) |p| return if (p.len > 0) p else null;
+    if (assay.knob("PREFERENCES")) |p| return if (p.len > 0) p else null;
     const Buf = struct {
         var bytes: [1024]u8 = undefined;
     };

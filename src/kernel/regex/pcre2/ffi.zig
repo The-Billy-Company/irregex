@@ -47,6 +47,16 @@ pub const ERROR_NOMATCH: c_int = -1;
 /// `pcre2_pattern_info` to size a replacement's slot vector (`2*(count+1)`).
 pub const INFO_CAPTURECOUNT: u32 = 4;
 
+/// The name-table trio, for the inverse lookup `pcre2_substring_number_from_name`
+/// cannot do: number → name. PCRE2 keeps the names as a sorted block of
+/// fixed-width entries inside the compiled code, each entry being a big-endian
+/// group number followed by a NUL-terminated name, so reading it needs all three
+/// facts — how many entries, how wide one is, and where the block starts.
+/// Values from `pcre2.h`.
+pub const INFO_NAMECOUNT: u32 = 17;
+pub const INFO_NAMEENTRYSIZE: u32 = 18;
+pub const INFO_NAMETABLE: u32 = 19;
+
 /// `PCRE2_UNSET` — the ovector sentinel for a group that did not participate in
 /// the match (`SIZE_MAX`). Mapped to gist's `-1` "unset slot" convention.
 pub const UNSET: Size = std.math.maxInt(Size);

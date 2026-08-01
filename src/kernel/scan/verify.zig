@@ -122,8 +122,20 @@ pub fn containsWide(gpa: std.mem.Allocator, hay: []const u8, needle: []const u8)
 /// ASCII-caseless kernel with the same fan-out policy. This is the whole-file
 /// drop every engine calls, so a caseless gate rides the identical wide path
 /// a case-sensitive one does (multi-GiB blobs included).
+///
+/// It also re-plans the gate on `hay` (`Gate.on`), which is why this is the one
+/// place that has to: it is the ONLY function in the tree handed a whole document
+/// and a gate at the same instant, so every caller of the whole-file drop —
+/// serial intake, both swarm emit paths — inherits a document-priced anchor pair
+/// from this single site instead of each re-deriving one. `Gate.on` declines below
+/// its size gate, so a normal source file pays two comparisons and keeps the
+/// static pair; a multi-hundred-MB blob is where it earns (10–17× on a body whose
+/// alphabet the shipped table mis-ranks). Being on the presence test rather than
+/// on the read means a body that is DROPPED here — the case that pays the full
+/// sweep, since a hit exits early — is exactly the one that gets the good pair.
 pub fn gateWide(gpa: std.mem.Allocator, hay: []const u8, gate: simd.Gate) bool {
-    return wideAny(gpa, hay, &.{gate.bytes}, gate.ci, gate.plan);
+    const doc = gate.on(hay);
+    return wideAny(gpa, hay, &.{doc.bytes}, doc.ci, doc.plan);
 }
 
 const NulShard = struct {

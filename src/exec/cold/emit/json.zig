@@ -123,7 +123,15 @@ pub fn emitOne(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher
         }
     }
     st.bump(.files_searched);
-    st.add(.bytes_searched, emitFile(a, out, re, ss, caps, o, eff, st, bin, searched, needle));
+    // Re-price the required-literal gate on the bytes this file will ACTUALLY be
+    // searched over — `eff.body`, after the binary cut above, not `f.body` — the same
+    // per-document admission `render.zig::renderFile` performs for the text path. A
+    // gate arrives here minted once per RUN from the pattern alone, so without this
+    // every file in a `--json` run shares an anchor pair chosen from the shipped
+    // byte-frequency table. `Gate.on` re-decides from the static pair, so calling it
+    // per file cannot carry file N's choice into file N+1.
+    const doc = if (needle) |g| g.on(eff.body) else null;
+    st.add(.bytes_searched, emitFile(a, out, re, ss, caps, o, eff, st, bin, searched, doc));
 }
 
 fn fileWeight(_: void, f: File) usize {
@@ -290,11 +298,20 @@ fn soloShard(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.ArrayList(u
     for (1..nthr) |i| base_ln[i] = base_ln[i - 1] + counts[i - 1].nl;
     if (!o.text) for (counts) |c| if (c.nul) return null; // binary ⇒ caller reports it
 
+    // Both anchor decisions, priced ONCE on the whole body and then copied into every
+    // shard. Minting them inside `Shard.run` would re-sample the same document once
+    // per core, which contradicts the budget the sampling is amortized against — and
+    // the pair must not differ between shards of one file, since which offsets the
+    // block filter compares is a property of the body, not of a slice of it.
+    const doc_needle = if (needle) |g| g.on(f.body) else null;
+    const doc_lit_plan = output.Emitter.docLitPlan(o, re, f.body);
+
     const Shard = struct {
         re: *const Matcher,
         o: Opts,
         f: File,
         needle: ?simd.Gate,
+        lit_plan: ?simd.Plan,
         lo: usize,
         hi: usize,
         base: usize,
@@ -306,7 +323,7 @@ fn soloShard(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.ArrayList(u
         fn run(sh: *@This()) void {
             const sa = sh.arena.allocator();
             var ss = Matcher.SpanSim.init(sa, sh.re) catch die("engine init failed\n", .{});
-            soloShardRecords(sa, &sh.buf, sh.re, &ss, sh.o, sh.f, sh.lo, sh.hi, sh.base, sh.needle, &sh.fml, &sh.fm);
+            soloShardRecords(sa, &sh.buf, sh.re, &ss, sh.o, sh.f, sh.lo, sh.hi, sh.base, sh.needle, sh.lit_plan, &sh.fml, &sh.fm);
         }
     };
 
@@ -315,7 +332,8 @@ fn soloShard(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.ArrayList(u
         .re = re,
         .o = o,
         .f = f,
-        .needle = needle,
+        .needle = doc_needle,
+        .lit_plan = doc_lit_plan,
         .lo = cuts[i],
         .hi = cuts[i + 1],
         .base = base_ln[i],
@@ -364,7 +382,7 @@ fn soloShard(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.ArrayList(u
 /// on the landed line and emits only on a real span. Either way the record head,
 /// `view` (CRLF-trimmed), terminator-inclusive `lines.text`, and submatch
 /// offsets are byte-identical to the serial `emitFile`'s plain branch.
-fn soloShardRecords(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, ss: *Matcher.SpanSim, o: Opts, f: File, lo: usize, hi: usize, base: usize, needle: ?simd.Gate, fml: *usize, fm: *usize) void {
+fn soloShardRecords(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, ss: *Matcher.SpanSim, o: Opts, f: File, lo: usize, hi: usize, base: usize, needle: ?simd.Gate, lit_plan: ?simd.Plan, fml: *usize, fm: *usize) void {
     const body = f.body;
     const lits = output.Emitter.maskLiterals(o, re);
     const jump = needle != null or lits.len != 0; // a hit-to-hit prefilter exists
@@ -380,7 +398,7 @@ fn soloShardRecords(a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Ma
         // for a literal-free pattern — take the next line as-is.
         var ls: usize = pos;
         if (jump) {
-            const p = (if (needle) |g| g.find(body, pos) else simd.indexOfAnyPos(body, pos, lits)) orelse break;
+            const p = (if (needle) |g| g.find(body, pos) else simd.indexOfAnyPosWith(body, pos, lits, lit_plan)) orelse break;
             if (p >= hi) break;
             ls = if (simd.lastIndexOfScalar(body, p, '\n')) |nl| nl + 1 else 0;
         }
@@ -785,7 +803,13 @@ fn litCandidates(a: std.mem.Allocator, re: *const Matcher, needle: ?simd.Gate, o
     @memset(cand, false);
     var lc: usize = 0;
     var from: usize = 0;
-    while (simd.indexOfAnyPos(body, from, lits)) |p| {
+    // One mint for this document, before the loop. The loop below re-enters the
+    // scanner once per HIT, so asking inside it would re-derive the anchor decision
+    // millions of times on a match-dense body — and `anchor.select` is ~21 ns on a
+    // typical needle since the joint correction landed, which is a cost that only
+    // makes sense paid once. `docLitPlan` declines below its own size gate.
+    const plan = output.Emitter.docLitPlan(o, re, body);
+    while (simd.indexOfAnyPosWith(body, from, lits, plan)) |p| {
         while (lc + 1 < lines.len and lines[lc + 1].off <= p) lc += 1;
         cand[lc] = true;
         if (lc + 1 >= lines.len) break;

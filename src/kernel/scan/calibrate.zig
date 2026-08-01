@@ -69,13 +69,94 @@
 //!    offsets, so declining is two comparisons and a return, and a small buffer
 //!    never touches a bitvector.
 //!
-//! ## NOT WIRED, and the reason is a call-shape mismatch — read before wiring
+//! ## WIRED at `simd.planOn` — read before moving it
 //!
-//! Nothing calls this yet. It is registered in `root.zig` so it builds and its
-//! tests run, and that is deliberately as far as it goes. The obvious wiring —
-//! swap `anchorsOf(needle)` for a calibrated pair inside
-//! `simd.zig::indexOfPos` — **cannot pay, and would re-commit a defect this
-//! package has already recorded twice.**
+//! `simd.zig::planOn` is the only entry point, and everything upstream reaches it
+//! through one of three document-grain seams. Two properties of that call site are
+//! load-bearing, and both were mistakes first:
+//!
+//! · It calls `refine`, not `best`. Adopting the sample's favourite
+//!   unconditionally was a measured 0.5–1.1% CPU tax with no row it won — see
+//!   `refine` for the two mechanisms and the numbers.
+//! · It is per DOCUMENT, never per line. The size gate is a claim about the scan
+//!   the sampling amortizes against, so evaluating it on a slice prices the wrong
+//!   thing.
+//!
+//! ## The three seams, and why there are exactly three
+//!
+//! A plan must be minted where a WHOLE document first arrives and then reused by
+//! every scan of it, so each seam is a place where that admission happens:
+//!
+//! · **`simd.Gate.on(hay)`** — the required-literal gate, re-priced on one body.
+//!   `Emitter.openOn` calls it per file (serial render, the swarm worker, the
+//!   single-file shard driver, stdin, and the resident session's fold),
+//!   `json.emitOne` and `json.soloShard` do the same for the record stream, and
+//!   `verify.gateWide` calls it for the whole-file drop in `quarry/intake.zig`.
+//!   Idempotent by construction: it re-decides from `planFor(bytes)`, never from
+//!   `self.plan`, so a long-lived gate cannot carry file N's pair into file N+1.
+//! · **`Emitter.lit_plan`** — the literal SWEEP plan, for the loops that re-enter
+//!   the scanner once per match: `skim.fileLit`, `Emitter.litCandidates`, and
+//!   `skim.litNextSpan` (the NFA-free `-o`/`--count-matches` span walk). A field
+//!   and not a local because those loops would otherwise re-sample per hit, and
+//!   because `emitFileSharded` cuts one file across cores and must hand every shard
+//!   the same value. `json.zig` keeps the same value in its own shard struct and in
+//!   `litCandidates`, hoisted above the loop for the same reason.
+//! · **`PikeScratch.litPlan`** — the span walks (`span.zig::litSpan`), memoized on
+//!   the haystack slice because that function's ~20 callers each build their own
+//!   `SpanSim` at a different grain. See it for why a stale memo is sound.
+//!
+//! `LiteralSet.findOn` and `verdict.docMatch` ride the first seam's reasoning at
+//! the fused whole-document grain, and `render.anyHit`'s `-q` presence sweep mints
+//! one directly because it holds a body and answers from a single jump.
+//!
+//! **The per-hit hoists are not only about calibration.** Since `anchor.zig` gained
+//! its distance-conditioned joint correction, `anchor.select` costs ~21 ns on a
+//! typical 4–8 byte needle rather than ~3.7 ns. Every loop above re-derived that
+//! decision once per HIT before it took a plan, so on a match-dense body the hoist
+//! is worth more than the sampling it also enables — and a one-literal set is
+//! exactly the case that pays it (an alternation anchors each needle on its own
+//! first+last and never calls `select`).
+//!
+//! **MEASURED REACH, 2026-07-30** (M4, single-threaded, child CPU, best of 7,
+//! interleaved in-binary A/B via `GIST_NO_CALIBRATE`. Corpus: a 200 MB buffer whose
+//! alphabet is the statically-rare bytes, holding needles whose locally-rarest byte
+//! the shipped table ranks common — `zeqXtj`, `tzeQjq`, `ezQtj`, three of them so a
+//! row is not one needle's luck. Wall clock on a 200 MB mmap is mostly page-fault
+//! noise, which is why CPU is the reported quantity.)
+//!
+//!     -Fc / -F / -Fn / -Fo / --count-matches   6.9–8.0x
+//!     --json  /  --json -o                     7.8x / 8.3x
+//!     -q  (presence, one jump)                 7.0x
+//!     -Fl  (exits at the first hit)            4.5–4.7x
+//!     regex, required literal, -o / --count-matches   2.00x    -l  4.6x
+//!     regex per-line modes (-c/-n/-w/-U/-A)    1.23–1.26x      -i  1.00x (no pair)
+//!
+//! Ground truth under the CLI, `spikes/anchor-plan/sweep.zig`: one hit-to-hit
+//! kernel sweep is 70 ms on the table's pair and 3.9–4.0 ms re-priced, **17.6–17.9x**
+//! — and the table's pair takes the *single*-probe shape there, so the fast loop on
+//! the wrong byte loses to the two-probe loop on the right pair by an order of
+//! magnitude. Selectivity underneath: 4.09 M block survivors on the static pair,
+//! 34–42 on the calibrated one.
+//!
+//! Neutral where the table is already right — median 1.002x (min 0.996x, max 1.012x)
+//! over 15 mode×needle rows on a 213 MB many-small-files code tree, where the size
+//! gate declines in two comparisons. Read the MEDIAN of repeats there and not the
+//! best-of-N: at ~0.03 s a run, one lucky outlier in either arm reads as a 1.4x
+//! swing, which is how a phantom `-q` regression was manufactured and then dissolved
+//! by nine paired reps. Output is byte-identical: 411/411 rgsuite parity on both
+//! engines, and 420 in-binary mode×needle×corpus differentials with zero divergence.
+//!
+//! The two ceilings are structural, not wiring gaps. `-i` has no pair to choose
+//! (`containsCaseless` is a different kernel). The per-line ENGINE modes cap near
+//! the whole-file gate's contribution because a 60-byte line is one block, where the
+//! choice of two offsets inside it barely moves anything — every 7–8x row is a
+//! whole-buffer hit-jumping sweep, which is the shape the pair actually governs.
+//! The same split shows inside one engine mode: `-o`/`--count-matches` reach 2.00x
+//! because they sweep, while `-c`/`-n` over the same pattern stay at 1.25x.
+//!
+//! The wiring that is still WRONG — swap `anchorsOf(needle)` for a calibrated
+//! pair inside `simd.zig::indexOfPos` itself — **cannot pay, and would
+//! re-commit a defect this package has already recorded twice.**
 //!
 //! 1. **The size gate can never fire at that call site.** `indexOfPos` is not
 //!    called once per buffer. `query.zig::countGeneric` calls
@@ -102,13 +183,14 @@
 //!    throughput on a uniform-random buffer). The in-loop demotion counter
 //!    catches it, but only after paying for it.
 //!
-//! The seam this actually needs is a **per-scan plan**: calibrate once when a
-//! document is admitted, then thread the chosen pair through every line of that
-//! document — `indexOfPosWith(hay, from, needle, pair)`, with `indexOfPos`
-//! keeping today's static behavior, the plan owned by `CompiledQuery`, and the
-//! gate moved onto the DOCUMENT size rather than the per-call slice. That is an
-//! interface change across `simd.zig` and `query.zig`, and it is the decision
-//! this module is waiting on — not a missing import.
+//! The seam this needed — and now has — is a **per-scan plan**: calibrate once
+//! when a document is admitted, then thread the chosen pair through every line of
+//! that document. That is `simd.Plan` + `indexOfPosWith(hay, from, needle, plan)`,
+//! with `indexOfPos` keeping the static behavior the roofline control reads, the
+//! plan owned by `CompiledQuery`, and the gate on the DOCUMENT size rather than
+//! the per-call slice. Defect 3 above is why an adopted pair still declares
+//! `single = false`, and why `refine` declining is the outcome that preserves the
+//! single-probe shape.
 //!
 //! `block_bytes` is a PARAMETER, not a local constant: the caller owns the
 //! block stride and this module must not re-derive it. RECORDED DEFECT
@@ -207,6 +289,10 @@ const gate_factor: usize = 16;
 /// the cheapest as `.{ probe, confirm }` with `probe <= confirm`. Returns null
 /// when the buffer is too small for the sampling to pay for itself, in which
 /// case the caller keeps its static choice.
+///
+/// Prefer `refine` in production: this reports the sample's favourite with no
+/// regard for what the caller already had, so a caller that adopts it
+/// unconditionally pays for a swap even when the two agree. See `refine`.
 pub fn best(hay: []const u8, needle: []const u8, block_bytes: usize) ?[2]usize {
     return tuned(shipped, hay, needle, block_bytes);
 }
@@ -214,10 +300,104 @@ pub fn best(hay: []const u8, needle: []const u8, block_bytes: usize) ?[2]usize {
 /// `best` at an explicit tuning — the seam the sweep in `research/pincer/`
 /// drives, so the measured curve describes THIS code and not a replica of it.
 pub fn tuned(comptime cfg: Config, hay: []const u8, needle: []const u8, block_bytes: usize) ?[2]usize {
+    var offs: [cfg.max_offsets]usize = undefined;
+    var seen: [cfg.max_offsets][cfg.max_offsets]u32 = undefined;
+    const k = sample(cfg, hay, needle, block_bytes, &offs, &seen) orelse return null;
+    const win = cheapest(cfg, offs[0..k], &seen);
+    return .{ offs[win.a], offs[win.b] };
+}
+
+/// `best`, but as an IMPROVEMENT TEST against the pair the caller already holds:
+/// null means "keep what you have", and a pair means the sample says the
+/// incumbent is materially worse. `incumbent` is a pair of needle offsets in
+/// either slot order (`anchor.Pair` is not sorted — its slots carry meaning).
+///
+/// RECORDED DEFECT (2026-07-30): the first wiring adopted `best` unconditionally
+/// and was a measured 0.5–1.1% CPU *tax* end-to-end, with no row it won. Two
+/// mechanisms, both invisible to a survivor-count sweep:
+///
+///  1. The static table already picks the oracle pair on 80/177 code needles
+///     (§ the module head). On those the swap buys nothing, so all that is left
+///     of it is the sampling.
+///  2. Adopting a calibrated pair forfeits the single-probe block shape —
+///     `singleProbeWorthwhile` prices against the STATIC table and cannot judge
+///     a calibrated byte (defect 3 above). So a needle whose static plan was
+///     single-probe-eligible gets *demoted* by a swap that gains nothing.
+///
+/// Both vanish once the incumbent competes on the same sample. It is pinned into
+/// the candidate set, priced with everything else, and displaced only when the
+/// winner beats it by `margin_shift` — which is why declining is the common
+/// answer and the caller keeps its `single` eligibility with it.
+pub fn refine(hay: []const u8, needle: []const u8, block_bytes: usize, incumbent: [2]usize) ?[2]usize {
+    return refineTuned(shipped, hay, needle, block_bytes, incumbent);
+}
+
+/// The RELATIVE half of the margin, as a right shift: a winner must save at
+/// least `1/2^n` of the incumbent's sampled survivors. 3 (12.5%) separates the
+/// two measured populations cleanly and is not a tuned constant — when the table
+/// is right it aggregates to 1.00–1.04x the oracle, and when it is wrong it is
+/// 1.39–2.21x (§ the module head), so anything inside a few percent is sampling
+/// variance on a decision that does not matter.
+const margin_shift: u5 = 3;
+
+/// The ABSOLUTE half, in standard deviations of the incumbent's own count.
+///
+/// RECORDED DEFECT (2026-07-30): a purely relative margin is a winner's curse.
+/// `cheapest` is the argmin of `C(k,2)` — up to 120 — noisy estimates of the same
+/// underlying density, so its expected value sits several sigma BELOW the true
+/// minimum even when every pair is truly identical. The randomised suite caught
+/// it immediately: on a 6-letter alphabet, where all 120 pairs have the same true
+/// density by construction, a 34-byte needle's sample claimed a >12.5% win over
+/// an incumbent that was in fact 0.3% BETTER over the whole buffer. The relative
+/// floor cannot see this because the bias scales with `sqrt(count)`, not with
+/// `count`.
+///
+/// A survivor count is a sum of Bernoulli trials, so its standard deviation is
+/// `~sqrt(count)`; 4 sigma covers the multiplicity at `k = 16` (a 120-way argmin
+/// reaches ~3.5 sigma routinely). This term dominates at small sampled counts —
+/// which is exactly where the relative floor is worthless — and is negligible at
+/// the shipped budget's thousands, where the relative floor takes over. Take the
+/// larger of the two and both regimes are covered by one comparison.
+const noise_sigmas: f64 = 4.0;
+
+/// Is the winner enough better than the incumbent to be worth swapping to?
+/// Both halves of the margin, whichever binds harder. `>=` and not `>` on the
+/// way out: two pairs that tie are the same decision, and the incumbent is the
+/// one whose `single` eligibility is already known-good.
+fn worthSwapping(win: u32, incumbent: u32) bool {
+    const relative = incumbent >> margin_shift;
+    const noise: u32 = @intFromFloat(noise_sigmas * @sqrt(@as(f64, @floatFromInt(incumbent))));
+    return win + @max(relative, noise) < incumbent;
+}
+
+/// `refine` at an explicit tuning.
+pub fn refineTuned(
+    comptime cfg: Config,
+    hay: []const u8,
+    needle: []const u8,
+    block_bytes: usize,
+    incumbent: [2]usize,
+) ?[2]usize {
+    var offs: [cfg.max_offsets]usize = undefined;
+    var seen: [cfg.max_offsets][cfg.max_offsets]u32 = undefined;
+
+    // Order matters: the incumbent has to be in the candidate set BEFORE the
+    // sample is taken, or it cannot be priced on the same bytes as its rivals.
+    const k = layout(cfg, hay, needle, &offs) orelse return null;
+    const held = pin(offs[0..k], incumbent) orelse return null;
+    if (!measure(cfg, hay, needle, block_bytes, offs[0..k], &seen)) return null;
+
+    const win = cheapest(cfg, offs[0..k], &seen);
+    if (!worthSwapping(win.cost, seen[held[0]][held[1]])) return null;
+    return .{ offs[win.a], offs[win.b] };
+}
+
+/// The candidate offsets plus the gates that decide whether sampling can pay at
+/// all. Null is "decline"; the return is how many of `offs` were filled.
+fn layout(comptime cfg: Config, hay: []const u8, needle: []const u8, offs: *[cfg.max_offsets]usize) ?usize {
     comptime std.debug.assert(cfg.window_bytes % word_bits == 0);
     comptime std.debug.assert(cfg.budget_bytes >= cfg.window_bytes);
     comptime std.debug.assert(cfg.max_offsets >= 2);
-    std.debug.assert(block_bytes > 0);
 
     // A 2-byte needle has exactly one pair, so every selector agrees and
     // sampling can only cost. Nothing to decide is not the same as a cheap
@@ -231,9 +411,67 @@ pub fn tuned(comptime cfg: Config, hay: []const u8, needle: []const u8, block_by
     const k = @min(needle.len, cfg.max_offsets);
     if (hay.len / gate_factor < k * cfg.budget_bytes) return null;
 
-    var offs: [cfg.max_offsets]usize = undefined;
-    const filled = candidates(cfg.max_offsets, needle.len, &offs);
+    const filled = candidates(cfg.max_offsets, needle.len, offs);
     std.debug.assert(filled == k);
+    return k;
+}
+
+/// `layout` then `measure` — the whole sample for a caller with no incumbent.
+fn sample(
+    comptime cfg: Config,
+    hay: []const u8,
+    needle: []const u8,
+    block_bytes: usize,
+    offs: *[cfg.max_offsets]usize,
+    seen: *[cfg.max_offsets][cfg.max_offsets]u32,
+) ?usize {
+    const k = layout(cfg, hay, needle, offs) orelse return null;
+    if (!measure(cfg, hay, needle, block_bytes, offs[0..k], seen)) return null;
+    return k;
+}
+
+/// Force `want` into an already-sorted candidate set, so the incumbent is priced
+/// on the same sample as its rivals. Offsets at or under the cap already hold
+/// every offset the needle has, so this is a no-op there; past the cap each
+/// wanted offset displaces its nearest neighbour. A slot holding a wanted value
+/// is never evicted, and a value already present is never re-inserted, so the
+/// set stays strictly increasing — which the `probe < confirm` invariant below
+/// depends on. Returns the incumbent's `[lo, hi]` indices into the set.
+fn pin(offs: []usize, want: [2]usize) ?[2]usize {
+    for (want) |w| {
+        if (std.mem.indexOfScalar(usize, offs, w) != null) continue;
+        var victim: usize = 0;
+        var nearest: usize = std.math.maxInt(usize);
+        for (offs, 0..) |o, i| {
+            if (o == want[0] or o == want[1]) continue;
+            const d = if (o > w) o - w else w - o;
+            if (d < nearest) {
+                nearest = d;
+                victim = i;
+            }
+        }
+        if (nearest == std.math.maxInt(usize)) return null;
+        offs[victim] = w;
+    }
+    std.mem.sort(usize, offs, {}, std.sort.asc(usize));
+    const a = std.mem.indexOfScalar(usize, offs, want[0]) orelse return null;
+    const b = std.mem.indexOfScalar(usize, offs, want[1]) orelse return null;
+    if (a == b) return null; // a degenerate incumbent has nothing to compare
+    return if (a < b) .{ a, b } else .{ b, a };
+}
+
+/// Fill `seen[a][b]` with how many sampled positions survive the pair
+/// `(offs[a], offs[b])`. False when the buffer cannot host one window.
+fn measure(
+    comptime cfg: Config,
+    hay: []const u8,
+    needle: []const u8,
+    block_bytes: usize,
+    offs: []const usize,
+    seen: *[cfg.max_offsets][cfg.max_offsets]u32,
+) bool {
+    std.debug.assert(block_bytes > 0);
+    const k = offs.len;
 
     // One window reads `window_bytes` candidate positions at every offset, so
     // it touches `[lo, lo + window_bytes + needle.len - 1)`. Solving for the
@@ -241,7 +479,7 @@ pub fn tuned(comptime cfg: Config, hay: []const u8, needle: []const u8, block_by
     // needle.len` — the last real candidate start — so the geometry needs no
     // separate tail guard.
     const reach = cfg.window_bytes + needle.len - 1;
-    if (hay.len < reach + 1) return null;
+    if (hay.len < reach + 1) return false;
     const last_lo = hay.len - reach;
 
     const window_words = cfg.window_bytes / word_bits;
@@ -256,7 +494,7 @@ pub fn tuned(comptime cfg: Config, hay: []const u8, needle: []const u8, block_by
     // which is not a thing to put on a worker thread's stack. Survivor counts
     // are additive over disjoint position ranges, so windowing is exact, not an
     // approximation.
-    var seen: [cfg.max_offsets][cfg.max_offsets]u32 = @splat(@splat(0));
+    seen.* = @splat(@splat(0));
     var vec: [cfg.max_offsets][window_words]u64 = undefined;
 
     for (0..n_win) |w| {
@@ -273,14 +511,22 @@ pub fn tuned(comptime cfg: Config, hay: []const u8, needle: []const u8, block_by
             seen[a][b] += s;
         };
     }
+    return true;
+}
 
-    // Argmin, ties to the WIDEST separation — the same structural
-    // anti-correlation axis `anchor.zig` breaks its ties on, and for the same
-    // reason: a tie means the evidence has no opinion, and separation is the
-    // only correlation-reducing axis available without a model. The accumulator
-    // starts at `maxInt` and at the widest pair, so no pair can fail to
-    // displace the initialiser — the recorded `0:1` collapse next door was
-    // exactly a strict `<` against initialisers that were already the answer.
+/// Argmin over the priced pairs, ties to the WIDEST separation — the same
+/// structural anti-correlation axis `anchor.zig` breaks its ties on, and for the
+/// same reason: a tie means the evidence has no opinion, and separation is the
+/// only correlation-reducing axis available without a model. The accumulator
+/// starts at `maxInt` and at the widest pair, so no pair can fail to displace
+/// the initialiser — the recorded `0:1` collapse next door was exactly a strict
+/// `<` against initialisers that were already the answer.
+fn cheapest(
+    comptime cfg: Config,
+    offs: []const usize,
+    seen: *const [cfg.max_offsets][cfg.max_offsets]u32,
+) struct { a: usize, b: usize, cost: u32 } {
+    const k = offs.len;
     var bi: usize = 0;
     var bj: usize = k - 1;
     var low: u32 = std.math.maxInt(u32);
@@ -296,15 +542,12 @@ pub fn tuned(comptime cfg: Config, hay: []const u8, needle: []const u8, block_by
         }
     };
 
-    // Structural invariants. The pair changes only WHICH filter runs — the
+    // Structural invariant. The pair changes only WHICH filter runs — the
     // caller always `eql`-verifies survivors — so a wrong-but-valid pair is a
     // throughput bug, while an out-of-bounds offset is memory corruption at
     // `hay[i + confirm ..][0..block_bytes]`.
-    const probe = offs[bi];
-    const confirm = offs[bj];
-    std.debug.assert(probe < confirm);
-    std.debug.assert(confirm < needle.len);
-    return .{ probe, confirm };
+    std.debug.assert(offs[bi] < offs[bj]);
+    return .{ .a = bi, .b = bj, .cost = low };
 }
 
 /// The offsets a pair may be drawn from: every offset of a needle up to the

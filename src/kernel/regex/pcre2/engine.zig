@@ -66,6 +66,7 @@ pub fn compileOptionBits(opts: Options) u32 {
 /// string back through the frozen `CompileError` surface.
 threadlocal var last_error_buf: [256]u8 = undefined;
 threadlocal var last_error_len: usize = 0;
+threadlocal var last_error_offset: usize = 0;
 
 /// The most recent compile diagnostic for this thread ("" if none).
 pub fn lastError() []const u8 {
@@ -111,8 +112,22 @@ pub fn matchErrorMessage(buf: []u8) []const u8 {
     return ffi.errorMessage(code, buf);
 }
 
+/// Where in the pattern the last compile error was detected. Meaningless
+/// without a preceding `BadPattern`, so it is read next to `lastError` or not
+/// at all; PCRE2 reports it as a byte index into the pattern it was handed.
+pub fn lastErrorOffset() usize {
+    return last_error_offset;
+}
+
 /// Render a PCRE2 compile error code into the thread-local diagnostic buffer
-/// (read back via `lastError` after a `BadPattern`).
+/// (read back via `lastError` after a `BadPattern`). `at` is PCRE2's own
+/// `erroroffset`, which the C seam forwards so a host gets "where" and not only
+/// "what" — the CLI prints the message alone and ignores it.
+pub fn recordErrorAt(code: c_int, at: usize) void {
+    last_error_offset = at;
+    recordError(code);
+}
+
 pub fn recordError(code: c_int) void {
     const msg = ffi.errorMessage(code, &last_error_buf);
     // `errorMessage` wrote into the buffer (or returned a static fallback).
@@ -299,7 +314,7 @@ pub fn compileMode(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
     var errorcode: c_int = 0;
     var erroroffset: ffi.Size = 0;
     const code = ffi.pcre2_compile_8(pattern.ptr, pattern.len, compile_options, &errorcode, &erroroffset, null) orelse {
-        recordError(errorcode);
+        recordErrorAt(errorcode, erroroffset);
         return CompileError.BadPattern;
     };
     errdefer ffi.pcre2_code_free_8(code);

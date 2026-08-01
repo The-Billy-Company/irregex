@@ -356,6 +356,11 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         const body = if (o.encoding == .auto) stripBom(raw) else ingest.applyEncoding(a, o.encoding, raw);
         var out0: std.ArrayList(u8) = .empty;
         var em0 = Emitter{ .a = a, .re = re, .o = o, .show_name = false, .out = &out0, .base = @intFromPtr(body.ptr), .body_end = @intFromPtr(body.ptr) + body.len, .caps = caps, .use_color = use_color, .needle = line_needle };
+        // A pipe is the one source with no size bound at all — `cat 200MB | gist -F`
+        // is the same scan a file argument gets, so it gets the same per-document
+        // anchor re-pricing `renderFile` performs. Read whole before this point, so
+        // the whole document really is in hand.
+        em0.openOn(body);
         // `-U` with a pattern that can cross `\n`: match the whole stream as
         // one buffer; otherwise the per-line path over rg's line split.
         const hits = if (multiline.sliceModel(re, o)) em0.buffer("<stdin>", body) else blk: {

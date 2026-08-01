@@ -306,7 +306,7 @@ pub fn loadQuiet(gpa: std.mem.Allocator, io: std.Io) !?Persisted {
 /// but that only prevents an out-of-bounds path lookup if the table holds EXACTLY
 /// doc_count entries. Called by the loader; exposed for tests.
 ///
-/// Both members come from the declared `persist` domain (ADR-373 law 2). A path
+/// Both members come from the declared `persist` domain (fault-channel law 2). A path
 /// table of the wrong length IS corruption — the two blobs were written by
 /// different builds — and saying so in the shared vocabulary is what lets the
 /// loader handle every untrustworthy-bytes fact with one prong.
@@ -472,7 +472,7 @@ fn loadMappedPair(gpa: std.mem.Allocator, io: std.Io, pf: *const PairFiles, gen:
 fn sealedCrest(bytes: []const u8, doc_count: u32) ?[]const crest.Vector {
     const view = crest_sidecar.decode(bytes, doc_count) orelse return null;
     crest_sidecar.verify(bytes) catch {
-        assay.trace(.index, "gist: crest sidecar seal broken — sieve stands down for this load\n", .{});
+        assay.trace(.index, assay.tag ++ "crest sidecar seal broken — sieve stands down for this load\n", .{});
         return null;
     };
     return view;

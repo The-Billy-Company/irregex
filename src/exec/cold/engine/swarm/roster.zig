@@ -72,7 +72,7 @@ fn hasNonDirectoryRoot(io: std.Io, roots: []const []const u8) bool {
 ///
 /// Allocation failure RETURNS rather than exiting: the resident daemon calls
 /// this from `irregex_search`'s reconcile, where `exit(2)` would kill the
-/// embedding host instead of yielding `IRREGEX_OOM` (ADR-373 law 1). Only this
+/// embedding host instead of yielding `IRREGEX_OOM` (fault-channel law 1). Only this
 /// enumerator's OWN allocations — the ones on the calling thread — are covered;
 /// the shared per-worker descent (`descent.zig`) still exits, since an error
 /// cannot cross the fan-out and its `catch oom()` sites sit in the per-entry
@@ -149,7 +149,7 @@ pub fn collectFileSet(gpa: std.mem.Allocator, io: std.Io, roots: []const []const
     }
     const ncpu = portal.cpuCount() catch 6;
     var nworkers = defaultWorkerCount(ncpu, true);
-    if (assay.envSpan("GIST_WORKERS")) |s| if (std.fmt.parseInt(usize, s, 10) catch null) |n| {
+    if (assay.knob("WORKERS")) |s| if (std.fmt.parseInt(usize, s, 10) catch null) |n| {
         nworkers = @max(1, n);
     };
     const workers = try gpa.alloc(Worker, nworkers);

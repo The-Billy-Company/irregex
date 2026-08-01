@@ -199,7 +199,7 @@ pub fn emitStats(a: std.mem.Allocator, out: *std.ArrayList(u8), s: Stats, elapse
 /// diagnostic. Shared by both walk engines so their reported counts can't drift.
 pub fn diagSearch(gpa: std.mem.Allocator, json: bool, s: Stats, elapsed: assay.Duration) void {
     if (!assay.lit(.query)) return;
-    assay.summary(gpa, json, "gist: {d} files searched · {d} with match · {d} matches · {d} matched lines · {d} bytes searched · {d:.1} ms\n", .{ s.get(.files_searched), s.get(.files_with_match), s.get(.matches), s.get(.matched_lines), s.get(.bytes_searched), elapsed.ms() }, .{
+    assay.summary(gpa, json, assay.tag ++ "{d} files searched · {d} with match · {d} matches · {d} matched lines · {d} bytes searched · {d:.1} ms\n", .{ s.get(.files_searched), s.get(.files_with_match), s.get(.matches), s.get(.matched_lines), s.get(.bytes_searched), elapsed.ms() }, .{
         .{ "verb", "s", "search" },
         .{ "files_searched", "d", s.get(.files_searched) },
         .{ "files_with_match", "d", s.get(.files_with_match) },

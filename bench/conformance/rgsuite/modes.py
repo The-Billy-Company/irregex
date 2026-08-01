@@ -6,7 +6,7 @@
 companion that certifies exactly those two modes now that gist implements them: it
 compares `gist <args>` against `rg <args>` — ripgrep the ground truth, no hardcoded
 expected strings — across a flag matrix on synthetic edge-case fixtures (byte-exact)
-and the real Billy tree (order-normalized), diffing stdout + exit codes, and asserting
+and the real host tree (order-normalized), diffing stdout + exit codes, and asserting
 the indexed path equals `--no-index` (read-elision soundness). `bench` times both to
 hunt acceleration wins.
 
@@ -32,8 +32,8 @@ import time
 
 
 HERE = Path(__file__).resolve().parent
-KERNEL = HERE.parents[2]  # bench/conformance/rgsuite -> pkg/kernels/irregex
-REPO = HERE.parents[5]  # -> repo root
+KERNEL = HERE.parents[2]  # rgsuite → conformance → bench → repo
+REPO = KERNEL
 FIX = Path()  # temp fixture root, set in main()
 
 RG = os.environ.get("RG_BIN", "rg")

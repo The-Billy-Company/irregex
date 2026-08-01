@@ -252,8 +252,8 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     // the real elision oracle is admitted. This makes freshness_fs.sh prove the
     // accelerated path instead of accidentally passing via an async/full-read
     // fallback. It is intentionally not a CLI flag.
-    const require_elision = assay.envSpan("GIST_TEST_REQUIRE_ELISION") != null;
-    if (require_elision and !want_elision) die("gist: test-required index elision was not eligible\n", .{});
+    const require_elision = assay.knobSet("TEST_REQUIRE_ELISION");
+    if (require_elision and !want_elision) die(assay.tag ++ "test-required index elision was not eligible\n", .{});
 
     const roots: []const []const u8 = if (parsed.roots.len > 0) parsed.roots else &.{"."};
 
@@ -295,7 +295,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     // cannot re-charge every later query), the certificate is a measurement tool
     // rather than a default.
     var cert: fresh.Certificate = .{};
-    if (want_elision and assay.envFlag("GIST_CERTIFY")) {
+    if (want_elision and assay.knobFlag("CERTIFY")) {
         if (std.Thread.spawn(.{}, fresh.Certificate.proveMain, .{ &cert, gpa, io, roots })) |t| t.detach() else |_| {
             // No thread: prove inline rather than forfeit. Same verdict, same
             // position in the run — only the overlap with the loads is lost.
@@ -310,8 +310,8 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     if (want_elision) {
         if (require_elision) {
             lazy.admit(gpa, io, o, filters, plan, sieve);
-            if (lazy.val == null) die("gist: test-required index elision was declined\n", .{});
-            if (!elide.testHasElidableFile(io, &lazy.val.?)) die("gist: test-required index elision found no elidable live file\n", .{});
+            if (lazy.val == null) die(assay.tag ++ "test-required index elision was declined\n", .{});
+            if (!elide.testHasElidableFile(io, &lazy.val.?)) die(assay.tag ++ "test-required index elision found no elidable live file\n", .{});
             lazy.ready.store(true, .release);
         } else {
             // Detached: if every worker out-walks the load and gives up on
@@ -334,7 +334,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     // snapshot can't place just walks live). `GIST_NO_PHANTOM` (internal,
     // undocumented — the `GIST_NO_PARALLEL` idiom) forces the live walk for
     // parity gates.
-    var snap_view: ?treemap.View = if (assay.envSpan("GIST_NO_PHANTOM") == null) treemap.load(io) else null;
+    var snap_view: ?treemap.View = if (!assay.knobSet("NO_PHANTOM")) treemap.load(io) else null;
 
     // Content shard. Loaded for a body-reading walk broad enough to amortize the
     // one-time map + doc-table build (`broadIndexedRoots`, same rung the elide
@@ -344,13 +344,13 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     // and the shard never holds compressed inputs anyway). `GIST_NO_SHARD`
     // (internal, undocumented — the `GIST_NO_PHANTOM` idiom) forces live reads
     // for the parity gate. Membership + freshness only, so it is fail-open.
-    const want_shard = assay.envSpan("GIST_NO_SHARD") == null and !o.no_index and o.mode != .files and !icfg.active() and elide.broadIndexedRoots(parsed.roots);
+    const want_shard = !assay.knobSet("NO_SHARD") and !o.no_index and o.mode != .files and !icfg.active() and elide.broadIndexedRoots(parsed.roots);
     var shard_view: ?shard_mod.View = if (want_shard) shard_mod.load(gpa, io) else null;
 
     // Everything above overlapped the journal round trip; the verdict must be in
     // before `Cfg` fixes how the walk lists a directory, so this is where the run
     // stops overlapping and latches it.
-    const certifying = want_elision and assay.envFlag("GIST_CERTIFY");
+    const certifying = want_elision and assay.knobFlag("CERTIFY");
     const certified: ?i128 = if (certifying) cert.settle(io) else null;
     // Only speak when a probe actually ran: labeling a run "refused" when the
     // accelerator was never armed reads as a corpus verdict rather than a
@@ -439,14 +439,14 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     // -j/--threads caps the pool explicitly (rg's `--threads`); 0 keeps gist's
     // adaptive topology. `GIST_WORKERS` still overrides everything (parity gates).
     if (o.threads != 0) nworkers = @max(1, o.threads);
-    if (assay.envSpan("GIST_WORKERS")) |s| if (std.fmt.parseInt(usize, s, 10) catch null) |n| {
+    if (assay.knob("WORKERS")) |s| if (std.fmt.parseInt(usize, s, 10) catch null) |n| {
         nworkers = @max(1, n);
     };
     // A walk may earn more hands than its starting width once it proves it is the
     // I/O-bound kind (`Crew.consider`). An EXPLICIT width — `-j`, `GIST_WORKERS`,
     // a transform run's own `ncpu` fan-out — is the caller's answer, not a guess
     // to be revised, so those pin the ceiling to what they asked for.
-    const pinned = o.threads != 0 or icfg.active() or assay.envSpan("GIST_WORKERS") != null;
+    const pinned = o.threads != 0 or icfg.active() or assay.knobSet("WORKERS");
     const ceiling = if (pinned) nworkers else @max(nworkers, maxWorkerCount(ncpu));
     const workers = gpa.alloc(Worker, ceiling) catch oom();
     defer gpa.free(workers);

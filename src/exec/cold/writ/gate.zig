@@ -196,9 +196,9 @@ pub fn winnow(a: std.mem.Allocator, o: Opts, pattern: []const u8, re: *const Mat
         .linear => {},
         .pcre => return .{},
     }
-    const want_cover = !o.caseless and !assay.envFlag("GIST_NO_COVER");
+    const want_cover = !o.caseless and !assay.knobFlag("NO_COVER");
     var w = query_mod.winnow(a, pattern, arm.linearOptions(o), if (want_cover) .{} else null);
-    if (assay.envFlag("GIST_NO_CREST")) w.sieve = crest.no_sieve;
+    if (assay.knobFlag("NO_CREST")) w.sieve = crest.no_sieve;
     return w;
 }
 

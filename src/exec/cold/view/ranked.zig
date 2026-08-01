@@ -11,7 +11,7 @@
 //! This file therefore ranks a file SET; it never decides one. That is the whole
 //! seam: an earlier version enumerated candidates straight out of the persisted
 //! index's path table, which made the index answer "what is in the corpus"
-//! instead of merely "which of these files can possibly match" (ADR-373 law 1),
+//! instead of merely "which of these files can possibly match" (fault-channel law 1),
 //! and quietly cost the view every file the index's own corpus policy excludes —
 //! all of `vendor/`, plus any walk-widening flag (`-uu`) the table knows nothing
 //! about. The caller (`view.zig`) now hands over the walk's own file set, still
@@ -258,7 +258,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, files: []const 
     const top = try emitRanked(gpa, re, docs.items, files, k);
     assay.trace(.rank, "rank phase: fuse+render {d:.1} ms · top {d} (live)\n", .{ phase.lap(io).ms(), top });
     const query = query_span.read(io);
-    assay.summary(gpa, false, "gist: {d} ranked matches (top {d}) · live-scanned {d} files · rank {d:.1} ms\n", .{ docs.items.len, top, files.len, query.ms() }, .{
+    assay.summary(gpa, false, assay.tag ++ "{d} ranked matches (top {d}) · live-scanned {d} files · rank {d:.1} ms\n", .{ docs.items.len, top, files.len, query.ms() }, .{
         .{ "verb", "s", "rank" },
         .{ "ranked_matches", "d", docs.items.len },
         .{ "top", "d", top },
@@ -291,7 +291,7 @@ pub fn renderLive(gpa: std.mem.Allocator, io: std.Io, re: *const Regex, files: [
     const top = try renderRanked(gpa, re, docs.items, files, k, out);
     assay.trace(.rank, "rank phase: fuse+render {d:.1} ms · top {d} (warm)\n", .{ phase.lap(io).ms(), top });
     const query = query_span.read(io);
-    assay.summary(gpa, false, "gist: {d} ranked matches (top {d}) · warm-scanned {d} files · rank {d:.1} ms\n", .{ docs.items.len, top, files.len, query.ms() }, .{
+    assay.summary(gpa, false, assay.tag ++ "{d} ranked matches (top {d}) · warm-scanned {d} files · rank {d:.1} ms\n", .{ docs.items.len, top, files.len, query.ms() }, .{
         .{ "verb", "s", "rank" },
         .{ "ranked_matches", "d", docs.items.len },
         .{ "top", "d", top },

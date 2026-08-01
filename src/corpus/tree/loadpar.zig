@@ -54,7 +54,7 @@ const AT = std.posix.AT;
 /// Allocation failure RETURNS here rather than exiting the process: this loader
 /// is what `corpus.load` fuses on, and `corpus.load` stands up the corpus behind
 /// every FFI entry, where an `exit(2)` would take the embedding host down with
-/// it instead of yielding `IRREGEX_OOM` (ADR-373 law 1).
+/// it instead of yielding `IRREGEX_OOM` (fault-channel law 1).
 ///
 /// An error cannot cross a thread boundary, so a worker that runs out of memory
 /// records it in `Worker.oom` and then keeps RETIRING tasks without doing their
@@ -231,7 +231,7 @@ fn processDir(w: *Worker, a: std.mem.Allocator, task: DirTask, local: *std.Array
     if (try_bulk) {
         // The bulk-stat→readdir seam: a listing failure is this accelerator
         // declining, not a fault — `bulk_ok` stays false and the portable
-        // fallback below does the same work, slower. Typed since ADR-373 law 1,
+        // fallback below does the same work, slower. Typed since fault-channel law 1,
         // so an OutOfMemory here propagates instead of masquerading as "this
         // platform has no getdirentries" and quietly retrying the slow path.
         switch (try bulkstat.listNamesOnly(a, dir.handle)) {
@@ -481,8 +481,8 @@ test "fused parallel load has byte-identical membership to the serial walk" {
 /// at 8 — the walk+read is syscall/namei-bound (like the search walk), so more
 /// threads add directory-fd and namei contention without shortening the tail.
 fn workerCount() usize {
-    if (std.c.getenv("GIST_WORKERS")) |v| {
-        if (std.fmt.parseInt(usize, std.mem.span(v), 10) catch null) |n| if (n > 0) return n;
+    if (assay.knob("WORKERS")) |v| {
+        if (std.fmt.parseInt(usize, v, 10) catch null) |n| if (n > 0) return n;
     }
     const cpu = portal.cpuCount() catch 8;
     return @max(@as(usize, 1), @min(cpu, 8));

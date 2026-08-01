@@ -64,7 +64,7 @@ pub fn compileFor(self: *ResidentSession, req: Request, mode: Mode) QueryError!a
         // linear-syntax decline → certified cold fallback.
         .pcre = req.pcre,
         // `CompileError` has exactly two members, so the switch is exhaustive
-        // and names each fact once (ADR-373 law 1). `Unsupported` is
+        // and names each fact once (fault-channel law 1). `Unsupported` is
         // `unsupported_syntax` and NOT `freshness_unprovable`: both route to the
         // same cold fallback, so the mislabel was invisible in routing — but
         // `unsupported_syntax` is the ONLY refusable declinature
@@ -245,7 +245,7 @@ fn asked(self: *ResidentSession, win: *const query_mod.Winnow, cq: *const Compil
 /// cold `elide.answered`, so one `GIST_TRACE=index` run reports both tiers in the
 /// same grammar and the certificate reads warm's numbers off the wired path.
 fn tiered(tier: []const u8, cand: []u32, corpus: usize) []u32 {
-    assay.trace(.index, "gist: warm tier={s} candidates={d}/{d}\n", .{ tier, cand.len, corpus });
+    assay.trace(.index, assay.tag ++ "warm tier={s} candidates={d}/{d}\n", .{ tier, cand.len, corpus });
     return cand;
 }
 
@@ -261,9 +261,9 @@ fn tiered(tier: []const u8, cand: []u32, corpus: usize) []u32 {
 /// cold's, so one binary A/Bs both tiers.
 fn winnowFor(arena: std.mem.Allocator, cq: *const CompiledQuery) query_mod.Winnow {
     const source = cq.source orelse return .{};
-    const want_cover = !cq.caseless and !assay.envFlag("GIST_NO_COVER");
+    const want_cover = !cq.caseless and !assay.knobFlag("NO_COVER");
     var win = query_mod.winnow(arena, source, .{ .caseless = cq.caseless, .unicode = cq.unicode }, if (want_cover) .{} else null);
-    if (assay.envFlag("GIST_NO_CREST")) win.sieve = crest.no_sieve;
+    if (assay.knobFlag("NO_CREST")) win.sieve = crest.no_sieve;
     return win;
 }
 
@@ -283,7 +283,7 @@ fn sieved(self: *ResidentSession, sieve: *const crest.Swell, ids: []u32) []u32 {
         ids[w] = d;
         w += 1;
     };
-    assay.trace(.index, "gist: warm sieve candidates={d}/{d}\n", .{ w, ids.len });
+    assay.trace(.index, assay.tag ++ "warm sieve candidates={d}/{d}\n", .{ w, ids.len });
     return ids[0..w];
 }
 
