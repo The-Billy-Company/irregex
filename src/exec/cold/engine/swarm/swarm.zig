@@ -168,7 +168,7 @@ pub fn eligible(io: std.Io, parsed: args.Parsed, o: Opts, re: ?*const Matcher) b
 /// tally); under `-U` the boolean must be PROVEN equal to the whole-buffer emit
 /// model's verdict (`bufBoolExact`).
 ///
-/// The decline is a real bug fix, not caution: `bench/rgsuite/fuzz.py` caught
+/// The decline is a real bug fix, not caution: `gist/bench/conformance/rgsuite/fuzz.py` caught
 /// `--files-without-match` paired with any of these streaming ordinary match
 /// lines, and — under `--sort path`, where the sink rewrites each delivered
 /// record as its path — listing the file set rg EXCLUDES. The serial engine's
@@ -563,12 +563,12 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
         stats.emitStats(gpa, &sbuf, st, search_span.read(io));
         _ = corpus_mod.writeStdout(sbuf.items);
         stats.diagSearch(gpa, o.mode == .json, st, search_span.read(io));
-        (Outcome{ .matched = sink.matched_files > 0, .faulted = q.walk_error.load(.acquire) or nothing_searched }).exit();
+        (Outcome{ .matched = sink.succeeded(), .faulted = q.walk_error.load(.acquire) or nothing_searched }).exit();
     }
     // `--files-without-match`: `matched_files` counts files that LACKED the
     // pattern (each `bufferPath` → `emitFilesChunk`), so exit 0 iff at least
     // one such file was found — ripgrep's success predicate for this mode.
     if (re != null and !o.quiet and o.mode != .files and !o.mode.negated() and sink.matched_files == 0 and !nothing_searched and !q.walk_error.load(.acquire))
         hints.noMatches(hints.shape(parsed.patterns, o, parsed.roots, parsed.roots.len > 0), null);
-    (Outcome{ .matched = sink.matched_files > 0, .faulted = q.walk_error.load(.acquire) or nothing_searched }).exit();
+    (Outcome{ .matched = sink.succeeded(), .faulted = q.walk_error.load(.acquire) or nothing_searched }).exit();
 }

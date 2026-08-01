@@ -83,7 +83,7 @@ const emitStats = stats.emitStats;
 
 // ─────────────────────────── the published face ───────────────────────────
 
-// ADR-376 moved the implementation out from under this module: the walk to
+// The implementation moved out from under this module: the walk to
 // `quarry/walk.zig` (sole authority on WHAT is in the tree, shared verbatim
 // with the warm session), read shards and index admission to `quarry/intake.zig`,
 // rg's canonical file order to `quarry/order.zig`, fd 0 to `quarry/stream.zig`,
@@ -476,30 +476,40 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         // trailing block — the search it ran to decide the listing, which is the
         // same search the standard mode reports.
         var lstat = Stats{};
+        // rg's success predicate for this mode is "some file's search found no
+        // match" (`SummarySink::has_match` inverted), NOT "some path printed" —
+        // a walked binary counts without ever being listed, so the verdict rides
+        // back from the per-file decider rather than from `out`.
+        var without = false;
         const bounds = if (o.stats or assay.serialForced()) null else par.shardBounds(InFile, files, {}, inFileWeight, par.min_bytes, par.max_shards, a);
         if (bounds) |b| {
-            filesWithoutSharded(gpa, a, &out, re, o, line_needle, files, b);
+            without = filesWithoutSharded(gpa, a, &out, re, o, line_needle, files, b);
         } else for (files) |f| {
-            if (o.stats)
+            const one = if (o.stats)
                 render.withoutMatchTallied(a, re, o, &em, &lsim, wssp, line_needle, f, &out, &lstat, w.binary_detect)
             else
                 fileWithoutMatch(a, re, o, &em, &lsim, wssp, line_needle, f, &out);
+            if (one) without = true;
         }
         if (o.stats) {
-            const listed = out.items.len > 0;
             lstat.set(.bytes_printed, stats.bytesPrinted(o, out.items.len));
+            // `-q --stats` keeps the stats BLOCK and drops the path list, exactly
+            // as the standard mode's tail does (rg prints its trailing block under
+            // `-q` in every mode; this branch used to suppress the whole stream,
+            // so `--files-without-match -q --stats` printed nothing at all).
+            if (o.quiet) out.clearRetainingCapacity();
             emitStats(a, &out, lstat, search_span.read(io));
             stats.diagSearch(gpa, false, lstat, search_span.read(io));
-            if (!o.quiet) corpus_mod.emitStdout(out.items);
+            corpus_mod.emitStdout(out.items);
             pcreFaultExit(re);
-            (Outcome{ .matched = listed, .faulted = err_exit }).exit();
+            (Outcome{ .matched = without, .faulted = err_exit }).exit();
         }
         // Under -q the stream is suppressed; the found-a-without-match file still
         // decides the exit (0 = at least one file lacked the pattern, ripgrep's
         // `--files-without-match` success).
         if (!o.quiet) corpus_mod.emitStdout(out.items);
         pcreFaultExit(re);
-        (Outcome{ .matched = out.items.len > 0, .faulted = err_exit }).exit();
+        (Outcome{ .matched = without, .faulted = err_exit }).exit();
     }
 
     const heading = o.groups();

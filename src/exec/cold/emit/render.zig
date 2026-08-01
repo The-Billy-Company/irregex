@@ -349,7 +349,16 @@ pub fn emitFileSharded(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.A
 /// like `anyMatch`, the buffer scan passes null: no shared capture VM to race
 /// across shards. Shared by the serial loop and every parallel shard so the two
 /// can't drift.
-pub fn fileWithoutMatch(a: std.mem.Allocator, re: *const Matcher, o: Opts, em: *Emitter, lsim: *Matcher.Sim, wssp: ?*Matcher.SpanSim, needle: ?simd.Gate, f: InFile, out: *std.ArrayList(u8)) void {
+///
+/// Returns this file's contribution to the RUN's success, which in this mode is
+/// rg's inverted predicate — `SummarySink::has_match` is `match_count == 0` for
+/// `PathWithoutMatch`, so "found no match" IS the success. That is a different
+/// question from "printed a row", and the two part company on exactly one file
+/// shape: a walked binary, whose search is abandoned and therefore found nothing
+/// (counts) but which rg's printer still refuses to list (no row). Deriving the
+/// exit code from the emitted bytes instead made gist exit 1 over a binary-only
+/// tree where rg exits 0.
+pub fn fileWithoutMatch(a: std.mem.Allocator, re: *const Matcher, o: Opts, em: *Emitter, lsim: *Matcher.Sim, wssp: ?*Matcher.SpanSim, needle: ?simd.Gate, f: InFile, out: *std.ArrayList(u8)) bool {
     const body = visibleBody(o.encoding, f.bytes);
     // A WALKED NUL-bearing file is dropped: rg's Summary printer never lists it
     // (measured — `rg --files-without-match -e zzz .` over a tree holding a
@@ -357,7 +366,19 @@ pub fn fileWithoutMatch(a: std.mem.Allocator, re: *const Matcher, o: Opts, em: *
     // posture, searched whole as text, so it IS listable — the same asymmetry
     // `binary.handleBinary` applies to `-l`. gist used to drop both, losing a
     // file rg reports (found by the differential fuzzer).
-    if (body.len > 0 and !f.explicit and corpus_mod.isBinary(body) and !o.text and !o.binary) return;
+    //
+    // The rule is `renderFile`'s, byte for byte: the first NUL ANYWHERE in the
+    // body (rg detects it in whatever buffer it lands in), with `-U`'s clause
+    // that a NUL past the sniff window the slice model never reads leaves the
+    // file text. This used to ask `corpus.isBinary`, whose 8 KiB window is the
+    // INDEX's membership rule, not the searcher's — so a NUL in the tail of a
+    // large file went unseen here and gist listed a path rg suppresses. The
+    // three flags are `writ.binaryDetect` inlined (this file is below writ).
+    if (body.len > 0 and !f.explicit and !o.text and !o.binary and !o.null_data) {
+        if (verify.firstNulWide(a, body)) |nul| {
+            if (!(ml.sliceModel(re, o) and !binary.multilineBinary(body.len, nul))) return true;
+        }
+    }
     const any = if (ml.sliceModel(re, o)) bufferAnyHit(a, re, o, null, needle, f.path, body) else blk: {
         var lines: std.ArrayList([]const u8) = .empty;
         collectLines(a, body, o.term(), &lines);
@@ -372,6 +393,7 @@ pub fn fileWithoutMatch(a: std.mem.Allocator, re: *const Matcher, o: Opts, em: *
     // this mode's whole output is a list of files to go open. No budget applies
     // to `--files-without-match` (see below), so no chrome to account for.
     if (!any) out.print(a, "{s}{s}", .{ beacon.anchor(a, f.path), if (o.null_sep) "\x00" else o.outTerm() }) catch oom();
+    return !any;
 }
 
 /// One file's `--stats` contribution: rg's `matches` / `matched lines` /
@@ -417,12 +439,15 @@ fn tallyFile(em: *Emitter, f: InFile, stat: *Stats, body: []const u8, lines: []c
 /// the stats block reports the search it ran to find that out. Kept next to
 /// `fileWithoutMatch` (and off the sharded fan-out, which owns no `Stats`) so the
 /// mode has exactly one tallying caller.
-pub fn withoutMatchTallied(a: std.mem.Allocator, re: *const Matcher, o: Opts, em: *Emitter, lsim: *Matcher.Sim, wssp: ?*Matcher.SpanSim, needle: ?simd.Gate, f: InFile, out: *std.ArrayList(u8), stat: *Stats, binary_detect: bool) void {
-    fileWithoutMatch(a, re, o, em, lsim, wssp, needle, f, out);
+pub fn withoutMatchTallied(a: std.mem.Allocator, re: *const Matcher, o: Opts, em: *Emitter, lsim: *Matcher.Sim, wssp: ?*Matcher.SpanSim, needle: ?simd.Gate, f: InFile, out: *std.ArrayList(u8), stat: *Stats, binary_detect: bool) bool {
+    const without = fileWithoutMatch(a, re, o, em, lsim, wssp, needle, f, out);
     const body = visibleBody(o.encoding, f.bytes);
     // An empty file is still a searched file with zero bytes — `renderFile`'s
     // empty arm counts it the same way.
-    if (body.len == 0) return stat.bump(.files_searched);
+    if (body.len == 0) {
+        stat.bump(.files_searched);
+        return without;
+    }
     const nul = if (binary_detect) verify.firstNulWide(a, body) else null;
     const matched = if (nul != null) tallyFile(em, f, stat, body, &.{}, nul) else blk: {
         var lines: std.ArrayList([]const u8) = .empty;
@@ -431,6 +456,7 @@ pub fn withoutMatchTallied(a: std.mem.Allocator, re: *const Matcher, o: Opts, em
         break :blk tallyFile(em, f, stat, body, lines.items, null);
     };
     if (matched) stat.bump(.files_with_match);
+    return without;
 }
 
 /// `--files-without-match`, data-parallel over `files`. Each file is independent
@@ -439,7 +465,10 @@ pub fn withoutMatchTallied(a: std.mem.Allocator, re: *const Matcher, o: Opts, em
 /// through the SAME `fileWithoutMatch` into per-arena buffers with their own
 /// boolean `Sim` / (word) `SpanSim` / `Emitter`, then the driver concatenates the
 /// buffers in file order — byte-identical to the serial loop. Merges into `out`.
-pub fn filesWithoutSharded(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, o: Opts, needle: ?simd.Gate, files: []const InFile, bounds: []const usize) void {
+/// Returns the OR of every shard's per-file verdict, the same run-success answer
+/// the serial loop folds (see `fileWithoutMatch`) — a shard holding only walked
+/// binaries emits nothing yet still carries the run to exit 0.
+pub fn filesWithoutSharded(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, o: Opts, needle: ?simd.Gate, files: []const InFile, bounds: []const usize) bool {
     const nthr = bounds.len - 1;
     const Shard = struct {
         re: *const Matcher,
@@ -448,6 +477,7 @@ pub fn filesWithoutSharded(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *s
         files: []const InFile,
         arena: std.heap.ArenaAllocator,
         buf: std.ArrayList(u8) = .empty,
+        without: bool = false,
 
         fn run(sh: *@This()) void {
             const sa = sh.arena.allocator();
@@ -455,7 +485,9 @@ pub fn filesWithoutSharded(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *s
             var wss: ?Matcher.SpanSim = if (sh.o.word) (Matcher.SpanSim.init(sa, sh.re) catch null) else null;
             const wssp: ?*Matcher.SpanSim = if (wss) |*s| s else null;
             var em = Emitter{ .a = sa, .re = sh.re, .o = sh.o, .show_name = false, .out = &sh.buf, .needle = sh.needle };
-            for (sh.files) |f| fileWithoutMatch(sa, sh.re, sh.o, &em, &lsim, wssp, sh.needle, f, &sh.buf);
+            for (sh.files) |f| {
+                if (fileWithoutMatch(sa, sh.re, sh.o, &em, &lsim, wssp, sh.needle, f, &sh.buf)) sh.without = true;
+            }
         }
     };
 
@@ -471,7 +503,12 @@ pub fn filesWithoutSharded(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *s
 
     const threads = a.alloc(std.Thread, nthr) catch oom();
     par.fanOut(Shard, shards, threads, Shard.run);
-    for (shards) |*sh| out.appendSlice(a, sh.buf.items) catch oom();
+    var without = false;
+    for (shards) |*sh| {
+        out.appendSlice(a, sh.buf.items) catch oom();
+        without = without or sh.without;
+    }
+    return without;
 }
 
 /// Mirror ripgrep's exit 2 when a `-P` search tripped a resource limit mid-run
@@ -548,4 +585,55 @@ pub fn anyMatch(a: std.mem.Allocator, re: *const Matcher, o: Opts, needle: ?simd
         for (lines.items) |line| if (lineHit(&em, &sim, wssp, needle, line) != o.invert) return true;
     }
     return false;
+}
+
+const Regex = captures_mod.Regex;
+
+test "--files-without-match: an unlistable binary still answers `found no match`" {
+    const t = std.testing;
+    var m = Matcher{ .linear = try Regex.compile(t.allocator, "zzz") };
+    defer m.deinit();
+    const o = Opts{ .mode = .files_without_match };
+    // The per-file arena every real caller hands in (serial loop and shard
+    // alike): line collection and the printed path are freed in one drop.
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var out: std.ArrayList(u8) = .empty;
+    var lsim = try Matcher.Sim.init(a, &m);
+    var em = Emitter{ .a = a, .re = &m, .o = o, .show_name = false, .out = &out };
+
+    // A walked NUL-bearing file. rg's Summary printer refuses to list it, so no
+    // path may reach `out` — yet the search it abandoned found no match, and
+    // `SummarySink::has_match` for this mode is `match_count == 0`, so the file
+    // still carries the run to exit 0. Reading the exit code off the printed
+    // bytes instead made gist exit 1 over a binary-only tree where rg exits 0.
+    const bin = InFile{ .path = "bin.dat", .scope = ".", .bytes = "head\n\x00\x01 buried\n" };
+    try t.expect(fileWithoutMatch(a, &m, o, &em, &lsim, null, null, bin, &out));
+    try t.expectEqual(@as(usize, 0), out.items.len);
+
+    // A text file lacking the pattern is the listable half of the same verdict.
+    const txt = InFile{ .path = "a.txt", .scope = ".", .bytes = "nothing here\n" };
+    try t.expect(fileWithoutMatch(a, &m, o, &em, &lsim, null, null, txt, &out));
+    try t.expect(std.mem.indexOf(u8, out.items, "a.txt") != null);
+
+    // A file that HAS the pattern is the only `false`: no row, and nothing
+    // toward the exit code either.
+    out.clearRetainingCapacity();
+    const hit = InFile{ .path = "b.txt", .scope = ".", .bytes = "zzz\n" };
+    try t.expect(!fileWithoutMatch(a, &m, o, &em, &lsim, null, null, hit, &out));
+    try t.expectEqual(@as(usize, 0), out.items.len);
+
+    // A NUL in the TAIL, past the 8 KiB window the index's membership rule
+    // looks at. rg reads the file buffer by buffer and detects it wherever it
+    // lands, so it lists nothing; gist asked `corpus.isBinary` here, saw a
+    // clean first 8 KiB, and printed a path rg suppresses (`rg
+    // --files-without-match -e generated .` over a 140 KB file ending in a NUL:
+    // rg omits it, gist listed it). The searcher's rule is the whole body.
+    out.clearRetainingCapacity();
+    const tail = try std.mem.concat(a, u8, &.{ "line of text\n" ** 1024, "\x00 buried\n" });
+    try t.expect(corpus_mod.binary_window < tail.len - 10); // the window really is passed
+    const late = InFile{ .path = "late.dat", .scope = ".", .bytes = tail };
+    try t.expect(fileWithoutMatch(a, &m, o, &em, &lsim, null, null, late, &out));
+    try t.expectEqual(@as(usize, 0), out.items.len);
 }

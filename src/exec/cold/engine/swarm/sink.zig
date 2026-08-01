@@ -49,6 +49,12 @@ pub const Sink = struct {
     group_sep: ?[2][]const u8 = .{ "--", "\n" },
     first: bool = true, // guarded by `mu`
     matched_files: usize = 0, // guarded by `mu`
+    // `--files-without-match` only: files whose search found nothing — rg's
+    // success for this mode — yet which its printer refuses to list, i.e. walked
+    // binaries. Kept apart from `matched_files` because that counter doubles as
+    // `--stats`'s `files_with_match`, and a suppressed binary contained no match;
+    // only the exit code may read this.
+    unlisted: usize = 0, // guarded by `mu`
     // Bytes actually written to stdout (match stream + separators). `--stats`
     // reads this after the walk for `bytes printed` (quiet ⇒ forced to 0).
     bytes_printed: usize = 0, // guarded by `mu`
@@ -67,6 +73,24 @@ pub const Sink = struct {
         if (n == 0) return;
         self.chrome += n;
         corpus_mod.noteChrome(self.chrome);
+    }
+
+    /// Did this run succeed (rg's exit 0)? Read after the workers join, so both
+    /// counters are quiescent. A row is success in every mode; a counted-but-
+    /// unlisted file is success only in `--files-without-match`, which is the
+    /// only mode that ever banks one.
+    pub fn succeeded(self: *const Sink) bool {
+        return self.matched_files > 0 or self.unlisted > 0;
+    }
+
+    /// Count a file toward `--files-without-match`'s success without printing a
+    /// row for it (the walked-binary case — see `unlisted`). No bytes, no
+    /// terminator, so no `writeStdout`: a lock and a counter, once per binary
+    /// file, off every hot path.
+    pub fn noteUnlisted(self: *Sink) void {
+        self.mu.lockUncancelable(self.io);
+        defer self.mu.unlock(self.io);
+        self.unlisted += 1;
     }
 
     pub fn emit(self: *Sink, kind: FragKind, buf: []const u8, chrome: usize) void {

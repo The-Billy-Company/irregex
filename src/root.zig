@@ -136,11 +136,11 @@ pub const regex_reduce = regex_engine.reduce;
 pub const regex_rungs = regex_engine.rungs;
 pub const regex_price = regex_engine.price;
 /// The SP-quotient sieve harvested from a `Dfa` — re-exported for its
-/// corpus-scale soundness + speed bench (`bench/sieve/`).
+/// corpus-scale soundness + speed bench (`bench/rungs/sieve/`).
 pub const regex_sieve = regex_engine.sieve;
 pub const regex_compose = regex_engine.compose;
 /// The Parabix bit-parallel rung, lowered from the AST — re-exported for its
-/// corpus-scale throughput + agreement bench (`bench/parabix/`).
+/// corpus-scale throughput + agreement bench (`bench/rungs/parabix/`).
 pub const regex_parabix = regex_engine.parabix;
 /// The parser's own tree and the analyses that walk it — the baseline arm of
 /// the sweep bench, and what a planner reads today.
@@ -357,6 +357,17 @@ pub const inner = struct {
 
 pub const version_string: [:0]const u8 = "0.3.0"; // x-release-please-version
 
+/// The C-ABI compatibility integer, and the provenance stamp every measurement
+/// harness prints in its banner — which is why it is declared here rather than
+/// only on the export shim: a bench binary links the module, not the library.
+/// `contract/engine.toml`'s `abi_version` is the contract for this number, and
+/// `irregex_abi_version()` returns it rather than restating it, so the two can
+/// never disagree. Bump only for a breaking layout or signature change; an
+/// additive symbol keeps it.
+pub fn abi() u32 {
+    return 2;
+}
+
 /// The vendored PCRE2 the `-P` backend links (`kernel/regex/pcre2/ffi.zig`),
 /// reported by `gist rg --pcre2-version` in ripgrep's own phrasing. Declared
 /// beside the engine semver rather than inside the FFI shim so the answer a
@@ -468,6 +479,7 @@ test {
     _ = @import("exec/cold/engine/swarm/crew.zig"); // worker state, pool topology, the ordered --sort replay
     _ = @import("exec/cold/read/ingest.zig"); // -z/--pre/-E content transforms (decompress/preprocess/transcode)
     _ = @import("corpus/read/encoding.zig"); // -E WHATWG legacy-code-page decoders (single-byte + CJK multi-byte)
+    _ = @import("exec/cold/emit/render.zig"); // one file's result: the --files-without-match verdict both engines fold
     _ = @import("exec/cold/emit/multiline.zig"); // -U whole-buffer match model (Emitter.buffer + --json)
     _ = @import("exec/cold/emit/output/multibuf_test.zig"); // -U whole-buffer emit: the ripgrep-captured parity table
     _ = @import("exec/cold/emit/hints.zig"); // no-match stderr guidance: shape analysis + exact render bytes
