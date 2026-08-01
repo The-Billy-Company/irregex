@@ -44,8 +44,9 @@ opinion about products:
   vocabulary the faces share.
 - `research/` - the hand-authored algorithms (crest, pincer, ceiling,
   the automata work) with their own proofs and prior-art dossiers.
-- `python/` - the `irregex` PyPI face: a dependency-free subprocess API
-  over an installed binary.
+- `bindings/` - the Python, Go, and Rust faces of the C ABI. Each one
+  ships the native library with it, so installing needs no Zig and no
+  compiler.
 - `tools/` - the generated-table builders (Unicode, encodings, rarity,
   schema) and their pinned UCD/WHATWG inputs.
 
