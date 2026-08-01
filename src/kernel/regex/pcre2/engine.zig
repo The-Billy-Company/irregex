@@ -21,7 +21,27 @@ pub const Span = core.Regex.Span;
 
 /// Compile-time engine knobs mirroring `Regex.Options`. `unicode` selects
 /// PCRE2 UTF+UCP semantics (ripgrep's `-P` default); off ⇒ raw bytes / ASCII.
-pub const Options = struct { caseless: bool = false, multiline: bool = false, dotall: bool = false, unicode: bool = true };
+pub const Options = struct { caseless: bool = false, multiline: bool = false, dotall: bool = false, unicode: bool = true, word: bool = false };
+
+/// `-w` for this arm, as rg spells it for its own PCRE2 backend:
+/// `(?<!\w)(?:PAT)(?!\w)`. Lookaround is free here, so the boundary becomes part
+/// of the language exactly as the linear arm's `\b{start-half}` wrap does — and
+/// for the same reason (a vet applied after the span is chosen cannot retry the
+/// shorter arm at the same offset).
+///
+/// The wrapped text is what `pcre2_compile` sees and nothing else: the required
+/// literal and the shadow gate keep reading the ORIGINAL pattern, whose language
+/// CONTAINS the wrapped one, so both prefilters stay sound while staying blind to
+/// a construct they would only have to skip. Returns `pattern` itself when there
+/// is nothing to do, so a caller frees only what it did not pass in.
+pub fn wordWrapped(allocator: std.mem.Allocator, pattern: []const u8, opts: Options) CompileError![]const u8 {
+    if (!opts.word) return pattern;
+    return std.fmt.allocPrint(allocator, word_lead ++ "{s})(?!\\w)", .{pattern}) catch CompileError.OutOfMemory;
+}
+
+/// What `wordWrapped` puts BEFORE the pattern — named so a compile diagnostic can
+/// subtract it and keep pointing at the byte the user typed.
+const word_lead = "(?<!\\w)(?:";
 
 /// `Unsupported` = built without / unavailable; `BadPattern` = a compile
 /// diagnostic (message in `last_error`); `OutOfMemory` = allocation failure.
@@ -311,10 +331,15 @@ pub const Pcre = struct {
 pub fn compileMode(allocator: std.mem.Allocator, pattern: []const u8, opts: Options, enable_jit: bool) CompileError!Pcre {
     const compile_options = compileOptionBits(opts);
 
+    const src = try wordWrapped(allocator, pattern, opts);
+    defer if (src.ptr != pattern.ptr) allocator.free(src);
+
     var errorcode: c_int = 0;
     var erroroffset: ffi.Size = 0;
-    const code = ffi.pcre2_compile_8(pattern.ptr, pattern.len, compile_options, &errorcode, &erroroffset, null) orelse {
-        recordErrorAt(errorcode, erroroffset);
+    const code = ffi.pcre2_compile_8(src.ptr, src.len, compile_options, &errorcode, &erroroffset, null) orelse {
+        // PCRE2 located the defect in the text IT was handed; the caller draws its
+        // caret against the pattern the user typed, so discount the `-w` lead.
+        recordErrorAt(errorcode, erroroffset -| (if (src.ptr == pattern.ptr) 0 else word_lead.len));
         return CompileError.BadPattern;
     };
     errdefer ffi.pcre2_code_free_8(code);

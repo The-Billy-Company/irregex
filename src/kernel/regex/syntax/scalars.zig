@@ -1,11 +1,15 @@
-//! gist — Unicode scalar ranges: the parse-time accumulator, and the case fold
-//! that rewrites a finished tree.
+//! gist — Unicode scalar ranges: the parse-time accumulator, and the three
+//! rewrites a FINISHED tree can still owe its flags.
 //!
 //! `ScalarSet` is scratch, not vocabulary — it exists only between reading a
 //! class and lowering it, and no `Node` ever holds one. That is the line between
 //! this file and `tree.zig`: everything here builds or rewrites the persistent
-//! types, and nothing here is one. `foldCaseAst` sits beside it because the `-i`
-//! fold is the same range algebra applied after the parse rather than during it.
+//! types, and nothing here is one. The three passes sit beside it because each is
+//! a flag whose meaning is a rewrite rather than an engine mode — `-i` is the
+//! same range algebra applied after the parse (`foldCaseAst`), `--crlf` is one
+//! codepoint removed from every class (`stripCpAst`), and `-w` is two assertions
+//! wrapped around the root (`wordBoundedAst`). One definition each, because both
+//! the match engine and the capture VM apply them to their own parse.
 
 const std = @import("std");
 const uni = @import("../unicode/tables.zig");
@@ -157,6 +161,68 @@ fn refold(gpa: std.mem.Allocator, n: *Node) ParseError!void {
     }
     try ss.foldExpand();
     try ss.writeInto(gpa, n);
+}
+
+/// `-w` as rg spells it: the whole parse wrapped in the two HALF boundary
+/// assertions, so a word-bounded match is what the engine searches for rather
+/// than what a later vet accepts.
+///
+/// The halves, not `\b`: `\b{start-half}` asks only that nothing wordy sit behind
+/// the position, which is what lets `-w ' x '` (a pattern whose own first byte is
+/// not a word byte) still match — `\b` there would demand a transition the space
+/// cannot provide. They are exactly the two conditions the post-match `wordOk`
+/// vet applies, so this changes WHICH span an engine settles on, never which
+/// spans are admissible: at a start offset whose greedy arm is word-internal, the
+/// assertion prunes that arm inside the search and the engine goes on to the
+/// shorter admissible one, where the vet could only reject the whole offset and
+/// advance past matches rg reports.
+///
+/// Wrapping the parsed root rather than the pattern text is what makes the
+/// precedence free: `-w 'a|bc'` binds the alternation, not its first arm.
+pub fn wordBoundedAst(arena: std.mem.Allocator, ast: *Node) ParseError!*Node {
+    const lead = try arena.create(Node);
+    lead.* = .{ .word = .start_half };
+    const trail = try arena.create(Node);
+    trail.* = .{ .word = .end_half };
+    const tail = try arena.create(Node);
+    tail.* = .{ .concat = .{ ast, trail } };
+    const root = try arena.create(Node);
+    root.* = .{ .concat = .{ lead, tail } };
+    return root;
+}
+
+/// Remove one codepoint from every consuming class in the AST, so no thread can
+/// consume it — `--crlf`'s strip of `\r`, and rg's own rule (`grep-regex`
+/// `strip_from_match`): with `\n` as the line terminator, a CR is line furniture
+/// rather than content, so `.`, `[…]`, a negated class, and `\S` must all decline
+/// it. Without this, `.` glues two CRLF-terminated lines into one match and a
+/// lone CR reads as ordinary text.
+///
+/// A LITERAL `\r` is a class of one by the time the parse finishes, so it empties
+/// and the pattern becomes unmatchable. That is deliberate: rg refuses such a
+/// pattern outright (exit 2), and gist answers the same question with the clean
+/// no-match its hint channel explains, exactly as it already does for a literal
+/// `\n` in the per-line model.
+///
+/// Zero-width assertions and structure are untouched. Idempotent, so re-visiting
+/// a node shared through `{n,m}` is harmless.
+pub fn stripCpAst(gpa: std.mem.Allocator, n: *Node, cp: u21) ParseError!void {
+    switch (n.*) {
+        .class => |*s| if (cp <= 0xFF) s.remove(@intCast(cp)),
+        .uclass => |ranges| {
+            var ss = ScalarSet{ .gpa = gpa };
+            try ss.addTable(ranges);
+            try ss.dropCp(cp);
+            try ss.writeInto(gpa, n);
+        },
+        .concat, .alt => |kids| {
+            try stripCpAst(gpa, kids[0], cp);
+            try stripCpAst(gpa, kids[1], cp);
+        },
+        .star, .plus, .quest => |r| try stripCpAst(gpa, r.node, cp),
+        .capture => |g| try stripCpAst(gpa, g.child, cp),
+        .empty, .anchor_start, .anchor_end, .anchor_buf_start, .anchor_buf_end, .word => {},
+    }
 }
 
 /// Recursively case-fold every consuming class in the AST so the compiled engine

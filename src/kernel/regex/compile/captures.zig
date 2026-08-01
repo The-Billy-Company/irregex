@@ -75,13 +75,18 @@ pub const Caps = union(enum) {
 
     /// Which grammar a pattern is written in, and under what semantics. The
     /// `pcre` arm reads `multiline`/`dotall`; the linear arm ignores them
-    /// (`^`/`$`/`.` are line-scoped there by construction).
+    /// (`^`/`$`/`.` are line-scoped there by construction). `word`/`crlf` are the
+    /// two rewrites that change what the pattern MEANS, so both arms owe them —
+    /// a capture program that skipped either would report a different span than
+    /// the search that asked for it (`-w -r`, `--crlf -r`).
     pub const Selection = struct {
         caseless: bool = false,
         unicode: bool = true,
         pcre: bool = false,
         multiline: bool = false,
         dotall: bool = false,
+        word: bool = false,
+        crlf: bool = false,
     };
 
     /// Compile `pattern` into whichever arm it belongs to — the ecosystem's ONE
@@ -102,6 +107,7 @@ pub const Caps = union(enum) {
                 .multiline = sel.multiline,
                 .dotall = sel.dotall,
                 .unicode = sel.unicode,
+                .word = sel.word,
             }) catch |e| switch (e) {
                 error.OutOfMemory => |oom| return oom,
                 // `Unsupported` joins `BadPattern`: to a caller holding one
@@ -110,7 +116,7 @@ pub const Caps = union(enum) {
                 else => return error.BadPattern,
             },
         };
-        const linear = try Captures.compile(gpa, pattern, sel.caseless, sel.unicode);
+        const linear = try Captures.compile(gpa, pattern, sel);
         return switch (try OnePass.attach(gpa, linear)) {
             .got => |op| .{ .onepass = op },
             .declined => .{ .linear = linear },
@@ -162,16 +168,24 @@ pub const Captures = struct {
     nslots_buf: [][]isize,
     gen: u32 = 0,
 
-    pub fn compile(gpa: std.mem.Allocator, pattern: []const u8, caseless: bool, unicode: bool) ParseError!Captures {
+    /// The same `sel` the union's `compile` resolved, so this arm applies the
+    /// meaning-changing rewrites (`-i`, `--crlf`, `-w`) that the search matcher
+    /// applies in `linear/program/lower.zig::parse` — one list, spelled once each
+    /// in `syntax/scalars.zig`, so a replacement can never be measured against a
+    /// span the search engine would not have chosen.
+    pub fn compile(gpa: std.mem.Allocator, pattern: []const u8, sel: Caps.Selection) ParseError!Captures {
         var arena_state = std.heap.ArenaAllocator.init(gpa);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
 
+        const unicode = sel.unicode;
         var names: std.ArrayList(syn.NamedCap) = .empty;
-        var parser = syn.Parser{ .src = pattern, .arena = arena, .names = &names, .unicode = unicode, .caseless = caseless };
-        const ast = try parser.parseAlt();
+        var parser = syn.Parser{ .src = pattern, .arena = arena, .names = &names, .unicode = unicode, .caseless = sel.caseless };
+        const parsed = try parser.parseAlt();
         if (parser.pos != pattern.len) return ParseError.BadPattern;
-        if (caseless) try syn.foldCaseAst(arena, ast, unicode);
+        if (sel.caseless) try syn.foldCaseAst(arena, parsed, unicode);
+        if (sel.crlf) try syn.stripCpAst(arena, parsed, '\r');
+        const ast = if (sel.word) try syn.wordBoundedAst(arena, parsed) else parsed;
 
         var c = Comp{ .gpa = gpa };
         errdefer c.prog.deinit(gpa);

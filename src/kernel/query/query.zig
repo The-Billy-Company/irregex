@@ -1,4 +1,4 @@
-//! gist search core — the compiled, transport-neutral query (ADR-352).
+//! gist search core — the compiled, transport-neutral query.
 //!
 //! One deep module owns "a search intent, compiled". A `(pattern, fixed,
 //! ignore_case, pcre, mode)` spec — the whole shape the unified search contract
@@ -16,8 +16,8 @@
 //!   • Fail-closed, never fatal. Every entry point RETURNS a typed error — a
 //!     pattern outside the linear-time syntax is `error.Unsupported`, an
 //!     allocation failure is `error.OutOfMemory` — so a bad query can never
-//!     `die()`/exit an embedding host (the exact hazard ADR-352 defers the FFI
-//!     on). The CLI's cold path keeps its own `die()` shell; this core does not.
+//!     `die()`/exit an embedding host (the exact hazard that keeps the FFI
+//!     surface honest). The CLI's cold path keeps its own `die()` shell; this core does not.
 //!   • Thread-safe for the parallel walk. A `CompiledQuery` is immutable after
 //!     `compile`; the only per-query mutable state — the regex Pike-VM
 //!     simulation — is a caller-owned `Scratch`, one per worker, threaded into
@@ -69,11 +69,18 @@ pub const Spec = struct {
     /// `\w`/`\d`/`\s`/`.`/`\p{…}`/`\b`. The daemon stays at this default; the
     /// in-process FFI may explicitly select ASCII through the same compile seam.
     unicode: bool = true,
-    /// `-w`/`--word-regexp`: only word-bounded match spans count. This is rg's
-    /// POST-MATCH rule, NOT `\b(pat)\b` — a span `[s,e)` counts iff a non-word
-    /// codepoint (or the line edge) bounds it on BOTH sides (`wordOk` below,
-    /// mirroring `exec/cold/emit/output.zig::wordOk` over the same shared
-    /// `\b` oracle), so a punctuation-only match is still a valid word match.
+    /// `-w`/`--word-regexp`: only word-bounded match spans count — a span `[s,e)`
+    /// counts iff a non-word codepoint (or the line edge) bounds it on BOTH sides,
+    /// so a punctuation-only match is still a valid word match. It is the HALF
+    /// boundaries, not `\b(pat)\b`.
+    ///
+    /// A regex body carries that rule INSIDE the compiled program (rg's own
+    /// rewrite — `syntax/scalars.zig::wordBoundedAst` for the linear arm, a
+    /// lookaround wrap for PCRE2), so the engine settles on a word-bounded span by
+    /// construction. The post-match `wordOk` vet (`word.zig`, sharing the `\b`
+    /// oracle with `exec/cold/emit/output.zig::wordOk`) remains for the `.literal`
+    /// body, where there is no program to rewrite and a single literal has exactly
+    /// one span per offset for the vet to judge.
     word: bool = false,
     /// `-m N`/`--max-count`: cap matching lines PER FILE at N (`0` = unlimited).
     /// rg's explicit `-m0` (match nothing) is resolved at the session boundary
@@ -232,7 +239,7 @@ pub const CompiledQuery = struct {
         // required literal, so a `-P` body skips them (its prefilter reads the
         // backend's `required`/`alts` directly — see `prefilter`).
         if (spec.pcre and !spec.fixed) {
-            const p = Pcre.compileOpts(gpa, spec.pattern, .{ .caseless = spec.ignore_case, .unicode = spec.unicode }) catch |e|
+            const p = Pcre.compileOpts(gpa, spec.pattern, .{ .caseless = spec.ignore_case, .unicode = spec.unicode, .word = spec.word }) catch |e|
                 return if (e == error.OutOfMemory) CompileError.OutOfMemory else CompileError.Unsupported;
             return .{ .mode = spec.mode, .caseless = spec.ignore_case, .word = spec.word, .unicode = spec.unicode, .max_count = spec.max_count, .body = .{ .engine = .{ .pcre = p } } };
         }
@@ -240,7 +247,7 @@ pub const CompiledQuery = struct {
         const escaped: ?[]u8 = if (spec.fixed) try escapeLiteral(gpa, spec.pattern) else null;
         errdefer if (escaped) |e| gpa.free(e);
 
-        const re = Regex.compileOpts(gpa, escaped orelse spec.pattern, .{ .caseless = spec.ignore_case, .unicode = spec.unicode }) catch
+        const re = Regex.compileOpts(gpa, escaped orelse spec.pattern, .{ .caseless = spec.ignore_case, .unicode = spec.unicode, .word = spec.word }) catch
             return CompileError.Unsupported;
         const source = escaped orelse spec.pattern;
         var q = CompiledQuery{ .mode = spec.mode, .caseless = spec.ignore_case, .word = spec.word, .unicode = spec.unicode, .max_count = spec.max_count, .body = .{ .engine = .{ .linear = re } }, .escaped = escaped, .source = source };

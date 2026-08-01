@@ -45,9 +45,9 @@ const Arms = struct { op: OnePass, pike: Captures };
 /// never be perturbed by the engine under test. Returns null when the pattern is
 /// refused, which is a legitimate outcome and not a failure.
 fn arms(pat: []const u8, unicode: bool) !?Arms {
-    var pike = try Captures.compile(ta, pat, false, unicode);
+    var pike = try Captures.compile(ta, pat, .{ .unicode = unicode });
     errdefer pike.deinit();
-    var second = try Captures.compile(ta, pat, false, unicode);
+    var second = try Captures.compile(ta, pat, .{ .unicode = unicode });
     errdefer second.deinit();
     switch (try OnePass.attach(ta, second)) {
         .got => |op| return .{ .op = op, .pike = pike },
@@ -209,7 +209,7 @@ test "onepass: definitionally ambiguous patterns are refused, and the Pike VM st
         .{ .pat = "(.*)=(.*)", .line = "k=v=w", .want = &.{ 0, 5, 0, 3, 4, 5 } },
     };
     for (cases) |c| {
-        var pike = try Captures.compile(ta, c.pat, false, false);
+        var pike = try Captures.compile(ta, c.pat, .{ .unicode = false });
         defer pike.deinit();
         try std.testing.expectEqual(fault.Decline.not_worthwhile, (try OnePass.attach(ta, pike)).declined);
         // `attach` declining must leave `pike` untouched and usable — that is the
@@ -224,7 +224,7 @@ test "onepass: definitionally ambiguous patterns are refused, and the Pike VM st
 test "onepass: a refused pattern routed through Caps still captures correctly" {
     // The seam the product actually uses: `Caps` with the Pike arm, for a
     // pattern the one-pass builder declined.
-    const pike = try Captures.compile(ta, "(ab|ac)+", false, false);
+    const pike = try Captures.compile(ta, "(ab|ac)+", .{ .unicode = false });
     try std.testing.expectEqual(fault.Decline.not_worthwhile, (try OnePass.attach(ta, pike)).declined);
     var caps = captures.Caps{ .linear = pike };
     defer caps.deinit();
@@ -253,7 +253,7 @@ test "onepass: the real -r / --json patterns that must take the fast arm" {
         "(\\w+)://",
     };
     for (must) |p| {
-        var pike = try Captures.compile(ta, p, false, true);
+        var pike = try Captures.compile(ta, p, .{});
         switch (try OnePass.attach(ta, pike)) {
             .got => |built| {
                 var owned = built;
@@ -292,7 +292,7 @@ test "onepass: eligibility census over a realistic -r/--json pattern corpus" {
     for (corpus) |p| {
         var ok: [2]bool = .{ false, false };
         for ([_]bool{ true, false }, 0..) |u, k| {
-            var pike = Captures.compile(ta, p, false, u) catch continue;
+            var pike = Captures.compile(ta, p, .{ .unicode = u }) catch continue;
             switch (try OnePass.attach(ta, pike)) {
                 .got => |built| {
                     var owned = built;
@@ -341,7 +341,7 @@ test "onepass: assertions on an accept, and a post-match branch under one" {
     // A `match` reached with a pending assertion may FAIL at run time and hand
     // control to a lower-priority branch — a choice the table cannot express.
     // The builder must refuse rather than silently drop that branch.
-    var pike = try Captures.compile(ta, "(a*)(?:$|b)", false, false);
+    var pike = try Captures.compile(ta, "(a*)(?:$|b)", .{ .unicode = false });
     defer pike.deinit();
     try std.testing.expectEqual(fault.Decline.not_worthwhile, (try OnePass.attach(ta, pike)).declined);
 
@@ -400,7 +400,7 @@ test "onepass: empty and zero-length-match edges" {
 }
 
 test "onepass: named groups survive the arm swap" {
-    const pike = try Captures.compile(ta, "(?P<key>\\w+)=(?P<val>[^,]*)", false, false);
+    const pike = try Captures.compile(ta, "(?P<key>\\w+)=(?P<val>[^,]*)", .{ .unicode = false });
     var op = (try OnePass.attach(ta, pike)).got;
     defer op.deinit();
     try std.testing.expectEqual(@as(?u32, 1), op.groupByName("key"));

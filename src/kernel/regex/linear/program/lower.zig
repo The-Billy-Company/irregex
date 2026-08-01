@@ -45,6 +45,14 @@ const Regex = core.Regex;
 /// codepoint-aware: non-ASCII literals, `.`, `\w`/`\d`/`\s`, `\p{…}`, and
 /// non-ASCII `[…]` lower to a `uclass` (UTF-8 byte sub-automaton). Cleared, the
 /// engine is a pure byte matcher (today's `(?-u)` behavior, byte-for-byte).
+/// `word` (`-w`/`--word-regexp`) makes the word boundary part of the LANGUAGE,
+/// by wrapping the parse in `\b{start-half}` … `\b{end-half}` — rg's own rewrite
+/// (`grep-regex`'s `word` config), and the reason its engine settles on the
+/// SHORTER admissible arm of an alternation at a start offset instead of vetting
+/// the greedy one and moving on. See `syn.wordBoundedAst`.
+/// `crlf` (`--crlf`) strips `\r` from every consuming class, so no thread may
+/// consume the CR of a `\r\n` terminator — rg's `strip_from_match`. See
+/// `syn.stripCpAst`.
 /// `line_anchors` decouples the regex `m` flag from `-U`: `^`/`$` anchor at
 /// every `\n` (true) or only the buffer ends (false). `null` inherits
 /// `multiline` — rg's `-U` default is `m` ON, and `(?-m)` clears it while the
@@ -66,6 +74,8 @@ pub const Options = struct {
     multiline: bool = false,
     dotall: bool = false,
     unicode: bool = false,
+    word: bool = false,
+    crlf: bool = false,
     line_anchors: ?bool = null,
     force_dfa: bool = false,
     symbolic: Symbolic = .auto,
@@ -88,7 +98,10 @@ pub fn parse(arena: std.mem.Allocator, pattern: []const u8, opts: Options) Parse
     // Fold BEFORE every downstream analysis (required-literal, cover, first-set,
     // DFA, forced crest) so prefilter and match engines agree on the same classes.
     if (opts.caseless) try syn.foldCaseAst(arena, ast, opts.unicode);
-    return ast;
+    // `--crlf`: no consuming class may hold `\r`. After the fold, so a promoted
+    // `uclass` is stripped too.
+    if (opts.crlf) try syn.stripCpAst(arena, ast, '\r');
+    return if (opts.word) try syn.wordBoundedAst(arena, ast) else ast;
 }
 
 /// The crest sieve's forced swell — ĝ per top-level alternative — for `pattern`

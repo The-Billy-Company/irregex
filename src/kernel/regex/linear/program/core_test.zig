@@ -33,8 +33,8 @@ fn matchesCI(pattern: []const u8, line: []const u8) !bool {
 
 test "regex: caseless (-i) folds literals, classes, and ranges both ways" {
     // Literal bytes fold both directions (the pattern case is irrelevant).
-    try std.testing.expect(try matchesCI("WalletService", "type walletservice struct"));
-    try std.testing.expect(try matchesCI("walletservice", "WALLETSERVICE = 1"));
+    try std.testing.expect(try matchesCI("SessionStore", "type sessionstore struct"));
+    try std.testing.expect(try matchesCI("sessionstore", "SESSIONSTORE = 1"));
     try std.testing.expect(try matchesCI("Func", "FUNC main"));
     // A class range gains its opposite-case twin: [a-c] also admits [A-C].
     try std.testing.expect(try matchesCI("[a-c]at", "BAT"));
@@ -42,7 +42,7 @@ test "regex: caseless (-i) folds literals, classes, and ranges both ways" {
     try std.testing.expect(try matchesCI("err[0-9]", "ERR7"));
     try std.testing.expect(!try matchesCI("err[0-9]", "ERRx"));
     // Sound vs case-SENSITIVE baseline: the same pattern must NOT match folded.
-    try std.testing.expect(!try matches("WalletService", "walletservice"));
+    try std.testing.expect(!try matches("SessionStore", "sessionstore"));
 }
 
 fn matchesU(pattern: []const u8, line: []const u8) !bool {
@@ -145,14 +145,14 @@ test "regex: caseless empties the required literal (prefilter falls back to scan
     // A folded literal byte is a 2-member class, so `only()`→null and the longest
     // required literal is "" — the cli grep path then seeds every doc (sound,
     // since trigrams are case-sensitive and cannot prune a caseless needle).
-    var re = try Regex.compileOpts(std.testing.allocator, "walletservice", .{ .caseless = true });
+    var re = try Regex.compileOpts(std.testing.allocator, "sessionstore", .{ .caseless = true });
     defer re.deinit();
     try std.testing.expectEqual(@as(usize, 0), re.required.len);
     try std.testing.expectEqual(@as(usize, 0), re.alts.len);
     // The case-SENSITIVE compile keeps its full required literal for the prefilter.
-    var cs = try Regex.compile(std.testing.allocator, "walletservice");
+    var cs = try Regex.compile(std.testing.allocator, "sessionstore");
     defer cs.deinit();
-    try std.testing.expectEqualStrings("walletservice", cs.required);
+    try std.testing.expectEqualStrings("sessionstore", cs.required);
 }
 
 test "regex: dot, star, plus, quest" {
@@ -490,8 +490,8 @@ fn span1(pattern: []const u8, line: []const u8, from: usize) !?Regex.Span {
 
 /// Concatenate every non-overlapping match's TEXT with '|' — the `-o` stream
 /// per line (empty matches advance one byte, exactly as `emitOnlyMatching`).
-fn spansJoined(gpa: std.mem.Allocator, pattern: []const u8, line: []const u8) ![]u8 {
-    var re = try Regex.compile(gpa, pattern);
+fn spansJoined(gpa: std.mem.Allocator, pattern: []const u8, line: []const u8, opts: Regex.Options) ![]u8 {
+    var re = try Regex.compileOpts(gpa, pattern, opts);
     defer re.deinit();
     var ss = try Regex.SpanSim.init(gpa, &re);
     defer ss.deinit();
@@ -514,9 +514,58 @@ fn spansJoined(gpa: std.mem.Allocator, pattern: []const u8, line: []const u8) ![
 }
 
 fn expectJoined(pattern: []const u8, line: []const u8, want: []const u8) !void {
-    const got = try spansJoined(std.testing.allocator, pattern, line);
+    return expectJoinedOpts(pattern, line, .{}, want);
+}
+
+/// `expectJoined` for a flag whose whole meaning is a rewrite of the pattern
+/// (`-w`, `--crlf`, `-i`): the `-o` stream must come out of the COMPILED program,
+/// because that is where the rewrite lives and where a post-filter would not be.
+fn expectJoinedOpts(pattern: []const u8, line: []const u8, opts: Regex.Options, want: []const u8) !void {
+    const got = try spansJoined(std.testing.allocator, pattern, line, opts);
     defer std.testing.allocator.free(got);
     try std.testing.expectEqualStrings(want, got);
+}
+
+test "matchSpan: -w settles on a LONGER arm at the same start (rewrite, not a post-filter)" {
+    const w: Regex.Options = .{ .word = true };
+    // Measured, `rg -w -o -e 'abc|abcd'` over "x abcd" ⇒ "abcd". Leftmost-first
+    // reaches `abc` first at offset 2, and its end sits before `d` — a word byte
+    // — so the trailing half-boundary fails. The retry has to happen AT offset 2,
+    // which it does because the assertions are inside the program. A post-filter
+    // over the settled span sees only the losing `abc`, advances past 2, and
+    // reports nothing where rg reports a match (the false negative fixed here).
+    try expectJoinedOpts("abc|abcd", "x abcd", w, "abcd");
+    try expectJoinedOpts("abcd|abc", "x abcd", w, "abcd"); // arm ORDER is irrelevant
+    // Every arm admissible ⇒ leftmost-first order is untouched by the rewrite.
+    try expectJoinedOpts("ab|abc|abcd", "ab abc abcd", w, "ab|abc|abcd");
+    // The CONTROL, and the reason this is not an overcorrection: a pattern whose
+    // every span is word-internal still finds nothing. A fix that merely widened
+    // the search would start reporting these.
+    try expectJoinedOpts("abc", "x abcd", w, "");
+    try expectJoinedOpts("ab", "x abcd", w, "");
+    // `-w` is the two HALF boundaries, not `\b…\b`. Measured: `rg -w -o -e -`
+    // finds the dash in "foo - bar" (both neighbours non-word) where `\b-\b`
+    // finds nothing at all, and finds NO dash in "foo-bar", because a half
+    // boundary judges the neighbouring byte and not the span's own first byte.
+    try expectJoinedOpts("-", "foo - bar", w, "-");
+    try expectJoinedOpts("-", "foo-bar", w, "");
+}
+
+test "matchSpan: --crlf takes \\r out of every consuming class (no line gluing)" {
+    const crlf: Regex.Options = .{ .crlf = true };
+    // Measured, `rg --crlf -o` over "alpha\r\nbeta\r\n": `a.*` yields "alpha",
+    // never "alpha\r". rg rewrites the PATTERN before compiling — `.` and every
+    // class, negated or not, lose the codepoint — so nothing consuming can cross
+    // a CR. A `.` that still admitted `\r` glued the CRLF into the next line and
+    // reported matches rg does not have.
+    try expectJoinedOpts("a.*", "alpha\r", crlf, "alpha");
+    try expectJoinedOpts("[^x]+", "beta\r", crlf, "beta");
+    try expectJoinedOpts("a[^q]*", "alpha\r", crlf, "alpha");
+    try expectJoinedOpts("alpha.beta", "alpha\rbeta", crlf, "");
+    // Without the flag the same classes keep `\r`: the rewrite is `--crlf`'s
+    // meaning, not a global redefinition of what `.` is.
+    try expectJoined("a.*", "alpha\r", "alpha\r");
+    try expectJoined("alpha.beta", "alpha\rbeta", "alpha\rbeta");
 }
 
 test "matchSpan: leftmost-first prefers the earlier alternation branch (a|ab ⇒ a)" {
@@ -855,7 +904,7 @@ test "regex/span: a window equals a slice wherever the two must agree" {
         "",
         "foo",
         "xx foo yy foobar zz",
-        "  const WalletService = makeThing(user_id_key, HTTPServer);",
+        "  const SessionStore = makeThing(user_id_key, HTTPServer);",
         "mail bob@host.com and eve@x.io done",
         "foo bar x foo baz x",
         "aaaa bbbb 1234 5678 zzzz",

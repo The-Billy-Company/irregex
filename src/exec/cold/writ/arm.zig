@@ -48,7 +48,7 @@ pub fn linearArm(gpa: std.mem.Allocator, eff: []const u8, o: Opts) fault.Answer(
 /// the cover plan off this AST, and a flag that disagreed there would prune real
 /// matches rather than merely slow the query down.
 pub fn linearOptions(o: Opts) Regex.Options {
-    return .{ .caseless = o.caseless, .multiline = o.multiline, .dotall = o.multiline_dotall, .unicode = o.unicode, .line_anchors = o.re_line_anchors };
+    return .{ .caseless = o.caseless, .multiline = o.multiline, .dotall = o.multiline_dotall, .unicode = o.unicode, .word = o.word, .crlf = o.crlf, .line_anchors = o.re_line_anchors };
 }
 
 /// Whether PCRE2 was chosen outright (`-P`) or reached by escalation — the two
@@ -63,7 +63,7 @@ const PcreRoute = enum { outright, escalated };
 /// escalation (`dieUnexpressible` below) must ask under identical options, or
 /// the prediction answers about a pattern the run would never have compiled.
 pub fn pcreOptions(o: Opts) pcre2.Options {
-    return .{ .caseless = o.caseless, .multiline = o.re_line_anchors, .dotall = o.multiline_dotall, .unicode = o.pcre_unicode };
+    return .{ .caseless = o.caseless, .multiline = o.re_line_anchors, .dotall = o.multiline_dotall, .unicode = o.pcre_unicode, .word = o.word };
 }
 
 pub fn pcreArm(gpa: std.mem.Allocator, eff: []const u8, o: Opts, route: PcreRoute) Pcre {
@@ -188,6 +188,8 @@ pub fn compileCaps(gpa: std.mem.Allocator, o: Opts, eff: []const u8, is_pcre: bo
         .pcre = is_pcre,
         .multiline = o.re_line_anchors,
         .dotall = o.multiline_dotall,
+        .word = o.word,
+        .crlf = o.crlf,
     }) catch |e| switch (e) {
         error.OutOfMemory => oom(),
         // Same three-way truth as `dieUnexpressible`, so the `-r` path asks the

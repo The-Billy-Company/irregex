@@ -52,6 +52,8 @@ pub const mask = assertion.mask;
 // ── scalar ranges: parse-time accumulation and the `-i` fold (`scalars.zig`) ──
 pub const ScalarSet = scalars.ScalarSet;
 pub const foldCaseAst = scalars.foldCaseAst;
+pub const stripCpAst = scalars.stripCpAst;
+pub const wordBoundedAst = scalars.wordBoundedAst;
 
 // ── the parser (`parser.zig`; class/escape bodies in `bracket.zig`/`escape.zig`) ──
 pub const Parser = @import("parser.zig").Parser;

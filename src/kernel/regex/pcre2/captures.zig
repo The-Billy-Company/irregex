@@ -33,9 +33,15 @@ pub const PcreCaptures = struct {
     allocator: std.mem.Allocator,
 
     pub fn compile(allocator: std.mem.Allocator, pattern: []const u8, opts: Options) CompileError!PcreCaptures {
+        // The same `-w` rewrite the search program compiles, so a `-w -r` run
+        // replaces the span the search found rather than the greedy one starting
+        // where it found it.
+        const src = try engine.wordWrapped(allocator, pattern, opts);
+        defer if (src.ptr != pattern.ptr) allocator.free(src);
+
         var errorcode: c_int = 0;
         var erroroffset: ffi.Size = 0;
-        const code = ffi.pcre2_compile_8(pattern.ptr, pattern.len, engine.compileOptionBits(opts), &errorcode, &erroroffset, null) orelse {
+        const code = ffi.pcre2_compile_8(src.ptr, src.len, engine.compileOptionBits(opts), &errorcode, &erroroffset, null) orelse {
             engine.recordError(errorcode);
             return CompileError.BadPattern;
         };
