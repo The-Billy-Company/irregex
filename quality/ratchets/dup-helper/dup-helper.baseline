@@ -1,0 +1,10 @@
+# zig-dup ratchet baseline — cross-file copy-pasted fn bodies per Zig file.
+#
+# A finding is a normalized (comment-stripped, whitespace-collapsed)
+# container-level fn body byte-identical across >= 2 different files under
+# src/ — the parity-bug class where one twin is fixed and the other silently
+# isn't. Deliberate copies opt out via `// dup-allow:`.
+#
+# Update rule: monotonically decrease only. Refresh after cleanup:
+#     python3 quality/ratchets/run.py dup-helper --refresh
+

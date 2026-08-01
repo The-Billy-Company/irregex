@@ -1,0 +1,9 @@
+# zig-oom ratchet baseline — inline OOM exits per Zig command-plane file.
+#
+# Tracks `die("oom…")` call sites outside the canonical `pub const oom`
+# (src/surface/cli/outcome.zig) plus duplicate non-pub `fn oom(`
+# definitions across src/.
+#
+# Update rule: monotonically decrease only. Refresh after cleanup:
+#     python3 quality/ratchets/run.py oom --refresh
+

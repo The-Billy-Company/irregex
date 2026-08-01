@@ -1,0 +1,9 @@
+# The same settings the Python binding declares in its own pyproject, repeated
+# here because ruff resolves config per-file from the nearest ancestor and this
+# tree is not under that package. Two trees of Python in one repo formatting to
+# two different widths would be churn nobody chose.
+line-length = 100
+
+[lint]
+select = [ "E", "F", "I", "UP", "B", "SIM" ]
+ignore = [ "E501" ]

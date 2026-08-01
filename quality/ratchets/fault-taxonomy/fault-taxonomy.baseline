@@ -1,0 +1,16 @@
+# zig-fault-taxonomy ratchet baseline — undeclared error names per Zig file.
+#
+# Fault-channel law 2: the fault vocabulary is closed. Every error name irregex
+# PRODUCES must be a member of a [fault_domains] domain in
+# contract/engine.toml (mirrored by src/fault.zig), so a sixth spelling of
+# `Corrupt` cannot accrete the way BadFormat / CorruptIndex did.
+#
+# Excluded structurally: test vocabulary (*_test.zig, *_fuzz.zig, inline `test`
+# blocks, and std.testing's own SkipZigTest / Test… family), file-private control
+# flow (a non-pub named `const` error set — the shadow rewriter's `error.Bail`),
+# and consuming positions (a `=>` prong label or an `==` operand handles a std
+# error, it does not mint one).
+#
+# Update rule: monotonically decrease only. Refresh after cleanup:
+#     python3 quality/ratchets/run.py fault-taxonomy --refresh
+

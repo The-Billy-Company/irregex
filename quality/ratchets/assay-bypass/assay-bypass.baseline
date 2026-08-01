@@ -1,0 +1,15 @@
+# zig-assay-bypass ratchet baseline — std.debug.print sites per Zig file.
+#
+# Fault-channel law 6: assay owns the one diagnostic channel. A direct
+# std.debug.print escapes a `dark` sink (breaking the never-write contract),
+# lands on the daemon's stderr instead of the client's under a `buffer` sink,
+# and emits prose during a --json run. Route it through `assay.diag` instead.
+#
+# Exempt structurally: src/assay/assay.zig + src/assay/channel.zig ARE the sink
+# (`.stderr => std.debug.print`), and *_test.zig / *_fuzz.zig / inline `test`
+# blocks are out of scope. A mention inside a comment is prose, not a call.
+#
+# Update rule: monotonically decrease only. Refresh after cleanup:
+#     python3 quality/ratchets/run.py assay-bypass --refresh
+
+src/corpus/index/frame/frame.zig=2
