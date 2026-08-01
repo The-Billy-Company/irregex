@@ -12,7 +12,7 @@ Fairness is the whole design, and three choices carry it:
 
   * **Byte semantics on both sides.** Our default dialect is a byte matcher;
     theirs is Unicode-aware. Every pattern is therefore handed to them with a
-    leading `(?-u)` — exactly as `bench/dominance/races/regex.sh` does for `rg` —
+    leading `(?-u)` — exactly as `gist/bench/dominance/races/regex.sh` does for `rg` —
     plus `-b -B`, which lifts their refusal to compile a byte pattern that can
     match invalid UTF-8. Both are required, not generous: without `(?-u)` their
     `\\w` lowers a UTF-8 trie and the comparison measures a flag rather than a
@@ -37,7 +37,7 @@ Two things it deliberately does NOT claim:
   * **Search throughput.** Timing two engines' scans through two CLIs measures
     process startup, IO, and prefilter policy far more than it measures a
     transition loop. The binary-level search race already exists and is honest
-    about being one (`bench/dominance/races/regex.sh`); the automaton-level
+    about being one (`gist/bench/dominance/races/regex.sh`); the automaton-level
     search claim is the self-race in `bench.zig`.
   * **State count, as a headline.** Their automaton reserves special states — a
     dead state, a quit state, and a start group — so on a five-state pattern the
@@ -75,7 +75,7 @@ HERE = Path(__file__).resolve().parent
 # bench/rungs/automata → the package root, then out to the repo root.
 PKG = HERE.parents[2]  # automata → rungs → bench → repo
 REPO = PKG
-DEFAULT_CLONE = REPO / ".etc" / "regex"
+DEFAULT_CLONE = REPO / "upstream" / "regex"
 
 # `regex-cli` prints a `key: value` preamble before the automaton itself. These
 # are the four facts a shape comparison needs; anything else in that block is

@@ -95,7 +95,7 @@ const Row = struct {
 };
 
 /// The slate. The first block is the **cross-engine** set: it is the pattern
-/// list `bench/dominance/races/regex.sh` races binaries on, so the shape numbers
+/// list `gist/bench/dominance/races/regex.sh` races binaries on, so the shape numbers
 /// here describe the same automata that race decides — a shape win on patterns
 /// nobody searches for would be a curiosity. The second block is the **width**
 /// set: "the n-th byte from the end" needs ~2^n states, which is where a
@@ -1595,6 +1595,30 @@ const burst_width = [_]Row{
     .{ .pat = "[0-9a-f]{64}-", .fill = "0123456789abcdef", .why = "no '-'" },
 };
 
+/// The control that keeps the one-width decision honest, and the reason this
+/// ladder can be read at all.
+///
+/// Every row above pairs one pattern with one fill, so "the rows where twelve
+/// lanes win" reads like a set of automata — and it is not. The four winners are
+/// exactly the four whose fill is drawn from their own pattern's class, which is
+/// what drives them across states; the seven losers all have a fill chosen to
+/// contain nothing their first class accepts, so they sit in one state. Read as
+/// automata, `seen >= 9` looks like a dispatchable property. It is not one.
+///
+/// These rows are those same four patterns — the same compiled `Regex`, the same
+/// state count, the same mirror, everything a freeze-time predicate could
+/// possibly see — over a document their class rejects. They park (`seen` 9/9/33/65
+/// → 1), and every one of them flips from wanting twelve lanes to LOSING ~1.31×
+/// on twelve. So the property that separates the two populations is carried by the
+/// document, and a wider automaton corpus cannot make the choice decidable: the
+/// label is not a function of the input a per-automaton predicate gets to read.
+const burst_control = [_]Row{
+    .{ .pat = "[0-9a-f]{8}-[0-9a-f]{4}", .fill = "ghijklmnopqrstuv", .why = "no hex digit" },
+    .{ .pat = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", .fill = "ghijklmnopqrstuv", .why = "no hex digit" },
+    .{ .pat = "[0-9a-f]{32}-", .fill = "ghijklmnopqrstuv", .why = "no hex digit" },
+    .{ .pat = "[0-9a-f]{64}-", .fill = "ghijklmnopqrstuv", .why = "no hex digit" },
+};
+
 /// The arm labels as data, so the row that names the winner reads it from the same
 /// list the columns were headed from and cannot drift out of order.
 const arm_labels = blk: {
@@ -1866,6 +1890,15 @@ fn burstAgrees(d: *const Dfa, wide: *const Dfa.Wide, doc: []u8, pat: []const u8,
 /// others: the `win`/`ship` gap is the standing measurement of what a working-set
 /// -aware walk would recover, and the reason this column is printed.
 ///
+/// `burst_control` is what turns that from an assertion into a measurement, and
+/// it is the last four rows of the table. They re-run the four patterns that want
+/// twelve lanes over a document their own class rejects; the automata are
+/// identical down to the state count and the mirror, and every one of them parks
+/// and flips to wanting four. Anyone reading `seen >= 9` off this table as a
+/// dispatchable property of the automaton should read those rows first: the
+/// pattern that wins 1.13× on twelve at `seen = 9` loses 1.31× on twelve at
+/// `seen = 1`, and a freeze-time predicate cannot tell the two runs apart.
+///
 /// Read `seen` before any ratio, as in `search`: a row parked in a self-loop makes
 /// the transition load a perfectly-predicted L1 hit, so it prices the instruction
 /// mix and nothing about the automaton. Rows that wander (`[0-9a-f]{32}-` visits
@@ -1901,7 +1934,7 @@ fn runBurst(gpa: std.mem.Allocator, io: anytype, failed: *bool) !?f64 {
     var ratio_log: f64 = 0;
     var priced: usize = 0;
 
-    for (slate ++ burst_width) |row| {
+    for (slate ++ burst_width ++ burst_control) |row| {
         const fill = row.fill orelse continue; // shape-only row: no match-free document
         var re = Regex.compile(gpa, row.pat) catch |e| {
             std.debug.print("{s: <46}  compile failed: {s}\n", .{ row.pat, @errorName(e) });
