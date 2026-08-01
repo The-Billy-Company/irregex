@@ -110,6 +110,26 @@ const Product = struct {
         // state — so the slot is in range. `aut.dead` is the one id that can be
         // `maxInt` (no dead state was ever interned), and it is only ever COMPARED
         // against in `canonNode`, never landed on.
+        //
+        // THE ASSERT IS THE ONLY GUARD, AND IT IS DEBUG-ONLY. Release builds are
+        // ReleaseFast, where this compiles to `unreachable` — so in the build that
+        // matters the two bounds below are an ASSUMPTION handed to the optimizer,
+        // not a check. What it is protecting is the `p.seen[slot] = id` store four
+        // lines down: a `Landing` carrying `pat == aut.dead == maxInt(u32)` would
+        // compute a slot of ~2³² × `nstates` and write there. That is an
+        // out-of-bounds WRITE into the heap, not a read and not a panic — it would
+        // surface as corruption somewhere unrelated, long after this frame is gone.
+        //
+        // So the load-bearing fact is the one stated above: nothing may LAND on
+        // `aut.dead`. `canonNode` compares against it and maps the pair onto
+        // `dec.root`, which keeps `node` in range, but it deliberately leaves
+        // `l.pat` alone — the dead id still reaches the slot arithmetic. If a
+        // future change lets a dead pattern state flow into `intern` as a landing
+        // (rather than only as a comparand), or gives `dead` a real interned id
+        // without re-checking this, that is the specific way to turn a compile-time
+        // cost optimization into heap corruption. Keep `nstates` as the single
+        // stride: it is used here, in the `dead` lookup after the walk, and in the
+        // `gpa.alloc` that sizes `seen`, and those three must agree exactly.
         std.debug.assert(node < p.dec.count() and l.pat < p.aut.nstates);
         const slot = @as(usize, node) * p.aut.nstates + l.pat;
         if (p.seen[slot] != none) return .{ .id = p.seen[slot], .is_new = false };

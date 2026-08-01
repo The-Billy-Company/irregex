@@ -77,6 +77,29 @@ pub const Decoder = struct {
     /// when the weave is finished. The edge list stays the authority (it is what
     /// interning and the byte-class partition read); this is the same answer laid
     /// out for the one caller that asks 10⁶ times.
+    ///
+    /// **Costs 1 KiB per node** (256 targets × `u32`), unconditionally and with no
+    /// upper bound of its own — `spread` sizes it from `nodes.items.len`, which is
+    /// however many nodes the UTF-8 weave interned. That is the deliberate trade
+    /// and it is asymmetric: the space is linear in the trie, the time it buys back
+    /// is what used to be quadratic-ish (edges scanned × lookups). Unicode `\w`
+    /// lowers to 748 scalar ranges, so this is the regime the table was built for.
+    /// If a pattern family ever pushes node count far past that, this field — not
+    /// the walk — becomes the memory story, and a two-level or per-node-sparse
+    /// layout is the answer rather than reverting `follow`.
+    ///
+    /// **Do not "simplify" `follow` back to scanning `edgesOf`.** The scan is the
+    /// version this replaced, it is still present in spirit (and in the ordering
+    /// argument on `spread`), and it reads like the obvious cleanup. It measured
+    /// 21.5M edge comparisons for 1.4M lookups on `func\s+\w+\(` and was the
+    /// largest single line item in compiling a literal-plus-Unicode-class pattern.
+    /// Reverting it costs roughly 4× on the compile of exactly the shapes agents
+    /// search for most (`sym.method`, `func name(`), and — because the engine
+    /// census (`bench/rungs/census/`) reports the machine chosen and not the time
+    /// spent choosing it — **no census row and no answer would change**, so the
+    /// regression is invisible to the gate an engine change is normally read
+    /// against. User-CPU compile timing on `pgxpool\.\w+` against its ASCII twin
+    /// is what sees it.
     row: std.ArrayList(u32) = .empty,
 
     pub fn deinit(d: *Decoder) void {
@@ -125,6 +148,36 @@ pub const Decoder = struct {
     }
 
     /// The edge target covering `b`, or null when the byte cannot continue here.
+    ///
+    /// ## PRECONDITION — `spread` has run, and nothing here can check it
+    ///
+    /// This reads `row` unconditionally. The assert below is the whole guard, and
+    /// it is a `std.debug.assert`, so it is **absent from the build that matters**:
+    /// release builds are ReleaseFast, where the failed branch is `unreachable` and
+    /// the optimizer is therefore entitled to ASSUME `row` is sized rather than
+    /// test it. A `Decoder` that reaches this function without `spread` does not
+    /// panic in production — it indexes an empty slice with no bounds check, and
+    /// the symptom is a wrong `follow` answer, i.e. a wrong automaton and a
+    /// silently wrong MATCH. That is the failure mode to keep in mind; it is not a
+    /// crash.
+    ///
+    /// What holds the precondition up today is narrow and worth stating so it is
+    /// not dismantled by accident:
+    ///
+    ///   * `build` (below) is the ONLY site that constructs a `Decoder`, and it
+    ///     calls `spread` on BOTH of its return paths — the empty-`seqs` early
+    ///     return and the woven one. Add a third return, or a second construction
+    ///     site, and this function is reading uninitialized memory.
+    ///   * `follow` has exactly two callers, both in `transcribe.zig`, both after
+    ///     `decoder_mod.build` returned. Widening the caller set is fine; calling
+    ///     it on a half-built `Decoder` is not.
+    ///
+    /// `row` is derived state, not a cache with an invalidation story: it is
+    /// correct only because the weave is FINISHED before `spread` runs and no edge
+    /// or node is appended afterwards. If a future change ever mutates `edges` or
+    /// `nodes` past that point, `spread` must run again — there is no staleness
+    /// check here and no cheap one to add, because the whole point of the table is
+    /// that this path does no work beyond one load.
     pub fn follow(d: *const Decoder, node: u32, b: u8) ?u32 {
         std.debug.assert(d.row.items.len == d.nodes.items.len * 256); // `spread` ran
         const t = d.row.items[(@as(usize, node) << 8) | b];
