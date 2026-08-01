@@ -93,8 +93,8 @@ pub fn matcherPrefilter(m: *const Matcher, one: *[1][]const u8) []const []const 
 /// escape orbits `caselessVariants` excludes; ASCII fold (`(?-u)`) admits
 /// them. A caseless match must contain every segment of the raw literal in
 /// some case spelling, so gating on one admissible window stays a sound
-/// necessary condition even when the whole literal declines (`walletservice`
-/// carries an `s` whose Unicode orbit escapes ASCII — but its `wallet` prefix
+/// necessary condition even when the whole literal declines (`eventsource`
+/// carries an `s` whose Unicode orbit escapes ASCII — but its `event` prefix
 /// gates cleanly). Only a window covering the ENTIRE literal can ever prove
 /// match equivalence; a partial window is containment-only.
 pub fn foldClosedWindow(lit: []const u8, unicode: bool) ?[]const u8 {

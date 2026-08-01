@@ -309,14 +309,14 @@ test "a ranked row names and quotes the caller's own file set" {
     // table, so a row could name a file the walk never admitted. `Source` is now
     // the caller's gathered set and `Doc.id` indexes it, which is what makes the
     // ranked set the walk's set: there is no other slice a row could come from.
-    var re = try Regex.compile(a, "WalletService");
+    var re = try Regex.compile(a, "SessionStore");
     defer re.deinit();
     var sim = try Regex.Sim.init(a, &re);
     defer sim.deinit();
 
     const files = [_]LiveFile{
-        .{ .path = "services/backend/api/wallet.go", .bytes = "type WalletService struct {\n\tdb *pgxpool.Pool\n}\n" },
-        .{ .path = "scripts/vendor/graphify/uses.py", .bytes = "import wallet\nwallet.WalletService.grant(user)\n" },
+        .{ .path = "services/backend/api/session.go", .bytes = "type SessionStore struct {\n\tdb *pgxpool.Pool\n}\n" },
+        .{ .path = "tools/indexer/uses.py", .bytes = "import session\nsession.SessionStore.evict(key)\n" },
     };
     var docs: std.ArrayList(Doc) = .empty;
     defer docs.deinit(a);
@@ -330,12 +330,12 @@ test "a ranked row names and quotes the caller's own file set" {
     // Both paths surface, the declaration outranks the call site, and each row's
     // snippet is quoted from the bytes the caller passed — not re-read from disk
     // (neither path exists), which is why a vendored file can be ranked at all.
-    try t.expect(std.mem.indexOf(u8, out.items, "services/backend/api/wallet.go:1") != null);
-    try t.expect(std.mem.indexOf(u8, out.items, "scripts/vendor/graphify/uses.py:2") != null);
+    try t.expect(std.mem.indexOf(u8, out.items, "services/backend/api/session.go:1") != null);
+    try t.expect(std.mem.indexOf(u8, out.items, "tools/indexer/uses.py:2") != null);
     try t.expect(std.mem.indexOf(u8, out.items, "[def]") != null);
-    try t.expect(std.mem.indexOf(u8, out.items, "type WalletService struct {") != null);
-    try t.expect(std.mem.indexOf(u8, out.items, "wallet.WalletService.grant(user)") != null);
-    try t.expect(std.mem.indexOf(u8, out.items, "wallet.go").? < std.mem.indexOf(u8, out.items, "uses.py").?);
+    try t.expect(std.mem.indexOf(u8, out.items, "type SessionStore struct {") != null);
+    try t.expect(std.mem.indexOf(u8, out.items, "session.SessionStore.evict(key)") != null);
+    try t.expect(std.mem.indexOf(u8, out.items, "session.go").? < std.mem.indexOf(u8, out.items, "uses.py").?);
 }
 
 test "fileDoc matches alternation and wildcard regexes, not raw pattern bytes" {

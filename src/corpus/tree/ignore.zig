@@ -171,7 +171,7 @@ pub fn ruleMatch(a: std.mem.Allocator, ci: bool, root_depth: usize, r: Rule, rel
     // is the WALK's job: an ignored directory is pruned when entered, so its
     // descendants are never enumerated; re-testing ancestors here would OR
     // matches across levels and lose per-level last-match-wins (a
-    // `!scripts/observe/build/` re-include must not leak down to the
+    // `!tools/indexer/build/` re-include must not leak down to the
     // `__pycache__/` inside it, and a `build/` exclude must not resurrect
     // against children of that re-included directory).
     if (r.anchored) {
@@ -1412,15 +1412,15 @@ test "anchored ancestor rule matches its full path order-independently (rg 15.2 
     // An anchored CWD/ancestor-tier rule matches the full CWD-relative path the
     // same way regardless of how many explicit roots share the ancestor — no
     // per-root re-anchoring, matching rg 15.2's fixed multi-directory behavior.
-    const rule = Rule{ .glob = "scripts/observe/build", .base = "", .negated = true, .anchored = true, .dir_only = true };
-    try t.expect(ruleMatch(t.allocator, false, 1, rule, "scripts/observe/build", true));
+    const rule = Rule{ .glob = "tools/indexer/build", .base = "", .negated = true, .anchored = true, .dir_only = true };
+    try t.expect(ruleMatch(t.allocator, false, 1, rule, "tools/indexer/build", true));
 }
 
 test "compiled matcher folds the anchored ancestor rule by full path" {
     const t = std.testing;
     const rules = [_]Rule{
         .{ .glob = "build", .base = "", .negated = false, .anchored = false, .dir_only = true },
-        .{ .glob = "scripts/observe/build", .base = "", .negated = true, .anchored = true, .dir_only = true },
+        .{ .glob = "tools/indexer/build", .base = "", .negated = true, .anchored = true, .dir_only = true },
     };
     var complex = [_]u32{1};
     var compiled = Compiled{ .rules = &rules, .lit = std.StringHashMap(Compiled.Slot).init(t.allocator), .ext = std.StringHashMap(Compiled.Slot).init(t.allocator), .complex = &complex, .a = t.allocator };
@@ -1430,5 +1430,5 @@ test "compiled matcher folds the anchored ancestor rule by full path" {
 
     // The anchored rule (rank 1) matches the full path, so its rank wins over
     // the slash-less `build` (rank 0) — order-independent.
-    try t.expectEqual(@as(?u32, 1), compiled.matchRank("scripts/observe/build", true));
+    try t.expectEqual(@as(?u32, 1), compiled.matchRank("tools/indexer/build", true));
 }

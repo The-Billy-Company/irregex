@@ -423,10 +423,10 @@ test "classify: a dangling -e and empty patterns fail closed" {
 
 test "classify: --rank[=N] is eligible with a regex pattern, case, and PATH roots" {
     // Bare `--rank` ⇒ the default-top-20 sentinel (0), mode stays .lines.
-    const bare = try ok(&.{ "--rank", "WalletService" });
+    const bare = try ok(&.{ "--rank", "SessionStore" });
     try std.testing.expectEqual(@as(?usize, 0), bare.rank_k);
     try std.testing.expectEqual(request.Mode.lines, bare.mode);
-    try std.testing.expectEqualStrings("WalletService", bare.pattern);
+    try std.testing.expectEqualStrings("SessionStore", bare.pattern);
     // `--rank=N` carries the explicit top-k.
     const n = try ok(&.{ "--rank=5", "needle" });
     try std.testing.expectEqual(@as(?usize, 5), n.rank_k);

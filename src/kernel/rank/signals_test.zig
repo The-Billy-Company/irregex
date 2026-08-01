@@ -11,10 +11,10 @@ test "declaration confidence follows geometry across syntax families" {
     try expect(confidence("func NewWallet(cc grpc.ClientConn) Wallet {", "NewWallet") == 3);
     try expect(confidence("pub fn parse(self: *T) !void {", "parse") == 3);
     try expect(confidence("def charge(self, amount):", "charge") == 3);
-    try expect(confidence("class WalletService:", "WalletService") == 3);
+    try expect(confidence("class SessionStore:", "SessionStore") == 3);
     try expect(confidence("function getWallet() {", "getWallet") == 3);
     try expect(confidence("type Wallet struct {", "Wallet") == 3);
-    try expect(confidence("interface WalletService {", "WalletService") == 3);
+    try expect(confidence("interface SessionStore {", "SessionStore") == 3);
     try expect(confidence("defmodule Wallet do", "Wallet") == 1); // word-delimited, punctuation-free declaration
     try expect(confidence("def deadline_ms(:scope), do: fetch(:scope)", "deadline_ms") == 3);
     try expect(confidence("const OpenhumanLinkModal = () => {", "OpenhumanLinkModal") == 3);
@@ -54,10 +54,10 @@ test "invalid UTF-8 fails closed around textual symbol geometry" {
 test "declaration geometry rejects parameters, imports, uses, and fragments" {
     try expect(!signals.definesNeedle("    w := NewWallet(cc)", "NewWallet")); // call site
     try expect(!signals.definesNeedle("    return charge(amount)", "charge")); // call site
-    try expect(!signals.definesNeedle("    var x = WalletService", "WalletService")); // RHS of =
-    try expect(!signals.definesNeedle("    log(\"WalletService started\")", "WalletService")); // string
+    try expect(!signals.definesNeedle("    var x = SessionStore", "SessionStore")); // RHS of =
+    try expect(!signals.definesNeedle("    log(\"SessionStore started\")", "SessionStore")); // string
     try expect(!signals.definesNeedle("    fields := []T{Wallet, Ledger}", "Wallet")); // list element (comma)
-    try expect(!signals.definesNeedle("type WalletServiceImpl struct {", "WalletService")); // mid-identifier
+    try expect(!signals.definesNeedle("type SessionStoreImpl struct {", "SessionStore")); // mid-identifier
     try expect(!signals.definesNeedle("plain text with charge in it", "charge")); // no def kw
     try expect(!signals.definesNeedle("def verdict(req: SearchRequest) -> bool:", "SearchRequest")); // parameter annotation
     try expect(!signals.definesNeedle("import type { ApiError } from './api';", "ApiError")); // import member

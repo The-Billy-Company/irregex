@@ -113,8 +113,8 @@ test "anchor: the probe slot carries the rarer byte" {
     // the wrong byte. That regression was introduced and caught once already
     // (`anchor.zig`: "Never sort this pair").
     for ([_][]const u8{
-        "WalletService", "pgxpool",  "context.Context", "SELECT", "buf.validate",
-        "Zq9_x",         "aaaaaaaa", "})",              "impl",   "substrate",
+        "SessionStore", "pgxpool",  "context.Context", "SELECT", "buf.validate",
+        "Zq9_x",        "aaaaaaaa", "})",              "impl",   "substrate",
     }) |needle| {
         const p = anchor.select(needle);
         try t.expect(p.probe != p.confirm);
@@ -144,7 +144,7 @@ test "plan: containsWith ≡ contains ≡ std.mem.indexOf" {
     // which two offsets the block filter compares, and `eql` decides the match.
     // Checked against std as the third opinion so a shared bug in both gist
     // paths still fails.
-    const needles = [_][]const u8{ "ab", "ctx", "func", "pgxpool", "WalletService", "aaaa", "})", "Zq9_x" };
+    const needles = [_][]const u8{ "ab", "ctx", "func", "pgxpool", "SessionStore", "aaaa", "})", "Zq9_x" };
     var prng: std.Random.DefaultPrng = .init(0x9E3779B97F4A7C15);
     const rnd = prng.random();
 

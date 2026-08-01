@@ -49,7 +49,7 @@ test "serialization and configuration are data (Linguist type: data)" {
         .{ .path = "app.log", .want = .data, .why = "log payload" },
         .{ .path = "fix.patch", .want = .data, .why = "a patch is data about code, not code" },
         .{ .path = "icon.svg", .want = .data, .why = "an image, not source you change behavior in" },
-        .{ .path = "billy.service", .want = .data, .why = "systemd unit — INI values, no expressions" },
+        .{ .path = "indexer.service", .want = .data, .why = "systemd unit — INI values, no expressions" },
         .{ .path = "corpus.tar.gz", .want = .data, .why = "compressed bytes" },
     };
     for (cases) |c| expectEqual(c.want, genus.of(c.path)) catch |e| {

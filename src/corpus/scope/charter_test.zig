@@ -47,7 +47,7 @@ test "a charter declares the three corpus facts" {
     const c = try parsed(
         \\# what this corpus is
         \\roots = ["services", "libs"]
-        \\skip  = ["graphify-out"]
+        \\skip  = ["derived-out"]
         \\types = ["zigsrc:*.zig"]
     , "");
     defer c.deinit(t.allocator);
@@ -55,7 +55,7 @@ test "a charter declares the three corpus facts" {
     try t.expectEqual(@as(usize, 2), c.roots.len);
     try t.expectEqualStrings("services", c.roots[0]);
     try t.expectEqualStrings("libs", c.roots[1]);
-    try t.expectEqualStrings("graphify-out", c.skip[0]);
+    try t.expectEqualStrings("derived-out", c.skip[0]);
     try t.expectEqualStrings("zigsrc:*.zig", c.types[0]);
 }
 
