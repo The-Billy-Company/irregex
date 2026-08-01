@@ -239,26 +239,27 @@ resolved by the second table, and no live lane stepping `\n` into a live or
 accepting state) and, when it is, publishes `sliceSafe`. `rungs.zig` looks that
 method up by name at comptime, so a rung that never grows one is simply held to
 its static model — conservative by construction. Measured worth of the
-refinement on the production `lineMatch`
-(`spikes/regex-engine-worldclass/probe18.zig`, 64 MiB / 1.74M lines,
-arms alternated): **2.13–2.52×** on five slice-safe field patterns, against
-controls at 0.94–1.05 where the tier correctly stands down.
+refinement on the production `lineMatch` (a same-`Regex` A/B — answer with the
+tier armed, blank `re.rungs`, answer again — over 64 MiB / 1.74M lines of CPython
+source plus Russian prose, min of 5, arms alternated, the two answers checked
+equal inside the timing loop): **2.13–2.52×** on five slice-safe field patterns,
+against controls at 0.94–1.05 where the tier correctly stands down.
 
 `-U` (`pike/search.zig`'s `bufMatch`) is the third caller, and it asks the slice
 question about a whole file. It consults the tier under exactly the guard the
 DFA already sits behind there — an assertion-free program, where the buffer is
 one haystack — and `lower.zig` withholds the tier only from assertion-bearing
 multiline, which has no DFA to lower in the first place. Measured **4.84–11.42×**
-on flat `-U` patterns (`probe19.zig`, non-matching tails so the scan covers the
-whole buffer rather than a prefix).
+on flat `-U` patterns, measured with non-matching tails so the scan covers the
+whole buffer rather than a prefix.
 
 ## Which rungs actually arm
 
 Every rung arms on the population it prices best, and the costed gate stands one
 down at _compile_ time wherever a start-skip or the DFA would win — the point of
 offers over booleans. Each claim below is a **committed, reproducible proof**
-(`zig build <step>`), not a `.local` probe, run against the 207.7 MiB corpus on
-this machine:
+(`zig build <step>`) rather than a one-off scratch measurement, run against the
+207.7 MiB corpus on this machine:
 
 | Rung      | Proof          | Arms on / Evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | --------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

@@ -184,11 +184,22 @@ pub const Dfa = struct {
     /// (0.43–0.45) once that tail dominates and the frame spills too. Summed over
     /// the slate the two widths tie inside run-to-run variance, and choosing
     /// between them needs the DOCUMENT rather than the automaton — the same 14 KiB
-    /// automaton parks on prose and wanders over hex. So the engine carries one
-    /// width, and the ladder keeps racing twelve as the measured ceiling: over
-    /// repeat runs the shipped width geomeans 1.27×–1.29× against the classed
-    /// walk, and a per-row best-arm oracle ~1.29×, so the gap left on the table
-    /// is a couple of points for whoever makes the walk working-set-aware.
+    /// automaton parks on prose and wanders over hex.
+    ///
+    /// That last sentence is now a measurement rather than a claim, and it is the
+    /// standing answer to "just dispatch twelve lanes on the wandering automata".
+    /// `burst_control` re-runs the four patterns that want twelve — over a
+    /// document their own class rejects instead of one drawn from it. Same
+    /// compiled program, same state count, same mirror, same everything a
+    /// freeze-time predicate could read; the states they visit collapse (9, 9, 33,
+    /// 65 → 1 each) and all four flip from winning ~1.13× on twelve lanes to
+    /// LOSING ~1.31× on them. A per-automaton predicate is not underdetermined
+    /// here, it is unavailable: the label is a function of bytes the predicate
+    /// never sees. So the engine carries one width, and the ladder keeps racing
+    /// twelve as the measured ceiling: over repeat runs the shipped width geomeans
+    /// 1.27×–1.29× against the classed walk, and a per-row best-arm oracle ~1.29×,
+    /// so the gap left on the table belongs to whoever makes the walk
+    /// working-set-aware at RUN time, not to a better freeze-time guess.
     pub const Wide = struct {
         trans_in: []const u32,
         trans_fin: []const u32,

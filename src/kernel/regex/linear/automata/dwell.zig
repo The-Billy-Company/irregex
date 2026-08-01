@@ -61,9 +61,12 @@ pub const min_profitable_stride: u16 = 32;
 /// premultiplied table load; a span step reaches through a state's priority key
 /// to decide dead/matched, re-derives the gap's shape, and indexes a memo row
 /// keyed on both — a dependent-load chain, not one load. First measured at 3.2 ns
-/// per byte against the boolean walk's ~0.25 (`spikes/span-bound-eval/`),
-/// putting the true figure nearer 13; taken conservatively low, because
-/// underrating the walker can only make the bar *stricter* than break-even.
+/// per byte, walking one megabyte to its end with no match and no skip armed,
+/// stable across three patterns, against the boolean walk's ~0.25 — which brackets
+/// what `zig build automata-rung -- burst` reports for the mirrored doc walk,
+/// 0.23–0.36 ns/byte over an 8 MiB match-free document. That puts the true figure
+/// nearer 13; taken conservatively low, because underrating the walker can only
+/// make the bar *stricter* than break-even.
 ///
 /// The span walk has since got cheaper per byte — offset-currency cells took it
 /// to 1.49 ns, so the honest ratio is now ~6 and this 8 sits a little *above* it

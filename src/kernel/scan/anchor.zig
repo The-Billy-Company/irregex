@@ -151,11 +151,14 @@
 //! ### What the numbers are, and the summaries that backfire
 //!
 //! `pmi` holds `log2(Σ joint / Σ independence)` per (symbol-pair, gap), sixteenths of
-//! a bit, i8 — the count-preserving log-linear lift, fitted by
-//! `spikes/anchor-policy/` over 186 MB of TRAINING bytes (every fifth repo text
-//! file plus half the prose corpus) and scored on the disjoint remainder against a
-//! needle slate sharing no string with it. Regenerate with `census.zig` → `emit.py`:
-//! the recipe is the contract, not the digits.
+//! a bit, i8 — the count-preserving log-linear lift, fitted over 186 MB of TRAINING
+//! bytes (every fifth repo text file plus half the prose corpus, held out by
+//! construction rather than after the fact) and scored on the disjoint remainder
+//! against a needle slate sharing no string with it. Regenerating it means re-running
+//! that fit — census the training split for joint and independence counts per
+//! (symbol-pair, gap), then render the lift into i8 sixteenths — rather than editing
+//! the digits: the recipe is the contract. The fitting tools were a pre-production
+//! harness and are not in this tree.
 //!
 //! How a bucket is summarised decides whether the table helps at all. `lift` (used)
 //! scores 1.13x/1.29x; a mean log-residual over the same buckets scores 1.18x/1.38x
@@ -171,7 +174,7 @@
 //! leaves prose at 1.69x, prose-only gets prose to 1.34x and hands back half the code
 //! win (1.30x). A static table cannot know which regime a buffer is, so only the union
 //! fit is a policy. The blend is not a knob to tune, but not because it does nothing:
-//! re-running `census.zig` over actually-concatenated bytes at four code shares gives
+//! re-running the census over actually-concatenated bytes at four code shares gives
 //! geometric means of 1.29x (0.15), **1.21x (0.28, the natural union)**, 1.22x (0.50)
 //! and 1.25x (0.65) — flat across the middle, worse at both ends, and the two regimes
 //! TRADE inside the flat band (code 1.13x → 1.09x as prose goes 1.29x → 1.37x). The

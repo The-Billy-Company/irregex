@@ -204,7 +204,7 @@ pub const Compose = struct {
         //   * and if `\n` can step a live lane anywhere but START, or into a
         //     match, the language crosses a line and the reset drops it.
         //
-        // Measured worth (`probe18`, 64 MiB, 1.74M lines): 2.2-2.4x on the
+        // Measured worth (a same-`Regex` A/B, 64 MiB, 1.74M lines): 2.2-2.4x on the
         // per-line path for the patterns this admits. Both controls matter —
         // an anchored pattern is 3.4x SLOWER through here than through the
         // ladder's line-start-only walk, because it scans what the ladder skips.

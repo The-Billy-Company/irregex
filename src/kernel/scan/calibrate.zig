@@ -131,8 +131,10 @@
 //!     regex, required literal, -o / --count-matches   2.00x    -l  4.6x
 //!     regex per-line modes (-c/-n/-w/-U/-A)    1.23–1.26x      -i  1.00x (no pair)
 //!
-//! Ground truth under the CLI, `spikes/anchor-plan/sweep.zig`: one hit-to-hit
-//! kernel sweep is 70 ms on the table's pair and 3.9–4.0 ms re-priced, **17.6–17.9x**
+//! Ground truth under the CLI: one hit-to-hit kernel sweep in the `fileLit` loop
+//! shape, clocked inside the kernel so intake, walk and emit stay out of the timed
+//! region, best of 3 per arm with the hit count asserted equal across arms. That
+//! sweep is 70 ms on the table's pair and 3.9–4.0 ms re-priced, **17.6–17.9x**
 //! — and the table's pair takes the *single*-probe shape there, so the fast loop on
 //! the wrong byte loses to the two-probe loop on the right pair by an order of
 //! magnitude. Selectivity underneath: 4.09 M block survivors on the static pair,
@@ -258,8 +260,10 @@ const word_bits: usize = @bitSizeOf(u64);
 ///   calibration = k x budget / R_cal        scan = len / R_scan
 ///   saving      = (len / R_scan) x (1 - 1/speedup)
 ///
-/// Measured here (2026-07-29, M4, `spikes/anchor-calibrate/time.zig`):
-/// a fully-filtered scan of the 213 MB code tree runs at R_scan = 37.9 GB/s,
+/// Measured here (2026-07-29, M4; both rates taken through the shipped code
+/// paths rather than a replica, page cache pre-warmed by a full pass, best of 5):
+/// a fully-filtered scan of the 213 MB code tree — an absent rare needle, so
+/// every block is filtered out — runs at R_scan = 37.9 GB/s,
 /// and calibrating at the shipped budget costs 3.5 us at k = 3 rising to
 /// 36.8 us at k = 16 — `R_cal / R_scan` = 1.46 falling to 0.76, because the
 /// sampling reads `k` streams out of cache (fast) while paying a pricing term
