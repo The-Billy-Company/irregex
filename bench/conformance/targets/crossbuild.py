@@ -45,11 +45,14 @@ SKIP = shutil.ignore_patterns(
 def _path_deps() -> list[str]:
     """The sibling directories `build.zig.zon` reaches for via a relative path.
 
-    `irregex` builds on `.kernelkit = .{ .path = "../_buildkit" }`, so a snapshot
-    of the package alone does not compile — it must reproduce the *relative
-    layout*, not just the directory. Read from the manifest rather than
-    hardcoded, so a new path dependency is carried automatically instead of
-    failing the next sweep.
+    A package that reaches for `../something` does not compile from a snapshot
+    of itself — the snapshot has to reproduce the *relative layout*, not just
+    the directory. `irregex` currently reaches for nothing, which is the point
+    of it being the substrate, so this returns empty here and the mirror is a
+    single directory. It stays manifest-driven rather than asserting that:
+    a path dependency added tomorrow is carried automatically instead of
+    failing the next sweep, and the sibling packages built on this one (which
+    do reach for `../irregex`) use the same code.
     """
     zon = (PKG / "build.zig.zon").read_text()
     return sorted({m for m in re.findall(r'\.path\s*=\s*"([^"]+)"', zon)})

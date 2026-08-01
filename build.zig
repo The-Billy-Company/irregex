@@ -11,7 +11,8 @@
 //! `gist`; the kinship engine (and the cento quoter over this library's
 //! FM-index) lives in `relate`.
 //!
-//! The test chassis mirrors kernelkit's (`../_buildkit`): one ReleaseSafe
+//! The test chassis is this package's own, and `gist`/`relate` mirror it by
+//! reaching for `brigade.zig` through their dependency here: one ReleaseSafe
 //! brigade-sharded unit-test binary (`test` / `test-quick`), a compile-only
 //! `check` step for the --watch/ZLS loop, a kcov `coverage` step, and the
 //! Linux/Windows cross-compile drift gates folded into `test`.
@@ -136,7 +137,7 @@ const Floor = struct {
 
 pub fn build(b: *std.Build) void {
     // macOS deployment floor: keep the emitted Mach-O's minos below any
-    // plausible consumer link target (kernelkit's convention). Windows floor:
+    // plausible consumer link target. Windows floor:
     // win10_rs4 — `std.Io.net.has_unix_sockets` is comptime-false below it,
     // which would prune the entire resident tier out of a cross-build.
     const default_target: std.Target.Query = if (builtin.target.os.tag == .macos)
@@ -146,17 +147,27 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{ .default_target = default_target });
     const optimize = b.standardOptimizeOption(.{});
 
+    // Debug info is worth its size to anyone developing against the engine and
+    // worth nothing to someone who ran `pip install`. It is not a rounding error
+    // either: on ELF the DWARF outweighs the code roughly four to one, so the
+    // published Linux library is ~11 MB unstripped against ~2 MB stripped. Mach-O
+    // hides the asymmetry by keeping DWARF in a separate `.dSYM`, which is why
+    // only the ELF and PE artifacts look bloated. Off by default so a local build
+    // stays debuggable; the wheel matrix asks for it explicitly.
+    const strip = b.option(bool, "strip", "Omit debug info from emitted artifacts (packaging)");
+
     var floor = Floor{ .b = b, .target = target };
 
     // ── the public module (`@import("irregex")`) ──
     // What `relate`/`gist`/`blast` consume as a sibling-path dependency. PIC
-    // for the same reason kernelkit's chassis is: the product packages link it
-    // into PIE binaries and (in gist) a shared C-ABI object.
+    // because the product packages link it into PIE binaries and (in gist) a
+    // shared C-ABI object.
     const engine = b.addModule("irregex", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
         .pic = true,
+        .strip = strip,
     });
     floor.under(engine);
 
@@ -174,6 +185,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .pic = true,
         .link_libc = true,
+        .strip = strip,
         .imports = &.{.{ .name = "irregex", .module = engine }},
     });
 
@@ -218,7 +230,7 @@ pub fn build(b: *std.Build) void {
     };
 
     // One compiled test binary, `shards` processes running disjoint residue
-    // classes of it (kernelkit's brigade runner). ~2x cores, not 1x: the build
+    // classes of it (`brigade.zig`). ~2x cores, not 1x: the build
     // runner keeps only cores-1 steps in flight, so over-decomposing turns its
     // scheduler into a work queue instead of idling a core beside a grinding
     // neighbor.
@@ -227,7 +239,7 @@ pub fn build(b: *std.Build) void {
         "test-shards",
         "how many parallel processes `zig build test` splits the unit-test binary across (default: 2x CPU count; 1 restores a single-process run)",
     ) orelse @min(@max(std.Thread.getCpuCount() catch 1, 1) * 2, 64);
-    const brigade = b.dependency("kernelkit", .{}).path("brigade.zig");
+    const brigade = b.path("brigade.zig");
     const tests = b.addTest(.{
         .root_module = test_module,
         .test_runner = .{ .path = brigade, .mode = .simple },
@@ -344,8 +356,9 @@ pub fn build(b: *std.Build) void {
 }
 
 /// Hang `shards` independent `Run` steps off one compiled test binary, each
-/// owning a disjoint residue class of the (filtered) suite — kernelkit's
-/// fan-out, restated here because this build declares no C-ABI kernel.
+/// owning a disjoint residue class of the (filtered) suite. The parallelism is
+/// the build runner's: independent `Run` steps are already scheduled across
+/// cores, so `brigade.zig` only decides which tests a process claims.
 fn addShards(
     b: *std.Build,
     tests: *std.Build.Step.Compile,
