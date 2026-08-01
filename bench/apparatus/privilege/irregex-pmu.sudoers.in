@@ -1,0 +1,38 @@
+# irregex — hardware-counter access for one helper, and nothing else.
+#
+# TEMPLATE. install.sh renders @USER@ and @DIGEST@ and validates the result with
+# `visudo -c -f` before anything touches /etc/sudoers.d/. Do not install this
+# file as-is; the placeholders are not valid sudoers syntax, which is deliberate
+# — a stray `cp` of this file cannot become a live rule.
+#
+# WHAT THIS GRANTS
+#   @USER@ may run exactly one absolute path as root, without a password, and
+#   only if that file's SHA-256 still matches @DIGEST@.
+#
+#   The helper at that path forks, drops privileges irrevocably, and execs its
+#   argument as @USER@. It never runs anything as root. So this rule does not
+#   grant root — it grants ktrace/kperf ownership to one process at a time.
+#
+# WHY THE DIGEST IS THE LOAD-BEARING PART
+#   Ten agent processes build in this repository concurrently. A NOPASSWD rule
+#   naming a path any of them can write is a local root escalation, which is why
+#   no rule here names anything under zig-out/ or any other build output. The
+#   helper lives in a root-owned directory, mode 0555, and sudo re-hashes it on
+#   every invocation: replace the binary and sudo refuses to run it. Changing the
+#   helper therefore requires re-running install.sh under authentication — that
+#   friction is the feature, not an oversight.
+#
+# WHAT IT STILL CANNOT PROTECT AGAINST
+#   Anyone who can invoke the helper can nominate a process of their choosing to
+#   receive counter access. That is a high-resolution timing side channel and a
+#   kperf sampling facility, for one process, until it exits. It is much smaller
+#   than root and it is not nothing. Read privilege/README.md before installing.
+#
+# REVOKE
+#   sudo rm /etc/sudoers.d/irregex-pmu /usr/local/libexec/irregex-pmu-bless
+#   Nothing else in the repository depends on it; every benchmark keeps working,
+#   measuring cycles and instructions through the unprivileged backend.
+
+# One line. NOPASSWD covers the authentication; a second `Defaults !authenticate`
+# spec would be a redundant mechanism to audit, so there isn't one.
+@USER@ ALL=(root) NOPASSWD: sha256:@DIGEST@ @HELPER@

@@ -5,21 +5,35 @@
 //! later meets the roofline (Layer C) and the static port-pressure bound
 //! (Layer B). Wall-clock measures the noisy box; the PMU measures the work.
 //!
-//! Two backends behind one `Meter`:
-//!   * **macOS / Apple Silicon** — Apple's private `kperf`/`kperfdata`
-//!     frameworks, `dlopen`'d at runtime (the same path Instruments uses; see
-//!     ibireme's `kpc_demo`). FIXED_CYCLES + FIXED_INSTRUCTIONS via the
-//!     thread-counter API. **Requires root/`sudo`** (xnu gates `kpc`); without
-//!     it the userspace cycle register `PMCCNTR_EL0` is trapped, so there is no
-//!     non-root cycle count on Apple Silicon.
+//! Three backends behind one `Meter`, tried in that order:
+//!   * **macOS `kperf`** — Apple's private `kperf`/`kperfdata` frameworks,
+//!     `dlopen`'d at runtime (the same path Instruments uses; see ibireme's
+//!     `kpc_demo`). FIXED_CYCLES + FIXED_INSTRUCTIONS via the thread-counter
+//!     API. **Requires root**, and root is the *only* key: xnu's
+//!     `_current_task_can_own_ktrace` is `kauth_cred_issuser(...)` plus an
+//!     entitlement that exists only on a DEVELOPMENT/DEBUG kernel. Worth
+//!     keeping first because it is the only backend that can program
+//!     *configurable* events (cache misses, branch mispredicts) — nothing below
+//!     reaches past the two fixed counters.
+//!   * **macOS `thread_selfcounts`** — the same two numbers, **unprivileged**.
+//!     xnu's `THSC_CPI` ("the current thread's cycles and instructions",
+//!     `bsd/sys/resource_private.h`) is not gated by ktrace at all, so an
+//!     ordinary `zig build portbound` measures real cycles/byte with no `sudo`,
+//!     no sudoers rule, and no setuid anything. Measured on an M4 Max: 0.35%
+//!     cycle repeatability over a 6M-cycle region, 385 cycles per read, and a
+//!     saturating sibling thread leaks 0.01% — it is genuinely per-thread.
+//!     See `bench/apparatus/privilege/README.md` for the evidence and for why
+//!     the privileged arrangement it replaces is staged but not installed.
 //!   * **everything else** — `has_pmu = false`; `counters()` returns zero and the
 //!     caller falls back to its monotonic `std.time.Timer` (ns/byte). The Linux
 //!     `perf_event_open` backend lands in pass 2 (see `Meter.init`).
 //!
-//! Design rule: **never fail the run.** If the PMU can't be opened (not root,
-//! not macOS, framework missing) `init` degrades to wall-clock and reports it.
-//! kperf is driven purely through opaque pointers + dlsym'd C functions — no
-//! reverse-engineered struct layouts — so it can't silently read garbage.
+//! Design rule: **never fail the run.** If no PMU can be opened (not macOS,
+//! framework missing, counters refused) `init` degrades to wall-clock and
+//! reports which tier it landed on. Both macOS backends are reached purely
+//! through dlsym'd C entry points, and each *proves* its counters advance
+//! before claiming `has_pmu` — so neither can silently report garbage, and a
+//! future OS that drops a symbol or narrows a struct degrades instead of lying.
 //!
 //! The file also carries the two host-provenance primitives every certificate
 //! layer stamps next to a measured number: `cpuBrand` (which silicon produced
@@ -36,6 +50,12 @@ pub const Counters = struct {
     valid: bool = false,
 };
 
+/// Which instrument a number came from. A report that stamps provenance needs
+/// to name its meter without carrying the whole prose `note` — and, more to the
+/// point, must not attribute an unprivileged `thread_selfcounts` reading to
+/// kperf just because kperf used to be the only backend.
+pub const Kind = enum { none, kperf, thsc };
+
 pub const Meter = struct {
     has_pmu: bool = false,
     note: []const u8 = "wall-clock only (no PMU)",
@@ -44,16 +64,29 @@ pub const Meter = struct {
     const Backend = union(enum) {
         none: void,
         kperf: KPerf,
+        thsc: Thsc,
     };
 
+    pub fn kind(self: *const Meter) Kind {
+        return switch (self.backend) {
+            .none => .none,
+            .kperf => .kperf,
+            .thsc => .thsc,
+        };
+    }
+
     /// Try the platform PMU; on any failure degrade to wall-clock. Never errors.
+    /// kperf first (it is the only tier that can carry configurable events), then
+    /// the unprivileged per-thread counters, which need no `sudo` at all.
     pub fn init() Meter {
         if (builtin.target.os.tag == .macos) {
             if (KPerf.open()) |k| {
                 return .{ .has_pmu = true, .note = k.note, .backend = .{ .kperf = k } };
-            } else |_| {
-                return .{ .note = "wall-clock only (kperf needs sudo; run under root for cycles)" };
-            }
+            } else |_| {}
+            if (Thsc.open()) |t| {
+                return .{ .has_pmu = true, .note = t.note, .backend = .{ .thsc = t } };
+            } else |_| {}
+            return .{ .note = "wall-clock only (no kperf: needs root; no thread_selfcounts: unavailable)" };
         }
         // Linux perf_event_open backend: pass 2.
         return .{};
@@ -62,6 +95,7 @@ pub const Meter = struct {
     pub fn deinit(self: *Meter) void {
         switch (self.backend) {
             .kperf => |*k| k.close(),
+            .thsc => |*t| t.close(),
             .none => {},
         }
     }
@@ -73,6 +107,7 @@ pub const Meter = struct {
     pub fn counters(self: *Meter) Counters {
         return switch (self.backend) {
             .kperf => |*k| k.read(),
+            .thsc => |*t| t.read(),
             .none => .{},
         };
     }
@@ -256,3 +291,260 @@ const KPerf = struct {
         self.kperf.close();
     }
 };
+
+// ── macOS unprivileged backend: thread_selfcounts ────────────────────────────
+
+/// Somewhere for the validation loop's result to land, so the optimizer can't
+/// delete the work whose cycles we are trying to observe.
+var thsc_sink: u64 = 0;
+
+/// The same two numbers kperf's fixed counters carry — retired cycles and
+/// instructions for the **calling thread** — read through xnu's
+/// `thread_selfcounts` syscall, which no ktrace ACL guards. This is the tier
+/// that removes the sudoers question from the certificate entirely.
+///
+/// Reached through the exported libSystem symbol, never through the syscall
+/// number: a syscall number is a magic constant that silently means something
+/// else if it is ever renumbered, while a missing symbol is a clean degrade. The
+/// struct layout is likewise not guessed — it is `struct thsc_cpi` from xnu's
+/// `bsd/sys/resource_private.h`, **instructions first**, and `open` proves the
+/// kernel filled both fields before trusting either (see `poison`).
+const Thsc = struct {
+    libsystem: std.DynLib,
+    selfcounts: *const fn (u32, *Cpi, usize) callconv(.c) c_int,
+    note: []const u8,
+
+    /// `THSC_CPI = 1` — "get the current thread's cycles and instructions".
+    /// The kernel rejects an unknown kind (verified: kind 999 ⇒ -1), so this
+    /// constant cannot quietly select a different flavour.
+    const kind_cpi: u32 = 1;
+
+    /// `struct thsc_cpi`. Instructions come first; reading the two the other way
+    /// round would report an IPC of 1/IPC and a clock ~1.7× the real one.
+    const Cpi = extern struct { instructions: u64, cycles: u64 };
+
+    /// The kernel accepts an undersized buffer and returns **success** having
+    /// written only part of the struct (verified: `size=8` fills instructions and
+    /// leaves cycles untouched). So a zero return is not evidence the read
+    /// happened. Both fields are pre-set to a value no counter can plausibly
+    /// hold; a field still holding it after the call means the contract moved
+    /// under us, and the backend refuses rather than reporting a poison as a
+    /// cycle count.
+    const poison: u64 = 0xA5A5_A5A5_DEAD_BEEF;
+
+    const libsystem_path = "/usr/lib/libSystem.B.dylib";
+
+    fn open() !Thsc {
+        var libsystem = try std.DynLib.open(libsystem_path);
+        errdefer libsystem.close();
+
+        var self: Thsc = .{
+            .libsystem = libsystem,
+            .selfcounts = libsystem.lookup(
+                *const fn (u32, *Cpi, usize) callconv(.c) c_int,
+                "thread_selfcounts",
+            ) orelse return error.SymbolMissing,
+            .note = "",
+        };
+
+        // Prove the counters before claiming them: two reads around a little
+        // real work must both succeed, must fill both fields, and must advance.
+        // A kernel that returns ENOTSUP for CPI (the header says some hardware
+        // does) or that stops accounting fails here and we fall to wall-clock.
+        const a = self.sample() orelse return error.CountersUnavailable;
+        var acc: u64 = thsc_sink;
+        for (0..4096) |i| acc +%= i ^ (acc >> 3);
+        thsc_sink = acc;
+        const b = self.sample() orelse return error.CountersUnavailable;
+        if (b.cycles <= a.cycles or b.instructions <= a.instructions) return error.CountersNotAdvancing;
+
+        self.note = "thread_selfcounts · THSC_CPI cycles + instructions (unprivileged, per-thread)";
+        return self;
+    }
+
+    /// One raw read, or `null` if the kernel refused it or short-filled it.
+    fn sample(self: *const Thsc) ?Cpi {
+        var c: Cpi = .{ .instructions = poison, .cycles = poison };
+        if (self.selfcounts(kind_cpi, &c, @sizeOf(Cpi)) != 0) return null;
+        if (c.instructions == poison or c.cycles == poison) return null;
+        return c;
+    }
+
+    fn read(self: *Thsc) Counters {
+        const c = self.sample() orelse return .{};
+        return .{ .cycles = c.cycles, .instructions = c.instructions, .valid = true };
+    }
+
+    fn close(self: *Thsc) void {
+        self.libsystem.close();
+    }
+};
+
+// ── tests ────────────────────────────────────────────────────────────────────
+//
+// These are the checks that decide whether a certificate number is real, so each
+// is written to FAIL on a specific way the counter could be lying — not to
+// re-state the implementation. None of them asserts a machine-specific constant,
+// so they hold on any host: on a box with no cycle counter every one degrades to
+// asserting the documented wall-clock contract instead of skipping silently.
+
+var test_sink: u64 = 0;
+
+/// Burn a known, non-elidable amount of work. Returns the accumulator so a
+/// caller can keep it live.
+fn spin(iters: usize) u64 {
+    var acc: u64 = test_sink;
+    for (0..iters) |i| acc +%= i ^ (acc >> 3);
+    test_sink = acc;
+    return acc;
+}
+
+/// Wall-clock wait, straight through libc — the module already links it for
+/// `dlopen`, and threading a `std.Io` in just to pause a test would give this
+/// file a dependency none of its production code has.
+fn nap(ns: u64) void {
+    const ts: std.c.timespec = .{
+        .sec = @intCast(ns / std.time.ns_per_s),
+        .nsec = @intCast(ns % std.time.ns_per_s),
+    };
+    _ = std.c.nanosleep(&ts, null);
+}
+
+test "a meter is either honestly instrumented or honestly wall-clock" {
+    var m = Meter.init();
+    defer m.deinit();
+    // The invariant every consumer relies on: `has_pmu` and the backend agree,
+    // and a meter without one reports zeroed, invalid counters rather than a
+    // plausible-looking number.
+    try std.testing.expectEqual(m.has_pmu, m.kind() != .none);
+    if (!m.has_pmu) {
+        const c = m.counters();
+        try std.testing.expect(!c.valid);
+        try std.testing.expectEqual(@as(u64, 0), c.cycles);
+        try std.testing.expectEqual(@as(u64, 0), c.instructions);
+    }
+    try std.testing.expect(m.note.len > 0);
+}
+
+test "counters advance across real work and stay self-consistent" {
+    var m = Meter.init();
+    defer m.deinit();
+    if (!m.has_pmu) return;
+
+    const a = m.counters();
+    std.mem.doNotOptimizeAway(spin(1 << 21));
+    const b = m.counters();
+    try std.testing.expect(a.valid and b.valid);
+    try std.testing.expect(b.cycles > a.cycles);
+    try std.testing.expect(b.instructions > a.instructions);
+
+    // IPC has to be physically possible. This is a coarse sanity bound — it
+    // catches a units mix-up or a counter wired to something that isn't a
+    // counter, but deliberately not a field-order oracle: swapping the two
+    // fields merely reports 1/IPC, which is still inside any honest window on a
+    // machine near IPC 1. The layout is pinned by the short-read test below,
+    // which was checked against exactly that mutation.
+    const ipc = @as(f64, @floatFromInt(b.instructions - a.instructions)) /
+        @as(f64, @floatFromInt(b.cycles - a.cycles));
+    try std.testing.expect(ipc > 0.01 and ipc < 64.0);
+}
+
+test "cycles measure work, not elapsed time" {
+    var m = Meter.init();
+    defer m.deinit();
+    if (!m.has_pmu) return;
+
+    // A sleeping thread retires almost nothing. If cycles tracked wall-clock,
+    // 50 ms of sleep would look like ~10^8 cycles on any modern core; the
+    // counter is only useful because it does not.
+    const s0 = m.counters();
+    nap(50 * std.time.ns_per_ms);
+    const s1 = m.counters();
+    const idle = s1.cycles -% s0.cycles;
+
+    const w0 = m.counters();
+    std.mem.doNotOptimizeAway(spin(1 << 21));
+    const w1 = m.counters();
+    const busy = w1.cycles -% w0.cycles;
+
+    try std.testing.expect(busy > idle * 4);
+}
+
+test "counters are per-thread, so a busy neighbour cannot inflate them" {
+    var m = Meter.init();
+    defer m.deinit();
+    if (!m.has_pmu) return;
+
+    const iters: usize = 1 << 21;
+    const solo = blk: {
+        const a = m.counters();
+        std.mem.doNotOptimizeAway(spin(iters));
+        break :blk m.counters().cycles -% a.cycles;
+    };
+
+    // Ten agents share this machine, so a counter that accrued a sibling's work
+    // would make every measurement a function of who else is building. Saturate
+    // another thread and require the same answer.
+    const Sibling = struct {
+        stop: std.atomic.Value(bool) = .init(false),
+        sink: u64 = 0,
+        fn churn(s: *@This()) void {
+            while (!s.stop.load(.monotonic)) {
+                var acc: u64 = s.sink;
+                for (0..1 << 16) |i| acc +%= i ^ (acc >> 3);
+                s.sink = acc;
+            }
+        }
+    };
+    var sib: Sibling = .{};
+    const th = try std.Thread.spawn(.{}, Sibling.churn, .{&sib});
+    defer {
+        sib.stop.store(true, .monotonic);
+        th.join();
+    }
+    nap(10 * std.time.ns_per_ms); // let it get going
+
+    const shared = blk: {
+        const a = m.counters();
+        std.mem.doNotOptimizeAway(spin(iters));
+        break :blk m.counters().cycles -% a.cycles;
+    };
+
+    // Generous bound: contention for shared cache and the memory system can
+    // legitimately slow this thread. What it must not do is *add* the sibling's
+    // retired cycles, which would be a multiple, not a fraction.
+    try std.testing.expect(shared < solo * 2);
+}
+
+test "an undersized read is refused rather than half-filled" {
+    if (builtin.target.os.tag != .macos) return;
+    var t = Thsc.open() catch return; // no unprivileged counter here; nothing to check
+    defer t.close();
+
+    // The kernel returns success for a short buffer, writing only the fields
+    // that fit — verified on macOS 26: `size=8` fills instructions and leaves
+    // cycles untouched. `sample` must therefore not trust the return code, and
+    // the poison sentinel is what catches it. Ask for one field's worth and
+    // require the backend to notice.
+    var c: Thsc.Cpi = .{ .instructions = Thsc.poison, .cycles = Thsc.poison };
+    _ = t.selfcounts(Thsc.kind_cpi, &c, @sizeOf(u64));
+    try std.testing.expectEqual(Thsc.poison, c.cycles);
+
+    // And the full-size read the backend actually issues fills both.
+    const full = t.sample() orelse return error.FullSizedReadRefused;
+    try std.testing.expect(full.cycles != Thsc.poison and full.instructions != Thsc.poison);
+}
+
+test "an unknown counter kind is rejected, so the flavour cannot drift" {
+    if (builtin.target.os.tag != .macos) return;
+    var t = Thsc.open() catch return;
+    defer t.close();
+    var c: Thsc.Cpi = .{ .instructions = 0, .cycles = 0 };
+    try std.testing.expect(t.selfcounts(0xDEAD, &c, @sizeOf(Thsc.Cpi)) != 0);
+}
+
+test "host provenance answers before anything is measured" {
+    var buf: [64]u8 = undefined;
+    try std.testing.expect(cpuBrand(&buf).len > 0);
+    _ = requestPerformanceQos(); // a hint; a host may decline it
+}
