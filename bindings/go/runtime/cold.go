@@ -54,10 +54,11 @@ type resolvedPath struct {
 }
 
 // Binary is the absolute path to one of the kernel's product binaries.
-// Resolution order is the env override, this checkout's built
-// zig-out/bin/<name>, then PATH — checkout-local ahead of PATH so a worktree
-// never drives a stale globally installed build. Cached per process, negative
-// answers included: a host with no binary asks once, not once per query.
+// Resolution order is the env override, a built zig-out/bin/<name> in this
+// checkout or an ancestor of it, the sibling checkout that owns the name, then
+// PATH — checkout-local ahead of PATH so a worktree never drives a stale
+// globally installed build. Cached per process, negative answers included: a
+// host with no binary asks once, not once per query.
 func Binary(name string) (string, error) {
 	resolvedMu.Lock()
 	defer resolvedMu.Unlock()
@@ -77,40 +78,80 @@ func locate(name string) (string, error) {
 		}
 		return "", fmt.Errorf("%w: %s=%q is not a file", ErrNoBinary, envOverride[name], env)
 	}
-	if built := checkoutBuild(name); built != "" {
-		return built, nil
+	looked := candidates(name)
+	for _, bin := range looked {
+		if isFile(bin) {
+			return bin, nil
+		}
 	}
 	if onPath, err := exec.LookPath(name); err == nil {
 		return onPath, nil
 	}
-	return "", fmt.Errorf("%w: set %s, put %s on PATH, or run `make install-gist`", ErrNoBinary, envOverride[name], name)
+	return "", fmt.Errorf("%w: %s is unset, %s is not on PATH, and no build exists at any of:\n\t%s\nbuild one with `zig build -Doptimize=ReleaseFast` in the %s checkout",
+		ErrNoBinary, envOverride[name], name, strings.Join(searched(looked), "\n\t"), name)
 }
 
-// checkoutBuild finds `zig-out/bin/<name>` for the kernel this process is
-// running inside, by ascending from the working directory. A Go package has no
-// __file__, so the tree is discovered rather than baked in — which also means a
-// consumer outside the monorepo simply falls through to PATH.
-func checkoutBuild(name string) string {
+// candidates is the ordered ladder of `zig-out/bin/<name>` paths a local build
+// could occupy, discovered by ascending from the working directory. A Go package
+// has no __file__, so the tree is found rather than baked in — which also means
+// a consumer outside the ecosystem simply falls through to PATH.
+//
+// Two passes, in the order the Python binding already resolves in
+// (bindings/python/irregex/runtime/shell.py, `_locate_root`): an already-built
+// binary anywhere up the chain, then the sibling checkout that owns the name.
+// The two are describing the same fact about one filesystem, so they must agree.
+// The four packages are flat siblings of one workspace — `relate` sits at
+// ../relate/zig-out/bin/relate whether the process runs inside irregex or blast
+// — and a sibling is only believed when it carries the `build.zig` that makes it
+// that package's checkout rather than a directory that happens to share a name.
+//
+// Own build ahead of sibling on purpose: the checkout you are standing in is the
+// one you just rebuilt, and a sibling's zig-out may hold something older. No rung
+// dates what it finds, so pin an exact build with the env override when the
+// difference matters.
+func candidates(name string) []string {
 	dir, err := os.Getwd()
 	if err != nil {
-		return ""
+		return nil
 	}
+	ancestors := make([]string, 0, 16)
 	for range 16 {
-		for _, base := range []string{
-			filepath.Join(dir, "zig-out", "bin", name),
-			filepath.Join(dir, "libs", "kernels", "irregex", "zig-out", "bin", name),
-		} {
-			if info, err := os.Stat(base); err == nil && !info.IsDir() {
-				return base
-			}
-		}
+		ancestors = append(ancestors, dir)
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return ""
+			break
 		}
 		dir = parent
 	}
-	return ""
+	own := make([]string, 0, len(ancestors))
+	var siblings []string
+	for _, a := range ancestors {
+		own = append(own, filepath.Join(a, "zig-out", "bin", name))
+		// An ancestor named `name` IS the owning checkout, and its build is
+		// already the candidate just appended.
+		if filepath.Base(a) == name || !isFile(filepath.Join(a, "build.zig")) {
+			continue
+		}
+		if s := filepath.Join(filepath.Dir(a), name); isFile(filepath.Join(s, "build.zig")) {
+			siblings = append(siblings, filepath.Join(s, "zig-out", "bin", name))
+		}
+	}
+	return append(own, siblings...)
+}
+
+// searched renders the ladder for a failure. Naming every path is the point: the
+// alternative is the reader re-deriving the ladder from this file, which is how a
+// rung stayed dead long enough to silence four tests.
+func searched(looked []string) []string {
+	if len(looked) == 0 {
+		return []string{"(nowhere — the working directory could not be read)"}
+	}
+	return looked
+}
+
+func isFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 // Output is one child's two streams: rows on stdout, diagnostics on stderr, so a
@@ -227,7 +268,9 @@ func cold(ctx context.Context, q Query) (*Rows, error) {
 	if err != nil {
 		return nil, err
 	}
+	start := time.Now()
 	out, err := Spawn(ctx, p.tool, p.argv, q.Dir)
+	waited := time.Since(start)
 	if err != nil {
 		return nil, err
 	}
@@ -235,7 +278,7 @@ func cold(ctx context.Context, q Query) (*Rows, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newRows(&coldRows{rows: rows, facts: coldStats(out, len(rows))}), nil
+	return newRows(&coldRows{rows: rows, facts: coldStats(out, len(rows), waited)}), nil
 }
 
 // coldRows serves an answer the child already materialized. A child's stdout is
@@ -261,8 +304,16 @@ func (c *coldRows) close() error { return nil }
 // drawn from, how much of the query was foreign, what a budget trimmed).
 // Best-effort by design: an absent record yields the row count alone rather than
 // failing a query that already produced its rows.
-func coldStats(out Output, rows int) Stats {
-	s := Stats{Rows: uint64(rows)}
+//
+// waited is the child's measured wall clock, and it is the floor under Elapsed
+// rather than a fallback of last resort: the summary counts whole milliseconds,
+// so a sub-millisecond verb reports `"ms":0` while the caller demonstrably waited
+// for a process to start, answer, and exit. The in-process tier reports
+// nanoseconds, and one tier may not answer "no time passed" where its twin
+// answers a real duration. A summary that does report time still wins — it is the
+// finer account of where the time went.
+func coldStats(out Output, rows int, waited time.Duration) Stats {
+	s := Stats{Rows: uint64(rows), Elapsed: waited}
 	diag := summary(out.Stdout, out.Stderr)
 	if diag == nil {
 		return s
@@ -275,7 +326,9 @@ func coldStats(out Output, rows int) Stats {
 	if n := counter(diag, "rows", "picks", "hits", "located"); s.Rows == 0 {
 		s.Rows = n
 	}
-	s.Elapsed = elapsed(diag)
+	if reported := elapsed(diag); reported > 0 {
+		s.Elapsed = reported
+	}
 	return s
 }
 

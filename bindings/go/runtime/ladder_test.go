@@ -108,9 +108,6 @@ func TestDigestPolicy(t *testing.T) {
 // answer a verb with the same rows. A declinature is a fact about speed, so a
 // difference here would mean one tier is lying.
 func TestTiersAgree(t *testing.T) {
-	if _, err := Binary(ToolRelate); err != nil {
-		t.Skipf("no relate binary: %v", err)
-	}
 	root := corpus(t)
 	q := Query{
 		Op:     analytic.OpDups,
@@ -119,9 +116,18 @@ func TestTiersAgree(t *testing.T) {
 		Dir:    root,
 	}
 
+	// The only skip left in this package, and it is deliberately not the kind
+	// TestMain abolished. That kind asked the filesystem whether a binary
+	// happened to be lying around; this one asks how this very test binary was
+	// compiled. The default build is pure Go, because the in-process analytic
+	// tier is opt-in behind `-tags irregex_ffi` so a `go get` consumer never
+	// tries to link a libirregex that cannot exist in the module cache. A
+	// cross-tier oracle with one tier present has nothing to compare, and no
+	// amount of building or installing changes that — only rebuilding this test
+	// binary with the tag does.
 	warm := Probe()
 	if !warm.Analytic {
-		t.Skipf("no in-process analytic plane to compare against (cgo=%v, err=%v)", warm.CGO, warm.Err)
+		t.Skipf("this test binary has no in-process analytic tier to compare the cold one against; rebuild with `-tags irregex_ffi` (cgo=%v, err=%v)", warm.CGO, warm.Err)
 	}
 	native := render(t, q)
 	if len(native) == 0 {
@@ -143,9 +149,6 @@ func TestTiersAgree(t *testing.T) {
 // counters rather than dropping them: a retrieval answer must be able to say the
 // query was foreign to the corpus instead of merely empty.
 func TestColdSurfacesStats(t *testing.T) {
-	if _, err := Binary(ToolRelate); err != nil {
-		t.Skipf("no relate binary: %v", err)
-	}
 	t.Setenv("IRREGEX_NO_FFI", "1")
 	root := corpus(t)
 	rows, err := Run(t.Context(), Query{

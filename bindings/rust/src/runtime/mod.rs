@@ -52,8 +52,11 @@ pub use decode::Row;
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
-    /// No engine binary could be located (env `GIST_BIN`, `PATH`, or the
-    /// repo's `zig-out/bin/`). Build it with `zig build`.
+    /// No engine binary could be located: not at the env override (`GIST_BIN`
+    /// / `RELATE_BIN` / `BLAST_BIN`), not at a built `zig-out/bin/<name>` in
+    /// this checkout, an ancestor, or the sibling checkout that owns the name,
+    /// and not on `PATH`. The message names every path it tried, in order.
+    /// Build one with `zig build`.
     NotFound(String),
     /// The pattern or flag combination is outside GIST's linear-time engine
     /// (e.g. PCRE2 lookaround/backreferences, `-U` multiline) — the engine
@@ -93,7 +96,10 @@ pub type Result<T> = std::result::Result<T, Error>;
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NotFound(m) => write!(f, "gist binary not found: {m}"),
+            // The message already names the tool it went looking for, and it is
+            // not always `gist` — the same error carries a missing `relate` or
+            // `blast`. Prefix with the crate, not with one of the three faces.
+            Self::NotFound(m) => write!(f, "irregex: {m}"),
             Self::UnsupportedPattern(m) => write!(f, "unsupported pattern: {m}"),
             Self::BadPattern(m) => write!(f, "malformed pattern: {m}"),
             Self::Failed(m) => write!(f, "gist search failed: {m}"),

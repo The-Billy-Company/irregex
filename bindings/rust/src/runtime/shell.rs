@@ -58,12 +58,14 @@ pub fn binary() -> Result<PathBuf> {
 }
 
 /// Absolute path to a certified binary. Resolution order: the `env` override,
-/// then `name` on `PATH`, then the repo's built `zig-out/bin/<name>`. Successes
-/// are cached; a failure re-resolves on the next call, so building the binary
-/// mid-session takes effect without restarting the host.
+/// a built `zig-out/bin/<name>` in this checkout or an ancestor of it, the
+/// sibling checkout that owns the name, then `PATH` — checkout-local ahead of
+/// `PATH` so a worktree never drives a stale globally installed build.
+/// Successes are cached; a failure re-resolves on the next call, so building
+/// the binary mid-session takes effect without restarting the host.
 ///
 /// # Errors
-/// [`Error::NotFound`] when no binary resolves.
+/// [`Error::NotFound`] when no binary resolves, naming every path it looked at.
 pub fn binary_named(name: &'static str, env_var: &'static str) -> Result<PathBuf> {
     static CACHE: OnceLock<Mutex<HashMap<&'static str, PathBuf>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
@@ -90,20 +92,121 @@ fn resolve(name: &str, env_var: &str) -> Result<PathBuf> {
             p.display()
         )));
     }
+    let looked = candidates(name);
+    if let Some(found) = looked.iter().find(|p| p.is_file()) {
+        return Ok(found.clone());
+    }
     if let Some(p) = which(name) {
         return Ok(p);
     }
-    // CARGO_MANIFEST_DIR is bindings/rust; the kernel root is ../..
-    let built = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../zig-out/bin")
-        .join(name);
-    if built.is_file() {
-        return Ok(built);
+    Err(Error::NotFound(unfound(name, env_var, &looked)))
+}
+
+/// How far up the tree the ancestor walk climbs. Sixteen is the ceiling the Go
+/// binding uses: deeper than any real checkout, and a bound on the work when
+/// the anchor is a registry path with nothing of ours above it.
+const ASCENT: usize = 16;
+
+/// Where the ancestor walk starts, nearest anchor first.
+///
+/// Two anchors, because this file is read in two unrelated situations and
+/// neither one alone covers both. The **working directory** is the runtime
+/// truth and is what the Go binding walks: `cargo test` inside
+/// `blast/bindings/rust` stands in the blast checkout no matter which crate
+/// compiled this source. **`CARGO_MANIFEST_DIR`** is baked in at compile time,
+/// and — because `env!` expands where it is written — it names *this* crate's
+/// directory even when relate or blast is the consumer. That is why it cannot
+/// be the only anchor: from blast it can only ever describe irregex's tree,
+/// which is the reason asking it for `relate` used to be unanswerable. It is
+/// kept as the second anchor for a host that has chdir'd away from its
+/// checkout, and it is harmlessly inert for a crates.io consumer, whose
+/// manifest dir is a registry path holding no `zig-out` and no `build.zig`.
+fn anchors() -> Vec<PathBuf> {
+    let mut from = Vec::with_capacity(2);
+    if let Ok(cwd) = env::current_dir() {
+        from.push(cwd);
     }
-    Err(Error::NotFound(format!(
-        "no `{name}` binary — set {env_var}, put `{name}` on PATH, or build it with \
-         `zig build -Doptimize=ReleaseFast` in the gist package"
-    )))
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    if !from.contains(&manifest) {
+        from.push(manifest);
+    }
+    from
+}
+
+/// The ordered ladder of `zig-out/bin/<name>` paths a local build could occupy.
+///
+/// Two passes, in the order the Python and Go bindings already resolve in
+/// (`bindings/python/irregex/runtime/shell.py`, `_locate_root`;
+/// `bindings/go/runtime/cold.go`, `candidates`): an already-built binary
+/// anywhere up the chain, then the sibling checkout that owns the name. All
+/// three are describing the same fact about one filesystem, so they must agree.
+///
+/// The four packages are flat siblings of one workspace — `relate` sits at
+/// `../relate/zig-out/bin/relate` whether the process runs inside irregex or
+/// blast — and a sibling is only believed when it carries the `build.zig` that
+/// makes it that package's checkout rather than a directory that happens to
+/// share a name.
+///
+/// Own build ahead of sibling on purpose: the checkout you are standing in is
+/// the one you just rebuilt, and a sibling's `zig-out` may hold something
+/// older. No rung dates what it finds, so pin an exact build with the env
+/// override when the difference matters.
+///
+/// Nothing here builds. The Python binding will run `zig build` as an in-repo
+/// last resort; a `cargo test` that silently spends ten minutes in the Zig
+/// compiler is a worse surprise than a legible failure, which is the same call
+/// the Go binding made.
+fn candidates(name: &str) -> Vec<PathBuf> {
+    let built = |dir: &Path| dir.join("zig-out").join("bin").join(name);
+    let (mut own, mut siblings) = (Vec::new(), Vec::new());
+    for anchor in anchors() {
+        for dir in anchor.ancestors().take(ASCENT) {
+            own.push(built(dir));
+            // An ancestor named `name` IS the owning checkout, and its build is
+            // already the candidate just pushed.
+            if dir.file_name().is_some_and(|base| base == name) || !dir.join("build.zig").is_file()
+            {
+                continue;
+            }
+            if let Some(sibling) = dir.parent().map(|up| up.join(name))
+                && sibling.join("build.zig").is_file()
+            {
+                siblings.push(built(&sibling));
+            }
+        }
+    }
+    own.append(&mut siblings);
+    once_each(own)
+}
+
+/// Order-preserving dedupe. Two anchors reaching the same directory is one
+/// rung, and a failure that lists a path twice reads as two places checked.
+fn once_each(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut kept: Vec<PathBuf> = Vec::with_capacity(paths.len());
+    for p in paths {
+        if !kept.contains(&p) {
+            kept.push(p);
+        }
+    }
+    kept
+}
+
+/// The failure, naming every location in the order it was tried. Naming them is
+/// the point: the alternative is the reader re-deriving the ladder from this
+/// file, which is how two agents came to investigate the same dead rung twice.
+fn unfound(name: &str, env_var: &str, looked: &[PathBuf]) -> String {
+    let rungs: String = if looked.is_empty() {
+        "\n\t(nowhere — no anchor directory could be read)".to_owned()
+    } else {
+        looked
+            .iter()
+            .map(|p| format!("\n\t{}", p.display()))
+            .collect()
+    };
+    format!(
+        "no `{name}` binary: {env_var} is unset, `{name}` is not on PATH, and no build exists at \
+         any of:{rungs}\nbuild one with `zig build -Doptimize=ReleaseFast` in the {name} checkout"
+    )
 }
 
 fn expand_tilde(raw: &std::ffi::OsStr) -> PathBuf {

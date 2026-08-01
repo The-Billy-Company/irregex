@@ -57,7 +57,7 @@ def _locate_root(name: str) -> Path | None:
 
     Walks ancestors of this file for an already-built `zig-out/bin/<name>`, then
     for a `build.zig` whose directory is named `name` (or a sibling checkout of
-    that name — the four packages sit next to each other under Billy-Company).
+    that name — the four packages sit next to each other in one workspace).
     Substrate code lives in `irregex`, so a fixed `parents[N]` cannot name
     relate's or blast's tree.
     """
@@ -100,7 +100,7 @@ def _resolve(name: str, env_var: str) -> str:
         return on_path
     msg = (
         f"no `{name}` binary found — set {env_var}, put `{name}` on PATH, "
-        "or build it with `make install-gist`"
+        "or build it with `zig build -Doptimize=ReleaseFast`"
     )
     raise GistNotFoundError(msg)
 
