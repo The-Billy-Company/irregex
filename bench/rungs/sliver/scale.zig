@@ -31,7 +31,7 @@
 //!     EXCEED the directory rule's is a regression and fails the audit.
 //!
 //! Output: a table on stdout, and a machine-readable TSV at
-//! `.local/gist-verify/scale_tiers.tsv` for `certify_scale_report.py`.
+//! `.gist/scale_tiers.tsv` for `certify_scale_report.py`.
 
 const std = @import("std");
 const gist = @import("irregex");
@@ -88,7 +88,7 @@ fn allDocs(gpa: std.mem.Allocator, n: usize) ![]u32 {
     return all;
 }
 
-/// The historical rule, verbatim from `bench/lowerbound/lowerbound.zig`: a
+/// The historical rule, verbatim from `bench/bounds/lowerbound/audit.zig`: a
 /// needle under 3 bytes is unqueryable, so every document is a candidate.
 fn baseCandidates(idx: *const Index, gpa: std.mem.Allocator, n_docs: usize, filters: []const []const u8) ![]u32 {
     var usable = filters.len > 0;

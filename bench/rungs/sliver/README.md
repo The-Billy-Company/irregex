@@ -12,9 +12,9 @@ doc_radar:
       contains: ["peak_rss_gib", "post-kiln"]
 ---
 
-# `bench/sliver` — index tiers under load, in Layer D's own unit
+# `bench/rungs/sliver` — index tiers under load, in Layer D's own unit
 
-Layer D (`bench/lowerbound/`) measures the floor a **trigram** directory can
+Layer D (`bench/bounds/lowerbound/`) measures the floor a **trigram** directory can
 reach, in _candidate bytes delivered to verify_. It records four of the twelve
 canonical classes arriving at **cand% = 100%** — the whole corpus admitted,
 because the needle is thinner than a trigram (`literal-punct2` = `})`) or carries
@@ -35,7 +35,7 @@ GIST_SCALE_TRACE=1 zig build scale         # also print the filters each class o
 ```
 
 Output: `<GIST_DIR>/scale_tiers.tsv` — the same artifact home `gist index` uses,
-so it lands at the repo-root `.local/gist-verify/` by default (a `# k=v`
+so it lands at the repo-root `.gist/` by default (a `# k=v`
 provenance header, then one row per class).
 
 ## What it measures, and why the numbers can be trusted
@@ -84,8 +84,9 @@ and correctly declines. `regex-dense-scan` (`\w{3,8}`) offers no literal at all.
 A **positional** tier stores where in a document a trigram occurs, so verify reads
 regions rather than whole documents — the axis Layer D calls the floor. It is
 deliberately **not implemented**, and the whole size/benefit surface behind that
-decision is committed at `artifact/positional_pareto.tsv`
-(`spikes/scale-pareto/pareto_probe.py`). Two axes are swept: a trigram
+decision is committed at `artifact/positional_pareto.tsv`, measured by a
+standalone probe over gist's own trigram directory across a 19,440-document,
+188.2 MiB slice of the corpus at a 256-byte block. Two axes are swept: a trigram
 carries block positions only if its document frequency is below **T**, and at most
 **cap** blocks are stored per (trigram, document) — an over-cap posting drops its
 constraint, which is sound because dropping a constraint only widens the admitted
@@ -131,13 +132,14 @@ delivering ≥2× on any probe.
 
 `scale_race.py` races the three indexed engines over a multi-GB corpus (shallow
 clones of linux, llvm, go, rust — 352,316 files / 5.5 GiB on disk) across the same
-canonical 12 classes, reusing `bench/races/_compete.sh`'s fairness contract
-(`GIST_UNCAP=1`, one shared output mode) and `bench/certify/certify_stats.py` for
-medians, bootstrap CIs and the Mann-Whitney verdict. Artifacts: `scale_race.tsv`,
-`scale_build.tsv`, `scale_resident.tsv`, `scale_truth.tsv`, `scale_elision.tsv`.
+canonical 12 classes, reusing `gist/bench/dominance/races/field.sh`'s fairness
+contract (`GIST_UNCAP=1`, one shared output mode) and `bench/apparatus/stats.py`
+for medians, bootstrap CIs and the Mann-Whitney verdict. Artifacts:
+`scale_race.tsv`, `scale_build.tsv`, `scale_resident.tsv`, `scale_truth.tsv`,
+`scale_elision.tsv`.
 
 ```bash
-python3 bench/sliver/scale_race.py --corpus <corpus> --gist-dir <gistdir> \
+python3 bench/rungs/sliver/scale_race.py --corpus <corpus> --gist-dir <gistdir> \
     --zoekt-dir <zoektdir> --csearch-idx <csearch.idx> --reps 5
 ```
 
@@ -194,9 +196,9 @@ ripgrep, and missed by **both** csearch and zoekt.
 
 ## Certificate layer
 
-`bench/certify/certify_scale_report.py` splices **Layer J** between
+`gist/bench/certificate/report/scale.py` splices **Layer J** between
 `<!-- SCALE-LAYER-START -->` / `<!-- SCALE-LAYER-END -->` and writes the roster
-side-car `bench/certify/artifact/scale.csv`.
+side-car `gist/bench/certificate/artifact/scale.csv`.
 
 It is fail-closed in three directions, and the third is the unusual one:
 
@@ -217,22 +219,22 @@ Re-run standalone (`zig build scale` first; it writes into `GIST_DIR`):
 
 ```bash
 cd <irregex-repo-root> && zig build scale -Doptimize=ReleaseFast
-python3 bench/certificate/report/scale.py \
-  --certificate bench/certificate/artifact/CERTIFICATE.md \
-  --tsv ../../../.local/gist-verify/scale_tiers.tsv \
+python3 ../gist/bench/certificate/report/scale.py \
+  --certificate ../gist/bench/certificate/artifact/CERTIFICATE.md \
+  --tsv ../../../.gist/scale_tiers.tsv \
   --race bench/rungs/sliver/artifact/scale_race.tsv \
   --build bench/rungs/sliver/artifact/scale_build.tsv \
   --resident bench/rungs/sliver/artifact/scale_resident.tsv \
   --pareto bench/rungs/sliver/artifact/positional_pareto.tsv \
   --elision bench/rungs/sliver/artifact/scale_elision.tsv \
   --walkcost bench/rungs/sliver/artifact/scale_walkcost.tsv \
-  --sidecar bench/certificate/artifact/scale.csv \
+  --sidecar ../gist/bench/certificate/artifact/scale.csv \
   --machine "$(sysctl -n machdep.cpu.brand_string)" --zig "$(zig version)"
 ```
 
-Roster row for `bench/certify/layers.py` (the parent wires it; this lane does not
-edit that file) — header `## Layer J — positional + substring index tiers at scale
-(vs zoekt)`, side-car `scale.csv`:
+Roster row for `gist/bench/certificate/guard/layers.py` (the parent wires it;
+this lane does not edit that file) — header `## Layer J — positional + substring
+index tiers at scale (vs zoekt)`, side-car `scale.csv`:
 
 ```python
 Layer(

@@ -1,6 +1,6 @@
 # completeness at scale — files-with-matches counts over the multi-GB scale corpus
 # ripgrep is the correctness oracle (it scans; it cannot be stale or index-limited).
-# Per bench/races/_compete.sh, zoekt is a TIMING reference and not a correctness
+# Per gist/bench/dominance/races/field.sh, zoekt is a TIMING reference and not a correctness
 # oracle; this table is why that caveat matters, and why a latency ratio against zoekt
 # must never be read without its hit count.
 #

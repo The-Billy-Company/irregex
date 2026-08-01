@@ -1,0 +1,28 @@
+# index build cost over the multi-GB scale corpus, measured with /usr/bin/time -l
+# corpus: shallow clones of linux, llvm, go, rust under
+#   one scratch corpus root  ·  352316 files on disk  ·  5.5 GiB incl. VCS metadata
+#
+# The three engines do NOT see identical bytes, and the fairness contract in
+# gist/bench/dominance/races/field.sh says so: gist and csearch index a text corpus filtered by
+# their own binary/ignore heuristics, while zoekt takes no file list and indexes the
+# roots tree. `text_gib` is therefore reported per engine as each one measured it, and
+# `index_pct_text` is normalized against that engine's own text volume.
+#
+# gist's peak RSS was the honest weak spot of this table (14.50 GiB, 5.1x csearch) and is
+# still not normalized away — it is now 4.56 GiB after the block-fired trigram builder,
+# which is the whole reason this row was re-measured rather than left to age.
+engine	wall_s	peak_rss_gib	text_gib	index_mib	index_pct_text	files	provenance
+gist	26.0	4.56	3.35	357.5	10.4	342844	/usr/bin/time -l gist index, median of 5 (this session, post-kiln)
+csearch	56.3	2.86	3.72	401.1	10.5	-	/usr/bin/time -l cindex . (this session)
+zoekt	235.6	1.70	5.50	8908.8	158.0	-	/usr/bin/time -l zoekt-index (earlier session, same corpus)
+# gist's wall is the median of 5 reps on a box ~10 coworker agents were also building on:
+# user time held at 24.8-25.1 s across every rep while sys swung 19-41 s, so the spread is
+# the machine, not the builder. csearch's and zoekt's rows are from a quieter session, so
+# the ratio derived against them understates gist's build speed rather than flattering it.
+# gist also writes an 18.4 MiB paths sidecar (the doc->path table), counted separately.
+# zoekt's index_mib is the on-disk shard total (8.7 GiB) measured with du -sh; its
+# text_gib is the whole roots tree because zoekt indexed it without a file list, so its
+# index_pct_text is a ceiling rather than a like-for-like ratio.
+#
+# Query-time residency (the "must the index be resident?" question):
+# see scale_resident.tsv.

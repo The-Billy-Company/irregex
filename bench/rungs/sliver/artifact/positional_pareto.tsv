@@ -1,0 +1,36 @@
+# positional-tier Pareto surface, measured by a standalone probe over gist's own trigram
+# directory: one pass takes document frequency per trigram, a second prices every
+# (trigram, document) posting once with a real delta+varint encoder and buckets it by df,
+# so cost(T) is a prefix sum over the buckets rather than a re-run per threshold.
+# corpus_docs=19440 corpus_mib=188.2 block=256
+# A trigram carries block positions iff its document frequency df <= T. `cap` is the
+# maximum block count stored per (trigram, document); an over-cap posting stores a
+# marker and its constraint is DROPPED from the intersection (sound: dropping a
+# constraint only widens the admitted region).
+# sidecar_mib / pct_corpus = incremental index bytes at real delta+varint encoding.
+# The five cand_* columns are candidate bytes (MiB) delivered to verify for that probe.
+# T=0 is the baseline: no positions carried, i.e. today's doc-level answer.
+cap	T	carried_trigrams	sidecar_mib	pct_corpus	cand_pgxpool	cand_context_Context	cand_func	cand_panic	cand_WalletService
+8	0	0	0.0	0.0	12.3	25.5	108.7	41.5	17.1
+8	64	303506	7.1	3.8	12.3	25.5	108.7	41.5	17.1
+8	256	324469	16.5	8.8	12.3	25.5	108.7	41.5	17.1
+8	512	330792	24.4	12.9	12.3	25.5	108.7	41.5	17.1
+8	1024	335073	35.0	18.6	4.9	25.5	108.7	41.5	12.6
+8	2048	337940	49.2	26.1	4.9	25.5	108.7	41.5	12.1
+8	4096	339722	66.9	35.5	4.9	15.7	108.7	22.0	11.4
+8	8192	340829	89.1	47.3	4.9	15.7	80.5	19.7	11.4
+8	16384	341336	108.2	57.5	4.9	15.7	80.2	19.7	11.4
+8	uniform	341349	108.8	57.8	4.9	15.7	80.2	19.7	11.4
+inf	0	0	0.0	0.0	12.3	25.5	108.7	41.5	17.0
+inf	1024	335092	74.9	39.8	0.5	25.5	108.7	41.5	0.5
+inf	4096	339741	136.0	72.3	0.5	7.2	108.7	0.9	0.1
+inf	uniform	341368	245.8	130.6	0.5	7.2	29.8	0.7	0.1
+# Per-probe binding trigram document frequency — the structural reason the cheap end
+# of the curve buys nothing. min_df is the document frequency of the probe's RAREST
+# trigram, so no threshold below it carries ANY of that probe's positions.
+# probe	min_df	max_df	admits_docs	doc_level_mib	true_mib
+#probe	pgxpool	560	9766	552	12.3	12.3
+#probe	context.Context	2405	16985	1895	25.5	20.1
+#probe	func	7671	9494	7554	108.7	106.4
+#probe	panic	3933	4665	1128	41.5	29.3
+#probe	WalletService	686	13754	112	17.0	12.0
