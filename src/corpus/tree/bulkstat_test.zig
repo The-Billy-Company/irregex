@@ -72,6 +72,13 @@ test "bulkstat.visitFresh ≡ the stat-based walk over a real tree (old/new meta
     defer arena_state.deinit();
     const a = arena_state.allocator();
 
+    // The skip-dir arm below claims `node_modules` is pruned and `sub` is not.
+    // That is a claim about the comptime baseline, so the fixture states its
+    // own overlay rather than inheriting an operator's, which is free to name
+    // `sub` and would turn a passing baseline into a failing one.
+    const scope = haystack.stateSkipOverlay(.none);
+    defer scope.release();
+
     var scratch: [portal.max_path]u8 = undefined;
     const root = try std.fmt.allocPrint(a, "{s}/gist_bulkstat_test_{x}", .{ portal.scratchDir(&scratch), @intFromPtr(&threaded) });
     fault.spare("clear leftover fixture", Dir.cwd().deleteTree(io, root)); // best-effort clean slate from a prior crashed run
@@ -162,7 +169,15 @@ test "bulkstat.BulkDir reads name/type/mtime/ctime directly off a small director
 
     var saw_file = false;
     var saw_dir = false;
-    while (try bd.next()) |e| {
+    while (true) {
+        // A declinature is a failure here, exactly as the `try` this replaced
+        // made it: the fixture is a directory this test just planted, on a
+        // platform that declares `supported`. The step-aside rides the success
+        // position now, so refusing it has to be said rather than implied.
+        const e = switch (bd.next()) {
+            .got => |v| v orelse break,
+            .declined => return error.BulkDirDeclinedOnItsOwnFixture,
+        };
         if (std.mem.eql(u8, e.name, "hello.txt")) {
             try std.testing.expect(e.is_file);
             try std.testing.expect(!e.is_dir);

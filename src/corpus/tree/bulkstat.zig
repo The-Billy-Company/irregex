@@ -98,10 +98,13 @@ pub fn needsLiveRead(anchor_ns: i128, mtime_ns: ?i128, ctime_ns: ?i128) bool {
 pub fn visitFresh(a: Allocator, io: std.Io, dir: Dir, prefix: []const u8, built_ns: i128, out: *std.ArrayList([]const u8)) void {
     var bd = BulkDir.init(dir.handle);
     while (true) {
-        const entry = bd.next() catch {
-            fallbackWalk(a, io, prefix, built_ns, out);
-            return;
-        } orelse break;
+        const entry = switch (bd.next()) {
+            .got => |e| e orelse break,
+            .declined => {
+                fallbackWalk(a, io, prefix, built_ns, out);
+                return;
+            },
+        };
         if (entry.is_dir) {
             if (haystack.isSkipDir(entry.name)) continue;
             var sub = dir.openDir(io, entry.name, .{ .iterate = true }) catch continue;
@@ -172,11 +175,16 @@ fn collect(gpa: Allocator, drain: anytype) error{OutOfMemory}!fault.Answer([]Own
         list.deinit(gpa);
     }
     while (true) {
-        const entry = drain.next() catch {
-            for (list.items) |e| gpa.free(e.name);
-            list.deinit(gpa);
-            return .{ .declined = .capability_missing };
-        } orelse break;
+        const entry = switch (drain.next()) {
+            .got => |e| e orelse break,
+            // The arm already named why it stepped aside; carry that reason out
+            // rather than restating one, so the two cannot drift apart.
+            .declined => |why| {
+                for (list.items) |e| gpa.free(e.name);
+                list.deinit(gpa);
+                return .{ .declined = why };
+            },
+        };
         try list.append(gpa, .{
             .name = try gpa.dupe(u8, entry.name),
             .is_dir = entry.is_dir,

@@ -49,6 +49,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const fault = @import("../../fault.zig");
 
 const w = std.os.windows;
 
@@ -56,15 +57,23 @@ const w = std.os.windows;
 /// `Declined` means the accelerator stepped aside — the syscall is absent on this
 /// filesystem, or the buffer it packed did not hold up.
 ///
-/// It is `pub` for exactly one importer, `bulkstat.zig`, which converts it into a
-/// `fault.Answer(…).declined = .capability_missing` at the module boundary. It
-/// never reaches a third file and therefore never owes the global fault taxonomy
-/// a member — same posture as the PCRE2 shadow rewriter's `error.Bail`.
+/// It never leaves this file: each arm's `next` converts it into `stepped_aside`
+/// at the seam, so the declinature crosses in the success position and no caller
+/// can `try` its way past the fallback. That is the PCRE2 shadow rewriter's
+/// posture (`error.Bail` → `no_shadow`), and it is why this name owes the global
+/// fault taxonomy no member. It used to be `pub`, enforced only by a comment
+/// asking one importer to convert it; the conversion lives on this side of the
+/// boundary now, so the type system holds the line instead of the reader.
 ///
 /// The split from `OutOfMemory` is the point. A single merged error had every
 /// caller's `catch` treat an allocation failure as "this platform lacks the
 /// syscall" and silently walk the slower path with a dying allocator.
-pub const Declines = error{Declined};
+const Declines = error{Declined};
+
+/// What every arm answers with when it steps aside. `capability_missing` is
+/// written for this accelerator by name — the per-file path does the same work,
+/// slower — so a declinature here is routing, never damage.
+const stepped_aside: fault.Answer(?Entry) = .{ .declined = .capability_missing };
 
 /// Whether this target can batch **names + kinds + change timestamps** in one
 /// call, which is what lets the walk elide unchanged indexed files inline with no
@@ -226,11 +235,15 @@ const BulkDir = struct {
         if (n == 0) self.exhausted = true;
     }
 
-    /// Next entry, or null at end-of-directory. `error.Declined` means the
+    /// Next entry, `.got = null` at end-of-directory, or a declinature when the
     /// syscall itself failed (wrong fs, permissions, …) — the caller must fall
-    /// back to a stat-based walk, never treat this as "done". Distinct from the
-    /// `null` that means "done", which is why the two cannot be confused here.
-    pub fn next(self: *BulkDir) Declines!?Entry {
+    /// back to a stat-based walk, never read that as "done". The two live in
+    /// different arms of the answer, which is why they cannot be confused.
+    pub fn next(self: *BulkDir) fault.Answer(?Entry) {
+        return .{ .got = self.step() catch return stepped_aside };
+    }
+
+    fn step(self: *BulkDir) Declines!?Entry {
         if (self.count == 0) {
             if (self.exhausted) return null;
             try self.refill();
@@ -325,10 +338,14 @@ const PosixNames = struct {
         return .{ .dirfd = dirfd };
     }
 
-    /// Next entry, or null when the directory is drained. Timestamps are always
-    /// null here: this call class does not resolve them, and a caller that needs
-    /// them wants `Sheaf`.
-    pub fn next(self: *PosixNames) Declines!?Entry {
+    /// Next entry, `.got = null` when the directory is drained. Timestamps are
+    /// always null here: this call class does not resolve them, and a caller that
+    /// needs them wants `Sheaf`.
+    pub fn next(self: *PosixNames) fault.Answer(?Entry) {
+        return .{ .got = self.step() catch return stepped_aside };
+    }
+
+    fn step(self: *PosixNames) Declines!?Entry {
         while (true) {
             if (self.off >= self.end) {
                 if (self.exhausted) return null;
@@ -508,10 +525,14 @@ const NtDir = struct {
         if (self.end == 0) self.exhausted = true;
     }
 
-    /// Next entry, or null at end-of-directory. `error.Declined` means the batch
-    /// refused or contradicted itself — the caller must fall back to a stat-based
-    /// walk, never treat it as "done".
-    pub fn next(self: *NtDir) Declines!?Entry {
+    /// Next entry, `.got = null` at end-of-directory, or a declinature when the
+    /// batch refused or contradicted itself — the caller must fall back to a
+    /// stat-based walk, never read that as "done".
+    pub fn next(self: *NtDir) fault.Answer(?Entry) {
+        return .{ .got = self.step() catch return stepped_aside };
+    }
+
+    fn step(self: *NtDir) Declines!?Entry {
         while (true) {
             if (self.off >= self.end) {
                 if (self.exhausted) return null;
