@@ -4,7 +4,7 @@ doc_radar:
     - description: "bench evidence-genre buckets that still live in this repo"
       glob: bench/*/
       unit: dirs
-      equals: 4
+      equals: 3
   sentinels:
     - description: "the Layer B′ measured rung exists as a build step"
       file: build.zig
@@ -14,15 +14,17 @@ doc_radar:
 # irregex/bench
 
 Benchmark, verification, and competitive-proof harness for the search kernel —
-no engine code lives here (that's all under `src/`). Four evidence-genre
-buckets live in this repo; dominance and certificate moved to the sibling
-`gist` repo (`gist/bench/…`). Sorted by what a folder _proves_, not by the
-mechanism it proves it about:
+no engine code lives here (that's all under `src/`). Three evidence-genre
+buckets live in this repo. The ones that oracle the *product* rather than the
+engine — dominance, certificate, and conformance — live in the sibling `gist`
+repo (`gist/bench/…`), because what they measure is a binary this package does
+not build. Sorted by what a folder _proves_, not by the mechanism it proves it
+about:
 
 | Bucket                                  | What it holds                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`apparatus/`](apparatus/README.md)     | The instruments, and the ground they run over: [`harness/`](apparatus/harness/README.md) — the native `gist-bench` Zig binaries, the microscopic cycles/byte certificate, PMU counters, bootstrap statistics, the shared probe registry; [`corpora/`](apparatus/corpora/README.md) — the multi-corpus fetcher (`fetch.sh` + `torture.py`).                                                                                                                                             |
-| [`conformance/`](conformance/README.md) | Fail-closed correctness — **no timing claim lives here**: [`gates/`](conformance/gates/README.md) (parity · contract · oracle), [`rgsuite/`](conformance/rgsuite/README.md) the rg drop-in replay, [`diag/`](conformance/diag/README.md) the stderr goldens, [`shapes/`](conformance/shapes/README.md) the CLI-shape admission matrix, [`targets/`](conformance/targets/README.md) the cross-compile matrix. The Layer G retrieval contract lives in the sibling `relate` repo under `relate/bench/conformance/relate/`. |
+| [`apparatus/`](apparatus/README.md)     | The instruments: [`harness/`](apparatus/harness/README.md) — the native `gist-bench` Zig binaries, the microscopic cycles/byte certificate, PMU counters, bootstrap statistics, the shared probe registry — plus `roots.sh`, which answers where this package's siblings are. The corpora fetcher went with `conformance/`, its only consumer.                                                                                                                                             |
+| `gist/bench/conformance/` | Fail-closed correctness — **no timing claim lives here** (sibling `gist` repo): `gates/` (parity · contract · oracle), `rgsuite/` the rg drop-in replay, `diag/` the stderr goldens, `shapes/` the CLI-shape admission matrix, `targets/` the cross-compile matrix, and `apparatus/corpora/` the multi-corpus fetcher they run over. It oracles the `gist` binary against `rg`, so it lives with the package that builds one. The Layer G retrieval contract lives in the sibling `relate` repo under `relate/bench/conformance/relate/`. |
 | `gist/bench/dominance/`     | Measured product performance in the world (sibling `gist` repo): `gist/bench/dominance/races/` the competitor field (`field.sh`) + the multi-tool head-to-heads, `gist/bench/dominance/session/` the warm resident-daemon tier, `gist/bench/dominance/evaluate/` the operational envelope (lifecycle cost, footprint, scaling, concurrency).                                                                                                                                    |
 | `gist/bench/certificate/` | The published Dominance-and-Fit claim (was `certify/`, sibling `gist` repo): `gist/bench/certificate/mint/` the mint + layer splicers, `gist/bench/certificate/report/` `stats.py` + the layer report writers, `gist/bench/certificate/guard/` roster/artifact/release/ratio checks, `gist/bench/certificate/ledger/` the mint history, and `gist/bench/certificate/artifact/` the **frozen** published receipts.                                                                                 |
 | [`bounds/`](bounds/README.md)           | Layers B–D — distance from a stated limit: [`port/`](bounds/port/README.md) the `llvm-mca` static + measured µarch bound, [`roofline/`](bounds/roofline/README.md) the memory roof, [`lowerbound/`](bounds/lowerbound/README.md) the information-theoretic candidate-byte floor. Layer F (codex self-index vs the order-0 entropy bound) lives in `relate/bench/bounds/codex/`.                                                                                                                   |

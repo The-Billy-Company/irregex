@@ -1,1 +1,0 @@
-search: N files indexed · N candidate(s) · N refreshed · N hit(s) · query N ms

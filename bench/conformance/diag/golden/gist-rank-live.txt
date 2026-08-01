@@ -1,1 +1,0 @@
-gist: N ranked matches (top N) · live-scanned N files · rank N ms

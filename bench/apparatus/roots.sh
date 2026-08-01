@@ -9,7 +9,8 @@
 # Exports:
 #   KERNEL      — package root (build.zig.zon), climbed from HERE
 #   REPO        — corpus envelope (GIST_CORPUS_ROOT, else monorepo/billy, else KERNEL)
-#   PRODUCT     — checkout that owns gist/relate binaries (sibling gist, else KERNEL)
+#   PRODUCT     — checkout that owns the gist binary (sibling gist, else KERNEL)
+#   KINSHIP     — checkout that owns the relate binary (sibling relate, else PRODUCT)
 #   GIST_VERIFY — GIST_DIR or ${REPO}/.local/gist-verify (artifact home)
 
 _gist_climb_pkg() {
@@ -57,6 +58,18 @@ _gist_product_root() {
   printf '%s\n' "$pkg"
 }
 
+# `relate` ships its own binary from its own checkout, so a gate that oracles
+# both products cannot assume one zig-out holds them. Falls back to PRODUCT,
+# which is where `relate` lived before the split.
+_gist_kinship_root() {
+  local pkg="$1"
+  if [[ -f "${pkg}/../relate/build.zig.zon" ]]; then
+    (cd "${pkg}/../relate" && pwd)
+    return 0
+  fi
+  _gist_product_root "$pkg"
+}
+
 gist_resolve_roots() {
   local here="$1"
   KERNEL="$(_gist_climb_pkg "$here")" || {
@@ -65,5 +78,6 @@ gist_resolve_roots() {
   }
   REPO="$(_gist_corpus_root "$KERNEL")"
   PRODUCT="$(_gist_product_root "$KERNEL")"
+  KINSHIP="$(_gist_kinship_root "$KERNEL")"
   GIST_VERIFY="${GIST_DIR:-${REPO}/.local/gist-verify}"
 }
