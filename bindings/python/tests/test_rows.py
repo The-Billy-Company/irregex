@@ -294,7 +294,9 @@ def test_a_drifted_digest_is_a_named_failure() -> None:
         verify(_FakeFFI(), _Fake("0" * len(table.DIGEST)))
     message = str(caught.value)
     assert table.DIGEST in message
-    assert "make gen" in message, "the failure must say how to reconcile the two sides"
+    assert "build_schema_tables.py" in message, (
+        "the failure must say how to reconcile the two sides"
+    )
 
 
 def test_the_digest_is_pinned_by_the_generated_table() -> None:

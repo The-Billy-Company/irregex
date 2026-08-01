@@ -5,8 +5,8 @@ Python: the ABI and engine versions, the request options and exit codes
 (`abi`), the calibration bands a distance or a coding gain is graded against
 (`grades`), and the analytic row-schema table the decoder walks (`table`).
 
-`../schema.gen.py` is lowered from `contract/surface.toml` on every
-`make gen` and stays where the generator puts it; `table` loads it and adds the
+`../schema.gen.py` is lowered from `contract/analytic.toml` by
+`tools/build_schema_tables.py` and stays where the generator puts it; `table` loads it and adds the
 indexes a decoder needs. Nothing in this package computes a threshold — Zig owns
 calibration, and a second opinion here would be a second answer.
 """

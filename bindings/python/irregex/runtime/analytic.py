@@ -294,7 +294,7 @@ def verify(ffi: FFI, lib: object) -> None:
     msg = (
         f"row-schema drift: library digest {theirs}, this binding was generated "
         f"from {table.DIGEST}. Differing schemas: {', '.join(_drifted(ffi, lib)) or 'unknown'}. "
-        f"Rebuild libirregex and rerun `make gen`."
+        f"Rebuild libirregex and rerun `python3 tools/build_schema_tables.py`."
     )
     raise SchemaDriftError(msg)
 

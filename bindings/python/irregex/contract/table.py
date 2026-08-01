@@ -1,7 +1,7 @@
 """The analytic plane's row-schema table, indexed for a decoder to walk.
 
-`../schema.gen.py` is lowered from `contract/surface.toml` by
-`tools/build_schema_tables.py` and rewritten in place on every `make gen`, so it
+`../schema.gen.py` is lowered from `contract/analytic.toml` by
+`tools/build_schema_tables.py` and rewritten in place on every run of it, so it
 stays exactly where the generator puts it. A dot in a filename is not a legal
 module name, which is why the tables arrive through a file loader rather than an
 `import` — the alternative is a hand-copied second table, the drift this plane

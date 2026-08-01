@@ -8,7 +8,7 @@ class GistError(Exception):
 
 
 class GistNotFoundError(GistError):
-    """The `gist` binary could not be located (env `GIST_BIN`, PATH, or the repo's `zig-out/bin/gist`). Build it with `make install-gist`."""
+    """The `gist` binary could not be located (env `GIST_BIN`, PATH, or the repo's `zig-out/bin/gist`). Build it with `zig build -Doptimize=ReleaseFast`."""
 
 
 class UnsupportedPatternError(GistError):
@@ -24,7 +24,7 @@ class SearchFailedError(GistError):
 
 
 class SchemaDriftError(GistError):
-    """The loaded library's row-schema digest disagrees with the table this binding was generated from, so a decoded row would be a plausible lie. Names the schemas that differ. Rebuild the library and rerun `make gen`; never decode past this."""
+    """The loaded library's row-schema digest disagrees with the table this binding was generated from, so a decoded row would be a plausible lie. Names the schemas that differ. Rebuild the library and rerun `python3 tools/build_schema_tables.py`; never decode past this."""
 
 
 class RowDecodeError(GistError):

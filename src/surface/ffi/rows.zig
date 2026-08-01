@@ -36,7 +36,7 @@ const contract = @import("contract.zig");
 pub const Status = contract.Status;
 
 /// The generated table: `digest`, `schemas`, `verbs`, `Id`, `Op`, `Tag`, and
-/// the `[row_enums]` enums. Regenerate with `make gen-gist-schema`.
+/// the `[row_enums]` enums. Regenerate with `python3 tools/build_schema_tables.py`.
 pub const table = @import("schema.gen.zig");
 
 /// A borrowed UTF-8 span. NOT NUL-terminated — `len` is authoritative.

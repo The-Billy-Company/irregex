@@ -37,8 +37,8 @@ from irregex import _abi
 def _root() -> Path:
     """The engine checkout, found by climbing to the contract.
 
-    Works from the polyrepo (``irregex/``) and from the monorepo copy
-    (``irregex/``) without being told which it is in.
+    Works from the standalone checkout (``irregex/``) and from a copy nested
+    somewhere inside a monorepo, without being told which it is in.
     """
     for base in Path(__file__).resolve().parents:
         if (base / "contract" / "engine.toml").is_file():
