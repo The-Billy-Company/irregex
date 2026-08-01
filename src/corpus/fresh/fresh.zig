@@ -488,7 +488,7 @@ fn journalFresh(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, b
     //
     // The test is the ADMITTED set, which is the journal's own answer, not the
     // raw event count — and it must be, because gist's artifact directory sits
-    // inside the walk root by default (`.local/gist-verify`), so every build,
+    // inside the walk root by default (`.gist`), so every build,
     // amend, and skip-marker write is a real event under the root that
     // admission then discards. A path admission discards is not in the corpus
     // and so was never indexed and can never be elided; should a later

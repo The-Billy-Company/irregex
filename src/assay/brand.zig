@@ -44,7 +44,7 @@ pub const Brand = struct {
     env_prefix: []const u8 = "GIST_",
     /// Where the index, atlas, shelf, freshness anchor, and daemon socket live,
     /// relative to the working directory. Per-ecosystem.
-    artifact_dir: []const u8 = ".local/gist-verify",
+    artifact_dir: []const u8 = ".gist",
 };
 
 /// This compilation's identity: the root module's `irregex_brand` when it
@@ -62,7 +62,7 @@ pub fn knobName(comptime suffix: []const u8) [*:0]const u8 {
 test "the default identity is the historical gist spelling" {
     try std.testing.expectEqualStrings("gist", active.name);
     try std.testing.expectEqualStrings("GIST_", active.env_prefix);
-    try std.testing.expectEqualStrings(".local/gist-verify", active.artifact_dir);
+    try std.testing.expectEqualStrings(".gist", active.artifact_dir);
 }
 
 test "a knob name folds the prefix in and stays null-terminated" {

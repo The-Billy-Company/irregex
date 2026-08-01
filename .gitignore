@@ -7,7 +7,7 @@ zig-pkg/
 # Rust (bindings/rust)
 target/
 
-# Python (bindings/python)
+# Python (bindings/python, quality/ratchets)
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -15,6 +15,12 @@ __pycache__/
 dist/
 .pytest_cache/
 .ruff_cache/
+
+# Artifact home (index, atlas, shelf, freshness anchor, daemon socket)
+.gist/
+
+# Upstream checkouts cloned by hand for study/differential testing
+upstream/
 
 # Machine-local scratch
 .local*/

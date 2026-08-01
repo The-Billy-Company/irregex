@@ -15,7 +15,7 @@ use crate::request::SearchRequest;
 use super::Result;
 
 const PROTOCOL_VERSION: u8 = 9; // must match `protocol.protocol_version`
-const DEFAULT_OUT_DIR: &str = ".local/gist-verify"; // `$GIST_DIR` default
+const DEFAULT_OUT_DIR: &str = ".gist"; // `$GIST_DIR` default
 const MAX_FRAME: u32 = 16 << 20; // `protocol.max_frame`
 // A diagnostic stream is bounded by the lenses a query can light; a peer that
 // never stops emitting them is misbehaving, and cold is the honest answer.

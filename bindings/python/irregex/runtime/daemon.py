@@ -30,8 +30,8 @@ if TYPE_CHECKING:
 PROTOCOL_VERSION = 9  # must match `protocol.protocol_version`
 # READY's fixed prefix: [u8 proto][u64 daemon][u64 session][u64 image][u32 n].
 _READY_HEADER = 29
-# `$GIST_SESSION_SOCK`, else `$GIST_DIR/gistd.sock` (default `.local/gist-verify`).
-DEFAULT_OUT_DIR = ".local/gist-verify"
+# `$GIST_SESSION_SOCK`, else `$GIST_DIR/gistd.sock` (default `.gist`).
+DEFAULT_OUT_DIR = ".gist"
 
 
 def _default_socket() -> str:
@@ -188,7 +188,7 @@ def ensure_serve(
     except GistNotFoundError:
         return False
     # A bare `gist serve` binds `$GIST_SESSION_SOCK` else the CWD-relative
-    # `.local/gist-verify/gistd.sock` and serves the rootless CWD walk — exactly
+    # `.gist/gistd.sock` and serves the rootless CWD walk — exactly
     # the tree a rootless query answers cold. Pin the child's bind address only
     # when the caller overrode the default socket.
     env = os.environ if socket_path is None else {**os.environ, "GIST_SESSION_SOCK": str(sock)}

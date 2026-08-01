@@ -37,9 +37,9 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]  # tools/ → repo root
 # (`research/pincer/TESTING.md`), so the shipped table and the numbers that
 # justify it describe one corpus.
 SKIP_DIRS = frozenset({
-    ".git", ".local", ".etc", "node_modules", "target", "dist", "build", ".build",
+    ".git", ".local", "upstream", "node_modules", "target", "dist", "build", ".build",
     "out", ".next", "coverage", ".venv", "venv", "__pycache__", ".zig-cache",
-    "zig-cache", "zig-out", "zig-pkg", "graphify-out", ".pnpm-store", "vendor",
+    "zig-cache", "zig-out", "zig-pkg", "derived-out", ".pnpm-store", "vendor",
     ".turbo", "DerivedData", "Pods", ".swiftpm", "storybook-static",
     ".mypy_cache", ".ruff_cache", ".pytest_cache",
 })  # fmt: skip

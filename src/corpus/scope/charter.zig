@@ -16,7 +16,7 @@
 //!
 //!   * roots  lived only in `GIST_ROOTS`, else the whole tree;
 //!   * skips  lived in `<GIST_DIR>/skips.list`, which defaults inside gitignored
-//!            `.local/`, so "seed `graphify-out`" was per-machine folklore and a
+//!            `.gist/`, so "seed `derived-out`" was per-machine folklore and a
 //!            fresh clone searched a different corpus than a seeded one;
 //!   * types  had to be re-passed as `--type-add` on every single invocation.
 //!

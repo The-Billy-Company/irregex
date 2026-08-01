@@ -526,9 +526,9 @@ test "every kernel-side exclusion candidate is a directory the walk already skip
     // The subset law this accelerator's exactness rests on. A candidate the walk
     // would descend into must be filtered out by `excludeNoise`, so asserting it
     // over the whole roster pins the invariant at the source rather than at the
-    // one call site. `.etc` and `graphify-out` were on this list before the
+    // one call site. `upstream` and `derived-out` were on this list before the
     // filter existed: repo-specific names in a generic kernel, neither in the
-    // comptime skip set, and `.etc` is real corpus under `-uu`.
+    // comptime skip set, and `upstream` is real corpus under `-uu`.
     for (noisy_candidates) |n| try std.testing.expect(haystack.isSkipDir(n));
-    try std.testing.expect(!haystack.inBaselineSkipSet(".etc"));
+    try std.testing.expect(!haystack.inBaselineSkipSet("upstream"));
 }
