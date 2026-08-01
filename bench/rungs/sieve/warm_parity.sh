@@ -55,11 +55,26 @@
 # Freezing the bytes is what lets a difference between arms mean something.
 #
 # Usage: bench/rungs/sieve/warm_parity.sh
+#        GIST_SIEVE_CORPUS="src bench" bench/rungs/sieve/warm_parity.sh
 set -uo pipefail
 # gist's ~25k-token agent-context output budget clips a repo-wide result; a
 # clipped arm would read as lost lines rather than as a cap. Lift it (the hard
 # OOM ceiling stays on) so all four arms are compared at full output.
 export GIST_UNCAP=1
+
+# ── the corpus this gate is TOLD, not one it assumes ─────────────────────────
+# GIST_SIEVE_CORPUS — space-separated paths, relative to the corpus root
+#   (`GIST_CORPUS_ROOT`, else this package), whose TRACKED files are frozen into
+#   the throwaway tree. WHICH slices to freeze is a fact about the tree being
+#   measured, and it used to be four literals naming slices of one particular
+#   checkout. Anywhere else those pathspecs match nothing, so `git ls-files`
+#   returned a fraction of what the gate thought it had asking — and a gate that
+#   freezes a near-empty corpus still reports every arm as agreeing. It is a
+#   declared input now, defaulting to slices this package actually ships so a
+#   bare clone measures itself; nothing else about the gate's semantics moved.
+#   `cover_parity.sh` reads the same knob, so the two sieve gates freeze the
+#   same tree unless you deliberately tell them otherwise.
+read -r -a SIEVE_CORPUS <<< "${GIST_SIEVE_CORPUS:-src bench}"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=../../apparatus/roots.sh
@@ -91,11 +106,21 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "freezing a real-source corpus under ${WORK}…"
-(
-  cd "${REPO}" && git ls-files services/backend src \
-    docs/architecture clients/web/packages
-) | (cd "${REPO}" && rsync -a --files-from=- . "${WORK}/") 2> /dev/null || {
+echo "freezing a real-source corpus under ${WORK}… (${SIEVE_CORPUS[*]})"
+# Enumerate first and rsync second, rather than piping one into the other: the
+# empty list is the failure this gate cannot afford to swallow, and inside a
+# pipe it looks exactly like a successful copy of nothing.
+MANIFEST="${RUN}/corpus.files"
+(cd "${REPO}" && git ls-files -- "${SIEVE_CORPUS[@]}") > "${MANIFEST}"
+[[ -s "${MANIFEST}" ]] || {
+  echo "FAILED: GIST_SIEVE_CORPUS matched no tracked file under ${REPO}"
+  echo "        asked for: ${SIEVE_CORPUS[*]}"
+  echo "        Every arm agrees trivially on an empty corpus, so this gate"
+  echo "        refuses rather than reporting a vacuous green. Name paths this"
+  echo "        tree tracks, or point GIST_CORPUS_ROOT at the tree that has them."
+  exit 1
+}
+(cd "${REPO}" && rsync -a --files-from="${MANIFEST}" . "${WORK}/") 2> /dev/null || {
   echo "  corpus copy failed"
   exit 1
 }

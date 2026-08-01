@@ -41,6 +41,14 @@
 #
 # Usage: bench/rungs/sieve/cover_parity.sh (or `the prefilter parity gates under `bench/rungs/sieve/``, which
 # builds the binary and runs this beside the warm gate)
+#        GIST_SIEVE_CORPUS="src bench" bench/rungs/sieve/cover_parity.sh
+#
+# GIST_SIEVE_CORPUS — space-separated paths, relative to the corpus root, whose
+#   tracked files are frozen. Declared rather than assumed, and the SAME knob
+#   `warm_parity.sh` reads (documented at length there), so the two sieve gates
+#   freeze the same tree unless you deliberately tell them otherwise. This one
+#   keeps its own fallback: a path the tree does not have is dropped, and a list
+#   that drops to nothing degrades to `src .` rather than refusing.
 set -uo pipefail
 # gist's ~25k-token agent-context output budget clips a repo-wide result; a
 # clipped arm would read as lost lines rather than as a cap. Lift it (the hard
@@ -61,9 +69,10 @@ GIST="${PRODUCT}/zig-out/bin/gist"
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
 echo "freezing a real-source corpus under ${WORK}…"
-# Prefer the historical monorepo slices when present; else this package's src/.
+# Keep the slices the corpus root actually has; else fall back to the whole tree.
+read -r -a _cover_want <<< "${GIST_SIEVE_CORPUS:-src bench}"
 _cover_paths=()
-for _p in services/backend src docs/architecture clients/web/packages; do
+for _p in "${_cover_want[@]}"; do
   [[ -e "${REPO}/${_p}" ]] && _cover_paths+=("${_p}")
 done
 [[ ${#_cover_paths[@]} -gt 0 ]] || _cover_paths=(src .)

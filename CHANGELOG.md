@@ -994,7 +994,7 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
   roots: `indexElisionWanted` no longer requires a broad root — the
   elide-oracle loader already runs concurrently with the walk and the
   end-of-walk flush never blocks on it, so a nested-root query (`gist Foo
-  services/backend/api`) gets its non-candidate reads elided like a rootless
+  some/nested/dir`) gets its non-candidate reads elided like a rootless
   scan (subtree matrix shape 1.66x → ~4.5–7.8x) while a tiny scope that outruns
   the load pays only the deferral append. Caseless: `-i`/resolved `-S` no
   longer disables the trigram prefilter wholesale — the raw (pre-fold) required
@@ -1338,8 +1338,8 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
 - `-w` word searches now ride the required-literal gate (`\bLIT\b` can only
   match where LIT occurs — the boundary check only ever rejects), and the
   emitter gained a per-line SIMD memmem gate so lines without the literal never
-  touch the regex engine. `-w Config services/backend` dropped from 72ms to
-  43ms (user CPU 297ms → 62ms), 1.5x faster than ripgrep.
+  touch the regex engine. `-w Config` over a large Go service tree dropped from
+  72ms to 43ms (user CPU 297ms → 62ms), 1.5x faster than ripgrep.
 - `walkFresh` now runs its first shard inline on the calling thread and only
   spawns workers for the rest, so a single-shard walk (a small tree — the
   common resident-reconcile case, hit on every non-clean query) spawns zero
@@ -2252,13 +2252,14 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
   vs `rg` (9/9 head-to-head, `.local/gist-dogfood/prove.sh`):
 
   - **Positional PATH args now scope the search** — `grep WalletService
-  services/`
+  <subtree>/`
     used to search the _whole repo_ while the agent believed it scoped (a
     wrong-but-confident result). Every non-flag token after the pattern is now
   a
     path root AND-ed into the `PathFilter` and **pruned before any read** —
   gist's
-    structural edge, not just parity: `grep WalletService services/backend/api`
+    structural edge, not just parity: the same search scoped to one service
+    subtree
     reads **28 candidates** (vs 86 unscoped, vs rg's whole-subtree walk) and
   runs
     **1.14× faster than rg at ~⅕ the syscall time** (112 ms vs 590 ms system,
@@ -2410,7 +2411,7 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
   **Proof (byte-exact vs `rg -o` on the shared corpus):** an 11-pattern
   differential battery (`func \w+`, `[A-Z]\w+Error`, `return|continue|break`,
   `\bfunc\b`, `[a-z]+[A-Z]\w+`, `a|ab`, `[0-9]{2,}`, …) over
-  `services/backend/gateway`
+  a single Go service tree
   diffs to **0 lines** against `rg -o -n --no-heading --no-ignore --hidden
   --no-unicode` (`.local/gist-dogfood/o_battery.sh`); every residual divergence
   across the wider tree is a `.gitignore`/hidden/`isSkipDir` file — gist's
@@ -2815,7 +2816,7 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
   codes)
   so the two-set model is machine-checkable, not just prose — the seed for
   wiring
-  gist into `services/ai/tools`.
+  gist into an agent's tool catalog.
 
   Dead-code shake per the refactoring rule: `src/commands/grep/` and
   `src/commands/cli/drivers.zig` are **deleted**, not deprecated-and-kept;
@@ -3233,8 +3234,8 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
     falls back to counting non-matching lines (rg's behavior — invert has no
   span
     to count). **Proven byte-identical to `rg --count-matches`** across 11
-    literal + regex patterns over the shared `-g '*.go' services/backend` scope
-    (up to 2 591 files each, 0 mismatches).
+    literal + regex patterns over the shared `-g '*.go'` scope on a large Go
+    service tree (up to 2 591 files each, 0 mismatches).
   - **Corpus-policy no-ops gist already satisfies are accepted, not
   fail-loud.**
     `--hidden`, `--no-ignore[-vcs/-parent/-dot/-global]`, `-u`/`-uu`/
