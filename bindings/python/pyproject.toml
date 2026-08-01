@@ -4,6 +4,11 @@
 #
 # Zero runtime dependencies: the transport is ctypes, which is in the standard
 # library, so installing needs no compiler and no Python headers.
+#
+# The 3.12 floor is load-bearing, not caution: the runtime uses PEP 695 generic
+# syntax (`def mixin[C: type]`) and PEP 695 `type` aliases, which are parse
+# errors before 3.12. Lowering it makes the metadata admit interpreters that
+# cannot import the package.
 
 [build-system]
 requires = [ "hatchling>=1.27" ]
@@ -14,7 +19,7 @@ name = "irregex"
 version = "0.2.0"
 description = "A linear-time regex engine for Python, with the engine bundled in the wheel."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = [ "LICENSE", "NOTICE" ]
 authors = [ { name = "The Billy Company" } ]
@@ -25,6 +30,9 @@ classifiers = [
   "Intended Audience :: Developers",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Programming Language :: Zig",
   "Topic :: Software Development :: Libraries :: Python Modules",
   "Topic :: Text Processing",
