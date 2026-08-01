@@ -1,0 +1,260 @@
+# ═════════════════════════════════════════════════════════════════════════════
+#  The engine contract
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# What may be asked of the search engine, and what its process contract says on
+# the way out. This file is authored here, in the kernel that implements it.
+#
+#   [meta]             identity, and the version axes that move apart
+#   [request_options]  the SearchRequest surface every face accepts
+#   [match_kinds]      what a returned Match record can be
+#   [exit_codes]       the process contract — what `$?` means
+#   [status_codes]     the in-process C-ABI return vocabulary
+#   [decline_reasons]  why a tier stepped aside (never a failure)
+#   [fault_domains]    the flat taxonomy of genuine failures
+#   [coordinate_spaces] which ruler a fault's `at` offset is measured in
+#
+# Most of these are mirrored by hand in the Go, Python, and Rust bindings that
+# live in the `gist` repository. Nothing is copied: each binding RESOLVES this
+# file from the authoring sibling checkout, and the gate is fail-closed — a
+# binding that cannot read it fails rather than skips.
+#
+# The surfaces this file used to also declare now live with the packages that
+# own them — `analytic.toml` for the row schemas, `gist/contract/surface.toml` for
+# gist's transports;
+# `relate/contract/kinship.toml` for the compression plane. This file changed
+# name from `search_api.toml` when that happened. The in-process vocabulary
+# went with them and came back: see the note above [status_codes].
+#
+# This is a contract, not code. Adding a request option is a deliberate
+# widening of the deep SearchRequest surface: review it as an interface change,
+# not a casual edit.
+
+
+# ═══ request ═════════════════════════════════════════════════════════════════
+
+# ── [meta] — identity, and three version axes ────────────────────────────────
+# The axes are deliberately DISTINCT: a change on one does not force a bump on
+# the others, and each is pinned against a different live artifact.
+#
+#   abi_version       the C-ABI compatibility integer that `src/root.zig abi()`
+#                     and `irregex_abi_version()` return, mirrored and gated by
+#                     the Python/Rust ABI_VERSION and the FFI loader. Additive
+#                     C symbols do NOT bump it; a breaking layout or signature
+#                     change does. (v2: the match callback `irregex_match_fn`
+#                     gained an i32 abort return.)
+#   engine_version    the engine semver — `src/root.zig version_string`,
+#                     `build.zig.zon .version`, `irregex_version()`. Carries the
+#                     release marker so the release bot moves it with those two;
+#                     it sat a minor behind for a whole release because it did
+#                     not, and the parity test that would have caught it was
+#                     itself skipping on an unresolvable path.
+#   protocol_version  the resident-session wire protocol; see [session].
+#
+# Persisted formats version themselves: the trigram index and the kinship atlas
+# each carry their own magic and revision in their own headers, not here.
+[meta]
+name = "gist-unified-search"
+abi_version = 2
+engine_version = "0.3.0" # x-release-please-version
+
+# ── [request_options] — the deep SearchRequest surface ───────────────────────
+# Only match-finding INTENT belongs here: presentation, ranking, stats, replace
+# and stdin stay CLI-only and are deliberately NOT contract options.
+#
+# Every row names the ripgrep-parity flag the engine already honors (the
+# `flag_catalog` in src/exec/cold/argv/args.zig), and a face lowers a
+# request into exactly that argv — so no face reimplements search.
+[request_options]
+# what to look for, and where
+pattern = { type = "str", flag = "<positional>", detail = "the regex or literal to find" }
+paths = { type = "list[str]", flag = "<positional>", detail = "roots to search; empty = the repo default roots" }
+
+# how a line matches
+fixed = { type = "bool", flag = "-F", detail = "treat pattern as a literal string" }
+ignore_case = { type = "bool", flag = "-i", detail = "Unicode case-insensitive by default; `unicode = false` selects ASCII folding" }
+smart_case = { type = "bool", flag = "-S", detail = "Unicode-case-insensitive unless the pattern has uppercase text" }
+word = { type = "bool", flag = "-w", detail = "match whole Unicode words by default; `unicode = false` selects ASCII boundaries" }
+invert = { type = "bool", flag = "-v", detail = "select non-matching lines" }
+quiet = { type = "bool", flag = "-q", detail = "print nothing; exit 0 at the first match, 1 if none (an existence early-halt)" }
+
+# which files are visited
+globs = { type = "list[str]", flag = "-g", detail = "include/exclude globs (a leading ! excludes)" }
+iglobs = { type = "list[str]", flag = "--iglob", detail = "case-insensitive include/exclude globs" }
+types = { type = "list[str]", flag = "-t", detail = "restrict to a registered file type" }
+not_types = { type = "list[str]", flag = "-T", detail = "exclude a registered file type" }
+max_depth = { type = "int", flag = "--max-depth", detail = "cap directory descent depth (0 = unlimited)" }
+hidden = { type = "bool", flag = "--hidden", detail = "search hidden files/dirs" }
+no_ignore = { type = "bool", flag = "--no-ignore", detail = "disable .gitignore/.ignore/.rgignore filtering" }
+follow = { type = "bool", flag = "-L", detail = "follow symlinks" }
+
+# how much of a hit comes back
+before = { type = "int", flag = "-B", detail = "lines of leading context" }
+after = { type = "int", flag = "-A", detail = "lines of trailing context" }
+context = { type = "int", flag = "-C", detail = "lines of context on both sides" }
+max_count = { type = "int", flag = "-m", detail = "stop after N matching lines per file; rg's `-m0` matches nothing (exit 1). Python `None` = unset; the Rust builder's `0` = unlimited" }
+
+# which engine answers
+engine = { type = "linear|auto|pcre2", flag = "--engine/-P", detail = "linear matcher, automatic PCRE2 escalation, or explicit PCRE2 JIT" }
+multiline = { type = "bool", flag = "-U", detail = "allow a match to span line boundaries" }
+multiline_dotall = { type = "bool", flag = "--multiline-dotall", detail = "make `.` match newlines; implies multiline in the package" }
+unicode = { type = "bool|null", flag = "--unicode/--no-unicode", detail = "explicit Unicode/ASCII semantics across the selected linear or PCRE2 backend; null keeps engine defaults" }
+no_index = { type = "bool", flag = "--no-index", detail = "force the pure live walk (skip index acceleration)" }
+
+
+# ═══ answer ══════════════════════════════════════════════════════════════════
+# Two vocabularies, deliberately NOT folded together. [exit_codes] is the
+# PROCESS contract — what a shell script reads from `$?`. The three tables after
+# it are the IN-PROCESS contract the C ABI, the Zig kernel and both bindings
+# speak. They use overlapping integers for opposite facts (exit 1 is "no
+# match"; status 1 is "match"), so one merged table would be a live hazard.
+#
+# The in-process vocabulary lives here because it is otherwise hand-copied four
+# times — the `include/irregex.h` defines, the Zig `Status` enum
+# (src/surface/ffi/contract.zig), and, in the `gist` repository that vendors this
+# file, the Rust constants (bindings/rust/src/contract/mod.rs) and the Python
+# ones (bindings/python/gist/runtime/native.py) — with no single source a gate
+# could check them against. Declared once, a status-parity gate can cover all
+# four.
+#
+# It lives HERE rather than with any one face because `include/irregex.h`
+# declares it: a host that links only libirregex — the whole point of the split
+# — still receives these codes and this fault struct, so the package that emits
+# them is the package that must declare them. librelate, libgist and libblast
+# each speak this same vocabulary by linking it, not by redeclaring it.
+#
+# Every outcome belongs to exactly ONE channel, and nothing crosses:
+#
+#   result       an answer; a negative answer is still an answer
+#   declinature  this tier declines; a correct answer exists ONE TIER DOWN
+#   fault        a genuine failure, with no correct answer anywhere
+
+# ── [match_kinds] — what a returned record can be ────────────────────────────
+# A matching line carries its submatch spans; a context line is the -A/-B/-C
+# neighborhood and carries none.
+[match_kinds]
+match = { detail = "a line containing at least one submatch" }
+context = { detail = "a leading/trailing context line (no submatches)" }
+
+# ── [exit_codes] — the process contract ──────────────────────────────────────
+# ripgrep's three codes, preserved end to end, so a script reading the code
+# means the same thing it does for rg.
+[exit_codes]
+matched = { code = 0, detail = "at least one match" }
+no_match = { code = 1, detail = "ran cleanly, found nothing" }
+error = { code = 2, detail = "unsupported pattern/flag, or an I/O/walk error — never a silent empty result" }
+
+# ── [status_codes] — what every C-ABI entry point returns ────────────────────
+# Non-negative is success; negative means the caller must do something else.
+# The KEY is the Zig `Status` field, `c` is the `include/irregex.h` macro, and
+# each binding's own constant is that macro's suffix (Rust `sys::OOM`; the
+# Python face prefixes its own, `_GIST_OK`, and names only the codes it branches
+# on — a binding may declare fewer, never a different code). Human text for a
+# code comes from `irregex_status_message`; a binding must not carry per-code
+# prose of its own.
+#
+# `disposition` is the load-bearing field: it names the channel a status belongs
+# to, so a binding cannot quietly turn a declinature into an error value. That
+# is why `stale` spells its disposition out rather than leaving it to each
+# consumer's judgment.
+#
+# `domains` is required on every `fault` row and names the [fault_domains] it
+# carries. The five domains do not map 1:1 onto three statuses, so the fold is
+# DECLARED here rather than re-derived by each reader: every domain appears in
+# exactly one row, and a new domain with no home fails the gate instead of
+# quietly reporting as some neighbor. A binding that needs the distinction a
+# fold hides reads `name` from `irregex_last_fault`.
+[status_codes]
+ok = { code = 0, c = "IRREGEX_OK", disposition = "result", detail = "ran cleanly, no match" }
+match = { code = 1, c = "IRREGEX_MATCH", disposition = "result", detail = "ran cleanly, at least one match" }
+stale = { code = -1, c = "IRREGEX_STALE", disposition = "declinature", detail = "the warm in-process tier declines — the pattern is outside the linear engine, or freshness is unprovable. NOT a failure: the caller answers cold and gets the identical result, so a binding must not surface it as an error value" }
+out_of_memory = { code = -2, c = "IRREGEX_OOM", disposition = "fault", domains = [
+  "resource",
+], detail = "allocation failed (fault domain `resource`)" }
+open_failed = { code = -3, c = "IRREGEX_OPEN_FAILED", disposition = "fault", domains = [
+  "corpus",
+  "persist",
+  "wire",
+], detail = "the warm corpus could not be stood up. Carries three domains: `corpus` (the tree would not open), `persist` (an artifact was corrupt or the wrong generation), and `wire` (the daemon transport failed) — all three mean the same thing to a host, that this corpus could not be stood up, and `irregex_last_fault` restores which one per incident" }
+invalid = { code = -4, c = "IRREGEX_INVALID", disposition = "fault", domains = [
+  "pattern",
+], detail = "an unknown flag bit or a wrongly-sized request struct — fail-closed, never silently dropped (fault domain `pattern`)" }
+
+# ── [decline_reasons] — why an accelerator tier declined ─────────────────────
+# The key is the Zig `fault.Decline` member (src/fault.zig). It rides the
+# SUCCESS position of `fault.Answer(T)`, never the error channel, so `try` at a
+# tier seam cannot convert a routine fallback into an abort.
+#
+# Five reasons cross six seams (warm→cold, linear→PCRE2, indexed→live,
+# shadow-rewriter→none, bulk-stat→per-file, daemon→subprocess), deliberately
+# not 1:1: the reason is what a caller acts on, and two seams can decline for
+# the same reason.
+#
+# `fallback` is required on every row and names the slower tier that CAN answer.
+# That invariant is the whole warrant for keeping declinature out of the error
+# channel: if no member could name one, a declinature would just be a fault.
+[decline_reasons]
+unsupported_syntax = { fallback = "pcre2", detail = "the linear engine cannot express this pattern (lookaround, a backreference); also the PCRE2 shadow rewriter declining a pattern it cannot safely rewrite, which PCRE2 then answers unrewritten. The ONE reason that has a fault twin — see `pattern` in [fault_domains]" }
+freshness_unprovable = { fallback = "cold", detail = "the resident tier cannot prove its bytes still match the tree (the fail-closed watcher barrier), or the daemon is absent/wedged; the cold subprocess re-reads and answers byte-identically" }
+index_absent = { fallback = "live_scan", detail = "no persisted index covers these roots, so there is nothing to elide reads against — the live walk answers identically, slower" }
+not_worthwhile = { fallback = "live_scan", detail = "an index does cover them and the savings model priced the lookup above the scan; the live walk is the CHEAPER answer here, not a degraded one" }
+capability_missing = { fallback = "per_file", detail = "the platform lacks the syscall an accelerator rides (bulk stat), so the per-file path does the same work slower" }
+
+# ── [fault_domains] — the flat taxonomy of genuine failures ──────────────────
+# A fault is a failure with no correct answer anywhere. Zig unifies error names
+# GLOBALLY, so the merge has to be deliberate: this is the one declaration,
+# every producer imports src/fault.zig, and `members` is each Zig error set
+# exactly (the key's capitalization is the set — `corpus` is `fault.Corpus`).
+# `BadFormat` and `CorruptIndex` collapsed into `Corrupt` here, and the taxonomy
+# gate reads this block to keep a sixth synonym from accreting the same way.
+[fault_domains]
+corpus = { members = [
+  "FileNotFound",
+  "AccessDenied",
+  "NotDir",
+  "SymLinkLoop",
+  "NameTooLong",
+], detail = "a path could not be read or descended. Exactly the set `fault.pathNote` switches EXHAUSTIVELY over to produce ripgrep's errno phrasing, so adding a member is a compile error at the renderer instead of a mystery string in a terminal" }
+persist = { members = [
+  "Corrupt",
+  "Truncated",
+  "NonCanonical",
+  "VersionMismatch",
+  "GenerationMismatch",
+  "Oversized",
+], detail = "persisted bytes are untrustworthy — trigram index, kinship atlas, codex shelf, fragment table. Every artifact fails CLOSED to the live path, so a persist fault costs speed, never answers. `Oversized` is the writer's mirror: the artifact this corpus would need exceeds what can represent or hold it (record count, length arithmetic, destination buffer) — one fact, not one member per bounds check" }
+pattern = { members = [
+  "BadPattern",
+  "Unsupported",
+  "TooManyPatterns",
+  "PowersetCapHit",
+  "NeedleTooShort",
+], detail = "the query itself has no answer under the selected engine. `Unsupported` deliberately also appears in [decline_reasons] as `unsupported_syntax`: one fact, two channels — a declinature while PCRE2 can still answer it, a fault once `--engine linear` has refused PCRE2. `fault.Decline.refused` is the single conversion point. `BadPattern` is the opposite case and never a declinature: the grammar itself rejects the pattern, so no slower engine could answer it either" }
+resource = { members = [
+  "OutOfMemory",
+  "TimedOut",
+  "Exhausted",
+], detail = "the machine or the budget ran out; `OutOfMemory` is the one held to a single canonical exit in the command plane, and `Exhausted` is its non-heap sibling for an OS handle the kernel refused (a fork, a pipe) — one fact per condition, not one per call site" }
+wire = { members = [
+  "ConnClosed",
+  "UnexpectedFrame",
+  "StreamTooLong",
+], detail = "the resident-session UDS protocol failed mid-frame. Does NOT cross the C seam (the FFI is in-process, with no daemon transport). The daemon CLIENT converts one into a declinature at its own boundary by falling open to the cold subprocess; the daemon itself has no slower tier, so it faults" }
+
+# ── [coordinate_spaces] — what a fault's `at` offset INDEXES ─────────────────
+# A fault reports one offset and it can be measured in two different rulers: a
+# byte in the file being read, or a byte in the pattern being compiled. The seam
+# used to leave that to inference — `at` was a file offset unless `path` was
+# null, in which case it was a pattern offset — so every binding re-derived a
+# three-clause conjunction, and one missed clause points a user's caret at the
+# wrong string.
+#
+# So it is a field, not an inference: `irregex_fault.at_space` names the ruler.
+# The KEY is the Zig `contract.AtSpace` member, `c` is the include/irregex.h
+# macro. `none` is 0 for one reason — byte 0 is a real offset, so absence cannot
+# be spelled by the value of `at` itself, and a reader that only wants "is there
+# a position at all" still gets it from a zero test.
+[coordinate_spaces]
+none = { code = 0, c = "IRREGEX_AT_NONE", detail = "no offset — the fault is about the file, the allocation, or the request as a whole. `at` is 0 and means nothing" }
+file = { code = 1, c = "IRREGEX_AT_FILE", detail = "a byte offset within `path`: where a persisted artifact went bad, where a walk stopped" }
+pattern = { code = 2, c = "IRREGEX_AT_PATTERN", detail = "a byte offset within the PATTERN handed to the compile — where the grammar was refused. `path` is empty here, since the fault is about no file" }

@@ -1,0 +1,495 @@
+# ═════════════════════════════════════════════════════════════════════════════
+#  The analytic contract
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# One self-describing row answers every analytic verb: a schema id, a presence
+# mask, and a flat `irregex_value` array. What that array MEANS is declared here
+# — and here rather than in a product's contract because the row layout is
+# substrate. gist, relate and blast all return these rows through the same
+# `irregex_rows` cursor, so a decoder written against this file decodes all
+# three, and none of them gets to redeclare a schema privately.
+#
+#   [row_enums]         the closed vocabularies a row field can hold
+#   [row_schemas]       the field list of every analytic result row
+#   [analytic]          the cursor, introspection and stats surface
+#   [analytic.producers] which library answers which verb
+#   [analytic.params]   the size-checked request families
+#   [analytic.verbs]    op code · params family · row schema · producer
+#
+# Nothing here is mirrored by hand. `tools/build_schema_tables.py` lowers it
+# into `src/surface/ffi/schema.gen.zig` and into each binding's generated table,
+# and `--check` is the drift gate. `irregex_schema_digest()` returns the engine's
+# digest over this table; a binding compares it to its own generated constant at
+# load, so a stale shared library is a loud startup failure rather than a
+# silently mis-decoded row.
+#
+# Op codes are ecosystem-wide on purpose: nothing about op 4 says librelate
+# rather than libgist answers it, which is why `[analytic.producers]` exists and
+# why a binding must never infer routing from an op range.
+#
+# The engine's own return vocabulary (`[status_codes]`, `[decline_reasons]`,
+# `[fault_domains]`, `[coordinate_spaces]`) is next door in `engine.toml`. The
+# products' own surfaces stay with the products: gist's published names,
+# transports and daemon session in `gist/contract/surface.toml`, the compression
+# vocabulary in `relate/contract/kinship.toml`, the composed verbs in
+# `blast/contract/compose.toml`.
+
+
+# ── [row_enums] — the closed vocabularies a row field may hold ───────────────
+# A row field typed `enum:<name>` carries the ORDINAL of one of these variants,
+# not its text. The ordinal is the ABI: variants are append-only and never
+# reordered, so an older binding decoding a newer engine's row sees an unknown
+# ordinal (which it must surface as unknown) rather than a silently wrong label.
+# Every one of these already exists as a Zig enum; declaring it here is what
+# lets a generated decoder in each language stay in step with it.
+[row_enums]
+grade = { id = 1, variants = [
+  "none",
+  "weak",
+  "moderate",
+  "strong",
+  "identical",
+], detail = "the calibrated kinship band a distance falls in (surface/cli/grade.zig) — ordered weakest-first so `>=` is a threshold test" }
+channel = { id = 2, variants = [
+  "copies",
+  "twins",
+  "shapes",
+  "any",
+], detail = "which kinship signal produced a distance: byte copies, the bytes−structure gap, normalized structure, or the closer of either" }
+unit = { id = 3, variants = [
+  "file",
+  "function",
+  "match",
+], detail = "the comparison unit a kinship row was computed over (surface/face/relate/units.zig)" }
+rank_kind = { id = 4, variants = [
+  "definition",
+  "use",
+  "generated",
+], detail = "why `--rank` placed a row where it did: a definition site, a call site, or demoted codegen" }
+
+# ── [row_schemas] — the field list of every analytic result row ──────────────
+# The analytic plane returns ONE row type over the C ABI (`irregex_row`: a
+# schema id plus a flat value array). These tables are what that array means.
+# Declared here rather than in four hand-written struct definitions because the
+# alternative is the N verbs × M languages drift this contract exists to kill:
+# a new verb that reuses an existing schema needs zero new C surface, and a verb
+# with a new shape needs one table here and one generated decoder arm per
+# language.
+#
+#   id        the wire discriminant. APPEND-ONLY — never renumbered, never
+#             reused, because a persisted or in-flight row is identified by it.
+#   fields    positional. Appending a field is compatible (an older decoder
+#             stops early); inserting or retyping one is a breaking change and
+#             takes a NEW id, not an edit.
+#   type      `text` · `i64` · `f64` · `bool` · `enum:<row_enums key>` ·
+#             `texts` (a string list) · `rows:<row_schemas key>` (a nested slice)
+#   optional  the field may be absent; the row's presence bitmask says which.
+#             Absent is NOT zero — `distance = 0.0` means identical, so a
+#             binding must be able to tell "no distance" from "no distance
+#             between them".
+#
+# `region` and `site` are the two shared leaf shapes; everything that names a
+# place in the tree reuses one of them rather than re-spelling path+line.
+
+[row_schemas.region]
+id = 1
+detail = "a span of one file — the unit view's file/function/match cell, and the member shape every grouped kinship row nests"
+fields = [
+  { name = "path", type = "text" },
+  { name = "line_start", type = "i64" },
+  { name = "line_end", type = "i64" },
+  { name = "headline", type = "text", optional = true },
+]
+
+[row_schemas.site]
+id = 2
+detail = "a bare point in the tree: the definition sites blast reports"
+fields = [
+  { name = "path", type = "text" },
+  { name = "line", type = "i64" },
+]
+
+[row_schemas.similar]
+id = 3
+detail = "one kinship neighbor — `relate similar`, and the twin tier of `irregex blast`"
+fields = [
+  { name = "path", type = "text" },
+  { name = "distance", type = "f64" },
+  { name = "grade", type = "enum:grade" },
+  { name = "channel", type = "enum:channel" },
+]
+
+[row_schemas.dup_pair]
+id = 4
+detail = "one near-duplicate pair — `relate dups`"
+fields = [
+  { name = "a", type = "text" },
+  { name = "b", type = "text" },
+  { name = "distance", type = "f64" },
+  { name = "grade", type = "enum:grade" },
+]
+
+[row_schemas.cluster]
+id = 5
+detail = "one fork family — `relate clusters`; graded by the family's loosest edge"
+fields = [
+  { name = "paths", type = "texts" },
+  { name = "max_distance", type = "f64" },
+  { name = "grade", type = "enum:grade" },
+]
+
+[row_schemas.echo]
+id = 6
+detail = "one structural echo — `relate echoes`: same skeleton, different vocabulary"
+fields = [
+  { name = "a", type = "text" },
+  { name = "b", type = "text" },
+  { name = "echo", type = "f64" },
+  { name = "byte_distance", type = "f64" },
+  { name = "structure_distance", type = "f64" },
+  { name = "grade", type = "enum:grade" },
+]
+
+[row_schemas.concept]
+id = 7
+detail = "one repeated concept — `relate concepts`: a group of regions that say the same thing"
+fields = [
+  { name = "members", type = "rows:region" },
+  { name = "repeated_lines", type = "i64" },
+  { name = "confidence", type = "f64" },
+  { name = "structure_distance", type = "f64" },
+  { name = "byte_distance", type = "f64", optional = true },
+  { name = "echo", type = "f64", optional = true },
+]
+
+[row_schemas.family]
+id = 8
+detail = "one repetition family — `relate fragments` / composed `irregex family`: unit × channel, members as regions"
+fields = [
+  { name = "rank", type = "i64" },
+  { name = "unit", type = "enum:unit" },
+  { name = "channel", type = "enum:channel" },
+  { name = "edge", type = "f64" },
+  { name = "repeated_lines", type = "i64" },
+  { name = "score", type = "f64" },
+  { name = "members", type = "rows:region" },
+]
+
+[row_schemas.distinct]
+id = 9
+detail = "one un-echoed unit and its nearest miss — the inverse polarity of `fragments`"
+fields = [
+  { name = "unit", type = "enum:unit" },
+  { name = "member", type = "rows:region" },
+  { name = "nearest", type = "rows:region", optional = true },
+  { name = "byte_distance", type = "f64" },
+  { name = "structure_distance", type = "f64" },
+]
+
+[row_schemas.recalled]
+id = 10
+detail = "one compression-retrieval hit — `relate recall`: how cheaply this file would describe the query"
+fields = [
+  { name = "path", type = "text" },
+  { name = "gain", type = "f64" },
+  { name = "cost_bits", type = "f64" },
+  { name = "bits_saved", type = "f64" },
+  { name = "factors", type = "i64" },
+  { name = "literals", type = "i64" },
+]
+
+[row_schemas.pick]
+id = 11
+detail = "one member of an anti-redundant reading set — `relate pack` / composed `irregex context`. `marginal_bits` is novelty BEYOND the picks before it, so rows are only meaningful in order; `patterns` is populated by the composed verb (which exact intents admitted this file) and empty for the bare pack"
+fields = [
+  { name = "rank", type = "i64" },
+  { name = "path", type = "text" },
+  { name = "marginal_bits", type = "f64" },
+  { name = "coverage", type = "f64" },
+  { name = "patterns", type = "texts" },
+]
+
+[row_schemas.phrase]
+id = 12
+detail = "one priced phrase of a quotation — the leaf of `relate quote`"
+fields = [
+  { name = "text", type = "text" },
+  { name = "occurrences", type = "i64" },
+  { name = "bits", type = "f64" },
+  { name = "source", type = "text", optional = true },
+]
+
+[row_schemas.quotation]
+id = 13
+detail = "the whole-query verdict of `relate quote`, with its phrases nested"
+fields = [
+  { name = "bits", type = "f64" },
+  { name = "bits_per_byte", type = "f64" },
+  { name = "quoted_bytes", type = "i64" },
+  { name = "query_bytes", type = "i64" },
+  { name = "escapes", type = "i64" },
+  { name = "phrases", type = "rows:phrase" },
+]
+
+[row_schemas.attribution]
+id = 14
+detail = "one provenance phrase re-verified against a source's CURRENT bytes — composed `irregex provenance`. `verified = false` means the shelf remembers it but the live file no longer holds it"
+fields = [
+  { name = "text", type = "text" },
+  { name = "occurrences", type = "i64" },
+  { name = "source", type = "text", optional = true },
+  { name = "verified", type = "bool" },
+  { name = "line", type = "i64", optional = true },
+]
+
+[row_schemas.pattern_hit]
+id = 15
+detail = "one attributed hit of a multi-pattern sweep — `relate patterns`; `pattern_id` indexes the request's pattern list"
+fields = [
+  { name = "path", type = "text" },
+  { name = "line", type = "i64" },
+  { name = "pattern_id", type = "i64" },
+]
+
+[row_schemas.pattern_count]
+id = 16
+detail = "one tally row of a `--by pattern` / `--by file` sweep"
+fields = [
+  { name = "label", type = "text" },
+  { name = "count", type = "i64" },
+]
+
+[row_schemas.reference]
+id = 17
+detail = "one dependent of a blast seed: a site that names the symbol, classified by whether it defines or uses it"
+fields = [
+  { name = "path", type = "text" },
+  { name = "line", type = "i64" },
+  { name = "enclosing", type = "text", optional = true },
+  { name = "defines", type = "bool" },
+]
+
+[row_schemas.dependency]
+id = 18
+detail = "one symbol the blast seed's own body depends on"
+fields = [
+  { name = "symbol", type = "text" },
+  { name = "path", type = "text" },
+  { name = "line", type = "i64" },
+]
+
+[row_schemas.ripple]
+id = 19
+detail = "one same-language file reached tangentially from the blast seed"
+fields = [
+  { name = "path", type = "text" },
+  { name = "via", type = "text" },
+  { name = "hops", type = "i64" },
+]
+
+[row_schemas.mention]
+id = 20
+detail = "one comment that names the blast seed — prose that goes stale when the symbol moves"
+fields = [
+  { name = "path", type = "text" },
+  { name = "line", type = "i64" },
+  { name = "text", type = "text" },
+]
+
+[row_schemas.blast]
+id = 21
+detail = "the whole live blast radius of one symbol — composed `irregex blast`. Exactly one row per query; every tier nests. `omitted` is what `--budget` trimmed, so a truncated answer says so instead of looking complete"
+fields = [
+  { name = "symbol", type = "text" },
+  { name = "kind", type = "text" },
+  { name = "definitions", type = "rows:site" },
+  { name = "dependents", type = "rows:reference" },
+  { name = "dependencies", type = "rows:dependency" },
+  { name = "twins", type = "rows:similar" },
+  { name = "ripple", type = "rows:ripple" },
+  { name = "comments", type = "rows:mention" },
+  { name = "notes", type = "texts" },
+  { name = "omitted", type = "i64" },
+]
+
+[row_schemas.ranked]
+id = 22
+detail = "one row of the `--rank` definition-first view. Over the ABI this is a typed row; the subprocess fallback recovers it by re-parsing human stdout, which is the fragility the analytic plane exists to remove"
+fields = [
+  { name = "path", type = "text" },
+  { name = "line_number", type = "i64" },
+  { name = "kind", type = "enum:rank_kind" },
+  { name = "count", type = "i64" },
+  { name = "snippet", type = "text", optional = true },
+]
+
+
+# ── [analytic] — the `ffi` transport's analytic plane (ABI-3) ────────────────
+# Everything in part 4 — kinship, retrieval, the composed verbs — was reachable
+# only by spawning `relate`/`irregex` and re-parsing their NDJSON. That made
+# every embedding package a parser of a human-facing CLI: three hand-written
+# decoders per verb, drifting independently, and a binding that cannot answer
+# without a child process. This plane exposes the same kernels in-process.
+#
+# The shape is ONE dispatch and ONE row type, not a symbol per verb. A per-verb
+# C surface is N verbs × M languages of hand-mirrored structs, and it is exactly
+# the drift this contract was written to kill — so instead:
+#
+#   gist_run(engine, op, params, cancel, &cursor)
+#       one entry point. `op` is an [analytic.verbs] code; `params` is one of
+#       the [analytic.params] families, size-checked like SearchRequest so an
+#       older engine reading a newer struct fails closed with IRREGEX_INVALID
+#       rather than reading past its knowledge.
+#   irregex_rows_next / _next_batch / _close
+#       the pull cursor, mirroring the exact plane's `gist_cursor_*` triad.
+#       Rows borrow cursor-owned memory and are valid until the next pull.
+#   irregex_rows_stats
+#       the answer-level facts a row cannot carry: elapsed, whether the atlas or
+#       live bytes answered, how many files were refreshed into a warm answer,
+#       how many query fingerprints the corpus has never seen. A binding that
+#       hides these turns "your text isn't in this repo" into "no results".
+#   irregex_schema_digest
+#       one call that proves the engine's row-schema table is the one this
+#       binding's decoder was generated from. Cheaper and stricter than
+#       per-field negotiation, and it makes a stale .so a loud startup failure
+#       instead of a silently mis-decoded row.
+#   irregex_schema_count / irregex_schema_get
+#       the table itself, for a decoder that wants to name the drift.
+#
+# A row is `{ schema_id, present_mask, nvalues, values }` over a tagged
+# `irregex_value`. Adding a verb that reuses a schema costs ZERO new C surface;
+# adding a new shape costs one [row_schemas] table and one generated arm per
+# language. No binding hand-writes a struct for a verb again.
+#
+# The engine handle is the existing `gist_engine` — the analytic ops load the
+# INDEX corpus (and fold the atlas/shelf) lazily on first use, so one open
+# serves both planes and a host pays for the analytic corpus only if it asks an
+# analytic question. Cancellation is the same `gist_cancel` token.
+#
+# No symbol here changes signature, so `gist_abi_version()` stays 2 — but the
+# plane did SPLIT: `gist_run` answers only `rank` now, and the four analytic
+# params families were renamed with their libraries (`relate_*`, `blast_*`).
+# The op numbers deliberately did not move, so a host that stored them keeps
+# them and only the entry symbol it calls changes. `schema_digest` is the
+# analytic plane's own compatibility axis, versioned by the row-schema table
+# rather than by the ABI.
+[analytic]
+cursor = [ "irregex_rows_next", "irregex_rows_next_batch", "irregex_rows_close" ]
+introspection = [ "irregex_schema_digest", "irregex_schema_count", "irregex_schema_get" ]
+stats = "irregex_rows_stats"
+handle = "irregex_engine"                                                              # libirregex's; shared with the exact pull plane
+value_tags = [ "text", "i64", "f64", "bool", "enum", "texts", "rows" ]
+max_fields = 64                                                                           # the row presence mask is one u64
+fallback = "subprocess"                                                                   # fail-open, never a hard dependency
+corpus = "index"                                                                          # not the rg-parity gitignore walk
+
+# ── [analytic.producers] — which library answers which verb ─────────────────
+# There used to be one `entry = "gist_run"` here, because one library answered
+# everything. Three do now, and a verb's producer is the ONE fact a binding
+# cannot derive: the op numbers stayed ecosystem-wide on purpose, so nothing
+# about op 4 says librelate rather than libgist answers it. Each verb below
+# names its producer and the entry symbol is looked up here — never inferred
+# from an op range, which would silently mis-route the next verb appended to a
+# family.
+#
+# All three take the same `irregex_engine` and hand back the same `irregex_rows`
+# cursor — both owned by libirregex, so the handle one library opens is the same
+# object another consumes, and a host that resolves a second entry symbol changes
+# nothing else.
+# A producer whose symbol is absent from the process is a DECLINATURE, not a
+# failure: that verb answers through the subprocess tier and the rows are
+# identical. So a host linking only libgist still answers all seventeen.
+[analytic.producers]
+gist = { entry = "gist_run", library = "libgist", header = "gist.h" }
+relate = { entry = "relate_run", library = "librelate", header = "relate.h" }
+blast = { entry = "blast_run", library = "libblast", header = "blast.h" }
+
+# ── [analytic.params] — the size-checked request families ───────────────────
+# Five shapes, not seventeen. A family is shared by every verb whose question
+# has the same shape, so a caller learns one struct per KIND of question. Each
+# begins with `struct_size` (fail-closed, exactly as SearchRequest does) and a
+# `flags` word; unset numeric fields mean "the engine's documented default",
+# which is why they are declared here rather than left to each binding.
+[analytic.params]
+kinship = { c = "relate_kinship_params", fields = [
+  "struct_size",
+  "flags",
+  "target",
+  "target_len",
+  "channel",
+  "unit",
+  "max_distance",
+  "min_echo",
+  "min_grade",
+  "min_size",
+  "min_lines",
+  "top",
+], detail = "every verb that asks `what resembles what` — a target (or none, for a corpus-wide sweep), a channel, an admission threshold, and a floor" }
+retrieval = { c = "relate_retrieval_params", fields = [
+  "struct_size",
+  "flags",
+  "query",
+  "query_len",
+  "top",
+], detail = "every verb that prices free text against the corpus: recall, pack, quote" }
+sweep = { c = "relate_sweep_params", fields = [
+  "struct_size",
+  "flags",
+  "patterns",
+  "npatterns",
+  "under",
+  "under_len",
+  "by",
+  "top",
+], detail = "the multi-pattern one-walk sweep; `by` selects row-per-hit, per-pattern tally, or per-file tally" }
+compose = { c = "blast_compose_params", fields = [
+  "struct_size",
+  "flags",
+  "text",
+  "text_len",
+  "patterns",
+  "npatterns",
+  "match_mode",
+  "max_distance",
+  "min_echo",
+  "budget",
+  "top",
+], detail = "the both-engines verbs: an exact PatternSet narrows a candidate set and the compression kernel reasons inside it. `match_mode` is any|all; `budget` trims blast's low-priority tail into stats.omitted" }
+rank = { c = "gist_rank_params", fields = [
+  "struct_size",
+  "flags",
+  "pattern",
+  "pattern_len",
+  "top",
+], detail = "the definition-first ranked view of an exact query — the one exact-plane verb whose rows are analytic rather than Match records" }
+
+# ── [analytic.verbs] — op code · params family · row schema · producer ──────
+# The dispatch table. `op` is the wire discriminant and is APPEND-ONLY. `schema`
+# names a [row_schemas] table, `params` an [analytic.params] family, and
+# `producer` an [analytic.producers] entry — so a gate can prove every verb's
+# decoder exists in every language, and every binding can route to the right
+# entry symbol, without reading any Zig. Prose for what each verb MEANS stays
+# with the CLI verb tables in part 4 — this is the wire, not the semantics.
+#
+# `stream` is load-bearing for a caller sizing a batch: `many` verbs can return
+# an unbounded row count and should be pulled in batches, while `one` verbs
+# answer with exactly one row (quote's phrases and blast's tiers nest inside it,
+# so the whole answer arrives in a single pull).
+[analytic.verbs]
+similar = { op = 1, params = "kinship", schema = "similar", stream = "many", producer = "relate" }
+dups = { op = 2, params = "kinship", schema = "dup_pair", stream = "many", producer = "relate" }
+clusters = { op = 3, params = "kinship", schema = "cluster", stream = "many", producer = "relate" }
+echoes = { op = 4, params = "kinship", schema = "echo", stream = "many", producer = "relate" }
+concepts = { op = 5, params = "kinship", schema = "concept", stream = "many", producer = "relate" }
+fragments = { op = 6, params = "kinship", schema = "family", stream = "many", producer = "relate" }
+distinct = { op = 7, params = "kinship", schema = "distinct", stream = "many", producer = "relate" }
+recall = { op = 8, params = "retrieval", schema = "recalled", stream = "many", producer = "relate" }
+pack = { op = 9, params = "retrieval", schema = "pick", stream = "many", producer = "relate" }
+quote = { op = 10, params = "retrieval", schema = "quotation", stream = "one", producer = "relate" }
+patterns = { op = 11, params = "sweep", schema = "pattern_hit", stream = "many", producer = "relate" }
+pattern_counts = { op = 12, params = "sweep", schema = "pattern_count", stream = "many", producer = "relate" }
+context = { op = 13, params = "compose", schema = "pick", stream = "many", producer = "blast" }
+family = { op = 14, params = "compose", schema = "family", stream = "many", producer = "blast" }
+provenance = { op = 15, params = "compose", schema = "attribution", stream = "many", producer = "blast" }
+blast = { op = 16, params = "compose", schema = "blast", stream = "one", producer = "blast" }
+rank = { op = 17, params = "rank", schema = "ranked", stream = "many", producer = "gist" }
