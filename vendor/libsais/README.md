@@ -54,17 +54,34 @@ Codex feeds bytes, and `sais.build` caps at `i32` indices, so the 32-bit 8-bit
 unit is the whole reachable surface.
 
 The OpenMP entry points (`libsais_omp` and friends) sit behind
-`#if defined(LIBSAIS_OPENMP)` and stay compiled out — measured, not assumed.
-Compiled against Homebrew `libomp`, `libsais_omp` buys **1.65×** on the sort and
-saturates at 8 threads, and beyond that adds threads without adding speed. That
-is the whole offer, and the price is a `libomp`/`libgomp` runtime that is in
-neither the toolchain nor the ledger and that every build host, cross-compile
-target, and CI image would have to carry. Codex declined it and sharded the
-phases it owns instead (`kernel/math/parallel.zig`, pure `std.Thread`,
-zero dependencies), which is why the sort is now a *third* of a build that used
-to be seven eighths. The pin keeps the code available for the day a second
-1.65× is worth a link-time dependency; the harness that priced it is
-`spikes/libsais-eval/` (`-Domp=true`).
+`#if defined(LIBSAIS_OPENMP)` and stay compiled out — measured, not assumed, and
+the measurement is the reason. Compiled against Homebrew `libomp` and timed
+inside the real codex pipeline, the best parallel arm ran the sort in 5662 ms
+against serial libsais at 5949 ms: about **1.05×**, in exchange for a
+`libomp`/`libgomp` runtime that is in neither the toolchain nor the ledger and
+that every build host, cross-compile target, and CI image would have to carry.
+Codex declined it and sharded the phases it owns instead
+(`kernel/math/parallel.zig`, pure `std.Thread`, zero dependencies), which is why
+the sort is now a *third* of a build that used to be seven eighths. What earns
+the pin is the serial path: 5949 ms against 15304 ms for Zig's own `sais.build`,
+a 2.57× that costs no link-time dependency at all.
+
+Read the parallel arms as a decline and not as a scaling curve. They came off a
+box with other tenants on it, and they do not increase with threads — 4 at
+7647 ms, 8 at 10471 ms, 12 at 6512 ms, 16 at 5662 ms — which puts the 8-thread
+arm slowest of the four and slower than serial. A table that shape is measuring
+the load. `omp-scale.sh` exists to retake it in a quiet window and never caught
+one, so there is no trustworthy thread-scaling table for this dependency; what
+the evidence supports is only that OpenMP did not buy enough here to pay for
+itself, and the shape of its scaling is still an open question if anyone
+revisits it.
+
+The harness that priced it built this same translation unit twice from one
+`build.zig`, once plain and once with `-DLIBSAIS_OPENMP` linked against Homebrew
+`libomp`, then timed the sort inside the real codex pipeline (SA-IS → BWT →
+wavelet+RRR → locate) over a 200 MB corpus at min of 2 reps, proving
+`sa_sentinel == [n] ++ libsais_sa` byte for byte on every arm so a faster sort
+could not be a wronger one.
 
 ## Updating
 
