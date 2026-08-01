@@ -49,6 +49,7 @@ const resident = @import("../warm/resident.zig");
 const keepmod = @import("../answer/keep.zig");
 const watch = @import("../watch/watch.zig");
 const fault = @import("../../../fault.zig");
+const haystack = @import("../../../corpus/tree/haystack.zig");
 const Dir = std.Io.Dir;
 
 const ResidentSession = resident.ResidentSession;
@@ -68,15 +69,23 @@ const Tree = struct {
     io: std.Io,
     a: std.mem.Allocator,
     live: std.ArrayList([]const u8) = .empty,
+    scope: haystack.StatedSkipOverlay,
 
     fn init(a: std.mem.Allocator, io: std.Io, tag: []const u8, seed: usize) !Tree {
+        // Stated, not inherited: this fixture writes `sub/` and grades the
+        // digest against its own ledger, so an operator whose `GIST_SKIP` or
+        // seeded `skips.list` happens to name a directory here would have the
+        // walk prune bytes the oracle still counts.
+        const scope = haystack.stateSkipOverlay(.none);
+        errdefer scope.release();
         const root = try std.fmt.allocPrint(a, "/tmp/gist_vouch_{s}_{x}", .{ tag, seed });
         fault.spare("clear leftover fixture", Dir.cwd().deleteTree(io, root));
         try Dir.cwd().createDirPath(io, root);
-        return .{ .root = root, .io = io, .a = a };
+        return .{ .root = root, .io = io, .a = a, .scope = scope };
     }
 
     fn deinit(self: *Tree) void {
+        self.scope.release();
         fault.spare("remove fixture", Dir.cwd().deleteTree(self.io, self.root));
         self.live.deinit(self.a);
     }

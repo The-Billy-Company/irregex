@@ -8,7 +8,7 @@ const haystack = @import("haystack.zig");
 const fault = @import("../../fault.zig");
 
 /// The pre-`StaticStringMap` reference: a plain linear scan over the exact
-/// same 35-name list. The comptime-baseline lookup's speedup must never change
+/// same 36-name list. The comptime-baseline lookup's speedup must never change
 /// WHICH names are skipped — this differential is the guardrail, so it pins
 /// `inBaselineSkipSet` (the pure map), not the full-policy `isSkipDir`.
 /// Project-specific extras ride the runtime `GIST_SKIP`/`skips.list` overlay
@@ -21,6 +21,7 @@ const skip_list = [_][]const u8{
     ".zig-cache",    "zig-out",     "zig-pkg",       ".cache",        ".local",
     ".turbo",        "vendor",      ".swiftpm",      "Pods",          "DerivedData",
     ".cursor",       ".idea",       ".vscode",       ".parcel-cache", ".pnpm-store",
+    ".gist",
 };
 fn isSkipDirLinear(name: []const u8) bool {
     for (skip_list) |s| if (std.mem.eql(u8, name, s)) return true;
@@ -36,38 +37,50 @@ test "skip-dir baseline: near-misses (prefix/suffix/case/substring) are NOT skip
         "git",           ".gitx",   "gitt",    ".GIT",  "targets",
         "ta",            "builds",  ".buildx", "outer", "node_module",
         "node_modules2", "vendors", "cache",   ".cach", "",
-        "graphify-out", // was a hardcoded host-tree-ism; now GIST_SKIP territory
+        "gist",          ".gistx",  ".GIST",   ".gis",
+        "derived-out", // a per-tree output dir: overlay territory, never baseline
     };
     for (near_misses) |name| try std.testing.expect(!haystack.inBaselineSkipSet(name));
 }
 
+test "skip-dir baseline: the engine never indexes its own artifact home" {
+    // `.gist` is where the trigram index, kinship atlas, shelf, freshness
+    // anchor, and daemon socket live, and it sits inside the walk root by
+    // default — so a corpus walk that entered it would be indexing its own
+    // exhaust, and every index build would grow the corpus it just measured.
+    // It is baseline, not overlay: it holds for any tree, with no charter —
+    // which is why this asserts the pure map rather than `isSkipDir`, whose
+    // answer would also be true for a machine that merely seeded it.
+    try std.testing.expect(haystack.inBaselineSkipSet(".gist"));
+}
+
 test "policy skip is the charter/env overlay, not the generic baseline" {
-    // `.git` is baseline-only — cold `-uu` must still enter it (rg parity).
-    // `graphify-out` is charter-only — cold `-uu` must refuse it. The two sets
-    // are deliberately disjoint so a tree's committed skip cannot silently
-    // pull ripgrep's unrestricted surface into the corpus baseline.
+    // `.git` is baseline-only — cold `-uu` must still enter it (rg parity), and
+    // the baseline never doubles as the overlay. A per-tree output directory
+    // like `derived-out` is the overlay's business only: the baseline must not
+    // carry it, so no clone of an unrelated tree inherits another tree's
+    // folklore as if it were a universal convention.
     try std.testing.expect(haystack.inBaselineSkipSet(".git"));
     try std.testing.expect(!haystack.isPolicySkip(".git"));
-    try std.testing.expect(!haystack.inBaselineSkipSet("graphify-out"));
-    // Charter is discovered from the working tree; this test runs inside the
-    // host checkout whose `.irregex.toml` declares `graphify-out` (and
-    // `.local`). Absent a charter the name is not a policy skip — which is
-    // why `graphify-out` was lifted out of the baseline rather than left as a
-    // hardcoded host-tree-ism every clone of an unrelated tree would inherit.
-    if (haystack.isPolicySkip("graphify-out")) {
-        try std.testing.expect(haystack.isSkipDir("graphify-out"));
-        try std.testing.expect(haystack.isPolicySkip(".local"));
-    }
+    try std.testing.expect(!haystack.inBaselineSkipSet("derived-out"));
+
+    // The overlay half is NOT asserted here on purpose. `isPolicySkip` reads
+    // whatever the ambient charter, `GIST_SKIP`, and `<GIST_DIR>/skips.list`
+    // happen to say, so any claim about a specific name here is a claim about
+    // the machine, not the code: it goes vacuous in a checkout with no charter
+    // and answers out of an unrelated repository whenever `GIST_DIR` is
+    // inherited from one. `charter_test.zig` drives that path properly, from a
+    // charter it writes itself.
 }
 
 test "skip-dir baseline: matches the naive linear scan across a mixed sample" {
     const sample = [_][]const u8{
-        "services",     "libs",    "src",     ".git",     "node_modules",
-        "commands",     "corpus",  "regex",   "target",   "dist-types",
-        "index",        "scan",    "rank",    "vendor",   ".idea",
-        "kernels",      "biology", "runtime", "tools",    "neural",
-        "graphify-out", "quality", ".turbo",  "internal", "pkg",
-        "zig-pkg",
+        "services",    "lib",      "src",     ".git",     "node_modules",
+        "commands",    "corpus",   "regex",   "target",   "dist-types",
+        "index",       "scan",     "rank",    "vendor",   ".idea",
+        "kernel",      "bindings", "runtime", "tools",    "research",
+        "derived-out", "quality",  ".turbo",  "internal", "pkg",
+        "zig-pkg",     ".gist",    "gist",    "upstream",
     };
     for (sample) |name| try std.testing.expectEqual(isSkipDirLinear(name), haystack.inBaselineSkipSet(name));
 }
@@ -77,7 +90,7 @@ test "joinPath: byte-identical to `root ++ \"/\" ++ rel` for every shape the wal
     const cases = [_]struct { root: []const u8, rel: []const u8 }{
         .{ .root = "services", .rel = "backend/gateway/main.go" },
         .{ .root = ".", .rel = "README.md" },
-        .{ .root = "libs", .rel = "kernels/irregex/src/corpus/tree/haystack.zig" },
+        .{ .root = "lib", .rel = "irregex/src/corpus/tree/haystack.zig" },
         .{ .root = "a", .rel = "b" },
     };
     for (cases) |c| {
@@ -98,6 +111,12 @@ test "Walker applies nested gitignore precedence to every corpus consumer" {
     defer arena.deinit();
     const a = arena.allocator();
     const root = "/tmp/irregex_haystack_ignore_fixture";
+
+    // The claim is about gitignore precedence, so the skip overlay is held at
+    // the baseline: an operator whose policy names `nested` would prune the
+    // very directory whose `keep.log` negation this proves.
+    const scope = haystack.stateSkipOverlay(.none);
+    defer scope.release();
 
     fault.spare("clear leftover fixture", std.Io.Dir.cwd().deleteTree(io, root));
     defer fault.spare("remove fixture", std.Io.Dir.cwd().deleteTree(io, root));

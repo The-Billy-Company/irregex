@@ -32,6 +32,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const fault = @import("../../../fault.zig");
+const haystack = @import("../../../corpus/tree/haystack.zig");
 const portal = @import("../../../portal.zig");
 const resident = @import("../warm/resident.zig");
 const truth = @import("../warm/truth.zig");
@@ -67,8 +68,18 @@ pub const Tree = struct {
     io: std.Io,
     a: std.mem.Allocator,
     live: std.ArrayList([]const u8) = .empty,
+    scope: haystack.StatedSkipOverlay,
 
     pub fn init(a: std.mem.Allocator, io: std.Io, tag: []const u8, seed: usize) !Tree {
+        // The corpus scope is STATED, for the same reason the root is absolute:
+        // this rig grades the engine against a ledger of files it wrote itself,
+        // under subdirectories (`sub/`, `moved/`) whose basenames an operator's
+        // `GIST_SKIP` or seeded `<GIST_DIR>/skips.list` is free to name. Inherit
+        // that overlay and the walk prunes a directory the oracle still expects,
+        // and a true claim about the backend fails against a corpus nobody here
+        // declared. The ambient policy goes back on the way out.
+        const scope = haystack.stateSkipOverlay(.none);
+        errdefer scope.release();
         // `portal.scratchDir`, not `/tmp`: Windows has no such directory. Slashed
         // because every path in this rig is compared as a STRING against the
         // session's answers, and those are `/`-spelled on every platform by
@@ -81,10 +92,11 @@ pub const Tree = struct {
         const root = try std.fmt.allocPrint(a, "{s}/gist_watch_{s}_{x}", .{ scratch, tag, seed });
         fault.spare("clear leftover fixture", Dir.cwd().deleteTree(io, root));
         try Dir.cwd().createDirPath(io, root);
-        return .{ .root = root, .io = io, .a = a };
+        return .{ .root = root, .io = io, .a = a, .scope = scope };
     }
 
     pub fn deinit(self: *Tree) void {
+        self.scope.release();
         fault.spare("remove fixture", Dir.cwd().deleteTree(self.io, self.root));
         self.live.deinit(self.a);
     }

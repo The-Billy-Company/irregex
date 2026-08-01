@@ -1,6 +1,6 @@
 //! irregex — corpus loading, shared by the CLI drivers (`surface/face/gist/`), the
 //! unified search engine (`exec/cold/`) and the bench/verify harness
-//! (`bench/harness/bench.zig`). The corpus is every non-binary, non-gitignored
+//! (`gist/bench/apparatus/harness/bench.zig`). The corpus is every non-binary, non-gitignored
 //! file under the roots (rg-style: a NUL byte ⇒ binary ⇒ skipped), minus the
 //! corpus-only build/VCS skip list. Also owns the stdout results contract
 //! (`emitResults`) every search path emits through.
@@ -91,13 +91,27 @@ pub const bytes_per_token: usize = 4;
 pub const default_soft_output_bytes: usize = 100 << 10; // ~25k tokens
 pub const default_hard_output_bytes: usize = 256 << 20; // OOM ceiling
 
-const OutputBudget = struct {
-    // The effective stop for both streaming and serial accumulation, in bytes;
-    // 0 ⇒ unlimited. `--uncap` ⇒ the hard ceiling; otherwise min(soft, hard).
+/// What a run is BOUND BY — the policy half of the budget, split from the run
+/// counters below because it is the only half a caller states. A CLI resolves it
+/// from the flag plus the environment (`resolveOutputBudget`); a caller with no
+/// environment to read — an embedder of the C ABI, a test that must be bound
+/// deterministically rather than by whatever the operator's shell exported —
+/// states it outright and hands it to `installOutputBudget`. Same shape, and the
+/// same reason, as the explicit `lenses` mask on `assay.install`.
+pub const Budget = struct {
+    /// The effective stop for both streaming and serial accumulation, in bytes;
+    /// 0 ⇒ unlimited. `--uncap` ⇒ the hard ceiling; otherwise min(soft, hard).
     ceiling: usize = @min(default_soft_output_bytes, default_hard_output_bytes),
-    // True once the soft guard is lifted (`--uncap`/`GIST_UNCAP`) — only the hard
-    // OOM ceiling remains, which shapes the truncation notice's wording.
+    /// True once the soft guard is lifted (`--uncap`/`GIST_UNCAP`) — only the hard
+    /// OOM ceiling remains, which shapes the truncation notice's wording.
     soft_disabled: bool = false,
+
+    /// What a run with no flag and no environment is bound by.
+    pub const default: Budget = .{};
+};
+
+const OutputBudget = struct {
+    limit: Budget = .default,
     written: std.atomic.Value(usize) = .init(0), // bytes streamed so far (Sink-serialized under its lock)
     chrome: std.atomic.Value(usize) = .init(0), // of those, escapes nobody reads — see `noteChrome`
     truncated: std.atomic.Value(bool) = .init(false), // any path hit the ceiling
@@ -121,21 +135,37 @@ pub fn hintsEnabled() bool {
     return if (assay.knob("HINTS")) |s| !assay.envFalsy(s) else true;
 }
 
-/// Resolve this process's output ceilings from the `--uncap` flag and the
-/// `GIST_UNCAP` / `GIST_MAX_OUTPUT_TOKENS` / `GIST_MAX_OUTPUT_BYTES` env knobs,
-/// and reset the run counters. Idempotent: the CLI calls it once from the
-/// dispatch shell (so the warm client honors the env) and again from the cold
-/// engine (so the `--uncap` flag — which always routes cold — takes effect).
-pub fn initOutputBudget(flag_uncap: bool) void {
+/// Read this process's ceilings out of the `--uncap` flag and the `GIST_UNCAP` /
+/// `GIST_MAX_OUTPUT_TOKENS` / `GIST_MAX_OUTPUT_BYTES` env knobs. Consulting the
+/// environment is ALL it does — that is what lets the install below be driven by
+/// a caller that has none, and what keeps "which knobs bind a run" one readable
+/// expression instead of a side effect buried in a setter.
+pub fn resolveOutputBudget(flag_uncap: bool) Budget {
     const disabled = flag_uncap or envUncap();
     const soft = if (assay.knobUsize("MAX_OUTPUT_TOKENS")) |t| t *| bytes_per_token else default_soft_output_bytes;
     const hard = assay.knobUsize("MAX_OUTPUT_BYTES") orelse default_hard_output_bytes;
-    output_budget.soft_disabled = disabled;
-    output_budget.ceiling = if (disabled) hard else if (hard == 0) soft else @min(soft, hard);
+    return .{
+        .soft_disabled = disabled,
+        .ceiling = if (disabled) hard else if (hard == 0) soft else @min(soft, hard),
+    };
+}
+
+/// Bind this run to `limit` and reset the run counters — the one place a budget
+/// takes effect, whether it came from the environment or from a caller stating it.
+pub fn installOutputBudget(limit: Budget) void {
+    output_budget.limit = limit;
     output_budget.written.store(0, .monotonic);
     output_budget.chrome.store(0, .monotonic);
     output_budget.truncated.store(false, .monotonic);
     output_budget.announced.store(false, .monotonic);
+}
+
+/// Resolve the ceilings from flag + environment and install them. Idempotent:
+/// the CLI calls it once from the dispatch shell (so the warm client honors the
+/// env) and again from the cold engine (so the `--uncap` flag — which always
+/// routes cold — takes effect).
+pub fn initOutputBudget(flag_uncap: bool) void {
+    installOutputBudget(resolveOutputBudget(flag_uncap));
 }
 
 /// Report the run's cumulative **chrome** — the color escapes and OSC-8 link
@@ -185,8 +215,10 @@ pub const Mark = struct {
 /// `--uncap` already leaves only the hard ceiling, so this is a no-op there.
 pub fn exemptSoftCap() void {
     if (assay.knobSet("MAX_OUTPUT_TOKENS")) return;
-    output_budget.soft_disabled = true;
-    output_budget.ceiling = assay.knobUsize("MAX_OUTPUT_BYTES") orelse default_hard_output_bytes;
+    output_budget.limit = .{
+        .soft_disabled = true,
+        .ceiling = assay.knobUsize("MAX_OUTPUT_BYTES") orelse default_hard_output_bytes,
+    };
 }
 
 /// Write RESULTS (the match list / ranked rows) to **stdout** — the Unix
@@ -205,7 +237,7 @@ pub fn exemptSoftCap() void {
 /// crossing fragment still lands (whole lines, no mid-line cut) and every
 /// subsequent one is refused.
 pub fn writeStdout(bytes: []const u8) bool {
-    const ceiling = output_budget.ceiling;
+    const ceiling = output_budget.limit.ceiling;
     if (ceiling != 0 and spent(0) >= ceiling) {
         output_budget.truncated.store(true, .monotonic);
         return false;
@@ -328,7 +360,7 @@ fn carbonCopy(bytes: []const u8, how: enum { whole, torn }) void {
 /// lands whole" shape. Marks the run truncated (for `finishOutput`) when it cuts.
 /// `false` ⇒ stdout is spent/closed (nothing more to send), like `writeStdout`.
 pub fn writeStdoutCapped(bytes: []const u8) bool {
-    const ceiling = output_budget.ceiling;
+    const ceiling = output_budget.limit.ceiling;
     if (ceiling == 0) return drain.write(rawWriteStdout, bytes); // GIST_MAX_OUTPUT_BYTES=0 ⇒ truly unbounded
     const already = output_budget.written.load(.monotonic);
     if (already >= ceiling) {
@@ -388,7 +420,7 @@ pub fn emitStdout(bytes: []const u8) void {
 /// memory (the OOM guard) and stops at the exact point streaming would cut.
 /// Uncapped (ceiling 0) ⇒ always false. Marks the run truncated for `finishOutput`.
 pub fn outputFull(pending: usize) bool {
-    const ceiling = output_budget.ceiling;
+    const ceiling = output_budget.limit.ceiling;
     if (ceiling == 0 or spent(pending) < ceiling) return false;
     output_budget.truncated.store(true, .monotonic);
     return true;
@@ -439,8 +471,8 @@ pub fn finishOutput() void {
     flushStdout();
     if (!output_budget.truncated.load(.monotonic)) return;
     if (output_budget.announced.swap(true, .monotonic)) return;
-    const cap = output_budget.ceiling;
-    if (output_budget.soft_disabled) {
+    const cap = output_budget.limit.ceiling;
+    if (output_budget.limit.soft_disabled) {
         assay.diag(assay.tag ++ "output truncated at the hard {d}-byte OOM ceiling\n", .{cap});
         if (hintsEnabled())
             assay.diag(assay.tag ++ "try PATH args / -t / -g to scope the query, or raise GIST_MAX_OUTPUT_BYTES\n", .{});
@@ -457,8 +489,13 @@ test "the ceiling counts what is read, not the escapes around it" {
     // The regression this pins: the budget once measured emitted bytes, so a
     // colored or clickable run answered roughly half as many rows as the same
     // query in plain text — you paid for results in bytes nobody ever saw.
-    defer initOutputBudget(false);
-    initOutputBudget(false);
+    // Stated, not resolved: `initOutputBudget` reads `GIST_UNCAP` and the two
+    // override knobs, so a test that called it would assert the default ceiling
+    // while bound by whatever the operator's shell exported (the bench harness
+    // exports `GIST_UNCAP=1`). The claim here is about the default budget, so the
+    // test hands itself that budget.
+    defer installOutputBudget(.default);
+    installOutputBudget(.default);
     const ceiling = default_soft_output_bytes;
 
     noteChrome(0);
@@ -476,8 +513,8 @@ test "a sharded merge cuts on content, so a decorated run keeps every file" {
     // Four files of 40 KiB each, three quarters of it escapes: 160 KiB of bytes
     // but only 40 KiB to read. Charged as bytes it would cut at the third file;
     // charged as content the whole thing fits under the 100 KiB ceiling.
-    defer initOutputBudget(false);
-    initOutputBudget(false);
+    defer installOutputBudget(.default);
+    installOutputBudget(.default); // the default budget, stated — see the test above
     noteChrome(0);
 
     const a = std.testing.allocator;
@@ -500,7 +537,7 @@ test "a sharded merge cuts on content, so a decorated run keeps every file" {
     try std.testing.expectEqual(buf.len, out.items.len);
 
     // The same bytes with nothing to discount are what the ceiling is for.
-    initOutputBudget(false);
+    installOutputBudget(.default);
     noteChrome(0);
     out.clearRetainingCapacity();
     try std.testing.expectEqual(@as(?usize, 2), try appendBudgeted(a, &out, buf, &plain, true));

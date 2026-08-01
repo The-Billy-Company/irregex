@@ -45,9 +45,9 @@ pub const Haystack = struct {
 ///
 /// `std.StaticStringMap` — the same technique Zig's own tokenizer keyword
 /// lookup uses (`std.zig.primitives.names`, `std.zig.Token.getKeyword`) —
-/// buckets these 35 names by length at comptime, so a lookup is one length
+/// buckets these 36 names by length at comptime, so a lookup is one length
 /// check + a compare against only the few same-length candidates, instead of
-/// testing all 35 in the worst (most common) case of "not a skip dir".
+/// testing all 36 in the worst (most common) case of "not a skip dir".
 /// Measured (standalone ReleaseFast micro-bench, 1786 real repo directory
 /// basenames pulled from `git ls-tree`, 2000 passes): a linear `std.mem.eql`
 /// scan over the flat list runs 18.5 ns/call; this runs 2.8 ns/call — a 6.6×
@@ -56,7 +56,11 @@ pub const Haystack = struct {
 /// with this list; not worth it for noise-level gain on an already-cheap op).
 /// Every name is a cross-ecosystem convention (VCS, package caches, build
 /// output) — nothing project-specific; a tree with its own heavy dirs extends
-/// the policy per invocation via `GIST_SKIP`.
+/// the policy per invocation via `GIST_SKIP`. `.gist` is here on the same
+/// footing as `.zig-cache`: it is this engine's OWN artifact home, it sits
+/// inside the walk root by default, and indexing an index is a tool reading
+/// its own exhaust. A caller who really wants those bytes names the directory
+/// as a root, which the walk still honors.
 const skip_dirs = std.StaticStringMap(void).initComptime(.{
     .{".git"},          .{".github"},     .{".hg"},           .{".svn"},          .{"node_modules"},
     .{"target"},        .{"dist"},        .{"dist-types"},    .{"build"},         .{".build"},
@@ -65,15 +69,50 @@ const skip_dirs = std.StaticStringMap(void).initComptime(.{
     .{".zig-cache"},    .{"zig-out"},     .{"zig-pkg"},       .{".cache"},        .{".local"},
     .{".turbo"},        .{"vendor"},      .{".swiftpm"},      .{"Pods"},          .{"DerivedData"},
     .{".cursor"},       .{".idea"},       .{".vscode"},       .{".parcel-cache"}, .{".pnpm-store"},
+    .{".gist"},
 });
 
-/// Extra skip basenames, parsed once per process from three optional sources:
-/// the `GIST_SKIP` env (`:`/`,`/space separated — one-shot override), the
-/// tree's committed charter (`.irregex.toml skip` — the durable, SHARED policy,
-/// and the one a fresh clone gets for free), and the machine-local
+/// The extra directory basenames a tree declared out of its corpus, beyond the
+/// generic comptime baseline above — the POLICY half of the skip decision,
+/// split from the walk that consults it for the same reason the output budget
+/// is split from its run counters: it is the only half a caller ever states. A
+/// CLI resolves it from the environment, the committed charter, and the
+/// machine-local seeded list (`resolveSkipOverlay`); a caller with none of
+/// those to read — an embedder standing the engine up over a corpus it chose
+/// itself, a test that builds its own fixture tree and must not have the
+/// operator's machine prune a directory out of it — states it outright and
+/// hands it to `installSkipOverlay`. Same shape, and the same reason, as
+/// `corpus.Budget` on `installOutputBudget` and the explicit `lenses` mask on
+/// `assay.install`.
+pub const SkipOverlay = struct {
+    /// Directory basenames to prune on top of the baseline. Borrowed: every
+    /// current producer hands over strings that outlive the process.
+    names: []const []const u8 = &.{},
+
+    /// What a walk with no `GIST_SKIP`, no charter `skip`, and no seeded
+    /// `skips.list` prunes: nothing beyond the comptime baseline.
+    pub const none: SkipOverlay = .{};
+};
+
+/// An overlay held for the duration of a scope, with whatever was in force
+/// before put back on the way out. The restore is what makes the seam safe to
+/// use from a fixture: a test that states its own scope must not leave the
+/// process describing a corpus the next caller never asked for.
+pub const StatedSkipOverlay = struct {
+    ambient: SkipOverlay,
+
+    pub fn release(self: StatedSkipOverlay) void {
+        installSkipOverlay(self.ambient);
+    }
+};
+
+/// The overlay's three optional sources and the one slot they land in: the
+/// `GIST_SKIP` env (`:`/`,`/space separated — one-shot override), the tree's
+/// committed charter (`.irregex.toml skip` — the durable, SHARED policy, and
+/// the one a fresh clone gets for free), and the machine-local
 /// `<outDir()>/skips.list` (one name per line, `#` comments). The charter is
 /// why the last of those is no longer the only durable rung: `outDir()`
-/// defaults inside gitignored `.local/`, so a skips.list policy was per-machine
+/// defaults inside gitignored `.gist/`, so a skips.list policy was per-machine
 /// folklore that a fresh clone silently lacked — two clones of one tree walking
 /// two different corpora. It stays honored for the machine-specific case.
 /// The comptime baseline above stays generic; anything project-specific rides
@@ -88,6 +127,9 @@ const extra_skips = struct {
     var file_buf: [4096]u8 = undefined;
     var names: [32][]const u8 = undefined;
     var count: usize = 0;
+    /// The overlay actually in force — the environment's, or a caller's. Empty
+    /// until `done` publishes, which is the only state `list` reads it in.
+    var installed: []const []const u8 = &.{};
 
     fn add(tok: []const u8) void {
         if (count < names.len) {
@@ -115,18 +157,59 @@ const extra_skips = struct {
         }
     }
 
+    fn lock() void {
+        while (locked.swap(true, .acquire)) std.atomic.spinLoopHint();
+    }
+
+    fn unlock() void {
+        locked.store(false, .release);
+    }
+
     fn list() []const []const u8 {
         if (!done.load(.acquire)) {
-            while (locked.swap(true, .acquire)) std.atomic.spinLoopHint();
-            defer locked.store(false, .release);
+            lock();
+            defer unlock();
             if (!done.load(.acquire)) {
                 fill();
+                installed = names[0..count];
                 done.store(true, .release);
             }
         }
-        return names[0..count];
+        return installed;
     }
 };
+
+/// The overlay in force: whatever a caller stated, or — if nobody has — what
+/// `GIST_SKIP`, the tree's charter, and `<outDir()>/skips.list` say, resolved
+/// now and at most once per process, exactly as the first walk would have
+/// resolved it. The read half of the split, so `installSkipOverlay` below can
+/// be driven by a caller with no environment to read, and so a caller that
+/// wants its own scope back afterwards has something to put back.
+pub fn resolveSkipOverlay() SkipOverlay {
+    return .{ .names = extra_skips.list() };
+}
+
+/// Bind every subsequent walk to `overlay` — the one place a skip policy takes
+/// effect, whether it came from the environment or from a caller stating it.
+/// Installing also settles the lazy resolution, so a caller that states a
+/// policy before the first walk is never overwritten by one. State the policy
+/// before the walks that must see it: this rebinds a slice the walk reads
+/// unsynchronized once `done` has published, the same footing the resolved
+/// answer has always been read on.
+pub fn installSkipOverlay(overlay: SkipOverlay) void {
+    extra_skips.lock();
+    defer extra_skips.unlock();
+    extra_skips.installed = overlay.names;
+    extra_skips.done.store(true, .release);
+}
+
+/// Install `overlay` and hand back the scope that puts the previous one back.
+/// The pairing every fixture wants: one call in `init`, `release` in `deinit`.
+pub fn stateSkipOverlay(overlay: SkipOverlay) StatedSkipOverlay {
+    const ambient = resolveSkipOverlay();
+    installSkipOverlay(overlay);
+    return .{ .ambient = ambient };
+}
 
 /// Comptime-baseline membership only — the generic VCS/build/cache basenames,
 /// with no runtime `GIST_SKIP`/`skips.list` overlay folded in. This is the pure
@@ -144,8 +227,9 @@ pub fn isSkipDir(name: []const u8) bool {
     return isPolicySkip(name);
 }
 
-/// Is `name` a directory basename this TREE declared out of the corpus —
-/// charter `skip`, `GIST_SKIP`, or `<outDir()>/skips.list` — and nothing else?
+/// Is `name` a directory basename declared out of the corpus by the overlay in
+/// force — resolved from charter `skip`, `GIST_SKIP`, and
+/// `<outDir()>/skips.list` unless a caller stated one — and nothing else?
 /// Cold search (including `-uu`) consults this and not the generic baseline:
 /// ripgrep parity requires `-uu` to enter `.git`/`node_modules`, but a
 /// committed charter skip is a fact about the repository, not an ignore rule

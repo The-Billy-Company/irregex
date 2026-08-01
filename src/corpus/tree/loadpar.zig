@@ -422,6 +422,14 @@ test "fused parallel load has byte-identical membership to the serial walk" {
     defer arena.deinit();
     const a = arena.allocator();
 
+    // Both loaders consult the overlay, so an operator's cannot break PARITY —
+    // but the fixture writes `sub/nested`, and an overlay naming either one
+    // prunes it from both sides at once, so the must-be-present arm below stops
+    // holding and the parity half goes vacuous over a corpus this test never
+    // built. State the baseline so the membership rules are actually exercised.
+    const scope = haystack.stateSkipOverlay(.none);
+    defer scope.release();
+
     const root = "/tmp/gist_loadpar_parity_fixture";
     fault.spare("clear leftover parity fixture", Dir.cwd().deleteTree(io, root));
     defer fault.spare("remove parity fixture", Dir.cwd().deleteTree(io, root));
