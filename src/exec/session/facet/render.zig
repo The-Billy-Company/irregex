@@ -1,4 +1,4 @@
-//! gist resident session — the warm `lines` renderer (ADR-352 rung 2.5).
+//! gist resident session — the warm `lines` renderer.
 //!
 //! Renders the default `gist <pattern>` presentation (`path:text`, `-n` for
 //! `path:line:text`) for a pre-gated, path-sorted document list — through the

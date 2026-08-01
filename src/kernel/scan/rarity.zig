@@ -61,7 +61,8 @@
 //!
 //! What the range is worth, with the anchor policy held fixed and only the
 //! table varying, priced against the best pair that exists for each needle
-//! (`spikes/rarity-range/rank.zig` over the dossier's corpora): 2.55×
+//! (survivors of the two-offset AND filter counted exactly, the oracle taken by
+//! brute force over every offset pair of every needle in the slate): 2.55×
 //! → 1.50× of oracle survivors on 203 MB of code, 2.99× → 2.21× on 128 MB of
 //! prose. The prose figure is honestly cross-distribution — this is a code
 //! prior, and a prose-fitted census reaches 1.76× there.

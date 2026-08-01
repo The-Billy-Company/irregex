@@ -340,7 +340,7 @@ fn parseLong(b: *Builder, arg: []const u8, i: *usize, all: []const []const u8) v
 /// (exit 2) on a missing pattern, a bad numeric value, or an unsupported flag.
 pub fn parseArgv(a: std.mem.Allocator, args: []const []const u8) Parsed {
     var b = Builder{ .a = a };
-    // The tree's own type names, before argv, so `-t billy` resolves and an
+    // The tree's own type names, before argv, so `-t zigsrc` resolves and an
     // explicit `--type-add` on the line can still redefine what the charter
     // declared. Same grammar as the flag — the charter carries `--type-add`
     // specs, not a second dialect nobody would learn twice.

@@ -92,9 +92,10 @@ pub fn envFlag(key: [*:0]const u8) bool {
 /// decides which cold plane runs. `GIST_NO_PARALLEL` (internal, undocumented,
 /// never a CLI flag) routes every eligible query and every emit-phase shard onto
 /// the single-threaded reference engine, so the differential gates
-/// (`bench/gates/line_parity.sh`, `bench/rgsuite/run.py`,
-/// `bench/evaluate/regimes.py`) can push one case list through BOTH the parallel
-/// swarm and the serial oracle and prove them byte-identical.
+/// (`gist/bench/conformance/gates/parity/line_parity.sh`,
+/// `gist/bench/conformance/rgsuite/run.py`,
+/// `gist/bench/dominance/evaluate/regimes.py`) can push one case list through
+/// BOTH the parallel swarm and the serial oracle and prove them byte-identical.
 ///
 /// It lives here, read by exactly one function, precisely because plane
 /// selection is this kernel's highest systemic risk: `swarm.eligible`, both

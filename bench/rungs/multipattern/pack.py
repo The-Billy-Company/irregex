@@ -29,13 +29,13 @@ from pathlib import Path
 import sys
 
 # Directories a code-search corpus never contains. Mirrors the `XDIRS` set in
-# `bench/races/_compete.sh` so a packed corpus and a raced corpus agree.
+# `gist/bench/dominance/races/field.sh` so a packed corpus and a raced corpus agree.
 SKIP = {
     ".git", ".hg", ".svn", "node_modules", "target", ".venv", "venv", "__pycache__",
     ".zig-cache", "zig-cache", "zig-out", "dist", "dist-types", "build", ".build",
     "out", ".next", "coverage", ".turbo", ".mypy_cache", ".ruff_cache", ".pytest_cache",
     "Pods", "DerivedData", ".swiftpm", ".local", ".cache", ".parcel-cache",
-    "storybook-static", "xcuserdata", "graphify-out", ".pnpm-store",
+    "storybook-static", "xcuserdata", "derived-out", ".pnpm-store",
 }
 # A per-document ceiling, matching the kernel's own `corpus.per_file_cap`
 # posture: one pathological megafile must not become the whole corpus.

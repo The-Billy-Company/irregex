@@ -444,7 +444,7 @@ pub const Index = struct {
     /// cost before it is dropped. Dropping a conjunct only WIDENS the candidate
     /// set (see `queryPlan`), so this ceiling can never cost a match — it is a
     /// pure work/pruning trade, and 64x is where a clause stops paying for its
-    /// own decode on the measured slate (`bench/sieve/indexq.zig`).
+    /// own decode on the measured slate (`bench/rungs/sieve/indexq.zig`).
     const plan_work_ratio: u64 = 64;
     /// Directory groups one atom may resolve; past this the atom is declined
     /// (sound — it only widens). 4096 covers every literal a plan can carry.

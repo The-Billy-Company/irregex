@@ -392,7 +392,7 @@ pub const flag_catalog = [_]FlagSpec{
     // gist's own config layers and not merely for rg parity.
     //
     // They were missing until a conformance sweep over `rg --generate
-    // complete-bash` counted them (bench/rgsuite/surface.py): 35 flags that
+    // complete-bash` counted them (gist/bench/conformance/rgsuite/surface.py): 35 flags that
     // ripgrep documents and gist rejected. The mined suite could not see the
     // hole, because ripgrep's own integration tests do not exercise most of
     // its negations either — which is exactly why the denominator has to come

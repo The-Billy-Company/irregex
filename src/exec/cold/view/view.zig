@@ -115,7 +115,8 @@ pub fn dispatch(r: Run) !Claim {
 /// acceleration one (fault-channel law 1) and cost the view every file the index's
 /// corpus policy excludes but a search walk enters: `corpus/tree/haystack.zig`'s
 /// generic skip-dir baseline prunes `vendor/` (right for the kinship corpus,
-/// wrong for a search), so a ranked `graphify` silently dropped 470 real hits,
+/// wrong for a search), so on a tree carrying a large vendored subtree a ranked
+/// query silently dropped 470 real hits,
 /// and no walk-widening flag reached the view at all — `-uu`, whose walk admits
 /// 15× the files, ranked the default corpus and called it an answer.
 fn rank(r: Run) !Claim {

@@ -32,7 +32,7 @@ presents it in a shape ripgrep has no flag for. Two ship today.
 Each lens finishes the run itself, before the certified rg-parity walk and emit
 path. That early return is not a shortcut — it is what keeps the parity
 certificate meaningful. A lens **cannot** thread its own awareness through the
-machinery `bench/rgsuite/` measures, because it never reaches that machinery.
+machinery `gist/bench/conformance/rgsuite/` measures, because it never reaches that machinery.
 The rg path stays a byte-for-byte ripgrep drop-in no matter how many native
 views gist grows.
 

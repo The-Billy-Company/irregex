@@ -25,7 +25,7 @@
 //! grammar was a silent false-negative factory (see that file's header). The
 //! persisted per-doc table lives in `corpus/index/crest/sidecar.zig`; the
 //! read-elision wiring in `exec/cold/engine/{serial.zig,swarm/}`; the
-//! production proof harness in `bench/crest/`.
+//! production proof harness in `bench/rungs/crest/`.
 //!
 //! SOUNDNESS POSTURE: everything rounds DOWN — a construct `swell` cannot
 //! certify contributes nothing (or zeroes the whole vector), so under-pruning is

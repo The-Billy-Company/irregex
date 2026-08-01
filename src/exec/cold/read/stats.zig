@@ -46,7 +46,7 @@ pub const FileStat = struct { matches: usize, lines: usize, bytes: usize };
 /// reports `0 bytes printed` however many path or tally bytes it emitted, and so
 /// does `-q`, which emits nothing. gist used to report its own output buffer's
 /// length in those modes (`14 bytes printed` where rg said `0`); the divergence
-/// was caught differentially by `bench/rgsuite/fuzz.py`. Both walk engines route
+/// was caught differentially by `gist/bench/conformance/rgsuite/fuzz.py`. Both walk engines route
 /// through here so the two cannot answer it differently.
 pub fn bytesPrinted(o: Opts, written: usize) usize {
     return if (o.quiet or o.mode.enumerates()) 0 else written;
@@ -114,7 +114,7 @@ pub fn fileMatchStats(re: *const Matcher, a: std.mem.Allocator, o: Opts, body: [
             // no span to count) while every summary printer — `-c`,
             // `--count-matches`, `-l`, `--files-without-match` — reports one per
             // inverted line. Both measured against live rg;
-            // `bench/rgsuite/fuzz.py` is the oracle.
+            // `gist/bench/conformance/rgsuite/fuzz.py` is the oracle.
             m += if (o.invert) @intFromBool(o.mode.enumerates()) else hits;
             last_hit_end = lineEnd(body, line);
         }

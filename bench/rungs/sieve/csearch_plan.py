@@ -20,7 +20,7 @@ atoms of a clause, AND over the trigrams of an atom (`Index.queryPlan`) — whic
 covers csearch's tree exactly: its OR-of-ANDs alternations become one clause of
 multi-trigram atoms, its AND-of-ORs boundary products become several clauses.
 
-stdlib only. Probe rows are parsed out of `bench/harness/probes.zig`, the same
+stdlib only. Probe rows are parsed out of `bench/apparatus/harness/probes.zig`, the same
 registry Layers A and D import, so the slate cannot drift from theirs.
 """
 
@@ -234,7 +234,7 @@ def main() -> int:
         type=Path,
         required=True,
         action="append",
-        help="a Zig probe registry; repeatable (shared bench/harness/probes.zig, then stress.zig)",
+        help="a Zig probe registry; repeatable (shared bench/apparatus/harness/probes.zig, then stress.zig)",
     )
     ap.add_argument("--index", type=Path, required=True, help="the csearch .idx")
     ap.add_argument("--out", type=Path, required=True, help="plan TSV for indexq.zig")

@@ -68,8 +68,8 @@ pub const Clause = []const Atom;
 /// no) clause, which only ever widens the candidate set.
 ///
 /// The defaults are the measured optimum on the Layer-L slate
-/// (`bench/sieve/indexq.zig`); `--cover-*` overrides exist there so the frontier
-/// is re-derived from data rather than asserted.
+/// (`bench/rungs/sieve/indexq.zig`); `--cover-*` overrides exist there so the
+/// frontier is re-derived from data rather than asserted.
 pub const Limits = struct {
     /// Members of one byte/codepoint class admissible as a choice point. 64 is
     /// the measured knee AND the natural boundary: it is exactly the size of an

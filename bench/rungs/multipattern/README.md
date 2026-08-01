@@ -4,8 +4,6 @@ doc_radar:
     - bench/rungs/multipattern/bench.zig
     - bench/rungs/multipattern/vscan.c
     - bench/rungs/multipattern/pack.py
-    - bench/dominance/races/multipattern.sh
-    - bench/certificate/report/multipattern.py
     - src/kernel/slate/muster.zig
   sentinels:
     "bench/rungs/multipattern/vscan.c":
@@ -18,7 +16,7 @@ doc_radar:
         - PatternSet
 ---
 
-# `bench/multipattern` — the Hyperscan race (Layer K)
+# `bench/rungs/multipattern` — the Hyperscan race (Layer K)
 
 Three files, one question: **when N patterns must be found with per-pattern
 attribution, who is faster and why?** The named champion is Hyperscan (Intel;
@@ -60,8 +58,8 @@ is absent.
 brew install vectorscan                     # optional — the rival column
 cd <irregex-repo-root>
 zig build -Doptimize=ReleaseFast lab        # builds the `multipattern` arm
-bash bench/races/multipattern.sh            # both arms, sweeps N=4,8,16,32,64
-bash bench/races/multipattern.sh -n 8,64 -m 32 services libs   # narrower
+bash ../gist/bench/dominance/races/multipattern.sh            # both arms, sweeps N=4,8,16,32,64
+bash ../gist/bench/dominance/races/multipattern.sh -n 8,64 -m 32 services libs   # narrower
 ```
 
 The harness writes `perbyte.tsv`, `meta.json`, and hyperfine exports under
@@ -69,39 +67,41 @@ The harness writes `perbyte.tsv`, `meta.json`, and hyperfine exports under
 splice Layer K into the certificate:
 
 ```bash
-python3 bench/certify/certify_multipattern_report.py \
+python3 ../gist/bench/certificate/report/multipattern.py \
   --perbyte .local/gist-compete/multipattern/perbyte.tsv \
   --raw     .local/gist-compete/multipattern/raw \
   --meta    .local/gist-compete/multipattern/meta.json \
-  --certificate bench/certify/artifact/CERTIFICATE.md \
-  --csv         bench/certify/artifact/multipattern.csv
+  --certificate ../gist/bench/certificate/artifact/CERTIFICATE.md \
+  --csv         ../gist/bench/certificate/artifact/multipattern.csv
 ```
 
 ### Wiring it into the mint
 
-This lane does not edit `bench/certify/certify_layers.sh` — the parent wires all
-five new layers. The block to add, in that file's existing idiom (`MULTIPATTERN_OUT`
-is honored by the harness, so the whole layer stays inside `${OUT}`):
+This lane does not edit `gist/bench/certificate/mint/splice.sh` — the parent
+wires all five new layers. The block to add, in that file's existing idiom
+(`MULTIPATTERN_OUT` is honored by the harness, so the whole layer stays inside
+`${OUT}`):
 
 ```bash
 # Layer K — multi-pattern simultaneous matching (vs Hyperscan/Vectorscan). Both
 # arms are fail-closed by construction (the race refuses to time an answer it has
 # not proven); the report re-asserts K1-K4 and refuses to splice on any violation.
 note "Layer K — multi-pattern vs Hyperscan/Vectorscan (fail-closed)…"
-MULTIPATTERN_OUT="${OUT}/multipattern" bash "${HERE}/../races/multipattern.sh" \
+MULTIPATTERN_OUT="${OUT}/multipattern" bash "${HERE}/../../dominance/races/multipattern.sh" \
   || die "multipattern race failed (attribution violation) — fix src/kernel/slate, never weaken the sieve"
-python3 "${HERE}/certify_multipattern_report.py" \
+python3 "${HERE}/../report/multipattern.py" \
   --certificate "${CERT}" \
   --perbyte "${OUT}/multipattern/perbyte.tsv" \
   --raw "${OUT}/multipattern/raw" \
   --meta "${OUT}/multipattern/meta.json" \
   --csv "${OUT}/multipattern.csv" \
-  || die "certify_multipattern_report.py failed (Layer K invariant violated)"
+  || die "multipattern.py failed (Layer K invariant violated)"
 ```
 
-`Layer K` also has to join the shared roster in `bench/certify/layers.py`, which
-the completeness gate and the ledger both read — otherwise the section splices
-and the gate never notices it exists.
+`Layer K` also has to join the shared roster in
+`gist/bench/certificate/guard/layers.py`, which the completeness gate and the
+ledger both read — otherwise the section splices and the gate never notices it
+exists.
 
 ## The measurement hazard that nearly published a fake number
 

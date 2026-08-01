@@ -806,10 +806,11 @@ test "adversarial: Pike docMatch fallback (DFA-null) vs independent oracle" {
 }
 
 test "adversarial: Sim reuse across calls ≡ fresh Sim per call" {
-    // Real callers (bench/certify/scan) reuse ONE `Sim` across many documents; a
-    // stale `gen`/`seen` not reset between calls would silently corrupt every
-    // call after the first. The harness elsewhere allocates a fresh `Sim` per
-    // check, so this is the only place that path is adversarially exercised.
+    // Real callers (`gist/bench/apparatus/harness/certify.zig`) reuse ONE `Sim`
+    // across many documents; a stale `gen`/`seen` not reset between calls would
+    // silently corrupt every call after the first. The harness elsewhere
+    // allocates a fresh `Sim` per check, so this is the only place that path is
+    // adversarially exercised.
     const a = std.testing.allocator;
     const pats = [_][]const u8{ "\\d+", "ab*c", "[a-c]{2,}", "^x|y$", "(foo|bar)", "\\w+$", "a.*b" };
     const inputs = [_][]const u8{ "123", "abbbc", "aabbcc", "y", "xfoo", "", "no", "barbar\nfoo\n", "a\nb", "zzz" };

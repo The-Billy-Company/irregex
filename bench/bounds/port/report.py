@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 """gist portcert — Layer B certificate splicer (static port-optimality bound).
 
-Reads the `portcert.json` emitted by `portcert.sh` (per probe x reference
+Reads the `portcert.json` emitted by `mca.sh` (per probe x reference
 microarchitecture: Block RThroughput, bytes/iter, cycles/byte) and renders a
 `## Layer B — port-optimality (static µarch bound)` markdown section, then
-splices it into `.local/gist-verify/CERTIFICATE.md`.
+splices it into `.gist/CERTIFICATE.md`.
 
 The section also carries **Layer B′ — the port bound measured on this
 machine**: if a sibling `portbound.json` exists (written by
-`zig build portbound` / `sudo zig-out/bin/gist-portbound`, which times the
+`zig build portbound`, which times the
 same drift-guarded probes natively under the PMU), its measured cycles/byte +
 cycles/step are rendered with full provenance (CPU brand, QoS, meter). This is
 fail-closed: without that file — or when it says `"pmu": false` — the
 certificate states plainly that cycles are cross-checked against reference
-cores only, NOT measured here, and names the sudo rung that mints the measured
+cores only, NOT measured here, and names the rung that mints the measured
 figure. Wall-clock is never converted to cycles via an assumed frequency.
 
-Splice discipline (mirrors bench/certify/certify_stats.py): replace any existing
+Splice discipline (mirrors gist/bench/certificate/report/stats.py): replace any existing
 `## Layer B` section (from that heading to the next `## Layer` heading or EOF),
 and insert a fresh one *before* the macroscopic Layer-A header so re-running
 `certify.sh` (which rewrites from that header to EOF) never clobbers Layer B. If
@@ -58,18 +58,22 @@ BOUND_NOTE = (
     "is the recurrence latency (the dependent-load chain), which is *higher* than "
     "the port `Block RThroughput` shown here. For the DFA, `Block RThroughput` is "
     "the port-pressure ceiling; the binding constraint is the dependent-load "
-    "latency llvm-mca reports per instruction. See `bench/portcert/README.md`."
+    "latency llvm-mca reports per instruction. See `bench/bounds/port/README.md`."
 )
 
 
 MEASURED_HEADER = "### Layer B′ — port bound, measured on this machine"
 
 # The rung an operator climbs to mint the measured-on-this-machine bound.
+# `sudo` is deliberately not in it: `pmu.zig` reads retired cycles through xnu's
+# unprivileged `thread_selfcounts`, so root buys only kperf's configurable
+# events, which this lane never asks for. Telling a reader to re-run under sudo
+# implies the plain run cannot measure cycles, which it usually can.
 MEASURED_RUNG = (
     "`cd <irregex-repo-root> && zig build -Doptimize=ReleaseFast portbound` "
-    "(wall-clock), then from the repo root "
-    "`sudo zig-out/bin/gist-portbound` for cycles (xnu gates "
-    "the PMU to root), then re-run `bench/portcert/portcert.sh` to splice."
+    "(the unprivileged per-thread counters supply cycles; root is needed only "
+    "for kperf's configurable events, which this lane does not use), then "
+    "re-run `bench/bounds/port/mca.sh` to splice."
 )
 
 
@@ -99,12 +103,16 @@ def render_measured(measured: dict | None) -> list[str]:
     )
 
     if not measured.get("pmu", False):
+        # Name the meter that refused rather than asserting a cause. There are
+        # two counter tiers and only one is privilege-gated, so "kperf needs
+        # root" was a guess that misread an unprivileged refusal as a sudo
+        # problem — and `pmu.Meter.note`, which the artifact already carries,
+        # says which tiers were tried and why each declined.
         lines.append(
             "**cycles/byte: cross-checked (reference cores), NOT measured on this "
-            "machine.** The runner executed here but the PMU was unavailable "
-            "(kperf needs root), so only wall-clock ns are recorded below — never "
-            "converted to cycles via an assumed frequency. Rerun under `sudo` for "
-            "measured: " + MEASURED_RUNG
+            "machine.** The runner executed here but no cycle counter opened — "
+            f"meter: _{meter}_ — so only wall-clock ns are recorded below, never "
+            "converted to cycles via an assumed frequency. Rung: " + MEASURED_RUNG
         )
         lines.append("")
         lines.append(prov)
@@ -163,7 +171,7 @@ def render(doc: dict, measured: dict | None = None) -> str:
     lines = [LAYER_B_HEADER, ""]
     lines.append(
         f"_Static reciprocal-throughput bound from `llvm-mca {ver}`, computed by "
-        "`bench/portcert/portcert.sh`. gist's two hot loops are byte-faithful "
+        "`bench/bounds/port/mca.sh`. gist's two hot loops are byte-faithful "
         "copies (drift-guarded by `probes_test.zig`), cross-compiled by Zig to each "
         "reference core; llvm-mca scores the marked hot-loop region for port "
         "pressure. Lower cycles/byte is better._"
@@ -173,7 +181,7 @@ def render(doc: dict, measured: dict | None = None) -> str:
         lines.append(
             "_No results — `llvm-mca` was unavailable or every probe skipped. "
             "Install it with `brew install llvm` and re-run "
-            "`bench/portcert/portcert.sh`._"
+            "`bench/bounds/port/mca.sh`._"
         )
         lines.append("")
         lines.append(APPLE_NOTE)
@@ -234,12 +242,12 @@ def splice(cert: Path, section: str) -> None:
 def main() -> int:
     """CLI entry point."""
     ap = argparse.ArgumentParser(description="gist Layer B port-optimality certificate splicer")
-    ap.add_argument("--json", type=Path, required=True, help="portcert.json from portcert.sh")
+    ap.add_argument("--json", type=Path, required=True, help="portcert.json from mca.sh")
     ap.add_argument("--certificate", type=Path, required=True, help="CERTIFICATE.md to splice into")
     args = ap.parse_args()
 
     if not args.json.exists():
-        print(f"portcert_report: {args.json} not found — did portcert.sh run?")
+        print(f"portcert_report: {args.json} not found — did mca.sh run?")
         return 1
     doc = json.loads(args.json.read_text())
 
@@ -263,7 +271,7 @@ def main() -> int:
             f"portcert_report: {args.certificate} not found — wrote standalone "
             f"section to {sidecar}.\n"
             "  Run `zig build certify` first to create CERTIFICATE.md, then re-run "
-            "portcert.sh to splice Layer B in place."
+            "mca.sh to splice Layer B in place."
         )
         return 0
 

@@ -36,7 +36,7 @@ test "source snapshots are mirrors, ordinary target folders are not" {
     try std.testing.expect(isPath("packages/app/node_modules/.cache/tool/source.ts"));
     try std.testing.expect(isPath("repo/.cache/copied/source.py"));
     try std.testing.expect(!isPath("services/compiler/target/source.rs"));
-    try std.testing.expect(!isPath("pkg/tools/support/graph.zig"));
+    try std.testing.expect(!isPath("lib/build/graph.zig"));
 }
 
 test "canonical resolves only exact authored duplicates" {

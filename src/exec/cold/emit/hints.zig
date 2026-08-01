@@ -356,9 +356,9 @@ fn rendered(a: std.mem.Allocator, s: Shape, files: ?usize) ![]u8 {
 test "uppercase pattern gets -i first; -uu rides along" {
     var arena = std.heap.ArenaAllocator.init(t.allocator);
     defer arena.deinit();
-    const got = try rendered(arena.allocator(), shape(&.{"WalletService"}, .{}, &.{}, false), 1204);
+    const got = try rendered(arena.allocator(), shape(&.{"SessionStore"}, .{}, &.{}, false), 1204);
     try t.expectEqualStrings(
-        \\gist: no matches for 'WalletService' · 1204 files scanned
+        \\gist: no matches for 'SessionStore' · 1204 files scanned
         \\gist: try -i — the pattern has uppercase; retry case-insensitive
         \\gist: try -uu — gitignored and hidden files were excluded from this search
         \\
@@ -497,6 +497,6 @@ test "a vigil that never armed is silent rather than crashing on no progress" {
 test "bare shape (warm path): pattern facts still drive hints" {
     var arena = std.heap.ArenaAllocator.init(t.allocator);
     defer arena.deinit();
-    const got = try rendered(arena.allocator(), shapeBare("WalletService", false, false), null);
+    const got = try rendered(arena.allocator(), shapeBare("SessionStore", false, false), null);
     try t.expect(std.mem.indexOf(u8, got, "-i — the pattern has uppercase") != null);
 }

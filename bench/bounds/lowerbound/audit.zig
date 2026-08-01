@@ -28,13 +28,15 @@
 //!     touches EXACTLY `candidate_bytes` (one pass, no double traffic), the SIMD
 //!     literal path ≤ `candidate_bytes`.
 //!
-//! Fail-closed, exactly like `bench/gates/scan_regress.sh`: any violated
-//! invariant exits non-zero. Weakening an assertion to go green would violate
-//! the repo's anti-bandaid rule — a failure here is a real finding about gist.
+//! Fail-closed, exactly like `gist/bench/conformance/gates/parity/scan_regress.sh`:
+//! any violated invariant exits non-zero. Weakening an assertion to go green
+//! would violate the repo's anti-bandaid rule — a failure here is a real
+//! finding about gist.
 //!
-//! Probe set is *imported* from `bench/harness/probes.zig` — the same module
-//! `certify.zig` (Layer A) uses — so Layer D lines up class-for-class with
-//! Layers A-C by construction, not by a hand-maintained "keep in sync" copy.
+//! Probe set is *imported* from `bench/apparatus/harness/probes.zig` — the same
+//! module `certify.zig` (Layer A) uses — so Layer D lines up class-for-class
+//! with Layers A-C by construction, not by a hand-maintained "keep in sync"
+//! copy.
 
 const std = @import("std");
 const builtin = @import("builtin");

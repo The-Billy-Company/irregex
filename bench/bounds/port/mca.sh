@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# portcert.sh — Layer B of the dominance-and-fit certificate: PORT-OPTIMALITY, static.
+# mca.sh — Layer B of the dominance-and-fit certificate: PORT-OPTIMALITY, static.
 #
 # Layer A proves empirical dominance over ripgrep on the registered workloads.
 # Layer B proves *why the hot loop can't be beaten on this instruction sequence*:
@@ -23,12 +23,12 @@
 # guarded by probes_test.zig (zig build test). Markers ride INSIDE the loop body
 # so LLVM's loop rotation/cloning can't strand them.
 #
-# DEGRADE, NEVER FAIL (mirrors bench/harness/pmu.zig): if llvm-mca is not
+# DEGRADE, NEVER FAIL (mirrors bench/apparatus/harness/pmu.zig): if llvm-mca is not
 # installed this prints a documented skip and exits 0. Install it opt-in with
 #   brew install llvm            (llvm-mca lands at $(brew --prefix llvm)/bin)
 #
-# Usage:  bench/portcert/portcert.sh            (writes CSV+JSON, splices cert)
-#         ITERS=200 bench/portcert/portcert.sh  (more llvm-mca sim iterations)
+# Usage:  bench/bounds/port/mca.sh             (writes CSV+JSON, splices cert)
+#         ITERS=200 bench/bounds/port/mca.sh   (more llvm-mca sim iterations)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -205,9 +205,12 @@ if [[ -f "${OUT}/portbound.json" ]]; then
   echo "Layer B′ (measured on this machine): spliced from ${OUT}/portbound.json"
 else
   cat << 'EOF'
-Layer B′ (measured on this machine): not yet run. Mint it with
-  (cd <irregex-repo-root> && zig build -Doptimize=ReleaseFast portbound)  # wall-clock
-  sudo zig-out/bin/gist-portbound                     # cycles (kpc is root-gated; run from repo root)
-then re-run this script to splice the measured subsection.
+Layer B′ (measured on this machine): not yet run. Mint it from the repo root with
+  zig build -Doptimize=ReleaseFast portbound   # measures cycles unprivileged
+then re-run this script to splice the measured subsection. No sudo: the
+unprivileged thread_selfcounts tier supplies retired cycles, and root only adds
+kperf's configurable events, which this lane never asks for. If the minted
+artifact still says "pmu": false, read its "meter" field — it names the tier
+that refused, and sudo is not always the answer.
 EOF
 fi

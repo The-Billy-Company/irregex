@@ -14,7 +14,7 @@ doc_radar:
 
 # bench/parabix — the bit-parallel rung's production proof harness
 
-`zig build parabix-rung` (from ``) links the **real** engine
+`zig build parabix-rung` (from the repository root) links the **real** engine
 and the **real** rung, so both baselines — the full `Regex.docMatch` ladder and
 the raw `Dfa.docMatch` beneath it — are the shipped code rather than a
 reimplementation. Every row runs both arms over the same buffer, in the same

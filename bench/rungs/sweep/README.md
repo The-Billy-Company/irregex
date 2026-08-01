@@ -28,7 +28,7 @@ doc_radar:
 
 # bench/rungs/sweep — is the fused fabric actually worth it, consumer by consumer
 
-`zig build sweep-rung` (from ``).
+`zig build sweep-rung` (from the repository root).
 
 The `ast` package claims to answer in **one interned sweep** what
 `analysis.zig` and `parabix/admit.zig` each answer in **one recursive walk**.

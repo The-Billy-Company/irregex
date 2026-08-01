@@ -34,7 +34,7 @@ up 1:1 with Layers A–C by construction, not by a hand-kept copy) it measures:
 - **cand%** — candidate bytes ÷ corpus bytes (the pruning the filter achieves).
 
 `lowerbound_report.py` splices the formal argument + the measured table into
-`.local/gist-verify/CERTIFICATE.md` as the `## Layer D` section.
+`.gist/CERTIFICATE.md` as the `## Layer D` section.
 
 No production code is instrumented. The audit is _structural_: it re-implements
 the fused scan in the harness with a byte counter, asserts (a) that reference's
@@ -84,12 +84,12 @@ zig build certify                       # or: gist-bench certify
 
 # 2. build + run the Layer D audit (parent wires the `lowerbound` build step;
 #    until then it runs as its own executable):
-zig build lowerbound                    # → .local/gist-verify/lowerbound.csv
+zig build lowerbound                    # → .gist/lowerbound.csv
 
 # 3. splice the Layer D section into the certificate:
 python3 bench/bounds/lowerbound/report.py \
-    --csv .local/gist-verify/lowerbound.csv \
-    --certificate .local/gist-verify/CERTIFICATE.md
+    --csv .gist/lowerbound.csv \
+    --certificate .gist/CERTIFICATE.md
 ```
 
 `gist-lowerbound` exits non-zero (mirroring

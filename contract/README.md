@@ -63,7 +63,8 @@ scale / concurrency, with parity as a build-sanity precondition), the corpora, t
 required competitors, the provenance every bundle must carry, and the publication
 rule (clean tree only) — plus the `[[claim]]` rows that bind a prose number to one
 artifact. Cold/warm query dominance is **not** re-timed here; that is the
-Dominance-and-Fit Certificate's job (`../bench/certify/`). The evaluator that reads it
+Dominance-and-Fit Certificate's job (sibling `gist` package,
+`gist/bench/certificate/`). The evaluator that reads it
 lives in `gist/bench/dominance/evaluate/`;
 the evaluate-verify gate in the sibling `gist` package holds it fail-closed. Absolute latency is
 machine-specific and never gated across machines — only the index/corpus footprint

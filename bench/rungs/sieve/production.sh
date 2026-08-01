@@ -17,7 +17,7 @@
 #
 # Emits `production.tsv` beside this script for `certify_indexq_report.py`.
 #
-# Usage: bench/sieve/production.sh [--runs N] [corpus-root]
+# Usage: bench/rungs/sieve/production.sh [--runs N] [corpus-root]
 set -uo pipefail
 export GIST_UNCAP=1
 

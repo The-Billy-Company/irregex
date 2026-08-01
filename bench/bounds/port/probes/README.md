@@ -6,7 +6,7 @@ doc_radar:
       contains: ['@import("probes/simd_contains.zig")', '@import("probes/dfa_step.zig")', '@import("probes/dfa_mirror.zig")', "gist.simd.contains", "gist.regex.Regex"]
 ---
 
-# bench/portcert/probes
+# bench/bounds/port/probes
 
 Byte-faithful, standalone copies of gist's hot loops — the objects
 [`../mca.sh`](../mca.sh) cross-compiles and hands to `llvm-mca`.

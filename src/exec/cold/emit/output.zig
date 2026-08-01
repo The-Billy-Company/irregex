@@ -465,7 +465,7 @@ pub const Emitter = struct {
     /// NOT `--field-match-separator`: rg documents that flag as "only used when
     /// printing matching lines", and a count is a summary, not a matching line —
     /// its own printer carries a separator no flag reaches. Differentially
-    /// confirmed against live rg (`bench/rgsuite/fuzz.py`, which is how the leak
+    /// confirmed against live rg (`gist/bench/conformance/rgsuite/fuzz.py`, which is how the leak
     /// was found: gist was rendering `path|1` under `--field-match-separator '|'`).
     const summary_sep = ":";
 

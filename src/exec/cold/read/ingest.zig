@@ -359,7 +359,7 @@ test "applyEncoding utf8: one U+FFFD per ill-formed maximal subpart" {
     const a = arena.allocator();
     const FFFD = "\u{FFFD}";
     // Every expectation below was captured from live `rg -E utf8` on the same
-    // bytes (see the `-E utf-8` lane of bench/rgsuite/fuzz.py) — not derived
+    // bytes (see the `-E utf-8` lane of gist/bench/conformance/rgsuite/fuzz.py) — not derived
     // from this implementation. An explicit label decodes; it never passes
     // invalid bytes through.
     try t.expectEqualStrings("hi", applyEncoding(a, .utf8, "\xEF\xBB\xBFhi")); // BOM still stripped

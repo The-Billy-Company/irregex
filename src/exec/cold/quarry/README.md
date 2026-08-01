@@ -68,6 +68,6 @@ changed is re-read into the session's overlay, whose documents the sieve never
 sees. The proof above buys back a vector measured by someone else, at another
 time; warm never has to ask.
 
-Gated by [`bench/gates/index_elision_parity.sh`](../../../../bench/conformance/gates/parity/index_elision_parity.sh)
+Gated by `gist/bench/conformance/gates/parity/index_elision_parity.sh`
 (indexed and non-indexed runs must produce identical bytes) and
-`indexed_pcre_oracle.py`.
+`gist/bench/conformance/gates/oracle/indexed_pcre_oracle.py`.

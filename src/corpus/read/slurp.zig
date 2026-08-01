@@ -23,7 +23,7 @@ pub const BUFCAP: usize = 65536;
 /// no match is exit 1; a file that will not open at all is a gap in what was
 /// searched, and ripgrep reports it on stderr and exits 2 even when other files
 /// matched. Returning `?` for both made an unreadable file present as a silent
-/// "found nothing here" — measured against live rg by `bench/rgsuite/fuzz.py`,
+/// "found nothing here" — measured against live rg by `gist/bench/conformance/rgsuite/fuzz.py`,
 /// which is where this seam came from. `notice.WalkFault` already covers this
 /// set, so the shared renderer takes these errors unchanged.
 pub const OpenFault = std.posix.OpenError;

@@ -79,8 +79,8 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
   `GIST_NO_PARALLEL_LOAD` forces the serial reference (parity gate + escape
   hatch, mirroring the engine's `GIST_NO_PARALLEL`); `GIST_WORKERS` overrides
   the worker count.
-- A new `relate concepts` verb drops kinship from the file to the FUNCTION
-  (ADR-363): where `clusters`/`echoes` answer "which files are forks?",
+- A new `relate concepts` verb drops kinship from the file to the FUNCTION:
+  where `clusters`/`echoes` answer "which files are forks?",
   `concepts` answers the finer question an agent actually asks — "which
   functions across the tree are the same idea (the repeated engine, the
   duplicated JSON dump, the copy-pasted validator), regardless of name or
@@ -101,7 +101,7 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
   advertised by `--schema`; `relate index` builds it and `relate status`
   reports its readiness.
 - A new `src/engine/query.zig` deep module owns the transport-neutral compiled
-  query (ADR-352): a `(pattern, fixed, ignore_case, mode)` spec lowers once
+  query: a `(pattern, fixed, ignore_case, mode)` spec lowers once
   into an immutable matcher (literal SIMD fast path, else the linear-time regex
   engine, escaping a `-F -i` literal), exposing the sound trigram `prefilter`
   for index candidate pruning and the per-doc `docMatches`/`countLines`
@@ -109,7 +109,7 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
   `error.Unsupported`, never a `die()`) and thread-safe (immutable query;
   per-worker `Scratch` is caller-owned), so the cold CLI and the warm resident
   session now execute through one shared compile → prefilter → match core.
-- A new `src/search/` primitives tier (ADR-363) makes the engine set-shaped —
+- A new `src/search/` primitives tier makes the engine set-shaped —
   match ∪ relate ∪ weave: `PatternSet` compiles N patterns once through the
   shared `engine/query.zig` core with exact per-pattern attribution
   (`docMask`/`lineHits`) behind a skip-only fused alternation gate; `Sketch`
@@ -192,7 +192,7 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
   negotiation,
   `render.renderLinesShm`, and `resident.queryLinesShm`.
   (see also: gist)
-- (in `gist`) Added the gist operational-envelope matrix under `bench/evaluate/` (ADR-352):…
+- (in `gist`) Added the gist operational-envelope matrix under `bench/evaluate/`:…
 - Composed family search now compares exact-hit functions or match windows
   instead of only whole files, ranks families by conservative repeated-line
   opportunity, offers a scope-relative `--brief` worklist and `--only` answer
@@ -334,7 +334,7 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
   read-your-writes and ripgrep parity are unchanged and soundness never rests
   on
   the watcher.
-- The resident-session machinery (ADR-352 rung 2.5) now carries its unit suite:
+- The resident-session machinery now carries its unit suite:
   the eligibility classifier's fail-closed boundary, the UDS wire codec's
   lossless round-trip and fail-closed framing, and — over a real directory tree
   — resident==rg parity, read-your-writes, and the watcher-barrier seqlock.
@@ -510,8 +510,8 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
   is held continuously by new `shard-*` and post-index `shard-freshness` cases
   in `bench/gates/index_elision_parity.sh`.
   (see also: gist)
-- `irregex blast SYMBOL` — a live symbol blast radius for editing agents
-  (ADR-367): the seed's definition + kind, direct dependents (functions
+- `irregex blast SYMBOL` — a live symbol blast radius for editing agents:
+  the seed's definition + kind, direct dependents (functions
   referencing it, def/use classified) and dependencies (identifiers its body
   resolves), tangential twins (compression kin of its file) and ripple
   (same-language second-hop callers), and comments that mention it — computed
@@ -795,7 +795,7 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
   `anyLane` — a word-wide OR-reduce "did anything hit?" — with the movemask
   paid only inside proven-hot blocks. Anchors got smarter too: a corpus-derived
   byte-density table (`rarity.zig`, the memchr crate's rare-byte idea measured
-  over the Billy tree) picks the needle's two rarest bytes at any offsets
+  over a large polyglot monorepo) picks the needle's two rarest bytes at any offsets
   instead of first+last, a genuinely-rare probe earns a single-load block
   filter, and a runtime hit counter demotes that shape mid-buffer when the
   table misdescribes the bytes (base64, random-looking text) — the
@@ -979,14 +979,13 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
   and
   verifies per line where rg scans the whole buffer through a Teddy/memmem
   prefilter and touches only candidate lines.
-- Graduate GIST from the doc-radar canary to the repository-wide search
-  substrate (ADR-352): every first-party executable ripgrep consumer now drives
-  the certified `gist` engine — the trust/codegen lints (`user-id`, `policy`,
-  `fronts`, `boundary-gates`), doc-radar's count/files/still-here wrappers, the
-  relocator + restructure + comment-quality + pentest tooling, the
-  `fetchjson`/`readjson`/`resource_static`/`vox`/chaos shell scripts, and the
-  Bridge's `atelier_grep` (resolved binary, with `atelier_health` reporting
-  `gist_available`). Patternless `rg --files` inventories moved to the git
+- Graduate GIST from a single canary consumer to the repository-wide search
+  substrate of the monorepo it was born in: every first-party executable
+  ripgrep consumer now drives the certified `gist` engine — lint gates, doc
+  freshness wrappers, the relocate/restructure/comment-quality/pentest
+  tooling, several shell scripts, and the agent-facing code-search tool
+  (resolved binary, with its health probe reporting availability).
+  Patternless `rg --files` inventories moved to the git
   index,
   each consumer carries a committed `*_gist_parity.py` guard, and a fail-closed
   `gist-adoption` ratchet ratchets first-party ripgrep executions to zero. Raw
@@ -1044,12 +1043,10 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
   outrank repeated imports, annotations, and calls across diverse repositories.
 - Ranked searches now demote cached source mirrors and identify exact canonical
   duplicates, keeping widened searches focused on editable code.
-- Register `billy-irregex` in the root uv workspace so AI development and tests
-  import the local binding reliably. Production AI deliberately omits the
-  package,
-  binary, and proprietary repository corpus, making repository search
-  unavailable
-  instead of searching an unrelated container filesystem.
+- Register the Python binding in the parent workspace so development and tests
+  import the local package reliably. The production image deliberately omits
+  the package, the binary, and the repository corpus, making repository search
+  unavailable instead of searching an unrelated container filesystem.
 - Replaced the T3 freshness overlay's per-file `readdir()` + `statFile()` walk
   with `getattrlistbulk(2)` batched directory enumeration on Darwin
   (src/corpus/tree/bulkstat.zig — hand-declared FFI, no Zig std binding
@@ -1079,7 +1076,8 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
   coworking-agent load, load avg ~9.4): the "pre" phase (cold-load + freshness)
   median dropped from ~51ms (post-bulkstat, static shards) to ~40ms, and a
   head-to-head against ripgrep on the same corpus flipped from GIST trailing to
-  1.93x faster (σ 9.8ms vs rg's 54ms) on `billy` — the exact high-match
+  1.93x faster (σ 9.8ms vs rg's 54ms) on a corpus-saturating literal — the exact
+  high-match
   "saturating pattern" the README previously called out as GIST's weak spot —
   and 6.45x faster on a selective literal (`fetchAdd`).
 - Rewrote the package root and relate READMEs to the OSS convention (What it is
@@ -1176,7 +1174,7 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
   skip them, explicit positional roots resolve into the snapshot by name, and a
   missing/corrupt/future-dated `tree.map` (or `GIST_NO_PHANTOM=1`) returns the
   walk to its live path byte-identically. Walk-bound shapes moved most: on the
-  Billy corpus `-g '*.go'`/`-t go` races went 2.2× → **7.6–7.8×** over ripgrep,
+  home corpus `-g '*.go'`/`-t go` races went 2.2× → **7.6–7.8×** over ripgrep,
   the whole-matrix span is now 2.3×–16.1× (19/19 wins, floors republished), and
   rgsuite holds 409/409 on both engines.
 - The in-process C search callback (`irregex_match_fn`) now returns `int32_t`
@@ -1295,7 +1293,7 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
   (`-l`/files-with-matches) and falls open to `subprocess` otherwise.
 - (in `gist`) The warm resident session (`src/runtime/session/resident.zig`) and the cold…
 - Un-hardcoded the corpus roots — gist and relate now index and query any tree,
-  not just the Billy monorepo. `gist index [ROOT...]` / `relate index` take
+  not just the monorepo it was born in. `gist index [ROOT...]` / `relate index` take
   roots positionally; with none given, `corpus.resolveRoots` picks per tree (a
   `GIST_ROOTS` env override split on `:`/`,`/space, else `.` — the whole tree).
   Every artifact is now self-describing: the trigram index generation-publishes
@@ -1667,7 +1665,7 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
   the ranked read pass scanned every candidate's full bytes, a symbol living
   only in a committed binary's symbol table (e.g. `atomic.(*Int32).Store`
   inside
-  `scripts/observe/trust/mdns_verify/mdns_verify`) surfaced as a ranked hit
+  `tools/mdns_verify/mdns_verify`) surfaced as a ranked hit
   that
   the locate path — and rg — correctly skip.
 
@@ -1739,7 +1737,7 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
   collect-and-sort with rg's error-files-last (ascending) placement; a
   multi-root `--sort path` over the live tree is byte-identical to rg and ~2.6×
   faster (parallel reads vs rg's forced single thread).
-- `session.warm_eligible` (the Python leg's warm/cold router, ADR-352 rung 2.5)
+- `session.warm_eligible` (the Python leg's warm/cold router)
   accepted any non-scoped request regardless of pattern shape, so a `\n`, NUL,
   or empty pattern was routed to the resident daemon — whose whole-document
   engine can match across line boundaries where the cold per-line walk cannot,
@@ -1759,7 +1757,7 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
   rule is tested against the candidate itself (full path for anchored patterns,
   basename for slash-less ones), never against ancestor components or path
   prefixes — ancestor exclusion is the walk's directory pruning. Previously a
-  re-include like `!scripts/observe/build/` leaked everything beneath it (e.g.
+  re-include like `!tools/indexer/build/` leaked everything beneath it (e.g.
   its `__pycache__/`) into results in both the serial and parallel engines; two
   rgsuite cases regained byte-identical PASS.
 - rg-parity fixes across the regex escape parser: \\0–\\9 (backreference
@@ -2321,7 +2319,7 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
     pastes rg patterns carrying a global flag group reflexively; gist used to
   reject
     the whole (legal-to-rg) pattern. Now `i`→ASCII caseless
-  (`(?i)walletservice` is
+  (`(?i)sessionstore` is
     byte-identical to `-i`), `m`/`u`/`U`/any `-…` form → no-op (gist is
   per-line,
     byte-oriented — exactly rg `(?-u)`), while `s` (dotall across newlines) and
@@ -2755,7 +2753,7 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
   `--ignore-file`, `--no-ignore-vcs`, per-dir `.ignore`, hidden whitelist),
   lifting
   supported-surface parity to 98.9% with no regression elsewhere.
-- Initial scaffold mirroring `pkg/kernels/core` conventions: `build.zig`
+- Initial scaffold mirroring the conventions of its sibling C-ABI kernel: `build.zig`
   (static + dynamic libs, header install, `test` + `coverage` steps),
   `build.zig.zon`, flat C-ABI in `include/gist.h`, `src/root.zig`.
   (see also: gist)
@@ -2924,9 +2922,9 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
     `.min.js`, …).
 
   Dogfooding the extraction caught a **real latent bug**: `definesNeedle` only
-  checked the identifier boundary _before_ the needle, so searching `Wallet`
+  checked the identifier boundary _before_ the needle, so searching `Session`
   treated
-  `type WalletService struct` as its _definition_ (a prefix hit). It now
+  `type SessionStore struct` as its _definition_ (a prefix hit). It now
   requires a
   whole-word match on **both** sides. The signal still only ever reorders
   (never

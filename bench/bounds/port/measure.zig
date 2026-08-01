@@ -1,7 +1,7 @@
 //! gist bench — `gist-portbound`: Layer B′ of the dominance-and-fit certificate —
 //! the **port bound, measured on this machine**.
 //!
-//! Layer B (`portcert.sh`) is a *static* llvm-mca bound on gist's two hot loops,
+//! Layer B (`mca.sh`) is a *static* llvm-mca bound on gist's two hot loops,
 //! necessarily taken on reference cores (znver4 / neoverse-v2) because LLVM has
 //! no real scheduling model for any Apple CPU (LLVM issue #63698). That leaves a
 //! disclosed truth gap: the "at the hardware limit" claim was cross-checked on
@@ -18,11 +18,15 @@
 //!     (1 byte per step, the dependent-load chain is the floor).
 //!
 //! Honesty rules (all inherited from `pmu.zig` / the certificate discipline):
-//!   * **Fail-closed on cycles.** Without the PMU (xnu gates kpc to root) the
-//!     run still completes and reports wall-clock ns, but the JSON says
-//!     `"pmu": false` and the certificate labels cycles as *NOT measured on
-//!     this machine* — it never converts wall-clock to cycles via an assumed
-//!     frequency. Re-run under `sudo` for the measured figures.
+//!   * **Fail-closed on cycles.** If no cycle counter opens, the run still
+//!     completes and reports wall-clock ns, but the JSON says `"pmu": false` and
+//!     the certificate labels cycles as *NOT measured on this machine* — it never
+//!     converts wall-clock to cycles via an assumed frequency. On Apple Silicon
+//!     that fallback is now the rare case rather than the normal one: `pmu.zig`
+//!     reads retired cycles and instructions through xnu's unprivileged
+//!     `thread_selfcounts`, so a plain `zig build portbound` measures them. Only
+//!     kperf's *configurable* events still need root, and this lane asks for
+//!     none — see `bench/apparatus/privilege/README.md`.
 //!   * **Provenance stamped**: CPU brand (`machdep.cpu.brand_string`), the
 //!     P-core note (USER_INTERACTIVE QoS request + the *measured* effective GHz,
 //!     which itself distinguishes a P-core from an E-core placement), and the
@@ -34,14 +38,14 @@
 //!     values the loop needs live anyway. The production `simd.contains` is
 //!     timed alongside as a marker-overhead cross-check.
 //!
-//! Output: stdout table + `.local/gist-verify/portbound.json`. Re-run
-//! `bench/portcert/portcert.sh` (or `portcert_report.py`) afterward to splice
+//! Output: stdout table + `.gist/portbound.json`. Re-run
+//! `bench/bounds/port/mca.sh` (or `report.py`) afterward to splice
 //! the measured subsection into `CERTIFICATE.md`.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const gist = @import("irregex");
-const pmu = @import("pmu"); // bench/harness/pmu.zig, wired as a module in build.zig
+const pmu = @import("pmu"); // bench/apparatus/harness/pmu.zig, wired as a module in build.zig
 
 const simd_probe = @import("probes/simd_contains.zig");
 const dfa_probe = @import("probes/dfa_step.zig");
@@ -274,11 +278,11 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
     }
 
     try writeJson(gpa, io, brand, qos, meter.note, probe_s, prod_s, dfa_s, mirror_s);
-    std.debug.print("\nwrote {s}/portbound.json — re-run bench/portcert/portcert.sh to splice Layer B′ into CERTIFICATE.md\n", .{out_dir});
-    if (!meter.has_pmu) {
-        std.debug.print("note: cycles NOT measured on this machine (PMU needs root) — the artifact says so.\n", .{});
-        std.debug.print("      Re-run `sudo zig-out/bin/gist-portbound` from the repo root for the measured bound.\n", .{});
-    }
+    std.debug.print("\nwrote {s}/portbound.json — re-run bench/bounds/port/mca.sh to splice Layer B′ into CERTIFICATE.md\n", .{out_dir});
+    // Report the meter that refused, not a guessed cause. Two tiers are tried
+    // and only kperf is privilege-gated, so "PMU needs root" pointed an operator
+    // at `sudo` for an unprivileged refusal root cannot fix.
+    if (!meter.has_pmu) std.debug.print("note: cycles NOT measured on this machine — the artifact says so. Meter: {s}\n", .{meter.note});
 }
 
 fn writeJson(gpa: std.mem.Allocator, io: std.Io, brand: []const u8, qos: []const u8, meter_note: []const u8, probe_s: Sample, prod_s: Sample, dfa_s: Sample, mirror_s: Sample) !void {
@@ -290,7 +294,7 @@ fn writeJson(gpa: std.mem.Allocator, io: std.Io, brand: []const u8, qos: []const
     try j.appendSlice(gpa, "{\n");
     try j.appendSlice(gpa, "  \"layer\": \"B-measured\",\n");
     try j.appendSlice(gpa, "  \"claim\": \"port bound, measured on this machine (same drift-guarded probes as Layer B)\",\n");
-    try j.appendSlice(gpa, "  \"generated_by\": \"bench/portcert/portbound.zig (gist-portbound)\",\n");
+    try j.appendSlice(gpa, "  \"generated_by\": \"bench/bounds/port/measure.zig (gist-portbound)\",\n");
     try j.appendSlice(gpa, try std.fmt.bufPrint(&line, "  \"cpu_brand\": \"{s}\",\n", .{brand}));
     try j.appendSlice(gpa, try std.fmt.bufPrint(&line, "  \"arch\": \"{s}\",\n", .{@tagName(builtin.target.cpu.arch)}));
     try j.appendSlice(gpa, try std.fmt.bufPrint(&line, "  \"qos\": \"{s}\",\n", .{qos}));

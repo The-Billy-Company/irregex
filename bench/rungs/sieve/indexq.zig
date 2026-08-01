@@ -31,8 +31,9 @@
 //! dropped. A violation exits non-zero; it is a real finding, never something
 //! to paper over.
 //!
-//! Probe rows are `@import`ed from `bench/harness/probes.zig`, the same registry
-//! Layers A and D use, so Layer L lines up class-for-class by construction.
+//! Probe rows are `@import`ed from `bench/apparatus/harness/probes.zig`, the
+//! same registry Layers A and D use, so Layer L lines up class-for-class by
+//! construction.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -369,7 +370,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, limits: query.CoverLimits) !void 
 
     try writeTsv(gpa, io, &corpus, &idx, build_ms, rows.items);
     std.debug.print("\nwrote {s}\n", .{csv_path});
-    std.debug.print("run: python3 bench/certificate/report/indexq.py --certificate {s}/CERTIFICATE.md --tsv {s}\n", .{ out_dir, csv_path });
+    std.debug.print("run: python3 gist/bench/certificate/report/indexq.py --certificate {s}/CERTIFICATE.md --tsv {s}\n", .{ out_dir, csv_path });
 
     if (violations > 0) {
         std.debug.print("\nFAILED: {d} cross-arm hit disagreement(s) — one of the three formulas is UNSOUND (it pruned a document the matcher says matches). Investigate; do NOT weaken the assertion.\n", .{violations});

@@ -47,4 +47,4 @@ Corpus admission and path vocabulary are shared below the CLI in
 [`corpus/tree/`](../../corpus/tree) and [`corpus/scope/`](../../corpus/scope).
 
 Named for what each module _is_, not to mirror ripgrep's source layout. The
-rgsuite certificate (`bench/rgsuite/`) is the parity gate for this face.
+rgsuite certificate (`gist/bench/conformance/rgsuite/`) is the parity gate for this face.

@@ -4,7 +4,7 @@ doc_radar:
     - description: "the Layer B′ measured runner is wired as a build step + installed exe"
       file: build.zig
       contains: ['b.step("portbound"', '.name = "gist-portbound"']
-    - description: "the static leg splices the measured subsection and names the sudo rung"
+    - description: "the static leg splices the measured subsection and names the rung that mints it"
       file: bench/bounds/port/mca.sh
       contains: ["portbound.json", "sudo zig-out/bin/gist-portbound"]
     - description: "the splicer fail-closed labels cycles when not measured here"
@@ -12,7 +12,7 @@ doc_radar:
       contains: "NOT measured on this "
 ---
 
-# bench/portcert — Layer B (port-optimality: static bound + measured on this machine)
+# bench/bounds/port — Layer B (port-optimality: static bound + measured on this machine)
 
 Layer B of gist's [Dominance-and-Fit Certificate](../README.md#dominance-and-fit-certificate-layers-ag).
 Where Layer A proves empirical dominance over ripgrep on the registered
@@ -28,8 +28,8 @@ cross-machine cross-check.
 | File                       | Role                                                                                                                                                                                                     |
 | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `mca.sh`                   | cross-compiles every probe to two reference microarchitectures, runs `llvm-mca`, writes `portcert.csv`/`portcert.json`, splices the certificate                                                          |
-| `report.py`                | renders the `## Layer B` markdown section (static + the Layer B′ measured subsection) from `portcert.json` + `portbound.json` and splices it into `.local/gist-verify/CERTIFICATE.md`                    |
-| `measure.zig`              | **Layer B′** — `gist-portbound`: times the same drift-guarded probes natively under the PMU (`bench/harness/pmu.zig`), writing `portbound.json` (measured cyc/byte + cyc/step; fail-closed without root) |
+| `report.py`                | renders the `## Layer B` markdown section (static + the Layer B′ measured subsection) from `portcert.json` + `portbound.json` and splices it into `.gist/CERTIFICATE.md`                    |
+| `measure.zig`              | **Layer B′** — `gist-portbound`: times the same drift-guarded probes natively under the PMU (`bench/apparatus/harness/pmu.zig`), writing `portbound.json` (measured cyc/byte + cyc/step; fail-closed without root) |
 | `probes/simd_contains.zig` | byte-faithful copy of the hot loop in [`../../../src/kernel/scan/simd.zig`](../../../src/kernel/scan/simd.zig)'s `contains` — throughput-bound                                                                 |
 | `probes/dfa_step.zig`      | the **classed** DFA recurrence — `s = trans_in[s + class[b]]`, 3 loads/byte, the layout every non-document DFA consumer still walks — latency-bound                                                       |
 | `probes/dfa_mirror.zig`    | the **byte-indexed** recurrence — `s = trans_in[s + b]` over the `Dfa.Wide` mirror that [`../../../src/kernel/regex/linear/dfa/dfa.zig`](../../../src/kernel/regex/linear/dfa/dfa.zig)'s `docMatch` steps, 2 loads/byte — latency-bound |
@@ -60,9 +60,14 @@ while every other consumer steps the classed tables, so bounding one would leave
 the other undescribed. Running both was also the cheapest way to ask *what kind*
 of win the mirror is — and the answer was not the obvious one:
 
-- **Measured (Layer B′), the two are a wash**: 4.59 ns/step classed against
-  4.62 ns/step mirrored on an M4 Max. Deleting a load per byte bought nothing
-  here.
+- **Measured (Layer B′), the two are a wash** — the classed and mirrored rows
+  land within a percent of each other, well inside run-to-run spread, so
+  deleting a load per byte bought nothing here. The two rows are what say so;
+  read them out of your own `portbound.json` rather than from here. This bullet
+  used to quote a fixed pair of ns/step figures, and by the time anyone checked
+  they were off by more than 3× against the artifact on disk — the same probes
+  re-timed on a different working set. The wash is the durable finding; the
+  digits were a snapshot of one run pretending to be the claim.
 - **Because the deleted load was never on the critical path.** `class[b]`
   depends on the document byte, not on `s`, so it issues early and retires
   under the transition load's latency. The loop-carried chain is
@@ -102,7 +107,7 @@ not a re-derivation), so a silent divergence between the probe and the
 production loop fails `zig build test` loudly instead of shipping a stale
 certificate.
 
-## Layer B′ — port bound, measured on this machine (the sudo rung)
+## Layer B′ — port bound, measured on this machine
 
 The static leg is honest about its gap: it bounds _reference_ cores because
 LLVM models no Apple core (below). `measure.zig` closes the gap empirically —
@@ -122,11 +127,16 @@ loop; ports bind, memory never does), and reports:
 Provenance is stamped in `portbound.json` and the spliced section: CPU brand
 (`machdep.cpu.brand_string`), the P-core note (USER_INTERACTIVE QoS request
 plus the _measured_ effective GHz, which itself tells a P-core from an
-E-core), and the PMU source. **Fail-closed:** without root the PMU is
-unavailable (xnu gates `kpc`), so the run records wall-clock ns only and the
-certificate says _"cycles/byte: cross-checked (reference cores), NOT measured
-on this machine"_ — it never converts wall-clock to cycles via an assumed
-frequency.
+E-core), and the PMU source. **Fail-closed:** when no cycle counter opens the
+run records wall-clock ns only and the certificate says _"cycles/byte:
+cross-checked (reference cores), NOT measured on this machine"_ — it never
+converts wall-clock to cycles via an assumed frequency. The report names the
+meter that refused rather than asserting a cause; it used to say "kperf needs
+root", which reads an unprivileged refusal as a `sudo` problem and sends the
+operator up a rung that cannot help. **Root is not what buys cycles here:**
+`pmu.zig`'s unprivileged `thread_selfcounts` tier supplies retired cycles and
+instructions to a plain `zig build portbound`, and root only adds kperf's
+configurable events, which this lane never requests.
 
 ## How to run
 
@@ -135,19 +145,23 @@ cd <irregex-repo-root>
 bench/bounds/port/mca.sh                # static leg: portcert.csv/.json + splice Layer B (+B′ if present)
 ITERS=200 bench/bounds/port/mca.sh      # more llvm-mca simulation iterations
 
-# Layer B′ — measured on this machine:
-zig build -Doptimize=ReleaseFast portbound         # wall-clock only (labels cycles NOT measured)
-cd ../../..                                        # the binary resolves .local/ at the CWD — run from repo root
-sudo zig-out/bin/gist-portbound  # measured cycles (kpc is root-gated)
-bench/bounds/port/mca.sh       # re-splice: the measured subsection lands in the cert
+# Layer B′ — measured on this machine (unprivileged: thread_selfcounts):
+zig build -Doptimize=ReleaseFast portbound   # measures cycles; no sudo needed
+sudo zig-out/bin/gist-portbound              # only adds kperf's configurable events
+bench/bounds/port/mca.sh                     # re-splice: the measured subsection lands in the cert
 ```
 
+The runner resolves its artifact directory against the CWD, so stay at the repo
+root. `portbound.json`'s `meter` field names which tier produced the numbers —
+that is what to read before believing a cycles/byte figure, and what to read
+when there isn't one.
+
 `CERT_OUT=/path/to/bundle` targets an isolated certificate directory; otherwise
-the script uses the repo's `.local/gist-verify/`.
+the script uses the repo's `.gist/`.
 
 Install `llvm-mca` opt-in with `brew install llvm` (lands at
 `$(brew --prefix llvm)/bin/llvm-mca`). Missing `llvm-mca` or `zig` degrades to
-a documented skip (exit 0), never a failure — mirroring `bench/harness/pmu.zig`'s
+a documented skip (exit 0), never a failure — mirroring `bench/apparatus/harness/pmu.zig`'s
 "never fail the run" discipline; `gist-portbound` degrades the same way
 (wall-clock + a loud NOT-measured label instead of a crash).
 

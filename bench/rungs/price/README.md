@@ -43,7 +43,7 @@ doc_radar:
 
 # bench/rungs/price — the currency the auction settles in
 
-`zig build ladder-price` (from ``). Default runs `verify`
+`zig build ladder-price` (from the repository root). Default runs `verify`
 and `regret`; `mint` is opt-in.
 
 The ladder's auction was structurally real and numerically invented. Every

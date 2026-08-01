@@ -31,7 +31,7 @@ doc_radar:
         - "--no-index"
 ---
 
-# bench/sieve — measuring what a filter declines to read
+# bench/rungs/sieve — measuring what a filter declines to read
 
 This folder measures **what a filter declines to read**, from both ends of the
 pipeline and on both tiers. `bench.zig` proves the quotient sieve's per-position
@@ -48,7 +48,7 @@ proved correct.
 
 # The quotient sieve's production proof harness
 
-`zig build sieve` (from ``) links the **real** engine and
+`zig build sieve` (from the repository root) links the **real** engine and
 the **real** rung, then walks the **real** host corpus. The baseline is the
 shipped `Dfa.docMatch`, not a reimplementation, and both arms run in the same
 process over the same bytes so the ratio survives a box carrying ten coworker
@@ -142,7 +142,7 @@ in the discipline of the crest Sieve Theorem (`research/crest/PROOF.md`).
 
 ## Two slates, reported separately
 
-`bench/harness/probes.zig` — the certificate's own twelve classes — is reported
+`bench/apparatus/harness/probes.zig` — the certificate's own twelve classes — is reported
 first and unedited, so nobody can call it chosen to flatter gist. But it was
 designed to span _scan_ cost (Layers A and D), and on the **planner** axis eight
 of its twelve rows cannot separate two planners at all: four are single-literal,
@@ -158,47 +158,53 @@ heading, never merged into the twelve.
 
 ## Running it
 
-All paths below are relative to this package (this repo); the
-artifacts land under the repo-root `.local/gist-verify/` the other layers
-already write to, which is `../../../.local/gist-verify` from here.
+All paths below are relative to the repository root; the artifacts land under the
+repo-root `.gist/` the other layers already write to.
 
 ```bash
 cd <irregex-repo-root>
-(cd ../../.. && install the sibling `gist` package)   # gist's index over the shared corpus
+# install the sibling `gist` package first — its index is the shared corpus
 
 # csearch's index over the byte-identical file list, then its own formula per probe
-python3 bench/sieve/csearch_plan.py \
-  --probes bench/harness/probes.zig --probes bench/sieve/stress.zig \
-  --index ../../../.local/gist-compete/csearch.idx \
-  --out ../../../.local/gist-verify/indexq_csearch.plan
+python3 bench/rungs/sieve/csearch_plan.py \
+  --probes bench/apparatus/harness/probes.zig --probes bench/rungs/sieve/stress.zig \
+  --index .local/gist-compete/csearch.idx \
+  --out .gist/indexq_csearch.plan
 
 zig build indexq -Doptimize=ReleaseFast   # selectivity + precision → indexq.tsv
-bash bench/sieve/indexcost.sh             # size / build / peak RSS → indexcost.tsv
+bash bench/rungs/sieve/indexcost.sh       # size / build / peak RSS → indexcost.tsv
 ```
 
 `zig build indexq` runs with the repo root as its cwd (`build.zig` sets it), so
-its `indexq.tsv` is written to `.local/gist-verify/` regardless of where you
+its `indexq.tsv` is written to `.gist/` regardless of where you
 invoked it from.
 
 `indexq` accepts `--cover-class=N`, `--cover-atoms=N`, `--cover-clauses=N` so
 the planner's cost ceilings are a **measured frontier** rather than asserted
 constants; the shipped defaults are the knees of that sweep.
 
-`indexcost.sh` **sources** `bench/races/_compete.sh` (a library, never executed)
-so the fairness contract — csearch indexes gist's exact corpus, the persisted
-`paths.list` — is not re-litigated or duplicated here.
+`indexcost.sh` **sources** the competitor field library (never executed
+directly) so the fairness contract — csearch indexes gist's exact corpus, the
+persisted `paths.list` — is not re-litigated or duplicated here. That library
+went to the sibling `gist` package with the rest of the dominance lane, so this
+script does not currently resolve it; see the note under "Splicing the
+certificate".
 
 ## Splicing the certificate
 
+The splicer went to the sibling `gist` package along with the rest of the
+certificate lane, so splicing this rung's numbers is a cross-package step and
+needs a `gist` checkout beside this one:
+
 ```bash
-python3 bench/certify/certify_indexq_report.py \
-  --certificate bench/certify/artifact/CERTIFICATE.md \
-  --tsv ../../../.local/gist-verify/indexq.tsv \
-  --cost-tsv ../../../.local/gist-verify/indexcost.tsv \
+python3 ../gist/bench/certificate/report/indexq.py \
+  --certificate ../gist/bench/certificate/artifact/CERTIFICATE.md \
+  --tsv .gist/indexq.tsv \
+  --cost-tsv .gist/indexcost.tsv \
   --machine "$(uname -m)" --zig "$(zig version)"
 ```
 
-`certify_layers.sh` wires it with its own `${OUT}` / `${CERT}` variables, which
+The mint script wires it with its own `${OUT}` / `${CERT}` variables, which
 already resolve to the same two files.
 
 The reporter refuses to splice a win it cannot substantiate. It exits non-zero,

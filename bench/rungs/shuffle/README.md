@@ -14,7 +14,7 @@ doc_radar:
 
 # bench/shuffle — the composition rung's production proof harness
 
-`zig build compose-rung` (from ``) links the **real**
+`zig build compose-rung` (from the repository root) links the **real**
 engine and the **real** rung, so the baseline is the shipped `Dfa.docMatch`
 rather than a reimplementation of it. Both arms run over the same buffer, in the
 same process, **interleaved round by round** and reported min-of-N — on a box

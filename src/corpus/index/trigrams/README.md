@@ -71,7 +71,7 @@ class runs) lives in [`../crest/`](../crest).
 ## Invariants
 
 - **Accelerator only** — indexed ≡ unindexed output
-  (`bench/gates/index_elision_parity.sh`).
+  (`gist/bench/conformance/gates/parity/index_elision_parity.sh`).
 - Anchor stamped **before** corpus read; missing / unreadable timestamps →
   live-read; missing anchor seeds every doc fresh (fail closed).
 - Equality at the anchor boundary is live (`mtime >= anchor` or

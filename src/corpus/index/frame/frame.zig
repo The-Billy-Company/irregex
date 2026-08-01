@@ -392,8 +392,8 @@ test "the tree binding admits only the tree it names" {
     try Dir.cwd().writeFile(io, .{ .sub_path = binding, .data = root });
     try t.expect(!bindingHolds(binding));
 
-    // A PREFIX of the live tree must not pass either: `/Users/x/billy-old`
-    // and `/Users/x/billy` are different checkouts, and every artifact in one
+    // A PREFIX of the live tree must not pass either: `/Users/x/repo-old`
+    // and `/Users/x/repo` are different checkouts, and every artifact in one
     // names files by a path that resolves inside the other.
     try Dir.cwd().writeFile(io, .{ .sub_path = binding, .data = here[0 .. here.len - 1] });
     try t.expect(!bindingHolds(binding));

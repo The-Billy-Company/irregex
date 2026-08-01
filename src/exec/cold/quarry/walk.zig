@@ -74,7 +74,7 @@ pub const Candidate = struct { rel: []const u8, scope: []const u8, disk: []const
 /// them, since they build from this same hidden/ignore-excluding walk. A file
 /// under a PRUNED hidden/ignored directory never reaches this list, because the
 /// walk stops descending at the directory (rg/gist never un-hide *into* a hidden
-/// or ignored dir — proven in `bench/gates/index_elision_parity.sh`), so it
+/// or ignored dir — proven in `gist/bench/conformance/gates/parity/index_elision_parity.sh`), so it
 /// captures precisely the reachable un-hide/un-ignore candidates and nothing
 /// more. Consumed by the warm session (`session/warm/resident.zig`) to keep
 /// `resident == gist --no-index == rg` for `-t`/`-g`. `rel` is owned by the

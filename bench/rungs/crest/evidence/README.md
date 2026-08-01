@@ -12,7 +12,6 @@ From the repository root:
 # Exploratory proof; raw samples and matcher differentials land in .local.
 cd <irregex-repo-root>
 zig build crest -- --runs 20 --warmup 3
-cd ../../..
 
 # Publication is stricter: clean tree, pinned HEAD, real benchmark + Zig tests.
 python3 bench/rungs/crest/evidence/crest_evidence.py package

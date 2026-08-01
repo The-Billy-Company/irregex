@@ -64,6 +64,6 @@ purpose: `--files-without-match` forbids the whole-file gate but still permits
 index prefiltering, so folding them together would be a silent behavior change.
 Each says why in its own doc comment.
 
-Proved by the rgsuite differential harness (`bench/rgsuite/`) and
-[`bench/gates/index_elision_parity.sh`](../../../../bench/conformance/gates/parity/index_elision_parity.sh):
-a gate may change speed, never results.
+Proved by the rgsuite differential harness (`gist/bench/conformance/rgsuite/`)
+and `gist/bench/conformance/gates/parity/index_elision_parity.sh`: a gate may
+change speed, never results.

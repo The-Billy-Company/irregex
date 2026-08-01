@@ -50,5 +50,5 @@ it lives here on disk. Kinship artifacts (atlas / frag) live in `relate`.
 
 > Index is an accelerator, not an authority.
 
-`bench/gates/index_elision_parity.sh` asserts indexed ≡ unindexed byte-exact
+`gist/bench/conformance/gates/parity/index_elision_parity.sh` asserts indexed ≡ unindexed byte-exact
 line multisets and exit codes.

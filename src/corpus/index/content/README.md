@@ -34,7 +34,7 @@ proves it: `mtime < anchor AND ctime < anchor` (the conservative
 never held (new since the build, binary, over cap, outside the indexed roots) —
 misses the lookup and is read live, so the walk's answer is the walk's answer
 whether or not a shard is loaded. This is proven continuously by the
-`shard-*` / `shard-freshness` cases in `bench/gates/index_elision_parity.sh`,
+`shard-*` / `shard-freshness` cases in `gist/bench/conformance/gates/parity/index_elision_parity.sh`,
 which diff the shard-served run against `--no-index` (pure live walk).
 
 Build: `gist index` (whole-CWD indexed corpora only), self-anchored — its own

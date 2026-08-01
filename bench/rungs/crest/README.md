@@ -13,7 +13,7 @@ doc_radar:
 
 # bench/crest — the Crest sieve's production proof harness
 
-`zig build crest` (from ``) links the real engine, walks
+`zig build crest` (from the repository root) links the real engine, walks
 the real host corpus, and proves the **crest sieve** (`src/kernel/math/crest.zig`,
 theory in `research/crest/PROOF.md`) fail-closed:
 

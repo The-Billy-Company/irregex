@@ -38,7 +38,7 @@ pub const WalkFault = Dir.OpenError || Dir.Iterator.Error || Dir.SelectiveWalker
 /// mid-walk. THE one rendering, shared by both engines' `reportWalkError`, so a
 /// directory neither could enter reads byte-identically. The differential
 /// harness keys on the errno phrase and the exit class (never the `rg:`/`gist:`
-/// prefix or the number — `bench/rgsuite/run.py`), so the phrases are contract.
+/// prefix or the number — `gist/bench/conformance/rgsuite/run.py`), so the phrases are contract.
 ///
 /// Those phrases live in `fault.pathNoteOf`, whose `pathNote` switch is
 /// exhaustive over `fault.Corpus` (fault-channel law 2) and which falls through to the

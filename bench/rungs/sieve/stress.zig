@@ -1,5 +1,5 @@
 //! gist bench — Layer L's **planner-stress slate**, an extension of the shared
-//! probe registry (`bench/harness/probes.zig`) used by `indexq.zig` alone.
+//! probe registry (`bench/apparatus/harness/probes.zig`) used by `indexq.zig` alone.
 //!
 //! Why a second slate exists. The shared registry is the certificate's own
 //! twelve classes, and Layer L reports every one of them first — it is the

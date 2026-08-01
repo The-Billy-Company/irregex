@@ -98,7 +98,7 @@ fn nextSequence(b: []const u8) struct { len: usize, ok: bool } {
 /// therefore what ripgrep's `-E utf-8` prints where the file's bytes are not
 /// actually UTF-8. Without this an explicit UTF-8 label was a pure passthrough
 /// and gist emitted the raw invalid bytes where rg emitted `�`; the divergence
-/// was found differentially by `bench/rgsuite/fuzz.py` on a corpus of lone
+/// was found differentially by `gist/bench/conformance/rgsuite/fuzz.py` on a corpus of lone
 /// continuation bytes.
 ///
 /// Borrows when the bytes are already valid — which is the overwhelming case for

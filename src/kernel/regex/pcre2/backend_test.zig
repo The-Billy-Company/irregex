@@ -316,7 +316,7 @@ test "required-literal: lookaround/backreferences prefilter soundly (the PCRE-ra
     // lookaround itself is zero-width, so the surrounding literal is mandatory in
     // every match). If this regresses, gist silently loses its prefilter edge —
     // or worse, over-claims and elides a real match. These are the exact slate
-    // patterns from bench/races/pcre_headtohead.sh.
+    // patterns from gist/bench/dominance/races/pcre.sh.
     try expectRequired("func\\s+\\w+(?=\\()", "func"); // lookahead: "func" required
     try expectRequired("import\\s+(?!type)", "import"); // neg-lookahead: "import"
     try expectRequired("(?<=return\\s)nil", "nil"); // lookbehind: only "nil" is consumed

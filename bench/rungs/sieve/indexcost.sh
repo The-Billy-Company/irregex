@@ -5,15 +5,15 @@
 # Selectivity is only half of "is this index better". An index that admits
 # fewer candidate bytes by being four times the size and four times slower to
 # build has not won anything, so Layer L is fail-closed on cost as well as on
-# candidates (`certify_indexq_report.py` refuses to splice a win outside the
-# declared cost envelope). This script measures the cost half.
+# candidates (`gist/bench/certificate/report/indexq.py` refuses to splice a win
+# outside the declared cost envelope). This script measures the cost half.
 #
-# Fairness is not re-litigated here: `bench/races/_compete.sh` already owns the
-# contract that csearch indexes gist's EXACT corpus — the persisted
-# `paths.list`, the doc→path table gist's own indexer emitted — so the two
-# indexes cover byte-identical files. This script SOURCES that file (it is a
-# library, never executed) and reuses its paths and its `cindex` invocation
-# verbatim rather than keeping a second, driftable copy.
+# Fairness is not re-litigated here: `gist/bench/dominance/races/field.sh`
+# already owns the contract that csearch indexes gist's EXACT corpus — the
+# persisted `paths.list`, the doc→path table gist's own indexer emitted — so
+# the two indexes cover byte-identical files. This script SOURCES that file
+# (it is a library, never executed) and reuses its paths and its `cindex`
+# invocation verbatim rather than keeping a second, driftable copy.
 #
 # Emits a two-row TSV (`indexcost.tsv`) that the reporter reads. Peak RSS comes
 # from the kernel via `/usr/bin/time` (`-l` on BSD/macOS, `-v` on GNU), in KiB
