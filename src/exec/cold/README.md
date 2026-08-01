@@ -2,7 +2,7 @@
 doc_radar:
   sentinels:
     - description: "serial engine remains the commands.search re-export"
-      file: pkg/kernels/irregex/src/root.zig
+      file: src/root.zig
       contains: 'pub const search = @import("exec/cold/engine/serial.zig");'
 ---
 
@@ -38,13 +38,13 @@ face's own `Emitter` / `read/binary.zig` so warm bytes cannot drift from cold.
 
 The first six are the pipeline in order: **argv → writ → quarry → read → emit**,
 with `engine/` choosing which scheduler walks it
-([ADR-376](../../../../../../../docs/architecture/3-decisions/376-cold-engine-deep-modules.md)).
+(the cold-engine deep-module split).
 `view/` sits beside that pipeline rather than in it — a lens branches before the
 certified rg path and finishes the run itself, which is exactly what keeps the
 parity certificate meaningful as gist grows native shapes.
 
 Corpus admission and path vocabulary are shared below the CLI in
-[`corpus/tree/`](../../../corpus/tree) and [`corpus/scope/`](../../../corpus/scope).
+[`corpus/tree/`](../../corpus/tree) and [`corpus/scope/`](../../corpus/scope).
 
 Named for what each module _is_, not to mirror ripgrep's source layout. The
 rgsuite certificate (`bench/rgsuite/`) is the parity gate for this face.

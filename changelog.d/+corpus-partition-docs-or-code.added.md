@@ -40,7 +40,7 @@ basename-only, so a `docs/` rule is inexpressible there even by hand
 counterpart; zoekt links go-enry's `Prose`/`Data` classifiers and never calls them.
 
 Both halves are permanently gated. `partition_parity.sh` proves the set
-identities over the live tree on every `make test-gist` — totality, disjointness,
+identities over the live tree on every `zig build test` — totality, disjointness,
 each `--no-` form as an exact complement, `-t`/`-T` alias parity, index and
 resident session as acceleration only, no genus un-hiding a path the walk
 refused, and the location rule still rescuing extensionless documents.

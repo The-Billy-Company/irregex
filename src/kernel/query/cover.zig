@@ -1,5 +1,5 @@
 //! gist — the **conjunctive cover**: lowering a parsed pattern to a boolean
-//! query over trigrams that the index may soundly demand (ADR-352, Layer L).
+//! query over trigrams that the index may soundly demand ( Layer L).
 //!
 //! `prefilter.zig` answers the *one-literal* question: which single literal (or
 //! single alternation cover) is mandatory? That question throws away most of

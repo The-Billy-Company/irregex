@@ -29,7 +29,7 @@ const B64 = bits.Field(u64);
 /// should judge instead.
 pub const max_states: u32 = 4096;
 
-// File-private control flow (ADR-373): converted to `.declined` at the
+// File-private control flow (the fault-channel taxonomy): converted to `.declined` at the
 // symbolic module boundary — not members of the declared fault taxonomy.
 const Decline = error{TooLarge};
 const Error = Decline || std.mem.Allocator.Error;

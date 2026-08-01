@@ -72,7 +72,7 @@ from matrix import (
 )
 
 HERE = Path(__file__).resolve().parent
-PKG = HERE.parent.parent.parent  # pkg/kernels/irregex
+PKG = HERE.parent.parent.parent  # this repo root
 ARTIFACT = HERE / "artifact"
 RG_MATRIX = HERE / "ripgrep-matrix.json"
 

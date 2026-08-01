@@ -36,7 +36,7 @@ have cindex || {
   exit 1
 }
 [[ -x "${GIST_BIN}" ]] || {
-  echo "indexcost: no ${GIST_BIN} — run \`make install-gist\` first" >&2
+  echo "indexcost: no ${GIST_BIN} — run \`install the sibling `gist` package\` first" >&2
   exit 1
 }
 

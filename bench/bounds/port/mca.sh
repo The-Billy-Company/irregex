@@ -32,9 +32,10 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-KERNEL="$(cd "${HERE}/../../.." && pwd)" # port/ → bounds/ → bench/ → gist root
-REPO="$(cd "${KERNEL}/../../.." && pwd)"
-OUT="${CERT_OUT:-${REPO}/.local/gist-verify}" # shared with Layer A
+# shellcheck source=../../apparatus/roots.sh
+source "${HERE}/../../apparatus/roots.sh"
+gist_resolve_roots "${HERE}" || exit 1
+OUT="${CERT_OUT:-${GIST_VERIFY}}" # shared with Layer A
 WORK="${OUT}/portcert"                        # our emitted .s + llvm-mca logs
 CERT="${OUT}/CERTIFICATE.md"
 CSV="${OUT}/portcert.csv"
@@ -205,8 +206,8 @@ if [[ -f "${OUT}/portbound.json" ]]; then
 else
   cat << 'EOF'
 Layer B′ (measured on this machine): not yet run. Mint it with
-  (cd pkg/kernels/irregex && zig build -Doptimize=ReleaseFast portbound)  # wall-clock
-  sudo pkg/kernels/irregex/zig-out/bin/gist-portbound                     # cycles (kpc is root-gated; run from repo root)
+  (cd <irregex-repo-root> && zig build -Doptimize=ReleaseFast portbound)  # wall-clock
+  sudo zig-out/bin/gist-portbound                     # cycles (kpc is root-gated; run from repo root)
 then re-run this script to splice the measured subsection.
 EOF
 fi

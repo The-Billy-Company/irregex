@@ -1,5 +1,4 @@
-//! gist resident session — the macOS `kqueue` event backend (ADR-352 rung 2.5,
-//! ADR-372).
+//! gist resident session — the macOS `kqueue` event backend.
 //!
 //! Raw syscalls, no frameworks: the watcher costs the cold one-shot search
 //! nothing, where the FSEvents stream this replaced needed CoreServices +
@@ -56,7 +55,7 @@ fn wallNowNs() ?i128 {
 /// `Seqlock.arm` only marks a watcher live, `clean` is published solely by
 /// a COMPLETED reconcile that no event raced, and `full_pass_done` forces
 /// the first pass after arming to be the full walk. So a change that races
-/// registration is caught by that walk (ADR-372).
+/// registration is caught by that walk.
 pub fn startKqueue(self: anytype) void {
     if (comptime !is_macos) return;
     self.budget = budget.watchBudget();

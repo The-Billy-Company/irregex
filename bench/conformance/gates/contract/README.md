@@ -3,7 +3,7 @@
 Fail-closed **behavioral-contract** gates — the invariants gist promises callers
 that aren't a direct `rg` diff. `streams.sh` and `fail_closed.sh` source the
 shared field registry at
-[`../../../dominance/races/field.sh`](../../../dominance/races/field.sh); the
+`gist/bench/dominance/races/field.sh`; the
 rest are self-contained.
 
 | File                  | Contract                                                                                                                                                                                                      |
@@ -15,7 +15,7 @@ rest are self-contained.
 | `ci_order.sh`         | **orchestration** — correctness gates run first, performance (certificate + ratio floors) second                                                                                                              |
 
 ```bash
-cd pkg/kernels/irregex
+cd <irregex-repo-root>
 bench/conformance/gates/contract/streams.sh
 bench/conformance/gates/contract/enum_determinism.sh
 ```

@@ -11,7 +11,7 @@
 //!      unlock. `tryRead` / `tryWrite` return the same guard or null.
 //!
 //!   2. **`readReconciled`** — the read-mostly "answer over an immutable
-//!      snapshot, refresh on a miss" dance (ADR-352 rung 2.5): enter shared and,
+//!      snapshot, refresh on a miss" dance: enter shared and,
 //!      when the snapshot is already fresh, answer under the shared lock so
 //!      readers overlap; otherwise drop shared, take EXCLUSIVE, refresh, then
 //!      **downgrade** back to shared to answer. This is textbook double-checked

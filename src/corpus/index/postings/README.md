@@ -2,10 +2,10 @@
 doc_radar:
   sentinels:
     - description: "postings stay the LEB128 + CSR blob codecs"
-      file: pkg/kernels/irregex/src/corpus/index/postings/varint.zig
+      file: src/corpus/index/postings/varint.zig
       contains: ["pub fn encode", "pub fn decode"]
     - description: "trigrams consume the native-endian CSR blob layout"
-      file: pkg/kernels/irregex/src/corpus/index/postings/persisted_blob.zig
+      file: src/corpus/index/postings/persisted_blob.zig
       contains: ["GISTIDX", "pub const MappedRegions", "format_version"]
 ---
 

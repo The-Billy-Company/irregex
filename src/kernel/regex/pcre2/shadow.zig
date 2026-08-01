@@ -40,7 +40,7 @@ const literal_mod = @import("literal.zig");
 /// which is what keeps `try` from ever mistaking a bail for a failure.
 const Err = error{ Bail, OutOfMemory };
 
-/// The rewriter's only declinature (ADR-373 law 1): no containment proof, so
+/// The rewriter's only declinature (fault-channel law 1): no containment proof, so
 /// PCRE2 answers the pattern unrewritten. Both bail paths return this one value.
 const no_shadow: fault.Answer([]u8) = .{ .declined = .unsupported_syntax };
 

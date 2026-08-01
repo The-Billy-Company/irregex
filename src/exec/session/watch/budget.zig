@@ -1,5 +1,4 @@
-//! gist resident session — the macOS watch-descriptor budget (ADR-352 rung 2.5,
-//! ADR-372).
+//! gist resident session — the macOS watch-descriptor budget.
 //!
 //! One question: how many vnode watches may this session hold? The macOS kqueue
 //! backend (`kqueue.zig`) pays one descriptor per watched vnode, so the answer
@@ -125,7 +124,7 @@ test "budget: a ceiling at or under the reserve arms nothing (fail-closed)" {
 
 test "budget: the reported rlimit is not the ceiling macOS enforces" {
     const t = std.testing;
-    // The measured gap this clamp exists for, on the machine ADR-372 was built
+    // The measured gap this clamp exists for, on the machine this barrier was built
     // on: a 1,048,575 soft `RLIMIT_NOFILE` against `kern.maxfilesperproc` of
     // 245,760 — the rlimit alone over-states the room by more than 4×.
     try t.expect(budgetFrom(1_048_575) > 4 * lessReserve(245_760));

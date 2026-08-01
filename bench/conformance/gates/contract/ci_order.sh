@@ -167,7 +167,7 @@ run "CLI-shape matrix floors (shapes.py gate)" \
 # below observed. Blocking under --gate. No external tool needed, so it runs
 # before the hyperfine/rg field check.
 run "flag hot-path floors (flagbench --gate)" \
-  zig build flagbench -- pkg/kernels/irregex/src --gate
+  zig build flagbench -- src --gate
 missing=""
 for t in hyperfine csearch zoekt rg; do command -v "${t}" > /dev/null || missing="${missing} ${t}"; done
 if [[ -n "${missing}" ]]; then

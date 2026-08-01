@@ -2,7 +2,7 @@
 doc_radar:
   sentinels:
     - description: "rank stays weighted RRF over intrinsic signals"
-      file: pkg/kernels/irregex/src/kernel/rank/rank.zig
+      file: src/kernel/rank/rank.zig
       contains: "Reciprocal"
 ---
 

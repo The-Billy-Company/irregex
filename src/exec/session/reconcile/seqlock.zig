@@ -1,4 +1,4 @@
-//! The freshness seqlock every resident session shares (ADR-352 rung 2.5).
+//! The freshness seqlock every resident session shares.
 //!
 //! Both warm engines — gist's `ResidentSession` (mirrors corpus bytes) and
 //! relate's `RetrievalSession` (caches an anchor overlay) — face the identical

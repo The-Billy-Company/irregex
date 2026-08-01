@@ -36,7 +36,7 @@ const reduce = @import("../automata/reduce.zig");
 /// the byte path would have refused to hold.
 pub const max_states: u32 = 4096;
 
-// File-private control flow (ADR-373): same names as decoder's set so Zig
+// File-private control flow (the fault-channel taxonomy): same names as decoder's set so Zig
 // unifies them; converted to `.declined` at the symbolic module boundary.
 const Decline = error{ TooLarge, Malformed };
 const Error = Decline || std.mem.Allocator.Error;

@@ -21,7 +21,7 @@ differentials — the word-boundary Unicode quit path at 320 s, its ASCII
 counterpart at 160 s, and the two symbolic differentials at 101 s and 88 s —
 costing 669 s of the suite's 1059 s. They carry explicit coverage floors, so
 their sweeps stay exactly as they were; `build.zig` names them as `deep_tests`
-and `zig build test-quick` (`make test-gist-quick`) runs everything else. Full
+and `zig build test-quick` (`zig build test-quick`) runs everything else. Full
 `zig build test` is unchanged and remains what a push is judged by; the quick
 tier is a deliberately weaker proof and says so. A `deep_tests` entry that stops
 matching is reported by name and only ever makes the quick tier slower.

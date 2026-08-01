@@ -66,9 +66,9 @@ MEASURED_HEADER = "### Layer B′ — port bound, measured on this machine"
 
 # The rung an operator climbs to mint the measured-on-this-machine bound.
 MEASURED_RUNG = (
-    "`cd pkg/kernels/irregex && zig build -Doptimize=ReleaseFast portbound` "
+    "`cd <irregex-repo-root> && zig build -Doptimize=ReleaseFast portbound` "
     "(wall-clock), then from the repo root "
-    "`sudo pkg/kernels/irregex/zig-out/bin/gist-portbound` for cycles (xnu gates "
+    "`sudo zig-out/bin/gist-portbound` for cycles (xnu gates "
     "the PMU to root), then re-run `bench/portcert/portcert.sh` to splice."
 )
 
@@ -251,7 +251,7 @@ def main() -> int:
     if portbound.exists():
         try:
             measured = json.loads(portbound.read_text())
-        except json.JSONDecodeError, OSError:
+        except (json.JSONDecodeError, OSError):
             measured = None
     section = render(doc, measured)
 

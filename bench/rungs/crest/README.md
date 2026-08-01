@@ -1,11 +1,11 @@
 ---
 doc_radar:
   paths_exist:
-    - pkg/kernels/irregex/bench/rungs/crest/bench.zig
-    - pkg/kernels/irregex/src/kernel/math/crest.zig
-    - pkg/kernels/irregex/research/crest/PROOF.md
+    - bench/rungs/crest/bench.zig
+    - src/kernel/math/crest.zig
+    - research/crest/PROOF.md
   sentinels:
-    - file: pkg/kernels/irregex/bench/rungs/crest/bench.zig
+    - file: bench/rungs/crest/bench.zig
       contains:
         - "SOUNDNESS VIOLATION"
         - "randomSoundness"
@@ -13,8 +13,8 @@ doc_radar:
 
 # bench/crest — the Crest sieve's production proof harness
 
-`zig build crest` (from `pkg/kernels/irregex/`) links the real engine, walks
-the real Billy corpus, and proves the **crest sieve** (`src/kernel/math/crest.zig`,
+`zig build crest` (from ``) links the real engine, walks
+the real host corpus, and proves the **crest sieve** (`src/kernel/math/crest.zig`,
 theory in `research/crest/PROOF.md`) fail-closed:
 
 1. **Soundness** — for every file, matched ⇒ ¬pruned, against the production

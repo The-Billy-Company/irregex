@@ -5,7 +5,7 @@
 //! through the engine's own seal (`gist.regex_parabix`), so both arms of every
 //! race are production code. Four things it establishes, each fail-closed:
 //!
-//!   1. **Agreement, over the real Billy corpus.** Every pattern is run over
+//!   1. **Agreement, over the real host corpus.** Every pattern is run over
 //!      every corpus document by both the shipped ladder and this rung; a single
 //!      disagreement exits non-zero. (The exhaustive proof is the randomized
 //!      differential against the Pike VM in `parabix_test.zig`; this is the same

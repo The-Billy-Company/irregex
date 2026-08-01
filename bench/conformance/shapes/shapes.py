@@ -49,8 +49,8 @@ import sys
 import tomllib
 
 HERE = Path(__file__).resolve().parent
-KERNEL = HERE.parents[2]
-REPO = KERNEL.parents[2]
+KERNEL = HERE.parents[2]  # shapes → conformance → bench → repo
+REPO = KERNEL
 MATRIX = HERE / "shapes.toml"
 BASELINE = HERE / "baseline.json"
 CSV = HERE / "shapes.csv"
@@ -312,7 +312,7 @@ def _render_cert(rows: list[dict]) -> None:
     """Human-readable per-shape certificate (measured wins + the declared loss)."""
     g = {"win": "✅ win", "parity": "≈ parity", "loss": "❌ loss"}
     out = ["# gist CLI-shape admission matrix — measured", "",
-           "_gist cold-indexed vs ripgrep over the six Billy source roots. A WIN needs "
+           "_gist cold-indexed vs ripgrep over the six host source roots. A WIN needs "
            f"a lower median **and** Mann-Whitney p < {S.ALPHA:.2f} (fail-closed). Parity is "
            "correctness-proven separately (`matrix.py parity`: gist-idx == gist-noidx == rg). "
            "Every shape is a declared win — the former `-U` losses fell to the parallel "

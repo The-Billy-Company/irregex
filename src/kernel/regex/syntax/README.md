@@ -2,28 +2,28 @@
 doc_radar:
   counts:
     - description: "the syntax plane: the facade, five implementation files behind it, the shared \\w test, and one test file"
-      glob: pkg/kernels/irregex/src/kernel/regex/syntax/*.zig
+      glob: src/kernel/regex/syntax/*.zig
       unit: files
       equals: 9
   sentinels:
     - description: "syntax.zig is a front door only — the vocabulary and the parser are defined behind it"
-      file: pkg/kernels/irregex/src/kernel/regex/syntax/syntax.zig
+      file: src/kernel/regex/syntax/syntax.zig
       contains: ["pub const Parser", "pub const Node", "pub const foldCaseAst"]
       absent: ["pub const Node = union", "pub const Parser = struct"]
     - description: "the vocabulary every downstream stage is written against lives in one file"
-      file: pkg/kernels/irregex/src/kernel/regex/syntax/tree.zig
+      file: src/kernel/regex/syntax/tree.zig
       contains: ["pub const ByteSet", "pub const Node", "pub const State", "pub const ParseError"]
     - description: "a word assertion is a 4-bit truth table, and the algebra over it is dependency-free"
-      file: pkg/kernels/irregex/src/kernel/regex/syntax/assertion.zig
+      file: src/kernel/regex/syntax/assertion.zig
       contains: ["pub const Word", "pub const Sides", "pub const mask"]
     - description: "scalar-range accumulation is parse-time scratch, and case folding rewrites the finished tree"
-      file: pkg/kernels/irregex/src/kernel/regex/syntax/scalars.zig
+      file: src/kernel/regex/syntax/scalars.zig
       contains: ["pub const ScalarSet", "pub fn foldCaseAst"]
     - description: "the recursive descent keeps its four mutually-recursive levels together"
-      file: pkg/kernels/irregex/src/kernel/regex/syntax/parser.zig
+      file: src/kernel/regex/syntax/parser.zig
       contains: ["pub const Parser = struct", "pub fn parseAlt", "caseless: bool"]
     - description: "a negated class folds before it complements, and each mode complements in its own universe"
-      file: pkg/kernels/irregex/src/kernel/regex/syntax/bracket.zig
+      file: src/kernel/regex/syntax/bracket.zig
       contains: ["fn addComplement", "fn readByteAtom", "const PosixClass"]
 ---
 

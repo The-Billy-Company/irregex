@@ -29,7 +29,7 @@ same corpus and probe set so the columns are directly comparable; what a
 against **zoekt** and **csearch** on a multi-GB corpus.
 
 ```bash
-cd pkg/kernels/irregex
+cd <irregex-repo-root>
 zig build scale -Doptimize=ReleaseFast     # table on stdout + machine-readable TSV
 GIST_SCALE_TRACE=1 zig build scale         # also print the filters each class offers
 ```
@@ -216,7 +216,7 @@ It is fail-closed in three directions, and the third is the unusual one:
 Re-run standalone (`zig build scale` first; it writes into `GIST_DIR`):
 
 ```bash
-cd pkg/kernels/irregex && zig build scale -Doptimize=ReleaseFast
+cd <irregex-repo-root> && zig build scale -Doptimize=ReleaseFast
 python3 bench/certificate/report/scale.py \
   --certificate bench/certificate/artifact/CERTIFICATE.md \
   --tsv ../../../.local/gist-verify/scale_tiers.tsv \

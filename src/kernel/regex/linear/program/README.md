@@ -2,10 +2,10 @@
 doc_radar:
   sentinels:
     - description: "the handle owns immutable state and adopts its behavior from the neighboring folders by name"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/program/core.zig
+      file: src/kernel/regex/linear/program/core.zig
       contains: ["pub const Regex", "pub const compile = lower.compile", "pub const Span = span.Span"]
     - description: "compilation folds before it analyzes, and hands back an owned handle"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/program/lower.zig
+      file: src/kernel/regex/linear/program/lower.zig
       contains: ["pub fn compileOpts", "pub fn freeAlts"]
 ---
 

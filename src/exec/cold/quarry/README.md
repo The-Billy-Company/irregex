@@ -2,17 +2,17 @@
 doc_radar:
   counts:
     - description: "six modules — the walk, what it must read, in what order, from where, what may be skipped, and how a failed descent reads"
-      glob: pkg/kernels/irregex/src/exec/cold/quarry/*.zig
+      glob: src/exec/cold/quarry/*.zig
       equals: 6
   sentinels:
-    - description: "the oracle answers in the success position — a declinature is a routing fact, never a fault (ADR-373 law 1)"
-      file: pkg/kernels/irregex/src/exec/cold/quarry/elide.zig
+    - description: "the oracle answers in the success position — a declinature is a routing fact, never a fault (fault-channel law 1)"
+      file: src/exec/cold/quarry/elide.zig
       contains: ["fault.Answer(Oracle)", "pub fn skip", "const Err = error{"]
     - description: "the parallel engine admits the shared oracle rather than carrying its own"
-      file: pkg/kernels/irregex/src/exec/cold/engine/swarm/swarm.zig
+      file: src/exec/cold/engine/swarm/swarm.zig
       contains: ['@import("../../quarry/elide.zig")', "elide.Lazy"]
-    - description: "the serial read plane shares the oracle's indexed-path primitive; its own IndexSkip freshness proof is what ADR-376 stage 2 folds in"
-      file: pkg/kernels/irregex/src/exec/cold/quarry/intake.zig
+    - description: "the serial read plane shares the oracle's indexed-path primitive; its own IndexSkip freshness proof is what the cold-engine deep-module split stage 2 folds in"
+      file: src/exec/cold/quarry/intake.zig
       contains: ['@import("elide.zig")', "elide.IndexedPaths"]
 ---
 
@@ -22,7 +22,7 @@ The walk decides **which files a query is about**. This package decides **which
 of those files must actually be opened** — and nothing else. Keeping the second
 question out of both engines is what stops "may we skip these bytes?" from being
 answered twice, differently, in two schedulers
-([ADR-376](../../../../../../docs/architecture/3-decisions/376-cold-engine-deep-modules.md)).
+(the cold-engine deep-module split).
 
 | Module       | Role                                                                                                                                             |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -40,7 +40,7 @@ first time.
 Two freshness proofs still coexist here: `elide.Oracle`, which the parallel walk
 consults per file from the bulk listing's own timestamps, and `intake.zig`'s
 `IndexSkip`, which the serial read plane builds over the same indexed-path
-primitive. Folding the second into the first is ADR-376 stage 2 — and having
+primitive. Folding the second into the first is the cold-engine deep-module split stage 2 — and having
 them side by side in one package, rather than one per engine, is the point of
 this package existing before that fold happens.
 
@@ -68,6 +68,6 @@ changed is re-read into the session's overlay, whose documents the sieve never
 sees. The proof above buys back a vector measured by someone else, at another
 time; warm never has to ask.
 
-Gated by [`bench/gates/index_elision_parity.sh`](../../../../../bench/gates/index_elision_parity.sh)
+Gated by [`bench/gates/index_elision_parity.sh`](../../../../bench/conformance/gates/parity/index_elision_parity.sh)
 (indexed and non-indexed runs must produce identical bytes) and
 `indexed_pcre_oracle.py`.

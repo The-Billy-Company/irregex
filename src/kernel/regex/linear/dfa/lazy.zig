@@ -1,6 +1,6 @@
 //! gist — the ON-DEMAND driver of the subset construction: the same automaton
 //! `powerset.zig` builds, except a state is determinized the first time a haystack
-//! actually walks into it. RE2 / rust-`regex`'s hybrid DFA, in Billy's shape.
+//! actually walks into it. RE2 / rust-`regex`'s hybrid DFA, in this package's shape.
 //!
 //! It picks up eager builds declined on cost: a Unicode trie can make every eager
 //! closure expensive while ASCII haystacks visit only a handful of states. Both

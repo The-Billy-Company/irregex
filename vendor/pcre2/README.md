@@ -64,5 +64,5 @@ updates are a clean re-vendor, never a patch to reconcile.
 
 Re-download the next release, verify its signature/sha256, replace `src/` +
 `deps/sljit/` with the same file subset, refresh the pin above and the
-supply-chain ledger entry (`contracts/trust/supply-chain/ledger.toml`), then
-`make build-gist && make test-gist`.
+pin in `build.zig.zon`, then `zig build && zig build test` from this package
+root (and the product packages that depend on it).

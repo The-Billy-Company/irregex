@@ -7,7 +7,7 @@
 //! through the same three-call backend contract every real backend honors
 //! (`dirty_log.armExact()`, `note(abs)` before `markDirty()`),
 //! then asserts the answers against an INDEPENDENT on-disk oracle (a naive
-//! re-read + substring scan that never runs the engine — sins.mdc Sin #2), so
+//! re-read + substring scan that never runs the engine — never bandaid a test), so
 //! a scoped-path bug can't grade its own homework.
 //!
 //! The suite is double-sided:

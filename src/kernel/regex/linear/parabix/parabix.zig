@@ -33,7 +33,7 @@
 //! Parallelism in Regular Expression Matching" (PACT 2014) and the icGrep
 //! system at Simon Fraser University. The transposition, the character-class
 //! bit-plane compilation, and `MatchStar` are all theirs. What is ours is the
-//! Billy-native rebuild — a folding Shannon expansion instead of their
+//! in-tree rebuild — a folding Shannon expansion instead of their
 //! multiplexing CC compiler, a fixed-size allocation-free program that embeds
 //! in `Regex` by value, GPR carry threading chosen for AArch64's lack of
 //! `movemask`, and the compile-time admission gate that keeps their published

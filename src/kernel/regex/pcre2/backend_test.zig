@@ -211,7 +211,7 @@ test "an invalid pattern is a BadPattern with a diagnostic message" {
 // ── JIT ↔ interpreter parity ───────────────────────────────────────────────
 
 test "JIT compiles on this build target" {
-    // The vendored sljit backend covers every arch Billy builds on (x86-64,
+    // The vendored sljit backend covers every arch this package builds on (x86-64,
     // arm64, …), and the `-P` lane exists for rg-parity speed — so a silent
     // drop to the interpreter is a regression we want to see loudly. The
     // interpreter fallback's *correctness* is proven independently below.

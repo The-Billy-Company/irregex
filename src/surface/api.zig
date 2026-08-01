@@ -1,4 +1,4 @@
-//! irregex — the curated Zig-native hosted API (ADR-352 / ADR-363 / ADR-367).
+//! irregex — the curated Zig-native hosted API (exact search, set-shaped primitives, and exact-before-statistical compose).
 //!
 //! `root.zig` re-exports the engine's internal tiers for the CLI, the tests,
 //! and the C-ABI shims. This module is the *product* surface a Zig embedder
@@ -13,7 +13,7 @@
 //!   * `Engine`      — a hosted corpus: roots + allocator + threaded I/O + the
 //!                     warm resident engine, opened once and queried many times.
 //!   * `SearchQuery` — one match-finding intent (the `gist` exact face), the
-//!                     deep option surface `contract/search_api.toml` pins.
+//!                     deep option surface `contract/engine.toml` pins.
 //!   * `Cursor`      — a *pull* result handle: `next()` one owned record at a
 //!                     time, or `nextBatch()` to amortize the call boundary.
 //!                     Records are owned by the cursor (copied off the engine's
@@ -29,7 +29,7 @@
 //! Ownership is explicit end to end: the caller owns the `gpa`; `Engine.open`
 //! and `Engine.search` return heap-stable handles (the threaded-I/O interface
 //! and the cursor arena capture their own addresses); every handle has exactly
-//! one destructor. The two answer channels stay apart (ADR-373 law 1): a
+//! one destructor. The two answer channels stay apart (fault-channel law 1): a
 //! genuine failure is a Zig error (`OutOfMemory`, and only that), while "the
 //! warm tier cannot answer this — run it cold" is a `fault.Answer` declinature,
 //! the hosted spelling of the FFI's `IRREGEX_STALE`. It is never fatal, and
@@ -55,7 +55,7 @@ pub const CancelToken = resident.CancelToken;
 
 /// One match-finding intent — the deep `SearchRequest` surface, minus the
 /// presentation/stats/replace concerns that stay CLI-only. Field semantics
-/// track `contract/search_api.toml [request_options]` and lower onto the
+/// track `contract/engine.toml [request_options]` and lower onto the
 /// resident engine's `Request`.
 pub const SearchQuery = struct {
     /// The regex or (with `fixed`) literal to find.
@@ -124,7 +124,7 @@ pub const OwnedMatch = struct {
 /// can hit — a pattern outside the linear-time syntax, freshness it cannot
 /// prove — is a **declinature**, not a failure: the embedder answers cold and
 /// gets the byte-identical result, so it rides `fault.Answer`'s success
-/// position where a `try` cannot silently turn it into an abort (ADR-373 law 1).
+/// position where a `try` cannot silently turn it into an abort (fault-channel law 1).
 pub const SearchError = std.mem.Allocator.Error;
 
 /// A pull result handle: an owned, arena-backed record buffer plus a read
@@ -302,7 +302,7 @@ pub const Engine = struct {
         // fire for it — the cursor allocated above has to be released by hand or
         // it leaks on every "run this cold". The declinature sitting in the
         // success position is what makes a `try` unable to abort on a routine
-        // fallback (ADR-373 law 1); the cost is that ownership on that arm is the
+        // fallback (fault-channel law 1); the cost is that ownership on that arm is the
         // caller's to discharge, exactly like the `.got` arm hands it to theirs.
         const any = switch (self.inner.search(scratch.allocator(), req, &collector) catch
             return error.OutOfMemory) {

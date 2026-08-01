@@ -3,7 +3,7 @@
 //! re-derived from OUR corpus instead of English prose).
 //!
 //! `density[b] = round(P(byte b) * 65535)`, unclamped, measured over 253 MB of
-//! the Billy tree (24,602 text files; walk and caps in
+//! the host tree (24,602 text files; walk and caps in
 //! `tools/build_rarity_table.py`, which emits the declaration below). The scan
 //! kernel anchors its block filter on the needle's two RAREST bytes
 //! (`anchor.zig` owns the policy), and when the rarest is genuinely rare
@@ -80,7 +80,7 @@
 pub const single_probe_max: u16 = 96;
 
 /// Per-byte corpus probability as `round(P * 65535)`, UNCLAMPED. Measured over
-/// 253 MB of the Billy tree (24,602 text files; see
+/// 253 MB of the host tree (24,602 text files; see
 /// `tools/build_rarity_table.py` for the exact walk). Regenerate with that
 /// script and review the diff — never widen, floor, or ceiling a cell by hand.
 /// Rows are 16 bytes wide; the legend marks the printable span, `_` for space.

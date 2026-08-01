@@ -2,10 +2,10 @@
 doc_radar:
   sentinels:
     - description: "crest sidecar stays generation-atomic with the trigram pair"
-      file: pkg/kernels/irregex/src/corpus/index/crest/sidecar.zig
+      file: src/corpus/index/crest/sidecar.zig
       contains: ["GISTCRS3", "pub fn decode", "pub fn verify"]
     - description: "sieve calculus lives in the regex analysis layer, not the sidecar — ĝ is derived from the engine's own AST"
-      file: pkg/kernels/irregex/src/kernel/regex/analysis/swell.zig
+      file: src/kernel/regex/analysis/swell.zig
       contains: "pub fn forcedSwell"
 ---
 

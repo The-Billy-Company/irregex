@@ -9,7 +9,7 @@
 //! need a static bound.
 //!
 //! The tables are passed as raw pointers (not a `Dfa`) so the object links with
-//! zero Billy dependencies, yet `probes_test.zig` builds a REAL `Dfa` via
+//! zero host-package dependencies, yet `probes_test.zig` builds a REAL `Dfa` via
 //! `Regex.compile`, hands its `trans_in`/`trans_fin`/`class` tables and its
 //! `match_hi` bound to this probe, and asserts the probe's verdict is
 //! bit-identical to `Dfa.docMatch` over random docs — a true differential drift

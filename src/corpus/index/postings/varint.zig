@@ -52,7 +52,7 @@ pub fn decode(buf: []const u8) Decoded {
     return .{ .value = result, .len = i };
 }
 
-/// Every member is a declared `persist` fault (ADR-373 law 2), because that is
+/// Every member is a declared `persist` fault (fault-channel law 2), because that is
 /// what the sole production caller does with all of them — reject the blob and
 /// fail closed to the live path.
 pub const DecodeError = error{

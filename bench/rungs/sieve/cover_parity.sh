@@ -33,13 +33,13 @@
 #   --no-unicode  the ASCII reading, where `\d` is 10 bytes and the cover fires
 #   winners     one pattern from each class the cover measurably improves
 #
-# The corpus is REAL Billy source (thousands of tracked Go/Zig/TS/Markdown
+# The corpus is REAL host source (thousands of tracked Go/Zig/TS/Markdown
 # files), copied into a throwaway tree and indexed there. The copy is the point:
 # ~10 agents edit this branch concurrently, and a repo-wide arm takes long enough
 # that two IDENTICAL runs already disagree — measured, not assumed. Freezing the
 # bytes is what lets a difference between arms mean something.
 #
-# Usage: bench/rungs/sieve/cover_parity.sh (or `make test-gist-prefilter`, which
+# Usage: bench/rungs/sieve/cover_parity.sh (or `the prefilter parity gates under `bench/rungs/sieve/``, which
 # builds the binary and runs this beside the warm gate)
 set -uo pipefail
 # gist's ~25k-token agent-context output budget clips a repo-wide result; a
@@ -48,21 +48,27 @@ set -uo pipefail
 export GIST_UNCAP=1
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-KERNEL="$(cd "${HERE}/../../.." && pwd)"
-REPO="$(cd "${KERNEL}/../../.." && pwd)"
-GIST="${KERNEL}/zig-out/bin/gist"
+# shellcheck source=../../apparatus/roots.sh
+source "${HERE}/../../apparatus/roots.sh"
+gist_resolve_roots "${HERE}" || exit 1
+GIST="${PRODUCT}/zig-out/bin/gist"
 
 [[ -x "${GIST}" ]] || {
-  echo "no gist binary at ${GIST} — run: cd ${KERNEL} && zig build -Doptimize=ReleaseFast"
+  echo "no gist binary at ${GIST} — run: cd ${PRODUCT} && zig build -Doptimize=ReleaseFast"
   exit 1
 }
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
 echo "freezing a real-source corpus under ${WORK}…"
+# Prefer the historical monorepo slices when present; else this package's src/.
+_cover_paths=()
+for _p in services/backend src docs/architecture clients/web/packages; do
+  [[ -e "${REPO}/${_p}" ]] && _cover_paths+=("${_p}")
+done
+[[ ${#_cover_paths[@]} -gt 0 ]] || _cover_paths=(src .)
 (
-  cd "${REPO}" && git ls-files services/backend pkg/kernels/irregex/src \
-    docs/architecture clients/web/packages
+  cd "${REPO}" && git ls-files "${_cover_paths[@]}"
 ) | (cd "${REPO}" && rsync -a --files-from=- . "${WORK}/") 2> /dev/null || {
   echo "  corpus copy failed"
   exit 1

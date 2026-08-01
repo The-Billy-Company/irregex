@@ -86,7 +86,7 @@
 //! positions to 0.76x (code) / 0.58x (prose) of the baseline's. The baseline row is
 //! ranked on raw `score()`: that rule never quantises, and quoting it through this
 //! policy's fixed-point grid would flatter it by 0.08x (code) purely by merging
-//! ties. Prose is the harder regime because `rarity.density` is fitted on the Billy
+//! ties. Prose is the harder regime because `rarity.density` is fitted on the host
 //! CODE tree, so its marginal is out of distribution there — hence baseline 2.21x
 //! and the larger prose win. Refitting `rarity.zig` on mixed bytes would shrink
 //! both; that module's call, not this one's.

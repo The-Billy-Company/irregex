@@ -13,7 +13,7 @@
 //! orchestration written inline in `serial.run`; a third lens would have been a
 //! third block, each re-deriving the file set, the filename-visibility rule,
 //! and the exit shape by hand. Written once here, adding a lens is adding a
-//! case — not re-deriving the run (ADR-376).
+//! case — not re-deriving the run (the cold-engine deep-module split).
 
 const std = @import("std");
 const args = @import("../argv/args.zig");
@@ -67,7 +67,7 @@ pub const Run = struct {
     /// non-matching bytes (`-v`, `--include-zero`, a transforming `-z`/`--pre`
     /// read that the index cannot speak about), so a lens inherits those guards
     /// instead of re-deriving them. Elision only skips a READ; the walk stays the
-    /// sole authority on WHAT to search (ADR-373 law 1), which is what keeps a
+    /// sole authority on WHAT to search (fault-channel law 1), which is what keeps a
     /// lens's file set equal to the same query's `-l` set.
     fn collect(r: Run) intake.Collected {
         return intake.collectFiles(r.a, r.gpa, r.io, r.parsed, r.w.filters, r.w.sieve, r.w.line_needle, r.icfg);
@@ -112,7 +112,7 @@ pub fn dispatch(r: Run) !Claim {
 /// The ranked set is `gist -l`'s set by CONSTRUCTION, because it is produced by
 /// the same walk. It used to be enumerated from the persisted index's path table
 /// instead, which made the index a semantic structure rather than an
-/// acceleration one (ADR-373 law 1) and cost the view every file the index's
+/// acceleration one (fault-channel law 1) and cost the view every file the index's
 /// corpus policy excludes but a search walk enters: `corpus/tree/haystack.zig`'s
 /// generic skip-dir baseline prunes `vendor/` (right for the kinship corpus,
 /// wrong for a search), so a ranked `graphify` silently dropped 470 real hits,

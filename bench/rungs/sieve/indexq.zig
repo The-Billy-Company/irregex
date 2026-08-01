@@ -129,7 +129,7 @@ fn unhex(arena: std.mem.Allocator, s: []const u8) ![]u8 {
 fn readPlans(arena: std.mem.Allocator, io: std.Io) !std.StringHashMap(Plan) {
     var out = std.StringHashMap(Plan).init(arena);
     const text = Dir.cwd().readFileAlloc(io, plan_path, arena, .limited(1 << 26)) catch |e| {
-        std.debug.print("indexq: cannot read {s}: {s}\n  run: python3 pkg/kernels/irregex/bench/rungs/sieve/csearch_plan.py --probes pkg/kernels/irregex/bench/apparatus/harness/probes.zig --index .local/gist-compete/csearch.idx --out {s}\n", .{ plan_path, @errorName(e), plan_path });
+        std.debug.print("indexq: cannot read {s}: {s}\n  run: python3 bench/rungs/sieve/csearch_plan.py --probes bench/apparatus/harness/probes.zig --index .local/gist-compete/csearch.idx --out {s}\n", .{ plan_path, @errorName(e), plan_path });
         return e;
     };
     var acc = std.StringHashMap(std.ArrayList(Index.Clause)).init(arena);
@@ -369,7 +369,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, limits: query.CoverLimits) !void 
 
     try writeTsv(gpa, io, &corpus, &idx, build_ms, rows.items);
     std.debug.print("\nwrote {s}\n", .{csv_path});
-    std.debug.print("run: python3 pkg/kernels/irregex/bench/certificate/report/indexq.py --certificate {s}/CERTIFICATE.md --tsv {s}\n", .{ out_dir, csv_path });
+    std.debug.print("run: python3 bench/certificate/report/indexq.py --certificate {s}/CERTIFICATE.md --tsv {s}\n", .{ out_dir, csv_path });
 
     if (violations > 0) {
         std.debug.print("\nFAILED: {d} cross-arm hit disagreement(s) — one of the three formulas is UNSOUND (it pruned a document the matcher says matches). Investigate; do NOT weaken the assertion.\n", .{violations});

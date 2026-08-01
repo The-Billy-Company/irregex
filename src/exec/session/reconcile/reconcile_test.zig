@@ -1,4 +1,4 @@
-//! gist resident session — the freshness-barrier hardening suite (ADR-352 rung 2.5).
+//! gist resident session — the freshness-barrier hardening suite.
 //!
 //! `resident_test.zig` pins correctness against hand-authored oracles; this file
 //! attacks the barrier itself along the three axes a warm, mutation-tracking
@@ -9,7 +9,7 @@
 //!      exercising the trigram-index path), the resident `files`/`count` answers
 //!      must equal an INDEPENDENT on-disk oracle (a naive re-scan of the same
 //!      bytes), before AND after an add/modify/delete round. The oracle never
-//!      runs the engine, so a shared bug can't hide the drift (sins.mdc Sin #2).
+//!      runs the engine, so a shared bug can't hide the drift (never bandaid a test: derive expectations from an independent oracle).
 //!   2. Concurrency — the one supported concurrency in the daemon is the watcher
 //!      thread firing `markDirty` lock-free while a query reconciles under the
 //!      mutex. A flood of events racing a query loop must never crash, leak, or

@@ -16,7 +16,7 @@
 //! scatter, which is correct.
 //!
 //! Prior art: Cameron et al., PACT 2014 (see `plane.zig`). Character-class
-//! compilation to bit-plane logic is theirs; this is a Billy-native rebuild of
+//! compilation to bit-plane logic is theirs; this is a in-tree rebuild of
 //! the idea with a folding Shannon expansion in place of icGrep's multiplexed
 //! `CC_Compiler`. No novelty claimed.
 //!

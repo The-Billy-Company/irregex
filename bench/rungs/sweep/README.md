@@ -1,25 +1,25 @@
 ---
 doc_radar:
   paths_exist:
-    - pkg/kernels/irregex/bench/rungs/sweep/bench.zig
-    - pkg/kernels/irregex/src/kernel/regex/ast/ast.zig
-    - pkg/kernels/irregex/src/kernel/regex/analysis/analysis.zig
-    - pkg/kernels/irregex/src/kernel/regex/linear/program/lower.zig
+    - bench/rungs/sweep/bench.zig
+    - src/kernel/regex/ast/ast.zig
+    - src/kernel/regex/analysis/analysis.zig
+    - src/kernel/regex/linear/program/lower.zig
   sentinels:
     - description: "both arms are production code reached through the engine's seal, never a reimplementation"
-      file: pkg/kernels/irregex/bench/rungs/sweep/bench.zig
+      file: bench/rungs/sweep/bench.zig
       contains:
         - "gist.regex_analysis"
         - "gist.regex_ast"
         - "gist.regex_parabix"
     - description: "a disagreement is classified, and a worse answer withholds the verdict"
-      file: pkg/kernels/irregex/bench/rungs/sweep/bench.zig
+      file: bench/rungs/sweep/bench.zig
       contains:
         - "fn versus"
         - "REGRESSES"
         - "break-even"
     - description: "the compile path sources its literal, cover and anchor facts from the one interned graph"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/program/lower.zig
+      file: src/kernel/regex/linear/program/lower.zig
       contains:
         - "ast_mod.analyze(arena, arena, ast"
         - "facts.root().lit"
@@ -28,7 +28,7 @@ doc_radar:
 
 # bench/rungs/sweep — is the fused fabric actually worth it, consumer by consumer
 
-`zig build sweep-rung` (from `pkg/kernels/irregex/`).
+`zig build sweep-rung` (from ``).
 
 The `ast` package claims to answer in **one interned sweep** what
 `analysis.zig` and `parabix/admit.zig` each answer in **one recursive walk**.

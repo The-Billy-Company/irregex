@@ -2,13 +2,13 @@
 doc_radar:
   sentinels:
     - description: "the snapshot proves a directory with the same conservative clock rule T3 uses"
-      file: pkg/kernels/irregex/src/corpus/index/phantom/treemap.zig
+      file: src/corpus/index/phantom/treemap.zig
       contains:
         - "needsLiveRead"
         - "GISTTRE2"
         - "pub fn verify"
     - description: "serving is decided on measured cost, not merely on the snapshot being fresh"
-      file: pkg/kernels/irregex/src/exec/cold/engine/swarm/descent.zig
+      file: src/exec/cold/engine/swarm/descent.zig
       contains:
         - "phantom_stat_budget"
 ---

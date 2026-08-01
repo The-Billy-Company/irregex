@@ -2,18 +2,18 @@
 doc_radar:
   sentinels:
     - description: "the roofline reporter owns the generated Layer C section"
-      file: pkg/kernels/irregex/bench/bounds/roofline/report.py
+      file: bench/bounds/roofline/report.py
       contains:
         - 'LAYER_C_HEADER = "## Layer C — roofline (measured headroom)"'
         - "if frac >= 80.0:"
     - description: "adverse tests forbid sub-roof saturation claims and pin the ladder's denominator"
-      file: pkg/kernels/irregex/bench/bounds/roofline/test_roofline.py
+      file: bench/bounds/roofline/test_roofline.py
       contains:
         - "test_sub_threshold_result_cannot_claim_saturation"
         - "test_corpus_sized_roof_is_the_divisor_when_present"
         - "test_roof_rung_is_not_read_as_the_matched_control"
     - description: "the matched control reads its geometry from production, never its own"
-      file: pkg/kernels/irregex/bench/bounds/roofline/bandwidth.zig
+      file: bench/bounds/roofline/bandwidth.zig
       contains:
         - "simd.block_bytes"
         - "simd.anchorsOf"
@@ -92,14 +92,14 @@ The four false assertions are recorded in `bandwidth.zig`'s header; the fix is
 that the control no longer gets to have its own opinion about any of them.
 
 Frequency (only needed for the _derived_ cycles/byte ceiling) is measured via
-the same `kperf` PMU [`../harness/pmu.zig`](../harness/pmu.zig) uses when run
+the same `kperf` PMU [`../../apparatus/harness/pmu.zig`](../../apparatus/harness/pmu.zig) uses when run
 under `sudo`; without it the run falls back to a clearly-labeled assumed
 clock — the primary **GB/s measurement itself is frequency-free**.
 
 ## How to run
 
 ```bash
-cd pkg/kernels/irregex
+cd <irregex-repo-root>
 zig build roofline                      # → .local/gist-verify/roofline.json
 bench/roofline/roofline_report.py       # splices Layer C into CERTIFICATE.md
 sudo zig build roofline && bench/roofline/roofline_report.py   # measured clock
@@ -121,7 +121,7 @@ assumed clock + a loud note, not an error.
   kernel's throughput is capped by `min(peak compute, peak bandwidth ×
 arithmetic intensity)`; gist's low arithmetic intensity puts it on the
   memory ridge this layer measures.
-- gist's own [`../harness/certify.zig`](../harness/certify.zig) (Layer A) —
+- gist's own [`../../apparatus/harness/certify.zig`](../../apparatus/harness/certify.zig) (Layer A) —
   the per-class cycles/byte this layer's ceiling is checked against, and
-  [`../portcert/`](../portcert/README.md) (Layer B) — the optional compute
+  [`../port/`](../port/README.md) (Layer B) — the optional compute
   ceiling this layer's report reads for the two-ceiling picture.

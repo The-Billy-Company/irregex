@@ -1,4 +1,4 @@
-//! gist resident session — the freshness watcher (ADR-352 rung 2.5).
+//! gist resident session — the freshness watcher.
 //!
 //! The watcher is a pure *accelerator* for the freshness barrier, never a
 //! correctness dependency. Its only job is to keep a session honest about when
@@ -47,7 +47,7 @@
 //! exact key model cannot represent — such a session stays coarse. kqueue
 //! reports a DESCRIPTOR this process opened itself, with the walk's own
 //! canonical spelling, so a writer's choice of spelling never enters the key
-//! space and exact arms even on a case-insensitive volume (ADR-372).
+//! space and exact arms even on a case-insensitive volume.
 //! `ReadDirectoryChangesW` reports the name as the DIRECTORY ENTRY stores it —
 //! one spelling per file whatever the writer typed — so it too arms exact,
 //! including on a case-insensitive volume.
@@ -227,7 +227,7 @@ pub fn Watcher(comptime Session: type) type {
         /// noted by the time it returns. Sound on both backends because each posts
         /// its event inside the syscall that caused it — once a writer's
         /// `write`/`close`/`rename` has returned, the event is already here
-        /// (ADR-372). False on an unarmed session, which reconciles every query
+        ///. False on an unarmed session, which reconciles every query
         /// anyway.
         pub fn flushSync(self: *@This()) bool {
             if (comptime is_macos) return self.flushKqueue();
@@ -316,7 +316,7 @@ pub fn Watcher(comptime Session: type) type {
         /// disarmed FIRST, so no answer can trust a quiescence that is about to
         /// stop being proven; then the loop thread is retired and every descriptor
         /// closed. The session falls back to the reconcile-always baseline — the
-        /// pre-ADR-372 behavior, slower but never stale — and `start` re-registers
+        /// pre-freshness-barrier behavior, slower but never stale — and `start` re-registers
         /// from scratch. Caller must guarantee no query is in flight: `serve.zig`
         /// sheds only with zero connections, the same quiescent window the initial
         /// arm ran in.

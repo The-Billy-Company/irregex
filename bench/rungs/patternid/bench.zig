@@ -49,7 +49,7 @@ const State = syntax.State;
 const Regex = gist.regex.Regex;
 
 // ── slates ──────────────────────────────────────────────────────────────────
-// Shapes the agent workload actually runs: bare identifiers (what relocator and
+// Shapes the agent workload actually runs: bare identifiers (what a renamer and
 // the trust lints classify), and regex bodies with shared structure, which is
 // where subsets collide and therefore where refinement can bite.
 

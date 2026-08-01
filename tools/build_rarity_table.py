@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Byte census of the Billy tree -> `src/kernel/scan/rarity.zig`'s `density`.
+"""Byte census of a large source tree -> `src/kernel/scan/rarity.zig`'s `density`.
 
 The table is the anchor-selection prior for the SIMD substring kernel: the
 block filter compares the needle's two RAREST bytes, so what the table has to
@@ -31,7 +31,7 @@ import pathlib
 import sys
 
 
-ROOT = pathlib.Path(__file__).resolve().parents[4]
+ROOT = pathlib.Path(__file__).resolve().parents[1]  # tools/ → repo root
 
 # Same walk the anchor-selection spike measured against
 # (`research/pincer/TESTING.md`), so the shipped table and the numbers that
@@ -121,7 +121,7 @@ def emit(table: list[int], files: int, total: int) -> str:
         rows.append("    " + "".join(cells).rstrip())
     body = "\n".join(rows)
     return f"""/// Per-byte corpus probability as `round(P * {SCALE})`, UNCLAMPED. Measured over
-/// {total / 1e6:.0f} MB of the Billy tree ({files:,} text files; see
+/// {total / 1e6:.0f} MB of the source tree ({files:,} text files; see
 /// `tools/build_rarity_table.py` for the exact walk). Regenerate with that
 /// script and review the diff — never widen, floor, or ceiling a cell by hand.
 /// Rows are 16 bytes wide; the legend marks the printable span, `_` for space.

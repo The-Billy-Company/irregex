@@ -2,16 +2,16 @@
 doc_radar:
   sentinels:
     - description: "the floor's two load-bearing widths and the target it is measured on"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/parabix/plane.zig
+      file: src/kernel/regex/linear/parabix/plane.zig
       contains: ["pub const width: usize = 128;", "pub const stripe: usize = 8;", "pub const on_neon"]
     - description: "the class compiler's two budgets, past which the DFA is the better rung"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/parabix/stencil.zig
+      file: src/kernel/regex/linear/parabix/stencil.zig
       contains: ["pub const max_classes: usize = 6;", "pub const max_gates: usize = 40;"]
     - description: "the gate refuses at compile time, and every refusal names itself"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/parabix/admit.zig
+      file: src/kernel/regex/linear/parabix/admit.zig
       contains: ["pub const Decline = enum", "star_height", "unicode", "pub fn starHeight"]
     - description: "the marker chain's three operations — advance, keep, and MatchStar closure"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/parabix/parabix.zig
+      file: src/kernel/regex/linear/parabix/parabix.zig
       contains: ["fn markers", "plane.addIn", "pub fn matchScalar"]
 ---
 
@@ -30,7 +30,7 @@ Parallelism in Regular Expression Matching_](https://dl.acm.org/doi/10.1145/2628
 (PACT 2014), and the [icGrep](https://github.com/icgrep) line of work at Simon
 Fraser University. The byte-to-bit transposition, the character-class bit-plane
 compilation, and `MatchStar` are all theirs. **No novelty is claimed here** —
-this is a Billy-native rebuild of a published technique, and the adoption
+this is a in-tree rebuild of a published technique, and the adoption
 verdict is written the way `research/ceiling/CLOSED.md` words one: the idea was
 anticipated in the literature, the _engineering_ is ours, and the interesting
 question is not whether it is new but whether it holds up in this tree. It

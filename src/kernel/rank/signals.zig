@@ -12,7 +12,7 @@
 //!   • **`shapeFingerprint`** — what remains of a matching line after vocabulary
 //!     is erased, so repeated use geometry carries less information.
 //!
-//! Both are deliberately **cross-language, not Billy-specific**.
+//! Both are deliberately **cross-language, not host-specific**.
 //! `declarationConfidence` reads Unicode word boundaries and geometry rather
 //! than a language catalogue: delimiter nesting, labels, equations, prefix
 //! forms, and body-opening punctuation. `shapeFingerprint` applies relate's

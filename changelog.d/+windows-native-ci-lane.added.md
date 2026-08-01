@@ -7,7 +7,7 @@ arm, because no gate on any machine compiled it.
 **`zig build check-windows` is the floor, and it is folded into `zig build test`.**
 It runs Sema plus codegen with no link over the CLI for `x86_64-windows-gnu`,
 `aarch64-windows-gnu`, and `x86-windows-gnu`, so a Windows-only compile error now
-fails a Linux and a macOS run. `make test-gist-windows` is the same step
+fails a Linux and a macOS run. `the Windows CI lane (`zig build check-windows`)` is the same step
 standalone, which is the most a POSIX laptop can honestly claim about Windows.
 All three triples are there because they disagree: **x86 is the only one that
 caught two real bugs.** The lazy-DFA churn statistic divided a `usize` by a `u64`

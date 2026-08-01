@@ -1,24 +1,35 @@
 ---
 doc_radar:
   paths_exist:
-    - pkg/kernels/irregex/src/kernel/scan/simd.zig
-    - pkg/kernels/irregex/src/kernel/scan/rarity.zig
-    - pkg/kernels/irregex/src/kernel/scan/anchor.zig
+    - src/kernel/scan/simd.zig
+    - src/kernel/scan/rarity.zig
+    - src/kernel/scan/anchor.zig
+    - src/kernel/scan/calibrate.zig
   sentinels:
     - description: "selection lives in one module, and that module carries the recorded defects so neither the independence assumption nor the offset-sorting slip can return"
-      file: pkg/kernels/irregex/src/kernel/scan/anchor.zig
+      file: src/kernel/scan/anchor.zig
       contains:
         - "RECORDED DEFECT"
         - "Never sort this pair"
     - description: "the scan kernel consumes the anchor decision rather than re-deriving it — a second copy of the policy is how a control ends up measuring a different filter"
-      file: pkg/kernels/irregex/src/kernel/scan/simd.zig
+      file: src/kernel/scan/simd.zig
       contains:
         - "anchor.select(needle)"
     - description: "the density table PROOF.md §2.2 measures, and the rarity threshold the single-load fast path gates on"
-      file: pkg/kernels/irregex/src/kernel/scan/rarity.zig
+      file: src/kernel/scan/rarity.zig
       contains:
         - "pub const density"
         - "single_probe_max"
+    - description: "PROOF.md §7.2.e — calibration reaches production as an improvement test over the static pair, minted per document, never as an unconditional override"
+      file: src/kernel/scan/simd.zig
+      contains:
+        - "pub fn planOn"
+        - "calibrate.refine"
+    - description: "the two lessons the integration taught: the incumbent is priced on the same sample, and the accept margin has an absolute noise floor because the argmin of many noisy estimates is biased low"
+      file: src/kernel/scan/calibrate.zig
+      contains:
+        - "pub fn refine"
+        - "noise_sigmas"
 ---
 
 # Pincer — anchor selection for the two-probe literal filter
@@ -59,16 +70,31 @@ is what keeps the failure graceful if a future census ever re-introduces ties. R
 §10.3 before trusting any single trap/control ratio — a cold page cache moves it far
 enough to imitate the defect.
 
-The per-buffer calibrating selector is **built and tested** in
+The per-buffer calibrating selector is **built, tested, and now shipped** in
 `kernel/scan/calibrate.zig`, and reaches 1.03–1.04× of the best-possible pair
 across code, prose, and a heterogeneous buffer — where the static table is
-1.39–2.21× — for 0.19% of a scan. It is **deliberately not wired**: the size gate
-it needs cannot be evaluated where `indexOfPos` is called, because `query.zig`
-calls `simd.contains` once *per line* rather than once per buffer, so the gate
-declines forever at that seam and removing it would re-pay the calibration per
-line. It needs a per-scan plan threaded through the line loop, which is an
-interface decision across two files — stated in full in `calibrate.zig`'s module
-doc and §7.2 of [`PROOF.md`](PROOF.md).
+1.39–2.21× — for 0.19% of a scan. §7.2 of [`PROOF.md`](PROOF.md) said the missing
+piece was a **per-scan plan** rather than a bigger gate, and that is what was built:
+`simd.Plan` is the decision as a value, `simd.planOn` is the document-grain mint,
+and three seams carry it to every literal scan — `simd.Gate.on` for the
+required-literal gate, `Emitter.lit_plan` for the hit-jumping sweeps, and
+`PikeScratch.litPlan` for the span walks.
+
+Two things §7.2 did not anticipate, both recorded in `calibrate.zig` rather than
+shipped as defects. Adopting the sample's favourite *unconditionally* is a measured
+CPU tax, not a win: the shipped table already picks the oracle pair on 80/177 code
+needles, and swapping off it also forfeits the single-probe block shape. So the
+integration is an **improvement test** (`refine`) with the incumbent priced on the
+same sample. And a purely relative accept margin is a **winner's curse** — the
+argmin of up to 120 noisy estimates of one density sits several sigma below the
+truth — so the margin is the larger of 12.5% and four standard deviations.
+
+Measured end-to-end on a 200 MB buffer whose alphabet is the statically-rare bytes,
+over three needles whose locally-rarest byte the shipped table ranks common:
+**6.9–8.0× less CPU** on the whole-buffer literal modes (7.8–8.3× for `--json`, 7.0×
+for `-q`), 17.6–17.9× on the kernel sweep underneath (4.09 M block survivors down to
+34–42), median 1.002× where the table was already right, and byte-identical output
+across 411/411 ripgrep parity cases and 420 in-binary differentials.
 
 Also still ahead: a pair-aware policy for the residual ~1.5× to oracle.
 
@@ -115,10 +141,14 @@ what ruled the static approach out and pointed at calibration (`PROOF.md` §6).
 
 ## The code
 
-Nothing is integrated. The defect lives at
+Both repairs and the calibrating selector are integrated. The defect lived at
 `src/kernel/scan/rarity.zig` (the clamp) and
-`src/kernel/scan/simd.zig::indexOfPos` (the tie-break and the two-probe loop).
-Reproduction harness: `spikes/anchor-joint-rarity/` — see `TESTING.md`.
+`src/kernel/scan/simd.zig::indexOfPos` (the tie-break and the two-probe loop);
+`src/kernel/scan/anchor.zig` now owns the static decision, `calibrate.zig` the
+per-buffer one, and `simd.zig`'s `Plan` / `planOn` / `Gate.on` the seam between
+them. Reproduction harnesses: `spikes/anchor-joint-rarity/` for the defect,
+`spikes/anchor-plan/` for the plan (`sweep.zig` is the kernel ground truth,
+`probe.zig` reports per-needle headroom) — see `TESTING.md`.
 
 ## What is ours, after refereeing
 
@@ -148,10 +178,11 @@ yet. Details, including the six specific findings that would kill claim 1, are i
 
 ## Status
 
-**Spike, proven, not integrated.** Selectivity is exact; wall clock is Apple M4
-only; the single-probe fast path and the end-to-end calibrating selector are
-unmeasured. The graduation path — widen the clamp first (a pure dynamic-range
-fix worth 1.73×/2.06× on its own), then calibrate — is in `TESTING.md`.
+**Integrated, and measured end-to-end.** The graduation path `TESTING.md` laid out
+was followed in order: widen the clamp first (a pure dynamic-range fix worth
+1.73×/2.06× on its own), then hoist the decision into a value, then calibrate it per
+document. Selectivity is exact; wall clock and the end-to-end CPU ratios are Apple
+M4 only, so the hardware-independent re-run on the Anvil box is still owed.
 
 One finding is worth acting on independently of the rest: the Certificate's
 `literal-rare` rung probes `pgxpool`, whose first two bytes happen to form a

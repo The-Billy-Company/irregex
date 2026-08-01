@@ -2,7 +2,7 @@
 doc_radar:
   sentinels:
     - description: "the shard is a read accelerator gated on the same T3 clock rule the elide overlay uses, behind its own magic"
-      file: pkg/kernels/irregex/src/corpus/index/content/shard.zig
+      file: src/corpus/index/content/shard.zig
       contains:
         - "needsLiveRead"
         - "GISTSHD2"

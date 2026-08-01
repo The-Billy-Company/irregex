@@ -1,4 +1,4 @@
-//! gist resident session — the warm-engine correctness suite (ADR-352 rung 2.5).
+//! gist resident session — the warm-engine correctness suite.
 //!
 //! The one invariant the resident path must never break is
 //! `resident matches == gist --no-index matches == rg matches`. Freshness has a
@@ -985,7 +985,7 @@ test "resident: -P serves the PCRE2 engine warm on every answer face" {
     }
 }
 
-// ── concurrency (ADR-352 rung 2.5 Workstream A2): the reader/writer session ──
+// ── concurrency (Workstream A2): the reader/writer session ──
 //
 // The RwLock discipline promises two things the single-thread daemon never
 // had to prove: (1) many answer faces may read the immutable mirror+overlay AT

@@ -1,5 +1,4 @@
 //! gist resident session — what is Windows' alone about the notify barrier
-//! (ADR-352 rung 2.5, ADR-372).
 //!
 //! The promises every exact backend makes run over `rig.zig` from
 //! `watch_test.zig`, unchanged on this platform — that is the point of extracting

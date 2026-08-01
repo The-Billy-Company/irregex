@@ -22,7 +22,7 @@ faith: `zig build sieve` after the change reproduces the slate exactly — the s
 9 patterns declined, the same single published `uuid` loss, 0 soundness violations over
 1.60 B byte-positions — because no pattern on the slate falls in the band. Both
 residuals behind that `uuid` row now have measured fix shapes rather than conjectures,
-built in the Rust sibling `pkg/kernels/core`: a persistence-aware (block, class)
+built in a separate Rust sheng sibling: a persistence-aware (block, class)
 chain that stops pricing a `k`-byte run as `p^k`, and a rival term read from the
 engine's own start-state accelerator with an excursion coefficient for what a tripped
 skip really costs.

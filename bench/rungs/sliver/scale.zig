@@ -190,7 +190,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
             },
         };
 
-        if (gist.assay.envSpan("GIST_SCALE_TRACE") != null) {
+        if (gist.assay.knobSet("SCALE_TRACE")) {
             std.debug.print("  {s}: {d} filter(s)", .{ p.class, filters.len });
             for (filters) |f| std.debug.print(" '{s}'", .{f});
             std.debug.print("\n", .{});

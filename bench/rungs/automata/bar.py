@@ -73,8 +73,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 # bench/rungs/automata → the package root, then out to the repo root.
-PKG = HERE.parents[2]
-REPO = PKG.parents[2]
+PKG = HERE.parents[2]  # automata → rungs → bench → repo
+REPO = PKG
 DEFAULT_CLONE = REPO / ".etc" / "regex"
 
 # `regex-cli` prints a `key: value` preamble before the automaton itself. These

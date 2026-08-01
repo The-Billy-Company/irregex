@@ -2,13 +2,13 @@
 doc_radar:
   sentinels:
     - description: "the inner rungs dispatch boolean questions and name which machine answered"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/ladder/verdict.zig
+      file: src/kernel/regex/linear/ladder/verdict.zig
       contains: ["pub fn lineMatch", "pub fn docMatch", "pub fn docMatchFused"]
     - description: "the outer rung is a tagged union over both engines, dispatched per line not per byte"
-      file: pkg/kernels/irregex/src/kernel/regex/matcher.zig
+      file: src/kernel/regex/matcher.zig
       contains: ["pub const Matcher = union(Backend)", "pub const Backend = enum { linear, pcre }"]
     - description: "the accelerator tier is one field with a three-valued protocol, a single ordered table, and a per-instance refinement of each rung's question"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/ladder/rungs.zig
+      file: src/kernel/regex/linear/ladder/rungs.zig
       contains:
         - "pub const Verdict = enum { hit, miss, unproven }"
         - "const order = [_]Spec{"
@@ -16,7 +16,7 @@ doc_radar:
         - "const Model = enum {"
         - "inline fn sliceSafe(rung: anytype) bool"
     - description: "every auction number is a measured calibration on one side and a structural cost model on the other, and neither half is a literal in the other's half"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/ladder/price.zig
+      file: src/kernel/regex/linear/ladder/price.zig
       contains:
         - "pub const Calibration = struct {"
         - "pub fn price(m: Machine) Cost {"
@@ -25,7 +25,7 @@ doc_radar:
         - "machine: []const u8"
         - "minted: []const u8"
     - description: "the fallback is priced by WHICH walker it is and by its two accelerations, where one constant used to stand for every walk — and not by its table's footprint, which the sweep showed does not move the step"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/ladder/price.zig
+      file: src/kernel/regex/linear/ladder/price.zig
       contains:
         - "dfa_step: f64"
         - "dfa_line: f64"
@@ -37,7 +37,7 @@ doc_radar:
         # The refuted axis. If these come back, the sweep has to come back with them.
         - "dfa_resident|dfa_spilled|resident_bytes|fn chase\\("
     - description: "a pattern decided above the ladder is priced by the kernel that decides it, classified by which backend that kernel chose rather than by its name"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/ladder/price.zig
+      file: src/kernel/regex/linear/ladder/price.zig
       contains:
         - "settle_class_ranges: f64,"
         - "settle_class_nibbles: f64,"
@@ -45,16 +45,16 @@ doc_radar:
         - "settle_literal_many: f64,"
         - 'inline else => |tag| @field(c, "settle_" ++ @tagName(tag)),'
     - description: "the settled case leaves the auction before a candidate is built, and keeps the displaced walk's price rather than overwriting it"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/ladder/rungs.zig
+      file: src/kernel/regex/linear/ladder/rungs.zig
       contains:
         - "pub const Selection = enum { settled, fallback, compose, parabix };"
         - "settled: ?price.Settle = null,"
         - "ad.selected_cost = price.price(.{ .settle = kernel });"
     - description: "the classifier reads each settling kernel's own backend choice instead of pricing a kernel by its name"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/program/lower.zig
+      file: src/kernel/regex/linear/program/lower.zig
       contains: ["fn settledBy("]
     - description: "a vector rung arms on evidence — the kernel existing AND this target having been minted — not on the arch alone, and no rung carries a bid of its own any more"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/ladder/rungs.zig
+      file: src/kernel/regex/linear/ladder/rungs.zig
       contains:
         - "pub const compose_armable: bool = compose_mod.lanes.native and price.calibrated;"
         - "pub const parabix_armable: bool = parabix_mod.native and price.calibrated;"
@@ -63,17 +63,17 @@ doc_radar:
         # rung went back to inventing its own price instead of reading a measurement.
         - "\\.scan = [0-9_]+"
     - description: "the compose rung has one entry point; the boolean dwell gate that used to stand in for an inequality is priced instead"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/shuffle/shuffle.zig
+      file: src/kernel/regex/linear/shuffle/shuffle.zig
       contains: ["pub fn lower("]
       absent_matches: ["pub fn build\\("]
     - description: "the price bench mints, verifies, and audits the auction's picks against measured-best"
-      file: pkg/kernels/irregex/bench/rungs/price/bench.zig
+      file: bench/rungs/price/bench.zig
       contains: ["mint", "verify", "regret"]
     - description: "the whole-buffer -U search consults the tier under the same assertion-free guard the DFA sits behind"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/pike/search.zig
+      file: src/kernel/regex/linear/pike/search.zig
       contains: ["switch (re.rungs.line(buf))"]
     - description: "the handle carries the tier as ONE field, not one per rung"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/program/core.zig
+      file: src/kernel/regex/linear/program/core.zig
       contains: ["rungs: rungs_mod.Rungs"]
 ---
 

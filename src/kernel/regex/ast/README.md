@@ -1,28 +1,28 @@
 ---
 doc_radar:
   paths_exist:
-    - pkg/kernels/irregex/src/kernel/regex/ast/ast.zig
-    - pkg/kernels/irregex/src/kernel/regex/ast/intern.zig
-    - pkg/kernels/irregex/src/kernel/regex/ast/algebra.zig
-    - pkg/kernels/irregex/src/kernel/regex/ast/facts.zig
-    - pkg/kernels/irregex/src/kernel/math/dag.zig
-    - pkg/kernels/irregex/bench/rungs/sweep/README.md
+    - src/kernel/regex/ast/ast.zig
+    - src/kernel/regex/ast/intern.zig
+    - src/kernel/regex/ast/algebra.zig
+    - src/kernel/regex/ast/facts.zig
+    - src/kernel/math/dag.zig
+    - bench/rungs/sweep/README.md
   sentinels:
     - description: "the three stages, each owning one file"
-      file: pkg/kernels/irregex/src/kernel/regex/ast/ast.zig
+      file: src/kernel/regex/ast/ast.zig
       contains:
         - "pub fn analyze"
         - "algebra_mod.simplify"
         - "facts_mod.sweep"
         - "pub fn cover"
     - description: "the memo is a complexity guard, not an optimization"
-      file: pkg/kernels/irregex/src/kernel/regex/ast/intern.zig
+      file: src/kernel/regex/ast/intern.zig
       contains:
         - "interning is linear in DISTINCT parse cells"
         - "fn spine"
         - "g.power"
     - description: "one fold, one accumulator struct — adding a question costs a field, not a traversal"
-      file: pkg/kernels/irregex/src/kernel/regex/ast/facts.zig
+      file: src/kernel/regex/ast/facts.zig
       contains:
         - "pub const Facts = struct"
         - "pub fn sweep"

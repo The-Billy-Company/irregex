@@ -2,7 +2,7 @@
 doc_radar:
   counts:
     - description: "tools keeps the two hermetic table generators: ucd · whatwg"
-      glob: pkg/kernels/irregex/tools/*
+      glob: tools/*
       unit: dirs
       equals: 2
 ---
@@ -21,8 +21,12 @@ generated file and regenerating after a pin bump is mechanical:
 | [`whatwg/`](whatwg) | WHATWG encoding indexes | `src/corpus/read/encoding_tables.gen.zig` |
 
 ```bash
-make gen-gist-unicode    # UCD → unicode tables
-make gen-gist-encoding   # WHATWG → encoding tables
+python3 tools/build_unicode_tables.py            # UCD → unicode tables
+python3 tools/build_unicode_tables.py --check    # drift gate
+python3 tools/build_encoding_tables.py           # WHATWG → encoding tables
+python3 tools/build_encoding_tables.py --check   # drift gate
+python3 tools/build_schema_tables.py             # contract → schema tables (+ sibling gist bindings)
+python3 tools/build_schema_tables.py --check     # drift gate
 ```
 
 One is a **measurement** — its input is the working tree, so running it is a
@@ -30,7 +34,7 @@ re-measurement whose output lands as a hand-reviewed diff, never automatically:
 
 | Tool                    | Input          | Output                                                    |
 | ----------------------- | -------------- | --------------------------------------------------------- |
-| `build_rarity_table.py` | the Billy tree | `src/kernel/scan/rarity.zig`'s `density` (paste + review) |
+| `build_rarity_table.py` | a large source tree | `src/kernel/scan/rarity.zig`'s `density` (paste + review) |
 
 ```bash
 python3 tools/build_rarity_table.py --report   # census diagnostics, no table

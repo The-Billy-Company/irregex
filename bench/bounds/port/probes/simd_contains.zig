@@ -28,7 +28,7 @@ const Vec = @Vector(vlen, u8);
 const Mask = std.meta.Int(.unsigned, vlen);
 
 /// Byte-for-byte `simd.contains`, hot filter body bracketed for llvm-mca.
-/// `hay`/`needle` are raw pointer+len so the object links with zero Billy deps.
+/// `hay`/`needle` are raw pointer+len so the object links with zero host-package deps.
 pub export fn portcert_simd_contains(hay_ptr: [*]const u8, hay_len: usize, needle_ptr: [*]const u8, needle_len: usize) bool {
     const hay = hay_ptr[0..hay_len];
     const needle = needle_ptr[0..needle_len];

@@ -1,35 +1,36 @@
 ---
 doc_radar:
   counts:
-    - description: "bench evidence-genre buckets, one per row of the table below"
-      glob: pkg/kernels/irregex/bench/*/
+    - description: "bench evidence-genre buckets that still live in this repo"
+      glob: bench/*/
       unit: dirs
-      equals: 6
+      equals: 4
   sentinels:
     - description: "the Layer B′ measured rung exists as a build step"
-      file: pkg/kernels/irregex/build.zig
+      file: build.zig
       contains: 'b.step("portbound"'
 ---
 
-# gist/bench
+# irregex/bench
 
-Benchmark, verification, and competitive-proof harness for the `gist`
-code-locator kernel — no engine code lives here (that's all under `src/`).
-Evidence is organized into six **evidence-genre buckets**, sorted by what a
-folder _proves_, not by the mechanism it proves it about:
+Benchmark, verification, and competitive-proof harness for the search kernel —
+no engine code lives here (that's all under `src/`). Four evidence-genre
+buckets live in this repo; dominance and certificate moved to the sibling
+`gist` repo (`gist/bench/…`). Sorted by what a folder _proves_, not by the
+mechanism it proves it about:
 
 | Bucket                                  | What it holds                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [`apparatus/`](apparatus/README.md)     | The instruments, and the ground they run over: [`harness/`](apparatus/harness/README.md) — the native `gist-bench` Zig binaries, the microscopic cycles/byte certificate, PMU counters, bootstrap statistics, the shared probe registry; [`corpora/`](apparatus/corpora/README.md) — the multi-corpus fetcher (`fetch.sh` + `torture.py`).                                                                                                                                             |
-| [`conformance/`](conformance/README.md) | Fail-closed correctness — **no timing claim lives here**: [`gates/`](conformance/gates/README.md) (parity · contract · oracle), [`rgsuite/`](conformance/rgsuite/README.md) the rg drop-in replay, [`diag/`](conformance/diag/README.md) the stderr goldens, [`shapes/`](conformance/shapes/README.md) the CLI-shape admission matrix, [`targets/`](conformance/targets/README.md) the cross-compile matrix, [`relate/`](conformance/relate/README.md) the Layer G retrieval contract. |
-| [`dominance/`](dominance/README.md)     | Measured product performance in the world: [`races/`](dominance/races/README.md) the competitor field (`field.sh`) + the multi-tool head-to-heads, [`session/`](dominance/session/README.md) the warm resident-daemon tier, [`evaluate/`](dominance/evaluate/README.md) the operational envelope (lifecycle cost, footprint, scaling, concurrency).                                                                                                                                    |
-| [`certificate/`](certificate/README.md) | The published Dominance-and-Fit claim (was `certify/`): [`mint/`](certificate/mint/README.md) the mint + layer splicers, [`report/`](certificate/report/README.md) `stats.py` + the layer report writers, [`guard/`](certificate/guard/README.md) roster/artifact/release/ratio checks, [`ledger/`](certificate/ledger/README.md) the mint history, and `artifact/` the **frozen** published receipts.                                                                                 |
-| [`bounds/`](bounds/README.md)           | Layers B–D + F — distance from a stated limit: [`port/`](bounds/port/README.md) the `llvm-mca` static + measured µarch bound, [`roofline/`](bounds/roofline/README.md) the memory roof, [`lowerbound/`](bounds/lowerbound/README.md) the information-theoretic candidate-byte floor, [`codex/`](bounds/codex/README.md) the self-index vs the order-0 entropy bound.                                                                                                                   |
+| [`conformance/`](conformance/README.md) | Fail-closed correctness — **no timing claim lives here**: [`gates/`](conformance/gates/README.md) (parity · contract · oracle), [`rgsuite/`](conformance/rgsuite/README.md) the rg drop-in replay, [`diag/`](conformance/diag/README.md) the stderr goldens, [`shapes/`](conformance/shapes/README.md) the CLI-shape admission matrix, [`targets/`](conformance/targets/README.md) the cross-compile matrix. The Layer G retrieval contract lives in the sibling `relate` repo under `relate/bench/conformance/relate/`. |
+| `gist/bench/dominance/`     | Measured product performance in the world (sibling `gist` repo): `gist/bench/dominance/races/` the competitor field (`field.sh`) + the multi-tool head-to-heads, `gist/bench/dominance/session/` the warm resident-daemon tier, `gist/bench/dominance/evaluate/` the operational envelope (lifecycle cost, footprint, scaling, concurrency).                                                                                                                                    |
+| `gist/bench/certificate/` | The published Dominance-and-Fit claim (was `certify/`, sibling `gist` repo): `gist/bench/certificate/mint/` the mint + layer splicers, `gist/bench/certificate/report/` `stats.py` + the layer report writers, `gist/bench/certificate/guard/` roster/artifact/release/ratio checks, `gist/bench/certificate/ledger/` the mint history, and `gist/bench/certificate/artifact/` the **frozen** published receipts.                                                                                 |
+| [`bounds/`](bounds/README.md)           | Layers B–D — distance from a stated limit: [`port/`](bounds/port/README.md) the `llvm-mca` static + measured µarch bound, [`roofline/`](bounds/roofline/README.md) the memory roof, [`lowerbound/`](bounds/lowerbound/README.md) the information-theoretic candidate-byte floor. Layer F (codex self-index vs the order-0 entropy bound) lives in `relate/bench/bounds/codex/`.                                                                                                                   |
 | [`rungs/`](rungs/README.md)             | Per-mechanism production proofs: [`crest/`](rungs/crest/README.md) Layer E + its evidence bundle, plus [`sieve/`](rungs/sieve/README.md), [`shuffle/`](rungs/shuffle/README.md), [`parabix/`](rungs/parabix/README.md), [`multipattern/`](rungs/multipattern/README.md), and [`sliver/`](rungs/sliver/README.md).                                                                                                                                                                      |
 
 ```bash
-cd pkg/kernels/irregex
-zig build -Doptimize=ReleaseFast bench                  # default Billy source roots
+cd <irregex-repo-root>
+zig build -Doptimize=ReleaseFast bench                  # default host source roots
 zig build -Doptimize=ReleaseFast bench -- services libs  # scope to specific dirs
 ```
 
@@ -43,10 +44,10 @@ comparison).
 
 ## The field — who gist races
 
-`dominance/races/`, `conformance/gates/`, and `certificate/` all race gist
+`gist/bench/dominance/races/`, `conformance/gates/`, and `gist/bench/certificate/` all race gist
 against the same **seven** code searchers, split by whether they keep an index.
 The registry, fairness scoping, and per-tool invocations live in
-**[`dominance/races/field.sh`](dominance/races/field.sh)** (sourced by every
+**`gist/bench/dominance/races/field.sh`** (sourced by every
 script below except `equality.sh`); columns auto-skip when a binary isn't
 installed.
 
@@ -95,25 +96,25 @@ fixed. Expect `github.com/google/codesearch v1.2.0` and a
 
 | Script                                     | Race                                                                                                                                                                                                                                              |
 | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `dominance/races/warm.sh`                  | **warm**: gist resident-index p50 vs the unindexed scanners (the long-lived agent-session model)                                                                                                                                                  |
-| `dominance/races/cold.sh`                  | **cold literal**: fresh-process gist vs csearch/zoekt (indexed) + rg/ugrep/ag/ggrep/git-grep (unindexed)                                                                                                                                          |
-| `dominance/races/regex.sh`                 | **cold regex**: same field, gist's byte-class DFA vs RE2 (csearch/zoekt) and PCRE (`-P`) / `(?-u)`                                                                                                                                                |
+| `gist/bench/dominance/races/warm.sh`                  | **warm**: gist resident-index p50 vs the unindexed scanners (the long-lived agent-session model)                                                                                                                                                  |
+| `gist/bench/dominance/races/cold.sh`                  | **cold literal**: fresh-process gist vs csearch/zoekt (indexed) + rg/ugrep/ag/ggrep/git-grep (unindexed)                                                                                                                                          |
+| `gist/bench/dominance/races/regex.sh`                 | **cold regex**: same field, gist's byte-class DFA vs RE2 (csearch/zoekt) and PCRE (`-P`) / `(?-u)`                                                                                                                                                |
 | `conformance/gates/parity/equality.sh`     | **correctness**: gist ≡ `rg` over a byte-exact corpus snapshot (the soundness oracle, INDEX path)                                                                                                                                                 |
 | `conformance/gates/parity/scan_regress.sh` | **scan-path regression + race**: the no-prefilter live-tree scan ≡ `rg` (gate, exits 1 on FN/FP) + min-of-N vs `rg` + the straggler-balance canary                                                                                                |
 | `conformance/gates/contract/streams.sh`    | **output contract** (gate, exits 1 on violation): results→stdout, diagnostics (`—` summary / `[pipeline]` / guidance)→stderr across the literal, rank, and scan paths — the `rg`-conventional split that makes gist composable in agent pipelines |
-| `certificate/mint/mint.sh`                 | **statistical certificate**: the same field, per regex class, with a fail-closed bootstrap-CI + Mann-Whitney verdict vs ripgrep                                                                                                                   |
+| `gist/bench/certificate/mint/mint.sh`                 | **statistical certificate**: the same field, per regex class, with a fail-closed bootstrap-CI + Mann-Whitney verdict vs ripgrep                                                                                                                   |
 
 Each race prints per-query times with gist's speedup, then a summary: **geomean
 speedup and win-rate per tool**, split indexed vs unindexed. Raw rows land in
 `.local/gist-compete/{cold,regex,warm}.csv` for your own analysis. See
-`dominance/races/README.md` and `conformance/gates/README.md` for the
+`gist/bench/dominance/races/README.md` and `conformance/gates/README.md` for the
 scenario-level detail.
 
-`dominance/races/warm.sh` times gist's **in-process** engine (the microsecond
+`gist/bench/dominance/races/warm.sh` times gist's **in-process** engine (the microsecond
 ceiling — no transport, no process spawn), which no client actually rides. The
 honest warm-**product** path — a persistent client dialing a `gist serve` daemon
 once and replaying the slate over that warm connection — is certified separately
-in [`session/`](dominance/session/README.md) (`make bench-gist-session`), the only sound
+in `gist/bench/dominance/session/` (`make bench-gist-session`), the only sound
 basis for a "warm is Nx faster than ripgrep" claim.
 
 ## Fairness — stated, not hand-waved
@@ -135,7 +136,7 @@ tree's own roots — `field.sh` resolves them once, mirroring
   (`$SCOPE`): without them these two alone walk build artifacts the root ignore
   never names — Elixir `_build`/`deps`/`cover`, Electron `out/` — that
   `gist index` prunes and csearch therefore never indexes. Not the whole of
-  `$XDIRS`, because `vendor` holds tracked Billy source; mix output is anchored
+  `$XDIRS`, because `vendor` holds tracked source; mix output is anchored
   per `mix.exs` root for the same reason rule-of-five anchors it.
 - **csearch** indexes gist's **exact corpus file list** (the persisted
   `paths.list` doc→path table) → byte-for-byte the same files → result sets ≈
@@ -186,8 +187,8 @@ rgsuite parity proves `--include-zero` correct, which is not a speed claim.
 Every layer writes into the same `.local/gist-verify/CERTIFICATE.md`. Layer A
 has several lanes — the **microscopic** half (`zig build certify`,
 `apparatus/harness/certify.zig` + `apparatus/harness/pmu.zig` + `apparatus/harness/stats.zig`, see
-`apparatus/harness/README.md`), the **macroscopic** half (`certificate/mint/mint.sh` +
-`certificate/report/stats.py`, see `certificate/README.md`), the warm resident tier, and
+`apparatus/harness/README.md`), the **macroscopic** half (`gist/bench/certificate/mint/mint.sh` +
+`gist/bench/certificate/report/stats.py`, see `gist/bench/certificate/README.md`), the warm resident tier, and
 the `--rank` lane. **One command** mints or refreshes the whole thing — Layers
 B/B′/C/D/E/F and the warm/`--rank`/relate lanes are spliced automatically and
 `guard/artifacts.py` fail-closes if any section is missing.
@@ -200,12 +201,12 @@ repo root, so they run from anywhere.
 ```bash
 # Refresh Layers B/B′/C/D/E/F onto an existing Layer-A bundle (the common path):
 make bench-gist-certify
-# or:  bash pkg/kernels/irregex/bench/certificate/mint/splice.sh
+# or:  bash ../gist/bench/certificate/mint/splice.sh
 
 # Full mint (A micro + PMU if sudo + A macro race + warm + --rank + B–F + relate) + publish:
 CERT_FULL=1 CERT_PUBLISH=1 CERT_SUDO=1 make bench-gist-certify
-# or:  CERT_PUBLISH_DIR=bench/certificate/artifact CERT_SUDO=1 \
-#        bash pkg/kernels/irregex/bench/certificate/mint/mint.sh
+# or:  CERT_PUBLISH_DIR=../gist/bench/certificate/artifact CERT_SUDO=1 \
+#        bash ../gist/bench/certificate/mint/mint.sh
 ```
 
 Run a full mint in a clean, stable checkout or isolated worktree. A live

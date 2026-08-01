@@ -2,19 +2,19 @@
 doc_radar:
   sentinels:
     - description: "the two jaws, the tri-state verdict, the window both take, and the eligibility gate that keeps multiline on the VM"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/caliper/caliper.zig
+      file: src/kernel/regex/linear/caliper/caliper.zig
       contains: ["pub const Verdict", "pub const Window", "pub fn eligible", "pub fn measure", "!multiline"]
     - description: "priority-ordered determinization: an ordered state list, dominance, quitting as an answer, and the accelerators that keep a span step near one load — a per-state mark, the memo-only run, and the two row grains that let a word-bearing program into it"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/caliper/automaton.zig
+      file: src/kernel/regex/linear/caliper/automaton.zig
       contains: ["pub const Machine", "pub const Cache", "dominate", "quit", "const Mark", "pub fn glide", "const Grain", "fn course"]
     - description: "the span walk's prefilter bar is priced against the span walk, not the boolean one"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/automata/dwell.zig
+      file: src/kernel/regex/linear/automata/dwell.zig
       contains: ["pub const min_profitable_stride", "pub const min_profitable_span_stride"]
     - description: "the reversal reuses the forward lowering rather than re-parsing"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/caliper/reverse.zig
+      file: src/kernel/regex/linear/caliper/reverse.zig
       contains: ["pub fn build", "pub fn matchIndex"]
     - description: "one transcription of the zero-width assertions serves both the boolean DFA and both jaws"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/dfa/subset.zig
+      file: src/kernel/regex/linear/dfa/subset.zig
       contains: ["pub const Gap", "pub fn passes"]
 ---
 

@@ -116,7 +116,7 @@ pub const Result = struct { mode: Mode, files: []const []const u8 = &.{}, count:
 pub const Lines = struct { out: []const u8, matched: bool };
 
 /// One streamed selection: a matching line, or a zero-span nonmatching line for
-/// `-v` (ADR-352 rung 3 — the in-process FFI's output unit). `path` aliases the
+/// `-v` (in-process FFI tier — the in-process FFI's output unit). `path` aliases the
 /// mirror path table / overlay key; `text` is
 /// the line CONTENT without its `\n` terminator and aliases session bytes;
 /// `spans` alias `search`'s per-line scratch. All three are valid ONLY during

@@ -1,5 +1,4 @@
 //! gist resident session — the Windows `ReadDirectoryChangesW` freshness backend
-//! (ADR-352 rung 2.5, ADR-372).
 //!
 //! One recursive subscription per root, every completion landing on a single I/O
 //! completion port. Structurally this is the Linux arm, not the macOS one: a
@@ -40,7 +39,7 @@
 //! writer-supplied name, so two byte-spellings can alias one file. A notify record
 //! carries the name *as the directory entry stores it* — one spelling per file, no
 //! matter how the writer opened it — so the key space is the walk's own, exactly as
-//! it is for kqueue's descriptors (ADR-372). Case-insensitive volumes and
+//! it is for kqueue's descriptors. Case-insensitive volumes and
 //! per-directory case-sensitive ones both arm.
 //!
 //! **The extended record class earns its floor.** `NotifyExtended` (Windows 10

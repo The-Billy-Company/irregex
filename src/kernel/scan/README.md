@@ -2,38 +2,38 @@
 doc_radar:
   sentinels:
     - description: "literal-lane algebra lives on the scan floor (shared with the shuffle rung)"
-      file: pkg/kernels/irregex/src/kernel/scan/lanes.zig
+      file: src/kernel/scan/lanes.zig
       contains: ["pub inline fn shuffle", "lanes16 = 16,", "lanes32 = 32,"]
     - description: "simd presence + verify remain the hot scan primitives"
-      file: pkg/kernels/irregex/src/kernel/scan/simd.zig
+      file: src/kernel/scan/simd.zig
       contains: "contains"
     - description: "corpus byte-density table drives anchor selection + the single-probe dispatch"
-      file: pkg/kernels/irregex/src/kernel/scan/rarity.zig
+      file: src/kernel/scan/rarity.zig
       contains: "single_probe_max"
     - description: "the anchor decision is one module with its defects recorded — a second copy of the policy is how a control ends up measuring a different filter"
-      file: pkg/kernels/irregex/src/kernel/scan/anchor.zig
+      file: src/kernel/scan/anchor.zig
       contains:
         - "pub fn select"
         - "RECORDED DEFECT"
     - description: "verify is the fused parallel confirm kernel"
-      file: pkg/kernels/irregex/src/kernel/scan/verify.zig
+      file: src/kernel/scan/verify.zig
       contains: "pub fn"
     - description: "classrun ships the boolean scan, the fused -c line count, and the -o span walker"
-      file: pkg/kernels/irregex/src/kernel/scan/classrun.zig
+      file: src/kernel/scan/classrun.zig
       contains:
         - "pub fn scan"
         - "pub fn countLines"
         - "pub fn nextSpan"
     - description: "teddy carries 64 buckets — the widened multi-literal prefilter, not the old 8"
-      file: pkg/kernels/irregex/src/kernel/scan/teddy.zig
+      file: src/kernel/scan/teddy.zig
       contains: "pub const max_buckets: usize = 64;"
     - description: "the literal-set dispatcher carries the two-authority contract and tiers on teddy's bucket ceiling"
-      file: pkg/kernels/irregex/src/kernel/scan/literal_set.zig
+      file: src/kernel/scan/literal_set.zig
       contains:
         - "pub const Authority = enum { exact, candidate };"
         - "teddy_mod.max_buckets"
     - description: "aho is the sparse large-set automaton bounded by literal bytes, not a states x 256 matrix"
-      file: pkg/kernels/irregex/src/kernel/scan/aho.zig
+      file: src/kernel/scan/aho.zig
       contains: "Sparse Aho"
 ---
 
@@ -50,10 +50,10 @@ directly.
 | File              | Job                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `lanes.zig`       | Literal-lane vocabulary + byte-shuffle algebra (`Vec`, 16/32 widths, `shuffle` / reduction). Std-only; the regex shuffle rung and Teddy share it — moved here from `regex/linear/shuffle/` so teddy never imports the regex package |
-| `simd.zig`        | SIMD substring presence (`contains ≡ std.mem.indexOf`) — memchr-style rare-pair anchor gate for fixed strings, 64-byte blocks gated on a cheap any-lane OR-reduce (movemask only in hit blocks)                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `simd.zig`        | SIMD substring presence (`contains ≡ std.mem.indexOf`) — memchr-style rare-pair anchor gate for fixed strings, 64-byte blocks gated on a cheap any-lane OR-reduce (movemask only in hit blocks). Also owns the **anchor decision as a value**: `Plan` (the chosen pair + single-probe eligibility), `planFor` (static, from the shipped table), `planOn` (the same decision re-priced on one document's bytes), and the `*With` entry points a caller drives a minted plan through. `Gate` carries a plan so the whole-file drop and the hit-jump loop share one decision; `Gate.on(hay)` re-decides it for one body and is idempotent on purpose |
 | `anchor.zig`      | **Which two needle offsets the block filter compares** — the filter's only variable cost, and therefore the one place that decision is allowed to be made. Minimises summed byte rarity, then breaks ties toward the widest separation. Carries the recorded defects: ranking marginals prices a conjunction as `P(a)·P(b)` and so assumes the probes are independent (text badly violates it), and a saturating density table turned that drift into a collapse onto the adjacent pair. See `research/pincer/` |
 | `rarity.zig`      | Corpus-derived byte-density table feeding `anchor`'s selection + the single-probe dispatch threshold (the memchr crate's "rare byte" heuristic, measured over the Billy tree). Its **ordering** is the load-bearing property — a saturating cell is a tie, and a tie hands the decision to a fallback                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `calibrate.zig`   | The same decision as `anchor`, priced on the buffer in hand instead of a shipped table: 64 KB sampled in 256-byte **stratified** windows, cheapest pair wins, 1.03–1.04× of the best-possible pair where the static table is 1.39–2.21×. **Registered and tested but called by nothing, on purpose** — its size gate cannot be evaluated per `indexOfPos` call, because `contains` is invoked once per *line*. Needs a per-scan plan; the full statement is in its module doc                                                                                                                                                                                                                                                                                        |
+| `calibrate.zig`   | The same decision as `anchor`, priced on the buffer in hand instead of a shipped table: 64 KB sampled in 256-byte **stratified** windows, cheapest pair wins, 1.03–1.04× of the best-possible pair where the static table is 1.39–2.21×. Reached only through `simd.planOn`, and as an **improvement test** (`refine`) rather than an override — adopting the sample's favourite unconditionally was a measured CPU tax, and a purely relative accept margin is a winner's curse. Its size gate is a claim about the scan the sampling amortizes against, so it is priced per **document** and never per line; the three document-grain seams that reach it, and the measured 6.9–8.0× on large buffers, are in its module doc |
 | `verify.zig`      | Pure data-parallel candidate-verify kernel + SIMD scan wrappers callers drive                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `teddy.zig`       | Teddy nibble-shuffle multi-literal prefilter (Hyperscan's slim-Teddy, 8 buckets per group): resolves up to `max_buckets` = **64** needles in a constant 2 loads per block via nibble→bucket `tbl`/`pshufb` tables, where the fused first+last gate would pay `1 + N`. Byte-exact leftmost vs `std.mem.indexOf`, proven by the differential fuzz in `simd_test.zig`                                                                                                                                                                                                                                                               |
 | `literal_set.zig` | The **literal-set dispatcher** — one engine over the whole size range. One needle takes the rare-byte `memmem` kernel, sets through 64 take grouped Teddy, larger sets take sparse Aho–Corasick. Every result carries an `Authority`: an `.exact` pure-literal set (the pattern _is_ this alternation) decides presence/position outright, while a `.candidate` cover only nominates a regex-engine candidate. This is the machine the ladder fronts every boolean entry point with (`../regex/linear/ladder/verdict.zig`)                                                                                                       |

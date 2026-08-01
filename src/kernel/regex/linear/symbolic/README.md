@@ -2,19 +2,19 @@
 doc_radar:
   sentinels:
     - description: "the two ceilings this path declines against, and the alphabet's predicate cap"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/symbolic/transcribe.zig
+      file: src/kernel/regex/linear/symbolic/transcribe.zig
       contains: ["pub const max_states: u32 = 4096;"]
     - description: "the decoder's node ceiling and the rejected-minterm prune that keeps it small"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/symbolic/decoder.zig
+      file: src/kernel/regex/linear/symbolic/decoder.zig
       contains: ["pub const max_nodes: u32 = 4096;", "fn rejected(", "pub fn classes("]
     - description: "the codepoint determinizer bills the SAME visit meter the byte one does"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/symbolic/determinize.zig
+      file: src/kernel/regex/linear/symbolic/determinize.zig
       contains: ["visits: u64", "fn step(", "reseed: u32,"]
     - description: "the facade decides eligibility and converts every decline into a byte-path fallback"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/symbolic/symbolic.zig
+      file: src/kernel/regex/linear/symbolic/symbolic.zig
       contains: ["pub fn eligible", "pub fn build", "declined"]
     - description: "the compile-time knob that keeps the byte powerset reachable as the oracle"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/program/lower.zig
+      file: src/kernel/regex/linear/program/lower.zig
       contains: ["pub const Symbolic = enum { auto, off };", "symbolic.eligible(ast)"]
 ---
 

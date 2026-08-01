@@ -13,7 +13,7 @@
 # `scan_regress.sh` (which proves the live scan
 # ≡ rg) and rgsuite (which proves the walk ≡ rg): here the oracle is gist's own
 # `--no-index` path, so "the index only changes speed, never results" is
-# continuously verified, not merely asserted (sins.mdc: truth, not vibes).
+# continuously verified, not merely asserted (prove with measurement, not assertion).
 #
 # Hermetic: builds a throwaway corpus under one of gist's indexed roots (`libs/`
 # so `gist index`'s default_roots covers it), indexes it, then diffs auto-index
@@ -34,7 +34,7 @@ set -uo pipefail
 # identical full output (the hard OOM ceiling stays on).
 export GIST_UNCAP=1
 HERE="$(cd "$(dirname "$0")" && pwd)"
-KERNEL="$(cd "${HERE}/../../../.." && pwd)" # pkg/kernels/irregex
+KERNEL="$(cd "${HERE}/../../../.." && pwd)" # this repo root
 
 echo "building gist (ReleaseFast)…"
 (cd "${KERNEL}" && zig build -Doptimize=ReleaseFast > /dev/null 2>&1) || {

@@ -2,10 +2,10 @@
 doc_radar:
   sentinels:
     - description: "PatternSet + loom.Plan remain the closed set-ops surface"
-      file: pkg/kernels/irregex/src/kernel/slate/patterns.zig
+      file: src/kernel/slate/patterns.zig
       contains: "pub const PatternSet"
     - description: "loom keeps the closed plan ops"
-      file: pkg/kernels/irregex/src/kernel/slate/loom.zig
+      file: src/kernel/slate/loom.zig
       contains: "pub const Plan"
 ---
 
@@ -13,7 +13,7 @@ doc_radar:
 
 Was `kernel/slate/`. Operate on **many intents** or a **whole result stream**
 at once, engine-side, with exact answers — the set-shaped half of the irregex
-primitives (ADR-363). What backs `relate patterns` and the dragnet/trawl
+primitives. What backs `relate patterns` and the dragnet/trawl
 multipattern tiers (`muster` · `trawl`).
 
 ## Files
@@ -37,4 +37,4 @@ New closed ops in the loom vocabulary, attribution shape changes, or fused
 gate soundness. Verb UX lives in `surface/face/relate/`; match semantics in
 `kernel/regex/`.
 
-Design: [ADR-363](../../../../../../docs/architecture/3-decisions/363-irregex-primitives.md).
+The primitives are set-shaped: match, relate, weave.

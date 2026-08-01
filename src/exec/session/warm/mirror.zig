@@ -1,5 +1,4 @@
 //! gist resident session — the faithful in-RAM mirror of the walked tree
-//! (ADR-352 rung 2.5).
 //!
 //! `load` reads a pre-selected path list (the certified rg-default walk,
 //! `exec/cold/engine/serial.zig::defaultFileSet`) into resident documents with the
@@ -30,7 +29,7 @@
 //! Documents and path strings live in one arena (freed as a unit); `docs` is a
 //! plain `[][]const u8` so the trigram index builds over it directly.
 //!
-//! ## Two-tier byte store (ADR-352 rung 2.5)
+//! ## Two-tier byte store
 //!
 //! An unchanged corpus file's bytes need not be re-read into the heap: `gist
 //! index` already concatenated every member body into the mmap'd, page-cache-

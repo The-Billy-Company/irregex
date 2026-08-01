@@ -2,13 +2,13 @@
 doc_radar:
   sentinels:
     - description: "binary policy is one module both walk engines call — the NUL cut, the two geometries, and the notes stay together"
-      file: pkg/kernels/irregex/src/exec/cold/read/binary.zig
+      file: src/exec/cold/read/binary.zig
       contains: ["pub fn committedPrefix", "pub fn handleBinary", "pub fn multilineBinary"]
     - description: "one read strategy and one raw-stat projection, so neither engine invents its own"
-      file: pkg/kernels/irregex/src/corpus/read/slurp.zig
+      file: src/corpus/read/slurp.zig
       contains: ["pub const BUFCAP", "pub const StagedFile", "pub fn mapFile"]
     - description: "-E still covers the WHATWG CJK multi-byte decoders"
-      file: pkg/kernels/irregex/src/corpus/read/encoding.zig
+      file: src/corpus/read/encoding.zig
       contains: ["gb18030", "shift_jis", "euc_jp"]
 ---
 
@@ -28,8 +28,8 @@ Byte legibility (encoding · inode · legible · slurp) moved to [`../../../corp
 
 `auto` encoding (the default) sniffs BOM — UTF-8 stripped, UTF-16 transcoded.
 `none` disables even that; an explicit WHATWG label forces a transcode.
-Generated tables are refreshed by `make gen-gist-encoding` (see
-[`../../../../../tools/whatwg/`](../../../../../tools/whatwg/)).
+Generated tables are refreshed by `python3 tools/build_encoding_tables.py` (see
+[`../../../../tools/whatwg/`](../../../../tools/whatwg/)).
 
 Walk-failure wording (`printWalkError`, `printNothingSearched`) is **not** here —
 it describes the descent rather than a file's bytes, so it lives beside the walk
@@ -39,5 +39,5 @@ in [`../quarry/notice.zig`](../quarry/notice.zig).
 
 Binary policy, staged-read strategy, `-z` / `--pre` / `-E` ingest, or WHATWG
 decoder coverage. Encoding pin bumps go through
-`pkg/kernels/irregex/tools/whatwg/` — never hand-edit
+`tools/whatwg/` — never hand-edit
 `encoding_tables.gen.zig`.

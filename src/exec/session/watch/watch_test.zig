@@ -1,4 +1,4 @@
-//! gist resident session — the freshness-watcher barrier suite (ADR-352 rung 2.5).
+//! gist resident session — the freshness-watcher barrier suite.
 //!
 //! The watcher is a pure *accelerator*: when it proves quiescence the session
 //! takes the microsecond clean path; on any event it forces a reconcile. These
@@ -6,7 +6,7 @@
 //! `clean` true (fast path) and a `markDirty` clears it (back to reconcile) —
 //! and prove the real `Watcher` lifecycle (`start`/`stop`) is crash-free. All
 //! three report-in-the-operation backends arm causal quiescence (Linux inotify ·
-//! macOS kqueue, ADR-372 · Windows `ReadDirectoryChangesW`); a target without one
+//! macOS kqueue · Windows `ReadDirectoryChangesW`); a target without one
 //! stays reconcile-always.
 //!
 //! It then pins THE PROMISE ITSELF, over the real `Watcher` and a real tree

@@ -2,29 +2,29 @@
 doc_radar:
   sentinels:
     - description: "PathFilter owns path scoping; the pure glob matcher lives on the math floor"
-      file: pkg/kernels/irregex/src/corpus/scope/filter.zig
+      file: src/corpus/scope/filter.zig
       contains: ["pub const PathFilter", "glob.zig"]
     - description: "language type table stays lookup-driven"
-      file: pkg/kernels/irregex/src/corpus/scope/types.zig
+      file: src/corpus/scope/types.zig
       contains: ["extsForType", "isKnownType"]
     - description: "the partition stays total, comptime-proved against the type table, and code stays the default"
-      file: pkg/kernels/irregex/src/corpus/scope/genus.zig
+      file: src/corpus/scope/genus.zig
       contains:
         - "pub const Genus = enum"
         - "unclassified -t type (add it to genus.zig)"
         - "-t type classified into two genera"
         - "return .code;"
     - description: "path normalization remains shared with corpus ignore"
-      file: pkg/kernels/irregex/src/corpus/scope/paths.zig
+      file: src/corpus/scope/paths.zig
       contains: ["stripDot", "rootDepth"]
     - description: "the charter declares corpus facts, not taste"
-      file: pkg/kernels/irregex/src/corpus/scope/charter.zig
+      file: src/corpus/scope/charter.zig
       contains: ["pub const Charter", "pub fn governing", "pub fn honorNoConfig"]
     - description: "did-you-mean lives on the math floor; three planes consume it"
-      file: pkg/kernels/irregex/src/kernel/math/misread.zig
+      file: src/kernel/math/misread.zig
       contains: ["pub const Diagnostic", "pub fn nearest", "pub fn keepToken"]
     - description: "the charter's three keys each reach a real seam"
-      file: pkg/kernels/irregex/src/corpus/tree/corpus.zig
+      file: src/corpus/tree/corpus.zig
       contains: ["if (charter.governing()) |c| if (c.roots.len > 0) {"]
 ---
 
@@ -75,9 +75,9 @@ The compile-time proof is about *spellings*; totality and disjointness are claim
 about a whole tree, which no unit test can make. Those are asserted over the live
 repo by
 [`bench/conformance/gates/parity/partition_parity.sh`](../../../bench/conformance/gates/parity/partition_parity.sh)
-on every `make test-gist`, and the classification's behavior against a
+on every `zig build test`, and the classification's behavior against a
 hand-assembled `-t` union is gated by
-[`bench/dominance/partition/`](../../../bench/dominance/partition/README.md). Edit
+`gist/bench/dominance/partition/`. Edit
 a genus here and expect both to have an opinion.
 
 ## The charter

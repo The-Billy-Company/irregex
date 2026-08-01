@@ -2,10 +2,10 @@
 doc_radar:
   sentinels:
     - description: "the compiled-NFA reachability analysis is sound and conservative — a wrong answer only costs a full scan, never a missed match"
-      file: pkg/kernels/irregex/src/kernel/regex/analysis/reach.zig
+      file: src/kernel/regex/analysis/reach.zig
       contains: ["pub fn analyzeFirst", "pub fn reachesMatchEol"]
     - description: "the forced-crest calculus reads the engine's own AST (the PROOF §3.7a Grammar Contract) — a wrong answer here skips a file that matches, so unlike its siblings it is the one analysis whose failure mode is a missed match"
-      file: pkg/kernels/irregex/src/kernel/regex/analysis/swell.zig
+      file: src/kernel/regex/analysis/swell.zig
       contains: ["pub fn forcedSwell", "syntax.zig"]
 ---
 

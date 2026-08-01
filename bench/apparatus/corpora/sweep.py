@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Multi-corpus differential sweep: `gist rg` vs real ripgrep on foreign trees.
 
-Every other gate in bench/ measures ONE corpus (the Billy monorepo). This
+Every other gate in bench/ measures ONE corpus (a large host monorepo). This
 sweep replays a broad flag/pattern slate over each installed corpus in
 `.local/gist-corpora/` (see fetch.sh) — trees with radically different shapes:
 the Linux kernel (C at scale), CPython (encoding fixtures), TypeScript
@@ -40,8 +40,8 @@ import time
 
 
 HERE = Path(__file__).resolve().parent
-KERNEL = HERE.parents[2]
-REPO = KERNEL.parents[2]
+KERNEL = HERE.parents[2]  # corpora → apparatus → bench → repo
+REPO = KERNEL
 GIST = KERNEL / "zig-out" / "bin" / "gist"
 CORPORA = Path(os.environ.get("GIST_CORPORA_DIR", REPO / ".local" / "gist-corpora"))
 TIMEOUT = int(os.environ.get("SWEEP_TIMEOUT", "300"))

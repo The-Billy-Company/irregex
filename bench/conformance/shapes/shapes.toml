@@ -1,4 +1,4 @@
-# gist CLI-shape admission matrix (ADR-352).
+# gist CLI-shape admission matrix.
 #
 # One machine-readable row per SUPPORTED CLI shape gist claims, spanning the
 # dimensions a locator's behavior actually turns on: `mode` (linear / -U / -P),
@@ -24,7 +24,7 @@
 #
 # Patterns are chosen for known corpus selectivity (rare = one service symbol,
 # common = a ubiquitous keyword) so the selectivity dimension is real, not a label.
-# Roots default to the six Billy source roots (mirrors corpus.resolveRoots and
+# Roots default to the six host source roots (mirrors corpus.resolveRoots and
 # _compete.sh); a row may override `roots` to exercise a bounded subtree.
 #
 # ONE WORD OF WARNING ABOUT `select`, PAID FOR IN A REAL DEFECT

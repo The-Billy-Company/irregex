@@ -8,7 +8,7 @@
 # needs its own soundness oracle since it's a different traversal.
 #
 # Two things, both kept permanent so the win can't silently rot and the next
-# exploration starts from a measured floor (sins.mdc: prove with truth, not vibes):
+# exploration starts from a measured floor (prove with measurement, not assertion):
 #
 #   1. SOUNDNESS (the gate). gist's match-set must equal plain `rg (?-u) -l` over
 #      the SAME roots — gist's tree-walk now honors `.gitignore` and excludes

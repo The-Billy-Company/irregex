@@ -1,17 +1,16 @@
 ---
 doc_radar:
   counts:
-    - description: "index artifact packages (trigrams · postings · crest · atlas · frag · content · phantom · shelf · frame); a transitional empty codex/ shell may still be present"
-      glob: pkg/kernels/irregex/src/corpus/index/*
+    - description: "index artifact packages (trigrams · postings · crest · content · phantom · shelf · frame)"
+      glob: src/corpus/index/*
       unit: dirs
-      min: 9
-      max: 10
+      equals: 7
   sentinels:
     - description: "the elision contract every index package is built on"
-      file: pkg/kernels/irregex/src/exec/cold/engine/README.md
+      file: src/exec/cold/engine/README.md
       contains: "Index is an accelerator, not an authority."
     - description: "every mapped artifact loads through the one shared protocol"
-      file: pkg/kernels/irregex/src/corpus/index/frame/frame.zig
+      file: src/corpus/index/frame/frame.zig
       contains: ["pub fn mapArtifact"]
 ---
 
@@ -22,11 +21,11 @@ decides which files exist; indexes only prove that some cannot match (or answer
 count/find/restore / kinship without a full scan). `--no-index`, a missing
 anchor, or a corrupt artifact always degrades to slower-but-identical answers.
 
-FM-index _math_ lives in [`../../kernel/codex/`](../../kernel/codex/README.md);
-the on-disk shelf is [`shelf/`](shelf/README.md). Freshness lives in
+FM-index _math_ lives in [`../../kernel/codex/`](../../kernel/codex/);
+the on-disk shelf is [`shelf/`](shelf/). Freshness lives in
 [`../fresh/`](../fresh/README.md), not under trigrams. The wire floor
 ([`frame/`](frame/README.md)) sits architecturally above `fault`, even though
-it lives here on disk.
+it lives here on disk. Kinship artifacts (atlas / frag) live in `relate`.
 
 ## Indexes, by what they eliminate
 
@@ -37,8 +36,8 @@ it lives here on disk.
 | [`phantom/`](phantom) | directory listing syscalls | `tree.map` membership snapshot |
 | [`content/`](content) | per-file open/read/close | `content.shard` mmap of unchanged bodies |
 | [`shelf/`](shelf) | the corpus itself (for count/find/restore) | Persisted SHLF over the kernel codex |
-| [`atlas/`](atlas) | re-sketching every file | Warm LZJD sketches for `relate similar` / `echoes` |
-| [`frag/`](frag) | re-sketching every function | Per-function silhouettes for `--unit function` |
+| `relate/src/corpus/index/atlas/` | re-sketching every file | Warm LZJD sketches for `relate similar` / `echoes` |
+| `relate/src/corpus/index/frag/` | re-sketching every function | Per-function silhouettes for `--unit function` |
 
 ## Substrate packages
 

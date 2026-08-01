@@ -2,42 +2,42 @@
 doc_radar:
   sentinels:
     - description: "Layer H's markers and title are this harness's alone"
-      file: pkg/kernels/irregex/bench/certificate/report/portable.py
+      file: bench/certificate/report/portable.py
       contains: ["<!-- PORTABLE-LAYER-START -->", "<!-- PORTABLE-LAYER-END -->", "## Layer H — portability (target matrix, executed)"]
     - description: "the conformance slate defeats gist's output cap, proves the vendored PCRE2 per target, and caps the translation-layer lane at its own rung"
-      file: pkg/kernels/irregex/bench/conformance/targets/matrix.py
+      file: bench/conformance/targets/matrix.py
       contains: ["--uncap", "PCRE2_PROBE", "TIERS", "conforms-wine", "LANE_CEILING", "WINE_DOCKERFILE"]
     - description: "the Wine ceiling is read by the scorer, not just declared"
-      file: pkg/kernels/irregex/bench/conformance/targets/portable.py
+      file: bench/conformance/targets/portable.py
       contains: ["lane_ceiling(t[\"lane\"])"]
     - description: "one comptime seam carries every Windows fork the descent needed"
-      file: pkg/kernels/irregex/src/portal.zig
+      file: src/portal.zig
       contains: ["fn ntOpen", "resident_sessions", "GetFinalPathNameByHandleA", "fn argsIterator"]
     - description: "the Windows whole-file view is a demand-paged section, and will_need really prefetches"
-      file: pkg/kernels/irregex/src/portal.zig
+      file: src/portal.zig
       contains: ["fn ntMap", "NtCreateSection", "NtMapViewOfSection", "fn ntAdvise", "PrefetchVirtualMemory"]
       absent: ["VirtualAlloc("]
     - description: "volume identity is its own query on Windows, and not the class Wine leaves unimplemented"
-      file: pkg/kernels/irregex/src/corpus/read/inode.zig
+      file: src/corpus/read/inode.zig
       contains: ["pub fn devicePath", "fn volumeSerial", "NtQueryInformationFile", ".Id)"]
       absent: ["NtQueryVolumeInformationFile"]
     - description: "a walker path is normalized to gist's one separator, at the seam rather than per consumer — and free on a platform already spelling it"
-      file: pkg/kernels/irregex/src/corpus/scope/paths.zig
+      file: src/corpus/scope/paths.zig
       contains: ["pub fn slashed", "pub fn slashInPlace", "replaceScalar", "std.fs.path.sep == '/'"]
     - description: "the serial walk normalizes what the walker lends it (its own buffer, since the walker overwrites that one)"
-      file: pkg/kernels/irregex/src/exec/cold/quarry/walk.zig
+      file: src/exec/cold/quarry/walk.zig
       contains: ["paths_mod.slashed(a, entry.path)"]
     - description: "the corpus haystack normalizes the join it already owns, so the second seam adds no allocation"
-      file: pkg/kernels/irregex/src/corpus/tree/haystack.zig
+      file: src/corpus/tree/haystack.zig
       contains: ["paths.slashInPlace(path)"]
     - description: "the native Windows lane still asks what Wine cannot answer, on both architectures, and still asserts the Win32-only contract"
       file: .github/workflows/gist-windows.yml
       contains: ["windows-2025", "windows-11-arm", "zig build test", "Win32 contract"]
     - description: "a sweep is hermetic against the ~10 coworker agents editing this tree"
-      file: pkg/kernels/irregex/bench/conformance/targets/crossbuild.py
+      file: bench/conformance/targets/crossbuild.py
       contains: ["def snapshot", "def frozen", "def control"]
     - description: "the probe slate this harness mirrors class-for-class"
-      file: pkg/kernels/irregex/bench/apparatus/harness/probes.zig
+      file: bench/apparatus/harness/probes.zig
       contains: ["literal-punct2", "regex-classcount", "regex-litalt"]
 ---
 

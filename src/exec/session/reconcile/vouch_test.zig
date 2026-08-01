@@ -41,7 +41,7 @@
 //!      walk saves the QUERY and does nothing for an answer already held.
 //!
 //! The oracle never runs the engine: it is a re-read of the fixture's own live
-//! ledger, so a backend bug cannot grade its own homework (sins.mdc Sin #2).
+//! ledger, so a backend bug cannot grade its own homework (never bandaid a test: derive expectations from an independent oracle).
 
 const std = @import("std");
 const builtin = @import("builtin");

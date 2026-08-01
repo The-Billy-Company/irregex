@@ -3,7 +3,7 @@
 Every layer of Crest is tested at the level where its failure would be
 invisible elsewhere, and every soundness gate is **fail-closed**: a violation
 exits non-zero, and the fix is always the calculus, never the assertion
-(sins.mdc Sin #2 — no bandaids).
+(never bandaid a failing test).
 
 The one property that matters is **soundness**: `matched ⇒ ¬pruned`, for
 every document, every pattern, every mode. A false _positive_ (a survivor the
@@ -51,7 +51,7 @@ years later, so it gets the adversarial treatment the trigram loader gets:
 
 ## 3. Production proof harness — `bench/crest/bench.zig` (`zig build crest`)
 
-Links the **real** engine (`Regex.docMatch`) and walks the **real** Billy
+Links the **real** engine (`Regex.docMatch`) and walks the **real** host
 corpus via the same `corpus.load` the optimality certificate uses. Six gates
 per run:
 
@@ -144,12 +144,12 @@ trail (PRIOR_ART.md §7–8).
 ## 7. Reproduce everything
 
 ```bash
-cd pkg/kernels/irregex
+cd <irregex-repo-root>
 zig build test        # §1 + §2 + engine parity suites
 zig build crest       # §3 — exploratory raw evidence in .local/crest-evidence/
 gist index && gist status   # §4 — sidecar persisted alongside index.gist
 python3 spikes/ridge-spectrum/ridge.py --oracle --selftest  # §5 — oracle + property suite
 cd ../../..
-python3 pkg/kernels/irregex/bench/rungs/crest/evidence/crest_evidence.py package
+python3 bench/rungs/crest/evidence/crest_evidence.py package
 # clean committed HEAD only: source archive + manifests + samples + monograph
 ```

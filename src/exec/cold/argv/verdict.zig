@@ -6,7 +6,7 @@
 //! rather than being coerced into a plausible default. That is the whole reason
 //! the value grammar is its own module — a silently-clamped `--max-filesize` or
 //! a silently-ignored `--sort` key produces a *wrong result set* that looks like
-//! a right one, which `contract/search_api.toml` forbids outright.
+//! a right one, which `contract/engine.toml` forbids outright.
 //!
 //! It sits at the bottom of the argv package: it knows nothing about `Opts`,
 //! the flag catalog, or the parse loop, so every layer above may lean on it.

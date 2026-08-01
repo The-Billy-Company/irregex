@@ -12,7 +12,7 @@ they oracle against**:
 
 `parity/scan_regress.sh` and `contract/streams.sh` source the shared field
 registry at
-[`../../dominance/races/field.sh`](../../dominance/races/field.sh); `equality.sh`,
+`gist/bench/dominance/races/field.sh`; `equality.sh`,
 `index_elision_parity.sh`, and `enum_determinism.sh` are pure gist-side oracles
 and need no field registry (`enum_determinism.sh` diffs gist against itself and
 needs no `rg`).
@@ -31,7 +31,7 @@ index was built. Any divergence means the index is altering _results_, not just
 skipping reads, which breaks gist's core safety claim.
 
 ```bash
-cd pkg/kernels/irregex
+cd <irregex-repo-root>
 bench/conformance/gates/parity/index_elision_parity.sh
 ```
 
@@ -54,7 +54,7 @@ the flags aren't quietly no-ops). There is no `rg` column because ripgrep has no
 docs/code axis to oracle against; the invariants are the specification.
 
 ```bash
-cd pkg/kernels/irregex
+cd <irregex-repo-root>
 bench/conformance/gates/parity/partition_parity.sh
 ```
 
@@ -81,7 +81,7 @@ the order-dependent truncation lived; the warm client applies the identical
 exemption in `tryWarm`, so the engines can't disagree on which files `-l` returns.
 
 ```bash
-cd pkg/kernels/irregex
+cd <irregex-repo-root>
 bench/conformance/gates/contract/enum_determinism.sh
 ```
 
@@ -100,7 +100,7 @@ diff can't race), then runs `rg` over that identical snapshot and diffs:
 Both must be zero.
 
 ```bash
-cd pkg/kernels/irregex
+cd <irregex-repo-root>
 bench/conformance/gates/parity/equality.sh 150 1   # gist ≡ rg over a byte-exact corpus snapshot, per needle
 ```
 
@@ -118,7 +118,7 @@ byte) and asserts `gist rg <pat>` is stdout + exit-code byte-identical to
 Runs once per engine (parallel `pipeline.zig` + serial `run.zig`).
 
 ```bash
-cd pkg/kernels/irregex
+cd <irregex-repo-root>
 bench/conformance/gates/parity/unicode_parity.sh
 ```
 
@@ -141,7 +141,7 @@ doesn't cover it — this script is the companion oracle:
 Built ReleaseFast (release-vs-release with `rg`).
 
 ```bash
-cd pkg/kernels/irregex
+cd <irregex-repo-root>
 bench/conformance/gates/parity/scan_regress.sh         # gate + race, default runs=12
 bench/conformance/gates/parity/scan_regress.sh 20      # tighter timing
 ```
@@ -156,6 +156,6 @@ checked for (a) results present on stdout and (b) no diagnostic leaking onto
 stdout, with a distinct stderr budget for `--rank`'s timing line.
 
 ```bash
-cd pkg/kernels/irregex
+cd <irregex-repo-root>
 bench/conformance/gates/contract/streams.sh
 ```

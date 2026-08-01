@@ -1,18 +1,18 @@
 ---
 doc_radar:
   paths_exist:
-    - pkg/kernels/irregex/bench/rungs/multipattern/bench.zig
-    - pkg/kernels/irregex/bench/rungs/multipattern/vscan.c
-    - pkg/kernels/irregex/bench/rungs/multipattern/pack.py
-    - pkg/kernels/irregex/bench/dominance/races/multipattern.sh
-    - pkg/kernels/irregex/bench/certificate/report/multipattern.py
-    - pkg/kernels/irregex/src/kernel/slate/muster.zig
+    - bench/rungs/multipattern/bench.zig
+    - bench/rungs/multipattern/vscan.c
+    - bench/rungs/multipattern/pack.py
+    - bench/dominance/races/multipattern.sh
+    - bench/certificate/report/multipattern.py
+    - src/kernel/slate/muster.zig
   sentinels:
-    "pkg/kernels/irregex/bench/rungs/multipattern/vscan.c":
+    "bench/rungs/multipattern/vscan.c":
       contains:
         - hs_compile_lit_multi
         - hs_scan
-    "pkg/kernels/irregex/bench/rungs/multipattern/bench.zig":
+    "bench/rungs/multipattern/bench.zig":
       contains:
         - "fn oracle"
         - PatternSet
@@ -52,13 +52,13 @@ Both arms emit one JSON object on stdout with the same keys (`gbps`, `doc_hits`,
 ## Running it
 
 Vectorscan is a **competitor, not a dependency**: it is never vendored and never
-enters Billy's dependency trust plane. The harness finds it through
+enters a dependency trust plane. The harness finds it through
 `pkg-config libhs` and skips every Vectorscan cell with a stated reason when it
 is absent.
 
 ```bash
 brew install vectorscan                     # optional — the rival column
-cd pkg/kernels/irregex
+cd <irregex-repo-root>
 zig build -Doptimize=ReleaseFast lab        # builds the `multipattern` arm
 bash bench/races/multipattern.sh            # both arms, sweeps N=4,8,16,32,64
 bash bench/races/multipattern.sh -n 8,64 -m 32 services libs   # narrower

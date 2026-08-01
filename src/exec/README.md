@@ -2,12 +2,12 @@
 doc_radar:
   counts:
     - description: "exec keeps cold · retrieval · session"
-      glob: pkg/kernels/irregex/src/exec/*
+      glob: src/exec/*
       unit: dirs
       equals: 3
   sentinels:
     - description: "cold serial engine remains the root search re-export"
-      file: pkg/kernels/irregex/src/root.zig
+      file: src/root.zig
       contains: 'pub const search = @import("exec/cold/engine/serial.zig");'
 ---
 
@@ -21,8 +21,8 @@ shapes. A `face/` imports these engines; an engine never imports a face.
 | Rung | Transport | Job |
 | ---- | --------- | --- |
 | [`cold/`](cold) | 1 (subprocess) | The certified rg-DEFAULT drop-in: argv → writ → quarry → read → engine → emit |
-| [`retrieval/`](retrieval) | shared | Fingerprint-lexicon retrieval `relate similar` / `pack` ride — shared by cold and warm |
-| [`session/`](session) | 2.5 (UDS daemon) | Resident corpus + index; owns `daemon/{client,serve}` since the ADR-352 move |
+| `relate/src/exec/retrieval/` | shared | Fingerprint-lexicon retrieval `relate similar` / `pack` ride — shared by cold and warm |
+| [`session/`](session) | 2.5 (UDS daemon) | Resident corpus + index; owns `daemon/{client,serve}` since the session-plane move |
 
 ## The one match opinion
 
@@ -37,9 +37,9 @@ through `kernel/query/query.zig`, and `session/` reuses `cold/`'s own `Emitter`
 - **cold owns the walk.** `session/` re-derives its file set from
   `cold/engine/serial.zig::defaultFileSet` on every reconcile.
 
-The in-process C-ABI rung 3 lives in [`../surface/ffi`](../surface/ffi); it
+The in-process C ABI lives in `gist/src/surface/ffi/`; it
 shares the resident session but is documented there.
 
 Deep dives: [`cold/README.md`](cold/README.md),
 [`session/README.md`](session/README.md),
-[`retrieval/README.md`](retrieval/README.md).
+`relate/src/exec/retrieval/README.md`.

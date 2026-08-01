@@ -62,7 +62,7 @@ import time
 
 
 HERE = Path(__file__).resolve().parent
-KERNEL = HERE.parents[3]  # bench/conformance/gates/oracle -> pkg/kernels/irregex
+KERNEL = HERE.parents[3]  # oracle → gates → conformance → bench → repo
 
 # gist soft-caps its own output (agent-context guard); lift it so a high-hit query
 # is byte-complete for the set comparison. The hard OOM ceiling stays on.

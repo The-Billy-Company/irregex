@@ -1,40 +1,40 @@
 <!--
 doc_radar:
   paths_exist:
-    - pkg/kernels/irregex/src/exec/session/watch/watch.zig
-    - pkg/kernels/irregex/src/exec/session/watch/inotify.zig
-    - pkg/kernels/irregex/src/exec/session/watch/kqueue.zig
-    - pkg/kernels/irregex/src/exec/session/watch/coverage.zig
-    - pkg/kernels/irregex/src/exec/session/watch/budget.zig
-    - pkg/kernels/irregex/src/exec/session/watch/notify.zig
-    - pkg/kernels/irregex/src/exec/session/watch/rig.zig
+    - src/exec/session/watch/watch.zig
+    - src/exec/session/watch/inotify.zig
+    - src/exec/session/watch/kqueue.zig
+    - src/exec/session/watch/coverage.zig
+    - src/exec/session/watch/budget.zig
+    - src/exec/session/watch/notify.zig
+    - src/exec/session/watch/rig.zig
   sentinels:
-    - file: pkg/kernels/irregex/src/exec/session/watch/notify.zig
+    - file: src/exec/session/watch/notify.zig
       description: the Windows backend subscribes recursively and drains onto a completion port, so a flushSync barrier can collect packets no background thread touched
       contains:
         ["pub fn startNotify", "pub fn drainNotifyLocked", "NtNotifyChangeDirectoryFileEx", "NtRemoveIoCompletion", "NotifyExtended"]
-    - file: pkg/kernels/irregex/src/exec/session/watch/rig.zig
+    - file: src/exec/session/watch/rig.zig
       description: the barrier suite both exact backends are judged by lives in one harness rather than once per platform
       contains: ["pub const live", "pub fn withSeededRig"]
-    - file: pkg/kernels/irregex/src/exec/session/watch/inotify.zig
+    - file: src/exec/session/watch/inotify.zig
       contains: ["pub fn startInotify", "pub fn drainInotifyLocked", "FS_CASEFOLD_FL"]
-    - file: pkg/kernels/irregex/src/exec/session/watch/kqueue.zig
+    - file: src/exec/session/watch/kqueue.zig
       contains: ["pub fn startKqueue", "pub fn drainKqueueLocked", "vnode_notes"]
       absent: ["FSEventStreamCreate"]
-    - file: pkg/kernels/irregex/src/exec/session/watch/coverage.zig
+    - file: src/exec/session/watch/coverage.zig
       description: the admission walk both selects the watch set and registers each admitted vnode, so the kevent filter is minted here
       contains: ["pub fn coverRoots", "isIgnoreSource", "EVTONLY", "EVFILT.VNODE", "fn vanished"]
-    - file: pkg/kernels/irregex/src/exec/session/watch/budget.zig
+    - file: src/exec/session/watch/budget.zig
       contains: ["pub fn watchBudget", "kern.maxfilesperproc", "kern.maxfiles"]
 -->
 
 # `watch/` — the freshness watcher backends
 
 The freshness watcher is a pure **accelerator** for the reconcile barrier
-(ADR-372, ADR-352 rung 2.5): it keeps a resident session honest about when it
+: it keeps a resident session honest about when it
 may skip the reconcile walk, and never a correctness dependency — a session
 that cannot arm simply reconciles every query (fail-closed). Correctness itself
-lives in [`../reconcile/`](../freshness) — this folder only decides _whether, and
+lives in [`../reconcile/`](../reconcile) — this folder only decides _whether, and
 how narrowly,_ that barrier has to walk.
 
 [`watch.zig`](watch.zig) is the facade: the public `Watcher(Session)` type, the

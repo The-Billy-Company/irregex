@@ -37,7 +37,7 @@ const record_len = crest.K * @sizeOf(u16);
 /// One fact: this sidecar cannot be written as asked. A doc count past the
 /// u32 id space, a length that overflows `usize`, and a destination shorter
 /// than the record table are three checks for it, not three failures — the
-/// caller loses the crest sieve either way (ADR-373 law 2).
+/// caller loses the crest sieve either way (fault-channel law 2).
 pub const EncodeError = error{Oversized};
 
 /// Checked form used by the decoder so a hostile count can never wrap into a

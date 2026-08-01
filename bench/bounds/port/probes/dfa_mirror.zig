@@ -26,7 +26,7 @@
 //! question, answered by `bench/rungs/automata -- burst`.
 //!
 //! Tables arrive as raw pointers (not a `Dfa`) so the object links with zero
-//! Billy dependencies, yet `probes_test.zig` builds a REAL `Dfa` via
+//! host-package dependencies, yet `probes_test.zig` builds a REAL `Dfa` via
 //! `Regex.compile`, hands over its `wide` mirror's tables and bound, and asserts
 //! this probe's verdict is bit-identical to `Dfa.docMatch` — a true differential
 //! drift guard rather than an oracle.

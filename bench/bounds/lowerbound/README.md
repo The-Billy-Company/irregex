@@ -2,10 +2,10 @@
 doc_radar:
   sentinels:
     - description: "Layer D consumes the shared first and last certificate classes"
-      file: pkg/kernels/irregex/bench/apparatus/harness/probes.zig
+      file: bench/apparatus/harness/probes.zig
       contains: ['.class = "literal-rare"', '.class = "regex-litalt"']
     - description: "the generated certificate cites the current production kernels"
-      file: pkg/kernels/irregex/bench/bounds/lowerbound/report.py
+      file: bench/bounds/lowerbound/report.py
       contains: ["src/kernel/scan/simd.zig", "src/kernel/regex/linear/dfa/dfa.zig"]
 ---
 
@@ -22,9 +22,9 @@ less work.
 ## What it is
 
 A **fail-closed, structural byte-touch audit**. `gist-lowerbound` builds the
-trigram index over the real Billy corpus, then for each of the twelve regex
-classes (imported from [`../harness/probes.zig`](../harness/probes.zig), the
-_same_ module [`certify.zig`](../harness/certify.zig) uses, so Layer D lines
+trigram index over the real host corpus, then for each of the twelve regex
+classes (imported from [`../../apparatus/harness/probes.zig`](../../apparatus/harness/probes.zig), the
+_same_ module [`certify.zig`](../../apparatus/harness/certify.zig) uses, so Layer D lines
 up 1:1 with Layers A–C by construction, not by a hand-kept copy) it measures:
 
 - **candidate bytes** — Σ lengths of the documents the trigram filter admits
@@ -87,13 +87,13 @@ zig build certify                       # or: gist-bench certify
 zig build lowerbound                    # → .local/gist-verify/lowerbound.csv
 
 # 3. splice the Layer D section into the certificate:
-python3 pkg/kernels/irregex/bench/bounds/lowerbound/report.py \
+python3 bench/bounds/lowerbound/report.py \
     --csv .local/gist-verify/lowerbound.csv \
     --certificate .local/gist-verify/CERTIFICATE.md
 ```
 
 `gist-lowerbound` exits non-zero (mirroring
-[`gates/scan_regress.sh`](../gates/scan_regress.sh)) if any candidate byte is
+[`gates/scan_regress.sh`](../../conformance/gates/parity/scan_regress.sh)) if any candidate byte is
 read past the single-pass floor, or if the independent reference disagrees with
 gist's real verify — a failure is a real finding about gist, never something to
 paper over by weakening the assertion.
@@ -116,7 +116,7 @@ paper over by weakening the assertion.
   selective patterns — gist's direct ancestor (see also `../README.md` and
   `src/kernel/regex/linear/dfa/dfa.zig`, which cites Cox's linear-time NFA/DFA work). The `cand%`
   column is the empirical measure of this pruning.
-- gist's own [`../harness/probes.zig`](../harness/probes.zig) — the shared
-  probe-class registry [`certify.zig`](../harness/certify.zig) (Layer A) also
+- gist's own [`../../apparatus/harness/probes.zig`](../../apparatus/harness/probes.zig) — the shared
+  probe-class registry [`certify.zig`](../../apparatus/harness/certify.zig) (Layer A) also
   imports, so the four layers of the certificate speak about the same twelve
   classes by construction.

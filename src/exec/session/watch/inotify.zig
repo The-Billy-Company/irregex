@@ -1,5 +1,4 @@
-//! gist resident session — the Linux `inotify` freshness backend (ADR-352 rung
-//! 2.5, ADR-372).
+//! gist resident session — the Linux `inotify` freshness backend.
 //!
 //! Recursively watches every directory under the session's roots, keyed to
 //! absolute realpaths so noted paths match the canonical shape `delta.resolve`

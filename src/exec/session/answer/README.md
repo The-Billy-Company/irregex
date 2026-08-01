@@ -1,20 +1,20 @@
 <!--
 doc_radar:
   paths_exist:
-    - pkg/kernels/irregex/src/exec/session/answer/answer.zig
-    - pkg/kernels/irregex/src/exec/session/answer/request.zig
-    - pkg/kernels/irregex/src/exec/session/answer/gather.zig
-    - pkg/kernels/irregex/bindings/python/tests/test_classify_parity.py
+    - src/exec/session/answer/answer.zig
+    - src/exec/session/answer/request.zig
+    - src/exec/session/answer/gather.zig
+    - bindings/python/tests/test_classify_parity.py
   sentinels:
-    - file: pkg/kernels/irregex/src/exec/session/answer/request.zig
+    - file: src/exec/session/answer/request.zig
       contains: ["effectiveIgnoreCase", "smart_case"]
-    - file: pkg/kernels/irregex/src/surface/face/gist/main.zig
+    - file: src/surface/face/gist/main.zig
       description: the warm-lens verdict line the Python parity test parses — composed from one format string, so pin the frame and both branch words rather than the assembled bytes
       matches: ['"gist: \[\{s\}\]', '"eligible" else "ineligible"']
-    - file: pkg/kernels/irregex/src/exec/session/answer/keep.zig
+    - file: src/exec/session/answer/keep.zig
       description: the keep holds answers against an epoch and never computes one
       contains: ["pub fn recall", "pub fn retain", "max_total_bytes"]
-    - file: pkg/kernels/irregex/src/exec/session/answer/gather.zig
+    - file: src/exec/session/answer/gather.zig
       description: the candidate walk prunes by all three stages, off one parse, with both stand-down knobs read here rather than client-side
       contains: ["query_mod.winnow", "GIST_NO_COVER", "GIST_NO_CREST", "queryPlan", "sieve.prunes"]
 -->
@@ -32,7 +32,7 @@ live next door in [`../facet/`](../facet).
 | [`answer.zig`](answer.zig)   | The answer + budget vocabulary every face shares: `QueryError` — only `Stale` and `OutOfMemory`, which _is_ the fail-closed contract — the answer shapes (`Result`, `Lines`, `MatchRecord`), and the cooperative bounds a hosted run carries (`CancelToken`, `RunBudget`, and the `Ceiling` whose clock read is sampled per stride so a wall-clock backstop costs nothing in the hot walk). Re-exported by `resident.zig`, so `resident.MatchRecord` and `answer.MatchRecord` are one type.                                                                                                            |
 | [`request.zig`](request.zig) | The eligibility classifier — accepts only the supported argv surface (bare pattern → `lines`, `-l`/`-c`, `-F`, the last-wins case family `-i`/`-s`/`-S`, `-w`, `-v`, `-q`, `-m N`/`--max-count N` (incl `-m0`), `-n`/`-N`, `-e`/`--regexp`; **rootless only** — any explicit PATH arg, even `.`, stays cold; a `\n`/NUL/empty pattern stays cold), everything else → `error.Unsupported` (cold fallback). `Request.effectiveIgnoreCase` is the **single smart-case resolution site**: `-S` folds via `args.hasUpper` at the compile seam, so clients ship the raw bit and never re-implement the fold. |
 | [`gather.zig`](gather.zig)   | The candidate walk all four faces share: compile the request through the shared search core, prune through **the same three-stage stack cold prunes by** (the conjunctive cover plan, then the crest sieve over the mirror's per-doc ρ(d), then the path filter — see below), then visit the surviving base docs plus the whole overlay under one budget + ceiling — with the per-match existence stat applied on every path the watcher has not proven clean, so a delete racing the walk→report window is never reported.                                                                            |
-| [`keep.zig`](keep.zig)       | The answer keep: rendered stdout + exit code held against a corpus change epoch, for the questions no index can make cheap. Everything above answers a query faster; this one declines to answer it twice. The daemon never computes here — a client computes cold and offers the result, and the keep only compares epochs and evicts by LRU against a byte ceiling, so a store that cannot recompute cannot recompute wrongly. See [`../../../cli/reprise.zig`](../../../cli/reprise.zig) for the caller's half.                                                                                     |
+| [`keep.zig`](keep.zig)       | The answer keep: rendered stdout + exit code held against a corpus change epoch, for the questions no index can make cheap. Everything above answers a query faster; this one declines to answer it twice. The daemon never computes here — a client computes cold and offers the result, and the keep only compares epochs and evicts by LRU against a byte ceiling, so a store that cannot recompute cannot recompute wrongly. See `gist/src/surface/cli/reprise.zig` for the caller's half.                                                                                     |
 
 `request_test.zig` sits beside its subject.
 

@@ -1,6 +1,6 @@
 # gist CLI-shape admission matrix — measured
 
-_gist cold-indexed vs ripgrep over the six Billy source roots. A WIN needs a lower median **and** Mann-Whitney p < 0.05 (fail-closed). Parity is correctness-proven separately (`matrix.py parity`: gist-idx == gist-noidx == rg). Every shape is a declared win — the former `-U` losses fell to the parallel multiline DFA and the former backref parity to the PCRE2 shadow gate; a future declared `loss` would stay report-only in its own row so no aggregate can bury it._
+_gist cold-indexed vs ripgrep over the six host source roots. A WIN needs a lower median **and** Mann-Whitney p < 0.05 (fail-closed). Parity is correctness-proven separately (`matrix.py parity`: gist-idx == gist-noidx == rg). Every shape is a declared win — the former `-U` losses fell to the parallel multiline DFA and the former backref parity to the PCRE2 shadow gate; a future declared `loss` would stay report-only in its own row so no aggregate can bury it._
 
 | shape                                 | dims                                         | gist ms |   rg ms | speedup |      p | verdict |
 | ------------------------------------- | -------------------------------------------- | ------: | ------: | ------: | -----: | :------ |

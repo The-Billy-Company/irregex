@@ -1,5 +1,5 @@
 //! The kernel's error vocabulary: what a failure *is*, and what a declinature
-//! is instead (ADR-373 laws 1–3).
+//! is instead (fault-channel law 1–3).
 //!
 //! irregex is one kernel behind four planes, and until this module each plane
 //! answered "which of these outcomes is even an error?" its own way. Two facts
@@ -263,7 +263,7 @@ pub fn scope() Scope {
 ///
 /// Which means the spared call has already run by the time we are here — if it
 /// installed a `Detail`, it has already displaced the caller's. That is only
-/// possible for a Billy function (std never installs), and the fix is the
+/// possible for a host function (std never installs), and the fix is the
 /// explicit `scope()` the caller already has; `spare` does not pretend to do it,
 /// because a scope opened after the fact would restore the wrong thing.
 pub fn spare(what: []const u8, result: anytype) void {

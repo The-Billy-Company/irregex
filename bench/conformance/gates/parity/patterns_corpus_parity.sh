@@ -30,16 +30,17 @@
 # Usage: bench/gates/patterns_corpus_parity.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-KERNEL="$(cd "${HERE}/../../../.." && pwd)" # pkg/kernels/irregex
-REPO="$(cd "${KERNEL}/../../.." && pwd)"
+# shellcheck source=../../../apparatus/roots.sh
+source "${HERE}/../../../apparatus/roots.sh"
+gist_resolve_roots "${HERE}" || exit 1
 
 echo "building gist + relate (ReleaseFast)…"
-(cd "${KERNEL}" && zig build -Doptimize=ReleaseFast > /dev/null 2>&1) || {
-  echo "FAILED: build error" >&2
+(cd "${PRODUCT}" && zig build -Doptimize=ReleaseFast > /dev/null 2>&1) || {
+  echo "FAILED: build error in ${PRODUCT}" >&2
   exit 1
 }
-GIST="${KERNEL}/zig-out/bin/gist"
-RELATE="${KERNEL}/zig-out/bin/relate"
+GIST="${PRODUCT}/zig-out/bin/gist"
+RELATE="${PRODUCT}/zig-out/bin/relate"
 for bin in "${GIST}" "${RELATE}"; do
   [[ -x "${bin}" ]] || {
     echo "FAILED: missing ${bin}" >&2

@@ -33,7 +33,7 @@ pub const max_scalar: u21 = 0x10FFFF;
 /// is pathological; the caller falls back to the byte path.
 pub const max_predicates: u32 = 512;
 
-// File-private control flow (ADR-373): converted to `.declined` at the
+// File-private control flow (the fault-channel taxonomy): converted to `.declined` at the
 // symbolic module boundary — not a declared fault-taxonomy member.
 const Err = error{TooManyPredicates};
 

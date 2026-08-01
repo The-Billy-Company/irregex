@@ -252,7 +252,7 @@ fn dirChain(cfg: *const Cfg, a: std.mem.Allocator, task: DirTask, present: IgPre
 
 /// Everything the parallel descent can fail with: the raw `openat` this engine
 /// uses instead of `std.Io` on a worker thread, and iterating a directory it
-/// already opened. Naming the set instead of taking `anyerror` (ADR-373 law 2)
+/// already opened. Naming the set instead of taking `anyerror` (fault-channel law 2)
 /// makes a widened std set a build failure here, where the walk can decide what
 /// it means, rather than a mystery string on a user's stderr. It is a subset of
 /// `notice.WalkFault`, so it coerces into the shared renderer.

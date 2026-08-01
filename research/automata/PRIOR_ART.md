@@ -2,7 +2,7 @@
 doc_radar:
   sentinels:
     - description: "the head-to-head race slate is the existing evidence surface this lane must extend down to the engine level"
-      file: pkg/kernels/irregex/bench/dominance/races/regex.sh
+      file: bench/dominance/races/regex.sh
       contains:
         - "csearch"
 ---

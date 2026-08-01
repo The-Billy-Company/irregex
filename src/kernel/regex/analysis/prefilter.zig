@@ -33,7 +33,7 @@ const max_ranges = 8; // rare 4–8 byte sets still earn a vector equality/range
 /// Shared, corpus-priced economics for every machine considering a byte-set
 /// prefilter. `mass` is a fixed-point probability over `probability_scale`;
 /// `stride` is the expected distance between candidates. The density source is
-/// the same checked-in Billy-corpus prior used by the substring kernel.
+/// the same checked-in host-corpus prior used by the substring kernel.
 pub const Economics = struct {
     mass: u16,
     stride: u16,

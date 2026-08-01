@@ -50,7 +50,7 @@ const oom = @import("../../../surface/cli/outcome.zig").oom;
 const sortTimeOf = order.sortTimeOf;
 
 /// `assembleIndexSkip`'s private control flow — the serial twin of `elide.Err`
-/// (ADR-373 law 2). Both non-OOM members are declinatures the instant they cross
+/// (fault-channel law 2). Both non-OOM members are declinatures the instant they cross
 /// into `buildIndexSkip`: "no index on disk" and "the table would not pay for
 /// itself" each name the live read as the tier that answers *correctly*, not
 /// worse. Inside this file they are only how an early exit reaches `errdefer`.
@@ -303,7 +303,7 @@ const IndexSkip = struct {
 /// of it expands into the ≤16-variant OR-set the index can query
 /// (`caselessFilter`) — declining only when no admissible window exists.
 /// Build the read-elision oracle from the persisted index — the indexed→live
-/// seam (ADR-373 law 1). It declines when there's nothing to gain (no sound
+/// seam (fault-channel law 1). It declines when there's nothing to gain (no sound
 /// prefilter, `--no-index`, or no index on disk — the last probed SILENTLY via
 /// `loadQuiet`, since a bare `gist <pattern>` outside an indexed corpus is the
 /// normal case, not a miss to nag about). `fresh_roots` scopes the freshness

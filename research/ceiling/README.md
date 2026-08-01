@@ -2,10 +2,10 @@
 doc_radar:
   sentinels:
     - description: "the closed-roads record keeps both citations that shut the cascade route"
-      file: pkg/kernels/irregex/research/ceiling/CLOSED.md
+      file: research/ceiling/CLOSED.md
       contains: ["Chandra", "Maler"]
     - description: "the eager driver's two bounds are what the ceiling argument is about"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/dfa/powerset.zig
+      file: src/kernel/regex/linear/dfa/powerset.zig
       contains: ["pub const max_states: u32 = 4096;", "pub const max_visits: u64 = 750_000;"]
 ---
 
@@ -147,5 +147,5 @@ and [`../../src/kernel/regex/linear/sieve/`](../../src/kernel/regex/linear/sieve
 (the two determinization drivers and their bounds),
 [`../../src/kernel/math/crest.zig`](../../src/kernel/math/crest.zig)
 (the document-stage sieve), and
-[`../../bench/certify/`](../../bench/certify/) (the certificate whose
+`gist/bench/certificate/` (the certificate whose
 `regex-classcount` row is the 100%-candidate hole named above).

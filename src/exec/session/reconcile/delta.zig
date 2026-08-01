@@ -47,7 +47,7 @@ const realpathAlloc = paths.realpathAlloc;
 
 /// Reading the ignore chain from disk can run out of memory, and this resolver
 /// runs inside `irregex_search`'s reconcile — so it RETURNS that rather than
-/// exiting the embedding host (ADR-373 law 1). It is not a `.needs_full`:
+/// exiting the embedding host (fault-channel law 1). It is not a `.needs_full`:
 /// declining to the full walk would only hit the same wall with the fault
 /// laundered into a slower path.
 const Oom = std.mem.Allocator.Error;
@@ -56,7 +56,7 @@ const Oom = std.mem.Allocator.Error;
 /// soundly, so nothing short of the full walk may be trusted. It **never leaves
 /// the module** — `walkSubtree` converts it at the boundary into
 /// `Decline.freshness_unprovable`, which is the same fact `Verdict.needs_full`
-/// already carries for `resolve` (ADR-373 law 1: one fact, one channel, and the
+/// already carries for `resolve` (fault-channel law 1: one fact, one channel, and the
 /// success position so `try` cannot turn a fallback into an abort).
 ///
 /// Named and non-`pub` on purpose. Spelled inline as `error{NeedFull}!void` in
@@ -166,7 +166,7 @@ pub const Delta = struct {
     /// An unreadable directory **declines** rather than faulting: cold reports
     /// walk errors and exits 2, so a silently gapped subtree may never look
     /// clean, and the sound answer is the full walk. The declinature rides the
-    /// success position (ADR-373 law 1) precisely because the tempting `try`
+    /// success position (fault-channel law 1) precisely because the tempting `try`
     /// here would abort a reconcile that has a correct slower answer.
     pub fn walkSubtree(self: *Delta, rel: []const u8, sink: *std.StringHashMapUnmanaged(void)) Oom!fault.Answer(void) {
         const scoped: fault.Answer(void) = .{ .got = {} };

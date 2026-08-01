@@ -2,13 +2,13 @@
 doc_radar:
   sentinels:
     - description: "Pcre handle remains the opt-in backend surface"
-      file: pkg/kernels/irregex/src/kernel/regex/pcre2/engine.zig
+      file: src/kernel/regex/pcre2/engine.zig
       contains: ["pub const Pcre", "lineMatch"]
     - description: "literal extraction never over-claims for index elision"
-      file: pkg/kernels/irregex/src/kernel/regex/pcre2/literal.zig
+      file: src/kernel/regex/pcre2/literal.zig
       contains: "pub fn"
     - description: "the shadow pre-filters PCRE patterns with a linear over-approximation"
-      file: pkg/kernels/irregex/src/kernel/regex/pcre2/shadow.zig
+      file: src/kernel/regex/pcre2/shadow.zig
       contains: ["overapprox", "Bail"]
 ---
 
@@ -18,7 +18,7 @@ The escape hatch for lookaround, backreferences, and named captures the
 linear Thompson/DFA tier cannot express. Selected by `-P` / `--pcre2`, or by
 `--engine auto` only when the linear compiler returns unsupported.
 
-Hermetic sources: [`../../../../../vendor/pcre2/`](../../../../../vendor/pcre2/)
+Hermetic sources: [`../../../../vendor/pcre2/`](../../../../vendor/pcre2/)
 (PCRE2 10.47). No system `libpcre2`.
 
 ## Files

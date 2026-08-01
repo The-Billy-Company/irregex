@@ -30,7 +30,7 @@
 //!      0.16× row, and now names the price that kept it off the ladder.
 //!
 //! Haystack: `$COMPOSE_HAY` when set (the research lane's 64 MiB file, for
-//! reproducing its exact numbers), else the real Billy corpus concatenated
+//! reproducing its exact numbers), else the real host corpus concatenated
 //! into one contiguous buffer via the same `corpus.load` the certificate
 //! layers use. Both are line-structured source bytes, which is what `docMatch`
 //! is shaped for.

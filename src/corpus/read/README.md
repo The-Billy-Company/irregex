@@ -2,7 +2,7 @@
 doc_radar:
   counts:
     - description: "read keeps encoding · inode · legible · slurp (+ generated tables)"
-      glob: pkg/kernels/irregex/src/corpus/read/*
+      glob: src/corpus/read/*
       unit: files
       min: 4
 ---

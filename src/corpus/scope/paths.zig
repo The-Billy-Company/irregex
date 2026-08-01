@@ -13,7 +13,7 @@ const portal = @import("../../portal.zig");
 /// The one OOM diagnostic. `allocFailure` below is the single emitter — the CLI
 /// reaches it as `outcome.oom`, so the corpus layer and the CLI have nothing
 /// left to drift between. Routed through assay so a `dark`/`buffer` sink honors
-/// the never-write contract (ADR-373 law 6).
+/// the never-write contract (fault-channel law 6).
 pub const oom_notice =
     \\oom: allocation failed
     \\gist: note: scope the query (PATH / -t / -g) or raise the process memory limit
@@ -114,7 +114,7 @@ pub fn cwdRelative(a: std.mem.Allocator, io: std.Io, path: []const u8) []const u
 /// is the one path helper the **library** reaches: every ignore-tier load under
 /// `corpus/tree/ignore.zig` joins through here, and those run inside
 /// `irregex_open` / `irregex_search`, where exiting the process is not a
-/// failure mode a host can survive (ADR-373 law 1). Its two siblings below
+/// failure mode a host can survive (fault-channel law 1). Its two siblings below
 /// still exit: `lowerDup` is only reached under case-insensitive ignore
 /// matching and `replaceSep` only under `--path-separator`, neither of which
 /// the C seam can select, so both remain command-plane-only.

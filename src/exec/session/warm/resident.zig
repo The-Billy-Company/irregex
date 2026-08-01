@@ -1,4 +1,4 @@
-//! gist resident session — the warm, in-memory search engine (ADR-352 rung 2.5).
+//! gist resident session — the warm, in-memory search engine.
 //!
 //! A `ResidentSession` owns the corpus bytes + trigram index for one repository,
 //! held warm across many queries so an eligible request (`request.zig`) answers
@@ -9,7 +9,7 @@
 //! the warm and cold answers cannot drift. Because that core **returns errors**
 //! (`error.Unsupported`) instead of calling `die()`, a bad request declines with
 //! `freshness_unprovable` (→ cold fallback) and can never terminate the daemon — the
-//! exact hazard ADR-352 defers the C FFI on.
+//! exact hazard the C FFI is deferred on.
 //!
 //! ## The corpus is a faithful mirror
 //!
@@ -153,7 +153,7 @@ pub const ResidentSession = struct {
     /// bounded because a re-touched path replaces its entry in place.
     overlay: std.StringHashMap(Overlay),
 
-    /// Reader/writer discipline (ADR-352 rung 2.5): `reconcile.barrier` (overlay
+    /// Reader/writer discipline: `reconcile.barrier` (overlay
     /// mutation, `maybeReload` engine swap, `fresh_ns` + counter bumps) is the
     /// WRITER; all five answer faces are READERS over the then-immutable mirror +
     /// overlay. Concurrent warm queries thus overlap — the whole point of the

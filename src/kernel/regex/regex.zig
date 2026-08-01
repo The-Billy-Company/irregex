@@ -8,7 +8,7 @@
 //! (`syntax → analysis → compile → linear`, with `unicode`, `pcre2`, `oracle`
 //! alongside) are INTERNALS. Callers get this file and nothing else; the seal
 //! in `contract/irregex.ward` makes that a build-time law rather than a
-//! convention, and `make lint-zig-arch` judges it.
+//! convention, and the `ward` gate over `contract/irregex.ward` judges it.
 //!
 //! Why a seal and not just a README: the engine's correctness rests on every
 //! consumer sharing ONE notion of what a pattern means. The crest sieve learned

@@ -2,7 +2,7 @@
 doc_radar:
   sentinels:
     - description: "the oracle is independent — it cross-checks the engine against a reference the engine does not share"
-      file: pkg/kernels/irregex/src/kernel/regex/oracle/adversarial_test.zig
+      file: src/kernel/regex/oracle/adversarial_test.zig
       contains: ["ADVERSARIAL"]
 ---
 

@@ -33,7 +33,7 @@ test {
 const Index = gist.trigram.Index;
 const Regex = gist.regex.Regex;
 const Dir = std.Io.Dir;
-const serve = gist.commands.serve; // the resident daemon (ADR-352 rung 2.5)
+const serve = gist.commands.serve; // the resident daemon
 const proto = gist.session.protocol; // the UDS wire codec the client speaks
 const net = std.Io.net;
 
@@ -379,7 +379,7 @@ fn runVerify(gpa: std.mem.Allocator, io: std.Io, battery_n: usize, seed: u64) !v
     std.debug.print("wrote {d} literal needles + {d} regexes + corpus.list → {s}/\nrun bench/equality.sh to diff against rg.\n", .{ needles.items.len, regexes.items.len, out_dir });
 }
 
-// ── session mode: the persistent-client → daemon product path (ADR-352 rung 2.5) ──
+// ── session mode: the persistent-client → daemon product path ──
 //
 // The `bench` mode above times the in-process engine (no transport, no process
 // spawn) — the microsecond ceiling. This mode times the number a REAL long-lived

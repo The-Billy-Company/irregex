@@ -2,7 +2,7 @@
 doc_radar:
   sentinels:
     - description: "the sieve has two answers and never a third, and its cost policy is one arithmetic that the gate, the census row, and the bench all read"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/sieve/sieve.zig
+      file: src/kernel/regex/linear/sieve/sieve.zig
       contains:
         [
           "pub const Verdict = enum { miss, unproven };",
@@ -13,7 +13,7 @@ doc_radar:
           "pub fn lineSafe(self: *const Sieve) bool {",
         ]
     - description: "worth is a license per grain, so the ladder asks each grain separately rather than admitting on the dearer kernel alone"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/ladder/rungs.zig
+      file: src/kernel/regex/linear/ladder/rungs.zig
       contains:
         ["inline fn lineSafe(rung: anytype) bool {", "inline fn docSafe(rung: anytype) bool {"]
       absent_matches:
@@ -21,7 +21,7 @@ doc_radar:
         # decider's. It is a quotient of two measurements now, never a rival to them.
         - "speed_ratio: f64 = "
     - description: "the harvest's four hard bounds — register width, conjunction width, core size, closure work"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/sieve/quotient.zig
+      file: src/kernel/regex/linear/sieve/quotient.zig
       contains:
         [
           "pub const cap: u8 = 16;",
@@ -30,10 +30,10 @@ doc_radar:
           "pub const max_closure_steps: u64 = 1_500_000;",
         ]
     - description: "the kernel takes the shared 16-wide shuffle from scan/lanes rather than carrying a fourth copy"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/sieve/sheng.zig
+      file: src/kernel/regex/linear/sieve/sheng.zig
       contains: ['@import("../../../scan/lanes.zig")', "pub const resident"]
     - description: "the production proof names an armed row that lost, and names the one input responsible instead of widening the gate around it"
-      file: pkg/kernels/irregex/bench/rungs/sieve/bench.zig
+      file: bench/rungs/sieve/bench.zig
       contains: ["ARMED INTO A LOSS", "MEMORYLESS byte prior", "persistence-aware prior"]
 ---
 
@@ -168,7 +168,7 @@ classes, harvested the same way the quotient is) closes it, and that is a
 separate piece of work rather than a knob on this one.
 
 **That prior has since been built and measured, and the diagnosis holds.** It
-lives in the Rust sibling [`pkg/kernels/core`](../../../../../../sheng/README.md) —
+lives in a separate Rust sheng sibling (not shipped in this repo) —
 this rung ported onto `regex-automata`, done in a standalone crate precisely so
 both residuals could be attacked without destabilizing the shipped ladder. The
 chain carries the byte's **class** in its state and runs on (block, class) pairs,
@@ -193,7 +193,7 @@ coefficient against a haystack drawn from the corpus's own measured byte shape
 moved `dfa_step` 2% (1.373 → 1.397, inside the clock's noise) while
 destabilizing `dfa_line` and `anchor_line` by 2.7× and 2.3×. That experiment and
 its refutation are recorded in
-[`bench/rungs/price/probe.zig`](../../../../bench/rungs/price/probe.zig).
+[`bench/rungs/price/probe.zig`](../../../../../bench/rungs/price/probe.zig).
 
 **This one has a measured fix shape too, from the same port.** The Rust gate does
 not price its rival at that machine's full-scan cost; it asks the engine which
@@ -265,7 +265,7 @@ sibling rung can take the instruction without taking the rung.
 
 ## Proving it
 
-`zig build sieve` walks the real Billy corpus and checks, at every byte position
+`zig build sieve` walks the real host corpus and checks, at every byte position
 of every document, that the DFA being in a matching state implies every quotient
 accepting. One violation exits non-zero. It publishes the measured selectivity
 beside the compile-time estimate that gates it — including the rows where the

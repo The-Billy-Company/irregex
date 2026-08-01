@@ -2,36 +2,36 @@
 doc_radar:
   counts:
     - description: "five top-level source layers (assay · corpus · exec · kernel · surface); portal/fault/root sit as files beside them"
-      glob: pkg/kernels/irregex/src/*
+      glob: src/*
       unit: dirs
       equals: 5
     - description: "kernel/ holds the ten ward tier packages (math…compose); a transitional empty match/ shell may still be present after the restructure"
-      glob: pkg/kernels/irregex/src/kernel/*
+      glob: src/kernel/*
       unit: dirs
       min: 10
       max: 11
     - description: "corpus/ holds scope · read · tree · fresh · index"
-      glob: pkg/kernels/irregex/src/corpus/*
+      glob: src/corpus/*
       unit: dirs
       equals: 5
   sentinels:
     - description: "the linear engine's eager-DFA cap the prose quotes (past it, Pike verifies)"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/dfa/powerset.zig
+      file: src/kernel/regex/linear/dfa/powerset.zig
       contains: "pub const max_states: u32 = 4096;"
     - description: "the elision contract the whole index tier is built on"
-      file: pkg/kernels/irregex/src/exec/cold/engine/README.md
+      file: src/exec/cold/engine/README.md
       contains: "Index is an accelerator, not an authority."
     - description: "the shared query core keeps its two binding invariants"
-      file: pkg/kernels/irregex/src/kernel/query/query.zig
+      file: src/kernel/query/query.zig
       contains: ["error.Unsupported", "immutable after"]
     - description: "the ward contract names the five-layer stack this README narrates"
-      file: pkg/kernels/irregex/contract/irregex.ward
+      file: contract/irregex.ward
       contains: ["tiers {", "math        kernel/math/**", "seal kernel/regex through regex.zig"]
     - description: "the machine-width seam still asks about this process before trusting the all-groups total"
-      file: pkg/kernels/irregex/src/portal.zig
+      file: src/portal.zig
       contains: ["pub fn cpuCount()", "GetProcessGroupAffinity", "ALL_PROCESSOR_GROUPS"]
     - description: "the shard-sizing floor asks portal, not std, for machine width"
-      file: pkg/kernels/irregex/src/kernel/math/parallel.zig
+      file: src/kernel/math/parallel.zig
       contains: "portal.cpuCount()"
       absent: "std.Thread.getCpuCount()"
 ---
@@ -89,7 +89,7 @@ same session in-process.
 | ----- | --- |
 | `portal.zig` | Every OS-spelling difference (handle-relative open, whole-file map, stat, realpath, argv, stdin readiness, **how wide the machine is**) — one Windows fork at the bottom |
 | `assay/` | Typed clocks, counters, `GIST_TRACE` — std-only so every tier can consume it |
-| `fault.zig` | Error taxonomy (ADR-373); reports through assay |
+| `fault.zig` | Error taxonomy (the fault-channel taxonomy); reports through assay |
 | `corpus/index/frame/` | Wire floor: `frame.zig` framing, `signet.zig` the one artifact digest, `home.zig` artifact directory. Lives under index on disk (what it frames) but sits just above fault on the ward page |
 
 **Machine width is a portal question, not a std one.** Every parallel stage sizes
@@ -116,9 +116,9 @@ No argv, no walk, no emit. Import arrows only point down the ward page;
 | [`rank/`](kernel/rank) | Result fusion + definition signals (`gist --rank`) |
 | [`slate/`](kernel/slate) | Many patterns, one walk (was `batch/`) |
 | [`anatomy/`](kernel/anatomy) | Source anatomy: comments, token vocabulary, leans |
-| [`kinship/`](kernel/kinship) | Compression-as-similarity |
-| [`codex/`](kernel/codex) | FM-index / wavelet / RRR / SA-IS codebook math (was under `corpus/index/codex`) |
-| [`compose/`](kernel/compose) | Set algebra over candidate sets |
+| `relate/src/kernel/kinship/` | Compression-as-similarity |
+| `relate/src/kernel/codex/` | FM-index / wavelet / RRR / SA-IS codebook math (was under `corpus/index/codex`) |
+| `relate/src/kernel/compose/` | Set algebra over candidate sets |
 
 ## `corpus/` — eligibility + persisted shadows
 
@@ -135,7 +135,7 @@ No argv, no walk, no emit. Import arrows only point down the ward page;
 | Package | Job |
 | ------- | --- |
 | [`cold/`](exec/cold) | One process per query: argv → writ → quarry → read → engine → emit |
-| [`retrieval/`](exec/retrieval) | Fingerprint-lexicon retrieval shared by `similar` / `pack` |
+| `relate/src/exec/retrieval/` | Fingerprint-lexicon retrieval shared by `similar` / `pack` |
 | [`session/`](exec/session) | Warm resident session: answer · facet · reconcile · warm · watch · conduit · **daemon/** |
 
 ## `surface/` — vocabulary, API, FFI, faces
@@ -144,8 +144,8 @@ No argv, no walk, no emit. Import arrows only point down the ward page;
 | ----- | --- |
 | [`cli/`](surface/cli) | Shared vocabulary: outcome (die/oom), jsonstr, flags, manifest, reprise |
 | `api.zig` | Hosted analytic Zig API |
-| [`ffi/`](surface/ffi) | C-ABI session + analytic plane |
-| [`face/`](surface/face) | Thin product faces; gist verbs live flat in `face/gist/verbs/` |
+| `gist/src/surface/ffi/` | C-ABI session + analytic plane |
+| `gist/src/surface/face/` | Thin product faces; gist verbs live flat in `face/gist/verbs/` |
 
 ## The correctness spine
 
@@ -157,4 +157,4 @@ No argv, no walk, no emit. Import arrows only point down the ward page;
 
 See [`../README.md`](../README.md) for products and prior art;
 [`kernel/regex/README.md`](kernel/regex/README.md) for the regex engine;
-[`surface/face/gist/README.md`](surface/face/gist/README.md) for the gist face.
+`gist/src/surface/face/gist/README.md` for the gist face.

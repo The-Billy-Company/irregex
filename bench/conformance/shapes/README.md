@@ -2,16 +2,16 @@
 doc_radar:
   occurrences:
     - description: "every declared CLI shape is one [[shape]] row in matrix.toml"
-      file: pkg/kernels/irregex/bench/conformance/shapes/shapes.toml
+      file: bench/conformance/shapes/shapes.toml
       pattern: '\[\[shape\]\]'
       equals: 27
     - description: "the literal set keeps a degenerate-selection case (selector blind spot)"
-      file: pkg/kernels/irregex/bench/conformance/shapes/shapes.toml
+      file: bench/conformance/shapes/shapes.toml
       pattern: 'select = "degenerate"'
       min: 1
   sentinels:
     - description: "the driver reuses the certificate's stats (never a second impl)"
-      file: pkg/kernels/irregex/bench/conformance/shapes/shapes.py
+      file: bench/conformance/shapes/shapes.py
       contains:
         - "import stats as S"
         - 'sub.add_parser("parity")'
@@ -115,7 +115,7 @@ the legacy match-volume labels so committed floors stay readable.
 > no real work to blame it on, so it can only be the prefilter. Removing
 > `literal-degenerate-files` / `literal-selective-control-files`, or collapsing
 > the same-class runs, is a **coverage regression** — not a cleanup. The
-> `min: 1` doc-radar assertion above is the mechanical half of this rule; this
+> `min: 1` freshness assertion above is the mechanical half of this rule; this
 > paragraph is the half that says why.
 
 Read the pair as a **ratio**, never as two absolute numbers: trap and control are

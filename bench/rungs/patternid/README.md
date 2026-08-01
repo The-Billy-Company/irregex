@@ -2,10 +2,10 @@
 doc_radar:
   sentinels:
     - description: "the sections this README describes are the sections the rung runs"
-      file: pkg/kernels/irregex/bench/rungs/patternid/bench.zig
+      file: bench/rungs/patternid/bench.zig
       contains: ["fn overlapSection", "fn speedSection", "fn buildSection", "fn settleSection"]
     - description: "settling authority is derived with the cover, not apart from it"
-      file: pkg/kernels/irregex/src/kernel/slate/muster.zig
+      file: src/kernel/slate/muster.zig
       contains: ["fn coverOf", "const Cover = struct"]
 ---
 
@@ -132,5 +132,5 @@ prints `agree`, because a settling rule that is wrong is also fast.
 ## Run
 
 ```bash
-cd pkg/kernels/irregex && zig build patternid-rung
+cd <irregex-repo-root> && zig build patternid-rung
 ```

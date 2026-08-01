@@ -2,7 +2,7 @@
 doc_radar:
   counts:
     - description: "corpus keeps scope · read · tree · fresh · index"
-      glob: pkg/kernels/irregex/src/corpus/*
+      glob: src/corpus/*
       unit: dirs
       equals: 5
 ---

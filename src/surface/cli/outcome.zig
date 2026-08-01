@@ -1,6 +1,6 @@
 //! Shared CLI vocabulary — how a face ends.
 //!
-//! ripgrep's contract is three codes (`contract/search_api.toml [exit_codes]`):
+//! ripgrep's contract is three codes (`contract/engine.toml [exit_codes]`):
 //! `0` a match, `1` a clean miss, `2` an error — "never a silent empty result".
 //! Every face owes the caller exactly that, and until this module each of the
 //! fourteen exit sites re-derived it inline as a nested ternary. That is how the
@@ -55,7 +55,7 @@ fn plainDeparture(code: u8) noreturn {
 /// Fatal exit with ripgrep's error code (2) and a formatted reason — the way a
 /// face rejects input it cannot honor (an unknown flag, a bad number, a glob
 /// that will not compile). Routed through `assay.diag` so a `dark` sink stays
-/// silent and a `buffer` sink captures the message for the client (ADR-373
+/// silent and a `buffer` sink captures the message for the client (the fault-channel taxonomy
 /// law 6) — the same reason `fatal` below takes this path.
 pub fn die(comptime msg: []const u8, args: anytype) noreturn {
     // A fatal exit never routes through the departure hook (an error is not
@@ -106,7 +106,7 @@ pub fn needArtifact(e: anyerror, what: []const u8, path: []const u8, rebuild: []
 /// actively wrong for a CLI under the rg contract: it prints a stack trace and
 /// exits **1** — the code that means "searched fine, found nothing". A face
 /// that could not open its index would report a clean miss, which is precisely
-/// the silent-empty-result failure `contract/search_api.toml` forbids. So no
+/// the silent-empty-result failure `contract/engine.toml` forbids. So no
 /// face returns an error union from `main`; each catches into here instead.
 ///
 /// Routed through `assay.diag` rather than `std.debug.print` so it obeys the

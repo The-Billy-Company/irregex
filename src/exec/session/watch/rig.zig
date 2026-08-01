@@ -1,4 +1,4 @@
-//! The harness every exact-backend barrier suite drives (ADR-372).
+//! The harness every exact-backend barrier suite drives.
 //!
 //! `scoped_test.zig` attacks the scoped reconcile by SIMULATING a backend's
 //! three-call contract (`armExact` → `note` → `markDirty`). This module removes
@@ -44,7 +44,7 @@ const ResidentSession = resident.ResidentSession;
 /// "wherever a watcher exists".
 ///
 ///   * macOS — `kqueue.zig`, exact by descriptor keying, proven by these cases
-///     since ADR-372.
+///     since the kqueue freshness barrier.
 ///   * Windows — `notify.zig`, exact by directory-entry keying; proven by these
 ///     same cases on the native CI lane, which is the only place a Windows kernel
 ///     exists to answer them.

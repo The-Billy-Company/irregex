@@ -5,7 +5,7 @@
 //! observation about today's corpus, and it is the test that would have caught
 //! `\<` being read as a literal `<` by a second, private grammar.
 //!
-//! The corpus-scale version (real Billy tree, real index) is `zig build crest`.
+//! The corpus-scale version (real host tree, real index) is `zig build crest`.
 
 const std = @import("std");
 const testing = std.testing;

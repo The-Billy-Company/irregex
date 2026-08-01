@@ -1,7 +1,7 @@
 //! Crest — production proof harness (Layer: does it actually work + how fast).
 //!
 //! Links gist's REAL engine (`@import("irregex")` — the crest kernel ships
-//! inside it at `src/kernel/math/crest.zig`) and walks the REAL Billy corpus via the
+//! inside it at `src/kernel/math/crest.zig`) and walks the REAL host corpus via the
 //! same `corpus.load` the certificate layers use, so this is not a toy: the
 //! baseline is gist's production `Regex.docMatch`, and every claim is a
 //! measured number over live source bytes.
@@ -9,7 +9,7 @@
 //! For each class-repetition query it establishes three things, fail-closed:
 //!   1. SOUNDNESS (the load-bearing claim). For EVERY file, if the real matcher
 //!      matches then the Crest sieve must NOT prune it. A single violation over
-//!      the whole corpus exits non-zero — no bandaid (sins.mdc). This is the
+//!      the whole corpus exits non-zero — no bandaid. This is the
 //!      Sieve Theorem checked against the production matcher on 100+ MiB.
 //!   2. PRUNING. What fraction of files the k-int crest compare removes before
 //!      the matcher runs — on exactly the class where the trigram index prunes

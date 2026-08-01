@@ -2,15 +2,15 @@
 doc_radar:
   counts:
     - description: "session planes: answer · warm · facet · reconcile · watch · conduit · daemon · warden"
-      glob: pkg/kernels/irregex/src/exec/session/*/
+      glob: src/exec/session/*/
       unit: dirs
       equals: 8
   sentinels:
-    - file: pkg/kernels/irregex/contract/search_api.toml
+    - file: ../gist/contract/surface.toml
       contains: ["[session]", "eligible_modes", "fail-closed-reconcile", '"lines"']
 ---
 
-# `src/exec/session/` — the resident search session (ADR-352 rung 2.5)
+# `src/exec/session/` — the resident search session
 
 The warm, in-memory engine behind `gist serve`. Productizes the in-memory bench
 path as a real per-repository service: corpus bytes + trigram index held
@@ -34,8 +34,8 @@ same socket; it was never gist’s product surface.
 | [`reconcile/`](reconcile) | May the session serve the bytes it already holds?                               |
 | [`watch/`](watch)         | Can that barrier skip the walk — and how narrowly?                              |
 | [`conduit/`](conduit)     | How a request reaches the daemon and an answer gets back                        |
-| [`daemon/`](daemon)       | Dial + serve loop — the transport both faces share                              |
-| [`warden/`](warden)       | How much memory a resident session may hold, enforced where it allocates        |
+| `gist/src/exec/session/daemon/`       | Dial + serve loop — the transport both faces share                              |
+| `gist/src/exec/session/warden/`       | How much memory a resident session may hold, enforced where it allocates        |
 
 ## The invariant
 

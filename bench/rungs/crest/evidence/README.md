@@ -10,19 +10,19 @@ From the repository root:
 
 ```bash
 # Exploratory proof; raw samples and matcher differentials land in .local.
-cd pkg/kernels/irregex
+cd <irregex-repo-root>
 zig build crest -- --runs 20 --warmup 3
 cd ../../..
 
 # Publication is stricter: clean tree, pinned HEAD, real benchmark + Zig tests.
-python3 pkg/kernels/irregex/bench/rungs/crest/evidence/crest_evidence.py package
+python3 bench/rungs/crest/evidence/crest_evidence.py package
 
 # Verify a package without trusting its prose.
-python3 pkg/kernels/irregex/bench/rungs/crest/evidence/crest_evidence.py \
+python3 bench/rungs/crest/evidence/crest_evidence.py \
   verify .local/crest-evidence/package-<full-commit>
 
 # Re-render the monograph from git-show bytes at that package's revision.
-python3 pkg/kernels/irregex/bench/rungs/crest/evidence/crest_evidence.py \
+python3 bench/rungs/crest/evidence/crest_evidence.py \
   monograph .local/crest-evidence/package-<full-commit>
 ```
 

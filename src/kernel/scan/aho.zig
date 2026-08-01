@@ -24,7 +24,7 @@ const Edge = struct {
     sibling: u32,
 };
 
-// Cap refusals stay file-private (ADR-373); `BuildError` unions them so callers
+// Cap refusals stay file-private (the fault-channel taxonomy); `BuildError` unions them so callers
 // see one set without minting a second public spelling of the same facts.
 const Cap = error{
     TooManyLiterals,

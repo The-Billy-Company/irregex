@@ -268,7 +268,7 @@ def _verify_csv(package: Path, run: _JsonObject, problems: list[str]) -> None:
         for key, value in expected.items():
             try:
                 observed = float(row[key])
-            except KeyError, ValueError:
+            except (KeyError, ValueError):
                 problems.append(f"crest.csv {key} is invalid for {query['pattern']}")
                 continue
             # CSV rounds to 2/3 decimals; include the exact half-unit boundary.

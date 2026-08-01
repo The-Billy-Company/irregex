@@ -1,5 +1,5 @@
 //! Tests for language-free ranking geometry and generated-artifact evidence.
-//! Real regressions from Billy, ripgrep, OpenClaw, Headroom, and OpenHuman are
+//! Real regressions from the host tree, ripgrep, OpenClaw, Headroom, and OpenHuman are
 //! represented by syntax shape rather than project or language labels.
 
 const std = @import("std");

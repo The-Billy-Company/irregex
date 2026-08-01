@@ -2,18 +2,18 @@
 doc_radar:
   counts:
     - description: "eight regex pipeline stages — syntax, analysis, ast, compile, linear, pcre2, unicode, oracle"
-      glob: pkg/kernels/irregex/src/kernel/regex/*/
+      glob: src/kernel/regex/*/
       equals: 8
       unit: dirs
   sentinels:
     - description: "the package root re-exports the engine's stages through its entry file, never around it"
-      file: pkg/kernels/irregex/src/root.zig
+      file: src/root.zig
       contains:
         - 'const regex_engine = @import("kernel/regex/regex.zig");'
         - 'pub const regex = regex_engine.program;'
         - 'pub const regex_dfa = regex_engine.dfa;'
     - description: "the engine is a sealed deep module — an outside import that skips the entry file fails lint-zig-arch"
-      file: pkg/kernels/irregex/contract/irregex.ward
+      file: contract/irregex.ward
       contains:
         - 'seal kernel/regex through regex.zig'
 ---
@@ -35,9 +35,9 @@ aho-corasick + teddy; sibling `query/` ≈ the meta engine).
 folder enters through [`regex.zig`](regex.zig), which re-exports the compiled
 handle, the engine-neutral `Matcher` seam, captures, and the leaf data
 namespaces the surface shares. The seal in
-[`contract/irregex.ward`](../../../../contract/irregex.ward) makes
-that a build-time law — `make lint-zig-arch` fails any import that reaches past
-it. The reason is soundness, not tidiness: the crest sieve once carried a
+[`contract/irregex.ward`](../../../contract/irregex.ward) makes
+that a build-time law — the `ward` gate over `contract/irregex.ward` fails any import that reaches past
+it (the judge currently lives in the private consuming monorepo). The reason is soundness, not tidiness: the crest sieve once carried a
 second, smaller parser, the two grammars disagreed on the zero-width `\<` /
 `\>` boundaries, and it silently pruned two thirds of the matching corpus. A
 single entry point is how "there is exactly one grammar" becomes a property

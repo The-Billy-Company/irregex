@@ -8,7 +8,7 @@
 //! well-formed UTF-8 encodings of the scalar values in the range, nothing more.
 //!
 //! Algorithm: Ken Thompson's / Russ Cox's UTF-8 range decomposition (RE2), the
-//! surrogate-safe range-stack formulation. This is a Billy-native reimplementation
+//! surrogate-safe range-stack formulation. This is a in-tree reimplementation
 //! of the shape rust-regex's `regex-syntax::utf8` exposes; the exhaustive
 //! properties it must satisfy (single codepoint ⇒ one sequence; surrogate
 //! encodings never matched; the canonical BMP decomposition) are pinned as tests

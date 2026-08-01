@@ -2,18 +2,18 @@
 doc_radar:
   counts:
     - description: "four modules — the compiled writ, plus the three derivations it owns"
-      glob: pkg/kernels/irregex/src/exec/cold/writ/*.zig
+      glob: src/exec/cold/writ/*.zig
       equals: 4
   sentinels:
     - description: "prune eligibility has exactly one owner — the predicate the tier used to re-spell at five call sites"
-      file: pkg/kernels/irregex/src/exec/cold/writ/gate.zig
+      file: src/exec/cold/writ/gate.zig
       contains:
         ["pub fn observesEveryByte", "pub fn mayDropFileUnread", "pub fn mayElideByIndex"]
     - description: "binary-detection liveness has one owner, and the writ computes rather than carries"
-      file: pkg/kernels/irregex/src/exec/cold/writ/writ.zig
+      file: src/exec/cold/writ/writ.zig
       contains: ["pub fn binaryDetect", "pub fn compile"]
     - description: "the engine face reads the writ instead of re-deriving the gates"
-      file: pkg/kernels/irregex/src/exec/cold/engine/serial.zig
+      file: src/exec/cold/engine/serial.zig
       contains: ["writ.Writ.compile", "const filters = w.filters;", "w.binary_detect"]
 ---
 
@@ -36,7 +36,7 @@ already stood down wherever it would be unsound.
 The obvious shape for this package is a context struct — a bag of parameters
 threaded through the pipeline to shorten signatures. That is the shallow module
 Ousterhout warns about, and it was
-[explicitly rejected](../../../../../../docs/architecture/3-decisions/376-cold-engine-deep-modules.md):
+explicitly rejected under the cold-engine deep-module split:
 it shortens signatures without removing a single duplication, because callers
 still reach in and re-derive.
 
@@ -65,5 +65,5 @@ index prefiltering, so folding them together would be a silent behavior change.
 Each says why in its own doc comment.
 
 Proved by the rgsuite differential harness (`bench/rgsuite/`) and
-[`bench/gates/index_elision_parity.sh`](../../../../../bench/gates/index_elision_parity.sh):
+[`bench/gates/index_elision_parity.sh`](../../../../bench/conformance/gates/parity/index_elision_parity.sh):
 a gate may change speed, never results.

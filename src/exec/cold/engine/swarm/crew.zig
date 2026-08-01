@@ -332,7 +332,7 @@ pub const Crew = struct {
     /// The thread array's allocation failure RETURNS: this sits on the calling
     /// thread, so the daemon-facing `roster.collectFileSet` can honor its own
     /// `Oom!` contract instead of taking the embedding host down with `exit(2)`
-    /// (ADR-373 law 1). The `noreturn` CLI path converts it back at its call site.
+    /// (fault-channel law 1). The `noreturn` CLI path converts it back at its call site.
     pub fn muster(c: *Crew, start: usize) std.mem.Allocator.Error!void {
         const seats = @max(1, @min(start, c.workers.len));
         c.threads = try c.gpa.alloc(std.Thread, c.workers.len -| 1);

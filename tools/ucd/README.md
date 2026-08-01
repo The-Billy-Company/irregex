@@ -26,4 +26,4 @@ in [`../build_unicode_tables.py`](../build_unicode_tables.py) → emits
 
 Verify with `shasum -a 256 *.txt`. To upgrade Unicode: re-fetch the whole set at
 the new version, update this table + `UNICODE_VERSION` in the generator, then
-`make gen-gist-unicode` and re-baseline the parity fixtures.
+`python3 tools/build_unicode_tables.py` and re-baseline the parity fixtures.

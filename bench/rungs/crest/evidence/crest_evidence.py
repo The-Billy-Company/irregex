@@ -23,8 +23,8 @@ import verify
 
 
 HERE = Path(__file__).resolve().parent
-REPO = HERE.parents[6]
-KERNEL = REPO / "pkg/kernels/irregex"
+KERNEL = HERE.parents[3]  # evidence → crest → rungs → bench → repo root
+REPO = KERNEL
 CONTRACT = KERNEL / "contract/crest_evidence.toml"
 UTC = timezone.utc
 
@@ -92,7 +92,7 @@ def _clean_commit() -> str:
 
 
 def _contract_at(commit: str) -> _TomlTable:
-    path = "pkg/kernels/irregex/contract/crest_evidence.toml"
+    path = "contract/crest_evidence.toml"
     raw = subprocess.check_output(
         ["git", "-C", str(REPO), "show", f"{commit}:{path}"],
         text=True,
@@ -179,7 +179,7 @@ def _archive(
 def _probe(*argv: str) -> str | None:
     try:
         value = subprocess.check_output(argv, text=True, stderr=subprocess.DEVNULL).strip()
-    except OSError, subprocess.CalledProcessError:
+    except (OSError, subprocess.CalledProcessError):
         return None
     return value or None
 
@@ -195,7 +195,7 @@ def _darwin_volume_info() -> _PlistObject:
             ["diskutil", "info", "-plist", mount], stderr=subprocess.DEVNULL
         )
         return plistlib.loads(raw)
-    except OSError, subprocess.CalledProcessError, plistlib.InvalidFileException:
+    except (OSError, subprocess.CalledProcessError, plistlib.InvalidFileException):
         return {}
 
 
@@ -219,7 +219,7 @@ def _memory_bytes() -> tuple[int | None, str | None]:
         return int(value), None
     try:
         return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"), None
-    except OSError, ValueError:
+    except (OSError, ValueError):
         return None, "host exposed no physical-memory total"
 
 

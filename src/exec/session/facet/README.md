@@ -1,10 +1,10 @@
 <!--
 doc_radar:
   paths_exist:
-    - pkg/kernels/irregex/src/exec/session/facet/fold.zig
-    - pkg/kernels/irregex/src/exec/session/facet/present.zig
-    - pkg/kernels/irregex/src/exec/session/facet/stream.zig
-    - pkg/kernels/irregex/src/exec/session/facet/render.zig
+    - src/exec/session/facet/fold.zig
+    - src/exec/session/facet/present.zig
+    - src/exec/session/facet/stream.zig
+    - src/exec/session/facet/render.zig
 -->
 
 # `facet/` — the four faces one warm answer can wear

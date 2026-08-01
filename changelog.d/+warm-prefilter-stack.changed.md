@@ -21,7 +21,7 @@ arrives with a null `source`, which is the standing "do not re-parse"
 certificate. `GIST_NO_COVER` / `GIST_NO_CREST` stand one half down each, read in
 the daemon rather than the client because that is where the pruning is derived.
 
-Measured on 5,883 files of real Billy source, frozen: the cover plan narrows the
+Measured on 5,883 files of real host source, frozen: the cover plan narrows the
 index answer 39-93% on the patterns that force several literals, the sieve takes
 another 44-94% off the literal-free class repetitions, and end-to-end that is
 1.4-1.9x geomean over the ten patterns either half can prune. The candidate

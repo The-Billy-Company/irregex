@@ -1,11 +1,11 @@
 ---
 doc_radar:
   paths_exist:
-    - pkg/kernels/irregex/bench/rungs/shuffle/bench.zig
-    - pkg/kernels/irregex/src/kernel/regex/linear/shuffle/shuffle.zig
+    - bench/rungs/shuffle/bench.zig
+    - src/kernel/regex/linear/shuffle/shuffle.zig
   sentinels:
     - description: "the harness fails closed on disagreement, and a row kept only to show where the rung LOSES is marked as such instead of being counted as a win"
-      file: pkg/kernels/irregex/bench/rungs/shuffle/bench.zig
+      file: bench/rungs/shuffle/bench.zig
       contains:
         - "error.ComposeProofFailed"
         - "boundary: bool = false,"
@@ -14,7 +14,7 @@ doc_radar:
 
 # bench/shuffle — the composition rung's production proof harness
 
-`zig build compose-rung` (from `pkg/kernels/irregex/`) links the **real**
+`zig build compose-rung` (from ``) links the **real**
 engine and the **real** rung, so the baseline is the shipped `Dfa.docMatch`
 rather than a reimplementation of it. Both arms run over the same buffer, in the
 same process, **interleaved round by round** and reported min-of-N — on a box
@@ -47,10 +47,10 @@ zqx`), and `~` keeps the literal length — hence the state count — identical
    something; this one publishes a 0.15× row.
 
 Haystack: `$COMPOSE_HAY` when set (the research lane's generated file, for
-reproducing its exact numbers), else the real Billy corpus concatenated into one
+reproducing its exact numbers), else the real host corpus concatenated into one
 contiguous buffer. `$COMPOSE_ROUNDS` sets the min-of-N depth (default 7).
 
-## Reference run — Apple M4 Max, 206.8 MiB of the Billy corpus
+## Reference run — Apple M4 Max, 206.8 MiB of the host corpus
 
 | pattern          | \|Q\| | lanes | base B/cyc | comp B/cyc | speedup                          |
 | ---------------- | ----- | ----- | ---------- | ---------- | -------------------------------- |

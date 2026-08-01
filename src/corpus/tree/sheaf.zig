@@ -52,7 +52,7 @@ const builtin = @import("builtin");
 
 const w = std.os.windows;
 
-/// The batched-listing pair's private control-flow vocabulary (ADR-373 law 1).
+/// The batched-listing pair's private control-flow vocabulary (fault-channel law 1).
 /// `Declined` means the accelerator stepped aside — the syscall is absent on this
 /// filesystem, or the buffer it packed did not hold up.
 ///

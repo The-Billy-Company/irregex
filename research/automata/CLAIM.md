@@ -2,7 +2,7 @@
 doc_radar:
   sentinels:
     - description: "C1 landed: the dependent load is gone, replaced by a bound and one compare. C2's target — the second table — is still there."
-      file: pkg/kernels/irregex/src/kernel/regex/linear/dfa/dfa.zig
+      file: src/kernel/regex/linear/dfa/dfa.zig
       contains:
         - "match_hi: u32"
         - "pub inline fn isMatch"
@@ -10,60 +10,60 @@ doc_radar:
       absent:
         - "is_match: []const bool"
     - description: "C1's permutation, and the one place every producer now establishes the layout invariants — in automata/, which belongs to neither road that builds an automaton"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/automata/freeze.zig
+      file: src/kernel/regex/linear/automata/freeze.zig
       contains:
         - "fn sortMatchFirst"
         - "Match-first renumbering"
         - "belongs to neither and serves both"
     - description: "C3 retired, and DELIBERATELY still here: the bulk clear is the measured-correct algorithm, because closure width exceeds the word count in every wide row. A sparse clear replacing this line would be a regression."
-      file: pkg/kernels/irregex/src/kernel/regex/linear/dfa/subset.zig
+      file: src/kernel/regex/linear/dfa/subset.zig
       contains:
         - "@memset(s.visited, 0)"
     - description: "C3's retirement instrument: the visit count rides out of determinization on the automaton, so mean closure width is a standing column rather than a one-off probe"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/dfa/dfa.zig
+      file: src/kernel/regex/linear/dfa/dfa.zig
       contains:
         - "visits: u64 = 0"
     - description: "C4's target: the engine still asks for the START state's dwell only, which is what leaves the interior claim open"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/automata/freeze.zig
+      file: src/kernel/regex/linear/automata/freeze.zig
       contains:
         - "The start state's skippable dwell"
         - "dwell.ofStart("
     - description: "C4's instrument: the survey takes the profitability bar as an argument, which is what separates a shape refusal from a threshold refusal"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/automata/dwell.zig
+      file: src/kernel/regex/linear/automata/dwell.zig
       contains:
         - "pub const min_profitable_stride: u16 = 32;"
         - "pub fn survey(d: *const Dfa, out: []Skippable, min_stride: u16) Census"
         - "unprofitable,"
     - description: "C4's premise is measured on documents that ENTER an interior dwell, not the search slate whose fills park the walk in start"
-      file: pkg/kernels/irregex/bench/rungs/automata/bench.zig
+      file: bench/rungs/automata/bench.zig
       contains:
         - "const dwell_slate = [_]Row{"
         - "fn elidableBytes"
     - description: "C5's real core: ONE file owning both quotient dimensions, with the one-way ordering that is the whole reason they are one file rather than two passes a caller sequences"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/automata/reduce.zig
+      file: src/kernel/regex/linear/automata/reduce.zig
       contains:
         - "pub fn run("
         - "rows first, then columns"
     - description: "C5 landed on the road whose redundancy is structural: the symbolic product reduces, and the pass it used to own is gone into automata/"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/symbolic/transcribe.zig
+      file: src/kernel/regex/linear/symbolic/transcribe.zig
       contains:
         - "reduce.run("
       absent:
         - "minimize."
     - description: "C5 declined on the byte road, and DELIBERATELY still absent: the determinizer freezes Classes.build's partition unchanged, because a collapse here was measured not to move the walk"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/dfa/powerset.zig
+      file: src/kernel/regex/linear/dfa/powerset.zig
       contains:
         - "No quotient runs here"
       absent:
         - "reduce.run("
     - description: "C5's retirement instrument: the UTF-8 trie population is measured APART from the ASCII one, and the verdict is a timed walk on both tables rather than a byte count"
-      file: pkg/kernels/irregex/bench/rungs/automata/bench.zig
+      file: bench/rungs/automata/bench.zig
       contains:
         - "const trie_slate = "
         - "fn scanRatio"
         - "const Lowering = enum { ascii, trie };"
     - description: "C8 retired and DELIBERATELY unbuilt: no deserializer exists, and the two layout properties that made a trusted one cost an O(states x classes) validation sweep are exactly the two C1 depends on, so softening them to enable serialization is the trade this retirement forbids"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/dfa/dfa.zig
+      file: src/kernel/regex/linear/dfa/dfa.zig
       contains:
         - "entries are premultiplied targets"
         - "The transition tables are NOT total"

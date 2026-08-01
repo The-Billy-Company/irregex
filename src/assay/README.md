@@ -1,11 +1,11 @@
 <!-- doc_radar:
 paths_exist:
-  - pkg/kernels/irregex/src/assay/span.zig
-  - pkg/kernels/irregex/src/assay/tally.zig
-  - pkg/kernels/irregex/src/assay/channel.zig
-  - pkg/kernels/irregex/src/assay/assay.zig
+  - src/assay/span.zig
+  - src/assay/tally.zig
+  - src/assay/channel.zig
+  - src/assay/assay.zig
 sentinels:
-  - file: pkg/kernels/irregex/src/assay/channel.zig
+  - file: src/assay/channel.zig
     contains: ["GIST_TRACE", "pub const Lens", "pub const Sink", "pub const Chatter"]
 -->
 
@@ -35,7 +35,7 @@ one file each.
 The sink is the seam that makes two properties true _by construction_ rather
 than by auditing every call site:
 
-- **The C-ABI / in-process session never writes stdout/stderr or exits** (ADR-352,
+- **The C-ABI / in-process session never writes stdout/stderr or exits** (
   `src/root.zig`): the FFI session scopes a `.dark` sink for the call, so any
   diagnostic anywhere below it is discarded.
 - **A warm (daemon) query's timing reaches the client**: a daemon worker scopes a
@@ -75,7 +75,7 @@ walk a tree; argv errors above that line stay audible on purpose.
 | Knob                                                                                | Effect                                                                                                                                                                                                                                                                               |
 | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `GIST_TRACE=amend,journal,reconcile,warm,rank,index,query,session,fault` (or `all`) | Light one or more phase-trace lenses (off by default). Replaces the former `GIST_AMEND_TRACE` / `GIST_JOURNAL_TRACE` / `GIST_RECONCILE_TRACE` / `GIST_DEBUG_WARM`.                                                                                                                   |
-| `GIST_TRACE=fault`                                                                  | Not a phase but a disposition: shows every failure the kernel **spared** because it could not change the answer (`fault.spare`, ADR-373 law 8) — a stale socket that would not unlink, an optional sidecar that would not write. Silent by default, so best-effort work stays quiet. |
+| `GIST_TRACE=fault`                                                                  | Not a phase but a disposition: shows every failure the kernel **spared** because it could not change the answer (`fault.spare`, fault-channel law 8) — a stale socket that would not unlink, an optional sidecar that would not write. Silent by default, so best-effort work stays quiet. |
 | `GIST_TRACE_FORMAT=text\|json`                                                      | Render summaries/traces as prose or NDJSON. Defaults to a `--json` run's own format, so `gist --json`'s stderr is machine-parseable too.                                                                                                                                             |
 
 ## When to edit

@@ -3,7 +3,7 @@
 doc_radar:
   sentinels:
     - description: "the lane algebra lives on the scan floor — one shuffle, two widths, AArch64 gate"
-      file: pkg/kernels/irregex/src/kernel/scan/lanes.zig
+      file: src/kernel/scan/lanes.zig
       contains:
         - "pub inline fn shuffle"
         - "pub const native = switch (builtin.cpu.arch)"
@@ -11,7 +11,7 @@ doc_radar:
         - "lanes32 = 32,"
       absent: ["lanes64"]
     - description: "the rung declines at compile time by returning null for what it cannot REPRESENT; whether a skip beats it is the priced auction's judgment, not a gate here"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/shuffle/shuffle.zig
+      file: src/kernel/regex/linear/shuffle/shuffle.zig
       contains:
         - "pub const max_states: u8 = 31;"
         - "pub fn lower("
@@ -43,7 +43,7 @@ free in instruction count and buys a quarter of the dependency depth: one
 loop-carried shuffle per 32-byte chunk instead of one dependent load per byte.
 
 Measured against the shipped `Dfa.docMatch`, same buffer, same process,
-interleaved (`bench/shuffle/`, 206 MiB of the real Billy corpus):
+interleaved (`bench/shuffle/`, 206 MiB of the real host corpus):
 
 |                   | 16 lanes      | 32 lanes     |
 | ----------------- | ------------- | ------------ |

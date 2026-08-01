@@ -2,7 +2,7 @@
 doc_radar:
   counts:
     - description: "succinct keeps SA-IS · RRR · wavelet"
-      glob: pkg/kernels/irregex/src/kernel/math/succinct/*.zig
+      glob: src/kernel/math/succinct/*.zig
       unit: files
       equals: 3
 ---
@@ -11,8 +11,8 @@ doc_radar:
 
 Generic succinct structures the codex composes — not FM-private. Lifted out of
 the old monolithic `corpus/index/codex/` so SA-IS / RRR / wavelet are reusable
-math on the floor, while the FM composition lives in [`../../codex/`](../../codex/)
-and the persisted SHLF artifact in [`../../../corpus/index/shelf/`](../../../corpus/index/shelf/).
+math on the floor, while the FM composition lives in `src/kernel/codex/` and
+the persisted SHLF artifact in `src/corpus/index/shelf/`.
 
 | File | Job |
 | ---- | --- |
@@ -21,4 +21,4 @@ and the persisted SHLF artifact in [`../../../corpus/index/shelf/`](../../../cor
 | `wavelet.zig` | Huffman-shaped wavelet tree rank oracle |
 
 The FM-index composition that wires these into a restorable self-index lives in
-[`../../codex/`](../../codex/README.md).
+`src/kernel/codex/`.

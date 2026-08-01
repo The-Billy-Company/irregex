@@ -18,7 +18,7 @@ const portal = @import("../../portal.zig");
 pub const BUFCAP: usize = 65536;
 
 /// Why a candidate the walk already admitted could not be opened — named rather
-/// than folded into a null (ADR-373 law 2), because the two outcomes have
+/// than folded into a null (fault-channel law 2), because the two outcomes have
 /// DIFFERENT exit classes and rg distinguishes them. A file that opens and holds
 /// no match is exit 1; a file that will not open at all is a gap in what was
 /// searched, and ripgrep reports it on stderr and exits 2 even when other files

@@ -160,7 +160,7 @@ pub fn mmapFile(io: std.Io, path: []const u8) !Mapping {
     const file = try std.Io.Dir.cwd().openFile(io, path, .{}); // .read_only default
     defer file.close(io);
     const len: usize = @intCast((try file.stat(io)).size);
-    // `Corrupt`, not an `EmptyFile` of its own (ADR-373 law 2): the sentence
+    // `Corrupt`, not an `EmptyFile` of its own (fault-channel law 2): the sentence
     // above already says a 0-byte artifact IS corruption, and the persist domain
     // is where an untrustworthy artifact fails closed to the live path.
     if (len == 0) return fault.Persist.Corrupt;

@@ -2,45 +2,45 @@
 doc_radar:
   sentinels:
     - description: "the membership rule holds: the folder's occupant is road-independent — it names both roads and belongs to neither"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/automata/freeze.zig
+      file: src/kernel/regex/linear/automata/freeze.zig
       contains:
         - "../dfa/powerset.zig"
         - "../symbolic/transcribe.zig"
         - "belongs to neither and serves both"
     - description: "both roads enter through this folder rather than transcribing the layout passes themselves"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/dfa/powerset.zig
+      file: src/kernel/regex/linear/dfa/powerset.zig
       contains:
         - "@import(\"../automata/freeze.zig\")"
     - description: "the symbolic road too — it no longer reaches into the byte road's folder for a shared pass"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/symbolic/transcribe.zig
+      file: src/kernel/regex/linear/symbolic/transcribe.zig
       contains:
         - "@import(\"../automata/freeze.zig\")"
       absent:
         - "@import(\"../dfa/freeze.zig\")"
     - description: "reduce owns BOTH quotient dimensions with the one-way ordering that makes them one file, and says why the sieve's dual cannot share its core"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/automata/reduce.zig
+      file: src/kernel/regex/linear/automata/reduce.zig
       contains:
         - "pub const Plan"
         - "pub fn run"
         - "The order is load-bearing"
         - "It is the *dual*, and the two cannot share a core"
     - description: "the symbolic road reduces both dimensions; the byte road declines both, and its determinizer freezes the class partition unchanged"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/symbolic/transcribe.zig
+      file: src/kernel/regex/linear/symbolic/transcribe.zig
       contains:
         - "reduce.run"
     - description: "the sieve's ascending closure stays with the sieve and says so where it lives"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/sieve/quotient.zig
+      file: src/kernel/regex/linear/sieve/quotient.zig
       absent:
         - "@import(\"../automata/reduce.zig\")"
     - description: "the dwell owns one question and says in the file which fast paths it refuses to annex"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/automata/dwell.zig
+      file: src/kernel/regex/linear/automata/dwell.zig
       contains:
         - "pub const max_exit_bytes"
         - "pub fn ofStart"
         - "pub fn survey"
         - "A fast path is not a dwell"
     - description: "the exit-set rule has ONE transcription — the determinizer core no longer carries a copy"
-      file: pkg/kernels/irregex/src/kernel/regex/linear/dfa/subset.zig
+      file: src/kernel/regex/linear/dfa/subset.zig
       absent:
         - "max_accel_bytes"
         - "relevant.set(b)"
@@ -82,7 +82,7 @@ a *finished* automaton admits, in the one order they can run in:
 1. **Match-first renumbering** — permute states so every accepting one precedes
    every non-accepting one, collapsing a per-state `is_match[s]` array into a
    single `match_hi` bound. This is claim C1 in
-   [`research/automata/CLAIM.md`](../../../../research/automata/CLAIM.md); it
+   [`research/automata/CLAIM.md`](../../../../../research/automata/CLAIM.md); it
    landed at 1.10–1.16× geomean on the scalar walk.
 2. **The start state's dwell** — read off the start row, which needs state
    *identity*, so it has to precede premultiplication. The rule itself is
@@ -205,7 +205,7 @@ Three things that look like candidates and are not:
 
 - **`../dfa/dfa.zig`**, the automaton type itself, is shared by both roads and by
   every executor — but its path is pinned inside the frozen benchmark manifests
-  under [`bench/certificate/artifact/`](../../../../../bench/certificate/artifact/).
+  under `gist/bench/certificate/artifact/`.
   Those are recorded evidence, not source, and moving a file to make a folder
   tidier is not a reason to rewrite them.
 - **`../program/`**, the Thompson lowering, produces the NFA rather than operating

@@ -1,15 +1,15 @@
 <!-- doc_radar:
 paths_exist:
-  - pkg/kernels/irregex/bench/conformance/diag/golden.py
+  - bench/conformance/diag/golden.py
 sentinels:
-  - file: pkg/kernels/irregex/bench/conformance/diag/golden.py
+  - file: bench/conformance/diag/golden.py
     contains: ["def normalize", "def cmd_check"]
 -->
 
 # `bench/diag/` — the diagnostic-template golden net
 
 The safety net for routing every stderr diagnostic through
-[`src/assay/`](../../src/assay/README.md). Each verb-summary / timing / trace
+[`src/assay/`](../../../src/assay/README.md). Each verb-summary / timing / trace
 line is a **format template** with volatile values (elapsed `ms`, live counts,
 the `atlas,`/`live,` provenance tag) punched in. `golden.py` runs each read-only
 verb, captures stderr, and **normalizes the volatile values away** — every digit
@@ -32,6 +32,6 @@ python3 bench/diag/golden.py show <name>  # print one verb's normalized template
 ```
 
 Read-only verbs only — nothing here mutates the shared machine-local index or
-atlas. The sibling [`bench/gates/streams.sh`](../gates/streams.sh) proves the
+atlas. The sibling [`bench/gates/streams.sh`](../gates/contract/streams.sh) proves the
 _stream_ contract (results→stdout, stderr silent except the sanctioned
 channels); this proves the _content_ templates of that stderr channel.

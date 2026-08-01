@@ -1,10 +1,12 @@
 # Pincer — testing story
 
-Everything in `PROOF.md` is reproducible from `spikes/anchor-joint-rarity/`.
-This file records what was measured, how, and what each instrument can and
-cannot establish.
+`PROOF.md` §1–§10 is reproducible from `spikes/anchor-joint-rarity/`, and
+§7.2.e's integration numbers from `spikes/anchor-plan/`. This file records
+what was measured, how, and what each instrument can and cannot establish.
 
 ## Instruments
+
+Selector sweep — `spikes/anchor-joint-rarity/`:
 
 | file | role |
 | --- | --- |
@@ -13,13 +15,36 @@ cannot establish.
 | `timeit.zig` | wall clock of the kernel's dual-probe loop, anchor pair as the only variable |
 | `report.py` | aggregation, per-needle ratios, degenerate-pick census |
 
+Integration — `spikes/anchor-plan/`:
+
+| file | role |
+| --- | --- |
+| `sweep.zig` | one hit-to-hit kernel sweep under the lazy, static, and calibrated plans; asserts the three hit counts agree before reporting times |
+| `probe.zig` | per-needle survivor counts for static / refined / best, i.e. the headroom the improvement test is deciding over |
+| `bigab.py` | in-binary CPU A/B across the literal modes, `GIST_NO_CALIBRATE` as the only variable |
+| `regexab.py` | the same for a regex carrying a required literal |
+| `diffall.py` | 420-invocation output differential, calibrated vs static arm of one binary |
+
 ### Build
+
+The spikes live in Billy's machine-local `.local/`, the package in its own checkout
+beside it, so a module dependency crosses between the two:
 
 ```bash
 cd spikes/anchor-joint-rarity
-R=../../../pkg/kernels/irregex/src/kernel/scan/rarity.zig
+R=../../../../irregex/src/kernel/scan/rarity.zig
 zig build-exe -O ReleaseFast -femit-bin=probe  --dep rarity -Mmain=probe.zig  -Mrarity=$R
 zig build-exe -O ReleaseFast -femit-bin=timeit --dep rarity -Mmain=timeit.zig -Mrarity=$R
+```
+
+The integration spikes import the whole package instead of one module, so they take
+its build graph:
+
+```bash
+cd spikes/anchor-plan
+P=../../../../irregex/src/root.zig
+zig build-exe -O ReleaseFast -femit-bin=sweepbin --dep irregex -Mmain=sweep.zig -Mirregex=$P
+zig build-exe -O ReleaseFast -femit-bin=probebin --dep irregex -Mmain=probe.zig -Mirregex=$P
 ```
 
 `probe.zig` imports the **production** `rarity.zig` module rather than a copy, so
@@ -54,6 +79,24 @@ python3 report.py code.csv
 ./timeit corpus.bin  pairs.tsv
 ./timeit prose_a.bin pairs_prose.tsv
 ```
+
+For the integration (§7.2.e), from `spikes/anchor-plan/`. `adv.txt` is the
+adversarial 200 MB buffer — an alphabet of statically-rare bytes — and `bigtree/` a
+213 MB synthetic code tree, so the same commands report both the regime calibration
+exists for and the ordinary one:
+
+```bash
+./sweepbin adv.txt <needle>...          # kernel ground truth, three plans
+./probebin adv.txt <needle>...          # static / refine / best survivor counts
+python3 bigab.py                        # in-binary CPU A/B, literal modes
+python3 regexab.py                      # ditto, regex with a required literal
+python3 diffall.py                      # 420-invocation output differential
+```
+
+Every arm of the A/B runs the binary **in place** rather than from a copy: copying it
+invalidates the code signature on Apple silicon, and the child is then `SIGKILL`ed —
+which reads as a suspiciously fast run rather than as a failure, so the harness also
+refuses to report on a killed child.
 
 ## Why the selectivity numbers are exact rather than sampled
 
@@ -104,25 +147,39 @@ way.
 ## What is not yet tested
 
 - **Single-probe fast path.** `density ≤ 48` selects a different loop shape.
-  Everything here measures the dual-probe wide tier.
-- **End-to-end calibrating selector.** Its selectivity is measured; its wall
-  clock is inferred from the joint row minus §7.1 overhead. Calibration has to
-  live in the kernel to be timed honestly.
+  Everything in the selector sweep measures the dual-probe wide tier. The
+  integration does interact with it — an adopted calibrated pair declares
+  `single = false`, because `singleProbeWorthwhile` prices its probe against the
+  static table and cannot judge a byte that is statically rare and locally common —
+  which is one of the two reasons `refine` declining is a *good* outcome.
 - **Second machine.** All timings are Apple M4. Selectivity is
-  machine-independent; throughput is not.
-- **Threaded scan.** The 1.7 GB production run is single-file and warm-cache.
+  machine-independent; throughput is not, and the hardware-independent re-run on the
+  Anvil box is still owed for the end-to-end ratios.
+- **Threaded scan.** The 1.7 GB production run is single-file and warm-cache. The
+  integration A/B forces `-j1` so the paired rows measure one core's work; dropping
+  it lets `emitFileSharded` cut the file across cores and reports 8.0–8.2× with
+  identical output, which is the same ratio and therefore evidence that the
+  once-per-document mint is not being re-paid per shard — but the two arms are not
+  compared to each other as a speedup.
 
-## If this graduates
+## How the integration is tested
 
-Integration would need, in the kernel's existing idiom:
-
-1. `rarity.zig` widened past the clamp — a pure dynamic-range fix, no new
-   concept, and by itself worth 1.73×/2.06× (`PROOF.md` §4).
-2. Stratified calibration in `indexOfPos`, gated on buffer size per §7.1,
-   composed with the runtime demotion counter already there.
-3. A differential test asserting that the recalibrated selector returns
-   byte-identical match sets — the `eql` verify already makes correctness
-   independent of anchor choice, which is what makes this safe to change at all.
-4. A Certificate rung whose literal probes span the needle space rather than
-   sampling `pgxpool`, so the blind spot in §5 cannot reopen.
-5. A changelog fragment, per the repo's per-package convention.
+1. `calibrate_test.zig` covers `refine` directly: the incumbent is kept when it is
+   already optimal, replaced when a materially better pair exists, and — the
+   centrepiece — **not** replaced on a uniform alphabet where all 120 pairs share one
+   true density, which is the winner's-curse case that caught the purely relative
+   margin. Its randomised arm uses a skewed alphabet so genuine wins exist, and
+   asserts bounded per-trial regression with aggregate improvement.
+2. `anchor_test.zig` holds the defect's own guard — an all-tied needle must never
+   select adjacent offsets — plus the table's rank-inversion and lowercase-
+   distinguishability invariants.
+3. Output equivalence is proven three ways rather than argued: the mined ripgrep
+   suite (`bench/conformance/rgsuite/run.py`, 411/411 on both the parallel and serial
+   engines), its differential fuzz companion (residual unchanged, and identical with
+   `GIST_NO_CALIBRATE=1`, so the one remaining `line-content` case is not this), and
+   an in-binary differential over 420 mode×needle×corpus invocations comparing the
+   calibrated and static arms of the *same* binary byte for byte.
+4. `spikes/anchor-plan/sweep.zig` is the kernel ground truth: one full
+   hit-to-hit sweep under the lazy, static, and calibrated plans, asserting the three
+   hit counts agree before reporting their times. It is what separates "the kernel
+   got faster" from "the CLI got faster", and it is how the un-wired paths were found.

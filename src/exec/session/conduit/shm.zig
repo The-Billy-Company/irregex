@@ -19,7 +19,7 @@
 //! erroring, and the caller turns the declinature back into the classic
 //! `chunk`-frame path. This buffer is a pure accelerator, never a new source of
 //! truth or a new failure mode — which is exactly why "the shared buffer could
-//! not be stood up" belongs on `fault.Answer`'s success channel (ADR-373 law 1)
+//! not be stood up" belongs on `fault.Answer`'s success channel (fault-channel law 1)
 //! and not in an error set a caller could `try` past into an abort.
 
 const std = @import("std");

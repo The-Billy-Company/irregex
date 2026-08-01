@@ -2,15 +2,15 @@
 doc_radar:
   counts:
     - description: "fresh keeps anchor · journal · sweep (+ tests)"
-      glob: pkg/kernels/irregex/src/corpus/fresh/*.zig
+      glob: src/corpus/fresh/*.zig
       unit: files
       min: 3
   sentinels:
     - description: "the dual-clock anchor is the crate's central truth mechanism"
-      file: pkg/kernels/irregex/src/corpus/fresh/fresh.zig
+      file: src/corpus/fresh/fresh.zig
       contains: ["pub fn readAnchor", "pub fn writeAnchor"]
     - description: "the model's one predicate reads BOTH clocks and treats absence as change"
-      file: pkg/kernels/irregex/src/corpus/tree/bulkstat.zig
+      file: src/corpus/tree/bulkstat.zig
       contains: "pub fn needsLiveRead"
 ---
 

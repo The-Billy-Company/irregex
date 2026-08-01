@@ -15,9 +15,9 @@ opinion about products:
 | Package | What it is |
 |---|---|
 | **irregex** (this repo) | the library: engines, index, corpus, rank, emit, warm core |
-| [`relate`](../relate) | the similarity engine: compression-as-search, kinship, the codex |
-| [`gist`](../gist) | the product chassis: ships the `gist` + `relate` binaries, the daemon, the C ABI, editor + shell integration |
-| [`blast`](../blast) | the composed face: ships the `irregex` binary (`blast` / `provenance`) |
+| `relate` | the similarity engine: compression-as-search, kinship, the cento quoter |
+| `gist` | the product chassis: ships the `gist` + `relate` binaries, the daemon, the C ABI, editor + shell integration |
+| `blast` | the composed face: ships the `irregex` binary (`blast` / `provenance`) |
 
 ## What's inside
 
@@ -91,10 +91,10 @@ and subject to change for anyone else.
 
 ## Provenance
 
-Extracted from `irregex` (cut at the extraction commit).
+Extracted from a private monorepo (cut at `ce430bbaab`).
 Architecture is machine-checked: `contract/irregex.ward` declares the
-tier ordering, seals, and reach ceiling, and the ward gate judges it
-over the real `@import` graph. Changelog is towncrier
+tier ordering, seals, and reach ceiling over the real `@import` graph
+(the `ward` judge currently lives in the private monorepo that consumes this package). Changelog is towncrier
 (`changelog.d/` fragments → `CHANGELOG.md`). Apache-2.0; `NOTICE`
 attributes the vendored and borrowed work (PCRE2, the ripgrep lineage,
 UCD and WHATWG data).

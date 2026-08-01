@@ -1,12 +1,12 @@
 ---
 doc_radar:
   sentinels:
-    - file: pkg/kernels/irregex/src/exec/session/reconcile/dirty.zig
+    - file: src/exec/session/reconcile/dirty.zig
       contains: ["armExact", "noteDoubt"]
-    - file: pkg/kernels/irregex/src/exec/session/reconcile/delta.zig
+    - file: src/exec/session/reconcile/delta.zig
       contains: ["needs_full", "keyIsCurrent"]
     - description: "leases live on the math floor"
-      file: pkg/kernels/irregex/src/kernel/math/lease.zig
+      file: src/kernel/math/lease.zig
       contains: ["pub const Ward", "pub const Latch"]
 ---
 

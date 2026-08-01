@@ -2,18 +2,18 @@
 doc_radar:
   counts:
     - description: "vendor keeps the hermetic C floor — one tree per library"
-      glob: pkg/kernels/irregex/vendor/*
+      glob: vendor/*
       unit: dirs
       equals: 2
   sentinels:
     - description: "PCRE2 is built from the vendored tree, not the system lib"
-      file: pkg/kernels/irregex/vendor/pcre2/README.md
+      file: vendor/pcre2/README.md
       contains: "10.47"
     - description: "libsais is built from the vendored tree, not a system lib"
-      file: pkg/kernels/irregex/vendor/libsais/README.md
+      file: vendor/libsais/README.md
       contains: "2.10.2"
     - description: "both trees are rows in build.zig's declarative C floor"
-      file: pkg/kernels/irregex/build.zig
+      file: build.zig
       contains:
         - "vendor/pcre2/src"
         - "vendor/libsais/src"
@@ -27,7 +27,7 @@ not depend on system packages for match semantics or index construction.
 | Tree | What | Why vendored |
 | ---- | ---- | ------------ |
 | [`pcre2/`](pcre2) | PCRE2 10.47 (8-bit + JIT/sljit) | Opt-in `-P` / `--engine auto` — no system `libpcre2` |
-| [`libsais/`](libsais) | libsais 2.10.2 (8-bit suffix array) | The codex FM-index's suffix sort — no system `libsais` |
+| `relate/vendor/libsais/` | libsais 2.10.2 (8-bit suffix array) | The codex FM-index's suffix sort — no system `libsais` |
 
 Together these are **the C floor**: `build.zig` holds one declarative row per
 library (name, include path, sources, feature flags) and links the whole set
@@ -45,4 +45,4 @@ backs — the PCRE parity slate, or `zig build test -Dtest-filter='sais:'` and
 `zig build codex-scale`.
 
 Do not add casual vendor trees here — prefer a hermetic pin with a README
-that states version, license, and the Billy-side wrapper path.
+that states version, license, and the consumer-side wrapper path.

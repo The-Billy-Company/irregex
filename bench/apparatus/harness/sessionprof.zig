@@ -85,7 +85,7 @@ const Span = gist.assay.Span; // the package instrumentation floor: monotonic Sp
 const corpus_mod = gist.corpus;
 
 /// Enough reps to make the bootstrap CI meaningful without turning a profile run
-/// into a coffee break; every seam here is sub-100 ms on the Billy tree.
+/// into a coffee break; every seam here is sub-100 ms on the host tree.
 const default_reps: usize = 40;
 
 /// A prevent-elision sink — every seam XOR-folds its answer in, so the optimizer
@@ -232,7 +232,7 @@ const Counter = struct {
 };
 
 /// Per-shard passes inside the fan-out calibrator's single spawn round. Six puts
-/// it at ~2.3 ms on the Billy tree — the median cost of the `fanout` seams it
+/// it at ~2.3 ms on the host tree — the median cost of the `fanout` seams it
 /// stands for — while keeping ONE spawn round, exactly like those seams. Paying
 /// the magnitude in spawn rounds instead over-weights spawn and over-corrects the
 /// whole class (measured 1.52× while its seams held 1.1×).
@@ -261,7 +261,7 @@ const slate = [_][]const u8{ "pub fn", "ResidentSession", "gatedLineCount", "pgx
 /// The default source tree to freeze: the engine's own sources — a real, dense
 /// corpus well above `parallel.min_bytes` (256 KiB), so the sharded lanes
 /// genuinely shard instead of falling through to their serial cores.
-const default_source = "pkg/kernels/irregex/src";
+const default_source = "src";
 
 pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: *std.process.Args.Iterator) !void {
     var reps = default_reps;

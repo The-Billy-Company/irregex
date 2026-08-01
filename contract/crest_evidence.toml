@@ -8,16 +8,16 @@ artifact_kind = "crest-production-proof"
 
 [paths]
 raw_dir = ".local/crest-evidence"
-kernel_root = "pkg/kernels/irregex"
-harness = "pkg/kernels/irregex/bench/rungs/crest/bench.zig"
+kernel_root = "."
+harness = "bench/rungs/crest/bench.zig"
 run_json = ".local/crest-evidence/crest-run.json"
 aggregate_csv = ".local/crest-evidence/crest.csv"
 corpus_manifest = ".local/crest-evidence/corpus-manifest.tsv"
 source_archive_paths = [ "." ]
 monograph_sources = [
-  "pkg/kernels/irregex/research/crest/PROOF.md",
-  "pkg/kernels/irregex/research/crest/PRIOR_ART.md",
-  "pkg/kernels/irregex/research/crest/TESTING.md",
+  "research/crest/PROOF.md",
+  "research/crest/PRIOR_ART.md",
+  "research/crest/TESTING.md",
 ]
 
 [benchmark]
@@ -112,7 +112,7 @@ pruned = true
 digit_threshold = 2
 
 [commands]
-cwd = "pkg/kernels/irregex"
+cwd = "."
 benchmark = [ "zig", "build", "crest", "--", "--runs", "{runs}", "--warmup", "{warmup}" ]
 test = [ "zig", "build", "test", "--summary", "all" ]
 

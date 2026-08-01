@@ -2,22 +2,22 @@
 doc_radar:
   sentinels:
     - description: "all corpus walkers retain the shared gitignore boundary"
-      file: pkg/kernels/irregex/src/corpus/tree/haystack.zig
+      file: src/corpus/tree/haystack.zig
       contains: ["ignore.Ignore", "shouldSkip"]
     - description: "the stdout drain rides corpus.zig's writeStdout seam"
-      file: pkg/kernels/irregex/src/corpus/tree/corpus.zig
+      file: src/corpus/tree/corpus.zig
       contains: ["pub const StdoutPolicy = drain.Policy"]
     - description: "drain lives beside the corpus that arms it (not under cold emit)"
-      file: pkg/kernels/irregex/src/corpus/tree/drain.zig
+      file: src/corpus/tree/drain.zig
       contains: ["pub const Policy"]
     - description: "the charter discovery is wired into haystack + corpus root resolution"
-      file: pkg/kernels/irregex/src/corpus/tree/haystack.zig
+      file: src/corpus/tree/haystack.zig
       contains: "charter"
     - description: "the sheaf keeps a batched-enumeration arm for every platform family it claims"
-      file: pkg/kernels/irregex/src/corpus/tree/sheaf.zig
+      file: src/corpus/tree/sheaf.zig
       contains: ["getattrlistbulk", "NtQueryDirectoryFile", "getdents64", "getdirentries"]
     - description: "bulkstat is policy only — the syscall ABIs live next door in the sheaf"
-      file: pkg/kernels/irregex/src/corpus/tree/bulkstat.zig
+      file: src/corpus/tree/bulkstat.zig
       contains: ["const sheaf = @import(\"sheaf.zig\")", "pub const BulkDir = sheaf.Sheaf"]
 ---
 

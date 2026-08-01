@@ -3,7 +3,7 @@
 Correctness gates that oracle gist **against `rg`** (or against gist itself) — a
 divergence here means the answer is wrong, and each script exits non-zero on any
 FN/FP. `scan_regress.sh` sources the shared field registry at
-[`../../../dominance/races/field.sh`](../../../dominance/races/field.sh); the
+`gist/bench/dominance/races/field.sh`; the
 rest are pure gist-side oracles needing no field.
 
 | File                        | Gate                                                                                                                                                                                                                                                                |
@@ -35,7 +35,7 @@ stays provably servable while the file is stale, and only per-file freshness
 keeps that from becoming a false negative.
 
 ```bash
-cd pkg/kernels/irregex
+cd <irregex-repo-root>
 bench/conformance/gates/parity/equality.sh 150 1
 bench/conformance/gates/parity/index_elision_parity.sh
 bench/conformance/gates/parity/partition_parity.sh

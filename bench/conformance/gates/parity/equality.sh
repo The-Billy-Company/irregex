@@ -14,14 +14,19 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-KERNEL="$(cd "${HERE}/../../../.." && pwd)" # parity/ → gates/ → conformance/ → bench/ → gist root
-REPO="$(cd "${KERNEL}/../../.." && pwd)"
+# shellcheck source=../../../apparatus/roots.sh
+source "${HERE}/../../../apparatus/roots.sh"
+gist_resolve_roots "${HERE}" || exit 1
+OUT="${GIST_VERIFY}"
 BATTERY="${1:-120}"
 SEED="${2:-1}"
-OUT="${REPO}/.local/gist-verify"
 
 echo "building gist index + emitting verified match sets (battery=${BATTERY} seed=${SEED})…"
-(cd "${KERNEL}" && zig build -Doptimize=ReleaseFast verify -- "${BATTERY}" "${SEED}") || exit 1
+# verify lives on the product package when the harness is wired there; fall back
+# to KERNEL for the historical all-in-one layout.
+(cd "${PRODUCT}" && zig build -Doptimize=ReleaseFast verify -- "${BATTERY}" "${SEED}") \
+  || (cd "${KERNEL}" && zig build -Doptimize=ReleaseFast verify -- "${BATTERY}" "${SEED}") \
+  || exit 1
 
 cd "${REPO}" || exit 1
 command -v rg > /dev/null || {

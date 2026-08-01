@@ -8,7 +8,7 @@ tests `src/kernel/math/crest_test.zig`). Persisted sidecar:
 read-elision oracles (`src/exec/cold/engine/serial.zig` +
 `parallel.zig`).
 Proof harness: `bench/crest/bench.zig` (links the real gist engine, walks the
-real corpus, fail-closed). Run: `zig build crest` from `pkg/kernels/irregex/`;
+real corpus, fail-closed). Run: `zig build crest` from ``;
 unit tests ride `zig build test`. Prior art: `PRIOR_ART.md`; test inventory:
 `TESTING.md`.
 
@@ -679,7 +679,7 @@ corpus:
 
 - **matcher** — gist's real `Regex.docMatch`, compiled per mode with the same
   flags handed to `ghat` (honoring Theorem 2);
-- **corpus** — the live Billy tree via the same `corpus.load` the optimality
+- **corpus** — the live host tree via the same `corpus.load` the optimality
   certificate layers use;
 - **index builder** — the production `crest_sidecar.build` (the same parallel
   pass `gist index` persists as `crest.bin`);
@@ -703,7 +703,7 @@ corpus:
 No numeric result in this source document is assigned to the repaired
 calculus. Measurements are minted only after the source revision is committed:
 
-    python3 pkg/kernels/irregex/bench/rungs/crest/evidence/crest_evidence.py package
+    python3 bench/rungs/crest/evidence/crest_evidence.py package
 
 The command refuses a dirty tree, runs the benchmark and test slate frozen in
 `contract/crest_evidence.toml`, archives the exact Git revision, and records:

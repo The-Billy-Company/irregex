@@ -2,7 +2,7 @@
 # fetch.sh — install the pinned multi-corpus battery into .local/gist-corpora/.
 #
 # Every performance and correctness claim in bench/ was historically measured on
-# ONE corpus (the Billy monorepo, one machine). This fetcher materializes trees
+# ONE corpus (a large host monorepo, one machine). This fetcher materializes trees
 # with genuinely different shapes so the differential sweep (sweep.py) can hunt
 # divergences the home corpus can never expose:
 #
@@ -31,7 +31,9 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-REPO="$(cd "${HERE}/../../../../../.." && pwd)"
+# shellcheck source=../roots.sh
+source "${HERE}/../roots.sh"
+gist_resolve_roots "${HERE}" || exit 1
 DEST="${GIST_CORPORA_DIR:-${REPO}/.local/gist-corpora}"
 mkdir -p "${DEST}"
 

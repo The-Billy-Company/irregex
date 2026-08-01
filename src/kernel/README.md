@@ -2,16 +2,16 @@
 doc_radar:
   counts:
     - description: "ten ward tier packages under kernel/ (math…compose); transitional empty match/ shell may still be present"
-      glob: pkg/kernels/irregex/src/kernel/*
+      glob: src/kernel/*
       unit: dirs
       min: 10
       max: 11
   sentinels:
     - description: "the shared query core keeps fail-closed + immutable-after-compile"
-      file: pkg/kernels/irregex/src/kernel/query/query.zig
+      file: src/kernel/query/query.zig
       contains: ["error.Unsupported", "immutable after"]
     - description: "the regex package is sealed through its entry file"
-      file: pkg/kernels/irregex/contract/irregex.ward
+      file: contract/irregex.ward
       contains: "seal kernel/regex through regex.zig"
 ---
 
@@ -32,9 +32,10 @@ to know all the others.
 | [`rank/`](rank) | Result fusion + per-language definition signals (`gist --rank`) |
 | [`slate/`](slate) | Many patterns in one walk (was `batch/`) — `patterns` · `muster` · `trawl` · `loom` |
 | [`anatomy/`](anatomy) | Source anatomy — comment spans, identifier tokens, structural leans |
-| [`kinship/`](kinship) | Compression-as-similarity: `metric/` · `cluster/` · `recall/` |
-| [`codex/`](codex) | Compression codebook math (FM-index, wavelet, RRR, SA-IS) — seals payloads with the wire floor |
-| [`compose/`](compose) | Set algebra over candidate sets — exact-before-statistical (ADR-367) |
+| [`codex/`](codex) | FM-index composition over the succinct floors — seals payloads with the wire floor |
+| `relate/src/kernel/kinship/` | Compression-as-similarity: `metric/` · `cluster/` · `recall/` |
+| `relate/src/kernel/codex/` | Ziv–Merhav cento quoter over this package's FM-index |
+| `relate/src/kernel/compose/` | Set algebra over candidate sets — exact-before-statistical compose |
 
 ## The match ladder (cheapest sound rung first)
 
@@ -61,4 +62,4 @@ sibling `query/` ≈ the meta engine.
 Match semantics, prefilter soundness, DFA/Pike/PCRE caps, ranking signals,
 relate math, multipattern attribution, composition algebra. Do **not** put
 ignore rules, flag parsing, or output coloring here — that is `exec/cold/` /
-`corpus/`. Design: [ADR-363](../../../../../docs/architecture/3-decisions/363-irregex-primitives.md).
+`corpus/`.

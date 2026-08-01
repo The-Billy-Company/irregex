@@ -1,5 +1,4 @@
 //! gist resident session — the warm `lines` renderer correctness suite
-//! (ADR-352 rung 2.5).
 //!
 //! The one invariant the renderer must never break is byte-parity with the
 //! cold presentation: `resident lines bytes == gist --no-index bytes == rg

@@ -1,29 +1,29 @@
 ---
 doc_radar:
   paths_exist:
-    - pkg/kernels/irregex/bench/rungs/sieve/bench.zig
-    - pkg/kernels/irregex/bench/rungs/sieve/indexq.zig
-    - pkg/kernels/irregex/bench/rungs/sieve/stress.zig
-    - pkg/kernels/irregex/bench/rungs/sieve/csearch_plan.py
-    - pkg/kernels/irregex/bench/rungs/sieve/indexcost.sh
-    - pkg/kernels/irregex/bench/rungs/sieve/cover_parity.sh
-    - pkg/kernels/irregex/bench/rungs/sieve/warm_parity.sh
-    - pkg/kernels/irregex/src/kernel/query/cover.zig
-    - pkg/kernels/irregex/src/kernel/regex/linear/sieve/sieve.zig
+    - bench/rungs/sieve/bench.zig
+    - bench/rungs/sieve/indexq.zig
+    - bench/rungs/sieve/stress.zig
+    - bench/rungs/sieve/csearch_plan.py
+    - bench/rungs/sieve/indexcost.sh
+    - bench/rungs/sieve/cover_parity.sh
+    - bench/rungs/sieve/warm_parity.sh
+    - src/kernel/query/cover.zig
+    - src/kernel/regex/linear/sieve/sieve.zig
   sentinels:
     - description: "the harness fails closed on a missed match, on a retired matching document, and on a ladder that disagrees with the full scan"
-      file: pkg/kernels/irregex/bench/rungs/sieve/bench.zig
+      file: bench/rungs/sieve/bench.zig
       contains:
         - "SOUNDNESS VIOLATION"
         - "DOCUMENT VIOLATION"
         - "LADDER DIVERGENCE"
     - description: "Layer L fails closed on a cross-arm hit disagreement — a formula that pruned a real match"
-      file: pkg/kernels/irregex/bench/rungs/sieve/indexq.zig
+      file: bench/rungs/sieve/indexq.zig
       contains:
         - "a filter elided a real match"
         - "one of the three formulas is UNSOUND"
     - description: "the warm gate compares four arms, refuses a vacuous green (a stack that never fired, a daemon that died mid-run), and derives its baseline from a second daemon rather than a client-side env var"
-      file: pkg/kernels/irregex/bench/rungs/sieve/warm_parity.sh
+      file: bench/rungs/sieve/warm_parity.sh
       contains:
         - "start_daemon pre-wiring"
         - "require_daemons"
@@ -48,8 +48,8 @@ proved correct.
 
 # The quotient sieve's production proof harness
 
-`zig build sieve` (from `pkg/kernels/irregex/`) links the **real** engine and
-the **real** rung, then walks the **real** Billy corpus. The baseline is the
+`zig build sieve` (from ``) links the **real** engine and
+the **real** rung, then walks the **real** host corpus. The baseline is the
 shipped `Dfa.docMatch`, not a reimplementation, and both arms run in the same
 process over the same bytes so the ratio survives a box carrying ten coworker
 agents.
@@ -90,7 +90,7 @@ _loses_. The rows that would have lost are among the declined ones; a run with
 no false arms is the harness passing, not the rung failing to find work.
 
 Novelty is disclaimed in the source header and in
-[`research/ceiling/CLOSED.md`](../../research/ceiling/CLOSED.md): the
+[`research/ceiling/CLOSED.md`](../../../research/ceiling/CLOSED.md): the
 over-approximating-prefilter contract is Luchaup et al. (INFOCOM 2014), Češka et
 al. (arXiv:1904.10786), and Hyperscan's `HS_FLAG_PREFILTER`. What is ours is the
 SP-partition harvest from an already-built DFA and the measured decision of when
@@ -158,13 +158,13 @@ heading, never merged into the twelve.
 
 ## Running it
 
-All paths below are relative to this package (`pkg/kernels/irregex`); the
+All paths below are relative to this package (this repo); the
 artifacts land under the repo-root `.local/gist-verify/` the other layers
 already write to, which is `../../../.local/gist-verify` from here.
 
 ```bash
-cd pkg/kernels/irregex
-(cd ../../.. && make install-gist)   # gist's index over the shared corpus
+cd <irregex-repo-root>
+(cd ../../.. && install the sibling `gist` package)   # gist's index over the shared corpus
 
 # csearch's index over the byte-identical file list, then its own formula per probe
 python3 bench/sieve/csearch_plan.py \
@@ -256,7 +256,7 @@ Two sockets, two sessions, one binary.
    same `[cold]` string at the client, and cold answers correctly — so every
    later case would keep passing while testing nothing. A death is a hard stop
    naming the case that caused it.
-3. **A corpus that moved underneath it.** The corpus is real Billy source copied
+3. **A corpus that moved underneath it.** The corpus is real host source copied
    into a throwaway tree and indexed there. ~10 agents edit this branch
    concurrently and a repo-wide arm takes long enough that two _identical_ runs
    already disagree; freezing the bytes is what lets a difference between arms
@@ -289,19 +289,19 @@ asserts the former and only reports the latter.
 
 ## Running both parity gates
 
-`make test-gist-prefilter` is the wired entry point: it builds the ReleaseFast
+`the prefilter parity gates under `bench/rungs/sieve/`` is the wired entry point: it builds the ReleaseFast
 binary both scripts require and runs them in dependency order — the cold tier's
 cover plan first, then the resident session's copy of it. It stays out of
-`make test-gist`, which is CI-hermetic and needs only Zig, because these two
+`zig build test`, which is CI-hermetic and needs only Zig, because these two
 freeze a multi-thousand-file corpus, index it, and bring up resident daemons.
 `rg` is optional (a missing ripgrep drops that arm and keeps the other three);
 `rsync` is not, since it is how the corpus gets frozen, so the target skips
 rather than measure a tree ten agents are editing.
 
 ```bash
-make test-gist-prefilter                # both gates, binary built for you
+the prefilter parity gates under `bench/rungs/sieve/`                # both gates, binary built for you
 
-cd pkg/kernels/irregex                 # or one at a time, mid-edit
+cd <irregex-repo-root>                 # or one at a time, mid-edit
 zig build -Doptimize=ReleaseFast
 bash bench/rungs/sieve/cover_parity.sh
 bash bench/rungs/sieve/warm_parity.sh   # KEEP=1 leaves the corpus + daemon logs

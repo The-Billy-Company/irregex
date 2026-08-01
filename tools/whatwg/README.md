@@ -8,7 +8,7 @@ The lowering lives in [`../build_encoding_tables.py`](../build_encoding_tables.p
 [`../../src/corpus/read/encoding.zig`](../../src/corpus/read/encoding.zig)
 rides. This is the same set `encoding_rs` (ripgrep's transcoder) is built from, so
 gist reaches byte-for-byte `-E` parity with `rg` (proven in
-[`../../bench/rgsuite/transforms.py`](../../bench/rgsuite/transforms.py)).
+[`../../bench/conformance/rgsuite/transforms.py`](../../bench/conformance/rgsuite/transforms.py)).
 
 ## Provenance
 
@@ -33,4 +33,5 @@ gist reaches byte-for-byte `-E` parity with `rg` (proven in
 
 Verify the embedded pins with `shasum -a 256 *.txt` (compare to each file's
 `# Identifier:`). To upgrade: re-fetch the set from the URL above, then
-`make gen-gist-encoding` and re-run `python3 ../../bench/rgsuite/transforms.py run`.
+`python3 tools/build_encoding_tables.py` (from the package root) and re-run
+`python3 bench/conformance/rgsuite/transforms.py run`.

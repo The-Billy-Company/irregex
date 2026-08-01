@@ -2,13 +2,13 @@
 doc_radar:
   counts:
     - description: "surface keeps cli · face · ffi (plus a transitional empty exec/ shell that may still be present)"
-      glob: pkg/kernels/irregex/src/surface/*
+      glob: src/surface/*
       unit: dirs
       min: 3
       max: 4
   sentinels:
     - description: "cold serial engine remains the root search re-export (exec promoted out of surface)"
-      file: pkg/kernels/irregex/src/root.zig
+      file: src/root.zig
       contains: 'pub const search = @import("exec/cold/engine/serial.zig");'
 ---
 
@@ -22,8 +22,8 @@ plane, and the three thin product faces. Engines never import a face.
 | ----- | --- |
 | [`cli/`](cli) | Shared vocabulary: flags, emit, manifest, grade, guide, outcome (`die`/`oom`), reprise (answer keep), jsonstr, primer (man + completions) |
 | `api.zig` | Hosted analytic Zig API — drives the session from above |
-| [`ffi/`](ffi) | C-ABI session + analytic plane over `api.zig` |
-| [`face/`](face) | The three faces — `gist` · `relate` · `irregex` — verb tables, `--help`, `--schema`, NDJSON shapes |
+| `gist/src/surface/ffi/` | C-ABI session + analytic plane over `api.zig` |
+| `gist/src/surface/face/` | The three faces — `gist` · `relate` · `irregex` — verb tables, `--help`, `--schema`, NDJSON shapes |
 
 ## Shared contracts
 
@@ -42,5 +42,5 @@ plane, and the three thin product faces. Engines never import a face.
 
 Cold argv / walk / emit / warm reconcile live under [`../exec/`](../exec/).
 
-Deep dives: [`cli/`](cli/README.md) · [`ffi/`](ffi/README.md) ·
-[`face/`](face/README.md).
+Deep dives live in the sibling `gist` repo: `gist/src/surface/cli/` ·
+`gist/src/surface/ffi/` · `gist/src/surface/face/`.

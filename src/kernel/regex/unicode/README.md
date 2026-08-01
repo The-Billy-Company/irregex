@@ -1,7 +1,7 @@
 ---
 doc_radar:
   sentinels:
-    - file: pkg/kernels/irregex/src/kernel/regex/unicode/tables.gen.zig
+    - file: src/kernel/regex/unicode/tables.gen.zig
       contains: ['pub const unicode_version = "16.0.0";']
 ---
 
@@ -21,16 +21,16 @@ Unicode without leaving its O(1)/byte floor:
 ## Regenerating the tables
 
 The tables are lowered from a pinned **UCD 16.0.0** subset vendored under
-[`../../../../../tools/ucd/`](../../../../../tools/ucd/) by
-[`../../../../../tools/build_unicode_tables.py`](../../../../../tools/build_unicode_tables.py):
+[`../../../../tools/ucd/`](../../../../tools/ucd/) by
+[`../../../../tools/build_unicode_tables.py`](../../../../tools/build_unicode_tables.py):
 
 ```bash
-make gen-gist-unicode    # regenerate src/kernel/regex/unicode/tables.gen.zig
-make gen-gist-verify     # drift gate: regenerate + diff (CI)
+python3 tools/build_unicode_tables.py            # regenerate tables.gen.zig
+python3 tools/build_unicode_tables.py --check    # drift gate
 ```
 
 The generator is stdlib-only and deterministic, so the checked-in
 `tables.gen.zig` is exactly what the pinned inputs produce — a byte-diff is the
 drift gate. To move to a newer Unicode version, re-vendor the UCD files (update
-`pkg/kernels/irregex/tools/ucd/README.md` provenance), bump `UNICODE_VERSION`, and
+`tools/ucd/README.md` provenance), bump `UNICODE_VERSION`, and
 regenerate.

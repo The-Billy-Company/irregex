@@ -33,7 +33,7 @@ const determinize = @import("determinize.zig");
 /// this declines to the byte path rather than growing without bound.
 pub const max_nodes: u32 = 4096;
 
-// File-private control flow (ADR-373): converted to `.declined` at the
+// File-private control flow (the fault-channel taxonomy): converted to `.declined` at the
 // symbolic module boundary — not members of the declared fault taxonomy.
 const Decline = error{ TooLarge, Malformed };
 const Error = Decline || std.mem.Allocator.Error;

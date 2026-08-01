@@ -1,4 +1,4 @@
-//! gist resident session — the eligible-request classifier (ADR-352 rung 2.5).
+//! gist resident session — the eligible-request classifier.
 //!
 //! Warm surface: `-l` / `-c` / bare `lines`, literal (`-F`), linear regex, or
 //! `-P`/`--pcre2` (`--engine=pcre2`) PCRE2 regex, ±case (`-i`/`-s`/`-S`),
@@ -12,7 +12,7 @@
 //!
 //! Scope: a bare `gist <pattern>` searches the rootless CWD tree the daemon was
 //! born serving. An explicit positional PATH is admitted only when it is a clean
-//! repo-root-relative subtree/file (`gist pat pkg/kernels`) — the resident
+//! repo-root-relative subtree/file (`gist pat src/kernel`) — the resident
 //! mirror stores CWD-relative paths with no `./` prefix, so a root cold would
 //! render with a prefix the mirror lacks (`.`, `./libs`, an absolute path, a
 //! `..` escape) still declines to cold. `-g`/`-t` add glob/type constraints
@@ -130,7 +130,7 @@ pub const Request = struct {
     }
 };
 
-/// One fact, one spelling (ADR-373 law 2): this argv is outside the resident
+/// One fact, one spelling (fault-channel law 2): this argv is outside the resident
 /// fast path, so answer cold. A bare `-l` with no pattern used to have its own
 /// `NoPattern` member, but every caller here does the same `catch → .cold` —
 /// the missing pattern is one more shape the warm classifier does not support,

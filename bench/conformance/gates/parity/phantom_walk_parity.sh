@@ -51,7 +51,7 @@ export GIST_NO_AUTOSERVE=1
 # inherited one would collapse the comparison to a single path.
 unset GIST_TEST_REQUIRE_ELISION GIST_NO_PHANTOM GIST_NO_SHARD GIST_NO_INDEX GIST_ROOTS
 HERE="$(cd "$(dirname "$0")" && pwd)"
-KERNEL="$(cd "${HERE}/../../../.." && pwd)" # pkg/kernels/irregex
+KERNEL="$(cd "${HERE}/../../../.." && pwd)" # this repo root
 
 echo "building gist (ReleaseFast)…"
 (cd "${KERNEL}" && zig build -Doptimize=ReleaseFast > /dev/null 2>&1) || {

@@ -2,10 +2,10 @@
 doc_radar:
   sentinels:
     - description: "capture extraction is a separate Pike VM — the primary engine stays capture-free"
-      file: pkg/kernels/irregex/src/kernel/regex/compile/captures.zig
+      file: src/kernel/regex/compile/captures.zig
       contains: ["pub const Caps", "onepass: OnePass", "linear: Captures"]
-    - description: "the one-pass arm fails closed into a declinature, never a fault (ADR-373 law 1)"
-      file: pkg/kernels/irregex/src/kernel/regex/compile/onepass.zig
+    - description: "the one-pass arm fails closed into a declinature, never a fault (fault-channel law 1)"
+      file: src/kernel/regex/compile/onepass.zig
       contains: ["fault.Answer(OnePass)", "declined = .not_worthwhile", "pub fn attach"]
 ---
 
@@ -34,7 +34,7 @@ uncertainty in the checker (a converging ε-path, a conflicting transition, an
 assertion-guarded accept with live successors, a table past its cap) resolves to
 a **declinature** — `attach` answers `fault.Answer(OnePass){ .declined }`, not an
 error, because a pattern needing a search is routine and the Pike VM is the
-correct answer one tier down (ADR-373 law 1). Unanchored search is a
+correct answer one tier down (fault-channel law 1). Unanchored search is a
 budgeted restart loop: a pattern whose candidate starts are not selective hands
 the query back rather than going quadratic where the Pike VM is linear.
 

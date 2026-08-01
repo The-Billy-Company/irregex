@@ -13,7 +13,7 @@
 //! never add, drop, or reorder one. `defaultFileSetExtras` is therefore shared
 //! verbatim with the warm session, which mirrors this exact set — and returns
 //! allocation failure rather than exiting, because the FFI host calling
-//! `irregex_open` must receive `IRREGEX_OOM`, not a dead process (ADR-373 law 1).
+//! `irregex_open` must receive `IRREGEX_OOM`, not a dead process (fault-channel law 1).
 
 const std = @import("std");
 const args = @import("../argv/args.zig");
@@ -30,7 +30,7 @@ const Opts = args.Opts;
 /// The walk returns allocation failure instead of exiting: it is also the warm
 /// session's corpus selector, reached from `irregex_open` / `irregex_search`,
 /// where an `exit(2)` kills the embedding host rather than yielding
-/// `IRREGEX_OOM` (ADR-373 law 1). The command plane absorbs it with
+/// `IRREGEX_OOM` (fault-channel law 1). The command plane absorbs it with
 /// `catch oom()` at its own boundary, so the CLI is unchanged.
 const Oom = std.mem.Allocator.Error;
 
@@ -99,9 +99,9 @@ fn collectExtra(a: std.mem.Allocator, list: *std.ArrayList(Extra), ig: *const ig
 
 /// Everything the serial descent can REPORT: opening a root or a chosen
 /// subdirectory, and iterating one already open. The walker's own allocation
-/// failure never lands here — it propagates as `error.OutOfMemory` (ADR-373
+/// failure never lands here — it propagates as `error.OutOfMemory` (the fault-channel taxonomy
 /// law 1), because a swallowed OOM reads as an empty corpus to an embedding
-/// host. Naming the set instead of taking `anyerror` (ADR-373
+/// host. Naming the set instead of taking `anyerror` (the fault-channel taxonomy
 /// law 2) means a widened std set is a build failure here, where the walk can
 /// decide what it means, rather than a mystery string on a user's stderr. It is
 /// a subset of `notice.WalkFault`, so it coerces into the shared renderer.
@@ -219,7 +219,7 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
     var root = Dir.cwd().openDir(io, root_path, .{ .iterate = true }) catch |e| return reportWalkError(prefix, e, walk_error);
     defer root.close(io);
     // The walker's only construction failure is allocation, and allocation
-    // failure RETURNS (ADR-373 law 1): the warm session and the FFI call this
+    // failure RETURNS (fault-channel law 1): the warm session and the FFI call this
     // walk from inside a host process, where folding an OOM into `walk_error`
     // would serve a silently empty set instead of yielding `IRREGEX_OOM`.
     var walker = try root.walkSelectively(a);
@@ -404,7 +404,7 @@ pub const FileSet = struct { paths: []const []const u8, path_error: bool };
 ///
 /// Allocation failure RETURNS: the warm session calls this from `irregex_open`
 /// and every reconcile behind `irregex_search`, where exiting the process would
-/// take the embedding host down instead of yielding `IRREGEX_OOM` (ADR-373 law
+/// take the embedding host down instead of yielding `IRREGEX_OOM` (the fault-channel taxonomy law
 /// 1). The command plane absorbs it at `collectFiles` with `catch oom()`, so the
 /// CLI's exit 2 and OOM notice are byte-identical to before.
 pub fn defaultFileSetExtras(a: std.mem.Allocator, io: std.Io, roots: []const []const u8, extras_out: ?*[]const Extra) Oom!FileSet {

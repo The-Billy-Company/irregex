@@ -2,23 +2,23 @@
 doc_radar:
   counts:
     - description: "two Python tools in this folder: the adversarial generator and the differential sweep"
-      glob: pkg/kernels/irregex/bench/apparatus/corpora/*.py
+      glob: bench/apparatus/corpora/*.py
       unit: files
       equals: 2
     - description: "one shell tool in this folder: the pinned corpus fetcher"
-      glob: pkg/kernels/irregex/bench/apparatus/corpora/*.sh
+      glob: bench/apparatus/corpora/*.sh
       unit: files
       equals: 1
   sentinels:
     - description: "the corpus pins this README documents are the ones the fetcher enforces"
-      file: pkg/kernels/irregex/bench/apparatus/corpora/fetch.sh
+      file: bench/apparatus/corpora/fetch.sh
       contains:
         - 'LINUX_TAG="v6.10"'
         - 'CPYTHON_TAG="v3.13.0"'
         - 'TS_TAG="v5.8.3"'
         - 'SUB_BYTES=$((256 * 1024 * 1024))'
     - description: "the sweep runs both engines and treats ripgrep as the oracle"
-      file: pkg/kernels/irregex/bench/apparatus/corpora/sweep.py
+      file: bench/apparatus/corpora/sweep.py
       contains:
         - 'GIST_NO_PARALLEL'
         - 'ripgrep is the oracle'
@@ -26,7 +26,7 @@ doc_radar:
 
 # gist/bench/corpora — the multi-corpus battery
 
-Every other harness in `bench/` measures **one corpus** (the Billy monorepo)
+Every other harness in `bench/` measures **one corpus** (a large host monorepo)
 on one machine. This folder makes the correctness claim portable: it installs
 five trees with radically different shapes under `.local/gist-corpora/`
 (machine-local, gitignored) and replays a differential flag/pattern slate on

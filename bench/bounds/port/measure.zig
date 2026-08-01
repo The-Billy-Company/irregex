@@ -277,7 +277,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
     std.debug.print("\nwrote {s}/portbound.json — re-run bench/portcert/portcert.sh to splice Layer B′ into CERTIFICATE.md\n", .{out_dir});
     if (!meter.has_pmu) {
         std.debug.print("note: cycles NOT measured on this machine (PMU needs root) — the artifact says so.\n", .{});
-        std.debug.print("      Re-run `sudo pkg/kernels/irregex/zig-out/bin/gist-portbound` from the repo root for the measured bound.\n", .{});
+        std.debug.print("      Re-run `sudo zig-out/bin/gist-portbound` from the repo root for the measured bound.\n", .{});
     }
 }
 

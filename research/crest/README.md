@@ -1,61 +1,61 @@
 ---
 doc_radar:
   paths_exist:
-    - pkg/kernels/irregex/src/kernel/math/crest.zig
-    - pkg/kernels/irregex/src/kernel/math/crest_test.zig
-    - pkg/kernels/irregex/src/kernel/regex/analysis/swell.zig
-    - pkg/kernels/irregex/src/kernel/regex/analysis/swell_test.zig
-    - pkg/kernels/irregex/src/corpus/index/crest/sidecar.zig
-    - pkg/kernels/irregex/bench/rungs/crest/bench.zig
+    - src/kernel/math/crest.zig
+    - src/kernel/math/crest_test.zig
+    - src/kernel/regex/analysis/swell.zig
+    - src/kernel/regex/analysis/swell_test.zig
+    - src/corpus/index/crest/sidecar.zig
+    - bench/rungs/crest/bench.zig
   sentinels:
-    - file: pkg/kernels/irregex/build.zig
+    - file: build.zig
       contains:
         - 'b.step("crest"'
     - description: "the document half — ρ(d) and the dominance test"
-      file: pkg/kernels/irregex/src/kernel/math/crest.zig
+      file: src/kernel/math/crest.zig
       contains:
         - "pub fn crest"
         - "pub fn pruned"
     - description: "the Grammar Contract (PROOF §3.7a) is structural: ĝ is derived from the engine's own syntax.Node AST, so the private mini-parser that misread \\< as a literal cannot come back"
-      file: pkg/kernels/irregex/src/kernel/regex/analysis/swell.zig
+      file: src/kernel/regex/analysis/swell.zig
       contains:
         - "pub fn forcedSwell"
         - 'syntax.zig'
     - description: "the family spans two alphabets (PROOF §3.7, Lemma 2b) — the scalar-closed twin is what lets a codepoint class certify over a byte sieve, so `\\d` prunes at the engine's Unicode default"
-      file: pkg/kernels/irregex/src/kernel/math/crest.zig
+      file: src/kernel/math/crest.zig
       contains:
         - "pub const Alphabet"
         - "pub fn lane"
     - description: "a uclass is priced by the same atom() as a byte class, off its encoding byte set and cheapest UTF-8 length — no unicode flag reaches the calculus"
-      file: pkg/kernels/irregex/src/kernel/regex/analysis/swell.zig
+      file: src/kernel/regex/analysis/swell.zig
       contains:
         - "fn encoded"
         - "pub fn atom"
     - description: "the document scan is cut into pieces and rejoined by the same run algebra the calculus folds over the AST (PROOF §6)"
-      file: pkg/kernels/irregex/src/kernel/math/crest.zig
+      file: src/kernel/math/crest.zig
       contains:
         - "const Piece"
         - "fn join"
     - description: "the sieve is a disjunction (PROOF §3.9): one ĝ per top-level alternative, pruning only what clears none of them"
-      file: pkg/kernels/irregex/src/kernel/math/crest.zig
+      file: src/kernel/math/crest.zig
       contains:
         - "pub const Swell"
         - "pub fn prunes"
       absent:
         - "pub fn weaker"
     - description: "the Sieve Theorem is checked against the real matcher, not just sampled by the corpus bench — including the multi-branch disjunction"
-      file: pkg/kernels/irregex/src/kernel/regex/analysis/swell_test.zig
+      file: src/kernel/regex/analysis/swell_test.zig
       contains:
         - "sieve theorem: a matching document is never pruned"
         - "top-level alternation is a disjunction, not a componentwise min"
-    - file: pkg/kernels/irregex/src/exec/cold/writ/gate.zig
+    - file: src/exec/cold/writ/gate.zig
       contains:
         - "pub fn winnow"
     - description: "the resident session prunes by the same swell, off the same one-parse derivation"
-      file: pkg/kernels/irregex/src/exec/session/answer/gather.zig
+      file: src/exec/session/answer/gather.zig
       contains:
         - "sieve.prunes"
-    - file: pkg/kernels/irregex/src/exec/cold/quarry/elide.zig
+    - file: src/exec/cold/quarry/elide.zig
       contains:
         - "crest"
 ---
@@ -101,13 +101,13 @@ per branch, no byte scan, provably no false negatives.
 ## Run
 
 ```bash
-cd pkg/kernels/irregex
+cd <irregex-repo-root>
 zig build crest       # exploratory proof → .local/crest-evidence/
 zig build test        # kernel + sidecar unit tests ride the main suite
 gist index            # persists crest.bin beside index.gist
 gist '[0-9a-f]{12}'   # the sieve elides pruned reads in production
 cd ../../..
-python3 pkg/kernels/irregex/bench/rungs/crest/evidence/crest_evidence.py package
+python3 bench/rungs/crest/evidence/crest_evidence.py package
 # clean committed HEAD only: revision-bound source, tests, measurements, monograph
 ```
 

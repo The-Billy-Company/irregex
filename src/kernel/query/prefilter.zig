@@ -1,4 +1,4 @@
-//! Sound trigram-prefilter literal derivation for the compiled query (ADR-352).
+//! Sound trigram-prefilter literal derivation for the compiled query.
 //!
 //! One concern: given a compiled body, which literal(s) may the trigram index
 //! soundly AND together to prune candidate files WITHOUT ever dropping a true

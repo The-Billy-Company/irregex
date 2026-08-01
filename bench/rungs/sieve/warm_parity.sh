@@ -49,7 +49,7 @@
 #                 concedes entirely and the sieve exists for
 #   cover-*       patterns forcing several literals, where the plan beats the OR
 #
-# The corpus is REAL Billy source, copied into a throwaway tree and indexed
+# The corpus is REAL host source, copied into a throwaway tree and indexed
 # there. The copy is the point: ~10 agents edit this branch concurrently, and a
 # repo-wide arm takes long enough that two IDENTICAL runs already disagree.
 # Freezing the bytes is what lets a difference between arms mean something.
@@ -62,12 +62,13 @@ set -uo pipefail
 export GIST_UNCAP=1
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-KERNEL="$(cd "${HERE}/../../.." && pwd)"
-REPO="$(cd "${KERNEL}/../../.." && pwd)"
-GIST="${KERNEL}/zig-out/bin/gist"
+# shellcheck source=../../apparatus/roots.sh
+source "${HERE}/../../apparatus/roots.sh"
+gist_resolve_roots "${HERE}" || exit 1
+GIST="${PRODUCT}/zig-out/bin/gist"
 
 [[ -x "${GIST}" ]] || {
-  echo "no gist binary at ${GIST} — run: cd ${KERNEL} && zig build -Doptimize=ReleaseFast"
+  echo "no gist binary at ${GIST} — run: cd ${PRODUCT} && zig build -Doptimize=ReleaseFast"
   exit 1
 }
 
@@ -92,7 +93,7 @@ trap cleanup EXIT
 
 echo "freezing a real-source corpus under ${WORK}…"
 (
-  cd "${REPO}" && git ls-files services/backend pkg/kernels/irregex/src \
+  cd "${REPO}" && git ls-files services/backend src \
     docs/architecture clients/web/packages
 ) | (cd "${REPO}" && rsync -a --files-from=- . "${WORK}/") 2> /dev/null || {
   echo "  corpus copy failed"
@@ -115,7 +116,7 @@ echo "indexing ${corpus_files} files…"
 # `GIST_NO_AUTOSERVE=1`, so a decline can never fork a second daemon onto it and
 # silently re-scope the arm.
 #
-# ROOTLESS `serve`, not `serve .` — the production shape (`make gist-serve` and
+# ROOTLESS `serve`, not `serve .` — the production shape (`start the resident daemon from the sibling `gist` package` and
 # the CLI's own auto-spawn both take no positional). A daemon rooted at `.`
 # builds its mirror from that positional and then answers these ROOTLESS argvs
 # with `./`-prefixed display paths, which is rg's own rendering for `gist pat .`

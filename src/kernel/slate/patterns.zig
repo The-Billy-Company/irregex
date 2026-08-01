@@ -2,8 +2,8 @@
 //!
 //! One search intent compiles through `kernel/query/query.zig`; this module compiles
 //! MANY — the Hyperscan-shaped workload (Wang et al., NSDI 2019) that agent
-//! tools actually run: relocator classifies dozens of literals per pass, the
-//! trust lints scan forbidden-pattern lists, doc-radar replays a whole query
+//! tools actually run: a renamer classifies dozens of literals per pass, a
+//! lint suite scans forbidden-pattern lists, a freshness checker replays a query
 //! corpus. Today each caller either re-runs the engine once per pattern (N
 //! walks, N reads) or fuses an alternation and then RE-DERIVES "which pattern
 //! hit" downstream in Python. `PatternSet` owns both halves: one shared pass

@@ -23,7 +23,7 @@ const alphabet = @import("alphabet.zig");
 const Node = syn.Node;
 
 /// Why a pattern cannot be lowered to a codepoint program.
-/// File-private control flow (ADR-373): converted to `.declined` at the
+/// File-private control flow (the fault-channel taxonomy): converted to `.declined` at the
 /// symbolic module boundary — not members of the declared fault taxonomy.
 const Reject = error{
     /// `\b` `\B` `\<` `\>` — the word-context axis, byte-path only here.

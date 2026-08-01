@@ -26,7 +26,7 @@ It splices a `## Layer C — roofline (hardware ceiling)` section into
 # This file emits the certificate's Layer-C markdown, which intentionally carries
 # math/typography glyphs (mult-sign, division-sign, en/em dashes, middot) that
 # ruff's ambiguous-unicode rules flag; the glyphs are the certificate's contract,
-# so silence them file-wide (repo precedent: services/ai, taskrunner, entrain all
+# so silence them file-wide (same posture as other long-running report scripts
 # ignore RUF001/002/003 for intentional glyphs).
 # ruff: noqa: RUF001
 
@@ -52,10 +52,10 @@ SUMMARY = (
     "only at or above 80%; otherwise it reports optimization headroom."
 )
 # Anchor the shared cert dir at the repo root (computed from this file's location:
-# bench/roofline/roofline_report.py → repo root is parents[5]) so the report works
+# bench/bounds/roofline/report.py → repo root
 # from any CWD — the zig steps and portcert.sh already resolve the repo root, and
 # `.local/gist-verify` always lives there. A `--out-dir` override still wins.
-OUT_DIR = Path(__file__).resolve().parents[6] / ".local/gist-verify"
+OUT_DIR = Path(__file__).resolve().parents[3] / ".local/gist-verify"
 
 # Apple M-series shared P-cluster L2 — a candidate set larger than this spills to
 # DRAM, so an apparent rate above the DRAM ceiling on a >L2 working set is a
@@ -124,7 +124,7 @@ def load_compute_ceiling(path: Path, ghz: float) -> ComputeBound | None:
         return None
     try:
         doc = json.loads(path.read_text())
-    except json.JSONDecodeError, OSError:
+    except (json.JSONDecodeError, OSError):
         return None
     cores: list[tuple[str, float, float]] = []
     for r in doc.get("results", []):

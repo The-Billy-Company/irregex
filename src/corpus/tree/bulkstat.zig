@@ -12,7 +12,7 @@
 //! syscalls (readdir vs getdirentriesattr thread, Dec 2014; independently
 //! reproduced: ~1,600× fewer syscalls, ~4-5× faster on a warm NVMe SSD,
 //! quivent/getattrlistbulk-rs, 2025 benchmark on M1).
-//! `pkg/kernels/irregex/changelog.d/+bulkstat-freshness.changed.md` cites the
+//! `changelog.d/+bulkstat-freshness.changed.md` cites the
 //! measurement on THIS corpus.
 //!
 //! This file owns the *policy*: which entries a freshness walk cares about, how a
@@ -135,7 +135,7 @@ pub const OwnedEntry = struct {
 /// portable `Dir.Iterator`, never mixes a partial bulk result with a partial
 /// iterate one (which could double- or under-count an entry).
 ///
-/// The module boundary (ADR-373 law 1): a declinature crosses in the SUCCESS
+/// The module boundary (fault-channel law 1): a declinature crosses in the SUCCESS
 /// position, so a caller cannot `try` its way past the fallback, while
 /// `OutOfMemory` stays in the error channel where it belongs.
 pub fn listOneLevel(gpa: Allocator, dirfd: std.posix.fd_t) error{OutOfMemory}!fault.Answer([]OwnedEntry) {

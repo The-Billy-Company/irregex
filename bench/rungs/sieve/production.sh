@@ -22,20 +22,22 @@ set -uo pipefail
 export GIST_UNCAP=1
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-KERNEL="$(cd "${HERE}/../../.." && pwd)"
-GIST="${KERNEL}/zig-out/bin/gist"
+# shellcheck source=../../apparatus/roots.sh
+source "${HERE}/../../apparatus/roots.sh"
+gist_resolve_roots "${HERE}" || exit 1
+GIST="${PRODUCT}/zig-out/bin/gist"
 RUNS=7
 if [[ "${1:-}" == "--runs" ]]; then
   RUNS="$2"
   shift 2
 fi
-ROOT="${1:-$(cd "${KERNEL}/../../.." && pwd)}"
+ROOT="${1:-${REPO}}"
 # Beside every other layer's artifact, not beside the script.
-OUT="${OUT:-${KERNEL}/../../../.local/gist-verify/production.tsv}"
+OUT="${OUT:-${GIST_VERIFY}/production.tsv}"
 mkdir -p "$(dirname "${OUT}")"
 
 [[ -x "${GIST}" ]] || {
-  echo "no gist binary at ${GIST} — run: cd ${KERNEL} && zig build -Doptimize=ReleaseFast"
+  echo "no gist binary at ${GIST} — run: cd ${PRODUCT} && zig build -Doptimize=ReleaseFast"
   exit 1
 }
 cd "${ROOT}" || exit 1

@@ -1,4 +1,4 @@
-//! The ripgrep `-w` word-boundary rule for the compiled query (ADR-352).
+//! The ripgrep `-w` word-boundary rule for the compiled query.
 //!
 //! `-w` is a POST-match rule, NOT `\b(pat)\b`: a match span `[s,e)` counts iff a
 //! non-word codepoint (or the line edge) bounds it on BOTH sides. The verdict

@@ -345,31 +345,115 @@ is `16 × k × budget`, which takes break-even with 2.5–4.6× of margin on pur
 because the static table already picks the oracle pair on 80/177 code needles and
 the gate has to bound that pure-loss case.
 
+Both of the next two subsections' per-needle counts were measured against the
+selector §10 repaired, which `anchor.zig`'s own table now labels the *baseline* at
+1.50×/1.29× of oracle. The shipped selector is a distance-conditioned joint one at
+1.13×/1.29×, so it agrees with the oracle on strictly more needles than 80/177 — the
+pure-loss population the gate has to bound is **larger** than these numbers say, and
+the case for both the conservative gate and 7.2.e's improvement test is stronger, not
+weaker. Neither count was re-derived, so read them as bounds in the direction that
+favours declining to calibrate.
+
 **7.2.c — "dominates everywhere" is too strong.** Calibration loses to the table
 on 28/177 code needles, worst case 10.7× its survivor count. None is material
 (largest is +0.014 pp of survivor density) and the net is negative in all three
 regimes, but the defensible claim is aggregate dominance with no material
 per-needle regression — not dominance.
 
-**7.2.d — the tier cannot be expressed at the call site it was designed for, and
-this is why the module is not wired.** §7 reasons about "the buffer actually being
-searched" as though a scan is one call over one large buffer. It is not.
-`query.zig::countGeneric` calls `simd.contains(line, needle)` **once per line**;
-the literal path also has a once-per-document gate. So a size gate evaluated on
-the slice handed to `indexOfPos` sees tens of bytes per call and declines
-forever — while removing the gate inverts the problem and re-pays 3.5–36.8 µs
-*per line*. The measured 1.04×/1.03×/1.03× was taken by calibrating once over a
-213 MB buffer, which is a call shape production does not have. That is the same
-error class as the two recorded defects in `simd.zig` (a control measuring a path
-production never takes), arrived at from the other direction.
+**7.2.d — the tier cannot be expressed at the call site it was designed for.** §7
+reasons about "the buffer actually being searched" as though a scan is one call over
+one large buffer. It is not. `query.zig::countGeneric` calls
+`simd.contains(line, needle)` **once per line**; the literal path also has a
+once-per-document gate. So a size gate evaluated on the slice handed to
+`indexOfPos` sees tens of bytes per call and declines forever — while removing the
+gate inverts the problem and re-pays 3.5–36.8 µs *per line*. The measured
+1.04×/1.03×/1.03× was taken by calibrating once over a 213 MB buffer, which is a
+call shape production does not have. That is the same error class as the two
+recorded defects in `simd.zig` (a control measuring a path production never takes),
+arrived at from the other direction.
 
 The fix is a **per-scan plan**, not a bigger gate: calibrate once when a document
 is admitted, thread the pair through every line of that document
 (`indexOfPosWith(hay, from, needle, pair)`), keep `indexOfPos` static so
 `bench/bounds/roofline`'s published control cannot drift out of sync with the
-kernel, and gate on document size. That is an interface change spanning
-`simd.zig` and `query.zig`, and it is the open decision — the full statement of it
-lives in `calibrate.zig`'s module doc, at the point of use.
+kernel, and gate on document size.
+
+**7.2.e — that plan is now built, and the integration taught two things §7 did not
+know.** `simd.Plan` is the decision as a value, `simd.planOn` the document-grain
+mint, and three seams carry it to every literal scan: `simd.Gate.on` (the
+required-literal gate, re-priced per body), `Emitter.lit_plan` (the hit-jumping
+sweeps, minted before any shard exists so cutting one file across cores cannot
+re-sample it per core), and `PikeScratch.litPlan` (the span walks, memoized on the
+haystack slice). `indexOfPos` kept its static behaviour, so the roofline control did
+not drift.
+
+A third property is a consequence rather than a lesson, but it is why the per-hit
+hoists carry their own weight: §10's repaired selector became a **distance-conditioned
+joint** one, and `anchor.select` now costs ~21 ns on a typical 4–8 byte needle where
+the two-pass marginal selector cost ~3.7 ns. Every hit-jumping loop re-derived that
+decision once per match before it took a plan, so the hoist is a straight cost fix on
+match-dense bodies even with calibration switched off — and a one-literal set is
+exactly the case that pays it, since an alternation anchors each needle on its own
+first+last and never calls `select` at all.
+
+First lesson: **adopting the sample's favourite unconditionally is a tax, not a
+win** — a measured 0.5–1.1% CPU regression with no row it won, because 7.2.b's
+"80/177 needles the table already gets right" is not merely a break-even case but a
+strictly losing one (the swap also forfeits the single-probe block shape, which
+`singleProbeWorthwhile` prices against the static table and cannot judge for a
+calibrated byte). So the integration is an **improvement test**: the incumbent is
+pinned into the candidate set, priced on the same sample, and displaced only on a
+material win. 7.2.c's "aggregate dominance with no material per-needle regression"
+is therefore now enforced per call rather than argued in aggregate.
+
+Second lesson: **a purely relative accept margin is a winner's curse.** The argmin
+of up to 120 noisy estimates of one underlying density sits several sigma below the
+truth even when every pair is truly identical; the randomised suite produced a
+claimed 12.5% win over an incumbent that was in fact 0.3% better. The bias scales
+with `√count`, which no relative floor can see, so the margin is the larger of 12.5%
+and four standard deviations of the incumbent's own sampled count.
+
+Measured after integration (M4, single-threaded, in-binary A/B via
+`GIST_NO_CALIBRATE`, child CPU, best of 7, interleaved) on a 200 MB buffer whose
+alphabet is the statically-rare bytes, over three needles whose locally-rarest byte
+the table ranks common — `zeqXtj`, `tzeQjq`, `ezQtj`:
+
+| arm | ratio |
+| --- | --- |
+| `-Fc` / `-F` / `-Fn` / `-Fo` / `--count-matches` | 6.9–8.0× |
+| `--json` / `--json -o` | 7.8× / 8.3× |
+| `-q` (presence, one jump) | 7.0× |
+| `-Fl` (exits at the first hit) | 4.5–4.7× |
+| bare kernel sweep (`sweep.zig`) | 17.6–17.9× (70 ms → 3.9 ms) |
+| regex w/ required literal, `-o` / `--count-matches` / `-l` | 2.00× / 2.00× / 4.6× |
+| regex per-line (`-c` `-n` `-w` `-U` `-A`) | 1.23–1.26× |
+| `-i` (no pair to choose) | 1.00× |
+
+Selectivity underneath: 4.09 M block survivors on the static pair against 34–42 on
+the calibrated one — and the static pair takes the *single*-probe shape, so §5's fast
+loop aimed at the wrong byte loses to the two-probe loop aimed well by an order of
+magnitude. **Median 1.002×** (min 0.996×, max 1.012×) across 15 mode×needle rows on a
+213 MB many-small-files code tree, where the gate declines in two comparisons — so
+7.2.b's margin behaves as designed. Output is byte-identical: 411/411
+supported-surface ripgrep parity on both engines, an unchanged fuzz residual, and 420
+in-binary differentials with zero divergence.
+
+One methodological note that cost a false alarm: on the code tree a run is ~0.03 s, so
+a **best-of-N** statistic is the wrong one — a single lucky outlier in either arm reads
+as a 1.4× swing. A `-q` row that appeared to regress 0.60× on best-of-5 came back at
+median 1.005× over nine paired reps, with the `off` arm's minimum sitting 0.18 s below
+its own cluster. Best-of-N is right for the adversarial rows, where the signal is 8×
+and the spread is 1%; it is not right for a neutrality claim.
+
+Two ceilings remain, and both are structural rather than unwired. `-i` has no pair
+to choose, because `containsCaseless` is a different kernel. The per-line engine
+modes cap near the whole-file gate's contribution because a 60-byte line is one
+block, and which two offsets inside a single block get compared barely moves
+anything. The split is visible *within* one engine mode, which is what makes it a
+statement about scan shape rather than about the literal/regex boundary: `-o` and
+`--count-matches` sweep and reach 2.00×, while `-c` and `-n` over the same pattern
+stay at 1.25×. Every 7–8× row is a whole-buffer hit-jumping sweep, which is the shape
+the anchor pair actually governs.
 
 ## 8. What this says about the original question
 
@@ -559,13 +643,16 @@ separation tie-break (§10), the unclamped `u16` density table with
 selector-quality probe classes that make the defect visible to the benchmark suite
 at all. The closure is measured end to end (§10.1).
 
-**Not yet integrated:** the pair-aware policy (the ~1.5×-to-1.0× gap is still
-open), and the calibrating selector — `kernel/scan/calibrate.zig` exists and
-implements §7's design, but nothing imports it yet, so it is inert. Neither
-`anchor_test.zig` nor `calibrate_test.zig` exists, which means **the regression
-guard for this entire defect — an all-tied needle must never select adjacent
-offsets — is not yet enforced by a test.** Until it is, §10's repair is protected
-only by the benchmark ratio in §10.1, whose measurement caveat is §10.3.
+**Also integrated:** the calibrating selector, reached through `simd.planOn` as an
+improvement test over the static pair, with the plan minted per document and carried
+by three seams (§7.2.e for the shape, the two lessons the integration taught, and the
+measured 6.9–8.0×). `anchor_test.zig` and `calibrate_test.zig` both exist, so the
+regression guard for this entire defect — an all-tied needle must never select
+adjacent offsets — is enforced by a test rather than by §10.1's benchmark ratio alone.
+
+**Not yet integrated:** the pair-aware policy; the ~1.5×-to-1.0× gap against the
+oracle is still open for the static table, and calibration closes it only where the
+size gate fires.
 
 - Selectivity is measured exactly; wall clock is measured on this machine
   (Apple M4) only, for the dual-probe wide tier. The single-probe fast path
@@ -579,13 +666,21 @@ only by the benchmark ratio in §10.1, whose measurement caveat is §10.3.
 - Needle slates are 2–16 bytes. The kernel's own doc cites 2–4 byte needles as
   dominant traffic; very short needles have few pairs and less to gain.
 - The 1.7 GB single-file production run is warm-cache and single-threaded. It
-  establishes that the defect is visible in the shipped binary; it does not
-  establish the end-to-end win, which requires the patch.
-- No end-to-end timing exists yet for the calibrating selector, because
-  calibration has to live inside the kernel to be timed honestly. Its
-  selectivity is measured and equals the joint table's, and its overhead is
-  derived from the measured scan rate — but the composition of the two is an
-  inference, not a measurement.
+  establishes that the defect is visible in the shipped binary; the end-to-end win
+  is §7.2.e's in-binary A/B, on a different (adversarial) corpus.
+- §7.2.e's end-to-end ratios are **child CPU time in one binary against itself**
+  via `GIST_NO_CALIBRATE`, not a two-build comparison — deliberately, because this
+  tree is edited concurrently by many agents and a two-build A/B cannot hold the
+  rest of the binary fixed. Wall clock on a 200 MB mmap is mostly page-fault noise,
+  which is why CPU is the reported quantity.
+- The 6.9–8.0× rows are measured on a **constructed adversarial buffer** — an
+  alphabet of statically-rare bytes holding needles whose locally-rarest byte the
+  shipped table ranks common. That is the regime calibration exists for, not a
+  typical one; the typical regime is the 1.00× code-tree rows in the same table,
+  and both belong to the claim. The three needles also **do not occur** in the
+  buffer, so those rows are pure prefilter waste with the verification term held at
+  zero — deliberately, since that is the term the anchor pair governs, but it means
+  they are not a claim about a match-heavy scan.
 - The break-even model in §7.1 assumes calibration and scan run at the same
   bytes/second. Calibration touches `n` streams over a small region and should
   be more cache-friendly than a full scan, which would make the real threshold
@@ -593,4 +688,8 @@ only by the benchmark ratio in §10.1, whose measurement caveat is §10.3.
   pessimistic reading.
 
 Reproduction: `spikes/anchor-joint-rarity/` (`corpus.py`, `probe.zig`,
-`timeit.zig`, `report.py`). See `TESTING.md`.
+`timeit.zig`, `report.py`) for the defect and the selector sweep;
+`spikes/anchor-plan/` for the integration — `sweep.zig` times a bare kernel
+sweep under all three plans, `probe.zig` reports per-needle headroom, `bigab.py`
+runs the in-binary CPU A/B, and `diffall.py` is the 420-invocation output
+differential. See `TESTING.md`.

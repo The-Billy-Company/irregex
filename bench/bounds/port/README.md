@@ -2,13 +2,13 @@
 doc_radar:
   sentinels:
     - description: "the Layer B′ measured runner is wired as a build step + installed exe"
-      file: pkg/kernels/irregex/build.zig
+      file: build.zig
       contains: ['b.step("portbound"', '.name = "gist-portbound"']
     - description: "the static leg splices the measured subsection and names the sudo rung"
-      file: pkg/kernels/irregex/bench/bounds/port/mca.sh
-      contains: ["portbound.json", "sudo pkg/kernels/irregex/zig-out/bin/gist-portbound"]
+      file: bench/bounds/port/mca.sh
+      contains: ["portbound.json", "sudo zig-out/bin/gist-portbound"]
     - description: "the splicer fail-closed labels cycles when not measured here"
-      file: pkg/kernels/irregex/bench/bounds/port/report.py
+      file: bench/bounds/port/report.py
       contains: "NOT measured on this "
 ---
 
@@ -30,9 +30,9 @@ cross-machine cross-check.
 | `mca.sh`                   | cross-compiles every probe to two reference microarchitectures, runs `llvm-mca`, writes `portcert.csv`/`portcert.json`, splices the certificate                                                          |
 | `report.py`                | renders the `## Layer B` markdown section (static + the Layer B′ measured subsection) from `portcert.json` + `portbound.json` and splices it into `.local/gist-verify/CERTIFICATE.md`                    |
 | `measure.zig`              | **Layer B′** — `gist-portbound`: times the same drift-guarded probes natively under the PMU (`bench/harness/pmu.zig`), writing `portbound.json` (measured cyc/byte + cyc/step; fail-closed without root) |
-| `probes/simd_contains.zig` | byte-faithful copy of the hot loop in [`../../src/kernel/scan/simd.zig`](../../src/kernel/scan/simd.zig)'s `contains` — throughput-bound                                                                 |
+| `probes/simd_contains.zig` | byte-faithful copy of the hot loop in [`../../../src/kernel/scan/simd.zig`](../../../src/kernel/scan/simd.zig)'s `contains` — throughput-bound                                                                 |
 | `probes/dfa_step.zig`      | the **classed** DFA recurrence — `s = trans_in[s + class[b]]`, 3 loads/byte, the layout every non-document DFA consumer still walks — latency-bound                                                       |
-| `probes/dfa_mirror.zig`    | the **byte-indexed** recurrence — `s = trans_in[s + b]` over the `Dfa.Wide` mirror that [`../../src/kernel/regex/linear/dfa/dfa.zig`](../../src/kernel/regex/linear/dfa/dfa.zig)'s `docMatch` steps, 2 loads/byte — latency-bound |
+| `probes/dfa_mirror.zig`    | the **byte-indexed** recurrence — `s = trans_in[s + b]` over the `Dfa.Wide` mirror that [`../../../src/kernel/regex/linear/dfa/dfa.zig`](../../../src/kernel/regex/linear/dfa/dfa.zig)'s `docMatch` steps, 2 loads/byte — latency-bound |
 | `probes_test.zig`          | the drift guard — asserts each probe is bit-identical to the real production function it copies, over adversarial random inputs (`zig build test`)                                                       |
 
 **Why cross-compiled reference cores, not this machine.** This dev box is
@@ -90,7 +90,7 @@ recurrence; treat `sim cyc/it` as per-probe, not cross-probe.
 ## Drift guard, not a duplicate
 
 The probes are **byte-faithful copies**, not the production functions
-themselves — `llvm-mca` needs a standalone, zero-Billy-dependency object to
+themselves — `llvm-mca` needs a standalone, zero-host-package-dependency object to
 disassemble, and the markers that bracket the measured region (`# LLVM-MCA-
 BEGIN/END`) have to live inside the loop body so LLVM's loop rotation/cloning
 can't strand them, which the production code has no reason to carry.
@@ -131,15 +131,15 @@ frequency.
 ## How to run
 
 ```bash
-cd pkg/kernels/irregex
+cd <irregex-repo-root>
 bench/bounds/port/mca.sh                # static leg: portcert.csv/.json + splice Layer B (+B′ if present)
 ITERS=200 bench/bounds/port/mca.sh      # more llvm-mca simulation iterations
 
 # Layer B′ — measured on this machine:
 zig build -Doptimize=ReleaseFast portbound         # wall-clock only (labels cycles NOT measured)
 cd ../../..                                        # the binary resolves .local/ at the CWD — run from repo root
-sudo pkg/kernels/irregex/zig-out/bin/gist-portbound  # measured cycles (kpc is root-gated)
-pkg/kernels/irregex/bench/bounds/port/mca.sh       # re-splice: the measured subsection lands in the cert
+sudo zig-out/bin/gist-portbound  # measured cycles (kpc is root-gated)
+bench/bounds/port/mca.sh       # re-splice: the measured subsection lands in the cert
 ```
 
 `CERT_OUT=/path/to/bundle` targets an isolated certificate directory; otherwise
@@ -159,5 +159,5 @@ a documented skip (exit 0), never a failure — mirroring `bench/harness/pmu.zig
 - **[LLVM issue #63698](https://github.com/llvm/llvm-project/issues/63698)**
   — the reason this layer targets `znver4`/`neoverse-v2` instead of an
   Apple-Silicon `-mcpu`: no real scheduling model exists for any Apple core.
-- gist's own [`../harness/certify.zig`](../harness/certify.zig) (Layer A) —
+- gist's own [`../../apparatus/harness/certify.zig`](../../apparatus/harness/certify.zig) (Layer A) —
   the measured cycles/byte this layer's static bound is checked against.

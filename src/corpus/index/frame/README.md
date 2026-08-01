@@ -2,36 +2,36 @@
 doc_radar:
   sentinels:
     - description: "frame owns the shared framing primitives"
-      file: pkg/kernels/irregex/src/corpus/index/frame/frame.zig
+      file: src/corpus/index/frame/frame.zig
       contains:
         - "pub const Cursor"
         - "pub fn joinNul"
         - "pub fn splitNulExact"
         - "pub fn parsePathTable"
     - description: "frame owns the file primitives every artifact maps and publishes through"
-      file: pkg/kernels/irregex/src/corpus/index/frame/frame.zig
+      file: src/corpus/index/frame/frame.zig
       contains:
         - "pub const Mapping"
         - "pub fn mmapFile"
         - "pub fn writeAtomic"
     - description: "the tree binding is published, proved, and reportable from one place"
-      file: pkg/kernels/irregex/src/corpus/index/frame/frame.zig
+      file: src/corpus/index/frame/frame.zig
       contains:
         - "pub fn boundHere"
         - "pub fn bindingHolds"
         - "pub fn publishBinding"
         - "pub fn socketBindingPath"
     - description: "home resolves the artifact directory every blob shares"
-      file: pkg/kernels/irregex/src/corpus/index/frame/home.zig
+      file: src/corpus/index/frame/home.zig
       contains: ["pub fn outDir", "pub fn ArtifactPath", "default_out_dir"]
     - description: "signet is the one artifact digest on the wire floor"
-      file: pkg/kernels/irregex/src/corpus/index/frame/signet.zig
+      file: src/corpus/index/frame/signet.zig
       contains: ["pub fn of", "pub fn sealInto", "pub fn unseal"]
     - description: "quill seals an artifact written in pieces, never holding the blob"
-      file: pkg/kernels/irregex/src/corpus/index/frame/quill.zig
+      file: src/corpus/index/frame/quill.zig
       contains: ["pub const Quill", "pub fn put", "pub fn seal"]
     - description: "the freshness anchor declines unless the binding holds"
-      file: pkg/kernels/irregex/src/corpus/fresh/fresh.zig
+      file: src/corpus/fresh/fresh.zig
       contains: ["if (!frame.boundHere()) return null"]
 ---
 

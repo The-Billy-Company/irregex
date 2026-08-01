@@ -22,7 +22,7 @@ Usage:
     golden.py show <name>      # print one verb's normalized template
 
 Binaries are taken from ``zig-out/bin`` under the kernel; build them first with
-``zig build -Doptimize=ReleaseFast`` (or ``make build-gist``). Read-only verbs
+``zig build -Doptimize=ReleaseFast`` (library check) or the sibling ``gist`` package binaries. Read-only verbs
 only — nothing here mutates the shared machine-local index/atlas.
 """
 
@@ -35,8 +35,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-KERNEL = Path(__file__).resolve().parents[3]  # bench/conformance/diag → conformance → bench → kernel
-REPO = KERNEL.parents[2]  # pkg/kernels/irregex → repo root
+KERNEL = Path(__file__).resolve().parents[3]  # diag → conformance → bench → repo root
+REPO = KERNEL
 BIN = KERNEL / "zig-out" / "bin"
 GOLDEN_DIR = Path(__file__).resolve().parent / "golden"
 
@@ -60,16 +60,16 @@ def normalize(stderr: str) -> str:
 NEEDLE = "WalletService"
 CASES: list[tuple[str, str, list[str]]] = [
     ("gist-rank-live", "gist", [NEEDLE, "--rank", "--no-index", "libs"]),
-    ("relate-similar", "relate", ["similar", "pkg/kernels/irregex/src/root.zig", "--no-index", "--top", "3"]),
-    ("relate-dups", "relate", ["dups", "pkg/kernels/irregex/src", "--no-index"]),
-    ("relate-clusters", "relate", ["clusters", "pkg/kernels/irregex/src", "--no-index"]),
-    ("relate-echoes", "relate", ["echoes", "pkg/kernels/irregex/src", "--no-index", "--top", "5"]),
-    ("relate-patterns", "relate", ["patterns", "-e", "Span", "-e", "Tally", "pkg/kernels/irregex/src"]),
-    ("relate-search", "relate", ["search", "monotonic clock reading", "pkg/kernels/irregex/src"]),
-    ("relate-pack", "relate", ["pack", "diagnostic channel sink", "pkg/kernels/irregex/src", "--top", "3"]),
-    ("irregex-context", "irregex", ["context", "diagnostic sink", "-e", "Sink", "pkg/kernels/irregex/src", "--top", "3"]),
-    ("irregex-family", "irregex", ["family", "Tally", "pkg/kernels/irregex/src", "--echo-min", "0.15"]),
-    ("irregex-blast", "irregex", ["blast", "Duration", "pkg/kernels/irregex/src"]),
+    ("relate-similar", "relate", ["similar", "src/root.zig", "--no-index", "--top", "3"]),
+    ("relate-dups", "relate", ["dups", "src", "--no-index"]),
+    ("relate-clusters", "relate", ["clusters", "src", "--no-index"]),
+    ("relate-echoes", "relate", ["echoes", "src", "--no-index", "--top", "5"]),
+    ("relate-patterns", "relate", ["patterns", "-e", "Span", "-e", "Tally", "src"]),
+    ("relate-search", "relate", ["search", "monotonic clock reading", "src"]),
+    ("relate-pack", "relate", ["pack", "diagnostic channel sink", "src", "--top", "3"]),
+    ("irregex-context", "irregex", ["context", "diagnostic sink", "-e", "Sink", "src", "--top", "3"]),
+    ("irregex-family", "irregex", ["family", "Tally", "src", "--echo-min", "0.15"]),
+    ("irregex-blast", "irregex", ["blast", "Duration", "src"]),
     ("irregex-provenance", "irregex", ["provenance", "the monotonic-awake clock"]),
 ]
 

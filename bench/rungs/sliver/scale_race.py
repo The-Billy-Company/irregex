@@ -53,7 +53,7 @@ from stats import dominance, median_ci  # noqa: E402
 GIST = KERNEL / "zig-out" / "bin" / "gist"
 
 # Byte-identical to bench/certify/ratio_regress.py PROBES — the canonical 12.
-# Needles are Billy-repo shaped on purpose: keeping them identical is what makes
+# Needles are host-repo shaped on purpose: keeping them identical is what makes
 # a scale cell comparable to the certificate's own cell. A needle absent from
 # this corpus still measures something real (the pure index-filter path), and
 # its zero hit count is published so the cell cannot be mistaken for a scan.

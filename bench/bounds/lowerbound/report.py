@@ -29,7 +29,7 @@ stdlib only. Mirrors `bench/certify/certify_stats.py`'s splice technique.
 # This file emits the certificate's Layer-D markdown, which intentionally carries
 # math/typography glyphs (Omega, leq, middot, en/em dashes) that ruff's
 # ambiguous-unicode rules flag; the glyphs are the certificate's contract, so
-# silence them file-wide (repo precedent: services/ai, taskrunner, entrain all
+# silence them file-wide (same posture as other long-running report scripts
 # ignore RUF001/002/003 for intentional glyphs).
 
 import argparse
@@ -220,10 +220,10 @@ def splice(cert: Path, section: str) -> None:
 
 def main() -> int:
     # The shared cert dir lives at the repo root; anchor defaults there (computed
-    # from this file: bench/lowerbound/lowerbound_report.py → repo root parents[5])
+    # from this file: bench/bounds/lowerbound/report.py → repo root
     # so the report works from any CWD, like the zig steps and portcert.sh.
     """CLI entry point."""
-    out_dir = Path(__file__).resolve().parents[6] / ".local/gist-verify"
+    out_dir = Path(__file__).resolve().parents[3] / ".local/gist-verify"
     ap = argparse.ArgumentParser(description="gist Layer D lower-bound certificate splicer")
     ap.add_argument(
         "--csv",

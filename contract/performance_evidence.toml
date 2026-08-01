@@ -1,6 +1,6 @@
 # GIST performance-evidence contract — the source of truth for Gist's
 # OPERATIONAL-ENVELOPE evidence (the evaluation counterpart to the correctness
-# contract in search_api.toml).
+# contract in engine.toml).
 #
 # SCOPE — WHAT THIS OWNS, AND WHAT IT DELIBERATELY DOES NOT
 #   The Dominance-and-Fit Certificate (bench/certificate/ + dominance/session/
@@ -51,7 +51,7 @@ schema_version = 1
 adr = 352
 # The certificate OWNS cold/warm dominance + correctness + optimality; this
 # contract's regimes are the operational envelope beside it, never a re-measure.
-certificate_bundle = "pkg/kernels/irregex/bench/certificate/artifact"
+certificate_bundle = "bench/certificate/artifact"
 
 # ── precondition (not a regime) ───────────────────────────────────────────────
 # Before ANY cell below is timed, gist must prove a byte-exact (order-insensitive)
@@ -111,7 +111,7 @@ Gist is actually built for, not just single-query latency.
 gated_cross_machine = false
 
 # ── corpora ─────────────────────────────────────────────────────────────────
-# The matrix runs over the Billy home tree PLUS the pinned foreign battery
+# The matrix runs over the host home tree PLUS the pinned foreign battery
 # (bench/apparatus/corpora/fetch.sh), so no claim is home-corpus-only. Each corpus is a
 # distinct SHAPE; a bundle records which corpora it actually measured.
 
@@ -220,14 +220,14 @@ raw_dir = ".local/gist-evaluation"
 # Committed, verified bundles + the aggregate report live here, one dir per
 # machine so Apple-arm64 and Anvil-linux-x86_64 stay SEPARATE, machine-labeled
 # evidence (never averaged into one blended number).
-artifact_dir = "pkg/kernels/irregex/bench/dominance/evaluate/artifact"
+artifact_dir = "bench/dominance/evaluate/artifact"
 # A PUBLISHED bundle must come from a clean git tree (git_dirty = false); a dirty
 # tree may be measured for exploration but is refused at publish and marked
 # exploratory in the bundle so it can never masquerade as evidence.
 require_clean_tree_to_publish = true
 
 # ── claims ────────────────────────────────────────────────────────────────────
-# Each claim binds a prose number to ONE artifact source, so the doc-radar
+# Each claim binds a prose number to ONE artifact source, so a freshness
 # verifier (and the evaluator's own `verify --claims`) can hold a README
 # sentence to the measured value. `regime` names which path the number is from.
 #
@@ -237,7 +237,7 @@ require_clean_tree_to_publish = true
 # in its own docs from its own artifacts — this contract must not restate them.
 [[claim]]
 id = "resource.index_over_corpus"
-source = "pkg/kernels/irregex/bench/certificate/artifact/index-sizes.json"
+source = "bench/certificate/artifact/index-sizes.json"
 kind = "json_ratio"
 regime = "resource"
 scope = "required index bytes (posting + path + freshness) / corpus bytes — the footprint ratio, hardware-invariant and comparable across machines"
