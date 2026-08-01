@@ -106,7 +106,6 @@ zig build crest       # exploratory proof → .local/crest-evidence/
 zig build test        # kernel + sidecar unit tests ride the main suite
 gist index            # persists crest.bin beside index.gist
 gist '[0-9a-f]{12}'   # the sieve elides pruned reads in production
-cd ../../..
 python3 bench/rungs/crest/evidence/crest_evidence.py package
 # clean committed HEAD only: revision-bound source, tests, measurements, monograph
 ```
@@ -118,7 +117,7 @@ performance table. `crest_evidence.py package` refuses a dirty tree, runs the
 real matcher proof and tests, captures every timing sample, corpus-content
 manifest, machine/filesystem/cache conditions, seeds, matcher differentials,
 and `crest.csv`, then renders a monograph only from that committed revision.
-See `PROOF.md` §5 and `bench/crest/evidence/README.md`.
+See `PROOF.md` §5 and `bench/rungs/crest/evidence/README.md`.
 
 ## Status
 
@@ -128,9 +127,11 @@ proof of global novelty. `gist index` persists the Crest
 sidecar; both the serial and parallel engines prune candidates with it
 (caseless keeps case-closed certificates and self-declines unsafe folds;
 Unicode mode certifies only alphabet-safe constructs — the Alphabet Contract,
-`PROOF.md` §3.7). Lineage:
-`spikes/classrun-formula/` (Python reference + 240k-pair property
-suite + originality dossier).
+`PROOF.md` §3.7). Lineage: a Python reference sieve, cleared by a 240,000-pair
+randomized property suite against Python `re` with zero false negatives, plus
+the count-cousin ablation and an originality dossier. That spike is not in this
+repo; `bench/rungs/crest/` proves the same soundness against the shipped matcher
+instead.
 
 **Two research extensions (`PROOF.md` §3.6, §7).** (1) An _independent exact
 oracle_ — `g(R,C)` by NFA × run-monitor emptiness — checks soundness and
@@ -142,5 +143,9 @@ per class and force a run _multiset_ via a gap-aware `all_out` calculus, so
 tokens Crest's single run cannot (+5.9pp on dates, no regression on single-run
 queries). Referee 2026-07-20: no collision, re-scoped to the run-order-statistic
 
-- multiset calculus (`PRIOR_ART.md` §8). Lineage + reproduction:
-  `spikes/ridge-spectrum/`.
+- multiset calculus (`PRIOR_ART.md` §8). Both extensions came from one Python
+  spike that does not ship here: it carried the gap-aware segment calculus, the
+  NFA×monitor oracle (5,224 forced-run checks, sound on every one, 98.2% exactly
+  tight), a 160,000-pair sieve property suite with zero false negatives, and the
+  base-vs-ridge corpus bench `PROOF.md` §7.4 tabulates. Nothing in this
+  repository re-runs it.

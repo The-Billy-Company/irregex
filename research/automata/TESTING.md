@@ -15,10 +15,10 @@ doc_radar:
 
 # Testing — how each claim dies
 
-The evidence surface we have races **binaries**: `bench/dominance/races/regex.sh`
-puts `gist` against `rg`, `csearch`, and `zoekt` on a pattern slate and reports
-wall-clock. That is the right instrument for the product claim and the wrong one
-for this lane. A binary race cannot tell me whether a win came from the
+The evidence surface we have races **binaries**:
+`gist/bench/dominance/races/regex.sh` puts `gist` against `rg`, `csearch`, and
+`zoekt` on a pattern slate and reports wall-clock. That is the right instrument
+for the product claim and the wrong one for this lane. A binary race cannot tell me whether a win came from the
 determinizer, the alphabet, the prefilter, or the fact that we walk the corpus
 differently. Every claim in [`CLAIM.md`](CLAIM.md) is a claim about *one
 function*, so the instrument has to be one function.

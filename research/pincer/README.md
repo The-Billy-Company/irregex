@@ -146,9 +146,13 @@ Both repairs and the calibrating selector are integrated. The defect lived at
 `src/kernel/scan/simd.zig::indexOfPos` (the tie-break and the two-probe loop);
 `src/kernel/scan/anchor.zig` now owns the static decision, `calibrate.zig` the
 per-buffer one, and `simd.zig`'s `Plan` / `planOn` / `Gate.on` the seam between
-them. Reproduction harnesses: `spikes/anchor-joint-rarity/` for the defect,
-`spikes/anchor-plan/` for the plan (`sweep.zig` is the kernel ground truth,
-`probe.zig` reports per-needle headroom) — see `TESTING.md`.
+them. The guards ship beside them: `anchor_test.zig` pins the defect's own
+invariant, that an all-tied needle must never select adjacent offsets, and
+`calibrate_test.zig` covers the improvement test, including the uniform-alphabet
+case where every pair is genuinely identical and the winner's curse would
+otherwise manufacture a swap. The harnesses that produced the tables above were
+pre-production spikes and are not in this tree; `TESTING.md` records what each
+established, and what a reader can and cannot re-run here.
 
 ## What is ours, after refereeing
 

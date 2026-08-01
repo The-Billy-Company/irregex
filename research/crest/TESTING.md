@@ -49,7 +49,7 @@ years later, so it gets the adversarial treatment the trigram loader gets:
   256 membership masks, the 65,535 cap, element interpretation, and format
   version; `GISTCRS1` is rejected rather than guessed compatible.
 
-## 3. Production proof harness — `bench/crest/bench.zig` (`zig build crest`)
+## 3. Production proof harness — `bench/rungs/crest/bench.zig` (`zig build crest`)
 
 Links the **real** engine (`Regex.docMatch`) and walks the **real** host
 corpus via the same `corpus.load` the optimality certificate uses. Six gates
@@ -111,11 +111,14 @@ check the **Artifact theorem**; filesystem freshness suites check the
 conditional **Freshness theorem**. Only their conjunction authorizes read
 elision (`PROOF.md` §2.1).
 
-## 5. Independent exact-automaton oracle (`spikes/ridge-spectrum/ridge.py`)
+## 5. Independent exact-automaton oracle (a Python spike, not shipped here)
 
 The tightness measurement (PROOF.md §3.6) is refereed, not asserted, by an
 **independent** implementation of the exact forced run `g(R,C)` — built from a
-_separate_ Thompson NFA compiler, so the AST calculus never grades itself:
+_separate_ Thompson NFA compiler, so the AST calculus never grades itself. That
+referee was a pre-production Python harness (`ridge.py`) and it is **not part of
+this repository**; the section records what it established, not a command you
+can run. Everything below is a dated measurement, not a reproduction:
 
 - `g_exact` decides `g_i(R,C)` by emptiness of `NFA(R) × monitor(C,r,i)` (the
   monitor DFA counts maximal C-runs reaching length `r`), binary-searched over
@@ -133,13 +136,21 @@ _separate_ Thompson NFA compiler, so the AST calculus never grades itself:
 
 ## 6. Lineage — the Python spikes
 
-Crest before a line of Zig: `spikes/classrun-formula/` — a Python
-reference with a **240,000-pair** randomized property suite (oracle = Python
-`re`), the count-cousin ablation, and the Erdős–Rényi selectivity model
-validated against measured prune rates. Zero violations. The run-spectrum
-extension (Ridge) and the exact oracle above come from
-`spikes/ridge-spectrum/`. Both dossiers carry the originality referee
-trail (PRIOR_ART.md §7–8).
+Crest existed before a line of Zig, as a Python reference sieve carrying a
+**240,000-pair** randomized property suite (oracle = Python `re`; 51,463 of the
+pairs had a nonzero forced run and were therefore prunable). Zero violations.
+Beside it sat the count-cousin ablation (on `[0-9a-f]{8}` the run statistic
+prunes 92.9% of files where the total-population cousin at the same threshold
+prunes 4.2%), and the Erdős–Rényi selectivity model, borne out by the measured
+rates: narrow classes with a forced run ≥6 approach total pruning, wide classes
+prune near nothing. The run-spectrum extension (Ridge) and the exact oracle
+above came from a second spike, whose measurements §5 records.
+
+Neither spike ships with this repository. They were the argument for the
+calculus, made before there was one to test; `crest_test.zig` and
+`bench/rungs/crest/` are what took over their job, and against the real matcher
+rather than a Python model of it. Both dossiers carried the originality referee
+trail summarized in PRIOR_ART.md §7–8.
 
 ## 7. Reproduce everything
 
@@ -148,8 +159,12 @@ cd <irregex-repo-root>
 zig build test        # §1 + §2 + engine parity suites
 zig build crest       # §3 — exploratory raw evidence in .local/crest-evidence/
 gist index && gist status   # §4 — sidecar persisted alongside index.gist
-python3 spikes/ridge-spectrum/ridge.py --oracle --selftest  # §5 — oracle + property suite
-cd ../../..
 python3 bench/rungs/crest/evidence/crest_evidence.py package
 # clean committed HEAD only: source archive + manifests + samples + monograph
 ```
+
+§5 is the exception, and it is worth saying plainly rather than leaving a
+command that cannot run: the exact-automaton oracle was a pre-production Python
+harness and is not in this tree. Its results stand as dated measurements. To
+re-referee tightness against the repaired calculus, someone has to build the
+independent oracle again.

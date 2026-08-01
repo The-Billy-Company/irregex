@@ -86,7 +86,7 @@ refinement core; it excludes `program/`'s Thompson lowering, which *produces* an
 automaton rather than operating on a finished one. The wider hoist sketched below
 stays a proposal, and it should not be executed on tidiness grounds — `dfa.zig`'s
 path in particular is pinned inside the frozen benchmark manifests under
-`bench/certificate/artifact/`, which are recorded evidence rather than source.
+`gist/bench/certificate/artifact/`, which are recorded evidence rather than source.
 
 ### The shape it grows into — proposed, not landed
 

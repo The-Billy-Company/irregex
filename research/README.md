@@ -52,8 +52,8 @@ Crest production code: [`../src/kernel/math/crest.zig`](../src/kernel/math/crest
 [`../src/corpus/index/crest/`](../src/corpus/index/crest/). Production harness:
 `zig build crest` / [`../bench/rungs/crest/`](../bench/rungs/crest/).
 
-Gist production face: `gist/src/surface/face/gist/`. Evidence: `irregex/bench/conformance/gates/`,
-`irregex/bench/conformance/rgsuite/`, and `gist/bench/certificate/`.
+Gist production face: `gist/src/surface/face/gist/`. Evidence: `gist/bench/conformance/gates/`,
+`gist/bench/conformance/rgsuite/`, and `gist/bench/certificate/`.
 
 Relate production face: `gist/src/surface/face/relate/`. Engines: `relate/src/kernel/kinship/`.
 Evidence: `relate/bench/` (Layer G retrieval contract).

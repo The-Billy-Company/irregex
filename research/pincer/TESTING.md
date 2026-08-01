@@ -1,12 +1,16 @@
 # Pincer — testing story
 
-`PROOF.md` §1–§10 is reproducible from `spikes/anchor-joint-rarity/`, and
-§7.2.e's integration numbers from `spikes/anchor-plan/`. This file records
-what was measured, how, and what each instrument can and cannot establish.
+`PROOF.md` §1–§10 was measured on one pre-production spike, and §7.2.e's
+integration numbers on a second. **Neither ships with this repository.** So this
+file is a record rather than a recipe: what was measured, how, what each
+instrument can and cannot establish, and where the invariants they found are
+guarded now. The tests that carry those invariants forward do ship, and they are
+listed under "How the integration is tested" below; the tables themselves cannot
+be regenerated here without rebuilding the harnesses.
 
 ## Instruments
 
-Selector sweep — `spikes/anchor-joint-rarity/`:
+Selector sweep (§3, §4) — four files, none of them in this tree:
 
 | file | role |
 | --- | --- |
@@ -15,7 +19,7 @@ Selector sweep — `spikes/anchor-joint-rarity/`:
 | `timeit.zig` | wall clock of the kernel's dual-probe loop, anchor pair as the only variable |
 | `report.py` | aggregation, per-needle ratios, degenerate-pick census |
 
-Integration — `spikes/anchor-plan/`:
+Integration (§7.2.e) — a second spike, also absent:
 
 | file | role |
 | --- | --- |
@@ -25,32 +29,21 @@ Integration — `spikes/anchor-plan/`:
 | `regexab.py` | the same for a regex carrying a required literal |
 | `diffall.py` | 420-invocation output differential, calibrated vs static arm of one binary |
 
-### Build
+### How they were built, and why the direction matters
 
-The spikes live in Billy's machine-local `.local/`, the package in its own checkout
-beside it, so a module dependency crosses between the two:
+Each spike sat in a scratch directory beside the checkout and was built as a bare
+`zig build-exe` reaching back into the tree for its dependency. The selector
+sweep took exactly one module, `src/kernel/scan/rarity.zig`, as `-Mrarity`. The
+integration spikes took the whole package through `src/root.zig` as `-Mirregex`,
+because they exercise `simd.planOn` and the plan seams rather than one table.
 
-```bash
-cd spikes/anchor-joint-rarity
-R=../../../../irregex/src/kernel/scan/rarity.zig
-zig build-exe -O ReleaseFast -femit-bin=probe  --dep rarity -Mmain=probe.zig  -Mrarity=$R
-zig build-exe -O ReleaseFast -femit-bin=timeit --dep rarity -Mmain=timeit.zig -Mrarity=$R
-```
-
-The integration spikes import the whole package instead of one module, so they take
-its build graph:
-
-```bash
-cd spikes/anchor-plan
-P=../../../../irregex/src/root.zig
-zig build-exe -O ReleaseFast -femit-bin=sweepbin --dep irregex -Mmain=sweep.zig -Mirregex=$P
-zig build-exe -O ReleaseFast -femit-bin=probebin --dep irregex -Mmain=probe.zig -Mirregex=$P
-```
-
-`probe.zig` imports the **production** `rarity.zig` module rather than a copy, so
-the "shipped" row cannot drift from what the kernel actually does. Its
-`unigramPair` is a transcription of `simd.zig::indexOfPos`, including the strict
-`<` tie-break that produces the `0:1` collapse.
+That direction is the load-bearing detail, and it is the part worth carrying into
+any rebuild. `probe.zig` imported the **production** `rarity.zig` rather than a
+copy, so the "shipped" row could not drift from what the kernel actually does;
+its `unigramPair` is a transcription of `simd.zig::indexOfPos`, strict `<`
+tie-break included, which is what produces the `0:1` collapse. A harness that
+reimplements the thing it grades establishes nothing about the shipped binary,
+and this one refused to.
 
 ## Corpora
 
@@ -80,9 +73,9 @@ python3 report.py code.csv
 ./timeit prose_a.bin pairs_prose.tsv
 ```
 
-For the integration (§7.2.e), from `spikes/anchor-plan/`. `adv.txt` is the
-adversarial 200 MB buffer — an alphabet of statically-rare bytes — and `bigtree/` a
-213 MB synthetic code tree, so the same commands report both the regime calibration
+For the integration (§7.2.e), in the second spike. `adv.txt` was the adversarial
+200 MB buffer — an alphabet of statically-rare bytes — and `bigtree/` a 213 MB
+synthetic code tree, so the same commands reported both the regime calibration
 exists for and the ordinary one:
 
 ```bash
@@ -174,12 +167,18 @@ way.
    select adjacent offsets — plus the table's rank-inversion and lowercase-
    distinguishability invariants.
 3. Output equivalence is proven three ways rather than argued: the mined ripgrep
-   suite (`bench/conformance/rgsuite/run.py`, 411/411 on both the parallel and serial
-   engines), its differential fuzz companion (residual unchanged, and identical with
-   `GIST_NO_CALIBRATE=1`, so the one remaining `line-content` case is not this), and
+   suite (`gist/bench/conformance/rgsuite/run.py`, which ships in the `gist`
+   package — 411/411 on both the parallel and serial engines), its differential
+   fuzz companion (residual unchanged, and identical with `GIST_NO_CALIBRATE=1`,
+   so the one remaining `line-content` case is not this), and
    an in-binary differential over 420 mode×needle×corpus invocations comparing the
    calibrated and static arms of the *same* binary byte for byte.
-4. `spikes/anchor-plan/sweep.zig` is the kernel ground truth: one full
-   hit-to-hit sweep under the lazy, static, and calibrated plans, asserting the three
-   hit counts agree before reporting their times. It is what separates "the kernel
-   got faster" from "the CLI got faster", and it is how the un-wired paths were found.
+4. The spike's `sweep.zig` was the kernel ground truth: one full hit-to-hit sweep
+   under the lazy, static, and calibrated plans, asserting the three hit counts
+   agree before reporting their times. It separates "the kernel got faster" from
+   "the CLI got faster", and it is how the un-wired paths were found; a CLI
+   number alone would have shown the same win with a seam still dead. That
+   instrument is the one gap left by the spikes' absence: items 1–3 ship and keep
+   the correctness claims live, but nothing in this tree re-times the kernel
+   under all three plans, so the 17.6–17.9× bare-sweep row in §7.2.e stands on a
+   dated measurement rather than on a rung anyone can re-run.

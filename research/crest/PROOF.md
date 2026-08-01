@@ -7,8 +7,8 @@ tests `src/kernel/math/crest_test.zig`). Persisted sidecar:
 (`crest.bin`, generation-atomic with the trigram pair). Wiring: both
 read-elision oracles (`src/exec/cold/engine/serial.zig` +
 `parallel.zig`).
-Proof harness: `bench/crest/bench.zig` (links the real gist engine, walks the
-real corpus, fail-closed). Run: `zig build crest` from ``;
+Proof harness: `bench/rungs/crest/bench.zig` (links the real gist engine, walks
+the real corpus, fail-closed). Run: `zig build crest` from the repository root;
 unit tests ride `zig build test`. Prior art: `PRIOR_ART.md`; test inventory:
 `TESTING.md`.
 
@@ -361,10 +361,13 @@ compiler, so the AST calculus never grades itself. The 2026-07-19 harness run,
 before the epsilon/optional-certificate repair, was sound on all 6,549 random
 (regex, class) checks and exactly tight on 98.0%, with mean gap 0.043. That
 number is retained only as a dated baseline; it must be remeasured before being
-claimed for the repaired calculus. The exact oracle and property harness live
-in the lineage spike
-(`spikes/ridge-spectrum/ridge.py`, `g_exact`); the corpus-scale
-matched⇒¬pruned proof against the real matcher stays in `bench/crest/`.
+claimed for the repaired calculus. The exact oracle and its property harness
+were a pre-production Python spike; they do not ship with this repo. Rebuilding
+them means a second Thompson NFA compiler, the product against the run monitor,
+and emptiness under a binary search on `r`; the independence is the whole point,
+so a referee sharing the calculus's own code path would be worth nothing. The
+corpus-scale matched⇒¬pruned proof against the real matcher does ship, in
+`bench/rungs/crest/`.
 
 ### 3.7 Alphabet contract (the one real false-negative footgun)
 
@@ -437,7 +440,7 @@ a `uclass` reaches. Caseless matching is unaffected in kind: `-i` folds the AST
 before the calculus runs, so a fold whose orbit escapes ASCII (`k`→U+212A
 KELVIN SIGN, `s`→U+017F LONG S) promotes the node to `uclass` and is then priced
 by the rule above rather than by a hand-maintained special case.
-`bench/crest/bench.zig` exercises all four alphabet × case pairings against the
+`bench/rungs/crest/bench.zig` exercises all four alphabet × case pairings against the
 real matcher. Option (b) as originally posed — indexing true codepoint runs —
 remains unimplemented and is now mostly uninteresting: it would tighten
 `\d`-style bounds on non-ASCII-heavy documents, which a code corpus does not
@@ -674,7 +677,7 @@ reports **both** regimes plus zero-false-negative everywhere (§5).
 
 ## 5. Production proof (revision-bound, fail-closed)
 
-`bench/crest/bench.zig` links the production engine and walks the production
+`bench/rungs/crest/bench.zig` links the production engine and walks the production
 corpus:
 
 - **matcher** — gist's real `Regex.docMatch`, compiled per mode with the same
@@ -884,10 +887,19 @@ collision** but two honest downgrades, adopted here:
 
 ## 8. Lineage
 
-Crest graduated from `spikes/classrun-formula/` (Python `rune.py`, 240k
-property pairs, count-cousin ablation, dated adversarial novelty search);
-working name "Rune" retired at graduation. The forced-run **spectrum** (Ridge,
-§7) and the **exact automaton oracle** (§3.6) come from
-`spikes/ridge-spectrum/` (`ridge.py` — segment calculus + NFA×monitor
-oracle + 160k-pair sieve property suite + base-vs-ridge corpus bench; referee
-verdict PARTIAL/no-collision 2026-07-20).
+Crest graduated from a Python spike carrying the working name "Rune", retired
+at graduation. That spike was a reference sieve plus a randomized property
+suite: **240,000** `(regex, text)` pairs against Python `re`, 51,463 of them
+carrying a nonzero forced run and therefore prunable, **zero** false negatives.
+It also carried the count-cousin ablation that decided the design (on
+`[0-9a-f]{8}` the run statistic pruned 92.9% of files where the total-population
+cousin at the same threshold pruned 4.2%, a ~22× separation), and a dated
+adversarial novelty search. Neither the reference nor the suite ships here; the
+calculus they were arguing for is `src/kernel/math/crest.zig`, and the
+production-matcher soundness proof that replaced them is `bench/rungs/crest/`.
+
+The forced-run **spectrum** (Ridge, §7) and the **exact automaton oracle**
+(§3.6) came from a second Python spike, also unshipped: the gap-aware segment
+calculus, the NFA×monitor oracle, a 160,000-pair sieve property suite that found
+zero false negatives across 20,494 prunable regexes, and the base-vs-ridge
+corpus bench §7.4 tabulates. Referee verdict PARTIAL / no-collision, 2026-07-20.

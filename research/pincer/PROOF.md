@@ -101,7 +101,7 @@ than additive — see §10.2, which prices all four corners.
 
 ## 3. Measured selectivity
 
-Corpus: 214 MB of the Billy tree (code, binaries excluded) × 177 needles drawn
+Corpus: 214 MB of a large polyglot monorepo (code, binaries excluded) × 177 needles drawn
 from real identifiers; and 134 MB of English prose × 90 needles stratified
 across the frequency spectrum. Pair statistics for the table-based selectors are
 fitted on a **held-out** half in both regimes. `probe.zig` prices every
@@ -687,9 +687,18 @@ size gate fires.
   *lower* than tabulated — but that is unverified, so the table is the
   pessimistic reading.
 
-Reproduction: `spikes/anchor-joint-rarity/` (`corpus.py`, `probe.zig`,
-`timeit.zig`, `report.py`) for the defect and the selector sweep;
-`spikes/anchor-plan/` for the integration — `sweep.zig` times a bare kernel
-sweep under all three plans, `probe.zig` reports per-needle headroom, `bigab.py`
-runs the in-binary CPU A/B, and `diffall.py` is the 420-invocation output
-differential. See `TESTING.md`.
+Provenance of the numbers, since the harnesses that produced them were
+pre-production spikes and do not ship here. The defect and the selector sweep
+(§3, §4) ran on the first: a corpus builder that concatenated 214 MB of real
+code and 134 MB of English prose behind NUL separators and diverted every fifth
+file to a held-out fitting half; an exhaustive `probe` that imported the
+production `rarity.zig` and priced every offset pair against the oracle by
+popcounting per-offset match bitvectors; a timing harness that varied only the
+anchor pair through the kernel's dual-probe loop; and an aggregator for the
+per-needle ratios and the degenerate-pick census. The integration (§7.2.e) ran
+on a second: a `sweep.zig` timing one hit-to-hit kernel sweep under the lazy,
+static and calibrated plans that refused to report until all three hit counts
+agreed, a per-needle headroom probe, the in-binary CPU A/B against
+`GIST_NO_CALIBRATE`, and the 420-invocation output differential. What ships in
+place of them is the part that must keep holding: `anchor_test.zig`,
+`calibrate_test.zig`, and the parity suites. See `TESTING.md`.
