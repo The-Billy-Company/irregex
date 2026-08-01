@@ -48,16 +48,56 @@
 //! differ by exactly one thing. The 512 MiB tier stays, as what it always
 //! actually was: a cache-hierarchy datum, not a scan denominator.
 //!
-//! Frequency (needed only for the derived cycles/byte ceiling) is **measured**
-//! via the same kperf PMU certify uses when run under `sudo`; without it we fall
-//! back to a clearly-labeled assumed clock and report the ceiling primarily in
-//! GB/s (bytes/ns), which needs no frequency at all. Never fails the run
-//! (pmu.zig's discipline): no PMU ⇒ assumed clock + a loud note.
+//! ## Recorded defect — the absent needle was not absent (2026-08-01)
+//!
+//! The "absent" needle was the source literal `Zq9_gist_roofline_absent_needle_`,
+//! and the corpus root defaults to the package itself — so THIS FILE was one of
+//! the corpus documents, its literal was tiled into the contiguous buffer, and
+//! `simd.contains` early-exited on the benchmark's own source instead of
+//! streaming. "production contiguous" published ~3,029 GB/s: roughly 30× the
+//! same run's measured 102 GB/s STREAM roof, i.e. an early return timed as a
+//! memory sweep. `measureGistScan`'s "0 matches, pure streaming" row carried
+//! the milder form of the same lie — one of 861 documents matched, so the
+//! number was near-right but the label was false.
+//!
+//! Choosing a different literal only postpones the collision to the next edit
+//! of this file, so the needle is no longer written down at all: `absentNeedle`
+//! derives it from the bytes about to be scanned, as a run of one byte value
+//! longer than that value's longest run anywhere in them. A run of length N
+//! cannot contain a run of length N+1, so absence is a property of the corpus
+//! rather than of this file's spelling, and no future edit to any source file
+//! can make the needle present. The run additionally fails closed against
+//! `simd.contains` before it is used, because an instrument that cannot tell
+//! an early return from a memory sweep must refuse to publish.
+//! Frequency is needed only for the *derived* cycles/byte ceiling; the GB/s
+//! ceiling is bytes/ns and needs no clock at all. It is measured through
+//! `pmu.Meter`, which tries kperf (root) and then the unprivileged per-thread
+//! counters. Never fails the run (pmu.zig's discipline): no counter tier ⇒ the
+//! GB/s ceilings publish and the cycles/byte ceilings do not exist.
+//!
+//! RECORDED DEFECT (2026-08-01): `dram_cyc_per_byte_ceiling` and
+//! `l2_cyc_per_byte_ceiling` used to be emitted unconditionally, computed from a
+//! hardcoded 4.4 GHz whenever no counter tier opened — an assumption published
+//! under a field name that reads as a measurement, beside a `ghz_source` sibling
+//! saying "assumed" that consumers were free to ignore. Divided by an assumed
+//! clock those two fields are the GB/s ceiling in different units times a guess,
+//! and their only honest reader is a comparison against Layer A's *measured*
+//! cycles/byte — which only exists when a counter tier opened, in which case the
+//! clock is measured too. So they are now behind `Clock.cycPerByte`, which
+//! returns null on an assumed clock, and the artifact carries no top-level `ghz`
+//! for another consumer to divide by. An assumption can no longer mint a
+//! cycles/byte figure anywhere in Layer C.
+//!
+//! The artifact also records `meter` — the tiers `pmu.zig` actually tried — so a
+//! run that reports no clock says which backend refused. Without it, a *stale
+//! binary* built before a counter tier existed publishes "no PMU" on a host
+//! whose counters work, and the receipt cannot tell that apart from a host that
+//! genuinely has none.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const gist = @import("irregex");
-const pmu = @import("pmu"); // bench/harness/pmu.zig, wired as a module in build.zig
+const pmu = @import("pmu"); // bench/apparatus/harness/pmu.zig, wired as a module in build.zig
 
 const corpus_mod = gist.corpus;
 const simd = gist.simd;
@@ -83,10 +123,38 @@ const ScanVec = @Vector(scan_vlen, u8);
 const trials = 9;
 const traffic_budget = 2 << 30; // ~2 GiB of reads per trial, per tier
 
-/// Assumed core clock when no PMU (Apple M4 Max P-core sustained boost, ~4.4 GHz;
-/// labeled loudly in output). Only affects the *derived* cycles/byte figure —
-/// the primary GB/s ceiling is frequency-free.
+/// Stand-in core clock when no counter tier opens (Apple M4 Max P-core sustained
+/// boost, ~4.4 GHz). It is printed to the terminal so an operator can see what a
+/// missing clock would have cost, and it reaches nothing else: `Clock.measured`
+/// is false, so no derived figure and no artifact field is computed from it.
 const assumed_ghz = 4.4;
+
+/// Whether this build can measure memory bandwidth at all.
+///
+/// RECORDED DEFECT (2026-08-01): this rung's build posture is `.asked`, so it
+/// compiles at the caller's `-Doptimize`, which Zig defaults to Debug — and
+/// every documented invocation was a bare `zig build roofline`. In Debug the
+/// reduction is neither unrolled nor vectorized, so all three tiers report the
+/// same scalar issue rate instead of their cache level. The artifact on disk
+/// read L1 8.0 · L2 8.4 · DRAM 8.3 GB/s: a flat "hierarchy", L1 *slower* than
+/// L2, and every figure ~12x under the ReleaseFast roof this same host records
+/// in the README. It was well-formed JSON with a measured clock, so the derived
+/// cycles/byte inherited the defect honestly and looked like a result.
+///
+/// Nothing in the numbers says which build produced them, so the build mode is
+/// the guard. `bench/README.md` has always said to build ReleaseFast; a
+/// standing instruction that only the docs enforce is exactly the shape this
+/// audit is closing, so the rung now refuses instead of publishing. Debug and
+/// ReleaseSmall both suppress the vectorization the kernel is built around;
+/// ReleaseSafe keeps bounds checks but still vectorizes, so it measures memory.
+const measurable = measurableIn(builtin.mode);
+
+fn measurableIn(mode: std.builtin.OptimizeMode) bool {
+    return switch (mode) {
+        .Debug, .ReleaseSmall => false,
+        .ReleaseSafe, .ReleaseFast => true,
+    };
+}
 
 var sink: u64 = 0; // defeat DCE of the measured reduction
 
@@ -204,12 +272,39 @@ fn measureContiguous(io: std.Io, name: []const u8, buf: []const u8, needle: []co
     return .{ .name = name, .gbps_max = samples[trials - 1], .gbps_median = samples[trials / 2] };
 }
 
-/// Effective core clock (GHz) via the kperf PMU: stream the DRAM buffer once with
-/// the cycle counter live, GHz = Δcycles ÷ Δns — the honest frequency *under
-/// memory load*, which is exactly the regime the memory ceiling describes. Falls
-/// back to the assumed clock when the PMU is unavailable (no sudo / not macOS).
-fn measureGhz(io: std.Io, meter: *pmu.Meter, buf: []u64) struct { ghz: f64, source: []const u8 } {
-    if (!meter.has_pmu) return .{ .ghz = assumed_ghz, .source = "assumed (no PMU — run `sudo` for a measured clock)" };
+/// The clock the *derived* cycles/byte ceilings are divided by, and whether this
+/// host produced it. Nothing reads `ghz` directly: the one conversion out of GB/s
+/// goes through `cycPerByte`, which declines on an assumed clock, so a cycles/byte
+/// figure cannot be built from a guess by any caller — present or future.
+const Clock = struct {
+    ghz: f64,
+    source: []const u8,
+    /// The tiers `pmu.Meter` tried, verbatim. Travels into the artifact so a
+    /// missing clock names the backend that refused it.
+    meter: []const u8,
+    measured: bool,
+
+    /// cycles/byte ceiling = cycles/ns ÷ bytes/ns = GHz ÷ GB/s — the floor no
+    /// single-thread kernel can beat, since it would have to read faster than
+    /// memory. `null` unless the clock was measured here: over an assumed clock
+    /// this is the GB/s ceiling in different units multiplied by a guess, and its
+    /// only honest reader is a comparison against Layer A's *measured* per-class
+    /// cycles/byte, which exists only when a counter tier opened.
+    fn cycPerByte(self: Clock, gbps: f64) ?f64 {
+        return if (self.measured and gbps > 0) self.ghz / gbps else null;
+    }
+};
+
+/// Effective core clock (GHz) via the PMU: stream the DRAM buffer once with the
+/// cycle counter live, GHz = Δcycles ÷ Δns — the honest frequency *under memory
+/// load*, which is exactly the regime the memory ceiling describes. Falls back to
+/// the assumed clock when no PMU tier opened (not macOS, or both refused).
+///
+/// `source` names the tier that produced the number rather than a fixed backend:
+/// the unprivileged `thread_selfcounts` reading is a real measured clock, and it
+/// is not kperf's.
+fn measureGhz(io: std.Io, meter: *pmu.Meter, buf: []u64) Clock {
+    if (!meter.has_pmu) return .{ .ghz = assumed_ghz, .source = "assumed (no PMU — no cycle counter opened)", .meter = meter.note, .measured = false };
     const c0 = meter.counters();
     const sp = Span.open(io);
     var acc: u64 = 0;
@@ -218,19 +313,74 @@ fn measureGhz(io: std.Io, meter: *pmu.Meter, buf: []u64) struct { ghz: f64, sour
     const c1 = meter.counters();
     sink +%= acc;
     const cycles: f64 = @floatFromInt(c1.cycles -% c0.cycles);
-    if (cycles <= 0) return .{ .ghz = assumed_ghz, .source = "assumed (PMU returned no cycles)" };
-    return .{ .ghz = cycles / ns, .source = "measured (kperf, cycles ÷ ns under memory load)" };
+    if (cycles <= 0) return .{ .ghz = assumed_ghz, .source = "assumed (PMU returned no cycles)", .meter = meter.note, .measured = false };
+    return .{ .ghz = cycles / ns, .meter = meter.note, .measured = true, .source = switch (meter.kind()) {
+        .kperf => "measured (kperf, cycles ÷ ns under memory load)",
+        .thsc => "measured (thread_selfcounts, cycles ÷ ns under memory load)",
+        .none => "measured (PMU, cycles ÷ ns under memory load)",
+    } };
 }
 
-const ScanResult = struct { needle: []const u8, kind: []const u8, gbps: f64 };
-
-// Absent needle forces a full scan of every byte (no early exit, no verify) —
-// the clean streaming point. The realistic ones show early-exit + verification.
-const scan_needles = [_]ScanResult{
-    .{ .needle = "Zq9_gist_roofline_absent_needle_", .kind = "full-scan (0 matches, pure streaming)", .gbps = 0 },
-    .{ .needle = "func", .kind = "with matches (early-exit + verify)", .gbps = 0 },
-    .{ .needle = "})", .kind = "with matches (early-exit + verify)", .gbps = 0 },
+const ScanResult = struct {
+    needle: []const u8,
+    /// Printable spelling of `needle` for the terminal and the artifact. The
+    /// absent arm's needle is a run of one byte value picked out of the corpus
+    /// at run time and is not printable; nothing downstream ever needs the
+    /// bytes, only which needle a row was measured with.
+    label: []const u8,
+    kind: []const u8,
+    gbps: f64,
 };
+
+// Row 0's needle forces a full scan of every byte (no early exit, no verify) —
+// the clean streaming point — and is filled in by `absentNeedle` once the
+// corpus is loaded. It is deliberately EMPTY here: a literal in this file is a
+// literal in the corpus, which is exactly the 2026-08-01 recorded defect. The
+// realistic ones show early-exit + verification.
+const scan_needles = [_]ScanResult{
+    .{ .needle = "", .label = "", .kind = "full-scan (0 matches, pure streaming)", .gbps = 0 },
+    .{ .needle = "func", .label = "func", .kind = "with matches (early-exit + verify)", .gbps = 0 },
+    .{ .needle = "})", .label = "})", .kind = "with matches (early-exit + verify)", .gbps = 0 },
+};
+
+/// Length of the absent arm's needle, held at the historical 32 bytes so the
+/// arm stays comparable across mints.
+const absent_len = 32;
+
+/// Longest run of each byte value in `p`, folded into `run`.
+fn tallyRuns(longest: *[256]usize, p: []const u8) void {
+    var i: usize = 0;
+    while (i < p.len) {
+        const b = p[i];
+        var j = i + 1;
+        while (j < p.len and p[j] == b) j += 1;
+        longest[b] = @max(longest[b], j - i);
+        i = j;
+    }
+}
+
+/// A needle that CANNOT occur in `first` or in any of `rest`, derived from
+/// their bytes rather than written down — see the 2026-08-01 recorded defect.
+///
+/// Returns `absent_len` copies of the byte value with the shortest longest-run
+/// across those bytes. A run of length N contains no run of length N+1, so the
+/// needle's absence is a property of what is being scanned; it holds for the
+/// contiguous buffer and for every individual document, and no edit to any
+/// source file can make it present. Errors rather than degrading if all 256
+/// values already carry an `absent_len`-long run, which no text corpus does.
+fn absentNeedle(out: *[absent_len]u8, first: []const u8, rest: []const []const u8) ![]const u8 {
+    var longest = [_]usize{0} ** 256;
+    tallyRuns(&longest, first);
+    for (rest) |p| tallyRuns(&longest, p);
+
+    var pick: usize = 0;
+    for (1..256) |b| {
+        if (longest[b] < longest[pick]) pick = b;
+    }
+    if (longest[pick] >= absent_len) return error.NoAbsentNeedle;
+    @memset(out, @intCast(pick));
+    return out;
+}
 
 /// gist's real SIMD substring scan (`scan/simd.zig` `contains`) streamed over the
 /// RAM-resident corpus — the **clean** roofline operating point. With an absent
@@ -259,6 +409,23 @@ pub fn main(init: std.process.Init) !void {
 }
 
 pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
+    // Refuse before spending a single trial: an unoptimized build measures its
+    // own codegen, not the memory system, and there is no way to tell the two
+    // apart once the numbers are JSON. See `measurable`.
+    if (!measurable) {
+        std.debug.print(
+            \\gist roofline: refusing to run in a {s} build.
+            \\
+            \\  The kernel's unrolled vector reduction is what makes this a bandwidth
+            \\  probe; unoptimized it degrades to a scalar loop, every tier reports the
+            \\  same issue rate, and the artifact looks like a measured hierarchy.
+            \\
+            \\  Run: zig build -Doptimize=ReleaseFast roofline
+            \\
+        , .{@tagName(builtin.mode)});
+        return error.UnoptimizedBuild;
+    }
+
     // Three tiers sized to land in distinct levels of the M-series hierarchy:
     // L1 (128 KiB P-core L1D) · L2 (16 MiB shared per P-cluster) · DRAM (beyond
     // the system-level cache). Sizes are rounded to whole STEP strides.
@@ -295,15 +462,35 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
     const clk = measureGhz(io, &meter, dram_buf);
     const dram = tiers[sizes.len - 1];
     const l2 = tiers[1];
-    // cycles/byte ceiling = cycles/ns ÷ bytes/ns = GHz ÷ GB/s. The floor no
-    // single-thread kernel can beat: it would have to read faster than memory.
-    const dram_cpb = clk.ghz / dram.gbps_max;
-    const l2_cpb = clk.ghz / l2.gbps_max;
+
+    // Fail-closed instrument check, in the same spirit as the absent needle
+    // below: a 16 KiB working set that streams no faster than a 512 MiB one has
+    // not resolved a cache hierarchy, so whatever this run measured, it was not
+    // memory. No threshold to argue about — L1 read bandwidth exceeds DRAM read
+    // bandwidth on every machine that has both, and best-of-9 leaves no room
+    // for an inversion. The Debug artifact this guard was written against
+    // reported L1 8.0 against DRAM 8.3.
+    if (tiers[0].gbps_max <= dram.gbps_max) {
+        std.debug.print(
+            \\
+            \\gist roofline: refusing to publish — the tier ladder did not resolve.
+            \\  L1 ({d:.1} GB/s) is not faster than DRAM ({d:.1} GB/s), so these
+            \\  figures describe something other than the memory hierarchy.
+            \\
+        , .{ tiers[0].gbps_max, dram.gbps_max });
+        return error.HierarchyUnresolved;
+    }
 
     std.debug.print("\nclock:   {d:.3} GHz · {s}\n", .{ clk.ghz, clk.source });
-    std.debug.print("ceiling: DRAM {d:.1} GB/s = {d:.4} cyc/byte · L2 {d:.1} GB/s = {d:.4} cyc/byte\n", .{
-        dram.gbps_max, dram_cpb, l2.gbps_max, l2_cpb,
-    });
+    std.debug.print("ceiling: DRAM {d:.1} GB/s · L2 {d:.1} GB/s\n", .{ dram.gbps_max, l2.gbps_max });
+    // The cycles/byte restatement of those two ceilings exists only when this
+    // host measured its own clock. Under the stand-in it is withheld from the
+    // terminal for the same reason it is withheld from the artifact.
+    if (clk.cycPerByte(dram.gbps_max)) |d| {
+        std.debug.print("         = {d:.4} cyc/byte DRAM · {d:.4} cyc/byte L2 (derived, GHz ÷ GB/s)\n", .{ d, clk.cycPerByte(l2.gbps_max).? });
+    } else {
+        std.debug.print("         cyc/byte withheld — clock not measured here ({s})\n", .{clk.meter});
+    }
 
     gpa.free(dram_buf); // the hierarchy table and the clock are done with it
 
@@ -340,7 +527,17 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
     }
     const roof = measureTier(io, "corpus-sized STREAM", flat_buf);
 
-    const absent = scan_needles[0].needle;
+    // Derived, not written down, and then checked against the very kernel whose
+    // early exit produced the 2026-08-01 defect: the construction makes a match
+    // impossible, so a hit here means the derivation is broken and the ladder
+    // must refuse to publish rather than time a return.
+    var absent_buf: [absent_len]u8 = undefined;
+    const absent = try absentNeedle(&absent_buf, flat, corpus.docs);
+    if (simd.contains(flat, absent)) return error.NoAbsentNeedle;
+    for (corpus.docs) |d| if (simd.contains(d, absent)) return error.NoAbsentNeedle;
+    var absent_label: [32]u8 = undefined;
+    const absent_shown = try std.fmt.bufPrint(&absent_label, "0x{X:0>2}x{d}", .{ absent[0], absent.len });
+
     const stages = [_]Stage{
         .{ .name = "corpus-sized STREAM roof", .gbps_max = roof.gbps_max, .gbps_median = roof.gbps_median },
         measureContiguous(io, "matched gate control", flat, absent, true),
@@ -357,6 +554,8 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
     // size, only the fragmentation into `corpus.docs.len` separate streams is
     // new. None of these sub-roof points is called a saturated hardware bound.
     var scans = scan_needles;
+    scans[0].needle = absent;
+    scans[0].label = absent_shown;
     std.debug.print("\ngist SIMD scan over {d} files · {d:.1} MiB (single-thread `contains`):\n", .{ corpus.docs.len, corpus_mib });
     for (&scans) |*s| {
         s.gbps = measureGistScan(io, &corpus, s.needle);
@@ -365,19 +564,18 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
         });
     }
 
-    try writeJson(gpa, io, tiers[0..], clk.ghz, clk.source, dram_cpb, l2_cpb, roof.gbps_max, stages[0..], scans[0..], corpus_mib);
-    std.debug.print("\nwrote {s}/roofline.json — run bench/roofline/roofline_report.py to splice Layer C\n", .{out_dir});
-    if (!meter.has_pmu) std.debug.print("note: clock assumed (GB/s is frequency-free; cyc/byte derived). Re-run `sudo` for a measured clock.\n", .{});
+    try writeJson(gpa, io, tiers[0..], clk, dram, l2, roof.gbps_max, stages[0..], scans[0..], corpus_mib);
+    std.debug.print("\nwrote {s}/roofline.json — run bench/bounds/roofline/report.py to splice Layer C\n", .{out_dir});
+    if (!clk.measured) std.debug.print("note: no clock measured here, so the artifact publishes no cycles/byte. The GB/s ceilings are frequency-free and unaffected. Meter: {s}\n", .{clk.meter});
 }
 
 fn writeJson(
     gpa: std.mem.Allocator,
     io: std.Io,
     tiers: []const Tier,
-    ghz: f64,
-    ghz_source: []const u8,
-    dram_cpb: f64,
-    l2_cpb: f64,
+    clk: Clock,
+    dram: Tier,
+    l2: Tier,
     roof_gbps: f64,
     stages: []const Stage,
     scans: []const ScanResult,
@@ -391,10 +589,34 @@ fn writeJson(
     try j.appendSlice(gpa, "{\n");
     try j.appendSlice(gpa, try std.fmt.bufPrint(&line, "  \"machine\": \"{s}\",\n", .{@tagName(builtin.target.cpu.arch)}));
     try j.appendSlice(gpa, try std.fmt.bufPrint(&line, "  \"zig\": \"{s}\",\n", .{builtin.zig_version_string}));
-    try j.appendSlice(gpa, try std.fmt.bufPrint(&line, "  \"ghz\": {d:.4},\n", .{ghz}));
-    try j.appendSlice(gpa, try std.fmt.bufPrint(&line, "  \"ghz_source\": \"{s}\",\n", .{ghz_source}));
-    try j.appendSlice(gpa, try std.fmt.bufPrint(&line, "  \"dram_cyc_per_byte_ceiling\": {d:.6},\n", .{dram_cpb}));
-    try j.appendSlice(gpa, try std.fmt.bufPrint(&line, "  \"l2_cyc_per_byte_ceiling\": {d:.6},\n", .{l2_cpb}));
+    // The clock is nested, and there is deliberately no top-level `ghz`: a flat
+    // divisor is exactly what let a consumer multiply an assumption without ever
+    // reading the sibling that called it one. `measured` is the field a reader
+    // has to pass through to reach the number.
+    try j.appendSlice(gpa, "  \"clock\": {\n");
+    // An unmeasured clock publishes JSON `null`, not the stand-in the terminal
+    // printed: a number here is divisible by a consumer who never reads
+    // `measured`, and `null` is not. That is the whole fix, in one field.
+    if (clk.measured) {
+        try j.appendSlice(gpa, try std.fmt.bufPrint(&line, "    \"ghz\": {d:.4},\n", .{clk.ghz}));
+    } else {
+        try j.appendSlice(gpa, "    \"ghz\": null,\n");
+    }
+    try j.appendSlice(gpa, try std.fmt.bufPrint(&line, "    \"measured\": {},\n", .{clk.measured}));
+    try j.appendSlice(gpa, try std.fmt.bufPrint(&line, "    \"source\": \"{s}\",\n", .{clk.source}));
+    try j.appendSlice(gpa, try std.fmt.bufPrint(&line, "    \"meter\": \"{s}\"\n", .{clk.meter}));
+    try j.appendSlice(gpa, "  },\n");
+    // Present only when this host measured its own clock — see `Clock.cycPerByte`.
+    // The object carries the clock it was divided by, so the derivation travels
+    // with the figures instead of living in a sibling a reader may skip.
+    if (clk.cycPerByte(dram.gbps_max)) |dram_cpb| {
+        try j.appendSlice(gpa, "  \"derived_cyc_per_byte\": {\n");
+        try j.appendSlice(gpa, "    \"basis\": \"measured clock GHz ÷ measured tier GB/s\",\n");
+        try j.appendSlice(gpa, try std.fmt.bufPrint(&line, "    \"ghz\": {d:.4},\n", .{clk.ghz}));
+        try j.appendSlice(gpa, try std.fmt.bufPrint(&line, "    \"dram_ceiling\": {d:.6},\n", .{dram_cpb}));
+        try j.appendSlice(gpa, try std.fmt.bufPrint(&line, "    \"l2_ceiling\": {d:.6}\n", .{clk.cycPerByte(l2.gbps_max).?}));
+        try j.appendSlice(gpa, "  },\n");
+    }
     try j.appendSlice(gpa, try std.fmt.bufPrint(&line, "  \"corpus_mib\": {d:.1},\n", .{corpus_mib}));
     // The ladder's denominator: STREAM at the corpus's own size over the
     // corpus's own bytes. `tiers[DRAM]` is the cache-hierarchy datum only —
@@ -417,7 +639,7 @@ fn writeJson(
     try j.appendSlice(gpa, "  \"gist_scan\": [\n");
     for (scans, 0..) |s, i| {
         try j.appendSlice(gpa, try std.fmt.bufPrint(&line, "    {{ \"needle\": \"{s}\", \"kind\": \"{s}\", \"gbps\": {d:.3} }}{s}\n", .{
-            s.needle, s.kind, s.gbps, if (i + 1 < scans.len) "," else "",
+            s.label, s.kind, s.gbps, if (i + 1 < scans.len) "," else "",
         }));
     }
     try j.appendSlice(gpa, "  ]\n}\n");
@@ -432,4 +654,30 @@ test "streamSum reduces every word (checksum matches scalar)" {
         expect +%= x.*;
     }
     try std.testing.expectEqual(expect, streamSum(&buf));
+}
+
+test "an unmeasured clock cannot mint a cycles/byte figure" {
+    // The invariant the 2026-08-01 defect violated: `assumed_ghz` is a real
+    // number and `102 GB/s` is a real number, so the division always succeeds.
+    // What must not exist is the *result*, on a host that measured no clock.
+    const assumed: Clock = .{ .ghz = assumed_ghz, .source = "assumed", .meter = "none", .measured = false };
+    try std.testing.expectEqual(@as(?f64, null), assumed.cycPerByte(102.0));
+
+    const measured: Clock = .{ .ghz = 4.0, .source = "measured", .meter = "kperf", .measured = true };
+    try std.testing.expectEqual(@as(?f64, 0.04), measured.cycPerByte(100.0));
+    // A tier that measured no bandwidth is not a cycles/byte figure either.
+    try std.testing.expectEqual(@as(?f64, null), measured.cycPerByte(0.0));
+}
+
+test "an unoptimized build is not a bandwidth measurement" {
+    // The Debug artifact this guard was written against is the negative case:
+    // the mode is a comptime fact, so the only thing to pin is that the two
+    // modes which suppress the kernel's vectorization are the two the rung
+    // refuses to run under.
+    try std.testing.expect(!measurableIn(.Debug));
+    try std.testing.expect(!measurableIn(.ReleaseSmall));
+    try std.testing.expect(measurableIn(.ReleaseFast));
+    try std.testing.expect(measurableIn(.ReleaseSafe));
+    // …and that the live build agrees with the predicate for its own mode.
+    try std.testing.expectEqual(measurableIn(builtin.mode), measurable);
 }

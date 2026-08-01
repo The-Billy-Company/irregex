@@ -17,9 +17,13 @@ def fixture(scan_gbps: float, *, ladder: bool = True) -> dict:
     roof = {
         "machine": "test",
         "zig": "test",
-        "ghz": 4.0,
-        "ghz_source": "measured",
-        "dram_cyc_per_byte_ceiling": 0.04,
+        "clock": {"ghz": 4.0, "measured": True, "source": "measured", "meter": "test"},
+        "derived_cyc_per_byte": {
+            "basis": "measured clock GHz ÷ measured tier GB/s",
+            "ghz": 4.0,
+            "dram_ceiling": 0.04,
+            "l2_ceiling": 0.0267,
+        },
         "corpus_mib": 512,
         "tiers": [
             {"name": "L1", "gbps": 200},
@@ -90,6 +94,67 @@ class DenominatorTest(unittest.TestCase):
         # Production outruns the control: the ladder is inverted and must say so
         # instead of pointing at the roof rung it can obviously never outrun.
         self.assertIn("non-binding here", roofline_report.localize(ladder, 65.0))
+
+
+class ProvenanceTest(unittest.TestCase):
+    """No cycles/byte figure may reach the certificate off an unmeasured clock.
+
+    Guards the recorded defect: `dram_cyc_per_byte_ceiling` shipped for months
+    computed from a hardcoded 4.4 GHz, beside a `ghz_source` sibling reading
+    `assumed (no PMU)` that this reporter never read. Each test names one way
+    the figure could come back.
+    """
+
+    def test_an_unmeasured_clock_publishes_no_cycles_per_byte(self) -> None:
+        roof = fixture(60)
+        roof["clock"] = {
+            "ghz": None,
+            "measured": False,
+            "source": "assumed (no PMU — no cycle counter opened)",
+            "meter": "wall-clock only",
+        }
+        roof.pop("derived_cyc_per_byte")
+        report = roofline_report.render(roof, [], None)
+
+        self.assertIn("not measured on this host", report)
+        self.assertIn("cycles/byte ceiling: _withheld", report)
+        self.assertNotIn("cyc/byte**", report)
+        # The GB/s half is frequency-free, so it must still be published.
+        self.assertIn("100.0 GB/s", report)
+
+    def test_a_stale_flat_ghz_key_cannot_resurrect_the_ceiling(self) -> None:
+        # An artifact still on disk from before the nesting. Reading `ghz` off
+        # the top level is exactly the mistake, so the reporter must not.
+        roof = fixture(60)
+        del roof["clock"]
+        roof["ghz"], roof["ghz_source"] = 4.4, "assumed (no PMU)"
+        roof["dram_cyc_per_byte_ceiling"] = 0.0431
+        report = roofline_report.render(roof, [], None)
+
+        self.assertIn("artifact predates the clock record", report)
+        self.assertNotIn("0.0431", report)
+        self.assertNotIn("4.400", report)
+
+    def test_a_measured_clock_still_publishes_with_its_basis(self) -> None:
+        report = roofline_report.render(fixture(60), [], None)
+
+        self.assertIn("4.000 GHz measured here", report)
+        self.assertIn("0.0400 cyc/byte", report)
+        self.assertIn("measured clock GHz ÷ measured tier GB/s", report)
+
+    def test_static_llvm_mca_cycles_are_not_converted_without_a_clock(self) -> None:
+        # A modelled cycle count times a guessed frequency reads as a measured
+        # bandwidth; two inferences deep is one too many to print as "≈N GB/s".
+        roof = fixture(60)
+        roof["clock"] = {"ghz": None, "measured": False, "source": "assumed", "meter": "none"}
+        roof.pop("derived_cyc_per_byte")
+        bound = roofline_report.ComputeBound([("znver4", 0.081, None)])
+        report = roofline_report.render(roof, [], bound)
+
+        self.assertIn("0.081 cyc/byte", report)
+        self.assertNotIn("(≈", report)  # the "≈N GB/s" translation of a modelled cycle
+        self.assertIn("modelled by llvm-mca", report)
+        self.assertIn("measured no clock to convert them with", report)
 
 
 class RooflineReportTest(unittest.TestCase):

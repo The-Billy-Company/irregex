@@ -20,15 +20,49 @@ doc_radar:
         - "simd.anyLane"
         - "simd.singleProbeEligible"
       absent: ["std.simd.suggestVectorLength"]
+    - description: "the absent needle is derived from the corpus and checked, never a literal"
+      file: bench/bounds/roofline/bandwidth.zig
+      contains:
+        - "fn absentNeedle"
+        - "absentNeedle(&absent_buf, flat, corpus.docs)"
+        - "error.NoAbsentNeedle"
+    - description: "an unmeasured clock cannot mint a cycles/byte figure: the only exit from GB/s returns null"
+      file: bench/bounds/roofline/bandwidth.zig
+      contains:
+        - "fn cycPerByte(self: Clock, gbps: f64) ?f64"
+        - "return if (self.measured and gbps > 0) self.ghz / gbps else null;"
+        - 'test "an unmeasured clock cannot mint a cycles/byte figure"'
+        - '\"ghz\": null,'
+      # The identifiers still appear in the header's recorded-defect note, which
+      # is the point of it. What must not come back is either one as an emitted
+      # JSON key, so these pin the escaped-quote form only `bufPrint` produces.
+      absent:
+        - '\"dram_cyc_per_byte_ceiling\"'
+        - '\"l2_cyc_per_byte_ceiling\"'
+    - description: "an unoptimized build refuses to publish, and a flat tier ladder refuses too"
+      file: bench/bounds/roofline/bandwidth.zig
+      contains:
+        - "const measurable = measurableIn(builtin.mode);"
+        - "return error.UnoptimizedBuild;"
+        - "return error.HierarchyUnresolved;"
+        - 'test "an unoptimized build is not a bandwidth measurement"'
+    - description: "the reporter reaches the clock only through the measured gate, with no flat ghz divisor"
+      file: bench/bounds/roofline/report.py
+      contains:
+        - "clock = Clock.read(roof)"
+        - 'measured = bool(c.get("measured")) and isinstance(ghz, int | float)'
+      absent:
+        - 'roof.get("ghz"'
+        - "ghz_source"
 ---
 
-# bench/roofline — Layer C (measured headroom)
+# bench/bounds/roofline — Layer C (measured headroom)
 
 Layer C of gist's [Dominance-and-Fit Certificate](../README.md#dominance-and-fit-certificate-layers-ag).
 Where Layer A proves empirical dominance over ripgrep on the registered
 workloads and Layer B bounds its hot loop against static instruction-level
-pressure, Layer C tests the hardware claim: gist's cycles/byte sit against this machine's memory
-bandwidth ceiling. It reports a near-roof result only at or above 80%;
+pressure, Layer C tests the hardware claim: gist's achieved read bandwidth against this
+machine's measured memory-bandwidth ceiling. It reports a near-roof result only at or above 80%;
 anything below that is reported as optimization headroom, without inventing
 a binding bottleneck.
 
@@ -37,7 +71,7 @@ a binding bottleneck.
 | File                      | Role                                                                                                                                                                                                           |
 | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `bandwidth.zig`           | a STREAM-style single-thread read-bandwidth microbenchmark at three working-set tiers (L1/L2/DRAM), a matched gate/contiguous-production ladder over a corpus-sized buffer of corpus bytes, and gist's real SIMD scan over the corpus |
-| `report.py`               | reads `roofline.json` + Layer A's `certify.csv` (optionally Layer B's `portcert.json` for the compute ceiling), renders the `## Layer C` markdown section, splices it into `.local/gist-verify/CERTIFICATE.md` |
+| `report.py`               | reads `roofline.json` + Layer A's `certify.csv` (optionally Layer B's `portcert.json` for the compute ceiling), renders the `## Layer C` markdown section, splices it into `.gist/CERTIFICATE.md` |
 | `test_roofline.py`        | adverse tests that reject sub-roof saturation claims and keep legacy certificate refreshes honest                                                                                                              |
 
 Low arithmetic intensity places a theoretical roof; it does not prove an
@@ -58,6 +92,25 @@ estimate. It then times gist's real `scan/simd.zig` `contains` over the full
 corpus with an absent needle (a full scan, no early exit, no verification) —
 the clean corpus operating point — plus two present needles for context
 (early-exit + verify, not a clean bandwidth number).
+
+### Why the absent needle is derived, not written down
+
+The absent needle is **not a literal**. `absentNeedle` reads the bytes that are
+about to be scanned and returns a 32-byte run of whichever byte value has the
+shortest longest-run among them; a run of length N holds no run of length N+1,
+so the needle's absence is a fact about the corpus and not about how this file
+happens to be spelled. It is then re-checked with `simd.contains` against the
+contiguous buffer and against every document, and the run errors out rather
+than publish if either finds it.
+
+That guard exists because the arm spent its whole life measuring nothing. The
+needle used to be the literal `Zq9_gist_roofline_absent_needle_`, and the
+corpus root defaults to the package itself — so `bandwidth.zig` was one of the
+corpus documents, the literal was tiled into the contiguous buffer, and
+`simd.contains` returned on the benchmark's own source a few hundred KiB in.
+"production contiguous" published **3,029 GB/s** against the same run's
+measured 102 GB/s STREAM roof: an early return timed as a memory sweep. A
+freshly-chosen literal would only survive until the next edit of this file.
 
 Between STREAM and the corpus point sits the **matched ladder**, and its whole
 value is that consecutive rungs differ by exactly one thing. All three run over
@@ -91,24 +144,95 @@ unconditionally dual-window loop for a needle production scans single-probe.
 The four false assertions are recorded in `bandwidth.zig`'s header; the fix is
 that the control no longer gets to have its own opinion about any of them.
 
-Frequency (only needed for the _derived_ cycles/byte ceiling) is measured via
-the same `kperf` PMU [`../../apparatus/harness/pmu.zig`](../../apparatus/harness/pmu.zig) uses when run
-under `sudo`; without it the run falls back to a clearly-labeled assumed
-clock — the primary **GB/s measurement itself is frequency-free**.
+### Why a cycles/byte ceiling can be absent from the artifact
+
+**Every GB/s number here is frequency-free** — bytes ÷ ns needs no clock. A
+cycles/byte restatement of the same ceiling does need one: it is GHz ÷ GB/s.
+The clock comes from [`../../apparatus/harness/pmu.zig`](../../apparatus/harness/pmu.zig),
+streamed under memory load so the frequency describes the regime the ceiling
+describes; `pmu.Meter` tries `kperf` (root) and then the unprivileged
+per-thread counters, so the rung below often measures a real clock with no
+`sudo` at all.
+
+When neither tier opens, the artifact publishes **no cycles/byte at all** — not
+a figure derived from a stand-in frequency. Until 2026-08-01 it published
+`dram_cyc_per_byte_ceiling` and `l2_cyc_per_byte_ceiling` unconditionally,
+computed from a hardcoded 4.4 GHz, next to a `ghz_source` sibling reading
+`assumed (no PMU)` that any consumer was free to ignore — and `report.py` did
+ignore it, printing the figure as "derived" with no mention that the divisor was
+a guess. Divided by an assumption those two fields are just the GB/s ceiling in
+other units, times a number nobody measured.
+
+The fix is structural rather than a warning:
+
+- The clock is a `Clock` with a `measured` bool, and the only way out of GB/s is
+  `Clock.cycPerByte`, which returns `null` on an unmeasured clock. No caller,
+  present or future, can build a cycles/byte figure from the stand-in.
+- `roofline.json` nests the clock and publishes `"ghz": null` when it was not
+  measured, so there is no flat divisor for a consumer to reach past `measured`
+  and multiply.
+- The two ceilings moved inside an optional `derived_cyc_per_byte` object that
+  carries the clock it was divided by and is **absent** when there was none.
+  The old flat keys are gone rather than renamed, so a stale reader gets a
+  `KeyError` instead of a stale number, and a stale artifact still on disk reads
+  as unmeasured.
+- Layer B's llvm-mca cycles/byte likewise no longer gets a `≈N GB/s`
+  translation without a measured clock. That conversion was two inferences deep:
+  a modelled cycle count times a guessed frequency, printed as a bandwidth.
+
+### Why an unoptimized build refuses to publish
+
+The same defect one layer down, found in the same audit. This rung's build
+posture is `.asked`, so it compiles at whatever `-Doptimize` the caller passes,
+which Zig defaults to Debug — and every documented invocation of it, here and in
+[`../../README.md`](../../README.md), was a bare `zig build roofline`. The
+kernel's whole claim to be a bandwidth probe is its unrolled vector reduction
+over eight independent accumulators; unoptimized, that degrades to a scalar loop
+and every tier reports the same issue rate.
+
+The artifact on disk when this was found read **L1 8.0 · L2 8.4 · DRAM 8.3
+GB/s**: a flat "hierarchy" with L1 *slower* than L2, roughly an order of
+magnitude under the 102 GB/s roof this same host records above. It was
+well-formed JSON with a genuinely measured clock, so `derived_cyc_per_byte`
+inherited the defect honestly and read as a result. Nothing in the numbers says
+which build produced them.
+
+Two fail-closed gates now stand where the instruction used to:
+
+- **The build mode.** Debug and ReleaseSmall both suppress the vectorization the
+  kernel is built around, so `run` refuses before spending a trial and names the
+  rung to use. ReleaseSafe keeps its bounds checks but still vectorizes, so it
+  measures memory and is allowed.
+- **The ladder itself.** A 16 KiB working set that streams no faster than a 512
+  MiB one has not resolved a cache hierarchy, whatever it measured. There is no
+  threshold to argue over — L1 read bandwidth exceeds DRAM read bandwidth on
+  every machine that has both — so `L1 <= DRAM` is refused outright, in the same
+  spirit as the absent needle re-checked against `simd.contains`.
+
+A bandwidth roof is a claim about the *machine*, which is what separates it from
+Layer B′'s cycles/byte: that one is a claim about the build, so honouring the
+caller's `-Doptimize` is right there and wrong here.
 
 ## How to run
 
 ```bash
 cd <irregex-repo-root>
-zig build roofline                      # → .local/gist-verify/roofline.json
-bench/roofline/roofline_report.py       # splices Layer C into CERTIFICATE.md
-sudo zig build roofline && bench/roofline/roofline_report.py   # measured clock
+zig build -Doptimize=ReleaseFast roofline   # → .gist/roofline.json
+bench/bounds/roofline/report.py             # splices Layer C into CERTIFICATE.md
+sudo zig build -Doptimize=ReleaseFast roofline   # adds kperf's configurable events
 ```
 
-Run `zig build certify` (Layer A) first — `roofline_report.py` reads its
-`certify.csv` for the per-class end-to-end operating points shown alongside
-the ceiling. Never fails the run (mirrors `pmu.zig`'s discipline): no PMU ⇒
-assumed clock + a loud note, not an error.
+`-Doptimize=ReleaseFast` is not advice: an unoptimized build refuses to run, for
+the reason above.
+
+`sudo` is not required for a measured clock — the unprivileged per-thread
+counter tier supplies one; it only buys `kperf`, the single tier that can
+program configurable events. Run Layer A first (the certify harness) —
+`report.py` reads its `certify.csv` for the per-class end-to-end operating
+points shown alongside the ceiling. Never fails the run (mirrors `pmu.zig`'s
+discipline): no counter tier ⇒ the GB/s ceilings publish, the cycles/byte
+ceilings do not exist, and both the terminal and the artifact say which backend
+refused.
 
 ## Prior art
 

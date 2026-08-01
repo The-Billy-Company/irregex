@@ -9,7 +9,7 @@ well below it is bandwidth-saturated. This report preserves that distinction.
 
 This reads two measured artifacts and writes a verdict that is beyond reproach:
   * `roofline.json`  — this machine's achievable single-core read bandwidth per
-                       cache tier (from `bench/roofline/bandwidth.zig`), the
+                       cache tier (from `bench/bounds/roofline/bandwidth.zig`), the
                        hardware upper bound.
   * `matched_ladder` — dual-window control, production on contiguous DRAM, and
                        production over corpus documents; these localize the gap.
@@ -19,7 +19,7 @@ Optionally `portcert.json` (Layer B) supplies the **compute ceiling** for the
 full two-ceiling picture; absent, the section notes memory-ceiling-only.
 
 It splices a `## Layer C — roofline (hardware ceiling)` section into
-`.local/gist-verify/CERTIFICATE.md`, replacing any existing one (heading → next
+`.gist/CERTIFICATE.md`, replacing any existing one (heading → next
 `## Layer`/EOF), mirroring `certify/certify_stats.py`. stdlib only, fail-closed.
 """
 
@@ -53,9 +53,9 @@ SUMMARY = (
 )
 # Anchor the shared cert dir at the repo root (computed from this file's location:
 # bench/bounds/roofline/report.py → repo root
-# from any CWD — the zig steps and portcert.sh already resolve the repo root, and
-# `.local/gist-verify` always lives there. A `--out-dir` override still wins.
-OUT_DIR = Path(__file__).resolve().parents[3] / ".local/gist-verify"
+# from any CWD — the zig steps and port/mca.sh already resolve the repo root, and
+# `.gist` always lives there. A `--out-dir` override still wins.
+OUT_DIR = Path(__file__).resolve().parents[3] / ".gist"
 
 # Apple M-series shared P-cluster L2 — a candidate set larger than this spills to
 # DRAM, so an apparent rate above the DRAM ceiling on a >L2 working set is a
@@ -102,19 +102,54 @@ def load_certify(path: Path) -> list[ClassPoint]:
 
 
 @dataclass
+class Clock:
+    """The core clock, and whether this host produced it.
+
+    Read out of `roofline.json`'s nested `clock` object. There is deliberately no
+    top-level `ghz` to fall back on: a flat divisor is what let this report turn
+    llvm-mca's static cycles/byte into a "≈N GB/s" compute bound by multiplying an
+    assumed 4.4 GHz — including in a published x86_64 bundle, where 4.4 GHz was
+    another machine's guess. `ghz` is `None` unless it was measured, so every
+    cycles↔GB/s conversion in this file is unreachable without a real clock.
+    """
+
+    ghz: float | None
+    source: str
+    meter: str
+
+    @classmethod
+    def read(cls, roof: dict) -> "Clock":
+        """Read the nested clock; an artifact predating it reports as unmeasured."""
+        c = roof.get("clock")
+        if not isinstance(c, dict):
+            return cls(None, "absent (artifact predates the clock record)", "?")
+        ghz = c.get("ghz")
+        measured = bool(c.get("measured")) and isinstance(ghz, int | float)
+        return cls(
+            float(ghz) if measured else None,
+            str(c.get("source", "?")),
+            str(c.get("meter", "?")),
+        )
+
+
+@dataclass
 class ComputeBound:
     """Layer B's static port bound for the `simd_contains` loop, per reference core.
 
     Crucially cross-machine: Layer B runs llvm-mca on `znver4`/`neoverse-v2`
-    because LLVM ships no Apple-Silicon scheduling model (this host is an M4), so
-    these are a low-arithmetic-intensity *cross-check*, NOT a same-axis ceiling on
-    this roofline. Reported as such — never folded into a min(compute, memory).
+    because LLVM ships no Apple-Silicon scheduling model, so these are a
+    low-arithmetic-intensity *cross-check*, NOT a same-axis ceiling on this
+    roofline. Reported as such — never folded into a min(compute, memory).
+
+    `gbps_at_ghz` is None where the host measured no clock: llvm-mca reports
+    cycles, and cycles become bytes/second only through a clock. Modelled cycles
+    times a guessed frequency is two inferences deep and reads as a bandwidth.
     """
 
-    cores: list[tuple[str, float, float]]  # (uarch, cyc_per_byte, gbps_at_ghz)
+    cores: list[tuple[str, float, float | None]]  # (uarch, cyc_per_byte, gbps_at_ghz)
 
 
-def load_compute_ceiling(path: Path, ghz: float) -> ComputeBound | None:
+def load_compute_ceiling(path: Path, clock: Clock) -> ComputeBound | None:
     """Read Layer B's `simd_contains` port bound (real portcert.json schema), with a schema-tolerant fallback.
 
     Returns None ⇒ caller notes memory-ceiling-only.
@@ -126,23 +161,27 @@ def load_compute_ceiling(path: Path, ghz: float) -> ComputeBound | None:
         doc = json.loads(path.read_text())
     except (json.JSONDecodeError, OSError):
         return None
-    cores: list[tuple[str, float, float]] = []
+
+    def at_clock(cpb: float) -> float | None:
+        return clock.ghz / cpb if clock.ghz and cpb > 0 else None
+
+    cores: list[tuple[str, float, float | None]] = []
     for r in doc.get("results", []):
         cpb = r.get("cyc_per_byte")
         if r.get("probe") == "simd_contains" and isinstance(cpb, int | float) and cpb > 0:
-            cores.append((r.get("target_uarch", "?"), float(cpb), ghz / float(cpb)))
+            cores.append((r.get("target_uarch", "?"), float(cpb), at_clock(float(cpb))))
     if cores:
         return ComputeBound(cores)
     # Legacy/flat fallback: an explicit GB/s or a min cyc/byte at top level.
     for k in ("compute_gbps", "peak_gbps"):
         if isinstance(doc.get(k), int | float):
-            return ComputeBound(
-                [("(reported)", ghz / float(doc[k]) if doc[k] else 0.0, float(doc[k]))]
-            )
+            gbps = float(doc[k])
+            cpb = clock.ghz / gbps if clock.ghz and gbps else 0.0
+            return ComputeBound([("(reported)", cpb, gbps)])
     for k in ("cyc_per_byte", "min_cyc_per_byte", "static_cyc_per_byte"):
         v = doc.get(k)
         if isinstance(v, int | float) and v > 0:
-            return ComputeBound([("(reported)", float(v), ghz / float(v))])
+            return ComputeBound([("(reported)", float(v), at_clock(float(v)))])
     return None
 
 
@@ -183,8 +222,7 @@ def localize(ladder: list[dict], pure_gbps: float) -> str:
 def render(roof: dict, pts: list[ClassPoint], compute: ComputeBound | None) -> str:
     """Render generated source artifacts."""
     tiers = {t["name"]: float(t["gbps"]) for t in roof["tiers"]}
-    ghz = float(roof.get("ghz", 0.0))
-    ghz_src = roof.get("ghz_source", "?")
+    clock = Clock.read(roof)
     dram = tiers.get("DRAM", 0.0)
     # RECORDED DEFECT (2026-07-29): every scan rung used to be divided by
     # `dram` — a 512 MiB uniform-random buffer — so the published headroom
@@ -224,24 +262,47 @@ def render(roof: dict, pts: list[ClassPoint], compute: ComputeBound | None) -> s
         "- **measured memory ceiling (single core, pure read):** "
         + " · ".join(f"{n} **{g:.1f} GB/s**" for n, g in tiers.items())
     )
-    lines.append(f"- clock: {ghz:.3f} GHz — {ghz_src}")
-    dram_cpb = roof.get("dram_cyc_per_byte_ceiling")
-    if isinstance(dram_cpb, int | float):
+    # The cycles/byte restatement of the memory ceiling is published only when
+    # `bandwidth.zig` measured this host's clock; it withholds the figures
+    # otherwise, and this report does not reconstruct them from anything.
+    cpb = roof.get("derived_cyc_per_byte")
+    cpb = cpb if clock.ghz is not None and isinstance(cpb, dict) else None
+    ceiling = float(cpb["dram_ceiling"]) if cpb else None
+    if cpb and ceiling is not None and clock.ghz is not None:
+        lines.append(f"- clock: **{clock.ghz:.3f} GHz measured here** — {clock.source}")
         lines.append(
-            f"- DRAM ceiling in cycles/byte (derived, GHz ÷ GB/s): **{dram_cpb:.4f} cyc/byte** "
-            "— the ideal pure-read floor; search instructions and load shape can impose "
-            "lower ceilings"
+            f"- DRAM ceiling in cycles/byte (derived, {cpb.get('basis', 'GHz ÷ GB/s')}): "
+            f"**{ceiling:.4f} cyc/byte** — the ideal pure-read floor; search "
+            "instructions and load shape can impose lower ceilings"
+        )
+    else:
+        lines.append(
+            f"- clock: **not measured on this host** — {clock.source} · meter: {clock.meter}"
+        )
+        lines.append(
+            "- cycles/byte ceiling: _withheld. Every GB/s figure in this section is bytes/ns and "
+            "needs no clock; a cycles/byte restatement needs one, and this host produced none, so "
+            "Layer C publishes no cycles/byte rather than one divided by a stand-in frequency._"
         )
     if compute:
         bounds = " · ".join(
-            f"{u} {cpb:.3f} cyc/byte (≈{g:.0f} GB/s)" for u, cpb, g in compute.cores
+            f"{u} {cpb_core:.3f} cyc/byte" + (f" (≈{g:.0f} GB/s)" if g is not None else "")
+            for u, cpb_core, g in compute.cores
+        )
+        gbps_note = (
+            ""
+            if any(g is not None for _, _, g in compute.cores)
+            else " No GB/s equivalent is shown: llvm-mca reports cycles, and this host measured "
+            "no clock to convert them with."
         )
         lines.append(
             "- **compute bound (Layer B, cross-machine):** the `simd_contains` loop's static "
-            f"llvm-mca port bound — {bounds}. These are *reference cores* (LLVM has no "
-            "Apple-Silicon model), so they are a low-intensity **cross-check**, not a same-axis "
-            "ceiling on this M4 roofline; they confirm the scan is a tight, few-cycle/byte "
-            "port-bound kernel, but do not identify this machine's binding bottleneck."
+            f"llvm-mca port bound — {bounds}. These are *reference cores* modelled by llvm-mca, "
+            "not observations of any core (LLVM has no Apple-Silicon model), so they are a "
+            "low-intensity **cross-check**, not a same-axis ceiling on this "
+            f"`{roof.get('machine', '?')}` roofline; they confirm the scan is a tight, "
+            "few-cycle/byte port-bound kernel, but do not identify this machine's binding "
+            f"bottleneck.{gbps_note}"
         )
     else:
         lines.append(
@@ -343,19 +404,25 @@ def render(roof: dict, pts: list[ClassPoint], compute: ComputeBound | None) -> s
         )
     lines.append("\n</details>")
 
-    have_pmu = any(p.cyc_per_byte > 0 for p in pts)
+    have_layer_a_cycles = any(p.cyc_per_byte > 0 for p in pts)
     lines.append("")
-    if have_pmu:
+    if have_layer_a_cycles and ceiling is not None:
         lines.append(
-            "_Layer A measured gist's actual cycles/byte under `sudo` (see the microscopic table "
-            "above); compare them to the derived DRAM ceiling of "
-            f"{dram_cpb:.4f} cyc/byte to quantify headroom; do not read the bound as saturation._"
+            "_Layer A measured gist's actual cycles/byte (see the microscopic table above); "
+            f"compare them to the derived DRAM ceiling of {ceiling:.4f} cyc/byte to quantify "
+            "headroom; do not read the bound as saturation._"
+        )
+    elif have_layer_a_cycles:
+        lines.append(
+            "> Layer A carries measured cycles/byte but Layer C measured no clock, so there is no "
+            "cycles/byte ceiling to compare them against. Re-mint Layer C on a host whose counters "
+            "open; the two halves must not be divided by different clocks."
         )
     else:
         lines.append(
-            "> Ceiling clock was assumed (no PMU). The **GB/s measurements and ratios are "
-            "frequency-free**; only the derived cyc/byte figures assume the clock. "
-            "Re-run `sudo zig build certify` + `sudo zig build roofline` for measured cycles."
+            "> Neither layer measured cycles on this host. The **GB/s measurements and ratios are "
+            "frequency-free** and stand on their own; no cycles/byte figure is published anywhere "
+            "in this section, derived or otherwise."
         )
     lines.append("")
     return "\n".join(lines)
@@ -416,7 +483,7 @@ def main() -> int:
     if not pts:
         print(f"roofline_report: {cc} has no rows — did certify run?")
         return 1
-    compute = load_compute_ceiling(pc, float(roof.get("ghz", 0.0)))
+    compute = load_compute_ceiling(pc, Clock.read(roof))
 
     section = render(roof, pts, compute)
     splice(cert, section)
