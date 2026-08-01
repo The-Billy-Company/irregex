@@ -14,6 +14,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const haystack = @import("../../../corpus/tree/haystack.zig");
+const stamp = @import("stamp.zig");
 
 const linux = std.os.linux;
 const Dir = std.Io.Dir;
@@ -206,17 +207,6 @@ fn coverNewDir(self: anytype, ev: *const linux.inotify_event, buf: []const u8, r
         self.session.markDoubtForever();
 }
 
-/// The wall instant a delivery is stamped with, or null when the clock is
-/// unreadable — the caller poisons the ledger rather than guessing one. Each
-/// backend reads the clock beside its own event loop (`kqueue.zig` keeps the
-/// twin of this) because the instant must be taken at DELIVERY, not at drain;
-/// the ledger itself stays free of any platform clock.
-fn wallNowNs() ?i128 {
-    var ts: std.c.timespec = undefined;
-    if (std.c.clock_gettime(.REALTIME, &ts) != 0) return null;
-    return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
-}
-
 /// Arm the annals ledger the resident keep reads its epoch from, and open its
 /// coverage now that every watch is registered — an event that predated its
 /// own watch was never observable, so the ledger must not claim the window
@@ -232,7 +222,7 @@ fn armAnnals(self: anytype, lone_root: ?[]const u8, exact: bool) void {
     if (!exact) return;
     const abs = lone_root orelse return;
     self.session.annals.arm(abs);
-    if (wallNowNs()) |ns| self.session.annals.openCoverage(ns);
+    if (stamp.wallNowNs()) |ns| self.session.annals.openCoverage(ns);
 }
 
 /// Record one exact FILE delivery into the annals ledger. A directory reaches
@@ -244,7 +234,7 @@ fn armAnnals(self: anytype, lone_root: ?[]const u8, exact: bool) void {
 /// `kqueue.note` applies, so both backends describe one corpus surface.
 fn noteAnnals(self: anytype, abs: []const u8) void {
     if (comptime !@TypeOf(self.*).has_annals) return;
-    if (wallNowNs()) |ns| self.session.annals.note(abs, ns) else self.session.annals.noteDoubt();
+    if (stamp.wallNowNs()) |ns| self.session.annals.note(abs, ns) else self.session.annals.noteDoubt();
 }
 
 /// Note the exact path an inotify record attributes to, into the session's

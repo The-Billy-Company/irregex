@@ -7,6 +7,7 @@ doc_radar:
     - src/exec/session/watch/coverage.zig
     - src/exec/session/watch/budget.zig
     - src/exec/session/watch/notify.zig
+    - src/exec/session/watch/stamp.zig
     - src/exec/session/watch/rig.zig
   sentinels:
     - file: src/exec/session/watch/notify.zig
@@ -50,6 +51,7 @@ dispatches to, each a set of free functions over that generic `Watcher`.
 | [`coverage.zig`](coverage.zig) | macOS admission | Selects the macOS watch set from the walk's own `Ignore` policy so the descriptor cost stays proportional to the corpus, registers each admitted vnode (`EVFILT_VNODE` + `EV_CLEAR`, `vnode_notes`), owns the policy arena and the key-space arithmetic, classifies the hidden ignore SOURCES that decide admission, and judges which `open(2)` failure may be skipped — only a path that vanished, never one the walk still searches (`vanished`). |
 | [`budget.zig`](budget.zig)     | macOS ceiling   | How many vnode watches may be held — clamped against the three ceilings the kernel enforces (`kern.maxfilesperproc`, a bounded share of `kern.maxfiles`, and the raised `RLIMIT_NOFILE`), returning zero (unarmed) rather than a set it cannot register.                      |
 | [`notify.zig`](notify.zig)     | Windows         | One recursive `ReadDirectoryChangesW` subscription per root (`NtNotifyChangeDirectoryFileEx` with `WatchTree`), draining onto a single I/O completion port. Owns the change filter, the record walk over both record classes, and the overflow posture.                        |
+| [`stamp.zig`](stamp.zig)       | POSIX clock     | The wall instant a delivery is stamped with, read at DELIVERY rather than at drain so the annals compare against instants minted from the same realtime clock. Shared by both POSIX arms so they cannot drift on what "now" means; Windows reads the FILETIME its own records carry.                                                                                                       |
 | [`rig.zig`](rig.zig)           | test harness    | The tree fixture and session rig the barrier suite runs on, so both exact backends are judged by the same cases instead of each proving whatever its own file happened to test.                                                                                                |
 
 `kqueue.zig` and `coverage.zig` are two halves of one macOS backend — the event

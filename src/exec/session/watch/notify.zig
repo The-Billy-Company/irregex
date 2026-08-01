@@ -424,9 +424,10 @@ fn recordNs(self: anytype, rec: []const u8) ?i128 {
 
 /// The wall instant a delivery is stamped with when the record cannot supply one,
 /// or null when the clock is unreadable — the caller poisons the ledger rather
-/// than guessing. `inotify.zig` and `kqueue.zig` each keep the twin of this,
-/// because the instant must be taken at DELIVERY and the ledger itself stays free
-/// of any platform clock.
+/// than guessing. Spelled here rather than taken from `stamp.zig`, which the
+/// POSIX arms share: there is no `clock_gettime` on NT, and the FILETIME this
+/// reads is the same counter `recordNs` prefers, so both paths date a delivery
+/// on one clock.
 fn wallNowNs() ?i128 {
     if (comptime !windows) return null;
     var ft: w.FILETIME = undefined;

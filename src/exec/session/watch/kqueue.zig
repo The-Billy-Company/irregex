@@ -17,6 +17,7 @@ const builtin = @import("builtin");
 const fault = @import("../../../fault.zig");
 const budget = @import("budget.zig");
 const coverage = @import("coverage.zig");
+const stamp = @import("stamp.zig");
 
 const is_macos = builtin.os.tag == .macos;
 
@@ -38,16 +39,6 @@ const NOTE = struct {
 /// The note mask every watch requests (see `NOTE`).
 pub const vnode_notes: u32 = NOTE.DELETE | NOTE.WRITE | NOTE.EXTEND |
     NOTE.ATTRIB | NOTE.LINK | NOTE.RENAME | NOTE.REVOKE;
-
-/// Wall-clock nanoseconds off the raw libc clock — the watcher's OS thread has
-/// no `std.Io` handle, and the annals compare against `base.ns` instants minted
-/// from the SAME realtime clock. Null on failure (callers degrade to
-/// doubt/uncovered, never to a guessed instant).
-fn wallNowNs() ?i128 {
-    var ts: std.c.timespec = undefined;
-    if (std.c.clock_gettime(.REALTIME, &ts) != 0) return null;
-    return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
-}
 
 /// Register the whole watch set, then arm. Runs on the calling thread
 /// (daemon boot) and takes ~300 ms for 22k descriptors — it does not need
@@ -83,7 +74,7 @@ pub fn startKqueue(self: anytype) void {
     // registration spanned (conservative by construction — uncovered, never
     // wrong). Then promise exactness, and arm LAST, so nothing can trust
     // quiescence before a consumer exists to prove it.
-    if (comptime @TypeOf(self.*).has_annals) if (wallNowNs()) |ns| self.session.annals.openCoverage(ns);
+    if (comptime @TypeOf(self.*).has_annals) if (stamp.wallNowNs()) |ns| self.session.annals.openCoverage(ns);
     self.session.dirty_log.armExact();
     self.session.armWatcher();
 }
@@ -171,7 +162,7 @@ pub fn note(self: anytype, path: []const u8, is_dir: bool) void {
     if (is_dir) return;
     if (coverage.isIgnoreSource(std.fs.path.basename(path))) self.ig_stale = true;
     if (comptime @TypeOf(self.*).has_annals) {
-        if (wallNowNs()) |ns| self.session.annals.note(path, ns) else self.session.annals.noteDoubt();
+        if (stamp.wallNowNs()) |ns| self.session.annals.note(path, ns) else self.session.annals.noteDoubt();
     }
 }
 
