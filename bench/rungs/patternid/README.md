@@ -16,10 +16,15 @@ One number, and it gates a design.
 ## The question
 
 `slate/patterns.zig` answers "which of my N patterns hit this document?" with a
-fused any-of gate followed by up to N per-pattern confirmations. The proposal in
-`spikes/patternid-automaton/SPIKE.md` is to let the single fused pass
-carry the answer, by widening the trailing word of the determinizer's state key
-from a match flag to a 64-pattern bitmask.
+fused any-of gate followed by up to N per-pattern confirmations. The proposal is
+to let the single fused pass carry the answer, by widening the trailing word of
+the determinizer's state key from a match flag to a 64-pattern bitmask. The
+design scan behind it read rust-regex's determinizer, dense DFA, NFA, search, and
+overlapping/half-match paths end to end, settled the shape, and left exactly one
+thing unmeasured: whether that widening multiplies states. This rung is that
+measurement, and it came back **1.017-1.121** over six slates, worst on `kin-8`,
+the slate built deliberately adversarial: eight patterns sharing both prefixes
+and suffixes, which is where subsets genuinely collide.
 
 That widening is free in bytes. `subset.zig` already interns each DFA state on a
 `[]u64` of length `words + 1` whose last word holds `@intFromBool(matched)` — a

@@ -1,8 +1,12 @@
 //! PatternID — does attribution-in-the-key cost states?
 //!
-//! The one number that gates `spikes/patternid-automaton/SPIKE.md`.
+//! The one number that gates the PatternID design; attribution, overlapping
+//! matches, and an end-only HalfMatch stream are one mechanism seen three ways,
+//! so all three ride on this ratio. The design scan measured it at 1.017-1.121
+//! over six slates - worst on the slate built deliberately to collide - and
+//! passed.
 //!
-//! The plan there is to make a fused pattern-set DFA carry *which* patterns
+//! The plan is to make a fused pattern-set DFA carry *which* patterns
 //! matched, by widening the trailing word of the determinizer's state key from a
 //! match flag to a 64-pattern bitmask. That word already exists and is already
 //! allocated, so the key costs nothing. What it might cost is STATES: two subsets
@@ -70,9 +74,9 @@ const slates = [_]Slate{
     } },
     // Shared prefixes and suffixes: the adversarial case for subset collision.
     .{ .name = "kin-8", .pats = &.{
-        "billy_wallet_grant", "billy_wallet_debit", "billy_wallet_hold",
-        "billy_ledger_grant", "billy_ledger_debit", "billy_ledger_hold",
-        "billy_audit_grant",  "billy_audit_debit",
+        "store_wallet_grant", "store_wallet_debit", "store_wallet_hold",
+        "store_ledger_grant", "store_ledger_debit", "store_ledger_hold",
+        "store_audit_grant",  "store_audit_debit",
     } },
     .{ .name = "re-6", .pats = &.{
         "pgxpool\\.\\w+", "func \\w+Handler", "[A-Z][a-z]+Service",
