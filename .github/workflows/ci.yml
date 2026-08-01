@@ -1,9 +1,10 @@
 # What has to be true before a change lands.
 #
-# Four faces, four jobs, deliberately not one: a Zig engine regression and a
-# Rust clippy nit are different news, and a single job would report them as the
-# same red X. Nothing here needs a sibling checkout — this package builds from
-# its own clone, and that is itself something CI proves every run.
+# Four faces plus three discipline gates, seven jobs, deliberately not one: a
+# Zig engine regression and a Rust clippy nit are different news, and a single
+# job would report them as the same red X. Nothing here needs a sibling checkout —
+# this package builds from its own clone, and that is itself something CI proves
+# every run.
 name: ci
 
 on:
@@ -42,6 +43,46 @@ jobs:
       # the failure is one line rather than a suite's worth of scrollback.
       - run: zig build check
       - run: zig build test
+
+  hermetic:
+    # The same suite, run by an operator whose environment disagrees with it.
+    #
+    # A fixture that builds a tree under /tmp and then queries it is making a
+    # claim about a corpus it never declared: the skip overlay resolves from
+    # `GIST_SKIP`, the tree's charter, and `<GIST_DIR>/skips.list`, so an
+    # ambient value naming `src` prunes the fixture's own directory and the
+    # engine correctly declines a root it was told to ignore. That shape once
+    # accounted for fourteen tests at once, every one of them green on a clean
+    # box and red on a configured one, which is the worst way to hold a suite:
+    # it passes here and fails on the only machine that matters, someone's.
+    #
+    # One host is enough — the defect is reading the environment, not the
+    # platform — but it cannot share the engine job's cache, because Zig keys
+    # the cache on the environment and that is precisely what moves here. That
+    # is the cost, and it buys a suite that states its own inputs.
+    runs-on: ubuntu-latest
+    env:
+      # Deliberately hostile: the directory names a real checkout is most
+      # likely to contain, so a fixture that leans on any of them is caught.
+      HOSTILE_SKIPS: >-
+        src lib test tests spec docs doc bench benches vendor third_party
+        tool tools script scripts example examples fixture fixtures
+        internal pkg build dist
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: suite under a hostile GIST_SKIP
+        run: GIST_SKIP="${HOSTILE_SKIPS}" zig build test
+      - name: suite under a hostile skips.list
+        # The third leak vector into the same overlay, and the one that reaches
+        # the engine without any variable naming a skip — so it has to be
+        # exercised separately rather than assumed equivalent to the line above.
+        run: |
+          d="$(mktemp -d)"
+          tr ' ' '\n' <<<"${HOSTILE_SKIPS}" > "$d/skips.list"
+          GIST_DIR="$d" zig build test
 
   python:
     # 3.12 is the declared floor and is load-bearing (PEP 695 syntax in the
@@ -95,3 +136,130 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+
+  fmt:
+    # Its own job, for the same reason the other five are: formatter drift is
+    # its own kind of news, and it is the kind most easily misread as something
+    # else. `zig fmt` pads a column-aligned multiline literal into a grid, so a
+    # rename that shrinks the widest cell leaves every row beneath it one space
+    # too wide — in files nobody touched. That wants a red X that says so.
+    #
+    # Folding it into `engine` would run it twice for a verdict that cannot
+    # differ by host, and bury it under a build log. Folding it into `ratchets`
+    # would put a Zig toolchain into the one job that deliberately has none.
+    # This is seconds either way; the toolchain install is what setup-zig
+    # caches, and a job that reports for itself is worth that.
+    #
+    # Pinned to the ZIG_VERSION the engine builds with, because the formatter's
+    # output is a property of the compiler release — checking against a
+    # different Zig would be checking against a different grid.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: zig fmt --check
+        run: |
+          set -euo pipefail
+          # Enumerated rather than spelled out as a path list, because a path
+          # list drifts the same silent way the formatting did. The invocation
+          # that caught this by hand named `tools`, which holds no Zig at all,
+          # and would have missed a new top-level directory that did.
+          #
+          # Tracked plus untracked-not-ignored is every Zig file this repository
+          # owns. What that leaves out is exactly the ignored trees — cargo's
+          # `bindings/rust/target`, which parks a whole semver-checks copy of
+          # this repo, and `zig-pkg/` — so the exclusions are named in
+          # `.gitignore` and reviewable there, rather than being whatever
+          # happened to fall outside an argument list.
+          #
+          # The existence test is for a working tree mid-edit, where the index
+          # can still name a file someone has deleted; CI's checkout never has
+          # one, and a stale index should not read as a formatting failure.
+          files=()
+          while IFS= read -r f; do
+            if [ -f "$f" ]; then files+=("$f"); fi
+          done < <(git ls-files -co --exclude-standard '*.zig')
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::found no .zig files — the enumeration is broken, not the tree" >&2
+            exit 1
+          fi
+          echo "checking ${#files[@]} files"
+          zig fmt --check "${files[@]}"
+
+  ratchets:
+    # Four baseline-guarded lints over src/**/*.zig — see quality/ratchets/.
+    # They are text scans, so there is no Zig step: compiling the engine to
+    # count `std.debug.print` call sites would tie a grep to a toolchain it
+    # does not use, and would make this the slowest job instead of the fastest.
+    #
+    # Stdlib-only Python by design, so uv is here to pin an interpreter rather
+    # than to install anything; `uv run --no-project` keeps it from discovering
+    # bindings/python's pyproject and building a wheel this job has no use for.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      # The gates themselves. A failure names the file and the delta, and the
+      # fix is in the code — never in the baseline.
+      - run: uv run --no-project --python 3.12 python quality/ratchets/run.py
+      # The detectors' own unit tests. A ratchet that stopped detecting reports
+      # a clean tree, which is the one failure mode the gate cannot self-report,
+      # so the proofs run beside it rather than on a slower cadence.
+      - name: ratchet detector tests
+        run: |
+          for t in quality/ratchets/*/test_*.py; do
+            uv run --no-project --python 3.12 python "$t"
+          done
+
+  changelog:
+    # Nothing was checking the news fragments, and the failure mode is quiet by
+    # construction: `towncrier build --draft` will cheerfully render a clean
+    # changelog while silently dropping any file whose name it does not
+    # recognize. A fragment typed `.fixd.md` instead of `.fixed.md` is not an
+    # error to towncrier — it is simply not a fragment, so it renders nothing,
+    # exits 0, and stays invisible until someone notices the entry missing from a
+    # release. With 195 fragments queued here, that is a lot of surface for one
+    # typo to hide in.
+    #
+    # So `--draft` on its own is NOT the gate, and adding it alone would have
+    # been a green tick over exactly the defect it was supposed to catch. The
+    # strictness comes from `ignore` in `towncrier.toml`: setting that key flips
+    # towncrier from skipping unparseable filenames to failing on them, with a
+    # message naming the file. That puts the fragment grammar in towncrier's
+    # hands rather than in a bespoke filename parser here — the same reason
+    # `fmt` above takes its file set from `git ls-files` instead of a path list.
+    # There is no second spelling to keep in sync, and a contributor running
+    # `towncrier build --draft` locally now gets the same error CI does.
+    #
+    # `towncrier check` is deliberately not what this runs: that verb asks
+    # whether a branch ADDED a fragment, which is a contribution policy. This
+    # job only asks whether the fragments that exist are well-formed.
+    #
+    # No Zig and no build, like `ratchets` — this reads filenames.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: every fragment is one towncrier recognizes
+        run: |
+          set -euo pipefail
+          # The version is a placeholder — `--draft` writes nothing, and the
+          # number only shows up in the heading it renders to stdout.
+          draft=$(uv run --no-project --with towncrier towncrier build --draft --version 0.0.0)
+          printf '%s\n' "$draft"
+          # The vacuous-green guard, in the same spirit as `fmt`'s "found no .zig
+          # files". A misconfigured `directory`, or a fragment directory towncrier
+          # cannot read, renders "No significant changes." and exits 0 — a
+          # passing gate over nothing. Conditioning on fragments actually being
+          # present on disk keeps this honest right after a release, when an empty
+          # `changelog.d` and an empty draft are the correct answer. `README.md`
+          # is the one non-fragment `.md` in there, and it is named in the
+          # `ignore` list for that reason.
+          fragments=$(find changelog.d -maxdepth 1 -name '*.md' ! -name 'README.md' | wc -l | tr -d ' ')
+          echo "changelog.d holds ${fragments} fragment(s)"
+          if [ "$fragments" -gt 0 ] && printf '%s' "$draft" | grep -q 'No significant changes'; then
+            echo "::error::${fragments} fragments on disk but towncrier rendered none — the wiring is broken, not the tree" >&2
+            exit 1
+          fi

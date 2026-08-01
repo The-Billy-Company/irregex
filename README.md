@@ -70,6 +70,61 @@ The unit-test binary is pinned to ReleaseSafe on purpose: the suite that
 tries to break the checks keeps them; the shipped CLIs (built in `gist`
 and `blast`) compile them out with ReleaseFast.
 
+### Running one test, and the cache trap underneath it
+
+`-Dtest-filter=<substring>` narrows the suite and `-Dtest-shards=1` puts
+it back into one process for a debugger:
+
+```bash
+zig build test -Dtest-filter='word-boundary' -Dtest-shards=1
+```
+
+Worth knowing before you trust a filtered run twice: **`zig build test`
+caches the test run, and the environment is part of the cache key.** The
+filter reaches the harness as `BRIGADE_FILTER`, an environment variable
+set on the run step (`addShards` at the bottom of `build.zig`), and Zig
+hashes a run step's environment along with its argv. So the first run
+under a given environment executes, and every later run under an
+environment you have already used is served from cache: the step is
+skipped, nothing executes, and the build exits 0 in about the time a
+no-op build takes (~1.7 s here).
+
+What makes that bite is that a cache hit still reports a test count.
+`--summary all` prints `19/19 tests passed` whether the shard ran or was
+replayed. The only token that tells them apart is `cached` where an
+executed step says `success <n>ms`:
+
+```
++- test shard 0/1 success 3ms     # ran
++- test shard 0/1 cached          # did NOT run, still "19/19 tests passed"
+```
+
+That makes `zig build test` the wrong instrument for asking whether the
+tree is sensitive to an environment variable. The obvious probe - run the
+suite with the variable set, then again without it to confirm - revisits
+an environment it has already visited on the confirming leg, so that leg
+is a replay and is green by construction. I nearly certified a tree as
+environment-immune on exactly that, and the tell was not in the exit code
+or the test count; it was one word in the summary.
+
+To probe an environment variable, drive the compiled test binary
+yourself. It sits under no build-cache layer, so it executes every time:
+
+```bash
+# find the binary - force a real run, or a cached one prints no argv at all
+env FORCE=$RANDOM zig build test -Dtest-filter='<name>' -Dtest-shards=1 --verbose
+#   ... BRIGADE_SHARD=0/1 BRIGADE_FILTER=<name> ./.zig-cache/o/<hash>/test
+
+BRIGADE_SHARD=0/1 BRIGADE_FILTER='<name>' BRIGADE_TIMES=1 \
+  ./.zig-cache/o/<hash>/test
+```
+
+`BRIGADE_TIMES=1` emits one `<ms>` + tab + `<name>` line per test, which
+is the evidence that the run happened at all rather than a claim that it
+did. A filter matching nothing is loud rather than quietly empty -
+`BRIGADE_FILTER='...' matched none of the N tests`, naming the count it
+searched - so a stale filter cannot pass as a clean run either.
+
 ## Using it
 
 ```zig

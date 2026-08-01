@@ -1,7 +1,7 @@
 # Towncrier configuration for irregex.
 #
-# Inherited from billy's chronicle changelog driver at extraction; standalone
-# now — the file is hand-maintained here.
+# Inherited from the monorepo's changelog driver at extraction; standalone now —
+# the file is hand-maintained here.
 #
 # News fragments live in changelog.d/<slug>.<type>.md and are assembled into
 # CHANGELOG.md at the `<!-- towncrier release notes start -->` marker:
@@ -15,6 +15,13 @@ filename = "CHANGELOG.md"
 start_string = "<!-- towncrier release notes start -->\n"
 title_format = "## [{version}] - {project_date}"
 wrap = true
+# Not a cosmetic whitelist — this key is what makes a malformed fragment an
+# error. Without it, towncrier silently ignores any filename it cannot parse, so
+# `+thing.fixd.md` renders nothing, exits 0, and goes missing from the release
+# with no complaint. Setting `ignore` flips that: anything in `changelog.d` that
+# is neither a valid fragment nor named here fails the build and says which file.
+# The two names below are the only non-fragments the directory is meant to hold.
+ignore = [".gitkeep", "README.md"]
 
 [[tool.towncrier.type]]
 directory = "added"
