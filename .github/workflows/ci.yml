@@ -1,0 +1,97 @@
+# What has to be true before a change lands.
+#
+# Four faces, four jobs, deliberately not one: a Zig engine regression and a
+# Rust clippy nit are different news, and a single job would report them as the
+# same red X. Nothing here needs a sibling checkout — this package builds from
+# its own clone, and that is itself something CI proves every run.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A force-push mid-run should cancel the run it obsoleted, not race it.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  ZIG_VERSION: 0.16.0
+
+jobs:
+  engine:
+    # Both host families, because the build branches on them: macOS re-archives
+    # through `libtool` for ld64's alignment rules, and the resident tier's Unix
+    # sockets behave differently enough to be worth exercising on each.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      # Compile-only first: when this fails, the test log below is noise, and
+      # the failure is one line rather than a suite's worth of scrollback.
+      - run: zig build check
+      - run: zig build test
+
+  python:
+    # 3.12 is the declared floor and is load-bearing (PEP 695 syntax in the
+    # runtime), so it is tested rather than assumed. There is no upper pin: a
+    # published library has no business refusing next year's interpreter, and
+    # the way to keep that true is to notice when it breaks.
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13", "3.14"]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bindings/python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - uses: astral-sh/setup-uv@v5
+      - run: uv run --python ${{ matrix.python }} pytest -q
+
+  go:
+    # No Zig step: the module carries a prebuilt archive per supported platform
+    # precisely so `go get` needs no toolchain. Installing Zig here would test a
+    # path consumers never take.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bindings/go
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: bindings/go/go.mod
+      - run: go vet ./...
+      - run: go test ./...
+
+  rust:
+    # Same reasoning as Go: `vendor/<triple>/libirregex.a` is what a normal
+    # `cargo build` links, so that is the rung CI should be exercising.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bindings/rust
+    steps:
+      - uses: actions/checkout@v4
+      # rust-toolchain.toml pins the channel; installing it explicitly would
+      # override the pin the repository already made.
+      - run: rustup show
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test

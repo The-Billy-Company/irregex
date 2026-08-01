@@ -1,0 +1,109 @@
+# Publish the wheel matrix to PyPI when a version tag is pushed.
+#
+# Runs on macOS because that is the host the matrix is actually proven on: Zig
+# cross-compiles all five targets from one machine in about a minute, and the
+# macOS slices are the ones a Linux host would have the most trouble with. The
+# direction that matters (macOS host, Linux/Windows targets) is exercised every
+# time this runs.
+#
+# Wheels only, no sdist. The Python project lives under `bindings/python` while
+# the engine sources live at the repository root, so an sdist rooted at the
+# project would not contain the thing it needs to build. Five wheels cover the
+# platforms anyone is installing on; shipping a source archive that cannot
+# build itself would be worse than shipping none.
+#
+# ONE-TIME SETUP: this uses PyPI Trusted Publishing, so there is no API token to
+# rotate or leak. On PyPI, add a trusted publisher for the `irregex` project
+# pointing at this repository, workflow `release.yml`, environment `pypi`.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  # Buildable and verifiable without publishing, so the matrix can be exercised
+  # without minting a version.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  wheels:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: bindings/python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - uses: astral-sh/setup-uv@v5
+
+      # The three faces version independently on purpose — the Zig package, the
+      # Python distribution, and the Rust crate are at 0.3.0, 0.2.0 and 0.1.0 and
+      # there is no reason a binding's API churn should bump the engine's number.
+      # But this workflow publishes exactly one of them, so the tag has to name
+      # that one's version or the release notes describe an artifact nobody got.
+      - name: The tag must name the version being published
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          declared=$(uv run --python 3.12 python -c \
+            "import tomllib,pathlib;print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+          if [ "$tag" != "$declared" ]; then
+            echo "::error::tag v$tag would publish irregex $declared." \
+                 "Tag the Python distribution's version, or bump pyproject.toml." >&2
+            exit 1
+          fi
+          echo "tag v$tag matches the declared version"
+
+      - name: Build every target
+        run: uv run --python 3.12 python scripts/build_wheels.py
+
+      # The gate that earns its place: install the wheel on the *declared floor*
+      # and run the suite against it. A wheel whose `requires-python` is a
+      # guess installs cleanly and then fails at import, which is the worst
+      # possible place to find out — so the floor is proven here, on the
+      # artifact about to be published, not asserted in a TOML file.
+      - name: Prove the declared floor on the built artifact
+        run: |
+          set -euo pipefail
+          uv venv --python 3.12 /tmp/floor
+          uv pip install --python /tmp/floor/bin/python \
+            --find-links dist --no-index irregex
+          uv pip install --python /tmp/floor/bin/python pytest
+          # From a directory that is not the project, so the import resolves to
+          # the installed wheel rather than the working copy beside it.
+          cd /tmp && /tmp/floor/bin/python -c "
+          import irregex
+          m = irregex.compile(r'(?P<k>\w+)=(?P<v>\d+)').search('x=42')
+          assert (m.group('k'), m.group('v')) == ('x', '42'), m
+          print('floor import + match OK')
+          "
+
+      - name: Check the metadata the index will read
+        run: uvx twine check dist/*.whl
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels
+          path: bindings/python/dist/*.whl
+          if-no-files-found: error
+
+  publish:
+    # Only a tag publishes. A manual run builds and verifies and stops there.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: wheels
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      # The OIDC token Trusted Publishing exchanges for an upload credential.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
