@@ -87,10 +87,15 @@ def native_target() -> Target | None:
 
 
 def build_library(target: Target, prefix: Path) -> Path:
+    # Stripped, because nobody `pip install`s a library to debug its internals.
+    # On ELF the DWARF outweighs the code about four to one, so this is the
+    # difference between an 11 MB wheel and a 2 MB one; Mach-O is already small
+    # because its debug info lives in a separate `.dSYM` that never ships here.
     command = [
         "zig",
         "build",
         "-Doptimize=ReleaseFast",
+        "-Dstrip=true",
         f"-Dtarget={target.zig}",
         "--prefix",
         str(prefix),

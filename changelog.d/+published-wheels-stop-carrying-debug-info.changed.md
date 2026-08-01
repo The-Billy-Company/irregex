@@ -1,0 +1,3 @@
+The published Linux wheel was 11 MB, of which roughly 9 MB was DWARF nobody who ran `pip install` was ever going to read. Debug info outweighed the code about four to one on ELF and PE; macOS only looked innocent because Mach-O keeps its DWARF in a separate `.dSYM` that never entered the wheel in the first place.
+
+`build.zig` now takes `-Dstrip`, off by default so a local build stays debuggable, and the wheel matrix passes it. Every wheel in the matrix is now under 0.8 MB and they are within 0.1 MB of each other instead of varying six-fold by platform. The full binding suite passes against the stripped library.
