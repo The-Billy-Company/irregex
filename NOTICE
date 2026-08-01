@@ -14,6 +14,12 @@ component and are not superseded by the Apache License, Version 2.0 above.
     Copyright (c) 2009-2024 Zoltan Herczeg
     The backend behind `-P`. See vendor/pcre2/LICENCE.md for the full text.
 
+  * libsais — linear-time suffix array construction (vendor/libsais/)
+    Apache-2.0
+    Copyright (c) 2021-2025 Ilya Grebnov
+    The suffix sort under the FM-index. See vendor/libsais/LICENSE for the
+    full text.
+
   * WHATWG Encoding Standard index tables (tools/whatwg/index-*.txt,
     tools/whatwg/encodings.json)
     CC0-1.0 (public-domain dedication)
