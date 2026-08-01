@@ -141,14 +141,14 @@ pub const Ast = struct {
                 },
                 // Both sides of a concat are mandatory, so either side's cover
                 // speaks for the whole — take the more selective.
-                .concat => thinner(memo[kids[0].index()], memo[kids[1].index()]),
+                .concat => analysis.thinner(memo[kids[0].index()], memo[kids[1].index()]),
                 .plus, .capture => memo[kids[0].index()],
                 else => null,
             };
             // A cover is only as selective as its weakest branch, so a descent
             // is worth taking only when even that branch out-reads this node's
             // own literal.
-            if (nested) |s| if (weakest(s) > best.len) {
+            if (nested) |s| if (analysis.weakest(s) > best.len) {
                 slot.* = s;
                 continue;
             };
@@ -157,21 +157,6 @@ pub const Ast = struct {
         return memo[self.interned.root.index()];
     }
 };
-
-/// Length of a cover's shortest literal — what its selectivity is bounded by.
-fn weakest(set: []const []const u8) usize {
-    if (set.len == 0) return 0;
-    var min: usize = std.math.maxInt(usize);
-    for (set) |lit| min = @min(min, lit.len);
-    return min;
-}
-
-/// The more selective of two sound covers, either of which may be absent.
-fn thinner(a: ?[]const []const u8, b: ?[]const []const u8) ?[]const []const u8 {
-    const sa = a orelse return b;
-    const sb = b orelse return sa;
-    return if (weakest(sb) > weakest(sa)) sb else sa;
-}
 
 /// Intern a parsed pattern, canonicalize it, and sweep it.
 ///

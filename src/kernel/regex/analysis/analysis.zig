@@ -42,8 +42,10 @@ fn longer(a: []const u8, b: []const u8) []const u8 {
 
 /// The UTF-8 bytes of a single-codepoint `uclass` (a non-ASCII literal), or null
 /// for a wider codepoint class — so a `uclass` literal feeds the same prefilter /
-/// pure-literal machinery as an ASCII `class` singleton.
-fn uclassLiteral(arena: std.mem.Allocator, ranges: []const [2]u21) ParseError!?[]const u8 {
+/// pure-literal machinery as an ASCII `class` singleton. Public because the DAG
+/// sweep (`../ast/facts.zig`) answers the same question about the same node kind,
+/// and two spellings of "is this codepoint class a literal" could disagree.
+pub fn uclassLiteral(arena: std.mem.Allocator, ranges: []const [2]u21) ParseError!?[]const u8 {
     if (ranges.len != 1 or ranges[0][0] != ranges[0][1]) return null;
     var buf: [4]u8 = undefined;
     const n = std.unicode.utf8Encode(ranges[0][0], &buf) catch return null;
@@ -171,14 +173,18 @@ pub fn requiredAny(arena: std.mem.Allocator, node: *Node) ParseError!?[]const []
 }
 
 /// Length of a cover's shortest literal — what its selectivity is bounded by.
-fn weakest(cover: []const []const u8) usize {
+pub fn weakest(cover: []const []const u8) usize {
     var min: usize = std.math.maxInt(usize);
     for (cover) |lit| min = @min(min, lit.len);
     return if (cover.len == 0) 0 else min;
 }
 
-/// The more selective of two sound covers, either of which may be absent.
-fn thinner(a: ?[]const []const u8, b: ?[]const []const u8) ?[]const []const u8 {
+/// The more selective of two sound covers, either of which may be absent. This
+/// and `weakest` are the cover calculus itself, not the walker's private
+/// arithmetic: `../ast/ast.zig` builds the same cover the other way round (a
+/// forward sweep over the interned DAG rather than a recursive descent) and has
+/// to reach the identical verdict, so both read the selectivity rule from here.
+pub fn thinner(a: ?[]const []const u8, b: ?[]const []const u8) ?[]const []const u8 {
     const sa = a orelse return b;
     const sb = b orelse return sa;
     return if (weakest(sb) > weakest(sa)) sb else sa;

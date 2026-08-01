@@ -64,7 +64,7 @@ pub fn sweep(arena: std.mem.Allocator, _: Id, op: Op, kids: [2]Id, done: []const
         .anchor_start => zeroWidth(true),
 
         .class => |set| consuming(litOfClass(arena, set) catch |e| return e, set, 1),
-        .uclass => |ranges| consumingCp(try litOfUclass(arena, ranges), leadBytes(ranges), utf8Min(ranges), utf8Max(ranges)),
+        .uclass => |ranges| consumingCp(try analysis.uclassLiteral(arena, ranges), leadBytes(ranges), utf8Min(ranges), utf8Max(ranges)),
 
         .concat => cat(arena, done[kids[0].index()], done[kids[1].index()]),
         .alt => either(done[kids[0].index()], done[kids[1].index()]),
@@ -99,15 +99,6 @@ fn zeroWidth(anchors: bool) Facts {
 fn litOfClass(arena: std.mem.Allocator, set: ByteSet) ParseError!?[]const u8 {
     const b = set.only() orelse return null;
     return try arena.dupe(u8, &[_]u8{b});
-}
-
-/// A single-codepoint `uclass` is a non-ASCII literal, and its UTF-8 bytes feed
-/// the prefilter exactly like an ASCII one. Anything wider proves no literal.
-fn litOfUclass(arena: std.mem.Allocator, ranges: []const [2]u21) ParseError!?[]const u8 {
-    if (ranges.len != 1 or ranges[0][0] != ranges[0][1]) return null;
-    var buf: [4]u8 = undefined;
-    const n = std.unicode.utf8Encode(ranges[0][0], &buf) catch return null;
-    return try arena.dupe(u8, buf[0..n]);
 }
 
 fn consuming(lit: ?[]const u8, set: ByteSet, width: u32) Facts {
