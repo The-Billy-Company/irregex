@@ -8,7 +8,8 @@
 //! structs. It sits at the bottom of the package DAG (imports only `std`), so
 //! `kernel/`, `corpus/`, and `surface/` all consume it without inversion.
 //!
-//! Three axes, three sibling files, re-exported here:
+//! Three axes and the identity they report under, four sibling files, all
+//! re-exported here:
 //!   * time  → `span.zig`     — `Span`/`Duration` (monotonic) vs `Anchor` (wall),
 //!                              made non-interchangeable at the type level, plus
 //!                              `Cadence`, the measured core rate that turns a
@@ -17,6 +18,10 @@
 //!   * debug → `channel.zig`  — the env vocabulary, the lens gate, the chatter
 //!                              gate, and the thread-local sink every
 //!                              diagnostic routes through.
+//!   * who   → `brand.zig`    — the program name a diagnostic is signed with,
+//!                              the namespace its knobs live in, and where its
+//!                              artifacts go, so `relate` stops reporting
+//!                              itself as `gist`.
 //!
 //! `Run` (below) is the ergonomic layer over the channel for the ~15 verb
 //! summary lines: it opens a `Span` and emits one line that is byte-identical to
@@ -56,6 +61,16 @@ pub const envFalsy = channel.envFalsy;
 pub const envUsize = channel.envUsize;
 pub const envFlag = channel.envFlag;
 pub const serialForced = channel.serialForced;
+
+// ── identity ──
+const brand = @import("brand.zig");
+pub const Brand = brand.Brand;
+pub const identity = brand.active;
+pub const tag = channel.tag;
+pub const knob = channel.knob;
+pub const knobFlag = channel.knobFlag;
+pub const knobSet = channel.knobSet;
+pub const knobUsize = channel.knobUsize;
 
 /// One diagnostic summary line, bound to a `Span` (opened at construction) and
 /// the verb's `--json` flag. `emit` renders it as text (byte-identical to the

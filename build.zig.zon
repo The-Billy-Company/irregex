@@ -18,8 +18,14 @@
             .hash = "N-V-__8AACsQywAxzz2irB4p1ssU5F43ChN0ztDcy_GRz_Hz",
             .lazy = true,
         },
-        // libsais moved to the `relate` package with the codex FM-index
-        // (PLAN v5 split).
+        // libsais 2.10.2 — the suffix sort under the FM-index. The bytes that
+        // build live under vendor/libsais/; this `.lazy` entry only pins the
+        // upstream release by URL + content hash.
+        .libsais = .{
+            .url = "https://github.com/IlyaGrebnov/libsais/archive/refs/tags/v2.10.2.tar.gz",
+            .hash = "N-V-__8AAPB0GQBIBogUbM-MgZJ-IjjoKFw9PBg0zJ5IHbVV",
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",

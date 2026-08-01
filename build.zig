@@ -4,9 +4,12 @@
 //! cold walk-and-emit pipeline → the warm resident core, plus the trigram /
 //! crest / phantom persisted index tiers. It ships as a **Zig module**
 //! (`@import("irregex")`) that the product packages (`relate`, `gist`,
-//! `blast`) consume as siblings; it installs no executables and no C-ABI
-//! artifact of its own. The session-shaped C ABI (include/*.h + surface/ffi)
-//! lives in `gist`; the kinship/codex engines live in `relate`.
+//! `blast`) consume as siblings, plus its own C-ABI artifact — `libirregex` +
+//! `include/irregex.h`: the regex-over-text plane (compile · is_match ·
+//! find_all · captures) and the status/fault substrate all four ABIs share.
+//! It installs no executables. The session-shaped ABI over a corpus lives in
+//! `gist`; the kinship engine (and the cento quoter over this library's
+//! FM-index) lives in `relate`.
 //!
 //! The test chassis mirrors kernelkit's (`../_buildkit`): one ReleaseSafe
 //! brigade-sharded unit-test binary (`test` / `test-quick`), a compile-only
@@ -75,7 +78,19 @@ const pcre2_cflags = [_][]const u8{
     "-std=c11",
 };
 
-/// One PCRE2 static archive per optimize mode, memoized — an adversarial
+// libsais — the suffix-array constructor under the FM-index. No feature
+// flags: LIBSAIS_OPENMP stays OFF, so the parallel entry points are
+// preprocessed away and the archive needs no `libomp`. `-fno-sanitize=
+// undefined` because the induced sort walks its suffix array with
+// deliberately negative sentinel indices and one-past-the-end cursors — a
+// codex build must fail as a Zig error, never as a sanitizer abort inside C.
+// Provenance: vendor/libsais/README.md + the build.zig.zon `.lazy` row.
+const libsais_cflags = [_][]const u8{
+    "-fno-sanitize=undefined",
+    "-std=c99",
+};
+
+/// One static archive per C floor per optimize mode, memoized — an adversarial
 /// ReleaseSafe test must not run a Debug C library, and a ReleaseFast product
 /// twin must not link a ReleaseSafe one. `.pic = true` so one archive serves
 /// both a future shared object and every executable (macOS is PIC by default;
@@ -83,26 +98,38 @@ const pcre2_cflags = [_][]const u8{
 const Floor = struct {
     b: *std.Build,
     target: std.Build.ResolvedTarget,
-    built: Memo = Memo.initFill(null),
+    pcre2: Memo = Memo.initFill(null),
+    libsais: Memo = Memo.initFill(null),
 
     const Memo = std.EnumArray(std.builtin.OptimizeMode, ?*std.Build.Step.Compile);
 
-    /// Links libc + the PCRE2 archive onto `m`. libc is not incidental: the
-    /// archive is C, and the macOS FSEvents historical journal
+    /// Links libc + both C floors onto `m`. libc is not incidental: the
+    /// archives are C, and the macOS FSEvents historical journal
     /// (`src/corpus/fresh/journal.zig`) reaches CoreServices through libc's
     /// `dlopen`/`dlsym` at runtime rather than link-time framework bindings.
     fn under(self: *Floor, m: *std.Build.Module) void {
         m.link_libc = true;
-        m.linkLibrary(self.at(m.optimize.?));
+        m.linkLibrary(self.pcre2At(m.optimize.?));
+        m.linkLibrary(self.libsaisAt(m.optimize.?));
     }
 
-    fn at(self: *Floor, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
-        if (self.built.get(optimize)) |ready| return ready;
+    fn pcre2At(self: *Floor, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
+        if (self.pcre2.get(optimize)) |ready| return ready;
         const mod = self.b.createModule(.{ .target = self.target, .optimize = optimize, .link_libc = true, .pic = true });
         mod.addIncludePath(self.b.path("vendor/pcre2/src"));
         mod.addCSourceFiles(.{ .root = self.b.path("vendor/pcre2/src"), .files = &pcre2_sources, .flags = &pcre2_cflags });
         const lib = self.b.addLibrary(.{ .name = "pcre2irregex", .linkage = .static, .root_module = mod });
-        self.built.set(optimize, lib);
+        self.pcre2.set(optimize, lib);
+        return lib;
+    }
+
+    fn libsaisAt(self: *Floor, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
+        if (self.libsais.get(optimize)) |ready| return ready;
+        const mod = self.b.createModule(.{ .target = self.target, .optimize = optimize, .link_libc = true, .pic = true });
+        mod.addIncludePath(self.b.path("vendor/libsais/include"));
+        mod.addCSourceFiles(.{ .root = self.b.path("vendor/libsais/src"), .files = &.{"libsais.c"}, .flags = &libsais_cflags });
+        const lib = self.b.addLibrary(.{ .name = "libsais", .linkage = .static, .root_module = mod });
+        self.libsais.set(optimize, lib);
         return lib;
     }
 };
@@ -132,6 +159,41 @@ pub fn build(b: *std.Build) void {
         .pic = true,
     });
     floor.under(engine);
+
+    // ── the C-ABI artifact (`libirregex` + `include/irregex.h`) ──
+    // Rooted at the export shims, NOT at `src/root.zig`. A Zig `export fn` is
+    // emitted by every compilation that reaches it, so shims living in the
+    // library module would be duplicated into `libgist`, `librelate`, and
+    // `libblast` — each of which imports it — and a host linking two of them
+    // would hit a duplicate-symbol error for a symbol it asked for once.
+    // Keeping them in the artifact's own root means the symbols exist exactly
+    // where the library named after them is.
+    const abi = b.createModule(.{
+        .root_source_file = b.path("src/surface/ffi/exports.zig"),
+        .target = target,
+        .optimize = optimize,
+        .pic = true,
+        .link_libc = true,
+        .imports = &.{.{ .name = "irregex", .module = engine }},
+    });
+
+    // Dynamic (Python cffi dlopens it) owns the header install; static is what
+    // Go cgo and a Rust build.rs link. Zig's archiver leaves Mach-O members
+    // non-8-byte-aligned, which Apple's ld64 rejects in a cgo link, so macOS
+    // re-archives through `libtool -static`; LLD tolerates it.
+    const dynamic_lib = b.addLibrary(.{ .name = "irregex", .linkage = .dynamic, .root_module = abi });
+    dynamic_lib.installHeader(b.path("include/irregex.h"), "irregex.h");
+    b.installArtifact(dynamic_lib);
+    if (target.result.os.tag == .macos) {
+        const obj = b.addObject(.{ .name = "irregex", .root_module = abi });
+        const repack = b.addSystemCommand(&.{ "libtool", "-static", "-o" });
+        const aligned_a = repack.addOutputFileArg("libirregex.a");
+        repack.addArtifactArg(obj);
+        b.getInstallStep().dependOn(&b.addInstallLibFile(aligned_a, "libirregex.a").step);
+    } else {
+        const static_lib = b.addLibrary(.{ .name = "irregex", .linkage = .static, .root_module = abi });
+        b.installArtifact(static_lib);
+    }
 
     // The unit-test binary is pinned to ReleaseSafe: the suite is dominated by
     // differential-fuzz loops (DFA vs Pike, powerset language equivalence,
@@ -183,6 +245,26 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
     addShards(b, tests, test_step, shards, test_filter, test_skip);
+
+    // The C-ABI artifact is a SEPARATE module (rooted at the export shims, see
+    // above), and Zig collects tests only from a root module's own files — so
+    // every test under `surface/ffi/exports.zig` and its siblings was compiled by
+    // nothing and run by nothing. It gets its own binary, unsharded: a handful of
+    // tests over shims and the C lowering of the warm corpus, where splitting
+    // across processes costs more than it saves.
+    //
+    // Its own step, and folded into `test` only when nothing is filtered, because
+    // brigade fails a shard whose filter matched none of its tests — correct for
+    // one binary (you typo'd it), wrong across two, where a name living in the
+    // other plane is not a typo. So an unfiltered run — the one a push is judged
+    // by — covers both, and a filtered hunt names the plane it is hunting in.
+    const abi_tests = b.addTest(.{
+        .root_module = abi,
+        .test_runner = .{ .path = brigade, .mode = .simple },
+    });
+    const abi_step = b.step("test-abi", "Run the C-ABI artifact's unit tests (folded into `test`)");
+    addShards(b, abi_tests, abi_step, 1, test_filter, test_skip);
+    if (test_filter == null) test_step.dependOn(abi_step);
 
     // `zig build test-quick` — the same suite minus the declared long poles,
     // for the edit loop. A strictly weaker proof than `test`, and says so.

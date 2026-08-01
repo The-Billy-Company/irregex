@@ -13,18 +13,15 @@
 //! mutated tree wrongly). See `research/gist/PRIOR_ART.md`.
 //!
 //! Search, index lifecycle, and result handling are Zig-native and surfaced by
-//! the `gist` CLI. The C ABI in `include/irregex.h` exposes ABI/engine-version
-//! introspection, allocation-free trigram extraction, AND — since ADR-352
-//! rung 3 — an in-process warm search SESSION (`irregex_open`/`irregex_search`/
-//! `irregex_close`, implemented in
-//! `surface/ffi/session.zig`): a non-Zig host holds a corpus warm in its own
-//! process and streams match records over a callback, with no subprocess,
-//! socket, `stdout`, or `exit`. Every entry returns a status code instead of
-//! `die()`ing, so a bad query can never terminate an embedding host — the
-//! property ADR-352 gated the search ABI on. It rides the
-//! error-returning shared core (`kernel/query/query.zig`) + resident engine, so an
-//! in-process answer is byte-identical to the cold `gist --json` stream. Index
-//! BUILD lifecycle stays a Zig/CLI surface (a session searches the live tree).
+//! the `gist` CLI. This package's own C ABI (`include/irregex.h`, shims in
+//! `surface/ffi/exports.zig`) is deliberately the SMALL half: a pattern over a
+//! buffer the host already holds — compile, `is_match`, `find_all`,
+//! `captures` — plus the status/fault substrate every package's ABI returns.
+//! No corpus, no session, no index; a host that wants those links `libgist`.
+//! Every entry returns a status instead of `die()`ing, so a bad pattern can
+//! never terminate an embedding host, and every verb is a shim over the
+//! machinery the CLI runs (`kernel/query/query.zig`, the `Caps` arms) — which
+//! is what makes an in-process answer the same answer `gist --json` prints.
 //!
 //! Package shape: two engines over a shared floor, grouped by concern and
 //! re-exported here (three layers under `src/`):
@@ -46,9 +43,15 @@ const std = @import("std");
 // and warm-query timing are properties of one seam). See src/assay/README.md.
 pub const assay = @import("assay/assay.zig");
 
+// Who the program riding this engine is: the name it signs a diagnostic with,
+// the namespace its knobs live in, where its artifacts go. A binary declares
+// `pub const irregex_brand: irregex.Brand = .{ .name = "relate" };` in its root
+// module; anything that declares nothing keeps the historical `gist` spellings.
+pub const Brand = assay.Brand;
+
 // How a face terminates: the rg `0`/`1`/`2` exit contract (both precedences)
 // and the `fatal` catch that keeps an escaped error off Zig's default handler,
-// which would exit 1 — "found nothing" — on a hard fault. See ADR-373.
+// which would exit 1 — "found nothing" — on a hard fault.
 pub const Outcome = @import("surface/cli/outcome.zig").Outcome;
 pub const fatal = @import("surface/cli/outcome.zig").fatal;
 
@@ -56,7 +59,7 @@ pub const fatal = @import("surface/cli/outcome.zig").fatal;
 // merges error names globally, so the merge must be deliberate), the
 // declinature enum that keeps a routine tier fallback out of the error channel
 // entirely, and the thread-local detail slot the C ABI's last-fault pull reads.
-// Vocabulary and payload only — transport stays assay's. See ADR-373 laws 1-3.
+// Vocabulary and payload only — transport stays assay's.
 pub const fault = @import("fault.zig");
 
 // The platform seam: the POSIX-shaped primitives the engine actually calls —
@@ -203,22 +206,26 @@ pub const irregex = struct {
     pub const loom = @import("kernel/slate/loom.zig");
 };
 
-// compose (exact ∩ compression kernels, ADR-367) moved to the `relate`
+// compose (exact ∩ compression kernels) moved to the `relate`
 // package — its context/family halves run kinship inside the exact filter,
 // so it lives above this library in the ecosystem DAG.
 
-// ── succinct: the entropy-bound primitives under the codex ──
-// SA-IS suffix sort, RRR bitvectors, and the Huffman-shaped wavelet tree.
-// The codex FM-index itself (kernel/codex) and its shelf artifact live in
-// the `relate` package; these pure math floors stay with the library.
+// ── succinct floors + FM-index + shelf ──
+// SA-IS / RRR / wavelet are the math floors; the FM-index composition
+// (`kernel/codex`) and its persisted multi-doc shelf sit above them. Both
+// used to live in `relate`, which made gist's `codex` verb depend on relate
+// for an index tier — a cycle once the relate face also needed gist's
+// answer keep. An index tier belongs with the other index tiers.
 pub const codex = struct {
     pub const sais = @import("kernel/math/succinct/sais.zig");
     pub const rrr = @import("kernel/math/succinct/rrr.zig");
     pub const wavelet = @import("kernel/math/succinct/wavelet.zig");
+    pub const index = @import("kernel/codex/codex.zig");
+    pub const shelf = @import("corpus/index/shelf/shelf.zig");
 };
 
-// The relate engine (kinship metric/cluster/recall, retrieval, the codex
-// FM-index) is the `relate` package, which depends on this library.
+// The relate engine (kinship metric/cluster/recall, retrieval, the
+// Ziv–Merhav cento over this library's FM-index) is the `relate` package.
 
 // ── the transport-neutral compiled query (the shared search core) ──
 // One deep module owns "a search intent, compiled": the fail-closed, thread-safe
@@ -229,7 +236,7 @@ pub const engine = struct {
     pub const query = @import("kernel/query/query.zig");
 };
 
-// ── resident search session (ADR-352 rung 2.5): the warm in-memory engine +
+// ── resident search session: the warm in-memory engine +
 // its Unix-socket transport, sharing the kernels above but returning errors
 // instead of `die()`ing so a bad request can't take down the daemon. ──
 pub const session = struct {
@@ -267,12 +274,36 @@ pub const commands = struct {
     // and the warm client moved to their product packages.
 };
 
-/// The curated Zig-native hosted API (ADR-352): a small vocabulary of owned
+/// The curated Zig-native hosted API: a small vocabulary of owned
 /// handles — `Engine`, `SearchQuery`, `Cursor` (pull `next`/`nextBatch`),
 /// `CancelToken`, `RunOptions` — over the same error-returning warm engine the
 /// resident daemon and the C-ABI shims ride. What a Zig embedder (and the C ABI
 /// + bindings above it) programs to, distinct from the internal tiers above.
 pub const api = @import("surface/api.zig");
+
+/// The C-ABI substrate the whole ecosystem shares: the status enum and its
+/// three dispositions, the one fault translation, the per-incident fault pull,
+/// the pattern-semantics flag bits, and the self-describing row protocol.
+///
+/// `librelate`, `libgist`, and `libblast` each link this library and return
+/// these types, so a host that links two of them reads one vocabulary rather
+/// than two spellings of "declined". A product's own ABI exports only its
+/// verbs on top of this.
+pub const ffi = struct {
+    pub const contract = @import("surface/ffi/contract.zig");
+    pub const rows = @import("surface/ffi/rows.zig");
+    /// This library's OWN plane on that substrate: a pattern and a buffer, with
+    /// no corpus behind them — compile, `is_match`, `find_all`, `captures`. The
+    /// `export fn` shims that lower it to C live in `surface/ffi/exports.zig`,
+    /// which is the root of the `libirregex` artifact rather than of this
+    /// module, so a host linking two of the ecosystem's libraries gets one
+    /// definition of each symbol.
+    pub const pattern = @import("surface/ffi/pattern.zig");
+    /// The other half every package's ABI shares: a materialized run of rows
+    /// plus the position a host reads it from. Each library exports its own
+    /// `…_run` and returns THIS, so three questions cost one cursor protocol.
+    pub const answer = @import("surface/ffi/answer.zig");
+};
 
 // ── the product seam ──
 // What the sibling product packages (`relate` · `gist` · `blast`) reach that
@@ -332,14 +363,20 @@ pub const version_string: [:0]const u8 = "0.3.0"; // x-release-please-version
 /// caller reads and the library actually linked have one name between them.
 pub const pcre2_version_string = "10.47";
 
-// The C-ABI compatibility integer, the session export shims, and the
-// analytic-plane exports moved to the `gist` package with surface/ffi.
+// The session export shims and the analytic-plane exports belong to the `gist`
+// package; what lives here is the substrate underneath all of them (`ffi`).
 
 test {
     // `refAllDecls` pulls each `pub` tier re-export above into `zig build test`,
     // but each tier's tests live in a sibling `*_test.zig` (shape cap), which is
     // NOT re-exported — so every test file is wired in explicitly here.
     std.testing.refAllDecls(@This());
+    // `refAllDecls` is one level deep: it references the `ffi` struct without
+    // analyzing the files behind it, so those tests need naming outright.
+    _ = @import("surface/ffi/contract.zig"); // the shared status/fault substrate every package's ABI returns
+    _ = @import("surface/ffi/rows.zig"); // the self-describing row protocol the analytic ABIs share
+    _ = @import("surface/ffi/answer.zig"); // the shared row cursor: one walk, batching from the same position, fail-closed arguments
+    _ = @import("surface/ffi/pattern.zig"); // the regex-over-text plane: argument guards, the lazy capture arm, -F/-w/smart-case at the seam
     _ = @import("assay/assay.zig"); // instrumentation floor: Span/Duration/Anchor, Tally(Schema), the diagnostic channel
     _ = @import("surface/api_test.zig"); // hosted API facade: Engine/Cursor/CancelToken over a live warm tree
     // engine tiers
@@ -356,6 +393,8 @@ test {
     _ = @import("corpus/index/frame/frame_test.zig"); // shared artifact-load protocol: tree binding + future-anchor refusal, no leak on reject
     _ = @import("corpus/index/phantom/treemap_test.zig"); // phantom tree.map layout: round-trip, root resolve, torn blobs fail closed
     _ = @import("corpus/index/content/shard.zig"); // content shard: body round-trip, freshness gate, torn blobs fail closed
+    _ = @import("kernel/codex/codex_test.zig"); // SA-IS/RRR/wavelet/FM-index differential vs naive oracles
+    _ = @import("corpus/index/shelf/shelf_test.zig"); // count/tally vs per-doc oracles through save/load, fail-closed framing
     _ = @import("kernel/rank/rank_test.zig"); // T4 RRF fusion ranking
     _ = @import("kernel/rank/signals_test.zig"); // cross-language def-detection + generated-file signals
     _ = @import("kernel/rank/replica.zig"); // cached-source mirror classification + exact canonical duplicate
@@ -381,7 +420,7 @@ test {
     _ = @import("exec/session/facet/render.zig"); // warm lines renderer: cold-Emitter byte parity
     _ = @import("exec/session/warm/resident_test.zig"); // resident session: parity vs cold, overlay, RYW, deletion
     _ = @import("exec/session/conduit/shm.zig"); // portable anonymous shm buffer: fd round-trip, zero-len unsupported
-    _ = @import("exec/session/watch/watch_test.zig"); // freshness watcher: dirty/clean seqlock barrier + the promise EVERY exact backend makes, over real mutations (ADR-372)
+    _ = @import("exec/session/watch/watch_test.zig"); // freshness watcher: dirty/clean seqlock barrier + the promise EVERY exact backend makes, over real mutations
     _ = @import("exec/session/watch/kqueue_test.zig"); // macOS-only: the ignore-selected watch set, and a vnode it cannot open
     _ = @import("exec/session/watch/notify_test.zig"); // Windows-only: recursive-subscription cost, buffer overflow, plain record class
     _ = @import("exec/session/reconcile/reconcile_test.zig"); // barrier hardening: differential vs on-disk oracle, concurrency, overflow/bound

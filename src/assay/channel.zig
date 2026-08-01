@@ -5,7 +5,7 @@
 //! `std.debug.print` calls straight to stderr. Three problems compounded:
 //!
 //!   1. The C-ABI/session contract "an embedding host must never see us write to
-//!      stdout/stderr or `exit`" (src/root.zig, ADR-352) was held only by
+//!      stdout/stderr or `exit`" (src/root.zig) was held only by
 //!      auditing all 90 sites — one stray `debug.print` on a warm path would
 //!      break it silently.
 //!   2. The warm daemon dropped diagnostics entirely (it can't write the
@@ -24,14 +24,48 @@
 //! `envUsize`/`envFlag`) is the one place `GIST_*` knobs are read.
 
 const std = @import("std");
+const brand = @import("brand.zig");
 
-// ── env-knob vocabulary — the one place a `GIST_*` variable is read ──
+/// The prefix this program signs a diagnostic with (`"gist: "` by default).
+/// Concatenate it into the format literal — `diag(tag ++ "output truncated\n",
+/// .{})` — so the line names whichever binary is actually running. Folded at
+/// comptime, so it costs nothing and cannot move the bytes of a program that
+/// keeps the default identity.
+pub const tag = brand.active.name ++ ": ";
 
-/// A `getenv` that arrives as a slice (null when unset). Every `GIST_*`/`HOME`/
-/// XDG probe goes through here rather than a scattered `std.c.getenv` +
-/// `std.mem.span` pair per site.
+// ── env-knob vocabulary — the one place a branded variable is read ──
+
+/// A `getenv` that arrives as a slice (null when unset). Every branded knob and
+/// every `HOME`/XDG probe goes through here rather than a scattered
+/// `std.c.getenv` + `std.mem.span` pair per site. Takes a FULL name: the
+/// unbranded environment (`HOME`, `NO_COLOR`, `TERM_PROGRAM`) is spelled here
+/// directly, while a knob this ecosystem owns goes through `knob` below.
 pub fn envSpan(key: [*:0]const u8) ?[]const u8 {
     return if (std.c.getenv(key)) |v| std.mem.span(v) else null;
+}
+
+/// A knob in this ecosystem's own namespace, named by its suffix: `knob("DIR")`
+/// reads `GIST_DIR`. The prefix is folded in at comptime, so an embedder that
+/// rebrands moves every knob at once and no call site spells the namespace.
+pub fn knob(comptime suffix: []const u8) ?[]const u8 {
+    return envSpan(brand.knobName(suffix));
+}
+
+/// `knob` under the "explicitly on" policy — present, non-empty, not a falsy
+/// spelling.
+pub fn knobFlag(comptime suffix: []const u8) bool {
+    return envFlag(brand.knobName(suffix));
+}
+
+/// `knob` under the "merely present" policy, where even `=0` counts. Reserved
+/// for the gate knobs whose whole job is to be set by a harness.
+pub fn knobSet(comptime suffix: []const u8) bool {
+    return knob(suffix) != null;
+}
+
+/// `knob` parsed as a base-10 `usize`, or null when unset or unparsable.
+pub fn knobUsize(comptime suffix: []const u8) ?usize {
+    return envUsize(brand.knobName(suffix));
 }
 
 /// The shared "explicitly off" spelling for boolean knobs: `0`/`false`/`no`
@@ -72,7 +106,7 @@ pub fn envFlag(key: [*:0]const u8) bool {
 /// sibling loader knob `GIST_NO_PARALLEL_LOAD` (corpus.zig) is deliberately
 /// separate — a different plane (index load), gated by `envFlag`.
 pub fn serialForced() bool {
-    return envSpan("GIST_NO_PARALLEL") != null;
+    return knobSet("NO_PARALLEL");
 }
 
 // ── the diagnostic lenses (was: four separate `*_TRACE` env vars) ──
@@ -85,7 +119,7 @@ pub fn serialForced() bool {
 ///
 /// `fault` is the odd one out: not a phase but a disposition — every failure
 /// the kernel deliberately spared because it could not change the answer
-/// (`fault.spare`, ADR-373 law 8). Off by default, so best-effort work stays
+/// (`fault.spare`, fault-channel law 8). Off by default, so best-effort work stays
 /// quiet; lit, it is the only way to see a spared failure at all.
 ///
 /// `link` is the OSC-8 hyperlink decision (`cli/beacon.zig`): whether this run
@@ -209,12 +243,12 @@ pub const Policy = struct { sink: Sink = .stderr, json_default: bool = false, le
 
 pub fn install(p: Policy) void {
     default_sink = p.sink;
-    lens_mask.store(p.lenses orelse if (envSpan("GIST_TRACE")) |s| parseLenses(s) else 0, .monotonic);
+    lens_mask.store(p.lenses orelse if (knob("TRACE")) |s| parseLenses(s) else 0, .monotonic);
     // A freshly installed policy speaks. The message switches are FLAGS, not
     // environment, so they cannot be read here — `muffle` lands them once the
     // argv is parsed, which is still before anything can walk a tree.
     muffled.store(0, .monotonic);
-    format_json = if (envSpan("GIST_TRACE_FORMAT")) |f|
+    format_json = if (knob("TRACE_FORMAT")) |f|
         std.ascii.eqlIgnoreCase(f, "json")
     else
         p.json_default;
@@ -223,7 +257,7 @@ pub fn install(p: Policy) void {
 /// Whether summary/trace lines should render as NDJSON. `run_json` is the
 /// verb's own `--json` flag; `GIST_TRACE_FORMAT` overrides it when set.
 pub fn jsonFormat(run_json: bool) bool {
-    return if (envSpan("GIST_TRACE_FORMAT") != null) format_json else run_json;
+    return if (knobSet("TRACE_FORMAT")) format_json else run_json;
 }
 
 /// A scoped thread-local sink override. `end()` restores the prior sink — pair
@@ -351,7 +385,7 @@ test "note is gated by its chatter class; diag is not" {
 
     // A muffled run still gets everything the switch does not govern — a
     // summary or truncation notice is not a file message.
-    diag("gist: output truncated\n", .{});
+    diag(tag ++ "output truncated\n", .{});
     try std.testing.expectEqualStrings("gist: output truncated\n", buf.items);
 
     buf.clearRetainingCapacity();

@@ -6,11 +6,13 @@
 // convention until it is written here. Judged by `ward verify` (the ward
 // gate riding in each consumer's CI).
 //
-// Post-split scope (the ecosystem cut of 2026-07-29): this package is the
-// LIBRARY — syntax, engines, corpus, cold pipeline, warm resident core, and
-// the analytic api. The compression-kinship tiers live in `relate`; the
-// daemon transport, CLI faces, and C ABI live in `gist`; the composed face
-// lives in `blast`. Each carries its own contract/*.ward.
+// Post-split scope (the ecosystem cut of 2026-07-29, amended 2026-07-30):
+// this package is the LIBRARY — syntax, engines, corpus, cold pipeline, warm
+// resident core, the FM-index + shelf, and the analytic api. The
+// compression-kinship tiers (and the cento quoter over this package's
+// FM-index) live in `relate`; the daemon transport, CLI faces, and C ABI
+// live in `gist`; the composed face lives in `blast`. Each carries its own
+// contract/*.ward.
 
 package irregex {
     // root.zig is the module's public face: it re-exports every tier (and the
@@ -52,8 +54,8 @@ tiers {
     // under `corpus/index/` on disk because that is what it frames, but it
     // sits HERE on the page because the crest sieve stamps its schema with
     // the same signet the corpus artifacts use — pure byte discipline, no
-    // corpus knowledge. (It is also what `relate`'s codex kernel seals its
-    // payloads with, reached through root's `inner` seam.)
+    // corpus knowledge. (It is also what the FM-index seals its payloads
+    // with, one tier up.)
     frame       corpus/index/frame/**
 
     // ── Pure compute. No argv, no walk, no emit. ────────────────────────────
@@ -63,6 +65,14 @@ tiers {
     // hash-consed DAG, the succinct structures: arithmetic and structure with
     // no product opinion.
     math        kernel/math/**
+
+    // The FM-index composition over the succinct floors above (SA-IS → BWT →
+    // wavelet → RRR). Pure compute: count/locate/restore over one byte
+    // string, plus a sealed save/load that uses the wire floor. It sat in
+    // `relate` until gist's `codex` verb and the relate face crossed each
+    // other through it; an index tier belongs below the corpus index
+    // artifacts and above the math it stands on.
+    codex       kernel/codex/**
 
     // The SIMD scanners and the literal-lane vocabulary they share with the
     // regex composer.
@@ -110,10 +120,11 @@ tiers {
     // a days-old artifact still answer correctly.
     fresh       corpus/fresh/**
 
-    // The remaining persisted artifacts over the corpus — content shard and
-    // phantom map. (The kinship artifacts — atlas, fragment atlas, codex
-    // shelf — moved to `relate` with the metrics that write them.)
-    index       corpus/index/content/** corpus/index/phantom/**
+    // The remaining persisted artifacts over the corpus — content shard,
+    // phantom map, and the FM-index shelf (the multi-doc SHLF wrapping the
+    // codex tier above). The kinship artifacts — atlas and fragment atlas —
+    // stay in `relate` with the metrics that write them.
+    index       corpus/index/content/** corpus/index/phantom/** corpus/index/shelf/**
 
     // ── Surface: vocabulary, then transports. ───────────────────────────────
 
@@ -133,6 +144,16 @@ tiers {
     // The analytic plane's Zig-side API, driving the session from above.
     // (The C-ABI plane over it lives in `gist`.)
     api         surface/api.zig surface/api_test.zig
+
+    // The C-ABI plane: the substrate every package's ABI returns (status,
+    // fault, rows) and this package's own regex-over-text verbs. Highest tier
+    // because it is a transport — it reaches down into the compiled-query
+    // kernel, the capture arms, and cold's `-S` predicate, and nothing reaches
+    // back. `exports.zig` sits here too but is deliberately NOT reachable from
+    // root: it is the `libirregex` artifact's root, so its `export fn`s are
+    // emitted once, by the library named after them, rather than by every
+    // sibling package that imports this module.
+    ffi         surface/ffi/**
 }
 
 // Guest lists: regions only the named importers may reach at all.
