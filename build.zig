@@ -353,6 +353,144 @@ pub fn build(b: *std.Build) void {
             test_step.dependOn(&obj.step);
         }
     }
+
+    // ── the shared measurement instruments ──
+    // Published as named modules rather than kept private, because the lanes
+    // that read them do not all live here: `gist`'s `gist-bench` reaches these
+    // three through its dependency on this package, the same way it reaches
+    // `brigade.zig`. That is the whole reason `bench/apparatus/harness` is in
+    // `.paths`. Keeping ONE probe registry across both repos is what lets a
+    // competitor race over there and an engine rung over here be compared by
+    // class name; a second copy would silently stop meaning the same thing.
+    const probes = b.addModule("probes", .{
+        .root_source_file = b.path("bench/apparatus/harness/probes.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const pmu = b.addModule("pmu", .{
+        .root_source_file = b.path("bench/apparatus/harness/pmu.zig"),
+        .target = target,
+        .optimize = optimize,
+        // It reaches libSystem and the kperf frameworks through `dlopen`, so the
+        // module needs libc on its own account — not only when a lane that
+        // imports it happens to ask for it.
+        .link_libc = true,
+    });
+    const stats = b.addModule("stats", .{
+        .root_source_file = b.path("bench/apparatus/harness/stats.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    // The verdict math every lane in both repos reports through — bootstrap CI
+    // and Mann-Whitney. Nothing else compiles it, so without this it is dead
+    // code that happens to be trusted.
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = stats })).step);
+    // The meter is trusted the same way, and for a sharper reason: it decides
+    // whether every cycles/byte number in the certificate is a measurement or a
+    // zero. Its tests are adverse — a swapped struct field, a short read, a
+    // per-process counter masquerading as per-thread, or a cycle count that is
+    // secretly wall-clock each fail one of them.
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = pmu })).step);
+
+    // ── the measurement lab ──
+    // Deliberately OFF the default install step: a bare `zig build` (and every
+    // parity gate that rebuilds a product binary) pays only for the library and
+    // its C ABI. Each lab executable installs on its own named step, so the
+    // documented `sudo zig-out/bin/<exe>` re-runs keep working after e.g.
+    // `zig build portbound`; `zig build lab` installs all of them at once.
+    //
+    // Only ENGINE lanes live here. The `gist-bench` harness moved to the `gist`
+    // package with the binary it measures: its session mode drives a live
+    // `gist serve` daemon, and this package cannot depend on the one downstream
+    // of it. See gist/bench/README.md.
+    const lab_step = b.step("lab", "Build + install the measurement-lab executables → zig-out/bin");
+
+    // A rung that races an accelerator against the shipped ladder has to be
+    // compiled the way the shipped ladder is, or the ratio is about the build
+    // mode rather than the machine. Certificate lanes instead honour whatever
+    // `-Doptimize` the caller asked for, since a cycles/byte number is a claim
+    // about THIS build.
+    const lab_optimize = b.option(
+        std.builtin.OptimizeMode,
+        "lab-optimize",
+        "optimize mode for the production-posture rungs (default ReleaseFast — they race the shipped ladder)",
+    ) orelse .ReleaseFast;
+    const speed = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = lab_optimize,
+        .pic = true,
+    });
+    floor.under(speed);
+
+    const Lane = struct {
+        step: []const u8,
+        exe: []const u8,
+        root: []const u8,
+        blurb: []const u8,
+        /// Production posture (races the shipped ladder) vs the caller's mode.
+        posture: enum { shipped, asked } = .shipped,
+        instrument: ?[]const u8 = null,
+        /// `pmu.zig` reaches Apple's private kperf through `dlopen`.
+        libc: bool = false,
+        /// Lanes carrying their own unit tests, folded into `zig build test`.
+        tested: bool = false,
+    };
+    for ([_]Lane{
+        // Certificate layers — each answers "how far is this from a stated limit".
+        .{ .step = "roofline", .exe = "gist-roofline", .root = "bench/bounds/roofline/bandwidth.zig", .posture = .asked, .instrument = "pmu", .libc = true, .tested = true, .blurb = "Layer-C optimality cert: STREAM read-bandwidth ceiling vs gist's scan" },
+        .{ .step = "portbound", .exe = "gist-portbound", .root = "bench/bounds/port/measure.zig", .posture = .asked, .instrument = "pmu", .libc = true, .tested = true, .blurb = "Layer-B′ optimality cert: measured on-machine port bound (sudo for cycles)" },
+        .{ .step = "lowerbound", .exe = "gist-lowerbound", .root = "bench/bounds/lowerbound/audit.zig", .posture = .asked, .instrument = "probes", .blurb = "Layer-D optimality cert: fail-closed algorithmic-floor byte-touch audit" },
+        .{ .step = "scale", .exe = "gist-scale", .root = "bench/rungs/sliver/scale.zig", .posture = .asked, .instrument = "probes", .blurb = "Layer-J: fail-closed sub-trigram candidate-byte audit (directory vs sliver tier)" },
+        .{ .step = "indexq", .exe = "gist-indexq", .root = "bench/rungs/sieve/indexq.zig", .posture = .asked, .instrument = "probes", .blurb = "Layer-L optimality cert: candidate-byte selectivity head-to-head vs csearch's own formula" },
+        // Production rungs — each races one real accelerator against the real ladder.
+        .{ .step = "crest", .exe = "crest", .root = "bench/rungs/crest/bench.zig", .blurb = "Crest production proof: sound forced-class-run sieve — pruning + speed vs the real matcher" },
+        .{ .step = "sieve", .exe = "sieve", .root = "bench/rungs/sieve/bench.zig", .blurb = "Quotient-sieve production proof: per-position soundness, measured selectivity, kernel speed vs the shipped DFA" },
+        .{ .step = "compose-rung", .exe = "compose-rung", .root = "bench/rungs/shuffle/bench.zig", .blurb = "Composition-rung production proof: whole-buffer agreement with the shipped DFA, interleaved throughput, and the armed-skip boundary row" },
+        .{ .step = "parabix-rung", .exe = "parabix-rung", .root = "bench/rungs/parabix/bench.zig", .blurb = "Parabix-rung production proof: corpus-scale agreement with the shipped ladder, negative-case throughput vs both baselines, and the refusal rows" },
+        .{ .step = "automata-rung", .exe = "automata-rung", .root = "bench/rungs/automata/bench.zig", .blurb = "Automata-layout proof: per-pattern automaton shape, and the match test priced both ways over one machine" },
+        .{ .step = "patternid-rung", .exe = "patternid-rung", .root = "bench/rungs/patternid/bench.zig", .blurb = "PatternID gate: state-count cost of carrying a pattern mask in the determinizer's state key" },
+        .{ .step = "multipattern", .exe = "multipattern", .root = "bench/rungs/multipattern/bench.zig", .blurb = "Multi-pattern race arm: per-document attribution throughput, fail-closed against N independent searches" },
+        .{ .step = "sweep-rung", .exe = "sweep-rung", .root = "bench/rungs/sweep/bench.zig", .blurb = "Sweep-rung consumer proof: each recursive analysis raced against the fused interned-AST sweep, alone and bundled, fail-closed on any disagreement" },
+        .{ .step = "ladder-price", .exe = "ladder-price", .root = "bench/rungs/price/bench.zig", .blurb = "Ladder price plane: re-time every auction coefficient in isolation (verify), and gate the auction's per-pattern picks against the measured-fastest machine (regret)" },
+        .{ .step = "engine-census", .exe = "engine-census", .root = "bench/rungs/census/bench.zig", .instrument = "probes", .blurb = "Engine census: which ladder machine each certificate probe class actually compiles to" },
+    }) |lane| {
+        const shipped = lane.posture == .shipped;
+        const mod = b.createModule(.{
+            .root_source_file = b.path(lane.root),
+            .target = target,
+            .optimize = if (shipped) lab_optimize else optimize,
+        });
+        mod.addImport("irregex", if (shipped) speed else engine);
+        if (lane.instrument) |name| mod.addImport(name, if (std.mem.eql(u8, name, "pmu")) pmu else probes);
+        if (lane.libc) mod.link_libc = true;
+
+        const exe = b.addExecutable(.{ .name = lane.exe, .root_module = mod });
+        const install = &b.addInstallArtifact(exe, .{}).step;
+        lab_step.dependOn(install);
+
+        // Every lane runs from the package root. In the monorepo this was three
+        // levels up, because the corpus and the package were different trees;
+        // here they are the same tree.
+        const run = b.addRunArtifact(exe);
+        run.setCwd(b.path("."));
+        if (b.args) |args| run.addArgs(args);
+        const step = b.step(lane.step, lane.blurb);
+        step.dependOn(&run.step);
+        step.dependOn(install);
+        if (lane.tested) test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = mod })).step);
+    }
+
+    // Layer-B drift guard: the `probes/` copies must stay ≡ the real production
+    // hot loops. Test-only — it publishes no number, it just refuses to let a
+    // silent copy/production divergence ship inside a stale certificate.
+    const probes_drift = b.createModule(.{
+        .root_source_file = b.path("bench/bounds/port/probes_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    probes_drift.addImport("irregex", engine);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = probes_drift })).step);
 }
 
 /// Hang `shards` independent `Run` steps off one compiled test binary, each

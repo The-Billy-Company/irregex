@@ -41,7 +41,7 @@ const rows = irregex.ffi.rows;
 /// text's true count instead of the window's. (`irregex_group_name` arrived in
 /// the same revision and would not have bumped anything.)
 export fn irregex_abi_version() u32 {
-    return 2;
+    return irregex.abi();
 }
 
 /// The engine semver, NUL-terminated and static, so a binding can version-gate

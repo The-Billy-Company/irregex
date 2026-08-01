@@ -13,9 +13,9 @@ kernel, LLVM, the Go tree and the Rust tree), on the same bytes, and reports:
     "GitHub scale" is usually actually decided.
 
 Statistics are NOT reimplemented here: medians, bootstrap CIs and the
-Mann-Whitney dominance verdict all come from `bench/certify/certify_stats.py`.
+Mann-Whitney dominance verdict all come from `bench/apparatus/stats.py`.
 
-Fairness follows `bench/races/_compete.sh`:
+Fairness follows `gist/bench/dominance/races/field.sh`:
   · GIST_UNCAP=1, so gist's agent-context output budget cannot clip a
     repo-wide result and flatter its own timing,
   · every engine answers the same question in the same mode — files-with-matches
@@ -26,8 +26,9 @@ Fairness follows `bench/races/_compete.sh`:
     a corpus disagreement is visible rather than hidden inside a latency ratio.
 
 Usage:
-  python3 bench/sliver/scale_race.py --corpus DIR --gist-dir DIR \
-      --zoekt-dir DIR --csearch-idx FILE [--reps 5] [--out DIR]
+  python3 bench/rungs/sliver/scale_race.py --corpus DIR --gist-dir DIR \
+      --zoekt-dir DIR --csearch-idx FILE [--reps 5] [--out DIR] \
+      [--corpus-label "shallow clones of linux, llvm, go, rust · 352316 files"]
 """
 
 from __future__ import annotations
@@ -46,13 +47,13 @@ import time
 
 HERE = Path(__file__).resolve().parent
 KERNEL = HERE.parent.parent.parent
-sys.path.insert(0, str(KERNEL / "bench" / "certificate" / "report"))
+sys.path.insert(0, str(KERNEL / "bench" / "apparatus"))
 from stats import dominance, median_ci  # noqa: E402
 
 
 GIST = KERNEL / "zig-out" / "bin" / "gist"
 
-# Byte-identical to bench/certify/ratio_regress.py PROBES — the canonical 12.
+# Byte-identical to gist/bench/certificate/guard/ratio.py PROBES — the canonical 12.
 # Needles are host-repo shaped on purpose: keeping them identical is what makes
 # a scale cell comparable to the certificate's own cell. A needle absent from
 # this corpus still measures something real (the pure index-filter path), and
@@ -137,7 +138,9 @@ def measure(a: argparse.Namespace) -> list[Cell]:
                     c.times_ms.append(ms)
                     c.hits = n
                     if err and n == 0:
-                        c.failed = err.strip().splitlines()[0][:120] if err.strip() else ""
+                        c.failed = (
+                            err.strip().splitlines()[0][:120] if err.strip() else ""
+                        )
             except (OSError, subprocess.SubprocessError) as exc:  # unobtainable lane
                 c.failed = f"{type(exc).__name__}: {exc}"[:120]
             cells.append(c)
@@ -165,7 +168,9 @@ def report(cells: list[Cell], a: argparse.Namespace) -> int:
         for tool in ("gist", "zoekt", "csearch"):
             c = by.get((cls, tool))
             if c is None or not c.times_ms:
-                rows.append(f"{cls}\t{tool}\t\t\t\t\t\t\t{(c.failed if c else 'missing')}")
+                rows.append(
+                    f"{cls}\t{tool}\t\t\t\t\t\t\t{(c.failed if c else 'missing')}"
+                )
                 continue
             med, lo, hi = median_ci(c.times_ms, rng)
             sp, p, verdict = "", "", ""
@@ -179,7 +184,7 @@ def report(cells: list[Cell], a: argparse.Namespace) -> int:
     (out / "scale_race.json").write_text(
         json.dumps(
             {
-                "corpus": str(a.corpus),
+                "corpus": a.corpus_label,
                 "reps": a.reps,
                 "cells": [
                     {
@@ -209,8 +214,17 @@ def main() -> int:
     ap.add_argument("--reps", type=int, default=5)
     ap.add_argument("--seed", type=int, default=20260727)
     ap.add_argument("--out", type=Path, default=HERE / "artifact")
+    # What the corpus WAS, never where it sat. The artifact is committed, so a
+    # bare `--corpus` path would publish whichever laptop minted it; the label
+    # falls back to the leaf name, which cannot carry a home directory.
+    ap.add_argument(
+        "--corpus-label",
+        default=None,
+        help="description recorded in the artifact (default: the corpus directory name)",
+    )
     a = ap.parse_args()
-    print(f"scale race · corpus {a.corpus} · reps {a.reps}", flush=True)
+    a.corpus_label = a.corpus_label or a.corpus.resolve().name
+    print(f"scale race · corpus {a.corpus_label} · reps {a.reps}", flush=True)
     return report(measure(a), a)
 
 

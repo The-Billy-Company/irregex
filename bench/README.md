@@ -23,26 +23,42 @@ about:
 
 | Bucket                                  | What it holds                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`apparatus/`](apparatus/README.md)     | The instruments: [`harness/`](apparatus/harness/README.md) — the native `gist-bench` Zig binaries, the microscopic cycles/byte certificate, PMU counters, bootstrap statistics, the shared probe registry — plus `roots.sh`, which answers where this package's siblings are. The corpora fetcher went with `conformance/`, its only consumer.                                                                                                                                             |
+| [`apparatus/`](apparatus/README.md)     | The instruments: [`harness/`](apparatus/harness/README.md) — the three shared modules both repos import (`probes` the 12-class registry, `pmu` the hardware counters, `stats` the bootstrap/Mann-Whitney verdict math) — plus `roots.sh`, which answers where this package's siblings are. The corpora fetcher went with `conformance/`, its only consumer, and the `gist-bench` binary went with the product it drives.                                                                     |
 | `gist/bench/conformance/` | Fail-closed correctness — **no timing claim lives here** (sibling `gist` repo): `gates/` (parity · contract · oracle), `rgsuite/` the rg drop-in replay, `diag/` the stderr goldens, `shapes/` the CLI-shape admission matrix, `targets/` the cross-compile matrix, and `apparatus/corpora/` the multi-corpus fetcher they run over. It oracles the `gist` binary against `rg`, so it lives with the package that builds one. The Layer G retrieval contract lives in the sibling `relate` repo under `relate/bench/conformance/relate/`. |
 | `gist/bench/dominance/`     | Measured product performance in the world (sibling `gist` repo): `gist/bench/dominance/races/` the competitor field (`field.sh`) + the multi-tool head-to-heads, `gist/bench/dominance/session/` the warm resident-daemon tier, `gist/bench/dominance/evaluate/` the operational envelope (lifecycle cost, footprint, scaling, concurrency).                                                                                                                                    |
 | `gist/bench/certificate/` | The published Dominance-and-Fit claim (was `certify/`, sibling `gist` repo): `gist/bench/certificate/mint/` the mint + layer splicers, `gist/bench/certificate/report/` `stats.py` + the layer report writers, `gist/bench/certificate/guard/` roster/artifact/release/ratio checks, `gist/bench/certificate/ledger/` the mint history, and `gist/bench/certificate/artifact/` the **frozen** published receipts.                                                                                 |
 | [`bounds/`](bounds/README.md)           | Layers B–D — distance from a stated limit: [`port/`](bounds/port/README.md) the `llvm-mca` static + measured µarch bound, [`roofline/`](bounds/roofline/README.md) the memory roof, [`lowerbound/`](bounds/lowerbound/README.md) the information-theoretic candidate-byte floor. Layer F (codex self-index vs the order-0 entropy bound) lives in `relate/bench/bounds/codex/`.                                                                                                                   |
 | [`rungs/`](rungs/README.md)             | Per-mechanism production proofs: [`crest/`](rungs/crest/README.md) Layer E + its evidence bundle, plus [`sieve/`](rungs/sieve/README.md), [`shuffle/`](rungs/shuffle/README.md), [`parabix/`](rungs/parabix/README.md), [`multipattern/`](rungs/multipattern/README.md), and [`sliver/`](rungs/sliver/README.md).                                                                                                                                                                      |
 
+Every lane installs on its own named step, and `zig build lab` installs all of
+them at once. A bare `zig build` builds only the library and its C ABI:
+
 ```bash
 cd <irregex-repo-root>
-zig build -Doptimize=ReleaseFast bench                  # default host source roots
-zig build -Doptimize=ReleaseFast bench -- services libs  # scope to specific dirs
+zig build lab                                    # all 15 → zig-out/bin
+zig build -Doptimize=ReleaseFast crest           # one production rung
+zig build -Doptimize=ReleaseFast roofline        # one certificate layer
+zig build -Doptimize=ReleaseFast portbound       # Layer B′ with real cycles
 ```
 
-The run step sets cwd to the repo root, so dir arguments are repo-root-relative.
-The candidate count `apparatus/harness/bench.zig` reports is a **sound superset** of
+Each run step sets cwd to the package root, so path arguments are
+package-relative. Certificate layers honour whatever `-Doptimize` you ask for,
+since a cycles/byte number is a claim about *this* build; production rungs
+default to `-Dlab-optimize=ReleaseFast` because a rung that races the shipped
+ladder has to be compiled the way the shipped ladder is, or the ratio is about
+the build mode rather than the machine.
+
+The one certificate layer that is **not** a claim about this build is the memory
+roof: `bounds/roofline/` measures the machine's bandwidth, and a Debug build of
+its vector reduction measures its own codegen instead — flat across all three
+cache tiers, roughly an order of magnitude low, and indistinguishable from a
+real hierarchy once it is JSON. It therefore refuses to run unoptimized rather
+than publish, so the `-Doptimize` above is not advice.
+
+The corpus-slate lane (`zig build bench`) moved to the `gist` package with the
+`gist-bench` binary. The candidate count it reports is a **sound superset** of
 `rg`'s true match-file count; the gap is the trigram filter's false-positive
-rate (verified away by the caller's real regex). Set the numbers against a
-correctly-scoped `rg` baseline (scope to source dirs — an unscoped `rg` from
-repo root drags through ~99 GB of `target/` caches and is not a fair
-comparison).
+rate, verified away by the caller's real regex.
 
 ## The field — who gist races
 
@@ -116,7 +132,7 @@ scenario-level detail.
 ceiling — no transport, no process spawn), which no client actually rides. The
 honest warm-**product** path — a persistent client dialing a `gist serve` daemon
 once and replaying the slate over that warm connection — is certified separately
-in `gist/bench/dominance/session/` (`make bench-gist-session`), the only sound
+in `gist/bench/dominance/session/`, the only sound
 basis for a "warm is Nx faster than ripgrep" claim.
 
 ## Fairness — stated, not hand-waved
@@ -186,10 +202,10 @@ rgsuite parity proves `--include-zero` correct, which is not a speed claim.
 | **F** | codex self-index — compressed below the order-0 entropy coder yet searchable, n-free O(m) count, byte-exact decodable, self-recognizing (cento)                         | ✅ implemented |
 | **G** | relate — retrieval by description length: boundary (paraphrases outside exact search) + recall@1 + anti-redundant pack (a contract, not a race)                         | ✅ implemented |
 
-Every layer writes into the same `.local/gist-verify/CERTIFICATE.md`. Layer A
-has several lanes — the **microscopic** half (`zig build certify`,
-`apparatus/harness/certify.zig` + `apparatus/harness/pmu.zig` + `apparatus/harness/stats.zig`, see
-`apparatus/harness/README.md`), the **macroscopic** half (`gist/bench/certificate/mint/mint.sh` +
+Every layer writes into the same `.gist/CERTIFICATE.md`. Layer A
+has several lanes — the **microscopic** half (`zig build certify` in the sibling
+`gist` repo, whose `certify.zig` reads this package's `pmu` and `stats` modules
+from `apparatus/harness/`), the **macroscopic** half (`gist/bench/certificate/mint/mint.sh` +
 `gist/bench/certificate/report/stats.py`, see `gist/bench/certificate/README.md`), the warm resident tier, and
 the `--rank` lane. **One command** mints or refreshes the whole thing — Layers
 B/B′/C/D/E/F and the warm/`--rank`/relate lanes are spliced automatically and
@@ -202,13 +218,11 @@ repo root, so they run from anywhere.
 
 ```bash
 # Refresh Layers B/B′/C/D/E/F onto an existing Layer-A bundle (the common path):
-make bench-gist-certify
-# or:  bash ../gist/bench/certificate/mint/splice.sh
+bash ../gist/bench/certificate/mint/splice.sh
 
 # Full mint (A micro + PMU if sudo + A macro race + warm + --rank + B–F + relate) + publish:
-CERT_FULL=1 CERT_PUBLISH=1 CERT_SUDO=1 make bench-gist-certify
-# or:  CERT_PUBLISH_DIR=../gist/bench/certificate/artifact CERT_SUDO=1 \
-#        bash ../gist/bench/certificate/mint/mint.sh
+CERT_PUBLISH_DIR=../gist/bench/certificate/artifact CERT_SUDO=1 \
+  bash ../gist/bench/certificate/mint/mint.sh
 ```
 
 Run a full mint in a clean, stable checkout or isolated worktree. A live
