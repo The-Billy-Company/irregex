@@ -37,7 +37,7 @@ const oom = @import("../../../../surface/cli/outcome.zig").oom;
 /// `notice.printWalkError` (the line an unreadable DIRECTORY already produced)
 /// and the flag is the queue's existing `walk_error` atomic, so the two halves
 /// of "could not look" reach the exit code through one path. Discovered by
-/// `bench/rgsuite/fuzz.py` differentially against live rg.
+/// `gist/bench/conformance/rgsuite/fuzz.py` differentially against live rg.
 fn reportUnopenable(w: *Worker, rel: []const u8, e: slurp.OpenFault) void {
     notice.printWalkError(rel, e);
     w.q.walk_error.store(true, .release);
@@ -146,6 +146,9 @@ pub fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.po
     // re-arms that arm (via `covered = 0`), where forgetting it published the
     // file as ordinary text — the `--stats`-only binary leak the fuzzer found.
     var prefix_nul = false;
+    // How many RAW prefix bytes stage 1's proof actually read — 0 when no proof
+    // ran at all. The whole-file gate below skips past them; see `proven`.
+    var read: usize = 0;
     if (!utf16) {
         // NUL in buffer 0: rg's emission cutoff is the start of the buffer that
         // holds the first NUL — the very first — so an implicit walked file
@@ -155,16 +158,25 @@ pub fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.po
         // to the full read + `emitBody` binary path. `--binary`-style explicit
         // files never reach this engine.
         if (cfg.binary_detect and std.mem.indexOfScalar(u8, sf.prefix, 0) != null) {
-            if (!o.stats) return;
+            if (!o.stats) {
+                // Unlistable, but its abandoned search found no match — which is
+                // what `--files-without-match` succeeds on (`sink.unlisted`).
+                if (o.mode.negated()) cfg.sink.noteUnlisted();
+                return;
+            }
             prefix_nul = true;
         }
         // `-l` / `--files-without-match` + a >64 KiB file: a match PROVEN
         // inside the NUL-free prefix settles the file — `-l` emits and skips
         // the tail; `--files-without-match` skips WITHOUT emitting (the file
         // HAS a match). Absence proves nothing; fall through to the full read.
-        if (cfg.fast_l and sf.more and prefixProvesMatch(w, re, ingest.visibleBody(o.encoding, sf.prefix))) {
-            if (!o.mode.negated()) w.bufferPath(dpath, if (o.null_sep) "\x00" else o.outTerm());
-            return;
+        if (cfg.fast_l and sf.more) {
+            const proof = provePrefix(w, re, sf.prefix);
+            if (proof.matched) {
+                if (!o.mode.negated()) w.bufferPath(dpath, if (o.null_sep) "\x00" else o.outTerm());
+                return;
+            }
+            read = proof.read;
         }
     }
     // A file past the scratch cap is read by MAPPING it (`slurp.readTail`), and
@@ -192,12 +204,25 @@ pub fn searchFile(w: *Worker, a: std.mem.Allocator, scratch: []u8, dirfd: std.po
     // space: `body` aliases `raw` at offset 0 or 3 (UTF-8 BOM strip), so the
     // scanned raw prefix maps to `body[0..covered]`. A UTF-16 transcode built a
     // fresh buffer with different bytes — nothing carries over (covered = 0).
-    const covered: usize = if (utf16 or prefix_nul) 0 else sf.prefix.len -| (@intFromPtr(body.ptr) - @intFromPtr(raw.bytes.ptr));
+    const bom: usize = if (utf16) 0 else @intFromPtr(body.ptr) - @intFromPtr(raw.bytes.ptr);
+    const covered: usize = if (utf16 or prefix_nul) 0 else sf.prefix.len -| bom;
+    // Bytes stage 1's PROOF read, in body space — a different question with a
+    // different answer. `covered` is how far the NUL sniff got (the whole
+    // prefix); the proof reads only `provableRegion`, the prefix cut at its
+    // LAST terminator. A prefix holding no `\n` at all proves nothing and reads
+    // nothing, so deriving the gate's start from `covered` told it to skip
+    // 64 KiB the gate had never looked at — `-l` then dropped a match sitting
+    // at the head of a long line, and `--files-without-match` asserted the file
+    // had none. Ask stage 1 what it read instead of re-deriving it here: two
+    // derivations of one fact is exactly how these drifted apart.
+    const proven: usize = if (prefix_nul) 0 else read -| bom;
     // Literal gate. When stage 1 already proved the equivalence gate absent
-    // from the prefix (fast_l + tail present + no early emit above), rescan
-    // only the unseen tail plus a `gate_len-1` straddle window for a literal
-    // crossing the seam — not the whole body again.
-    const gate_from: usize = if (cfg.fast_l and cfg.lits_equiv and !utf16 and sf.more) covered -| (cfg.gate_len - 1) else 0;
+    // from what it read (fast_l + tail present + no early emit above), rescan
+    // only the unproven remainder plus a `gate_len-1` straddle window for a
+    // literal crossing the seam — not the whole body again. Only the
+    // equivalence arm proves the LITERAL absent; a regex proof that came back
+    // undecided says nothing about the gate.
+    const gate_from: usize = if (cfg.lits_equiv) proven -| (cfg.gate_len - 1) else 0;
     emitBody(w, a, dpath, body, covered, gate_from);
 }
 
@@ -257,32 +282,33 @@ fn emitBody(w: *Worker, a: std.mem.Allocator, dpath: []const u8, body: []const u
     // Stage 1 already proved `body[0..covered]` NUL-free (or we'd have
     // returned there), so the first NUL — the binary cutoff — can only sit in
     // the unseen tail. Sub-cap files are fully covered: zero bytes rescanned.
-    if (cfg.binary_detect) if (std.mem.indexOfScalarPos(u8, body, covered, 0)) |nul| {
-        // rg's -U slice model runs only when the pattern can actually match
-        // `\n`; slice model + NUL beyond the 64K sniff means the searcher never
-        // notices it — ordinary text, fall through to the normal path.
-        if (!(slice_model and !binary.multilineBinary(body.len, nul))) {
-            // `--files-without-match` skips binary files entirely (serial
-            // `fileWithoutMatch` returns before any emit) — no path, no tally.
-            if (o.mode.negated()) return;
-            if (o.stats) {
-                // Walked (implicit) file: only the committed prefix was
-                // searched — mirror serial `renderFile`'s binary stats arm.
-                const searched = body[0..binary.committedPrefix(body, nul)];
-                var blines: std.ArrayList([]const u8) = .empty;
-                if (!o.multiline) legible.collectLines(a, searched, o.term(), &blines);
-                const fs = stats.fileMatchStats(re, a, o, searched, blines.items, cfg.line_needle);
-                w.stats.bump(.files_searched);
-                w.stats.add(.matches, fs.matches);
-                w.stats.add(.matched_lines, fs.lines);
-                w.stats.add(.bytes_searched, fs.bytes);
-            }
-            const matched = binary.handleBinary(a, re, o, &buf, &em, dpath, false, body, nul, cfg.show_name);
-            if (matched or buf.items.len > 0)
-                w.deliver(if (matched) .bin_hit else .text_plain, dpath, buf.items, em.chrome);
+    if (binaryCut(w, re, body, covered)) |nul| {
+        if (o.stats) {
+            // Walked (implicit) file: only the committed prefix was
+            // searched — mirror serial `renderFile`'s binary stats arm.
+            const searched = body[0..binary.committedPrefix(body, nul)];
+            var blines: std.ArrayList([]const u8) = .empty;
+            if (!o.multiline) legible.collectLines(a, searched, o.term(), &blines);
+            const fs = stats.fileMatchStats(re, a, o, searched, blines.items, cfg.line_needle);
+            w.stats.bump(.files_searched);
+            w.stats.add(.matches, fs.matches);
+            w.stats.add(.matched_lines, fs.lines);
+            w.stats.add(.bytes_searched, fs.bytes);
+        }
+        // `--files-without-match` lists no binary file (serial
+        // `fileWithoutMatch` returns before any emit) — but the search it
+        // abandoned found nothing, which is exactly what this mode succeeds
+        // on, so the file still carries the exit code. After the tally
+        // above: rg counts it as a searched file either way.
+        if (o.mode.negated()) {
+            cfg.sink.noteUnlisted();
             return;
         }
-    };
+        const matched = binary.handleBinary(a, re, o, &buf, &em, dpath, false, body, nul, cfg.show_name);
+        if (matched or buf.items.len > 0)
+            w.deliver(if (matched) .bin_hit else .text_plain, dpath, buf.items, em.chrome);
+        return;
+    }
 
     // `-l` / `--files-without-match` fused fast path: one early-exit whole-
     // buffer pass answers the file — no line split, no per-line engine
@@ -342,6 +368,24 @@ fn emitBody(w: *Worker, a: std.mem.Allocator, dpath: []const u8, body: []const u
     if (!cfg.heading and buf.items.len > before_body) w.deliver(.text_plain, dpath, buf.items, em.chrome);
 }
 
+/// This run's binary cutoff in `body` at or after `from` — the offset of the
+/// first NUL that makes the file binary — or null when the file is text as far
+/// as gist is concerned.
+///
+/// One definition, because the gate-miss path and the post-gate path must reach
+/// the SAME verdict about the same bytes: whether a file is listable does not
+/// depend on which of the two got there first. The `-U` clause is rg's: the
+/// slice model runs only when the pattern can match `\n`, and a NUL past the
+/// 64K sniff window is one the searcher never notices, so the file stays
+/// ordinary text.
+fn binaryCut(w: *Worker, re: *const Matcher, body: []const u8, from: usize) ?usize {
+    const o = w.cfg.o;
+    if (!w.cfg.binary_detect) return null;
+    const nul = std.mem.indexOfScalarPos(u8, body, from, 0) orelse return null;
+    if (multiline.sliceModel(re, o) and !binary.multilineBinary(body.len, nul)) return null;
+    return nul;
+}
+
 /// Whole-file gate / alts miss: settle `--files-without-match` (emit) and
 /// `--stats` (tally a zero-hit searched file); every other mode is a silent drop.
 /// `--stats` bytes follow the binary cutoff: a walked file with a NUL only
@@ -349,6 +393,16 @@ fn emitBody(w: *Worker, a: std.mem.Allocator, dpath: []const u8, body: []const u
 fn gateMiss(w: *Worker, dpath: []const u8, body: []const u8) void {
     const o = w.cfg.o;
     if (o.mode.negated()) {
+        // A walked binary is unlistable in this mode, and the gate proving the
+        // pattern absent does not make it listable — the same verdict the
+        // post-gate arm above reaches, just from the other side of the gate.
+        // Stage 1's prefix sniff catches most of these before the gate ever
+        // runs, but not all: a NUL in the TAIL of a >64 KiB file is past the
+        // sniffed prefix, and a transform run (`-E`/`-z`) skips stage 1
+        // entirely. Both arrived here and got listed, where rg lists neither.
+        // The abandoned search still found no match, which is what this mode
+        // succeeds on, so the file carries the exit code without a row.
+        if (binaryCut(w, w.cfg.re.?, body, 0) != null) return w.cfg.sink.noteUnlisted();
         w.bufferPath(dpath, if (o.null_sep) "\x00" else o.outTerm());
     } else if (o.stats) {
         var bytes = body.len;
@@ -400,28 +454,44 @@ fn provableRegion(re: *const Matcher, o: Opts, prefix: []const u8) ?[]const u8 {
     return prefix[0 .. nl + 1];
 }
 
-/// Positive-only match proof over a buffer prefix: true ⇒ the file matches
-/// (emit and skip its tail); false ⇒ undecided (the caller reads the rest).
-/// The pure-literal equivalence answers from SIMD `contains` alone — no engine
-/// run at all. The regex path sees only COMPLETE lines: a truncated line's cut
-/// IS an end-of-line to `docMatch`, so `$`/`^$` could fire where the real line
+/// What stage 1 settled from the first BUFCAP bytes, and at what cost.
+///
+/// `matched` is positive-only: true ⇒ the file matches (emit and skip its
+/// tail); false ⇒ undecided (the caller reads the rest). `read` is how many RAW
+/// prefix bytes the proof looked at, and it is reported rather than re-derived
+/// because it is NOT `prefix.len`: `provableRegion` can cut the region short or
+/// refuse it outright, and a caller that assumes otherwise skips its own scan
+/// past bytes nobody read.
+const Proof = struct { matched: bool, read: usize };
+
+/// Positive-only match proof over a buffer prefix. The pure-literal
+/// equivalence answers from SIMD `contains` alone — no engine run at all. The
+/// regex path sees only COMPLETE lines: a truncated line's cut IS an
+/// end-of-line to `docMatch`, so `$`/`^$` could fire where the real line
 /// continues — a false positive `provableRegion`'s terminator bound removes.
-fn prefixProvesMatch(w: *Worker, re: *const Matcher, prefix: []const u8) bool {
+fn provePrefix(w: *Worker, re: *const Matcher, prefix: []const u8) Proof {
     const cfg = w.cfg;
-    const region = provableRegion(re, cfg.o, prefix) orelse return false;
-    if (cfg.lits_equiv) {
-        if (cfg.file_needle) |n| return n.in(region);
-        return simd.containsAny(region, cfg.file_alts);
-    }
-    if (cfg.o.multiline) {
-        // `-U`: sound only for an assertion-free pattern (substring-closed —
-        // nothing zero-width can assert against the cut).
-        if (!re.bufPrefixClosed()) return false;
-        const sim = w.matchSim() orelse return false;
-        return re.bufMatch(sim, region);
-    }
-    const sim = w.matchSim() orelse return false;
-    return re.docMatch(sim, region);
+    const visible = ingest.visibleBody(cfg.o.encoding, prefix);
+    const region = provableRegion(re, cfg.o, visible) orelse return .{ .matched = false, .read = 0 };
+    // Back into RAW prefix space: `visibleBody` may have dropped a BOM off the
+    // front, and the caller measures this against the raw staged read.
+    const read = (prefix.len - visible.len) + region.len;
+    const matched = blk: {
+        if (cfg.lits_equiv) {
+            if (cfg.file_needle) |n| break :blk n.in(region);
+            break :blk simd.containsAny(region, cfg.file_alts);
+        }
+        if (cfg.o.multiline) {
+            // `-U`: sound only for an assertion-free pattern (substring-closed
+            // — nothing zero-width can assert against the cut).
+            if (!re.bufPrefixClosed()) break :blk false;
+            const sim = w.matchSim() orelse break :blk false;
+            break :blk re.bufMatch(sim, region);
+        }
+        const sim = w.matchSim() orelse break :blk false;
+        break :blk re.docMatch(sim, region);
+    };
+    return .{ .matched = matched, .read = read };
 }
 
 const Regex = @import("../../../../kernel/regex/regex.zig").Regex;
@@ -438,6 +508,12 @@ test "a stage-1 proof never reaches past the last terminator rg committed" {
     defer m.deinit();
     const o = Opts{ .mode = .files_with_matches };
 
+    // The second bug this pins, on the consuming side: because the region can
+    // be null or short, a caller may only skip its own scan past what the proof
+    // READ (`Proof.read`), never past the prefix. Deriving the whole-file
+    // literal gate's start from the NUL sniff's extent instead had `-l` skip
+    // 64 KiB nobody had looked at, and `--files-without-match` swear a matching
+    // file held nothing.
     var blob: [1024]u8 = undefined;
     @memset(&blob, 'x');
     @memcpy(blob[100..103], "dog");
