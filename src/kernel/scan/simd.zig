@@ -39,8 +39,8 @@ const Mask = std.meta.Int(.unsigned, vlen);
 
 /// Wide stride for the streaming scanners (`memchr`, `countByte`, reverse
 /// memchr, the caseless single-byte find, AND `indexOfPos`'s block loop).
-/// Measured on Apple M4 (2026-07-22, `bench/harness/flagbench` + a width
-/// sweep): a 64-byte stride runs a one-load-per-block scan ~35% faster than
+/// Measured on Apple M4 (2026-07-22, `gist/bench/apparatus/harness/flagbench` +
+/// a width sweep): a 64-byte stride runs a one-load-per-block scan ~35% faster than
 /// the 16-byte NEON register — the out-of-order core issues the four
 /// independent 16-byte loads across its NEON pipes. A `vlen`-wide second tier
 /// runs before the scalar tail so a haystack shorter than `scan_vlen` still
@@ -367,16 +367,68 @@ pub fn planFor(needle: []const u8) ?Plan {
 /// single-probe shape for nothing. `refine` makes the incumbent compete on the
 /// same sample; the defect is recorded in full at `calibrate.refine`.
 pub fn planOn(hay: []const u8, needle: []const u8) ?Plan {
-    const static = planFor(needle) orelse return null;
-    if (assay.envFlag("GIST_NO_CALIBRATE")) return static;
+    return refineOn(hay, needle, planFor(needle) orelse return null);
+}
+
+/// `GIST_NO_CALIBRATE`, answered once per PROCESS rather than once per document.
+///
+/// `refineOn` is a per-FILE seam, so this used to be a `getenv` — a linear walk
+/// of `environ` with a `strcmp` per entry — for every file in the corpus. On this
+/// tree (880 files, 16 KB mean) that is ~50 ns against a ~205 ns scan of the mean
+/// document: a debug knob priced at a quarter of the work it gates, paid by every
+/// run whether or not anybody set it.
+///
+/// Sound because the answer cannot move under us. Nothing in this kernel calls
+/// `setenv`, and the A/B this knob exists for spawns a CHILD per arm
+/// (`research/pincer/PROOF.md` §7.2.e — "child CPU time in one binary against
+/// itself"), so "one binary" means one BUILD and each arm gets a fresh
+/// environment read at its own startup. Relaxed ordering because the value is a
+/// pure function of that environment: two threads racing here compute the same
+/// answer, and a thread reading `unknown` after another has stored simply
+/// computes it again.
+var calibrate_knob: std.atomic.Value(u8) = .init(0); // 0 unknown · 1 on · 2 off
+
+fn calibrateOff() bool {
+    return switch (calibrate_knob.load(.monotonic)) {
+        0 => blk: {
+            const off = assay.envFlag("GIST_NO_CALIBRATE");
+            calibrate_knob.store(@as(u8, 1) + @intFromBool(off), .monotonic);
+            break :blk off;
+        },
+        1 => false,
+        else => true,
+    };
+}
+
+/// `planOn` against an incumbent the caller ALREADY HOLDS, returning the plan to
+/// scan with — `held` itself whenever the sample has no material objection, which
+/// is the common answer.
+///
+/// This is the seam every per-document caller wants, and the reason is arithmetic.
+/// `planOn` re-derives its own incumbent through `planFor` -> `planOf` ->
+/// `anchor.select`, which since the distance-conditioned joint correction costs
+/// ~21 ns on a 4-8 byte needle and ~37 ns at 32 — but every per-document caller in
+/// this kernel (`Gate.plan`, `LiteralSet.single.plan`) minted exactly that value
+/// once per query and is holding it in a field. So the whole re-derivation is
+/// recomputing a constant. Measured over this tree's 880 documents, a `planOn` per
+/// file cost 142 ns of which `refine` itself — the part that reads the document —
+/// was 2.7; the other 139 were the recomputed static plan plus the two `getenv`s
+/// on the way to it.
+///
+/// **Idempotence lives in the caller now.** `planOn` bought it by refusing to look
+/// at what the caller held; a caller that remembers the static plan and always
+/// passes THAT (see `Gate.base`) gets the same property, because `held` is then by
+/// construction the same value on file N+1 as it was on file N.
+pub fn refineOn(hay: []const u8, needle: []const u8, held: Plan) Plan {
+    if (calibrateOff()) return held;
     // `anchor.Pair`'s slots carry meaning and are NOT sorted, but a candidate
     // offset SET is unordered, so the incumbent goes in low-first. Declining
-    // returns `static` untouched, so the slot assignment survives a decline.
-    const held = if (static.pair.probe < static.pair.confirm)
-        [2]usize{ static.pair.probe, static.pair.confirm }
+    // returns `held` untouched, so the slot assignment survives a decline.
+    const pinned = if (held.pair.probe < held.pair.confirm)
+        [2]usize{ held.pair.probe, held.pair.confirm }
     else
-        [2]usize{ static.pair.confirm, static.pair.probe };
-    const off = calibrate.refine(hay, needle, block_bytes, held) orelse return static;
+        [2]usize{ held.pair.confirm, held.pair.probe };
+    const off = calibrate.refine(hay, needle, block_bytes, pinned) orelse return held;
     return .{
         .pair = .{ .probe = off[0], .confirm = off[1] },
         // RECORDED DEFECT (calibrate.zig doc, defect 3): `singleProbeWorthwhile`
@@ -766,7 +818,29 @@ pub const Gate = struct {
     /// gate goes straight to `memchr`. Build through `of`/`caseless` rather than a
     /// struct literal — there is deliberately no default, because a literal that
     /// omitted the field would compile and silently give the per-call cost back.
+    ///
+    /// This is the EFFECTIVE plan — what `in` and `find` scan with, read straight
+    /// with no further choice to make. `on` overwrites it with the document's pair
+    /// and keeps the static one in `base`.
     plan: ?Plan,
+
+    /// The static incumbent `on` refines against, once `on` has overwritten `plan`
+    /// with a document's pair. `null` means `plan` IS still the static one, so a
+    /// gate straight out of `of` needs no second field written.
+    ///
+    /// It exists so `on` can be cheap AND idempotent at once. Idempotence needs the
+    /// incumbent to be the same value on file N+1 as on file N (see `on`); the old
+    /// shape bought that by re-deriving it from `bytes` through `planFor`, an
+    /// `anchor.select` per FILE (~21 ns at 4-8 bytes, ~37 at 32) to reconstruct a
+    /// value the gate was already holding. Keeping it makes that recomputation
+    /// unnecessary rather than merely faster.
+    ///
+    /// Deliberately NOT consulted by `in`/`find`. Those two are the hit-to-hit jump
+    /// loop, called once per MATCH, and folding the choice into them cost a
+    /// measured 1.2x on `-o` and `-l` over this tree — a per-hit branch traded for a
+    /// per-file `select` is the wrong direction by three orders of magnitude in
+    /// call count. The scan reads one field; only `on` reads two.
+    base: ?Plan = null,
 
     /// The case-sensitive gate, plan included.
     pub fn of(bytes: []const u8) Gate {
@@ -794,21 +868,33 @@ pub const Gate = struct {
     /// line: `planOn`'s size gate is a claim about the scan the sampling amortizes
     /// against, so pricing it on a slice of the work prices the wrong thing.
     ///
-    /// **Idempotent, and that is load-bearing.** `planOn` derives its own incumbent
-    /// from `bytes` via `planFor`, never from `self.plan`, so re-planning an
-    /// already-re-planned gate re-decides from the static pair rather than
-    /// compounding. Without that property a long-lived gate (an `Emitter` walks
-    /// many files) would carry the previous document's pair into the next one as
-    /// the incumbent to beat — and `refine` only swaps on a MATERIAL improvement,
-    /// so a pair that was ideal for file N would be defended into file N+1 where it
-    /// is the pathological one. That is the whole failure this method is meant to
-    /// remove, so it must not be reintroduced by holding state here.
+    /// **Idempotent, and that is load-bearing.** The incumbent is `base orelse
+    /// plan` — the static pair on the first call and, once `base` is written, that
+    /// same static pair forever after. So re-planning an already-re-planned gate
+    /// re-decides from the static pair rather than compounding. Without that
+    /// property a long-lived gate (an `Emitter` walks many files, assigning the
+    /// result back over itself) would carry the previous document's pair into the
+    /// next one as the incumbent to beat — and `refine` only swaps on a MATERIAL
+    /// improvement, so a pair that was ideal for file N would be defended into file
+    /// N+1 where it is the pathological one. That is the whole failure this method
+    /// exists to remove.
+    ///
+    /// It used to buy that property by re-deriving the incumbent through
+    /// `planFor(bytes)` and deliberately ignoring `self.plan` — correct, but an
+    /// `anchor.select` per FILE to reconstruct a constant the gate was already
+    /// carrying. Remembering it gets the same guarantee out of the type.
     ///
     /// A caseless gate returns unchanged: `containsCaseless` is a different kernel
     /// that takes no pair, so there is nothing to re-plan.
     pub fn on(self: Gate, hay: []const u8) Gate {
         if (self.ci) return self;
-        return .{ .bytes = self.bytes, .ci = false, .equiv = self.equiv, .plan = planOn(hay, self.bytes) };
+        const held = self.base orelse self.plan orelse return self;
+        return .{
+            .bytes = self.bytes,
+            .equiv = self.equiv,
+            .plan = refineOn(hay, self.bytes, held),
+            .base = held,
+        };
     }
 
     pub inline fn in(self: Gate, hay: []const u8) bool {

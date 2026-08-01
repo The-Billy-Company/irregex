@@ -125,8 +125,13 @@ pub const LiteralSet = struct {
             .single => |one| one,
             else => return self.find(hay, from),
         };
-        const position = if (simd.planOn(hay, single.needle)) |p|
-            simd.indexOfPosWith(hay, from, single.needle, p)
+        // `single.plan` IS `planFor(needle)`, so it is exactly the incumbent
+        // `planOn` would have re-derived here — once per document, at an
+        // `anchor.select` a piece. Refine against the field instead; `null` there
+        // means `planFor` declined (1-byte needle, or the hoist stood down), which
+        // is the same condition under which `planOn` returns null.
+        const position = if (single.plan) |held|
+            simd.indexOfPosWith(hay, from, single.needle, simd.refineOn(hay, single.needle, held))
         else
             simd.indexOfPos(hay, from, single.needle);
         return switch (self.authority) {
