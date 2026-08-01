@@ -1,0 +1,2271 @@
+{
+ "generator": "scripts/python_oracle.py",
+ "reference": "the irregex Python binding",
+ "engine_version": "0.3.0",
+ "cases": [
+  {
+   "name": "literal",
+   "pattern": "cat",
+   "flags": {},
+   "text": "cat",
+   "spans": [
+    [
+     0,
+     3
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      3
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "literal",
+   "pattern": "cat",
+   "flags": {},
+   "text": "concatenate",
+   "spans": [
+    [
+     3,
+     6
+    ]
+   ],
+   "groups": [
+    [
+     [
+      3,
+      6
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "literal",
+   "pattern": "cat",
+   "flags": {},
+   "text": "a cat and a cat",
+   "spans": [
+    [
+     2,
+     5
+    ],
+    [
+     12,
+     15
+    ]
+   ],
+   "groups": [
+    [
+     [
+      2,
+      5
+     ]
+    ],
+    [
+     [
+      12,
+      15
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "literal",
+   "pattern": "cat",
+   "flags": {},
+   "text": "",
+   "spans": [],
+   "groups": [],
+   "is_match": false
+  },
+  {
+   "name": "alternation",
+   "pattern": "cat|dog",
+   "flags": {},
+   "text": "a cat, a dog",
+   "spans": [
+    [
+     2,
+     5
+    ],
+    [
+     9,
+     12
+    ]
+   ],
+   "groups": [
+    [
+     [
+      2,
+      5
+     ]
+    ],
+    [
+     [
+      9,
+      12
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "alternation",
+   "pattern": "cat|dog",
+   "flags": {},
+   "text": "catdog",
+   "spans": [
+    [
+     0,
+     3
+    ],
+    [
+     3,
+     6
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      3
+     ]
+    ],
+    [
+     [
+      3,
+      6
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "alternation",
+   "pattern": "cat|dog",
+   "flags": {},
+   "text": "bird",
+   "spans": [],
+   "groups": [],
+   "is_match": false
+  },
+  {
+   "name": "class",
+   "pattern": "[0-9]+",
+   "flags": {},
+   "text": "a1b22c333",
+   "spans": [
+    [
+     1,
+     2
+    ],
+    [
+     3,
+     5
+    ],
+    [
+     6,
+     9
+    ]
+   ],
+   "groups": [
+    [
+     [
+      1,
+      2
+     ]
+    ],
+    [
+     [
+      3,
+      5
+     ]
+    ],
+    [
+     [
+      6,
+      9
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "class",
+   "pattern": "[0-9]+",
+   "flags": {},
+   "text": "0",
+   "spans": [
+    [
+     0,
+     1
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      1
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "class",
+   "pattern": "[0-9]+",
+   "flags": {},
+   "text": "none",
+   "spans": [],
+   "groups": [],
+   "is_match": false
+  },
+  {
+   "name": "class",
+   "pattern": "[0-9]+",
+   "flags": {},
+   "text": "10.20.30",
+   "spans": [
+    [
+     0,
+     2
+    ],
+    [
+     3,
+     5
+    ],
+    [
+     6,
+     8
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      2
+     ]
+    ],
+    [
+     [
+      3,
+      5
+     ]
+    ],
+    [
+     [
+      6,
+      8
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "dot_star",
+   "pattern": "a.*b",
+   "flags": {},
+   "text": "axxb",
+   "spans": [
+    [
+     0,
+     4
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      4
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "dot_star",
+   "pattern": "a.*b",
+   "flags": {},
+   "text": "ab",
+   "spans": [
+    [
+     0,
+     2
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      2
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "dot_star",
+   "pattern": "a.*b",
+   "flags": {},
+   "text": "ba",
+   "spans": [],
+   "groups": [],
+   "is_match": false
+  },
+  {
+   "name": "dot_star",
+   "pattern": "a.*b",
+   "flags": {},
+   "text": "aXbXaXb",
+   "spans": [
+    [
+     0,
+     7
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      7
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "star_nullable",
+   "pattern": "a*",
+   "flags": {},
+   "text": "abc",
+   "spans": [
+    [
+     0,
+     1
+    ],
+    [
+     2,
+     2
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      1
+     ]
+    ],
+    [
+     [
+      2,
+      2
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "star_nullable",
+   "pattern": "a*",
+   "flags": {},
+   "text": "",
+   "spans": [],
+   "groups": [],
+   "is_match": false
+  },
+  {
+   "name": "star_nullable",
+   "pattern": "a*",
+   "flags": {},
+   "text": "aaa",
+   "spans": [
+    [
+     0,
+     3
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      3
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "star_nullable",
+   "pattern": "a*",
+   "flags": {},
+   "text": "bbb",
+   "spans": [
+    [
+     0,
+     0
+    ],
+    [
+     1,
+     1
+    ],
+    [
+     2,
+     2
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      0
+     ]
+    ],
+    [
+     [
+      1,
+      1
+     ]
+    ],
+    [
+     [
+      2,
+      2
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "star_nullable",
+   "pattern": "a*",
+   "flags": {},
+   "text": "abc\n",
+   "spans": [
+    [
+     0,
+     1
+    ],
+    [
+     2,
+     2
+    ],
+    [
+     3,
+     3
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      1
+     ]
+    ],
+    [
+     [
+      2,
+      2
+     ]
+    ],
+    [
+     [
+      3,
+      3
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "star_nullable",
+   "pattern": "a*",
+   "flags": {},
+   "text": "aXaXa",
+   "spans": [
+    [
+     0,
+     1
+    ],
+    [
+     2,
+     3
+    ],
+    [
+     4,
+     5
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      1
+     ]
+    ],
+    [
+     [
+      2,
+      3
+     ]
+    ],
+    [
+     [
+      4,
+      5
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "empty_pattern",
+   "pattern": "",
+   "flags": {},
+   "text": "",
+   "spans": [],
+   "groups": [],
+   "is_match": false
+  },
+  {
+   "name": "empty_pattern",
+   "pattern": "",
+   "flags": {},
+   "text": "a",
+   "spans": [
+    [
+     0,
+     0
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      0
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "empty_pattern",
+   "pattern": "",
+   "flags": {},
+   "text": "abc",
+   "spans": [
+    [
+     0,
+     0
+    ],
+    [
+     1,
+     1
+    ],
+    [
+     2,
+     2
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      0
+     ]
+    ],
+    [
+     [
+      1,
+      1
+     ]
+    ],
+    [
+     [
+      2,
+      2
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "empty_pattern",
+   "pattern": "",
+   "flags": {},
+   "text": "\n",
+   "spans": [
+    [
+     0,
+     0
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      0
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "word_boundary",
+   "pattern": "\\b",
+   "flags": {},
+   "text": "ab cd",
+   "spans": [
+    [
+     0,
+     0
+    ],
+    [
+     2,
+     2
+    ],
+    [
+     3,
+     3
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      0
+     ]
+    ],
+    [
+     [
+      2,
+      2
+     ]
+    ],
+    [
+     [
+      3,
+      3
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "word_boundary",
+   "pattern": "\\b",
+   "flags": {},
+   "text": "",
+   "spans": [],
+   "groups": [],
+   "is_match": false
+  },
+  {
+   "name": "word_boundary",
+   "pattern": "\\b",
+   "flags": {},
+   "text": " ",
+   "spans": [],
+   "groups": [],
+   "is_match": false
+  },
+  {
+   "name": "word_boundary",
+   "pattern": "\\b",
+   "flags": {},
+   "text": "a",
+   "spans": [
+    [
+     0,
+     0
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      0
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "optional",
+   "pattern": "x?",
+   "flags": {},
+   "text": "axbxc",
+   "spans": [
+    [
+     0,
+     0
+    ],
+    [
+     1,
+     2
+    ],
+    [
+     3,
+     4
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      0
+     ]
+    ],
+    [
+     [
+      1,
+      2
+     ]
+    ],
+    [
+     [
+      3,
+      4
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "optional",
+   "pattern": "x?",
+   "flags": {},
+   "text": "xxx",
+   "spans": [
+    [
+     0,
+     1
+    ],
+    [
+     1,
+     2
+    ],
+    [
+     2,
+     3
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      1
+     ]
+    ],
+    [
+     [
+      1,
+      2
+     ]
+    ],
+    [
+     [
+      2,
+      3
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "optional",
+   "pattern": "x?",
+   "flags": {},
+   "text": "",
+   "spans": [],
+   "groups": [],
+   "is_match": false
+  },
+  {
+   "name": "nullable_group",
+   "pattern": "(a*)(b*)",
+   "flags": {},
+   "text": "aabb",
+   "spans": [
+    [
+     0,
+     4
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      4
+     ],
+     [
+      0,
+      2
+     ],
+     [
+      2,
+      4
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "nullable_group",
+   "pattern": "(a*)(b*)",
+   "flags": {},
+   "text": "ab",
+   "spans": [
+    [
+     0,
+     2
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      2
+     ],
+     [
+      0,
+      1
+     ],
+     [
+      1,
+      2
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "nullable_group",
+   "pattern": "(a*)(b*)",
+   "flags": {},
+   "text": "",
+   "spans": [],
+   "groups": [],
+   "is_match": false
+  },
+  {
+   "name": "nullable_group",
+   "pattern": "(a*)(b*)",
+   "flags": {},
+   "text": "ba",
+   "spans": [
+    [
+     0,
+     1
+    ],
+    [
+     1,
+     2
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      1
+     ],
+     [
+      0,
+      0
+     ],
+     [
+      0,
+      1
+     ]
+    ],
+    [
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      2,
+      2
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "unicode_literal",
+   "pattern": "café",
+   "flags": {},
+   "text": "le café noir",
+   "spans": [
+    [
+     3,
+     8
+    ]
+   ],
+   "groups": [
+    [
+     [
+      3,
+      8
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "unicode_literal",
+   "pattern": "café",
+   "flags": {},
+   "text": "CAFÉ",
+   "spans": [],
+   "groups": [],
+   "is_match": false
+  },
+  {
+   "name": "unicode_literal",
+   "pattern": "café",
+   "flags": {},
+   "text": "cafe",
+   "spans": [],
+   "groups": [],
+   "is_match": false
+  },
+  {
+   "name": "unicode_icase",
+   "pattern": "café",
+   "flags": {
+    "ignore_case": true
+   },
+   "text": "le CAFÉ noir",
+   "spans": [
+    [
+     3,
+     8
+    ]
+   ],
+   "groups": [
+    [
+     [
+      3,
+      8
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "unicode_icase",
+   "pattern": "café",
+   "flags": {
+    "ignore_case": true
+   },
+   "text": "Café",
+   "spans": [
+    [
+     0,
+     5
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      5
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "unicode_class",
+   "pattern": "\\w+",
+   "flags": {},
+   "text": "naïve café",
+   "spans": [
+    [
+     0,
+     6
+    ],
+    [
+     7,
+     12
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      6
+     ]
+    ],
+    [
+     [
+      7,
+      12
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "unicode_class",
+   "pattern": "\\w+",
+   "flags": {},
+   "text": "日本語 text",
+   "spans": [
+    [
+     0,
+     9
+    ],
+    [
+     10,
+     14
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      9
+     ]
+    ],
+    [
+     [
+      10,
+      14
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "unicode_class",
+   "pattern": "\\w+",
+   "flags": {},
+   "text": "a_b-c",
+   "spans": [
+    [
+     0,
+     3
+    ],
+    [
+     4,
+     5
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      3
+     ]
+    ],
+    [
+     [
+      4,
+      5
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "unicode_dot",
+   "pattern": ".",
+   "flags": {},
+   "text": "é",
+   "spans": [
+    [
+     0,
+     2
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      2
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "unicode_dot",
+   "pattern": ".",
+   "flags": {},
+   "text": "日本",
+   "spans": [
+    [
+     0,
+     3
+    ],
+    [
+     3,
+     6
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      3
+     ]
+    ],
+    [
+     [
+      3,
+      6
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "unicode_dot",
+   "pattern": ".",
+   "flags": {},
+   "text": "aé",
+   "spans": [
+    [
+     0,
+     1
+    ],
+    [
+     1,
+     3
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      1
+     ]
+    ],
+    [
+     [
+      1,
+      3
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "ascii_class",
+   "pattern": "\\w+",
+   "flags": {
+    "unicode": false
+   },
+   "text": "naïve café",
+   "spans": [
+    [
+     0,
+     2
+    ],
+    [
+     4,
+     6
+    ],
+    [
+     7,
+     10
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      2
+     ]
+    ],
+    [
+     [
+      4,
+      6
+     ]
+    ],
+    [
+     [
+      7,
+      10
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "ascii_class",
+   "pattern": "\\w+",
+   "flags": {
+    "unicode": false
+   },
+   "text": "abc def",
+   "spans": [
+    [
+     0,
+     3
+    ],
+    [
+     4,
+     7
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      3
+     ]
+    ],
+    [
+     [
+      4,
+      7
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "groups_numbered",
+   "pattern": "(\\w+)@(\\w+)",
+   "flags": {},
+   "text": "mail bob@host now",
+   "spans": [
+    [
+     5,
+     13
+    ]
+   ],
+   "groups": [
+    [
+     [
+      5,
+      13
+     ],
+     [
+      5,
+      8
+     ],
+     [
+      9,
+      13
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "groups_numbered",
+   "pattern": "(\\w+)@(\\w+)",
+   "flags": {},
+   "text": "no at sign",
+   "spans": [],
+   "groups": [],
+   "is_match": false
+  },
+  {
+   "name": "groups_named",
+   "pattern": "(?P<user>\\w+)@(?P<host>\\w+)",
+   "flags": {},
+   "text": "bob@host",
+   "spans": [
+    [
+     0,
+     8
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      8
+     ],
+     [
+      0,
+      3
+     ],
+     [
+      4,
+      8
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "groups_optional",
+   "pattern": "(a)|(b)",
+   "flags": {},
+   "text": "a",
+   "spans": [
+    [
+     0,
+     1
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      1
+     ],
+     [
+      0,
+      1
+     ],
+     [
+      -1,
+      -1
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "groups_optional",
+   "pattern": "(a)|(b)",
+   "flags": {},
+   "text": "b",
+   "spans": [
+    [
+     0,
+     1
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      1
+     ],
+     [
+      -1,
+      -1
+     ],
+     [
+      0,
+      1
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "groups_optional",
+   "pattern": "(a)|(b)",
+   "flags": {},
+   "text": "ab",
+   "spans": [
+    [
+     0,
+     1
+    ],
+    [
+     1,
+     2
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      1
+     ],
+     [
+      0,
+      1
+     ],
+     [
+      -1,
+      -1
+     ]
+    ],
+    [
+     [
+      1,
+      2
+     ],
+     [
+      -1,
+      -1
+     ],
+     [
+      1,
+      2
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "groups_optional",
+   "pattern": "(a)|(b)",
+   "flags": {},
+   "text": "c",
+   "spans": [],
+   "groups": [],
+   "is_match": false
+  },
+  {
+   "name": "groups_nested",
+   "pattern": "((a)(b)?)+",
+   "flags": {},
+   "text": "abaab",
+   "spans": [
+    [
+     0,
+     5
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      5
+     ],
+     [
+      3,
+      5
+     ],
+     [
+      3,
+      4
+     ],
+     [
+      4,
+      5
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "groups_nested",
+   "pattern": "((a)(b)?)+",
+   "flags": {},
+   "text": "a",
+   "spans": [
+    [
+     0,
+     1
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      1
+     ],
+     [
+      0,
+      1
+     ],
+     [
+      0,
+      1
+     ],
+     [
+      -1,
+      -1
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "fixed",
+   "pattern": "a.c",
+   "flags": {
+    "fixed": true
+   },
+   "text": "a.c",
+   "spans": [
+    [
+     0,
+     3
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      3
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "fixed",
+   "pattern": "a.c",
+   "flags": {
+    "fixed": true
+   },
+   "text": "abc",
+   "spans": [],
+   "groups": [],
+   "is_match": false
+  },
+  {
+   "name": "fixed",
+   "pattern": "a.c",
+   "flags": {
+    "fixed": true
+   },
+   "text": "xa.cx",
+   "spans": [
+    [
+     1,
+     4
+    ]
+   ],
+   "groups": [
+    [
+     [
+      1,
+      4
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "icase",
+   "pattern": "abc",
+   "flags": {
+    "ignore_case": true
+   },
+   "text": "ABC abc AbC",
+   "spans": [
+    [
+     0,
+     3
+    ],
+    [
+     4,
+     7
+    ],
+    [
+     8,
+     11
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      3
+     ]
+    ],
+    [
+     [
+      4,
+      7
+     ]
+    ],
+    [
+     [
+      8,
+      11
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "word",
+   "pattern": "cat",
+   "flags": {
+    "word": true
+   },
+   "text": "cat concatenate the cat.",
+   "spans": [
+    [
+     0,
+     3
+    ],
+    [
+     20,
+     23
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      3
+     ]
+    ],
+    [
+     [
+      20,
+      23
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "word",
+   "pattern": "cat",
+   "flags": {
+    "word": true
+   },
+   "text": "cats",
+   "spans": [],
+   "groups": [],
+   "is_match": false
+  },
+  {
+   "name": "word_group",
+   "pattern": "(c\\w+)",
+   "flags": {
+    "word": true
+   },
+   "text": "cat concat cow",
+   "spans": [
+    [
+     0,
+     3
+    ],
+    [
+     4,
+     10
+    ],
+    [
+     11,
+     14
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      3
+     ],
+     [
+      0,
+      3
+     ]
+    ],
+    [
+     [
+      4,
+      10
+     ],
+     [
+      4,
+      10
+     ]
+    ],
+    [
+     [
+      11,
+      14
+     ],
+     [
+      11,
+      14
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "smart_lower",
+   "pattern": "abc",
+   "flags": {
+    "smart_case": true
+   },
+   "text": "ABC abc",
+   "spans": [
+    [
+     0,
+     3
+    ],
+    [
+     4,
+     7
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      3
+     ]
+    ],
+    [
+     [
+      4,
+      7
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "smart_upper",
+   "pattern": "Abc",
+   "flags": {
+    "smart_case": true
+   },
+   "text": "ABC abc Abc",
+   "spans": [
+    [
+     8,
+     11
+    ]
+   ],
+   "groups": [
+    [
+     [
+      8,
+      11
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "pcre_lookahead",
+   "pattern": "foo(?=bar)",
+   "flags": {
+    "pcre": true
+   },
+   "text": "foobar foobaz",
+   "spans": [
+    [
+     0,
+     3
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      3
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "pcre_lookbehind",
+   "pattern": "(?<=\\$)\\d+",
+   "flags": {
+    "pcre": true
+   },
+   "text": "$42 and 43",
+   "spans": [
+    [
+     1,
+     3
+    ]
+   ],
+   "groups": [
+    [
+     [
+      1,
+      3
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "pcre_backref",
+   "pattern": "(\\w)\\1",
+   "flags": {
+    "pcre": true
+   },
+   "text": "aa bb ab cc",
+   "spans": [
+    [
+     0,
+     2
+    ],
+    [
+     3,
+     5
+    ],
+    [
+     9,
+     11
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      2
+     ],
+     [
+      0,
+      1
+     ]
+    ],
+    [
+     [
+      3,
+      5
+     ],
+     [
+      3,
+      4
+     ]
+    ],
+    [
+     [
+      9,
+      11
+     ],
+     [
+      9,
+      10
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "overlapping",
+   "pattern": "aa",
+   "flags": {},
+   "text": "aaaa",
+   "spans": [
+    [
+     0,
+     2
+    ],
+    [
+     2,
+     4
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      2
+     ]
+    ],
+    [
+     [
+      2,
+      4
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "overlapping",
+   "pattern": "aa",
+   "flags": {},
+   "text": "aaa",
+   "spans": [
+    [
+     0,
+     2
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      2
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "anchored",
+   "pattern": "^a",
+   "flags": {},
+   "text": "abc",
+   "spans": [
+    [
+     0,
+     1
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      1
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "anchored",
+   "pattern": "^a",
+   "flags": {},
+   "text": "bac",
+   "spans": [],
+   "groups": [],
+   "is_match": false
+  },
+  {
+   "name": "end_anchor",
+   "pattern": "c$",
+   "flags": {},
+   "text": "abc",
+   "spans": [
+    [
+     2,
+     3
+    ]
+   ],
+   "groups": [
+    [
+     [
+      2,
+      3
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "end_anchor",
+   "pattern": "c$",
+   "flags": {},
+   "text": "abc\n",
+   "spans": [],
+   "groups": [],
+   "is_match": false
+  },
+  {
+   "name": "end_anchor",
+   "pattern": "c$",
+   "flags": {},
+   "text": "cab",
+   "spans": [],
+   "groups": [],
+   "is_match": false
+  },
+  {
+   "name": "repeat_bound",
+   "pattern": "a{2,3}",
+   "flags": {},
+   "text": "a aa aaa aaaa",
+   "spans": [
+    [
+     2,
+     4
+    ],
+    [
+     5,
+     8
+    ],
+    [
+     9,
+     12
+    ]
+   ],
+   "groups": [
+    [
+     [
+      2,
+      4
+     ]
+    ],
+    [
+     [
+      5,
+      8
+     ]
+    ],
+    [
+     [
+      9,
+      12
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "anchor_start_caret",
+   "pattern": "^a",
+   "flags": {},
+   "text": "\nabc",
+   "spans": [],
+   "groups": [],
+   "is_match": false
+  },
+  {
+   "name": "anchor_start_caret",
+   "pattern": "^a",
+   "flags": {},
+   "text": "abc",
+   "spans": [
+    [
+     0,
+     1
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      1
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "anchor_start_caret",
+   "pattern": "^a",
+   "flags": {},
+   "text": "ab\nabc",
+   "spans": [
+    [
+     0,
+     1
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      1
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "anchor_start_text",
+   "pattern": "\\Aa",
+   "flags": {},
+   "text": "\nabc",
+   "spans": [],
+   "groups": [],
+   "is_match": false
+  },
+  {
+   "name": "anchor_start_text",
+   "pattern": "\\Aa",
+   "flags": {},
+   "text": "abc",
+   "spans": [
+    [
+     0,
+     1
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      1
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "anchor_start_text",
+   "pattern": "\\Aa",
+   "flags": {},
+   "text": "ab\nabc",
+   "spans": [
+    [
+     0,
+     1
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      1
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "anchor_end_dollar",
+   "pattern": "b$",
+   "flags": {},
+   "text": "ab\ncd",
+   "spans": [],
+   "groups": [],
+   "is_match": false
+  },
+  {
+   "name": "anchor_end_dollar",
+   "pattern": "b$",
+   "flags": {},
+   "text": "ab",
+   "spans": [
+    [
+     1,
+     2
+    ]
+   ],
+   "groups": [
+    [
+     [
+      1,
+      2
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "anchor_end_dollar",
+   "pattern": "b$",
+   "flags": {},
+   "text": "cd\nab",
+   "spans": [
+    [
+     4,
+     5
+    ]
+   ],
+   "groups": [
+    [
+     [
+      4,
+      5
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "anchor_end_text",
+   "pattern": "b\\z",
+   "flags": {},
+   "text": "ab\ncd",
+   "spans": [],
+   "groups": [],
+   "is_match": false
+  },
+  {
+   "name": "anchor_end_text",
+   "pattern": "b\\z",
+   "flags": {},
+   "text": "ab",
+   "spans": [
+    [
+     1,
+     2
+    ]
+   ],
+   "groups": [
+    [
+     [
+      1,
+      2
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "anchor_end_text",
+   "pattern": "b\\z",
+   "flags": {},
+   "text": "cd\nab",
+   "spans": [
+    [
+     4,
+     5
+    ]
+   ],
+   "groups": [
+    [
+     [
+      4,
+      5
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "anchor_both_line",
+   "pattern": "^abc$",
+   "flags": {},
+   "text": "x\nabc\ny",
+   "spans": [],
+   "groups": [],
+   "is_match": false
+  },
+  {
+   "name": "anchor_both_line",
+   "pattern": "^abc$",
+   "flags": {},
+   "text": "abc",
+   "spans": [
+    [
+     0,
+     3
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      3
+     ]
+    ]
+   ],
+   "is_match": true
+  },
+  {
+   "name": "anchor_both_text",
+   "pattern": "\\Aabc\\z",
+   "flags": {},
+   "text": "x\nabc\ny",
+   "spans": [],
+   "groups": [],
+   "is_match": false
+  },
+  {
+   "name": "anchor_both_text",
+   "pattern": "\\Aabc\\z",
+   "flags": {},
+   "text": "abc",
+   "spans": [
+    [
+     0,
+     3
+    ]
+   ],
+   "groups": [
+    [
+     [
+      0,
+      3
+     ]
+    ]
+   ],
+   "is_match": true
+  }
+ ]
+}

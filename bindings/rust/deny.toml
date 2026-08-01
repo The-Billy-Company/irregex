@@ -1,0 +1,42 @@
+# cargo-deny config (schema v2, cargo-deny 0.18 or newer).
+# https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+version = 2
+yanked = "warn"
+
+[licenses]
+version = 2
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Zlib",
+]
+
+[bans]
+multiple-versions = "allow"
+wildcards = "allow"
+
+# The crate has no runtime dependencies, and that is a property worth keeping.
+# Anything that would pull TLS, an async runtime, or a mock framework into a
+# regex binding's dependency graph is a design mistake rather than a choice.
+[[bans.deny]]
+name = "openssl-sys"
+reason = "A regex binding has no business linking TLS."
+
+[[bans.deny]]
+name = "native-tls"
+reason = "A regex binding has no business linking TLS."
+
+[[bans.deny]]
+name = "mockall"
+reason = "The engine is the thing under test; there is nothing here to mock."
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"

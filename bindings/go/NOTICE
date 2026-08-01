@@ -1,0 +1,35 @@
+irregex - the irregular-expression engine, Go binding
+Copyright 2026 The Billy Company
+
+Licensed under the Apache License, Version 2.0. See LICENSE.
+
+The static archives vendored in this module are compiled from the irregex
+engine and include the following third-party components, which carry their own
+licenses and copyright notices. Those notices are not superseded by the
+Apache License, Version 2.0.
+
+  * PCRE2 - Perl-Compatible Regular Expressions
+    BSD-3-Clause WITH PCRE2-exception
+    Copyright (c) 1997-2024 University of Cambridge
+    Copyright (c) 2009-2024 Zoltan Herczeg
+    The backend behind CompileOpts{PCRE: true}.
+
+  * libsais - linear-time suffix array construction
+    Apache-2.0
+    Copyright (c) 2021-2025 Ilya Grebnov
+
+  * Unicode Character Database, version 16.0.0
+    Unicode License v3
+    Copyright (c) 2024 Unicode, Inc. Unicode and the Unicode Logo are
+    registered trademarks of Unicode, Inc. in the U.S. and other countries.
+    The source of the generated Unicode property, case-folding, and script
+    tables.
+
+  * WHATWG Encoding Standard index tables
+    CC0-1.0 (public-domain dedication)
+    The source of the generated legacy-encoding decode tables.
+
+Algorithms and interface conventions implemented from published descriptions
+rather than from borrowed source - among them Aho-Corasick (1975), Hyperscan's
+Teddy prefilter, and Cox's trigram-index construction - carry no obligation
+here. They are credited where they are used.

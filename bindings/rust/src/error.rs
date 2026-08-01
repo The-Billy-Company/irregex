@@ -1,0 +1,418 @@
+//! The error type, and the one place a negative status becomes one.
+//!
+//! The C ABI answers with a status code and leaves per-incident detail in a
+//! thread-local fault slot. A binding that surfaced the number would make every
+//! caller re-learn the vocabulary, so nothing above this module ever sees an
+//! `i32`: [`fault`] reads the status sentence and the fault name together and
+//! returns a typed [`Error`].
+//!
+//! Three rules the file keeps. `IRREGEX_OOM` gets its own variant, because
+//! "the machine is out of memory" and "your pattern is wrong" call for
+//! different handling. No negative status is ever treated as a result, because
+//! folding one into "no match" is how a binding reports a failure as an answer.
+//!
+//! And a refused pattern is sorted by its **status code**, never by the fault
+//! name behind it. The header spends two paragraphs on this: `IRREGEX_STALE`
+//! means the linear grammar declined something PCRE2 can express, and
+//! `IRREGEX_INVALID` means nothing here accepts it. Those are different
+//! outcomes with different repairs, they are decidable from the return value
+//! alone, and the engine decides between them by asking PCRE2 rather than by
+//! consulting a list of constructs that could drift from it. Matching on the
+//! fault string would re-introduce exactly the drift the seam removed.
+
+use std::fmt;
+
+use crate::sys;
+
+/// One raw status code from the C ABI, with the library's own sentence for it.
+///
+/// Public because an unrecognised negative status is still a real answer and a
+/// caller logging it should be able to print the number the engine used.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Status(i32);
+
+impl Status {
+    /// A tier declined, and the caller is expected to answer through its
+    /// fallback. The one negative status that is not a failure.
+    pub const DECLINED: Self = Self(sys::STALE);
+
+    /// The engine ran out of memory.
+    pub const OUT_OF_MEMORY: Self = Self(sys::OOM);
+
+    /// The raw code, as `irregex.h` spells it.
+    #[must_use]
+    pub const fn code(self) -> i32 {
+        self.0
+    }
+
+    /// The library's static human sentence for this code.
+    #[must_use]
+    pub fn message(self) -> &'static str {
+        sys::status_message(self.0)
+    }
+}
+
+impl fmt::Display for Status {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let text = self.message();
+        if text.is_empty() {
+            return write!(f, "status {}", self.0);
+        }
+        write!(f, "{text} (status {})", self.0)
+    }
+}
+
+impl fmt::Debug for Status {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Status({}: {})", self.0, self.message())
+    }
+}
+
+/// Everything that can go wrong between a pattern and an answer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Error {
+    /// The engine would not compile this pattern, and said nothing about where.
+    ///
+    /// The refusals with no position are the engine's own ceilings rather than
+    /// a misplaced character - a pattern whose determinised form is too large,
+    /// too many alternatives, a literal too short to index. There is no offset
+    /// to point at because no single byte is the problem. A malformed pattern
+    /// is [`Error::Syntax`], which does have one.
+    Pattern {
+        /// The pattern source, as it was given.
+        pattern: String,
+        /// The status the refusal crossed the seam as.
+        status: Status,
+        /// The engine's per-incident fault name, when it left one.
+        detail: Option<String>,
+    },
+    /// A search over a valid pattern could not complete.
+    Search {
+        /// The status the failure crossed the seam as.
+        status: Status,
+        /// The engine's per-incident fault name, when it left one.
+        detail: Option<String>,
+    },
+    /// The engine's capture arm will not compile this pattern, so group detail
+    /// is unavailable for its matches. Searching still works: `is_match`,
+    /// `find` and `find_iter` answer, and only the `captures` family cannot.
+    Groups {
+        /// The pattern source, as it was given.
+        pattern: String,
+        /// The status the refusal crossed the seam as.
+        status: Status,
+        /// The engine's per-incident fault name, when it left one.
+        detail: Option<String>,
+    },
+    /// The engine could not allocate. Kept separate from every other failure
+    /// because it says nothing about the pattern.
+    OutOfMemory {
+        /// The engine's per-incident fault name, when it left one.
+        detail: Option<String>,
+    },
+    /// The linked library speaks a different C ABI than this crate was written
+    /// against. Reported instead of read, because the alternative to a loud
+    /// failure here is a struct misread quietly somewhere else.
+    Abi {
+        /// The ABI version this crate speaks.
+        expected: u32,
+        /// The ABI version the linked library reports.
+        found: u32,
+    },
+    /// A match boundary landed inside a UTF-8 codepoint, so the span cannot
+    /// slice the caller's `&str`.
+    ///
+    /// Reachable with `unicode(false)`, where the engine matches bytes and a
+    /// pattern like `.` can legitimately stop mid-codepoint. It is an error and
+    /// not a panic because the caller chose byte semantics and deserves to hear
+    /// which offset the choice produced.
+    NotCharBoundary {
+        /// The byte offset that fell inside a codepoint.
+        offset: usize,
+    },
+    /// The engine's own arms disagreed about a match. Not a caller error;
+    /// reported rather than papered over, because inventing a plausible answer
+    /// from two contradictory ones is how a binding launders an engine bug.
+    Inconsistent {
+        /// What the two arms each said.
+        message: String,
+    },
+    // Appended, and new variants belong here too. Inserting one further up
+    // renumbers every variant after it, which `cargo-semver-checks` reports as
+    // a break even when the enum carries data in every variant and so cannot be
+    // cast to an integer at all.
+    /// The pattern is well formed, but the linear grammar cannot express it -
+    /// lookaround, a backreference, an atomic group, an inline flag group. The
+    /// PCRE2 arm can, and compiling the same pattern with
+    /// [`RegexBuilder::pcre(true)`](crate::RegexBuilder::pcre) succeeds.
+    ///
+    /// This is the engine stepping aside rather than failing, so there is no
+    /// fault behind it and nothing to report but the repair:
+    ///
+    /// ```
+    /// use irregex::{Error, Regex, RegexBuilder};
+    ///
+    /// let pattern = r"(?<=\$)\d+";
+    /// let re = match Regex::new(pattern) {
+    ///     Err(Error::NeedsPcre { .. }) => RegexBuilder::new(pattern).pcre(true).build(),
+    ///     other => other,
+    /// }?;
+    /// assert_eq!(re.find("cost $42").unwrap().as_str(), "42");
+    /// # Ok::<(), Error>(())
+    /// ```
+    ///
+    /// Retrying is a decision, not a formality: the linear engine is linear in
+    /// the length of the text and the PCRE2 arm is not, so a program that
+    /// accepts patterns from someone else may prefer to report this instead.
+    NeedsPcre {
+        /// The pattern source, as it was given.
+        pattern: String,
+    },
+    /// The pattern is malformed, and no arm of the engine accepts it -
+    /// [`RegexBuilder::pcre`](crate::RegexBuilder::pcre) will not rescue it.
+    ///
+    /// Distinct from [`Error::NeedsPcre`], which is a grammar this build
+    /// declined rather than a pattern nobody can read.
+    Syntax {
+        /// The pattern source, as it was given.
+        pattern: String,
+        /// Where the engine detected the problem, as a byte offset into
+        /// `pattern`. Never past its end, and always on a `char` boundary, so
+        /// `&pattern[..at]` is the text the engine got through.
+        at: usize,
+        /// The status the refusal crossed the seam as.
+        status: Status,
+        /// The engine's per-incident fault name, when it left one.
+        detail: Option<String>,
+    },
+}
+
+impl Error {
+    /// Whether this is an allocation failure.
+    #[must_use]
+    pub fn is_out_of_memory(&self) -> bool {
+        matches!(self, Self::OutOfMemory { .. })
+    }
+
+    /// The raw status behind this error, when one crossed the seam.
+    #[must_use]
+    pub fn status(&self) -> Option<Status> {
+        match self {
+            Self::Pattern { status, .. }
+            | Self::Syntax { status, .. }
+            | Self::Search { status, .. }
+            | Self::Groups { status, .. } => Some(*status),
+            Self::NeedsPcre { .. } => Some(Status::DECLINED),
+            Self::OutOfMemory { .. } => Some(Status::OUT_OF_MEMORY),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NeedsPcre { pattern } => write!(
+                f,
+                "the linear grammar cannot express `{pattern}`, but the PCRE2 arm can: \
+                 compiling it with RegexBuilder::pcre(true) accepts this pattern. That arm \
+                 is not linear in the length of the text, which is why it is opt-in."
+            ),
+            Self::Syntax {
+                pattern,
+                at,
+                status,
+                detail,
+            } => {
+                write!(f, "cannot compile pattern `{pattern}`: at byte {at}, ")?;
+                write_reason(f, *status, detail.as_deref())
+            },
+            Self::Pattern {
+                pattern,
+                status,
+                detail,
+            } => {
+                write!(f, "cannot compile pattern `{pattern}`: ")?;
+                write_reason(f, *status, detail.as_deref())
+            },
+            Self::Search { status, detail } => {
+                write!(f, "search failed: ")?;
+                write_reason(f, *status, detail.as_deref())
+            },
+            Self::Groups {
+                pattern,
+                status,
+                detail,
+            } => {
+                write!(
+                    f,
+                    "the capture engine will not compile `{pattern}`, so group detail is \
+                     unavailable for its matches (searching still works): "
+                )?;
+                write_reason(f, *status, detail.as_deref())
+            },
+            Self::OutOfMemory { detail } => {
+                write!(f, "the engine ran out of memory: ")?;
+                write_reason(f, Status::OUT_OF_MEMORY, detail.as_deref())
+            },
+            Self::Abi { expected, found } => write!(
+                f,
+                "irregex ABI mismatch: this crate speaks ABI {expected}, but the linked \
+                 library reports ABI {found}. Link a matching pair, or unset IRREGEX_LIB_DIR."
+            ),
+            Self::NotCharBoundary { offset } => write!(
+                f,
+                "the engine reported a match boundary at byte {offset}, which is inside a \
+                 UTF-8 codepoint; that span cannot slice the searched string. A pattern \
+                 compiled with unicode(false) matches bytes, so this is the byte semantics \
+                 you asked for showing through."
+            ),
+            Self::Inconsistent { message } => {
+                write!(f, "internal disagreement in the engine: {message}")
+            },
+        }
+    }
+}
+
+fn write_reason(f: &mut fmt::Formatter<'_>, status: Status, detail: Option<&str>) -> fmt::Result {
+    match detail {
+        Some(name) => write!(f, "{name}; {status}"),
+        None => write!(f, "{status}"),
+    }
+}
+
+impl std::error::Error for Error {}
+
+/// The typed error for a negative `status` from this thread's last call.
+///
+/// `build` decides which variant the status belongs in; this function's job is
+/// to attach the fault detail while it is still readable. The header says the
+/// fault slot holds the last failure *on this thread*, so the read has to
+/// happen here, before the caller does anything else with the library.
+pub(crate) fn fault(status: i32, build: impl FnOnce(Status, Option<String>) -> Error) -> Error {
+    debug_assert!(status < 0, "a non-negative status is not a failure");
+    let detail = last_fault();
+    if status == sys::OOM {
+        return Error::OutOfMemory {
+            detail: detail.map(|found| found.text),
+        };
+    }
+    build(Status(status), detail.map(|found| found.text))
+}
+
+/// The typed error for a negative `status` from compiling `pattern`.
+///
+/// Compile is the one verb with two ways to say no, and the whole point of the
+/// seam is that they are told apart by the **status code** before anything
+/// looks at a fault. `IRREGEX_STALE` returns here without reading the fault
+/// slot at all - not as an optimisation, but because the slot still holds this
+/// thread's *previous* failure, and a declinature that reported it would blame
+/// an unrelated pattern for stepping aside.
+pub(crate) fn compile_refusal(status: i32, pattern: &str) -> Error {
+    debug_assert!(status < 0, "a non-negative status is not a refusal");
+    if status == sys::STALE {
+        return Error::NeedsPcre {
+            pattern: pattern.to_owned(),
+        };
+    }
+    let detail = last_fault();
+    if status == sys::OOM {
+        return Error::OutOfMemory {
+            detail: detail.map(|found| found.text),
+        };
+    }
+    // A position only means a byte in the pattern for the status that says the
+    // pattern is the problem, and only if it lands somewhere the caller can
+    // actually slice to. Anything else is a refusal with no place to point.
+    let at = detail
+        .as_ref()
+        .filter(|_| status == sys::INVALID)
+        .and_then(|found| found.at)
+        .filter(|at| pattern.is_char_boundary(*at));
+    let (pattern, detail) = (pattern.to_owned(), detail.map(|found| found.text));
+    match at {
+        Some(at) => Error::Syntax {
+            pattern,
+            at,
+            status: Status(status),
+            detail,
+        },
+        None => Error::Pattern {
+            pattern,
+            status: Status(status),
+            detail,
+        },
+    }
+}
+
+/// What the engine left in this thread's fault slot.
+struct Detail {
+    /// The fault name, and the file it was about when there was one.
+    text: String,
+    /// A byte offset into the PATTERN, when the fault carried one measured in
+    /// that space.
+    at: Option<usize>,
+}
+
+/// This thread's last fault, read once.
+///
+/// Once, because the name, the path and the offset are one incident: reading
+/// them from separate calls would let a work call in between swap the slot and
+/// pair an offset with the wrong name.
+///
+/// Absence is normal, not a second failure: the header is explicit that a
+/// non-OK status does not imply a detail exists, because an argument guard has
+/// nothing to add over its own status sentence.
+fn last_fault() -> Option<Detail> {
+    let mut slot = sys::Fault::default();
+    // SAFETY: `slot` is a live, correctly-sized `irregex_fault` whose
+    // `struct_size` we set, which is exactly what the header requires; the
+    // library only writes through the pointer for the duration of the call.
+    if unsafe { sys::irregex_last_fault(&raw mut slot) } != sys::MATCH {
+        return None;
+    }
+    if slot.name.is_null() {
+        return None;
+    }
+    // SAFETY: the header documents `name` as a static, NUL-terminated string
+    // that is never NULL when a fault was written; we checked for NULL anyway.
+    let name = unsafe { std::ffi::CStr::from_ptr(slot.name) }
+        .to_str()
+        .ok()?;
+    if name.is_empty() {
+        return None;
+    }
+    // The offset says which ruler it is measured in, so there is nothing to
+    // derive here: only a pattern-space offset can index the pattern a caller
+    // handed over. The other space, `AT_FILE`, belongs to the sibling libraries
+    // that walk a corpus - there is none behind this one, no verb here opens a
+    // file, and an offset into a file the caller never named could not be
+    // pointed at anyway. So it is asserted rather than handled: if the engine
+    // ever does report one here, that is worth a failed test rather than a
+    // caret under the wrong string.
+    debug_assert_ne!(
+        slot.at_space,
+        sys::AT_FILE,
+        "no verb in this plane reads a file, so a file-space offset cannot be about anything \
+         the caller can see"
+    );
+    let at = (slot.at_space == sys::AT_PATTERN)
+        .then(|| usize::try_from(slot.at).ok())
+        .flatten();
+    let about_a_file = !slot.path.is_null() && slot.path_len > 0;
+    if !about_a_file {
+        return Some(Detail {
+            text: name.to_owned(),
+            at,
+        });
+    }
+    // SAFETY: the header documents `path` / `path_len` as a borrowed byte span
+    // valid until this thread's next work call, and no such call happens between
+    // the `irregex_last_fault` above and this read.
+    let path = unsafe { std::slice::from_raw_parts(slot.path, slot.path_len) };
+    Some(Detail {
+        text: format!("{name} at {}", String::from_utf8_lossy(path)),
+        at,
+    })
+}

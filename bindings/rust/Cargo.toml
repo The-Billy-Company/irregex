@@ -1,0 +1,50 @@
+# Its own workspace root, deliberately. The crate has to lift out of this
+# repository as a standalone package, and an empty `[workspace]` table means a
+# Cargo.toml appearing above it later cannot silently absorb it and take over
+# its lockfile and lint configuration.
+[workspace]
+
+[package]
+name = "irregex"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+description = "Rust bindings for the irregex regex engine and the shared analytic substrate (row protocol, transports, contracts)."
+keywords = [ "regex", "regexp", "pattern", "pcre2", "bindings" ]
+categories = [ "text-processing", "api-bindings" ]
+# Nothing is published from this tree yet. Removing this line is the release
+# decision, and it should be made on purpose rather than by a stray `cargo
+# publish` in a directory somebody forgot they were in.
+publish = false
+
+# The vendored archives are the install story, so they ship. `target/` and the
+# per-target build caches do not.
+exclude = [ "/target", "/.cargo" ]
+
+[dependencies]
+# The substrate's subprocess tier speaks ripgrep `--json` and analytic NDJSON;
+# serde is the idiomatic parser. The regex face itself needs no runtime deps.
+serde = { version = "1", features = [ "derive" ] }
+serde_json = "1"
+
+[dev-dependencies]
+# The cross-check corpus against the reference Python binding is committed JSON,
+# so the test suite needs no Python at test time - just a parser for it.
+# The contract parity gate reads the canonical TOML files.
+toml = "1"
+# Behavioral tests plant a throwaway corpus.
+tempfile = "3"
+
+[lints.rust]
+missing_docs = "deny"
+# Every `unsafe` operation states its own invariant; an `unsafe fn` body is not
+# a blanket permission slip for the operations inside it.
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+# The rule that every `unsafe` block carries a `// SAFETY:` comment, enforced by
+# the compiler instead of by review. The regex face holds this; the analytic
+# substrate (moved from gist) is allow-listed at the module boundary until its
+# blocks grow comments in a dedicated pass.
+undocumented_unsafe_blocks = "deny"

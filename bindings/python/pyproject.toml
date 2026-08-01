@@ -1,0 +1,67 @@
+# The wheel bundles a native shared library, so it is platform-tagged, not
+# `py3-none-any`. `hatch_build.py` builds the library, force-includes it under
+# `irregex/lib/`, and sets the tag; see that file for the cross-build knobs.
+#
+# Zero runtime dependencies: the transport is ctypes, which is in the standard
+# library, so installing needs no compiler and no Python headers.
+
+[build-system]
+requires = [ "hatchling>=1.27" ]
+build-backend = "hatchling.build"
+
+[project]
+name = "irregex"
+version = "0.2.0"
+description = "A linear-time regex engine for Python, with the engine bundled in the wheel."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = [ "LICENSE", "NOTICE" ]
+authors = [ { name = "The Billy Company" } ]
+keywords = [ "regex", "regexp", "re", "pcre", "linear-time" ]
+dependencies = [  ]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Zig",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: Text Processing",
+]
+
+[project.urls]
+Homepage = "https://github.com/The-Billy-Company/irregex"
+Repository = "https://github.com/The-Billy-Company/irregex"
+Issues = "https://github.com/The-Billy-Company/irregex/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = [ "irregex" ]
+# The library is placed by the hook rather than read out of the source tree, so
+# a stale copy from a previous target can never be picked up by accident.
+artifacts = [ "irregex/lib/*" ]
+
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "hatch_build.py"
+
+[tool.hatch.build.targets.sdist]
+include = [ "irregex", "tests", "scripts", "hatch_build.py", "README.md", "LICENSE", "NOTICE" ]
+
+[dependency-groups]
+# `cffi` is test-only and stays out of `dependencies`: the regex API is ctypes
+# over the stdlib, and the substrate's in-process tier fails open without it.
+# It is here so the suites that assert the two transports agree actually run.
+dev = [ "pytest>=8.0", "cffi>=1.17" ]
+
+[tool.pytest.ini_options]
+testpaths = [ "tests" ]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = [ "E", "F", "I", "UP", "B", "SIM" ]
+ignore = [ "E501" ]
+
+[tool.ruff.lint.isort]
+known-first-party = [ "irregex" ]
