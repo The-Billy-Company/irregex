@@ -223,8 +223,18 @@ pub fn build(b: *std.Build) void {
         repack.addArtifactArg(obj);
         b.getInstallStep().dependOn(&b.addInstallLibFile(aligned_a, "libirgx.a").step);
     } else {
+        // Installed as a FILE rather than as an artifact, which is not a style
+        // choice: `installArtifact` is what publishes a name into the table a
+        // dependent's `dep.artifact("irgx")` searches, and the dynamic library
+        // above already owns that name. Registering a second one made the lookup
+        // ambiguous and panicked the build runner - in every DEPENDENT, never
+        // here, and only on the branch macOS does not take, so it stayed
+        // invisible on a laptop while no Zig consumer could build on Linux at
+        // all. The macOS arm is already file-shaped for its own reason (ld64
+        // alignment), so this makes both arms install `libirgx.a` the same way
+        // and leaves exactly one artifact answering to the name.
         const static_lib = b.addLibrary(.{ .name = "irgx", .linkage = .static, .root_module = abi });
-        b.installArtifact(static_lib);
+        b.getInstallStep().dependOn(&b.addInstallLibFile(static_lib.getEmittedBin(), "libirgx.a").step);
     }
 
     // The unit-test binary is pinned to ReleaseSafe: the suite is dominated by

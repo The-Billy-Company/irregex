@@ -151,18 +151,44 @@ jobs:
           fi
 
   go:
-    # No Zig step: the module carries a prebuilt archive per supported platform
-    # precisely so `go get` needs no toolchain. Installing Zig here would test a
-    # path consumers never take.
+    # The module carries a prebuilt archive per supported platform precisely so
+    # `go get` needs no toolchain, and this job deliberately does not rebuild it
+    # — the committed archive is the rung a consumer actually links.
+    #
+    # Zig is here for the other half. What `runtime` tests is the ladder: the
+    # dispatch, the tiers, the row decode. A ladder needs something at the top of
+    # it, so the suite drives a real producer, and a missing one is fatal rather
+    # than skipped — the tier's tests would otherwise stop existing and the job
+    # would pass having decoded nothing. gist is the producer it asks for, being
+    # the public one; the oracle that genuinely needs relate lives in relate.
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: bindings/go
+        working-directory: irregex/bindings/go
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: irregex
+      - uses: actions/checkout@v4
+        with:
+          repository: The-Billy-Company/gist
+          path: gist
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
       - uses: actions/setup-go@v5
         with:
-          go-version-file: bindings/go/go.mod
+          # Workspace-relative, not working-directory-relative.
+          go-version-file: irregex/bindings/go/go.mod
+      # This checkout first, and the order is load-bearing rather than tidy:
+      # gist's install step copies `../irregex/zig-out/lib/libirgx.a`, so building
+      # it against an unbuilt sibling fails on that copy.
+      - name: Build the producer the ladder drives
+        run: |
+          ( cd "$GITHUB_WORKSPACE/irregex" && zig build --summary none )
+          ( cd "$GITHUB_WORKSPACE/gist" && zig build --summary none )
+          test -x "$GITHUB_WORKSPACE/gist/zig-out/bin/gist"
+          echo "$GITHUB_WORKSPACE/gist/zig-out/bin" >> "$GITHUB_PATH"
       - run: go vet ./...
       - run: go test ./...
 
