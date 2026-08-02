@@ -563,10 +563,14 @@ pub const Builder = struct {
             // selection instead of becoming an override that decides alone.
             if (self.customGlobs(name)) |globs|
                 (if (negate) &self.neg_exts else &self.exts).appendSlice(self.a, globs) catch oom();
-            // A user-defined `--type-add` type resolves to include/exclude globs; a
-            // built-in resolves to its own glob set (scope/types.zig).
+            // A `--type-add` name selected by `-t` is a TYPE, not a `-g` glob, so
+            // its globs join `exts` beside every built-in type's. Routing them to
+            // `includes` made the two AND (`filter.admits`), so one custom `-t`
+            // silently voided every built-in `-t` beside it — rg unions all of
+            // them. It also let a custom `-t` un-ignore a gitignored leaf, which
+            // only `-g` may do (`filter.surfacesHidden`).
         } else if (self.customGlobs(name)) |globs| {
-            (if (negate) &self.excludes else &self.includes).appendSlice(self.a, globs) catch oom();
+            (if (negate) &self.neg_exts else &self.exts).appendSlice(self.a, globs) catch oom();
         } else {
             const e = types.extsForType(name) orelse die("unrecognized type: {s}\n", .{name});
             (if (negate) &self.neg_exts else &self.exts).appendSlice(self.a, e) catch oom();
