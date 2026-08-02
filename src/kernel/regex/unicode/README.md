@@ -1,10 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - file: src/kernel/regex/unicode/tables.gen.zig
-      contains: ['pub const unicode_version = "16.0.0";']
----
-
 # `regex/unicode` — Unicode support for the byte engine
 
 gist matches **bytes**, but ripgrep folds and classifies **codepoints** by

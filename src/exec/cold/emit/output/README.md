@@ -1,24 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "grid owns the per-line frame and the fused-walk eligibility predicate"
-      file: src/exec/cold/emit/output/grid.zig
-      contains: ["pub fn file", "pub fn fusedFileEligible"]
-    - description: "skim stays the line-free literal loop behind its own eligibility gate"
-      file: src/exec/cold/emit/output/skim.zig
-      contains: ["pub fn fileLit", "pub fn litFastEligible"]
-    - description: "multibuf owns the -U whole-buffer emit and the harness its parity table drives; its frames borrow display's one vimgrep row shape rather than printing a second one"
-      file: src/exec/cold/emit/output/multibuf.zig
-      contains: ["pub fn buffer", "pub const MlHarness", "fn bufVimgrep", "display.vimgrepLine"]
-      absent: ["fn emitVimgrepRow", "fn vimgrepRows"]
-    - description: "display is the one place a chosen line becomes bytes, and the only vimgrep row shape"
-      file: src/exec/cold/emit/output/display.zig
-      contains: ["pub fn emitBody", "pub fn exceeded", "pub fn emitMatches", "pub fn vimgrepLine"]
-    - description: "replace keeps expandInto allocator-explicit so --json shares it verbatim"
-      file: src/exec/cold/emit/output/replace.zig
-      contains: ["pub fn expandInto", "pub fn buildReplaced"]
----
-
 # emit/output — the rg output models
 
 Every ripgrep flag that changes _what stdout looks like_ lands here. The

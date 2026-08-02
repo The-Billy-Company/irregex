@@ -1,29 +1,3 @@
----
-
-doc_radar:
-  sentinels:
-    - description: "the lane algebra lives on the scan floor — one shuffle, two widths, AArch64 gate"
-      file: src/kernel/scan/lanes.zig
-      contains:
-        - "pub inline fn shuffle"
-        - "pub const native = switch (builtin.cpu.arch)"
-        - "lanes16 = 16,"
-        - "lanes32 = 32,"
-      absent: ["lanes64"]
-    - description: "the rung declines at compile time by returning null for what it cannot REPRESENT; whether a skip beats it is the priced auction's judgment, not a gate here"
-      file: src/kernel/regex/linear/shuffle/shuffle.zig
-      contains:
-        - "pub const max_states: u8 = 31;"
-        - "pub fn lower("
-        - "pub fn match"
-        - "pub fn docMatch"
-      absent_matches:
-        # The boolean that stood in for an inequality it could not state. The
-        # stride-priced fallback outbids composition on strong-skip patterns now,
-        # and loses to it on weak ones — neither of which this could express.
-        - "^\\s*if \\(dfa\\.start_dwell != null\\)"
----
-
 # linear/shuffle — matching as a reduction
 
 **The eager DFA's cost is a pointer chase, not a table.** `s = trans[s + class[b]]`

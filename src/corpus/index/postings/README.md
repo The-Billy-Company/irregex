@@ -1,14 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "postings stay the LEB128 + CSR blob codecs"
-      file: src/corpus/index/postings/varint.zig
-      contains: ["pub fn encode", "pub fn decode"]
-    - description: "trigrams consume the native-endian CSR blob layout"
-      file: src/corpus/index/postings/persisted_blob.zig
-      contains: ["GISTIDX", "pub const MappedRegions", "format_version"]
----
-
 # `src/corpus/index/postings/` — compact posting-body codecs
 
 How a posting list of document ids becomes bytes on disk and maps back

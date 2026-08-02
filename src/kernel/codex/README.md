@@ -1,27 +1,3 @@
----
-doc_radar:
-  counts:
-    - description: "FM-index composition — codex (+ test)"
-      glob: src/kernel/codex/*.zig
-      unit: files
-      equals: 2
-  sentinels:
-    - description: "root re-exports the FM-index beside the succinct floors"
-      file: src/root.zig
-      contains:
-        - 'pub const index = @import("kernel/codex/codex.zig");'
-        - 'pub const sais = @import("kernel/math/succinct/sais.zig");'
-    - description: "libsais is compiled from the pinned vendor mirror in this package"
-      file: build.zig
-      contains:
-        - "vendor/libsais/src"
-        - 'name = "libsais"'
-    - file: src/kernel/math/succinct/sais.zig
-      contains:
-        - "induced sorting"
-        - "extern fn libsais"
----
-
 # `src/kernel/codex/` — the FM-index
 
 _What if the index over a corpus **was** the compression of that corpus?_

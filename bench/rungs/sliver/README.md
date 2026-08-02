@@ -1,17 +1,3 @@
----
-doc_radar:
-  sentinels:
-    "artifact/positional_pareto.tsv":
-      contains: ["carried_trigrams", "pct_corpus", "cand_pgxpool"]
-    "artifact/scale_elision.tsv":
-      contains: ["indexed_eq_noindex"]
-      absent_matches: ["\\tNO$"]
-    "artifact/scale_walkcost.tsv":
-      contains: ["maxrss_mib", "owned_mib", "gist --no-index -uu", "rg -uu"]
-    "artifact/scale_build.tsv":
-      contains: ["peak_rss_gib", "post-kiln"]
----
-
 # `bench/rungs/sliver` — index tiers under load, in Layer D's own unit
 
 Layer D (`bench/bounds/lowerbound/`) measures the floor a **trigram** directory can

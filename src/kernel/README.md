@@ -1,20 +1,3 @@
----
-doc_radar:
-  counts:
-    - description: "ten ward tier packages under kernel/ (math…compose); transitional empty match/ shell may still be present"
-      glob: src/kernel/*
-      unit: dirs
-      min: 10
-      max: 11
-  sentinels:
-    - description: "the shared query core keeps fail-closed + immutable-after-compile"
-      file: src/kernel/query/query.zig
-      contains: ["error.Unsupported", "immutable after"]
-    - description: "the regex package is sealed through its entry file"
-      file: contract/irregex.ward
-      contains: "seal kernel/regex through regex.zig"
----
-
 # `src/kernel/` — pure search kernels
 
 Algorithms and math — **no argv, no walk, no emit, no filesystem**. Every

@@ -1,34 +1,3 @@
-<!--
-doc_radar:
-  paths_exist:
-    - src/exec/session/watch/watch.zig
-    - src/exec/session/watch/inotify.zig
-    - src/exec/session/watch/kqueue.zig
-    - src/exec/session/watch/coverage.zig
-    - src/exec/session/watch/budget.zig
-    - src/exec/session/watch/notify.zig
-    - src/exec/session/watch/stamp.zig
-    - src/exec/session/watch/rig.zig
-  sentinels:
-    - file: src/exec/session/watch/notify.zig
-      description: the Windows backend subscribes recursively and drains onto a completion port, so a flushSync barrier can collect packets no background thread touched
-      contains:
-        ["pub fn startNotify", "pub fn drainNotifyLocked", "NtNotifyChangeDirectoryFileEx", "NtRemoveIoCompletion", "NotifyExtended"]
-    - file: src/exec/session/watch/rig.zig
-      description: the barrier suite both exact backends are judged by lives in one harness rather than once per platform
-      contains: ["pub const live", "pub fn withSeededRig"]
-    - file: src/exec/session/watch/inotify.zig
-      contains: ["pub fn startInotify", "pub fn drainInotifyLocked", "FS_CASEFOLD_FL"]
-    - file: src/exec/session/watch/kqueue.zig
-      contains: ["pub fn startKqueue", "pub fn drainKqueueLocked", "vnode_notes"]
-      absent: ["FSEventStreamCreate"]
-    - file: src/exec/session/watch/coverage.zig
-      description: the admission walk both selects the watch set and registers each admitted vnode, so the kevent filter is minted here
-      contains: ["pub fn coverRoots", "isIgnoreSource", "EVTONLY", "EVFILT.VNODE", "fn vanished"]
-    - file: src/exec/session/watch/budget.zig
-      contains: ["pub fn watchBudget", "kern.maxfilesperproc", "kern.maxfiles"]
--->
-
 # `watch/` — the freshness watcher backends
 
 The freshness watcher is a pure **accelerator** for the reconcile barrier

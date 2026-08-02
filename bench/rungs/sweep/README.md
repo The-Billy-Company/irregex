@@ -1,31 +1,3 @@
----
-doc_radar:
-  paths_exist:
-    - bench/rungs/sweep/bench.zig
-    - src/kernel/regex/ast/ast.zig
-    - src/kernel/regex/analysis/analysis.zig
-    - src/kernel/regex/linear/program/lower.zig
-  sentinels:
-    - description: "both arms are production code reached through the engine's seal, never a reimplementation"
-      file: bench/rungs/sweep/bench.zig
-      contains:
-        - "gist.regex_analysis"
-        - "gist.regex_ast"
-        - "gist.regex_parabix"
-    - description: "a disagreement is classified, and a worse answer withholds the verdict"
-      file: bench/rungs/sweep/bench.zig
-      contains:
-        - "fn versus"
-        - "REGRESSES"
-        - "break-even"
-    - description: "the compile path sources its literal, cover and anchor facts from the one interned graph"
-      file: src/kernel/regex/linear/program/lower.zig
-      contains:
-        - "ast_mod.analyze(arena, arena, ast"
-        - "facts.root().lit"
-        - "facts.root().anchored"
----
-
 # bench/rungs/sweep — is the fused fabric actually worth it, consumer by consumer
 
 `zig build sweep-rung` (from the repository root).

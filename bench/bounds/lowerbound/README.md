@@ -1,14 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "Layer D consumes the shared first and last certificate classes"
-      file: bench/apparatus/harness/probes.zig
-      contains: ['.class = "literal-rare"', '.class = "regex-litalt"']
-    - description: "the generated certificate cites the current production kernels"
-      file: bench/bounds/lowerbound/report.py
-      contains: ["src/kernel/scan/simd.zig", "src/kernel/regex/linear/dfa/dfa.zig"]
----
-
 # gist/bench/lowerbound — Layer D (algorithmic lower bound)
 
 Layer D of gist's [Dominance-and-Fit Certificate](../README.md#dominance-and-fit-certificate-layers-ag).

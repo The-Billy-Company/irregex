@@ -1,26 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "all corpus walkers retain the shared gitignore boundary"
-      file: src/corpus/tree/haystack.zig
-      contains: ["ignore.Ignore", "shouldSkip"]
-    - description: "the stdout drain rides corpus.zig's writeStdout seam"
-      file: src/corpus/tree/corpus.zig
-      contains: ["pub const StdoutPolicy = drain.Policy"]
-    - description: "drain lives beside the corpus that arms it (not under cold emit)"
-      file: src/corpus/tree/drain.zig
-      contains: ["pub const Policy"]
-    - description: "the charter discovery is wired into haystack + corpus root resolution"
-      file: src/corpus/tree/haystack.zig
-      contains: "charter"
-    - description: "the sheaf keeps a batched-enumeration arm for every platform family it claims"
-      file: src/corpus/tree/sheaf.zig
-      contains: ["getattrlistbulk", "NtQueryDirectoryFile", "getdents64", "getdirentries"]
-    - description: "bulkstat is policy only — the syscall ABIs live next door in the sheaf"
-      file: src/corpus/tree/bulkstat.zig
-      contains: ["const sheaf = @import(\"sheaf.zig\")", "pub const BulkDir = sheaf.Sheaf"]
----
-
 # `src/corpus/tree/` — the walk, the corpus, the drain
 
 The source-tree substrate shared by indexing, cold search, resident search, and

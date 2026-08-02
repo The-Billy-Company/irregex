@@ -1,14 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "crest sidecar stays generation-atomic with the trigram pair"
-      file: src/corpus/index/crest/sidecar.zig
-      contains: ["GISTCRS3", "pub fn decode", "pub fn verify"]
-    - description: "sieve calculus lives in the regex analysis layer, not the sidecar — ĝ is derived from the engine's own AST"
-      file: src/kernel/regex/analysis/swell.zig
-      contains: "pub fn forcedSwell"
----
-
 # `src/corpus/index/crest/` — persisted crest-vector sidecar
 
 The disk half of the **crest sieve**. Kernel math:

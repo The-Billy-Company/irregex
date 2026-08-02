@@ -1,33 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "PathFilter owns path scoping; the pure glob matcher lives on the math floor"
-      file: src/corpus/scope/filter.zig
-      contains: ["pub const PathFilter", "glob.zig"]
-    - description: "language type table stays lookup-driven"
-      file: src/corpus/scope/types.zig
-      contains: ["extsForType", "isKnownType"]
-    - description: "the partition stays total, comptime-proved against the type table, and code stays the default"
-      file: src/corpus/scope/genus.zig
-      contains:
-        - "pub const Genus = enum"
-        - "unclassified -t type (add it to genus.zig)"
-        - "-t type classified into two genera"
-        - "return .code;"
-    - description: "path normalization remains shared with corpus ignore"
-      file: src/corpus/scope/paths.zig
-      contains: ["stripDot", "rootDepth"]
-    - description: "the charter declares corpus facts, not taste"
-      file: src/corpus/scope/charter.zig
-      contains: ["pub const Charter", "pub fn governing", "pub fn honorNoConfig"]
-    - description: "did-you-mean lives on the math floor; three planes consume it"
-      file: src/kernel/math/misread.zig
-      contains: ["pub const Diagnostic", "pub fn nearest", "pub fn keepToken"]
-    - description: "the charter's three keys each reach a real seam"
-      file: src/corpus/tree/corpus.zig
-      contains: ["if (charter.governing()) |c| if (c.roots.len > 0) {"]
----
-
 # `src/corpus/scope/` — which paths count as the corpus
 
 Path eligibility and the committed charter. This package answers _"may this

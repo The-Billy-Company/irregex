@@ -1,12 +1,3 @@
----
-doc_radar:
-  counts:
-    - description: "succinct keeps SA-IS · RRR · wavelet"
-      glob: src/kernel/math/succinct/*.zig
-      unit: files
-      equals: 3
----
-
 # `src/kernel/math/succinct/` — structure math
 
 Generic succinct structures the codex composes — not FM-private. Lifted out of

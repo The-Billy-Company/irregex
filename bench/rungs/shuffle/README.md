@@ -1,17 +1,3 @@
----
-doc_radar:
-  paths_exist:
-    - bench/rungs/shuffle/bench.zig
-    - src/kernel/regex/linear/shuffle/shuffle.zig
-  sentinels:
-    - description: "the harness fails closed on disagreement, and a row kept only to show where the rung LOSES is marked as such instead of being counted as a win"
-      file: bench/rungs/shuffle/bench.zig
-      contains:
-        - "error.ComposeProofFailed"
-        - "boundary: bool = false,"
-        - "throughput above is over a prefix"
----
-
 # bench/shuffle — the composition rung's production proof harness
 
 `zig build compose-rung` (from the repository root) links the **real**

@@ -1,17 +1,3 @@
----
-doc_radar:
-  counts:
-    - description: "math floor zig sources at package root (bits/crest/dag/forest/glob/lease/misread/mix/parallel + tests)"
-      glob: src/kernel/math/*.zig
-      unit: files
-      equals: 14
-  sentinels:
-    - description: "crest owns the document side (ρ, dominance, class family) and derives no ĝ — forced-crest calculus reads the engine AST from regex/analysis/swell.zig"
-      file: src/kernel/math/crest.zig
-      contains: ["pub const Class", "pub const Alphabet", "pub fn crest", "pub fn pruned", "pub const Swell"]
-      absent: ["pub fn ghat", "const Parser"]
----
-
 # `src/kernel/math/` — the math floor
 
 The lowest kernel tier: pure, product-free arithmetic and the structures it runs

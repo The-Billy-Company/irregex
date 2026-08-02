@@ -1,16 +1,3 @@
----
-doc_radar:
-  counts:
-    - description: "bench evidence-genre buckets that still live in this repo"
-      glob: bench/*/
-      unit: dirs
-      equals: 3
-  sentinels:
-    - description: "the Layer B′ measured rung exists as a build step"
-      file: build.zig
-      contains: 'b.step("portbound"'
----
-
 # irregex/bench
 
 Benchmark, verification, and competitive-proof harness for the search kernel —

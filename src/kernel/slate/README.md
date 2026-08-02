@@ -1,14 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "PatternSet + loom.Plan remain the closed set-ops surface"
-      file: src/kernel/slate/patterns.zig
-      contains: "pub const PatternSet"
-    - description: "loom keeps the closed plan ops"
-      file: src/kernel/slate/loom.zig
-      contains: "pub const Plan"
----
-
 # `src/kernel/slate/` — many patterns, one walk
 
 Was `kernel/slate/`. Operate on **many intents** or a **whole result stream**

@@ -1,14 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "engine contract keeps request options + match kinds + exit codes + version axes"
-      file: contract/engine.toml
-      contains: ["[request_options]", "[match_kinds]", "[exit_codes]", "abi_version"]
-    - description: "performance-evidence contract keeps its regimes + competitors + claims"
-      file: contract/performance_evidence.toml
-      contains: ["[[regime]]", "[competitors]", "[[claim]]", "[provenance]"]
----
-
 # `contract/` — engine and evidence contracts
 
 [`engine.toml`](engine.toml) is the source of truth for the search engine's

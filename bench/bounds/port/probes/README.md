@@ -1,11 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "the drift guard exercises every probe against production kernels, including both DFA table layouts"
-      file: bench/bounds/port/probes_test.zig
-      contains: ['@import("probes/simd_contains.zig")', '@import("probes/dfa_step.zig")', '@import("probes/dfa_mirror.zig")', "gist.simd.contains", "gist.regex.Regex"]
----
-
 # bench/bounds/port/probes
 
 Byte-faithful, standalone copies of gist's hot loops — the objects

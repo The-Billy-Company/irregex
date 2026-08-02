@@ -1,21 +1,3 @@
----
-doc_radar:
-  counts:
-    - description: "three modules — the dispatch and the two lenses that ship"
-      glob: src/exec/cold/view/*.zig
-      equals: 3
-  sentinels:
-    - description: "one seam: a lens is a case in dispatch, and unclaimed is the ordinary rg answer"
-      file: src/exec/cold/view/view.zig
-      contains: ["pub fn dispatch", "pub const Claim", "unclaimed"]
-    - description: "the engine face branches to the dispatch instead of inlining the lenses"
-      file: src/exec/cold/engine/serial.zig
-      contains: ["view.dispatch"]
-    - description: "both lenses read the writ's already-guarded binary verdict rather than re-spelling it"
-      file: src/exec/cold/view/commentscope.zig
-      contains: ["writ.binaryDetect(o)"]
----
-
 # exec/cold/view — gist's own ways of looking at a match
 
 A **lens** answers the same compiled query over the same PATH scope, but

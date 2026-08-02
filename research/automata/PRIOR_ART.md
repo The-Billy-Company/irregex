@@ -1,12 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "the head-to-head race slate is the existing evidence surface this lane must extend down to the engine level"
-      file: bench/dominance/races/regex.sh
-      contains:
-        - "csearch"
----
-
 # Prior art — `regex-automata`, and the field behind it
 
 The lineage of every fast regex engine runs through one 1968 paper and one 2007

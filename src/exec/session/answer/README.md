@@ -1,24 +1,3 @@
-<!--
-doc_radar:
-  paths_exist:
-    - src/exec/session/answer/answer.zig
-    - src/exec/session/answer/request.zig
-    - src/exec/session/answer/gather.zig
-    - bindings/python/tests/test_classify_parity.py
-  sentinels:
-    - file: src/exec/session/answer/request.zig
-      contains: ["effectiveIgnoreCase", "smart_case"]
-    - file: src/surface/face/gist/main.zig
-      description: the warm-lens verdict line the Python parity test parses — composed from one format string, so pin the frame and both branch words rather than the assembled bytes
-      matches: ['"gist: \[\{s\}\]', '"eligible" else "ineligible"']
-    - file: src/exec/session/answer/keep.zig
-      description: the keep holds answers against an epoch and never computes one
-      contains: ["pub fn recall", "pub fn retain", "max_total_bytes"]
-    - file: src/exec/session/answer/gather.zig
-      description: the candidate walk prunes by all three stages, off one parse, with both stand-down knobs read here rather than client-side
-      contains: ["query_mod.winnow", "GIST_NO_COVER", "GIST_NO_CREST", "queryPlan", "sieve.prunes"]
--->
-
 # `answer/` — what may be asked, what comes back, and the walk between them
 
 The contract layer. A consumer can read this folder and learn the whole warm

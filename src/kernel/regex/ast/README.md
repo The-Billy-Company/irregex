@@ -1,33 +1,3 @@
----
-doc_radar:
-  paths_exist:
-    - src/kernel/regex/ast/ast.zig
-    - src/kernel/regex/ast/intern.zig
-    - src/kernel/regex/ast/algebra.zig
-    - src/kernel/regex/ast/facts.zig
-    - src/kernel/math/dag.zig
-    - bench/rungs/sweep/README.md
-  sentinels:
-    - description: "the three stages, each owning one file"
-      file: src/kernel/regex/ast/ast.zig
-      contains:
-        - "pub fn analyze"
-        - "algebra_mod.simplify"
-        - "facts_mod.sweep"
-        - "pub fn cover"
-    - description: "the memo is a complexity guard, not an optimization"
-      file: src/kernel/regex/ast/intern.zig
-      contains:
-        - "interning is linear in DISTINCT parse cells"
-        - "fn spine"
-        - "g.power"
-    - description: "one fold, one accumulator struct — adding a question costs a field, not a traversal"
-      file: src/kernel/regex/ast/facts.zig
-      contains:
-        - "pub const Facts = struct"
-        - "pub fn sweep"
----
-
 # regex/ast — the pattern's shape, interned once and asked everything at once
 
 The parser hands back a tree. It is the right thing to **lower** — its

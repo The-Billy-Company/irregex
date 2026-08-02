@@ -1,17 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "the face still exposes the mode ladder and re-exports the walk/writ/emit surface callers import through"
-      file: src/exec/cold/engine/serial.zig
-      contains: ["pub fn run", "defaultFileSetExtras", 'writ = @import("../writ/writ.zig")']
-    - description: "the fused pipeline is still reached through its eligibility test, so an ineligible flag set falls through to serial"
-      file: src/exec/cold/engine/swarm/swarm.zig
-      contains: ["pub fn eligible", "pub fn run"]
-    - description: "relate's cold recall engine lives beside cold as exec/retrieval"
-      file: src/exec/retrieval/retrieval.zig
-      contains: ["pub fn retrieve", "pub fn pack"]
----
-
 # exec/cold/engine — walk + match orchestration
 
 The control planes that wire [`argv`](../argv) → [`writ`](../writ) →

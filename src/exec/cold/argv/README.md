@@ -1,35 +1,3 @@
----
-doc_radar:
-  counts:
-    - description: "the argv package is the facade plus its six concern modules and one test"
-      glob: src/exec/cold/argv/*.zig
-      equals: 8
-      unit: modules
-  sentinels:
-    - description: "args.zig stays a facade whose test block keeps sibling tests discoverable"
-      file: src/exec/cold/argv/args.zig
-      contains:
-        - "pub const parseArgv = grammar.parseArgv;"
-        - "_ = catalog;"
-      absent:
-        - "flag_catalog = [_]FlagSpec"
-    - description: "flag_catalog remains the parser and --schema source of truth"
-      file: src/exec/cold/argv/catalog.zig
-      contains:
-        - "pub const flag_catalog"
-    - description: "Opts is the one request record, Unicode default-on"
-      file: src/exec/cold/argv/intent.zig
-      contains:
-        - "pub const Opts"
-        - "unicode: bool = true,"
-    - description: "preferences are TTY-gated and catalog-validated"
-      file: src/exec/cold/argv/preference.zig
-      contains:
-        - "pub const Preferences"
-        - "pub fn forThisRun"
-        - "pub fn steering"
----
-
 # exec/cold/argv — flag grammar
 
 Parsing only. This package lowers argv into a single precedence-sensitive

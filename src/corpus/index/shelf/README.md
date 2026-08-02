@@ -1,15 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "the shelf artifact's whole lifecycle lives in one writer below every face"
-      file: src/corpus/index/shelf/shelf.zig
-      contains:
-        - "pub fn shelfFile"
-        - "pub fn persist"
-        - "pub fn open"
-        - "pub fn staleCount"
----
-
 # `src/corpus/index/shelf/` — the persisted codex shelf
 
 The on-disk SHLF artifact three faces read: `gist codex`, `relate quote` /

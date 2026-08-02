@@ -1,32 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "the regex engine is one sealed deep module — the automata package lives INSIDE that seal, not beside it"
-      file: contract/irregex.ward
-      contains:
-        - "seal kernel/regex through regex.zig"
-    - description: "the consolidation started, and its door states the membership rule that keeps it from becoming a junk drawer"
-      file: src/kernel/regex/linear/automata/README.md
-      contains:
-        - "cannot say which road"
-        - "Shared *by nature*"
-    - description: "the single transcription of the zero-width assertions, shared by every determinizer — the reason a machine algebra can be factored out at all"
-      file: src/kernel/regex/linear/dfa/subset.zig
-      contains:
-        - "pub const Gap"
-        - "pub fn passes"
-        - "fn refineBySet"
-    - description: "the language-preserving end of the lattice, and the file that owns BOTH of a finished table's over-refined dimensions"
-      file: src/kernel/regex/linear/automata/reduce.zig
-      contains:
-        - "Moore's partition refinement"
-        - "The order is load-bearing"
-    - description: "the coarser end of the same lattice"
-      file: src/kernel/regex/linear/sieve/quotient.zig
-      contains:
-        - "pub const max_conjuncts"
----
-
 # Automata — the machine algebra, and beating `regex-automata`
 
 Everything in this engine that constructs, determinizes, reduces, or reverses a

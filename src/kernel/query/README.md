@@ -1,26 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "the compiled query stays fail-closed and immutable, dispatching through the engine-neutral seam"
-      file: src/kernel/query/query.zig
-      contains: ["pub const CompiledQuery", "error.Unsupported", "pub const Scratch"]
-    - description: "the prefilter derivation stays sound for both the fold window and the case-variant OR-set"
-      file: src/kernel/query/prefilter.zig
-      contains: ["pub fn regexPrefilter", "pub fn foldClosedWindow", "pub fn caselessVariants"]
-    - description: "both index prunings come off ONE parse, so warm and cold cannot derive different ones"
-      file: src/kernel/query/prefilter.zig
-      contains: ["pub const Winnow", "pub fn winnow", "lower.parse"]
-    - description: "the conjunctive cover emits a CNF plan under cost ceilings, and declines rather than weakens"
-      file: src/kernel/query/cover.zig
-      contains: ["pub fn plan", "pub fn planSource", "pub const Limits"]
-    - description: "the cover's soundness is brute-forced against the production matcher, not argued"
-      file: src/kernel/query/cover_test.zig
-      contains: ["fn proveSound", "PlanElidesMatch"]
-    - description: "the -w rule is a post-match predicate over the shared word oracle"
-      file: src/kernel/query/word.zig
-      contains: ["pub const wordOk"]
----
-
 # `src/kernel/query/` — a search intent, compiled
 
 The **shared boundary** for the hosted search API.

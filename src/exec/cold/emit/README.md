@@ -1,31 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "output.zig stays the facade — Emitter state plus forwarders, with the mode bodies in output/"
-      file: src/exec/cold/emit/output.zig
-      contains: ["pub const Emitter", "pub const expandInto", "@import(\"output/grid.zig\")"]
-    - description: "maskLiterals is the one place that ranks which literal set a candidate prefilter may sweep, so the three sites cannot disagree about when the alternation cover is sound"
-      file: src/exec/cold/emit/output.zig
-      contains: ["pub fn maskLiterals"]
-    - description: "json's two prefilter sites — the per-line mask and the solo-shard jump — ask maskLiterals rather than deriving a literal set locally"
-      file: src/exec/cold/emit/json.zig
-      contains: ["output.Emitter.maskLiterals"]
-      absent: ["re.lits()"]
-    - description: "hints stays a pure-render stderr channel gated by GIST_HINTS (corpus.zig owns the env read), with both triggers — outcome and duration — on the one grammar"
-      file: src/exec/cold/emit/hints.zig
-      contains: ["pub fn noMatches", "hintsEnabled()", "pub const Vigil", "pub fn renderSlow"]
-    - description: "multiline holds the two -U model decisions rg makes differently from the line model: the sequential invert claim scan, and one count over spans rather than start-lines"
-      file: src/exec/cold/emit/multiline.zig
-      contains: ["pub fn claimed", "pub fn count", "pub const Walk"]
-      absent: ["pub fn countStartLines"]
-    - description: "one file's worth of rendering is a shared function, not a per-scheduler copy"
-      file: src/exec/cold/emit/render.zig
-      contains: ["pub fn renderFile", "pub fn emitSharded"]
-    - description: "a hyperlink is framing the Emitter brackets around text it was already printing — never a second path formatter"
-      file: src/exec/cold/emit/output.zig
-      contains: ["fn linkOpen", "pub fn linkClose", "pub fn heading"]
----
-
 # exec/cold/emit — match presentation
 
 Turns match spans into the bytes on stdout. One `Emitter` carries shared match,

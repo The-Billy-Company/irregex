@@ -1,15 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "pmu.zig carries the provenance primitives every certificate layer stamps"
-      file: bench/apparatus/harness/pmu.zig
-      contains: ["pub fn cpuBrand", "pub fn requestPerformanceQos"]
-  counts:
-    - description: "the harness holds exactly the three shared instruments"
-      glob: bench/apparatus/harness/*.zig
-      equals: 3
----
-
 # bench/apparatus/harness
 
 The three **shared instruments**. None of them makes a claim; each is what a

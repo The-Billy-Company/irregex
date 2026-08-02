@@ -1,17 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "the generated schema table is mounted, not re-declared"
-      file: bindings/rust/src/contract/mod.rs
-      contains: ['#[path = "../schema.gen.rs"]', "pub mod schema"]
-    - description: "the four row_enums vocabularies have typed faces"
-      file: bindings/rust/src/contract/calibration.rs
-      contains: ["Grade = 1", "Channel = 2", "Unit = 3", "row_enum!"]
-    - description: "analytic tables are generated from analytic.toml"
-      file: bindings/rust/src/schema.gen.rs
-      contains: ["contract/analytic.toml", "DIGEST"]
----
-
 # `contract/` — what the engine promises, in Rust
 
 This module is the crate's copy of the substrate contracts —

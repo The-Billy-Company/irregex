@@ -1,23 +1,3 @@
----
-doc_radar:
-  counts:
-    - description: "eight regex pipeline stages — syntax, analysis, ast, compile, linear, pcre2, unicode, oracle"
-      glob: src/kernel/regex/*/
-      equals: 8
-      unit: dirs
-  sentinels:
-    - description: "the package root re-exports the engine's stages through its entry file, never around it"
-      file: src/root.zig
-      contains:
-        - 'const regex_engine = @import("kernel/regex/regex.zig");'
-        - 'pub const regex = regex_engine.program;'
-        - 'pub const regex_dfa = regex_engine.dfa;'
-    - description: "the engine is a sealed deep module — an outside import that skips the entry file fails lint-zig-arch"
-      file: contract/irregex.ward
-      contains:
-        - 'seal kernel/regex through regex.zig'
----
-
 # `src/kernel/regex/` — the regex package
 
 Everything regular-expression in one first-class home — promoted out of the old

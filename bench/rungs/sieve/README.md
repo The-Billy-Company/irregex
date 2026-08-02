@@ -1,36 +1,3 @@
----
-doc_radar:
-  paths_exist:
-    - bench/rungs/sieve/bench.zig
-    - bench/rungs/sieve/indexq.zig
-    - bench/rungs/sieve/stress.zig
-    - bench/rungs/sieve/csearch_plan.py
-    - bench/rungs/sieve/indexcost.sh
-    - bench/rungs/sieve/cover_parity.sh
-    - bench/rungs/sieve/warm_parity.sh
-    - src/kernel/query/cover.zig
-    - src/kernel/regex/linear/sieve/sieve.zig
-  sentinels:
-    - description: "the harness fails closed on a missed match, on a retired matching document, and on a ladder that disagrees with the full scan"
-      file: bench/rungs/sieve/bench.zig
-      contains:
-        - "SOUNDNESS VIOLATION"
-        - "DOCUMENT VIOLATION"
-        - "LADDER DIVERGENCE"
-    - description: "Layer L fails closed on a cross-arm hit disagreement — a formula that pruned a real match"
-      file: bench/rungs/sieve/indexq.zig
-      contains:
-        - "a filter elided a real match"
-        - "one of the three formulas is UNSOUND"
-    - description: "the warm gate compares four arms, refuses a vacuous green (a stack that never fired, a daemon that died mid-run), and derives its baseline from a second daemon rather than a client-side env var"
-      file: bench/rungs/sieve/warm_parity.sh
-      contains:
-        - "start_daemon pre-wiring"
-        - "require_daemons"
-        - "makes the parity above"
-        - "--no-index"
----
-
 # bench/rungs/sieve — measuring what a filter declines to read
 
 This folder measures **what a filter declines to read**, from both ends of the

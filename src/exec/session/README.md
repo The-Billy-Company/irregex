@@ -1,15 +1,3 @@
----
-doc_radar:
-  counts:
-    - description: "session planes: answer · warm · facet · reconcile · watch · conduit · daemon · warden"
-      glob: src/exec/session/*/
-      unit: dirs
-      equals: 8
-  sentinels:
-    - file: ../gist/contract/surface.toml
-      contains: ["[session]", "eligible_modes", "fail-closed-reconcile", '"lines"']
----
-
 # `src/exec/session/` — the resident search session
 
 The warm, in-memory engine behind `gist serve`. Productizes the in-memory bench

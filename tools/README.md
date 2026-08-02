@@ -1,12 +1,3 @@
----
-doc_radar:
-  counts:
-    - description: "tools keeps the two hermetic table generators: ucd · whatwg"
-      glob: tools/*
-      unit: dirs
-      equals: 2
----
-
 # `tools/` — table generators
 
 The Python builders that lower fixed data into Zig tables. None of them touches

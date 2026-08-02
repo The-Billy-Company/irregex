@@ -1,14 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "capture extraction is a separate Pike VM — the primary engine stays capture-free"
-      file: src/kernel/regex/compile/captures.zig
-      contains: ["pub const Caps", "onepass: OnePass", "linear: Captures"]
-    - description: "the one-pass arm fails closed into a declinature, never a fault (fault-channel law 1)"
-      file: src/kernel/regex/compile/onepass.zig
-      contains: ["fault.Answer(OnePass)", "declined = .not_worthwhile", "pub fn attach"]
----
-
 # kernel/regex/compile — AST → NFA lowering + captures
 
 The **middle of the pipeline**: lower the parsed AST into the flat instruction

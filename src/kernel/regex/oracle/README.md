@@ -1,11 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "the oracle is independent — it cross-checks the engine against a reference the engine does not share"
-      file: src/kernel/regex/oracle/adversarial_test.zig
-      contains: ["ADVERSARIAL"]
----
-
 # kernel/regex/oracle — independent differential oracle
 
 The correctness backstop the in-family fuzz can't provide. `../linear/dfa/dfa_test.zig`

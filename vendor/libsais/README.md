@@ -1,14 +1,3 @@
-<!--
-doc_radar:
-  sentinels:
-    - file: include/libsais.h
-      contains:
-        - "#define LIBSAIS_VERSION_STRING  \"2.10.2\""
-    - file: LICENSE
-      contains:
-        - "Apache License"
--->
-
 # Vendored libsais 2.10.2
 
 The pinned, hermetically-built suffix-array constructor behind the codex

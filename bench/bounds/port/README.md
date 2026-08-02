@@ -1,17 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "the Layer B′ measured runner is wired as a build step + installed exe"
-      file: build.zig
-      contains: ['b.step("portbound"', '.name = "gist-portbound"']
-    - description: "the static leg splices the measured subsection and names the rung that mints it"
-      file: bench/bounds/port/mca.sh
-      contains: ["portbound.json", "sudo zig-out/bin/gist-portbound"]
-    - description: "the splicer fail-closed labels cycles when not measured here"
-      file: bench/bounds/port/report.py
-      contains: "NOT measured on this "
----
-
 # bench/bounds/port — Layer B (port-optimality: static bound + measured on this machine)
 
 Layer B of gist's [Dominance-and-Fit Certificate](../README.md#dominance-and-fit-certificate-layers-ag).

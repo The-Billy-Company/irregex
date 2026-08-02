@@ -56,6 +56,5 @@ gist's.
 
 Not fixed, because fixing it is a decision rather than an edit:
 `bench/rungs/sieve/indexcost.sh` still sources `../../dominance/races/field.sh`,
-which is not in this package, so that script cannot run here; and a few
-`doc_radar` / contract keys still name sibling-repo paths as if they lived under
-this root.
+which is not in this package, so that script cannot run here; and a few contract
+keys still name sibling-repo paths as if they lived under this root.

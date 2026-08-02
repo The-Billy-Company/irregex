@@ -1,18 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "the arm exists now and is listed among the per-mechanism rungs; it points inward, which is the whole reason it had to be its own folder"
-      file: bench/rungs/README.md
-      contains:
-        - "Per-mechanism production proofs"
-        - "automata/"
-    - description: "the harness proves its own premise before publishing a number, and holds both arms to one verdict"
-      file: bench/rungs/automata/bench.zig
-      contains:
-        - "document MATCHES"
-        - "fn statesVisited"
----
-
 # Testing — how each claim dies
 
 The evidence surface we have races **binaries**:

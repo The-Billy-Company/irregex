@@ -1,12 +1,3 @@
----
-doc_radar:
-  counts:
-    - description: "read keeps encoding · inode · legible · slurp (+ generated tables)"
-      glob: src/corpus/read/*
-      unit: files
-      min: 4
----
-
 # `src/corpus/read/` — byte legibility
 
 Is this file readable text? Encoding decode, inode identity, and the slurp /

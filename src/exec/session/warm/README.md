@@ -1,22 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "resident binds facet engines as real methods on the session state"
-      file: src/exec/session/warm/resident.zig
-      contains:
-        - "pub const query = fold.query"
-        - "pub const queryLines = present.queryLines"
-        - "pub const queryExists = stream.queryExists"
-        - "pub const search = stream.search"
-        - "pub fn beginRead"
-    - description: "mirror is the in-RAM corpus; retrieval is the warm side of exec/retrieval"
-      file: src/exec/session/warm/mirror.zig
-      contains: ["pub inline fn gatedBody"]
-    - description: "the mirror carries ρ(d) for the crest sieve, built by the persisted sidecar's own builder rather than a second loop"
-      file: src/exec/session/warm/mirror.zig
-      contains: ["crests: []const crest.Vector", "crest_table.build"]
----
-
 # `warm/` — what is held across queries
 
 Two sibling warm engines plus the byte stores they answer from. Nothing here

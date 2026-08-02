@@ -1,12 +1,3 @@
-<!--
-doc_radar:
-  paths_exist:
-    - src/exec/session/facet/fold.zig
-    - src/exec/session/facet/present.zig
-    - src/exec/session/facet/stream.zig
-    - src/exec/session/facet/render.zig
--->
-
 # `facet/` — the four faces one warm answer can wear
 
 Each module here takes the candidate documents [`../answer/gather.zig`](../answer/gather.zig)

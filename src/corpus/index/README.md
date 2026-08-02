@@ -1,19 +1,3 @@
----
-doc_radar:
-  counts:
-    - description: "index artifact packages (trigrams · postings · crest · content · phantom · shelf · frame)"
-      glob: src/corpus/index/*
-      unit: dirs
-      equals: 7
-  sentinels:
-    - description: "the elision contract every index package is built on"
-      file: src/exec/cold/engine/README.md
-      contains: "Index is an accelerator, not an authority."
-    - description: "every mapped artifact loads through the one shared protocol"
-      file: src/corpus/index/frame/frame.zig
-      contains: ["pub fn mapArtifact"]
----
-
 # `src/corpus/index/` — persisted accelerators
 
 Persisted structures that may **elide reads, never own truth**. The live walk

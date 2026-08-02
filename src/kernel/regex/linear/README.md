@@ -1,18 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "the public Regex handle owns the state and adopts its behavior from the neighbors by name"
-      file: src/kernel/regex/linear/program/core.zig
-      contains:
-        ["pub const Regex", "pub const lineMatch = verdict.lineMatch", "pub const matchSpan = span.matchSpan"]
-    - description: "the boolean engine ladder (classrun → accelerator tier → DFA → Pike) lives in ladder/verdict.zig"
-      file: src/kernel/regex/linear/ladder/verdict.zig
-      contains: ["pub fn lineMatch", "pub fn docMatch"]
-    - description: "the engine-neutral meta dispatcher lives at the regex package root (promoted out of ladder/)"
-      file: src/kernel/regex/matcher.zig
-      contains: ["pub const Matcher"]
----
-
 # `kernel/regex/linear/` — the linear-time execution engine
 
 The **back of the pipeline**: the RE2/ripgrep-philosophy engine that actually

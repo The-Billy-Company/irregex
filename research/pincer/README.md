@@ -1,37 +1,3 @@
----
-doc_radar:
-  paths_exist:
-    - src/kernel/scan/simd.zig
-    - src/kernel/scan/rarity.zig
-    - src/kernel/scan/anchor.zig
-    - src/kernel/scan/calibrate.zig
-  sentinels:
-    - description: "selection lives in one module, and that module carries the recorded defects so neither the independence assumption nor the offset-sorting slip can return"
-      file: src/kernel/scan/anchor.zig
-      contains:
-        - "RECORDED DEFECT"
-        - "Never sort this pair"
-    - description: "the scan kernel consumes the anchor decision rather than re-deriving it — a second copy of the policy is how a control ends up measuring a different filter"
-      file: src/kernel/scan/simd.zig
-      contains:
-        - "anchor.select(needle)"
-    - description: "the density table PROOF.md §2.2 measures, and the rarity threshold the single-load fast path gates on"
-      file: src/kernel/scan/rarity.zig
-      contains:
-        - "pub const density"
-        - "single_probe_max"
-    - description: "PROOF.md §7.2.e — calibration reaches production as an improvement test over the static pair, minted per document, never as an unconditional override"
-      file: src/kernel/scan/simd.zig
-      contains:
-        - "pub fn planOn"
-        - "calibrate.refine"
-    - description: "the two lessons the integration taught: the incumbent is priced on the same sample, and the accept margin has an absolute noise floor because the argmin of many noisy estimates is biased low"
-      file: src/kernel/scan/calibrate.zig
-      contains:
-        - "pub fn refine"
-        - "noise_sigmas"
----
-
 # Pincer — anchor selection for the two-probe literal filter
 
 A literal scan's throughput is decided by **which two needle offsets** the

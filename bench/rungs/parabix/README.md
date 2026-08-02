@@ -1,17 +1,3 @@
----
-doc_radar:
-  paths_exist:
-    - bench/rungs/parabix/bench.zig
-    - src/kernel/regex/linear/parabix/parabix.zig
-  sentinels:
-    - description: "the harness fails closed on disagreement and on the gate arming where it must not"
-      file: bench/rungs/parabix/bench.zig
-      contains:
-        - "error.ParabixProofFailed"
-        - "ARMED on a pattern the gate must refuse"
-        - "corpus documents disagreed"
----
-
 # bench/parabix — the bit-parallel rung's production proof harness
 
 `zig build parabix-rung` (from the repository root) links the **real** engine

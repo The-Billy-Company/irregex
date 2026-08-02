@@ -1,11 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "serial engine remains the commands.search re-export"
-      file: src/root.zig
-      contains: 'pub const search = @import("exec/cold/engine/serial.zig");'
----
-
 # exec/cold — the unified rg-DEFAULT engine
 
 The cold search path. This is what backs bare `gist <pattern>`, `gist rg`, and

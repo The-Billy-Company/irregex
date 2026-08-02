@@ -1,21 +1,3 @@
----
-doc_radar:
-  counts:
-    - description: "six modules — the walk, what it must read, in what order, from where, what may be skipped, and how a failed descent reads"
-      glob: src/exec/cold/quarry/*.zig
-      equals: 6
-  sentinels:
-    - description: "the oracle answers in the success position — a declinature is a routing fact, never a fault (fault-channel law 1)"
-      file: src/exec/cold/quarry/elide.zig
-      contains: ["fault.Answer(Oracle)", "pub fn skip", "const Err = error{"]
-    - description: "the parallel engine admits the shared oracle rather than carrying its own"
-      file: src/exec/cold/engine/swarm/swarm.zig
-      contains: ['@import("../../quarry/elide.zig")', "elide.Lazy"]
-    - description: "the serial read plane shares the oracle's indexed-path primitive; its own IndexSkip freshness proof is what the cold-engine deep-module split stage 2 folds in"
-      file: src/exec/cold/quarry/intake.zig
-      contains: ['@import("elide.zig")', "elide.IndexedPaths"]
----
-
 # exec/cold/quarry — what is in the tree, and what must be read
 
 The walk decides **which files a query is about**. This package decides **which

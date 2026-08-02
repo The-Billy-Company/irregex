@@ -1,17 +1,3 @@
----
-doc_radar:
-  counts:
-    - description: "surface keeps cli · face · ffi (plus a transitional empty exec/ shell that may still be present)"
-      glob: src/surface/*
-      unit: dirs
-      min: 3
-      max: 4
-  sentinels:
-    - description: "cold serial engine remains the root search re-export (exec promoted out of surface)"
-      file: src/root.zig
-      contains: 'pub const search = @import("exec/cold/engine/serial.zig");'
----
-
 # `src/surface/` — vocabulary, API, FFI, faces
 
 Everything a user or host touches. Execution moved to [`../exec/`](../exec/);

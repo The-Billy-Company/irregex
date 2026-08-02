@@ -1,17 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "an answer reports its own tier and the two truncation facts"
-      file: bindings/rust/src/runtime/answer.rs
-      contains: ["Tier::Subprocess", "foreign", "omitted"]
-    - description: "STALE is a declinature, never an Err"
-      file: bindings/rust/src/runtime/plane.rs
-      contains: ["STALE", "Ok(None)"]
-    - description: "the digest handshake precedes any native decode"
-      file: bindings/rust/src/runtime/handshake.rs
-      contains: ["schema::DIGEST", "first_disagreement"]
----
-
 # `runtime/` — how a question reaches the engine, and how rows come back
 
 Everything above this module states _what_ it wants. This module is the only

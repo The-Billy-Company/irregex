@@ -1,19 +1,3 @@
----
-doc_radar:
-  counts:
-    - description: "fresh keeps anchor · journal · sweep (+ tests)"
-      glob: src/corpus/fresh/*.zig
-      unit: files
-      min: 3
-  sentinels:
-    - description: "the dual-clock anchor is the crate's central truth mechanism"
-      file: src/corpus/fresh/fresh.zig
-      contains: ["pub fn readAnchor", "pub fn writeAnchor"]
-    - description: "the model's one predicate reads BOTH clocks and treats absence as change"
-      file: src/corpus/tree/bulkstat.zig
-      contains: "pub fn needsLiveRead"
----
-
 # `src/corpus/fresh/` — when may an artifact speak for live bytes?
 
 The freshness law. Promoted out of `corpus/index/trigrams/` because every

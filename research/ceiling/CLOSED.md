@@ -1,22 +1,3 @@
----
-doc_radar:
-  occurrences:
-    - file: research/ceiling/CLOSED.md
-      pattern: '^## \d+\. '
-      equals: 3
-  sentinels:
-    - file: research/ceiling/CLOSED.md
-      contains:
-        - "**Novelty:"
-        - "**Adoption:"
-    # Entry 1's third look conditions its verdict on this exact coefficient. If
-    # a mint moves it, that verdict is stale and the cascade front-end is owed a
-    # re-ask — so the gate should fail here rather than let the record rot.
-    - file: src/kernel/regex/linear/ladder/price.zig
-      contains:
-        - ".parabix_op = 0.555"
----
-
 # Closed roads
 
 Each entry is a route past the [execution ceiling](README.md) that was

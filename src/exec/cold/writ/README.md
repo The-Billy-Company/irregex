@@ -1,22 +1,3 @@
----
-doc_radar:
-  counts:
-    - description: "four modules — the compiled writ, plus the three derivations it owns"
-      glob: src/exec/cold/writ/*.zig
-      equals: 4
-  sentinels:
-    - description: "prune eligibility has exactly one owner — the predicate the tier used to re-spell at five call sites"
-      file: src/exec/cold/writ/gate.zig
-      contains:
-        ["pub fn observesEveryByte", "pub fn mayDropFileUnread", "pub fn mayElideByIndex"]
-    - description: "binary-detection liveness has one owner, and the writ computes rather than carries"
-      file: src/exec/cold/writ/writ.zig
-      contains: ["pub fn binaryDetect", "pub fn compile"]
-    - description: "the engine face reads the writ instead of re-deriving the gates"
-      file: src/exec/cold/engine/serial.zig
-      contains: ["writ.Writ.compile", "const filters = w.filters;", "w.binary_detect"]
----
-
 # exec/cold/writ — what the patterns decide
 
 A **writ** is what an invocation's argv patterns compile to. Not the matcher

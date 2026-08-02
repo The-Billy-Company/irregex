@@ -1,16 +1,3 @@
----
-doc_radar:
-  counts:
-    - description: "exec keeps cold · retrieval · session"
-      glob: src/exec/*
-      unit: dirs
-      equals: 3
-  sentinels:
-    - description: "cold serial engine remains the root search re-export"
-      file: src/root.zig
-      contains: 'pub const search = @import("exec/cold/engine/serial.zig");'
----
-
 # `src/exec/` — the search runtimes
 
 Where a compiled query meets a corpus. Promoted **out of** `surface/` so

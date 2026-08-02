@@ -1,15 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - file: src/exec/session/reconcile/dirty.zig
-      contains: ["armExact", "noteDoubt"]
-    - file: src/exec/session/reconcile/delta.zig
-      contains: ["needs_full", "keyIsCurrent"]
-    - description: "leases live on the math floor"
-      file: src/kernel/math/lease.zig
-      contains: ["pub const Ward", "pub const Latch"]
----
-
 # `reconcile/` — may the session serve the bytes it already holds?
 
 The fail-closed barrier that earns a warm answer. Renamed from `freshness/`

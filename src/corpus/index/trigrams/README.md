@@ -1,32 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "trigram Index + freshness remain the T0/T3 surface"
-      file: src/corpus/index/trigrams/trigram.zig
-      contains: "pub const Index"
-    - description: "freshness fails closed when the anchor is missing"
-      file: src/corpus/fresh/fresh.zig
-      contains: "anchor"
-    - description: "codicil builds and decodes the incremental amendment segment"
-      file: src/corpus/index/trigrams/codicil.zig
-      contains: ["pub fn build", "pub fn decode", "pub const Decoded"]
-    - description: "codicil publish is atomic on the persist layer, and both build paths flip the generation through the one function that also retires"
-      file: src/corpus/index/trigrams/persist.zig
-      contains: ["pub fn publishCodicil", "fn publishGeneration"]
-    - description: "generation retention fences a candidate on ordering, grace, and the survivor window"
-      file: src/corpus/index/trigrams/lapse.zig
-      contains: ["pub fn reclaim", "grace_ns", "fn parseGen"]
-    - description: "sweep work-steals the freshness metadata walk"
-      file: src/corpus/fresh/sweep.zig
-      contains: "buildWorkItems"
-    - description: "the sliver tier answers sub-trigram needles under a decode budget"
-      file: src/corpus/index/trigrams/sliver.zig
-      contains: ["pub fn candidates", "budget_ratio", "max_len"]
-    - description: "the block builder fires bounded windows into compressed runs and sweeps them into the CSR body"
-      file: src/corpus/index/trigrams/kiln.zig
-      contains: ["pub fn fire", "fn sortByTrigram", "fn sweep", "block_budget"]
----
-
 # `src/corpus/index/trigrams/` — T0 candidate index + T3 freshness
 
 Gist's structural edge over a whole-tree scan. A file containing a literal

@@ -1,14 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "the sections this README describes are the sections the rung runs"
-      file: bench/rungs/patternid/bench.zig
-      contains: ["fn overlapSection", "fn speedSection", "fn buildSection", "fn settleSection"]
-    - description: "settling authority is derived with the cover, not apart from it"
-      file: src/kernel/slate/muster.zig
-      contains: ["fn coverOf", "const Cover = struct"]
----
-
 # `patternid-rung` — does attribution-in-the-key cost states?
 
 One number, and it gates a design.

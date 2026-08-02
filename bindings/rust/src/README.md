@@ -1,11 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "substrate modules are mounted beside the regex face"
-      file: bindings/rust/src/lib.rs
-      contains: ["pub mod contract", "pub mod request", "pub mod runtime"]
----
-
 # src
 
 Two faces share this crate. The **regex** face is a `regex`-shaped API over a

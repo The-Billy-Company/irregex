@@ -1,28 +1,3 @@
----
-doc_radar:
-  counts:
-    - description: "research keeps the crest + ceiling + automata + pincer theory dossiers"
-      glob: research/*
-      unit: dirs
-      equals: 4
-  sentinels:
-    - description: "the closed-roads record remains the authority on routes already shut"
-      file: research/ceiling/CLOSED.md
-      contains: "Closed roads"
-    - description: "the Sieve Theorem write-up remains the crest authority"
-      file: research/crest/PROOF.md
-      contains: "Sieve"
-    - description: "the automata dossier remains the authority on the machine algebra and the competitive program against regex-automata"
-      file: research/automata/CLAIM.md
-      contains: "SP-quotient sieve is ours"
-    - description: "the pincer dossier remains the authority on anchor selection — it keeps the independence diagnosis, the measured limit of the separation tie-break, and an honest integration status"
-      file: research/pincer/PROOF.md
-      contains:
-        - "Independence is assumed and text violates it"
-        - "a tie-break, not a selectivity model"
-        - "Not yet integrated"
----
-
 # `research/` — claim, ancestry, and falsification
 
 This is irregex's research record, not production code. Each dossier separates

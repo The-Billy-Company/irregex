@@ -1,14 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "every zero-width assertion is resolved in one place, against one position's flags"
-      file: src/kernel/regex/linear/pike/closure.zig
-      contains: [".assert_word", ".assert_buf_start", "pub fn closureBuf", "sides: syn.Sides"]
-    - description: "the boolean walk keeps its three comptime seeding policies"
-      file: src/kernel/regex/linear/pike/search.zig
-      contains: ["const Scan = enum { anchored, skip, plain }", "pub fn bufMatch"]
----
-
 # linear/pike — the Pike VM
 
 A **Thompson NFA simulated in lockstep**: one thread list per input position,

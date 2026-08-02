@@ -1,11 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "rank stays weighted RRF over intrinsic signals"
-      file: src/kernel/rank/rank.zig
-      contains: "Reciprocal"
----
-
 # `src/kernel/rank/` — T4 definition-first ranking
 
 Turns the verified match set into the ranked, token-compressed list an agent

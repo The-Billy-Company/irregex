@@ -1,24 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "the eager driver's two bounds — the hard size ceiling and the calibrated cost policy"
-      file: src/kernel/regex/linear/dfa/powerset.zig
-      contains: ["pub const max_states: u32 = 4096;", "pub const max_visits: u64 = 750_000;"]
-    - description: "the shared determinizer core both drivers run — the start row the dwell reads, and the visit meter"
-      file: src/kernel/regex/linear/dfa/subset.zig
-      contains: ["pub fn forceStartRow", "visits: u64 = 0,"]
-      absent: ["pub fn startAccel"] # the exit-set rule lives in ../automata/dwell.zig
-    - description: "the immutable automaton keeps its interior / last-byte tables and the word-context walk"
-      file: src/kernel/regex/linear/dfa/dfa.zig
-      contains: ["trans_fin", "pub fn matchWord", "pub fn docMatch"]
-    - description: "the byte-indexed mirror MIRRORS rather than replaces — it carries its own budget and lives beside the classed tables the rest of the engine still reads"
-      file: src/kernel/regex/linear/dfa/dfa.zig
-      contains: ["pub const Wide = struct", "pub const stride = 256;", "wide: ?Wide = null,"]
-    - description: "the mirror is built by the shared freeze, before premultiplication, and only for the automata that walk it"
-      file: src/kernel/regex/linear/automata/freeze.zig
-      contains: ["fn widen", "Dfa.Wide.afford"]
----
-
 # linear/dfa — the determinized primary engine
 
 **One table lookup per byte, regardless of match density.** The Pike VM in

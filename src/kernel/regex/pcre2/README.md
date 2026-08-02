@@ -1,17 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "Pcre handle remains the opt-in backend surface"
-      file: src/kernel/regex/pcre2/engine.zig
-      contains: ["pub const Pcre", "lineMatch"]
-    - description: "literal extraction never over-claims for index elision"
-      file: src/kernel/regex/pcre2/literal.zig
-      contains: "pub fn"
-    - description: "the shadow pre-filters PCRE patterns with a linear over-approximation"
-      file: src/kernel/regex/pcre2/shadow.zig
-      contains: ["overapprox", "Bail"]
----
-
 # `kernel/regex/pcre2/` — opt-in PCRE2 JIT backend
 
 The escape hatch for lookaround, backreferences, and named captures the

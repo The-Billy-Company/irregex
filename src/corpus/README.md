@@ -1,12 +1,3 @@
----
-doc_radar:
-  counts:
-    - description: "corpus keeps scope · read · tree · fresh · index"
-      glob: src/corpus/*
-      unit: dirs
-      equals: 5
----
-
 # `src/corpus/` — shared source substrate
 
 Which paths and bytes are eligible for search or indexing, and their persisted

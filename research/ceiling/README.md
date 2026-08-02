@@ -1,14 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "the closed-roads record keeps both citations that shut the cascade route"
-      file: research/ceiling/CLOSED.md
-      contains: ["Chandra", "Maler"]
-    - description: "the eager driver's two bounds are what the ceiling argument is about"
-      file: src/kernel/regex/linear/dfa/powerset.zig
-      contains: ["pub const max_states: u32 = 4096;", "pub const max_visits: u64 = 750_000;"]
----
-
 # `ceiling/` — how fast a scan can go, and which roads are shut
 
 The other three dossiers each defend something we built. This one defends a

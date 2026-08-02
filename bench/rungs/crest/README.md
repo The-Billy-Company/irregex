@@ -1,16 +1,3 @@
----
-doc_radar:
-  paths_exist:
-    - bench/rungs/crest/bench.zig
-    - src/kernel/math/crest.zig
-    - research/crest/PROOF.md
-  sentinels:
-    - file: bench/rungs/crest/bench.zig
-      contains:
-        - "SOUNDNESS VIOLATION"
-        - "randomSoundness"
----
-
 # bench/crest — the Crest sieve's production proof harness
 
 `zig build crest` (from the repository root) links the real engine, walks

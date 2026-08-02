@@ -1,15 +1,3 @@
-<!--
-doc_radar:
-  sentinels:
-    - file: src/pcre2.h
-      contains:
-        - "#define PCRE2_MAJOR           10"
-        - "#define PCRE2_MINOR           47"
-    - file: LICENCE.md
-      contains:
-        - "BSD-3-Clause WITH PCRE2-exception"
--->
-
 # Vendored PCRE2 10.47
 
 The pinned, hermetically-built PCRE2 sources behind gist's opt-in `-P`/`--pcre2`

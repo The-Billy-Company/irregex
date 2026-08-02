@@ -1,24 +1,3 @@
----
-doc_radar:
-  counts:
-    - description: "vendor keeps the hermetic C floor — one tree per library"
-      glob: vendor/*
-      unit: dirs
-      equals: 2
-  sentinels:
-    - description: "PCRE2 is built from the vendored tree, not the system lib"
-      file: vendor/pcre2/README.md
-      contains: "10.47"
-    - description: "libsais is built from the vendored tree, not a system lib"
-      file: vendor/libsais/README.md
-      contains: "2.10.2"
-    - description: "both trees are rows in build.zig's declarative C floor"
-      file: build.zig
-      contains:
-        - "vendor/pcre2/src"
-        - "vendor/libsais/src"
----
-
 # `vendor/` — hermetic third-party sources
 
 Pinned upstream trees built into the kernel so CI and developer machines do

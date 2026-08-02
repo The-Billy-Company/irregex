@@ -68,9 +68,4 @@ Every number was re-derived from the source or the harness README that mints it
 rather than carried over. Two claims did not survive that: the roofline figures
 the old head quoted no longer matched the artifact, and a passes-per-candidate-
 byte range for the SIMD classes existed only in an untracked local baseline, so
-both are stated qualitatively now against what the tracked harnesses assert. The
-head also gains a `doc_radar` block it never had - six directory counts across
-the regex stages, the kernel tiers, the corpus packages, the index artifacts,
-and both `exec/` levels, plus twenty-three sentinel literals over the constants,
-version strings, contract symbols, and recipe entry points the prose quotes - so
-the next drift in any of it is a lint failure rather than a reading.
+both are stated qualitatively now against what the tracked harnesses assert.

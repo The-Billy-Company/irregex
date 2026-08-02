@@ -1,21 +1,3 @@
----
-doc_radar:
-  paths_exist:
-    - bench/rungs/multipattern/bench.zig
-    - bench/rungs/multipattern/vscan.c
-    - bench/rungs/multipattern/pack.py
-    - src/kernel/slate/muster.zig
-  sentinels:
-    "bench/rungs/multipattern/vscan.c":
-      contains:
-        - hs_compile_lit_multi
-        - hs_scan
-    "bench/rungs/multipattern/bench.zig":
-      contains:
-        - "fn oracle"
-        - PatternSet
----
-
 # `bench/rungs/multipattern` — the Hyperscan race (Layer K)
 
 Three files, one question: **when N patterns must be found with per-pattern

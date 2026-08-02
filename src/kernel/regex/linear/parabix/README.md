@@ -1,20 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "the floor's two load-bearing widths and the target it is measured on"
-      file: src/kernel/regex/linear/parabix/plane.zig
-      contains: ["pub const width: usize = 128;", "pub const stripe: usize = 8;", "pub const on_neon"]
-    - description: "the class compiler's two budgets, past which the DFA is the better rung"
-      file: src/kernel/regex/linear/parabix/stencil.zig
-      contains: ["pub const max_classes: usize = 6;", "pub const max_gates: usize = 40;"]
-    - description: "the gate refuses at compile time, and every refusal names itself"
-      file: src/kernel/regex/linear/parabix/admit.zig
-      contains: ["pub const Decline = enum", "star_height", "unicode", "pub fn starHeight"]
-    - description: "the marker chain's three operations — advance, keep, and MatchStar closure"
-      file: src/kernel/regex/linear/parabix/parabix.zig
-      contains: ["fn markers", "plane.addIn", "pub fn matchScalar"]
----
-
 # linear/parabix — the bit-parallel within-document scan rung
 
 **A DFA runs at load _latency_; this runs at ALU throughput.** A table walker

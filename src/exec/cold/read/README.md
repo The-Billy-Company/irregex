@@ -1,17 +1,3 @@
----
-doc_radar:
-  sentinels:
-    - description: "binary policy is one module both walk engines call — the NUL cut, the two geometries, and the notes stay together"
-      file: src/exec/cold/read/binary.zig
-      contains: ["pub fn committedPrefix", "pub fn handleBinary", "pub fn multilineBinary"]
-    - description: "one read strategy and one raw-stat projection, so neither engine invents its own"
-      file: src/corpus/read/slurp.zig
-      contains: ["pub const BUFCAP", "pub const StagedFile", "pub fn mapFile"]
-    - description: "-E still covers the WHATWG CJK multi-byte decoders"
-      file: src/corpus/read/encoding.zig
-      contains: ["gb18030", "shift_jis", "euc_jp"]
----
-
 # exec/cold/read — per-file ingest
 
 Everything that turns a path into matchable UTF-8 — and the per-file search that

@@ -1,14 +1,3 @@
-<!-- doc_radar:
-paths_exist:
-  - src/assay/span.zig
-  - src/assay/tally.zig
-  - src/assay/channel.zig
-  - src/assay/assay.zig
-sentinels:
-  - file: src/assay/channel.zig
-    contains: ["GIST_TRACE", "pub const Lens", "pub const Sink", "pub const Chatter"]
--->
-
 # `src/assay/` — the instrumentation floor (time · count · debug)
 
 An _assay_ is a precise measurement of composition. This is the one module the

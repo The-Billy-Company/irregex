@@ -1,27 +1,3 @@
----
-doc_radar:
-  counts:
-    - description: "seven modules — the face plus its six stages"
-      glob: src/exec/cold/engine/swarm/*.zig
-      equals: 7
-  sentinels:
-    - description: "the plane's whole published surface is two functions; everything else is reached through them"
-      file: src/exec/cold/engine/swarm/swarm.zig
-      contains: ["pub fn eligible", "pub fn run"]
-    - description: "the callable file-set walk stays a peer entry point, not a search with its output suppressed"
-      file: src/exec/cold/engine/swarm/roster.zig
-      contains: ["pub fn collectFileSet"]
-    - description: "one queue owns discovery, donation, and the abort that makes a soft output budget stop the walk"
-      file: src/exec/cold/engine/swarm/queue.zig
-      contains: ["pub fn donate", "pub fn abort", "pub fn noteDiscovered"]
-    - description: "the pool's width is a starting bet the walk may revise, bounded by the machine's fast cores"
-      file: src/exec/cold/engine/swarm/crew.zig
-      contains: ["pub const Crew", "pub fn consider", "pub fn maxWorkerCount"]
-    - description: "the per-directory scratch stays a real allocator distinct from the immortal worker arena, so a walked path is not charged for the whole run"
-      file: src/exec/cold/engine/swarm/descent.zig
-      contains: ["dir_scratch_retain"]
----
-
 # exec/cold/engine/swarm — the fused work-stealing pass
 
 One walk that also reads and also matches. The serial engine descends the tree,
