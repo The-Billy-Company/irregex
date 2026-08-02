@@ -6,10 +6,10 @@ Both steps built an `addObject` rooted at `src/root.zig`. Zig analyzes what a
 compilation reaches, and an object that exports nothing reaches almost nothing:
 the module's `pub` decls are lazy, so Sema stopped near the top and the step
 went green. The proof is a side-by-side. With the arch-shaped `lanes.native`
-regression in place, `zig build -Dtarget=aarch64-linux-gnu -Dcpu=baseline-neon`
-- the real library - failed with the `shufflePair` compile error, while the
-cross-check object for the same target passed on a cold cache. A portability
-gate over code it never read.
+regression in place, `zig build -Dtarget=aarch64-linux-gnu
+-Dcpu=baseline-neon` - the real library - failed with the `shufflePair`
+compile error, while the cross-check object for the same target passed on a
+cold cache. A portability gate over code it never read.
 
 The shipped `libirgx` is rooted at `src/surface/ffi/exports.zig`, not at
 `root.zig`, for its own unrelated reason (an `export fn` is emitted by every

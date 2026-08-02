@@ -18,6 +18,6 @@ word.
 
 The predicate now names its dependency instead of guessing at it. `lanes` has
 always known which of its three arms it compiled; it just never said so out
-loud. It publishes that as `lanes.arm`, and `resident` is `tbl.arm != .portable`
-- one question, asked once, by the module that has the answer. There is no
-second derivation left to drift.
+loud. It publishes that as `lanes.arm`, and `resident` is
+`tbl.arm != .portable` - one question, asked once, by the module that has the
+answer. There is no second derivation left to drift.
