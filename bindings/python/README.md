@@ -1,7 +1,7 @@
-# irregex
+# irregex - a linear-time regex engine for Python
 
 A regex engine for Python that matches in linear time, shipped as a single
-wheel with the engine inside it.
+wheel with the engine inside it. No catastrophic backtracking, so no ReDoS.
 
 ```bash
 pip install irregex
@@ -19,9 +19,10 @@ is in the standard library.
 
 The `re` module backtracks. On most patterns that is fine, and on a few it is
 not: `(a+)+b` against a string of forty `a`s will hang your process. That is
-not a bug in `re`; it is what a backtracking engine does. If your patterns come
-from a config file, an API request, or a user, you are one unlucky pattern away
-from a stalled worker.
+not a bug in `re`; it is what a backtracking engine does. It has a name when an
+attacker reaches it - regular expression denial of service, ReDoS - and if your
+patterns come from a config file, an API request, or a user, you are one
+unlucky pattern away from a stalled worker.
 
 irregex runs a finite automaton instead. Match time is linear in the length of
 the text and independent of how the pattern is shaped. In exchange, the default
@@ -228,9 +229,20 @@ there fails loudly at import rather than silently falling back.
 ## Supported platforms
 
 Wheels are built for macOS on arm64 and x86_64, Linux on x86_64 and aarch64
-(manylinux, glibc 2.17 and newer), and Windows on x86_64. Python 3.10 and
+(manylinux, glibc 2.17 and newer), and Windows on x86_64. Python 3.12 and
 newer. The wheels are platform-tagged, because they contain a native library;
 a wheel for the wrong platform will not install rather than failing at import.
+
+## Searching a codebase with it
+
+This is the engine. If what you actually want is a tool, three are built on it
+and each ships its own package:
+
+| Package | Question |
+|---|---|
+| [`gist-search`](https://pypi.org/project/gist-search/) | where is this exact pattern? |
+| [`relate-search`](https://pypi.org/project/relate-search/) | what resembles this, and what repeats? |
+| [`blast-search`](https://pypi.org/project/blast-search/) | what breaks if I change this symbol? |
 
 ## License
 

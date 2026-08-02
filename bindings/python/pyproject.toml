@@ -16,32 +16,81 @@ build-backend = "hatchling.build"
 
 [project]
 name = "irregex"
-version = "1.0.0" # x-release-please-version
-description = "A linear-time regex engine for Python, with the engine bundled in the wheel."
+version = "1.0.0"                                                                                                                          # x-release-please-version
+description = "Linear-time regex engine for Python - no catastrophic backtracking, no ReDoS, with the native engine bundled in the wheel."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = [ "LICENSE", "NOTICE" ]
 authors = [ { name = "The Billy Company" } ]
-keywords = [ "regex", "regexp", "re", "pcre", "linear-time" ]
+# PyPI search scores name + summary + description + keywords, so these are the
+# words somebody types when they have the problem this engine solves, not a
+# restatement of the module name. Three families: what it is (regex engine,
+# automata), what it guarantees (linear time, no backtracking, ReDoS), and what
+# it is reached for instead of (re, re2, pcre2, hyperscan).
+keywords = [
+  "regex",
+  "regexp",
+  "regular-expression",
+  "regex-engine",
+  "re",
+  "re2",
+  "pcre",
+  "pcre2",
+  "hyperscan",
+  "linear-time",
+  "redos",
+  "backtracking",
+  "catastrophic-backtracking",
+  "dfa",
+  "nfa",
+  "automata",
+  "finite-automata",
+  "thompson-nfa",
+  "pike-vm",
+  "pattern-matching",
+  "text-processing",
+  "search",
+  "string-matching",
+  "unicode",
+  "simd",
+  "fm-index",
+  "trigram",
+  "ffi",
+  "zig",
+]
 dependencies = [  ]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
+  "Intended Audience :: Information Technology",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
   "Programming Language :: Zig",
+  "Topic :: Software Development :: Libraries",
   "Topic :: Software Development :: Libraries :: Python Modules",
   "Topic :: Text Processing",
+  "Topic :: Text Processing :: General",
+  "Topic :: Text Processing :: Indexing",
+  "Topic :: Utilities",
+  "Typing :: Typed",
 ]
 
+# PyPI renders these as the sidebar link list. Every one is a distinct
+# destination: a reader who wants the changelog should not have to guess that
+# it lives behind "Homepage".
 [project.urls]
 Homepage = "https://github.com/The-Billy-Company/irregex"
+Documentation = "https://github.com/The-Billy-Company/irregex#readme"
 Repository = "https://github.com/The-Billy-Company/irregex"
 Issues = "https://github.com/The-Billy-Company/irregex/issues"
+Changelog = "https://github.com/The-Billy-Company/irregex/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 packages = [ "irgx" ]

@@ -6,13 +6,30 @@
 
 [package]
 name = "irregex"
-version = "1.0.0" # x-release-please-version
+version = "1.0.0"                                                                                                                                                      # x-release-please-version
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
-description = "Rust bindings for the irregex regex engine and the shared analytic substrate (row protocol, transports, contracts)."
-keywords = [ "regex", "regexp", "pattern", "pcre2", "bindings" ]
-categories = [ "text-processing", "api-bindings" ]
+description = "Linear-time regex engine for Rust - no catastrophic backtracking, no ReDoS - plus the shared analytic substrate (row protocol, transports, contracts)."
+readme = "README.md"
+homepage = "https://github.com/The-Billy-Company/irregex"
+repository = "https://github.com/The-Billy-Company/irregex"
+documentation = "https://github.com/The-Billy-Company/irregex/blob/main/bindings/rust/README.md"
+authors = [ "The Billy Company" ]
+# crates.io allows five, so each one has to earn its slot against the others.
+# `pattern` and `bindings` were doing no work - `pattern` is a word every crate
+# in this category uses, and `bindings` is what the category field already
+# says. `redos` replaces them because it is the term somebody types when they
+# have the problem this engine is the answer to, and almost nothing on
+# crates.io claims it.
+keywords = [ "regex", "regexp", "regex-engine", "redos", "automata" ]
+categories = [
+  "text-processing",
+  "parsing",
+  "algorithms",
+  "api-bindings",
+  "external-ffi-bindings",
+]
 # Nothing is published from this tree yet. Removing this line is the release
 # decision, and it should be made on purpose rather than by a stray `cargo
 # publish` in a directory somebody forgot they were in.
