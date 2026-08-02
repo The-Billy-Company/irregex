@@ -1,0 +1,1 @@
+`irgx` has shipped its `py.typed` marker from the beginning, which is the only reason a consumer's type checker can see its annotations at all. Nothing guarded it. Deleting that file breaks no test and fails no build; it just quietly downgrades every downstream user to `Any`. There is a test for it now - the same one the three sibling packages got along with the marker itself.
