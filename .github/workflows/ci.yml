@@ -105,19 +105,24 @@ jobs:
     steps:
       # ── why this job checks out a sibling, and only this one ──
       #
-      # The suite reads four contract TOMLs. Two are this package's own. The
-      # third, `kinship.toml`, is relate's and is vendored into `contract/` by
-      # `tools/sync_contract.py`, because relate is internal and a public
-      # package whose tests need a clone of a private one is a package the
-      # public cannot test. The fourth, `surface.toml`, is gist's — and gist is
-      # public, so the original is one checkout away and there is no reason to
-      # keep a copy that can go stale. One gate also reads `gist/include/gist.h`
-      # to catch a producer symbol misspelled identically on both sides of the
-      # contract, and only the real header can settle that.
+      # The suite reads four contract TOMLs and four headers. Two contracts are
+      # this package's own; `kinship.toml` is relate's, vendored into
+      # `contract/` by `tools/sync_contract.py` and drift-gated from relate's
+      # own CI; `surface.toml` is gist's and is read from the checkout, since
+      # a copy that can go stale earns nothing when the original is one
+      # checkout away.
       #
-      # The layout is flat — $GITHUB_WORKSPACE/{irregex,gist} — because that is
-      # what every checkout in this ecosystem already assumes and what the
-      # resolvers walk for. CI resolves these the way a laptop does.
+      # The headers are why all four packages are cloned. The cffi mirror spans
+      # every face this substrate can describe, and `test_cdef_header_parity`
+      # fails closed on a header it cannot read — a mirror checked against a
+      # header that is not there is not checked at all. All four packages are
+      # public, so anyone can satisfy this the same way CI does. Only `irregex`
+      # and `gist` are built: relate's and blast's headers are committed, and
+      # nothing here calls into those two.
+      #
+      # The layout is flat — $GITHUB_WORKSPACE/{irregex,gist,relate,blast} —
+      # because that is what every checkout in this ecosystem already assumes
+      # and what the resolvers walk for. CI resolves these the way a laptop does.
       - uses: actions/checkout@v4
         with:
           path: irregex
@@ -125,6 +130,14 @@ jobs:
         with:
           repository: The-Billy-Company/gist
           path: gist
+      - uses: actions/checkout@v4
+        with:
+          repository: The-Billy-Company/relate
+          path: relate
+      - uses: actions/checkout@v4
+        with:
+          repository: The-Billy-Company/blast
+          path: blast
       - uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
