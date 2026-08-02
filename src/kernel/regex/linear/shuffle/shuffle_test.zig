@@ -77,12 +77,30 @@ test "compose: the vector fold equals the scalar definition of the same fold" {
     // Random tables with an absorbing top lane — the kernel's one precondition —
     // driven over random bytes. This is the shuffle itself under test, with no
     // regex anywhere near it, so a divergence localizes to `lanes.zig`.
+    //
+    // `runNative`, NOT `run`. `run` dispatches on `lanes.native`, which is false
+    // off AArch64, so `run` there IS `runPortable` — which is `lanes.reference`
+    // — and this test spent every Linux CI run comparing a function to itself,
+    // reporting two thousand agreeing cases and proving none of them. It is the
+    // same vacuity this file's header describes for the LOWERING and fixes with
+    // `lowerFor(true, …)`; the kernel had it too, one level down.
+    //
+    // The 16-lane fold runs anywhere (`shuffle` always resolves to something),
+    // so it is a real differential even where the rung declines to arm, and on
+    // SSSE3 it exercises a `pshufb` composition production never reaches. The
+    // 32-lane fold needs the two-register `TBL`, and instantiating it off NEON
+    // is a compile error — hence the comptime split rather than a runtime skip.
     var prng = std.Random.DefaultPrng.init(0xC0FFEE);
     const r = prng.random();
     var bytes: [512]u8 = undefined;
     var checked: usize = 0;
 
-    inline for (.{ lanes.Width.lanes16, lanes.Width.lanes32 }) |w| {
+    const widths = if (lanes.native)
+        .{ lanes.Width.lanes16, lanes.Width.lanes32 }
+    else
+        .{lanes.Width.lanes16};
+
+    inline for (widths) |w| {
         inline for (.{ lanes.Index.byte, lanes.Index.byte_eol }) |ix| {
             const stride = comptime w.stride();
             const table = try a.alloc(u8, lanes.tableBytes(w, ix));
@@ -99,7 +117,7 @@ test "compose: the vector fold equals the scalar definition of the same fold" {
                 const n = r.uintLessThan(usize, bytes.len + 1);
                 for (bytes[0..n]) |*b| b.* = r.int(u8);
                 const hay = bytes[0..n];
-                const got = lanes.run(w, ix, hay, table, 0, match_lane);
+                const got = lanes.runNative(w, ix, hay, table, 0, match_lane);
                 const want = lanes.reference(w, ix, hay, table, 0, match_lane);
                 if (got != want) {
                     std.debug.print("KERNEL DIVERGENCE w={} ix={} len={}\n", .{ w, ix, n });
@@ -109,7 +127,10 @@ test "compose: the vector fold equals the scalar definition of the same fold" {
             }
         }
     }
-    try std.testing.expectEqual(@as(usize, 2000), checked);
+    // Two widths × two index axes off AArch64 becomes one width × two axes, and
+    // the floor says which run this was — a silently halved corpus is how a
+    // differential stops covering what its name claims.
+    try std.testing.expectEqual(@as(usize, if (lanes.native) 2000 else 1000), checked);
 }
 
 // ─────────────────────────────── 2. the gates ─────────────────────────────────

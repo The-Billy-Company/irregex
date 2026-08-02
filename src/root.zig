@@ -418,6 +418,7 @@ test {
     _ = @import("kernel/scan/calibrate_test.zig"); // per-buffer anchor calibration: planted oracle + stratification contrast
     _ = @import("kernel/scan/anchor_test.zig"); // anchor tie-break + table-range regression guards, and plan-seam equivalence
     _ = @import("kernel/scan/classrun_test.zig"); // SIMD class-run kernel vs scalar oracle (both backends)
+    _ = @import("kernel/scan/lanes_test.zig"); // the shuffle primitive: host instruction vs the portable arm no CI host compiles
     _ = @import("corpus/fresh/fresh_test.zig"); // T3 freshness `widen` set-algebra
     _ = @import("kernel/query/query_test.zig"); // shared compiled-query: compile/prefilter/match vs oracle
     _ = @import("kernel/math/bits_test.zig"); // shared two's-complement bit identities vs bool-slice oracle

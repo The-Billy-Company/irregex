@@ -309,6 +309,210 @@ test "sieve: the shuffle kernel ≡ the scalar oracle, byte for byte" {
     try std.testing.expect(checked > 3_000);
 }
 
+/// A buffer of `lines` short lines over `alphabet`, always ending in `\n`.
+///
+/// Shaped so the lane split *engages*: `sheng.split` looks for a newline at or
+/// after each `j·(len/lanes)` boundary, so lines short relative to a quarter of
+/// the buffer make all three interior cuts land. Buffers that fall through to
+/// the single chain are worth testing too — the geometry sweep below does that
+/// deliberately — but a random corpus that only ever fell through is how this
+/// kernel went untested in the first place.
+fn multiLineDoc(r: std.Random, buf: []u8, alphabet: []const u8, lines: usize) []u8 {
+    var i: usize = 0;
+    var remaining = lines;
+    while (remaining > 0 and i < buf.len) : (remaining -= 1) {
+        const width = @min(4 + r.uintLessThan(usize, 20), buf.len - i);
+        for (0..width) |_| {
+            if (i == buf.len) break;
+            buf[i] = alphabet[r.uintLessThan(usize, alphabet.len)];
+            i += 1;
+        }
+        if (i < buf.len) {
+            buf[i] = '\n';
+            i += 1;
+        }
+    }
+    return buf[0..i];
+}
+
+test "sieve: the four-lane buffer kernel ≡ the scalar oracle, and actually splits" {
+    // `scanDoc` is a different kernel from `scan`: it cuts the buffer at
+    // newlines, advances four independent shuffle chains in lockstep to the
+    // shortest lane, folds per-lane accumulators, and finishes each remainder
+    // from the state that lane reached. None of that machinery had a test
+    // caller — `scanDoc` was reached only from `bench/` and the ladder, and the
+    // one doc-grain differential drove `scan` (the per-line entry) over 64-byte
+    // buffers, well under the 256 bytes `split` needs to engage at all.
+    //
+    // The reference is `scanScalar`, one position at a time over the whole
+    // buffer, so a divergence localizes to the lane algebra and not to the
+    // quotient it is walking.
+    const a = std.testing.allocator;
+    const alphabet = "abc01_ x.y-Z";
+    var doc_buf: [1400]u8 = undefined;
+    var checked: usize = 0;
+    var engaged: usize = 0;
+    var misses: usize = 0;
+
+    var seed: u64 = 0;
+    while (seed < 2400) : (seed += 1) {
+        var prng = std.Random.DefaultPrng.init(seed *% 0xA24BAED4963EE407);
+        const r = prng.random();
+        var pat: std.ArrayList(u8) = .empty;
+        defer pat.deinit(a);
+        var g = Gen{ .r = r, .buf = &pat, .a = a };
+        try g.alt(2);
+
+        var f = (try Fixture.init(pat.items, .ungated)) orelse continue;
+        defer f.deinit();
+        if (!f.s.doc_ok) continue;
+
+        for (0..6) |_| {
+            const doc = multiLineDoc(r, &doc_buf, alphabet, 20 + r.uintLessThan(usize, 60));
+            const got = f.s.scanDoc(doc);
+            const want = f.s.scanScalar(doc);
+            if (got != want) {
+                std.debug.print("DOC KERNEL DIVERGENCE pat=/{s}/ n={d} len={d}\n", .{ pat.items, f.s.n, doc.len });
+                return error.DocLaneScalarDivergence;
+            }
+            // …and the whole point of the sieve, at this grain: a `.miss` is a
+            // proof, checked against the Pike VM rather than the DFA the
+            // quotient came from.
+            if (got == .miss) {
+                misses += 1;
+                if (truthDoc(&f, doc)) {
+                    std.debug.print("FALSE DOC MISS pat=/{s}/ len={d}\n", .{ pat.items, doc.len });
+                    return error.SieveRejectedARealMatch;
+                }
+            }
+            if (sheng.lanesEngaged(f.s.q[0..f.s.n], doc)) engaged += 1;
+            checked += 1;
+        }
+    }
+    try std.testing.expect(checked > 2_000);
+    // A whole-buffer `.miss` is a claim about a kilobyte, so it is rare where
+    // the per-line sweep's is common — measured ~1% here against ~15% there.
+    // The floor says the branch is reached, not that this is where `.miss` gets
+    // its volume; the line-grain differential above is that.
+    try std.testing.expect(misses > 20);
+    // The floor that makes the rest of this test mean anything: without it a
+    // corpus of too-short buffers passes while executing the single chain every
+    // time, which is how this kernel stayed untested.
+    try std.testing.expect(engaged > checked / 2);
+}
+
+test "sieve: a match survives wherever it sits relative to a lane cut" {
+    // Placement is where a lane kernel breaks: a match in a tail past `burst`,
+    // one straddling a cut, one in the first bytes of a lane that starts
+    // mid-state. Rather than hand-computing those offsets — which would bake
+    // this build's lane count and threshold into the test — plant a known
+    // positive at EVERY offset and let the sweep cover them.
+    //
+    // The needle is derived, not written down: random lines until the Pike VM
+    // says one matches. A hardcoded example would encode today's pattern
+    // generator rather than the pattern's own language.
+    const filler = "qqq\nwww\n";
+    var doc_buf: [900]u8 = undefined;
+    var line_buf: [24]u8 = undefined;
+    var planted: usize = 0;
+    var engaged: usize = 0;
+
+    for (slate) |pat| {
+        var f = (try Fixture.init(pat, .ungated)) orelse continue;
+        defer f.deinit();
+        if (!f.s.doc_ok) continue;
+
+        var prng = std.Random.DefaultPrng.init(0x9E37_79B1);
+        const r = prng.random();
+        const needle = blk: {
+            const chars = "abcXYZ019 -+/=\t";
+            for (0..20_000) |_| {
+                const len = 6 + r.uintLessThan(usize, line_buf.len - 6);
+                for (line_buf[0..len]) |*c| c.* = chars[r.uintLessThan(usize, chars.len)];
+                if (f.truth(line_buf[0..len])) break :blk line_buf[0..len];
+            }
+            continue; // no positive found for this pattern; nothing to plant
+        };
+
+        var at: usize = 0;
+        while (at + needle.len <= doc_buf.len) : (at += 1) {
+            // Repaint the WHOLE buffer, not just the window about to be
+            // written: the previous placement started one byte earlier, so
+            // restoring only `[at, at+len)` leaves its first byte behind and
+            // the filler smears as the sweep advances. That erases the newlines
+            // the lane split needs, and the sweep quietly stops testing the
+            // kernel it is named for — which is exactly what it did until this
+            // test's own `engaged == planted` floor caught it.
+            for (&doc_buf, 0..) |*c, i| c.* = filler[i % filler.len];
+            @memcpy(doc_buf[at..][0..needle.len], needle);
+            const doc = doc_buf[0..];
+
+            const got = f.s.scanDoc(doc);
+            const want = f.s.scanScalar(doc);
+            if (got != want) {
+                std.debug.print("PLANTED DIVERGENCE pat=/{s}/ at={d}\n", .{ pat, at });
+                return error.DocLaneScalarDivergence;
+            }
+            if (got == .miss and truthDoc(&f, doc)) {
+                std.debug.print("PLANTED FALSE MISS pat=/{s}/ at={d}\n", .{ pat, at });
+                return error.SieveRejectedARealMatch;
+            }
+            if (sheng.lanesEngaged(f.s.q[0..f.s.n], doc)) engaged += 1;
+            planted += 1;
+        }
+    }
+    try std.testing.expect(planted > 800);
+    try std.testing.expect(engaged == planted); // this buffer always splits
+}
+
+test "sieve: the buffer kernel agrees with the oracle across the split's geometry" {
+    // The split has three ways to decline — too short, no newline at all, and a
+    // newline the search from `j·share` cannot find — and each is a silent
+    // fallthrough to the single chain. Every shape below must give the oracle's
+    // verdict whether it splits or not, and the census records which did, so a
+    // future change to the threshold shows up as a moved number rather than as
+    // silently reduced coverage.
+    var buf: [2048]u8 = undefined;
+    var f = (try Fixture.init("[A-Za-z]+[0-9]+", .ungated)) orelse return error.SkipZigTest;
+    defer f.deinit();
+    if (!f.s.doc_ok) return error.SkipZigTest;
+
+    var split_seen: usize = 0;
+    var fell_through: usize = 0;
+
+    // Lengths straddling the 4×64 threshold the lane split needs, plus a long
+    // sweep well past it. `\n`-dense, so a cut is always findable.
+    for ([_]usize{ 0, 1, 63, 64, 127, 128, 200, 254, 255, 256, 257, 300, 511, 512, 1023, 2048 }) |len| {
+        for (buf[0..len], 0..) |*c, i| c.* = if (i % 9 == 8) '\n' else 'a' + @as(u8, @intCast(i % 7));
+        const doc = buf[0..len];
+        try std.testing.expectEqual(f.s.scanScalar(doc), f.s.scanDoc(doc));
+        if (sheng.lanesEngaged(f.s.q[0..f.s.n], doc)) split_seen += 1 else fell_through += 1;
+    }
+
+    // A minified line: long enough to split, no newline to split ON.
+    @memset(buf[0..], 'a');
+    try std.testing.expectEqual(f.s.scanScalar(buf[0..]), f.s.scanDoc(buf[0..]));
+    try std.testing.expect(!sheng.lanesEngaged(f.s.q[0..f.s.n], buf[0..]));
+
+    // One newline, at the very end: every interior cut search runs off the end.
+    buf[buf.len - 1] = '\n';
+    try std.testing.expectEqual(f.s.scanScalar(buf[0..]), f.s.scanDoc(buf[0..]));
+    try std.testing.expect(!sheng.lanesEngaged(f.s.q[0..f.s.n], buf[0..]));
+
+    // Wildly unequal lanes: one enormous line, then a crowd of tiny ones. The
+    // lockstep burst is the SHORTEST lane, so nearly all the work lands in the
+    // first lane's tail — the path a balanced buffer never reaches.
+    @memset(buf[0 .. buf.len / 2], 'q');
+    buf[buf.len / 2] = '\n';
+    for (buf[buf.len / 2 + 1 ..], 0..) |*c, i| c.* = if (i % 2 == 1) '\n' else 'z';
+    try std.testing.expectEqual(f.s.scanScalar(buf[0..]), f.s.scanDoc(buf[0..]));
+    if (sheng.lanesEngaged(f.s.q[0..f.s.n], buf[0..])) split_seen += 1;
+
+    // Both regimes must be witnessed, or the sweep has stopped covering one.
+    try std.testing.expect(split_seen > 0);
+    try std.testing.expect(fell_through > 0);
+}
+
 test "sieve: the two-quotient conjunction is a real conjunction" {
     // `survives2` must be ∃position(A ∧ B), not (∃A) ∧ (∃B) — the weaker form
     // would still be sound but strictly less selective, so this is a
