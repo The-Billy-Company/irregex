@@ -48,6 +48,13 @@ const Corpus = struct {
         const root = try std.fmt.allocPrint(a, "/tmp/gist_scoped_{s}_{x}", .{ tag, seed });
         fault.spare("clear leftover fixture", Dir.cwd().deleteTree(io, root));
         try Dir.cwd().createDirPath(io, root);
+        // Every fixture here is its own repository, because `.gitignore` governs
+        // one and nothing else. Absent this, the VCS tier switches off whenever
+        // the runner sits outside a checkout (`Ignore`'s require-git rule), and
+        // the ignore-source test below silently stops testing what it names: the
+        // `.gitignore` it writes changes no verdict, so the file it should have
+        // dropped stays admitted and the count comes back one too high.
+        try Dir.cwd().createDirPath(io, try std.fs.path.join(a, &.{ root, ".git" }));
         const rootz = try a.dupeZ(u8, root);
         var buf: [portal.max_path]u8 = undefined;
         const resolved = portal.realpath(rootz, &buf) orelse return error.Unexpected;

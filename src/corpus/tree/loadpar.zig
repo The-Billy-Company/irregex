@@ -435,6 +435,13 @@ test "fused parallel load has byte-identical membership to the serial walk" {
     defer fault.spare("remove parity fixture", Dir.cwd().deleteTree(io, root));
     try Dir.cwd().createDirPath(io, try joinPath(a, root, "sub/nested"));
     try Dir.cwd().createDirPath(io, try joinPath(a, root, "node_modules"));
+    // The fixture is its own repository, because `.gitignore` only governs one.
+    // Without this the VCS tier switches off whenever the test binary is launched
+    // from outside a checkout (`Ignore`'s require-git rule, ripgrep's), and the
+    // two gitignore assertions below pass for an ambient reason — where the
+    // runner happened to be — rather than because this corpus says so. That
+    // reads as green on a laptop and as `foo.log` surviving on a bare CI runner.
+    try Dir.cwd().createDirPath(io, try joinPath(a, root, ".git"));
 
     const W = struct {
         fn f(io_: std.Io, a_: std.mem.Allocator, p: []const u8, data: []const u8) !void {
