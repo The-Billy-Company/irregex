@@ -104,66 +104,33 @@ func TestDigestPolicy(t *testing.T) {
 	}
 }
 
-// TestTiersAgree is the cross-tier oracle: whichever tiers this machine has must
-// answer a verb with the same rows. A declinature is a fact about speed, so a
-// difference here would mean one tier is lying.
-func TestTiersAgree(t *testing.T) {
-	root := corpus(t)
-	q := Query{
-		Op:     analytic.OpDups,
-		Params: analytic.Kinship{MaxDistance: ptr(0.6), Top: 10, NoIndex: true},
-		Roots:  []string{root},
-		Dir:    root,
-	}
-
-	// The only skip left in this package, and it is deliberately not the kind
-	// TestMain abolished. That kind asked the filesystem whether a binary
-	// happened to be lying around; this one asks how this very test binary was
-	// compiled. The default build is pure Go, because the in-process analytic
-	// tier is opt-in behind `-tags irgx_ffi` so a `go get` consumer never
-	// tries to link a libirgx that cannot exist in the module cache. A
-	// cross-tier oracle with one tier present has nothing to compare, and no
-	// amount of building or installing changes that — only rebuilding this test
-	// binary with the tag does.
-	warm := Probe()
-	if !warm.Analytic {
-		t.Skipf("this test binary has no in-process analytic tier to compare the cold one against; rebuild with `-tags irgx_ffi` (cgo=%v, err=%v)", warm.CGO, warm.Err)
-	}
-	native := render(t, q)
-	if len(native) == 0 {
-		t.Fatal("the fixture corpus produced no duplicate pair, so this oracle proves nothing")
-	}
-	t.Setenv("IRGX_NO_FFI", "1")
-	cold := render(t, q)
-	if len(native) != len(cold) {
-		t.Fatalf("tiers disagree on row count: native %d, cold %d\nnative=%v\ncold=%v", len(native), len(cold), native, cold)
-	}
-	for i := range native {
-		if native[i] != cold[i] {
-			t.Errorf("row %d: native %s, cold %s", i, native[i], cold[i])
-		}
-	}
-}
-
 // TestColdSurfacesStats pins that the subprocess tier reports the answer-level
-// counters rather than dropping them: a retrieval answer must be able to say the
-// query was foreign to the corpus instead of merely empty.
+// counters rather than dropping them: an answer must be able to say how much
+// work it did and which tier did it, not merely hand back rows.
+//
+// Driven through gist's `rank`, the one analytic verb a public producer owns.
+// The verb is incidental — what is under test is this package's cold tier, which
+// spawns a child, frames a request, and decodes rows back — so the cheapest
+// producer that can answer at all is the right one to ask.
 func TestColdSurfacesStats(t *testing.T) {
 	t.Setenv("IRGX_NO_FFI", "1")
 	root := corpus(t)
 	rows, err := Run(t.Context(), Query{
-		Op:     analytic.OpRecall,
-		Params: analytic.Retrieval{Query: "kinship sketch of a duplicated helper", Top: 3},
+		Op:     analytic.OpRank,
+		Params: analytic.Rank{Pattern: "Reticulate", Top: 3},
 		Roots:  []string{root},
 		Dir:    root,
 	})
 	if err != nil {
-		t.Fatalf("recall: %v", err)
+		t.Fatalf("rank: %v", err)
 	}
 	defer rows.Close()
 	found, err := rows.Collect()
 	if err != nil {
 		t.Fatalf("collect: %v", err)
+	}
+	if len(found) == 0 {
+		t.Fatal("the fixture corpus matched nothing, so this proves no decode happened")
 	}
 	stats := rows.Stats()
 	if stats.Elapsed <= 0 {
@@ -175,24 +142,6 @@ func TestColdSurfacesStats(t *testing.T) {
 	if stats.SourceName() == "" {
 		t.Error("stats named no tier")
 	}
-}
-
-func render(t *testing.T, q Query) []string {
-	t.Helper()
-	rows, err := Run(t.Context(), q)
-	if err != nil {
-		t.Fatalf("run %s: %v", q.Op, err)
-	}
-	defer rows.Close()
-	found, err := rows.Collect()
-	if err != nil {
-		t.Fatalf("collect %s: %v", q.Op, err)
-	}
-	out := make([]string, 0, len(found))
-	for _, row := range found {
-		out = append(out, row.String())
-	}
-	return out
 }
 
 // corpus writes a small tree with one deliberate near-duplicate pair and one
@@ -221,9 +170,3 @@ func corpus(t *testing.T) string {
 	}
 	return root
 }
-
-// ptr is the address of a literal, for the optional knobs that read "absent" as
-// nil. Go 1.26 spells this `new(0.6)`; keeping the helper keeps this module's
-// floor at the version its production code actually needs, so a consumer on an
-// older toolchain is not locked out by a convenience in a test.
-func ptr[T any](v T) *T { return &v }

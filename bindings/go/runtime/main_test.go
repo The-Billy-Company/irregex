@@ -8,7 +8,19 @@ import (
 )
 
 // tools are the engines this package's tests drive.
-var tools = []string{ToolRelate}
+//
+// gist, and deliberately only gist. What this package owns is the ladder — the
+// dispatch, the tiers, the row decode — not any particular verb, so it needs
+// *a* producer rather than a specific one, and which producer it picks decides
+// who can run these tests. gist is public; relate is not. Certifying relate
+// here made a public package's suite require a clone of a private one, which is
+// a suite the public cannot run.
+//
+// gist produces exactly one analytic verb (`rank`), and one is all a ladder
+// test needs. The oracle that genuinely has to be relate's — the cross-tier row
+// comparison over a kinship verb — moved to relate's own Go bindings, where the
+// binary it judges is the repository's own artifact rather than a sibling's.
+var tools = []string{ToolGist}
 
 // engines names the binary TestMain certified for each of [tools], so a failing
 // run can close by saying which build produced it. The store that makes every
