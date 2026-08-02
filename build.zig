@@ -11,14 +11,15 @@
 //! `gist`; the kinship engine (and the cento quoter over this library's
 //! FM-index) lives in `relate`.
 //!
-//! The test chassis is this package's own, and `gist`/`relate` mirror it by
-//! reaching for `brigade.zig` through their dependency here: one ReleaseSafe
-//! brigade-sharded unit-test binary (`test` / `test-quick`), a compile-only
-//! `check` step for the --watch/ZLS loop, a kcov `coverage` step, and the
-//! Linux/Windows cross-compile drift gates folded into `test`.
+//! The test chassis comes from the `brigade` package, as it does in every
+//! sibling: one ReleaseSafe brigade-sharded unit-test binary (`test` /
+//! `test-quick`), a compile-only `check` step for the --watch/ZLS loop, a kcov
+//! `coverage` step, and the Linux/Windows cross-compile drift gates folded into
+//! `test`.
 
 const std = @import("std");
 const builtin = @import("builtin");
+const brigade = @import("brigade");
 
 // ── the suite's long poles (`zig build test-quick` stands these aside) ──
 // Each is a compile-bound differential (hundreds of powerset DFA builds under
@@ -167,7 +168,7 @@ const Codegen = struct {
     /// **zlib is the default on ELF** and zstd is the ask, which inverts how
     /// the two codecs rank on the merits — zstd is better on all three axes at
     /// once (ratio, compression speed, decompression speed), which is the
-    /// finding `ELFCOMPRESS_ZSTD` was standardised on (MaskRay, `zstd
+    /// finding `ELFCOMPRESS_ZSTD` was standardized on (MaskRay, `zstd
     /// compressed debug sections`, 2022). It loses here on the only axis a
     /// default is decided by: who can read it. `ELFCOMPRESS_ZLIB` is the one
     /// value the generic ABI has always had and every binutils, gdb, and
@@ -261,7 +262,7 @@ pub fn build(b: *std.Build) void {
         // A build ID is only *needed* by the artifact that has lost its DWARF,
         // so it rides `-Dstrip` rather than being one more thing the packaging
         // matrix has to remember. `sha1` over Zig's cheaper `fast` because the
-        // point is to be recognised by tools we do not own — `debuginfod`, the
+        // point is to be recognized by tools we do not own — `debuginfod`, the
         // distro debug-package splitters, the symbolizers — and a 20-byte note
         // is the shape all of them were built around. Overridable both ways:
         // `-Dbuild-id=fast` for the cheap 8-byte hash, `=none` to opt out.
@@ -432,34 +433,18 @@ pub fn build(b: *std.Build) void {
         break :blk twin;
     };
 
-    // One compiled test binary, `shards` processes running disjoint residue
-    // classes of it (`brigade.zig`). ~2x cores, not 1x: the build
-    // runner keeps only cores-1 steps in flight, so over-decomposing turns its
-    // scheduler into a work queue instead of idling a core beside a grinding
-    // neighbor.
-    const shards = b.option(
-        usize,
-        "test-shards",
-        "how many parallel processes `zig build test` splits the unit-test binary across (default: 2x CPU count; 1 restores a single-process run)",
-    ) orelse @min(@max(std.Thread.getCpuCount() catch 1, 1) * 2, 64);
-    const brigade = b.path("brigade.zig");
+    // One compiled test binary, N processes running disjoint residue classes of
+    // it. `brigade.init` reads `-Dtest-shards` / `-Dtest-filter` / `-Dtest-skip`
+    // and locates the runner inside its own package; the fan-out and the ~2x
+    // cores default live there too.
+    const bg = brigade.init(b, .{});
     const tests = b.addTest(.{
         .root_module = test_module,
-        .test_runner = .{ .path = brigade, .mode = .simple },
+        .test_runner = bg.runner(),
     });
-    const test_filter = b.option(
-        []const u8,
-        "test-filter",
-        "run only unit tests whose name contains one of these comma-separated substrings",
-    );
-    const test_skip = b.option(
-        []const u8,
-        "test-skip",
-        "skip unit tests whose name contains one of these comma-separated substrings",
-    );
 
     const test_step = b.step("test", "Run unit tests");
-    addShards(b, tests, test_step, shards, test_filter, test_skip);
+    bg.shard(test_step, tests, .{});
 
     // The C-ABI artifact is a SEPARATE module (rooted at the export shims, see
     // above), and Zig collects tests only from a root module's own files — so
@@ -475,21 +460,19 @@ pub fn build(b: *std.Build) void {
     // by — covers both, and a filtered hunt names the plane it is hunting in.
     const abi_tests = b.addTest(.{
         .root_module = abi,
-        .test_runner = .{ .path = brigade, .mode = .simple },
+        .test_runner = bg.runner(),
     });
     const abi_step = b.step("test-abi", "Run the C-ABI artifact's unit tests (folded into `test`)");
-    addShards(b, abi_tests, abi_step, 1, test_filter, test_skip);
-    if (test_filter == null) test_step.dependOn(abi_step);
+    bg.shard(abi_step, abi_tests, .{ .count = 1 });
+    if (!bg.narrowed()) test_step.dependOn(abi_step);
 
     // `zig build test-quick` — the same suite minus the declared long poles,
     // for the edit loop. A strictly weaker proof than `test`, and says so.
-    const deep = std.mem.join(b.allocator, ",", &deep_tests) catch @panic("OOM");
     const quick_step = b.step(
         "test-quick",
         b.fmt("Run unit tests except the {d} declared long poles (weaker than `test`)", .{deep_tests.len}),
     );
-    const quick_skip = if (test_skip) |s| b.fmt("{s},{s}", .{ s, deep }) else deep;
-    addShards(b, tests, quick_step, shards, test_filter, quick_skip);
+    bg.shard(quick_step, tests, .{ .skip = &deep_tests });
 
     // Debug twin for `check` (the step ZLS / --watch -fincremental drives) and
     // `coverage` (kcov needs full-fidelity DWARF). Carries the SAME brigade
@@ -497,7 +480,7 @@ pub fn build(b: *std.Build) void {
     // debug twin on the stock runner would compile a different program.
     const debug_tests = if (test_module == engine) tests else b.addTest(.{
         .root_module = engine,
-        .test_runner = .{ .path = brigade, .mode = .simple },
+        .test_runner = bg.runner(),
     });
     b.step("check", "Compile tests without running (fast --watch -fincremental loop / ZLS)")
         .dependOn(&debug_tests.step);
@@ -505,7 +488,7 @@ pub fn build(b: *std.Build) void {
     const run_cov = b.addSystemCommand(&.{ "kcov", "--clean", "--include-pattern=src/" });
     run_cov.addArg(b.pathFromRoot(".local/coverage"));
     run_cov.addArtifactArg(debug_tests);
-    run_cov.setEnvironmentVariable("BRIGADE_SHARD", "0/1");
+    bg.whole(run_cov);
     b.step("coverage", "Run unit tests under kcov → .local/coverage/ (Cobertura XML)")
         .dependOn(&run_cov.step);
 
@@ -529,6 +512,35 @@ pub fn build(b: *std.Build) void {
             .queries = &.{.{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu }},
         },
         .{
+            .step = "check-portable",
+            .blurb = "Cross-compile for the targets with no SIMD arm (Sema+codegen, no link) — keeps every `cpu.has` gate honest about the feature it names",
+            .queries = &.{
+                // AArch64 with NEON SUBTRACTED. Not a hypothetical target: it
+                // is what any `-mcpu` without SIMD resolves to, and it broke.
+                // `lanes.native` armed the composition by architecture, reached
+                // `shufflePair`, and died on that function's own
+                // `@compileError` — no artifact at all for anyone on an AArch64
+                // profile without SIMD. An arch-shaped gate in front of a
+                // feature-shaped requirement is invisible to every host that
+                // happens to have the feature, so the only thing that sees it
+                // is a build for a host that does not.
+                .{
+                    .cpu_arch = .aarch64,
+                    .os_tag = .linux,
+                    .abi = .gnu,
+                    .cpu_model = .baseline,
+                    .cpu_features_sub = std.Target.aarch64.featureSet(&.{.neon}),
+                },
+                // Neither NEON nor SSSE3 nor anything to fall back from: the
+                // one target where `shuffle` and `pshufb` compile their
+                // portable arms because there is no other arm to take.
+                // `check-linux` above already covers x86_64 at baseline (SSE2),
+                // which is the same story for the shuffle and the declared
+                // floor of the published manylinux wheel.
+                .{ .cpu_arch = .riscv64, .os_tag = .linux, .abi = .gnu },
+            },
+        },
+        .{
             .step = "check-windows",
             .blurb = "Cross-compile the library for all three Windows triples (Sema+codegen, no link) — keeps portal's Win32 arm and the warm tier's Win32 arm building",
             .queries = &.{
@@ -542,11 +554,27 @@ pub fn build(b: *std.Build) void {
         const step = b.step(check.step, check.blurb);
         for (check.queries) |query| {
             const foreign = b.resolveTargetQuery(query);
-            const mod = b.createModule(.{
+            // Rooted at the C-ABI export surface, NOT at `src/root.zig`, for the
+            // same reason the shipped `libirgx` is: Zig analyzes what a
+            // compilation reaches, and a bare object over `root.zig` exports
+            // nothing, so it reached almost none of the engine. That check
+            // passed on an AArch64 target with NEON subtracted while the actual
+            // library build for the same target failed to compile — a green
+            // portability gate over code it never looked at. `export fn` is what
+            // forces Sema down to the kernels these steps exist to keep honest.
+            const foreign_engine = b.createModule(.{
                 .root_source_file = b.path("src/root.zig"),
                 .target = foreign,
                 .optimize = .Debug,
                 .link_libc = true,
+            });
+            foreign_engine.addOptions("build_options", version);
+            const mod = b.createModule(.{
+                .root_source_file = b.path("src/surface/ffi/exports.zig"),
+                .target = foreign,
+                .optimize = .Debug,
+                .link_libc = true,
+                .imports = &.{.{ .name = "irregex", .module = foreign_engine }},
             });
             const obj = b.addObject(.{
                 .name = b.fmt("irregex-check-{t}-{t}", .{ query.cpu_arch.?, query.os_tag.? }),
@@ -610,7 +638,7 @@ pub fn build(b: *std.Build) void {
 
     // A rung that races an accelerator against the shipped ladder has to be
     // compiled the way the shipped ladder is, or the ratio is about the build
-    // mode rather than the machine. Certificate lanes instead honour whatever
+    // mode rather than the machine. Certificate lanes instead honor whatever
     // `-Doptimize` the caller asked for, since a cycles/byte number is a claim
     // about THIS build.
     const lab_optimize = b.option(
@@ -760,28 +788,5 @@ pub fn build(b: *std.Build) void {
     }) |view| {
         const dest = b.fmt("llvm/{s}.{s}", .{ ir_name, view[1] });
         ir_step.dependOn(&b.addInstallFileWithDir(view[0], .prefix, dest).step);
-    }
-}
-
-/// Hang `shards` independent `Run` steps off one compiled test binary, each
-/// owning a disjoint residue class of the (filtered) suite. The parallelism is
-/// the build runner's: independent `Run` steps are already scheduled across
-/// cores, so `brigade.zig` only decides which tests a process claims.
-fn addShards(
-    b: *std.Build,
-    tests: *std.Build.Step.Compile,
-    step: *std.Build.Step,
-    shards: usize,
-    filter: ?[]const u8,
-    skip: ?[]const u8,
-) void {
-    for (0..shards) |i| {
-        const run_shard = b.addRunArtifact(tests);
-        run_shard.setEnvironmentVariable("BRIGADE_SHARD", b.fmt("{d}/{d}", .{ i, shards }));
-        if (filter) |f| run_shard.setEnvironmentVariable("BRIGADE_FILTER", f);
-        if (skip) |s| run_shard.setEnvironmentVariable("BRIGADE_SKIP", s);
-        run_shard.expectExitCode(0);
-        run_shard.setName(b.fmt("{s} shard {d}/{d}", .{ step.name, i, shards }));
-        step.dependOn(&run_shard.step);
     }
 }

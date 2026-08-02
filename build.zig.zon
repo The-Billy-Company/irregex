@@ -4,6 +4,11 @@
     .fingerprint = 0x418e7555d884a859,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
+        // The shard-aware test runner. Build-time only, no artifact, no ABI —
+        // it decides which tests a process owns and hangs the `Run` steps off
+        // one compiled binary. Sibling-checkout path dep (dev); releases pin
+        // url+hash via the publish script.
+        .brigade = .{ .path = "../brigade" },
         // PCRE2 10.47 — the opt-in `-P` engine. The build compiles the pinned
         // mirror physically vendored under vendor/pcre2/ (hermetic, offline,
         // byte-reproducible), so this entry is `.lazy` and is NEVER fetched by
@@ -29,9 +34,6 @@
     .paths = .{
         "build.zig",
         "build.zig.zon",
-        // The shard-aware test runner. Part of the package because `gist` and
-        // `relate` reach it through their dependency on this one.
-        "brigade.zig",
         // The shared measurement instruments — the 12-class probe registry, the
         // PMU counters, and the bootstrap/Mann-Whitney verdict math — exported
         // as the `probes` / `pmu` / `stats` modules. Here for the same reason
