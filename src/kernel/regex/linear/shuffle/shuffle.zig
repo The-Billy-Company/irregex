@@ -129,7 +129,21 @@ pub const Compose = struct {
     ///   * the start closure already accepts — START and MATCH would be the same
     ///     lane, and the DFA answers such patterns in O(1) anyway.
     pub fn lower(gpa: std.mem.Allocator, dfa: anytype) !?*Compose {
-        if (comptime !lanes.native) return null;
+        return lowerFor(lanes.native, gpa, dfa);
+    }
+
+    /// `lower` with the target predicate passed in, mirroring the parabix rung's
+    /// `admit.planFor`. `lanes.native` is a DISPATCH judgment — the 32-lane form
+    /// wants `TBL`'s two-register list and the 16-lane form on `pshufb` has never
+    /// been measured — but everything below it is architecture-independent: the
+    /// lane assignment, the end-of-line axis detection, the `slice_safe` proof,
+    /// and the table itself are the same on every target, and `lanes.run` already
+    /// carries a portable fold for them to be driven through. The test suite
+    /// passes `true` so that all of that is exercised wherever CI runs, rather
+    /// than only on the architecture that happens to arm the kernel. Production
+    /// never passes anything but `lanes.native`.
+    pub fn lowerFor(comptime armed: bool, gpa: std.mem.Allocator, dfa: anytype) !?*Compose {
+        if (comptime !armed) return null;
         if (dfa.word_ctx) return null;
         if (dfa.isMatch(dfa.start)) return null;
 

@@ -13,6 +13,16 @@
 //!   4. **differential fuzz** — random patterns × random haystacks, line level
 //!      and doc level, against `lineMatchPike` / per-line Pike. Any divergence
 //!      is a bug in this rung, never in the test.
+//!
+//! Layers 1–4 lower through `Compose.lowerFor(true, …)`, which forces the target
+//! predicate the production entrance reads from `lanes.native`. That predicate
+//! decides whether the KERNEL is worth shipping here; it says nothing about what
+//! a lowered machine means, and everything this file checks below it is the same
+//! on every architecture. Reading it would leave a non-AArch64 run asserting
+//! only that a null is a null, with its vacuity floors unmeetable — the shape
+//! that made all seven of these tests fail the first time CI ran them on Linux.
+//! The two tests whose subject IS the arming decision (the auction, and the
+//! `sliceSafe` proof through the ladder) name the predicate and skip.
 
 const std = @import("std");
 const regex = @import("../program/core.zig");
@@ -28,6 +38,17 @@ const a = std.testing.allocator;
 
 /// Compile `pattern` and lower it, or null when the rung declines. `force_dfa`
 /// keeps class-run-shaped patterns in coverage, exactly as `dfa_test.zig` does.
+///
+/// `lowerFor(true, …)` rather than `lower`, so a decline here is always a
+/// statement about the MACHINE — word context, too many lanes, an accepting
+/// start closure — and never about the host. `lanes.native` is a dispatch
+/// judgment about which kernel is worth shipping; everything this file tests
+/// below it (lane assignment, the end-of-line axis, the `slice_safe` proof, the
+/// table) is architecture-independent, and `lanes.run` carries a portable fold
+/// to drive it through. Going through the production entrance instead would
+/// make every gate assertion off AArch64 a vacuous "null, for the wrong
+/// reason", and every differential floor an unmeetable one. The two tests whose
+/// subject really IS the production arming decision say so themselves.
 fn lower(pattern: []const u8) !?struct { re: Regex, cx: *Compose } {
     var re = try Regex.compileOpts(a, pattern, .{ .force_dfa = true });
     errdefer re.deinit();
@@ -35,7 +56,7 @@ fn lower(pattern: []const u8) !?struct { re: Regex, cx: *Compose } {
         re.deinit();
         return null;
     };
-    const cx = (try Compose.lower(a, dfa)) orelse {
+    const cx = (try Compose.lowerFor(true, a, dfa)) orelse {
         re.deinit();
         return null;
     };
@@ -131,11 +152,11 @@ test "compose: gate — more than 31 non-accepting states stands the rung down" 
     defer wide.deinit();
     if (wide.dfa) |d| {
         try std.testing.expect(d.nstates > compose.max_states);
-        try std.testing.expectEqual(@as(?*Compose, null), try Compose.lower(a, d));
+        try std.testing.expectEqual(@as(?*Compose, null), try Compose.lowerFor(true, a, d));
     }
     var narrow = try Regex.compileOpts(a, "^[a-z]{8}$", .{ .force_dfa = true });
     defer narrow.deinit();
-    const cx = (try Compose.lower(a, narrow.dfa.?)) orelse return error.RungDeclined;
+    const cx = (try Compose.lowerFor(true, a, narrow.dfa.?)) orelse return error.RungDeclined;
     defer cx.deinit();
     try std.testing.expect(cx.match("abcdefgh"));
     try std.testing.expect(!cx.match("abcdefg"));
@@ -146,7 +167,7 @@ test "compose: gate — word context and an already-accepting start stand it dow
     defer wordy.deinit();
     if (wordy.dfa) |d| {
         try std.testing.expect(d.word_ctx);
-        try std.testing.expectEqual(@as(?*Compose, null), try Compose.lower(a, d));
+        try std.testing.expectEqual(@as(?*Compose, null), try Compose.lowerFor(true, a, d));
     }
     // `a*` matches the empty string at every position, so its start closure is
     // already accepting: START and MATCH would have to be the same lane.
@@ -154,15 +175,17 @@ test "compose: gate — word context and an already-accepting start stand it dow
     defer nullable.deinit();
     if (nullable.dfa) |d| {
         try std.testing.expect(d.isMatch(d.start));
-        try std.testing.expectEqual(@as(?*Compose, null), try Compose.lower(a, d));
+        try std.testing.expectEqual(@as(?*Compose, null), try Compose.lowerFor(true, a, d));
     }
 }
 
 test "compose: gate — a non-AArch64 target leaves the field null" {
     // `native` is the compile-time predicate the rung is gated on; on a target
-    // without it, `lower` returns null before touching the DFA at all. Here we
-    // can only assert the two agree — the x86 build is proven by compiling the
-    // package for `x86_64-linux` in CI, where this rung is unreachable code.
+    // without it, `lower` returns null before touching the DFA at all. This is
+    // the one place the PRODUCTION entrance is called rather than `lowerFor`,
+    // and asserting that the two agree is the whole test: everything else in
+    // this file forces the predicate on, so without this the gate could rot to
+    // a constant `true` and nothing would notice.
     var re = try Regex.compileOpts(a, "^[a-z]{8}$", .{ .force_dfa = true });
     defer re.deinit();
     const built = try Compose.lower(a, re.dfa.?);
@@ -326,7 +349,7 @@ test "compose: line-level differential vs the Pike VM (0 divergences), anchors i
         var re = Regex.compileOpts(a, pat.items, .{ .force_dfa = true }) catch continue;
         defer re.deinit();
         const dfa = re.dfa orelse continue;
-        const cx = (try Compose.lower(a, dfa)) orelse continue; // declined ⇒ not this rung's line
+        const cx = (try Compose.lowerFor(true, a, dfa)) orelse continue; // declined ⇒ not this rung's line
         defer cx.deinit();
         armed += 1;
         var sim = try Regex.Sim.init(a, &re);
@@ -368,7 +391,7 @@ test "compose: docMatch single-pass scan ≡ per-line Pike over multi-line buffe
         var re = Regex.compileOpts(a, pat.items, .{ .force_dfa = true }) catch continue;
         defer re.deinit();
         const dfa = re.dfa orelse continue;
-        const cx = (try Compose.lower(a, dfa)) orelse continue;
+        const cx = (try Compose.lowerFor(true, a, dfa)) orelse continue;
         defer cx.deinit();
         var sim = try Regex.Sim.init(a, &re);
         defer sim.deinit();
@@ -408,6 +431,15 @@ test "compose: the sliceSafe proof, through the ladder, on haystacks full of new
     // So: drive the PRODUCTION entry point, feed it buffers dense in `\n`, and
     // hold it to the Pike VM's answer for that exact slice. A `sliceSafe` proof
     // that is too generous diverges here on the first anchored pattern.
+    //
+    // The one test in this file that cannot force the target predicate, because
+    // the ladder's arming decision IS its subject: `re.rungs.compose` is null by
+    // construction wherever `compose_armable` is false, so off AArch64 every
+    // iteration would `continue` and the two population floors below could never
+    // be met. Skipping is the honest answer — there is no tier to hold to a
+    // slice question there — and the `slice_safe` derivation itself still runs
+    // on every target through `lowerFor` above.
+    if (comptime !ladder.compose_armable) return error.SkipZigTest;
     const alphabet = "abcd01_ xy\n\n";
     var hay_buf: [96]u8 = undefined;
 

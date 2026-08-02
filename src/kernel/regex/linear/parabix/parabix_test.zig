@@ -14,6 +14,17 @@
 //! asserted twice — that the pattern really is star-height 2, and that the rung
 //! refuses it — because "we measured it slow" and "it cannot reach the kernel"
 //! are different claims and only the second one is the contract.
+//!
+//! Every helper below drives the `planFor`/`buildFor` seam with the target
+//! predicate forced ON, and that is deliberate. `.target` is a refusal about
+//! WHERE the throughput was measured, not about what the pattern means: it is
+//! decided first and short-circuits every other verdict, so a suite that went
+//! through the production entrance would, off AArch64, assert nothing but a
+//! column of `.target`s while its own vacuity floors failed. The lowering and
+//! the marker chain are portable Zig, so forcing the predicate runs all three
+//! oracles wherever CI runs — which is the only arrangement in which a
+//! cross-architecture divergence in this machinery is caught by us and not by a
+//! user. The target verdict itself keeps its own test, through the same seam.
 
 const std = @import("std");
 /// brigade, the test runner, is this binary's root module. `note` is its stdout
@@ -38,10 +49,15 @@ fn ast(arena: std.mem.Allocator, pattern: []const u8) !*syn.Node {
     return lower.parse(arena, pattern, .{});
 }
 
-/// Plan a pattern with no rival armed — the gate question we want to isolate is
-/// "is this pattern's SHAPE admissible", not "is something cheaper available".
+/// Plan a pattern with no rival armed and the target predicate forced on — the
+/// gate question we want to isolate is "is this pattern's SHAPE admissible", not
+/// "is something cheaper available" and not "was this build's architecture the
+/// one the throughput was measured on". `.target` short-circuits every other
+/// verdict, so on any non-AArch64 host the shape gates below would read as a
+/// row of `.target`s and prove nothing about the shapes. The one test that owns
+/// the target verdict asserts it directly, through the same seam.
 fn planOf(arena: std.mem.Allocator, pattern: []const u8) !admit.Plan {
-    return admit.plan(try ast(arena, pattern), .{});
+    return admit.planFor(true, try ast(arena, pattern), .{});
 }
 
 fn declineOf(arena: std.mem.Allocator, pattern: []const u8) !?admit.Decline {
@@ -51,8 +67,13 @@ fn declineOf(arena: std.mem.Allocator, pattern: []const u8) !?admit.Decline {
     };
 }
 
+/// Arm the rung regardless of host, for the same reason `planOf` forces the
+/// predicate: the marker chain is portable Zig, so a differential run against
+/// the Pike VM is meaningful on every architecture the package builds for — and
+/// it is the only thing that would catch the machinery answering differently
+/// somewhere the rung declines to ship.
 fn buildOf(arena: std.mem.Allocator, pattern: []const u8) !?parabix.Parabix {
-    return switch (parabix.Parabix.build(try ast(arena, pattern), .{})) {
+    return switch (parabix.Parabix.buildFor(true, try ast(arena, pattern), .{})) {
         .armed => |px| px,
         .declined => null,
     };
@@ -63,7 +84,7 @@ fn buildOpts(arena: std.mem.Allocator, pattern: []const u8, opts: lower.Options)
         .grain = if (opts.multiline) .buffer else .lines,
         .unicode_words = opts.unicode,
     };
-    return switch (parabix.Parabix.build(try lower.parse(arena, pattern, opts), model)) {
+    return switch (parabix.Parabix.buildFor(true, try lower.parse(arena, pattern, opts), model)) {
         .armed => |px| px,
         .declined => null,
     };
@@ -272,7 +293,7 @@ test "parabix/gate: every other refusal reason has a witness" {
     // A codepoint class is multi-byte, so membership is not a function of one
     // byte's eight bits and the basis-plane model does not apply at all.
     const uni = try lower.parse(a, "é+x", .{ .unicode = true });
-    try expectEqual(admit.Decline.unicode, admit.plan(uni, admit.Model{ .unicode_words = true }).declined);
+    try expectEqual(admit.Decline.unicode, admit.planFor(true, uni, admit.Model{ .unicode_words = true }).declined);
 }
 
 test "parabix/assertions: Unicode word gaps, malformed UTF-8, anchors, and seams match Pike" {

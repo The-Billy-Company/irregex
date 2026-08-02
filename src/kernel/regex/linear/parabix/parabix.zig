@@ -111,7 +111,20 @@ pub const Parabix = struct {
     /// gate reads only the pattern's own shape and its measured operation price —
     /// sibling economics are the parent's to compare (`ladder/rungs.zig`).
     pub fn build(root: *const syn.Node, model: Model) Build {
-        return offer(admit.plan(root, model));
+        return buildFor(plane.on_neon, root, model);
+    }
+
+    /// `build` with the target predicate passed in — the executor's counterpart
+    /// to `admit.planFor`, and there for the same reason. `native` is a claim
+    /// about where the THROUGHPUT was measured; the lowering and the block
+    /// machinery are ordinary portable Zig (`@shuffle`, shifts, `u128` adds) and
+    /// mean the same thing on any little-endian target. Without this seam the
+    /// differential suites can only run on the one architecture that arms the
+    /// rung, so a build that stands it down proves nothing about the machinery
+    /// it stood down — and a real cross-architecture divergence would first be
+    /// seen by a user. Production never passes anything but `plane.on_neon`.
+    pub fn buildFor(comptime neon: bool, root: *const syn.Node, model: Model) Build {
+        return offer(admit.planFor(neon, root, model));
     }
 
     /// The same decision reached from pattern TEXT, for callers that hold no
