@@ -2,9 +2,17 @@
 #
 # Four faces plus three discipline gates, seven jobs, deliberately not one: a
 # Zig engine regression and a Rust clippy nit are different news, and a single
-# job would report them as the same red X. Nothing here needs a sibling checkout —
-# this package builds from its own clone, and that is itself something CI proves
-# every run.
+# job would report them as the same red X.
+#
+# The engine builds from its own clone with nothing beside it, and that is
+# itself something CI proves every run — this is the base of the ecosystem's
+# dependency graph and it must not need the things that depend on it. The
+# bindings are the exception, and only just: they mirror four contract TOMLs and
+# two of those are authored next door. `kinship.toml` is relate's and is
+# vendored here, because relate is internal and a public package the public
+# cannot test is not really public. `surface.toml` is gist's, and gist is
+# public, so those jobs check it out and read the original rather than keeping a
+# copy that can go stale.
 name: ci
 
 on:
@@ -94,16 +102,53 @@ jobs:
       matrix:
         python: ["3.12", "3.13", "3.14"]
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: bindings/python
     steps:
+      # ── why this job checks out a sibling, and only this one ──
+      #
+      # The suite reads four contract TOMLs. Two are this package's own. The
+      # third, `kinship.toml`, is relate's and is vendored into `contract/` by
+      # `tools/sync_contract.py`, because relate is internal and a public
+      # package whose tests need a clone of a private one is a package the
+      # public cannot test. The fourth, `surface.toml`, is gist's — and gist is
+      # public, so the original is one checkout away and there is no reason to
+      # keep a copy that can go stale. One gate also reads `gist/include/gist.h`
+      # to catch a producer symbol misspelled identically on both sides of the
+      # contract, and only the real header can settle that.
+      #
+      # The layout is flat — $GITHUB_WORKSPACE/{irregex,gist} — because that is
+      # what every checkout in this ecosystem already assumes and what the
+      # resolvers walk for. CI resolves these the way a laptop does.
       - uses: actions/checkout@v4
+        with:
+          path: irregex
+      - uses: actions/checkout@v4
+        with:
+          repository: The-Billy-Company/gist
+          path: gist
       - uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
+      # Without these the suite reports green over the seams that matter most.
+      # The FFI tier resolves `libirgx` out of this checkout's zig-out/, and a
+      # miss there is a silent darkening rather than an error — the loader
+      # returns nothing and the tier's tests simply stop existing. The gist
+      # binary is the same story one level up: conftest skips its whole fixture
+      # when `gist` is not on PATH.
+      - name: Build the library and binary the suite drives
+        run: |
+          ( cd irregex && zig build --summary none )
+          ( cd gist && zig build --summary none )
+          echo "$GITHUB_WORKSPACE/gist/zig-out/bin" >> "$GITHUB_PATH"
       - uses: astral-sh/setup-uv@v5
-      - run: uv run --python ${{ matrix.python }} pytest -q
+      - name: pytest, and prove nothing skipped itself
+        working-directory: irregex/bindings/python
+        run: |
+          set -o pipefail
+          uv run --python ${{ matrix.python }} pytest -q -rs 2>&1 | tee "$RUNNER_TEMP/pytest.log"
+          if grep -qE '^SKIPPED|[0-9]+ skipped' "$RUNNER_TEMP/pytest.log"; then
+            echo "::error::a test skipped itself — a library or binary did not resolve"
+            exit 1
+          fi
 
   go:
     # No Zig step: the module carries a prebuilt archive per supported platform
@@ -127,9 +172,19 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: bindings/rust
+        working-directory: irregex/bindings/rust
     steps:
+      # gist for `surface.toml`, in the flat layout the resolvers walk for; see
+      # the python job for why one sibling is checked out and the other vendored.
+      # No Zig and no ecosystem build: the archive cargo links is committed to
+      # this repository, which is the rung a consumer actually takes.
       - uses: actions/checkout@v4
+        with:
+          path: irregex
+      - uses: actions/checkout@v4
+        with:
+          repository: The-Billy-Company/gist
+          path: gist
       # rust-toolchain.toml pins the channel; installing it explicitly would
       # override the pin the repository already made.
       - run: rustup show
@@ -212,6 +267,21 @@ jobs:
           for t in quality/ratchets/*/test_*.py; do
             uv run --no-project --python 3.12 python "$t"
           done
+
+  version:
+    # One number lives in `build.zig.zon`; the manifests that cannot import it —
+    # the contract, Cargo, PyPI, the Go mirror — carry a marked copy the release
+    # bot rewrites. This asks whether those copies still agree, and whether the
+    # bot has been told about every one of them. A mirror the config forgot is
+    # the interesting failure: nothing breaks until a release ships a package
+    # claiming last version's number.
+    #
+    # Stdlib-only, no Zig and no build — it reads lines.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv run --no-project --python 3.12 python tools/version_parity.py
 
   changelog:
     # Nothing was checking the news fragments, and the failure mode is quiet by

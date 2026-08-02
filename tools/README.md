@@ -41,6 +41,25 @@ python3 tools/build_rarity_table.py --report   # census diagnostics, no table
 python3 tools/build_rarity_table.py            # the declaration, zig-fmt canonical
 ```
 
+One is a **gate** — it reads the tree and answers yes or no, writing nothing:
+
+| Tool                 | Asks                                                            |
+| -------------------- | --------------------------------------------------------------- |
+| `version_parity.py`  | do every mirror of `build.zig.zon`'s `.version` still agree, and does the release bot know about each one? |
+
+```bash
+python3 tools/version_parity.py          # the gate (CI's `version` job)
+python3 tools/version_parity.py --json   # the mirrors it found, for a machine
+```
+
+`build.zig.zon` is the single place this package's version is written: Zig reads
+it through a build option, Rust reads `CARGO_PKG_VERSION`, Python reads its
+installed distribution metadata. The copies that remain are manifests that
+cannot import anything, each carrying an `x-release-please-version` marker the
+release bot rewrites. The gate discovers those markers rather than holding a
+list, so it fails both on a mirror that drifted and on one
+`release-please-config.json` never learned about.
+
 ## When to edit here
 
 - Bumping the Unicode or WHATWG pin (update sha / identifier headers + regen).
