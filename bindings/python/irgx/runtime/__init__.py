@@ -11,15 +11,21 @@ latency and nothing else. A declinature is not a failure: the kernel answers
 `IRGX_STALE` when its in-process view cannot be trusted for this query, which
 means "ask the tier below", and the caller never learns it happened.
 
-  * `native` — loads `libirgx`, probes which symbols this build actually
-    exports, and verifies the row-schema digest before any row is believed.
-  * `analytic` — the seventeen analytic verbs: parameters lowered once, run
-    through `gist_run`, rows pulled as a cursor with real batching.
-  * `decode` — one schema-driven decoder for every row type.
-  * `cold` — the subprocess tier, rebuilding the same rows from the CLI's NDJSON
-    so both transports feed one decoder.
-  * `shell` / `daemon` — process invocation and the warm resident session.
-  * `errors` — the typed failures, including the two the analytic plane adds.
+  * `loader` — the face registry: a product package registers the library it
+      owns, and this composes one cffi type universe and opens it. Nothing is
+      mapped that no package claimed.
+    * `analytic` — the seventeen analytic verbs: parameters lowered once, run
+      through the owning library's `<face>_run`, rows pulled as a cursor with
+      real batching, and the row-schema digest verified before a row is believed.
+    * `decode` — one schema-driven decoder for every row type.
+    * `cold` — the subprocess tier, rebuilding the same rows from the CLI's NDJSON
+      so both transports feed one decoder.
+    * `shell` — process invocation for every face's binary.
+    * `errors` — the typed failures, including the two the analytic plane adds.
+
+  The in-process session and the resident daemon are not here: they hold one
+  product's corpus, so they live in that product's package (`gist._native`,
+  `gist._daemon`) and register themselves with `loader`.
 """
 
 from __future__ import annotations

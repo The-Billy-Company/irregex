@@ -3,9 +3,6 @@ package runtime
 import (
 	"context"
 	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -104,69 +101,7 @@ func TestDigestPolicy(t *testing.T) {
 	}
 }
 
-// TestColdSurfacesStats pins that the subprocess tier reports the answer-level
-// counters rather than dropping them: an answer must be able to say how much
-// work it did and which tier did it, not merely hand back rows.
-//
-// Driven through gist's `rank`, the one analytic verb a public producer owns.
-// The verb is incidental — what is under test is this package's cold tier, which
-// spawns a child, frames a request, and decodes rows back — so the cheapest
-// producer that can answer at all is the right one to ask.
-func TestColdSurfacesStats(t *testing.T) {
-	t.Setenv("IRGX_NO_FFI", "1")
-	root := corpus(t)
-	rows, err := Run(t.Context(), Query{
-		Op:     analytic.OpRank,
-		Params: analytic.Rank{Pattern: "Reticulate", Top: 3},
-		Roots:  []string{root},
-		Dir:    root,
-	})
-	if err != nil {
-		t.Fatalf("rank: %v", err)
-	}
-	defer rows.Close()
-	found, err := rows.Collect()
-	if err != nil {
-		t.Fatalf("collect: %v", err)
-	}
-	if len(found) == 0 {
-		t.Fatal("the fixture corpus matched nothing, so this proves no decode happened")
-	}
-	stats := rows.Stats()
-	if stats.Elapsed <= 0 {
-		t.Errorf("stats reported no elapsed time: %+v", stats)
-	}
-	if stats.Rows != uint64(len(found)) {
-		t.Errorf("stats.Rows = %d, decoded %d", stats.Rows, len(found))
-	}
-	if stats.SourceName() == "" {
-		t.Error("stats named no tier")
-	}
-}
-
-// corpus writes a small tree with one deliberate near-duplicate pair and one
-// unrelated file, so a kinship verb has something true to find without depending
-// on the repository around it. The files are deliberately substantial: a sketch of
-// a three-line file carries too few phrases for the candidate stage to band, so a
-// toy corpus produces a vacuous answer rather than a wrong one.
-func corpus(t *testing.T) string {
-	t.Helper()
-	root := t.TempDir()
-	var body strings.Builder
-	body.WriteString("package sample\n\n")
-	for i := 1; i <= 11; i++ {
-		fmt.Fprintf(&body, "// Stanza %d: the reticulation of splines, a matter of some delicacy.\n"+
-			"func Reticulate%d(splines []int) int {\n\ttotal := 0\n\tfor _, s := range splines {\n\t\ttotal += s * %d\n\t}\n\treturn total\n}\n\n", i, i, i)
-	}
-	files := map[string]string{
-		"alpha.go": body.String(),
-		"beta.go":  body.String() + "// a trailing remark, so the pair is near rather than exact\n",
-		"gamma.go": "package sample\n\n" + strings.Repeat("// Wholly unrelated prose about tunnels, weather, and the price of tin.\n", 30),
-	}
-	for name, text := range files {
-		if err := os.WriteFile(filepath.Join(root, name), []byte(text), 0o600); err != nil {
-			t.Fatalf("write %s: %v", name, err)
-		}
-	}
-	return root
-}
+// The cold tier's own counters are pinned where a producer is built: gist's
+// `exact` package drives this package's `Run` through `rank` and asserts the
+// stats come back (`gist/bindings/go/exact/ladder_test.go`). Nothing in this
+// file spawns a child, which is why this package's tests need no binary at all.

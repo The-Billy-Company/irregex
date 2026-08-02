@@ -7,11 +7,19 @@ skipped for want of a library. That is exactly how the mirror kept declaring
 `gist_engine_open` for a while after the engine moved down into the substrate as
 `irgx_engine_open`: nothing compared the two texts.
 
-This gate compares them: for every function in the mirror, the union of the
-reachable headers must declare one of that name, with the same return type and
-the same parameter types (names ignored — those are documentation). Reading fails
-closed, naming the header it wanted, because a mirror checked against a header
-that isn't there is not checked at all.
+This gate compares them: for every function in the mirror, `include/irgx.h` must
+declare one of that name, with the same return type and the same parameter types
+(names ignored — those are documentation). Reading fails closed, naming the
+header it wanted, because a mirror checked against a header that isn't there is
+not checked at all.
+
+**One header, on purpose.** This gate reads `include/irgx.h` and nothing else,
+because the mirror it checks declares `irgx_*` and nothing else. A producer
+symbol belongs to the library that EXPORTS it, so `gist_run` is declared in
+`gist.h`, mirrored in `gist._native.CDEF`, and gated against that header in
+gist's repo. The result is that this suite needs no sibling checkout to run —
+anyone can clone this repo alone and get the same verdict — and no product's
+release can be blocked on the engine's, nor the engine's on a product's.
 """
 
 from __future__ import annotations
@@ -21,14 +29,12 @@ import re
 from pathlib import Path
 
 import pytest
-
 from irgx.contract import abi as contract
 
-# Which header each package publishes. The mirror spans all four: the substrate's
-# own plus every producer it may describe (see ANALYTIC_CDEF). The stem is not
-# always the package name — this package is `irregex` and publishes `irgx.h`,
-# the same split the C prefix and the Python import name carry.
-HEADERS = {"irregex": "irgx", "gist": "gist", "relate": "relate", "blast": "blast"}
+# The one header this package publishes, and the only one this gate reads. The
+# stem is not the package name — this package is `irregex` and publishes
+# `irgx.h`, the same split the C prefix and the Python import name carry.
+HEADER = "include/irgx.h"
 
 _COMMENT = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
 _LINKAGE = re.compile(r'extern\s*"C"|[{}]')
@@ -36,21 +42,20 @@ _TOKEN = re.compile(r"[A-Za-z_]\w*|\*+|\[\]|\.\.\.")
 _DECL = re.compile(r"^(?P<ret>[\w\s*]+?)\b(?P<name>\w+)\s*\((?P<params>.*)\)$", re.S)
 
 
-def _header_path(pkg: str) -> Path:
-    """`include/<stem>.h`, in this checkout or the sibling that publishes it.
+def _header_path() -> Path:
+    """`include/irgx.h`, found by walking up from this file.
 
-    The same ancestor-then-sibling rule `contract_path` uses, for the same
-    reason: the four packages sit next to each other and no counted depth names
-    them all.
+    An ancestor walk rather than a counted depth, so the suite keeps working if
+    it is run from a different directory or moved a level. It never looks
+    sideways: the header this mirror answers to is published by this repo, and
+    a gate that could satisfy itself from a sibling checkout would be a gate on
+    whatever happened to be next to it.
     """
     here = Path(__file__).resolve()
-    stem = HEADERS[pkg]
-    homes = (f"include/{stem}.h", f"{pkg}/include/{stem}.h")
     for base in here.parents:
-        for home in homes:
-            if (candidate := base / home).is_file():
-                return candidate
-    return here.parents[3] / homes[1]
+        if (candidate := base / HEADER).is_file():
+            return candidate
+    return here.parents[3] / HEADER
 
 
 def _types(params: str) -> tuple[str, ...]:
@@ -100,18 +105,14 @@ def _functions(source: str) -> dict[str, tuple[str, tuple[str, ...]]]:
 
 @functools.cache
 def _declared() -> dict[str, tuple[str, tuple[str, ...]]]:
-    """Every function the reachable headers declare, keyed by name."""
-    merged: dict[str, tuple[str, tuple[str, ...]]] = {}
-    for pkg in HEADERS:
-        path = _header_path(pkg)
-        if not path.is_file():
-            pytest.fail(
-                f"include/{HEADERS[pkg]}.h not found (looked at {path}). The mirror cannot be "
-                f"checked against a header that is not there; check out {pkg} beside "
-                f"this repo."
-            )
-        merged |= _functions(path.read_text(encoding="utf-8"))
-    return merged
+    """Every function this package's header declares, keyed by name."""
+    path = _header_path()
+    if not path.is_file():
+        pytest.fail(
+            f"{HEADER} not found (looked at {path}). The mirror cannot be checked "
+            f"against a header that is not there."
+        )
+    return _functions(path.read_text(encoding="utf-8"))
 
 
 @functools.cache
@@ -120,11 +121,27 @@ def _mirrored() -> dict[str, tuple[str, tuple[str, ...]]]:
 
 
 def test_the_mirror_declares_something() -> None:
-    """Guard the extractor itself: a regex that matches nothing would pass silently."""
+    """Guard the extractor itself: a regex that matches nothing would pass silently.
+
+    Named anchors rather than a bare count, because a count is a guard that has to
+    be re-based every time the surface legitimately moves — as it did when the
+    product halves of this mirror went to the packages that own them — and one
+    re-based by reflex stops guarding anything. These four span the mirror's
+    sections (engine, status, row cursor, schema), so a parse that silently
+    matched a fraction of the text still fails.
+    """
     mirrored = _mirrored()
-    assert len(mirrored) > 15, f"only parsed {len(mirrored)} functions out of the mirror"
-    assert "irgx_engine_open" in mirrored
-    assert len(_declared()) > 15
+    for anchor in (
+        "irgx_engine_open",
+        "irgx_status_message",
+        "irgx_rows_next",
+        "irgx_schema_digest",
+    ):
+        assert anchor in mirrored, f"the extractor found no {anchor} in the mirror"
+    assert len(_declared()) > len(mirrored), (
+        "irgx.h should declare more than the mirror does — it also carries the "
+        "regex API, which this cffi tier does not use"
+    )
 
 
 @pytest.mark.parametrize("name", sorted(_mirrored()))

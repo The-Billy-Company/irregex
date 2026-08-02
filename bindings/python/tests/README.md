@@ -13,11 +13,11 @@ what makes the same suite valid in both places.
 
 | File | What it is for |
 |---|---|
-| `test_iteration.py` | Zero-width and nullable patterns, cross-checked against `gist --json` where the tool is available. |
+| `test_iteration.py` | Zero-width and nullable patterns: the two rules that produce the engine's answer, and the hand-rolled loop that would give a different one. The same sequence is held to `gist --json`, the authority the header names, in gist's own suite — that comparison needs gist's binary, so it lives where the binary is built. |
 | `test_unicode.py` | Codepoint indices versus byte offsets, case folding past ASCII, and the `str`/`bytes` wall. |
 | `test_threads.py` | One module-level `Pattern`, many threads, different texts. |
 | `test_groups.py` | Numbered, named, and non-participating groups; the short-window `captures` contract. |
-| `test_flags.py` | Every flag, proved by a behaviour that changes when it is set. |
+| `test_flags.py` | Every flag, proved by a behavior that changes when it is set. |
 | `test_errors.py` | Refused patterns - both kinds, told apart by class - mixed domains, and the load-time failures, which need a fresh interpreter. |
 | `test_substitution.py` | `sub`, `subn`, `split`, and the template grammar. |
 | `test_parity.py` | Side by side with `re`: agreement where they agree, our answer asserted as a literal where they do not. |
@@ -43,7 +43,7 @@ than against the current one.
   refuses. A binding that mislabelled one would pass the class assertions and
   fail these. It also fails a pattern *first*, so the thread's fault slot holds
   something, and then asserts a declined pattern leaves that slot empty - which
-  is the behavioural proof that the class comes from the status code and not
+  is the behavioral proof that the class comes from the status code and not
   from a fault name, since there is no fault to name.
 - `test_parity.py` computes `re`'s answer live for the patterns where the two
   are specified to agree, so it fails if either side moves. Where they diverge

@@ -2,68 +2,31 @@ package runtime
 
 import (
 	"flag"
-	"fmt"
 	"os"
 	"testing"
 )
 
-// tools are the engines this package's tests drive.
+// TestMain exists to parse flags, and deliberately to do nothing else.
 //
-// gist, and deliberately only gist. What this package owns is the ladder — the
-// dispatch, the tiers, the row decode — not any particular verb, so it needs
-// *a* producer rather than a specific one, and which producer it picks decides
-// who can run these tests. gist is public; relate is not. Certifying relate
-// here made a public package's suite require a clone of a private one, which is
-// a suite the public cannot run.
+// It used to resolve a producer binary and refuse to run the package without
+// one, because the cold tier's tests spawned a child. That made a public
+// library's suite require a clone of a consumer: this repository builds no
+// binary of its own, so the only producer available was gist's.
 //
-// gist produces exactly one analytic verb (`rank`), and one is all a ladder
-// test needs. The oracle that genuinely has to be relate's — the cross-tier row
-// comparison over a kinship verb — moved to relate's own Go bindings, where the
-// binary it judges is the repository's own artifact rather than a sibling's.
-var tools = []string{ToolGist}
-
-// engines names the binary TestMain certified for each of [tools], so a failing
-// run can close by saying which build produced it. The store that makes every
-// later call agree is [Binary]'s own cache, which TestMain primes: resolving
-// here fixes the answer for the whole process, so a test that chdirs into a
-// temp dir cannot re-walk from a different anchor and judge something else.
-var engines = map[string]string{}
-
-// TestMain hands the harness its binaries once, and refuses to run the package
-// without them.
+// The tests that genuinely needed a child moved to the repositories that build
+// one — the row-and-stats comparison to gist's `exact`, the kinship oracle to
+// relate's own bindings — and what remains here is the ladder's own reasoning:
+// tier introspection, the FFI escape hatch, seam refusals, cancellation, and
+// the digest policy. None of that spawns anything, so there is nothing left to
+// certify up front, and the package now runs from a clone of this repository
+// alone.
 //
-// A test knows something the library cannot: which build it is judging.
-// [Binary] staying a *discovering* affordance is right for a library consumer,
-// who genuinely has no other way to find the engine. But a missing binary
-// during a test run is a broken environment rather than an optional
-// capability, and failing the whole package is the honest severity for that.
-//
-// The per-test `t.Skipf("no relate binary")` guards this replaces are exactly
-// what hid a dead rung in the resolver: discovery quietly returned nothing,
-// every test that needed a child skipped, and the package reported ok over a
-// seam nothing had exercised. A skip is a claim that the thing was optional,
-// and it was never optional here.
-//
-// One skip survives in this package — TestTiersAgree's — and it is a fact about
-// the build tags rather than about the filesystem. Its comment says so.
+// It stays rather than being deleted because a `t.Skipf` in its place is how the
+// dead rung hid the first time: discovery quietly returned nothing, every test
+// needing a child skipped, and the package reported ok over a seam nothing had
+// exercised. Anything reintroduced here that needs a producer should fail the
+// package, not skip it.
 func TestMain(m *testing.M) {
 	flag.Parse()
-	for _, tool := range tools {
-		bin, err := Binary(tool)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "this package's tests drive the real %s engine, and none was found.\n%v\n", tool, err)
-			os.Exit(1)
-		}
-		engines[tool] = bin
-		if testing.Verbose() {
-			fmt.Fprintf(os.Stderr, "judging %s: %s\n", tool, bin)
-		}
-	}
-	code := m.Run()
-	if code != 0 {
-		for _, tool := range tools {
-			fmt.Fprintf(os.Stderr, "judged %s: %s\n", tool, engines[tool])
-		}
-	}
-	os.Exit(code)
+	os.Exit(m.Run())
 }

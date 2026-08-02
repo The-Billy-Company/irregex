@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, Protocol
 
 from ..contract import table
-from . import native
+from . import loader
 from .decode import Row, record
 from .errors import GistError, SchemaDriftError
 from .params import Compose, Kinship, Params, Rank, Retrieval, Sweep
@@ -230,14 +230,23 @@ def answer(
     return (native and _in_process(verb, params, roots, cwd)) or cold()
 
 
-def available() -> bool:
-    """Whether the in-process analytic plane can answer at all (library present, symbols exported, digest agrees)."""
-    return _plane() is not None
+def available(face: str) -> bool:
+    """Whether `face`'s in-process analytic plane can answer (library present, symbols exported, digest agrees).
+
+    Takes the face because there is no such thing as "the" plane: each product
+    library carries its own copy of the dispatch, and which of them a process has
+    mapped depends on which packages it imported.
+    """
+    return _plane(face) is not None
 
 
+# The substrate's half of the plane — the engine handle, the row cursor, and the
+# schema table, all `irgx_*` and all present in any library that links the
+# engine. A face's own `<face>_run` is probed separately, at the point of
+# dispatch: it is the one symbol whose absence is routine rather than a sign the
+# library is too old to be worth asking.
 _PLANE_SYMBOLS: Final = (
     "irgx_engine_open",
-    "gist_run",
     "irgx_rows_next",
     "irgx_rows_next_batch",
     "irgx_rows_stats",
@@ -258,25 +267,32 @@ def _run_symbol(verb: str) -> str:
     return table.VERBS[verb][4]
 
 
-_plane_cache: tuple[FFI, object] | None = None
-_plane_probed = False
+def _face_of(symbol: str) -> str:
+    """The face that owns producer `symbol` — `gist_run` → `gist`.
+
+    The producer's own name carries this, so the mapping needs no table: a verb
+    appended to the contract tomorrow routes itself.
+    """
+    return symbol.split("_", 1)[0]
+
+
+_plane_cache: dict[str, tuple[FFI, object] | None] = {}
 _plane_lock = threading.Lock()
 
 
-def _plane() -> tuple[FFI, object] | None:
-    """The loaded library iff it exports the analytic plane and its schemas match ours. Raises on drift; None when the plane simply isn't there."""
-    global _plane_cache, _plane_probed
-    if _plane_probed:
-        return _plane_cache
+def _plane(face: str) -> tuple[FFI, object] | None:
+    """`face`'s library iff it exports the analytic plane and its schemas match ours. Raises on drift; None when that face simply isn't loadable here."""
+    if face in _plane_cache:
+        return _plane_cache[face]
     with _plane_lock:
-        if _plane_probed:
-            return _plane_cache
-        loaded = native.load()
-        if loaded is None or not native.exports(*_PLANE_SYMBOLS):
-            _plane_cache, _plane_probed = None, True
+        if face in _plane_cache:
+            return _plane_cache[face]
+        loaded = loader.load(face)
+        if loaded is None or not loader.exports(face, *_PLANE_SYMBOLS):
+            _plane_cache[face] = None
             return None
         verify(*loaded)
-        _plane_cache, _plane_probed = loaded, True
+        _plane_cache[face] = loaded
         return loaded
 
 
@@ -357,7 +373,8 @@ def _in_process(
     cwd: str | os.PathLike[str] | None,
 ) -> Rows | None:
     """Run `verb` through its owning library's …_run, or None to answer cold."""
-    plane = _plane()
+    sym = _run_symbol(verb)
+    plane = _plane(_face_of(sym))
     if plane is None or not _is_process_cwd(cwd):
         return None
     ffi, lib = plane
@@ -369,7 +386,6 @@ def _in_process(
     # they must survive.
     struct, _keep = params.lower(ffi)
     out = ffi.new("irgx_rows **")
-    sym = _run_symbol(verb)
     run = getattr(lib, sym, None)
     if run is None:
         return None  # owning library not linked — identical answer, one tier down

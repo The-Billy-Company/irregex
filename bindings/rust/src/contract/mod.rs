@@ -1,8 +1,13 @@
 //! Runtime mirror of the substrate contracts — `irregex/contract/engine.toml`,
 //! `irregex/contract/analytic.toml`, and `relate/contract/kinship.toml` — plus
-//! the result records both planes report. Gist's `contract/surface.toml`
-//! still owns transports / tool-boundary / package names; those constants are
-//! mirrored here so a parity gate can hold the whole surface in one place.
+//! the result records both planes report.
+//!
+//! Only those three, on purpose. A product's own contract is mirrored in that
+//! product's crate: gist's published names and tool boundary live in
+//! `gist::contract`, beside the `contract/surface.toml` they answer to. They
+//! were mirrored here while the packages shared a repository, which left this
+//! crate's test suite unable to run without a gist checkout next to it — a
+//! substrate its consumers cannot be released without.
 //!
 //! The package embeds the contracts' load-bearing constants so it carries no
 //! runtime dependency on the repo files (an OSS checkout ships without them); the
@@ -36,10 +41,6 @@ pub const ABI_VERSION: u32 = 2;
 /// crate it is written. [`crate::engine_version`] reports what the linked
 /// library actually says, and the contract parity test asserts the two agree.
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
-/// The published distribution name (`[package].dist` in `contract/surface.toml`).
-pub const PACKAGE_DIST: &str = "gist-search";
-/// The published import name (`[package].import` in `contract/surface.toml`).
-pub const PACKAGE_IMPORT: &str = "gist";
 
 /// Mirrors `[request_options]` — the deep [`crate::SearchRequest`] surface. The
 /// parity test asserts this set equals the TOML keys.
@@ -112,19 +113,6 @@ pub const AT_NONE: i32 = 0;
 pub const AT_FILE: i32 = 1;
 /// A byte offset within the pattern that was refused.
 pub const AT_PATTERN: i32 = 2;
-
-/// Mirrors `[tool_boundary.aliases]` — a tool-boundary parameter name → its
-/// canonical request option (the agent / code-place seam lives in the Python
-/// face; carried here for the parity gate's completeness).
-pub const ALIASES: &[(&str, &str)] = &[
-    ("query", "pattern"),
-    ("glob", "globs"),
-    ("context_lines", "context"),
-];
-
-/// Mirrors `[tool_boundary.routing_keys]` — recognized-but-ignored place/rank
-/// selectors that stay outside GIST.
-pub const ROUTING_KEYS: &[&str] = &["place", "at", "semantic"];
 
 // ── result records ─────────────────────────────────────────────────────────
 

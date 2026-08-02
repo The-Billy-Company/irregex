@@ -10,7 +10,7 @@ is committed and the library comes from `vendor/`.
 | `surface.rs` | The `regex`-shaped API: iteration, split, the three replace verbs, `$name` expansion, closures as replacements, and a `find_all` window shorter than the answer still returning all of it. |
 | `threads.rs` | One `static Regex` searched from many threads at once, with every answer checked against what that thread would have got alone. |
 | `faults.rs` | A refusal is an error with a reason in it, and a negative status never becomes a wrong answer. The two refusals stay apart: a pattern the linear grammar declines is retryable under `pcre` and installs nothing, a malformed one carries the offset it died at and `pcre` will not rescue it. |
-| `contract.rs` | The substrate mirror (`contract/`, generated schema table, grade bands) does not drift from `analytic.toml` / `engine.toml` / `kinship.toml` / gist's `surface.toml`. |
+| `contract.rs` | The substrate mirror (`contract/`, generated schema table, grade bands) does not drift from `analytic.toml` / `engine.toml` / `kinship.toml` — all three committed here, so the suite needs no sibling checkout. |
 
 ## The oracle is the strongest test here
 

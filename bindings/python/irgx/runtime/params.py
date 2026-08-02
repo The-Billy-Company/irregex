@@ -95,7 +95,7 @@ class Kinship:
     distinct: bool = False
 
     def lower(self, ffi: FFI) -> tuple[object, tuple[object, ...]]:
-        """Lower into `gist_kinship_params`."""
+        """Lower into `irgx_kinship_params`."""
         ptr, length, keep = _text(ffi, self.target)
         flags = (
             (_HAS_MAX_DISTANCE if self.max_distance is not None else 0)
@@ -105,9 +105,9 @@ class Kinship:
         )
         return (
             ffi.new(
-                "gist_kinship_params *",
+                "irgx_kinship_params *",
                 {
-                    "struct_size": ffi.sizeof("gist_kinship_params"),
+                    "struct_size": ffi.sizeof("irgx_kinship_params"),
                     "flags": flags,
                     "target": ptr,
                     "target_len": length,
@@ -135,13 +135,13 @@ class Retrieval:
     top: int = 0
 
     def lower(self, ffi: FFI) -> tuple[object, tuple[object, ...]]:
-        """Lower into `gist_retrieval_params`."""
+        """Lower into `irgx_retrieval_params`."""
         ptr, length, keep = _text(ffi, self.query)
         return (
             ffi.new(
-                "gist_retrieval_params *",
+                "irgx_retrieval_params *",
                 {
-                    "struct_size": ffi.sizeof("gist_retrieval_params"),
+                    "struct_size": ffi.sizeof("irgx_retrieval_params"),
                     "flags": 0,
                     "query": ptr,
                     "query_len": length,
@@ -167,7 +167,7 @@ class Sweep:
     by: str | None = None
 
     def lower(self, ffi: FFI) -> tuple[object, tuple[object, ...]]:
-        """Lower into `gist_sweep_params`. `by` selects the engine-side tally axis (`pattern` · `file`); unset streams hits."""
+        """Lower into `irgx_sweep_params`. `by` selects the engine-side tally axis (`pattern` · `file`); unset streams hits."""
         array, count, keep = _texts(ffi, self.patterns)
         under, under_len, under_keep = _text(ffi, self.under)
         flags = (
@@ -178,9 +178,9 @@ class Sweep:
         )
         return (
             ffi.new(
-                "gist_sweep_params *",
+                "irgx_sweep_params *",
                 {
-                    "struct_size": ffi.sizeof("gist_sweep_params"),
+                    "struct_size": ffi.sizeof("irgx_sweep_params"),
                     "flags": flags,
                     "patterns": array,
                     "npatterns": count,
@@ -211,7 +211,7 @@ class Compose:
     ignore_case: bool = False
 
     def lower(self, ffi: FFI) -> tuple[object, tuple[object, ...]]:
-        """Lower into `gist_compose_params`."""
+        """Lower into `irgx_compose_params`."""
         text, text_len, text_keep = _text(ffi, self.text)
         array, count, keep = _texts(ffi, self.patterns)
         flags = (
@@ -223,9 +223,9 @@ class Compose:
         )
         return (
             ffi.new(
-                "gist_compose_params *",
+                "irgx_compose_params *",
                 {
-                    "struct_size": ffi.sizeof("gist_compose_params"),
+                    "struct_size": ffi.sizeof("irgx_compose_params"),
                     "flags": flags,
                     "text": text,
                     "text_len": text_len,
@@ -253,14 +253,14 @@ class Rank:
     ignore_case: bool = False
 
     def lower(self, ffi: FFI) -> tuple[object, tuple[object, ...]]:
-        """Lower into `gist_rank_params`."""
+        """Lower into `irgx_rank_params`."""
         ptr, length, keep = _text(ffi, self.pattern)
         flags = (_FIXED if self.fixed else 0) | (_IGNORE_CASE if self.ignore_case else 0)
         return (
             ffi.new(
-                "gist_rank_params *",
+                "irgx_rank_params *",
                 {
-                    "struct_size": ffi.sizeof("gist_rank_params"),
+                    "struct_size": ffi.sizeof("irgx_rank_params"),
                     "flags": flags,
                     "pattern": ptr,
                     "pattern_len": length,

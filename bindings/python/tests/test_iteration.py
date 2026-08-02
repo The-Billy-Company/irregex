@@ -12,9 +12,8 @@ from __future__ import annotations
 import ctypes
 import re
 
-import pytest
-
 import irgx
+import pytest
 from irgx import _abi
 
 
@@ -163,27 +162,9 @@ def test_a_short_window_is_resized_once_and_answers_completely(monkeypatch):
     assert calls == 2
 
 
-# ── cross-checked against the tool the header names ───────────────────────
-
-
-@pytest.mark.parametrize(
-    "pattern,line",
-    [
-        ("a*", "abc"),
-        ("a*", "abcab"),
-        ("a*", "bbb"),
-        (r"\b", "hi yo"),
-        ("a?", "bab"),
-        ("(a)*", "baac"),
-        (r"\w+", "naive cafe words"),
-        ("", "abc"),
-        ("a+", "aa b aaa"),
-    ],
-)
-def test_spans_agree_with_gist_json(gist_spans, pattern, line):
-    # gist matches a line including its newline, so that is the buffer to hand
-    # this binding for the comparison to mean anything.
-    assert spans(pattern, line + "\n") == gist_spans(pattern, line)
+# The same sequence is also checked against `gist --json`, the authority the
+# header names for it — in gist's own suite, since that is where the tool being
+# compared against is built (`tests/test_span_parity.py`).
 
 
 # ── the buffer is one unit, and every verb has to say so ──────────────────

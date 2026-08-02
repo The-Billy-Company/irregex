@@ -1,12 +1,14 @@
 //! The mirror in `irgx::contract` must not drift from the canonical
 //! contracts, nor from the driven binary.
 //!
-//! Four files are canonical, split by who authors what they describe:
+//! Three files are canonical, split by who authors what they describe:
 //! `irregex/contract/analytic.toml` (row schemas, verbs, producers),
 //! `irregex/contract/engine.toml` (request surface, match kinds, exit codes,
-//! version axes), `relate/contract/kinship.toml` (the compression plane), and
-//! the gist package's `contract/surface.toml` (transports, tool boundary,
-//! published package names).
+//! version axes), and `relate/contract/kinship.toml` (the compression plane),
+//! vendored into `contract/` by `tools/sync_contract.py` and drift-gated from
+//! relate's own CI. All three are in this checkout, so this suite runs against
+//! a clone of this repository alone. A product's own contract is gated in that
+//! product's repo — gist's `surface.toml` against `gist::contract`.
 //!
 //! Reading them **fails closed**. It used to skip, on the reasoning that an
 //! installed crate legitimately ships without the repo file — true, but a test
@@ -21,64 +23,49 @@ use std::sync::OnceLock;
 
 use irgx::contract;
 
-/// Who authors each contract. Probed at every ancestor rather than at a counted
-/// depth — a fixed index was already off by one before the split, and because
-/// an unreadable contract used to be a skip rather than a failure, the mirror
-/// went ungated for its whole life.
-const AUTHORS: &[(&str, &str)] = &[
-    ("analytic", "irregex"),
-    ("engine", "irregex"),
-    ("kinship", "relate"),
-    ("surface", "gist"),
-];
+const CONTRACTS: &[&str] = &["analytic", "engine", "kinship"];
 
-const CONTRACTS: &[&str] = &["analytic", "engine", "kinship", "surface"];
-
-/// Path to one canonical contract TOML.
+/// Path to one canonical contract TOML, in this checkout.
 ///
-/// `IRGX_<NAME>_CONTRACT` overrides. Otherwise the file is looked for at
-/// every ancestor, in this checkout first and then in the sibling that authors
-/// it. Failing both, the path this layout would have used is returned anyway,
-/// so a caller reporting the miss names somewhere real.
+/// `IRGX_<NAME>_CONTRACT` overrides. Otherwise the file is looked for at every
+/// ancestor rather than at a counted depth — a fixed index was already off by
+/// one before the repositories split, and because an unreadable contract used to
+/// be a skip rather than a failure, the mirror went ungated for its whole life.
+/// Failing that, the path this layout would have used is returned anyway, so a
+/// caller reporting the miss names somewhere real.
+///
+/// It never looks sideways. It used to fall back to `<author>/contract/…` in a
+/// sibling checkout, which is how a gate ends up passing on whatever happened to
+/// be cloned next to it; every contract this suite reads is now committed here,
+/// relate's `kinship.toml` included, vendored by `tools/sync_contract.py`.
 fn contract_path(name: &str) -> PathBuf {
     let env_key = format!("IRGX_{}_CONTRACT", name.to_ascii_uppercase());
     if let Ok(p) = std::env::var(&env_key) {
         return PathBuf::from(p);
     }
-    let author = AUTHORS
-        .iter()
-        .find(|(n, _)| *n == name)
-        .map_or("gist", |(_, a)| *a);
-    let homes = [
-        format!("contract/{name}.toml"),
-        format!("{author}/contract/{name}.toml"),
-    ];
+    let home = format!("contract/{name}.toml");
     let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     for base in here.ancestors() {
-        for home in &homes {
-            let candidate = base.join(home);
-            if candidate.is_file() {
-                return candidate;
-            }
+        let candidate = base.join(&home);
+        if candidate.is_file() {
+            return candidate;
         }
     }
-    // `bindings/rust` → gist checkout root, then `contract/<name>.toml`.
+    // `bindings/rust` → the checkout root, then `contract/<name>.toml`.
     here.ancestors()
         .nth(2)
         .unwrap_or(Path::new(&here))
-        .join(&homes[0])
+        .join(&home)
 }
 
 fn load_toml(name: &str) -> &'static toml::Table {
     static ANALYTIC: OnceLock<toml::Table> = OnceLock::new();
     static ENGINE: OnceLock<toml::Table> = OnceLock::new();
     static KINSHIP: OnceLock<toml::Table> = OnceLock::new();
-    static SURFACE: OnceLock<toml::Table> = OnceLock::new();
     let slot = match name {
         "analytic" => &ANALYTIC,
         "engine" => &ENGINE,
         "kinship" => &KINSHIP,
-        "surface" => &SURFACE,
         other => panic!("unknown contract {other}"),
     };
     slot.get_or_init(|| {
@@ -134,18 +121,6 @@ fn meta_mirror_matches_toml() {
 }
 
 #[test]
-fn package_names_mirror_toml() {
-    // The published artifact names are this repo's to declare, so they live in
-    // its own contract rather than the kernel's.
-    let package = load_toml("surface")["package"].as_table().unwrap();
-    assert_eq!(package["dist"].as_str().unwrap(), contract::PACKAGE_DIST);
-    assert_eq!(
-        package["import"].as_str().unwrap(),
-        contract::PACKAGE_IMPORT
-    );
-}
-
-#[test]
 fn request_options_mirror_matches_toml() {
     let mirror: BTreeSet<String> = contract::REQUEST_OPTIONS
         .iter()
@@ -180,36 +155,6 @@ fn match_kinds_and_exit_codes_mirror_toml() {
         codes["error"]["code"].as_integer().unwrap(),
         i64::from(contract::EXIT_ERROR)
     );
-}
-
-#[test]
-fn tool_boundary_mirror_matches_toml() {
-    let boundary = load_toml("surface")["tool_boundary"].as_table().unwrap();
-    let aliases = boundary["aliases"].as_table().unwrap();
-    for (from, to) in contract::ALIASES {
-        assert_eq!(
-            aliases[*from].as_str().unwrap(),
-            *to,
-            "alias {from} drifted"
-        );
-    }
-    assert_eq!(
-        aliases.len(),
-        contract::ALIASES.len(),
-        "alias count drifted"
-    );
-
-    let routing: BTreeSet<String> = contract::ROUTING_KEYS
-        .iter()
-        .map(|s| (*s).to_owned())
-        .collect();
-    let toml_routing: BTreeSet<String> = boundary["routing_keys"]
-        .as_table()
-        .unwrap()
-        .keys()
-        .cloned()
-        .collect();
-    assert_eq!(toml_routing, routing);
 }
 
 // ── the generated analytic tables ─────────────────────────────────────────────────────────────────

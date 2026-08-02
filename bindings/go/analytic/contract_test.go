@@ -10,51 +10,45 @@ import (
 	"testing"
 )
 
-// contractAuthors maps each contract name to the sibling that authors it.
-// Probed at every ancestor rather than at a counted depth — a fixed index was
-// already off by one before the split, and because an unreadable contract used
-// to be a skip rather than a failure, the mirror went ungated for its whole
-// life. It is a hard failure now; see contractTOML.
-var contractAuthors = map[string]string{
-	"engine":   "irregex",
-	"analytic": "irregex",
-	"kinship":  "relate",
-	"surface":  "gist",
-	"compose":  "blast",
-}
-
-// contractPath is the path to one canonical contract TOML.
+// contractPath is the path to one canonical contract TOML, in this checkout.
 //
 // IRGX_<NAME>_CONTRACT overrides. Otherwise the file is looked for at every
-// ancestor, in this checkout first and then in the sibling that authors it.
-// Failing both, the path this layout would have used is returned anyway, so a
-// caller reporting the miss names somewhere real.
+// ancestor rather than at a counted depth — a fixed index was already off by one
+// before the repositories split, and because an unreadable contract used to be a
+// skip rather than a failure, the mirror went ungated for its whole life. It is a
+// hard failure now; see contractTOML. Failing that, the path this layout would
+// have used is returned anyway, so a caller reporting the miss names somewhere
+// real.
+//
+// It never looks sideways. It used to fall back to <author>/contract/<name>.toml
+// in a sibling clone, with a map naming gist and blast as authors of contracts
+// this package does not read; the only two it does read, kinship and analytic,
+// are committed here. A gate that can satisfy itself from whatever happens to be
+// cloned beside it is a gate on the neighbor.
 func contractPath(name string) string {
 	if override := os.Getenv("IRGX_" + strings.ToUpper(name) + "_CONTRACT"); override != "" {
 		return override
 	}
-	author := contractAuthors[name]
-	homes := []string{
-		filepath.Join("contract", name+".toml"),
-		filepath.Join(author, "contract", name+".toml"),
-	}
+	home := filepath.Join("contract", name+".toml")
 	dir, err := os.Getwd()
 	if err != nil {
-		return homes[0]
+		return home
 	}
 	for base := dir; ; base = filepath.Dir(base) {
-		for _, home := range homes {
-			p := filepath.Join(base, home)
-			if _, err := os.Stat(p); err == nil {
-				return p
-			}
+		if p := filepath.Join(base, home); fileExists(p) {
+			return p
 		}
 		if parent := filepath.Dir(base); parent == base {
 			break
 		}
 	}
-	// bindings/go → gist checkout root, then contract/<name>.toml.
-	return filepath.Join(filepath.Dir(filepath.Dir(dir)), homes[0])
+	// bindings/go → the checkout root, then contract/<name>.toml.
+	return filepath.Join(filepath.Dir(filepath.Dir(dir)), home)
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // contractTOML reads one canonical contract so a calibration test cannot be
