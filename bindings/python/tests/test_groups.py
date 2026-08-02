@@ -12,12 +12,12 @@ import ctypes
 
 import pytest
 
-import irregex
-from irregex import _abi
+import irgx
+from irgx import _abi
 
 
 def test_numbered_groups():
-    match = irregex.search(r"(\w+)@(\w+)\.(\w+)", "write to me@example.com now")
+    match = irgx.search(r"(\w+)@(\w+)\.(\w+)", "write to me@example.com now")
     assert match is not None
     assert match.group(0) == "me@example.com"
     assert match.group(1) == "me"
@@ -28,7 +28,7 @@ def test_numbered_groups():
 
 
 def test_a_group_that_did_not_participate_is_none_not_empty():
-    pattern = irregex.compile(r"(\w+)=(?:(\d+)|(true))")
+    pattern = irgx.compile(r"(\w+)=(?:(\d+)|(true))")
 
     number = pattern.search("n=42")
     assert number is not None
@@ -43,7 +43,7 @@ def test_a_group_that_did_not_participate_is_none_not_empty():
 
 
 def test_a_group_that_matched_empty_is_not_none():
-    match = irregex.search(r"(a)(x*)(b)", "ab")
+    match = irgx.search(r"(a)(x*)(b)", "ab")
     assert match is not None
     assert match.groups() == ("a", "", "b")
     assert match.group(2) == ""
@@ -52,7 +52,7 @@ def test_a_group_that_matched_empty_is_not_none():
 
 
 def test_named_groups():
-    pattern = irregex.compile(r"(?P<user>\w+)@(?P<host>[\w.]+)")
+    pattern = irgx.compile(r"(?P<user>\w+)@(?P<host>[\w.]+)")
     assert pattern.groups == 2
     assert pattern.groupindex == {"user": 1, "host": 2}
 
@@ -65,19 +65,19 @@ def test_named_groups():
 
 
 def test_the_other_named_group_spelling_works_too():
-    pattern = irregex.compile(r"(?<key>\w+)")
+    pattern = irgx.compile(r"(?<key>\w+)")
     assert pattern.groupindex == {"key": 1}
     assert pattern.search("abc").group("key") == "abc"
 
 
 def test_lookbehind_is_not_mistaken_for_a_group_name():
-    pattern = irregex.compile(r"(?<=x)(?P<rest>\w+)", pcre=True)
+    pattern = irgx.compile(r"(?<=x)(?P<rest>\w+)", pcre=True)
     assert pattern.groupindex == {"rest": 1}
     assert pattern.search("xabc").group("rest") == "abc"
 
 
 def test_groupdict_reports_absent_named_groups():
-    pattern = irregex.compile(r"(?P<num>\d+)|(?P<word>[a-z]+)")
+    pattern = irgx.compile(r"(?P<num>\d+)|(?P<word>[a-z]+)")
     assert pattern.groupindex == {"num": 1, "word": 2}
     match = pattern.search("42")
     assert match is not None
@@ -91,7 +91,7 @@ def test_a_name_is_found_through_spellings_that_look_like_groups_and_are_not(pcr
     # so reading the names off the pattern text has to get both right to arrive
     # at the same answer the parser already holds. Both grammars, because the
     # PCRE2 arm keeps its names in its own table and has to agree.
-    pattern = irregex.compile(r"\((?:x|y)(?P<inner>\w+)\)", pcre=pcre)
+    pattern = irgx.compile(r"\((?:x|y)(?P<inner>\w+)\)", pcre=pcre)
     assert pattern.groups == 1
     assert pattern.groupindex == {"inner": 1}
     assert pattern.search("(xab)").group("inner") == "ab"
@@ -108,7 +108,7 @@ def test_a_name_is_found_through_spellings_that_look_like_groups_and_are_not(pcr
     ],
 )
 def test_a_name_comes_from_the_parser_not_from_reading_the_pattern_text(source, subject):
-    pattern = irregex.compile(source, pcre=True)
+    pattern = irgx.compile(source, pcre=True)
     assert pattern.groups == 1
     assert pattern.groupindex == {"n": 1}
     assert pattern.search(subject).group("n") == "abc"
@@ -117,7 +117,7 @@ def test_a_name_comes_from_the_parser_not_from_reading_the_pattern_text(source, 
 def test_unnamed_groups_are_absent_from_groupindex_without_shifting_the_named_ones():
     # Every group is asked about by index, so an unnamed one answers "no name"
     # rather than being skipped in a way that could renumber its neighbours.
-    pattern = irregex.compile(r"(\w)(?P<second>\w)(\w)(?P<fourth>\w)")
+    pattern = irgx.compile(r"(\w)(?P<second>\w)(\w)(?P<fourth>\w)")
     assert pattern.groups == 4
     assert pattern.groupindex == {"second": 2, "fourth": 4}
     # Decoded at resolve time: the engine's bytes borrow a handle that a thread
@@ -134,16 +134,16 @@ def test_the_three_answers_asking_a_group_for_its_name_can_give():
     compiled = _abi.Compiled(rb"(?P<named>a)(b)", 0)
     name = _abi.Text()
 
-    assert _abi.lib.irregex_group_name(compiled.ptr, 1, ctypes.byref(name)) == _abi.MATCH
+    assert _abi.lib.irgx_group_name(compiled.ptr, 1, ctypes.byref(name)) == _abi.MATCH
     assert name.decode() == "named"
-    assert _abi.lib.irregex_group_name(compiled.ptr, 2, ctypes.byref(name)) == _abi.OK
+    assert _abi.lib.irgx_group_name(compiled.ptr, 2, ctypes.byref(name)) == _abi.OK
     # Group 0 is the whole match, which is never named.
-    assert _abi.lib.irregex_group_name(compiled.ptr, 0, ctypes.byref(name)) == _abi.OK
-    assert _abi.lib.irregex_group_name(compiled.ptr, 3, ctypes.byref(name)) == _abi.INVALID
+    assert _abi.lib.irgx_group_name(compiled.ptr, 0, ctypes.byref(name)) == _abi.OK
+    assert _abi.lib.irgx_group_name(compiled.ptr, 3, ctypes.byref(name)) == _abi.INVALID
 
 
 def test_a_pattern_with_no_groups_reports_zero():
-    pattern = irregex.compile(r"\w+")
+    pattern = irgx.compile(r"\w+")
     assert pattern.groups == 0
     assert pattern.groupindex == {}
     match = pattern.search("abc")
@@ -152,7 +152,7 @@ def test_a_pattern_with_no_groups_reports_zero():
 
 
 def test_asking_for_a_group_that_does_not_exist():
-    match = irregex.search(r"(a)", "a")
+    match = irgx.search(r"(a)", "a")
     with pytest.raises(IndexError):
         match.group(2)
     with pytest.raises(IndexError):
@@ -169,7 +169,7 @@ def test_captures_reports_the_true_group_count_even_from_a_short_window():
     compiled = _abi.Compiled(rb"(a)(b)(c)", 0)
     out = (_abi.Span * 2)()
     written = ctypes.c_size_t()
-    status = _abi.lib.irregex_captures(compiled.ptr, b"abc", 3, 0, out, 2, ctypes.byref(written))
+    status = _abi.lib.irgx_captures(compiled.ptr, b"abc", 3, 0, out, 2, ctypes.byref(written))
     assert status == _abi.MATCH
     assert written.value == 4, "1 whole match + 3 declared groups"
     assert (out[0].start, out[0].end) == (0, 3)
@@ -186,7 +186,7 @@ def test_group_detail_is_filled_per_match_and_matches_find_all():
         (r"(x)?a", "a xa a"),
         (r"(?P<k>\w+)=(\d+)", "a=1 bb=22 ccc=333"),
     ]:
-        compiled = irregex.compile(pattern)
+        compiled = irgx.compile(pattern)
         for match in compiled.finditer(text):
             assert match.span(0) == match.span()
             assert text[match.start() : match.end()] == match.group(0)

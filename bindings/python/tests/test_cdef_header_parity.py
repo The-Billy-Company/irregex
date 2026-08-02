@@ -1,11 +1,11 @@
 """Every function the cffi mirror declares must be spelled as its header spells it.
 
-`irregex.contract.abi.CDEF` is a hand-maintained mirror of the C headers, and cffi
+`irgx.contract.abi.CDEF` is a hand-maintained mirror of the C headers, and cffi
 resolves an ABI-mode symbol lazily — so a stale name in the mirror is invisible
 until the call, and invisible *entirely* if the tier that would make the call is
 skipped for want of a library. That is exactly how the mirror kept declaring
 `gist_engine_open` for a while after the engine moved down into the substrate as
-`irregex_engine_open`: nothing compared the two texts.
+`irgx_engine_open`: nothing compared the two texts.
 
 This gate compares them: for every function in the mirror, the union of the
 reachable headers must declare one of that name, with the same return type and
@@ -22,11 +22,13 @@ from pathlib import Path
 
 import pytest
 
-from irregex.contract import abi as contract
+from irgx.contract import abi as contract
 
 # Which header each package publishes. The mirror spans all four: the substrate's
-# own plus every producer it may describe (see ANALYTIC_CDEF).
-HEADERS = ("irregex", "gist", "relate", "blast")
+# own plus every producer it may describe (see ANALYTIC_CDEF). The stem is not
+# always the package name — this package is `irregex` and publishes `irgx.h`,
+# the same split the C prefix and the Python import name carry.
+HEADERS = {"irregex": "irgx", "gist": "gist", "relate": "relate", "blast": "blast"}
 
 _COMMENT = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
 _LINKAGE = re.compile(r'extern\s*"C"|[{}]')
@@ -35,14 +37,15 @@ _DECL = re.compile(r"^(?P<ret>[\w\s*]+?)\b(?P<name>\w+)\s*\((?P<params>.*)\)$", 
 
 
 def _header_path(pkg: str) -> Path:
-    """`include/<pkg>.h`, in this checkout or the sibling that publishes it.
+    """`include/<stem>.h`, in this checkout or the sibling that publishes it.
 
     The same ancestor-then-sibling rule `contract_path` uses, for the same
     reason: the four packages sit next to each other and no counted depth names
     them all.
     """
     here = Path(__file__).resolve()
-    homes = (f"include/{pkg}.h", f"{pkg}/include/{pkg}.h")
+    stem = HEADERS[pkg]
+    homes = (f"include/{stem}.h", f"{pkg}/include/{stem}.h")
     for base in here.parents:
         for home in homes:
             if (candidate := base / home).is_file():
@@ -70,7 +73,7 @@ def _preprocessor_free(source: str) -> str:
 
     They carry no semicolon, so a `#define` above a declaration would otherwise
     land in the same chunk as the declaration and hide it — which is how the
-    first draft of this gate managed to miss `irregex_status_message`, and how
+    first draft of this gate managed to miss `irgx_status_message`, and how
     `extern "C" {` hid whichever declaration happens to come first.
     """
     kept, continuing = [], False
@@ -103,7 +106,7 @@ def _declared() -> dict[str, tuple[str, tuple[str, ...]]]:
         path = _header_path(pkg)
         if not path.is_file():
             pytest.fail(
-                f"include/{pkg}.h not found (looked at {path}). The mirror cannot be "
+                f"include/{HEADERS[pkg]}.h not found (looked at {path}). The mirror cannot be "
                 f"checked against a header that is not there; check out {pkg} beside "
                 f"this repo."
             )
@@ -120,7 +123,7 @@ def test_the_mirror_declares_something() -> None:
     """Guard the extractor itself: a regex that matches nothing would pass silently."""
     mirrored = _mirrored()
     assert len(mirrored) > 15, f"only parsed {len(mirrored)} functions out of the mirror"
-    assert "irregex_engine_open" in mirrored
+    assert "irgx_engine_open" in mirrored
     assert len(_declared()) > 15
 
 

@@ -17,19 +17,19 @@ var ErrUnsupportedPattern = errors.New("irregex: pattern outside the linear-time
 
 // ErrNoCGO reports that this build has no in-process tier at all — either
 // CGO_ENABLED=0, or the default build, which leaves the cgo tier out until
-// `-tags irregex_ffi` asks for it.
+// `-tags irgx_ffi` asks for it.
 // Every verb still answers through the subprocess transport, so callers see this
 // only when they ask for the native tier by name.
-var ErrNoCGO = errors.New("irregex: built without the in-process tier (build -tags irregex_ffi)")
+var ErrNoCGO = errors.New("irregex: built without the in-process tier (build -tags irgx_ffi)")
 
 // DriftError is a live library whose row-schema table is NOT the one this
 // binding's decoder was generated from. Decoding its rows would silently
 // mis-read fields, so the analytic tier refuses instead — loudly, naming the
-// first schema that differs. Force the subprocess tier with IRREGEX_NO_FFI=1
+// first schema that differs. Force the subprocess tier with IRGX_NO_FFI=1
 // while the library is rebuilt.
 type DriftError struct {
 	Want, Got string // the contract digest and the library's
-	Detail    string // the first divergence, named via irregex_schema_get
+	Detail    string // the first divergence, named via irgx_schema_get
 }
 
 func (d *DriftError) Error() string {
@@ -77,7 +77,7 @@ func (q Query) validate() error {
 // Run answers one analytic verb through the best tier that can.
 //
 // The in-process plane goes first when this build has it, the library exports it,
-// and its schema digest matches. A tier that DECLINES (IRREGEX_STALE) is not a
+// and its schema digest matches. A tier that DECLINES (IRGX_STALE) is not a
 // failure — the query re-runs against the certified binary and the rows are
 // identical — so a declinature never reaches the caller as an error. Only a fault
 // about the query itself, or a drifted schema table, does.
@@ -116,11 +116,11 @@ func Scope(dir string, roots []string) []string {
 
 func (q Query) scope() []string { return Scope(q.Dir, q.Roots) }
 
-// noFFI is the operator escape hatch: IRREGEX_NO_FFI=1 forces every verb through
+// noFFI is the operator escape hatch: IRGX_NO_FFI=1 forces every verb through
 // the subprocess tier, which is how a host keeps working while a drifted library
 // is rebuilt.
 func noFFI() bool {
-	v := os.Getenv("IRREGEX_NO_FFI")
+	v := os.Getenv("IRGX_NO_FFI")
 	return v != "" && v != "0"
 }
 

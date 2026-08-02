@@ -32,7 +32,7 @@
 //! one destructor. The two answer channels stay apart (fault-channel law 1): a
 //! genuine failure is a Zig error (`OutOfMemory`, and only that), while "the
 //! warm tier cannot answer this — run it cold" is a `fault.Answer` declinature,
-//! the hosted spelling of the FFI's `IRREGEX_STALE`. It is never fatal, and
+//! the hosted spelling of the FFI's `IRGX_STALE`. It is never fatal, and
 //! because it never touches the error channel a `try` cannot mistake it for one.
 
 const std = @import("std");

@@ -3,12 +3,12 @@
 //! A row is a schema id plus a flat value array, so a library whose
 //! `[row_schemas]` table has moved would be decoded *confidently and wrongly* by
 //! a stale generated table — the failure mode with no symptom. Comparing
-//! `irregex_schema_digest()` to [`schema::DIGEST`] costs one string compare and
+//! `irgx_schema_digest()` to [`schema::DIGEST`] costs one string compare and
 //! converts that class of bug into a named refusal.
 //!
 //! Refusing is not enough on its own, because "the digests differ" tells an
 //! operator nothing about which side to rebuild. So a mismatch walks the
-//! engine's own `irregex_schema_count`/`irregex_schema_get` and reports the
+//! engine's own `irgx_schema_count`/`irgx_schema_get` and reports the
 //! first schema, arity, or field tag that disagrees, in the contract's own
 //! vocabulary. When the engine exposes no introspection the failure stays loud,
 //! just unnamed.
@@ -22,7 +22,7 @@ use crate::contract::schema::{self, SCHEMAS};
 /// Compare the engine's schema digest to the generated one, naming the first
 /// schema that disagrees. `None` means the tables match.
 ///
-/// `introspect` is optional because `irregex_schema_count`/`_get` are a
+/// `introspect` is optional because `irgx_schema_count`/`_get` are a
 /// diagnostic luxury: without them the mismatch is still refused, it just
 /// cannot say which schema moved.
 pub(super) fn drift(
@@ -85,7 +85,7 @@ pub(super) fn message(live_digest: &str, engine: Option<&[Declared]>) -> String 
         .unwrap_or_else(|| "no schema-level detail available".to_owned());
     format!(
         "engine digest {live_digest} != generated {generated}; {named}. Regenerate the bindings \
-         (`python3 tools/build_schema_tables.py`) or rebuild libirregex \
+         (`python3 tools/build_schema_tables.py`) or rebuild libirgx \
          so both sides speak the same [row_schemas].",
         generated = schema::DIGEST
     )
@@ -134,7 +134,7 @@ pub(super) fn first_disagreement(engine: &[Declared]) -> Option<String> {
 mod tests {
     //! These synthesize the *engine's* side of the handshake, because the
     //! failure they guard is the one no library on this machine can be made to
-    //! produce on demand: a `libirregex` whose `[row_schemas]` moved. What the
+    //! produce on demand: a `libirgx` whose `[row_schemas]` moved. What the
     //! synthesized table is compared against is the contract itself.
 
     use super::*;

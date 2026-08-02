@@ -5,7 +5,7 @@
 
 use std::borrow::Cow;
 
-use irregex::{Captures, NoExpand, Regex, RegexBuilder};
+use irgx::{Captures, NoExpand, Regex, RegexBuilder};
 
 #[test]
 fn find_and_iterate() {
@@ -159,9 +159,9 @@ fn accessors_and_traits() {
     assert!(copy.is_match("ABC"));
     assert_eq!(copy.find_iter("ABC abc").count(), 2);
 
-    assert_eq!(irregex::ABI_VERSION, 2);
-    assert!(!irregex::engine_version().is_empty());
-    assert!(!irregex::pcre2_version().is_empty());
+    assert_eq!(irgx::ABI_VERSION, 2);
+    assert!(!irgx::engine_version().is_empty());
+    assert!(!irgx::pcre2_version().is_empty());
 }
 
 /// The checked verbs exist so a caller who does not want a panic never has to

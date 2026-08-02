@@ -1,4 +1,4 @@
-"""The contract mirror in `irregex.contract` must not drift from the canonical
+"""The contract mirror in `irgx.contract` must not drift from the canonical
 contracts, nor from the driven binary.
 
 The canonical files are split by who authors what they describe: this repo's own
@@ -25,12 +25,12 @@ import shutil
 import pytest
 import tomllib
 
-from irregex.contract import abi as contract
-from irregex.contract import table
-from irregex.request import SearchRequest
-from irregex.runtime import analytic as analytic_runtime
-from irregex.runtime import shell as engine
-from irregex.runtime.errors import GistNotFoundError
+from irgx.contract import abi as contract
+from irgx.contract import table
+from irgx.request import SearchRequest
+from irgx.runtime import analytic as analytic_runtime
+from irgx.runtime import shell as engine
+from irgx.runtime.errors import GistNotFoundError
 
 
 def _binary_available() -> bool:
@@ -119,7 +119,7 @@ def test_every_verb_routes_to_the_producer_the_contract_names() -> None:
 
     Three libraries answer these seventeen verbs and the op numbers stayed
     ecosystem-wide, so nothing in a request says which. Mis-routing would not
-    fail loudly: the wrong library returns IRREGEX_INVALID for an op it does not
+    fail loudly: the wrong library returns IRGX_INVALID for an op it does not
     know, which the ladder reads as a declinature and answers cold — correct rows
     at subprocess cost, invisible forever.
     """
@@ -171,7 +171,7 @@ def test_every_declared_producer_resolves_in_the_loaded_process() -> None:
     # libgist is not optional the way the siblings are: it is what this binding
     # opens, so a loaded plane that cannot resolve gist's own entry is a broken
     # library, not a thin install. (The engine handle every producer takes comes
-    # from irregex_engine_open, down in the substrate.)
+    # from irgx_engine_open, down in the substrate.)
     assert hasattr(lib, gist_entry), f"the loaded plane exports no {gist_entry}"
     for verb, spec in analytic["verbs"].items():
         if spec["producer"] != "gist":

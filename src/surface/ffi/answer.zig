@@ -5,7 +5,7 @@
 //! `blast` composing the two all hand a host the same thing — a run of
 //! self-describing rows plus the answer-level facts no row carries. Only the
 //! producing is per-package. So each library exports its own `…_run`, and every
-//! one of them returns THIS, walked by the one set of `irregex_rows_*` symbols.
+//! one of them returns THIS, walked by the one set of `irgx_rows_*` symbols.
 //!
 //! That split is what keeps a host from learning three cursor protocols to ask
 //! three questions, and it costs nothing to arrange: an `Answer` holds an

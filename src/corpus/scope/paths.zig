@@ -113,7 +113,7 @@ pub fn cwdRelative(a: std.mem.Allocator, io: std.Io, path: []const u8) []const u
 /// Returns `error.OutOfMemory` rather than calling `allocFailure` because this
 /// is the one path helper the **library** reaches: every ignore-tier load under
 /// `corpus/tree/ignore.zig` joins through here, and those run inside
-/// `irregex_open` / `irregex_search`, where exiting the process is not a
+/// `irgx_open` / `irgx_search`, where exiting the process is not a
 /// failure mode a host can survive (fault-channel law 1). Its two siblings below
 /// still exit: `lowerDup` is only reached under case-insensitive ignore
 /// matching and `replaceSep` only under `--path-separator`, neither of which

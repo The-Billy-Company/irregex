@@ -10,7 +10,7 @@ so the whole set comes off one machine:
     python3 scripts/vendor_libraries.py --only aarch64-apple-darwin
     python3 scripts/vendor_libraries.py --list
 
-Archives land in ``vendor/<rust-target-triple>/libirregex.a``, which is exactly
+Archives land in ``vendor/<rust-target-triple>/libirgx.a``, which is exactly
 where ``build.rs`` looks. Rerun this whenever the engine changes: the archives
 are committed build output, so a source change not followed by a run of this
 script ships an engine older than the repository it came from.
@@ -55,19 +55,19 @@ VENDOR = CRATE / "vendor"
 # partially linkable archive instead of passing on a lucky one.
 PROBE = """
 #include <stdio.h>
-#include "irregex.h"
+#include "irgx.h"
 
 int main(void) {
-  irregex_regex *re = NULL;
-  irregex_span spans[4];
+  irgx_regex *re = NULL;
+  irgx_span spans[4];
   size_t written = 0;
-  if (irregex_compile((const uint8_t *)"a+", 2, IRREGEX_PCRE, &re) != IRREGEX_OK) return 1;
-  if (irregex_find_all(re, (const uint8_t *)"aa b", 4, spans, 4, &written) != IRREGEX_MATCH) return 2;
-  if (irregex_captures(re, (const uint8_t *)"aa b", 4, 0, spans, 4, &written) != IRREGEX_MATCH) return 3;
-  if (irregex_is_match(re, (const uint8_t *)"aa b", 4) != IRREGEX_MATCH) return 4;
-  irregex_free(re);
-  printf("%s %s %u %lld\\n", irregex_version(), irregex_pcre2_version(),
-         irregex_abi_version(), (long long)spans[0].end);
+  if (irgx_compile((const uint8_t *)"a+", 2, IRGX_PCRE, &re) != IRGX_OK) return 1;
+  if (irgx_find_all(re, (const uint8_t *)"aa b", 4, spans, 4, &written) != IRGX_MATCH) return 2;
+  if (irgx_captures(re, (const uint8_t *)"aa b", 4, 0, spans, 4, &written) != IRGX_MATCH) return 3;
+  if (irgx_is_match(re, (const uint8_t *)"aa b", 4) != IRGX_MATCH) return 4;
+  irgx_free(re);
+  printf("%s %s %u %lld\\n", irgx_version(), irgx_pcre2_version(),
+         irgx_abi_version(), (long long)spans[0].end);
   return 0;
 }
 """
@@ -84,7 +84,7 @@ class Target:
 
     @property
     def archive(self) -> Path:
-        return VENDOR / self.rust / "libirregex.a"
+        return VENDOR / self.rust / "libirgx.a"
 
 
 # macOS 11 is where arm64 begins. glibc 2.17 is the manylinux2014 floor and
@@ -216,12 +216,12 @@ def build(target: Target, cache_root: Path, zig: str, strip: str | None, nm: str
             ],
             cwd=ENGINE,
         )  # fmt: skip
-        archive = staging / "lib" / "libirregex.a"
+        archive = staging / "lib" / "libirgx.a"
         if not archive.is_file():
             raise RuntimeError(f"zig build produced no {archive}")
 
         if not defines(nm, archive, FLOOR_WITNESS):
-            merged = work / "libirregex.a"
+            merged = work / "libirgx.a"
             merge(zig, archive, floor_archive(cache), merged)
             archive = merged
             if not defines(nm, archive, FLOOR_WITNESS):
@@ -230,7 +230,7 @@ def build(target: Target, cache_root: Path, zig: str, strip: str | None, nm: str
         if strip:
             run([strip, "--strip-debug", str(archive)])
 
-        header = ENGINE / "include" / "irregex.h"
+        header = ENGINE / "include" / "irgx.h"
         note = probe_link(zig, target, archive, header, work)
 
         target.archive.parent.mkdir(parents=True, exist_ok=True)

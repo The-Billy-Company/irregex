@@ -3,7 +3,7 @@
 No binary and no library: the plane's contract is `contract/surface.toml`
 lowered into `schema.gen.py`, so every expectation here is read off that table
 rather than off a captured answer. Synthesized value arrays stand in for the
-`irregex_value` blocks a cursor would hand over, which is the only way to test
+`irgx_value` blocks a cursor would hand over, which is the only way to test
 absence, an unknown ordinal, and batch boundaries deliberately.
 
 The properties under test are the ones a mis-decode would quietly violate:
@@ -23,12 +23,12 @@ from __future__ import annotations
 
 import pytest
 
-from irregex.contract import table
-from irregex.contract.grades import Grade
-from irregex.runtime import cold
-from irregex.runtime.analytic import Rows, Stats, rows_of, verify
-from irregex.runtime.decode import ABSENT, Row, Unknown, record, row_type
-from irregex.runtime.errors import RowDecodeError, SchemaDriftError
+from irgx.contract import table
+from irgx.contract.grades import Grade
+from irgx.runtime import cold
+from irgx.runtime.analytic import Rows, Stats, rows_of, verify
+from irgx.runtime.decode import ABSENT, Row, Unknown, record, row_type
+from irgx.runtime.errors import RowDecodeError, SchemaDriftError
 
 
 def _schema(name: str) -> int:
@@ -268,7 +268,7 @@ class _Fake:
     def __init__(self, digest: str) -> None:
         self._digest = digest.encode()
 
-    def irregex_schema_digest(self) -> bytes:
+    def irgx_schema_digest(self) -> bytes:
         return self._digest
 
 

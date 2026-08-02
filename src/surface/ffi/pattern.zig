@@ -1,4 +1,4 @@
-//! The regex-over-text plane — `libirregex`'s own C ABI.
+//! The regex-over-text plane — `libirgx`'s own C ABI.
 //!
 //! What a host reaches for when it has a pattern and a buffer, and no corpus:
 //! compile once, then ask `is_match` / `find_all` / `captures` about bytes it
@@ -10,7 +10,7 @@
 //! `CompiledQuery` (the compile → prefilter → match kernel both engines share)
 //! and `Caps` (the one-pass / Pike / PCRE2 capture seam). Nothing in this file
 //! decides what a pattern means — which is the point. An in-process
-//! `irregex_captures` returns the offsets `gist --json` would print for the
+//! `irgx_captures` returns the offsets `gist --json` would print for the
 //! same pattern because it is the same arm, reached through the same door.
 //!
 //! Two rules the whole plane keeps:
@@ -63,7 +63,7 @@ fn view(text: ?[*]const u8, len: usize) ?[]const u8 {
 ///   - **`.stale`** — PCRE2 takes it, so this is `unsupported_syntax`, whose
 ///     declared fallback *is* `pcre2`. `--engine auto` escalates across that
 ///     same seam in the CLI; here the caller escalates by setting
-///     `IRREGEX_PCRE`. A declinature is not a failure, so per the seam's own
+///     `IRGX_PCRE`. A declinature is not a failure, so per the seam's own
 ///     law it is returned directly and installs **no** fault — which also means
 ///     a host decides from the return value alone, with no second call.
 ///   - **`error.BadPattern` + `at`** — PCRE2 refuses it too. Nothing can answer
@@ -307,7 +307,7 @@ pub fn groupIndex(re: *Regex, name: ?[*]const u8, len: usize, out: ?*u32) Status
 ///
 /// The bytes borrow the handle: they are the parser's own name storage, or
 /// PCRE2's name table inside the compiled code, so they live until
-/// `irregex_free` and cost no copy. An index past the group count is a caller
+/// `irgx_free` and cost no copy. An index past the group count is a caller
 /// error rather than an absence — the count is knowable (`groupCount`), so a
 /// walk off the end is a bug worth naming, where an unnamed group is an answer.
 pub fn groupName(re: *Regex, index: u32, out: ?*rows.Text) Status {

@@ -9,8 +9,8 @@ the Go source rather than a directory down, because `go mod vendor` copies a
 package's own files and skips a subdirectory holding no Go package; kept one
 level down, every vendored consumer would fail at the linker. All four come off
 one machine, cross-compiled by Zig against a glibc 2.17 and macOS 11 floor, and
-each one is proved to link before it is committed. `irregex_abi_version()` is checked
-at package init, so a library supplied through the `irregex_syslib` escape hatch
+each one is proved to link before it is committed. `irgx_abi_version()` is checked
+at package init, so a library supplied through the `irgx_syslib` escape hatch
 that disagrees says so instead of mis-reading a struct.
 
 The surface is stdlib `regexp`'s, because that is the API a Go programmer
@@ -25,7 +25,7 @@ for an option function to extend. There is no `MatchReader` family and no
 would be a semantic the library does not hold.
 
 Three properties are the whole reason this is a binding rather than a wrapper.
-Iteration is `irregex_find_all`, never a Go advance loop over `captures`, so the
+Iteration is `irgx_find_all`, never a Go advance loop over `captures`, so the
 empty-match, adjacency and `-w` rules a nullable pattern depends on are the
 engine's; group detail is filled in afterwards by `captures(from: span.start)`
 per span the engine already blessed, and the two are checked against each other.
@@ -39,10 +39,10 @@ no thread-local to hide one in, and a `sync.Pool` lends a handle out per call
 instead, with a finalizer to free what the pool drops.
 
 Writing it turned up two faults in the ABI, both fixed in the engine before this
-shipped. `irregex_compile` used to refuse a NULL pattern of length zero even
+shipped. `irgx_compile` used to refuse a NULL pattern of length zero even
 though the empty pattern compiles fine, which a language whose empty string
 carries no data pointer trips over without meaning anything by it. And
-`irregex_is_match` used to answer a different question from `irregex_find_all`,
+`irgx_is_match` used to answer a different question from `irgx_find_all`,
 splitting the buffer into lines, so `c$` over `"abc\n"` was a match to one and
 not the other. The nine-pattern by six-text anchor grid that found it is now a
 test here, checking that `MatchString` and `FindStringIndex` agree on all 54

@@ -1,6 +1,6 @@
 //go:build !cgo
 
-package irregex
+package irgx
 
 // The engine is a native library, and there is no pure-Go implementation behind
 // this package to fall back to, so CGO_ENABLED=0 cannot produce a working

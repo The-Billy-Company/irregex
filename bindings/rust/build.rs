@@ -8,12 +8,12 @@
 //!
 //! The ladder, in order, and it stops at the first rung that answers:
 //!
-//! 1. `$IRREGEX_LIB_DIR` - link the library in that directory. Set, it wins;
+//! 1. `$IRGX_LIB_DIR` - link the library in that directory. Set, it wins;
 //!    set and empty of a library, it is a hard error rather than a silent fall
 //!    through to a build the caller did not choose.
-//! 2. `vendor/<target-triple>/libirregex.a` - the prebuilt archive. Self
+//! 2. `vendor/<target-triple>/libirgx.a` - the prebuilt archive. Self
 //!    contained: the vendoring script folds the PCRE2 floor in and strips DWARF.
-//! 3. `zig-out/lib/libirregex.{dylib,so}` in an engine checkout above this
+//! 3. `zig-out/lib/libirgx.{dylib,so}` in an engine checkout above this
 //!    crate, when the host is the target. What a source checkout already has.
 //! 4. `zig build` in that checkout, when `zig` is on `PATH`.
 //!
@@ -45,17 +45,17 @@ const ZIG_TRIPLES: &[(&str, &str)] = &[
 ];
 
 fn main() {
-    println!("cargo:rerun-if-env-changed=IRREGEX_LIB_DIR");
+    println!("cargo:rerun-if-env-changed=IRGX_LIB_DIR");
     let target = env("TARGET");
     let host = env("HOST");
     let crate_dir = PathBuf::from(env("CARGO_MANIFEST_DIR"));
 
-    if let Some(dir) = std::env::var_os("IRREGEX_LIB_DIR") {
+    if let Some(dir) = std::env::var_os("IRGX_LIB_DIR") {
         let dir = PathBuf::from(dir);
         let Some(kind) = library_in(&dir) else {
             fail(&format!(
-                "IRREGEX_LIB_DIR points at {}, which holds no irregex library. Expected \
-                 one of libirregex.a, libirregex.dylib or libirregex.so there. It is an \
+                "IRGX_LIB_DIR points at {}, which holds no irregex library. Expected \
+                 one of libirgx.a, libirgx.dylib or libirgx.so there. It is an \
                  error rather than a fallback because linking a different engine than the \
                  one you named would report results from a library you did not choose.",
                 dir.display()
@@ -64,7 +64,7 @@ fn main() {
         return link(&dir, kind);
     }
 
-    let vendored = crate_dir.join("vendor").join(&target).join("libirregex.a");
+    let vendored = crate_dir.join("vendor").join(&target).join("libirgx.a");
     println!("cargo:rerun-if-changed={}", vendored.display());
     if vendored.is_file() {
         return link(vendored.parent().unwrap(), Kind::Static);
@@ -97,9 +97,9 @@ enum Kind {
 fn link(dir: &Path, kind: Kind) {
     println!("cargo:rustc-link-search=native={}", dir.display());
     match kind {
-        Kind::Static => println!("cargo:rustc-link-lib=static=irregex"),
+        Kind::Static => println!("cargo:rustc-link-lib=static=irgx"),
         Kind::Shared => {
-            println!("cargo:rustc-link-lib=dylib=irregex");
+            println!("cargo:rustc-link-lib=dylib=irgx");
             // So the linked binary resolves the library at run time. Only the
             // shared rungs need it; a static link has nothing to find later.
             println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
@@ -109,14 +109,14 @@ fn link(dir: &Path, kind: Kind) {
 
 /// Which library form `dir` holds, preferring the static one.
 fn library_in(dir: &Path) -> Option<Kind> {
-    if dir.join("libirregex.a").is_file() {
+    if dir.join("libirgx.a").is_file() {
         return Some(Kind::Static);
     }
     shared_in(dir)
 }
 
 fn shared_in(dir: &Path) -> Option<Kind> {
-    let found = ["libirregex.dylib", "libirregex.so"]
+    let found = ["libirgx.dylib", "libirgx.so"]
         .iter()
         .any(|name| dir.join(name).is_file());
     found.then_some(Kind::Shared)
@@ -136,7 +136,7 @@ fn zig_build(checkout: &Path, target: &str) -> Result<PathBuf, String> {
         return Err(format!(
             "and this crate does not know a Zig triple for {target}, so it cannot build \
              the engine from source for it either. Add one to ZIG_TRIPLES in build.rs, or \
-             build the engine yourself and point IRREGEX_LIB_DIR at it."
+             build the engine yourself and point IRGX_LIB_DIR at it."
         ));
     };
     let prefix = PathBuf::from(env("OUT_DIR")).join("engine");
@@ -162,7 +162,7 @@ fn zig_build(checkout: &Path, target: &str) -> Result<PathBuf, String> {
             return Err(format!(
                 "and `zig` could not be run ({why}), so the engine cannot be built from \
                  the source in {}. Install Zig, or build the engine elsewhere and point \
-                 IRREGEX_LIB_DIR at the directory holding the library.",
+                 IRGX_LIB_DIR at the directory holding the library.",
                 checkout.display()
             ));
         },
@@ -181,7 +181,7 @@ fn unserved(target: &str, crate_dir: &Path) -> String {
     let mut served: Vec<String> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(crate_dir.join("vendor")) {
         for entry in entries.flatten() {
-            if entry.path().join("libirregex.a").is_file() {
+            if entry.path().join("libirgx.a").is_file() {
                 served.push(entry.file_name().to_string_lossy().into_owned());
             }
         }

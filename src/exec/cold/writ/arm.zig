@@ -93,7 +93,7 @@ pub fn pcreArm(gpa: std.mem.Allocator, eff: []const u8, o: Opts, route: PcreRout
 /// what is actually broken and where instead.
 ///
 /// The probe costs one PCRE2 compile on a path that is about to exit — and buys
-/// the distinction `IRREGEX_STALE` vs `BadPattern` draws for the C ABI
+/// the distinction `IRGX_STALE` vs `BadPattern` draws for the C ABI
 /// (`surface/ffi/pattern.zig: refuse`), so the CLI and the library now refuse
 /// the same pattern for the same stated reason.
 ///

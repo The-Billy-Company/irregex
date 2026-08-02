@@ -71,8 +71,8 @@ fn hasNonDirectoryRoot(io: std.Io, roots: []const []const u8) bool {
 /// allocation is released before return.
 ///
 /// Allocation failure RETURNS rather than exiting: the resident daemon calls
-/// this from `irregex_search`'s reconcile, where `exit(2)` would kill the
-/// embedding host instead of yielding `IRREGEX_OOM` (fault-channel law 1). Only this
+/// this from `irgx_search`'s reconcile, where `exit(2)` would kill the
+/// embedding host instead of yielding `IRGX_OOM` (fault-channel law 1). Only this
 /// enumerator's OWN allocations — the ones on the calling thread — are covered;
 /// the shared per-worker descent (`descent.zig`) still exits, since an error
 /// cannot cross the fan-out and its `catch oom()` sites sit in the per-entry

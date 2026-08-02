@@ -19,7 +19,7 @@
 //!
 //! A [`Row`] is a borrowed view: it holds the row header by value (four words)
 //! and a `PhantomData` tying it to the arena its texts and nested rows live in.
-//! For a native answer that arena is the `irregex_rows` cursor, which the C ABI
+//! For a native answer that arena is the `irgx_rows` cursor, which the C ABI
 //! guarantees stays valid until close — so batches may be held alongside each
 //! other without copying. [`Row::to_owned`] is the explicit exit from the
 //! borrow into an [`OwnedRow`] that outlives the cursor.

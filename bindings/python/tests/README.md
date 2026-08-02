@@ -5,7 +5,7 @@ python3 -m pytest
 ```
 
 From a source checkout there is no bundled library yet - that is placed by the
-build hook when a wheel is built - so `conftest.py` points `IRREGEX_LIB` at the
+build hook when a wheel is built - so `conftest.py` points `IRGX_LIB` at the
 engine's own `zig-out` build, using exactly the override a user would. Build it
 first with `zig build` from the engine root. Against an installed wheel the
 bundled library is already there and nothing in `conftest.py` fires, which is

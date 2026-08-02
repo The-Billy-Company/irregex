@@ -7,7 +7,7 @@ things you can do about a refusal, retry it with `pcre(true)` or show the user
 where they went wrong, were both unavailable, because you could not tell which
 refusal you had.
 
-Now the C seam answers `IRREGEX_STALE` for the first and `IRREGEX_INVALID` with
+Now the C seam answers `IRGX_STALE` for the first and `IRGX_INVALID` with
 an offset for the second, and the enum says so:
 
 ```rust

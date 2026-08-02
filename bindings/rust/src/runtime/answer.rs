@@ -5,7 +5,7 @@
 //!
 //! Unlike the exact plane's `gist_cursor`, which recycles one submatch
 //! scratch per pull, an analytic answer is materialized into a *single* arena
-//! that stays valid until close (`include/gist.h`, `irregex_rows_next_batch`).
+//! that stays valid until close (`include/gist.h`, `irgx_rows_next_batch`).
 //! Modeling a pull as `&mut self` would therefore invent an invalidation the ABI
 //! does not have and forbid the very thing batching exists for — holding several
 //! batches at once. The read position lives in a [`Cell`] instead, which makes a
@@ -74,9 +74,9 @@ impl Stats {
     }
 }
 
-/// A live `irregex_rows` cursor and everything that must outlive it.
+/// A live `irgx_rows` cursor and everything that must outlive it.
 pub(super) struct Native {
-    pub(super) ptr: *mut sys::irregex_rows,
+    pub(super) ptr: *mut sys::irgx_rows,
     pub(super) vt: &'static Vtable,
     pub(super) done: Cell<bool>,
     /// Keeps the corpus alive for as long as any row borrows its arena. Never

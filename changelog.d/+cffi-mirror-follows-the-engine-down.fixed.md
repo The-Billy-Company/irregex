@@ -1,5 +1,5 @@
 The Python substrate's cffi mirror still named the engine `gist_engine_open`
-after the engine moved down here as `irregex_engine_open`, so every in-process
+after the engine moved down here as `irgx_engine_open`, so every in-process
 call through it raised `AttributeError` on a symbol libgist has never exported.
 Nothing caught it because cffi resolves an ABI-mode symbol lazily and the tier
 that would have made the call was skipping for want of `cffi` in a standalone

@@ -6,7 +6,7 @@ it too, and nothing said where the defect was. ripgrep names the error and
 points a caret at it.
 
 So the refusal now asks PCRE2 before it speaks, which is the same probe the C ABI
-already used to separate `IRREGEX_STALE` from a `BadPattern` fault. If PCRE2
+already used to separate `IRGX_STALE` from a `BadPattern` fault. If PCRE2
 takes the pattern, the escalation really was the answer and the message is
 unchanged. If PCRE2 refuses it too, gist names the defect, points at the byte,
 and says that no engine here compiles it rather than sending you to a flag that

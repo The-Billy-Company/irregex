@@ -1,4 +1,4 @@
-package irregex_test
+package irgx_test
 
 import (
 	"fmt"
@@ -8,12 +8,12 @@ import (
 	"sync"
 	"testing"
 
-	irregex "github.com/The-Billy-Company/irregex/bindings/go"
+	irgx "github.com/The-Billy-Company/irregex/bindings/go"
 )
 
 // The package-level var is the shape every Go programmer writes, and it is the
 // reason a *Regexp has to be safe for concurrent use.
-var shared = irregex.MustCompile(`(?P<key>\w+)=(\d+)`)
+var shared = irgx.MustCompile(`(?P<key>\w+)=(\d+)`)
 
 // Many goroutines, one Regexp, a different input each, every answer checked
 // against one computed serially beforehand. Run under -race this also covers the
@@ -88,7 +88,7 @@ func TestConcurrentCompiles(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			pattern := fmt.Sprintf(`a{%d}`, i%5+1)
-			re, err := irregex.Compile(pattern)
+			re, err := irgx.Compile(pattern)
 			if err != nil {
 				t.Errorf("compile %q: %v", pattern, err)
 				return
@@ -108,7 +108,7 @@ func TestConcurrentCompiles(t *testing.T) {
 // not free a handle that is still in use, which is the failure that would
 // otherwise show up as a crash here.
 func TestPoolSurvivesGC(t *testing.T) {
-	re := irregex.MustCompile(`\d+`)
+	re := irgx.MustCompile(`\d+`)
 	for range 5 {
 		var wg sync.WaitGroup
 		for i := range 16 {

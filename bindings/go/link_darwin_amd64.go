@@ -1,6 +1,6 @@
-//go:build cgo && !irregex_syslib
+//go:build cgo && !irgx_syslib
 
-package irregex
+package irgx
 
-// #cgo LDFLAGS: ${SRCDIR}/libirregex_darwin_amd64.a
+// #cgo LDFLAGS: ${SRCDIR}/libirgx_darwin_amd64.a
 import "C"

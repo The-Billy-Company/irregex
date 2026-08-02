@@ -7,7 +7,7 @@
 // already has in their fingers. Compile a pattern once, share it, and call the
 // Find family on it:
 //
-//	var word = irregex.MustCompile(`\w+`)
+//	var word = irgx.MustCompile(`\w+`)
 //
 //	func first(s string) string { return word.FindString(s) }
 //
@@ -31,7 +31,7 @@
 // patterns: an empty match is suppressed at the end of the buffer and where the
 // previous match ended. `a*` over "abc" is two matches here and four in the
 // stdlib. See the package README for the rest of the differences.
-package irregex
+package irgx
 
 import (
 	"strconv"
@@ -45,7 +45,7 @@ import (
 // so there is nothing for an option function to extend, and a struct literal
 // shows every choice at the call site.
 //
-//	re, err := irregex.CompileOpts{IgnoreCase: true, Word: true}.Compile("cat")
+//	re, err := irgx.CompileOpts{IgnoreCase: true, Word: true}.Compile("cat")
 type CompileOpts struct {
 	// Fixed treats the pattern as a literal string rather than a regex, so a
 	// pattern full of metacharacters is data instead of a syntax error. It wins

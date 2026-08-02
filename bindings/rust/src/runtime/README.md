@@ -29,7 +29,7 @@ An analytic call tries, in order:
 
 Each rung is skipped, never failed, for three reasons: the crate was built
 without the `native` feature, the loaded library predates the analytic exports
-(symbol probe comes back empty), or the engine answered `IRREGEX_STALE`. That
+(symbol probe comes back empty), or the engine answered `IRGX_STALE`. That
 last one is the subtle one — **stale is a declinature, not an error**. The
 engine is saying "I could answer this, but not from what I have warm"; the
 correct response is to ask the next tier, and the caller must never see it. An
@@ -81,7 +81,7 @@ Three decisions in there are load-bearing:
 ## The handshake
 
 Before the first native row is decoded, `handshake.rs` compares the generated
-`DIGEST` against `irregex_schema_digest()`. Equal, and the plane is live.
+`DIGEST` against `irgx_schema_digest()`. Equal, and the plane is live.
 Different, and the plane refuses **loudly** — walking the engine's own schema
 table to name the schema or field that drifted, because "row 4 field 7 looks
 wrong" is not something a caller can act on. A missing symbol is a downgrade; a

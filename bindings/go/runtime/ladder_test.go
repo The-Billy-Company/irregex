@@ -33,16 +33,16 @@ func TestProbeIsCoherent(t *testing.T) {
 	t.Logf("tier: cgo=%v analytic=%v library=%q err=%v", tier.CGO, tier.Analytic, tier.LibraryDigest, tier.Err)
 }
 
-// TestNoFFIForcesCold pins the operator escape hatch: with IRREGEX_NO_FFI set the
+// TestNoFFIForcesCold pins the operator escape hatch: with IRGX_NO_FFI set the
 // in-process plane is not consulted at all, which is how a host keeps answering
 // while a drifted library is rebuilt.
 func TestNoFFIForcesCold(t *testing.T) {
-	t.Setenv("IRREGEX_NO_FFI", "1")
+	t.Setenv("IRGX_NO_FFI", "1")
 	if tier := Probe(); tier.Analytic {
-		t.Fatal("IRREGEX_NO_FFI=1 still reported a live analytic plane")
+		t.Fatal("IRGX_NO_FFI=1 still reported a live analytic plane")
 	}
 	if rows, err := native(t.Context(), Query{Op: analytic.OpDups, Params: analytic.Kinship{}}); rows != nil || err != nil {
-		t.Fatalf("native() = (%v, %v) under IRREGEX_NO_FFI, want a clean declinature", rows, err)
+		t.Fatalf("native() = (%v, %v) under IRGX_NO_FFI, want a clean declinature", rows, err)
 	}
 }
 
@@ -120,20 +120,20 @@ func TestTiersAgree(t *testing.T) {
 	// TestMain abolished. That kind asked the filesystem whether a binary
 	// happened to be lying around; this one asks how this very test binary was
 	// compiled. The default build is pure Go, because the in-process analytic
-	// tier is opt-in behind `-tags irregex_ffi` so a `go get` consumer never
-	// tries to link a libirregex that cannot exist in the module cache. A
+	// tier is opt-in behind `-tags irgx_ffi` so a `go get` consumer never
+	// tries to link a libirgx that cannot exist in the module cache. A
 	// cross-tier oracle with one tier present has nothing to compare, and no
 	// amount of building or installing changes that — only rebuilding this test
 	// binary with the tag does.
 	warm := Probe()
 	if !warm.Analytic {
-		t.Skipf("this test binary has no in-process analytic tier to compare the cold one against; rebuild with `-tags irregex_ffi` (cgo=%v, err=%v)", warm.CGO, warm.Err)
+		t.Skipf("this test binary has no in-process analytic tier to compare the cold one against; rebuild with `-tags irgx_ffi` (cgo=%v, err=%v)", warm.CGO, warm.Err)
 	}
 	native := render(t, q)
 	if len(native) == 0 {
 		t.Fatal("the fixture corpus produced no duplicate pair, so this oracle proves nothing")
 	}
-	t.Setenv("IRREGEX_NO_FFI", "1")
+	t.Setenv("IRGX_NO_FFI", "1")
 	cold := render(t, q)
 	if len(native) != len(cold) {
 		t.Fatalf("tiers disagree on row count: native %d, cold %d\nnative=%v\ncold=%v", len(native), len(cold), native, cold)
@@ -149,7 +149,7 @@ func TestTiersAgree(t *testing.T) {
 // counters rather than dropping them: a retrieval answer must be able to say the
 // query was foreign to the corpus instead of merely empty.
 func TestColdSurfacesStats(t *testing.T) {
-	t.Setenv("IRREGEX_NO_FFI", "1")
+	t.Setenv("IRGX_NO_FFI", "1")
 	root := corpus(t)
 	rows, err := Run(t.Context(), Query{
 		Op:     analytic.OpRecall,

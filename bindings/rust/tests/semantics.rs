@@ -5,7 +5,7 @@
 //! the semantics without running a generator; and it covers the places where this
 //! engine deliberately differs from the `regex` crate.
 
-use irregex::{Error, Regex, RegexBuilder};
+use irgx::{Error, Regex, RegexBuilder};
 
 // ── nullable and zero-width patterns ─────────────────────────────────────
 

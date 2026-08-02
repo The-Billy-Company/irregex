@@ -15,7 +15,7 @@
 
 use std::collections::BTreeMap;
 
-use irregex::{Regex, RegexBuilder};
+use irgx::{Regex, RegexBuilder};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -78,7 +78,7 @@ fn corpus() -> Corpus {
 /// hundred span mismatches.
 #[test]
 fn corpus_matches_the_linked_engine() {
-    let found = irregex::engine_version();
+    let found = irgx::engine_version();
     assert_eq!(
         corpus().engine_version,
         found,

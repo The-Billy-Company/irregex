@@ -14,9 +14,9 @@ that tells us whether the Go binding needs an offset translation (it does not).
 
 Run it from anywhere:
 
-    IRREGEX_LIB=/path/to/libirregex.dylib python3 scripts/python_oracle.py
+    IRGX_LIB=/path/to/libirgx.dylib python3 scripts/python_oracle.py
 
-IRREGEX_LIB is only needed when the Python package was installed without its
+IRGX_LIB is only needed when the Python package was installed without its
 bundled shared library, which is the case for a source checkout.
 """
 
@@ -31,7 +31,7 @@ OUT = HERE.parent / "testdata" / "python_oracle.json"
 # A source checkout, where the Python package sits beside this binding.
 sys.path.insert(0, str(HERE.parent.parent / "python"))
 
-import irregex  # noqa: E402
+import irgx  # noqa: E402
 
 # Each case is (name, pattern, flags, texts). Flags use the Python binding's
 # keyword spelling; the Go side maps them onto CompileOpts.
@@ -78,7 +78,7 @@ CASES: list[tuple[str, str, dict[str, bool], list[str]]] = [
 def main() -> None:
     out = []
     for name, pattern, flags, texts in CASES:
-        compiled = irregex.compile(pattern.encode(), **flags)
+        compiled = irgx.compile(pattern.encode(), **flags)
         for text in texts:
             data = text.encode()
             spans = [list(m.span()) for m in compiled.finditer(data)]
@@ -107,7 +107,7 @@ def main() -> None:
             {
                 "generator": "bindings/go/scripts/python_oracle.py",
                 "reference": "the irregex Python binding",
-                "engine_version": irregex.ENGINE_VERSION,
+                "engine_version": irgx.ENGINE_VERSION,
                 "cases": out,
             },
             indent=1,
@@ -116,7 +116,7 @@ def main() -> None:
         + "\n",
         encoding="utf-8",
     )
-    print(f"{OUT}: {len(out)} cases from engine {irregex.ENGINE_VERSION}")
+    print(f"{OUT}: {len(out)} cases from engine {irgx.ENGINE_VERSION}")
 
 
 if __name__ == "__main__":

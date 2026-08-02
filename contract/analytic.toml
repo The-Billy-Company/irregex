@@ -3,10 +3,10 @@
 # ═════════════════════════════════════════════════════════════════════════════
 #
 # One self-describing row answers every analytic verb: a schema id, a presence
-# mask, and a flat `irregex_value` array. What that array MEANS is declared here
+# mask, and a flat `irgx_value` array. What that array MEANS is declared here
 # — and here rather than in a product's contract because the row layout is
 # substrate. gist, relate and blast all return these rows through the same
-# `irregex_rows` cursor, so a decoder written against this file decodes all
+# `irgx_rows` cursor, so a decoder written against this file decodes all
 # three, and none of them gets to redeclare a schema privately.
 #
 #   [row_enums]         the closed vocabularies a row field can hold
@@ -18,7 +18,7 @@
 #
 # Nothing here is mirrored by hand. `tools/build_schema_tables.py` lowers it
 # into `src/surface/ffi/schema.gen.zig` and into each binding's generated table,
-# and `--check` is the drift gate. `irregex_schema_digest()` returns the engine's
+# and `--check` is the drift gate. `irgx_schema_digest()` returns the engine's
 # digest over this table; a binding compares it to its own generated constant at
 # load, so a stale shared library is a loud startup failure rather than a
 # silently mis-decoded row.
@@ -68,7 +68,7 @@ rank_kind = { id = 4, variants = [
 ], detail = "why `--rank` placed a row where it did: a definition site, a call site, or demoted codegen" }
 
 # ── [row_schemas] — the field list of every analytic result row ──────────────
-# The analytic plane returns ONE row type over the C ABI (`irregex_row`: a
+# The analytic plane returns ONE row type over the C ABI (`irgx_row`: a
 # schema id plus a flat value array). These tables are what that array means.
 # Declared here rather than in four hand-written struct definitions because the
 # alternative is the N verbs × M languages drift this contract exists to kill:
@@ -338,26 +338,26 @@ fields = [
 #   gist_run(engine, op, params, cancel, &cursor)
 #       one entry point. `op` is an [analytic.verbs] code; `params` is one of
 #       the [analytic.params] families, size-checked like SearchRequest so an
-#       older engine reading a newer struct fails closed with IRREGEX_INVALID
+#       older engine reading a newer struct fails closed with IRGX_INVALID
 #       rather than reading past its knowledge.
-#   irregex_rows_next / _next_batch / _close
+#   irgx_rows_next / _next_batch / _close
 #       the pull cursor, mirroring the exact plane's `gist_cursor_*` triad.
 #       Rows borrow cursor-owned memory and are valid until the next pull.
-#   irregex_rows_stats
+#   irgx_rows_stats
 #       the answer-level facts a row cannot carry: elapsed, whether the atlas or
 #       live bytes answered, how many files were refreshed into a warm answer,
 #       how many query fingerprints the corpus has never seen. A binding that
 #       hides these turns "your text isn't in this repo" into "no results".
-#   irregex_schema_digest
+#   irgx_schema_digest
 #       one call that proves the engine's row-schema table is the one this
 #       binding's decoder was generated from. Cheaper and stricter than
 #       per-field negotiation, and it makes a stale .so a loud startup failure
 #       instead of a silently mis-decoded row.
-#   irregex_schema_count / irregex_schema_get
+#   irgx_schema_count / irgx_schema_get
 #       the table itself, for a decoder that wants to name the drift.
 #
 # A row is `{ schema_id, present_mask, nvalues, values }` over a tagged
-# `irregex_value`. Adding a verb that reuses a schema costs ZERO new C surface;
+# `irgx_value`. Adding a verb that reuses a schema costs ZERO new C surface;
 # adding a new shape costs one [row_schemas] table and one generated arm per
 # language. No binding hand-writes a struct for a verb again.
 #
@@ -374,10 +374,10 @@ fields = [
 # analytic plane's own compatibility axis, versioned by the row-schema table
 # rather than by the ABI.
 [analytic]
-cursor = [ "irregex_rows_next", "irregex_rows_next_batch", "irregex_rows_close" ]
-introspection = [ "irregex_schema_digest", "irregex_schema_count", "irregex_schema_get" ]
-stats = "irregex_rows_stats"
-handle = "irregex_engine"                                                              # libirregex's; shared with the exact pull plane
+cursor = [ "irgx_rows_next", "irgx_rows_next_batch", "irgx_rows_close" ]
+introspection = [ "irgx_schema_digest", "irgx_schema_count", "irgx_schema_get" ]
+stats = "irgx_rows_stats"
+handle = "irgx_engine"                                                              # libirgx's; shared with the exact pull plane
 value_tags = [ "text", "i64", "f64", "bool", "enum", "texts", "rows" ]
 max_fields = 64                                                                           # the row presence mask is one u64
 fallback = "subprocess"                                                                   # fail-open, never a hard dependency
@@ -392,8 +392,8 @@ corpus = "index"                                                                
 # from an op range, which would silently mis-route the next verb appended to a
 # family.
 #
-# All three take the same `irregex_engine` and hand back the same `irregex_rows`
-# cursor — both owned by libirregex, so the handle one library opens is the same
+# All three take the same `irgx_engine` and hand back the same `irgx_rows`
+# cursor — both owned by libirgx, so the handle one library opens is the same
 # object another consumes, and a host that resolves a second entry symbol changes
 # nothing else.
 # A producer whose symbol is absent from the process is a DECLINATURE, not a

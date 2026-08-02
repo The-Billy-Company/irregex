@@ -31,9 +31,9 @@ pub use calibration::{Channel, Grade, Polarity, Unit, Variant};
 /// C-ABI compatibility integer (tracks `src/root.zig` `abi()`).
 pub const ABI_VERSION: u32 = 2;
 /// Engine semver (tracks `src/root.zig` `version_string`).
-pub const ENGINE_VERSION: &str = "0.3.0";
+pub const ENGINE_VERSION: &str = "1.0.0";
 /// The published distribution name (`[package].dist` in `contract/surface.toml`).
-pub const PACKAGE_DIST: &str = "gist";
+pub const PACKAGE_DIST: &str = "gist-search";
 /// The published import name (`[package].import` in `contract/surface.toml`).
 pub const PACKAGE_IMPORT: &str = "gist";
 

@@ -1,6 +1,6 @@
 # The wheel bundles a native shared library, so it is platform-tagged, not
 # `py3-none-any`. `hatch_build.py` builds the library, force-includes it under
-# `irregex/lib/`, and sets the tag; see that file for the cross-build knobs.
+# `irgx/lib/`, and sets the tag; see that file for the cross-build knobs.
 #
 # Zero runtime dependencies: the transport is ctypes, which is in the standard
 # library, so installing needs no compiler and no Python headers.
@@ -16,7 +16,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "irregex"
-version = "0.2.0"
+version = "1.0.0"
 description = "A linear-time regex engine for Python, with the engine bundled in the wheel."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -44,16 +44,16 @@ Repository = "https://github.com/The-Billy-Company/irregex"
 Issues = "https://github.com/The-Billy-Company/irregex/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = [ "irregex" ]
+packages = [ "irgx" ]
 # The library is placed by the hook rather than read out of the source tree, so
 # a stale copy from a previous target can never be picked up by accident.
-artifacts = [ "irregex/lib/*" ]
+artifacts = [ "irgx/lib/*" ]
 
 [tool.hatch.build.targets.wheel.hooks.custom]
 path = "hatch_build.py"
 
 [tool.hatch.build.targets.sdist]
-include = [ "irregex", "tests", "scripts", "hatch_build.py", "README.md", "LICENSE", "NOTICE" ]
+include = [ "irgx", "tests", "scripts", "hatch_build.py", "README.md", "LICENSE", "NOTICE" ]
 
 [dependency-groups]
 # `cffi` is test-only and stays out of `dependencies`: the regex API is ctypes
@@ -72,4 +72,4 @@ select = [ "E", "F", "I", "UP", "B", "SIM" ]
 ignore = [ "E501" ]
 
 [tool.ruff.lint.isort]
-known-first-party = [ "irregex" ]
+known-first-party = [ "irgx" ]

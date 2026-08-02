@@ -4,12 +4,12 @@ doc_radar:
     - file: dispatch.go
       contains:
         - "//go:build cgo"
-        - "irregex_go_produce"
+        - "irgx_go_produce"
     - file: native.go
-      description: the cgo tier links only libirregex; product producers resolve via dlsym
+      description: the cgo tier links only libirgx; product producers resolve via dlsym
       contains:
         - "//go:build cgo"
-        - "-lirregex"
+        - "-lirgx"
       absent:
         - "__attribute__((weak))"
         - "-lgist"
@@ -18,7 +18,7 @@ doc_radar:
       contains:
         - "dladdr"
         - "RTLD_NOLOAD"
-        - "irregex_engine_open"
+        - "irgx_engine_open"
     - file: stub.go
       contains:
         - "//go:build !cgo"
@@ -26,7 +26,7 @@ doc_radar:
       contains:
         - "func Run(ctx context.Context, q Query) (*Rows, error)"
         - "func Probe() Tier"
-        - "IRREGEX_NO_FFI"
+        - "IRGX_NO_FFI"
     - file: row.go
       contains:
         - "func Assemble(id uint32, values []Value, present uint64) (Row, error)"
@@ -41,7 +41,7 @@ doc_radar:
 # `runtime` — the transports and the fallback ladder
 
 Everything that touches the analytic kernel from Go lives here: the cgo
-declarations against `libirregex`, the analytic dispatch (product producers via
+declarations against `libirgx`, the analytic dispatch (product producers via
 `dlsym`), the generic row decoder, the child-process runner, and the error
 mapping that decides which of those answers a query. Product verb packages
 (gist `exact`/`index`, relate, blast `compose`) hold vocabulary; this package
@@ -51,15 +51,15 @@ holds mechanism.
 
 One verb, two tiers, one answer:
 
-1. **In-process** (`dispatch.go`, `//go:build cgo && irregex_ffi`) — the
-   product's `*_run` symbol against a warm `irregex_engine`, when that library
+1. **In-process** (`dispatch.go`, `//go:build cgo && irgx_ffi`) — the
+   product's `*_run` symbol against a warm `irgx_engine`, when that library
    is linked into the process. Preferred, allocation-lean, cancellable.
 2. **Child process** (`cold.go` + `plan.go` + `decode.go`) — the certified
    `gist` / `relate` / `blast` binary, its NDJSON raised back into rows of the
    same schema.
 
 A tier that cannot answer **declines**, and a declinature is not an error.
-`Probe()` reports which tiers this process actually has; `IRREGEX_NO_FFI=1`
+`Probe()` reports which tiers this process actually has; `IRGX_NO_FFI=1`
 forces the child tier.
 
 ## Reachable is not callable — the engine-sharing guard
@@ -73,9 +73,9 @@ establish that it speaks for *this* engine. Hand a foreign handle to a producer
 carrying its own statically compiled copy and it segfaults — identical struct
 layout, entirely separate state — rather than declining.
 
-So `irregex_go_producer` asks the producer's own image whether it can resolve
+So `irgx_go_producer` asks the producer's own image whether it can resolve
 the engine's opener: `dladdr` for the defining image, `dlopen(…, RTLD_NOLOAD)`
-for a handle to just that image, then `dlsym` for `irregex_engine_open`. An
+for a handle to just that image, then `dlsym` for `irgx_engine_open`. An
 image that shares the engine resolves it, directly or through the dependency it
 links it from; an image with a private copy cannot, because a private copy is
 not exported. The invariant names no library and **lifts itself** the moment a
@@ -99,7 +99,7 @@ static void *guard(const char *name) {
   if (dladdr(found, &info) == 0 || info.dli_fname == NULL) return NULL;
   void *image = dlopen(info.dli_fname, RTLD_LAZY | RTLD_NOLOAD);
   if (image == NULL) return NULL;
-  int shares = dlsym(image, "irregex_engine_open") != NULL;
+  int shares = dlsym(image, "irgx_engine_open") != NULL;
   dlclose(image);
   return shares ? found : NULL;
 }
@@ -118,10 +118,10 @@ producer, and `guard` must return the symbol:
 
 ```sh
 cc -shared -o libfake.dylib fake.c && cc -o probe probe.c
-./probe irregex/zig-out/lib/libirregex.dylib relate/zig-out/lib/librelate.dylib relate_run
+./probe irregex/zig-out/lib/libirgx.dylib relate/zig-out/lib/librelate.dylib relate_run
 ```
 
 Loading the substrate first is not incidental: the product dylibs currently bake
 a **relative** rpath into the build tree's `.zig-cache`, so a bare `dlopen` of
 `librelate.dylib` from an arbitrary directory fails to find
-`@rpath/libirregex.dylib` on its own.
+`@rpath/libirgx.dylib` on its own.

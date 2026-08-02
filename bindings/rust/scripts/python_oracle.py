@@ -14,9 +14,9 @@ whether the Rust binding needs an offset translation (it does not).
 
 Run it from anywhere:
 
-    IRREGEX_LIB=/path/to/libirregex.dylib python3 scripts/python_oracle.py
+    IRGX_LIB=/path/to/libirgx.dylib python3 scripts/python_oracle.py
 
-IRREGEX_LIB is only needed when the Python package was installed without its
+IRGX_LIB is only needed when the Python package was installed without its
 bundled shared library, which is the case for a source checkout.
 """
 
@@ -31,7 +31,7 @@ OUT = HERE.parent / "testdata" / "python_oracle.json"
 # A source checkout, where the Python binding sits beside this one.
 sys.path.insert(0, str(HERE.parent.parent / "python"))
 
-import irregex  # noqa: E402
+import irgx  # noqa: E402
 
 # Each case is (name, pattern, flags, texts). Flags use the Python binding's
 # keyword spelling; the Rust side maps them onto RegexBuilder.
@@ -72,8 +72,8 @@ CASES: list[tuple[str, str, dict[str, bool], list[str]]] = [
     ("anchored", "^a", {}, ["abc", "bac"]),
     ("end_anchor", "c$", {}, ["abc", "abc\n", "cab"]),
     ("repeat_bound", "a{2,3}", {}, ["a aa aaa aaaa"]),
-    # Anchors against a text holding a newline. This is where irregex_is_match
-    # and irregex_find_all currently disagree, for all four anchors: is_match
+    # Anchors against a text holding a newline. This is where irgx_is_match
+    # and irgx_find_all currently disagree, for all four anchors: is_match
     # answers as if they were LINE anchors, find_all as if they were TEXT
     # anchors. Recorded here in both bindings so the Rust suite can prove the
     # split is the engine's and not its own.
@@ -89,7 +89,7 @@ CASES: list[tuple[str, str, dict[str, bool], list[str]]] = [
 def main() -> None:
     out = []
     for name, pattern, flags, texts in CASES:
-        compiled = irregex.compile(pattern.encode(), **flags)
+        compiled = irgx.compile(pattern.encode(), **flags)
         for text in texts:
             data = text.encode()
             # A group the match did not enter is None in the Python binding and
@@ -118,7 +118,7 @@ def main() -> None:
             {
                 "generator": "scripts/python_oracle.py",
                 "reference": "the irregex Python binding",
-                "engine_version": irregex.ENGINE_VERSION,
+                "engine_version": irgx.ENGINE_VERSION,
                 "cases": out,
             },
             indent=1,
@@ -127,7 +127,7 @@ def main() -> None:
         + "\n",
         encoding="utf-8",
     )
-    print(f"{OUT}: {len(out)} cases from engine {irregex.ENGINE_VERSION}")
+    print(f"{OUT}: {len(out)} cases from engine {irgx.ENGINE_VERSION}")
 
 
 if __name__ == "__main__":

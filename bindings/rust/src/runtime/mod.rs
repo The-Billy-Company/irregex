@@ -9,7 +9,7 @@
 //! | [`relay`] — the certified CLIs, NDJSON in | always; the fail-open floor |
 //! | [`shell`] / [`session`] — the exact plane's process + resident transports | the rg-parity search surface |
 //!
-//! The ladder is **fail-open by construction**. `IRREGEX_STALE` is a
+//! The ladder is **fail-open by construction**. `IRGX_STALE` is a
 //! *declinature*, not a failure: the tier is saying "ask the next one and you
 //! will get the same answer", so it never reaches the caller as an `Err`. The
 //! same is true of an absent analytic symbol — an engine built before the analytic plane
@@ -134,7 +134,7 @@ impl From<std::io::Error> for Error {
 /// transports then consume the *same* request without either knowing the other
 /// exists. Adding a verb to an existing family costs one [`Query::op`] arm.
 pub trait Query {
-    /// The `IRREGEX_OP_*` code (`[analytic.verbs]`).
+    /// The `IRGX_OP_*` code (`[analytic.verbs]`).
     fn op(&self) -> u32;
     /// The size-checked C params struct, borrowing this request's buffers.
     fn wire(&self) -> Wire<'_>;
@@ -149,7 +149,7 @@ pub trait Query {
     fn roots(&self) -> &[std::path::PathBuf];
     /// The pattern set for the two families that carry one (`sweep`, `compose`).
     ///
-    /// Kept off [`Query::wire`] because an `irregex_text[]` has to be built
+    /// Kept off [`Query::wire`] because an `irgx_text[]` has to be built
     /// somewhere that outlives the params struct, and the only such place is the
     /// caller of both.
     fn texts(&self) -> Vec<&str> {
@@ -165,7 +165,7 @@ pub trait Query {
 ///
 /// The families are separate structs (rather than one union) because
 /// `gist_run` size-checks each against its declared shape, and a
-/// mismatched size is `IRREGEX_INVALID` by design.
+/// mismatched size is `IRGX_INVALID` by design.
 pub enum Wire<'a> {
     Kinship(sys::KinshipParams, std::marker::PhantomData<&'a ()>),
     Retrieval(sys::RetrievalParams, std::marker::PhantomData<&'a ()>),
@@ -175,7 +175,7 @@ pub enum Wire<'a> {
 }
 
 impl<'a> Wire<'a> {
-    /// Point the two pattern-carrying families at a `irregex_text[]` the caller
+    /// Point the two pattern-carrying families at a `irgx_text[]` the caller
     /// owns. `'a` ties that array to the same request the params borrow from, so
     /// the pointer cannot outlive the strings behind it.
     pub fn bind(&mut self, texts: &'a [sys::Text]) {

@@ -7,6 +7,9 @@ wheel with the engine inside it.
 pip install irregex
 ```
 
+You install `irregex` and you `import irgx` - the distribution keeps the
+project's name, the module is the short one you type all day.
+
 That is the whole install. There is no compiler step, no Zig toolchain, and no
 separate binary to put on your PATH. The engine is written in Zig and ships as
 a shared library inside the package; Python talks to it through `ctypes`, which
@@ -29,9 +32,9 @@ that force backtracking. When you need them, ask for them explicitly with
 ## A short tour
 
 ```python
-import irregex
+import irgx
 
-for m in irregex.finditer(r"(\w+)@(\w+\.\w+)", "write me@example.com or you@other.org"):
+for m in irgx.finditer(r"(\w+)@(\w+\.\w+)", "write me@example.com or you@other.org"):
     print(m.span(), m.group(1), m.group(2))
 ```
 
@@ -46,13 +49,13 @@ same verbs as methods. A `Match` has `group`, `groups`, `groupdict`, `start`,
 `end`, `span`, `expand`, `__getitem__`, and the `.re` and `.string` attributes.
 
 ```python
-pattern = irregex.compile(r"(?P<key>\w+)=(?P<value>\d+)")
+pattern = irgx.compile(r"(?P<key>\w+)=(?P<value>\d+)")
 
 pattern.is_match("a=1")                       # True, and the cheapest question
 pattern.findall("a=1 bb=22")                  # [('a', '1'), ('bb', '22')]
 pattern.sub(r"\g<value>:\g<key>", "a=1")      # '1:a'
 pattern.split("a=1, bb=22")                   # keeps the groups, like re.split
-irregex.escape("1+1=2")                       # '1\\+1=2'
+irgx.escape("1+1=2")                       # '1\\+1=2'
 ```
 
 `sub` and `subn` take a template string or a callable. In a template, `\1` and
@@ -60,7 +63,7 @@ irregex.escape("1+1=2")                       # '1\\+1=2'
 the `Match`.
 
 ```python
-irregex.sub(r"\d+", lambda m: str(int(m.group()) * 2), "a1 b20")   # 'a2 b40'
+irgx.sub(r"\d+", lambda m: str(int(m.group()) * 2), "a1 b20")   # 'a2 b40'
 ```
 
 ## Flags are keyword arguments
@@ -78,10 +81,10 @@ module-level verbs.
 | `pcre` | Use the PCRE2 grammar. Lookaround and backreferences; not linear time. |
 
 ```python
-irregex.findall("a.c", "abc a.c", fixed=True)             # ['a.c']
-irregex.findall("cat", "cat cats concat", word=True)      # ['cat']
-irregex.findall("café", "CAFÉ", ignore_case=True)         # ['CAFÉ']
-irregex.findall(r"(?<=@)\w+", "me@example", pcre=True)    # ['example']
+irgx.findall("a.c", "abc a.c", fixed=True)             # ['a.c']
+irgx.findall("cat", "cat cats concat", word=True)      # ['cat']
+irgx.findall("café", "CAFÉ", ignore_case=True)         # ['CAFÉ']
+irgx.findall(r"(?<=@)\w+", "me@example", pcre=True)    # ['example']
 ```
 
 `fixed`, `word` and `smart_case` have no spelling in `re` at all. They are the
@@ -100,7 +103,7 @@ them. Here the translation is done for you, and this holds for every match:
 
 ```python
 text = "naïve café"
-for m in irregex.finditer(r"\w+", text):
+for m in irgx.finditer(r"\w+", text):
     assert text[m.start():m.end()] == m.group()
 ```
 
@@ -113,7 +116,7 @@ Put a compiled pattern at module scope and use it from a thread pool. That is
 what people do, and it works here.
 
 ```python
-PATTERN = irregex.compile(r"(\w+)=(\d+)")
+PATTERN = irgx.compile(r"(\w+)=(\d+)")
 
 with ThreadPoolExecutor() as pool:
     results = list(pool.map(PATTERN.findall, many_texts))
@@ -127,35 +130,35 @@ after that. When a thread ends, its handle is released with it.
 
 ## Errors are exceptions
 
-`irregex.error` is the base, named to match `re.error` so `except` clauses
+`irgx.error` is the base, named to match `re.error` so `except` clauses
 port unchanged. It carries the same three attributes `re.error` does - `msg`,
 `pattern`, `pos` - so a caller compiling patterns out of a config file can say
 which one broke and where.
 
 ```python
->>> irregex.compile("[abc")
+>>> irgx.compile("[abc")
 Traceback (most recent call last):
   ...
-irregex.error: could not compile pattern '[abc': BadPattern; invalid: bad argument, or a pattern this arm cannot compile
+irgx.error: could not compile pattern '[abc': BadPattern; invalid: bad argument, or a pattern this arm cannot compile
 ```
 
 A pattern can also be refused for a reason that has a remedy. Lookaround, a
 backreference and an atomic group are outside the linear grammar but perfectly
 well-formed, and the engine does not call those a failure at all - it *declines*
 them, which is a different status code saying "not me, try the fallback". That
-arrives as `irregex.UnsupportedPattern`, a subclass, with `pos` of `None`,
+arrives as `irgx.UnsupportedPattern`, a subclass, with `pos` of `None`,
 because a tier that stepped aside has nothing to point at.
 
 ```python
 try:
-    pattern = irregex.compile(r"(?<=\$)\d+")
-except irregex.UnsupportedPattern:
-    pattern = irregex.compile(r"(?<=\$)\d+", pcre=True)   # this always works
+    pattern = irgx.compile(r"(?<=\$)\d+")
+except irgx.UnsupportedPattern:
+    pattern = irgx.compile(r"(?<=\$)\d+", pcre=True)   # this always works
 ```
 
 Which of the two you get is the engine's ruling, not a guess made here: it asks
 PCRE2 whether PCRE2 can express the pattern, and answers on the return value.
-Because `UnsupportedPattern` is a subclass, `except irregex.error` still catches
+Because `UnsupportedPattern` is a subclass, `except irgx.error` still catches
 both.
 
 Running out of memory raises `MemoryError`, because that is the exception a
@@ -176,7 +179,7 @@ unanchored search, which is where they end up subtly wrong. Write the anchor:
 empty match after the last character of the text; this engine does not.
 
 ```python
-[m.span() for m in irregex.finditer("a*", "abc")]   # [(0, 1), (2, 2)]
+[m.span() for m in irgx.finditer("a*", "abc")]   # [(0, 1), (2, 2)]
 [m.span() for m in re.finditer("a*", "abc")]        # [(0, 1), (1, 1), (2, 2), (3, 3)]
 ```
 
@@ -190,9 +193,9 @@ the engine's and not a re-derivation of them.
 class will not match it. A longer match may still span one.
 
 ```python
-irregex.findall(r"\s", "a\nb")     # []
-irregex.findall(r"\s", "a\tb")     # ['\t']
-irregex.findall(r"a\sb", "a\nb")   # ['a\nb']
+irgx.findall(r"\s", "a\nb")     # []
+irgx.findall(r"\s", "a\tb")     # ['\t']
+irgx.findall(r"a\sb", "a\nb")   # ['a\nb']
 ```
 
 **`findall` reports `None` for a group that did not participate**, where
@@ -201,7 +204,7 @@ the empty string are different facts, and `.groups()` already tells them apart
 in both libraries.
 
 ```python
-irregex.findall(r"(a)|(b)", "ab")   # [('a', None), (None, 'b')]
+irgx.findall(r"(a)|(b)", "ab")   # [('a', None), (None, 'b')]
 re.findall(r"(a)|(b)", "ab")        # [('a', ''), ('', 'b')]
 ```
 
@@ -212,13 +215,13 @@ equivalent, so it is named after what it does.
 ## Introspection
 
 ```python
-irregex.__version__      # this package
-irregex.ENGINE_VERSION   # the Zig engine bundled in this wheel
-irregex.PCRE2_VERSION    # the PCRE2 the pcre=True arm runs on
-irregex.LIBRARY          # the resolved path of the loaded shared library
+irgx.__version__      # this package
+irgx.ENGINE_VERSION   # the Zig engine bundled in this wheel
+irgx.PCRE2_VERSION    # the PCRE2 the pcre=True arm runs on
+irgx.LIBRARY          # the resolved path of the loaded shared library
 ```
 
-Set `IRREGEX_LIB` to the path of a shared library to load that one instead of
+Set `IRGX_LIB` to the path of a shared library to load that one instead of
 the bundled copy. It names a file, not a directory, and a path that is not
 there fails loudly at import rather than silently falling back.
 

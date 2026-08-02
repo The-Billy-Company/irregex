@@ -1,4 +1,4 @@
-package irregex_test
+package irgx_test
 
 import (
 	"errors"
@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	irregex "github.com/The-Billy-Company/irregex/bindings/go"
+	irgx "github.com/The-Billy-Company/irregex/bindings/go"
 )
 
 // The two halves of a refused compile. The engine decides which is which by
@@ -48,19 +48,19 @@ var malformed = []struct {
 func TestDeclinedPatternRetriesWithPCRE(t *testing.T) {
 	for _, tc := range declined {
 		t.Run(tc.pattern, func(t *testing.T) {
-			re, err := irregex.Compile(tc.pattern)
+			re, err := irgx.Compile(tc.pattern)
 			if err == nil {
 				t.Fatalf("Compile(%q) succeeded under the linear grammar", tc.pattern)
 			}
 			if re != nil {
 				t.Errorf("Compile returned %v alongside the error; a declinature writes no handle", re)
 			}
-			if !errors.Is(err, irregex.ErrNeedsPCRE) {
+			if !errors.Is(err, irgx.ErrNeedsPCRE) {
 				t.Fatalf("error %q does not match ErrNeedsPCRE", err)
 			}
 			// A construct the other grammar has is not a defect in the text, so
 			// there is no offset to report and no SyntaxError to report it in.
-			var bad *irregex.SyntaxError
+			var bad *irgx.SyntaxError
 			if errors.As(err, &bad) {
 				t.Errorf("declined pattern came back as %T (%v), want the sentinel only", bad, bad)
 			}
@@ -69,7 +69,7 @@ func TestDeclinedPatternRetriesWithPCRE(t *testing.T) {
 			}
 
 			// The retry the sentinel exists to authorize.
-			re, err = irregex.CompileOpts{PCRE: true}.Compile(tc.pattern)
+			re, err = irgx.CompileOpts{PCRE: true}.Compile(tc.pattern)
 			if err != nil {
 				t.Fatalf("PCRE compile: %v", err)
 			}
@@ -86,13 +86,13 @@ func TestDeclinedPatternRetriesWithPCRE(t *testing.T) {
 func TestMalformedPatternCarriesItsOffset(t *testing.T) {
 	for _, tc := range malformed {
 		t.Run(tc.pattern, func(t *testing.T) {
-			re, err := irregex.Compile(tc.pattern)
+			re, err := irgx.Compile(tc.pattern)
 			if err == nil {
 				t.Fatalf("Compile(%q) = %v, want an error", tc.pattern, re)
 			}
-			var bad *irregex.SyntaxError
+			var bad *irgx.SyntaxError
 			if !errors.As(err, &bad) {
-				t.Fatalf("error is %T (%v), want *irregex.SyntaxError", err, err)
+				t.Fatalf("error is %T (%v), want *irgx.SyntaxError", err, err)
 			}
 			if bad.Expr != tc.pattern {
 				t.Errorf("Expr = %q, want %q", bad.Expr, tc.pattern)
@@ -116,15 +116,15 @@ func TestMalformedPatternCarriesItsOffset(t *testing.T) {
 			}
 			// Nothing accepts it, so the flag that rescues a declinature does
 			// not rescue this - and it must not start looking rescuable.
-			pcre, err := irregex.CompileOpts{PCRE: true}.Compile(tc.pattern)
+			pcre, err := irgx.CompileOpts{PCRE: true}.Compile(tc.pattern)
 			if err == nil {
 				t.Fatalf("with PCRE, Compile(%q) = %v, want an error", tc.pattern, pcre)
 			}
-			if errors.Is(err, irregex.ErrNeedsPCRE) {
+			if errors.Is(err, irgx.ErrNeedsPCRE) {
 				t.Errorf("with PCRE, error %q still asks for PCRE", err)
 			}
 			if !errors.As(err, &bad) {
-				t.Errorf("with PCRE, error is %T (%v), want *irregex.SyntaxError", err, err)
+				t.Errorf("with PCRE, error is %T (%v), want *irgx.SyntaxError", err, err)
 			}
 		})
 	}
@@ -141,10 +141,10 @@ func TestARefusalIsPositionedInThePattern(t *testing.T) {
 	for _, tc := range malformed {
 		t.Run(tc.pattern, func(t *testing.T) {
 			for _, pcre := range []bool{false, true} {
-				_, err := irregex.CompileOpts{PCRE: pcre}.Compile(tc.pattern)
-				var bad *irregex.SyntaxError
+				_, err := irgx.CompileOpts{PCRE: pcre}.Compile(tc.pattern)
+				var bad *irgx.SyntaxError
 				if !errors.As(err, &bad) {
-					t.Fatalf("pcre=%v: error is %T (%v), want *irregex.SyntaxError", pcre, err, err)
+					t.Fatalf("pcre=%v: error is %T (%v), want *irgx.SyntaxError", pcre, err, err)
 				}
 				if bad.At < 0 || bad.At > len(bad.Expr) {
 					t.Fatalf("pcre=%v: At = %d, which is no position in %q", pcre, bad.At, bad.Expr)
@@ -152,9 +152,9 @@ func TestARefusalIsPositionedInThePattern(t *testing.T) {
 				// The caret a caller prints sits under Expr[At], so the offset
 				// has to slice the pattern rather than merely be a number.
 				_ = bad.Expr[:bad.At]
-				var seam *irregex.Error
+				var seam *irgx.Error
 				if !errors.As(err, &seam) {
-					t.Fatalf("pcre=%v: no *irregex.Error underneath", pcre)
+					t.Fatalf("pcre=%v: no *irgx.Error underneath", pcre)
 				}
 				if seam.At != int64(bad.At) {
 					t.Errorf("pcre=%v: the seam reports byte %d, the class reports %d", pcre, seam.At, bad.At)
@@ -167,20 +167,20 @@ func TestARefusalIsPositionedInThePattern(t *testing.T) {
 // The two classes have to be told apart from each other and from anything else
 // a caller might be matching in the same errors.Is chain.
 func TestRefusalClassesAreDistinguishable(t *testing.T) {
-	_, declinature := irregex.Compile(declined[0].pattern)
-	_, defect := irregex.Compile(malformed[0].pattern)
+	_, declinature := irgx.Compile(declined[0].pattern)
+	_, defect := irgx.Compile(malformed[0].pattern)
 	if declinature == nil || defect == nil {
 		t.Fatal("both patterns were supposed to be refused")
 	}
 
-	var bad *irregex.SyntaxError
+	var bad *irgx.SyntaxError
 	if errors.As(declinature, &bad) {
 		t.Error("the declinature is also a *SyntaxError")
 	}
-	if errors.Is(defect, irregex.ErrNeedsPCRE) {
+	if errors.Is(defect, irgx.ErrNeedsPCRE) {
 		t.Error("the malformed pattern also matches ErrNeedsPCRE")
 	}
-	if !errors.As(defect, &bad) || !errors.Is(declinature, irregex.ErrNeedsPCRE) {
+	if !errors.As(defect, &bad) || !errors.Is(declinature, irgx.ErrNeedsPCRE) {
 		t.Fatal("a class stopped matching itself")
 	}
 	// An unrelated sentinel must not be swallowed by either one.
@@ -192,16 +192,16 @@ func TestRefusalClassesAreDistinguishable(t *testing.T) {
 	}
 	// And the generic seam error is still reachable under the defect, which is
 	// where its status code and fault plane live.
-	var seam *irregex.Error
+	var seam *irgx.Error
 	if !errors.As(defect, &seam) {
-		t.Fatal("the defect does not unwrap to an *irregex.Error")
+		t.Fatal("the defect does not unwrap to an *irgx.Error")
 	}
 	if seam.Status >= 0 {
 		t.Errorf("Status = %d, want a negative status", seam.Status)
 	}
 	// The declinature is not a failure, so it carries no seam error to unwrap.
 	if errors.As(declinature, &seam) {
-		t.Error("the declinature unwraps to an *irregex.Error; it is a routing fact, not a fault")
+		t.Error("the declinature unwraps to an *irgx.Error; it is a routing fact, not a fault")
 	}
 }
 
@@ -213,14 +213,14 @@ func TestDeclinatureIgnoresAnEarlierFault(t *testing.T) {
 	defer runtime.UnlockOSThread()
 
 	for _, prior := range malformed {
-		if _, err := irregex.Compile(prior.pattern); err == nil {
+		if _, err := irgx.Compile(prior.pattern); err == nil {
 			t.Fatalf("Compile(%q) was supposed to fail and leave a fault", prior.pattern)
 		}
-		_, err := irregex.Compile(declined[0].pattern)
-		if !errors.Is(err, irregex.ErrNeedsPCRE) {
+		_, err := irgx.Compile(declined[0].pattern)
+		if !errors.Is(err, irgx.ErrNeedsPCRE) {
 			t.Fatalf("after %q failed, the declinature came back as %v", prior.pattern, err)
 		}
-		var bad *irregex.SyntaxError
+		var bad *irgx.SyntaxError
 		if errors.As(err, &bad) {
 			t.Errorf("after %q failed, the declinature picked up %v", prior.pattern, bad)
 		}
@@ -238,7 +238,7 @@ func TestDeclinatureRepeatsCleanly(t *testing.T) {
 	const workers = 16
 	const rounds = 400
 
-	canary := irregex.MustCompile(`\d+`)
+	canary := irgx.MustCompile(`\d+`)
 	var wg sync.WaitGroup
 	wg.Add(workers)
 	for w := range workers {
@@ -246,12 +246,12 @@ func TestDeclinatureRepeatsCleanly(t *testing.T) {
 			defer wg.Done()
 			for round := range rounds {
 				tc := declined[(w+round)%len(declined)]
-				re, err := irregex.Compile(tc.pattern)
+				re, err := irgx.Compile(tc.pattern)
 				if re != nil {
 					t.Errorf("worker %d round %d: %q returned a handle", w, round, tc.pattern)
 					return
 				}
-				if !errors.Is(err, irregex.ErrNeedsPCRE) {
+				if !errors.Is(err, irgx.ErrNeedsPCRE) {
 					t.Errorf("worker %d round %d: %q = %v", w, round, tc.pattern, err)
 					return
 				}
@@ -268,7 +268,7 @@ func TestDeclinatureRepeatsCleanly(t *testing.T) {
 	if got := canary.FindString("abc 123"); got != "123" {
 		t.Errorf("after the churn, FindString = %q, want 123", got)
 	}
-	re, err := irregex.CompileOpts{PCRE: true}.Compile(declined[0].pattern)
+	re, err := irgx.CompileOpts{PCRE: true}.Compile(declined[0].pattern)
 	if err != nil {
 		t.Fatalf("after the churn, PCRE compile: %v", err)
 	}
@@ -292,5 +292,5 @@ func TestMustCompilePanicNamesTheRemedy(t *testing.T) {
 			}
 		}
 	}()
-	irregex.MustCompile(declined[0].pattern)
+	irgx.MustCompile(declined[0].pattern)
 }

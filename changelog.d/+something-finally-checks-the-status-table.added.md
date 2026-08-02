@@ -1,7 +1,7 @@
 The status vocabulary is now gated against every artifact that restates it.
 `contract/engine.toml` declares it once and three places spell it again: the
-`Status` enum in `src/surface/ffi/contract.zig`, the `IRREGEX_*` defines in
-`include/irregex.h`, and the error sets in `src/fault.zig`. The contract's
+`Status` enum in `src/surface/ffi/contract.zig`, the `IRGX_*` defines in
+`include/irgx.h`, and the error sets in `src/fault.zig`. The contract's
 argument for declaring it in one place was that a single gate could then cover
 all of it. That gate did not exist. In any language: no Zig test parsed the
 contract, and the Rust and Go mirrors, which do resolve the file, never asserted
@@ -17,7 +17,7 @@ domain and no two claim the same one.
 
 Nothing is listed twice. Every expectation is derived from the pair being
 compared, including the awkward one: nothing here knows that `out_of_memory`
-answers to `IRREGEX_OOM`, because the contract's `c` field says so and the
+answers to `IRGX_OOM`, because the contract's `c` field says so and the
 assertion reads it from there. Rename a macro in both places and the gate
 follows; rename it in one and the gate stops you.
 

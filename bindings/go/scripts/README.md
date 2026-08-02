@@ -20,12 +20,12 @@ python3 scripts/vendor_libraries.py --list        # what the matrix covers
 
 | Target | Zig triple | Archive |
 |---|---|---|
-| darwin/arm64 | `aarch64-macos.11.0` | `libirregex_darwin_arm64.a` |
-| darwin/amd64 | `x86_64-macos.11.0` | `libirregex_darwin_amd64.a` |
-| linux/amd64 | `x86_64-linux-gnu.2.17` | `libirregex_linux_amd64.a` |
-| linux/arm64 | `aarch64-linux-gnu.2.17` | `libirregex_linux_arm64.a` |
+| darwin/arm64 | `aarch64-macos.11.0` | `libirgx_darwin_arm64.a` |
+| darwin/amd64 | `x86_64-macos.11.0` | `libirgx_darwin_amd64.a` |
+| linux/amd64 | `x86_64-linux-gnu.2.17` | `libirgx_linux_amd64.a` |
+| linux/arm64 | `aarch64-linux-gnu.2.17` | `libirgx_linux_arm64.a` |
 
-Archives land beside the Go source, with `irregex.h` next to them. That is not
+Archives land beside the Go source, with `irgx.h` next to them. That is not
 cosmetic: `go mod vendor` copies a package's own files and skips a subdirectory
 holding no Go package, so an archive kept one level down would be missing from
 every vendored consumer.
@@ -62,7 +62,7 @@ asserts against.
 ```bash
 python3 scripts/python_oracle.py
 # or, from a source checkout where the package has no bundled library:
-IRREGEX_LIB=/path/to/libirregex.dylib python3 scripts/python_oracle.py
+IRGX_LIB=/path/to/libirgx.dylib python3 scripts/python_oracle.py
 ```
 
 The engine's Python binding was written against the same C ABI first, is

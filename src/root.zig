@@ -13,7 +13,7 @@
 //! mutated tree wrongly). See `research/gist/PRIOR_ART.md`.
 //!
 //! Search, index lifecycle, and result handling are Zig-native and surfaced by
-//! the `gist` CLI. This package's own C ABI (`include/irregex.h`, shims in
+//! the `gist` CLI. This package's own C ABI (`include/irgx.h`, shims in
 //! `surface/ffi/exports.zig`) is deliberately the SMALL half: a pattern over a
 //! buffer the host already holds — compile, `is_match`, `find_all`,
 //! `captures` — plus the status/fault substrate every package's ABI returns.
@@ -45,7 +45,7 @@ pub const assay = @import("assay/assay.zig");
 
 // Who the program riding this engine is: the name it signs a diagnostic with,
 // the namespace its knobs live in, where its artifacts go. A binary declares
-// `pub const irregex_brand: irregex.Brand = .{ .name = "relate" };` in its root
+// `pub const irgx_brand: irregex.Brand = .{ .name = "relate" };` in its root
 // module; anything that declares nothing keeps the historical `gist` spellings.
 pub const Brand = assay.Brand;
 
@@ -295,7 +295,7 @@ pub const ffi = struct {
     /// This library's OWN plane on that substrate: a pattern and a buffer, with
     /// no corpus behind them — compile, `is_match`, `find_all`, `captures`. The
     /// `export fn` shims that lower it to C live in `surface/ffi/exports.zig`,
-    /// which is the root of the `libirregex` artifact rather than of this
+    /// which is the root of the `libirgx` artifact rather than of this
     /// module, so a host linking two of the ecosystem's libraries gets one
     /// definition of each symbol.
     pub const pattern = @import("surface/ffi/pattern.zig");
@@ -355,13 +355,13 @@ pub const inner = struct {
     pub const lexspan = @import("kernel/anatomy/lexspan.zig");
 };
 
-pub const version_string: [:0]const u8 = "0.3.0"; // x-release-please-version
+pub const version_string: [:0]const u8 = "1.0.0"; // x-release-please-version
 
 /// The C-ABI compatibility integer, and the provenance stamp every measurement
 /// harness prints in its banner — which is why it is declared here rather than
 /// only on the export shim: a bench binary links the module, not the library.
 /// `contract/engine.toml`'s `abi_version` is the contract for this number, and
-/// `irregex_abi_version()` returns it rather than restating it, so the two can
+/// `irgx_abi_version()` returns it rather than restating it, so the two can
 /// never disagree. Bump only for a breaking layout or signature change; an
 /// additive symbol keeps it.
 pub fn abi() u32 {

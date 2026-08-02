@@ -5,7 +5,7 @@ committed artifacts, so a user of the crate never needs them.
 
 ## `vendor_libraries.py`
 
-Cross-compiles `libirregex.a` for every target the crate vendors and writes them
+Cross-compiles `libirgx.a` for every target the crate vendors and writes them
 to `vendor/<rust-target-triple>/`. Zig cross-compiles, so one machine produces
 the whole set.
 
@@ -34,10 +34,10 @@ triples and writes what it reports to `testdata/python_oracle.json`, which
 `tests/oracle.rs` asserts against.
 
 ```bash
-IRREGEX_LIB=/path/to/libirregex.dylib python3 scripts/python_oracle.py
+IRGX_LIB=/path/to/libirgx.dylib python3 scripts/python_oracle.py
 ```
 
-`IRREGEX_LIB` is only needed when the Python package was installed without its
+`IRGX_LIB` is only needed when the Python package was installed without its
 bundled shared library, which is the case in a source checkout. Add a case by
 appending to `CASES` and re-running; the JSON is committed so the Rust test suite
 needs no Python.

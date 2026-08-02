@@ -15,7 +15,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, LazyLock};
 
-use irregex::{Regex, RegexBuilder};
+use irgx::{Regex, RegexBuilder};
 
 static WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[a-z]+").unwrap());
 static GROUPED: LazyLock<Regex> =
@@ -27,12 +27,12 @@ static GROUPED: LazyLock<Regex> =
 fn regex_is_send_and_sync() {
     fn require<T: Send + Sync + 'static>() {}
     require::<Regex>();
-    require::<irregex::RegexBuilder>();
-    require::<irregex::Error>();
+    require::<irgx::RegexBuilder>();
+    require::<irgx::Error>();
     // A `Match` borrows the text, so it travels with it.
     fn require_send<T: Send>() {}
-    require_send::<irregex::Match<'static>>();
-    require_send::<irregex::Matches<'static>>();
+    require_send::<irgx::Match<'static>>();
+    require_send::<irgx::Matches<'static>>();
 }
 
 /// Every thread searches a different text through one `static`, and every answer

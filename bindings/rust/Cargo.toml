@@ -6,7 +6,7 @@
 
 [package]
 name = "irregex"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
@@ -21,6 +21,12 @@ publish = false
 # The vendored archives are the install story, so they ship. `target/` and the
 # per-target build caches do not.
 exclude = [ "/target", "/.cargo" ]
+
+# The crate is published as `irregex` and imported as `irgx`. The two are
+# deliberately different: the package name is the crates.io identity, the lib
+# name is the identifier every caller types.
+[lib]
+name = "irgx"
 
 [dependencies]
 # The substrate's subprocess tier speaks ripgrep `--json` and analytic NDJSON;

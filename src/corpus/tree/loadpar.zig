@@ -54,7 +54,7 @@ const AT = std.posix.AT;
 /// Allocation failure RETURNS here rather than exiting the process: this loader
 /// is what `corpus.load` fuses on, and `corpus.load` stands up the corpus behind
 /// every FFI entry, where an `exit(2)` would take the embedding host down with
-/// it instead of yielding `IRREGEX_OOM` (fault-channel law 1).
+/// it instead of yielding `IRGX_OOM` (fault-channel law 1).
 ///
 /// An error cannot cross a thread boundary, so a worker that runs out of memory
 /// records it in `Worker.oom` and then keeps RETIRING tasks without doing their

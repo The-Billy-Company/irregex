@@ -2,7 +2,7 @@
  *
  * Three libraries answer the seventeen analytic verbs: `gist_run` for rank,
  * `relate_run` for the kinship, retrieval and sweep verbs, and `blast_run` for
- * the composed ones. Only libirregex is linked here — the substrate that opens
+ * the composed ones. Only libirgx is linked here — the substrate that opens
  * the corpus and walks rows. The product producers are resolved by name at RUN
  * time, so a host that links only the libraries it needs still builds, and a
  * weak fallback definition is never used (it would permanently SHADOW a strong
@@ -15,11 +15,11 @@
  * cgo compiles each file's preamble as its own translation unit, which is why
  * this is a header rather than more lines in native.go: both native.go and
  * dispatch.go need these declarations. */
-#ifndef IRREGEX_GO_PRODUCERS_H
-#define IRREGEX_GO_PRODUCERS_H
+#ifndef IRGX_GO_PRODUCERS_H
+#define IRGX_GO_PRODUCERS_H
 
 #include <dlfcn.h>
-#include <irregex.h>
+#include <irgx.h>
 
 /* similar · dups · clusters · echoes · concepts · fragments · distinct.
  * `target` NULL = the corpus-wide sweep. */
@@ -28,11 +28,11 @@ typedef struct {
   uint32_t flags;
   const uint8_t *target;
   size_t target_len;
-  uint32_t channel; /* IRREGEX_CHANNEL_* */
-  uint32_t unit;    /* IRREGEX_UNIT_*    */
+  uint32_t channel; /* IRGX_CHANNEL_* */
+  uint32_t unit;    /* IRGX_UNIT_*    */
   double max_distance;
   double min_echo;
-  uint32_t min_grade; /* IRREGEX_GRADE_*: withhold anything weaker */
+  uint32_t min_grade; /* IRGX_GRADE_*: withhold anything weaker */
   uint32_t min_size;
   uint32_t min_lines;
   uint32_t top;
@@ -52,7 +52,7 @@ typedef struct {
 typedef struct {
   uint32_t struct_size;
   uint32_t flags;
-  const irregex_text *patterns;
+  const irgx_text *patterns;
   size_t npatterns;
   const uint8_t *under; /* optional glob scope; NULL = the whole corpus */
   size_t under_len;
@@ -67,7 +67,7 @@ typedef struct {
   uint32_t flags;
   const uint8_t *text;
   size_t text_len;
-  const irregex_text *patterns;
+  const irgx_text *patterns;
   size_t npatterns;
   double max_distance;
   double min_echo;
@@ -88,9 +88,9 @@ typedef struct {
 
 /* One signature, three producers: an analytic entry takes an open corpus, an op,
  * that op's params family, an optional cancel token, and hands back a cursor. */
-typedef int32_t (*irregex_producer)(irregex_engine *engine, uint32_t op,
-                                    const void *params, irregex_cancel *cancel,
-                                    irregex_rows **out);
+typedef int32_t (*irgx_producer)(irgx_engine *engine, uint32_t op,
+                                    const void *params, irgx_cancel *cancel,
+                                    irgx_rows **out);
 
 /* Reachable is not callable. RTLD_DEFAULT searches everything the process has
  * loaded — including libraries this module did not choose — so finding a symbol
@@ -110,24 +110,24 @@ typedef int32_t (*irregex_producer)(irregex_engine *engine, uint32_t op,
  * which is why every library WE ship passes it untouched. It earns its keep for
  * the ones we don't: these are published packages now, and the process namespace
  * is open. Fail closed to the cold tier; never hand a stranger the handle. */
-static inline irregex_producer irregex_go_producer(const char *name) {
+static inline irgx_producer irgx_go_producer(const char *name) {
   void *found = dlsym(RTLD_DEFAULT, name);
   if (found == NULL) return NULL;
   Dl_info info;
   if (dladdr(found, &info) == 0 || info.dli_fname == NULL) return NULL;
   void *image = dlopen(info.dli_fname, RTLD_LAZY | RTLD_NOLOAD);
   if (image == NULL) return NULL;
-  int shares = dlsym(image, "irregex_engine_open") != NULL;
+  int shares = dlsym(image, "irgx_engine_open") != NULL;
   dlclose(image); /* drops only the reference RTLD_NOLOAD took */
-  return shares ? (irregex_producer)found : NULL;
+  return shares ? (irgx_producer)found : NULL;
 }
 
 /* Go cannot call a C function pointer; this hands the call back to C. */
-static inline int32_t irregex_go_produce(irregex_producer f, irregex_engine *engine,
+static inline int32_t irgx_go_produce(irgx_producer f, irgx_engine *engine,
                                          uint32_t op, const void *params,
-                                         irregex_cancel *cancel,
-                                         irregex_rows **out) {
+                                         irgx_cancel *cancel,
+                                         irgx_rows **out) {
   return f(engine, op, params, cancel, out);
 }
 
-#endif /* IRREGEX_GO_PRODUCERS_H */
+#endif /* IRGX_GO_PRODUCERS_H */

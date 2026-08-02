@@ -150,7 +150,7 @@ tiers {
     // because it is a transport — it reaches down into the compiled-query
     // kernel, the capture arms, and cold's `-S` predicate, and nothing reaches
     // back. `exports.zig` sits here too but is deliberately NOT reachable from
-    // root: it is the `libirregex` artifact's root, so its `export fn`s are
+    // root: it is the `libirgx` artifact's root, so its `export fn`s are
     // emitted once, by the library named after them, rather than by every
     // sibling package that imports this module.
     ffi         surface/ffi/**

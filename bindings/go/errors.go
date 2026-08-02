@@ -1,6 +1,6 @@
 //go:build cgo
 
-package irregex
+package irgx
 
 // The two ways a compile can be refused, which the ABI reports as two different
 // status codes rather than two spellings of one fault name. Everything here is
@@ -16,9 +16,9 @@ import (
 // is wrong with the pattern; the linear-time engine has no way to express it,
 // which is a routing fact and not a defect. The remedy is one flag:
 //
-//	re, err := irregex.Compile(pat)
-//	if errors.Is(err, irregex.ErrNeedsPCRE) {
-//		re, err = irregex.CompileOpts{PCRE: true}.Compile(pat)
+//	re, err := irgx.Compile(pat)
+//	if errors.Is(err, irgx.ErrNeedsPCRE) {
+//		re, err = irgx.CompileOpts{PCRE: true}.Compile(pat)
 //	}
 //	if err != nil {
 //		return err
@@ -38,7 +38,7 @@ var ErrNeedsPCRE = errors.New("pattern needs the PCRE2 grammar: set CompileOpts.
 // [CompileOpts.PCRE] does not rescue it, which is exactly what separates it
 // from [ErrNeedsPCRE].
 //
-//	var bad *irregex.SyntaxError
+//	var bad *irgx.SyntaxError
 //	if errors.As(err, &bad) {
 //		log.Printf("%s\n%*s", bad.Expr, bad.At+1, "^")
 //	}

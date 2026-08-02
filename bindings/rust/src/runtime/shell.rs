@@ -136,7 +136,7 @@ fn anchors() -> Vec<PathBuf> {
 /// The ordered ladder of `zig-out/bin/<name>` paths a local build could occupy.
 ///
 /// Two passes, in the order the Python and Go bindings already resolve in
-/// (`bindings/python/irregex/runtime/shell.py`, `_locate_root`;
+/// (`bindings/python/irgx/runtime/shell.py`, `_locate_root`;
 /// `bindings/go/runtime/cold.go`, `candidates`): an already-built binary
 /// anywhere up the chain, then the sibling checkout that owns the name. All
 /// three are describing the same fact about one filesystem, so they must agree.

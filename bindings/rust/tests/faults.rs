@@ -5,7 +5,7 @@
 //! thread-local fault slot. The binding's job is to never let one of those become
 //! a wrong result, and to say something a caller can act on.
 
-use irregex::{Error, Regex, RegexBuilder};
+use irgx::{Error, Regex, RegexBuilder};
 
 #[test]
 fn a_bad_pattern_is_an_error_not_a_panic() {
@@ -311,7 +311,7 @@ fn variants_are_distinguishable() {
 
     let oom = Error::OutOfMemory { detail: None };
     assert!(oom.is_out_of_memory());
-    assert_eq!(oom.status(), Some(irregex::Status::OUT_OF_MEMORY));
+    assert_eq!(oom.status(), Some(irgx::Status::OUT_OF_MEMORY));
     assert_eq!(oom.status().unwrap().code(), -2);
     assert!(oom.to_string().contains("out of memory"));
     assert!(!oom.status().unwrap().message().is_empty());
@@ -338,7 +338,7 @@ fn variants_are_distinguishable() {
     assert_ne!(declined, oom);
     assert_ne!(malformed, boundary);
     assert_ne!(declined.status(), malformed.status());
-    assert_eq!(declined.status(), Some(irregex::Status::DECLINED));
+    assert_eq!(declined.status(), Some(irgx::Status::DECLINED));
     assert_eq!(declined.status().unwrap().code(), -1);
     assert!(!declined.is_out_of_memory());
     // Distinguishable at a glance too: the declinature names the repair and the
@@ -359,7 +359,7 @@ fn status_carries_the_engines_own_sentence() {
     );
     assert!(format!("{refused}").contains(&format!("status {}", refused.code())));
 
-    let oom = irregex::Status::OUT_OF_MEMORY;
+    let oom = irgx::Status::OUT_OF_MEMORY;
     assert_eq!(oom.code(), -2);
     assert!(oom.message().to_lowercase().contains("memory"));
     assert!(format!("{oom}").contains("status -2"));
@@ -431,20 +431,20 @@ fn abi_version_is_checked() {
     // Compiling anything at all forces the check, and a mismatch would be an
     // `Error::Abi` rather than a struct read against the wrong layout.
     assert!(Regex::new("a").is_ok());
-    assert_eq!(irregex::ABI_VERSION, 2);
+    assert_eq!(irgx::ABI_VERSION, 2);
 
-    let stale = irregex::ABI_VERSION - 1;
+    let stale = irgx::ABI_VERSION - 1;
     let mismatch = Error::Abi {
-        expected: irregex::ABI_VERSION,
+        expected: irgx::ABI_VERSION,
         found: stale,
     };
     let said = mismatch.to_string();
     assert!(
-        said.contains(&format!("ABI {}", irregex::ABI_VERSION)),
+        said.contains(&format!("ABI {}", irgx::ABI_VERSION)),
         "{said:?}"
     );
     assert!(said.contains(&format!("ABI {stale}")), "{said:?}");
     // The message has to name the lever that causes it, because the usual reason
     // is a stale library on a search path.
-    assert!(said.contains("IRREGEX_LIB_DIR"));
+    assert!(said.contains("IRGX_LIB_DIR"));
 }

@@ -1,4 +1,4 @@
-package irregex_test
+package irgx_test
 
 import (
 	"encoding/json"
@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"testing"
 
-	irregex "github.com/The-Billy-Company/irregex/bindings/go"
+	irgx "github.com/The-Billy-Company/irregex/bindings/go"
 )
 
 // The cross-check against the reference implementation.
@@ -39,11 +39,11 @@ type oracleCase struct {
 	Groups  [][][]int       `json:"groups"`
 }
 
-func (c oracleCase) opts() irregex.CompileOpts {
+func (c oracleCase) opts() irgx.CompileOpts {
 	// The Python binding spells the Unicode flag positively and defaults it on;
 	// this binding spells its absence, so the zero value is the default. Same
 	// bit either way.
-	return irregex.CompileOpts{
+	return irgx.CompileOpts{
 		Fixed:      c.Flags["fixed"],
 		IgnoreCase: c.Flags["ignore_case"],
 		Word:       c.Flags["word"],
@@ -73,9 +73,9 @@ func loadOracle(t *testing.T) oracleFile {
 
 func TestPythonOracleSpans(t *testing.T) {
 	file := loadOracle(t)
-	if file.EngineVersion != irregex.Version() {
+	if file.EngineVersion != irgx.Version() {
 		t.Logf("oracle was generated against engine %s, this build links %s",
-			file.EngineVersion, irregex.Version())
+			file.EngineVersion, irgx.Version())
 	}
 	for _, c := range file.Cases {
 		t.Run(c.Name+"/"+strconv.Quote(c.Text), func(t *testing.T) {

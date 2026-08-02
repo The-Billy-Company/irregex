@@ -37,7 +37,7 @@ plane, and the three thin product faces. Engines never import a face.
 
 - Shared flag / emit / outcome vocabulary (`cli/`).
 - Verb dispatch, help copy, or NDJSON shapes (`face/{gist,relate,irregex}`).
-- FFI status codes or callback lifetime (`include/irregex.h` in lockstep).
+- FFI status codes or callback lifetime (`include/irgx.h` in lockstep).
 - Analytic API surface (`api.zig`).
 
 Cold argv / walk / emit / warm reconcile live under [`../exec/`](../exec/).

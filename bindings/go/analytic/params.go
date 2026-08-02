@@ -14,7 +14,7 @@ package analytic
 // having its bytes reinterpreted.
 type Params interface {
 	Family() string
-	// Flags is the IRREGEX_AN_* bitset this request carries.
+	// Flags is the IRGX_AN_* bitset this request carries.
 	Flags() uint32
 }
 

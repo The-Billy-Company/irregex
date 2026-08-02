@@ -2,7 +2,7 @@ package analytic
 
 import "strconv"
 
-// Search flag bits (irregex.h IRREGEX_*). An unknown bit fails closed at the C
+// Search flag bits (irgx.h IRGX_*). An unknown bit fails closed at the C
 // seam rather than being silently dropped, so this set is the whole vocabulary.
 const (
 	FlagFixed      uint32 = 1 << 0
@@ -78,7 +78,7 @@ type Request struct {
 	MaxCount uint
 }
 
-// Flags is the request's IRREGEX_* bitset.
+// Flags is the request's IRGX_* bitset.
 func (r Request) Flags() uint32 {
 	var f uint32
 	set := func(on bool, bit uint32) {

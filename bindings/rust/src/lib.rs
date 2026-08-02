@@ -7,8 +7,8 @@
 //! process, reached through a small C ABI.
 //!
 //! ```
-//! # fn main() -> Result<(), irregex::Error> {
-//! let re = irregex::Regex::new(r"(\w+)@(\w+)")?;
+//! # fn main() -> Result<(), irgx::Error> {
+//! let re = irgx::Regex::new(r"(\w+)@(\w+)")?;
 //! let caps = re.captures("mail bob@host now").unwrap();
 //! assert_eq!(&caps[1], "bob");
 //! assert_eq!(caps.get(2).unwrap().as_str(), "host");
@@ -27,7 +27,7 @@
 //! arm:
 //!
 //! ```
-//! use irregex::{Error, Regex, RegexBuilder};
+//! use irgx::{Error, Regex, RegexBuilder};
 //!
 //! fn compile(pattern: &str) -> Result<Regex, Error> {
 //!     match Regex::new(pattern) {
@@ -51,7 +51,7 @@
 //! through:
 //!
 //! ```
-//! # use irregex::{Error, Regex};
+//! # use irgx::{Error, Regex};
 //! let Err(Error::Syntax { at, .. }) = Regex::new("(unclosed") else { unreachable!() };
 //! assert_eq!(at, 9);
 //! ```
@@ -62,7 +62,7 @@
 //!
 //! ```
 //! use std::sync::LazyLock;
-//! use irregex::Regex;
+//! use irgx::Regex;
 //!
 //! static WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\w+").unwrap());
 //!
@@ -116,7 +116,7 @@
 //! # Linking
 //!
 //! The crate carries a prebuilt static archive per supported target, so the
-//! usual build needs no Zig toolchain. `IRREGEX_LIB_DIR` points the build at a
+//! usual build needs no Zig toolchain. `IRGX_LIB_DIR` points the build at a
 //! library you built yourself instead. A target with no vendored archive falls
 //! back to building the engine from source, and fails at build time with a
 //! sentence if it cannot.
@@ -152,7 +152,7 @@ pub use crate::replace::{NoExpand, Replacer};
 /// number or every [`Regex::new`] fails with [`Error::Abi`].
 pub const ABI_VERSION: u32 = sys::ABI_VERSION;
 
-/// The linked engine's semantic version, e.g. `"0.3.0"`.
+/// The linked engine's semantic version, e.g. `"1.0.0"`.
 ///
 /// Distinct from this crate's version: one crate release can carry a newer
 /// engine without an API change.

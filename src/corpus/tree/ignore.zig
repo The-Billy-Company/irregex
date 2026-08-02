@@ -32,8 +32,8 @@ const join = paths.join;
 const Dir = std.Io.Dir;
 
 /// Allocation failure is the only fault this module can raise, and it RETURNS
-/// rather than exiting: every entry below runs inside `irregex_open` /
-/// `irregex_search` as well as inside the CLI, and a `process.exit(2)` there
+/// rather than exiting: every entry below runs inside `irgx_open` /
+/// `irgx_search` as well as inside the CLI, and a `process.exit(2)` there
 /// kills the embedding host instead of handing it a status (fault-channel law 1).
 /// The command plane absorbs it at its own top level with `catch oom()`, so the
 /// CLI's exit code and OOM notice are unchanged.

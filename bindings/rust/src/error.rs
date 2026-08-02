@@ -6,15 +6,15 @@
 //! `i32`: [`fault`] reads the status sentence and the fault name together and
 //! returns a typed [`Error`].
 //!
-//! Three rules the file keeps. `IRREGEX_OOM` gets its own variant, because
+//! Three rules the file keeps. `IRGX_OOM` gets its own variant, because
 //! "the machine is out of memory" and "your pattern is wrong" call for
 //! different handling. No negative status is ever treated as a result, because
 //! folding one into "no match" is how a binding reports a failure as an answer.
 //!
 //! And a refused pattern is sorted by its **status code**, never by the fault
-//! name behind it. The header spends two paragraphs on this: `IRREGEX_STALE`
+//! name behind it. The header spends two paragraphs on this: `IRGX_STALE`
 //! means the linear grammar declined something PCRE2 can express, and
-//! `IRREGEX_INVALID` means nothing here accepts it. Those are different
+//! `IRGX_INVALID` means nothing here accepts it. Those are different
 //! outcomes with different repairs, they are decidable from the return value
 //! alone, and the engine decides between them by asking PCRE2 rather than by
 //! consulting a list of constructs that could drift from it. Matching on the
@@ -39,7 +39,7 @@ impl Status {
     /// The engine ran out of memory.
     pub const OUT_OF_MEMORY: Self = Self(sys::OOM);
 
-    /// The raw code, as `irregex.h` spells it.
+    /// The raw code, as `irgx.h` spells it.
     #[must_use]
     pub const fn code(self) -> i32 {
         self.0
@@ -151,7 +151,7 @@ pub enum Error {
     /// fault behind it and nothing to report but the repair:
     ///
     /// ```
-    /// use irregex::{Error, Regex, RegexBuilder};
+    /// use irgx::{Error, Regex, RegexBuilder};
     ///
     /// let pattern = r"(?<=\$)\d+";
     /// let re = match Regex::new(pattern) {
@@ -259,7 +259,7 @@ impl fmt::Display for Error {
             Self::Abi { expected, found } => write!(
                 f,
                 "irregex ABI mismatch: this crate speaks ABI {expected}, but the linked \
-                 library reports ABI {found}. Link a matching pair, or unset IRREGEX_LIB_DIR."
+                 library reports ABI {found}. Link a matching pair, or unset IRGX_LIB_DIR."
             ),
             Self::NotCharBoundary { offset } => write!(
                 f,
@@ -305,7 +305,7 @@ pub(crate) fn fault(status: i32, build: impl FnOnce(Status, Option<String>) -> E
 ///
 /// Compile is the one verb with two ways to say no, and the whole point of the
 /// seam is that they are told apart by the **status code** before anything
-/// looks at a fault. `IRREGEX_STALE` returns here without reading the fault
+/// looks at a fault. `IRGX_STALE` returns here without reading the fault
 /// slot at all - not as an optimisation, but because the slot still holds this
 /// thread's *previous* failure, and a declinature that reported it would blame
 /// an unrelated pattern for stepping aside.
@@ -366,10 +366,10 @@ struct Detail {
 /// nothing to add over its own status sentence.
 fn last_fault() -> Option<Detail> {
     let mut slot = sys::Fault::default();
-    // SAFETY: `slot` is a live, correctly-sized `irregex_fault` whose
+    // SAFETY: `slot` is a live, correctly-sized `irgx_fault` whose
     // `struct_size` we set, which is exactly what the header requires; the
     // library only writes through the pointer for the duration of the call.
-    if unsafe { sys::irregex_last_fault(&raw mut slot) } != sys::MATCH {
+    if unsafe { sys::irgx_last_fault(&raw mut slot) } != sys::MATCH {
         return None;
     }
     if slot.name.is_null() {
@@ -409,7 +409,7 @@ fn last_fault() -> Option<Detail> {
     }
     // SAFETY: the header documents `path` / `path_len` as a borrowed byte span
     // valid until this thread's next work call, and no such call happens between
-    // the `irregex_last_fault` above and this read.
+    // the `irgx_last_fault` above and this read.
     let path = unsafe { std::slice::from_raw_parts(slot.path, slot.path_len) };
     Some(Detail {
         text: format!("{name} at {}", String::from_utf8_lossy(path)),

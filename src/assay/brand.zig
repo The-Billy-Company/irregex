@@ -14,7 +14,7 @@
 //! it, the library reads it, a caller who declares nothing gets the default:
 //!
 //! ```zig
-//! pub const irregex_brand: irregex.Brand = .{ .name = "relate" };
+//! pub const irgx_brand: irregex.Brand = .{ .name = "relate" };
 //! ```
 //!
 //! Because it resolves at comptime, a knob name is still a string literal by the
@@ -47,10 +47,10 @@ pub const Brand = struct {
     artifact_dir: []const u8 = ".gist",
 };
 
-/// This compilation's identity: the root module's `irregex_brand` when it
+/// This compilation's identity: the root module's `irgx_brand` when it
 /// declares one, else the default. A test runner, a C-ABI host, and any binary
 /// that never opts in all land on `gist`.
-pub const active: Brand = if (@hasDecl(root, "irregex_brand")) root.irregex_brand else .{};
+pub const active: Brand = if (@hasDecl(root, "irgx_brand")) root.irgx_brand else .{};
 
 /// The full name of a branded environment knob — `active.env_prefix ++ suffix`,
 /// folded at comptime so the `getenv` still sees a literal.

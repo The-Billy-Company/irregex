@@ -18,7 +18,7 @@ import (
 // ABIVersion; the analytic plane's own compatibility axis is [Digest].
 const (
 	ABIVersion    = 2
-	EngineVersion = "0.3.0"
+	EngineVersion = "1.0.0"
 )
 
 // Process exit codes ([exit_codes]) — ripgrep's three, preserved end to end. A
@@ -51,7 +51,7 @@ func (s Status) Result() bool { return s >= 0 }
 // Declined reports whether s is the declinature — never surface it as an error.
 func (s Status) Declined() bool { return s == StatusStale }
 
-// Which tier answered an analytic query (irregex_stats.source).
+// Which tier answered an analytic query (irgx_stats.source).
 const (
 	SourceLive  uint32 = 0
 	SourceAtlas uint32 = 1
@@ -119,7 +119,7 @@ func (o Op) String() string {
 
 // Params is the [analytic.params] family this op's request struct must be —
 // "kinship", "retrieval", "sweep", "compose" or "rank". A mismatched family is
-// IRREGEX_INVALID at the seam, so callers check it before dispatching.
+// IRGX_INVALID at the seam, so callers check it before dispatching.
 func (o Op) Params() string {
 	v, _ := Verb(o)
 	return v.Params

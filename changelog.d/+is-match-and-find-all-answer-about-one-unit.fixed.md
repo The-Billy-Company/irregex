@@ -1,4 +1,4 @@
-`irregex_is_match` and `irregex_find_all` disagreed about every anchored
+`irgx_is_match` and `irgx_find_all` disagreed about every anchored
 pattern. `c$` over `"abc\n"` was a match to one and no match to the other; so
 were `^a` over `"\nabc"`, `\Aabc\z` over `"x\nabc\ny"`, and 19 of 54 probed
 pairs. Two independent bindings hit it while being written, and both had to
@@ -23,7 +23,7 @@ nullable pattern once inlined to win the first back. `walk` is `inline` with
 a comptime-known sink instead, so each caller still compiles to the single
 tight loop, measured at parity on both shapes.
 
-Also: `irregex_compile` rejected a NULL pattern of length zero, though the
+Also: `irgx_compile` rejected a NULL pattern of length zero, though the
 empty pattern compiles fine and every search verb already reads NULL with
 length zero as the empty text. A language whose empty string carries no data
 pointer, like Go, hands that in without meaning anything by it.

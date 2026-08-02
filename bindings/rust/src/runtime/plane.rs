@@ -65,16 +65,16 @@ fn resolve<F: Copy>(name: &CStr) -> Option<F> {
 
 fn probe() -> State {
     let (Some(next), Some(next_batch), Some(stats), Some(close)) = (
-        resolve::<sys::RowsNextFn>(c"irregex_rows_next"),
-        resolve::<sys::RowsNextBatchFn>(c"irregex_rows_next_batch"),
-        resolve::<sys::RowsStatsFn>(c"irregex_rows_stats"),
-        resolve::<sys::RowsCloseFn>(c"irregex_rows_close"),
+        resolve::<sys::RowsNextFn>(c"irgx_rows_next"),
+        resolve::<sys::RowsNextBatchFn>(c"irgx_rows_next_batch"),
+        resolve::<sys::RowsStatsFn>(c"irgx_rows_stats"),
+        resolve::<sys::RowsCloseFn>(c"irgx_rows_close"),
     ) else {
         return State::Absent;
     };
     let (Some(engine_open), Some(engine_close)) = (
         resolve::<sys::EngineOpenFn>(ENGINE_OPENER),
-        resolve::<sys::EngineCloseFn>(c"irregex_engine_close"),
+        resolve::<sys::EngineCloseFn>(c"irgx_engine_close"),
     ) else {
         return State::Absent;
     };
@@ -87,10 +87,10 @@ fn probe() -> State {
         return State::Absent;
     }
     // No digest entry point at all is an older plane, not a drifted one.
-    if let Some(digest) = resolve::<sys::SchemaDigestFn>(c"irregex_schema_digest") {
+    if let Some(digest) = resolve::<sys::SchemaDigestFn>(c"irgx_schema_digest") {
         let introspect =
-            resolve::<sys::SchemaCountFn>(c"irregex_schema_count")
-                .zip(resolve::<sys::SchemaGetFn>(c"irregex_schema_get"));
+            resolve::<sys::SchemaCountFn>(c"irgx_schema_count")
+                .zip(resolve::<sys::SchemaGetFn>(c"irgx_schema_get"));
         if let Some(why) = handshake::drift(digest, introspect) {
             return State::Drifted(why);
         }
@@ -103,13 +103,13 @@ fn probe() -> State {
         close,
         engine_open,
         engine_close,
-        last_fault: resolve::<sys::LastFaultFn>(c"irregex_last_fault"),
+        last_fault: resolve::<sys::LastFaultFn>(c"irgx_last_fault"),
     })
 }
 
 /// The symbol that opens the engine every producer is handed. Named here so
 /// [`entries`] can ask a producer's image whether it can see the same one.
-const ENGINE_OPENER: &CStr = c"irregex_engine_open";
+const ENGINE_OPENER: &CStr = c"irgx_engine_open";
 
 /// Resolve every distinct entry symbol the verb table names, keeping the ones
 /// this process can actually call.
@@ -154,7 +154,7 @@ pub fn available() -> bool {
 
 /// A warm engine, freed once every cursor that borrows its corpus is gone.
 pub(super) struct EngineHandle {
-    ptr: *mut sys::irregex_engine,
+    ptr: *mut sys::irgx_engine,
     close: sys::EngineCloseFn,
 }
 
@@ -190,7 +190,7 @@ fn engine(vt: &Vtable, roots: &[PathBuf]) -> Result<Arc<EngineHandle>> {
         .map(|p| cstring(p))
         .collect::<Result<Vec<_>>>()?;
     let ptrs: Vec<*const std::os::raw::c_char> = owned.iter().map(|c| c.as_ptr()).collect();
-    let mut out: *mut sys::irregex_engine = std::ptr::null_mut();
+    let mut out: *mut sys::irgx_engine = std::ptr::null_mut();
     let status = unsafe {
         (vt.engine_open)(
             if ptrs.is_empty() {
@@ -290,7 +290,7 @@ fn producer(vt: &Vtable, op: u32) -> Option<sys::AnalyticRunFn> {
 /// Run `query` in process.
 ///
 /// `Ok(None)` is the **declinature**: no plane, the verb's producing library is
-/// not in this process, or the engine returned `IRREGEX_STALE` because it cannot
+/// not in this process, or the engine returned `IRGX_STALE` because it cannot
 /// serve this question warm. The caller falls through to the subprocess tier and
 /// gets the identical answer.
 ///
@@ -322,7 +322,7 @@ pub fn run(query: &impl Query) -> Result<Option<Rows>> {
         .collect();
     let mut wire = query.wire();
     wire.bind(&views);
-    let mut out: *mut sys::irregex_rows = std::ptr::null_mut();
+    let mut out: *mut sys::irgx_rows = std::ptr::null_mut();
     let status = unsafe {
         run(
             engine.ptr,
@@ -437,7 +437,7 @@ mod incidents {
 /// Routing, proven without an engine.
 ///
 /// Worth pinning here rather than only in the contract test, because a
-/// mis-route has no symptom: the wrong library answers `IRREGEX_INVALID` for an
+/// mis-route has no symptom: the wrong library answers `IRGX_INVALID` for an
 /// op it does not know, the ladder reads that as a declinature, and the verb
 /// quietly costs a subprocess forever after.
 #[cfg(test)]
@@ -445,11 +445,11 @@ mod routing {
     use super::*;
 
     unsafe extern "C" fn stub(
-        _e: *mut sys::irregex_engine,
+        _e: *mut sys::irgx_engine,
         _op: u32,
         _p: *const std::ffi::c_void,
-        _c: *mut sys::irregex_cancel,
-        _o: *mut *mut sys::irregex_rows,
+        _c: *mut sys::irgx_cancel,
+        _o: *mut *mut sys::irgx_rows,
     ) -> i32 {
         sys::OK
     }
@@ -462,14 +462,14 @@ mod routing {
                 .map(|e| (*e, stub as sys::AnalyticRunFn))
                 .collect(),
             next: {
-                unsafe extern "C" fn f(_: *mut sys::irregex_rows, _: *mut sys::Row) -> i32 {
+                unsafe extern "C" fn f(_: *mut sys::irgx_rows, _: *mut sys::Row) -> i32 {
                     sys::OK
                 }
                 f
             },
             next_batch: {
                 unsafe extern "C" fn f(
-                    _: *mut sys::irregex_rows,
+                    _: *mut sys::irgx_rows,
                     _: *mut sys::Row,
                     _: usize,
                     _: *mut usize,
@@ -479,27 +479,27 @@ mod routing {
                 f
             },
             stats: {
-                unsafe extern "C" fn f(_: *mut sys::irregex_rows, _: *mut sys::Stats) -> i32 {
+                unsafe extern "C" fn f(_: *mut sys::irgx_rows, _: *mut sys::Stats) -> i32 {
                     sys::OK
                 }
                 f
             },
             close: {
-                unsafe extern "C" fn f(_: *mut sys::irregex_rows) {}
+                unsafe extern "C" fn f(_: *mut sys::irgx_rows) {}
                 f
             },
             engine_open: {
                 unsafe extern "C" fn f(
                     _: *const *const std::os::raw::c_char,
                     _: usize,
-                    _: *mut *mut sys::irregex_engine,
+                    _: *mut *mut sys::irgx_engine,
                 ) -> i32 {
                     sys::OK
                 }
                 f
             },
             engine_close: {
-                unsafe extern "C" fn f(_: *mut sys::irregex_engine) {}
+                unsafe extern "C" fn f(_: *mut sys::irgx_engine) {}
                 f
             },
             last_fault: None,

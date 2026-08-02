@@ -41,7 +41,7 @@ doc_radar:
 This is the prose half of [`../contract/irregex.ward`](../contract/irregex.ward).
 The Zig tree holds three product faces (`gist` · `relate` · `irregex`) over one
 shared stack organized into **five layers**, read bottom-up. `root.zig`
-re-exports every tier through the flat C ABI in `../include/irregex.h`;
+re-exports every tier through the flat C ABI in `../include/irgx.h`;
 `../bench/` holds the proof harness, never engine code.
 
 **The teachable sentence:** the kernel answers, the corpus supplies, exec

@@ -1,6 +1,6 @@
-//go:build cgo && !irregex_syslib
+//go:build cgo && !irgx_syslib
 
-package irregex
+package irgx
 
-// #cgo LDFLAGS: ${SRCDIR}/libirregex_linux_arm64.a -lm
+// #cgo LDFLAGS: ${SRCDIR}/libirgx_linux_arm64.a -lm
 import "C"

@@ -4,8 +4,8 @@
 //! cold walk-and-emit pipeline → the warm resident core, plus the trigram /
 //! crest / phantom persisted index tiers. It ships as a **Zig module**
 //! (`@import("irregex")`) that the product packages (`relate`, `gist`,
-//! `blast`) consume as siblings, plus its own C-ABI artifact — `libirregex` +
-//! `include/irregex.h`: the regex-over-text plane (compile · is_match ·
+//! `blast`) consume as siblings, plus its own C-ABI artifact — `libirgx` +
+//! `include/irgx.h`: the regex-over-text plane (compile · is_match ·
 //! find_all · captures) and the status/fault substrate all four ABIs share.
 //! It installs no executables. The session-shaped ABI over a corpus lives in
 //! `gist`; the kinship engine (and the cento quoter over this library's
@@ -171,7 +171,7 @@ pub fn build(b: *std.Build) void {
     });
     floor.under(engine);
 
-    // ── the C-ABI artifact (`libirregex` + `include/irregex.h`) ──
+    // ── the C-ABI artifact (`libirgx` + `include/irgx.h`) ──
     // Rooted at the export shims, NOT at `src/root.zig`. A Zig `export fn` is
     // emitted by every compilation that reaches it, so shims living in the
     // library module would be duplicated into `libgist`, `librelate`, and
@@ -193,17 +193,17 @@ pub fn build(b: *std.Build) void {
     // Go cgo and a Rust build.rs link. Zig's archiver leaves Mach-O members
     // non-8-byte-aligned, which Apple's ld64 rejects in a cgo link, so macOS
     // re-archives through `libtool -static`; LLD tolerates it.
-    const dynamic_lib = b.addLibrary(.{ .name = "irregex", .linkage = .dynamic, .root_module = abi });
-    dynamic_lib.installHeader(b.path("include/irregex.h"), "irregex.h");
+    const dynamic_lib = b.addLibrary(.{ .name = "irgx", .linkage = .dynamic, .root_module = abi });
+    dynamic_lib.installHeader(b.path("include/irgx.h"), "irgx.h");
     b.installArtifact(dynamic_lib);
     if (target.result.os.tag == .macos) {
-        const obj = b.addObject(.{ .name = "irregex", .root_module = abi });
+        const obj = b.addObject(.{ .name = "irgx", .root_module = abi });
         const repack = b.addSystemCommand(&.{ "libtool", "-static", "-o" });
-        const aligned_a = repack.addOutputFileArg("libirregex.a");
+        const aligned_a = repack.addOutputFileArg("libirgx.a");
         repack.addArtifactArg(obj);
-        b.getInstallStep().dependOn(&b.addInstallLibFile(aligned_a, "libirregex.a").step);
+        b.getInstallStep().dependOn(&b.addInstallLibFile(aligned_a, "libirgx.a").step);
     } else {
-        const static_lib = b.addLibrary(.{ .name = "irregex", .linkage = .static, .root_module = abi });
+        const static_lib = b.addLibrary(.{ .name = "irgx", .linkage = .static, .root_module = abi });
         b.installArtifact(static_lib);
     }
 

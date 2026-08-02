@@ -1,8 +1,8 @@
-//! Synthesized `irregex_row` buffers, for tests only.
+//! Synthesized `irgx_row` buffers, for tests only.
 //!
 //! The decoder's hard cases are wire shapes a healthy engine never emits — a
 //! cleared presence bit, an ordinal past the enum table, a tag that contradicts
-//! the declaration — and this crate cannot link a `libirregex` to ask for them.
+//! the declaration — and this crate cannot link a `libirgx` to ask for them.
 //! Building the bytes by hand is therefore the only way to test the boundary,
 //! and it keeps the *expectations* on the contract side: a test names a schema
 //! and a field, and this module turns that into the layout `[row_schemas]` says

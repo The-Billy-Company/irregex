@@ -124,7 +124,7 @@ pub const Row = extern struct {
     }
 };
 
-/// One declared field, for `irregex_schema_get`. `nested` is the schema id for
+/// One declared field, for `irgx_schema_get`. `nested` is the schema id for
 /// `rows`, the enum id for `enum`, and 0 otherwise.
 pub const Field = extern struct {
     name: [*:0]const u8,
@@ -372,7 +372,7 @@ pub fn textList(arena: std.mem.Allocator, items: []const []const u8) ![]Text {
     return out;
 }
 
-test "the wire layout matches include/irregex.h byte for byte" {
+test "the wire layout matches include/irgx.h byte for byte" {
     const t = std.testing;
     // Three bindings decode these by offset. A silent size change here is a
     // mis-read field in Python, Rust, and Go simultaneously — and nothing else

@@ -1,6 +1,6 @@
 //! How a `Send + Sync` [`crate::Regex`] is built out of a handle that is not.
 //!
-//! The header is blunt: an `irregex_regex *` owns the scratch its finds run in,
+//! The header is blunt: an `irgx_regex *` owns the scratch its finds run in,
 //! so two threads sharing one corrupt a match rather than race a counter, and
 //! the advice is to compile one per thread. A Rust programmer, meanwhile, will
 //! write `static RE: LazyLock<Regex>` and hand it to Rayon without a second
@@ -25,7 +25,7 @@ use std::sync::{Mutex, PoisonError};
 use crate::error::{Error, compile_refusal};
 use crate::sys;
 
-/// One `irregex_regex *`, freed when this value drops.
+/// One `irgx_regex *`, freed when this value drops.
 struct Handle(NonNull<sys::Regex>);
 
 // SAFETY: the handle is single-threaded, which is not the same as thread-bound.
@@ -41,9 +41,9 @@ unsafe impl Send for Handle {}
 
 impl Drop for Handle {
     fn drop(&mut self) {
-        // SAFETY: `self.0` came from a successful `irregex_compile` and has not
+        // SAFETY: `self.0` came from a successful `irgx_compile` and has not
         // been freed, since only this `Drop` frees it and it runs once.
-        unsafe { sys::irregex_free(self.0.as_ptr()) }
+        unsafe { sys::irgx_free(self.0.as_ptr()) }
     }
 }
 
@@ -97,8 +97,7 @@ fn compile(pattern: &[u8], flags: u32) -> Result<Handle, Error> {
     // SAFETY: `pattern` is a live slice passed with its own length, `flags` is a
     // plain integer, and `out` is a live pointer slot the library only writes on
     // success. The call cannot unwind: every entry in this ABI returns a status.
-    let status =
-        unsafe { sys::irregex_compile(pattern.as_ptr(), pattern.len(), flags, &raw mut out) };
+    let status = unsafe { sys::irgx_compile(pattern.as_ptr(), pattern.len(), flags, &raw mut out) };
     if status < 0 {
         // `out` is deliberately not consulted: the header leaves it untouched on
         // a refusal, so there is no handle here to read, keep or free - not even
@@ -110,7 +109,7 @@ fn compile(pattern: &[u8], flags: u32) -> Result<Handle, Error> {
     NonNull::new(out)
         .map(Handle)
         .ok_or_else(|| Error::Inconsistent {
-            message: "irregex_compile reported success but wrote no handle".to_owned(),
+            message: "irgx_compile reported success but wrote no handle".to_owned(),
         })
 }
 

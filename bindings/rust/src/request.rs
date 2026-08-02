@@ -36,12 +36,12 @@ pub enum SearchEngine {
 /// / [`count`](SearchRequest::count).
 ///
 /// ```no_run
-/// let hits = irregex::request::SearchRequest::new(r"func\s+\w+")
+/// let hits = irgx::request::SearchRequest::new(r"func\s+\w+")
 ///     .path("services/backend")
 ///     .ignore_case()
 ///     .glob("*.go")
 ///     .run()?;
-/// # Ok::<(), irregex::runtime::Error>(())
+/// # Ok::<(), irgx::runtime::Error>(())
 /// ```
 #[derive(Debug, Clone)]
 pub struct SearchRequest {

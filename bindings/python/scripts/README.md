@@ -41,9 +41,9 @@ passes three environment variables:
 
 | Variable | Meaning |
 |---|---|
-| `IRREGEX_PREBUILT_LIB` | The library to bundle. The hook copies it instead of invoking Zig itself. |
-| `IRREGEX_WHEEL_PLATFORM` | The platform tag to stamp. The host's own tag would be a lie when cross-building. |
-| `IRREGEX_ZIG_TARGET` | The triple, so the hook knows which OS's file layout and library name to expect. |
+| `IRGX_PREBUILT_LIB` | The library to bundle. The hook copies it instead of invoking Zig itself. |
+| `IRGX_WHEEL_PLATFORM` | The platform tag to stamp. The host's own tag would be a lie when cross-building. |
+| `IRGX_ZIG_TARGET` | The triple, so the hook knows which OS's file layout and library name to expect. |
 
 Building a wheel directly with `uv build` and none of those set is the
 local-development path: the hook runs `zig build` itself and derives this

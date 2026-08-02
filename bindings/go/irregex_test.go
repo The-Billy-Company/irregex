@@ -1,4 +1,4 @@
-package irregex_test
+package irgx_test
 
 import (
 	"errors"
@@ -7,27 +7,27 @@ import (
 	"strings"
 	"testing"
 
-	irregex "github.com/The-Billy-Company/irregex/bindings/go"
+	irgx "github.com/The-Billy-Company/irregex/bindings/go"
 )
 
 func TestCompileErrorNamesTheProblem(t *testing.T) {
-	re, err := irregex.Compile("a(")
+	re, err := irgx.Compile("a(")
 	if err == nil {
 		t.Fatalf("Compile(%q) = %v, want an error", "a(", re)
 	}
 	// An unclosed group is malformed rather than merely outside this grammar,
 	// so the seam reports it as a defect with a position; the class carries
 	// that, and the generic seam error stays reachable underneath it.
-	var bad *irregex.SyntaxError
+	var bad *irgx.SyntaxError
 	if !errors.As(err, &bad) {
-		t.Fatalf("error is %T, want *irregex.SyntaxError", err)
+		t.Fatalf("error is %T, want *irgx.SyntaxError", err)
 	}
 	if bad.At < 0 || bad.At > len("a(") {
 		t.Errorf("At = %d, outside %q", bad.At, "a(")
 	}
-	var typed *irregex.Error
+	var typed *irgx.Error
 	if !errors.As(err, &typed) {
-		t.Fatalf("error %T does not unwrap to *irregex.Error", err)
+		t.Fatalf("error %T does not unwrap to *irgx.Error", err)
 	}
 	if typed.Status >= 0 {
 		t.Errorf("Status = %d, want a negative status", typed.Status)
@@ -45,10 +45,10 @@ func TestCompileErrorNamesTheProblem(t *testing.T) {
 // Lookaround is outside the default grammar. Refusing it at compile time is the
 // contract; answering "no match" would be a lie.
 func TestLookaroundNeedsPCRE(t *testing.T) {
-	if _, err := irregex.Compile(`foo(?=bar)`); err == nil {
+	if _, err := irgx.Compile(`foo(?=bar)`); err == nil {
 		t.Fatal("lookaround compiled under the linear grammar, want an error")
 	}
-	re, err := irregex.CompileOpts{PCRE: true}.Compile(`foo(?=bar)`)
+	re, err := irgx.CompileOpts{PCRE: true}.Compile(`foo(?=bar)`)
 	if err != nil {
 		t.Fatalf("PCRE compile: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestMustCompilePanics(t *testing.T) {
 			t.Errorf("panic value %v does not name the pattern", recovered)
 		}
 	}()
-	irregex.MustCompile("a(")
+	irgx.MustCompile("a(")
 }
 
 // The engine's iteration rules, which are not the standard library's. An empty
@@ -89,7 +89,7 @@ func TestNullablePatternsDifferFromStdlib(t *testing.T) {
 		{`x?`, "axbxc", [][]int{{0, 0}, {1, 2}, {3, 4}}},
 		{``, "abc", [][]int{{0, 0}, {1, 1}, {2, 2}}},
 	} {
-		re := irregex.MustCompile(tc.pattern)
+		re := irgx.MustCompile(tc.pattern)
 		if got := re.FindAllStringIndex(tc.text, -1); !reflect.DeepEqual(got, tc.want) {
 			t.Errorf("%q over %q = %v, want %v", tc.pattern, tc.text, got, tc.want)
 		}
@@ -107,7 +107,7 @@ func TestNullablePatternsDifferFromStdlib(t *testing.T) {
 // the caller's own string, with no translation, for text that is not ASCII.
 func TestNonASCIIOffsetsSliceTheCallersString(t *testing.T) {
 	const text = "le CAFÉ noir, le café clair"
-	re := irregex.CompileOpts{IgnoreCase: true}.MustCompile("café")
+	re := irgx.CompileOpts{IgnoreCase: true}.MustCompile("café")
 	locs := re.FindAllStringIndex(text, -1)
 	if len(locs) != 2 {
 		t.Fatalf("FindAllStringIndex = %v, want two matches", locs)
@@ -131,11 +131,11 @@ func TestNonASCIIOffsetsSliceTheCallersString(t *testing.T) {
 
 func TestUnicodeClassesAreOnByDefault(t *testing.T) {
 	const text = "naïve café"
-	unicode := irregex.MustCompile(`\w+`).FindAllString(text, -1)
+	unicode := irgx.MustCompile(`\w+`).FindAllString(text, -1)
 	if !reflect.DeepEqual(unicode, []string{"naïve", "café"}) {
 		t.Errorf("unicode \\w+ = %q, want [naïve café]", unicode)
 	}
-	ascii := irregex.CompileOpts{ASCII: true}.MustCompile(`\w+`).FindAllString(text, -1)
+	ascii := irgx.CompileOpts{ASCII: true}.MustCompile(`\w+`).FindAllString(text, -1)
 	if reflect.DeepEqual(ascii, unicode) {
 		t.Errorf("ASCII \\w+ = %q, which is what Unicode gave; the flag did nothing", ascii)
 	}
@@ -176,7 +176,7 @@ func TestSubexpNamesAreIndexedByGroupNumber(t *testing.T) {
 				if tc.pcreOnly && !pcre {
 					continue
 				}
-				re, err := irregex.CompileOpts{PCRE: pcre}.Compile(tc.pattern)
+				re, err := irgx.CompileOpts{PCRE: pcre}.Compile(tc.pattern)
 				if err != nil {
 					t.Fatalf("pcre=%v: compile %q: %v", pcre, tc.pattern, err)
 				}
@@ -208,7 +208,7 @@ func TestSubexpNamesAreIndexedByGroupNumber(t *testing.T) {
 // same spelling twice. SubexpIndex has to answer with the first of them, as the
 // standard library's does, rather than with whichever one was written last.
 func TestDuplicateNamesResolveToTheFirstGroup(t *testing.T) {
-	re, err := irregex.CompileOpts{PCRE: true}.Compile(`(?J)(?<d>a)|(?<d>b)`)
+	re, err := irgx.CompileOpts{PCRE: true}.Compile(`(?J)(?<d>a)|(?<d>b)`)
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestDuplicateNamesResolveToTheFirstGroup(t *testing.T) {
 }
 
 func TestGroupsNumberedAndNamed(t *testing.T) {
-	re := irregex.MustCompile(`(?P<user>\w+)@(\w+)`)
+	re := irgx.MustCompile(`(?P<user>\w+)@(\w+)`)
 	if got := re.NumSubexp(); got != 2 {
 		t.Fatalf("NumSubexp = %d, want 2", got)
 	}
@@ -257,7 +257,7 @@ func TestGroupsNumberedAndNamed(t *testing.T) {
 // matched empty. Reporting both as "" would quietly lose the difference, which
 // is exactly the bug the C ABI's {-1,-1} exists to prevent.
 func TestNonParticipatingGroupIsNotEmptyString(t *testing.T) {
-	re := irregex.MustCompile(`(a)|(b)`)
+	re := irgx.MustCompile(`(a)|(b)`)
 	index := re.FindStringSubmatchIndex("b")
 	if want := []int{0, 1, -1, -1, 0, 1}; !reflect.DeepEqual(index, want) {
 		t.Fatalf("FindStringSubmatchIndex(b) = %v, want %v", index, want)
@@ -266,7 +266,7 @@ func TestNonParticipatingGroupIsNotEmptyString(t *testing.T) {
 		t.Errorf("FindSubmatch group 1 = %q, want nil for a group that did not participate", got[1])
 	}
 	// The empty-group case, for contrast: it matched, and it matched nothing.
-	empty := irregex.MustCompile(`(a*)b`)
+	empty := irgx.MustCompile(`(a*)b`)
 	if got := empty.FindStringSubmatchIndex("b"); !reflect.DeepEqual(got, []int{0, 1, 0, 0}) {
 		t.Errorf("(a*)b over %q = %v, want [0 1 0 0]", "b", got)
 	}
@@ -278,7 +278,7 @@ func TestNonParticipatingGroupIsNotEmptyString(t *testing.T) {
 func TestFlagsChangeBehaviour(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
-		opts    irregex.CompileOpts
+		opts    irgx.CompileOpts
 		pattern string
 		text    string
 		want    []string
@@ -286,12 +286,12 @@ func TestFlagsChangeBehaviour(t *testing.T) {
 		// flag that silently did nothing cannot pass.
 		plain []string
 	}{
-		{"fixed", irregex.CompileOpts{Fixed: true}, `a.c`, "a.c abc", []string{"a.c"}, []string{"a.c", "abc"}},
-		{"ignoreCase", irregex.CompileOpts{IgnoreCase: true}, `abc`, "ABC abc", []string{"ABC", "abc"}, []string{"abc"}},
-		{"word", irregex.CompileOpts{Word: true}, `cat`, "cat concatenate", []string{"cat"}, []string{"cat", "cat"}},
-		{"smartCaseFolds", irregex.CompileOpts{SmartCase: true}, `abc`, "ABC abc", []string{"ABC", "abc"}, []string{"abc"}},
-		{"ascii", irregex.CompileOpts{ASCII: true}, `\w+`, "café", []string{"caf"}, []string{"café"}},
-		{"pcre", irregex.CompileOpts{PCRE: true}, `(\w)\1`, "aa ab", []string{"aa"}, nil},
+		{"fixed", irgx.CompileOpts{Fixed: true}, `a.c`, "a.c abc", []string{"a.c"}, []string{"a.c", "abc"}},
+		{"ignoreCase", irgx.CompileOpts{IgnoreCase: true}, `abc`, "ABC abc", []string{"ABC", "abc"}, []string{"abc"}},
+		{"word", irgx.CompileOpts{Word: true}, `cat`, "cat concatenate", []string{"cat"}, []string{"cat", "cat"}},
+		{"smartCaseFolds", irgx.CompileOpts{SmartCase: true}, `abc`, "ABC abc", []string{"ABC", "abc"}, []string{"abc"}},
+		{"ascii", irgx.CompileOpts{ASCII: true}, `\w+`, "café", []string{"caf"}, []string{"café"}},
+		{"pcre", irgx.CompileOpts{PCRE: true}, `(\w)\1`, "aa ab", []string{"aa"}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			re, err := tc.opts.Compile(tc.pattern)
@@ -301,7 +301,7 @@ func TestFlagsChangeBehaviour(t *testing.T) {
 			if got := re.FindAllString(tc.text, -1); !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("with flag: %q, want %q", got, tc.want)
 			}
-			plain, err := irregex.Compile(tc.pattern)
+			plain, err := irgx.Compile(tc.pattern)
 			if err != nil {
 				if tc.plain != nil {
 					t.Fatalf("plain compile: %v", err)
@@ -320,11 +320,11 @@ func TestFlagsChangeBehaviour(t *testing.T) {
 // folding off.
 func TestSmartCaseRespectsThePattern(t *testing.T) {
 	const text = "ABC abc Abc"
-	smart := irregex.CompileOpts{SmartCase: true}.MustCompile("Abc").FindAllString(text, -1)
+	smart := irgx.CompileOpts{SmartCase: true}.MustCompile("Abc").FindAllString(text, -1)
 	if !reflect.DeepEqual(smart, []string{"Abc"}) {
 		t.Errorf("smart case with an uppercase pattern = %q, want [Abc]", smart)
 	}
-	folded := irregex.CompileOpts{IgnoreCase: true}.MustCompile("Abc").FindAllString(text, -1)
+	folded := irgx.CompileOpts{IgnoreCase: true}.MustCompile("Abc").FindAllString(text, -1)
 	if len(folded) != 3 {
 		t.Errorf("ignore case with the same pattern = %q, want three matches", folded)
 	}
@@ -333,14 +333,14 @@ func TestSmartCaseRespectsThePattern(t *testing.T) {
 // Word filtering happens inside the search, not as a filter over its results,
 // so a rejected span must not stop the search that follows it.
 func TestWordSearchResumesPastARejectedSpan(t *testing.T) {
-	re := irregex.CompileOpts{Word: true}.MustCompile(`cat`)
+	re := irgx.CompileOpts{Word: true}.MustCompile(`cat`)
 	if got := re.FindAllStringIndex("concatenate a cat", -1); !reflect.DeepEqual(got, [][]int{{14, 17}}) {
 		t.Errorf("= %v, want the standalone cat at 14", got)
 	}
 }
 
 func TestFindLimits(t *testing.T) {
-	re := irregex.MustCompile(`a`)
+	re := irgx.MustCompile(`a`)
 	const text = "aaaaa"
 	for _, tc := range []struct{ n, want int }{{-1, 5}, {0, 0}, {1, 1}, {3, 3}, {9, 5}} {
 		if got := len(re.FindAllString(text, tc.n)); got != tc.want {
@@ -363,7 +363,7 @@ func TestFindLimits(t *testing.T) {
 func TestAShortWindowStillReturnsTheWholeAnswer(t *testing.T) {
 	const count = 20000
 	text := strings.Repeat("a ", count)
-	re := irregex.MustCompile(`a`)
+	re := irgx.MustCompile(`a`)
 	for _, n := range []int{-1, count + 1, count, count - 1, 8192, 4097, 4096, 4095, 1} {
 		want := n
 		if n < 0 || n > count {
@@ -382,7 +382,7 @@ func TestAShortWindowStillReturnsTheWholeAnswer(t *testing.T) {
 }
 
 func TestNoMatchAnswers(t *testing.T) {
-	re := irregex.MustCompile(`zzz`)
+	re := irgx.MustCompile(`zzz`)
 	if re.MatchString("abc") {
 		t.Error("MatchString found a match that is not there")
 	}
@@ -415,7 +415,7 @@ var (
 func TestMatchStringAgreesWithFind(t *testing.T) {
 	pairs := 0
 	for _, pattern := range anchorPatterns {
-		re := irregex.MustCompile(pattern)
+		re := irgx.MustCompile(pattern)
 		for _, text := range anchorTexts {
 			pairs++
 			if got, want := re.MatchString(text), re.FindStringIndex(text) != nil; got != want {
@@ -444,7 +444,7 @@ func TestAnchorsSpanTheWholeBuffer(t *testing.T) {
 		{`^abc$`, "x\nabc\ny"},
 		{`b$`, "ab\ncd"},
 	} {
-		re := irregex.MustCompile(tc.pattern)
+		re := irgx.MustCompile(tc.pattern)
 		if re.MatchString(tc.text) {
 			t.Errorf("%q matched %q; the anchor is reading the text as lines",
 				tc.pattern, tc.text)
@@ -454,7 +454,7 @@ func TestAnchorsSpanTheWholeBuffer(t *testing.T) {
 	for _, tc := range []struct{ pattern, text string }{
 		{`^a`, "abc"}, {`\Aa`, "abc\n"}, {`c$`, "abc"}, {`c\z`, "\nabc"}, {`^abc$`, "abc"},
 	} {
-		re := irregex.MustCompile(tc.pattern)
+		re := irgx.MustCompile(tc.pattern)
 		if !re.MatchString(tc.text) {
 			t.Errorf("%q did not match %q", tc.pattern, tc.text)
 		}
@@ -462,7 +462,7 @@ func TestAnchorsSpanTheWholeBuffer(t *testing.T) {
 }
 
 func TestByteAndStringHalvesAgree(t *testing.T) {
-	re := irregex.MustCompile(`(\w+)@(\w+)`)
+	re := irgx.MustCompile(`(\w+)@(\w+)`)
 	const text = "a bob@host b eve@box"
 	if !reflect.DeepEqual(re.FindStringIndex(text), re.FindIndex([]byte(text))) {
 		t.Error("FindStringIndex and FindIndex disagree")
@@ -488,14 +488,14 @@ func TestByteAndStringHalvesAgree(t *testing.T) {
 // buffer would let an append scribble over the next match.
 func TestByteResultsAreCapped(t *testing.T) {
 	src := []byte("cat dog")
-	got := irregex.MustCompile(`cat`).Find(src)
+	got := irgx.MustCompile(`cat`).Find(src)
 	if cap(got) != len(got) {
 		t.Errorf("cap = %d, len = %d; the result can be appended into its neighbour", cap(got), len(got))
 	}
 }
 
 func TestSplit(t *testing.T) {
-	comma := irregex.MustCompile(`,`)
+	comma := irgx.MustCompile(`,`)
 	for _, tc := range []struct {
 		text string
 		n    int
@@ -515,13 +515,13 @@ func TestSplit(t *testing.T) {
 	}
 	// A separator that can match empty splits by the engine's rules, not the
 	// standard library's, so it is asserted rather than assumed.
-	if got := irregex.MustCompile(`x*`).Split("abc", -1); !reflect.DeepEqual(got, []string{"a", "b", "c"}) {
+	if got := irgx.MustCompile(`x*`).Split("abc", -1); !reflect.DeepEqual(got, []string{"a", "b", "c"}) {
 		t.Errorf(`x* Split("abc") = %q, want [a b c]`, got)
 	}
 }
 
 func TestReplace(t *testing.T) {
-	re := irregex.MustCompile(`(?P<user>\w+)@(\w+)`)
+	re := irgx.MustCompile(`(?P<user>\w+)@(\w+)`)
 	for _, tc := range []struct{ template, want string }{
 		{"$1", "bob and eve"},
 		{"${user}", "bob and eve"},
@@ -563,13 +563,13 @@ func TestReplace(t *testing.T) {
 // A replacement must not see the text it already wrote, which is what a naive
 // rebuild that re-searches its own output would do.
 func TestReplaceDoesNotRescanItsOutput(t *testing.T) {
-	if got := irregex.MustCompile(`a`).ReplaceAllString("aaa", "aa"); got != "aaaaaa" {
+	if got := irgx.MustCompile(`a`).ReplaceAllString("aaa", "aa"); got != "aaaaaa" {
 		t.Errorf("= %q, want aaaaaa", got)
 	}
 }
 
 func TestExpand(t *testing.T) {
-	re := irregex.MustCompile(`(?P<key>\w+)=(?P<value>\w+)`)
+	re := irgx.MustCompile(`(?P<key>\w+)=(?P<value>\w+)`)
 	const text = "a=1 b=2"
 	var out []byte
 	for _, match := range re.FindAllStringSubmatchIndex(text, -1) {
@@ -588,7 +588,7 @@ func TestEmptyPatternAndEmptyText(t *testing.T) {
 	// A zero-length Go string may carry a nil data pointer, and the engine reads
 	// null with length zero as the empty pattern, so this is also the test that
 	// the binding hands the empty string across the seam untouched.
-	re, err := irregex.Compile("")
+	re, err := irgx.Compile("")
 	if err != nil {
 		t.Fatalf("Compile(%q): %v", "", err)
 	}
@@ -598,10 +598,10 @@ func TestEmptyPatternAndEmptyText(t *testing.T) {
 	if got := re.FindAllStringIndex("", -1); got != nil {
 		t.Errorf("empty pattern over empty text = %v, want nil", got)
 	}
-	if irregex.MustCompile(`a`).MatchString("") {
+	if irgx.MustCompile(`a`).MatchString("") {
 		t.Error("a matched the empty text")
 	}
-	if got := irregex.MustCompile(`a`).FindAll(nil, -1); got != nil {
+	if got := irgx.MustCompile(`a`).FindAll(nil, -1); got != nil {
 		t.Errorf("Find over a nil slice = %v, want nil", got)
 	}
 	// The zero string, whose data pointer really is nil, where a "" literal's
@@ -609,7 +609,7 @@ func TestEmptyPatternAndEmptyText(t *testing.T) {
 	// so it is the one that proves the binding needs nothing standing in for an
 	// address.
 	var zero string
-	if _, err := irregex.Compile(zero); err != nil {
+	if _, err := irgx.Compile(zero); err != nil {
 		t.Errorf("Compile(zero string): %v", err)
 	}
 	if re.MatchString(zero) {
@@ -618,26 +618,26 @@ func TestEmptyPatternAndEmptyText(t *testing.T) {
 }
 
 func TestPackageLevelHelpers(t *testing.T) {
-	ok, err := irregex.MatchString(`^a`, "abc")
+	ok, err := irgx.MatchString(`^a`, "abc")
 	if err != nil || !ok {
 		t.Errorf("MatchString = %v, %v", ok, err)
 	}
-	if ok, err := irregex.Match(`^a`, []byte("bbc")); err != nil || ok {
+	if ok, err := irgx.Match(`^a`, []byte("bbc")); err != nil || ok {
 		t.Errorf("Match = %v, %v", ok, err)
 	}
-	if _, err := irregex.MatchString(`a(`, "abc"); err == nil {
+	if _, err := irgx.MatchString(`a(`, "abc"); err == nil {
 		t.Error("MatchString with a bad pattern returned no error")
 	}
 }
 
 func TestStringAndVersions(t *testing.T) {
-	if got := irregex.MustCompile(`a+b`).String(); got != "a+b" {
+	if got := irgx.MustCompile(`a+b`).String(); got != "a+b" {
 		t.Errorf("String = %q", got)
 	}
-	if irregex.Version() == "" || irregex.PCRE2Version() == "" {
+	if irgx.Version() == "" || irgx.PCRE2Version() == "" {
 		t.Error("the linked library reports no version")
 	}
-	if got := irregex.ABIVersion(); got != 2 {
+	if got := irgx.ABIVersion(); got != 2 {
 		t.Errorf("ABIVersion = %d, want 2; the binding was written against ABI 2", got)
 	}
 }

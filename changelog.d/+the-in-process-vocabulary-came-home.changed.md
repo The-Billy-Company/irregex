@@ -1,9 +1,9 @@
 `[status_codes]`, `[decline_reasons]` and `[fault_domains]` are declared here
 again, in `contract/engine.toml`. The ecosystem split had carried them out to
 `gist/contract/surface.toml` along with the row schemas that genuinely belong
-there, and it was the wrong home for a reason worth naming: `include/irregex.h`
+there, and it was the wrong home for a reason worth naming: `include/irgx.h`
 is what returns those codes and that fault struct, so a host linking only
-libirregex — the entire point of shipping this library separately — received a
+libirgx — the entire point of shipping this library separately — received a
 vocabulary that no contract in this repository declared. librelate, libgist and
 libblast speak it by linking it, not by redeclaring it.
 

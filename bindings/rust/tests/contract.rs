@@ -1,4 +1,4 @@
-//! The mirror in `irregex::contract` must not drift from the canonical
+//! The mirror in `irgx::contract` must not drift from the canonical
 //! contracts, nor from the driven binary.
 //!
 //! Four files are canonical, split by who authors what they describe:
@@ -19,7 +19,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use irregex::contract;
+use irgx::contract;
 
 /// Who authors each contract. Probed at every ancestor rather than at a counted
 /// depth — a fixed index was already off by one before the split, and because
@@ -36,12 +36,12 @@ const CONTRACTS: &[&str] = &["analytic", "engine", "kinship", "surface"];
 
 /// Path to one canonical contract TOML.
 ///
-/// `IRREGEX_<NAME>_CONTRACT` overrides. Otherwise the file is looked for at
+/// `IRGX_<NAME>_CONTRACT` overrides. Otherwise the file is looked for at
 /// every ancestor, in this checkout first and then in the sibling that authors
 /// it. Failing both, the path this layout would have used is returned anyway,
 /// so a caller reporting the miss names somewhere real.
 fn contract_path(name: &str) -> PathBuf {
-    let env_key = format!("IRREGEX_{}_CONTRACT", name.to_ascii_uppercase());
+    let env_key = format!("IRGX_{}_CONTRACT", name.to_ascii_uppercase());
     if let Ok(p) = std::env::var(&env_key) {
         return PathBuf::from(p);
     }
@@ -460,6 +460,6 @@ fn channel_polarity_mirrors_toml() {
 
 #[test]
 fn engine_version_matches_contract() {
-    // The linked libirregex reports the same semver the contract mirrors.
-    assert_eq!(irregex::engine_version(), contract::ENGINE_VERSION);
+    // The linked libirgx reports the same semver the contract mirrors.
+    assert_eq!(irgx::engine_version(), contract::ENGINE_VERSION);
 }

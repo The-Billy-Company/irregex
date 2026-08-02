@@ -122,7 +122,7 @@ jobs:
       - run: go test ./...
 
   rust:
-    # Same reasoning as Go: `vendor/<triple>/libirregex.a` is what a normal
+    # Same reasoning as Go: `vendor/<triple>/libirgx.a` is what a normal
     # `cargo build` links, so that is the rung CI should be exercising.
     runs-on: ubuntu-latest
     defaults:

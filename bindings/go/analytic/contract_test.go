@@ -25,12 +25,12 @@ var contractAuthors = map[string]string{
 
 // contractPath is the path to one canonical contract TOML.
 //
-// IRREGEX_<NAME>_CONTRACT overrides. Otherwise the file is looked for at every
+// IRGX_<NAME>_CONTRACT overrides. Otherwise the file is looked for at every
 // ancestor, in this checkout first and then in the sibling that authors it.
 // Failing both, the path this layout would have used is returned anyway, so a
 // caller reporting the miss names somewhere real.
 func contractPath(name string) string {
-	if override := os.Getenv("IRREGEX_" + strings.ToUpper(name) + "_CONTRACT"); override != "" {
+	if override := os.Getenv("IRGX_" + strings.ToUpper(name) + "_CONTRACT"); override != "" {
 		return override
 	}
 	author := contractAuthors[name]

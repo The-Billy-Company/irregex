@@ -13,7 +13,7 @@
 //! never add, drop, or reorder one. `defaultFileSetExtras` is therefore shared
 //! verbatim with the warm session, which mirrors this exact set — and returns
 //! allocation failure rather than exiting, because the FFI host calling
-//! `irregex_open` must receive `IRREGEX_OOM`, not a dead process (fault-channel law 1).
+//! `irgx_open` must receive `IRGX_OOM`, not a dead process (fault-channel law 1).
 
 const std = @import("std");
 const args = @import("../argv/args.zig");
@@ -28,9 +28,9 @@ const Dir = std.Io.Dir;
 const Opts = args.Opts;
 
 /// The walk returns allocation failure instead of exiting: it is also the warm
-/// session's corpus selector, reached from `irregex_open` / `irregex_search`,
+/// session's corpus selector, reached from `irgx_open` / `irgx_search`,
 /// where an `exit(2)` kills the embedding host rather than yielding
-/// `IRREGEX_OOM` (fault-channel law 1). The command plane absorbs it with
+/// `IRGX_OOM` (fault-channel law 1). The command plane absorbs it with
 /// `catch oom()` at its own boundary, so the CLI is unchanged.
 const Oom = std.mem.Allocator.Error;
 
@@ -221,7 +221,7 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
     // The walker's only construction failure is allocation, and allocation
     // failure RETURNS (fault-channel law 1): the warm session and the FFI call this
     // walk from inside a host process, where folding an OOM into `walk_error`
-    // would serve a silently empty set instead of yielding `IRREGEX_OOM`.
+    // would serve a silently empty set instead of yielding `IRGX_OOM`.
     var walker = try root.walkSelectively(a);
     defer walker.deinit();
     while (true) {
@@ -402,9 +402,9 @@ pub const FileSet = struct { paths: []const []const u8, path_error: bool };
 /// costs one extra `ignore.decide` classification per skipped file (never per
 /// kept file), letting the warm session answer `-t`/`-g` with cold parity.
 ///
-/// Allocation failure RETURNS: the warm session calls this from `irregex_open`
-/// and every reconcile behind `irregex_search`, where exiting the process would
-/// take the embedding host down instead of yielding `IRREGEX_OOM` (the fault-channel taxonomy law
+/// Allocation failure RETURNS: the warm session calls this from `irgx_open`
+/// and every reconcile behind `irgx_search`, where exiting the process would
+/// take the embedding host down instead of yielding `IRGX_OOM` (the fault-channel taxonomy law
 /// 1). The command plane absorbs it at `collectFiles` with `catch oom()`, so the
 /// CLI's exit 2 and OOM notice are byte-identical to before.
 pub fn defaultFileSetExtras(a: std.mem.Allocator, io: std.Io, roots: []const []const u8, extras_out: ?*[]const Extra) Oom!FileSet {

@@ -1,7 +1,7 @@
 //! [`Regex`], [`RegexBuilder`], and the two engine calls everything is built on.
 //!
 //! One rule shapes the whole file: **the match sequence comes from
-//! `irregex_find_all`, never from a loop over `irregex_captures`.** The engine
+//! `irgx_find_all`, never from a loop over `irgx_captures`.** The engine
 //! owns what a sequence of matches is - whether an empty match adjacent to the
 //! previous one counts, what happens at the end of the buffer, how `word(true)`
 //! filtering interacts with resuming the scan - and none of that is derivable
@@ -72,7 +72,7 @@ impl Regex {
         let mut count: u32 = 0;
         // SAFETY: the lease hands out a live handle this thread alone holds, and
         // `count` is a live `u32` slot the library writes only on success.
-        let status = unsafe { sys::irregex_group_count(lease.raw(), &raw mut count) };
+        let status = unsafe { sys::irgx_group_count(lease.raw(), &raw mut count) };
         // A negative status here means the capture arm refused the pattern, not
         // that the pattern is unusable. Record the refusal and let the verbs that
         // actually need a group be the ones that complain.
@@ -156,7 +156,7 @@ impl Regex {
         // SAFETY: the lease is exclusive to this thread, and `body` is a live
         // slice passed with its own length. A `&str`'s pointer is never null,
         // and the header accepts a zero length regardless.
-        let status = unsafe { sys::irregex_is_match(lease.raw(), body.as_ptr(), body.len()) };
+        let status = unsafe { sys::irgx_is_match(lease.raw(), body.as_ptr(), body.len()) };
         if status < 0 {
             return Err(fault(status, |status, detail| Error::Search {
                 status,
@@ -316,7 +316,7 @@ impl Regex {
         // most `out.len()` spans into a buffer that holds that many; `written` is
         // a live slot. The header allows a zero-length text.
         let status = unsafe {
-            sys::irregex_find_all(
+            sys::irgx_find_all(
                 lease.raw(),
                 body.as_ptr(),
                 body.len(),
@@ -388,7 +388,7 @@ impl Regex {
             // `find_all` reported inside `body`, so it satisfies the header's
             // `from <= len`; `written` is a live slot.
             let status = unsafe {
-                sys::irregex_captures(
+                sys::irgx_captures(
                     lease.raw(),
                     body.as_ptr(),
                     body.len(),
@@ -496,18 +496,18 @@ fn name_table(lease: &crate::pool::Lease<'_>, count: u32) -> Box<[(Box<str>, usi
     let mut found: Vec<(Box<str>, usize)> = Vec::new();
     // Group 0 is the whole match and is never named, so the walk starts at 1
     // and stops at the count the engine just reported: an index past it is
-    // `IRREGEX_INVALID`, not an absent name.
+    // `IRGX_INVALID`, not an absent name.
     for index in 1..=count {
         let mut name = sys::Text::default();
         // SAFETY: the lease is exclusive to this thread, `index` is within the
         // group count the engine reported for this same handle, and `name` is a
         // live slot the library writes only when it reports a match.
-        let status = unsafe { sys::irregex_group_name(lease.raw(), index, &raw mut name) };
+        let status = unsafe { sys::irgx_group_name(lease.raw(), index, &raw mut name) };
         if status != sys::MATCH || name.ptr.is_null() {
             continue;
         }
         // SAFETY: the header documents the span as the parser's own name
-        // storage, borrowed from the handle and valid until `irregex_free`; the
+        // storage, borrowed from the handle and valid until `irgx_free`; the
         // lease is alive for this whole loop and the bytes are copied below.
         let bytes = unsafe { std::slice::from_raw_parts(name.ptr, name.len) };
         if let Ok(text) = std::str::from_utf8(bytes) {
@@ -553,8 +553,8 @@ impl std::str::FromStr for Regex {
 /// Compile a pattern with the flags spelled out.
 ///
 /// ```
-/// # fn main() -> Result<(), irregex::Error> {
-/// let re = irregex::RegexBuilder::new("café").ignore_case(true).build()?;
+/// # fn main() -> Result<(), irgx::Error> {
+/// let re = irgx::RegexBuilder::new("café").ignore_case(true).build()?;
 /// assert!(re.is_match("le CAFÉ noir"));
 /// # Ok(())
 /// # }
@@ -570,7 +570,7 @@ impl RegexBuilder {
     #[must_use]
     pub fn new(pattern: &str) -> Self {
         // Unicode semantics are the engine's default, so the bit that exists is
-        // `IRREGEX_NO_UNICODE` and the default flag word is empty.
+        // `IRGX_NO_UNICODE` and the default flag word is empty.
         Self {
             pattern: pattern.to_owned(),
             flags: 0,

@@ -40,11 +40,14 @@ jobs:
           version: 0.16.0
       - uses: astral-sh/setup-uv@v5
 
-      # The three faces version independently on purpose — the Zig package, the
-      # Python distribution, and the Rust crate are at 0.3.0, 0.2.0 and 0.1.0 and
-      # there is no reason a binding's API churn should bump the engine's number.
-      # But this workflow publishes exactly one of them, so the tag has to name
-      # that one's version or the release notes describe an artifact nobody got.
+      # The three faces — the Zig package, the Python distribution, and the Rust
+      # crate — all start at 1.0.0 together. That is the release freezing the C
+      # ABI, and it would read badly for the thing being frozen to carry a
+      # different number than the thing promising it. They diverge from there:
+      # a binding's API churn has no business bumping the engine. So equal
+      # numbers today are a starting line, not a coupling — and this workflow
+      # publishes exactly one face, so the tag has to name that one's version or
+      # the release notes describe an artifact nobody got.
       - name: The tag must name the version being published
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
@@ -77,8 +80,8 @@ jobs:
           # From a directory that is not the project, so the import resolves to
           # the installed wheel rather than the working copy beside it.
           cd /tmp && /tmp/floor/bin/python -c "
-          import irregex
-          m = irregex.compile(r'(?P<k>\w+)=(?P<v>\d+)').search('x=42')
+          import irgx
+          m = irgx.compile(r'(?P<k>\w+)=(?P<v>\d+)').search('x=42')
           assert (m.group('k'), m.group('v')) == ('x', '42'), m
           print('floor import + match OK')
           "

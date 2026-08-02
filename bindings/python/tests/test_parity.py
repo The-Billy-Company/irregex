@@ -13,7 +13,7 @@ import re
 
 import pytest
 
-import irregex
+import irgx
 
 # Patterns in the grammar both engines implement the same way, over text chosen
 # to exercise anchors, classes, alternation, quantifiers and word boundaries.
@@ -39,7 +39,7 @@ AGREE = [
 
 @pytest.mark.parametrize(("pattern", "text"), AGREE)
 def test_spans_agree_with_re(pattern, text):
-    assert [m.span() for m in irregex.finditer(pattern, text)] == [
+    assert [m.span() for m in irgx.finditer(pattern, text)] == [
         m.span() for m in re.finditer(pattern, text)
     ]
 
@@ -49,21 +49,19 @@ def test_findall_agrees_with_re(pattern, text):
     # `re.findall` returns "" for a group the match did not enter; none of these
     # patterns has one, which is why the comparison is exact here and the
     # divergence gets its own test below.
-    assert irregex.findall(pattern, text) == re.findall(pattern, text)
+    assert irgx.findall(pattern, text) == re.findall(pattern, text)
 
 
 @pytest.mark.parametrize(("pattern", "text"), AGREE)
 def test_groups_agree_with_re(pattern, text):
-    for mine, theirs in zip(
-        irregex.finditer(pattern, text), re.finditer(pattern, text), strict=True
-    ):
+    for mine, theirs in zip(irgx.finditer(pattern, text), re.finditer(pattern, text), strict=True):
         assert mine.group(0) == theirs.group(0)
         assert mine.groups() == theirs.groups()
 
 
 @pytest.mark.parametrize(("pattern", "text"), AGREE)
 def test_substitution_agrees_with_re(pattern, text):
-    assert irregex.sub(pattern, "<>", text) == re.sub(pattern, "<>", text)
+    assert irgx.sub(pattern, "<>", text) == re.sub(pattern, "<>", text)
 
 
 def test_alternation_prefers_the_left_branch_exactly_as_re_does():
@@ -71,18 +69,18 @@ def test_alternation_prefers_the_left_branch_exactly_as_re_does():
     # would report "ab" for `a|ab`. It does not, which is what makes the
     # comparisons above meaningful rather than accidental.
     for pattern, text in [("a|ab", "ab"), ("ab|a", "ab"), ("(a|ab)(c|bcd)", "abcd")]:
-        assert irregex.search(pattern, text).span() == re.search(pattern, text).span()
+        assert irgx.search(pattern, text).span() == re.search(pattern, text).span()
 
 
 def test_lazy_quantifiers_agree_with_re():
     for pattern, text in [(r"\w+?", "abc"), (r"<.*?>", "<a><b>"), (r"a+?b", "aaab")]:
-        assert [m.span() for m in irregex.finditer(pattern, text)] == [
+        assert [m.span() for m in irgx.finditer(pattern, text)] == [
             m.span() for m in re.finditer(pattern, text)
         ]
 
 
 def test_ignore_case_agrees_with_re_on_ascii():
-    assert irregex.findall("walrus", "WALRUS Walrus walrus", ignore_case=True) == re.findall(
+    assert irgx.findall("walrus", "WALRUS Walrus walrus", ignore_case=True) == re.findall(
         "walrus", "WALRUS Walrus walrus", re.IGNORECASE
     )
 
@@ -95,10 +93,10 @@ def test_we_do_not_report_an_empty_match_at_the_end_of_the_text():
     # not. The rule belongs to the engine, whose unit of work is a line of a
     # file and which reports what it found IN the text rather than after it.
     # `find_all` is the authority, so the binding reports what it reports.
-    assert [m.span() for m in irregex.finditer("", "abc")] == [(0, 0), (1, 1), (2, 2)]
+    assert [m.span() for m in irgx.finditer("", "abc")] == [(0, 0), (1, 1), (2, 2)]
     assert [m.span() for m in re.finditer("", "abc")] == [(0, 0), (1, 1), (2, 2), (3, 3)]
 
-    assert [m.span() for m in irregex.finditer("a*", "abc")] == [(0, 1), (2, 2)]
+    assert [m.span() for m in irgx.finditer("a*", "abc")] == [(0, 1), (2, 2)]
     assert [m.span() for m in re.finditer("a*", "abc")] == [(0, 1), (1, 1), (2, 2), (3, 3)]
 
 
@@ -107,7 +105,7 @@ def test_a_non_participating_group_is_none_in_findall_not_empty_string():
     # distinction between "did not match" and "matched nothing". `.groups()`
     # already reports None for that case in both libraries, so `findall`
     # agreeing with `.groups()` is the more consistent answer.
-    assert irregex.findall(r"(a)|(b)", "ab") == [("a", None), (None, "b")]
+    assert irgx.findall(r"(a)|(b)", "ab") == [("a", None), (None, "b")]
     assert re.findall(r"(a)|(b)", "ab") == [("a", ""), ("", "b")]
 
 
@@ -115,7 +113,7 @@ def test_flags_are_keywords_and_the_re_bitmask_is_not_accepted():
     # `re.IGNORECASE` is an int; passing it positionally to a keyword-only
     # surface is a TypeError rather than a silently ignored argument.
     with pytest.raises(TypeError):
-        irregex.compile("a", re.IGNORECASE)
+        irgx.compile("a", re.IGNORECASE)
 
 
 def test_a_newline_is_a_line_terminator_and_not_ordinary_whitespace():
@@ -124,13 +122,13 @@ def test_a_newline_is_a_line_terminator_and_not_ordinary_whitespace():
     # the pattern. `re` has no such notion and matches it like any other space.
     # A longer match may still span a newline, so this is about what a
     # one-character class admits, not about the buffer being cut up.
-    assert irregex.findall(r"\s", "a\nb") == []
+    assert irgx.findall(r"\s", "a\nb") == []
     assert re.findall(r"\s", "a\nb") == ["\n"]
-    assert irregex.findall(r"\s", "a\tb") == ["\t"]  # every other space is ordinary
-    assert irregex.findall(r"a\sb", "a\nb") == ["a\nb"]
+    assert irgx.findall(r"\s", "a\tb") == ["\t"]  # every other space is ordinary
+    assert irgx.findall(r"a\sb", "a\nb") == ["a\nb"]
     # `.` excludes the newline in both, which is the one place they already
     # agreed.
-    assert irregex.findall(r"a.b", "a\nb") == re.findall(r"a.b", "a\nb") == []
+    assert irgx.findall(r"a.b", "a\nb") == re.findall(r"a.b", "a\nb") == []
 
 
 def test_there_is_no_fullmatch_or_match_because_the_engine_has_no_anchored_verb():
@@ -139,10 +137,10 @@ def test_there_is_no_fullmatch_or_match_because_the_engine_has_no_anchored_verb(
     # is the engine's own answer. Note the spelling: the end-of-text anchor is
     # `\z`, as in Rust and RE2. `\Z` is not in this grammar, and asking for it
     # raises rather than quietly meaning something else.
-    assert not hasattr(irregex, "fullmatch")
-    assert not hasattr(irregex, "match")
-    whole = irregex.search(r"\A\w+\z", "abc")
+    assert not hasattr(irgx, "fullmatch")
+    assert not hasattr(irgx, "match")
+    whole = irgx.search(r"\A\w+\z", "abc")
     assert whole is not None and whole.span() == (0, 3)
-    assert irregex.search(r"\A\w+\z", "abc def") is None
-    with pytest.raises(irregex.error):
-        irregex.compile(r"\Z")
+    assert irgx.search(r"\A\w+\z", "abc def") is None
+    with pytest.raises(irgx.error):
+        irgx.compile(r"\Z")

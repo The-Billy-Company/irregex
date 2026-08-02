@@ -53,7 +53,7 @@ pub const Status = enum(i32) {
     /// path before reaching here) and `wire`, which the contract says cannot
     /// cross this seam at all since the FFI is in-process with no daemon
     /// transport. Both stay total rather than trusted: what the fold loses,
-    /// `irregex_last_fault`'s `name` restores per incident.
+    /// `irgx_last_fault`'s `name` restores per incident.
     ///
     /// Exhaustive on purpose — a twentieth fault member is a compile error here
     /// instead of a silent `else` prong that would report a new failure as a
@@ -115,7 +115,7 @@ pub fn statusMessage(code: i32) [*:0]const u8 {
         @intFromEnum(Status.open_failed) => "open failed: could not stand up the corpus this call needed",
         // Both of `invalid`'s causes, because a host reading only this line
         // after a refused pattern would otherwise go hunting for a null it
-        // never passed. Which one it was is `irregex_last_fault`'s to say.
+        // never passed. Which one it was is `irgx_last_fault`'s to say.
         @intFromEnum(Status.invalid) => "invalid: bad argument, or a pattern this arm cannot compile",
         else => "unknown status",
     };
@@ -191,7 +191,7 @@ pub const FaultDetail = extern struct {
 /// A non-OK status does **not** imply a detail exists, and `.ok` here is not a
 /// contradiction of it. The seam's own argument guards (`.invalid` for a null
 /// pointer or a stale `struct_size`) have no per-incident detail to add over
-/// `irregex_status_message`, and a declinature is not a fault at all — so `.ok`
+/// `irgx_status_message`, and a declinature is not a fault at all — so `.ok`
 /// means "nothing further to say", never "the call succeeded".
 ///
 /// **`.ok` still writes.** It used to leave `out` untouched, which made the
@@ -202,7 +202,7 @@ pub const FaultDetail = extern struct {
 /// and `name` becomes the empty string rather than null, keeping its promise.
 ///
 /// Reading does not consume: a host may ask twice, or ask after
-/// `irregex_status_message`, and get the same answer.
+/// `irgx_status_message`, and get the same answer.
 pub fn lastFault(out: ?*FaultDetail) Status {
     const slot = out orelse return .invalid;
     if (slot.struct_size != @sizeOf(FaultDetail)) return .invalid;
@@ -235,7 +235,7 @@ pub fn lastFault(out: ?*FaultDetail) Status {
 /// the host the detail behind it.
 ///
 /// A **declinature never comes through here**: `.stale` is returned directly by
-/// its call sites, which is what keeps `irregex_last_fault` silent about a tier
+/// its call sites, which is what keeps `irgx_last_fault` silent about a tier
 /// that merely stepped aside.
 pub fn report(d: fault.Detail) Status {
     fault.install(d);
@@ -267,7 +267,7 @@ pub fn reportAny(e: anyerror, unknown: Status) Status {
 ///
 /// Only the entries that START work call it. Teardown (`close`, `cursorClose`,
 /// `cancelFree`, `engineClose`) and the two pure readers
-/// (`irregex_status_message`, `irregex_last_fault`) leave the slot alone, so a
+/// (`irgx_status_message`, `irgx_last_fault`) leave the slot alone, so a
 /// host can still report the detail from its cleanup path — the one place a
 /// uniform "every call clears" rule would silently eat it.
 ///

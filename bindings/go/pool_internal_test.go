@@ -1,6 +1,6 @@
 //go:build cgo
 
-package irregex
+package irgx
 
 import (
 	"sync"

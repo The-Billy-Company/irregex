@@ -3,7 +3,7 @@
 //! Isolated from the index build/query in `trigram.zig` so the SoTA sparse-n-gram
 //! variant (ADR-pending) drops in HERE without touching either. Pure,
 //! allocation-free primitives over caller-owned buffers — `extractSortedUnique`
-//! is the cross-language parity oracle the C-ABI `irregex_trigram_count` calls into.
+//! is the cross-language parity oracle the C-ABI `irgx_trigram_count` calls into.
 
 const std = @import("std");
 

@@ -1,4 +1,4 @@
-//go:build !cgo || !irregex_ffi
+//go:build !cgo || !irgx_ffi
 
 package runtime
 
@@ -13,11 +13,11 @@ import (
 // to make the ladder's first rung a no-op rather than to reimplement it.
 //
 // It is also the DEFAULT, which is the point. The in-process tier links a
-// libirregex that only a `zig build` produces, and a module fetched by
+// libirgx that only a `zig build` produces, and a module fetched by
 // `go get` has no such artifact anywhere near it — keying the tier on cgo alone
 // meant the ordinary CGO_ENABLED=1 build tried to link a file that could not
 // exist and failed at the linker rather than answering. The tier is therefore
-// opt-in: build with `-tags irregex_ffi` once zig-out/ is populated.
+// opt-in: build with `-tags irgx_ffi` once zig-out/ is populated.
 
 const hasCGO = false
 

@@ -97,7 +97,7 @@ func locate(name string) (string, error) {
 // a consumer outside the ecosystem simply falls through to PATH.
 //
 // Two passes, in the order the Python binding already resolves in
-// (bindings/python/irregex/runtime/shell.py, `_locate_root`): an already-built
+// (bindings/python/irgx/runtime/shell.py, `_locate_root`): an already-built
 // binary anywhere up the chain, then the sibling checkout that owns the name.
 // The two are describing the same fact about one filesystem, so they must agree.
 // The four packages are flat siblings of one workspace — `relate` sits at
@@ -220,7 +220,7 @@ func died(state *os.ProcessState, code int) string {
 }
 
 // unsupportedMarkers are the phrases the engine prints when a pattern or flag is
-// outside its linear-time syntax — the cold spelling of IRREGEX_STALE.
+// outside its linear-time syntax — the cold spelling of IRGX_STALE.
 var unsupportedMarkers = [...]string{"unsupported", "use ripgrep", "use rg for this", "linear-time syntax", "not yet implemented"}
 
 func unsupported(stderr string) bool {

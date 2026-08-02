@@ -4,19 +4,19 @@ A wheel that contains a ``.dylib`` is not ``py3-none-any``. Claiming otherwise
 produces a file that pip will happily install on Linux and that will fail at
 ``import`` time, which is the worst possible place to discover the mistake. So
 this hook does three things: build (or accept) the shared library, force it into
-the wheel under ``irregex/lib/``, and set the platform tag to match.
+the wheel under ``irgx/lib/``, and set the platform tag to match.
 
 The Python side is pure - it is ctypes, not a C extension - so the tag is
 ``py3-none-<platform>``: any Python 3, no CPython ABI, this platform only.
 
 Two environment variables drive a cross-build:
 
-``IRREGEX_PREBUILT_LIB``
+``IRGX_PREBUILT_LIB``
     A library that is already built. The hook copies it instead of invoking
     Zig. This is what ``scripts/build_wheels.py`` uses, so the matrix script
     owns the Zig invocation and this hook stays a packaging step.
 
-``IRREGEX_WHEEL_PLATFORM``
+``IRGX_WHEEL_PLATFORM``
     The platform tag to stamp, e.g. ``manylinux_2_17_x86_64``. Required when
     cross-building, since the host's own tag would be a lie.
 """
@@ -38,9 +38,9 @@ from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 # Zig's install layout per OS: where the shared library lands under --prefix,
 # and what it must be called inside the package for ctypes to find it.
 _LAYOUT = {
-    "windows": ("bin/irregex.dll", "irregex.dll"),
-    "macos": ("lib/libirregex.dylib", "libirregex.dylib"),
-    "linux": ("lib/libirregex.so", "libirregex.so"),
+    "windows": ("bin/irgx.dll", "irgx.dll"),
+    "macos": ("lib/libirgx.dylib", "libirgx.dylib"),
+    "linux": ("lib/libirgx.so", "libirgx.so"),
 }
 
 
@@ -61,7 +61,7 @@ def _engine_root(start: Path) -> Path:
     raise RuntimeError(
         "cannot find the irregex Zig sources (no build.zig above "
         f"{start}). Building this wheel from an sdist needs either the engine "
-        "sources or IRREGEX_PREBUILT_LIB pointing at a built library."
+        "sources or IRGX_PREBUILT_LIB pointing at a built library."
     )
 
 
@@ -72,28 +72,28 @@ class IrregexBuildHook(BuildHookInterface):
         if self.target_name != "wheel":
             return
 
-        zig_target = os.environ.get("IRREGEX_ZIG_TARGET")
+        zig_target = os.environ.get("IRGX_ZIG_TARGET")
         which_os = _os_of(zig_target)
         _, installed_name = _LAYOUT[which_os]
 
-        prebuilt = os.environ.get("IRREGEX_PREBUILT_LIB")
+        prebuilt = os.environ.get("IRGX_PREBUILT_LIB")
         if prebuilt:
             source = Path(prebuilt).resolve()
             if not source.is_file():
-                raise RuntimeError(f"IRREGEX_PREBUILT_LIB={prebuilt!r} is not a file")
+                raise RuntimeError(f"IRGX_PREBUILT_LIB={prebuilt!r} is not a file")
         else:
             source = self._build_with_zig(zig_target, which_os)
 
         build_data["pure_python"] = False
         build_data["infer_tag"] = False
         build_data["tag"] = f"py3-none-{self._platform_tag()}"
-        build_data.setdefault("force_include", {})[str(source)] = f"irregex/lib/{installed_name}"
+        build_data.setdefault("force_include", {})[str(source)] = f"irgx/lib/{installed_name}"
 
     def _build_with_zig(self, zig_target: str | None, which_os: str) -> Path:
         if shutil.which("zig") is None:
             raise RuntimeError(
                 "zig is not on PATH. Install Zig to build this wheel from source, "
-                "or set IRREGEX_PREBUILT_LIB to a library you already have."
+                "or set IRGX_PREBUILT_LIB to a library you already have."
             )
         root = _engine_root(Path(self.root).resolve())
         # Held on the instance so the directory outlives `initialize` and is
@@ -124,7 +124,7 @@ class IrregexBuildHook(BuildHookInterface):
         wheel that installs nowhere. This path is the local-development
         fallback; ``scripts/build_wheels.py`` always passes the tag explicitly.
         """
-        override = os.environ.get("IRREGEX_WHEEL_PLATFORM")
+        override = os.environ.get("IRGX_WHEEL_PLATFORM")
         if override:
             return override
         tag = sysconfig.get_platform().replace("-", "_").replace(".", "_")

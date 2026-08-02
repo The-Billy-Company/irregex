@@ -1,6 +1,6 @@
-//go:build cgo && !irregex_syslib
+//go:build cgo && !irgx_syslib
 
-package irregex
+package irgx
 
 // The vendored archive for this platform. One of these files exists per
 // supported platform, each carrying the same directive against a different
@@ -15,5 +15,5 @@ package irregex
 // directory down would be silently dropped and the vendored build would fail at
 // the linker.
 
-// #cgo LDFLAGS: ${SRCDIR}/libirregex_darwin_arm64.a
+// #cgo LDFLAGS: ${SRCDIR}/libirgx_darwin_arm64.a
 import "C"

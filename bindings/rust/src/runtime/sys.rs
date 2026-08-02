@@ -2,7 +2,7 @@
 //!
 //! Two halves with deliberately different compilation rules:
 //!
-//! * The **layouts** — every `#[repr(C)]` struct and every `IRREGEX_*` constant
+//! * The **layouts** — every `#[repr(C)]` struct and every `IRGX_*` constant
 //!   — are compiled unconditionally. They describe bytes, not symbols, so they
 //!   cost nothing without a library and they let the analytic row decoder (and
 //!   its tests) be exercised against synthesized buffers on a plain subprocess
@@ -24,14 +24,14 @@ use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_void};
 
 /// Opaque warm corpus (`api.Engine`), shared by the exact and analytic planes —
-/// and by every package's producer, which is why `libirregex` opens it.
-pub enum irregex_engine {}
+/// and by every package's producer, which is why `libirgx` opens it.
+pub enum irgx_engine {}
 /// Opaque materialized pull cursor (owns its record arena).
 pub enum gist_cursor {}
 /// Opaque thread-safe cancellation token (`api.CancelToken`), also substrate.
-pub enum irregex_cancel {}
+pub enum irgx_cancel {}
 /// Opaque analytic row cursor (owns the arena every row borrows).
-pub enum irregex_rows {}
+pub enum irgx_rows {}
 
 // ── the exact plane ────────────────────────────────────────────────────────
 
@@ -70,10 +70,10 @@ pub struct SearchRequest {
     pub pattern_len: usize,
     pub timeout_ns: u64,
     pub max_results: usize,
-    pub cancel: *mut irregex_cancel,
+    pub cancel: *mut irgx_cancel,
 }
 
-// Flag bits (mirror `contract.zig` / the IRREGEX_* header macros).
+// Flag bits (mirror `contract.zig` / the IRGX_* header macros).
 pub const FLAG_FIXED: u32 = 1 << 0;
 pub const FLAG_IGNORE_CASE: u32 = 1 << 1;
 pub const FLAG_WORD: u32 = 1 << 2;
@@ -124,7 +124,7 @@ pub const AN_BY_PATTERN: u32 = 1 << 6;
 pub const AN_BY_FILE: u32 = 1 << 7;
 pub const AN_DISTINCT: u32 = 1 << 8;
 
-// Which tier answered (`irregex_stats.source`).
+// Which tier answered (`irgx_stats.source`).
 pub const SOURCE_LIVE: u32 = 0;
 pub const SOURCE_ATLAS: u32 = 1;
 pub const SOURCE_SHELF: u32 = 2;
@@ -162,7 +162,7 @@ pub struct Row {
     pub values: *const Value,
 }
 
-/// One declared field, for `irregex_schema_get`.
+/// One declared field, for `irgx_schema_get`.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Field {
@@ -173,7 +173,7 @@ pub struct Field {
     pub reserved: c_int,
 }
 
-/// One declared row schema, for `irregex_schema_get`.
+/// One declared row schema, for `irgx_schema_get`.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Schema {
@@ -271,7 +271,7 @@ pub struct RankParams {
 pub struct Fault {
     pub struct_size: u32,
     pub status: c_int,
-    /// Which ruler `at` is measured in (`IRREGEX_AT_*`); zero when there is no
+    /// Which ruler `at` is measured in (`IRGX_AT_*`); zero when there is no
     /// offset at all, so it stays the "is `at` meaningful" test it replaced.
     pub at_space: c_int,
     pub name: *const c_char,
@@ -284,21 +284,21 @@ pub struct Fault {
 // declarations: [`super::plane`] resolves them at run time, so an engine built
 // before the analytic plane landed leaves the crate working rather than unlinkable.
 pub type AnalyticRunFn = unsafe extern "C" fn(
-    engine: *mut irregex_engine,
+    engine: *mut irgx_engine,
     op: u32,
     params: *const c_void,
-    cancel: *mut irregex_cancel,
-    out: *mut *mut irregex_rows,
+    cancel: *mut irgx_cancel,
+    out: *mut *mut irgx_rows,
 ) -> c_int;
-pub type RowsNextFn = unsafe extern "C" fn(rows: *mut irregex_rows, out: *mut Row) -> c_int;
+pub type RowsNextFn = unsafe extern "C" fn(rows: *mut irgx_rows, out: *mut Row) -> c_int;
 pub type RowsNextBatchFn = unsafe extern "C" fn(
-    rows: *mut irregex_rows,
+    rows: *mut irgx_rows,
     out: *mut Row,
     cap: usize,
     written: *mut usize,
 ) -> c_int;
-pub type RowsStatsFn = unsafe extern "C" fn(rows: *mut irregex_rows, out: *mut Stats) -> c_int;
-pub type RowsCloseFn = unsafe extern "C" fn(rows: *mut irregex_rows);
+pub type RowsStatsFn = unsafe extern "C" fn(rows: *mut irgx_rows, out: *mut Stats) -> c_int;
+pub type RowsCloseFn = unsafe extern "C" fn(rows: *mut irgx_rows);
 pub type SchemaDigestFn = unsafe extern "C" fn() -> *const c_char;
 pub type SchemaCountFn = unsafe extern "C" fn() -> u32;
 pub type SchemaGetFn = unsafe extern "C" fn(id: u32, out: *mut Schema) -> c_int;
@@ -306,9 +306,9 @@ pub type LastFaultFn = unsafe extern "C" fn(out: *mut Fault) -> c_int;
 pub type EngineOpenFn = unsafe extern "C" fn(
     roots: *const *const c_char,
     nroots: usize,
-    out: *mut *mut irregex_engine,
+    out: *mut *mut irgx_engine,
 ) -> c_int;
-pub type EngineCloseFn = unsafe extern "C" fn(engine: *mut irregex_engine);
+pub type EngineCloseFn = unsafe extern "C" fn(engine: *mut irgx_engine);
 
 // ── run-time symbol resolution ─────────────────────────────────────────────
 

@@ -58,24 +58,24 @@ VENDOR = MODULE
 # archive instead of passing on a lucky one.
 PROBE = """
 #include <stdio.h>
-#include "irregex.h"
+#include "irgx.h"
 
 int main(void) {
-  irregex_regex *re = NULL;
-  irregex_span spans[4];
-  irregex_text name;
+  irgx_regex *re = NULL;
+  irgx_span spans[4];
+  irgx_text name;
   size_t written = 0;
   const uint8_t *pattern = (const uint8_t *)"(?P<g>a+)";
-  if (irregex_compile(pattern, 9, IRREGEX_PCRE, &re) != IRREGEX_OK) return 1;
-  if (irregex_find_all(re, (const uint8_t *)"aa b", 4, spans, 4, &written) != IRREGEX_MATCH) return 2;
-  if (irregex_captures(re, (const uint8_t *)"aa b", 4, 0, spans, 4, &written) != IRREGEX_MATCH) return 3;
-  if (irregex_is_match(re, (const uint8_t *)"aa b", 4) != IRREGEX_MATCH) return 4;
+  if (irgx_compile(pattern, 9, IRGX_PCRE, &re) != IRGX_OK) return 1;
+  if (irgx_find_all(re, (const uint8_t *)"aa b", 4, spans, 4, &written) != IRGX_MATCH) return 2;
+  if (irgx_captures(re, (const uint8_t *)"aa b", 4, 0, spans, 4, &written) != IRGX_MATCH) return 3;
+  if (irgx_is_match(re, (const uint8_t *)"aa b", 4) != IRGX_MATCH) return 4;
   // The Go binding builds its whole name table out of this one, so an archive
   // that cannot resolve it is a broken `go build` rather than a broken search.
-  if (irregex_group_name(re, 1, &name) != IRREGEX_MATCH) return 5;
-  irregex_free(re);
-  printf("%s %s %u %lld\\n", irregex_version(), irregex_pcre2_version(),
-         irregex_abi_version(), (long long)spans[0].end);
+  if (irgx_group_name(re, 1, &name) != IRGX_MATCH) return 5;
+  irgx_free(re);
+  printf("%s %s %u %lld\\n", irgx_version(), irgx_pcre2_version(),
+         irgx_abi_version(), (long long)spans[0].end);
   return 0;
 }
 """
@@ -99,7 +99,7 @@ class Target:
         # Beside the Go source, not under it: `go mod vendor` copies a package's
         # own files and skips subdirectories that hold no Go package, so an
         # archive one level down would vanish from a vendored consumer.
-        return VENDOR / f"libirregex_{self.goos}_{self.goarch}.a"
+        return VENDOR / f"libirgx_{self.goos}_{self.goarch}.a"
 
 
 # macOS 11 is where arm64 begins. glibc 2.17 is the manylinux2014 floor and
@@ -233,12 +233,12 @@ def build(target: Target, cache_root: Path, zig: str, strip: str | None, nm: str
             ],
             cwd=ENGINE,
         )
-        archive = staging / "lib" / "libirregex.a"
+        archive = staging / "lib" / "libirgx.a"
         if not archive.is_file():
             raise RuntimeError(f"zig build produced no {archive}")
 
         if not defines(nm, archive, FLOOR_WITNESS):
-            merged = work / "libirregex.a"
+            merged = work / "libirgx.a"
             merge(zig, archive, floor_archive(cache), merged)
             archive = merged
             if not defines(nm, archive, FLOOR_WITNESS):
@@ -247,11 +247,11 @@ def build(target: Target, cache_root: Path, zig: str, strip: str | None, nm: str
         if strip:
             run([strip, "--strip-debug", str(archive)])
 
-        header = ENGINE / "include" / "irregex.h"
+        header = ENGINE / "include" / "irgx.h"
         note = probe_link(zig, target, archive, header, work)
 
         shutil.copy2(archive, target.archive)
-        shutil.copy2(header, VENDOR / "irregex.h")
+        shutil.copy2(header, VENDOR / "irgx.h")
         return target.archive.stat().st_size, note
 
 

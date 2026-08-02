@@ -49,9 +49,9 @@ class Target:
     host: tuple[str, str] | None = None
 
 
-_DYLIB = "lib/libirregex.dylib"
-_SO = "lib/libirregex.so"
-_DLL = "bin/irregex.dll"
+_DYLIB = "lib/libirgx.dylib"
+_SO = "lib/libirgx.so"
+_DLL = "bin/irgx.dll"
 
 # glibc 2.17 is the manylinux2014 floor and still the widest useful baseline;
 # Zig links against exactly that version rather than the host's, which is what
@@ -109,9 +109,9 @@ def build_library(target: Target, prefix: Path) -> Path:
 
 def build_wheel(target: Target, library: Path, outdir: Path) -> None:
     env = os.environ | {
-        "IRREGEX_PREBUILT_LIB": str(library),
-        "IRREGEX_WHEEL_PLATFORM": target.tag,
-        "IRREGEX_ZIG_TARGET": target.zig,
+        "IRGX_PREBUILT_LIB": str(library),
+        "IRGX_WHEEL_PLATFORM": target.tag,
+        "IRGX_ZIG_TARGET": target.zig,
     }
     if shutil.which("uv"):
         command = ["uv", "build", "--wheel", "--out-dir", str(outdir)]

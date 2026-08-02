@@ -39,8 +39,8 @@ The crate-root [`Error`](crate::Error) is the regex face. Analytic callers use
 
 ## The one rule that shapes the whole thing
 
-**The match sequence comes from `irregex_find_all`, never from a loop over
-`irregex_captures`.** The engine decides what a sequence of matches is: whether
+**The match sequence comes from `irgx_find_all`, never from a loop over
+`irgx_captures`.** The engine decides what a sequence of matches is: whether
 an empty match adjacent to the previous one counts, what happens at the end of
 the buffer, how `word(true)` filtering interacts with resuming the scan. None of
 that is derivable from a `find(from)` cursor, and every one of those rules is a

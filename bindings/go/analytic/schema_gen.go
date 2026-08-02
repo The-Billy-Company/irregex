@@ -2,7 +2,7 @@
 
 package analytic
 
-// Digest is compared to irregex_schema_digest() at load — a stale library is a
+// Digest is compared to irgx_schema_digest() at load — a stale library is a
 // loud failure, not a mis-decoded row.
 const Digest = "fe410e7f8ccb9a62c71bd28161f2e080"
 

@@ -4,7 +4,7 @@ contract on the grounds that they described surfaces gist and relate own. Six of
 them turned out not to be owned by any product at all: `[row_enums]`,
 `[row_schemas]`, `[analytic]`, `[analytic.producers]`, `[analytic.params]` and
 `[analytic.verbs]` describe the one self-describing row that gist, relate AND
-blast all hand back through the same `irregex_rows` cursor. Row layout is
+blast all hand back through the same `irgx_rows` cursor. Row layout is
 substrate. It lives with the engine that emits it, not with whichever product
 declared it first.
 
@@ -28,5 +28,5 @@ The split is textual, and the digest proves nothing moved but the addresses:
 
 Two facts that had quietly gone false were corrected on the way past.
 `[analytic].handle` still said `gist_engine` after the engine moved down into
-`libirregex`, and the prose beside `[analytic.producers]` still said all three
-producers share a `gist_engine`; both name `irregex_engine` now.
+`libirgx`, and the prose beside `[analytic.producers]` still said all three
+producers share a `gist_engine`; both name `irgx_engine` now.

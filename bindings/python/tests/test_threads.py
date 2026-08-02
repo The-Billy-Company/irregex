@@ -2,7 +2,7 @@
 
 The C handle owns the scratch its finds run in, so two threads sharing one
 corrupt a match rather than race a counter. A Python caller will not know that:
-they will write ``PAT = irregex.compile(...)`` at module scope and hand it to a
+they will write ``PAT = irgx.compile(...)`` at module scope and hand it to a
 pool. These tests are the proof that doing so is safe, and they are written so
 that a binding sharing one handle would fail them rather than merely be slow.
 """
@@ -14,11 +14,11 @@ import threading
 import weakref
 from concurrent.futures import ThreadPoolExecutor
 
-import irregex
+import irgx
 
 # Compiled once, at module scope, exactly the way the hazard shows up in real
 # code.
-PATTERN = irregex.compile(r"(\w+)=(\d+)")
+PATTERN = irgx.compile(r"(\w+)=(\d+)")
 
 WORKERS = 16
 ROUNDS = 120
@@ -45,7 +45,7 @@ def test_a_module_level_pattern_survives_a_thread_pool():
 
 
 def test_concurrent_finditer_on_different_texts_stays_correct():
-    pattern = irregex.compile(r"\d+")
+    pattern = irgx.compile(r"\d+")
     barrier = threading.Barrier(WORKERS)
     problems: list[str] = []
 
@@ -68,7 +68,7 @@ def test_concurrent_finditer_on_different_texts_stays_correct():
 
 
 def test_each_thread_gets_its_own_handle():
-    pattern = irregex.compile("abc")
+    pattern = irgx.compile("abc")
     seen: list[int] = []
     lock = threading.Lock()
     # All eight threads must be alive at once while their addresses are read.
@@ -97,7 +97,7 @@ def test_each_thread_gets_its_own_handle():
 
 def test_a_short_lived_threads_handle_is_released_when_it_dies():
     # A pool of short-lived workers must not accumulate one live handle each.
-    pattern = irregex.compile("abc")
+    pattern = irgx.compile("abc")
 
     holder: list[weakref.ref] = []
 

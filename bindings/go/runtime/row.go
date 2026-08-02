@@ -6,7 +6,7 @@
 // through gist_run when this build has cgo, the library exports the
 // plane, and its row-schema digest matches the table this decoder was generated
 // from. Otherwise — no cgo, no plane, no library, or a tier that DECLINES
-// (IRREGEX_STALE) — the same verb answers by running the certified `gist` /
+// (IRGX_STALE) — the same verb answers by running the certified `gist` /
 // `relate` / `irregex` binary and decoding its NDJSON. The two produce identical
 // rows, so which tier answered is a fact about speed, reported in [Stats], and
 // never an error.
@@ -282,7 +282,7 @@ func nestedName(id uint32) string {
 	return "schema?"
 }
 
-// Stats are the answer-level facts no row can carry (irregex_rows_stats).
+// Stats are the answer-level facts no row can carry (irgx_rows_stats).
 // Foreign is load-bearing for the retrieval verbs: it counts query fingerprints
 // the corpus has NEVER seen, which is how "your text isn't in this repo" stays
 // distinguishable from "no results". Omitted is what a budget trimmed, so a

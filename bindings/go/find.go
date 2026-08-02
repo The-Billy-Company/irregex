@@ -1,6 +1,6 @@
 //go:build cgo
 
-package irregex
+package irgx
 
 // The Find family, in stdlib [regexp] shape. Two conventions carry through all
 // of it.

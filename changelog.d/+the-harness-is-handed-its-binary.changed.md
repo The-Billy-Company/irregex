@@ -14,8 +14,8 @@ severity for that.
 
 One skip survives, and it is the other kind. `TestTiersAgree` is a cross-tier
 oracle, and the default build is pure Go because the in-process analytic tier is
-opt-in behind `-tags irregex_ffi`, so a `go get` consumer never tries to link a
-libirregex that cannot exist in the module cache. One tier present is nothing to
+opt-in behind `-tags irgx_ffi`, so a `go get` consumer never tries to link a
+libirgx that cannot exist in the module cache. One tier present is nothing to
 compare, and no amount of building or installing changes that - only rebuilding
 the test binary with the tag does. Its message now says exactly that, so nobody
 later reads it as the same rot.

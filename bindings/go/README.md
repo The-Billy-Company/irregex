@@ -38,9 +38,9 @@ should use it.
 ## A short tour
 
 ```go
-import irregex "github.com/The-Billy-Company/irregex/bindings/go"
+import irgx "github.com/The-Billy-Company/irregex/bindings/go"
 
-var mailbox = irregex.MustCompile(`(?P<user>\w+)@(\w+)`)
+var mailbox = irgx.MustCompile(`(?P<user>\w+)@(\w+)`)
 
 func main() {
 	const text = "write to bob@host, cc eve@box"
@@ -52,7 +52,7 @@ func main() {
 	mailbox.FindStringSubmatch(text)               // ["bob@host" "bob" "host"]
 	mailbox.SubexpIndex("user")                    // 1
 	mailbox.ReplaceAllString(text, "${user}")      // "write to bob, cc eve"
-	irregex.MustCompile(`,\s*`).Split(text, -1)    // ["write to bob@host" "cc eve@box"]
+	irgx.MustCompile(`,\s*`).Split(text, -1)    // ["write to bob@host" "cc eve@box"]
 }
 ```
 
@@ -66,7 +66,7 @@ Flags live in a `CompileOpts` struct, which has a `Compile` and a `MustCompile`
 of its own:
 
 ```go
-re := irregex.CompileOpts{IgnoreCase: true, Word: true}.MustCompile("cat")
+re := irgx.CompileOpts{IgnoreCase: true, Word: true}.MustCompile("cat")
 re.FindAllString("Cat concatenate CAT", -1) // ["Cat" "CAT"]
 ```
 
@@ -81,7 +81,7 @@ A `*Regexp` is safe for concurrent use by multiple goroutines, exactly as
 from anywhere:
 
 ```go
-var word = irregex.MustCompile(`\w+`)
+var word = irgx.MustCompile(`\w+`)
 ```
 
 The C handle underneath is not safe to share; it owns the scratch memory its
@@ -97,7 +97,7 @@ text, and one that starts where the previous match ended. So a nullable pattern
 reports fewer spans here:
 
 ```go
-irregex.MustCompile(`a*`).FindAllStringIndex("abc", -1) // [[0 1] [2 2]]
+irgx.MustCompile(`a*`).FindAllStringIndex("abc", -1) // [[0 1] [2 2]]
 regexp.MustCompile(`a*`).FindAllStringIndex("abc", -1)  // [[0 1] [2 2] [3 3]]
 ```
 
@@ -107,7 +107,7 @@ tools.
 
 **Lookaround and backreferences are compile errors, not silent non-matches.**
 `Compile("foo(?=bar)")` returns an error that matches `errors.Is(err,
-irregex.ErrNeedsPCRE)`, so a caller can retry with `PCRE: true` instead of
+irgx.ErrNeedsPCRE)`, so a caller can retry with `PCRE: true` instead of
 guessing. See "Errors" below.
 
 **Anchors do not treat the text as lines.** `^` and `$` mean the start and end
@@ -128,7 +128,7 @@ package returns slices your string directly:
 
 ```go
 const text = "le CAFÉ noir"
-loc := irregex.CompileOpts{IgnoreCase: true}.MustCompile("café").FindStringIndex(text)
+loc := irgx.CompileOpts{IgnoreCase: true}.MustCompile("café").FindStringIndex(text)
 text[loc[0]:loc[1]] // "CAFÉ"
 ```
 
@@ -143,9 +143,9 @@ linear-time engine just has no way to express it. The vendored PCRE2 does, so
 the same text compiles with one flag set:
 
 ```go
-re, err := irregex.Compile(pattern)
-if errors.Is(err, irregex.ErrNeedsPCRE) {
-	re, err = irregex.CompileOpts{PCRE: true}.Compile(pattern)
+re, err := irgx.Compile(pattern)
+if errors.Is(err, irgx.ErrNeedsPCRE) {
+	re, err = irgx.CompileOpts{PCRE: true}.Compile(pattern)
 }
 if err != nil {
 	return err
@@ -164,10 +164,10 @@ the engine stopped at, so you can point at it, and `PCRE: true` does not rescue
 it:
 
 ```go
-_, err := irregex.Compile(`[abc`)
+_, err := irgx.Compile(`[abc`)
 // irregex: compile "[abc": BadPattern at byte 4
 
-var bad *irregex.SyntaxError
+var bad *irgx.SyntaxError
 if errors.As(err, &bad) {
 	fmt.Printf("%s\n%*s\n", bad.Expr, bad.At+1, "^")
 	// [abc
@@ -181,7 +181,7 @@ is a real offset.
 The two are decided from the ABI's status code, not from a fault name, so they
 can never be confused with each other and neither is matched by comparing
 strings. Anything else - an allocation failure, a limit, an unknown flag bit -
-stays an `*irregex.Error` carrying the status code, the library's sentence for
+stays an `*irgx.Error` carrying the status code, the library's sentence for
 it, and whatever detail the engine recorded. A `*SyntaxError` unwraps to one of
 those, if you want the status underneath it.
 
@@ -211,10 +211,10 @@ the `link_*.go` file that names it:
 
 | Platform | Archive | Size |
 |---|---|---|
-| darwin/arm64 | `libirregex_darwin_arm64.a` | 1.3 MB |
-| darwin/amd64 | `libirregex_darwin_amd64.a` | 1.4 MB |
-| linux/amd64 | `libirregex_linux_amd64.a` | 1.8 MB |
-| linux/arm64 | `libirregex_linux_arm64.a` | 1.5 MB |
+| darwin/arm64 | `libirgx_darwin_arm64.a` | 1.3 MB |
+| darwin/amd64 | `libirgx_darwin_amd64.a` | 1.4 MB |
+| linux/amd64 | `libirgx_linux_amd64.a` | 1.8 MB |
+| linux/arm64 | `libirgx_linux_arm64.a` | 1.5 MB |
 
 That is about 6 MB of module, 2.3 MB of it over the wire, of which your binary
 links one archive. The Linux archives are built against glibc 2.17 and the macOS
@@ -230,13 +230,13 @@ error rather than a linker error about a missing symbol.
 
 ### Linking your own build
 
-Set the `irregex_syslib` build tag and point the toolchain at your library:
+Set the `irgx_syslib` build tag and point the toolchain at your library:
 
 ```bash
-IRREGEX_LIB_DIR=/path/to/your/build \
-CGO_CFLAGS="-I$IRREGEX_LIB_DIR/include" \
-CGO_LDFLAGS="-L$IRREGEX_LIB_DIR/lib" \
-go build -tags irregex_syslib ./...
+IRGX_LIB_DIR=/path/to/your/build \
+CGO_CFLAGS="-I$IRGX_LIB_DIR/include" \
+CGO_LDFLAGS="-L$IRGX_LIB_DIR/lib" \
+go build -tags irgx_syslib ./...
 ```
 
 cgo expands nothing but `${SRCDIR}` inside a `#cgo` line, so the environment

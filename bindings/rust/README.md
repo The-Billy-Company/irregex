@@ -8,6 +8,9 @@ inside the crate.
 irregex = "0.1"
 ```
 
+You depend on `irregex` and you `use irgx::` - the package keeps the project's
+name, the lib is the short one you type all day.
+
 That is the whole install on the four common desktop and server targets. There
 is no Zig toolchain to fetch, no C compiler step, and no separate binary to put
 on your PATH. The engine is written in Zig; the crate carries a prebuilt static
@@ -23,7 +26,7 @@ a second API and a second set of semantics. Here it is one flag on the same
 builder, and the two arms report matches in the same coordinate system:
 
 ```rust
-use irregex::RegexBuilder;
+use irgx::RegexBuilder;
 
 let re = RegexBuilder::new(r"(?<=\$)\d+").pcre(true).build()?;
 assert_eq!(re.find("cost $42").unwrap().as_str(), "42");
@@ -40,7 +43,7 @@ The other reason is `fixed`, `word` and `smart_case`, which have no spelling in
 ## A short tour
 
 ```rust
-use irregex::Regex;
+use irgx::Regex;
 
 let re = Regex::new(r"(\w+)@(\w+\.\w+)")?;
 for caps in re.captures_iter("write me@example.com or you@other.org") {
@@ -76,7 +79,7 @@ template with `$1` and `${name}` references, a `NoExpand` for text you did not
 write, or a `FnMut(&Captures) -> impl AsRef<str>`.
 
 Every verb that can panic has a `try_` sibling that returns
-`Result<_, irregex::Error>` instead: `try_is_match`, `try_find`, `try_find_iter`,
+`Result<_, irgx::Error>` instead: `try_is_match`, `try_find`, `try_find_iter`,
 `try_captures`, `try_captures_iter`, `try_replacen`. The panicking forms exist so
 `re.find(text)` returns an `Option` and reads like the crate you already know;
 the checked forms exist so a caller who cannot take a panic never has to.
@@ -95,7 +98,7 @@ the checked forms exist so a caller who cannot take a panic never has to.
 | `pcre` | Use the PCRE2 grammar: lookaround and backreferences. Not linear time. |
 
 ```rust
-use irregex::RegexBuilder;
+use irgx::RegexBuilder;
 
 RegexBuilder::new("a.c").fixed(true).build()?;         // matches "a.c", not "abc"
 RegexBuilder::new("cat").word(true).build()?;          // "cat", not "concatenate"
@@ -113,7 +116,7 @@ people do, and it works here.
 
 ```rust
 use std::sync::LazyLock;
-use irregex::Regex;
+use irgx::Regex;
 
 static WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\w+").unwrap());
 
@@ -177,7 +180,7 @@ express it. Lookaround, backreferences, atomic groups, inline flag groups.
 The same pattern under `pcre(true)` compiles. So the retry is two lines:
 
 ```rust
-use irregex::{Error, Regex, RegexBuilder};
+use irgx::{Error, Regex, RegexBuilder};
 
 fn compile(pattern: &str) -> Result<Regex, Error> {
     match Regex::new(pattern) {
@@ -214,7 +217,7 @@ through, and printing a caret under it needs no bounds check.
 
 ## Errors
 
-`irregex::Error` implements `std::error::Error` and carries the engine's own
+`irgx::Error` implements `std::error::Error` and carries the engine's own
 fault name and its sentence for the status, never a bare number. The variants
 are `NeedsPcre`, `Syntax`, `Pattern`, `Search`, `Groups`, `OutOfMemory`, `Abi`,
 `NotCharBoundary` and `Inconsistent`.
@@ -312,8 +315,8 @@ its panic message here.
 `build.rs` resolves the native library in this order, and the first rung that
 answers wins:
 
-1. **`IRREGEX_LIB_DIR`** - a directory holding your own `libirregex.a` or
-   `libirregex.{dylib,so}`. This is the override, and it is absolute: if it is
+1. **`IRGX_LIB_DIR`** - a directory holding your own `libirgx.a` or
+   `libirgx.{dylib,so}`. This is the override, and it is absolute: if it is
    set and does not hold a library, the build fails rather than falling through
    to something you did not ask for.
 2. **A vendored static archive** for the target triple, from `vendor/` in this
@@ -353,7 +356,7 @@ python3 scripts/vendor_libraries.py
 ## Supported platforms
 
 macOS on arm64 and x86_64, Linux on x86_64 and aarch64. Other targets build if
-`zig` is on PATH or you point `IRREGEX_LIB_DIR` at your own library. Rust 1.85
+`zig` is on PATH or you point `IRGX_LIB_DIR` at your own library. Rust 1.85
 or newer, edition 2024.
 
 ## License

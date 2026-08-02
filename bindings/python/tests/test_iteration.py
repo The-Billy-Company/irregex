@@ -3,7 +3,7 @@
 Zero-width and nullable patterns are where a regex binding goes wrong, because
 there are two defensible answers and only one of them is the engine's. These
 tests pin the engine's, spell out the two rules that produce it, and prove that
-the obvious wrong implementation - a Python loop over ``irregex_captures`` -
+the obvious wrong implementation - a Python loop over ``irgx_captures`` -
 would give a different answer and therefore fail here.
 """
 
@@ -14,12 +14,12 @@ import re
 
 import pytest
 
-import irregex
-from irregex import _abi
+import irgx
+from irgx import _abi
 
 
 def spans(pattern, text, **flags):
-    return [m.span() for m in irregex.finditer(pattern, text, **flags)]
+    return [m.span() for m in irgx.finditer(pattern, text, **flags)]
 
 
 # ── the two rules ─────────────────────────────────────────────────────────
@@ -50,7 +50,7 @@ def test_an_empty_match_touching_the_previous_match_is_not_reported():
 def test_the_empty_pattern_matches_between_every_character_but_not_past_the_end():
     assert spans("", "abc") == [(0, 0), (1, 1), (2, 2)]
     assert spans("", "") == []
-    assert irregex.findall("", "abc") == ["", "", ""]
+    assert irgx.findall("", "abc") == ["", "", ""]
 
 
 def test_lookahead_under_pcre_is_zero_width_and_follows_the_same_rules():
@@ -58,15 +58,15 @@ def test_lookahead_under_pcre_is_zero_width_and_follows_the_same_rules():
     assert spans("(?=x)", "foo", pcre=True) == []
     # A lookahead is not in the linear grammar at all, so without pcre=True it
     # is a refusal rather than a quiet non-match.
-    with pytest.raises(irregex.error):
-        irregex.compile("(?=foo)")
+    with pytest.raises(irgx.error):
+        irgx.compile("(?=foo)")
 
 
 # ── the sequence is the engine's, not a loop's ────────────────────────────
 
 
 def _naive_walk(pattern: str, text: str) -> list[tuple[int, int]]:
-    """The wrong implementation: advance a cursor over ``irregex_captures``.
+    """The wrong implementation: advance a cursor over ``irgx_captures``.
 
     Written out so the divergence below is demonstrated rather than asserted.
     This is the shape a binding falls into when it wants a `find(from)` cursor
@@ -79,7 +79,7 @@ def _naive_walk(pattern: str, text: str) -> list[tuple[int, int]]:
     found: list[tuple[int, int]] = []
     at = 0
     while at <= len(data):
-        status = _abi.lib.irregex_captures(
+        status = _abi.lib.irgx_captures(
             compiled.ptr, data, len(data), at, out, 1, ctypes.byref(written)
         )
         if status != _abi.MATCH:
@@ -126,7 +126,7 @@ def test_find_all_reports_the_count_the_text_has_not_the_count_that_fit():
     text = b"a" * 20
     out = (_abi.Span * 2)()
     written = ctypes.c_size_t()
-    status = _abi.lib.irregex_find_all(compiled.ptr, text, len(text), out, 2, ctypes.byref(written))
+    status = _abi.lib.irgx_find_all(compiled.ptr, text, len(text), out, 2, ctypes.byref(written))
     assert status == _abi.MATCH
     assert written.value == 20, "the text holds twenty, whatever the window holds"
     # At most `cap` spans are written, and they are the first ones.
@@ -139,7 +139,7 @@ def test_asking_only_how_many_matches_there_are_costs_no_span_buffer():
     compiled = _abi.Compiled(rb"\w+", 0)
     text = b"one two three four"
     written = ctypes.c_size_t()
-    _abi.lib.irregex_find_all(compiled.ptr, text, len(text), None, 0, ctypes.byref(written))
+    _abi.lib.irgx_find_all(compiled.ptr, text, len(text), None, 0, ctypes.byref(written))
     assert written.value == 4
 
 
@@ -148,15 +148,15 @@ def test_a_short_window_is_resized_once_and_answers_completely(monkeypatch):
     # number of matches costs two searches at most. The doubling schedule this
     # replaced paid a whole rescan per rung: five passes over the text below.
     calls = 0
-    real = _abi.lib.irregex_find_all
+    real = _abi.lib.irgx_find_all
 
     def counted(*args):
         nonlocal calls
         calls += 1
         return real(*args)
 
-    monkeypatch.setattr(_abi.lib, "irregex_find_all", counted)
-    monkeypatch.setattr("irregex._pattern._FIRST_WINDOW", 4)
+    monkeypatch.setattr(_abi.lib, "irgx_find_all", counted)
+    monkeypatch.setattr("irgx._pattern._FIRST_WINDOW", 4)
 
     text = "a" * 5_000
     assert len(spans("a", text)) == 5_000
@@ -200,16 +200,16 @@ def test_is_match_and_the_span_sequence_answer_about_the_same_unit(pattern, text
     # that splits a buffer into lines first, making `^` and `$` per-line - so it
     # and `search` disagreed on seven of these rows. There is no corpus behind
     # this plane, so the buffer IS the unit and both must read it that way.
-    compiled = irregex.compile(pattern)
+    compiled = irgx.compile(pattern)
     assert compiled.is_match(text) == (compiled.search(text) is not None)
 
 
 def test_an_interior_newline_is_an_ordinary_byte():
     # The discriminating half: an engine reading per-line would match all four.
-    assert irregex.compile("^a").search("\nabc") is None
-    assert irregex.compile("c$").search("abc\n") is None
-    assert irregex.compile("^abc$").search("x\nabc\ny") is None
-    assert irregex.compile("b$").search("ab\ncd") is None
+    assert irgx.compile("^a").search("\nabc") is None
+    assert irgx.compile("c$").search("abc\n") is None
+    assert irgx.compile("^abc$").search("x\nabc\ny") is None
+    assert irgx.compile("b$").search("ab\ncd") is None
     # And the anchors do still fire, so a dead-anchor engine fails here.
-    assert irregex.compile("^a").search("ab\ncd").span() == (0, 1)
-    assert irregex.compile("d$").search("ab\ncd").span() == (4, 5)
+    assert irgx.compile("^a").search("ab\ncd").span() == (0, 1)
+    assert irgx.compile("d$").search("ab\ncd").span() == (4, 5)

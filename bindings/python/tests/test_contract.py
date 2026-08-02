@@ -3,8 +3,8 @@
 ``contract/engine.toml`` declares the status codes, the fault taxonomy, the
 coordinate spaces and the decline reasons once, and four artifacts restate them:
 the ``Status`` and ``AtSpace`` enums in ``src/surface/ffi/contract.zig``, the
-``IRREGEX_*`` defines in ``include/irregex.h``, the error sets in
-``src/fault.zig``, and the module constants in ``irregex._abi`` that this
+``IRGX_*`` defines in ``include/irgx.h``, the error sets in
+``src/fault.zig``, and the module constants in ``irgx._abi`` that this
 binding switches on. The contract
 says the point of declaring them in one place is that a single gate can then
 cover all of it -- this is that gate, and before it existed the table was
@@ -12,7 +12,7 @@ declared and nothing compared anything to it.
 
 Every expectation is DERIVED from the pair being compared, never listed here.
 The key-to-macro mapping is the contract's own ``c`` field, which is why
-``out_of_memory`` may answer to ``IRREGEX_OOM`` without this file knowing that
+``out_of_memory`` may answer to ``IRGX_OOM`` without this file knowing that
 as a fact of its own; a table row that renamed its macro moves the assertion
 with it. Same for the fault domains: the Zig error set a domain is checked
 against is the domain key capitalized, per the contract's own rule.
@@ -31,7 +31,7 @@ from pathlib import Path
 import pytest
 import tomllib
 
-from irregex import _abi
+from irgx import _abi
 
 
 def _root() -> Path:
@@ -75,12 +75,12 @@ def _zig_error_set(source: str, name: str) -> list[str]:
 
 
 def _c_defines(header: str) -> dict[str, int]:
-    """`#define IRREGEX_X 0` / `#define IRREGEX_X (-1)` -> {name: value}.
+    """`#define IRGX_X 0` / `#define IRGX_X (-1)` -> {name: value}.
 
     A trailing `/* ... */` on the same line is the header's own house style for a
     short gloss, so it is skipped rather than being a reason to miss the row.
     """
-    pattern = r"^#define (IRREGEX_\w+) \(?(-?\d+)\)?u?(?:\s*/\*.*)?$"
+    pattern = r"^#define (IRGX_\w+) \(?(-?\d+)\)?u?(?:\s*/\*.*)?$"
     return {m[1]: int(m[2]) for m in re.finditer(pattern, header, re.M)}
 
 
@@ -90,7 +90,7 @@ def test_the_zig_status_enum_is_the_contract_table(contract: dict) -> None:
 
 
 def test_the_c_header_defines_every_declared_status(contract: dict) -> None:
-    defines = _c_defines(_read("include/irregex.h"))
+    defines = _c_defines(_read("include/irgx.h"))
     # The contract names the macro per row, so a renamed macro moves this with it.
     for name, row in contract["status_codes"].items():
         macro = row["c"]
@@ -105,9 +105,9 @@ def test_no_status_macro_exists_that_the_contract_does_not_declare(contract: dic
     because the flag, value-tag and ordinal macros share the prefix and are
     different vocabularies -- a name rule would either miss them or sweep them in.
     """
-    header = _read("include/irregex.h")
+    header = _read("include/irgx.h")
     section = re.search(r"── the shared status vocabulary ─.*?\*/(.*?)/\* ──", header, re.S)
-    assert section, "include/irregex.h no longer has a status-vocabulary section to scope to"
+    assert section, "include/irgx.h no longer has a status-vocabulary section to scope to"
     assert set(_c_defines(section[1])) == {row["c"] for row in contract["status_codes"].values()}
 
 
@@ -122,9 +122,9 @@ def test_the_c_header_defines_exactly_the_declared_coordinate_spaces(contract: d
     A space minted in C only is as wrong as one missing: `at_space` is read by a
     switch, so an undeclared value is a prong nobody wrote.
     """
-    header = _read("include/irregex.h")
+    header = _read("include/irgx.h")
     section = re.search(r"── the fault detail ─.*?\*/(.*?)/\* ──", header, re.S)
-    assert section, "include/irregex.h no longer has a fault-detail section to scope to"
+    assert section, "include/irgx.h no longer has a fault-detail section to scope to"
     defines = _c_defines(section[1])
     declared = {row["c"]: row["code"] for row in contract["coordinate_spaces"].values()}
     assert defines == declared
@@ -135,8 +135,8 @@ def test_this_binding_mirrors_the_declared_coordinate_spaces(contract: dict) -> 
     is a prong nobody wrote - and a name whose number drifted is worse than one
     that is missing. Derived from the contract's own `c` field, as above."""
     for row in contract["coordinate_spaces"].values():
-        constant = row["c"].removeprefix("IRREGEX_")
-        assert hasattr(_abi, constant), f"{row['c']} has no name in irregex._abi"
+        constant = row["c"].removeprefix("IRGX_")
+        assert hasattr(_abi, constant), f"{row['c']} has no name in irgx._abi"
         assert getattr(_abi, constant) == row["code"]
 
 

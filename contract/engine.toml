@@ -38,13 +38,13 @@
 # the others, and each is pinned against a different live artifact.
 #
 #   abi_version       the C-ABI compatibility integer that `src/root.zig abi()`
-#                     and `irregex_abi_version()` return, mirrored and gated by
+#                     and `irgx_abi_version()` return, mirrored and gated by
 #                     the Python/Rust ABI_VERSION and the FFI loader. Additive
 #                     C symbols do NOT bump it; a breaking layout or signature
-#                     change does. (v2: the match callback `irregex_match_fn`
+#                     change does. (v2: the match callback `irgx_match_fn`
 #                     gained an i32 abort return.)
 #   engine_version    the engine semver — `src/root.zig version_string`,
-#                     `build.zig.zon .version`, `irregex_version()`. Carries the
+#                     `build.zig.zon .version`, `irgx_version()`. Carries the
 #                     release marker so the release bot moves it with those two;
 #                     it sat a minor behind for a whole release because it did
 #                     not, and the parity test that would have caught it was
@@ -56,7 +56,7 @@
 [meta]
 name = "gist-unified-search"
 abi_version = 2
-engine_version = "0.3.0" # x-release-please-version
+engine_version = "1.0.0" # x-release-please-version
 
 # ── [request_options] — the deep SearchRequest surface ───────────────────────
 # Only match-finding INTENT belongs here: presentation, ranking, stats, replace
@@ -110,15 +110,15 @@ no_index = { type = "bool", flag = "--no-index", detail = "force the pure live w
 # match"; status 1 is "match"), so one merged table would be a live hazard.
 #
 # The in-process vocabulary lives here because it is otherwise hand-copied four
-# times — the `include/irregex.h` defines, the Zig `Status` enum
+# times — the `include/irgx.h` defines, the Zig `Status` enum
 # (src/surface/ffi/contract.zig), and, in the `gist` repository that vendors this
 # file, the Rust constants (bindings/rust/src/contract/mod.rs) and the Python
 # ones (bindings/python/gist/runtime/native.py) — with no single source a gate
 # could check them against. Declared once, a status-parity gate can cover all
 # four.
 #
-# It lives HERE rather than with any one face because `include/irregex.h`
-# declares it: a host that links only libirregex — the whole point of the split
+# It lives HERE rather than with any one face because `include/irgx.h`
+# declares it: a host that links only libirgx — the whole point of the split
 # — still receives these codes and this fault struct, so the package that emits
 # them is the package that must declare them. librelate, libgist and libblast
 # each speak this same vocabulary by linking it, not by redeclaring it.
@@ -146,11 +146,11 @@ error = { code = 2, detail = "unsupported pattern/flag, or an I/O/walk error —
 
 # ── [status_codes] — what every C-ABI entry point returns ────────────────────
 # Non-negative is success; negative means the caller must do something else.
-# The KEY is the Zig `Status` field, `c` is the `include/irregex.h` macro, and
+# The KEY is the Zig `Status` field, `c` is the `include/irgx.h` macro, and
 # each binding's own constant is that macro's suffix (Rust `sys::OOM`; the
 # Python face prefixes its own, `_GIST_OK`, and names only the codes it branches
 # on — a binding may declare fewer, never a different code). Human text for a
-# code comes from `irregex_status_message`; a binding must not carry per-code
+# code comes from `irgx_status_message`; a binding must not carry per-code
 # prose of its own.
 #
 # `disposition` is the load-bearing field: it names the channel a status belongs
@@ -163,20 +163,20 @@ error = { code = 2, detail = "unsupported pattern/flag, or an I/O/walk error —
 # DECLARED here rather than re-derived by each reader: every domain appears in
 # exactly one row, and a new domain with no home fails the gate instead of
 # quietly reporting as some neighbor. A binding that needs the distinction a
-# fold hides reads `name` from `irregex_last_fault`.
+# fold hides reads `name` from `irgx_last_fault`.
 [status_codes]
-ok = { code = 0, c = "IRREGEX_OK", disposition = "result", detail = "ran cleanly, no match" }
-match = { code = 1, c = "IRREGEX_MATCH", disposition = "result", detail = "ran cleanly, at least one match" }
-stale = { code = -1, c = "IRREGEX_STALE", disposition = "declinature", detail = "the warm in-process tier declines — the pattern is outside the linear engine, or freshness is unprovable. NOT a failure: the caller answers cold and gets the identical result, so a binding must not surface it as an error value" }
-out_of_memory = { code = -2, c = "IRREGEX_OOM", disposition = "fault", domains = [
+ok = { code = 0, c = "IRGX_OK", disposition = "result", detail = "ran cleanly, no match" }
+match = { code = 1, c = "IRGX_MATCH", disposition = "result", detail = "ran cleanly, at least one match" }
+stale = { code = -1, c = "IRGX_STALE", disposition = "declinature", detail = "the warm in-process tier declines — the pattern is outside the linear engine, or freshness is unprovable. NOT a failure: the caller answers cold and gets the identical result, so a binding must not surface it as an error value" }
+out_of_memory = { code = -2, c = "IRGX_OOM", disposition = "fault", domains = [
   "resource",
 ], detail = "allocation failed (fault domain `resource`)" }
-open_failed = { code = -3, c = "IRREGEX_OPEN_FAILED", disposition = "fault", domains = [
+open_failed = { code = -3, c = "IRGX_OPEN_FAILED", disposition = "fault", domains = [
   "corpus",
   "persist",
   "wire",
-], detail = "the warm corpus could not be stood up. Carries three domains: `corpus` (the tree would not open), `persist` (an artifact was corrupt or the wrong generation), and `wire` (the daemon transport failed) — all three mean the same thing to a host, that this corpus could not be stood up, and `irregex_last_fault` restores which one per incident" }
-invalid = { code = -4, c = "IRREGEX_INVALID", disposition = "fault", domains = [
+], detail = "the warm corpus could not be stood up. Carries three domains: `corpus` (the tree would not open), `persist` (an artifact was corrupt or the wrong generation), and `wire` (the daemon transport failed) — all three mean the same thing to a host, that this corpus could not be stood up, and `irgx_last_fault` restores which one per incident" }
+invalid = { code = -4, c = "IRGX_INVALID", disposition = "fault", domains = [
   "pattern",
 ], detail = "an unknown flag bit or a wrongly-sized request struct — fail-closed, never silently dropped (fault domain `pattern`)" }
 
@@ -249,12 +249,12 @@ wire = { members = [
 # three-clause conjunction, and one missed clause points a user's caret at the
 # wrong string.
 #
-# So it is a field, not an inference: `irregex_fault.at_space` names the ruler.
-# The KEY is the Zig `contract.AtSpace` member, `c` is the include/irregex.h
+# So it is a field, not an inference: `irgx_fault.at_space` names the ruler.
+# The KEY is the Zig `contract.AtSpace` member, `c` is the include/irgx.h
 # macro. `none` is 0 for one reason — byte 0 is a real offset, so absence cannot
 # be spelled by the value of `at` itself, and a reader that only wants "is there
 # a position at all" still gets it from a zero test.
 [coordinate_spaces]
-none = { code = 0, c = "IRREGEX_AT_NONE", detail = "no offset — the fault is about the file, the allocation, or the request as a whole. `at` is 0 and means nothing" }
-file = { code = 1, c = "IRREGEX_AT_FILE", detail = "a byte offset within `path`: where a persisted artifact went bad, where a walk stopped" }
-pattern = { code = 2, c = "IRREGEX_AT_PATTERN", detail = "a byte offset within the PATTERN handed to the compile — where the grammar was refused. `path` is empty here, since the fault is about no file" }
+none = { code = 0, c = "IRGX_AT_NONE", detail = "no offset — the fault is about the file, the allocation, or the request as a whole. `at` is 0 and means nothing" }
+file = { code = 1, c = "IRGX_AT_FILE", detail = "a byte offset within `path`: where a persisted artifact went bad, where a walk stopped" }
+pattern = { code = 2, c = "IRGX_AT_PATTERN", detail = "a byte offset within the PATTERN handed to the compile — where the grammar was refused. `path` is empty here, since the fault is about no file" }

@@ -1,6 +1,6 @@
 .{
     .name = .irregex,
-    .version = "0.3.0", // x-release-please-version
+    .version = "1.0.0", // x-release-please-version
     .fingerprint = 0x418e7555d884a859,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{

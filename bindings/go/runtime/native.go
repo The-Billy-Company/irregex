@@ -1,17 +1,17 @@
-//go:build cgo && irregex_ffi
+//go:build cgo && irgx_ffi
 
 package runtime
 
 /*
-// Linked against the SHARED libirregex, as the Python and Rust bindings are, not
+// Linked against the SHARED libirgx, as the Python and Rust bindings are, not
 // the static archive. Product producers (gist_run / relate_run / blast_run) are
 // resolved at run time via dlsym, so this package never links a product library
 // — a host that wants in-process rank, kinship, or compose links those dylibs
 // from the product module that owns them. This tier is opt-in
-// (`-tags irregex_ffi`) and already points at a local build tree, so a load path
+// (`-tags irgx_ffi`) and already points at a local build tree, so a load path
 // into that same tree is what it was always describing.
 #cgo CFLAGS:  -I${SRCDIR}/../../../zig-out/include
-#cgo LDFLAGS: -L${SRCDIR}/../../../zig-out/lib -lirregex
+#cgo LDFLAGS: -L${SRCDIR}/../../../zig-out/lib -lirgx
 #cgo LDFLAGS: -Wl,-rpath,${SRCDIR}/../../../zig-out/lib
 #include <stdlib.h>
 #include <string.h>
@@ -38,7 +38,7 @@ const hasCGO = true
 // independent and safe to iterate concurrently.
 type Native struct {
 	mu  sync.Mutex
-	ptr *C.irregex_engine
+	ptr *C.irgx_engine
 }
 
 // OpenNative stands up the in-process engine over roots (none = the rootless CWD
@@ -57,8 +57,8 @@ func OpenNative(roots ...string) (*Native, error) {
 	if len(cRoots) > 0 {
 		head = (**C.char)(unsafe.Pointer(&cRoots[0]))
 	}
-	var out *C.irregex_engine
-	if st := C.irregex_engine_open(head, C.size_t(len(roots)), &out); st != C.IRREGEX_OK {
+	var out *C.irgx_engine
+	if st := C.irgx_engine_open(head, C.size_t(len(roots)), &out); st != C.IRGX_OK {
 		return nil, statusError(st, "engine open")
 	}
 	e := &Native{ptr: out}
@@ -72,7 +72,7 @@ func (n *Native) Close() error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if n.ptr != nil {
-		C.irregex_engine_close(n.ptr)
+		C.irgx_engine_close(n.ptr)
 		n.ptr = nil
 		goruntime.SetFinalizer(n, nil)
 	}
@@ -80,7 +80,7 @@ func (n *Native) Close() error {
 }
 
 // Do runs fn while holding the engine lock, handing it the underlying
-// irregex_engine pointer. Product packages that speak a product ABI over this
+// irgx_engine pointer. Product packages that speak a product ABI over this
 // corpus (exact search via gist_search_cursor) use this rather than reaching
 // into the unexported C handle — C pointer types cannot cross cgo packages.
 func (n *Native) Do(fn func(engine unsafe.Pointer) error) error {
@@ -103,23 +103,23 @@ func goBytes(p unsafe.Pointer, n C.size_t) string {
 // has no analytic plane, or a *DriftError when it has one this decoder was not
 // generated from.
 func libraryDigest() (string, error) {
-	if C.irregex_schema_digest() == nil {
+	if C.irgx_schema_digest() == nil {
 		return "", nil
 	}
-	return verifyDigest(C.GoString(C.irregex_schema_digest()), namedDrift)
+	return verifyDigest(C.GoString(C.irgx_schema_digest()), namedDrift)
 }
 
 // namedDrift walks the library's own schema table against this binding's to name
-// the first divergence — a digest alone detects drift; irregex_schema_get says
+// the first divergence — a digest alone detects drift; irgx_schema_get says
 // WHICH schema moved, which is the difference between a bug report and a mystery.
 func namedDrift() string {
-	if n := int(C.irregex_schema_count()); n != analytic.SchemaCount() {
+	if n := int(C.irgx_schema_count()); n != analytic.SchemaCount() {
 		return fmt.Sprintf("library declares %d schemas, this decoder %d", n, analytic.SchemaCount())
 	}
 	for id := uint32(1); int(id) <= analytic.SchemaCount(); id++ {
-		var cs C.irregex_schema
+		var cs C.irgx_schema
 		cs.struct_size = C.uint32_t(unsafe.Sizeof(cs))
-		if C.irregex_schema_get(C.uint32_t(id), &cs) != C.IRREGEX_OK {
+		if C.irgx_schema_get(C.uint32_t(id), &cs) != C.IRGX_OK {
 			return fmt.Sprintf("library cannot describe schema %d", id)
 		}
 		mine, _ := analytic.Schema(id)
@@ -142,9 +142,9 @@ func namedDrift() string {
 // watchCancel allocates a cancellation token and a goroutine that trips it when
 // ctx ends. release tears the watcher down before the token frees, so no
 // goroutine can touch freed memory.
-func watchCancel(ctx context.Context) (*C.irregex_cancel, func(), error) {
-	var tok *C.irregex_cancel
-	if C.irregex_cancel_new(&tok) != C.IRREGEX_OK {
+func watchCancel(ctx context.Context) (*C.irgx_cancel, func(), error) {
+	var tok *C.irgx_cancel
+	if C.irgx_cancel_new(&tok) != C.IRGX_OK {
 		return nil, nil, errors.New("irregex: could not allocate a cancel token")
 	}
 	stop, watched := make(chan struct{}), make(chan struct{})
@@ -152,14 +152,14 @@ func watchCancel(ctx context.Context) (*C.irregex_cancel, func(), error) {
 		defer close(watched)
 		select {
 		case <-ctx.Done():
-			C.irregex_cancel_request(tok)
+			C.irgx_cancel_request(tok)
 		case <-stop:
 		}
 	}()
 	return tok, func() {
 		close(stop)
 		<-watched
-		C.irregex_cancel_free(tok)
+		C.irgx_cancel_free(tok)
 	}, nil
 }
 
@@ -169,7 +169,7 @@ func statusError(st C.int32_t, what string) error {
 	if analytic.Status(st).Declined() {
 		return fmt.Errorf("%s: %w (use the gist binary with -P/--engine auto for lookaround)", what, ErrUnsupportedPattern)
 	}
-	msg := C.GoString(C.irregex_status_message(st))
+	msg := C.GoString(C.irgx_status_message(st))
 	if detail := lastFault(); detail != "" {
 		return fmt.Errorf("%s: %s (%s)", what, msg, detail)
 	}
@@ -177,9 +177,9 @@ func statusError(st C.int32_t, what string) error {
 }
 
 func lastFault() string {
-	var f C.irregex_fault
+	var f C.irgx_fault
 	f.struct_size = C.uint32_t(unsafe.Sizeof(f))
-	if C.irregex_last_fault(&f) != C.IRREGEX_MATCH {
+	if C.irgx_last_fault(&f) != C.IRGX_MATCH {
 		return ""
 	}
 	out := C.GoString(f.name)
@@ -188,7 +188,7 @@ func lastFault() string {
 		// Only a file offset belongs after a path. The engine names the space
 		// rather than leaving it to be inferred from `path`, so a pattern offset
 		// can no longer be rendered as a position inside a filename.
-		if f.at_space == C.IRREGEX_AT_FILE {
+		if f.at_space == C.IRGX_AT_FILE {
 			out += fmt.Sprintf("+%d", uint64(f.at))
 		}
 	}

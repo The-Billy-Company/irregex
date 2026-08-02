@@ -46,7 +46,7 @@ const Dir = std.Io.Dir;
 const realpathAlloc = paths.realpathAlloc;
 
 /// Reading the ignore chain from disk can run out of memory, and this resolver
-/// runs inside `irregex_search`'s reconcile — so it RETURNS that rather than
+/// runs inside `irgx_search`'s reconcile — so it RETURNS that rather than
 /// exiting the embedding host (fault-channel law 1). It is not a `.needs_full`:
 /// declining to the full walk would only hit the same wall with the fault
 /// laundered into a slower path.

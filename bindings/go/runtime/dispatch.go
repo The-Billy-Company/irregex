@@ -1,4 +1,4 @@
-//go:build cgo && irregex_ffi
+//go:build cgo && irgx_ffi
 
 package runtime
 
@@ -76,11 +76,11 @@ func dispatch(ctx context.Context, eng *Native, q Query) (*Rows, error) {
 		return nil, nil // this process did not load the library that owns the verb
 	}
 
-	var cur *C.irregex_rows
-	st := C.irregex_go_produce(run, eng.ptr, C.uint32_t(q.Op), params, tok, &cur)
+	var cur *C.irgx_rows
+	st := C.irgx_go_produce(run, eng.ptr, C.uint32_t(q.Op), params, tok, &cur)
 	release()
-	if st != C.IRREGEX_OK {
-		if analytic.Status(st).Declined() || st == C.IRREGEX_INVALID {
+	if st != C.IRGX_OK {
+		if analytic.Status(st).Declined() || st == C.IRGX_INVALID {
 			// A declinature is routine; INVALID means the library that answered
 			// predates this op or its params shape. The child answers both.
 			return nil, nil
@@ -100,7 +100,7 @@ func dispatch(ctx context.Context, eng *Native, q Query) (*Rows, error) {
 // process — the same lookup Python's ctypes and Rust's `sys` do, and the only one
 // that can tell "librelate is linked" from "it is not". A missing producer is an
 // absence, and the verb answers one tier down, through the child.
-func producer(op analytic.Op) (C.irregex_producer, bool) {
+func producer(op analytic.Op) (C.irgx_producer, bool) {
 	verb, ok := analytic.Verb(op)
 	if !ok {
 		return nil, false
@@ -112,11 +112,11 @@ func producer(op analytic.Op) (C.irregex_producer, bool) {
 // producers resolves every entry symbol the verb table names, once. Resolution
 // is per-process and cannot change under us: a dlopen after this point could
 // only ADD a producer, and a verb answered by the child is answered correctly.
-var producers = sync.OnceValue(func() map[string]C.irregex_producer {
-	found := make(map[string]C.irregex_producer, 3)
+var producers = sync.OnceValue(func() map[string]C.irgx_producer {
+	found := make(map[string]C.irgx_producer, 3)
 	for _, entry := range entries() {
 		name := C.CString(entry)
-		if fn := C.irregex_go_producer(name); fn != nil {
+		if fn := C.irgx_go_producer(name); fn != nil {
 			found[entry] = fn
 		}
 		C.free(unsafe.Pointer(name))
@@ -143,7 +143,7 @@ func entries() []string {
 func reachable(entry string) bool {
 	name := C.CString(entry)
 	defer C.free(unsafe.Pointer(name))
-	return C.irregex_go_producer(name) != nil
+	return C.irgx_go_producer(name) != nil
 }
 
 // lowerParams builds the C params struct for q's family, plus the release for
@@ -168,20 +168,20 @@ func lowerParams(q Query) (unsafe.Pointer, func()) {
 		owned = append(owned, p)
 		return (*C.uint8_t)(p), C.size_t(len(s))
 	}
-	spans := func(ss []string) (*C.irregex_text, C.size_t) {
+	spans := func(ss []string) (*C.irgx_text, C.size_t) {
 		if len(ss) == 0 {
 			return nil, 0
 		}
-		arr := C.calloc(C.size_t(len(ss)), C.size_t(unsafe.Sizeof(C.irregex_text{})))
+		arr := C.calloc(C.size_t(len(ss)), C.size_t(unsafe.Sizeof(C.irgx_text{})))
 		if arr == nil {
 			return nil, 0
 		}
 		owned = append(owned, arr)
-		view := unsafe.Slice((*C.irregex_text)(arr), len(ss))
+		view := unsafe.Slice((*C.irgx_text)(arr), len(ss))
 		for i, s := range ss {
 			view[i].ptr, view[i].len = span(s)
 		}
-		return (*C.irregex_text)(arr), C.size_t(len(ss))
+		return (*C.irgx_text)(arr), C.size_t(len(ss))
 	}
 
 	switch p := q.Params.(type) {
@@ -259,8 +259,8 @@ func count(n int) C.uint32_t {
 // nativeRows pulls decoded rows straight out of the cursor arena.
 type nativeRows struct {
 	engine *Native
-	ptr    *C.irregex_rows
-	views  []C.irregex_row
+	ptr    *C.irgx_rows
+	views  []C.irgx_row
 	done   bool
 }
 
@@ -269,12 +269,12 @@ func (n *nativeRows) fill(dst []Row) (int, error) {
 		return 0, nil
 	}
 	if len(n.views) < len(dst) {
-		n.views = make([]C.irregex_row, len(dst))
+		n.views = make([]C.irgx_row, len(dst))
 	}
 	var written C.size_t
-	st := C.irregex_rows_next_batch(n.ptr, &n.views[0], C.size_t(len(dst)), &written)
+	st := C.irgx_rows_next_batch(n.ptr, &n.views[0], C.size_t(len(dst)), &written)
 	switch st {
-	case C.IRREGEX_MATCH:
+	case C.IRGX_MATCH:
 		for i := range int(written) {
 			row, err := goRow(&n.views[i])
 			if err != nil {
@@ -283,7 +283,7 @@ func (n *nativeRows) fill(dst []Row) (int, error) {
 			dst[i] = row
 		}
 		return int(written), nil
-	case C.IRREGEX_OK:
+	case C.IRGX_OK:
 		n.done = true
 		return 0, nil
 	default:
@@ -295,9 +295,9 @@ func (n *nativeRows) stats() Stats {
 	if n.ptr == nil {
 		return Stats{}
 	}
-	var cs C.irregex_stats
+	var cs C.irgx_stats
 	cs.struct_size = C.uint32_t(unsafe.Sizeof(cs))
-	if C.irregex_rows_stats(n.ptr, &cs) != C.IRREGEX_OK {
+	if C.irgx_rows_stats(n.ptr, &cs) != C.IRGX_OK {
 		return Stats{}
 	}
 	return Stats{
@@ -313,7 +313,7 @@ func (n *nativeRows) stats() Stats {
 
 func (n *nativeRows) close() error {
 	if n.ptr != nil {
-		C.irregex_rows_close(n.ptr)
+		C.irgx_rows_close(n.ptr)
 		n.ptr = nil
 	}
 	return n.engine.Close()
@@ -321,7 +321,7 @@ func (n *nativeRows) close() error {
 
 // goRow decodes one borrowed native row, copying every text out of the arena so
 // the result outlives the cursor.
-func goRow(cr *C.irregex_row) (Row, error) {
+func goRow(cr *C.irgx_row) (Row, error) {
 	schema, ok := analytic.Schema(uint32(cr.schema_id))
 	if !ok {
 		return Row{}, fmt.Errorf("irregex: library returned unknown schema id %d", uint32(cr.schema_id))
@@ -344,7 +344,7 @@ func goRow(cr *C.irregex_row) (Row, error) {
 	return Assemble(uint32(cr.schema_id), values, uint64(cr.present))
 }
 
-func goValue(cv C.irregex_value, nested uint32) (Value, error) {
+func goValue(cv C.irgx_value, nested uint32) (Value, error) {
 	switch analytic.Tag(cv.tag) {
 	case analytic.TagText:
 		return Text(goBytes(cv.ptr, cv.len)), nil
@@ -360,7 +360,7 @@ func goValue(cv C.irregex_value, nested uint32) (Value, error) {
 		n := int(cv.len)
 		out := make([]string, n)
 		if n > 0 && cv.ptr != nil {
-			for i, t := range unsafe.Slice((*C.irregex_text)(cv.ptr), n) {
+			for i, t := range unsafe.Slice((*C.irgx_text)(cv.ptr), n) {
 				out[i] = goBytes(unsafe.Pointer(t.ptr), t.len)
 			}
 		}
@@ -369,7 +369,7 @@ func goValue(cv C.irregex_value, nested uint32) (Value, error) {
 		n := int(cv.len)
 		out := make([]Row, n)
 		if n > 0 && cv.ptr != nil {
-			for i, cr := range unsafe.Slice((*C.irregex_row)(cv.ptr), n) {
+			for i, cr := range unsafe.Slice((*C.irgx_row)(cv.ptr), n) {
 				child, err := goRow(&cr)
 				if err != nil {
 					return Value{}, err

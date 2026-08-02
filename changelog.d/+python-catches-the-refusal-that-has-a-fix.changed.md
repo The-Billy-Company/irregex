@@ -1,26 +1,26 @@
 A Python caller can now catch the refusal that has a fix, and fix it.
 
-`irregex.compile(r"(?<=\$)\d+")` used to raise the same `irregex.error` as
-`irregex.compile("[abc")`, so the only way to tell "this needs the other engine"
+`irgx.compile(r"(?<=\$)\d+")` used to raise the same `irgx.error` as
+`irgx.compile("[abc")`, so the only way to tell "this needs the other engine"
 from "this is broken" was to try `pcre=True` on everything and see what stuck.
 The first one is not a failure at all - the linear tier declines it and PCRE2
 takes it as it stands - and the engine says so on the return value now, so the
 binding does too.
 
-A declined pattern raises `irregex.UnsupportedPattern`, and the message says
+A declined pattern raises `irgx.UnsupportedPattern`, and the message says
 outright that `pcre=True` accepts it. So this is a real handler:
 
 ```python
 try:
-    pattern = irregex.compile(user_pattern)
-except irregex.UnsupportedPattern:
-    pattern = irregex.compile(user_pattern, pcre=True)
+    pattern = irgx.compile(user_pattern)
+except irgx.UnsupportedPattern:
+    pattern = irgx.compile(user_pattern, pcre=True)
 ```
 
-It is a subclass of `irregex.error`, so nothing that already catches
-`irregex.error` changes.
+It is a subclass of `irgx.error`, so nothing that already catches
+`irgx.error` changes.
 
-`irregex.error` also grew `re.error`'s three attributes - `msg`, `pattern`,
+`irgx.error` also grew `re.error`'s three attributes - `msg`, `pattern`,
 `pos` - which is how a Python user already expects to find a bad pattern. `pos`
 is the byte offset the engine located the refusal at, so a program compiling
 patterns out of a config file can point at the character instead of reprinting
