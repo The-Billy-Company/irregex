@@ -6,9 +6,15 @@
     .dependencies = .{
         // The shard-aware test runner. Build-time only, no artifact, no ABI —
         // it decides which tests a process owns and hangs the `Run` steps off
-        // one compiled binary. Sibling-checkout path dep (dev); releases pin
-        // url+hash via the publish script.
-        .brigade = .{ .path = "../brigade" },
+        // one compiled binary. Pinned by url+hash like everything else here,
+        // rather than reached at `../brigade`: a sibling path resolves on the
+        // machine that has the sibling and nowhere else, so a clone — CI's
+        // included — could not build this package at all. Not `.lazy`, because
+        // unlike the vendored engines below this one really is fetched.
+        .brigade = .{
+            .url = "https://github.com/The-Billy-Company/brigade/archive/505a57a9febf21757268bd8ac651c53d27896c79.tar.gz",
+            .hash = "brigade-0.1.0-1n1fSewLAQBenqvI3An0VUw24_TsuaT3mt1_4TfqWZwG",
+        },
         // PCRE2 10.47 — the opt-in `-P` engine. The build compiles the pinned
         // mirror physically vendored under vendor/pcre2/ (hermetic, offline,
         // byte-reproducible), so this entry is `.lazy` and is NEVER fetched by
