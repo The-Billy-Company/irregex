@@ -23,7 +23,7 @@ _AUTHORS = {"analytic": "irregex", "engine": "irregex", "kinship": "relate", "su
 # Mirrors `[meta]` in contract/engine.toml (versions) and `[package]` in
 # contract/surface.toml (dist / import names).
 ABI_VERSION = 2
-ENGINE_VERSION = "1.0.0"
+ENGINE_VERSION = "1.0.0"  # x-release-please-version
 PACKAGE_DIST = "gist-search"
 PACKAGE_IMPORT = "gist"
 

@@ -27,6 +27,7 @@ Three things differ from :mod:`re`, and each is deliberate:
 from __future__ import annotations
 
 import functools
+import importlib.metadata as _metadata
 from collections.abc import Callable, Iterator
 from typing import Any
 
@@ -55,10 +56,17 @@ __all__ = [
     "subn",
 ]
 
-#: The version of this Python package. The engine has its own version, which
-#: one wheel can carry a newer copy of without any API change here:
-#: :data:`ENGINE_VERSION`.
-__version__ = "1.0.0"
+#: The version of this Python package, read from the installed distribution's
+#: own metadata rather than restated here — ``pyproject.toml`` is the only
+#: place it is written, and a release moves that one line. A source checkout
+#: that was never installed has no metadata to read, so it falls back to the
+#: version the linked engine reports, which is what such a tree is actually
+#: running. The engine has its own version, which one wheel can carry a newer
+#: copy of without any API change here: :data:`ENGINE_VERSION`.
+try:
+    __version__ = _metadata.version("irregex")
+except _metadata.PackageNotFoundError:  # source checkout, never pip-installed
+    __version__ = ENGINE_VERSION
 
 _Flags = dict[str, bool]
 

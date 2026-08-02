@@ -1,0 +1,77 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+
+  "_comment": [
+    "Conventional Commits → a version bump, a tag, and a GitHub Release.",
+    "",
+    "── One package, one version",
+    "This repository ships one thing four ways: the Zig module, `libirgx` +",
+    "include/irgx.h, and the Python / Rust / Go bindings. They are released",
+    "together, so they carry one number, and `build.zig.zon`'s `.version` is",
+    "where that number is written. Zig reads it through a build option, Rust",
+    "reads CARGO_PKG_VERSION, and Python reads its installed distribution",
+    "metadata — none of them restate it. What remains is the packaging",
+    "manifests that cannot import anything, listed as `extra-files` below.",
+    "",
+    "── Why `simple` + generic extra-files",
+    "There is no Zig updater, and the version is pinned in lockstep across",
+    "files four languages own. `simple` keeps the manifest as the source of",
+    "truth and the `generic` updater rewrites the semver on any line carrying",
+    "an `x-release-please-version` annotation, so one release moves every",
+    "member of the lockstep atomically. `tools/version_parity.py` fails if a",
+    "marked line is missing from this list, so the two cannot drift apart.",
+    "",
+    "── Changelog ownership",
+    "towncrier owns CHANGELOG.md — the curated fragments under changelog.d/",
+    "are the release notes, written for people. release-please would compile a",
+    "second, machine-derived changelog into the same file and fight it, so",
+    "`skip-changelog` is on and the bot handles versions and tags only. Build",
+    "the notes with `towncrier build --version <the version this bumps to>`.",
+    "",
+    "── The tag cascades",
+    "Merging the release PR tags `vX.Y.Z`, which is what `release.yml` waits",
+    "for to publish the wheels. A tag pushed by GITHUB_TOKEN does NOT trigger",
+    "another workflow, so that hand-off only happens when the workflow runs",
+    "with RELEASE_PLEASE_TOKEN — see .github/workflows/release-please.yml."
+  ],
+
+  "release-type": "simple",
+  "include-component-in-tag": false,
+  "include-v-in-tag": true,
+  "separate-pull-requests": false,
+  "draft": false,
+  "prerelease": false,
+  "bump-minor-pre-major": true,
+  "bump-patch-for-minor-pre-major": false,
+
+  "changelog-sections": [
+    { "type": "feat", "section": "Features" },
+    { "type": "fix", "section": "Bug Fixes" },
+    { "type": "perf", "section": "Performance" },
+    { "type": "refactor", "section": "Refactor" },
+    { "type": "deps", "section": "Dependencies" },
+    { "type": "revert", "section": "Reverts" },
+    { "type": "docs", "section": "Documentation", "hidden": true },
+    { "type": "test", "section": "Tests", "hidden": true },
+    { "type": "build", "section": "Build", "hidden": true },
+    { "type": "ci", "section": "CI", "hidden": true },
+    { "type": "chore", "section": "Chore", "hidden": true },
+    { "type": "style", "section": "Style", "hidden": true }
+  ],
+
+  "packages": {
+    ".": {
+      "release-type": "simple",
+      "package-name": "irregex",
+      "skip-changelog": true,
+      "extra-files": [
+        { "type": "generic", "path": "build.zig.zon" },
+        { "type": "generic", "path": "contract/engine.toml" },
+        { "type": "generic", "path": "bindings/python/pyproject.toml" },
+        { "type": "generic", "path": "bindings/python/irgx/contract/abi.py" },
+        { "type": "generic", "path": "bindings/rust/Cargo.toml" },
+        { "type": "generic", "path": "bindings/go/analytic/contract.go" }
+      ]
+    }
+  }
+}

@@ -40,14 +40,12 @@ jobs:
           version: 0.16.0
       - uses: astral-sh/setup-uv@v5
 
-      # The three faces — the Zig package, the Python distribution, and the Rust
-      # crate — all start at 1.0.0 together. That is the release freezing the C
-      # ABI, and it would read badly for the thing being frozen to carry a
-      # different number than the thing promising it. They diverge from there:
-      # a binding's API churn has no business bumping the engine. So equal
-      # numbers today are a starting line, not a coupling — and this workflow
-      # publishes exactly one face, so the tag has to name that one's version or
-      # the release notes describe an artifact nobody got.
+      # Every face of this package — the Zig module, `libirgx`, and the Python,
+      # Rust, and Go bindings — carries one number, written once in
+      # `build.zig.zon` and mirrored into the manifests that cannot import it.
+      # So this check is not comparing two independent versions; it is catching
+      # a tag typed by hand, or a release PR merged without the bump it was
+      # supposed to carry. `tools/version_parity.py` guards the other direction.
       - name: The tag must name the version being published
         if: startsWith(github.ref, 'refs/tags/v')
         run: |

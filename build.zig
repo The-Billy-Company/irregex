@@ -158,6 +158,25 @@ pub fn build(b: *std.Build) void {
 
     var floor = Floor{ .b = b, .target = target };
 
+    // ── the one place this package's semver lives ──
+    // `build.zig.zon`'s `.version` is the single authority. `src/root.zig`
+    // reads it through this option instead of restating it, so the two cannot
+    // drift — the failure that put `engine_version` a minor behind for a whole
+    // release. Every remaining copy is a packaging manifest that cannot import
+    // anything (the contract, Cargo, PyPI, the Go mirror); those carry an
+    // `x-release-please-version` marker and are moved from here by the release
+    // bot, and `tools/version_parity.py` fails if one of them lags.
+    //
+    // The package name rides along so this generated file differs from the one
+    // every sibling generates. Zig content-addresses it, and two packages whose
+    // only option was an identical version string produced the SAME file — which
+    // it then refuses as the root of two modules the moment `gist` links
+    // `irregex`. Naming the package keeps them distinct and reads better anyway.
+    const zon = @import("build.zig.zon");
+    const version = b.addOptions();
+    version.addOption([:0]const u8, "version", zon.version);
+    version.addOption([:0]const u8, "package", @tagName(zon.name));
+
     // ── the public module (`@import("irregex")`) ──
     // What `relate`/`gist`/`blast` consume as a sibling-path dependency. PIC
     // because the product packages link it into PIE binaries and (in gist) a
@@ -170,6 +189,7 @@ pub fn build(b: *std.Build) void {
         .strip = strip,
     });
     floor.under(engine);
+    engine.addOptions("build_options", version);
 
     // ── the C-ABI artifact (`libirgx` + `include/irgx.h`) ──
     // Rooted at the export shims, NOT at `src/root.zig`. A Zig `export fn` is
@@ -226,6 +246,7 @@ pub fn build(b: *std.Build) void {
             .pic = true,
         });
         floor.under(twin);
+        twin.addOptions("build_options", version);
         break :blk twin;
     };
 

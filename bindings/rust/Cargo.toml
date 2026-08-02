@@ -6,7 +6,7 @@
 
 [package]
 name = "irregex"
-version = "1.0.0"
+version = "1.0.0" # x-release-please-version
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"

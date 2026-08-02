@@ -355,7 +355,12 @@ pub const inner = struct {
     pub const lexspan = @import("kernel/anatomy/lexspan.zig");
 };
 
-pub const version_string: [:0]const u8 = "1.0.0"; // x-release-please-version
+/// The engine semver, read from `build.zig.zon`'s `.version` — the single
+/// place this package's version is written. `build.zig` lifts it into this
+/// module as a build option, so a release bumps one line and this constant,
+/// `irgx_version()`, and every `--version` banner follow with nothing to keep
+/// in step by hand.
+pub const version_string: [:0]const u8 = @import("build_options").version;
 
 /// The C-ABI compatibility integer, and the provenance stamp every measurement
 /// harness prints in its banner — which is why it is declared here rather than

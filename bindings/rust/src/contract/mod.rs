@@ -30,8 +30,12 @@ pub use calibration::{Channel, Grade, Polarity, Unit, Variant};
 // ── `[meta]` in contract/engine.toml ─────────────────────────────────────
 /// C-ABI compatibility integer (tracks `src/root.zig` `abi()`).
 pub const ABI_VERSION: u32 = 2;
-/// Engine semver (tracks `src/root.zig` `version_string`).
-pub const ENGINE_VERSION: &str = "1.0.0";
+/// Engine semver. Read from this crate's own `Cargo.toml` rather than restated:
+/// the binding ships out of the engine's repository and is released with it, so
+/// the two versions are one number, and `Cargo.toml` is the only place in this
+/// crate it is written. [`crate::engine_version`] reports what the linked
+/// library actually says, and the contract parity test asserts the two agree.
+pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The published distribution name (`[package].dist` in `contract/surface.toml`).
 pub const PACKAGE_DIST: &str = "gist-search";
 /// The published import name (`[package].import` in `contract/surface.toml`).

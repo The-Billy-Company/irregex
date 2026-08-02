@@ -17,8 +17,12 @@ import (
 // ABI and engine versions, mirrored from [meta]. Additive C symbols do not bump
 // ABIVersion; the analytic plane's own compatibility axis is [Digest].
 const (
-	ABIVersion    = 2
-	EngineVersion = "1.0.0"
+	ABIVersion = 2
+	// Go can neither read the module's own version nor embed a file outside its
+	// module root, so this is the one mirror that has to be written down. The
+	// release bot moves it with the marker; `tools/version_parity.py` fails if
+	// it lags `build.zig.zon`.
+	EngineVersion = "1.0.0" // x-release-please-version
 )
 
 // Process exit codes ([exit_codes]) — ripgrep's three, preserved end to end. A
