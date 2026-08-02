@@ -17,12 +17,14 @@ script ships an engine older than the repository it came from.
 
 Three things happen per target beyond ``zig build``.
 
-**The C floor is folded in where the build leaves it out.** On macOS the
-installed archive is a relocatable-object merge and already carries PCRE2; on
-ELF it is a plain archive of the Zig objects only, so a link fails on
-``pcre2_compile_8`` and friends. The archive is probed for a PCRE2 symbol and
-the floor is merged in only when it is genuinely absent, so this keeps working
-unchanged the day the Zig build folds the floor in everywhere.
+**The C floor is verified present, not folded in.** ``build.zig`` packs
+``libirgx.a`` from a partially-linked object on every target now, so PCRE2 and
+libsais ride inside the archive it installs. This script used to merge them
+itself on ELF, where the build once shipped the Zig objects alone and a link
+died on ``pcre2_compile_8``; what is left of that is the probe, kept as a
+precondition. An archive that reaches here without the floor is a regression in
+the build, and vendoring it would push the failure out to somebody's
+``cargo build``.
 
 **Debug info is stripped.** DWARF is the large majority of an unstripped ELF
 archive and nothing links against it. Stripping is the difference between a
@@ -37,7 +39,6 @@ this script rather than a failure in somebody's ``cargo build`` a week later.
 from __future__ import annotations
 
 import argparse
-import glob
 import os
 import shutil
 import subprocess
@@ -81,6 +82,12 @@ class Target:
     #: the host SDK would produce an archive that refuses to link or load on an
     #: older machine than the one that built it.
     zig: str
+    #: The ``-Dcpu`` subtarget: the instruction floor this archive may use, and
+    #: therefore the oldest CPU it can be linked into. It has to be named for
+    #: the same reason the platform version does, and it must agree with the
+    #: floor `build.rs` passes on the source rung, or the two ways to obtain
+    #: this crate's engine would not be the same engine.
+    cpu: str
 
     @property
     def archive(self) -> Path:
@@ -91,15 +98,22 @@ class Target:
 # still the widest useful baseline; Zig links against exactly that version
 # rather than the host's, which is what makes a portable Linux archive off a
 # macOS laptop a real thing rather than a claim.
+#
+# aarch64's baseline already carries NEON. x86_64's baseline is SSE2, and the
+# scan kernels' `pshufb` is SSSE3 - so an unfloored x86_64 archive is one that
+# executes an instruction its own triple never promised. Zig's x86_64-macos
+# default happens to include SSSE3 and its linux one does not, which is why
+# only one of these was visibly wrong and both were equally undeclared.
 MATRIX = (
-    Target("aarch64-apple-darwin", "aarch64-macos.11.0"),
-    Target("x86_64-apple-darwin", "x86_64-macos.11.0"),
-    Target("x86_64-unknown-linux-gnu", "x86_64-linux-gnu.2.17"),
-    Target("aarch64-unknown-linux-gnu", "aarch64-linux-gnu.2.17"),
+    Target("aarch64-apple-darwin", "aarch64-macos.11.0", "baseline"),
+    Target("x86_64-apple-darwin", "x86_64-macos.11.0", "x86_64_v2"),
+    Target("x86_64-unknown-linux-gnu", "x86_64-linux-gnu.2.17", "x86_64_v2"),
+    Target("aarch64-unknown-linux-gnu", "aarch64-linux-gnu.2.17", "baseline"),
 )
 
-# One symbol from the vendored PCRE2, used to decide whether the C floor is
-# already inside the archive. Checking behaviour beats checking the platform.
+# One symbol from the vendored PCRE2, standing witness for the whole C floor.
+# Checking behaviour beats checking the platform: this asks the archive what it
+# contains rather than assuming what the build does per target.
 FLOOR_WITNESS = "pcre2_compile_8"
 
 LLVM_SEARCH = (
@@ -145,7 +159,7 @@ def defines(nm: str, archive: Path, symbol: str) -> bool:
     """Whether ``archive`` carries a definition of ``symbol``.
 
     Only a definition counts: an undefined reference to the very symbol we are
-    looking for is exactly the state that needs the merge.
+    looking for is exactly the state this is meant to catch.
     """
     listing = subprocess.run([nm, "--defined-only", str(archive)], capture_output=True, text=True)
     return any(
@@ -153,32 +167,6 @@ def defines(nm: str, archive: Path, symbol: str) -> bool:
         for line in listing.stdout.splitlines()
         if line.split()
     )
-
-
-def floor_archive(cache: Path) -> Path:
-    """The PCRE2 archive this build produced.
-
-    The Zig build does not install its C floors, so they have to be read out of
-    the build cache. That is only safe because the cache is per-target and owned
-    by this script: more than one candidate means the assumption broke, and
-    guessing between them would silently vendor the wrong architecture.
-    """
-    found = sorted(glob.glob(str(cache / "o" / "*" / "libpcre2irregex.a")))
-    if len(found) != 1:
-        raise RuntimeError(
-            f"expected exactly one libpcre2irregex.a under {cache}, found {len(found)}; "
-            f"delete that cache directory and rerun"
-        )
-    return Path(found[0])
-
-
-def merge(zig: str, base: Path, floor: Path, out: Path) -> None:
-    """Fold ``floor``'s members into ``base``, writing ``out``."""
-    run([zig, "ar", "-M"], input=f"create {out}\naddlib {base}\naddlib {floor}\nsave\nend\n")
-    members = run([zig, "ar", "t", str(out)], capture_output=True).stdout.split()
-    names = [Path(m).name for m in members]
-    if len(names) != len(set(names)):
-        raise RuntimeError(f"{out} has duplicate member names; the two archives collide")
 
 
 def probe_link(zig: str, target: Target, archive: Path, header: Path, workdir: Path) -> str:
@@ -212,6 +200,7 @@ def build(target: Target, cache_root: Path, zig: str, strip: str | None, nm: str
         run(
             [
                 zig, "build", "-Doptimize=ReleaseFast", f"-Dtarget={target.zig}",
+                f"-Dcpu={target.cpu}",
                 "--prefix", str(staging), "--cache-dir", str(cache),
             ],
             cwd=ENGINE,
@@ -221,11 +210,12 @@ def build(target: Target, cache_root: Path, zig: str, strip: str | None, nm: str
             raise RuntimeError(f"zig build produced no {archive}")
 
         if not defines(nm, archive, FLOOR_WITNESS):
-            merged = work / "libirgx.a"
-            merge(zig, archive, floor_archive(cache), merged)
-            archive = merged
-            if not defines(nm, archive, FLOOR_WITNESS):
-                raise RuntimeError(f"{target.rust}: merged archive still lacks {FLOOR_WITNESS}")
+            raise RuntimeError(
+                f"{target.rust}: {archive} does not define {FLOOR_WITNESS}, so the C floor "
+                f"is not inside it and a consumer's link will fail. build.zig packs the "
+                f"archive from a partially-linked object to prevent exactly this; check "
+                f"what changed there rather than merging the floor in here."
+            )
 
         if strip:
             run([strip, "--strip-debug", str(archive)])
@@ -240,7 +230,9 @@ def build(target: Target, cache_root: Path, zig: str, strip: str | None, nm: str
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--only", action="append", metavar="TRIPLE", help="build just these targets")
+    parser.add_argument(
+        "--only", action="append", metavar="TRIPLE", help="build just these targets"
+    )
     parser.add_argument("--list", action="store_true", help="print the matrix and exit")
     parser.add_argument(
         "--keep-debug",
@@ -256,7 +248,10 @@ def main() -> int:
 
     if args.list:
         for target in MATRIX:
-            print(f"{target.rust:28} zig={target.zig:24} -> {target.archive.relative_to(CRATE)}")
+            print(
+                f"{target.rust:28} zig={target.zig:24} cpu={target.cpu:11}"
+                f" -> {target.archive.relative_to(CRATE)}"
+            )
         return 0
 
     chosen = list(MATRIX)

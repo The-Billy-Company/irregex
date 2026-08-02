@@ -65,9 +65,10 @@ const pcre2_sources = [_][]const u8{
 // defaults; the -D flags turn on the 8-bit library, Unicode/UTF, JIT, and
 // static linkage. SUPPORT_JIT is always compiled in; on an sljit-unsupported
 // target the backend self-disables and the Zig wrapper falls back to the
-// interpreter. `-fno-sanitize=undefined` keeps Zig's C UBSan from trapping on
-// PCRE2's intentional, well-defined-in-practice pointer/shift idioms — a `-P`
-// query must degrade to a clean error, never a sanitizer abort.
+// interpreter. What is deliberately NOT here is a sanitizer opt-out: the
+// vendored C is built with `.sanitize_c = .off` on its module (see `Floor`),
+// which is the same decision stated where Zig owns it instead of smuggled in
+// as a clang flag that countermands one Zig just added.
 const pcre2_cflags = [_][]const u8{
     "-DHAVE_CONFIG_H",
     "-DPCRE2_CODE_UNIT_WIDTH=8",
@@ -75,27 +76,28 @@ const pcre2_cflags = [_][]const u8{
     "-DSUPPORT_UNICODE",
     "-DSUPPORT_PCRE2_8",
     "-DSUPPORT_JIT",
-    "-fno-sanitize=undefined",
     "-std=c11",
 };
 
 // libsais — the suffix-array constructor under the FM-index. No feature
 // flags: LIBSAIS_OPENMP stays OFF, so the parallel entry points are
-// preprocessed away and the archive needs no `libomp`. `-fno-sanitize=
-// undefined` because the induced sort walks its suffix array with
-// deliberately negative sentinel indices and one-past-the-end cursors — a
-// codex build must fail as a Zig error, never as a sanitizer abort inside C.
-// Provenance: vendor/libsais/README.md + the build.zig.zon `.lazy` row.
-const libsais_cflags = [_][]const u8{
-    "-fno-sanitize=undefined",
-    "-std=c99",
-};
+// preprocessed away and the archive needs no `libomp`. Provenance:
+// vendor/libsais/README.md + the build.zig.zon `.lazy` row.
+const libsais_cflags = [_][]const u8{"-std=c99"};
 
 /// One static archive per C floor per optimize mode, memoized — an adversarial
 /// ReleaseSafe test must not run a Debug C library, and a ReleaseFast product
 /// twin must not link a ReleaseSafe one. `.pic = true` so one archive serves
 /// both a future shared object and every executable (macOS is PIC by default;
 /// ELF non-PIC would reject the archive in a PIE link).
+///
+/// Both archives are built `.sanitize_c = .off`, which is load-bearing in
+/// exactly one mode: ReleaseSafe, where Zig otherwise instruments C with
+/// trapping UBSan. Both libraries would trip it on purpose — PCRE2 on its
+/// pointer/shift idioms, libsais on the negative sentinel indices and
+/// one-past-the-end cursors the induced sort is built out of — and both are
+/// well-defined in practice. A `-P` query must degrade to a clean error and a
+/// codex build must fail as a Zig error; neither may abort inside C.
 const Floor = struct {
     b: *std.Build,
     target: std.Build.ResolvedTarget,
@@ -116,7 +118,7 @@ const Floor = struct {
 
     fn pcre2At(self: *Floor, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
         if (self.pcre2.get(optimize)) |ready| return ready;
-        const mod = self.b.createModule(.{ .target = self.target, .optimize = optimize, .link_libc = true, .pic = true });
+        const mod = self.b.createModule(.{ .target = self.target, .optimize = optimize, .link_libc = true, .pic = true, .sanitize_c = .off });
         mod.addIncludePath(self.b.path("vendor/pcre2/src"));
         mod.addCSourceFiles(.{ .root = self.b.path("vendor/pcre2/src"), .files = &pcre2_sources, .flags = &pcre2_cflags });
         const lib = self.b.addLibrary(.{ .name = "pcre2irregex", .linkage = .static, .root_module = mod });
@@ -126,12 +128,85 @@ const Floor = struct {
 
     fn libsaisAt(self: *Floor, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
         if (self.libsais.get(optimize)) |ready| return ready;
-        const mod = self.b.createModule(.{ .target = self.target, .optimize = optimize, .link_libc = true, .pic = true });
+        const mod = self.b.createModule(.{ .target = self.target, .optimize = optimize, .link_libc = true, .pic = true, .sanitize_c = .off });
         mod.addIncludePath(self.b.path("vendor/libsais/include"));
         mod.addCSourceFiles(.{ .root = self.b.path("vendor/libsais/src"), .files = &.{"libsais.c"}, .flags = &libsais_cflags });
         const lib = self.b.addLibrary(.{ .name = "libsais", .linkage = .static, .root_module = mod });
         self.libsais.set(optimize, lib);
         return lib;
+    }
+};
+
+/// The codegen posture the command line asked for. Zig ships no rc file and no
+/// `-mllvm` passthrough — `build.zig` *is* the configuration file — so `-D…` is
+/// the entire surface between an operator and LLVM. Holding it as one value is
+/// what keeps a module or artifact added later from silently missing a knob,
+/// and the two setters are split because Zig splits them: the frame pointer is
+/// a property of a module's codegen, everything else of the whole compilation
+/// that links it.
+const Codegen = struct {
+    /// ReleaseFast omits the frame pointer, and the frame pointer is what a
+    /// sampling profiler walks — so a profile of the shipped posture is a pile
+    /// of unattributed leaves without this. A no-op on aarch64-darwin, whose
+    /// platform ABI pins the register whatever LLVM would have preferred.
+    frame_pointer: ?bool,
+    /// Cross-language inlining over the Zig↔C seam (PCRE2's match entry,
+    /// libsais's induced sort) plus whole-program IPO. Off by default because
+    /// it moves real optimization work into the link, which every edit then
+    /// pays for, and it only ever pays back in an artifact somebody ships.
+    lto: std.zig.LtoMode,
+    /// The rung between the two `-Dstrip` poles. DWARF is **79%** of the
+    /// emitted Linux shared object — 9.24 MB of 11.73 MB, against 1.51 MB of
+    /// `.text` — so "debuggable" and "small" read as opposites until the debug
+    /// info is compressed rather than deleted. A `SHF_COMPRESSED` header in
+    /// front of each `.debug_*` section is inflated by the consumer on demand,
+    /// so the DWARF a debugger ends up reading is the same DWARF — where
+    /// `-Dstrip` answers the size question by destroying it. Measured on this
+    /// library: 11.72 MB → 4.83 MB (zlib) or 4.57 MB (zstd).
+    ///
+    /// **zlib is the default on ELF** and zstd is the ask, which inverts how
+    /// the two codecs rank on the merits — zstd is better on all three axes at
+    /// once (ratio, compression speed, decompression speed), which is the
+    /// finding `ELFCOMPRESS_ZSTD` was standardised on (MaskRay, `zstd
+    /// compressed debug sections`, 2022). It loses here on the only axis a
+    /// default is decided by: who can read it. `ELFCOMPRESS_ZLIB` is the one
+    /// value the generic ABI has always had and every binutils, gdb, and
+    /// elfutils in service handles it, while zstd needs gdb 13.2 / binutils
+    /// 2.40 / elfutils 0.189 / LLVM 16 and an older reader does not degrade —
+    /// it refuses the section outright. So the default takes 59% of the win
+    /// nobody can be broken by, and `-Ddebug-compress=zstd` takes the rest.
+    ///
+    /// ELF only, link-time only, and release-only. An archive is never
+    /// linked, so `libirgx.a` is exactly the same bytes at every setting; and
+    /// `-ODebug` emits DWARF this vintage of LLD cannot compress without
+    /// segfaulting, which is why the default stands itself down there.
+    debug_compress: std.zig.CompressDebugSections,
+    /// A stripped artifact has no DWARF and therefore no identity: two builds
+    /// of different commits are the same anonymous bytes, and a crash in a
+    /// `pip install`ed wheel cannot be tied back to what produced it. A build
+    /// ID is the standard answer — the note packagers, `debuginfod`, and
+    /// symbolizers all match a separate debug file on — so `build` turns it on
+    /// with `-Dstrip` rather than leaving the packaged artifact unattributable.
+    build_id: ?std.zig.BuildId,
+
+    fn module(cg: Codegen, m: *std.Build.Module) *std.Build.Module {
+        if (cg.frame_pointer) |keep| m.omit_frame_pointer = !keep;
+        return m;
+    }
+
+    fn artifact(cg: Codegen, c: *std.Build.Step.Compile) *std.Build.Step.Compile {
+        c.lto = cg.lto;
+        c.compress_debug_sections = cg.debug_compress;
+        c.build_id = cg.build_id;
+        // Both of these are link-time LLVM passes, and only LLD hosts them —
+        // Zig's own ELF linker silently emits uncompressed sections instead of
+        // refusing, which is the worse failure: an operator who asked for a
+        // 4 MB library gets an 11 MB one and no diagnostic. Asking for either
+        // is therefore also asking for LLD, so say it here instead of making
+        // every caller pair the flags and discover that by error — or, for
+        // compression, not discover it at all.
+        if (cg.lto != .none or cg.debug_compress != .none) c.use_lld = true;
+        return c;
     }
 };
 
@@ -150,11 +225,86 @@ pub fn build(b: *std.Build) void {
     // Debug info is worth its size to anyone developing against the engine and
     // worth nothing to someone who ran `pip install`. It is not a rounding error
     // either: on ELF the DWARF outweighs the code roughly four to one, so the
-    // published Linux library is ~11 MB unstripped against ~2 MB stripped. Mach-O
-    // hides the asymmetry by keeping DWARF in a separate `.dSYM`, which is why
-    // only the ELF and PE artifacts look bloated. Off by default so a local build
-    // stays debuggable; the wheel matrix asks for it explicitly.
+    // Linux library measures 11.72 MB uncompressed against 1.88 MB stripped.
+    // Mach-O hides the asymmetry by keeping DWARF in a separate `.dSYM`, which
+    // is why only the ELF and PE artifacts look bloated. Off by default so a
+    // local build stays debuggable; the wheel matrix is the one caller that
+    // asks for it. It is also the *destructive* answer to the size question and
+    // no longer the first one reached for — `-Ddebug-compress` below is already
+    // on for a released ELF target, landing the same debuggable library at
+    // 4.83 MB.
     const strip = b.option(bool, "strip", "Omit debug info from emitted artifacts (packaging)");
+
+    // ── the LLVM knobs, and where the granularity actually stops ──
+    // Four tiers are reachable from a build script, coarsest first: the
+    // **subtarget** (`-Dcpu=baseline+avx2`, which becomes LLVM's feature string
+    // verbatim — `--verbose-llvm-cpu-features` prints back what it parsed), the
+    // **per-module** codegen flags, the **link-time** passes LLD hosts (LTO,
+    // section collection, debug-section compression), and the **pass
+    // pipeline**, which has no `std.Build` surface at all because
+    // `Step.Compile` carries nowhere to put a driver flag. `zig build ir`, at
+    // the bottom of this file, is the way down to that last tier and names the
+    // invocations. There is no fifth tier: Zig rejects `-mllvm`, deliberately,
+    // and rejects it inside `-cflags` too.
+    // Asked-for versus in-force, and the distinction is load-bearing: the ELF
+    // default below has to stand itself down on a target or a posture where it
+    // cannot work, while an *explicit* `-Ddebug-compress` on that same target
+    // has to be refused. Collapsing the two would either fail every
+    // `-Dstrip=true` build on its own default, or silently swallow a flag the
+    // operator typed.
+    const debug_compress_asked = b.option(std.zig.CompressDebugSections, "debug-compress", "Compress DWARF in place, ELF only (default zlib, which every reader handles; zstd is smaller and needs a 2023-era toolchain)");
+    const codegen: Codegen = .{
+        .frame_pointer = b.option(bool, "frame-pointer", "Keep the frame-pointer chain in optimized builds so a sampling profiler can walk it"),
+        .lto = b.option(std.zig.LtoMode, "lto", "Link-time optimization for the shipped artifacts and the lab executables (default none)") orelse .none,
+        .debug_compress = debug_compress_asked orelse
+            if (target.result.ofmt == .elf and strip != true and optimize != .Debug) .zlib else .none,
+        // A build ID is only *needed* by the artifact that has lost its DWARF,
+        // so it rides `-Dstrip` rather than being one more thing the packaging
+        // matrix has to remember. `sha1` over Zig's cheaper `fast` because the
+        // point is to be recognised by tools we do not own — `debuginfod`, the
+        // distro debug-package splitters, the symbolizers — and a 20-byte note
+        // is the shape all of them were built around. Overridable both ways:
+        // `-Dbuild-id=fast` for the cheap 8-byte hash, `=none` to opt out.
+        .build_id = b.option(std.zig.BuildId, "build-id", "Embed a linker build ID identifying this artifact (default: on with -Dstrip, the build that has no other identity)") orelse
+            if (strip == true and target.result.ofmt == .elf) .sha1 else null,
+    };
+    // Three refusals, one shape: a flag that would be *silently* pointless is
+    // worse than one that is missing, because the operator reads the posture
+    // they asked for as the posture they got.
+    //
+    // On Darwin LTO is not slow or degraded — it is not a thing. It needs a
+    // link-time pass pipeline, only LLD hosts one, and Zig has no LLD path for
+    // Mach-O. Refusing here beats the driver's "using LLD to link macho files is
+    // unsupported" three steps into a build the operator thought was running.
+    // Cross-compiling from this machine is unaffected: `-Dtarget=x86_64-linux-gnu
+    // -Dlto=thin` links through LLD and works.
+    if (codegen.lto != .none and target.result.ofmt == .macho)
+        std.process.fatal("-Dlto is unavailable for a {t} target: Zig links Mach-O with its own linker, and LTO requires LLD.", .{target.result.os.tag});
+    // Compression is worse than unavailable off ELF — it is accepted. `SHF_COMPRESSED`
+    // is an ELF section flag with no Mach-O or COFF equivalent (Mach-O keeps its
+    // DWARF outside the image entirely, in a `.dSYM`), and the driver takes the
+    // flag and emits exactly what it would have anyway.
+    if (debug_compress_asked) |asked| {
+        if (asked != .none and target.result.ofmt != .elf)
+            std.process.fatal("-Ddebug-compress needs an ELF target ({t} emits {t}): SHF_COMPRESSED has no equivalent in that format, and the driver accepts the flag without doing anything.", .{ target.result.os.tag, target.result.ofmt });
+        // And the two size levers are a choice, not a stack: strip emits no
+        // debug sections, so there is nothing left for compression to act on.
+        if (asked != .none and strip == true)
+            std.process.fatal("-Ddebug-compress and -Dstrip=true contradict — strip leaves no debug sections to compress. Pick one: compressed keeps every DWARF byte at 41% of the size, stripped keeps none at 16%.", .{});
+        // The one refusal that is not about semantics. LLD's compressor is
+        // reached through a `parallelForEach` over the output sections, and on
+        // the 29 MB of DWARF `-ODebug` emits for this library it faults in a
+        // worker thread — `SIGSEGV`, no diagnostic, nothing written. Every
+        // release mode compresses the same library cleanly (ReleaseSafe 4.90,
+        // ReleaseFast 4.83, ReleaseSmall 1.37 MB with zlib), so this is a
+        // ceiling on that one mode and not on the option. It is stated as a
+        // refusal rather than absorbed as a silent downgrade because the crash
+        // is the alternative, and a build that dies inside the linker reads
+        // like a broken toolchain rather than a flag that was never going to
+        // work. Retest it when the vendored LLD moves.
+        if (asked != .none and optimize == .Debug)
+            std.process.fatal("-Ddebug-compress={t} crashes LLD at -ODebug: the compressor faults on the DWARF this library emits unoptimized. Use a release mode (all three compress fine), or drop the flag — the ELF default already stands itself down here.", .{asked});
+    }
 
     var floor = Floor{ .b = b, .target = target };
 
@@ -181,13 +331,13 @@ pub fn build(b: *std.Build) void {
     // What `relate`/`gist`/`blast` consume as a sibling-path dependency. PIC
     // because the product packages link it into PIE binaries and (in gist) a
     // shared C-ABI object.
-    const engine = b.addModule("irregex", .{
+    const engine = codegen.module(b.addModule("irregex", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
         .pic = true,
         .strip = strip,
-    });
+    }));
     floor.under(engine);
     engine.addOptions("build_options", version);
 
@@ -199,7 +349,7 @@ pub fn build(b: *std.Build) void {
     // would hit a duplicate-symbol error for a symbol it asked for once.
     // Keeping them in the artifact's own root means the symbols exist exactly
     // where the library named after them is.
-    const abi = b.createModule(.{
+    const abi = codegen.module(b.createModule(.{
         .root_source_file = b.path("src/surface/ffi/exports.zig"),
         .target = target,
         .optimize = optimize,
@@ -207,35 +357,57 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .strip = strip,
         .imports = &.{.{ .name = "irregex", .module = engine }},
-    });
+    }));
 
     // Dynamic (Python cffi dlopens it) owns the header install; static is what
-    // Go cgo and a Rust build.rs link. Zig's archiver leaves Mach-O members
-    // non-8-byte-aligned, which Apple's ld64 rejects in a cgo link, so macOS
-    // re-archives through `libtool -static`; LLD tolerates it.
-    const dynamic_lib = b.addLibrary(.{ .name = "irgx", .linkage = .dynamic, .root_module = abi });
+    // Go cgo and a Rust build.rs link.
+    const dynamic_lib = codegen.artifact(b.addLibrary(.{ .name = "irgx", .linkage = .dynamic, .root_module = abi }));
     dynamic_lib.installHeader(b.path("include/irgx.h"), "irgx.h");
     b.installArtifact(dynamic_lib);
-    if (target.result.os.tag == .macos) {
-        const obj = b.addObject(.{ .name = "irgx", .root_module = abi });
-        const repack = b.addSystemCommand(&.{ "libtool", "-static", "-o" });
-        const aligned_a = repack.addOutputFileArg("libirgx.a");
-        repack.addArtifactArg(obj);
-        b.getInstallStep().dependOn(&b.addInstallLibFile(aligned_a, "libirgx.a").step);
-    } else {
-        // Installed as a FILE rather than as an artifact, which is not a style
-        // choice: `installArtifact` is what publishes a name into the table a
-        // dependent's `dep.artifact("irgx")` searches, and the dynamic library
-        // above already owns that name. Registering a second one made the lookup
-        // ambiguous and panicked the build runner - in every DEPENDENT, never
-        // here, and only on the branch macOS does not take, so it stayed
-        // invisible on a laptop while no Zig consumer could build on Linux at
-        // all. The macOS arm is already file-shaped for its own reason (ld64
-        // alignment), so this makes both arms install `libirgx.a` the same way
-        // and leaves exactly one artifact answering to the name.
-        const static_lib = b.addLibrary(.{ .name = "irgx", .linkage = .static, .root_module = abi });
-        b.getInstallStep().dependOn(&b.addInstallLibFile(static_lib.getEmittedBin(), "libirgx.a").step);
-    }
+
+    // The archive is packed from a partially-linked OBJECT on every target, and
+    // only the archiver differs. That is not symmetry for its own sake:
+    // `addLibrary(.static)` archives this compilation's own objects and leaves
+    // `linkLibrary` standing as an instruction for whoever links next — which,
+    // for an archive, is a stranger who was never told. So the ELF `libirgx.a`
+    // referenced `pcre2_compile_8` without carrying it, and a cgo or build.rs
+    // consumer got undefined symbols unless they knew to hunt down two more
+    // archives this package does not install; `bindings/rust/build.rs` routes
+    // around it by linking the shared object instead, and the wheel vendoring
+    // merges the floor in afterwards. macOS never had the bug, and not on
+    // purpose — its ld64 workaround happened to route through an object, which
+    // partially links, which pulls the C floor in. That accident is now the
+    // design, and both arms ship an archive that links on its own.
+    //
+    // Zig's archiver leaves Mach-O members non-8-byte-aligned, which Apple's
+    // ld64 rejects in a cgo link, so Darwin repacks through `libtool -static`;
+    // everywhere else it is `zig ar`, the compiler already in hand rather than
+    // one more host tool to have installed. Both arms install a plain FILE:
+    // `installArtifact` publishes a name into the table a dependent's
+    // `dep.artifact("irgx")` searches, the shared library above already owns
+    // that name, and a second registration made the lookup ambiguous and
+    // panicked the build runner — in every DEPENDENT, never here.
+    //
+    // `-Dlto` reaches the linked artifacts and deliberately not this object:
+    // LTO would hand the archiver bitcode members, and whether those survive
+    // into a cgo link is the consumer's linker's business, not ours to bet on.
+    const merge = b.addObject(.{ .name = "irgx", .root_module = abi });
+    const repack = if (target.result.os.tag == .macos)
+        b.addSystemCommand(&.{ "libtool", "-static", "-o" })
+    else
+        b.addSystemCommand(&.{ b.graph.zig_exe, "ar", "rcs" });
+    const merged = repack.addOutputFileArg("libirgx.a");
+    repack.addArtifactArg(merge);
+    b.getInstallStep().dependOn(&b.addInstallLibFile(merged, "libirgx.a").step);
+    // Because it installs as a file, the archive is invisible to a dependent's
+    // `dep.artifact("irgx")`, and the three faces need it: their own archives
+    // deliberately do not fold the substrate in, so a static consumer of gist,
+    // relate, or blast links the pair. gist used to reach for it with a `cp`
+    // from `../irregex/zig-out/lib`, which is a different build than the one it
+    // is being built against — on a cross-compile it copied this laptop's
+    // Mach-O archive into a Linux prefix. Naming it here hands over the archive
+    // from the dependency graph, so it is the right target by construction.
+    b.addNamedLazyPath("libirgx.a", merged);
 
     // The unit-test binary is pinned to ReleaseSafe: the suite is dominated by
     // differential-fuzz loops (DFA vs Pike, powerset language equivalence,
@@ -249,12 +421,12 @@ pub fn build(b: *std.Build) void {
         "optimize mode for the unit-test binary (default ReleaseSafe)",
     ) orelse .ReleaseSafe;
     const test_module = if (test_optimize == optimize) engine else blk: {
-        const twin = b.createModule(.{
+        const twin = codegen.module(b.createModule(.{
             .root_source_file = b.path("src/root.zig"),
             .target = target,
             .optimize = test_optimize,
             .pic = true,
-        });
+        }));
         floor.under(twin);
         twin.addOptions("build_options", version);
         break :blk twin;
@@ -446,13 +618,18 @@ pub fn build(b: *std.Build) void {
         "lab-optimize",
         "optimize mode for the production-posture rungs (default ReleaseFast — they race the shipped ladder)",
     ) orelse .ReleaseFast;
-    const speed = b.createModule(.{
+    const speed = codegen.module(b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = lab_optimize,
         .pic = true,
-    });
+    }));
     floor.under(speed);
+    // A faithful twin needs the engine's options too, not only its optimize
+    // mode: `version_string` is lazily analyzed, so a lane that happens to
+    // touch it would otherwise fail on a missing import rather than on
+    // anything it did.
+    speed.addOptions("build_options", version);
 
     const Lane = struct {
         step: []const u8,
@@ -487,16 +664,16 @@ pub fn build(b: *std.Build) void {
         .{ .step = "engine-census", .exe = "engine-census", .root = "bench/rungs/census/bench.zig", .instrument = "probes", .blurb = "Engine census: which ladder machine each certificate probe class actually compiles to" },
     }) |lane| {
         const shipped = lane.posture == .shipped;
-        const mod = b.createModule(.{
+        const mod = codegen.module(b.createModule(.{
             .root_source_file = b.path(lane.root),
             .target = target,
             .optimize = if (shipped) lab_optimize else optimize,
-        });
+        }));
         mod.addImport("irregex", if (shipped) speed else engine);
         if (lane.instrument) |name| mod.addImport(name, if (std.mem.eql(u8, name, "pmu")) pmu else probes);
         if (lane.libc) mod.link_libc = true;
 
-        const exe = b.addExecutable(.{ .name = lane.exe, .root_module = mod });
+        const exe = codegen.artifact(b.addExecutable(.{ .name = lane.exe, .root_module = mod }));
         const install = &b.addInstallArtifact(exe, .{}).step;
         lab_step.dependOn(install);
 
@@ -522,6 +699,68 @@ pub fn build(b: *std.Build) void {
     });
     probes_drift.addImport("irregex", engine);
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = probes_drift })).step);
+
+    // ── `zig build ir` — reading what LLVM actually did ──
+    // The knobs at the top choose what LLVM is ALLOWED to emit; this is how you
+    // find out what it emitted. One object, three views of that same
+    // compilation, into `zig-out/llvm/`: the post-pipeline `.ll` (grep it for
+    // the vector width a rung really got, or for the call that was supposed to
+    // inline), the matching `.bc`, and the `.s` that `llvm-mca` reads —
+    // `bench/bounds/port/mca.sh` already does the assembly half by hand for two
+    // cross-compiled reference cores, and this is the same lever without a
+    // µarch opinion.
+    //
+    // `-Dir=<file>` picks the root, at `-Dlab-optimize` (ReleaseFast) for the
+    // same reason the production rungs run there: Debug IR is not the IR that
+    // ships. The default root is the C-ABI surface rather than `src/root.zig`,
+    // because Zig analyzes lazily and a library root that exports nothing
+    // lowers to nothing — the export shims are what pull the real engine into
+    // an object. That default is tens of megabytes of IR; point it at one probe
+    // or leaf module to read a page instead.
+    //
+    // Below this the pass pipeline itself has no `std.Build` surface, so the
+    // last tier is the driver, invoked directly. `-fopt-bisect-limit` runs only
+    // the first N passes and names every one it then skipped, which is how you
+    // find the pass that undid a vectorization; it needs a real emit beside it,
+    // since `-fno-emit-bin` alone never enters LLVM at all:
+    //
+    //     zig build-obj <file> -O ReleaseFast -fno-emit-bin \
+    //         -femit-llvm-ir=/tmp/at-N.ll -fopt-bisect-limit=N
+    //     zig build-obj <file> --verbose-llvm-cpu-features   # the subtarget
+    //         # string `-Dcpu=` actually produced, as LLVM parsed it
+    //
+    // and the escape hatch the `.bc` exists for: any pass pipeline you like via
+    // an external `opt`, handed back to Zig as an input file. The LLVM major
+    // must match the one this compiler links (0.16.0 → LLVM 21) — a newer
+    // `opt`'s bitcode returns as `error: Invalid record`, which is a version
+    // mismatch and not a corrupt module.
+    //
+    //     opt -passes='…' zig-out/llvm/root.bc -o tuned.bc && zig build-obj tuned.bc
+    const ir_root = b.option([]const u8, "ir", "root source file `zig build ir` lowers (default src/surface/ffi/exports.zig)") orelse "src/surface/ffi/exports.zig";
+    const ir_name = std.fs.path.stem(ir_root);
+    const ir_mod = codegen.module(b.createModule(.{
+        .root_source_file = b.path(ir_root),
+        .target = target,
+        .optimize = lab_optimize,
+        // Matched to the shipped library module: both change codegen, so an
+        // inspection built without them would be reading a different program.
+        .pic = true,
+        .link_libc = true,
+    }));
+    ir_mod.addOptions("build_options", version);
+    // Only when the root is something else — two modules in one compilation may
+    // not share a source file, and the default root IS the engine's.
+    if (!std.mem.eql(u8, ir_root, "src/root.zig")) ir_mod.addImport("irregex", speed);
+    const ir_obj = b.addObject(.{ .name = ir_name, .root_module = ir_mod });
+    const ir_step = b.step("ir", "Emit optimized LLVM IR + bitcode + assembly for -Dir=<file> → zig-out/llvm/");
+    for ([_]struct { std.Build.LazyPath, []const u8 }{
+        .{ ir_obj.getEmittedLlvmIr(), "ll" },
+        .{ ir_obj.getEmittedLlvmBc(), "bc" },
+        .{ ir_obj.getEmittedAsm(), "s" },
+    }) |view| {
+        const dest = b.fmt("llvm/{s}.{s}", .{ ir_name, view[1] });
+        ir_step.dependOn(&b.addInstallFileWithDir(view[0], .prefix, dest).step);
+    }
 }
 
 /// Hang `shards` independent `Run` steps off one compiled test binary, each

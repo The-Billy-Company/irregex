@@ -45,6 +45,11 @@ class Target:
     tag: str
     #: Where Zig installs the shared library under --prefix.
     artifact: str
+    #: The ``-Dcpu`` subtarget: the instruction floor this wheel may use, and
+    #: therefore the oldest CPU it runs on. Named per target rather than left to
+    #: Zig's default, because the default is a decision either way and an
+    #: unwritten one cannot be reviewed.
+    cpu: str
     #: ``(sys.platform, machine)`` this target is the native one for.
     host: tuple[str, str] | None = None
 
@@ -58,20 +63,59 @@ _DLL = "bin/irgx.dll"
 # makes a manylinux wheel from a macOS laptop a real thing rather than a claim.
 # macOS 11 is where arm64 begins, so it is the floor there and pip rejects any
 # tag below it for that architecture.
+#
+# On the CPU floors. A wheel tag says which OS and architecture it runs on and
+# has no way to say which *instructions*, so that half of the promise is kept
+# here or nowhere. aarch64's baseline already includes NEON, which is every
+# vector path the engine has on that architecture, so there is nothing to
+# raise. x86_64's baseline is SSE2 and that is genuinely too low: the scan
+# kernels want `pshufb`, which is SSSE3. So x86_64 ships at v2 - SSSE3, SSE4.2,
+# POPCNT - which is Nehalem (2008) and Bulldozer (2011) and up, and is the same
+# floor RHEL 9 chose for an entire distribution. The one thing it costs is
+# Core 2 / Penryn, whose SSE stops at 4.1.
+#
+# The tier above, v3, is where AVX2 lives, and it is worth roughly double: the
+# same C-ABI surface emits 9.8k ymm instructions against 23k xmm ones at v2
+# (`zig build ir -Dtarget=… -Dcpu=…` prints the assembly either way). It is not
+# here because a static v3 wheel would refuse to run on anything before 2013,
+# and the way to have that width without that cost is runtime dispatch on top
+# of a v2 floor, which the engine does not do yet.
 MATRIX = (
-    Target("macos-arm64", "aarch64-macos.11.0", "macosx_11_0_arm64", _DYLIB, ("darwin", "arm64")),
-    Target("macos-x86_64", "x86_64-macos.11.0", "macosx_11_0_x86_64", _DYLIB, ("darwin", "x86_64")),
     Target(
-        "linux-x86_64", "x86_64-linux-gnu.2.17", "manylinux_2_17_x86_64", _SO, ("linux", "x86_64")
+        "macos-arm64",
+        "aarch64-macos.11.0",
+        "macosx_11_0_arm64",
+        _DYLIB,
+        "baseline",
+        ("darwin", "arm64"),
+    ),
+    Target(
+        "macos-x86_64",
+        "x86_64-macos.11.0",
+        "macosx_11_0_x86_64",
+        _DYLIB,
+        "x86_64_v2",
+        ("darwin", "x86_64"),
+    ),
+    Target(
+        "linux-x86_64",
+        "x86_64-linux-gnu.2.17",
+        "manylinux_2_17_x86_64",
+        _SO,
+        "x86_64_v2",
+        ("linux", "x86_64"),
     ),
     Target(
         "linux-aarch64",
         "aarch64-linux-gnu.2.17",
         "manylinux_2_17_aarch64",
         _SO,
+        "baseline",
         ("linux", "aarch64"),
     ),
-    Target("windows-x86_64", "x86_64-windows-gnu", "win_amd64", _DLL, ("win32", "AMD64")),
+    Target(
+        "windows-x86_64", "x86_64-windows-gnu", "win_amd64", _DLL, "x86_64_v2", ("win32", "AMD64")
+    ),
 )
 
 
@@ -97,6 +141,7 @@ def build_library(target: Target, prefix: Path) -> Path:
         "-Doptimize=ReleaseFast",
         "-Dstrip=true",
         f"-Dtarget={target.zig}",
+        f"-Dcpu={target.cpu}",
         "--prefix",
         str(prefix),
     ]
@@ -112,6 +157,10 @@ def build_wheel(target: Target, library: Path, outdir: Path) -> None:
         "IRGX_PREBUILT_LIB": str(library),
         "IRGX_WHEEL_PLATFORM": target.tag,
         "IRGX_ZIG_TARGET": target.zig,
+        # Unused on this path, which hands over a library already built above,
+        # but it keeps this matrix the single table: a source build triggered
+        # with the same environment resolves the same floor.
+        "IRGX_ZIG_CPU": target.cpu,
     }
     if shutil.which("uv"):
         command = ["uv", "build", "--wheel", "--out-dir", str(outdir)]
@@ -154,7 +203,9 @@ def main() -> int:
     if args.list:
         for target in MATRIX:
             mark = " (native)" if target is here else ""
-            print(f"{target.name:16} zig={target.zig:24} tag={target.tag}{mark}")
+            print(
+                f"{target.name:16} zig={target.zig:24} cpu={target.cpu:10} tag={target.tag}{mark}"
+            )
         return 0
 
     outdir = Path(args.outdir)

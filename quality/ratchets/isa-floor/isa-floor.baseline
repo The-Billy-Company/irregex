@@ -1,0 +1,15 @@
+# zig-isa-floor ratchet baseline — unguarded inline asm per Zig file.
+#
+# LLVM cannot see inside an `asm` block, so an arm selected by architecture
+# emits its instruction whatever the target's declared CPU floor promised —
+# `pshufb` (SSSE3) into a baseline x86_64 wheel, say, which then faults on the
+# machines that tag was for. Predicate the arm on the feature instead:
+#
+#     if (comptime builtin.cpu.has(.x86, .ssse3)) return asm ("pshufb …");
+#
+# Base-ISA mnemonics are exempt by name in the driver's BASE_ISA set; anything
+# unclassified needs a guard, so the gate fails closed on a new instruction.
+#
+# Update rule: monotonically decrease only. Refresh after cleanup:
+#     python3 quality/ratchets/run.py isa-floor --refresh
+

@@ -13,16 +13,18 @@
 //!    through to a build the caller did not choose.
 //! 2. `vendor/<target-triple>/libirgx.a` - the prebuilt archive. Self
 //!    contained: the vendoring script folds the PCRE2 floor in and strips DWARF.
-//! 3. `zig-out/lib/libirgx.{dylib,so}` in an engine checkout above this
-//!    crate, when the host is the target. What a source checkout already has.
+//! 3. `zig-out/lib/libirgx.a` in an engine checkout above this crate, when the
+//!    host is the target. What a source checkout already has.
 //! 4. `zig build` in that checkout, when `zig` is on `PATH`.
 //!
-//! Rungs 3 and 4 link the SHARED library rather than the archive, and burn an
-//! rpath so the result runs without `DYLD_LIBRARY_PATH`. That is not a style
-//! choice: on ELF the installed archive carries the Zig objects only, so a
-//! static link fails on `pcre2_compile_8`, while the shared object is fully
-//! linked. The vendored archives are pre-merged, which is why rung 2 can be
-//! static and needs no rpath at all.
+//! Every rung prefers the archive and only falls back to the shared library,
+//! which is a recent luxury: the engine's ELF `libirgx.a` used to carry the Zig
+//! objects alone, so a static link died on `pcre2_compile_8` and rungs 3 and 4
+//! had to link the dylib and burn an rpath to route around it. `build.zig` now
+//! packs both platforms' archives from a partially-linked object that carries
+//! the C floor, so a source rung links the same way a vendored one does. The
+//! rpath survives only for the shared fallback, which is the one case that has
+//! something to find at run time.
 //!
 //! A target none of the rungs can serve fails here, naming the target and both
 //! remedies, rather than producing a crate that cannot link.
@@ -30,18 +32,41 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Rust target triple to Zig triple, for the source-build rung.
+/// Rust target triple to Zig triple and CPU floor, for the source-build rung.
 ///
 /// Each Zig triple names an explicit minimum platform version. Letting Zig
 /// inherit the host SDK would build a library that refuses to load on an older
 /// machine than the one that built it.
-const ZIG_TRIPLES: &[(&str, &str)] = &[
-    ("aarch64-apple-darwin", "aarch64-macos.11.0"),
-    ("x86_64-apple-darwin", "x86_64-macos.11.0"),
-    ("x86_64-unknown-linux-gnu", "x86_64-linux-gnu.2.17"),
-    ("aarch64-unknown-linux-gnu", "aarch64-linux-gnu.2.17"),
-    ("x86_64-unknown-linux-musl", "x86_64-linux-musl"),
-    ("aarch64-unknown-linux-musl", "aarch64-linux-musl"),
+///
+/// The CPU floor has to be named for the opposite reason. Passing `-Dtarget`
+/// at all makes Zig resolve `-mcpu` to that target's *baseline* rather than to
+/// this machine, and x86_64's baseline is SSE2 - so without a floor here, a
+/// consumer compiling on their own modern box would silently get the scalar
+/// fallback for every shuffle the scan kernels have. The values match
+/// `bindings/python/scripts/build_wheels.py`; one rule, four channels.
+const ZIG_TRIPLES: &[(&str, &str, &str)] = &[
+    ("aarch64-apple-darwin", "aarch64-macos.11.0", "baseline"),
+    ("x86_64-apple-darwin", "x86_64-macos.11.0", "x86_64_v2"),
+    (
+        "x86_64-unknown-linux-gnu",
+        "x86_64-linux-gnu.2.17",
+        "x86_64_v2",
+    ),
+    (
+        "aarch64-unknown-linux-gnu",
+        "aarch64-linux-gnu.2.17",
+        "baseline",
+    ),
+    (
+        "x86_64-unknown-linux-musl",
+        "x86_64-linux-musl",
+        "x86_64_v2",
+    ),
+    (
+        "aarch64-unknown-linux-musl",
+        "aarch64-linux-musl",
+        "baseline",
+    ),
 ];
 
 fn main() {
@@ -76,29 +101,53 @@ fn main() {
 
     if target == host {
         let built = checkout.join("zig-out").join("lib");
-        if let Some(kind @ Kind::Shared) = shared_in(&built) {
+        if let Some(kind) = library_in(&built) {
             println!("cargo:rerun-if-changed={}", built.display());
             return link(&built, kind);
         }
     }
 
     match zig_build(&checkout, &target) {
-        Ok(dir) => link(&dir, Kind::Shared),
+        Ok((dir, kind)) => link(&dir, kind),
         Err(why) => fail(&format!("{}\n\n{why}", unserved(&target, &crate_dir))),
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 enum Kind {
     Static,
     Shared,
 }
 
 fn link(dir: &Path, kind: Kind) {
-    println!("cargo:rustc-link-search=native={}", dir.display());
     match kind {
-        Kind::Static => println!("cargo:rustc-link-lib=static=irgx"),
+        // The archive is staged into `$OUT_DIR` and searched for there rather
+        // than linked out of `dir`, because a directory holding `libirgx.a`
+        // beside `libirgx.dylib` is ambiguous and `-l static=` does not settle
+        // it: ld64 takes the dylib, so an install prefix - the exact shape of
+        // `zig-out/lib` - links shared while every line of this build script
+        // says static, and the binary has no rpath to find it with at run
+        // time. Staging removes the choice instead of restating the
+        // preference. A search path rather than the archive's own path as a
+        // link arg, because link args do not reach a crate that depends on
+        // this one and `rustc-link-search` does.
+        Kind::Static => {
+            let staged = PathBuf::from(env("OUT_DIR")).join("link");
+            let source = dir.join("libirgx.a");
+            std::fs::create_dir_all(&staged)
+                .and_then(|()| std::fs::copy(&source, staged.join("libirgx.a")))
+                .unwrap_or_else(|why| {
+                    fail(&format!(
+                        "could not stage {} into {}: {why}",
+                        source.display(),
+                        staged.display()
+                    ))
+                });
+            println!("cargo:rustc-link-search=native={}", staged.display());
+            println!("cargo:rustc-link-lib=static=irgx");
+        },
         Kind::Shared => {
+            println!("cargo:rustc-link-search=native={}", dir.display());
             println!("cargo:rustc-link-lib=dylib=irgx");
             // So the linked binary resolves the library at run time. Only the
             // shared rungs need it; a static link has nothing to find later.
@@ -130,9 +179,11 @@ fn engine_checkout(crate_dir: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-/// Build the engine into `$OUT_DIR`, returning the directory holding the result.
-fn zig_build(checkout: &Path, target: &str) -> Result<PathBuf, String> {
-    let Some((_, zig_target)) = ZIG_TRIPLES.iter().find(|(rust, _)| *rust == target) else {
+/// Build the engine into `$OUT_DIR`, returning where the result landed and
+/// which form of it to link.
+fn zig_build(checkout: &Path, target: &str) -> Result<(PathBuf, Kind), String> {
+    let Some((_, zig_target, zig_cpu)) = ZIG_TRIPLES.iter().find(|(rust, ..)| *rust == target)
+    else {
         return Err(format!(
             "and this crate does not know a Zig triple for {target}, so it cannot build \
              the engine from source for it either. Add one to ZIG_TRIPLES in build.rs, or \
@@ -146,6 +197,7 @@ fn zig_build(checkout: &Path, target: &str) -> Result<PathBuf, String> {
             "build",
             "-Doptimize=ReleaseFast",
             &format!("-Dtarget={zig_target}"),
+            &format!("-Dcpu={zig_cpu}"),
             "--prefix",
         ])
         .arg(&prefix)
@@ -168,13 +220,13 @@ fn zig_build(checkout: &Path, target: &str) -> Result<PathBuf, String> {
         },
     }
     let dir = prefix.join("lib");
-    if shared_in(&dir).is_some() {
-        return Ok(dir);
+    match library_in(&dir) {
+        Some(kind) => Ok((dir, kind)),
+        None => Err(format!(
+            "and `zig build` produced no library under {}.",
+            dir.display()
+        )),
     }
-    Err(format!(
-        "and `zig build` produced no shared library under {}.",
-        dir.display()
-    ))
 }
 
 fn unserved(target: &str, crate_dir: &Path) -> String {

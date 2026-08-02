@@ -1,8 +1,9 @@
 # Zig lint ratchets
 
-Four baseline-guarded lints over `src/**/*.zig`. They came from the monorepo
+Five baseline-guarded lints over `src/**/*.zig`. Four came from the monorepo
 irregex was extracted from, where they scanned this same tree; the tree moved, so
-the gates moved with it.
+the gates moved with it. The fifth, `isa-floor`, was written here, against a
+defect that had already shipped.
 
 ## What a ratchet is
 
@@ -25,10 +26,11 @@ exactly one situation: you did a cleanup, the counts went *down*, and you want
 the new floor recorded. Refreshing is correct after a fix and never instead of
 one.
 
-## The four gates
+## The five gates
 
 | Gate | Debt it freezes |
 | --- | --- |
+| [`isa-floor/`](isa-floor/) | an inline `asm` block selected by `builtin.cpu.arch` rather than `cpu.has` — LLVM cannot see inside the template, so the instruction ships whatever the target's declared CPU floor promised |
 | [`oom/`](oom/) | out-of-memory exits that don't route through the one canonical `oom()` helper — an inline `die("oom…")`, or a copy-pasted local `fn oom(` |
 | [`dup-helper/`](dup-helper/) | the same substantial `fn` body copy-pasted across two files, where a fix lands in one copy and the twin silently keeps the bug |
 | [`fault-taxonomy/`](fault-taxonomy/) | an error name produced by production Zig that is not a declared member of `[fault_domains]` in `contract/engine.toml` — the closure that makes `Corrupt`/`BadFormat`/`CorruptIndex` synonyms impossible |
@@ -40,7 +42,7 @@ explaining the rule and its exclusions in detail.
 ## Running them
 
 ```bash
-python3 quality/ratchets/run.py                    # all four
+python3 quality/ratchets/run.py                    # all five
 python3 quality/ratchets/run.py oom                # just one
 python3 quality/ratchets/run.py oom dup-helper     # a couple
 python3 quality/ratchets/run.py --list             # what exists
@@ -60,7 +62,7 @@ for t in quality/ratchets/*/test_*.py; do python3 "$t"; done
 
 ## Two gates are red on arrival
 
-`oom` and `assay-bypass` pass. `dup-helper` and `fault-taxonomy` do not, and
+`oom`, `assay-bypass`, and `isa-floor` pass. `dup-helper` and `fault-taxonomy` do not, and
 their baselines were deliberately left as they came rather than reseeded from
 the current scan - seeding is how a gate stops being a gate.
 

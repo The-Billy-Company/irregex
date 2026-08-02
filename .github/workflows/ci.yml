@@ -270,7 +270,7 @@ jobs:
           zig fmt --check "${files[@]}"
 
   ratchets:
-    # Four baseline-guarded lints over src/**/*.zig — see quality/ratchets/.
+    # Five baseline-guarded lints over src/**/*.zig — see quality/ratchets/.
     # They are text scans, so there is no Zig step: compiling the engine to
     # count `std.debug.print` call sites would tie a grep to a toolchain it
     # does not use, and would make this the slowest job instead of the fastest.

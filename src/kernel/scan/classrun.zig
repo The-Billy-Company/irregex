@@ -675,27 +675,26 @@ inline fn nibbleMask(t: *const Nibbles, b: V16) u16 {
 /// index's high bit is set, else `table[idx[i] & 0x0F]`. The sibling
 /// `teddy.zig` shuffle is the raw-`tbl` twin whose callers pre-mask indices;
 /// truffle *relies* on the zeroing, so the scalar fallback implements it too.
+/// Predicated on the feature rather than the architecture, for the reason
+/// `lanes.shuffle` spells out: inline asm is opaque to LLVM's subtarget check,
+/// so an arch-only arm would put SSSE3 into a baseline artifact.
 inline fn pshufb(table: V16, idx: V16) V16 {
-    return switch (builtin.cpu.arch) {
-        // NEON `tbl` zeroes any index ≥ 16; the 0x8F-masked indices the callers
-        // pass are either a low nibble (< 16) or carry bit 7 (≥ 0x80) — exactly
-        // pshufb's split.
-        .aarch64, .aarch64_be => asm ("tbl %[o].16b, {%[t].16b}, %[i].16b"
-            : [o] "=w" (-> V16),
-            : [t] "w" (table),
-              [i] "w" (idx),
-        ),
-        .x86_64 => asm ("pshufb %[i], %[o]"
-            : [o] "=x" (-> V16),
-            : [t] "0" (table),
-              [i] "x" (idx),
-        ),
-        else => blk: {
-            var out: [16]u8 = undefined;
-            const t: [16]u8 = table;
-            const ix: [16]u8 = idx;
-            for (0..16) |k| out[k] = if (ix[k] & 0x80 != 0) 0 else t[ix[k] & 0x0F];
-            break :blk out;
-        },
-    };
+    // NEON `tbl` zeroes any index ≥ 16; the 0x8F-masked indices the callers
+    // pass are either a low nibble (< 16) or carry bit 7 (≥ 0x80) — exactly
+    // pshufb's split.
+    if (comptime builtin.cpu.has(.aarch64, .neon)) return asm ("tbl %[o].16b, {%[t].16b}, %[i].16b"
+        : [o] "=w" (-> V16),
+        : [t] "w" (table),
+          [i] "w" (idx),
+    );
+    if (comptime builtin.cpu.has(.x86, .ssse3)) return asm ("pshufb %[i], %[o]"
+        : [o] "=x" (-> V16),
+        : [t] "0" (table),
+          [i] "x" (idx),
+    );
+    var out: [16]u8 = undefined;
+    const t: [16]u8 = table;
+    const ix: [16]u8 = idx;
+    for (0..16) |k| out[k] = if (ix[k] & 0x80 != 0) 0 else t[ix[k] & 0x0F];
+    return out;
 }

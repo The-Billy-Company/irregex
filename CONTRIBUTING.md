@@ -162,6 +162,143 @@ unoptimized measurement (a Debug build refuses to publish a curve).
 Profile the function you changed rather than re-running a whole suite and
 squinting. If output is supposed to be byte-identical, prove that it is.
 
+## Turning LLVM down a level
+
+Zig has no rc file and no `-mllvm` passthrough, so there is nowhere to hide a
+codegen setting: [`build.zig`](build.zig) is the configuration file and `-D…` is
+the whole surface. Four tiers are reachable, coarsest first.
+
+The **subtarget** is what LLVM sees as its feature string, verbatim:
+
+```bash
+zig build -Dcpu=baseline+avx2            # what the artifact may assume
+zig build-obj <file> --verbose-llvm-cpu-features   # what LLVM parsed it into
+```
+
+That string is a promise to whoever runs the artifact, and it is the one LLVM
+keeps for you everywhere except inside an `asm` block, where the template is
+just bytes for the assembler. So an arm chosen by architecture -
+`switch (builtin.cpu.arch) { .x86_64 => asm ("pshufb …") }` - assembles SSSE3
+into a build whose declared floor was SSE2, and the machine that finds out is a
+user's. **Predicate an asm arm on the feature, never the architecture:**
+
+```zig
+if (comptime builtin.cpu.has(.x86, .ssse3)) return asm ("pshufb %[i], %[o]" ...);
+if (comptime builtin.cpu.has(.aarch64, .neon)) return asm ("tbl %[o].16b, …" ...);
+```
+
+The check is comptime and costs nothing at run time. A leaf helper with no
+fallback guards itself and `@compileError`s off-feature rather than trusting
+every future call site. [`quality/ratchets/isa-floor/`](quality/ratchets/isa-floor/README.md)
+holds the tree at zero unguarded blocks.
+
+The published wheels name their floor per target in
+[`bindings/python/scripts/build_wheels.py`](bindings/python/scripts/build_wheels.py) -
+`baseline` on aarch64, whose baseline already has NEON, and `x86_64_v2` on
+x86_64, because the scan kernels want `pshufb` and SSE2 does not have it.
+
+**Per-module** codegen is a named option:
+
+```bash
+zig build -Dframe-pointer=true           # keep the chain a sampling profiler walks
+```
+
+**Link-time** passes are the tier only LLD hosts, so each one quietly asks for
+LLD too:
+
+```bash
+zig build -Dtarget=x86_64-linux-gnu -Dlto=thin              # cross-language IPO over the C floor
+zig build -Dtarget=x86_64-linux-gnu -Doptimize=ReleaseFast  # 4.83 MB: zlib is already the default here
+zig build -Dtarget=x86_64-linux-gnu -Doptimize=ReleaseFast -Ddebug-compress=zstd   # 4.57 MB, same DWARF
+zig build -Dstrip=true                                      # 1.88 MB, no DWARF, build ID instead
+```
+
+`-Ddebug-compress` is the answer to a shared object that is 79% debug info
+(9.24 MB of DWARF against 1.51 MB of `.text`). A `SHF_COMPRESSED` header in
+front of each `.debug_*` section is inflated by the debugger on demand, so
+unlike `-Dstrip` nothing is lost. **It is on by default for a released ELF
+target**, at `zlib`, which is the one `ELFCOMPRESS_` value the generic ABI has
+always carried; `zstd` is better on ratio, compression speed, and decompression
+speed at once and is still the ask, because a reader older than gdb 13.2 /
+binutils 2.40 / elfutils 0.189 / LLVM 16 does not degrade on it, it refuses the
+section. So the default takes the 59% of the win nobody can be broken by
+(11.72 MB -> 4.83 MB) and the flag takes the rest (4.57 MB).
+
+It is ELF-only, link-only, and release-only. Link-only means `libirgx.a` is the
+same bytes at every setting, because an archive is never linked.
+Release-only is a ceiling rather than a policy: LLD's compressor reaches the
+output sections through a `parallelForEach`, and on the 29 MB of DWARF
+`-ODebug` emits for this library it faults in a worker thread - `SIGSEGV`, no
+diagnostic, nothing written. ReleaseSafe (4.90 MB), ReleaseFast (4.83 MB), and
+ReleaseSmall (1.37 MB) all compress the same library cleanly, so the default
+stands itself down at `-ODebug` and an explicit flag there is refused.
+
+`-Dstrip` is the other pole, and the one that needs an identity handed back -
+a stripped artifact is anonymous bytes, so it gets a `sha1` build ID note by
+default for `debuginfod` and the distro debug-file splitters to match on.
+`-Dbuild-id=` overrides in both directions.
+
+Each of these refuses rather than degrading, because a link-time flag that
+does nothing still reports success: `-Dlto` and `-Ddebug-compress` off ELF
+(Zig links Mach-O with its own linker, and `SHF_COMPRESSED` is not a Mach-O
+concept), `-Ddebug-compress` alongside `-Dstrip=true`, which would be
+compressing sections that were never emitted, and `-Ddebug-compress` at
+`-ODebug`, where the alternative is that crash.
+
+**What LLVM actually did** is a build step. One object, three views of the same
+compilation, into `zig-out/llvm/`:
+
+```bash
+zig build ir                                    # the C-ABI surface, ~50 MB of IR
+zig build ir -Dir=src/kernel/scan/simd.zig      # one module, ~a page
+```
+
+The `.ll` is post-pipeline IR - grep it for the vector width a rung really got,
+or the call that was supposed to inline. The `.s` is what
+[`bench/bounds/port/mca.sh`](bench/bounds/port/mca.sh) feeds `llvm-mca`. The
+`.bc` is the handoff below.
+
+**The pass pipeline** has no `std.Build` surface, so the last tier is the driver
+itself. `-fopt-bisect-limit` runs the first N passes and names every one it
+skipped, which is how you find the pass that undid a vectorization - it needs a
+real emit beside it, because `-fno-emit-bin` alone never enters LLVM:
+
+```bash
+zig build-obj <file> -O ReleaseFast -fno-emit-bin \
+    -femit-llvm-ir=/tmp/at-N.ll -fopt-bisect-limit=N
+```
+
+And the escape hatch the `.bc` exists for - any pass pipeline you like, through
+an external `opt`, handed back to Zig as an input file. The LLVM major must
+match the one this compiler links (0.16.0 → LLVM 21); a newer `opt`'s bitcode
+returns as `error: Invalid record`, which is a version mismatch and not a
+corrupt module.
+
+```bash
+opt -passes='…' zig-out/llvm/exports.bc -o tuned.bc && zig build-obj tuned.bc
+```
+
+**Turning it off is not the fifth tier**, however much `-fno-llvm` looks like
+one. The self-hosted backend is the faster debug path on x86_64 and it is not
+that on aarch64 yet, which is the machine most of this gets written on. Three
+lines of Zig whose only weight is `std.debug.print`, same target, separate
+caches, each arm measured twice:
+
+| backend | cold | warm |
+|---|---|---|
+| LLVM | 0.91 s | 0.88 s |
+| `-fno-llvm -fno-lld` | 175.7 s | 196.7 s |
+
+Two hundred times slower, and the warm run is not faster than the cold one, so
+there is no cache to amortize it against. There is no `-D` flag for this on
+purpose - a build option is a thing somebody might reasonably set, and until
+that second row moves this one is a trap with a nice name. Recheck it on a Zig
+bump rather than trusting this table; the number is the whole argument, and it
+is the kind that changes.
+
+Nothing here belongs in a merged change on its own. These are instruments for
+arriving at a number, and the number is what the PR argues with.
+
 ## Every change carries its own news
 
 Write a towncrier fragment in the **same PR**:

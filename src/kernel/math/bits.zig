@@ -75,28 +75,35 @@ pub inline fn laneMask(comptime Mask: type, hits: anytype) Mask {
 /// cheaper: weight every lane with its bit value, then three pairwise adds
 /// (`addp`) collapse 64 lanes into one u64. Other arches keep the portable
 /// bitcast+shift shape, x86's movemask being one instruction already.
+///
+/// The fold is selected by the FEATURE it needs rather than by the architecture
+/// that normally carries it: `addp` below is inline asm, which LLVM's subtarget
+/// check cannot see through, so an arch-only test would emit NEON into an
+/// artifact built for an aarch64 baseline that had NEON disabled.
 pub inline fn blockMask(hits: [4]@Vector(16, bool)) u64 {
     const V16 = @Vector(16, u8);
-    switch (@import("builtin").cpu.arch) {
-        .aarch64, .aarch64_be => {
-            const weights: V16 = .{ 1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128 };
-            const zero: V16 = @splat(0);
-            var t: [4]V16 = undefined;
-            inline for (hits, 0..) |h, k| t[k] = @select(u8, h, weights, zero);
-            const s = addp(addp(t[0], t[1]), addp(t[2], t[3]));
-            return @as(@Vector(2, u64), @bitCast(addp(s, s)))[0];
-        },
-        else => {
-            var m: u64 = 0;
-            inline for (hits, 0..) |h, k| m |= @as(u64, laneMask(u16, h)) << (k * 16);
-            return m;
-        },
+    if (comptime @import("builtin").cpu.has(.aarch64, .neon)) {
+        const weights: V16 = .{ 1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128 };
+        const zero: V16 = @splat(0);
+        var t: [4]V16 = undefined;
+        inline for (hits, 0..) |h, k| t[k] = @select(u8, h, weights, zero);
+        const s = addp(addp(t[0], t[1]), addp(t[2], t[3]));
+        return @as(@Vector(2, u64), @bitCast(addp(s, s)))[0];
     }
+    var m: u64 = 0;
+    inline for (hits, 0..) |h, k| m |= @as(u64, laneMask(u16, h)) << (k * 16);
+    return m;
 }
 
 /// NEON pairwise byte add over the concatenation of `a ++ b` — the folding
 /// step of the movemask emulation above.
+///
+/// Its own guard rather than its caller's: a leaf that assembles an optional
+/// instruction should refuse to compile off-feature instead of trusting every
+/// future call site to have asked first.
 inline fn addp(a: @Vector(16, u8), b: @Vector(16, u8)) @Vector(16, u8) {
+    if (comptime !@import("builtin").cpu.has(.aarch64, .neon))
+        @compileError("bits.addp is NEON-only — gate the caller on cpu.has(.aarch64, .neon)");
     return asm ("addp %[o].16b, %[a].16b, %[b].16b"
         : [o] "=w" (-> @Vector(16, u8)),
         : [a] "w" (a),

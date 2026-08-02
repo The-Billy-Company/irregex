@@ -1,0 +1,129 @@
+"""Detector proofs for zig-isa-floor — the arch-selected arm counts, the guarded one does not.
+
+The first test is the one that matters: it is the *pre-fix* text of
+``lanes.shuffle``, the real defect this ratchet exists to have caught, and it
+must come back as a finding. A gate whose baseline is empty proves nothing
+until it has been shown to fail on the bug it was built for.
+"""
+
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from isa_floor_ratchet import BASE_ISA, _scan_one, count_unguarded, scan  # noqa: E402
+
+# Verbatim shape of the shipped defect: the arm is chosen by architecture, so
+# SSSE3's `pshufb` lands in an artifact whose declared floor is SSE2.
+ARCH_SELECTED = """\
+pub inline fn shuffle(t: Vec, idx: Vec) Vec {
+    return switch (builtin.cpu.arch) {
+        .aarch64 => asm ("tbl %[o].16b, {%[t].16b}, %[i].16b"
+            : [o] "=w" (-> Vec),
+        ),
+        .x86_64 => asm ("pshufb %[i], %[o]"
+            : [o] "=x" (-> Vec),
+        ),
+        else => portable(t, idx),
+    };
+}
+"""
+
+FEATURE_SELECTED = """\
+pub inline fn shuffle(t: Vec, idx: Vec) Vec {
+    if (comptime builtin.cpu.has(.aarch64, .neon)) return asm ("tbl %[o].16b, {%[t].16b}, %[i].16b"
+        : [o] "=w" (-> Vec),
+    );
+    if (comptime builtin.cpu.has(.x86, .ssse3)) return asm ("pshufb %[i], %[o]"
+        : [o] "=x" (-> Vec),
+    );
+    return portable(t, idx);
+}
+"""
+
+
+class RegressionTest(unittest.TestCase):
+    def test_the_shipped_defect_is_caught(self) -> None:
+        found = count_unguarded(ARCH_SELECTED)
+        self.assertEqual(2, found.total, found.by_pattern)
+        self.assertEqual({"tbl": 1, "pshufb": 1}, dict(found.by_pattern))
+
+    def test_the_fix_is_clean(self) -> None:
+        self.assertEqual(0, count_unguarded(FEATURE_SELECTED).total)
+
+
+class CountUnguardedTest(unittest.TestCase):
+    def test_base_isa_mnemonic_needs_no_feature(self) -> None:
+        src = 'fn spin(x: u64) u64 {\n    return asm ("add %[o], %[i], #1"\n        : [o] "=r" (-> u64),\n    );\n}\n'
+        self.assertEqual(0, count_unguarded(src).total)
+        self.assertIn("add", BASE_ISA)
+
+    def test_unknown_mnemonic_fails_closed(self) -> None:
+        # Nobody has classified `vpternlogd`; until someone does, it needs a guard.
+        src = 'fn f() V {\n    return asm ("vpternlogd %[o], %[a], %[b], $0xfe"\n        : [o] "=x" (-> V),\n    );\n}\n'
+        self.assertEqual({"vpternlogd": 1}, dict(count_unguarded(src).by_pattern))
+
+    def test_negated_guard_still_guards(self) -> None:
+        # A leaf with no fallback refuses to compile off-feature; that is a guard.
+        src = (
+            "inline fn addp(a: V, b: V) V {\n"
+            "    if (comptime !builtin.cpu.has(.aarch64, .neon))\n"
+            '        @compileError("NEON only");\n'
+            '    return asm ("addp %[o].16b, %[a].16b, %[b].16b"\n'
+            '        : [o] "=w" (-> V),\n'
+            "    );\n"
+            "}\n"
+        )
+        self.assertEqual(0, count_unguarded(src).total)
+
+    def test_guard_in_a_previous_function_does_not_carry(self) -> None:
+        src = (
+            "fn guarded() V {\n"
+            "    if (comptime builtin.cpu.has(.x86, .ssse3)) return zero;\n"
+            "    return zero;\n"
+            "}\n"
+            "fn bare() V {\n"
+            '    return asm ("pshufb %[i], %[o]"\n        : [o] "=x" (-> V),\n    );\n'
+            "}\n"
+        )
+        self.assertEqual({"pshufb": 1}, dict(count_unguarded(src).by_pattern))
+
+    def test_operand_shape_suffix_is_not_a_different_instruction(self) -> None:
+        src = 'fn f() V {\n    return asm ("tbl.16b v0, { v1 }, v2"\n        : [o] "=w" (-> V),\n    );\n}\n'
+        self.assertEqual({"tbl": 1}, dict(count_unguarded(src).by_pattern))
+
+    def test_asm_named_in_a_comment_is_prose(self) -> None:
+        src = 'fn f() V {\n    // an asm ("pshufb …") arm would need a guard here\n    return zero;\n}\n'
+        self.assertEqual(0, count_unguarded(src).total)
+
+    def test_asm_named_in_a_string_is_prose(self) -> None:
+        src = 'fn f() []const u8 {\n    return "asm (\\"pshufb\\")";\n}\n'
+        self.assertEqual(0, count_unguarded(src).total)
+
+    def test_asm_volatile_is_matched(self) -> None:
+        src = 'fn f() void {\n    asm volatile ("pshufb %[i], %[o]"\n        :\n        : [i] "x" (v),\n    );\n}\n'
+        self.assertEqual({"pshufb": 1}, dict(count_unguarded(src).by_pattern))
+
+
+class ScopeTest(unittest.TestCase):
+    def test_live_tree_is_clean(self) -> None:
+        # The baseline is empty on purpose; this is the assertion that keeps it so.
+        self.assertEqual([], [(fc.rel_path, fc.detail and fc.detail.summary()) for fc in scan()])
+
+    def test_generated_header_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "x.zig"
+            p.write_text("// Code generated by tool. DO NOT EDIT.\n" + ARCH_SELECTED, "utf-8")
+            self.assertIsNone(_scan_one(p))
+
+    def test_unreadable_file_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "x.zig"
+            p.write_bytes(b"\xff\xfe\x00bad utf8 \xff")
+            with self.assertRaises(SystemExit):
+                _scan_one(p)
+
+
+if __name__ == "__main__":
+    unittest.main()

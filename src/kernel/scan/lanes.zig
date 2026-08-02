@@ -104,26 +104,30 @@ pub fn tableBytes(w: Width, ix: Index) usize {
 /// SSSE3 zeroes on the high bit only), so callers keep indices in range — the
 /// lowering above fills unreachable lanes with the identity for exactly this
 /// reason.
+///
+/// Each arm is predicated on the FEATURE that instruction needs, not on the
+/// architecture that usually has it. An `asm` block is opaque to LLVM's
+/// subtarget check, so an arch-only arm emits `pshufb` — SSSE3, and not in the
+/// x86_64 baseline — into an artifact whose declared floor never promised it:
+/// it assembles, it ships, and it faults on the first machine that took the
+/// declaration at its word. Asking `cpu.has` costs nothing at run time (the
+/// answer is comptime) and makes the floor the target's rather than a guess.
 pub inline fn shuffle(t: Vec, idx: Vec) Vec {
-    return switch (builtin.cpu.arch) {
-        .aarch64, .aarch64_be => asm ("tbl %[o].16b, {%[t].16b}, %[i].16b"
-            : [o] "=w" (-> Vec),
-            : [t] "w" (t),
-              [i] "w" (idx),
-        ),
-        .x86_64 => asm ("pshufb %[i], %[o]"
-            : [o] "=x" (-> Vec),
-            : [t] "0" (t),
-              [i] "x" (idx),
-        ),
-        else => blk: {
-            var out: [16]u8 = undefined;
-            const tt: [16]u8 = t;
-            const ii: [16]u8 = idx;
-            for (&out, ii) |*o, k| o.* = tt[k & 0x0F];
-            break :blk out;
-        },
-    };
+    if (comptime builtin.cpu.has(.aarch64, .neon)) return asm ("tbl %[o].16b, {%[t].16b}, %[i].16b"
+        : [o] "=w" (-> Vec),
+        : [t] "w" (t),
+          [i] "w" (idx),
+    );
+    if (comptime builtin.cpu.has(.x86, .ssse3)) return asm ("pshufb %[i], %[o]"
+        : [o] "=x" (-> Vec),
+        : [t] "0" (t),
+          [i] "x" (idx),
+    );
+    var out: [16]u8 = undefined;
+    const tt: [16]u8 = t;
+    const ii: [16]u8 = idx;
+    for (&out, ii) |*o, k| o.* = tt[k & 0x0F];
+    return out;
 }
 
 /// The 32-lane shuffle: `out[i] = {lo,hi}[idx[i]]` for `idx[i] < 32`.
@@ -138,7 +142,14 @@ pub inline fn shuffle(t: Vec, idx: Vec) Vec {
 /// process: this form 0.98 B/cycle, a single asm block moving the pair itself
 /// 0.92, four moves 0.77, `TBX`-merged single-register lookups 0.59, and
 /// zero-extend-and-OR 0.44.
+///
+/// Guarded here rather than at the call site: `native` above already keeps the
+/// 32-lane algebra off non-NEON targets, but a leaf that assembles an optional
+/// instruction should refuse to compile off-feature rather than trust every
+/// future caller to have checked.
 inline fn shufflePair(lo: Vec, hi: Vec, idx: Vec) Vec {
+    if (comptime !builtin.cpu.has(.aarch64, .neon))
+        @compileError("lanes.shufflePair is NEON-only — callers gate on `native`");
     return asm ("tbl %[o].16b, {v30.16b, v31.16b}, %[i].16b"
         : [o] "=w" (-> Vec),
         : [i] "w" (idx),

@@ -53,6 +53,20 @@ def _os_of(zig_target: str | None) -> str:
     return {"darwin": "macos", "win32": "windows"}.get(sys.platform, "linux")
 
 
+def _zig_cpu(zig_target: str) -> str:
+    """The instruction floor to build `zig_target` at.
+
+    ``IRGX_ZIG_CPU`` overrides, which is how ``scripts/build_wheels.py`` keeps
+    one table for the whole matrix. The fallback is the same rule that table
+    encodes: aarch64's baseline already carries NEON and needs no raising,
+    while x86_64's baseline is SSE2 and the scan kernels want SSSE3.
+    """
+    override = os.environ.get("IRGX_ZIG_CPU")
+    if override:
+        return override
+    return "baseline" if zig_target.startswith("aarch64") else "x86_64_v2"
+
+
 def _engine_root(start: Path) -> Path:
     """The Zig package root, found by walking up for ``build.zig``."""
     for parent in (start, *start.parents):
@@ -102,7 +116,12 @@ class IrregexBuildHook(BuildHookInterface):
         prefix = Path(self._staging.name)
         command = ["zig", "build", "-Doptimize=ReleaseFast", "--prefix", str(prefix)]
         if zig_target:
-            command.append(f"-Dtarget={zig_target}")
+            # Naming a target also opts out of native CPU detection - Zig falls
+            # back to that target's baseline, and x86_64's baseline is SSE2,
+            # below the SSSE3 the scan kernels want. So a target implies a
+            # floor. `scripts/build_wheels.py` sets both; a bare source build
+            # names neither and keeps Zig's native detection, which is right.
+            command += [f"-Dtarget={zig_target}", f"-Dcpu={_zig_cpu(zig_target)}"]
         subprocess.run(command, cwd=root, check=True)
 
         relative, _ = _LAYOUT[which_os]
