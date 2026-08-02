@@ -84,6 +84,58 @@ pub fn commentOnly(line: []const u8) bool {
         std.mem.startsWith(u8, trimmed, "\\\\");
 }
 
+/// What a byte belongs to, once the lexer has walked to it. The three-way
+/// answer the blast radius needs: a symbol in code is a reference, a symbol in
+/// a comment is documentation the edit will falsify, and a symbol in a string
+/// is a name wired by text (reflection, SQL, a route table) — weaker evidence
+/// than a call, but an edge all the same, so it must be distinguishable rather
+/// than collapsed into either neighbor.
+pub const Span = enum { code, comment, literal };
+
+fn spanOf(state: Lex) Span {
+    return switch (state) {
+        .code => .code,
+        .single, .double, .backtick => .literal,
+        .line_comment, .block_comment => .comment,
+    };
+}
+
+/// Paint every byte with the span it belongs to, mapped through `map` so one
+/// walk serves every projection. A delimiter belongs to the span it opens or
+/// closes (`//` and `*/` are comment bytes) except the newline that ends a line
+/// comment, which is code — the boundary `commentMask` has always drawn.
+fn paint(bytes: []const u8, comptime T: type, out: []T, comptime map: fn (Span) T) void {
+    var state: Lex = .code;
+    var escaped = false;
+    var i: usize = 0;
+    while (i < bytes.len) {
+        const opened = state;
+        const start = i;
+        _ = lexByte(bytes, &i, &state, &escaped);
+        const span: Span = if (opened == .code)
+            spanOf(state)
+        else if (opened == .line_comment and state == .code)
+            .code
+        else
+            spanOf(opened);
+        for (out[start..@min(i + 1, bytes.len)]) |*slot| slot.* = map(span);
+        i += 1;
+    }
+}
+
+/// A per-byte span map — the full three-way classification, caller-owned and
+/// `bytes.len` long. `commentMask` is this walk with the answer narrowed, so
+/// the two can never disagree about where a comment or a string ends.
+pub fn spanMask(gpa: std.mem.Allocator, bytes: []const u8) ![]Span {
+    const out = try gpa.alloc(Span, bytes.len);
+    paint(bytes, Span, out, struct {
+        fn same(s: Span) Span {
+            return s;
+        }
+    }.same);
+    return out;
+}
+
 /// A per-byte comment map: `out[i]` is `true` iff `bytes[i]` falls inside a
 /// line (`//`, `#`) or block (`/* … */`) comment. String literals are skipped
 /// so a `//` or `#` inside a string never reads as a comment. Caller owns the
@@ -92,27 +144,11 @@ pub fn commentOnly(line: []const u8) bool {
 /// match and a structure sketch agree on what "comment" means byte-for-byte.
 pub fn commentMask(gpa: std.mem.Allocator, bytes: []const u8) ![]bool {
     const out = try gpa.alloc(bool, bytes.len);
-    @memset(out, false);
-    const n = bytes.len;
-    var i: usize = 0;
-    while (i < n) {
-        const c = bytes[i];
-        if (c == '"' or c == '\'' or c == '`') { // string literal — never a comment
-            const q = c;
-            i += 1;
-            while (i < n and bytes[i] != q) i += if (bytes[i] == '\\') @as(usize, 2) else 1;
-            i = @min(i + 1, n);
-        } else if ((c == '/' and i + 1 < n and bytes[i + 1] == '/') or c == '#') { // line comment
-            const end = std.mem.indexOfScalarPos(u8, bytes, i, '\n') orelse n;
-            @memset(out[i..end], true);
-            i = end;
-        } else if (c == '/' and i + 1 < n and bytes[i + 1] == '*') { // block comment
-            const rel = std.mem.indexOfPos(u8, bytes, i + 2, "*/");
-            const end = if (rel) |e| e + 2 else n;
-            @memset(out[i..end], true);
-            i = end;
-        } else i += 1;
-    }
+    paint(bytes, bool, out, struct {
+        fn isComment(s: Span) bool {
+            return s == .comment;
+        }
+    }.isComment);
     return out;
 }
 
@@ -145,6 +181,40 @@ test "commentMask marks line and block comments, skips strings" {
     // Python `#` opens a line comment.
     const py = std.mem.indexOf(u8, src, "python").?;
     try std.testing.expect(mask[py]);
+}
+
+test "spanMask separates the three spans, and comments project to commentMask" {
+    const gpa = std.testing.allocator;
+    const src =
+        "call(WalletService);            // WalletService is documented here\n" ++
+        "const route = \"WalletService/Get\";\n" ++
+        "/* WalletService in a block */\n";
+    const map = try spanMask(gpa, src);
+    defer gpa.free(map);
+
+    // The same identifier, three times, three different answers — the whole
+    // reason blast can tell a call site from a route string from a stale doc.
+    try std.testing.expectEqual(Span.code, map[std.mem.indexOf(u8, src, "WalletService").?]);
+    try std.testing.expectEqual(Span.comment, map[std.mem.indexOf(u8, src, "WalletService is").?]);
+    try std.testing.expectEqual(Span.literal, map[std.mem.indexOf(u8, src, "WalletService/Get").?]);
+    try std.testing.expectEqual(Span.comment, map[std.mem.indexOf(u8, src, "WalletService in a block").?]);
+
+    // One walk, two projections: `commentMask` must agree byte for byte, or a
+    // comment-scoped match and a blast report would disagree about the tree.
+    const comments = try commentMask(gpa, src);
+    defer gpa.free(comments);
+    for (map, comments) |span, flagged| try std.testing.expectEqual(span == .comment, flagged);
+}
+
+test "spanMask: an unterminated string and a bare backslash do not run off the end" {
+    const gpa = std.testing.allocator;
+    // A truncated file is the shape that walks past the buffer if the escape
+    // bookkeeping consumes two bytes at the last one.
+    for ([_][]const u8{ "x = \"never closed", "y = 'a\\", "/* open block", "z = `\\" }) |src| {
+        const map = try spanMask(gpa, src);
+        defer gpa.free(map);
+        try std.testing.expectEqual(src.len, map.len);
+    }
 }
 
 test "commentOnly is start-anchored" {

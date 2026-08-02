@@ -393,6 +393,7 @@ test {
     _ = @import("surface/ffi/rows.zig"); // the self-describing row protocol the analytic ABIs share
     _ = @import("surface/ffi/answer.zig"); // the shared row cursor: one walk, batching from the same position, fail-closed arguments
     _ = @import("surface/ffi/pattern.zig"); // the regex-over-text plane: argument guards, the lazy capture arm, -F/-w/smart-case at the seam
+    _ = @import("kernel/anatomy/lexspan.zig"); // the shared comment/code/string lexer: `inner` is one level deep, so its tests need naming here
     _ = @import("assay/assay.zig"); // instrumentation floor: Span/Duration/Anchor, Tally(Schema), the diagnostic channel
     _ = @import("surface/api_test.zig"); // hosted API facade: Engine/Cursor/CancelToken over a live warm tree
     // engine tiers
