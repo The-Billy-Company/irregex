@@ -24,7 +24,6 @@
 # bindings and vendors a copy of this file to check them against.
 
 
-
 # ═══ 4 · native tiers ════════════════════════════════════════════════════════
 # Vocabulary with no ripgrep equivalent, so — like `--rank` — it carries no
 # parity obligation, and the semantics pinned here ARE its contract.
