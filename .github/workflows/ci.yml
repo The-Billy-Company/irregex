@@ -282,10 +282,12 @@ jobs:
     #
     # It is also the only job here that needs neither Zig nor a build. A
     # contributor who mistyped a heading should learn that in seconds, not after
-    # a matrix compiles. ShellCheck ships with the runner; everything else is a
-    # Python distribution installed into uv's isolated environment at a pinned
-    # version, so this job's verdict moves when we move it and not when a
-    # formatter ships a release.
+    # a matrix compiles. Every tool here is a Python distribution installed into
+    # uv's isolated environment at a pinned version, so this job's verdict moves
+    # when we move it and not when a formatter ships a release. ShellCheck used to
+    # be the exception and shipped with the runner, until an image carrying an
+    # older build reported SC2317 against a `trap`-invoked cleanup that newer
+    # ShellCheck reads correctly — a red X nobody here caused.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -311,7 +313,7 @@ jobs:
           uv run --no-project --with ruff==0.16.1 ruff check --config quality/ruff.toml .
           uv run --no-project --with ruff==0.16.1 ruff format --check --config quality/ruff.toml .
       - name: Shell correctness
-        run: git ls-files -z '*.sh' | xargs -0 shellcheck
+        run: git ls-files -z '*.sh' | xargs -0 uv run --no-project --with shellcheck-py==0.11.0.1 shellcheck
       # Last, so it audits the exact file CI just interpreted — including every
       # action and permission this job itself introduced.
       - name: GitHub Actions security
