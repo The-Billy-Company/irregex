@@ -8,7 +8,7 @@ kernel, LLVM, the Go tree and the Rust tree), on the same bytes, and reports:
 
   · index build wall time, peak RSS, and index size as a fraction of corpus,
   · query latency across the canonical 12 probe classes, cold and warm,
-  · resident-set behaviour while querying — the question of whether an engine
+  · resident-set behavior while querying — the question of whether an engine
     must hold its index in memory or can let the kernel page it, which is where
     "GitHub scale" is usually actually decided.
 
@@ -34,22 +34,20 @@ Usage:
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, field
 import json
 import os
-from pathlib import Path
 import random
 import shutil
 import subprocess
 import sys
 import time
-
+from dataclasses import dataclass, field
+from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 KERNEL = HERE.parent.parent.parent
 sys.path.insert(0, str(KERNEL / "bench" / "apparatus"))
 from stats import dominance, median_ci  # noqa: E402
-
 
 GIST = KERNEL / "zig-out" / "bin" / "gist"
 
@@ -138,9 +136,7 @@ def measure(a: argparse.Namespace) -> list[Cell]:
                     c.times_ms.append(ms)
                     c.hits = n
                     if err and n == 0:
-                        c.failed = (
-                            err.strip().splitlines()[0][:120] if err.strip() else ""
-                        )
+                        c.failed = err.strip().splitlines()[0][:120] if err.strip() else ""
             except (OSError, subprocess.SubprocessError) as exc:  # unobtainable lane
                 c.failed = f"{type(exc).__name__}: {exc}"[:120]
             cells.append(c)
@@ -168,9 +164,7 @@ def report(cells: list[Cell], a: argparse.Namespace) -> int:
         for tool in ("gist", "zoekt", "csearch"):
             c = by.get((cls, tool))
             if c is None or not c.times_ms:
-                rows.append(
-                    f"{cls}\t{tool}\t\t\t\t\t\t\t{(c.failed if c else 'missing')}"
-                )
+                rows.append(f"{cls}\t{tool}\t\t\t\t\t\t\t{(c.failed if c else 'missing')}")
                 continue
             med, lo, hi = median_ci(c.times_ms, rng)
             sp, p, verdict = "", "", ""

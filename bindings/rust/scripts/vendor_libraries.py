@@ -113,7 +113,7 @@ MATRIX = (
 )
 
 # One symbol from the vendored PCRE2, standing witness for the whole C floor.
-# Checking behaviour beats checking the platform: this asks the archive what it
+# Checking behavior beats checking the platform: this asks the archive what it
 # contains rather than assuming what the build does per target.
 FLOOR_WITNESS = "pcre2_compile_8"
 
@@ -219,7 +219,9 @@ def probe_link(zig: str, target: Target, archive: Path, header: Path, workdir: P
     return "cross-compiled; linked but not run"
 
 
-def build(target: Target, cache_root: Path, zig: str, strip: str | None, nm: str) -> tuple[int, str]:
+def build(
+    target: Target, cache_root: Path, zig: str, strip: str | None, nm: str
+) -> tuple[int, str]:
     cache = cache_root / target.zig
     cache.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="irregex-rust-") as scratch:

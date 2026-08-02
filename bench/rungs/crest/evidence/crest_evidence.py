@@ -4,11 +4,9 @@
 from __future__ import annotations
 
 import argparse
-from datetime import date, datetime, time as datetime_time, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
 import platform
 import plistlib
 import shutil
@@ -16,11 +14,13 @@ import socket
 import subprocess
 import tempfile
 import time
-import tomllib
+from datetime import date, datetime, timezone
+from datetime import time as datetime_time
+from pathlib import Path
 
 import monograph
+import tomllib
 import verify
-
 
 HERE = Path(__file__).resolve().parent
 KERNEL = HERE.parents[3]  # evidence → crest → rungs → bench → repo root
@@ -160,7 +160,7 @@ def _archive(
         *paths,
     ]
     started, wall = _utc_now(), time.monotonic()
-    completed = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    completed = subprocess.run(argv, capture_output=True, check=False)
     receipt = {
         "label": "source_archive",
         "argv": argv,

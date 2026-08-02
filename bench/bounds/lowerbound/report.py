@@ -37,7 +37,6 @@ import csv
 from dataclasses import dataclass
 from pathlib import Path
 
-
 LAYER_D_HEADER = "## Layer D — algorithmic lower bound (information-theoretic floor)"
 
 

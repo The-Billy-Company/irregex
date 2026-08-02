@@ -25,17 +25,44 @@ stdlib only. Usage:
 
 import argparse
 import os
-from pathlib import Path
 import sys
+from pathlib import Path
 
 # Directories a code-search corpus never contains. Mirrors the `XDIRS` set in
 # `gist/bench/dominance/races/field.sh` so a packed corpus and a raced corpus agree.
 SKIP = {
-    ".git", ".hg", ".svn", "node_modules", "target", ".venv", "venv", "__pycache__",
-    ".zig-cache", "zig-cache", "zig-out", "dist", "dist-types", "build", ".build",
-    "out", ".next", "coverage", ".turbo", ".mypy_cache", ".ruff_cache", ".pytest_cache",
-    "Pods", "DerivedData", ".swiftpm", ".local", ".cache", ".parcel-cache",
-    "storybook-static", "xcuserdata", "derived-out", ".pnpm-store",
+    ".git",
+    ".hg",
+    ".svn",
+    "node_modules",
+    "target",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".zig-cache",
+    "zig-cache",
+    "zig-out",
+    "dist",
+    "dist-types",
+    "build",
+    ".build",
+    "out",
+    ".next",
+    "coverage",
+    ".turbo",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".pytest_cache",
+    "Pods",
+    "DerivedData",
+    ".swiftpm",
+    ".local",
+    ".cache",
+    ".parcel-cache",
+    "storybook-static",
+    "xcuserdata",
+    "derived-out",
+    ".pnpm-store",
 }
 # A per-document ceiling, matching the kernel's own `corpus.per_file_cap`
 # posture: one pathological megafile must not become the whole corpus.
@@ -59,11 +86,22 @@ def is_text(blob: bytes) -> bool:
 
 def main() -> int:
     """CLI entry point."""
-    ap = argparse.ArgumentParser(description="pack a deterministic corpus blob for the multipattern race")
+    ap = argparse.ArgumentParser(
+        description="pack a deterministic corpus blob for the multipattern race"
+    )
     ap.add_argument("roots", nargs="*", type=Path, help="roots to walk when --paths is absent")
-    ap.add_argument("--out", type=Path, required=True, help="output dir for corpus.bin + corpus.idx")
-    ap.add_argument("--paths", type=Path, help="gist paths.list (NUL-separated) to use as the corpus")
-    ap.add_argument("--base", type=Path, default=Path("."), help="base dir the paths.list entries are relative to")
+    ap.add_argument(
+        "--out", type=Path, required=True, help="output dir for corpus.bin + corpus.idx"
+    )
+    ap.add_argument(
+        "--paths", type=Path, help="gist paths.list (NUL-separated) to use as the corpus"
+    )
+    ap.add_argument(
+        "--base",
+        type=Path,
+        default=Path("."),
+        help="base dir the paths.list entries are relative to",
+    )
     ap.add_argument("--mib", type=int, default=64, help="byte budget for the packed blob")
     args = ap.parse_args()
 

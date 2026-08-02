@@ -30,7 +30,6 @@ import argparse
 import pathlib
 import sys
 
-
 ROOT = pathlib.Path(__file__).resolve().parents[1]  # tools/ → repo root
 
 # Same walk the anchor-selection spike measured against

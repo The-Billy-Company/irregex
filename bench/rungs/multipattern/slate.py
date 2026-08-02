@@ -68,9 +68,17 @@ def canonical(blob: bytes, want: int, min_count: int, max_count: int | None = No
         freq[tok] = freq.get(tok, 0) + 1
     # Ranked by descending frequency, ties broken by the bytes themselves so the
     # ordering is total and platform-independent (dict order never leaks in).
-    ranked = [t for _, t in sorted(((c, t) for t, c in freq.items()
-                                    if c >= min_count and (max_count is None or c <= max_count)),
-                                   key=lambda p: (-p[0], p[1]))]
+    ranked = [
+        t
+        for _, t in sorted(
+            (
+                (c, t)
+                for t, c in freq.items()
+                if c >= min_count and (max_count is None or c <= max_count)
+            ),
+            key=lambda p: (-p[0], p[1]),
+        )
+    ]
     if not ranked:
         return []
     stride = max(1, len(ranked) // want)
@@ -85,14 +93,21 @@ def main() -> int:
     ap.add_argument("--corpus", required=True, type=Path)
     ap.add_argument("-n", type=int, default=1024)
     ap.add_argument("--min-count", type=int, default=4)
-    ap.add_argument("--max-count", type=int, default=None,
-                    help="drop literals occurring more than this often -- the SELECTIVITY "
-                         "band. Corpus token frequency is not query frequency: an agent "
-                         "sweeps for `WalletService`, never for `string`, so a slate drawn "
-                         "from the raw token distribution measures line emission rather "
-                         "than search. Capping the count models a symbol query.")
-    ap.add_argument("--digest", action="store_true",
-                    help="print 'COUNT SHA256' instead of the slate, for the record")
+    ap.add_argument(
+        "--max-count",
+        type=int,
+        default=None,
+        help="drop literals occurring more than this often -- the SELECTIVITY "
+        "band. Corpus token frequency is not query frequency: an agent "
+        "sweeps for `WalletService`, never for `string`, so a slate drawn "
+        "from the raw token distribution measures line emission rather "
+        "than search. Capping the count models a symbol query.",
+    )
+    ap.add_argument(
+        "--digest",
+        action="store_true",
+        help="print 'COUNT SHA256' instead of the slate, for the record",
+    )
     args = ap.parse_args()
 
     blob_path = args.corpus / "corpus.bin"
@@ -102,8 +117,11 @@ def main() -> int:
 
     slate = canonical(blob_path.read_bytes(), args.n, args.min_count, args.max_count)
     if len(slate) < args.n:
-        print(f"slate.py: corpus yielded only {len(slate)} usable literals "
-              f"(wanted {args.n}); widen the corpus or lower --min-count", file=sys.stderr)
+        print(
+            f"slate.py: corpus yielded only {len(slate)} usable literals "
+            f"(wanted {args.n}); widen the corpus or lower --min-count",
+            file=sys.stderr,
+        )
         if not slate:
             return 2
 

@@ -4,19 +4,18 @@
 from __future__ import annotations
 
 import csv
-from datetime import date, datetime, time
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import subprocess
 import tarfile
 import tempfile
-import tomllib
+from datetime import date, datetime, time
+from pathlib import Path
 
 import monograph
-
+import tomllib
 
 SHA256 = re.compile(r"[0-9a-f]{64}")
 COMMIT = re.compile(r"[0-9a-f]{40,64}")
@@ -160,8 +159,7 @@ def _verify_git_archive(
                 "--",
                 *paths,
             ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=False,
         )
         if completed.returncode:

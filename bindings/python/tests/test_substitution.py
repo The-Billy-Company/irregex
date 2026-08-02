@@ -9,9 +9,8 @@ that domain is codepoints and the engine's is bytes.
 
 from __future__ import annotations
 
-import pytest
-
 import irgx
+import pytest
 
 
 def test_a_literal_replacement():
@@ -47,7 +46,7 @@ def test_named_backreferences_in_the_template():
 
 def test_a_group_the_match_did_not_enter_contributes_nothing():
     # A template cannot render None, so a non-participating group renders as
-    # empty. This is `re`'s behaviour too, and it is the only sensible one:
+    # empty. This is `re`'s behavior too, and it is the only sensible one:
     # the alternative is refusing to substitute at all.
     assert irgx.sub(r"(a)|(b)", r"<\1\2>", "ab") == "<a><b>"
 

@@ -126,7 +126,7 @@ MATRIX = (
 )
 
 # One symbol from the vendored PCRE2, standing witness for the whole C floor.
-# Checking behaviour beats checking the platform: this asks the archive what it
+# Checking behavior beats checking the platform: this asks the archive what it
 # contains rather than assuming what the build does per target.
 FLOOR_WITNESS = "pcre2_compile_8"
 
@@ -202,10 +202,12 @@ def defines(nm: str, archive: Path, symbol: str) -> bool:
     Only a definition counts: an undefined reference to the very symbol we are
     looking for is exactly the state this is meant to catch.
     """
-    listing = subprocess.run(
-        [nm, "--defined-only", str(archive)], capture_output=True, text=True
+    listing = subprocess.run([nm, "--defined-only", str(archive)], capture_output=True, text=True)
+    return any(
+        line.split()[-1].lstrip("_") == symbol
+        for line in listing.stdout.splitlines()
+        if line.split()
     )
-    return any(line.split()[-1].lstrip("_") == symbol for line in listing.stdout.splitlines() if line.split())
 
 
 def probe_link(zig: str, target: Target, archive: Path, header: Path, workdir: Path) -> str:
@@ -215,9 +217,15 @@ def probe_link(zig: str, target: Target, archive: Path, header: Path, workdir: P
     binary = workdir / "probe"
     run(
         [
-            zig, "cc", "-target", target.zig,
-            f"-I{header.parent}", str(source), str(archive),
-            "-o", str(binary),
+            zig,
+            "cc",
+            "-target",
+            target.zig,
+            f"-I{header.parent}",
+            str(source),
+            str(archive),
+            "-o",
+            str(binary),
         ]
     )
     native = (sys.platform == "darwin" and target.goos == "darwin") or (
@@ -229,7 +237,9 @@ def probe_link(zig: str, target: Target, archive: Path, header: Path, workdir: P
     return "cross-compiled; linked but not run"
 
 
-def build(target: Target, cache_root: Path, zig: str, strip: str | None, nm: str) -> tuple[int, str]:
+def build(
+    target: Target, cache_root: Path, zig: str, strip: str | None, nm: str
+) -> tuple[int, str]:
     cache = cache_root / target.zig
     cache.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="irregex-go-") as scratch:
@@ -237,9 +247,15 @@ def build(target: Target, cache_root: Path, zig: str, strip: str | None, nm: str
         staging = work / "stage"
         run(
             [
-                zig, "build", "-Doptimize=ReleaseFast", f"-Dtarget={target.zig}",
+                zig,
+                "build",
+                "-Doptimize=ReleaseFast",
+                f"-Dtarget={target.zig}",
                 f"-Dcpu={target.cpu}",
-                "--prefix", str(staging), "--cache-dir", str(cache),
+                "--prefix",
+                str(staging),
+                "--cache-dir",
+                str(cache),
             ],
             cwd=ENGINE,
         )

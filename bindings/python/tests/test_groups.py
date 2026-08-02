@@ -10,9 +10,8 @@ from __future__ import annotations
 
 import ctypes
 
-import pytest
-
 import irgx
+import pytest
 from irgx import _abi
 
 
@@ -116,7 +115,7 @@ def test_a_name_comes_from_the_parser_not_from_reading_the_pattern_text(source, 
 
 def test_unnamed_groups_are_absent_from_groupindex_without_shifting_the_named_ones():
     # Every group is asked about by index, so an unnamed one answers "no name"
-    # rather than being skipped in a way that could renumber its neighbours.
+    # rather than being skipped in a way that could renumber its neighbors.
     pattern = irgx.compile(r"(\w)(?P<second>\w)(\w)(?P<fourth>\w)")
     assert pattern.groups == 4
     assert pattern.groupindex == {"second": 2, "fourth": 4}

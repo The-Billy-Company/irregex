@@ -27,9 +27,8 @@ Run: python3 tools/build_encoding_tables.py            # writes the .gen.zig
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import sys
-
+from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 WHATWG = HERE / "whatwg"

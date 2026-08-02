@@ -11,9 +11,8 @@ from __future__ import annotations
 
 import re
 
-import pytest
-
 import irgx
+import pytest
 
 # Patterns in the grammar both engines implement the same way, over text chosen
 # to exercise anchors, classes, alternation, quantifiers and word boundaries.
@@ -22,7 +21,7 @@ AGREE = [
     (r"\d+", "a1 bb22 ccc333"),
     (r"[a-z]+\d", "ab1 cd2 x"),
     (r"(\w+)@(\w+)\.(\w+)", "me@example.com and you@other.org"),
-    (r"colou?r", "color colour colr"),
+    (r"colou?r", "color color colr"),
     (r"^\w+", "first second"),
     (r"\w+$", "first second"),
     (r"a|bb|ccc", "a bb ccc bbb"),
@@ -85,7 +84,7 @@ def test_ignore_case_agrees_with_re_on_ascii():
     )
 
 
-# ── the divergences, asserted as our behaviour ────────────────────────────
+# ── the divergences, asserted as our behavior ────────────────────────────
 
 
 def test_we_do_not_report_an_empty_match_at_the_end_of_the_text():

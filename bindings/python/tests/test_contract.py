@@ -30,7 +30,6 @@ from pathlib import Path
 
 import pytest
 import tomllib
-
 from irgx import _abi
 
 

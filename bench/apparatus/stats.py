@@ -19,10 +19,9 @@ is a LOSS. Nothing is averaged into a win.
 stdlib only, and deterministic — the caller owns the seeded RNG.
 """
 
-from dataclasses import dataclass
 import math
 import random
-
+from dataclasses import dataclass
 
 ALPHA = 0.05
 BOOTSTRAP = 10_000

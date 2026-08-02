@@ -4,11 +4,9 @@
 from __future__ import annotations
 
 import hashlib
-import json
-from pathlib import Path
 import re
 import subprocess
-
+from pathlib import Path
 
 MONOGRAPH = "CREST-MONOGRAPH.md"
 DETACHED = "CREST-MONOGRAPH.sha256"
@@ -54,9 +52,7 @@ def measured_table(run: _JsonObject) -> str:
         full = query["full_ns"] / 1_000_000
         sieve = query["sieve_ns"] / 1_000_000
         speedup = full / sieve if sieve else 0.0
-        mode = ("(?i) " if query["caseless"] else "") + (
-            "Unicode" if query["unicode"] else "ASCII"
-        )
+        mode = ("(?i) " if query["caseless"] else "") + ("Unicode" if query["unicode"] else "ASCII")
         rows.append(
             f"| {query['label']} | `{query['pattern']}` | {mode} | {diff['pruned_files']} | "
             f"{diff['matched']} | {full:.3f} | {sieve:.3f} | {speedup:.3f}× |"

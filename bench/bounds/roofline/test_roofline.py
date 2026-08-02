@@ -143,7 +143,7 @@ class ProvenanceTest(unittest.TestCase):
         self.assertIn("measured clock GHz ÷ measured tier GB/s", report)
 
     def test_static_llvm_mca_cycles_are_not_converted_without_a_clock(self) -> None:
-        # A modelled cycle count times a guessed frequency reads as a measured
+        # A modeled cycle count times a guessed frequency reads as a measured
         # bandwidth; two inferences deep is one too many to print as "≈N GB/s".
         roof = fixture(60)
         roof["clock"] = {"ghz": None, "measured": False, "source": "assumed", "meter": "none"}
@@ -152,8 +152,8 @@ class ProvenanceTest(unittest.TestCase):
         report = roofline_report.render(roof, [], bound)
 
         self.assertIn("0.081 cyc/byte", report)
-        self.assertNotIn("(≈", report)  # the "≈N GB/s" translation of a modelled cycle
-        self.assertIn("modelled by llvm-mca", report)
+        self.assertNotIn("(≈", report)  # the "≈N GB/s" translation of a modeled cycle
+        self.assertIn("modeled by llvm-mca", report)
         self.assertIn("measured no clock to convert them with", report)
 
 

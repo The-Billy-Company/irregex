@@ -16,9 +16,8 @@ import subprocess
 import sys
 import sysconfig
 
-import pytest
-
 import irgx
+import pytest
 from irgx import _abi
 
 

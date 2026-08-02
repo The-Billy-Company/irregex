@@ -119,7 +119,7 @@ def ours(pkg: Path) -> list[dict[str, object]]:
         cells = ln.split("\t")
         if len(cells) != len(head):
             continue
-        row: dict[str, object] = dict(zip(head, cells))
+        row: dict[str, object] = dict(zip(head, cells, strict=True))
         for k in ("nfa", "cls", "dfa", "accept", "table_bytes", "build_ns"):
             row[k] = int(row[k])  # type: ignore[arg-type]
         rows.append(row)
@@ -240,9 +240,7 @@ def main() -> int:
         "  bldus  microseconds to determinize. Ours is min-of-N over the shipped\n"
         "         NFA; theirs is the `compile dfa time` their own CLI reports.\n"
     )
-    print(
-        f"{'':<46}{'cls':>11}{'':>7}{'dfa':>17}{'tblB':>21}{'':>7}{'bldus':>17}{'':>7}"
-    )
+    print(f"{'':<46}{'cls':>11}{'':>7}{'dfa':>17}{'tblB':>21}{'':>7}{'bldus':>17}{'':>7}")
     print(
         f"{'pattern':<46}{'us':>5}{'them':>6}{'x':>7}"
         f"{'us':>5}{'them':>6}{'min':>6}"

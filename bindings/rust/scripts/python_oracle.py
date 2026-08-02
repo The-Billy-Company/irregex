@@ -95,7 +95,10 @@ def main() -> None:
             # A group the match did not enter is None in the Python binding and
             # -1, -1 here; -1 is what the C ABI itself reports.
             groups = [
-                [list(m.span(i)) if m.span(i) != (-1, -1) else [-1, -1] for i in range(compiled.groups + 1)]
+                [
+                    list(m.span(i)) if m.span(i) != (-1, -1) else [-1, -1]
+                    for i in range(compiled.groups + 1)
+                ]
                 for m in compiled.finditer(data)
             ]
             out.append(

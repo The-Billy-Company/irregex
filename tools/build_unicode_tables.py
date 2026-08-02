@@ -17,9 +17,8 @@ Run: python3 tools/build_unicode_tables.py           # writes the .gen.zig
 
 from __future__ import annotations
 
-from pathlib import Path
 import sys
-
+from pathlib import Path
 
 UNICODE_VERSION = "16.0.0"
 HERE = Path(__file__).resolve().parent

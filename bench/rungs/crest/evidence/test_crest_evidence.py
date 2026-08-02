@@ -6,16 +6,15 @@ from __future__ import annotations
 import hashlib
 import io
 import json
-from collections.abc import Callable
-from pathlib import Path
 import subprocess
 import tarfile
 import tempfile
 import unittest
+from collections.abc import Callable
+from pathlib import Path
 
 import monograph
 import verify
-
 
 HERE = Path(__file__).resolve().parent
 CONTRACT = HERE.parents[3] / "contract/crest_evidence.toml"
@@ -111,9 +110,7 @@ def _init_repo(path: Path, source_paths: list[str]) -> str:
         ],
         check=True,
     )
-    return subprocess.check_output(
-        ["git", "-C", str(path), "rev-parse", "HEAD"], text=True
-    ).strip()
+    return subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"], text=True).strip()
 
 
 def _write_monograph(

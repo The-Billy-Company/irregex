@@ -28,9 +28,8 @@ stdlib only. Idempotent.
 
 import argparse
 import json
-from pathlib import Path
 import re
-
+from pathlib import Path
 
 LAYER_B_HEADER = "## Layer B — port-optimality (static µarch bound)"
 MACRO_HEADER = "## Layer A — macroscopic dominance over ripgrep"

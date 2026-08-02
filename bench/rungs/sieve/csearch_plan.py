@@ -72,9 +72,7 @@ def read_probes(path: Path) -> list[tuple[str, str, str]]:
     comments, and Layer L must speak about exactly the live slate Layers A and D
     do — no more.
     """
-    live = "\n".join(
-        ln for ln in path.read_text().splitlines() if not ln.lstrip().startswith("//")
-    )
+    live = "\n".join(ln for ln in path.read_text().splitlines() if not ln.lstrip().startswith("//"))
     return [(cls, kind, zig_unescape(pat)) for cls, kind, pat in PROBE_ROW.findall(live)]
 
 
@@ -256,7 +254,7 @@ def main() -> int:
         print(f"  {cls:<18} {own:>7} files · {rendered[:88]}", file=sys.stderr)
 
     lines = ["# class\tcsearch_own_docs\tclause (atoms joined by |, hex literals joined by ,)"]
-    for cls, own, rendered, clauses, filterable in rows:
+    for cls, own, _rendered, clauses, filterable in rows:
         if not filterable:
             lines.append(f"{cls}\t{own}\t")  # empty ⇒ no filter, whole corpus
             continue
@@ -266,7 +264,10 @@ def main() -> int:
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text("\n".join(lines) + "\n")
     if total_dropped:
-        print(f"  NOTE: {total_dropped} clause(s) past the {MAX_ATOMS}-atom cap were dropped", file=sys.stderr)
+        print(
+            f"  NOTE: {total_dropped} clause(s) past the {MAX_ATOMS}-atom cap were dropped",
+            file=sys.stderr,
+        )
     print(f"wrote {args.out}", file=sys.stderr)
     return 0
 

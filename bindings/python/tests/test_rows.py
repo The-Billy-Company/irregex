@@ -22,7 +22,6 @@ The properties under test are the ones a mis-decode would quietly violate:
 from __future__ import annotations
 
 import pytest
-
 from irgx.contract import table
 from irgx.contract.grades import Grade
 from irgx.runtime import cold

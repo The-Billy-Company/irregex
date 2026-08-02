@@ -65,7 +65,9 @@ ASM_RE = re.compile(r"\basm\b(?:\s+volatile\b)?\s*\(")
 # ORIGINAL bytes (the blanked copy has spaces there). `tbl.16b` and `b.eq`
 # carry a dot, so it is part of the token and stripped for classification.
 TEMPLATE_RE = re.compile(r'\s*"([a-zA-Z][\w.]*)')
-FN_DECL_RE = re.compile(r"^[ \t]*(?:pub\s+)?(?:export\s+)?(?:inline\s+)?fn\s+\w+\s*\(", re.MULTILINE)
+FN_DECL_RE = re.compile(
+    r"^[ \t]*(?:pub\s+)?(?:export\s+)?(?:inline\s+)?fn\s+\w+\s*\(", re.MULTILINE
+)
 GUARD_RE = re.compile(r"\bcpu\.has\s*\(")
 GENERATED_HEADER_RE = re.compile(r"^\s*//\s*Code generated\b|^\s*//\s*@generated\b", re.IGNORECASE)
 

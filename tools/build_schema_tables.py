@@ -45,10 +45,11 @@ Run: python3 tools/build_schema_tables.py           # write
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-import sys
+
 import tomllib
 
 HERE = Path(__file__).resolve().parent
@@ -138,10 +139,14 @@ def load(path: Path = CONTRACT) -> Table:
             if kind == "enum":
                 nested = enum_id.get(arg, 0) or _die(f"{name}.{f['name']}: unknown enum {arg!r}")
             elif kind == "rows":
-                nested = schema_id.get(arg, 0) or _die(f"{name}.{f['name']}: unknown schema {arg!r}")
+                nested = schema_id.get(arg, 0) or _die(
+                    f"{name}.{f['name']}: unknown schema {arg!r}"
+                )
             fields.append(Field(f["name"], TAGS.index(kind), nested, bool(f.get("optional"))))
         if len(fields) > MAX_FIELDS:
-            _die(f"row_schemas.{name}: {len(fields)} fields exceeds the {MAX_FIELDS}-bit presence mask")
+            _die(
+                f"row_schemas.{name}: {len(fields)} fields exceeds the {MAX_FIELDS}-bit presence mask"
+            )
         schemas.append(Schema(s["id"], name, s["detail"], tuple(fields)))
     schemas.sort(key=lambda s: s.id)
 
@@ -156,9 +161,7 @@ def load(path: Path = CONTRACT) -> Table:
         if v["producer"] not in raw_producers:
             _die(f"analytic.verbs.{name}: unknown producer {v['producer']!r}")
         entry = raw_producers[v["producer"]]["entry"]
-        verbs.append(
-            Verb(v["op"], name, v["params"], schema_id[v["schema"]], v["stream"], entry)
-        )
+        verbs.append(Verb(v["op"], name, v["params"], schema_id[v["schema"]], v["stream"], entry))
     verbs.sort(key=lambda v: v.op)
 
     _contiguous("row_schemas", [s.id for s in schemas])
@@ -193,7 +196,9 @@ def _digest(enums: tuple[Enum, ...], schemas: tuple[Schema, ...], verbs: tuple[V
     lines = [f"enum {e.id} {e.name} {','.join(e.variants)}" for e in enums]
     lines += [
         "schema {} {} {}".format(
-            s.id, s.name, "|".join(f"{f.name}:{f.tag}:{f.nested}:{int(f.optional)}" for f in s.fields)
+            s.id,
+            s.name,
+            "|".join(f"{f.name}:{f.tag}:{f.nested}:{int(f.optional)}" for f in s.fields),
         )
         for s in schemas
     ]
@@ -227,7 +232,11 @@ def _zig(t: Table) -> str:
     for e in t.enums:
         variants = ", ".join(_zid(v) for v in e.variants)
         out.append(f"pub const {_pascal(e.name)} = enum(u32) {{ {variants} }};")
-    out += ["", "/// Schema ids — the wire discriminant, append-only.", "pub const Id = enum(u32) {"]
+    out += [
+        "",
+        "/// Schema ids — the wire discriminant, append-only.",
+        "pub const Id = enum(u32) {",
+    ]
     out += [f"    {s.name} = {s.id}," for s in t.schemas]
     out += ["};", "", "/// Verb op codes.", "pub const Op = enum(u32) {"]
     out += [f"    {v.name} = {v.op}," for v in t.verbs]
@@ -256,7 +265,9 @@ def _zig(t: Table) -> str:
         "pub const schemas = [_]rows.Schema{",
     ]
     for s in t.schemas:
-        out.append(f"    .{{ .struct_size = @sizeOf(rows.Schema), .id = {s.id}, .name = \"{s.name}\", .nfields = {len(s.fields)}, .reserved = 0, .fields = &fields_{s.name} }},")
+        out.append(
+            f'    .{{ .struct_size = @sizeOf(rows.Schema), .id = {s.id}, .name = "{s.name}", .nfields = {len(s.fields)}, .reserved = 0, .fields = &fields_{s.name} }},'
+        )
     out += ["};", ""]
     for s in t.schemas:
         out.append(f"const fields_{s.name} = [_]rows.Field{{")
@@ -302,7 +313,9 @@ def _python(t: Table) -> str:
     out += [
         "}",
         "",
-        "ENUM_BY_ID: Final[dict[int, str]] = {" + ", ".join(f"{e.id}: {e.name!r}" for e in t.enums) + "}",
+        "ENUM_BY_ID: Final[dict[int, str]] = {"
+        + ", ".join(f"{e.id}: {e.name!r}" for e in t.enums)
+        + "}",
         "",
         "# verb -> (op, params family, schema id, streams many rows, entry symbol)",
         "VERBS: Final[dict[str, tuple[int, str, int, bool, str]]] = {",
@@ -321,8 +334,8 @@ def _python(t: Table) -> str:
 # Emitting the shape rustfmt would produce keeps this file `cargo fmt
 # --check`-clean by construction, so the formatter and the drift gate can't pull
 # the generated table in opposite directions. `format_generated_files` would say
-# this declaratively, but it is nightly-only and the workspace pins stable —
-# this mirrors the netcfg and sandbox-tier Rust emitters.
+# this declaratively, but it is nightly-only and the workspace pins stable, so
+# the widths are restated here instead.
 RUST_STRUCT_LIT_WIDTH = 18
 RUST_FN_CALL_WIDTH = 60
 
@@ -479,7 +492,12 @@ def _go(t: Table) -> str:
         "\t" + f'"{e.name}":'.ljust(pad) + " {" + ", ".join(f'"{v}"' for v in e.variants) + "},"
         for e in t.enums
     ]
-    out += ["}", "", "// enumByID resolves a field's Nested back to its enum name.", "var enumByID = map[uint32]string{"]
+    out += [
+        "}",
+        "",
+        "// enumByID resolves a field's Nested back to its enum name.",
+        "var enumByID = map[uint32]string{",
+    ]
     out += [f'\t{e.id}: "{e.name}",' for e in t.enums]
     out += ["}", "", "// schemas is indexed by ID-1.", "var schemas = []SchemaDef{"]
     for s in t.schemas:
@@ -508,7 +526,7 @@ ZIG_KEYWORDS = frozenset(
     """addrspace align allowzero and anyframe anytype asm async await break callconv catch
     comptime const continue defer else enum errdefer error export extern fn for if inline
     linksection noalias noinline nosuspend opaque or orelse packed pub resume return struct
-    suspend switch test threadlocal try union unreachable usingnamespace var volatile while""".split()
+    suspend switch test threadlocal try union unreachable usingnamespace var volatile while""".split()  # noqa: SIM905 — the wrapped block reads as the keyword list it mirrors; 48 quoted elements would not
 )
 
 

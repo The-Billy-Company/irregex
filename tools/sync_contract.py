@@ -115,7 +115,7 @@ def main() -> int:
     for name, author, have, want in drifted:
         print(f"::error::contract/{name}.toml has drifted from {author}'s original")
         if have is None:
-            print(f"  the vendored copy is missing entirely; run: python3 tools/sync_contract.py")
+            print("  the vendored copy is missing entirely; run: python3 tools/sync_contract.py")
             continue
         diff = difflib.unified_diff(
             have.splitlines(True),
@@ -135,7 +135,11 @@ def main() -> int:
 
     for w in wrote:
         print(f"sync_contract: wrote {w}")
-    print("sync_contract: every vendored contract matches its author" if args.check else "sync_contract: up to date")
+    print(
+        "sync_contract: every vendored contract matches its author"
+        if args.check
+        else "sync_contract: up to date"
+    )
     return 0
 
 

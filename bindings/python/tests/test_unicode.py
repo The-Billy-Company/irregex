@@ -11,9 +11,8 @@ so it is asserted here on text where the two domains actually differ.
 
 from __future__ import annotations
 
-import pytest
-
 import irgx
+import pytest
 
 # Every character past the first is multi-byte, so a binding that skipped the
 # translation would be wrong from index 2 onwards.

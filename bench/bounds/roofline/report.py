@@ -31,11 +31,10 @@ It splices a `## Layer C — roofline (hardware ceiling)` section into
 # ruff: noqa: RUF001
 
 import argparse
-from dataclasses import dataclass
 import json
-from pathlib import Path
 import re
-
+from dataclasses import dataclass
+from pathlib import Path
 
 LAYER_C_HEADER = "## Layer C — roofline (measured headroom)"
 # certify_stats.py rewrites this section to EOF, so a fresh Layer C is inserted
@@ -142,7 +141,7 @@ class ComputeBound:
     roofline. Reported as such — never folded into a min(compute, memory).
 
     `gbps_at_ghz` is None where the host measured no clock: llvm-mca reports
-    cycles, and cycles become bytes/second only through a clock. Modelled cycles
+    cycles, and cycles become bytes/second only through a clock. Modeled cycles
     times a guessed frequency is two inferences deep and reads as a bandwidth.
     """
 
@@ -297,7 +296,7 @@ def render(roof: dict, pts: list[ClassPoint], compute: ComputeBound | None) -> s
         )
         lines.append(
             "- **compute bound (Layer B, cross-machine):** the `simd_contains` loop's static "
-            f"llvm-mca port bound — {bounds}. These are *reference cores* modelled by llvm-mca, "
+            f"llvm-mca port bound — {bounds}. These are *reference cores* modeled by llvm-mca, "
             "not observations of any core (LLVM has no Apple-Silicon model), so they are a "
             "low-intensity **cross-check**, not a same-axis ceiling on this "
             f"`{roof.get('machine', '?')}` roofline; they confirm the scan is a tight, "

@@ -4,6 +4,13 @@
 # two different widths would be churn nobody chose.
 line-length = 100
 
+# A generated table is its generator's output, not authored code. ruff would
+# rewrite `schema.gen.py` into double quotes and exploded literals, which is a
+# shape `tools/build_schema_tables.py` does not emit — so the formatter and the
+# drift gate would each demand the file the other rejects. The generator is the
+# one holding a contract, so it wins and ruff looks away.
+extend-exclude = [ "**/*.gen.py" ]
+
 [lint]
 select = [ "E", "F", "I", "UP", "B", "SIM" ]
 ignore = [ "E501" ]

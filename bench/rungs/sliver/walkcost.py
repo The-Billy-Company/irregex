@@ -37,14 +37,13 @@ from __future__ import annotations
 
 import argparse
 import os
-from pathlib import Path
 import re
 import shutil
 import statistics
 import subprocess
 import sys
 import time
-
+from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 KERNEL = HERE.parent.parent.parent
@@ -202,11 +201,7 @@ def report(samples: list[Sample], a: argparse.Namespace) -> int:
     if g and r and g.rss and r.rss:
         lines.append(
             f"# ratio gist/rg: maxrss {g.med(g.rss) / r.med(r.rss):.2f}x"
-            + (
-                f" · owned {g.med(g.owned) / r.med(r.owned):.2f}x"
-                if g.owned and r.owned
-                else ""
-            )
+            + (f" · owned {g.med(g.owned) / r.med(r.owned):.2f}x" if g.owned and r.owned else "")
         )
     tsv.write_text("\n".join(lines) + "\n")
     print(f"\nwrote {tsv}")

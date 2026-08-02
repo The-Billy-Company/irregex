@@ -1,4 +1,4 @@
-"""Every flag, proved by a behaviour that changes when it is set.
+"""Every flag, proved by a behavior that changes when it is set.
 
 A flag test that only checks the bit word proves the binding can do arithmetic.
 These check that the engine did something different, which is the only claim
@@ -7,9 +7,8 @@ worth making.
 
 from __future__ import annotations
 
-import pytest
-
 import irgx
+import pytest
 from irgx import _abi
 from irgx._pattern import flag_bits
 
