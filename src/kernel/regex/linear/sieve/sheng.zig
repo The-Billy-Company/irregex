@@ -45,10 +45,18 @@ const zeros: V16 = @splat(0);
 /// compile gate stands it down. Deliberately WIDER than `compose`'s own gate: that
 /// gate needs the two-register `TBL` form only AArch64 has, while a quotient
 /// needs one 16-lane lookup, which SSSE3 also does in one instruction.
-pub const resident = switch (builtin.cpu.arch) {
-    .aarch64, .aarch64_be, .x86_64 => true,
-    else => false,
-};
+///
+/// Asked of the shuffle itself rather than re-derived from the architecture.
+/// This used to read `switch (builtin.cpu.arch) { .aarch64, .aarch64_be,
+/// .x86_64 => true, … }`, which is the same mistake `lanes.shuffle` and
+/// `classrun.pshufb` each carry a paragraph warning against, one level up:
+/// `pshufb` is SSSE3 and the x86_64 baseline is SSE2, so on a generic x86_64
+/// build the predicate said "register-resident" while the kernel underneath it
+/// was a sixteen-element scalar gather per byte — arming a pre-pass strictly
+/// slower than the DFA it exists to skip. `isa-floor` gates the `asm` blocks
+/// but cannot see a boolean derived from the wrong question, so the boolean
+/// names its dependency instead of guessing at it.
+pub const resident = tbl.arm != .portable;
 
 inline fn accepts(state: V16, th: V16) V16 {
     return @select(u8, state >= th, ones, zeros);
@@ -110,6 +118,23 @@ fn split(comptime lanes: usize, doc: []const u8) ?[lanes + 1]usize {
 /// above carry no such requirement.
 pub fn survivesDoc(qs: []const Quotient, doc: []const u8) bool {
     return if (qs.len == 1) docLanes(1, qs, doc) else docLanes(2, qs, doc);
+}
+
+/// Would `survivesDoc` actually take its multi-lane path over this buffer, or
+/// fall through to the single chain?
+///
+/// The lane split is silent by design — too few newlines or too short a buffer
+/// and the kernel simply runs `survives1`/`survives2` instead, which is the
+/// right behavior and an invisible one. A differential over buffers that all
+/// fell through would report thousands of agreeing cases while never executing
+/// the burst lockstep, the per-lane accumulators, or the tails at all. The test
+/// asks the kernel rather than re-deriving the threshold, so the two cannot
+/// drift into a corpus that covers nothing.
+pub fn lanesEngaged(qs: []const Quotient, doc: []const u8) bool {
+    return if (qs.len == 1)
+        split(laneCount(1), doc) != null
+    else
+        split(laneCount(2), doc) != null;
 }
 
 fn docLanes(comptime n: usize, qs: []const Quotient, doc: []const u8) bool {

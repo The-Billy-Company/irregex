@@ -681,7 +681,10 @@ inline fn nibbleMask(t: *const Nibbles, b: V16) u16 {
 inline fn pshufb(table: V16, idx: V16) V16 {
     // NEON `tbl` zeroes any index ≥ 16; the 0x8F-masked indices the callers
     // pass are either a low nibble (< 16) or carry bit 7 (≥ 0x80) — exactly
-    // pshufb's split.
+    // pshufb's split. That coincidence IS the contract, so assert it: an index
+    // in 0x10..0x7F would take the two arms apart silently, `tbl` reading it as
+    // zero and `pshufb` as the low nibble.
+    std.debug.assert(@reduce(.And, (idx < @as(V16, @splat(0x10))) | (idx >= @as(V16, @splat(0x80)))));
     if (comptime builtin.cpu.has(.aarch64, .neon)) return asm ("tbl %[o].16b, {%[t].16b}, %[i].16b"
         : [o] "=w" (-> V16),
         : [t] "w" (table),
@@ -692,6 +695,15 @@ inline fn pshufb(table: V16, idx: V16) V16 {
         : [t] "0" (table),
           [i] "x" (idx),
     );
+    return pshufbPortable(table, idx);
+}
+
+/// What `pshufb` computes, compiled on every target so the differential can
+/// reach it where the two `asm` arms displace it — the sibling of
+/// `lanes.shufflePortable`, with this file's zeroing contract rather than that
+/// file's in-range one. Truffle *relies* on the zeroing, so this is a
+/// specification and not a degradation.
+pub fn pshufbPortable(table: V16, idx: V16) V16 {
     var out: [16]u8 = undefined;
     const t: [16]u8 = table;
     const ix: [16]u8 = idx;

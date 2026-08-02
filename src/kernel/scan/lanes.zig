@@ -41,15 +41,22 @@ pub const Vec = @Vector(16, u8);
 /// because a scalar gather per byte is exactly the latency-bound shape the
 /// composition was built to escape.
 ///
-/// AArch64 only, and deliberately narrower than `shuffle`'s own portability:
-/// the 32-lane form needs `TBL` with a two-register list, which SSSE3 has no
-/// equivalent for (it would take AVX-512 `vpermi2b`), and the 16-lane form on
-/// `pshufb` has never been measured — an unmeasured fast path is not a fast
-/// path. Everything below still COMPILES everywhere; it just never runs.
-pub const native = switch (builtin.cpu.arch) {
-    .aarch64, .aarch64_be => true,
-    else => false,
-};
+/// AArch64 NEON only, and deliberately narrower than `shuffle`'s own
+/// portability: the 32-lane form needs `TBL` with a two-register list, which
+/// SSSE3 has no equivalent for (it would take AVX-512 `vpermi2b`), and the
+/// 16-lane form on `pshufb` has never been measured — an unmeasured fast path
+/// is not a fast path. Everything below still COMPILES everywhere; it just
+/// never runs.
+///
+/// The FEATURE, not the architecture. This read `switch (builtin.cpu.arch) {
+/// .aarch64, .aarch64_be => true, … }`, and NEON is an optional AArch64
+/// feature — so `zig build -Dtarget=aarch64-linux-gnu -Dcpu=baseline-neon`
+/// armed the composition, reached `shufflePair`, and died on that function's
+/// own `@compileError`. Not a slow build or a wrong answer: no build at all,
+/// for anyone targeting an AArch64 profile without SIMD. `shufflePair` states
+/// its requirement in the feature's own terms, so the gate in front of it has
+/// to be asked in those terms too.
+pub const native = builtin.cpu.has(.aarch64, .neon);
 
 /// How many lanes a transformation carries — that is, how many states the
 /// lowered machine has, absorbing sink included. The value is the row stride in
@@ -112,7 +119,19 @@ pub fn tableBytes(w: Width, ix: Index) usize {
 /// it assembles, it ships, and it faults on the first machine that took the
 /// declaration at its word. Asking `cpu.has` costs nothing at run time (the
 /// answer is comptime) and makes the floor the target's rather than a guess.
+/// `quality/ratchets/isa-floor` is the gate that keeps it that way.
+///
+/// The in-range precondition is ASSERTED, not merely documented. The three arms
+/// answer differently above 15 — `tbl` zeroes every index ≥ 16, `pshufb` zeroes
+/// only on the high bit and masks the rest to the low nibble, and
+/// `shufflePortable` masks unconditionally — so a caller that drifts out of
+/// range does not get a wrong answer, it gets a DIFFERENT wrong answer per
+/// architecture, which no single-host test can see. The assert is a safe-build
+/// check and free in ReleaseFast (where it instead hands the optimizer the
+/// range fact), so the whole differential corpus above this leaf doubles as a
+/// probe for the one thing the kernel cannot otherwise catch.
 pub inline fn shuffle(t: Vec, idx: Vec) Vec {
+    std.debug.assert(@reduce(.Max, idx) < 16);
     if (comptime builtin.cpu.has(.aarch64, .neon)) return asm ("tbl %[o].16b, {%[t].16b}, %[i].16b"
         : [o] "=w" (-> Vec),
         : [t] "w" (t),
@@ -123,12 +142,49 @@ pub inline fn shuffle(t: Vec, idx: Vec) Vec {
         : [t] "0" (t),
           [i] "x" (idx),
     );
+    return shufflePortable(t, idx);
+}
+
+/// What `shuffle` computes, written once in Zig and compiled on EVERY target —
+/// including the two where an `asm` arm displaces it.
+///
+/// Its job is to be the arm the differential can always reach. A build compiles
+/// exactly one of `shuffle`'s three arms and comptime-prunes the others, so a
+/// test that only exercises `shuffle` proves whichever arm the host happened to
+/// have and says nothing about the two it discarded; the portable one, needed
+/// by every target that is neither NEON nor SSSE3, was reachable from no test
+/// on no machine. Holding the host's instruction to this on each CI
+/// architecture pins all three to one statement, because each asm arm is proved
+/// against the same shared reference.
+///
+/// The masking is what `tbl`/`pshufb` do to an in-range index and is therefore
+/// unobservable under the assert above; `shuffleModel` below is where the
+/// out-of-range disagreement is written down deliberately.
+pub fn shufflePortable(t: Vec, idx: Vec) Vec {
     var out: [16]u8 = undefined;
     const tt: [16]u8 = t;
     const ii: [16]u8 = idx;
     for (&out, ii) |*o, k| o.* = tt[k & 0x0F];
     return out;
 }
+
+/// Which of the three arms this build compiled `shuffle` to.
+///
+/// Published because a *dispatch* decision elsewhere depends on it and must not
+/// re-derive it. `sheng.resident` asks whether the shuffle underneath the
+/// quotient sieve is a real single instruction, and answering that by naming
+/// the architecture instead of the feature is how a generic x86_64 build came
+/// to arm a pre-pass whose kernel was a sixteen-element scalar gather per byte
+/// — strictly slower than the DFA the pre-pass exists to skip. A caller that
+/// reads this cannot drift from what `shuffle` actually did.
+pub const Arm = enum { neon, ssse3, portable };
+
+pub const arm: Arm = if (builtin.cpu.has(.aarch64, .neon))
+    .neon
+else if (builtin.cpu.has(.x86, .ssse3))
+    .ssse3
+else
+    .portable;
 
 /// The 32-lane shuffle: `out[i] = {lo,hi}[idx[i]]` for `idx[i] < 32`.
 ///
@@ -146,10 +202,13 @@ pub inline fn shuffle(t: Vec, idx: Vec) Vec {
 /// Guarded here rather than at the call site: `native` above already keeps the
 /// 32-lane algebra off non-NEON targets, but a leaf that assembles an optional
 /// instruction should refuse to compile off-feature rather than trust every
-/// future caller to have checked.
-inline fn shufflePair(lo: Vec, hi: Vec, idx: Vec) Vec {
+/// future caller to have checked. `pub` for the differential's sake — it is the
+/// one arm with no portable twin to be held to, so a test has to reach it by
+/// name and supply the definition itself.
+pub inline fn shufflePair(lo: Vec, hi: Vec, idx: Vec) Vec {
     if (comptime !builtin.cpu.has(.aarch64, .neon))
         @compileError("lanes.shufflePair is NEON-only — callers gate on `native`");
+    std.debug.assert(@reduce(.Max, idx) < 32);
     return asm ("tbl %[o].16b, {v30.16b, v31.16b}, %[i].16b"
         : [o] "=w" (-> Vec),
         : [i] "w" (idx),
@@ -267,7 +326,9 @@ inline fn rowOf(comptime ix: Index, bytes: []const u8, i: usize) usize {
 ///
 /// Every lane value in every row must also be `< w.stride()`. Out-of-range
 /// lanes read as zero under `TBL`, which would silently alias lane 0 rather
-/// than fault — fill unreachable lanes with the identity.
+/// than fault — fill unreachable lanes with the identity. A row that breaks
+/// this now trips the shuffle's own assert in a safe build instead of quietly
+/// answering one thing here and another on the next architecture.
 pub fn run(
     comptime w: Width,
     comptime ix: Index,
@@ -284,7 +345,21 @@ pub fn run(
         runPortable(w, ix, bytes, tbl, start_lane, match_lane);
 }
 
-fn runNative(
+/// The vector fold, reachable by name.
+///
+/// `run` above dispatches on `native`, which is false everywhere but AArch64 —
+/// so off AArch64 `run` IS `runPortable`, and a test written against `run` and
+/// `reference` compares a function to itself. That is not a hypothetical: it is
+/// what the rung's headline "kernel ≡ definition" differential did on every
+/// Linux CI run, reporting two thousand agreeing cases and proving none of
+/// them. A test that means to exercise the vector fold has to say so.
+///
+/// The 16-lane form runs on every target — `shuffle` always resolves to
+/// something — so it is a real differential even where the rung declines to
+/// arm, and on SSSE3 it exercises a `pshufb` composition production never
+/// reaches. The 32-lane form needs the two-register `TBL` and instantiating it
+/// off NEON is a compile error, so a caller gates that width on `native`.
+pub fn runNative(
     comptime w: Width,
     comptime ix: Index,
     bytes: []const u8,
