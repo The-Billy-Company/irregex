@@ -114,8 +114,6 @@ func Scope(dir string, roots []string) []string {
 	return out
 }
 
-func (q Query) scope() []string { return Scope(q.Dir, q.Roots) }
-
 // noFFI is the operator escape hatch: IRGX_NO_FFI=1 forces every verb through
 // the subprocess tier, which is how a host keeps working while a drifted library
 // is rebuilt.

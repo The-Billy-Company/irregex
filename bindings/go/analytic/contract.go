@@ -262,7 +262,8 @@ func EnumOrdinal(id uint32, label string) (int64, bool) {
 	if !ok {
 		return 0, false
 	}
-	return ordinalOf(name, label)
+	ordinal, ok := ordinalOf(name, label)
+	return int64(ordinal), ok
 }
 
 func labelOf(enum string, ordinal int64) (string, bool) {
@@ -273,11 +274,13 @@ func labelOf(enum string, ordinal int64) (string, bool) {
 	return variants[ordinal], true
 }
 
-func ordinalOf(enum, label string) (int64, bool) {
-	for i, v := range enums[enum] {
+func ordinalOf(enum, label string) (uint32, bool) {
+	var ordinal uint32
+	for _, v := range enums[enum] {
 		if v == label {
-			return int64(i), true
+			return ordinal, true
 		}
+		ordinal++
 	}
 	return 0, false
 }

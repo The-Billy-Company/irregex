@@ -205,7 +205,7 @@ func Spawn(ctx context.Context, tool string, argv []string, dir string) (Output,
 	}
 }
 
-// died accounts for a child that said nothing on stderr. A signalled process has
+// died accounts for a child that said nothing on stderr. A signaled process has
 // no exit code at all — ExitCode reports -1 — so reporting it as "exited -1" both
 // invents a code and hides the one fact worth knowing: something outside the
 // engine killed it, and there is no output because it never got to speak. On
@@ -313,7 +313,7 @@ func (c *coldRows) close() error { return nil }
 // answers a real duration. A summary that does report time still wins — it is the
 // finer account of where the time went.
 func coldStats(out Output, rows int, waited time.Duration) Stats {
-	s := Stats{Rows: uint64(rows), Elapsed: waited}
+	s := Stats{Rows: count(rows), Elapsed: waited}
 	diag := summary(out.Stdout, out.Stderr)
 	if diag == nil {
 		return s
@@ -330,6 +330,13 @@ func coldStats(out Output, rows int, waited time.Duration) Stats {
 		s.Elapsed = reported
 	}
 	return s
+}
+
+func count(n int) uint64 {
+	if n < 0 {
+		return 0
+	}
+	return uint64(n)
 }
 
 // elapsed totals every millisecond counter the summary reports. A verb spells its
