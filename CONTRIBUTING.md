@@ -47,6 +47,31 @@ One toolchain is mandatory. The rest you need only for the binding you touch.
 | the Rust binding | rustup | `bindings/rust/rust-toolchain.toml` |
 | the Go binding | Go | `bindings/go/go.mod` |
 
+If you run [mise](https://mise.jdx.dev), that whole table is one command:
+
+```bash
+mise install
+```
+
+`.mise.toml` pins every row at the version CI uses and `mise.lock` carries the
+checksums for all four release platforms. The pins are mirrors of the files in
+the third column and never the authority, so bumping one means bumping the
+other in the same commit.
+
+The Rust row asks for `llvm-tools` as well. That is what puts `llvm-nm` and
+`llvm-strip` within reach of the vendoring scripts under `bindings/*/scripts/`,
+and `llvm-objdump` within reach of anyone checking which instructions a shipped
+archive actually contains. rustup builds those from the same LLVM the pinned
+compiler links, so one pin dates all of them: 166 MB of binutils rather than a
+separate 1.7 GB LLVM install, and no argument about which version a laptop
+happens to carry. They live in the sysroot rather than on `PATH` - which is
+also why a Homebrew LLVM is easy to have and still not find, since that formula
+is keg-only. `find_tool()` in those scripts asks `rustc` where; by hand it is:
+
+```bash
+"$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin"
+```
+
 Nothing is fetched at build time. PCRE2 and libsais are physically vendored, so
 `zig build` is hermetic and works offline; the `.lazy` entries in
 `build.zig.zon` exist to pin provenance, not to download anything.

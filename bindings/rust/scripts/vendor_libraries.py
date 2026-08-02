@@ -39,6 +39,7 @@ this script rather than a failure in somebody's ``cargo build`` a week later.
 from __future__ import annotations
 
 import argparse
+import functools
 import os
 import shutil
 import subprocess
@@ -132,11 +133,38 @@ def run(command: list[str], **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(command, check=True, text=True, **kwargs)
 
 
+@functools.cache
+def rustup_llvm_bin() -> Path | None:
+    """Where rustup keeps LLVM's binutils, or None if this machine has no Rust.
+
+    The rung with a version on it. `.mise.toml` pins rust with
+    `components = ["llvm-tools"]`, and rustup builds those binutils from the
+    same LLVM the pinned rustc links - so they move when the pin moves and not
+    otherwise. Homebrew's LLVM under LLVM_SEARCH floats with whatever the
+    machine last upgraded to, which is fine as a fallback and wrong as the
+    default for a script whose output is committed.
+    """
+    try:
+        sysroot = run(["rustc", "--print", "sysroot"], capture_output=True).stdout.strip()
+        version = run(["rustc", "-vV"], capture_output=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    host = next(
+        (ln.removeprefix("host: ") for ln in version.splitlines() if ln.startswith("host: ")),
+        "",
+    )
+    pinned = Path(sysroot, "lib", "rustlib", host, "bin") if sysroot and host else None
+    return pinned if pinned and pinned.is_dir() else None
+
+
 def find_tool(name: str, env_var: str) -> str | None:
-    """An LLVM binutil, from the environment, PATH, Xcode, or a known prefix."""
+    """An LLVM binutil: the environment, then rustup, then PATH, Xcode, a prefix."""
     override = os.environ.get(env_var)
     if override:
         return override
+    pinned = rustup_llvm_bin()
+    if pinned and (candidate := pinned / name).is_file():
+        return str(candidate)
     found = shutil.which(name)
     if found:
         return found
@@ -272,8 +300,9 @@ def main() -> int:
     if strip is None and not args.keep_debug:
         raise SystemExit(
             "llvm-strip not found. It removes the DWARF that nothing links against and\n"
-            "that dominates the archive size. Install LLVM, set $LLVM_STRIP, or pass\n"
-            "--keep-debug to vendor the unstripped archives anyway."
+            "that dominates the archive size. Run `mise install` for the pinned Rust\n"
+            "toolchain's llvm-tools, set $LLVM_STRIP, or pass --keep-debug to vendor\n"
+            "the unstripped archives anyway."
         )
 
     total = 0

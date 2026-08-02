@@ -22,6 +22,11 @@ dist/
 # Upstream checkouts cloned by hand for study/differential testing
 upstream/
 
+# Toolchain overrides for one machine. `.mise.toml` and `mise.lock` are
+# tracked; these are the per-checkout escape hatch and nobody else's business.
+mise.local.toml
+mise.local.lock
+
 # Machine-local scratch
 .local*/
 .DS_Store
