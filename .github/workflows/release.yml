@@ -34,11 +34,11 @@ jobs:
       run:
         working-directory: bindings/python
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
 
       # Every face of this package — the Zig module, `libirgx`, and the Python,
       # Rust, and Go bindings — carries one number, written once in
@@ -87,7 +87,7 @@ jobs:
       - name: Check the metadata the index will read
         run: uvx twine check dist/*.whl
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheels
           path: bindings/python/dist/*.whl
@@ -103,7 +103,7 @@ jobs:
       # The OIDC token Trusted Publishing exchanges for an upload credential.
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: wheels
           path: dist

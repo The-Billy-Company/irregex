@@ -43,7 +43,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
@@ -77,7 +77,7 @@ jobs:
         tool tools script scripts example examples fixture fixtures
         internal pkg build dist
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
@@ -123,18 +123,18 @@ jobs:
       # The layout is flat — $GITHUB_WORKSPACE/{irregex,gist,relate,blast} —
       # because that is what every checkout in this ecosystem already assumes
       # and what the resolvers walk for. CI resolves these the way a laptop does.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: irregex
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: The-Billy-Company/gist
           path: gist
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: The-Billy-Company/relate
           path: relate
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: The-Billy-Company/blast
           path: blast
@@ -152,7 +152,7 @@ jobs:
           ( cd irregex && zig build --summary none )
           ( cd gist && zig build --summary none )
           echo "$GITHUB_WORKSPACE/gist/zig-out/bin" >> "$GITHUB_PATH"
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
       - name: pytest, and prove nothing skipped itself
         working-directory: irregex/bindings/python
         run: |
@@ -179,17 +179,17 @@ jobs:
       run:
         working-directory: irregex/bindings/go
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: irregex
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: The-Billy-Company/gist
           path: gist
       - uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           # Workspace-relative, not working-directory-relative.
           go-version-file: irregex/bindings/go/go.mod
@@ -217,10 +217,10 @@ jobs:
       # the python job for why one sibling is checked out and the other vendored.
       # No Zig and no ecosystem build: the archive cargo links is committed to
       # this repository, which is the rung a consumer actually takes.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: irregex
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: The-Billy-Company/gist
           path: gist
@@ -249,7 +249,7 @@ jobs:
     # different Zig would be checking against a different grid.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
@@ -293,8 +293,8 @@ jobs:
     # bindings/python's pyproject and building a wheel this job has no use for.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
       # The gates themselves. A failure names the file and the delta, and the
       # fix is in the code — never in the baseline.
       - run: uv run --no-project --python 3.12 python quality/ratchets/run.py
@@ -318,8 +318,8 @@ jobs:
     # Stdlib-only, no Zig and no build — it reads lines.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
       - run: uv run --no-project --python 3.12 python tools/version_parity.py
 
   changelog:
@@ -349,8 +349,8 @@ jobs:
     # No Zig and no build, like `ratchets` — this reads filenames.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
       - name: every fragment is one towncrier recognizes
         run: |
           set -euo pipefail
