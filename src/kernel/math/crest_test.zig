@@ -82,7 +82,7 @@ test "cutting the document into pieces rejoins to the same answer" {
     // Past `interleave_floor` the scan splits the document, measures the
     // pieces independently, and rejoins them by the run algebra — so a run
     // crossing a cut is the one thing that can be dropped or double-counted,
-    // and a piece that never breaks is the one that must carry its neighbour's
+    // and a piece that never breaks is the one that must carry its neighbor's
     // run through. Both are aimed at directly, against the same oracle.
     const gpa = testing.allocator;
     var prng = std.Random.DefaultPrng.init(0x1E_7E_A7_ED);

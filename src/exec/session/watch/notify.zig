@@ -11,7 +11,7 @@
 //! **Why a completion port and not an event or an APC.** All three can report a
 //! finished notify, and only one of them can carry the freshness *barrier*. An
 //! event in the `IO_STATUS_BLOCK` and an APC are both delivered by the issuing
-//! thread — the status block is written and the event signalled inside a special
+//! thread — the status block is written and the event signaled inside a special
 //! kernel APC queued to whoever issued the request — so a `flushSync` running on
 //! the daemon's route thread could scan every status block, find them all
 //! `PENDING`, and declare a tree quiescent that the kernel had already reported

@@ -7,7 +7,7 @@ says so inline.
 
 Read this before `PROOF.md`'s conclusions. The short version: the **defect** is
 ours, the **diagnosis** was published in this exact domain in 2018, and the
-**repair** is standard practice in a neighbouring one. Only a narrow slice of the
+**repair** is standard practice in a neighboring one. Only a narrow slice of the
 mechanism is unclaimed, and the part of `PROOF.md` §7 that reads most like an
 invention is in fact an adoption.
 
@@ -42,28 +42,28 @@ gap:** one web query, no direct USPTO/EPO/Google Patents search. Intel
 negative is weak and must be closed properly before any novelty is asserted
 externally.
 
-## Neighbours
+## Neighbors
 
 | Name | Year | What it selects | Objective | Background model | Verdict |
 | --- | --- | --- | --- | --- | --- |
 | Muła, generic SIMD strfind | 2016 | fixed first + last byte | none (structural) | none | no |
-| `memchr` `Pair::with_ranker` | 2020– | two byte offsets | minimise each byte's rank independently | static i.i.d. **marginals** | no — this is the incumbent being improved on |
-| rust `regex` `FreqyPacked` | 2016– | rarest single byte | minimise marginal frequency | static marginals; **explicitly rejects** haystack analysis | bears on claim 2 |
+| `memchr` `Pair::with_ranker` | 2020– | two byte offsets | minimize each byte's rank independently | static i.i.d. **marginals** | no — this is the incumbent being improved on |
+| rust `regex` `FreqyPacked` | 2016– | rarest single byte | minimize marginal frequency | static marginals; **explicitly rejects** haystack analysis | bears on claim 2 |
 | Sunday, Optimal Mismatch | 1990 | *order* of comparisons | least-frequent first | i.i.d. empirical marginals | ancestor of marginal selection |
 | Hume & Sunday, guard char | 1991 | one guard offset | reduce false starts | marginals / ad-hoc | no |
 | Hyperscan Noodle | 2015– | two offsets in a literal | distinguishing-ness, caseless safety | none | no |
-| Hyperscan FDR/Teddy bucketing | 2015–21 | pattern→bucket | minimise collisions; score is a **product** over bytes | independence assumed | no — an independence-assuming counterexample |
+| Hyperscan FDR/Teddy bucketing | 2015–21 | pattern→bucket | minimize collisions; score is a **product** over bytes | independence assumed | no — an independence-assuming counterexample |
 | Hyperscan "super characters" | 2019 | byte *i* + low bits of *i+1* | suppress shuffle false positives | structural | closest structural use of adjacency; no bigram model |
 | ClickHouse / Volnitsky | 2011– | fixed hashed bigram positions | index density | none | no |
-| zoekt `findSelectiveNgrams` | 2016– | two trigram offsets at a known distance | **minimise posting-list intersection** | **self-calibrating marginals** + non-overlap heuristic | **kills the shape of claim 2** |
-| Burkhardt & Kärkkäinen, gapped *q*-grams | 2001–03 | which positions a shape inspects | maximise threshold (minimum coverage) | **i.i.d. uniform** | no — the crux distinction |
-| PatternHunter / Ma–Tromp–Li | 2002 | spaced-seed positions | maximise sensitivity at fixed weight | i.i.d. Bernoulli | no |
-| Buhler, Keich & Sun | 2003 | spaced-seed positions | maximise sensitivity | **empirical kth-order Markov** over the alignment alphabet | **narrows claim 1** |
+| zoekt `findSelectiveNgrams` | 2016– | two trigram offsets at a known distance | **minimize posting-list intersection** | **self-calibrating marginals** + non-overlap heuristic | **kills the shape of claim 2** |
+| Burkhardt & Kärkkäinen, gapped *q*-grams | 2001–03 | which positions a shape inspects | maximize threshold (minimum coverage) | **i.i.d. uniform** | no — the crux distinction |
+| PatternHunter / Ma–Tromp–Li | 2002 | spaced-seed positions | maximize sensitivity at fixed weight | i.i.d. Bernoulli | no |
+| Buhler, Keich & Sun | 2003 | spaced-seed positions | maximize sensitivity | **empirical kth-order Markov** over the alignment alphabet | **narrows claim 1** |
 | iedera (Kucherov & Noé) | 2005– | subset-seed templates | sensitivity **and** selectivity | **Markov background (`-b`)**, alignment alphabet | **narrows claim 1** |
-| Optimal Seed Solver (Xin et al.) | 2015 | positions + lengths of *x* seeds | minimise the **sum** of frequencies | **self-calibrating** from the real index | kills claim 2; additive, not joint |
+| Optimal Seed Solver (Xin et al.) | 2015 | positions + lengths of *x* seeds | minimize the **sum** of frequencies | **self-calibrating** from the real index | kills claim 2; additive, not joint |
 | Startin, "Heuristics for Substring Search" | 2018 | fixed first-two-byte pair | (analysis, not selection) | **real-corpus order-1 Markov bigram histograms** | **most dangerous hit** — states the problem, not the fix |
 
-## The strong neighbours
+## The strong neighbors
 
 ### `memchr` — `Pair::with_ranker`
 
@@ -107,11 +107,11 @@ correlation dodge. It builds no joint distribution over (a at *i*, b at *i+d*).
 ### Burkhardt & Kärkkäinen — gapped *q*-grams
 
 Flagged in advance as the likely strongest hit; it is not. Gapped *q*-grams
-choose a **shape** — which positions of a window to inspect — and optimise the
+choose a **shape** — which positions of a window to inspect — and optimize the
 **threshold**, the guaranteed number of shared gapped *q*-grams between strings
 within edit distance *k*, via the combinatorial *minimum coverage* property.
 That is a worst-case guarantee over alignments; the false-positive side is
-analysed under **i.i.d. uniform random text**. No empirical corpus, no
+analyzed under **i.i.d. uniform random text**. No empirical corpus, no
 character-frequency term, no joint distribution. It selects positions by
 combinatorial geometry, not background statistics.
 <https://users-cs.au.dk/~gerth/alcom-ft/TR/ALCOMFT-TR-01-74.html> ·
@@ -120,9 +120,9 @@ combinatorial geometry, not background statistics.
 
 ### Buhler, Keich & Sun — "Designing seeds for similarity search in genomic DNA"
 
-The dangerous academic neighbour. They abandon PatternHunter's i.i.d. Bernoulli
+The dangerous academic neighbor. They abandon PatternHunter's i.i.d. Bernoulli
 background, train a **kth-order Markov chain from real aligned genomic data**,
-and choose seed positions to maximise hit probability under that correlated
+and choose seed positions to maximize hit probability under that correlated
 model — stating outright that *"the probability of at least one match varies
 because the probabilities of matches at different offsets are not
 independent."* So "select which positions a filter probes using an
@@ -131,7 +131,7 @@ is published, in 2003. Two things leave a residue: the model is over the
 **alignment alphabet** (match/mismatch symbols), so no P(byte *a* at *i*, byte
 *b* at *i+d*) quantity exists anywhere; and the objective is **sensitivity to
 true homologies**, with background selectivity pinned by holding seed weight
-fixed rather than being minimised.
+fixed rather than being minimized.
 <https://www.maths.usyd.edu.au/u/uri/my_papers/2003_spaced_seeds_RECOMB.pdf>
 
 ### iedera — Kucherov & Noé
@@ -140,7 +140,7 @@ fixed rather than being minimised.
 when computing a seed's selectivity alongside a foreground model. iedera can
 therefore select seed templates against a **correlated** background rather than
 an i.i.d. one and report the resulting selectivity — the closest anything in the
-literature comes to "choose probe positions by minimising joint background hit
+literature comes to "choose probe positions by minimizing joint background hit
 probability under a correlated model." It differs on the same two axes as Buhler
 et al.: the alphabet carries no notion of *which* concrete symbol values sit at
 the probed positions, and a seed is a template reused across all queries rather
@@ -150,9 +150,9 @@ than an offset pair chosen per-needle from that needle's own bytes.
 ### Optimal Seed Solver — Xin et al.
 
 A DP picking positions **and** lengths for *x* non-overlapping seeds to
-**minimise the sum of their frequencies**, every frequency read from the actual
+**minimize the sum of their frequencies**, every frequency read from the actual
 reference-genome index — fully self-calibrating on the corpus being searched,
-optimising a real cost rather than a proxy. It is not the joint claim for a
+optimizing a real cost rather than a proxy. It is not the joint claim for a
 structural reason worth stating precisely: OSS's filter is **disjunctive**
 (pigeonhole — at least one seed must be error-free), so candidate cost really is
 additive in the marginals and no joint term exists to model. The filter under
@@ -191,7 +191,7 @@ frequency-driven offset selection.
 
 ## Verdicts
 
-### Claim 1 — select (o₁, o₂) by minimising joint, distance-conditioned pair frequency
+### Claim 1 — select (o₁, o₂) by minimizing joint, distance-conditioned pair frequency
 
 **NARROWED.**
 
@@ -213,7 +213,7 @@ What narrows it:
    bigram tables, Markov-generated correlated text, and a demonstration that the
    incumbent heuristic collapses on it — inside the SIMD-prefilter domain
    itself. **The motivating insight is prior art.**
-3. **zoekt** already ships the right objective (minimise the conjunction's
+3. **zoekt** already ships the right objective (minimize the conjunction's
    survivors, not the marginals) with a correlation-aware constraint, in a
    two-probes-at-a-known-distance filter.
 
@@ -221,15 +221,15 @@ Residue that remains unclaimed, stated tightly because this is what is
 defensible:
 
 > Selecting the probe **offset pair** for a conjunctive SIMD literal prefilter by
-> minimising an estimate of **P(X_i = a ∧ X_{i+d} = b)** — a distance-conditioned
+> minimizing an estimate of **P(X_i = a ∧ X_{i+d} = b)** — a distance-conditioned
 > joint distribution over **concrete byte values** of the specific needle,
 > indexed by the specific gap `d = o₂ − o₁` — as the direct objective of
-> selection, in place of minimising a product of per-byte marginals.
+> selection, in place of minimizing a product of per-byte marginals.
 
 Four axes distinguish this from the nearest art simultaneously, and no single
 prior work has more than two: (a) the alphabet is 256 raw byte values, not a 2–3
 symbol alignment alphabet; (b) the distribution is conditioned on the gap, so
-correlation is modelled as a function of distance rather than dodged by a binary
+correlation is modeled as a function of distance rather than dodged by a binary
 overlap rule; (c) selection is per-needle from that needle's own bytes at query
 time, not a reusable template; (d) the objective is background selectivity of a
 **conjunction**, where independence is a real approximation error, not a
@@ -270,7 +270,7 @@ find before asserting novelty anywhere external.
    or *n*-gram corpus table.** `ng_literal_analysis.cpp` was read far enough to
    see it is length/uniqueness-driven; not every scoring path in the 5.4.2 tree
    was audited.
-3. **A spaced- or subset-seed paper optimising seed selectivity against an
+3. **A spaced- or subset-seed paper optimizing seed selectivity against an
    empirical Markov background over the raw sequence alphabet, where selection
    depends on the concrete residues of the specific query.** iedera comes
    closest; a query-adaptive variant would be fatal.

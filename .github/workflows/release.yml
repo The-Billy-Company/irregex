@@ -34,13 +34,21 @@ jobs:
       run:
         working-directory: bindings/python
     steps:
-      - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      # Both setups cache by default, and a cache is writable by any workflow on
+      # any branch. That is a fine trade for CI, where a poisoned entry costs a
+      # confusing red X; it is the wrong trade here, where the artifact this job
+      # builds gets signed and published. A release builds from source or not
+      # at all.
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.16.0
-      - uses: astral-sh/setup-uv@v5
-
-      # Every face of this package — the Zig module, `libirgx`, and the Python,
+          use-cache: false
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: false
       # Rust, and Go bindings — carries one number, written once in
       # `build.zig.zon` and mirrored into the manifests that cannot import it.
       # So this check is not comparing two independent versions; it is catching
@@ -87,7 +95,7 @@ jobs:
       - name: Check the metadata the index will read
         run: uvx twine check dist/*.whl
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: wheels
           path: bindings/python/dist/*.whl
@@ -103,8 +111,8 @@ jobs:
       # The OIDC token Trusted Publishing exchanges for an upload credential.
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: wheels
           path: dist
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2

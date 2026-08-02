@@ -18,7 +18,7 @@
 //! that assumption — the correlated unit is the WORD, so byte correlation peaks
 //! at exactly the short distances a needle offers. The digraph `st` in code or
 //! `th` in prose occurs far more often than the marginal product predicts, so a
-//! marginal-minimising selector drifts toward correlated pairs and the
+//! marginal-minimizing selector drifts toward correlated pairs and the
 //! conjunction degenerates toward a single-byte filter.
 //!
 //! ## RECORDED DEFECT (2026-07-29) — a saturating table turned that drift into a collapse
@@ -84,7 +84,7 @@
 //!
 //! 4 KB buys ~93% of what 272 KB of exact bytes buys, cutting surviving lane
 //! positions to 0.76x (code) / 0.58x (prose) of the baseline's. The baseline row is
-//! ranked on raw `score()`: that rule never quantises, and quoting it through this
+//! ranked on raw `score()`: that rule never quantizes, and quoting it through this
 //! policy's fixed-point grid would flatter it by 0.08x (code) purely by merging
 //! ties. Prose is the harder regime because `rarity.density` is fitted on the host
 //! CODE tree, so its marginal is out of distribution there — hence baseline 2.21x
@@ -113,7 +113,7 @@
 //!
 //! ### Why a FOLDED alphabet is the compaction that works
 //!
-//! `research/pincer/PROOF.md` §6 records two failed compactions — log-quantising and
+//! `research/pincer/PROOF.md` §6 records two failed compactions — log-quantizing and
 //! gap-windowing the joint — and concludes compaction loses. That is too strong:
 //! **both shortened the GAP axis and neither touched the ALPHABET axis.** The
 //! correlated unit is the concrete digraph (`th`, `qu`, `::`, `->`), so the
@@ -142,7 +142,7 @@
 //! Four planes are stored and `d > 4` reads the `d = 4` plane. §6's truncation failed
 //! because an unmodelled gap fell back to the independence product — a strictly
 //! OPTIMISTIC price — so the argmin walked to exactly the pairs the model could not
-//! vouch for. Here it is priced by the widest MODELLED correction, so every candidate
+//! vouch for. Here it is priced by the widest MODELED correction, so every candidate
 //! is quoted on one scale and no cell is cheap by omission. That makes the axis nearly
 //! free: 4 planes score 1.13x/1.29x where all 15 score 1.14x/1.28x, while 3 cliffs on
 //! prose (1.65x) and 2 gives back nearly the whole prose win (2.01x) — prose
@@ -160,7 +160,7 @@
 //! the digits: the recipe is the contract. The fitting tools were a pre-production
 //! harness and are not in this tree.
 //!
-//! How a bucket is summarised decides whether the table helps at all. `lift` (used)
+//! How a bucket is summarized decides whether the table helps at all. `lift` (used)
 //! scores 1.13x/1.29x; a mean log-residual over the same buckets scores 1.18x/1.38x
 //! evidence-gated and 1.25x/1.38x expectation-weighted, because a mean is dominated by
 //! the byte pairs that never co-occur — of which there are most at `d = 1`, so the
@@ -236,7 +236,7 @@
 //!   — the objective is the true one and it STILL loses, worse as it gets freer:
 //!   15 gap-only numbers reach 1.46x/2.41x held out (worse than baseline on prose);
 //!   1,080 class-pair×gap reach 1.41x/1.97x; 30,720 byte×partner-class fit the
-//!   training slate best of all (1.20x) and generalise worst of all (1.62x on code,
+//!   training slate best of all (1.20x) and generalize worst of all (1.62x on code,
 //!   worse than baseline). 267 needles cannot pin thousands of parameters. This table
 //!   fits NOTHING to the objective — it estimates a corpus statistic and lets the
 //!   argmin use it — which is exactly why it holds up off the slate it was scored on.

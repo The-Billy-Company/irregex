@@ -1,0 +1,12 @@
+{
+  "recommendations": [
+    "charliermarsh.ruff",
+    "davidanson.vscode-markdownlint",
+    "editorconfig.editorconfig",
+    "golang.go",
+    "rust-lang.rust-analyzer",
+    "tamasfe.even-better-toml",
+    "ziglang.vscode-zig"
+  ],
+  "unwantedRecommendations": []
+}

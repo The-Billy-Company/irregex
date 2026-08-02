@@ -23,7 +23,7 @@ const Dir = std.Io.Dir;
 /// A throwaway tree plus the two clocks the model is stated in terms of. The
 /// gap around the anchor is real sleep because it has to be: the claim is about
 /// what the FILESYSTEM records, and a filesystem whose timestamp granularity is
-/// coarser than the gap would make the test lie in gist's favour.
+/// coarser than the gap would make the test lie in gist's favor.
 const Fixture = struct {
     const gap_ns = 25 * std.time.ns_per_ms;
 

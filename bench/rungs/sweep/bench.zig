@@ -340,7 +340,7 @@ const Row = struct {
     /// A consumer is transferable when the fabric never answers worse and, on
     /// its own, is not slower. One that needs the bundle to win is reported as
     /// bundle-only rather than as a win — that is the difference between "move
-    /// this call" and "move this call once its neighbours move too".
+    /// this call" and "move this call once its neighbors move too".
     fn verdict(self: Row) []const u8 {
         if (self.worse != 0) return "REGRESSES";
         return if (self.speedup() >= 1.0) "transfer" else "bundle-only";

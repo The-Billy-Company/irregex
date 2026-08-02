@@ -35,7 +35,8 @@ readonly HELPER_DIR="/usr/local/libexec"
 readonly HELPER_PATH="${HELPER_DIR}/${HELPER_NAME}"
 readonly SUDOERS_PATH="/etc/sudoers.d/irregex-pmu"
 
-readonly HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly HERE
 readonly SOURCE="${HERE}/pmu_bless.c"
 readonly TEMPLATE="${HERE}/irregex-pmu.sudoers.in"
 readonly PROBE_SRC="${HERE}/kperf_probe.c"
@@ -133,6 +134,9 @@ if [ -d "${HELPER_DIR}" ]; then
     writable="$([ -w "${HELPER_DIR}" ] && echo yes || echo no)"
   fi
   [ "${writable}" != "yes" ] || die "${HELPER_DIR} is writable by ${TARGET_USER}; refusing (this is the swap-after-check hole)"
+  # `ls -lde` is deliberate: this diagnostic prints the directory's ACL, not
+  # a filename inventory where find would be safer.
+  # shellcheck disable=SC2012
   ls -lde "${HELPER_DIR}" | sed 's/^/    /'
 fi
 say "path is root-owned and not user-writable: the swap-after-check race is closed"

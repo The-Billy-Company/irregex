@@ -7,7 +7,7 @@ itself rather than a word — `\b{start-half}foo` finds a `foo` nothing wordy ru
 into, whether or not `foo` starts with a word character.
 
 Adding them collapsed the family rather than growing it. All six word
-assertions ask one question about two neighbours, so there is now one AST node
+assertions ask one question about two neighbors, so there is now one AST node
 and one NFA state carrying a four-bit mask — a bit per (before, after) pair —
 where there used to be a node and a state per spelling. Every engine evaluates
 any of them with a shift and a test, the one-pass builder intersects two masks

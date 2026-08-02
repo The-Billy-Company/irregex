@@ -21,7 +21,7 @@ wrap = true
 # with no complaint. Setting `ignore` flips that: anything in `changelog.d` that
 # is neither a valid fragment nor named here fails the build and says which file.
 # The two names below are the only non-fragments the directory is meant to hold.
-ignore = [".gitkeep", "README.md"]
+ignore = [ ".gitkeep", "README.md" ]
 
 [[tool.towncrier.type]]
 directory = "added"

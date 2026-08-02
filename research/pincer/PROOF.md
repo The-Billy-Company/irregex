@@ -29,7 +29,7 @@ A 64-byte kernel block is precisely one `u64` word of a per-offset match
 bitvector: bit `p` of word `w` of vector `k` is set iff `hay[64w + p + k] ==
 needle[k]`. Then for a pair `(i, j)`
 
-```
+```text
 survivors = Σ_w popCount(B_i[w] & B_j[w])
 hot       = Σ_w [ (B_i[w] & B_j[w]) ≠ 0 ]
 ```
@@ -51,7 +51,7 @@ as `P(a)·P(b)`, i.e. assumes the two draws are independent. Text is the worst
 case for that assumption: byte correlation is strongest at exactly the
 distances a short needle offers, because the correlated unit *is* the word. The
 digraph `st` in code, or `th` in prose, occurs far more often than the product
-of its marginals predicts, so a unigram-minimising selector walks into a
+of its marginals predicts, so a unigram-minimizing selector walks into a
 correlated pair and the conjunction degenerates toward a single-byte filter.
 
 **This diagnosis is not ours.** Startin (2018) built byte-pair adjacency
@@ -68,7 +68,7 @@ correlation too, and handled precisely one degenerate case of it — a structura
 `rarity.zig` stores `density[b] = min(255, round(P(b) · 32768))`. The
 saturation is not benign:
 
-```
+```text
 clamped at 255: 31 bytes, 30 of them printable
   ' ' ( ) , . / 0 : S _ a b c d e f g h i l m n o p r s t u x y
 lowercase clamped: 20/26     unclamped: j=66 k=108 q=55 v=224 w=187 z=61
@@ -79,7 +79,7 @@ but for a lowercase identifier the clamp destroys the ordering entirely: every
 byte ties at 255. `simd.zig` then breaks ties with strict `<`, so the loop never
 displaces its initialisers and returns
 
-```
+```text
 o1 = 0, o2 = 1
 ```
 
@@ -140,7 +140,7 @@ averages them.
 
 Worst individual cases, shipped vs oracle:
 
-```
+```text
 code   tau_allostatic  0:1    610,172  →  2:3      2,528    241×
        stepSec         0:1  1,465,519  →  3:4      6,131    239×
        copyright       0:1    911,658  →  3:4      4,220    216×
@@ -164,7 +164,7 @@ the anchor pair as the only variable.
 
 Worst shipped throughputs, and where the repair puts them:
 
-```
+```text
 code   return    4.4 GB/s → 14.9    error    4.6 → 20.2    instances  5.1 → 24.8
 prose  helpful   2.4 GB/s → 50.5    thunder  2.8 → 31.1    thought    2.9 → 21.5
 ```
@@ -181,7 +181,7 @@ the defect is production-visible without one, exploit the fact that the
 selector's choice is a function of the needle: run the real `gist` on a single
 1.7 GB file and compare needles that select well against needles that collapse.
 
-```
+```bash
 gist -uu --no-index -c <needle> big.txt        # 1.7 GB, warm page cache
 ```
 
@@ -220,14 +220,14 @@ lose to the 512-byte census**:
 
 They fail for opposite reasons, and both are instructive.
 
-**Truncation** mixes two scales. A modelled pair is priced by its true joint
+**Truncation** mixes two scales. A modeled pair is priced by its true joint
 count (honest, high); an unmodelled pair is priced by the independence product
 (optimistic, low). The argmin therefore walks straight into the unmodelled
 region — the selector is *biased toward exactly the gaps it knows nothing
 about*. Adding gaps monotonically helps only because it shrinks the region where
 the bias operates.
 
-**Windowing** removes that bias by restricting candidates to the modelled
+**Windowing** removes that bias by restricting candidates to the modeled
 window, and it does pick the oracle pair more often than the census does
 (139/177 vs 76/177 on code). It still loses on aggregate — 2.91× on prose —
 because the aggregate is carried by a few needles whose only decorrelated pair
@@ -250,7 +250,7 @@ buffer actually being searched**, then scan with the winner. Same arithmetic as
 **This is adoption, not invention, and that is the argument for it.** The
 referee killed self-calibration as a novelty claim outright (`PRIOR_ART.md`,
 claim 2): zoekt already selects its two trigram probes by reading *live
-posting-list lengths from the index being searched*, optimising intersection
+posting-list lengths from the index being searched*, optimizing intersection
 size rather than marginal rarity; Optimal Seed Solver already runs a DP over
 seed positions against frequencies read from the real reference index, beating
 four earlier self-calibrating schemes; and `memchr` ships
@@ -285,7 +285,7 @@ same 1 MB budget takes code to 1.01× — and the resulting selector
 - has full oracle-class detail: 146/177 and 81/90 exact-oracle picks at the 1 MB
   budget.
 
-### 7.1 Cost and the amortisation threshold
+### 7.1 Cost and the amortization threshold
 
 Calibration scans `n × budget` bytes for an `n`-byte needle, in the same SIMD
 equality loop as the scan itself — so its cost is the *measured* scan rate at
@@ -352,7 +352,7 @@ selector §10 repaired, which `anchor.zig`'s own table now labels the *baseline*
 pure-loss population the gate has to bound is **larger** than these numbers say, and
 the case for both the conservative gate and 7.2.e's improvement test is stronger, not
 weaker. Neither count was re-derived, so read them as bounds in the direction that
-favours declining to calibrate.
+favors declining to calibrate.
 
 **7.2.c — "dominates everywhere" is too strong.** Calibration loses to the table
 on 28/177 code needles, worst case 10.7× its survivor count. None is material
@@ -384,7 +384,7 @@ mint, and three seams carry it to every literal scan: `simd.Gate.on` (the
 required-literal gate, re-priced per body), `Emitter.lit_plan` (the hit-jumping
 sweeps, minted before any shard exists so cutting one file across cores cannot
 re-sample it per core), and `PikeScratch.litPlan` (the span walks, memoized on the
-haystack slice). `indexOfPos` kept its static behaviour, so the roofline control did
+haystack slice). `indexOfPos` kept its static behavior, so the roofline control did
 not drift.
 
 A third property is a consequence rather than a lesson, but it is why the per-hit
@@ -396,7 +396,7 @@ match-dense bodies even with calibration switched off — and a one-literal set 
 exactly the case that pays it, since an alternation anchors each needle on its own
 first+last and never calls `select` at all.
 
-First lesson: **adopting the sample's favourite unconditionally is a tax, not a
+First lesson: **adopting the sample's favorite unconditionally is a tax, not a
 win** — a measured 0.5–1.1% CPU regression with no row it won, because 7.2.b's
 "80/177 needles the table already gets right" is not merely a break-even case but a
 strictly losing one (the swap also forfeits the single-probe block shape, which
@@ -408,7 +408,7 @@ is therefore now enforced per call rather than argued in aggregate.
 
 Second lesson: **a purely relative accept margin is a winner's curse.** The argmin
 of up to 120 noisy estimates of one underlying density sits several sigma below the
-truth even when every pair is truly identical; the randomised suite produced a
+truth even when every pair is truly identical; the randomized suite produced a
 claimed 12.5% win over an incumbent that was in fact 0.3% better. The bias scales
 with `√count`, which no relative floor can see, so the margin is the larger of 12.5%
 and four standard deviations of the incumbent's own sampled count.
@@ -498,7 +498,7 @@ novel.
   `memchr`. **Claim killed.** It should be adopted precisely because it is
   known-good, and what we contribute is the measured price that the incumbent's
   stated objection ("far too expensive") assumed without measuring.
-- **Narrowly unclaimed:** selecting the offset *pair* by minimising
+- **Narrowly unclaimed:** selecting the offset *pair* by minimizing
   `P(X_i = a ∧ X_{i+d} = b)` — a distance-conditioned joint over **concrete byte
   values** of the specific needle, at the specific gap — as the direct objective,
   for a **conjunctive** filter. Four axes separate it from the nearest art
@@ -662,7 +662,7 @@ size gate fires.
   self-fitted. The **oracle and the sampling selectors are in-corpus by
   construction** — the sampling selector genuinely reads the buffer it will
   scan, which is the proposal, but it means its ratio to the oracle is a measure
-  of sample sufficiency, not of generalisation.
+  of sample sufficiency, not of generalization.
 - Needle slates are 2–16 bytes. The kernel's own doc cites 2–4 byte needles as
   dominant traffic; very short needles have few pairs and less to gain.
 - The 1.7 GB single-file production run is warm-cache and single-threaded. It

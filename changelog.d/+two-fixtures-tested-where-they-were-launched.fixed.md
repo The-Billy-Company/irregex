@@ -1,4 +1,4 @@
-Two test fixtures asserted `.gitignore` behaviour they were not actually
+Two test fixtures asserted `.gitignore` behavior they were not actually
 creating the conditions for, and passed anyway because of where the test binary
 happened to be run from.
 
@@ -9,7 +9,7 @@ so their VCS rules were switched on only by the ambient fact that the runner sat
 inside this checkout. Run the suite from anywhere else and the rules simply did
 not apply:
 
-```
+```text
 MEMBER: /tmp/gist_loadpar_parity_fixture/foo.log        # `*.log` said drop it
 MEMBER: /tmp/gist_loadpar_parity_fixture/sub/ignored.txt # so did `ignored.txt`
 ```

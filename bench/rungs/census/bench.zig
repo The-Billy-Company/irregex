@@ -12,7 +12,7 @@
 //! ladder filled at compile time, never a re-derivation — and prints one row per
 //! probe: the selected decider, its costed offer against the fallback's, whether
 //! a sieve fronted it, and which cheaper reduction (literal set, class run)
-//! pre-empted the tier entirely.
+//! pre-emptied the tier entirely.
 //!
 //! Reads only; it arms nothing and changes no answer.
 

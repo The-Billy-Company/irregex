@@ -307,7 +307,7 @@ pub fn measure(j: *Jaws, win: Window, skip: ?*const prefilter.Prefilter) Verdict
 /// Null means a re-seed did fire, so some survivor may have begun later than
 /// the entry, and only the reversed automaton can say which. That is the case
 /// with no usable prefilter (`seed` is then true at every gap until a match),
-/// so the fallback is the whole of the old behaviour and nothing declines that
+/// so the fallback is the whole of the old behavior and nothing declines that
 /// did not decline before.
 const Reach = struct { end: usize, start: ?usize };
 
@@ -355,7 +355,7 @@ fn forwardEnd(j: *Jaws, w: Window, pre: ?*const prefilter.Prefilter) ?End {
     const region = w.region();
 
     // Stand on a candidate BEFORE paying for a start closure. Nothing is live
-    // at `w.from` yet, so the licence is the loop's own: a prefilter is offered
+    // at `w.from` yet, so the license is the loop's own: a prefilter is offered
     // only when no match can be zero-width, hence every match consumes a first
     // byte the prefilter admits, hence a gap it refuses cannot begin one.
     // Entering anyway costs a closure, a bound scan, and a glide that dies on

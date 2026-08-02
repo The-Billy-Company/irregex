@@ -39,7 +39,7 @@ for m in irgx.finditer(r"(\w+)@(\w+\.\w+)", "write me@example.com or you@other.o
     print(m.span(), m.group(1), m.group(2))
 ```
 
-```
+```text
 (6, 20) me example.com
 (24, 37) you other.org
 ```
@@ -52,11 +52,11 @@ same verbs as methods. A `Match` has `group`, `groups`, `groupdict`, `start`,
 ```python
 pattern = irgx.compile(r"(?P<key>\w+)=(?P<value>\d+)")
 
-pattern.is_match("a=1")                       # True, and the cheapest question
-pattern.findall("a=1 bb=22")                  # [('a', '1'), ('bb', '22')]
-pattern.sub(r"\g<value>:\g<key>", "a=1")      # '1:a'
-pattern.split("a=1, bb=22")                   # keeps the groups, like re.split
-irgx.escape("1+1=2")                       # '1\\+1=2'
+pattern.is_match("a=1")  # True, and the cheapest question
+pattern.findall("a=1 bb=22")  # [('a', '1'), ('bb', '22')]
+pattern.sub(r"\g<value>:\g<key>", "a=1")  # '1:a'
+pattern.split("a=1, bb=22")  # keeps the groups, like re.split
+irgx.escape("1+1=2")  # '1\\+1=2'
 ```
 
 `sub` and `subn` take a template string or a callable. In a template, `\1` and
@@ -64,7 +64,7 @@ irgx.escape("1+1=2")                       # '1\\+1=2'
 the `Match`.
 
 ```python
-irgx.sub(r"\d+", lambda m: str(int(m.group()) * 2), "a1 b20")   # 'a2 b40'
+irgx.sub(r"\d+", lambda m: str(int(m.group()) * 2), "a1 b20")  # 'a2 b40'
 ```
 
 ## Flags are keyword arguments
@@ -82,10 +82,10 @@ module-level verbs.
 | `pcre` | Use the PCRE2 grammar. Lookaround and backreferences; not linear time. |
 
 ```python
-irgx.findall("a.c", "abc a.c", fixed=True)             # ['a.c']
-irgx.findall("cat", "cat cats concat", word=True)      # ['cat']
-irgx.findall("café", "CAFÉ", ignore_case=True)         # ['CAFÉ']
-irgx.findall(r"(?<=@)\w+", "me@example", pcre=True)    # ['example']
+irgx.findall("a.c", "abc a.c", fixed=True)  # ['a.c']
+irgx.findall("cat", "cat cats concat", word=True)  # ['cat']
+irgx.findall("café", "CAFÉ", ignore_case=True)  # ['CAFÉ']
+irgx.findall(r"(?<=@)\w+", "me@example", pcre=True)  # ['example']
 ```
 
 `fixed`, `word` and `smart_case` have no spelling in `re` at all. They are the
@@ -105,7 +105,7 @@ them. Here the translation is done for you, and this holds for every match:
 ```python
 text = "naïve café"
 for m in irgx.finditer(r"\w+", text):
-    assert text[m.start():m.end()] == m.group()
+    assert text[m.start() : m.end()] == m.group()
 ```
 
 ASCII text takes a fast path where the two are identical, so you pay nothing
@@ -154,7 +154,7 @@ because a tier that stepped aside has nothing to point at.
 try:
     pattern = irgx.compile(r"(?<=\$)\d+")
 except irgx.UnsupportedPattern:
-    pattern = irgx.compile(r"(?<=\$)\d+", pcre=True)   # this always works
+    pattern = irgx.compile(r"(?<=\$)\d+", pcre=True)  # this always works
 ```
 
 Which of the two you get is the engine's ruling, not a guess made here: it asks
@@ -180,8 +180,8 @@ unanchored search, which is where they end up subtly wrong. Write the anchor:
 empty match after the last character of the text; this engine does not.
 
 ```python
-[m.span() for m in irgx.finditer("a*", "abc")]   # [(0, 1), (2, 2)]
-[m.span() for m in re.finditer("a*", "abc")]        # [(0, 1), (1, 1), (2, 2), (3, 3)]
+[m.span() for m in irgx.finditer("a*", "abc")]  # [(0, 1), (2, 2)]
+[m.span() for m in re.finditer("a*", "abc")]  # [(0, 1), (1, 1), (2, 2), (3, 3)]
 ```
 
 The engine also suppresses an empty match sitting exactly where the previous
@@ -194,9 +194,9 @@ the engine's and not a re-derivation of them.
 class will not match it. A longer match may still span one.
 
 ```python
-irgx.findall(r"\s", "a\nb")     # []
-irgx.findall(r"\s", "a\tb")     # ['\t']
-irgx.findall(r"a\sb", "a\nb")   # ['a\nb']
+irgx.findall(r"\s", "a\nb")  # []
+irgx.findall(r"\s", "a\tb")  # ['\t']
+irgx.findall(r"a\sb", "a\nb")  # ['a\nb']
 ```
 
 **`findall` reports `None` for a group that did not participate**, where
@@ -205,8 +205,8 @@ the empty string are different facts, and `.groups()` already tells them apart
 in both libraries.
 
 ```python
-irgx.findall(r"(a)|(b)", "ab")   # [('a', None), (None, 'b')]
-re.findall(r"(a)|(b)", "ab")        # [('a', ''), ('', 'b')]
+irgx.findall(r"(a)|(b)", "ab")  # [('a', None), (None, 'b')]
+re.findall(r"(a)|(b)", "ab")  # [('a', ''), ('', 'b')]
 ```
 
 **There is an `is_match`.** It asks whether the text holds a match at all and
@@ -216,10 +216,10 @@ equivalent, so it is named after what it does.
 ## Introspection
 
 ```python
-irgx.__version__      # this package
-irgx.ENGINE_VERSION   # the Zig engine bundled in this wheel
-irgx.PCRE2_VERSION    # the PCRE2 the pcre=True arm runs on
-irgx.LIBRARY          # the resolved path of the loaded shared library
+irgx.__version__  # this package
+irgx.ENGINE_VERSION  # the Zig engine bundled in this wheel
+irgx.PCRE2_VERSION  # the PCRE2 the pcre=True arm runs on
+irgx.LIBRARY  # the resolved path of the loaded shared library
 ```
 
 Set `IRGX_LIB` to the path of a shared library to load that one instead of

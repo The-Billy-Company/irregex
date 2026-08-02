@@ -262,7 +262,7 @@ asserts the former and only reports the latter.
 
 ## Running both parity gates
 
-`the prefilter parity gates under `bench/rungs/sieve/`` is the wired entry point: it builds the ReleaseFast
+`the prefilter parity gates under`bench/rungs/sieve/`` is the wired entry point: it builds the ReleaseFast
 binary both scripts require and runs them in dependency order — the cold tier's
 cover plan first, then the resident session's copy of it. It stays out of
 `zig build test`, which is CI-hermetic and needs only Zig, because these two

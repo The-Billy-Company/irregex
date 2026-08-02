@@ -377,11 +377,11 @@ fields = [
 cursor = [ "irgx_rows_next", "irgx_rows_next_batch", "irgx_rows_close" ]
 introspection = [ "irgx_schema_digest", "irgx_schema_count", "irgx_schema_get" ]
 stats = "irgx_rows_stats"
-handle = "irgx_engine"                                                              # libirgx's; shared with the exact pull plane
+handle = "irgx_engine"                                                           # libirgx's; shared with the exact pull plane
 value_tags = [ "text", "i64", "f64", "bool", "enum", "texts", "rows" ]
-max_fields = 64                                                                           # the row presence mask is one u64
-fallback = "subprocess"                                                                   # fail-open, never a hard dependency
-corpus = "index"                                                                          # not the rg-parity gitignore walk
+max_fields = 64                                                                  # the row presence mask is one u64
+fallback = "subprocess"                                                          # fail-open, never a hard dependency
+corpus = "index"                                                                 # not the rg-parity gitignore walk
 
 # ── [analytic.producers] — which library answers which verb ─────────────────
 # There used to be one `entry = "gist_run"` here, because one library answered

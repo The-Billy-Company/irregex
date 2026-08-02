@@ -175,7 +175,7 @@ The wandering rows are the ones to judge it by, and they are also the shape the
 The self-loop band crosses 1.0, and that is the number rather than a defect in it.
 A state that never changes leaves the removed load perfectly predicted and L1-hot,
 so those rows measure an instruction against noise; one of them scored 0.979× on
-one run and 1.04–1.06× on the next two. A band quoted from only its favourable
+one run and 1.04–1.06× on the next two. A band quoted from only its favorable
 samples is an advertisement, so it is quoted from all of them, and the conclusion
 that survives is narrower and truer: **parity where the walk stands still, 20–27%
 where it moves.**

@@ -1,7 +1,7 @@
-# irregex
+# irregex - a linear-time regex engine for Rust
 
 A regex engine for Rust that matches in linear time, with the engine shipped
-inside the crate.
+inside the crate. No catastrophic backtracking, so no ReDoS.
 
 ```toml
 [dependencies]
@@ -51,7 +51,7 @@ for caps in re.captures_iter("write me@example.com or you@other.org") {
 }
 ```
 
-```
+```text
 6..20 me example.com
 24..37 you other.org
 ```
@@ -206,7 +206,7 @@ let Err(Error::Syntax { at, .. }) = Regex::new("(unclosed") else { unreachable!(
 assert_eq!(at, 9);
 ```
 
-```
+```text
 cannot compile pattern `(unclosed`: at byte 9, BadPattern; invalid: bad
 argument, or a pattern this arm cannot compile (status -4)
 ```
@@ -289,7 +289,7 @@ the difference is that you cannot turn it off. The linear grammar refuses `(?m)`
 rather than accepting it and ignoring it, so a pattern written for another engine
 fails loudly instead of quietly matching the wrong thing. If you want per-line
 anchors, either split the text yourself and search each line, or use the `pcre`
-arm, which does honour `(?m)`:
+arm, which does honor `(?m)`:
 
 ```rust
 Regex::new("(?m)^b");                                   // Err(Error::NeedsPcre)
@@ -302,7 +302,7 @@ pattern it cannot read, so this is the retryable variant and the two-line retry
 above handles it.
 
 `is_match` is the cheap way to ask, and it agrees with `find` on every input: it
-runs the same walk and stops at the first span rather than materialising the
+runs the same walk and stops at the first span rather than materializing the
 rest.
 
 **`Captures::get` reports `None` for a group that did not participate**, which

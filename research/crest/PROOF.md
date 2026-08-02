@@ -404,7 +404,7 @@ CAN be read into.** Every family member `C` gains a twin `C+u = C ∪
 > _Proof._ A scalar `u ≤ 0x7F` encodes to the single byte `u`, which lies in
 > `C` by hypothesis. A scalar `u > 0x7F` encodes to two to four bytes, every
 > one of which has bit 7 set — lead bytes are `0xC2..0xF4`, continuations
-> `0x80..0xBF` — by UTF-8's self-synchronising design (Pike & Thompson), hence
+> `0x80..0xBF` — by UTF-8's self-synchronizing design (Pike & Thompson), hence
 > every one lies in `[0x80,0xFF] ⊆ C+u`. Each scalar contributes at least one
 > byte and consecutive scalars encode to adjacent bytes, so the byte run is at
 > least as long as the scalar run. ∎

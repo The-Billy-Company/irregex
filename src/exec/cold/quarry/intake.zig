@@ -247,7 +247,7 @@ fn readCandidates(dest: std.mem.Allocator, gpa: std.mem.Allocator, candidates: [
 //   • `indexed`  — every path the index covers (only THESE may be elided; a path
 //     the index doesn't know — a new file, or one outside the indexed roots — is
 //     always read, so nothing is ever wrongly skipped);
-//   • `candidates` — `fresh.candidates`: trigram hits for the prefilter UNIONed
+//   • `candidates` — `fresh.candidates`: trigram hits for the prefilter UNIONNed
 //     with every file touched since the build (the freshness overlay closes the
 //     stale-index gap — a file that GAINED the needle since the build is in this
 //     set and gets read).

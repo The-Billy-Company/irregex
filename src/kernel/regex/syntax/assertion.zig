@@ -27,7 +27,7 @@ pub const Word = enum(u4) {
     start_half = 0b0011, // `\b{start-half}` — nothing wordy behind, ahead unconstrained
     end_half = 0b0101, // `\b{end-half}` — nothing wordy ahead, behind unconstrained
 
-    /// Does this assertion hold at a position whose neighbours are as given?
+    /// Does this assertion hold at a position whose neighbors are as given?
     /// A haystack edge counts as a non-word side, which is what makes
     /// `\b{start-half}` true at offset 0 and `\b{end-half}` true at the end —
     /// callers pass `false` there, as they already do for `\b`.

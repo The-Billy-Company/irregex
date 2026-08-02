@@ -154,7 +154,7 @@ test "an assertion that can fire on silence will not fire inside a character" {
         for ([_]syn.Word{ .not_boundary, .start_half, .end_half }) |w| try t.expect(!w.holds(s));
     }
     // The four whole-character gaps are all real boundaries (the dash is not a
-    // word character, so each of them separates one from a non-word neighbour),
+    // word character, so each of them separates one from a non-word neighbor),
     // which is why rg prints nothing for `\B` on this line at all.
     for ([_]usize{ 0, 1, 4, 5 }) |p| {
         const s = sides(true, dashed, p);

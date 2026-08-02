@@ -320,7 +320,7 @@ const interleave_floor = 4 * 1024;
 /// What one contiguous piece of a document proves, per lane: the run it opens
 /// with, the longest run inside it, the run it ends with, and whether it is one
 /// unbroken run — the last because a piece that never breaks carries a run
-/// through from its left neighbour to its right one.
+/// through from its left neighbor to its right one.
 ///
 /// This is the document-side twin of `swell.Profile`, down to the field names:
 /// same P/F/S, same concatenation law. There it folds over the pattern AST,

@@ -1,0 +1,11 @@
+# Every tracked shell file is Bash. Follow local helpers, then add only the
+# optional checks this benchmark corpus already satisfies. The stricter
+# bracket, brace, and masked-return checks would be a style migration, not a
+# lint configuration; they stay out until that migration lands.
+shell=bash
+external-sources=true
+source-path=SCRIPTDIR
+enable=avoid-nullary-conditions
+enable=check-sourced
+enable=deprecate-which
+enable=useless-use-of-cat

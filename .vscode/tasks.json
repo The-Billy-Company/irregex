@@ -1,0 +1,48 @@
+{
+  // The four canonical Zig loops from CONTRIBUTING.md, one command away.
+  "version": "2.0.0",
+  "presentation": {
+    "reveal": "always",
+    "panel": "dedicated",
+    "clear": true
+  },
+  "tasks": [
+    {
+      "label": "zig: check",
+      "type": "shell",
+      "command": "zig build check",
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "zig: test",
+      "type": "shell",
+      "command": "zig build test",
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "zig: test filtered",
+      "detail": "Enter the substring Brigade should run.",
+      "type": "shell",
+      "command": "zig build test -Dtest-filter='${input:testFilter}'",
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "zig: check watch",
+      "type": "shell",
+      "command": "zig build check --watch",
+      "isBackground": true,
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "testFilter",
+      "type": "promptString",
+      "description": "Test-name substring",
+      "default": ""
+    }
+  ]
+}

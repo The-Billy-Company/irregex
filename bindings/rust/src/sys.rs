@@ -199,7 +199,7 @@ pub fn pcre2_version() -> &'static str {
 /// decision - the typed code is the contract.
 pub fn status_message(code: i32) -> &'static str {
     // SAFETY: takes a plain `int32_t` by value and answers with a static string
-    // for any input, including a code it does not recognise. The header also
+    // for any input, including a code it does not recognize. The header also
     // promises it leaves the fault slot alone, which is why it is safe to call
     // while building an error.
     borrow(unsafe { irgx_status_message(code) })
@@ -208,7 +208,7 @@ pub fn status_message(code: i32) -> &'static str {
 /// The ABI version the linked library reports, resolved once.
 ///
 /// Cached because the answer cannot change within a process and because every
-/// `Regex::new` consults it. `LazyLock` gives the one-time initialisation
+/// `Regex::new` consults it. `LazyLock` gives the one-time initialization
 /// without a lock on the hot path.
 static LINKED_ABI: LazyLock<u32> = LazyLock::new(|| {
     // SAFETY: a pure reader taking no arguments and returning a plain `uint32_t`.

@@ -310,7 +310,7 @@ pub fn Dag(comptime Payload: type, comptime arity: usize) type {
 
         /// `base` combined with itself `n` times, in `O(log n)` distinct nodes
         /// by repeated squaring — the identity that makes a bounded repetition
-        /// cheap to analyse. `combine` must be associative for this to preserve
+        /// cheap to analyze. `combine` must be associative for this to preserve
         /// meaning; concatenation is, so `a{1000}` becomes ~19 nodes instead of
         /// 1000 while still denoting the same language.
         ///

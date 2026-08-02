@@ -154,7 +154,7 @@ pub const Machine = struct {
     /// transition and the memo needs all sixteen gap shapes.
     word_ctx: bool,
     /// `\w` is the Unicode word class, so a word test may have to decode. Only
-    /// `glide` reads this, to know when a neighbouring byte is beyond what a
+    /// `glide` reads this, to know when a neighboring byte is beyond what a
     /// byte-shaped row can answer for.
     unicode: bool,
 
@@ -315,7 +315,7 @@ pub const Cache = struct {
     }
 
     /// Can a match be **zero-width** — does the start closure reach `match` at
-    /// any gap shape at all? This is the licence for a caller to skip bytes: a
+    /// any gap shape at all? This is the license for a caller to skip bytes: a
     /// search that jumps to the next position a byte could be *consumed* from
     /// can only lose a match that consumes nothing, so a machine that answers
     /// `false` here can be driven by a first-byte prefilter, and one that

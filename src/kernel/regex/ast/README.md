@@ -13,7 +13,7 @@ three files, one `analyze` call:
 
 | Stage | File | What it spends |
 |---|---|---|
-| **Intern** | `intern.zig` | Hash-consing. Identical subtrees become one node, so structural equality is an integer compare and a shared shape is analysed once no matter how many parents reach it. |
+| **Intern** | `intern.zig` | Hash-consing. Identical subtrees become one node, so structural equality is an integer compare and a shared shape is analyzed once no matter how many parents reach it. |
 | **Canonicalize** | `algebra.zig` | The operator identities — ε units, alternation idempotence, the union of two classes being a class, the closure table that makes `(a*)*` one star. Every rule strictly shrinks the graph. |
 | **Sweep** | `facts.zig` | One forward loop filling every synthesized attribute at the same time. |
 

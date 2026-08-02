@@ -104,7 +104,7 @@ fn timeSieve(io: std.Io, s: *const Sieve, docs: []const []const u8) struct { ns:
 }
 
 /// The shipped dispatch: four-lane whole-buffer scan where the `nl_reset`
-/// licence holds, one chain otherwise.
+/// license holds, one chain otherwise.
 fn verdict(s: *const Sieve, doc: []const u8) sieve_mod.Verdict {
     return if (s.doc_ok) s.scanDoc(doc) else s.scan(doc);
 }

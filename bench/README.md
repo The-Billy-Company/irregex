@@ -29,7 +29,7 @@ zig build -Doptimize=ReleaseFast portbound       # Layer B′ with real cycles
 ```
 
 Each run step sets cwd to the package root, so path arguments are
-package-relative. Certificate layers honour whatever `-Doptimize` you ask for,
+package-relative. Certificate layers honor whatever `-Doptimize` you ask for,
 since a cycles/byte number is a claim about *this* build; production rungs
 default to `-Dlab-optimize=ReleaseFast` because a rung that races the shipped
 ladder has to be compiled the way the shipped ladder is, or the ratio is about

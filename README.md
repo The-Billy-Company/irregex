@@ -277,7 +277,7 @@ match RegexBuilder::new(pattern).build() {
 try:
     pattern = irgx.compile(r"(?<=\$)\d+")
 except irgx.UnsupportedPattern:
-    pattern = irgx.compile(r"(?<=\$)\d+", pcre=True)   # this always works
+    pattern = irgx.compile(r"(?<=\$)\d+", pcre=True)  # this always works
 ```
 
 Go spells the declinature `irgx.ErrNeedsPCRE` and C spells it `IRGX_STALE`. All
@@ -674,7 +674,7 @@ over the whole size range, and every result it returns carries an `Authority`: a
 `.candidate` cover only nominates. That two-valued return is what lets a
 prefilter be aggressive without ever being wrong.
 
-`anchor.zig` picks which two needle offsets the block filter compares, minimising
+`anchor.zig` picks which two needle offsets the block filter compares, minimizing
 summed byte rarity and breaking ties toward the widest separation. It carries its
 own recorded defect in the source: ranking marginals prices a conjunction as
 `P(a)·P(b)` and so assumes probe independence, which text badly violates.
@@ -684,7 +684,7 @@ shipped table. It samples 64 KB in 256-byte stratified windows and lands at
 1.03-1.04× of the best possible pair, where the static table is 1.39-2.21×.
 
 Note that it is reached as an *improvement test* rather than an override.
-Adopting the sample's favourite unconditionally was a measured CPU tax, and a
+Adopting the sample's favorite unconditionally was a measured CPU tax, and a
 purely relative accept margin is a winner's curse.
 
 ### The Corpus

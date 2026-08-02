@@ -2,7 +2,7 @@ Selector quality is now a measured dimension of the benchmark suite instead of a
 property nothing in the suite could name.
 
 The anchor-pair collapse that just got fixed was running inside the certificate the
-whole time and no row reported it, because every literal probe was labelled by how
+whole time and no row reported it, because every literal probe was labeled by how
 many true matches it had — `rare` or `common` — and that single label carries two
 independent costs. `pgxpool` was the only "rare literal", and it is a lucky needle:
 `pg` is a genuinely rare digraph, so it selects a good offset pair and looks fast.

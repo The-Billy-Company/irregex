@@ -1,0 +1,53 @@
+{
+  // Markdown is this repository's largest authored surface. markdownlint owns
+  // its layout here; there is no Prettier pass to defer formatting to.
+  "$schema": "https://raw.githubusercontent.com/DavidAnson/markdownlint-cli2/v0.23.0/schema/markdownlint-cli2-config-schema.json",
+  "gitignore": true,
+  "globs": ["**/*.md"],
+  "ignores": [
+    // Vendored prose belongs upstream. Generated package and build trees are
+    // ignored by Git already; these entries keep direct invocations honest.
+    "vendor/**",
+    "bindings/rust/vendor/**",
+    "**/target/**",
+    "**/.venv/**",
+    "**/.zig-cache/**",
+    "**/zig-out/**",
+    "**/zig-pkg/**"
+  ],
+  "config": {
+    "default": true,
+    // The corpus carries compact one-space list continuations and literal
+    // tab-indented Go examples. Both render correctly; normalizing either
+    // would rewrite historical evidence without changing its meaning.
+    "MD007": false,
+    "MD010": false,
+    // Prose, citations, command lines, and generated benchmark tables all have
+    // legitimate long lines; wrapping those mechanically makes them worse.
+    "MD013": false,
+    // CHANGELOG sections repeat release-note headings by design.
+    "MD024": { "siblings_only": true },
+    "MD025": false,
+    // Research proofs quote multi-paragraph sources and use full sentences as
+    // headings. Those are semantic choices, not malformed Markdown.
+    "MD026": false,
+    "MD028": false,
+    // Lazy numbering keeps reordered lists from becoming diff storms.
+    "MD029": false,
+    "MD033": {
+      "allowed_elements": ["a", "br", "details", "div", "img", "p", "picture", "source", "span", "strong", "sub", "summary", "sup"]
+    },
+    // Security contacts and citation targets are clearer as literal addresses.
+    "MD034": false,
+    "MD036": false,
+    // Fragments and research notes are valid without a page-title heading.
+    "MD041": false,
+    // Both emphasis delimiters are valid CommonMark. Enforcing one would churn
+    // the generated changelog and hundreds of hand-authored equations.
+    "MD049": false,
+    // Math and grammar examples contain literal pipes that are not table cells.
+    "MD056": false,
+    // Column-width aesthetics are not a correctness property.
+    "MD060": false
+  }
+}

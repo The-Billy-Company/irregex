@@ -26,7 +26,7 @@ use crate::sys;
 
 /// One raw status code from the C ABI, with the library's own sentence for it.
 ///
-/// Public because an unrecognised negative status is still a real answer and a
+/// Public because an unrecognized negative status is still a real answer and a
 /// caller logging it should be able to print the number the engine used.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Status(i32);
@@ -306,7 +306,7 @@ pub(crate) fn fault(status: i32, build: impl FnOnce(Status, Option<String>) -> E
 /// Compile is the one verb with two ways to say no, and the whole point of the
 /// seam is that they are told apart by the **status code** before anything
 /// looks at a fault. `IRGX_STALE` returns here without reading the fault
-/// slot at all - not as an optimisation, but because the slot still holds this
+/// slot at all - not as an optimization, but because the slot still holds this
 /// thread's *previous* failure, and a declinature that reported it would blame
 /// an unrelated pattern for stepping aside.
 pub(crate) fn compile_refusal(status: i32, pattern: &str) -> Error {

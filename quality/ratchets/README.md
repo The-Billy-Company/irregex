@@ -91,7 +91,7 @@ is nothing to refresh.
 
 ## Layout
 
-```
+```text
 quality/ratchets/
 ├── run.py                    the entry point; discovers ratchets structurally
 ├── _lib/

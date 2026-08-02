@@ -361,7 +361,7 @@ pub fn planFor(needle: []const u8) ?Plan {
 /// as good as anything the sample found, so the static plan is what almost every
 /// document gets and the fallback is the common path, not the exception.
 ///
-/// It is `refine` and not `best` on purpose. Adopting the sample's favourite
+/// It is `refine` and not `best` on purpose. Adopting the sample's favorite
 /// unconditionally was a measured 0.5–1.1% CPU tax with no row it won — the table
 /// is already right most of the time, and swapping off it also forfeits the
 /// single-probe shape for nothing. `refine` makes the incumbent compete on the
@@ -483,7 +483,7 @@ inline fn core(hay: []const u8, from: usize, needle: []const u8, plan: ?Plan) ?u
     //
     // Guarded on the wide tier's OWN entry condition, which is the point: both
     // wide loops below already test it per iteration, so hoisting it here is
-    // behaviour-identical and means a haystack too short for the wide tier —
+    // behavior-identical and means a haystack too short for the wide tier —
     // every source line under `needle.len - 1 + block_bytes` — never prices an
     // anchor pair it cannot use. `plan` skips the decision outright.
     if (i + last_off + scan_vlen <= hay.len) {

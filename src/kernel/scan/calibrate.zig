@@ -75,7 +75,7 @@
 //! through one of three document-grain seams. Two properties of that call site are
 //! load-bearing, and both were mistakes first:
 //!
-//! · It calls `refine`, not `best`. Adopting the sample's favourite
+//! · It calls `refine`, not `best`. Adopting the sample's favorite
 //!   unconditionally was a measured 0.5–1.1% CPU tax with no row it won — see
 //!   `refine` for the two mechanisms and the numbers.
 //! · It is per DOCUMENT, never per line. The size gate is a claim about the scan
@@ -294,7 +294,7 @@ const gate_factor: usize = 16;
 /// when the buffer is too small for the sampling to pay for itself, in which
 /// case the caller keeps its static choice.
 ///
-/// Prefer `refine` in production: this reports the sample's favourite with no
+/// Prefer `refine` in production: this reports the sample's favorite with no
 /// regard for what the caller already had, so a caller that adopts it
 /// unconditionally pays for a swap even when the two agree. See `refine`.
 pub fn best(hay: []const u8, needle: []const u8, block_bytes: usize) ?[2]usize {
@@ -349,7 +349,7 @@ const margin_shift: u5 = 3;
 /// RECORDED DEFECT (2026-07-30): a purely relative margin is a winner's curse.
 /// `cheapest` is the argmin of `C(k,2)` — up to 120 — noisy estimates of the same
 /// underlying density, so its expected value sits several sigma BELOW the true
-/// minimum even when every pair is truly identical. The randomised suite caught
+/// minimum even when every pair is truly identical. The randomized suite caught
 /// it immediately: on a 6-letter alphabet, where all 120 pairs have the same true
 /// density by construction, a 34-byte needle's sample claimed a >12.5% win over
 /// an incumbent that was in fact 0.3% BETTER over the whole buffer. The relative
@@ -437,7 +437,7 @@ fn sample(
 /// Force `want` into an already-sorted candidate set, so the incumbent is priced
 /// on the same sample as its rivals. Offsets at or under the cap already hold
 /// every offset the needle has, so this is a no-op there; past the cap each
-/// wanted offset displaces its nearest neighbour. A slot holding a wanted value
+/// wanted offset displaces its nearest neighbor. A slot holding a wanted value
 /// is never evicted, and a value already present is never re-inserted, so the
 /// set stays strictly increasing — which the `probe < confirm` invariant below
 /// depends on. Returns the incumbent's `[lo, hi]` indices into the set.
@@ -564,7 +564,7 @@ fn cheapest(
 /// and the choice among subsets costs at most 15% — a rarity-ranked
 /// preselection has almost nothing to win here, which is why this module takes
 /// no rarity parameter and stays independent of `rarity.zig`. Even spacing is
-/// the deterministic subset that maximises the minimum gap while keeping offset
+/// the deterministic subset that maximizes the minimum gap while keeping offset
 /// 0 and `len - 1`, and reaching WIDE pairs is what `research/pincer/` §6 found
 /// the joint objective actually depends on.
 ///

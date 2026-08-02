@@ -1,0 +1,41 @@
+{
+  "_meta": [
+    "editorconfig-checker enforces the .editorconfig this repository already promises.",
+    "Generated archives, vendored source, standards data, and build trees are bytes we do not own.",
+    "Markdown is owned by markdownlint; Go is owned by gofmt, whose cgo preambles contain intentional space-indented C.",
+    "IndentSize stays off: language formatters understand continuation alignment; a modulo check does not."
+  ],
+  "Verbose": false,
+  "Debug": false,
+  "IgnoreDefaults": false,
+  "SpacesAfterTabs": false,
+  "NoColor": false,
+  "Exclude": [
+    "\\.a$",
+    "\\.lock$",
+    "\\.baseline$",
+    "\\.md$",
+    "\\.go$",
+    "^vendor/",
+    "^bindings/rust/vendor/",
+    "^tools/(ucd|whatwg)/",
+    "(^|/)target/",
+    "(^|/)\\.venv/",
+    "(^|/)\\.zig-cache/",
+    "^zig-out/",
+    "^zig-pkg/",
+    "(^|/)__pycache__/",
+    "(^|/)\\.ruff_cache/"
+  ],
+  "AllowedContentTypes": [],
+  "PassedFiles": [],
+  "Disable": {
+    "EndOfLine": false,
+    "Indentation": false,
+    "IndentSize": true,
+    "InsertFinalNewline": false,
+    "TrimTrailingWhitespace": false,
+    "MaxLineLength": true,
+    "Charset": false
+  }
+}

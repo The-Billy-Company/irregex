@@ -43,8 +43,10 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: ${{ env.ZIG_VERSION }}
       # Compile-only first: when this fails, the test log below is noise, and
@@ -77,8 +79,10 @@ jobs:
         tool tools script scripts example examples fixture fixtures
         internal pkg build dist
     steps:
-      - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: ${{ env.ZIG_VERSION }}
       - name: suite under a hostile GIST_SKIP
@@ -103,58 +107,37 @@ jobs:
         python: ["3.12", "3.13", "3.14"]
     runs-on: ubuntu-latest
     steps:
-      # ── why this job checks out a sibling, and only this one ──
+      # ── this job checks out one repository, and that is the point ──
       #
-      # The suite reads four contract TOMLs and four headers. Two contracts are
-      # this package's own; `kinship.toml` is relate's, vendored into
-      # `contract/` by `tools/sync_contract.py` and drift-gated from relate's
-      # own CI; `surface.toml` is gist's and is read from the checkout, since
-      # a copy that can go stale earns nothing when the original is one
-      # checkout away.
+      # Everything the suite reads, this repository publishes: its own
+      # `include/irgx.h` for the cffi mirror gate, its own `analytic.toml` and
+      # `engine.toml`, and relate's `kinship.toml` vendored into `contract/` by
+      # `tools/sync_contract.py` and drift-gated from relate's own CI.
       #
-      # The headers are why all four packages are cloned. The cffi mirror spans
-      # every face this substrate can describe, and `test_cdef_header_parity`
-      # fails closed on a header it cannot read — a mirror checked against a
-      # header that is not there is not checked at all. All four packages are
-      # public, so anyone can satisfy this the same way CI does. Only `irregex`
-      # and `gist` are built: relate's and blast's headers are committed, and
-      # nothing here calls into those two.
-      #
-      # The layout is flat — $GITHUB_WORKSPACE/{irregex,gist,relate,blast} —
-      # because that is what every checkout in this ecosystem already assumes
-      # and what the resolvers walk for. CI resolves these the way a laptop does.
-      - uses: actions/checkout@v4
+      # It used to clone all four packages, because the mirror declared every
+      # face's symbols and the gate needed every face's header to check them.
+      # Those declarations now live with the libraries that export them —
+      # `gist_run` in gist.h, mirrored in `gist._native` — so each package gates
+      # its own surface in its own CI. A substrate whose tests need its
+      # consumers checked out is a substrate its consumers cannot be released
+      # without, and this is a public repository that anyone should be able to
+      # clone alone and get a verdict from.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          path: irregex
-      - uses: actions/checkout@v4
-        with:
-          repository: The-Billy-Company/gist
-          path: gist
-      - uses: actions/checkout@v4
-        with:
-          repository: The-Billy-Company/relate
-          path: relate
-      - uses: actions/checkout@v4
-        with:
-          repository: The-Billy-Company/blast
-          path: blast
-      - uses: mlugg/setup-zig@v2
+          persist-credentials: false
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: ${{ env.ZIG_VERSION }}
-      # Without these the suite reports green over the seams that matter most.
+      # Without this the suite reports green over the seam that matters most.
       # The FFI tier resolves `libirgx` out of this checkout's zig-out/, and a
       # miss there is a silent darkening rather than an error — the loader
-      # returns nothing and the tier's tests simply stop existing. The gist
-      # binary is the same story one level up: conftest skips its whole fixture
-      # when `gist` is not on PATH.
-      - name: Build the library and binary the suite drives
-        run: |
-          ( cd irregex && zig build --summary none )
-          ( cd gist && zig build --summary none )
-          echo "$GITHUB_WORKSPACE/gist/zig-out/bin" >> "$GITHUB_PATH"
-      - uses: astral-sh/setup-uv@v5
+      # returns nothing and the tier's tests simply stop existing, which is what
+      # the skip check below is here to catch.
+      - name: Build the library the suite drives
+        run: zig build --summary none
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
       - name: pytest, and prove nothing skipped itself
-        working-directory: irregex/bindings/python
+        working-directory: bindings/python
         run: |
           set -o pipefail
           uv run --python ${{ matrix.python }} pytest -q -rs 2>&1 | tee "$RUNNER_TEMP/pytest.log"
@@ -164,46 +147,42 @@ jobs:
           fi
 
   go:
+    # No Zig and no sibling, for two separate reasons that happen to agree.
+    #
     # The module carries a prebuilt archive per supported platform precisely so
     # `go get` needs no toolchain, and this job deliberately does not rebuild it
-    # — the committed archive is the rung a consumer actually links.
+    # — the committed archive is the rung a consumer actually links. The default
+    # build does not even reach it: the cgo path is behind `irgx_ffi`, so a plain
+    # `go test` exercises the pure-Go ladder.
     #
-    # Zig is here for the other half. What `runtime` tests is the ladder: the
-    # dispatch, the tiers, the row decode. A ladder needs something at the top of
-    # it, so the suite drives a real producer, and a missing one is fatal rather
-    # than skipped — the tier's tests would otherwise stop existing and the job
-    # would pass having decoded nothing. gist is the producer it asks for, being
-    # the public one; the oracle that genuinely needs relate lives in relate.
+    # And the ladder's tests no longer drive a producer. They pin this package's
+    # own reasoning — tier introspection, the FFI escape hatch, seam refusals,
+    # cancellation, the digest policy — none of which spawns a child. The two
+    # that did moved to the repositories that build one: the row-and-stats
+    # comparison to gist's `exact`, the kinship oracle to relate's bindings. This
+    # repository builds no binary, so asking for one here was asking for a
+    # consumer's, which is a public suite the public cannot run.
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: irregex/bindings/go
+        working-directory: bindings/go
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          path: irregex
-      - uses: actions/checkout@v4
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          repository: The-Billy-Company/gist
-          path: gist
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: ${{ env.ZIG_VERSION }}
-      - uses: actions/setup-go@v5
-        with:
-          # Workspace-relative, not working-directory-relative.
-          go-version-file: irregex/bindings/go/go.mod
-      # This checkout first, and the order is load-bearing rather than tidy:
-      # gist's install step copies `../irregex/zig-out/lib/libirgx.a`, so building
-      # it against an unbuilt sibling fails on that copy.
-      - name: Build the producer the ladder drives
-        run: |
-          ( cd "$GITHUB_WORKSPACE/irregex" && zig build --summary none )
-          ( cd "$GITHUB_WORKSPACE/gist" && zig build --summary none )
-          test -x "$GITHUB_WORKSPACE/gist/zig-out/bin/gist"
-          echo "$GITHUB_WORKSPACE/gist/zig-out/bin" >> "$GITHUB_PATH"
+          go-version-file: bindings/go/go.mod
       - run: go vet ./...
       - run: go test ./...
+      # `go vet` judges correctness; this judges the rest of what the binding
+      # promises a consumer — an unchecked Close, a swallowed error, a shadowed
+      # return. It runs here rather than beside the other linters because the
+      # toolchain it needs is already standing up in this job.
+      - uses: golangci/golangci-lint-action@4afd733a84b1f43292c63897423277bb7f4313a9 # v8
+        with:
+          version: v2.12.2
+          working-directory: bindings/go
 
   rust:
     # Same reasoning as Go: `vendor/<triple>/libirgx.a` is what a normal
@@ -211,25 +190,35 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: irregex/bindings/rust
+        working-directory: bindings/rust
     steps:
-      # gist for `surface.toml`, in the flat layout the resolvers walk for; see
-      # the python job for why one sibling is checked out and the other vendored.
-      # No Zig and no ecosystem build: the archive cargo links is committed to
-      # this repository, which is the rung a consumer actually takes.
-      - uses: actions/checkout@v4
+      # One checkout, like the python job: every contract the parity gate reads
+      # is committed here, gist's `surface.toml` having gone back to gist along
+      # with the constants that mirrored it. No Zig and no ecosystem build
+      # either — the archive cargo links is committed to this repository, which
+      # is the rung a consumer actually takes.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          path: irregex
-      - uses: actions/checkout@v4
-        with:
-          repository: The-Billy-Company/gist
-          path: gist
-      # rust-toolchain.toml pins the channel; installing it explicitly would
+          persist-credentials: false
       # override the pin the repository already made.
       - run: rustup show
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+      # A prebuilt binary rather than the Docker action, which takes a
+      # repo-root-relative manifest path and would have to be told about a
+      # layout that differs in every one of these repositories. This is a
+      # plain step, so it inherits the working directory and the toolchain
+      # rustup already resolved above.
+      - uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
+        with:
+          tool: cargo-deny@0.19.0
+      # deny.toml has been checked in the whole time with nothing running it.
+      # `check` is all four: a RustSec advisory against anything in the graph,
+      # the banned crates that would mean this binding grew a TLS stack or an
+      # async runtime, the license allowlist, and the registries a crate may
+      # come from.
+      - run: cargo deny check
 
   fmt:
     # Its own job, for the same reason the other five are: formatter drift is
@@ -249,8 +238,10 @@ jobs:
     # different Zig would be checking against a different grid.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: ${{ env.ZIG_VERSION }}
       - name: zig fmt --check
@@ -282,6 +273,50 @@ jobs:
           echo "checking ${#files[@]} files"
           zig fmt --check "${files[@]}"
 
+  discipline:
+    # The engine can compile perfectly while the surface a stranger arrives at
+    # rots: a dead link in the README, a fence with no language, a manifest that
+    # stopped parsing, a workflow that trusts a movable tag. That is one kind of
+    # news — the public explanation no longer matches the thing — so it gets one
+    # red X, separate from the six jobs that judge the code.
+    #
+    # It is also the only job here that needs neither Zig nor a build. A
+    # contributor who mistyped a heading should learn that in seconds, not after
+    # a matrix compiles. ShellCheck ships with the runner; everything else is a
+    # Python distribution installed into uv's isolated environment at a pinned
+    # version, so this job's verdict moves when we move it and not when a
+    # formatter ships a release.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+      - name: Markdown structure and layout
+        uses: DavidAnson/markdownlint-cli2-action@6bf21b07787794f89a243495939cd651942aeabe # v24.1.0
+        with:
+          globs: "**/*.md"
+      - name: Authored spelling
+        uses: crate-ci/typos@bee27e3a4fd1ea2111cf90ab89cd076c870fce14 # v1.48.0
+      - name: YAML structure
+        run: uv run --no-project --with yamllint==1.38.0 yamllint .
+      - name: TOML format and schemas
+        run: |
+          uv run --no-project --with taplo==0.9.3 taplo fmt --check
+          uv run --no-project --with taplo==0.9.3 taplo lint
+      - name: EditorConfig conformance
+        run: uv run --no-project --with editorconfig-checker==3.8.0 ec
+      - name: Python lint and format
+        run: |
+          uv run --no-project --with ruff==0.16.1 ruff check --config quality/ruff.toml .
+          uv run --no-project --with ruff==0.16.1 ruff format --check --config quality/ruff.toml .
+      - name: Shell correctness
+        run: git ls-files -z '*.sh' | xargs -0 shellcheck
+      # Last, so it audits the exact file CI just interpreted — including every
+      # action and permission this job itself introduced.
+      - name: GitHub Actions security
+        run: uv run --no-project --with zizmor==1.29.0 zizmor --no-online-audits --strict-collection .
+
   ratchets:
     # Five baseline-guarded lints over src/**/*.zig — see quality/ratchets/.
     # They are text scans, so there is no Zig step: compiling the engine to
@@ -293,9 +328,10 @@ jobs:
     # bindings/python's pyproject and building a wheel this job has no use for.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-      # The gates themselves. A failure names the file and the delta, and the
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
       # fix is in the code — never in the baseline.
       - run: uv run --no-project --python 3.12 python quality/ratchets/run.py
       # The detectors' own unit tests. A ratchet that stopped detecting reports
@@ -318,8 +354,10 @@ jobs:
     # Stdlib-only, no Zig and no build — it reads lines.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
       - run: uv run --no-project --python 3.12 python tools/version_parity.py
 
   changelog:
@@ -349,8 +387,10 @@ jobs:
     # No Zig and no build, like `ratchets` — this reads filenames.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
       - name: every fragment is one towncrier recognizes
         run: |
           set -euo pipefail

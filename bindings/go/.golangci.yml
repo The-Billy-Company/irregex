@@ -1,0 +1,56 @@
+version: "2"
+
+# This module is a cgo binding, not a web service. The slate stays on language
+# correctness, error contracts, unsafe conversions, and suppression hygiene.
+run:
+  timeout: 5m
+  go: "1.26"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - errorlint
+    - govet
+    - ineffassign
+    - nilerr
+    - nilnesserr
+    - staticcheck
+    - unconvert
+    - unused
+    - wastedassign
+    - nolintlint
+    - gosec
+  settings:
+    errorlint:
+      errorf: true
+      errorf-multi: true
+      asserts: true
+      comparison: true
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      allow-no-explanation: []
+      allow-unused: false
+  exclusions:
+    generated: lax
+    rules:
+      # Cleanup in tests is best-effort; the assertion before it owns the news.
+      - linters: [errcheck]
+        source: defer .+\.Close\(
+      # Test fixtures deliberately drive malformed and low-level values.
+      - linters: [gosec]
+        path: _test\.go
+      # Binary paths are explicit caller configuration or resolved from a
+      # checked checkout/PATH ladder; executing and statting them is the API.
+      - linters: [gosec]
+        path: runtime/cold\.go
+        text: "G204|G703"
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gofmt

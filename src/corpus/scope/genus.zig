@@ -166,7 +166,7 @@ pub const Set = packed struct(u8) {
 /// name, which is what tells the caller to go on to the language table — so a
 /// genus name shadows nothing and costs an unrecognized type nothing.
 ///
-/// `prose` and `source` are here because they are what the neighbours call
+/// `prose` and `source` are here because they are what the neighbors call
 /// these sets (Linguist's `prose`, ripgrep's `--type-list` docs section), and a
 /// name an agent guesses correctly is worth more than a name it has to learn.
 pub const spellings = [_]struct { name: []const u8, genus: Genus }{

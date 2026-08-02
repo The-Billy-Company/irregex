@@ -12,7 +12,7 @@ unchanged. If PCRE2 refuses it too, gist names the defect, points at the byte,
 and says that no engine here compiles it rather than sending you to a flag that
 cannot help:
 
-```
+```text
 gist: error: bad pattern — missing terminating ] for character class
 gist: note: [abc
 gist: note:     ^ here (byte 4)

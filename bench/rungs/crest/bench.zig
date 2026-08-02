@@ -369,7 +369,7 @@ fn scanProof(io: std.Io, docs: []const []const u8, bytes: usize, runs: usize, vi
     }
 
     // Interleaved, and scored on the MINIMUM. Ten agents share this machine, so
-    // a median samples the neighbours' compile jobs as much as the code under
+    // a median samples the neighbors' compile jobs as much as the code under
     // test; the fastest observed run is the one least contaminated by them, and
     // alternating the two scans run-by-run keeps that contamination shared.
     var sink: u64 = 0;

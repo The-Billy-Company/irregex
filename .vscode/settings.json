@@ -1,0 +1,39 @@
+{
+  // Artifact trees are huge compared with the authored repository. In
+  // particular, Rust semver checks park another checkout under target/.
+  "files.watcherExclude": {
+    "**/.zig-cache/**": true,
+    "**/zig-out/**": true,
+    "**/zig-pkg/**": true,
+    "**/bindings/rust/target/**": true,
+    "**/.venv/**": true,
+    "**/__pycache__/**": true,
+    "**/.ruff_cache/**": true
+  },
+  "search.exclude": {
+    "**/.zig-cache": true,
+    "**/zig-out": true,
+    "**/zig-pkg": true,
+    "**/bindings/rust/target": true,
+    "**/.venv": true,
+    "**/__pycache__": true,
+    "**/.ruff_cache": true
+  },
+  "search.followSymlinks": false,
+
+  // Content guessing must not overrule the repository's .editorconfig.
+  "editor.detectIndentation": false,
+  "files.eol": "\n",
+  "editor.formatOnSave": false,
+
+  // ZLS is byte-identical to `zig fmt` only when it resolves the Zig 0.16.0
+  // pinned by this repository. A stray Homebrew Zig can disagree with CI.
+  "[zig]": { "editor.defaultFormatter": "ziglang.vscode-zig" },
+  "[rust]": { "editor.defaultFormatter": "rust-lang.rust-analyzer" },
+  "[go]": {
+    "editor.defaultFormatter": "golang.go",
+    "editor.insertSpaces": false
+  },
+  "[python]": { "editor.defaultFormatter": "charliermarsh.ruff" },
+  "[toml]": { "editor.defaultFormatter": "tamasfe.even-better-toml" }
+}

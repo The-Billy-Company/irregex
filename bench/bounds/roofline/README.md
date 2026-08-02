@@ -120,7 +120,7 @@ The fix is structural rather than a warning:
   as unmeasured.
 - Layer B's llvm-mca cycles/byte likewise no longer gets a `≈N GB/s`
   translation without a measured clock. That conversion was two inferences deep:
-  a modelled cycle count times a guessed frequency, printed as a bandwidth.
+  a modeled cycle count times a guessed frequency, printed as a bandwidth.
 
 ### Why an unoptimized build refuses to publish
 
@@ -152,7 +152,7 @@ Two fail-closed gates now stand where the instruction used to:
   spirit as the absent needle re-checked against `simd.contains`.
 
 A bandwidth roof is a claim about the *machine*, which is what separates it from
-Layer B′'s cycles/byte: that one is a claim about the build, so honouring the
+Layer B′'s cycles/byte: that one is a claim about the build, so honoring the
 caller's `-Doptimize` is right there and wrong here.
 
 ## How to run

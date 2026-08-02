@@ -21,8 +21,17 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=../../dominance/races/field.sh
-source "${HERE}/../../dominance/races/field.sh"
+# The field belongs to the gist product checkout after the package split.
+# Resolve that sibling first; ShellCheck cannot follow the resulting path, so
+# the variables it exports are intentionally opaque to static analysis.
+# shellcheck source=../../apparatus/roots.sh
+source "${HERE}/../../apparatus/roots.sh"
+gist_resolve_roots "${HERE}"
+# Declarations describe the field library's interface to static analysis; the
+# source immediately below supplies every value and the `have` helper.
+OUT="" COMPETE_DIR="" PATHS_LIST="" GIST_BIN="" CORPUS="" CSEARCH_IDX=""
+# shellcheck disable=SC1090,SC1091
+source "${PRODUCT}/bench/dominance/races/field.sh"
 
 OUT_TSV="${OUT}/indexcost.tsv"
 mkdir -p "${COMPETE_DIR}" "${OUT}"
@@ -36,7 +45,7 @@ have cindex || {
   exit 1
 }
 [[ -x "${GIST_BIN}" ]] || {
-  echo "indexcost: no ${GIST_BIN} — run \`install the sibling `gist` package\` first" >&2
+  echo "indexcost: no ${GIST_BIN} — install the sibling gist package first" >&2
   exit 1
 }
 

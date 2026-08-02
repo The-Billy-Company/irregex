@@ -20,11 +20,11 @@ filter compares, and the `eql` verify is what decides a match.
 `simd.planOn` is the document-grain seam `calibrate.zig` was written for, and it
 adopts a calibrated pair through `calibrate.refine` rather than `calibrate.best`.
 Two defects are recorded there rather than shipped: adopting the sample's
-favourite unconditionally was a measured 0.5–1.1% CPU tax with no row it won (the
+favorite unconditionally was a measured 0.5–1.1% CPU tax with no row it won (the
 shipped table is already right on most needles, and swapping off it also forfeits
 the single-probe shape), and a purely relative accept margin is a winner's curse —
 the argmin of up to 120 noisy estimates of the same density sits several sigma
-below the truth, which the randomised suite caught as a claimed 12.5% win over an
+below the truth, which the randomized suite caught as a claimed 12.5% win over an
 incumbent that was in fact better. The margin is now the larger of 12.5% and four
 standard deviations of the incumbent's own count.
 

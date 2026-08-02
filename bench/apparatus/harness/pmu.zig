@@ -316,7 +316,7 @@ const Thsc = struct {
 
     /// `THSC_CPI = 1` — "get the current thread's cycles and instructions".
     /// The kernel rejects an unknown kind (verified: kind 999 ⇒ -1), so this
-    /// constant cannot quietly select a different flavour.
+    /// constant cannot quietly select a different flavor.
     const kind_cpi: u32 = 1;
 
     /// `struct thsc_cpi`. Instructions come first; reading the two the other way
@@ -470,7 +470,7 @@ test "cycles measure work, not elapsed time" {
     try std.testing.expect(busy > idle * 4);
 }
 
-test "counters are per-thread, so a busy neighbour cannot inflate them" {
+test "counters are per-thread, so a busy neighbor cannot inflate them" {
     var m = Meter.init();
     defer m.deinit();
     if (!m.has_pmu) return;
@@ -535,7 +535,7 @@ test "an undersized read is refused rather than half-filled" {
     try std.testing.expect(full.cycles != Thsc.poison and full.instructions != Thsc.poison);
 }
 
-test "an unknown counter kind is rejected, so the flavour cannot drift" {
+test "an unknown counter kind is rejected, so the flavor cannot drift" {
     if (builtin.target.os.tag != .macos) return;
     var t = Thsc.open() catch return;
     defer t.close();

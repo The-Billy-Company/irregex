@@ -490,7 +490,7 @@ func TestByteResultsAreCapped(t *testing.T) {
 	src := []byte("cat dog")
 	got := irgx.MustCompile(`cat`).Find(src)
 	if cap(got) != len(got) {
-		t.Errorf("cap = %d, len = %d; the result can be appended into its neighbour", cap(got), len(got))
+		t.Errorf("cap = %d, len = %d; the result can be appended into its neighbor", cap(got), len(got))
 	}
 }
 

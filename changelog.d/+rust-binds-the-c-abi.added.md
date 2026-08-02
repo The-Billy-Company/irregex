@@ -47,4 +47,4 @@ anchors never fire both report no match for `\Aabc\z` over `"x\nabc\ny"`, so eac
 row carries what all three readings predict and the test checks it still holds
 rows that separate them. Eight rows contradict the per-line reading; seven
 contradict dead anchors. `(?m)` is pinned as refused by the linear grammar and
-honoured by the PCRE arm, which is the supported way to ask for per-line anchors.
+honored by the PCRE arm, which is the supported way to ask for per-line anchors.

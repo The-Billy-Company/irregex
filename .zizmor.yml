@@ -1,0 +1,26 @@
+# GitHub Actions is this repository's only CI plane. zizmor audits the workflow
+# surface itself; SHA pins make every third-party action an immutable input.
+
+rules:
+  excessive-permissions:
+    remap:
+      severity: high
+  cache-poisoning:
+    remap:
+      severity: high
+  # A brand-new release is the one most likely to be a compromised one, so
+  # every ecosystem in dependabot.yml sits out its first week.
+  dependabot-cooldown:
+    config:
+      days: 7
+  unpinned-uses:
+    config:
+      policies:
+        "*": hash-pin
+  forbidden-uses:
+    config:
+      deny:
+        # CVE-2025-30066 rewrote published tags to exfiltrate runner secrets.
+        - tj-actions/*
+        # The reviewdog action family suffered coordinated impostor commits.
+        - reviewdog/*

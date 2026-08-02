@@ -159,9 +159,9 @@ way.
 
 1. `calibrate_test.zig` covers `refine` directly: the incumbent is kept when it is
    already optimal, replaced when a materially better pair exists, and — the
-   centrepiece — **not** replaced on a uniform alphabet where all 120 pairs share one
+   centerpiece — **not** replaced on a uniform alphabet where all 120 pairs share one
    true density, which is the winner's-curse case that caught the purely relative
-   margin. Its randomised arm uses a skewed alphabet so genuine wins exist, and
+   margin. Its randomized arm uses a skewed alphabet so genuine wins exist, and
    asserts bounded per-trial regression with aggregate improvement.
 2. `anchor_test.zig` holds the defect's own guard — an all-tied needle must never
    select adjacent offsets — plus the table's rank-inversion and lowercase-

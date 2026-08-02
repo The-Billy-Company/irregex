@@ -26,7 +26,7 @@ const std = @import("std");
 const calibrate = @import("calibrate.zig");
 
 /// The block stride the kernel really uses. Passed in rather than re-derived
-/// for the reason `calibrate.zig`'s doc records; the tests honour that too.
+/// for the reason `calibrate.zig`'s doc records; the tests honor that too.
 const block_bytes: usize = 64;
 
 /// A sampling budget small enough that a test buffer stays in the hundreds of
@@ -67,7 +67,7 @@ fn cheapest(hay: []const u8, needle: []const u8) Cheapest {
     return out;
 }
 
-test "a returned pair is always in-bounds, ordered and distinct (randomised)" {
+test "a returned pair is always in-bounds, ordered and distinct (randomized)" {
     const gpa = std.testing.allocator;
     var prng = std.Random.DefaultPrng.init(0xCA11B);
     const rng = prng.random();
@@ -301,7 +301,7 @@ test "refine: a buffer where no pair is better keeps the incumbent" {
     for (hay) |*b| b.* = needle[prng.random().uintLessThan(usize, needle.len)];
 
     // The premise: the gate admits this buffer, so every decline below is a
-    // judgement about the pairs and not a refusal to look at them.
+    // judgment about the pairs and not a refusal to look at them.
     try std.testing.expect(calibrate.best(hay, needle, block_bytes) != null);
 
     // Every pair, as an incumbent, survives contact with the calibrator.
@@ -328,7 +328,7 @@ test "refine: an incumbent past the offset cap is priced, not ignored" {
     // `c` only on multiples of 16, `d` only on 16k+8. `hay[p] == 'c'` forces
     // `p % 16 == 0`, hence `(p + 19) % 16 == 3 != 8`, so the pair (0,19) has
     // ZERO survivors by arithmetic. Both its offsets are also pin-proof: the
-    // nearest evictable neighbour of 4 is 3 and of 18 is 17.
+    // nearest evictable neighbor of 4 is 3 and of 18 is 17.
     for (hay, 0..) |*byte, i| byte.* = if (i % 16 == 0)
         'c'
     else if (i % 16 == 8)
@@ -364,7 +364,7 @@ test "refine: every swap is in-bounds, bounded in loss, and wins in aggregate" {
 
     // What a SAMPLED selector can and cannot promise, stated as the module head
     // states it: not "never loses" — an estimator that read the whole buffer to
-    // guarantee that would cost more than the scan it is optimising — but
+    // guarantee that would cost more than the scan it is optimizing — but
     // "losses are immaterial and the aggregate improves". This suite is what
     // holds the margin to that, and it is where the winner's-curse defect
     // recorded at `noise_sigmas` was caught: with a purely relative margin the

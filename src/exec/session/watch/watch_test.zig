@@ -263,7 +263,7 @@ test "exact: a shed watch set answers from the baseline, and re-arming re-covers
             try std.testing.expect(!r.session.dirty_log.exact);
             try std.testing.expect(!r.session.full_pass_done);
             // No backend, so no barrier to cross — a `flushSync` that claimed to
-            // have drained one would be a licence to trust a dead stream.
+            // have drained one would be a license to trust a dead stream.
             try std.testing.expect(!r.watcher.flushSync());
 
             // The adverse case: an IN-PLACE content edit with nothing watching.

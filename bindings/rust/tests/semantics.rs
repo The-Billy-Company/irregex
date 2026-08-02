@@ -559,7 +559,7 @@ fn anchors_are_text_anchors_and_find_all_is_the_authority() {
 /// linear grammar refuses `(?m)` rather than parsing it and ignoring it, which
 /// matters because a pattern carried over from another engine would otherwise
 /// match the wrong thing silently. The PCRE arm is the escape hatch and does
-/// honour it, so the refusal is a property of the grammar rather than a gap.
+/// honor it, so the refusal is a property of the grammar rather than a gap.
 #[test]
 fn there_is_no_multiline_mode_in_the_linear_grammar() {
     for pattern in ["(?m)^b", "(?m:^b)", r"(?m)b$"] {

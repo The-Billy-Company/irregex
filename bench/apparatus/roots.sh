@@ -15,12 +15,12 @@
 
 _gist_climb_pkg() {
   local d="$1"
-  while [[ -n "$d" && "$d" != / ]]; do
+  while [[ -n "${d}" && "${d}" != / ]]; do
     if [[ -f "${d}/build.zig.zon" ]]; then
-      printf '%s\n' "$d"
+      printf '%s\n' "${d}"
       return 0
     fi
-    d="$(dirname "$d")"
+    d="$(dirname "${d}")"
   done
   return 1
 }
@@ -37,7 +37,7 @@ _gist_corpus_root() {
     (cd "${GIST_CORPUS_ROOT}" && pwd)
     return 0
   fi
-  printf '%s\n' "$pkg"
+  printf '%s\n' "${pkg}"
 }
 
 _gist_product_root() {
@@ -46,7 +46,7 @@ _gist_product_root() {
     (cd "${pkg}/../gist" && pwd)
     return 0
   fi
-  printf '%s\n' "$pkg"
+  printf '%s\n' "${pkg}"
 }
 
 # `relate` ships its own binary from its own checkout, so a gate that oracles
@@ -58,17 +58,18 @@ _gist_kinship_root() {
     (cd "${pkg}/../relate" && pwd)
     return 0
   fi
-  _gist_product_root "$pkg"
+  _gist_product_root "${pkg}"
 }
 
 gist_resolve_roots() {
   local here="$1"
-  KERNEL="$(_gist_climb_pkg "$here")" || {
+  KERNEL="$(_gist_climb_pkg "${here}")" || {
     echo "roots.sh: no build.zig.zon above ${here}" >&2
     return 1
   }
-  REPO="$(_gist_corpus_root "$KERNEL")"
-  PRODUCT="$(_gist_product_root "$KERNEL")"
-  KINSHIP="$(_gist_kinship_root "$KERNEL")"
+  REPO="$(_gist_corpus_root "${KERNEL}")"
+  PRODUCT="$(_gist_product_root "${KERNEL}")"
+  KINSHIP="$(_gist_kinship_root "${KERNEL}")"
   GIST_VERIFY="${GIST_DIR:-${REPO}/.gist}"
+  export KERNEL REPO PRODUCT KINSHIP GIST_VERIFY
 }

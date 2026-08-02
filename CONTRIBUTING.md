@@ -28,7 +28,7 @@ The development model is **sibling checkouts**. The faces path-depend on
 that crosses the boundary, clone the sibling next to this one rather than
 inside it:
 
-```
+```text
 Billy-Company/
 ├── irregex/     ← you are here
 ├── gist/
@@ -46,6 +46,7 @@ One toolchain is mandatory. The rest you need only for the binding you touch.
 | the Python binding | [uv](https://docs.astral.sh/uv/) | `requires-python` floor 3.12 |
 | the Rust binding | rustup | `bindings/rust/rust-toolchain.toml` |
 | the Go binding | Go | `bindings/go/go.mod` |
+| the discipline gate | markdownlint-cli2, typos, shellcheck, golangci-lint | the actions in [`ci.yml`](.github/workflows/ci.yml), mirrored into `.mise.toml` |
 
 If you run [mise](https://mise.jdx.dev), that whole table is one command:
 
@@ -117,17 +118,19 @@ cd bindings/go     && go vet ./... && go test ./...
 
 ## What CI will check
 
-Eight jobs in [`.github/workflows/ci.yml`](.github/workflows/ci.yml), split on
-purpose - an engine regression and a clippy nit are different news and deserve
-different red Xs.
+Ten jobs in [`.github/workflows/ci.yml`](.github/workflows/ci.yml), split on
+purpose - an engine regression, a clippy nit, and a dead link in the README are
+different news and deserve different red Xs.
 
 | Job | What it holds |
 | --- | --- |
 | `engine` | `zig build check` + `zig build test`, on Linux **and** macOS |
 | `hermetic` | the same suite under a deliberately hostile `GIST_SKIP` and `skips.list`, because a test that reads ambient configuration passes here and fails on someone's real machine |
-| `python` / `go` / `rust` | each binding's own suite; Python across 3.12, 3.13, and 3.14 |
+| `python` / `go` / `rust` | each binding's own suite; Python across 3.12, 3.13, and 3.14. Each also holds its language surface: Ruff, golangci-lint, Clippy, and `cargo deny` over the crate's advisories, bans, licenses, and sources |
 | `fmt` | `zig fmt --check` over every tracked and untracked-not-ignored `.zig` file |
+| `discipline` | the authored surface rather than the code: Markdown, spelling, YAML, TOML, EditorConfig, shell, Python lint and format, and the GitHub Actions perimeter |
 | `ratchets` | the baselines under [`quality/ratchets/`](quality/ratchets/README.md) |
+| `version` | the one number in `build.zig.zon` still matches every manifest that mirrors it |
 | `changelog` | every fragment in `changelog.d/` is one towncrier recognizes |
 
 Run the formatter before you push - `zig fmt` reflows column-aligned literals,
@@ -138,9 +141,37 @@ too wide:
 zig fmt .
 ```
 
+The `discipline` job is the other half of that, and it needs no toolchain at
+all. Every command below is the one CI runs, at the version CI pins, so a green
+run here is a green job there:
+
+```bash
+markdownlint-cli2                                                    # layout and structure
+typos                                                                # authored spelling
+uv run --no-project --with yamllint==1.38.0 yamllint .
+uv run --no-project --with taplo==0.9.3 taplo fmt --check && taplo lint
+uv run --no-project --with editorconfig-checker==3.8.0 ec
+uv run --no-project --with ruff==0.16.1 ruff check  --config quality/ruff.toml .
+uv run --no-project --with ruff==0.16.1 ruff format --config quality/ruff.toml .
+git ls-files -z '*.sh' | xargs -0 shellcheck
+uv run --no-project --with zizmor==1.29.0 zizmor --no-online-audits --strict-collection .
+```
+
+Two of those judge things worth knowing about before you hit them. `ruff` skips
+`*.gen.py`, because a generated table answers to
+[`tools/build_schema_tables.py`](tools/build_schema_tables.py) and not to a
+formatter - run that with `--check` instead. And `zizmor` requires every action
+to be pinned to a commit, not a tag: an annotated tag has its own object hash
+that is *not* the commit it points at, and pinning that hash gives you a
+workflow that fails to resolve. Take the `^{}` line:
+
+```bash
+git ls-remote --tags https://github.com/actions/checkout | grep 'refs/tags/v4^{}'
+```
+
 ### Ratchets only shrink
 
-[`quality/ratchets/`](quality/ratchets/README.md) freezes behaviour a unit test
+[`quality/ratchets/`](quality/ratchets/README.md) freezes behavior a unit test
 cannot: one canonical out-of-memory exit, a fault taxonomy every error path is
 drawn from, a gate against bypassing the assay. Each keeps a `.baseline`, and
 the contract is that **new code is born clean and existing counts only go
@@ -381,7 +412,7 @@ it to `extra-files`, and the gate will hold it.
 Commit subjects here are a conventional prefix plus a lowercase sentence that
 says what changed, in the voice of the change rather than the ticket:
 
-```
+```text
 fix: the batched walk cannot leak its own step-aside
 perf: the automata ladder stops dispatching twelve lanes for a walk that ends at two
 docs: every cited path resolves again after the split

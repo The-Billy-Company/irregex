@@ -24,7 +24,7 @@ both capture VMs read one option, so `-r`/`--json` cannot drift from the match.
 
 It is the HALF boundaries, not `\b(pat)\b`. `rg -w -o -e -` finds the dash in
 `foo - bar` where `\b-\b` finds nothing, and finds no dash in `foo-bar`: a half
-boundary judges the neighbouring byte, not the span's own first byte. gist
+boundary judges the neighboring byte, not the span's own first byte. gist
 agrees on both.
 
 The vet stays for the `.literal` body, where there is no program to rewrite and

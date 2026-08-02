@@ -25,7 +25,7 @@ name whichever backend actually answered, so a number can't quietly change
 meaning when the tier underneath it does. Seven tests hold the new backend to its
 contract: that a meter is either honestly instrumented or honestly wall-clock,
 that counters advance across real work, that they measure work rather than
-elapsed time, that a busy neighbour thread can't inflate them, and - the one that
+elapsed time, that a busy neighbor thread can't inflate them, and - the one that
 catches a struct-layout drift the coarse IPC bound would miss - that an undersized
 read is refused rather than half-filled, since the kernel will otherwise fill only
 what fits and report success.

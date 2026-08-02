@@ -11,7 +11,7 @@ rare-byte heuristic and by `rarity.zig` here, ranks bytes by **individual**
 frequency. That prices a two-position conjunction as `P(a)·P(b)` — it assumes
 the probes are independent. Text is the worst case for that assumption: the
 correlated unit is the word, so correlation is strongest at exactly the short
-distances a needle offers. A unigram-minimising selector therefore drifts toward
+distances a needle offers. A unigram-minimizing selector therefore drifts toward
 correlated pairs, and the conjunction degenerates toward a single-byte filter.
 
 Here that drift was a collapse, because `rarity.zig` clamps its density at 255 and
@@ -47,7 +47,7 @@ required-literal gate, `Emitter.lit_plan` for the hit-jumping sweeps, and
 `PikeScratch.litPlan` for the span walks.
 
 Two things §7.2 did not anticipate, both recorded in `calibrate.zig` rather than
-shipped as defects. Adopting the sample's favourite *unconditionally* is a measured
+shipped as defects. Adopting the sample's favorite *unconditionally* is a measured
 CPU tax, not a win: the shipped table already picks the oracle pair on 80/177 code
 needles, and swapping off it also forfeits the single-probe block shape. So the
 integration is an **improvement test** (`refine`) with the incumbent priced on the
@@ -102,7 +102,7 @@ what ruled the static approach out and pointed at calibration (`PROOF.md` §6).
 | file | role |
 | --- | --- |
 | `PROOF.md` | the exact-pricing method, the defect and its two compounding halves, selectivity and wall-clock measurements, the failed compactions, the calibrating design, and threats to validity |
-| `PRIOR_ART.md` | dated, search-qualified prior-art review — neighbouring families (`memchr` rare bytes, Hyperscan Noodle/Teddy, gapped q-grams, spaced seeds) and what remains unclaimed |
+| `PRIOR_ART.md` | dated, search-qualified prior-art review — neighboring families (`memchr` rare bytes, Hyperscan Noodle/Teddy, gapped q-grams, spaced seeds) and what remains unclaimed |
 | `TESTING.md` | instruments, corpora, held-out fitting, the adverse tests that were meant to kill it, and what is not yet tested |
 
 ## The code
@@ -136,7 +136,7 @@ measurements might suggest, and the honest split matters:
   index, and `memchr` ships a trait for exactly this substitution. We should
   adopt it *because* it is known-good; what the measurements add is the price
   (0.2%) that the incumbent's "far too expensive" assumed without measuring;
-- **narrowly unclaimed:** minimising `P(X_i = a ∧ X_{i+d} = b)` over concrete
+- **narrowly unclaimed:** minimizing `P(X_i = a ∧ X_{i+d} = b)` over concrete
   byte values at a specific gap, per-needle, as the direct objective for a
   **conjunctive** filter. Buhler–Keich–Sun (2003) and iedera already choose
   filter positions under an empirical Markov background, so the general move is

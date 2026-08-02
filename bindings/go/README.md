@@ -198,7 +198,7 @@ There is no pure-Go implementation behind this package, so `CGO_ENABLED=0`
 cannot produce a working build. It fails at compile time with a message that
 says so, rather than building a package whose every call panics:
 
-```
+```text
 ./nocgo.go:11:11: undefined: irregex_requires_cgo_build_with_CGO_ENABLED_1
 ```
 

@@ -14,13 +14,15 @@
 version: 2
 
 updates:
-  # The workflows themselves. Pinned by tag today; a compromised action is the
+  # The workflows themselves. Pinned to commits; a compromised action is the
   # supply-chain hole nobody watches, so this is the entry that matters most.
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
       day: monday
+    cooldown:
+      default-days: 7
     groups:
       actions:
         patterns: ["*"]
@@ -35,6 +37,8 @@ updates:
     schedule:
       interval: weekly
       day: monday
+    cooldown:
+      default-days: 7
     groups:
       rust:
         patterns: ["*"]
@@ -49,6 +53,8 @@ updates:
     directory: /bindings/rust
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "build"
     labels: ["dependencies", "rust"]
@@ -61,6 +67,8 @@ updates:
     schedule:
       interval: weekly
       day: monday
+    cooldown:
+      default-days: 7
     groups:
       go:
         patterns: ["*"]
@@ -76,6 +84,8 @@ updates:
     schedule:
       interval: weekly
       day: monday
+    cooldown:
+      default-days: 7
     groups:
       python:
         patterns: ["*"]

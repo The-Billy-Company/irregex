@@ -8,7 +8,7 @@ them; each is also its own named step. They stay off the default install, so a
 bare `zig build` still pays only for the library and its C ABI.
 
 The two postures a lane can take are now a declared field rather than a habit.
-A certificate layer honours whatever `-Doptimize` you asked for, because a
+A certificate layer honors whatever `-Doptimize` you asked for, because a
 cycles/byte number is a claim about *that* build; a production rung compiles at
 `-Dlab-optimize` (ReleaseFast by default), because a rung that races the shipped
 ladder has to be built the way the shipped ladder is or the ratio describes the

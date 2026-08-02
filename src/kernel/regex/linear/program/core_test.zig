@@ -544,9 +544,9 @@ test "matchSpan: -w settles on a LONGER arm at the same start (rewrite, not a po
     try expectJoinedOpts("abc", "x abcd", w, "");
     try expectJoinedOpts("ab", "x abcd", w, "");
     // `-w` is the two HALF boundaries, not `\b…\b`. Measured: `rg -w -o -e -`
-    // finds the dash in "foo - bar" (both neighbours non-word) where `\b-\b`
+    // finds the dash in "foo - bar" (both neighbors non-word) where `\b-\b`
     // finds nothing at all, and finds NO dash in "foo-bar", because a half
-    // boundary judges the neighbouring byte and not the span's own first byte.
+    // boundary judges the neighboring byte and not the span's own first byte.
     try expectJoinedOpts("-", "foo - bar", w, "-");
     try expectJoinedOpts("-", "foo-bar", w, "");
 }

@@ -14,6 +14,7 @@ ABI 2 adds `irgx_group_name`, the inverse of `irgx_group_index`, so the
 table is walked straight out of the compiled pattern: group 1 through group N,
 whatever the engine calls each one, identically on both grammars. The scanner is
 deleted. Nothing about the public contract moved - it is still stdlib `regexp`'s
+
 - `SubexpNames()` indexed by group number with `""` for an unnamed group and for
 element 0, `SubexpIndex` answering -1 for a name the pattern does not declare,
 and the first of two groups that share one. The engine lends those bytes rather

@@ -1,0 +1,9 @@
+# Lint levels live in Cargo.toml; this file tunes Clippy's behavior for the
+# binding crate. Suggestions must stay inside the crate's declared Rust floor.
+msrv = "1.85"
+check-incompatible-msrv-in-tests = true
+
+# Tests exercise fallible FFI and fixture construction. Their unwraps are test
+# assertions, not a shipping error path.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

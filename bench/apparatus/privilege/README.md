@@ -23,7 +23,7 @@ syscall, `thread_selfcounts`, which returns retired cycles and instructions for
 the calling thread. `pmu.zig` now tries three backends in order — `kperf`, then
 `thread_selfcounts`, then honest wall-clock — so the common case needs nothing:
 
-```
+```bash
 $ zig build -Doptimize=ReleaseFast roofline   # no sudo, no password
 meter:   thread_selfcounts · THSC_CPI cycles + instructions (unprivileged, per-thread)
 …
@@ -63,7 +63,7 @@ return _current_task_can_own_ktrace() ? 0 : EPERM;   /* == euid 0 on release ker
 Not the framework load — `dlopen` of kperf succeeds unprivileged. The gate is
 the first counter call. Verified directly by `kperf_probe.c`:
 
-```
+```bash
 $ ./kperf_probe
 kperf_probe: euid=501 pid=24299
   kpc_force_all_ctrs_get -> rc=-1 errno=1 (Operation not permitted)
@@ -77,7 +77,7 @@ process and then leave. That is the whole design.
 
 ## Why not the obvious rule
 
-```
+```text
 <user> ALL=(root) NOPASSWD: /…/irregex/zig-out/bin/<benchbinary>
 ```
 
@@ -99,8 +99,8 @@ directory.
 
 Rejecting `timestamp_timeout` is worth being explicit about: it looks weaker than
 NOPASSWD because it is temporary, but it is *broader*. A live sudo timestamp
-authorises **any** command from that account, so any of the ten agents can spend
-it on anything. The digest-pinned helper authorises exactly one immutable binary,
+authorizes **any** command from that account, so any of the ten agents can spend
+it on anything. The digest-pinned helper authorizes exactly one immutable binary,
 forever. Narrow-and-permanent beats broad-and-temporary here.
 
 ## The security model of what is staged
@@ -121,7 +121,7 @@ argument is that it **never executes anything as root**:
 Fail directions are chosen so that every error loses privilege rather than
 leaking it:
 
-| Condition | Behaviour |
+| Condition | Behavior |
 |---|---|
 | No non-root `SUDO_UID` to drop to | **refuse** — never exec as root |
 | Cannot drop privileges, or drop is recoverable | **refuse** — never exec as root |

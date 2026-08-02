@@ -9,7 +9,7 @@ already on. `-Ddebug-compress` puts each `.debug_*` section behind a
 The default is `zlib` and `zstd` is the ask, which inverts how the two codecs
 rank on the merits. `ELFCOMPRESS_ZSTD` has been in the generic ABI since 2022
 and is better than zlib on ratio, compression speed, and decompression speed at
-once, which is the finding it was standardised on - and it loses here on the
+once, which is the finding it was standardized on - and it loses here on the
 only axis a default is decided by, which is who can read it. An older reader
 does not degrade on a zstd section, it refuses it, and the floor is gdb 13.2,
 binutils 2.40, elfutils 0.189, LLVM 16. So the default takes the 59% of the win

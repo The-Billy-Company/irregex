@@ -16,7 +16,7 @@ name rather than by relative path:
 
 ## Who reads them
 
-```
+```text
 irregex  bounds/{roofline,port}          → pmu
          bounds/lowerbound, rungs/…      → probes
 gist     bench/apparatus/harness/        → pmu · probes · stats   (via the irregex dependency)

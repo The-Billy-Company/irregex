@@ -223,10 +223,12 @@ this lane does not edit that file) — header `## Layer J — positional + subst
 index tiers at scale (vs zoekt)`, side-car `scale.csv`:
 
 ```python
-Layer(
-    "J",
-    "Layer J — positional + substring",
-    "## Layer J — positional + substring index tiers at scale (vs zoekt)",
-    "scale.csv",
-),
+(
+    Layer(
+        "J",
+        "Layer J — positional + substring",
+        "## Layer J — positional + substring index tiers at scale (vs zoekt)",
+        "scale.csv",
+    ),
+)
 ```

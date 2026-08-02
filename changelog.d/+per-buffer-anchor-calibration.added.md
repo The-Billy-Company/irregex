@@ -12,6 +12,7 @@ stratified sampling lands at 1.04x. On homogeneous prose a prefix is fine
 (1.05x), which is exactly why measuring only prose would have shipped the bug.
 
 **The gate it needs is a claim about a document, not about a call.** `len >= 16 * k
+
 * budget` is 3.1 MB at a 3-byte needle, and the obvious call site cannot satisfy
 that: `query.zig` calls `simd.contains(line, needle)` once per *line*, so the gate
 declines on every real call, while removing the gate would re-pay 3.5-36.8 us per

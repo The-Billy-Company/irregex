@@ -1,7 +1,7 @@
 No Zig package could depend on this one on Linux. `dep.artifact("irgx")`
 panicked the build runner before it compiled anything:
 
-```
+```text
 thread 2452 panic: artifact name 'irgx' is ambiguous
 ```
 

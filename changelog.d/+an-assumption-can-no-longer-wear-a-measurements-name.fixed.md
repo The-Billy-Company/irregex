@@ -37,7 +37,7 @@ trial, and a tier ladder where L1 is not faster than DRAM errors out too, since 
 16 KiB working set that streams no faster than a 512 MiB one has not resolved a
 cache hierarchy whatever else it measured. A bandwidth roof is a claim about the
 machine, which is what separates it from Layer B's cycles/byte; that one is a
-claim about the build, so honouring the caller's mode is right there and wrong
+claim about the build, so honoring the caller's mode is right there and wrong
 here.
 
 Layer B also stopped asserting a cause it could not know. It reported "kperf

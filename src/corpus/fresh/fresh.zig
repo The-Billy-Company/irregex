@@ -141,7 +141,7 @@ pub const Candidates = struct {
     }
 };
 
-/// Base trigram candidates for `filters` UNIONed with every file whose mtime or
+/// Base trigram candidates for `filters` UNIONNed with every file whose mtime or
 /// ctime is at/after the build anchor (plus metadata-unknown files). `filters`
 /// is the prefilter set: a single mandatory
 /// literal (`{required}`), an alternation cover set (`foo|bar` ⇒ {foo, bar}), or
