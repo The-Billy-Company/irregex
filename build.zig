@@ -366,8 +366,9 @@ pub fn build(b: *std.Build) void {
     dynamic_lib.installHeader(b.path("include/irgx.h"), "irgx.h");
     b.installArtifact(dynamic_lib);
 
-    // The archive is packed from a partially-linked OBJECT on every target, and
-    // only the archiver differs. That is not symmetry for its own sake:
+    // The archive carries its own C floor on every target, so it links standing
+    // alone. Everywhere a partial link exists that is done by packing a
+    // partially-linked OBJECT. That is not symmetry for its own sake:
     // `addLibrary(.static)` archives this compilation's own objects and leaves
     // `linkLibrary` standing as an instruction for whoever links next — which,
     // for an archive, is a stranger who was never told. So the ELF `libirgx.a`
@@ -392,13 +393,34 @@ pub fn build(b: *std.Build) void {
     // `-Dlto` reaches the linked artifacts and deliberately not this object:
     // LTO would hand the archiver bitcode members, and whether those survive
     // into a cgo link is the consumer's linker's business, not ours to bet on.
-    const merge = b.addObject(.{ .name = "irgx", .root_module = abi });
-    const repack = if (target.result.os.tag == .macos)
-        b.addSystemCommand(&.{ "libtool", "-static", "-o" })
-    else
-        b.addSystemCommand(&.{ b.graph.zig_exe, "ar", "rcs" });
+    //
+    // COFF is the one target that cannot get there through an object, because
+    // it has no partial link: `zig build-obj` handed the two floor archives
+    // refuses with "coff does not support linking multiple objects into one".
+    // The property being bought is that the archive carries the C floor, and an
+    // archive is a bag of members — so Windows buys it by splicing instead of
+    // merging. `zig ar`'s `L` adds an input archive's *contents* rather than the
+    // archive as a member, so the abi's own objects and both floors land in one
+    // `libirgx.a` with the same closure the merged object has elsewhere. Only
+    // the assembly differs; what a consumer links does not.
+    const repack = switch (target.result.ofmt) {
+        // Zig's archiver leaves Mach-O members unaligned (see above).
+        .macho => b.addSystemCommand(&.{ "libtool", "-static", "-o" }),
+        // `L` is only defined for `q` (append), which is what create means for
+        // an output path the Run step mints fresh on every cache miss.
+        .coff => b.addSystemCommand(&.{ b.graph.zig_exe, "ar", "qcsL" }),
+        else => b.addSystemCommand(&.{ b.graph.zig_exe, "ar", "rcs" }),
+    };
     const merged = repack.addOutputFileArg("libirgx.a");
-    repack.addArtifactArg(merge);
+    if (target.result.ofmt == .coff) {
+        // Not installed as an artifact — see the ambiguity note above; it exists
+        // only to hand the archiver this compilation's own objects.
+        repack.addArtifactArg(b.addLibrary(.{ .name = "irgx", .linkage = .static, .root_module = abi }));
+        repack.addArtifactArg(floor.pcre2At(optimize));
+        repack.addArtifactArg(floor.libsaisAt(optimize));
+    } else {
+        repack.addArtifactArg(b.addObject(.{ .name = "irgx", .root_module = abi }));
+    }
     b.getInstallStep().dependOn(&b.addInstallLibFile(merged, "libirgx.a").step);
     // Because it installs as a file, the archive is invisible to a dependent's
     // `dep.artifact("irgx")`, and the three faces need it: their own archives
