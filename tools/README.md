@@ -41,16 +41,28 @@ python3 tools/build_rarity_table.py --report   # census diagnostics, no table
 python3 tools/build_rarity_table.py            # the declaration, zig-fmt canonical
 ```
 
-One is a **gate** — it reads the tree and answers yes or no, writing nothing:
+Two are **gates** — they read the tree and answer yes or no:
 
 | Tool                 | Asks                                                            |
 | -------------------- | --------------------------------------------------------------- |
 | `version_parity.py`  | do every mirror of `build.zig.zon`'s `.version` still agree, and does the release bot know about each one? |
+| `sync_contract.py`   | does each contract vendored from a sibling still match what its author wrote? |
 
 ```bash
 python3 tools/version_parity.py          # the gate (CI's `version` job)
 python3 tools/version_parity.py --json   # the mirrors it found, for a machine
+python3 tools/sync_contract.py           # refresh the vendored copies
+python3 tools/sync_contract.py --check   # the gate (relate's `contract` job)
 ```
+
+`sync_contract.py` is the only one here that also writes, and it writes a copy
+rather than a generated file. Exactly one contract is vendored — relate's
+`kinship.toml`, which the bindings mirror — because relate is private, and a
+public package whose own tests need a clone of a private one is a package the
+public cannot test. gist's `surface.toml` is deliberately absent: gist is
+public, so CI checks it out and reads the original. The `--check` gate runs from
+relate's CI rather than this one, since only the repository that authors the
+contract can see both files at once.
 
 `build.zig.zon` is the single place this package's version is written: Zig reads
 it through a build option, Rust reads `CARGO_PKG_VERSION`, Python reads its
