@@ -1,0 +1,134 @@
+# Vendored from relate/contract/kinship.toml — do not edit here.
+# ═════════════════════════════════════════════════════════════════════════════
+#  The kinship contract
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# The vocabulary of compression-as-search: how a unit is sketched, how two
+# sketches are compared, what a distance means once it is graded, and which
+# verbs a caller may ask for. None of it has a ripgrep equivalent, and none of
+# it is expressible as a pattern — which is why it is a contract of its own
+# rather than a corner of the engine's.
+#
+#   sketch / silhouette / attribution   the three record kinds, at the top level
+#   [channels]    what "near" means — copies · twins · shapes · any
+#   [grades]      the calibrated bands, and which direction each one improves in
+#   [verbs]       the closed verb set, and the axes each one accepts
+#   [retired]     spellings that must fail loudly with their replacement
+#   [lifecycle]   how the atlas and shelf age, and what a warm answer promises
+#
+# These tables were `[irregex.*]` inside the old unified contract — nested under
+# the name of the package that merely happened to hold the file. They are the
+# `relate` engine's, and they say so now.
+#
+# The `gist` repository mirrors the grade bands and channel names in its three
+# bindings and vendors a copy of this file to check them against.
+
+
+
+# ═══ 4 · native tiers ════════════════════════════════════════════════════════
+# Vocabulary with no ripgrep equivalent, so — like `--rank` — it carries no
+# parity obligation, and the semantics pinned here ARE its contract.
+#
+# Corpus policy for every verb in this part: they load the INDEX corpus (every
+# non-binary file under the roots, minus VCS and build subtrees), not the
+# rg-parity gitignore walk. They are corpus analytics, not per-file greps.
+# Results stream NDJSON under `--json`; diagnostics stay on stderr; exit codes
+# stay rg's (0/1/2).
+
+# ── [irregex] — pattern sets and compression kinship (`relate`) ──────────────
+# The set-shaped tier over the engine (src/kernel/), built from three
+# primitives:
+#
+#   match   pattern SETS with exact per-pattern attribution
+#   relate  compression kinship — an LZ78 dictionary bottom-k MinHash with LZJD
+#           distance, plus the winnowed structure silhouette
+#   weave   a closed filter/group/sort/limit plan executed engine-side
+sketch = { k = 128, min_phrase = 3, algorithm = "LZ78 phrase dictionary -> bottom-k (KMV) of 64-bit phrase hashes; distance = 1 - KMV-estimated Jaccard (LZJD)", detail = "deterministic: same bytes => same sketch on every platform" }
+silhouette = { k = 256, gram = 5, window = 4, algorithm = "normalize (identifiers->I, numbers->N, strings->S, comments dropped, pan-language keywords kept) -> hash every gram-token shingle -> winnow (min of every window) -> bottom-k (KMV); distance = 1 - KMV-estimated Jaccard", detail = "the STRUCTURE channel: a renamed Type-2 twin normalizes to the identical token stream, so its silhouette distance is exactly 0 while its byte distance stays far; deterministic, language-agnostic (a squint, not a parse)" }
+attribution = { detail = "a PatternSet answer is bit-identical to N independent single-pattern runs; the fused (?:a)|(?:b) gate is an accelerator that may only skip work, never change an answer (tests hold it to the single-pattern oracle)" }
+
+# ── [irregex.channels] — one channel vocabulary, every kinship verb ──────────
+# `--as` names the channel by what it finds. The metric names
+# (bytes|echo|structure|fused) stay accepted as `--lens` aliases, so a caller
+# who learned the metric is not stranded — they are spellings of one enum, never
+# a second code path.
+#
+# `quantity` is the JSON key a row's score arrives under, and it is per channel
+# on purpose: naming a gap or a gain `distance` would invert the meaning of
+# every downstream threshold. A row therefore carries one score column plus the
+# channel that names it, never a fused number.
+[channels]
+copies = { metric = "bytes", polarity = "distance", quantity = "distance", admits = "--max-distance", detail = "LZJD distance over raw bytes: verbatim duplication and its drift. the default for a record probe" }
+shapes = { metric = "structure", polarity = "distance", quantity = "distance", admits = "--max-distance", detail = "normalized-structure silhouette distance: shared skeleton, vocabulary irrelevant" }
+twins = { metric = "echo", polarity = "gap", quantity = "echo", admits = "--min-echo", detail = "byte distance MINUS structure distance: the same skeleton wearing different vocabulary (Type-2 clones), the abstraction candidate. a GAP — higher is stronger, and byte-identical files score zero, which is the weakest twin evidence there is. the default for the repetition verb, because it is the only channel no other tool reports" }
+any = { metric = "fused", polarity = "distance", quantity = "distance", admits = "--max-distance", detail = "min(copies, shapes): close in EITHER channel counts" }
+recall = { metric = "gain", polarity = "gain", quantity = "gain", admits = "<none>", pairwise = false, detail = "Ziv-Merhav coding gain of a TEXT against one document (1 - cost/cold): how cheaply the corpus already describes it. NOT pairwise — it prices a text probe, so it is chosen by the probe's SHAPE (bare text to `relate similar`) and can never be named by --as. a gain rises with confidence, which is why it bands on its own scale rather than borrowing the distance bands" }
+
+# ── [irregex.grades] — one calibration of what a score is worth ──────────────
+# Ranking verbs always return rows, so an answer with no real kin used to read
+# exactly like a find. Every kinship score is banded against the thresholds the
+# tool already documented; the band rides each --json row, --min-grade G
+# withholds anything weaker than G, and an answer that is entirely background
+# reports itself on stderr in gist's hint grammar (GIST_HINTS=0 mutes it). A
+# trimmed but genuine answer accounts for what it withheld without recanting.
+[grades]
+distance = { identical = 0.05, strong = 0.25, moderate = 0.50, weak = 0.75, detail = "upper bound per band; anything above weak is `none` — background, not a result. the cut points are the documented ones: 0.05 near-exact copy, 0.25 the --max-distance admission default, 0.50 shares style not substance" }
+gap = { strong = 0.45, moderate = 0.30, weak = 0.15, detail = "lower bound per band; anything below weak is `none`. scaled from the 0.15 --min-echo floor, under which a structure-close pair is small-sample noise rather than a shared skeleton. a gap is never `identical`, because two byte-identical files have a zero gap — the weakest twin evidence there is" }
+gain = { identical = 0.90, strong = 0.60, moderate = 0.45, weak = 0.30, detail = "lower bound per band for the `recall` channel; measured over this repo's ~20k-file corpus — a sentence lifted verbatim out of a source file scored 0.9496, an on-target descriptive query 0.63-0.82, an English query about a subject the scope does not contain 0.32-0.44, and nonsense 0.16-0.23. a one-word query is cheap to explain anywhere, which is why 0.43 for `def` has to land in the same band as `not really here`" }
+empty = { code = 1, detail = "a kinship verb that emits no row exits 1 — `no_match` in [exit_codes], the same code gist returns for a pattern that matches no line, whether the corpus held no kin or --min-grade withheld every candidate. the trace diagnostic still prints: how long the query took is a fact about the run, not about whether it found anything" }
+
+# ── [irregex.verbs] — the `relate` surface ───────────────────────────────────
+# TWO kinship questions, not six verbs. Everything a caller can ask about
+# resemblance is either the NEIGHBOR question (rank a corpus against one thing —
+# `similar`) or the REPETITION question (what repeats inside a corpus —
+# `echoes`), and the axes that used to be verb names are flags:
+#
+#   unit     file | function | match      what a row IS
+#   channel  copies | twins | shapes | any   which repetition ([irregex.channels])
+#   shape    pairs | families | distinct  what the answer is FOR
+#
+# So `dups` is `echoes --as copies`, `clusters` adds `--shape families`,
+# `concepts` adds `--unit function`, and `search` is `similar <text>` — see
+# [irregex.retired] for the coaching table the CLI prints. Kinship rows answer
+# from a persisted artifact when one is fresh-foldable and live otherwise, with
+# identical answers either way ([irregex.lifecycle]); `--no-index` forces live.
+#
+# Noise floors are uniform, because they are properties of the measurement
+# rather than of a verb: `--min-lines` (default 5 at `--unit function`) refuses
+# fragments too short to carry a signal, `--min-mass` refuses units too small to
+# shed a real fingerprint sample (two of them land at distance ~0 by arithmetic,
+# and a false `identical` is worse than no row), and generated paths are
+# withheld from a repetition sweep — a codegen twin is never a refactor
+# candidate, the fix lives in the template — while `--include-generated` turns
+# the sweep into a drift audit. A neighbor probe keeps generated files, because
+# "which generated file is closest to this hand-written one" is a real question.
+[verbs]
+similar = { argv = "relate similar <path | path#Lnnn | text> [--as copies|twins|shapes|any] [--unit file|function] [--matching PAT]... [--min-grade G] [--top N] [--json] [--no-index] [ROOT...]", detail = "the NEIGHBOR question: rank the corpus against ONE probe, strongest first, with the probe itself excluded. the probe's SHAPE decides how it is priced, so a caller never has to make a flag agree with an argument — a path scores kinship over files; `path#Lnnn` scores the function containing that line against function fragments (asking 'where else is this implementation' rather than 'which file resembles a function'); bare text scores the `recall` channel, Ziv-Merhav coding gain against the corpus; text WITH --as fingerprints the snippet and compares it as a record ('what is shaped like this'). every row carries its calibrated grade, --min-grade withholds background, and an answer made only of background says so on stderr" }
+echoes = { argv = "relate echoes [--unit file|function|match] [--as copies|twins|shapes|any] [--shape pairs|families|distinct] [--max-distance T] [--min-echo E] [--min-size N] [--min-lines N] [--min-mass N] [--include-generated] [--matching PAT]... [--min-grade G] [--top N] [--brief] [--json] [--no-index] [ROOT...]", detail = "the REPETITION question along the three axes above. pairs = two units to open side by side (nominated by shared seed hashes, every emitted pair exactly verified against both sketches — precision, not exhaustive recall). families = the transitive closure of that verified graph, which is the unit a dedup or restructure sweep acts on, graded by the family's LOOSEST admitted edge and ranked by consolidation opportunity (conservative repeated_lines, never a fused score). distinct = the complement, units that joined no family, each carrying its nearest miss and both measured distances — so 'which of these 14 implementations is genuinely unique' is a measurement with a receipt rather than an absence indistinguishable from too tight a threshold. `--unit function` extracts fragments (regions.extractAll over authored brace-family and Python source) and computes byte sketches only for nominated fragments, never a repo-wide byte pass" }
+patterns = { argv = "relate patterns -e P [-e P...] [-f FILE] [-F] [-i] [--by pattern|file] [--under GLOB] [--top N] [--json] [ROOT...]", detail = "one walk, N patterns, exact per-pattern attribution as path:line rows; --by groups into counts, --under/--top shape engine-side (loom); rows are total-ordered (path, line, pattern) so output is deterministic" }
+pack = { argv = "relate pack <text> [--matching PAT]... [--match any|all] [-F] [-i] [--top N] [--json] [ROOT...]", detail = "the SET of files that jointly describes <text> cheapest — greedy max-coverage over corpus-priced query chunks nominated by the persisted trigram codebook; each pick's marginal_bits is exactly the priced bits it adds beyond earlier picks; foreign chunks are reported, never silently absorbed. with --matching the lexicon is built from ONLY the admitted files, so novelty is priced inside the matching set and each pick names the patterns that admitted it" }
+quote = { argv = "relate quote <text> [--json]", detail = "rewrite <text> as maximal verbatim quotations from the WHOLE corpus, priced in bits (cross-parse on the persisted codex shelf, O(|text|)); each phrase attributed to one exemplar file; corpus-conditional bits/byte is the novelty meter" }
+
+# ── [irregex.retired] — folded verb names and where they went ────────────────
+# A retired name is not a hidden alias: it does not dispatch, so nothing runs on
+# stale semantics. It is a row in the manifest, which means `relate dups` exits
+# 2 with the invocation that replaces it and the reason the fold happened — and
+# `relate --schema` carries the same table, so an agent that learned the old
+# vocabulary re-learns it from the tool instead of from a changelog.
+[retired]
+search = { now = "relate similar <text>", because = "one probe verb: bare text scores the recall channel and a path scores kinship, so the split forced a caller to know which kind their question was before they could ask it" }
+dups = { now = "relate echoes --as copies", because = "a channel is a flag, not a verb" }
+clusters = { now = "relate echoes --as copies --shape families", because = "a shape is a flag, not a verb" }
+concepts = { now = "relate echoes --as shapes --shape families --unit function", because = "the comparison unit is a flag; every axis of a repetition question now composes with every other" }
+
+# ── [irregex.lifecycle] — the warm artifacts and their two verbs ─────────────
+# This tier owns its warm artifacts the way gist owns the trigram index — a full
+# engine, not a shim. A query folds in every file changed since the build anchor
+# (the same stat walk, all channels refreshed together) and gates emitted rows
+# against deletion, so a warm answer is byte-identical to a live one. An
+# accelerator, never an authority: a missing or corrupt artifact answers live.
+[lifecycle]
+atlas = { file = ".gist/kinship.atlas", detail = "magic ATLS v3: anchor + NUL-separated path catalog + fixed-width sketch rows + fixed-width silhouette rows + FNV-1a checksum. one LZJD sketch and one structure silhouette per corpus file; broad kinship scopes use it, narrow explicit scopes sketch live when cheaper; fails closed on corruption" }
+frag = { file = ".gist/concepts.frag", detail = "magic FRAG: anchor + roots blob + NUL-separated path catalog + per-fragment records (path index, byte/line span, variable-length structure silhouette) + FNV-1a checksum. the warm tier for the function unit (`relate echoes --unit function`, and a `path#Lnnn` probe): one function-fragment table, folded for freshness the way the atlas is (files changed since the anchor re-extracted, deletions gated). only structural silhouettes persist; byte sketches for the copies/twins channels are computed live for nominated fragments; fails closed on corruption" }
+index = { argv = "relate index [--shelf]", detail = "build + persist the atlas AND the concepts.frag fragment table atomically (anchor captured BEFORE the corpus read); --shelf also rebuilds the codex shelf quote reads — the same artifact `gist codex build` writes" }
+status = { argv = "relate status [--json]", detail = "atlas + frag + shelf readiness and staleness; exit 0 when the atlas is ready, 1 otherwise (verbs still answer, live)" }
