@@ -1,0 +1,78 @@
+name: Bug report
+description: A crash, a hang, a build failure, or anything else that does not belong in the other two forms.
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        If the engine returned the wrong *answer*, the "Wrong match" form asks
+        better questions than this one - use that instead.
+
+
+        A crash or a hang reachable from any pattern and any subject may be a
+        security issue rather than a bug. If an attacker could control either
+        one, close this tab and report it privately: see
+        [SECURITY.md](https://github.com/The-Billy-Company/irregex/blob/main/SECURITY.md).
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce it
+      description: >-
+        Commands and code, from a clean checkout if you can manage it. The
+        smaller the better; a reproduction we can run is worth ten paragraphs
+        of description.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Output, panic, or stack trace
+      description: The whole thing, not the last line. Build logs count.
+      render: text
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Which surface did you drive?
+      options:
+        - Zig API
+        - C ABI (include/irgx.h)
+        - Python binding
+        - Rust binding
+        - Go binding
+        - the build itself (zig build / zig build test)
+        - through one of the faces (gist / relate / blast)
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Platform and toolchain
+      description: >-
+        OS, architecture, and the compiler you used. If you built the engine,
+        the Zig version and the optimize mode - safety checks are on in Debug
+        and ReleaseSafe and off in ReleaseFast, so the mode changes what a bug
+        looks like.
+      placeholder: "Ubuntu 24.04 x86_64, Zig 0.16.0, ReleaseFast"
+    validations:
+      required: true

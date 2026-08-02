@@ -1,0 +1,84 @@
+# Automated dependency updates.
+#
+# Four manifests, four ecosystems, one weekly window. Everything is grouped so
+# a quiet week is one pull request rather than nine - a review queue nobody
+# reads is the same as no review at all.
+#
+# What is deliberately NOT here: Zig. Dependabot has no Zig ecosystem, and the
+# two entries in `build.zig.zon` would be the wrong thing to automate anyway.
+# PCRE2 and libsais are physically vendored under `vendor/`; the url+hash pins
+# beside them are provenance for bytes already on disk, so bumping a pin
+# without re-vendoring the tree would produce a manifest that lies. Re-vendor
+# by hand: `zig fetch --save` the new release, refresh `vendor/`, and update
+# NOTICE in the same commit.
+version: 2
+
+updates:
+  # The workflows themselves. Pinned by tag today; a compromised action is the
+  # supply-chain hole nobody watches, so this is the entry that matters most.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"
+    labels: ["dependencies", "ci"]
+
+  # The Rust binding. Two runtime dependencies (serde, serde_json) and two for
+  # tests; a group keeps a patch week to one pull request.
+  - package-ecosystem: cargo
+    directory: /bindings/rust
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      rust:
+        patterns: ["*"]
+    commit-message:
+      prefix: "build"
+    labels: ["dependencies", "rust"]
+
+  # The channel `bindings/rust/rust-toolchain.toml` pins. CI runs `rustup show`
+  # rather than installing a channel, precisely so that file is the only place
+  # the toolchain is named - which makes it worth watching.
+  - package-ecosystem: rust-toolchain
+    directory: /bindings/rust
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "build"
+    labels: ["dependencies", "rust"]
+
+  # The Go binding has no third-party requires - it carries prebuilt archives
+  # and links them through cgo. This entry exists to catch the day that stops
+  # being true, and to keep the declared Go version honest.
+  - package-ecosystem: gomod
+    directory: /bindings/go
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      go:
+        patterns: ["*"]
+    commit-message:
+      prefix: "build"
+    labels: ["dependencies", "go"]
+
+  # The Python binding ships zero runtime dependencies on purpose - the
+  # transport is ctypes, which is stdlib - so this only ever moves the dev
+  # group and `uv.lock`.
+  - package-ecosystem: uv
+    directory: /bindings/python
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      python:
+        patterns: ["*"]
+    commit-message:
+      prefix: "build"
+    labels: ["dependencies", "python"]

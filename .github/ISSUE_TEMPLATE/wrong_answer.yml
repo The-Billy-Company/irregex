@@ -1,0 +1,98 @@
+name: Wrong match
+description: The engine matched something it should not have, or missed something it should have found.
+title: "wrong answer: "
+labels: ["bug", "correctness"]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        This is the report we most want to receive. A regex engine that is
+        merely fast is worthless, so a divergence from what the pattern means
+        outranks almost everything else in the queue.
+
+
+        One ask before you write: reduce it. The smallest pattern and the
+        shortest subject that still show the problem are worth more than a real
+        file, because they turn into a regression test the same day.
+
+  - type: textarea
+    id: pattern
+    attributes:
+      label: The pattern
+      description: Exactly as passed, unescaped by your shell. Paste it, do not retype it.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: subject
+    attributes:
+      label: The subject
+      description: >-
+        The bytes you searched. If whitespace, line endings, or invalid UTF-8
+        are load-bearing, attach a file instead of pasting - a paste normalizes
+        exactly the thing under test.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: flags
+    attributes:
+      label: Flags and options
+      description: >-
+        Case folding, word boundaries, multiline, Unicode mode, engine
+        selection. If you drove the API rather than a face, the option struct.
+      placeholder: "-i -U, or: unicode on, multiline off"
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected, and what you got
+      description: >-
+        Spans if you have them. Say which offsets, not just "it matched".
+    validations:
+      required: true
+
+  - type: input
+    id: oracle
+    attributes:
+      label: What does an independent engine say?
+      description: >-
+        Optional but decisive. Python's `re`, PCRE2, RE2, ripgrep - whatever
+        you have. If two engines disagree with us, we are almost certainly the
+        one that is wrong; if they disagree with each other, the interesting
+        question is which semantics the pattern actually asks for.
+      placeholder: "python3 -c \"import re; print(re.findall(...))\" → ['abc']"
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Which surface did you drive?
+      options:
+        - Zig API
+        - C ABI (include/irgx.h)
+        - Python binding
+        - Rust binding
+        - Go binding
+        - through one of the faces (gist / relate / blast)
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: A release version, or the commit SHA if you built from source.
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: "macOS 15.4 arm64, Zig 0.16.0, ReleaseFast"
+    validations:
+      required: true

@@ -1,0 +1,30 @@
+# Who gets asked to review what.
+#
+# GitHub matches the LAST rule that applies to a file, so the specific rules
+# live below the catch-all. Ownership here is a routing table, not a fence: a
+# pull request from anyone is welcome on any of these paths.
+
+*                       @GriffinCanCode
+
+# The engine tiers and the contract that binds them. A change to the import
+# topology is an architecture change even when the diff is three lines.
+/src/                   @GriffinCanCode
+/contract/              @GriffinCanCode
+
+# The C ABI is the promise every binding and every face rests on, and it
+# freezes at 1.0.0. A header change is an ecosystem change.
+/include/               @GriffinCanCode
+
+# Third-party bytes and the attribution that has to travel with them. Never
+# edit one of these without the other.
+/vendor/                @GriffinCanCode
+/NOTICE                 @GriffinCanCode
+/LICENSE                @GriffinCanCode
+
+# The measurement apparatus and the dossiers that make a claim falsifiable.
+/bench/                 @GriffinCanCode
+/research/              @GriffinCanCode
+
+# Anything that can change what CI proves, including this file.
+/.github/               @GriffinCanCode
+/quality/               @GriffinCanCode

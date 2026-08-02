@@ -1,0 +1,66 @@
+name: Feature request
+description: Something the engine should be able to do and cannot.
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        The bar here is not "would this be nice". It is: what can you not do
+        today, and what would you stop having to write yourself?
+
+
+        This library aims for substantial capability behind a small interface,
+        which means a proposal that adds one more knob to an existing verb is
+        usually a harder sell than one that removes a reason to reach outside
+        the library at all.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you are trying to do
+      description: >-
+        The task, not the API you have in mind. What are you building, and
+        where does it currently hit a wall?
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: What you do instead today
+      description: >-
+        The code you write around the gap, the second tool you shell out to, or
+        the case you gave up on. This is the strongest evidence a request has.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+      description: >-
+        A signature, a flag, a behaviour. Rough is fine. If you can say what
+        the semantics are at the edges - empty input, invalid UTF-8, an anchor,
+        an unbounded quantifier - say it, because that is where the design work
+        actually is.
+
+  - type: input
+    id: prior_art
+    attributes:
+      label: Who already does this?
+      description: >-
+        Another engine, a paper, a library. Not a disqualification - the
+        opposite. Knowing that RE2 or PCRE2 or Hyperscan solved it, and how,
+        is where a good design starts.
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      description: >-
+        This repository is the engine and the C ABI floor. The command-line
+        products live in `gist`, `relate`, and `blast`.
+      options:
+        - label: This is about the engine, the indexes, the ABI, or a binding - not about a face's flags or output.
+          required: true

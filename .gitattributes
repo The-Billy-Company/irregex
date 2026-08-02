@@ -1,0 +1,76 @@
+# How git should treat the bytes in this repository.
+#
+# Three jobs: keep line endings from becoming a diff, keep vendored and
+# generated files out of review and out of GitHub's language stats, and give
+# git the hunk-header rules that make a diff readable.
+#
+# NOT here on purpose: `export-ignore`. It would trim files out of the tarball
+# GitHub generates for a tag, and that tarball is exactly what `zig fetch`
+# hashes - the url+hash pin a downstream `build.zig.zon` carries is a hash of
+# those bytes. Excluding a directory to save a consumer a few kilobytes would
+# invalidate every pin that already exists. What ships in the Zig package is
+# already decided, deliberately and reviewably, by `.paths` in build.zig.zon.
+
+# ── Line endings ────────────────────────────────────────────────────────────
+# Normalize on commit, LF in the working tree on every platform. Everything
+# here is built by Zig, Go, Rust, Python, and POSIX shell; none of them wants
+# CRLF, and a Windows checkout that introduced it would fail the corpus tests
+# by changing the bytes under test.
+* text=auto eol=lf
+
+# ── Binary ──────────────────────────────────────────────────────────────────
+# The prebuilt per-platform archives the Go and Rust bindings link, so that a
+# consumer needs no Zig toolchain. Explicitly binary: they are large, and a
+# heuristic that ever guessed "text" would try to normalize them.
+*.a binary
+
+# ── Vendored ────────────────────────────────────────────────────────────────
+# Upstream sources we carry verbatim - PCRE2 behind `-P`, libsais under the
+# FM-index, and the Rust binding's vendored archives. `linguist-vendored`
+# keeps them out of the repository's language breakdown; the C in PCRE2 is
+# not this project's C.
+vendor/**                 linguist-vendored
+bindings/rust/vendor/**   linguist-vendored
+
+# The pinned Unicode Character Database and WHATWG encoding tables. Inputs to
+# the table generators under tools/, not source anyone edits by hand.
+tools/ucd/**     linguist-vendored -diff
+tools/whatwg/**  linguist-vendored -diff
+
+# ── Generated ───────────────────────────────────────────────────────────────
+# The schema tables every face lowers through, minted by
+# tools/build_schema_tables.py from contract/*.toml. Collapsed in review
+# because the diff to read is the contract's, not its projection's.
+*.gen.zig      linguist-generated
+schema.gen.*   linguist-generated
+schema_gen.*   linguist-generated
+
+# The C header and archives the bindings carry are copies placed by their
+# `scripts/vendor_libraries.py`; the source of truth is include/irgx.h and
+# `zig build`.
+bindings/*/irgx.h  linguist-generated
+
+# Lockfiles: resolver output. Reviewed as a fact ("this version moved"), never
+# read line by line.
+*.lock  linguist-generated -diff
+
+# ── Diff drivers ────────────────────────────────────────────────────────────
+# Git ships hunk-header patterns for these languages; naming them here is what
+# makes `@@ ... fn whatever` appear above a hunk instead of a bare line number.
+*.c   diff=cpp
+*.h   diff=cpp
+*.go  diff=golang
+*.py  diff=python
+*.rs  diff=rust
+*.md  diff=markdown
+
+# Zig has no built-in driver. The attribute is inert until the pattern exists
+# in your own git config; CONTRIBUTING.md has the one-line command, and
+# without it this line simply falls back to git's default behaviour.
+*.zig diff=zig
+
+# ── Merge ───────────────────────────────────────────────────────────────────
+# The changelog is append-at-the-top and assembled by towncrier. Two branches
+# adding release sections conflict textually while agreeing semantically; a
+# union merge keeps both and lets the next `towncrier build` sort it out.
+CHANGELOG.md merge=union

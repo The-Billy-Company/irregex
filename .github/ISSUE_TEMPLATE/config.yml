@@ -1,0 +1,25 @@
+# Blank issues are off, not to be difficult, but because the three forms beside
+# this file ask for the things that decide whether a report is actionable: the
+# pattern, the bytes, the flags, and which surface you drove. A regex bug
+# without its subject is a bug nobody can reproduce.
+blank_issues_enabled: false
+
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/The-Billy-Company/irregex/security/advisories/new
+    about: >-
+      Never in a public issue. This opens a private thread only the maintainers
+      can read. See SECURITY.md for what counts and what we do next.
+
+  - name: Something wrong with the `gist` command line
+    url: https://github.com/The-Billy-Company/gist/issues
+    about: >-
+      Flags, output, ranking, the resident daemon, install - `gist` is a
+      separate repository. File it there; we move it here if the cause turns
+      out to be the engine.
+
+  - name: Something wrong with `relate` or `blast`
+    url: https://github.com/The-Billy-Company/relate/issues
+    about: >-
+      Similarity, repetition, provenance, and blast radius are the sibling
+      faces, each with its own repository and its own issue tracker.

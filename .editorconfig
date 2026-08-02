@@ -1,0 +1,108 @@
+# What your editor should do before a formatter ever runs.
+#
+# This file is not a second opinion. Every value below is the value the tool
+# that actually gates the file already emits - `zig fmt` for Zig and `.zon`,
+# `rustfmt` under bindings/rust/rustfmt.toml, `gofmt` for Go, `ruff format`
+# under quality/ruff.toml and bindings/python/pyproject.toml. An editor save
+# and a `--check` run therefore cannot disagree, which is the whole point:
+# formatting drift here is a red X in CI (`zig fmt --check` runs on every push
+# over `git ls-files -co '*.zig'`), and a contributor should never learn about
+# it from CI when their editor could have told them.
+#
+# `max_line_length` is deliberately absent. Wrap policy belongs to the
+# formatters, which know about string literals, URLs, and column-aligned
+# tables; a flat cap here would only fight them.
+#
+# Spec: https://spec.editorconfig.org/
+
+root = true
+
+# Universal - applies to every text file in the tree.
+[*]
+charset                  = utf-8
+end_of_line              = lf
+insert_final_newline     = true
+trim_trailing_whitespace = true
+indent_style             = space
+indent_size              = 4
+
+# Zig, and the `.zon` manifests `zig fmt` also formats. 4-space soft tabs.
+[*.{zig,zon}]
+indent_style = space
+indent_size  = 4
+
+# The ward contract language (contract/*.ward) - a house DSL with no formatter,
+# so this file IS its layout contract. C-style comments, 4-space blocks.
+[*.ward]
+indent_style = space
+indent_size  = 4
+
+# Rust: rustfmt `tab_spaces = 4`.
+[*.rs]
+indent_style = space
+indent_size  = 4
+
+# Go: gofmt writes hard tabs and there is no flag to talk it out of that.
+# `tab_width` is the editor's visual hint, not a claim about the bytes.
+[*.{go,mod,sum}]
+indent_style = tab
+indent_size  = 4
+tab_width    = 4
+
+# Python: ruff format, 4-space.
+[*.{py,pyi}]
+indent_style = space
+indent_size  = 4
+
+# C and headers - the hand-written C ABI surface under include/ and the
+# generated headers the bindings carry. No formatter runs on these; 4-space
+# matches what the shipped `irgx.h` already is.
+[*.{c,h}]
+indent_style = space
+indent_size  = 4
+
+# Data and markup: 2-space is the convention every one of these tools defaults
+# to (taplo, prettier, the GitHub Actions schema).
+[*.{toml,yml,yaml,json}]
+indent_style = space
+indent_size  = 2
+
+# Shell: matches `shfmt -i 2`.
+[*.{sh,bash}]
+indent_style = space
+indent_size  = 2
+
+# Markdown keeps trailing whitespace: two trailing spaces are a hard line
+# break, and trimming them silently rewrites the rendered page.
+[*.md]
+trim_trailing_whitespace = false
+
+# Fixed-column data. Nothing indents these, and an editor that "helpfully"
+# re-aligns a column breaks the parser reading them.
+[*.{tsv,csv,baseline}]
+indent_style             = unset
+indent_size              = unset
+trim_trailing_whitespace = false
+
+# Vendored upstream (vendor/pcre2, vendor/libsais, bindings/rust/vendor) and
+# the fetched package cache. These are somebody else's bytes; re-indenting
+# them on save would turn a re-vendor into an unreviewable diff.
+[{vendor,zig-pkg}/**]
+indent_style             = unset
+indent_size              = unset
+trim_trailing_whitespace = false
+insert_final_newline     = false
+
+[bindings/rust/vendor/**]
+indent_style             = unset
+indent_size              = unset
+trim_trailing_whitespace = false
+insert_final_newline     = false
+
+# The pinned Unicode Character Database and WHATWG encoding tables. Byte-exact
+# copies of upstream data files - the table generators hash what they read.
+[tools/{ucd,whatwg}/**]
+indent_style             = unset
+indent_size              = unset
+trim_trailing_whitespace = false
+insert_final_newline     = false
