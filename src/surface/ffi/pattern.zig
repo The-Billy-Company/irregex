@@ -648,3 +648,80 @@ test "the PCRE2 arm captures too, through the same door" {
     // And the boolean plane answers the same pattern.
     try t.expectEqual(Status.match, isMatch(re, " walrus", 7));
 }
+
+// ── adversarial additions: termination + a toxic-pattern soak ──────────────
+//
+// The suite above proves each verb's contract on well-formed input. These prove
+// two properties over ADVERSARIAL input that no single case states: a nullable
+// pattern's empty-match storm terminates with a bounded count rather than
+// spinning, and no random toxic pattern can make any FFI entry crash or return
+// a status outside its own vocabulary. Both stay on the LINEAR engine — which
+// is linear-time by construction — so an adversarial pattern over an adversarial
+// buffer cannot backtrack catastrophically the way a PCRE2 `(a*)*` could, and
+// the soak runs in milliseconds. Deterministic PRNG, the repo's fuzz idiom.
+
+test "find_all terminates on a nullable pattern's empty-match storm, bounded by position" {
+    // A pattern that matches the empty string offers a zero-width match at every
+    // position; the seam must advance past each rather than re-find it forever.
+    // The one hard invariant a host can rely on: no more matches than positions.
+    for ([_][]const u8{ "a*", "b*", "(?:)", "x?", "\\d*" }) |pat| {
+        const re = try open(pat, 0);
+        defer free(re);
+        for ([_][]const u8{ "", "aaaa", "abcabc", "zzzzzzzzzzzzzzzz" }) |text| {
+            var buf: [64]Span = undefined;
+            var n: usize = 0;
+            const st = findAll(re, text.ptr, text.len, &buf, buf.len, &n);
+            try t.expect(st == .match or st == .ok);
+            try t.expect((n == 0) == (st == .ok)); // count and verdict agree
+            try t.expect(n <= text.len + 1); // never more matches than positions
+        }
+    }
+}
+
+test "the FFI trust boundary survives a toxic-pattern soak without a crash or a bogus status" {
+    // Braces are withheld from the alphabet on purpose: `{` is the one metachar
+    // whose bounded repetition could ask the linear engine for a huge state set,
+    // and this soak is about the seam's robustness, not the machine's patience.
+    const meta = "abc.*+?()[]^$|\\-\t \n";
+    const haystacks = [_][]const u8{ "", "abc", "a\nb", "aAbBcC 123", "\x00\x01\xff\x7f", "the quick brown fox" };
+
+    const sc = fault.scope();
+    defer sc.end();
+    var prng = std.Random.DefaultPrng.init(0xB1A57_ADBE);
+    const r = prng.random();
+    var compiled: usize = 0;
+    var pbuf: [12]u8 = undefined;
+
+    for (0..3000) |_| {
+        const plen = r.uintLessThan(usize, pbuf.len + 1);
+        for (pbuf[0..plen]) |*c| c.* = meta[r.uintLessThan(usize, meta.len)];
+        const pat = pbuf[0..plen];
+
+        var re: *Regex = undefined;
+        // A toxic pattern is one of exactly three answers — compiled, declined
+        // to PCRE2, or refused — never a fourth thing and never a crash.
+        const cs = compile(pat.ptr, pat.len, 0, &re);
+        try t.expect(cs == .ok or cs == .stale or cs == .invalid);
+        if (cs != .ok) continue;
+        defer free(re);
+        compiled += 1;
+
+        for (haystacks) |hay| {
+            const ms = isMatch(re, hay.ptr, hay.len);
+            try t.expect(ms == .match or ms == .ok);
+
+            var buf: [64]Span = undefined;
+            var n: usize = 0;
+            const fs = findAll(re, hay.ptr, hay.len, &buf, buf.len, &n);
+            try t.expect(fs == .match or fs == .ok);
+            // The two verbs answer the same question about the same unit, and a
+            // zero-width storm still cannot exceed the position count.
+            try t.expectEqual(ms, fs);
+            try t.expect((n == 0) == (fs == .ok));
+            try t.expect(n <= hay.len + 1);
+        }
+    }
+    // The generator is not so hostile that nothing ever compiles — otherwise the
+    // match-side asserts above would be vacuous.
+    try t.expect(compiled > 100);
+}
