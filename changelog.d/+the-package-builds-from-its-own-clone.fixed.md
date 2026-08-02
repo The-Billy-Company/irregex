@@ -1,5 +1,0 @@
-This package could not be built by anyone who only had this package. `build.zig.zon` reached for `.kernelkit = .{ .path = "../_buildkit" }`, a sibling that exists on one machine and has no remote, so a fresh clone failed at configure time with `unable to open '../_buildkit'` — before compiling a line. That broke every clone, every CI runner, and any `pip install` that had to build from the sdist rather than a wheel.
-
-The whole of what it borrowed was one file: `brigade.zig`, the shard-aware test runner, now living here beside `build.zig` and shipped as part of the package. `gist` and `relate` pick it up through the dependency on this package they already declared, so the build-tooling package leaves the graph entirely rather than being replaced by a published one. Nothing about how tests run changed — same sharding, same `BRIGADE_*` levers, same per-test semantics.
-
-The prose that pointed at the old package went with it, including two comments citing a `_buildkit/build.zig` helper that is no longer reachable from any of these repositories.

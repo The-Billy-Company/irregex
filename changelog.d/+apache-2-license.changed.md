@@ -1,1 +1,0 @@
-Relicensed from MIT to Apache-2.0 — same permissive freedoms, plus an explicit patent grant with retaliation termination, a NOTICE/attribution obligation, and a stated-changes requirement. No API or behavior change.

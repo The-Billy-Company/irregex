@@ -1,7 +1,0 @@
-This repository had no CI of any kind, which is precisely how a `requires-python` floor of `>=3.10` shipped in a package whose runtime uses syntax that is a parse error before 3.12: nothing ever installed the built artifact and tried to import it.
-
-`ci` runs the four faces as four jobs, because a Zig engine regression and a Rust clippy nit are different news and one job would report them as the same red X: the engine (`check` then `test`, on both Linux and macOS, since the build branches on the host), the Python binding on 3.12/3.13/3.14, and the Go and Rust bindings. Neither of those last two installs Zig — both ship a prebuilt archive per platform so that `go get` and `cargo build` need no toolchain, and installing one in CI would exercise a path no consumer takes.
-
-`release` builds the whole wheel matrix on a tag and publishes through PyPI Trusted Publishing, so there is no API token to leak or rotate. Two things gate the upload. The declared Python floor is proven against the artifact about to be published — the wheel is installed on 3.12 and imported from outside the source tree — rather than asserted in a TOML file, which is the specific check that would have caught the false floor. And because the three faces version independently (0.3.0, 0.2.0, 0.1.0), the tag is checked against the version it would actually publish, so `v0.3.0` refuses rather than quietly shipping 0.2.0.
-
-Publishing needs one manual step first: register this repository, workflow `release.yml`, environment `pypi` as a trusted publisher for the `irregex` project on PyPI.

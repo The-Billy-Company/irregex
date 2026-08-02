@@ -1,3 +1,0 @@
-The Go runtime's child tier reported a signaled process as `exited -1`, which both invents an exit code a signaled process does not have and hides the one fact worth knowing: something outside the engine killed it, and there is no output because it never got to speak. It now names the signal — `killed by segmentation fault (no output; the engine did not fault)`.
-
-This was not cosmetic. An intermittent `gist status: exited -1` in the index lifecycle tests had been written off as machine noise; the first run under the new wording named it a **segmentation fault**, and the crash report puts it in `readGenerationFile` → `Io.Dir.readFileAlloc` under `status`. A diagnostic that misattributes a crash to the engine's exit code buys silence, not stability.
