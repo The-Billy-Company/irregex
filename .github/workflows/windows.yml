@@ -22,6 +22,8 @@ jobs:
   native:
     name: native (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
+    env:
+      ZIG_TARGET: ${{ matrix.zig_arch }}-windows
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -47,7 +49,10 @@ jobs:
           $declared = $floor.Matches[0].Groups[1].Value
           if ($declared -ne $ver) { throw "workflow pins zig $ver, build.zig.zon declares $declared" }
 
-          $target = '${{ matrix.zig_arch }}-windows'
+          # Zig 0.16's arm64 compiler emits malformed LLVM records for bundled
+          # C sources. The x64 compiler runs under Windows emulation and emits
+          # the native matrix target requested by the build below.
+          $target = 'x86_64-windows'
           $index = Invoke-RestMethod -Uri 'https://ziglang.org/download/index.json'
           $release = $index.$ver
           if (-not $release) { throw "ziglang.org carries no $ver release" }
@@ -69,11 +74,9 @@ jobs:
           if ((& (Join-Path $root 'zig.exe') version) -ne $ver) { throw 'provisioned Zig reports the wrong version' }
 
       - name: Test and build shipped library
-        # Zig 0.16's Windows arm64 compiler can corrupt shared ZIR entries when
-        # concurrent build steps compile the same module.
         run: |
-          zig build test -j1
-          zig build -Doptimize=ReleaseFast -j1
+          zig build test -Dtarget=$env:ZIG_TARGET -j1
+          zig build -Dtarget=$env:ZIG_TARGET -Doptimize=ReleaseFast -j1
 
       - name: Python ABI smoke
         shell: pwsh

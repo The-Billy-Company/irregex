@@ -93,6 +93,7 @@ pub const Meter = struct {
     }
 
     pub fn deinit(self: *Meter) void {
+        if (comptime builtin.target.os.tag != .macos) return;
         switch (self.backend) {
             .kperf => |*k| k.close(),
             .thsc => |*t| t.close(),
@@ -105,6 +106,7 @@ pub const Meter = struct {
     /// **current thread only**, so the measured kernel must be single-threaded
     /// (a parallel fan-out would leak cycles onto unmeasured workers).
     pub fn counters(self: *Meter) Counters {
+        if (comptime builtin.target.os.tag != .macos) return .{};
         return switch (self.backend) {
             .kperf => |*k| k.read(),
             .thsc => |*t| t.read(),
@@ -517,7 +519,7 @@ test "counters are per-thread, so a busy neighbor cannot inflate them" {
 }
 
 test "an undersized read is refused rather than half-filled" {
-    if (builtin.target.os.tag != .macos) return;
+    if (comptime builtin.target.os.tag != .macos) return;
     var t = Thsc.open() catch return; // no unprivileged counter here; nothing to check
     defer t.close();
 
@@ -536,7 +538,7 @@ test "an undersized read is refused rather than half-filled" {
 }
 
 test "an unknown counter kind is rejected, so the flavor cannot drift" {
-    if (builtin.target.os.tag != .macos) return;
+    if (comptime builtin.target.os.tag != .macos) return;
     var t = Thsc.open() catch return;
     defer t.close();
     var c: Thsc.Cpi = .{ .instructions = 0, .cycles = 0 };
