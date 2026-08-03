@@ -60,16 +60,20 @@ jobs:
           if ($got -ne $build.shasum) { throw "sha256 mismatch: got $got, expected $($build.shasum)" }
 
           $into = Join-Path $env:RUNNER_TEMP 'zig'
-          Expand-Archive -LiteralPath $zip -DestinationPath $into -Force
+          New-Item -ItemType Directory -Force -Path $into | Out-Null
+          tar.exe -xf $zip -C $into
+          if ($LASTEXITCODE -ne 0) { throw "tar could not extract the Zig archive" }
           $root = (Get-ChildItem -Directory -LiteralPath $into | Select-Object -First 1).FullName
           if (-not $root) { throw "the archive extracted no directory into $into" }
           Add-Content -LiteralPath $env:GITHUB_PATH -Value $root
           if ((& (Join-Path $root 'zig.exe') version) -ne $ver) { throw 'provisioned Zig reports the wrong version' }
 
       - name: Test and build shipped library
+        # Zig 0.16's Windows arm64 compiler can corrupt shared ZIR entries when
+        # concurrent build steps compile the same module.
         run: |
-          zig build test
-          zig build -Doptimize=ReleaseFast
+          zig build test -j1
+          zig build -Doptimize=ReleaseFast -j1
 
       - name: Python ABI smoke
         shell: pwsh
