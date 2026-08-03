@@ -64,7 +64,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "irregex"
+name = "irgx"
 version = "1.0.0"
 dependencies = [
  "serde",

@@ -5,7 +5,12 @@
 [workspace]
 
 [package]
-name = "irregex"
+# `irgx`, not `irregex`: the latter is an unrelated 2023 crate on the index and
+# crate names are permanent, so it was never available to us. That is a happy
+# accident — `irgx` is already the C symbol prefix, the header, and the Python
+# import, so the Rust name now agrees with every other surface instead of being
+# the one place the project is spelled out in full.
+name = "irgx"
 version = "1.0.0"                                                                                                                                                      # x-release-please-version
 edition = "2024"
 rust-version = "1.85"
@@ -37,20 +42,13 @@ categories = [
   "api-bindings",
   "external-ffi-bindings",
 ]
-# Nothing is published from this tree yet. Removing this line is the release
-# decision, and it should be made on purpose rather than by a stray `cargo
-# publish` in a directory somebody forgot they were in.
-publish = false
-
 # The vendored archives are the install story, so they ship. `target/` and the
 # per-target build caches do not.
 exclude = [ "/target", "/.cargo" ]
 
-# The crate is published as `irregex` and imported as `irgx`. The two are
-# deliberately different: the package name is the crates.io identity, the lib
-# name is the identifier every caller types.
-[lib]
-name = "irgx"
+# No `[lib] name` override: the package is `irgx`, so the library Cargo derives
+# is already `irgx` and callers already type `use irgx::…`. It used to be here
+# only because the package was spelled `irregex`.
 
 [dependencies]
 # The substrate's subprocess tier speaks ripgrep `--json` and analytic NDJSON;
