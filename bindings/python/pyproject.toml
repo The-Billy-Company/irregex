@@ -18,7 +18,10 @@ build-backend = "hatchling.build"
 name = "irregex"
 version = "1.0.0"                                                                                                                          # x-release-please-version
 description = "Linear-time regex engine for Python - no catastrophic backtracking, no ReDoS, with the native engine bundled in the wheel."
-readme = "README.md"
+# The long description is the repository's own README, lifted and link-corrected
+# at build time by `hatch_readme.py`. PyPI opens onto the project's front door,
+# not onto a second one kept beside this file.
+dynamic = [ "readme" ]
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = [ "LICENSE", "NOTICE" ]
@@ -92,6 +95,12 @@ Repository = "https://github.com/The-Billy-Company/irregex"
 Issues = "https://github.com/The-Billy-Company/irregex/issues"
 Changelog = "https://github.com/The-Billy-Company/irregex/blob/main/CHANGELOG.md"
 
+[tool.hatch.metadata.hooks.custom]
+path = "hatch_readme.py"
+
+[tool.hatch.build.targets.sdist.hooks.custom]
+path = "hatch_readme.py"
+
 [tool.hatch.build.targets.wheel]
 packages = [ "irgx" ]
 # The library is placed by the hook rather than read out of the source tree, so
@@ -102,13 +111,24 @@ artifacts = [ "irgx/lib/*" ]
 path = "hatch_build.py"
 
 [tool.hatch.build.targets.sdist]
-include = [ "irgx", "tests", "scripts", "hatch_build.py", "README.md", "LICENSE", "NOTICE" ]
+include = [
+  "irgx",
+  "tests",
+  "scripts",
+  "hatch_build.py",
+  "hatch_readme.py",
+  "README.md",
+  "LICENSE",
+  "NOTICE",
+]
 
 [dependency-groups]
 # `cffi` is test-only and stays out of `dependencies`: the regex API is ctypes
 # over the stdlib, and the substrate's in-process tier fails open without it.
 # It is here so the suites that assert the two transports agree actually run.
-dev = [ "pytest>=8.0", "cffi>=1.17" ]
+# `hatchling` is here for the same reason at one remove: it is the build backend,
+# and `test_description.py` drives the metadata hook that decides what PyPI shows.
+dev = [ "pytest>=8.0", "cffi>=1.17", "hatchling>=1.27" ]
 
 [tool.pytest.ini_options]
 testpaths = [ "tests" ]

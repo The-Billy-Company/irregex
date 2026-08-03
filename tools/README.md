@@ -32,19 +32,41 @@ python3 tools/build_rarity_table.py --report   # census diagnostics, no table
 python3 tools/build_rarity_table.py            # the declaration, zig-fmt canonical
 ```
 
-Two are **gates** — they read the tree and answer yes or no:
+Three are **gates** — they read the tree and answer yes or no:
 
 | Tool                 | Asks                                                            |
 | -------------------- | --------------------------------------------------------------- |
 | `version_parity.py`  | do every mirror of `build.zig.zon`'s `.version` still agree, and does the release bot know about each one? |
 | `sync_contract.py`   | does each contract vendored from a sibling still match what its author wrote? |
+| `registry_readme.py` | does every relative link in `README.md` still resolve — and, when writing, the corrected copy an index publishes |
 
 ```bash
 python3 tools/version_parity.py          # the gate (CI's `version` job)
 python3 tools/version_parity.py --json   # the mirrors it found, for a machine
 python3 tools/sync_contract.py           # refresh the vendored copies
 python3 tools/sync_contract.py --check   # the gate (relate's `contract` job)
+python3 tools/registry_readme.py --check # the gate (CI's `version` job)
+python3 tools/registry_readme.py         # mint bindings/rust/PROJECT_README.md
 ```
+
+## The README, on an index that is not GitHub
+
+PyPI and crates.io each show a README as the whole project page, and each
+resolves a relative link against its own URL. `include/irgx.h` is correct on
+GitHub, a 404 under `pypi.org/project/irregex/`, and on crates.io a well-formed
+URL into the crate's subdirectory pointing at a file that was never there — the
+worst of the three, because nothing looks broken.
+
+`registry_readme.py` is the one rewriter both ends share. It absolutizes every
+relative target against the `repository` URL the manifest already declares —
+`raw` for an image, `tree` or `blob` by what the path is on disk — and refuses
+outright on a target the repository does not contain. Python calls it from
+`bindings/python/hatch_readme.py` at wheel-build time, so the corrected page
+exists only inside the artifact. Cargo has no metadata hook, so for crates.io
+this writes `bindings/rust/PROJECT_README.md`, which is gitignored and which
+`readme` points at: `cargo package` fails loudly if it was never generated, and
+`cargo build` never reads it. Mint it immediately before `cargo package`,
+never earlier: a missing file fails loudly, a stale one would ship quietly.
 
 `sync_contract.py` is the only one here that also writes, and it writes a copy
 rather than a generated file. Exactly one contract is vendored — relate's
