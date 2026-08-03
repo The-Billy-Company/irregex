@@ -1,7 +1,7 @@
 name: Wrong match
 description: The engine matched something it should not have, or missed something it should have found.
 title: "wrong answer: "
-labels: ["bug", "correctness"]
+labels: ["bug", "topic/correctness"]
 body:
   - type: markdown
     attributes:

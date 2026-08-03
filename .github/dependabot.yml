@@ -28,7 +28,7 @@ updates:
         patterns: ["*"]
     commit-message:
       prefix: "ci"
-    labels: ["dependencies", "ci"]
+    labels: ["type/deps", "area/ci"]
 
   # The Rust binding. Two runtime dependencies (serde, serde_json) and two for
   # tests; a group keeps a patch week to one pull request.
@@ -44,7 +44,7 @@ updates:
         patterns: ["*"]
     commit-message:
       prefix: "build"
-    labels: ["dependencies", "rust"]
+    labels: ["type/deps", "area/bindings", "lang/rust"]
 
   # The channel `bindings/rust/rust-toolchain.toml` pins. CI runs `rustup show`
   # rather than installing a channel, precisely so that file is the only place
@@ -57,7 +57,7 @@ updates:
       default-days: 7
     commit-message:
       prefix: "build"
-    labels: ["dependencies", "rust"]
+    labels: ["type/deps", "area/bindings", "lang/rust"]
 
   # The Go binding has no third-party requires - it carries prebuilt archives
   # and links them through cgo. This entry exists to catch the day that stops
@@ -74,7 +74,7 @@ updates:
         patterns: ["*"]
     commit-message:
       prefix: "build"
-    labels: ["dependencies", "go"]
+    labels: ["type/deps", "area/bindings", "lang/go"]
 
   # The Python binding ships zero runtime dependencies on purpose - the
   # transport is ctypes, which is stdlib - so this only ever moves the dev
@@ -91,4 +91,4 @@ updates:
         patterns: ["*"]
     commit-message:
       prefix: "build"
-    labels: ["dependencies", "python"]
+    labels: ["type/deps", "area/bindings", "lang/python"]
