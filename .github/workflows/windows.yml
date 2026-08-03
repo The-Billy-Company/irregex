@@ -75,8 +75,8 @@ jobs:
 
       - name: Test and build shipped library
         run: |
-          zig build test -Dtarget=$env:ZIG_TARGET -j1
-          zig build -Dtarget=$env:ZIG_TARGET -Doptimize=ReleaseFast -j1
+          zig build test "-Dtarget=$($env:ZIG_TARGET)" -j1
+          zig build "-Dtarget=$($env:ZIG_TARGET)" -Doptimize=ReleaseFast -j1
 
       - name: Python ABI smoke
         shell: pwsh
