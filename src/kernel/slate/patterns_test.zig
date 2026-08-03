@@ -62,6 +62,32 @@ fn expectMaskParityOne(specs: []const Spec, doc: []const u8, armed: bool) !void 
     try std.testing.expectEqual(oracle_any, set.anyMatch(doc, &sc));
 }
 
+fn expectCompiledMaskParity(
+    armed: *const PatternSet,
+    armed_sc: *PatternSet.Scratch,
+    armed_mask: []u64,
+    bare: *const PatternSet,
+    bare_sc: *PatternSet.Scratch,
+    bare_mask: []u64,
+    oracles: []const query.CompiledQuery,
+    oracle_sc: []query.Scratch,
+    doc: []const u8,
+) !void {
+    const armed_any = armed.docMask(doc, armed_sc, armed_mask);
+    const bare_any = bare.docMask(doc, bare_sc, bare_mask);
+    var oracle_any = false;
+    for (oracles, oracle_sc, 0..) |*oracle, *sc, i| {
+        const want = oracle.docMatches(doc, sc);
+        oracle_any = oracle_any or want;
+        try std.testing.expectEqual(want, patterns.maskHas(armed_mask, i));
+        try std.testing.expectEqual(want, patterns.maskHas(bare_mask, i));
+    }
+    try std.testing.expectEqual(oracle_any, armed_any);
+    try std.testing.expectEqual(oracle_any, bare_any);
+    try std.testing.expectEqual(oracle_any, armed.anyMatch(doc, armed_sc));
+    try std.testing.expectEqual(oracle_any, bare.anyMatch(doc, bare_sc));
+}
+
 test "attribution parity: mixed literals + regex against the single-pattern oracle" {
     const doc =
         \\const store = try SessionStore.init(gpa);
@@ -364,6 +390,40 @@ test "differential fuzz: settled patterns agree with N oracles over random hayst
         "TODO",  "TOD",      "FIXME", "alpha",  "alphabet", "beta", "xbeta",
         "gamma", "gammaray", "delta", "delta7", " ",        "\n",   "zz",
     };
+    var armed = try PatternSet.compile(gpa, &specs);
+    defer armed.deinit(gpa);
+    var armed_sc = try armed.scratch(gpa);
+    defer armed_sc.deinit(gpa);
+    var bare = try PatternSet.compile(gpa, &specs);
+    defer bare.deinit(gpa);
+    if (bare.muster) |*m| {
+        m.deinit(gpa);
+        bare.muster = null;
+    }
+    var bare_sc = try bare.scratch(gpa);
+    defer bare_sc.deinit(gpa);
+
+    const oracles = try gpa.alloc(query.CompiledQuery, specs.len);
+    defer gpa.free(oracles);
+    var compiled: usize = 0;
+    defer for (oracles[0..compiled]) |*oracle| oracle.deinit(gpa);
+    for (specs, oracles) |spec, *oracle| {
+        oracle.* = try query.CompiledQuery.compile(gpa, spec);
+        compiled += 1;
+    }
+    const oracle_sc = try gpa.alloc(query.Scratch, specs.len);
+    defer gpa.free(oracle_sc);
+    var scratched: usize = 0;
+    defer for (oracle_sc[0..scratched]) |*sc| sc.deinit();
+    for (oracles, oracle_sc) |*oracle, *sc| {
+        sc.* = try oracle.scratch(gpa);
+        scratched += 1;
+    }
+    const armed_mask = try gpa.alloc(u64, patterns.maskWords(specs.len));
+    defer gpa.free(armed_mask);
+    const bare_mask = try gpa.alloc(u64, patterns.maskWords(specs.len));
+    defer gpa.free(bare_mask);
+
     var prng = std.Random.DefaultPrng.init(0x5EED_5E77_1E00);
     const rand = prng.random();
     var buf: [512]u8 = undefined;
@@ -378,7 +438,7 @@ test "differential fuzz: settled patterns agree with N oracles over random hayst
         }
         // A random haystack is unreadable from the failure alone; name it, with
         // each pattern's oracle verdict and whether the muster settled it.
-        expectMaskParity(&specs, buf[0..n]) catch |e| {
+        expectCompiledMaskParity(&armed, &armed_sc, armed_mask, &bare, &bare_sc, bare_mask, oracles, oracle_sc, buf[0..n]) catch |e| {
             std.debug.print("disagreement on \"{f}\"\n", .{std.zig.fmtString(buf[0..n])});
             for (specs, 0..) |spec, i| std.debug.print("  [{d}] {s:<12} oracle={} settled={}\n", .{
                 i, spec.pattern, try oracleMatches(spec, buf[0..n]), try settles(&specs, i),
