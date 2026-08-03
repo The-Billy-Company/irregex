@@ -1181,11 +1181,12 @@ happened rather than a claim that it did.
  predicated on the CPU feature it needs rather than the architecture, OOM paths
  must use the canonical helper, error values must be declared in the fault
  taxonomy, no raw `std.debug.print`, and no duplicated function bodies.
- - **A test runner that admits what it ran.** [`brigade.zig`](brigade.zig)
- shards `zig build test` across cores, gives each test a fresh leak-detecting
- allocator, and answers to `BRIGADE_FILTER`, `BRIGADE_SHARD` and
- `BRIGADE_TIMES`. A filter matching nothing is loud, naming the count it
- searched, rather than quietly green.
+ - **A test runner that admits what it ran.**
+ [`brigade`](https://github.com/The-Billy-Company/brigade), pinned by url and
+ hash in [`build.zig.zon`](build.zig.zon), shards `zig build test` across cores,
+ gives each test a fresh leak-detecting allocator, and answers to
+ `BRIGADE_FILTER`, `BRIGADE_SHARD` and `BRIGADE_TIMES`. A filter matching
+ nothing is loud, naming the count it searched, rather than quietly green.
 
 ## What It Is Measured Against
 
