@@ -133,6 +133,11 @@ different news and deserve different red Xs.
 | `version` | the one number in `build.zig.zon` still matches every manifest that mirrors it |
 | `changelog` | every fragment in `changelog.d/` is one towncrier recognizes |
 
+The separate [`windows`](.github/workflows/windows.yml) workflow runs the Zig
+suite and loads the real DLL through the Python `ctypes` binding on native x64
+and arm64 Windows. The cross-target build gate remains the compile-time proof;
+this lane is the runtime one.
+
 Run the formatter before you push - `zig fmt` reflows column-aligned literals,
 so a rename that shrinks the widest cell leaves rows you never touched one space
 too wide:
