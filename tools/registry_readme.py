@@ -43,9 +43,10 @@ from __future__ import annotations
 import argparse
 import re
 import sys
-import tomllib
 from collections.abc import Iterator
 from pathlib import Path
+
+import tomllib
 
 # The Go module root. pkg.go.dev shows the README it finds there, verbatim, and
 # resolves its links against the repository - so that one is not corrected here,
@@ -65,9 +66,7 @@ SHIPPED = "PROJECT_README.md"
 # The link forms a Markdown document can carry. Reference definitions
 # (`[id]: url`) are matched too, so a switch to that style cannot quietly
 # smuggle a relative target past this.
-_INLINE = re.compile(
-    r"(?P<head>!?\[[^\]]*\]\()(?P<target>[^)\s]+)(?P<tail>(?:\s+\"[^\"]*\")?\))"
-)
+_INLINE = re.compile(r"(?P<head>!?\[[^\]]*\]\()(?P<target>[^)\s]+)(?P<tail>(?:\s+\"[^\"]*\")?\))")
 _REFERENCE = re.compile(r"(?P<head>^\[[^\]]+\]:\s+)(?P<target>\S+)(?P<tail>.*)$")
 _FENCE = re.compile(r"^\s*(?:```|~~~)")
 _ALERT = re.compile(r"^(?P<quote>\s*>\s*)\[!(?P<kind>[A-Z]+)\]\s*$")
@@ -92,9 +91,7 @@ def absolutize(target: str, root: Path, repo: str, *, image: bool = False) -> st
     # `raw` is a redirect to the raw host, which keeps this derived from the one
     # declared URL rather than assembling a second host by hand.
     kind = "raw" if image else "tree" if on_disk.is_dir() else "blob"
-    return f"{repo}/{kind}/{BRANCH}/{path.rstrip('/')}" + (
-        f"#{fragment}" if fragment else ""
-    )
+    return f"{repo}/{kind}/{BRANCH}/{path.rstrip('/')}" + (f"#{fragment}" if fragment else "")
 
 
 def _walk(readme: str) -> Iterator[tuple[str, bool]]:
@@ -113,9 +110,7 @@ def rewrite(readme: str, root: Path, repo: str) -> str:
     """The document with every relative target absolutized and alerts lowered."""
 
     def one(match: re.Match[str]) -> str:
-        target = absolutize(
-            match["target"], root, repo, image=match["head"].startswith("!")
-        )
+        target = absolutize(match["target"], root, repo, image=match["head"].startswith("!"))
         return f"{match['head']}{target}{match['tail']}"
 
     out = []
@@ -155,10 +150,7 @@ def declared_repository(manifest: Path) -> str:
     link is built against. Read rather than passed, so the address on the page
     cannot drift from the address the package claims."""
     table = tomllib.loads(manifest.read_text(encoding="utf-8"))
-    url = (
-        table.get("package", {}).get("repository")
-        or table["project"]["urls"]["Repository"]
-    )
+    url = table.get("package", {}).get("repository") or table["project"]["urls"]["Repository"]
     return url.rstrip("/")
 
 
@@ -191,9 +183,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.check:
         module = root / GO_MODULE / "README.md"
-        if module.is_file() and (
-            dead := dead_targets(module.read_text("utf-8"), module.parent)
-        ):
+        if module.is_file() and (dead := dead_targets(module.read_text("utf-8"), module.parent)):
             print(
                 f"registry_readme: {GO_MODULE}/README.md links to {dead}, which pkg.go.dev "
                 "publishes as written - a target that is not there is a dead link on the "
