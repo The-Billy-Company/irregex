@@ -123,14 +123,20 @@ native library with it, so installing needs no Zig and no compiler.
 
  - **[Python](bindings/python/README.md)** – `pip install irregex` (3.12+), then
  `import irgx`. Transport is `ctypes` over a shared library inside the wheel.
- - **[Rust](bindings/rust/README.md)** – a path or git dependency, then
- `use irgx::`. A static archive is vendored per target triple.
- - **[Go](bindings/go/README.md)** – `go get …/bindings/go`, then cgo. A
- prebuilt archive ships per platform, so no toolchain is needed.
+ - **[Rust](bindings/rust/README.md)** – `cargo add irgx`, then `use irgx::`. A
+ static archive is vendored per target triple.
+ - **[Go](bindings/go/README.md)** – `go get github.com/The-Billy-Company/irregex/bindings/go`,
+ then cgo. A prebuilt archive ships per platform, so no toolchain is needed.
  - **[Zig](src/root.zig)** – a `build.zig.zon` dependency, then
  `@import("irregex")`. Source, built with your project.
  - **C, and anything else** – `zig build`, then
  [`include/irgx.h`](include/irgx.h). One library and one header.
+
+You type `irgx` everywhere except PyPI, where the distribution is still
+`irregex` because that name was free and the import is `irgx` anyway - the
+bs4 / PIL split. On crates.io `irregex` is an unrelated 2023 crate and names
+there are permanent, so the Rust package is `irgx`, which is the prefix the C
+ABI and the header already use.
 
 The surface in each is the one that language already expects: `Pattern`,
 `finditer` and `sub` in Python, `Regex`, `RegexBuilder` and `captures_iter` in

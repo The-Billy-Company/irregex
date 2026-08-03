@@ -3,13 +3,15 @@
 A regex engine for Rust that matches in linear time, with the engine shipped
 inside the crate. No catastrophic backtracking, so no ReDoS.
 
-```toml
-[dependencies]
-irregex = "0.1"
+```bash
+cargo add irgx
 ```
 
-You depend on `irregex` and you `use irgx::` - the package keeps the project's
-name, the lib is the short one you type all day.
+The crate is [`irgx`](https://crates.io/crates/irgx) and you `use irgx::`. The
+project is called irregex, but `irregex` on crates.io is an unrelated 2023 crate
+and names there are permanent, so it was never available to us. That turned out
+well: `irgx` is already the C symbol prefix, the header, and the Python import,
+so the Rust name now agrees with every other surface.
 
 That is the whole install on the four common desktop and server targets. There
 is no Zig toolchain to fetch, no C compiler step, and no separate binary to put
