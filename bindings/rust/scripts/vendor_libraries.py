@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import functools
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -89,6 +90,10 @@ class Target:
     #: floor `build.rs` passes on the source rung, or the two ways to obtain
     #: this crate's engine would not be the same engine.
     cpu: str
+    #: System libraries the archive needs beyond what `std` already links, as
+    #: `build.rs` names them. Empty everywhere the archive closes against libc
+    #: alone; see the Windows entries below for the one place it does not.
+    libs: tuple[str, ...] = ()
 
     @property
     def archive(self) -> Path:
@@ -105,11 +110,30 @@ class Target:
 # executes an instruction its own triple never promised. Zig's x86_64-macos
 # default happens to include SSSE3 and its linux one does not, which is why
 # only one of these was visibly wrong and both were equally undeclared.
+#
+# Windows 10 RS4 is the floor `build.zig`'s own `check-windows` drift gate
+# compiles against, so the shipped archive and that gate describe one platform.
+# The two Windows rows are the GNU ABI under the two names Rust gives it: x86_64
+# leads with `-gnu` (mingw-w64's gcc), and aarch64 has no `-gnu` at all, because
+# that toolchain was never ported to it - `-gnullvm` (llvm-mingw) is the only
+# GNU-ABI arm64 Windows target Rust has. One archive serves both spellings on a
+# given architecture; `build.rs` maps the aliases onto these directories rather
+# than this script committing a second copy of the same bytes.
+#
+# Only the GNU arms are here. Zig cannot cross-compile to `-pc-windows-msvc`:
+# the MSVC C runtime headers are not redistributable, so it has nothing to
+# compile the PCRE2 floor against unless Visual Studio is on the machine, and
+# an archive that can only be produced on one operating system is not one this
+# script can promise. `build.rs` knows the MSVC triples anyway and builds them
+# from source there, which is where a machine that *can* produce them already
+# is.
 MATRIX = (
     Target("aarch64-apple-darwin", "aarch64-macos.11.0", "baseline"),
     Target("x86_64-apple-darwin", "x86_64-macos.11.0", "x86_64_v2"),
     Target("x86_64-unknown-linux-gnu", "x86_64-linux-gnu.2.17", "x86_64_v2"),
     Target("aarch64-unknown-linux-gnu", "aarch64-linux-gnu.2.17", "baseline"),
+    Target("x86_64-pc-windows-gnu", "x86_64-windows.win10_rs4-gnu", "x86_64_v2", ("ntdll",)),
+    Target("aarch64-pc-windows-gnullvm", "aarch64-windows.win10_rs4-gnu", "baseline", ("ntdll",)),
 )
 
 # One symbol from the vendored PCRE2, standing witness for the whole C floor.
@@ -197,24 +221,57 @@ def defines(nm: str, archive: Path, symbol: str) -> bool:
     )
 
 
+def verify_build_rs(targets: list[Target]) -> None:
+    """Hold ``build.rs`` to the libraries this matrix probes against.
+
+    The probe below proves an archive closes under one particular set of
+    libraries. Nobody ever performs that link: a consumer's is emitted by
+    ``build.rs``, so if the two sets disagree the proof is about a build that
+    does not happen. Checked before anything is compiled, because the answer
+    costs a file read and the alternative costs minutes per target.
+    """
+    source = (CRATE / "build.rs").read_text()
+    for target in targets:
+        for lib in target.libs:
+            if f'"{lib}"' not in source:
+                raise SystemExit(
+                    f"{target.rust} is vendored against -l{lib}, but build.rs never emits "
+                    f"it, so a consumer's link would go without. Add it to system_libs()."
+                )
+
+
+#: The ``sys.platform`` a Rust triple's operating system is native to, keyed by
+#: the component of the triple that names it.
+HOST_PLATFORM = {"apple": "darwin", "linux": "linux", "windows": "win32"}
+
+#: ``platform.machine()`` spellings, in the architecture vocabulary a Rust
+#: triple leads with.
+HOST_ARCH = {
+    "arm64": "aarch64",
+    "ARM64": "aarch64",
+    "aarch64": "aarch64",
+    "x86_64": "x86_64",
+    "AMD64": "x86_64",
+}
+
+
 def probe_link(zig: str, target: Target, archive: Path, header: Path, workdir: Path) -> str:
     """Compile and link a program against ``archive``; run it when it is native."""
     source = workdir / "probe.c"
     source.write_text(PROBE)
-    binary = workdir / "probe"
+    windows = "windows" in target.rust
+    binary = workdir / ("probe.exe" if windows else "probe")
     run(
         [
             zig, "cc", "-target", target.zig,
             f"-I{header.parent}", str(source), str(archive),
+            *(f"-l{lib}" for lib in target.libs),
             "-o", str(binary),
         ]
     )  # fmt: skip
-    goos = "macos" if "apple" in target.rust else "linux"
-    native = (sys.platform == "darwin" and goos == "macos") or (
-        sys.platform.startswith("linux") and goos == "linux"
-    )
-    arch = {"arm64": "aarch64", "aarch64": "aarch64", "x86_64": "x86_64", "AMD64": "x86_64"}
-    if native and arch.get(os.uname().machine) == target.rust.split("-", 1)[0]:
+    host = next((p for name, p in HOST_PLATFORM.items() if name in target.rust), None)
+    native = host is not None and sys.platform.startswith(host)
+    if native and HOST_ARCH.get(platform.machine()) == target.rust.split("-", 1)[0]:
         return run([str(binary)], capture_output=True).stdout.strip()
     return "cross-compiled; linked but not run"
 
@@ -279,8 +336,9 @@ def main() -> int:
     if args.list:
         for target in MATRIX:
             print(
-                f"{target.rust:28} zig={target.zig:24} cpu={target.cpu:11}"
+                f"{target.rust:28} zig={target.zig:30} cpu={target.cpu:11}"
                 f" -> {target.archive.relative_to(CRATE)}"
+                f"{'  libs=' + ' '.join('-l' + lib for lib in target.libs) if target.libs else ''}"
             )
         return 0
 
@@ -291,6 +349,8 @@ def main() -> int:
         if unknown:
             raise SystemExit(f"no target named {', '.join(unknown)}")
         chosen = [by_name[n] for n in args.only]
+
+    verify_build_rs(chosen)
 
     zig = shutil.which("zig")
     if not zig:

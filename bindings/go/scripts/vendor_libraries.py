@@ -15,7 +15,15 @@ Rerun this whenever the engine changes. The archives are committed build
 output, so a source change that is not followed by a run of this script ships
 an engine older than the repository it came from.
 
-Three things happen per target beyond `zig build`.
+Four things happen per target beyond `zig build`.
+
+**The link file is held to this matrix.** A consumer's cgo link is driven by
+the `#cgo LDFLAGS` line in `link_<goos>_<goarch>.go`, not by anything here, so
+that line is checked against the libraries this matrix declares before a byte
+is compiled. Otherwise the probe below would be evidence about a link nobody
+performs - which is a live risk on exactly one platform, Windows, where the
+archive needs `-lntdll` and Zig's driver supplies it silently while mingw's
+gcc does not.
 
 **The C floor is verified present, not folded in.** `build.zig` packs
 `libirgx.a` from a partially-linked object on every target now, so PCRE2 and
@@ -32,8 +40,10 @@ under 8 MB, which is the difference between a reasonable module and a rude one.
 
 **Every archive is proved to link before it is committed.** A probe program
 that calls the ABI is compiled and linked against the fresh archive with
-`zig cc -target <triple>`. A missing symbol is then a failure of this script
-rather than a failure in somebody's `go build` a week later.
+`zig cc -target <triple>`, under the target's declared libraries and nothing
+else. A missing symbol is then a failure of this script rather than a failure
+in somebody's `go build` a week later. When the host is the target, the probe
+is also run.
 """
 
 from __future__ import annotations
@@ -41,11 +51,13 @@ from __future__ import annotations
 import argparse
 import functools
 import os
+import platform
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -93,6 +105,14 @@ class Target:
     #: therefore the oldest CPU a Go consumer can link it into. Named rather
     #: than defaulted, for the same reason the platform version is.
     cpu: str
+    #: System libraries the archive needs beyond what the platform's cgo
+    #: compiler links by default, as they appear in the `#cgo LDFLAGS` line.
+    #: Empty everywhere the default set already closes the archive; see the
+    #: Windows entries below for the one place it does not.
+    libs: tuple[str, ...] = ()
+    #: ``platform.machine()`` spellings this target is the native host for, so
+    #: the probe below can be *run* rather than only linked.
+    machines: tuple[str, ...] = field(default=(), repr=False)
 
     @property
     def name(self) -> str:
@@ -105,11 +125,23 @@ class Target:
         # archive one level down would vanish from a vendored consumer.
         return VENDOR / f"libirgx_{self.goos}_{self.goarch}.a"
 
+    @property
+    def link_file(self) -> Path:
+        """The cgo file whose build constraint selects this archive."""
+        return VENDOR / f"link_{self.goos}_{self.goarch}.go"
+
+    @property
+    def ldflags(self) -> str:
+        """The `#cgo LDFLAGS` value this target's link file has to declare."""
+        return " ".join((f"${{SRCDIR}}/{self.archive.name}", *self.libs))
+
 
 # macOS 11 is where arm64 begins. glibc 2.17 is the manylinux2014 floor and
 # still the widest useful baseline; Zig links against exactly that version
 # rather than the host's, which is what makes a portable Linux archive off a
-# macOS laptop a real thing rather than a claim.
+# macOS laptop a real thing rather than a claim. Windows 10 RS4 is the floor
+# `build.zig`'s own `check-windows` drift gate compiles against, so naming it
+# here keeps the shipped archive and the gate describing one platform.
 #
 # The CPU floors match `bindings/python/scripts/build_wheels.py`, and for the
 # same reason: a `GOARCH` says as little about instructions as a wheel tag does,
@@ -118,11 +150,35 @@ class Target:
 # x86_64-macos default happens to carry SSSE3 already, its linux one does not,
 # and depending on that difference is how one of these archives ended up with
 # 52 instructions its own triple never promised.
+#
+# Only Windows names a library. Everywhere else the archive's externals are
+# libc and the platform's crt, which every cgo compiler links by default. On
+# Windows the engine reaches the kernel through ntdll - 60 `Nt*`/`Ldr*`/`Rtl*`
+# symbols, which is Zig's std, not ours - and mingw-w64's default library set
+# stops at kernel32. Zig's own driver adds ntdll silently, so a probe linked by
+# `zig cc` proves nothing about the gcc that cgo will actually use; the flag is
+# declared here, checked into the link file, and cross-checked below.
 MATRIX = (
-    Target("darwin", "arm64", "aarch64-macos.11.0", "baseline"),
-    Target("darwin", "amd64", "x86_64-macos.11.0", "x86_64_v2"),
-    Target("linux", "amd64", "x86_64-linux-gnu.2.17", "x86_64_v2"),
-    Target("linux", "arm64", "aarch64-linux-gnu.2.17", "baseline"),
+    Target("darwin", "arm64", "aarch64-macos.11.0", "baseline", machines=("arm64", "aarch64")),
+    Target("darwin", "amd64", "x86_64-macos.11.0", "x86_64_v2", machines=("x86_64",)),
+    Target("linux", "amd64", "x86_64-linux-gnu.2.17", "x86_64_v2", machines=("x86_64",)),
+    Target("linux", "arm64", "aarch64-linux-gnu.2.17", "baseline", machines=("aarch64",)),
+    Target(
+        "windows",
+        "amd64",
+        "x86_64-windows.win10_rs4-gnu",
+        "x86_64_v2",
+        libs=("-lntdll",),
+        machines=("AMD64", "x86_64"),
+    ),
+    Target(
+        "windows",
+        "arm64",
+        "aarch64-windows.win10_rs4-gnu",
+        "baseline",
+        libs=("-lntdll",),
+        machines=("ARM64", "aarch64"),
+    ),
 )
 
 # One symbol from the vendored PCRE2, standing witness for the whole C floor.
@@ -210,11 +266,61 @@ def defines(nm: str, archive: Path, symbol: str) -> bool:
     )
 
 
+#: The ``sys.platform`` a target's GOOS is the native host for.
+HOST_PLATFORM = {"darwin": "darwin", "linux": "linux", "windows": "win32"}
+
+#: The one directive in a link file that the Go toolchain acts on.
+LDFLAGS = re.compile(r"^// #cgo LDFLAGS: *(?P<flags>.+?) *$", re.MULTILINE)
+
+
+def verify_link_files(targets: list[Target]) -> None:
+    """Hold each target's cgo directive to the libraries this matrix declares.
+
+    The probe below proves an archive closes under one particular set of
+    libraries. Nobody ever performs that link: a consumer's cgo link is driven
+    by the `#cgo LDFLAGS` line in the target's own file, so if the two sets
+    disagree the proof is about a build that does not happen. Checked before
+    anything is compiled, because the answer costs a file read and the
+    alternative costs several minutes per target.
+    """
+    for target in targets:
+        if not target.link_file.is_file():
+            raise SystemExit(
+                f"{target.name} is in the matrix but {target.link_file.name} does not exist, "
+                f"so a build for it would select no archive. Add the file, declaring "
+                f"`// #cgo LDFLAGS: {target.ldflags}`."
+            )
+        found = LDFLAGS.search(target.link_file.read_text())
+        if found is None:
+            raise SystemExit(f"{target.link_file.name} declares no `#cgo LDFLAGS` line")
+        if found["flags"] != target.ldflags:
+            raise SystemExit(
+                f"{target.link_file.name} links `{found['flags']}`, but this matrix vendors "
+                f"an archive proved to close under `{target.ldflags}`. Reconcile the two: "
+                f"the probe is only evidence about the link a consumer actually performs."
+            )
+
+    # A target whose link file exists but which `link_unsupported.go` still
+    # rejects compiles both files at once and fails on the undefined constant
+    # there - in the consumer's build, naming neither this matrix nor the
+    # platform they asked for.
+    unsupported = (VENDOR / "link_unsupported.go").read_text()
+    for goos in dict.fromkeys(t.goos for t in targets):
+        arches = " || ".join(t.goarch for t in MATRIX if t.goos == goos)
+        clause = f"!({goos} && ({arches}))"
+        if clause not in unsupported:
+            raise SystemExit(
+                f"link_unsupported.go does not exclude {goos}: its build constraint needs "
+                f"`{clause}`, or a {goos} build compiles it alongside the archive's own "
+                f"link file and dies on the undefined constant."
+            )
+
+
 def probe_link(zig: str, target: Target, archive: Path, header: Path, workdir: Path) -> str:
     """Compile and link a program against `archive`; run it when it is native."""
     source = workdir / "probe.c"
     source.write_text(PROBE)
-    binary = workdir / "probe"
+    binary = workdir / ("probe.exe" if target.goos == "windows" else "probe")
     run(
         [
             zig,
@@ -224,15 +330,16 @@ def probe_link(zig: str, target: Target, archive: Path, header: Path, workdir: P
             f"-I{header.parent}",
             str(source),
             str(archive),
+            *target.libs,
             "-o",
             str(binary),
         ]
     )
-    native = (sys.platform == "darwin" and target.goos == "darwin") or (
-        sys.platform.startswith("linux") and target.goos == "linux"
+    native = (
+        sys.platform.startswith(HOST_PLATFORM[target.goos])
+        and platform.machine() in target.machines
     )
-    host_arch = {"arm64": "arm64", "aarch64": "arm64", "x86_64": "amd64", "AMD64": "amd64"}
-    if native and host_arch.get(os.uname().machine) == target.goarch:
+    if native:
         return run([str(binary)], capture_output=True).stdout.strip()
     return "cross-compiled; linked but not run"
 
@@ -303,8 +410,9 @@ def main() -> int:
     if args.list:
         for target in MATRIX:
             print(
-                f"{target.name:14} zig={target.zig:24} cpu={target.cpu:11}"
+                f"{target.name:14} zig={target.zig:30} cpu={target.cpu:11}"
                 f" -> {target.archive.relative_to(MODULE)}"
+                f"{'  libs=' + ' '.join(target.libs) if target.libs else ''}"
             )
         return 0
 
@@ -315,6 +423,8 @@ def main() -> int:
         if unknown:
             raise SystemExit(f"no target named {', '.join(unknown)}")
         chosen = [by_name[n] for n in args.only]
+
+    verify_link_files(chosen)
 
     zig = shutil.which("zig")
     if not zig:
