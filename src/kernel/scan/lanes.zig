@@ -35,18 +35,30 @@ const builtin = @import("builtin");
 /// A 16-lane transformation, and the shape every shuffle here speaks.
 pub const Vec = @Vector(16, u8);
 
-/// Is COMPOSITION worth arming on this target? Callers gate on this at COMPILE
-/// time and leave their field null when it is false; `runPortable` below is
-/// then the specification and the test oracle rather than a shipping path,
-/// because a scalar gather per byte is exactly the latency-bound shape the
-/// composition was built to escape.
+/// The WIDEST composition this build can drive as a real vector kernel, or
+/// `null` where it can drive none. Callers gate on this at COMPILE time and
+/// leave their field null when it is `null`; `runPortable` below is then the
+/// specification and the test oracle rather than a shipping path, because a
+/// scalar gather per byte is exactly the latency-bound shape the composition
+/// was built to escape.
 ///
-/// AArch64 NEON only, and deliberately narrower than `shuffle`'s own
-/// portability: the 32-lane form needs `TBL` with a two-register list, which
-/// SSSE3 has no equivalent for (it would take AVX-512 `vpermi2b`), and the
-/// 16-lane form on `pshufb` has never been measured — an unmeasured fast path
-/// is not a fast path. Everything below still COMPILES everywhere; it just
-/// never runs.
+/// **Per width, because the two widths need different instructions and one bool
+/// could only answer for the narrower of them by lying about the wider.** The
+/// 16-lane form is one 16-byte table lookup, which is `TBL` on NEON and
+/// `pshufb` on SSSE3 — `shuffle` below already has both arms, and gating it on
+/// NEON meant every SSE machine ran a kernel it had the instruction for through
+/// the scalar oracle instead. The 32-lane form needs a lookup across a REGISTER
+/// PAIR, which SSSE3 has no equivalent for at all (it would take AVX-512
+/// `vpermi2b`), so it stays NEON. Everything below still COMPILES everywhere.
+///
+/// This is a CAPABILITY, and deliberately not a claim that anyone measured the
+/// kernel here. The 16-lane `pshufb` composition has never been timed, and an
+/// unmeasured fast path is not a fast path — but that is a fact about the
+/// price plane, not about the instruction set, and conflating the two is what
+/// left the SSSE3 arm unreachable rather than merely unpriced. The ladder
+/// conjoins the two facts itself (`ladder/rungs.zig`: kernel exists AND
+/// `price.calibrated`), so an unpriced target declines through the gate that
+/// knows why instead of through this one.
 ///
 /// The FEATURE, not the architecture. This read `switch (builtin.cpu.arch) {
 /// .aarch64, .aarch64_be => true, … }`, and NEON is an optional AArch64
@@ -56,7 +68,58 @@ pub const Vec = @Vector(16, u8);
 /// for anyone targeting an AArch64 profile without SIMD. `shufflePair` states
 /// its requirement in the feature's own terms, so the gate in front of it has
 /// to be asked in those terms too.
-pub const native = builtin.cpu.has(.aarch64, .neon);
+pub const widest: ?Width = if (builtin.cpu.has(.aarch64, .neon))
+    .lanes32
+else if (builtin.cpu.has(.x86, .ssse3))
+    .lanes16
+else
+    null;
+
+/// WHICH byte-permute this build compiled, as one name. `widest` answers how
+/// many lanes a kernel may drive; this answers what instruction drives them,
+/// which is the axis the numbers vary on and the one `widest` cannot express:
+/// `.ssse3` and `.avx` are both 16-lane and are not the same machine.
+///
+/// One member per arm in `shuffle` below, in the same order, because that is
+/// what the name is FOR — a build that took the `vpshufb` arm must not be
+/// described by a row measured over `pshufb`. The test at the bottom of this
+/// file holds the two in step, so adding an arm without a class fails here
+/// rather than silently pricing the new arm as the old one.
+///
+/// There is deliberately no AVX-512 member. The 32-lane form on x86 would need
+/// `vpermi2b` and `shuffle` has no such arm, so a class for it would name a
+/// kernel this engine cannot build - a row keyed on it could never be selected
+/// and would read like a port that had happened.
+pub const Isa = enum { portable, ssse3, avx, neon };
+
+/// The class this build belongs to. Comptime, like every arm it stands for: the
+/// permute is chosen when the binary is made, so a machine cannot be talked
+/// into a class whose instructions were pruned out of it.
+///
+/// This is also the *dispatch* fact a caller elsewhere must read rather than
+/// re-derive. `sheng.resident` asks whether the shuffle underneath the quotient
+/// sieve is a real single instruction, and answering that by naming the
+/// architecture instead of the feature is how a generic x86-64 build came to arm
+/// a pre-pass whose kernel was a sixteen-element scalar gather per byte —
+/// strictly slower than the DFA the pre-pass exists to skip.
+pub const isa: Isa = if (builtin.cpu.has(.aarch64, .neon))
+    .neon
+else if (builtin.cpu.has(.x86, .avx))
+    .avx
+else if (builtin.cpu.has(.x86, .ssse3))
+    .ssse3
+else
+    .portable;
+
+/// Can THIS width run as a real vector kernel here? The question every caller
+/// actually has, since a lowering picks its width from the machine's state
+/// count and only then needs to know whether the build can drive it.
+///
+/// `Width` is `enum(u8)` valued at its own lane count, so the widths order by
+/// their tag and "no wider than `widest`" is the whole test.
+pub fn armed(comptime w: Width) bool {
+    return if (widest) |cap| @intFromEnum(w) <= @intFromEnum(cap) else false;
+}
 
 /// How many lanes a transformation carries — that is, how many states the
 /// lowered machine has, absorbing sink included. The value is the row stride in
@@ -137,6 +200,24 @@ pub inline fn shuffle(t: Vec, idx: Vec) Vec {
         : [t] "w" (t),
           [i] "w" (idx),
     );
+    // VEX first, and not as a micro-optimization: an `asm` template names an
+    // ENCODING, and a legacy-SSE `pshufb` reached from code LLVM compiled with
+    // VEX around it costs an AVX/SSE transition every time control crosses
+    // between them, because the core has to preserve the upper halves of every
+    // YMM register across the boundary. It is invisible in a disassembly that
+    // looks correct and invisible in an instruction count — the kernel retires
+    // the same ops, it just stalls on each one. Measured on the i5-13500 with
+    // the 16-lane end-of-line fold, which is the shape that made LLVM emit VEX
+    // for the surrounding `\n` test: 203.6 cyc/B legacy against 0.85 for the
+    // same fold without the lookahead, at an IPC of 0.079. Same instruction,
+    // same table, 236× — spent entirely on the encoding boundary.
+    if (comptime builtin.cpu.has(.x86, .avx)) return asm ("vpshufb %[i], %[t], %[o]"
+        : [o] "=x" (-> Vec),
+        : [t] "x" (t),
+          [i] "x" (idx),
+    );
+    // No AVX on this target, so nothing can be VEX-encoded and the legacy form
+    // is the only one — and cannot transition against anything.
     if (comptime builtin.cpu.has(.x86, .ssse3)) return asm ("pshufb %[i], %[o]"
         : [o] "=x" (-> Vec),
         : [t] "0" (t),
@@ -167,24 +248,6 @@ pub fn shufflePortable(t: Vec, idx: Vec) Vec {
     for (&out, ii) |*o, k| o.* = tt[k & 0x0F];
     return out;
 }
-
-/// Which of the three arms this build compiled `shuffle` to.
-///
-/// Published because a *dispatch* decision elsewhere depends on it and must not
-/// re-derive it. `sheng.resident` asks whether the shuffle underneath the
-/// quotient sieve is a real single instruction, and answering that by naming
-/// the architecture instead of the feature is how a generic x86_64 build came
-/// to arm a pre-pass whose kernel was a sixteen-element scalar gather per byte
-/// — strictly slower than the DFA the pre-pass exists to skip. A caller that
-/// reads this cannot drift from what `shuffle` actually did.
-pub const Arm = enum { neon, ssse3, portable };
-
-pub const arm: Arm = if (builtin.cpu.has(.aarch64, .neon))
-    .neon
-else if (builtin.cpu.has(.x86, .ssse3))
-    .ssse3
-else
-    .portable;
 
 /// The 32-lane shuffle: `out[i] = {lo,hi}[idx[i]]` for `idx[i] < 32`.
 ///
@@ -338,8 +401,10 @@ pub fn run(
     match_lane: u8,
 ) bool {
     // A comptime-known condition means only the taken branch is analyzed, which
-    // is what keeps the AArch64 asm below out of an x86 build's sight.
-    return if (comptime native)
+    // is what keeps `shufflePair`'s AArch64 asm out of an x86 build's sight —
+    // and it has to be asked per WIDTH, or the 32-lane arm's requirement
+    // silently sets the 16-lane arm's floor.
+    return if (comptime armed(w))
         runNative(w, ix, bytes, tbl, start_lane, match_lane)
     else
         runPortable(w, ix, bytes, tbl, start_lane, match_lane);
@@ -347,18 +412,18 @@ pub fn run(
 
 /// The vector fold, reachable by name.
 ///
-/// `run` above dispatches on `native`, which is false everywhere but AArch64 —
-/// so off AArch64 `run` IS `runPortable`, and a test written against `run` and
+/// `run` above dispatches on `armed`, so on a target that can drive neither
+/// width `run` IS `runPortable`, and a test written against `run` and
 /// `reference` compares a function to itself. That is not a hypothetical: it is
 /// what the rung's headline "kernel ≡ definition" differential did on every
 /// Linux CI run, reporting two thousand agreeing cases and proving none of
 /// them. A test that means to exercise the vector fold has to say so.
 ///
 /// The 16-lane form runs on every target — `shuffle` always resolves to
-/// something — so it is a real differential even where the rung declines to
-/// arm, and on SSSE3 it exercises a `pshufb` composition production never
-/// reaches. The 32-lane form needs the two-register `TBL` and instantiating it
-/// off NEON is a compile error, so a caller gates that width on `native`.
+/// something, portable arm included — so it is a real differential even where
+/// the rung declines to arm. The 32-lane form needs the two-register `TBL` and
+/// instantiating it off NEON is a compile error, so a caller gates that width
+/// on `armed(.lanes32)`.
 pub fn runNative(
     comptime w: Width,
     comptime ix: Index,

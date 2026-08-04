@@ -41,9 +41,11 @@ const gist = @import("irregex");
 const probe = @import("probe.zig");
 const mint = @import("mint.zig");
 const regret_mod = @import("regret.zig");
+const pmu = @import("pmu");
+const lanes = gist.regex.compose.lanes;
 
-const price = gist.regex_price;
-const rungs = gist.regex_rungs;
+const price = gist.regex.price;
+const rungs = gist.regex.rungs;
 
 /// How far a re-timed coefficient may sit from the committed one before the
 /// verify step calls it drift. Generous on purpose: this laptop routinely
@@ -92,6 +94,11 @@ pub fn main(init: std.process.Init) !void {
     // roughly 1.2 s, and the default gate adds regret for about 1.8 s.
     const rounds: usize = if (envSpan("PRICE_ROUNDS")) |r| std.fmt.parseInt(usize, r, 10) catch 9 else 9;
 
+    // Before anything is timed. On a hybrid part the clock and the coefficients
+    // must come off the same core class or the plane is scaled by whichever one
+    // each happened to land on — 1.37× apart on the x86 box these are minted on.
+    const pinned = pmu.requestPerformanceQos();
+
     const clock = probe.Clock.measure(io, 1_500_000) orelse {
         std.debug.print(
             \\ladder-price: no in-process cycle clock on this target ({s}).
@@ -102,7 +109,14 @@ pub fn main(init: std.process.Init) !void {
         , .{@tagName(builtin.cpu.arch)});
         return error.NoClock;
     };
-    std.debug.print("core clock measured in-process: {d:.3} GHz · min-of-{d}\n", .{ clock.ghz(), rounds });
+    // The clock converges on its own sampling (see `assay.Cadence.measure`);
+    // `rounds` is the coefficient probes' count and was printed here as if it
+    // described the clock, which read as provenance the clock did not have.
+    std.debug.print("core clock measured in-process: {d:.3} GHz · fastest core class {s}\n", .{
+        clock.ghz(),
+        if (pinned) "pinned" else "not pinned (uniform cores, or the host declined)",
+    });
+    std.debug.print("coefficient probes: min-of-{d}\n", .{rounds});
     std.debug.print("committed calibration: {s} (minted {s})\n\n", .{ price.active.machine, price.active.minted });
 
     // One instrument for the whole run: both verbs measure through the same
@@ -212,6 +226,12 @@ fn emit(io: std.Io, cal: price.Calibration) !void {
     std.debug.print("pub const {s}: Calibration = .{{\n", .{planeName()});
     std.debug.print("    .machine = \"{s}\",\n", .{machine});
     std.debug.print("    .minted = \"{s}\",\n", .{today(io)});
+    // WHICH build these numbers speak for, in the spelling `Calibration.fitsBuild`
+    // matches on. Emitted rather than left to the paster because it is not a
+    // judgment: the class is a fact about the binary that just did the timing,
+    // and reading it off `lanes.isa` is the only way it cannot be mistyped into
+    // a row that then prices a permute nobody measured.
+    std.debug.print("    .isa = .{s},\n", .{@tagName(lanes.isa)});
     inline for (comptime std.meta.fieldNames(price.Calibration)) |name| {
         const v = @field(cal, name);
         switch (@FieldType(price.Calibration, name)) {
@@ -224,11 +244,18 @@ fn emit(io: std.Io, cal: price.Calibration) !void {
     std.debug.print("}};\n", .{});
 }
 
+/// What to call the row this run produces: its permute class, which is the same
+/// name `fitsBuild` selects on — so re-minting at a given ISA floor replaces the
+/// row it replaced last time, and minting at a NEW floor adds one rather than
+/// overwriting a neighbour.
+///
+/// It read the core's model name, and before that
+/// `switch (builtin.cpu.arch) { .aarch64 => "apple_arm64", … }`, so a mint run
+/// on Graviton emitted a row named for Apple silicon carrying Graviton's
+/// numbers, and pasting it would have overwritten the Apple measurement rather
+/// than added a second one.
 fn planeName() []const u8 {
-    return switch (builtin.cpu.arch) {
-        .aarch64, .aarch64_be => "apple_arm64",
-        else => "unnamed_target",
-    };
+    return @tagName(lanes.isa);
 }
 
 fn hostName(buf: []u8) []const u8 {

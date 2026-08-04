@@ -139,7 +139,7 @@ pub const Program = struct {
     /// circuits, and the marker chains. The rung publishes this so its place in
     /// the ladder can be argued from a number rather than from a hope.
     pub fn stripeOps(self: *const Program) usize {
-        var n: usize = 104 * plane.stripe; // the transposition, per block
+        var n: usize = transpose_ops;
         for (self.circuits[0..self.nclasses]) |*c| n += c.ops();
         for (self.instrs[0..self.ninstrs]) |i| n += switch (i.op) {
             .step, .opt => @as(usize, i.k) * 5 * plane.stripe,
@@ -149,6 +149,17 @@ pub const Program = struct {
         return n;
     }
 };
+
+/// The share of `stripeOps` every admitted program pays identically: eight
+/// bit-plane transpositions per block, before a single marker op runs.
+///
+/// Named and exported because it is the ONLY part of the count that does not
+/// vary with the pattern, which makes it the intercept of any honest cost model
+/// over that count — `ladder/price.zig` subtracts it to recover the variable
+/// half. Pricing it as if it scaled with a pattern's op count charged small
+/// programs for a constant and, on a host where the transposition is dear
+/// relative to a marker op, extrapolated ~1.6× too dear over the `\b` shapes.
+pub const transpose_ops: usize = 104 * plane.stripe;
 
 pub const Economics = struct {
     stripe_ops: usize,
@@ -178,15 +189,15 @@ pub fn starHeight(n: *const syn.Node) u32 {
 /// Decide, and on admission lower. Pure: same AST and scan model in, same
 /// verdict out, no allocation and no I/O.
 pub fn plan(root: *const syn.Node, model: Model) Plan {
-    return planFor(plane.on_neon, root, model);
+    return planFor(plane.vectorized, root, model);
 }
 
-/// `plan` with the target predicate passed in. The x86 refusal is a comptime
-/// branch, so on this machine it is unreachable and untestable in place — this
-/// seam lets the gate test drive the verdict the OTHER build produces, and the
-/// cross-compile check proves that build still compiles.
-pub fn planFor(comptime neon: bool, root: *const syn.Node, model: Model) Plan {
-    if (!neon) return .{ .declined = .target };
+/// `plan` with the target predicate passed in. The refusal is a comptime
+/// branch, so on any one machine it is unreachable and untestable in place —
+/// this seam lets the gate test drive the verdict the OTHER build produces, and
+/// the cross-compile check proves that build still compiles.
+pub fn planFor(comptime vector: bool, root: *const syn.Node, model: Model) Plan {
+    if (!vector) return .{ .declined = .target };
     if (starHeight(root) > 1) return .{ .declined = .star_height };
 
     var b = Builder{ .model = model };

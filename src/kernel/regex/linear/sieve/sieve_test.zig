@@ -735,8 +735,16 @@ test "sieve window: cost fact prices the selected decider, including cheap paths
     const classes = [_]ByteSet{ bytes("Q"), bytes("7"), bytes("-"), bytes("Z") };
     const cheap: sieve.Above = .{ .decider_cost = 1_000 };
     const declined = try Sieve.buildWindows(std.testing.allocator, &.{.{ .classes = &classes }}, cheap, .worth);
-    try std.testing.expectEqual(sieve.Decline.unprofitable, declined.decline.?);
-    try std.testing.expectEqual(@as(u32, 1_000), declined.cost.?.decider_cost);
+    if (sheng.resident) {
+        try std.testing.expectEqual(sieve.Decline.unprofitable, declined.decline.?);
+        try std.testing.expectEqual(@as(u32, 1_000), declined.cost.?.decider_cost);
+    } else {
+        // A build with no register-resident shuffle has no sieve to price, and
+        // the target refusal precedes the arithmetic — asserted rather than
+        // skipped, so the portable build is held to an answer of its own.
+        try std.testing.expectEqual(sieve.Decline.target, declined.decline.?);
+        try std.testing.expect(declined.cost == null);
+    }
 
     const ungated = try Sieve.buildWindows(std.testing.allocator, &.{.{ .classes = &classes }}, cheap, .ungated);
     const s = ungated.sieve orelse return error.UngatedWindowDeclined;

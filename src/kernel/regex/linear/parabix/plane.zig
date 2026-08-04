@@ -113,12 +113,50 @@ pub inline fn blockOf(w: Wide, comptime b: usize) Block {
     return bits(@as([stripe]Lane, @bitCast(w))[b]);
 }
 
-/// Little-endian AArch64 only. Not because the algorithm is: the transposition
-/// is plain `@shuffle` + shift/xor and compiles anywhere. It is because the
-/// throughput claim, the differential run, and the instruction budget behind
-/// the rung's place in the ladder were all measured here. Everywhere else the
-/// rung declines at compile time and the ladder falls through unchanged.
-pub const on_neon = builtin.cpu.arch == .aarch64 and builtin.cpu.arch.endian() == .little;
+/// Does this build have a real byte-shuffle unit to transpose on?
+///
+/// **A CAPABILITY, and deliberately not a claim that anyone measured it here.**
+/// That distinction is the whole of this predicate's history: it read
+/// `builtin.cpu.arch == .aarch64`, and the comment justifying that named a
+/// throughput measurement, not an instruction — so an architecture question was
+/// standing in for a pricing one, and every x86-64 host in the world got the
+/// rung switched off at compile time for a reason that was never about x86.
+/// The ladder now conjoins the two facts itself (`ladder/rungs.zig`:
+/// `parabix_armable` = this AND `price.calibrated`), so an unpriced target
+/// declines through the gate that knows why. Widening this one does not arm a
+/// single unmeasured host; it makes the refusal legible and mintable.
+///
+/// Little-endian, because `bits` reinterprets a `Lane` as the marker chain's
+/// `u128` and reads lane i bit g as position 8i+g. That is a correctness
+/// requirement, not a performance one, and it is why `aarch64_be` is out.
+///
+/// NEON or SSSE3, because `transpose` is three rounds of even/odd byte
+/// de-interleave and three delta swaps — `@shuffle` and shift/xor, portable Zig
+/// that compiles literally anywhere. What differs is what it compiles TO, and
+/// the measured budget for one 128-byte block is the reason the floor sits
+/// here rather than at SSE2:
+///
+///   | target             | instructions | per byte |
+///   |--------------------|--------------|----------|
+///   | NEON (`tbl`)       |          178 |     1.39 |
+///   | AVX (`vpshufb`)    |          245 |     1.91 |
+///   | SSSE3 (`pshufb`)   |          292 |     2.28 |
+///   | SSE2 (`baseline`)  |          398 |     3.11 |
+///
+/// NEON wins because `uzp1`/`uzp2` IS the even/odd de-interleave, one
+/// instruction for what `pshufb` needs a shuffle pair to say and what SSE2 must
+/// emulate with `punpck` chains. A 1.6× budget at SSSE3 is a rung that still
+/// has something to sell against the DFA; the 2.2× at SSE2 is emulation, and
+/// drawing the line at the shuffle — the same instruction `scan/lanes.zig`
+/// draws its own 16-lane line at — keeps one answer to "is there a byte
+/// permute here" rather than two that can drift.
+///
+/// The FEATURE, not the architecture. NEON is an optional AArch64 feature, and
+/// asking the arch meant an `-mcpu=baseline-neon` profile claimed a shuffle
+/// unit it does not have. `cpu.has` costs nothing at run time — the answer is
+/// comptime — and makes the floor the target's own rather than a guess about it.
+pub const vectorized = builtin.cpu.arch.endian() == .little and
+    (builtin.cpu.has(.aarch64, .neon) or builtin.cpu.has(.x86, .ssse3));
 
 /// Bits 0..len-1 — the positions of this block that hold a real byte. Class
 /// streams are masked by it so a short final block's padding can never advance

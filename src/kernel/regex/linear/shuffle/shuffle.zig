@@ -58,8 +58,8 @@
 const std = @import("std");
 /// The lane algebra, re-exported: it is the shareable half of this rung (a
 /// sibling wanting the `TBL` primitive imports it directly and depends on no
-/// rung), and callers read `lanes.native` to know whether the rung can arm at
-/// all before they ask it to.
+/// rung), and callers read `lanes.widest` to know which lane counts the rung
+/// can arm here — if any — before they ask it to.
 pub const lanes = @import("../../../scan/lanes.zig");
 
 /// The most non-accepting states a machine may have and still be lowered: 31
@@ -121,29 +121,44 @@ pub const Compose = struct {
     /// `trans_fin`, `isMatch`, `start`, `empty_match`, `word_ctx`, `accel`.
     ///
     /// Each refusal is a real hole rather than a convenience:
-    ///   * not AArch64 — the kernel is one instruction and there is no portable
-    ///     equivalent worth arming;
+    ///   * no vector table lookup here — the kernel is one instruction and
+    ///     there is no portable equivalent worth arming;
     ///   * `\b`/`\B` word context — resolved per line by a second table axis
     ///     this lowering does not carry;
-    ///   * more than `max_states` non-accepting states;
+    ///   * more than `max_states` non-accepting states, or more than the build
+    ///     can drive: a machine needing 32 lanes on a target that only has the
+    ///     16-lane lookup is declined here rather than lowered into a table
+    ///     `lanes.run` would have to fold with the scalar oracle — which is the
+    ///     shape this rung exists to escape, so shipping it would be slower than
+    ///     the DFA it replaced;
     ///   * the start closure already accepts — START and MATCH would be the same
     ///     lane, and the DFA answers such patterns in O(1) anyway.
     pub fn lower(gpa: std.mem.Allocator, dfa: anytype) !?*Compose {
-        return lowerFor(lanes.native, gpa, dfa);
+        return lowerFor(lanes.widest, gpa, dfa);
     }
 
-    /// `lower` with the target predicate passed in, mirroring the parabix rung's
-    /// `admit.planFor`. `lanes.native` is a DISPATCH judgment — the 32-lane form
-    /// wants `TBL`'s two-register list and the 16-lane form on `pshufb` has never
-    /// been measured — but everything below it is architecture-independent: the
-    /// lane assignment, the end-of-line axis detection, the `slice_safe` proof,
-    /// and the table itself are the same on every target, and `lanes.run` already
-    /// carries a portable fold for them to be driven through. The test suite
-    /// passes `true` so that all of that is exercised wherever CI runs, rather
-    /// than only on the architecture that happens to arm the kernel. Production
-    /// never passes anything but `lanes.native`.
-    pub fn lowerFor(comptime armed: bool, gpa: std.mem.Allocator, dfa: anytype) !?*Compose {
-        if (comptime !armed) return null;
+    /// `lower` with the target capability passed in, mirroring the parabix
+    /// rung's `admit.planFor`: the widest lane count this caller may emit, or
+    /// null to decline outright.
+    ///
+    /// Which widths a build can drive is a DISPATCH judgment — the 32-lane form
+    /// wants `TBL`'s two-register list, which only NEON has — but everything
+    /// below it is architecture-independent: the lane assignment, the
+    /// end-of-line axis detection, the `slice_safe` proof, and the table itself
+    /// are the same on every target, and `lanes.run` already carries a portable
+    /// fold for them to be driven through. The test suite passes `.lanes32` so
+    /// that all of that is exercised wherever CI runs, rather than only on the
+    /// architecture that happens to arm the kernel. Production never passes
+    /// anything but `lanes.widest`.
+    pub fn lowerFor(comptime widest: ?lanes.Width, gpa: std.mem.Allocator, dfa: anytype) !?*Compose {
+        // Two statements rather than `comptime widest orelse return null`: that
+        // spelling puts the `return` INSIDE the comptime block, which is a
+        // runtime return at comptime and does not compile. It never surfaced
+        // because production reaches this only under `compose_armable`, so on a
+        // target with no permute the whole call is pruned and the body is never
+        // instantiated - a test is the only caller that can ask for it there.
+        if (comptime widest == null) return null;
+        const cap = comptime widest.?;
         if (dfa.word_ctx) return null;
         if (dfa.isMatch(dfa.start)) return null;
 
@@ -196,6 +211,11 @@ pub const Compose = struct {
         }
 
         const width: lanes.Width = if (match_lane < 16) .lanes16 else .lanes32;
+        // The machine needs more lanes than this build has a vector lookup for.
+        // Declined rather than narrowed: the lane count is the state count, so
+        // there is nothing to give up — and declined HERE, before the table is
+        // allocated, so an unservable target pays nothing for the refusal.
+        if (@intFromEnum(width) > @intFromEnum(cap)) return null;
         const stride = width.stride();
         const table = try gpa.alloc(u8, lanes.tableBytes(width, index));
         errdefer gpa.free(table);

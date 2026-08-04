@@ -72,11 +72,16 @@ pub const Cost = price.Cost;
 /// a lowering's allocation for a machine that has no price to bid.
 ///
 /// Published so the benches and gate tests read the same predicate the ladder
-/// acts on. They used to read a bare `lanes.native` / `parabix.native`, which
-/// answered half the question and would have reported a rung as armable on a
-/// freshly-ported target where nothing had been measured yet.
-pub const compose_armable: bool = compose_mod.lanes.native and price.calibrated;
-pub const parabix_armable: bool = parabix_mod.native and price.calibrated;
+/// acts on. They used to read a bare `lanes.widest` / `parabix.vectorized`,
+/// which answered half the question and would have reported a rung as armable
+/// on a freshly-ported target where nothing had been measured yet.
+///
+/// Compose asks whether ANY width arms, because the width is a property of the
+/// individual machine rather than of the build: a target with only the 16-lane
+/// lookup still serves every pattern under sixteen lanes, and `lower` is what
+/// declines the wider ones.
+pub const compose_armable: bool = compose_mod.lanes.widest != null and price.calibrated;
+pub const parabix_armable: bool = parabix_mod.vectorized and price.calibrated;
 
 /// One independently representable candidate offered to the ladder.
 pub const Offer = struct {
@@ -552,7 +557,7 @@ test "a vector rung is not BUILT where its evidence is missing, only where it lo
     try std.testing.expectEqual(parabix_armable, r.parabix != null);
     // So a null field above is the ladder withholding evidence, never the pattern
     // being unrepresentable — the two reasons the single arch predicate conflated.
-    if (comptime parabix_mod.native)
+    if (comptime parabix_mod.vectorized)
         try std.testing.expect(parabix_mod.Parabix.build(ast, .{}) == .armed);
 }
 
@@ -567,7 +572,7 @@ test "the byte-model annotation is a claim about a gate, and the gate keeps it" 
     // question. Relaxing (1), or admitting an anchor that bound to the slice edge
     // instead of a line's, would not crash — it would silently answer the wrong
     // question — which is why this is pinned.
-    if (comptime !parabix_mod.native) return error.SkipZigTest;
+    if (comptime !parabix_mod.vectorized) return error.SkipZigTest;
     const a = std.testing.allocator;
     // (1) The newline class still stands the rung down under the line grain.
     try std.testing.expect(switch (parabix_mod.Parabix.compileOffer(a, "[a-z\\n]+[0-9]+", .{})) {

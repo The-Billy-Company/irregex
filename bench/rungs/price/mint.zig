@@ -30,14 +30,16 @@ const std = @import("std");
 const gist = @import("irregex");
 const probe = @import("probe.zig");
 
-const price = gist.regex_price;
+const price = gist.regex.price;
 const Regex = gist.regex.Regex;
-const Dfa = gist.regex_dfa.Dfa;
-const Compose = gist.regex_compose.Compose;
-const Width = gist.regex_compose.lanes.Width;
-const Parabix = gist.regex_parabix.Parabix;
-const Sieve = gist.regex_sieve.Sieve;
-const stripe_width = gist.regex_parabix.plane_floor.stripe_width;
+const Dfa = gist.regex.dfa.Dfa;
+const Compose = gist.regex.compose.Compose;
+const Width = gist.regex.compose.lanes.Width;
+const lanes = gist.regex.compose.lanes;
+const Parabix = gist.regex.parabix.Parabix;
+const Sieve = gist.regex.sieve.Sieve;
+const stripe_width = gist.regex.parabix.plane_floor.stripe_width;
+const transpose_ops = gist.regex.parabix.transpose_ops;
 
 /// One point of the table-residency sweep, kept so the curve is printed rather
 /// than summarized. A reader who disagrees with the three numbers derived from
@@ -79,6 +81,9 @@ pub fn measure(rig: probe.Rig) !Report {
     var cal = price.Calibration{
         .machine = "",
         .minted = "",
+        // Read off the binary doing the timing rather than passed in, so a
+        // freshly minted row cannot claim a permute it was not measured over.
+        .isa = lanes.isa,
         .dfa_step = 0,
         .dfa_line = 0,
         .skip_scan = 0,
@@ -94,6 +99,7 @@ pub fn measure(rig: probe.Rig) !Report {
         .compose16 = 0,
         .compose32 = 0,
         .compose_eol = 0,
+        .parabix_base = 0,
         .parabix_op = 0,
         .sieve_line = .{ 0, 0 },
         .sieve_doc = .{ 0, 0 },
@@ -293,7 +299,7 @@ fn anchor(rig: probe.Rig, cal: *price.Calibration, missing: *std.ArrayList([]con
         y[i] = rig.rate(probe.DfaPass{ .on = d, .hay = hay.bytes }, hay.bytes.len);
         x[i] = 1 / @as(f64, @floatFromInt(cols)); // lines per byte
     }
-    const fit = probe.separate(y, x);
+    const fit = probe.separate(&y, &x);
     cal.anchor_scan = fit.intercept;
     cal.anchor_line = fit.slope;
 }
@@ -380,7 +386,7 @@ fn skip(
         y[i] = rig.rate(probe.DfaPass{ .on = d, .hay = hay.bytes }, hay.bytes.len);
         x[i] = @as(f64, @floatFromInt(planted)) / @as(f64, @floatFromInt(hay.bytes.len));
     }
-    cal.skip_verify = probe.separate(y, x).slope;
+    cal.skip_verify = probe.separate(&y, &x).slope;
 }
 
 /// The two dearer walkers. Neither is selectable by a flag — a pattern reaches
@@ -474,17 +480,54 @@ fn vectors(
     // by ops-per-stripe-of-bytes is the only arithmetic here, and it is the
     // inverse of what the model does — so a mis-stated `stripeOps` shows up as
     // a drifting coefficient rather than as a silently wrong bid.
-    for ([_][]const u8{ "[a-z]+[0-9]+wxy", "[a-z]+[0-9]+", "[a-y]+[0-9]+w" }) |pat| {
+    // Fitted across the slate, not read off one pattern — the same reason the
+    // DFA's step is a sweep. The model is `cyc/B = parabix_op · ops / stripe`,
+    // a line through the origin, and one point makes it exact THERE and
+    // unconstrained everywhere else. That is invisible on a host where every
+    // marker op costs about the same: the implied per-op cost across nine
+    // patterns spans 0.508–0.581 on an M4 Max, so any single point is the whole
+    // line. It is not invisible on Raptor Lake, where the word-boundary shapes
+    // come in at 0.56–0.62 against 0.72–0.87 for the rest, because their extra
+    // ops are cheaper than the average op and a slope taken from a `\b`-free
+    // pattern extrapolates 1.6× too dear over them. That mis-prediction is what
+    // handed `\b[a-z]{4}[0-9]{4}` to a walk measuring 2.27 cyc/B over a parabix
+    // program measuring 1.54 — each coefficient verifying clean, composing into
+    // a bad decision, which is precisely what `regret` exists to catch.
+    //
+    // Least squares over the slate, separating the two costs a parabix pass
+    // genuinely has: `transpose_ops` of transposition that EVERY admitted
+    // program pays identically, and the class-circuit and marker ops built on
+    // it. Folding the first into the variable count is only harmless where the
+    // transposition costs about what a marker op costs — true on NEON, false on
+    // SSSE3, where the fitted intercept comes in at ~6.4× what the slope alone
+    // would predict for it. The x-axis is therefore ops ABOVE the transposition,
+    // per byte, and the intercept is the transposition's own per-byte price.
+    //
+    // The slate deliberately spans both op mixes; a fit over patterns that all
+    // look alike is a single point wearing more digits.
+    var xs: [8]f64 = undefined;
+    var ys: [8]f64 = undefined;
+    var fitted: usize = 0;
+    for ([_][]const u8{
+        "[a-z]+[0-9]+wxy",     "[a-z]+[0-9]+",    "[a-y]+[0-9]+w",
+        "[a-y]+[0-9]+x+w",     "[a-z][0-9]wxy",   "[a-z]{4}[0-9]{4}",
+        "\\b[a-z]{4}[0-9]{4}", "\\b[a-z]+[0-9]+",
+    }) |pat| {
         const armed = switch (Parabix.compileOffer(rig.gpa, pat, .{})) {
             .armed => |p| p,
             .declined => continue,
         };
-        if (armed.economics.stripe_ops == 0) continue;
-        const cyc = rig.rate(probe.ParabixPass{ .on = &armed, .hay = hay }, hay.len);
-        cal.parabix_op = cyc * @as(f64, @floatFromInt(stripe_width)) /
-            @as(f64, @floatFromInt(armed.economics.stripe_ops));
-        break;
-    } else try missing.append(rig.gpa, "parabix_op (no probe armed the rung)");
+        if (armed.economics.stripe_ops <= transpose_ops) continue;
+        xs[fitted] = @as(f64, @floatFromInt(armed.economics.stripe_ops - transpose_ops)) /
+            @as(f64, @floatFromInt(stripe_width));
+        ys[fitted] = rig.rate(probe.ParabixPass{ .on = &armed, .hay = hay }, hay.len);
+        fitted += 1;
+    }
+    if (fitted >= 2) {
+        const fit = probe.separate(ys[0..fitted], xs[0..fitted]);
+        cal.parabix_base = fit.intercept;
+        cal.parabix_op = fit.slope;
+    } else try missing.append(rig.gpa, "parabix_base/parabix_op (slate armed too few programs to fit)");
 }
 
 fn composeAt(
@@ -576,19 +619,26 @@ const SvDoc = struct {
 // ── the one-off build, which is the auction's tiebreak ───────────────────────
 
 fn builds(rig: probe.Rig, cal: *price.Calibration, missing: *std.ArrayList([]const u8)) !void {
-    var re = Regex.compileOpts(rig.gpa, "[a-z]{12}[0-9]{4}", .{ .force_dfa = true }) catch {
-        try missing.append(rig.gpa, "build_per_table_byte (probe failed to compile)");
-        return;
-    };
-    defer re.deinit();
-    if (re.dfa) |d| lower: {
-        const sizing = (try Compose.lower(rig.gpa, d)) orelse break :lower;
+    // A slate, not one pattern, for the reason every other probe here carries
+    // one: how many lanes a pattern needs is a property of the pattern, and
+    // whether that many lanes exist is a property of the HOST. The single probe
+    // this replaced was `[a-z]{12}[0-9]{4}`, which wants more than sixteen —
+    // so on a 16-lane target `lower` declined, the `break` left the coefficient
+    // at zero, and nothing said so. A zero here is not a free build, it is a
+    // compose machine the auction would price as costless to construct.
+    const shapes = [_][]const u8{ "[a-z]{12}[0-9]{4}", "[a-z]{4}[0-9]{4}", "[a-z][0-9]wxy", "[a-z][0-9]" };
+    for (shapes) |pat| {
+        var re = Regex.compileOpts(rig.gpa, pat, .{ .force_dfa = true }) catch continue;
+        defer re.deinit();
+        const d = re.dfa orelse continue;
+        const sizing = (try Compose.lower(rig.gpa, d)) orelse continue;
         const bytes = sizing.table.len;
         sizing.deinit();
-        if (bytes == 0) break :lower;
+        if (bytes == 0) continue;
         cal.build_per_table_byte = rig.cycles(Lower{ .gpa = rig.gpa, .d = d }) /
             @as(f64, @floatFromInt(bytes));
-    } else try missing.append(rig.gpa, "build_per_table_byte (no DFA)");
+        break;
+    } else try missing.append(rig.gpa, "build_per_table_byte (no probe lowered to a compose table)");
 
     for ([_][]const u8{ "[a-z]+[0-9]+wxy", "[a-z]+[0-9]+" }) |pat| {
         const armed = switch (Parabix.compileOffer(rig.gpa, pat, .{})) {

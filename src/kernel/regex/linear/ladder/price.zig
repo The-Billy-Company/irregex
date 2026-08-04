@@ -55,6 +55,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const lanes = @import("../../../scan/lanes.zig");
 const plane = @import("../parabix/plane.zig");
+const admit = @import("../parabix/admit.zig");
 
 /// The auction's unit: one count is 10⁻⁴ cycles per byte, so `10_000` reads as
 /// 1.00 cyc/B. The dense byte-class walk's measured 3.0 lands on 30_000 — the
@@ -108,6 +109,39 @@ pub const Calibration = struct {
     /// no machine beside it is an anecdote.
     machine: []const u8,
     minted: []const u8,
+
+    /// WHICH build this row speaks for: the byte-permute class its numbers were
+    /// measured over (`lanes.Isa`). This is a claim about every core that
+    /// compiles to these arms, not only the one in `machine` — a wider claim
+    /// than the measurement, taken deliberately.
+    ///
+    /// The narrow alternative was tried first and is what this replaced. Rows
+    /// used to be claimed by CPU MODEL NAME, which meant a row spoke only for
+    /// the silicon it was minted on and every other core fell to `unmeasured`.
+    /// That reads as caution and is not: the published manylinux wheel declares
+    /// an x86-64-v2 floor, so its model name is `x86_64_v2`, so it matched no
+    /// row, so it shipped the SSSE3 composition and the Parabix transposition
+    /// COMPILED IN and never let either bid. The thing most people install had
+    /// the kernels and refused to use them, and nothing failed to say so.
+    ///
+    /// Keyed on the permute because that is the axis the coefficients actually
+    /// vary on, and it varies hugely: the Parabix transposition is the dearer
+    /// half by 5x under `pshufb` and at parity under `tbl`, since `tbl` does in
+    /// one instruction what SSSE3 spends a sequence on. Two cores in the same
+    /// class differ too, but by far less than two classes do, and `verify` is
+    /// what reports it when a given machine disagrees with its class.
+    ///
+    /// The permute is also the narrowest thing a row can honestly be keyed on
+    /// that is still wide enough to cover a stranger. ARCHITECTURE was the
+    /// first attempt and is far too wide: every AArch64 target read the Apple
+    /// row, so Graviton, Ampere, a Windows-on-Arm laptop and a Raspberry Pi all
+    /// bid an M4 Max's numbers. That is not a conservative approximation, since
+    /// the auction is a comparison BETWEEN two of these numbers - importing a
+    /// foreign row keeps the ratios of a machine nobody is running, and the
+    /// rung that wins is whichever one Apple happens to be relatively good at.
+    /// Model name was the second attempt and is too narrow, for the reason
+    /// above. The permute is the property the ratios are a function of.
+    isa: lanes.Isa,
 
     /// Did anyone actually measure this target? A vector rung must see `true`
     /// before it bids: the alternative is a rung arming on a hoped-for number,
@@ -218,11 +252,26 @@ pub const Calibration = struct {
     compose32: f64,
     compose_eol: f64,
 
-    /// One Parabix stripe vector op. `Program.stripeOps` counts the
-    /// transposition, the class circuits and the marker chains, so this single
-    /// coefficient is the whole bit-parallel price — where the literal it
-    /// replaced carried an intercept nothing produced and a divisor of eight
-    /// nothing measured.
+    /// Parabix, as the two costs it actually is: the transposition every
+    /// admitted program pays identically (`parabix_base`, cyc/B), and one stripe
+    /// vector op of the class circuits and marker chains built on top of it
+    /// (`parabix_op`).
+    ///
+    /// The single-slope model that preceded this folded `admit.transpose_ops`
+    /// into the variable count, which is only harmless where the transposition
+    /// costs about what a marker op costs. It does on NEON (the fitted intercept
+    /// lands within 1.2× of what the slope alone would predict); it does not on
+    /// SSSE3, where there is no `tbl` and the same transposition prices at ~6.4×
+    /// a marker op. Charging that as if it scaled with the pattern under-priced
+    /// dense programs and over-priced sparse ones by 29%, which is how
+    /// `\b[a-z]{4}[0-9]{4}` came to be handed to a walk measuring 2.26 cyc/B
+    /// over a parabix program measuring 1.55 — the mis-pick `regret` caught.
+    ///
+    /// This intercept is MEASURED, and is the opposite of the `9_000 + ops/8`
+    /// literal the coefficient replaced: that one was a constant nobody
+    /// produced, dominating every small program. Both halves come out of one
+    /// least-squares fit over a slate spanning both op mixes.
+    parabix_base: f64,
     parabix_op: f64,
 
     /// The Sheng quotient step, indexed by conjunct count minus one, at each
@@ -235,34 +284,124 @@ pub const Calibration = struct {
     /// and cycles per marker instruction lowered.
     build_per_table_byte: f64,
     build_per_instr: f64,
+
+    /// Does this row describe the kernels this build compiled? One equality
+    /// against `lanes.isa`, which is the same comptime feature read that chose
+    /// the arms — so a row is selected by the property its numbers are actually
+    /// a function of.
+    pub fn fitsBuild(self: Calibration) bool {
+        return self.isa == lanes.isa;
+    }
 };
 
 /// Minted on this machine by `zig build ladder-price -- mint`, verified by
 /// `-- verify`. Every field is one row of that run's output; none is a rounded
 /// quotation of a README.
-pub const apple_arm64: Calibration = .{
+pub const neon: Calibration = .{
     .machine = "Apple M4 Max (aarch64-macos)",
-    .minted = "2026-07-29",
-    .dfa_step = 1.373,
-    .dfa_line = 1.351,
-    .skip_scan = 0.063,
-    .skip_verify = 21.719,
-    .anchor_scan = 0.062,
-    .anchor_line = 26.273,
-    .settle_class_ranges = 0.146,
-    .settle_class_nibbles = 0.178,
-    .settle_literal_one = 0.073,
-    .settle_literal_many = 0.517,
-    .lazy_step = 9.519,
-    .pike_step = 29.574,
-    .compose16 = 0.436,
-    .compose32 = 0.880,
-    .compose_eol = 0.441,
-    .parabix_op = 0.555,
-    .sieve_line = .{ 1.270, 0.0 },
-    .sieve_doc = .{ 0.729, 0.0 },
-    .build_per_table_byte = 1.799,
-    .build_per_instr = 584.443,
+    .minted = "2026-08-04",
+    .isa = .neon,
+    .dfa_step = 1.584,
+    .dfa_line = 1.473,
+    .skip_scan = 0.050,
+    .skip_verify = 9.545,
+    .anchor_scan = 0.057,
+    .anchor_line = 29.566,
+    .settle_class_ranges = 0.150,
+    .settle_class_nibbles = 0.170,
+    .settle_literal_one = 0.047,
+    .settle_literal_many = 0.520,
+    .lazy_step = 10.550,
+    .pike_step = 27.921,
+    .compose16 = 0.474,
+    .compose32 = 0.887,
+    .compose_eol = 0.483,
+    .parabix_base = 0.492,
+    .parabix_op = 0.543,
+    .sieve_line = .{ 1.304, 0.000 },
+    .sieve_doc = .{ 0.777, 0.000 },
+    .build_per_table_byte = 1.974,
+    .build_per_instr = 641.996,
+};
+
+/// Minted on the i5-13500 (Raptor Lake, Debian 12) by the same command, pinned
+/// to the performance-core class — a hybrid part whose P-cores run at 4.8 GHz
+/// and E-cores at 3.5, so a row taken without that pin describes neither.
+///
+/// `compose32` and `build_per_table_byte` are the two rows to read carefully.
+/// The first is **zero because there is no 32-lane machine here**: the 32-lane
+/// composition needs `TBL`'s two-register form, which has no SSSE3 counterpart,
+/// so `lanes.widest` caps at 16 and `Compose.lowerFor` declines the width before
+/// it allocates. It is not an unmeasured coefficient, it is a machine that
+/// cannot be built, and `zeroCoefficientsAreUnbuildableMachines` below is what
+/// holds those two claims together.
+pub const avx: Calibration = .{
+    .machine = "Intel Core i5-13500 (x86_64-linux)",
+    .minted = "2026-08-04",
+    .isa = .avx,
+    .dfa_step = 2.001,
+    .dfa_line = 5.196,
+    .skip_scan = 0.069,
+    .skip_verify = 36.478,
+    .anchor_scan = 0.075,
+    .anchor_line = 41.357,
+    .settle_class_ranges = 0.339,
+    .settle_class_nibbles = 0.235,
+    .settle_literal_one = 0.075,
+    .settle_literal_many = 0.619,
+    .lazy_step = 12.365,
+    .pike_step = 93.836,
+    .compose16 = 0.854,
+    .compose32 = 0.000,
+    .compose_eol = 1.008,
+    .parabix_base = 1.208,
+    .parabix_op = 0.223,
+    .sieve_line = .{ 1.568, 0.000 },
+    .sieve_doc = .{ 1.031, 0.000 },
+    .build_per_table_byte = 3.051,
+    .build_per_instr = 881.457,
+};
+
+/// The same silicon at the x86-64-v2 floor, where `shuffle` takes its legacy
+/// `pshufb` arm because the binary has no AVX to encode `vpshufb` with. Minted
+/// with `-Dcpu=x86_64_v2` on the Raptor Lake box, so the CORE is held fixed and
+/// the only difference from `avx` above is the permute encoding - which is the
+/// point, since that is the axis a class is keyed on.
+///
+/// This is the row the published manylinux wheel selects, and the reason the
+/// class exists as its own row rather than borrowing `avx`'s numbers. It is not
+/// a rescaling of them: `compose_eol` is 40% dearer under the legacy encoding,
+/// and the Parabix halves come out almost inverted (a cheap transposition and
+/// dear marker ops, against `avx`'s dear transposition and cheap ops).
+///
+/// A real v2-only part is older than this core, so these numbers describe a
+/// modern CPU executing a conservative build - which is the case that actually
+/// ships, not a hypothetical Nehalem.
+pub const ssse3: Calibration = .{
+    .machine = "Intel Core i5-13500 at the x86-64-v2 floor (x86_64-linux)",
+    .minted = "2026-08-04",
+    .isa = .ssse3,
+    .dfa_step = 1.924,
+    .dfa_line = 5.172,
+    .skip_scan = 0.082,
+    .skip_verify = 24.664,
+    .anchor_scan = 0.098,
+    .anchor_line = 30.473,
+    .settle_class_ranges = 0.309,
+    .settle_class_nibbles = 0.259,
+    .settle_literal_one = 0.074,
+    .settle_literal_many = 0.609,
+    .lazy_step = 12.297,
+    .pike_step = 86.669,
+    .compose16 = 0.848,
+    .compose32 = 0.000,
+    .compose_eol = 1.418,
+    .parabix_base = 0.514,
+    .parabix_op = 1.092,
+    .sieve_line = .{ 1.743, 0.000 },
+    .sieve_doc = .{ 1.160, 0.000 },
+    .build_per_table_byte = 3.048,
+    .build_per_instr = 871.991,
 };
 
 /// No calibration exists for this target. The values are Apple-arm64's, present
@@ -271,26 +410,38 @@ pub const apple_arm64: Calibration = .{
 /// auction degenerates to exactly what it always was there: one bidder, the
 /// fallback, and a unit that cancels.
 pub const unmeasured: Calibration = blk: {
-    var c = apple_arm64;
-    c.machine = "no calibration minted for this target";
+    var c = neon;
+    c.machine = "no calibration minted for this permute class";
     c.minted = "-";
     c.measured = false;
+    // Its `isa` is inherited and meaningless: this row is not in `minted`, so
+    // it is only ever FALLEN TO by the `else` and never selected by a match.
     break :blk c;
 };
 
-/// The calibration in force. Selected on ARCHITECTURE, because that is what the
-/// kernels are written against; a second Apple-class machine reading Apple-class
-/// numbers is the intended behavior, and the verify step is what catches a host
-/// those numbers do not fit.
-pub const active: Calibration = switch (builtin.cpu.arch) {
-    .aarch64, .aarch64_be => apple_arm64,
-    else => unmeasured,
-};
+/// Every calibration that has been minted, in the order they are consulted.
+/// Adding a target is one row here plus its `isa`, and nothing else in this
+/// file changes — which is the property the arch switch did not have, where a
+/// new row also meant a new arm and a judgment about what the `else` should now
+/// mean.
+const minted = [_]Calibration{ neon, avx, ssse3 };
+
+/// The calibration in force: the minted row for this build's permute class, and
+/// `unmeasured` when none exists.
+///
+/// Selected on the PERMUTE rather than the architecture or the part number,
+/// because that is what the kernels were compiled from and what their ratios
+/// are a function of. See `Calibration.isa` for the two spellings this
+/// replaced. A build with no byte permute at all lands on `.portable` and
+/// matches nothing, which is correct: there is no vector kernel there to price.
+pub const active: Calibration = for (minted) |c| {
+    if (c.fitsBuild()) break c;
+} else unmeasured;
 
 /// May a rung whose throughput claim rests on measured silicon bid at all? The
-/// arch predicates (`lanes.native`, `plane.on_neon`) answer "does the kernel
-/// exist here"; this answers "did anyone time it here", and both must hold.
-/// Porting a kernel to a new target is therefore two steps that cannot be
+/// capability predicates (`lanes.widest`, `plane.vectorized`) answer "does the
+/// kernel exist here"; this answers "did anyone time it here", and both must
+/// hold. Porting a kernel to a new target is therefore two steps that cannot be
 /// confused: make it compile, then mint its calibration.
 ///
 /// The conjunction is taken once, in `rungs.zig` (`compose_armable`,
@@ -357,7 +508,8 @@ pub fn price(m: Machine) Cost {
             .compile = build(c.build_per_table_byte * @as(f64, @floatFromInt(x.table_bytes))),
         },
         .parabix => |p| .{
-            .scan = perByte(c.parabix_op * @as(f64, @floatFromInt(p.stripe_ops)) /
+            .scan = perByte(c.parabix_base + c.parabix_op *
+                @as(f64, @floatFromInt(p.stripe_ops -| admit.transpose_ops)) /
                 @as(f64, @floatFromInt(plane.stripe_width))),
             .compile = build(c.build_per_instr * @as(f64, @floatFromInt(p.instrs))),
         },
@@ -523,18 +675,28 @@ test "the fallbacks are ordered by what they actually are" {
 test "composition prices its width and its end-of-line index as independent axes" {
     // Each axis is held monotone with the OTHER two fixed, which is the whole
     // claim the model makes. It deliberately does not claim an ordering BETWEEN
-    // axes: this machine measures the end-of-line index at 0.463 cyc/B and the
-    // lane doubling at 0.453, so `16+eol` is dearer than `32` here and cheaper
-    // on a host whose second shuffle is slower. An assertion across the two
-    // would be reading one machine's coincidence as a law.
+    // axes: NEON measures the end-of-line index at 0.483 cyc/B and the lane
+    // doubling at 0.413, so `16+eol` is dearer than `32` there and cheaper on a
+    // host whose second shuffle is slower. An assertion across the two would be
+    // reading one machine's coincidence as a law.
     const compose = struct {
         fn at(width: lanes.Width, eol: bool, table_bytes: usize) Cost {
             return price(.{ .compose = .{ .width = width, .eol = eol, .table_bytes = table_bytes } });
         }
     };
-    inline for (.{ false, true }) |eol| // widening lanes costs more
-        try std.testing.expect(compose.at(.lanes16, eol, 4 << 10)
-            .lessThan(compose.at(.lanes32, eol, 4 << 10)));
+    // Widening lanes costs more — asked only where the wide machine EXISTS.
+    // On a host whose byte shuffle is `pshufb`, the 32-lane composition has no
+    // counterpart to `TBL`'s two-register form, so `compose32` is a priced hole
+    // rather than a cheap machine (see `avx`) and an unconditional
+    // ordering here reads that hole as the auction's best bid. The claim is not
+    // weakened where it applies; it is asked of the builds it is about, and
+    // `zeroCoefficientsAreUnbuildableMachines` is what keeps the skip honest by
+    // proving the hole coincides with a machine `lowerFor` refuses to build.
+    if (comptime lanes.armed(.lanes32)) {
+        inline for (.{ false, true }) |eol|
+            try std.testing.expect(compose.at(.lanes16, eol, 4 << 10)
+                .lessThan(compose.at(.lanes32, eol, 4 << 10)));
+    }
     inline for (.{ lanes.Width.lanes16, .lanes32 }) |w| // indexing line ends costs more
         try std.testing.expect(compose.at(w, false, 4 << 10)
             .lessThan(compose.at(w, true, 4 << 10)));
@@ -542,18 +704,57 @@ test "composition prices its width and its end-of-line index as independent axes
         try std.testing.expect(compose.at(w, false, 4 << 10).compile <
             compose.at(w, false, 8 << 10).compile);
 
-    // And the dearest composition still beats the machine it exists to replace.
-    try std.testing.expect(compose.at(.lanes32, true, 4 << 10)
-        .lessThan(price(.{ .walk = .{ .kind = .eager } })));
+    // And the composition this build can actually construct still beats the
+    // machine it exists to replace. Pinned at the armed width rather than always
+    // at 32 lanes, because on a 16-lane host the 32-lane figure is a hole, which
+    // would have made this the easiest assertion in the file exactly where it is
+    // the tightest one.
+    const armed = comptime lanes.widest orelse .lanes32;
+    const eager_walk = price(.{ .walk = .{ .kind = .eager } });
+    try std.testing.expect(compose.at(armed, false, 4 << 10).lessThan(eager_walk));
+
+    // Whether the `+eol` form clears that same bar is a MEASUREMENT, and it
+    // parts by ISA, so it is pinned as an outcome per class rather than asserted
+    // one way. The legacy encoding is why: `compose_eol` is 1.418 there against
+    // `avx`'s 1.008 on the same core, while the walk it bids against is slightly
+    // cheaper, so `16+eol` prices at 2.266 cyc/B against a 1.924 walk and loses.
+    // The bench measures that composition at 2.27 as well and the auction hands
+    // the pattern to the fallback at regret 1.00x — the price working, not a
+    // rung failing. Asserting a win unconditionally read two rows' agreement as
+    // a law, and the only way back to green would have been relaxing whichever
+    // row next told the truth.
+    const eol_clears = compose.at(armed, true, 4 << 10).lessThan(eager_walk);
+    try std.testing.expectEqual(switch (lanes.isa) {
+        .neon, .avx => true,
+        .ssse3 => false,
+        .portable => true, // no compose machine here; `unmeasured` inherits NEON's
+    }, eol_clears);
 }
 
-test "parabix is priced by the ops it publishes, with no intercept" {
-    // Two programs differing only in op count must differ only by the measured
-    // per-op cost — the property the `9_000 + ops/8` literal could not have,
-    // since its intercept dominated every small program.
-    const lo = price(.{ .parabix = .{ .stripe_ops = 1024, .instrs = 4 } });
-    const hi = price(.{ .parabix = .{ .stripe_ops = 2048, .instrs = 4 } });
-    try std.testing.expectApproxEqAbs(@as(f64, 2.0), hi.cycPerByte() / lo.cycPerByte(), 1e-3);
+test "parabix charges its transposition once and its marker ops by the op" {
+    const at = struct {
+        fn ops(n: usize) f64 {
+            return price(.{ .parabix = .{ .stripe_ops = n, .instrs = 4 } }).cycPerByte();
+        }
+    };
+    // A program that is ALL transposition and no markers pays the floor and
+    // nothing else — the property that makes the intercept a measured cost
+    // rather than the `9_000 + ops/8` literal it replaced, which charged every
+    // program for a constant no kernel produced.
+    const floor = at.ops(admit.transpose_ops);
+    try std.testing.expectApproxEqAbs(active.parabix_base, floor, 1e-3);
+
+    // Above the floor the price is linear in the marker ops: twice the ops
+    // ABOVE the transposition costs twice as much ABOVE the floor. Stated on
+    // the variable half because that is the half the pattern controls — the
+    // old form asserted it of the TOTAL, which silently claimed the
+    // transposition scaled with the pattern too, and over-priced the `\b`
+    // shapes by 29% on a host where it is the dearer of the two.
+    const one = at.ops(admit.transpose_ops + 512) - floor;
+    const two = at.ops(admit.transpose_ops + 1024) - floor;
+    try std.testing.expectApproxEqAbs(@as(f64, 2.0), two / one, 1e-3);
+    try std.testing.expect(one > 0); // and it is a cost, not a discount
+
     // A ruinous program must price itself out rather than wrap into a bargain.
     try std.testing.expect(!price(.{ .parabix = .{ .stripe_ops = 1 << 30, .instrs = 24 } })
         .lessThan(price(.{ .walk = .{ .kind = .pike } })));
@@ -561,10 +762,132 @@ test "parabix is priced by the ops it publishes, with no intercept" {
 
 test "an unmeasured target withholds the flag the vector rungs bid on" {
     try std.testing.expect(!unmeasured.measured);
-    try std.testing.expect(apple_arm64.measured);
-    // The flag tracks the ARCH the kernels are written for, so on this host the
-    // two agree; the point of the field is that a port cannot skip the mint.
-    try std.testing.expectEqual(lanes.native, calibrated);
+    try std.testing.expect(neon.measured);
+
+    // Calibration is INDEPENDENT of whether the kernel exists — that separation
+    // is the whole design (see `calibrated`), and this used to assert the two
+    // were equal, which held only by the coincidence that the one calibrated
+    // arch was also the only armed one. An SSSE3 host has the 16-lane kernel and
+    // no price for it; that is a rung correctly standing down, not a broken
+    // invariant, and the equality would have called it one.
+    //
+    // What must hold is that `calibrated` reports the SELECTED row rather than
+    // any row that exists, so a target nobody measured cannot inherit a
+    // measurement by being compiled next to one.
+    try std.testing.expectEqual(active.measured, calibrated);
+    try std.testing.expectEqual(active.fitsBuild() or !active.measured, true);
+}
+
+test "a zero coefficient is an unbuildable machine, never a free one" {
+    // `price` reads a coefficient and multiplies; nothing in that arithmetic can
+    // tell "nobody measured this" from "this costs nothing", so a hole in a row
+    // prices as the CHEAPEST bid available and the auction picks it every time.
+    // The plane is safe from that only because a coefficient is allowed to be
+    // zero exactly where the corresponding machine cannot be constructed — and
+    // that is a coincidence between two files until something asserts it.
+    //
+    // Live case: `avx.compose32 = 0`, because the 32-lane composition
+    // needs `TBL`'s two-register form and SSSE3 has no counterpart. Delete the
+    // width guard in `Compose.lowerFor` and this test is what fails, rather than
+    // an x86 auction quietly awarding every wide pattern to a free machine.
+    if (comptime !active.measured) return error.SkipZigTest;
+
+    if (active.compose16 == 0) try std.testing.expect(lanes.widest == null);
+    if (active.compose32 == 0) try std.testing.expect(!lanes.armed(.lanes32));
+    // Every compose machine writes a table, so a priced width needs a priced build.
+    if (active.build_per_table_byte == 0) try std.testing.expect(lanes.widest == null);
+    // Parabix needs BOTH halves: a zero slope prices every marker op free, and
+    // a zero floor hands out the transposition — the one cost no admitted
+    // program escapes — for nothing.
+    if (active.parabix_base == 0 or active.parabix_op == 0 or active.build_per_instr == 0)
+        try std.testing.expect(!plane.vectorized);
+
+    // And the converse for the width actually armed here: a kernel this build
+    // CAN construct must carry a price, or the rung bids nothing against a
+    // fallback that bids something.
+    if (comptime lanes.widest) |w| {
+        try std.testing.expect(switch (w) {
+            .lanes16 => active.compose16,
+            .lanes32 => active.compose32,
+        } > 0);
+    }
+}
+
+test "a calibration is claimed by permute, so a foreign kernel cannot inherit one" {
+    // The bug this pins: `active` selected on `builtin.cpu.arch`, so EVERY
+    // AArch64 core read the Apple row. Graviton and Ampere are AArch64 and are
+    // not an M4 Max, and the auction compares these numbers against each other
+    // — so a foreign row does not merely mis-scale, it re-orders the rungs.
+    //
+    // A row for a permute this build did not compile is not selected. `.portable`
+    // is the case that always exists to test with, since a build that HAS a
+    // permute is by construction not portable.
+    if (comptime lanes.isa != .portable) try std.testing.expect(!(Calibration{
+        .machine = "x",
+        .minted = "-",
+        .isa = .portable,
+        .dfa_step = 1,
+        .dfa_line = 1,
+        .skip_scan = 1,
+        .skip_verify = 1,
+        .anchor_scan = 1,
+        .anchor_line = 1,
+        .settle_class_ranges = 1,
+        .settle_class_nibbles = 1,
+        .settle_literal_one = 1,
+        .settle_literal_many = 1,
+        .lazy_step = 1,
+        .pike_step = 1,
+        .compose16 = 1,
+        .compose32 = 1,
+        .compose_eol = 1,
+        .parabix_base = 1,
+        .parabix_op = 1,
+        .sieve_line = .{ 1, 0 },
+        .sieve_doc = .{ 1, 0 },
+        .build_per_table_byte = 1,
+        .build_per_instr = 1,
+    }).fitsBuild());
+
+    // `unmeasured` is reachable only by falling through, never by matching. Its
+    // `isa` is inherited from the row it was copied from, so if it were ever
+    // consulted it would claim a class it holds no measurement for.
+    inline for (minted) |c| try std.testing.expect(!std.mem.eql(
+        u8,
+        c.machine,
+        unmeasured.machine,
+    ));
+
+    // At most one row per class, or `active` silently prefers whichever was
+    // listed first and the other is a dead measurement nobody can reach.
+    inline for (minted, 0..) |a, i| {
+        inline for (minted, 0..) |b, j| {
+            if (comptime i < j) try std.testing.expect(a.isa != b.isa);
+        }
+    }
+
+    // Every class that can BUILD a vector kernel has a row. This is the wheel
+    // bug as an assertion: `.ssse3` is the x86-64-v2 floor the published
+    // manylinux wheel declares, it compiles the 16-lane composition and the
+    // Parabix transposition, and for as long as rows were claimed by part
+    // number it matched none of them and bid neither.
+    //
+    // Read off the enum rather than a list written here, so the next arm added
+    // to `shuffle` fails THIS test until it is measured. A hand-kept list would
+    // have let a new class ship the way `.ssse3` did — kernels compiled in, no
+    // row to price them, silently bidding nothing.
+    inline for (@typeInfo(lanes.Isa).@"enum".fields) |f| {
+        const k: lanes.Isa = @enumFromInt(f.value);
+        if (k == .portable) continue; // no vector kernel to price
+        var found = false;
+        inline for (minted) |c| {
+            if (c.isa == k) found = true;
+        }
+        if (!found) {
+            std.debug.print("permute class .{s} has a kernel and no calibration\n", .{f.name});
+            return error.UnmintedPermuteClass;
+        }
+    }
 }
 
 test "the sieve's ratio is a quotient of two measured numbers" {

@@ -14,9 +14,9 @@
 //!      and doc level, against `lineMatchPike` / per-line Pike. Any divergence
 //!      is a bug in this rung, never in the test.
 //!
-//! Layers 1–4 lower through `Compose.lowerFor(true, …)`, which forces the target
-//! predicate the production entrance reads from `lanes.native`. That predicate
-//! decides whether the KERNEL is worth shipping here; it says nothing about what
+//! Layers 1–4 lower through `Compose.lowerFor(.lanes32, …)`, which forces the
+//! capability the production entrance reads from `lanes.widest`. That says
+//! which KERNEL widths this build can drive; it says nothing about what
 //! a lowered machine means, and everything this file checks below it is the same
 //! on every architecture. Reading it would leave a non-AArch64 run asserting
 //! only that a null is a null, with its vacuity floors unmeetable — the shape
@@ -39,10 +39,10 @@ const a = std.testing.allocator;
 /// Compile `pattern` and lower it, or null when the rung declines. `force_dfa`
 /// keeps class-run-shaped patterns in coverage, exactly as `dfa_test.zig` does.
 ///
-/// `lowerFor(true, …)` rather than `lower`, so a decline here is always a
+/// `lowerFor(.lanes32, …)` rather than `lower`, so a decline here is always a
 /// statement about the MACHINE — word context, too many lanes, an accepting
-/// start closure — and never about the host. `lanes.native` is a dispatch
-/// judgment about which kernel is worth shipping; everything this file tests
+/// start closure — and never about the host. `lanes.widest` is a dispatch
+/// judgment about which kernel widths are worth shipping; everything this file tests
 /// below it (lane assignment, the end-of-line axis, the `slice_safe` proof, the
 /// table) is architecture-independent, and `lanes.run` carries a portable fold
 /// to drive it through. Going through the production entrance instead would
@@ -56,7 +56,7 @@ fn lower(pattern: []const u8) !?struct { re: Regex, cx: *Compose } {
         re.deinit();
         return null;
     };
-    const cx = (try Compose.lowerFor(true, a, dfa)) orelse {
+    const cx = (try Compose.lowerFor(.lanes32, a, dfa)) orelse {
         re.deinit();
         return null;
     };
@@ -78,24 +78,25 @@ test "compose: the vector fold equals the scalar definition of the same fold" {
     // driven over random bytes. This is the shuffle itself under test, with no
     // regex anywhere near it, so a divergence localizes to `lanes.zig`.
     //
-    // `runNative`, NOT `run`. `run` dispatches on `lanes.native`, which is false
-    // off AArch64, so `run` there IS `runPortable` — which is `lanes.reference`
-    // — and this test spent every Linux CI run comparing a function to itself,
-    // reporting two thousand agreeing cases and proving none of them. It is the
-    // same vacuity this file's header describes for the LOWERING and fixes with
-    // `lowerFor(true, …)`; the kernel had it too, one level down.
+    // `runNative`, NOT `run`. `run` dispatches on `lanes.armed`, which is false
+    // for every width on a target with no vector table lookup, so `run` there
+    // IS `runPortable` — which is `lanes.reference` — and this test spent every
+    // Linux CI run comparing a function to itself, reporting two thousand
+    // agreeing cases and proving none of them. It is the same vacuity this
+    // file's header describes for the LOWERING and fixes by forcing the
+    // capability; the kernel had it too, one level down.
     //
     // The 16-lane fold runs anywhere (`shuffle` always resolves to something),
     // so it is a real differential even where the rung declines to arm, and on
-    // SSSE3 it exercises a `pshufb` composition production never reaches. The
-    // 32-lane fold needs the two-register `TBL`, and instantiating it off NEON
-    // is a compile error — hence the comptime split rather than a runtime skip.
+    // SSSE3 it exercises the `pshufb` composition. The 32-lane fold needs the
+    // two-register `TBL`, and instantiating it off NEON is a compile error —
+    // hence the comptime split rather than a runtime skip.
     var prng = std.Random.DefaultPrng.init(0xC0FFEE);
     const r = prng.random();
     var bytes: [512]u8 = undefined;
     var checked: usize = 0;
 
-    const widths = if (lanes.native)
+    const widths = if (comptime lanes.armed(.lanes32))
         .{ lanes.Width.lanes16, lanes.Width.lanes32 }
     else
         .{lanes.Width.lanes16};
@@ -127,10 +128,10 @@ test "compose: the vector fold equals the scalar definition of the same fold" {
             }
         }
     }
-    // Two widths × two index axes off AArch64 becomes one width × two axes, and
+    // Two widths × two index axes off NEON becomes one width × two axes, and
     // the floor says which run this was — a silently halved corpus is how a
     // differential stops covering what its name claims.
-    try std.testing.expectEqual(@as(usize, if (lanes.native) 2000 else 1000), checked);
+    try std.testing.expectEqual(@as(usize, if (lanes.armed(.lanes32)) 2000 else 1000), checked);
 }
 
 // ─────────────────────────────── 2. the gates ─────────────────────────────────
@@ -143,7 +144,13 @@ test "compose: an armed literal skip outbids the rung, and the ladder is where t
     // the assertion moved with it. The rung must still be REPRESENTABLE here —
     // that is what makes the outcome a priced judgment rather than a refusal —
     // and the ladder must still decline to arm it.
-    if (comptime !lanes.native) return error.SkipZigTest;
+    //
+    // Gated on the LADDER's predicate, not the kernel's: every assertion below
+    // is about which machine the auction selected, and an auction needs a price
+    // as much as it needs a kernel. Reading the kernel predicate alone would
+    // run this on a freshly-ported target where nothing has been timed yet, and
+    // fail it for the one reason it is not about.
+    if (comptime !ladder.compose_armable) return error.SkipZigTest;
     var re = try Regex.compileOpts(a, "qzx.*jvw.*mkp", .{ .force_dfa = true });
     defer re.deinit();
     const dfa = re.dfa.?;
@@ -173,11 +180,11 @@ test "compose: gate — more than 31 non-accepting states stands the rung down" 
     defer wide.deinit();
     if (wide.dfa) |d| {
         try std.testing.expect(d.nstates > compose.max_states);
-        try std.testing.expectEqual(@as(?*Compose, null), try Compose.lowerFor(true, a, d));
+        try std.testing.expectEqual(@as(?*Compose, null), try Compose.lowerFor(.lanes32, a, d));
     }
     var narrow = try Regex.compileOpts(a, "^[a-z]{8}$", .{ .force_dfa = true });
     defer narrow.deinit();
-    const cx = (try Compose.lowerFor(true, a, narrow.dfa.?)) orelse return error.RungDeclined;
+    const cx = (try Compose.lowerFor(.lanes32, a, narrow.dfa.?)) orelse return error.RungDeclined;
     defer cx.deinit();
     try std.testing.expect(cx.match("abcdefgh"));
     try std.testing.expect(!cx.match("abcdefg"));
@@ -188,7 +195,7 @@ test "compose: gate — word context and an already-accepting start stand it dow
     defer wordy.deinit();
     if (wordy.dfa) |d| {
         try std.testing.expect(d.word_ctx);
-        try std.testing.expectEqual(@as(?*Compose, null), try Compose.lowerFor(true, a, d));
+        try std.testing.expectEqual(@as(?*Compose, null), try Compose.lowerFor(.lanes32, a, d));
     }
     // `a*` matches the empty string at every position, so its start closure is
     // already accepting: START and MATCH would have to be the same lane.
@@ -196,24 +203,48 @@ test "compose: gate — word context and an already-accepting start stand it dow
     defer nullable.deinit();
     if (nullable.dfa) |d| {
         try std.testing.expect(d.isMatch(d.start));
-        try std.testing.expectEqual(@as(?*Compose, null), try Compose.lowerFor(true, a, d));
+        try std.testing.expectEqual(@as(?*Compose, null), try Compose.lowerFor(.lanes32, a, d));
     }
 }
 
-test "compose: gate — a non-AArch64 target leaves the field null" {
-    // `native` is the compile-time predicate the rung is gated on; on a target
-    // without it, `lower` returns null before touching the DFA at all. This is
-    // the one place the PRODUCTION entrance is called rather than `lowerFor`,
-    // and asserting that the two agree is the whole test: everything else in
-    // this file forces the predicate on, so without this the gate could rot to
-    // a constant `true` and nothing would notice.
-    var re = try Regex.compileOpts(a, "^[a-z]{8}$", .{ .force_dfa = true });
-    defer re.deinit();
-    const built = try Compose.lower(a, re.dfa.?);
-    if (built) |cx| {
-        defer cx.deinit();
-        try std.testing.expect(lanes.native);
-    } else try std.testing.expect(!lanes.native);
+test "compose: gate — the production entrance serves exactly the widths this build can drive" {
+    // `lanes.widest` is the compile-time capability the rung is gated on; on a
+    // target with no vector table lookup, `lower` returns null before touching
+    // the DFA at all. This is the one place the PRODUCTION entrance is called
+    // rather than `lowerFor`, and asserting that the two agree is the whole
+    // test: everything else in this file forces the capability to its maximum,
+    // so without this the gate could rot to a constant and nothing would notice.
+    //
+    // Both widths, because they are no longer one decision. A build with only
+    // the 16-lane lookup (SSSE3, where `pshufb` has no register-pair form) must
+    // still serve every machine that fits in sixteen lanes — the bug this test
+    // now pins is the old one-bool gate, under which such a target served
+    // NEITHER width and ran a `pshufb` it had through the scalar oracle.
+    // Declining the wide machine matters just as much in the other direction:
+    // lowered anyway, it would fold through `runPortable` on a hot path, which
+    // is slower than the DFA this rung exists to beat.
+    //
+    // `{8}` determinizes to one state per position and fits sixteen lanes;
+    // `{20}` needs more than sixteen and no more than `max_states`, so it is
+    // exactly the machine the two capabilities disagree about.
+    const cases = .{
+        .{ "^[a-z]{8}$", lanes.Width.lanes16 },
+        .{ "^[a-z]{20}$", lanes.Width.lanes32 },
+    };
+    inline for (cases) |case| {
+        var re = try Regex.compileOpts(a, case[0], .{ .force_dfa = true });
+        defer re.deinit();
+        // The control: this pattern really does lower to the width claimed, so
+        // a decline below is the capability gate and not the machine drifting
+        // to a lane count that makes the assertion vacuous.
+        const forced = (try Compose.lowerFor(.lanes32, a, re.dfa.?)) orelse return error.RungDeclined;
+        defer forced.deinit();
+        try std.testing.expectEqual(case[1], forced.width);
+
+        const built = try Compose.lower(a, re.dfa.?);
+        if (built) |cx| cx.deinit();
+        try std.testing.expectEqual(lanes.armed(case[1]), built != null);
+    }
 }
 
 // ───────────────────────────── 3. targeted units ──────────────────────────────
@@ -370,7 +401,7 @@ test "compose: line-level differential vs the Pike VM (0 divergences), anchors i
         var re = Regex.compileOpts(a, pat.items, .{ .force_dfa = true }) catch continue;
         defer re.deinit();
         const dfa = re.dfa orelse continue;
-        const cx = (try Compose.lowerFor(true, a, dfa)) orelse continue; // declined ⇒ not this rung's line
+        const cx = (try Compose.lowerFor(.lanes32, a, dfa)) orelse continue; // declined ⇒ not this rung's line
         defer cx.deinit();
         armed += 1;
         var sim = try Regex.Sim.init(a, &re);
@@ -412,7 +443,7 @@ test "compose: docMatch single-pass scan ≡ per-line Pike over multi-line buffe
         var re = Regex.compileOpts(a, pat.items, .{ .force_dfa = true }) catch continue;
         defer re.deinit();
         const dfa = re.dfa orelse continue;
-        const cx = (try Compose.lowerFor(true, a, dfa)) orelse continue;
+        const cx = (try Compose.lowerFor(.lanes32, a, dfa)) orelse continue;
         defer cx.deinit();
         var sim = try Regex.Sim.init(a, &re);
         defer sim.deinit();
@@ -495,10 +526,22 @@ test "compose: the sliceSafe proof, through the ladder, on haystacks full of new
     }
     // Both populations must be represented or the run proves nothing: all-safe
     // would mean the guard never fired, all-unsafe would mean the refinement is
-    // dead and the throughput it buys is imaginary.
-    try std.testing.expect(slice_yes > 100);
-    try std.testing.expect(slice_no > 100);
-    try std.testing.expect(slice_cases > 50_000);
+    // dead and the throughput it buys is imaginary. Reported rather than merely
+    // asserted, because a bare floor that trips says only that the ladder armed
+    // a different mix than it used to — not which population went thin, which
+    // is the whole diagnosis on a target whose auction prices compose out.
+    //
+    // The case floor is the thinnest calibrated build's, not the richest one's.
+    // How many instances the ladder arms is an ISA-dependent AUCTION outcome:
+    // AVX reaches 51,400 cases (463 safe / 822 unsafe), and the same core at the
+    // x86-64-v2 floor reaches 31,720 (456 / 337), because the legacy permute
+    // encoding prices the end-of-line composition above its walk and those are
+    // exactly the instances the `\n` proof declines. A floor pinned to the
+    // richest build would have failed the leaner one for arming correctly.
+    if (slice_yes <= 100 or slice_no <= 100 or slice_cases <= 25_000) {
+        std.debug.print("compose slice population: safe={d} unsafe={d} cases={d}\n", .{ slice_yes, slice_no, slice_cases });
+        return error.ComposeSlicePopulationTooThin;
+    }
 }
 
 test "compose: differential scale (the number the report cites)" {

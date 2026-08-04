@@ -39,16 +39,21 @@ const lanes = @import("lanes.zig");
 
 const Vec = lanes.Vec;
 
-/// The three arms' index handling, written as data. Nothing ships against
-/// this — the assert in `shuffle` forbids the domain where they differ — so it
-/// lives here rather than in the module it describes.
-fn model(comptime arm: lanes.Arm, t: Vec, idx: Vec) Vec {
+/// Each arm's index handling, written as data. Nothing ships against this — the
+/// assert in `shuffle` forbids the domain where they differ — so it lives here
+/// rather than in the module it describes.
+///
+/// Keyed on the permute class, which has four members against three behaviours:
+/// `vpshufb` is `pshufb` in a VEX encoding and handles an index identically, so
+/// the two share an arm here. They are separate classes because their COST
+/// differs, which is a question for `ladder/price.zig` and not for semantics.
+fn model(comptime isa: lanes.Isa, t: Vec, idx: Vec) Vec {
     var out: [16]u8 = undefined;
     const tt: [16]u8 = t;
     const ii: [16]u8 = idx;
-    for (&out, ii) |*o, k| o.* = switch (arm) {
+    for (&out, ii) |*o, k| o.* = switch (isa) {
         .neon => if (k < 16) tt[k] else 0, // `tbl` zeroes every index ≥ 16
-        .ssse3 => if (k & 0x80 != 0) 0 else tt[k & 0x0F], // `pshufb` zeroes on bit 7
+        .ssse3, .avx => if (k & 0x80 != 0) 0 else tt[k & 0x0F], // `pshufb` zeroes on bit 7
         .portable => tt[k & 0x0F], // masks, and never zeroes
     };
     return out;
@@ -170,7 +175,7 @@ test "lanes: the 32-lane pair shuffle equals the portable statement of it" {
     // this is the one layer a Linux run cannot check. It skips rather than
     // passing vacuously, and the guard is comptime so the asm stays out of an
     // x86 build's sight.
-    if (comptime !lanes.native) return error.SkipZigTest;
+    if (comptime !lanes.armed(.lanes32)) return error.SkipZigTest;
 
     var prng = std.Random.DefaultPrng.init(0x32_1A4E5);
     const r = prng.random();
@@ -187,4 +192,51 @@ test "lanes: the 32-lane pair shuffle equals the portable statement of it" {
         for (&want, ix) |*o, k| o.* = if (k < 16) lo[k] else hi[k - 16];
         try std.testing.expectEqual(@as(Vec, want), lanes.shufflePair(lo, hi, idx));
     }
+}
+
+test "lanes: the arming claim is exactly the instruction the shuffle compiled to" {
+    // `widest` promises a width can run as a REAL vector kernel, and `isa` is
+    // the independent record of what `shuffle` actually resolved to. Deriving
+    // them separately and pinning them together is what stops a future arm from
+    // claiming a width its instruction cannot serve — an AVX2 entry in `widest`
+    // with no AVX2 arm in `shuffle` would arm the rung onto the scalar gather,
+    // which is slower than the DFA the rung exists to beat and would show up as
+    // a throughput regression rather than a failure.
+    //
+    // The 32-lane form is the asymmetry worth stating: neither `pshufb` nor its
+    // VEX spelling has register-pair addressing at all, so both x86 classes top
+    // out at sixteen. Reading that off the permute rather than off the
+    // architecture is the whole repair — the predicate used to be one NEON bool,
+    // and an SSE machine with `pshufb` in hand ran the 16-lane composition
+    // through the oracle.
+    try std.testing.expectEqual(switch (lanes.isa) {
+        .neon => @as(?lanes.Width, .lanes32),
+        .ssse3, .avx => .lanes16,
+        .portable => null,
+    }, lanes.widest);
+
+    // Widths are nested, never disjoint: anything that can drive the pair
+    // lookup can drive the single one. A build armed for 32 and not 16 would
+    // send every small machine — the common case, and the one measured fastest
+    // — down the scalar path while the wide ones flew.
+    if (comptime lanes.armed(.lanes32)) try std.testing.expect(lanes.armed(.lanes16));
+    if (comptime !lanes.armed(.lanes16)) try std.testing.expect(!lanes.armed(.lanes32));
+
+    // And the dispatcher agrees with the claim. `run` picks `runNative` exactly
+    // where `armed` says the kernel is real, so a table folded through it must
+    // equal the scalar definition whichever branch this build took.
+    var tbl: [256 * 16]u8 = undefined;
+    var prng = std.Random.DefaultPrng.init(0xA12E5);
+    const r = prng.random();
+    for (0..256) |row| {
+        const cells = tbl[row * 16 ..][0..16];
+        for (cells) |*c| c.* = r.uintLessThan(u8, 16);
+        cells[15] = 15; // MATCH absorbs, the kernel's one precondition
+    }
+    var hay: [300]u8 = undefined;
+    for (&hay) |*b| b.* = r.int(u8);
+    try std.testing.expectEqual(
+        lanes.reference(.lanes16, .byte, &hay, &tbl, 0, 15),
+        lanes.run(.lanes16, .byte, &hay, &tbl, 0, 15),
+    );
 }

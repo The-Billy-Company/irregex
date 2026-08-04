@@ -29,10 +29,10 @@ const gist = @import("irregex");
 pub const Span = gist.assay.Span;
 
 const Regex = gist.regex.Regex;
-const Settle = gist.regex_price.Settle;
-const Dfa = gist.regex_dfa.Dfa;
-const Compose = gist.regex_compose.Compose;
-const Parabix = gist.regex_parabix.Parabix;
+const Settle = gist.regex.price.Settle;
+const Dfa = gist.regex.dfa.Dfa;
+const Compose = gist.regex.compose.Compose;
+const Parabix = gist.regex.parabix.Parabix;
 
 /// The bytes a probe haystack is drawn from: lowercase `a`–`y` only. No digit,
 /// no uppercase, no `z`. Every probe pattern carries one of those three, which
@@ -168,12 +168,34 @@ pub const ParabixPass = Pass(*const Parabix, "match");
 /// error. Two points on the same kernel cancel the intercept exactly instead,
 /// and the slope is then an honest difference of things that genuinely differ.
 ///
-/// `x` is the event rate (candidates per byte, lines per byte); both are clamped
-/// at zero, since a negative cost is a measurement that lost its own noise.
-pub fn separate(y: [2]f64, x: [2]f64) struct { intercept: f64, slope: f64 } {
-    if (x[0] == x[1]) return .{ .intercept = @max(y[0], 0), .slope = 0 };
-    const slope = @max((y[0] - y[1]) / (x[0] - x[1]), 0);
-    return .{ .intercept = @max(y[1] - slope * x[1], 0), .slope = slope };
+/// `x` is the event rate (candidates per byte, lines per byte, marker ops per
+/// byte); both halves are clamped at zero, since a negative cost is a
+/// measurement that lost its own noise.
+///
+/// Ordinary least squares over however many points the caller has. At two it is
+/// the exact line through them — the shape the skip and anchor pairs are
+/// planted to give — and at N it is the fit `parabix` needs, whose points come
+/// from a slate of patterns rather than from two settings of one knob.
+pub fn separate(y: []const f64, x: []const f64) struct { intercept: f64, slope: f64 } {
+    std.debug.assert(y.len == x.len and y.len >= 2);
+    const n: f64 = @floatFromInt(y.len);
+    var sx: f64 = 0;
+    var sy: f64 = 0;
+    for (x, y) |a, b| {
+        sx += a;
+        sy += b;
+    }
+    const mx = sx / n;
+    const my = sy / n;
+    var cov: f64 = 0;
+    var vx: f64 = 0;
+    for (x, y) |a, b| {
+        cov += (a - mx) * (b - my);
+        vx += (a - mx) * (a - mx);
+    }
+    if (vx == 0) return .{ .intercept = @max(my, 0), .slope = 0 };
+    const slope = @max(cov / vx, 0);
+    return .{ .intercept = @max(my - slope * mx, 0), .slope = slope };
 }
 
 /// A synthetic haystack: `cols`-wide lines over the safe alphabet, deterministic

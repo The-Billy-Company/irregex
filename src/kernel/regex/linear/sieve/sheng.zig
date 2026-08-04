@@ -56,7 +56,7 @@ const zeros: V16 = @splat(0);
 /// slower than the DFA it exists to skip. `isa-floor` gates the `asm` blocks
 /// but cannot see a boolean derived from the wrong question, so the boolean
 /// names its dependency instead of guessing at it.
-pub const resident = tbl.arm != .portable;
+pub const resident = tbl.isa != .portable;
 
 inline fn accepts(state: V16, th: V16) V16 {
     return @select(u8, state >= th, ones, zeros);

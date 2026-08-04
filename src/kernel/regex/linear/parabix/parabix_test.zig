@@ -27,6 +27,7 @@
 //! user. The target verdict itself keeps its own test, through the same seam.
 
 const std = @import("std");
+const builtin = @import("builtin");
 /// brigade, the test runner, is this binary's root module. `note` is its stdout
 /// channel — where a green test's verdict counts belong, since Zig renders any
 /// step's stderr through its failure printer even when the step passed.
@@ -39,6 +40,7 @@ const plane = @import("plane.zig");
 const stencil = @import("stencil.zig");
 const admit = @import("admit.zig");
 const parabix = @import("parabix.zig");
+const ladder = @import("../ladder/rungs.zig");
 
 const Regex = core.Regex;
 const expect = std.testing.expect;
@@ -270,12 +272,38 @@ test "parabix/gate: admission publishes its own economics without rival booleans
     try expectEqual(candidate.program.stripeOps(), candidate.economics.stripe_ops);
 }
 
-test "parabix/gate: a non-AArch64 build leaves the field null" {
+test "parabix/gate: a build with no shuffle unit leaves the field null" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const node = try ast(arena.allocator(), "[a-z]+[0-9]");
     try expectEqual(admit.Decline.target, admit.planFor(false, node, .{}).declined);
     try expect(admit.planFor(true, node, .{}) == .admitted);
+}
+
+test "parabix/gate: the target refusal is about the shuffle unit, not the architecture" {
+    // The predicate this pins used to read `arch == .aarch64`, which refused
+    // every x86-64 host for a reason that was never about x86: the comment
+    // defending it cited a THROUGHPUT measurement, and an unmeasured target is
+    // the price plane's business, not the instruction set's. Asserting the two
+    // conjuncts separately is what keeps them from re-merging — a future edit
+    // that folds pricing back into the capability fails here rather than
+    // quietly switching a whole architecture off again.
+    try expectEqual(
+        builtin.cpu.arch.endian() == .little and
+            (builtin.cpu.has(.aarch64, .neon) or builtin.cpu.has(.x86, .ssse3)),
+        parabix.vectorized,
+    );
+
+    // Little-endian is CORRECTNESS, not speed: `plane.bits` reinterprets a lane
+    // vector as the marker chain's `u128` and needs lane i bit g to be position
+    // 8i+g. A big-endian build must decline however many shuffle units it has.
+    if (comptime builtin.cpu.arch.endian() == .big) try expect(!parabix.vectorized);
+
+    // And the capability alone never arms the rung. On a target with the
+    // instruction but no minted price, the ladder still withholds it — the
+    // conjunction lives in `rungs.zig` precisely so this file cannot claim
+    // otherwise.
+    if (comptime !ladder.price.calibrated) try expect(!ladder.parabix_armable);
 }
 
 test "parabix/gate: every other refusal reason has a witness" {

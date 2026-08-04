@@ -63,14 +63,15 @@ pub const Decline = admit.Decline;
 pub const Plan = admit.Plan;
 pub const Model = admit.Model;
 pub const Economics = admit.Economics;
+pub const transpose_ops = admit.transpose_ops;
 pub const plan = admit.plan;
 pub const starHeight = admit.starHeight;
 
-/// Can this build arm the rung at all? False everywhere but little-endian
-/// AArch64 — the throughput claim was measured there and the transposition is
-/// written for NEON's byte permutes. Published so a bench can say "declined
-/// because of the target" rather than reporting a silent zero.
-pub const native = plane.on_neon;
+/// Does the transposition have a byte-shuffle unit to run on here? Published so
+/// a bench can say "declined because of the target" rather than reporting a
+/// silent zero — and, since it is only half of what the ladder asks, so a bench
+/// can distinguish that refusal from the unpriced one beside it.
+pub const vectorized = plane.vectorized;
 
 /// Every carry the marker chain threads across a block seam: one per shift
 /// site, one per `MatchStar` addition. Zeroed at the start of a scan, which is
@@ -111,20 +112,20 @@ pub const Parabix = struct {
     /// gate reads only the pattern's own shape and its measured operation price —
     /// sibling economics are the parent's to compare (`ladder/rungs.zig`).
     pub fn build(root: *const syn.Node, model: Model) Build {
-        return buildFor(plane.on_neon, root, model);
+        return buildFor(plane.vectorized, root, model);
     }
 
     /// `build` with the target predicate passed in — the executor's counterpart
-    /// to `admit.planFor`, and there for the same reason. `native` is a claim
-    /// about where the THROUGHPUT was measured; the lowering and the block
-    /// machinery are ordinary portable Zig (`@shuffle`, shifts, `u128` adds) and
-    /// mean the same thing on any little-endian target. Without this seam the
-    /// differential suites can only run on the one architecture that arms the
-    /// rung, so a build that stands it down proves nothing about the machinery
-    /// it stood down — and a real cross-architecture divergence would first be
-    /// seen by a user. Production never passes anything but `plane.on_neon`.
-    pub fn buildFor(comptime neon: bool, root: *const syn.Node, model: Model) Build {
-        return offer(admit.planFor(neon, root, model));
+    /// to `admit.planFor`, and there for the same reason. `vectorized` is a claim
+    /// about the instruction set; the lowering and the block machinery are
+    /// ordinary portable Zig (`@shuffle`, shifts, `u128` adds) and mean the same
+    /// thing on any little-endian target. Without this seam the differential
+    /// suites can only run where the rung arms, so a build that stands it down
+    /// proves nothing about the machinery it stood down — and a real
+    /// cross-architecture divergence would first be seen by a user. Production
+    /// never passes anything but `plane.vectorized`.
+    pub fn buildFor(comptime vector: bool, root: *const syn.Node, model: Model) Build {
+        return offer(admit.planFor(vector, root, model));
     }
 
     /// The same decision reached from pattern TEXT, for callers that hold no

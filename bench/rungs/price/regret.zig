@@ -25,11 +25,11 @@ const std = @import("std");
 const gist = @import("irregex");
 const probe = @import("probe.zig");
 
-const price = gist.regex_price;
-const rungs = gist.regex_rungs;
+const price = gist.regex.price;
+const rungs = gist.regex.rungs;
 const Regex = gist.regex.Regex;
-const Compose = gist.regex_compose.Compose;
-const Parabix = gist.regex_parabix.Parabix;
+const Compose = gist.regex.compose.Compose;
+const Parabix = gist.regex.parabix.Parabix;
 
 /// One machine's measured throughput on one pattern, beside what it bid.
 pub const Arm = struct {
