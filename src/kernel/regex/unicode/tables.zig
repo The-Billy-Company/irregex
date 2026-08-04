@@ -159,6 +159,41 @@ test "property lookup: gc coarse/fine, scripts, keys, Any" {
     try testing.expect(property("NotARealProperty") == null);
 }
 
+test "property lookup: the identifier properties every language grammar spells" {
+    // `[_\p{XID_Start}][_\p{XID_Continue}]*` is verbatim how tree-sitter-go
+    // writes `identifier`, and Java, C, Rust, and JavaScript differ only in
+    // which sigils they add. Without these, the most common terminal in every
+    // language is the one a lexer cannot compile.
+    for ([_][]const u8{ "XID_Start", "XID_Continue", "ID_Start", "ID_Continue" }) |name| {
+        const p = property(name) orelse return error.MissingProperty;
+        try testing.expect(inRanges(p, 'a'));
+        try testing.expect(inRanges(p, 0x00E9)); // é
+        try testing.expect(!inRanges(p, ' '));
+        try testing.expect(!inRanges(p, '-'));
+    }
+    // Start excludes what only Continue admits: a digit, and the combining
+    // marks that may follow a letter but never open an identifier.
+    try testing.expect(!inRanges(property("XID_Start").?, '7'));
+    try testing.expect(inRanges(property("XID_Continue").?, '7'));
+    try testing.expect(inRanges(property("XID_Continue").?, 0x0300)); // COMBINING GRAVE
+    try testing.expect(!inRanges(property("XID_Start").?, 0x0300));
+    // Loose matching (UAX#44-LM3) is the runtime's rule, so the spellings a
+    // grammar author might reach for all land on the same table.
+    try testing.expectEqual(property("XID_Start").?.ptr, property("xid start").?.ptr);
+    try testing.expectEqual(property("XID_Start").?.ptr, property("xidstart").?.ptr);
+
+    // The rest of the binary properties came along generically, not from a
+    // list — so this holds without anyone having named them.
+    try testing.expect(inRanges(property("Alphabetic").?, 'a'));
+    try testing.expect(inRanges(property("White_Space").?, ' '));
+    try testing.expect(inRanges(property("Uppercase").?, 'A'));
+    try testing.expect(!inRanges(property("Uppercase").?, 'a'));
+    try testing.expect(inRanges(property("Dash").?, '-'));
+    // A multi-valued property is a property VALUE, not a binary class, and must
+    // not have been folded into one under its own name.
+    try testing.expect(property("InCB") == null);
+}
+
 /// Every consumer (`inRanges`, `foldOrbit`, `property`) binary-searches these
 /// tables, so sortedness + non-overlap is a correctness PRECONDITION, not a nicety.
 /// This test is the drift tripwire: a regenerated `tables.gen.zig` that emits an

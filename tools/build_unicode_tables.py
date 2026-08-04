@@ -44,6 +44,33 @@ def parse_ranges(path: Path, want: str, col: int = 1) -> list[Range]:
     return out
 
 
+def binary_props(path: Path) -> dict[str, list[Range]]:
+    """Every `RANGE ; PROPERTY` binary property in a UCD property file.
+
+    Exactly two fields, deliberately: a three-field row (`0x200D ; InCB ;
+    Linker`) names a property *value*, and folding every value of a
+    multi-valued property under the property's own name would invent a class
+    Unicode does not define and nobody can ask for by name.
+    """
+    props: dict[str, list[Range]] = {}
+    for raw in path.read_text().splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        fields = [f.strip() for f in line.split(";")]
+        if len(fields) != 2:
+            continue
+        lo, _, hi = fields[0].partition("..")
+        lo_i = int(lo, 16)
+        props.setdefault(fields[1], []).append((lo_i, int(hi, 16) if hi else lo_i))
+    return props
+
+
+def loose(name: str) -> str:
+    """UAX#44-LM3 loose matching, as `tables.zig::looseEql` does it at runtime."""
+    return name.lower().replace("_", "").replace("-", "").replace(" ", "")
+
+
 def gc_map(path: Path) -> dict[str, list[Range]]:
     """All general-category ranges keyed by the fine two-letter category."""
     cats: dict[str, list[Range]] = {}
@@ -123,9 +150,22 @@ def fmt_ranges(name: str, ranges: list[Range]) -> str:
 def build() -> str:
     """Lower the pinned UCD inputs into the generated Unicode tables module text."""
     gc = {k: coalesce(v) for k, v in gc_map(UCD / "DerivedGeneralCategory.txt").items()}
-    alphabetic = coalesce(parse_ranges(UCD / "DerivedCoreProperties.txt", "Alphabetic"))
-    white_space = coalesce(parse_ranges(UCD / "PropList.txt", "White_Space"))
-    join_control = coalesce(parse_ranges(UCD / "PropList.txt", "Join_Control"))
+
+    # Every binary property the two pinned property files define, read
+    # generically rather than from a hand-kept list of the ones we happened to
+    # need. The list was the bug: `\p{XID_Start}` and `\p{XID_Continue}` are how
+    # Go, Java, C, Rust, and JavaScript all spell "identifier character", so a
+    # generator that emitted only what `\w` was built from could not compile the
+    # single most common terminal in any language grammar.
+    binary: dict[str, list[Range]] = {}
+    for src in ("DerivedCoreProperties.txt", "PropList.txt"):
+        for name, rngs in binary_props(UCD / src).items():
+            binary.setdefault(name, []).extend(rngs)
+    binary = {k: coalesce(v) for k, v in binary.items()}
+
+    alphabetic = binary["Alphabetic"]
+    white_space = binary["White_Space"]
+    join_control = binary["Join_Control"]
     scripts: dict[str, list[Range]] = {}
     for raw in (UCD / "Scripts.txt").read_text().splitlines():
         line = raw.split("#", 1)[0].strip()
@@ -200,8 +240,21 @@ def build() -> str:
         lines.append(fmt_ranges(ident, scripts[name]))
         script_named.append((name, ident))
     lines.append("")
+    lines.append("// ── \\p{...} binary properties (DerivedCoreProperties, PropList) ──")
+    # A property whose loose name a category or script already claimed is
+    # dropped rather than emitted second: the runtime lookup is first-match, so
+    # a shadowed table would be dead weight that reads as if it worked.
+    taken = {loose(n) for n, _ in named + script_named}
+    binary_named: list[tuple[str, str]] = []
+    for name in sorted(binary):
+        if loose(name) in taken:
+            continue
+        ident = f"bp_{name}"
+        lines.append(fmt_ranges(ident, binary[name]))
+        binary_named.append((name, ident))
+    lines.append("")
     lines.append("pub const NamedRanges = struct { name: []const u8, ranges: []const Range };")
-    all_named = named + script_named
+    all_named = named + script_named + binary_named
     body = ", ".join(f'.{{ .name = "{n}", .ranges = {ident} }}' for n, ident in all_named)
     lines.append(f"pub const properties: []const NamedRanges = &.{{ {body} }};")
     lines.append("")

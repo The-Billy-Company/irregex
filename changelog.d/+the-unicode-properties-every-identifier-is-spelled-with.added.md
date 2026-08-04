@@ -1,0 +1,5 @@
+`\p{...}` resolved general categories and scripts. It did not resolve `XID_Start` or `XID_Continue`, which is how Go, Java, C, Rust, and JavaScript each spell "identifier character" - so the single most common terminal in any language grammar was a pattern this engine rejected.
+
+The data was already pinned: `DerivedCoreProperties.txt` is where `\w`'s `Alphabetic` comes from, and the two identifier properties sit a few hundred lines further down the same file. What was missing was the generator reading it. It now reads every binary property in `DerivedCoreProperties.txt` and `PropList.txt` generically rather than lifting the three the Perl classes happened to need, which is 57 properties and matches what rust-regex resolves. A three-field row (`InCB; Linker`) is a property *value* and is skipped, so no class is invented that Unicode does not define; a name a category or script already claimed is dropped rather than emitted where the first-match lookup would never see it.
+
+The tables grow from 340 KB to 577 KB of source. Compile time did not move.
