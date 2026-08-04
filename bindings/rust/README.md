@@ -13,10 +13,11 @@ and names there are permanent, so it was never available to us. That turned out
 well: `irgx` is already the C symbol prefix, the header, and the Python import,
 so the Rust name now agrees with every other surface.
 
-That is the whole install on the four common desktop and server targets. There
-is no Zig toolchain to fetch, no C compiler step, and no separate binary to put
-on your PATH. The engine is written in Zig; the crate carries a prebuilt static
-archive per target and `build.rs` picks the right one and links it in.
+That is the whole install on the common desktop and server targets - macOS,
+Linux, and Windows, on both x86_64 and arm64. There is no Zig toolchain to
+fetch, no C compiler step, and no separate binary to put on your PATH. The
+engine is written in Zig; the crate carries a prebuilt static archive per target
+and `build.rs` picks the right one and links it in.
 
 ## Why you might want it
 
@@ -72,7 +73,16 @@ re.splitn(text, 3);
 re.replace(text, "$1");         // the leftmost match
 re.replace_all(text, "$1");
 re.replacen(text, 2, "$1");
+re.find_at(text, 4);            // start late without slicing (see below)
+re.is_match_at(text, 4);
 ```
+
+`find_at` and `is_match_at` start the search at a byte offset **without moving
+the haystack's edges**, which is the whole reason they exist: `^`, `\b` and every
+lookaround still read the text from the beginning. Slicing to the same offset is
+a different question, and a wrong one — `^b` does not match `"abc"` from 1, but
+it does match the slice `"bc"`. The offset must be a character boundary; the
+`try_` siblings return `Error::NotCharBoundary` instead of panicking.
 
 A `Match` has `start()`, `end()`, `range()`, `as_str()`, `as_bytes()`, `len()`
 and `is_empty()`. A `Captures` has `get(n)`, `name("n")`, `iter()`, `len()`,
@@ -82,9 +92,45 @@ write, or a `FnMut(&Captures) -> impl AsRef<str>`.
 
 Every verb that can panic has a `try_` sibling that returns
 `Result<_, irgx::Error>` instead: `try_is_match`, `try_find`, `try_find_iter`,
-`try_captures`, `try_captures_iter`, `try_replacen`. The panicking forms exist so
+`try_captures`, `try_captures_iter`, `try_replacen`, `try_find_at`,
+`try_is_match_at`. The panicking forms exist so
 `re.find(text)` returns an `Option` and reads like the crate you already know;
 the checked forms exist so a caller who cannot take a panic never has to.
+
+## Many patterns at once: `RegexSet`
+
+```rust
+use irgx::RegexSet;
+
+let set = RegexSet::new([r"^\w+@\w+$", r"^\d{3}-\d{4}$", r"^https?://"])?;
+
+set.is_match("bob@host");                              // true
+set.matches("555-1234").iter().collect::<Vec<_>>();    // [1]
+```
+
+Same shape as `regex`'s `RegexSet`, and same reason for it: N compiled patterns
+asked separately read the text N times, and one fused `a|b|c` reads it once and
+throws away which pattern hit. `SetMatches` carries `matched_any()`,
+`matched(i)`, `len()` (the size of the set, as in `regex`, not the number of
+hits), and `iter()`. `RegexSetBuilder` takes the same flags `RegexBuilder` does,
+minus the two the engine's slate cannot carry (`multi_line` and
+`dot_matches_new_line`); `smart_case` is resolved per pattern, so one set can
+hold a case-folding pattern and a case-sensitive one.
+
+What is underneath is not an alternation. The engine pools every pattern's
+required literals into a SIMD sieve, so a text nothing in the set can match is
+usually rejected before any automaton runs, and a pattern whose literals
+*decide* it is answered by the sieve alone. Past ~18 pooled literals it hands off
+to one Aho-Corasick automaton so the per-byte cost stops growing with N.
+
+A set reports presence, not position — there is no per-pattern span verb, exactly
+as there is none in `regex`. Once you know pattern 7 matched, `Regex::find` on
+pattern 7 is the search you were going to run anyway, against a text now known to
+be worth searching.
+
+Admission is all or nothing: the first pattern the engine will not take refuses
+the whole set, and the error names *that pattern* rather than saying one of them
+failed.
 
 ## Flags
 
@@ -241,11 +287,12 @@ than the default.
 **`fixed`, `word` and `smart_case` exist.** They are the options a command-line
 searcher has had for decades and they have no `regex` equivalent.
 
-**No `Regex::shortest_match`, `find_at`, or byte-slice `Regex`.** The C ABI has
-no anchored or resumable verb, and faking one on top of an unanchored scan is
-exactly where a binding goes subtly wrong. Anchors are in the grammar: use `\A`
-and `\z`. Note the spelling of the end anchor; it is `\z`, as in `regex` and
-RE2, not `\Z`.
+**No `Regex::shortest_match` or byte-slice `Regex`.** The C ABI has no anchored
+verb, and faking one on top of an unanchored scan is exactly where a binding
+goes subtly wrong. Anchors are in the grammar: use `\A` and `\z`. Note the
+spelling of the end anchor; it is `\z`, as in `regex` and RE2, not `\Z`.
+`RegexSet::matches_at` is absent for the same reason - the bounded search the
+single-pattern `find_at` rides on has no slate counterpart yet.
 
 **`find_iter` is eager.** The engine reports the whole match sequence in one
 call, and that call is the authority on what a sequence *is*, so the crate asks
@@ -312,10 +359,10 @@ its panic message here.
 `build.rs` resolves the native library in this order, and the first rung that
 answers wins:
 
-1. **`IRGX_LIB_DIR`** - a directory holding your own `libirgx.a` or
-   `libirgx.{dylib,so}`. This is the override, and it is absolute: if it is
-   set and does not hold a library, the build fails rather than falling through
-   to something you did not ask for.
+1. **`IRGX_LIB_DIR`** - a directory holding your own `libirgx.a`,
+   `libirgx.{dylib,so}`, or, on Windows, `irgx.lib` beside the DLL. This is the
+   override, and it is absolute: if it is set and does not hold a library, the
+   build fails rather than falling through to something you did not ask for.
 2. **A vendored static archive** for the target triple, from `vendor/` in this
    crate. This is the path almost everyone takes, and it needs nothing installed.
 3. **An existing `zig-out/lib/`** in an engine checkout beside the crate, when
@@ -324,14 +371,30 @@ answers wins:
 
 Vendored targets, and the size of the archive each one links:
 
-- **`aarch64-apple-darwin`** — 1.89 MiB.
-- **`x86_64-apple-darwin`** — 2.02 MiB.
-- **`x86_64-unknown-linux-gnu`** — 2.60 MiB.
-- **`aarch64-unknown-linux-gnu`** — 2.13 MiB.
+- **`aarch64-apple-darwin`** — 2.06 MiB.
+- **`x86_64-apple-darwin`** — 2.22 MiB.
+- **`x86_64-unknown-linux-gnu`** — 2.80 MiB.
+- **`aarch64-unknown-linux-gnu`** — 2.30 MiB.
+- **`x86_64-pc-windows-gnu`** — 2.83 MiB, and it also serves
+  `x86_64-pc-windows-gnullvm`, which is the same ABI under a second name.
+- **`aarch64-pc-windows-gnullvm`** — 2.47 MiB. Rust has no
+  `aarch64-pc-windows-gnu`; mingw-w64's gcc was never ported to arm64, so
+  llvm-mingw is the GNU-ABI arm64 Windows toolchain and `-gnullvm` is its
+  triple.
 
 The Linux archives are built against glibc 2.17, so they work on anything from
-CentOS 7 forward. Each one is stripped of debug info; the whole crate is
-9.16 MiB unpacked and 3.28 MiB as the gzipped package `cargo package` produces.
+CentOS 7 forward, and the Windows ones against Windows 10 RS4. Each is stripped
+of debug info; the whole crate is 15.3 MiB unpacked and 5.3 MiB as the gzipped
+package `cargo package` produces, against crates.io's 10 MiB ceiling.
+
+**MSVC is the one Windows ABI with no vendored archive.** Zig cross-compiles
+every target above from a single host, but the MSVC C runtime headers are not
+redistributable, so an MSVC archive can only be produced on a machine that has
+Visual Studio - which is exactly the machine that can build it from source
+anyway. `build.rs` knows the MSVC triples, so on Windows with `zig` on PATH a
+`cargo build` for the default toolchain builds the engine and links it; without
+Zig it fails with a message saying so and naming `-pc-windows-gnu` as the
+vendored alternative.
 
 A target with no vendored archive and no `zig` fails at build time with a
 message saying which target it was, what it looked for, and the two ways to fix
@@ -350,7 +413,9 @@ python3 scripts/vendor_libraries.py
 
 ## Supported platforms
 
-macOS on arm64 and x86_64, Linux on x86_64 and aarch64. Other targets build if
+macOS on arm64 and x86_64, Linux on x86_64 and aarch64, and Windows on x86_64
+and arm64 under the GNU ABI. Every one of them links a vendored archive and is
+tested on its own hardware in CI. Other targets - MSVC among them - build if
 `zig` is on PATH or you point `IRGX_LIB_DIR` at your own library. Rust 1.85
 or newer, edition 2024.
 

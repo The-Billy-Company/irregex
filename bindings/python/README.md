@@ -65,6 +65,21 @@ irgx.escape("1+1=2")  # '1\\+1=2'
 `\g<name>` refer to groups and `\g<0>` is the whole match. A callable receives
 the `Match`.
 
+A compiled `Pattern`'s `search`, `finditer`, `findall` and `is_match` take
+`re`'s `pos` and `endpos`, which bound the search without slicing the subject:
+
+```python
+pattern = irgx.compile("^b")
+pattern.search("abc", 1)  # None - `^` is still offset 0, not offset 1
+irgx.compile("b$").search("abc", 0, 2)  # matches (1, 2) - `endpos` IS the end
+```
+
+The asymmetry is `re`'s and this follows it: `pos` moves where the search
+starts, `endpos` moves where the text *ends*, so `$` and `\b` see it. Both clamp
+into the subject rather than raising, and both count in the subject's own units —
+characters for `str`, bytes for `bytes`. They live on the compiled pattern only,
+as in `re`, where the module-level functions take `flags` in that position.
+
 ```python
 irgx.sub(r"\d+", lambda m: str(int(m.group()) * 2), "a1 b20")  # 'a2 b40'
 ```
@@ -181,27 +196,15 @@ purpose.
   unanchored search, which is where they end up subtly wrong. Write the
   anchor instead: `\A` and `\z` are in the grammar. Note the spelling of the
   end anchor; it is `\z`, as in Rust and RE2, not `\Z`.
-- **Zero-width matches follow the engine's rules, not `re`'s.** `re` reports
-  an empty match after the last character of the text; this engine does not,
-  and it also suppresses an empty match sitting exactly where the previous
-  match ended, which is why `a*` over `"abc"` gives two spans and not four.
+- **`finditer` is eager.** The engine reports the whole match sequence in one
+  call rather than handing back a cursor a Python loop advances, so the
+  iterator knows its own `len()` before you walk it. The sequence itself is
+  `re`'s — every empty match at every position, including the one at the end of
+  the text and the one abutting a previous match — because deriving it in Python
+  is exactly where a binding gets nullable patterns wrong:
 
   ```python
-  [m.span() for m in irgx.finditer("a*", "abc")]  # [(0, 1), (2, 2)]
-  [m.span() for m in re.finditer("a*", "abc")]  # [(0, 1), (1, 1), (2, 2), (3, 3)]
-  ```
-
-  Iteration here comes from a single call into the engine's own
-  match-sequence routine rather than from a Python loop advancing a cursor,
-  so these rules are the engine's and not a re-derivation of them.
-- **A newline is a line terminator, not ordinary whitespace.** A
-  single-character class will not match it, though a longer match may still
-  span one.
-
-  ```python
-  irgx.findall(r"\s", "a\nb")  # []
-  irgx.findall(r"\s", "a\tb")  # ['\t']
-  irgx.findall(r"a\sb", "a\nb")  # ['a\nb']
+  [m.span() for m in irgx.finditer("a*", "abc")]  # [(0, 1), (1, 1), (2, 2), (3, 3)]
   ```
 
 - **`findall` reports `None` for a group that did not participate**, where
@@ -237,9 +240,12 @@ there fails loudly at import rather than silently falling back.
 ## Supported Platforms
 
 Wheels are built for macOS on arm64 and x86_64, Linux on x86_64 and aarch64
-(manylinux, glibc 2.17 and newer), and Windows on x86_64. Python 3.12 and
-newer. The wheels are platform-tagged, because they contain a native library;
-a wheel for the wrong platform will not install rather than failing at import.
+(manylinux, glibc 2.17 and newer), and Windows on x86_64 and arm64 (Windows 10
+RS4 and newer). Python 3.12 and newer. Every platform gets the same engine and
+the same answers, and the suite runs on each of them rather than on one and by
+assumption on the rest. The wheels are platform-tagged, because they contain a
+native library; a wheel for the wrong platform will not install rather than
+failing at import.
 
 ## Searching a Codebase with It
 

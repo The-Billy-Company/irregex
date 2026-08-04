@@ -27,16 +27,21 @@ build`.
   `manylinux_2_17_x86_64`, at the `x86_64_v2` floor.
 - **`linux-aarch64`** builds at `aarch64-linux-gnu.2.17`, tagged
   `manylinux_2_17_aarch64`, at the `baseline` floor.
-- **`windows-x86_64`** builds at `x86_64-windows-gnu`, tagged `win_amd64`, at
-  the `x86_64_v2` floor.
+- **`windows-x86_64`** builds at `x86_64-windows.win10_rs4-gnu`, tagged
+  `win_amd64`, at the `x86_64_v2` floor.
+- **`windows-arm64`** builds at `aarch64-windows.win10_rs4-gnu`, tagged
+  `win_arm64`, at the `baseline` floor.
 
 Every target names an explicit minimum platform version in its triple, and its
-tag says the same number. That pairing is the point: letting Zig inherit the
-host's macOS SDK produces a library that refuses to load on an older machine
-than the one that built it, under a tag promising it would. glibc 2.17 is the
-manylinux2014 floor; Zig links against exactly that version rather than the
-host's, which is what makes a manylinux wheel built on a laptop a real thing
-rather than a claim.
+tag says the same number where the tag can say it at all. That pairing is the
+point: letting Zig inherit the host's macOS SDK produces a library that refuses
+to load on an older machine than the one that built it, under a tag promising it
+would. glibc 2.17 is the manylinux2014 floor; Zig links against exactly that
+version rather than the host's, which is what makes a manylinux wheel built on a
+laptop a real thing rather than a claim. `win_amd64` and `win_arm64` carry no
+version at all, so Windows 10 RS4 is stated in the triple and nowhere else -
+picked to match the floor `build.zig`'s own `check-windows` drift gate compiles
+against, so the wheel and the gate that guards it describe one platform.
 
 The `-Dcpu` floor is the other half of that same promise, because a wheel tag
 names an OS and an architecture but has no way to name an instruction set.

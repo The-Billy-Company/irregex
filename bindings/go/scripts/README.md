@@ -26,6 +26,10 @@ python3 scripts/vendor_libraries.py --list        # what the matrix covers
   `libirgx_linux_amd64.a`.
 - **linux/arm64** cross-compiles via `aarch64-linux-gnu.2.17` into
   `libirgx_linux_arm64.a`.
+- **windows/amd64** cross-compiles via `x86_64-windows.win10_rs4-gnu` into
+  `libirgx_windows_amd64.a`.
+- **windows/arm64** cross-compiles via `aarch64-windows.win10_rs4-gnu` into
+  `libirgx_windows_arm64.a`.
 
 Archives land beside the Go source, with `irgx.h` next to them. That is not
 cosmetic: `go mod vendor` copies a package's own files and skips a subdirectory
@@ -42,7 +46,16 @@ archive never assumes an instruction the target's oldest supported CPU lacks.
 output. A source change that is not followed by a run of this script ships an
 engine older than the repository it came from.
 
-Three things happen per target beyond `zig build`:
+Four things happen per target beyond `zig build`:
+
+- **The link file is held to the matrix.** A consumer's cgo link is driven by
+  the `#cgo LDFLAGS` line in `link_<goos>_<goarch>.go`, not by anything in this
+  script, so that line is checked against the libraries the matrix declares
+  before a byte is compiled - as is `link_unsupported.go`'s build constraint,
+  which has to exclude every target the matrix now serves. It matters on
+  exactly one platform: Windows needs `-lntdll`, and Zig's driver adds ntdll on
+  its own while the gcc cgo actually uses does not, so a probe linked here
+  would close for a reason a consumer's link would not have.
 
 - **The C floor is verified present, not folded in.** `build.zig` now packs
   `libirgx.a` from a partially-linked object on every target, so PCRE2 and

@@ -28,6 +28,10 @@ You do need cgo, which means a C compiler. `CGO_ENABLED=0` will not build; see
   you get its features and its performance profile. `regexp` simply does not
   have them. You do not have to know up front which grammar a pattern wants
   either: a declined compile says so with `ErrNeedsPCRE`, and you retry.
+- **`Set`, for many patterns over one text.** Which of N patterns match, in one
+  pass, keeping which one it was. `regexp` has no type for this, so the
+  alternative is a loop that reads the text N times or an alternation that
+  throws the attribution away.
 - **The same answers as the engine's other bindings.** If you also use the
   Python binding or the command line tools, this package reports the same spans
   for the same pattern over the same bytes.
@@ -70,9 +74,10 @@ re := irgx.CompileOpts{IgnoreCase: true, Word: true}.MustCompile("cat")
 re.FindAllString("Cat concatenate CAT", -1) // ["Cat" "CAT"]
 ```
 
-The six options are `Fixed`, `IgnoreCase`, `Word`, `SmartCase`, `ASCII` and
-`PCRE`. The zero value is what plain `Compile` uses, so `CompileOpts{}.Compile`
-and `Compile` are the same call.
+The options are `Fixed`, `IgnoreCase`, `Word`, `SmartCase`, `ASCII`, `PCRE`, and
+the two `regexp` spells inline instead of as flags - `MultiLine` for `(?m)` and
+`DotAll` for `(?s)`. The zero value is what plain `Compile` uses, so
+`CompileOpts{}.Compile` and `Compile` are the same call.
 
 ## Concurrency
 
@@ -89,6 +94,53 @@ searches run in. A `*Regexp` keeps a pool of handles and lends one to a
 goroutine for the duration of a call, so the rule is kept for you and never
 becomes your problem. The cost is that a burst of concurrency compiles a few
 extra copies of the pattern, which are freed when the pool releases them.
+
+## Many Patterns at Once: `Set`
+
+`regexp` has no type for "which of these two hundred patterns match this text",
+so you write the loop, and the loop reads the text two hundred times. Or you
+write `a|b|c`, which reads it once and then cannot tell you which branch hit.
+
+A `Set` is the third thing - one pass, and attribution:
+
+```go
+var kinds = irgx.MustCompileSet(`^func `, `^type `, `^var `, `^const `)
+
+func classify(decl string) []int { return kinds.WhichString(decl) }
+```
+
+Two questions. `MatchString` asks whether *any* pattern matches, which is the
+cheap one and where a batch workload spends its time: a literal scan can throw
+out a hopeless text with no pattern running at all. `WhichString` asks *which*,
+as ascending indices into the list you compiled - `Patterns()` names them,
+`Len()` bounds them, and `Match`/`Which` take `[]byte` for the same questions.
+
+There is no per-pattern span verb, which is an edge rather than an omission. A
+`Set` is a **classifier**: once you know pattern 7 is in this text,
+`FindAllIndex` on pattern 7 is the walk you were going to run anyway, over a text
+now known to be worth walking.
+
+The unit is the whole text, exactly as it is for a `Regexp`, so a `Set` that
+names pattern *i* and a `Regexp` compiled from pattern *i* alone always agree.
+That is the property the test suite spends most of its time on, including over
+all 255 subsets of a corpus, because a prefilter that over-rejects is precisely
+the bug you would not notice.
+
+Two things differ from a plain compile. The flags apply to every pattern, which
+is the honest shape for a set that came from a config file - and `MultiLine` and
+`DotAll` are refused rather than ignored, because this plane has nowhere to carry
+them. And a refusal names the pattern: a `*SetError` carrying the index, wrapping
+the same `*SyntaxError` or `ErrNeedsPCRE` a lone `Compile` would have given, so
+
+```go
+var refused *irgx.SetError
+if errors.As(err, &refused) {
+	log.Printf("pattern %d (%q): %v", refused.Index, refused.Expr, refused.Err)
+}
+```
+
+A `*Set` is safe for concurrent use by multiple goroutines, by the same pool the
+`Regexp` uses.
 
 ## Differences from `regexp`
 
@@ -217,22 +269,51 @@ If you need a regex engine in a cgo-free build, that is what `regexp` is for.
 One static archive is vendored per platform, selected by the build constraint on
 the `link_*.go` file that names it:
 
-- **darwin/arm64** ships `libirgx_darwin_arm64.a`, about 2.1 MB.
-- **darwin/amd64** ships `libirgx_darwin_amd64.a`, about 2.1 MB.
-- **linux/amd64** ships `libirgx_linux_amd64.a`, about 2.7 MB.
-- **linux/arm64** ships `libirgx_linux_arm64.a`, about 2.2 MB.
+- **darwin/arm64** ships `libirgx_darwin_arm64.a`, about 2.2 MB.
+- **darwin/amd64** ships `libirgx_darwin_amd64.a`, about 2.3 MB.
+- **linux/amd64** ships `libirgx_linux_amd64.a`, about 2.9 MB.
+- **linux/arm64** ships `libirgx_linux_arm64.a`, about 2.4 MB.
+- **windows/amd64** ships `libirgx_windows_amd64.a`, about 3.0 MB.
+- **windows/arm64** ships `libirgx_windows_arm64.a`, about 2.6 MB.
 
-That is about 9 MB of module, of which your binary links one archive. The Linux
-archives are built against glibc 2.17 and the macOS ones against the macOS 11
-SDK, so they work on anything newer.
+That is about 15 MB of module, of which your binary links one archive. The Linux
+archives are built against glibc 2.17, the macOS ones against the macOS 11 SDK,
+and the Windows ones against Windows 10 RS4, so they work on anything newer.
+
+Every platform is equally supported: same engine, same answers, one suite, and
+CI runs it on each of them rather than cross-compiling and assuming. The
+Windows arms link `ntdll` alongside the archive, which is declared in their
+`link_*.go` files and is the one thing that differs between platforms.
+
+Building for a platform not in that list fails at compile time with a named
+error rather than a linker error about a missing symbol.
+
+### Windows needs a C compiler too
+
+Nothing here is Windows-specific except how easy the compiler is to forget.
+cgo needs a C toolchain on every platform, and on macOS and Linux you almost
+certainly have one; on Windows you may not. Install
+[mingw-w64](https://www.mingw-w64.org/) (MSYS2's `mingw-w64-ucrt-x86_64-gcc` is
+the usual route) and make sure `gcc` is on `PATH`.
+
+On **windows/arm64** there is no mingw-w64 gcc, because it was never ported
+there. Use [llvm-mingw](https://github.com/mstorsjo/llvm-mingw), or Zig, which
+is the same toolchain with less to install:
+
+```bash
+set CC=zig cc -target aarch64-windows.win10_rs4-gnu
+go build ./...
+```
+
+Either mingw flavour links them. Beyond the sixty ntdll symbols and a handful
+of kernel32 imports, the archives ask the C runtime for nothing but `malloc`,
+`free`, `memcpy`, and the ctype table - names msvcrt and UCRT both export - so
+they carry no dependency on which one your gcc was built against.
 
 The archives sit beside the Go source rather than in a subdirectory, because
 `go mod vendor` copies a package's own files and skips a subdirectory that holds
 no Go package. Kept one level down they would be dropped from a vendored
 consumer, and the build would fail at the linker.
-
-Building for a platform not in that list fails at compile time with a named
-error rather than a linker error about a missing symbol.
 
 ### Linking Your Own Build
 
