@@ -1,27 +1,16 @@
-# `vendor/` — hermetic third-party sources
+# `vendor/` — Hermetic Third-Party Sources
 
-Pinned upstream trees built into the kernel so CI and developer machines do
-not depend on system packages for match semantics or index construction.
+`vendor/` holds pinned upstream trees built directly into the kernel, so neither CI nor a developer machine depends on a system package for match semantics or index construction.
 
-| Tree | What | Why vendored |
-| ---- | ---- | ------------ |
-| [`pcre2/`](pcre2) | PCRE2 10.47 (8-bit + JIT/sljit) | Opt-in `-P` / `--engine auto` — no system `libpcre2` |
-| `relate/vendor/libsais/` | libsais 2.10.2 (8-bit suffix array) | The codex FM-index's suffix sort — no system `libsais` |
+irregex vendors exactly two libraries:
 
-Together these are **the C floor**: `build.zig` holds one declarative row per
-library (name, include path, sources, feature flags) and links the whole set
-onto any module that compiles the engine, each archive built at that module's
-own optimize. Adding a library is a row there plus a tree here — never a
-call-site sweep.
+- **[`pcre2/`](pcre2)** is PCRE2 10.47, an 8-bit build with JIT/sljit support, backing the opt-in `-P` / `--engine auto` escalation path so no system `libpcre2` is ever consulted.
+- **`libsais/`** is libsais 2.10.2, an 8-bit suffix-array construction library backing the codex FM-index's suffix sort, so no system `libsais` is consulted either.
 
-Both are bound with explicit `extern` declarations rather than `@cImport`
-(`src/kernel/regex/pcre2/ffi.zig`,
-`src/kernel/math/succinct/sais.zig`), so no module outside `build.zig` needs
-their include paths. Version bumps: re-pin the tarball sha in that library's
-README, refresh its `contracts/trust/supply-chain/ledger.toml` row and the
-`.lazy` provenance entry in `build.zig.zon`, then re-run the gates the library
-backs — the PCRE parity slate, or `zig build test -Dtest-filter='sais:'` and
-`zig build codex-scale`.
+Together these are the C floor. `build.zig` holds one declarative row per library — name, include path, sources, feature flags — and links the whole set onto any module that compiles the engine, with each archive built at that module's own optimize level. Adding a library means adding a row in `build.zig` plus a tree here, never a call-site sweep across the codebase.
 
-Do not add casual vendor trees here — prefer a hermetic pin with a README
-that states version, license, and the consumer-side wrapper path.
+Both libraries are bound with explicit `extern` declarations rather than `@cImport`, so no module outside `build.zig` needs their include paths. The PCRE2 wrapper lives in `src/kernel/regex/pcre2/ffi.zig`; the libsais wrapper lives in `src/kernel/math/succinct/sais.zig`.
+
+Bumping a vendored version takes three steps. Re-pin the tarball hash in that library's own README (`pcre2/README.md` or `libsais/README.md`), refresh the matching `.lazy` dependency entry in `build.zig.zon`, then re-run the tests the library backs — the PCRE2 JIT-vs-interpreter parity tests in `src/kernel/regex/pcre2/backend_test.zig`, or `zig build test -Dtest-filter='sais:'` for libsais.
+
+Do not add a casual vendor tree here. Prefer a hermetic pin with its own README stating version, license, and the consumer-side wrapper path.

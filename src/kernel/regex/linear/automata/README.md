@@ -1,4 +1,4 @@
-# linear/automata
+# linear/automata — operations neither road owns
 
 Operations on a finished automaton that belong to **neither road that builds one**.
 
@@ -14,7 +14,7 @@ Ask `relate` how alike they are and it will tell you they are each other's
 nearest kin in the whole 21,806-file tree and *still* only weakly similar — which
 is the right answer. They are not duplicates waiting to be merged.
 
-## The membership rule
+## The Membership Rule
 
 A file belongs here when it operates on an automaton and **cannot say which road
 produced it**. That is a sharper test than "shared", and it is what keeps this
@@ -25,7 +25,7 @@ folder from becoming a junk drawer:
 - Shared *by nature* — it takes finished tables and a shape, and the roads are
   indistinguishable from inside it. Lives here.
 
-## What is here
+## What Is Here
 
 **`freeze.zig`** — the last operation on any determinization. It takes the dense
 id-indexed tables both roads produce and applies the four layout passes that only
@@ -141,7 +141,7 @@ does it answer *which bytes leave a state?* Executing a skip is
 `../../analysis/prefilter.zig`'s job, and a thing that merely goes faster is not a
 dwell.
 
-## Why it is three files
+## Why It Is Three Files
 
 Because three is what belongs here. A folder holding a real boundary with a few
 occupants is honest where one holding five shallow ones is not, and the membership rule
@@ -157,7 +157,7 @@ Three things that look like candidates and are not:
 
 - **`../dfa/dfa.zig`**, the automaton type itself, is shared by both roads and by
   every executor — but its path is pinned inside the frozen benchmark manifests
-  under `gist/bench/certificate/artifact/`.
+  under [`bench/certificate/artifact/`](../../../../../bench/certificate/artifact).
   Those are recorded evidence, not source, and moving a file to make a folder
   tidier is not a reason to rewrite them.
 - **`../program/`**, the Thompson lowering, produces the NFA rather than operating

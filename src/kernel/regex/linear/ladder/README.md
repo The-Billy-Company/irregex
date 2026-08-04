@@ -5,11 +5,14 @@ _which machine is the cheapest one that can soundly answer this?_ — with no
 semantics of their own: every rung answers identically to the Pike VM, and a rung
 that cannot decide a haystack falls through instead of guessing.
 
-| File                                     | Rung                                                                                                                                                              |
-| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`../../matcher.zig`](../../matcher.zig) | **Which backend** (at the regex package root). Tagged union over linear `Regex` and opt-in PCRE2 `Pcre` (`-P`), dispatched once per line / span — never per byte. |
-| `verdict.zig`                            | **Which rung inside the linear arm.** Cost order: end-of-line certainty → SIMD class-run → accelerator tier → byte-class DFA → Pike VM.                           |
-| `rungs.zig`                              | **Which accelerator inside that.** Optional machines behind one interface so the handle carries one field.                                                        |
+- **[`../../matcher.zig`](../../matcher.zig)** decides **which backend** (at the
+  regex package root): a tagged union over the linear `Regex` and opt-in PCRE2
+  `Pcre` (`-P`), dispatched once per line / span — never per byte.
+- **[`verdict.zig`](verdict.zig)** decides **which rung inside the linear arm**,
+  in cost order: end-of-line certainty → SIMD class-run → accelerator tier →
+  byte-class DFA → Pike VM.
+- **[`rungs.zig`](rungs.zig)** decides **which accelerator inside that**:
+  optional machines behind one interface, so the handle carries one field.
 
 The `*Fused` predicates (`docMatchFused`, `countRunFused`) let a caller with its
 own per-line loop ask _which_ machine would answer **before** paying a line
@@ -19,7 +22,7 @@ Callers of the linear engine never import `verdict.zig`: `../program/core.zig`
 adopts `lineMatch`, `docMatch`, and the fused predicates onto `Regex`. `Matcher`
 is imported directly, by name, from the surface layer.
 
-## The rung protocol
+## The Rung Protocol
 
 Three-valued, and it unifies the two kinds of accelerator exactly rather than
 papering over their difference:
@@ -44,7 +47,7 @@ instead of merely standing down beside one. The sieve is not in that contest: it
 narrows without deciding, so it is offered the winner's per-byte cost and applies
 its own survival inequality against it.
 
-## What a rung costs — `price.zig`
+## What a Rung Costs — `price.zig`
 
 The auction was structurally real and numerically invented: the bids were
 hand-written literals (`30_000`, `500 + 30_000/stride`, `4_400`/`8_000`,
@@ -71,22 +74,23 @@ and a new rung adds a model without re-measuring anything.
 Two consequences worth stating, because both replaced a boolean:
 
 - **The fallback is priced by which walker it actually is.** One constant used to
-  cover the eager DFA, the lazy DFA _and_ the Pike VM; measured, they are 1.18,
-  9.50 and 29.63 cyc/B — a **25×** range a challenger was previously bidding
-  blind into. `^` is priced as what it actually is, too: a per-**line** seed
-  behind a `memchr`, not a per-byte walk. That single axis took the auction's
-  worst misprice from **2.82×** to **1.00×**.
+  cover the eager DFA, the lazy DFA _and_ the Pike VM; on the Apple M4 Max row
+  they measure 1.373, 9.52, and 29.57 cyc/B — a roughly **21×** range a
+  challenger was previously bidding blind into. `^` is priced as what it
+  actually is, too: a per-**line** seed behind a `memchr`, not a per-byte walk.
+  That single axis took the auction's worst misprice from **2.82×** to
+  **1.00×** ([`bench/rungs/price/`](../../../../../bench/rungs/price/README.md)).
 - **The walk is _not_ priced by its table's footprint, and that is a measurement
   too.** The plane shipped a residency axis first — a resident step, a spilled
   step, and the table size between them — because "a table too big for L1 walks
-  slower" sounds like the fact a walk turns on. The sweep built to fit that curve
-  refuted it: a **1.4 MB** table and a **216-byte** table both walk at 1.18
-  cyc/B, and the whole 6-point spread (1.02–1.21 over a 19,000× footprint range)
-  tracks automaton shape. It could not have been otherwise — the step is one
-  dependent load from `table[state·stride + class[byte]]`, so the working set is
-  the rows a haystack _visits_ times the classes it _uses_, and a 1795-state
-  pattern cycles through a handful on real text. The axis is gone, `Machine.walk`
-  has no footprint field to misuse, and the sweep stays in `mint` printing its
+  slower" sounds like the fact a walk turns on. The sweep built to fit that
+  curve refuted it: a **1.4 MB** table and a **216-byte** table walk at the same
+  `dfa_step` over a 19,000× footprint range, tracking automaton shape rather
+  than table size. It could not have been otherwise — the step is one dependent
+  load from `table[state·stride + class[byte]]`, so the working set is the rows
+  a haystack _visits_ times the classes it _uses_, and a 1795-state pattern
+  cycles through a handful on real text. The axis is gone, `Machine.walk` has
+  no footprint field to misuse, and the sweep stays in `mint` printing its
   spread — so a host that really is cache-sensitive shows the knee before
   anything silently misprices.
 - **A pattern nothing in the ladder answers is priced by whatever does.** Above
@@ -111,7 +115,7 @@ Two consequences worth stating, because both replaced a boolean:
   either direction. `Compose.lower` is the only entry point; there is no second
   dispatch judgment inside the rung.
 
-### Minting, verifying, and regret — `zig build ladder-price`
+### Minting, Verifying, and Regret — `zig build ladder-price`
 
 Three verbs, and the third is the one that matters:
 
@@ -129,7 +133,7 @@ Three verbs, and the third is the one that matters:
   found, and how the fix was proven. Worst regret is currently **1.00×** across
   the slate, ceiling 1.25×.
 
-### Arming is evidence-shaped, not arch-shaped
+### Arming Is Evidence-Shaped, Not Arch-Shaped
 
 A vector rung used to arm on `builtin.cpu.arch`, which answers a question nobody
 asked: whether the kernel _compiles_. What the auction needs to know is whether
@@ -138,7 +142,7 @@ its bid means anything — and it does not, on a host with no calibration. So
 exists **and** this target was minted), and a rung with no evidence is not built
 at all rather than built and priced with borrowed numbers.
 
-## Which question a rung answers
+## Which Question a Rung Answers
 
 The second axis, and the one where a mistake produces a wrong answer instead of
 a crash. `lineMatch` asks _does the pattern match a substring of exactly these
@@ -153,8 +157,8 @@ admission gate, which refuses every assertion and every class containing `\n`. A
 is wrong for a slice; `compose` is one, because its `\n` table row maps every
 lane back to start.
 
-That is the rung KIND's model, and holding a whole kind to its worst case cost
-real throughput, so an instance may prove better: `compose.lower` checks whether
+That is the rung _kind_'s model, and holding a whole kind to its worst case
+costs real throughput, so an instance may prove better: `compose.lower` checks whether
 the reset row is what the DFA would do on a `\n` anyway (unanchored, no `$`
 resolved by the second table, and no live lane stepping `\n` into a live or
 accepting state) and, when it is, publishes `sliceSafe`. `rungs.zig` looks that
@@ -174,20 +178,46 @@ multiline, which has no DFA to lower in the first place. Measured **4.84–11.42
 on flat `-U` patterns, measured with non-matching tails so the scan covers the
 whole buffer rather than a prefix.
 
-## Which rungs actually arm
+## Which Rungs Actually Arm
 
 Every rung arms on the population it prices best, and the costed gate stands one
 down at _compile_ time wherever a start-skip or the DFA would win — the point of
 offers over booleans. Each claim below is a **committed, reproducible proof**
-(`zig build <step>`) rather than a one-off scratch measurement, run against the
-207.7 MiB corpus on this machine:
+(`zig build <step>`) rather than a one-off scratch measurement; the exact corpus
+varies per proof (crest ships a fixed 760-file / 14.8 MiB slate, while compose
+and parabix walk whatever `corpus.resolveRoots` finds on the host running the
+bench), so re-run the named step before quoting a figure as current:
 
-| Rung      | Proof          | Arms on / Evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| --------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `compose` | `compose-rung` | class-alternations, bounded digit/hex runs — every armed row agrees on the whole buffer. **The workhorse:** 6.76–6.82x on the class-alt family (\|Q\| 9–15), 3.3x on hex/digit (\|Q\| 17–22). Declines `uni-prop` (literal skip beats retiring) and `dot-star-chain` (build refuses; the ladder keeps the accelerated DFA). Also on `lineMatch` and `-U` for the instances that prove `sliceSafe`.                                                                                                  |
-| `parabix` | `parabix-rung` | `emailish` `dot-lead` `alnum-alt` `bounded` `digit-run`, plus `word-gap`/`line-gap` assertions compose cannot serve. **Now armed.** 230,978 document verdicts byte-identical to the shipped ladder; s2p ~13.8 GB/s, full 2.5–5.65 GB/s (1.6–4.7x vs the negative-case DFA). Refuses `nested-star` (star-height 2) and `uni-class` (codepoint class).                                                                                                                                                |
-| `sieve`   | `sieve`        | profitable quotients only. **Armed, and mostly self-declining.** 0 soundness violations over 1.60 B byte-positions; the costed gate now declines **6 of 9** as `unprofitable` — including `digit-40` and `iso-date`, which the pre-plane boolean armed. One row (`uuid`) still arms into a measured 0.89×, and the bench publishes it as a loss: the arithmetic is minted cycles, the residual is the selectivity estimate's memoryless byte prior. See [`../sieve/README.md`](../sieve/README.md). |
-| `crest`   | `crest`        | literal-free class runs where the trigram extractor yields no requirement. Forced-class-run sieve: 0 false negatives across the corpus + 96,000 randomized (pattern, file) pairs; prunes 84–96%, up to 28.2x. Correctly near-1.0x (stands down) on wide single-class patterns like `word-3`.                                                                                                                                                                                                        |
+- **`compose`** (`zig build compose-rung`) arms on class-alternations and
+  bounded digit/hex runs, with every armed row agreeing with the shipped ladder
+  on the whole buffer. It is the workhorse: 4.7–4.8x on the class-alt family
+  (9–15 states, 16 lanes) and 2.3x on the wider hex/digit family (17–22 states,
+  32 lanes). It declines `uni-prop` (past `Compose.lower`'s state ceiling) and
+  loses the auction on `dot-star-chain` (the fallback's skip prices cheaper than
+  a 32-lane composition over two unanchored `.*` gaps). It also arms on
+  `lineMatch` and `-U` for the instances that prove `sliceSafe`.
+- **`parabix`** (`zig build parabix-rung`) arms on the flat class-chain family —
+  `digit-run`, `dot-lead`, `alnum-alt`, `bounded`, `emailish`, and the
+  assertion-carrying `word-gap`/`line-gap` rows compose cannot serve. Its own
+  run measures 2.1–3.4x the shipped ladder and a comparable margin over the
+  bare DFA, with transposition alone at roughly 14 GB/s. It refuses nested
+  Kleene (`star_height`) and any codepoint class (`unicode`); see
+  [`../parabix/README.md`](../parabix/README.md) for the full admission gate.
+- **`sieve`** (`zig build sieve`) arms only on quotients the costed gate prices
+  as profitable, with 0 soundness violations over 1.60 B byte-positions on its
+  own slate. The costed gate declines 6 of 9 slate patterns as unprofitable —
+  including `digit-40` and `iso-date`, which a pre-plane boolean used to arm —
+  and one row (`uuid`) still arms into a measured 0.89x loss the bench
+  publishes rather than hides: the arithmetic is minted cycles, the residual is
+  the selectivity estimate's memoryless byte prior. See
+  [`../sieve/README.md`](../sieve/README.md).
+- **`crest`** (`zig build crest`, a document-level pre-filter ahead of the
+  ladder rather than a `rungs.zig` entry) targets literal-free class runs where
+  the trigram extractor yields no requirement. On its own 760-file / 14.8 MiB
+  slate it holds 0 soundness violations across randomized sweeps over both
+  engine modes, prunes up to 89.5% and reaches a 14.36x speedup on tight
+  classes like a 12-hex-digit run, and correctly declines (stands near 1.0x)
+  on wide single-class patterns like `word-3`.
 
 Ahead of every rung sit the literal populations: an `.exact` literal-set decides
 a whole line/buffer in one SIMD/Teddy/Aho scan with no automaton, and a
@@ -198,5 +228,4 @@ thrash a fixed budget quits to the Pike VM instead of churning.
 
 No rung is dormant: every one has a green proof on its own population, and the
 costed offers are what let an unprofitable candidate lose to a cheaper rival
-rather than arm unconditionally. Re-run the four `zig build` proof steps above to
-refresh any figure before quoting it as current.
+rather than arm unconditionally.

@@ -1,27 +1,38 @@
-# `warm/` — what is held across queries
+# `warm/` — What Is Held Across Queries
 
-Two sibling warm engines plus the byte stores they answer from. Nothing here
-decides what an answer looks like — that is [`../facet/`](../facet/) — and
-nothing here proves the held state still matches disk — that is
-[`../reconcile/`](../reconcile/).
+The resident engine plus the byte stores it answers from.
 
-| Module          | Role                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `resident.zig`  | `ResidentSession` — gist’s warm state: mirror + trigram index, mutation overlay, freshness seqlock + dirty log, and `beginRead` (the read lease every answer passes through)                                                                                                                                                                                                                                                                                                                                |
-| `retrieval.zig` | `RetrievalSession` — relate’s warm sibling for `similar` / `pack`. Holds one repo’s mmap’d trigram index + doc→path table and answers through the shared `relate/src/exec/retrieval/` kernel, so warm ≡ cold. Freshness is the persisted index’s build anchor                                                                                                                                                                                                                                      |
-| `mirror.zig`    | The in-RAM corpus mirror: unchanged members bind to the persisted `content.shard` mmap; changed/new/binary/oversize docs heap-read with cold’s own per-file treatment. Also holds ρ(d) per doc — the crest vectors the sieve prunes a candidate by with k integer compares and no byte scan — built by the persisted `crest.bin` sidecar’s **own** builder over the mirror’s own bytes, so a resident vector and the on-disk one for the same bytes cannot disagree, and the vectors need no freshness gate |
-| `overlay.zig`   | Mutation store — live edits become answerable substitutions without rebuilding the base mirror                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `truth.zig`     | Independent filesystem oracle for adversarial tests — never runs the engine                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+Nothing here decides what an answer looks like — that is
+[`../facet/`](../facet) — and nothing here proves the held state still
+matches disk — that is [`../reconcile/`](../reconcile).
 
-## Why two engines don’t share a base type
+## Modules
 
-`resident` mirrors corpus **bytes** and reconciles a moving cursor over them;
-`retrieval` never holds file contents and reasons about a persisted index’s
-build anchor. They share only the reconcile barrier and the watcher.
+- **[`resident.zig`](resident.zig)** is `ResidentSession`, gist's warm state:
+  the mirror plus trigram index, the mutation overlay, the freshness seqlock
+  and dirty log, and `beginRead`, the read lease every answer passes
+  through.
+- **[`mirror.zig`](mirror.zig)** is the in-RAM corpus mirror. An unchanged
+  member binds to the persisted `content.shard` mmap; a changed, new,
+  binary, or oversize doc heap-reads with cold's own per-file treatment. It
+  also holds each doc's crest vector ρ(d) — what the sieve prunes a
+  candidate by with a handful of integer compares and no byte scan — built
+  by the persisted `crest.bin` sidecar's own builder over the mirror's own
+  bytes, so a resident vector and the on-disk one for the same bytes cannot
+  disagree and the vectors need no freshness gate.
+- **[`overlay.zig`](overlay.zig)** is the mutation store: live edits become
+  answerable substitutions without rebuilding the base mirror.
+- **[`truth.zig`](truth.zig)** is an independent filesystem oracle for
+  adversarial tests. It never runs the engine.
+
+Suites: `resident_test.zig` and `scoped_test.zig` sit beside their subjects.
+
+The sibling `relate` repo holds the retrieval engine's own warm session —
+`RetrievalSession` never held file contents here, and it left with the rest
+of the kinship engine when the packages split.
 
 ## Naming
 
-Was `warm/corpus.zig` / `warm/recall.zig`. Renamed so the file says what it
-is (`mirror`) and so “recall” stays free for `kernel/kinship/recall/` — the
-warm side of the shared retrieval engine is `retrieval.zig`, same-name-
-same-concept with `relate/src/exec/retrieval/`.
+This was `warm/corpus.zig` and `warm/recall.zig`. It was renamed so the file
+says what it is (`mirror`) and so *recall* stays free for
+`kernel/kinship/recall/`.

@@ -11,17 +11,17 @@ the whole set.
 
 ```bash
 python3 scripts/vendor_libraries.py                          # all targets
-python3 scripts/vendor_libraries.py --target x86_64-apple-darwin
+python3 scripts/vendor_libraries.py --only x86_64-apple-darwin
 python3 scripts/vendor_libraries.py --list
 ```
 
 Needs `zig` on PATH and an engine checkout above this directory. For each target
 it builds with an explicit minimum platform version, strips debug info with
-`llvm-strip --strip-debug`, merges the PCRE2 C floor into the archive when the
-Zig build left it out, and then link-tests the result with a small C program that
-compiles a pattern and runs a search. A target that fails the link test is not
-written, because an archive that only fails at the consumer's link step is worse
-than a missing one.
+`llvm-strip --strip-debug`, verifies the PCRE2 C floor is actually present in the
+archive rather than folding it in itself, and then link-tests the result with a
+small C program that compiles a pattern and runs a search. A target that fails
+either check is not written, because an archive that only fails at the
+consumer's link step is worse than a missing one.
 
 The pinned minimum platform versions are what make the archives portable:
 macOS 11.0, and glibc 2.17 on Linux so the archives work on anything from

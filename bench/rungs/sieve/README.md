@@ -14,12 +14,11 @@ about the **filter**, which is engine machinery this package builds and owns.
 - **`zig build sieve`** → the quotient sieve (below).
 - **`zig build indexq`** → [Layer L, index quality vs csearch](#layer-l--index-quality-head-to-head-against-csearch).
 
-The two prefilter **parity gates** that used to live here — `cover_parity.sh` and
-`warm_parity.sh` — drive a `gist` binary this package does not build, so they
-went with the product to
-`gist/bench/conformance/gates/parity/`. Same for `indexcost.sh`, which sources
-the competitor field registry and now sits beside it in
-`gist/bench/dominance/races/`.
+Two prefilter **parity gates** used to live here — `cover_parity.sh` and
+`warm_parity.sh` — and drove a `gist` binary this package does not build, so
+they went with the product to `gist/bench/conformance/gates/parity/`.
+`indexcost.sh` stayed: it prices *this package's* index build, not the
+product's, so it still lives beside this file (below).
 
 # The quotient sieve's production proof harness
 
@@ -71,8 +70,6 @@ al. (arXiv:1904.10786), and Hyperscan's `HS_FLAG_PREFILTER`. What is ours is the
 SP-partition harvest from an already-built DFA and the measured decision of when
 it is worth arming.
 
----
-
 # Layer L — index quality head-to-head against csearch
 
 `zig build indexq` answers one claim: _"your trigram index is **csearch-class,
@@ -91,11 +88,13 @@ One corpus, one built index, one evaluator (`Index.queryPlan`), one verifier
 (the production matcher). The **only** thing that differs between arms is the
 boolean formula over trigrams:
 
-| arm         | formula                                                                                                                      |
-| ----------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `gist-base` | the pre-Layer-L prefilter — one required literal, else the per-branch alternation cover (one clause)                         |
-| `gist`      | the conjunctive cover (`src/kernel/query/cover.zig`), read off the pattern source with the matcher's own parse options       |
-| `csearch`   | **csearch's own formula**, lifted verbatim from `csearch -verbose` by `csearch_plan.py` and replayed against gist's postings |
+- **`gist-base`** is the pre-Layer-L prefilter — one required literal, else
+  the per-branch alternation cover (one clause).
+- **`gist`** is the conjunctive cover (`src/kernel/query/cover.zig`), read
+  off the pattern source with the matcher's own parse options.
+- **`csearch`** is csearch's own formula, lifted verbatim from
+  `csearch -verbose` by `csearch_plan.py` and replayed against gist's
+  postings.
 
 csearch's arm is not a reimplementation and not a proxy. `csearch -verbose`
 prints `index.RegexpQuery(re.Syntax)` rendered by `Query.String()`; the parser in
@@ -130,6 +129,17 @@ a Zig signature, an ISO date, a hex constant, a URL, an ADR cite, a method
 alternation, a `:=` assignment — chosen because csearch's planner has a real,
 non-obvious answer for each. They are reported and spliced under their own
 heading, never merged into the twelve.
+
+`slate.py`, beside this file, is what keeps both slates honest against
+whichever corpus they run over. A class matching no file and a class matching
+every file admit the identical candidate set under both planners, so either
+endpoint is a row that cannot separate `gist` from `csearch` no matter how the
+two formulas differ — and it still prints a number, which is the dangerous
+part. `slate.py --audit <corpus>` measures every class with Python's own `re`
+(never this engine, so a corpus that only passes according to the tool under
+test is not evidence) and exits non-zero if a class is vacuous, saturating, or
+has drifted out of its declared selectivity band. Run it before declaring a
+corpus for Layer L, not after a certificate run already trusted it.
 
 ## Running it
 

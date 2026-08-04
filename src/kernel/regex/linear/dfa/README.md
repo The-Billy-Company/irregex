@@ -39,19 +39,24 @@ to, costing ~15 ms to find a small automaton. `force_dfa` waives the policy (so
 the differential oracles reach the DFA on every pattern they generate); nothing
 waives the ceiling.
 
-| File                | Role                                                                                                                                                                                                                                             |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `dfa.zig`           | The immutable automaton: byte-class table, interior vs last-byte transitions (`trans_fin` resolves `$`), the byte-indexed `Wide` mirror the doc walk steps, the start state's skippable dwell, whole-document `docMatch`, word-context walk.       |
-| `subset.zig`        | The construction both drivers share: byte-class refinement (by word-ness for `\b`), the assertion-resolving epsilon-closure, the transition step, subset interning, the visit meter, and the start row a dwell is read off.                       |
-| `powerset.zig`      | The **eager** policy: walk to fixpoint under the bounds, then hand the finished tables to [`../automata/freeze.zig`](../automata), which applies the layout passes only a complete automaton admits. The symbolic road hands over the same thing, so neither transcribes them.        |
-| `lazy.zig`          | The **on-demand** policy: an immutable `Lazy` (classes, anchoring, its own start dwell) plus a per-thread mutable `Cache` that determinizes a state the first time a haystack walks into it, and quits to the Pike VM rather than thrash.         |
-| `dfa_test.zig`      | DFA unit cases + differential fuzz against the Pike VM, plus the two that hold the mirror: cell-exactness against the classed tables, and `docMatch` fuzzed with the mirror present and then withheld.                                            |
-| `powerset_test.zig` | Determinizer structural invariants + exhaustive language equivalence vs a from-scratch NFA spec.                                                                                                                                                 |
+- **`dfa.zig`** is the immutable automaton: byte-class table, interior vs last-byte transitions (`trans_fin` resolves `$`), the byte-indexed `Wide` mirror the doc walk steps, the start state's skippable dwell, whole-document `docMatch`, word-context walk.
 
-`dfa.zig` is the one submodule besides the `Regex` handle that `src/root.zig`
-re-exports (`regex_dfa`), for C-ABI and library consumers.
+- **`subset.zig`** is the construction both drivers share: byte-class refinement (by word-ness for `\b`), the assertion-resolving epsilon-closure, the transition step, subset interning, the visit meter, and the start row a dwell is read off.
 
-## Word boundaries at the DFA floor
+- **`powerset.zig`** is the *eager* policy. It walks to fixpoint under the bounds, then hands the finished tables to [`../automata/freeze.zig`](../automata), which applies the layout passes only a complete automaton admits. The symbolic road hands over the same thing, so neither transcribes them.
+
+- **`lazy.zig`** is the *on-demand* policy: an immutable `Lazy` (classes, anchoring, its own start dwell) plus a per-thread mutable `Cache` that determinizes a state the first time a haystack walks into it, and quits to the Pike VM rather than thrash.
+
+- **`dfa_test.zig`** carries DFA unit cases and differential fuzz against the Pike VM, plus the two tests that hold the mirror: cell-exactness against the classed tables, and `docMatch` fuzzed with the mirror present and then withheld.
+
+- **`powerset_test.zig`** carries determinizer structural invariants and exhaustive language equivalence against a from-scratch NFA spec.
+
+`dfa.zig` is one of the leaf modules named through `regex.dfa` in
+[`../regex.zig`](../../regex.zig), the one door into `kernel/regex/` that
+`contract/irregex.zone` seals at build time. A cost harness reaches it there —
+for a Regex handle's own scan, go through `Regex` instead.
+
+## Word Boundaries at the DFA Floor
 
 `\b` / `\B` / `\<` / `\>` are not deferred to the VM: `powerset.build` refines
 byte classes by ASCII word-ness and doubles the interior table so a transition

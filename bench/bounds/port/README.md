@@ -1,25 +1,49 @@
 # bench/bounds/port — Layer B (port-optimality: static bound + measured on this machine)
 
-Layer B of gist's [Dominance-and-Fit Certificate](../README.md#dominance-and-fit-certificate-layers-ag).
-Where Layer A proves empirical dominance over ripgrep on the registered
-workloads, Layer B proves _why the hot loop can't be beaten on this instruction sequence_ — in
-two legs: a **static** `llvm-mca` microarchitectural bound (port pressure /
-reciprocal throughput) over reference cores, and **Layer B′**, the same
-hot-loop probes run natively on _this_ machine under the PMU, so the
-certificate can carry a measured-here cycles/byte instead of only a
-cross-machine cross-check.
+Layer B of [irregex's Dominance-and-Fit Certificate](../README.md#dominance-and-fit-certificate-layers-al),
+one of the seven layers this package mints itself. Layer B proves *why the
+hot loop can't be beaten on this instruction sequence* — in two legs: a
+**static** `llvm-mca` microarchitectural bound (port pressure / reciprocal
+throughput) over reference cores, and **Layer B′**, the same hot-loop probes
+run natively on *this* machine under the PMU, so the certificate can carry a
+measured-here cycles/byte instead of only a cross-machine cross-check.
 
-## What it is
+## What It Is
 
-| File                       | Role                                                                                                                                                                                                     |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `mca.sh`                   | cross-compiles every probe to two reference microarchitectures, runs `llvm-mca`, writes `portcert.csv`/`portcert.json`, splices the certificate                                                          |
-| `report.py`                | renders the `## Layer B` markdown section (static + the Layer B′ measured subsection) from `portcert.json` + `portbound.json` and splices it into `.gist/CERTIFICATE.md`                    |
-| `measure.zig`              | **Layer B′** — `gist-portbound`: times the same drift-guarded probes natively under the PMU (`bench/apparatus/harness/pmu.zig`), writing `portbound.json` (measured cyc/byte + cyc/step; fail-closed without root) |
-| `probes/simd_contains.zig` | byte-faithful copy of the hot loop in [`../../../src/kernel/scan/simd.zig`](../../../src/kernel/scan/simd.zig)'s `contains` — throughput-bound                                                                 |
-| `probes/dfa_step.zig`      | the **classed** DFA recurrence — `s = trans_in[s + class[b]]`, 3 loads/byte, the layout every non-document DFA consumer still walks — latency-bound                                                       |
-| `probes/dfa_mirror.zig`    | the **byte-indexed** recurrence — `s = trans_in[s + b]` over the `Dfa.Wide` mirror that [`../../../src/kernel/regex/linear/dfa/dfa.zig`](../../../src/kernel/regex/linear/dfa/dfa.zig)'s `docMatch` steps, 2 loads/byte — latency-bound |
-| `probes_test.zig`          | the drift guard — asserts each probe is bit-identical to the real production function it copies, over adversarial random inputs (`zig build test`)                                                       |
+- **`mca.sh`** cross-compiles every probe to two reference
+  microarchitectures, runs `llvm-mca`, writes `portcert.csv`/`portcert.json`,
+  and splices the certificate.
+
+- **`report.py`** renders the `## Layer B` markdown section (the static leg
+  plus the Layer B′ measured subsection) from `portcert.json` and
+  `portbound.json`, and splices it into the mint's working
+  `CERTIFICATE.md` (`.gist/` by default, or `$GIST_DIR`).
+  [`mint.sh`](../../certificate/mint/mint.sh) copies the finished file into
+  the committed
+  [`bench/certificate/artifact/`](../../certificate/artifact/) snapshot only
+  when asked (`CERT_PUBLISH_DIR=...`).
+
+- **`measure.zig`** is **Layer B′** — `gist-portbound` times the same
+  drift-guarded probes natively under the PMU
+  (`bench/apparatus/harness/pmu.zig`), writing `portbound.json` (measured
+  cyc/byte plus cyc/step; fail-closed without root).
+
+- **`probes/simd_contains.zig`** is a byte-faithful copy of the hot loop in
+  [`../../../src/kernel/scan/simd.zig`](../../../src/kernel/scan/simd.zig)'s
+  `contains` — throughput-bound.
+
+- **`probes/dfa_step.zig`** is the **classed** DFA recurrence —
+  `s = trans_in[s + class[b]]`, 3 loads/byte, the layout every non-document
+  DFA consumer still walks — latency-bound.
+
+- **`probes/dfa_mirror.zig`** is the **byte-indexed** recurrence —
+  `s = trans_in[s + b]` over the `Dfa.Wide` mirror that
+  [`../../../src/kernel/regex/linear/dfa/dfa.zig`](../../../src/kernel/regex/linear/dfa/dfa.zig)'s
+  `docMatch` steps, 2 loads/byte — latency-bound.
+
+- **`probes_test.zig`** is the drift guard — it asserts each probe is
+  bit-identical to the real production function it copies, over adversarial
+  random inputs (`zig build test`).
 
 **Why cross-compiled reference cores, not this machine.** This dev box is
 Apple Silicon, and LLVM ships **no real scheduling model for any Apple CPU** —
@@ -78,7 +102,7 @@ markers, so its ~5–6 cyc/it is the real dependent-load recurrence. Read
 `Block RThroughput` for the port bound and the measured Layer B′ column for the
 recurrence; treat `sim cyc/it` as per-probe, not cross-probe.
 
-## Drift guard, not a duplicate
+## Drift Guard, Not a Duplicate
 
 The probes are **byte-faithful copies**, not the production functions
 themselves — `llvm-mca` needs a standalone, zero-host-package-dependency object to
@@ -93,7 +117,7 @@ not a re-derivation), so a silent divergence between the probe and the
 production loop fails `zig build test` loudly instead of shipping a stale
 certificate.
 
-## Layer B′ — port bound, measured on this machine
+## Layer B′ — Port Bound, Measured On This Machine
 
 The static leg is honest about its gap: it bounds _reference_ cores because
 LLVM models no Apple core (below). `measure.zig` closes the gap empirically —
@@ -124,7 +148,9 @@ operator up a rung that cannot help. **Root is not what buys cycles here:**
 instructions to a plain `zig build portbound`, and root only adds kperf's
 configurable events, which this lane never requests.
 
-## How to run
+## How to Run
+
+Run the static leg first, then optionally the on-machine measured leg.
 
 ```bash
 cd <irregex-repo-root>
@@ -151,13 +177,14 @@ a documented skip (exit 0), never a failure — mirroring `bench/apparatus/harne
 "never fail the run" discipline; `gist-portbound` degrades the same way
 (wall-clock + a loud NOT-measured label instead of a crash).
 
-## Prior art
+## Prior Art
 
-- **LLVM `llvm-mca`** — the static machine-code analyzer this layer drives;
+- **LLVM `llvm-mca`** is the static machine-code analyzer this layer drives;
   see the [LLVM `llvm-mca` documentation](https://llvm.org/docs/CommandGuide/llvm-mca.html)
   for the reciprocal-throughput / port-pressure model it implements.
 - **[LLVM issue #63698](https://github.com/llvm/llvm-project/issues/63698)**
-  — the reason this layer targets `znver4`/`neoverse-v2` instead of an
+  is the reason this layer targets `znver4`/`neoverse-v2` instead of an
   Apple-Silicon `-mcpu`: no real scheduling model exists for any Apple core.
-- gist's own [`../../apparatus/harness/certify.zig`](../../apparatus/harness/certify.zig) (Layer A) —
-  the measured cycles/byte this layer's static bound is checked against.
+- The sibling `gist` repo's `bench/apparatus/harness/certify.zig` (Layer A)
+  supplies the measured cycles/byte this layer's static bound is checked
+  against.

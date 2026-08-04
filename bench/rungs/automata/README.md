@@ -1,4 +1,4 @@
-# bench/rungs/automata
+# `bench/rungs/automata` — The Machine Algebra, Raced Against Itself
 
 Every other rung here races an accelerator against the shipped DFA. This one
 races the DFA against itself.
@@ -24,7 +24,7 @@ zig build automata-rung -- sift      # does the count-keyed literal cascade ever
 zig build automata-rung -- shape     # TSV, for the cross-engine join
 ```
 
-## What it reports
+## What It Reports
 
 Ten sections, deliberately not mixed:
 
@@ -152,7 +152,7 @@ characters `\d+`. And `mirrorFaithful` checks the mirror the engine will actuall
 walk, cell by cell across every state × all 256 bytes, so an arm can never
 publish a time for a table that isn't the one it stands in for.
 
-## Read `seen` before `speedup`
+## Read `seen` Before `speedup`
 
 `seen` is how many distinct states the walk actually entered. It is the column
 that makes the rest of the table honest, because a pattern can determinize to 512
@@ -163,11 +163,11 @@ real work.
 
 Measured on an M-series laptop carrying ten coworker agents, seven runs:
 
-| Regime                       | Rows                                    | Speedup       |
-| ---------------------------- | --------------------------------------- | ------------- |
-| Self-loop (`seen` = 1)       | `a.*b.*c`, `panic\|0x`, `;$`, …          | 0.98 – 1.19×  |
-| Wandering (`seen` ≥ 9)       | `[0-9a-f]{8}-[0-9a-f]{4}`, `[0-9a-f]{32}-` | 1.20 – 1.27×  |
-| Geometric mean, whole slate  | 13 rows                                 | 1.10 – 1.16×  |
+- **Self-loop rows** (`seen` = 1) — `a.*b.*c`, `panic|0x`, `;$`, and similar —
+  read 0.98–1.19×.
+- **Wandering rows** (`seen` ≥ 9) — `[0-9a-f]{8}-[0-9a-f]{4}`,
+  `[0-9a-f]{32}-` — read 1.20–1.27×.
+- **The geometric mean** over the whole 13-row slate is 1.10–1.16×.
 
 The wandering rows are the ones to judge it by, and they are also the shape the
 `crest` lane cares about — a long class run that no prefilter can skip.
@@ -180,7 +180,7 @@ samples is an advertisement, so it is quoted from all of them, and the conclusio
 that survives is narrower and truer: **parity where the walk stands still, 20–27%
 where it moves.**
 
-## The cross-engine column
+## The Cross-Engine Column
 
 `shape` is TSV so [`bar.py`](bar.py) can join it against `regex-cli debug dense
 dfa` from the vendored rust-`regex` clone. Both engines are built byte-mode
@@ -194,11 +194,11 @@ python3 bench/rungs/automata/bar.py            # 27 patterns, both engines
 python3 bench/rungs/automata/bar.py --reps 5   # more rounds for their build time
 ```
 
-| Geomean over 27 patterns    | Ratio         |
-| --------------------------- | ------------- |
-| Our alphabet is coarser     | **2.32×**     |
-| Our transition table is smaller | **2.38×** |
-| We determinize faster       | **4.8 – 5.1×** |
+Geomean over the 27 patterns:
+
+- **Our alphabet is coarser** — **2.32×**.
+- **Our transition table is smaller** — **2.38×**.
+- **We determinize faster** — **4.8–5.1×**.
 
 The first two are shape and reproduce to the digit. The third is a timing, and
 raising `--reps` *lowers* it, because more fresh processes keep handing their
@@ -217,7 +217,7 @@ is not minimization quality — their id space also holds per-anchoring start st
 quit, and dead. We are smaller there partly because we answer fewer questions, which
 belongs in the record as a capability difference.
 
-## The four claims this rung killed
+## The Four Claims This Rung Killed
 
 `search` is the arm that landed C1, and `inner` is the arm that landed half of C7
 after establishing that the other half was already in the product. `area` and `build`/`width` are the arms that
@@ -262,7 +262,7 @@ never mattered: `\p{L}+` is a 1592-state NFA, but a Unicode class lowers to a
 determinizer at all. The width that motivated the claim had been designed off this
 path long before the claim was written.
 
-## C4, and why a true premise still isn't a result
+## C4, And Why A True Premise Still Isn't A Result
 
 `dwell`'s census reports **0.0% `elide%` and 97.5% `ceil%`** on `a.*b` — so C4's
 premise holds where C2's and C3's did not, and the only thing between it and a large
@@ -351,7 +351,7 @@ last figure is inflated by a division on a runtime `ncls` this harness has not f
 into the state representation; crediting it back in full moves the ceiling only to
 ≈0.7×, so the verdict does not rest on it.
 
-## C5, and the slate that could not speak for the shape
+## C5, And The Slate That Could Not Speak For The Shape
 
 `reduce` prices both quotient dimensions of `automata/reduce.zig` on the byte road.
 Over the everyday slate the answer looks unambiguous: **rows collapse on 1 automaton
@@ -396,14 +396,14 @@ because the front end got fixed. `compile.zig` lowered the parser's tree, where
 already knew an alternation of byte classes *is* a byte class. `oneByteUnion` folds it
 at that seam, and the row that motivated this whole paragraph now reads:
 
-| `(a\|b\|c\|d\|e\|f\|g\|h){10}` | before | after | |
-| --- | --- | --- | --- |
-| NFA states | 151 | **11** | 13.7× |
-| scratch words | 3 | **1** | — |
-| byte classes | 9 | **2** | 4.5× |
-| table bytes | 792 | **176** | 4.5× |
-| determinization | 56.9 µs | **3.6 µs** | **15.8×** |
-| what `reduce` still finds | 9→2 cols | **nothing** | — |
+For `(a|b|c|d|e|f|g|h){10}`:
+
+- **NFA states** — 151 before, **11** after, a 13.7× reduction.
+- **Scratch words** — 3 before, **1** after.
+- **Byte classes** — 9 before, **2** after, a 4.5× reduction.
+- **Table bytes** — 792 before, **176** after, a 4.5× reduction.
+- **Determinization** — 56.9 µs before, **3.6 µs** after, a **15.8×** speedup.
+- **What `reduce` still finds** — 9→2 columns before, **nothing** after.
 
 **The ASCII column collapse went from 1/32 rows to 0/32.** The one row on the whole
 everyday slate that had residual column redundancy arrives minimal now, so the claim
@@ -424,7 +424,7 @@ the trie rows' 4/5 column collapse stays where it is — that one is a real auto
 property of a UTF-8 decoder, not a front-end artifact, and C5 already measured it as
 not worth spending on the walk.
 
-## C7, and the arm that exists to find nothing
+## C7, And The Arm That Exists To Find Nothing
 
 `inner` is the first section here whose first job was to check whether the claim
 had already shipped. It had, in half: **25 of 33 rows prove a mandatory literal
@@ -464,7 +464,7 @@ with one result kept. It also asserts the direction that would be a *bug* rather
 than a slowdown — a suffix that reports a match the whole buffer does not hold
 fails the run.
 
-## C9, and the pairing that killed a true premise
+## C9, And The Pairing That Killed A True Premise
 
 The `sift` arm audits one decision: `scan/literal_set.zig` picks its scan kernel by
 **needle count** — 1 ⇒ rare-byte memmem, ≤64 ⇒ grouped Teddy, beyond ⇒ sparse
@@ -502,7 +502,7 @@ rejected verify, not a lost skip.
 Which leaves the adversarial row to a document-adaptive mechanism, and that is the
 family the `dwell` arm already priced at 0.56× against ship. Same door, closed twice.
 
-## Two premises it refuses to assume
+## Two Premises It Refuses To Assume
 
 **Documents must be match-free.** A boolean scan returns at the first hit, so
 timing a matching haystack measures the match position and not the recurrence.
@@ -516,7 +516,7 @@ report. (The exhaustive proof is elsewhere: the Pike VM differential in
 `zig build test`, which cleared 209,700 document decisions and 209,550 line
 decisions over 1,397 patterns with zero divergences when this layout landed.)
 
-## Where the superseded code lives
+## Where The Superseded Code Lives
 
 Inside `bench.zig`, and nowhere else. `walkLoaded` is the *old* form of the walk;
 keeping it in the engine so a benchmark could reach it would leave a second

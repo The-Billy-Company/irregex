@@ -1,4 +1,4 @@
-# `bench/rungs/sliver` — index tiers under load, in Layer D's own unit
+# `bench/rungs/sliver` — Index Tiers Under Load, In Layer D's Own Unit
 
 Layer D (`bench/bounds/lowerbound/`) measures the floor a **trigram** directory can
 reach, in _candidate bytes delivered to verify_. It records four of the twelve
@@ -24,14 +24,13 @@ Output: `<GIST_DIR>/scale_tiers.tsv` — the same artifact home `gist index` use
 so it lands at the repo-root `.gist/` by default (a `# k=v`
 provenance header, then one row per class).
 
-## What it measures, and why the numbers can be trusted
+## What It Measures, And Why The Numbers Can Be Trusted
 
-Two candidate rules over identical inputs:
-
-| Rule        | Meaning                                                                                                                                          |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `directory` | the historical gate — a needle < 3 bytes cannot be queried, so every document is a candidate. Reproduces Layer D's numbers; the honest "before". |
-| `tiered`    | the sliver tier answers sub-trigram needles from the same directory, and a mixed alternation is unioned per branch.                              |
+Two candidate rules run over identical inputs. **`directory`** is the
+historical gate — a needle under 3 bytes cannot be queried, so every document
+is a candidate, reproducing Layer D's numbers as the honest "before". **`tiered`**
+is the sliver tier answering sub-trigram needles from the same directory, with
+a mixed alternation unioned per branch.
 
 - **No production code is instrumented and no candidate rule is re-implemented.**
   `tiered` calls the same `sliver.candidates` production calls, so a number here
@@ -43,14 +42,12 @@ Two candidate rules over identical inputs:
 - **Fail-closed on the payoff too.** A class whose tiered candidate bytes _exceed_
   the directory rule's is a regression and fails the audit.
 
-## Measured result (Apple M4 Pro, zig 0.16.0, 21,105 files / 209.6 MiB)
+## Measured Result (Apple M4 Pro, Zig 0.16.0, 21,105 Files / 209.6 MiB)
 
-Two classes move, and they are exactly the two Layer D reports at 100%:
-
-| class            | pattern     | cand% directory | cand% tiered | reduction |
-| ---------------- | ----------- | --------------: | -----------: | --------: |
-| `literal-punct2` | `})`        |         100.00% |       49.18% | **2.03×** |
-| `regex-litalt`   | `panic\|0x` |         100.00% |       37.42% | **2.67×** |
+Two classes move, and they are exactly the two Layer D reports at 100%.
+**`literal-punct2`** (`})`) drops from 100.00% of the corpus admitted under
+`directory` to 49.18% under `tiered`, a **2.03×** reduction. **`regex-litalt`**
+(`panic|0x`) drops from 100.00% to 37.42%, a **2.67×** reduction.
 
 The corpus is the live working tree, so absolute percentages shift by tenths
 between mints as files change; the reduction factors are stable, and the TSV
@@ -65,7 +62,7 @@ is only as selective as the byte it filters on: `regex-eol` (`;$`) and
 file, so the tier engages, prices the union from exact directory cardinalities,
 and correctly declines. `regex-dense-scan` (`\w{3,8}`) offers no literal at all.
 
-## The positional tier: measured, priced, and declined
+## The Positional Tier: Measured, Priced, And Declined
 
 A **positional** tier stores where in a document a trigram occurs, so verify reads
 regions rather than whole documents — the axis Layer D calls the floor. It is
@@ -78,15 +75,25 @@ carries block positions only if its document frequency is below **T**, and at mo
 constraint, which is sound because dropping a constraint only widens the admitted
 region. Sidecar bytes are measured at real delta+varint encoding.
 
-| cap |  df ≤ T |   sidecar | % corpus | `pgxpool` | `context.Context` |  `func` | `panic` |
-| --: | ------: | --------: | -------: | --------: | ----------------: | ------: | ------: |
-|   8 |       0 |         0 |     0.0% |    12.3 M |            25.5 M | 108.7 M |  41.5 M |
-|   8 |     256 |  16.5 MiB |     8.8% |    12.3 M |            25.5 M | 108.7 M |  41.5 M |
-|   8 |    1024 |  35.0 MiB |    18.6% |     4.9 M |            25.5 M | 108.7 M |  41.5 M |
-|   8 | uniform | 108.8 MiB |    57.8% |     4.9 M |            15.7 M |  80.2 M |  19.7 M |
-| inf |    1024 |  74.9 MiB |    39.8% |     0.5 M |            25.5 M | 108.7 M |  41.5 M |
-| inf |    4096 | 136.0 MiB |    72.3% |     0.5 M |             7.2 M | 108.7 M |   0.9 M |
-| inf | uniform | 245.8 MiB |   130.6% |     0.5 M |             7.2 M |  29.8 M |   0.7 M |
+- **`cap=8`** caps every trigram at 8 stored positions per document. At **T=0**
+  (no positions carried) sidecar is 0 MiB and every probe pays doc-level cost:
+  `pgxpool` 12.3 MiB, `context.Context` 25.5 MiB, `func` 108.7 MiB, `panic`
+  41.5 MiB, `WalletService` 17.1 MiB. Raising T to 256 costs 16.5 MiB of
+  sidecar (8.8% of corpus) with no probe moving yet. Only past **T=1024**
+  (35.0 MiB, 18.6%) does `pgxpool` drop to 4.9 MiB and `WalletService` to
+  12.6 MiB. Past **T=4096** (66.9 MiB, 35.5%) `context.Context` drops to
+  15.7 MiB, `panic` to 22.0 MiB, and `WalletService` to 11.4 MiB. The ceiling
+  of this curve, **T=uniform** (108.8 MiB, 57.8%), finally moves `func` to
+  80.2 MiB and settles `panic` at 19.7 MiB.
+- **`cap=inf`** stores every block a trigram's document frequency permits, at
+  proportionally higher cost. **T=1024** (74.9 MiB, 39.8%) is the first point
+  priced above cap-8's ceiling, and it moves `pgxpool` to 0.5 MiB and
+  `WalletService` to 0.5 MiB while leaving `context.Context`, `func`, and
+  `panic` untouched. **T=4096** (136.0 MiB, 72.3%) moves `context.Context` to
+  7.2 MiB, `panic` to 0.9 MiB, and `WalletService` to 0.1 MiB, with `func`
+  still untouched. **T=uniform** — every trigram, every position, **245.8 MiB,
+  130.6% of corpus, a sidecar larger than the text it indexes** — is the only
+  point that ever moves `func`, down to 29.8 MiB.
 
 **The cheap end of the curve buys nothing, and the reason is structural.** A
 threshold only carries a literal's positions once it reaches that literal's
@@ -114,7 +121,7 @@ by choice at a measured price. The decision is gated, not asserted: Layer J
 refuses to splice if any threshold costing ≤10% of corpus is ever measured
 delivering ≥2× on any probe.
 
-## Scale: gist vs zoekt vs csearch
+## Scale: Gist Vs Zoekt Vs csearch
 
 `scale_race.py` races the three indexed engines over a multi-GB corpus (shallow
 clones of linux, llvm, go, rust — 352,316 files / 5.5 GiB on disk) across the same
@@ -141,19 +148,28 @@ stopped materializing corpus-proportional intermediates and started firing in
 blocks, and that is the row to re-measure after any builder change, because the
 verdict sentence in Layer J is derived from it rather than typed beside it.
 
-Query-time memory needed two metrics, and an earlier draft of this file got its
-mechanism wrong. `maximum resident set size` is ~575 MiB whatever the query,
-which that draft read as loading the 389 MiB index rather than paging it. It is
-not: `vmmap` shows `index.gist` **11.5 MiB resident of 354.9 MiB mapped**, and
-two controls settle it — a zero-candidate needle whose filter elides _every_
-read still costs 583 MiB, and `--no-index`, mapping nothing, still costs 535 MiB.
-The residency is the **live tree walk over all 336,780 files** (one touched byte
-costs a 16 KiB page on ARM64), so it tracks file count, and those pages are
-clean and evictable. On owned memory — `peak memory footprint`, what the process
-cannot have reclaimed — gist is flat at **93–96 MiB**, ~10× csearch and **5.8×
+Query-time memory needs two metrics on macOS, and two wrong explanations for
+gist's ~575 MiB `maximum resident set size` were tried and retired before
+finding the real one. The first guess — that this was the cost of loading the
+389 MiB index — is refuted by `vmmap`: `index.gist` shows **11.5 MiB resident
+of 354.9 MiB mapped**, genuinely demand-paged rather than loaded whole. Two
+controls confirm the index isn't the cost either: a zero-candidate needle
+whose filter elides *every* read still costs 583 MiB, and `--no-index`,
+mapping nothing, still costs 535 MiB — so the index accounts for only
+~48 MiB of that number.
+
+The second guess — that the remaining ~535 MiB is inherent to walking a live
+tree of 336,780 files, since one touched byte costs a whole 16 KiB page on
+ARM64 — was retired too, by the matched pair against ripgrep in
+[Walk Cost](#walk-cost-the-matched-pair-against-ripgrep) below: if the cost
+were a property of walking, ripgrep would pay it walking the same tree, and it
+does not. The excess is gist's own *implementation* of walking, which that
+section found and partly fixed. On owned memory — `peak memory footprint`,
+what the process cannot have reclaimed and the metric that fix does not touch
+— gist is flat at **93–96 MiB** on this corpus, ~10× csearch and **5.8×
 better than zoekt's 558 MiB**.
 
-## Walk cost: the matched pair against ripgrep
+## Walk Cost: The Matched Pair Against Ripgrep
 
 `walkcost.py` is the instrument for the one comparison that decides whether a
 walk is expensive or gist's walk was: same needle, same `-uu` scope, same cwd,
@@ -169,22 +185,24 @@ python3 bench/rungs/sliver/walkcost.py --root <tree> [--pattern pgxpool] [--reps
 
 This is where the walk's own retention was found: gist mapped every large file it
 read and held all of them to exit, so its resident set tracked the corpus rather
-than the query. Dropping each mapping in the frame that rendered it took the
-matched pair from **274 MiB to ~54 MiB of maxrss** on an 11 GiB tree, and it is
-also very slightly *faster* (6.32 s ± 0.33 against 6.75 s ± 0.39 over six runs
-each), because 274 MiB of live mappings is VM pressure the walk was paying for
-and nothing was reading.
+than the query. Dropping each mapping in the frame that rendered it closed most
+of the gap: the committed `scale_walkcost.tsv` run, a zero-match `pgxpool` needle
+over the checked-out `.etc/` tree (239,162 files, 3 reps), shows gist at
+**54.1 MiB maxrss / 37.5 MiB owned** against ripgrep's **33.9 MiB / 31.9 MiB** —
+a 1.60× maxrss ratio and 1.18× on owned memory, down from the unfixed number this
+section used to carry. The remaining gap is real and open, not zero; re-run
+`walkcost.py` after any further change to the walk's file-mapping lifecycle.
 
 That walk is also the one cause of the cheap-literal latency losses (~1.2 s over
 337,949 files), and it is the freshness contract being paid for, not overhead: a
 file created after all three indices were built is found by gist and by
 ripgrep, and missed by **both** csearch and zoekt.
 
-## Certificate layer
+## Certificate Layer
 
-`gist/bench/certificate/report/scale.py` splices **Layer J** between
+`bench/certificate/report/scale.py` splices **Layer J** between
 `<!-- SCALE-LAYER-START -->` / `<!-- SCALE-LAYER-END -->` and writes the roster
-side-car `gist/bench/certificate/artifact/scale.csv`.
+side-car `bench/certificate/artifact/scale.csv`.
 
 It is fail-closed in three directions, and the third is the unusual one:
 
@@ -205,30 +223,28 @@ Re-run standalone (`zig build scale` first; it writes into `GIST_DIR`):
 
 ```bash
 cd <irregex-repo-root> && zig build scale -Doptimize=ReleaseFast
-python3 ../gist/bench/certificate/report/scale.py \
-  --certificate ../gist/bench/certificate/artifact/CERTIFICATE.md \
-  --tsv ../../../.gist/scale_tiers.tsv \
+python3 bench/certificate/report/scale.py \
+  --certificate bench/certificate/artifact/CERTIFICATE.md \
+  --tsv .gist/scale_tiers.tsv \
   --race bench/rungs/sliver/artifact/scale_race.tsv \
   --build bench/rungs/sliver/artifact/scale_build.tsv \
   --resident bench/rungs/sliver/artifact/scale_resident.tsv \
   --pareto bench/rungs/sliver/artifact/positional_pareto.tsv \
   --elision bench/rungs/sliver/artifact/scale_elision.tsv \
   --walkcost bench/rungs/sliver/artifact/scale_walkcost.tsv \
-  --sidecar ../gist/bench/certificate/artifact/scale.csv \
+  --sidecar bench/certificate/artifact/scale.csv \
   --machine "$(sysctl -n machdep.cpu.brand_string)" --zig "$(zig version)"
 ```
 
-Roster row for `gist/bench/certificate/guard/layers.py` (the parent wires it;
-this lane does not edit that file) — header `## Layer J — positional + substring
+Roster row for `bench/certificate/guard/profile.py` (the parent wires it; this
+lane does not edit that file) — header `## Layer J — positional + substring
 index tiers at scale (vs zoekt)`, side-car `scale.csv`:
 
 ```python
-(
-    Layer(
-        "J",
-        "Layer J — positional + substring",
-        "## Layer J — positional + substring index tiers at scale (vs zoekt)",
-        "scale.csv",
-    ),
-)
+Layer(
+    "J",
+    "Layer J — positional + substring index tiers",
+    "## Layer J — positional + substring index tiers at scale (vs zoekt)",
+    "scale.csv",
+),
 ```

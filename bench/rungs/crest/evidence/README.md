@@ -1,10 +1,10 @@
-# CREST release evidence
+# CREST Release Evidence
 
 This leaf turns the production CREST proof into a revision-bound, independently
 verifiable package. It uses only the Python standard library and writes only
 under `.local/crest-evidence/`.
 
-## Run
+## Running It
 
 From the repository root:
 
@@ -32,20 +32,21 @@ never copies source claims from the working tree: the monograph reads each
 source document with `git show COMMIT:path`. Benchmark numbers come only from
 the package's `crest-run.json`.
 
-## Package contract
+## Package Contract
 
 The package contains:
 
-- the exact source commit and a Git archive whose complete tar identity
+- **the source commit**, and a Git archive whose complete tar identity
   (paths, bytes, executable modes, metadata, and PAX revision) must reproduce
-  byte-for-byte from that object in the verifier's Git database;
-- `crest.csv`, ordered raw nanosecond samples, fixed matcher regressions,
-  deterministic seeds, four randomized mode differentials (ASCII/Unicode ×
-  case-sensitive/caseless), and a byte-sorted corpus path/size/SHA-256 manifest;
-- benchmark and test transcripts, command receipts, machine/OS/CPU/memory/
-  storage/filesystem/power/cache-condition metadata (unsupported probes are
-  `null` with a note), and hashes for each artifact;
-- a revision-bound monograph and two detached hashes.
+  byte-for-byte from that object in the verifier's Git database.
+- **the run evidence** — `crest.csv`, ordered raw nanosecond samples, fixed
+  matcher regressions, deterministic seeds, four randomized mode
+  differentials (ASCII/Unicode × case-sensitive/caseless), and a byte-sorted
+  corpus path/size/SHA-256 manifest.
+- **provenance metadata** — benchmark and test transcripts, command receipts,
+  machine/OS/CPU/memory/storage/filesystem/power/cache-condition metadata
+  (unsupported probes are `null` with a note), and hashes for each artifact.
+- **the monograph** — a revision-bound document plus two detached hashes.
 
 `evidence-manifest.json` SHA-256-binds every payload;
 `EVIDENCE-MANIFEST.sha256` binds that manifest. Its in-document `Monograph

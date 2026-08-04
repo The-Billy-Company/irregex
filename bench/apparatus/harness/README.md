@@ -6,13 +6,24 @@ can reach, which is why `bench/apparatus/harness` is listed in this package's
 `build.zig.zon` `.paths` — the same reason `brigade.zig` is.
 
 Each is exported by `build.zig` as a named Zig module, so a lane imports it by
-name rather than by relative path:
+name rather than by relative path.
 
-| Module      | File          | What it is                                                                                                                                       |
-| ----------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `probes`    | `probes.zig`  | the 12-class query registry — the shared vocabulary a race arm, an engine rung, and a minted certificate all report against, so rows line up by class name |
-| `pmu`       | `pmu.zig`     | hardware performance counters — Apple's private `kperf` via `dlopen`/`std.DynLib` — cycles and instructions retired, plus the host-provenance primitives (`cpuBrand`, `requestPerformanceQos`) every layer stamps into its report |
-| `stats`     | `stats.zig`   | the verdict math — bootstrap-CI median, Tukey outlier rejection, Mann-Whitney significance. Every lane in **both** repos reports through it        |
+- **`probes`** (`probes.zig`) is the 12-class query registry — the shared
+  vocabulary a race arm, an engine rung, and a minted certificate all report
+  against, so rows line up by class name.
+
+- **`pmu`** (`pmu.zig`) is hardware performance counters — one meter over
+  four backends: macOS `kperf` (root) then `thread_selfcounts`
+  (unprivileged), Linux `perf_event_open` as one grouped read, Windows
+  `QueryThreadCycleTime`. Cycles everywhere, instructions retired everywhere
+  but Windows, which has no unprivileged counter for them; a host with no
+  PMU degrades to wall-clock and says which wall it hit. It also carries the
+  host-provenance primitives (`cpuBrand`, `requestPerformanceQos`) every
+  layer stamps into its report.
+
+- **`stats`** (`stats.zig`) is the verdict math — bootstrap-CI median, Tukey
+  outlier rejection, Mann-Whitney significance. Every lane in **both**
+  repos reports through it.
 
 ## Who reads them
 

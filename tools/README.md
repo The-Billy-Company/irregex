@@ -1,44 +1,49 @@
-# `tools/` — table generators
+# `tools/` — Table Generators
 
 The Python builders that lower fixed data into Zig tables. None of them touches
 the network; regenerating is always an explicit, reviewed step.
 
-Two of them are **hermetic** — the input is vendored bytes, so the output is a
-generated file and regenerating after a pin bump is mechanical:
+Two of them are hermetic — the input is vendored bytes, so the output is a
+generated file and regenerating after a pin bump is mechanical.
 
-| Tool                | Input (vendored)        | Output (generated — do not hand-edit)     |
-| ------------------- | ----------------------- | ----------------------------------------- |
-| [`ucd/`](ucd)       | Unicode 16.0.0 UCD text | `src/kernel/regex/unicode/tables.gen.zig` |
-| [`whatwg/`](whatwg) | WHATWG encoding indexes | `src/corpus/read/encoding_tables.gen.zig` |
+- **[`ucd/`](ucd)** takes Unicode 16.0.0 UCD text and writes
+  `src/kernel/regex/unicode/tables.gen.zig`.
+- **[`whatwg/`](whatwg)** takes the WHATWG encoding indexes and writes
+  `src/corpus/read/encoding_tables.gen.zig`.
+
+Run either generator and its matching drift check with these commands:
 
 ```bash
 python3 tools/build_unicode_tables.py            # UCD → unicode tables
 python3 tools/build_unicode_tables.py --check    # drift gate
 python3 tools/build_encoding_tables.py           # WHATWG → encoding tables
 python3 tools/build_encoding_tables.py --check   # drift gate
-python3 tools/build_schema_tables.py             # contract → schema tables (+ sibling gist bindings)
+python3 tools/build_schema_tables.py             # contract → schema tables (Zig + this package's own Go/Python/Rust bindings)
 python3 tools/build_schema_tables.py --check     # drift gate
 ```
 
-One is a **measurement** — its input is the working tree, so running it is a
-re-measurement whose output lands as a hand-reviewed diff, never automatically:
-
-| Tool                    | Input          | Output                                                    |
-| ----------------------- | -------------- | --------------------------------------------------------- |
-| `build_rarity_table.py` | a large source tree | `src/kernel/scan/rarity.zig`'s `density` (paste + review) |
+One is a measurement — its input is the working tree, so running it is a
+re-measurement whose output lands as a hand-reviewed diff, never automatically.
+**`build_rarity_table.py`** reads a large source tree and produces the
+`density` table pasted into `src/kernel/scan/rarity.zig`. Run it, then paste
+and review the result:
 
 ```bash
 python3 tools/build_rarity_table.py --report   # census diagnostics, no table
 python3 tools/build_rarity_table.py            # the declaration, zig-fmt canonical
 ```
 
-Three are **gates** — they read the tree and answer yes or no:
+Three are gates — they read the tree and answer yes or no.
 
-| Tool                 | Asks                                                            |
-| -------------------- | --------------------------------------------------------------- |
-| `version_parity.py`  | do every mirror of `build.zig.zon`'s `.version` still agree, and does the release bot know about each one? |
-| `sync_contract.py`   | does each contract vendored from a sibling still match what its author wrote? |
-| `registry_readme.py` | does every relative link in `README.md` still resolve — and, when writing, the corrected copy an index publishes |
+- **`version_parity.py`** asks whether every mirror of `build.zig.zon`'s
+  `.version` still agrees, and whether the release bot knows about each one.
+- **`sync_contract.py`** asks whether each contract vendored from a sibling
+  still matches what its author wrote.
+- **`registry_readme.py`** asks whether every relative link in `README.md`
+  still resolves — and, when writing, produces the corrected copy an index
+  publishes.
+
+Run the gates and their write-mode counterparts with these commands:
 
 ```bash
 python3 tools/version_parity.py          # the gate (CI's `version` job)
@@ -49,7 +54,7 @@ python3 tools/registry_readme.py --check # the gate (CI's `version` job)
 python3 tools/registry_readme.py         # mint bindings/rust/PROJECT_README.md
 ```
 
-## The README, on an index that is not GitHub
+## Making the README Work on Package Indexes
 
 PyPI and crates.io each show a README as the whole project page, and each
 resolves a relative link against its own URL. `include/irgx.h` is correct on
@@ -85,7 +90,7 @@ release bot rewrites. The gate discovers those markers rather than holding a
 list, so it fails both on a mirror that drifted and on one
 `release-please-config.json` never learned about.
 
-## When to edit here
+## When to Edit Here
 
 - Bumping the Unicode or WHATWG pin (update sha / identifier headers + regen).
 - Extending the encoding set to stay at `encoding_rs` / `rg -E` parity.

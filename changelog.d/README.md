@@ -10,7 +10,7 @@ towncrier create +<slug>.<type>.md
 towncrier build --version x.y.z
 ```
 
-Fragment shape: `+<slug>.<type>.md`. Write one in the **same PR** as any
+Fragment shape: `+<slug>.<type>.md`. Write one in the *same PR* as any
 user-visible / API / behavior / perf / security change. Skip only for
 comment-only, format-only, or pure-internal refactors with zero observable
 delta — when unsure, write the fragment.

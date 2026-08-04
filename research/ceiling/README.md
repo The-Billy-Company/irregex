@@ -1,140 +1,73 @@
-# `ceiling/` — how fast a scan can go, and which roads are shut
+# Ceiling — How Fast A Scan Can Go, And Which Roads Are Shut
 
-The other three dossiers each defend something we built. This one defends a
-**number and a map**: the speed limit our scanning engines actually run into,
-why it is the limit, and which routes past it have been tried and closed. It
-exists so that the same three dead ends are not rediscovered annually.
+The other dossiers in `research/` each defend something built. This one defends a number and a map: the speed limit our scanning engines actually run into, why it is the limit, and which routes past it have been tried and closed. It exists so the same dead ends are not rediscovered annually.
 
-Unlike `crest/`, `gist/`, and `relate/`, no road here defends a shipped
-**novel technique** — the shipped accelerator tier (compose, parabix, sieve)
-applies known ideas to escape the bound this document measures. Treat each
-road below as the investigation record that led to those rungs, not as a
-description of the engine in its current form.
+Unlike `crest/`, `gist/research/gist/`, and `relate/research/relate/`, no road here defends a shipped novel technique. The shipped accelerator tier (composition, transposed bitstreams, the class-run sieve) applies known ideas to escape the bound this document measures. Read each road below as the investigation record that led to those rungs, not as a description of the engine's current form.
 
-## The limit, measured
+## The Limit, Measured
 
-One probe, 64 MiB haystack, every pattern chosen to miss so that `docMatch`
-must retire every byte and an early return cannot flatter the number. Apple M4
-Max P-core.
+The measurement is one probe over a 64 MiB haystack, every pattern chosen to miss so that `docMatch` must retire every byte and an early return cannot flatter the number, on an Apple M4 Max P-core.
 
-**Throughput is the measurement; bytes/cycle is a derived figure, so read the
-first column and treat the second as a band.** A later lane put a
-dependent-add chain on this box and measured its actual clock at **3.27–3.92
-GHz under contention**, not the 4.512 GHz nominal these numbers were first
-normalized against. Every ratio below is unaffected, because every row was
-measured on the same machine — but any single absolute bytes/cycle figure was
-understated by 15–38%, and the original table has been re-derived here rather
-than left standing.
+Throughput is the measurement; bytes/cycle is a derived figure, so read the GB/s column and treat bytes/cycle as a band. A later lane measured this box's actual clock at 3.27–3.92 GHz under contention rather than the 4.512 GHz nominal these numbers were first normalized against. Every ratio in this dossier is unaffected, because every row was measured on the same machine, but any single absolute bytes/cycle figure was understated by 15–38% and has been re-derived here.
 
-| condition                              | GB/s (measured) | bytes/cycle (3.27–3.92 GHz) |
-| -------------------------------------- | --------------- | --------------------------- |
-| start acceleration armed (memchr skip) | 40.0–40.6       | 10.2–12.4                   | *   |
-| no skip available, 9-state DFA         | 1.250           | 0.319–0.382                 |
-| no skip available, 73-state DFA        | 1.245           | 0.318–0.381                 |
-| no skip, on-demand driver              | 0.623           | 0.159–0.191                 |
+- **A start-acceleration skip** (`memchr`-style) reaches 40.0–40.6 GB/s, 10.2–12.4 bytes/cycle, but that row is the top of a 30× range rather than a fixed value: the same code path measures 7.667 bytes/cycle on the rare byte `{z}` and 0.302 on the common byte `{e}`, and an armed skip on two common letters measures 0.256, slower than arming nothing. The arming predicate counts start bytes and never asks how often they occur, so which end of that range you land on is currently decided by a byte count rather than by rarity.
+- **No skip available**, a 9-state table DFA, reaches 1.250 GB/s. A 73-state DFA over the same shape reaches 1.245 GB/s, essentially identical.
+- **No skip, on-demand determinization** reaches 0.623 GB/s.
 
-\* **The armed row is the top of a 30× range, not a value.** A later lane
-measured the same code path at **7.667 B/cycle on `{z}` and 0.302 on `{e}`** —
-because the arming predicate counts start bytes and never asks how often they
-occur. An armed skip on two common letters measures 0.256, _slower than arming
-nothing_. Read this row as the ceiling of the skip path on a rare needle; the
-floor is down among the no-skip rows, and which one you get is currently decided
-by a byte count. See `CLOSED.md`.
+The two no-skip rows being equal across an eight-fold difference in automaton size is the whole finding, and it is a ratio, so the clock correction leaves it untouched. 1.25 GB/s is 2.6–3.1 cycles/byte, close to one L1 load-to-use latency. The loop `state = trans[state + class[byte]]` cannot issue the next load until the previous one lands, so the cost is the serial dependency chain and not the table; shrinking the automaton or improving the table layout cannot help. Only a change of bound type, from latency-bound to throughput-bound, moves this number.
 
-**The two no-skip rows being equal across an eight-fold difference in
-automaton size is the whole finding**, and it is a ratio, so the clock
-correction leaves it untouched. 1.25 GB/s is **2.6–3.1 cycles/byte**, which is
-one L1 load-to-use latency — and lands _closer_ to the hardware's actual L1
-figure than the original 3.61 did, so the correction strengthens the argument
-it was supporting. The loop
-`state = trans[state + class[byte]]` cannot issue the next load until
-the previous one lands, so the cost is the serial dependency chain and not the
-table. Shrinking the automaton therefore cannot help, and neither can a better
-table layout. Only a change of _bound type_ — from latency-bound to
-throughput-bound — moves this number.
+That prediction has since been tested directly, and it held. The engine grew a byte-indexed mirror of the transition tables that folds the class column into the row and deletes one load per byte, precisely the better table layout the prediction says cannot help on the serial chain, and it does not: `bench/bounds/port` measures 4.59 ns/step classed against 4.62 mirrored, because `class[byte]` depends on the document byte rather than on `state` and was never on the critical path. The same mirror is worth about 1.28× on the shipped document walk, which bursts four lines in lockstep, exactly the change of bound type the prediction names as the only thing that moves the number.
 
-**That last clause has since been tested directly, and it held.** The engine
-later grew a byte-indexed mirror of the transition tables (`Dfa.Wide`), which
-folds the class column into the row and deletes one load per byte — precisely
-the "better table layout" this paragraph predicts cannot help. On the serial
-chain it does not: the `bench/bounds/port` probes measure 4.59 ns/step classed
-against 4.62 mirrored, a wash, because `class[byte]` depends on the document byte
-rather than on `state` and so was never on the critical path. The same mirror is
-worth ~1.28× to the shipped document walk — which bursts four lines in lockstep,
-i.e. is exactly the change of bound type this sentence names as the only thing
-that moves the number.
+For calibration, a reference table DFA measures 0.15 bytes/cycle on Skylake (Langdale), so this engine is already roughly 2.1–2.5× better than the naive baseline. The claim is that we are at the wall, not behind it.
 
-For calibration, a reference table DFA measures 0.15 bytes/cycle on Skylake
-(Langdale), so the engine is already roughly 2.1–2.5× better than the naive
-baseline. We are at the wall rather than behind it.
+## What The Bound Change Bought
 
-### The bound type did change, and here is what it bought
+Two rungs have since been built to escape the dependency chain: one turns the step into a register shuffle instead of a load, and the other avoids stepping at all.
 
-That last sentence was a prediction when it was written. Two rungs have since
-been built to test it, and both escape the dependency chain — one by making the
-step a register shuffle instead of a load, the other by not stepping at all.
+- **Transformation composition** reaches 1.94 bytes/cycle, because `(f∘g)[i] = f[g[i]]` is one `vqtbl` instruction, and re-associating the fold this way is a reduction rather than a scan.
+- **Transposed class bitstreams** reach 0.73–1.29 bytes/cycle, because there is no per-byte state at all; 128 bytes advance as 8 planes.
+- **The table DFA** measured above stays at 0.32–0.38 bytes/cycle.
 
-| construction                | B/cycle   | how it escapes the chain                                              |
-| --------------------------- | --------- | --------------------------------------------------------------------- |
-| transformation composition  | 1.94      | `(f∘g)[i] = f[g[i]]` is one `vqtbl`; a reduction, so it re-associates |
-| transposed class bitstreams | 0.73–1.29 | no per-byte state at all; 128 bytes advance as 8 planes               |
-| table DFA (the wall above)  | 0.32–0.38 | —                                                                     |
+The escape is real and worth 2–6×, and the two rungs hit different ceilings once out: composition stops at the `TBL4` instruction once the automaton exceeds 31 states, while the bitstream path is currently held to roughly a third of its own limit by a class-circuit interpreter and wants an emitter. Neither is anywhere near L1 latency any more, which is the point: the wall this dossier measures is real, and it is specific to the one loop, not to matching in general.
 
-So the escape is real and worth 2–6×, and the two rungs hit **different**
-ceilings once out: composition stops at the `TBL4` instruction when |Q| > 31,
-while the bitstream path is currently held at roughly a third of its own limit
-by a class-circuit _interpreter_ (transposition alone still runs at 3.12) and
-wants an emitter. Neither is anywhere near L1 latency any more, which is the
-point — **the wall this document measures is real, and it is specific to the
-one loop, not to matching.**
+## The Two Regimes, And Why The Ladder Is Shaped This Way
 
-## The two regimes, and why the ladder is shaped the way it is
+The roughly 32× gap between the accelerated and unaccelerated rows is the single most important fact about scan performance here, and it explains the dispatch ladder better than any argument about automaton quality. When a literal is long enough to arm a skip, the engine is in `memchr` territory and nothing else matters. When the pattern is literal-free, a class repetition like `[0-9a-f]{12}` or `\p{Greek}{3}`, no skip can arm, the trigram index reports every document as a candidate, and the scan pays full freight.
 
-The 32× gap between the accelerated and unaccelerated rows is the single most
-important fact about our scan performance, and it explains the dispatch ladder
-better than any argument about automaton quality. When a literal is long
-enough to arm a skip, the engine is in memchr territory and nothing else
-matters. When the pattern is literal-free — a class repetition like
-`[0-9a-f]{12}`, or `\p{Greek}{3}` — no skip can arm, the trigram index reports
-every document as a candidate, and the scan pays full freight.
+That literal-free cell is attacked at two stages that multiply rather than compete. The document stage is `crest/`, shipped, pruning whole files with integer compares and no byte scan (96.4% pruned on `[0-9a-f]{12}`). The scan stage is the ladder's accelerator tier: three optional rungs that each escape the dependent load rather than shorten it, admitted per pattern and absent when they cannot help.
 
-That literal-free cell is attacked at two different stages, and they multiply
-rather than compete:
+Closing that second stage produced one result worth keeping above every throughput number in this dossier: the rungs' arming rate matters more than their peak. Composition arms on most realistic field patterns and is the tier's whole measured value; the bitstream rung's admission window turned out to be a strict subset of composition's, and the sieve's own best pattern never reaches it because the class-run kernel takes that shape first. A rung that is 12× faster on patterns nobody writes is worth less than one that is 6× faster on patterns everybody writes, and only integration could see that, not the research phase or the build phase.
 
-- **document stage** — `crest/`, shipped: prune whole files with integer
-  compares and no byte scan (96.4% pruned on `[0-9a-f]{12}`).
-- **scan stage** — also shipped now, as the ladder's accelerator tier: three
-  optional rungs that each escape the dependent load rather than shorten it,
-  admitted per pattern and absent when they cannot help.
+## What The Field Has Reached
 
-That second bullet read "open" for most of this document's life, and closing it
-produced one result worth keeping above all the throughput numbers: **the
-rungs' arming rate matters more than their peak.** Composition arms on most
-realistic field patterns and is the tier's whole measured value; the bitstream
-rung's admission window turned out to be a strict subset of composition's, and
-the sieve's own best pattern never reaches it because the class-run kernel takes
-that shape first. A rung that is 12× faster on patterns nobody writes is worth
-less than one that is 6× faster on patterns everybody writes, and neither the
-research phase nor the build phase could see that — only integration could.
+An adversarial survey with a kill mandate found three nearly disjoint performance peaks in the field, and nobody is simultaneously feature-complete and at the throughput frontier. `memchr`'s AVX2/AVX-512 rare-byte scan reaches roughly 14–30 bytes/cycle when one rare byte exists; this engine's accelerated path reaches 8.87–8.99; Sheng16 reaches 0.98 for automata of 16 states or fewer; Parabix-style bitstream engines reach 0.63–1.6 but collapse on nested Kleene; and this engine's unaccelerated path, at 0.277, sits above the reference table DFA's 0.15 but below everything that has left the table-DFA model entirely. Roughly one byte per cycle is the accepted wall for a general table DFA, and it is microarchitectural rather than asymptotic: every published general 100–10,000-state DFA that beats it does so by leaving the model, through a shuffle table, a literal skip, or bitstreams.
 
-## The dossier
+Completeness tells the same disjoint-peaks story from the other side. No surveyed engine combines full Boolean intersection and complement, real captures, unbounded lookaround, bounded repetition without blowup, Unicode, and Hyperscan-class multi-pattern throughput; the closest points are completeness without speed, speed without completeness, and balanced single-pattern automata. The full survey, including the completeness table and the Unicode and benchmarking caveats, is in [`PRIOR_ART.md`](PRIOR_ART.md).
 
-| File                           | Question                                                                                                                               |
-| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
-| [`PRIOR_ART.md`](PRIOR_ART.md) | What the field has achieved, at what throughput, with what feature set — and where the plane is genuinely empty.                       |
-| [`CLOSED.md`](CLOSED.md)       | Routes past the limit that were tried and shut, each with the citation that shuts it and the residue still open.                       |
-| [`LOWERING.md`](LOWERING.md)   | The three places the compiler cost more than the algorithm did — each a spelling of identical semantics that LLVM lowers 1.6–2× apart. |
+## Which Routes Past The Limit Are Shut
 
-Production context for the numbers above:
-[`../../src/kernel/regex/linear/ladder/`](../../src/kernel/regex/linear/ladder/)
-(the tier that admits a rung and the order it consults them in),
-[`../../src/kernel/regex/linear/shuffle/`](../../src/kernel/regex/linear/shuffle/),
-[`../../src/kernel/regex/linear/parabix/`](../../src/kernel/regex/linear/parabix/),
-and [`../../src/kernel/regex/linear/sieve/`](../../src/kernel/regex/linear/sieve/)
-(the three escapes, each with its own measured limit),
-[`../../src/kernel/regex/linear/dfa/`](../../src/kernel/regex/linear/dfa/)
-(the two determinization drivers and their bounds),
-[`../../src/kernel/math/crest.zig`](../../src/kernel/math/crest.zig)
-(the document-stage sieve), and
-`gist/bench/certificate/` (the certificate whose
-`regex-classcount` row is the 100%-candidate hole named above).
+[`CLOSED.md`](CLOSED.md) records three proposed escapes and what actually closed each one, always separating the novelty verdict (was this published already) from the adoption verdict (does it earn its keep here), because those two questions have independent answers.
+
+Cascade decomposition into parallel prefix scans was refereed on the theorem that throughput is governed by automaton depth rather than state count; measured, depth tracks state count almost exactly, so the idea died on its own premise rather than on a citation. What survived is a real result: transformation composition, the same morphism with nothing decomposed, measured 1.94 bytes/cycle against a same-machine 0.276 baseline. A follow-up lane later found the depth-versus-state-count gap had been measured with the wrong denominator, closed it with equality using a saturating-counter factor, and then re-priced the front-end this would need against the shipped Parabix ladder; the realizable population in this corpus is five distinct patterns, and none of them clears the current budget by enough to justify a new rung.
+
+A unified register algebra for counting and captures was found already published three times over, under the names copyless cost-register automata and the single-use restriction, and the composition it proposed for tagged captures turns out to be false rather than merely known: tagged determinization requires register replication that counting-set automata must forbid. It was declined on the census, not the citations, because the pathological bounded-gap shape it would fix barely appears in this corpus.
+
+The quotient sieve, a conjunction of small SP-partition quotients as a sound gather-free prefilter, lost its priority claim to three independent prior publications but kept its engineering case; it measured zero soundness violations over 671 million byte-positions and 2.5–3.0× the full DFA's kernel speed, and it is the one entry on the page marked to be built.
+
+## Where The Compiler Cost More Than The Algorithm
+
+[`LOWERING.md`](LOWERING.md) records three places where identical semantics, spelled two ways, cost 1.6–2× or more purely in how LLVM lowers them: a `@Vector(8, u128)` bitstream that scalarizes into 16 GPR operations on AArch64 where `@Vector(128, u8)` compiles to one vectorized instruction, a composition-rung table whose throughput improved monotonically as its stripe width grew past the point where register pressure says stop, and an adjacent-field table read that cost two loads per byte until the fields were folded into one `readInt(u64)`. Every bytes/cycle number elsewhere in this dossier is a property of an algorithm and a spelling together, and the spelling is not free.
+
+## Companion Documents
+
+[`PRIOR_ART.md`](PRIOR_ART.md) answers what the field has achieved, at what throughput, with what feature set, and where the plane is genuinely empty.
+
+[`CLOSED.md`](CLOSED.md) answers which routes past the limit were tried and shut, each with the citation that shuts it and the residue still open.
+
+[`LOWERING.md`](LOWERING.md) answers where the compiler cost more than the algorithm did, each a spelling of identical semantics that LLVM lowers 1.6–2× apart.
+
+## Where The Production Code Lives
+
+The tier that admits a rung and the order it consults them in lives at [`../../src/kernel/regex/linear/ladder/`](../../src/kernel/regex/linear/ladder/). The three escapes, each with its own measured limit, live at [`../../src/kernel/regex/linear/shuffle/`](../../src/kernel/regex/linear/shuffle/), [`../../src/kernel/regex/linear/parabix/`](../../src/kernel/regex/linear/parabix/), and [`../../src/kernel/regex/linear/sieve/`](../../src/kernel/regex/linear/sieve/).
+
+The two determinization drivers and their bounds live at [`../../src/kernel/regex/linear/dfa/`](../../src/kernel/regex/linear/dfa/). The document-stage sieve is [`../../src/kernel/math/crest.zig`](../../src/kernel/math/crest.zig), documented in full in the sibling [`crest/`](../crest) dossier. The certificate whose `regex-classcount` row is the 100%-candidate hole named above lives in the sibling `gist` repository's `bench/certificate/`.

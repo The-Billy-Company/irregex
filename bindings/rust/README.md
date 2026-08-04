@@ -90,14 +90,12 @@ the checked forms exist so a caller who cannot take a panic never has to.
 
 `RegexBuilder` carries six, and each one changes an answer:
 
-| Method | What it does |
-|---|---|
-| `fixed` | Treat the pattern as a literal string. No metacharacters, and no pattern can be a syntax error. |
-| `ignore_case` | Fold case, including outside ASCII. |
-| `word` | Only report a match that stands alone as a word. |
-| `smart_case` | Fold case only if the pattern itself has no uppercase in it. |
-| `unicode` | Unicode classes, folding and boundaries. On by default. |
-| `pcre` | Use the PCRE2 grammar: lookaround and backreferences. Not linear time. |
+- **`fixed`** treats the pattern as a literal string, so there are no metacharacters and no pattern can be a syntax error.
+- **`ignore_case`** folds case, including outside ASCII.
+- **`word`** only reports a match that stands alone as a word.
+- **`smart_case`** folds case only if the pattern itself has no uppercase in it.
+- **`unicode`** turns on Unicode classes, folding and boundaries, and is on by default.
+- **`pcre`** switches to the PCRE2 grammar for lookaround and backreferences, which is not linear time.
 
 ```rust
 use irgx::RegexBuilder;
@@ -260,48 +258,45 @@ println!("{}", found.len());
 for m in re.find_iter(text).rev() { /* ... */ }
 ```
 
-**Zero-width matches follow the engine's rules.** It suppresses an empty match
-at the end of the buffer, and one sitting exactly where the previous match
-ended:
+**Zero-width matches are the `regex` crate's sequence.** `a*` over `"abc"` is
+`[(0, 1), (2, 2), (3, 3)]` in both: the empty match at 1 is skipped because it
+abuts the `a` that ended there, the one at the end of the text is reported, and
+after an empty match the scan resumes at the next character, so no empty match
+is ever reported inside a multi-byte one.
+
+Which matches a nullable pattern yields is a convention rather than a fact, and
+every ecosystem picked a different one - Python's `re` shows the empty match at
+1, grep tools show fewer than either. The C ABI reports the widest sequence and
+each binding thins it to its own language's convention, so this crate shows
+Rust's. `tests/sequence.rs` runs both crates over the same inputs and asserts
+they agree, rather than freezing a table that could quietly stop being true.
+
+**A newline is ordinary whitespace.** The text is one buffer, not a sequence of
+lines, so `\s` matches a newline and a match may span one:
 
 ```rust
-// irregex
-[(0, 1), (2, 2)]
-// the regex crate
-[(0, 1), (1, 1), (2, 2), (3, 3)]
-```
-
-for `a*` over `"abc"`. This is not a translation choice; iteration comes from a
-single call into the engine's own match-sequence routine, so these are its rules
-rather than a re-derivation of them.
-
-**A newline is a line terminator, not ordinary whitespace.** A
-single-character class will not match one. A longer match may still span one.
-
-```rust
-Regex::new(r"\s")?.find("a\nb");      // None
-Regex::new(r"\s")?.find("a\tb");      // the tab, at byte 1
+Regex::new(r"\s")?.find("a\nb");      // the newline, at byte 1
 Regex::new(r"a\sb")?.find("a\nb");    // the whole thing, newline included
+Regex::new(".")?.find_iter("a\nb");   // (0,1) and (2,3) - `.` still stops
 ```
 
-**The text you search is one unit, and there is no multi-line mode.** `^` and
-`\A` match at offset 0, `$` and `\z` at the end, and an interior newline is an
-ordinary byte rather than a boundary. That is the `regex` crate's default too;
-the difference is that you cannot turn it off. The linear grammar refuses `(?m)`
-rather than accepting it and ignoring it, so a pattern written for another engine
-fails loudly instead of quietly matching the wrong thing. If you want per-line
-anchors, either split the text yourself and search each line, or use the `pcre`
-arm, which does honor `(?m)`:
+**`^` and `$` are text anchors, and `multi_line` makes them line anchors.** Off
+by default, exactly as `regex`'s `multi_line` is. That is a separate question
+from the buffer above: the text is one buffer under either setting, and this
+only moves the two anchors.
 
 ```rust
-Regex::new("(?m)^b");                                   // Err(Error::NeedsPcre)
-RegexBuilder::new("(?m)^b").pcre(true).build()?
-    .find("a\nb");                                      // matches at byte 2
+RegexBuilder::new("^..").multi_line(true).build()?
+    .find_iter("ab\ncd");                               // (0,2) and (3,5)
+RegexBuilder::new(".").dot_matches_new_line(true).build()?;
 ```
 
-An inline flag group is a grammar the linear engine declines rather than a
-pattern it cannot read, so this is the retryable variant and the two-line retry
-above handles it.
+The builder is the portable way to ask. Inline `(?m)` and `(?s)` are PCRE2
+grammar here - the linear engine returns `Error::NeedsPcre` rather than
+accepting them and ignoring them, so a pattern written for another engine fails
+loudly instead of quietly matching the wrong thing. That is the retryable
+variant, and the two-line retry above handles it; reaching for it also opts into
+a backtracking engine, which the builder flags do not.
 
 `is_match` is the cheap way to ask, and it agrees with `find` on every input: it
 runs the same walk and stops at the first span rather than materializing the
@@ -327,18 +322,16 @@ answers wins:
    you are building for the host.
 4. **`zig build`** in that checkout, when `zig` is on PATH.
 
-Vendored targets:
+Vendored targets, and the size of the archive each one links:
 
-| Target | Archive |
-|---|---|
-| `aarch64-apple-darwin` | 1.32 MiB |
-| `x86_64-apple-darwin` | 1.42 MiB |
-| `x86_64-unknown-linux-gnu` | 1.76 MiB |
-| `aarch64-unknown-linux-gnu` | 1.45 MiB |
+- **`aarch64-apple-darwin`** — 1.89 MiB.
+- **`x86_64-apple-darwin`** — 2.02 MiB.
+- **`x86_64-unknown-linux-gnu`** — 2.60 MiB.
+- **`aarch64-unknown-linux-gnu`** — 2.13 MiB.
 
 The Linux archives are built against glibc 2.17, so they work on anything from
 CentOS 7 forward. Each one is stripped of debug info; the whole crate is
-6.15 MiB on disk and 2.28 MiB gzipped.
+9.16 MiB unpacked and 3.28 MiB as the gzipped package `cargo package` produces.
 
 A target with no vendored archive and no `zig` fails at build time with a
 message saying which target it was, what it looked for, and the two ways to fix

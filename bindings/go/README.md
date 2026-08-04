@@ -13,9 +13,9 @@ prebuilt static archive inside the module; a cgo build constraint picks the one
 for your platform and links it into your program.
 
 You do need cgo, which means a C compiler. `CGO_ENABLED=0` will not build; see
-"cgo is required" below.
+"The cgo Requirement" below.
 
-## Why you might want it
+## Reasons to Use It
 
 `regexp` is already linear time, so that is not the reason. These are:
 
@@ -35,7 +35,7 @@ You do need cgo, which means a C compiler. `CGO_ENABLED=0` will not build; see
 If none of that is worth a cgo dependency, `regexp` is a fine answer and you
 should use it.
 
-## A short tour
+## A Short Tour
 
 ```go
 import irgx "github.com/The-Billy-Company/irregex/bindings/go"
@@ -90,20 +90,28 @@ goroutine for the duration of a call, so the rule is kept for you and never
 becomes your problem. The cost is that a burst of concurrency compiles a few
 extra copies of the pattern, which are freed when the pool releases them.
 
-## How it differs from `regexp`
+## Differences from `regexp`
 
-**Zero-width matches.** The engine suppresses an empty match at the end of the
-text, and one that starts where the previous match ended. So a nullable pattern
-reports fewer spans here:
+**Nullable patterns iterate exactly like `regexp`'s.** The engine's own match
+sequence is byte-granular - an empty match at every offset a nullable pattern
+can produce one - and this package thins it to the standard library's rule
+before you ever see it: an empty match abutting the previous one is dropped,
+and the scan resumes a rune past an empty match rather than a byte past it.
+`a*` over `"abc"` reports the same three spans here as it does from
+`regexp.MustCompile`.
 
-```go
-irgx.MustCompile(`a*`).FindAllStringIndex("abc", -1) // [[0 1] [2 2]]
-regexp.MustCompile(`a*`).FindAllStringIndex("abc", -1)  // [[0 1] [2 2] [3 3]]
-```
+**Word classes are Unicode by default; `regexp`'s are ASCII.** `\b`, `\B` and
+`\w` treat any Unicode letter as a word character here, so `\b` finds two
+boundaries in `"héllo"` where `regexp` finds four, because `regexp` does not
+count `é` as a letter. `CompileOpts{ASCII: true}` asks for `regexp`'s alphabet
+and gets its exact answer back.
 
-Neither is wrong; they are different conventions. This one is the engine's, and
-it is the same one you get from the engine's other bindings and its command line
-tools.
+**Invalid UTF-8 is not silently repaired.** `regexp` decodes a byte that begins
+no valid rune as U+FFFD and lets `.` consume it, so `.` finds two "characters"
+in two junk bytes that encode nothing. A Unicode `.` here matches only
+well-formed scalar values, so the same junk leaves behind zero-width positions
+instead. `CompileOpts{ASCII: true}` drops to the byte alphabet, where every
+byte is a match again.
 
 **Lookaround and backreferences are compile errors, not silent non-matches.**
 `Compile("foo(?=bar)")` returns an error that matches `errors.Is(err,
@@ -192,7 +200,7 @@ The Find family returns no error, again like the standard library. A search that
 fails at the C boundary after the pattern already compiled can only be an
 allocation failure, and it panics rather than returning a wrong answer.
 
-## cgo is required
+## The cgo Requirement
 
 There is no pure-Go implementation behind this package, so `CGO_ENABLED=0`
 cannot produce a working build. It fails at compile time with a message that
@@ -209,26 +217,24 @@ If you need a regex engine in a cgo-free build, that is what `regexp` is for.
 One static archive is vendored per platform, selected by the build constraint on
 the `link_*.go` file that names it:
 
-| Platform | Archive | Size |
-|---|---|---|
-| darwin/arm64 | `libirgx_darwin_arm64.a` | 1.3 MB |
-| darwin/amd64 | `libirgx_darwin_amd64.a` | 1.4 MB |
-| linux/amd64 | `libirgx_linux_amd64.a` | 1.8 MB |
-| linux/arm64 | `libirgx_linux_arm64.a` | 1.5 MB |
+- **darwin/arm64** ships `libirgx_darwin_arm64.a`, about 2.1 MB.
+- **darwin/amd64** ships `libirgx_darwin_amd64.a`, about 2.1 MB.
+- **linux/amd64** ships `libirgx_linux_amd64.a`, about 2.7 MB.
+- **linux/arm64** ships `libirgx_linux_arm64.a`, about 2.2 MB.
 
-That is about 6 MB of module, 2.3 MB of it over the wire, of which your binary
-links one archive. The Linux archives are built against glibc 2.17 and the macOS
-ones against the macOS 11 SDK, so they work on anything newer.
+That is about 9 MB of module, of which your binary links one archive. The Linux
+archives are built against glibc 2.17 and the macOS ones against the macOS 11
+SDK, so they work on anything newer.
 
 The archives sit beside the Go source rather than in a subdirectory, because
 `go mod vendor` copies a package's own files and skips a subdirectory that holds
 no Go package. Kept one level down they would be dropped from a vendored
 consumer, and the build would fail at the linker.
 
-Building for a platform not in that table fails at compile time with a named
+Building for a platform not in that list fails at compile time with a named
 error rather than a linker error about a missing symbol.
 
-### Linking your own build
+### Linking Your Own Build
 
 Set the `irgx_syslib` build tag and point the toolchain at your library:
 
@@ -245,7 +251,7 @@ variable is read by the toolchain rather than by this package; `CGO_CFLAGS` and
 against this binding's ABI version when the package initializes, so a mismatched
 one gives you a sentence naming both numbers rather than a corrupted search.
 
-### Regenerating the vendored set
+### Regenerating the Vendored Set
 
 ```bash
 python3 scripts/vendor_libraries.py

@@ -1,73 +1,22 @@
-# Automata — the machine algebra, and beating `regex-automata`
+# Automata — The Machine Algebra, And Beating `regex-automata`
 
-Everything in this engine that constructs, determinizes, reduces, or reverses a
-finite automaton is one subject, and today it is scattered across six folders
-that each own a slice of it. This dossier does two things: it states where that
-subject belongs as a package, and it opens the competitive program against the
-reference implementation of the same subject — BurntSushi's Rust
-[`regex-automata`](https://docs.rs/regex-automata), cloned for study at
-`upstream/regex/` (gitignored; `git clone --depth 1 https://github.com/rust-lang/regex`).
+Everything in this engine that constructs, determinizes, reduces, or reverses a finite automaton is one subject, and today it is scattered across six folders that each own a slice of it. This dossier does two things: it states where that subject belongs as a package, and it opens the competitive program against the reference implementation of the same subject, BurntSushi's Rust [`regex-automata`](https://docs.rs/regex-automata), cloned for study at `upstream/regex/` (gitignored; `git clone --depth 1 https://github.com/rust-lang/regex`).
 
-The competitive posture is not imitation. The crate is the best engineering in
-this field and it is also, in its author's own annotations, a pile of admitted
-approximations — a non-minimal alphabet he flags as future work, a minimizer he
-calls slow and ships disabled, a literal extractor he calls "a black art", a
-memory pool he says he is "not entirely happy with". Those are the seams. Where
-we diverge it must be because we measured a better answer, and the divergence
-gets written down.
+The competitive posture is not imitation. The crate is the best engineering in this field and it is also, in its author's own annotations, a pile of admitted approximations: a non-minimal alphabet he flags as future work, a minimizer he calls slow and ships disabled, a literal extractor he calls "a black art", a memory pool he says he is "not entirely happy with". Those are the seams. Where this engine diverges it must be because a better answer was measured, and the divergence gets written down.
 
-## This folder
+## Where The Package Belongs
 
-| File                             | Question                                                                                                  |
-| -------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `README.md`                      | What the subject is, where the package goes, and what we already have.                                    |
-| [`PRIOR_ART.md`](PRIOR_ART.md)   | What `regex-automata` actually does, mathematically, and every bound its author concedes.                  |
-| [`CLAIM.md`](CLAIM.md)           | What is ours, what we intend to take, and the mechanism for each — one falsifiable claim per row.          |
-| [`TESTING.md`](TESTING.md)       | How each claim is proven or killed, and what the engine-level race arm had to refuse to assume.            |
+The package starts at [`src/kernel/regex/linear/automata/`](../../src/kernel/regex/linear/automata/README.md), one level deeper than this section originally proposed, for a reason worth recording rather than quietly editing away.
 
-## Where the package goes
+Hoisting it out as `src/kernel/automata/`, a peer of `regex/`, looked appealing on the theory that automata theory is alphabet-agnostic and the Aho-Corasick machine in `scan/` is an automaton too. It is the wrong call. Every construction here consumes `syntax.State`, the one NFA instruction type, and the whole purpose of sealing `kernel/regex` behind `regex.zig` is that a second grammar inside this tree once disagreed with the first about `\<` and silently pruned two thirds of a matching corpus. Hoisting the constructions out would either drag `syntax/` with them or force a package below the seal to import through it, so the theory stays behind the same door as the grammar it is a theory of.
 
-Inside the package seal, and it starts at
-[**`src/kernel/regex/linear/automata/`**](../../src/kernel/regex/linear/automata/README.md)
-— which is one level deeper than this section originally proposed, for a reason
-worth recording rather than quietly editing away.
+The first real occupant then decided the depth. The operations shared by nature rather than by accident are shared between the two determinization roads, and both of those live under `linear/`, as does the `Dfa` type they produce. A folder hoisted to `regex/automata/` would have to import downward into `linear/dfa/dfa.zig` for the type it operates on, inverting the layering to buy nothing. So the package lands where its dependencies already are, and its membership rule is one sentence: a file belongs there when it operates on an automaton and cannot say which road produced it.
 
-I considered `src/kernel/automata/`, hoisted out as a peer of `regex/`, on the
-theory that automata theory is alphabet-agnostic and the Aho-Corasick machine in
-`scan/` is an automaton too. It is the wrong call. Every construction we have
-consumes `syntax.State`, the one NFA instruction type, and the whole purpose of
-`seal kernel/regex through regex.zig` is that a second grammar inside this tree
-once disagreed with the first about `\<` and silently pruned two thirds of a
-matching corpus. Hoisting the constructions out would either drag `syntax/` with
-them or force a package below the seal to import through it. The theory belongs
-behind the same door as the grammar it is a theory of.
+That is deliberately narrower than "shared". It admits `freeze.zig` (the three ordered layout passes, previously transcribed once per road) and the refinement core discussed below; it excludes `program/`'s Thompson lowering, which produces an automaton rather than operating on a finished one. `dfa.zig`'s own path in particular stays pinned, since it is recorded inside the frozen benchmark manifests under `gist/bench/certificate/artifact/`, which are evidence rather than source.
 
-Then the first real occupant decided the depth. The operations that are shared by
-nature rather than by accident are shared between the **two determinization
-roads**, and both of those live under `linear/`, as does the `Dfa` type they
-produce. A folder hoisted to `regex/automata/` would have to import *downward*
-into `linear/dfa/dfa.zig` for the type it operates on, inverting the layering to
-buy nothing. So the package lands where its dependencies already are, and the
-membership rule is stated in one sentence at its door: **a file belongs there when
-it operates on an automaton and cannot say which road produced it.**
+## The Shape It Grows Into
 
-That is deliberately narrower than "shared". It admits `freeze.zig` (the three
-ordered layout passes, previously transcribed once per road) and claim C5's
-refinement core; it excludes `program/`'s Thompson lowering, which *produces* an
-automaton rather than operating on a finished one. The wider hoist sketched below
-stays a proposal, and it should not be executed on tidiness grounds — `dfa.zig`'s
-path in particular is pinned inside the frozen benchmark manifests under
-`gist/bench/certificate/artifact/`, which are recorded evidence rather than source.
-
-### The shape it grows into — proposed, not landed
-
-The cut is by layer, not by feature.
-`automata/` owns the **machine algebra**: what a machine is, how it is built
-from an AST, how it is determinized, how it is reduced, how it is reversed. The
-existing folders keep the **executors**: the byte loops, the SIMD kernels, the
-cost policies that decide when to build what. Give it an interface small enough
-to state in one sentence — *hand me an NFA program and an alphabet policy, get a
-deterministic table* — and the executors become thin loops over tables.
+The cut, still mostly proposed rather than landed, is by layer rather than by feature. `automata/` would own the machine algebra: what a machine is, how it is built from an AST, how it is determinized, how it is reduced, how it is reversed. The existing folders keep the executors: the byte loops, the SIMD kernels, the cost policies that decide when to build what.
 
 ```text
 automata/
@@ -83,103 +32,55 @@ automata/
                     Moore row refinement · column coincidence (landed, one file)
 ```
 
-Three subfolders, one leaf, and a door, inside the Rule of Five. What it hollows out is
-real: `dfa/` keeps the immutable automaton and its two driver policies,
-`caliper/` keeps the two-jaw search, `sieve/` keeps the selectivity gate and the
-Sheng kernel, `symbolic/` collapses to its eligibility facade. Each of those
-becomes a consumer of one deep module instead of a co-owner of a scattered one.
+Most of that has not been done, and it earns its way in one occupant at a time. What exists today holds the operations that pay for the boundary the moment they move: `determinize/`'s shared layer, minus the two constructions that are genuinely different algorithms, plus `reduce.zig`. The remaining boxes are a hypothesis about where the code wants to live, and a relocation with no measurement behind it is a diff, not an improvement.
 
-Most of that has not been done, and it earns its way in one occupant at a time. The
-folder that exists holds the operations that pay for the boundary the moment they
-move — `determinize/`'s shared layer, in effect, minus the two constructions that
-are genuinely different algorithms — plus `reduce.zig`, which C5 both built and
-resized. The remaining boxes are a hypothesis about where the code wants to
-live, and a relocation with no measurement behind it is a diff, not an
-improvement.
+## Why `reduce.zig` Is One File, Not Two
 
-### `reduce.zig` is the discovery in the mapping, and it is not the one drawn here
+The natural first guess was one core with two stopping conditions: Moore refinement for minimization, and the same machinery climbed further for the sieve's over-approximation. That guess is wrong, and finding out why is the useful part.
 
-The box above said *Moore refinement · the SP-lattice harvest*: one core, two stopping
-conditions. That is the wrong shape, and finding out why is the useful part.
+Partitions of a DFA's state set with the substitution property, meaning `p ≡ q` implies `δ(p,b) ≡ δ(q,b)` for every byte, form a lattice under refinement (Hartmanis & Stearns, *Algebraic Structure Theory of Sequential Machines*, 1966). Moore refinement descends that lattice, splitting from the accept partition down to the Myhill-Nerode congruence, whose quotient is the minimal DFA for the same language. The sieve's harvest ascends it instead, unioning from one merged pair up to the least closed partition above it, so its quotient accepts a superset: a machine that can refute but never confirm. Opposite direction, opposite extremum, so different machinery: refinement wants a signature hash per pass, closure wants a disjoint-set forest, and the sieve deliberately refuses to respect the accept partition at all. A shared core would be an enum switch over two disjoint loops agreeing on a predicate and nothing else, so `sieve/quotient.zig` stays where it is.
 
-The partitions of a DFA's state set with the **substitution property** — if
-`p ≡ q` then `δ(p,b) ≡ δ(q,b)` for every byte — form a lattice under refinement
-(Hartmanis & Stearns, *Algebraic Structure Theory of Sequential Machines*,
-1966). Every SP partition induces a well-defined quotient automaton on the
-blocks. At the fine end of that lattice sits the coarsest partition that still
-separates accepting from non-accepting behavior: the Myhill-Nerode congruence,
-whose quotient is the minimal DFA accepting exactly the same language. That is what
-Moore refinement computes. Climb **past** that point to a
-strictly coarser SP partition and the quotient accepts a **superset** — a
-machine that can refute but never confirm. That is what `quotient.zig` harvests
-for the sieve.
+The core that did land is a different, better one. A finished dense table is over-refined in two axes rather than one: rows, where no suffix separates two states, and columns, where no state routes two byte classes differently. Merging rows is what makes columns coincide, so the two only compose in that order, which is a real reason for one file where "two stopping conditions" was not. `automata/reduce.zig` owns both, and `symbolic/minimize.zig` folded into it. Neither RE2 nor `regex-automata` has the sieve's half at all; `minimize.rs` exists, ships disabled, and has no over-approximating sibling, so this engine ships one more idea than either, just not as a separate function.
 
-One lattice, two consumers — and **opposite directions is the whole problem, not the
-symmetry it looks like**. Moore *descends* the lattice, splitting from the accept
-partition down to the greatest closed partition below it; SP closure *ascends*,
-unioning from one merged pair up to the least closed partition above it. Opposite
-extremum, therefore different machinery: refinement wants a signature hash per pass,
-closure wants a disjoint-set forest. And the sieve deliberately refuses to respect the
-accept partition, which is exactly what buys its over-approximation. A shared core
-would be an enum switch over two disjoint loops that agree on a predicate and nothing
-else, so `sieve/quotient.zig` stays where it is.
+The policy halves stay where they are. The Sheng width budget and the stationary-distribution selectivity estimate are about one rung's economics rather than lattices, so they belong beside the kernel they gate.
 
-**The core that did land is a better one, and the second dimension is where it came
-from.** A finished dense table is over-refined in two axes, not one — rows (no suffix
-separates two states) and columns (no state routes two byte classes differently) — and
-merging rows is what makes columns coincide, so the two only compose in that order.
-That one-way dependency is a real reason for one file, where "two stopping conditions"
-was not. `automata/reduce.zig` owns both; `symbolic/minimize.zig` is gone into it.
+## What This Engine Already Has
 
-Neither RE2 nor `regex-automata` has the sieve's half at all — `minimize.rs` exists,
-ships disabled, and has no over-approximating sibling. We still ship one more idea than
-they do; we just do not ship it as one function.
+Three constructions in this engine have no counterpart in `regex-automata` at all: the predicate alphabet, the SP quotient, and the two register-resident rungs described in the ceiling dossier.
 
-The *policy* halves stay where they are. The 16-state Sheng width budget and the
-stationary-distribution selectivity estimate are about one rung's economics, not
-about lattices; they belong next to the kernel they gate.
+- [`compile/compile.zig`](../../src/kernel/regex/compile/compile.zig) is Thompson AST-to-NFA lowering over bytes.
+- [`compile/onepass.zig`](../../src/kernel/regex/compile/onepass.zig) is the one-pass property, that no epsilon path converges twice, and the deterministic-with-side-effects table it licenses.
+- [`linear/dfa/subset.zig`](../../src/kernel/regex/linear/dfa/subset.zig) is byte-class refinement by transition set, the assertion-resolving epsilon-closure, subset interning, and the visit meter.
+- [`linear/dfa/powerset.zig`](../../src/kernel/regex/linear/dfa/powerset.zig) is eager determinization to fixpoint, with premultiplication and start acceleration.
+- [`linear/dfa/lazy.zig`](../../src/kernel/regex/linear/dfa/lazy.zig) is on-demand determinization with a cache-generation reset policy and a sticky decline.
+- [`linear/symbolic/`](../../src/kernel/regex/linear/symbolic) is determinization over a predicate alphabet of minterms, then a product with a UTF-8 decoder to land back on a byte table.
+- [`linear/automata/reduce.zig`](../../src/kernel/regex/linear/automata/reduce.zig) is both of a finished table's over-refined dimensions: Moore row refinement, then column coincidence.
+- [`linear/caliper/`](../../src/kernel/regex/linear/caliper) is priority-ordered determinization with match dominance, leftmost-first spans at one table lookup per byte, plus program reversal.
+- [`linear/sieve/quotient.zig`](../../src/kernel/regex/linear/sieve/quotient.zig) is the SP-lattice harvest and its conjunction selection.
+- [`linear/shuffle/`](../../src/kernel/regex/linear/shuffle) is the transformation monoid: a byte becomes a map on the whole state set, folded by a SIMD shuffle.
+- [`linear/parabix/`](../../src/kernel/regex/linear/parabix) is bit-parallel simulation, one marker bit per position, a pattern step as a shift and a mask.
+- [`linear/pike/`](../../src/kernel/regex/linear/pike) is the NFA simulation that stands behind all of it as oracle and fallback.
 
-## What we already have
+A fourth advantage is structural rather than a new construction: this engine's boolean determinizer interns on the unordered NFA-state set, while `regex-automata` always keeps priority order, so for a yes/no search this engine's automaton can be strictly smaller on the same pattern. The price is a second, ordered construction when a span is actually asked for, which is what `caliper/` is for.
 
-Read this as the base to build on, not as a consolation prize. Our automata
-surface today, and what each piece already implements:
+## Companion Documents
 
-| Where                       | Mathematics                                                                                                                     |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `compile/compile.zig`       | Thompson AST→NFA lowering over bytes.                                                                                           |
-| `compile/onepass.zig`       | The one-pass property (no ε-path converges twice), and the deterministic-with-side-effects table it licenses.                    |
-| `linear/dfa/subset.zig`     | Byte-class refinement by transition **set**; the assertion-resolving ε-closure; subset interning; the visit meter.               |
-| `linear/dfa/powerset.zig`   | Eager determinization to fixpoint, premultiplication, start acceleration.                                                        |
-| `linear/dfa/lazy.zig`       | On-demand determinization with a cache-generation reset policy and a sticky decline.                                             |
-| `linear/symbolic/`          | Determinization over a **predicate alphabet** (minterms), then a product with a UTF-8 decoder to land back on a byte table.      |
-| `linear/automata/reduce.zig` | Both of a finished table's over-refined dimensions: Moore row refinement, then column coincidence.                                 |
-| `linear/caliper/`           | Priority-ordered determinization with match dominance — leftmost-first spans at a table lookup per byte — plus program reversal. |
-| `linear/sieve/quotient.zig` | The SP-lattice harvest and its conjunction selection.                                                                           |
-| `linear/shuffle/`           | The transformation monoid: a byte becomes a map on the whole state set, folded by a SIMD shuffle.                                |
-| `linear/parabix/`           | Bit-parallel simulation: one marker bit per position, a pattern step as a shift and a mask.                                      |
-| `linear/pike/`              | The NFA simulation that stands behind all of it as oracle and fallback.                                                          |
+[`PRIOR_ART.md`](PRIOR_ART.md) traces what `regex-automata` actually does mathematically and every bound its own author concedes, from its alphabet's range-boundary compromise through its ordered-state determinization to its disabled Hopcroft minimizer.
 
-Three of those have no counterpart in `regex-automata` at all: the predicate
-alphabet, the SP quotient, and the two register-resident rungs. A fourth is a
-quiet structural advantage — our boolean determinizer interns on the
-**unordered** NFA-state set, while theirs always keeps priority order, so for a
-yes/no search our automaton can be strictly smaller than theirs on the same
-pattern. We pay for that with a second, ordered construction when a span is
-asked for, which is what `caliper/` is.
+[`CLAIM.md`](CLAIM.md) states what is ours, what is intended to be taken, and the mechanism for each, one falsifiable claim per section, ordered by whether a single function's profile can prove it rather than by the size of the prize.
 
-## Sequencing
+[`TESTING.md`](TESTING.md) describes the per-function harness each claim needed, why a whole-binary race against `rg`, `csearch`, and `zoekt` cannot attribute a win to one construction, and the oracle that makes every claim here cheap to trust: any determinized construction that disagrees with the Pike VM simulation on any input is wrong, full stop.
 
-Understanding first, then measurement, then the move — and that order held. The
-consolidation is a pure relocation, so it waited; the improvements are what the
-dossier is for. `CLAIM.md` orders them by provability-in-isolation rather than by
-size of the prize, because a win you cannot attribute to one function is a win you
-cannot defend against the next regression.
+## Where Things Stand
 
-Where that has got to, so this file stops being a plan and starts being a record:
-one claim **landed** on measured numbers (C1, the match-first partition, 1.10–1.16×
-geomean), one **measured and confirmed** against the crate itself (C6 — 2.32×
-coarser alphabet, 2.38× smaller table, 4.8× faster determinization over 27
-patterns), and **two retired by the harness built for the first** (C2 and C3, each
-on a premise that turned out to be false). The instrument is
-[`bench/rungs/automata/`](../../bench/rungs/automata/README.md); the numbers and the
-reasoning live in `CLAIM.md`, which is allowed to delete its own entries.
+The instrument for every claim in `CLAIM.md` is [`bench/rungs/automata/`](../../bench/rungs/automata/README.md), and understanding came first, then measurement, then the move: the consolidation above is a pure relocation and waited, while the claims below are what the dossier is actually for.
+
+Two claims of authorship stand without a scoreboard, because they are claims about construction rather than speed: the SP-quotient sieve as a deliberately non-language-preserving refutation gate, and determinization over a predicate alphabet transcribed back to bytes, which follows D'Antoni and Veanes rather than Cox and is, as far as this search found, the only symbolic-automata implementation in a production grep.
+
+Of the nine claims of intent, two landed on measured numbers. Renumbering DFA states so a match test becomes one bound compare instead of a dependent second load reaches a geometric mean of 1.10–1.16× over the eager tier's rows, and the coarser alphabet this engine already builds measures 2.32× fewer classes, a 2.38× smaller transition table, and 4.8–5.1× faster determinization than `regex-automata`'s own minimized build across 27 patterns.
+
+Two claims split rather than landing or dying outright. The shared refinement core for minimization and the sieve's over-approximation does not exist as one parameterized engine, because the two climb the same lattice in opposite directions with opposite correctness conditions; what did land is a different, real result, one file collapsing a finished table's row redundancy and column redundancy together, live on the symbolic road and measured as not worth its own build cost on the byte road. Reverse-inner literal search turned out to be two claims wearing one name: the prefilter half was already shipped before the claim was written, while the half that bounds a boolean search by the literal's found offset rather than rescanning from byte zero was not, and building it reached a 16.30× geometric mean with a 0.98× worst case on documents built to give it nothing to work with.
+
+Five claims were retired by measurement rather than by argument, and each is kept rather than deleted because a claim killed by evidence is the cheapest kind of progress in a lane like this one. An EOI column to halve a duplicated table dies because cost tracks the bytes a walk actually touches, not the table's total area. A sparse closure clear dies because a wide NFA and a narrow closure turn out to be close to structurally impossible together in this engine's constructions. A skip out of every interior dwell, not just the unanchored start, has a premise that is genuinely true, and still loses to the shipped multi-lane walk because no interior skip can outrun the line length `\n` caps it at. Serializable finished tables die because the median automaton in this engine's own slate is cheaper to redetermine than to load off disk. And a corpus-priced literal-prefilter dispatcher, replacing a cascade keyed only on needle count, is retired on the currency rather than the premise: the specific statistic this engine already computes for the sieve answers backwards on 9 of the 11 rows it was measured against.
+
+The full mechanism, every number, and the reasoning behind each verdict live in `CLAIM.md`, which is explicitly allowed to delete its own entries.

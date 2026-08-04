@@ -1,34 +1,24 @@
-# `research/` — claim, ancestry, and falsification
+# `research/` — Claim, Ancestry, and Falsification
 
-This is irregex's research record, not production code. Each dossier separates
-three questions that engineering prose too often collapses: **what useful
-thing did we build, what did the world already know, and what evidence could
-prove us wrong?** Production math and wiring live under `src/`; executable
-evidence lives under `bench/`.
+This is irregex's research record, not production code. Each dossier separates three questions that engineering prose too often collapses: what useful thing got built, what the world already knew, and what evidence could prove it wrong. Production math and wiring live under `src/`; executable evidence lives under `bench/`.
 
-| Dossier               | Research program                                                                                                                                                                                     |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`crest/`](crest)     | new mathematics: [Sieve Theorem](crest/PROOF.md), [prior-art review](crest/PRIOR_ART.md), and [falsification strategy](crest/TESTING.md)                                                             |
-| `gist/research/gist/` (sibling `gist` repo) | agent-loop exact search: product claim, competitive ancestry, and evidence story in `gist/research/gist/{CLAIM,PRIOR_ART,TESTING}.md` |
-| `relate/research/relate/` (sibling `relate` repo) | compression-as-search: product claim, Language Trees lineage, and evidence story in `relate/research/relate/{CLAIM,PRIOR_ART,TESTING}.md` |
-| [`ceiling/`](ceiling) | the scan speed limit: [what the field reaches](ceiling/PRIOR_ART.md), [which routes past it are shut](ceiling/CLOSED.md), and [where the compiler cost more than the algorithm](ceiling/LOWERING.md) |
-| [`automata/`](automata) | the machine algebra: [where the package belongs](automata/README.md), [`regex-automata` dissected](automata/PRIOR_ART.md), [what we take and what is ours](automata/CLAIM.md), and [how each claim dies](automata/TESTING.md) |
-| [`pincer/`](pincer)   | which two bytes the vector unit compares: [the measured defect and the calibrating repair](pincer/PROOF.md), [rare-byte ancestry](pincer/PRIOR_ART.md), and [the adverse tests](pincer/TESTING.md) |
+Read each dossier left to right: the claim earns attention, prior art limits what is ours, and testing decides whether the implementation deserves the claim.
 
-Read each row left to right: the claim earns attention, prior art limits what
-is ours, and testing decides whether the implementation deserves the claim.
-The fourth row is the exception that proves the shape — `ceiling/` defends no
-shipped thing. It holds a measured limit and a record of closed routes, so
-that dead ends cost a citation to rediscover instead of a month.
-If behavior changes, edit source first; then update the dossier only where the
-claim or evidence truly moved.
+- **[`crest/`](crest)** makes the new-mathematics claim, carried across a [Sieve Theorem proof](crest/PROOF.md), a [prior-art review](crest/PRIOR_ART.md), and a [falsification strategy](crest/TESTING.md).
+- **`gist/research/gist/`** (sibling `gist` repo) documents agent-loop exact search — the product claim, its competitive ancestry, and its evidence story, in `gist/research/gist/{CLAIM,PRIOR_ART,TESTING}.md`.
+- **`relate/research/relate/`** (sibling `relate` repo) documents compression-as-search — the product claim, its lineage from *Language Trees and Zipping*, and its evidence story, in `relate/research/relate/{CLAIM,PRIOR_ART,TESTING}.md`.
+- **[`ceiling/`](ceiling)** documents the scan speed limit, spanning [what the field reaches](ceiling/PRIOR_ART.md), [which routes past it are shut](ceiling/CLOSED.md), and [where the compiler cost more than the algorithm](ceiling/LOWERING.md).
+- **[`automata/`](automata)** documents the machine algebra, spanning where the package belongs, a [dissection of `regex-automata`](automata/PRIOR_ART.md), [what we take and what is ours](automata/CLAIM.md), and [how each claim dies](automata/TESTING.md).
+- **[`pincer/`](pincer)** documents which two bytes the vector unit compares, spanning [the measured defect and its calibrating repair](pincer/PROOF.md), [rare-byte ancestry](pincer/PRIOR_ART.md), and [the adverse tests](pincer/TESTING.md).
 
-Crest production code: [`../src/kernel/math/crest.zig`](../src/kernel/math/crest.zig) +
-[`../src/corpus/index/crest/`](../src/corpus/index/crest/). Production harness:
-`zig build crest` / [`../bench/rungs/crest/`](../bench/rungs/crest/).
+`ceiling/` is the exception that proves the shape: it defends no shipped thing. It holds a measured limit and a record of closed routes, so a dead end costs a citation to rediscover instead of a month.
 
-Gist production face: `gist/src/surface/face/gist/`. Evidence: `gist/bench/conformance/gates/`,
-`gist/bench/conformance/rgsuite/`, and `gist/bench/certificate/`.
+If behavior changes, edit source first, then update the dossier only where the claim or evidence truly moved.
 
-Relate production face: `gist/src/surface/face/relate/`. Engines: `relate/src/kernel/kinship/`.
-Evidence: `relate/bench/` (Layer G retrieval contract).
+## Where the Code and Evidence Live
+
+Crest's production code lives at [`../src/kernel/math/crest.zig`](../src/kernel/math/crest.zig) and [`../src/corpus/index/crest/`](../src/corpus/index/crest/), and its harness runs as `zig build crest` from [`../bench/rungs/crest/`](../bench/rungs/crest/).
+
+Gist's production face lives at `gist/src/surface/face/gist/` in the sibling repo, with evidence under `gist/bench/conformance/gates/`, `gist/bench/conformance/rgsuite/`, and `gist/bench/certificate/`.
+
+Relate's production face lives at `relate/src/surface/face/` in the sibling repo, its kinship engines at `relate/src/kernel/kinship/`, and its evidence under `relate/bench/`.

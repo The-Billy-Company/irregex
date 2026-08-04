@@ -1,67 +1,41 @@
 # `src/corpus/scope/` — which paths count as the corpus
 
-Path eligibility and the committed charter. This package answers _"may this
-path be searched or indexed?"_ — never _"does this pattern match?"_. Because
-irregex already holds the path list, scoping prunes candidates **before**
-`open(2)`, which is why `-t` / `-g` make a search faster (rg filters while
-walking the whole tree).
+This package decides path eligibility and holds the committed charter. It answers *may this path be searched or indexed?* and never *does this pattern match?* — that second question belongs to the engine.
 
-The old `glob.zig` was two packages wearing one name. The **pure matcher**
-(gitignores-shaped `*` / `**` / `!`) lives on the math floor at
-[`../../kernel/math/glob.zig`](../../kernel/math/glob.zig) so engines and
-surfaces can share it without importing corpus policy. What remains here is
-the **PathFilter** — how those matches compose into an include/exclude set
-for a walk.
+Because irregex already holds the full path list, scoping prunes candidates before `open(2)` ever runs. That is the one place irregex can be faster than ripgrep rather than merely matching it: rg applies a glob filter while walking the whole tree, so a `-g '*.go'` query here reads only the Go files instead of touching every candidate.
 
-| File | Job |
-| ---- | --- |
-| `filter.zig` | `PathFilter` — include/exclude composition over the math-floor glob matcher |
-| `paths.zig` | Shared path normalization, joining, depth, ASCII-fold helpers |
-| `types.zig` | Language → extension/filename table (`-t go` / `py` / `rust` / …) |
-| `genus.zig` | The corpus partition — `docs` / `code` / `data` behind `--docs` / `--no-code` |
-| `genus_test.zig` | The partition's oracle: every glob in the type table lands in its own row's genus |
-| `charter.zig` | `.irregex.toml` — committed corpus declaration (`roots`, `skip`, `types`) |
-| `charter_test.zig` | Adverse tests: every malformed declaration must be refused |
+The old `glob.zig` was two packages wearing one name. The pure matcher (gitignore-shaped `*` / `**` / `!`) lives on the math floor at [`../../kernel/math/glob.zig`](../../kernel/math/glob.zig), so engines and surfaces can share it without importing corpus policy. What remains here is the *PathFilter* — how those matches compose into an include/exclude set for a walk.
 
-Did-you-mean (`misread.zig`) left for the math floor — charter, cold argv
-preferences, and gist config all consume the same edit-distance helper.
+## Files, By Job
 
-## Two different questions about one path
+- **`filter.zig`** implements `PathFilter` — the include/exclude composition over the math-floor glob matcher.
+- **`paths.zig`** holds shared path normalization, joining, depth, and ASCII-fold helpers.
+- **`types.zig`** is the language → extension/filename table (`-t go` / `py` / `rust` / …).
+- **`genus.zig`** implements the corpus partition — `docs` / `code` / `data` behind `--docs` / `--no-code`.
+- **`genus_test.zig`** is the partition's oracle: every glob in the type table lands in its own row's genus.
+- **`charter.zig`** parses `.irregex.toml`, the committed corpus declaration (`roots`, `skip`, `types`).
+- **`charter_test.zig`** holds the adverse tests: every malformed declaration must be refused.
 
-`types.zig` answers **which language** (223 rows, one per language). `genus.zig`
-answers **which kind** — prose you read to understand, payload you read to
-configure, or the implementation — because that is the question an agent asks and
-`-t` cannot express it: naming a dozen types still misses the extensionless
-`CHANGELOG`.
+Did-you-mean support stays on the math floor rather than duplicating here: the charter, the cold engine's argv preferences, and the `gist config` verb all resolve an unrecognized key through the one edit-distance helper at [`../../kernel/math/misread.zig`](../../kernel/math/misread.zig).
 
-The partition is total and disjoint, so `--docs` and `--no-docs` are exact
-complements. `code` is deliberately the **leftover**: an unfamiliar extension
-lands there, so a gap in the table shows `--code` one line too many instead of
-silently hiding a file. Every classification is comptime-proved against the type
-table in both directions — a new `-t` type is a *compile error* until it is
-classified, and a renamed one is a compile error until the rename lands here.
+## Two Different Questions About One Path
 
-The compile-time proof is about *spellings*; totality and disjointness are claims
-about a whole tree, which no unit test can make. Those are asserted over the live
-repo by
-[`bench/conformance/gates/parity/partition_parity.sh`](../../../bench/conformance/gates/parity/partition_parity.sh)
-on every `zig build test`, and the classification's behavior against a
-hand-assembled `-t` union is gated by
-`gist/bench/dominance/partition/`. Edit
-a genus here and expect both to have an opinion.
+`types.zig` answers which language a path is — 223 rows, one per language. `genus.zig` answers a different question: which *kind* of file is this — prose you read to understand, payload you read to configure, or the implementation itself.
 
-## The charter
+That is the question an agent actually asks, and `-t` cannot express it: naming a dozen types still misses the extensionless `CHANGELOG`.
 
-ripgrep's `.ripgreprc` conflates taste (`--max-columns`) with corpus facts
-(`--glob=!vendor/*`). The charter is the second half, split out and committed:
-three keys equally true for the person, the agent, the daemon, and CI.
-`--no-config` suppresses it for one run. Ceilinged at `Reach.corpus` — it may
-declare which files exist, never what counts as a match in them.
+The partition is total and disjoint, so `--docs` and `--no-docs` are exact complements. `code` is deliberately the leftover: an unfamiliar extension lands there, so a gap in the table shows one extra line under `--code` rather than silently hiding a file.
 
-## When to edit
+Every classification is comptime-proved against the type table in both directions: a new `-t` type is a compile error until `genus.zig` classifies it, and a renamed one is a compile error until the rename lands here too. `genus_test.zig`'s own oracle test then instantiates every glob in the table at runtime and asserts it lands in its own row's declared genus — the exhaustive check a compile-time proof about spellings cannot make by itself. Edit a genus and expect both to have an opinion.
 
-New `-t` aliases, a new type's genus, PathFilter composition, charter keys.
-A genus name is a type name, so `--type-add 'docs:notes/**'` extends the
-partition without a new configuration key. Ignore-file discovery
-stays in [`../tree/`](../tree/). The glob dialect itself is
-[`../../kernel/math/glob.zig`](../../kernel/math/glob.zig).
+## The Charter
+
+ripgrep's `.ripgreprc` conflates taste (`--max-columns`) with corpus facts (`--glob=!vendor/*`). The charter is the second half, split out and committed: three keys equally true for the person, the agent, the daemon, and CI.
+
+`--no-config` suppresses it for one run. It is ceilinged at `Reach.corpus` — it may declare which files exist, never what counts as a match inside them.
+
+## When To Edit
+
+Come here for new `-t` aliases, a new type's genus, PathFilter composition, and charter keys. A genus name is a type name, so `--type-add 'docs:notes/**'` extends the partition without a new configuration key.
+
+Ignore-file discovery stays in [`../tree/`](../tree/README.md). The glob dialect itself lives in [`../../kernel/math/glob.zig`](../../kernel/math/glob.zig).

@@ -1,22 +1,23 @@
-# zig-assay-bypass ratchet
+# zig-assay-bypass Ratchet
 
-**`assay` owns the one diagnostic channel.** It exists because scattered
+`assay` owns the one diagnostic channel. It exists because scattered
 `std.debug.print` calls made the never-write contract — an embedding host must
 never see us write to stdout/stderr — an audit instead of a property of one
 routing point.
 
-## The rule
+## The Rule
 
 One finding per `std.debug.print(` call in production Zig. Each one is three live
-defects at once:
+defects at once, depending on what is running the process:
 
-| Under…          | The bypass…                                                              |
-| --------------- | ------------------------------------------------------------------------ |
-| a `dark` sink   | escapes to the host's **real** stderr, breaking the never-write contract |
-| a `buffer` sink | lands on the daemon's stderr instead of the connected client's           |
-| a `--json` run  | emits English prose into a stream the consumer is parsing as NDJSON      |
+- **Under a `dark` sink**, the call escapes to the host's real stderr,
+  breaking the never-write contract.
+- **Under a `buffer` sink**, the call lands on the daemon's stderr instead of
+  the connected client's.
+- **Under a `--json` run**, the call emits English prose into a stream the
+  consumer is parsing as NDJSON.
 
-## Structural exclusions
+## Structural Exclusions
 
 - **`src/assay/assay.zig` and `src/assay/channel.zig` are the sink.** The stderr
   arm of the channel is literally `.stderr => std.debug.print(fmt, args)`.
@@ -36,7 +37,7 @@ routes through `assay.diag` instead — is prose and does not count.
 Scope: `src/**/*.zig`, minus the exclusions above, `*.gen.zig`, and
 generated-header files.
 
-## What is in the baseline
+## What Is in the Baseline
 
 Two bypasses in `src/corpus/index/frame/frame.zig` — the unreadable-artifact and
 corrupt-artifact notes. Both are burn-down targets, not blessed exceptions. Three

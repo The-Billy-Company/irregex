@@ -15,7 +15,7 @@ separate binary to put on your PATH. The engine is written in Zig and ships as
 a shared library inside the package; Python talks to it through `ctypes`, which
 is in the standard library.
 
-## Why you might want it
+## Why You Might Want It
 
 The `re` module backtracks. On most patterns that is fine, and on a few it is
 not: `(a+)+b` against a string of forty `a`s will hang your process. That is
@@ -30,7 +30,9 @@ grammar has no lookaround and no backreferences, because those are the features
 that force backtracking. When you need them, ask for them explicitly with
 `pcre=True` and you get a PCRE2 backend, with PCRE2's performance profile.
 
-## A short tour
+## A Short Tour
+
+Here is the module-level surface, doing the thing it is for:
 
 ```python
 import irgx
@@ -67,19 +69,21 @@ the `Match`.
 irgx.sub(r"\d+", lambda m: str(int(m.group()) * 2), "a1 b20")  # 'a2 b40'
 ```
 
-## Flags are keyword arguments
+## Flags Are Keyword Arguments
 
 There is no bitmask. Every option is a keyword on `compile`, and on the
 module-level verbs.
 
-| Keyword | What it does |
-|---|---|
-| `fixed` | Treat the pattern as a literal string. No metacharacters. |
-| `ignore_case` | Fold case, including outside ASCII. |
-| `word` | Only report a match that stands alone as a word. |
-| `smart_case` | Fold case only if the pattern has no uppercase in it. |
-| `unicode` | Unicode classes, folding and boundaries. On by default. |
-| `pcre` | Use the PCRE2 grammar. Lookaround and backreferences; not linear time. |
+- **`fixed`** treats the pattern as a literal string, with no metacharacters.
+- **`ignore_case`** folds case, including outside ASCII.
+- **`word`** only reports a match that stands alone as a word.
+- **`smart_case`** folds case only if the pattern has no uppercase in it.
+- **`unicode`** turns on Unicode classes, folding, and boundaries; it is on by
+  default.
+- **`pcre`** switches to the PCRE2 grammar - lookaround and backreferences,
+  and no linear-time guarantee.
+
+Each flag composes with the others, and none of them touches the pattern text:
 
 ```python
 irgx.findall("a.c", "abc a.c", fixed=True)  # ['a.c']
@@ -92,7 +96,7 @@ irgx.findall(r"(?<=@)\w+", "me@example", pcre=True)  # ['example']
 options a command-line searcher has had for decades, and they are frequently
 what you actually meant.
 
-## str in, str out
+## `str` In, `str` Out
 
 A pattern compiled from `str` searches `str` and reports codepoint indices. A
 pattern compiled from `bytes` searches `bytes` and reports byte offsets. Mixing
@@ -111,7 +115,7 @@ for m in irgx.finditer(r"\w+", text):
 ASCII text takes a fast path where the two are identical, so you pay nothing
 for the guarantee when it costs nothing.
 
-## A Pattern is safe to share across threads
+## A `Pattern` Is Safe to Share Across Threads
 
 Put a compiled pattern at module scope and use it from a thread pool. That is
 what people do, and it works here.
@@ -129,12 +133,14 @@ are immutable, and hands each thread its own handle the first time that thread
 uses it. Compiling is pure, so this costs one compile per thread and nothing
 after that. When a thread ends, its handle is released with it.
 
-## Errors are exceptions
+## Errors Are Exceptions
 
 `irgx.error` is the base, named to match `re.error` so `except` clauses
 port unchanged. It carries the same three attributes `re.error` does - `msg`,
 `pattern`, `pos` - so a caller compiling patterns out of a config file can say
 which one broke and where.
+
+An unbalanced class is refused at compile time, with `pos` naming the byte:
 
 ```python
 >>> irgx.compile("[abc")
@@ -165,55 +171,57 @@ both.
 Running out of memory raises `MemoryError`, because that is the exception a
 Python caller already handles for it.
 
-## How this differs from `re`
+## How This Differs from `re`
 
 Most patterns behave identically, and the test suite checks a set of them
 against `re` on every run. These are the places they part ways, all of them on
 purpose.
 
-**No `match` or `fullmatch`.** Both would have to be faked on top of an
-unanchored search, which is where they end up subtly wrong. Write the anchor:
-`\A` and `\z` are in the grammar. Note the spelling of the end anchor; it is
-`\z`, as in Rust and RE2, not `\Z`.
+- **No `match` or `fullmatch`.** Both would have to be faked on top of an
+  unanchored search, which is where they end up subtly wrong. Write the
+  anchor instead: `\A` and `\z` are in the grammar. Note the spelling of the
+  end anchor; it is `\z`, as in Rust and RE2, not `\Z`.
+- **Zero-width matches follow the engine's rules, not `re`'s.** `re` reports
+  an empty match after the last character of the text; this engine does not,
+  and it also suppresses an empty match sitting exactly where the previous
+  match ended, which is why `a*` over `"abc"` gives two spans and not four.
 
-**Zero-width matches follow the engine's rules, not `re`'s.** `re` reports an
-empty match after the last character of the text; this engine does not.
+  ```python
+  [m.span() for m in irgx.finditer("a*", "abc")]  # [(0, 1), (2, 2)]
+  [m.span() for m in re.finditer("a*", "abc")]  # [(0, 1), (1, 1), (2, 2), (3, 3)]
+  ```
 
-```python
-[m.span() for m in irgx.finditer("a*", "abc")]  # [(0, 1), (2, 2)]
-[m.span() for m in re.finditer("a*", "abc")]  # [(0, 1), (1, 1), (2, 2), (3, 3)]
-```
+  Iteration here comes from a single call into the engine's own
+  match-sequence routine rather than from a Python loop advancing a cursor,
+  so these rules are the engine's and not a re-derivation of them.
+- **A newline is a line terminator, not ordinary whitespace.** A
+  single-character class will not match it, though a longer match may still
+  span one.
 
-The engine also suppresses an empty match sitting exactly where the previous
-match ended, which is why `a*` over `"abc"` gives two spans and not four.
-Iteration here comes from a single call into the engine's own match-sequence
-routine rather than from a Python loop advancing a cursor, so these rules are
-the engine's and not a re-derivation of them.
+  ```python
+  irgx.findall(r"\s", "a\nb")  # []
+  irgx.findall(r"\s", "a\tb")  # ['\t']
+  irgx.findall(r"a\sb", "a\nb")  # ['a\nb']
+  ```
 
-**A newline is a line terminator, not ordinary whitespace.** A single-character
-class will not match it. A longer match may still span one.
+- **`findall` reports `None` for a group that did not participate**, where
+  `re.findall` reports `""`. A group that did not match and a group that
+  matched the empty string are different facts, and `.groups()` already
+  tells them apart in both libraries.
 
-```python
-irgx.findall(r"\s", "a\nb")  # []
-irgx.findall(r"\s", "a\tb")  # ['\t']
-irgx.findall(r"a\sb", "a\nb")  # ['a\nb']
-```
+  ```python
+  irgx.findall(r"(a)|(b)", "ab")  # [('a', None), (None, 'b')]
+  re.findall(r"(a)|(b)", "ab")  # [('a', ''), ('', 'b')]
+  ```
 
-**`findall` reports `None` for a group that did not participate**, where
-`re.findall` reports `""`. A group that did not match and a group that matched
-the empty string are different facts, and `.groups()` already tells them apart
-in both libraries.
-
-```python
-irgx.findall(r"(a)|(b)", "ab")  # [('a', None), (None, 'b')]
-re.findall(r"(a)|(b)", "ab")  # [('a', ''), ('', 'b')]
-```
-
-**There is an `is_match`.** It asks whether the text holds a match at all and
-lets the engine stop at the first one without building a span. `re` has no
-equivalent, so it is named after what it does.
+- **There is an `is_match`.** It asks whether the text holds a match at all
+  and lets the engine stop at the first one without building a span. `re`
+  has no equivalent, so it is named after what it does.
 
 ## Introspection
+
+A few module attributes describe what is actually loaded, which matters the
+moment `IRGX_LIB` enters the picture:
 
 ```python
 irgx.__version__  # this package
@@ -226,23 +234,24 @@ Set `IRGX_LIB` to the path of a shared library to load that one instead of
 the bundled copy. It names a file, not a directory, and a path that is not
 there fails loudly at import rather than silently falling back.
 
-## Supported platforms
+## Supported Platforms
 
 Wheels are built for macOS on arm64 and x86_64, Linux on x86_64 and aarch64
 (manylinux, glibc 2.17 and newer), and Windows on x86_64. Python 3.12 and
 newer. The wheels are platform-tagged, because they contain a native library;
 a wheel for the wrong platform will not install rather than failing at import.
 
-## Searching a codebase with it
+## Searching a Codebase with It
 
 This is the engine. If what you actually want is a tool, three are built on it
-and each ships its own package:
+and each ships its own package.
 
-| Package | Question |
-|---|---|
-| [`gist-search`](https://pypi.org/project/gist-search/) | where is this exact pattern? |
-| [`relate-search`](https://pypi.org/project/relate-search/) | what resembles this, and what repeats? |
-| [`blast-search`](https://pypi.org/project/blast-search/) | what breaks if I change this symbol? |
+- **[`gist-search`](https://pypi.org/project/gist-search/)** answers where an
+  exact pattern is.
+- **[`relate-search`](https://pypi.org/project/relate-search/)** answers what
+  resembles this, and what repeats.
+- **[`blast-search`](https://pypi.org/project/blast-search/)** answers what
+  breaks if this symbol changes.
 
 ## License
 

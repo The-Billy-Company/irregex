@@ -1,10 +1,10 @@
-# `runtime/` — how a question reaches the engine, and how rows come back
+# runtime
 
 Everything above this module states _what_ it wants. This module is the only
 place that knows _how_ it is answered — and, when the fast way is unavailable,
 that the slow way gives the same answer.
 
-## The ladder
+## The Ladder
 
 An analytic call tries, in order:
 
@@ -41,7 +41,7 @@ out-of-process CLI, alongside `foreign` (fingerprints the corpus has never seen
 — "your text isn't in this repo", not "no results") and `omitted` (a budget
 truncated the tail).
 
-## One decoder for seventeen verbs
+## One Decoder for Seventeen Verbs
 
 Every analytic verb returns the same self-describing row, so the crate has one
 decoder rather than one result type per verb, and both transports lower into
@@ -64,7 +64,7 @@ Three decisions in there are load-bearing:
   borrow checker is what enforces that — not a doc comment. `to_owned()` is the
   explicit way out, and it is a deep copy including nested rows.
 
-## The handshake
+## The Handshake
 
 Before the first native row is decoded, `handshake.rs` compares the generated
 `DIGEST` against `irgx_schema_digest()`. Equal, and the plane is live.
@@ -74,7 +74,7 @@ wrong" is not something a caller can act on. A missing symbol is a downgrade; a
 drifted digest is a failure. Mis-decoding a row whose shape changed underneath
 us is the one outcome worth failing to avoid.
 
-## When to edit
+## When to Edit
 
 Adding a verb is a contract change first (`irregex/contract/analytic.toml`,
 `relate/contract/kinship.toml`, or `blast/contract/compose.toml`), then a

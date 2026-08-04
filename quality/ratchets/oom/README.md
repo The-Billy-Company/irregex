@@ -8,12 +8,11 @@ the call site and never a copy-pasted local `fn oom(`.
 The failure mode this freezes is the parity-bug class: two spellings of the same
 exit, one gets the fix, the other silently keeps the bug.
 
-## Tracked patterns
+## Tracked Patterns
 
-| Pattern             | Debt                                                                |
-| ------------------- | ------------------------------------------------------------------- |
-| inline `die("oom…)` | OOM exit duplicated at a call site whose enclosing `fn` is not `oom` |
-| non-`pub fn oom(`   | copy-pasted local twin of the canonical helper                      |
+- **An inline `die("oom…)`** is an OOM exit duplicated at a call site whose
+  enclosing `fn` is not `oom`.
+- **A non-`pub fn oom(`** is a copy-pasted local twin of the canonical helper.
 
 The enclosing function of a `die("oom` site is the nearest preceding `fn NAME(`
 line; only `NAME == oom` exempts it, which is how the canonical body's own

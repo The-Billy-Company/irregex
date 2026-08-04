@@ -27,18 +27,25 @@ the text, and **`sieve/`** refutes whole regions cheaply without ever confirming
 one. Every rung is optional, declines at compile time by being absent, and
 answers identically to the Pike VM.
 
-| Folder                  | Role                                                                                                                                                                                                                                                                                |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`program/`](program)   | The compiled artifact and its constructor: the public `Regex` handle (immutable state, `deinit`, program-walk predicates) and the compile pipeline that fills it.                                                                                                                   |
-| [`ladder/`](ladder)     | Engine selection at every grain: which backend (`Matcher` — linear or PCRE2), which rung answers a boolean question (`verdict` — classrun → accelerator tier → DFA → Pike), and which optional accelerator serves inside that (`rungs` — one interface over shuffle/parabix/sieve). |
-| [`pike/`](pike)         | The Pike VM: reusable scratch, the epsilon-closure that resolves every zero-width assertion, the comptime-specialized boolean walks, and the `-o` span walk it still owns as oracle and fallback.                                                                                   |
-| [`caliper/`](caliper)   | The determinized answer to **where**, not whether: a forward leftmost-first jaw for a match's end and a backward anchored jaw over the reversed program for its start. Spans at a table lookup per byte, declining to the Pike span it is fuzzed against.                           |
-| [`dfa/`](dfa)           | The determinized primary: the immutable, scratch-free byte-class DFA, the subset construction behind it, and the two policies that drive it — eager to fixpoint, or on demand per visited state.                                                                                    |
-| [`symbolic/`](symbolic) | The same determinization, over the pattern's own predicates instead of UTF-8 bytes, then crossed back with a decoder into an ordinary byte DFA — so a Unicode class costs what its ASCII twin costs. Declines to `dfa/` for anything it cannot say exactly.                         |
-| [`automata/`](automata) | Operations on a finished automaton that cannot say which road built it. `freeze.zig` applies the four layout passes only a complete determinization admits — match-first renumbering, start acceleration, widening into the byte-indexed mirror, premultiplication — so both roads establish the invariants once instead of transcribing them twice. |
-| [`shuffle/`](shuffle)   | Rung. Matching as a reduction: each byte's transition becomes a transformation of the whole state set, folded by a SIMD shuffle, so the loop carries a register rather than a load. Small automata only — the shuffle table is the width bound.                                     |
-| [`parabix/`](parabix)   | Rung. Matching as bit-parallel arithmetic: one marker bit per haystack position, a pattern step as a shift and a mask over a whole block. Nothing gathered, nothing loaded per byte; flat languages only, since star height becomes runtime iteration.                              |
-| [`sieve/`](sieve)       | Rung, and the only one that cannot say yes. An over-approximating quotient of the DFA, so a survivor proves nothing and a rejection proves everything — it narrows the region the machine below has to walk.                                                                        |
+- **[`program/`](program)** is the compiled artifact and its constructor: the public `Regex` handle (immutable state, `deinit`, program-walk predicates) and the compile pipeline that fills it.
+
+- **[`ladder/`](ladder)** picks the engine at every grain: which backend (`Matcher` — linear or PCRE2), which rung answers a boolean question (`verdict` — classrun → accelerator tier → DFA → Pike), and which optional accelerator serves inside that (`rungs` — one interface over shuffle/parabix/sieve).
+
+- **[`pike/`](pike)** is the Pike VM: reusable scratch, the epsilon-closure that resolves every zero-width assertion, the comptime-specialized boolean walks, and the `-o` span walk it still owns as oracle and fallback.
+
+- **[`caliper/`](caliper)** determinizes the answer to *where*, not whether: a forward leftmost-first jaw for a match's end and a backward anchored jaw over the reversed program for its start. It spans at a table lookup per byte, declining to the Pike span it is fuzzed against.
+
+- **[`dfa/`](dfa)** is the determinized primary: the immutable, scratch-free byte-class DFA, the subset construction behind it, and the two policies that drive it — eager to fixpoint, or on demand per visited state.
+
+- **[`symbolic/`](symbolic)** runs the same determinization over the pattern's own predicates instead of UTF-8 bytes, then crosses back with a decoder into an ordinary byte DFA — so a Unicode class costs what its ASCII twin costs. It declines to `dfa/` for anything it cannot say exactly.
+
+- **[`automata/`](automata)** operates on a finished automaton that cannot say which road built it. `freeze.zig` applies the four layout passes only a complete determinization admits — match-first renumbering, start acceleration, widening into the byte-indexed mirror, premultiplication — so both roads establish the invariants once instead of transcribing them twice.
+
+- **[`shuffle/`](shuffle)** is a rung: matching as a reduction, where each byte's transition becomes a transformation of the whole state set, folded by a SIMD shuffle, so the loop carries a register rather than a load. It serves small automata only — the shuffle table is the width bound.
+
+- **[`parabix/`](parabix)** is a rung: matching as bit-parallel arithmetic, one marker bit per haystack position, a pattern step as a shift and a mask over a whole block. Nothing is gathered or loaded per byte; it serves flat languages only, since star height becomes runtime iteration.
+
+- **[`sieve/`](sieve)** is a rung, and the only one that cannot say yes. It is an over-approximating quotient of the DFA, so a survivor proves nothing and a rejection proves everything — it narrows the region the machine below has to walk.
 
 `Regex` is one type to every caller (`Regex.compile`, `re.docMatch`,
 `Regex.Span` …). Zig has no `usingnamespace`, so `program/core.zig` adopts each
@@ -48,7 +55,7 @@ about, and moving a function between files never touches a call site.
 Imports the shared vocabulary from `../syntax/`, `../analysis/`, `../compile/`;
 the exhaustive independent-oracle differential lives in `../oracle/`.
 
-## When to edit
+## When to Edit
 
 DFA / Pike dispatch or the PCRE2 seam (`ladder/`), compile-time engine selection
 (`program/lower.zig`), eager-vs-on-demand determinization policy (`dfa/`), the

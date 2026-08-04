@@ -19,19 +19,23 @@ So every row reports both columns, and the verdict is per consumer.
 ## What it runs
 
 Both arms are production code reached through `regex.zig`'s seal — the
-incumbent walkers via `regex_analysis` / `regex_parabix`, the challenger via
-`regex_ast`. Nothing here reimplements either side; a bench that rebuilt an arm
+incumbent walkers via `regex.analysis` / `regex.parabix`, the challenger via
+`regex.ast`. Nothing here reimplements either side; a bench that rebuilt an arm
 would be racing a copy of the engine rather than the engine.
 
 Four consumers, chosen because each has a live recursive answer today to be
 raced against:
 
-| Question | Incumbent | Why it is interesting |
-|---|---|---|
-| `best` | `analysis.literalInfo` | The mandatory literal the trigram prefilter plans on. |
-| `cover` | `analysis.requiredAny` | Quadratic today — it calls `literalInfo` at every node it descends through, and `literalInfo` re-walks that node's whole subtree. |
-| `anchored` | `analysis.startsAnchored` | The cheapest walk there is. The control: if the fabric ever "wins" this one, the measurement is broken. |
-| `star_height` | `parabix.starHeight` | Gates the bit-parallel rung at height ≤ 1, so the answer changes which engine runs. |
+- **`best`** races `analysis.literalInfo` — the mandatory literal the trigram
+  prefilter plans on.
+- **`cover`** races `analysis.requiredAny` — quadratic today, because it calls
+  `literalInfo` at every node it descends through and `literalInfo` re-walks
+  that node's whole subtree.
+- **`anchored`** races `analysis.startsAnchored` — the cheapest walk there is,
+  and the control: if the fabric ever "wins" this one, the measurement is
+  broken.
+- **`star_height`** races `parabix.starHeight` — it gates the bit-parallel
+  rung at height ≤ 1, so the answer changes which engine runs.
 
 ## Answers before times
 
@@ -82,11 +86,18 @@ has no answer for it yet.
 
 ## Flags
 
-| Flag | Default | What |
-|---|---|---|
-| `--patterns FILE` | built-in slate | One pattern per line, `#` comments. The slate is chosen for asymptotics — shallow patterns where the build has nothing to amortize, alternations that expose the quadratic term, bounded repetitions that interning raises by squaring. |
-| `--reps N` | 5 | Timed passes; the fastest is reported, so one scheduler hiccup on a box running ten coworking agents cannot become the number. |
-| `--inner N` | 64 | Iterations per pass, since a single answer is faster than the clock is precise. |
-| `--owner gpa\|arena` | `arena` | Who owns the DAG and the fact array. Not a tuning knob but a design question: the graph's lifetime is the compile's, and the compile already holds an arena. |
-| `--strict` | off | Exit on the first regression rather than tallying. |
-| `--json` | off | One object on stdout. |
+- **`--patterns FILE`** (default: built-in slate) takes one pattern per line,
+  `#` comments. The slate is chosen for asymptotics — shallow patterns where
+  the build has nothing to amortize, alternations that expose the quadratic
+  term, bounded repetitions that interning raises by squaring.
+- **`--reps N`** (default `5`) sets timed passes; the fastest is reported, so
+  one scheduler hiccup on a box running ten coworking agents cannot become
+  the number.
+- **`--inner N`** (default `64`) sets iterations per pass, since a single
+  answer is faster than the clock is precise.
+- **`--owner gpa|arena`** (default `arena`) picks who owns the DAG and the
+  fact array. Not a tuning knob but a design question: the graph's lifetime
+  is the compile's, and the compile already holds an arena.
+- **`--strict`** (default off) exits on the first regression rather than
+  tallying.
+- **`--json`** (default off) prints one object on stdout.

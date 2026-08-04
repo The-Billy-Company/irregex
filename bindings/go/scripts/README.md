@@ -1,4 +1,4 @@
-# Maintenance scripts
+# Maintenance Scripts
 
 Neither script runs at install time or at test time. They produce two things
 that are committed to the module: the vendored archives, and the cross-check
@@ -18,12 +18,14 @@ python3 scripts/vendor_libraries.py --only linux/amd64
 python3 scripts/vendor_libraries.py --list        # what the matrix covers
 ```
 
-| Target | Zig triple | Archive |
-|---|---|---|
-| darwin/arm64 | `aarch64-macos.11.0` | `libirgx_darwin_arm64.a` |
-| darwin/amd64 | `x86_64-macos.11.0` | `libirgx_darwin_amd64.a` |
-| linux/amd64 | `x86_64-linux-gnu.2.17` | `libirgx_linux_amd64.a` |
-| linux/arm64 | `aarch64-linux-gnu.2.17` | `libirgx_linux_arm64.a` |
+- **darwin/arm64** cross-compiles via the Zig triple `aarch64-macos.11.0` into
+  `libirgx_darwin_arm64.a`.
+- **darwin/amd64** cross-compiles via `x86_64-macos.11.0` into
+  `libirgx_darwin_amd64.a`.
+- **linux/amd64** cross-compiles via `x86_64-linux-gnu.2.17` into
+  `libirgx_linux_amd64.a`.
+- **linux/arm64** cross-compiles via `aarch64-linux-gnu.2.17` into
+  `libirgx_linux_arm64.a`.
 
 Archives land beside the Go source, with `irgx.h` next to them. That is not
 cosmetic: `go mod vendor` copies a package's own files and skips a subdirectory
@@ -32,7 +34,9 @@ every vendored consumer.
 
 The triples carry an explicit minimum platform version. Inheriting the host SDK
 would produce an archive that refuses to link or load on a machine older than
-the one that built it.
+the one that built it. Each target also pins a `-Dcpu` floor - `x86_64_v2` for
+both amd64 targets, Zig's `baseline` for both arm64 ones - so a vendored
+archive never assumes an instruction the target's oldest supported CPU lacks.
 
 **Rerun this whenever the engine changes.** The archives are committed build
 output. A source change that is not followed by a run of this script ships an
@@ -40,15 +44,18 @@ engine older than the repository it came from.
 
 Three things happen per target beyond `zig build`:
 
-- **The C floor is folded in where the build leaves it out.** On macOS the
-  installed archive already carries PCRE2; on ELF it holds the Zig objects only,
-  so a cgo link fails on `pcre2_compile_8` and friends. The script probes the
-  archive for that symbol and merges the floor in only when it is genuinely
-  absent, so the day the Zig build folds it in everywhere, this keeps working
-  with nothing to edit.
-- **Debug info is stripped.** DWARF is most of an unstripped archive and nothing
-  links against it. Stripping takes the vendored set from about 26 MB to under
-  7 MB. `llvm-strip` does the work; `--keep-debug` skips it.
+- **The C floor is verified present, not folded in.** `build.zig` now packs
+  `libirgx.a` from a partially-linked object on every target, so PCRE2 and
+  libsais ride inside the archive it installs there. This script used to merge
+  them in itself on ELF, back when the build shipped the Zig objects alone and
+  a cgo link died on `pcre2_compile_8`; what is left of that era is the check,
+  kept as a precondition. An archive that reaches here without the floor is a
+  regression in the build, and vendoring it would push the failure out to
+  somebody's `go build` a week later.
+- **Debug info is stripped.** DWARF dominates an unstripped archive and nothing
+  links against it, so stripping is most of the difference between a reasonable
+  module and a rude one; the four vendored archives currently total about
+  9 MB stripped. `llvm-strip` does the work; `--keep-debug` skips it.
 - **Every archive is proved to link before it is committed.** A probe program
   that compiles a pattern, searches, reads captures and frees the handle is
   linked against the fresh archive. A missing symbol becomes a failure here

@@ -26,15 +26,24 @@ exactly one situation: you did a cleanup, the counts went *down*, and you want
 the new floor recorded. Refreshing is correct after a fix and never instead of
 one.
 
-## The five gates
+## The Five Gates
 
-| Gate | Debt it freezes |
-| --- | --- |
-| [`isa-floor/`](isa-floor/) | an inline `asm` block selected by `builtin.cpu.arch` rather than `cpu.has` — LLVM cannot see inside the template, so the instruction ships whatever the target's declared CPU floor promised |
-| [`oom/`](oom/) | out-of-memory exits that don't route through the one canonical `oom()` helper — an inline `die("oom…")`, or a copy-pasted local `fn oom(` |
-| [`dup-helper/`](dup-helper/) | the same substantial `fn` body copy-pasted across two files, where a fix lands in one copy and the twin silently keeps the bug |
-| [`fault-taxonomy/`](fault-taxonomy/) | an error name produced by production Zig that is not a declared member of `[fault_domains]` in `contract/engine.toml` — the closure that makes `Corrupt`/`BadFormat`/`CorruptIndex` synonyms impossible |
-| [`assay-bypass/`](assay-bypass/) | a `std.debug.print(` that bypasses the `assay` diagnostic channel and writes to a host's real stderr |
+- **[`isa-floor/`](isa-floor/)** freezes an inline `asm` block selected by
+  `builtin.cpu.arch` rather than `cpu.has` — LLVM cannot see inside the
+  template, so the instruction ships whatever the target's declared CPU floor
+  promised.
+- **[`oom/`](oom/)** freezes out-of-memory exits that don't route through the
+  one canonical `oom()` helper — an inline `die("oom…")`, or a copy-pasted
+  local `fn oom(`.
+- **[`dup-helper/`](dup-helper/)** freezes the same substantial `fn` body
+  copy-pasted across two files, where a fix lands in one copy and the twin
+  silently keeps the bug.
+- **[`fault-taxonomy/`](fault-taxonomy/)** freezes an error name produced by
+  production Zig that is not a declared member of `[fault_domains]` in
+  `contract/engine.toml` — the closure that makes `Corrupt`/`BadFormat`/
+  `CorruptIndex` synonyms impossible.
+- **[`assay-bypass/`](assay-bypass/)** freezes a `std.debug.print(` that
+  bypasses the `assay` diagnostic channel and writes to a host's real stderr.
 
 Each directory holds its driver, its `.baseline`, its unit tests, and a README
 explaining the rule and its exclusions in detail.
@@ -60,34 +69,31 @@ The unit tests are plain `unittest` and live beside each driver:
 for t in quality/ratchets/*/test_*.py; do python3 "$t"; done
 ```
 
-## Two gates are red on arrival
+## Some Baselines Predate the Gate
 
-`oom`, `assay-bypass`, and `isa-floor` pass. `dup-helper` and `fault-taxonomy` do not, and
-their baselines were deliberately left as they came rather than reseeded from
-the current scan - seeding is how a gate stops being a gate.
+The four gates inherited from that monorepo each had their `.baseline` seeded
+from whatever the tree already looked like on the day the gate landed — not
+reseeded to zero, because seeding a baseline to hide standing debt is how a
+gate stops being a gate. A file that already appears in a `.baseline` is
+allowed to keep its existing count; it only fails when that count goes *up*
+or a file outside the baseline gets its first finding.
 
-Most of what they found is real, and it is in code these baselines predate:
+A file already sitting in the `.baseline` at an unchanged count reports
+nothing at all — the diff only prints `increased` (an existing file whose
+count went up) and `new_files` (a file with no baseline entry, first offense).
+Inherited debt is invisible in a passing or failing run alike; the only way to
+see it is to open a `.baseline` file directly, one `<path>=<count>` line per
+offender. Run the live command for the current pass/fail state of all five:
 
-- **dup-helper**, three duplicated bodies across five files. `wallNowNs` in
-  `exec/session/watch/inotify.zig` and `.../kqueue.zig`; `thinner` in
-  `kernel/regex/analysis/analysis.zig` and `kernel/regex/ast/ast.zig`; and one
-  body under two names, `uclassLiteral` in `analysis.zig` and `litOfUclass` in
-  `kernel/regex/ast/facts.zig`.
-- **fault-taxonomy**, sixteen undeclared names in one file: `corpus/tree/sheaf.zig`'s
-  `error.Declined`, which is a declinature riding the error channel - exactly the
-  shape `fault.Answer(T)` exists to hold.
+```bash
+python3 quality/ratchets/run.py --json
+```
 
-It also reported three of `portal.zig`'s Windows mapping faults
-(`MappingAlreadyExists`, `MemoryMappingNotSupported`, `PermissionDenied`), and
-that turned out to be the detector's fault rather than the code's: they are
-members of `std.posix.MMapError`, which is what `ntMap`'s declared `MapError`
-*is*, so the Windows arm is restating std's vocabulary because its signature
-obliges it. The gate learned the rule it was missing - a `return` into a
-declared std error set produces nothing new - rather than the baseline learning
-to look away.
-
-Each is a small, local fix. Do them and the gates go green on their own; there
-is nothing to refresh.
+The detector has also occasionally been wrong rather than the code —
+`fault-taxonomy` once flagged Windows mapping faults that were only restating
+`std.posix.MMapError`'s own vocabulary because a signature obliged it, and the
+fix there was teaching the gate the rule it was missing, not silencing the
+finding.
 
 ## Layout
 

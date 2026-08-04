@@ -154,10 +154,11 @@ const irregex = b.dependency("irregex", .{ .target = target, .optimize = optimiz
 exe.root_module.addImport("irregex", irregex.module("irregex"));
 ```
 
-The module surface is [`src/root.zig`](src/root.zig): the engine tiers (`regex`,
-`regex_dfa`, `matcher`, `captures`), the corpus and index families, the compiled
-query, `api` for the curated hosted Zig vocabulary, and `ffi` for the C-ABI
-substrate.
+The module surface is [`src/root.zig`](src/root.zig): the whole regex engine
+behind the one `regex` door, with `Pattern`, `Munch`, and `Chorus` hoisted to
+the root because they are what most callers actually reach for, plus the
+corpus and index families, the compiled query, `api` for the curated hosted
+Zig vocabulary, and `ffi` for the C-ABI substrate.
 
 Note that the `inner` namespace is the product seam. Those modules are internal
 but stable, they version together with this package, and they are explicitly not
@@ -200,33 +201,32 @@ Every Zig snippet in this section is compiled against the module.
 
 ### Match Bytes You Already Hold
 
-The cheapest question is `is_match`. It is the same walk the iterator runs,
-stopped at the first span rather than materializing the rest, so the two can
-never disagree about the same text.
+The cheapest question is `isMatch`. `Pattern` is the handle you compile it
+against: it owns its own scratch, so no signature has to mention one, and
+`isMatch` is the same walk `find` runs, stopped at the first span rather than
+materializing the rest, so the two can never disagree about the same text.
 
 ```zig
 const irregex = @import("irregex");
-const Regex = irregex.regex.Regex;
 
-var re = try Regex.compile(gpa, "\\bwallet[A-Za-z_]*");
-defer re.deinit();
+var pat = try irregex.Pattern.compile(gpa, "\\bwallet[A-Za-z_]*");
+defer pat.deinit();
 
-var sim = try Regex.Sim.init(gpa, &re);  // per-thread simulation scratch
-defer sim.deinit();
-
-if (re.lineMatch(&sim, line)) { … }
+if (try pat.isMatch(line)) { … }
 ```
 
-When you need *where* rather than *whether*, ask for a span. It is a separate
-handle on purpose, since the boolean path never allocates the per-state
-start-offset maps a span needs.
+When you need *where* rather than *whether*, call `find` instead. It runs a
+different internal path than `isMatch`, since the boolean route never
+allocates the per-state start-offset maps a span needs.
 
 ```zig
-var span_sim = try Regex.SpanSim.init(gpa, &re);
-defer span_sim.deinit();
-
-if (re.matchSpan(&span_sim, line, 0)) |s| { … }  // ?Span{ .start, .end }
+if (try pat.find(line)) |s| { … }  // ?Span{ .start, .end }
 ```
+
+`Pattern` is the door most Zig callers want. The lower-level `regex.Regex` and
+its `Sim` scratch are still there underneath it — reach for them directly only
+when you are assembling your own walk, the way the [pattern-set](#ask-many-patterns-in-one-walk)
+and [crest](#prune-when-the-pattern-has-no-literal-in-it) recipes below do.
 
 In the other four languages this is the surface you already know:
 
@@ -633,8 +633,9 @@ otherwise write yourself.
  `memmem`, Teddy to 64 needles at two loads a block, sparse Aho-Corasick past
  that, a class-run kernel, the byte-shuffle lane algebra, and the anchor
  decision as a value you can re-price on one document.
- - **[`regex/`](src/kernel/regex/README.md)** – the engine. Eight stages and one
- seal, [detailed below](#the-engine-stage-by-stage).
+ - **[`regex/`](src/kernel/regex/README.md)** – the engine. Eight pipeline
+stages, a consumer face outside the pipeline, and one seal,
+[detailed below](#the-engine-stage-by-stage).
  - **[`query/`](src/kernel/query)** – a search intent compiled once: the
  prefilter every index prunes with and the match decision every transport runs,
  both from one lowering.
@@ -811,7 +812,14 @@ disagrees with it.
  declines goes to the vendored JIT, plus a linear over-approximation so it can
  still be prefiltered.
  - **oracle** ([`oracle/`](src/kernel/regex/oracle)) – a pattern and a haystack
- become an independent second opinion.
+become an independent second opinion.
+
+A ninth tier, [`glean/`](src/kernel/regex/glean), sits outside this pipeline. It
+is the consumer face: a compiled `Pattern` and everything a caller asks of it —
+match, find, walk, capture, replace, split — shaped by who is asking rather
+than by which automaton answers, and hoisted to the package root as
+[`Pattern`](#match-bytes-you-already-hold) because it is what most callers
+actually reach for.
 
 There is exactly one grammar, and that is a property rather than a promise. Every
 one of those stages is an internal, callers enter through
@@ -1149,9 +1157,12 @@ happened rather than a claim that it did.
  - **Prefilter soundness against brute force**, plus external differentials
  against `rg` and `grep -oP` at their own default semantics.
  - **Pike as the in-family reference.** Every optional rung is differentialed
- against the VM at scale before it is allowed to arm: 350,200 cases for the
- composition rung, 419,250 for symbolic, and 16,320 for the one-pass capture
- engine.
+ against the VM at scale before it is allowed to arm: the composition rung's
+ suite asserts a floor of 225,000 line-grain and 110,000 document-grain
+ cases, the symbolic rung's asserts 180,000, and the one-pass capture
+ engine's asserts 8,000 (pattern, input) comparisons — each a minimum the
+ generator must clear rather than a fixed total, so a run that silently
+ produced fewer cases fails loudly instead of passing quietly.
  - **Structure as law.** [`contract/irregex.zone`](contract/irregex.zone)
  declares the zone order, the seals, a five-hop reach ceiling, and a cycle ban
  over the real `@import` graph.

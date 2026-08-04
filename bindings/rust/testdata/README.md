@@ -2,7 +2,7 @@
 
 ## `python_oracle.json`
 
-What the reference Python binding reports for a corpus of 78 pattern / flag /
+What the reference Python binding reports for a corpus of 94 pattern / flag /
 text triples: the match spans, the group spans of each match, and the `is_match`
 answer. `tests/oracle.rs` asserts this crate reports exactly the same thing.
 

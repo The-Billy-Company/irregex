@@ -1,25 +1,36 @@
 # bench/bounds/roofline — Layer C (measured headroom)
 
-Layer C of gist's [Dominance-and-Fit Certificate](../README.md#dominance-and-fit-certificate-layers-ag).
-Where Layer A proves empirical dominance over ripgrep on the registered
-workloads and Layer B bounds its hot loop against static instruction-level
-pressure, Layer C tests the hardware claim: gist's achieved read bandwidth against this
-machine's measured memory-bandwidth ceiling. It reports a near-roof result only at or above 80%;
-anything below that is reported as optimization headroom, without inventing
-a binding bottleneck.
+Layer C of [irregex's Dominance-and-Fit Certificate](../README.md#dominance-and-fit-certificate-layers-al),
+one of the seven layers this package mints itself. Where Layer B bounds the
+hot loop against static instruction-level pressure, Layer C tests the
+hardware claim: the engine's achieved read bandwidth against this machine's
+measured memory-bandwidth ceiling. It reports a near-roof result only at or
+above 80%; anything below that is reported as optimization headroom, without
+inventing a binding bottleneck.
 
-## What it is
+## What It Is
 
-| File                      | Role                                                                                                                                                                                                           |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `bandwidth.zig`           | a STREAM-style single-thread read-bandwidth microbenchmark at three working-set tiers (L1/L2/DRAM), a matched gate/contiguous-production ladder over a corpus-sized buffer of corpus bytes, and gist's real SIMD scan over the corpus |
-| `report.py`               | reads `roofline.json` + Layer A's `certify.csv` (optionally Layer B's `portcert.json` for the compute ceiling), renders the `## Layer C` markdown section, splices it into `.gist/CERTIFICATE.md` |
-| `test_roofline.py`        | adverse tests that reject sub-roof saturation claims and keep legacy certificate refreshes honest                                                                                                              |
+- **`bandwidth.zig`** is a STREAM-style single-thread read-bandwidth
+  microbenchmark at three working-set tiers (L1/L2/DRAM), a matched
+  gate/contiguous-production ladder over a corpus-sized buffer of corpus
+  bytes, and the engine's real SIMD scan over the corpus.
+
+- **`report.py`** reads `roofline.json` plus, when present, gist's own
+  Layer A `certify.csv` and this package's own Layer B `portcert.json` for
+  the compute ceiling; it renders the `## Layer C` markdown section and
+  splices it into the mint's working `CERTIFICATE.md` (`.gist/` by default,
+  or `$GIST_DIR`). [`mint.sh`](../../certificate/mint/mint.sh) copies the
+  finished file into the committed
+  [`bench/certificate/artifact/`](../../certificate/artifact/) snapshot only
+  when asked (`CERT_PUBLISH_DIR=...`).
+
+- **`test_roofline.py`** carries adverse tests that reject sub-roof
+  saturation claims and keep legacy certificate refreshes honest.
 
 Low arithmetic intensity places a theoretical roof; it does not prove an
-implementation has reached it. `roofline_report.py` therefore reports the
-measured operating point, its distance from the roof, and the matched stages
-that localize the gap.
+implementation has reached it. `report.py` therefore reports the measured
+operating point, its distance from the roof, and the matched stages that
+localize the gap.
 
 ## Method
 
@@ -30,12 +41,12 @@ accumulator sum-reduction (independent accumulators hide load-use latency, so
 the loop is bound by load-port/cache bandwidth, not the dependency chain) —
 best-of-9 trials, since on this shared coworking box interference only ever
 _slows_ a trial, never inflates it, so the max is the cleanest ceiling
-estimate. It then times gist's real `scan/simd.zig` `contains` over the full
+estimate. It then times the engine's real `scan/simd.zig` `contains` over the full
 corpus with an absent needle (a full scan, no early exit, no verification) —
 the clean corpus operating point — plus two present needles for context
 (early-exit + verify, not a clean bandwidth number).
 
-### Why the absent needle is derived, not written down
+### Why the Absent Needle Is Derived, Not Written Down
 
 The absent needle is **not a literal**. `absentNeedle` reads the bytes that are
 about to be scanned and returns a 32-byte run of whichever byte value has the
@@ -74,7 +85,7 @@ prices verification and production control flow; the corpus gap that follows
 prices document fragmentation and dispatch alone. This ladder makes Layer C
 diagnostic even when the scan is nowhere near the hardware roof.
 
-### Why the control reads from production
+### Why the Control Reads From Production
 
 Through 2026-07 the ladder was **inverted** — the control measured 47.5 GB/s
 against production's 53.0 on aarch64, which is impossible for a real upper
@@ -86,7 +97,7 @@ unconditionally dual-window loop for a needle production scans single-probe.
 The four false assertions are recorded in `bandwidth.zig`'s header; the fix is
 that the control no longer gets to have its own opinion about any of them.
 
-### Why a cycles/byte ceiling can be absent from the artifact
+### Why a Cycles/Byte Ceiling Can Be Absent From the Artifact
 
 **Every GB/s number here is frequency-free** — bytes ÷ ns needs no clock. A
 cycles/byte restatement of the same ceiling does need one: it is GHz ÷ GB/s.
@@ -122,7 +133,7 @@ The fix is structural rather than a warning:
   translation without a measured clock. That conversion was two inferences deep:
   a modeled cycle count times a guessed frequency, printed as a bandwidth.
 
-### Why an unoptimized build refuses to publish
+### Why an Unoptimized Build Refuses to Publish
 
 The same defect one layer down, found in the same audit. This rung's build
 posture is `.asked`, so it compiles at whatever `-Doptimize` the caller passes,
@@ -155,7 +166,9 @@ A bandwidth roof is a claim about the *machine*, which is what separates it from
 Layer B′'s cycles/byte: that one is a claim about the build, so honoring the
 caller's `-Doptimize` is right there and wrong here.
 
-## How to run
+## How to Run
+
+Build the optimized probe, then splice its result into the certificate.
 
 ```bash
 cd <irregex-repo-root>
@@ -169,25 +182,28 @@ the reason above.
 
 `sudo` is not required for a measured clock — the unprivileged per-thread
 counter tier supplies one; it only buys `kperf`, the single tier that can
-program configurable events. Run Layer A first (the certify harness) —
-`report.py` reads its `certify.csv` for the per-class end-to-end operating
-points shown alongside the ceiling. Never fails the run (mirrors `pmu.zig`'s
-discipline): no counter tier ⇒ the GB/s ceilings publish, the cycles/byte
-ceilings do not exist, and both the terminal and the artifact say which backend
-refused.
+program configurable events. When gist's own Layer A `certify.csv` is present
+in the same output directory, `report.py` reads it for the per-class
+end-to-end operating points shown alongside the ceiling; absent it, Layer C
+still publishes on its own measurements. Never fails the run (mirrors
+`pmu.zig`'s discipline): no counter tier ⇒ the GB/s ceilings publish, the
+cycles/byte ceilings do not exist, and both the terminal and the artifact say
+which backend refused.
 
-## Prior art
+## Prior Art
 
 - **John D. McCalpin, "Memory Bandwidth and Machine Balance in Current High
   Performance Computers" (1995), _IEEE TCCA Newsletter_.** The STREAM
   benchmark methodology this layer's read-bandwidth sweep follows.
+
 - **Samuel Williams, Andrew Waterman, David Patterson, "Roofline: An
   Insightful Visual Performance Model for Multicore Architectures" (2009),
   _Communications of the ACM_ 52(4):65-76.** The roofline model itself — a
   kernel's throughput is capped by `min(peak compute, peak bandwidth ×
-arithmetic intensity)`; gist's low arithmetic intensity puts it on the
-  memory ridge this layer measures.
-- gist's own [`../../apparatus/harness/certify.zig`](../../apparatus/harness/certify.zig) (Layer A) —
-  the per-class cycles/byte this layer's ceiling is checked against, and
-  [`../port/`](../port/README.md) (Layer B) — the optional compute
+  arithmetic intensity)`; the engine's low arithmetic intensity puts it on
+  the memory ridge this layer measures.
+
+- **`gist/bench/apparatus/harness/certify.zig`** (sibling `gist` repo, Layer A) —
+  the per-class cycles/byte this layer's ceiling is optionally checked
+  against, and [`../port/`](../port/README.md) (Layer B) — the compute
   ceiling this layer's report reads for the two-ceiling picture.

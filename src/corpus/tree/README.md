@@ -1,37 +1,29 @@
 # `src/corpus/tree/` — the walk, the corpus, the drain
 
-The source-tree substrate shared by indexing, cold search, resident search, and
-the verification harness. Owns corpus loading (serial + fused parallel), the
-Haystack walk, the rg-compatible ignore protocol, and the stdout drain that
-`corpus.zig`'s `writeStdout` seam arms. Path selection lives beside it in
-[`../scope/`](../scope/); the freshness law and FSEvents journal live in
-[`../fresh/`](../fresh/).
+This package is the source-tree substrate shared by indexing, cold search, resident search, and the verification harness.
 
-| File | Role |
-| ---- | ---- |
-| `corpus.zig` | Loads non-binary files under the corpus roots; owns the process output budget and charter-aware roots |
-| `haystack.zig` | Shared recursive `Walker` — ignore + corpus skip policy + charter skips |
-| `ignore.zig` | Compiles gitignore / `.ignore` / `.rgignore` precedence once for every face |
-| `drain.zig` | Stdout cadence — `line` / `block` / `relay` policies (its only consumer is `corpus.zig`) |
-| `bulkstat.zig` | Freshness policy over batched metadata — the elision law, the fresh-file overlay, the portable fallback |
-| `sheaf.zig` | The batched-enumeration ABIs themselves: Darwin `getattrlistbulk`, Windows `NtQueryDirectoryFile`, POSIX `getdirentries`/`getdents64` |
-| `loadpar.zig` | Fused parallel walk+read loader — membership-parity with `haystack.Walker` |
+It owns corpus loading (serial and fused parallel), the Haystack walk, the rg-compatible ignore protocol, and the stdout drain that `corpus.zig`'s `writeStdout` seam arms. Path selection lives beside it in [`../scope/`](../scope/README.md); the freshness law and the FSEvents journal live in [`../fresh/`](../fresh/README.md).
 
-## Why `drain` sits here
+## Files, By Role
 
-Stdout buffering looks like emit policy, but the only caller is
-`corpus.writeStdout`. Parking it under `exec/cold/emit/` forced a corpus→cold
-edge for a cadence table. It lives with the corpus seam that arms it.
+- **`corpus.zig`** loads non-binary files under the corpus roots and owns the process output budget and the charter-aware roots resolution.
+- **`haystack.zig`** is the shared recursive `Walker` — ignore policy plus corpus skip policy plus charter skips.
+- **`ignore.zig`** compiles gitignore / `.ignore` / `.rgignore` precedence once for every face.
+- **`drain.zig`** is the stdout cadence — `line` / `block` / `relay` policies, whose only consumer is `corpus.zig`.
+- **`bulkstat.zig`** holds the freshness policy over batched metadata: the elision law, the fresh-file overlay, and the portable fallback.
+- **`sheaf.zig`** is the batched-enumeration ABI itself: Darwin `getattrlistbulk`, Windows `NtQueryDirectoryFile`, POSIX `getdirentries`/`getdents64`.
+- **`loadpar.zig`** is the fused parallel walk+read loader, membership-parity with `haystack.Walker`.
 
-## Freshness model
+## Why `drain` Sits Here
 
-The persisted trigram index accelerates; it never overrules live bytes. The
-dual-clock anchor + change journal that make a days-old artifact still correct
-live in [`../fresh/`](../fresh/) — shared by every artifact, not a trigram
-private. See that README for the qualified local-filesystem guarantee.
+Stdout buffering looks like emit policy, but its only caller is `corpus.writeStdout`. Parking it under `exec/cold/emit/` would have forced a corpus-to-cold edge for a cadence table, so it lives with the corpus seam that arms it instead.
 
-## When to edit
+## Freshness Model
 
-Walk policy, ignore dialect, drain syscall budgets, parallel loader parity.
-Charter keys and PathFilter composition are [`../scope/`](../scope/).
-Artifact clocks are [`../fresh/`](../fresh/).
+The persisted trigram index accelerates; it never overrules live bytes. The dual-clock anchor and change journal that make a days-old artifact still correct live in [`../fresh/`](../fresh/README.md), shared by every artifact rather than a trigram private.
+
+See that README for the qualified local-filesystem guarantee.
+
+## When To Edit
+
+Come here for walk policy, the ignore dialect, drain syscall budgets, and parallel-loader parity. Charter keys and PathFilter composition belong in [`../scope/`](../scope/README.md); artifact clocks belong in [`../fresh/`](../fresh/README.md).

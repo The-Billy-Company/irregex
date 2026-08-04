@@ -1,5 +1,7 @@
 # Tests
 
+Run the whole suite from this directory:
+
 ```bash
 python3 -m pytest
 ```
@@ -11,18 +13,51 @@ first with `zig build` from the engine root. Against an installed wheel the
 bundled library is already there and nothing in `conftest.py` fires, which is
 what makes the same suite valid in both places.
 
-| File | What it is for |
-|---|---|
-| `test_iteration.py` | Zero-width and nullable patterns: the two rules that produce the engine's answer, and the hand-rolled loop that would give a different one. The same sequence is held to `gist --json`, the authority the header names, in gist's own suite — that comparison needs gist's binary, so it lives where the binary is built. |
-| `test_unicode.py` | Codepoint indices versus byte offsets, case folding past ASCII, and the `str`/`bytes` wall. |
-| `test_threads.py` | One module-level `Pattern`, many threads, different texts. |
-| `test_groups.py` | Numbered, named, and non-participating groups; the short-window `captures` contract. |
-| `test_flags.py` | Every flag, proved by a behavior that changes when it is set. |
-| `test_errors.py` | Refused patterns - both kinds, told apart by class - mixed domains, and the load-time failures, which need a fresh interpreter. |
-| `test_substitution.py` | `sub`, `subn`, `split`, and the template grammar. |
-| `test_parity.py` | Side by side with `re`: agreement where they agree, our answer asserted as a literal where they do not. |
+- **`test_iteration.py`** proves zero-width and nullable patterns follow the
+  two rules that produce the engine's answer, against the hand-rolled loop
+  that would give a different one. The same sequence is held to `gist
+  --json`, the authority the header names, in gist's own suite - that
+  comparison needs gist's binary, so it lives where the binary is built.
+- **`test_unicode.py`** covers codepoint indices versus byte offsets, case
+  folding past ASCII, and the `str`/`bytes` wall.
+- **`test_threads.py`** holds one module-level `Pattern` live across many
+  threads searching different texts.
+- **`test_groups.py`** covers numbered, named, and non-participating groups,
+  and the short-window `captures` contract.
+- **`test_flags.py`** proves every flag by a behavior that changes when it is
+  set.
+- **`test_errors.py`** covers refused patterns - both kinds, told apart by
+  class - mixed domains, and the load-time failures, which need a fresh
+  interpreter.
+- **`test_substitution.py`** covers `sub`, `subn`, `split`, and the template
+  grammar.
+- **`test_parity.py`** runs side by side with `re`: agreement where they
+  agree, and our answer asserted as a literal where they do not.
+- **`test_contract.py`** asserts the in-process status and fault vocabulary
+  agrees across every artifact that restates it: `contract/engine.toml`, the
+  `Status`/`AtSpace` enums in `contract.zig`, the `IRGX_*` defines in
+  `include/irgx.h`, the error sets in `fault.zig`, and the constants in
+  `irgx._abi` this binding switches on.
+- **`test_cdef_header_parity.py`** checks that every function
+  `irgx.contract.abi.CDEF` declares is spelled, typed, and returns exactly
+  what `include/irgx.h` says it does, so a renamed C symbol fails here
+  instead of staying invisible until a call nobody happened to make.
+- **`test_contract_substrate.py`** asserts the `irgx.contract` mirror has not
+  drifted from the canonical `engine.toml` and `analytic.toml`, from relate's
+  vendored `kinship.toml`, or from which library each verb actually routes
+  to.
+- **`test_rows.py`** decodes the analytic row plane against synthesized value
+  arrays rather than a captured answer, so it can force the cases a real
+  cursor rarely hits: an absent field, an ordinal newer than this table
+  knows, nested rows, and a deliberately drifted schema digest.
+- **`test_packaging.py`** asserts the published package ships `py.typed`,
+  without which a consumer's type checker silently ignores every annotation
+  here.
+- **`test_description.py`** checks the README used as the PyPI long
+  description: every relative link must resolve against the page displaying
+  it, not against the repository, and it needs no built library or network.
 
-## How these are written
+## How These Are Written
 
 A test that passes whatever the code does is worse than no test, so the ones
 that carry weight are written against a plausible wrong implementation rather

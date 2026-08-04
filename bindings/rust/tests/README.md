@@ -3,16 +3,14 @@
 `cargo test`. No Python, no network, and no engine build: the cross-check corpus
 is committed and the library comes from `vendor/`.
 
-| File | What it proves |
-|---|---|
-| `oracle.rs` | Every span, every group span, and every `is_match` answer agrees with the reference Python binding, over a committed corpus of 94 pattern / flag / text triples. |
-| `semantics.rs` | The engine's own rules, spelled out: nullable patterns, zero-width matches, byte offsets over non-ASCII, participating and non-participating groups, and each of the six flags changing an answer. |
-| `surface.rs` | The `regex`-shaped API: iteration, split, the three replace verbs, `$name` expansion, closures as replacements, and a `find_all` window shorter than the answer still returning all of it. |
-| `threads.rs` | One `static Regex` searched from many threads at once, with every answer checked against what that thread would have got alone. |
-| `faults.rs` | A refusal is an error with a reason in it, and a negative status never becomes a wrong answer. The two refusals stay apart: a pattern the linear grammar declines is retryable under `pcre` and installs nothing, a malformed one carries the offset it died at and `pcre` will not rescue it. |
-| `contract.rs` | The substrate mirror (`contract/`, generated schema table, grade bands) does not drift from `analytic.toml` / `engine.toml` / `kinship.toml` — all three committed here, so the suite needs no sibling checkout. |
+- **`oracle.rs`** proves every span, every group span, and every `is_match` answer agrees with the reference Python binding, over a committed corpus of 94 pattern / flag / text triples.
+- **`semantics.rs`** proves the engine's own rules, spelled out: nullable patterns, zero-width matches, byte offsets over non-ASCII, participating and non-participating groups, and each of the six flags changing an answer.
+- **`surface.rs`** proves the `regex`-shaped API: iteration, split, the three replace verbs, `$name` expansion, closures as replacements, and a `find_all` window shorter than the answer still returning all of it.
+- **`threads.rs`** proves one `static Regex` searched from many threads at once gives every thread the same answer it would have got alone.
+- **`faults.rs`** proves a refusal is an error with a reason in it, and a negative status never becomes a wrong answer. The two refusals stay apart: a pattern the linear grammar declines is retryable under `pcre` and installs nothing, a malformed one carries the offset it died at and `pcre` will not rescue it.
+- **`contract.rs`** proves the substrate mirror (`contract/`, generated schema table, grade bands) does not drift from `analytic.toml` / `engine.toml` / `kinship.toml` — all three committed here, so the suite needs no sibling checkout.
 
-## The oracle is the strongest test here
+## The Oracle Is the Strongest Test Here
 
 `oracle.rs` is the one that would catch a plausible-but-wrong implementation. The
 Python binding was written against this same C ABI first, is independently
@@ -34,7 +32,7 @@ this crate had copied Python's offset translation, the non-ASCII cases would fai
 by several bytes each. `corpus_matches_the_linked_engine` fails first, with a
 clear message, if the corpus was generated against a different engine build.
 
-## The anchor grid, and why it is shaped that way
+## The Anchor Grid, and Why It Is Shaped That Way
 
 `semantics::anchors_are_text_anchors_and_find_all_is_the_authority` pins the
 contract that the buffer is one unit: `^` and `\A` at offset 0, `$` and `\z` at

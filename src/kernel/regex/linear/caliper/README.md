@@ -24,9 +24,11 @@ is the region a match may occupy, while `hay` stays whole because every
 zero-width assertion resolves against it end to end. Slicing to bound a search
 would also move the text's edges, and then `$` and any look-around at the cut
 answer a question about the slice — so the bound moves the walk's ceiling and
-nothing else.
+nothing else. `Span` and `Window` are declared once in the package-wide
+vocabulary, [`mark.zig`](../../../../mark.zig), and re-exported through
+`caliper.zig` because this is the engine that gives them their shape.
 
-## Keeping up with the walk it replaced
+## Keeping Up With the Walk It Replaced
 
 A table lookup per byte is only worth having if the lookup is actually one
 lookup. Two things keep it there:
@@ -50,21 +52,26 @@ lookup. Two things keep it there:
   be excluded from the run entirely and paid a call per byte, which was the
   whole of its deficit: `\bfoo\b` over a match-saturated line went from 0.86x
   ripgrep to 1.78x on that change alone, while every word-free arm held still.
-  The two grains are separate comptime
-  loops on purpose. Folding them — handing a word-free program four copies of
-  its one row so the lookup is unconditional — reads better and costs 60% on a
-  long glide, because two extra byte loads per iteration are nothing against a
-  cache miss and everything against the L1 hit this loop is made of.
+  The two grains are separate comptime loops on purpose. Folding them — handing
+  a word-free program four copies of its one row so the lookup is unconditional
+  — reads better and costs 60% on a long glide, because two extra byte loads
+  per iteration are nothing against a cache miss and everything against the L1
+  hit this loop is made of.
 - **A `Mark` per state**, interned alongside it: matched, dead. The search's two
   questions about a state used to be a walk into its priority key and then into
   that key's last word; they are one load of a dense array.
+- **A `Cell` names a state by its memo offset directly** (`id * stride`) and
+  carries its `Mark` in the bits above that offset, rather than a second array.
+  The recurrence drops to `off = raw` with no multiply to re-derive a row and
+  no second load to ask whether the state is interesting — worth roughly 2.1x
+  per byte on a saturated line, measured against the loop it replaced.
 
 The forward jaw also drives the caller's first-byte prefilter, priced against
 *this* walk (`dwell.min_profitable_span_stride`) and not the boolean one — the
 same corpus prior, an order of magnitude lower bar, because a `memchr` call does
 not get cheaper when the walker it stands down gets dearer.
 
-## Why a bitset was not enough
+## Why a Bitset Was Not Enough
 
 `dfa/subset.zig` interns a DFA state as a _set_ of NFA states, because a boolean
 answer only asks whether anything matches. A span asks more: `a|ab` must report
@@ -86,14 +93,21 @@ to the end the forward jaw found.
 
 ## Files
 
-| File               | Role                                                                                                                                                                               |
-| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `caliper.zig`      | The handle and the two-pass search: eligibility, the `Caliper` (reversed program + both machine configurations) built once at compile time, the per-thread `Jaws`, and `measure`.  |
-| `automaton.zig`    | The lazy priority-ordered determinizer both jaws run: ordered-list states, the dominance-aware closure, interning, the transition memo, and `quit`. Direction lives in the caller. |
-| `reverse.zig`      | The forward Thompson program read right to left — built from the lowered program, so no second parse can disagree about what the pattern means.                                    |
-| `caliper_test.zig` | Leftmost-first unit cases plus a differential sweep against the Pike span oracle.                                                                                                  |
+- **[`caliper.zig`](caliper.zig)** is the handle and the two-pass search:
+  eligibility, the `Caliper` (reversed program + both machine configurations)
+  built once at compile time, the per-thread `Jaws`, `measure`, and the
+  `Span`/`Window` vocabulary re-exported from `mark.zig`.
+- **[`automaton.zig`](automaton.zig)** is the lazy priority-ordered
+  determinizer both jaws run: ordered-list states, the dominance-aware closure,
+  interning, the transition memo, `Cell`, `glide`, and `quit`. Direction lives
+  in the caller.
+- **[`reverse.zig`](reverse.zig)** is the forward Thompson program read right
+  to left — built from the lowered program, so no second parse can disagree
+  about what the pattern means.
+- **[`caliper_test.zig`](caliper_test.zig)** runs leftmost-first unit cases
+  plus a differential sweep against the Pike span oracle.
 
-## What it does not answer
+## What It Does Not Answer
 
 Eligibility is decided once, at compile time, and the caliper is simply absent
 when it does not apply — there is no runtime branch to mispredict:
@@ -110,7 +124,7 @@ pattern whose determinization outgrows the budget sets `quit`, `measure` returns
 never correctness — which is what lets the VM remain the oracle it is fuzzed
 against rather than dead weight.
 
-## Assertions are not reversed
+## Assertions Are Not Reversed
 
 `^ $ \b \B \< \>` are _position predicates_: `^` asserts that a gap is a line
 start, `\b` that the bytes straddling a gap differ in word-ness. Neither says

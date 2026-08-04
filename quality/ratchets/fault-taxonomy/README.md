@@ -1,44 +1,60 @@
-# zig-fault-taxonomy ratchet
+# zig-fault-taxonomy Ratchet
 
-**The irregex fault vocabulary is closed.** Zig unifies error names globally, so
+The irregex fault vocabulary is closed. Zig unifies error names globally, so
 `error.Corrupt`, `error.BadFormat` and `error.CorruptIndex` all meaning "these
 persisted bytes are untrustworthy" was worse than untidy — synonyms cannot be
 handled uniformly and homonyms merge silently. Five domains are declared once in
 `src/fault.zig` and mirrored in `contract/engine.toml`'s `[fault_domains]` block.
 This ratchet is what stops a sixth spelling from accreting the same way.
 
-## The rule
+## The Rule
 
-One finding per error name **produced** by production Zig that is not a member of
+One finding per error name *produced* by production Zig that is not a member of
 a declared `[fault_domains]` domain. The vocabulary is read from
 `contract/engine.toml` at run time — the driver hardcodes no member list — and a
 missing or empty block is a hard error, never an empty allowlist that flags the
 world.
 
-**Synonymy is not judged semantically.** No mechanical rule can decide that
+Synonymy is not judged semantically. No mechanical rule can decide that
 `BadFormat` means what `Corrupt` means, and a ratchet that guessed would be
 unpredictable. So it enforces the property that makes synonyms impossible —
 closure — and a new spelling of an existing fact is caught the same way a
 genuinely new fact is. Only the fix differs: map it onto the existing member, or
 add a member to the contract *and* to `fault.zig`.
 
-## Structural exclusions (never a list of names)
+## Structural Exclusions
 
-| Excluded | Why |
-| --- | --- |
-| `*_test.zig` · `*_fuzz.zig` · inline `test "…" { … }` blocks | `error.SkipZigTest` / `error.TestUnexpectedResult` are std.testing's, and a fuzz harness's `error.LoadersDisagree` is an oracle assertion, not a kernel fault |
-| a name declared only in a **non-`pub` named `const`** error set | file-private control flow — it cannot reach another module's handler, so it cannot become a synonym anyone must unify. This is the PCRE2 shadow rewriter's `const Err = error{ Bail, OutOfMemory };` |
-| a **consuming** `error.X` — a `=>` prong label or an `==` / `!=` operand | it *handles* a name that came from elsewhere (usually `std`), it does not mint one. This is what keeps every propagated std error out of the count without maintaining a list of std error names |
-| a `return error.X` from a function whose **declared error set is std's own** | the signature obliges it. `portal.ntMap` returns `MapError!Mapping` where `const MapError = std.posix.MMapError`, so `error.PermissionDenied` there is std's vocabulary restated, not irregex's minted — the POSIX arm of the same `pub fn map` returns the identical name from inside `std.posix.mmap`, where nothing counts it either |
+The gate never carries a list of exempt names; every exclusion below is a shape
+in the code, not a name on an allowlist.
+
+- **Test and fuzz surfaces** — `*_test.zig`, `*_fuzz.zig`, and inline
+  `test "…" { … }` blocks are excluded because `error.SkipZigTest` and
+  `error.TestUnexpectedResult` are `std.testing`'s, and a fuzz harness's
+  `error.LoadersDisagree` is an oracle assertion, not a kernel fault.
+- **File-private error sets** — a name declared only in a non-`pub` named
+  `const` error set is file-private control flow: it cannot reach another
+  module's handler, so it cannot become a synonym anyone must unify. This is
+  the PCRE2 shadow rewriter's `const Err = error{ Bail, OutOfMemory };`.
+- **Consuming an error rather than minting one** — a `=>` prong label or an
+  `==` / `!=` operand *handles* a name that came from elsewhere (usually
+  `std`), it does not mint one. This is what keeps every propagated std error
+  out of the count without maintaining a list of std error names.
+- **`return error.X` under a std-typed error set** — when a function's
+  declared error set is std's own, the signature obliges the return.
+  `portal.ntMap` returns `MapError!Mapping` where
+  `const MapError = std.posix.MMapError`, so `error.PermissionDenied` there is
+  std's vocabulary restated, not irregex's minted — the POSIX arm of the same
+  `pub fn map` returns the identical name from inside `std.posix.mmap`, where
+  nothing counts it either.
 
 Deliberately narrow: an *inline* anonymous set in a private function signature
-does **not** count as private, because an inferred error set propagates it out of
+does *not* count as private, because an inferred error set propagates it out of
 the file anyway. Matching runs on a comment/string-blanked copy of each file
 (`quality/ratchets/_lib/zigtext.py`), so a name quoted in a doc comment is prose.
 
-## Why the std-set exclusion cannot be gamed
+## Why the Std-Set Exclusion Cannot Be Gamed
 
-It rests on the **compiler**, not on this driver knowing what std's members are.
+It rests on the compiler, not on this driver knowing what std's members are.
 A function declaring an explicit error set may only `return` a member of it, and
 Zig rejects anything else at that exact token — so minting a private name inside
 one of these bodies is not a finding the rule hides, it is a build failure.
@@ -62,7 +78,7 @@ Every fence exists to keep that guarantee load-bearing:
 Scope: `src/**/*.zig`, minus the suffixes above, `*.gen.zig`, and
 generated-header files.
 
-## The three fixes
+## The Three Fixes
 
 1. **A new spelling of an existing fact** (`BadFormat`/`CorruptIndex` → `Corrupt`)
    — import `src/fault.zig` and return the declared member.
@@ -70,7 +86,7 @@ generated-header files.
    all. Return `fault.Answer(T){ .declined = … }` with one of the
    `[decline_reasons]` in `contract/engine.toml`.
 3. **A genuinely new fault the taxonomy lacks** — add the member to the right
-   domain in `src/fault.zig` **and** to `[fault_domains]`. Both, or the mirror
+   domain in `src/fault.zig` *and* to `[fault_domains]`. Both, or the mirror
    check fails.
 
 ## Surface
