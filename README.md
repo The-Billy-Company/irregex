@@ -61,12 +61,9 @@ something else.
 
 The default engine cannot backtrack. It is a Thompson construction over bytes,
 so an innocent-looking pattern cannot detonate on an unlucky input, and the cost
-per byte is bounded no matter how ambiguous the pattern is.
-
-That road starts at Ken Thompson's [Regular Expression Search
-Algorithm](https://doi.org/10.1145/363347.363387) (CACM, 1968) and was put back
-on the map by Russ Cox in [Regular Expression Matching Can Be Simple And
-Fast](https://swtch.com/~rsc/regexp/regexp1.html).
+per byte is bounded no matter how ambiguous the pattern is. The
+[technical report](https://proof.billylives.com/software/irregex/tech-report)
+carries the algebra, history, and search-engine lineage behind that choice.
 
 The seam here mirrors the decomposition Rust's regex ecosystem arrived at,
 because it is the right one. `kernel/regex/` is the syntax and automata half,
@@ -74,8 +71,7 @@ sibling `kernel/scan/` is the literal accelerator half, and sibling
 `kernel/query/` is the meta engine that picks between them.
 
 PCRE2 is available for lookaround and backreferences, and it is opted into
-rather than disguised. Nobody should promise both guarantees without saying
-which one they handed you.
+rather than disguised.
 
 ## Should I Be Using This?
 
@@ -1070,40 +1066,17 @@ rather than guess on recursion, subroutine calls, and conditionals.
 
 ### Crest
 
-Crest is the analysis only the AST can do. Every candidate index in the field
-tests presence: does this document contain a substring the match requires?
+Crest is the AST-derived necessary condition for literal-free class runs, the
+blind spot a presence index cannot close. The
+[technical report](https://proof.billylives.com/software/irregex/tech-report#crest)
+carries the calculus, lineage, and soundness argument.
 
-Which means a pattern with no literal in it, `[0-9a-f]{12}`, which is exactly
-what hunting a hash or a MAC address looks like, proves nothing about any
-document and concedes the entire corpus.
-
-Crest closes that hole, and it is the one piece of mathematics in this tree that
-is ours.
-
-Index each document by the vector of its longest consecutive run per byte class:
-sixteen lanes, eight classes across two alphabets, thirty-two bytes a document.
-
-Derive from the pattern the runs it is *forced* to contain, by a min-of-max run
-calculus over the AST, one vector per top-level alternative, since a match
-satisfies one branch rather than all of them.
-
-Then prune any document whose crest falls below every alternative's forced crest.
-The name is the shape: a maximal class run is the crest of that class's profile
-across the document, and a document that never crests that high cannot hold a
-match.
-
-Soundness is by construction rather than by testing. Every bound rounds down, any
-construct the calculus cannot certify contributes nothing, and an unsafe caseless
-fold declines to zero, so under-pruning is the only failure mode available to it.
-
-Then it is tested anyway, fail-closed: `matched ⇒ ¬pruned` against the production
-matcher over the real corpus, plus randomized adversarial patterns in both engine
-modes, with one violation exiting non-zero.
+The implementation remains deliberately split across the seam it proves: the
+kernel is [`src/kernel/math/crest.zig`](src/kernel/math/crest.zig), the query
+half is `analysis/swell.zig`, and the production harness is `zig build crest`.
 
 The theorem, calculus, refereed prior-art review, and falsification strategy are
-in [`research/crest/`](research/crest). The kernel is
-[`src/kernel/math/crest.zig`](src/kernel/math/crest.zig), the query half is
-`analysis/swell.zig`, and the harness is `zig build crest`.
+in [`research/crest/`](research/crest).
 
 ## The C ABI
 
@@ -1196,45 +1169,14 @@ happened rather than a claim that it did.
 
 ## What It Is Measured Against
 
-A performance claim in a README is a wish. The engine-level evidence is minted by
-build steps in this repository, and each layer measures fit against a stated
-bound rather than universal or hardware optimality, because that is not a thing a
-benchmark can establish.
+A performance claim in a README is a wish. The
+[technical report](https://proof.billylives.com/software/irregex/tech-report#evidence)
+states the argument and its limits; the repository keeps the executable proof.
 
- - **Layer B** – port-optimality: the hot loop against a static µarch budget
- (`llvm-mca`). [`bench/bounds/port/`](bench/bounds/port/README.md).
- - **Layer B′** – the same probes in measured cycles on this machine, via the
- PMU. Same harness, `zig build portbound`.
- - **Layer C** – roofline: measured achievable bandwidth, and the scan's
- distance from it. [`bench/bounds/roofline/`](bench/bounds/roofline/README.md).
- - **Layer D** – the information-theoretic candidate-byte floor.
- [`bench/bounds/lowerbound/`](bench/bounds/lowerbound/README.md).
-
-Layer D is the one to read first, because it argues about a minimum rather than a
-race. Verifying a match is Ω(candidate bytes) in the worst case, the classical
-Knuth-Morris-Pratt and Boyer-Moore result, since an unread byte could *be* the
-match or could break one.
-
-The fused byte-class DFA reads each candidate byte exactly once: `passes ≡
-1.0000` on every DFA class, with none of the memchr-then-rescan double traffic a
-per-line matcher pays, and the SIMD literal path strictly under it on vector
-skips and early exit.
-
-The audit is proven non-tautological by fault injection. A single extra byte-read
-per line drives `passes` to 1.02 and trips a hard `exit 1`.
-
-Sublinearity is not this layer's job and it does not claim it. That comes from
-the candidate filter deciding what verify never has to see.
-
-Two honesty rules the harnesses enforce rather than merely state:
-
- - **No fabricated hardware model.** xnu gates the PMU behind root and LLVM
- ships no scheduling model for any Apple core, so the static bound is computed
- against two cores LLVM does model precisely (Zen 4 and Neoverse V2) and the
- Apple column is left empty. An absent number beats an invented one.
- - **No unoptimized measurement.** A Debug build is not vectorized, so
- `roofline` refuses to run rather than publish a curve that is flat across all
- three cache tiers.
+The harnesses measure fit against explicit floors: a static microarchitectural
+budget, real PMU cycles where the host exposes them, measured memory bandwidth,
+and the information-theoretic candidate-byte minimum. They refuse a machine or
+build mode they cannot judge honestly rather than manufacturing a number.
 
 ```bash
 zig build lab                                # every harness → zig-out/bin
