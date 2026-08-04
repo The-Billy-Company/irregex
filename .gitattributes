@@ -54,6 +54,25 @@ bindings/*/irgx.h  linguist-generated
 # read line by line.
 *.lock  linguist-generated -diff
 
+# ── Apparatus ───────────────────────────────────────────────────────────────
+# Code that measures or operates this project, rather than being it. Where
+# `linguist-vendored` above says "somebody else wrote this", these say "we wrote
+# it, and it is not the engine". Either way the file stays in the tree, in
+# review, in diffs, and in the tarball; only the language breakdown changes.
+#
+# bench/ is the harness behind every published ratio, quality/ is the ratchet
+# and lint slate, tools/ mints the Unicode and schema tables from the pinned
+# inputs already marked vendored above, and .github/ operates the repository.
+# None of it is the regex engine, and together they were reading as a tenth of
+# the repository's language. Excluded, the bar reads Zig 87%.
+bench/**    linguist-detectable=false
+quality/**  linguist-detectable=false
+tools/**    linguist-detectable=false
+.github/**  linguist-detectable=false
+
+# NOT excluded: bindings/ is the libirgx C ABI's Python, Rust, and Go surface -
+# shipped code a consumer imports, and honestly this project's second language.
+
 # ── Diff drivers ────────────────────────────────────────────────────────────
 # Git ships hunk-header patterns for these languages; naming them here is what
 # makes `@@ ... fn whatever` appear above a hunk instead of a bare line number.
